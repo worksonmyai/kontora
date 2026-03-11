@@ -31,7 +31,7 @@ func (d *Daemon) applyTicketSnapshot(path string, t *ticket.Ticket) {
 	}
 	d.tickets[t.ID] = ns
 
-	if t.Status != ticket.StatusTodo || !t.Kontora {
+	if (t.Status != ticket.StatusTodo || !t.Kontora) && d.queued[t.ID] {
 		d.removeQueuedLocked(t.ID)
 	}
 

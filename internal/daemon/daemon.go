@@ -382,7 +382,14 @@ func (d *Daemon) handleFileChanged(path string) {
 	defer d.mu.Unlock()
 
 	prev, known := d.tickets[t.ID]
-	d.tickets[t.ID] = &ticketState{ticket: t, filePath: path}
+	ns := &ticketState{ticket: t, filePath: path}
+	// Preserve lastError when the ticket stays paused (e.g. user edited notes
+	// but didn't retry). Rebuilding from disk would otherwise lose it since
+	// lastError is in-memory only.
+	if known && prev.lastError != "" && t.Status == ticket.StatusPaused {
+		ns.lastError = prev.lastError
+	}
+	d.tickets[t.ID] = ns
 	d.broadcastTicketUpdate(t.ID)
 
 	if !t.Kontora {
@@ -641,7 +648,6 @@ func (d *Daemon) runTicket(ctx context.Context, ticketID string) {
 	if !agentOK {
 		log.Error("unknown agent", "agent", agentName)
 		d.pauseTicket(t, filePath, fmt.Sprintf("unknown agent %q", agentName))
-		d.broadcastTicketUpdateLocking(ticketID)
 		return
 	}
 	roleCfg := d.cfg.Roles[roleName]
@@ -713,7 +719,6 @@ func (d *Daemon) runSimpleTicket(ctx, taskCtx context.Context, log *slog.Logger,
 	if !ok {
 		log.Error("unknown agent", "agent", agentName)
 		d.pauseTicket(t, filePath, fmt.Sprintf("unknown agent %q", agentName))
-		d.broadcastTicketUpdateLocking(ticketID)
 		return
 	}
 
@@ -1184,6 +1189,7 @@ func (d *Daemon) pauseTicket(t *ticket.Ticket, path, reason string) {
 	}
 	d.mu.Lock()
 	d.tickets[t.ID] = &ticketState{ticket: t, filePath: path, lastError: reason}
+	d.broadcastTicketUpdate(t.ID)
 	d.mu.Unlock()
 }
 

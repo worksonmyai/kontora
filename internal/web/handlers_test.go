@@ -20,6 +20,7 @@ import (
 
 // mockService implements TicketService for handler tests.
 type mockService struct {
+	setStageStage *string
 	tickets    []TicketInfo
 	getTicket  *TicketInfo
 	getErr     error
@@ -71,7 +72,12 @@ func (m *mockService) DeleteTicket(id string) error {
 func (m *mockService) PauseTicket(id string) error          { return m.actionFn(id) }
 func (m *mockService) RetryTicket(id string) error          { return m.actionFn(id) }
 func (m *mockService) SkipStage(id string) error            { return m.actionFn(id) }
-func (m *mockService) SetStage(id string, _ string) error   { return m.actionFn(id) }
+func (m *mockService) SetStage(id string, stage string) error {
+	if m.setStageStage != nil {
+		*m.setStageStage = stage
+	}
+	return m.actionFn(id)
+}
 func (m *mockService) MoveTicket(id string, _ string) error { return m.actionFn(id) }
 func (m *mockService) InitTicket(id string, req InitTicketRequest) error {
 	if m.initFn != nil {
@@ -267,19 +273,23 @@ func TestHandleSkip_NotFound(t *testing.T) {
 // --- POST /api/tickets/{id}/set-stage ---
 
 func TestHandleSetStage_Success(t *testing.T) {
-	tkt := TicketInfo{ID: "t-001", Status: "todo", Stage: "implement"}
+	var capturedStage string
+	tkt := TicketInfo{ID: "t-001", Status: "todo", Stage: "review"}
 	svc := &mockService{
-		tickets:  []TicketInfo{tkt},
-		actionFn: func(_ string) error { return nil },
+		tickets:       []TicketInfo{tkt},
+		actionFn:      func(_ string) error { return nil },
+		setStageStage: &capturedStage,
 	}
 	srv := startHandlerTestServer(t, svc)
 
-	res := post(t, srv, "/api/tickets/t-001/set-stage", `{"stage":"implement"}`)
+	res := post(t, srv, "/api/tickets/t-001/set-stage", `{"stage":"review"}`)
 	assert.Equal(t, http.StatusOK, res.statusCode)
 
 	var result TicketInfo
 	require.NoError(t, json.Unmarshal([]byte(res.body), &result))
 	assert.Equal(t, "t-001", result.ID)
+	assert.Equal(t, "review", result.Stage)
+	assert.Equal(t, "review", capturedStage)
 }
 
 func TestHandleSetStage_NotFound(t *testing.T) {

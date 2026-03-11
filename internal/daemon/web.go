@@ -677,6 +677,8 @@ func (d *Daemon) buildTicketInfo(ts *ticketState, includeBody bool) web.TicketIn
 		}
 	}
 
+	info.LastError = ts.lastError
+
 	if includeBody {
 		info.Body = t.Body
 	}

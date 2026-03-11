@@ -161,7 +161,7 @@ func TestDaemonRepo_Save_CallsWriteAndAfterSave(t *testing.T) {
 	path := writeTestTicket(t, dir, "tst-001", "---\nid: tst-001\nstatus: todo\n---\n# Test\n")
 
 	repo := NewDaemonRepo(DaemonRepoCallbacks{
-		PathLookup: func(id string) (string, error) {
+		PathLookup: func(_ string) (string, error) {
 			return path, nil
 		},
 		WriteTicket: func(t *ticket.Ticket, p string) error {
@@ -172,7 +172,7 @@ func TestDaemonRepo_Save_CallsWriteAndAfterSave(t *testing.T) {
 			}
 			return os.WriteFile(p, data, 0o644)
 		},
-		AfterSave: func(id string, st *app.StoredTicket) {
+		AfterSave: func(id string, _ *app.StoredTicket) {
 			savedID = id
 		},
 	})

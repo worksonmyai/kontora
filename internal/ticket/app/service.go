@@ -249,9 +249,8 @@ func (s *Service) Init(id string, req InitRequest) (Result, error) {
 	if status == "" {
 		status = string(ticket.StatusTodo)
 	}
-	switch ticket.Status(status) {
+	switch ticket.Status(status) { //nolint:exhaustive // only open/todo are valid init statuses
 	case ticket.StatusOpen, ticket.StatusTodo:
-		// valid init statuses
 	default:
 		return Result{}, fmt.Errorf("%w: init status must be \"open\" or \"todo\", got %q", ErrInvalidState, status)
 	}

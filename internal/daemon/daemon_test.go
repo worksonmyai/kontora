@@ -1568,3 +1568,157 @@ created: 2026-01-01T00:00:00Z
 	cancel()
 	require.NoError(t, <-errCh)
 }
+
+func TestPauseTicket_LastError(t *testing.T) {
+	h := newHarness(t)
+
+	failRunner := func(_ context.Context, _ RunnerParams) (process.Result, error) {
+		return process.Result{ExitCode: -1}, fmt.Errorf("connection refused")
+	}
+
+	d := New(h.cfg,
+		WithLogger(testLogger(t)),
+		WithDebounce(50*time.Millisecond),
+		WithLockPath(h.lockPath),
+		WithRunner(failRunner),
+		WithSkipOrphanCleanup(),
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- d.Run(ctx) }()
+	time.Sleep(200 * time.Millisecond)
+
+	h.writeTicket("tst-le1.md", h.taskMD("tst-le1", "todo", "one-stage"))
+	h.waitForStatus("tst-le1.md", ticket.StatusPaused, 10*time.Second)
+
+	info, err := d.GetTicket("tst-le1")
+	require.NoError(t, err)
+	assert.Equal(t, "paused", info.Status)
+	assert.Contains(t, info.LastError, "runner failed: connection refused")
+
+	cancel()
+	require.NoError(t, <-errCh)
+}
+
+func TestRetryTicket_ClearsLastError(t *testing.T) {
+	h := newHarness(t)
+
+	var attempt int
+	runner := func(_ context.Context, _ RunnerParams) (process.Result, error) {
+		attempt++
+		if attempt == 1 {
+			return process.Result{ExitCode: -1}, fmt.Errorf("first attempt fails")
+		}
+		return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now()}, nil
+	}
+
+	d := New(h.cfg,
+		WithLogger(testLogger(t)),
+		WithDebounce(50*time.Millisecond),
+		WithLockPath(h.lockPath),
+		WithRunner(runner),
+		WithSkipOrphanCleanup(),
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- d.Run(ctx) }()
+	time.Sleep(200 * time.Millisecond)
+
+	h.writeTicket("tst-le2.md", h.taskMD("tst-le2", "todo", "one-stage"))
+	h.waitForStatus("tst-le2.md", ticket.StatusPaused, 10*time.Second)
+
+	// Verify lastError is set.
+	info, err := d.GetTicket("tst-le2")
+	require.NoError(t, err)
+	assert.NotEmpty(t, info.LastError)
+
+	// Retry should clear lastError.
+	require.NoError(t, d.RetryTicket("tst-le2"))
+
+	info, err = d.GetTicket("tst-le2")
+	require.NoError(t, err)
+	assert.Empty(t, info.LastError)
+
+	cancel()
+	require.NoError(t, <-errCh)
+}
+
+func TestPauseTicket_ManualPause_NoLastError(t *testing.T) {
+	h := newHarness(t)
+	cfg := h.defaultConfig("sleep", "sleep")
+	cfg.Agents["agent1"] = config.Agent{Binary: "sleep", Args: []string{"30"}}
+	cfg.Roles["step1"] = config.Role{Prompt: ""}
+	d := h.newDaemon(cfg)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- d.Run(ctx) }()
+	time.Sleep(200 * time.Millisecond)
+
+	h.writeTicket("tst-le3.md", h.taskMD("tst-le3", "todo", "one-stage"))
+	h.waitForStatus("tst-le3.md", ticket.StatusInProgress, 5*time.Second)
+
+	require.NoError(t, d.PauseTicket("tst-le3"))
+	h.waitForStatus("tst-le3.md", ticket.StatusPaused, 5*time.Second)
+
+	info, err := d.GetTicket("tst-le3")
+	require.NoError(t, err)
+	assert.Empty(t, info.LastError)
+
+	cancel()
+	require.NoError(t, <-errCh)
+}
+
+func TestHandleAgentExit_PipelinePause_SetsLastError(t *testing.T) {
+	h := newHarness(t)
+
+	// Use a runner that exits with code 1 — on_failure=pause will trigger ActionPause.
+	failRunner := func(_ context.Context, _ RunnerParams) (process.Result, error) {
+		return process.Result{ExitCode: 1, StartedAt: time.Now(), ExitedAt: time.Now()}, nil
+	}
+
+	cfg := h.defaultConfig("true", "true")
+	// Set on_failure=pause for step1.
+	p := cfg.Pipelines["one-stage"]
+	p[0].OnFailure = "pause"
+	cfg.Pipelines["one-stage"] = p
+
+	d := New(cfg,
+		WithLogger(testLogger(t)),
+		WithDebounce(50*time.Millisecond),
+		WithLockPath(h.lockPath),
+		WithRunner(failRunner),
+		WithSkipOrphanCleanup(),
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- d.Run(ctx) }()
+	time.Sleep(200 * time.Millisecond)
+
+	h.writeTicket("tst-le4.md", h.taskMD("tst-le4", "todo", "one-stage"))
+	h.waitForStatus("tst-le4.md", ticket.StatusPaused, 10*time.Second)
+
+	require.Eventually(t, func() bool {
+		info, err := d.GetTicket("tst-le4")
+		return err == nil && info.LastError != ""
+	}, 5*time.Second, 50*time.Millisecond)
+
+	info, err := d.GetTicket("tst-le4")
+	require.NoError(t, err)
+	assert.Contains(t, info.LastError, "agent exited with code 1")
+	assert.Contains(t, info.LastError, "stage: step1")
+
+	cancel()
+	require.NoError(t, <-errCh)
+}

@@ -54,6 +54,7 @@
     applyTheme(getStoredTheme() === 'light' ? 'light' : 'dark');
   </script>
   <style>
+    html { font-size: 17px; }
     html, body { background: rgba(var(--surface-950), 1); color: rgba(var(--tx), 1); }
     input, select, textarea, button { color-scheme: inherit; }
     [x-cloak] { display: none !important; }
@@ -94,11 +95,11 @@
     .ticket-prose input[type="checkbox"] { margin-right: 0.4rem; accent-color: rgba(var(--accent), 1); }
     .ticket-prose strong { font-weight: 600; }
 
-    .tip { position: relative; display: inline-flex; align-items: center; justify-content: center; width: 14px; height: 14px; border-radius: 50%; font-size: 9px; font-style: italic; font-family: 'DM Sans', serif; color: rgba(var(--surface-600), 1); border: 1px solid rgba(var(--surface-700), 1); cursor: default; margin-left: 4px; flex-shrink: 0; line-height: 1; background: none; padding: 0; }
+    .tip { position: relative; display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; border-radius: 50%; font-size: 11px; font-style: italic; font-family: 'DM Sans', serif; color: rgba(var(--surface-600), 1); border: 1px solid rgba(var(--surface-700), 1); cursor: default; margin-left: 4px; flex-shrink: 0; line-height: 1; background: none; padding: 0; }
     .tip:hover, .tip:focus-visible { color: rgba(var(--accent), 1); border-color: rgba(var(--accent), 0.38); outline: none; }
-    #global-tip { position: fixed; background: rgba(var(--surface-800), 1); color: rgba(var(--tx), 1); font-size: 11px; font-family: 'DM Sans', sans-serif; line-height: 1.4; padding: 6px 10px; border-radius: 6px; border: 1px solid rgba(var(--surface-700), 1); white-space: normal; width: max-content; max-width: 240px; pointer-events: none; opacity: 0; transition: opacity 0.15s; z-index: 9999; }
+    #global-tip { position: fixed; background: rgba(var(--surface-800), 1); color: rgba(var(--tx), 1); font-size: 13px; font-family: 'DM Sans', sans-serif; line-height: 1.4; padding: 6px 10px; border-radius: 6px; border: 1px solid rgba(var(--surface-700), 1); white-space: normal; width: max-content; max-width: 260px; pointer-events: none; opacity: 0; transition: opacity 0.15s; z-index: 9999; }
 
-    #global-tip-t { position: fixed; background: rgba(var(--surface-800), 1); color: rgba(var(--tx), 1); font-size: 11px; font-family: 'DM Sans', sans-serif; line-height: 1; padding: 4px 8px; border-radius: 4px; border: 1px solid rgba(var(--surface-700), 1); white-space: nowrap; pointer-events: none; opacity: 0; transition: opacity 0.15s; z-index: 9999; }
+    #global-tip-t { position: fixed; background: rgba(var(--surface-800), 1); color: rgba(var(--tx), 1); font-size: 13px; font-family: 'DM Sans', sans-serif; line-height: 1; padding: 4px 8px; border-radius: 4px; border: 1px solid rgba(var(--surface-700), 1); white-space: nowrap; pointer-events: none; opacity: 0; transition: opacity 0.15s; z-index: 9999; }
   </style>
 </head>
 
@@ -188,17 +189,17 @@
     <div class="shrink-0 px-4 py-2 border-b border-surface-700/30 flex items-center gap-3">
       <span class="font-mono text-xs text-surface-600" x-text="selectedTicket?.id"></span>
       <span class="text-sm text-tx-2 truncate" x-text="selectedTicket?.title"></span>
-      <span x-show="selectedTicket?.status === 'in_progress'" class="flex items-center gap-1 text-[10px] font-mono text-accent">
+      <span x-show="selectedTicket?.status === 'in_progress'" class="flex items-center gap-1 text-[12px] font-mono text-accent">
         <span class="w-1 h-1 rounded-full bg-accent pulse-dot"></span>
         live
       </span>
       <div class="ml-auto flex items-center gap-2">
         <button @click="toggleTerminalRW()"
-                class="text-[10px] font-mono px-1.5 py-0.5 rounded transition-colors"
+                class="text-[12px] font-mono px-1.5 py-0.5 rounded transition-colors"
                 :class="terminalRW ? 'text-err bg-err/10' : 'text-surface-600 hover:text-tx-3'">
           <span x-text="terminalRW ? 'read-write' : 'read-only'"></span>
         </button>
-        <span class="text-[10px] font-mono text-surface-600 cursor-pointer hover:text-tx-3 transition-colors"
+        <span class="text-[12px] font-mono text-surface-600 cursor-pointer hover:text-tx-3 transition-colors"
               @click.stop="copyCmd('kontora attach ' + selectedTicket?.id)"
               x-text="copiedCmd === 'kontora attach ' + selectedTicket?.id ? '✓ copied' : 'kontora attach ' + selectedTicket?.id"></span>
         <button @click="terminalFullscreen = false"
@@ -222,25 +223,25 @@
       <form @submit.prevent="submitCreateTicket()">
         <div class="space-y-3">
           <div>
-            <label class="text-[11px] font-mono text-tx-3 block mb-1">Title *</label>
+            <label class="text-[13px] font-mono text-tx-3 block mb-1">Title *</label>
             <input x-model="createForm.title" type="text" required
                    class="w-full bg-surface-800 border border-surface-700/50 rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40"
                    placeholder="Ticket title">
           </div>
           <div>
-            <label class="text-[11px] font-mono text-tx-3 block mb-1">Body</label>
+            <label class="text-[13px] font-mono text-tx-3 block mb-1">Body</label>
             <textarea x-model="createForm.body" rows="3"
                       class="w-full bg-surface-800 border border-surface-700/50 rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40 resize-y"
                       placeholder="Ticket description (markdown)"></textarea>
           </div>
           <div>
-            <label class="text-[11px] font-mono text-tx-3 mb-1 flex items-center">Path *<button type="button" class="tip" data-tip="Path to the repository the agent will work in. Supports ~ (e.g. ~/projects/myrepo).">i</button></label>
+            <label class="text-[13px] font-mono text-tx-3 mb-1 flex items-center">Path *<button type="button" class="tip" data-tip="Path to the repository the agent will work in. Supports ~ (e.g. ~/projects/myrepo).">i</button></label>
             <input x-model="createForm.path" type="text" required
                    class="w-full bg-surface-800 border border-surface-700/50 rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40"
                    placeholder="~/projects/myrepo">
           </div>
           <div>
-            <label class="text-[11px] font-mono text-tx-3 mb-1 flex items-center">Pipeline<button type="button" class="tip" data-tip="The sequence of stages this ticket goes through (e.g. plan → code → review). Each stage runs an agent in turn. Pipelines are configured in the config file. Leave empty for a standalone ticket.">i</button></label>
+            <label class="text-[13px] font-mono text-tx-3 mb-1 flex items-center">Pipeline<button type="button" class="tip" data-tip="The sequence of stages this ticket goes through (e.g. plan → code → review). Each stage runs an agent in turn. Pipelines are configured in the config file. Leave empty for a standalone ticket.">i</button></label>
             <select x-model="createForm.pipeline"
                     class="w-full bg-surface-800 border border-surface-700/50 rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40">
               <option value="">None</option>
@@ -251,7 +252,7 @@
           </div>
           <div class="flex gap-3">
             <div class="flex-1">
-              <label class="text-[11px] font-mono text-tx-3 mb-1 flex items-center">Agent<button type="button" class="tip" data-tip="Override the agent for all pipeline stages (or for a standalone ticket). Leave empty to use the pipeline default.">i</button></label>
+              <label class="text-[13px] font-mono text-tx-3 mb-1 flex items-center">Agent<button type="button" class="tip" data-tip="Override the agent for all pipeline stages (or for a standalone ticket). Leave empty to use the pipeline default.">i</button></label>
               <select x-model="createForm.agent"
                       class="w-full bg-surface-800 border border-surface-700/50 rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40">
                 <option value="">Default</option>
@@ -261,7 +262,7 @@
               </select>
             </div>
             <div class="flex-1">
-              <label class="text-[11px] font-mono text-tx-3 mb-1 flex items-center">Status<button type="button" class="tip" data-tip="Todo: starts automatically when a slot is available. Open: saved as a draft until you move it to Todo.">i</button></label>
+              <label class="text-[13px] font-mono text-tx-3 mb-1 flex items-center">Status<button type="button" class="tip" data-tip="Todo: starts automatically when a slot is available. Open: saved as a draft until you move it to Todo.">i</button></label>
               <select x-model="createForm.status"
                       class="w-full bg-surface-800 border border-surface-700/50 rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40">
                 <option value="todo">todo</option>
@@ -272,11 +273,11 @@
         </div>
         <div class="flex justify-end gap-2 mt-5">
           <button type="button" @click="closeCreateModal()"
-                  class="text-[11px] font-mono px-4 py-1.5 rounded bg-surface-800 border border-surface-700/50 text-tx-3 hover:text-tx-2 transition-colors">
+                  class="text-[13px] font-mono px-4 py-1.5 rounded bg-surface-800 border border-surface-700/50 text-tx-3 hover:text-tx-2 transition-colors">
             cancel
           </button>
           <button type="submit" :disabled="createSubmitting"
-                  class="text-[11px] font-mono px-4 py-1.5 rounded bg-accent/20 border border-accent/30 text-accent hover:bg-accent/30 transition-colors disabled:opacity-50">
+                  class="text-[13px] font-mono px-4 py-1.5 rounded bg-accent/20 border border-accent/30 text-accent hover:bg-accent/30 transition-colors disabled:opacity-50">
             <span x-text="createSubmitting ? 'creating...' : 'create'"></span>
           </button>
         </div>
@@ -291,13 +292,13 @@
         <span class="text-sm font-semibold text-tx-2">Do ticket</span>
         <button @click="closeInitModal()" class="text-surface-600 hover:text-tx-3 text-sm">✕</button>
       </div>
-      <p class="text-[11px] font-mono text-surface-600 mb-1" x-text="initForm.ticketId"></p>
-      <p x-show="initForm.title" class="text-[11px] text-tx-2 mb-1" x-text="initForm.title"></p>
-      <p class="text-[11px] text-surface-600 mb-3">Prepares this ticket for execution: assigns a pipeline starting from the first stage and queues it to run.</p>
+      <p class="text-[13px] font-mono text-surface-600 mb-1" x-text="initForm.ticketId"></p>
+      <p x-show="initForm.title" class="text-[13px] text-tx-2 mb-1" x-text="initForm.title"></p>
+      <p class="text-[13px] text-surface-600 mb-3">Prepares this ticket for execution: assigns a pipeline starting from the first stage and queues it to run.</p>
       <form @submit.prevent="submitInitTicket()">
         <div class="space-y-3">
           <div>
-            <label class="text-[11px] font-mono text-tx-3 mb-1 flex items-center">Pipeline<button type="button" class="tip" data-tip="The sequence of stages this ticket goes through (e.g. plan → code → review). Each stage runs an agent in turn. Pipelines are configured in the config file. Leave empty for a simple single-run ticket.">i</button></label>
+            <label class="text-[13px] font-mono text-tx-3 mb-1 flex items-center">Pipeline<button type="button" class="tip" data-tip="The sequence of stages this ticket goes through (e.g. plan → code → review). Each stage runs an agent in turn. Pipelines are configured in the config file. Leave empty for a simple single-run ticket.">i</button></label>
             <select x-model="initForm.pipeline"
                     class="w-full bg-surface-800 border border-surface-700/50 rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40">
               <option value="">simple (single run, no stages)</option>
@@ -307,7 +308,7 @@
             </select>
           </div>
           <div>
-            <label class="text-[11px] font-mono text-tx-3 mb-1 flex items-center">Agent<button type="button" class="tip" data-tip="Override the agent for all pipeline stages (or for a standalone ticket). Leave empty to use the pipeline default.">i</button></label>
+            <label class="text-[13px] font-mono text-tx-3 mb-1 flex items-center">Agent<button type="button" class="tip" data-tip="Override the agent for all pipeline stages (or for a standalone ticket). Leave empty to use the pipeline default.">i</button></label>
             <select x-model="initForm.agent"
                     class="w-full bg-surface-800 border border-surface-700/50 rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40">
               <option value="">Default</option>
@@ -317,7 +318,7 @@
             </select>
           </div>
           <div>
-            <label class="text-[11px] font-mono text-tx-3 mb-1 flex items-center">Path *<button type="button" class="tip" data-tip="Path to the repository the agent will work in. Supports ~ (e.g. ~/projects/myrepo).">i</button></label>
+            <label class="text-[13px] font-mono text-tx-3 mb-1 flex items-center">Path *<button type="button" class="tip" data-tip="Path to the repository the agent will work in. Supports ~ (e.g. ~/projects/myrepo).">i</button></label>
             <input x-model="initForm.path" type="text" required
                    class="w-full bg-surface-800 border border-surface-700/50 rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40"
                    placeholder="~/projects/myrepo">
@@ -325,11 +326,11 @@
         </div>
         <div class="flex justify-end gap-2 mt-5">
           <button type="button" @click="closeInitModal()"
-                  class="text-[11px] font-mono px-4 py-1.5 rounded bg-surface-800 border border-surface-700/50 text-tx-3 hover:text-tx-2 transition-colors">
+                  class="text-[13px] font-mono px-4 py-1.5 rounded bg-surface-800 border border-surface-700/50 text-tx-3 hover:text-tx-2 transition-colors">
             cancel
           </button>
           <button type="submit" :disabled="initSubmitting"
-                  class="text-[11px] font-mono px-4 py-1.5 rounded bg-accent/20 border border-accent/30 text-accent hover:bg-accent/30 transition-colors disabled:opacity-50">
+                  class="text-[13px] font-mono px-4 py-1.5 rounded bg-accent/20 border border-accent/30 text-accent hover:bg-accent/30 transition-colors disabled:opacity-50">
             <span x-text="initSubmitting ? 'doing...' : 'do'"></span>
           </button>
         </div>
@@ -346,9 +347,9 @@
                 :disabled="deleteSubmitting"
                 class="text-surface-600 hover:text-tx-3 text-sm disabled:opacity-50 disabled:cursor-not-allowed">✕</button>
       </div>
-      <p class="text-[11px] font-mono text-surface-600 mb-1" x-text="selectedTicket?.id"></p>
-      <p x-show="selectedTicket?.title" class="text-[11px] text-tx-2 mb-3" x-text="selectedTicket?.title"></p>
-      <div class="space-y-2 text-[11px] text-surface-600 leading-relaxed">
+      <p class="text-[13px] font-mono text-surface-600 mb-1" x-text="selectedTicket?.id"></p>
+      <p x-show="selectedTicket?.title" class="text-[13px] text-tx-2 mb-3" x-text="selectedTicket?.title"></p>
+      <div class="space-y-2 text-[13px] text-surface-600 leading-relaxed">
         <p>This removes only the markdown ticket file.</p>
         <p>Any existing git worktree is left alone.</p>
         <p x-show="selectedTicket?.status === 'in_progress'" class="text-warn">The running agent will be stopped.</p>
@@ -356,12 +357,12 @@
       <div class="flex justify-end gap-2 mt-5">
         <button type="button" @click="closeDeleteModal()"
                 :disabled="deleteSubmitting"
-                class="text-[11px] font-mono px-4 py-1.5 rounded bg-surface-800 border border-surface-700/50 text-tx-3 hover:text-tx-2 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+                class="text-[13px] font-mono px-4 py-1.5 rounded bg-surface-800 border border-surface-700/50 text-tx-3 hover:text-tx-2 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
           cancel
         </button>
         <button type="button" @click="deleteSelectedTicket()"
                 :disabled="deleteSubmitting"
-                class="text-[11px] font-mono px-4 py-1.5 rounded bg-err/15 border border-err/25 text-err hover:bg-err/25 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+                class="text-[13px] font-mono px-4 py-1.5 rounded bg-err/15 border border-err/25 text-err hover:bg-err/25 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
           <span x-text="deleteSubmitting ? 'deleting...' : 'delete file'"></span>
         </button>
       </div>
@@ -372,7 +373,7 @@
   <header class="h-12 border-b border-surface-700/50 flex items-center gap-4 px-5 shrink-0">
     <div class="flex items-center gap-3 shrink-0">
       <span class="font-mono font-bold text-sm tracking-wider text-tx-2">kontora</span>
-      <span class="text-[10px] font-mono text-surface-600 uppercase tracking-widest hidden sm:inline">agent orchestration</span>
+      <span class="text-[12px] font-mono text-surface-600 uppercase tracking-widest hidden sm:inline">agent orchestration</span>
     </div>
 
     <!-- Search -->
@@ -397,13 +398,13 @@
            class="absolute z-50 top-full mt-1 w-full bg-surface-900 border border-surface-700/50 rounded-lg shadow-xl overflow-hidden">
         <template x-for="(group, gi) in suggestions" :key="group.label">
           <div>
-            <div class="px-3 py-1 text-[10px] font-mono uppercase tracking-wider text-surface-600 bg-surface-950" x-text="group.label"></div>
+            <div class="px-3 py-1 text-[12px] font-mono uppercase tracking-wider text-surface-600 bg-surface-950" x-text="group.label"></div>
             <template x-for="(item, ii) in group.items" :key="item.value">
               <button @click="applySuggestion(item)" @mouseenter="selectedIndex = flatIndex(gi, ii)"
                       class="w-full text-left px-3 py-1.5 text-xs font-mono flex items-center justify-between transition-colors"
                       :class="selectedIndex === flatIndex(gi, ii) ? 'bg-accent/15 text-accent' : 'text-tx-3 hover:bg-surface-800'">
                 <span class="truncate" x-text="item.display"></span>
-                <span x-show="item.count !== null" class="text-[10px] text-surface-600 ml-2 shrink-0" x-text="item.count"></span>
+                <span x-show="item.count !== null" class="text-[12px] text-surface-600 ml-2 shrink-0" x-text="item.count"></span>
               </button>
             </template>
           </div>
@@ -427,11 +428,11 @@
         <svg x-show="lightTheme" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
       </button>
       <button @click="openCreateModal()"
-              class="text-[11px] font-mono px-2 py-0.5 rounded bg-surface-800 border border-surface-700/50 text-tx-3 hover:text-accent hover:border-accent/30 transition-colors">
+              class="text-[13px] font-mono px-2 py-0.5 rounded bg-surface-800 border border-surface-700/50 text-tx-3 hover:text-accent hover:border-accent/30 transition-colors">
         + new
       </button>
       <button @click="$refs.uploadInput.click()"
-              class="text-[11px] font-mono px-2 py-0.5 rounded bg-surface-800 border border-surface-700/50 text-tx-3 hover:text-accent hover:border-accent/30 transition-colors">
+              class="text-[13px] font-mono px-2 py-0.5 rounded bg-surface-800 border border-surface-700/50 text-tx-3 hover:text-accent hover:border-accent/30 transition-colors">
         upload
       </button>
     </div>
@@ -456,13 +457,13 @@
               <div class="w-2 h-2 rounded-full" :class="col.color"></div>
               <span class="text-xs font-mono font-semibold uppercase tracking-wider text-tx-3" x-text="col.label"></span>
               <button type="button" class="tip" :data-tip="col.tip" :aria-label="col.tip">i</button>
-              <span class="text-[10px] font-mono text-surface-600 ml-auto"
+              <span class="text-[12px] font-mono text-surface-600 ml-auto"
                     x-text="filteredTicketsByStatus(col.status).length"></span>
               <button x-show="col.status === 'open' && colHover"
                       x-transition:enter="transition-opacity duration-150" x-transition:enter-start="opacity-0" x-transition:enter-end="opacity-100"
                       x-transition:leave="transition-opacity duration-100" x-transition:leave-start="opacity-100" x-transition:leave-end="opacity-0"
                       @click.stop="openCreateModal()"
-                      class="absolute right-0 text-[10px] font-mono px-1.5 py-0.5 rounded bg-surface-800 border border-surface-700/50 text-surface-600 hover:text-accent hover:border-accent/30">+ new</button>
+                      class="absolute right-0 text-[12px] font-mono px-1.5 py-0.5 rounded bg-surface-800 border border-surface-700/50 text-surface-600 hover:text-accent hover:border-accent/30">+ new</button>
             </div>
             <!-- Card list -->
             <div class="flex-1 overflow-y-auto space-y-2 px-0.5 pb-2 rounded-lg"
@@ -481,17 +482,17 @@
                      ]"
                   <!-- Ticket header -->
                   <div class="flex items-start justify-between gap-2 mb-1.5">
-                    <span class="font-mono text-[11px] text-surface-600 group-hover:text-tx-3 transition-colors"
+                    <span class="font-mono text-[13px] text-surface-600 group-hover:text-tx-3 transition-colors"
                           x-text="ticket.id"></span>
                     <div class="flex items-center gap-1.5">
                       <template x-if="ticket.status === 'in_progress'">
-                        <span class="flex items-center gap-1 text-[10px] font-mono text-accent">
+                        <span class="flex items-center gap-1 text-[12px] font-mono text-accent">
                           <span class="w-1 h-1 rounded-full bg-accent pulse-dot"></span>
                           <span x-text="ticket.stage"></span>
                         </span>
                       </template>
                       <template x-if="ticket.status !== 'in_progress' && ticket.stage">
-                        <span class="text-[10px] font-mono text-surface-600" x-text="ticket.stage"></span>
+                        <span class="text-[12px] font-mono text-surface-600" x-text="ticket.stage"></span>
                       </template>
                     </div>
                   </div>
@@ -499,22 +500,22 @@
                   <p class="text-[13px] text-tx-2 leading-snug font-medium" x-text="ticket.title"></p>
                   <!-- Meta row -->
                   <div class="flex items-center gap-2 mt-2.5">
-                    <span class="text-[10px] font-mono px-1.5 py-0.5 rounded bg-surface-800 text-tx-3"
+                    <span class="text-[12px] font-mono px-1.5 py-0.5 rounded bg-surface-800 text-tx-3"
                           x-text="pathBasename(ticket.path)"></span>
                     <template x-if="ticket.agent">
-                      <span class="text-[10px] font-mono text-surface-600" x-text="ticket.agent"></span>
+                      <span class="text-[12px] font-mono text-surface-600" x-text="ticket.agent"></span>
                     </template>
                     <template x-if="ticket.status === 'in_progress' && ticket.started_at">
-                      <span class="text-[10px] font-mono text-surface-600 ml-auto" x-text="formatDuration(ticket)" :data-tip-t="'Started: ' + formatAbsDate(ticket.started_at)"></span>
+                      <span class="text-[12px] font-mono text-surface-600 ml-auto" x-text="formatDuration(ticket)" :data-tip-t="'Started: ' + formatAbsDate(ticket.started_at)"></span>
                     </template>
                     <template x-if="ticket.created_at && !(ticket.status === 'in_progress' && ticket.started_at)">
-                      <span class="text-[10px] font-mono text-surface-600 ml-auto" x-text="timeAgo(ticket.created_at)" :data-tip-t="formatAbsDate(ticket.created_at)"></span>
+                      <span class="text-[12px] font-mono text-surface-600 ml-auto" x-text="timeAgo(ticket.created_at)" :data-tip-t="formatAbsDate(ticket.created_at)"></span>
                     </template>
                   </div>
                 </div>
               </template>
               <div x-show="filteredTicketsByStatus(col.status).length === 0"
-                   class="text-[10px] font-mono text-surface-600/50 text-center py-6"
+                   class="text-[12px] font-mono text-surface-600/50 text-center py-6"
                    x-text="col.emptyText">
               </div>
             </div>
@@ -563,7 +564,7 @@
                      class="absolute right-0 mt-2 min-w-[9rem] overflow-hidden rounded-lg border border-surface-700/60 bg-surface-900/95 shadow-lg shadow-black/30"
                      @click.stop>
                   <button @click="detailMenuOpen = false; openDeleteModal()"
-                          class="w-full px-3 py-2 text-left text-[11px] font-mono text-err hover:bg-err/10 transition-colors">
+                          class="w-full px-3 py-2 text-left text-[13px] font-mono text-err hover:bg-err/10 transition-colors">
                     delete file
                   </button>
                 </div>
@@ -572,31 +573,31 @@
           </div>
           <h2 class="text-sm font-semibold text-tx-2 mb-3" x-text="selectedTicket?.title"></h2>
           <div class="mb-3">
-            <span class="text-[10px] font-mono px-2 py-0.5 rounded-full border"
+            <span class="text-[12px] font-mono px-2 py-0.5 rounded-full border"
                   :class="statusStyle(selectedTicket?.status)"
                   x-text="selectedTicket?.status"></span>
             <div class="mt-2 flex flex-col gap-0.5">
               <template x-if="selectedTicket?.pipeline">
                 <div class="flex gap-3">
-                  <span class="text-[10px] font-mono text-surface-600 w-14">pipeline</span>
-                  <span class="text-[10px] font-mono text-tx-3" x-text="selectedTicket?.pipeline"></span>
+                  <span class="text-[12px] font-mono text-surface-600 w-14">pipeline</span>
+                  <span class="text-[12px] font-mono text-tx-3" x-text="selectedTicket?.pipeline"></span>
                 </div>
               </template>
               <div class="flex gap-3">
-                <span class="text-[10px] font-mono text-surface-600 w-14">path</span>
-                <span class="text-[10px] font-mono text-tx-3" x-text="selectedTicket?.path" :title="selectedTicket?.path"></span>
+                <span class="text-[12px] font-mono text-surface-600 w-14">path</span>
+                <span class="text-[12px] font-mono text-tx-3" x-text="selectedTicket?.path" :title="selectedTicket?.path"></span>
               </div>
               <template x-if="selectedTicket?.created_at">
                 <div class="flex gap-3">
-                  <span class="text-[10px] font-mono text-surface-600 w-14">created</span>
-                  <span class="text-[10px] font-mono text-tx-3" x-text="formatAbsDate(selectedTicket.created_at)"></span>
+                  <span class="text-[12px] font-mono text-surface-600 w-14">created</span>
+                  <span class="text-[12px] font-mono text-tx-3" x-text="formatAbsDate(selectedTicket.created_at)"></span>
                 </div>
               </template>
               <template x-if="selectedTicket?.stage && selectedTicket?.stages?.length > 1">
                 <div class="flex gap-3 items-center">
-                  <span class="text-[10px] font-mono text-surface-600 w-14">stage</span>
+                  <span class="text-[12px] font-mono text-surface-600 w-14">stage</span>
                   <template x-if="['paused', 'open'].includes(selectedTicket?.status) && setStageOpen">
-                    <select class="text-[10px] font-mono bg-surface-800 text-tx-3 border border-surface-700/50 rounded px-1 py-0.5 outline-none focus:border-accent/40"
+                    <select class="text-[12px] font-mono bg-surface-800 text-tx-3 border border-surface-700/50 rounded px-1 py-0.5 outline-none focus:border-accent/40"
                             @change="setStage($event.target.value); setStageOpen = false"
                             @blur="setStageOpen = false"
                             x-init="$nextTick(() => $el.focus())">
@@ -606,7 +607,7 @@
                     </select>
                   </template>
                   <template x-if="!(['paused', 'open'].includes(selectedTicket?.status) && setStageOpen)">
-                    <span class="text-[10px] font-mono text-tx-3"
+                    <span class="text-[12px] font-mono text-tx-3"
                           :class="['paused', 'open'].includes(selectedTicket?.status) ? 'cursor-pointer hover:text-accent border-b border-dashed border-surface-600 hover:border-accent/40' : ''"
                           @click="if (['paused', 'open'].includes(selectedTicket?.status)) setStageOpen = true"
                           x-text="selectedTicket?.stage"></span>
@@ -615,8 +616,8 @@
               </template>
               <template x-if="selectedTicket?.status === 'in_progress' && selectedTicket?.started_at">
                 <div class="flex gap-3">
-                  <span class="text-[10px] font-mono text-surface-600 w-14">running</span>
-                  <span class="text-[10px] font-mono text-tx-3" x-text="formatDuration(selectedTicket)"></span>
+                  <span class="text-[12px] font-mono text-surface-600 w-14">running</span>
+                  <span class="text-[12px] font-mono text-tx-3" x-text="formatDuration(selectedTicket)"></span>
                 </div>
               </template>
             </div>
@@ -625,21 +626,21 @@
           <div class="flex flex-wrap gap-2">
             <template x-if="selectedTicket?.status === 'in_progress'">
               <button @click="action('pause')"
-                      class="text-[11px] font-mono px-3 py-1.5 md:py-1 rounded bg-surface-800 border border-surface-700/50 text-tx-3 hover:text-warn hover:border-warn/30 transition-colors min-h-[44px] md:min-h-0"
+                      class="text-[13px] font-mono px-3 py-1.5 md:py-1 rounded bg-surface-800 border border-surface-700/50 text-tx-3 hover:text-warn hover:border-warn/30 transition-colors min-h-[44px] md:min-h-0"
                       title="Stops the running agent and pauses the ticket. The worktree is preserved for inspection or retry.">
                 pause
               </button>
             </template>
             <template x-if="selectedTicket?.status === 'paused'">
               <button @click="action('retry')"
-                      class="text-[11px] font-mono px-3 py-1.5 md:py-1 rounded bg-surface-800 border border-surface-700/50 text-tx-3 hover:text-ok hover:border-ok/30 transition-colors min-h-[44px] md:min-h-0"
+                      class="text-[13px] font-mono px-3 py-1.5 md:py-1 rounded bg-surface-800 border border-surface-700/50 text-tx-3 hover:text-ok hover:border-ok/30 transition-colors min-h-[44px] md:min-h-0"
                       title="Resets the attempt counter and re-runs the current stage in the same worktree.">
                 retry
               </button>
             </template>
             <template x-if="selectedTicket?.status === 'in_progress'">
               <button @click="action('skip')"
-                      class="text-[11px] font-mono px-3 py-1.5 md:py-1 rounded bg-surface-800 border border-surface-700/50 text-tx-3 hover:text-tx-2 hover:border-surface-600 transition-colors min-h-[44px] md:min-h-0"
+                      class="text-[13px] font-mono px-3 py-1.5 md:py-1 rounded bg-surface-800 border border-surface-700/50 text-tx-3 hover:text-tx-2 hover:border-surface-600 transition-colors min-h-[44px] md:min-h-0"
                       title="Skips the current stage and advances to the next one in the pipeline.">
                 skip stage
               </button>
@@ -652,7 +653,7 @@
           <div class="flex items-center gap-1 flex-wrap" title="Pipeline stages run sequentially. Each stage spawns an agent in the shared worktree. Click completed stages to view their logs.">
             <template x-for="(stage, i) in (selectedTicket?.stages || [])" :key="i">
               <div class="flex items-center gap-1">
-                <button class="text-[10px] font-mono px-2 py-0.5 rounded transition-colors"
+                <button class="text-[12px] font-mono px-2 py-0.5 rounded transition-colors"
                      :class="[stageStyle(stage, selectedTicket),
                               isStageClickable(stage, selectedTicket) ? 'cursor-pointer hover:ring-1 hover:ring-accent/40' : 'cursor-default',
                               logViewStage === stage && isStageClickable(stage, selectedTicket) ? 'ring-1 ring-accent/60' : '']"
@@ -660,7 +661,7 @@
                   <span x-text="stage"></span>
                 </button>
                 <template x-if="i < (selectedTicket?.stages?.length || 0) - 1">
-                  <span class="text-surface-600 text-[10px]">→</span>
+                  <span class="text-surface-600 text-[12px]">→</span>
                 </template>
               </div>
             </template>
@@ -670,12 +671,12 @@
         <!-- Tabs -->
         <div class="flex border-b border-surface-700/30">
           <button x-show="showTerminalTab()" @click="switchTab('terminal')"
-                  class="text-[11px] font-mono px-4 py-2.5 border-b-2 transition-colors"
+                  class="text-[13px] font-mono px-4 py-2.5 border-b-2 transition-colors"
                   :class="activeTab === 'terminal' ? 'text-tx-2 border-accent' : 'text-surface-600 border-transparent hover:text-tx-3'"
                   x-text="terminalTabLabel()">
           </button>
           <button @click="switchTab('ticket')"
-                  class="text-[11px] font-mono px-4 py-2.5 border-b-2 transition-colors"
+                  class="text-[13px] font-mono px-4 py-2.5 border-b-2 transition-colors"
                   :class="activeTab === 'ticket' ? 'text-tx-2 border-accent' : 'text-surface-600 border-transparent hover:text-tx-3'">
             ticket
           </button>
@@ -690,17 +691,17 @@
           <!-- Terminal viewer -->
           <div x-show="terminalOpen" class="flex-1 min-h-0 flex flex-col">
             <div class="shrink-0 px-4 py-2 border-b border-surface-700/20 flex items-center">
-              <span class="flex items-center gap-1 text-[10px] font-mono text-accent">
+              <span class="flex items-center gap-1 text-[12px] font-mono text-accent">
                 <span class="w-1 h-1 rounded-full bg-accent pulse-dot"></span>
                 live
               </span>
-              <span class="text-[10px] font-mono text-surface-600/40 ml-2" x-show="selectedTicket?.stages?.indexOf(selectedTicket?.stage) > 0">· click stages above to view logs</span>
+              <span class="text-[12px] font-mono text-surface-600/40 ml-2" x-show="selectedTicket?.stages?.indexOf(selectedTicket?.stage) > 0">· click stages above to view logs</span>
               <button @click="toggleTerminalRW()"
-                      class="ml-auto text-[10px] font-mono px-1.5 py-0.5 rounded transition-colors"
+                      class="ml-auto text-[12px] font-mono px-1.5 py-0.5 rounded transition-colors"
                       :class="terminalRW ? 'text-err bg-err/10' : 'text-surface-600 hover:text-tx-3'">
                 <span x-text="terminalRW ? 'read-write' : 'read-only'"></span>
               </button>
-              <span class="text-[10px] font-mono text-surface-600 cursor-pointer hover:text-tx-3 transition-colors ml-2"
+              <span class="text-[12px] font-mono text-surface-600 cursor-pointer hover:text-tx-3 transition-colors ml-2"
                     @click.stop="copyCmd('kontora attach ' + selectedTicket?.id)"
                     x-text="copiedCmd === 'kontora attach ' + selectedTicket?.id ? '✓ copied' : 'kontora attach ' + selectedTicket?.id"></span>
               <button x-show="!isMobile" @click="terminalFullscreen = !terminalFullscreen"
@@ -736,10 +737,10 @@
             <template x-if="logViewContent !== null">
               <div class="h-full flex flex-col">
                 <div class="shrink-0 px-0 pb-2 flex items-center gap-2">
-                  <span class="text-[10px] font-mono text-surface-600" x-text="logViewStage ? 'stage: ' + logViewStage : 'latest log'"></span>
-                  <span class="text-[10px] font-mono text-surface-600/40">· click stages above to switch</span>
+                  <span class="text-[12px] font-mono text-surface-600" x-text="logViewStage ? 'stage: ' + logViewStage : 'latest log'"></span>
+                  <span class="text-[12px] font-mono text-surface-600/40">· click stages above to switch</span>
                   <template x-if="selectedTicket?.status === 'in_progress'">
-                    <button class="text-[10px] font-mono text-accent hover:underline"
+                    <button class="text-[12px] font-mono text-accent hover:underline"
                             @click="logViewContent = null; logViewStage = null; openTerminal()">← back to live</button>
                   </template>
                 </div>
@@ -859,7 +860,7 @@
     <!-- Collapsed state hint (desktop only) -->
     <div x-show="!selectedTicket && !isMobile && !loading"
          class="w-12 border-l border-surface-700/50 flex items-center justify-center shrink-0">
-      <span class="text-surface-600 text-[10px] font-mono [writing-mode:vertical-rl] tracking-wider">select a ticket</span>
+      <span class="text-surface-600 text-[12px] font-mono [writing-mode:vertical-rl] tracking-wider">select a ticket</span>
     </div>
   </div>
 

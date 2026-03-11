@@ -53,6 +53,11 @@ func (s *mockSource) SkipStage(id string) error {
 	return s.actionErr
 }
 
+func (s *mockSource) SetStage(id string, stage string) error {
+	s.actions = append(s.actions, "set-stage:"+id+":"+stage)
+	return s.actionErr
+}
+
 func (s *mockSource) UpdateTicket(id string, _ web.UpdateTicketRequest) error {
 	s.actions = append(s.actions, "update:"+id)
 	return s.updateErr

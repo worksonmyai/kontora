@@ -93,6 +93,7 @@ func TestAPISource_Actions(t *testing.T) {
 		{"pause", src.PauseTicket, "/api/tickets/tst-001/pause"},
 		{"retry", src.RetryTicket, "/api/tickets/tst-001/retry"},
 		{"skip", src.SkipStage, "/api/tickets/tst-001/skip"},
+		{"set-stage", func(id string) error { return src.SetStage(id, "implement") }, "/api/tickets/tst-001/set-stage"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -261,6 +262,7 @@ func TestFileSource_ActionsUnavailable(t *testing.T) {
 	assert.ErrorIs(t, src.PauseTicket("x"), errDaemonNotRunning)
 	assert.ErrorIs(t, src.RetryTicket("x"), errDaemonNotRunning)
 	assert.ErrorIs(t, src.SkipStage("x"), errDaemonNotRunning)
+	assert.ErrorIs(t, src.SetStage("x", "implement"), errDaemonNotRunning)
 	assert.Nil(t, src.Subscribe(context.Background()))
 
 	_, err := src.FetchConfig()

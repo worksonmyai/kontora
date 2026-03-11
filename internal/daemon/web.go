@@ -408,7 +408,9 @@ func (d *Daemon) SetStage(id string, stage string) error {
 		return err
 	}
 
-	_ = t2.SetField("role", stage)
+	if err := t2.SetField("role", stage); err != nil {
+		return fmt.Errorf("failed to set ticket role to %q: %w", stage, err)
+	}
 
 	if err := d.writeTicket(t2, filePath); err != nil {
 		return err

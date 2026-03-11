@@ -386,7 +386,7 @@ func (d *Daemon) handleFileChanged(path string) {
 	// Preserve lastError when the ticket stays paused (e.g. user edited notes
 	// but didn't retry). Rebuilding from disk would otherwise lose it since
 	// lastError is in-memory only.
-	if known && prev.lastError != "" && t.Status == ticket.StatusPaused {
+	if known && prev.lastError != "" && prev.ticket.Status == ticket.StatusPaused && t.Status == ticket.StatusPaused {
 		ns.lastError = prev.lastError
 	}
 	d.tickets[t.ID] = ns

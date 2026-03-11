@@ -20,17 +20,18 @@ import (
 
 // mockService implements TicketService for handler tests.
 type mockService struct {
-	tickets    []TicketInfo
-	getTicket  *TicketInfo
-	getErr     error
-	actionFn   func(id string) error
-	createFn   func(req CreateTicketRequest) (TicketInfo, error)
-	uploadFn   func(content []byte) (TicketInfo, error)
-	deleteFn   func(id string) error
-	initFn     func(id string, req InitTicketRequest) error
-	updateFn   func(id string, req UpdateTicketRequest) error
-	logsFn     func(id, stage string) (string, error)
-	configInfo ConfigInfo
+	setStageStage *string
+	tickets       []TicketInfo
+	getTicket     *TicketInfo
+	getErr        error
+	actionFn      func(id string) error
+	createFn      func(req CreateTicketRequest) (TicketInfo, error)
+	uploadFn      func(content []byte) (TicketInfo, error)
+	deleteFn      func(id string) error
+	initFn        func(id string, req InitTicketRequest) error
+	updateFn      func(id string, req UpdateTicketRequest) error
+	logsFn        func(id, stage string) (string, error)
+	configInfo    ConfigInfo
 }
 
 func (m *mockService) ListTickets() []TicketInfo { return m.tickets }
@@ -68,9 +69,15 @@ func (m *mockService) DeleteTicket(id string) error {
 	}
 	return nil
 }
-func (m *mockService) PauseTicket(id string) error          { return m.actionFn(id) }
-func (m *mockService) RetryTicket(id string) error          { return m.actionFn(id) }
-func (m *mockService) SkipStage(id string) error            { return m.actionFn(id) }
+func (m *mockService) PauseTicket(id string) error { return m.actionFn(id) }
+func (m *mockService) RetryTicket(id string) error { return m.actionFn(id) }
+func (m *mockService) SkipStage(id string) error   { return m.actionFn(id) }
+func (m *mockService) SetStage(id string, stage string) error {
+	if m.setStageStage != nil {
+		*m.setStageStage = stage
+	}
+	return m.actionFn(id)
+}
 func (m *mockService) MoveTicket(id string, _ string) error { return m.actionFn(id) }
 func (m *mockService) InitTicket(id string, req InitTicketRequest) error {
 	if m.initFn != nil {
@@ -261,6 +268,60 @@ func TestHandleSkip_NotFound(t *testing.T) {
 
 	res := post(t, srv, "/api/tickets/t-001/skip", "")
 	assert.Equal(t, http.StatusNotFound, res.statusCode)
+}
+
+// --- POST /api/tickets/{id}/set-stage ---
+
+func TestHandleSetStage_Success(t *testing.T) {
+	var capturedStage string
+	tkt := TicketInfo{ID: "t-001", Status: "todo", Stage: "review"}
+	svc := &mockService{
+		tickets:       []TicketInfo{tkt},
+		actionFn:      func(_ string) error { return nil },
+		setStageStage: &capturedStage,
+	}
+	srv := startHandlerTestServer(t, svc)
+
+	res := post(t, srv, "/api/tickets/t-001/set-stage", `{"stage":"review"}`)
+	assert.Equal(t, http.StatusOK, res.statusCode)
+
+	var result TicketInfo
+	require.NoError(t, json.Unmarshal([]byte(res.body), &result))
+	assert.Equal(t, "t-001", result.ID)
+	assert.Equal(t, "review", result.Stage)
+	assert.Equal(t, "review", capturedStage)
+}
+
+func TestHandleSetStage_NotFound(t *testing.T) {
+	svc := &mockService{actionFn: func(_ string) error { return ErrTicketNotFound }}
+	srv := startHandlerTestServer(t, svc)
+
+	res := post(t, srv, "/api/tickets/t-001/set-stage", `{"stage":"implement"}`)
+	assert.Equal(t, http.StatusNotFound, res.statusCode)
+}
+
+func TestHandleSetStage_InvalidStage(t *testing.T) {
+	svc := &mockService{actionFn: func(_ string) error { return ErrInvalidState }}
+	srv := startHandlerTestServer(t, svc)
+
+	res := post(t, srv, "/api/tickets/t-001/set-stage", `{"stage":"nonexistent"}`)
+	assert.Equal(t, http.StatusConflict, res.statusCode)
+}
+
+func TestHandleSetStage_BadJSON(t *testing.T) {
+	svc := &mockService{actionFn: func(_ string) error { return nil }}
+	srv := startHandlerTestServer(t, svc)
+
+	res := post(t, srv, "/api/tickets/t-001/set-stage", `{bad json}`)
+	assert.Equal(t, http.StatusBadRequest, res.statusCode)
+}
+
+func TestHandleSetStage_MissingStage(t *testing.T) {
+	svc := &mockService{actionFn: func(_ string) error { return nil }}
+	srv := startHandlerTestServer(t, svc)
+
+	res := post(t, srv, "/api/tickets/t-001/set-stage", `{}`)
+	assert.Equal(t, http.StatusBadRequest, res.statusCode)
 }
 
 // --- POST /api/tickets/{id}/move ---

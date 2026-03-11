@@ -93,6 +93,7 @@ func (m *mockTerminalService) DeleteTicket(_ string) error                      
 func (m *mockTerminalService) PauseTicket(_ string) error                         { return nil }
 func (m *mockTerminalService) RetryTicket(_ string) error                         { return nil }
 func (m *mockTerminalService) SkipStage(_ string) error                           { return nil }
+func (m *mockTerminalService) SetStage(_ string, _ string) error                  { return nil }
 func (m *mockTerminalService) MoveTicket(_ string, _ string) error                { return nil }
 func (m *mockTerminalService) InitTicket(_ string, _ InitTicketRequest) error     { return nil }
 func (m *mockTerminalService) UpdateTicket(_ string, _ UpdateTicketRequest) error { return nil }

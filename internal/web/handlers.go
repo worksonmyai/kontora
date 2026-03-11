@@ -56,6 +56,33 @@ func (s *Server) handleSkip(w http.ResponseWriter, r *http.Request) {
 	s.handleAction(w, r, func(id string) error { return s.svc.SkipStage(id) })
 }
 
+func (s *Server) handleSetStage(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+
+	var body struct {
+		Stage string `json:"stage"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON body"})
+		return
+	}
+	if body.Stage == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "stage is required"})
+		return
+	}
+
+	if err := s.svc.SetStage(id, body.Stage); err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	tkt, err := s.svc.GetTicket(id)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, tkt)
+}
+
 func (s *Server) handleMove(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 

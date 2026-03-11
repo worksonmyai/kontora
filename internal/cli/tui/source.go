@@ -17,6 +17,8 @@ import (
 	"github.com/worksonmyai/kontora/internal/cli"
 	"github.com/worksonmyai/kontora/internal/config"
 	"github.com/worksonmyai/kontora/internal/ticket"
+	"github.com/worksonmyai/kontora/internal/ticket/app"
+	"github.com/worksonmyai/kontora/internal/ticket/store"
 	"github.com/worksonmyai/kontora/internal/web"
 )
 
@@ -315,29 +317,17 @@ type fileSource struct {
 func (s *fileSource) Connected() bool { return false }
 
 func (s *fileSource) FetchTickets() ([]web.TicketInfo, int, error) {
-	dir := config.ExpandTilde(s.cfg.TicketsDir)
-	entries, err := os.ReadDir(dir)
+	svc := s.newService()
+	views, err := svc.List(app.ListOptions{})
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, 0, nil
-		}
 		return nil, 0, err
 	}
 
 	var tickets []web.TicketInfo
 	running := 0
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".md") {
-			continue
-		}
-		t, err := ticket.ParseFile(filepath.Join(dir, entry.Name()))
-		if err != nil {
-			continue
-		}
-		if !t.Kontora && t.Status != ticket.StatusOpen {
-			continue
-		}
-		info := buildFileTicketInfo(s.cfg, t)
+	for _, v := range views {
+		s.augmentStages(&v)
+		info := web.TicketInfoFromView(v)
 		if info.Status == string(ticket.StatusInProgress) {
 			running++
 		}
@@ -347,15 +337,13 @@ func (s *fileSource) FetchTickets() ([]web.TicketInfo, int, error) {
 }
 
 func (s *fileSource) FetchTask(id string) (web.TicketInfo, error) {
-	dir := config.ExpandTilde(s.cfg.TicketsDir)
-	path := filepath.Join(dir, id+".md")
-	t, err := ticket.ParseFile(path)
+	svc := s.newService()
+	v, err := svc.Get(id, app.GetOptions{IncludeBody: true})
 	if err != nil {
 		return web.TicketInfo{}, fmt.Errorf("ticket %q not found", id)
 	}
-	info := buildFileTicketInfo(s.cfg, t)
-	info.Body = t.Body
-	return info, nil
+	s.augmentStages(&v)
+	return web.TicketInfoFromView(v), nil
 }
 
 func (s *fileSource) FetchLogs(id, stage string) (string, error) {
@@ -381,49 +369,29 @@ func (s *fileSource) SkipStage(string) error                             { retur
 func (s *fileSource) SetStage(string, string) error                      { return errDaemonNotRunning }
 func (s *fileSource) Subscribe(context.Context) <-chan web.TicketEvent   { return nil }
 
-func buildFileTicketInfo(cfg *config.Config, t *ticket.Ticket) web.TicketInfo {
-	info := web.TicketInfo{
-		ID:        t.ID,
-		Title:     t.Title(),
-		Status:    string(t.Status),
-		Kontora:   t.Kontora,
-		Stage:     t.Role,
-		Pipeline:  t.Pipeline,
-		Path:      t.Path,
-		Attempt:   t.Attempt,
-		CreatedAt: t.Created,
-		StartedAt: t.StartedAt,
-		Branch:    t.Branch,
+func (s *fileSource) newService() *app.Service {
+	return app.New(s.cfg, store.NewDiskRepo(s.cfg.TicketsDir), app.NoopRuntime{})
+}
+
+// augmentStages discovers log-file stages for simple kontora tickets.
+func (s *fileSource) augmentStages(v *app.View) {
+	if !v.Kontora || v.Pipeline != "" || len(v.Stages) == 0 {
+		return
 	}
-	if t.Agent != "" {
-		info.Agent = t.Agent
-		info.AgentOverride = true
-	} else {
-		info.Agent = cli.AgentForStage(cfg, t.Pipeline, t.Role)
-		if info.Agent == "" && t.Kontora {
-			info.Agent = cfg.DefaultAgent
-		}
+	if v.Stages[0] != "default" {
+		return
 	}
-	if pipelineCfg, ok := cfg.Pipelines[t.Pipeline]; ok {
-		stages := make([]string, len(pipelineCfg))
-		for i, stage := range pipelineCfg {
-			stages[i] = stage.Role
-		}
-		info.Stages = stages
-	}
-	if t.Kontora && t.Pipeline == "" && len(info.Stages) == 0 {
-		logsDir := config.ExpandTilde(cfg.LogsDir)
-		logDir := filepath.Join(logsDir, t.ID)
-		if entries, err := os.ReadDir(logDir); err == nil {
-			for _, entry := range entries {
-				if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".log") {
-					info.Stages = append(info.Stages, strings.TrimSuffix(entry.Name(), ".log"))
-				}
+	logsDir := config.ExpandTilde(s.cfg.LogsDir)
+	logDir := filepath.Join(logsDir, v.ID)
+	if entries, err := os.ReadDir(logDir); err == nil {
+		var discovered []string
+		for _, entry := range entries {
+			if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".log") {
+				discovered = append(discovered, strings.TrimSuffix(entry.Name(), ".log"))
 			}
 		}
-		if len(info.Stages) == 0 {
-			info.Stages = []string{"default"}
+		if len(discovered) > 0 {
+			v.Stages = discovered
 		}
 	}
-	return info
 }

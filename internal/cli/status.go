@@ -14,6 +14,7 @@ import (
 
 	"github.com/worksonmyai/kontora/internal/config"
 	"github.com/worksonmyai/kontora/internal/ticket"
+	"github.com/worksonmyai/kontora/internal/ticket/app"
 )
 
 type StatusOpts struct {
@@ -123,7 +124,7 @@ func buildRows(cfg *config.Config, tickets []*ticket.Ticket) []ticketRow {
 			stage = "—"
 		}
 
-		agent := AgentForStage(cfg, t.Pipeline, t.Role)
+		agent := app.AgentForStage(cfg, t.Pipeline, t.Role)
 		if agent == "" && t.Kontora {
 			agent = cfg.DefaultAgent
 		} else if agent == "" {
@@ -185,19 +186,6 @@ func renderTable(rows []ticketRow) string {
 	}
 
 	return tbl.Render()
-}
-
-func AgentForStage(cfg *config.Config, pipelineName, role string) string {
-	pipeline, ok := cfg.Pipelines[pipelineName]
-	if !ok || role == "" {
-		return ""
-	}
-	for _, stage := range pipeline {
-		if stage.Role == role {
-			return stage.Agent
-		}
-	}
-	return ""
 }
 
 func Duration(t *ticket.Ticket) string {

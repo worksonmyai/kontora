@@ -9,6 +9,7 @@ import (
 
 	"github.com/worksonmyai/kontora/internal/config"
 	"github.com/worksonmyai/kontora/internal/ticket"
+	"github.com/worksonmyai/kontora/internal/ticket/app"
 )
 
 // View prints ticket details to the given writer.
@@ -49,7 +50,7 @@ func View(cfg *config.Config, taskID string, w io.Writer) error {
 		fmt.Fprintf(w, "branch:    %s\n", t.Branch)
 	}
 	if t.Role != "" {
-		agent := AgentForStage(cfg, t.Pipeline, t.Role)
+		agent := app.AgentForStage(cfg, t.Pipeline, t.Role)
 		if agent != "" {
 			fmt.Fprintf(w, "agent:     %s\n", agent)
 		}

@@ -1,0 +1,1792 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="color-scheme" content="light dark">
+  <title>kontora</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><circle cx='8' cy='8' r='7' fill='%23585b70'/></svg>">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.8/dist/cdn.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.6/Sortable.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/marked@15.0.7/marked.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/dompurify@3.3.2/dist/purify.min.js"></script>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=DM+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            mono: ['JetBrains Mono', 'monospace'],
+            sans: ['DM Sans', 'sans-serif'],
+          },
+          colors: {
+            surface: { deep: 'rgba(var(--surface-deep), <alpha-value>)', 950: 'rgba(var(--surface-950), <alpha-value>)', 900: 'rgba(var(--surface-900), <alpha-value>)', 850: 'rgba(var(--surface-850), <alpha-value>)', 800: 'rgba(var(--surface-800), <alpha-value>)', 700: 'rgba(var(--surface-700), <alpha-value>)', 600: 'rgba(var(--surface-600), <alpha-value>)' },
+            accent: { DEFAULT: 'rgba(var(--accent), <alpha-value>)', dim: 'rgba(var(--accent-dim), <alpha-value>)', bright: 'rgba(var(--accent-bright), <alpha-value>)' },
+            ok: 'rgba(var(--ok), <alpha-value>)',
+            warn: 'rgba(var(--warn), <alpha-value>)',
+            err: 'rgba(var(--err), <alpha-value>)',
+            tx: { DEFAULT: 'rgba(var(--tx), <alpha-value>)', 2: 'rgba(var(--tx-2), <alpha-value>)', 3: 'rgba(var(--tx-3), <alpha-value>)', 4: 'rgba(var(--tx-4), <alpha-value>)' },
+          }
+        }
+      }
+    }
+  </script>
+  <style id="kontora-theme"></style>
+  <script>
+    function getStoredTheme() {
+      try { return localStorage.getItem('kontora-theme'); } catch (e) { return null; }
+    }
+    function setStoredTheme(t) {
+      try { localStorage.setItem('kontora-theme', t); } catch (e) {}
+    }
+    var kontoraThemeCSS = {
+      dark: ':root{--surface-deep:24,24,37;--surface-950:30,30,46;--surface-900:35,35,52;--surface-850:40,40,58;--surface-800:49,50,68;--surface-700:69,71,90;--surface-600:88,91,112;--accent:137,180,250;--accent-dim:90,126,196;--accent-bright:180,208,251;--ok:166,227,161;--warn:249,226,175;--err:243,139,168;--tx:205,214,244;--tx-2:186,194,222;--tx-3:166,173,200;--tx-4:127,132,156}',
+      light: ':root{--surface-deep:220,224,232;--surface-950:239,241,245;--surface-900:230,233,239;--surface-850:220,224,232;--surface-800:204,208,218;--surface-700:188,192,204;--surface-600:172,176,190;--accent:30,102,245;--accent-dim:21,88,208;--accent-bright:114,135,253;--ok:64,160,43;--warn:223,142,29;--err:210,15,57;--tx:76,79,105;--tx-2:92,95,119;--tx-3:108,111,133;--tx-4:140,143,161}'
+    };
+    function applyTheme(t) {
+      document.documentElement.dataset.theme = t;
+      document.documentElement.style.colorScheme = t;
+      document.getElementById('kontora-theme').textContent = kontoraThemeCSS[t];
+    }
+    applyTheme(getStoredTheme() === 'light' ? 'light' : 'dark');
+  </script>
+  <style>
+    html, body { background: rgba(var(--surface-950), 1); color: rgba(var(--tx), 1); }
+    input, select, textarea, button { color-scheme: inherit; }
+    [x-cloak] { display: none !important; }
+    .sortable-ghost { opacity: 0.3; }
+    .sortable-drag { opacity: 0.9; transform: rotate(1.5deg); }
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: rgba(var(--surface-700), 1); border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: rgba(var(--surface-600), 1); }
+    @keyframes pulse-dot { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+    .pulse-dot { animation: pulse-dot 2s ease-in-out infinite; }
+    @keyframes slide-up { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+    .slide-up { animation: slide-up 0.2s ease-out; }
+
+    .resize-handle { width: 4px; cursor: col-resize; background: transparent; transition: background 0.15s; position: absolute; top: 0; bottom: 0; left: 0; z-index: 10; }
+    .resize-handle:hover, .resize-handle.active { background: rgba(var(--accent), 0.25); }
+
+    .ticket-prose { color: rgba(var(--tx), 1); line-height: 1.7; }
+    .ticket-prose h1 { font-size: 1.25rem; font-weight: 700; margin: 1.5rem 0 0.75rem; font-family: 'JetBrains Mono', monospace; }
+    .ticket-prose h2 { font-size: 1.05rem; font-weight: 600; margin: 1.25rem 0 0.5rem; font-family: 'JetBrains Mono', monospace; border-bottom: 1px solid rgba(var(--surface-700), 1); padding-bottom: 0.35rem; }
+    .ticket-prose h3 { font-size: 0.95rem; font-weight: 600; margin: 1rem 0 0.4rem; font-family: 'JetBrains Mono', monospace; }
+    .ticket-prose h4 { font-size: 0.85rem; font-weight: 600; color: rgba(var(--tx-2), 1); margin: 0.75rem 0 0.3rem; font-family: 'JetBrains Mono', monospace; }
+    .ticket-prose p { margin: 0.5rem 0; }
+    .ticket-prose ul, .ticket-prose ol { margin: 0.5rem 0; padding-left: 1.5rem; }
+    .ticket-prose li { margin: 0.2rem 0; }
+    .ticket-prose ul li { list-style-type: disc; }
+    .ticket-prose ol li { list-style-type: decimal; }
+    .ticket-prose li::marker { color: rgba(var(--surface-600), 1); }
+    .ticket-prose code { font-family: 'JetBrains Mono', monospace; font-size: 0.8rem; background: rgba(var(--surface-800), 1); padding: 0.15rem 0.4rem; border-radius: 3px; color: rgba(var(--accent-bright), 1); }
+    .ticket-prose pre { background: rgba(var(--surface-deep), 1); border: 1px solid rgba(var(--surface-700), 1); border-radius: 6px; padding: 0.75rem 1rem; margin: 0.75rem 0; overflow-x: auto; }
+    .ticket-prose pre code { background: none; padding: 0; color: rgba(var(--tx), 1); font-size: 0.78rem; }
+    .ticket-prose a { color: rgba(var(--accent), 1); text-decoration: underline; text-underline-offset: 2px; }
+    .ticket-prose blockquote { border-left: 3px solid rgba(var(--surface-700), 1); padding-left: 1rem; color: rgba(var(--tx-3), 1); margin: 0.75rem 0; }
+    .ticket-prose table { width: 100%; border-collapse: collapse; margin: 0.75rem 0; font-size: 0.85rem; }
+    .ticket-prose th { text-align: left; padding: 0.4rem 0.75rem; border-bottom: 1px solid rgba(var(--surface-600), 1); color: rgba(var(--tx-2), 1); font-family: 'JetBrains Mono', monospace; font-size: 0.78rem; }
+    .ticket-prose td { padding: 0.35rem 0.75rem; border-bottom: 1px solid rgba(var(--surface-800), 1); }
+    .ticket-prose hr { border: none; border-top: 1px solid rgba(var(--surface-700), 1); margin: 1.5rem 0; }
+    .ticket-prose input[type="checkbox"] { margin-right: 0.4rem; accent-color: rgba(var(--accent), 1); }
+    .ticket-prose strong { font-weight: 600; }
+
+    .tip { position: relative; display: inline-flex; align-items: center; justify-content: center; width: 14px; height: 14px; border-radius: 50%; font-size: 9px; font-style: italic; font-family: 'DM Sans', serif; color: rgba(var(--surface-600), 1); border: 1px solid rgba(var(--surface-700), 1); cursor: default; margin-left: 4px; flex-shrink: 0; line-height: 1; background: none; padding: 0; }
+    .tip:hover, .tip:focus-visible { color: rgba(var(--accent), 1); border-color: rgba(var(--accent), 0.38); outline: none; }
+    #global-tip { position: fixed; background: rgba(var(--surface-800), 1); color: rgba(var(--tx), 1); font-size: 11px; font-family: 'DM Sans', sans-serif; line-height: 1.4; padding: 6px 10px; border-radius: 6px; border: 1px solid rgba(var(--surface-700), 1); white-space: normal; width: max-content; max-width: 240px; pointer-events: none; opacity: 0; transition: opacity 0.15s; z-index: 9999; }
+
+    #global-tip-t { position: fixed; background: rgba(var(--surface-800), 1); color: rgba(var(--tx), 1); font-size: 11px; font-family: 'DM Sans', sans-serif; line-height: 1; padding: 4px 8px; border-radius: 4px; border: 1px solid rgba(var(--surface-700), 1); white-space: nowrap; pointer-events: none; opacity: 0; transition: opacity 0.15s; z-index: 9999; }
+  </style>
+</head>
+
+<body class="h-full bg-surface-950 text-tx font-sans overflow-hidden" x-data="kontora()" x-cloak
+      @keydown.escape.window="if (deleteModal) closeDeleteModal(); else if (createModal) closeCreateModal(); else if (initModal) closeInitModal(); else if (detailMenuOpen) detailMenuOpen = false; else if (terminalFullscreen) terminalFullscreen = false; else if (selectedTicket) closeDetail();"
+      @dragenter.prevent="if ($event.dataTransfer && $event.dataTransfer.types.includes('Files')) uploadDragging = true"
+      @dragover.prevent>
+
+  <!-- Global tooltips (teleported outside overflow containers) -->
+  <div id="global-tip"></div>
+  <div id="global-tip-t"></div>
+  <script>
+    (function() {
+      function setupTip(id, selector, attr, positionFn) {
+        var el = document.getElementById(id);
+        var timer;
+        document.addEventListener('mouseenter', function(e) {
+          var trig = e.target.closest(selector);
+          if (!trig) return;
+          var text = trig.getAttribute(attr);
+          if (!text) return;
+          clearTimeout(timer);
+          el.textContent = text;
+          el.style.opacity = '1';
+          el.style.left = '0'; el.style.top = '0';
+          positionFn(el, trig.getBoundingClientRect());
+        }, true);
+        document.addEventListener('mouseleave', function(e) {
+          if (!e.target.closest || !e.target.closest(selector)) return;
+          timer = setTimeout(function() { el.style.opacity = '0'; }, 80);
+        }, true);
+      }
+
+      setupTip('global-tip', '.tip[data-tip]', 'data-tip', function(el, r) {
+        var tw = el.offsetWidth, th = el.offsetHeight;
+        var left = r.left + r.width / 2 - tw / 2;
+        var top = r.top - th - 6;
+        if (left < 4) left = 4;
+        if (left + tw > window.innerWidth - 4) left = window.innerWidth - 4 - tw;
+        if (top < 4) top = r.bottom + 6;
+        el.style.left = left + 'px';
+        el.style.top = top + 'px';
+      });
+
+      setupTip('global-tip-t', '[data-tip-t]', 'data-tip-t', function(el, r) {
+        var tw = el.offsetWidth, th = el.offsetHeight;
+        var left = r.right - tw;
+        var top = r.top - th - 4;
+        if (left < 4) left = 4;
+        if (top < 4) top = r.bottom + 4;
+        el.style.left = left + 'px';
+        el.style.top = top + 'px';
+      });
+    })();
+  </script>
+
+  <!-- Error toast -->
+  <div x-show="error"
+       x-transition
+       x-effect="if (error) setTimeout(() => error = null, 5000)"
+       @click="error = null"
+       class="fixed bottom-4 right-4 z-[60] bg-err/20 border border-err/30 text-err text-sm font-mono px-4 py-2 rounded-lg cursor-pointer max-w-sm">
+    <span x-text="error"></span>
+  </div>
+
+  <!-- Upload drag-and-drop overlay -->
+  <div x-show="uploadDragging"
+       x-transition.opacity
+       @dragleave.self="uploadDragging = false"
+       @dragover.prevent
+       @drop.prevent="uploadDragging = false; handleUpload($event.dataTransfer.files)"
+       class="fixed inset-0 z-[55] bg-black/60 flex items-center justify-center">
+    <div class="border-2 border-dashed border-accent/50 rounded-2xl p-12 text-center pointer-events-none">
+      <p class="text-accent font-mono text-sm">Drop .md files here</p>
+      <p class="text-surface-600 text-xs mt-1">Ticket files will be imported</p>
+    </div>
+  </div>
+
+  <!-- Hidden upload input -->
+  <input type="file" accept=".md" multiple class="hidden" x-ref="uploadInput"
+         @change="handleUpload($event.target.files); $event.target.value = ''">
+
+  <!-- Fullscreen terminal overlay -->
+  <div x-show="terminalFullscreen && terminalOpen"
+       x-transition.opacity.duration.150ms
+       class="fixed inset-0 z-50 bg-surface-950 flex flex-col">
+    <div class="shrink-0 px-4 py-2 border-b border-surface-700/30 flex items-center gap-3">
+      <span class="font-mono text-xs text-surface-600" x-text="selectedTicket?.id"></span>
+      <span class="text-sm text-tx-2 truncate" x-text="selectedTicket?.title"></span>
+      <span x-show="selectedTicket?.status === 'in_progress'" class="flex items-center gap-1 text-[10px] font-mono text-accent">
+        <span class="w-1 h-1 rounded-full bg-accent pulse-dot"></span>
+        live
+      </span>
+      <div class="ml-auto flex items-center gap-2">
+        <button @click="toggleTerminalRW()"
+                class="text-[10px] font-mono px-1.5 py-0.5 rounded transition-colors"
+                :class="terminalRW ? 'text-err bg-err/10' : 'text-surface-600 hover:text-tx-3'">
+          <span x-text="terminalRW ? 'read-write' : 'read-only'"></span>
+        </button>
+        <span class="text-[10px] font-mono text-surface-600 cursor-pointer hover:text-tx-3 transition-colors"
+              @click.stop="copyCmd('kontora attach ' + selectedTicket?.id)"
+              x-text="copiedCmd === 'kontora attach ' + selectedTicket?.id ? '✓ copied' : 'kontora attach ' + selectedTicket?.id"></span>
+        <button @click="terminalFullscreen = false"
+                class="text-surface-600 hover:text-tx-3 transition-colors text-xs leading-none"
+                aria-label="Collapse terminal" data-tip-t="Collapse">
+          <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 14 10 14 10 20"/><polyline points="20 10 14 10 14 4"/><line x1="14" y1="10" x2="21" y2="3"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
+        </button>
+      </div>
+    </div>
+    <div id="terminal-container-fullscreen" class="flex-1 min-h-0 bg-surface-deep p-1 overflow-hidden transition-shadow"
+         :class="terminalRW ? 'ring-1 ring-err/40' : ''"></div>
+  </div>
+
+  <!-- Create ticket modal -->
+  <div x-show="createModal" x-transition.opacity class="fixed inset-0 z-50 flex items-center justify-center bg-black/60" @click.self="closeCreateModal()">
+    <div class="bg-surface-900 border border-surface-700/50 rounded-xl p-5 w-full max-w-md mx-4 slide-up" @click.stop>
+      <div class="flex items-center justify-between mb-4">
+        <span class="text-sm font-semibold text-tx-2">New ticket</span>
+        <button @click="closeCreateModal()" class="text-surface-600 hover:text-tx-3 text-sm">✕</button>
+      </div>
+      <form @submit.prevent="submitCreateTicket()">
+        <div class="space-y-3">
+          <div>
+            <label class="text-[11px] font-mono text-tx-3 block mb-1">Title *</label>
+            <input x-model="createForm.title" type="text" required
+                   class="w-full bg-surface-800 border border-surface-700/50 rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40"
+                   placeholder="Ticket title">
+          </div>
+          <div>
+            <label class="text-[11px] font-mono text-tx-3 block mb-1">Body</label>
+            <textarea x-model="createForm.body" rows="3"
+                      class="w-full bg-surface-800 border border-surface-700/50 rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40 resize-y"
+                      placeholder="Ticket description (markdown)"></textarea>
+          </div>
+          <div>
+            <label class="text-[11px] font-mono text-tx-3 mb-1 flex items-center">Path *<button type="button" class="tip" data-tip="Path to the repository the agent will work in. Supports ~ (e.g. ~/projects/myrepo).">i</button></label>
+            <input x-model="createForm.path" type="text" required
+                   class="w-full bg-surface-800 border border-surface-700/50 rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40"
+                   placeholder="~/projects/myrepo">
+          </div>
+          <div>
+            <label class="text-[11px] font-mono text-tx-3 mb-1 flex items-center">Pipeline<button type="button" class="tip" data-tip="The sequence of stages this ticket goes through (e.g. plan → code → review). Each stage runs an agent in turn. Pipelines are configured in the config file. Leave empty for a standalone ticket.">i</button></label>
+            <select x-model="createForm.pipeline"
+                    class="w-full bg-surface-800 border border-surface-700/50 rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40">
+              <option value="">None</option>
+              <template x-for="p in configCache?.pipelines || []" :key="p">
+                <option :value="p" x-text="pipelineLabel(p)"></option>
+              </template>
+            </select>
+          </div>
+          <div class="flex gap-3">
+            <div class="flex-1">
+              <label class="text-[11px] font-mono text-tx-3 mb-1 flex items-center">Agent<button type="button" class="tip" data-tip="Override the agent for all pipeline stages (or for a standalone ticket). Leave empty to use the pipeline default.">i</button></label>
+              <select x-model="createForm.agent"
+                      class="w-full bg-surface-800 border border-surface-700/50 rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40">
+                <option value="">Default</option>
+                <template x-for="a in configCache?.agents || []" :key="a">
+                  <option :value="a" x-text="a"></option>
+                </template>
+              </select>
+            </div>
+            <div class="flex-1">
+              <label class="text-[11px] font-mono text-tx-3 mb-1 flex items-center">Status<button type="button" class="tip" data-tip="Todo: starts automatically when a slot is available. Open: saved as a draft until you move it to Todo.">i</button></label>
+              <select x-model="createForm.status"
+                      class="w-full bg-surface-800 border border-surface-700/50 rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40">
+                <option value="todo">todo</option>
+                <option value="open">open</option>
+              </select>
+            </div>
+          </div>
+        </div>
+        <div class="flex justify-end gap-2 mt-5">
+          <button type="button" @click="closeCreateModal()"
+                  class="text-[11px] font-mono px-4 py-1.5 rounded bg-surface-800 border border-surface-700/50 text-tx-3 hover:text-tx-2 transition-colors">
+            cancel
+          </button>
+          <button type="submit" :disabled="createSubmitting"
+                  class="text-[11px] font-mono px-4 py-1.5 rounded bg-accent/20 border border-accent/30 text-accent hover:bg-accent/30 transition-colors disabled:opacity-50">
+            <span x-text="createSubmitting ? 'creating...' : 'create'"></span>
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Init ticket modal -->
+  <div x-show="initModal" x-transition.opacity class="fixed inset-0 z-50 flex items-center justify-center bg-black/60" @click.self="closeInitModal()">
+    <div class="bg-surface-900 border border-surface-700/50 rounded-xl p-5 w-full max-w-md mx-4 slide-up" @click.stop>
+      <div class="flex items-center justify-between mb-4">
+        <span class="text-sm font-semibold text-tx-2">Do ticket</span>
+        <button @click="closeInitModal()" class="text-surface-600 hover:text-tx-3 text-sm">✕</button>
+      </div>
+      <p class="text-[11px] font-mono text-surface-600 mb-1" x-text="initForm.ticketId"></p>
+      <p x-show="initForm.title" class="text-[11px] text-tx-2 mb-1" x-text="initForm.title"></p>
+      <p class="text-[11px] text-surface-600 mb-3">Prepares this ticket for execution: assigns a pipeline starting from the first stage and queues it to run.</p>
+      <form @submit.prevent="submitInitTicket()">
+        <div class="space-y-3">
+          <div>
+            <label class="text-[11px] font-mono text-tx-3 mb-1 flex items-center">Pipeline<button type="button" class="tip" data-tip="The sequence of stages this ticket goes through (e.g. plan → code → review). Each stage runs an agent in turn. Pipelines are configured in the config file. Leave empty for a simple single-run ticket.">i</button></label>
+            <select x-model="initForm.pipeline"
+                    class="w-full bg-surface-800 border border-surface-700/50 rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40">
+              <option value="">simple (single run, no stages)</option>
+              <template x-for="p in configCache?.pipelines || []" :key="p">
+                <option :value="p" x-text="pipelineLabel(p)"></option>
+              </template>
+            </select>
+          </div>
+          <div>
+            <label class="text-[11px] font-mono text-tx-3 mb-1 flex items-center">Agent<button type="button" class="tip" data-tip="Override the agent for all pipeline stages (or for a standalone ticket). Leave empty to use the pipeline default.">i</button></label>
+            <select x-model="initForm.agent"
+                    class="w-full bg-surface-800 border border-surface-700/50 rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40">
+              <option value="">Default</option>
+              <template x-for="a in configCache?.agents || []" :key="a">
+                <option :value="a" x-text="a"></option>
+              </template>
+            </select>
+          </div>
+          <div>
+            <label class="text-[11px] font-mono text-tx-3 mb-1 flex items-center">Path *<button type="button" class="tip" data-tip="Path to the repository the agent will work in. Supports ~ (e.g. ~/projects/myrepo).">i</button></label>
+            <input x-model="initForm.path" type="text" required
+                   class="w-full bg-surface-800 border border-surface-700/50 rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40"
+                   placeholder="~/projects/myrepo">
+          </div>
+        </div>
+        <div class="flex justify-end gap-2 mt-5">
+          <button type="button" @click="closeInitModal()"
+                  class="text-[11px] font-mono px-4 py-1.5 rounded bg-surface-800 border border-surface-700/50 text-tx-3 hover:text-tx-2 transition-colors">
+            cancel
+          </button>
+          <button type="submit" :disabled="initSubmitting"
+                  class="text-[11px] font-mono px-4 py-1.5 rounded bg-accent/20 border border-accent/30 text-accent hover:bg-accent/30 transition-colors disabled:opacity-50">
+            <span x-text="initSubmitting ? 'doing...' : 'do'"></span>
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Delete ticket modal -->
+  <div x-show="deleteModal" x-transition.opacity class="fixed inset-0 z-50 flex items-center justify-center bg-black/60" @click.self="closeDeleteModal()">
+    <div class="bg-surface-900 border border-err/20 rounded-xl p-5 w-full max-w-md mx-4 slide-up" @click.stop>
+      <div class="flex items-center justify-between mb-4">
+        <span class="text-sm font-semibold text-tx-2">Delete ticket file</span>
+        <button @click="closeDeleteModal()"
+                :disabled="deleteSubmitting"
+                class="text-surface-600 hover:text-tx-3 text-sm disabled:opacity-50 disabled:cursor-not-allowed">✕</button>
+      </div>
+      <p class="text-[11px] font-mono text-surface-600 mb-1" x-text="selectedTicket?.id"></p>
+      <p x-show="selectedTicket?.title" class="text-[11px] text-tx-2 mb-3" x-text="selectedTicket?.title"></p>
+      <div class="space-y-2 text-[11px] text-surface-600 leading-relaxed">
+        <p>This removes only the markdown ticket file.</p>
+        <p>Any existing git worktree is left alone.</p>
+        <p x-show="selectedTicket?.status === 'in_progress'" class="text-warn">The running agent will be stopped.</p>
+      </div>
+      <div class="flex justify-end gap-2 mt-5">
+        <button type="button" @click="closeDeleteModal()"
+                :disabled="deleteSubmitting"
+                class="text-[11px] font-mono px-4 py-1.5 rounded bg-surface-800 border border-surface-700/50 text-tx-3 hover:text-tx-2 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+          cancel
+        </button>
+        <button type="button" @click="deleteSelectedTicket()"
+                :disabled="deleteSubmitting"
+                class="text-[11px] font-mono px-4 py-1.5 rounded bg-err/15 border border-err/25 text-err hover:bg-err/25 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+          <span x-text="deleteSubmitting ? 'deleting...' : 'delete file'"></span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Top bar -->
+  <header class="h-12 border-b border-surface-700/50 flex items-center gap-4 px-5 shrink-0">
+    <div class="flex items-center gap-3 shrink-0">
+      <span class="font-mono font-bold text-sm tracking-wider text-tx-2">kontora</span>
+      <span class="text-[10px] font-mono text-surface-600 uppercase tracking-widest hidden sm:inline">agent orchestration</span>
+    </div>
+
+    <!-- Search -->
+    <div class="flex-1 max-w-md relative" @click.outside="searchOpen = false">
+      <div class="relative flex items-center">
+        <svg class="absolute left-2.5 w-3.5 h-3.5 text-surface-600 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+        </svg>
+        <input type="text" x-model="searchQuery" @input="updateSuggestions()" @focus="if (suggestions.length) searchOpen = true"
+               @keydown.arrow-down.prevent="moveSelection(1)" @keydown.arrow-up.prevent="moveSelection(-1)"
+               @keydown.enter.prevent="acceptSelection()" @keydown.escape="searchOpen = false; selectedIndex = -1; $el.blur()"
+               placeholder="Filter tickets..." aria-label="Filter tickets"
+               class="w-full pl-8 pr-7 py-1 text-xs font-mono rounded bg-surface-900 border border-surface-700/50 text-tx placeholder-surface-600 focus:outline-none focus:border-accent/40 transition-colors">
+        <button x-show="searchQuery" @click="clearSearch()" aria-label="Clear filter" class="absolute right-2 text-surface-600 hover:text-tx-3">
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+          </svg>
+        </button>
+      </div>
+      <!-- Autocomplete dropdown -->
+      <div x-show="searchOpen && suggestions.length" x-cloak
+           class="absolute z-50 top-full mt-1 w-full bg-surface-900 border border-surface-700/50 rounded-lg shadow-xl overflow-hidden">
+        <template x-for="(group, gi) in suggestions" :key="group.label">
+          <div>
+            <div class="px-3 py-1 text-[10px] font-mono uppercase tracking-wider text-surface-600 bg-surface-950" x-text="group.label"></div>
+            <template x-for="(item, ii) in group.items" :key="item.value">
+              <button @click="applySuggestion(item)" @mouseenter="selectedIndex = flatIndex(gi, ii)"
+                      class="w-full text-left px-3 py-1.5 text-xs font-mono flex items-center justify-between transition-colors"
+                      :class="selectedIndex === flatIndex(gi, ii) ? 'bg-accent/15 text-accent' : 'text-tx-3 hover:bg-surface-800'">
+                <span class="truncate" x-text="item.display"></span>
+                <span x-show="item.count !== null" class="text-[10px] text-surface-600 ml-2 shrink-0" x-text="item.count"></span>
+              </button>
+            </template>
+          </div>
+        </template>
+      </div>
+    </div>
+
+    <div class="flex items-center gap-4 text-xs font-mono shrink-0 ml-auto">
+      <span class="w-1.5 h-1.5 rounded-full bg-ok pulse-dot"></span>
+      <span class="text-surface-600 hidden sm:inline">|</span>
+      <span class="text-tx-3"><span class="text-tx" x-text="runningAgents"></span> agents running</span>
+      <template x-if="searchQuery && searchQuery.trim()">
+        <span class="text-tx-3">
+          <span class="text-surface-600">|</span>
+          <span class="text-tx" x-text="filteredTicketCount()"></span> matched
+        </span>
+      </template>
+      <span class="text-surface-600">|</span>
+      <button @click="toggleTheme()" class="text-surface-600 hover:text-tx-3 transition-colors p-0.5" aria-label="Toggle theme">
+        <svg x-show="!lightTheme" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+        <svg x-show="lightTheme" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+      </button>
+      <button @click="openCreateModal()"
+              class="text-[11px] font-mono px-2 py-0.5 rounded bg-surface-800 border border-surface-700/50 text-tx-3 hover:text-accent hover:border-accent/30 transition-colors">
+        + new
+      </button>
+      <button @click="$refs.uploadInput.click()"
+              class="text-[11px] font-mono px-2 py-0.5 rounded bg-surface-800 border border-surface-700/50 text-tx-3 hover:text-accent hover:border-accent/30 transition-colors">
+        upload
+      </button>
+    </div>
+  </header>
+
+  <!-- Main layout -->
+  <div class="flex h-[calc(100%-3rem)]">
+
+    <!-- Loading state -->
+    <div x-show="loading" class="flex-1 flex items-center justify-center">
+      <span class="text-surface-600 font-mono text-sm">loading...</span>
+    </div>
+
+    <!-- Kanban board -->
+    <div x-show="!loading" class="flex-1 overflow-x-auto overflow-y-hidden" @click="selectedTicket && closeDetail()">
+      <div class="flex gap-3 p-4 h-full min-w-min">
+        <template x-for="col in columns" :key="col.status">
+          <div class="flex flex-col min-w-[240px] w-[240px] md:min-w-[280px] md:w-[280px] shrink-0"
+               x-data="{ colHover: false }" @mouseenter="colHover = true" @mouseleave="colHover = false">
+            <!-- Column header -->
+            <div class="relative flex items-center gap-2 mb-3 px-1">
+              <div class="w-2 h-2 rounded-full" :class="col.color"></div>
+              <span class="text-xs font-mono font-semibold uppercase tracking-wider text-tx-3" x-text="col.label"></span>
+              <button type="button" class="tip" :data-tip="col.tip" :aria-label="col.tip">i</button>
+              <span class="text-[10px] font-mono text-surface-600 ml-auto"
+                    x-text="filteredTicketsByStatus(col.status).length"></span>
+              <button x-show="col.status === 'open' && colHover"
+                      x-transition:enter="transition-opacity duration-150" x-transition:enter-start="opacity-0" x-transition:enter-end="opacity-100"
+                      x-transition:leave="transition-opacity duration-100" x-transition:leave-start="opacity-100" x-transition:leave-end="opacity-0"
+                      @click.stop="openCreateModal()"
+                      class="absolute right-0 text-[10px] font-mono px-1.5 py-0.5 rounded bg-surface-800 border border-surface-700/50 text-surface-600 hover:text-accent hover:border-accent/30">+ new</button>
+            </div>
+            <!-- Card list -->
+            <div class="flex-1 overflow-y-auto space-y-2 px-0.5 pb-2 rounded-lg"
+                 :id="'col-' + col.status"
+                 :data-status="col.status"
+                 x-init="initSortable($el, col.status)">
+              <template x-for="ticket in filteredTicketsByStatus(col.status)" :key="ticket.id">
+                <div :data-ticket-id="ticket.id"
+                     @click.stop="selectTicket(ticket)"
+                     class="group rounded-lg p-3 cursor-pointer transition-all duration-150 border slide-up"
+                     :class="[
+                       selectedTicket?.id === ticket.id
+                         ? 'bg-surface-800 border-accent/30 shadow-lg shadow-accent/5'
+                         : 'bg-surface-900 border-surface-700/30 hover:border-surface-600/50 hover:bg-surface-850',
+                       !ticket.kontora ? 'border-dashed' : ''
+                     ]"
+                  <!-- Ticket header -->
+                  <div class="flex items-start justify-between gap-2 mb-1.5">
+                    <span class="font-mono text-[11px] text-surface-600 group-hover:text-tx-3 transition-colors"
+                          x-text="ticket.id"></span>
+                    <div class="flex items-center gap-1.5">
+                      <template x-if="ticket.status === 'in_progress'">
+                        <span class="flex items-center gap-1 text-[10px] font-mono text-accent">
+                          <span class="w-1 h-1 rounded-full bg-accent pulse-dot"></span>
+                          <span x-text="ticket.stage"></span>
+                        </span>
+                      </template>
+                      <template x-if="ticket.status !== 'in_progress' && ticket.stage">
+                        <span class="text-[10px] font-mono text-surface-600" x-text="ticket.stage"></span>
+                      </template>
+                    </div>
+                  </div>
+                  <!-- Title -->
+                  <p class="text-[13px] text-tx-2 leading-snug font-medium" x-text="ticket.title"></p>
+                  <!-- Meta row -->
+                  <div class="flex items-center gap-2 mt-2.5">
+                    <span class="text-[10px] font-mono px-1.5 py-0.5 rounded bg-surface-800 text-tx-3"
+                          x-text="pathBasename(ticket.path)"></span>
+                    <template x-if="ticket.agent">
+                      <span class="text-[10px] font-mono text-surface-600" x-text="ticket.agent"></span>
+                    </template>
+                    <template x-if="ticket.status === 'in_progress' && ticket.started_at">
+                      <span class="text-[10px] font-mono text-surface-600 ml-auto" x-text="formatDuration(ticket)" :data-tip-t="'Started: ' + formatAbsDate(ticket.started_at)"></span>
+                    </template>
+                    <template x-if="ticket.created_at && !(ticket.status === 'in_progress' && ticket.started_at)">
+                      <span class="text-[10px] font-mono text-surface-600 ml-auto" x-text="timeAgo(ticket.created_at)" :data-tip-t="formatAbsDate(ticket.created_at)"></span>
+                    </template>
+                  </div>
+                </div>
+              </template>
+              <div x-show="filteredTicketsByStatus(col.status).length === 0"
+                   class="text-[10px] font-mono text-surface-600/50 text-center py-6"
+                   x-text="col.emptyText">
+              </div>
+            </div>
+          </div>
+        </template>
+      </div>
+    </div>
+
+    <!-- Detail panel (desktop: side panel, mobile: full-screen overlay) -->
+    <div x-show="selectedTicket"
+         x-transition.opacity.duration.150ms
+         class="flex flex-col bg-surface-950 overflow-hidden relative shrink-0"
+         :class="isMobile ? 'fixed inset-0 z-50' : 'border-l border-surface-700/50'"
+         :style="!isMobile && selectedTicket ? 'width:' + panelWidth + 'px' : ''">
+
+      <!-- Resize handle -->
+      <div x-show="!isMobile" class="resize-handle" @mousedown.prevent="startResize($event)"></div>
+
+      <!-- Ticket detail header -->
+      <div class="shrink-0">
+        <div class="p-4 border-b border-surface-700/30">
+          <div class="flex items-center justify-between mb-2">
+            <span class="font-mono text-xs text-surface-600 cursor-pointer hover:text-tx-3 transition-colors"
+                  x-text="copiedId ? '✓ copied' : selectedTicket?.id"
+                  @click.stop="copyTicketId(selectedTicket?.id)"></span>
+            <div class="flex items-center gap-3" @click.outside="detailMenuOpen = false">
+              <button @click="closeDetail()"
+                      class="w-6 h-6 rounded-md border border-surface-700/40 bg-surface-900/70 text-surface-600 hover:bg-surface-800 hover:text-tx-2 hover:border-surface-600 transition-colors flex items-center justify-center"
+                      aria-label="Close detail">
+                <svg xmlns="http://www.w3.org/2000/svg" width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round">
+                  <path d="M6 6l12 12M18 6L6 18"/>
+                </svg>
+              </button>
+              <div class="relative">
+                <button @click.stop="detailMenuOpen = !detailMenuOpen"
+                        class="w-6 h-6 rounded-md border border-surface-700/40 bg-surface-900/70 text-surface-600 hover:bg-surface-800 hover:text-tx-2 hover:border-surface-600 transition-colors flex items-center justify-center"
+                        aria-label="More actions">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="currentColor">
+                    <circle cx="5" cy="12" r="2.2"></circle>
+                    <circle cx="12" cy="12" r="2.2"></circle>
+                    <circle cx="19" cy="12" r="2.2"></circle>
+                  </svg>
+                </button>
+                <div x-show="detailMenuOpen"
+                     x-transition.origin.top.right
+                     class="absolute right-0 mt-2 min-w-[9rem] overflow-hidden rounded-lg border border-surface-700/60 bg-surface-900/95 shadow-lg shadow-black/30"
+                     @click.stop>
+                  <button @click="detailMenuOpen = false; openDeleteModal()"
+                          class="w-full px-3 py-2 text-left text-[11px] font-mono text-err hover:bg-err/10 transition-colors">
+                    delete file
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+          <h2 class="text-sm font-semibold text-tx-2 mb-3" x-text="selectedTicket?.title"></h2>
+          <div class="mb-3">
+            <span class="text-[10px] font-mono px-2 py-0.5 rounded-full border"
+                  :class="statusStyle(selectedTicket?.status)"
+                  x-text="selectedTicket?.status"></span>
+            <div class="mt-2 flex flex-col gap-0.5">
+              <template x-if="selectedTicket?.pipeline">
+                <div class="flex gap-3">
+                  <span class="text-[10px] font-mono text-surface-600 w-14">pipeline</span>
+                  <span class="text-[10px] font-mono text-tx-3" x-text="selectedTicket?.pipeline"></span>
+                </div>
+              </template>
+              <div class="flex gap-3">
+                <span class="text-[10px] font-mono text-surface-600 w-14">path</span>
+                <span class="text-[10px] font-mono text-tx-3" x-text="selectedTicket?.path" :title="selectedTicket?.path"></span>
+              </div>
+              <template x-if="selectedTicket?.created_at">
+                <div class="flex gap-3">
+                  <span class="text-[10px] font-mono text-surface-600 w-14">created</span>
+                  <span class="text-[10px] font-mono text-tx-3" x-text="formatAbsDate(selectedTicket.created_at)"></span>
+                </div>
+              </template>
+              <template x-if="selectedTicket?.status === 'in_progress' && selectedTicket?.started_at">
+                <div class="flex gap-3">
+                  <span class="text-[10px] font-mono text-surface-600 w-14">running</span>
+                  <span class="text-[10px] font-mono text-tx-3" x-text="formatDuration(selectedTicket)"></span>
+                </div>
+              </template>
+            </div>
+          </div>
+          <!-- Actions -->
+          <div class="flex flex-wrap gap-2">
+            <template x-if="selectedTicket?.status === 'in_progress'">
+              <button @click="action('pause')"
+                      class="text-[11px] font-mono px-3 py-1.5 md:py-1 rounded bg-surface-800 border border-surface-700/50 text-tx-3 hover:text-warn hover:border-warn/30 transition-colors min-h-[44px] md:min-h-0"
+                      title="Stops the running agent and pauses the ticket. The worktree is preserved for inspection or retry.">
+                pause
+              </button>
+            </template>
+            <template x-if="selectedTicket?.status === 'paused'">
+              <button @click="action('retry')"
+                      class="text-[11px] font-mono px-3 py-1.5 md:py-1 rounded bg-surface-800 border border-surface-700/50 text-tx-3 hover:text-ok hover:border-ok/30 transition-colors min-h-[44px] md:min-h-0"
+                      title="Resets the attempt counter and re-runs the current stage in the same worktree.">
+                retry
+              </button>
+            </template>
+            <template x-if="selectedTicket?.status === 'in_progress'">
+              <button @click="action('skip')"
+                      class="text-[11px] font-mono px-3 py-1.5 md:py-1 rounded bg-surface-800 border border-surface-700/50 text-tx-3 hover:text-tx-2 hover:border-surface-600 transition-colors min-h-[44px] md:min-h-0"
+                      title="Skips the current stage and advances to the next one in the pipeline.">
+                skip stage
+              </button>
+            </template>
+          </div>
+        </div>
+
+        <!-- Pipeline progress -->
+        <div class="px-4 py-3 border-b border-surface-700/30" x-show="selectedTicket?.stages?.length > 0">
+          <div class="flex items-center gap-1 flex-wrap" title="Pipeline stages run sequentially. Each stage spawns an agent in the shared worktree. Click completed stages to view their logs.">
+            <template x-for="(stage, i) in (selectedTicket?.stages || [])" :key="i">
+              <div class="flex items-center gap-1">
+                <button class="text-[10px] font-mono px-2 py-0.5 rounded transition-colors"
+                     :class="[stageStyle(stage, selectedTicket),
+                              isStageClickable(stage, selectedTicket) ? 'cursor-pointer hover:ring-1 hover:ring-accent/40' : 'cursor-default',
+                              logViewStage === stage && isStageClickable(stage, selectedTicket) ? 'ring-1 ring-accent/60' : '']"
+                     @click="clickStage(stage)">
+                  <span x-text="stage"></span>
+                </button>
+                <template x-if="i < (selectedTicket?.stages?.length || 0) - 1">
+                  <span class="text-surface-600 text-[10px]">→</span>
+                </template>
+              </div>
+            </template>
+          </div>
+        </div>
+
+        <!-- Tabs -->
+        <div class="flex border-b border-surface-700/30">
+          <button x-show="showTerminalTab()" @click="switchTab('terminal')"
+                  class="text-[11px] font-mono px-4 py-2.5 border-b-2 transition-colors"
+                  :class="activeTab === 'terminal' ? 'text-tx-2 border-accent' : 'text-surface-600 border-transparent hover:text-tx-3'"
+                  x-text="terminalTabLabel()">
+          </button>
+          <button @click="switchTab('ticket')"
+                  class="text-[11px] font-mono px-4 py-2.5 border-b-2 transition-colors"
+                  :class="activeTab === 'ticket' ? 'text-tx-2 border-accent' : 'text-surface-600 border-transparent hover:text-tx-3'">
+            ticket
+          </button>
+        </div>
+      </div>
+
+      <!-- Tab content -->
+      <div class="flex-1 min-h-0 overflow-hidden">
+
+        <!-- Terminal tab -->
+        <div x-show="activeTab === 'terminal'" class="h-full flex flex-col">
+          <!-- Terminal viewer -->
+          <div x-show="terminalOpen" class="flex-1 min-h-0 flex flex-col">
+            <div class="shrink-0 px-4 py-2 border-b border-surface-700/20 flex items-center">
+              <span class="flex items-center gap-1 text-[10px] font-mono text-accent">
+                <span class="w-1 h-1 rounded-full bg-accent pulse-dot"></span>
+                live
+              </span>
+              <span class="text-[10px] font-mono text-surface-600/40 ml-2" x-show="selectedTicket?.stages?.indexOf(selectedTicket?.stage) > 0">· click stages above to view logs</span>
+              <button @click="toggleTerminalRW()"
+                      class="ml-auto text-[10px] font-mono px-1.5 py-0.5 rounded transition-colors"
+                      :class="terminalRW ? 'text-err bg-err/10' : 'text-surface-600 hover:text-tx-3'">
+                <span x-text="terminalRW ? 'read-write' : 'read-only'"></span>
+              </button>
+              <span class="text-[10px] font-mono text-surface-600 cursor-pointer hover:text-tx-3 transition-colors ml-2"
+                    @click.stop="copyCmd('kontora attach ' + selectedTicket?.id)"
+                    x-text="copiedCmd === 'kontora attach ' + selectedTicket?.id ? '✓ copied' : 'kontora attach ' + selectedTicket?.id"></span>
+              <button x-show="!isMobile" @click="terminalFullscreen = !terminalFullscreen"
+                      class="text-surface-600 hover:text-tx-3 transition-colors ml-2 text-xs leading-none"
+                      :aria-label="terminalFullscreen ? 'Collapse terminal' : 'Expand terminal'"
+                      :data-tip-t="terminalFullscreen ? 'Collapse' : 'Expand'">
+                <svg x-show="!terminalFullscreen" xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
+                <svg x-show="terminalFullscreen" xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 14 10 14 10 20"/><polyline points="20 10 14 10 14 4"/><line x1="14" y1="10" x2="21" y2="3"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
+              </button>
+            </div>
+            <div id="terminal-container" class="flex-1 min-h-0 bg-surface-deep p-1 overflow-hidden transition-shadow"
+                 :class="terminalRW ? 'ring-1 ring-err/40' : ''"></div>
+          </div>
+
+          <!-- Status info (when terminal is not connected) -->
+          <div x-show="!terminalOpen" class="flex-1 min-h-0 overflow-y-auto p-4">
+            <template x-if="selectedTicket?.status === 'in_progress' && logViewContent === null && !logViewLoading">
+              <div class="text-sm text-tx-3 font-mono">
+                <p class="text-surface-600 mb-1">Agent: <span class="text-tx-3" x-text="selectedTicket?.agent || 'unknown'"></span></p>
+                <template x-if="selectedTicket?.started_at">
+                  <p class="text-surface-600">Running for <span class="text-tx-3" x-text="formatDuration(selectedTicket)" :data-tip-t="'Started: ' + formatAbsDate(selectedTicket?.started_at)"></span></p>
+                </template>
+                <template x-if="selectedTicket?.branch">
+                  <p class="text-surface-600 mt-1">Branch: <span class="text-tx-3 cursor-pointer hover:text-tx-2 transition-colors"
+                    @click.stop="copyBranch(selectedTicket?.branch)"
+                    x-text="copiedBranch ? '✓ copied' : selectedTicket?.branch"></span></p>
+                </template>
+                <p class="text-surface-600 mt-2">Attach: <span class="text-tx-3 cursor-pointer hover:text-tx-2 transition-colors"
+                  @click.stop="copyCmd('kontora attach ' + selectedTicket?.id)"
+                  x-text="copiedCmd === 'kontora attach ' + selectedTicket?.id ? '✓ copied' : 'kontora attach ' + selectedTicket?.id"></span></p>
+              </div>
+            </template>
+            <template x-if="logViewContent !== null">
+              <div class="h-full flex flex-col">
+                <div class="shrink-0 px-0 pb-2 flex items-center gap-2">
+                  <span class="text-[10px] font-mono text-surface-600" x-text="logViewStage ? 'stage: ' + logViewStage : 'latest log'"></span>
+                  <span class="text-[10px] font-mono text-surface-600/40">· click stages above to switch</span>
+                  <template x-if="selectedTicket?.status === 'in_progress'">
+                    <button class="text-[10px] font-mono text-accent hover:underline"
+                            @click="logViewContent = null; logViewStage = null; openTerminal()">← back to live</button>
+                  </template>
+                </div>
+                <pre class="flex-1 min-h-0 overflow-auto bg-surface-deep rounded border border-surface-700/30 p-3 text-[12px] font-mono text-tx whitespace-pre-wrap break-words" x-text="logViewContent"></pre>
+              </div>
+            </template>
+            <template x-if="logViewLoading">
+              <div class="text-sm font-mono text-surface-600">
+                <p>Loading logs...</p>
+              </div>
+            </template>
+            <template x-if="!logViewLoading && logViewContent === null && selectedTicket?.status !== 'in_progress'">
+              <div class="text-sm font-mono text-tx-4">
+                <template x-if="selectedTicket?.status === 'done'">
+                  <div>
+                    <p class="text-ok/60 mb-1">✓ Ticket completed</p>
+                    <template x-if="selectedTicket?.branch">
+                      <p>Branch: <span class="text-tx-3 cursor-pointer hover:text-tx-2 transition-colors"
+                        @click.stop="copyBranch(selectedTicket?.branch)"
+                        x-text="copiedBranch ? '✓ copied' : selectedTicket?.branch"></span></p>
+                    </template>
+                    <p class="mt-1">Logs: <span class="text-tx-3 cursor-pointer hover:text-tx-2 transition-colors"
+                      @click.stop="copyCmd('kontora logs ' + selectedTicket?.id)"
+                      x-text="copiedCmd === 'kontora logs ' + selectedTicket?.id ? '✓ copied' : 'kontora logs ' + selectedTicket?.id"></span></p>
+                  </div>
+                </template>
+                <template x-if="selectedTicket?.status === 'paused'">
+                  <div>
+                    <p class="text-warn/60 mb-1">⏸ Ticket paused</p>
+                    <p class="text-surface-600 text-xs leading-relaxed mb-2">Paused manually or by the pipeline's failure policy after retries were exhausted.</p>
+                    <p>Resume: <span class="text-tx-3 cursor-pointer hover:text-tx-2 transition-colors"
+                      @click.stop="copyCmd('kontora retry ' + selectedTicket?.id)"
+                      x-text="copiedCmd === 'kontora retry ' + selectedTicket?.id ? '✓ copied' : 'kontora retry ' + selectedTicket?.id"></span></p>
+                    <p class="text-surface-600 mt-2 text-xs leading-relaxed">Click <span class="text-tx-3">retry</span> to re-run the current stage, or drag to <span class="text-tx-3">todo</span> to resume.</p>
+                  </div>
+                </template>
+              </div>
+            </template>
+          </div>
+        </div>
+
+        <!-- Ticket tab -->
+        <div x-show="activeTab === 'ticket'" class="h-full overflow-y-auto bg-surface-950">
+          <div class="max-w-3xl mx-auto px-8 py-6">
+            <!-- Editable form for editable tickets (open/todo/paused) -->
+            <template x-if="editing && ['open', 'todo', 'paused'].includes(selectedTicket?.status)">
+              <div>
+                <div class="grid grid-cols-3 gap-3 mb-4">
+                  <div>
+                    <label class="text-xs font-mono text-surface-600 mb-1 flex items-center">Pipeline<button type="button" class="tip" data-tip="The sequence of stages this ticket goes through. Each stage runs an agent in turn. Pipelines are configured in the config file.">i</button></label>
+                    <select x-model="editForm.pipeline" @change="saveEdit()"
+                      class="w-full bg-surface-800 border border-surface-700 rounded px-2 py-1 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent">
+                      <option value="">—</option>
+                      <template x-for="p in (configCache?.pipelines || [])" :key="p">
+                        <option :value="p" x-text="pipelineLabel(p)"></option>
+                      </template>
+                    </select>
+                  </div>
+                  <div>
+                    <label class="text-xs font-mono text-surface-600 mb-1 flex items-center">Agent<button type="button" class="tip" data-tip="Override the agent for all pipeline stages (or for a standalone ticket). Leave empty to use the pipeline default.">i</button></label>
+                    <select x-model="editForm.agent" @change="saveEdit()"
+                      class="w-full bg-surface-800 border border-surface-700 rounded px-2 py-1 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent">
+                      <option value="">Default</option>
+                      <template x-for="a in (configCache?.agents || [])" :key="a">
+                        <option :value="a" x-text="a"></option>
+                      </template>
+                    </select>
+                  </div>
+                  <div>
+                    <label class="text-xs font-mono text-surface-600 mb-1 flex items-center">Path<button type="button" class="tip" data-tip="Path to the repository the agent will work in. Supports ~ (e.g. ~/projects/myrepo).">i</button></label>
+                    <input type="text" x-model="editForm.path" @change="saveEdit()"
+                      class="w-full bg-surface-800 border border-surface-700 rounded px-2 py-1 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent">
+                  </div>
+                </div>
+                <div class="flex items-center justify-between mb-1">
+                  <label class="text-xs font-mono text-surface-600 flex items-center">Body<button type="button" class="tip" data-tip="The ticket description that agents see when working on this ticket.">i</button></label>
+                  <span x-show="editSubmitting" class="text-xs font-mono text-surface-600">saving...</span>
+                  <span x-show="editSaved && !editSubmitting" class="text-xs font-mono text-ok/60">saved</span>
+                </div>
+                <!-- Body: click-to-edit toggle -->
+                <template x-if="editingBody">
+                  <textarea x-model="editForm.body" @input="debounceSaveEdit()"
+                    @blur="if (_editDebounce) { clearTimeout(_editDebounce); _editDebounce = null; } editingBody = false; saveEdit()"
+                    x-init="$nextTick(() => $el.focus())"
+                    class="w-full h-[calc(100vh-280px)] bg-surface-800 border border-surface-700 rounded px-3 py-2 text-sm text-tx-2 font-mono resize-none focus:outline-none focus:border-accent"
+                    spellcheck="false"></textarea>
+                </template>
+                <template x-if="!editingBody">
+                  <div @click="editingBody = true"
+                    class="cursor-text rounded border border-transparent hover:border-surface-700/50 transition-colors min-h-[100px]">
+                    <div x-show="editForm.body" class="ticket-prose text-sm" x-html="renderMarkdown(editForm.body)"></div>
+                    <p x-show="!editForm.body" class="text-sm font-mono text-surface-600">Click to add a description...</p>
+                  </div>
+                </template>
+              </div>
+            </template>
+            <!-- Read-only view for non-editable tickets -->
+            <template x-if="!editing || !['open', 'todo', 'paused'].includes(selectedTicket?.status)">
+              <div>
+                <div class="ticket-prose text-sm" x-html="renderMarkdown(selectedTicket?.body || '')"></div>
+                <div x-show="!selectedTicket?.body" class="text-sm font-mono text-surface-600">
+                  <p>No ticket description.</p>
+                </div>
+              </div>
+            </template>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- Collapsed state hint (desktop only) -->
+    <div x-show="!selectedTicket && !isMobile && !loading"
+         class="w-12 border-l border-surface-700/50 flex items-center justify-center shrink-0">
+      <span class="text-surface-600 text-[10px] font-mono [writing-mode:vertical-rl] tracking-wider">select a ticket</span>
+    </div>
+  </div>
+
+  <script>
+  function kontora() {
+    return {
+      tickets: [],
+      runningAgents: 0,
+      selectedTicket: null,
+      terminalOpen: false,
+      terminalRW: false,
+      terminalFullscreen: false,
+      activeTab: 'terminal',
+      panelWidth: parseInt(localStorage.getItem('kontora-panel-width')) || Math.floor(window.innerWidth * 0.5),
+      loading: true,
+      error: null,
+      isMobile: window.innerWidth < 768,
+      createModal: false,
+      createSubmitting: false,
+      createForm: { title: '', path: '', pipeline: '', agent: '', status: 'todo', body: '' },
+      initModal: false,
+      initSubmitting: false,
+      initForm: { ticketId: '', title: '', pipeline: '', agent: '', path: '' },
+      deleteModal: false,
+      detailMenuOpen: false,
+      copiedId: false,
+      copiedBranch: false,
+      copiedCmd: null,
+      configCache: null,
+      logViewContent: null,
+      logViewStage: null,
+      logViewLoading: false,
+      searchQuery: '',
+      searchOpen: false,
+      suggestions: [],
+      selectedIndex: -1,
+      _termWs: null,
+      _term: null,
+      _TerminalClass: null,
+      _FitAddonClass: null,
+      _fitAddon: null,
+      _resizeObserver: null,
+      _resizeTimer: null,
+      _eventSource: null,
+      editing: false,
+      editingBody: false,
+      editForm: { body: '', pipeline: '', path: '', agent: '' },
+      editSubmitting: false,
+      editSaved: false,
+      _editDebounce: null,
+      deleteSubmitting: false,
+      uploadDragging: false,
+      lightTheme: getStoredTheme() === 'light',
+
+      columns: [
+        { status: 'open',      label: 'Open',      color: 'bg-accent',    tip: 'Draft ticket, not running yet. Drag to Todo or click Initialize to start.', emptyText: 'Create a ticket to get started' },
+        { status: 'todo',      label: 'Todo',      color: 'bg-tx-4',    tip: 'Waiting to start. Will begin automatically when a slot is available.', emptyText: 'Move a ticket here to put it next in line' },
+        { status: 'in_progress',   label: 'Running',   color: 'bg-accent',      tip: 'An agent is currently working on this ticket.', emptyText: 'No tickets are running right now' },
+        { status: 'paused',    label: 'Paused',    color: 'bg-warn',        tip: 'Stopped for now. Click Retry or drag to Todo to resume.', emptyText: 'No paused tickets' },
+        { status: 'done',      label: 'Done',      color: 'bg-ok',          tip: 'Ticket completed successfully.', emptyText: 'No completed tickets yet' },
+        { status: 'cancelled', label: 'Cancelled', color: 'bg-surface-600', tip: 'Stopped manually. Drag to Todo to run it again.', emptyText: 'No cancelled tickets' },
+      ],
+
+      async init() {
+        window.addEventListener('resize', () => {
+          this.isMobile = window.innerWidth < 768;
+        });
+        this.$watch('terminalFullscreen', (fs) => {
+          if (!this._term?.element || !this.terminalOpen) return;
+          var target = fs
+            ? document.getElementById('terminal-container-fullscreen')
+            : document.getElementById('terminal-container');
+          if (!target) return;
+          target.appendChild(this._term.element);
+          if (this._resizeObserver) {
+            this._resizeObserver.disconnect();
+            this._resizeObserver.observe(target);
+          }
+          var self = this;
+          requestAnimationFrame(function() { self.refitTerminal(); });
+        });
+        try {
+          await this.fetchTasks();
+        } catch (e) {
+          this.error = 'Failed to load tickets';
+        }
+        this.loading = false;
+        this.connectSSE();
+      },
+
+      async fetchTasks() {
+        const res = await fetch('/api/tickets');
+        if (!res.ok) throw new Error('Failed to fetch tickets');
+        const data = await res.json();
+        this.tickets = data.tickets || [];
+        this.runningAgents = data.running_agents || 0;
+        this.updateFavicon();
+      },
+
+      _cssVar(name, styles) {
+        var s = styles || getComputedStyle(document.documentElement);
+        return 'rgb(' + s.getPropertyValue(name).trim() + ')';
+      },
+
+      updateFavicon() {
+        const counts = { in_progress: 0, paused: 0, todo: 0, done: 0 };
+        this.tickets.filter(t => t.kontora).forEach(t => { if (counts[t.status] !== undefined) counts[t.status]++; });
+
+        var styles = getComputedStyle(document.documentElement);
+        var v = (name) => this._cssVar(name, styles);
+        let color, label;
+        if (counts.in_progress > 0) {
+          color = v('--accent'); label = counts.in_progress + ' running';
+        } else if (counts.paused > 0) {
+          color = v('--warn'); label = counts.paused + ' paused';
+        } else if (counts.todo > 0) {
+          color = v('--surface-600'); label = counts.todo + ' queued';
+        } else if (counts.done > 0) {
+          color = v('--ok'); label = 'all done';
+        } else {
+          color = v('--surface-600'); label = null;
+        }
+
+        document.title = label ? '(' + label + ') kontora' : 'kontora';
+        const icon = document.querySelector('link[rel="icon"]');
+        if (icon) icon.href = "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><circle cx='8' cy='8' r='7' fill='" + encodeURIComponent(color) + "'/></svg>";
+      },
+
+      ticketsByStatus(status) {
+        return this.tickets
+          .filter(t => t.status === status && (status === 'open' || t.kontora))
+          .sort((a, b) => {
+            const ca = a.created_at || '';
+            const cb = b.created_at || '';
+            if (ca !== cb) return ca > cb ? -1 : 1;
+            return 0;
+          });
+      },
+
+
+      showTerminalTab() {
+        if (!this.selectedTicket) return false;
+        if (this.selectedTicket.status === 'in_progress') return true;
+        if (this.selectedTicket.history?.length > 0) return true;
+        return false;
+      },
+
+      terminalTabLabel() {
+        if (this.selectedTicket?.status === 'in_progress') return 'terminal';
+        return 'logs';
+      },
+
+      connectSSE() {
+        if (this._eventSource) this._eventSource.close();
+        const es = new EventSource('/api/events');
+        this._eventSource = es;
+        es.addEventListener('ticket_updated', (e) => {
+          const ticket = JSON.parse(e.data);
+          const idx = this.tickets.findIndex(t => t.id === ticket.id);
+          if (idx >= 0) {
+            this.tickets[idx] = ticket;
+          } else {
+            this.tickets.push(ticket);
+          }
+          this.runningAgents = this.tickets.filter(t => t.status === 'in_progress' && t.kontora).length;
+          this.updateFavicon();
+          if (this.selectedTicket?.id === ticket.id) {
+            if (this.editing && !['open', 'todo', 'paused'].includes(ticket.status)) {
+              this.editing = false;
+              this.editingBody = false;
+            }
+            if (this.editing) {
+              // Preserve editing form state, only update list-level fields
+              this.selectedTicket.status = ticket.status;
+              this.selectedTicket.stage = ticket.stage;
+              this.selectedTicket.attempt = ticket.attempt;
+            } else {
+              var body = this.selectedTicket.body;
+              this.selectedTicket = ticket;
+              if (body) this.selectedTicket.body = body;
+            }
+            if (this.activeTab === 'terminal' && !this.showTerminalTab()) {
+              this.activeTab = 'ticket';
+            }
+          }
+        });
+        es.addEventListener('ticket_deleted', (e) => {
+          const ticket = JSON.parse(e.data);
+          this.tickets = this.tickets.filter(t => t.id !== ticket.id);
+          if (this.selectedTicket?.id === ticket.id) {
+            this.closeDetail();
+          }
+          this.runningAgents = this.tickets.filter(t => t.status === 'in_progress' && t.kontora).length;
+          this.updateFavicon();
+        });
+        es.addEventListener('terminal_ready', (e) => {
+          const ticket = JSON.parse(e.data);
+          if (this.selectedTicket?.id === ticket.id && this.activeTab === 'terminal') {
+            if (this.terminalOpen) {
+              this._teardownTransport();
+              this._connectTerminal();
+            } else {
+              this.openTerminal();
+            }
+          }
+        });
+        es.onerror = () => {
+          es.close();
+          setTimeout(() => this.connectSSE(), 3000);
+        };
+      },
+
+      async openCreateModal() {
+        this.createForm = { title: '', path: '', pipeline: '', agent: '', status: 'todo', body: '' };
+        this.createModal = true;
+        if (!this.configCache) {
+          try {
+            const res = await fetch('/api/config');
+            if (res.ok) this.configCache = await res.json();
+          } catch (e) {
+            this.error = 'Failed to load config';
+          }
+        }
+      },
+
+      closeCreateModal() {
+        this.createModal = false;
+        this.createSubmitting = false;
+      },
+
+      async submitCreateTicket() {
+        if (!this.createForm.title || !this.createForm.path) return;
+        this.createSubmitting = true;
+        this.error = null;
+        try {
+          const body = { title: this.createForm.title, path: this.createForm.path };
+          if (this.createForm.pipeline) body.pipeline = this.createForm.pipeline;
+          if (this.createForm.agent) body.agent = this.createForm.agent;
+          if (this.createForm.status) body.status = this.createForm.status;
+          if (this.createForm.body) body.body = this.createForm.body;
+          const res = await fetch('/api/tickets', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+          });
+          if (!res.ok) {
+            const data = await res.json().catch(() => ({}));
+            this.error = data.error || 'Failed to create ticket';
+            this.createSubmitting = false;
+            return;
+          }
+          this.closeCreateModal();
+        } catch (e) {
+          this.error = 'Failed to create ticket: ' + e.message;
+          this.createSubmitting = false;
+        }
+      },
+
+      async handleUpload(fileList) {
+        const mdFiles = [...fileList].filter(f => f.name.toLowerCase().endsWith('.md'));
+        if (!mdFiles.length) {
+          this.error = 'No .md files selected';
+          return;
+        }
+        const form = new FormData();
+        mdFiles.forEach(f => form.append('files', f));
+        try {
+          const res = await fetch('/api/tickets/upload', { method: 'POST', body: form });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok && data.error) {
+            this.error = data.error;
+          } else if (data.errors && data.errors.length) {
+            this.error = data.errors.map(e => e.file + ': ' + e.error).join('; ');
+          }
+        } catch (e) {
+          this.error = 'Upload failed: ' + e.message;
+        }
+      },
+
+      async openInitModal(ticket) {
+        this.initForm = {
+          ticketId: ticket.id,
+          title: ticket.title || '',
+          pipeline: ticket.pipeline || '',
+          agent: ticket.agent || '',
+          path: ticket.path || '',
+        };
+        this.initModal = true;
+        if (!this.configCache) {
+          try {
+            const res = await fetch('/api/config');
+            if (res.ok) this.configCache = await res.json();
+          } catch (e) {
+            this.error = 'Failed to load config';
+          }
+        }
+      },
+
+      closeInitModal() {
+        this.initModal = false;
+        this.initSubmitting = false;
+      },
+
+      async submitInitTicket() {
+        if (!this.initForm.path) return;
+        this.initSubmitting = true;
+        this.error = null;
+        try {
+          const res = await fetch('/api/tickets/' + this.initForm.ticketId + '/init', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ pipeline: this.initForm.pipeline, path: this.initForm.path, agent: this.initForm.agent || undefined }),
+          });
+          if (!res.ok) {
+            const data = await res.json().catch(() => ({}));
+            this.error = data.error || 'Failed to start ticket';
+            this.initSubmitting = false;
+            return;
+          }
+          this.closeInitModal();
+        } catch (e) {
+          this.error = 'Failed to start ticket: ' + e.message;
+          this.initSubmitting = false;
+        }
+      },
+
+      async selectTicket(ticket) {
+        if (this.selectedTicket?.id === ticket.id) {
+          this.closeDetail();
+          return;
+        }
+        this.closeTerminal();
+        this.terminalRW = false;
+        this.logViewContent = null;
+        this.logViewStage = null;
+        this.logViewLoading = false;
+        this.selectedTicket = ticket;
+        try {
+          var res = await fetch('/api/tickets/' + ticket.id);
+          if (res.ok) {
+            var full = await res.json();
+            this.selectedTicket = full;
+            var idx = this.tickets.findIndex(function(t) { return t.id === full.id; });
+            if (idx >= 0) this.tickets[idx] = full;
+          }
+        } catch (e) {
+          this.error = 'Failed to load ticket details';
+        }
+        if (this.selectedTicket?.status !== 'in_progress' && this.selectedTicket?.status !== 'todo' && this.selectedTicket?.status !== 'open'
+            && this.selectedTicket?.history?.length > 0) {
+          var lastStage = this.selectedTicket.history[this.selectedTicket.history.length - 1].stage;
+          this.fetchStageLogs(this.selectedTicket.id, lastStage);
+          this.activeTab = 'terminal';
+        } else if (this.selectedTicket?.status === 'in_progress') {
+          this.activeTab = 'terminal';
+          this.openTerminal();
+        } else {
+          this.activeTab = 'ticket';
+          if (['open', 'todo', 'paused'].includes(this.selectedTicket?.status)) this.startEditing();
+        }
+      },
+
+      switchTab(tab) {
+        this.activeTab = tab;
+        if (tab === 'terminal' && this.selectedTicket?.status === 'in_progress' && !this.terminalOpen) {
+          this.openTerminal();
+        } else if (tab !== 'terminal' && this.terminalOpen) {
+          this.closeTerminal();
+        }
+        if (tab === 'ticket' && !this.editing) {
+          this.startEditing();
+        }
+      },
+
+      closeDetail() {
+        this.terminalFullscreen = false;
+        this.closeTerminal();
+        this.terminalRW = false;
+        this.detailMenuOpen = false;
+        this.deleteModal = false;
+        this.editing = false;
+        this.editingBody = false;
+        this.deleteSubmitting = false;
+        this.selectedTicket = null;
+        this.activeTab = 'ticket';
+        this.logViewContent = null;
+        this.logViewStage = null;
+        this.logViewLoading = false;
+      },
+
+      copyTicketId(id) {
+        if (!id) return;
+        navigator.clipboard.writeText(id);
+        this.copiedId = true;
+        setTimeout(() => { this.copiedId = false; }, 1200);
+      },
+
+      copyBranch(branch) {
+        if (!branch) return;
+        navigator.clipboard.writeText(branch);
+        this.copiedBranch = true;
+        setTimeout(() => { this.copiedBranch = false; }, 1200);
+      },
+
+      copyCmd(cmd) {
+        if (!cmd) return;
+        navigator.clipboard.writeText(cmd);
+        this.copiedCmd = cmd;
+        setTimeout(() => { this.copiedCmd = null; }, 1200);
+      },
+
+      async action(type) {
+        if (!this.selectedTicket) return;
+        this.error = null;
+        try {
+          const res = await fetch('/api/tickets/' + this.selectedTicket.id + '/' + type, { method: 'POST' });
+          if (!res.ok) {
+            const data = await res.json().catch(() => ({}));
+            this.error = data.error || type + ' failed';
+            return;
+          }
+          const updated = await res.json();
+          const idx = this.tickets.findIndex(t => t.id === updated.id);
+          if (idx >= 0) this.tickets[idx] = updated;
+          this.selectedTicket = updated;
+          if (type === 'pause' || type === 'skip') this.closeTerminal();
+        } catch (e) {
+          this.error = type + ' failed: ' + e.message;
+        }
+      },
+
+      openDeleteModal() {
+        if (!this.selectedTicket || this.deleteSubmitting) return;
+        this.deleteModal = true;
+      },
+
+      closeDeleteModal() {
+        if (this.deleteSubmitting) return;
+        this.deleteModal = false;
+      },
+
+      async deleteSelectedTicket() {
+        if (!this.selectedTicket || this.deleteSubmitting) return;
+        const ticketId = this.selectedTicket.id;
+        this.deleteSubmitting = true;
+        this.error = null;
+        try {
+          const res = await fetch('/api/tickets/' + ticketId, {
+            method: 'DELETE',
+            headers: { 'X-Kontora-Confirm': 'delete-ticket-file' },
+          });
+          if (!res.ok) {
+            const data = await res.json().catch(() => ({}));
+            this.error = data.error || 'Delete failed';
+            return;
+          }
+          this.deleteModal = false;
+          this.tickets = this.tickets.filter(t => t.id !== ticketId);
+          if (this.selectedTicket?.id === ticketId) this.closeDetail();
+          this.runningAgents = this.tickets.filter(t => t.status === 'in_progress' && t.kontora).length;
+          this.updateFavicon();
+        } catch (e) {
+          this.error = 'Delete failed: ' + e.message;
+        } finally {
+          this.deleteSubmitting = false;
+        }
+      },
+
+      async moveTask(ticketId, newStatus) {
+        this.error = null;
+        const ticket = this.tickets.find(t => t.id === ticketId);
+        if (newStatus === 'todo' && ticket && !ticket.kontora) {
+          this.openInitModal(ticket);
+          return;
+        }
+        const oldStatus = ticket ? ticket.status : null;
+        if (ticket) ticket.status = newStatus;
+        try {
+          const res = await fetch('/api/tickets/' + ticketId + '/move', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ status: newStatus }),
+          });
+          if (!res.ok) {
+            const data = await res.json().catch(() => ({}));
+            this.error = data.error || 'Move failed';
+            if (ticket && oldStatus) ticket.status = oldStatus;
+          }
+        } catch (e) {
+          this.error = 'Move failed: ' + e.message;
+          if (ticket && oldStatus) ticket.status = oldStatus;
+        }
+      },
+
+      async startEditing() {
+        const editable = ['open', 'todo', 'paused'];
+        if (!this.selectedTicket || !editable.includes(this.selectedTicket.status)) return;
+        this.editingBody = false;
+        this.editForm = {
+          body: this.selectedTicket.body || '',
+          pipeline: this.selectedTicket.pipeline || '',
+          path: this.selectedTicket.path || '',
+          agent: this.selectedTicket.agent || '',
+        };
+        this.editing = true;
+        this.editSaved = false;
+        if (!this.configCache) {
+          try {
+            const res = await fetch('/api/config');
+            if (res.ok) {
+              this.configCache = await res.json();
+            } else {
+              this.error = 'Failed to load configuration';
+            }
+          } catch (e) {
+            this.error = 'Failed to load configuration: ' + (e.message || e);
+          }
+        }
+      },
+
+      async saveEdit() {
+        if (!this.selectedTicket || !this.editing) return;
+        this.editSubmitting = true;
+        this.editSaved = false;
+        try {
+          const body = {};
+          if (this.editForm.body !== (this.selectedTicket.body || '')) body.body = this.editForm.body;
+          if (this.editForm.pipeline !== (this.selectedTicket.pipeline || '')) body.pipeline = this.editForm.pipeline;
+          if (this.editForm.path !== (this.selectedTicket.path || '')) body.path = this.editForm.path;
+          if (this.editForm.agent !== (this.selectedTicket.agent || '')) body.agent = this.editForm.agent;
+          if (Object.keys(body).length === 0) { this.editSubmitting = false; return; }
+          const res = await fetch('/api/tickets/' + this.selectedTicket.id, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+          });
+          if (res.ok) {
+            const updated = await res.json();
+            const idx = this.tickets.findIndex(t => t.id === updated.id);
+            if (idx >= 0) this.tickets[idx] = updated;
+            this.selectedTicket = updated;
+            this.editSaved = true;
+            setTimeout(() => { this.editSaved = false; }, 1500);
+          } else {
+            const data = await res.json().catch(() => ({}));
+            this.error = data.error || 'Failed to save';
+          }
+        } catch (e) {
+          this.error = 'Failed to save: ' + e.message;
+        }
+        this.editSubmitting = false;
+      },
+
+      debounceSaveEdit() {
+        if (this._editDebounce) clearTimeout(this._editDebounce);
+        this._editDebounce = setTimeout(() => this.saveEdit(), 800);
+      },
+
+      statusStyle(status) {
+        return {
+          open:    'bg-accent/10 text-accent border-accent/20',
+          todo:    'bg-surface-800 text-tx-3 border-surface-700/50',
+          in_progress: 'bg-accent/10 text-accent border-accent/20',
+          paused:  'bg-warn/10 text-warn border-warn/20',
+          done:    'bg-ok/10 text-ok border-ok/20',
+        }[status] || 'bg-surface-800 text-tx-3 border-surface-700/50';
+      },
+
+      isStageClickable(stage, ticket) {
+        if (!ticket || !ticket.stages || ticket.stages.length === 0) return false;
+        if (ticket.status === 'todo' || ticket.status === 'open') return false;
+        if (ticket.status === 'done') return true;
+        var stageIdx = ticket.stages.indexOf(stage);
+        var currentIdx = ticket.stages.indexOf(ticket.stage);
+        if (currentIdx < 0) return false;
+        return stageIdx >= 0 && stageIdx < currentIdx;
+      },
+
+      clickStage(stage) {
+        if (!this.selectedTicket) return;
+        if (stage === this.selectedTicket.stage && this.selectedTicket.status === 'in_progress') {
+          this.logViewContent = null;
+          this.logViewStage = null;
+          this.openTerminal();
+          return;
+        }
+        if (!this.isStageClickable(stage, this.selectedTicket)) return;
+        this.closeTerminal();
+        this.fetchStageLogs(this.selectedTicket.id, stage);
+      },
+
+      async fetchStageLogs(ticketId, stage) {
+        this.logViewStage = stage;
+        this.logViewLoading = true;
+        this.logViewContent = null;
+        try {
+          var url = '/api/tickets/' + ticketId + '/logs';
+          if (stage) url += '?stage=' + encodeURIComponent(stage);
+          var res = await fetch(url);
+          if (!res.ok) {
+            var errData = await res.json().catch(function() { return {}; });
+            this.error = errData.error || 'Failed to load stage logs';
+            this.logViewContent = null;
+            this.logViewLoading = false;
+            return;
+          }
+          var data = await res.json();
+          this.logViewContent = data.content || '';
+        } catch (e) {
+          this.error = 'Failed to load stage logs';
+          this.logViewContent = null;
+        }
+        this.logViewLoading = false;
+      },
+
+      stageStyle(stage, ticket) {
+        if (!ticket || !ticket.stages) return 'bg-surface-800 text-surface-600';
+        var stageIdx = ticket.stages.indexOf(stage);
+        var currentIdx = ticket.stages.indexOf(ticket.stage);
+        if (ticket.status === 'done') return 'bg-ok/10 text-ok/60';
+        if (stage === ticket.stage) {
+          if (ticket.status === 'in_progress') return 'bg-accent/15 text-accent';
+          if (ticket.status === 'paused') return 'bg-warn/15 text-warn';
+          return 'bg-accent/15 text-accent';
+        }
+        if (currentIdx >= 0 && stageIdx >= 0 && stageIdx < currentIdx) return 'bg-ok/10 text-ok/60';
+        return 'bg-surface-800 text-surface-600';
+      },
+
+      initSortable(el, status) {
+        if (this.isMobile) return;
+        var self = this;
+        new Sortable(el, {
+          group: 'kanban',
+          animation: 150,
+          ghostClass: 'sortable-ghost',
+          dragClass: 'sortable-drag',
+          onEnd: function(evt) {
+            var ticketId = evt.item.dataset.ticketId;
+            var fromStatus = evt.from.dataset.status;
+            var toStatus = evt.to.dataset.status;
+            if (fromStatus === toStatus || !ticketId) return;
+            // Undo SortableJS DOM move — let Alpine handle re-render
+            evt.item.remove();
+            var ref = evt.from.children[evt.oldIndex];
+            evt.from.insertBefore(evt.item, ref || null);
+            self.moveTask(ticketId, toStatus);
+          }
+        });
+      },
+
+      async openTerminal() {
+        if (!this.selectedTicket || this.terminalOpen) return;
+        this.terminalOpen = true;
+        try {
+          if (!this._TerminalClass || !this._FitAddonClass) {
+            var [termMod, fitMod] = await Promise.all([
+              import('https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/+esm'),
+              import('https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/+esm'),
+            ]);
+            this._TerminalClass = termMod.Terminal;
+            this._FitAddonClass = fitMod.FitAddon;
+          }
+          await this.$nextTick();
+          this._connectTerminal();
+        } catch (e) {
+          this.error = 'Failed to load terminal';
+          this.terminalOpen = false;
+        }
+      },
+
+      _connectTerminal() {
+        var container = document.getElementById('terminal-container');
+        if (!container) return;
+
+        this._fitAddon = new this._FitAddonClass();
+        this._term = new this._TerminalClass({
+          theme: this._getTerminalTheme(),
+          fontSize: 13,
+          fontFamily: "'JetBrains Mono', monospace",
+          cursorBlink: this.terminalRW,
+          disableStdin: false,
+          scrollback: 5000,
+        });
+        this._term.loadAddon(this._fitAddon);
+        this._term.open(container);
+
+        var self = this;
+        self._resizeObserver = new ResizeObserver(function() {
+          clearTimeout(self._resizeTimer);
+          self._resizeTimer = setTimeout(function() { self.refitTerminal(); }, 100);
+        });
+        self._resizeObserver.observe(container);
+
+        requestAnimationFrame(function() {
+          if (!self._term) return;
+          self._fitAddon.fit();
+          self._connectWs();
+        });
+      },
+
+      _connectWs() {
+        if (this._termInputDisposable) {
+          this._termInputDisposable.dispose();
+          this._termInputDisposable = null;
+        }
+        var self = this;
+        var cols = self._term.cols;
+        var rows = self._term.rows;
+        var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+        var url = proto + '//' + location.host + '/ws/terminal/' + self.selectedTicket.id
+          + '?cols=' + cols + '&rows=' + rows + (self.terminalRW ? '&rw=1' : '');
+        var ws = new WebSocket(url);
+        ws.binaryType = 'arraybuffer';
+        self._termWs = ws;
+        var term = self._term;
+        ws.onmessage = function(e) {
+          if (term) term.write(new Uint8Array(e.data));
+        };
+        ws.onclose = function() { self._termWs = null; };
+        ws.onerror = function() { self._termWs = null; };
+        if (self.terminalRW) {
+          self._termInputDisposable = term.onData(function(data) {
+            if (ws.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({ type: 'input', data: data }));
+            }
+          });
+        }
+      },
+
+      _teardownTransport() {
+        clearTimeout(this._resizeTimer);
+        if (this._resizeObserver) {
+          this._resizeObserver.disconnect();
+          this._resizeObserver = null;
+        }
+        if (this._termInputDisposable) {
+          this._termInputDisposable.dispose();
+          this._termInputDisposable = null;
+        }
+        if (this._termWs) {
+          this._termWs.close();
+          this._termWs = null;
+        }
+        if (this._term) {
+          try { this._term.dispose(); } catch (e) {}
+          this._term = null;
+        }
+        this._fitAddon = null;
+      },
+
+      closeTerminal() {
+        this._teardownTransport();
+        this.terminalOpen = false;
+      },
+
+      toggleTerminalRW() {
+        this.terminalRW = !this.terminalRW;
+        if (!this.terminalOpen || !this._term) return;
+        if (this._termWs) this._termWs.close();
+        this._connectWs();
+      },
+
+      refitTerminal() {
+        if (!this._term || !this._fitAddon || !this.terminalOpen) return;
+        this._fitAddon.fit();
+        if (this._termWs && this._termWs.readyState === WebSocket.OPEN) {
+          this._termWs.send(JSON.stringify({ type: 'resize', cols: this._term.cols, rows: this._term.rows }));
+        }
+      },
+
+      pathBasename(p) {
+        if (!p) return '';
+        return p.split('/').filter(Boolean).pop() || p;
+      },
+
+      pipelineLabel(name) {
+        var infos = this.configCache?.pipeline_infos || [];
+        var info = infos.find(i => i.name === name);
+        if (info && info.stages.length) return name + '  (' + info.stages.join(' → ') + ')';
+        return name;
+      },
+
+      ticketMatchesQuery(ticket, q) {
+        var normalized = (q || '').trim().toLowerCase();
+        if (!normalized) return true;
+        var fields = [ticket.title, ticket.id, this.pathBasename(ticket.path), ticket.pipeline];
+        return fields.some(f => f && f.toLowerCase().includes(normalized));
+      },
+
+      filteredTicketsByStatus(status) {
+        var all = this.ticketsByStatus(status);
+        if (!this.searchQuery) return all;
+        return all.filter(t => this.ticketMatchesQuery(t, this.searchQuery));
+      },
+
+      filteredTicketCount() {
+        return this.columns.reduce((n, col) => n + this.filteredTicketsByStatus(col.status).length, 0);
+      },
+
+      updateSuggestions() {
+        var q = this.searchQuery.trim().toLowerCase();
+        if (!q) { this.suggestions = []; this.searchOpen = false; this.selectedIndex = -1; return; }
+        var projects = {}, pipelines = {};
+        var matchingTickets = [];
+        this.tickets.forEach(t => {
+          var proj = this.pathBasename(t.path);
+          if (proj) { if (!projects[proj]) projects[proj] = 0; projects[proj]++; }
+          if (t.pipeline) { if (!pipelines[t.pipeline]) pipelines[t.pipeline] = 0; pipelines[t.pipeline]++; }
+          if ((t.title && t.title.toLowerCase().includes(q)) || (t.id && t.id.toLowerCase().includes(q))) {
+            matchingTickets.push(t);
+          }
+        });
+        var groups = [];
+        var projItems = Object.keys(projects).filter(p => p.toLowerCase().includes(q))
+          .sort().slice(0, 5).map(p => ({ display: p, value: p, count: projects[p] }));
+        if (projItems.length) groups.push({ label: 'Projects', items: projItems });
+        var pipItems = Object.keys(pipelines).filter(p => p.toLowerCase().includes(q))
+          .sort().slice(0, 5).map(p => ({ display: p, value: p, count: pipelines[p] }));
+        if (pipItems.length) groups.push({ label: 'Pipelines', items: pipItems });
+        var ticketItems = matchingTickets.slice(0, 5).map(t => ({ display: t.id + ' ' + t.title, value: t.id, count: null }));
+        if (ticketItems.length) groups.push({ label: 'Tickets', items: ticketItems });
+        this.suggestions = groups;
+        this.selectedIndex = -1;
+        this.searchOpen = groups.length > 0;
+      },
+
+      applySuggestion(item) {
+        this.searchQuery = item.value;
+        this.searchOpen = false;
+        this.selectedIndex = -1;
+        this.suggestions = [];
+      },
+
+      clearSearch() {
+        this.searchQuery = '';
+        this.searchOpen = false;
+        this.suggestions = [];
+        this.selectedIndex = -1;
+      },
+
+      flatIndex(gi, ii) {
+        var idx = 0;
+        for (var g = 0; g < this.suggestions.length; g++) {
+          for (var i = 0; i < this.suggestions[g].items.length; i++) {
+            if (g === gi && i === ii) return idx;
+            idx++;
+          }
+        }
+        return -1;
+      },
+
+      totalSuggestions() {
+        return this.suggestions.reduce((n, g) => n + g.items.length, 0);
+      },
+
+      moveSelection(delta) {
+        var total = this.totalSuggestions();
+        if (!total) return;
+        if (!this.searchOpen) this.searchOpen = true;
+        this.selectedIndex = ((this.selectedIndex + delta) % total + total) % total;
+      },
+
+      acceptSelection() {
+        if (this.selectedIndex < 0) return;
+        var idx = 0;
+        for (var g = 0; g < this.suggestions.length; g++) {
+          for (var i = 0; i < this.suggestions[g].items.length; i++) {
+            if (idx === this.selectedIndex) { this.applySuggestion(this.suggestions[g].items[i]); return; }
+            idx++;
+          }
+        }
+      },
+
+      formatDuration(ticket) {
+        if (!ticket || !ticket.started_at) return '';
+        var start = new Date(ticket.started_at);
+        var now = new Date();
+        var mins = Math.floor((now - start) / 60000);
+        if (mins < 1) return '<1m';
+        if (mins < 60) return mins + 'm';
+        return Math.floor(mins / 60) + 'h ' + (mins % 60) + 'm';
+      },
+
+      formatAbsDate(dateStr) {
+        if (!dateStr) return '';
+        var d = new Date(dateStr);
+        var pad = function(n) { return n < 10 ? '0' + n : '' + n; };
+        return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+      },
+
+      timeAgo(dateStr) {
+        if (!dateStr) return '';
+        var diff = Math.floor((Date.now() - new Date(dateStr)) / 1000);
+        if (diff < 60) return 'just now';
+        if (diff < 3600) return Math.floor(diff / 60) + 'm';
+        if (diff < 86400) return Math.floor(diff / 3600) + 'h';
+        if (diff < 604800) return Math.floor(diff / 86400) + 'd';
+        return Math.floor(diff / 604800) + 'w';
+      },
+
+      renderMarkdown(md) {
+        if (!md) return '';
+        try { return DOMPurify.sanitize(marked.parse(md)); } catch (e) { return ''; }
+      },
+
+      startResize(e) {
+        var self = this;
+        var startX = e.clientX;
+        var startW = self.panelWidth;
+        var handle = e.target;
+        handle.classList.add('active');
+        document.body.style.cursor = 'col-resize';
+        document.body.style.userSelect = 'none';
+
+        function onMove(ev) {
+          var delta = startX - ev.clientX;
+          var maxW = Math.floor(window.innerWidth * 0.9);
+          self.panelWidth = Math.max(320, Math.min(maxW, startW + delta));
+        }
+        function onUp() {
+          document.removeEventListener('mousemove', onMove);
+          document.removeEventListener('mouseup', onUp);
+          handle.classList.remove('active');
+          document.body.style.cursor = '';
+          document.body.style.userSelect = '';
+          localStorage.setItem('kontora-panel-width', self.panelWidth);
+        }
+        document.addEventListener('mousemove', onMove);
+        document.addEventListener('mouseup', onUp);
+      },
+
+      toggleTheme() {
+        this.lightTheme = !this.lightTheme;
+        var t = this.lightTheme ? 'light' : 'dark';
+        applyTheme(t);
+        setStoredTheme(t);
+        if (this._term) this._applyTerminalTheme();
+        this.updateFavicon();
+      },
+
+      _getTerminalTheme() {
+        var s = getComputedStyle(document.documentElement);
+        return { background: this._cssVar('--surface-deep', s), foreground: this._cssVar('--tx', s), cursor: this._cssVar('--accent', s), selectionBackground: this._cssVar('--surface-700', s) };
+      },
+
+      _applyTerminalTheme() {
+        if (!this._term) return;
+        var theme = this._getTerminalTheme();
+        this._term.options.theme = theme;
+      },
+    }
+  }
+  </script>
+</body>
+</html>

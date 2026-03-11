@@ -1,0 +1,55 @@
+tickets_dir: ~/org/tickets
+branch_prefix: myprefix
+default_agent: claude-sonnet
+worktrees_dir: ~/kontora/worktrees
+max_concurrent_agents: 3
+
+agents:
+  claude-sonnet:
+    binary: claude
+    args: ["--dangerously-skip-permissions", "--model", "sonnet"]
+  claude-opus:
+    binary: claude
+    args: ["--dangerously-skip-permissions", "--model", "opus"]
+
+roles:
+  plan:
+    prompt: |
+      Analyze the task and produce a detailed implementation plan.
+    timeout: 10m
+  code:
+    prompt: |
+      Read PLAN.md and implement it.
+    timeout: 30m
+  review:
+    prompt: |
+      Run linters and tests. Review the diff.
+    timeout: 15m
+  commit:
+    prompt: |
+      Stage, commit, push, and create a PR.
+    timeout: 5m
+
+environment:
+  CLAUDE_CODE_MAX_TURNS: "50"
+  MY_CUSTOM_VAR: hello
+
+pipelines:
+  default:
+    - role: plan
+      agent: claude-opus
+      on_success: next
+      on_failure: pause
+    - role: code
+      agent: claude-sonnet
+      on_success: next
+      on_failure: retry
+      max_retries: 2
+    - role: review
+      agent: claude-sonnet
+      on_success: next
+      on_failure: back
+    - role: commit
+      agent: claude-sonnet
+      on_success: done
+      on_failure: pause

@@ -1,0 +1,112 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            goos: linux
+            goarch: amd64
+          - runner: macos-latest
+            goos: darwin
+            goarch: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Install GoReleaser
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          install-only: true
+
+      - name: Build
+        run: goreleaser build --single-target --clean --snapshot
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+
+      - name: Package binary
+        run: |
+          cd dist/kontora_*/
+          tar czf ../../kontora_${{ matrix.goos }}_${{ matrix.goarch }}.tar.gz kontora
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: kontora_${{ matrix.goos }}_${{ matrix.goarch }}
+          path: kontora_${{ matrix.goos }}_${{ matrix.goarch }}.tar.gz
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Generate changelog
+        id: changelog
+        run: |
+          PREV_TAG=$(git tag --sort=-v:refname | head -2 | tail -1)
+          if [ -z "$PREV_TAG" ] || [ "$PREV_TAG" = "${{ github.ref_name }}" ]; then
+            # First release — use all commits
+            RANGE="HEAD"
+          else
+            RANGE="${PREV_TAG}..${{ github.ref_name }}"
+          fi
+          {
+            echo 'CHANGELOG<<EOF'
+            git log --pretty=format:"- %s (%h)" --no-merges "$RANGE"
+            echo ''
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+          merge-multiple: true
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*.tar.gz
+          body: ${{ steps.changelog.outputs.CHANGELOG }}
+
+  update-formula:
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: main
+
+      - name: Update Homebrew formula
+        run: |
+          TAG="${{ github.ref_name }}"
+          REVISION="${{ github.sha }}"
+          sed -i "s/tag: \"v[^\"]*\"/tag: \"${TAG}\"/" Formula/kontora.rb
+          sed -i "s/revision: \"[^\"]*\"/revision: \"${REVISION}\"/" Formula/kontora.rb
+
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/kontora.rb
+          git diff --cached --quiet && exit 0
+          git commit -m "Update Homebrew formula to ${{ github.ref_name }}"
+          git push

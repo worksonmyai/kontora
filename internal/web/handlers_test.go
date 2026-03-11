@@ -21,17 +21,17 @@ import (
 // mockService implements TicketService for handler tests.
 type mockService struct {
 	setStageStage *string
-	tickets    []TicketInfo
-	getTicket  *TicketInfo
-	getErr     error
-	actionFn   func(id string) error
-	createFn   func(req CreateTicketRequest) (TicketInfo, error)
-	uploadFn   func(content []byte) (TicketInfo, error)
-	deleteFn   func(id string) error
-	initFn     func(id string, req InitTicketRequest) error
-	updateFn   func(id string, req UpdateTicketRequest) error
-	logsFn     func(id, stage string) (string, error)
-	configInfo ConfigInfo
+	tickets       []TicketInfo
+	getTicket     *TicketInfo
+	getErr        error
+	actionFn      func(id string) error
+	createFn      func(req CreateTicketRequest) (TicketInfo, error)
+	uploadFn      func(content []byte) (TicketInfo, error)
+	deleteFn      func(id string) error
+	initFn        func(id string, req InitTicketRequest) error
+	updateFn      func(id string, req UpdateTicketRequest) error
+	logsFn        func(id, stage string) (string, error)
+	configInfo    ConfigInfo
 }
 
 func (m *mockService) ListTickets() []TicketInfo { return m.tickets }
@@ -69,9 +69,9 @@ func (m *mockService) DeleteTicket(id string) error {
 	}
 	return nil
 }
-func (m *mockService) PauseTicket(id string) error          { return m.actionFn(id) }
-func (m *mockService) RetryTicket(id string) error          { return m.actionFn(id) }
-func (m *mockService) SkipStage(id string) error            { return m.actionFn(id) }
+func (m *mockService) PauseTicket(id string) error { return m.actionFn(id) }
+func (m *mockService) RetryTicket(id string) error { return m.actionFn(id) }
+func (m *mockService) SkipStage(id string) error   { return m.actionFn(id) }
 func (m *mockService) SetStage(id string, stage string) error {
 	if m.setStageStage != nil {
 		*m.setStageStage = stage

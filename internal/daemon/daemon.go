@@ -172,8 +172,9 @@ type Daemon struct {
 }
 
 type ticketState struct {
-	ticket   *ticket.Ticket
-	filePath string
+	ticket    *ticket.Ticket
+	filePath  string
+	lastError string
 }
 
 func New(cfg *config.Config, opts ...Option) *Daemon {
@@ -839,6 +840,7 @@ func (d *Daemon) runSimpleTicket(ctx, taskCtx context.Context, log *slog.Logger,
 	}
 
 	// Simple exit handling: 0 → done, non-0 → paused.
+	var lastErr string
 	if result.ExitCode == 0 {
 		_ = t2.SetField("status", string(ticket.StatusDone))
 		completedAt := result.ExitedAt
@@ -850,6 +852,7 @@ func (d *Daemon) runSimpleTicket(ctx, taskCtx context.Context, log *slog.Logger,
 		d.killTaskWindow(ticketID)
 	} else {
 		_ = t2.SetField("status", string(ticket.StatusPaused))
+		lastErr = fmt.Sprintf("agent exited with code %d", result.ExitCode)
 		log.Warn("paused", "exit_code", result.ExitCode)
 	}
 
@@ -863,7 +866,8 @@ func (d *Daemon) runSimpleTicket(ctx, taskCtx context.Context, log *slog.Logger,
 	}
 
 	d.mu.Lock()
-	d.tickets[ticketID] = &ticketState{ticket: t2, filePath: filePath}
+	d.tickets[ticketID] = &ticketState{ticket: t2, filePath: filePath, lastError: lastErr}
+	d.broadcastTicketUpdate(ticketID)
 	d.mu.Unlock()
 }
 
@@ -974,8 +978,13 @@ func (d *Daemon) handleAgentExit(ctx, taskCtx context.Context, p handleExitParam
 		d.killTaskWindow(p.ticketID)
 	}
 
+	var lastErr string
+	if exitAction.Kind == pipeline.ActionPause {
+		lastErr = fmt.Sprintf("agent exited with code %d (stage: %s)", p.result.ExitCode, p.roleName)
+	}
+
 	d.mu.Lock()
-	d.tickets[p.ticketID] = &ticketState{ticket: t2, filePath: p.filePath}
+	d.tickets[p.ticketID] = &ticketState{ticket: t2, filePath: p.filePath, lastError: lastErr}
 
 	// Re-enqueue if advance/retry/back.
 	switch exitAction.Kind { //nolint:exhaustive
@@ -1174,7 +1183,7 @@ func (d *Daemon) pauseTicket(t *ticket.Ticket, path, reason string) {
 		log.Error("pause: write failed", "err", err)
 	}
 	d.mu.Lock()
-	d.tickets[t.ID] = &ticketState{ticket: t, filePath: path}
+	d.tickets[t.ID] = &ticketState{ticket: t, filePath: path, lastError: reason}
 	d.mu.Unlock()
 }
 

@@ -1005,9 +1005,9 @@ func buildOperationalAppendix(taskID, filePath, wtPath string, isPipeline bool) 
 }
 
 // buildAgentArgs constructs the argument list for an agent invocation.
-// For Claude agents it injects --dangerously-skip-permissions, --settings
-// with a Notification hook that signals tmux wait-for on idle_prompt, and
-// --session-id for session JSONL logging.
+// For Claude agents it injects --settings with a Notification hook that
+// signals tmux wait-for on idle_prompt, and --session-id for session JSONL
+// logging.
 // For pi agents it injects -e with a temporary TypeScript extension that
 // calls ctx.shutdown() on agent_end so pi exits cleanly after ticket completion.
 // Returns the args, the path to the temporary settings/extension file (empty
@@ -1019,7 +1019,6 @@ func buildAgentArgs(agentCfg config.Agent, rendered, channelName string) ([]stri
 	var sessionID string
 	switch agentCfg.Binary {
 	case "claude":
-		args = append(args, "--dangerously-skip-permissions")
 		var err error
 		settingsFile, err = writeHooksSettings(channelName)
 		if err != nil {

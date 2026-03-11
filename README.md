@@ -57,6 +57,9 @@ agents:
     args: ["--dangerously-skip-permissions", "--model", "sonnet"]
 ```
 
+> [!WARNING]
+> The default config runs Claude Code with `--dangerously-skip-permissions`.
+
 **Roles** are prompt templates. They tell the agent what to do:
 
 ```yaml

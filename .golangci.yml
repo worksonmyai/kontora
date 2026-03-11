@@ -1,0 +1,83 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  enable:
+    - asciicheck
+    - bodyclose
+    - copyloopvar
+    - dogsled
+    - dupword
+    - durationcheck
+    - errcheck
+    - errorlint
+    - exhaustive
+    - gocyclo
+    - gocritic
+    - goprintffuncname
+    - gosec
+    - govet
+    - ineffassign
+    - intrange
+    - misspell
+    - modernize
+    - nakedret
+    - nilerr
+    - nosprintfhostport
+    - prealloc
+    - revive
+    - rowserrcheck
+    - sqlclosecheck
+    - staticcheck
+    - unconvert
+    - unparam
+    - unused
+    - usestdlibvars
+    - wastedassign
+    - whitespace
+  settings:
+    errcheck:
+      exclude-functions:
+        - io.Copy
+        - io/ioutil.ReadFile
+        - io/ioutil.WriteFile
+    errorlint:
+      errorf: false
+      asserts: false
+      comparison: true
+    gocritic:
+      disabled-checks:
+        - ifElseChain
+    gosec:
+      includes:
+        - G104
+        - G108
+        - G109
+        - G112
+        - G114
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    rules:
+      - linters:
+          - revive
+        text: if-return
+      - linters:
+          - dupword
+        path: _test\.go
+      - linters:
+          - unparam
+        path: _test\.go
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  exclusions:
+    generated: lax

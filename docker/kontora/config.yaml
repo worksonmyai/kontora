@@ -1,0 +1,86 @@
+tickets_dir: ~/.kontora/tickets
+logs_dir: ~/.kontora/logs
+worktrees_dir: ~/.kontora/worktrees
+max_concurrent_agents: 5
+
+web:
+  enabled: true
+  port: 8080
+
+agents:
+  claude:
+    binary: claude
+    args:
+      - --dangerously-skip-permissions
+  opencode:
+    binary: opencode
+  pi:
+    binary: pi
+    args:
+      - -p
+      - --no-session
+
+roles:
+  code:
+    prompt: |
+      {{ .Ticket.Description }}
+    timeout: 30m
+
+  implement:
+    prompt: |
+      {{ .Ticket.Description }}
+
+      Do NOT commit or push. Only implement the code and run tests.
+    timeout: 60m
+
+  review:
+    prompt: |
+      Review the code changes for this ticket. Check for:
+      - Correctness and edge cases
+      - Code quality and maintainability
+      - Test coverage
+
+      Write all review results to the ticket {{ .Ticket.ID }}
+    timeout: 30m
+
+  fix-review:
+    prompt: |
+      Read the code review from the notes of {{ .Ticket.ID }}
+
+      If there are issues listed, fix all of them and run tests.
+    timeout: 30m
+
+  commit:
+    prompt: |
+      Commit uncommitted files. This is the ready and reviewed
+      implementation of the ticket {{ .Ticket.ID }}.
+
+      You have full authorization to commit.
+      Do not ask for confirmation — just do it.
+    timeout: 5m
+
+pipelines:
+  default:
+    - role: code
+      agent: claude
+      on_success: done
+      on_failure: pause
+
+  implement-review-commit:
+    - role: implement
+      agent: claude
+      on_success: next
+      on_failure: pause
+    - role: review
+      agent: claude
+      on_success: next
+      on_failure: retry
+      max_retries: 1
+    - role: fix-review
+      agent: claude
+      on_success: next
+      on_failure: retry
+    - role: commit
+      agent: claude
+      on_success: done
+      on_failure: retry

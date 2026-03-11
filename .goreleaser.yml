@@ -1,0 +1,16 @@
+version: 2
+builds:
+  - id: kontora
+    main: ./cmd/kontora
+    binary: kontora
+    env:
+      - CGO_ENABLED=0
+    goos: ["linux", "darwin"]
+    goarch: ["amd64", "arm64"]
+    ignore:
+      - goos: darwin
+        goarch: amd64
+    ldflags:
+      - -s -w -X main.revision={{.Tag}}-{{.ShortCommit}}-{{.CommitDate}}
+archives:
+  - name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"

@@ -539,7 +539,7 @@ func mapAppError(err error) error {
 		return web.ErrInvalidState
 	}
 	if errors.Is(err, app.ErrUnknownAgent) {
-		return fmt.Errorf("%w %s", web.ErrUnknownAgent, err.Error())
+		return web.ErrUnknownAgent
 	}
 	return err
 }

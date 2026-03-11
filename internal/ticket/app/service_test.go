@@ -113,6 +113,7 @@ func TestSetStatus_AlreadySame(t *testing.T) {
 	svc := New(testCfg(), repo, &spyRuntime{})
 
 	_, err := svc.SetStatus("tst-001", ticket.StatusTodo)
+	require.ErrorIs(t, err, ErrInvalidState)
 	require.ErrorContains(t, err, "already todo")
 }
 
@@ -245,6 +246,18 @@ func TestInit_CustomRole(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Equal(t, "review", repo.tickets["tst-001"].Ticket.Role)
+}
+
+func TestInit_InvalidStatus(t *testing.T) {
+	repo := newMemRepo()
+	repo.add("tst-001", "---\nid: tst-001\nstatus: open\npath: ~/projects/test\n---\n# Test\n")
+	svc := New(testCfg(), repo, &spyRuntime{})
+
+	_, err := svc.Init("tst-001", InitRequest{
+		Pipeline: "default",
+		Status:   "done",
+	})
+	require.ErrorIs(t, err, ErrInvalidState)
 }
 
 func TestGet_IncludesBody(t *testing.T) {

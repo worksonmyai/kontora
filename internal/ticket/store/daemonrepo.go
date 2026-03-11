@@ -12,7 +12,7 @@ import (
 // handle mutex locking and internal state coordination.
 type DaemonRepoCallbacks struct {
 	// PathLookup returns the file path for a ticket ID.
-	// Called inside the daemon's lock.
+	// Implementations are responsible for their own synchronization.
 	PathLookup func(id string) (string, error)
 
 	// WriteTicket writes a ticket to disk (handles recordSelfWrite).

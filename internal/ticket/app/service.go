@@ -84,7 +84,7 @@ func (s *Service) SetStatus(id string, status ticket.Status) (Result, error) {
 	}
 
 	if st.Ticket.Status == status {
-		return Result{}, fmt.Errorf("ticket %s is already %s", resolved, status)
+		return Result{}, fmt.Errorf("%w: ticket %s is already %s", ErrInvalidState, resolved, status)
 	}
 
 	if err := st.Ticket.SetField("kontora", true); err != nil {
@@ -248,6 +248,12 @@ func (s *Service) Init(id string, req InitRequest) (Result, error) {
 	status := req.Status
 	if status == "" {
 		status = string(ticket.StatusTodo)
+	}
+	switch ticket.Status(status) {
+	case ticket.StatusOpen, ticket.StatusTodo:
+		// valid init statuses
+	default:
+		return Result{}, fmt.Errorf("%w: init status must be \"open\" or \"todo\", got %q", ErrInvalidState, status)
 	}
 	if err := t.SetField("status", status); err != nil {
 		return Result{}, fmt.Errorf("setting status: %w", err)

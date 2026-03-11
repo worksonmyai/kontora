@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 
@@ -145,12 +146,12 @@ func cmdStart() {
 		cfg.Web.Port = *port
 	}
 
-	if err := runDaemon(cfg); err != nil {
+	if err := runDaemon(cfg, *configPath); err != nil {
 		log.Fatalf("daemon: %v", err)
 	}
 }
 
-func runDaemon(cfg *config.Config) error {
+func runDaemon(cfg *config.Config, configPath string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
@@ -159,10 +160,12 @@ func runDaemon(cfg *config.Config) error {
 		stop()
 	}()
 
+	lockPath := filepath.Join(filepath.Dir(configPath), "lock")
+
 	logger := slog.New(charmlog.NewWithOptions(os.Stderr, charmlog.Options{
 		ReportTimestamp: true,
 	}))
-	d := daemon.New(cfg, daemon.WithLogger(logger))
+	d := daemon.New(cfg, daemon.WithLogger(logger), daemon.WithLockPath(lockPath))
 	return d.Run(ctx)
 }
 

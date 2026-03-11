@@ -489,11 +489,13 @@ function kontora() {
       const editable = ['open', 'todo', 'paused'];
       if (!this.selectedTicket || !editable.includes(this.selectedTicket.status)) return;
       this.editingBody = false;
+      var pipeline = this.selectedTicket.pipeline || '';
+      var agent = this.selectedTicket.agent || '';
       this.editForm = {
         body: this.selectedTicket.body || '',
-        pipeline: this.selectedTicket.pipeline || '',
+        pipeline: '',
         path: this.selectedTicket.path || '',
-        agent: this.selectedTicket.agent || '',
+        agent: '',
       };
       this.editing = true;
       this.editSaved = false;
@@ -509,6 +511,12 @@ function kontora() {
           this.error = 'Failed to load configuration: ' + (e.message || e);
         }
       }
+      // Defer select values until after x-for has created <option> elements.
+      // Alpine's x-model effect on the <select> fires before x-for populates
+      // options, so setting the value immediately would fail to match.
+      await this.$nextTick();
+      this.editForm.pipeline = pipeline;
+      this.editForm.agent = agent;
     },
 
     async saveEdit() {

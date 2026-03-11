@@ -23,6 +23,8 @@ import (
 	"github.com/worksonmyai/kontora/internal/process"
 	"github.com/worksonmyai/kontora/internal/prompt"
 	"github.com/worksonmyai/kontora/internal/ticket"
+	"github.com/worksonmyai/kontora/internal/ticket/app"
+	"github.com/worksonmyai/kontora/internal/ticket/store"
 	"github.com/worksonmyai/kontora/internal/tmux"
 	"github.com/worksonmyai/kontora/internal/watcher"
 	"github.com/worksonmyai/kontora/internal/web"
@@ -153,6 +155,7 @@ type Daemon struct {
 	runner            RunnerFunc
 	skipOrphanCleanup bool
 	broker            *web.SSEBroker
+	svc               *app.Service
 
 	debounce time.Duration
 	lockPath string
@@ -198,7 +201,41 @@ func New(cfg *config.Config, opts ...Option) *Daemon {
 		opt(d)
 	}
 	d.queueCond = sync.NewCond(&d.mu)
+	d.svc = d.buildService()
 	return d
+}
+
+func (d *Daemon) buildService() *app.Service {
+	repo := store.NewDaemonRepo(store.DaemonRepoCallbacks{
+		PathLookup: func(id string) (string, error) {
+			d.mu.Lock()
+			defer d.mu.Unlock()
+			ts, ok := d.tickets[id]
+			if !ok {
+				return "", app.ErrNotFound
+			}
+			return ts.filePath, nil
+		},
+		WriteTicket: func(t *ticket.Ticket, path string) error {
+			return d.writeTicket(t, path)
+		},
+		AfterSave: func(id string, st *app.StoredTicket) {
+			d.mu.Lock()
+			defer d.mu.Unlock()
+			d.tickets[id] = &ticketState{ticket: st.Ticket, filePath: st.FilePath}
+		},
+		ListTickets: func() []*app.StoredTicket {
+			d.mu.Lock()
+			defer d.mu.Unlock()
+			result := make([]*app.StoredTicket, 0, len(d.tickets))
+			for _, ts := range d.tickets {
+				result = append(result, &app.StoredTicket{Ticket: ts.ticket, FilePath: ts.filePath})
+			}
+			return result
+		},
+	})
+	rt := &daemonRuntime{d: d}
+	return app.New(d.cfg, repo, rt)
 }
 
 // ticketLog returns a logger with the ticket ID pre-set.

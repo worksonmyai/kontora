@@ -15,6 +15,7 @@ import (
 
 	"github.com/worksonmyai/kontora/internal/config"
 	"github.com/worksonmyai/kontora/internal/ticket"
+	"github.com/worksonmyai/kontora/internal/ticket/app"
 	"github.com/worksonmyai/kontora/internal/tmux"
 )
 
@@ -240,7 +241,7 @@ func buildAttachItems(cfg *config.Config) ([]attachItem, error) {
 			if t.Role != "" {
 				item.stage = t.Role
 			}
-			agent := AgentForStage(cfg, t.Pipeline, t.Role)
+			agent := app.AgentForStage(cfg, t.Pipeline, t.Role)
 			if agent != "" {
 				item.agent = agent
 			}

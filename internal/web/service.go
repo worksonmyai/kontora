@@ -3,6 +3,8 @@ package web
 import (
 	"errors"
 	"time"
+
+	"github.com/worksonmyai/kontora/internal/ticket/app"
 )
 
 var (
@@ -99,4 +101,38 @@ type HistoryInfo struct {
 type TicketEvent struct {
 	Type   string     `json:"type"`
 	Ticket TicketInfo `json:"ticket"`
+}
+
+// TicketInfoFromView converts an app.View to a TicketInfo.
+func TicketInfoFromView(v app.View) TicketInfo {
+	info := TicketInfo{
+		ID:            v.ID,
+		Title:         v.Title,
+		Status:        v.Status,
+		Kontora:       v.Kontora,
+		Stage:         v.Stage,
+		Pipeline:      v.Pipeline,
+		Path:          v.Path,
+		Agent:         v.Agent,
+		AgentOverride: v.AgentOverride,
+		Attempt:       v.Attempt,
+		CreatedAt:     v.CreatedAt,
+		StartedAt:     v.StartedAt,
+		Branch:        v.Branch,
+		Stages:        v.Stages,
+		Body:          v.Body,
+	}
+	if len(v.History) > 0 {
+		info.History = make([]HistoryInfo, len(v.History))
+		for i, h := range v.History {
+			info.History[i] = HistoryInfo{
+				Stage:       h.Stage,
+				Agent:       h.Agent,
+				ExitCode:    h.ExitCode,
+				StartedAt:   h.StartedAt,
+				CompletedAt: h.CompletedAt,
+			}
+		}
+	}
+	return info
 }

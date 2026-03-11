@@ -347,6 +347,7 @@ func (d *Daemon) SkipStage(id string) error {
 	if err != nil {
 		return err
 	}
+	_ = t2.SetField("kontora", true)
 
 	if currentIdx+1 >= len(pipelineCfg) {
 		_ = t2.SetField("status", "done")
@@ -402,6 +403,7 @@ func (d *Daemon) MoveTicket(id string, newStatus string) error {
 		if err != nil {
 			return err
 		}
+		_ = t2.SetField("kontora", true)
 		_ = t2.SetField("status", newStatus)
 		if err := d.writeTicket(t2, filePath); err != nil {
 			return err

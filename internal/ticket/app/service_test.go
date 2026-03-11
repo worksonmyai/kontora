@@ -69,10 +69,10 @@ type spyRuntime struct {
 	deleted   []string
 }
 
-func (s *spyRuntime) Enqueue(t *ticket.Ticket)      { s.enqueued = append(s.enqueued, t.ID) }
-func (s *spyRuntime) Cancel(id string)               { s.cancelled = append(s.cancelled, id) }
-func (s *spyRuntime) BroadcastUpdated(id string)     { s.updated = append(s.updated, id) }
-func (s *spyRuntime) BroadcastDeleted(id string)     { s.deleted = append(s.deleted, id) }
+func (s *spyRuntime) Enqueue(t *ticket.Ticket)   { s.enqueued = append(s.enqueued, t.ID) }
+func (s *spyRuntime) Cancel(id string)           { s.cancelled = append(s.cancelled, id) }
+func (s *spyRuntime) BroadcastUpdated(id string) { s.updated = append(s.updated, id) }
+func (s *spyRuntime) BroadcastDeleted(id string) { s.deleted = append(s.deleted, id) }
 
 func testCfg() *config.Config {
 	return &config.Config{
@@ -327,10 +327,10 @@ func TestList_OpenNonKontoraIncluded(t *testing.T) {
 
 func TestBuildView_AgentResolution(t *testing.T) {
 	cases := []struct {
-		name          string
-		ticket        string
-		wantAgent     string
-		wantOverride  bool
+		name         string
+		ticket       string
+		wantAgent    string
+		wantOverride bool
 	}{
 		{
 			name:         "from pipeline stage",

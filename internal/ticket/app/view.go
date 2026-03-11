@@ -41,18 +41,18 @@ type HistoryView struct {
 // BuildView projects a ticket into a View using config for agent/stage resolution.
 func BuildView(cfg *config.Config, t *ticket.Ticket, includeBody bool) View {
 	v := View{
-		ID:        t.ID,
-		Title:     t.Title(),
-		Status:    string(t.Status),
-		Kontora:   t.Kontora,
-		Stage:     t.Role,
-		Pipeline:  t.Pipeline,
-		Path:      t.Path,
-		Attempt:   t.Attempt,
-		CreatedAt: t.Created,
-		StartedAt: t.StartedAt,
+		ID:          t.ID,
+		Title:       t.Title(),
+		Status:      string(t.Status),
+		Kontora:     t.Kontora,
+		Stage:       t.Role,
+		Pipeline:    t.Pipeline,
+		Path:        t.Path,
+		Attempt:     t.Attempt,
+		CreatedAt:   t.Created,
+		StartedAt:   t.StartedAt,
 		CompletedAt: t.CompletedAt,
-		Branch:    t.Branch,
+		Branch:      t.Branch,
 	}
 
 	if t.Agent != "" {

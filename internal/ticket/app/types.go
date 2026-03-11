@@ -32,10 +32,10 @@ type RuntimeHooks interface {
 // Used by CLI and TUI file mode.
 type NoopRuntime struct{}
 
-func (NoopRuntime) Enqueue(*ticket.Ticket)      {}
-func (NoopRuntime) Cancel(string)                {}
-func (NoopRuntime) BroadcastUpdated(string)      {}
-func (NoopRuntime) BroadcastDeleted(string)      {}
+func (NoopRuntime) Enqueue(*ticket.Ticket)  {}
+func (NoopRuntime) Cancel(string)           {}
+func (NoopRuntime) BroadcastUpdated(string) {}
+func (NoopRuntime) BroadcastDeleted(string) {}
 
 // Result is returned by mutation methods.
 type Result struct {

@@ -395,4 +395,3 @@ func (s *fileSource) augmentStages(v *app.View) {
 		}
 	}
 }
-

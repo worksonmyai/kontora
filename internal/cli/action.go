@@ -25,6 +25,47 @@ func Cancel(tasksDir, taskID string) error {
 	return SetStatus(tasksDir, taskID, string(ticket.StatusCancelled))
 }
 
+// SetStage moves a ticket to a specific pipeline stage by name.
+func SetStage(cfg *config.Config, taskID, targetStage string) error {
+	tasksDir := config.ExpandTilde(cfg.TicketsDir)
+	resolvedID, err := resolveTaskID(tasksDir, taskID)
+	if err != nil {
+		return err
+	}
+
+	filePath := filepath.Join(tasksDir, resolvedID+".md")
+	t, err := ticket.ParseFile(filePath)
+	if err != nil {
+		return fmt.Errorf("parsing ticket: %w", err)
+	}
+
+	pipelineCfg, ok := cfg.Pipelines[t.Pipeline]
+	if !ok {
+		return fmt.Errorf("unknown pipeline %q for ticket %s", t.Pipeline, resolvedID)
+	}
+
+	found := false
+	for _, stage := range pipelineCfg {
+		if stage.Role == targetStage {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return fmt.Errorf("stage %q not found in pipeline %q", targetStage, t.Pipeline)
+	}
+
+	if err := t.SetField("role", targetStage); err != nil {
+		return fmt.Errorf("setting role: %w", err)
+	}
+
+	out, err := t.Marshal()
+	if err != nil {
+		return fmt.Errorf("marshalling ticket: %w", err)
+	}
+	return os.WriteFile(filePath, out, 0o644)
+}
+
 // Skip advances a ticket to the next pipeline stage, or marks it done
 // if it is on the final stage. The ticket file is modified directly.
 func Skip(cfg *config.Config, taskID string) error {

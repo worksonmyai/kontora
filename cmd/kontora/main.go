@@ -50,6 +50,7 @@ func renderUsage() string {
 		{"pause", "Pause a running or queued ticket"},
 		{"retry", "Re-queue a paused ticket"},
 		{"skip", "Skip to the next pipeline stage"},
+		{"set-stage", "Move ticket to a specific pipeline stage"},
 		{"cancel", "Cancel a ticket"},
 		{"logs", "Show agent logs for a ticket"},
 		{"attach", "Attach to a running ticket"},
@@ -97,6 +98,8 @@ func main() {
 		cmdAction("retry")
 	case "skip":
 		cmdSkip()
+	case "set-stage":
+		cmdSetStage()
 	case "cancel":
 		cmdAction("cancel")
 	case "logs":
@@ -391,6 +394,26 @@ func cmdSkip() {
 	cfg := mustLoadConfig(*configPath)
 
 	if err := cli.Skip(cfg, taskID); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func cmdSetStage() {
+	fs := flag.NewFlagSet("set-stage", flag.ExitOnError)
+	configPath := fs.String("config", defaultConfigPath(), "path to config file")
+	if err := fs.Parse(os.Args[2:]); err != nil {
+		log.Fatalf("parsing flags: %v", err)
+	}
+
+	if fs.NArg() < 2 {
+		log.Fatal("usage: kontora set-stage TICKET_ID STAGE")
+	}
+	taskID := fs.Arg(0)
+	stage := fs.Arg(1)
+
+	cfg := mustLoadConfig(*configPath)
+
+	if err := cli.SetStage(cfg, taskID, stage); err != nil {
 		log.Fatal(err)
 	}
 }

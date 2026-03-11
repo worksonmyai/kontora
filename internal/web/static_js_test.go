@@ -8,8 +8,6 @@ import (
 )
 
 func TestStaticIndexJS(t *testing.T) {
-	t.Helper()
-
 	if _, err := exec.LookPath("node"); err != nil {
 		t.Skip("node not found")
 	}

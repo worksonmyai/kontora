@@ -129,6 +129,36 @@ test("openTerminal cancels stale startup after teardown", async () => {
   assert.deepEqual(connectCalls, []);
 });
 
+test("openTerminal clears terminalOpen if the tab changes before startup completes", async () => {
+  const state = loadKontoraState();
+  const nextTick = deferred();
+  const connectCalls = [];
+  let teardownCalls = 0;
+
+  state.selectedTicket = { id: "tst-001" };
+  state.activeTab = "terminal";
+  state.$nextTick = () => nextTick.promise;
+  state._TerminalClass = class {};
+  state._FitAddonClass = class {};
+  state._connectTerminal = (seq) => {
+    connectCalls.push(seq);
+  };
+  state._teardownTransport = () => {
+    teardownCalls += 1;
+  };
+
+  const openPromise = state.openTerminal();
+  state.activeTab = "ticket";
+
+  nextTick.resolve();
+  await openPromise;
+
+  assert.equal(state.terminalOpen, false);
+  assert.equal(state._terminalOpening, false);
+  assert.equal(teardownCalls, 1);
+  assert.deepEqual(connectCalls, []);
+});
+
 test("reconnectTerminal does nothing while the terminal is already opening", () => {
   const state = loadKontoraState();
   let teardownCalls = 0;

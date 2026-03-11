@@ -655,7 +655,12 @@ function kontora() {
           this._FitAddonClass = fitMod.FitAddon;
         }
         await this.$nextTick();
-        if (!this.terminalOpen || this._terminalSeq !== seq || this.activeTab !== 'terminal' || this.selectedTicket?.id !== ticketId) return;
+        if (!this.terminalOpen || this._terminalSeq !== seq) return;
+        if (this.activeTab !== 'terminal' || this.selectedTicket?.id !== ticketId) {
+          this._teardownTransport();
+          this.terminalOpen = false;
+          return;
+        }
         this._connectTerminal(seq);
       } catch (e) {
         this.error = 'Failed to load terminal';

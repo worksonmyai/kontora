@@ -370,6 +370,57 @@ func (d *Daemon) SkipStage(id string) error {
 	return nil
 }
 
+// SetStage moves a ticket to a specific pipeline stage by name.
+func (d *Daemon) SetStage(id string, stage string) error {
+	d.mu.Lock()
+
+	ts, ok := d.tickets[id]
+	if !ok {
+		d.mu.Unlock()
+		return web.ErrTicketNotFound
+	}
+
+	pipelineName := ts.ticket.Pipeline
+	filePath := ts.filePath
+
+	pipelineCfg, ok := d.cfg.Pipelines[pipelineName]
+	if !ok {
+		d.mu.Unlock()
+		return web.ErrInvalidState
+	}
+
+	found := false
+	for _, s := range pipelineCfg {
+		if s.Role == stage {
+			found = true
+			break
+		}
+	}
+	if !found {
+		d.mu.Unlock()
+		return web.ErrInvalidState
+	}
+
+	d.mu.Unlock()
+
+	t2, err := ticket.ParseFile(filePath)
+	if err != nil {
+		return err
+	}
+
+	_ = t2.SetField("role", stage)
+
+	if err := d.writeTicket(t2, filePath); err != nil {
+		return err
+	}
+
+	d.mu.Lock()
+	d.tickets[id] = &ticketState{ticket: t2, filePath: filePath}
+	d.broadcastTicketUpdate(id)
+	d.mu.Unlock()
+	return nil
+}
+
 // MoveTicket sets a ticket's status to newStatus with transition validation.
 func (d *Daemon) MoveTicket(id string, newStatus string) error {
 	switch newStatus {

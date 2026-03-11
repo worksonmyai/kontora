@@ -33,6 +33,7 @@ type Source interface {
 	PauseTicket(id string) error
 	RetryTicket(id string) error
 	SkipStage(id string) error
+	SetStage(id, stage string) error
 	Subscribe(ctx context.Context) <-chan web.TicketEvent
 	Connected() bool
 }
@@ -227,6 +228,31 @@ func (s *apiSource) RetryTicket(id string) error {
 }
 func (s *apiSource) SkipStage(id string) error { return s.postAction("/api/tickets/" + id + "/skip") }
 
+func (s *apiSource) SetStage(id, stage string) error {
+	body, err := json.Marshal(struct {
+		Stage string `json:"stage"`
+	}{stage})
+	if err != nil {
+		return err
+	}
+	resp, err := s.client.Post(s.base+"/api/tickets/"+id+"/set-stage", "application/json", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		var r struct {
+			Error string `json:"error"`
+		}
+		_ = json.NewDecoder(resp.Body).Decode(&r)
+		if r.Error != "" {
+			return fmt.Errorf("%s", r.Error)
+		}
+		return fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+	return nil
+}
+
 func (s *apiSource) Subscribe(ctx context.Context) <-chan web.TicketEvent {
 	ch := make(chan web.TicketEvent, 64)
 	go func() {
@@ -352,6 +378,7 @@ func (s *fileSource) UpdateTicket(string, web.UpdateTicketRequest) error { retur
 func (s *fileSource) PauseTicket(string) error                           { return errDaemonNotRunning }
 func (s *fileSource) RetryTicket(string) error                           { return errDaemonNotRunning }
 func (s *fileSource) SkipStage(string) error                             { return errDaemonNotRunning }
+func (s *fileSource) SetStage(string, string) error                      { return errDaemonNotRunning }
 func (s *fileSource) Subscribe(context.Context) <-chan web.TicketEvent   { return nil }
 
 func buildFileTicketInfo(cfg *config.Config, t *ticket.Ticket) web.TicketInfo {

@@ -46,6 +46,7 @@ function kontora() {
     editSubmitting: false,
     editSaved: false,
     _editDebounce: null,
+    setStageOpen: false,
     deleteSubmitting: false,
     uploadDragging: false,
     lightTheme: getStoredTheme() === 'light',
@@ -325,6 +326,7 @@ function kontora() {
       this.logViewContent = null;
       this.logViewStage = null;
       this.logViewLoading = false;
+      this.setStageOpen = false;
       this.selectedTicket = ticket;
       try {
         var res = await fetch('/api/tickets/' + ticket.id);
@@ -578,6 +580,29 @@ function kontora() {
       if (!this.isStageClickable(stage, this.selectedTicket)) return;
       this.closeTerminal();
       this.fetchStageLogs(this.selectedTicket.id, stage);
+    },
+
+    async setStage(stage) {
+      if (!this.selectedTicket) return;
+      this.error = null;
+      try {
+        const res = await fetch('/api/tickets/' + this.selectedTicket.id + '/set-stage', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ stage: stage }),
+        });
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          this.error = data.error || 'set-stage failed';
+          return;
+        }
+        const updated = await res.json();
+        const idx = this.tickets.findIndex(t => t.id === updated.id);
+        if (idx >= 0) this.tickets[idx] = updated;
+        this.selectedTicket = updated;
+      } catch (e) {
+        this.error = 'set-stage failed: ' + e.message;
+      }
     },
 
     async fetchStageLogs(ticketId, stage) {

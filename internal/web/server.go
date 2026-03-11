@@ -41,6 +41,7 @@ func New(svc TicketService, broker *SSEBroker, host string, port int, log *slog.
 	mux.HandleFunc("POST /api/tickets/{id}/pause", s.handlePause)
 	mux.HandleFunc("POST /api/tickets/{id}/retry", s.handleRetry)
 	mux.HandleFunc("POST /api/tickets/{id}/skip", s.handleSkip)
+	mux.HandleFunc("POST /api/tickets/{id}/set-stage", s.handleSetStage)
 	mux.HandleFunc("POST /api/tickets/{id}/move", s.handleMove)
 	mux.HandleFunc("POST /api/tickets/{id}/init", s.handleInit)
 	mux.HandleFunc("PUT /api/tickets/{id}", s.handleUpdateTicket)

@@ -191,6 +191,60 @@ func TestDaemon_SkipStage(t *testing.T) {
 	require.NoError(t, <-errCh)
 }
 
+func TestDaemon_SetStage(t *testing.T) {
+	h := newHarness(t)
+	cfg := h.defaultConfig("sleep", "true")
+	cfg.Agents["agent1"] = config.Agent{Binary: "sleep", Args: []string{"30"}}
+	cfg.Roles["step1"] = config.Role{Prompt: ""}
+	cfg.Roles["step2"] = config.Role{Prompt: ""}
+	d := h.newDaemon(cfg)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- d.Run(ctx) }()
+	time.Sleep(200 * time.Millisecond)
+
+	// Start ticket at step2 by writing it with role=step2.
+	h.writeTicket("tst-ss1.md", fmt.Sprintf(`---
+id: tst-ss1
+kontora: true
+status: paused
+pipeline: two-stage
+role: step2
+path: %s
+created: 2026-01-01T00:00:00Z
+---
+# Test set-stage
+`, h.repoDir))
+
+	// Wait for daemon to discover the ticket.
+	require.Eventually(t, func() bool {
+		_, err := d.GetTicket("tst-ss1")
+		return err == nil
+	}, 5*time.Second, 50*time.Millisecond)
+
+	// Set stage back to step1.
+	require.NoError(t, d.SetStage("tst-ss1", "step1"))
+
+	// Verify only the role changed — status and attempt stay untouched.
+	result := h.readTask("tst-ss1.md")
+	assert.Equal(t, "step1", result.Role)
+	assert.Equal(t, ticket.StatusPaused, result.Status)
+
+	// Invalid stage should return error.
+	err := d.SetStage("tst-ss1", "nonexistent")
+	assert.ErrorIs(t, err, web.ErrInvalidState)
+
+	// Not found ticket should return error.
+	err = d.SetStage("nonexistent", "step1")
+	assert.ErrorIs(t, err, web.ErrTicketNotFound)
+
+	cancel()
+	require.NoError(t, <-errCh)
+}
+
 func TestDaemon_MoveTicket(t *testing.T) {
 	cases := []struct {
 		name        string

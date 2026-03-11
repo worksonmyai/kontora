@@ -592,6 +592,27 @@
                   <span class="text-[10px] font-mono text-tx-3" x-text="formatAbsDate(selectedTicket.created_at)"></span>
                 </div>
               </template>
+              <template x-if="selectedTicket?.stage && selectedTicket?.stages?.length > 1">
+                <div class="flex gap-3 items-center">
+                  <span class="text-[10px] font-mono text-surface-600 w-14">stage</span>
+                  <template x-if="['paused', 'open'].includes(selectedTicket?.status) && setStageOpen">
+                    <select class="text-[10px] font-mono bg-surface-800 text-tx-3 border border-surface-700/50 rounded px-1 py-0.5 outline-none focus:border-accent/40"
+                            @change="setStage($event.target.value); setStageOpen = false"
+                            @blur="setStageOpen = false"
+                            x-init="$nextTick(() => $el.focus())">
+                      <template x-for="s in selectedTicket?.stages || []" :key="s">
+                        <option :value="s" x-text="s" :selected="s === selectedTicket?.stage"></option>
+                      </template>
+                    </select>
+                  </template>
+                  <template x-if="!(['paused', 'open'].includes(selectedTicket?.status) && setStageOpen)">
+                    <span class="text-[10px] font-mono text-tx-3"
+                          :class="['paused', 'open'].includes(selectedTicket?.status) ? 'cursor-pointer hover:text-accent border-b border-dashed border-surface-600 hover:border-accent/40' : ''"
+                          @click="if (['paused', 'open'].includes(selectedTicket?.status)) setStageOpen = true"
+                          x-text="selectedTicket?.stage"></span>
+                  </template>
+                </div>
+              </template>
               <template x-if="selectedTicket?.status === 'in_progress' && selectedTicket?.started_at">
                 <div class="flex gap-3">
                   <span class="text-[10px] font-mono text-surface-600 w-14">running</span>

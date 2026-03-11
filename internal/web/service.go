@@ -25,6 +25,7 @@ type TicketService interface {
 	PauseTicket(id string) error
 	RetryTicket(id string) error
 	SkipStage(id string) error
+	SetStage(id string, stage string) error
 	MoveTicket(id string, newStatus string) error
 	InitTicket(id string, req InitTicketRequest) error
 	UpdateTicket(id string, req UpdateTicketRequest) error

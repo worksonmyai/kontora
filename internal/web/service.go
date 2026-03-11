@@ -84,6 +84,7 @@ type TicketInfo struct {
 	Stages        []string      `json:"stages,omitempty"`
 	History       []HistoryInfo `json:"history,omitempty"`
 	Body          string        `json:"body,omitempty"`
+	LastError     string        `json:"last_error,omitempty"`
 }
 
 type HistoryInfo struct {

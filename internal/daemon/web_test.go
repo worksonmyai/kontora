@@ -237,6 +237,35 @@ func TestDaemon_MoveTicket(t *testing.T) {
 			require.NoError(t, <-errCh)
 		})
 	}
+
+	t.Run("open to done sets kontora", func(t *testing.T) {
+		h := newHarness(t)
+		d := h.newDaemon(h.cfg)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		h.writeTicket("tst-mnk.md", `---
+id: tst-mnk
+status: open
+created: 2026-01-01T00:00:00Z
+---
+# Test ticket tst-mnk
+`)
+
+		errCh := make(chan error, 1)
+		go func() { errCh <- d.Run(ctx) }()
+		time.Sleep(200 * time.Millisecond)
+
+		require.NoError(t, d.MoveTicket("tst-mnk", "done"))
+
+		result := h.readTask("tst-mnk.md")
+		assert.Equal(t, ticket.StatusDone, result.Status)
+		assert.True(t, result.Kontora, "kontora should be set after move")
+
+		cancel()
+		require.NoError(t, <-errCh)
+	})
 }
 
 func TestDaemon_DeleteTicket(t *testing.T) {

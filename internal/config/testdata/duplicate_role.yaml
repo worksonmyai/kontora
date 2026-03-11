@@ -1,0 +1,26 @@
+tickets_dir: ~/org/tickets
+
+agents:
+  claude:
+    binary: claude
+
+roles:
+  code:
+    prompt: Write code.
+  review:
+    prompt: Review code.
+
+pipelines:
+  default:
+    - role: code
+      agent: claude
+      on_success: next
+      on_failure: pause
+    - role: review
+      agent: claude
+      on_success: next
+      on_failure: pause
+    - role: code
+      agent: claude
+      on_success: done
+      on_failure: pause

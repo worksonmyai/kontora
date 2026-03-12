@@ -187,7 +187,7 @@ func New(cfg *config.Config, opts ...Option) *Daemon {
 		runner:    tmuxRunner,
 		broker:    web.NewSSEBroker(),
 		debounce:  time.Second,
-		lockPath:  "~/.kontora/lock",
+		lockPath:  defaultLockPath(),
 		log: slog.New(charmlog.NewWithOptions(os.Stderr, charmlog.Options{
 			ReportTimestamp: true,
 		})),
@@ -1424,6 +1424,10 @@ func newSessionID() string {
 	b[8] = (b[8] & 0x3f) | 0x80 // variant 10
 	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
 		b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
+}
+
+func defaultLockPath() string {
+	return filepath.Join(filepath.Dir(config.DefaultConfigPath()), "lock")
 }
 
 func expandTilde(path string) string {

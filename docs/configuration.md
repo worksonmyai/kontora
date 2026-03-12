@@ -1,6 +1,6 @@
 # Configuration Reference
 
-Kontora reads configuration from a YAML file. It checks these paths in order: `.kontora/config.yaml` in the current directory, then `~/.config/kontora/config.yaml`, then the OS config directory (`~/Library/Application Support/kontora/config.yaml` on macOS). Override with `--config`. Unknown fields are rejected. See also: [Ticket Format](tickets.md).
+Kontora reads configuration from a YAML file. It checks these paths in order: `.kontora/config.yaml` in the current directory, then `$XDG_CONFIG_HOME/kontora/config.yaml` (or `~/.config/kontora/config.yaml` if unset). Override with `--config`. Unknown fields are rejected. See also: [Ticket Format](tickets.md).
 
 ## Minimal example
 

@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 )
 
 // ResolveConfigPath finds the config file by checking the local .kontora
@@ -36,14 +37,16 @@ func DefaultConfigPath() string {
 
 func configDirs() []string {
 	var dirs []string
-	home, err := os.UserHomeDir()
-	if err == nil {
-		dirs = append(dirs, filepath.Join(home, ".config"))
-	}
-	if d, err := os.UserConfigDir(); err == nil {
-		// On Linux os.UserConfigDir() already returns ~/.config, skip duplicate.
-		if len(dirs) == 0 || dirs[0] != d {
+	if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
+		dirs = append(dirs, xdg)
+	} else if runtime.GOOS != "darwin" {
+		if d, err := os.UserConfigDir(); err == nil {
 			dirs = append(dirs, d)
+		}
+	}
+	if len(dirs) == 0 {
+		if home, err := os.UserHomeDir(); err == nil {
+			dirs = append(dirs, filepath.Join(home, ".config"))
 		}
 	}
 	return dirs

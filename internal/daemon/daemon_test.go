@@ -977,6 +977,37 @@ func TestSimpleTask(t *testing.T) {
 	require.NoError(t, <-errCh)
 }
 
+func TestSimpleTaskBranchOverride(t *testing.T) {
+	h := newHarness(t)
+	d := h.newDaemon(h.cfg)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- d.Run(ctx) }()
+
+	time.Sleep(200 * time.Millisecond)
+
+	md := fmt.Sprintf(`---
+id: tst-br01
+kontora: true
+status: todo
+branch: my-custom-branch
+path: %s
+created: 2026-01-01T00:00:00Z
+---
+# Test branch override
+`, h.repoDir)
+	h.writeTicket("tst-br01.md", md)
+
+	result := h.waitForStatus("tst-br01.md", ticket.StatusDone, 10*time.Second)
+	assert.Equal(t, "my-custom-branch", result.Branch)
+
+	cancel()
+	require.NoError(t, <-errCh)
+}
+
 func TestSimpleTaskFailure(t *testing.T) {
 	h := newHarness(t)
 	cfg := h.defaultConfig("false", "true")

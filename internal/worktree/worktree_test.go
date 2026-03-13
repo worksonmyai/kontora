@@ -47,14 +47,14 @@ func TestCreateAndRemove(t *testing.T) {
 	wtDir := t.TempDir()
 	m := New(wtDir)
 
-	path, created, err := m.Create(repoDir, "myrepo", "tkt-1", "kontora")
+	path, created, err := m.Create(repoDir, "myrepo", "tkt-1", "kontora/tkt-1")
 	require.NoError(t, err)
 	assert.True(t, created)
 	_, err = os.Stat(path)
 	require.NoError(t, err, "worktree dir does not exist")
 	assertBranch(t, path, "kontora/tkt-1")
 
-	path2, created2, err := m.Create(repoDir, "myrepo", "tkt-1", "kontora")
+	path2, created2, err := m.Create(repoDir, "myrepo", "tkt-1", "kontora/tkt-1")
 	require.NoError(t, err, "idempotent Create")
 	assert.False(t, created2)
 	assert.Equal(t, path, path2)
@@ -70,7 +70,7 @@ func TestCreateAfterRemoveReusesBranch(t *testing.T) {
 	wtDir := t.TempDir()
 	m := New(wtDir)
 
-	path, created, err := m.Create(repoDir, "myrepo", "tkt-1", "kontora")
+	path, created, err := m.Create(repoDir, "myrepo", "tkt-1", "kontora/tkt-1")
 	require.NoError(t, err)
 	assert.True(t, created)
 
@@ -79,7 +79,7 @@ func TestCreateAfterRemoveReusesBranch(t *testing.T) {
 	require.True(t, os.IsNotExist(err), "worktree dir should be gone after remove")
 
 	// Re-create: branch still exists, should reuse it.
-	path2, created2, err := m.Create(repoDir, "myrepo", "tkt-1", "kontora")
+	path2, created2, err := m.Create(repoDir, "myrepo", "tkt-1", "kontora/tkt-1")
 	require.NoError(t, err)
 	assert.True(t, created2)
 	assert.Equal(t, path, path2)
@@ -99,9 +99,9 @@ func TestTwoWorktreesSameRepo(t *testing.T) {
 	wtDir := t.TempDir()
 	m := New(wtDir)
 
-	p1, _, err := m.Create(repoDir, "myrepo", "tkt-1", "kontora")
+	p1, _, err := m.Create(repoDir, "myrepo", "tkt-1", "kontora/tkt-1")
 	require.NoError(t, err)
-	p2, _, err := m.Create(repoDir, "myrepo", "tkt-2", "kontora")
+	p2, _, err := m.Create(repoDir, "myrepo", "tkt-2", "kontora/tkt-2")
 	require.NoError(t, err)
 
 	assert.NotEqual(t, p1, p2)
@@ -110,12 +110,12 @@ func TestTwoWorktreesSameRepo(t *testing.T) {
 	assertBranch(t, p2, "kontora/tkt-2")
 }
 
-func TestCreateWithCustomPrefix(t *testing.T) {
+func TestCreateWithCustomBranch(t *testing.T) {
 	repoDir := initRepo(t)
 	wtDir := t.TempDir()
 	m := New(wtDir)
 
-	path, _, err := m.Create(repoDir, "myrepo", "tkt-1", "custom")
+	path, _, err := m.Create(repoDir, "myrepo", "tkt-1", "custom/tkt-1")
 	require.NoError(t, err)
 	assertBranch(t, path, "custom/tkt-1")
 
@@ -128,7 +128,7 @@ func TestRemoveDirtyWorktree(t *testing.T) {
 	wtDir := t.TempDir()
 	m := New(wtDir)
 
-	path, _, err := m.Create(repoDir, "myrepo", "tkt-dirty", "kontora")
+	path, _, err := m.Create(repoDir, "myrepo", "tkt-dirty", "kontora/tkt-dirty")
 	require.NoError(t, err)
 
 	// Create an untracked file to make the worktree dirty.
@@ -148,7 +148,7 @@ func TestRemoveDirtyWorktreeStaged(t *testing.T) {
 	wtDir := t.TempDir()
 	m := New(wtDir)
 
-	path, _, err := m.Create(repoDir, "myrepo", "tkt-staged", "kontora")
+	path, _, err := m.Create(repoDir, "myrepo", "tkt-staged", "kontora/tkt-staged")
 	require.NoError(t, err)
 
 	// Create and stage a file without committing.
@@ -230,10 +230,21 @@ func TestCreateAutoDetectBranch(t *testing.T) {
 	wtDir := t.TempDir()
 	m := New(wtDir)
 
-	path, created, err := m.Create(dir, "myrepo", "tkt-1", "kontora")
+	path, created, err := m.Create(dir, "myrepo", "tkt-1", "kontora/tkt-1")
 	require.NoError(t, err)
 	assert.True(t, created)
 	assertBranch(t, path, "kontora/tkt-1")
+}
+
+func TestCreateCustomBranch(t *testing.T) {
+	repoDir := initRepo(t)
+	wtDir := t.TempDir()
+	m := New(wtDir)
+
+	path, created, err := m.Create(repoDir, "myrepo", "tkt-1", "my-feature-branch")
+	require.NoError(t, err)
+	assert.True(t, created)
+	assertBranch(t, path, "my-feature-branch")
 }
 
 func assertBranch(t *testing.T, dir, wantBranch string) {

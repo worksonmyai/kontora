@@ -76,6 +76,7 @@ func (d *Daemon) CreateTicket(req web.CreateTicketRequest) (web.TicketInfo, erro
 		Status:   req.Status,
 		Title:    req.Title,
 		Body:     req.Body,
+		Branch:   req.Branch,
 		NoEdit:   true,
 	})
 	if err != nil {
@@ -172,6 +173,7 @@ func (d *Daemon) GetConfig() web.ConfigInfo {
 		Pipelines:     pipelines,
 		PipelineInfos: infos,
 		Agents:        agents,
+		BranchPrefix:  d.cfg.BranchPrefix,
 	}
 }
 
@@ -417,6 +419,11 @@ func (d *Daemon) UpdateTicket(id string, req web.UpdateTicketRequest) error {
 			}
 		}
 		if err := t2.SetField("agent", *req.Agent); err != nil {
+			return err
+		}
+	}
+	if req.Branch != nil {
+		if err := t2.SetField("branch", *req.Branch); err != nil {
 			return err
 		}
 	}

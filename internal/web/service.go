@@ -44,6 +44,7 @@ type CreateTicketRequest struct {
 	Agent    string `json:"agent,omitempty"`
 	Status   string `json:"status,omitempty"`
 	Body     string `json:"body,omitempty"`
+	Branch   string `json:"branch,omitempty"`
 }
 
 type InitTicketRequest struct {
@@ -57,6 +58,7 @@ type UpdateTicketRequest struct {
 	Pipeline *string `json:"pipeline,omitempty"`
 	Path     *string `json:"path,omitempty"`
 	Agent    *string `json:"agent,omitempty"`
+	Branch   *string `json:"branch,omitempty"`
 }
 
 type PipelineInfo struct {
@@ -68,6 +70,7 @@ type ConfigInfo struct {
 	Pipelines     []string       `json:"pipelines"`
 	PipelineInfos []PipelineInfo `json:"pipeline_infos"`
 	Agents        []string       `json:"agents"`
+	BranchPrefix  string         `json:"branch_prefix"`
 }
 
 type TicketInfo struct {

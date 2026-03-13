@@ -18,7 +18,7 @@ func yamlQuote(s string) string {
 		return fmt.Sprintf("%q", s)
 	}
 	switch strings.ToLower(s) {
-	case "null", "~":
+	case "null", "~", "true", "false", "yes", "no", "on", "off":
 		return fmt.Sprintf("%q", s)
 	}
 	return s
@@ -32,6 +32,7 @@ type NewOpts struct {
 	Status   string
 	Title    string
 	Body     string
+	Branch   string
 	NoEdit   bool
 }
 
@@ -71,12 +72,16 @@ func New(cfg *config.Config, opts NewOpts) (string, error) {
 	if opts.Agent != "" {
 		agentLine = fmt.Sprintf("agent: %s\n", yamlQuote(opts.Agent))
 	}
+	branchLine := ""
+	if opts.Branch != "" {
+		branchLine = fmt.Sprintf("branch: %s\n", yamlQuote(opts.Branch))
+	}
 	body := "\n"
 	if opts.Body != "" {
 		body = "\n" + opts.Body + "\n"
 	}
-	content := fmt.Sprintf("---\nid: %s\nkontora: true\nstatus: %s\n%s%spath: %s\ncreated: %s\n---\n# %s\n%s",
-		id, yamlQuote(opts.Status), pipelineLine, agentLine, yamlQuote(opts.Path), now, opts.Title, body)
+	content := fmt.Sprintf("---\nid: %s\nkontora: true\nstatus: %s\n%s%s%spath: %s\ncreated: %s\n---\n# %s\n%s",
+		id, yamlQuote(opts.Status), pipelineLine, agentLine, branchLine, yamlQuote(opts.Path), now, opts.Title, body)
 
 	dir := config.ExpandTilde(cfg.TicketsDir)
 	if err := os.MkdirAll(dir, 0o755); err != nil {

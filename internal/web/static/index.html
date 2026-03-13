@@ -250,6 +250,12 @@
               </template>
             </select>
           </div>
+          <div>
+            <label class="text-[13px] font-mono text-tx-3 mb-1 flex items-center">Branch<button type="button" class="tip" data-tip="Override the git branch name. Leave empty to auto-generate from the ticket ID.">i</button></label>
+            <input x-model="createForm.branch" type="text"
+                   class="w-full bg-surface-800 border border-surface-700/50 rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40"
+                   :placeholder="(configCache?.branch_prefix || 'kontora') + '/…'">
+          </div>
           <div class="flex gap-3">
             <div class="flex-1">
               <label class="text-[13px] font-mono text-tx-3 mb-1 flex items-center">Agent<button type="button" class="tip" data-tip="Override the agent for all pipeline stages (or for a standalone ticket). Leave empty to use the pipeline default.">i</button></label>
@@ -793,7 +799,7 @@
             <!-- Editable form for editable tickets (open/todo/paused) -->
             <template x-if="editing && ['open', 'todo', 'paused'].includes(selectedTicket?.status)">
               <div>
-                <div class="grid grid-cols-3 gap-3 mb-4">
+                <div class="grid grid-cols-3 gap-3 mb-3">
                   <div>
                     <label class="text-xs font-mono text-surface-600 mb-1 flex items-center">Pipeline<button type="button" class="tip" data-tip="The sequence of stages this ticket goes through. Each stage runs an agent in turn. Pipelines are configured in the config file.">i</button></label>
                     <select x-model="editForm.pipeline" @change="saveEdit()"
@@ -819,6 +825,12 @@
                     <input type="text" x-model="editForm.path" @change="saveEdit()"
                       class="w-full bg-surface-800 border border-surface-700 rounded px-2 py-1 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent">
                   </div>
+                </div>
+                <div class="mb-4">
+                  <label class="text-xs font-mono text-surface-600 mb-1 flex items-center">Branch<button type="button" class="tip" data-tip="Override the git branch name. Leave empty to auto-generate from the ticket ID.">i</button></label>
+                  <input type="text" x-model="editForm.branch" @change="saveEdit()"
+                    class="w-full bg-surface-800 border border-surface-700 rounded px-2 py-1 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent"
+                    :placeholder="(configCache?.branch_prefix || 'kontora') + '/' + selectedTicket?.id">
                 </div>
                 <div class="flex items-center justify-between mb-1">
                   <label class="text-xs font-mono text-surface-600 flex items-center">Body<button type="button" class="tip" data-tip="The ticket description that agents see when working on this ticket.">i</button></label>

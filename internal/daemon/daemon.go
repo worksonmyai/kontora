@@ -480,6 +480,15 @@ func (d *Daemon) handleFileRemoved(path string) {
 	}
 }
 
+// ticketBranch returns the branch name for a ticket, using the ticket's
+// existing branch if set, otherwise generating one from the config prefix.
+func (d *Daemon) ticketBranch(t *ticket.Ticket) string {
+	if b := strings.TrimSpace(t.Branch); b != "" {
+		return b
+	}
+	return worktree.BranchName(d.cfg.BranchPrefix, t.ID)
+}
+
 // removeWorktree removes the git worktree for a ticket. Logs but does not
 // propagate errors — a failed cleanup should not block ticket completion.
 // Dirty worktrees are preserved (branch and directory kept intact).
@@ -656,8 +665,8 @@ func (d *Daemon) runTicket(ctx context.Context, ticketID string) {
 	}
 
 	// Create worktree.
-	branchPrefix := d.cfg.BranchPrefix
-	wtPath, created, err := d.worktrees.Create(repoPath, repoName, ticketID, branchPrefix)
+	branch := d.ticketBranch(t)
+	wtPath, created, err := d.worktrees.Create(repoPath, repoName, ticketID, branch)
 	if err != nil {
 		log.Error("create worktree failed", "path", repoPath, "err", err)
 		d.pauseTicket(t, filePath, "create worktree failed: "+err.Error())
@@ -668,7 +677,7 @@ func (d *Daemon) runTicket(ctx context.Context, ticketID string) {
 	} else {
 		log.Info("worktree reused", "path", wtPath)
 	}
-	_ = t.SetField("branch", worktree.BranchName(branchPrefix, ticketID))
+	_ = t.SetField("branch", branch)
 	if err := d.writeTicket(t, filePath); err != nil {
 		log.Error("write failed", "phase", "branch", "err", err)
 		return
@@ -743,7 +752,7 @@ func (d *Daemon) runTicket(ctx context.Context, ticketID string) {
 		pipelineCfg:  pipelineCfg,
 		repoPath:     repoPath,
 		repoName:     repoName,
-		branchPrefix: branchPrefix,
+		branchPrefix: d.cfg.BranchPrefix,
 	})
 }
 
@@ -784,8 +793,8 @@ func (d *Daemon) runSimpleTicket(ctx, taskCtx context.Context, log *slog.Logger,
 	}
 
 	// Create worktree.
-	branchPrefix := d.cfg.BranchPrefix
-	wtPath, created, err := d.worktrees.Create(repoPath, repoName, ticketID, branchPrefix)
+	branch := d.ticketBranch(t)
+	wtPath, created, err := d.worktrees.Create(repoPath, repoName, ticketID, branch)
 	if err != nil {
 		log.Error("create worktree failed", "path", repoPath, "err", err)
 		d.pauseTicket(t, filePath, "create worktree failed: "+err.Error())
@@ -796,7 +805,7 @@ func (d *Daemon) runSimpleTicket(ctx, taskCtx context.Context, log *slog.Logger,
 	} else {
 		log.Info("worktree reused", "path", wtPath)
 	}
-	_ = t.SetField("branch", worktree.BranchName(branchPrefix, ticketID))
+	_ = t.SetField("branch", branch)
 	if err := d.writeTicket(t, filePath); err != nil {
 		log.Error("write failed", "phase", "branch", "err", err)
 		return
@@ -849,6 +858,7 @@ func (d *Daemon) runSimpleTicket(ctx, taskCtx context.Context, log *slog.Logger,
 	log.Info("agent exited", attrs...)
 
 	// Handle context cancellation.
+	branchPrefix := d.cfg.BranchPrefix
 	if taskCtx.Err() != nil {
 		if ctx.Err() != nil {
 			log.Warn("interrupted by shutdown")

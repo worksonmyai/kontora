@@ -26,7 +26,7 @@ func (m *Manager) Path(repoName, taskID string) string {
 	return filepath.Join(m.worktreesDir, repoName, taskID)
 }
 
-func (m *Manager) Create(repoPath, repoName, taskID, branchPrefix string) (wtPath string, created bool, err error) {
+func (m *Manager) Create(repoPath, repoName, taskID, branch string) (wtPath string, created bool, err error) {
 	wtPath = m.Path(repoName, taskID)
 
 	if _, err := os.Stat(wtPath); err == nil {
@@ -42,7 +42,6 @@ func (m *Manager) Create(repoPath, repoName, taskID, branchPrefix string) (wtPat
 		return "", false, fmt.Errorf("detecting default branch: %w", err)
 	}
 
-	branch := BranchName(branchPrefix, taskID)
 	cmd := exec.Command("git", "worktree", "add", "-b", branch, wtPath, base)
 	cmd.Dir = repoPath
 	if out, err := cmd.CombinedOutput(); err != nil {

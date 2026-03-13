@@ -13,7 +13,7 @@ function kontora() {
     isMobile: window.innerWidth < 768,
     createModal: false,
     createSubmitting: false,
-    createForm: { title: '', path: '', pipeline: '', agent: '', status: 'todo', body: '' },
+    createForm: { title: '', path: '', pipeline: '', agent: '', status: 'todo', body: '', branch: '' },
     initModal: false,
     initSubmitting: false,
     initForm: { ticketId: '', title: '', pipeline: '', agent: '', path: '' },
@@ -203,7 +203,7 @@ function kontora() {
     },
 
     async openCreateModal() {
-      this.createForm = { title: '', path: '', pipeline: '', agent: '', status: 'todo', body: '' };
+      this.createForm = { title: '', path: '', pipeline: '', agent: '', status: 'todo', body: '', branch: '' };
       this.createModal = true;
       if (!this.configCache) {
         try {
@@ -230,6 +230,7 @@ function kontora() {
         if (this.createForm.agent) body.agent = this.createForm.agent;
         if (this.createForm.status) body.status = this.createForm.status;
         if (this.createForm.body) body.body = this.createForm.body;
+        if (this.createForm.branch) body.branch = this.createForm.branch;
         const res = await fetch('/api/tickets', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -496,6 +497,7 @@ function kontora() {
         pipeline: '',
         path: this.selectedTicket.path || '',
         agent: '',
+        branch: this.selectedTicket.branch || '',
       };
       this.editing = true;
       this.editSaved = false;
@@ -529,6 +531,7 @@ function kontora() {
         if (this.editForm.pipeline !== (this.selectedTicket.pipeline || '')) body.pipeline = this.editForm.pipeline;
         if (this.editForm.path !== (this.selectedTicket.path || '')) body.path = this.editForm.path;
         if (this.editForm.agent !== (this.selectedTicket.agent || '')) body.agent = this.editForm.agent;
+        if (this.editForm.branch !== (this.selectedTicket.branch || '')) body.branch = this.editForm.branch;
         if (Object.keys(body).length === 0) { this.editSubmitting = false; return; }
         const res = await fetch('/api/tickets/' + this.selectedTicket.id, {
           method: 'PUT',

@@ -138,7 +138,7 @@ func (s *Server) handleCreateTicket(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "path is required"})
 		return
 	}
-	if containsNewline(req.Title) || containsNewline(req.Path) || containsNewline(req.Pipeline) || containsNewline(req.Status) || containsNewline(req.Agent) {
+	if containsNewline(req.Title) || containsNewline(req.Path) || containsNewline(req.Pipeline) || containsNewline(req.Status) || containsNewline(req.Agent) || containsNewline(req.Branch) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "fields must not contain newlines"})
 		return
 	}
@@ -202,6 +202,10 @@ func (s *Server) handleUpdateTicket(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Agent != nil && containsNewline(*req.Agent) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "agent must not contain newlines"})
+		return
+	}
+	if req.Branch != nil && containsNewline(*req.Branch) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "branch must not contain newlines"})
 		return
 	}
 

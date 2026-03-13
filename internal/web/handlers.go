@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os/exec"
 	"path/filepath"
 	"strings"
 )
@@ -138,12 +139,17 @@ func (s *Server) handleCreateTicket(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "path is required"})
 		return
 	}
-	if containsNewline(req.Title) || containsNewline(req.Path) || containsNewline(req.Pipeline) || containsNewline(req.Status) || containsNewline(req.Agent) || containsNewline(req.Branch) {
+	if containsNewline(req.Title) || containsNewline(req.Path) || containsNewline(req.Pipeline) || containsNewline(req.Status) || containsNewline(req.Agent) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "fields must not contain newlines"})
 		return
 	}
 	if req.Status != "" && req.Status != "todo" && req.Status != "open" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "status must be 'todo' or 'open'"})
+		return
+	}
+	req.Branch = strings.TrimSpace(req.Branch)
+	if req.Branch != "" && !validBranchName(req.Branch) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid branch name"})
 		return
 	}
 
@@ -204,9 +210,13 @@ func (s *Server) handleUpdateTicket(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "agent must not contain newlines"})
 		return
 	}
-	if req.Branch != nil && containsNewline(*req.Branch) {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "branch must not contain newlines"})
-		return
+	if req.Branch != nil {
+		trimmed := strings.TrimSpace(*req.Branch)
+		req.Branch = &trimmed
+		if trimmed != "" && !validBranchName(trimmed) {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid branch name"})
+			return
+		}
 	}
 
 	if err := s.svc.UpdateTicket(id, req); err != nil {
@@ -342,6 +352,11 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 func containsNewline(s string) bool {
 	return strings.ContainsAny(s, "\n\r")
+}
+
+// validBranchName checks whether s is a valid git branch name.
+func validBranchName(s string) bool {
+	return exec.Command("git", "check-ref-format", "--branch", s).Run() == nil
 }
 
 func writeServiceError(w http.ResponseWriter, err error) {

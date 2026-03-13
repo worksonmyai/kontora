@@ -110,7 +110,7 @@ func TestTwoWorktreesSameRepo(t *testing.T) {
 	assertBranch(t, p2, "kontora/tkt-2")
 }
 
-func TestCreateWithCustomPrefix(t *testing.T) {
+func TestCreateWithCustomBranch(t *testing.T) {
 	repoDir := initRepo(t)
 	wtDir := t.TempDir()
 	m := New(wtDir)

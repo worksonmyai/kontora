@@ -446,8 +446,8 @@ func (d *Daemon) handleFileRemoved(path string) {
 // ticketBranch returns the branch name for a ticket, using the ticket's
 // existing branch if set, otherwise generating one from the config prefix.
 func (d *Daemon) ticketBranch(t *ticket.Ticket) string {
-	if t.Branch != "" {
-		return t.Branch
+	if b := strings.TrimSpace(t.Branch); b != "" {
+		return b
 	}
 	return worktree.BranchName(d.cfg.BranchPrefix, t.ID)
 }

@@ -18,7 +18,7 @@ func yamlQuote(s string) string {
 		return fmt.Sprintf("%q", s)
 	}
 	switch strings.ToLower(s) {
-	case "null", "~":
+	case "null", "~", "true", "false", "yes", "no", "on", "off":
 		return fmt.Sprintf("%q", s)
 	}
 	return s

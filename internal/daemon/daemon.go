@@ -1108,7 +1108,7 @@ func buildAgentArgs(agentCfg config.Agent, rendered, channelName string) ([]stri
 // a fallback for when Claude goes idle without a clean Stop.
 func writeHooksSettings(channelName string) (string, error) {
 	waitCmd := fmt.Sprintf("tmux wait-for -S %s", channelName)
-	settings := fmt.Sprintf(`{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"%s"}]}],"Notification":[{"matcher":"idle_prompt","hooks":[{"type":"command","command":"%s"}]}]}}`, waitCmd, waitCmd)
+	settings := fmt.Sprintf(`{"hooks":{"Stop":[{"matcher":"","hooks":[{"type":"command","command":"%s"}]}],"Notification":[{"matcher":"idle_prompt","hooks":[{"type":"command","command":"%s"}]}]}}`, waitCmd, waitCmd)
 	f, err := os.CreateTemp("", "kontora-settings-*.json")
 	if err != nil {
 		return "", err

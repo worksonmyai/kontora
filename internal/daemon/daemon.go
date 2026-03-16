@@ -1078,7 +1078,7 @@ func buildAgentArgs(agentCfg config.Agent, rendered, channelName string) ([]stri
 	copy(args, agentCfg.Args)
 	var settingsFile string
 	var sessionID string
-	switch agentCfg.Binary {
+	switch filepath.Base(agentCfg.Binary) {
 	case "claude":
 		var err error
 		settingsFile, err = writeHooksSettings(channelName)

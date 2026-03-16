@@ -1078,8 +1078,8 @@ func buildAgentArgs(agentCfg config.Agent, rendered, channelName string) ([]stri
 	copy(args, agentCfg.Args)
 	var settingsFile string
 	var sessionID string
-	switch filepath.Base(agentCfg.Binary) {
-	case "claude":
+	switch {
+	case agentCfg.IsClaude():
 		var err error
 		settingsFile, err = writeHooksSettings(channelName)
 		if err != nil {
@@ -1088,7 +1088,7 @@ func buildAgentArgs(agentCfg config.Agent, rendered, channelName string) ([]stri
 		args = append(args, "--settings", settingsFile)
 		sessionID = newSessionID()
 		args = append(args, "--session-id", sessionID)
-	case "pi":
+	case agentCfg.IsPi():
 		var err error
 		settingsFile, err = writePiExitExtension()
 		if err != nil {
@@ -1177,7 +1177,7 @@ func (d *Daemon) buildRunnerParams(agentCfg config.Agent, roleCfg config.Role, a
 		Timeout:     roleCfg.Timeout.Duration,
 		TicketID:    ticketID,
 		LogFile:     filepath.Join(logDir, roleName+".log"),
-		Interactive: agentCfg.Binary == "claude",
+		Interactive: agentCfg.IsClaude(),
 		SessionID:   sessionID,
 		SessionDir:  sessionDir,
 		Env:         env,

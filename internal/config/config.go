@@ -60,6 +60,14 @@ type Agent struct {
 	Environment map[string]string `yaml:"environment"`
 }
 
+func (a Agent) IsClaude() bool {
+	return filepath.Base(a.Binary) == "claude"
+}
+
+func (a Agent) IsPi() bool {
+	return filepath.Base(a.Binary) == "pi"
+}
+
 type Role struct {
 	Prompt  string   `yaml:"prompt"`
 	Timeout Duration `yaml:"timeout"`

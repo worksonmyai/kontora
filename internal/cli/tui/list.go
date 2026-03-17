@@ -105,7 +105,13 @@ func sortTickets(tasks []web.TicketInfo) {
 		}
 		ta := derefTimePtr(a.CreatedAt)
 		tb := derefTimePtr(b.CreatedAt)
-		return ta.Compare(tb)
+		if c := tb.Compare(ta); c != 0 {
+			return c
+		}
+		if a.Title != b.Title {
+			return strings.Compare(a.Title, b.Title)
+		}
+		return strings.Compare(a.ID, b.ID)
 	})
 }
 

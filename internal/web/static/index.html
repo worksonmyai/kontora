@@ -162,7 +162,7 @@
   <!-- Error toast -->
   <div x-show="error"
        x-transition
-       x-effect="if (error) setTimeout(() => error = null, 5000)"
+       x-effect="if (error) setTimeout(() => error = null, 10000)"
        @click="error = null"
        class="fixed bottom-4 right-4 z-[60] bg-err/20 border border-err/30 text-err text-sm font-mono px-4 py-2 rounded-lg cursor-pointer max-w-sm">
     <span x-text="error"></span>

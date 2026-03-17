@@ -858,9 +858,10 @@
                 </template>
                 <template x-if="!editingBody">
                   <div @click="editingBody = true"
-                    class="cursor-text rounded border border-transparent hover:border-surface-700/50 transition-colors min-h-[100px]">
+                    class="group/edit cursor-text rounded border border-transparent hover:border-surface-700/50 transition-colors min-h-[100px] relative">
                     <div x-show="editForm.body" class="ticket-prose text-sm" x-html="renderMarkdown(editForm.body)"></div>
                     <p x-show="!editForm.body" class="text-sm font-mono text-surface-600">Click to add a description...</p>
+                    <span x-show="editForm.body" class="absolute top-1 right-1 text-[11px] font-mono text-surface-600 opacity-0 group-hover/edit:opacity-100 transition-opacity">click to edit</span>
                   </div>
                 </template>
               </div>

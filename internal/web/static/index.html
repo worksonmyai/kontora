@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="color-scheme" content="light dark">
   <title>kontora</title>
-  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><circle cx='8' cy='8' r='7' fill='%23585b70'/></svg>">
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><circle cx='8' cy='8' r='7' fill='%235b6078'/></svg>">
   <script src="https://cdn.tailwindcss.com"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.8/dist/cdn.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.6/Sortable.min.js"></script>
@@ -43,7 +43,7 @@
       try { localStorage.setItem('kontora-theme', t); } catch (e) {}
     }
     var kontoraThemeCSS = {
-      dark: ':root{--surface-deep:24,24,37;--surface-950:30,30,46;--surface-900:35,35,52;--surface-850:40,40,58;--surface-800:49,50,68;--surface-700:69,71,90;--surface-600:88,91,112;--accent:137,180,250;--accent-dim:90,126,196;--accent-bright:180,208,251;--ok:166,227,161;--warn:249,226,175;--err:243,139,168;--tx:205,214,244;--tx-2:186,194,222;--tx-3:166,173,200;--tx-4:127,132,156}',
+      dark: ':root{--surface-deep:30,32,48;--surface-950:36,39,58;--surface-900:41,44,64;--surface-850:46,50,70;--surface-800:54,58,79;--surface-700:73,77,100;--surface-600:91,96,120;--accent:138,173,244;--accent-dim:91,120,190;--accent-bright:183,189,248;--ok:166,218,149;--warn:238,212,159;--err:237,135,150;--tx:202,211,245;--tx-2:184,192,224;--tx-3:165,173,203;--tx-4:128,135,162}',
       light: ':root{--surface-deep:220,224,232;--surface-950:239,241,245;--surface-900:230,233,239;--surface-850:220,224,232;--surface-800:204,208,218;--surface-700:188,192,204;--surface-600:172,176,190;--accent:30,102,245;--accent-dim:21,88,208;--accent-bright:114,135,253;--ok:64,160,43;--warn:223,142,29;--err:210,15,57;--tx:76,79,105;--tx-2:92,95,119;--tx-3:108,111,133;--tx-4:140,143,161}'
     };
     function applyTheme(t) {

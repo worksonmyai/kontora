@@ -687,7 +687,7 @@
               <div class="flex items-center gap-1">
                 <button class="text-[12px] font-mono px-2 py-0.5 rounded transition-colors"
                      :class="[stageStyle(stage, selectedTicket),
-                              isStageClickable(stage, selectedTicket) ? 'cursor-pointer hover:ring-1 hover:ring-accent/40' : 'cursor-default',
+                              isStageClickable(stage, selectedTicket) ? 'cursor-pointer hover:ring-1 hover:ring-accent/40 underline decoration-dotted decoration-ok/40 underline-offset-2' : 'cursor-default',
                               logViewStage === stage && isStageClickable(stage, selectedTicket) ? 'ring-1 ring-accent/60' : '']"
                      @click="clickStage(stage)">
                   <span x-text="stage"></span>

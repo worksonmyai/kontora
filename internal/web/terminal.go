@@ -3,7 +3,9 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
+	"math/rand/v2"
 	"net/http"
 	"os"
 	"os/exec"
@@ -49,8 +51,23 @@ func (s *Server) handleTerminalWS(w http.ResponseWriter, r *http.Request) {
 
 	rw := r.URL.Query().Get("rw") == "1"
 
-	target := tmux.WindowTarget(tmux.DefaultSessionName, id)
-	args := []string{"attach-session", "-t", target}
+	// Create a linked tmux session so the web viewer gets independent sizing
+	// without shrinking the pane in the main session.
+	viewSession := fmt.Sprintf("kontora-view-%s-%x", id, rand.Uint32())
+	mainSession := "=" + tmux.DefaultSessionName
+	out, err := exec.Command("tmux", "new-session", "-d", "-t", mainSession, "-s", viewSession,
+		"-x", strconv.Itoa(cols), "-y", strconv.Itoa(rows)).CombinedOutput()
+	if err != nil {
+		s.log.Error("linked session create failed", "err", err, "output", string(out), "ticket", id)
+		conn.Close(websocket.StatusInternalError, "failed to create viewer session")
+		return
+	}
+	defer func() { _ = exec.Command("tmux", "kill-session", "-t", "="+viewSession).Run() }()
+
+	// Select the ticket's window inside the linked session.
+	_ = exec.Command("tmux", "select-window", "-t", "="+viewSession+":"+id).Run()
+
+	args := []string{"attach-session", "-t", "=" + viewSession}
 	if !rw {
 		args = append(args, "-r")
 	}
@@ -73,9 +90,9 @@ func (s *Server) handleTerminalWS(w http.ResponseWriter, r *http.Request) {
 		s.readClientMessages(ctx, conn, ptmx)
 	}()
 
-	s.log.Info("terminal session connected", "ticket", id)
+	s.log.Info("terminal session connected", "ticket", id, "view_session", viewSession)
 	s.pipeOutput(ctx, conn, ptmx, id)
-	s.log.Info("terminal session disconnected", "ticket", id)
+	s.log.Info("terminal session disconnected", "ticket", id, "view_session", viewSession)
 }
 
 func (s *Server) readClientMessages(ctx context.Context, conn *websocket.Conn, ptmx *os.File) {

@@ -36,6 +36,7 @@ function kontora() {
     _term: null,
     _TerminalClass: null,
     _FitAddonClass: null,
+    _Unicode11AddonClass: null,
     _fitAddon: null,
     _terminalSeq: 0,
     _terminalOpening: false,
@@ -690,12 +691,14 @@ function kontora() {
       this._terminalOpening = true;
       try {
         if (!this._TerminalClass || !this._FitAddonClass) {
-          var [termMod, fitMod] = await Promise.all([
+          var [termMod, fitMod, unicodeMod] = await Promise.all([
             import('https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/+esm'),
             import('https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/+esm'),
+            import('https://cdn.jsdelivr.net/npm/@xterm/addon-unicode11@0.8.0/+esm'),
           ]);
           this._TerminalClass = termMod.Terminal;
           this._FitAddonClass = fitMod.FitAddon;
+          this._Unicode11AddonClass = unicodeMod.Unicode11Addon;
         }
         await this.$nextTick();
         if (!this.terminalOpen || this._terminalSeq !== seq) return;
@@ -738,6 +741,8 @@ function kontora() {
         scrollback: 5000,
       });
       this._term.loadAddon(this._fitAddon);
+      this._term.loadAddon(new this._Unicode11AddonClass());
+      this._term.unicode.activeVersion = '11';
       this._term.open(container);
 
       var self = this;

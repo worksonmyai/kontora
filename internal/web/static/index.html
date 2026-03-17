@@ -72,6 +72,11 @@
     @keyframes slide-up { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
     .slide-up { animation: slide-up 0.2s ease-out; }
 
+    @media (prefers-reduced-motion: reduce) {
+      .pulse-dot { animation: none; }
+      .slide-up { animation: none; }
+    }
+
     .resize-handle { width: 4px; cursor: col-resize; background: transparent; transition: background 0.15s; position: absolute; top: 0; bottom: 0; left: 0; z-index: 10; }
     .resize-handle:hover, .resize-handle.active { background: rgba(var(--accent), 0.25); }
 

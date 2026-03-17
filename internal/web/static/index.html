@@ -679,7 +679,7 @@
 
         <!-- Pipeline progress -->
         <div class="px-4 py-3 border-b border-surface-700/30" x-show="selectedTicket?.stages?.length > 0">
-          <div class="flex items-center gap-1 flex-wrap" title="Pipeline stages run sequentially. Each stage spawns an agent in the shared worktree. Click completed stages to view their logs.">
+          <div class="flex items-center gap-1 flex-wrap">
             <template x-for="(stage, i) in (selectedTicket?.stages || [])" :key="i">
               <div class="flex items-center gap-1">
                 <button class="text-[12px] font-mono px-2 py-0.5 rounded transition-colors"

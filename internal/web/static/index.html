@@ -232,26 +232,26 @@
       <form @submit.prevent="submitCreateTicket()">
         <div class="space-y-3">
           <div>
-            <label class="text-[13px] font-mono text-tx-3 block mb-1">Title *</label>
-            <input x-model="createForm.title" type="text" required
+            <label for="create-title" class="text-[13px] font-mono text-tx-3 block mb-1">Title *</label>
+            <input id="create-title" x-model="createForm.title" type="text" required
                    class="w-full bg-surface-800 border border-surface-700/50 rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40"
                    placeholder="Ticket title">
           </div>
           <div>
-            <label class="text-[13px] font-mono text-tx-3 block mb-1">Body</label>
-            <textarea x-model="createForm.body" rows="3"
+            <label for="create-body" class="text-[13px] font-mono text-tx-3 block mb-1">Body</label>
+            <textarea id="create-body" x-model="createForm.body" rows="3"
                       class="w-full bg-surface-800 border border-surface-700/50 rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40 resize-y"
                       placeholder="Ticket description (markdown)"></textarea>
           </div>
           <div>
-            <label class="text-[13px] font-mono text-tx-3 mb-1 flex items-center">Path *<button type="button" class="tip" data-tip="Path to the repository the agent will work in. Supports ~ (e.g. ~/projects/myrepo).">i</button></label>
-            <input x-model="createForm.path" type="text" required
+            <label for="create-path" class="text-[13px] font-mono text-tx-3 mb-1 flex items-center">Path *<button type="button" class="tip" data-tip="Path to the repository the agent will work in. Supports ~ (e.g. ~/projects/myrepo).">i</button></label>
+            <input id="create-path" x-model="createForm.path" type="text" required
                    class="w-full bg-surface-800 border border-surface-700/50 rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40"
                    placeholder="~/projects/myrepo">
           </div>
           <div>
-            <label class="text-[13px] font-mono text-tx-3 mb-1 flex items-center">Pipeline<button type="button" class="tip" data-tip="The sequence of stages this ticket goes through (e.g. plan → code → review). Each stage runs an agent in turn. Pipelines are configured in the config file. Leave empty for a standalone ticket.">i</button></label>
-            <select x-model="createForm.pipeline"
+            <label for="create-pipeline" class="text-[13px] font-mono text-tx-3 mb-1 flex items-center">Pipeline<button type="button" class="tip" data-tip="The sequence of stages this ticket goes through (e.g. plan → code → review). Each stage runs an agent in turn. Pipelines are configured in the config file. Leave empty for a standalone ticket.">i</button></label>
+            <select id="create-pipeline" x-model="createForm.pipeline"
                     class="w-full bg-surface-800 border border-surface-700/50 rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40">
               <option value="">None</option>
               <template x-for="p in configCache?.pipelines || []" :key="p">
@@ -260,15 +260,15 @@
             </select>
           </div>
           <div>
-            <label class="text-[13px] font-mono text-tx-3 mb-1 flex items-center">Branch<button type="button" class="tip" data-tip="Override the git branch name. Leave empty to auto-generate from the ticket ID.">i</button></label>
-            <input x-model="createForm.branch" type="text"
+            <label for="create-branch" class="text-[13px] font-mono text-tx-3 mb-1 flex items-center">Branch<button type="button" class="tip" data-tip="Override the git branch name. Leave empty to auto-generate from the ticket ID.">i</button></label>
+            <input id="create-branch" x-model="createForm.branch" type="text"
                    class="w-full bg-surface-800 border border-surface-700/50 rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40"
                    :placeholder="(configCache?.branch_prefix || 'kontora') + '/…'">
           </div>
           <div class="flex gap-3">
             <div class="flex-1">
-              <label class="text-[13px] font-mono text-tx-3 mb-1 flex items-center">Agent<button type="button" class="tip" data-tip="Override the agent for all pipeline stages (or for a standalone ticket). Leave empty to use the pipeline default.">i</button></label>
-              <select x-model="createForm.agent"
+              <label for="create-agent" class="text-[13px] font-mono text-tx-3 mb-1 flex items-center">Agent<button type="button" class="tip" data-tip="Override the agent for all pipeline stages (or for a standalone ticket). Leave empty to use the pipeline default.">i</button></label>
+              <select id="create-agent" x-model="createForm.agent"
                       class="w-full bg-surface-800 border border-surface-700/50 rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40">
                 <option value="">Default</option>
                 <template x-for="a in configCache?.agents || []" :key="a">
@@ -277,8 +277,8 @@
               </select>
             </div>
             <div class="flex-1">
-              <label class="text-[13px] font-mono text-tx-3 mb-1 flex items-center">Status<button type="button" class="tip" data-tip="Todo: starts automatically when a slot is available. Open: saved as a draft until you move it to Todo.">i</button></label>
-              <select x-model="createForm.status"
+              <label for="create-status" class="text-[13px] font-mono text-tx-3 mb-1 flex items-center">Status<button type="button" class="tip" data-tip="Todo: starts automatically when a slot is available. Open: saved as a draft until you move it to Todo.">i</button></label>
+              <select id="create-status" x-model="createForm.status"
                       class="w-full bg-surface-800 border border-surface-700/50 rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40">
                 <option value="todo">todo</option>
                 <option value="open">open</option>
@@ -313,8 +313,8 @@
       <form @submit.prevent="submitInitTicket()">
         <div class="space-y-3">
           <div>
-            <label class="text-[13px] font-mono text-tx-3 mb-1 flex items-center">Pipeline<button type="button" class="tip" data-tip="The sequence of stages this ticket goes through (e.g. plan → code → review). Each stage runs an agent in turn. Pipelines are configured in the config file. Leave empty for a simple single-run ticket.">i</button></label>
-            <select x-model="initForm.pipeline"
+            <label for="init-pipeline" class="text-[13px] font-mono text-tx-3 mb-1 flex items-center">Pipeline<button type="button" class="tip" data-tip="The sequence of stages this ticket goes through (e.g. plan → code → review). Each stage runs an agent in turn. Pipelines are configured in the config file. Leave empty for a simple single-run ticket.">i</button></label>
+            <select id="init-pipeline" x-model="initForm.pipeline"
                     class="w-full bg-surface-800 border border-surface-700/50 rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40">
               <option value="">simple (single run, no stages)</option>
               <template x-for="p in configCache?.pipelines || []" :key="p">
@@ -323,8 +323,8 @@
             </select>
           </div>
           <div>
-            <label class="text-[13px] font-mono text-tx-3 mb-1 flex items-center">Agent<button type="button" class="tip" data-tip="Override the agent for all pipeline stages (or for a standalone ticket). Leave empty to use the pipeline default.">i</button></label>
-            <select x-model="initForm.agent"
+            <label for="init-agent" class="text-[13px] font-mono text-tx-3 mb-1 flex items-center">Agent<button type="button" class="tip" data-tip="Override the agent for all pipeline stages (or for a standalone ticket). Leave empty to use the pipeline default.">i</button></label>
+            <select id="init-agent" x-model="initForm.agent"
                     class="w-full bg-surface-800 border border-surface-700/50 rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40">
               <option value="">Default</option>
               <template x-for="a in configCache?.agents || []" :key="a">
@@ -333,8 +333,8 @@
             </select>
           </div>
           <div>
-            <label class="text-[13px] font-mono text-tx-3 mb-1 flex items-center">Path *<button type="button" class="tip" data-tip="Path to the repository the agent will work in. Supports ~ (e.g. ~/projects/myrepo).">i</button></label>
-            <input x-model="initForm.path" type="text" required
+            <label for="init-path" class="text-[13px] font-mono text-tx-3 mb-1 flex items-center">Path *<button type="button" class="tip" data-tip="Path to the repository the agent will work in. Supports ~ (e.g. ~/projects/myrepo).">i</button></label>
+            <input id="init-path" x-model="initForm.path" type="text" required
                    class="w-full bg-surface-800 border border-surface-700/50 rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40"
                    placeholder="~/projects/myrepo">
           </div>

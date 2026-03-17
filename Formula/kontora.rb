@@ -5,7 +5,7 @@ class Kontora < Formula
 
   url "https://github.com/worksonmyai/kontora.git",
       tag: "v0.5.0",
-      revision: "2635cc4c0c2a5243a02743aecbc357db604a3189",
+      revision: "2ee847ce3ab20dfda3539a8427041c8f5fc560ed",
       using: :git
   head "https://github.com/worksonmyai/kontora.git", branch: "main", using: :git
 

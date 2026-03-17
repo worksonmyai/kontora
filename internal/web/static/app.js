@@ -473,6 +473,12 @@ function kontora() {
     async moveTask(ticketId, newStatus) {
       this.error = null;
       const ticket = this.tickets.find(t => t.id === ticketId);
+      if (newStatus === 'in_progress' && ticket && ticket.status === 'open') {
+        if (confirm("Tickets can't run directly from Open. Move to Todo instead?")) {
+          this.moveTask(ticketId, 'todo');
+        }
+        return;
+      }
       if (newStatus === 'todo' && ticket && !ticket.kontora) {
         this.openInitModal(ticket);
         return;

@@ -110,6 +110,9 @@
     #global-tip { position: fixed; background: rgba(var(--surface-800), 1); color: rgba(var(--tx), 1); font-size: 13px; font-family: 'DM Sans', sans-serif; line-height: 1.4; padding: 6px 10px; border-radius: 6px; border: 1px solid rgba(var(--surface-700), 1); white-space: normal; width: max-content; max-width: 260px; pointer-events: none; opacity: 0; transition: opacity 0.15s; z-index: 9999; }
 
     #global-tip-t { position: fixed; background: rgba(var(--surface-800), 1); color: rgba(var(--tx), 1); font-size: 13px; font-family: 'DM Sans', sans-serif; line-height: 1; padding: 4px 8px; border-radius: 4px; border: 1px solid rgba(var(--surface-700), 1); white-space: nowrap; pointer-events: none; opacity: 0; transition: opacity 0.15s; z-index: 9999; }
+
+    .copyable { cursor: pointer; border-bottom: 1px dashed rgba(var(--surface-600), 0.5); transition: color 0.15s, border-color 0.15s; }
+    .copyable:hover { border-color: rgba(var(--accent), 0.5); }
   </style>
 </head>
 
@@ -210,7 +213,7 @@
                 :class="terminalRW ? 'text-err bg-err/10' : 'text-surface-600 hover:text-tx-3'">
           <span x-text="terminalRW ? 'read-write' : 'read-only'"></span>
         </button>
-        <span class="text-[12px] font-mono text-surface-600 cursor-pointer hover:text-tx-3 transition-colors"
+        <span class="copyable text-[12px] font-mono text-surface-600 hover:text-tx-3"
               @click.stop="copyCmd('kontora attach ' + selectedTicket?.id)"
               x-text="copiedCmd === 'kontora attach ' + selectedTicket?.id ? '✓ copied' : 'kontora attach ' + selectedTicket?.id"></span>
         <button @click="terminalFullscreen = false"
@@ -566,7 +569,7 @@
       <div class="shrink-0">
         <div class="p-4 border-b border-surface-700/30">
           <div class="flex items-center justify-between mb-2">
-            <span class="font-mono text-xs text-surface-600 cursor-pointer hover:text-tx-3 transition-colors"
+            <span class="copyable font-mono text-xs text-surface-600 hover:text-tx-3"
                   x-text="copiedId ? '✓ copied' : selectedTicket?.id"
                   @click.stop="copyTicketId(selectedTicket?.id)"></span>
             <div class="flex items-center gap-3" @click.outside="detailMenuOpen = false">
@@ -730,7 +733,7 @@
                       :class="terminalRW ? 'text-err bg-err/10' : 'text-surface-600 hover:text-tx-3'">
                 <span x-text="terminalRW ? 'read-write' : 'read-only'"></span>
               </button>
-              <span class="text-[12px] font-mono text-surface-600 cursor-pointer hover:text-tx-3 transition-colors ml-2"
+              <span class="copyable text-[12px] font-mono text-surface-600 hover:text-tx-3 ml-2"
                     @click.stop="copyCmd('kontora attach ' + selectedTicket?.id)"
                     x-text="copiedCmd === 'kontora attach ' + selectedTicket?.id ? '✓ copied' : 'kontora attach ' + selectedTicket?.id"></span>
               <button x-show="!isMobile" @click="terminalFullscreen = !terminalFullscreen"
@@ -754,11 +757,11 @@
                   <p class="text-surface-600">Running for <span class="text-tx-3" x-text="formatDuration(selectedTicket)" :data-tip-t="'Started: ' + formatAbsDate(selectedTicket?.started_at)"></span></p>
                 </template>
                 <template x-if="selectedTicket?.branch">
-                  <p class="text-surface-600 mt-1">Branch: <span class="text-tx-3 cursor-pointer hover:text-tx-2 transition-colors"
+                  <p class="text-surface-600 mt-1">Branch: <span class="copyable text-tx-3 hover:text-tx-2"
                     @click.stop="copyBranch(selectedTicket?.branch)"
                     x-text="copiedBranch ? '✓ copied' : selectedTicket?.branch"></span></p>
                 </template>
-                <p class="text-surface-600 mt-2">Attach: <span class="text-tx-3 cursor-pointer hover:text-tx-2 transition-colors"
+                <p class="text-surface-600 mt-2">Attach: <span class="copyable text-tx-3 hover:text-tx-2"
                   @click.stop="copyCmd('kontora attach ' + selectedTicket?.id)"
                   x-text="copiedCmd === 'kontora attach ' + selectedTicket?.id ? '✓ copied' : 'kontora attach ' + selectedTicket?.id"></span></p>
               </div>
@@ -787,11 +790,11 @@
                   <div>
                     <p class="text-ok/60 mb-1">✓ Ticket completed</p>
                     <template x-if="selectedTicket?.branch">
-                      <p>Branch: <span class="text-tx-3 cursor-pointer hover:text-tx-2 transition-colors"
+                      <p>Branch: <span class="copyable text-tx-3 hover:text-tx-2"
                         @click.stop="copyBranch(selectedTicket?.branch)"
                         x-text="copiedBranch ? '✓ copied' : selectedTicket?.branch"></span></p>
                     </template>
-                    <p class="mt-1">Logs: <span class="text-tx-3 cursor-pointer hover:text-tx-2 transition-colors"
+                    <p class="mt-1">Logs: <span class="copyable text-tx-3 hover:text-tx-2"
                       @click.stop="copyCmd('kontora logs ' + selectedTicket?.id)"
                       x-text="copiedCmd === 'kontora logs ' + selectedTicket?.id ? '✓ copied' : 'kontora logs ' + selectedTicket?.id"></span></p>
                   </div>
@@ -805,7 +808,7 @@
                     <template x-if="!selectedTicket?.last_error">
                       <p class="text-surface-600 text-xs leading-relaxed mb-2">Paused manually or by the pipeline's failure policy after retries were exhausted.</p>
                     </template>
-                    <p>Resume: <span class="text-tx-3 cursor-pointer hover:text-tx-2 transition-colors"
+                    <p>Resume: <span class="copyable text-tx-3 hover:text-tx-2"
                       @click.stop="copyCmd('kontora retry ' + selectedTicket?.id)"
                       x-text="copiedCmd === 'kontora retry ' + selectedTicket?.id ? '✓ copied' : 'kontora retry ' + selectedTicket?.id"></span></p>
                     <p class="text-surface-600 mt-2 text-xs leading-relaxed">Click <span class="text-tx-3">retry</span> to re-run the current stage, or drag to <span class="text-tx-3">todo</span> to resume.</p>

@@ -478,7 +478,9 @@
                  x-init="initSortable($el, col.status)">
               <template x-for="ticket in filteredTicketsByStatus(col.status)" :key="ticket.id">
                 <div :data-ticket-id="ticket.id"
+                     role="button" tabindex="0"
                      @click.stop="selectTicket(ticket)"
+                     @keydown.enter.stop="selectTicket(ticket)"
                      class="group rounded-lg p-3 cursor-pointer transition-all duration-150 border slide-up"
                      :class="[
                        selectedTicket?.id === ticket.id

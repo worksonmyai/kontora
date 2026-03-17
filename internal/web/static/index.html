@@ -64,6 +64,9 @@
     ::-webkit-scrollbar-track { background: transparent; }
     ::-webkit-scrollbar-thumb { background: rgba(var(--surface-700), 1); border-radius: 3px; }
     ::-webkit-scrollbar-thumb:hover { background: rgba(var(--surface-600), 1); }
+    *:focus-visible { outline: 2px solid rgba(var(--accent), 0.6); outline-offset: 2px; }
+    input:focus-visible, select:focus-visible, textarea:focus-visible { outline: none; }
+
     @keyframes pulse-dot { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
     .pulse-dot { animation: pulse-dot 2s ease-in-out infinite; }
     @keyframes slide-up { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }

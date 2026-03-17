@@ -709,6 +709,7 @@ function kontora() {
         }
         this._connectTerminal(seq);
       } catch (e) {
+        console.error('terminal load error:', e);
         this.error = 'Failed to load terminal';
         this.terminalOpen = false;
       } finally {
@@ -739,6 +740,7 @@ function kontora() {
         cursorBlink: this.terminalRW,
         disableStdin: false,
         scrollback: 5000,
+        allowProposedApi: true,
       });
       this._term.loadAddon(this._fitAddon);
       this._term.loadAddon(new this._Unicode11AddonClass());

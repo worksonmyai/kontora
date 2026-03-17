@@ -88,17 +88,8 @@ func (d *Daemon) CreateTicket(req web.CreateTicketRequest) (web.TicketInfo, erro
 		return web.TicketInfo{}, fmt.Errorf("parsing created ticket: %w", err)
 	}
 
-	d.mu.Lock()
-	ts := &ticketState{ticket: t, filePath: filePath}
-	d.tickets[id] = ts
-	if t.Status == "todo" {
-		d.enqueue(t)
-	}
-	info := d.buildTicketInfo(ts, false)
-	d.broadcastTicketUpdate(id)
-	d.mu.Unlock()
-
-	return info, nil
+	d.applyTicketSnapshot(filePath, t)
+	return d.GetTicket(id)
 }
 
 // UploadTicket imports a ticket from raw .md file content.
@@ -146,14 +137,8 @@ func (d *Daemon) UploadTicket(content []byte) (web.TicketInfo, error) {
 		return web.TicketInfo{}, fmt.Errorf("writing ticket file: %w", err)
 	}
 
-	d.mu.Lock()
-	ts := &ticketState{ticket: t, filePath: filePath}
-	d.tickets[t.ID] = ts
-	info := d.buildTicketInfo(ts, false)
-	d.broadcastTicketUpdate(t.ID)
-	d.mu.Unlock()
-
-	return info, nil
+	d.applyTicketSnapshot(filePath, t)
+	return d.GetTicket(t.ID)
 }
 
 // GetConfig returns available pipelines and agents from the daemon config.
@@ -251,7 +236,6 @@ func (d *Daemon) PauseTicket(id string) error {
 	}
 
 	filePath := ts.filePath
-	cancel, hasCancel := d.running[id]
 	d.mu.Unlock()
 
 	// Re-read ticket from disk to get a fresh copy that doesn't race with runTicket.
@@ -259,35 +243,94 @@ func (d *Daemon) PauseTicket(id string) error {
 	if err != nil {
 		return err
 	}
-	_ = t2.SetField("status", "paused")
-	if err := d.writeTicket(t2, filePath); err != nil {
+	if err := t2.SetField("status", string(ticket.StatusPaused)); err != nil {
 		return err
 	}
-
-	// Cancel the running agent. The handleAgentExit path will see status=paused
-	// on re-read and skip pipeline evaluation.
-	if hasCancel {
-		cancel()
+	if err := d.writeAndApplyTicket(t2, filePath); err != nil {
+		return err
 	}
-
-	d.mu.Lock()
-	d.tickets[id] = &ticketState{ticket: t2, filePath: filePath}
-	d.broadcastTicketUpdate(id)
-	d.mu.Unlock()
 	return nil
 }
 
 // RetryTicket resets a non-running ticket to todo and re-enqueues it.
 func (d *Daemon) RetryTicket(id string) error {
-	_, err := d.svc.Retry(id)
-	return mapAppError(err)
+	d.mu.Lock()
+
+	ts, ok := d.tickets[id]
+	if !ok {
+		d.mu.Unlock()
+		return web.ErrTicketNotFound
+	}
+	if ts.ticket.Status == ticket.StatusInProgress || ts.ticket.Status == ticket.StatusTodo {
+		d.mu.Unlock()
+		return web.ErrInvalidState
+	}
+
+	filePath := ts.filePath
+	d.mu.Unlock()
+
+	t2, err := ticket.ParseFile(filePath)
+	if err != nil {
+		return err
+	}
+	if err := resetForQueue(t2); err != nil {
+		return err
+	}
+	return d.writeAndApplyTicket(t2, filePath)
 }
 
 // SkipStage advances a ticket to the next pipeline stage, or completes it
 // if already on the last stage.
 func (d *Daemon) SkipStage(id string) error {
-	_, err := d.svc.Skip(id)
-	return mapAppError(err)
+	d.mu.Lock()
+
+	ts, ok := d.tickets[id]
+	if !ok {
+		d.mu.Unlock()
+		return web.ErrTicketNotFound
+	}
+
+	t := ts.ticket
+	filePath := ts.filePath
+	pipelineCfg, ok := d.cfg.Pipelines[t.Pipeline]
+	if !ok {
+		d.mu.Unlock()
+		return fmt.Errorf("unknown pipeline %q for ticket %s", t.Pipeline, id)
+	}
+
+	currentIdx := -1
+	for i, s := range pipelineCfg {
+		if s.Role == t.Role {
+			currentIdx = i
+			break
+		}
+	}
+	if currentIdx < 0 {
+		d.mu.Unlock()
+		return fmt.Errorf("role %q not found in pipeline %q", t.Role, t.Pipeline)
+	}
+
+	d.mu.Unlock()
+
+	t2, err := ticket.ParseFile(filePath)
+	if err != nil {
+		return err
+	}
+
+	if currentIdx+1 >= len(pipelineCfg) {
+		if err := markDone(t2, time.Now().UTC()); err != nil {
+			return err
+		}
+	} else {
+		if err := t2.SetField("role", pipelineCfg[currentIdx+1].Role); err != nil {
+			return err
+		}
+		if err := resetForQueue(t2); err != nil {
+			return err
+		}
+	}
+
+	return d.writeAndApplyTicket(t2, filePath)
 }
 
 // SetStage moves a ticket to a specific pipeline stage by name.
@@ -332,15 +375,7 @@ func (d *Daemon) SetStage(id string, stage string) error {
 		return fmt.Errorf("failed to set ticket role to %q: %w", stage, err)
 	}
 
-	if err := d.writeTicket(t2, filePath); err != nil {
-		return err
-	}
-
-	d.mu.Lock()
-	d.tickets[id] = &ticketState{ticket: t2, filePath: filePath}
-	d.broadcastTicketUpdate(id)
-	d.mu.Unlock()
-	return nil
+	return d.writeAndApplyTicket(t2, filePath)
 }
 
 // MoveTicket sets a ticket's status to newStatus with transition validation.
@@ -357,40 +392,114 @@ func (d *Daemon) MoveTicket(id string, newStatus string) error {
 		default:
 			return web.ErrInvalidState
 		}
-		_, err := d.svc.SetStatus(id, ticket.Status(newStatus))
-		return mapAppError(err)
+
+		d.mu.Lock()
+		ts, ok := d.tickets[id]
+		if !ok {
+			d.mu.Unlock()
+			return web.ErrTicketNotFound
+		}
+		filePath := ts.filePath
+		d.mu.Unlock()
+
+		t2, err := ticket.ParseFile(filePath)
+		if err != nil {
+			return err
+		}
+		if err := t2.SetField("kontora", true); err != nil {
+			return err
+		}
+		switch newStatus {
+		case "open":
+			if err := resetForOpen(t2); err != nil {
+				return err
+			}
+		case "done":
+			if err := markDone(t2, time.Now().UTC()); err != nil {
+				return err
+			}
+		case "cancelled":
+			if err := markCancelled(t2); err != nil {
+				return err
+			}
+		}
+
+		return d.writeAndApplyTicket(t2, filePath)
 	}
 }
 
 // InitTicket initializes a non-kontora ticket: sets pipeline, path, kontora=true,
 // status=todo, role to the first pipeline stage, and enqueues it.
 func (d *Daemon) InitTicket(id string, req web.InitTicketRequest) error {
-	_, err := d.svc.Init(id, app.InitRequest{
-		Pipeline: req.Pipeline,
-		Path:     req.Path,
-		Agent:    req.Agent,
-	})
-	return mapAppError(err)
+	d.mu.Lock()
+
+	ts, ok := d.tickets[id]
+	if !ok {
+		d.mu.Unlock()
+		return web.ErrTicketNotFound
+	}
+	if ts.ticket.Kontora {
+		d.mu.Unlock()
+		return web.ErrInvalidState
+	}
+
+	if req.Pipeline != "" {
+		pipelineCfg, ok := d.cfg.Pipelines[req.Pipeline]
+		if !ok || len(pipelineCfg) == 0 {
+			d.mu.Unlock()
+			return web.ErrInvalidState
+		}
+	}
+	if req.Agent != "" {
+		if _, ok := d.cfg.Agents[req.Agent]; !ok {
+			d.mu.Unlock()
+			return fmt.Errorf("%w %q", web.ErrUnknownAgent, req.Agent)
+		}
+	}
+
+	filePath := ts.filePath
+	d.mu.Unlock()
+
+	t2, err := ticket.ParseFile(filePath)
+	if err != nil {
+		return err
+	}
+	_ = t2.SetField("pipeline", req.Pipeline)
+	_ = t2.SetField("path", req.Path)
+	if req.Agent != "" {
+		_ = t2.SetField("agent", req.Agent)
+	}
+	_ = t2.SetField("kontora", true)
+	if req.Pipeline != "" {
+		pipelineCfg := d.cfg.Pipelines[req.Pipeline]
+		_ = t2.SetField("role", pipelineCfg[0].Role)
+	}
+	if err := resetForQueue(t2); err != nil {
+		return err
+	}
+	return d.writeAndApplyTicket(t2, filePath)
 }
 
 // UpdateTicket updates body and frontmatter fields of a ticket.
 // Allowed in statuses: open, todo, paused.
 func (d *Daemon) UpdateTicket(id string, req web.UpdateTicketRequest) error {
 	d.mu.Lock()
-	defer d.mu.Unlock()
 
 	ts, ok := d.tickets[id]
 	if !ok {
+		d.mu.Unlock()
 		return web.ErrTicketNotFound
 	}
 	switch ts.ticket.Status {
 	case ticket.StatusOpen, ticket.StatusTodo, ticket.StatusPaused:
 		// allowed
 	case ticket.StatusInProgress, ticket.StatusDone, ticket.StatusCancelled:
+		d.mu.Unlock()
 		return web.ErrInvalidState
 	}
 
 	filePath := ts.filePath
+	d.mu.Unlock()
 
 	t2, err := ticket.ParseFile(filePath)
 	if err != nil {
@@ -431,13 +540,7 @@ func (d *Daemon) UpdateTicket(id string, req web.UpdateTicketRequest) error {
 		t2.SetBody(*req.Body)
 	}
 
-	if err := d.writeTicket(t2, filePath); err != nil {
-		return err
-	}
-
-	d.tickets[id] = &ticketState{ticket: t2, filePath: filePath}
-	d.broadcastTicketUpdate(id)
-	return nil
+	return d.writeAndApplyTicket(t2, filePath)
 }
 
 // GetLogs returns the log content for a ticket stage. If stage is empty, it returns
@@ -530,25 +633,6 @@ func (d *Daemon) buildTicketInfo(ts *ticketState, includeBody bool) web.TicketIn
 	info := web.TicketInfoFromView(v)
 	info.LastError = ts.lastError
 	return info
-}
-
-// mapAppError translates app-level sentinel errors to web-level sentinel errors
-// so that HTTP handlers and tests that check for web.ErrInvalidState etc. continue
-// to work correctly.
-func mapAppError(err error) error {
-	if err == nil {
-		return nil
-	}
-	if errors.Is(err, app.ErrNotFound) {
-		return web.ErrTicketNotFound
-	}
-	if errors.Is(err, app.ErrInvalidState) {
-		return web.ErrInvalidState
-	}
-	if errors.Is(err, app.ErrUnknownAgent) {
-		return web.ErrUnknownAgent
-	}
-	return err
 }
 
 // removeQueuedLocked drops a ticket from the dedupe map and scheduler heap.

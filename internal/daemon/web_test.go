@@ -174,11 +174,6 @@ func TestDaemon_SkipStage(t *testing.T) {
 	h.writeTicket("tst-s01.md", h.taskMD("tst-s01", "todo", "two-stage"))
 	h.waitForStatus("tst-s01.md", ticket.StatusInProgress, 5*time.Second)
 
-	// Pause first (can't skip a running ticket without pausing).
-	require.NoError(t, d.PauseTicket("tst-s01"))
-	h.waitForStatus("tst-s01.md", ticket.StatusPaused, 5*time.Second)
-
-	// Skip step1 → step2.
 	require.NoError(t, d.SkipStage("tst-s01"))
 
 	// Agent2 is "true" so it should complete quickly.
@@ -245,6 +240,72 @@ created: 2026-01-01T00:00:00Z
 	require.NoError(t, <-errCh)
 }
 
+func TestDaemon_MoveTicket_RunningToDone(t *testing.T) {
+	h := newHarness(t)
+	cfg := h.defaultConfig("sleep", "true")
+	cfg.Agents["agent1"] = config.Agent{Binary: "sleep", Args: []string{"30"}}
+	cfg.Roles["step1"] = config.Role{Prompt: ""}
+	d := h.newDaemon(cfg)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- d.Run(ctx) }()
+	time.Sleep(200 * time.Millisecond)
+
+	h.writeTicket("tst-md01.md", h.taskMD("tst-md01", "todo", "one-stage"))
+	h.waitForStatus("tst-md01.md", ticket.StatusInProgress, 5*time.Second)
+
+	require.NoError(t, d.MoveTicket("tst-md01", "done"))
+
+	result := h.waitForStatus("tst-md01.md", ticket.StatusDone, 5*time.Second)
+	require.NotNil(t, result.CompletedAt)
+	h.waitForWorktreeGone("tst-md01", 5*time.Second)
+
+	cancel()
+	require.NoError(t, <-errCh)
+}
+
+func TestDaemon_RetryTicket_ClearsCompletedAt(t *testing.T) {
+	h := newHarness(t)
+	cfg := h.defaultConfig("sleep", "true")
+	cfg.Agents["agent1"] = config.Agent{Binary: "sleep", Args: []string{"30"}}
+	cfg.Roles["step1"] = config.Role{Prompt: ""}
+	d := h.newDaemon(cfg)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	h.writeTicket("tst-rc01.md", fmt.Sprintf(`---
+id: tst-rc01
+kontora: true
+status: done
+pipeline: one-stage
+path: %s
+created: 2026-01-01T00:00:00Z
+started_at: 2026-01-02T00:00:00Z
+completed_at: 2026-01-03T00:00:00Z
+---
+# Test ticket tst-rc01
+`, h.repoDir))
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- d.Run(ctx) }()
+	time.Sleep(200 * time.Millisecond)
+
+	require.NoError(t, d.RetryTicket("tst-rc01"))
+
+	require.Eventually(t, func() bool {
+		tkt := h.readTask("tst-rc01.md")
+		return (tkt.Status == ticket.StatusTodo || tkt.Status == ticket.StatusInProgress) &&
+			tkt.CompletedAt == nil
+	}, 5*time.Second, 50*time.Millisecond)
+
+	cancel()
+	require.NoError(t, <-errCh)
+}
+
 func TestDaemon_MoveTicket(t *testing.T) {
 	cases := []struct {
 		name        string
@@ -284,6 +345,9 @@ func TestDaemon_MoveTicket(t *testing.T) {
 				if tc.checkStatus {
 					result := h.readTask(ticketID + ".md")
 					assert.Equal(t, ticket.Status(tc.newStatus), result.Status)
+					if tc.newStatus == "done" {
+						assert.NotNil(t, result.CompletedAt)
+					}
 				}
 			}
 

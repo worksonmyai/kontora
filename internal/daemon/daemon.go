@@ -23,8 +23,6 @@ import (
 	"github.com/worksonmyai/kontora/internal/process"
 	"github.com/worksonmyai/kontora/internal/prompt"
 	"github.com/worksonmyai/kontora/internal/ticket"
-	"github.com/worksonmyai/kontora/internal/ticket/app"
-	"github.com/worksonmyai/kontora/internal/ticket/store"
 	"github.com/worksonmyai/kontora/internal/tmux"
 	"github.com/worksonmyai/kontora/internal/watcher"
 	"github.com/worksonmyai/kontora/internal/web"
@@ -155,8 +153,6 @@ type Daemon struct {
 	runner            RunnerFunc
 	skipOrphanCleanup bool
 	broker            *web.SSEBroker
-	svc               *app.Service
-
 	debounce time.Duration
 	lockPath string
 	log      *slog.Logger
@@ -201,41 +197,7 @@ func New(cfg *config.Config, opts ...Option) *Daemon {
 		opt(d)
 	}
 	d.queueCond = sync.NewCond(&d.mu)
-	d.svc = d.buildService()
 	return d
-}
-
-func (d *Daemon) buildService() *app.Service {
-	repo := store.NewDaemonRepo(store.DaemonRepoCallbacks{
-		PathLookup: func(id string) (string, error) {
-			d.mu.Lock()
-			defer d.mu.Unlock()
-			ts, ok := d.tickets[id]
-			if !ok {
-				return "", app.ErrNotFound
-			}
-			return ts.filePath, nil
-		},
-		WriteTicket: func(t *ticket.Ticket, path string) error {
-			return d.writeTicket(t, path)
-		},
-		AfterSave: func(id string, st *app.StoredTicket) {
-			d.mu.Lock()
-			defer d.mu.Unlock()
-			d.tickets[id] = &ticketState{ticket: st.Ticket, filePath: st.FilePath}
-		},
-		ListTickets: func() []*app.StoredTicket {
-			d.mu.Lock()
-			defer d.mu.Unlock()
-			result := make([]*app.StoredTicket, 0, len(d.tickets))
-			for _, ts := range d.tickets {
-				result = append(result, &app.StoredTicket{Ticket: ts.ticket, FilePath: ts.filePath})
-			}
-			return result
-		},
-	})
-	rt := &daemonRuntime{d: d}
-	return app.New(d.cfg, repo, rt)
 }
 
 // ticketLog returns a logger with the ticket ID pre-set.
@@ -412,54 +374,7 @@ func (d *Daemon) handleFileChanged(path string) {
 	if t.ID == "" {
 		return
 	}
-
-	log := d.ticketLog(t.ID)
-
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
-	prev, known := d.tickets[t.ID]
-	ns := &ticketState{ticket: t, filePath: path}
-	// Preserve lastError when the ticket stays paused (e.g. user edited notes
-	// but didn't retry). Rebuilding from disk would otherwise lose it since
-	// lastError is in-memory only.
-	if known && prev.lastError != "" && prev.ticket.Status == ticket.StatusPaused && t.Status == ticket.StatusPaused {
-		ns.lastError = prev.lastError
-	}
-	d.tickets[t.ID] = ns
-	d.broadcastTicketUpdate(t.ID)
-
-	if !t.Kontora {
-		return
-	}
-
-	switch t.Status { //nolint:exhaustive
-	case ticket.StatusTodo:
-		if !known || prev.ticket.Status != ticket.StatusTodo {
-			if cancel, ok := d.running[t.ID]; ok {
-				log.Info("killing agent", "reason", "status changed to todo")
-				cancel()
-			}
-			// Kill any leftover tmux window (e.g. from a paused ticket being retried).
-			d.killTaskWindow(t.ID)
-			if !known {
-				log.Info("new ticket", "pipeline", t.Pipeline)
-			} else {
-				log.Info("enqueuing", "previous_status", string(prev.ticket.Status), "pipeline", t.Pipeline, "role", t.Role)
-			}
-			d.enqueue(t)
-		}
-	case ticket.StatusPaused, ticket.StatusCancelled:
-		if cancel, ok := d.running[t.ID]; ok {
-			log.Info("killing agent", "reason", "user set "+string(t.Status))
-			cancel()
-		}
-		if t.Status == ticket.StatusCancelled {
-			go d.cleanupWorktree(log, t)
-		}
-	case ticket.StatusDone:
-		go d.cleanupWorktree(log, t)
-	}
+	d.applyTicketSnapshot(path, t)
 }
 
 func (d *Daemon) handleFileRemoved(path string) {

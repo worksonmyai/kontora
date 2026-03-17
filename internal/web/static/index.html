@@ -308,7 +308,7 @@
   <div x-show="initModal" x-transition.opacity class="fixed inset-0 z-50 flex items-center justify-center bg-black/60" @click.self="closeInitModal()">
     <div role="dialog" aria-modal="true" aria-labelledby="init-modal-title" class="bg-surface-900 border border-surface-700/50 rounded-xl p-5 w-full max-w-md mx-4 slide-up" @click.stop>
       <div class="flex items-center justify-between mb-4">
-        <span id="init-modal-title" class="text-sm font-semibold text-tx-2">Do ticket</span>
+        <span id="init-modal-title" class="text-sm font-semibold text-tx-2">Start ticket</span>
         <button @click="closeInitModal()" class="text-surface-600 hover:text-tx-3" aria-label="Close">
           <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
         </button>
@@ -352,7 +352,7 @@
           </button>
           <button type="submit" :disabled="initSubmitting"
                   class="text-[13px] font-mono px-4 py-1.5 rounded bg-accent/20 border border-accent/30 text-accent hover:bg-accent/30 transition-colors disabled:opacity-50">
-            <span x-text="initSubmitting ? 'doing...' : 'do'"></span>
+            <span x-text="initSubmitting ? 'starting...' : 'start'"></span>
           </button>
         </div>
       </form>

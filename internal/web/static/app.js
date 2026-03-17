@@ -58,7 +58,7 @@ function kontora() {
       { status: 'todo', label: 'Todo', color: 'bg-tx-4', tip: 'Waiting to start. Will begin automatically when a slot is available.', emptyText: 'Move a ticket here to put it next in line', tint: '' },
       { status: 'in_progress', label: 'Running', color: 'bg-accent', tip: 'An agent is currently working on this ticket.', emptyText: 'No tickets are running right now', tint: 'bg-accent/[0.04]' },
       { status: 'paused', label: 'Paused', color: 'bg-warn', tip: 'Stopped for now. Click Retry or drag to Todo to resume.', emptyText: 'No paused tickets', tint: '' },
-      { status: 'done', label: 'Done', color: 'bg-ok', tip: 'Ticket completed successfully.', emptyText: 'No completed tickets yet', tint: 'bg-ok/[0.04]' },
+      { status: 'done', label: 'Done', color: 'bg-ok', tip: 'Ticket completed successfully.', emptyText: 'No completed tickets yet', tint: '' },
       { status: 'cancelled', label: 'Cancelled', color: 'bg-surface-600', tip: 'Stopped manually. Drag to Todo to run it again.', emptyText: 'No cancelled tickets', tint: '' },
     ],
 

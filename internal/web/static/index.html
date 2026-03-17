@@ -604,6 +604,7 @@
             <span class="text-[12px] font-mono px-2 py-0.5 rounded-full border"
                   :class="statusStyle(selectedTicket?.status)"
                   x-text="selectedTicket?.status"></span>
+            <span x-show="detailLoading" class="text-[12px] font-mono text-surface-600 ml-2">loading...</span>
             <div class="mt-2 flex flex-col gap-0.5">
               <template x-if="selectedTicket?.pipeline">
                 <div class="flex gap-3">

@@ -27,6 +27,7 @@ function kontora() {
     logViewContent: null,
     logViewStage: null,
     logViewLoading: false,
+    detailLoading: false,
     searchQuery: '',
     searchOpen: false,
     suggestions: [],
@@ -330,6 +331,7 @@ function kontora() {
       this.logViewLoading = false;
       this.setStageOpen = false;
       this.selectedTicket = ticket;
+      this.detailLoading = true;
       try {
         var res = await fetch('/api/tickets/' + ticket.id);
         if (res.ok) {
@@ -341,6 +343,7 @@ function kontora() {
       } catch (e) {
         this.error = 'Failed to load ticket details';
       }
+      this.detailLoading = false;
       if (this.selectedTicket?.status !== 'in_progress' && this.selectedTicket?.status !== 'todo' && this.selectedTicket?.status !== 'open'
           && this.selectedTicket?.history?.length > 0) {
         var lastStage = this.selectedTicket.history[this.selectedTicket.history.length - 1].stage;

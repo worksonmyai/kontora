@@ -79,7 +79,13 @@ func Status(cfg *config.Config, all bool, w io.Writer, opts StatusOpts) error {
 		if ra, rb := StatusRank(a.Status), StatusRank(b.Status); ra != rb {
 			return ra - rb
 		}
-		return derefTime(a.Created).Compare(derefTime(b.Created))
+		if c := derefTime(b.Created).Compare(derefTime(a.Created)); c != 0 {
+			return c
+		}
+		if at, bt := a.Title(), b.Title(); at != bt {
+			return strings.Compare(at, bt)
+		}
+		return strings.Compare(a.ID, b.ID)
 	})
 
 	if len(tickets) == 0 {

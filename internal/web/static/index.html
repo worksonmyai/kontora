@@ -215,9 +215,9 @@
 
   <!-- Create ticket modal -->
   <div x-show="createModal" x-transition.opacity class="fixed inset-0 z-50 flex items-center justify-center bg-black/60" @click.self="closeCreateModal()">
-    <div class="bg-surface-900 border border-surface-700/50 rounded-xl p-5 w-full max-w-md mx-4 slide-up" @click.stop>
+    <div role="dialog" aria-modal="true" aria-labelledby="create-modal-title" class="bg-surface-900 border border-surface-700/50 rounded-xl p-5 w-full max-w-md mx-4 slide-up" @click.stop>
       <div class="flex items-center justify-between mb-4">
-        <span class="text-sm font-semibold text-tx-2">New ticket</span>
+        <span id="create-modal-title" class="text-sm font-semibold text-tx-2">New ticket</span>
         <button @click="closeCreateModal()" class="text-surface-600 hover:text-tx-3 text-sm">✕</button>
       </div>
       <form @submit.prevent="submitCreateTicket()">
@@ -293,9 +293,9 @@
 
   <!-- Init ticket modal -->
   <div x-show="initModal" x-transition.opacity class="fixed inset-0 z-50 flex items-center justify-center bg-black/60" @click.self="closeInitModal()">
-    <div class="bg-surface-900 border border-surface-700/50 rounded-xl p-5 w-full max-w-md mx-4 slide-up" @click.stop>
+    <div role="dialog" aria-modal="true" aria-labelledby="init-modal-title" class="bg-surface-900 border border-surface-700/50 rounded-xl p-5 w-full max-w-md mx-4 slide-up" @click.stop>
       <div class="flex items-center justify-between mb-4">
-        <span class="text-sm font-semibold text-tx-2">Do ticket</span>
+        <span id="init-modal-title" class="text-sm font-semibold text-tx-2">Do ticket</span>
         <button @click="closeInitModal()" class="text-surface-600 hover:text-tx-3 text-sm">✕</button>
       </div>
       <p class="text-[13px] font-mono text-surface-600 mb-1" x-text="initForm.ticketId"></p>
@@ -346,9 +346,9 @@
 
   <!-- Delete ticket modal -->
   <div x-show="deleteModal" x-transition.opacity class="fixed inset-0 z-50 flex items-center justify-center bg-black/60" @click.self="closeDeleteModal()">
-    <div class="bg-surface-900 border border-err/20 rounded-xl p-5 w-full max-w-md mx-4 slide-up" @click.stop>
+    <div role="dialog" aria-modal="true" aria-labelledby="delete-modal-title" class="bg-surface-900 border border-err/20 rounded-xl p-5 w-full max-w-md mx-4 slide-up" @click.stop>
       <div class="flex items-center justify-between mb-4">
-        <span class="text-sm font-semibold text-tx-2">Delete ticket file</span>
+        <span id="delete-modal-title" class="text-sm font-semibold text-tx-2">Delete ticket file</span>
         <button @click="closeDeleteModal()"
                 :disabled="deleteSubmitting"
                 class="text-surface-600 hover:text-tx-3 text-sm disabled:opacity-50 disabled:cursor-not-allowed">✕</button>

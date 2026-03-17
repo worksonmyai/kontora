@@ -227,7 +227,9 @@
     <div role="dialog" aria-modal="true" aria-labelledby="create-modal-title" class="bg-surface-900 border border-surface-700/50 rounded-xl p-5 w-full max-w-md mx-4 slide-up" @click.stop>
       <div class="flex items-center justify-between mb-4">
         <span id="create-modal-title" class="text-sm font-semibold text-tx-2">New ticket</span>
-        <button @click="closeCreateModal()" class="text-surface-600 hover:text-tx-3 text-sm">✕</button>
+        <button @click="closeCreateModal()" class="text-surface-600 hover:text-tx-3" aria-label="Close">
+          <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+        </button>
       </div>
       <form @submit.prevent="submitCreateTicket()">
         <div class="space-y-3">
@@ -305,7 +307,9 @@
     <div role="dialog" aria-modal="true" aria-labelledby="init-modal-title" class="bg-surface-900 border border-surface-700/50 rounded-xl p-5 w-full max-w-md mx-4 slide-up" @click.stop>
       <div class="flex items-center justify-between mb-4">
         <span id="init-modal-title" class="text-sm font-semibold text-tx-2">Do ticket</span>
-        <button @click="closeInitModal()" class="text-surface-600 hover:text-tx-3 text-sm">✕</button>
+        <button @click="closeInitModal()" class="text-surface-600 hover:text-tx-3" aria-label="Close">
+          <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+        </button>
       </div>
       <p class="text-[13px] font-mono text-surface-600 mb-1" x-text="initForm.ticketId"></p>
       <p x-show="initForm.title" class="text-[13px] text-tx-2 mb-1" x-text="initForm.title"></p>
@@ -360,7 +364,9 @@
         <span id="delete-modal-title" class="text-sm font-semibold text-tx-2">Delete ticket file</span>
         <button @click="closeDeleteModal()"
                 :disabled="deleteSubmitting"
-                class="text-surface-600 hover:text-tx-3 text-sm disabled:opacity-50 disabled:cursor-not-allowed">✕</button>
+                class="text-surface-600 hover:text-tx-3 disabled:opacity-50 disabled:cursor-not-allowed" aria-label="Close">
+          <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+        </button>
       </div>
       <p class="text-[13px] font-mono text-surface-600 mb-1" x-text="selectedTicket?.id"></p>
       <p x-show="selectedTicket?.title" class="text-[13px] text-tx-2 mb-3" x-text="selectedTicket?.title"></p>

@@ -653,24 +653,24 @@
           <!-- Actions -->
           <div class="flex flex-wrap gap-2">
             <template x-if="selectedTicket?.status === 'in_progress'">
-              <button @click="action('pause')"
-                      class="text-[13px] font-mono px-3 py-1.5 md:py-1 rounded bg-surface-800 border border-surface-700/50 text-tx-3 hover:text-warn hover:border-warn/30 transition-colors min-h-[44px] md:min-h-0"
-                      title="Stops the running agent and pauses the ticket. The worktree is preserved for inspection or retry.">
-                pause
+              <button @click="action('pause')" :disabled="!!actionLoading"
+                      class="text-[13px] font-mono px-3 py-1.5 md:py-1 rounded bg-surface-800 border border-surface-700/50 text-tx-3 hover:text-warn hover:border-warn/30 transition-colors min-h-[44px] md:min-h-0 disabled:opacity-50 disabled:cursor-not-allowed"
+                      data-tip-t="Stops the running agent and pauses the ticket. The worktree is preserved for inspection or retry.">
+                <span x-text="actionLoading === 'pause' ? 'pausing...' : 'pause'"></span>
               </button>
             </template>
             <template x-if="selectedTicket?.status === 'paused'">
-              <button @click="action('retry')"
-                      class="text-[13px] font-mono px-3 py-1.5 md:py-1 rounded bg-surface-800 border border-surface-700/50 text-tx-3 hover:text-ok hover:border-ok/30 transition-colors min-h-[44px] md:min-h-0"
-                      title="Resets the attempt counter and re-runs the current stage in the same worktree.">
-                retry
+              <button @click="action('retry')" :disabled="!!actionLoading"
+                      class="text-[13px] font-mono px-3 py-1.5 md:py-1 rounded bg-surface-800 border border-surface-700/50 text-tx-3 hover:text-ok hover:border-ok/30 transition-colors min-h-[44px] md:min-h-0 disabled:opacity-50 disabled:cursor-not-allowed"
+                      data-tip-t="Resets the attempt counter and re-runs the current stage in the same worktree.">
+                <span x-text="actionLoading === 'retry' ? 'retrying...' : 'retry'"></span>
               </button>
             </template>
             <template x-if="selectedTicket?.status === 'in_progress'">
-              <button @click="action('skip')"
-                      class="text-[13px] font-mono px-3 py-1.5 md:py-1 rounded bg-surface-800 border border-surface-700/50 text-tx-3 hover:text-tx-2 hover:border-surface-600 transition-colors min-h-[44px] md:min-h-0"
-                      title="Skips the current stage and advances to the next one in the pipeline.">
-                skip stage
+              <button @click="action('skip')" :disabled="!!actionLoading"
+                      class="text-[13px] font-mono px-3 py-1.5 md:py-1 rounded bg-surface-800 border border-surface-700/50 text-tx-3 hover:text-tx-2 hover:border-surface-600 transition-colors min-h-[44px] md:min-h-0 disabled:opacity-50 disabled:cursor-not-allowed"
+                      data-tip-t="Skips the current stage and advances to the next one in the pipeline.">
+                <span x-text="actionLoading === 'skip' ? 'skipping...' : 'skip stage'"></span>
               </button>
             </template>
           </div>

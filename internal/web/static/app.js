@@ -6,6 +6,7 @@ function kontora() {
     terminalOpen: false,
     terminalRW: false,
     terminalFullscreen: false,
+    ticketFullscreen: false,
     activeTab: 'terminal',
     panelWidth: parseInt(localStorage.getItem('kontora-panel-width')) || Math.floor(window.innerWidth * 0.5),
     loading: true,
@@ -362,6 +363,7 @@ function kontora() {
     },
 
     switchTab(tab) {
+      if (tab !== 'ticket') this.ticketFullscreen = false;
       this.activeTab = tab;
       if (tab === 'terminal' && this.selectedTicket?.status === 'in_progress' && !this.terminalOpen) {
         this.openTerminal();
@@ -375,6 +377,7 @@ function kontora() {
 
     closeDetail() {
       this.terminalFullscreen = false;
+      this.ticketFullscreen = false;
       this.closeTerminal();
       this.terminalRW = false;
       this.detailMenuOpen = false;

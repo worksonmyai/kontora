@@ -622,9 +622,9 @@
               <template x-if="selectedTicket?.branch">
                 <div class="flex gap-3">
                   <span class="text-[12px] font-mono text-surface-600 w-14">branch</span>
-                  <span class="copyable text-[12px] font-mono text-tx-3 hover:text-tx-2"
+                  <button type="button" class="copyable text-[12px] font-mono text-tx-3 hover:text-tx-2"
                         @click.stop="copyBranch(selectedTicket?.branch)"
-                        x-text="copiedBranch ? '✓ copied' : selectedTicket?.branch"></span>
+                        x-text="copiedBranch === selectedTicket?.branch ? '✓ copied' : selectedTicket?.branch"></button>
                 </div>
               </template>
               <template x-if="selectedTicket?.created_at">
@@ -765,9 +765,9 @@
                   <p class="text-surface-600">Running for <span class="text-tx-3" x-text="formatDuration(selectedTicket)" :data-tip-t="'Started: ' + formatAbsDate(selectedTicket?.started_at)"></span></p>
                 </template>
                 <template x-if="selectedTicket?.branch">
-                  <p class="text-surface-600 mt-1">Branch: <span class="copyable text-tx-3 hover:text-tx-2"
+                  <p class="text-surface-600 mt-1">Branch: <button type="button" class="copyable text-tx-3 hover:text-tx-2"
                     @click.stop="copyBranch(selectedTicket?.branch)"
-                    x-text="copiedBranch ? '✓ copied' : selectedTicket?.branch"></span></p>
+                    x-text="copiedBranch === selectedTicket?.branch ? '✓ copied' : selectedTicket?.branch"></button></p>
                 </template>
                 <p class="text-surface-600 mt-2">Attach: <span class="copyable text-tx-3 hover:text-tx-2"
                   @click.stop="copyCmd('kontora attach ' + selectedTicket?.id)"
@@ -798,9 +798,9 @@
                   <div>
                     <p class="text-ok/60 mb-1">✓ Ticket completed</p>
                     <template x-if="selectedTicket?.branch">
-                      <p>Branch: <span class="copyable text-tx-3 hover:text-tx-2"
+                      <p>Branch: <button type="button" class="copyable text-tx-3 hover:text-tx-2"
                         @click.stop="copyBranch(selectedTicket?.branch)"
-                        x-text="copiedBranch ? '✓ copied' : selectedTicket?.branch"></span></p>
+                        x-text="copiedBranch === selectedTicket?.branch ? '✓ copied' : selectedTicket?.branch"></button></p>
                     </template>
                     <p class="mt-1">Logs: <span class="copyable text-tx-3 hover:text-tx-2"
                       @click.stop="copyCmd('kontora logs ' + selectedTicket?.id)"

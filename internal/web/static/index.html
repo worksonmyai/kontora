@@ -619,6 +619,14 @@
                 <span class="text-[12px] font-mono text-surface-600 w-14">path</span>
                 <span class="text-[12px] font-mono text-tx-3" x-text="selectedTicket?.path" :title="selectedTicket?.path"></span>
               </div>
+              <template x-if="selectedTicket?.branch">
+                <div class="flex gap-3">
+                  <span class="text-[12px] font-mono text-surface-600 w-14">branch</span>
+                  <span class="copyable text-[12px] font-mono text-tx-3 hover:text-tx-2"
+                        @click.stop="copyBranch(selectedTicket?.branch)"
+                        x-text="copiedBranch ? '✓ copied' : selectedTicket?.branch"></span>
+                </div>
+              </template>
               <template x-if="selectedTicket?.created_at">
                 <div class="flex gap-3">
                   <span class="text-[12px] font-mono text-surface-600 w-14">created</span>

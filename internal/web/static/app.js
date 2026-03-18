@@ -21,7 +21,7 @@ function kontora() {
     deleteModal: false,
     detailMenuOpen: false,
     copiedId: false,
-    copiedBranch: false,
+    copiedBranch: null,
     copiedCmd: null,
     configCache: null,
     logViewContent: null,
@@ -399,8 +399,8 @@ function kontora() {
     copyBranch(branch) {
       if (!branch) return;
       navigator.clipboard.writeText(branch);
-      this.copiedBranch = true;
-      setTimeout(() => { this.copiedBranch = false; }, 1200);
+      this.copiedBranch = branch;
+      setTimeout(() => { this.copiedBranch = null; }, 1200);
     },
 
     copyCmd(cmd) {

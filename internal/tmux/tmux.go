@@ -99,7 +99,10 @@ func newWindow(sessionName, ticketID, dir, script string) error {
 	}
 
 	// Session doesn't exist — create it with this as the first window.
-	out, err = exec.Command("tmux", "new-session", "-d", "-s", sessionName, "-n", ticketID, "-c", dir, "--", script).CombinedOutput()
+	// Ensure LANG is set so the tmux server starts with UTF-8 support.
+	createCmd := exec.Command("tmux", "new-session", "-d", "-s", sessionName, "-n", ticketID, "-c", dir, "--", script)
+	createCmd.Env = append(os.Environ(), "LANG=en_US.UTF-8")
+	out, err = createCmd.CombinedOutput()
 	if err == nil {
 		return nil
 	}

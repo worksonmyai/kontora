@@ -55,8 +55,10 @@ func (s *Server) handleTerminalWS(w http.ResponseWriter, r *http.Request) {
 	// without shrinking the pane in the main session.
 	viewSession := fmt.Sprintf("kontora-view-%s-%x", id, rand.Uint32())
 	mainSession := "=" + tmux.DefaultSessionName
-	out, err := exec.Command("tmux", "new-session", "-d", "-t", mainSession, "-s", viewSession,
-		"-x", strconv.Itoa(cols), "-y", strconv.Itoa(rows)).CombinedOutput()
+	newCmd := exec.Command("tmux", "new-session", "-d", "-t", mainSession, "-s", viewSession,
+		"-x", strconv.Itoa(cols), "-y", strconv.Itoa(rows))
+	newCmd.Env = append(os.Environ(), "LANG=en_US.UTF-8")
+	out, err := newCmd.CombinedOutput()
 	if err != nil {
 		s.log.Error("linked session create failed", "err", err, "output", string(out), "ticket", id)
 		conn.Close(websocket.StatusInternalError, "failed to create viewer session")
@@ -72,7 +74,7 @@ func (s *Server) handleTerminalWS(w http.ResponseWriter, r *http.Request) {
 		args = append(args, "-r")
 	}
 	cmd := exec.CommandContext(ctx, "tmux", args...)
-	cmd.Env = append(os.Environ(), "TERM=xterm-256color")
+	cmd.Env = append(os.Environ(), "TERM=xterm-256color", "LANG=en_US.UTF-8")
 
 	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{
 		Rows: uint16(rows),

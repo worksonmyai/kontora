@@ -133,9 +133,9 @@ function kontora() {
       return this.tickets
         .filter(t => t.status === status && (status === 'open' || t.kontora))
         .sort((a, b) => {
-          const ca = a.created_at || '';
-          const cb = b.created_at || '';
-          if (ca !== cb) return ca > cb ? -1 : 1;
+          const ta = status === 'in_progress' && a.started_at ? a.started_at : (a.created_at || '');
+          const tb = status === 'in_progress' && b.started_at ? b.started_at : (b.created_at || '');
+          if (ta !== tb) return ta > tb ? -1 : 1;
           if (a.title !== b.title) return a.title < b.title ? -1 : 1;
           if (a.id !== b.id) return a.id < b.id ? -1 : 1;
           return 0;

@@ -79,7 +79,9 @@ func Status(cfg *config.Config, all bool, w io.Writer, opts StatusOpts) error {
 		if ra, rb := StatusRank(a.Status), StatusRank(b.Status); ra != rb {
 			return ra - rb
 		}
-		if c := derefTime(b.Created).Compare(derefTime(a.Created)); c != 0 {
+		ta := ticketSortTime(a)
+		tb := ticketSortTime(b)
+		if c := tb.Compare(ta); c != 0 {
 			return c
 		}
 		if at, bt := a.Title(), b.Title(); at != bt {
@@ -238,6 +240,13 @@ func FormatTimestamp(t *time.Time) string {
 		}
 		return t.Format("Jan 02 2006")
 	}
+}
+
+func ticketSortTime(t *ticket.Ticket) time.Time {
+	if t.Status == ticket.StatusInProgress && t.StartedAt != nil {
+		return *t.StartedAt
+	}
+	return derefTime(t.Created)
 }
 
 func derefTime(t *time.Time) time.Time {

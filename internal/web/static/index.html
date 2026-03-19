@@ -807,7 +807,7 @@
       <!-- Narrow column: ticket details sidebar -->
       <div class="shrink-0 overflow-y-auto border-l border-surface-700/30"
            :class="isMobile ? 'order-1 border-l-0 border-b border-surface-700/30' : ''"
-           :style="isMobile ? '' : 'width: 240px'">
+           :style="isMobile ? '' : 'width: 300px'">
         <div class="p-4">
           <!-- Header: close + menu -->
           <div class="flex items-center justify-between mb-3">
@@ -857,7 +857,7 @@
           </div>
 
           <!-- Metadata -->
-          <div class="flex flex-col gap-1 mb-4 text-[12px] font-mono">
+          <div class="flex flex-col gap-2.5 mb-4 text-[12px] font-mono">
             <template x-if="selectedTicket?.pipeline">
               <div class="flex flex-col">
                 <span class="text-surface-600">pipeline</span>
@@ -866,12 +866,12 @@
             </template>
             <div class="flex flex-col">
               <span class="text-surface-600">path</span>
-              <span class="text-tx-3 break-all" x-text="selectedTicket?.path" :title="selectedTicket?.path"></span>
+              <span class="text-tx-3 break-words" x-text="selectedTicket?.path" :title="selectedTicket?.path"></span>
             </div>
             <template x-if="selectedTicket?.branch">
               <div class="flex flex-col">
                 <span class="text-surface-600">branch</span>
-                <button type="button" class="copyable text-tx-3 hover:text-tx-2 text-left break-all"
+                <button type="button" class="copyable text-tx-3 hover:text-tx-2 text-left break-words"
                       @click.stop="copyBranch(selectedTicket?.branch)"
                       x-text="copiedBranch === selectedTicket?.branch ? '✓ copied' : selectedTicket?.branch"></button>
               </div>

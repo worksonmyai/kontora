@@ -502,7 +502,7 @@
                      role="button" tabindex="0"
                      @click.stop="selectTicket(ticket)"
                      @keydown.enter.stop="selectTicket(ticket)"
-                     class="group rounded-lg p-3 cursor-pointer transition-all duration-150 border slide-up"
+                     class="group rounded-lg p-3.5 cursor-pointer transition-all duration-150 border slide-up"
                      :class="[
                        selectedTicket?.id === ticket.id
                          ? 'bg-surface-800 border-accent/30 shadow-lg shadow-accent/5'
@@ -511,36 +511,39 @@
                            : 'bg-surface-900 border-surface-700/50 hover:border-surface-600/50 hover:bg-surface-850',
                        !ticket.kontora ? 'border-dashed' : ''
                      ]"
-                  <!-- Ticket header -->
-                  <div class="flex items-start justify-between gap-2 mb-1.5">
-                    <span class="font-mono text-[13px] text-surface-600 group-hover:text-tx-3 transition-colors"
-                          x-text="ticket.id"></span>
-                    <div class="flex items-center gap-1.5">
-                      <template x-if="ticket.status === 'in_progress'">
-                        <span class="flex items-center gap-1 text-[12px] font-mono text-accent">
-                          <span class="w-1 h-1 rounded-full bg-accent pulse-dot"></span>
-                          <span x-text="ticket.stage"></span>
-                        </span>
-                      </template>
-                      <template x-if="ticket.status !== 'in_progress' && ticket.stage">
-                        <span class="text-[12px] font-mono text-surface-600" x-text="ticket.stage"></span>
-                      </template>
-                    </div>
-                  </div>
-                  <!-- Title -->
-                  <p class="text-[13px] text-tx-2 leading-snug font-medium" x-text="ticket.title"></p>
-                  <!-- Meta row -->
-                  <div class="flex items-center gap-2 mt-2.5">
-                    <span class="text-[12px] font-mono px-1.5 py-0.5 rounded bg-surface-800 text-tx-3"
-                          x-text="pathBasename(ticket.path)"></span>
-                    <template x-if="ticket.agent">
-                      <span class="text-[12px] font-mono text-surface-600" x-text="ticket.agent"></span>
+                  <!-- Stage indicator (top right) -->
+                  <div class="flex items-center justify-between gap-2 mb-2">
+                    <template x-if="ticket.status === 'in_progress'">
+                      <span class="flex items-center gap-1 text-[11px] font-mono text-accent">
+                        <span class="w-1 h-1 rounded-full bg-accent pulse-dot"></span>
+                        <span x-text="ticket.stage"></span>
+                      </span>
+                    </template>
+                    <template x-if="ticket.status !== 'in_progress' && ticket.stage">
+                      <span class="text-[11px] font-mono text-surface-600" x-text="ticket.stage"></span>
+                    </template>
+                    <template x-if="!ticket.stage">
+                      <span></span>
                     </template>
                     <template x-if="ticket.status === 'in_progress' && ticket.started_at">
-                      <span class="text-[12px] font-mono text-surface-600 ml-auto" x-text="formatDuration(ticket)" :data-tip-t="'Started: ' + formatAbsDate(ticket.started_at)"></span>
+                      <span class="text-[11px] font-mono text-surface-600" x-text="formatDuration(ticket)" :data-tip-t="'Started: ' + formatAbsDate(ticket.started_at)"></span>
                     </template>
                     <template x-if="ticket.created_at && !(ticket.status === 'in_progress' && ticket.started_at)">
-                      <span class="text-[12px] font-mono text-surface-600 ml-auto" x-text="timeAgo(ticket.created_at)" :data-tip-t="formatAbsDate(ticket.created_at)"></span>
+                      <span class="text-[11px] font-mono text-surface-600" x-text="timeAgo(ticket.created_at)" :data-tip-t="formatAbsDate(ticket.created_at)"></span>
+                    </template>
+                  </div>
+                  <!-- Title -->
+                  <p class="text-sm text-tx leading-snug font-semibold" x-text="ticket.title"></p>
+                  <!-- Meta row -->
+                  <div class="flex items-center gap-1.5 mt-3 text-[11px] font-mono text-surface-600">
+                    <span class="group-hover:text-tx-3 transition-colors" x-text="ticket.id"></span>
+                    <span class="text-surface-700">·</span>
+                    <span x-text="pathBasename(ticket.path)"></span>
+                    <template x-if="ticket.agent">
+                      <span class="flex items-center gap-1.5">
+                        <span class="text-surface-700">·</span>
+                        <span x-text="ticket.agent"></span>
+                      </span>
                     </template>
                   </div>
                 </div>
@@ -555,24 +558,263 @@
       </div>
     </div>
 
-    <!-- Detail panel (desktop: side panel, mobile: full-screen overlay) -->
+    <!-- Detail panel (desktop: two-column layout, mobile: full-screen stacked) -->
     <div x-show="selectedTicket"
          x-transition.opacity.duration.150ms
-         class="flex flex-col bg-surface-950 overflow-hidden relative shrink-0"
-         :class="isMobile ? 'fixed inset-0 z-50' : 'border-l border-surface-700/50'"
+         class="bg-surface-950 overflow-hidden relative shrink-0"
+         :class="isMobile ? 'fixed inset-0 z-50 flex flex-col' : 'flex flex-row border-l border-surface-700/50'"
          :style="!isMobile && selectedTicket ? 'width:' + panelWidth + 'px' : ''">
 
       <!-- Resize handle -->
       <div x-show="!isMobile" class="resize-handle" @mousedown.prevent="startResize($event)"></div>
 
-      <!-- Ticket detail header -->
-      <div class="shrink-0">
-        <div class="p-4 border-b border-surface-700/30">
-          <div class="flex items-center justify-between mb-2">
+      <!-- Wide column: content (terminal / logs / ticket body) -->
+      <div class="flex-1 min-w-0 flex flex-col" :class="isMobile ? 'order-2' : ''">
+
+        <!-- Content header: tabs + pipeline stages -->
+        <div class="shrink-0">
+          <!-- Tabs -->
+          <div class="flex border-b border-surface-700/30 px-1">
+            <button x-show="showTerminalTab()" @click="switchTab('terminal')"
+                    class="text-[13px] font-mono px-4 py-2.5 border-b-2 transition-colors"
+                    :class="activeTab === 'terminal' ? 'text-tx-2 border-accent' : 'text-surface-600 border-transparent hover:text-tx-3'"
+                    x-text="terminalTabLabel()">
+            </button>
+            <button @click="switchTab('ticket')"
+                    class="text-[13px] font-mono px-4 py-2.5 border-b-2 transition-colors"
+                    :class="activeTab === 'ticket' ? 'text-tx-2 border-accent' : 'text-surface-600 border-transparent hover:text-tx-3'">
+              ticket
+            </button>
+            <div class="ml-auto flex items-center gap-2 pr-2">
+              <button x-show="!isMobile && (activeTab === 'terminal' ? terminalOpen : true)" @click="activeTab === 'terminal' ? (terminalFullscreen = !terminalFullscreen) : (ticketFullscreen = !ticketFullscreen)"
+                      class="text-surface-600 hover:text-tx-3 transition-colors text-xs leading-none"
+                      :aria-label="'Expand'" :data-tip-t="'Expand'">
+                <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
+              </button>
+            </div>
+          </div>
+
+          <!-- Pipeline progress (below tabs) -->
+          <div class="px-4 py-2.5 border-b border-surface-700/30" x-show="selectedTicket?.stages?.length > 0">
+            <div class="flex items-center gap-1 flex-wrap">
+              <template x-for="(stage, i) in (selectedTicket?.stages || [])" :key="i">
+                <div class="flex items-center gap-1">
+                  <button class="text-[12px] font-mono px-2 py-0.5 rounded transition-colors"
+                       :class="[stageStyle(stage, selectedTicket),
+                                isStageClickable(stage, selectedTicket) ? 'cursor-pointer hover:ring-1 hover:ring-accent/40 underline decoration-dotted decoration-ok/40 underline-offset-2' : 'cursor-default',
+                                logViewStage === stage && isStageClickable(stage, selectedTicket) ? 'ring-1 ring-accent/60' : '']"
+                       @click="clickStage(stage)">
+                    <span x-text="stage"></span>
+                  </button>
+                  <template x-if="i < (selectedTicket?.stages?.length || 0) - 1">
+                    <span class="text-surface-600 text-[12px]">→</span>
+                  </template>
+                </div>
+              </template>
+            </div>
+          </div>
+        </div>
+
+        <!-- Tab content (full remaining height) -->
+        <div class="flex-1 min-h-0 overflow-hidden">
+
+          <!-- Terminal tab -->
+          <div x-show="activeTab === 'terminal'" class="h-full flex flex-col">
+            <!-- Terminal viewer -->
+            <div x-show="terminalOpen" class="flex-1 min-h-0 flex flex-col">
+              <div class="shrink-0 px-4 py-2 border-b border-surface-700/20 flex items-center">
+                <span class="flex items-center gap-1 text-[12px] font-mono text-accent">
+                  <span class="w-1 h-1 rounded-full bg-accent pulse-dot"></span>
+                  live
+                </span>
+                <span class="text-[12px] font-mono text-surface-600/40 ml-2" x-show="selectedTicket?.stages?.indexOf(selectedTicket?.stage) > 0">· click stages to view logs</span>
+                <button @click="toggleTerminalRW()"
+                        class="ml-auto text-[12px] font-mono px-1.5 py-0.5 rounded transition-colors"
+                        :class="terminalRW ? 'text-err bg-err/10' : 'text-surface-600 hover:text-tx-3'">
+                  <span x-text="terminalRW ? 'read-write' : 'read-only'"></span>
+                </button>
+                <span class="copyable text-[12px] font-mono text-surface-600 hover:text-tx-3 ml-2"
+                      @click.stop="copyCmd('kontora attach ' + selectedTicket?.id)"
+                      x-text="copiedCmd === 'kontora attach ' + selectedTicket?.id ? '✓ copied' : 'kontora attach ' + selectedTicket?.id"></span>
+              </div>
+              <div id="terminal-container" class="flex-1 min-h-0 bg-surface-deep p-1 overflow-hidden transition-shadow"
+                   :class="terminalRW ? 'ring-1 ring-err/40' : ''"></div>
+            </div>
+
+            <!-- Status info (when terminal is not connected) -->
+            <div x-show="!terminalOpen" class="flex-1 min-h-0 overflow-y-auto p-4">
+              <template x-if="selectedTicket?.status === 'in_progress' && logViewContent === null && !logViewLoading">
+                <div class="text-sm text-tx-3 font-mono">
+                  <p class="text-surface-600 mb-1">Agent: <span class="text-tx-3" x-text="selectedTicket?.agent || 'unknown'"></span></p>
+                  <template x-if="selectedTicket?.started_at">
+                    <p class="text-surface-600">Running for <span class="text-tx-3" x-text="formatDuration(selectedTicket)" :data-tip-t="'Started: ' + formatAbsDate(selectedTicket?.started_at)"></span></p>
+                  </template>
+                  <template x-if="selectedTicket?.branch">
+                    <p class="text-surface-600 mt-1">Branch: <button type="button" class="copyable text-tx-3 hover:text-tx-2"
+                      @click.stop="copyBranch(selectedTicket?.branch)"
+                      x-text="copiedBranch === selectedTicket?.branch ? '✓ copied' : selectedTicket?.branch"></button></p>
+                  </template>
+                  <p class="text-surface-600 mt-2">Attach: <span class="copyable text-tx-3 hover:text-tx-2"
+                    @click.stop="copyCmd('kontora attach ' + selectedTicket?.id)"
+                    x-text="copiedCmd === 'kontora attach ' + selectedTicket?.id ? '✓ copied' : 'kontora attach ' + selectedTicket?.id"></span></p>
+                </div>
+              </template>
+              <template x-if="logViewContent !== null">
+                <div class="h-full flex flex-col">
+                  <div class="shrink-0 px-0 pb-2 flex items-center gap-2">
+                    <span class="text-[12px] font-mono text-surface-600" x-text="logViewStage ? 'stage: ' + logViewStage : 'latest log'"></span>
+                    <span class="text-[12px] font-mono text-surface-600/40">· click stages to switch</span>
+                    <template x-if="selectedTicket?.status === 'in_progress'">
+                      <button class="text-[12px] font-mono text-accent hover:underline"
+                              @click="logViewContent = null; logViewStage = null; openTerminal()">← back to live</button>
+                    </template>
+                  </div>
+                  <pre class="flex-1 min-h-0 overflow-auto bg-surface-deep rounded border border-surface-700/30 p-3 text-[12px] font-mono text-tx whitespace-pre-wrap break-words" x-text="logViewContent"></pre>
+                </div>
+              </template>
+              <template x-if="logViewLoading">
+                <div class="text-sm font-mono text-surface-600">
+                  <p>Loading logs...</p>
+                </div>
+              </template>
+              <template x-if="!logViewLoading && logViewContent === null && selectedTicket?.status !== 'in_progress'">
+                <div class="text-sm font-mono text-tx-4">
+                  <template x-if="selectedTicket?.status === 'done'">
+                    <div>
+                      <p class="text-ok/60 mb-1">✓ Ticket completed</p>
+                      <template x-if="selectedTicket?.branch">
+                        <p>Branch: <button type="button" class="copyable text-tx-3 hover:text-tx-2"
+                          @click.stop="copyBranch(selectedTicket?.branch)"
+                          x-text="copiedBranch === selectedTicket?.branch ? '✓ copied' : selectedTicket?.branch"></button></p>
+                      </template>
+                      <p class="mt-1">Logs: <span class="copyable text-tx-3 hover:text-tx-2"
+                        @click.stop="copyCmd('kontora logs ' + selectedTicket?.id)"
+                        x-text="copiedCmd === 'kontora logs ' + selectedTicket?.id ? '✓ copied' : 'kontora logs ' + selectedTicket?.id"></span></p>
+                    </div>
+                  </template>
+                  <template x-if="selectedTicket?.status === 'paused'">
+                    <div>
+                      <p class="text-warn/60 mb-1">⏸ Ticket paused</p>
+                      <template x-if="selectedTicket?.last_error">
+                        <p class="text-red-400 text-xs leading-relaxed mb-2 font-mono bg-red-950/30 rounded px-2 py-1 break-words whitespace-pre-wrap" x-text="selectedTicket.last_error"></p>
+                      </template>
+                      <template x-if="!selectedTicket?.last_error">
+                        <p class="text-surface-600 text-xs leading-relaxed mb-2">Paused manually or by the pipeline's failure policy after retries were exhausted.</p>
+                      </template>
+                      <p>Resume: <span class="copyable text-tx-3 hover:text-tx-2"
+                        @click.stop="copyCmd('kontora retry ' + selectedTicket?.id)"
+                        x-text="copiedCmd === 'kontora retry ' + selectedTicket?.id ? '✓ copied' : 'kontora retry ' + selectedTicket?.id"></span></p>
+                      <p class="text-surface-600 mt-2 text-xs leading-relaxed">Click <span class="text-tx-3">retry</span> to re-run the current stage, or drag to <span class="text-tx-3">todo</span> to resume.</p>
+                    </div>
+                  </template>
+                </div>
+              </template>
+            </div>
+          </div>
+
+          <!-- Ticket tab -->
+          <div x-show="activeTab === 'ticket'"
+               x-transition.opacity.duration.150ms
+               :class="ticketFullscreen ? 'fixed inset-0 z-50 bg-surface-950 flex flex-col' : 'h-full flex flex-col bg-surface-950'">
+            <template x-if="ticketFullscreen">
+              <div class="shrink-0 px-4 py-2 border-b border-surface-700/20 flex items-center">
+                <span class="text-sm text-tx-2 truncate" x-text="selectedTicket?.title"></span>
+                <button @click="ticketFullscreen = false"
+                        class="ml-auto text-surface-600 hover:text-tx-3 transition-colors text-xs leading-none"
+                        aria-label="Collapse ticket" data-tip-t="Collapse">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 14 10 14 10 20"/><polyline points="20 10 14 10 14 4"/><line x1="14" y1="10" x2="21" y2="3"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
+                </button>
+              </div>
+            </template>
+            <!-- Scrollable content wrapper -->
+            <div class="flex-1 min-h-0 overflow-y-auto">
+            <div class="max-w-3xl mx-auto px-8 py-6">
+              <!-- Editable form for editable tickets (open/todo/paused) -->
+              <template x-if="editing && ['open', 'todo', 'paused'].includes(selectedTicket?.status)">
+                <div>
+                  <div class="grid grid-cols-3 gap-3 mb-3">
+                    <div>
+                      <label class="text-xs font-mono text-surface-600 mb-1 flex items-center">Pipeline<button type="button" class="tip" data-tip="The sequence of stages this ticket goes through. Each stage runs an agent in turn. Pipelines are configured in the config file.">i</button></label>
+                      <select x-model="editForm.pipeline" @change="saveEdit()"
+                        class="w-full bg-surface-800 border border-surface-700 rounded px-2 py-1 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent">
+                        <option value="">—</option>
+                        <template x-for="p in (configCache?.pipelines || [])" :key="p">
+                          <option :value="p" x-text="pipelineLabel(p)"></option>
+                        </template>
+                      </select>
+                    </div>
+                    <div>
+                      <label class="text-xs font-mono text-surface-600 mb-1 flex items-center">Agent<button type="button" class="tip" data-tip="Override the agent for all pipeline stages (or for a standalone ticket). Leave empty to use the pipeline default.">i</button></label>
+                      <select x-model="editForm.agent" @change="saveEdit()"
+                        class="w-full bg-surface-800 border border-surface-700 rounded px-2 py-1 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent">
+                        <option value="">Default</option>
+                        <template x-for="a in (configCache?.agents || [])" :key="a">
+                          <option :value="a" x-text="a"></option>
+                        </template>
+                      </select>
+                    </div>
+                    <div>
+                      <label class="text-xs font-mono text-surface-600 mb-1 flex items-center">Path<button type="button" class="tip" data-tip="Path to the repository the agent will work in. Supports ~ (e.g. ~/projects/myrepo).">i</button></label>
+                      <input type="text" x-model="editForm.path" @change="saveEdit()"
+                        class="w-full bg-surface-800 border border-surface-700 rounded px-2 py-1 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent">
+                    </div>
+                  </div>
+                  <div class="mb-4">
+                    <label class="text-xs font-mono text-surface-600 mb-1 flex items-center">Branch<button type="button" class="tip" data-tip="Override the git branch name. Leave empty to auto-generate from the ticket ID.">i</button></label>
+                    <input type="text" x-model="editForm.branch" @change="saveEdit()"
+                      class="w-full bg-surface-800 border border-surface-700 rounded px-2 py-1 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent"
+                      :placeholder="(configCache?.branch_prefix || 'kontora') + '/' + selectedTicket?.id">
+                  </div>
+                  <div class="flex items-center justify-between mb-1">
+                    <label class="text-xs font-mono text-surface-600 flex items-center">Body<button type="button" class="tip" data-tip="The ticket description that agents see when working on this ticket.">i</button></label>
+                    <span x-show="editSubmitting" class="text-xs font-mono text-surface-600">saving...</span>
+                    <span x-show="editSaved && !editSubmitting" class="text-xs font-mono text-ok/60">saved</span>
+                  </div>
+                  <!-- Body: click-to-edit toggle -->
+                  <template x-if="editingBody">
+                    <textarea x-model="editForm.body" @input="debounceSaveEdit()"
+                      @blur="if (_editDebounce) { clearTimeout(_editDebounce); _editDebounce = null; } editingBody = false; saveEdit()"
+                      x-init="$nextTick(() => $el.focus())"
+                      class="w-full h-[calc(100vh-280px)] bg-surface-800 border border-surface-700 rounded px-3 py-2 text-sm text-tx-2 font-mono resize-none focus:outline-none focus:border-accent"
+                      spellcheck="false"></textarea>
+                  </template>
+                  <template x-if="!editingBody">
+                    <div @click="editingBody = true"
+                      class="group/edit cursor-text rounded border border-transparent hover:border-surface-700/50 transition-colors min-h-[100px] relative">
+                      <div x-show="editForm.body" class="ticket-prose text-sm" x-html="renderMarkdown(editForm.body)"></div>
+                      <p x-show="!editForm.body" class="text-sm font-mono text-surface-600">Click to add a description...</p>
+                      <span x-show="editForm.body" class="absolute top-1 right-1 text-[11px] font-mono text-surface-600 opacity-0 group-hover/edit:opacity-100 transition-opacity">click to edit</span>
+                    </div>
+                  </template>
+                </div>
+              </template>
+              <!-- Read-only view for non-editable tickets -->
+              <template x-if="!editing || !['open', 'todo', 'paused'].includes(selectedTicket?.status)">
+                <div>
+                  <div class="ticket-prose text-sm" x-html="renderMarkdown(selectedTicket?.body || '')"></div>
+                  <div x-show="!selectedTicket?.body" class="text-sm font-mono text-surface-600">
+                    <p>No ticket description.</p>
+                  </div>
+                </div>
+              </template>
+            </div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+
+      <!-- Narrow column: ticket details sidebar -->
+      <div class="shrink-0 overflow-y-auto border-l border-surface-700/30"
+           :class="isMobile ? 'order-1 border-l-0 border-b border-surface-700/30' : ''"
+           :style="isMobile ? '' : 'width: 240px'">
+        <div class="p-4">
+          <!-- Header: close + menu -->
+          <div class="flex items-center justify-between mb-3">
             <span class="copyable font-mono text-xs text-surface-600 hover:text-tx-3"
                   x-text="copiedId ? '✓ copied' : selectedTicket?.id"
                   @click.stop="copyTicketId(selectedTicket?.id)"></span>
-            <div class="flex items-center gap-3" @click.outside="detailMenuOpen = false">
+            <div class="flex items-center gap-2" @click.outside="detailMenuOpen = false">
               <button @click="closeDetail()"
                       class="w-6 h-6 rounded-md border border-surface-700/40 bg-surface-900/70 text-surface-600 hover:bg-surface-800 hover:text-tx-2 hover:border-surface-600 transition-colors flex items-center justify-center"
                       aria-label="Close detail">
@@ -592,7 +834,7 @@
                 </button>
                 <div x-show="detailMenuOpen"
                      x-transition.origin.top.right
-                     class="absolute right-0 mt-2 min-w-[9rem] overflow-hidden rounded-lg border border-surface-700/60 bg-surface-900/95 shadow-lg shadow-black/30"
+                     class="absolute right-0 mt-2 min-w-[9rem] overflow-hidden rounded-lg border border-surface-700/60 bg-surface-900/95 shadow-lg shadow-black/30 z-10"
                      @click.stop>
                   <button @click="detailMenuOpen = false; openDeleteModal()"
                           class="w-full px-3 py-2 text-left text-[13px] font-mono text-err hover:bg-err/10 transition-colors">
@@ -602,326 +844,98 @@
               </div>
             </div>
           </div>
+
+          <!-- Title -->
           <h2 class="text-sm font-semibold text-tx-2 mb-3" x-text="selectedTicket?.title"></h2>
+
+          <!-- Status badge -->
           <div class="mb-3">
             <span class="text-[12px] font-mono px-2 py-0.5 rounded-full border"
                   :class="statusStyle(selectedTicket?.status)"
                   x-text="selectedTicket?.status"></span>
             <span x-show="detailLoading" class="text-[12px] font-mono text-surface-600 ml-2">loading...</span>
-            <div class="mt-2 flex flex-col gap-0.5">
-              <template x-if="selectedTicket?.pipeline">
-                <div class="flex gap-3">
-                  <span class="text-[12px] font-mono text-surface-600 w-14">pipeline</span>
-                  <span class="text-[12px] font-mono text-tx-3" x-text="selectedTicket?.pipeline"></span>
-                </div>
-              </template>
-              <div class="flex gap-3">
-                <span class="text-[12px] font-mono text-surface-600 w-14">path</span>
-                <span class="text-[12px] font-mono text-tx-3" x-text="selectedTicket?.path" :title="selectedTicket?.path"></span>
-              </div>
-              <template x-if="selectedTicket?.branch">
-                <div class="flex gap-3">
-                  <span class="text-[12px] font-mono text-surface-600 w-14">branch</span>
-                  <button type="button" class="copyable text-[12px] font-mono text-tx-3 hover:text-tx-2"
-                        @click.stop="copyBranch(selectedTicket?.branch)"
-                        x-text="copiedBranch === selectedTicket?.branch ? '✓ copied' : selectedTicket?.branch"></button>
-                </div>
-              </template>
-              <template x-if="selectedTicket?.created_at">
-                <div class="flex gap-3">
-                  <span class="text-[12px] font-mono text-surface-600 w-14">created</span>
-                  <span class="text-[12px] font-mono text-tx-3" x-text="formatAbsDate(selectedTicket.created_at)"></span>
-                </div>
-              </template>
-              <template x-if="selectedTicket?.stage && selectedTicket?.stages?.length > 1">
-                <div class="flex gap-3 items-center">
-                  <span class="text-[12px] font-mono text-surface-600 w-14">stage</span>
-                  <template x-if="['paused', 'open'].includes(selectedTicket?.status) && setStageOpen">
-                    <select class="text-[12px] font-mono bg-surface-800 text-tx-3 border border-surface-700/50 rounded px-1 py-0.5 outline-none focus:border-accent/40"
-                            @change="setStage($event.target.value); setStageOpen = false"
-                            @blur="setStageOpen = false"
-                            x-init="$nextTick(() => $el.focus())">
-                      <template x-for="s in selectedTicket?.stages || []" :key="s">
-                        <option :value="s" x-text="s" :selected="s === selectedTicket?.stage"></option>
-                      </template>
-                    </select>
-                  </template>
-                  <template x-if="!(['paused', 'open'].includes(selectedTicket?.status) && setStageOpen)">
-                    <span class="text-[12px] font-mono text-tx-3"
-                          :class="['paused', 'open'].includes(selectedTicket?.status) ? 'cursor-pointer hover:text-accent border-b border-dashed border-surface-600 hover:border-accent/40' : ''"
-                          @click="if (['paused', 'open'].includes(selectedTicket?.status)) setStageOpen = true"
-                          x-text="selectedTicket?.stage"></span>
-                  </template>
-                </div>
-              </template>
-              <template x-if="selectedTicket?.status === 'in_progress' && selectedTicket?.started_at">
-                <div class="flex gap-3">
-                  <span class="text-[12px] font-mono text-surface-600 w-14">running</span>
-                  <span class="text-[12px] font-mono text-tx-3" x-text="formatDuration(selectedTicket)"></span>
-                </div>
-              </template>
-            </div>
           </div>
+
+          <!-- Metadata -->
+          <div class="flex flex-col gap-1 mb-4 text-[12px] font-mono">
+            <template x-if="selectedTicket?.pipeline">
+              <div class="flex flex-col">
+                <span class="text-surface-600">pipeline</span>
+                <span class="text-tx-3" x-text="selectedTicket?.pipeline"></span>
+              </div>
+            </template>
+            <div class="flex flex-col">
+              <span class="text-surface-600">path</span>
+              <span class="text-tx-3 break-all" x-text="selectedTicket?.path" :title="selectedTicket?.path"></span>
+            </div>
+            <template x-if="selectedTicket?.branch">
+              <div class="flex flex-col">
+                <span class="text-surface-600">branch</span>
+                <button type="button" class="copyable text-tx-3 hover:text-tx-2 text-left break-all"
+                      @click.stop="copyBranch(selectedTicket?.branch)"
+                      x-text="copiedBranch === selectedTicket?.branch ? '✓ copied' : selectedTicket?.branch"></button>
+              </div>
+            </template>
+            <template x-if="selectedTicket?.created_at">
+              <div class="flex flex-col">
+                <span class="text-surface-600">created</span>
+                <span class="text-tx-3" x-text="formatAbsDate(selectedTicket.created_at)"></span>
+              </div>
+            </template>
+            <template x-if="selectedTicket?.stage && selectedTicket?.stages?.length > 1">
+              <div class="flex flex-col">
+                <span class="text-surface-600">stage</span>
+                <template x-if="['paused', 'open'].includes(selectedTicket?.status) && setStageOpen">
+                  <select class="text-[12px] font-mono bg-surface-800 text-tx-3 border border-surface-700/50 rounded px-1 py-0.5 outline-none focus:border-accent/40"
+                          @change="setStage($event.target.value); setStageOpen = false"
+                          @blur="setStageOpen = false"
+                          x-init="$nextTick(() => $el.focus())">
+                    <template x-for="s in selectedTicket?.stages || []" :key="s">
+                      <option :value="s" x-text="s" :selected="s === selectedTicket?.stage"></option>
+                    </template>
+                  </select>
+                </template>
+                <template x-if="!(['paused', 'open'].includes(selectedTicket?.status) && setStageOpen)">
+                  <span class="text-tx-3"
+                        :class="['paused', 'open'].includes(selectedTicket?.status) ? 'cursor-pointer hover:text-accent border-b border-dashed border-surface-600 hover:border-accent/40 self-start' : ''"
+                        @click="if (['paused', 'open'].includes(selectedTicket?.status)) setStageOpen = true"
+                        x-text="selectedTicket?.stage"></span>
+                </template>
+              </div>
+            </template>
+            <template x-if="selectedTicket?.status === 'in_progress' && selectedTicket?.started_at">
+              <div class="flex flex-col">
+                <span class="text-surface-600">running</span>
+                <span class="text-tx-3" x-text="formatDuration(selectedTicket)"></span>
+              </div>
+            </template>
+          </div>
+
           <!-- Actions -->
-          <div class="flex flex-wrap gap-2">
+          <div class="flex flex-col gap-2">
             <template x-if="selectedTicket?.status === 'in_progress'">
               <button @click="action('pause')" :disabled="!!actionLoading"
-                      class="text-[13px] font-mono px-3 py-1.5 md:py-1 rounded bg-surface-800 border border-surface-700/50 text-tx-3 hover:text-warn hover:border-warn/30 transition-colors min-h-[44px] md:min-h-0 disabled:opacity-50 disabled:cursor-not-allowed"
-                      data-tip-t="Stops the running agent and pauses the ticket. The worktree is preserved for inspection or retry.">
+                      class="w-full text-[13px] font-mono px-3 py-1.5 rounded bg-surface-800 border border-surface-700/50 text-tx-3 hover:text-warn hover:border-warn/30 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                      data-tip-t="Stops the running agent and pauses the ticket.">
                 <span x-text="actionLoading === 'pause' ? 'pausing...' : 'pause'"></span>
               </button>
             </template>
             <template x-if="selectedTicket?.status === 'paused'">
               <button @click="action('retry')" :disabled="!!actionLoading"
-                      class="text-[13px] font-mono px-3 py-1.5 md:py-1 rounded bg-surface-800 border border-surface-700/50 text-tx-3 hover:text-ok hover:border-ok/30 transition-colors min-h-[44px] md:min-h-0 disabled:opacity-50 disabled:cursor-not-allowed"
-                      data-tip-t="Resets the attempt counter and re-runs the current stage in the same worktree.">
+                      class="w-full text-[13px] font-mono px-3 py-1.5 rounded bg-surface-800 border border-surface-700/50 text-tx-3 hover:text-ok hover:border-ok/30 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                      data-tip-t="Re-runs the current stage in the same worktree.">
                 <span x-text="actionLoading === 'retry' ? 'retrying...' : 'retry'"></span>
               </button>
             </template>
             <template x-if="selectedTicket?.status === 'in_progress'">
               <button @click="action('skip')" :disabled="!!actionLoading"
-                      class="text-[13px] font-mono px-3 py-1.5 md:py-1 rounded bg-surface-800 border border-surface-700/50 text-tx-3 hover:text-tx-2 hover:border-surface-600 transition-colors min-h-[44px] md:min-h-0 disabled:opacity-50 disabled:cursor-not-allowed"
-                      data-tip-t="Skips the current stage and advances to the next one in the pipeline.">
+                      class="w-full text-[13px] font-mono px-3 py-1.5 rounded bg-surface-800 border border-surface-700/50 text-tx-3 hover:text-tx-2 hover:border-surface-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                      data-tip-t="Skips the current stage and advances to the next one.">
                 <span x-text="actionLoading === 'skip' ? 'skipping...' : 'skip stage'"></span>
               </button>
             </template>
           </div>
         </div>
-
-        <!-- Pipeline progress -->
-        <div class="px-4 py-3 border-b border-surface-700/30" x-show="selectedTicket?.stages?.length > 0">
-          <div class="flex items-center gap-1 flex-wrap">
-            <template x-for="(stage, i) in (selectedTicket?.stages || [])" :key="i">
-              <div class="flex items-center gap-1">
-                <button class="text-[12px] font-mono px-2 py-0.5 rounded transition-colors"
-                     :class="[stageStyle(stage, selectedTicket),
-                              isStageClickable(stage, selectedTicket) ? 'cursor-pointer hover:ring-1 hover:ring-accent/40 underline decoration-dotted decoration-ok/40 underline-offset-2' : 'cursor-default',
-                              logViewStage === stage && isStageClickable(stage, selectedTicket) ? 'ring-1 ring-accent/60' : '']"
-                     @click="clickStage(stage)">
-                  <span x-text="stage"></span>
-                </button>
-                <template x-if="i < (selectedTicket?.stages?.length || 0) - 1">
-                  <span class="text-surface-600 text-[12px]">→</span>
-                </template>
-              </div>
-            </template>
-          </div>
-        </div>
-
-        <!-- Tabs -->
-        <div class="flex border-b border-surface-700/30">
-          <button x-show="showTerminalTab()" @click="switchTab('terminal')"
-                  class="text-[13px] font-mono px-4 py-2.5 border-b-2 transition-colors"
-                  :class="activeTab === 'terminal' ? 'text-tx-2 border-accent' : 'text-surface-600 border-transparent hover:text-tx-3'"
-                  x-text="terminalTabLabel()">
-          </button>
-          <button @click="switchTab('ticket')"
-                  class="text-[13px] font-mono px-4 py-2.5 border-b-2 transition-colors"
-                  :class="activeTab === 'ticket' ? 'text-tx-2 border-accent' : 'text-surface-600 border-transparent hover:text-tx-3'">
-            ticket
-          </button>
-        </div>
-      </div>
-
-      <!-- Tab content -->
-      <div class="flex-1 min-h-0 overflow-hidden">
-
-        <!-- Terminal tab -->
-        <div x-show="activeTab === 'terminal'" class="h-full flex flex-col">
-          <!-- Terminal viewer -->
-          <div x-show="terminalOpen" class="flex-1 min-h-0 flex flex-col">
-            <div class="shrink-0 px-4 py-2 border-b border-surface-700/20 flex items-center">
-              <span class="flex items-center gap-1 text-[12px] font-mono text-accent">
-                <span class="w-1 h-1 rounded-full bg-accent pulse-dot"></span>
-                live
-              </span>
-              <span class="text-[12px] font-mono text-surface-600/40 ml-2" x-show="selectedTicket?.stages?.indexOf(selectedTicket?.stage) > 0">· click stages above to view logs</span>
-              <button @click="toggleTerminalRW()"
-                      class="ml-auto text-[12px] font-mono px-1.5 py-0.5 rounded transition-colors"
-                      :class="terminalRW ? 'text-err bg-err/10' : 'text-surface-600 hover:text-tx-3'">
-                <span x-text="terminalRW ? 'read-write' : 'read-only'"></span>
-              </button>
-              <span class="copyable text-[12px] font-mono text-surface-600 hover:text-tx-3 ml-2"
-                    @click.stop="copyCmd('kontora attach ' + selectedTicket?.id)"
-                    x-text="copiedCmd === 'kontora attach ' + selectedTicket?.id ? '✓ copied' : 'kontora attach ' + selectedTicket?.id"></span>
-              <button x-show="!isMobile" @click="terminalFullscreen = !terminalFullscreen"
-                      class="text-surface-600 hover:text-tx-3 transition-colors ml-2 text-xs leading-none"
-                      :aria-label="terminalFullscreen ? 'Collapse terminal' : 'Expand terminal'"
-                      :data-tip-t="terminalFullscreen ? 'Collapse' : 'Expand'">
-                <svg x-show="!terminalFullscreen" xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
-                <svg x-show="terminalFullscreen" xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 14 10 14 10 20"/><polyline points="20 10 14 10 14 4"/><line x1="14" y1="10" x2="21" y2="3"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
-              </button>
-            </div>
-            <div id="terminal-container" class="flex-1 min-h-0 bg-surface-deep p-1 overflow-hidden transition-shadow"
-                 :class="terminalRW ? 'ring-1 ring-err/40' : ''"></div>
-          </div>
-
-          <!-- Status info (when terminal is not connected) -->
-          <div x-show="!terminalOpen" class="flex-1 min-h-0 overflow-y-auto p-4">
-            <template x-if="selectedTicket?.status === 'in_progress' && logViewContent === null && !logViewLoading">
-              <div class="text-sm text-tx-3 font-mono">
-                <p class="text-surface-600 mb-1">Agent: <span class="text-tx-3" x-text="selectedTicket?.agent || 'unknown'"></span></p>
-                <template x-if="selectedTicket?.started_at">
-                  <p class="text-surface-600">Running for <span class="text-tx-3" x-text="formatDuration(selectedTicket)" :data-tip-t="'Started: ' + formatAbsDate(selectedTicket?.started_at)"></span></p>
-                </template>
-                <template x-if="selectedTicket?.branch">
-                  <p class="text-surface-600 mt-1">Branch: <button type="button" class="copyable text-tx-3 hover:text-tx-2"
-                    @click.stop="copyBranch(selectedTicket?.branch)"
-                    x-text="copiedBranch === selectedTicket?.branch ? '✓ copied' : selectedTicket?.branch"></button></p>
-                </template>
-                <p class="text-surface-600 mt-2">Attach: <span class="copyable text-tx-3 hover:text-tx-2"
-                  @click.stop="copyCmd('kontora attach ' + selectedTicket?.id)"
-                  x-text="copiedCmd === 'kontora attach ' + selectedTicket?.id ? '✓ copied' : 'kontora attach ' + selectedTicket?.id"></span></p>
-              </div>
-            </template>
-            <template x-if="logViewContent !== null">
-              <div class="h-full flex flex-col">
-                <div class="shrink-0 px-0 pb-2 flex items-center gap-2">
-                  <span class="text-[12px] font-mono text-surface-600" x-text="logViewStage ? 'stage: ' + logViewStage : 'latest log'"></span>
-                  <span class="text-[12px] font-mono text-surface-600/40">· click stages above to switch</span>
-                  <template x-if="selectedTicket?.status === 'in_progress'">
-                    <button class="text-[12px] font-mono text-accent hover:underline"
-                            @click="logViewContent = null; logViewStage = null; openTerminal()">← back to live</button>
-                  </template>
-                </div>
-                <pre class="flex-1 min-h-0 overflow-auto bg-surface-deep rounded border border-surface-700/30 p-3 text-[12px] font-mono text-tx whitespace-pre-wrap break-words" x-text="logViewContent"></pre>
-              </div>
-            </template>
-            <template x-if="logViewLoading">
-              <div class="text-sm font-mono text-surface-600">
-                <p>Loading logs...</p>
-              </div>
-            </template>
-            <template x-if="!logViewLoading && logViewContent === null && selectedTicket?.status !== 'in_progress'">
-              <div class="text-sm font-mono text-tx-4">
-                <template x-if="selectedTicket?.status === 'done'">
-                  <div>
-                    <p class="text-ok/60 mb-1">✓ Ticket completed</p>
-                    <template x-if="selectedTicket?.branch">
-                      <p>Branch: <button type="button" class="copyable text-tx-3 hover:text-tx-2"
-                        @click.stop="copyBranch(selectedTicket?.branch)"
-                        x-text="copiedBranch === selectedTicket?.branch ? '✓ copied' : selectedTicket?.branch"></button></p>
-                    </template>
-                    <p class="mt-1">Logs: <span class="copyable text-tx-3 hover:text-tx-2"
-                      @click.stop="copyCmd('kontora logs ' + selectedTicket?.id)"
-                      x-text="copiedCmd === 'kontora logs ' + selectedTicket?.id ? '✓ copied' : 'kontora logs ' + selectedTicket?.id"></span></p>
-                  </div>
-                </template>
-                <template x-if="selectedTicket?.status === 'paused'">
-                  <div>
-                    <p class="text-warn/60 mb-1">⏸ Ticket paused</p>
-                    <template x-if="selectedTicket?.last_error">
-                      <p class="text-red-400 text-xs leading-relaxed mb-2 font-mono bg-red-950/30 rounded px-2 py-1 break-words whitespace-pre-wrap" x-text="selectedTicket.last_error"></p>
-                    </template>
-                    <template x-if="!selectedTicket?.last_error">
-                      <p class="text-surface-600 text-xs leading-relaxed mb-2">Paused manually or by the pipeline's failure policy after retries were exhausted.</p>
-                    </template>
-                    <p>Resume: <span class="copyable text-tx-3 hover:text-tx-2"
-                      @click.stop="copyCmd('kontora retry ' + selectedTicket?.id)"
-                      x-text="copiedCmd === 'kontora retry ' + selectedTicket?.id ? '✓ copied' : 'kontora retry ' + selectedTicket?.id"></span></p>
-                    <p class="text-surface-600 mt-2 text-xs leading-relaxed">Click <span class="text-tx-3">retry</span> to re-run the current stage, or drag to <span class="text-tx-3">todo</span> to resume.</p>
-                  </div>
-                </template>
-              </div>
-            </template>
-          </div>
-        </div>
-
-        <!-- Ticket tab -->
-        <div x-show="activeTab === 'ticket'"
-             x-transition.opacity.duration.150ms
-             :class="ticketFullscreen ? 'fixed inset-0 z-50 bg-surface-950 flex flex-col' : 'h-full flex flex-col bg-surface-950'">
-          <!-- Header row -->
-          <div class="shrink-0 px-4 py-2 border-b border-surface-700/20 flex items-center">
-            <span class="copyable text-[12px] font-mono text-surface-600 hover:text-tx-3"
-                  @click.stop="copyCmd(selectedTicket?.id)"
-                  x-text="copiedCmd === selectedTicket?.id ? '✓ copied' : selectedTicket?.id"></span>
-            <template x-if="ticketFullscreen">
-              <span class="text-sm text-tx-2 truncate ml-3" x-text="selectedTicket?.title"></span>
-            </template>
-            <button x-show="!isMobile" @click="ticketFullscreen = !ticketFullscreen"
-                    class="ml-auto text-surface-600 hover:text-tx-3 transition-colors text-xs leading-none"
-                    :aria-label="ticketFullscreen ? 'Collapse ticket' : 'Expand ticket'"
-                    :data-tip-t="ticketFullscreen ? 'Collapse' : 'Expand'">
-              <svg x-show="!ticketFullscreen" xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
-              <svg x-show="ticketFullscreen" xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 14 10 14 10 20"/><polyline points="20 10 14 10 14 4"/><line x1="14" y1="10" x2="21" y2="3"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
-            </button>
-          </div>
-          <!-- Scrollable content wrapper -->
-          <div class="flex-1 min-h-0 overflow-y-auto">
-          <div class="max-w-3xl mx-auto px-8 py-6">
-            <!-- Editable form for editable tickets (open/todo/paused) -->
-            <template x-if="editing && ['open', 'todo', 'paused'].includes(selectedTicket?.status)">
-              <div>
-                <div class="grid grid-cols-3 gap-3 mb-3">
-                  <div>
-                    <label class="text-xs font-mono text-surface-600 mb-1 flex items-center">Pipeline<button type="button" class="tip" data-tip="The sequence of stages this ticket goes through. Each stage runs an agent in turn. Pipelines are configured in the config file.">i</button></label>
-                    <select x-model="editForm.pipeline" @change="saveEdit()"
-                      class="w-full bg-surface-800 border border-surface-700 rounded px-2 py-1 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent">
-                      <option value="">—</option>
-                      <template x-for="p in (configCache?.pipelines || [])" :key="p">
-                        <option :value="p" x-text="pipelineLabel(p)"></option>
-                      </template>
-                    </select>
-                  </div>
-                  <div>
-                    <label class="text-xs font-mono text-surface-600 mb-1 flex items-center">Agent<button type="button" class="tip" data-tip="Override the agent for all pipeline stages (or for a standalone ticket). Leave empty to use the pipeline default.">i</button></label>
-                    <select x-model="editForm.agent" @change="saveEdit()"
-                      class="w-full bg-surface-800 border border-surface-700 rounded px-2 py-1 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent">
-                      <option value="">Default</option>
-                      <template x-for="a in (configCache?.agents || [])" :key="a">
-                        <option :value="a" x-text="a"></option>
-                      </template>
-                    </select>
-                  </div>
-                  <div>
-                    <label class="text-xs font-mono text-surface-600 mb-1 flex items-center">Path<button type="button" class="tip" data-tip="Path to the repository the agent will work in. Supports ~ (e.g. ~/projects/myrepo).">i</button></label>
-                    <input type="text" x-model="editForm.path" @change="saveEdit()"
-                      class="w-full bg-surface-800 border border-surface-700 rounded px-2 py-1 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent">
-                  </div>
-                </div>
-                <div class="mb-4">
-                  <label class="text-xs font-mono text-surface-600 mb-1 flex items-center">Branch<button type="button" class="tip" data-tip="Override the git branch name. Leave empty to auto-generate from the ticket ID.">i</button></label>
-                  <input type="text" x-model="editForm.branch" @change="saveEdit()"
-                    class="w-full bg-surface-800 border border-surface-700 rounded px-2 py-1 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent"
-                    :placeholder="(configCache?.branch_prefix || 'kontora') + '/' + selectedTicket?.id">
-                </div>
-                <div class="flex items-center justify-between mb-1">
-                  <label class="text-xs font-mono text-surface-600 flex items-center">Body<button type="button" class="tip" data-tip="The ticket description that agents see when working on this ticket.">i</button></label>
-                  <span x-show="editSubmitting" class="text-xs font-mono text-surface-600">saving...</span>
-                  <span x-show="editSaved && !editSubmitting" class="text-xs font-mono text-ok/60">saved</span>
-                </div>
-                <!-- Body: click-to-edit toggle -->
-                <template x-if="editingBody">
-                  <textarea x-model="editForm.body" @input="debounceSaveEdit()"
-                    @blur="if (_editDebounce) { clearTimeout(_editDebounce); _editDebounce = null; } editingBody = false; saveEdit()"
-                    x-init="$nextTick(() => $el.focus())"
-                    class="w-full h-[calc(100vh-280px)] bg-surface-800 border border-surface-700 rounded px-3 py-2 text-sm text-tx-2 font-mono resize-none focus:outline-none focus:border-accent"
-                    spellcheck="false"></textarea>
-                </template>
-                <template x-if="!editingBody">
-                  <div @click="editingBody = true"
-                    class="group/edit cursor-text rounded border border-transparent hover:border-surface-700/50 transition-colors min-h-[100px] relative">
-                    <div x-show="editForm.body" class="ticket-prose text-sm" x-html="renderMarkdown(editForm.body)"></div>
-                    <p x-show="!editForm.body" class="text-sm font-mono text-surface-600">Click to add a description...</p>
-                    <span x-show="editForm.body" class="absolute top-1 right-1 text-[11px] font-mono text-surface-600 opacity-0 group-hover/edit:opacity-100 transition-opacity">click to edit</span>
-                  </div>
-                </template>
-              </div>
-            </template>
-            <!-- Read-only view for non-editable tickets -->
-            <template x-if="!editing || !['open', 'todo', 'paused'].includes(selectedTicket?.status)">
-              <div>
-                <div class="ticket-prose text-sm" x-html="renderMarkdown(selectedTicket?.body || '')"></div>
-                <div x-show="!selectedTicket?.body" class="text-sm font-mono text-surface-600">
-                  <p>No ticket description.</p>
-                </div>
-              </div>
-            </template>
-          </div>
-          </div>
-        </div>
-
       </div>
     </div>
 

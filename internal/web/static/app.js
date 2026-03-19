@@ -8,7 +8,7 @@ function kontora() {
     terminalFullscreen: false,
     ticketFullscreen: false,
     activeTab: 'terminal',
-    panelWidth: parseInt(localStorage.getItem('kontora-panel-width')) || Math.floor(window.innerWidth * 0.5),
+    panelWidth: parseInt(localStorage.getItem('kontora-panel-width')) || Math.floor(window.innerWidth * 0.66),
     loading: true,
     error: null,
     isMobile: window.innerWidth < 768,

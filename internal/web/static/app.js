@@ -843,10 +843,16 @@ function kontora() {
 
     refitTerminal() {
       if (!this._term || !this._fitAddon || !this.terminalOpen) return;
+      var oldCols = this._term.cols;
+      var oldRows = this._term.rows;
       this._fitAddon.fit();
+      if (this._term.cols === oldCols && this._term.rows === oldRows) return;
       if (this._termWs && this._termWs.readyState === WebSocket.OPEN) {
         this._termWs.send(JSON.stringify({ type: 'resize', cols: this._term.cols, rows: this._term.rows }));
       }
+      // Clear viewport to remove reflow artifacts from cursor-positioned content.
+      // tmux will redraw the screen after receiving the resize via SIGWINCH.
+      this._term.write('\x1b[2J\x1b[H');
     },
 
     pathBasename(p) {

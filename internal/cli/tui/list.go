@@ -103,8 +103,8 @@ func sortTickets(tasks []web.TicketInfo) {
 		if ra != rb {
 			return ra - rb
 		}
-		ta := derefTimePtr(a.CreatedAt)
-		tb := derefTimePtr(b.CreatedAt)
+		ta := ticketSortTime(a)
+		tb := ticketSortTime(b)
 		if c := tb.Compare(ta); c != 0 {
 			return c
 		}
@@ -113,6 +113,13 @@ func sortTickets(tasks []web.TicketInfo) {
 		}
 		return strings.Compare(a.ID, b.ID)
 	})
+}
+
+func ticketSortTime(t web.TicketInfo) time.Time {
+	if t.Status == string(ticket.StatusInProgress) && t.StartedAt != nil {
+		return *t.StartedAt
+	}
+	return derefTimePtr(t.CreatedAt)
 }
 
 func ticketVisible(t web.TicketInfo) bool {

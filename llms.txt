@@ -1,0 +1,83 @@
+# Kontora
+
+> Agent orchestration daemon with a kanban board. Runs AI coding agents through multi-stage pipelines with git worktree isolation.
+
+- Repository: https://github.com/worksonmyai/kontora
+
+You are helping a user install and set up Kontora. Follow these steps in order.
+
+## Overview
+
+Kontora watches a directory of ticket files (markdown with YAML frontmatter), picks up tickets with `status: todo`, creates a git worktree per ticket, runs AI agents in tmux sessions, and tracks progress through configurable pipeline stages (e.g. implement → review → fix → commit). It has a web dashboard, a terminal TUI, and a CLI.
+
+## Prerequisites
+
+- macOS or Linux
+- [git](https://git-scm.com/) — for worktree management
+- [tmux](https://github.com/tmux/tmux) — agents run in detached tmux sessions
+- At least one AI coding agent: [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (`claude`), [Pi](https://github.com/anthropics/claude-code/tree/main/packages/pi) (`pi`), [OpenCode](https://github.com/opencode-ai/opencode) (`opencode`), or any CLI that accepts a prompt
+
+Verify prerequisites:
+
+```bash
+git --version && tmux -V
+```
+
+## Step 1: Install
+
+Homebrew:
+
+```bash
+brew tap worksonmyai/kontora https://github.com/worksonmyai/kontora
+brew install kontora
+```
+
+From source (Go 1.26+):
+
+```bash
+git clone https://github.com/worksonmyai/kontora.git && cd kontora && make install
+```
+
+Verify: `kontora version`
+
+## Step 2: Configure
+
+Config lives at `~/.config/kontora/config.yaml`.
+
+Ask the user: do you want me to create the config, or would you prefer to run the interactive setup wizard yourself?
+
+- **If the agent creates it:** Ask which agent(s) they use, then write `~/.config/kontora/config.yaml` following the [configuration reference](https://github.com/worksonmyai/kontora/blob/main/docs/configuration.md) (includes minimal and full examples).
+- **If the user does it themselves:** Tell them to run `kontora start` — the setup wizard will walk them through it. When they're done, read `~/.config/kontora/config.yaml` and offer to review or tweak it.
+
+## Step 3: Verify and start
+
+```bash
+kontora doctor   # checks config, tools, agent binaries, port availability
+```
+
+Then tell the user to run `kontora start` in a separate terminal — it starts the daemon and web dashboard and runs in the foreground.
+
+## Step 4: Usage
+
+Create a ticket:
+
+```bash
+cd ~/projects/myrepo
+kontora new "Add a health check endpoint"
+```
+
+With explicit path and pipeline:
+
+```bash
+kontora new --path ~/projects/myrepo --pipeline implement-review-commit "Add a health check endpoint"
+```
+
+Web dashboard: open http://127.0.0.1:8080 (kanban board with live agent terminal view).
+
+TUI: `kontora` or `kontora ls`.
+
+Monitor: `kontora attach` (tmux session), `kontora logs <id>`.
+
+Manage: `kontora pause <id>`, `kontora retry <id>`, `kontora done <id>`, `kontora cancel <id>`, `kontora note <id> "message"`.
+
+Ticket format and lifecycle: [docs/tickets.md](https://github.com/worksonmyai/kontora/blob/main/docs/tickets.md)

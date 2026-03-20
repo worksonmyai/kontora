@@ -5,6 +5,18 @@
 
 Kontora is an agent orchestration tool with a kanban board. You create tickets (markdown files), and it runs AI coding agents in tmux through configurable pipelines (e.g. implement -> review -> fix -> commit). Each ticket gets its own git worktree and tmux session.
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/dark.png">
+  <source media="(prefers-color-scheme: light)" srcset="docs/light.png">
+  <img alt="Kontora web dashboard" src="docs/dark.png">
+</picture>
+
+<details>
+<summary>tmux session view</summary>
+<br>
+<img alt="Kontora tmux session" src="docs/dark-tmux.png">
+</details>
+
 ## Install
 
 ```bash

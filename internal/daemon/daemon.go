@@ -175,9 +175,8 @@ type Daemon struct {
 }
 
 type ticketState struct {
-	ticket    *ticket.Ticket
-	filePath  string
-	lastError string
+	ticket   *ticket.Ticket
+	filePath string
 }
 
 func New(cfg *config.Config, opts ...Option) *Daemon {
@@ -419,14 +418,7 @@ func (d *Daemon) handleFileChanged(path string) {
 	defer d.mu.Unlock()
 
 	prev, known := d.tickets[t.ID]
-	ns := &ticketState{ticket: t, filePath: path}
-	// Preserve lastError when the ticket stays paused (e.g. user edited notes
-	// but didn't retry). Rebuilding from disk would otherwise lose it since
-	// lastError is in-memory only.
-	if known && prev.lastError != "" && prev.ticket.Status == ticket.StatusPaused && t.Status == ticket.StatusPaused {
-		ns.lastError = prev.lastError
-	}
-	d.tickets[t.ID] = ns
+	d.tickets[t.ID] = &ticketState{ticket: t, filePath: path}
 	d.broadcastTicketUpdate(t.ID)
 
 	if !t.Kontora {
@@ -892,9 +884,9 @@ func (d *Daemon) runSimpleTicket(ctx, taskCtx context.Context, log *slog.Logger,
 	}
 
 	// Simple exit handling: 0 → done, non-0 → paused.
-	var lastErr string
 	if result.ExitCode == 0 {
 		_ = t2.SetField("status", string(ticket.StatusDone))
+		_ = t2.SetField("last_error", "")
 		completedAt := result.ExitedAt
 		if completedAt.IsZero() {
 			completedAt = time.Now()
@@ -904,7 +896,7 @@ func (d *Daemon) runSimpleTicket(ctx, taskCtx context.Context, log *slog.Logger,
 		d.killTaskWindow(ticketID)
 	} else {
 		_ = t2.SetField("status", string(ticket.StatusPaused))
-		lastErr = fmt.Sprintf("agent exited with code %d", result.ExitCode)
+		_ = t2.SetField("last_error", fmt.Sprintf("agent exited with code %d", result.ExitCode))
 		log.Warn("paused", "exit_code", result.ExitCode)
 	}
 
@@ -918,7 +910,7 @@ func (d *Daemon) runSimpleTicket(ctx, taskCtx context.Context, log *slog.Logger,
 	}
 
 	d.mu.Lock()
-	d.tickets[ticketID] = &ticketState{ticket: t2, filePath: filePath, lastError: lastErr}
+	d.tickets[ticketID] = &ticketState{ticket: t2, filePath: filePath}
 	d.broadcastTicketUpdate(ticketID)
 	d.mu.Unlock()
 }
@@ -1014,6 +1006,13 @@ func (d *Daemon) handleAgentExit(ctx, taskCtx context.Context, p handleExitParam
 		d.pauseTicket(t2, p.filePath, "apply action failed: "+err.Error())
 		return
 	}
+
+	if exitAction.Kind == pipeline.ActionPause {
+		_ = t2.SetField("last_error", fmt.Sprintf("agent exited with code %d (stage: %s)", p.result.ExitCode, p.roleName))
+	} else {
+		_ = t2.SetField("last_error", "")
+	}
+
 	if err := d.writeTicket(t2, p.filePath); err != nil {
 		p.log.Error("write failed", "phase", "exit", "err", err)
 		return
@@ -1030,13 +1029,8 @@ func (d *Daemon) handleAgentExit(ctx, taskCtx context.Context, p handleExitParam
 		d.killTaskWindow(p.ticketID)
 	}
 
-	var lastErr string
-	if exitAction.Kind == pipeline.ActionPause {
-		lastErr = fmt.Sprintf("agent exited with code %d (stage: %s)", p.result.ExitCode, p.roleName)
-	}
-
 	d.mu.Lock()
-	d.tickets[p.ticketID] = &ticketState{ticket: t2, filePath: p.filePath, lastError: lastErr}
+	d.tickets[p.ticketID] = &ticketState{ticket: t2, filePath: p.filePath}
 
 	// Re-enqueue if advance/retry/back.
 	switch exitAction.Kind { //nolint:exhaustive
@@ -1227,6 +1221,7 @@ func (d *Daemon) pauseTicket(t *ticket.Ticket, path, reason string) {
 	if reason != "" {
 		t.AppendNote(reason, time.Now())
 	}
+	_ = t.SetField("last_error", reason)
 	if err := t.SetField("status", string(ticket.StatusPaused)); err != nil {
 		log.Error("pause: set status failed", "err", err)
 	}
@@ -1234,7 +1229,7 @@ func (d *Daemon) pauseTicket(t *ticket.Ticket, path, reason string) {
 		log.Error("pause: write failed", "err", err)
 	}
 	d.mu.Lock()
-	d.tickets[t.ID] = &ticketState{ticket: t, filePath: path, lastError: reason}
+	d.tickets[t.ID] = &ticketState{ticket: t, filePath: path}
 	d.broadcastTicketUpdate(t.ID)
 	d.mu.Unlock()
 }

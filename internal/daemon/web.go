@@ -260,6 +260,7 @@ func (d *Daemon) PauseTicket(id string) error {
 		return err
 	}
 	_ = t2.SetField("status", "paused")
+	_ = t2.SetField("last_error", "")
 	if err := d.writeTicket(t2, filePath); err != nil {
 		return err
 	}
@@ -527,9 +528,7 @@ func (d *Daemon) broadcastTerminalReady(id string) {
 // Must be called with d.mu held.
 func (d *Daemon) buildTicketInfo(ts *ticketState, includeBody bool) web.TicketInfo {
 	v := app.BuildView(d.cfg, ts.ticket, includeBody)
-	info := web.TicketInfoFromView(v)
-	info.LastError = ts.lastError
-	return info
+	return web.TicketInfoFromView(v)
 }
 
 // mapAppError translates app-level sentinel errors to web-level sentinel errors

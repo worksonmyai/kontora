@@ -78,6 +78,10 @@ func View(cfg *config.Config, taskID string, w io.Writer) error {
 		}
 	}
 
+	if t.LastError != "" {
+		fmt.Fprintf(w, "\n\033[31m⚠ Last error: %s\033[0m\n", t.LastError)
+	}
+
 	fmt.Fprintf(w, "\n%s", t.Body)
 	return nil
 }

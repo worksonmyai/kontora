@@ -104,6 +104,9 @@ func (m *mockTerminalService) GetLogs(_ string, _ string) (string, error) {
 func (m *mockTerminalService) Subscribe() (<-chan TicketEvent, func()) {
 	return nil, func() {}
 }
+func (m *mockTerminalService) Summarize(_ string, _ string) (SummaryInfo, error) {
+	return SummaryInfo{}, nil
+}
 func (m *mockTerminalService) HasTerminalSession(_ string) bool { return m.hasSession }
 
 func startTerminalTestServer(t *testing.T, svc TicketService) *Server {

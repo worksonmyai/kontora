@@ -274,6 +274,85 @@ pipelines:
 	}, cfg.Agents["claude"].Environment)
 }
 
+func TestSummarizerConfig(t *testing.T) {
+	input := `
+agents:
+  claude:
+    binary: claude
+summarizer:
+  binary: claude
+  args: ["-m", "haiku", "-p"]
+  prompt: "Summarize ticket {{.TicketID}}"
+  timeout: 45s
+roles:
+  s:
+    prompt: do stuff
+pipelines:
+  p:
+    - role: s
+      agent: claude
+      on_success: done
+      on_failure: pause
+`
+	cfg, err := LoadReader(strings.NewReader(input))
+	require.NoError(t, err)
+	require.NotNil(t, cfg.Summarizer)
+	assert.Equal(t, "claude", cfg.Summarizer.Binary)
+	assert.Equal(t, []string{"-m", "haiku", "-p"}, cfg.Summarizer.Args)
+	assert.Equal(t, "Summarize ticket {{.TicketID}}", cfg.Summarizer.Prompt)
+	assert.Equal(t, 45*time.Second, cfg.Summarizer.Timeout.Duration)
+}
+
+func TestSummarizerConfig_MissingBinary(t *testing.T) {
+	input := `
+agents:
+  claude:
+    binary: claude
+summarizer:
+  args: ["-m", "haiku"]
+roles:
+  s:
+    prompt: do stuff
+pipelines:
+  p:
+    - role: s
+      agent: claude
+      on_success: done
+      on_failure: pause
+`
+	_, err := LoadReader(strings.NewReader(input))
+	require.ErrorContains(t, err, "summarizer: binary is required")
+}
+
+func TestSummarizerConfig_DefaultTimeout(t *testing.T) {
+	input := `
+agents:
+  claude:
+    binary: claude
+summarizer:
+  binary: my-summarizer
+roles:
+  s:
+    prompt: do stuff
+pipelines:
+  p:
+    - role: s
+      agent: claude
+      on_success: done
+      on_failure: pause
+`
+	cfg, err := LoadReader(strings.NewReader(input))
+	require.NoError(t, err)
+	require.NotNil(t, cfg.Summarizer)
+	assert.Equal(t, 30*time.Second, cfg.Summarizer.Timeout.Duration)
+}
+
+func TestSummarizerConfig_Nil(t *testing.T) {
+	cfg, err := Load("testdata/minimal.yaml")
+	require.NoError(t, err)
+	assert.Nil(t, cfg.Summarizer)
+}
+
 func TestLoadReaderValid(t *testing.T) {
 	input := `
 tickets_dir: /tmp/tasks

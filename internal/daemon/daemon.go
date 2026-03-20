@@ -22,6 +22,7 @@ import (
 	"github.com/worksonmyai/kontora/internal/pipeline"
 	"github.com/worksonmyai/kontora/internal/process"
 	"github.com/worksonmyai/kontora/internal/prompt"
+	"github.com/worksonmyai/kontora/internal/summarizer"
 	"github.com/worksonmyai/kontora/internal/ticket"
 	"github.com/worksonmyai/kontora/internal/ticket/app"
 	"github.com/worksonmyai/kontora/internal/ticket/store"
@@ -156,6 +157,7 @@ type Daemon struct {
 	skipOrphanCleanup bool
 	broker            *web.SSEBroker
 	svc               *app.Service
+	summaryCache      *summarizer.Cache
 
 	debounce time.Duration
 	lockPath string
@@ -199,6 +201,9 @@ func New(cfg *config.Config, opts ...Option) *Daemon {
 	}
 	for _, opt := range opts {
 		opt(d)
+	}
+	if cfg.Summarizer != nil {
+		d.summaryCache = summarizer.NewCache(30 * time.Second)
 	}
 	d.queueCond = sync.NewCond(&d.mu)
 	d.svc = d.buildService()

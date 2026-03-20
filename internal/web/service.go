@@ -8,11 +8,13 @@ import (
 )
 
 var (
-	ErrTicketNotFound = errors.New("ticket not found")
-	ErrInvalidState   = errors.New("invalid state transition")
-	ErrLogNotFound    = errors.New("log not found")
-	ErrUnknownAgent   = errors.New("unknown agent")
-	ErrDeleteRejected = errors.New("delete rejected")
+	ErrTicketNotFound          = errors.New("ticket not found")
+	ErrInvalidState            = errors.New("invalid state transition")
+	ErrLogNotFound             = errors.New("log not found")
+	ErrUnknownAgent            = errors.New("unknown agent")
+	ErrDeleteRejected          = errors.New("delete rejected")
+	ErrSummarizerNotConfigured = errors.New("summarizer not configured")
+	ErrNoTerminalSession       = errors.New("no terminal session")
 )
 
 // TicketService defines the contract between the web layer and the daemon.
@@ -33,6 +35,7 @@ type TicketService interface {
 	UpdateTicket(id string, req UpdateTicketRequest) error
 	UploadTicket(content []byte) (TicketInfo, error)
 	GetLogs(id string, stage string) (string, error)
+	Summarize(id string, stage string) (SummaryInfo, error)
 	Subscribe() (ch <-chan TicketEvent, unsubscribe func())
 	HasTerminalSession(id string) bool
 }
@@ -67,10 +70,19 @@ type PipelineInfo struct {
 }
 
 type ConfigInfo struct {
-	Pipelines     []string       `json:"pipelines"`
-	PipelineInfos []PipelineInfo `json:"pipeline_infos"`
-	Agents        []string       `json:"agents"`
-	BranchPrefix  string         `json:"branch_prefix"`
+	Pipelines            []string       `json:"pipelines"`
+	PipelineInfos        []PipelineInfo `json:"pipeline_infos"`
+	Agents               []string       `json:"agents"`
+	BranchPrefix         string         `json:"branch_prefix"`
+	SummarizerConfigured bool           `json:"summarizer_configured"`
+}
+
+type SummaryInfo struct {
+	Summary   string    `json:"summary"`
+	Error     string    `json:"error,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+	Cached    bool      `json:"cached"`
+	Source    string    `json:"source"`
 }
 
 type TicketInfo struct {

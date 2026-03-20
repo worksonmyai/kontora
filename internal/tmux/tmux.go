@@ -45,6 +45,15 @@ func KillWindow(sessionName, ticketID string) error {
 	return nil
 }
 
+// CapturePaneText captures the full scrollback text from a ticket's tmux pane.
+func CapturePaneText(sessionName, ticketID string) (string, error) {
+	out, err := exec.Command("tmux", "capture-pane", "-t", WindowTarget(sessionName, ticketID), "-p", "-S", "-").CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("tmux capture-pane: %s: %w", strings.TrimSpace(string(out)), err)
+	}
+	return string(out), nil
+}
+
 // HasWindow returns true if a tmux window for the given ticket exists.
 func HasWindow(sessionName, ticketID string) bool {
 	return exec.Command("tmux", "list-panes", "-t", WindowTarget(sessionName, ticketID)).Run() == nil

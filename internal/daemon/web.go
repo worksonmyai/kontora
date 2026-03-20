@@ -3,6 +3,7 @@ package daemon
 import (
 	"bytes"
 	"container/heap"
+	"context"
 	"errors"
 	"fmt"
 	"maps"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/worksonmyai/kontora/internal/cli"
 	"github.com/worksonmyai/kontora/internal/config"
+	"github.com/worksonmyai/kontora/internal/summarizer"
 	"github.com/worksonmyai/kontora/internal/ticket"
 	"github.com/worksonmyai/kontora/internal/ticket/app"
 	"github.com/worksonmyai/kontora/internal/tmux"
@@ -170,10 +172,11 @@ func (d *Daemon) GetConfig() web.ConfigInfo {
 	}
 	agents := slices.Sorted(maps.Keys(d.cfg.Agents))
 	return web.ConfigInfo{
-		Pipelines:     pipelines,
-		PipelineInfos: infos,
-		Agents:        agents,
-		BranchPrefix:  d.cfg.BranchPrefix,
+		Pipelines:            pipelines,
+		PipelineInfos:        infos,
+		Agents:               agents,
+		BranchPrefix:         d.cfg.BranchPrefix,
+		SummarizerConfigured: d.cfg.Summarizer != nil,
 	}
 }
 
@@ -458,6 +461,101 @@ func (d *Daemon) GetLogs(id string, stage string) (string, error) {
 		return "", err
 	}
 	return buf.String(), nil
+}
+
+// Summarize returns a summary of a ticket's terminal output.
+func (d *Daemon) Summarize(id, stage string) (web.SummaryInfo, error) {
+	if d.cfg.Summarizer == nil {
+		return web.SummaryInfo{}, web.ErrSummarizerNotConfigured
+	}
+
+	d.mu.Lock()
+	_, ok := d.tickets[id]
+	d.mu.Unlock()
+	if !ok {
+		return web.SummaryInfo{}, web.ErrTicketNotFound
+	}
+
+	// Determine cache key.
+	cacheKey := id
+	if stage != "" {
+		cacheKey = id + ":" + stage
+	}
+
+	// Check cache.
+	if entry, ok := d.summaryCache.Get(cacheKey); ok {
+		info := web.SummaryInfo{
+			Summary:   entry.Summary,
+			CreatedAt: entry.CreatedAt,
+			Cached:    true,
+			Source:    entry.Source,
+		}
+		if entry.Error != nil {
+			info.Error = entry.Error.Error()
+		}
+		return info, nil
+	}
+
+	// Resolve input text.
+	var paneText string
+	source := "logs"
+	if stage == "" {
+		// Try live tmux pane first.
+		if tmux.HasWindow(tmux.DefaultSessionName, id) {
+			text, err := tmux.CapturePaneText(tmux.DefaultSessionName, id)
+			if err != nil {
+				return web.SummaryInfo{}, fmt.Errorf("capturing pane: %w", err)
+			}
+			paneText = text
+			source = "live"
+		} else {
+			// Fall back to most recent log file.
+			var buf bytes.Buffer
+			if err := cli.Logs(d.cfg.TicketsDir, d.cfg.LogsDir, id, "", &buf); err != nil {
+				if errors.Is(err, os.ErrNotExist) {
+					return web.SummaryInfo{}, web.ErrNoTerminalSession
+				}
+				return web.SummaryInfo{}, err
+			}
+			paneText = buf.String()
+		}
+	} else {
+		var buf bytes.Buffer
+		if err := cli.Logs(d.cfg.TicketsDir, d.cfg.LogsDir, id, stage, &buf); err != nil {
+			return web.SummaryInfo{}, web.ErrLogNotFound
+		}
+		paneText = buf.String()
+	}
+
+	// Run summarizer.
+	ctx, cancel := context.WithTimeout(context.Background(), d.cfg.Summarizer.Timeout.Duration)
+	defer cancel()
+
+	result, err := summarizer.Run(ctx, summarizer.Params{
+		Binary:   d.cfg.Summarizer.Binary,
+		Args:     d.cfg.Summarizer.Args,
+		Prompt:   d.cfg.Summarizer.Prompt,
+		PaneText: paneText,
+		TicketID: id,
+		Stage:    stage,
+	})
+
+	// Cache the result (including errors).
+	d.summaryCache.Set(cacheKey, result, source, err)
+
+	if err != nil {
+		return web.SummaryInfo{
+			Error:     err.Error(),
+			CreatedAt: time.Now(),
+			Source:    source,
+		}, nil
+	}
+
+	return web.SummaryInfo{
+		Summary:   result,
+		CreatedAt: time.Now(),
+		Source:    source,
+	}, nil
 }
 
 // Subscribe returns a channel that receives ticket events and an unsubscribe function.

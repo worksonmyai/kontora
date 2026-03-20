@@ -46,6 +46,14 @@ type Config struct {
 	Roles               map[string]Role     `yaml:"roles"`
 	Pipelines           map[string]Pipeline `yaml:"pipelines"`
 	Environment         map[string]string   `yaml:"environment"`
+	Summarizer          *Summarizer         `yaml:"summarizer"`
+}
+
+type Summarizer struct {
+	Binary  string   `yaml:"binary"`
+	Args    []string `yaml:"args"`
+	Prompt  string   `yaml:"prompt"`
+	Timeout Duration `yaml:"timeout"`
 }
 
 type Web struct {
@@ -147,6 +155,9 @@ func (c *Config) applyDefaults() {
 	if c.Web.Port == 0 {
 		c.Web.Port = 8080
 	}
+	if c.Summarizer != nil && c.Summarizer.Timeout.Duration == 0 {
+		c.Summarizer.Timeout.Duration = 30 * time.Second
+	}
 }
 
 var validOnSuccess = map[string]bool{"next": true, "done": true}
@@ -195,6 +206,12 @@ func (c *Config) Validate() error {
 		last := pipeline[len(pipeline)-1]
 		if last.OnSuccess != "done" {
 			return fmt.Errorf("pipeline %q: last stage must have on_success=done, got %q", name, last.OnSuccess)
+		}
+	}
+
+	if c.Summarizer != nil {
+		if c.Summarizer.Binary == "" {
+			return fmt.Errorf("summarizer: binary is required")
 		}
 	}
 

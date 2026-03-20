@@ -28,6 +28,9 @@ function kontora() {
     logViewContent: null,
     logViewStage: null,
     logViewLoading: false,
+    summaryContent: null,
+    summaryLoading: false,
+    summaryError: null,
     detailLoading: false,
     searchQuery: '',
     searchOpen: false,
@@ -333,16 +336,22 @@ function kontora() {
       this.logViewContent = null;
       this.logViewStage = null;
       this.logViewLoading = false;
+      this.clearSummary();
       this.setStageOpen = false;
       this.selectedTicket = ticket;
       this.detailLoading = true;
       try {
-        var res = await fetch('/api/tickets/' + ticket.id);
-        if (res.ok) {
-          var full = await res.json();
+        var fetches = [fetch('/api/tickets/' + ticket.id)];
+        if (!this.configCache) fetches.push(fetch('/api/config'));
+        var results = await Promise.all(fetches);
+        if (results[0].ok) {
+          var full = await results[0].json();
           this.selectedTicket = full;
           var idx = this.tickets.findIndex(function(t) { return t.id === full.id; });
           if (idx >= 0) this.tickets[idx] = full;
+        }
+        if (results[1] && results[1].ok) {
+          this.configCache = await results[1].json();
         }
       } catch (e) {
         this.error = 'Failed to load ticket details';
@@ -390,6 +399,7 @@ function kontora() {
       this.logViewContent = null;
       this.logViewStage = null;
       this.logViewLoading = false;
+      this.clearSummary();
     },
 
     copyTicketId(id) {
@@ -657,6 +667,41 @@ function kontora() {
         this.logViewContent = null;
       }
       this.logViewLoading = false;
+    },
+
+    summarizerConfigured() {
+      return this.configCache?.summarizer_configured === true;
+    },
+
+    async fetchSummary(stage) {
+      this.summaryLoading = true;
+      this.summaryContent = null;
+      this.summaryError = null;
+      try {
+        var url = '/api/tickets/' + this.selectedTicket.id + '/summary';
+        if (stage) url += '?stage=' + encodeURIComponent(stage);
+        var res = await fetch(url);
+        var data = await res.json();
+        if (!res.ok) {
+          this.summaryError = data.error || 'Failed to get summary';
+          this.summaryLoading = false;
+          return;
+        }
+        if (data.error) {
+          this.summaryError = data.error;
+        } else {
+          this.summaryContent = data.summary;
+        }
+      } catch (e) {
+        this.summaryError = 'Failed to get summary: ' + e.message;
+      }
+      this.summaryLoading = false;
+    },
+
+    clearSummary() {
+      this.summaryContent = null;
+      this.summaryLoading = false;
+      this.summaryError = null;
     },
 
     stageStyle(stage, ticket) {

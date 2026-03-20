@@ -31,6 +31,7 @@ type mockService struct {
 	initFn        func(id string, req InitTicketRequest) error
 	updateFn      func(id string, req UpdateTicketRequest) error
 	logsFn        func(id, stage string) (string, error)
+	summarizeFn   func(id, stage string) (SummaryInfo, error)
 	configInfo    ConfigInfo
 }
 
@@ -96,6 +97,12 @@ func (m *mockService) GetLogs(id, stage string) (string, error) {
 		return m.logsFn(id, stage)
 	}
 	return "", nil
+}
+func (m *mockService) Summarize(id, stage string) (SummaryInfo, error) {
+	if m.summarizeFn != nil {
+		return m.summarizeFn(id, stage)
+	}
+	return SummaryInfo{}, nil
 }
 func (m *mockService) Subscribe() (<-chan TicketEvent, func()) { return nil, func() {} }
 func (m *mockService) HasTerminalSession(_ string) bool        { return false }
@@ -837,6 +844,70 @@ func TestHandleGetLogs_PathTraversal(t *testing.T) {
 	srv := startHandlerTestServer(t, svc)
 
 	res := get(t, srv, "/api/tickets/t-001/logs?stage=../../etc/passwd")
+	assert.Equal(t, http.StatusNotFound, res.statusCode)
+}
+
+// --- GET /api/tickets/{id}/summary ---
+
+func TestHandleSummarize_Success(t *testing.T) {
+	svc := &mockService{
+		summarizeFn: func(id, stage string) (SummaryInfo, error) {
+			assert.Equal(t, "t-001", id)
+			assert.Equal(t, "", stage)
+			return SummaryInfo{Summary: "Agent is refactoring code", Source: "live"}, nil
+		},
+	}
+	srv := startHandlerTestServer(t, svc)
+
+	res := get(t, srv, "/api/tickets/t-001/summary")
+	assert.Equal(t, http.StatusOK, res.statusCode)
+
+	var result SummaryInfo
+	require.NoError(t, json.Unmarshal([]byte(res.body), &result))
+	assert.Equal(t, "Agent is refactoring code", result.Summary)
+	assert.Equal(t, "live", result.Source)
+}
+
+func TestHandleSummarize_WithStage(t *testing.T) {
+	svc := &mockService{
+		summarizeFn: func(id, stage string) (SummaryInfo, error) {
+			assert.Equal(t, "t-001", id)
+			assert.Equal(t, "code", stage)
+			return SummaryInfo{Summary: "Code stage summary", Source: "logs"}, nil
+		},
+	}
+	srv := startHandlerTestServer(t, svc)
+
+	res := get(t, srv, "/api/tickets/t-001/summary?stage=code")
+	assert.Equal(t, http.StatusOK, res.statusCode)
+
+	var result SummaryInfo
+	require.NoError(t, json.Unmarshal([]byte(res.body), &result))
+	assert.Equal(t, "Code stage summary", result.Summary)
+	assert.Equal(t, "logs", result.Source)
+}
+
+func TestHandleSummarize_NotConfigured(t *testing.T) {
+	svc := &mockService{
+		summarizeFn: func(_, _ string) (SummaryInfo, error) {
+			return SummaryInfo{}, ErrSummarizerNotConfigured
+		},
+	}
+	srv := startHandlerTestServer(t, svc)
+
+	res := get(t, srv, "/api/tickets/t-001/summary")
+	assert.Equal(t, http.StatusNotImplemented, res.statusCode)
+}
+
+func TestHandleSummarize_TicketNotFound(t *testing.T) {
+	svc := &mockService{
+		summarizeFn: func(_, _ string) (SummaryInfo, error) {
+			return SummaryInfo{}, ErrTicketNotFound
+		},
+	}
+	srv := startHandlerTestServer(t, svc)
+
+	res := get(t, srv, "/api/tickets/nonexistent/summary")
 	assert.Equal(t, http.StatusNotFound, res.statusCode)
 }
 

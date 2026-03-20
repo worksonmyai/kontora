@@ -296,6 +296,20 @@ func (s *Server) handleUploadTickets(w http.ResponseWriter, r *http.Request) {
 	}{tickets, errs})
 }
 
+func (s *Server) handleSummarize(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	stage := r.URL.Query().Get("stage")
+	if stage != "" {
+		stage = filepath.Base(stage)
+	}
+	info, err := s.svc.Summarize(id, stage)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, info)
+}
+
 func (s *Server) handleGetLogs(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	stage := r.URL.Query().Get("stage")
@@ -371,6 +385,10 @@ func writeServiceError(w http.ResponseWriter, err error) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 	case errors.Is(err, ErrDeleteRejected):
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+	case errors.Is(err, ErrSummarizerNotConfigured):
+		writeJSON(w, http.StatusNotImplemented, map[string]string{"error": err.Error()})
+	case errors.Is(err, ErrNoTerminalSession):
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
 	default:
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}

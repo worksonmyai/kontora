@@ -934,6 +934,27 @@
                 <span x-text="actionLoading === 'skip' ? 'skipping...' : 'skip stage'"></span>
               </button>
             </template>
+            <!-- Summarize button -->
+            <template x-if="selectedTicket?.status === 'in_progress' || (selectedTicket?.history?.length > 0)">
+              <button @click="clearSummary(); fetchSummary(selectedTicket?.status === 'in_progress' ? '' : (selectedTicket?.history?.[selectedTicket.history.length - 1]?.stage || ''))"
+                      :disabled="summaryLoading || !summarizerConfigured()"
+                      class="w-full text-[13px] font-mono px-3 py-1.5 rounded bg-surface-800 border border-surface-700/50 text-tx-3 hover:text-accent hover:border-accent/30 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                      :data-tip-t="summarizerConfigured() ? 'Get an AI summary of the terminal output' : 'Summarizer not configured — add a summarizer section to kontora.yaml'">
+                <span x-text="summaryLoading ? 'summarizing...' : 'summarize'"></span>
+              </button>
+            </template>
+          </div>
+
+          <!-- Summary display -->
+          <div x-show="summaryContent || summaryError" class="mt-3">
+            <div class="flex items-center justify-between mb-1">
+              <span class="text-xs font-mono text-surface-600">summary</span>
+              <button @click="clearSummary(); fetchSummary(selectedTicket?.status === 'in_progress' ? '' : (selectedTicket?.history?.[selectedTicket.history.length - 1]?.stage || ''))"
+                      :disabled="summaryLoading"
+                      class="text-[11px] font-mono text-surface-600 hover:text-accent disabled:opacity-50">refresh</button>
+            </div>
+            <div x-show="summaryContent" class="text-[12px] text-tx-3 bg-surface-800 rounded border border-surface-700/30 px-3 py-2 leading-relaxed" x-text="summaryContent"></div>
+            <div x-show="summaryError" class="text-[12px] text-err bg-err/10 rounded border border-err/20 px-3 py-2" x-text="summaryError"></div>
           </div>
         </div>
       </div>

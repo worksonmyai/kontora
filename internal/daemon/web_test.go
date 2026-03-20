@@ -965,3 +965,38 @@ func TestDaemon_InitTicket_NotFound(t *testing.T) {
 	cancel()
 	require.NoError(t, <-errCh)
 }
+
+func TestDaemon_Summarize_NotConfigured(t *testing.T) {
+	h := newHarness(t)
+	// Ensure no summarizer is configured (default).
+	d := h.newDaemon(h.cfg)
+
+	_, err := d.Summarize("any-id", "")
+	assert.ErrorIs(t, err, web.ErrSummarizerNotConfigured)
+}
+
+func TestDaemon_Summarize_TicketNotFound(t *testing.T) {
+	h := newHarness(t)
+	h.cfg.Summarizer = &config.Summarizer{Binary: "echo"}
+	h.cfg.Summarizer.Timeout.Duration = 30 * time.Second
+	d := h.newDaemon(h.cfg)
+
+	_, err := d.Summarize("nonexistent", "")
+	assert.ErrorIs(t, err, web.ErrTicketNotFound)
+}
+
+func TestDaemon_GetConfig_SummarizerConfigured(t *testing.T) {
+	h := newHarness(t)
+	d := h.newDaemon(h.cfg)
+
+	cfg := d.GetConfig()
+	assert.False(t, cfg.SummarizerConfigured)
+
+	// With summarizer configured.
+	h2 := newHarness(t)
+	h2.cfg.Summarizer = &config.Summarizer{Binary: "echo"}
+	d2 := h2.newDaemon(h2.cfg)
+
+	cfg2 := d2.GetConfig()
+	assert.True(t, cfg2.SummarizerConfigured)
+}

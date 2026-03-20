@@ -45,6 +45,7 @@ type Ticket struct {
 	Branch      string         `yaml:"branch"`
 	History     []HistoryEntry `yaml:"history"`
 	Created     *time.Time     `yaml:"created"`
+	LastError   string         `yaml:"last_error"`
 
 	Body     string `yaml:"-"`
 	FilePath string `yaml:"-"`

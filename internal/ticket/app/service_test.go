@@ -139,6 +139,17 @@ func TestRetry_ResetsAttempt(t *testing.T) {
 	assert.Equal(t, []string{"tst-001"}, rt.enqueued)
 }
 
+func TestRetry_ClearsLastError(t *testing.T) {
+	repo := newMemRepo()
+	repo.add("tst-001", "---\nid: tst-001\nstatus: paused\nkontora: true\nattempt: 1\npipeline: default\nrole: code\nlast_error: \"agent exited with code 1\"\n---\n# Test\n")
+	rt := &spyRuntime{}
+	svc := New(testCfg(), repo, rt)
+
+	_, err := svc.Retry("tst-001")
+	require.NoError(t, err)
+	assert.Empty(t, repo.tickets["tst-001"].Ticket.LastError)
+}
+
 func TestRetry_RejectsInProgress(t *testing.T) {
 	repo := newMemRepo()
 	repo.add("tst-001", "---\nid: tst-001\nstatus: in_progress\nkontora: true\n---\n# Test\n")

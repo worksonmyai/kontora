@@ -124,6 +124,7 @@ func TicketInfoFromView(v app.View) TicketInfo {
 		Branch:        v.Branch,
 		Stages:        v.Stages,
 		Body:          v.Body,
+		LastError:     v.LastError,
 	}
 	if len(v.History) > 0 {
 		info.History = make([]HistoryInfo, len(v.History))

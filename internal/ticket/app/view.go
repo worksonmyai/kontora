@@ -27,6 +27,7 @@ type View struct {
 	Stages        []string
 	History       []HistoryView
 	Body          string
+	LastError     string
 }
 
 // HistoryView is a single history entry in a View.
@@ -92,6 +93,8 @@ func BuildView(cfg *config.Config, t *ticket.Ticket, includeBody bool) View {
 			}
 		}
 	}
+
+	v.LastError = t.LastError
 
 	if includeBody {
 		v.Body = t.Body

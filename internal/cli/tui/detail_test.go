@@ -240,6 +240,25 @@ func TestDetailModel_ViewSimpleTaskEmptyBranch(t *testing.T) {
 	assert.Contains(t, view, "—") // empty branch shows dash
 }
 
+func TestDetailModel_ViewLastError(t *testing.T) {
+	info := testDetailTicket()
+	info.Status = "paused"
+	info.LastError = "agent exited with code 1 (stage: implement)"
+	m := newDetailModel(info, 100, 30)
+	view := m.View()
+
+	assert.Contains(t, view, "agent exited with code 1 (stage: implement)")
+}
+
+func TestDetailModel_ViewNoLastError(t *testing.T) {
+	info := testDetailTicket()
+	info.LastError = ""
+	m := newDetailModel(info, 100, 30)
+	view := m.View()
+
+	assert.NotContains(t, view, "⚠")
+}
+
 func TestDetailModel_ViewNonKontoraNoBranch(t *testing.T) {
 	info := web.TicketInfo{
 		ID:     "ext-001",

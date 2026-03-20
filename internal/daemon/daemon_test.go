@@ -1630,6 +1630,10 @@ func TestPauseTicket_LastError(t *testing.T) {
 	assert.Equal(t, "paused", info.Status)
 	assert.Contains(t, info.LastError, "runner failed: connection refused")
 
+	// Verify last_error is persisted in frontmatter.
+	tkt := h.readTask("tst-le1.md")
+	assert.Contains(t, tkt.LastError, "runner failed: connection refused")
+
 	cancel()
 	require.NoError(t, <-errCh)
 }
@@ -1664,17 +1668,21 @@ func TestRetryTicket_ClearsLastError(t *testing.T) {
 	h.writeTicket("tst-le2.md", h.taskMD("tst-le2", "todo", "one-stage"))
 	h.waitForStatus("tst-le2.md", ticket.StatusPaused, 10*time.Second)
 
-	// Verify lastError is set.
+	// Verify last_error is set in frontmatter.
 	info, err := d.GetTicket("tst-le2")
 	require.NoError(t, err)
 	assert.NotEmpty(t, info.LastError)
+	tkt := h.readTask("tst-le2.md")
+	assert.NotEmpty(t, tkt.LastError)
 
-	// Retry should clear lastError.
+	// Retry should clear last_error from frontmatter.
 	require.NoError(t, d.RetryTicket("tst-le2"))
 
 	info, err = d.GetTicket("tst-le2")
 	require.NoError(t, err)
 	assert.Empty(t, info.LastError)
+	tkt = h.readTask("tst-le2.md")
+	assert.Empty(t, tkt.LastError)
 
 	cancel()
 	require.NoError(t, <-errCh)
@@ -1749,6 +1757,11 @@ func TestHandleAgentExit_PipelinePause_SetsLastError(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, info.LastError, "agent exited with code 1")
 	assert.Contains(t, info.LastError, "stage: step1")
+
+	// Verify last_error is persisted in frontmatter.
+	tkt := h.readTask("tst-le4.md")
+	assert.Contains(t, tkt.LastError, "agent exited with code 1")
+	assert.Contains(t, tkt.LastError, "stage: step1")
 
 	cancel()
 	require.NoError(t, <-errCh)

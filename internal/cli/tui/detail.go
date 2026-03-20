@@ -173,7 +173,7 @@ func (m detailModel) View() string {
 		writeMeta(&b, "attempt", fmt.Sprintf("%d", m.ticket.Attempt))
 	}
 	if m.ticket.LastError != "" {
-		b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("1")).Render(fmt.Sprintf(" ⚠ %s", m.ticket.LastError)))
+		b.WriteString(styleError.Render(fmt.Sprintf(" ⚠ %s", m.ticket.LastError)))
 		b.WriteByte('\n')
 	}
 	b.WriteByte('\n')

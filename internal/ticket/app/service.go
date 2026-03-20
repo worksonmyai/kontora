@@ -93,7 +93,9 @@ func (s *Service) SetStatus(id string, status ticket.Status) (Result, error) {
 	if err := st.Ticket.SetField("status", string(status)); err != nil {
 		return Result{}, fmt.Errorf("setting status: %w", err)
 	}
-	_ = st.Ticket.SetField("last_error", "")
+	if err := st.Ticket.SetField("last_error", ""); err != nil {
+		return Result{}, fmt.Errorf("clearing last_error: %w", err)
+	}
 
 	if status == ticket.StatusDone {
 		now := time.Now().UTC()
@@ -131,7 +133,9 @@ func (s *Service) Retry(id string) (Result, error) {
 	if err := st.Ticket.SetField("status", string(ticket.StatusTodo)); err != nil {
 		return Result{}, fmt.Errorf("setting status: %w", err)
 	}
-	_ = st.Ticket.SetField("last_error", "")
+	if err := st.Ticket.SetField("last_error", ""); err != nil {
+		return Result{}, fmt.Errorf("clearing last_error: %w", err)
+	}
 
 	if err := s.repo.Save(st); err != nil {
 		return Result{}, err
@@ -190,7 +194,9 @@ func (s *Service) Skip(id string) (Result, error) {
 		}
 	}
 
-	_ = t.SetField("last_error", "")
+	if err := t.SetField("last_error", ""); err != nil {
+		return Result{}, fmt.Errorf("clearing last_error: %w", err)
+	}
 
 	if err := s.repo.Save(st); err != nil {
 		return Result{}, err
@@ -275,7 +281,9 @@ func (s *Service) Init(id string, req InitRequest) (Result, error) {
 	if err := t.SetField("attempt", 0); err != nil {
 		return Result{}, fmt.Errorf("setting attempt: %w", err)
 	}
-	_ = t.SetField("last_error", "")
+	if err := t.SetField("last_error", ""); err != nil {
+		return Result{}, fmt.Errorf("clearing last_error: %w", err)
+	}
 
 	if err := s.repo.Save(st); err != nil {
 		return Result{}, err

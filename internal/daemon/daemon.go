@@ -1221,7 +1221,9 @@ func (d *Daemon) pauseTicket(t *ticket.Ticket, path, reason string) {
 	if reason != "" {
 		t.AppendNote(reason, time.Now())
 	}
-	_ = t.SetField("last_error", reason)
+	if err := t.SetField("last_error", reason); err != nil {
+		log.Error("pause: set last_error failed", "err", err)
+	}
 	if err := t.SetField("status", string(ticket.StatusPaused)); err != nil {
 		log.Error("pause: set status failed", "err", err)
 	}

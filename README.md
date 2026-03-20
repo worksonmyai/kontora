@@ -19,6 +19,12 @@ Kontora is an agent orchestration tool with a kanban board. You create tickets (
 
 ## Install
 
+Ask your AI agent:
+
+> Help me install and set up Kontora: https://raw.githubusercontent.com/worksonmyai/kontora/main/llms.txt
+
+Or install manually:
+
 ```bash
 brew tap worksonmyai/kontora https://github.com/worksonmyai/kontora
 brew install kontora

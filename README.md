@@ -46,7 +46,7 @@ kontora attach # attach to the agent's tmux session
 
 ## Configuration
 
-Config is stored in `~/.config/.kontora/config.yaml` and defines three things: agents, roles, and pipelines.
+Config is stored in `~/.config/kontora/config.yaml` and defines three things: agents, roles, and pipelines.
 
 **Agents** are binaries kontora spawns — Claude Code, Aider, or anything with a CLI:
 

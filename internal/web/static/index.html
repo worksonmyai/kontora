@@ -216,8 +216,10 @@
       </span>
       <div class="ml-auto flex items-center gap-2">
         <button @click="toggleTerminalRW()"
-                class="text-[12px] font-mono px-1.5 py-0.5 rounded transition-colors"
+                class="text-[12px] font-mono px-1.5 py-0.5 rounded transition-colors flex items-center gap-1"
                 :class="terminalRW ? 'text-err bg-err/10' : 'text-surface-600 hover:text-tx-3'">
+          <svg x-show="terminalRW" xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>
+          <svg x-show="!terminalRW" xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
           <span x-text="terminalRW ? 'read-write' : 'read-only'"></span>
         </button>
         <span class="copyable text-[12px] font-mono text-surface-600 hover:text-tx-3"
@@ -461,11 +463,13 @@
         <svg x-show="lightTheme" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
       </button>
       <button @click="openCreateModal()"
-              class="text-[13px] font-mono px-2 py-0.5 rounded bg-surface-800 border border-surface-700/50 text-tx-3 hover:text-accent hover:border-accent/30 transition-colors">
-        + new
+              class="text-[13px] font-mono px-2 py-0.5 rounded bg-surface-800 border border-surface-700/50 text-tx-3 hover:text-accent hover:border-accent/30 transition-colors flex items-center gap-1">
+        <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
+        new
       </button>
       <button @click="$refs.uploadInput.click()"
-              class="text-[13px] font-mono px-2 py-0.5 rounded bg-surface-800 border border-surface-700/50 text-tx-3 hover:text-accent hover:border-accent/30 transition-colors">
+              class="text-[13px] font-mono px-2 py-0.5 rounded bg-surface-800 border border-surface-700/50 text-tx-3 hover:text-accent hover:border-accent/30 transition-colors flex items-center gap-1">
+        <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
         upload
       </button>
     </div>
@@ -590,13 +594,16 @@
           <!-- Tabs -->
           <div class="flex border-b border-surface-700/30 px-1">
             <button x-show="showTerminalTab()" @click="switchTab('terminal')"
-                    class="text-[13px] font-mono px-4 py-2.5 border-b-2 transition-colors"
-                    :class="activeTab === 'terminal' ? 'text-tx-2 border-accent' : 'text-surface-600 border-transparent hover:text-tx-3'"
-                    x-text="terminalTabLabel()">
+                    class="text-[11px] font-mono uppercase tracking-wider px-4 py-2.5 border-b-2 transition-colors flex items-center gap-1.5"
+                    :class="activeTab === 'terminal' ? 'text-tx-2 border-accent' : 'text-surface-600 border-transparent hover:text-tx-3'">
+              <svg x-show="selectedTicket?.status === 'in_progress'" xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+              <svg x-show="selectedTicket?.status !== 'in_progress'" xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M12 18v-6"/><path d="m9 15 3-3 3 3"/></svg>
+              <span x-text="terminalTabLabel()"></span>
             </button>
             <button @click="switchTab('ticket')"
-                    class="text-[13px] font-mono px-4 py-2.5 border-b-2 transition-colors"
+                    class="text-[11px] font-mono uppercase tracking-wider px-4 py-2.5 border-b-2 transition-colors flex items-center gap-1.5"
                     :class="activeTab === 'ticket' ? 'text-tx-2 border-accent' : 'text-surface-600 border-transparent hover:text-tx-3'">
+              <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/></svg>
               ticket
             </button>
             <div class="ml-auto flex items-center gap-2 pr-2">
@@ -616,12 +623,12 @@
                   <button class="text-[12px] font-mono px-2 py-0.5 rounded transition-colors"
                        :class="[stageStyle(stage, selectedTicket),
                                 isStageClickable(stage, selectedTicket) ? 'cursor-pointer hover:ring-1 hover:ring-accent/40 underline decoration-dotted decoration-ok/40 underline-offset-2' : 'cursor-default',
-                                logViewStage === stage && isStageClickable(stage, selectedTicket) ? 'ring-1 ring-accent/60' : '']"
+                                logViewStage && logViewStage !== stage ? 'opacity-40' : '']"
                        @click="clickStage(stage)">
                     <span x-text="stage"></span>
                   </button>
                   <template x-if="i < (selectedTicket?.stages?.length || 0) - 1">
-                    <span class="text-surface-600 text-[12px]">→</span>
+                    <span class="text-surface-600 text-[12px]" :class="logViewStage && logViewStage !== stage ? 'opacity-40' : ''">→</span>
                   </template>
                 </div>
               </template>
@@ -643,8 +650,10 @@
                 </span>
                 <span class="text-[12px] font-mono text-surface-600/40 ml-2" x-show="selectedTicket?.stages?.indexOf(selectedTicket?.stage) > 0">· click stages to view logs</span>
                 <button @click="toggleTerminalRW()"
-                        class="ml-auto text-[12px] font-mono px-1.5 py-0.5 rounded transition-colors"
+                        class="ml-auto text-[12px] font-mono px-1.5 py-0.5 rounded transition-colors flex items-center gap-1"
                         :class="terminalRW ? 'text-err bg-err/10' : 'text-surface-600 hover:text-tx-3'">
+                  <svg x-show="terminalRW" xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>
+                  <svg x-show="!terminalRW" xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
                   <span x-text="terminalRW ? 'read-write' : 'read-only'"></span>
                 </button>
                 <span class="copyable text-[12px] font-mono text-surface-600 hover:text-tx-3 ml-2"
@@ -676,8 +685,12 @@
               <template x-if="logViewContent !== null">
                 <div class="h-full flex flex-col">
                   <div class="shrink-0 px-0 pb-2 flex items-center gap-2">
-                    <span class="text-[12px] font-mono text-surface-600" x-text="logViewStage ? 'stage: ' + logViewStage : 'latest log'"></span>
-                    <span class="text-[12px] font-mono text-surface-600/40">· click stages to switch</span>
+                    <span class="text-[10px] font-mono text-surface-600 uppercase tracking-wider flex items-center gap-1">
+                      <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>
+                      stage
+                    </span>
+                    <span class="text-[12px] font-mono text-surface-600" x-text="logViewStage || 'latest log'"></span>
+                    <span class="text-[12px] font-mono text-surface-600/40 flex items-center gap-1.5"><svg xmlns="http://www.w3.org/2000/svg" width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 15l-2 5L9 9l11 4-5 2z"/></svg>click stages to switch</span>
                     <template x-if="selectedTicket?.status === 'in_progress'">
                       <button class="text-[12px] font-mono text-accent hover:underline"
                               @click="logViewContent = null; logViewStage = null; openTerminal()">← back to live</button>
@@ -851,7 +864,8 @@
                      class="absolute right-0 mt-2 min-w-[9rem] overflow-hidden rounded-lg border border-surface-700/60 bg-surface-900/95 shadow-lg shadow-black/30 z-10"
                      @click.stop>
                   <button @click="detailMenuOpen = false; openDeleteModal()"
-                          class="w-full px-3 py-2 text-left text-[13px] font-mono text-err hover:bg-err/10 transition-colors">
+                          class="w-full px-3 py-2 text-left text-[13px] font-mono text-err hover:bg-err/10 transition-colors flex items-center gap-1.5">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>
                     delete file
                   </button>
                 </div>
@@ -874,17 +888,17 @@
           <div class="flex flex-col gap-2.5 mb-4 text-[12px] font-mono">
             <template x-if="selectedTicket?.pipeline">
               <div class="flex flex-col">
-                <span class="text-surface-600">pipeline</span>
+                <span class="text-[10px] text-surface-600 uppercase tracking-wider flex items-center gap-1"><svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="8" height="8" rx="2"/><rect x="13" y="13" width="8" height="8" rx="2"/><path d="M7 15v2"/><path d="M7 11v-1a2 2 0 0 1 2-2h5"/><path d="m15 5-2 2 2 2"/></svg>pipeline</span>
                 <span class="text-tx-3" x-text="selectedTicket?.pipeline"></span>
               </div>
             </template>
             <div class="flex flex-col">
-              <span class="text-surface-600">path</span>
+              <span class="text-[10px] text-surface-600 uppercase tracking-wider flex items-center gap-1"><svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>path</span>
               <span class="text-tx-3 break-words" x-text="selectedTicket?.path" :title="selectedTicket?.path"></span>
             </div>
             <template x-if="selectedTicket?.branch">
               <div class="flex flex-col">
-                <span class="text-surface-600">branch</span>
+                <span class="text-[10px] text-surface-600 uppercase tracking-wider flex items-center gap-1"><svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>branch</span>
                 <button type="button" class="copyable text-tx-3 hover:text-tx-2 text-left break-words"
                       @click.stop="copyBranch(selectedTicket?.branch)"
                       x-text="copiedBranch === selectedTicket?.branch ? '✓ copied' : selectedTicket?.branch"></button>
@@ -892,13 +906,13 @@
             </template>
             <template x-if="selectedTicket?.created_at">
               <div class="flex flex-col">
-                <span class="text-surface-600">created</span>
+                <span class="text-[10px] text-surface-600 uppercase tracking-wider flex items-center gap-1"><svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2v4"/><path d="M16 2v4"/><rect width="18" height="18" x="3" y="4" rx="2"/><path d="M3 10h18"/></svg>created</span>
                 <span class="text-tx-3" x-text="formatAbsDate(selectedTicket.created_at)"></span>
               </div>
             </template>
             <template x-if="selectedTicket?.stage && selectedTicket?.stages?.length > 1">
               <div class="flex flex-col">
-                <span class="text-surface-600">stage</span>
+                <span class="text-[10px] text-surface-600 uppercase tracking-wider flex items-center gap-1"><svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>stage</span>
                 <template x-if="['paused', 'open'].includes(selectedTicket?.status) && setStageOpen">
                   <select class="text-[12px] font-mono bg-surface-800 text-tx-3 border border-surface-700/50 rounded px-1 py-0.5 outline-none focus:border-accent/40"
                           @change="setStage($event.target.value); setStageOpen = false"
@@ -919,7 +933,7 @@
             </template>
             <template x-if="selectedTicket?.status === 'in_progress' && selectedTicket?.started_at">
               <div class="flex flex-col">
-                <span class="text-surface-600">running</span>
+                <span class="text-[10px] text-surface-600 uppercase tracking-wider flex items-center gap-1"><svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>running</span>
                 <span class="text-tx-3" x-text="formatDuration(selectedTicket)"></span>
               </div>
             </template>
@@ -929,22 +943,25 @@
           <div class="flex flex-col gap-2">
             <template x-if="selectedTicket?.status === 'in_progress'">
               <button @click="action('pause')" :disabled="!!actionLoading"
-                      class="w-full text-[13px] font-mono px-3 py-1.5 rounded bg-surface-800 border border-surface-700/50 text-tx-3 hover:text-warn hover:border-warn/30 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                      class="w-full text-[13px] font-mono px-3 py-1.5 rounded bg-surface-800 border border-surface-700/50 text-tx-3 hover:text-warn hover:border-warn/30 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-1.5"
                       data-tip-t="Stops the running agent and pauses the ticket.">
+                <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="14" y="4" width="4" height="16" rx="1"/><rect x="6" y="4" width="4" height="16" rx="1"/></svg>
                 <span x-text="actionLoading === 'pause' ? 'pausing...' : 'pause'"></span>
               </button>
             </template>
             <template x-if="selectedTicket?.status === 'paused'">
               <button @click="action('retry')" :disabled="!!actionLoading"
-                      class="w-full text-[13px] font-mono px-3 py-1.5 rounded bg-surface-800 border border-surface-700/50 text-tx-3 hover:text-ok hover:border-ok/30 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                      class="w-full text-[13px] font-mono px-3 py-1.5 rounded bg-surface-800 border border-surface-700/50 text-tx-3 hover:text-ok hover:border-ok/30 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-1.5"
                       data-tip-t="Re-runs the current stage in the same worktree.">
+                <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M3 21v-5h5"/></svg>
                 <span x-text="actionLoading === 'retry' ? 'retrying...' : 'retry'"></span>
               </button>
             </template>
             <template x-if="selectedTicket?.status === 'in_progress'">
               <button @click="action('skip')" :disabled="!!actionLoading"
-                      class="w-full text-[13px] font-mono px-3 py-1.5 rounded bg-surface-800 border border-surface-700/50 text-tx-3 hover:text-tx-2 hover:border-surface-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                      class="w-full text-[13px] font-mono px-3 py-1.5 rounded bg-surface-800 border border-surface-700/50 text-tx-3 hover:text-tx-2 hover:border-surface-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-1.5"
                       data-tip-t="Skips the current stage and advances to the next one.">
+                <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 4 15 12 5 20 5 4"/><line x1="19" y1="5" x2="19" y2="19"/></svg>
                 <span x-text="actionLoading === 'skip' ? 'skipping...' : 'skip stage'"></span>
               </button>
             </template>

@@ -488,7 +488,7 @@
     </div>
 
     <!-- Kanban board -->
-    <div x-show="!loading" class="flex-1 overflow-x-auto overflow-y-hidden" @click="selectedTicket && closeDetail()">
+    <div x-show="!loading" class="flex-1 overflow-x-auto overflow-y-hidden transition-opacity duration-200" :class="selectedTicket ? 'opacity-40' : 'opacity-100'" @click="selectedTicket && closeDetail()">
       <div class="flex gap-3 p-4 h-full min-w-min">
         <template x-for="(col, colIdx) in columns" :key="col.status">
           <div class="flex flex-col h-full min-w-[240px] w-[240px] md:min-w-[280px] md:w-[280px] shrink-0 relative"
@@ -585,7 +585,7 @@
     <div x-show="selectedTicket"
          x-transition.opacity.duration.150ms
          class="bg-surface-950 overflow-hidden relative shrink-0"
-         :class="isMobile ? 'fixed inset-0 z-50 flex flex-col' : 'flex flex-row border-l border-surface-700/50'"
+         :class="isMobile ? 'fixed inset-0 z-50 flex flex-col' : 'flex flex-row border-l-2 border-surface-700'"
          :style="!isMobile && selectedTicket ? 'width:' + panelWidth + 'px' : ''">
 
       <!-- Resize handle -->

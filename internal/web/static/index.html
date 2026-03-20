@@ -475,15 +475,16 @@
     <!-- Kanban board -->
     <div x-show="!loading" class="flex-1 overflow-x-auto overflow-y-hidden" @click="selectedTicket && closeDetail()">
       <div class="flex gap-3 p-4 h-full min-w-min">
-        <template x-for="col in columns" :key="col.status">
-          <div class="flex flex-col min-w-[240px] w-[240px] md:min-w-[280px] md:w-[280px] shrink-0"
+        <template x-for="(col, colIdx) in columns" :key="col.status">
+          <div class="flex flex-col h-full min-w-[240px] w-[240px] md:min-w-[280px] md:w-[280px] shrink-0 relative"
                x-data="{ colHover: false }" @mouseenter="colHover = true" @mouseleave="colHover = false">
+            <div x-show="colIdx > 0" class="absolute left-[-7px] top-[15%] h-[70%] w-px bg-surface-700/60"></div>
             <!-- Column header -->
-            <div class="relative flex items-center gap-2 mb-3 px-1">
+            <div class="relative flex items-center justify-center gap-2 mb-3 px-1 pb-3 border-b border-surface-700/60">
               <div class="w-2 h-2 rounded-full" :class="col.color"></div>
               <span class="text-xs font-mono font-semibold uppercase tracking-wider text-tx-3" x-text="col.label"></span>
               <button type="button" class="tip" :data-tip="col.tip" :aria-label="col.tip">i</button>
-              <span class="text-[12px] font-mono text-surface-600 ml-auto"
+              <span class="absolute right-1 text-[12px] font-mono text-surface-600"
                     x-text="filteredTicketsByStatus(col.status).length"></span>
               <button x-show="col.status === 'open' && colHover"
                       x-transition:enter="transition-opacity duration-150" x-transition:enter-start="opacity-0" x-transition:enter-end="opacity-100"
@@ -492,7 +493,7 @@
                       class="absolute right-0 text-[12px] font-mono px-1.5 py-0.5 rounded bg-surface-800 border border-surface-700/50 text-surface-600 hover:text-accent hover:border-accent/30">+ new</button>
             </div>
             <!-- Card list -->
-            <div class="flex-1 overflow-y-auto space-y-2 px-0.5 pb-2 rounded-lg"
+            <div class="flex-1 flex flex-col overflow-y-auto space-y-2 px-0.5 pb-2 rounded-lg relative"
                  :id="'col-' + col.status"
                  :data-status="col.status"
                  :class="col.tint || ''"
@@ -548,9 +549,14 @@
                   </div>
                 </div>
               </template>
-              <div x-show="filteredTicketsByStatus(col.status).length === 0"
-                   class="text-[12px] font-mono text-surface-600/50 text-center py-6"
-                   x-text="col.emptyText">
+            </div>
+            <div x-show="filteredTicketsByStatus(col.status).length === 0"
+                 class="absolute inset-0 top-12 flex items-center justify-center empty-state pointer-events-none">
+              <div class="flex flex-col items-center gap-3">
+                <div class="w-12 h-12 rounded-lg border-2 border-dashed border-surface-700/60 flex items-center justify-center">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-surface-600/60" x-html="col.emptyIcon"></svg>
+                </div>
+                <span class="text-[12px] font-mono text-surface-600/50 text-center leading-relaxed h-8" x-text="col.emptyText"></span>
               </div>
             </div>
           </div>

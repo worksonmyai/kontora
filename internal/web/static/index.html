@@ -248,25 +248,26 @@
       <form @submit.prevent="submitCreateTicket()">
         <div class="space-y-3">
           <div>
-            <label for="create-title" class="text-[13px] font-mono text-tx-3 block mb-1">Title *</label>
+            <label for="create-title" class="text-[13px] font-mono text-tx-3 mb-1 flex items-center gap-1.5"><svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="opacity-50"><polyline points="4 7 4 4 20 4 20 7"/><line x1="9" y1="20" x2="15" y2="20"/><line x1="12" y1="4" x2="12" y2="20"/></svg>Title *</label>
             <input id="create-title" x-model="createForm.title" type="text" required
                    class="w-full bg-surface-800 border border-surface-700/50 rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40"
                    placeholder="Ticket title">
           </div>
           <div>
-            <label for="create-body" class="text-[13px] font-mono text-tx-3 block mb-1">Body</label>
+            <label for="create-body" class="text-[13px] font-mono text-tx-3 mb-1 flex items-center gap-1.5"><svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="opacity-50"><line x1="17" y1="10" x2="3" y2="10"/><line x1="21" y1="6" x2="3" y2="6"/><line x1="21" y1="14" x2="3" y2="14"/><line x1="17" y1="18" x2="3" y2="18"/></svg>Body</label>
             <textarea id="create-body" x-model="createForm.body" rows="3"
                       class="w-full bg-surface-800 border border-surface-700/50 rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40 resize-y"
                       placeholder="Ticket description (markdown)"></textarea>
           </div>
           <div>
-            <label for="create-path" class="text-[13px] font-mono text-tx-3 mb-1 flex items-center">Path *<button type="button" class="tip" data-tip="Path to the repository the agent will work in. Supports ~ (e.g. ~/projects/myrepo).">i</button></label>
+            <label for="create-path" class="text-[13px] font-mono text-tx-3 mb-1 flex items-center gap-1.5"><svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="opacity-50"><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"/></svg>Path *</label>
             <input id="create-path" x-model="createForm.path" type="text" required
                    class="w-full bg-surface-800 border border-surface-700/50 rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40"
                    placeholder="~/projects/myrepo">
+            <p class="text-[11px] text-surface-600 mt-0.5">Repository the agent will work in. Supports ~.</p>
           </div>
           <div>
-            <label for="create-pipeline" class="text-[13px] font-mono text-tx-3 mb-1 flex items-center">Pipeline<button type="button" class="tip" data-tip="The sequence of stages this ticket goes through (e.g. plan → code → review). Each stage runs an agent in turn. Pipelines are configured in the config file. Leave empty for a standalone ticket.">i</button></label>
+            <label for="create-pipeline" class="text-[13px] font-mono text-tx-3 mb-1 flex items-center gap-1.5"><svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="opacity-50"><polyline points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="3"/><polyline points="21 16 21 21 16 21"/><line x1="15" y1="15" x2="21" y2="21"/><line x1="4" y1="4" x2="9" y2="9"/></svg>Pipeline</label>
             <select id="create-pipeline" x-model="createForm.pipeline"
                     class="w-full bg-surface-800 border border-surface-700/50 rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40">
               <option value="">None</option>
@@ -274,16 +275,18 @@
                 <option :value="p" x-text="pipelineLabel(p)"></option>
               </template>
             </select>
+            <p class="text-[11px] text-surface-600 mt-0.5">Stages the ticket goes through. Leave empty for standalone.</p>
           </div>
           <div>
-            <label for="create-branch" class="text-[13px] font-mono text-tx-3 mb-1 flex items-center">Branch<button type="button" class="tip" data-tip="Override the git branch name. Leave empty to auto-generate from the ticket ID.">i</button></label>
+            <label for="create-branch" class="text-[13px] font-mono text-tx-3 mb-1 flex items-center gap-1.5"><svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="opacity-50"><line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>Branch</label>
             <input id="create-branch" x-model="createForm.branch" type="text"
                    class="w-full bg-surface-800 border border-surface-700/50 rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40"
                    :placeholder="(configCache?.branch_prefix || 'kontora') + '/…'">
+            <p class="text-[11px] text-surface-600 mt-0.5">Leave empty to auto-generate from ticket ID.</p>
           </div>
           <div class="flex gap-3">
             <div class="flex-1">
-              <label for="create-agent" class="text-[13px] font-mono text-tx-3 mb-1 flex items-center">Agent<button type="button" class="tip" data-tip="Override the agent for all pipeline stages (or for a standalone ticket). Leave empty to use the pipeline default.">i</button></label>
+              <label for="create-agent" class="text-[13px] font-mono text-tx-3 mb-1 flex items-center gap-1.5"><svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="opacity-50"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/></svg>Agent</label>
               <select id="create-agent" x-model="createForm.agent"
                       class="w-full bg-surface-800 border border-surface-700/50 rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40">
                 <option value="">Default</option>
@@ -293,12 +296,13 @@
               </select>
             </div>
             <div class="flex-1">
-              <label for="create-status" class="text-[13px] font-mono text-tx-3 mb-1 flex items-center">Status<button type="button" class="tip" data-tip="Todo: starts automatically when a slot is available. Open: saved as a draft until you move it to Todo.">i</button></label>
+              <label for="create-status" class="text-[13px] font-mono text-tx-3 mb-1 flex items-center gap-1.5"><svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="opacity-50"><circle cx="12" cy="12" r="10"/></svg>Status</label>
               <select id="create-status" x-model="createForm.status"
                       class="w-full bg-surface-800 border border-surface-700/50 rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40">
                 <option value="todo">todo</option>
                 <option value="open">open</option>
               </select>
+              <p class="text-[11px] text-surface-600 mt-0.5">Todo starts automatically. Open is a draft.</p>
             </div>
           </div>
         </div>
@@ -331,7 +335,7 @@
       <form @submit.prevent="submitInitTicket()">
         <div class="space-y-3">
           <div>
-            <label for="init-pipeline" class="text-[13px] font-mono text-tx-3 mb-1 flex items-center">Pipeline<button type="button" class="tip" data-tip="The sequence of stages this ticket goes through (e.g. plan → code → review). Each stage runs an agent in turn. Pipelines are configured in the config file. Leave empty for a simple single-run ticket.">i</button></label>
+            <label for="init-pipeline" class="text-[13px] font-mono text-tx-3 mb-1 flex items-center gap-1.5"><svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="opacity-50"><polyline points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="3"/><polyline points="21 16 21 21 16 21"/><line x1="15" y1="15" x2="21" y2="21"/><line x1="4" y1="4" x2="9" y2="9"/></svg>Pipeline</label>
             <select id="init-pipeline" x-model="initForm.pipeline"
                     class="w-full bg-surface-800 border border-surface-700/50 rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40">
               <option value="">simple (single run, no stages)</option>
@@ -341,7 +345,7 @@
             </select>
           </div>
           <div>
-            <label for="init-agent" class="text-[13px] font-mono text-tx-3 mb-1 flex items-center">Agent<button type="button" class="tip" data-tip="Override the agent for all pipeline stages (or for a standalone ticket). Leave empty to use the pipeline default.">i</button></label>
+            <label for="init-agent" class="text-[13px] font-mono text-tx-3 mb-1 flex items-center gap-1.5"><svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="opacity-50"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/></svg>Agent</label>
             <select id="init-agent" x-model="initForm.agent"
                     class="w-full bg-surface-800 border border-surface-700/50 rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40">
               <option value="">Default</option>
@@ -351,7 +355,7 @@
             </select>
           </div>
           <div>
-            <label for="init-path" class="text-[13px] font-mono text-tx-3 mb-1 flex items-center">Path *<button type="button" class="tip" data-tip="Path to the repository the agent will work in. Supports ~ (e.g. ~/projects/myrepo).">i</button></label>
+            <label for="init-path" class="text-[13px] font-mono text-tx-3 mb-1 flex items-center gap-1.5"><svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="opacity-50"><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"/></svg>Path *</label>
             <input id="init-path" x-model="initForm.path" type="text" required
                    class="w-full bg-surface-800 border border-surface-700/50 rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40"
                    placeholder="~/projects/myrepo">
@@ -547,7 +551,7 @@
                     </template>
                   </div>
                   <!-- Title -->
-                  <p class="text-sm text-tx leading-snug font-semibold" x-text="ticket.title"></p>
+                  <p class="text-sm text-tx leading-snug" x-text="ticket.title"></p>
                   <!-- Meta row -->
                   <div class="flex items-center gap-1.5 mt-3 text-[11px] font-mono text-surface-600">
                     <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="shrink-0 opacity-60"><line x1="4" y1="9" x2="20" y2="9"/><line x1="4" y1="15" x2="20" y2="15"/><line x1="10" y1="3" x2="8" y2="21"/><line x1="16" y1="3" x2="14" y2="21"/></svg>
@@ -762,7 +766,7 @@
                 <div>
                   <div class="grid grid-cols-3 gap-3 mb-3">
                     <div>
-                      <label class="text-xs font-mono text-surface-600 mb-1 flex items-center">Pipeline<button type="button" class="tip" data-tip="The sequence of stages this ticket goes through. Each stage runs an agent in turn. Pipelines are configured in the config file.">i</button></label>
+                      <label class="text-xs font-mono text-surface-600 mb-1 flex items-center gap-1.5"><svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="opacity-50"><polyline points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="3"/><polyline points="21 16 21 21 16 21"/><line x1="15" y1="15" x2="21" y2="21"/><line x1="4" y1="4" x2="9" y2="9"/></svg>Pipeline</label>
                       <select x-model="editForm.pipeline" @change="saveEdit()"
                         class="w-full bg-surface-800 border border-surface-700 rounded px-2 py-1 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent">
                         <option value="">—</option>
@@ -772,7 +776,7 @@
                       </select>
                     </div>
                     <div>
-                      <label class="text-xs font-mono text-surface-600 mb-1 flex items-center">Agent<button type="button" class="tip" data-tip="Override the agent for all pipeline stages (or for a standalone ticket). Leave empty to use the pipeline default.">i</button></label>
+                      <label class="text-xs font-mono text-surface-600 mb-1 flex items-center gap-1.5"><svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="opacity-50"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/></svg>Agent</label>
                       <select x-model="editForm.agent" @change="saveEdit()"
                         class="w-full bg-surface-800 border border-surface-700 rounded px-2 py-1 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent">
                         <option value="">Default</option>
@@ -782,19 +786,19 @@
                       </select>
                     </div>
                     <div>
-                      <label class="text-xs font-mono text-surface-600 mb-1 flex items-center">Path<button type="button" class="tip" data-tip="Path to the repository the agent will work in. Supports ~ (e.g. ~/projects/myrepo).">i</button></label>
+                      <label class="text-xs font-mono text-surface-600 mb-1 flex items-center gap-1.5"><svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="opacity-50"><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"/></svg>Path</label>
                       <input type="text" x-model="editForm.path" @change="saveEdit()"
                         class="w-full bg-surface-800 border border-surface-700 rounded px-2 py-1 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent">
                     </div>
                   </div>
                   <div class="mb-4">
-                    <label class="text-xs font-mono text-surface-600 mb-1 flex items-center">Branch<button type="button" class="tip" data-tip="Override the git branch name. Leave empty to auto-generate from the ticket ID.">i</button></label>
+                    <label class="text-xs font-mono text-surface-600 mb-1 flex items-center gap-1.5"><svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="opacity-50"><line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>Branch</label>
                     <input type="text" x-model="editForm.branch" @change="saveEdit()"
                       class="w-full bg-surface-800 border border-surface-700 rounded px-2 py-1 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent"
                       :placeholder="(configCache?.branch_prefix || 'kontora') + '/' + selectedTicket?.id">
                   </div>
                   <div class="flex items-center justify-between mb-1">
-                    <label class="text-xs font-mono text-surface-600 flex items-center">Body<button type="button" class="tip" data-tip="The ticket description that agents see when working on this ticket.">i</button></label>
+                    <label class="text-xs font-mono text-surface-600 flex items-center gap-1.5"><svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="opacity-50"><line x1="17" y1="10" x2="3" y2="10"/><line x1="21" y1="6" x2="3" y2="6"/><line x1="21" y1="14" x2="3" y2="14"/><line x1="17" y1="18" x2="3" y2="18"/></svg>Body</label>
                     <span x-show="editSubmitting" class="text-xs font-mono text-surface-600">saving...</span>
                     <span x-show="editSaved && !editSubmitting" class="text-xs font-mono text-ok/60">saved</span>
                   </div>

@@ -73,6 +73,13 @@
     .slide-up { animation: slide-up 0.2s ease-out; }
 
     .glow-accent { box-shadow: 0 0 12px rgba(var(--accent), 0.15), 0 0 4px rgba(var(--accent), 0.1); }
+    .glow-top-accent::before, .glow-top-ok::before, .glow-top-warn::before, .glow-top-muted::before {
+      content: ''; position: absolute; top: -1px; left: 0.5rem; right: 0.5rem; height: 1px;
+    }
+    .glow-top-accent::before { background: linear-gradient(to right, transparent, rgba(var(--accent), 0.5) 20%, rgba(var(--accent), 0.5) 80%, transparent); }
+    .glow-top-ok::before     { background: linear-gradient(to right, transparent, rgba(var(--ok), 0.4) 20%, rgba(var(--ok), 0.4) 80%, transparent); }
+    .glow-top-warn::before   { background: linear-gradient(to right, transparent, rgba(var(--warn), 0.4) 20%, rgba(var(--warn), 0.4) 80%, transparent); }
+    .glow-top-muted::before  { background: linear-gradient(to right, transparent, rgba(var(--surface-600), 0.3) 20%, rgba(var(--surface-600), 0.3) 80%, transparent); }
 
     @media (prefers-reduced-motion: reduce) {
       .pulse-dot { animation: none; }
@@ -503,15 +510,16 @@
                      role="button" tabindex="0"
                      @click.stop="selectTicket(ticket)"
                      @keydown.enter.stop="selectTicket(ticket)"
-                     class="group rounded-lg p-3.5 cursor-pointer transition-all duration-150 border slide-up"
+                     class="group relative rounded-lg p-3.5 cursor-pointer transition-all duration-150 border slide-up"
                      :class="[
                        selectedTicket?.id === ticket.id
                          ? 'bg-surface-800 border-accent/30 shadow-lg shadow-accent/5'
                          : ticket.status === 'in_progress' && ticket.kontora
-                           ? 'bg-surface-900 border-accent/30 glow-accent hover:bg-surface-850'
+                           ? 'bg-surface-900 border-accent/30 hover:bg-surface-850'
                            : 'bg-surface-900 border-surface-700/50 hover:border-surface-600/50 hover:bg-surface-850',
-                       !ticket.kontora ? 'border-dashed' : ''
-                     ]"
+                       !ticket.kontora ? 'border-dashed' : '',
+                       selectedTicket?.id !== ticket.id ? col.glow : ''
+                     ]">
                   <!-- Stage indicator (top right) -->
                   <div class="flex items-center justify-between gap-2 mb-2">
                     <template x-if="ticket.status === 'in_progress'">

@@ -56,17 +56,17 @@ function kontora() {
     lightTheme: getStoredTheme() === 'light',
 
     columns: [
-      { status: 'open', label: 'Open', color: 'bg-accent', tip: 'Draft ticket, not running yet. Drag to Todo or click Initialize to start.', emptyText: 'Create a ticket to get started', tint: '',
+      { status: 'open', label: 'Open', color: 'bg-accent', tip: 'Draft ticket, not running yet. Drag to Todo or click Initialize to start.', emptyText: 'Create a ticket to get started', tint: '', glow: 'glow-top-accent',
         emptyIcon: '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M9 15h6"/><path d="M12 18v-6"/>' },
-      { status: 'todo', label: 'Todo', color: 'bg-tx-4', tip: 'Waiting to start. Will begin automatically when a slot is available.', emptyText: 'Move a ticket here to put it next in line', tint: '',
+      { status: 'todo', label: 'Todo', color: 'bg-tx-4', tip: 'Waiting to start. Will begin automatically when a slot is available.', emptyText: 'Move a ticket here to put it next in line', tint: '', glow: 'glow-top-muted',
         emptyIcon: '<polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/>' },
-      { status: 'in_progress', label: 'Running', color: 'bg-accent', tip: 'An agent is currently working on this ticket.', emptyText: 'No tickets are running right now', tint: '',
+      { status: 'in_progress', label: 'Running', color: 'bg-accent', tip: 'An agent is currently working on this ticket.', emptyText: 'No tickets are running right now', tint: '', glow: 'glow-top-accent',
         emptyIcon: '<path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/>' },
-      { status: 'paused', label: 'Paused', color: 'bg-warn', tip: 'Stopped for now. Click Retry or drag to Todo to resume.', emptyText: 'No paused tickets', tint: '',
+      { status: 'paused', label: 'Paused', color: 'bg-warn', tip: 'Stopped for now. Click Retry or drag to Todo to resume.', emptyText: 'No paused tickets', tint: '', glow: 'glow-top-warn',
         emptyIcon: '<rect x="14" y="4" width="4" height="16" rx="1"/><rect x="6" y="4" width="4" height="16" rx="1"/>' },
-      { status: 'done', label: 'Done', color: 'bg-ok', tip: 'Ticket completed successfully.', emptyText: 'No completed tickets yet', tint: '',
+      { status: 'done', label: 'Done', color: 'bg-ok', tip: 'Ticket completed successfully.', emptyText: 'No completed tickets yet', tint: '', glow: 'glow-top-ok',
         emptyIcon: '<circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/>' },
-      { status: 'cancelled', label: 'Cancelled', color: 'bg-surface-600', tip: 'Stopped manually. Drag to Todo to run it again.', emptyText: 'No cancelled tickets', tint: '',
+      { status: 'cancelled', label: 'Cancelled', color: 'bg-surface-600', tip: 'Stopped manually. Drag to Todo to run it again.', emptyText: 'No cancelled tickets', tint: '', glow: 'glow-top-muted',
         emptyIcon: '<path d="m15 9-6 6"/><path d="m9 9 6 6"/><circle cx="12" cy="12" r="10"/>' },
     ],
 

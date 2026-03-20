@@ -4,11 +4,12 @@ on:
   push:
     tags: ["v*"]
 
-permissions:
-  contents: write
+permissions: {}
 
 jobs:
   build:
+    permissions:
+      contents: read
     strategy:
       matrix:
         include:
@@ -20,16 +21,18 @@ jobs:
             goarch: arm64
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           fetch-depth: 0
+          persist-credentials: false
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6
         with:
           go-version-file: go.mod
+          cache: false
 
       - name: Install GoReleaser
-        uses: goreleaser/goreleaser-action@v6
+        uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6
         with:
           install-only: true
 
@@ -45,7 +48,7 @@ jobs:
           tar czf ../../kontora_${{ matrix.goos }}_${{ matrix.goarch }}.tar.gz kontora
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: kontora_${{ matrix.goos }}_${{ matrix.goarch }}
           path: kontora_${{ matrix.goos }}_${{ matrix.goarch }}.tar.gz
@@ -53,20 +56,24 @@ jobs:
   release:
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Generate changelog
         id: changelog
+        env:
+          REF_NAME: ${{ github.ref_name }}
         run: |
           PREV_TAG=$(git tag --sort=-v:refname | head -2 | tail -1)
-          if [ -z "$PREV_TAG" ] || [ "$PREV_TAG" = "${{ github.ref_name }}" ]; then
-            # First release — use all commits
+          if [ -z "$PREV_TAG" ] || [ "$PREV_TAG" = "$REF_NAME" ]; then
             RANGE="HEAD"
           else
-            RANGE="${PREV_TAG}..${{ github.ref_name }}"
+            RANGE="${PREV_TAG}..${REF_NAME}"
           fi
           {
             echo 'CHANGELOG<<EOF'
@@ -76,37 +83,46 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           path: artifacts/
           merge-multiple: true
 
       - name: Create release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: artifacts/*.tar.gz
-          body: ${{ steps.changelog.outputs.CHANGELOG }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REF_NAME: ${{ github.ref_name }}
+          CHANGELOG: ${{ steps.changelog.outputs.CHANGELOG }}
+        run: gh release create "$REF_NAME" artifacts/*.tar.gz --title "$REF_NAME" --notes "$CHANGELOG"
 
   update-formula:
     needs: release
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           ref: main
+          persist-credentials: false
 
       - name: Update Homebrew formula
+        env:
+          TAG: ${{ github.ref_name }}
+          REVISION: ${{ github.sha }}
         run: |
-          TAG="${{ github.ref_name }}"
-          REVISION="${{ github.sha }}"
           sed -i "s/tag: \"v[^\"]*\"/tag: \"${TAG}\"/" Formula/kontora.rb
           sed -i "s/revision: \"[^\"]*\"/revision: \"${REVISION}\"/" Formula/kontora.rb
 
       - name: Commit and push
+        env:
+          TAG: ${{ github.ref_name }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
           git add Formula/kontora.rb
           git diff --cached --quiet && exit 0
-          git commit -m "Update Homebrew formula to ${{ github.ref_name }}"
+          git commit -m "Update Homebrew formula to ${TAG}"
           git push

@@ -155,6 +155,7 @@ When enabled, the server exposes:
 | `POST /api/tickets/{id}/pause` | Pause a running ticket. |
 | `POST /api/tickets/{id}/retry` | Retry a paused ticket. |
 | `POST /api/tickets/{id}/skip` | Skip the current pipeline stage. |
+| `POST /api/tickets/{id}/set-stage` | Move ticket to a specific pipeline stage (`{"stage": "..."}` body). |
 | `POST /api/tickets/{id}/move` | Set ticket status (`{"status": "..."}` body). |
 | `GET /api/config` | Available repos and pipelines (JSON). |
 | `GET /api/tickets/{id}/logs` | Get agent logs for a ticket (optional `?stage=` query param). |

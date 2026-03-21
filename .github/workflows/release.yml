@@ -100,6 +100,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      pull-requests: write
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
@@ -114,7 +115,7 @@ jobs:
           sed -i "s/tag: \"v[^\"]*\"/tag: \"${TAG}\"/" Formula/kontora.rb
           sed -i "s/revision: \"[^\"]*\"/revision: \"${REVISION}\"/" Formula/kontora.rb
 
-      - name: Commit and push
+      - name: Create PR
         env:
           TAG: ${{ github.ref_name }}
           GH_TOKEN: ${{ github.token }}
@@ -124,5 +125,9 @@ jobs:
           git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
           git add Formula/kontora.rb
           git diff --cached --quiet && exit 0
+          BRANCH="update-formula-${TAG}"
+          git checkout -b "$BRANCH"
           git commit -m "Update Homebrew formula to ${TAG}"
-          git push
+          git push -u origin "$BRANCH"
+          gh pr create --title "Update Homebrew formula to ${TAG}" --body "Automated formula update for release ${TAG}." --base main
+          gh pr merge --auto --squash

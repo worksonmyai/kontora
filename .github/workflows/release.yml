@@ -130,4 +130,4 @@ jobs:
           git commit -m "Update Homebrew formula to ${TAG}"
           git push -u origin "$BRANCH"
           gh pr create --title "Update Homebrew formula to ${TAG}" --body "Automated formula update for release ${TAG}." --base main
-          gh pr merge --auto --squash
+          gh pr merge --auto --squash --delete-branch

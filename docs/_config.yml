@@ -1,0 +1,6 @@
+title: Kontora
+description: Agent orchestration daemon. Tickets in, code out.
+url: https://worksonmyai.github.io
+baseurl: /kontora
+exclude:
+  - .DS_Store

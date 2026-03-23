@@ -6,7 +6,6 @@ repo_name: worksonmyai/kontora
 
 theme:
   name: material
-  custom_dir: docs/overrides
   palette:
     - scheme: slate
       primary: custom
@@ -25,13 +24,11 @@ theme:
     code: JetBrains Mono
   features:
     - navigation.instant
-    - navigation.tabs
     - navigation.sections
     - content.code.copy
     - toc.follow
 
 nav:
-  - Home: index.md
   - Configuration: configuration.md
   - Tickets: tickets.md
 

@@ -19,4 +19,14 @@ jobs:
         with:
           python-version: '3.12'
       - run: pip install mkdocs-material
-      - run: mkdocs gh-deploy --force
+      - run: mkdocs build
+      - run: cp docs/index.html site/index.html
+      - run: |
+          cd site
+          git init
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          git checkout -b gh-pages
+          git add -A
+          git commit -m "Deploy docs"
+          git push -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" gh-pages

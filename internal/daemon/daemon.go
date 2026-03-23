@@ -955,7 +955,7 @@ func (d *Daemon) handleAgentExit(ctx, taskCtx context.Context, p handleExitParam
 			p.log.Warn("interrupted by shutdown", "stage", p.stageName)
 			return
 		}
-		// User cancelled, done, or paused while running. Clean up worktree if cancelled or done.
+		// User changed status (e.g. cancelled, done, paused, or open) while running. Clean up worktree if in a terminal override.
 		if t2, err := ticket.ParseFile(p.filePath); err == nil {
 			if isTerminalOverride(t2.Status) {
 				d.removeWorktree(p.log, p.repoPath, p.repoName, p.ticketID, p.branchPrefix)

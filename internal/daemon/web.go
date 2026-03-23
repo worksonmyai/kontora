@@ -162,11 +162,11 @@ func (d *Daemon) GetConfig() web.ConfigInfo {
 	infos := make([]web.PipelineInfo, len(pipelines))
 	for i, name := range pipelines {
 		stages := d.cfg.Pipelines[name]
-		roles := make([]string, len(stages))
+		stageNames := make([]string, len(stages))
 		for j, s := range stages {
-			roles[j] = s.Role
+			stageNames[j] = s.Stage
 		}
-		infos[i] = web.PipelineInfo{Name: name, Stages: roles}
+		infos[i] = web.PipelineInfo{Name: name, Stages: stageNames}
 	}
 	agents := slices.Sorted(maps.Keys(d.cfg.Agents))
 	return web.ConfigInfo{
@@ -316,7 +316,7 @@ func (d *Daemon) SetStage(id string, stage string) error {
 
 	found := false
 	for _, s := range pipelineCfg {
-		if s.Role == stage {
+		if s.Stage == stage {
 			found = true
 			break
 		}
@@ -333,8 +333,8 @@ func (d *Daemon) SetStage(id string, stage string) error {
 		return err
 	}
 
-	if err := t2.SetField("role", stage); err != nil {
-		return fmt.Errorf("failed to set ticket role to %q: %w", stage, err)
+	if err := t2.SetField("stage", stage); err != nil {
+		return fmt.Errorf("failed to set ticket stage to %q: %w", stage, err)
 	}
 
 	if err := d.writeTicket(t2, filePath); err != nil {
@@ -368,7 +368,7 @@ func (d *Daemon) MoveTicket(id string, newStatus string) error {
 }
 
 // InitTicket initializes a non-kontora ticket: sets pipeline, path, kontora=true,
-// status=todo, role to the first pipeline stage, and enqueues it.
+// status=todo, stage to the first pipeline stage, and enqueues it.
 func (d *Daemon) InitTicket(id string, req web.InitTicketRequest) error {
 	_, err := d.svc.Init(id, app.InitRequest{
 		Pipeline: req.Pipeline,

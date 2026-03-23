@@ -80,20 +80,20 @@ func (h *testHarness) defaultConfig(agent1Binary, agent2Binary string) *config.C
 			"agent1": {Binary: agent1Binary},
 			"agent2": {Binary: agent2Binary},
 		},
-		Roles: map[string]config.Role{
+		Stages: map[string]config.Stage{
 			"step1": {Prompt: "do step1 for {{ .Ticket.ID }}"},
 			"step2": {Prompt: "do step2 for {{ .Ticket.ID }}"},
 		},
 		Pipelines: map[string]config.Pipeline{
 			"two-stage": {
-				{Role: "step1", Agent: "agent1", OnSuccess: "next", OnFailure: "pause"},
-				{Role: "step2", Agent: "agent2", OnSuccess: "done", OnFailure: "pause"},
+				{Stage: "step1", Agent: "agent1", OnSuccess: "next", OnFailure: "pause"},
+				{Stage: "step2", Agent: "agent2", OnSuccess: "done", OnFailure: "pause"},
 			},
 			"one-stage": {
-				{Role: "step1", Agent: "agent1", OnSuccess: "done", OnFailure: "pause"},
+				{Stage: "step1", Agent: "agent1", OnSuccess: "done", OnFailure: "pause"},
 			},
 			"retry-stage": {
-				{Role: "step1", Agent: "agent1", OnSuccess: "done", OnFailure: "retry", MaxRetries: 1},
+				{Stage: "step1", Agent: "agent1", OnSuccess: "done", OnFailure: "retry", MaxRetries: 1},
 			},
 		},
 	}
@@ -232,10 +232,10 @@ func TestConcurrencyLimit(t *testing.T) {
 		"agent1": {Binary: "sleep", Args: []string{"0.3"}},
 		"agent2": {Binary: "sleep", Args: []string{"0.3"}},
 	}
-	cfg.Roles["step1"] = config.Role{Prompt: ""}
-	cfg.Roles["step2"] = config.Role{Prompt: ""}
+	cfg.Stages["step1"] = config.Stage{Prompt: ""}
+	cfg.Stages["step2"] = config.Stage{Prompt: ""}
 	cfg.Pipelines["one-stage"] = config.Pipeline{
-		{Role: "step1", Agent: "agent1", OnSuccess: "done", OnFailure: "pause"},
+		{Stage: "step1", Agent: "agent1", OnSuccess: "done", OnFailure: "pause"},
 	}
 	d := h.newDaemon(cfg)
 
@@ -330,7 +330,7 @@ func TestUserPause(t *testing.T) {
 	h := newHarness(t)
 	cfg := h.defaultConfig("sleep", "sleep")
 	cfg.Agents["agent1"] = config.Agent{Binary: "sleep", Args: []string{"10"}}
-	cfg.Roles["step1"] = config.Role{Prompt: ""}
+	cfg.Stages["step1"] = config.Stage{Prompt: ""}
 	d := h.newDaemon(cfg)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -1554,7 +1554,7 @@ status: open
 pipeline: one-stage
 agent: agent2
 path: %s
-role: step1
+stage: step1
 created: 2026-01-01T00:00:00Z
 ---
 # BuildTicketInfo test
@@ -1692,7 +1692,7 @@ func TestPauseTicket_ManualPause_NoLastError(t *testing.T) {
 	h := newHarness(t)
 	cfg := h.defaultConfig("sleep", "sleep")
 	cfg.Agents["agent1"] = config.Agent{Binary: "sleep", Args: []string{"30"}}
-	cfg.Roles["step1"] = config.Role{Prompt: ""}
+	cfg.Stages["step1"] = config.Stage{Prompt: ""}
 	d := h.newDaemon(cfg)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)

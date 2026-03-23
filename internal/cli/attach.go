@@ -238,10 +238,10 @@ func buildAttachItems(cfg *config.Config) ([]attachItem, error) {
 			if item.title == "" {
 				item.title = "—"
 			}
-			if t.Role != "" {
-				item.stage = t.Role
+			if t.Stage != "" {
+				item.stage = t.Stage
 			}
-			agent := app.AgentForStage(cfg, t.Pipeline, t.Role)
+			agent := app.AgentForStage(cfg, t.Pipeline, t.Stage)
 			if agent != "" {
 				item.agent = agent
 			}

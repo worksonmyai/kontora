@@ -104,7 +104,7 @@ func TestDaemon_PauseTicket(t *testing.T) {
 	h := newHarness(t)
 	cfg := h.defaultConfig("sleep", "sleep")
 	cfg.Agents["agent1"] = config.Agent{Binary: "sleep", Args: []string{"30"}}
-	cfg.Roles["step1"] = config.Role{Prompt: ""}
+	cfg.Stages["step1"] = config.Stage{Prompt: ""}
 	d := h.newDaemon(cfg)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -130,7 +130,7 @@ func TestDaemon_RetryTicket(t *testing.T) {
 	h := newHarness(t)
 	cfg := h.defaultConfig("sleep", "sleep")
 	cfg.Agents["agent1"] = config.Agent{Binary: "sleep", Args: []string{"30"}}
-	cfg.Roles["step1"] = config.Role{Prompt: ""}
+	cfg.Stages["step1"] = config.Stage{Prompt: ""}
 	d := h.newDaemon(cfg)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -160,8 +160,8 @@ func TestDaemon_SkipStage(t *testing.T) {
 	h := newHarness(t)
 	cfg := h.defaultConfig("sleep", "true")
 	cfg.Agents["agent1"] = config.Agent{Binary: "sleep", Args: []string{"30"}}
-	cfg.Roles["step1"] = config.Role{Prompt: ""}
-	cfg.Roles["step2"] = config.Role{Prompt: ""}
+	cfg.Stages["step1"] = config.Stage{Prompt: ""}
+	cfg.Stages["step2"] = config.Stage{Prompt: ""}
 	d := h.newDaemon(cfg)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -185,7 +185,7 @@ func TestDaemon_SkipStage(t *testing.T) {
 	h.waitForStatus("tst-s01.md", ticket.StatusDone, 10*time.Second)
 
 	result := h.readTask("tst-s01.md")
-	assert.Equal(t, "step2", result.Role)
+	assert.Equal(t, "step2", result.Stage)
 
 	cancel()
 	require.NoError(t, <-errCh)
@@ -195,8 +195,8 @@ func TestDaemon_SetStage(t *testing.T) {
 	h := newHarness(t)
 	cfg := h.defaultConfig("sleep", "true")
 	cfg.Agents["agent1"] = config.Agent{Binary: "sleep", Args: []string{"30"}}
-	cfg.Roles["step1"] = config.Role{Prompt: ""}
-	cfg.Roles["step2"] = config.Role{Prompt: ""}
+	cfg.Stages["step1"] = config.Stage{Prompt: ""}
+	cfg.Stages["step2"] = config.Stage{Prompt: ""}
 	d := h.newDaemon(cfg)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -206,13 +206,13 @@ func TestDaemon_SetStage(t *testing.T) {
 	go func() { errCh <- d.Run(ctx) }()
 	time.Sleep(200 * time.Millisecond)
 
-	// Start ticket at step2 by writing it with role=step2.
+	// Start ticket at step2 by writing it with stage=step2.
 	h.writeTicket("tst-ss1.md", fmt.Sprintf(`---
 id: tst-ss1
 kontora: true
 status: paused
 pipeline: two-stage
-role: step2
+stage: step2
 path: %s
 created: 2026-01-01T00:00:00Z
 ---
@@ -228,9 +228,9 @@ created: 2026-01-01T00:00:00Z
 	// Set stage back to step1.
 	require.NoError(t, d.SetStage("tst-ss1", "step1"))
 
-	// Verify only the role changed — status and attempt stay untouched.
+	// Verify only the stage changed — status and attempt stay untouched.
 	result := h.readTask("tst-ss1.md")
-	assert.Equal(t, "step1", result.Role)
+	assert.Equal(t, "step1", result.Stage)
 	assert.Equal(t, ticket.StatusPaused, result.Status)
 
 	// Invalid stage should return error.
@@ -563,7 +563,7 @@ id: tst-uno
 status: done
 kontora: true
 pipeline: one-stage
-role: step1
+stage: step1
 path: `+h.repoDir+`
 created: 2026-01-01T00:00:00Z
 ---
@@ -839,7 +839,7 @@ func TestDaemon_UpdateTicket_Agent(t *testing.T) {
 			h := newHarness(t)
 			cfg := h.defaultConfig("sleep", "sleep")
 			cfg.Agents["agent1"] = config.Agent{Binary: "sleep", Args: []string{"30"}}
-			cfg.Roles["step1"] = config.Role{Prompt: ""}
+			cfg.Stages["step1"] = config.Stage{Prompt: ""}
 			d := h.newDaemon(cfg)
 
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -851,7 +851,7 @@ id: %s
 status: %s
 kontora: true
 pipeline: one-stage
-role: step1
+stage: step1
 path: %s
 created: 2026-01-01T00:00:00Z
 ---
@@ -924,7 +924,7 @@ func TestDaemon_UpdateTicket_InProgressRejects(t *testing.T) {
 	h := newHarness(t)
 	cfg := h.defaultConfig("sleep", "sleep")
 	cfg.Agents["agent1"] = config.Agent{Binary: "sleep", Args: []string{"30"}}
-	cfg.Roles["step1"] = config.Role{Prompt: ""}
+	cfg.Stages["step1"] = config.Stage{Prompt: ""}
 	d := h.newDaemon(cfg)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)

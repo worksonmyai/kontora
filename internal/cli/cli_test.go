@@ -114,14 +114,14 @@ func testConfig(dir string) *config.Config {
 		Agents: map[string]config.Agent{
 			"claude-sonnet": {Binary: "claude"},
 		},
-		Roles: map[string]config.Role{
+		Stages: map[string]config.Stage{
 			"code":   {Prompt: "code"},
 			"review": {Prompt: "review"},
 		},
 		Pipelines: map[string]config.Pipeline{
 			"default": {
-				{Role: "code", Agent: "claude-sonnet", OnSuccess: "next", OnFailure: "pause"},
-				{Role: "review", Agent: "claude-sonnet", OnSuccess: "done", OnFailure: "pause"},
+				{Stage: "code", Agent: "claude-sonnet", OnSuccess: "next", OnFailure: "pause"},
+				{Stage: "review", Agent: "claude-sonnet", OnSuccess: "done", OnFailure: "pause"},
 			},
 		},
 	}
@@ -137,7 +137,7 @@ kontora: true
 status: todo
 pipeline: default
 path: /tmp/testrepo
-role: code
+stage: code
 ---
 # Ticket one
 `)
@@ -156,7 +156,7 @@ kontora: true
 status: paused
 pipeline: default
 path: /tmp/testrepo
-role: review
+stage: review
 ---
 # Ticket three
 `)
@@ -223,7 +223,7 @@ kontora: true
 status: todo
 pipeline: default
 path: /tmp/testrepo
-role: code
+stage: code
 ---
 # Ticket
 `)
@@ -252,7 +252,7 @@ kontora: true
 status: in_progress
 pipeline: default
 path: /tmp/testrepo
-role: code
+stage: code
 ---
 # Running ticket
 `,
@@ -280,7 +280,7 @@ kontora: true
 status: paused
 pipeline: default
 path: /tmp/testrepo
-role: code
+stage: code
 ---
 # Paused ticket
 `,
@@ -298,7 +298,7 @@ kontora: true
 status: todo
 pipeline: default
 path: /tmp/testrepo
-role: code
+stage: code
 ---
 # Todo ticket
 `,
@@ -581,7 +581,7 @@ id: tst-001
 status: in_progress
 pipeline: default
 path: /tmp/testrepo
-role: code
+stage: code
 ---
 # Ticket
 `)
@@ -605,7 +605,7 @@ id: tst-001
 status: in_progress
 pipeline: default
 path: /tmp/testrepo
-role: review
+stage: review
 ---
 # Ticket
 `)
@@ -941,9 +941,9 @@ func TestShowConfig_IncludesDefaults(t *testing.T) {
 	cfg := &config.Config{
 		TicketsDir: "/tmp/tasks",
 		Agents:     map[string]config.Agent{"a": {Binary: "bin"}},
-		Roles:      map[string]config.Role{"s": {Prompt: "p"}},
+		Stages:     map[string]config.Stage{"s": {Prompt: "p"}},
 		Pipelines: map[string]config.Pipeline{
-			"p": {{Role: "s", Agent: "a", OnSuccess: "done", OnFailure: "pause"}},
+			"p": {{Stage: "s", Agent: "a", OnSuccess: "done", OnFailure: "pause"}},
 		},
 	}
 	var buf bytes.Buffer
@@ -1120,10 +1120,10 @@ func TestInit_StageSelection(t *testing.T) {
 	repoDir := initTestRepo(t)
 
 	cases := []struct {
-		name     string
-		ticket   string
-		picks    map[string]string // field → return value
-		wantRole string
+		name      string
+		ticket    string
+		picks     map[string]string // field → return value
+		wantStage string
 	}{
 		{
 			name: "stage selected",
@@ -1135,8 +1135,8 @@ path: %s
 ---
 # Pick a stage
 `, repoDir),
-			picks:    map[string]string{"starting stage": "review", "status": "todo"},
-			wantRole: "role: review",
+			picks:     map[string]string{"starting stage": "review", "status": "todo"},
+			wantStage: "stage: review",
 		},
 		{
 			name: "first stage selected by default",
@@ -1148,22 +1148,22 @@ path: %s
 ---
 # Pick first stage
 `, repoDir),
-			picks:    map[string]string{"starting stage": "code", "status": "todo"},
-			wantRole: "role: code",
+			picks:     map[string]string{"starting stage": "code", "status": "todo"},
+			wantStage: "stage: code",
 		},
 		{
-			name: "role already set skips picker",
+			name: "stage already set skips picker",
 			ticket: fmt.Sprintf(`---
 id: tst-001
 status: open
 pipeline: default
 path: %s
-role: code
+stage: code
 ---
-# Role preset
+# Stage preset
 `, repoDir),
-			picks:    map[string]string{"status": "todo"},
-			wantRole: "role: code",
+			picks:     map[string]string{"status": "todo"},
+			wantStage: "stage: code",
 		},
 	}
 
@@ -1187,10 +1187,10 @@ role: code
 			require.NoError(t, err)
 			content := string(data)
 
-			if tc.wantRole != "" {
-				assert.Contains(t, content, tc.wantRole)
+			if tc.wantStage != "" {
+				assert.Contains(t, content, tc.wantStage)
 			} else {
-				assert.NotContains(t, content, "role:")
+				assert.NotContains(t, content, "stage:")
 			}
 		})
 	}

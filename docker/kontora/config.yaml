@@ -20,7 +20,7 @@ agents:
       - -p
       - --no-session
 
-roles:
+stages:
   code:
     prompt: |
       {{ .Ticket.Description }}
@@ -61,26 +61,26 @@ roles:
 
 pipelines:
   default:
-    - role: code
+    - stage: code
       agent: claude
       on_success: done
       on_failure: pause
 
   implement-review-commit:
-    - role: implement
+    - stage: implement
       agent: claude
       on_success: next
       on_failure: pause
-    - role: review
+    - stage: review
       agent: claude
       on_success: next
       on_failure: retry
       max_retries: 1
-    - role: fix-review
+    - stage: fix-review
       agent: claude
       on_success: next
       on_failure: retry
-    - role: commit
+    - stage: commit
       agent: claude
       on_success: done
       on_failure: retry

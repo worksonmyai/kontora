@@ -256,3 +256,13 @@ pipelines:
 - `on_failure=back` is not allowed on the first stage.
 - The last stage must have `on_success=done`.
 - A role cannot appear more than once in the same pipeline.
+
+## Shell completions
+
+```bash
+# Fish - activate in current session
+kontora completion fish | source
+
+# Fish - persist across sessions
+kontora completion fish > ~/.config/fish/completions/kontora.fish
+```

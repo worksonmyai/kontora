@@ -3,7 +3,7 @@
 [![CI](https://github.com/worksonmyai/kontora/actions/workflows/ci.yml/badge.svg)](https://github.com/worksonmyai/kontora/actions/workflows/ci.yml)
 [![Go Report Card](https://goreportcard.com/badge/github.com/worksonmyai/kontora)](https://goreportcard.com/report/github.com/worksonmyai/kontora)
 
-Kontora is an agent orchestration tool with a kanban board. You create tickets (markdown files), and it runs AI coding agents in tmux through configurable pipelines (e.g. implement -> review -> fix -> commit). Each ticket gets its own git worktree and tmux session.
+Kontora is an agent orchestration tool. You write tickets as markdown files, it runs AI agents through multi-step pipelines, each in its own git worktree and tmux session.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/dark.png">
@@ -16,6 +16,13 @@ Kontora is an agent orchestration tool with a kanban board. You create tickets (
 <br>
 <img alt="Kontora tmux session" src="docs/dark-tmux.png">
 </details>
+
+## Features
+
+- **Multi-stage pipelines** with per-stage retry and failure policies (implement, review, fix, commit)
+- **Git worktree isolation** per ticket, so agents never conflict
+- **Any agent** that has a CLI (Claude Code, Pi, etc.)
+- **Web dashboard and TUI** kanban board
 
 ## Install
 
@@ -139,13 +146,3 @@ Automate GitHub Releases with zig cc cross-compilation.
 ```
 
 Create them with `kontora new` or write them by hand. Full reference: [docs/tickets.md](docs/tickets.md)
-
-### Shell completions
-
-```bash
-# Fish - activate in current session
-kontora completion fish | source
-
-# Fish - persist across sessions
-kontora completion fish > ~/.config/fish/completions/kontora.fish
-```

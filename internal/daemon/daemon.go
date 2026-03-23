@@ -441,7 +441,7 @@ func (d *Daemon) handleFileChanged(path string) {
 			}
 			d.enqueue(t)
 		}
-	case ticket.StatusPaused, ticket.StatusCancelled:
+	case ticket.StatusPaused, ticket.StatusCancelled, ticket.StatusOpen:
 		if cancel, ok := d.running[t.ID]; ok {
 			log.Info("killing agent", "reason", "user set "+string(t.Status))
 			cancel()
@@ -450,6 +450,10 @@ func (d *Daemon) handleFileChanged(path string) {
 			go d.cleanupWorktree(log, t)
 		}
 	case ticket.StatusDone:
+		if cancel, ok := d.running[t.ID]; ok {
+			log.Info("killing agent", "reason", "user set "+string(t.Status))
+			cancel()
+		}
 		go d.cleanupWorktree(log, t)
 	}
 }
@@ -492,6 +496,19 @@ func (d *Daemon) removeWorktree(log *slog.Logger, repoPath, repoName, ticketID, 
 	} else {
 		log.Info("worktree removed")
 	}
+}
+
+// isUserOverride returns true if the status represents a user-initiated
+// override that should prevent the exit handler from changing the status.
+func isUserOverride(s ticket.Status) bool {
+	return s == ticket.StatusPaused || s == ticket.StatusCancelled ||
+		s == ticket.StatusOpen || s == ticket.StatusDone
+}
+
+// isTerminalOverride returns true if the status is a terminal user override
+// that requires worktree cleanup and task window teardown.
+func isTerminalOverride(s ticket.Status) bool {
+	return s == ticket.StatusCancelled || s == ticket.StatusDone
 }
 
 // cleanupWorktree resolves repo info from a ticket and removes its worktree.
@@ -856,8 +873,11 @@ func (d *Daemon) runSimpleTicket(ctx, taskCtx context.Context, log *slog.Logger,
 			log.Warn("interrupted by shutdown")
 			return
 		}
-		if t2, err := ticket.ParseFile(filePath); err == nil && t2.Status == ticket.StatusCancelled {
-			d.removeWorktree(log, repoPath, repoName, ticketID, branchPrefix)
+		if t2, err := ticket.ParseFile(filePath); err == nil {
+			if isTerminalOverride(t2.Status) {
+				d.removeWorktree(log, repoPath, repoName, ticketID, branchPrefix)
+				d.killTaskWindow(ticketID)
+			}
 		}
 		log.Info("interrupted by user")
 		return
@@ -870,10 +890,10 @@ func (d *Daemon) runSimpleTicket(ctx, taskCtx context.Context, log *slog.Logger,
 		return
 	}
 
-	// If user paused/cancelled while running, respect that.
-	if t2.Status == ticket.StatusPaused || t2.Status == ticket.StatusCancelled {
+	// If user changed status while running, respect that.
+	if isUserOverride(t2.Status) {
 		log.Info("user override during execution", "status", t2.Status)
-		if t2.Status == ticket.StatusCancelled {
+		if isTerminalOverride(t2.Status) {
 			d.removeWorktree(log, repoPath, repoName, ticketID, branchPrefix)
 			d.killTaskWindow(ticketID)
 		}
@@ -935,9 +955,12 @@ func (d *Daemon) handleAgentExit(ctx, taskCtx context.Context, p handleExitParam
 			p.log.Warn("interrupted by shutdown", "stage", p.stageName)
 			return
 		}
-		// User cancelled or paused while running. Clean up worktree if cancelled.
-		if t2, err := ticket.ParseFile(p.filePath); err == nil && t2.Status == ticket.StatusCancelled {
-			d.removeWorktree(p.log, p.repoPath, p.repoName, p.ticketID, p.branchPrefix)
+		// User cancelled, done, or paused while running. Clean up worktree if cancelled or done.
+		if t2, err := ticket.ParseFile(p.filePath); err == nil {
+			if isTerminalOverride(t2.Status) {
+				d.removeWorktree(p.log, p.repoPath, p.repoName, p.ticketID, p.branchPrefix)
+				d.killTaskWindow(p.ticketID)
+			}
 		}
 		p.log.Info("interrupted by user", "stage", p.stageName)
 		return
@@ -950,10 +973,10 @@ func (d *Daemon) handleAgentExit(ctx, taskCtx context.Context, p handleExitParam
 		return
 	}
 
-	// If user paused/cancelled while running, respect that.
-	if t2.Status == ticket.StatusPaused || t2.Status == ticket.StatusCancelled {
+	// If user changed status while running, respect that.
+	if isUserOverride(t2.Status) {
 		p.log.Info("user override during execution", "status", t2.Status)
-		if t2.Status == ticket.StatusCancelled {
+		if isTerminalOverride(t2.Status) {
 			d.removeWorktree(p.log, p.repoPath, p.repoName, p.ticketID, p.branchPrefix)
 			d.killTaskWindow(p.ticketID)
 		}

@@ -47,6 +47,7 @@ These are set and updated by the daemon as the ticket progresses through its pip
 | `completed_at` | When the ticket finished (status became `done`). |
 | `branch` | Git worktree branch name (`kontora/<ticket-id>`). |
 | `history` | List of completed stage records. |
+| `last_error` | Error message from the last failed stage run. |
 
 ### Custom fields
 

@@ -1,0 +1,74 @@
+/* ── Match landing page palette ── */
+
+/* Dark mode (slate scheme) */
+[data-md-color-scheme="slate"] {
+  --md-default-bg-color: #0f1117;
+  --md-default-fg-color: #e2e4ea;
+  --md-default-fg-color--light: #6b7084;
+  --md-primary-fg-color: #3b82f6;
+  --md-primary-bg-color: #0f1117;
+  --md-accent-fg-color: #3b82f6;
+  --md-code-bg-color: #161922;
+  --md-code-fg-color: #e2e4ea;
+  --md-typeset-color: #e2e4ea;
+  --md-typeset-a-color: #3b82f6;
+  --md-footer-bg-color: #0f1117;
+  --md-footer-fg-color: #6b7084;
+}
+
+[data-md-color-scheme="slate"] .md-header {
+  background: rgba(15, 17, 23, 0.85);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+[data-md-color-scheme="slate"] .md-tabs {
+  background: #0f1117;
+}
+
+[data-md-color-scheme="slate"] .md-sidebar {
+  background: #0f1117;
+}
+
+[data-md-color-scheme="slate"] .md-nav__link--active,
+[data-md-color-scheme="slate"] .md-nav__link:hover {
+  color: #3b82f6;
+}
+
+/* Light mode */
+[data-md-color-scheme="default"] {
+  --md-primary-fg-color: #2563eb;
+  --md-accent-fg-color: #2563eb;
+  --md-typeset-a-color: #2563eb;
+  --md-code-bg-color: #f1f3f7;
+}
+
+/* ── Code blocks ── */
+.md-typeset code {
+  border-radius: 4px;
+}
+
+.md-typeset pre > code {
+  font-size: 13px;
+}
+
+/* ── Tables ── */
+[data-md-color-scheme="slate"] .md-typeset table:not([class]) {
+  background: #1a1d27;
+  border: 1px solid #2a2d3a;
+}
+
+[data-md-color-scheme="slate"] .md-typeset table:not([class]) th {
+  background: #161922;
+  color: #e2e4ea;
+}
+
+[data-md-color-scheme="slate"] .md-typeset table:not([class]) td {
+  border-color: #2a2d3a;
+}
+
+/* ── Dot pattern background ── */
+[data-md-color-scheme="slate"] .md-content {
+  background-image: radial-gradient(rgba(255,255,255,0.03) 1px, transparent 1px);
+  background-size: 24px 24px;
+}

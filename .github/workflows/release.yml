@@ -126,10 +126,11 @@ jobs:
           git add Formula/kontora.rb
           git diff --cached --quiet && exit 0
           BRANCH="update-formula-${TAG}"
+          git push origin --delete "$BRANCH" 2>/dev/null || true
           git checkout -b "$BRANCH"
           git commit -m "Update Homebrew formula to ${TAG}"
-          git push -u origin "$BRANCH" --force-with-lease
+          git push -u origin "$BRANCH"
           if ! gh pr view "$BRANCH" &>/dev/null; then
             gh pr create --title "Update Homebrew formula to ${TAG}" --body "Automated formula update for release ${TAG}." --base main
           fi
-          gh pr merge --auto --squash --delete-branch
+          gh pr merge --squash --delete-branch

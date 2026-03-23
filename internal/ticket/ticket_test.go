@@ -18,7 +18,7 @@ func TestParseBasic(t *testing.T) {
 	assert.Equal(t, StatusOpen, tkt.Status)
 	assert.Equal(t, "default", tkt.Pipeline)
 	assert.Equal(t, "~/projects/kontora", tkt.Path)
-	assert.Equal(t, "code", tkt.Role)
+	assert.Equal(t, "code", tkt.Stage)
 	assert.Equal(t, 1, tkt.Attempt)
 	require.NotNil(t, tkt.StartedAt)
 	assert.Equal(t, "kon-q88f-work", tkt.Branch)

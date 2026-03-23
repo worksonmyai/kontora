@@ -381,7 +381,7 @@ func (d *Daemon) initialScan(dir string) error {
 
 		d.tickets[t.ID] = &ticketState{ticket: t, filePath: path}
 		if t.Kontora && t.Status == ticket.StatusTodo {
-			d.ticketLog(t.ID).Info("enqueuing", "pipeline", t.Pipeline, "role", t.Role)
+			d.ticketLog(t.ID).Info("enqueuing", "pipeline", t.Pipeline, "stage", t.Stage)
 			d.enqueue(t)
 		}
 		d.mu.Unlock()
@@ -437,7 +437,7 @@ func (d *Daemon) handleFileChanged(path string) {
 			if !known {
 				log.Info("new ticket", "pipeline", t.Pipeline)
 			} else {
-				log.Info("enqueuing", "previous_status", string(prev.ticket.Status), "pipeline", t.Pipeline, "role", t.Role)
+				log.Info("enqueuing", "previous_status", string(prev.ticket.Status), "pipeline", t.Pipeline, "stage", t.Stage)
 			}
 			d.enqueue(t)
 		}
@@ -614,9 +614,9 @@ func (d *Daemon) runTicket(ctx context.Context, ticketID string) {
 		return
 	}
 
-	// If role is empty, set to first stage.
-	if t.Role == "" {
-		_ = t.SetField("role", pipelineCfg[0].Role)
+	// If stage is empty, set to first stage.
+	if t.Stage == "" {
+		_ = t.SetField("stage", pipelineCfg[0].Stage)
 	}
 	d.mu.Unlock()
 
@@ -639,7 +639,7 @@ func (d *Daemon) runTicket(ctx context.Context, ticketID string) {
 		log.Error("write failed", "phase", "pickup", "err", err)
 		return
 	}
-	log.Info("picked up", "pipeline", t.Pipeline, "role", t.Role)
+	log.Info("picked up", "pipeline", t.Pipeline, "stage", t.Stage)
 	d.broadcastTicketUpdateLocking(ticketID)
 
 	// Check if we were paused/cancelled between pickup and now.
@@ -676,7 +676,7 @@ func (d *Daemon) runTicket(ctx context.Context, ticketID string) {
 	}
 
 	// Render prompt.
-	roleName := action.Spawn.Role
+	stageName := action.Spawn.Stage
 	agentName := action.Spawn.Agent
 	if t.Agent != "" {
 		agentName = t.Agent
@@ -688,11 +688,11 @@ func (d *Daemon) runTicket(ctx context.Context, ticketID string) {
 		d.pauseTicket(t, filePath, fmt.Sprintf("unknown agent %q", agentName))
 		return
 	}
-	roleCfg := d.cfg.Roles[roleName]
+	stageCfg := d.cfg.Stages[stageName]
 
-	rendered, err := renderTicketPrompt(roleCfg.Prompt, t, filePath, wtPath)
+	rendered, err := renderTicketPrompt(stageCfg.Prompt, t, filePath, wtPath)
 	if err != nil {
-		log.Error("render prompt failed", "role", roleName, "err", err)
+		log.Error("render prompt failed", "stage", stageName, "err", err)
 		d.pauseTicket(t, filePath, "render prompt failed: "+err.Error())
 		return
 	}
@@ -701,7 +701,7 @@ func (d *Daemon) runTicket(ctx context.Context, ticketID string) {
 		rendered += buildOperationalAppendix(t.ID, filePath, wtPath, true)
 	}
 
-	log.Info("spawning agent", "agent", agentName, "role", roleName, "binary", agentCfg.Binary)
+	log.Info("spawning agent", "agent", agentName, "stage", stageName, "binary", agentCfg.Binary)
 
 	args, settingsFile, sessionID, err := buildAgentArgs(agentCfg, rendered, tmux.ChannelName(ticketID))
 	if err != nil {
@@ -712,10 +712,10 @@ func (d *Daemon) runTicket(ctx context.Context, ticketID string) {
 	if settingsFile != "" {
 		defer os.Remove(settingsFile)
 	}
-	params := d.buildRunnerParams(agentCfg, roleCfg, args, wtPath, ticketID, roleName, sessionID)
+	params := d.buildRunnerParams(agentCfg, stageCfg, args, wtPath, ticketID, stageName, sessionID)
 	result, runnerErr := d.runner(taskCtx, params)
 	if runnerErr != nil && taskCtx.Err() == nil {
-		log.Error("runner failed", "role", roleName, "err", runnerErr)
+		log.Error("runner failed", "stage", stageName, "err", runnerErr)
 		d.killTaskWindow(ticketID)
 		d.pauseTicket(t, filePath, "runner failed: "+runnerErr.Error())
 		return
@@ -724,7 +724,7 @@ func (d *Daemon) runTicket(ctx context.Context, ticketID string) {
 	d.materializeAgentLogs(log, params)
 
 	dur := result.ExitedAt.Sub(result.StartedAt).Truncate(time.Second)
-	attrs := []any{"role", roleName, "exit_code", result.ExitCode, "duration", dur}
+	attrs := []any{"stage", stageName, "exit_code", result.ExitCode, "duration", dur}
 	if result.ExitCode != 0 {
 		if tail := tailFile(params.LogFile, 512); tail != "" {
 			attrs = append(attrs, "output", tail)
@@ -739,7 +739,7 @@ func (d *Daemon) runTicket(ctx context.Context, ticketID string) {
 		log:          log,
 		ticketID:     ticketID,
 		filePath:     filePath,
-		roleName:     roleName,
+		stageName:    stageName,
 		result:       result,
 		pipelineCfg:  pipelineCfg,
 		repoPath:     repoPath,
@@ -826,7 +826,7 @@ func (d *Daemon) runSimpleTicket(ctx, taskCtx context.Context, log *slog.Logger,
 	if settingsFile != "" {
 		defer os.Remove(settingsFile)
 	}
-	params := d.buildRunnerParams(agentCfg, config.Role{}, args, wtPath, ticketID, "default", "")
+	params := d.buildRunnerParams(agentCfg, config.Stage{}, args, wtPath, ticketID, "default", "")
 	result, runnerErr := d.runner(taskCtx, params)
 	if runnerErr != nil && taskCtx.Err() == nil {
 		log.Error("runner failed", "err", runnerErr)
@@ -919,7 +919,7 @@ type handleExitParams struct {
 	log          *slog.Logger
 	ticketID     string
 	filePath     string
-	roleName     string
+	stageName    string
 	result       process.Result
 	pipelineCfg  config.Pipeline
 	repoPath     string
@@ -932,14 +932,14 @@ func (d *Daemon) handleAgentExit(ctx, taskCtx context.Context, p handleExitParam
 	// Distinguish daemon shutdown (ctx cancelled) from user cancel (only taskCtx).
 	if taskCtx.Err() != nil {
 		if ctx.Err() != nil {
-			p.log.Warn("interrupted by shutdown", "role", p.roleName)
+			p.log.Warn("interrupted by shutdown", "stage", p.stageName)
 			return
 		}
 		// User cancelled or paused while running. Clean up worktree if cancelled.
 		if t2, err := ticket.ParseFile(p.filePath); err == nil && t2.Status == ticket.StatusCancelled {
 			d.removeWorktree(p.log, p.repoPath, p.repoName, p.ticketID, p.branchPrefix)
 		}
-		p.log.Info("interrupted by user", "role", p.roleName)
+		p.log.Info("interrupted by user", "stage", p.stageName)
 		return
 	}
 
@@ -974,7 +974,7 @@ func (d *Daemon) handleAgentExit(ctx, taskCtx context.Context, p handleExitParam
 		Timestamp: p.result.ExitedAt,
 	})
 	if err != nil {
-		p.log.Error("evaluate exit failed", "role", p.roleName, "err", err)
+		p.log.Error("evaluate exit failed", "stage", p.stageName, "err", err)
 		d.pauseTicket(t2, p.filePath, "evaluate exit failed: "+err.Error())
 		return
 	}
@@ -984,21 +984,21 @@ func (d *Daemon) handleAgentExit(ctx, taskCtx context.Context, p handleExitParam
 		exitAction.History.Agent = t2.Agent
 	}
 
-	nextRole := fieldValue(exitAction.Fields, "role")
+	nextStage := fieldValue(exitAction.Fields, "stage")
 	switch exitAction.Kind {
 	case pipeline.ActionAdvance:
-		p.log.Info("advancing", "from", p.roleName, "to", nextRole)
+		p.log.Info("advancing", "from", p.stageName, "to", nextStage)
 	case pipeline.ActionComplete:
 		p.log.Info("completed", "branch", t2.Branch)
 	case pipeline.ActionRetry:
 		attempt := fieldValue(exitAction.Fields, "attempt")
-		p.log.Info("retrying", "role", p.roleName, "attempt", attempt)
+		p.log.Info("retrying", "stage", p.stageName, "attempt", attempt)
 	case pipeline.ActionBack:
-		p.log.Info("going back", "from", p.roleName, "to", nextRole)
+		p.log.Info("going back", "from", p.stageName, "to", nextStage)
 	case pipeline.ActionPause:
-		p.log.Warn("paused", "role", p.roleName, "exit_code", p.result.ExitCode)
+		p.log.Warn("paused", "stage", p.stageName, "exit_code", p.result.ExitCode)
 	case pipeline.ActionSpawn:
-		p.log.Warn("unexpected spawn action after exit", "role", p.roleName)
+		p.log.Warn("unexpected spawn action after exit", "stage", p.stageName)
 	}
 
 	if err := d.applyAction(t2, exitAction); err != nil {
@@ -1008,7 +1008,7 @@ func (d *Daemon) handleAgentExit(ctx, taskCtx context.Context, p handleExitParam
 	}
 
 	if exitAction.Kind == pipeline.ActionPause {
-		_ = t2.SetField("last_error", fmt.Sprintf("agent exited with code %d (stage: %s)", p.result.ExitCode, p.roleName))
+		_ = t2.SetField("last_error", fmt.Sprintf("agent exited with code %d (stage: %s)", p.result.ExitCode, p.stageName))
 	} else {
 		_ = t2.SetField("last_error", "")
 	}
@@ -1144,7 +1144,7 @@ export default function (pi: ExtensionAPI) {
 	return f.Name(), nil
 }
 
-func (d *Daemon) buildRunnerParams(agentCfg config.Agent, roleCfg config.Role, args []string, dir, ticketID, roleName, sessionID string) RunnerParams {
+func (d *Daemon) buildRunnerParams(agentCfg config.Agent, stageCfg config.Stage, args []string, dir, ticketID, stageName, sessionID string) RunnerParams {
 	logsDir := expandTilde(d.cfg.LogsDir)
 	logDir := filepath.Join(logsDir, ticketID)
 
@@ -1168,9 +1168,9 @@ func (d *Daemon) buildRunnerParams(agentCfg config.Agent, roleCfg config.Role, a
 		Binary:      agentCfg.Binary,
 		Args:        args,
 		Dir:         dir,
-		Timeout:     roleCfg.Timeout.Duration,
+		Timeout:     stageCfg.Timeout.Duration,
 		TicketID:    ticketID,
-		LogFile:     filepath.Join(logDir, roleName+".log"),
+		LogFile:     filepath.Join(logDir, stageName+".log"),
 		Interactive: agentCfg.IsClaude(),
 		SessionID:   sessionID,
 		SessionDir:  sessionDir,

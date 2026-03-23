@@ -11,13 +11,13 @@ agents:
   claude:
     binary: claude
 
-roles:
+stages:
   code:
     prompt: Write code.
 
 pipelines:
   default:
-    - role: code
+    - stage: code
       agent: claude
       on_success: done
       on_failure: pause
@@ -46,7 +46,7 @@ agents:
     binary: claude
     args: ["--dangerously-skip-permissions", "--model", "opus"]
 
-roles:
+stages:
   code:
     prompt: |
       {{ .Ticket.Description }}
@@ -83,27 +83,27 @@ roles:
 
 pipelines:
   default:
-    - role: code
+    - stage: code
       agent: claude-sonnet
       on_success: done
       on_failure: pause
 
   implement-review-commit:
-    - role: implement
+    - stage: implement
       agent: claude-sonnet
       on_success: next
       on_failure: pause
-    - role: review
+    - stage: review
       agent: claude-sonnet
       on_success: next
       on_failure: retry
       max_retries: 1
-    - role: fix-review
+    - stage: fix-review
       agent: claude-sonnet
       on_success: next
       on_failure: retry
       max_retries: 1
-    - role: commit
+    - stage: commit
       agent: claude-sonnet
       on_success: done
       on_failure: retry
@@ -183,12 +183,12 @@ agents:
 | `args` | no | Arguments passed to the binary. The rendered prompt is appended as the last argument. |
 | `environment` | no | Map of environment variables to set for this agent's processes (merged with top-level `environment`). |
 
-## roles
+## stages
 
-Map of role name to its prompt template and timeout. A role defines *what* an agent should do at a pipeline stage.
+Map of stage name to its prompt template and timeout. A stage defines *what* an agent should do at a pipeline step.
 
 ```yaml
-roles:
+stages:
   code:
     prompt: |
       {{ .Ticket.Description }}
@@ -221,7 +221,7 @@ Map of pipeline name to an ordered list of stages. Each ticket references a pipe
 ```yaml
 pipelines:
   default:
-    - role: code
+    - stage: code
       agent: claude
       on_success: done
       on_failure: pause
@@ -231,8 +231,8 @@ pipelines:
 
 | Field | Required | Values | Description |
 |-------|----------|--------|-------------|
-| `role` | yes | — | Role to run at this stage. |
-| `agent` | yes | — | Agent to run the role. |
+| `stage` | yes | — | Stage to run at this pipeline step. |
+| `agent` | yes | — | Agent to run the stage. |
 | `on_success` | yes | `next`, `done` | What to do when the agent exits 0. |
 | `on_failure` | yes | `retry`, `back`, `pause` | What to do when the agent exits non-zero. |
 | `max_retries` | no | integer (default `0`) | Maximum retry attempts (only relevant when `on_failure=retry`). |
@@ -250,12 +250,12 @@ pipelines:
 
 ### Validation rules
 
-- Every stage must reference a role and agent that exist in the config.
+- Every pipeline step must reference a stage and agent that exist in the config.
 - `on_success` must be `next` or `done`.
 - `on_failure` must be `retry`, `back`, or `pause`.
 - `on_failure=back` is not allowed on the first stage.
 - The last stage must have `on_success=done`.
-- A role cannot appear more than once in the same pipeline.
+- A stage cannot appear more than once in the same pipeline.
 
 ## Shell completions
 

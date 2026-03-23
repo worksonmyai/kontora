@@ -43,7 +43,7 @@ type Config struct {
 	MaxConcurrentAgents int                 `yaml:"max_concurrent_agents"`
 	Web                 Web                 `yaml:"web"`
 	Agents              map[string]Agent    `yaml:"agents"`
-	Roles               map[string]Role     `yaml:"roles"`
+	Stages              map[string]Stage    `yaml:"stages"`
 	Pipelines           map[string]Pipeline `yaml:"pipelines"`
 	Environment         map[string]string   `yaml:"environment"`
 }
@@ -68,15 +68,15 @@ func (a Agent) IsPi() bool {
 	return filepath.Base(a.Binary) == "pi"
 }
 
-type Role struct {
+type Stage struct {
 	Prompt  string   `yaml:"prompt"`
 	Timeout Duration `yaml:"timeout"`
 }
 
-type Pipeline []Stage
+type Pipeline []PipelineStep
 
-type Stage struct {
-	Role       string `yaml:"role"`
+type PipelineStep struct {
+	Stage      string `yaml:"stage"`
 	Agent      string `yaml:"agent"`
 	OnSuccess  string `yaml:"on_success"`
 	OnFailure  string `yaml:"on_failure"`
@@ -171,24 +171,24 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("pipeline %q: must have at least one stage", name)
 		}
 		seen := make(map[string]int, len(pipeline))
-		for i, stage := range pipeline {
-			if prev, ok := seen[stage.Role]; ok {
-				return fmt.Errorf("pipeline %q stage %d: duplicate role %q (first used at stage %d)", name, i, stage.Role, prev)
+		for i, step := range pipeline {
+			if prev, ok := seen[step.Stage]; ok {
+				return fmt.Errorf("pipeline %q stage %d: duplicate stage %q (first used at stage %d)", name, i, step.Stage, prev)
 			}
-			seen[stage.Role] = i
-			if _, ok := c.Roles[stage.Role]; !ok {
-				return fmt.Errorf("pipeline %q stage %d: unknown role %q", name, i, stage.Role)
+			seen[step.Stage] = i
+			if _, ok := c.Stages[step.Stage]; !ok {
+				return fmt.Errorf("pipeline %q stage %d: unknown stage %q", name, i, step.Stage)
 			}
-			if _, ok := c.Agents[stage.Agent]; !ok {
-				return fmt.Errorf("pipeline %q stage %d: unknown agent %q", name, i, stage.Agent)
+			if _, ok := c.Agents[step.Agent]; !ok {
+				return fmt.Errorf("pipeline %q stage %d: unknown agent %q", name, i, step.Agent)
 			}
-			if !validOnSuccess[stage.OnSuccess] {
-				return fmt.Errorf("pipeline %q stage %d: invalid on_success %q (must be next or done)", name, i, stage.OnSuccess)
+			if !validOnSuccess[step.OnSuccess] {
+				return fmt.Errorf("pipeline %q stage %d: invalid on_success %q (must be next or done)", name, i, step.OnSuccess)
 			}
-			if !validOnFailure[stage.OnFailure] {
-				return fmt.Errorf("pipeline %q stage %d: invalid on_failure %q (must be retry, back, or pause)", name, i, stage.OnFailure)
+			if !validOnFailure[step.OnFailure] {
+				return fmt.Errorf("pipeline %q stage %d: invalid on_failure %q (must be retry, back, or pause)", name, i, step.OnFailure)
 			}
-			if stage.OnFailure == "back" && i == 0 {
+			if step.OnFailure == "back" && i == 0 {
 				return fmt.Errorf("pipeline %q stage %d: on_failure=back not allowed on first stage", name, i)
 			}
 		}

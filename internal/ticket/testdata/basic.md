@@ -6,7 +6,7 @@ created: 2026-02-25T19:39:45Z
 type: task
 pipeline: default
 path: ~/projects/kontora
-role: code
+stage: code
 attempt: 1
 started_at: 2026-02-25T20:00:00Z
 branch: kon-q88f-work

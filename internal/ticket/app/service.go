@@ -164,9 +164,9 @@ func (s *Service) Skip(id string) (Result, error) {
 		return Result{}, fmt.Errorf("unknown pipeline %q for ticket %s", t.Pipeline, resolved)
 	}
 
-	currentIdx := stageIndex(pipelineCfg, t.Role)
+	currentIdx := stageIndex(pipelineCfg, t.Stage)
 	if currentIdx < 0 {
-		return Result{}, fmt.Errorf("role %q not found in pipeline %q", t.Role, t.Pipeline)
+		return Result{}, fmt.Errorf("stage %q not found in pipeline %q", t.Stage, t.Pipeline)
 	}
 
 	var newStatus string
@@ -183,8 +183,8 @@ func (s *Service) Skip(id string) (Result, error) {
 	} else {
 		// Advance to next stage.
 		newStatus = string(ticket.StatusTodo)
-		if err := t.SetField("role", pipelineCfg[currentIdx+1].Role); err != nil {
-			return Result{}, fmt.Errorf("setting role: %w", err)
+		if err := t.SetField("stage", pipelineCfg[currentIdx+1].Stage); err != nil {
+			return Result{}, fmt.Errorf("setting stage: %w", err)
 		}
 		if err := t.SetField("status", newStatus); err != nil {
 			return Result{}, fmt.Errorf("setting status: %w", err)
@@ -210,7 +210,7 @@ func (s *Service) Skip(id string) (Result, error) {
 }
 
 // Init initializes a ticket for daemon processing: sets pipeline, path,
-// kontora=true, status, and role.
+// kontora=true, status, and stage.
 func (s *Service) Init(id string, req InitRequest) (Result, error) {
 	resolved, err := s.repo.Resolve(id)
 	if err != nil {
@@ -269,12 +269,12 @@ func (s *Service) Init(id string, req InitRequest) (Result, error) {
 	}
 
 	if req.Pipeline != "" {
-		role := req.Role
-		if role == "" {
-			role = s.cfg.Pipelines[req.Pipeline][0].Role
+		stageName := req.Stage
+		if stageName == "" {
+			stageName = s.cfg.Pipelines[req.Pipeline][0].Stage
 		}
-		if err := t.SetField("role", role); err != nil {
-			return Result{}, fmt.Errorf("setting role: %w", err)
+		if err := t.SetField("stage", stageName); err != nil {
+			return Result{}, fmt.Errorf("setting stage: %w", err)
 		}
 	}
 
@@ -297,22 +297,22 @@ func (s *Service) Init(id string, req InitRequest) (Result, error) {
 }
 
 // AgentForStage returns the agent configured for a pipeline stage.
-func AgentForStage(cfg *config.Config, pipelineName, role string) string {
+func AgentForStage(cfg *config.Config, pipelineName, stageName string) string {
 	pipeline, ok := cfg.Pipelines[pipelineName]
-	if !ok || role == "" {
+	if !ok || stageName == "" {
 		return ""
 	}
-	for _, stage := range pipeline {
-		if stage.Role == role {
-			return stage.Agent
+	for _, step := range pipeline {
+		if step.Stage == stageName {
+			return step.Agent
 		}
 	}
 	return ""
 }
 
-func stageIndex(pipeline config.Pipeline, role string) int {
-	for i, stage := range pipeline {
-		if stage.Role == role {
+func stageIndex(pipeline config.Pipeline, stageName string) int {
+	for i, step := range pipeline {
+		if step.Stage == stageName {
 			return i
 		}
 	}

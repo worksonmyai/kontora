@@ -125,14 +125,14 @@ func Status(cfg *config.Config, all bool, w io.Writer, opts StatusOpts) error {
 func buildRows(cfg *config.Config, tickets []*ticket.Ticket) []ticketRow {
 	rows := make([]ticketRow, 0, len(tickets))
 	for _, t := range tickets {
-		stage := t.Role
+		stage := t.Stage
 		if stage == "" && t.Pipeline == "" && t.Kontora {
 			stage = "standalone"
 		} else if stage == "" {
 			stage = "—"
 		}
 
-		agent := app.AgentForStage(cfg, t.Pipeline, t.Role)
+		agent := app.AgentForStage(cfg, t.Pipeline, t.Stage)
 		if agent == "" && t.Kontora {
 			agent = cfg.DefaultAgent
 		} else if agent == "" {

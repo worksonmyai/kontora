@@ -57,18 +57,18 @@ func Enable(cfg *config.Config, taskID string, w io.Writer) error {
 		}
 	}
 
-	if t.Role == "" {
+	if t.Stage == "" {
 		if pipeline, ok := cfg.Pipelines[t.Pipeline]; ok && len(pipeline) > 1 {
 			stages := make([]string, len(pipeline))
 			for i, s := range pipeline {
-				stages[i] = s.Role
+				stages[i] = s.Stage
 			}
 			val, err := pickOneFn("starting stage", stages)
 			if err != nil {
 				return err
 			}
-			if err := t.SetField("role", val); err != nil {
-				return fmt.Errorf("setting role: %w", err)
+			if err := t.SetField("stage", val); err != nil {
+				return fmt.Errorf("setting stage: %w", err)
 			}
 		}
 	}
@@ -207,11 +207,11 @@ func pipelineDescs(cfg *config.Config, names []string) []string {
 	descs := make([]string, len(names))
 	for i, name := range names {
 		stages := cfg.Pipelines[name]
-		roles := make([]string, len(stages))
+		stageNames := make([]string, len(stages))
 		for j, s := range stages {
-			roles[j] = s.Role
+			stageNames[j] = s.Stage
 		}
-		descs[i] = strings.Join(roles, " → ")
+		descs[i] = strings.Join(stageNames, " → ")
 	}
 	return descs
 }

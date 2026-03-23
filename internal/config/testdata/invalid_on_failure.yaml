@@ -4,13 +4,13 @@ agents:
   claude:
     binary: claude
 
-roles:
+stages:
   code:
     prompt: Write code.
 
 pipelines:
   default:
-    - role: code
+    - stage: code
       agent: claude
       on_success: done
       on_failure: explode

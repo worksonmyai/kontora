@@ -49,8 +49,8 @@ func SetStage(cfg *config.Config, taskID, targetStage string) error {
 	}
 
 	found := false
-	for _, stage := range pipelineCfg {
-		if stage.Role == targetStage {
+	for _, step := range pipelineCfg {
+		if step.Stage == targetStage {
 			found = true
 			break
 		}
@@ -59,8 +59,8 @@ func SetStage(cfg *config.Config, taskID, targetStage string) error {
 		return fmt.Errorf("stage %q not found in pipeline %q", targetStage, t.Pipeline)
 	}
 
-	if err := t.SetField("role", targetStage); err != nil {
-		return fmt.Errorf("setting role: %w", err)
+	if err := t.SetField("stage", targetStage); err != nil {
+		return fmt.Errorf("setting stage: %w", err)
 	}
 
 	out, err := t.Marshal()

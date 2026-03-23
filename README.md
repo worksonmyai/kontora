@@ -71,7 +71,7 @@ kontora attach # attach to the agent's tmux session
 
 ## Configuration
 
-Config is stored in `~/.config/kontora/config.yaml` and defines three things: agents, roles, and pipelines.
+Config is stored in `~/.config/kontora/config.yaml` and defines three things: agents, stages, and pipelines.
 
 **Agents** are binaries kontora spawns — Claude Code, Aider, or anything with a CLI:
 
@@ -85,10 +85,10 @@ agents:
 > [!WARNING]
 > The default config runs Claude Code with `--dangerously-skip-permissions`.
 
-**Roles** are prompt templates. They tell the agent what to do:
+**Stages** are prompt templates. They tell the agent what to do:
 
 ```yaml
-roles:
+stages:
   code:
     prompt: |
       {{ .Ticket.Description }}
@@ -97,27 +97,27 @@ roles:
 
 Templates use Go syntax. `{{ .Ticket.Title }}`, `{{ .Ticket.Description }}`, `{{ file "PLAN.md" }}` (reads a file from the worktree).
 
-**Pipelines** wire roles to agents in sequence, with success/failure policies per stage:
+**Pipelines** wire stages to agents in sequence, with success/failure policies per step:
 
 ```yaml
 pipelines:
   default:
-    - role: code
+    - stage: code
       agent: claude
       on_success: done
       on_failure: pause
 
   implement-review-commit:
-    - role: implement
+    - stage: implement
       agent: claude
       on_success: next
       on_failure: pause
-    - role: review
+    - stage: review
       agent: claude
       on_success: next
       on_failure: retry
       max_retries: 1
-    - role: commit
+    - stage: commit
       agent: claude
       on_success: done
       on_failure: retry

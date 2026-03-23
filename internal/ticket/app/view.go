@@ -46,7 +46,7 @@ func BuildView(cfg *config.Config, t *ticket.Ticket, includeBody bool) View {
 		Title:       t.Title(),
 		Status:      string(t.Status),
 		Kontora:     t.Kontora,
-		Stage:       t.Role,
+		Stage:       t.Stage,
 		Pipeline:    t.Pipeline,
 		Path:        t.Path,
 		Attempt:     t.Attempt,
@@ -60,9 +60,9 @@ func BuildView(cfg *config.Config, t *ticket.Ticket, includeBody bool) View {
 		v.Agent = t.Agent
 		v.AgentOverride = true
 	} else if pipelineCfg, ok := cfg.Pipelines[t.Pipeline]; ok {
-		for _, stage := range pipelineCfg {
-			if stage.Role == t.Role {
-				v.Agent = stage.Agent
+		for _, step := range pipelineCfg {
+			if step.Stage == t.Stage {
+				v.Agent = step.Agent
 				break
 			}
 		}
@@ -72,8 +72,8 @@ func BuildView(cfg *config.Config, t *ticket.Ticket, includeBody bool) View {
 
 	if pipelineCfg, ok := cfg.Pipelines[t.Pipeline]; ok {
 		stages := make([]string, len(pipelineCfg))
-		for i, stage := range pipelineCfg {
-			stages[i] = stage.Role
+		for i, step := range pipelineCfg {
+			stages[i] = step.Stage
 		}
 		v.Stages = stages
 	}

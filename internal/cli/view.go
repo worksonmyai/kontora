@@ -33,11 +33,11 @@ func View(cfg *config.Config, taskID string, w io.Writer) error {
 
 		if pipeline, ok := cfg.Pipelines[t.Pipeline]; ok {
 			var stages []string
-			for _, stage := range pipeline {
-				if stage.Role == t.Role {
-					stages = append(stages, "["+stage.Role+"]")
+			for _, step := range pipeline {
+				if step.Stage == t.Stage {
+					stages = append(stages, "["+step.Stage+"]")
 				} else {
-					stages = append(stages, stage.Role)
+					stages = append(stages, step.Stage)
 				}
 			}
 			fmt.Fprintf(w, "stage:     %s\n", strings.Join(stages, " → "))
@@ -49,8 +49,8 @@ func View(cfg *config.Config, taskID string, w io.Writer) error {
 	if t.Branch != "" {
 		fmt.Fprintf(w, "branch:    %s\n", t.Branch)
 	}
-	if t.Role != "" {
-		agent := app.AgentForStage(cfg, t.Pipeline, t.Role)
+	if t.Stage != "" {
+		agent := app.AgentForStage(cfg, t.Pipeline, t.Stage)
 		if agent != "" {
 			fmt.Fprintf(w, "agent:     %s\n", agent)
 		}

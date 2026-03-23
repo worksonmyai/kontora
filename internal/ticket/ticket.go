@@ -38,7 +38,7 @@ type Ticket struct {
 	Pipeline    string         `yaml:"pipeline"`
 	Path        string         `yaml:"path"`
 	Agent       string         `yaml:"agent"`
-	Role        string         `yaml:"role"`
+	Stage       string         `yaml:"stage"`
 	Attempt     int            `yaml:"attempt"`
 	StartedAt   *time.Time     `yaml:"started_at"`
 	CompletedAt *time.Time     `yaml:"completed_at"`

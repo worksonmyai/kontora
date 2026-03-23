@@ -4,7 +4,7 @@ agents:
   claude:
     binary: claude
 
-roles:
+stages:
   code:
     prompt: Write code.
   review:
@@ -12,15 +12,15 @@ roles:
 
 pipelines:
   default:
-    - role: code
+    - stage: code
       agent: claude
       on_success: next
       on_failure: pause
-    - role: review
+    - stage: review
       agent: claude
       on_success: next
       on_failure: pause
-    - role: code
+    - stage: code
       agent: claude
       on_success: done
       on_failure: pause

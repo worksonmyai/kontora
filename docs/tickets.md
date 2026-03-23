@@ -41,7 +41,7 @@ These are set and updated by the daemon as the ticket progresses through its pip
 | Field | Description |
 |-------|-------------|
 | `kontora` | Boolean. When `true`, the daemon manages this ticket. Set by `kontora init`. |
-| `role` | Current pipeline stage (role name). Set to the first stage on pickup. |
+| `stage` | Current pipeline stage name. Set to the first stage on pickup. |
 | `attempt` | Retry counter for the current stage. Reset to 0 on advance/back. |
 | `started_at` | When the current stage started. |
 | `completed_at` | When the ticket finished (status became `done`). |

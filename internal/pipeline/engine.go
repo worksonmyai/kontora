@@ -58,7 +58,7 @@ type FieldUpdate struct {
 
 type SpawnInfo struct {
 	Agent string
-	Role  string
+	Stage string
 }
 
 type Action struct {
@@ -84,12 +84,12 @@ func handlePickup(t *ticket.Ticket, pipeline config.Pipeline, ev Event) (Action,
 		return Action{}, fmt.Errorf("pickup requires status=todo, got %q", t.Status)
 	}
 
-	idx, err := stageIndex(pipeline, t.Role)
+	idx, err := stageIndex(pipeline, t.Stage)
 	if err != nil {
 		return Action{}, err
 	}
 
-	stage := pipeline[idx]
+	step := pipeline[idx]
 
 	return Action{
 		Kind: ActionSpawn,
@@ -98,8 +98,8 @@ func handlePickup(t *ticket.Ticket, pipeline config.Pipeline, ev Event) (Action,
 			{Key: "started_at", Value: ev.Timestamp},
 		},
 		Spawn: &SpawnInfo{
-			Agent: stage.Agent,
-			Role:  stage.Role,
+			Agent: step.Agent,
+			Stage: step.Stage,
 		},
 	}, nil
 }
@@ -109,28 +109,28 @@ func handleAgentExited(t *ticket.Ticket, pipeline config.Pipeline, ev Event) (Ac
 		return Action{}, fmt.Errorf("agent_exited requires status=in_progress, got %q", t.Status)
 	}
 
-	idx, err := stageIndex(pipeline, t.Role)
+	idx, err := stageIndex(pipeline, t.Stage)
 	if err != nil {
 		return Action{}, err
 	}
 
-	stage := pipeline[idx]
+	step := pipeline[idx]
 	history := &ticket.HistoryEntry{
-		Stage:       stage.Role,
-		Agent:       stage.Agent,
+		Stage:       step.Stage,
+		Agent:       step.Agent,
 		ExitCode:    ev.ExitCode,
 		StartedAt:   t.StartedAt,
 		CompletedAt: &ev.Timestamp,
 	}
 
 	if ev.ExitCode == 0 {
-		return handleSuccess(stage, idx, pipeline, ev, history)
+		return handleSuccess(step, idx, pipeline, ev, history)
 	}
-	return handleFailure(stage, idx, pipeline, t, history)
+	return handleFailure(step, idx, pipeline, t, history)
 }
 
-func handleSuccess(stage config.Stage, idx int, pipeline config.Pipeline, ev Event, history *ticket.HistoryEntry) (Action, error) {
-	switch stage.OnSuccess {
+func handleSuccess(step config.PipelineStep, idx int, pipeline config.Pipeline, ev Event, history *ticket.HistoryEntry) (Action, error) {
+	switch step.OnSuccess {
 	case "done":
 		return Action{
 			Kind: ActionComplete,
@@ -143,28 +143,28 @@ func handleSuccess(stage config.Stage, idx int, pipeline config.Pipeline, ev Eve
 
 	case "next":
 		if idx+1 >= len(pipeline) {
-			return Action{}, fmt.Errorf("on_success=next on last stage %q", stage.Role)
+			return Action{}, fmt.Errorf("on_success=next on last stage %q", step.Stage)
 		}
 		next := pipeline[idx+1]
 		return Action{
 			Kind: ActionAdvance,
 			Fields: []FieldUpdate{
 				{Key: "status", Value: string(ticket.StatusTodo)},
-				{Key: "role", Value: next.Role},
+				{Key: "stage", Value: next.Stage},
 				{Key: "attempt", Value: 0},
 			},
 			History: history,
 		}, nil
 
 	default:
-		return Action{}, fmt.Errorf("unknown on_success: %q", stage.OnSuccess)
+		return Action{}, fmt.Errorf("unknown on_success: %q", step.OnSuccess)
 	}
 }
 
-func handleFailure(stage config.Stage, idx int, pipeline config.Pipeline, t *ticket.Ticket, history *ticket.HistoryEntry) (Action, error) {
-	switch stage.OnFailure {
+func handleFailure(step config.PipelineStep, idx int, pipeline config.Pipeline, t *ticket.Ticket, history *ticket.HistoryEntry) (Action, error) {
+	switch step.OnFailure {
 	case "retry":
-		if t.Attempt < stage.MaxRetries {
+		if t.Attempt < step.MaxRetries {
 			return Action{
 				Kind: ActionRetry,
 				Fields: []FieldUpdate{
@@ -192,7 +192,7 @@ func handleFailure(stage config.Stage, idx int, pipeline config.Pipeline, t *tic
 			Kind: ActionBack,
 			Fields: []FieldUpdate{
 				{Key: "status", Value: string(ticket.StatusTodo)},
-				{Key: "role", Value: prev.Role},
+				{Key: "stage", Value: prev.Stage},
 				{Key: "attempt", Value: 0},
 			},
 			History: history,
@@ -208,15 +208,15 @@ func handleFailure(stage config.Stage, idx int, pipeline config.Pipeline, t *tic
 		}, nil
 
 	default:
-		return Action{}, fmt.Errorf("unknown on_failure: %q", stage.OnFailure)
+		return Action{}, fmt.Errorf("unknown on_failure: %q", step.OnFailure)
 	}
 }
 
-func stageIndex(pipeline config.Pipeline, role string) (int, error) {
-	for i, stage := range pipeline {
-		if stage.Role == role {
+func stageIndex(pipeline config.Pipeline, stage string) (int, error) {
+	for i, step := range pipeline {
+		if step.Stage == stage {
 			return i, nil
 		}
 	}
-	return -1, fmt.Errorf("role %q not found in pipeline", role)
+	return -1, fmt.Errorf("stage %q not found in pipeline", stage)
 }

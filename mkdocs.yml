@@ -1,0 +1,50 @@
+site_name: Kontora
+site_url: https://worksonmyai.github.io/kontora
+site_description: Agent orchestration tool. Multi-stage pipelines, git worktree isolation, kanban board.
+repo_url: https://github.com/worksonmyai/kontora
+repo_name: worksonmyai/kontora
+
+theme:
+  name: material
+  custom_dir: docs/overrides
+  palette:
+    - scheme: slate
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/brightness-7
+        name: Switch to light mode
+    - scheme: default
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/brightness-4
+        name: Switch to dark mode
+  font:
+    text: Inter
+    code: JetBrains Mono
+  features:
+    - navigation.instant
+    - navigation.tabs
+    - navigation.sections
+    - content.code.copy
+    - toc.follow
+
+nav:
+  - Home: index.md
+  - Configuration: configuration.md
+  - Tickets: tickets.md
+
+extra_css:
+  - stylesheets/extra.css
+
+markdown_extensions:
+  - tables
+  - admonition
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - toc:
+      permalink: true

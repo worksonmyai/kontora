@@ -12,7 +12,7 @@ agents:
     binary: claude
     args: ["--dangerously-skip-permissions", "--model", "opus"]
 
-roles:
+stages:
   plan:
     prompt: |
       Analyze the task and produce a detailed implementation plan.
@@ -36,20 +36,20 @@ environment:
 
 pipelines:
   default:
-    - role: plan
+    - stage: plan
       agent: claude-opus
       on_success: next
       on_failure: pause
-    - role: code
+    - stage: code
       agent: claude-sonnet
       on_success: next
       on_failure: retry
       max_retries: 2
-    - role: review
+    - stage: review
       agent: claude-sonnet
       on_success: next
       on_failure: back
-    - role: commit
+    - stage: commit
       agent: claude-sonnet
       on_success: done
       on_failure: pause

@@ -19,14 +19,14 @@ import (
 // commit: on_failure=pause, on_success=done
 func testPipeline() config.Pipeline {
 	return config.Pipeline{
-		{Role: "plan", Agent: "opus", OnSuccess: "next", OnFailure: "pause"},
-		{Role: "code", Agent: "sonnet", OnSuccess: "next", OnFailure: "retry", MaxRetries: 2},
-		{Role: "review", Agent: "sonnet", OnSuccess: "next", OnFailure: "back"},
-		{Role: "commit", Agent: "sonnet", OnSuccess: "done", OnFailure: "pause"},
+		{Stage: "plan", Agent: "opus", OnSuccess: "next", OnFailure: "pause"},
+		{Stage: "code", Agent: "sonnet", OnSuccess: "next", OnFailure: "retry", MaxRetries: 2},
+		{Stage: "review", Agent: "sonnet", OnSuccess: "next", OnFailure: "back"},
+		{Stage: "commit", Agent: "sonnet", OnSuccess: "done", OnFailure: "pause"},
 	}
 }
 
-func testTicket(role string, status ticket.Status, attempt int) *ticket.Ticket {
+func testTicket(stage string, status ticket.Status, attempt int) *ticket.Ticket {
 	startedAt := ""
 	if status == ticket.StatusInProgress {
 		startedAt = "started_at: 2026-03-05T10:00:00Z"
@@ -37,13 +37,13 @@ id: test-001
 status: %s
 pipeline: default
 path: ~/projects/myapp
-role: %s
+stage: %s
 attempt: %d
 %s
 created: 2026-03-05T09:00:00Z
 ---
 # Test ticket
-`, status, role, attempt, startedAt)
+`, status, stage, attempt, startedAt)
 
 	t, err := ticket.ParseBytes([]byte(yaml))
 	if err != nil {
@@ -64,7 +64,7 @@ func TestEvaluate(t *testing.T) {
 		wantErr          bool
 		wantFields       map[string]string
 		wantSpawnAgent   string
-		wantSpawnRole    string
+		wantSpawnStage   string
 		wantHistory      bool
 		wantHistoryStage string
 		wantHistoryAgent string
@@ -77,7 +77,7 @@ func TestEvaluate(t *testing.T) {
 			wantKind:       ActionSpawn,
 			wantFields:     map[string]string{"status": "in_progress"},
 			wantSpawnAgent: "opus",
-			wantSpawnRole:  "plan",
+			wantSpawnStage: "plan",
 		},
 		{
 			name:    "pickup wrong status errors",
@@ -86,7 +86,7 @@ func TestEvaluate(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name:    "pickup unknown role errors",
+			name:    "pickup unknown stage errors",
 			ticket:  testTicket("unknown", ticket.StatusTodo, 0),
 			ev:      Event{Kind: EventPickedUp},
 			wantErr: true,
@@ -96,7 +96,7 @@ func TestEvaluate(t *testing.T) {
 			ticket:           testTicket("plan", ticket.StatusInProgress, 0),
 			ev:               Event{Kind: EventAgentExited, ExitCode: 0, Timestamp: ts},
 			wantKind:         ActionAdvance,
-			wantFields:       map[string]string{"status": "todo", "role": "code", "attempt": "0"},
+			wantFields:       map[string]string{"status": "todo", "stage": "code", "attempt": "0"},
 			wantHistory:      true,
 			wantHistoryStage: "plan",
 			wantHistoryAgent: "opus",
@@ -151,7 +151,7 @@ func TestEvaluate(t *testing.T) {
 			ticket:           testTicket("review", ticket.StatusInProgress, 0),
 			ev:               Event{Kind: EventAgentExited, ExitCode: 1, Timestamp: ts},
 			wantKind:         ActionBack,
-			wantFields:       map[string]string{"status": "todo", "role": "code", "attempt": "0"},
+			wantFields:       map[string]string{"status": "todo", "stage": "code", "attempt": "0"},
 			wantHistory:      true,
 			wantHistoryStage: "review",
 			wantHistoryAgent: "sonnet",
@@ -215,7 +215,7 @@ func TestEvaluate(t *testing.T) {
 			if tt.wantSpawnAgent != "" {
 				require.NotNil(t, action.Spawn)
 				assert.Equal(t, tt.wantSpawnAgent, action.Spawn.Agent)
-				assert.Equal(t, tt.wantSpawnRole, action.Spawn.Role)
+				assert.Equal(t, tt.wantSpawnStage, action.Spawn.Stage)
 			}
 
 			if tt.wantHistory {
@@ -285,7 +285,7 @@ id: test-002
 status: in_progress
 pipeline: default
 path: ~/projects/myapp
-role: plan
+stage: plan
 attempt: 0
 created: 2026-03-05T09:00:00Z
 ---

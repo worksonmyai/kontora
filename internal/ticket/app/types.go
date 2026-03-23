@@ -59,5 +59,5 @@ type InitRequest struct {
 	Path     string
 	Agent    string
 	Status   string // "open" or "todo"; defaults to "todo"
-	Role     string // starting stage; if empty, defaults to first pipeline stage
+	Stage    string // starting stage; if empty, defaults to first pipeline stage
 }

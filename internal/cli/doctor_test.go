@@ -19,13 +19,13 @@ func writeValidConfig(t *testing.T, dir string) string {
   true:
     binary: "true"
 
-roles:
+stages:
   s:
     prompt: do stuff
 
 pipelines:
   p:
-    - role: s
+    - stage: s
       agent: "true"
       on_success: done
       on_failure: pause
@@ -83,13 +83,13 @@ agents:
   true:
     binary: "true"
 
-roles:
+stages:
   s:
     prompt: do stuff
 
 pipelines:
   p:
-    - role: s
+    - stage: s
       agent: "true"
       on_success: done
       on_failure: pause
@@ -111,13 +111,13 @@ func TestDoctor_AgentBinaryMissing(t *testing.T) {
   myagent:
     binary: nonexistent-binary-abc123
 
-roles:
+stages:
   s:
     prompt: do stuff
 
 pipelines:
   p:
-    - role: s
+    - stage: s
       agent: myagent
       on_success: done
       on_failure: pause
@@ -152,13 +152,13 @@ agents:
   true:
     binary: "true"
 
-roles:
+stages:
   s:
     prompt: do stuff
 
 pipelines:
   p:
-    - role: s
+    - stage: s
       agent: "true"
       on_success: done
       on_failure: pause

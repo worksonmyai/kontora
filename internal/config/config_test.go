@@ -32,9 +32,9 @@ func TestLoadValid(t *testing.T) {
 	sonnet := cfg.Agents["claude-sonnet"]
 	assert.Equal(t, "claude", sonnet.Binary)
 
-	// Roles
-	assert.Len(t, cfg.Roles, 4)
-	plan := cfg.Roles["plan"]
+	// Stages
+	assert.Len(t, cfg.Stages, 4)
+	plan := cfg.Stages["plan"]
 	assert.Equal(t, 10*time.Minute, plan.Timeout.Duration)
 
 	// Pipelines
@@ -51,9 +51,9 @@ func TestLoadMinimalDefaults(t *testing.T) {
 	assert.Equal(t, 3, cfg.MaxConcurrentAgents)
 }
 
-func TestLoadUnknownRole(t *testing.T) {
-	_, err := Load("testdata/unknown_role.yaml")
-	require.ErrorContains(t, err, "unknown role")
+func TestLoadUnknownStage(t *testing.T) {
+	_, err := Load("testdata/unknown_stage.yaml")
+	require.ErrorContains(t, err, "unknown stage")
 }
 
 func TestLoadUnknownAgent(t *testing.T) {
@@ -131,9 +131,9 @@ func TestLoadLastStageNotDone(t *testing.T) {
 	require.ErrorContains(t, err, "last stage must have on_success=done")
 }
 
-func TestLoadDuplicateRoleInPipeline(t *testing.T) {
-	_, err := Load("testdata/duplicate_role.yaml")
-	require.ErrorContains(t, err, "duplicate role")
+func TestLoadDuplicateStageInPipeline(t *testing.T) {
+	_, err := Load("testdata/duplicate_stage.yaml")
+	require.ErrorContains(t, err, "duplicate stage")
 }
 
 func TestLoadUnknownDefaultAgent(t *testing.T) {
@@ -143,12 +143,12 @@ default_agent: nonexistent
 agents:
   a:
     binary: agent-bin
-roles:
+stages:
   s:
     prompt: do stuff
 pipelines:
   p:
-    - role: s
+    - stage: s
       agent: a
       on_success: done
       on_failure: pause
@@ -168,12 +168,12 @@ func TestDefaultAgentSingleInference(t *testing.T) {
 agents:
   my-agent:
     binary: my-agent-bin
-roles:
+stages:
   s:
     prompt: do stuff
 pipelines:
   p:
-    - role: s
+    - stage: s
       agent: my-agent
       on_success: done
       on_failure: pause
@@ -190,12 +190,12 @@ agents:
     binary: a-bin
   agent-b:
     binary: b-bin
-roles:
+stages:
   s:
     prompt: do stuff
 pipelines:
   p:
-    - role: s
+    - stage: s
       agent: agent-a
       on_success: done
       on_failure: pause
@@ -221,12 +221,12 @@ web:
 agents:
   a:
     binary: agent-bin
-roles:
+stages:
   s:
     prompt: do stuff
 pipelines:
   p:
-    - role: s
+    - stage: s
       agent: a
       on_success: done
       on_failure: pause
@@ -256,12 +256,12 @@ agents:
     environment:
       CLAUDE_CONFIG_DIR: /custom/config
       MY_VAR: hello
-roles:
+stages:
   s:
     prompt: do stuff
 pipelines:
   p:
-    - role: s
+    - stage: s
       agent: claude
       on_success: done
       on_failure: pause
@@ -281,12 +281,12 @@ default_agent: a
 agents:
   a:
     binary: agent-bin
-roles:
+stages:
   s:
     prompt: do stuff
 pipelines:
   p:
-    - role: s
+    - stage: s
       agent: a
       on_success: done
       on_failure: pause

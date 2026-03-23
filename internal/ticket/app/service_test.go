@@ -81,14 +81,14 @@ func testCfg() *config.Config {
 		Agents: map[string]config.Agent{
 			"claude-sonnet": {Binary: "claude"},
 		},
-		Roles: map[string]config.Role{
+		Stages: map[string]config.Stage{
 			"code":   {Prompt: "code"},
 			"review": {Prompt: "review"},
 		},
 		Pipelines: map[string]config.Pipeline{
 			"default": {
-				{Role: "code", Agent: "claude-sonnet", OnSuccess: "next", OnFailure: "pause"},
-				{Role: "review", Agent: "claude-sonnet", OnSuccess: "done", OnFailure: "pause"},
+				{Stage: "code", Agent: "claude-sonnet", OnSuccess: "next", OnFailure: "pause"},
+				{Stage: "review", Agent: "claude-sonnet", OnSuccess: "done", OnFailure: "pause"},
 			},
 		},
 	}
@@ -128,7 +128,7 @@ func TestSetStatus_InvalidStatus(t *testing.T) {
 
 func TestRetry_ResetsAttempt(t *testing.T) {
 	repo := newMemRepo()
-	repo.add("tst-001", "---\nid: tst-001\nstatus: paused\nkontora: true\nattempt: 3\npipeline: default\nrole: code\n---\n# Test\n")
+	repo.add("tst-001", "---\nid: tst-001\nstatus: paused\nkontora: true\nattempt: 3\npipeline: default\nstage: code\n---\n# Test\n")
 	rt := &spyRuntime{}
 	svc := New(testCfg(), repo, rt)
 
@@ -141,7 +141,7 @@ func TestRetry_ResetsAttempt(t *testing.T) {
 
 func TestRetry_ClearsLastError(t *testing.T) {
 	repo := newMemRepo()
-	repo.add("tst-001", "---\nid: tst-001\nstatus: paused\nkontora: true\nattempt: 1\npipeline: default\nrole: code\nlast_error: \"agent exited with code 1\"\n---\n# Test\n")
+	repo.add("tst-001", "---\nid: tst-001\nstatus: paused\nkontora: true\nattempt: 1\npipeline: default\nstage: code\nlast_error: \"agent exited with code 1\"\n---\n# Test\n")
 	rt := &spyRuntime{}
 	svc := New(testCfg(), repo, rt)
 
@@ -170,21 +170,21 @@ func TestRetry_RejectsTodo(t *testing.T) {
 
 func TestSkip_AdvancesToNextStage(t *testing.T) {
 	repo := newMemRepo()
-	repo.add("tst-001", "---\nid: tst-001\nstatus: in_progress\nkontora: true\npipeline: default\nrole: code\n---\n# Test\n")
+	repo.add("tst-001", "---\nid: tst-001\nstatus: in_progress\nkontora: true\npipeline: default\nstage: code\n---\n# Test\n")
 	rt := &spyRuntime{}
 	svc := New(testCfg(), repo, rt)
 
 	result, err := svc.Skip("tst-001")
 	require.NoError(t, err)
 	assert.Equal(t, "todo", result.Status)
-	assert.Equal(t, "review", repo.tickets["tst-001"].Ticket.Role)
+	assert.Equal(t, "review", repo.tickets["tst-001"].Ticket.Stage)
 	assert.Equal(t, 0, repo.tickets["tst-001"].Ticket.Attempt)
 	assert.Equal(t, []string{"tst-001"}, rt.enqueued)
 }
 
 func TestSkip_LastStage_MarksDone(t *testing.T) {
 	repo := newMemRepo()
-	repo.add("tst-001", "---\nid: tst-001\nstatus: in_progress\nkontora: true\npipeline: default\nrole: review\n---\n# Test\n")
+	repo.add("tst-001", "---\nid: tst-001\nstatus: in_progress\nkontora: true\npipeline: default\nstage: review\n---\n# Test\n")
 	rt := &spyRuntime{}
 	svc := New(testCfg(), repo, rt)
 
@@ -197,7 +197,7 @@ func TestSkip_LastStage_MarksDone(t *testing.T) {
 
 func TestSkip_UnknownPipeline(t *testing.T) {
 	repo := newMemRepo()
-	repo.add("tst-001", "---\nid: tst-001\nstatus: in_progress\nkontora: true\npipeline: nonexistent\nrole: code\n---\n# Test\n")
+	repo.add("tst-001", "---\nid: tst-001\nstatus: in_progress\nkontora: true\npipeline: nonexistent\nstage: code\n---\n# Test\n")
 	svc := New(testCfg(), repo, &spyRuntime{})
 
 	_, err := svc.Skip("tst-001")
@@ -220,7 +220,7 @@ func TestInit_SetsAllFields(t *testing.T) {
 	tkt := repo.tickets["tst-001"].Ticket
 	assert.True(t, tkt.Kontora)
 	assert.Equal(t, "default", tkt.Pipeline)
-	assert.Equal(t, "code", tkt.Role, "should default to first pipeline stage")
+	assert.Equal(t, "code", tkt.Stage, "should default to first pipeline stage")
 	assert.Equal(t, 0, tkt.Attempt)
 	assert.Equal(t, []string{"tst-001"}, rt.enqueued)
 }
@@ -246,17 +246,17 @@ func TestInit_UnknownAgent(t *testing.T) {
 	require.ErrorContains(t, err, "unknown agent")
 }
 
-func TestInit_CustomRole(t *testing.T) {
+func TestInit_CustomStage(t *testing.T) {
 	repo := newMemRepo()
 	repo.add("tst-001", "---\nid: tst-001\nstatus: open\npath: ~/projects/test\n---\n# Test\n")
 	svc := New(testCfg(), repo, &spyRuntime{})
 
 	_, err := svc.Init("tst-001", InitRequest{
 		Pipeline: "default",
-		Role:     "review",
+		Stage:    "review",
 	})
 	require.NoError(t, err)
-	assert.Equal(t, "review", repo.tickets["tst-001"].Ticket.Role)
+	assert.Equal(t, "review", repo.tickets["tst-001"].Ticket.Stage)
 }
 
 func TestInit_InvalidStatus(t *testing.T) {
@@ -273,7 +273,7 @@ func TestInit_InvalidStatus(t *testing.T) {
 
 func TestGet_IncludesBody(t *testing.T) {
 	repo := newMemRepo()
-	repo.add("tst-001", "---\nid: tst-001\nstatus: todo\nkontora: true\npipeline: default\nrole: code\n---\n# Hello world\n")
+	repo.add("tst-001", "---\nid: tst-001\nstatus: todo\nkontora: true\npipeline: default\nstage: code\n---\n# Hello world\n")
 	svc := New(testCfg(), repo, &spyRuntime{})
 
 	v, err := svc.Get("tst-001", GetOptions{IncludeBody: true})
@@ -345,13 +345,13 @@ func TestBuildView_AgentResolution(t *testing.T) {
 	}{
 		{
 			name:         "from pipeline stage",
-			ticket:       "---\nid: t1\nstatus: todo\nkontora: true\npipeline: default\nrole: code\n---\n# T\n",
+			ticket:       "---\nid: t1\nstatus: todo\nkontora: true\npipeline: default\nstage: code\n---\n# T\n",
 			wantAgent:    "claude-sonnet",
 			wantOverride: false,
 		},
 		{
 			name:         "ticket-level override",
-			ticket:       "---\nid: t1\nstatus: todo\nkontora: true\npipeline: default\nrole: code\nagent: opus\n---\n# T\n",
+			ticket:       "---\nid: t1\nstatus: todo\nkontora: true\npipeline: default\nstage: code\nagent: opus\n---\n# T\n",
 			wantAgent:    "opus",
 			wantOverride: true,
 		},
@@ -383,7 +383,7 @@ func TestBuildView_Stages(t *testing.T) {
 	}{
 		{
 			name:       "pipeline stages",
-			ticket:     "---\nid: t1\nstatus: todo\nkontora: true\npipeline: default\nrole: code\n---\n# T\n",
+			ticket:     "---\nid: t1\nstatus: todo\nkontora: true\npipeline: default\nstage: code\n---\n# T\n",
 			wantStages: []string{"code", "review"},
 		},
 		{

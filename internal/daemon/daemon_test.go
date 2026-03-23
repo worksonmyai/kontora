@@ -354,12 +354,93 @@ func TestUserPause(t *testing.T) {
 		"status: paused",
 		1,
 	)
-	h.writeTicket("tst-006.md", pausedContent)
+	path := h.writeTicket("tst-006.md", pausedContent)
+	d.handleFileChanged(path)
 
 	// Wait for agent to be killed — the ticket should stay paused.
-	time.Sleep(2 * time.Second)
+	waitForAgentsDone(t, d, 5*time.Second)
 	result := h.readTask("tst-006.md")
 	assert.Equal(t, ticket.StatusPaused, result.Status)
+
+	cancel()
+	require.NoError(t, <-errCh)
+}
+
+func TestExternalSetOpen(t *testing.T) {
+	h := newHarness(t)
+	cfg := h.defaultConfig("sleep", "sleep")
+	cfg.Agents["agent1"] = config.Agent{Binary: "sleep", Args: []string{"10"}}
+	cfg.Stages["step1"] = config.Stage{Prompt: ""}
+	d := h.newDaemon(cfg)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- d.Run(ctx) }()
+
+	time.Sleep(200 * time.Millisecond)
+
+	h.writeTicket("tst-open.md", h.taskMD("tst-open", "todo", "one-stage"))
+
+	// Wait for it to start running.
+	h.waitForStatus("tst-open.md", ticket.StatusInProgress, 5*time.Second)
+
+	// Externally set status to open.
+	time.Sleep(100 * time.Millisecond)
+	openContent := strings.Replace(
+		h.taskMD("tst-open", "todo", "one-stage"),
+		"status: todo",
+		"status: open",
+		1,
+	)
+	path := h.writeTicket("tst-open.md", openContent)
+	d.handleFileChanged(path)
+
+	// Wait for agent to be killed — the ticket should stay open.
+	waitForAgentsDone(t, d, 5*time.Second)
+	result := h.readTask("tst-open.md")
+	assert.Equal(t, ticket.StatusOpen, result.Status)
+
+	cancel()
+	require.NoError(t, <-errCh)
+}
+
+func TestExternalSetDone(t *testing.T) {
+	h := newHarness(t)
+	cfg := h.defaultConfig("sleep", "sleep")
+	cfg.Agents["agent1"] = config.Agent{Binary: "sleep", Args: []string{"10"}}
+	cfg.Stages["step1"] = config.Stage{Prompt: ""}
+	d := h.newDaemon(cfg)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- d.Run(ctx) }()
+
+	time.Sleep(200 * time.Millisecond)
+
+	h.writeTicket("tst-done.md", h.taskMD("tst-done", "todo", "one-stage"))
+
+	// Wait for it to start running.
+	h.waitForStatus("tst-done.md", ticket.StatusInProgress, 5*time.Second)
+
+	// Externally set status to done.
+	time.Sleep(100 * time.Millisecond)
+	doneContent := strings.Replace(
+		h.taskMD("tst-done", "todo", "one-stage"),
+		"status: todo",
+		"status: done",
+		1,
+	)
+	path := h.writeTicket("tst-done.md", doneContent)
+	d.handleFileChanged(path)
+
+	// Wait for agent to be killed — the ticket should stay done.
+	waitForAgentsDone(t, d, 5*time.Second)
+	result := h.readTask("tst-done.md")
+	assert.Equal(t, ticket.StatusDone, result.Status)
 
 	cancel()
 	require.NoError(t, <-errCh)
@@ -875,6 +956,18 @@ func TestCrashRecovery(t *testing.T) {
 
 	cancel()
 	require.NoError(t, <-errCh)
+}
+
+func waitForAgentsDone(t *testing.T, d *Daemon, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if d.RunningAgents() == 0 {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("agents still running after %v", timeout)
 }
 
 func (h *testHarness) waitForWorktreeGone(ticketID string, timeout time.Duration) {

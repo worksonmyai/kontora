@@ -1,0 +1,616 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Kontora — Agent orchestration daemon</title>
+  <meta name="description" content="Kontora is an agent orchestration tool. Write tickets as markdown, run AI agents through multi-stage pipelines, each in its own git worktree and tmux session.">
+  <style>
+    /* ── Reset ── */
+    *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+    /* ── Tokens ── */
+    :root {
+      --bg:        #0f1117;
+      --surface:   #1a1d27;
+      --border:    #2a2d3a;
+      --text:      #e2e4ea;
+      --muted:     #6b7084;
+      --primary:   #3b82f6;
+      --secondary: #f59e0b;
+      --tertiary:  #10b981;
+      --code-bg:   #161922;
+      --font-sans: 'Inter', ui-sans-serif, system-ui, -apple-system, sans-serif;
+      --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', 'Cascadia Code', monospace;
+      --max-w:     860px;
+    }
+
+    /* ── Base ── */
+    html { scroll-behavior: smooth; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font-sans);
+      font-size: 16px;
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
+      background-image: radial-gradient(rgba(255,255,255,0.03) 1px, transparent 1px);
+      background-size: 24px 24px;
+    }
+    a { color: var(--primary); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    /* ── Layout ── */
+    .wrap {
+      max-width: var(--max-w);
+      margin: 0 auto;
+      padding: 0 24px;
+    }
+
+    /* ── Nav ── */
+    nav {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      background: rgba(15, 17, 23, 0.85);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--border);
+    }
+    nav .wrap {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      height: 56px;
+    }
+    .wordmark {
+      font-family: var(--font-mono);
+      font-weight: 700;
+      font-size: 18px;
+      color: var(--text);
+    }
+    .nav-links { display: flex; gap: 24px; }
+    .nav-links a { color: var(--muted); font-size: 14px; font-weight: 500; }
+    .nav-links a:hover { color: var(--text); text-decoration: none; }
+
+    /* ── Hero ── */
+    .hero {
+      padding: 100px 0 0;
+      text-align: center;
+    }
+    .hero h1 {
+      font-size: 52px;
+      font-weight: 800;
+      letter-spacing: -0.03em;
+      line-height: 1.1;
+    }
+    .hero h1 .accent { color: var(--primary); }
+    .hero .subtitle {
+      font-family: var(--font-mono);
+      font-size: 15px;
+      color: var(--muted);
+      margin-top: 16px;
+    }
+
+    /* ── Install tabs ── */
+    .install {
+      margin: 40px auto 0;
+      max-width: 560px;
+    }
+    .install-tabs {
+      display: flex;
+      gap: 0;
+    }
+    .install-tab {
+      flex: 1;
+      padding: 10px 16px;
+      font-family: var(--font-mono);
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      text-align: center;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-bottom: none;
+      color: var(--muted);
+      cursor: pointer;
+      transition: color 0.15s, background 0.15s;
+    }
+    .install-tab:first-child { border-radius: 8px 0 0 0; }
+    .install-tab:last-child { border-radius: 0 8px 0 0; }
+    .install-tab + .install-tab { border-left: none; }
+    .install-tab.active {
+      background: var(--code-bg);
+      color: var(--primary);
+      border-bottom-color: var(--code-bg);
+    }
+    .install-panel {
+      display: none;
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      border-top: none;
+      border-radius: 0 0 8px 8px;
+      padding: 16px 20px;
+      min-height: 90px;
+      flex-direction: column;
+      justify-content: center;
+    }
+    .install-panel.active { display: flex; }
+    .install-panel {
+      text-align: left;
+    }
+    .install-panel p {
+      font-size: 14px;
+      color: var(--muted);
+      margin-bottom: 10px;
+      line-height: 1.5;
+    }
+    .install-panel code {
+      font-family: var(--font-mono);
+      font-size: 13px;
+      color: var(--text);
+      background: none;
+      padding: 0;
+    }
+
+    /* ── Terminal box ── */
+    .terminal-dots {
+      display: flex;
+      gap: 6px;
+    }
+    .terminal-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+    }
+    .terminal-dot.red    { background: #ff5f57; }
+    .terminal-dot.yellow { background: #febc2e; }
+    .terminal-dot.green  { background: #28c840; }
+    .terminal-cmd {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-family: var(--font-mono);
+      font-size: 14px;
+    }
+    .terminal-cmd code { color: var(--text); }
+    .terminal-cmd .prompt { color: var(--muted); margin-right: 8px; }
+    .copy-btn {
+      background: none;
+      border: none;
+      color: var(--muted);
+      cursor: pointer;
+      font-size: 16px;
+      padding: 4px;
+      line-height: 1;
+      transition: color 0.15s;
+    }
+    .copy-btn:hover { color: var(--text); }
+
+    /* ── Screenshot ── */
+    .screenshot {
+      margin-top: 56px;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      overflow: hidden;
+      box-shadow: 0 24px 80px rgba(59, 130, 246, 0.08), 0 0 0 1px rgba(59, 130, 246, 0.05);
+    }
+    .screenshot-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 14px;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+    }
+    .screenshot-bar .status {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    .screenshot img {
+      display: block;
+      width: 100%;
+      height: auto;
+    }
+
+    /* ── Section spacing ── */
+    section { padding: 96px 0; }
+    section h2 {
+      font-size: 28px;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      margin-bottom: 12px;
+    }
+    section h2::after {
+      content: '';
+      display: block;
+      width: 40px;
+      height: 3px;
+      background: var(--primary);
+      margin-top: 16px;
+      border-radius: 2px;
+    }
+
+    /* ── How it works ── */
+    .steps {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 48px;
+    }
+    .step {}
+    .step-label {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: var(--primary);
+      margin-bottom: 12px;
+    }
+    .step h3 {
+      font-size: 18px;
+      font-weight: 700;
+      margin-bottom: 10px;
+    }
+    .step p {
+      font-size: 14px;
+      color: var(--muted);
+      line-height: 1.6;
+      font-family: var(--font-mono);
+    }
+
+    /* ── Features ── */
+    .features-section h2::after { display: none; }
+    .features-section h2 { margin-bottom: 48px; }
+    .features {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+      padding: 16px;
+      background: rgba(26, 29, 39, 0.4);
+    }
+    .feature {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 28px;
+      border-left: 3px solid var(--border);
+    }
+    .feature:nth-child(1) { border-left-color: var(--primary); }
+    .feature:nth-child(2) { border-left-color: var(--tertiary); }
+    .feature:nth-child(3) { border-left-color: var(--secondary); }
+    .feature:nth-child(4) { border-left-color: var(--muted); }
+    .feature-tag {
+      font-family: var(--font-mono);
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      margin-bottom: 12px;
+    }
+    .feature:nth-child(1) .feature-tag { color: var(--primary); }
+    .feature:nth-child(2) .feature-tag { color: var(--tertiary); }
+    .feature:nth-child(3) .feature-tag { color: var(--secondary); }
+    .feature:nth-child(4) .feature-tag { color: var(--muted); }
+    .feature h3 {
+      font-size: 16px;
+      font-weight: 700;
+      margin-bottom: 8px;
+    }
+    .feature p {
+      font-size: 14px;
+      color: var(--muted);
+      line-height: 1.6;
+    }
+
+    /* ── YAML config ── */
+    .config-block {
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      overflow: hidden;
+      margin-top: 32px;
+    }
+    .config-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 16px;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      font-family: var(--font-mono);
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--muted);
+    }
+    .config-body {
+      padding: 24px;
+      font-family: var(--font-mono);
+      font-size: 13px;
+      line-height: 1.9;
+      overflow-x: auto;
+    }
+    .config-body .key { color: var(--primary); }
+    .config-body .str { color: var(--text); }
+    .config-body .val { color: var(--secondary); }
+
+    /* ── Quick start ── */
+    .quickstart {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 32px;
+    }
+    .quickstart h2 { margin-bottom: 24px; }
+    .quickstart h2::after { display: none; }
+    .quickstart-cmds {
+      font-family: var(--font-mono);
+      font-size: 13px;
+      line-height: 2.2;
+    }
+    .quickstart-cmds .line-num {
+      color: var(--muted);
+      margin-right: 12px;
+      user-select: none;
+    }
+    .quickstart-cmds .prompt { color: var(--muted); }
+    .quickstart-cmds .cmd { color: var(--primary); }
+    .quickstart-cmds .arg { color: var(--secondary); }
+    .docs-link {
+      display: inline-block;
+      margin-top: 24px;
+      font-size: 14px;
+      font-weight: 500;
+    }
+
+    /* ── Footer ── */
+    footer {
+      border-top: 1px solid var(--border);
+      padding: 32px 0;
+      text-align: center;
+      font-family: var(--font-mono);
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--muted);
+    }
+    footer a { color: var(--muted); }
+    footer a:hover { color: var(--text); }
+    footer .sep { margin: 0 12px; }
+
+    /* ── Light mode ── */
+    @media (prefers-color-scheme: light) {
+      :root {
+        --bg:        #f8f9fb;
+        --surface:   #ffffff;
+        --border:    #e2e4ea;
+        --text:      #1a1d27;
+        --muted:     #6b7084;
+        --primary:   #2563eb;
+        --secondary: #d97706;
+        --tertiary:  #059669;
+        --code-bg:   #f1f3f7;
+      }
+      body {
+        background-image: radial-gradient(rgba(0,0,0,0.04) 1px, transparent 1px);
+      }
+      nav { background: rgba(248, 249, 251, 0.85); }
+      .screenshot { box-shadow: 0 24px 80px rgba(37, 99, 235, 0.08); }
+      .features { background: rgba(255, 255, 255, 0.4); }
+    }
+
+    /* ── Responsive ── */
+    @media (max-width: 640px) {
+      .hero { padding: 64px 0 0; }
+      .hero h1 { font-size: 32px; }
+      .hero .subtitle { font-size: 13px; }
+      .steps { grid-template-columns: 1fr; gap: 32px; }
+      .features { grid-template-columns: 1fr; }
+      section { padding: 64px 0; }
+      section h2 { font-size: 24px; }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Nav -->
+  <nav>
+    <div class="wrap">
+      <span class="wordmark">kontora</span>
+      <div class="nav-links">
+        <a href="https://github.com/worksonmyai/kontora">GitHub</a>
+      </div>
+    </div>
+  </nav>
+
+  <!-- Hero -->
+  <div class="wrap">
+    <div class="hero">
+      <h1>Agent orchestration<br><span class="accent">tool.</span></h1>
+      <p class="subtitle">Multi-stage pipelines, git worktree isolation, kanban board.</p>
+
+      <div class="install">
+        <div class="install-tabs">
+          <button class="install-tab active" onclick="switchTab('agent', this)">Agent</button>
+          <button class="install-tab" onclick="switchTab('brew', this)">Homebrew</button>
+          <button class="install-tab" onclick="switchTab('go', this)">Go</button>
+        </div>
+        <div id="panel-agent" class="install-panel active">
+          <p>Paste this into Claude Code, Pi, or any AI agent:</p>
+          <div class="terminal-cmd">
+            <code>Help me install and set up Kontora: <a href="https://raw.githubusercontent.com/worksonmyai/kontora/main/llms.txt" style="color: var(--primary);">llms.txt</a></code>
+            <button class="copy-btn" onclick="navigator.clipboard.writeText('Help me install and set up Kontora: https://raw.githubusercontent.com/worksonmyai/kontora/main/llms.txt')" title="Copy full prompt">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+            </button>
+          </div>
+        </div>
+        <div id="panel-brew" class="install-panel">
+          <div class="terminal-cmd">
+            <div>
+              <span class="prompt">$</span>
+              <code>brew install kontora</code>
+            </div>
+            <button class="copy-btn" onclick="navigator.clipboard.writeText('brew tap worksonmyai/kontora https://github.com/worksonmyai/kontora && brew install kontora')" title="Copy">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+            </button>
+          </div>
+        </div>
+        <div id="panel-go" class="install-panel">
+          <div class="terminal-cmd">
+            <div>
+              <span class="prompt">$</span>
+              <code style="font-size: 12px;">go install github.com/worksonmyai/kontora/cmd/kontora@latest</code>
+            </div>
+            <button class="copy-btn" onclick="navigator.clipboard.writeText('go install github.com/worksonmyai/kontora/cmd/kontora@latest')" title="Copy">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+            </button>
+          </div>
+        </div>
+      </div>
+      <script>
+        document.addEventListener('copy', function(e) {
+          var sel = window.getSelection().toString();
+          if (sel.includes('llms.txt')) {
+            e.preventDefault();
+            e.clipboardData.setData('text/plain',
+              sel.replace('llms.txt', 'https://raw.githubusercontent.com/worksonmyai/kontora/main/llms.txt'));
+          }
+        });
+        function switchTab(tab, el) {
+          document.querySelectorAll('.install-tab').forEach(t => t.classList.remove('active'));
+          document.querySelectorAll('.install-panel').forEach(p => p.classList.remove('active'));
+          document.getElementById('panel-' + tab).classList.add('active');
+          el.classList.add('active');
+        }
+      </script>
+
+      <div class="screenshot">
+        <div class="screenshot-bar">
+          <div class="terminal-dots">
+            <span class="terminal-dot red"></span>
+            <span class="terminal-dot yellow"></span>
+            <span class="terminal-dot green"></span>
+          </div>
+          <span class="status">daemon_status: active</span>
+        </div>
+        <picture>
+          <source media="(prefers-color-scheme: dark)" srcset="dark.png">
+          <source media="(prefers-color-scheme: light)" srcset="light.png">
+          <img alt="Kontora web dashboard showing kanban board with tickets" src="dark.png" loading="lazy">
+        </picture>
+      </div>
+    </div>
+  </div>
+
+  <!-- How it works -->
+  <section>
+    <div class="wrap">
+      <div class="steps">
+        <div class="step">
+          <div class="step-label">Step 01</div>
+          <h3>Write a ticket</h3>
+          <p>Markdown file with a title and description. Kontora picks it up automatically.</p>
+        </div>
+        <div class="step">
+          <div class="step-label">Step 02</div>
+          <h3>Pipeline runs agents</h3>
+          <p>Implement &rarr; Review &rarr; Commit. Orchestrated autonomously.</p>
+        </div>
+        <div class="step">
+          <div class="step-label">Step 03</div>
+          <h3>Get results</h3>
+          <p>PRs ready for review. Full audit logs provided per execution.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Features -->
+  <section class="features-section" style="padding-top: 0;">
+    <div class="wrap">
+      <h2>Core Capabilities</h2>
+      <div class="features">
+        <div class="feature">
+          <div class="feature-tag">Architecture</div>
+          <h3>Multi-stage pipelines</h3>
+          <p>Chain stages with per-stage retry, rollback, and failure policies. Implement, review, fix, commit, each with its own agent.</p>
+        </div>
+        <div class="feature">
+          <div class="feature-tag">Isolation</div>
+          <h3>Git worktree isolation</h3>
+          <p>Every ticket runs in a dedicated worktree. Agents never conflict with each other or your working tree.</p>
+        </div>
+        <div class="feature">
+          <div class="feature-tag">Interoperability</div>
+          <h3>Any CLI agent</h3>
+          <p>Claude Code, Pi, or anything with a CLI. Define agents as a binary and args in YAML.</p>
+        </div>
+        <div class="feature">
+          <div class="feature-tag">Observability</div>
+          <h3>Web dashboard & TUI</h3>
+          <p>Kanban board in the browser or terminal. Attach to running agent tmux sessions in real time.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Config preview -->
+  <section style="padding-top: 0;">
+    <div class="wrap">
+      <h2>Define your workflow in YAML</h2>
+      <div class="config-block">
+        <div class="config-bar">
+          <span>config.yaml</span>
+          <button class="copy-btn" title="Copy">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+          </button>
+        </div>
+        <pre class="config-body"><span class="key">pipelines:</span>
+  <span class="key">implement-review-commit:</span>
+    - <span class="key">stage:</span> <span class="str">implement</span>
+      <span class="key">agent:</span> <span class="str">claude</span>
+      <span class="key">on_success:</span> <span class="val">next</span>
+      <span class="key">on_failure:</span> <span class="val">pause</span>
+    - <span class="key">stage:</span> <span class="str">review</span>
+      <span class="key">agent:</span> <span class="str">claude</span>
+      <span class="key">on_success:</span> <span class="val">next</span>
+      <span class="key">on_failure:</span> <span class="val">retry</span>
+      <span class="key">max_retries:</span> <span class="val">1</span>
+    - <span class="key">stage:</span> <span class="str">commit</span>
+      <span class="key">agent:</span> <span class="str">claude</span>
+      <span class="key">on_success:</span> <span class="val">done</span>
+      <span class="key">on_failure:</span> <span class="val">retry</span></pre>
+      </div>
+    </div>
+  </section>
+
+  <!-- Quick start -->
+  <section style="padding-top: 0;">
+    <div class="wrap">
+      <div class="quickstart">
+        <h2>Quick start</h2>
+        <div class="quickstart-cmds">
+          <div><span class="line-num">1</span><span class="prompt">$ </span><span class="cmd">kontora start</span></div>
+          <div><span class="line-num">2</span><span class="prompt">$ </span><span class="cmd">kontora new</span> <span class="arg">'Add a health check endpoint'</span></div>
+          <div><span class="line-num">3</span><span class="prompt">$ </span><span class="cmd">kontora attach</span></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Footer -->
+  <footer>
+    <div class="wrap">
+      <span>kontora</span>
+      <span class="sep">|</span>
+      <a href="https://github.com/worksonmyai/kontora">GitHub</a>
+    </div>
+  </footer>
+
+</body>
+</html>

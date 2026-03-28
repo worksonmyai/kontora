@@ -409,6 +409,49 @@ func TestBuildView_Stages(t *testing.T) {
 	}
 }
 
+func TestRun_FromOpen(t *testing.T) {
+	repo := newMemRepo()
+	repo.add("tst-001", "---\nid: tst-001\nstatus: open\nkontora: true\npipeline: default\nstage: code\n---\n# Test\n")
+	rt := &spyRuntime{}
+	svc := New(testCfg(), repo, rt)
+
+	result, err := svc.Run("tst-001")
+	require.NoError(t, err)
+	assert.Equal(t, "todo", result.Status)
+	assert.Equal(t, ticket.StatusTodo, repo.tickets["tst-001"].Ticket.Status)
+	assert.Equal(t, []string{"tst-001"}, rt.enqueued)
+}
+
+func TestRun_FromTodo(t *testing.T) {
+	repo := newMemRepo()
+	repo.add("tst-001", "---\nid: tst-001\nstatus: todo\nkontora: true\npipeline: default\nstage: code\n---\n# Test\n")
+	rt := &spyRuntime{}
+	svc := New(testCfg(), repo, rt)
+
+	result, err := svc.Run("tst-001")
+	require.NoError(t, err)
+	assert.Equal(t, "todo", result.Status)
+	assert.Equal(t, []string{"tst-001"}, rt.enqueued)
+}
+
+func TestRun_RejectsInProgress(t *testing.T) {
+	repo := newMemRepo()
+	repo.add("tst-001", "---\nid: tst-001\nstatus: in_progress\nkontora: true\n---\n# Test\n")
+	svc := New(testCfg(), repo, &spyRuntime{})
+
+	_, err := svc.Run("tst-001")
+	require.ErrorIs(t, err, ErrInvalidState)
+}
+
+func TestRun_RejectsNonKontora(t *testing.T) {
+	repo := newMemRepo()
+	repo.add("tst-001", "---\nid: tst-001\nstatus: todo\n---\n# Test\n")
+	svc := New(testCfg(), repo, &spyRuntime{})
+
+	_, err := svc.Run("tst-001")
+	require.ErrorIs(t, err, ErrInvalidState)
+}
+
 func TestAgentForStage(t *testing.T) {
 	cfg := testCfg()
 

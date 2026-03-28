@@ -33,6 +33,7 @@ complete -c kontora -n __fish_use_subcommand -a init -d 'Set up ticket for proce
 complete -c kontora -n __fish_use_subcommand -a done -d 'Close a ticket'
 complete -c kontora -n __fish_use_subcommand -a note -d 'Append note to ticket'
 complete -c kontora -n __fish_use_subcommand -a pause -d 'Pause a ticket'
+complete -c kontora -n __fish_use_subcommand -a run -d 'Enqueue a ticket for processing'
 complete -c kontora -n __fish_use_subcommand -a retry -d 'Re-queue a ticket'
 complete -c kontora -n __fish_use_subcommand -a skip -d 'Skip to next pipeline stage'
 complete -c kontora -n __fish_use_subcommand -a set-stage -d 'Move ticket to a specific pipeline stage'
@@ -50,7 +51,7 @@ complete -c kontora -n __fish_use_subcommand -a completion -d 'Generate shell co
 complete -c kontora -n '__fish_seen_subcommand_from completion' -a fish -d 'Fish shell'
 
 # Flags: -config (commands that accept it)
-set -l __kontora_config_cmds start doctor ls new view edit init done note pause retry skip set-stage cancel logs attach config
+set -l __kontora_config_cmds start doctor ls new view edit init run done note pause retry skip set-stage cancel logs attach config
 for cmd in $__kontora_config_cmds
     complete -c kontora -n "__fish_seen_subcommand_from $cmd" -o config -d 'Config file path' -r -F
 end
@@ -74,7 +75,7 @@ complete -c kontora -n '__fish_seen_subcommand_from attach' -o rw -d 'Read-write
 function __kontora_ticket_ids
     kontora ls --closed --static 2>/dev/null | string match -r '^\s' | awk '{print $1}'
 end
-set -l __kontora_id_cmds view edit init done note pause retry skip set-stage cancel logs attach
+set -l __kontora_id_cmds view edit init run done note pause retry skip set-stage cancel logs attach
 for cmd in $__kontora_id_cmds
     complete -c kontora -n "__fish_seen_subcommand_from $cmd" -a '(__kontora_ticket_ids)'
 end

@@ -49,6 +49,30 @@ func TestLoadMinimalDefaults(t *testing.T) {
 
 	assert.Equal(t, "~/.kontora/worktrees", cfg.WorktreesDir)
 	assert.Equal(t, 3, cfg.MaxConcurrentAgents)
+	require.NotNil(t, cfg.AutoPickUp)
+	assert.True(t, *cfg.AutoPickUp, "auto_pick_up should default to true")
+}
+
+func TestAutoPickUpExplicitFalse(t *testing.T) {
+	input := `
+auto_pick_up: false
+agents:
+  claude:
+    binary: claude
+stages:
+  s:
+    prompt: do stuff
+pipelines:
+  p:
+    - stage: s
+      agent: claude
+      on_success: done
+      on_failure: pause
+`
+	cfg, err := LoadReader(strings.NewReader(input))
+	require.NoError(t, err)
+	require.NotNil(t, cfg.AutoPickUp)
+	assert.False(t, *cfg.AutoPickUp)
 }
 
 func TestLoadUnknownStage(t *testing.T) {

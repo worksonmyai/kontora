@@ -43,6 +43,7 @@ type Config struct {
 	Editor              string              `yaml:"editor"`
 	DefaultAgent        string              `yaml:"default_agent"`
 	MaxConcurrentAgents int                 `yaml:"max_concurrent_agents"`
+	AutoPickUp          *bool               `yaml:"auto_pick_up"`
 	Web                 Web                 `yaml:"web"`
 	Agents              map[string]Agent    `yaml:"agents"`
 	Stages              map[string]Stage    `yaml:"stages"`
@@ -139,6 +140,9 @@ func (c *Config) applyDefaults() {
 	}
 	if c.MaxConcurrentAgents == 0 {
 		c.MaxConcurrentAgents = 3
+	}
+	if c.AutoPickUp == nil {
+		c.AutoPickUp = new(true)
 	}
 	if c.Web.Enabled == nil {
 		enabled := true

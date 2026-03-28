@@ -53,6 +53,10 @@ func (s *Server) handleRetry(w http.ResponseWriter, r *http.Request) {
 	s.handleAction(w, r, func(id string) error { return s.svc.RetryTicket(id) })
 }
 
+func (s *Server) handleRun(w http.ResponseWriter, r *http.Request) {
+	s.handleAction(w, r, func(id string) error { return s.svc.RunTicket(id) })
+}
+
 func (s *Server) handleSkip(w http.ResponseWriter, r *http.Request) {
 	s.handleAction(w, r, func(id string) error { return s.svc.SkipStage(id) })
 }

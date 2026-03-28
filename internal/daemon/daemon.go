@@ -455,6 +455,13 @@ func (d *Daemon) handleFileChanged(path string) {
 			cancel()
 		}
 		go d.cleanupWorktree(log, t)
+	default:
+		if d.cfg.IsCustomStatus(string(t.Status)) {
+			if cancel, ok := d.running[t.ID]; ok {
+				log.Info("killing agent", "reason", "user set "+string(t.Status))
+				cancel()
+			}
+		}
 	}
 }
 
@@ -500,9 +507,10 @@ func (d *Daemon) removeWorktree(log *slog.Logger, repoPath, repoName, ticketID, 
 
 // isUserOverride returns true if the status represents a user-initiated
 // override that should prevent the exit handler from changing the status.
-func isUserOverride(s ticket.Status) bool {
+func (d *Daemon) isUserOverride(s ticket.Status) bool {
 	return s == ticket.StatusPaused || s == ticket.StatusCancelled ||
-		s == ticket.StatusOpen || s == ticket.StatusDone
+		s == ticket.StatusOpen || s == ticket.StatusDone ||
+		d.cfg.IsCustomStatus(string(s))
 }
 
 // isTerminalOverride returns true if the status is a terminal user override
@@ -891,7 +899,7 @@ func (d *Daemon) runSimpleTicket(ctx, taskCtx context.Context, log *slog.Logger,
 	}
 
 	// If user changed status while running, respect that.
-	if isUserOverride(t2.Status) {
+	if d.isUserOverride(t2.Status) {
 		log.Info("user override during execution", "status", t2.Status)
 		if isTerminalOverride(t2.Status) {
 			d.removeWorktree(log, repoPath, repoName, ticketID, branchPrefix)
@@ -974,7 +982,7 @@ func (d *Daemon) handleAgentExit(ctx, taskCtx context.Context, p handleExitParam
 	}
 
 	// If user changed status while running, respect that.
-	if isUserOverride(t2.Status) {
+	if d.isUserOverride(t2.Status) {
 		p.log.Info("user override during execution", "status", t2.Status)
 		if isTerminalOverride(t2.Status) {
 			d.removeWorktree(p.log, p.repoPath, p.repoName, p.ticketID, p.branchPrefix)
@@ -1020,6 +1028,9 @@ func (d *Daemon) handleAgentExit(ctx, taskCtx context.Context, p handleExitParam
 		p.log.Info("going back", "from", p.stageName, "to", nextStage)
 	case pipeline.ActionPause:
 		p.log.Warn("paused", "stage", p.stageName, "exit_code", p.result.ExitCode)
+	case pipeline.ActionPark:
+		status := fieldValue(exitAction.Fields, "status")
+		p.log.Info("parked", "stage", p.stageName, "status", status, "exit_code", p.result.ExitCode)
 	case pipeline.ActionSpawn:
 		p.log.Warn("unexpected spawn action after exit", "stage", p.stageName)
 	}
@@ -1030,9 +1041,12 @@ func (d *Daemon) handleAgentExit(ctx, taskCtx context.Context, p handleExitParam
 		return
 	}
 
-	if exitAction.Kind == pipeline.ActionPause {
+	switch {
+	case exitAction.Kind == pipeline.ActionPause:
 		_ = t2.SetField("last_error", fmt.Sprintf("agent exited with code %d (stage: %s)", p.result.ExitCode, p.stageName))
-	} else {
+	case exitAction.Kind == pipeline.ActionPark && p.result.ExitCode != 0:
+		_ = t2.SetField("last_error", fmt.Sprintf("agent exited with code %d (stage: %s)", p.result.ExitCode, p.stageName))
+	default:
 		_ = t2.SetField("last_error", "")
 	}
 
@@ -1046,9 +1060,11 @@ func (d *Daemon) handleAgentExit(ctx, taskCtx context.Context, p handleExitParam
 		d.removeWorktree(p.log, p.repoPath, p.repoName, p.ticketID, p.branchPrefix)
 	}
 
-	// Kill tmux window unless paused — keep it alive so the user can
-	// attach and inspect/fix the failure in the worktree.
-	if exitAction.Kind != pipeline.ActionPause {
+	// Kill tmux window unless paused or parked-with-failure — keep it alive
+	// so the user can attach and inspect/fix the failure in the worktree.
+	keepWindow := exitAction.Kind == pipeline.ActionPause ||
+		(exitAction.Kind == pipeline.ActionPark && p.result.ExitCode != 0)
+	if !keepWindow {
 		d.killTaskWindow(p.ticketID)
 	}
 

@@ -55,7 +55,7 @@ function kontora() {
     uploadDragging: false,
     lightTheme: getStoredTheme() === 'light',
 
-    columns: [
+    _builtinColumns: [
       { status: 'open', label: 'Open', color: 'bg-accent', tip: 'Draft ticket, not running yet. Drag to Todo or click Initialize to start.', emptyText: 'Create a ticket to get started', tint: '', glow: 'glow-top-accent',
         emptyIcon: '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M9 15h6"/><path d="M12 18v-6"/>' },
       { status: 'todo', label: 'Todo', color: 'bg-tx-4', tip: 'Waiting to start. Will begin automatically when a slot is available.', emptyText: 'Move a ticket here to put it next in line', tint: '', glow: 'glow-top-muted',
@@ -69,6 +69,35 @@ function kontora() {
       { status: 'cancelled', label: 'Cancelled', color: 'bg-surface-600', tip: 'Stopped manually. Drag to Todo to run it again.', emptyText: 'No cancelled tickets', tint: '', glow: 'glow-top-muted',
         emptyIcon: '<path d="m15 9-6 6"/><path d="m9 9 6 6"/><circle cx="12" cy="12" r="10"/>' },
     ],
+
+    _knownCustomStatuses: {
+      review:       { label: 'Review', color: 'bg-review', glow: 'glow-top-review', emptyIcon: '<path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/>' },
+      human_review: { label: 'Human Review', color: 'bg-review', glow: 'glow-top-review', emptyIcon: '<path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/>' },
+    },
+
+    get columns() {
+      var cols = [...this._builtinColumns];
+      var custom = this.configCache?.custom_statuses || [];
+      if (custom.length > 0) {
+        var doneIdx = cols.findIndex(c => c.status === 'done');
+        if (doneIdx < 0) doneIdx = cols.length;
+        var customCols = custom.map(s => {
+          var known = this._knownCustomStatuses[s];
+          return {
+            status: s,
+            label: known?.label || s.charAt(0).toUpperCase() + s.slice(1).replace(/_/g, ' '),
+            color: known?.color || 'bg-surface-600',
+            tip: 'Custom status: ' + s,
+            emptyText: 'No ' + (known?.label || s).toLowerCase() + ' tickets',
+            tint: '',
+            glow: known?.glow || 'glow-top-muted',
+            emptyIcon: known?.emptyIcon || '<circle cx="12" cy="12" r="10"/><path d="M12 8v4"/><path d="M12 16h.01"/>',
+          };
+        });
+        cols.splice(doneIdx, 0, ...customCols);
+      }
+      return cols;
+    },
 
     async init() {
       window.addEventListener('resize', () => {
@@ -88,6 +117,12 @@ function kontora() {
         var self = this;
         requestAnimationFrame(function() { self.refitTerminal(); });
       });
+      try {
+        var cfgRes = await fetch('/api/config');
+        if (cfgRes.ok) this.configCache = await cfgRes.json();
+      } catch (e) {
+        this.error = 'Failed to load config';
+      }
       try {
         await this.fetchTasks();
       } catch (e) {
@@ -175,7 +210,7 @@ function kontora() {
         this.runningAgents = this.tickets.filter(t => t.status === 'in_progress' && t.kontora).length;
         this.updateFavicon();
         if (this.selectedTicket?.id === ticket.id) {
-          if (this.editing && !['open', 'todo', 'paused'].includes(ticket.status)) {
+          if (this.editing && !['open', 'todo', 'paused'].concat(this.configCache?.custom_statuses || []).includes(ticket.status)) {
             this.editing = false;
             this.editingBody = false;
           }
@@ -364,7 +399,7 @@ function kontora() {
         this.openTerminal();
       } else {
         this.activeTab = 'ticket';
-        if (['open', 'todo', 'paused'].includes(this.selectedTicket?.status)) this.startEditing();
+        if (['open', 'todo', 'paused'].concat(this.configCache?.custom_statuses || []).includes(this.selectedTicket?.status)) this.startEditing();
       }
     },
 
@@ -512,7 +547,7 @@ function kontora() {
     },
 
     async startEditing() {
-      const editable = ['open', 'todo', 'paused'];
+      const editable = ['open', 'todo', 'paused'].concat(this.configCache?.custom_statuses || []);
       if (!this.selectedTicket || !editable.includes(this.selectedTicket.status)) return;
       this.editingBody = false;
       var pipeline = this.selectedTicket.pipeline || '';

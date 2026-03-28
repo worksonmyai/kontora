@@ -320,6 +320,49 @@ created: 2026-01-01T00:00:00Z
 		cancel()
 		require.NoError(t, <-errCh)
 	})
+
+	t.Run("move to custom status", func(t *testing.T) {
+		h := newHarness(t)
+		h.cfg.Statuses = []string{"review", "qa"}
+		d := h.newDaemon(h.cfg)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		h.writeTicket("tst-mcs.md", h.taskMD("tst-mcs", "open", "one-stage"))
+
+		errCh := make(chan error, 1)
+		go func() { errCh <- d.Run(ctx) }()
+		time.Sleep(200 * time.Millisecond)
+
+		require.NoError(t, d.MoveTicket("tst-mcs", "review"))
+		result := h.readTask("tst-mcs.md")
+		assert.Equal(t, ticket.Status("review"), result.Status)
+
+		cancel()
+		require.NoError(t, <-errCh)
+	})
+
+	t.Run("reject unknown status with custom statuses configured", func(t *testing.T) {
+		h := newHarness(t)
+		h.cfg.Statuses = []string{"review", "qa"}
+		d := h.newDaemon(h.cfg)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		h.writeTicket("tst-mru.md", h.taskMD("tst-mru", "open", "one-stage"))
+
+		errCh := make(chan error, 1)
+		go func() { errCh <- d.Run(ctx) }()
+		time.Sleep(200 * time.Millisecond)
+
+		err := d.MoveTicket("tst-mru", "bogus")
+		assert.ErrorIs(t, err, web.ErrInvalidState)
+
+		cancel()
+		require.NoError(t, <-errCh)
+	})
 }
 
 func TestDaemon_DeleteTicket(t *testing.T) {
@@ -939,6 +982,54 @@ func TestDaemon_UpdateTicket_InProgressRejects(t *testing.T) {
 
 	agent := "agent2"
 	err := d.UpdateTicket("tst-uip", web.UpdateTicketRequest{Agent: &agent})
+	assert.ErrorIs(t, err, web.ErrInvalidState)
+
+	cancel()
+	require.NoError(t, <-errCh)
+}
+
+func TestDaemon_UpdateTicket_CustomStatus(t *testing.T) {
+	h := newHarness(t)
+	h.cfg.Statuses = []string{"review", "qa"}
+	d := h.newDaemon(h.cfg)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	h.writeTicket("tst-ucs.md", h.taskMD("tst-ucs", "review", "one-stage"))
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- d.Run(ctx) }()
+	time.Sleep(200 * time.Millisecond)
+
+	newBody := "# Updated from custom status\n"
+	err := d.UpdateTicket("tst-ucs", web.UpdateTicketRequest{Body: &newBody})
+	require.NoError(t, err)
+
+	result := h.readTask("tst-ucs.md")
+	assert.Equal(t, "# Updated from custom status\n", result.Body)
+
+	cancel()
+	require.NoError(t, <-errCh)
+}
+
+func TestDaemon_UpdateTicket_UnknownStatusRejects(t *testing.T) {
+	h := newHarness(t)
+	h.cfg.Statuses = []string{"review"}
+	d := h.newDaemon(h.cfg)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Manually write a ticket with a status that is not in the configured custom statuses.
+	h.writeTicket("tst-uuk.md", h.taskMD("tst-uuk", "bogus", "one-stage"))
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- d.Run(ctx) }()
+	time.Sleep(200 * time.Millisecond)
+
+	newBody := "should fail"
+	err := d.UpdateTicket("tst-uuk", web.UpdateTicketRequest{Body: &newBody})
 	assert.ErrorIs(t, err, web.ErrInvalidState)
 
 	cancel()

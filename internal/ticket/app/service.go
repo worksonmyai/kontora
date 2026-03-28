@@ -299,6 +299,45 @@ func (s *Service) Init(id string, req InitRequest) (Result, error) {
 	return Result{ID: resolved, Status: status}, nil
 }
 
+// Run enqueues a ticket in open or todo status for processing.
+// For open tickets it transitions the status to todo first.
+func (s *Service) Run(id string) (Result, error) {
+	resolved, err := s.repo.Resolve(id)
+	if err != nil {
+		return Result{}, err
+	}
+	st, err := s.repo.Get(resolved)
+	if err != nil {
+		return Result{}, err
+	}
+
+	t := st.Ticket
+	if !t.Kontora {
+		return Result{}, fmt.Errorf("%w: ticket is not initialized", ErrInvalidState)
+	}
+
+	switch t.Status { //nolint:exhaustive
+	case ticket.StatusOpen:
+		if err := t.SetField("status", string(ticket.StatusTodo)); err != nil {
+			return Result{}, fmt.Errorf("setting status: %w", err)
+		}
+		if err := t.SetField("last_error", ""); err != nil {
+			return Result{}, fmt.Errorf("clearing last_error: %w", err)
+		}
+		if err := s.repo.Save(st); err != nil {
+			return Result{}, err
+		}
+	case ticket.StatusTodo:
+		// Already todo — just enqueue below.
+	default:
+		return Result{}, fmt.Errorf("%w: cannot run ticket in status %s (must be open or todo)", ErrInvalidState, t.Status)
+	}
+
+	s.runtime.Enqueue(t)
+	s.runtime.BroadcastUpdated(resolved)
+	return Result{ID: resolved, Status: string(ticket.StatusTodo)}, nil
+}
+
 // AgentForStage returns the agent configured for a pipeline stage.
 func AgentForStage(cfg *config.Config, pipelineName, stageName string) string {
 	pipeline, ok := cfg.Pipelines[pipelineName]

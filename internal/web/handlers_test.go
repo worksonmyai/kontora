@@ -71,6 +71,7 @@ func (m *mockService) DeleteTicket(id string) error {
 }
 func (m *mockService) PauseTicket(id string) error { return m.actionFn(id) }
 func (m *mockService) RetryTicket(id string) error { return m.actionFn(id) }
+func (m *mockService) RunTicket(id string) error   { return m.actionFn(id) }
 func (m *mockService) SkipStage(id string) error   { return m.actionFn(id) }
 func (m *mockService) SetStage(id string, stage string) error {
 	if m.setStageStage != nil {

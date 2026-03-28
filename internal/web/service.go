@@ -26,6 +26,7 @@ type TicketService interface {
 	DeleteTicket(id string) error
 	PauseTicket(id string) error
 	RetryTicket(id string) error
+	RunTicket(id string) error
 	SkipStage(id string) error
 	SetStage(id string, stage string) error
 	MoveTicket(id string, newStatus string) error

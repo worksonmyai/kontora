@@ -380,7 +380,7 @@ func (d *Daemon) initialScan(dir string) error {
 		}
 
 		d.tickets[t.ID] = &ticketState{ticket: t, filePath: path}
-		if t.Kontora && t.Status == ticket.StatusTodo {
+		if t.Kontora && t.Status == ticket.StatusTodo && *d.cfg.AutoPickUp {
 			d.ticketLog(t.ID).Info("enqueuing", "pipeline", t.Pipeline, "stage", t.Stage)
 			d.enqueue(t)
 		}
@@ -434,12 +434,16 @@ func (d *Daemon) handleFileChanged(path string) {
 			}
 			// Kill any leftover tmux window (e.g. from a paused ticket being retried).
 			d.killTaskWindow(t.ID)
-			if !known {
+
+			if !*d.cfg.AutoPickUp {
+				log.Info("skipping auto pick-up", "pipeline", t.Pipeline)
+			} else if !known {
 				log.Info("new ticket", "pipeline", t.Pipeline)
+				d.enqueue(t)
 			} else {
 				log.Info("enqueuing", "previous_status", string(prev.ticket.Status), "pipeline", t.Pipeline, "stage", t.Stage)
+				d.enqueue(t)
 			}
-			d.enqueue(t)
 		}
 	case ticket.StatusPaused, ticket.StatusCancelled, ticket.StatusOpen:
 		if cancel, ok := d.running[t.ID]; ok {

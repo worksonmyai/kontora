@@ -46,6 +46,7 @@ func renderUsage() string {
 		{"view", "Print ticket details"},
 		{"edit", "Open a ticket in $EDITOR"},
 		{"init", "Set up a ticket for daemon processing"},
+		{"run", "Enqueue a ticket for processing"},
 		{"done", "Mark a ticket as done"},
 		{"note", "Append a note to a ticket"},
 		{"pause", "Pause a running or queued ticket"},
@@ -89,6 +90,8 @@ func main() {
 		cmdEdit()
 	case "init":
 		cmdInit()
+	case "run":
+		cmdRun()
 	case "done":
 		cmdDone()
 	case "note":
@@ -290,6 +293,25 @@ func cmdEdit() {
 	cfg := mustLoadConfig(*configPath)
 
 	if err := cli.Edit(cfg.TicketsDir, cfg.Editor, taskID); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func cmdRun() {
+	fs := flag.NewFlagSet("run", flag.ExitOnError)
+	configPath := fs.String("config", defaultConfigPath(), "path to config file")
+	if err := fs.Parse(os.Args[2:]); err != nil {
+		log.Fatalf("parsing flags: %v", err)
+	}
+
+	if fs.NArg() < 1 {
+		log.Fatal("ticket ID is required: kontora run TICKET_ID")
+	}
+	taskID := fs.Arg(0)
+
+	cfg := mustLoadConfig(*configPath)
+
+	if err := cli.Run(cfg, taskID); err != nil {
 		log.Fatal(err)
 	}
 }

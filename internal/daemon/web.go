@@ -289,6 +289,12 @@ func (d *Daemon) RetryTicket(id string) error {
 	return mapAppError(err)
 }
 
+// RunTicket enqueues a ticket in open or todo status for processing.
+func (d *Daemon) RunTicket(id string) error {
+	_, err := d.svc.Run(id)
+	return mapAppError(err)
+}
+
 // SkipStage advances a ticket to the next pipeline stage, or completes it
 // if already on the last stage.
 func (d *Daemon) SkipStage(id string) error {
@@ -354,7 +360,12 @@ func (d *Daemon) MoveTicket(id string, newStatus string) error {
 	switch newStatus {
 	case "paused":
 		return d.PauseTicket(id)
-	case "todo":
+	case "todo", "in_progress":
+		// RunTicket handles open/todo tickets; RetryTicket handles paused/done/cancelled.
+		// The daemon itself transitions todo→in_progress when it spawns the agent.
+		if err := d.RunTicket(id); err == nil {
+			return nil
+		}
 		return d.RetryTicket(id)
 	default:
 		switch newStatus {

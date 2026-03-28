@@ -92,6 +92,7 @@ func (m *mockTerminalService) GetConfig() ConfigInfo                            
 func (m *mockTerminalService) DeleteTicket(_ string) error                        { return nil }
 func (m *mockTerminalService) PauseTicket(_ string) error                         { return nil }
 func (m *mockTerminalService) RetryTicket(_ string) error                         { return nil }
+func (m *mockTerminalService) RunTicket(_ string) error                           { return nil }
 func (m *mockTerminalService) SkipStage(_ string) error                           { return nil }
 func (m *mockTerminalService) SetStage(_ string, _ string) error                  { return nil }
 func (m *mockTerminalService) MoveTicket(_ string, _ string) error                { return nil }

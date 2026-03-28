@@ -76,6 +76,7 @@ func (h *testHarness) defaultConfig(agent1Binary, agent2Binary string) *config.C
 		LogsDir:             h.logsDir,
 		DefaultAgent:        "agent1",
 		MaxConcurrentAgents: 4,
+		AutoPickUp:          new(true),
 		Agents: map[string]config.Agent{
 			"agent1": {Binary: agent1Binary},
 			"agent2": {Binary: agent2Binary},
@@ -1858,4 +1859,141 @@ func TestHandleAgentExit_PipelinePause_SetsLastError(t *testing.T) {
 
 	cancel()
 	require.NoError(t, <-errCh)
+}
+
+func TestAutoPickUpDisabled(t *testing.T) {
+	t.Run("startup scan skips todo tickets", func(t *testing.T) {
+		h := newHarness(t)
+		h.cfg.AutoPickUp = new(false)
+
+		// Write a todo ticket BEFORE starting daemon.
+		h.writeTicket("tst-ap1.md", h.taskMD("tst-ap1", "todo", "one-stage"))
+
+		d := h.newDaemon(h.cfg)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		errCh := make(chan error, 1)
+		go func() { errCh <- d.Run(ctx) }()
+
+		time.Sleep(700 * time.Millisecond)
+
+		result := h.readTask("tst-ap1.md")
+		assert.Equal(t, ticket.StatusTodo, result.Status, "ticket should remain todo when auto_pick_up=false")
+
+		cancel()
+		require.NoError(t, <-errCh)
+	})
+
+	t.Run("new todo ticket not picked up", func(t *testing.T) {
+		h := newHarness(t)
+		h.cfg.AutoPickUp = new(false)
+
+		d := h.newDaemon(h.cfg)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		errCh := make(chan error, 1)
+		go func() { errCh <- d.Run(ctx) }()
+
+		time.Sleep(200 * time.Millisecond)
+
+		h.writeTicket("tst-ap2.md", h.taskMD("tst-ap2", "todo", "one-stage"))
+
+		time.Sleep(500 * time.Millisecond)
+		result := h.readTask("tst-ap2.md")
+		assert.Equal(t, ticket.StatusTodo, result.Status, "new ticket should not be auto picked up")
+
+		cancel()
+		require.NoError(t, <-errCh)
+	})
+
+	t.Run("status transition to todo also blocked", func(t *testing.T) {
+		h := newHarness(t)
+		h.cfg.AutoPickUp = new(false)
+
+		d := h.newDaemon(h.cfg)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		errCh := make(chan error, 1)
+		go func() { errCh <- d.Run(ctx) }()
+
+		time.Sleep(200 * time.Millisecond)
+
+		// Write ticket as open first.
+		h.writeTicket("tst-ap3.md", h.taskMD("tst-ap3", "open", "one-stage"))
+		time.Sleep(200 * time.Millisecond)
+
+		// Transition open→todo — should NOT be picked up.
+		h.writeTicket("tst-ap3.md", h.taskMD("tst-ap3", "todo", "one-stage"))
+
+		time.Sleep(500 * time.Millisecond)
+		result := h.readTask("tst-ap3.md")
+		assert.Equal(t, ticket.StatusTodo, result.Status, "open→todo transition should not enqueue when auto_pick_up=false")
+
+		cancel()
+		require.NoError(t, <-errCh)
+	})
+
+	t.Run("pipeline transitions still work", func(t *testing.T) {
+		h := newHarness(t)
+		h.cfg.AutoPickUp = new(false)
+		h.cfg.Web = config.Web{Enabled: new(false)}
+
+		d := h.newDaemon(h.cfg)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+
+		errCh := make(chan error, 1)
+		go func() { errCh <- d.Run(ctx) }()
+
+		time.Sleep(200 * time.Millisecond)
+
+		// Write a two-stage ticket and kick it off via RunTicket.
+		h.writeTicket("tst-ap5.md", h.taskMD("tst-ap5", "todo", "two-stage"))
+		time.Sleep(300 * time.Millisecond)
+		require.NoError(t, d.RunTicket("tst-ap5"))
+
+		// The pipeline should advance through both stages automatically.
+		result := h.waitForStatus("tst-ap5.md", ticket.StatusDone, 10*time.Second)
+		require.Len(t, result.History, 2)
+
+		cancel()
+		require.NoError(t, <-errCh)
+	})
+
+	t.Run("RunTicket enqueues todo ticket", func(t *testing.T) {
+		h := newHarness(t)
+		h.cfg.AutoPickUp = new(false)
+		h.cfg.Web = config.Web{Enabled: new(false)}
+
+		d := h.newDaemon(h.cfg)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+
+		errCh := make(chan error, 1)
+		go func() { errCh <- d.Run(ctx) }()
+
+		time.Sleep(200 * time.Millisecond)
+
+		h.writeTicket("tst-ap4.md", h.taskMD("tst-ap4", "todo", "one-stage"))
+		time.Sleep(300 * time.Millisecond)
+
+		result := h.readTask("tst-ap4.md")
+		require.Equal(t, ticket.StatusTodo, result.Status, "should still be todo before RunTicket")
+
+		require.NoError(t, d.RunTicket("tst-ap4"))
+
+		result = h.waitForStatus("tst-ap4.md", ticket.StatusDone, 10*time.Second)
+		require.Len(t, result.History, 1)
+
+		cancel()
+		require.NoError(t, <-errCh)
+	})
 }

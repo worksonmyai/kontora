@@ -15,7 +15,7 @@ var (
 	ErrUnknownAgent = errors.New("unknown agent")
 )
 
-var validSetStatuses = map[ticket.Status]bool{
+var builtinSetStatuses = map[ticket.Status]bool{
 	ticket.StatusOpen:      true,
 	ticket.StatusTodo:      true,
 	ticket.StatusPaused:    true,
@@ -64,14 +64,17 @@ func (s *Service) List(opts ListOptions) ([]View, error) {
 	return views, nil
 }
 
+func (s *Service) isValidSetStatus(status ticket.Status) bool {
+	if builtinSetStatuses[status] {
+		return true
+	}
+	return s.cfg.IsCustomStatus(string(status))
+}
+
 // SetStatus changes a ticket's status with validation.
 func (s *Service) SetStatus(id string, status ticket.Status) (Result, error) {
-	if !validSetStatuses[status] {
-		valid := make([]string, 0, len(validSetStatuses))
-		for k := range validSetStatuses {
-			valid = append(valid, string(k))
-		}
-		return Result{}, fmt.Errorf("invalid status %q, valid statuses: %v", status, valid)
+	if !s.isValidSetStatus(status) {
+		return Result{}, fmt.Errorf("invalid status %q", status)
 	}
 
 	resolved, err := s.repo.Resolve(id)

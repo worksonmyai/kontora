@@ -128,7 +128,7 @@ func TestLoadMalformedYAML(t *testing.T) {
 
 func TestLoadLastStageNotDone(t *testing.T) {
 	_, err := Load("testdata/last_stage_next.yaml")
-	require.ErrorContains(t, err, "last stage must have on_success=done")
+	require.ErrorContains(t, err, "last stage must not have on_success=next")
 }
 
 func TestLoadDuplicateStageInPipeline(t *testing.T) {
@@ -272,6 +272,157 @@ pipelines:
 		"CLAUDE_CONFIG_DIR": "/custom/config",
 		"MY_VAR":            "hello",
 	}, cfg.Agents["claude"].Environment)
+}
+
+func TestLoadCustomStatuses(t *testing.T) {
+	cfg, err := Load("testdata/custom_statuses.yaml")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"review", "qa"}, cfg.Statuses)
+	assert.True(t, cfg.IsCustomStatus("review"))
+	assert.True(t, cfg.IsCustomStatus("qa"))
+	assert.False(t, cfg.IsCustomStatus("done"))
+}
+
+func TestCustomStatusClashBuiltin(t *testing.T) {
+	input := `
+agents:
+  a:
+    binary: bin
+statuses: [done]
+stages:
+  s:
+    prompt: x
+pipelines:
+  p:
+    - stage: s
+      agent: a
+      on_success: done
+      on_failure: pause
+`
+	_, err := LoadReader(strings.NewReader(input))
+	require.ErrorContains(t, err, "clashes with built-in status")
+}
+
+func TestCustomStatusClashReserved(t *testing.T) {
+	input := `
+agents:
+  a:
+    binary: bin
+statuses: [next]
+stages:
+  s:
+    prompt: x
+pipelines:
+  p:
+    - stage: s
+      agent: a
+      on_success: done
+      on_failure: pause
+`
+	_, err := LoadReader(strings.NewReader(input))
+	require.ErrorContains(t, err, "clashes with reserved keyword")
+}
+
+func TestCustomStatusDuplicate(t *testing.T) {
+	input := `
+agents:
+  a:
+    binary: bin
+statuses: [review, review]
+stages:
+  s:
+    prompt: x
+pipelines:
+  p:
+    - stage: s
+      agent: a
+      on_success: done
+      on_failure: pause
+`
+	_, err := LoadReader(strings.NewReader(input))
+	require.ErrorContains(t, err, "duplicate")
+}
+
+func TestCustomStatusInvalidFormat(t *testing.T) {
+	input := `
+agents:
+  a:
+    binary: bin
+statuses: [Review]
+stages:
+  s:
+    prompt: x
+pipelines:
+  p:
+    - stage: s
+      agent: a
+      on_success: done
+      on_failure: pause
+`
+	_, err := LoadReader(strings.NewReader(input))
+	require.ErrorContains(t, err, "must match")
+}
+
+func TestCustomStatusOnSuccessReference(t *testing.T) {
+	input := `
+agents:
+  a:
+    binary: bin
+statuses: [review]
+stages:
+  s:
+    prompt: x
+pipelines:
+  p:
+    - stage: s
+      agent: a
+      on_success: review
+      on_failure: pause
+`
+	cfg, err := LoadReader(strings.NewReader(input))
+	require.NoError(t, err)
+	assert.Equal(t, "review", cfg.Pipelines["p"][0].OnSuccess)
+}
+
+func TestCustomStatusOnFailureReference(t *testing.T) {
+	input := `
+agents:
+  a:
+    binary: bin
+statuses: [needs_fix]
+stages:
+  s:
+    prompt: x
+pipelines:
+  p:
+    - stage: s
+      agent: a
+      on_success: done
+      on_failure: needs_fix
+`
+	cfg, err := LoadReader(strings.NewReader(input))
+	require.NoError(t, err)
+	assert.Equal(t, "needs_fix", cfg.Pipelines["p"][0].OnFailure)
+}
+
+func TestCustomStatusLastStageNotNext(t *testing.T) {
+	input := `
+agents:
+  a:
+    binary: bin
+statuses: [review]
+stages:
+  s:
+    prompt: x
+pipelines:
+  p:
+    - stage: s
+      agent: a
+      on_success: review
+      on_failure: pause
+`
+	_, err := LoadReader(strings.NewReader(input))
+	require.NoError(t, err)
 }
 
 func TestLoadReaderValid(t *testing.T) {

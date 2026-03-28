@@ -33,13 +33,17 @@ var (
 		ticket.StatusDone:       lipgloss.NewStyle().Faint(true),
 		ticket.StatusCancelled:  lipgloss.NewStyle().Faint(true).Foreground(lipgloss.Color("1")),
 		ticket.StatusOpen:       lipgloss.NewStyle().Foreground(lipgloss.Color("5")),
+		"review":                lipgloss.NewStyle().Foreground(lipgloss.Color("13")),
+		"human_review":          lipgloss.NewStyle().Foreground(lipgloss.Color("13")),
 	}
 )
+
+var styleCustomStatus = lipgloss.NewStyle().Foreground(lipgloss.Color("208"))
 
 func styledStatus(s string) string {
 	st, ok := statusStyle[ticket.Status(s)]
 	if !ok {
-		return s
+		return styleCustomStatus.Render(s)
 	}
 	return st.Render(s)
 }

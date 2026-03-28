@@ -37,7 +37,8 @@ type (
 		config web.ConfigInfo
 		err    error
 	}
-	ticketCreatedMsg struct{ ticket web.TicketInfo }
+	ticketCreatedMsg  struct{ ticket web.TicketInfo }
+	customStatusesMsg struct{ statuses []string }
 
 	// Agent cycling messages
 	agentConfigMsg struct {
@@ -71,10 +72,13 @@ func newModel(src Source) model {
 }
 
 func (m model) Init() tea.Cmd {
+	cmds := []tea.Cmd{m.fetchCustomStatusesCmd()}
 	if m.source != nil && m.source.Connected() {
-		return m.fetchTasksCmd()
+		cmds = append(cmds, m.fetchTasksCmd())
+	} else {
+		cmds = append(cmds, m.fetchTasksCmd(), tickCmd())
 	}
-	return tea.Batch(m.fetchTasksCmd(), tickCmd())
+	return tea.Batch(cmds...)
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -90,6 +94,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyMsg:
 		return m.handleKey(msg)
+
+	case customStatusesMsg:
+		m.list.customStatuses = msg.statuses
+		m.list.buildColumns()
+		return m, nil
 
 	case ticketsRefreshedMsg:
 		m.list.setTickets(msg.tickets, msg.running)
@@ -358,6 +367,22 @@ func (m model) fetchLogsCmd(id, stage string) tea.Cmd {
 			return errMsg{err: err}
 		}
 		return logsMsg{content: content}
+	}
+}
+
+func (m model) fetchCustomStatusesCmd() tea.Cmd {
+	src := m.source
+	if !src.Connected() {
+		return func() tea.Msg {
+			return customStatusesMsg{}
+		}
+	}
+	return func() tea.Msg {
+		cfg, err := src.FetchConfig()
+		if err != nil {
+			return errMsg{err: err}
+		}
+		return customStatusesMsg{statuses: cfg.CustomStatuses}
 	}
 }
 

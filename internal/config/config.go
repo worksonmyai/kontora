@@ -6,6 +6,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -45,6 +47,7 @@ type Config struct {
 	Agents              map[string]Agent    `yaml:"agents"`
 	Stages              map[string]Stage    `yaml:"stages"`
 	Pipelines           map[string]Pipeline `yaml:"pipelines"`
+	Statuses            []string            `yaml:"statuses"`
 	Environment         map[string]string   `yaml:"environment"`
 }
 
@@ -149,8 +152,21 @@ func (c *Config) applyDefaults() {
 	}
 }
 
-var validOnSuccess = map[string]bool{"next": true, "done": true}
-var validOnFailure = map[string]bool{"retry": true, "back": true, "pause": true}
+var validStatusNameRe = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
+
+var builtinStatuses = map[string]bool{
+	"open": true, "todo": true, "in_progress": true,
+	"paused": true, "done": true, "cancelled": true,
+}
+
+var reservedKeywords = map[string]bool{
+	"next": true, "retry": true, "back": true,
+}
+
+// IsCustomStatus returns true if s is a user-defined custom status.
+func (c *Config) IsCustomStatus(s string) bool {
+	return slices.Contains(c.Statuses, s)
+}
 
 func (c *Config) Validate() error {
 	if _, ok := c.Agents[c.DefaultAgent]; !ok {
@@ -166,16 +182,42 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	// Validate custom statuses.
+	seen := make(map[string]bool, len(c.Statuses))
+	for _, s := range c.Statuses {
+		if !validStatusNameRe.MatchString(s) {
+			return fmt.Errorf("custom status %q: must match [a-z][a-z0-9_]*", s)
+		}
+		if builtinStatuses[s] {
+			return fmt.Errorf("custom status %q: clashes with built-in status", s)
+		}
+		if reservedKeywords[s] {
+			return fmt.Errorf("custom status %q: clashes with reserved keyword", s)
+		}
+		if seen[s] {
+			return fmt.Errorf("custom status %q: duplicate", s)
+		}
+		seen[s] = true
+	}
+
+	// Build valid on_success/on_failure sets dynamically.
+	validOnSuccess := map[string]bool{"next": true, "done": true}
+	validOnFailure := map[string]bool{"retry": true, "back": true, "pause": true}
+	for _, s := range c.Statuses {
+		validOnSuccess[s] = true
+		validOnFailure[s] = true
+	}
+
 	for name, pipeline := range c.Pipelines {
 		if len(pipeline) == 0 {
 			return fmt.Errorf("pipeline %q: must have at least one stage", name)
 		}
-		seen := make(map[string]int, len(pipeline))
+		seenStages := make(map[string]int, len(pipeline))
 		for i, step := range pipeline {
-			if prev, ok := seen[step.Stage]; ok {
+			if prev, ok := seenStages[step.Stage]; ok {
 				return fmt.Errorf("pipeline %q stage %d: duplicate stage %q (first used at stage %d)", name, i, step.Stage, prev)
 			}
-			seen[step.Stage] = i
+			seenStages[step.Stage] = i
 			if _, ok := c.Stages[step.Stage]; !ok {
 				return fmt.Errorf("pipeline %q stage %d: unknown stage %q", name, i, step.Stage)
 			}
@@ -183,18 +225,18 @@ func (c *Config) Validate() error {
 				return fmt.Errorf("pipeline %q stage %d: unknown agent %q", name, i, step.Agent)
 			}
 			if !validOnSuccess[step.OnSuccess] {
-				return fmt.Errorf("pipeline %q stage %d: invalid on_success %q (must be next or done)", name, i, step.OnSuccess)
+				return fmt.Errorf("pipeline %q stage %d: invalid on_success %q (must be next, done, or a custom status)", name, i, step.OnSuccess)
 			}
 			if !validOnFailure[step.OnFailure] {
-				return fmt.Errorf("pipeline %q stage %d: invalid on_failure %q (must be retry, back, or pause)", name, i, step.OnFailure)
+				return fmt.Errorf("pipeline %q stage %d: invalid on_failure %q (must be retry, back, pause, or a custom status)", name, i, step.OnFailure)
 			}
 			if step.OnFailure == "back" && i == 0 {
 				return fmt.Errorf("pipeline %q stage %d: on_failure=back not allowed on first stage", name, i)
 			}
 		}
 		last := pipeline[len(pipeline)-1]
-		if last.OnSuccess != "done" {
-			return fmt.Errorf("pipeline %q: last stage must have on_success=done, got %q", name, last.OnSuccess)
+		if last.OnSuccess == "next" {
+			return fmt.Errorf("pipeline %q: last stage must not have on_success=next, got %q", name, last.OnSuccess)
 		}
 	}
 

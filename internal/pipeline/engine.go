@@ -30,6 +30,7 @@ const (
 	ActionRetry
 	ActionBack
 	ActionPause // needs human attention
+	ActionPark  // park in custom status
 )
 
 func (k ActionKind) String() string {
@@ -46,6 +47,8 @@ func (k ActionKind) String() string {
 		return "back"
 	case ActionPause:
 		return "pause"
+	case ActionPark:
+		return "park"
 	default:
 		return fmt.Sprintf("ActionKind(%d)", int(k))
 	}
@@ -157,7 +160,13 @@ func handleSuccess(step config.PipelineStep, idx int, pipeline config.Pipeline, 
 		}, nil
 
 	default:
-		return Action{}, fmt.Errorf("unknown on_success: %q", step.OnSuccess)
+		return Action{
+			Kind: ActionPark,
+			Fields: []FieldUpdate{
+				{Key: "status", Value: step.OnSuccess},
+			},
+			History: history,
+		}, nil
 	}
 }
 
@@ -208,7 +217,13 @@ func handleFailure(step config.PipelineStep, idx int, pipeline config.Pipeline, 
 		}, nil
 
 	default:
-		return Action{}, fmt.Errorf("unknown on_failure: %q", step.OnFailure)
+		return Action{
+			Kind: ActionPark,
+			Fields: []FieldUpdate{
+				{Key: "status", Value: step.OnFailure},
+			},
+			History: history,
+		}, nil
 	}
 }
 

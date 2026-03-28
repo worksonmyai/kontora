@@ -170,10 +170,11 @@ func (d *Daemon) GetConfig() web.ConfigInfo {
 	}
 	agents := slices.Sorted(maps.Keys(d.cfg.Agents))
 	return web.ConfigInfo{
-		Pipelines:     pipelines,
-		PipelineInfos: infos,
-		Agents:        agents,
-		BranchPrefix:  d.cfg.BranchPrefix,
+		Pipelines:      pipelines,
+		PipelineInfos:  infos,
+		Agents:         agents,
+		BranchPrefix:   d.cfg.BranchPrefix,
+		CustomStatuses: d.cfg.Statuses,
 	}
 }
 
@@ -360,7 +361,9 @@ func (d *Daemon) MoveTicket(id string, newStatus string) error {
 		case "open", "done", "cancelled":
 			// valid
 		default:
-			return web.ErrInvalidState
+			if !d.cfg.IsCustomStatus(newStatus) {
+				return web.ErrInvalidState
+			}
 		}
 		_, err := d.svc.SetStatus(id, ticket.Status(newStatus))
 		return mapAppError(err)
@@ -393,6 +396,10 @@ func (d *Daemon) UpdateTicket(id string, req web.UpdateTicketRequest) error {
 		// allowed
 	case ticket.StatusInProgress, ticket.StatusDone, ticket.StatusCancelled:
 		return web.ErrInvalidState
+	default:
+		if !d.cfg.IsCustomStatus(string(ts.ticket.Status)) {
+			return web.ErrInvalidState
+		}
 	}
 
 	filePath := ts.filePath

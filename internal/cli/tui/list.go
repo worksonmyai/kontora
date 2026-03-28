@@ -45,10 +45,11 @@ type column struct {
 }
 
 type listModel struct {
-	tickets  []web.TicketInfo
-	filtered []web.TicketInfo
-	columns  []column
-	running  int
+	tickets        []web.TicketInfo
+	filtered       []web.TicketInfo
+	columns        []column
+	running        int
+	customStatuses []string
 
 	colIdx   int
 	rowIdx   int
@@ -170,9 +171,12 @@ func (m *listModel) buildColumns() {
 
 	m.columns = nil
 
-	order := columnOrder
+	order := slices.Clone(columnOrder)
+	for _, cs := range m.customStatuses {
+		order = append(order, ticket.Status(cs))
+	}
 	if m.showDone {
-		order = append(slices.Clone(columnOrder), doneStatuses...)
+		order = append(order, doneStatuses...)
 	}
 
 	for _, status := range order {
@@ -479,6 +483,7 @@ func renderCardLine(t web.TicketInfo, colW int, selected bool, line int) string 
 		if s, ok := statusStyle[st]; ok {
 			return s.Render(content)
 		}
+		return styleCustomStatus.Render(content)
 	}
 	if line == 1 {
 		return styleCardTitle.Render(content)

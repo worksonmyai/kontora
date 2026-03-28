@@ -230,6 +230,62 @@ func TestEvaluate(t *testing.T) {
 	}
 }
 
+// testPipelineWithCustomStatuses returns a pipeline using custom statuses.
+func testPipelineWithCustomStatuses() config.Pipeline {
+	return config.Pipeline{
+		{Stage: "plan", Agent: "opus", OnSuccess: "next", OnFailure: "pause"},
+		{Stage: "code", Agent: "sonnet", OnSuccess: "review", OnFailure: "needs_fix"},
+	}
+}
+
+func TestEvaluateCustomStatusOnSuccess(t *testing.T) {
+	pipeline := testPipelineWithCustomStatuses()
+	tk := testTicket("code", ticket.StatusInProgress, 0)
+	ts := time.Date(2026, 3, 5, 11, 0, 0, 0, time.UTC)
+
+	action, err := Evaluate(tk, pipeline, Event{Kind: EventAgentExited, ExitCode: 0, Timestamp: ts})
+	require.NoError(t, err)
+
+	assert.Equal(t, ActionPark, action.Kind)
+	fields := make(map[string]string)
+	for _, f := range action.Fields {
+		fields[f.Key] = fmt.Sprint(f.Value)
+	}
+	assert.Equal(t, "review", fields["status"])
+	_, hasCompletedAt := fields["completed_at"]
+	assert.False(t, hasCompletedAt)
+	require.NotNil(t, action.History)
+	assert.Equal(t, "code", action.History.Stage)
+}
+
+func TestEvaluateCustomStatusOnFailure(t *testing.T) {
+	pipeline := testPipelineWithCustomStatuses()
+	tk := testTicket("code", ticket.StatusInProgress, 0)
+	ts := time.Date(2026, 3, 5, 11, 0, 0, 0, time.UTC)
+
+	action, err := Evaluate(tk, pipeline, Event{Kind: EventAgentExited, ExitCode: 1, Timestamp: ts})
+	require.NoError(t, err)
+
+	assert.Equal(t, ActionPark, action.Kind)
+	fields := make(map[string]string)
+	for _, f := range action.Fields {
+		fields[f.Key] = fmt.Sprint(f.Value)
+	}
+	assert.Equal(t, "needs_fix", fields["status"])
+	require.NotNil(t, action.History)
+	assert.Equal(t, 1, action.History.ExitCode)
+}
+
+func TestEvaluateLastStageCustomOnSuccess(t *testing.T) {
+	pipeline := testPipelineWithCustomStatuses()
+	tk := testTicket("code", ticket.StatusInProgress, 0)
+	ts := time.Date(2026, 3, 5, 11, 0, 0, 0, time.UTC)
+
+	action, err := Evaluate(tk, pipeline, Event{Kind: EventAgentExited, ExitCode: 0, Timestamp: ts})
+	require.NoError(t, err)
+	assert.Equal(t, ActionPark, action.Kind)
+}
+
 func TestEvaluatePickupSetsStartedAt(t *testing.T) {
 	pipeline := testPipeline()
 	tk := testTicket("plan", ticket.StatusTodo, 0)

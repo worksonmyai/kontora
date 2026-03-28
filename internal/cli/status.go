@@ -25,16 +25,17 @@ var StatusOrder = map[ticket.Status]int{
 	ticket.StatusInProgress: 0,
 	ticket.StatusTodo:       1,
 	ticket.StatusPaused:     2,
-	ticket.StatusOpen:       3,
-	ticket.StatusDone:       4,
-	ticket.StatusCancelled:  5,
+	// custom statuses default to rank 3
+	ticket.StatusOpen:      4,
+	ticket.StatusDone:      5,
+	ticket.StatusCancelled: 6,
 }
 
 func StatusRank(s ticket.Status) int {
 	if r, ok := StatusOrder[s]; ok {
 		return r
 	}
-	return 7
+	return 3
 }
 
 var StatusColor = map[ticket.Status]lipgloss.Color{

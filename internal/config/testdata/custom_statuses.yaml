@@ -1,0 +1,27 @@
+tickets_dir: /tmp/tasks
+default_agent: a
+
+statuses:
+  - review
+  - qa
+
+agents:
+  a:
+    binary: agent-bin
+
+stages:
+  plan:
+    prompt: plan it
+  code:
+    prompt: code it
+
+pipelines:
+  default:
+    - stage: plan
+      agent: a
+      on_success: next
+      on_failure: pause
+    - stage: code
+      agent: a
+      on_success: review
+      on_failure: qa

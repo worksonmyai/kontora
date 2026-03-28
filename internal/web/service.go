@@ -67,10 +67,11 @@ type PipelineInfo struct {
 }
 
 type ConfigInfo struct {
-	Pipelines     []string       `json:"pipelines"`
-	PipelineInfos []PipelineInfo `json:"pipeline_infos"`
-	Agents        []string       `json:"agents"`
-	BranchPrefix  string         `json:"branch_prefix"`
+	Pipelines      []string       `json:"pipelines"`
+	PipelineInfos  []PipelineInfo `json:"pipeline_infos"`
+	Agents         []string       `json:"agents"`
+	BranchPrefix   string         `json:"branch_prefix"`
+	CustomStatuses []string       `json:"custom_statuses,omitempty"`
 }
 
 type TicketInfo struct {

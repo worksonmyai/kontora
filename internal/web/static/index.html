@@ -457,7 +457,7 @@
     <div class="flex items-center gap-4 text-xs font-mono shrink-0 ml-auto">
       <span class="w-1.5 h-1.5 rounded-full bg-ok pulse-dot"></span>
       <span class="text-surface-600 hidden sm:inline">|</span>
-      <span class="text-tx-3"><span class="text-tx" x-text="runningAgents"></span> agents running</span>
+      <span class="text-tx-3"><span class="text-tx" x-text="runningAgents"></span> <span x-text="runningAgents == 1 ? 'agent' : 'agents'"></span> running</span>
       <template x-if="searchQuery && searchQuery.trim()">
         <span class="text-tx-3">
           <span class="text-surface-600">|</span>

@@ -29,6 +29,7 @@
             ok: 'rgba(var(--ok), <alpha-value>)',
             warn: 'rgba(var(--warn), <alpha-value>)',
             err: 'rgba(var(--err), <alpha-value>)',
+            review: 'rgba(var(--review), <alpha-value>)',
             tx: { DEFAULT: 'rgba(var(--tx), <alpha-value>)', 2: 'rgba(var(--tx-2), <alpha-value>)', 3: 'rgba(var(--tx-3), <alpha-value>)', 4: 'rgba(var(--tx-4), <alpha-value>)' },
           }
         }
@@ -44,8 +45,8 @@
       try { localStorage.setItem('kontora-theme', t); } catch (e) {}
     }
     var kontoraThemeCSS = {
-      dark: ':root{--surface-deep:24,26,40;--surface-950:30,33,50;--surface-900:48,51,72;--surface-850:54,57,78;--surface-800:62,66,88;--surface-700:78,82,106;--surface-600:130,134,158;--accent:138,173,244;--accent-dim:91,120,190;--accent-bright:183,189,248;--ok:166,218,149;--warn:238,212,159;--err:237,135,150;--tx:202,211,245;--tx-2:184,192,224;--tx-3:165,173,203;--tx-4:140,147,172}',
-      light: ':root{--surface-deep:212,216,226;--surface-950:230,232,238;--surface-900:248,249,252;--surface-850:238,240,245;--surface-800:216,220,230;--surface-700:192,196,210;--surface-600:124,128,146;--accent:30,102,245;--accent-dim:21,88,208;--accent-bright:114,135,253;--ok:64,160,43;--warn:223,142,29;--err:210,15,57;--tx:76,79,105;--tx-2:92,95,119;--tx-3:108,111,133;--tx-4:120,123,143}'
+      dark: ':root{--surface-deep:24,26,40;--surface-950:30,33,50;--surface-900:48,51,72;--surface-850:54,57,78;--surface-800:62,66,88;--surface-700:78,82,106;--surface-600:130,134,158;--accent:138,173,244;--accent-dim:91,120,190;--accent-bright:183,189,248;--ok:166,218,149;--warn:238,212,159;--err:237,135,150;--review:198,160,246;--tx:202,211,245;--tx-2:184,192,224;--tx-3:165,173,203;--tx-4:140,147,172}',
+      light: ':root{--surface-deep:212,216,226;--surface-950:230,232,238;--surface-900:248,249,252;--surface-850:238,240,245;--surface-800:216,220,230;--surface-700:192,196,210;--surface-600:124,128,146;--accent:30,102,245;--accent-dim:21,88,208;--accent-bright:114,135,253;--ok:64,160,43;--warn:223,142,29;--err:210,15,57;--review:136,58,234;--tx:76,79,105;--tx-2:92,95,119;--tx-3:108,111,133;--tx-4:120,123,143}'
     };
     function applyTheme(t) {
       document.documentElement.dataset.theme = t;
@@ -74,13 +75,14 @@
     .slide-up { animation: slide-up 0.2s ease-out; }
 
     .glow-accent { box-shadow: 0 0 12px rgba(var(--accent), 0.15), 0 0 4px rgba(var(--accent), 0.1); }
-    .glow-top-accent::before, .glow-top-ok::before, .glow-top-warn::before, .glow-top-muted::before {
+    .glow-top-accent::before, .glow-top-ok::before, .glow-top-warn::before, .glow-top-muted::before, .glow-top-review::before {
       content: ''; position: absolute; top: -1px; left: 0.5rem; right: 0.5rem; height: 1px;
     }
     .glow-top-accent::before { background: linear-gradient(to right, transparent, rgba(var(--accent), 0.5) 20%, rgba(var(--accent), 0.5) 80%, transparent); }
     .glow-top-ok::before     { background: linear-gradient(to right, transparent, rgba(var(--ok), 0.4) 20%, rgba(var(--ok), 0.4) 80%, transparent); }
     .glow-top-warn::before   { background: linear-gradient(to right, transparent, rgba(var(--warn), 0.4) 20%, rgba(var(--warn), 0.4) 80%, transparent); }
     .glow-top-muted::before  { background: linear-gradient(to right, transparent, rgba(var(--surface-600), 0.3) 20%, rgba(var(--surface-600), 0.3) 80%, transparent); }
+    .glow-top-review::before { background: linear-gradient(to right, transparent, rgba(var(--review), 0.4) 20%, rgba(var(--review), 0.4) 80%, transparent); }
 
     @media (prefers-reduced-motion: reduce) {
       .pulse-dot { animation: none; }

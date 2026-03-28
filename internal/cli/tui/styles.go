@@ -33,6 +33,8 @@ var (
 		ticket.StatusDone:       lipgloss.NewStyle().Faint(true),
 		ticket.StatusCancelled:  lipgloss.NewStyle().Faint(true).Foreground(lipgloss.Color("1")),
 		ticket.StatusOpen:       lipgloss.NewStyle().Foreground(lipgloss.Color("5")),
+		"review":                lipgloss.NewStyle().Foreground(lipgloss.Color("13")),
+		"human_review":          lipgloss.NewStyle().Foreground(lipgloss.Color("13")),
 	}
 )
 

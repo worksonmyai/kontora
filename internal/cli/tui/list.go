@@ -36,6 +36,8 @@ var statusTitles = map[ticket.Status]string{
 	ticket.StatusOpen:       "Open",
 	ticket.StatusDone:       "Done",
 	ticket.StatusCancelled:  "Cancelled",
+	"review":                "Review",
+	"human_review":          "Human Review",
 }
 
 type column struct {

@@ -70,22 +70,30 @@ function kontora() {
         emptyIcon: '<path d="m15 9-6 6"/><path d="m9 9 6 6"/><circle cx="12" cy="12" r="10"/>' },
     ],
 
+    _knownCustomStatuses: {
+      review:       { label: 'Review', color: 'bg-review', glow: 'glow-top-review', emptyIcon: '<path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/>' },
+      human_review: { label: 'Human Review', color: 'bg-review', glow: 'glow-top-review', emptyIcon: '<path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/>' },
+    },
+
     get columns() {
       var cols = [...this._builtinColumns];
       var custom = this.configCache?.custom_statuses || [];
       if (custom.length > 0) {
         var doneIdx = cols.findIndex(c => c.status === 'done');
         if (doneIdx < 0) doneIdx = cols.length;
-        var customCols = custom.map(s => ({
-          status: s,
-          label: s.charAt(0).toUpperCase() + s.slice(1).replace(/_/g, ' '),
-          color: 'bg-surface-600',
-          tip: 'Custom status: ' + s,
-          emptyText: 'No ' + s + ' tickets',
-          tint: '',
-          glow: 'glow-top-muted',
-          emptyIcon: '<circle cx="12" cy="12" r="10"/><path d="M12 8v4"/><path d="M12 16h.01"/>',
-        }));
+        var customCols = custom.map(s => {
+          var known = this._knownCustomStatuses[s];
+          return {
+            status: s,
+            label: known?.label || s.charAt(0).toUpperCase() + s.slice(1).replace(/_/g, ' '),
+            color: known?.color || 'bg-surface-600',
+            tip: 'Custom status: ' + s,
+            emptyText: 'No ' + (known?.label || s).toLowerCase() + ' tickets',
+            tint: '',
+            glow: known?.glow || 'glow-top-muted',
+            emptyIcon: known?.emptyIcon || '<circle cx="12" cy="12" r="10"/><path d="M12 8v4"/><path d="M12 16h.01"/>',
+          };
+        });
         cols.splice(doneIdx, 0, ...customCols);
       }
       return cols;

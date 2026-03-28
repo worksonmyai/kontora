@@ -39,9 +39,11 @@ func StatusRank(s ticket.Status) int {
 }
 
 var StatusColor = map[ticket.Status]lipgloss.Color{
-	ticket.StatusInProgress: lipgloss.Color("2"), // green
-	ticket.StatusTodo:       lipgloss.Color("4"), // blue
-	ticket.StatusPaused:     lipgloss.Color("3"), // yellow
+	ticket.StatusInProgress: lipgloss.Color("2"),  // green
+	ticket.StatusTodo:       lipgloss.Color("4"),  // blue
+	ticket.StatusPaused:     lipgloss.Color("3"),  // yellow
+	"review":                lipgloss.Color("13"), // magenta
+	"human_review":          lipgloss.Color("13"), // magenta
 }
 
 type ticketRow struct {

@@ -372,6 +372,11 @@ func (m model) fetchLogsCmd(id, stage string) tea.Cmd {
 
 func (m model) fetchCustomStatusesCmd() tea.Cmd {
 	src := m.source
+	if !src.Connected() {
+		return func() tea.Msg {
+			return customStatusesMsg{}
+		}
+	}
 	return func() tea.Msg {
 		cfg, err := src.FetchConfig()
 		if err != nil {

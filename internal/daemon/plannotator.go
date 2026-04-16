@@ -29,17 +29,40 @@ func stageInPipeline(p config.Pipeline, stage string) bool {
 	return false
 }
 
-// defaultPlannotatorLookup uses exec.LookPath to verify the plannotator binary
-// is installed before we attempt a spawn. Keeping this as a separate hook lets
-// tests bypass the real PATH check when using a canned spawner.
-func defaultPlannotatorLookup(binary string) error {
+// defaultPlannotatorLookup resolves the plannotator binary to an absolute
+// path. It first honours an absolute config value, then consults PATH, and
+// finally falls back to a few common install locations so the integration
+// works under a launchd/GUI environment where the daemon inherits a
+// restricted PATH that omits ~/.local/bin and /opt/homebrew/bin.
+func defaultPlannotatorLookup(binary string) (string, error) {
 	if binary == "" {
-		return errors.New("plannotator binary is empty")
+		return "", errors.New("plannotator binary is empty")
 	}
-	if _, err := exec.LookPath(binary); err != nil {
-		return err
+	if filepath.IsAbs(binary) {
+		if _, err := os.Stat(binary); err != nil {
+			return "", err
+		}
+		return binary, nil
 	}
-	return nil
+	if p, err := exec.LookPath(binary); err == nil {
+		return p, nil
+	}
+	var candidates []string
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		candidates = append(candidates, filepath.Join(home, ".local", "bin", binary))
+	}
+	candidates = append(candidates,
+		"/opt/homebrew/bin/"+binary,
+		"/usr/local/bin/"+binary,
+		"/usr/bin/"+binary,
+		"/bin/"+binary,
+	)
+	for _, c := range candidates {
+		if info, err := os.Stat(c); err == nil && !info.IsDir() {
+			return c, nil
+		}
+	}
+	return "", fmt.Errorf("%q not found in $PATH or common locations", binary)
 }
 
 // defaultPlannotatorSpawner runs `plannotator review` as a subprocess and
@@ -108,7 +131,8 @@ func (d *Daemon) StartPlannotatorReview(id string) error {
 		return fmt.Errorf("stat worktree: %w", statErr)
 	}
 
-	if err := d.plannotatorLookup(d.cfg.Plannotator.Binary); err != nil {
+	binaryPath, err := d.plannotatorLookup(d.cfg.Plannotator.Binary)
+	if err != nil {
 		return fmt.Errorf("%w: %s", web.ErrPlannotatorBinary, err)
 	}
 
@@ -127,12 +151,12 @@ func (d *Daemon) StartPlannotatorReview(id string) error {
 		Ticket: web.TicketInfo{ID: id},
 	})
 
-	go d.runPlannotator(ctx, log, id, wtPath)
+	go d.runPlannotator(ctx, log, id, binaryPath, wtPath)
 
 	return nil
 }
 
-func (d *Daemon) runPlannotator(ctx context.Context, log *slog.Logger, id, wtPath string) {
+func (d *Daemon) runPlannotator(ctx context.Context, log *slog.Logger, id, binaryPath, wtPath string) {
 	defer func() {
 		d.mu.Lock()
 		if cancel, ok := d.plannotator[id]; ok {
@@ -143,7 +167,7 @@ func (d *Daemon) runPlannotator(ctx context.Context, log *slog.Logger, id, wtPat
 	}()
 
 	params := PlannotatorParams{
-		Binary:  d.cfg.Plannotator.Binary,
+		Binary:  binaryPath,
 		Dir:     wtPath,
 		Env:     map[string]string{"PLANNOTATOR_REMOTE": "0"},
 		Timeout: d.cfg.Plannotator.Timeout.Duration,

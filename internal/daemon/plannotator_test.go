@@ -72,11 +72,11 @@ func (h *plannotatorHarness) spawner() PlannotatorSpawner {
 }
 
 func (h *plannotatorHarness) lookup() PlannotatorLookup {
-	return func(_ string) error {
+	return func(binary string) (string, error) {
 		if h.lookupFails {
-			return errors.New("executable file not found in $PATH")
+			return "", errors.New("executable file not found in $PATH")
 		}
-		return nil
+		return binary, nil
 	}
 }
 
@@ -345,4 +345,33 @@ func TestPlannotator_UnknownTicket(t *testing.T) {
 
 	cancel()
 	require.NoError(t, <-errCh)
+}
+
+func TestDefaultPlannotatorLookup(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "plannotator-fake")
+	require.NoError(t, os.WriteFile(bin, []byte("#!/bin/sh\n"), 0o755))
+
+	cases := []struct {
+		name    string
+		binary  string
+		wantErr bool
+		want    string
+	}{
+		{name: "empty", binary: "", wantErr: true},
+		{name: "absolute existing", binary: bin, want: bin},
+		{name: "absolute missing", binary: filepath.Join(dir, "nope"), wantErr: true},
+		{name: "relative not found", binary: "definitely-not-a-real-binary-xyz", wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := defaultPlannotatorLookup(tc.binary)
+			if tc.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, got)
+		})
+	}
 }

@@ -167,10 +167,12 @@ type PlannotatorParams struct {
 	Timeout time.Duration
 }
 
-// PlannotatorLookup is injected to resolve whether the plannotator binary is
-// installed. It exists only so tests that inject a spawner can skip the real
-// exec.LookPath check.
-type PlannotatorLookup func(binary string) error
+// PlannotatorLookup resolves the plannotator binary to an absolute path.
+// Returns the resolved path on success (usable directly as argv[0]) so the
+// daemon can invoke the binary even when it lives outside the restricted
+// PATH the daemon inherits. Tests inject this to skip real filesystem
+// lookups when pairing with a fake spawner.
+type PlannotatorLookup func(binary string) (string, error)
 
 // WithPlannotatorSpawner overrides the default plannotator subprocess runner.
 // Tests use this to return canned stdout without forking a real process.

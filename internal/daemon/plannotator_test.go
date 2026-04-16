@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -93,19 +95,41 @@ func (h *plannotatorHarness) newDaemonWithSpawner() *Daemon {
 }
 
 // seedReviewTicket writes a ticket already parked in the human_review column
-// and creates a worktree for it so StartPlannotatorReview has somewhere to run.
+// and creates a real git worktree with one commit ahead of main — matching
+// what kontora produces in production when an agent finishes its work.
+// setupPlannotatorWorktree needs a real worktree to diff/apply against.
 func (h *plannotatorHarness) seedReviewTicket(id string) string {
 	h.t.Helper()
-	// Create a worktree manually — the daemon worktree manager handles git.
 	wtPath := filepath.Join(h.wtDir, h.repoName, id)
-	require.NoError(h.t, os.MkdirAll(wtPath, 0o755))
+	require.NoError(h.t, os.MkdirAll(filepath.Dir(wtPath), 0o755))
 
-	md := h.reviewTaskMD(id, "human_review")
+	branch := "kontora/" + id
+	for _, args := range [][]string{
+		{"worktree", "add", "-b", branch, wtPath, "main"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = h.repoDir
+		out, err := cmd.CombinedOutput()
+		require.NoError(h.t, err, "git %v: %s", args, out)
+	}
+	// Simulate an agent commit so plannotator has a real diff to review.
+	require.NoError(h.t, os.WriteFile(filepath.Join(wtPath, id+".txt"), []byte("agent work\n"), 0o644))
+	for _, args := range [][]string{
+		{"add", id + ".txt"},
+		{"commit", "-m", "agent: work on " + id},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = wtPath
+		out, err := cmd.CombinedOutput()
+		require.NoError(h.t, err, "git %v: %s", args, out)
+	}
+
+	md := h.reviewTaskMD(id, "human_review", branch)
 	path := h.writeTicket(id+".md", md)
 	return path
 }
 
-func (h *plannotatorHarness) reviewTaskMD(id, status string) string {
+func (h *plannotatorHarness) reviewTaskMD(id, status, branch string) string {
 	return `---
 id: ` + id + `
 kontora: true
@@ -113,6 +137,7 @@ status: ` + status + `
 pipeline: two-stage
 stage: step2
 path: ` + h.repoDir + `
+branch: ` + branch + `
 created: 2026-01-01T00:00:00Z
 history:
   - stage: step1
@@ -374,4 +399,142 @@ func TestDefaultPlannotatorLookup(t *testing.T) {
 			assert.Equal(t, tc.want, got)
 		})
 	}
+}
+
+// TestSetupPlannotatorWorktree covers the disposable-worktree path: the
+// function creates a detached checkout at the merge-base and applies the
+// branch's diff on top. The review worktree should contain the agent's
+// committed work as pending changes (exact staged/unstaged split is a git
+// detail we don't pin), and `git diff HEAD` should match what plannotator
+// would show against the base.
+func TestSetupPlannotatorWorktree(t *testing.T) {
+	cases := []struct {
+		name  string
+		setup func(t *testing.T, repo, wt string)
+		// expectedFiles maps paths (relative to the review worktree) to their
+		// expected content on disk after setup.
+		expectedFiles map[string]string
+		// expectDiffEmpty asserts `git diff HEAD` is empty — used for the
+		// no-commits-ahead case where the review worktree should match base.
+		expectDiffEmpty bool
+	}{
+		{
+			name: "single committed file shows up in review worktree",
+			setup: func(t *testing.T, _, wt string) {
+				commitFile(t, wt, "hello.txt", "world\n", "add hello")
+			},
+			expectedFiles: map[string]string{"hello.txt": "world\n"},
+		},
+		{
+			name: "multiple commits flatten into one diff",
+			setup: func(t *testing.T, _, wt string) {
+				commitFile(t, wt, "a.txt", "one\n", "c1")
+				commitFile(t, wt, "b.txt", "two\n", "c2")
+				commitFile(t, wt, "a.txt", "one-updated\n", "c3")
+			},
+			expectedFiles: map[string]string{
+				"a.txt": "one-updated\n",
+				"b.txt": "two\n",
+			},
+		},
+		{
+			name: "modifying a file that exists at base",
+			setup: func(t *testing.T, repo, wt string) {
+				// Seed main with a file, then fast-forward feature so the
+				// merge-base contains it. Modifying it on feature should come
+				// through as a change — not a new file.
+				commitFile(t, repo, "base.txt", "original\n", "base")
+				mustGit(t, wt, "reset", "--hard", "main")
+				commitFile(t, wt, "base.txt", "changed\n", "modify base")
+				mustGit(t, repo, "update-ref", "refs/remotes/origin/main", "main")
+			},
+			expectedFiles: map[string]string{"base.txt": "changed\n"},
+		},
+		{
+			name:            "no commits ahead of base yields clean review worktree",
+			setup:           func(*testing.T, string, string) {},
+			expectDiffEmpty: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			repo, wt := setupRealGitWorktree(t)
+			tc.setup(t, repo, wt)
+
+			reviewPath, cleanup, err := setupPlannotatorWorktree(testLogger(t), repo, wt)
+			require.NoError(t, err)
+			t.Cleanup(cleanup)
+
+			for rel, want := range tc.expectedFiles {
+				got, rErr := os.ReadFile(filepath.Join(reviewPath, rel))
+				require.NoError(t, rErr, "read %s", rel)
+				assert.Equal(t, want, string(got), "file %s", rel)
+			}
+
+			// The review worktree's HEAD is the merge-base; any applied diff
+			// should surface via `git diff HEAD` (which covers staged +
+			// unstaged + untracked via the `--` spec). Plannotator's default
+			// view reads this same data, so this check mirrors what the UI
+			// would show the user.
+			out, gErr := runGit(reviewPath, "diff", "HEAD", "--", ".")
+			require.NoError(t, gErr)
+			untracked, gErr := runGit(reviewPath, "ls-files", "--others", "--exclude-standard")
+			require.NoError(t, gErr)
+			totalDiff := strings.TrimSpace(out) + strings.TrimSpace(untracked)
+			if tc.expectDiffEmpty {
+				assert.Empty(t, totalDiff, "expected clean review worktree")
+			} else {
+				assert.NotEmpty(t, totalDiff, "expected changes to be visible in review worktree")
+			}
+		})
+	}
+}
+
+// TestSetupPlannotatorWorktree_CleanupIsIdempotent verifies we can call the
+// cleanup twice (once explicitly, once by deferred path) without the second
+// call failing — important because the caller uses `defer cleanup()` after
+// already invoking it on error.
+func TestSetupPlannotatorWorktree_CleanupIsIdempotent(t *testing.T) {
+	repo, wt := setupRealGitWorktree(t)
+	commitFile(t, wt, "x.txt", "y\n", "c")
+
+	reviewPath, cleanup, err := setupPlannotatorWorktree(testLogger(t), repo, wt)
+	require.NoError(t, err)
+	cleanup()
+	// Directory gone after first cleanup.
+	_, err = os.Stat(reviewPath)
+	assert.True(t, os.IsNotExist(err))
+	// Second call must not panic or error fatally.
+	cleanup()
+}
+
+// setupRealGitWorktree creates a real git repo on `main` and a separate
+// working worktree on branch `feature` both rooted at the returned paths.
+// The worktree starts at the same commit as main.
+func setupRealGitWorktree(t *testing.T) (repo, wt string) {
+	t.Helper()
+	repo = initRepo(t)
+	// origin/main is what DetectDefaultBranch prefers. Set it up with a fake
+	// remote so that resolution path is exercised.
+	mustGit(t, repo, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+	mustGit(t, repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+	wt = filepath.Join(t.TempDir(), "wt")
+	mustGit(t, repo, "worktree", "add", "-b", "feature", wt, "main")
+	return repo, wt
+}
+
+func commitFile(t *testing.T, dir, name, content, msg string) {
+	t.Helper()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644))
+	mustGit(t, dir, "add", name)
+	mustGit(t, dir, "commit", "-m", msg)
+}
+
+func mustGit(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, "git %v: %s", args, out)
 }

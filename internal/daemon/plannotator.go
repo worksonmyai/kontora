@@ -17,6 +17,7 @@ import (
 	"github.com/worksonmyai/kontora/internal/ticket"
 	"github.com/worksonmyai/kontora/internal/tmux"
 	"github.com/worksonmyai/kontora/internal/web"
+	"github.com/worksonmyai/kontora/internal/worktree"
 )
 
 // stageInPipeline reports whether a stage name appears in a pipeline definition.
@@ -118,7 +119,7 @@ func (d *Daemon) StartPlannotatorReview(id string) error {
 		return web.ErrInvalidState
 	}
 
-	repoName, _, err := d.resolvePath(t)
+	repoName, repoPath, err := d.resolvePath(t)
 	if err != nil {
 		return fmt.Errorf("resolve path: %w", err)
 	}
@@ -151,12 +152,12 @@ func (d *Daemon) StartPlannotatorReview(id string) error {
 		Ticket: web.TicketInfo{ID: id},
 	})
 
-	go d.runPlannotator(ctx, log, id, binaryPath, wtPath)
+	go d.runPlannotator(ctx, log, id, binaryPath, repoPath, wtPath)
 
 	return nil
 }
 
-func (d *Daemon) runPlannotator(ctx context.Context, log *slog.Logger, id, binaryPath, wtPath string) {
+func (d *Daemon) runPlannotator(ctx context.Context, log *slog.Logger, id, binaryPath, repoPath, wtPath string) {
 	defer func() {
 		d.mu.Lock()
 		if cancel, ok := d.plannotator[id]; ok {
@@ -166,9 +167,22 @@ func (d *Daemon) runPlannotator(ctx context.Context, log *slog.Logger, id, binar
 		d.mu.Unlock()
 	}()
 
+	reviewWt, cleanup, err := setupPlannotatorWorktree(log, repoPath, wtPath)
+	if err != nil {
+		log.Error("plannotator: setup review worktree failed", "err", err)
+		d.broker.Broadcast(web.TicketEvent{
+			Type:    "plannotator_finished",
+			Ticket:  web.TicketInfo{ID: id},
+			Outcome: web.PlannotatorOutcomeError,
+			Message: "setup review worktree: " + err.Error(),
+		})
+		return
+	}
+	defer cleanup()
+
 	params := PlannotatorParams{
 		Binary:  binaryPath,
-		Dir:     wtPath,
+		Dir:     reviewWt,
 		Env:     map[string]string{"PLANNOTATOR_REMOTE": "0"},
 		Timeout: d.cfg.Plannotator.Timeout.Duration,
 	}
@@ -426,4 +440,78 @@ func (d *Daemon) reworkAgent(t *ticket.Ticket) string {
 		}
 	}
 	return d.cfg.DefaultAgent
+}
+
+// setupPlannotatorWorktree creates a disposable detached worktree at the
+// merge-base of the ticket branch and the repo's default branch, then applies
+// the branch's diff on top as unstaged changes. Plannotator's default
+// "unstaged" view then shows everything the agent committed without the
+// daemon having to touch the ticket branch itself.
+//
+// Returns the path to the review worktree and a cleanup function that removes
+// it. The cleanup is safe to call once, regardless of outcome.
+func setupPlannotatorWorktree(log *slog.Logger, repoPath, branchWtPath string) (string, func(), error) {
+	defaultBranch, err := worktree.DetectDefaultBranch(repoPath)
+	if err != nil {
+		return "", nil, fmt.Errorf("detect default branch: %w", err)
+	}
+
+	mergeBase, err := runGit(branchWtPath, "merge-base", defaultBranch, "HEAD")
+	if err != nil {
+		return "", nil, fmt.Errorf("merge-base: %w", err)
+	}
+	mergeBase = strings.TrimSpace(mergeBase)
+	if mergeBase == "" {
+		return "", nil, errors.New("merge-base returned empty sha")
+	}
+
+	reviewPath := branchWtPath + ".plannotator"
+	// Clean up any leftover from a prior crashed run before asking git to create the worktree.
+	if _, err := os.Stat(reviewPath); err == nil {
+		_, _ = runGit(repoPath, "worktree", "remove", "--force", reviewPath)
+		_ = os.RemoveAll(reviewPath)
+	}
+
+	if _, err := runGit(repoPath, "worktree", "add", "--detach", reviewPath, mergeBase); err != nil {
+		return "", nil, fmt.Errorf("worktree add: %w", err)
+	}
+
+	cleanup := func() {
+		if _, err := runGit(repoPath, "worktree", "remove", "--force", reviewPath); err != nil {
+			log.Warn("plannotator: worktree remove failed, falling back to rm -rf", "err", err, "path", reviewPath)
+			_ = os.RemoveAll(reviewPath)
+		}
+	}
+
+	diff, err := runGit(branchWtPath, "diff", "--binary", mergeBase+"..HEAD")
+	if err != nil {
+		cleanup()
+		return "", nil, fmt.Errorf("git diff: %w", err)
+	}
+
+	if strings.TrimSpace(diff) != "" {
+		applyCmd := exec.Command("git", "apply")
+		applyCmd.Dir = reviewPath
+		applyCmd.Stdin = strings.NewReader(diff)
+		if out, err := applyCmd.CombinedOutput(); err != nil {
+			cleanup()
+			return "", nil, fmt.Errorf("git apply: %s: %w", strings.TrimSpace(string(out)), err)
+		}
+	}
+
+	return reviewPath, cleanup, nil
+}
+
+// runGit runs git in dir and returns stdout. On failure the error includes
+// stderr so operators can diagnose without turning on debug logging.
+func runGit(dir string, args ...string) (string, error) {
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("git %s: %s: %w", strings.Join(args, " "), strings.TrimSpace(stderr.String()), err)
+	}
+	return stdout.String(), nil
 }

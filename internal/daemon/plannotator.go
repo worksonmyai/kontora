@@ -89,18 +89,20 @@ func (d *Daemon) StartPlannotatorReview(id string) error {
 		return web.ErrInvalidState
 	}
 
-	repoName, repoPath, err := d.resolvePath(t)
+	_, repoPath, err := d.resolvePath(t)
 	if err != nil {
 		return fmt.Errorf("resolve path: %w", err)
 	}
-	wtPath := d.worktrees.Path(repoName, id)
-	if _, statErr := os.Stat(wtPath); statErr != nil {
-		if os.IsNotExist(statErr) {
-			return web.ErrPlannotatorWorkdir
-		}
-		log.Error("plannotator: stat worktree failed", "path", wtPath, "err", statErr)
-		return fmt.Errorf("stat worktree: %w", statErr)
+	branch := d.ticketBranch(t)
+	wtPath, err := worktree.FindWorktreeForBranch(repoPath, branch)
+	if err != nil {
+		log.Error("plannotator: find worktree failed", "branch", branch, "err", err)
+		return fmt.Errorf("find worktree: %w", err)
 	}
+	if wtPath == "" {
+		return web.ErrPlannotatorWorkdir
+	}
+	log.Info("located worktree for branch", "path", wtPath, "branch", branch)
 
 	binaryPath, err := d.plannotatorLookup(d.cfg.Plannotator.Binary)
 	if err != nil {

@@ -59,7 +59,7 @@ func TestCreateAndRemove(t *testing.T) {
 	assert.False(t, created2)
 	assert.Equal(t, path, path2)
 
-	require.NoError(t, m.Remove(repoDir, "myrepo", "tkt-1", "kontora"))
+	require.NoError(t, m.Remove(repoDir, "kontora/tkt-1"))
 	_, err = os.Stat(path)
 	assert.True(t, os.IsNotExist(err), "worktree dir still exists after remove")
 	assertBranchExists(t, repoDir, "kontora/tkt-1")
@@ -74,7 +74,7 @@ func TestCreateAfterRemoveReusesBranch(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, created)
 
-	require.NoError(t, m.Remove(repoDir, "myrepo", "tkt-1", "kontora"))
+	require.NoError(t, m.Remove(repoDir, "kontora/tkt-1"))
 	_, err = os.Stat(path)
 	require.True(t, os.IsNotExist(err), "worktree dir should be gone after remove")
 
@@ -91,7 +91,7 @@ func TestRemoveNonexistent(t *testing.T) {
 	wtDir := t.TempDir()
 	m := New(wtDir)
 
-	require.NoError(t, m.Remove(repoDir, "myrepo", "no-such-tkt", "kontora"))
+	require.NoError(t, m.Remove(repoDir, "kontora/no-such-tkt"))
 }
 
 func TestTwoWorktreesSameRepo(t *testing.T) {
@@ -119,7 +119,7 @@ func TestCreateWithCustomBranch(t *testing.T) {
 	require.NoError(t, err)
 	assertBranch(t, path, "custom/tkt-1")
 
-	require.NoError(t, m.Remove(repoDir, "myrepo", "tkt-1", "custom"))
+	require.NoError(t, m.Remove(repoDir, "custom/tkt-1"))
 	assertBranchExists(t, repoDir, "custom/tkt-1")
 }
 
@@ -134,7 +134,7 @@ func TestRemoveDirtyWorktree(t *testing.T) {
 	// Create an untracked file to make the worktree dirty.
 	require.NoError(t, os.WriteFile(filepath.Join(path, "dirty.txt"), []byte("wip"), 0o644))
 
-	err = m.Remove(repoDir, "myrepo", "tkt-dirty", "kontora")
+	err = m.Remove(repoDir, "kontora/tkt-dirty")
 	assert.ErrorIs(t, err, ErrDirtyWorktree)
 
 	// Worktree and branch should still exist.
@@ -158,8 +158,102 @@ func TestRemoveDirtyWorktreeStaged(t *testing.T) {
 	out, err := cmd.CombinedOutput()
 	require.NoError(t, err, "git add: %s", out)
 
-	err = m.Remove(repoDir, "myrepo", "tkt-staged", "kontora")
+	err = m.Remove(repoDir, "kontora/tkt-staged")
 	assert.ErrorIs(t, err, ErrDirtyWorktree)
+}
+
+func TestFindWorktreeForBranch(t *testing.T) {
+	repoDir := initRepo(t)
+	wtDir := t.TempDir()
+	m := New(wtDir)
+
+	path, _, err := m.Create(repoDir, "myrepo", "tkt-1", "feat/stacked")
+	require.NoError(t, err)
+
+	found, err := FindWorktreeForBranch(repoDir, "feat/stacked")
+	require.NoError(t, err)
+	assert.Equal(t, path, found)
+}
+
+func TestFindWorktreeForBranchNotFound(t *testing.T) {
+	repoDir := initRepo(t)
+
+	found, err := FindWorktreeForBranch(repoDir, "no/such/branch")
+	require.NoError(t, err)
+	assert.Equal(t, "", found)
+}
+
+func TestCreateReusesExistingWorktree(t *testing.T) {
+	repoDir := initRepo(t)
+	wtDir := t.TempDir()
+	m := New(wtDir)
+
+	// First create establishes the worktree at Path(repoName, "tkt-a").
+	pathA, createdA, err := m.Create(repoDir, "myrepo", "tkt-a", "feat/stacked")
+	require.NoError(t, err)
+	require.True(t, createdA)
+
+	pathBefore := m.Path("myrepo", "tkt-b")
+	_, statErr := os.Stat(pathBefore)
+	require.True(t, os.IsNotExist(statErr), "tkt-b dir should not yet exist")
+
+	// Second create with a different ticketID but the same branch must reuse pathA.
+	pathB, createdB, err := m.Create(repoDir, "myrepo", "tkt-b", "feat/stacked")
+	require.NoError(t, err)
+	assert.False(t, createdB)
+	assert.Equal(t, pathA, pathB)
+
+	// And the tkt-b default location was never created on disk.
+	_, statErr = os.Stat(pathBefore)
+	assert.True(t, os.IsNotExist(statErr), "no fresh dir should have been created for tkt-b")
+}
+
+func TestCreateReusesDirtyWorktree(t *testing.T) {
+	repoDir := initRepo(t)
+	wtDir := t.TempDir()
+	m := New(wtDir)
+
+	pathA, _, err := m.Create(repoDir, "myrepo", "tkt-a", "feat/stacked")
+	require.NoError(t, err)
+
+	// Make worktree dirty with an untracked file.
+	dirtyFile := filepath.Join(pathA, "dirty.txt")
+	require.NoError(t, os.WriteFile(dirtyFile, []byte("wip"), 0o644))
+
+	pathB, createdB, err := m.Create(repoDir, "myrepo", "tkt-b", "feat/stacked")
+	require.NoError(t, err)
+	assert.False(t, createdB)
+	assert.Equal(t, pathA, pathB)
+
+	// Dirty file must still be present and untouched.
+	data, err := os.ReadFile(dirtyFile)
+	require.NoError(t, err)
+	assert.Equal(t, "wip", string(data))
+}
+
+func TestRemoveByBranchDiscoversPath(t *testing.T) {
+	repoDir := initRepo(t)
+	wtDir := t.TempDir()
+	m := New(wtDir)
+
+	path, _, err := m.Create(repoDir, "myrepo", "tkt-1", "feat/stacked")
+	require.NoError(t, err)
+
+	require.NoError(t, m.Remove(repoDir, "feat/stacked"))
+
+	_, statErr := os.Stat(path)
+	assert.True(t, os.IsNotExist(statErr), "worktree dir should be gone")
+
+	found, err := FindWorktreeForBranch(repoDir, "feat/stacked")
+	require.NoError(t, err)
+	assert.Equal(t, "", found, "branch should no longer have a worktree")
+}
+
+func TestRemoveWhenBranchHasNoWorktree(t *testing.T) {
+	repoDir := initRepo(t)
+	m := New(t.TempDir())
+
+	require.NoError(t, m.Remove(repoDir, "feat/absent"))
 }
 
 func TestDetectDefaultBranch(t *testing.T) {

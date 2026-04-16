@@ -33,8 +33,11 @@ func (m *Manager) Path(repoName, taskID string) string {
 func FindWorktreeForBranch(repoPath, branch string) (string, error) {
 	cmd := exec.Command("git", "worktree", "list", "--porcelain")
 	cmd.Dir = repoPath
-	out, err := cmd.Output()
+	out, err := cmd.CombinedOutput()
 	if err != nil {
+		if msg := strings.TrimSpace(string(out)); msg != "" {
+			return "", fmt.Errorf("git worktree list: %s: %w", msg, err)
+		}
 		return "", fmt.Errorf("git worktree list: %w", err)
 	}
 

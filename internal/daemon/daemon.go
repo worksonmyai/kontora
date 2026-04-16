@@ -222,7 +222,7 @@ type Daemon struct {
 	tickets         map[string]*ticketState
 	running         map[string]context.CancelFunc
 	queued          map[string]bool   // dedupe: prevents same ticket being enqueued twice
-	runningBranches map[string]string // branch → ticketID holding the branch
+	runningBranches map[string]string // repoPath\x00branch → ticketID holding the branch
 	sem             chan struct{}
 	plannotator     map[string]context.CancelFunc // in-flight plannotator subprocesses
 
@@ -699,24 +699,27 @@ func (d *Daemon) runTicket(ctx context.Context, ticketID string) {
 	taskCtx, taskCancel := context.WithCancel(ctx)
 	d.running[ticketID] = taskCancel
 
-	// Reserve the branch atomically so two tickets on the same branch can't
-	// both pass this guard and reuse each other's worktree by surprise.
+	// Reserve the branch atomically so two tickets targeting the same
+	// repository and branch can't both pass this guard and reuse each
+	// other's worktree by surprise. Keyed by (repoPath, branch) because
+	// identical branch names in different repos don't collide.
 	branch := d.ticketBranch(t)
-	if holder, ok := d.runningBranches[branch]; ok && holder != ticketID {
+	branchKey := expandTilde(t.Path) + "\x00" + branch
+	if holder, ok := d.runningBranches[branchKey]; ok && holder != ticketID {
 		taskCancel()
 		delete(d.running, ticketID)
 		d.mu.Unlock()
 		d.pauseTicket(t, filePath, fmt.Sprintf("branch %s in use by ticket %s", branch, holder))
 		return
 	}
-	d.runningBranches[branch] = ticketID
+	d.runningBranches[branchKey] = ticketID
 
 	defer func() {
 		taskCancel()
 		d.mu.Lock()
 		delete(d.running, ticketID)
-		if d.runningBranches[branch] == ticketID {
-			delete(d.runningBranches, branch)
+		if d.runningBranches[branchKey] == ticketID {
+			delete(d.runningBranches, branchKey)
 		}
 		d.mu.Unlock()
 	}()

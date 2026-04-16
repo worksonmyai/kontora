@@ -10,6 +10,7 @@ import (
 	"strconv"
 
 	"github.com/worksonmyai/kontora/internal/config"
+	"github.com/worksonmyai/kontora/internal/process"
 )
 
 // Doctor runs a series of checks against the kontora setup and prints
@@ -68,11 +69,12 @@ func Doctor(configPath string, w io.Writer) error {
 		for _, name := range agentNames {
 			agent := cfg.Agents[name]
 			label := fmt.Sprintf("Agent %q (%s)", name, agent.Binary)
-			if _, err := exec.LookPath(agent.Binary); err != nil {
-				printCheck(w, "FAIL", label, "not found on PATH")
+			resolved, err := process.LookupBinary(agent.Binary)
+			if err != nil {
+				printCheck(w, "FAIL", label, err.Error())
 				hasFail = true
 			} else {
-				printCheck(w, "OK", label, "found")
+				printCheck(w, "OK", label, resolved)
 			}
 		}
 	}

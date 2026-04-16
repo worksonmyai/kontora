@@ -151,47 +151,82 @@ history:
 `
 }
 
-func TestPlannotator_ApprovePath(t *testing.T) {
-	h := newPlannotatorHarness(t)
-	d := h.newDaemonWithSpawner()
+// TestPlannotator_NoStateChangePaths covers the stdout values that must leave
+// the ticket parked in human_review: empty output, the explicit approval
+// marker, and the cancel-without-feedback marker. Each case asserts both that
+// the ticket did not move and that the broadcast outcome matches.
+func TestPlannotator_NoStateChangePaths(t *testing.T) {
+	cases := []struct {
+		name        string
+		stdout      string
+		wantOutcome string
+	}{
+		{name: "empty stdout", stdout: "", wantOutcome: web.PlannotatorOutcomeApproved},
+		{name: "approved marker", stdout: plannotatorApprovedMarker + "\n", wantOutcome: web.PlannotatorOutcomeApproved},
+		{name: "cancelled marker", stdout: plannotatorCancelledMarker + "\n", wantOutcome: web.PlannotatorOutcomeCancelled},
+	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newPlannotatorHarness(t)
+			d := h.newDaemonWithSpawner()
 
-	errCh := make(chan error, 1)
-	go func() { errCh <- d.Run(ctx) }()
-	time.Sleep(200 * time.Millisecond)
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
 
-	h.seedReviewTicket("tst-pa01")
-	// Wait until the daemon has registered the ticket.
-	require.Eventually(t, func() bool {
-		_, err := d.GetTicket("tst-pa01")
-		return err == nil
-	}, 2*time.Second, 20*time.Millisecond)
+			errCh := make(chan error, 1)
+			go func() { errCh <- d.Run(ctx) }()
+			time.Sleep(200 * time.Millisecond)
 
-	require.NoError(t, d.StartPlannotatorReview("tst-pa01"))
+			events, unsub := d.Subscribe()
+			defer unsub()
 
-	// Approve: return empty stdout from the spawner.
-	h.stdoutCh <- ""
+			h.seedReviewTicket("tst-pn01")
+			require.Eventually(t, func() bool {
+				_, err := d.GetTicket("tst-pn01")
+				return err == nil
+			}, 2*time.Second, 20*time.Millisecond)
 
-	// Ticket should remain in the review column; no review file written.
-	require.Eventually(t, func() bool {
-		d.mu.Lock()
-		defer d.mu.Unlock()
-		_, running := d.plannotator["tst-pa01"]
-		return !running
-	}, 2*time.Second, 20*time.Millisecond)
+			require.NoError(t, d.StartPlannotatorReview("tst-pn01"))
+			h.stdoutCh <- tc.stdout
 
-	info, err := d.GetTicket("tst-pa01")
-	require.NoError(t, err)
-	assert.Equal(t, "human_review", info.Status)
-	assert.Equal(t, "step2", info.Stage)
+			// Wait for the spawn goroutine to finish before inspecting state.
+			require.Eventually(t, func() bool {
+				d.mu.Lock()
+				defer d.mu.Unlock()
+				_, running := d.plannotator["tst-pn01"]
+				return !running
+			}, 2*time.Second, 20*time.Millisecond)
 
-	_, statErr := os.Stat(filepath.Join(h.reviewsDir, "tst-pa01.md"))
-	assert.True(t, os.IsNotExist(statErr), "no review file should be written on approve")
+			info, err := d.GetTicket("tst-pn01")
+			require.NoError(t, err)
+			assert.Equal(t, "human_review", info.Status)
+			assert.Equal(t, "step2", info.Stage)
 
-	cancel()
-	require.NoError(t, <-errCh)
+			_, statErr := os.Stat(filepath.Join(h.reviewsDir, "tst-pn01.md"))
+			assert.True(t, os.IsNotExist(statErr), "no review file should be written")
+
+			// Drain events until we see the finished broadcast for this ticket.
+			deadline := time.After(2 * time.Second)
+			var got string
+		loop:
+			for {
+				select {
+				case ev := <-events:
+					if ev.Type == "plannotator_finished" && ev.Ticket.ID == "tst-pn01" {
+						got = ev.Outcome
+						break loop
+					}
+				case <-deadline:
+					t.Fatal("timed out waiting for plannotator_finished event")
+				}
+			}
+			assert.Equal(t, tc.wantOutcome, got)
+
+			cancel()
+			require.NoError(t, <-errCh)
+		})
+	}
 }
 
 func TestPlannotator_ReworkPath(t *testing.T) {

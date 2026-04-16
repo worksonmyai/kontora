@@ -45,9 +45,10 @@ type TicketService interface {
 // PlannotatorOutcome enumerates the results of a plannotator review run.
 // The UI uses this to render the finished-state toast.
 const (
-	PlannotatorOutcomeApproved = "approved"
-	PlannotatorOutcomeRework   = "rework"
-	PlannotatorOutcomeError    = "error"
+	PlannotatorOutcomeApproved  = "approved"
+	PlannotatorOutcomeRework    = "rework"
+	PlannotatorOutcomeCancelled = "cancelled"
+	PlannotatorOutcomeError     = "error"
 )
 
 type CreateTicketRequest struct {

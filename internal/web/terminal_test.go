@@ -106,6 +106,9 @@ func (m *mockTerminalService) Subscribe() (<-chan TicketEvent, func()) {
 	return nil, func() {}
 }
 func (m *mockTerminalService) HasTerminalSession(_ string) bool { return m.hasSession }
+func (m *mockTerminalService) StartPlannotatorReview(_ string) error {
+	return nil
+}
 
 func startTerminalTestServer(t *testing.T, svc TicketService) *Server {
 	t.Helper()

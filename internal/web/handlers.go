@@ -339,13 +339,42 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 			if !ok {
 				return
 			}
-			data, _ := json.Marshal(ev.Ticket)
+			var data []byte
+			if strings.HasPrefix(ev.Type, "plannotator_") {
+				data, _ = json.Marshal(map[string]string{
+					"ticket_id": ev.Ticket.ID,
+					"outcome":   ev.Outcome,
+					"message":   ev.Message,
+				})
+			} else {
+				data, _ = json.Marshal(ev.Ticket)
+			}
 			fmt.Fprintf(w, "event: %s\ndata: %s\n\n", ev.Type, data)
 			flusher.Flush()
 		case <-r.Context().Done():
 			return
 		}
 	}
+}
+
+func (s *Server) handlePlannotatorReview(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if err := s.svc.StartPlannotatorReview(id); err != nil {
+		switch {
+		case errors.Is(err, ErrTicketNotFound):
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+		case errors.Is(err, ErrPlannotatorInFlight):
+			writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+		case errors.Is(err, ErrPlannotatorBinary):
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		case errors.Is(err, ErrPlannotatorWorkdir):
+			writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+		default:
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		}
+		return
+	}
+	w.WriteHeader(http.StatusAccepted)
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

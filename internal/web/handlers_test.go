@@ -31,6 +31,7 @@ type mockService struct {
 	initFn        func(id string, req InitTicketRequest) error
 	updateFn      func(id string, req UpdateTicketRequest) error
 	logsFn        func(id, stage string) (string, error)
+	plannotatorFn func(id string) error
 	configInfo    ConfigInfo
 }
 
@@ -100,6 +101,12 @@ func (m *mockService) GetLogs(id, stage string) (string, error) {
 }
 func (m *mockService) Subscribe() (<-chan TicketEvent, func()) { return nil, func() {} }
 func (m *mockService) HasTerminalSession(_ string) bool        { return false }
+func (m *mockService) StartPlannotatorReview(id string) error {
+	if m.plannotatorFn != nil {
+		return m.plannotatorFn(id)
+	}
+	return nil
+}
 
 // --- GET /api/tickets ---
 
@@ -975,6 +982,52 @@ func TestHandleSSE_StreamsEvents(t *testing.T) {
 	assert.Equal(t, "in_progress", tkt.Status)
 }
 
+func TestHandleSSE_PlannotatorEventFormat(t *testing.T) {
+	broker := NewSSEBroker()
+	srv := startHandlerTestServerWithBroker(t, &mockService{}, broker)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+srv.Addr()+"/api/events", nil)
+	require.NoError(t, err)
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	require.Eventually(t, func() bool {
+		broker.mu.Lock()
+		defer broker.mu.Unlock()
+		return len(broker.clients) > 0
+	}, time.Second, 5*time.Millisecond)
+
+	broker.Broadcast(TicketEvent{
+		Type:    "plannotator_finished",
+		Ticket:  TicketInfo{ID: "t-001"},
+		Outcome: PlannotatorOutcomeRework,
+	})
+
+	scanner := bufio.NewScanner(resp.Body)
+	var lines []string
+	for scanner.Scan() {
+		line := scanner.Text()
+		lines = append(lines, line)
+		if line == "" {
+			break
+		}
+	}
+	require.Len(t, lines, 3)
+	assert.Equal(t, "event: plannotator_finished", lines[0])
+
+	var payload struct {
+		TicketID string `json:"ticket_id"`
+		Outcome  string `json:"outcome"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(strings.TrimPrefix(lines[1], "data: ")), &payload))
+	assert.Equal(t, "t-001", payload.TicketID)
+	assert.Equal(t, "rework", payload.Outcome)
+}
+
 func TestHandleSSE_Disconnect(t *testing.T) {
 	broker := NewSSEBroker()
 	srv := startHandlerTestServerWithBroker(t, &mockService{}, broker)
@@ -1006,6 +1059,42 @@ func TestHandleSSE_Disconnect(t *testing.T) {
 
 	// Broadcast should not panic after client disconnects.
 	broker.Broadcast(TicketEvent{Type: "ticket_updated", Ticket: TicketInfo{ID: "t-001"}})
+}
+
+// --- POST /api/tickets/{id}/plannotator-review ---
+
+func TestHandlePlannotatorReview(t *testing.T) {
+	tests := []struct {
+		name         string
+		err          error
+		wantStatus   int
+		wantContains string
+	}{
+		{name: "accepted", err: nil, wantStatus: http.StatusAccepted},
+		{name: "not found", err: ErrTicketNotFound, wantStatus: http.StatusNotFound, wantContains: "ticket not found"},
+		{name: "in flight", err: ErrPlannotatorInFlight, wantStatus: http.StatusConflict, wantContains: "already in progress"},
+		{name: "binary missing", err: ErrPlannotatorBinary, wantStatus: http.StatusInternalServerError, wantContains: "plannotator not installed"},
+		{name: "workdir missing", err: ErrPlannotatorWorkdir, wantStatus: http.StatusConflict, wantContains: "worktree"},
+		{name: "other error", err: fmt.Errorf("disk on fire"), wantStatus: http.StatusInternalServerError, wantContains: "disk on fire"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := &mockService{
+				plannotatorFn: func(id string) error {
+					assert.Equal(t, "t-001", id)
+					return tc.err
+				},
+			}
+			srv := startHandlerTestServer(t, svc)
+
+			res := post(t, srv, "/api/tickets/t-001/plannotator-review", "")
+			assert.Equal(t, tc.wantStatus, res.statusCode)
+			if tc.wantContains != "" {
+				assert.Contains(t, res.body, tc.wantContains)
+			}
+		})
+	}
 }
 
 // --- helpers ---

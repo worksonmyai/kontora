@@ -15,12 +15,13 @@ import (
 type Status string
 
 const (
-	StatusOpen       Status = "open"
-	StatusTodo       Status = "todo"
-	StatusInProgress Status = "in_progress"
-	StatusPaused     Status = "paused"
-	StatusDone       Status = "done"
-	StatusCancelled  Status = "cancelled"
+	StatusOpen        Status = "open"
+	StatusTodo        Status = "todo"
+	StatusInProgress  Status = "in_progress"
+	StatusPaused      Status = "paused"
+	StatusHumanReview Status = "human_review"
+	StatusDone        Status = "done"
+	StatusCancelled   Status = "cancelled"
 )
 
 type HistoryEntry struct {

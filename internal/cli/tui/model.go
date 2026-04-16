@@ -280,7 +280,7 @@ func (m model) handleDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case isKey(msg, "g"):
 		st := ticket.Status(m.detail.ticket.Status)
 		switch st {
-		case ticket.StatusOpen, ticket.StatusTodo, ticket.StatusPaused:
+		case ticket.StatusOpen, ticket.StatusTodo, ticket.StatusPaused, ticket.StatusHumanReview:
 			// allowed
 		case ticket.StatusInProgress, ticket.StatusDone, ticket.StatusCancelled:
 			return m, nil

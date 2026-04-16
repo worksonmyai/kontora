@@ -307,6 +307,51 @@ func TestLoadCustomStatuses(t *testing.T) {
 	assert.False(t, cfg.IsCustomStatus("done"))
 }
 
+func TestHumanReviewFirstClass(t *testing.T) {
+	// human_review works in on_success/on_failure without being declared
+	// under statuses, and IsCustomStatus returns false for it (it's built-in).
+	input := `
+agents:
+  a:
+    binary: bin
+stages:
+  s:
+    prompt: x
+pipelines:
+  p:
+    - stage: s
+      agent: a
+      on_success: human_review
+      on_failure: human_review
+`
+	cfg, err := LoadReader(strings.NewReader(input))
+	require.NoError(t, err)
+	assert.False(t, cfg.IsCustomStatus("human_review"))
+	assert.Empty(t, cfg.Statuses)
+}
+
+func TestHumanReviewDeclaredStatusDropped(t *testing.T) {
+	// Old configs listing human_review under statuses should keep loading.
+	input := `
+agents:
+  a:
+    binary: bin
+statuses: [human_review, review]
+stages:
+  s:
+    prompt: x
+pipelines:
+  p:
+    - stage: s
+      agent: a
+      on_success: human_review
+      on_failure: pause
+`
+	cfg, err := LoadReader(strings.NewReader(input))
+	require.NoError(t, err)
+	assert.Equal(t, []string{"review"}, cfg.Statuses)
+}
+
 func TestCustomStatusClashBuiltin(t *testing.T) {
 	input := `
 agents:

@@ -445,7 +445,7 @@ func (d *Daemon) handleFileChanged(path string) {
 				d.enqueue(t)
 			}
 		}
-	case ticket.StatusPaused, ticket.StatusCancelled, ticket.StatusOpen:
+	case ticket.StatusPaused, ticket.StatusHumanReview, ticket.StatusCancelled, ticket.StatusOpen:
 		if cancel, ok := d.running[t.ID]; ok {
 			log.Info("killing agent", "reason", "user set "+string(t.Status))
 			cancel()
@@ -512,9 +512,9 @@ func (d *Daemon) removeWorktree(log *slog.Logger, repoPath, repoName, ticketID, 
 // isUserOverride returns true if the status represents a user-initiated
 // override that should prevent the exit handler from changing the status.
 func (d *Daemon) isUserOverride(s ticket.Status) bool {
-	return s == ticket.StatusPaused || s == ticket.StatusCancelled ||
-		s == ticket.StatusOpen || s == ticket.StatusDone ||
-		d.cfg.IsCustomStatus(string(s))
+	return s == ticket.StatusPaused || s == ticket.StatusHumanReview ||
+		s == ticket.StatusCancelled || s == ticket.StatusOpen ||
+		s == ticket.StatusDone || d.cfg.IsCustomStatus(string(s))
 }
 
 // isTerminalOverride returns true if the status is a terminal user override

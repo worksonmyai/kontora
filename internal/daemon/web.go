@@ -369,7 +369,7 @@ func (d *Daemon) MoveTicket(id string, newStatus string) error {
 		return d.RetryTicket(id)
 	default:
 		switch newStatus {
-		case "open", "done", "cancelled":
+		case "open", "done", "cancelled", "human_review":
 			// valid
 		default:
 			if !d.cfg.IsCustomStatus(newStatus) {
@@ -403,7 +403,7 @@ func (d *Daemon) UpdateTicket(id string, req web.UpdateTicketRequest) error {
 		return web.ErrTicketNotFound
 	}
 	switch ts.ticket.Status {
-	case ticket.StatusOpen, ticket.StatusTodo, ticket.StatusPaused:
+	case ticket.StatusOpen, ticket.StatusTodo, ticket.StatusPaused, ticket.StatusHumanReview:
 		// allowed
 	case ticket.StatusInProgress, ticket.StatusDone, ticket.StatusCancelled:
 		return web.ErrInvalidState

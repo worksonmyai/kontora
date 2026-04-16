@@ -21,6 +21,7 @@ var columnOrder = []ticket.Status{
 	ticket.StatusTodo,
 	ticket.StatusInProgress,
 	ticket.StatusPaused,
+	ticket.StatusHumanReview,
 	ticket.StatusOpen,
 }
 
@@ -30,14 +31,14 @@ var doneStatuses = []ticket.Status{
 }
 
 var statusTitles = map[ticket.Status]string{
-	ticket.StatusTodo:       "Todo",
-	ticket.StatusInProgress: "In Progress",
-	ticket.StatusPaused:     "Paused",
-	ticket.StatusOpen:       "Open",
-	ticket.StatusDone:       "Done",
-	ticket.StatusCancelled:  "Cancelled",
-	"review":                "Review",
-	"human_review":          "Human Review",
+	ticket.StatusTodo:        "Todo",
+	ticket.StatusInProgress:  "In Progress",
+	ticket.StatusPaused:      "Paused",
+	ticket.StatusHumanReview: "Human Review",
+	ticket.StatusOpen:        "Open",
+	ticket.StatusDone:        "Done",
+	ticket.StatusCancelled:   "Cancelled",
+	"review":                 "Review",
 }
 
 type column struct {

@@ -78,6 +78,10 @@ func defaultPlannotatorSpawner(ctx context.Context, params PlannotatorParams) (s
 func (d *Daemon) StartPlannotatorReview(id string) error {
 	log := d.ticketLog(id)
 
+	if !ticket.IsSafeID(id) {
+		return fmt.Errorf("%w: unsafe ticket id", web.ErrTicketNotFound)
+	}
+
 	d.mu.Lock()
 	ts, ok := d.tickets[id]
 	if !ok {
@@ -86,6 +90,10 @@ func (d *Daemon) StartPlannotatorReview(id string) error {
 	}
 	t := ts.ticket
 	d.mu.Unlock()
+
+	if t.Status != "review" {
+		return web.ErrInvalidState
+	}
 
 	repoName, _, err := d.resolvePath(t)
 	if err != nil {

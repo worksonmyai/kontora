@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"text/template"
+
+	"github.com/worksonmyai/kontora/internal/ticket"
 )
 
 type TicketData struct {
@@ -57,6 +59,10 @@ func RenderWithOptions(tmpl string, data Data, workDir string, opts Options) (st
 		},
 		"plannotatorReview": func() string {
 			if opts.ReviewsDir == "" || data.Ticket.ID == "" {
+				return ""
+			}
+			if !ticket.IsSafeID(data.Ticket.ID) {
+				logger.Warn("plannotatorReview: unsafe ticket id, refusing to build path", "id", data.Ticket.ID)
 				return ""
 			}
 			path := filepath.Join(opts.ReviewsDir, data.Ticket.ID+".md")

@@ -690,11 +690,14 @@ func (d *Daemon) runTicket(ctx context.Context, ticketID string) {
 	}
 	d.mu.Unlock()
 
-	// Out-of-band rework stage: when the ticket is parked in the rework stage
-	// (set by StartPlannotatorReview) and the user's pipeline doesn't declare
-	// it as a step, run it via the dedicated path so we can route back to
-	// status=review after the agent exits.
-	if t.Stage == config.ReworkStageName && !stageInPipeline(pipelineCfg, config.ReworkStageName) {
+	// Out-of-band rework stage: when built-in rework handling is enabled and
+	// the ticket is parked in the rework stage (set by StartPlannotatorReview)
+	// and the user's pipeline doesn't declare it as a step, run it via the
+	// dedicated path so we can route back to status=review after the agent
+	// exits. A user-defined rework stage is left alone.
+	if d.cfg.ReworkIsBuiltin &&
+		t.Stage == config.ReworkStageName &&
+		!stageInPipeline(pipelineCfg, config.ReworkStageName) {
 		d.runReworkStage(ctx, taskCtx, log, ticketID, t, filePath)
 		return
 	}

@@ -363,6 +363,8 @@ func (s *Server) handlePlannotatorReview(w http.ResponseWriter, r *http.Request)
 		switch {
 		case errors.Is(err, ErrTicketNotFound):
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+		case errors.Is(err, ErrInvalidState):
+			writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 		case errors.Is(err, ErrPlannotatorInFlight):
 			writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 		case errors.Is(err, ErrPlannotatorBinary):

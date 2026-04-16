@@ -194,12 +194,21 @@ func TestSetFieldPreservesOthers(t *testing.T) {
 
 	require.NoError(t, tkt.SetField("status", "paused"))
 
+	const logPath = "/var/log/kontora/unk-001/default.log"
+	require.NoError(t, tkt.SetField("last_log", logPath))
+	assert.Equal(t, logPath, tkt.LastLog)
+
 	out, err := tkt.Marshal()
 	require.NoError(t, err)
 
 	outStr := string(out)
 	assert.Contains(t, outStr, "custom_field: hello world")
 	assert.Contains(t, outStr, "another_custom: 42")
+	assert.Contains(t, outStr, "last_log: "+logPath)
+
+	reparsed, err := ParseBytes(out)
+	require.NoError(t, err)
+	assert.Equal(t, logPath, reparsed.LastLog)
 }
 
 func TestMarshalWithHistory(t *testing.T) {

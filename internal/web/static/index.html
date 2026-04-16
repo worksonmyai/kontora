@@ -696,6 +696,11 @@
                       @click.stop="copyBranch(selectedTicket?.branch)"
                       x-text="copiedBranch === selectedTicket?.branch ? '✓ copied' : selectedTicket?.branch"></button></p>
                   </template>
+                  <template x-if="selectedTicket?.last_log">
+                    <p class="text-surface-600 mt-1">Log: <button type="button" class="copyable text-tx-3 hover:text-tx-2"
+                      @click.stop="copyCmd(selectedTicket?.last_log)"
+                      x-text="copiedCmd === selectedTicket?.last_log ? '✓ copied' : selectedTicket?.last_log"></button></p>
+                  </template>
                   <p class="text-surface-600 mt-2">Attach: <span class="copyable text-tx-3 hover:text-tx-2"
                     @click.stop="copyCmd('kontora attach ' + selectedTicket?.id)"
                     x-text="copiedCmd === 'kontora attach ' + selectedTicket?.id ? '✓ copied' : 'kontora attach ' + selectedTicket?.id"></span></p>
@@ -733,6 +738,11 @@
                           @click.stop="copyBranch(selectedTicket?.branch)"
                           x-text="copiedBranch === selectedTicket?.branch ? '✓ copied' : selectedTicket?.branch"></button></p>
                       </template>
+                      <template x-if="selectedTicket?.last_log">
+                        <p class="mt-1">Log: <button type="button" class="copyable text-tx-3 hover:text-tx-2"
+                          @click.stop="copyCmd(selectedTicket?.last_log)"
+                          x-text="copiedCmd === selectedTicket?.last_log ? '✓ copied' : selectedTicket?.last_log"></button></p>
+                      </template>
                       <p class="mt-1">Logs: <span class="copyable text-tx-3 hover:text-tx-2"
                         @click.stop="copyCmd('kontora logs ' + selectedTicket?.id)"
                         x-text="copiedCmd === 'kontora logs ' + selectedTicket?.id ? '✓ copied' : 'kontora logs ' + selectedTicket?.id"></span></p>
@@ -745,6 +755,11 @@
                       <p>Resume: <span class="copyable text-tx-3 hover:text-tx-2"
                         @click.stop="copyCmd('kontora retry ' + selectedTicket?.id)"
                         x-text="copiedCmd === 'kontora retry ' + selectedTicket?.id ? '✓ copied' : 'kontora retry ' + selectedTicket?.id"></span></p>
+                      <template x-if="selectedTicket?.last_log">
+                        <p class="mt-1">Log: <button type="button" class="copyable text-tx-3 hover:text-tx-2"
+                          @click.stop="copyCmd(selectedTicket?.last_log)"
+                          x-text="copiedCmd === selectedTicket?.last_log ? '✓ copied' : selectedTicket?.last_log"></button></p>
+                      </template>
                       <p class="text-surface-600 mt-2 text-xs leading-relaxed">Click <span class="text-tx-3">retry</span> to re-run the current stage, or drag to <span class="text-tx-3">todo</span> to resume.</p>
                     </div>
                   </template>

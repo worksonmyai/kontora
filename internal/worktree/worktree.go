@@ -1,6 +1,8 @@
 package worktree
 
 import (
+	"bufio"
+	"bytes"
 	"fmt"
 	"os"
 	"os/exec"
@@ -26,16 +28,85 @@ func (m *Manager) Path(repoName, taskID string) string {
 	return filepath.Join(m.worktreesDir, repoName, taskID)
 }
 
-func (m *Manager) Create(repoPath, repoName, taskID, branch string) (wtPath string, created bool, err error) {
-	wtPath = m.Path(repoName, taskID)
-
-	if _, err := os.Stat(wtPath); err == nil {
-		return wtPath, false, nil
+// FindWorktreeForBranch returns the path of the worktree checked out on the
+// given branch in repoPath, or "" if none exists. Parses `git worktree list --porcelain`.
+func FindWorktreeForBranch(repoPath, branch string) (string, error) {
+	cmd := exec.Command("git", "worktree", "list", "--porcelain")
+	cmd.Dir = repoPath
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		if msg := strings.TrimSpace(string(out)); msg != "" {
+			return "", fmt.Errorf("git worktree list: %s: %w", msg, err)
+		}
+		return "", fmt.Errorf("git worktree list: %w", err)
 	}
+
+	wantRef := "refs/heads/" + branch
+
+	var curPath string
+	var detached bool
+	var curBranch string
+
+	reset := func() {
+		curPath = ""
+		detached = false
+		curBranch = ""
+	}
+
+	scanner := bufio.NewScanner(bytes.NewReader(out))
+	for scanner.Scan() {
+		line := scanner.Text()
+		if line == "" {
+			if curPath != "" && !detached && curBranch == wantRef {
+				return curPath, nil
+			}
+			reset()
+			continue
+		}
+		switch {
+		case strings.HasPrefix(line, "worktree "):
+			curPath = strings.TrimPrefix(line, "worktree ")
+		case line == "detached":
+			detached = true
+		case strings.HasPrefix(line, "branch "):
+			curBranch = strings.TrimPrefix(line, "branch ")
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return "", fmt.Errorf("scanning worktree list: %w", err)
+	}
+	// Handle the final stanza if the output didn't end with a blank line.
+	if curPath != "" && !detached && curBranch == wantRef {
+		return curPath, nil
+	}
+	return "", nil
+}
+
+func (m *Manager) Create(repoPath, repoName, taskID, branch string) (wtPath string, created bool, err error) {
+	// Ask git, not the filesystem, whether a worktree for this branch already
+	// exists. This handles old-layout worktrees, user-created worktrees in
+	// arbitrary locations, and idempotent re-entry for this ticket.
+	if existing, err := FindWorktreeForBranch(repoPath, branch); err != nil {
+		return "", false, fmt.Errorf("finding existing worktree: %w", err)
+	} else if existing != "" {
+		return existing, false, nil
+	}
+
+	wtPath = m.Path(repoName, taskID)
 
 	if err := os.MkdirAll(filepath.Dir(wtPath), 0o755); err != nil {
 		return "", false, fmt.Errorf("creating worktree parent dir: %w", err)
 	}
+
+	// Resolve symlinks in the parent directory so the path we hand to git
+	// matches what `git worktree list --porcelain` will later report for this
+	// branch. Without this, macOS /tmp -> /private/tmp diverges and callers
+	// like plannotator can't use FindWorktreeForBranch to round-trip the path.
+	resolved, err := filepath.EvalSymlinks(filepath.Dir(wtPath))
+	if err != nil {
+		return "", false, fmt.Errorf("resolving worktree parent symlinks: %w", err)
+	}
+	wtPath = filepath.Join(resolved, filepath.Base(wtPath))
 
 	base, err := DetectDefaultBranch(repoPath)
 	if err != nil {
@@ -97,15 +168,29 @@ func DetectDefaultBranch(repoPath string) (string, error) {
 // uncommitted changes (modified, staged, or untracked files).
 var ErrDirtyWorktree = fmt.Errorf("worktree has uncommitted changes")
 
-func (m *Manager) Remove(repoPath, repoName, taskID, _ string) error {
-	wtPath := m.Path(repoName, taskID)
+// Remove discovers the worktree for the given branch via git and removes it.
+// No-op when no worktree holds the branch. Returns ErrDirtyWorktree when the
+// discovered worktree has uncommitted changes.
+func (m *Manager) Remove(repoPath, branch string) error {
+	wtPath, err := FindWorktreeForBranch(repoPath, branch)
+	if err != nil {
+		return fmt.Errorf("finding worktree for branch: %w", err)
+	}
+	if wtPath == "" {
+		return nil
+	}
+	return m.RemoveAt(repoPath, wtPath)
+}
 
-	// Check if the worktree directory exists; if not, nothing to do.
-	if _, err := os.Stat(wtPath); os.IsNotExist(err) {
+// RemoveAt removes the worktree at wtPath directly, skipping branch discovery.
+// Use this in hot cleanup paths where the caller already knows the worktree
+// path. No-op when wtPath is empty. Returns ErrDirtyWorktree when the worktree
+// has uncommitted changes.
+func (m *Manager) RemoveAt(repoPath, wtPath string) error {
+	if wtPath == "" {
 		return nil
 	}
 
-	// Refuse to remove a dirty worktree.
 	if dirty, err := isDirty(wtPath); err != nil {
 		return fmt.Errorf("checking worktree status: %w", err)
 	} else if dirty {

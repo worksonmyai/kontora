@@ -20,6 +20,15 @@ import (
 	"github.com/worksonmyai/kontora/internal/worktree"
 )
 
+// Sentinel strings emitted by `plannotator review` on stdout. Plannotator
+// signals the user's choice through one of these exact lines (see
+// apps/hook/server/index.ts in the plannotator repo); anything else is treated
+// as feedback for the rework stage.
+const (
+	plannotatorApprovedMarker  = "Code review completed — no changes requested."
+	plannotatorCancelledMarker = "Review session closed without feedback."
+)
+
 // stageInPipeline reports whether a stage name appears in a pipeline definition.
 func stageInPipeline(p config.Pipeline, stage string) bool {
 	for _, step := range p {
@@ -59,8 +68,10 @@ func defaultPlannotatorSpawner(ctx context.Context, params PlannotatorParams) (s
 }
 
 // StartPlannotatorReview spawns a plannotator subprocess against the ticket's
-// worktree. When non-empty feedback is returned, the daemon parks the ticket
-// at stage=rework, status=todo and lets the scheduler pick it up.
+// worktree. The user's choice is signalled by plannotator's stdout: the
+// approved/cancelled marker strings leave the ticket parked in human_review,
+// while any other output is treated as feedback and parks the ticket at
+// stage=rework, status=todo for the scheduler to pick up.
 //
 // Synchronous errors:
 //   - web.ErrTicketNotFound: unknown ticket
@@ -169,12 +180,21 @@ func (d *Daemon) runPlannotator(ctx context.Context, log *slog.Logger, id, binar
 		return
 	}
 
-	if strings.TrimSpace(stdout) == "" {
-		log.Info("plannotator: approved (empty feedback)")
+	switch strings.TrimSpace(stdout) {
+	case "", plannotatorApprovedMarker:
+		log.Info("plannotator: approved")
 		d.broker.Broadcast(web.TicketEvent{
 			Type:    "plannotator_finished",
 			Ticket:  web.TicketInfo{ID: id},
 			Outcome: web.PlannotatorOutcomeApproved,
+		})
+		return
+	case plannotatorCancelledMarker:
+		log.Info("plannotator: cancelled by user")
+		d.broker.Broadcast(web.TicketEvent{
+			Type:    "plannotator_finished",
+			Ticket:  web.TicketInfo{ID: id},
+			Outcome: web.PlannotatorOutcomeCancelled,
 		})
 		return
 	}

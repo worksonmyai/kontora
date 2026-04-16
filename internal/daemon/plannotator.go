@@ -101,7 +101,11 @@ func (d *Daemon) StartPlannotatorReview(id string) error {
 	}
 	wtPath := d.worktrees.Path(repoName, id)
 	if _, statErr := os.Stat(wtPath); statErr != nil {
-		return fmt.Errorf("%w: %s", web.ErrPlannotatorWorkdir, wtPath)
+		if os.IsNotExist(statErr) {
+			return web.ErrPlannotatorWorkdir
+		}
+		log.Error("plannotator: stat worktree failed", "path", wtPath, "err", statErr)
+		return fmt.Errorf("stat worktree: %w", statErr)
 	}
 
 	if err := d.plannotatorLookup(d.cfg.Plannotator.Binary); err != nil {

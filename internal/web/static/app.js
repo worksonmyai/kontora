@@ -263,6 +263,10 @@ function kontora() {
       });
       es.onerror = () => {
         es.close();
+        // Drop any in-flight markers: if a plannotator run completes while SSE
+        // is disconnected, we'll never see the finished event and the button
+        // would stay disabled until a full page refresh.
+        this.plannotatorInFlight = {};
         setTimeout(() => this.connectSSE(), 3000);
       };
     },

@@ -25,7 +25,9 @@ type Data struct {
 
 // Options controls optional data plumbed into template helpers.
 type Options struct {
-	// ReviewsDir is the absolute path to the plannotator reviews directory.
+	// ReviewsDir is the plannotator reviews directory. It is used as-is in
+	// filepath.Join, so callers are expected to resolve ~ / relative paths
+	// before passing it in if they want an absolute path.
 	// When set, the plannotatorReview helper reads <ReviewsDir>/<ticket.ID>.md
 	// and deletes the file after reading. When empty, the helper returns "".
 	ReviewsDir string

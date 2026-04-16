@@ -56,23 +56,46 @@ function kontora() {
     lightTheme: getStoredTheme() === 'light',
     // Map of ticketId → true while a plannotator subprocess is in flight for it.
     plannotatorInFlight: {},
+    openMenuTicketId: null,
 
     _builtinColumns: [
-      { status: 'open', label: 'Open', color: 'bg-accent', tip: 'Draft ticket, not running yet. Drag to Todo or click Initialize to start.', emptyText: 'Create a ticket to get started', tint: '', glow: 'glow-top-accent',
+      { key: 'open', statuses: ['open'], dropStatus: 'open', label: 'Open', color: 'bg-accent', tip: 'Draft ticket, not running yet. Drag to In Progress or click Initialize to start.', emptyText: 'Create a ticket to get started', tint: '', glow: 'glow-top-accent',
         emptyIcon: '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M9 15h6"/><path d="M12 18v-6"/>' },
-      { status: 'todo', label: 'Todo', color: 'bg-tx-4', tip: 'Waiting to start. Will begin automatically when a slot is available.', emptyText: 'Move a ticket here to put it next in line', tint: '', glow: 'glow-top-muted',
-        emptyIcon: '<polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/>' },
-      { status: 'in_progress', label: 'Running', color: 'bg-accent', tip: 'An agent is currently working on this ticket.', emptyText: 'No tickets are running right now', tint: '', glow: 'glow-top-accent',
+      { key: 'in_progress', statuses: ['todo', 'in_progress', 'paused'], dropStatus: 'todo', label: 'In Progress', color: 'bg-ok', tip: 'Queued, running, or paused tickets. The daemon auto-promotes queued tickets when a worker is free.', emptyText: 'No tickets in flight right now', tint: '', glow: 'glow-top-ok',
         emptyIcon: '<path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/>' },
-      { status: 'paused', label: 'Paused', color: 'bg-warn', tip: 'Stopped for now. Click Retry or drag to Todo to resume.', emptyText: 'No paused tickets', tint: '', glow: 'glow-top-warn',
-        emptyIcon: '<rect x="14" y="4" width="4" height="16" rx="1"/><rect x="6" y="4" width="4" height="16" rx="1"/>' },
-      { status: 'human_review', label: 'Human Review', color: 'bg-review', tip: 'Waiting for a human to look at the result.', emptyText: 'No tickets waiting for review', tint: '', glow: 'glow-top-review',
+      { key: 'human_review', statuses: ['human_review'], dropStatus: 'human_review', label: 'Human Review', color: 'bg-review', tip: 'Waiting for a human to look at the result.', emptyText: 'No tickets waiting for review', tint: '', glow: 'glow-top-review',
         emptyIcon: '<path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/>' },
-      { status: 'done', label: 'Done', color: 'bg-ok', tip: 'Ticket completed successfully.', emptyText: 'No completed tickets yet', tint: '', glow: 'glow-top-ok',
+      { key: 'done', statuses: ['done'], dropStatus: 'done', label: 'Done', color: 'bg-ok', tip: 'Ticket completed successfully.', emptyText: 'No completed tickets yet', tint: '', glow: 'glow-top-ok',
         emptyIcon: '<circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/>' },
-      { status: 'cancelled', label: 'Cancelled', color: 'bg-surface-600', tip: 'Stopped manually. Drag to Todo to run it again.', emptyText: 'No cancelled tickets', tint: '', glow: 'glow-top-muted',
+      { key: 'cancelled', statuses: ['cancelled'], dropStatus: 'cancelled', label: 'Cancelled', color: 'bg-surface-600', tip: 'Stopped manually. Drag to In Progress to run it again.', emptyText: 'No cancelled tickets', tint: '', glow: 'glow-top-muted',
         emptyIcon: '<path d="m15 9-6 6"/><path d="m9 9 6 6"/><circle cx="12" cy="12" r="10"/>' },
     ],
+
+    // In-flight sort order: in_progress > paused > todo. Used inside the IN PROGRESS column.
+    _inflightRank: { in_progress: 0, paused: 1, todo: 2 },
+
+    // Per-status list of valid transitions surfaced in the per-card action menu.
+    // `endpoint` is the URL segment appended to /api/tickets/{id}/. When it is "move",
+    // `status` must be supplied and is sent as the JSON body.
+    validMoves: {
+      open:         [{ label: 'Queue',          endpoint: 'run' },
+                     { label: 'Cancel',         endpoint: 'move', status: 'cancelled' }],
+      todo:         [{ label: 'Move to open',   endpoint: 'move', status: 'open' },
+                     { label: 'Cancel',         endpoint: 'move', status: 'cancelled' }],
+      in_progress:  [{ label: 'Pause',          endpoint: 'pause' },
+                     { label: 'Send to review', endpoint: 'move', status: 'human_review' },
+                     { label: 'Mark done',      endpoint: 'move', status: 'done' },
+                     { label: 'Cancel',         endpoint: 'move', status: 'cancelled' }],
+      paused:       [{ label: 'Resume',         endpoint: 'retry' },
+                     { label: 'Mark done',      endpoint: 'move', status: 'done' },
+                     { label: 'Cancel',         endpoint: 'move', status: 'cancelled' }],
+      human_review: [{ label: 'Approve',        endpoint: 'move', status: 'done' },
+                     { label: 'Send back',      endpoint: 'retry' },
+                     { label: 'Cancel',         endpoint: 'move', status: 'cancelled' }],
+      done:         [{ label: 'Reopen',         endpoint: 'retry' },
+                     { label: 'Send to review', endpoint: 'move', status: 'human_review' }],
+      cancelled:    [{ label: 'Reopen',         endpoint: 'retry' }],
+    },
 
     _knownCustomStatuses: {
       review: { label: 'Review', color: 'bg-review', glow: 'glow-top-review', emptyIcon: '<path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/>' },
@@ -82,12 +105,14 @@ function kontora() {
       var cols = [...this._builtinColumns];
       var custom = this.configCache?.custom_statuses || [];
       if (custom.length > 0) {
-        var doneIdx = cols.findIndex(c => c.status === 'done');
+        var doneIdx = cols.findIndex(c => c.key === 'done');
         if (doneIdx < 0) doneIdx = cols.length;
         var customCols = custom.map(s => {
           var known = this._knownCustomStatuses[s];
           return {
-            status: s,
+            key: s,
+            statuses: [s],
+            dropStatus: s,
             label: known?.label || s.charAt(0).toUpperCase() + s.slice(1).replace(/_/g, ' '),
             color: known?.color || 'bg-surface-600',
             tip: 'Custom status: ' + s,
@@ -173,12 +198,25 @@ function kontora() {
       if (icon) icon.href = "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><circle cx='8' cy='8' r='7' fill='" + encodeURIComponent(color) + "'/></svg>";
     },
 
-    ticketsByStatus(status) {
+    ticketsByStatuses(statuses) {
+      var list = Array.isArray(statuses) ? statuses : [statuses];
+      var set = {};
+      list.forEach(s => { set[s] = true; });
+      var self = this;
       return this.tickets
-        .filter(t => t.status === status && (status === 'open' || t.kontora))
+        .filter(t => set[t.status] && (t.status === 'open' || t.kontora))
         .sort((a, b) => {
-          const ta = status === 'in_progress' && a.started_at ? a.started_at : (a.created_at || '');
-          const tb = status === 'in_progress' && b.started_at ? b.started_at : (b.created_at || '');
+          // Multi-status columns (IN PROGRESS): sort by status rank first so
+          // running > paused > todo, then by activity age.
+          if (list.length > 1) {
+            var ra = self._inflightRank[a.status];
+            var rb = self._inflightRank[b.status];
+            if (ra === undefined) ra = 99;
+            if (rb === undefined) rb = 99;
+            if (ra !== rb) return ra - rb;
+          }
+          const ta = a.status === 'in_progress' && a.started_at ? a.started_at : (a.created_at || '');
+          const tb = b.status === 'in_progress' && b.started_at ? b.started_at : (b.created_at || '');
           if (ta !== tb) return ta > tb ? -1 : 1;
           if (a.title !== b.title) return a.title < b.title ? -1 : 1;
           if (a.id !== b.id) return a.id < b.id ? -1 : 1;
@@ -562,6 +600,38 @@ function kontora() {
       }
     },
 
+    async moveTicketVia(ticketId, endpoint, body) {
+      this.error = null;
+      var ticket = this.tickets.find(t => t.id === ticketId);
+      // Queueing an uninitialized open ticket needs the init modal, not /run,
+      // because /run errors on kontora=false tickets.
+      if (endpoint === 'run' && ticket && !ticket.kontora) {
+        this.openInitModal(ticket);
+        return;
+      }
+      try {
+        var opts = { method: 'POST' };
+        if (body) {
+          opts.headers = { 'Content-Type': 'application/json' };
+          opts.body = JSON.stringify(body);
+        }
+        const res = await fetch('/api/tickets/' + ticketId + '/' + endpoint, opts);
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          this.error = data.error || (endpoint + ' failed');
+          return;
+        }
+        const updated = await res.json().catch(() => null);
+        if (updated && updated.id) {
+          const idx = this.tickets.findIndex(t => t.id === updated.id);
+          if (idx >= 0) this.tickets[idx] = updated;
+          if (this.selectedTicket?.id === updated.id) this.selectedTicket = updated;
+        }
+      } catch (e) {
+        this.error = endpoint + ' failed: ' + e.message;
+      }
+    },
+
     async moveTask(ticketId, newStatus) {
       this.error = null;
       const ticket = this.tickets.find(t => t.id === ticketId);
@@ -748,6 +818,16 @@ function kontora() {
       this.logViewLoading = false;
     },
 
+    stageDotClass(i, ticket) {
+      if (!ticket || !ticket.stages) return 'stage-dot-todo';
+      if (ticket.status === 'done') return 'stage-dot-done';
+      var currentIdx = ticket.stages.indexOf(ticket.stage);
+      if (currentIdx < 0) return 'stage-dot-todo';
+      if (i < currentIdx) return 'stage-dot-done';
+      if (i === currentIdx) return 'stage-dot-current';
+      return 'stage-dot-todo';
+    },
+
     stageStyle(stage, ticket) {
       if (!ticket || !ticket.stages) return 'bg-surface-800 text-surface-600';
       var stageIdx = ticket.stages.indexOf(stage);
@@ -762,7 +842,7 @@ function kontora() {
       return 'bg-surface-800 text-surface-600';
     },
 
-    initSortable(el, status) {
+    initSortable(el, dropStatus) {
       if (this.isMobile) return;
       var self = this;
       new Sortable(el, {
@@ -773,13 +853,13 @@ function kontora() {
         filter: '.empty-state',
         onEnd: function(evt) {
           var ticketId = evt.item.dataset.ticketId;
-          var fromStatus = evt.from.dataset.status;
-          var toStatus = evt.to.dataset.status;
-          if (fromStatus === toStatus || !ticketId) return;
+          var fromDrop = evt.from.dataset.dropStatus;
+          var toDrop = evt.to.dataset.dropStatus;
+          if (fromDrop === toDrop || !ticketId) return;
           evt.item.remove();
           var ref = evt.from.children[evt.oldIndex];
           evt.from.insertBefore(evt.item, ref || null);
-          self.moveTask(ticketId, toStatus);
+          self.moveTask(ticketId, toDrop);
         }
       });
     },
@@ -964,14 +1044,14 @@ function kontora() {
       return fields.some(f => f && f.toLowerCase().includes(normalized));
     },
 
-    filteredTicketsByStatus(status) {
-      var all = this.ticketsByStatus(status);
+    filteredTicketsByStatuses(statuses) {
+      var all = this.ticketsByStatuses(statuses);
       if (!this.searchQuery) return all;
       return all.filter(t => this.ticketMatchesQuery(t, this.searchQuery));
     },
 
     filteredTicketCount() {
-      return this.columns.reduce((n, col) => n + this.filteredTicketsByStatus(col.status).length, 0);
+      return this.columns.reduce((n, col) => n + this.filteredTicketsByStatuses(col.statuses).length, 0);
     },
 
     updateSuggestions() {

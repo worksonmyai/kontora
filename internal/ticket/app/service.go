@@ -16,11 +16,12 @@ var (
 )
 
 var builtinSetStatuses = map[ticket.Status]bool{
-	ticket.StatusOpen:      true,
-	ticket.StatusTodo:      true,
-	ticket.StatusPaused:    true,
-	ticket.StatusDone:      true,
-	ticket.StatusCancelled: true,
+	ticket.StatusOpen:        true,
+	ticket.StatusTodo:        true,
+	ticket.StatusPaused:      true,
+	ticket.StatusHumanReview: true,
+	ticket.StatusDone:        true,
+	ticket.StatusCancelled:   true,
 }
 
 // Service owns ticket use-cases: mutations, projection, and listing.

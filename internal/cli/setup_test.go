@@ -39,8 +39,6 @@ func TestBuildConfigYAML(t *testing.T) {
 				"max_concurrent_agents: 3",
 				"enabled: true",
 				"port: 8080",
-				"statuses:",
-				"- human_review",
 				"implement-review-commit:",
 				"stage: implement",
 				"stage: review",

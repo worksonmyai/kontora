@@ -639,10 +639,6 @@ func buildConfigYAML(ans *SetupAnswers) string {
 	fmt.Fprintf(&b, "max_concurrent_agents: %d\n", ans.MaxConcurrentAgents)
 	b.WriteString("\n")
 
-	b.WriteString("statuses:\n")
-	b.WriteString("  - human_review\n")
-	b.WriteString("\n")
-
 	fmt.Fprintf(&b, "web:\n")
 	fmt.Fprintf(&b, "  enabled: %t\n", ans.WebEnabled)
 	fmt.Fprintf(&b, "  port: %d\n", ans.WebPort)

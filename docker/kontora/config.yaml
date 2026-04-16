@@ -3,9 +3,6 @@ logs_dir: ~/.kontora/logs
 worktrees_dir: ~/.kontora/worktrees
 max_concurrent_agents: 5
 
-statuses:
-  - human_review
-
 web:
   enabled: true
   port: 8080

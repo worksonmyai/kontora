@@ -100,9 +100,6 @@ Templates use Go syntax. `{{ .Ticket.Title }}`, `{{ .Ticket.Description }}`, `{{
 **Pipelines** wire stages to agents in sequence, with success/failure policies per step:
 
 ```yaml
-statuses:
-  - human_review
-
 pipelines:
   default:
     - stage: code

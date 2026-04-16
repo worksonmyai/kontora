@@ -128,7 +128,9 @@
     .card-state-running { border-left: 2px solid rgba(var(--ok), 1); }
     .card-state-paused  { border-left: 2px solid rgba(var(--warn), 0.6); }
     .card-state-todo    { border-left: 2px solid rgba(var(--accent-dim), 0.6); }
-    .card-quiet { opacity: 0.92; }
+    .card-quiet { opacity: 0.6; }
+    /* Quiet cards drop the column-top accent glow so they read as backgrounded. */
+    .card-quiet::before { display: none !important; }
 
     .card-glyph-running { color: rgba(var(--ok), 1); }
     .card-glyph-paused  { color: rgba(var(--warn), 0.8); }
@@ -533,7 +535,7 @@
          @click="selectedTicket && closeDetail()">
       <div class="flex gap-3 p-4 h-full min-w-min">
         <template x-for="(col, colIdx) in columns" :key="col.key">
-          <div class="flex flex-col h-full min-w-[240px] w-[240px] md:min-w-[280px] md:w-[280px] shrink-0 relative"
+          <div class="flex flex-col h-full flex-1 min-w-[260px] basis-0 relative"
                x-data="{ colHover: false }" @mouseenter="colHover = true" @mouseleave="colHover = false">
             <div x-show="colIdx > 0" class="absolute left-[-7px] top-[15%] h-[70%] w-px bg-surface-700/60"></div>
             <!-- Column header -->
@@ -554,12 +556,14 @@
                  :id="'col-' + col.key"
                  :data-drop-status="col.dropStatus"
                  :class="col.tint || ''"
-                 x-init="initSortable($el, col.dropStatus)">
+                 x-init="initSortable($el)">
               <template x-for="ticket in filteredTicketsByStatuses(col.statuses)" :key="ticket.id">
                 <div :data-ticket-id="ticket.id"
-                     role="button" tabindex="0"
+                     role="listitem" tabindex="0"
+                     :aria-label="'Ticket ' + ticket.id + ': ' + ticket.title"
                      @click.stop="selectTicket(ticket)"
                      @keydown.enter.stop="selectTicket(ticket)"
+                     @keydown.space.stop.prevent="selectTicket(ticket)"
                      class="group relative rounded-lg p-3.5 cursor-pointer transition-all duration-150 border slide-up"
                      :class="[
                        selectedTicket?.id === ticket.id
@@ -600,11 +604,15 @@
                         <span class="text-[11px] font-mono text-surface-600" x-text="ticket.stage"></span>
                       </template>
                     </div>
-                    <div class="relative flex items-center shrink-0" @click.outside="if (openMenuTicketId === ticket.id) openMenuTicketId = null">
+                    <div class="relative flex items-center shrink-0"
+                         @click.outside="if (openMenuTicketId === ticket.id) openMenuTicketId = null"
+                         @keydown.escape.window="if (openMenuTicketId === ticket.id) openMenuTicketId = null">
                       <button type="button"
                               class="w-6 h-6 rounded-md border border-surface-700/40 bg-surface-900/70 text-surface-600 hover:bg-surface-800 hover:text-tx-2 hover:border-surface-600 transition-colors flex items-center justify-center opacity-0 group-hover:opacity-100 focus:opacity-100"
                               :class="openMenuTicketId === ticket.id ? 'opacity-100' : ''"
                               @click.stop="openMenuTicketId = (openMenuTicketId === ticket.id ? null : ticket.id)"
+                              :aria-expanded="openMenuTicketId === ticket.id"
+                              aria-haspopup="menu"
                               aria-label="More actions">
                         <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="currentColor">
                           <circle cx="5" cy="12" r="2.2"></circle>
@@ -628,8 +636,8 @@
                       </div>
                     </div>
                   </div>
-                  <!-- Pipeline stage progress -->
-                  <template x-if="ticket.stages && ticket.stages.length > 1">
+                  <!-- Pipeline stage progress: only in the In Progress column. -->
+                  <template x-if="col.key === 'in_progress' && ticket.stages && ticket.stages.length > 1">
                     <div class="flex items-center gap-1 mb-2">
                       <template x-for="(stage, i) in ticket.stages" :key="i">
                         <span class="stage-dot"

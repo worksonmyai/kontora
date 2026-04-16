@@ -200,11 +200,10 @@ function kontora() {
 
     ticketsByStatuses(statuses) {
       var list = Array.isArray(statuses) ? statuses : [statuses];
-      var set = {};
-      list.forEach(s => { set[s] = true; });
+      var set = new Set(list);
       var self = this;
       return this.tickets
-        .filter(t => set[t.status] && (t.status === 'open' || t.kontora))
+        .filter(t => set.has(t.status) && (t.status === 'open' || t.kontora))
         .sort((a, b) => {
           // Multi-status columns (IN PROGRESS): sort by status rank first so
           // running > paused > todo, then by activity age.
@@ -842,7 +841,7 @@ function kontora() {
       return 'bg-surface-800 text-surface-600';
     },
 
-    initSortable(el, dropStatus) {
+    initSortable(el) {
       if (this.isMobile) return;
       var self = this;
       new Sortable(el, {

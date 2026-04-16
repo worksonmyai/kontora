@@ -567,8 +567,8 @@
                       </span>
                     </template>
                   </div>
-                  <!-- Plannotator action (review column only) -->
-                  <template x-if="ticket.status === 'review'">
+                  <!-- Plannotator action (human_review column only) -->
+                  <template x-if="ticket.status === 'human_review'">
                     <button type="button"
                             class="mt-3 w-full text-[11px] font-mono uppercase tracking-wider px-2 py-1.5 rounded bg-surface-800 border border-surface-700/50 text-tx-3 hover:text-accent hover:border-accent/30 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-1.5"
                             :disabled="!!plannotatorInFlight[ticket.id]"

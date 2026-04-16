@@ -91,7 +91,7 @@ func (d *Daemon) StartPlannotatorReview(id string) error {
 	t := ts.ticket
 	d.mu.Unlock()
 
-	if t.Status != "review" {
+	if t.Status != ticket.StatusHumanReview {
 		return web.ErrInvalidState
 	}
 
@@ -367,9 +367,9 @@ func (d *Daemon) runReworkStage(ctx, taskCtx context.Context, log *slog.Logger, 
 	_ = t2.SetField("history", history)
 
 	if result.ExitCode == 0 {
-		_ = t2.SetField("status", reworkSuccessStatus(d.cfg))
+		_ = t2.SetField("status", string(ticket.StatusHumanReview))
 		_ = t2.SetField("last_error", "")
-		log.Info("rework completed, routed back to review", "branch", t2.Branch)
+		log.Info("rework completed, routed back to human_review", "branch", t2.Branch)
 		d.killTaskWindow(ticketID)
 	} else {
 		_ = t2.SetField("status", string(ticket.StatusPaused))
@@ -402,15 +402,4 @@ func (d *Daemon) reworkAgent(t *ticket.Ticket) string {
 		}
 	}
 	return d.cfg.DefaultAgent
-}
-
-// reworkSuccessStatus returns the status the ticket should land in after a
-// successful rework. Defaults to "review" (a custom status users are expected
-// to declare); falls back to paused if that status isn't configured so the
-// user notices instead of silently losing the ticket in an unknown state.
-func reworkSuccessStatus(cfg *config.Config) string {
-	if cfg.IsCustomStatus("review") {
-		return "review"
-	}
-	return string(ticket.StatusPaused)
 }

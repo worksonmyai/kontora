@@ -37,8 +37,6 @@ func newPlannotatorHarness(t *testing.T) *plannotatorHarness {
 		Timeout:    config.Duration{Duration: 5 * time.Second},
 		ReviewsDir: reviewsDir,
 	}
-	// Make "review" a valid custom status so transitions don't fail.
-	h.cfg.Statuses = []string{"review"}
 	// Merge the built-in rework stage: mimic applyDefaults.
 	if h.cfg.Stages == nil {
 		h.cfg.Stages = map[string]config.Stage{}
@@ -94,15 +92,15 @@ func (h *plannotatorHarness) newDaemonWithSpawner() *Daemon {
 	)
 }
 
-// seedReviewTicket writes a ticket already parked in the review column and
-// creates a worktree for it so StartPlannotatorReview has somewhere to run.
+// seedReviewTicket writes a ticket already parked in the human_review column
+// and creates a worktree for it so StartPlannotatorReview has somewhere to run.
 func (h *plannotatorHarness) seedReviewTicket(id string) string {
 	h.t.Helper()
 	// Create a worktree manually — the daemon worktree manager handles git.
 	wtPath := filepath.Join(h.wtDir, h.repoName, id)
 	require.NoError(h.t, os.MkdirAll(wtPath, 0o755))
 
-	md := h.reviewTaskMD(id, "review")
+	md := h.reviewTaskMD(id, "human_review")
 	path := h.writeTicket(id+".md", md)
 	return path
 }
@@ -161,7 +159,7 @@ func TestPlannotator_ApprovePath(t *testing.T) {
 
 	info, err := d.GetTicket("tst-pa01")
 	require.NoError(t, err)
-	assert.Equal(t, "review", info.Status)
+	assert.Equal(t, "human_review", info.Status)
 	assert.Equal(t, "step2", info.Stage)
 
 	_, statErr := os.Stat(filepath.Join(h.reviewsDir, "tst-pa01.md"))
@@ -261,11 +259,11 @@ func TestPlannotator_ReworkCompletion(t *testing.T) {
 		return err == nil && tk.Stage == "rework"
 	}, 3*time.Second, 20*time.Millisecond, "ticket should move to rework stage")
 
-	// Then wait for the loop to complete and the ticket to land back at review.
+	// Then wait for the loop to complete and the ticket to land back at human_review.
 	require.Eventually(t, func() bool {
 		tk, err := ticket.ParseFile(filePath)
-		return err == nil && tk.Status == "review"
-	}, 5*time.Second, 50*time.Millisecond, "ticket should loop back to review after rework")
+		return err == nil && tk.Status == "human_review"
+	}, 5*time.Second, 50*time.Millisecond, "ticket should loop back to human_review after rework")
 
 	// Review file consumed by the rework agent's prompt render.
 	_, statErr := os.Stat(filepath.Join(h.reviewsDir, "tst-prc01.md"))

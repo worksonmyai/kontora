@@ -33,15 +33,19 @@ import (
 
 const defaultPromptTemplate = "Work on this ticket: {{ .Ticket.ID }} — {{ .Ticket.Title }}\n\n{{ .Ticket.Description }}"
 
-func renderTicketPrompt(tmpl string, t *ticket.Ticket, filePath, wtPath string) (string, error) {
-	rendered, err := prompt.Render(tmpl, prompt.Data{
+func (d *Daemon) renderTicketPrompt(tmpl string, t *ticket.Ticket, filePath, wtPath string) (string, error) {
+	opts := prompt.Options{
+		ReviewsDir: expandTilde(d.cfg.Plannotator.ReviewsDir),
+		Logger:     d.log,
+	}
+	rendered, err := prompt.RenderWithOptions(tmpl, prompt.Data{
 		Ticket: prompt.TicketData{
 			ID:          t.ID,
 			Title:       t.Title(),
 			Description: t.Body,
 			FilePath:    filePath,
 		},
-	}, wtPath)
+	}, wtPath, opts)
 	if err != nil {
 		return "", err
 	}
@@ -149,23 +153,57 @@ func WithSkipOrphanCleanup() Option {
 	return func(d *Daemon) { d.skipOrphanCleanup = true }
 }
 
+// PlannotatorSpawner runs the `plannotator review` subprocess and returns its
+// captured stdout. Kept as a separate seam from the generic RunnerFunc because
+// the rest of the codebase conflates "runner for an agent" with tmux lifecycle
+// hooks that don't apply here.
+type PlannotatorSpawner func(ctx context.Context, params PlannotatorParams) (stdout string, err error)
+
+// PlannotatorParams carries inputs for a single plannotator invocation.
+type PlannotatorParams struct {
+	Binary  string
+	Dir     string
+	Env     map[string]string
+	Timeout time.Duration
+}
+
+// PlannotatorLookup is injected to resolve whether the plannotator binary is
+// installed. It exists only so tests that inject a spawner can skip the real
+// exec.LookPath check.
+type PlannotatorLookup func(binary string) error
+
+// WithPlannotatorSpawner overrides the default plannotator subprocess runner.
+// Tests use this to return canned stdout without forking a real process.
+func WithPlannotatorSpawner(fn PlannotatorSpawner) Option {
+	return func(d *Daemon) { d.plannotatorSpawner = fn }
+}
+
+// WithPlannotatorLookup overrides the binary-available check. Tests use this
+// to bypass exec.LookPath when pairing with a fake spawner.
+func WithPlannotatorLookup(fn PlannotatorLookup) Option {
+	return func(d *Daemon) { d.plannotatorLookup = fn }
+}
+
 type Daemon struct {
-	cfg               *config.Config
-	worktrees         *worktree.Manager
-	runner            RunnerFunc
-	skipOrphanCleanup bool
-	broker            *web.SSEBroker
-	svc               *app.Service
+	cfg                *config.Config
+	worktrees          *worktree.Manager
+	runner             RunnerFunc
+	plannotatorSpawner PlannotatorSpawner
+	plannotatorLookup  PlannotatorLookup
+	skipOrphanCleanup  bool
+	broker             *web.SSEBroker
+	svc                *app.Service
 
 	debounce time.Duration
 	lockPath string
 	log      *slog.Logger
 
-	mu      sync.Mutex
-	tickets map[string]*ticketState
-	running map[string]context.CancelFunc
-	queued  map[string]bool // dedupe: prevents same ticket being enqueued twice
-	sem     chan struct{}
+	mu          sync.Mutex
+	tickets     map[string]*ticketState
+	running     map[string]context.CancelFunc
+	queued      map[string]bool // dedupe: prevents same ticket being enqueued twice
+	sem         chan struct{}
+	plannotator map[string]context.CancelFunc // in-flight plannotator subprocesses
 
 	selfWrites   map[string]int
 	selfWritesMu sync.Mutex
@@ -181,20 +219,23 @@ type ticketState struct {
 
 func New(cfg *config.Config, opts ...Option) *Daemon {
 	d := &Daemon{
-		cfg:       cfg,
-		worktrees: worktree.New(expandTilde(cfg.WorktreesDir)),
-		runner:    tmuxRunner,
-		broker:    web.NewSSEBroker(),
-		debounce:  time.Second,
-		lockPath:  defaultLockPath(),
+		cfg:                cfg,
+		worktrees:          worktree.New(expandTilde(cfg.WorktreesDir)),
+		runner:             tmuxRunner,
+		plannotatorSpawner: defaultPlannotatorSpawner,
+		plannotatorLookup:  defaultPlannotatorLookup,
+		broker:             web.NewSSEBroker(),
+		debounce:           time.Second,
+		lockPath:           defaultLockPath(),
 		log: slog.New(charmlog.NewWithOptions(os.Stderr, charmlog.Options{
 			ReportTimestamp: true,
 		})),
-		tickets:    make(map[string]*ticketState),
-		running:    make(map[string]context.CancelFunc),
-		queued:     make(map[string]bool),
-		sem:        make(chan struct{}, cfg.MaxConcurrentAgents),
-		selfWrites: make(map[string]int),
+		tickets:     make(map[string]*ticketState),
+		running:     make(map[string]context.CancelFunc),
+		queued:      make(map[string]bool),
+		sem:         make(chan struct{}, cfg.MaxConcurrentAgents),
+		plannotator: make(map[string]context.CancelFunc),
+		selfWrites:  make(map[string]int),
 	}
 	for _, opt := range opts {
 		opt(d)
@@ -649,6 +690,18 @@ func (d *Daemon) runTicket(ctx context.Context, ticketID string) {
 	}
 	d.mu.Unlock()
 
+	// Out-of-band rework stage: when built-in rework handling is enabled and
+	// the ticket is parked in the rework stage (set by StartPlannotatorReview)
+	// and the user's pipeline doesn't declare it as a step, run it via the
+	// dedicated path so we can route back to status=review after the agent
+	// exits. A user-defined rework stage is left alone.
+	if d.cfg.ReworkIsBuiltin &&
+		t.Stage == config.ReworkStageName &&
+		!stageInPipeline(pipelineCfg, config.ReworkStageName) {
+		d.runReworkStage(ctx, taskCtx, log, ticketID, t, filePath)
+		return
+	}
+
 	// Evaluate pickup.
 	action, err := pipeline.Evaluate(t, pipelineCfg, pipeline.Event{
 		Kind:      pipeline.EventPickedUp,
@@ -719,7 +772,7 @@ func (d *Daemon) runTicket(ctx context.Context, ticketID string) {
 	}
 	stageCfg := d.cfg.Stages[stageName]
 
-	rendered, err := renderTicketPrompt(stageCfg.Prompt, t, filePath, wtPath)
+	rendered, err := d.renderTicketPrompt(stageCfg.Prompt, t, filePath, wtPath)
 	if err != nil {
 		log.Error("render prompt failed", "stage", stageName, "err", err)
 		d.pauseTicket(t, filePath, "render prompt failed: "+err.Error())
@@ -833,7 +886,7 @@ func (d *Daemon) runSimpleTicket(ctx, taskCtx context.Context, log *slog.Logger,
 	}
 
 	// Render prompt.
-	rendered, err := renderTicketPrompt(defaultPromptTemplate, t, filePath, wtPath)
+	rendered, err := d.renderTicketPrompt(defaultPromptTemplate, t, filePath, wtPath)
 	if err != nil {
 		log.Error("render prompt failed", "err", err)
 		d.pauseTicket(t, filePath, "render prompt failed: "+err.Error())
@@ -1305,6 +1358,10 @@ func (d *Daemon) killAll() {
 	defer d.mu.Unlock()
 	for id, cancel := range d.running {
 		d.ticketLog(id).Info("killing agent", "reason", "shutdown")
+		cancel()
+	}
+	for id, cancel := range d.plannotator {
+		d.ticketLog(id).Info("killing plannotator", "reason", "shutdown")
 		cancel()
 	}
 }

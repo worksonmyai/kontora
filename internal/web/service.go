@@ -8,11 +8,14 @@ import (
 )
 
 var (
-	ErrTicketNotFound = errors.New("ticket not found")
-	ErrInvalidState   = errors.New("invalid state transition")
-	ErrLogNotFound    = errors.New("log not found")
-	ErrUnknownAgent   = errors.New("unknown agent")
-	ErrDeleteRejected = errors.New("delete rejected")
+	ErrTicketNotFound      = errors.New("ticket not found")
+	ErrInvalidState        = errors.New("invalid state transition")
+	ErrLogNotFound         = errors.New("log not found")
+	ErrUnknownAgent        = errors.New("unknown agent")
+	ErrDeleteRejected      = errors.New("delete rejected")
+	ErrPlannotatorInFlight = errors.New("plannotator review already in progress")
+	ErrPlannotatorBinary   = errors.New("plannotator not installed: https://plannotator.ai")
+	ErrPlannotatorWorkdir  = errors.New("plannotator worktree not available")
 )
 
 // TicketService defines the contract between the web layer and the daemon.
@@ -36,7 +39,16 @@ type TicketService interface {
 	GetLogs(id string, stage string) (string, error)
 	Subscribe() (ch <-chan TicketEvent, unsubscribe func())
 	HasTerminalSession(id string) bool
+	StartPlannotatorReview(id string) error
 }
+
+// PlannotatorOutcome enumerates the results of a plannotator review run.
+// The UI uses this to render the finished-state toast.
+const (
+	PlannotatorOutcomeApproved = "approved"
+	PlannotatorOutcomeRework   = "rework"
+	PlannotatorOutcomeError    = "error"
+)
 
 type CreateTicketRequest struct {
 	Title    string `json:"title"`
@@ -106,6 +118,11 @@ type HistoryInfo struct {
 type TicketEvent struct {
 	Type   string     `json:"type"`
 	Ticket TicketInfo `json:"ticket"`
+	// Outcome is only populated for plannotator_finished events.
+	Outcome string `json:"outcome,omitempty"`
+	// Message carries additional context (e.g. spawn failure detail) on
+	// plannotator events. Optional.
+	Message string `json:"message,omitempty"`
 }
 
 // TicketInfoFromView converts an app.View to a TicketInfo.

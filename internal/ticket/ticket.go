@@ -64,6 +64,7 @@ type Ticket struct {
 	History     []HistoryEntry `yaml:"history"`
 	Created     *time.Time     `yaml:"created"`
 	LastError   string         `yaml:"last_error"`
+	LastLog     string         `yaml:"last_log"`
 
 	Body     string `yaml:"-"`
 	FilePath string `yaml:"-"`

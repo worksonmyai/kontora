@@ -730,34 +730,6 @@ func (d *Daemon) runTicket(ctx context.Context, ticketID string) {
 		return
 	}
 
-	// Resolve path.
-	repoName, repoPath, err := d.resolvePath(t)
-	if err != nil {
-		log.Error("resolve path failed", "err", err)
-		d.pauseTicket(t, filePath, "resolve path failed: "+err.Error())
-		return
-	}
-
-	// Create worktree.
-	branch := d.ticketBranch(t)
-	wtPath, created, err := d.worktrees.Create(repoPath, repoName, ticketID, branch)
-	if err != nil {
-		log.Error("create worktree failed", "path", repoPath, "err", err)
-		d.pauseTicket(t, filePath, "create worktree failed: "+err.Error())
-		return
-	}
-	if created {
-		log.Info("worktree created", "path", wtPath)
-	} else {
-		log.Info("worktree reused", "path", wtPath)
-	}
-	_ = t.SetField("branch", branch)
-	if err := d.writeTicket(t, filePath); err != nil {
-		log.Error("write failed", "phase", "branch", "err", err)
-		return
-	}
-
-	// Render prompt.
 	stageName := action.Spawn.Stage
 	agentName := action.Spawn.Agent
 	if t.Agent != "" {
@@ -772,50 +744,36 @@ func (d *Daemon) runTicket(ctx context.Context, ticketID string) {
 	}
 	stageCfg := d.cfg.Stages[stageName]
 
+	repoName, repoPath, wtPath, prepOK := d.prepareWorktreeForAgent(log, t, filePath, ticketID, stageName)
+	if !prepOK {
+		return
+	}
+
 	rendered, err := d.renderTicketPrompt(stageCfg.Prompt, t, filePath, wtPath)
 	if err != nil {
 		log.Error("render prompt failed", "stage", stageName, "err", err)
 		d.pauseTicket(t, filePath, "render prompt failed: "+err.Error())
 		return
 	}
-
 	if rendered != "" {
 		rendered += buildOperationalAppendix(t.ID, filePath, wtPath, true)
 	}
 
 	log.Info("spawning agent", "agent", agentName, "stage", stageName, "binary", agentCfg.Binary)
 
-	args, settingsFile, sessionID, err := buildAgentArgs(agentCfg, rendered, tmux.ChannelName(ticketID))
-	if err != nil {
-		log.Error("build agent args failed", "err", err)
-		d.pauseTicket(t, filePath, "build agent args failed: "+err.Error())
+	result, spawnOK := d.spawnAgentRun(taskCtx, t, spawnAgentParams{
+		log:       log,
+		ticketID:  ticketID,
+		filePath:  filePath,
+		stageName: stageName,
+		wtPath:    wtPath,
+		rendered:  rendered,
+		agentCfg:  agentCfg,
+		stageCfg:  stageCfg,
+	})
+	if !spawnOK {
 		return
 	}
-	if settingsFile != "" {
-		defer os.Remove(settingsFile)
-	}
-	params := d.buildRunnerParams(agentCfg, stageCfg, args, wtPath, ticketID, stageName, sessionID)
-	result, runnerErr := d.runner(taskCtx, params)
-	if runnerErr != nil && taskCtx.Err() == nil {
-		log.Error("runner failed", "stage", stageName, "err", runnerErr)
-		d.killTaskWindow(ticketID)
-		d.pauseTicket(t, filePath, "runner failed: "+runnerErr.Error())
-		return
-	}
-
-	d.materializeAgentLogs(log, params)
-
-	dur := result.ExitedAt.Sub(result.StartedAt).Truncate(time.Second)
-	attrs := []any{"stage", stageName, "exit_code", result.ExitCode, "duration", dur}
-	if result.ExitCode != 0 {
-		if tail := tailFile(params.LogFile, 512); tail != "" {
-			attrs = append(attrs, "output", tail)
-		}
-	}
-	if runnerErr != nil {
-		attrs = append(attrs, "err", runnerErr)
-	}
-	log.Info("agent exited", attrs...)
 
 	d.handleAgentExit(ctx, taskCtx, handleExitParams{
 		log:          log,
@@ -858,78 +816,36 @@ func (d *Daemon) runSimpleTicket(ctx, taskCtx context.Context, log *slog.Logger,
 		return
 	}
 
-	// Resolve path.
-	repoName, repoPath, err := d.resolvePath(t)
-	if err != nil {
-		log.Error("resolve path failed", "err", err)
-		d.pauseTicket(t, filePath, "resolve path failed: "+err.Error())
+	repoName, repoPath, wtPath, prepOK := d.prepareWorktreeForAgent(log, t, filePath, ticketID, "default")
+	if !prepOK {
 		return
 	}
 
-	// Create worktree.
-	branch := d.ticketBranch(t)
-	wtPath, created, err := d.worktrees.Create(repoPath, repoName, ticketID, branch)
-	if err != nil {
-		log.Error("create worktree failed", "path", repoPath, "err", err)
-		d.pauseTicket(t, filePath, "create worktree failed: "+err.Error())
-		return
-	}
-	if created {
-		log.Info("worktree created", "path", wtPath)
-	} else {
-		log.Info("worktree reused", "path", wtPath)
-	}
-	_ = t.SetField("branch", branch)
-	if err := d.writeTicket(t, filePath); err != nil {
-		log.Error("write failed", "phase", "branch", "err", err)
-		return
-	}
-
-	// Render prompt.
 	rendered, err := d.renderTicketPrompt(defaultPromptTemplate, t, filePath, wtPath)
 	if err != nil {
 		log.Error("render prompt failed", "err", err)
 		d.pauseTicket(t, filePath, "render prompt failed: "+err.Error())
 		return
 	}
-
 	if rendered != "" {
 		rendered += buildOperationalAppendix(t.ID, filePath, wtPath, false)
 	}
 
 	log.Info("spawning agent", "agent", agentName, "binary", agentCfg.Binary)
 
-	args, settingsFile, _, err := buildAgentArgs(agentCfg, rendered, tmux.ChannelName(ticketID))
-	if err != nil {
-		log.Error("build agent args failed", "err", err)
-		d.pauseTicket(t, filePath, "build agent args failed: "+err.Error())
+	result, spawnOK := d.spawnAgentRun(taskCtx, t, spawnAgentParams{
+		log:       log,
+		ticketID:  ticketID,
+		filePath:  filePath,
+		stageName: "default",
+		wtPath:    wtPath,
+		rendered:  rendered,
+		agentCfg:  agentCfg,
+		stageCfg:  config.Stage{},
+	})
+	if !spawnOK {
 		return
 	}
-	if settingsFile != "" {
-		defer os.Remove(settingsFile)
-	}
-	params := d.buildRunnerParams(agentCfg, config.Stage{}, args, wtPath, ticketID, "default", "")
-	result, runnerErr := d.runner(taskCtx, params)
-	if runnerErr != nil && taskCtx.Err() == nil {
-		log.Error("runner failed", "err", runnerErr)
-		d.killTaskWindow(ticketID)
-		d.pauseTicket(t, filePath, "runner failed: "+runnerErr.Error())
-		return
-	}
-
-	d.materializeAgentLogs(log, params)
-
-	dur := result.ExitedAt.Sub(result.StartedAt).Truncate(time.Second)
-	attrs := []any{"exit_code", result.ExitCode, "duration", dur}
-	if result.ExitCode != 0 {
-		if tail := tailFile(params.LogFile, 512); tail != "" {
-			attrs = append(attrs, "output", tail)
-		}
-	}
-	if runnerErr != nil {
-		attrs = append(attrs, "err", runnerErr)
-	}
-	log.Info("agent exited", attrs...)
 
 	// Handle context cancellation.
 	branchPrefix := d.cfg.BranchPrefix
@@ -1137,6 +1053,102 @@ func (d *Daemon) handleAgentExit(ctx, taskCtx context.Context, p handleExitParam
 	d.mu.Unlock()
 }
 
+// prepareWorktreeForAgent resolves the ticket's repo path, creates (or reuses)
+// a worktree for the ticket's branch, and writes the branch/last_log fields.
+// On failure the ticket is paused and ok=false is returned so the caller can
+// return immediately.
+func (d *Daemon) prepareWorktreeForAgent(log *slog.Logger, t *ticket.Ticket, filePath, ticketID, stageName string) (repoName, repoPath, wtPath string, ok bool) {
+	var err error
+	repoName, repoPath, err = d.resolvePath(t)
+	if err != nil {
+		log.Error("resolve path failed", "err", err)
+		d.pauseTicket(t, filePath, "resolve path failed: "+err.Error())
+		return "", "", "", false
+	}
+
+	branch := d.ticketBranch(t)
+	var created bool
+	wtPath, created, err = d.worktrees.Create(repoPath, repoName, ticketID, branch)
+	if err != nil {
+		log.Error("create worktree failed", "path", repoPath, "err", err)
+		d.pauseTicket(t, filePath, "create worktree failed: "+err.Error())
+		return "", "", "", false
+	}
+	if created {
+		log.Info("worktree created", "path", wtPath)
+	} else {
+		log.Info("worktree reused", "path", wtPath)
+	}
+
+	if err := t.SetField("branch", branch); err != nil {
+		log.Error("set field failed", "field", "branch", "err", err)
+	}
+	if err := t.SetField("last_log", d.stageLogPath(ticketID, stageName)); err != nil {
+		log.Error("set field failed", "field", "last_log", "err", err)
+	}
+	if err := d.writeTicket(t, filePath); err != nil {
+		log.Error("write failed", "phase", "spawn_fields", "err", err)
+		return "", "", "", false
+	}
+	return repoName, repoPath, wtPath, true
+}
+
+type spawnAgentParams struct {
+	log       *slog.Logger
+	ticketID  string
+	filePath  string
+	stageName string
+	wtPath    string
+	rendered  string
+	agentCfg  config.Agent
+	stageCfg  config.Stage
+}
+
+// spawnAgentRun builds agent args, invokes the runner, materializes session
+// logs, and logs exit info. On a spawn or runner failure the ticket is paused
+// and ok=false is returned so the caller can return immediately.
+func (d *Daemon) spawnAgentRun(taskCtx context.Context, t *ticket.Ticket, p spawnAgentParams) (process.Result, bool) {
+	args, settingsFile, sessionID, err := buildAgentArgs(p.agentCfg, p.rendered, tmux.ChannelName(p.ticketID))
+	if err != nil {
+		p.log.Error("build agent args failed", "err", err)
+		d.pauseTicket(t, p.filePath, "build agent args failed: "+err.Error())
+		return process.Result{}, false
+	}
+	if settingsFile != "" {
+		defer os.Remove(settingsFile)
+	}
+
+	params := d.buildRunnerParams(p.agentCfg, p.stageCfg, args, p.wtPath, p.ticketID, p.stageName, sessionID)
+	result, runnerErr := d.runner(taskCtx, params)
+	if runnerErr != nil && taskCtx.Err() == nil {
+		d.materializeAgentLogs(p.log, params)
+		errAttrs := []any{"stage", p.stageName, "err", runnerErr}
+		if tail := tailFile(params.LogFile); tail != "" {
+			errAttrs = append(errAttrs, "output", tail)
+		}
+		p.log.Error("runner failed", errAttrs...)
+		d.killTaskWindow(p.ticketID)
+		d.pauseTicket(t, p.filePath, fmt.Sprintf("runner failed: %s", runnerErr.Error()))
+		return result, false
+	}
+
+	d.materializeAgentLogs(p.log, params)
+
+	dur := result.ExitedAt.Sub(result.StartedAt).Truncate(time.Second)
+	attrs := []any{"stage", p.stageName, "exit_code", result.ExitCode, "duration", dur}
+	if result.ExitCode != 0 {
+		if tail := tailFile(params.LogFile); tail != "" {
+			attrs = append(attrs, "output", tail)
+		}
+	}
+	if runnerErr != nil {
+		attrs = append(attrs, "err", runnerErr)
+	}
+	p.log.Info("agent exited", attrs...)
+
+	return result, true
+}
+
 // buildOperationalAppendix returns a context block appended to every rendered prompt.
 // It gives agents the ticket ID, file paths, and CLI commands they need so they
 // don't have to search $HOME for context.
@@ -1266,7 +1278,7 @@ func (d *Daemon) buildRunnerParams(agentCfg config.Agent, stageCfg config.Stage,
 		Dir:         dir,
 		Timeout:     stageCfg.Timeout.Duration,
 		TicketID:    ticketID,
-		LogFile:     filepath.Join(logDir, stageName+".log"),
+		LogFile:     d.stageLogPath(ticketID, stageName),
 		Interactive: agentCfg.IsClaude(),
 		SessionID:   sessionID,
 		SessionDir:  sessionDir,
@@ -1309,6 +1321,10 @@ func (d *Daemon) writeTicket(t *ticket.Ticket, path string) error {
 	}
 	d.recordSelfWrite(path)
 	return os.WriteFile(path, data, 0o644)
+}
+
+func (d *Daemon) stageLogPath(ticketID, stageName string) string {
+	return filepath.Join(expandTilde(d.cfg.LogsDir), ticketID, stageName+".log")
 }
 
 func (d *Daemon) pauseTicket(t *ticket.Ticket, path, reason string) {
@@ -1557,9 +1573,13 @@ func fieldValue(fields []pipeline.FieldUpdate, key string) any {
 	return nil
 }
 
-// tailFile reads up to maxBytes from the end of a file and returns it as a
+// tailLogBytes is the maximum number of bytes read from the end of an agent
+// log file when capturing diagnostic output.
+const tailLogBytes = 4096
+
+// tailFile reads up to tailLogBytes from the end of a file and returns it as a
 // trimmed string. Returns empty string on any error.
-func tailFile(path string, maxBytes int64) string {
+func tailFile(path string) string {
 	f, err := os.Open(path)
 	if err != nil {
 		return ""
@@ -1571,7 +1591,7 @@ func tailFile(path string, maxBytes int64) string {
 		return ""
 	}
 
-	offset := max(info.Size()-maxBytes, 0)
+	offset := max(info.Size()-tailLogBytes, 0)
 	if _, err := f.Seek(offset, 0); err != nil {
 		return ""
 	}

@@ -1469,6 +1469,56 @@ func TestPauseTicketWritesReasonNote(t *testing.T) {
 	require.NoError(t, <-errCh)
 }
 
+func TestRunnerError_CapturesLogTailAndPath(t *testing.T) {
+	h := newHarness(t)
+
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
+
+	const marker = "boom-marker-output"
+	failRunner := func(_ context.Context, p RunnerParams) (process.Result, error) {
+		if p.LogFile != "" {
+			if err := os.MkdirAll(filepath.Dir(p.LogFile), 0o755); err != nil {
+				return process.Result{ExitCode: -1}, fmt.Errorf("create log dir: %w", err)
+			}
+			if err := os.WriteFile(p.LogFile, []byte(marker+"\n"), 0o644); err != nil {
+				return process.Result{ExitCode: -1}, fmt.Errorf("write log file: %w", err)
+			}
+		}
+		return process.Result{ExitCode: -1}, fmt.Errorf("boom")
+	}
+
+	d := New(h.cfg,
+		WithLogger(logger),
+		WithDebounce(50*time.Millisecond),
+		WithLockPath(h.lockPath),
+		WithRunner(failRunner),
+		WithSkipOrphanCleanup(),
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- d.Run(ctx) }()
+	time.Sleep(200 * time.Millisecond)
+
+	h.writeTicket("tst-le5.md", h.taskMD("tst-le5", "todo", "one-stage"))
+	result := h.waitForStatus("tst-le5.md", ticket.StatusPaused, 10*time.Second)
+
+	assert.Contains(t, result.LastError, "runner failed: boom")
+	assert.NotContains(t, result.LastError, "see log:")
+
+	assert.NotEmpty(t, result.LastLog)
+	assert.Contains(t, result.LastLog, filepath.Join(h.logsDir, "tst-le5"))
+
+	assert.Contains(t, logBuf.String(), "runner failed")
+	assert.Contains(t, logBuf.String(), marker)
+
+	cancel()
+	require.NoError(t, <-errCh)
+}
+
 func TestAgentOverride_Pipeline(t *testing.T) {
 	h := newHarness(t)
 	// agent1=true (default for step1), agent2=true
@@ -1723,10 +1773,14 @@ func TestPauseTicket_LastError(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "paused", info.Status)
 	assert.Contains(t, info.LastError, "runner failed: connection refused")
+	assert.NotContains(t, info.LastError, "see log:")
+	assert.NotEmpty(t, info.LastLog)
 
 	// Verify last_error is persisted in frontmatter.
 	tkt := h.readTask("tst-le1.md")
 	assert.Contains(t, tkt.LastError, "runner failed: connection refused")
+	assert.NotContains(t, tkt.LastError, "see log:")
+	assert.NotEmpty(t, tkt.LastLog)
 
 	cancel()
 	require.NoError(t, <-errCh)
@@ -1851,11 +1905,15 @@ func TestHandleAgentExit_PipelinePause_SetsLastError(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, info.LastError, "agent exited with code 1")
 	assert.Contains(t, info.LastError, "stage: step1")
+	assert.NotContains(t, info.LastError, "see log:")
+	assert.NotEmpty(t, info.LastLog)
 
 	// Verify last_error is persisted in frontmatter.
 	tkt := h.readTask("tst-le4.md")
 	assert.Contains(t, tkt.LastError, "agent exited with code 1")
 	assert.Contains(t, tkt.LastError, "stage: step1")
+	assert.NotContains(t, tkt.LastError, "see log:")
+	assert.NotEmpty(t, tkt.LastLog)
 
 	cancel()
 	require.NoError(t, <-errCh)

@@ -2115,3 +2115,46 @@ func TestAutoPickUpDisabled(t *testing.T) {
 		require.NoError(t, <-errCh)
 	})
 }
+
+func TestSchedulerRejectsConcurrentSameBranch(t *testing.T) {
+	h := newHarness(t)
+	cfg := h.defaultConfig("sleep", "sleep")
+	cfg.Agents["agent1"] = config.Agent{Binary: "sleep", Args: []string{"5"}}
+	cfg.Stages["step1"] = config.Stage{Prompt: ""}
+	d := h.newDaemon(cfg)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- d.Run(ctx) }()
+
+	time.Sleep(200 * time.Millisecond)
+
+	ticketMD := func(id string) string {
+		return fmt.Sprintf(`---
+id: %s
+kontora: true
+status: todo
+pipeline: one-stage
+branch: feat/stacked
+path: %s
+created: 2026-01-01T00:00:00Z
+---
+# Same-branch ticket %s
+`, id, h.repoDir, id)
+	}
+
+	// Ticket A claims the branch and stays in_progress.
+	h.writeTicket("tst-ca.md", ticketMD("tst-ca"))
+	h.waitForStatus("tst-ca.md", ticket.StatusInProgress, 5*time.Second)
+
+	// Ticket B on the same branch must be paused before any agent is spawned.
+	h.writeTicket("tst-cb.md", ticketMD("tst-cb"))
+
+	result := h.waitForStatus("tst-cb.md", ticket.StatusPaused, 5*time.Second)
+	assert.Contains(t, result.LastError, "branch feat/stacked in use by ticket tst-ca")
+
+	cancel()
+	<-errCh
+}

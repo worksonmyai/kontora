@@ -218,12 +218,13 @@ type Daemon struct {
 	lockPath string
 	log      *slog.Logger
 
-	mu          sync.Mutex
-	tickets     map[string]*ticketState
-	running     map[string]context.CancelFunc
-	queued      map[string]bool // dedupe: prevents same ticket being enqueued twice
-	sem         chan struct{}
-	plannotator map[string]context.CancelFunc // in-flight plannotator subprocesses
+	mu              sync.Mutex
+	tickets         map[string]*ticketState
+	running         map[string]context.CancelFunc
+	queued          map[string]bool   // dedupe: prevents same ticket being enqueued twice
+	runningBranches map[string]string // repoPath\x00branch → ticketID holding the branch
+	sem             chan struct{}
+	plannotator     map[string]context.CancelFunc // in-flight plannotator subprocesses
 
 	selfWrites   map[string]int
 	selfWritesMu sync.Mutex
@@ -251,12 +252,13 @@ func New(cfg *config.Config, opts ...Option) *Daemon {
 		log: slog.New(charmlog.NewWithOptions(os.Stderr, charmlog.Options{
 			ReportTimestamp: true,
 		})),
-		tickets:     make(map[string]*ticketState),
-		running:     make(map[string]context.CancelFunc),
-		queued:      make(map[string]bool),
-		sem:         make(chan struct{}, cfg.MaxConcurrentAgents),
-		plannotator: make(map[string]context.CancelFunc),
-		selfWrites:  make(map[string]int),
+		tickets:         make(map[string]*ticketState),
+		running:         make(map[string]context.CancelFunc),
+		queued:          make(map[string]bool),
+		runningBranches: make(map[string]string),
+		sem:             make(chan struct{}, cfg.MaxConcurrentAgents),
+		plannotator:     make(map[string]context.CancelFunc),
+		selfWrites:      make(map[string]int),
 	}
 	for _, opt := range opts {
 		opt(d)
@@ -558,15 +560,27 @@ func (d *Daemon) ticketBranch(t *ticket.Ticket) string {
 	return worktree.BranchName(d.cfg.BranchPrefix, t.ID)
 }
 
-// removeWorktree removes the git worktree for a ticket. Logs but does not
+// removeWorktreeAt removes the git worktree at wtPath. Logs but does not
 // propagate errors — a failed cleanup should not block ticket completion.
 // Dirty worktrees are preserved (branch and directory kept intact).
-func (d *Daemon) removeWorktree(log *slog.Logger, repoPath, repoName, ticketID, branchPrefix string) {
-	if err := d.worktrees.Remove(repoPath, repoName, ticketID, branchPrefix); errors.Is(err, worktree.ErrDirtyWorktree) {
+func (d *Daemon) removeWorktreeAt(log *slog.Logger, repoPath, wtPath string) {
+	d.logRemoveResult(log, d.worktrees.RemoveAt(repoPath, wtPath))
+}
+
+// removeWorktreeByBranch discovers the worktree via git and removes it. Used
+// when the caller doesn't have the worktree path in hand (e.g. status-change
+// goroutine). Logs but does not propagate errors.
+func (d *Daemon) removeWorktreeByBranch(log *slog.Logger, repoPath, branch string) {
+	d.logRemoveResult(log, d.worktrees.Remove(repoPath, branch))
+}
+
+func (d *Daemon) logRemoveResult(log *slog.Logger, err error) {
+	switch {
+	case errors.Is(err, worktree.ErrDirtyWorktree):
 		log.Warn("worktree has uncommitted changes, keeping it")
-	} else if err != nil {
+	case err != nil:
 		log.Warn("worktree cleanup failed", "err", err)
-	} else {
+	default:
 		log.Info("worktree removed")
 	}
 }
@@ -588,12 +602,12 @@ func isTerminalOverride(s ticket.Status) bool {
 // cleanupWorktree resolves repo info from a ticket and removes its worktree.
 // Safe to call from a goroutine (does not hold d.mu).
 func (d *Daemon) cleanupWorktree(log *slog.Logger, t *ticket.Ticket) {
-	repoName, repoPath, err := d.resolvePath(t)
+	_, repoPath, err := d.resolvePath(t)
 	if err != nil {
 		log.Warn("worktree cleanup: resolve path failed", "err", err)
 		return
 	}
-	d.removeWorktree(log, repoPath, repoName, t.ID, d.cfg.BranchPrefix)
+	d.removeWorktreeByBranch(log, repoPath, d.ticketBranch(t))
 }
 
 // enqueue adds a ticket to the queue. Must be called with d.mu held.
@@ -685,10 +699,28 @@ func (d *Daemon) runTicket(ctx context.Context, ticketID string) {
 	taskCtx, taskCancel := context.WithCancel(ctx)
 	d.running[ticketID] = taskCancel
 
+	// Reserve the branch atomically so two tickets targeting the same
+	// repository and branch can't both pass this guard and reuse each
+	// other's worktree by surprise. Keyed by (repoPath, branch) because
+	// identical branch names in different repos don't collide.
+	branch := d.ticketBranch(t)
+	branchKey := expandTilde(t.Path) + "\x00" + branch
+	if holder, ok := d.runningBranches[branchKey]; ok && holder != ticketID {
+		taskCancel()
+		delete(d.running, ticketID)
+		d.mu.Unlock()
+		d.pauseTicket(t, filePath, fmt.Sprintf("branch %s in use by ticket %s", branch, holder))
+		return
+	}
+	d.runningBranches[branchKey] = ticketID
+
 	defer func() {
 		taskCancel()
 		d.mu.Lock()
 		delete(d.running, ticketID)
+		if d.runningBranches[branchKey] == ticketID {
+			delete(d.runningBranches, branchKey)
+		}
 		d.mu.Unlock()
 	}()
 
@@ -765,7 +797,7 @@ func (d *Daemon) runTicket(ctx context.Context, ticketID string) {
 	}
 	stageCfg := d.cfg.Stages[stageName]
 
-	repoName, repoPath, wtPath, prepOK := d.prepareWorktreeForAgent(log, t, filePath, ticketID, stageName)
+	repoPath, wtPath, prepOK := d.prepareWorktreeForAgent(log, t, filePath, ticketID, stageName)
 	if !prepOK {
 		return
 	}
@@ -797,15 +829,14 @@ func (d *Daemon) runTicket(ctx context.Context, ticketID string) {
 	}
 
 	d.handleAgentExit(ctx, taskCtx, handleExitParams{
-		log:          log,
-		ticketID:     ticketID,
-		filePath:     filePath,
-		stageName:    stageName,
-		result:       result,
-		pipelineCfg:  pipelineCfg,
-		repoPath:     repoPath,
-		repoName:     repoName,
-		branchPrefix: d.cfg.BranchPrefix,
+		log:         log,
+		ticketID:    ticketID,
+		filePath:    filePath,
+		stageName:   stageName,
+		result:      result,
+		pipelineCfg: pipelineCfg,
+		repoPath:    repoPath,
+		wtPath:      wtPath,
 	})
 }
 
@@ -837,7 +868,7 @@ func (d *Daemon) runSimpleTicket(ctx, taskCtx context.Context, log *slog.Logger,
 		return
 	}
 
-	repoName, repoPath, wtPath, prepOK := d.prepareWorktreeForAgent(log, t, filePath, ticketID, "default")
+	repoPath, wtPath, prepOK := d.prepareWorktreeForAgent(log, t, filePath, ticketID, "default")
 	if !prepOK {
 		return
 	}
@@ -869,7 +900,6 @@ func (d *Daemon) runSimpleTicket(ctx, taskCtx context.Context, log *slog.Logger,
 	}
 
 	// Handle context cancellation.
-	branchPrefix := d.cfg.BranchPrefix
 	if taskCtx.Err() != nil {
 		if ctx.Err() != nil {
 			log.Warn("interrupted by shutdown")
@@ -877,7 +907,7 @@ func (d *Daemon) runSimpleTicket(ctx, taskCtx context.Context, log *slog.Logger,
 		}
 		if t2, err := ticket.ParseFile(filePath); err == nil {
 			if isTerminalOverride(t2.Status) {
-				d.removeWorktree(log, repoPath, repoName, ticketID, branchPrefix)
+				d.removeWorktreeAt(log, repoPath, wtPath)
 				d.killTaskWindow(ticketID)
 			}
 		}
@@ -896,7 +926,7 @@ func (d *Daemon) runSimpleTicket(ctx, taskCtx context.Context, log *slog.Logger,
 	if d.isUserOverride(t2.Status) {
 		log.Info("user override during execution", "status", t2.Status)
 		if isTerminalOverride(t2.Status) {
-			d.removeWorktree(log, repoPath, repoName, ticketID, branchPrefix)
+			d.removeWorktreeAt(log, repoPath, wtPath)
 			d.killTaskWindow(ticketID)
 		}
 		d.mu.Lock()
@@ -928,7 +958,7 @@ func (d *Daemon) runSimpleTicket(ctx, taskCtx context.Context, log *slog.Logger,
 	}
 
 	if result.ExitCode == 0 {
-		d.removeWorktree(log, repoPath, repoName, ticketID, branchPrefix)
+		d.removeWorktreeAt(log, repoPath, wtPath)
 	}
 
 	d.mu.Lock()
@@ -938,15 +968,14 @@ func (d *Daemon) runSimpleTicket(ctx, taskCtx context.Context, log *slog.Logger,
 }
 
 type handleExitParams struct {
-	log          *slog.Logger
-	ticketID     string
-	filePath     string
-	stageName    string
-	result       process.Result
-	pipelineCfg  config.Pipeline
-	repoPath     string
-	repoName     string
-	branchPrefix string
+	log         *slog.Logger
+	ticketID    string
+	filePath    string
+	stageName   string
+	result      process.Result
+	pipelineCfg config.Pipeline
+	repoPath    string
+	wtPath      string
 }
 
 func (d *Daemon) handleAgentExit(ctx, taskCtx context.Context, p handleExitParams) {
@@ -960,7 +989,7 @@ func (d *Daemon) handleAgentExit(ctx, taskCtx context.Context, p handleExitParam
 		// User changed status (e.g. cancelled, done, paused, or open) while running. Clean up worktree if in a terminal override.
 		if t2, err := ticket.ParseFile(p.filePath); err == nil {
 			if isTerminalOverride(t2.Status) {
-				d.removeWorktree(p.log, p.repoPath, p.repoName, p.ticketID, p.branchPrefix)
+				d.removeWorktreeAt(p.log, p.repoPath, p.wtPath)
 				d.killTaskWindow(p.ticketID)
 			}
 		}
@@ -979,7 +1008,7 @@ func (d *Daemon) handleAgentExit(ctx, taskCtx context.Context, p handleExitParam
 	if d.isUserOverride(t2.Status) {
 		p.log.Info("user override during execution", "status", t2.Status)
 		if isTerminalOverride(t2.Status) {
-			d.removeWorktree(p.log, p.repoPath, p.repoName, p.ticketID, p.branchPrefix)
+			d.removeWorktreeAt(p.log, p.repoPath, p.wtPath)
 			d.killTaskWindow(p.ticketID)
 		}
 		d.mu.Lock()
@@ -1051,7 +1080,7 @@ func (d *Daemon) handleAgentExit(ctx, taskCtx context.Context, p handleExitParam
 
 	// Clean up worktree on terminal states.
 	if exitAction.Kind == pipeline.ActionComplete {
-		d.removeWorktree(p.log, p.repoPath, p.repoName, p.ticketID, p.branchPrefix)
+		d.removeWorktreeAt(p.log, p.repoPath, p.wtPath)
 	}
 
 	// Kill tmux window unless paused or parked-with-failure — keep it alive
@@ -1078,27 +1107,25 @@ func (d *Daemon) handleAgentExit(ctx, taskCtx context.Context, p handleExitParam
 // a worktree for the ticket's branch, and writes the branch/last_log fields.
 // On failure the ticket is paused and ok=false is returned so the caller can
 // return immediately.
-func (d *Daemon) prepareWorktreeForAgent(log *slog.Logger, t *ticket.Ticket, filePath, ticketID, stageName string) (repoName, repoPath, wtPath string, ok bool) {
-	var err error
-	repoName, repoPath, err = d.resolvePath(t)
+func (d *Daemon) prepareWorktreeForAgent(log *slog.Logger, t *ticket.Ticket, filePath, ticketID, stageName string) (repoPath, wtPath string, ok bool) {
+	repoName, repoPath, err := d.resolvePath(t)
 	if err != nil {
 		log.Error("resolve path failed", "err", err)
 		d.pauseTicket(t, filePath, "resolve path failed: "+err.Error())
-		return "", "", "", false
+		return "", "", false
 	}
 
 	branch := d.ticketBranch(t)
-	var created bool
-	wtPath, created, err = d.worktrees.Create(repoPath, repoName, ticketID, branch)
+	wtPath, created, err := d.worktrees.Create(repoPath, repoName, ticketID, branch)
 	if err != nil {
 		log.Error("create worktree failed", "path", repoPath, "err", err)
 		d.pauseTicket(t, filePath, "create worktree failed: "+err.Error())
-		return "", "", "", false
+		return "", "", false
 	}
 	if created {
-		log.Info("worktree created", "path", wtPath)
+		log.Info("worktree created", "path", wtPath, "branch", branch)
 	} else {
-		log.Info("worktree reused", "path", wtPath)
+		log.Info("reusing existing worktree for branch", "path", wtPath, "branch", branch)
 	}
 
 	if err := t.SetField("branch", branch); err != nil {
@@ -1109,9 +1136,9 @@ func (d *Daemon) prepareWorktreeForAgent(log *slog.Logger, t *ticket.Ticket, fil
 	}
 	if err := d.writeTicket(t, filePath); err != nil {
 		log.Error("write failed", "phase", "spawn_fields", "err", err)
-		return "", "", "", false
+		return "", "", false
 	}
-	return repoName, repoPath, wtPath, true
+	return repoPath, wtPath, true
 }
 
 type spawnAgentParams struct {

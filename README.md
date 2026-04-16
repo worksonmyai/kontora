@@ -100,11 +100,14 @@ Templates use Go syntax. `{{ .Ticket.Title }}`, `{{ .Ticket.Description }}`, `{{
 **Pipelines** wire stages to agents in sequence, with success/failure policies per step:
 
 ```yaml
+statuses:
+  - human_review
+
 pipelines:
   default:
     - stage: code
       agent: claude
-      on_success: done
+      on_success: human_review
       on_failure: pause
 
   implement-review-commit:
@@ -119,7 +122,7 @@ pipelines:
       max_retries: 1
     - stage: commit
       agent: claude
-      on_success: done
+      on_success: human_review
       on_failure: retry
       max_retries: 1
 ```

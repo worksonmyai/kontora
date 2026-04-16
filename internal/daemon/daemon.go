@@ -751,13 +751,7 @@ func (d *Daemon) runTicket(ctx context.Context, ticketID string) {
 	} else {
 		log.Info("worktree reused", "path", wtPath)
 	}
-	_ = t.SetField("branch", branch)
-	if err := d.writeTicket(t, filePath); err != nil {
-		log.Error("write failed", "phase", "branch", "err", err)
-		return
-	}
 
-	// Render prompt.
 	stageName := action.Spawn.Stage
 	agentName := action.Spawn.Agent
 	if t.Agent != "" {
@@ -771,6 +765,17 @@ func (d *Daemon) runTicket(ctx context.Context, ticketID string) {
 		return
 	}
 	stageCfg := d.cfg.Stages[stageName]
+
+	if err := t.SetField("branch", branch); err != nil {
+		log.Error("set field failed", "field", "branch", "err", err)
+	}
+	if err := t.SetField("last_log", d.stageLogPath(ticketID, stageName)); err != nil {
+		log.Error("set field failed", "field", "last_log", "err", err)
+	}
+	if err := d.writeTicket(t, filePath); err != nil {
+		log.Error("write failed", "phase", "spawn_fields", "err", err)
+		return
+	}
 
 	rendered, err := d.renderTicketPrompt(stageCfg.Prompt, t, filePath, wtPath)
 	if err != nil {
@@ -797,9 +802,14 @@ func (d *Daemon) runTicket(ctx context.Context, ticketID string) {
 	params := d.buildRunnerParams(agentCfg, stageCfg, args, wtPath, ticketID, stageName, sessionID)
 	result, runnerErr := d.runner(taskCtx, params)
 	if runnerErr != nil && taskCtx.Err() == nil {
-		log.Error("runner failed", "stage", stageName, "err", runnerErr)
+		d.materializeAgentLogs(log, params)
+		errAttrs := []any{"stage", stageName, "err", runnerErr}
+		if tail := tailFile(params.LogFile); tail != "" {
+			errAttrs = append(errAttrs, "output", tail)
+		}
+		log.Error("runner failed", errAttrs...)
 		d.killTaskWindow(ticketID)
-		d.pauseTicket(t, filePath, "runner failed: "+runnerErr.Error())
+		d.pauseTicket(t, filePath, fmt.Sprintf("runner failed: %s", runnerErr.Error()))
 		return
 	}
 
@@ -808,7 +818,7 @@ func (d *Daemon) runTicket(ctx context.Context, ticketID string) {
 	dur := result.ExitedAt.Sub(result.StartedAt).Truncate(time.Second)
 	attrs := []any{"stage", stageName, "exit_code", result.ExitCode, "duration", dur}
 	if result.ExitCode != 0 {
-		if tail := tailFile(params.LogFile, 512); tail != "" {
+		if tail := tailFile(params.LogFile); tail != "" {
 			attrs = append(attrs, "output", tail)
 		}
 	}
@@ -879,9 +889,14 @@ func (d *Daemon) runSimpleTicket(ctx, taskCtx context.Context, log *slog.Logger,
 	} else {
 		log.Info("worktree reused", "path", wtPath)
 	}
-	_ = t.SetField("branch", branch)
+	if err := t.SetField("branch", branch); err != nil {
+		log.Error("set field failed", "field", "branch", "err", err)
+	}
+	if err := t.SetField("last_log", d.stageLogPath(ticketID, "default")); err != nil {
+		log.Error("set field failed", "field", "last_log", "err", err)
+	}
 	if err := d.writeTicket(t, filePath); err != nil {
-		log.Error("write failed", "phase", "branch", "err", err)
+		log.Error("write failed", "phase", "spawn_fields", "err", err)
 		return
 	}
 
@@ -911,9 +926,14 @@ func (d *Daemon) runSimpleTicket(ctx, taskCtx context.Context, log *slog.Logger,
 	params := d.buildRunnerParams(agentCfg, config.Stage{}, args, wtPath, ticketID, "default", "")
 	result, runnerErr := d.runner(taskCtx, params)
 	if runnerErr != nil && taskCtx.Err() == nil {
-		log.Error("runner failed", "err", runnerErr)
+		d.materializeAgentLogs(log, params)
+		errAttrs := []any{"err", runnerErr}
+		if tail := tailFile(params.LogFile); tail != "" {
+			errAttrs = append(errAttrs, "output", tail)
+		}
+		log.Error("runner failed", errAttrs...)
 		d.killTaskWindow(ticketID)
-		d.pauseTicket(t, filePath, "runner failed: "+runnerErr.Error())
+		d.pauseTicket(t, filePath, fmt.Sprintf("runner failed: %s", runnerErr.Error()))
 		return
 	}
 
@@ -922,7 +942,7 @@ func (d *Daemon) runSimpleTicket(ctx, taskCtx context.Context, log *slog.Logger,
 	dur := result.ExitedAt.Sub(result.StartedAt).Truncate(time.Second)
 	attrs := []any{"exit_code", result.ExitCode, "duration", dur}
 	if result.ExitCode != 0 {
-		if tail := tailFile(params.LogFile, 512); tail != "" {
+		if tail := tailFile(params.LogFile); tail != "" {
 			attrs = append(attrs, "output", tail)
 		}
 	}
@@ -1266,7 +1286,7 @@ func (d *Daemon) buildRunnerParams(agentCfg config.Agent, stageCfg config.Stage,
 		Dir:         dir,
 		Timeout:     stageCfg.Timeout.Duration,
 		TicketID:    ticketID,
-		LogFile:     filepath.Join(logDir, stageName+".log"),
+		LogFile:     d.stageLogPath(ticketID, stageName),
 		Interactive: agentCfg.IsClaude(),
 		SessionID:   sessionID,
 		SessionDir:  sessionDir,
@@ -1309,6 +1329,10 @@ func (d *Daemon) writeTicket(t *ticket.Ticket, path string) error {
 	}
 	d.recordSelfWrite(path)
 	return os.WriteFile(path, data, 0o644)
+}
+
+func (d *Daemon) stageLogPath(ticketID, stageName string) string {
+	return filepath.Join(expandTilde(d.cfg.LogsDir), ticketID, stageName+".log")
 }
 
 func (d *Daemon) pauseTicket(t *ticket.Ticket, path, reason string) {
@@ -1557,9 +1581,13 @@ func fieldValue(fields []pipeline.FieldUpdate, key string) any {
 	return nil
 }
 
-// tailFile reads up to maxBytes from the end of a file and returns it as a
+// tailLogBytes is the maximum number of bytes read from the end of an agent
+// log file when capturing diagnostic output.
+const tailLogBytes = 4096
+
+// tailFile reads up to tailLogBytes from the end of a file and returns it as a
 // trimmed string. Returns empty string on any error.
-func tailFile(path string, maxBytes int64) string {
+func tailFile(path string) string {
 	f, err := os.Open(path)
 	if err != nil {
 		return ""
@@ -1571,7 +1599,7 @@ func tailFile(path string, maxBytes int64) string {
 		return ""
 	}
 
-	offset := max(info.Size()-maxBytes, 0)
+	offset := max(info.Size()-tailLogBytes, 0)
 	if _, err := f.Seek(offset, 0); err != nil {
 		return ""
 	}

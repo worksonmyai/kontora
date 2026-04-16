@@ -105,6 +105,7 @@ type TicketInfo struct {
 	History       []HistoryInfo `json:"history,omitempty"`
 	Body          string        `json:"body,omitempty"`
 	LastError     string        `json:"last_error,omitempty"`
+	LastLog       string        `json:"last_log,omitempty"`
 }
 
 type HistoryInfo struct {
@@ -144,6 +145,7 @@ func TicketInfoFromView(v app.View) TicketInfo {
 		Stages:        v.Stages,
 		Body:          v.Body,
 		LastError:     v.LastError,
+		LastLog:       v.LastLog,
 	}
 	if len(v.History) > 0 {
 		info.History = make([]HistoryInfo, len(v.History))

@@ -66,6 +66,8 @@ function kontora() {
         emptyIcon: '<path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/>' },
       { status: 'paused', label: 'Paused', color: 'bg-warn', tip: 'Stopped for now. Click Retry or drag to Todo to resume.', emptyText: 'No paused tickets', tint: '', glow: 'glow-top-warn',
         emptyIcon: '<rect x="14" y="4" width="4" height="16" rx="1"/><rect x="6" y="4" width="4" height="16" rx="1"/>' },
+      { status: 'human_review', label: 'Human Review', color: 'bg-review', tip: 'Waiting for a human to look at the result.', emptyText: 'No tickets waiting for review', tint: '', glow: 'glow-top-review',
+        emptyIcon: '<path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/>' },
       { status: 'done', label: 'Done', color: 'bg-ok', tip: 'Ticket completed successfully.', emptyText: 'No completed tickets yet', tint: '', glow: 'glow-top-ok',
         emptyIcon: '<circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/>' },
       { status: 'cancelled', label: 'Cancelled', color: 'bg-surface-600', tip: 'Stopped manually. Drag to Todo to run it again.', emptyText: 'No cancelled tickets', tint: '', glow: 'glow-top-muted',
@@ -73,8 +75,7 @@ function kontora() {
     ],
 
     _knownCustomStatuses: {
-      review:       { label: 'Review', color: 'bg-review', glow: 'glow-top-review', emptyIcon: '<path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/>' },
-      human_review: { label: 'Human Review', color: 'bg-review', glow: 'glow-top-review', emptyIcon: '<path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/>' },
+      review: { label: 'Review', color: 'bg-review', glow: 'glow-top-review', emptyIcon: '<path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/>' },
     },
 
     get columns() {

@@ -705,7 +705,7 @@ func buildConfigYAML(ans *SetupAnswers) string {
 	b.WriteString("  default:\n")
 	fmt.Fprintf(&b, "    - stage: code\n")
 	fmt.Fprintf(&b, "      agent: %s\n", defaultAgent)
-	fmt.Fprintf(&b, "      on_success: done\n")
+	fmt.Fprintf(&b, "      on_success: human_review\n")
 	fmt.Fprintf(&b, "      on_failure: pause\n")
 	b.WriteString("\n")
 	b.WriteString("  implement-review-commit:\n")
@@ -725,7 +725,7 @@ func buildConfigYAML(ans *SetupAnswers) string {
 	fmt.Fprintf(&b, "      max_retries: 1\n")
 	fmt.Fprintf(&b, "    - stage: commit\n")
 	fmt.Fprintf(&b, "      agent: %s\n", defaultAgent)
-	fmt.Fprintf(&b, "      on_success: done\n")
+	fmt.Fprintf(&b, "      on_success: human_review\n")
 	fmt.Fprintf(&b, "      on_failure: retry\n")
 	fmt.Fprintf(&b, "      max_retries: 1\n")
 

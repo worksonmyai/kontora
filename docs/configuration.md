@@ -19,7 +19,7 @@ pipelines:
   default:
     - stage: code
       agent: claude
-      on_success: done
+      on_success: human_review
       on_failure: pause
 ```
 
@@ -85,7 +85,7 @@ pipelines:
   default:
     - stage: code
       agent: claude-sonnet
-      on_success: done
+      on_success: human_review
       on_failure: pause
 
   implement-review-commit:
@@ -105,7 +105,7 @@ pipelines:
       max_retries: 1
     - stage: commit
       agent: claude-sonnet
-      on_success: done
+      on_success: human_review
       on_failure: retry
       max_retries: 1
 ```
@@ -121,6 +121,7 @@ pipelines:
 | `editor` | no | `$EDITOR` or `vi` | Editor for `kontora edit`. Falls back to `$EDITOR`, then `vi`. |
 | `default_agent` | no | (inferred) | Agent used for tickets without a pipeline. Defaults to `claude` if an agent with that name exists, otherwise inferred when there is exactly one agent. Must be set explicitly when multiple agents are defined and none is named `claude`. |
 | `max_concurrent_agents` | no | `3` | Maximum number of agents running simultaneously. |
+| `statuses` | no | — | Extra parked statuses beyond the built-ins. Agents can park tickets here via `on_success`/`on_failure`. |
 | `environment` | no | — | Map of environment variables to set for all agent processes. |
 | `web` | no | — | Web dashboard settings (see [web](#web)). Enabled by default. |
 
@@ -202,7 +203,7 @@ pipelines:
   default:
     - stage: code
       agent: claude
-      on_success: done
+      on_success: human_review
       on_failure: pause
 ```
 
@@ -212,28 +213,32 @@ pipelines:
 |-------|----------|--------|-------------|
 | `stage` | yes | — | Stage to run at this pipeline step. |
 | `agent` | yes | — | Agent to run the stage. |
-| `on_success` | yes | `next`, `done` | What to do when the agent exits 0. |
-| `on_failure` | yes | `retry`, `back`, `pause` | What to do when the agent exits non-zero. |
+| `on_success` | yes | `next`, `done`, `human_review`, or a custom status | What to do when the agent exits 0. |
+| `on_failure` | yes | `retry`, `back`, `pause`, `human_review`, or a custom status | What to do when the agent exits non-zero. |
 | `max_retries` | no | integer (default `0`) | Maximum retry attempts (only relevant when `on_failure=retry`). |
 
 ### Policies
 
 **`on_success`**:
 - `next` — advance to the next stage (set status back to `todo` so the scheduler picks it up).
-- `done` — mark the ticket as complete. Required on the last stage.
+- `done` — mark the ticket as complete.
+- `human_review` — park the ticket in `human_review` for a human to look at.
+- A custom status declared in top-level `statuses:` — park the ticket in that status.
 
 **`on_failure`**:
 - `retry` — re-run the same stage (up to `max_retries`, then pause).
 - `back` — go back to the previous stage. Not allowed on the first stage.
-- `pause` — set the ticket to `paused` for human review.
+- `pause` — set the ticket to `paused`.
+- `human_review` — park the ticket in `human_review`.
+- A custom status declared in top-level `statuses:` — park the ticket in that status.
 
 ### Validation rules
 
 - Every pipeline step must reference a stage and agent that exist in the config.
-- `on_success` must be `next` or `done`.
-- `on_failure` must be `retry`, `back`, or `pause`.
+- `on_success` must be `next`, `done`, `human_review`, or a custom status declared in top-level `statuses:`.
+- `on_failure` must be `retry`, `back`, `pause`, `human_review`, or a custom status declared in top-level `statuses:`.
 - `on_failure=back` is not allowed on the first stage.
-- The last stage must have `on_success=done`.
+- The last stage must not have `on_success=next` (it must terminate with `done`, `human_review`, or a custom status).
 - A stage cannot appear more than once in the same pipeline.
 
 ## Shell completions

@@ -27,14 +27,14 @@ var (
 	styleKey               = lipgloss.NewStyle().Foreground(lipgloss.Color("5"))
 
 	statusStyle = map[ticket.Status]lipgloss.Style{
-		ticket.StatusInProgress: lipgloss.NewStyle().Foreground(lipgloss.Color("2")),
-		ticket.StatusTodo:       lipgloss.NewStyle().Foreground(lipgloss.Color("4")),
-		ticket.StatusPaused:     lipgloss.NewStyle().Foreground(lipgloss.Color("3")),
-		ticket.StatusDone:       lipgloss.NewStyle().Faint(true),
-		ticket.StatusCancelled:  lipgloss.NewStyle().Faint(true).Foreground(lipgloss.Color("1")),
-		ticket.StatusOpen:       lipgloss.NewStyle().Foreground(lipgloss.Color("5")),
-		"review":                lipgloss.NewStyle().Foreground(lipgloss.Color("13")),
-		"human_review":          lipgloss.NewStyle().Foreground(lipgloss.Color("13")),
+		ticket.StatusInProgress:  lipgloss.NewStyle().Foreground(lipgloss.Color("2")),
+		ticket.StatusTodo:        lipgloss.NewStyle().Foreground(lipgloss.Color("4")),
+		ticket.StatusPaused:      lipgloss.NewStyle().Foreground(lipgloss.Color("3")),
+		ticket.StatusHumanReview: lipgloss.NewStyle().Foreground(lipgloss.Color("13")),
+		ticket.StatusDone:        lipgloss.NewStyle().Faint(true),
+		ticket.StatusCancelled:   lipgloss.NewStyle().Faint(true).Foreground(lipgloss.Color("1")),
+		ticket.StatusOpen:        lipgloss.NewStyle().Foreground(lipgloss.Color("5")),
+		"review":                 lipgloss.NewStyle().Foreground(lipgloss.Color("13")),
 	}
 )
 

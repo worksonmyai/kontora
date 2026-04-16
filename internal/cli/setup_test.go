@@ -34,7 +34,7 @@ func TestBuildConfigYAML(t *testing.T) {
 			wantKeys: []string{
 				"tickets_dir: ~/.kontora/tickets",
 				"binary: claude",
-				"on_success: done",
+				"on_success: human_review",
 				"on_failure: pause",
 				"max_concurrent_agents: 3",
 				"enabled: true",

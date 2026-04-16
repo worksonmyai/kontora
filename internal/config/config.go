@@ -185,13 +185,18 @@ func (c *Config) applyDefaults() {
 		c.Stages[ReworkStageName] = defaultReworkStage()
 		c.ReworkIsBuiltin = true
 	}
+
+	// human_review used to be shipped as a custom status in the default config.
+	// Drop it from user-declared statuses so old configs keep loading after it
+	// became a built-in.
+	c.Statuses = slices.DeleteFunc(c.Statuses, func(s string) bool { return s == "human_review" })
 }
 
 var validStatusNameRe = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
 
 var builtinStatuses = map[string]bool{
 	"open": true, "todo": true, "in_progress": true,
-	"paused": true, "done": true, "cancelled": true,
+	"paused": true, "human_review": true, "done": true, "cancelled": true,
 }
 
 var reservedKeywords = map[string]bool{
@@ -236,8 +241,8 @@ func (c *Config) Validate() error {
 	}
 
 	// Build valid on_success/on_failure sets dynamically.
-	validOnSuccess := map[string]bool{"next": true, "done": true}
-	validOnFailure := map[string]bool{"retry": true, "back": true, "pause": true}
+	validOnSuccess := map[string]bool{"next": true, "done": true, "human_review": true}
+	validOnFailure := map[string]bool{"retry": true, "back": true, "pause": true, "human_review": true}
 	for _, s := range c.Statuses {
 		validOnSuccess[s] = true
 		validOnFailure[s] = true

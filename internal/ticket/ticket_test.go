@@ -370,6 +370,31 @@ func TestSetBody(t *testing.T) {
 	assert.Equal(t, "test", reparsed.ID)
 }
 
+func TestIsSafeID(t *testing.T) {
+	tests := []struct {
+		id   string
+		want bool
+	}{
+		{"kon-q88f", true},
+		{"gra-1234", true},
+		{"custom_id", true},
+		{"", false},
+		{".", false},
+		{"..", false},
+		{"../escape", false},
+		{"foo/bar", false},
+		{"foo\\bar", false},
+		{"foo..bar", false},
+		{"nul\x00byte", false},
+		{"a/../b", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.id, func(t *testing.T) {
+			assert.Equal(t, tt.want, IsSafeID(tt.id))
+		})
+	}
+}
+
 func TestParseReader(t *testing.T) {
 	input := "---\nid: reader-001\nstatus: open\ncreated: 2026-01-01T00:00:00Z\n---\n# From reader\n"
 	tkt, err := Parse(bytes.NewReader([]byte(input)))

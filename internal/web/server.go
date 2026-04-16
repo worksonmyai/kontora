@@ -48,6 +48,7 @@ func New(svc TicketService, broker *SSEBroker, host string, port int, log *slog.
 	mux.HandleFunc("PUT /api/tickets/{id}", s.handleUpdateTicket)
 	mux.HandleFunc("POST /api/tickets/upload", s.handleUploadTickets)
 	mux.HandleFunc("GET /api/tickets/{id}/logs", s.handleGetLogs)
+	mux.HandleFunc("POST /api/tickets/{id}/plannotator-review", s.handlePlannotatorReview)
 	mux.HandleFunc("GET /api/events", s.handleSSE)
 	mux.HandleFunc("GET /ws/terminal/{id}", s.handleTerminalWS)
 	subFS, _ := fs.Sub(staticFS, "static")

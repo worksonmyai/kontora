@@ -32,8 +32,8 @@ func TestLoadValid(t *testing.T) {
 	sonnet := cfg.Agents["claude-sonnet"]
 	assert.Equal(t, "claude", sonnet.Binary)
 
-	// Stages
-	assert.Len(t, cfg.Stages, 4)
+	// Stages: 4 user-defined plus the built-in "rework" stage.
+	assert.Len(t, cfg.Stages, 5)
 	plan := cfg.Stages["plan"]
 	assert.Equal(t, 10*time.Minute, plan.Timeout.Duration)
 
@@ -492,6 +492,77 @@ pipelines:
 `
 	_, err := LoadReader(strings.NewReader(input))
 	require.NoError(t, err)
+}
+
+func TestPlannotatorDefaults(t *testing.T) {
+	cfg, err := Load("testdata/minimal.yaml")
+	require.NoError(t, err)
+
+	assert.Equal(t, "plannotator", cfg.Plannotator.Binary)
+	assert.Equal(t, 30*time.Minute, cfg.Plannotator.Timeout.Duration)
+	assert.Equal(t, "~/.kontora/plannotator-reviews", cfg.Plannotator.ReviewsDir)
+}
+
+func TestPlannotatorOverride(t *testing.T) {
+	input := `
+plannotator:
+  binary: /usr/local/bin/plannotator
+  timeout: 10m
+  reviews_dir: /tmp/reviews
+agents:
+  claude:
+    binary: claude
+stages:
+  s:
+    prompt: do stuff
+pipelines:
+  p:
+    - stage: s
+      agent: claude
+      on_success: done
+      on_failure: pause
+`
+	cfg, err := LoadReader(strings.NewReader(input))
+	require.NoError(t, err)
+	assert.Equal(t, "/usr/local/bin/plannotator", cfg.Plannotator.Binary)
+	assert.Equal(t, 10*time.Minute, cfg.Plannotator.Timeout.Duration)
+	assert.Equal(t, "/tmp/reviews", cfg.Plannotator.ReviewsDir)
+}
+
+func TestDefaultReworkStageMerged(t *testing.T) {
+	cfg, err := Load("testdata/minimal.yaml")
+	require.NoError(t, err)
+
+	rework, ok := cfg.Stages["rework"]
+	require.True(t, ok, "built-in rework stage should be merged when absent")
+	assert.Contains(t, rework.Prompt, "plannotatorReview")
+	assert.Equal(t, 30*time.Minute, rework.Timeout.Duration)
+	assert.True(t, cfg.ReworkIsBuiltin)
+}
+
+func TestUserReworkStageWins(t *testing.T) {
+	input := `
+agents:
+  claude:
+    binary: claude
+stages:
+  s:
+    prompt: do stuff
+  rework:
+    prompt: "custom rework prompt"
+    timeout: 5m
+pipelines:
+  p:
+    - stage: s
+      agent: claude
+      on_success: done
+      on_failure: pause
+`
+	cfg, err := LoadReader(strings.NewReader(input))
+	require.NoError(t, err)
+	assert.Equal(t, "custom rework prompt", cfg.Stages["rework"].Prompt)
+	assert.Equal(t, 5*time.Minute, cfg.Stages["rework"].Timeout.Duration)
+	assert.False(t, cfg.ReworkIsBuiltin, "user-provided rework should not be marked as built-in")
 }
 
 func TestLoadReaderValid(t *testing.T) {

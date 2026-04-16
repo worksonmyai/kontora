@@ -50,6 +50,19 @@ type Config struct {
 	Pipelines           map[string]Pipeline `yaml:"pipelines"`
 	Statuses            []string            `yaml:"statuses"`
 	Environment         map[string]string   `yaml:"environment"`
+	Plannotator         Plannotator         `yaml:"plannotator"`
+
+	// ReworkIsBuiltin is true when the rework stage was injected by
+	// applyDefaults. It flips to false when the user defines their own
+	// `stages.rework:` block, signalling the daemon to leave routing to the
+	// user's pipeline/on_success config.
+	ReworkIsBuiltin bool `yaml:"-"`
+}
+
+type Plannotator struct {
+	Binary     string   `yaml:"binary"`
+	Timeout    Duration `yaml:"timeout"`
+	ReviewsDir string   `yaml:"reviews_dir"`
 }
 
 type Web struct {
@@ -154,6 +167,25 @@ func (c *Config) applyDefaults() {
 	if c.Web.Port == 0 {
 		c.Web.Port = 8080
 	}
+
+	if c.Plannotator.Binary == "" {
+		c.Plannotator.Binary = "plannotator"
+	}
+	if c.Plannotator.Timeout.Duration == 0 {
+		c.Plannotator.Timeout.Duration = 30 * time.Minute
+	}
+	if c.Plannotator.ReviewsDir == "" {
+		c.Plannotator.ReviewsDir = "~/.kontora/plannotator-reviews"
+	}
+
+	if _, ok := c.Stages[ReworkStageName]; !ok {
+		if c.Stages == nil {
+			c.Stages = map[string]Stage{}
+		}
+		c.Stages[ReworkStageName] = defaultReworkStage()
+		c.ReworkIsBuiltin = true
+	}
+
 	// human_review used to be shipped as a custom status in the default config.
 	// Drop it from user-declared statuses so old configs keep loading after it
 	// became a built-in.

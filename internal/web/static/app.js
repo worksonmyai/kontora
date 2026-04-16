@@ -54,6 +54,8 @@ function kontora() {
     deleteSubmitting: false,
     uploadDragging: false,
     lightTheme: getStoredTheme() === 'light',
+    // Map of ticketId → true while a plannotator subprocess is in flight for it.
+    plannotatorInFlight: {},
 
     _builtinColumns: [
       { status: 'open', label: 'Open', color: 'bg-accent', tip: 'Draft ticket, not running yet. Drag to Todo or click Initialize to start.', emptyText: 'Create a ticket to get started', tint: '', glow: 'glow-top-accent',
@@ -244,10 +246,55 @@ function kontora() {
           this.reconnectTerminal();
         }
       });
+      es.addEventListener('plannotator_started', (e) => {
+        const payload = JSON.parse(e.data);
+        if (payload.ticket_id) {
+          this.plannotatorInFlight[payload.ticket_id] = true;
+        }
+      });
+      es.addEventListener('plannotator_finished', (e) => {
+        const payload = JSON.parse(e.data);
+        if (payload.ticket_id) {
+          delete this.plannotatorInFlight[payload.ticket_id];
+        }
+        if (payload.outcome === 'error') {
+          this.error = 'Plannotator review failed' + (payload.message ? ': ' + payload.message : '');
+        }
+      });
       es.onerror = () => {
         es.close();
+        // Drop any in-flight markers: if a plannotator run completes while SSE
+        // is disconnected, we'll never see the finished event and the button
+        // would stay disabled until a full page refresh.
+        this.plannotatorInFlight = {};
         setTimeout(() => this.connectSSE(), 3000);
       };
+    },
+
+    async startPlannotatorReview(ticket) {
+      if (!ticket) return;
+      const id = ticket.id;
+      if (this.plannotatorInFlight[id]) return;
+      // Optimistically reflect in-flight state; the SSE event confirms it.
+      this.plannotatorInFlight[id] = true;
+      this.error = null;
+      try {
+        const res = await fetch('/api/tickets/' + id + '/plannotator-review', { method: 'POST' });
+        if (!res.ok) {
+          delete this.plannotatorInFlight[id];
+          const data = await res.json().catch(() => ({}));
+          if (res.status === 409) {
+            this.error = data.error || 'Plannotator review already in progress';
+          } else if (res.status === 500) {
+            this.error = data.error || 'Failed to start plannotator review';
+          } else {
+            this.error = data.error || ('Plannotator review failed (' + res.status + ')');
+          }
+        }
+      } catch (e) {
+        delete this.plannotatorInFlight[id];
+        this.error = 'Plannotator review failed: ' + e.message;
+      }
     },
 
     async openCreateModal() {

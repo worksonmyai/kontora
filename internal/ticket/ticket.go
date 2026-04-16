@@ -12,6 +12,23 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// IsSafeID reports whether id is safe to interpolate into a filesystem path
+// as a single filename component. Ticket IDs come from frontmatter and aren't
+// constrained by GenerateID for hand-edited tickets, so callers that build
+// paths like <dir>/<id>.md must guard against traversal.
+func IsSafeID(id string) bool {
+	if id == "" || id == "." || id == ".." {
+		return false
+	}
+	if strings.ContainsAny(id, "/\\\x00") {
+		return false
+	}
+	if strings.Contains(id, "..") {
+		return false
+	}
+	return true
+}
+
 type Status string
 
 const (

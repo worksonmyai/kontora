@@ -717,6 +717,7 @@ func TestAgentInteractiveMode(t *testing.T) {
 				WithDebounce(50*time.Millisecond),
 				WithLockPath(h.lockPath),
 				WithRunner(capturingRunner),
+				WithAgentLookup(passthroughAgentLookup),
 				WithSkipOrphanCleanup(),
 			)
 
@@ -804,6 +805,7 @@ func TestPiSessionLogMaterialization(t *testing.T) {
 		WithDebounce(50*time.Millisecond),
 		WithLockPath(h.lockPath),
 		WithRunner(capturingRunner),
+		WithAgentLookup(passthroughAgentLookup),
 		WithSkipOrphanCleanup(),
 	)
 
@@ -859,6 +861,7 @@ func TestPiSessionLogMaterializationMissing(t *testing.T) {
 		WithDebounce(50*time.Millisecond),
 		WithLockPath(h.lockPath),
 		WithRunner(capturingRunner),
+		WithAgentLookup(passthroughAgentLookup),
 		WithSkipOrphanCleanup(),
 	)
 
@@ -1209,6 +1212,7 @@ func TestSessionLogMaterialization(t *testing.T) {
 		WithDebounce(50*time.Millisecond),
 		WithLockPath(h.lockPath),
 		WithRunner(capturingRunner),
+		WithAgentLookup(passthroughAgentLookup),
 		WithSkipOrphanCleanup(),
 	)
 
@@ -1265,6 +1269,7 @@ func TestSessionLogMaterializationMissing(t *testing.T) {
 		WithDebounce(50*time.Millisecond),
 		WithLockPath(h.lockPath),
 		WithRunner(capturingRunner),
+		WithAgentLookup(passthroughAgentLookup),
 		WithSkipOrphanCleanup(),
 	)
 

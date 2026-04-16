@@ -31,39 +31,9 @@ func stageInPipeline(p config.Pipeline, stage string) bool {
 }
 
 // defaultPlannotatorLookup resolves the plannotator binary to an absolute
-// path. It first honours an absolute config value, then consults PATH, and
-// finally falls back to a few common install locations so the integration
-// works under a launchd/GUI environment where the daemon inherits a
-// restricted PATH that omits ~/.local/bin and /opt/homebrew/bin.
+// path via process.LookupBinary — see there for fallback semantics.
 func defaultPlannotatorLookup(binary string) (string, error) {
-	if binary == "" {
-		return "", errors.New("plannotator binary is empty")
-	}
-	if filepath.IsAbs(binary) {
-		if _, err := os.Stat(binary); err != nil {
-			return "", err
-		}
-		return binary, nil
-	}
-	if p, err := exec.LookPath(binary); err == nil {
-		return p, nil
-	}
-	var candidates []string
-	if home, err := os.UserHomeDir(); err == nil && home != "" {
-		candidates = append(candidates, filepath.Join(home, ".local", "bin", binary))
-	}
-	candidates = append(candidates,
-		"/opt/homebrew/bin/"+binary,
-		"/usr/local/bin/"+binary,
-		"/usr/bin/"+binary,
-		"/bin/"+binary,
-	)
-	for _, c := range candidates {
-		if info, err := os.Stat(c); err == nil && !info.IsDir() {
-			return c, nil
-		}
-	}
-	return "", fmt.Errorf("%q not found in $PATH or common locations", binary)
+	return process.LookupBinary(binary)
 }
 
 // defaultPlannotatorSpawner runs `plannotator review` as a subprocess and
@@ -307,6 +277,13 @@ func (d *Daemon) runReworkStage(ctx, taskCtx context.Context, log *slog.Logger, 
 		return
 	}
 
+	binaryPath, err := d.agentLookup(agentCfg.Binary)
+	if err != nil {
+		log.Error("rework: agent binary lookup failed", "binary", agentCfg.Binary, "err", err)
+		d.pauseTicket(t, filePath, fmt.Sprintf("rework: agent binary unavailable: %s", err))
+		return
+	}
+
 	// Set status=in_progress, started_at.
 	now := time.Now()
 	_ = t.SetField("status", string(ticket.StatusInProgress))
@@ -364,7 +341,7 @@ func (d *Daemon) runReworkStage(ctx, taskCtx context.Context, log *slog.Logger, 
 		defer os.Remove(settingsFile)
 	}
 
-	params := d.buildRunnerParams(agentCfg, stageCfg, args, wtPath, ticketID, config.ReworkStageName, sessionID)
+	params := d.buildRunnerParams(agentCfg, stageCfg, binaryPath, args, wtPath, ticketID, config.ReworkStageName, sessionID)
 	result, runnerErr := d.runner(taskCtx, params)
 	if runnerErr != nil && taskCtx.Err() == nil {
 		log.Error("rework: runner failed", "err", runnerErr)

@@ -174,6 +174,12 @@ type PlannotatorParams struct {
 // lookups when pairing with a fake spawner.
 type PlannotatorLookup func(binary string) (string, error)
 
+// AgentLookup resolves an agent binary to an absolute path. The daemon calls
+// this before spawning so a missing binary fails with a clear, early error
+// (instead of surfacing later as "agent exited too quickly" when the tmux
+// shell wrapper can't find the binary on its stripped PATH).
+type AgentLookup func(binary string) (string, error)
+
 // WithPlannotatorSpawner overrides the default plannotator subprocess runner.
 // Tests use this to return canned stdout without forking a real process.
 func WithPlannotatorSpawner(fn PlannotatorSpawner) Option {
@@ -186,12 +192,24 @@ func WithPlannotatorLookup(fn PlannotatorLookup) Option {
 	return func(d *Daemon) { d.plannotatorLookup = fn }
 }
 
+// WithAgentLookup overrides the agent binary resolver. Tests inject a
+// passthrough so they can use stand-in binary names (e.g. "agent1") without
+// touching the filesystem.
+func WithAgentLookup(fn AgentLookup) Option {
+	return func(d *Daemon) { d.agentLookup = fn }
+}
+
+func defaultAgentLookup(binary string) (string, error) {
+	return process.LookupBinary(binary)
+}
+
 type Daemon struct {
 	cfg                *config.Config
 	worktrees          *worktree.Manager
 	runner             RunnerFunc
 	plannotatorSpawner PlannotatorSpawner
 	plannotatorLookup  PlannotatorLookup
+	agentLookup        AgentLookup
 	skipOrphanCleanup  bool
 	broker             *web.SSEBroker
 	svc                *app.Service
@@ -226,6 +244,7 @@ func New(cfg *config.Config, opts ...Option) *Daemon {
 		runner:             tmuxRunner,
 		plannotatorSpawner: defaultPlannotatorSpawner,
 		plannotatorLookup:  defaultPlannotatorLookup,
+		agentLookup:        defaultAgentLookup,
 		broker:             web.NewSSEBroker(),
 		debounce:           time.Second,
 		lockPath:           defaultLockPath(),
@@ -1110,6 +1129,13 @@ type spawnAgentParams struct {
 // logs, and logs exit info. On a spawn or runner failure the ticket is paused
 // and ok=false is returned so the caller can return immediately.
 func (d *Daemon) spawnAgentRun(taskCtx context.Context, t *ticket.Ticket, p spawnAgentParams) (process.Result, bool) {
+	binaryPath, err := d.agentLookup(p.agentCfg.Binary)
+	if err != nil {
+		p.log.Error("agent binary lookup failed", "binary", p.agentCfg.Binary, "err", err)
+		d.pauseTicket(t, p.filePath, fmt.Sprintf("agent binary unavailable: %s", err))
+		return process.Result{}, false
+	}
+
 	args, settingsFile, sessionID, err := buildAgentArgs(p.agentCfg, p.rendered, tmux.ChannelName(p.ticketID))
 	if err != nil {
 		p.log.Error("build agent args failed", "err", err)
@@ -1120,7 +1146,7 @@ func (d *Daemon) spawnAgentRun(taskCtx context.Context, t *ticket.Ticket, p spaw
 		defer os.Remove(settingsFile)
 	}
 
-	params := d.buildRunnerParams(p.agentCfg, p.stageCfg, args, p.wtPath, p.ticketID, p.stageName, sessionID)
+	params := d.buildRunnerParams(p.agentCfg, p.stageCfg, binaryPath, args, p.wtPath, p.ticketID, p.stageName, sessionID)
 	result, runnerErr := d.runner(taskCtx, params)
 	if runnerErr != nil && taskCtx.Err() == nil {
 		d.materializeAgentLogs(p.log, params)
@@ -1254,7 +1280,7 @@ export default function (pi: ExtensionAPI) {
 	return f.Name(), nil
 }
 
-func (d *Daemon) buildRunnerParams(agentCfg config.Agent, stageCfg config.Stage, args []string, dir, ticketID, stageName, sessionID string) RunnerParams {
+func (d *Daemon) buildRunnerParams(agentCfg config.Agent, stageCfg config.Stage, binaryPath string, args []string, dir, ticketID, stageName, sessionID string) RunnerParams {
 	logsDir := expandTilde(d.cfg.LogsDir)
 	logDir := filepath.Join(logsDir, ticketID)
 
@@ -1275,7 +1301,7 @@ func (d *Daemon) buildRunnerParams(agentCfg config.Agent, stageCfg config.Stage,
 	}
 
 	return RunnerParams{
-		Binary:      agentCfg.Binary,
+		Binary:      binaryPath,
 		Args:        args,
 		Dir:         dir,
 		Timeout:     stageCfg.Timeout.Duration,

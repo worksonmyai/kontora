@@ -106,9 +106,15 @@ func (h *testHarness) newDaemon(cfg *config.Config) *Daemon {
 		WithDebounce(50*time.Millisecond),
 		WithLockPath(h.lockPath),
 		WithRunner(DirectRunner),
+		WithAgentLookup(passthroughAgentLookup),
 		WithSkipOrphanCleanup(),
 	)
 }
+
+// passthroughAgentLookup returns the binary unchanged. Tests use stand-in
+// binary names (e.g. "opus-binary") that aren't on PATH — the real
+// defaultAgentLookup would reject them before the runner is invoked.
+func passthroughAgentLookup(binary string) (string, error) { return binary, nil }
 
 func (h *testHarness) writeTicket(filename, content string) string {
 	h.t.Helper()
@@ -1300,6 +1306,7 @@ func TestNonClaudeAgentStillUsesPipePaneLogging(t *testing.T) {
 		WithDebounce(50*time.Millisecond),
 		WithLockPath(h.lockPath),
 		WithRunner(capturingRunner),
+		WithAgentLookup(passthroughAgentLookup),
 		WithSkipOrphanCleanup(),
 	)
 
@@ -1341,6 +1348,7 @@ func TestExitTailUsesOutputAttribute(t *testing.T) {
 		WithDebounce(50*time.Millisecond),
 		WithLockPath(h.lockPath),
 		WithRunner(capturingRunner),
+		WithAgentLookup(passthroughAgentLookup),
 		WithSkipOrphanCleanup(),
 	)
 
@@ -1469,6 +1477,51 @@ func TestPauseTicketWritesReasonNote(t *testing.T) {
 	require.NoError(t, <-errCh)
 }
 
+// TestAgentBinaryMissing verifies that a missing agent binary is reported
+// up-front with a clear message, instead of surfacing later as a cryptic
+// "agent exited too quickly" once the tmux shell wrapper fails to exec it.
+func TestAgentBinaryMissing(t *testing.T) {
+	h := newHarness(t)
+
+	var runnerCalled bool
+	trackingRunner := func(_ context.Context, _ RunnerParams) (process.Result, error) {
+		runnerCalled = true
+		return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now()}, nil
+	}
+
+	failingLookup := func(binary string) (string, error) {
+		return "", fmt.Errorf("%q not found in $PATH or common locations", binary)
+	}
+
+	h.cfg.Agents["agent1"] = config.Agent{Binary: "definitely-not-a-real-binary"}
+
+	d := New(h.cfg,
+		WithLogger(testLogger(t)),
+		WithDebounce(50*time.Millisecond),
+		WithLockPath(h.lockPath),
+		WithRunner(trackingRunner),
+		WithAgentLookup(failingLookup),
+		WithSkipOrphanCleanup(),
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- d.Run(ctx) }()
+	time.Sleep(200 * time.Millisecond)
+
+	h.writeTicket("tst-bnf.md", h.taskMD("tst-bnf", "todo", "one-stage"))
+	result := h.waitForStatus("tst-bnf.md", ticket.StatusPaused, 10*time.Second)
+
+	assert.False(t, runnerCalled, "runner must not run when binary lookup fails")
+	assert.Contains(t, result.LastError, "agent binary unavailable")
+	assert.Contains(t, result.LastError, "definitely-not-a-real-binary")
+
+	cancel()
+	require.NoError(t, <-errCh)
+}
+
 func TestRunnerError_CapturesLogTailAndPath(t *testing.T) {
 	h := newHarness(t)
 
@@ -1537,6 +1590,7 @@ func TestAgentOverride_Pipeline(t *testing.T) {
 		WithDebounce(50*time.Millisecond),
 		WithLockPath(h.lockPath),
 		WithRunner(capturingRunner),
+		WithAgentLookup(passthroughAgentLookup),
 		WithSkipOrphanCleanup(),
 	)
 
@@ -1589,6 +1643,7 @@ func TestAgentOverride_SimpleTask(t *testing.T) {
 		WithDebounce(50*time.Millisecond),
 		WithLockPath(h.lockPath),
 		WithRunner(capturingRunner),
+		WithAgentLookup(passthroughAgentLookup),
 		WithSkipOrphanCleanup(),
 	)
 

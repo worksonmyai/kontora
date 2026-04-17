@@ -76,7 +76,6 @@ func defaultPlannotatorSpawner(ctx context.Context, params PlannotatorParams) (s
 // Synchronous errors:
 //   - web.ErrTicketNotFound: unknown ticket
 //   - web.ErrPlannotatorInFlight: a previous invocation is still running
-//   - web.ErrPlannotatorWorkdir: the worktree does not exist
 //   - web.ErrPlannotatorBinary: the plannotator binary is not on PATH
 //
 // Anything else goes over SSE as a plannotator_finished(outcome=error).
@@ -100,20 +99,12 @@ func (d *Daemon) StartPlannotatorReview(id string) error {
 		return web.ErrInvalidState
 	}
 
-	_, repoPath, err := d.resolvePath(t)
+	repoName, repoPath, err := d.resolvePath(t)
 	if err != nil {
 		return fmt.Errorf("resolve path: %w", err)
 	}
 	branch := d.ticketBranch(t)
-	wtPath, err := worktree.FindWorktreeForBranch(repoPath, branch)
-	if err != nil {
-		log.Error("plannotator: find worktree failed", "branch", branch, "err", err)
-		return fmt.Errorf("find worktree: %w", err)
-	}
-	if wtPath == "" {
-		return web.ErrPlannotatorWorkdir
-	}
-	log.Info("located worktree for branch", "path", wtPath, "branch", branch)
+	reviewPath := d.worktrees.Path(repoName, id) + ".plannotator"
 
 	binaryPath, err := d.plannotatorLookup(d.cfg.Plannotator.Binary)
 	if err != nil {
@@ -135,12 +126,12 @@ func (d *Daemon) StartPlannotatorReview(id string) error {
 		Ticket: web.TicketInfo{ID: id},
 	})
 
-	go d.runPlannotator(ctx, log, id, binaryPath, repoPath, wtPath)
+	go d.runPlannotator(ctx, log, id, binaryPath, repoPath, branch, reviewPath)
 
 	return nil
 }
 
-func (d *Daemon) runPlannotator(ctx context.Context, log *slog.Logger, id, binaryPath, repoPath, wtPath string) {
+func (d *Daemon) runPlannotator(ctx context.Context, log *slog.Logger, id, binaryPath, repoPath, branch, reviewPath string) {
 	defer func() {
 		d.mu.Lock()
 		if cancel, ok := d.plannotator[id]; ok {
@@ -150,7 +141,7 @@ func (d *Daemon) runPlannotator(ctx context.Context, log *slog.Logger, id, binar
 		d.mu.Unlock()
 	}()
 
-	reviewWt, cleanup, err := setupPlannotatorWorktree(log, repoPath, wtPath)
+	reviewWt, cleanup, err := setupPlannotatorWorktree(log, repoPath, branch, reviewPath)
 	if err != nil {
 		log.Error("plannotator: setup review worktree failed", "err", err)
 		d.broker.Broadcast(web.TicketEvent{
@@ -212,9 +203,9 @@ func (d *Daemon) runPlannotator(ctx context.Context, log *slog.Logger, id, binar
 		})
 		return
 	}
-	reviewPath := filepath.Join(reviewsDir, id+".md")
-	if wErr := os.WriteFile(reviewPath, []byte(stdout), 0o644); wErr != nil {
-		log.Error("plannotator: write review file failed", "err", wErr, "path", reviewPath)
+	reviewFile := filepath.Join(reviewsDir, id+".md")
+	if wErr := os.WriteFile(reviewFile, []byte(stdout), 0o644); wErr != nil {
+		log.Error("plannotator: write review file failed", "err", wErr, "path", reviewFile)
 		d.broker.Broadcast(web.TicketEvent{
 			Type:    "plannotator_finished",
 			Ticket:  web.TicketInfo{ID: id},
@@ -227,7 +218,7 @@ func (d *Daemon) runPlannotator(ctx context.Context, log *slog.Logger, id, binar
 	if tErr := d.transitionToRework(id); tErr != nil {
 		log.Error("plannotator: transition to rework failed", "err", tErr)
 		// Best-effort cleanup: remove the orphaned review file.
-		_ = os.Remove(reviewPath)
+		_ = os.Remove(reviewFile)
 		d.broker.Broadcast(web.TicketEvent{
 			Type:    "plannotator_finished",
 			Ticket:  web.TicketInfo{ID: id},
@@ -447,15 +438,18 @@ func (d *Daemon) reworkAgent(t *ticket.Ticket) string {
 // "unstaged" view then shows everything the agent committed without the
 // daemon having to touch the ticket branch itself.
 //
-// Returns the path to the review worktree and a cleanup function that removes
-// it. The cleanup is safe to call once, regardless of outcome.
-func setupPlannotatorWorktree(log *slog.Logger, repoPath, branchWtPath string) (string, func(), error) {
+// All git operations run against repoPath with an explicit branch ref, so the
+// ticket's normal working worktree does not need to exist on disk — only the
+// branch itself does. Returns the path to the review worktree and a cleanup
+// function that removes it. The cleanup is safe to call once, regardless of
+// outcome.
+func setupPlannotatorWorktree(log *slog.Logger, repoPath, branch, reviewPath string) (string, func(), error) {
 	defaultBranch, err := worktree.DetectDefaultBranch(repoPath)
 	if err != nil {
 		return "", nil, fmt.Errorf("detect default branch: %w", err)
 	}
 
-	mergeBase, err := runGit(branchWtPath, "merge-base", defaultBranch, "HEAD")
+	mergeBase, err := runGit(repoPath, "merge-base", defaultBranch, branch)
 	if err != nil {
 		return "", nil, fmt.Errorf("merge-base: %w", err)
 	}
@@ -464,7 +458,9 @@ func setupPlannotatorWorktree(log *slog.Logger, repoPath, branchWtPath string) (
 		return "", nil, errors.New("merge-base returned empty sha")
 	}
 
-	reviewPath := branchWtPath + ".plannotator"
+	if err := os.MkdirAll(filepath.Dir(reviewPath), 0o755); err != nil {
+		return "", nil, fmt.Errorf("mkdir review parent: %w", err)
+	}
 	// Clean up any leftover from a prior crashed run before asking git to create the worktree.
 	if _, err := os.Stat(reviewPath); err == nil {
 		_, _ = runGit(repoPath, "worktree", "remove", "--force", reviewPath)
@@ -482,7 +478,7 @@ func setupPlannotatorWorktree(log *slog.Logger, repoPath, branchWtPath string) (
 		}
 	}
 
-	diff, err := runGit(branchWtPath, "diff", "--binary", mergeBase+"..HEAD")
+	diff, err := runGit(repoPath, "diff", "--binary", mergeBase+".."+branch)
 	if err != nil {
 		cleanup()
 		return "", nil, fmt.Errorf("git diff: %w", err)

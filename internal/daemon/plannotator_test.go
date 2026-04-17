@@ -97,7 +97,8 @@ func (h *plannotatorHarness) newDaemonWithSpawner() *Daemon {
 // seedReviewTicket writes a ticket already parked in the human_review column
 // and creates a real git worktree with one commit ahead of main — matching
 // what kontora produces in production when an agent finishes its work.
-// setupPlannotatorWorktree needs a real worktree to diff/apply against.
+// The worktree is what the rework stage would pick up; the review worktree
+// is derived independently by setupPlannotatorWorktree.
 func (h *plannotatorHarness) seedReviewTicket(id string) string {
 	h.t.Helper()
 	wtPath := filepath.Join(h.wtDir, h.repoName, id)
@@ -490,6 +491,16 @@ func TestSetupPlannotatorWorktree(t *testing.T) {
 			setup:           func(*testing.T, string, string) {},
 			expectDiffEmpty: true,
 		},
+		{
+			name: "branch exists without a registered worktree",
+			setup: func(t *testing.T, repo, wt string) {
+				commitFile(t, wt, "orphan.txt", "kept\n", "commit then drop worktree")
+				// Drop the branch's worktree. The branch itself still points at
+				// the commit, which is the scenario we want to cover.
+				mustGit(t, repo, "worktree", "remove", "--force", wt)
+			},
+			expectedFiles: map[string]string{"orphan.txt": "kept\n"},
+		},
 	}
 
 	for _, tc := range cases {
@@ -497,7 +508,8 @@ func TestSetupPlannotatorWorktree(t *testing.T) {
 			repo, wt := setupRealGitWorktree(t)
 			tc.setup(t, repo, wt)
 
-			reviewPath, cleanup, err := setupPlannotatorWorktree(testLogger(t), repo, wt)
+			reviewPath := filepath.Join(t.TempDir(), "review.plannotator")
+			reviewPath, cleanup, err := setupPlannotatorWorktree(testLogger(t), repo, "feature", reviewPath)
 			require.NoError(t, err)
 			t.Cleanup(cleanup)
 
@@ -534,7 +546,8 @@ func TestSetupPlannotatorWorktree_CleanupIsIdempotent(t *testing.T) {
 	repo, wt := setupRealGitWorktree(t)
 	commitFile(t, wt, "x.txt", "y\n", "c")
 
-	reviewPath, cleanup, err := setupPlannotatorWorktree(testLogger(t), repo, wt)
+	reviewPath := filepath.Join(t.TempDir(), "review.plannotator")
+	reviewPath, cleanup, err := setupPlannotatorWorktree(testLogger(t), repo, "feature", reviewPath)
 	require.NoError(t, err)
 	cleanup()
 	// Directory gone after first cleanup.

@@ -1074,7 +1074,6 @@ func TestHandlePlannotatorReview(t *testing.T) {
 		{name: "not found", err: ErrTicketNotFound, wantStatus: http.StatusNotFound, wantContains: "ticket not found"},
 		{name: "in flight", err: ErrPlannotatorInFlight, wantStatus: http.StatusConflict, wantContains: "already in progress"},
 		{name: "binary missing", err: ErrPlannotatorBinary, wantStatus: http.StatusInternalServerError, wantContains: "plannotator not installed"},
-		{name: "workdir missing", err: ErrPlannotatorWorkdir, wantStatus: http.StatusConflict, wantContains: "worktree"},
 		{name: "other error", err: fmt.Errorf("disk on fire"), wantStatus: http.StatusInternalServerError, wantContains: "disk on fire"},
 	}
 

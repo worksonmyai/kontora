@@ -15,7 +15,6 @@ var (
 	ErrDeleteRejected      = errors.New("delete rejected")
 	ErrPlannotatorInFlight = errors.New("plannotator review already in progress")
 	ErrPlannotatorBinary   = errors.New("plannotator not installed: https://plannotator.ai")
-	ErrPlannotatorWorkdir  = errors.New("plannotator worktree not available")
 )
 
 // TicketService defines the contract between the web layer and the daemon.

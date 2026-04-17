@@ -369,8 +369,6 @@ func (s *Server) handlePlannotatorReview(w http.ResponseWriter, r *http.Request)
 			writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 		case errors.Is(err, ErrPlannotatorBinary):
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		case errors.Is(err, ErrPlannotatorWorkdir):
-			writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 		default:
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		}

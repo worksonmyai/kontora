@@ -147,6 +147,43 @@
       pointer-events: none;
     }
 
+    /* Hide column scrollbars; keep scrolling behavior. */
+    .no-scrollbar { scrollbar-width: none; -ms-overflow-style: none; }
+    .no-scrollbar::-webkit-scrollbar { width: 0; height: 0; display: none; }
+
+    /* Per-column bottom overflow affordance: fade + chevron when more below. */
+    .col-fade { position: relative; }
+    .col-fade::after {
+      content: '';
+      position: absolute;
+      left: 0; right: 0; bottom: 0;
+      height: 40px;
+      pointer-events: none;
+      background: linear-gradient(to bottom, transparent, rgba(var(--surface-deep), 0.95));
+      opacity: 0;
+      transition: opacity 0.15s ease;
+    }
+    .col-fade.has-overflow-bottom::after { opacity: 1; }
+    .col-more-hint {
+      position: absolute;
+      left: 50%;
+      bottom: 4px;
+      transform: translateX(-50%);
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      padding: 2px 8px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 10px;
+      color: rgba(var(--tx-3), 1);
+      background: rgba(var(--surface-800), 0.9);
+      border: 1px solid rgba(var(--surface-700), 0.6);
+      border-radius: 999px;
+      pointer-events: none;
+      z-index: 2;
+    }
+    .col-more-hint svg { width: 10px; height: 10px; }
+
     /* Pipeline stage dots on the card. */
     .stage-dot { width: 6px; height: 6px; border-radius: 9999px; flex-shrink: 0; }
     .stage-dot-done    { background: rgba(var(--tx-4), 1); }
@@ -551,8 +588,33 @@
                       @click.stop="openCreateModal()"
                       class="absolute right-0 text-[12px] font-mono px-1.5 py-0.5 rounded bg-surface-800 border border-surface-700/50 text-surface-600 hover:text-accent hover:border-accent/30">+ new</button>
             </div>
-            <!-- Card list -->
-            <div class="flex-1 flex flex-col overflow-y-auto space-y-2 px-0.5 pb-2 rounded-lg relative"
+            <!-- Card list (overflow fade + "more" chip shown when column has more below) -->
+            <div class="col-fade flex-1 min-h-0 flex flex-col relative"
+                 x-data="{ overflowBottom: false }"
+                 x-init="
+                   const list = $refs.colList;
+                   const check = () => {
+                     overflowBottom = list.scrollHeight - list.scrollTop - list.clientHeight > 4;
+                   };
+                   const schedule = () => requestAnimationFrame(check);
+                   list.addEventListener('scroll', check, { passive: true });
+                   window.addEventListener('resize', schedule);
+                   const mo = new MutationObserver(schedule);
+                   mo.observe(list, { childList: true, subtree: true });
+                   const ro = new ResizeObserver(schedule);
+                   ro.observe(list);
+                   schedule();
+                 "
+                 :class="overflowBottom ? 'has-overflow-bottom' : ''">
+              <div x-show="overflowBottom && colHover"
+                   x-transition:enter="transition-opacity duration-150" x-transition:enter-start="opacity-0" x-transition:enter-end="opacity-100"
+                   x-transition:leave="transition-opacity duration-100" x-transition:leave-start="opacity-100" x-transition:leave-end="opacity-0"
+                   class="col-more-hint">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+                <span x-text="'more'"></span>
+              </div>
+              <div class="flex-1 min-h-0 flex flex-col overflow-y-auto no-scrollbar space-y-2 px-0.5 pb-2 rounded-lg"
+                 x-ref="colList"
                  :id="'col-' + col.key"
                  :data-drop-status="col.dropStatus"
                  :class="col.tint || ''"
@@ -573,14 +635,20 @@
                            : 'bg-surface-900 border-surface-700/50 hover:border-surface-600/50 hover:bg-surface-850',
                        !ticket.kontora ? 'border-dashed' : '',
                        selectedTicket?.id !== ticket.id ? col.glow : '',
-                       col.key === 'in_progress' && ticket.status === 'in_progress' ? 'card-state-running' : '',
-                       col.key === 'in_progress' && ticket.status === 'paused' ? 'card-state-paused card-quiet' : '',
-                       col.key === 'in_progress' && ticket.status === 'todo' ? 'card-state-todo card-quiet' : ''
+                       {
+                         'card-state-running': col.key === 'in_progress' && ticket.status === 'in_progress',
+                         'card-state-paused':  col.key === 'in_progress' && ticket.status === 'paused',
+                         'card-state-todo':    col.key === 'in_progress' && ticket.status === 'todo',
+                         'card-quiet':         col.key === 'in_progress' && (ticket.status === 'paused' || ticket.status === 'todo'),
+                       },
                      ]">
                   <div class="flex items-center justify-between gap-2 mb-2">
                     <div class="flex items-center gap-2 min-w-0">
                       <span class="text-[11px] font-mono font-semibold uppercase truncate"
-                            :class="ticket.path ? col.color.replace('bg-', 'text-') : 'text-surface-600'"
+                            :class="!ticket.path ? 'text-surface-600'
+                              : col.key === 'in_progress' && ticket.status === 'paused' ? 'text-warn'
+                              : col.key === 'in_progress' && ticket.status === 'todo' ? 'text-accent-dim'
+                              : col.color.replace('bg-', 'text-')"
                             x-text="ticket.path ? '[' + pathBasename(ticket.path).toUpperCase() + ']' : '—'"></span>
                       <template x-if="ticket.status === 'in_progress'">
                         <span class="flex items-center gap-1 text-[11px] font-mono card-glyph-running">
@@ -674,6 +742,7 @@
                   </div>
                 </div>
               </template>
+            </div>
             </div>
             <div x-show="filteredTicketsByStatuses(col.statuses).length === 0"
                  class="absolute inset-0 top-12 flex items-center justify-center empty-state pointer-events-none">

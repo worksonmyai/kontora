@@ -319,7 +319,7 @@
 </head>
 
 <body class="h-full bg-surface-950 text-tx font-sans overflow-hidden" x-data="kontora()" x-cloak
-      @keydown.escape.window="if (deleteModal) closeDeleteModal(); else if (createModal) closeCreateModal(); else if (initModal) closeInitModal(); else if (detailMenuOpen) detailMenuOpen = false; else if (terminalFullscreen) terminalFullscreen = false; else if (ticketFullscreen) ticketFullscreen = false; else if (selectedTicket) closeDetail();"
+      @keydown.escape.window="if (deleteModal) closeDeleteModal(); else if (initModal) closeInitModal(); else if (currentView === 'new') closeCreateModal(); else if (detailMenuOpen) detailMenuOpen = false; else if (terminalFullscreen) terminalFullscreen = false; else if (ticketFullscreen) ticketFullscreen = false; else if (selectedTicket) closeDetail();"
       @dragenter.prevent="if ($event.dataTransfer && $event.dataTransfer.types.includes('Files')) uploadDragging = true"
       @dragover.prevent>
 
@@ -431,90 +431,6 @@
          :class="terminalRW ? 'ring-1 ring-err/40' : ''"></div>
   </div>
 
-  <!-- Create ticket modal -->
-  <div x-show="createModal" x-transition.opacity class="fixed inset-0 z-50 flex items-center justify-center bg-black/60" @click.self="closeCreateModal()">
-    <div role="dialog" aria-modal="true" aria-labelledby="create-modal-title" class="bg-surface-900 border border-surface-700/50 rounded-xl p-5 w-full max-w-md mx-4 slide-up" @click.stop>
-      <div class="flex items-center justify-between mb-4">
-        <span id="create-modal-title" class="text-sm font-semibold text-tx-2">New ticket</span>
-        <button @click="closeCreateModal()" class="text-surface-600 hover:text-tx-3" aria-label="Close">
-          <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
-        </button>
-      </div>
-      <form @submit.prevent="submitCreateTicket()">
-        <div class="space-y-3">
-          <div>
-            <label for="create-title" class="text-[13px] font-mono text-tx-3 mb-1 flex items-center gap-1.5"><svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="opacity-50"><polyline points="4 7 4 4 20 4 20 7"/><line x1="9" y1="20" x2="15" y2="20"/><line x1="12" y1="4" x2="12" y2="20"/></svg>Title *</label>
-            <input id="create-title" x-model="createForm.title" type="text" required
-                   class="w-full bg-surface-800 border border-surface-700/50 rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40"
-                   placeholder="Ticket title">
-          </div>
-          <div>
-            <label for="create-body" class="text-[13px] font-mono text-tx-3 mb-1 flex items-center gap-1.5"><svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="opacity-50"><line x1="17" y1="10" x2="3" y2="10"/><line x1="21" y1="6" x2="3" y2="6"/><line x1="21" y1="14" x2="3" y2="14"/><line x1="17" y1="18" x2="3" y2="18"/></svg>Body</label>
-            <textarea id="create-body" x-model="createForm.body" rows="3"
-                      class="w-full bg-surface-800 border border-surface-700/50 rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40 resize-y"
-                      placeholder="Ticket description (markdown)"></textarea>
-          </div>
-          <div>
-            <label for="create-path" class="text-[13px] font-mono text-tx-3 mb-1 flex items-center gap-1.5"><svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="opacity-50"><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"/></svg>Path *</label>
-            <input id="create-path" x-model="createForm.path" type="text" required
-                   class="w-full bg-surface-800 border border-surface-700/50 rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40"
-                   placeholder="~/projects/myrepo">
-            <p class="text-[11px] text-surface-600 mt-0.5">Repository the agent will work in. Supports ~.</p>
-          </div>
-          <div>
-            <label for="create-pipeline" class="text-[13px] font-mono text-tx-3 mb-1 flex items-center gap-1.5"><svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="opacity-50"><polyline points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="3"/><polyline points="21 16 21 21 16 21"/><line x1="15" y1="15" x2="21" y2="21"/><line x1="4" y1="4" x2="9" y2="9"/></svg>Pipeline</label>
-            <select id="create-pipeline" x-model="createForm.pipeline"
-                    class="w-full bg-surface-800 border border-surface-700/50 rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40">
-              <option value="">None</option>
-              <template x-for="p in configCache?.pipelines || []" :key="p">
-                <option :value="p" x-text="pipelineLabel(p)"></option>
-              </template>
-            </select>
-            <p class="text-[11px] text-surface-600 mt-0.5">Stages the ticket goes through. Leave empty for standalone.</p>
-          </div>
-          <div>
-            <label for="create-branch" class="text-[13px] font-mono text-tx-3 mb-1 flex items-center gap-1.5"><svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="opacity-50"><line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>Branch</label>
-            <input id="create-branch" x-model="createForm.branch" type="text"
-                   class="w-full bg-surface-800 border border-surface-700/50 rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40"
-                   :placeholder="(configCache?.branch_prefix || 'kontora') + '/…'">
-            <p class="text-[11px] text-surface-600 mt-0.5">Leave empty to auto-generate from ticket ID.</p>
-          </div>
-          <div class="flex gap-3">
-            <div class="flex-1">
-              <label for="create-agent" class="text-[13px] font-mono text-tx-3 mb-1 flex items-center gap-1.5"><svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="opacity-50"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/></svg>Agent</label>
-              <select id="create-agent" x-model="createForm.agent"
-                      class="w-full bg-surface-800 border border-surface-700/50 rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40">
-                <option value="">Default</option>
-                <template x-for="a in configCache?.agents || []" :key="a">
-                  <option :value="a" x-text="a"></option>
-                </template>
-              </select>
-            </div>
-            <div class="flex-1">
-              <label for="create-status" class="text-[13px] font-mono text-tx-3 mb-1 flex items-center gap-1.5"><svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="opacity-50"><circle cx="12" cy="12" r="10"/></svg>Status</label>
-              <select id="create-status" x-model="createForm.status"
-                      class="w-full bg-surface-800 border border-surface-700/50 rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40">
-                <option value="todo">todo</option>
-                <option value="open">open</option>
-              </select>
-              <p class="text-[11px] text-surface-600 mt-0.5">Todo starts automatically. Open is a draft.</p>
-            </div>
-          </div>
-        </div>
-        <div class="flex justify-end gap-2 mt-5">
-          <button type="button" @click="closeCreateModal()"
-                  class="text-[13px] font-mono px-4 py-1.5 rounded bg-surface-800 border border-surface-700/50 text-tx-3 hover:text-tx-2 transition-colors">
-            cancel
-          </button>
-          <button type="submit" :disabled="createSubmitting"
-                  class="text-[13px] font-mono px-4 py-1.5 rounded bg-accent/20 border border-accent/30 text-accent hover:bg-accent/30 transition-colors disabled:opacity-50">
-            <span x-text="createSubmitting ? 'creating...' : 'create'"></span>
-          </button>
-        </div>
-      </form>
-    </div>
-  </div>
-
   <!-- Init ticket modal -->
   <div x-show="initModal" x-transition.opacity class="fixed inset-0 z-50 flex items-center justify-center bg-black/60" @click.self="closeInitModal()">
     <div role="dialog" aria-modal="true" aria-labelledby="init-modal-title" class="bg-surface-900 border border-surface-700/50 rounded-xl p-5 w-full max-w-md mx-4 slide-up" @click.stop>
@@ -605,6 +521,14 @@
 
   <!-- Top bar -->
   <header class="h-12 border-b border-surface-700/50 flex items-center gap-4 px-5 shrink-0">
+    <button @click="toggleSidebar()"
+            class="w-7 h-7 -ml-1 rounded text-surface-600 hover:text-tx-3 hover:bg-surface-900 transition-colors flex items-center justify-center shrink-0"
+            :aria-label="sidebarHidden ? 'Show sidebar' : 'Hide sidebar'"
+            :data-tip-t="sidebarHidden ? 'Show sidebar' : 'Hide sidebar'">
+      <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/>
+      </svg>
+    </button>
     <div class="flex items-center gap-3 shrink-0">
       <h1 class="font-mono font-bold text-sm tracking-wider text-tx-2 m-0">kontora</h1>
       <span class="text-[12px] font-mono text-surface-600 uppercase tracking-widest hidden sm:inline">agent orchestration</span>
@@ -677,7 +601,51 @@
   </header>
 
   <!-- Main layout -->
-  <main class="flex h-[calc(100%-3rem)]">
+  <main class="flex h-[calc(100%-3rem)] min-h-0 relative">
+
+    <!-- Left sidebar (hideable) -->
+    <aside x-show="!sidebarHidden" x-cloak
+           x-transition:enter="transition-all duration-150 ease-out"
+           x-transition:enter-start="opacity-0 -translate-x-2"
+           x-transition:enter-end="opacity-100 translate-x-0"
+           class="w-[220px] shrink-0 border-r border-surface-700/50 bg-surface-950 flex flex-col overflow-y-auto">
+      <!-- Nav -->
+      <nav class="p-2.5 flex flex-col gap-0.5">
+        <button @click="currentView = 'board'"
+                class="flex items-center gap-2.5 h-7 px-2.5 rounded text-[13px] transition-colors"
+                :class="currentView === 'board' ? 'bg-surface-800 text-tx' : 'text-tx-3 hover:bg-surface-900 hover:text-tx-2'">
+          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 14 14" fill="none" class="opacity-80"><rect x="2" y="2" width="3" height="10" rx="0.8" stroke="currentColor" stroke-width="1.1"/><rect x="6" y="2" width="3" height="6" rx="0.8" stroke="currentColor" stroke-width="1.1"/><rect x="10" y="2" width="2" height="8" rx="0.8" stroke="currentColor" stroke-width="1.1"/></svg>
+          <span>Dashboard</span>
+        </button>
+        <button @click="openCreateModal()"
+                class="flex items-center gap-2.5 h-7 px-2.5 rounded text-[13px] transition-colors"
+                :class="currentView === 'new' ? 'bg-surface-800 text-tx' : 'text-tx-3 hover:bg-surface-900 hover:text-tx-2'">
+          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 12 12" fill="none" class="opacity-80"><path d="M6 2v8M2 6h8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+          <span>New ticket</span>
+        </button>
+      </nav>
+
+      <!-- Agents -->
+      <div class="p-2.5 pt-2" x-show="(configCache?.agents || []).length > 0">
+        <div class="font-mono text-[10px] font-semibold text-surface-600 uppercase tracking-widest px-2 pb-1.5">agents</div>
+        <div class="flex flex-col">
+          <template x-for="a in (configCache?.agents || [])" :key="a">
+            <div class="flex items-center gap-2 h-6 px-2 text-[11px] text-tx-2 min-w-0" :title="a">
+              <span class="w-[5px] h-[5px] rounded-full shrink-0"
+                    :style="agentRunningCount(a) > 0 ? 'background: hsl(var(--st-progress)); box-shadow: 0 0 0 2px hsl(var(--st-progress) / 0.2)' : 'background: rgba(var(--surface-600), 1)'"></span>
+              <span class="font-mono truncate flex-1" x-text="a"></span>
+              <span class="font-mono num text-[10px] text-surface-600 shrink-0" x-text="agentRunningCount(a)"></span>
+            </div>
+          </template>
+        </div>
+      </div>
+
+      <!-- Footer -->
+      <div class="mt-auto p-2.5 border-t border-surface-700/30 font-mono text-[10px] text-tx-4 leading-relaxed">
+        <div class="px-2">daemon · <span x-text="window.location.host"></span></div>
+        <div class="px-2">go 1.26 · single-instance</div>
+      </div>
+    </aside>
 
     <!-- Loading state -->
     <div x-show="loading" class="flex-1 flex items-center justify-center">
@@ -685,7 +653,7 @@
     </div>
 
     <!-- Kanban board -->
-    <div x-show="!loading"
+    <div x-show="!loading && currentView === 'board'"
          x-data="{ hasOverflowRight: false }"
          x-init="
            const el = $el;
@@ -700,7 +668,7 @@
          @click="selectedTicket && closeDetail()">
       <div class="flex gap-3 p-4 h-full min-w-min">
         <template x-for="(col, colIdx) in columns" :key="col.key">
-          <div class="flex flex-col h-full flex-1 min-w-[260px] basis-0 relative"
+          <div class="flex flex-col h-full flex-1 min-w-[280px] basis-0 relative"
                x-data="{ colHover: false }" @mouseenter="colHover = true" @mouseleave="colHover = false">
             <!-- Column header -->
             <div class="col-head" :data-status="col.key" :style="'--col-tint: ' + col.tint">
@@ -712,7 +680,7 @@
                       x-transition:enter="transition-opacity duration-150" x-transition:enter-start="opacity-0" x-transition:enter-end="opacity-100"
                       x-transition:leave="transition-opacity duration-100" x-transition:leave-start="opacity-100" x-transition:leave-end="opacity-0"
                       @click.stop="openCreateModal()"
-                      class="text-[11px] font-mono px-1.5 py-0.5 rounded bg-surface-800 border border-surface-700/50 text-surface-600 hover:text-accent hover:border-accent/30 flex items-center gap-1">+ new</button>
+                      class="text-[10px] font-mono leading-none h-[18px] px-1.5 rounded bg-surface-800 border border-surface-700/50 text-surface-600 hover:text-accent hover:border-accent/30 inline-flex items-center gap-1">+ new</button>
             </div>
             <!-- Card list (overflow fade + "more" chip shown when column has more below) -->
             <div class="col-fade flex-1 min-h-0 flex flex-col relative"
@@ -873,11 +841,11 @@
       </div>
     </div>
 
-    <!-- Detail panel (desktop: two-column layout, mobile: full-screen stacked) -->
-    <div x-show="selectedTicket"
+    <!-- Detail panel (desktop: absolute overlay on the right; mobile: full-screen stacked) -->
+    <div x-show="selectedTicket && currentView === 'board'"
          x-transition.opacity.duration.150ms
-         class="bg-surface-950 overflow-hidden relative shrink-0"
-         :class="isMobile ? 'fixed inset-0 z-50 flex flex-col' : 'flex flex-row border-l-2 border-surface-700'"
+         class="bg-surface-950 overflow-hidden"
+         :class="isMobile ? 'fixed inset-0 z-50 flex flex-col' : 'absolute top-0 right-0 bottom-0 z-30 flex flex-row border-l border-surface-700 shadow-[0_0_40px_-10px_rgba(0,0,0,0.5)]'"
          :style="!isMobile && selectedTicket ? 'width:' + panelWidth + 'px' : ''">
 
       <!-- Resize handle -->
@@ -1293,10 +1261,106 @@
       </div>
     </div>
 
-    <!-- Collapsed state hint (desktop only) -->
-    <div x-show="!selectedTicket && !isMobile && !loading"
-         class="w-12 border-l border-surface-700/50 flex items-center justify-center shrink-0">
-      <span class="text-surface-600 text-[12px] font-mono [writing-mode:vertical-rl] tracking-wider">select a ticket</span>
+    <!-- New ticket page -->
+    <div x-show="!loading && currentView === 'new'" x-cloak class="flex flex-1 min-w-0 min-h-0">
+      <!-- Form pane -->
+      <div class="flex-1 min-w-0 overflow-y-auto">
+        <div class="max-w-2xl mx-auto px-8 py-6">
+          <div class="flex items-center justify-between mb-5">
+            <div class="flex items-baseline gap-3 min-w-0">
+              <h1 class="text-base font-semibold text-tx-2 m-0">New ticket</h1>
+              <span class="font-mono text-[10px] text-surface-600 uppercase tracking-widest hidden sm:inline truncate">creates a markdown file in your tickets directory</span>
+            </div>
+            <button type="button" @click="closeCreateModal()"
+                    class="font-mono text-[11px] text-surface-600 hover:text-tx-3 transition-colors px-2 py-0.5 rounded border border-surface-700/50"
+                    aria-label="Cancel and return to board">esc</button>
+          </div>
+
+          <form @submit.prevent="submitCreateTicket()" class="space-y-4">
+            <div>
+              <label for="new-title" class="text-[13px] font-mono text-tx-3 mb-1 flex items-center gap-1.5"><svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="opacity-50"><polyline points="4 7 4 4 20 4 20 7"/><line x1="9" y1="20" x2="15" y2="20"/><line x1="12" y1="4" x2="12" y2="20"/></svg>Title *</label>
+              <input id="new-title" x-model="createForm.title" type="text" required
+                     class="w-full bg-surface-800 border border-surface-700/50 rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40"
+                     placeholder="Short, descriptive ticket title">
+            </div>
+
+            <div>
+              <label for="new-body" class="text-[13px] font-mono text-tx-3 mb-1 flex items-center gap-1.5"><svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="opacity-50"><line x1="17" y1="10" x2="3" y2="10"/><line x1="21" y1="6" x2="3" y2="6"/><line x1="21" y1="14" x2="3" y2="14"/><line x1="17" y1="18" x2="3" y2="18"/></svg>Body</label>
+              <textarea id="new-body" x-model="createForm.body" rows="6"
+                        class="w-full bg-surface-800 border border-surface-700/50 rounded px-3 py-2 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40 resize-y"
+                        placeholder="Ticket description (markdown). Acceptance criteria, links, context."></textarea>
+            </div>
+
+            <div>
+              <label for="new-path" class="text-[13px] font-mono text-tx-3 mb-1 flex items-center gap-1.5"><svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="opacity-50"><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"/></svg>Path *</label>
+              <input id="new-path" x-model="createForm.path" type="text" required
+                     class="w-full bg-surface-800 border border-surface-700/50 rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40"
+                     placeholder="~/projects/myrepo">
+              <p class="text-[11px] text-surface-600 mt-0.5">Repository the agent will work in. Supports ~.</p>
+            </div>
+
+            <div class="grid grid-cols-3 gap-3">
+              <div>
+                <label for="new-pipeline" class="text-[13px] font-mono text-tx-3 mb-1 flex items-center gap-1.5"><svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="opacity-50"><polyline points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="3"/><polyline points="21 16 21 21 16 21"/><line x1="15" y1="15" x2="21" y2="21"/><line x1="4" y1="4" x2="9" y2="9"/></svg>Pipeline</label>
+                <select id="new-pipeline" x-model="createForm.pipeline"
+                        class="w-full bg-surface-800 border border-surface-700/50 rounded px-2 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40">
+                  <option value="">none</option>
+                  <template x-for="p in configCache?.pipelines || []" :key="p">
+                    <option :value="p" x-text="p"></option>
+                  </template>
+                </select>
+              </div>
+              <div>
+                <label for="new-agent" class="text-[13px] font-mono text-tx-3 mb-1 flex items-center gap-1.5"><svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="opacity-50"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/></svg>Agent</label>
+                <select id="new-agent" x-model="createForm.agent"
+                        class="w-full bg-surface-800 border border-surface-700/50 rounded px-2 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40">
+                  <option value="">default</option>
+                  <template x-for="a in configCache?.agents || []" :key="a">
+                    <option :value="a" x-text="a"></option>
+                  </template>
+                </select>
+              </div>
+              <div>
+                <label for="new-status" class="text-[13px] font-mono text-tx-3 mb-1 flex items-center gap-1.5"><svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="opacity-50"><circle cx="12" cy="12" r="10"/></svg>Status</label>
+                <select id="new-status" x-model="createForm.status"
+                        class="w-full bg-surface-800 border border-surface-700/50 rounded px-2 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40">
+                  <option value="todo">todo</option>
+                  <option value="open">open</option>
+                </select>
+              </div>
+            </div>
+            <p class="text-[11px] text-surface-600 -mt-2">Pipeline → stages the ticket runs through. Agent → defaults to pipeline's. Status → <span class="text-tx-3">todo</span> queues automatically; <span class="text-tx-3">open</span> stays a draft.</p>
+
+            <div>
+              <label for="new-branch" class="text-[13px] font-mono text-tx-3 mb-1 flex items-center gap-1.5"><svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="opacity-50"><line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>Branch</label>
+              <input id="new-branch" x-model="createForm.branch" type="text"
+                     class="w-full bg-surface-800 border border-surface-700/50 rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40"
+                     :placeholder="(configCache?.branch_prefix || 'kontora') + '/…'">
+              <p class="text-[11px] text-surface-600 mt-0.5">Leave empty to auto-generate from ticket ID.</p>
+            </div>
+
+            <div class="flex justify-end gap-2 pt-3 border-t border-surface-700/30">
+              <button type="button" @click="closeCreateModal()"
+                      class="text-[12px] font-mono h-8 px-4 rounded bg-surface-900 border border-surface-700/60 text-tx-3 hover:text-tx-2 hover:border-surface-600 transition-colors">
+                cancel
+              </button>
+              <button type="submit" :disabled="createSubmitting || !createForm.title || !createForm.path"
+                      class="text-[12px] font-mono h-8 px-4 rounded bg-accent text-accent-fg border border-accent hover:bg-accent-bright hover:border-accent-bright transition-colors disabled:opacity-50 disabled:cursor-not-allowed font-medium">
+                <span x-text="createSubmitting ? 'creating...' : 'create ticket'"></span>
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+
+      <!-- Live YAML frontmatter preview -->
+      <div class="hidden md:flex w-[420px] shrink-0 border-l border-surface-700/50 bg-surface-deep flex-col">
+        <div class="px-4 h-9 border-b border-surface-700/30 flex items-center gap-2">
+          <span class="font-mono text-[10px] font-semibold text-surface-600 uppercase tracking-widest">frontmatter preview</span>
+          <span class="font-mono text-[10px] text-tx-4 ml-auto truncate" x-show="createForm.title" x-text="createForm.title.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'') + '.md'"></span>
+        </div>
+        <pre class="flex-1 min-h-0 overflow-auto p-4 font-mono text-[12px] text-tx-3 leading-relaxed whitespace-pre-wrap" x-text="createPreviewYaml"></pre>
+      </div>
     </div>
   </main>
 

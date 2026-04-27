@@ -161,18 +161,23 @@ func (d *Daemon) GetConfig() web.ConfigInfo {
 	pipelines := slices.Sorted(maps.Keys(d.cfg.Pipelines))
 	infos := make([]web.PipelineInfo, len(pipelines))
 	for i, name := range pipelines {
-		stages := d.cfg.Pipelines[name]
-		stageNames := make([]string, len(stages))
-		for j, s := range stages {
+		steps := d.cfg.Pipelines[name]
+		stageNames := make([]string, len(steps))
+		for j, s := range steps {
 			stageNames[j] = s.Stage
 		}
-		infos[i] = web.PipelineInfo{Name: name, Stages: stageNames}
+		var defaultAgent string
+		if len(steps) > 0 {
+			defaultAgent = steps[0].Agent
+		}
+		infos[i] = web.PipelineInfo{Name: name, Stages: stageNames, DefaultAgent: defaultAgent}
 	}
 	agents := slices.Sorted(maps.Keys(d.cfg.Agents))
 	return web.ConfigInfo{
 		Pipelines:      pipelines,
 		PipelineInfos:  infos,
 		Agents:         agents,
+		DefaultAgent:   d.cfg.DefaultAgent,
 		BranchPrefix:   d.cfg.BranchPrefix,
 		CustomStatuses: d.cfg.Statuses,
 	}

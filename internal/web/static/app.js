@@ -354,6 +354,18 @@ function kontora() {
       this.createSubmitting = false;
     },
 
+    // Auto-pick the agent that the picked pipeline runs first, with a fallback
+    // to the global default. Mirrors what the daemon would resolve on submit
+    // when agent is left blank.
+    onPipelineChange() {
+      var name = this.createForm.pipeline;
+      if (!name) return;
+      var infos = this.configCache?.pipeline_infos || [];
+      var info = infos.find(i => i.name === name);
+      var def = (info && info.default_agent) || this.configCache?.default_agent || '';
+      if (def) this.createForm.agent = def;
+    },
+
     toggleSidebar() {
       this.sidebarHidden = !this.sidebarHidden;
       try { localStorage.setItem('kontora-sidebar-hidden', this.sidebarHidden ? '1' : '0'); } catch (e) {}

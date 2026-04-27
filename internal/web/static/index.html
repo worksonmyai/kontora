@@ -1296,7 +1296,7 @@
             <div class="grid grid-cols-3 gap-3">
               <div>
                 <label for="new-pipeline" class="text-[13px] font-mono text-tx-3 mb-1 flex items-center gap-1.5"><svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="opacity-50"><polyline points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="3"/><polyline points="21 16 21 21 16 21"/><line x1="15" y1="15" x2="21" y2="21"/><line x1="4" y1="4" x2="9" y2="9"/></svg>Pipeline</label>
-                <select id="new-pipeline" x-model="createForm.pipeline"
+                <select id="new-pipeline" x-model="createForm.pipeline" @change="onPipelineChange()"
                         class="w-full bg-surface-800 border border-surface-700/50 rounded px-2 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40">
                   <option value="">none</option>
                   <template x-for="p in configCache?.pipelines || []" :key="p">

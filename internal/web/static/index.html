@@ -25,7 +25,7 @@
           },
           colors: {
             surface: { deep: 'rgba(var(--surface-deep), <alpha-value>)', 950: 'rgba(var(--surface-950), <alpha-value>)', 900: 'rgba(var(--surface-900), <alpha-value>)', 850: 'rgba(var(--surface-850), <alpha-value>)', 800: 'rgba(var(--surface-800), <alpha-value>)', 700: 'rgba(var(--surface-700), <alpha-value>)', 600: 'rgba(var(--surface-600), <alpha-value>)' },
-            accent: { DEFAULT: 'rgba(var(--accent), <alpha-value>)', dim: 'rgba(var(--accent-dim), <alpha-value>)', bright: 'rgba(var(--accent-bright), <alpha-value>)' },
+            accent: { DEFAULT: 'rgba(var(--accent), <alpha-value>)', dim: 'rgba(var(--accent-dim), <alpha-value>)', bright: 'rgba(var(--accent-bright), <alpha-value>)', fg: 'rgba(var(--accent-fg), <alpha-value>)' },
             ok: 'rgba(var(--ok), <alpha-value>)',
             warn: 'rgba(var(--warn), <alpha-value>)',
             err: 'rgba(var(--err), <alpha-value>)',
@@ -45,8 +45,8 @@
       try { localStorage.setItem('kontora-theme', t); } catch (e) {}
     }
     var kontoraThemeCSS = {
-      dark: ':root{--surface-deep:24,26,40;--surface-950:30,33,50;--surface-900:48,51,72;--surface-850:54,57,78;--surface-800:62,66,88;--surface-700:78,82,106;--surface-600:130,134,158;--accent:138,173,244;--accent-dim:91,120,190;--accent-bright:183,189,248;--ok:166,218,149;--warn:238,212,159;--err:237,135,150;--review:198,160,246;--tx:202,211,245;--tx-2:184,192,224;--tx-3:165,173,203;--tx-4:140,147,172}',
-      light: ':root{--surface-deep:212,216,226;--surface-950:230,232,238;--surface-900:248,249,252;--surface-850:238,240,245;--surface-800:216,220,230;--surface-700:192,196,210;--surface-600:124,128,146;--accent:30,102,245;--accent-dim:21,88,208;--accent-bright:114,135,253;--ok:64,160,43;--warn:223,142,29;--err:210,15,57;--review:136,58,234;--tx:76,79,105;--tx-2:92,95,119;--tx-3:108,111,133;--tx-4:120,123,143}'
+      dark: ':root{--surface-deep:24,24,37;--surface-950:30,30,46;--surface-900:35,35,52;--surface-850:42,43,60;--surface-800:49,50,68;--surface-700:59,60,81;--surface-600:127,132,156;--accent:203,166,247;--accent-dim:137,108,209;--accent-bright:180,190,254;--accent-fg:24,24,37;--ok:166,227,161;--warn:249,226,175;--err:243,139,168;--review:203,166,247;--tx:205,214,244;--tx-2:186,194,222;--tx-3:166,173,200;--tx-4:108,112,134}',
+      light: ':root{--surface-deep:230,233,239;--surface-950:239,241,245;--surface-900:255,255,255;--surface-850:245,246,249;--surface-800:204,208,218;--surface-700:214,218,228;--surface-600:140,143,161;--accent:136,57,239;--accent-dim:92,40,165;--accent-bright:114,135,253;--accent-fg:255,255,255;--ok:64,160,43;--warn:223,142,29;--err:210,15,57;--review:136,57,239;--tx:76,79,105;--tx-2:92,95,119;--tx-3:108,111,133;--tx-4:172,176,190}'
     };
     function applyTheme(t) {
       document.documentElement.dataset.theme = t;
@@ -189,6 +189,132 @@
     .stage-dot-done    { background: rgba(var(--tx-4), 1); }
     .stage-dot-current { width: 8px; height: 8px; background: rgba(var(--accent), 1); box-shadow: 0 0 4px rgba(var(--accent), 0.5); }
     .stage-dot-todo    { background: transparent; border: 1px solid rgba(var(--surface-700), 1); }
+
+    /* ─── status hues (used by tinted column headers, stage progress, status dots) ─── */
+    :root {
+      --st-open:     227 35% 80%;
+      --st-progress: 41 86% 83%;
+      --st-review:   267 84% 81%;
+      --st-done:     115 54% 76%;
+      --st-cancel:   228 24% 72%;
+      --st-error:    343 81% 75%;
+    }
+    [data-theme='light'] {
+      --st-open:     227 35% 45%;
+      --st-progress: 38 80% 35%;
+      --st-review:   267 70% 50%;
+      --st-done:     115 50% 30%;
+      --st-cancel:   228 15% 45%;
+      --st-error:    343 75% 40%;
+    }
+
+    /* per-pipeline color hue, applied via [data-pipe-color="..."] on cards/tags */
+    [data-pipe-color="indigo"] { --pipe-h: 217 92% 76%; }
+    [data-pipe-color="cyan"]   { --pipe-h: 170 57% 73%; }
+    [data-pipe-color="amber"]  { --pipe-h: 23  92% 75%; }
+    [data-pipe-color="green"]  { --pipe-h: 115 54% 76%; }
+    [data-pipe-color="rose"]   { --pipe-h: 316 72% 86%; }
+    [data-pipe-color="mauve"]  { --pipe-h: 267 84% 81%; }
+    [data-pipe-color="none"]   { --pipe-h: 240 10% 55%; }
+    [data-theme='light'][data-pipe-color="indigo"] { --pipe-h: 217 80% 45%; }
+    [data-theme='light'][data-pipe-color="cyan"]   { --pipe-h: 188 70% 32%; }
+    [data-theme='light'][data-pipe-color="amber"]  { --pipe-h: 30  80% 38%; }
+    [data-theme='light'][data-pipe-color="green"]  { --pipe-h: 152 50% 28%; }
+    [data-theme='light'][data-pipe-color="rose"]   { --pipe-h: 348 60% 40%; }
+    [data-theme='light'][data-pipe-color="mauve"]  { --pipe-h: 267 70% 50%; }
+    [data-theme='light'][data-pipe-color="none"]   { --pipe-h: 240 10% 35%; }
+
+    /* Sticky tinted column header */
+    .col-head {
+      position: sticky; top: 0; z-index: 2;
+      display: flex; align-items: center; gap: 8px;
+      padding: 12px 10px 10px;
+      margin-bottom: 10px;
+      border-radius: 6px 6px 0 0;
+      background: linear-gradient(to bottom,
+        hsl(var(--col-tint) / 0.10),
+        hsl(var(--col-tint) / 0.04));
+      border-bottom: 1px solid hsl(var(--col-tint) / 0.25);
+    }
+    .col-head-dot {
+      width: 7px; height: 7px; border-radius: 9999px;
+      background: hsl(var(--col-tint));
+      flex-shrink: 0;
+    }
+    .col-head[data-status="in_progress"] .col-head-dot {
+      box-shadow: 0 0 0 3px hsl(var(--col-tint) / 0.25);
+    }
+    .col-head-label {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: hsl(var(--col-tint));
+      font-weight: 600;
+    }
+    .col-head-count {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px;
+      color: rgba(var(--surface-600), 1);
+      font-variant-numeric: tabular-nums;
+    }
+
+    /* Pipeline tag chip — uppercase mono in [BRACKETS] */
+    .pipe-tag {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      padding: 2px 6px;
+      border-radius: 3px;
+      color: hsl(var(--pipe-h, 240 10% 55%));
+      background: hsl(var(--pipe-h, 240 10% 55%) / 0.12);
+      text-transform: uppercase;
+      white-space: nowrap;
+      display: inline-block;
+      line-height: 1.4;
+    }
+
+    /* Stage progress bars (slim, side-by-side) */
+    .stage-bars { display: flex; gap: 2px; width: 100%; }
+    .stage-bars > span {
+      flex: 1; height: 3px; border-radius: 1px;
+      background: rgba(var(--surface-700), 1);
+    }
+    .stage-bars > span.done    { background: hsl(var(--st-done)); }
+    .stage-bars > span.current { background: hsl(var(--st-progress)); }
+    .stage-bars.is-cancelled > span { opacity: 0.35; }
+
+    /* Pipeline-tinted card left border (applies to every card on the new board) */
+    .kt-card {
+      border-left-width: 2px;
+      border-left-color: hsl(var(--pipe-h, 240 10% 55%) / 0.55);
+      transition: border-color .12s, background-color .12s, box-shadow .12s;
+    }
+    .kt-card:hover {
+      border-left-color: hsl(var(--pipe-h, 240 10% 55%));
+    }
+
+    /* "running" pill in the top header */
+    .running-pill {
+      display: inline-flex; align-items: center; gap: 6px;
+      height: 24px; padding: 0 9px;
+      border: 1px solid rgba(var(--surface-700), 0.7);
+      background: rgba(var(--surface-900), 1);
+      border-radius: 6px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px;
+      color: rgba(var(--tx-3), 1);
+    }
+    .running-pill-dot {
+      width: 6px; height: 6px; border-radius: 9999px;
+      background: hsl(var(--st-progress));
+      box-shadow: 0 0 0 3px hsl(var(--st-progress) / 0.2);
+    }
+    .running-pill.is-idle .running-pill-dot {
+      background: rgba(var(--surface-600), 1);
+      box-shadow: none;
+    }
   </style>
 </head>
 
@@ -520,28 +646,30 @@
       </div>
     </div>
 
-    <div class="flex items-center gap-4 text-xs font-mono shrink-0 ml-auto">
-      <span class="w-1.5 h-1.5 rounded-full bg-ok pulse-dot"></span>
-      <span class="text-surface-600 hidden sm:inline">|</span>
-      <span class="text-tx-3"><span class="text-tx" x-text="runningAgents"></span> <span x-text="runningAgents == 1 ? 'agent' : 'agents'"></span> running</span>
+    <div class="flex items-center gap-2 text-xs font-mono shrink-0 ml-auto">
+      <span class="running-pill" :class="runningAgents === 0 ? 'is-idle' : ''">
+        <span class="running-pill-dot" :class="runningAgents > 0 ? 'pulse-dot' : ''"></span>
+        <span class="text-tx num" x-text="runningAgents"></span>
+        <span class="text-surface-600">running</span>
+      </span>
       <template x-if="searchQuery && searchQuery.trim()">
-        <span class="text-tx-3">
-          <span class="text-surface-600">|</span>
-          <span class="text-tx" x-text="filteredTicketCount()"></span> matched
+        <span class="text-[11px] text-surface-600 mx-1">
+          <span class="text-tx-3" x-text="filteredTicketCount()"></span> matched
         </span>
       </template>
-      <span class="text-surface-600">|</span>
-      <button @click="toggleTheme()" class="text-surface-600 hover:text-tx-3 transition-colors p-0.5" aria-label="Toggle theme">
+      <button @click="toggleTheme()"
+              class="w-7 h-7 rounded border border-surface-700/60 text-surface-600 hover:text-tx-3 hover:border-surface-600 transition-colors flex items-center justify-center"
+              aria-label="Toggle theme">
         <svg x-show="!lightTheme" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
         <svg x-show="lightTheme" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
       </button>
       <button @click="openCreateModal()"
-              class="text-[13px] font-mono px-2 py-0.5 rounded bg-surface-800 border border-surface-700/50 text-tx-3 hover:text-accent hover:border-accent/30 transition-colors flex items-center gap-1">
-        <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
+              class="text-[12px] font-mono h-7 px-3 rounded bg-accent text-accent-fg border border-accent hover:bg-accent-bright hover:border-accent-bright transition-colors flex items-center gap-1.5 font-medium">
+        <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
         new
       </button>
       <button @click="$refs.uploadInput.click()"
-              class="text-[13px] font-mono px-2 py-0.5 rounded bg-surface-800 border border-surface-700/50 text-tx-3 hover:text-accent hover:border-accent/30 transition-colors flex items-center gap-1">
+              class="text-[12px] font-mono h-7 px-3 rounded bg-surface-900 border border-surface-700/60 text-tx-3 hover:text-tx-2 hover:border-surface-600 transition-colors flex items-center gap-1.5">
         <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
         upload
       </button>
@@ -574,19 +702,17 @@
         <template x-for="(col, colIdx) in columns" :key="col.key">
           <div class="flex flex-col h-full flex-1 min-w-[260px] basis-0 relative"
                x-data="{ colHover: false }" @mouseenter="colHover = true" @mouseleave="colHover = false">
-            <div x-show="colIdx > 0" class="absolute left-[-7px] top-[15%] h-[70%] w-px bg-surface-700/60"></div>
             <!-- Column header -->
-            <div class="relative flex items-center justify-center gap-2 mb-3 px-1 pb-3 border-b border-surface-700/60">
-              <div class="w-2 h-2 rounded-full" :class="col.color"></div>
-              <span class="text-xs font-mono font-semibold uppercase tracking-wider text-tx-3" x-text="col.label"></span>
-              <button type="button" class="tip" :data-tip="col.tip" :aria-label="col.tip">i</button>
-              <span class="absolute right-1 text-[12px] font-mono text-surface-600"
-                    x-text="filteredTicketsByStatuses(col.statuses).length"></span>
+            <div class="col-head" :data-status="col.key" :style="'--col-tint: ' + col.tint">
+              <span class="col-head-dot"></span>
+              <span class="col-head-label" x-text="col.label"></span>
+              <span class="col-head-count" x-text="filteredTicketsByStatuses(col.statuses).length"></span>
+              <button type="button" class="tip ml-auto" :data-tip="col.tip" :aria-label="col.tip">i</button>
               <button x-show="col.key === 'open' && colHover"
                       x-transition:enter="transition-opacity duration-150" x-transition:enter-start="opacity-0" x-transition:enter-end="opacity-100"
                       x-transition:leave="transition-opacity duration-100" x-transition:leave-start="opacity-100" x-transition:leave-end="opacity-0"
                       @click.stop="openCreateModal()"
-                      class="absolute right-0 text-[12px] font-mono px-1.5 py-0.5 rounded bg-surface-800 border border-surface-700/50 text-surface-600 hover:text-accent hover:border-accent/30">+ new</button>
+                      class="text-[11px] font-mono px-1.5 py-0.5 rounded bg-surface-800 border border-surface-700/50 text-surface-600 hover:text-accent hover:border-accent/30 flex items-center gap-1">+ new</button>
             </div>
             <!-- Card list (overflow fade + "more" chip shown when column has more below) -->
             <div class="col-fade flex-1 min-h-0 flex flex-col relative"
@@ -623,53 +749,39 @@
                 <div :data-ticket-id="ticket.id"
                      role="listitem" tabindex="0"
                      :aria-label="'Ticket ' + ticket.id + ': ' + ticket.title"
+                     :data-pipe-color="ticketPipeColor(ticket)"
                      @click.stop="selectTicket(ticket)"
                      @keydown.enter.stop="selectTicket(ticket)"
                      @keydown.space.stop.prevent="selectTicket(ticket)"
-                     class="group relative rounded-lg p-3.5 cursor-pointer transition-all duration-150 border slide-up"
+                     class="kt-card group relative rounded-lg p-3 cursor-pointer border slide-up flex flex-col gap-2"
                      :class="[
                        selectedTicket?.id === ticket.id
                          ? 'bg-surface-800 border-accent/30 shadow-lg shadow-accent/5'
-                         : ticket.status === 'in_progress' && ticket.kontora
-                           ? 'bg-surface-900 border-accent/30 hover:bg-surface-850'
-                           : 'bg-surface-900 border-surface-700/50 hover:border-surface-600/50 hover:bg-surface-850',
+                         : 'bg-surface-900 border-surface-700/50 hover:bg-surface-850',
                        !ticket.kontora ? 'border-dashed' : '',
-                       selectedTicket?.id !== ticket.id ? col.glow : '',
-                       {
-                         'card-state-running': col.key === 'in_progress' && ticket.status === 'in_progress',
-                         'card-state-paused':  col.key === 'in_progress' && ticket.status === 'paused',
-                         'card-state-todo':    col.key === 'in_progress' && ticket.status === 'todo',
-                         'card-quiet':         col.key === 'in_progress' && (ticket.status === 'paused' || ticket.status === 'todo'),
-                       },
+                       ticket.status === 'cancelled' ? 'opacity-60' : '',
                      ]">
-                  <div class="flex items-center justify-between gap-2 mb-2">
+                  <!-- Top row: pipeline tag + stage / status indicator + 3-dot menu -->
+                  <div class="flex items-center justify-between gap-2">
                     <div class="flex items-center gap-2 min-w-0">
-                      <span class="text-[11px] font-mono font-semibold uppercase truncate"
-                            :class="!ticket.path ? 'text-surface-600'
-                              : col.key === 'in_progress' && ticket.status === 'paused' ? 'text-warn'
-                              : col.key === 'in_progress' && ticket.status === 'todo' ? 'text-accent-dim'
-                              : col.color.replace('bg-', 'text-')"
-                            x-text="ticket.path ? '[' + pathBasename(ticket.path).toUpperCase() + ']' : '—'"></span>
-                      <template x-if="ticket.status === 'in_progress'">
-                        <span class="flex items-center gap-1 text-[11px] font-mono card-glyph-running">
-                          <span class="pulse-dot">●</span>
+                      <span class="pipe-tag truncate" x-text="'[' + ticketTagLabel(ticket) + ']'"></span>
+                      <template x-if="col.key === 'in_progress' && ticket.status === 'in_progress'">
+                        <span class="flex items-center gap-1 text-[11px] font-mono">
+                          <span class="pulse-dot text-ok">●</span>
                           <span class="text-accent" x-text="ticket.stage"></span>
                         </span>
                       </template>
-                      <template x-if="ticket.status === 'paused'">
-                        <span class="flex items-center gap-1 text-[11px] font-mono card-glyph-paused">
+                      <template x-if="col.key === 'in_progress' && ticket.status === 'paused'">
+                        <span class="flex items-center gap-1 text-[11px] font-mono text-warn">
                           <span>⏸</span>
                           <span x-show="ticket.stage" x-text="ticket.stage"></span>
                         </span>
                       </template>
-                      <template x-if="ticket.status === 'todo'">
-                        <span class="flex items-center gap-1 text-[11px] font-mono card-glyph-todo">
+                      <template x-if="col.key === 'in_progress' && ticket.status === 'todo'">
+                        <span class="flex items-center gap-1 text-[11px] font-mono text-surface-600">
                           <span>◌</span>
                           <span x-show="ticket.stage" x-text="ticket.stage"></span>
                         </span>
-                      </template>
-                      <template x-if="ticket.stage && !['in_progress','paused','todo'].includes(ticket.status)">
-                        <span class="text-[11px] font-mono text-surface-600" x-text="ticket.stage"></span>
                       </template>
                     </div>
                     <div class="relative flex items-center shrink-0"
@@ -704,41 +816,44 @@
                       </div>
                     </div>
                   </div>
-                  <!-- Pipeline stage progress: only in the In Progress column. -->
+
+                  <!-- Title -->
+                  <p class="text-[13px] text-tx leading-snug"
+                     :class="ticket.status === 'cancelled' ? 'line-through decoration-surface-600/60' : ''"
+                     x-text="ticket.title"></p>
+
+                  <!-- Stage progress bars: only in the In Progress column. -->
                   <template x-if="col.key === 'in_progress' && ticket.stages && ticket.stages.length > 1">
-                    <div class="flex items-center gap-1 mb-2">
+                    <div class="stage-bars">
                       <template x-for="(stage, i) in ticket.stages" :key="i">
-                        <span class="stage-dot"
-                              :class="stageDotClass(i, ticket)"
-                              :title="stage"></span>
+                        <span :class="stageBarClass(i, ticket)" :title="stage"></span>
                       </template>
                     </div>
                   </template>
-                  <!-- Title -->
-                  <p class="text-sm text-tx leading-snug" x-text="ticket.title"></p>
+
                   <!-- Meta row -->
-                  <div class="flex items-center gap-1.5 mt-3 text-[11px] font-mono text-surface-600">
-                    <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="shrink-0 opacity-60"><line x1="4" y1="9" x2="20" y2="9"/><line x1="4" y1="15" x2="20" y2="15"/><line x1="10" y1="3" x2="8" y2="21"/><line x1="16" y1="3" x2="14" y2="21"/></svg>
-                    <span class="group-hover:text-tx-3 transition-colors" x-text="ticket.id"></span>
-                    <template x-if="ticket.agent">
-                      <span class="flex items-center gap-1.5">
-                        <span class="text-surface-700">·</span>
-                        <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="shrink-0 opacity-60"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/></svg>
-                        <span x-text="ticket.agent"></span>
-                      </span>
-                    </template>
-                    <template x-if="ticket.status === 'in_progress' && ticket.started_at">
-                      <span class="flex items-center gap-1.5">
-                        <span class="text-surface-700">·</span>
+                  <div class="flex items-center gap-2 text-[11px] font-mono text-surface-600 justify-between">
+                    <div class="flex items-center gap-1.5 min-w-0">
+                      <span class="group-hover:text-tx-3 transition-colors truncate" x-text="ticket.id"></span>
+                      <template x-if="ticket.agent">
+                        <span class="flex items-center gap-1.5 min-w-0">
+                          <span class="text-surface-700">·</span>
+                          <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 10 10" fill="none" class="shrink-0 opacity-70"><circle cx="5" cy="5" r="4" stroke="currentColor" stroke-width="1"/><circle cx="5" cy="5" r="1.6" fill="currentColor"/></svg>
+                          <span class="truncate" x-text="ticket.agent"></span>
+                        </span>
+                      </template>
+                    </div>
+                    <div class="flex items-center gap-2 shrink-0">
+                      <template x-if="ticket.attempt > 0 && !['done','cancelled'].includes(ticket.status)">
+                        <span class="px-1.5 py-px rounded text-[10px] bg-err/15 text-err" x-text="'retry ' + ticket.attempt"></span>
+                      </template>
+                      <template x-if="ticket.status === 'in_progress' && ticket.started_at">
                         <span x-text="formatDuration(ticket)" :data-tip-t="'Started: ' + formatAbsDate(ticket.started_at)"></span>
-                      </span>
-                    </template>
-                    <template x-if="ticket.created_at && !(ticket.status === 'in_progress' && ticket.started_at)">
-                      <span class="flex items-center gap-1.5">
-                        <span class="text-surface-700">·</span>
+                      </template>
+                      <template x-if="ticket.created_at && !(ticket.status === 'in_progress' && ticket.started_at)">
                         <span x-text="timeAgo(ticket.created_at)" :data-tip-t="formatAbsDate(ticket.created_at)"></span>
-                      </span>
-                    </template>
+                      </template>
+                    </div>
                   </div>
                 </div>
               </template>

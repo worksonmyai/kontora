@@ -59,15 +59,15 @@ function kontora() {
     openMenuTicketId: null,
 
     _builtinColumns: [
-      { key: 'open', statuses: ['open'], dropStatus: 'open', label: 'Open', color: 'bg-accent', tip: 'Draft ticket, not running yet. Drag to In Progress or click Initialize to start.', emptyText: 'Create a ticket to get started', tint: '', glow: 'glow-top-accent',
+      { key: 'open', statuses: ['open'], dropStatus: 'open', label: 'Open', color: 'bg-accent', tint: '227 35% 80%', tip: 'Draft ticket, not running yet. Drag to In Progress or click Initialize to start.', emptyText: 'Create a ticket to get started', glow: 'glow-top-accent',
         emptyIcon: '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M9 15h6"/><path d="M12 18v-6"/>' },
-      { key: 'in_progress', statuses: ['todo', 'in_progress', 'paused'], dropStatus: 'todo', label: 'In Progress', color: 'bg-ok', tip: 'Queued, running, or paused tickets. The daemon auto-promotes queued tickets when a worker is free.', emptyText: 'No tickets in flight right now', tint: '', glow: 'glow-top-ok',
+      { key: 'in_progress', statuses: ['todo', 'in_progress', 'paused'], dropStatus: 'todo', label: 'In Progress', color: 'bg-ok', tint: '41 86% 83%', tip: 'Queued, running, or paused tickets. The daemon auto-promotes queued tickets when a worker is free.', emptyText: 'No tickets in flight right now', glow: 'glow-top-ok',
         emptyIcon: '<path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/>' },
-      { key: 'human_review', statuses: ['human_review'], dropStatus: 'human_review', label: 'Human Review', color: 'bg-review', tip: 'Waiting for a human to look at the result.', emptyText: 'No tickets waiting for review', tint: '', glow: 'glow-top-review',
+      { key: 'human_review', statuses: ['human_review'], dropStatus: 'human_review', label: 'Human Review', color: 'bg-review', tint: '267 84% 81%', tip: 'Waiting for a human to look at the result.', emptyText: 'No tickets waiting for review', glow: 'glow-top-review',
         emptyIcon: '<path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/>' },
-      { key: 'done', statuses: ['done'], dropStatus: 'done', label: 'Done', color: 'bg-ok', tip: 'Ticket completed successfully.', emptyText: 'No completed tickets yet', tint: '', glow: 'glow-top-ok',
+      { key: 'done', statuses: ['done'], dropStatus: 'done', label: 'Done', color: 'bg-ok', tint: '115 54% 76%', tip: 'Ticket completed successfully.', emptyText: 'No completed tickets yet', glow: 'glow-top-ok',
         emptyIcon: '<circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/>' },
-      { key: 'cancelled', statuses: ['cancelled'], dropStatus: 'cancelled', label: 'Cancelled', color: 'bg-surface-600', tip: 'Stopped manually. Drag to In Progress to run it again.', emptyText: 'No cancelled tickets', tint: '', glow: 'glow-top-muted',
+      { key: 'cancelled', statuses: ['cancelled'], dropStatus: 'cancelled', label: 'Cancelled', color: 'bg-surface-600', tint: '228 24% 72%', tip: 'Stopped manually. Drag to In Progress to run it again.', emptyText: 'No cancelled tickets', glow: 'glow-top-muted',
         emptyIcon: '<path d="m15 9-6 6"/><path d="m9 9 6 6"/><circle cx="12" cy="12" r="10"/>' },
     ],
 
@@ -98,7 +98,7 @@ function kontora() {
     },
 
     _knownCustomStatuses: {
-      review: { label: 'Review', color: 'bg-review', glow: 'glow-top-review', emptyIcon: '<path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/>' },
+      review: { label: 'Review', color: 'bg-review', tint: '267 84% 81%', glow: 'glow-top-review', emptyIcon: '<path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/>' },
     },
 
     get columns() {
@@ -115,9 +115,9 @@ function kontora() {
             dropStatus: s,
             label: known?.label || s.charAt(0).toUpperCase() + s.slice(1).replace(/_/g, ' '),
             color: known?.color || 'bg-surface-600',
+            tint: known?.tint || '267 84% 81%',
             tip: 'Custom status: ' + s,
             emptyText: 'No ' + (known?.label || s).toLowerCase() + ' tickets',
-            tint: '',
             glow: known?.glow || 'glow-top-muted',
             emptyIcon: known?.emptyIcon || '<circle cx="12" cy="12" r="10"/><path d="M12 8v4"/><path d="M12 16h.01"/>',
           };
@@ -1034,6 +1034,49 @@ function kontora() {
       var info = infos.find(i => i.name === name);
       if (info && info.stages.length) return name + '  (' + info.stages.join(' → ') + ')';
       return name;
+    },
+
+    // Label rendered in the [PIPELINE] tag at the top of a card.
+    // Prefers the pipeline name; falls back to the project basename.
+    ticketTagLabel(ticket) {
+      if (ticket.pipeline) return ticket.pipeline.toUpperCase();
+      var b = this.pathBasename(ticket.path);
+      if (b) return b.toUpperCase();
+      return '—';
+    },
+
+    // Returns one of: indigo|cyan|amber|green|rose|mauve|none. Used as the
+    // [data-pipe-color] attribute that drives the card left-border tint and
+    // the pipeline tag chip color via --pipe-h.
+    _knownPipeColors: {
+      'sigil':                 'indigo',
+      'sigil-sdk':             'cyan',
+      'kontora':               'green',
+      'deployment_tools':      'amber',
+      'grafana-assistant-app': 'rose',
+      'backend-enterprise':    'amber',
+      'astra-l':               'rose',
+      'sig-vmwa':              'green',
+    },
+    _pipeColorPalette: ['indigo', 'cyan', 'amber', 'green', 'rose', 'mauve'],
+    ticketPipeColor(ticket) {
+      var name = (ticket.pipeline || this.pathBasename(ticket.path) || '').toLowerCase();
+      if (!name) return 'none';
+      if (this._knownPipeColors[name]) return this._knownPipeColors[name];
+      var h = 0;
+      for (var i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) | 0;
+      return this._pipeColorPalette[Math.abs(h) % this._pipeColorPalette.length];
+    },
+
+    // Class for a single segment of the slim stage progress bar.
+    stageBarClass(i, ticket) {
+      if (!ticket || !ticket.stages) return '';
+      if (ticket.status === 'done') return 'done';
+      var currentIdx = ticket.stages.indexOf(ticket.stage);
+      if (currentIdx < 0) return '';
+      if (i < currentIdx) return 'done';
+      if (i === currentIdx) return 'current';
+      return '';
     },
 
     ticketMatchesQuery(ticket, q) {

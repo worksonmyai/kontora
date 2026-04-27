@@ -12,7 +12,6 @@ function kontora() {
     loading: true,
     error: null,
     isMobile: window.innerWidth < 768,
-    createModal: false,
     createSubmitting: false,
     createForm: { title: '', path: '', pipeline: '', agent: '', status: 'todo', body: '', branch: '' },
     initModal: false,
@@ -54,6 +53,8 @@ function kontora() {
     deleteSubmitting: false,
     uploadDragging: false,
     lightTheme: getStoredTheme() === 'light',
+    sidebarHidden: (function() { try { return localStorage.getItem('kontora-sidebar-hidden') !== '0'; } catch (e) { return true; } })(),
+    currentView: 'board',
     // Map of ticketId → true while a plannotator subprocess is in flight for it.
     plannotatorInFlight: {},
     openMenuTicketId: null,
@@ -336,7 +337,8 @@ function kontora() {
 
     async openCreateModal() {
       this.createForm = { title: '', path: '', pipeline: '', agent: '', status: 'todo', body: '', branch: '' };
-      this.createModal = true;
+      this.currentView = 'new';
+      this.error = null;
       if (!this.configCache) {
         try {
           const res = await fetch('/api/config');
@@ -348,8 +350,43 @@ function kontora() {
     },
 
     closeCreateModal() {
-      this.createModal = false;
+      this.currentView = 'board';
       this.createSubmitting = false;
+    },
+
+    toggleSidebar() {
+      this.sidebarHidden = !this.sidebarHidden;
+      try { localStorage.setItem('kontora-sidebar-hidden', this.sidebarHidden ? '1' : '0'); } catch (e) {}
+    },
+
+    // Number of tickets currently running on a given agent. Used by the sidebar.
+    agentRunningCount(agent) {
+      if (!agent) return 0;
+      return this.tickets.filter(t => t.agent === agent && t.status === 'in_progress').length;
+    },
+
+    // Live preview of the YAML frontmatter on the new-ticket page.
+    // Mirrors the fields the server stores; not byte-for-byte, but close enough
+    // to give a useful sense of what the markdown file will look like.
+    get createPreviewYaml() {
+      var f = this.createForm || {};
+      var lines = ['---'];
+      if (f.title)    lines.push('title: ' + JSON.stringify(f.title));
+      lines.push('status: ' + (f.status || 'todo'));
+      if (f.pipeline) lines.push('pipeline: ' + f.pipeline);
+      if (f.agent)    lines.push('agent: ' + f.agent);
+      if (f.path)     lines.push('path: ' + f.path);
+      if (f.branch)   lines.push('branch: ' + f.branch);
+      lines.push('---');
+      if (f.title) {
+        lines.push('');
+        lines.push('# ' + f.title);
+      }
+      if (f.body) {
+        lines.push('');
+        lines.push(f.body);
+      }
+      return lines.join('\n');
     },
 
     async submitCreateTicket() {
@@ -1059,13 +1096,16 @@ function kontora() {
       'sig-vmwa':              'green',
     },
     _pipeColorPalette: ['indigo', 'cyan', 'amber', 'green', 'rose', 'mauve'],
-    ticketPipeColor(ticket) {
-      var name = (ticket.pipeline || this.pathBasename(ticket.path) || '').toLowerCase();
-      if (!name) return 'none';
-      if (this._knownPipeColors[name]) return this._knownPipeColors[name];
+    pipelineColorByName(name) {
+      var n = (name || '').toLowerCase();
+      if (!n) return 'none';
+      if (this._knownPipeColors[n]) return this._knownPipeColors[n];
       var h = 0;
-      for (var i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) | 0;
+      for (var i = 0; i < n.length; i++) h = (h * 31 + n.charCodeAt(i)) | 0;
       return this._pipeColorPalette[Math.abs(h) % this._pipeColorPalette.length];
+    },
+    ticketPipeColor(ticket) {
+      return this.pipelineColorByName(ticket.pipeline || this.pathBasename(ticket.path));
     },
 
     // Class for a single segment of the slim stage progress bar.

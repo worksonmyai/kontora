@@ -75,14 +75,16 @@ type UpdateTicketRequest struct {
 }
 
 type PipelineInfo struct {
-	Name   string   `json:"name"`
-	Stages []string `json:"stages"`
+	Name         string   `json:"name"`
+	Stages       []string `json:"stages"`
+	DefaultAgent string   `json:"default_agent,omitempty"`
 }
 
 type ConfigInfo struct {
 	Pipelines      []string       `json:"pipelines"`
 	PipelineInfos  []PipelineInfo `json:"pipeline_infos"`
 	Agents         []string       `json:"agents"`
+	DefaultAgent   string         `json:"default_agent,omitempty"`
 	BranchPrefix   string         `json:"branch_prefix"`
 	CustomStatuses []string       `json:"custom_statuses,omitempty"`
 }

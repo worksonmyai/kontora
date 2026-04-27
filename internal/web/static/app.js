@@ -62,7 +62,7 @@ function kontora() {
     _builtinColumns: [
       { key: 'open', statuses: ['open'], dropStatus: 'open', label: 'Open', color: 'bg-accent', tint: '227 35% 80%', tip: 'Draft ticket, not running yet. Drag to In Progress or click Initialize to start.', emptyText: 'Create a ticket to get started', glow: 'glow-top-accent',
         emptyIcon: '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M9 15h6"/><path d="M12 18v-6"/>' },
-      { key: 'in_progress', statuses: ['todo', 'in_progress', 'paused'], dropStatus: 'todo', label: 'In Progress', color: 'bg-ok', tint: '41 86% 83%', tip: 'Queued, running, or paused tickets. The daemon auto-promotes queued tickets when a worker is free.', emptyText: 'No tickets in flight right now', glow: 'glow-top-ok',
+      { key: 'in_progress', statuses: ['todo', 'in_progress', 'paused'], dropStatus: 'todo', label: 'In Progress', color: 'bg-ok', tint: '41 86% 83%', tip: 'Queued, running, or paused tickets. The daemon auto-promotes queued tickets when a worker is free.', emptyText: 'No active tickets', glow: 'glow-top-ok',
         emptyIcon: '<path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/>' },
       { key: 'human_review', statuses: ['human_review'], dropStatus: 'human_review', label: 'Human Review', color: 'bg-review', tint: '267 84% 81%', tip: 'Waiting for a human to look at the result.', emptyText: 'No tickets waiting for review', glow: 'glow-top-review',
         emptyIcon: '<path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/>' },

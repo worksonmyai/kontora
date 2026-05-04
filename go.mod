@@ -14,7 +14,7 @@ require (
 	github.com/charmbracelet/log v1.0.0
 	github.com/coder/websocket v1.8.14
 	github.com/creack/pty/v2 v2.0.1
-	github.com/fsnotify/fsnotify v1.9.0
+	github.com/fsnotify/fsnotify v1.10.1
 	github.com/mattn/go-isatty v0.0.21
 	github.com/stretchr/testify v1.11.1
 	gopkg.in/yaml.v3 v3.0.1

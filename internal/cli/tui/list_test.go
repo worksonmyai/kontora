@@ -208,13 +208,18 @@ func TestListModel_NonKontoraVisibility(t *testing.T) {
 		{ID: "kon-001", Title: "Kontora todo", Status: "todo", Kontora: true},
 	}, 0)
 
-	assert.Len(t, m.filtered, 2)
-	assert.Equal(t, "kon-001", m.filtered[0].ID)
-	assert.Equal(t, "ext-001", m.filtered[1].ID)
+	assert.Len(t, m.filtered, 3)
+	assert.Contains(t, m.View(), "not a kontora ticket")
 
 	m.updateTicket(web.TicketInfo{ID: "ext-001", Title: "External open", Status: "done", Kontora: false})
-	assert.Len(t, m.filtered, 1)
-	assert.Equal(t, "kon-001", m.filtered[0].ID)
+	assert.Len(t, m.filtered, 3)
+	var columnIDs []string
+	for _, col := range m.columns {
+		for _, ti := range col.tickets {
+			columnIDs = append(columnIDs, ti.ID)
+		}
+	}
+	assert.ElementsMatch(t, []string{"ext-002", "kon-001"}, columnIDs, "done tickets stay hidden until showDone is enabled")
 }
 
 func TestListModel_CtrlCInFilterMode(t *testing.T) {

@@ -202,7 +202,6 @@ func cmdLs() {
 
 	fs := flag.NewFlagSet("ls", flag.ExitOnError)
 	configPath := fs.String("config", defaultConfigPath(), "path to config file")
-	all := fs.Bool("all", false, "show all tickets including non-initialized")
 	closed := fs.Bool("closed", false, "show done/cancelled tickets")
 	static := fs.Bool("static", false, "print static table instead of interactive TUI")
 	if err := fs.Parse(args); err != nil {
@@ -210,14 +209,14 @@ func cmdLs() {
 	}
 	cfg := mustLoadConfig(*configPath)
 
-	if !*static && !*all && !*closed && isatty.IsTerminal(os.Stdout.Fd()) {
+	if !*static && !*closed && isatty.IsTerminal(os.Stdout.Fd()) {
 		if err := tui.Run(cfg); err != nil {
 			log.Fatal(err)
 		}
 		return
 	}
 
-	if err := cli.Status(cfg, *all, os.Stdout, cli.StatusOpts{ShowClosed: *closed}); err != nil {
+	if err := cli.Status(cfg, os.Stdout, cli.StatusOpts{ShowClosed: *closed}); err != nil {
 		log.Fatal(err)
 	}
 }

@@ -2,6 +2,8 @@
 
 Tickets are markdown files with YAML frontmatter. They live in the directory specified by `tickets_dir` in the [configuration](configuration.md). Any tool that can write a markdown file — a text editor, Obsidian, a script — is a valid client.
 
+Kontora lists every valid ticket file that has an `id`, even when the file does not have `kontora: true`. Files without an `id` are treated as ordinary notes and are hidden. Tickets without `kontora: true` are shown with a `not a kontora ticket` marker and must be initialized before Kontora will run an agent for them.
+
 Deleting the markdown file removes the ticket from the daemon and web UI, but does not clean up any git worktree. If you want the normal cleanup path, cancel the ticket before deleting its file.
 
 ## Example
@@ -40,7 +42,7 @@ These are set and updated by the daemon as the ticket progresses through its pip
 
 | Field | Description |
 |-------|-------------|
-| `kontora` | Boolean. When `true`, the daemon manages this ticket. Set by `kontora init`. |
+| `kontora` | Boolean. When `true`, the daemon may manage and execute this ticket. Tickets without `kontora: true` are still listed, but are not auto-picked up and cannot be run/retried/skipped until initialized. Set by `kontora init`. |
 | `stage` | Current pipeline stage name. Set to the first stage on pickup. |
 | `attempt` | Retry counter for the current stage. Reset to 0 on advance/back. |
 | `started_at` | When the current stage started. |
@@ -86,7 +88,7 @@ open → todo → in_progress → done
 | `done` | All pipeline stages completed successfully. |
 | `cancelled` | Manually cancelled by the user. |
 
-The daemon only picks up tickets with `status: todo`. To pause a running ticket, use `kontora pause <id>` or set `status: paused` in the file — the daemon will detect the change and stop the agent.
+The daemon only picks up tickets that have both `kontora: true` and `status: todo`. A non-Kontora ticket can still appear in any status column, but Kontora will not start or resume work on it until you initialize it. To pause a running Kontora ticket, use `kontora pause <id>` or set `status: paused` in the file — the daemon will detect the change and stop the agent.
 
 ## History
 
@@ -135,4 +137,4 @@ kontora new "Fix the search index"                              # uses current g
 kontora new --path ~/projects/kontora "Fix the search index"      # explicit path
 ```
 
-**Manually:** Create a `.md` file in `tickets_dir` with the frontmatter above. The daemon watches the directory and picks up new `status: todo` tickets automatically.
+**Manually:** Create a `.md` file in `tickets_dir` with the frontmatter above. The daemon watches the directory and lists valid ticket files with an `id`. It only picks up new `status: todo` tickets automatically when they also have `kontora: true`; otherwise they remain visible as `not a kontora ticket` until initialized.

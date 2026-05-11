@@ -145,4 +145,4 @@ path: ~/projects/kontora
 Automate GitHub Releases with zig cc cross-compilation.
 ```
 
-Create them with `kontora new` or write them by hand. Full reference: [docs/tickets.md](docs/tickets.md)
+Create them with `kontora new` or write them by hand. Kontora lists any valid ticket with an `id`, but `kontora: true` is required before the daemon will execute it; otherwise the UI marks it as `not a kontora ticket`. Full reference: [docs/tickets.md](docs/tickets.md)

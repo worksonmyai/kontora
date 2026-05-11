@@ -49,15 +49,16 @@ func (s *Service) Get(id string, opts GetOptions) (View, error) {
 	return BuildView(s.cfg, st.Ticket, opts.IncludeBody), nil
 }
 
-// List returns views of all tickets, optionally including non-kontora tickets.
-func (s *Service) List(opts ListOptions) ([]View, error) {
+// List returns views of all valid tickets. Markdown files that parse but do not
+// declare an id are treated as non-ticket notes and remain hidden.
+func (s *Service) List(_ ListOptions) ([]View, error) {
 	stored, err := s.repo.List()
 	if err != nil {
 		return nil, err
 	}
 	var views []View
 	for _, st := range stored {
-		if !opts.IncludeNonKontora && !st.Ticket.Kontora && st.Ticket.Status != ticket.StatusOpen {
+		if st.Ticket.ID == "" {
 			continue
 		}
 		views = append(views, BuildView(s.cfg, st.Ticket, false))
@@ -127,6 +128,10 @@ func (s *Service) Retry(id string) (Result, error) {
 		return Result{}, err
 	}
 
+	if !st.Ticket.Kontora {
+		return Result{}, fmt.Errorf("%w: ticket is not initialized", ErrInvalidState)
+	}
+
 	if st.Ticket.Status == ticket.StatusInProgress || st.Ticket.Status == ticket.StatusTodo {
 		return Result{}, fmt.Errorf("%w: cannot retry ticket in status %s", ErrInvalidState, st.Ticket.Status)
 	}
@@ -163,6 +168,10 @@ func (s *Service) Skip(id string) (Result, error) {
 	}
 
 	t := st.Ticket
+	if !t.Kontora {
+		return Result{}, fmt.Errorf("%w: ticket is not initialized", ErrInvalidState)
+	}
+
 	pipelineCfg, ok := s.cfg.Pipelines[t.Pipeline]
 	if !ok {
 		return Result{}, fmt.Errorf("unknown pipeline %q for ticket %s", t.Pipeline, resolved)

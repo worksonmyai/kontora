@@ -162,7 +162,7 @@ stage: review
 `)
 
 	var buf bytes.Buffer
-	require.NoError(t, Status(cfg, false, &buf, StatusOpts{}))
+	require.NoError(t, Status(cfg, &buf, StatusOpts{}))
 
 	out := buf.String()
 	assert.Contains(t, out, "tst-001")
@@ -175,7 +175,7 @@ stage: review
 	assert.Less(t, idx1, idx3, "todo should come before paused")
 }
 
-func TestStatus_SkipsNonKontoraFiles(t *testing.T) {
+func TestStatus_SkipsNonTicketFiles(t *testing.T) {
 	dir := t.TempDir()
 	cfg := testConfig(dir)
 
@@ -196,7 +196,7 @@ path: /tmp/testrepo
 `)
 
 	var buf bytes.Buffer
-	require.NoError(t, Status(cfg, false, &buf, StatusOpts{}))
+	require.NoError(t, Status(cfg, &buf, StatusOpts{}))
 
 	out := buf.String()
 	assert.Contains(t, out, "tst-001")
@@ -208,7 +208,7 @@ func TestStatus_EmptyDir(t *testing.T) {
 	cfg := testConfig(dir)
 
 	var buf bytes.Buffer
-	require.NoError(t, Status(cfg, false, &buf, StatusOpts{}))
+	require.NoError(t, Status(cfg, &buf, StatusOpts{}))
 
 	assert.Equal(t, "No tickets.\n", buf.String())
 }
@@ -229,7 +229,7 @@ stage: code
 `)
 
 	var buf bytes.Buffer
-	require.NoError(t, Status(cfg, false, &buf, StatusOpts{}))
+	require.NoError(t, Status(cfg, &buf, StatusOpts{}))
 
 	assert.Contains(t, buf.String(), "claude-sonnet")
 }
@@ -360,7 +360,7 @@ path: /tmp/testrepo
 			}
 
 			var buf bytes.Buffer
-			require.NoError(t, Status(cfg, false, &buf, tc.opts))
+			require.NoError(t, Status(cfg, &buf, tc.opts))
 			out := buf.String()
 
 			if tc.wantExact != "" {
@@ -377,7 +377,7 @@ path: /tmp/testrepo
 	}
 }
 
-func TestStatus_AllFlag(t *testing.T) {
+func TestStatus_ShowsNonKontoraWithMarker(t *testing.T) {
 	dir := t.TempDir()
 	cfg := testConfig(dir)
 
@@ -392,24 +392,17 @@ path: /tmp/testrepo
 `)
 	writeTicket(t, dir, "other.md", `---
 id: other-001
-status: open
+status: todo
 ---
 # Non-kontora ticket
 `)
 
-	// all=false: only kontora tickets
 	var buf bytes.Buffer
-	require.NoError(t, Status(cfg, false, &buf, StatusOpts{}))
+	require.NoError(t, Status(cfg, &buf, StatusOpts{}))
 	out := buf.String()
 	assert.Contains(t, out, "tst-001")
-	assert.NotContains(t, out, "other-001")
-
-	// all=true: both tickets
-	buf.Reset()
-	require.NoError(t, Status(cfg, true, &buf, StatusOpts{}))
-	out = buf.String()
-	assert.Contains(t, out, "tst-001")
 	assert.Contains(t, out, "other-001")
+	assert.Contains(t, out, "not a kontora ticket")
 }
 
 func TestNew_CreatesValidTask(t *testing.T) {

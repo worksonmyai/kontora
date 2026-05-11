@@ -93,7 +93,7 @@ test("kontora inline app initializes in a minimal VM context", () => {
 
   assert.equal(typeof state.openTerminal, "function");
   assert.equal(typeof state.reconnectTerminal, "function");
-  assert.equal(state.panelWidth, 600);
+  assert.equal(state.panelWidth, Math.floor(1200 * 0.66));
 });
 
 test("index.html loads the external app script", () => {
@@ -201,4 +201,42 @@ test("reconnectTerminal tears down and reopens once when transport is ready", ()
 
   assert.equal(teardownCalls, 1);
   assert.equal(openCalls, 1);
+});
+
+test("board columns include non-Kontora tickets in their status columns", () => {
+  const state = loadKontoraState();
+  state.tickets = [
+    { id: "ext-001", title: "External", status: "todo", kontora: false },
+    { id: "kon-001", title: "Kontora", status: "todo", kontora: true },
+  ];
+
+  const ids = state.ticketsByStatuses("todo").map(t => t.id);
+
+  assert.deepEqual(ids.sort(), ["ext-001", "kon-001"]);
+});
+
+test("non-Kontora start and resume actions open initialization instead of posting", async () => {
+  const state = loadKontoraState();
+  const opened = [];
+  state.tickets = [
+    { id: "ext-run", title: "Run", status: "open", kontora: false },
+    { id: "ext-retry", title: "Retry", status: "paused", kontora: false },
+  ];
+  state.openInitModal = (ticket) => { opened.push(ticket.id); };
+
+  await state.moveTicketVia("ext-run", "run", null);
+  await state.moveTicketVia("ext-retry", "retry", null);
+  await state.moveTask("ext-retry", "todo");
+
+  assert.deepEqual(opened, ["ext-run", "ext-retry", "ext-retry"]);
+});
+
+test("agent running count ignores non-Kontora in-progress tickets", () => {
+  const state = loadKontoraState();
+  state.tickets = [
+    { id: "ext-001", agent: "claude", status: "in_progress", kontora: false },
+    { id: "kon-001", agent: "claude", status: "in_progress", kontora: true },
+  ];
+
+  assert.equal(state.agentRunningCount("claude"), 1);
 });

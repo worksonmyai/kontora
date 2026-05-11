@@ -204,7 +204,7 @@ function kontora() {
       var set = new Set(list);
       var self = this;
       return this.tickets
-        .filter(t => set.has(t.status) && (t.status === 'open' || t.kontora))
+        .filter(t => set.has(t.status))
         .sort((a, b) => {
           // Multi-status columns (IN PROGRESS): sort by status rank first so
           // running > paused > todo, then by activity age.
@@ -374,7 +374,7 @@ function kontora() {
     // Number of tickets currently running on a given agent. Used by the sidebar.
     agentRunningCount(agent) {
       if (!agent) return 0;
-      return this.tickets.filter(t => t.agent === agent && t.status === 'in_progress').length;
+      return this.tickets.filter(t => t.kontora && t.agent === agent && t.status === 'in_progress').length;
     },
 
     // Live preview of the YAML frontmatter on the new-ticket page.
@@ -648,12 +648,18 @@ function kontora() {
       }
     },
 
+    ticketActionWouldStart(endpoint, body) {
+      if (endpoint === 'run' || endpoint === 'retry') return true;
+      if (endpoint === 'move' && body && ['todo', 'in_progress'].includes(body.status)) return true;
+      return false;
+    },
+
     async moveTicketVia(ticketId, endpoint, body) {
       this.error = null;
       var ticket = this.tickets.find(t => t.id === ticketId);
-      // Queueing an uninitialized open ticket needs the init modal, not /run,
-      // because /run errors on kontora=false tickets.
-      if (endpoint === 'run' && ticket && !ticket.kontora) {
+      // Starting or resuming a visible but unmanaged ticket needs the init modal,
+      // not /run, /retry, or /move, because only kontora=true tickets may execute.
+      if (ticket && !ticket.kontora && this.ticketActionWouldStart(endpoint, body)) {
         this.openInitModal(ticket);
         return;
       }
@@ -683,14 +689,14 @@ function kontora() {
     async moveTask(ticketId, newStatus) {
       this.error = null;
       const ticket = this.tickets.find(t => t.id === ticketId);
+      if (ticket && !ticket.kontora && ['todo', 'in_progress'].includes(newStatus)) {
+        this.openInitModal(ticket);
+        return;
+      }
       if (newStatus === 'in_progress' && ticket && ticket.status === 'open') {
         if (confirm("Tickets can't run directly from Open. Move to Todo instead?")) {
           this.moveTask(ticketId, 'todo');
         }
-        return;
-      }
-      if (newStatus === 'todo' && ticket && !ticket.kontora) {
-        this.openInitModal(ticket);
         return;
       }
       const oldStatus = ticket ? ticket.status : null;

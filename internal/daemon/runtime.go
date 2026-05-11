@@ -10,6 +10,9 @@ type daemonRuntime struct {
 }
 
 func (r *daemonRuntime) Enqueue(t *ticket.Ticket) {
+	if t == nil || !t.Kontora {
+		return
+	}
 	r.d.mu.Lock()
 	defer r.d.mu.Unlock()
 	r.d.enqueue(t)

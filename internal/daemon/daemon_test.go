@@ -333,6 +333,35 @@ created: 2026-01-01T00:00:00Z
 	require.NoError(t, <-errCh)
 }
 
+func TestDaemonEnqueueAndRunTicketRejectNonKontora(t *testing.T) {
+	h := newHarness(t)
+	d := h.newDaemon(h.cfg)
+	path := h.writeTicket("tst-guard.md", `---
+id: tst-guard
+status: todo
+pipeline: one-stage
+created: 2026-01-01T00:00:00Z
+---
+# Ignored ticket
+`)
+	tkt := h.readTask("tst-guard.md")
+
+	d.mu.Lock()
+	d.enqueue(tkt)
+	queued := d.queued[tkt.ID]
+	queueLen := d.queue.Len()
+	d.tickets[tkt.ID] = &ticketState{ticket: tkt, filePath: path}
+	d.mu.Unlock()
+
+	assert.False(t, queued)
+	assert.Equal(t, 0, queueLen)
+
+	d.runTicket(context.Background(), tkt.ID)
+	result := h.readTask("tst-guard.md")
+	assert.Equal(t, ticket.StatusTodo, result.Status)
+	assert.Equal(t, 0, d.RunningAgents())
+}
+
 func TestUserPause(t *testing.T) {
 	h := newHarness(t)
 	cfg := h.defaultConfig("sleep", "sleep")

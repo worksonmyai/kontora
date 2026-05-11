@@ -14,6 +14,7 @@ func testDetailTicket() web.TicketInfo {
 		ID:       "tst-001",
 		Title:    "Test Ticket",
 		Status:   "in_progress",
+		Kontora:  true,
 		Pipeline: "default",
 		Path:     "~/projects/test",
 		Branch:   "kontora/tst-001",
@@ -269,4 +270,5 @@ func TestDetailModel_ViewNonKontoraNoBranch(t *testing.T) {
 	view := m.View()
 
 	assert.NotContains(t, view, "branch")
+	assert.Contains(t, view, "not a kontora ticket")
 }

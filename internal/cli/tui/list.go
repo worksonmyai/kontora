@@ -73,31 +73,27 @@ func newListModel() listModel {
 }
 
 func (m *listModel) setTickets(tickets []web.TicketInfo, running int) {
-	m.tickets = filterVisible(tickets)
+	m.tickets = slices.Clone(tickets)
 	m.running = running
 	sortTickets(m.tickets)
 	m.applyFilter()
 }
 
 func (m *listModel) updateTicket(info web.TicketInfo) {
-	visible := ticketVisible(info)
+	if info.ID == "" {
+		return
+	}
 	for i, t := range m.tickets {
 		if t.ID == info.ID {
-			if !visible {
-				m.tickets = slices.Delete(m.tickets, i, i+1)
-			} else {
-				m.tickets[i] = info
-			}
+			m.tickets[i] = info
 			sortTickets(m.tickets)
 			m.applyFilter()
 			return
 		}
 	}
-	if visible {
-		m.tickets = append(m.tickets, info)
-		sortTickets(m.tickets)
-		m.applyFilter()
-	}
+	m.tickets = append(m.tickets, info)
+	sortTickets(m.tickets)
+	m.applyFilter()
 }
 
 func sortTickets(tasks []web.TicketInfo) {
@@ -124,20 +120,6 @@ func ticketSortTime(t web.TicketInfo) time.Time {
 		return *t.StartedAt
 	}
 	return derefTimePtr(t.CreatedAt)
-}
-
-func ticketVisible(t web.TicketInfo) bool {
-	return t.Kontora || t.Status == string(ticket.StatusOpen)
-}
-
-func filterVisible(tickets []web.TicketInfo) []web.TicketInfo {
-	result := make([]web.TicketInfo, 0, len(tickets))
-	for _, t := range tickets {
-		if ticketVisible(t) {
-			result = append(result, t)
-		}
-	}
-	return result
 }
 
 func derefTimePtr(t *time.Time) time.Time {
@@ -471,8 +453,12 @@ func renderCardLine(t web.TicketInfo, colW int, selected bool, line int) string 
 			agent = "—"
 		}
 		content = "  " + truncateStr(stage+" · "+agent, colW-2)
-	case 3: // Blank
-		content = ""
+	case 3: // Non-Kontora marker or blank
+		if !t.Kontora {
+			content = "  " + truncateStr("not a kontora ticket", colW-2)
+		} else {
+			content = ""
+		}
 	}
 	content = padRight(content, colW)
 	if selected {

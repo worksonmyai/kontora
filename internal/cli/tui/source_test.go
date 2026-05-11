@@ -345,6 +345,26 @@ func TestFileSource_BuildFileTicketInfoSimpleTaskNoLogs(t *testing.T) {
 	assert.Equal(t, []string{"default"}, info.Stages)
 }
 
+func TestFileSource_FetchTicketsShowsNonKontoraButDoesNotCountRunning(t *testing.T) {
+	ticketsDir := t.TempDir()
+	logsDir := t.TempDir()
+	writeTicket(t, ticketsDir, "sim-001", "in_progress", "Kontora running")
+	content := "---\nid: ext-001\nstatus: in_progress\n---\n# External running\n"
+	require.NoError(t, os.WriteFile(filepath.Join(ticketsDir, "ext-001.md"), []byte(content), 0o644))
+
+	cfg := &config.Config{TicketsDir: ticketsDir, LogsDir: logsDir}
+	src := &fileSource{cfg: cfg}
+
+	infos, running, err := src.FetchTickets()
+	require.NoError(t, err)
+	assert.Equal(t, 1, running)
+	ids := make([]string, 0, len(infos))
+	for _, info := range infos {
+		ids = append(ids, info.ID)
+	}
+	assert.ElementsMatch(t, []string{"sim-001", "ext-001"}, ids)
+}
+
 func writeTicket(t *testing.T, dir, id, status, title string) {
 	t.Helper()
 	content := fmt.Sprintf("---\nid: %s\nstatus: %s\nkontora: true\n---\n# %s\n", id, status, title)

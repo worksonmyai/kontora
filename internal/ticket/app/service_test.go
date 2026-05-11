@@ -168,6 +168,18 @@ func TestRetry_RejectsTodo(t *testing.T) {
 	require.ErrorIs(t, err, ErrInvalidState)
 }
 
+func TestRetry_RejectsNonKontora(t *testing.T) {
+	repo := newMemRepo()
+	repo.add("tst-001", "---\nid: tst-001\nstatus: paused\n---\n# Test\n")
+	rt := &spyRuntime{}
+	svc := New(testCfg(), repo, rt)
+
+	_, err := svc.Retry("tst-001")
+	require.ErrorIs(t, err, ErrInvalidState)
+	assert.Empty(t, rt.enqueued)
+	assert.Equal(t, ticket.StatusPaused, repo.tickets["tst-001"].Ticket.Status)
+}
+
 func TestSkip_AdvancesToNextStage(t *testing.T) {
 	repo := newMemRepo()
 	repo.add("tst-001", "---\nid: tst-001\nstatus: in_progress\nkontora: true\npipeline: default\nstage: code\n---\n# Test\n")
@@ -202,6 +214,18 @@ func TestSkip_UnknownPipeline(t *testing.T) {
 
 	_, err := svc.Skip("tst-001")
 	require.ErrorContains(t, err, "unknown pipeline")
+}
+
+func TestSkip_RejectsNonKontora(t *testing.T) {
+	repo := newMemRepo()
+	repo.add("tst-001", "---\nid: tst-001\nstatus: paused\npipeline: default\nstage: code\n---\n# Test\n")
+	rt := &spyRuntime{}
+	svc := New(testCfg(), repo, rt)
+
+	_, err := svc.Skip("tst-001")
+	require.ErrorIs(t, err, ErrInvalidState)
+	assert.Empty(t, rt.enqueued)
+	assert.Equal(t, "code", repo.tickets["tst-001"].Ticket.Stage)
 }
 
 func TestInit_SetsAllFields(t *testing.T) {
@@ -303,27 +327,20 @@ func TestGet_PrefixResolve(t *testing.T) {
 	assert.Equal(t, "tst-001", v.ID)
 }
 
-func TestList_FiltersNonKontora(t *testing.T) {
+func TestList_IncludesKontoraAndNonKontoraTickets(t *testing.T) {
 	repo := newMemRepo()
 	repo.add("tst-001", "---\nid: tst-001\nstatus: todo\nkontora: true\n---\n# Kontora ticket\n")
 	repo.add("tst-002", "---\nid: tst-002\nstatus: todo\n---\n# Not kontora\n")
+	repo.add("notes", "---\ntitle: Just some notes\n---\n# Notes\n")
 	svc := New(testCfg(), repo, &spyRuntime{})
 
 	views, err := svc.List(ListOptions{})
 	require.NoError(t, err)
-	assert.Len(t, views, 1)
-	assert.Equal(t, "tst-001", views[0].ID)
-}
-
-func TestList_IncludesNonKontora(t *testing.T) {
-	repo := newMemRepo()
-	repo.add("tst-001", "---\nid: tst-001\nstatus: todo\nkontora: true\n---\n# K\n")
-	repo.add("tst-002", "---\nid: tst-002\nstatus: todo\n---\n# N\n")
-	svc := New(testCfg(), repo, &spyRuntime{})
-
-	views, err := svc.List(ListOptions{IncludeNonKontora: true})
-	require.NoError(t, err)
-	assert.Len(t, views, 2)
+	ids := make([]string, 0, len(views))
+	for _, v := range views {
+		ids = append(ids, v.ID)
+	}
+	assert.ElementsMatch(t, []string{"tst-001", "tst-002"}, ids)
 }
 
 func TestList_OpenNonKontoraIncluded(t *testing.T) {
@@ -334,6 +351,7 @@ func TestList_OpenNonKontoraIncluded(t *testing.T) {
 	views, err := svc.List(ListOptions{})
 	require.NoError(t, err)
 	assert.Len(t, views, 1)
+	assert.False(t, views[0].Kontora)
 }
 
 func TestBuildView_AgentResolution(t *testing.T) {

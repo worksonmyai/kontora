@@ -123,6 +123,9 @@ func (m detailModel) View() string {
 
 	// Header: ID + status + back hint
 	header := fmt.Sprintf(" %s · %s", m.ticket.ID, styledStatus(m.ticket.Status))
+	if !m.ticket.Kontora {
+		header += styleFaint.Render(" · not a kontora ticket")
+	}
 	right := "esc back"
 	available := max(0, m.width-lipgloss.Width(right)-1)
 	header = padRight(header, available) + styleFaint.Render(right)
@@ -137,6 +140,10 @@ func (m detailModel) View() string {
 	b.WriteByte('\n')
 
 	// Metadata
+	if !m.ticket.Kontora {
+		b.WriteString(styleFaint.Render(" not a kontora ticket"))
+		b.WriteByte('\n')
+	}
 	writeMeta(&b, "pipeline", m.ticket.Pipeline)
 	writeMeta(&b, "path", m.ticket.Path)
 	if m.ticket.Agent != "" {
@@ -214,14 +221,16 @@ func (m detailModel) View() string {
 	// Status bar
 	var parts []string
 	st := ticket.Status(m.ticket.Status)
-	if st == ticket.StatusInProgress {
-		parts = append(parts, "p pause")
-	}
-	if st == ticket.StatusPaused || st == ticket.StatusDone {
-		parts = append(parts, "r retry")
-	}
-	if st != ticket.StatusDone && st != ticket.StatusCancelled {
-		parts = append(parts, "s skip")
+	if m.ticket.Kontora {
+		if st == ticket.StatusInProgress {
+			parts = append(parts, "p pause")
+		}
+		if st == ticket.StatusPaused || st == ticket.StatusDone {
+			parts = append(parts, "r retry")
+		}
+		if st != ticket.StatusDone && st != ticket.StatusCancelled {
+			parts = append(parts, "s skip")
+		}
 	}
 	if st == ticket.StatusOpen || st == ticket.StatusTodo || st == ticket.StatusPaused {
 		parts = append(parts, "g agent")

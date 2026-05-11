@@ -48,10 +48,8 @@ type GetOptions struct {
 	IncludeBody bool
 }
 
-// ListOptions controls filtering for List.
-type ListOptions struct {
-	IncludeNonKontora bool
-}
+// ListOptions is reserved for future List response options.
+type ListOptions struct{}
 
 // InitRequest carries parameters for initializing a ticket.
 type InitRequest struct {

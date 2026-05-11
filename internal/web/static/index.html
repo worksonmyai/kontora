@@ -752,6 +752,9 @@
                   <div class="flex items-center justify-between gap-2">
                     <div class="flex items-center gap-2 min-w-0">
                       <span class="pipe-tag truncate" x-text="'[' + ticketTagLabel(ticket) + ']'"></span>
+                      <template x-if="!ticket.kontora">
+                        <span class="px-1.5 py-px rounded-full border border-warn/20 bg-warn/10 text-warn text-[10px] font-mono shrink-0">not a kontora ticket</span>
+                      </template>
                       <template x-if="col.key === 'in_progress' && ticket.status === 'in_progress'">
                         <span class="flex items-center gap-1 text-[11px] font-mono">
                           <span class="pulse-dot text-ok">●</span>
@@ -791,6 +794,11 @@
                            x-transition.origin.top.right
                            class="absolute right-0 top-7 min-w-[10rem] overflow-hidden rounded-lg border border-surface-700/60 bg-surface-900/95 shadow-lg shadow-black/30 z-20"
                            @click.stop>
+                        <template x-if="!ticket.kontora">
+                          <button type="button"
+                                  class="w-full px-3 py-2 text-left text-[12px] font-mono text-warn hover:bg-surface-800 hover:text-warn transition-colors"
+                                  @click.stop="openMenuTicketId = null; openInitModal(ticket)">Initialize</button>
+                        </template>
                         <template x-for="mv in (validMoves[ticket.status] || [])" :key="mv.label">
                           <button type="button"
                                   class="w-full px-3 py-2 text-left text-[12px] font-mono text-tx-3 hover:bg-surface-800 hover:text-tx-2 transition-colors"
@@ -1042,6 +1050,12 @@
             <!-- Scrollable content wrapper -->
             <div class="flex-1 min-h-0 overflow-y-auto">
             <div class="max-w-3xl mx-auto px-8 py-6">
+              <template x-if="selectedTicket && !selectedTicket.kontora">
+                <div class="mb-4 border-l-[3px] border-warn pl-3 py-1">
+                  <span class="text-warn text-xs font-mono font-semibold">not a kontora ticket</span>
+                  <p class="text-surface-600 text-xs font-mono mt-1">Initialize this ticket from the card menu before queueing, resuming, or running an agent.</p>
+                </div>
+              </template>
               <template x-if="selectedTicket?.last_error">
                 <div class="mb-4 border-l-[3px] border-red-500 pl-3 py-1">
                   <span class="text-red-400 text-xs font-mono font-semibold">Error: </span>
@@ -1173,6 +1187,8 @@
             <span class="text-[12px] font-mono px-2 py-0.5 rounded-full border"
                   :class="statusStyle(selectedTicket?.status)"
                   x-text="selectedTicket?.status"></span>
+            <span x-show="selectedTicket && !selectedTicket.kontora"
+                  class="text-[12px] font-mono px-2 py-0.5 rounded-full border border-warn/20 bg-warn/10 text-warn ml-2">not a kontora ticket</span>
             <span x-show="detailLoading" class="text-[12px] font-mono text-surface-600 ml-2">loading...</span>
           </div>
 

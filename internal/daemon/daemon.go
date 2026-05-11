@@ -613,6 +613,9 @@ func (d *Daemon) cleanupWorktree(log *slog.Logger, t *ticket.Ticket) {
 // enqueue adds a ticket to the queue. Must be called with d.mu held.
 // Skips enqueue if the ticket is already queued.
 func (d *Daemon) enqueue(t *ticket.Ticket) {
+	if t == nil || !t.Kontora {
+		return
+	}
 	if d.queued[t.ID] {
 		return
 	}
@@ -688,8 +691,8 @@ func (d *Daemon) runTicket(ctx context.Context, ticketID string) {
 	t := ts.ticket
 	filePath := ts.filePath
 
-	// Check ticket is still in a state we should process.
-	if t.Status != ticket.StatusTodo {
+	// Check ticket is still managed by Kontora and in a state we should process.
+	if !t.Kontora || t.Status != ticket.StatusTodo {
 		d.mu.Unlock()
 		return
 	}

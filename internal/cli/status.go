@@ -52,7 +52,7 @@ type ticketRow struct {
 }
 
 // Status scans cfg.TicketsDir, parses ticket files, and prints a formatted table.
-func Status(cfg *config.Config, all bool, w io.Writer, opts StatusOpts) error {
+func Status(cfg *config.Config, w io.Writer, opts StatusOpts) error {
 	dir := config.ExpandTilde(cfg.TicketsDir)
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -72,7 +72,7 @@ func Status(cfg *config.Config, all bool, w io.Writer, opts StatusOpts) error {
 		if err != nil {
 			continue
 		}
-		if !all && !t.Kontora {
+		if t.ID == "" {
 			continue
 		}
 		tickets = append(tickets, t)
@@ -142,8 +142,13 @@ func buildRows(cfg *config.Config, tickets []*ticket.Ticket) []ticketRow {
 			agent = "—"
 		}
 
+		marker := ""
+		if !t.Kontora {
+			marker = "not a kontora ticket"
+		}
+
 		rows = append(rows, ticketRow{
-			cells:   []string{t.ID, string(t.Status), stage, agent, Duration(t), FormatTimestamp(t.StartedAt), FormatTimestamp(t.CompletedAt)},
+			cells:   []string{t.ID, string(t.Status), stage, agent, Duration(t), FormatTimestamp(t.StartedAt), FormatTimestamp(t.CompletedAt), marker},
 			kontora: t.Kontora,
 		})
 	}
@@ -151,7 +156,7 @@ func buildRows(cfg *config.Config, tickets []*ticket.Ticket) []ticketRow {
 }
 
 func renderTable(rows []ticketRow) string {
-	headers := []string{"ID", "STATUS", "STAGE", "AGENT", "DURATION", "STARTED", "FINISHED"}
+	headers := []string{"ID", "STATUS", "STAGE", "AGENT", "DURATION", "STARTED", "FINISHED", "MARKER"}
 	pad := lipgloss.NewStyle().PaddingRight(3)
 
 	tbl := table.New().

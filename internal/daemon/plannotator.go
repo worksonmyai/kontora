@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -424,8 +425,8 @@ func (d *Daemon) reworkAgent(t *ticket.Ticket) string {
 	if t.Agent != "" {
 		return t.Agent
 	}
-	for i := len(t.History) - 1; i >= 0; i-- {
-		if a := t.History[i].Agent; a != "" {
+	for _, h := range slices.Backward(t.History) {
+		if a := h.Agent; a != "" {
 			return a
 		}
 	}

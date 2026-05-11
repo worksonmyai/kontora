@@ -752,7 +752,7 @@
                   <div class="flex items-center justify-between gap-2">
                     <div class="flex items-center gap-2 min-w-0">
                       <span class="pipe-tag truncate" x-text="'[' + ticketTagLabel(ticket) + ']'"></span>
-                      <template x-if="!ticket.kontora">
+                      <template x-if="!ticket.kontora && ticket.status !== 'open'">
                         <span class="px-1.5 py-px rounded-full border border-warn/20 bg-warn/10 text-warn text-[10px] font-mono shrink-0">not a kontora ticket</span>
                       </template>
                       <template x-if="col.key === 'in_progress' && ticket.status === 'in_progress'">

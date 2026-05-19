@@ -231,6 +231,83 @@ test("non-Kontora start and resume actions open initialization instead of postin
   assert.deepEqual(opened, ["ext-run", "ext-retry", "ext-retry"]);
 });
 
+test("human_review column sorts by updated_at descending", () => {
+  const state = loadKontoraState();
+  state.tickets = [
+    {
+      id: "rev-old",
+      title: "Old",
+      status: "human_review",
+      kontora: true,
+      created_at: "2026-05-19T09:00:00Z",
+      updated_at: "2026-05-19T10:00:00Z",
+    },
+    {
+      id: "rev-new",
+      title: "New",
+      status: "human_review",
+      kontora: true,
+      created_at: "2026-05-19T08:00:00Z",
+      updated_at: "2026-05-19T11:00:00Z",
+    },
+  ];
+
+  const ids = state.ticketsByStatuses("human_review").map(t => t.id);
+
+  assert.deepEqual(ids, ["rev-new", "rev-old"]);
+});
+
+test("human_review column falls back to created_at when updated_at is missing", () => {
+  const state = loadKontoraState();
+  state.tickets = [
+    {
+      id: "rev-no-update",
+      title: "NoUpdate",
+      status: "human_review",
+      kontora: true,
+      created_at: "2026-05-19T12:00:00Z",
+    },
+    {
+      id: "rev-updated",
+      title: "Updated",
+      status: "human_review",
+      kontora: true,
+      created_at: "2026-05-19T08:00:00Z",
+      updated_at: "2026-05-19T11:00:00Z",
+    },
+  ];
+
+  const ids = state.ticketsByStatuses("human_review").map(t => t.id);
+
+  assert.deepEqual(ids, ["rev-no-update", "rev-updated"]);
+});
+
+test("non-review columns ignore updated_at and keep existing sort", () => {
+  const state = loadKontoraState();
+  state.tickets = [
+    {
+      id: "todo-recent-update",
+      title: "Recent",
+      status: "todo",
+      kontora: true,
+      created_at: "2026-05-19T08:00:00Z",
+      updated_at: "2026-05-19T20:00:00Z",
+    },
+    {
+      id: "todo-newer-created",
+      title: "Newer",
+      status: "todo",
+      kontora: true,
+      created_at: "2026-05-19T10:00:00Z",
+      updated_at: "2026-05-19T11:00:00Z",
+    },
+  ];
+
+  const ids = state.ticketsByStatuses("todo").map(t => t.id);
+
+  assert.deepEqual(ids, ["todo-newer-created", "todo-recent-update"]);
+});
+
 test("agent running count ignores non-Kontora in-progress tickets", () => {
   const state = loadKontoraState();
   state.tickets = [

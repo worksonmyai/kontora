@@ -555,7 +555,14 @@ func (d *Daemon) broadcastTerminalReady(id string) {
 // Must be called with d.mu held.
 func (d *Daemon) buildTicketInfo(ts *ticketState, includeBody bool) web.TicketInfo {
 	v := app.BuildView(d.cfg, ts.ticket, includeBody)
-	return web.TicketInfoFromView(v)
+	info := web.TicketInfoFromView(v)
+	if ts.filePath != "" {
+		if st, err := os.Stat(ts.filePath); err == nil {
+			t := st.ModTime()
+			info.UpdatedAt = &t
+		}
+	}
+	return info
 }
 
 // mapAppError translates app-level sentinel errors to web-level sentinel errors

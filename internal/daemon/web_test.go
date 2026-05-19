@@ -55,6 +55,17 @@ func TestDaemon_ListTickets(t *testing.T) {
 	assert.Equal(t, []string{"step1"}, ids["tst-l01"].Stages)
 	assert.Equal(t, []string{"step1", "step2"}, ids["tst-l02"].Stages)
 
+	// UpdatedAt is derived from the markdown file's mtime and should be
+	// populated for every ticket the daemon tracks.
+	for _, id := range []string{"tst-l01", "tst-l02"} {
+		require.NotNil(t, ids[id].UpdatedAt, "%s should have UpdatedAt set", id)
+		path := filepath.Join(h.tasksDir, id+".md")
+		st, err := os.Stat(path)
+		require.NoError(t, err)
+		assert.True(t, ids[id].UpdatedAt.Equal(st.ModTime()),
+			"%s UpdatedAt %s should match file mtime %s", id, ids[id].UpdatedAt, st.ModTime())
+	}
+
 	cancel()
 	require.NoError(t, <-errCh)
 }

@@ -215,8 +215,15 @@ function kontora() {
             if (rb === undefined) rb = 99;
             if (ra !== rb) return ra - rb;
           }
-          const ta = a.status === 'in_progress' && a.started_at ? a.started_at : (a.created_at || '');
-          const tb = b.status === 'in_progress' && b.started_at ? b.started_at : (b.created_at || '');
+          const isReview = list.length === 1 && list[0] === 'human_review';
+          let ta, tb;
+          if (isReview) {
+            ta = a.updated_at || a.created_at || '';
+            tb = b.updated_at || b.created_at || '';
+          } else {
+            ta = a.status === 'in_progress' && a.started_at ? a.started_at : (a.created_at || '');
+            tb = b.status === 'in_progress' && b.started_at ? b.started_at : (b.created_at || '');
+          }
           if (ta !== tb) return ta > tb ? -1 : 1;
           if (a.title !== b.title) return a.title < b.title ? -1 : 1;
           if (a.id !== b.id) return a.id < b.id ? -1 : 1;

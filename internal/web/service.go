@@ -102,6 +102,7 @@ type TicketInfo struct {
 	Attempt       int           `json:"attempt"`
 	CreatedAt     *time.Time    `json:"created_at,omitempty"`
 	StartedAt     *time.Time    `json:"started_at,omitempty"`
+	UpdatedAt     *time.Time    `json:"updated_at,omitempty"`
 	Branch        string        `json:"branch,omitempty"`
 	Stages        []string      `json:"stages,omitempty"`
 	History       []HistoryInfo `json:"history,omitempty"`

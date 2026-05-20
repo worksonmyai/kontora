@@ -358,8 +358,19 @@ func TestPlannotator_ConcurrencyGuard(t *testing.T) {
 	err := d.StartPlannotatorReview("tst-pc01")
 	assert.ErrorIs(t, err, web.ErrPlannotatorInFlight)
 
-	// Release the spawner so the goroutine returns and we can shut down.
+	// Wait until setup has completed and the goroutine is blocked in the spawner.
+	require.Eventually(t, func() bool {
+		return h.callCount.Load() == 1
+	}, 2*time.Second, 20*time.Millisecond, "spawner should be invoked")
+
+	// Release the spawner and wait for cleanup before the test temp dirs go away.
 	h.stdoutCh <- ""
+	require.Eventually(t, func() bool {
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		_, running := d.plannotator["tst-pc01"]
+		return !running
+	}, 2*time.Second, 20*time.Millisecond, "plannotator should finish")
 
 	cancel()
 	require.NoError(t, <-errCh)

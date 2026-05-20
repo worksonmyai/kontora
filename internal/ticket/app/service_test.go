@@ -14,6 +14,7 @@ import (
 // memRepo is an in-memory Repository for tests.
 type memRepo struct {
 	tickets map[string]*StoredTicket
+	saveErr error // when set, Save returns it without mutating state
 }
 
 func newMemRepo() *memRepo {
@@ -57,6 +58,9 @@ func (r *memRepo) List() ([]*StoredTicket, error) {
 }
 
 func (r *memRepo) Save(st *StoredTicket) error {
+	if r.saveErr != nil {
+		return r.saveErr
+	}
 	r.tickets[st.Ticket.ID] = st
 	return nil
 }
@@ -180,6 +184,18 @@ func TestRetry_RejectsNonKontora(t *testing.T) {
 	assert.Equal(t, ticket.StatusPaused, repo.tickets["tst-001"].Ticket.Status)
 }
 
+func TestRetry_RejectsArchived(t *testing.T) {
+	repo := newMemRepo()
+	repo.add("tst-001", "---\nid: tst-001\nstatus: archived\nkontora: true\n---\n# Test\n")
+	rt := &spyRuntime{}
+	svc := New(testCfg(), repo, rt)
+
+	_, err := svc.Retry("tst-001")
+	require.ErrorIs(t, err, ErrInvalidState)
+	assert.Empty(t, rt.enqueued)
+	assert.Equal(t, ticket.StatusArchived, repo.tickets["tst-001"].Ticket.Status)
+}
+
 func TestSkip_AdvancesToNextStage(t *testing.T) {
 	repo := newMemRepo()
 	repo.add("tst-001", "---\nid: tst-001\nstatus: in_progress\nkontora: true\npipeline: default\nstage: code\n---\n# Test\n")
@@ -226,6 +242,18 @@ func TestSkip_RejectsNonKontora(t *testing.T) {
 	require.ErrorIs(t, err, ErrInvalidState)
 	assert.Empty(t, rt.enqueued)
 	assert.Equal(t, "code", repo.tickets["tst-001"].Ticket.Stage)
+}
+
+func TestSkip_RejectsArchived(t *testing.T) {
+	repo := newMemRepo()
+	repo.add("tst-001", "---\nid: tst-001\nstatus: archived\nkontora: true\npipeline: default\nstage: code\n---\n# Test\n")
+	rt := &spyRuntime{}
+	svc := New(testCfg(), repo, rt)
+
+	_, err := svc.Skip("tst-001")
+	require.ErrorIs(t, err, ErrInvalidState)
+	assert.Empty(t, rt.enqueued)
+	assert.Equal(t, ticket.StatusArchived, repo.tickets["tst-001"].Ticket.Status)
 }
 
 func TestInit_SetsAllFields(t *testing.T) {

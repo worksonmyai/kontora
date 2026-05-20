@@ -29,6 +29,7 @@ var StatusOrder = map[ticket.Status]int{
 	ticket.StatusOpen:      4,
 	ticket.StatusDone:      5,
 	ticket.StatusCancelled: 6,
+	ticket.StatusArchived:  7,
 }
 
 func StatusRank(s ticket.Status) int {
@@ -101,6 +102,10 @@ func Status(cfg *config.Config, w io.Writer, opts StatusOpts) error {
 	var visible []*ticket.Ticket
 	hasClosedTasks := false
 	for _, t := range tickets {
+		// Archived tickets are always hidden, including under --closed.
+		if t.Status == ticket.StatusArchived {
+			continue
+		}
 		if t.Status == ticket.StatusDone || t.Status == ticket.StatusCancelled {
 			hasClosedTasks = true
 			if !opts.ShowClosed {

@@ -54,6 +54,7 @@ func renderUsage() string {
 		{"skip", "Skip to the next pipeline stage"},
 		{"set-stage", "Move ticket to a specific pipeline stage"},
 		{"cancel", "Cancel a ticket"},
+		{"archive", "Archive old done/cancelled tickets"},
 		{"logs", "Show agent logs for a ticket"},
 		{"attach", "Attach to a running ticket"},
 		{"start", "Start the daemon"},
@@ -106,6 +107,8 @@ func main() {
 		cmdSetStage()
 	case "cancel":
 		cmdAction("cancel")
+	case "archive":
+		cmdArchive()
 	case "logs":
 		cmdLogs()
 	case "attach":
@@ -399,6 +402,22 @@ func cmdAction(action string) {
 		err = cli.Cancel(cfg.TicketsDir, taskID)
 	}
 	if err != nil {
+		log.Fatal(err)
+	}
+}
+
+func cmdArchive() {
+	fs := flag.NewFlagSet("archive", flag.ExitOnError)
+	configPath := fs.String("config", defaultConfigPath(), "path to config file")
+	days := fs.Int("days", 0, "archive done/cancelled tickets not modified in the last N days")
+	dryRun := fs.Bool("dry-run", false, "list tickets that would be archived without writing")
+	if err := fs.Parse(os.Args[2:]); err != nil {
+		log.Fatalf("parsing flags: %v", err)
+	}
+
+	cfg := mustLoadConfig(*configPath)
+
+	if err := cli.Archive(cfg, os.Stdout, cli.ArchiveOpts{Days: *days, DryRun: *dryRun}); err != nil {
 		log.Fatal(err)
 	}
 }

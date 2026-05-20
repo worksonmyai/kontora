@@ -517,7 +517,7 @@ func (d *Daemon) handleFileChanged(path string) {
 		if t.Status == ticket.StatusCancelled {
 			go d.cleanupWorktree(log, t)
 		}
-	case ticket.StatusDone:
+	case ticket.StatusDone, ticket.StatusArchived:
 		if cancel, ok := d.running[t.ID]; ok {
 			log.Info("killing agent", "reason", "user set "+string(t.Status))
 			cancel()
@@ -590,13 +590,14 @@ func (d *Daemon) logRemoveResult(log *slog.Logger, err error) {
 func (d *Daemon) isUserOverride(s ticket.Status) bool {
 	return s == ticket.StatusPaused || s == ticket.StatusHumanReview ||
 		s == ticket.StatusCancelled || s == ticket.StatusOpen ||
-		s == ticket.StatusDone || d.cfg.IsCustomStatus(string(s))
+		s == ticket.StatusDone || s == ticket.StatusArchived ||
+		d.cfg.IsCustomStatus(string(s))
 }
 
 // isTerminalOverride returns true if the status is a terminal user override
 // that requires worktree cleanup and task window teardown.
 func isTerminalOverride(s ticket.Status) bool {
-	return s == ticket.StatusCancelled || s == ticket.StatusDone
+	return s == ticket.StatusCancelled || s == ticket.StatusDone || s == ticket.StatusArchived
 }
 
 // cleanupWorktree resolves repo info from a ticket and removes its worktree.

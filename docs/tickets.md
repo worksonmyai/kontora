@@ -74,9 +74,9 @@ The first `# Heading` is treated as the ticket title and is available in prompt 
 ## Status lifecycle
 
 ```
-open → todo → in_progress → done
-                   ↓
-            paused / cancelled
+open → todo → in_progress → done ──────→ archived
+                   ↓                       ↑
+            paused / cancelled ────────────┘
 ```
 
 | Status | Meaning |
@@ -87,8 +87,20 @@ open → todo → in_progress → done
 | `paused` | Stopped by a failure policy or by the user. Set `status: todo` to resume. |
 | `done` | All pipeline stages completed successfully. |
 | `cancelled` | Manually cancelled by the user. |
+| `archived` | An old closed ticket, hidden from the main views. Terminal; still on disk. |
 
 The daemon only picks up tickets that have both `kontora: true` and `status: todo`. A non-Kontora ticket can still appear in any status column, but Kontora will not start or resume work on it until you initialize it. To pause a running Kontora ticket, use `kontora pause <id>` or set `status: paused` in the file — the daemon will detect the change and stop the agent.
+
+`archived` is a terminal built-in status for old `done`/`cancelled` tickets. Archived tickets are hidden from `kontora ls` (including `--closed`), the TUI, and the WebUI board, but their markdown files are kept on disk. The daemon never enqueues an archived ticket, and a live transition to `archived` stops any running agent and cleans up its worktree, just like `done`/`cancelled`. Create archived tickets with `kontora archive` (below) or by editing a file's `status` field directly; it cannot be set as a custom status or through the WebUI move actions.
+
+## Archiving old tickets
+
+```bash
+kontora archive --days 30            # archive done/cancelled tickets untouched for 30+ days
+kontora archive --days 30 --dry-run  # list what would be archived, write nothing
+```
+
+`kontora archive --days N` marks every `done` or `cancelled` ticket whose markdown file was last modified at or before `now - N days` as `archived`. The cutoff uses the file's modification time (the same value the WebUI shows as "updated"), because cancelled tickets have no `completed_at`. `--days` is required and must be a positive number. `--dry-run` prints the matching ticket IDs without changing any files, and a real run prints the IDs it archived followed by a one-line summary.
 
 ## History
 

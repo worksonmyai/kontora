@@ -38,6 +38,7 @@ complete -c kontora -n __fish_use_subcommand -a retry -d 'Re-queue a ticket'
 complete -c kontora -n __fish_use_subcommand -a skip -d 'Skip to next pipeline stage'
 complete -c kontora -n __fish_use_subcommand -a set-stage -d 'Move ticket to a specific pipeline stage'
 complete -c kontora -n __fish_use_subcommand -a cancel -d 'Cancel a ticket'
+complete -c kontora -n __fish_use_subcommand -a archive -d 'Archive old done/cancelled tickets'
 complete -c kontora -n __fish_use_subcommand -a logs -d 'Show agent logs'
 complete -c kontora -n __fish_use_subcommand -a attach -d 'Attach to running ticket'
 complete -c kontora -n __fish_use_subcommand -a start -d 'Start the daemon'
@@ -51,7 +52,7 @@ complete -c kontora -n __fish_use_subcommand -a completion -d 'Generate shell co
 complete -c kontora -n '__fish_seen_subcommand_from completion' -a fish -d 'Fish shell'
 
 # Flags: -config (commands that accept it)
-set -l __kontora_config_cmds start doctor ls new view edit init run done note pause retry skip set-stage cancel logs attach config
+set -l __kontora_config_cmds start doctor ls new view edit init run done note pause retry skip set-stage cancel archive logs attach config
 for cmd in $__kontora_config_cmds
     complete -c kontora -n "__fish_seen_subcommand_from $cmd" -o config -d 'Config file path' -r -F
 end
@@ -62,8 +63,11 @@ complete -c kontora -n '__fish_seen_subcommand_from new' -o pipeline -d 'Pipelin
 
 # Flags: ls
 complete -c kontora -n '__fish_seen_subcommand_from ls' -l closed -d 'Show done/cancelled tickets'
-complete -c kontora -n '__fish_seen_subcommand_from ls' -l all -d 'Show all tickets'
 complete -c kontora -n '__fish_seen_subcommand_from ls' -l static -d 'Static table output'
+
+# Flags: archive
+complete -c kontora -n '__fish_seen_subcommand_from archive' -o days -d 'Age threshold in days' -r
+complete -c kontora -n '__fish_seen_subcommand_from archive' -l dry-run -d 'List without writing'
 
 # Flags: logs
 complete -c kontora -n '__fish_seen_subcommand_from logs' -o stage -d 'Stage name' -r

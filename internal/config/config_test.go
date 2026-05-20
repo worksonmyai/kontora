@@ -372,6 +372,26 @@ pipelines:
 	require.ErrorContains(t, err, "clashes with built-in status")
 }
 
+func TestCustomStatusClashArchived(t *testing.T) {
+	input := `
+agents:
+  a:
+    binary: bin
+statuses: [archived]
+stages:
+  s:
+    prompt: x
+pipelines:
+  p:
+    - stage: s
+      agent: a
+      on_success: done
+      on_failure: pause
+`
+	_, err := LoadReader(strings.NewReader(input))
+	require.ErrorContains(t, err, "clashes with built-in status")
+}
+
 func TestCustomStatusClashReserved(t *testing.T) {
 	input := `
 agents:

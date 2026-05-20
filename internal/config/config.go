@@ -197,6 +197,7 @@ var validStatusNameRe = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
 var builtinStatuses = map[string]bool{
 	"open": true, "todo": true, "in_progress": true,
 	"paused": true, "human_review": true, "done": true, "cancelled": true,
+	"archived": true,
 }
 
 var reservedKeywords = map[string]bool{

@@ -114,6 +114,7 @@ func TestStatuses(t *testing.T) {
 		{StatusPaused},
 		{StatusDone},
 		{StatusCancelled},
+		{StatusArchived},
 	}
 
 	for _, tt := range tests {

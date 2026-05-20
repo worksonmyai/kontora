@@ -15,6 +15,9 @@ var (
 	ErrUnknownAgent = errors.New("unknown agent")
 )
 
+// builtinSetStatuses lists the statuses that SetStatus accepts. StatusArchived
+// is deliberately excluded: archived is terminal and may only be reached via the
+// archive command or a direct file edit, not WebUI/API moves.
 var builtinSetStatuses = map[ticket.Status]bool{
 	ticket.StatusOpen:        true,
 	ticket.StatusTodo:        true,
@@ -132,7 +135,7 @@ func (s *Service) Retry(id string) (Result, error) {
 		return Result{}, fmt.Errorf("%w: ticket is not initialized", ErrInvalidState)
 	}
 
-	if st.Ticket.Status == ticket.StatusInProgress || st.Ticket.Status == ticket.StatusTodo {
+	if st.Ticket.Status == ticket.StatusInProgress || st.Ticket.Status == ticket.StatusTodo || st.Ticket.Status == ticket.StatusArchived {
 		return Result{}, fmt.Errorf("%w: cannot retry ticket in status %s", ErrInvalidState, st.Ticket.Status)
 	}
 
@@ -170,6 +173,9 @@ func (s *Service) Skip(id string) (Result, error) {
 	t := st.Ticket
 	if !t.Kontora {
 		return Result{}, fmt.Errorf("%w: ticket is not initialized", ErrInvalidState)
+	}
+	if t.Status == ticket.StatusArchived {
+		return Result{}, fmt.Errorf("%w: cannot skip archived ticket %s", ErrInvalidState, resolved)
 	}
 
 	pipelineCfg, ok := s.cfg.Pipelines[t.Pipeline]

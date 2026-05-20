@@ -308,6 +308,42 @@ test("non-review columns ignore updated_at and keep existing sort", () => {
   assert.deepEqual(ids, ["todo-newer-created", "todo-recent-update"]);
 });
 
+test("applyTicketUpdate removes a ticket that becomes archived", () => {
+  const state = loadKontoraState();
+  state.updateFavicon = () => {};
+  state.tickets = [
+    { id: "kon-001", title: "Done", status: "done", kontora: true },
+    { id: "kon-002", title: "Todo", status: "todo", kontora: true },
+  ];
+
+  state.applyTicketUpdate({ id: "kon-001", title: "Done", status: "archived", kontora: true });
+
+  assert.deepEqual(state.tickets.map(t => t.id), ["kon-002"]);
+});
+
+test("applyTicketUpdate closes the detail panel when the selected ticket is archived", () => {
+  const state = loadKontoraState();
+  state.updateFavicon = () => {};
+  state.tickets = [{ id: "kon-001", title: "Done", status: "done", kontora: true }];
+  state.selectedTicket = { id: "kon-001", title: "Done", status: "done" };
+
+  state.applyTicketUpdate({ id: "kon-001", title: "Done", status: "archived", kontora: true });
+
+  assert.equal(state.selectedTicket, null);
+  assert.deepEqual(state.tickets, []);
+});
+
+test("applyTicketUpdate keeps non-archived updates on the board", () => {
+  const state = loadKontoraState();
+  state.updateFavicon = () => {};
+  state.tickets = [{ id: "kon-001", title: "Todo", status: "todo", kontora: true }];
+
+  state.applyTicketUpdate({ id: "kon-001", title: "Todo", status: "paused", kontora: true });
+
+  assert.equal(state.tickets.length, 1);
+  assert.equal(state.tickets[0].status, "paused");
+});
+
 test("agent running count ignores non-Kontora in-progress tickets", () => {
   const state = loadKontoraState();
   state.tickets = [

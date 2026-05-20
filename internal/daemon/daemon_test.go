@@ -482,6 +482,46 @@ func TestExternalSetDone(t *testing.T) {
 	require.NoError(t, <-errCh)
 }
 
+func TestExternalSetArchived(t *testing.T) {
+	h := newHarness(t)
+	cfg := h.defaultConfig("sleep", "sleep")
+	cfg.Agents["agent1"] = config.Agent{Binary: "sleep", Args: []string{"10"}}
+	cfg.Stages["step1"] = config.Stage{Prompt: ""}
+	d := h.newDaemon(cfg)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- d.Run(ctx) }()
+
+	time.Sleep(200 * time.Millisecond)
+
+	h.writeTicket("tst-arch.md", h.taskMD("tst-arch", "todo", "one-stage"))
+
+	// Wait for it to start running.
+	h.waitForStatus("tst-arch.md", ticket.StatusInProgress, 5*time.Second)
+
+	// Externally set status to archived.
+	time.Sleep(100 * time.Millisecond)
+	archivedContent := strings.Replace(
+		h.taskMD("tst-arch", "todo", "one-stage"),
+		"status: todo",
+		"status: archived",
+		1,
+	)
+	path := h.writeTicket("tst-arch.md", archivedContent)
+	d.handleFileChanged(path)
+
+	// Agent should be killed and the ticket should stay archived (not re-enqueued).
+	waitForAgentsDone(t, d, 5*time.Second)
+	result := h.readTask("tst-arch.md")
+	assert.Equal(t, ticket.StatusArchived, result.Status)
+
+	cancel()
+	require.NoError(t, <-errCh)
+}
+
 func TestFileLock(t *testing.T) {
 	h := newHarness(t)
 	d1 := h.newDaemon(h.cfg)
@@ -1085,6 +1125,68 @@ func TestWorktreeCleanupOnClose(t *testing.T) {
 
 	cancel()
 	require.NoError(t, <-errCh)
+}
+
+// TestWorktreeCleanupOnArchive tests that setting a ticket to archived via a
+// file edit (simulating `kontora archive`) triggers the same terminal cleanup
+// path as done/cancelled through handleFileChanged.
+func TestWorktreeCleanupOnArchive(t *testing.T) {
+	h := newHarness(t)
+	d := h.newDaemon(h.cfg)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- d.Run(ctx) }()
+
+	time.Sleep(200 * time.Millisecond)
+
+	wtPath := filepath.Join(h.wtDir, h.repoName, "tst-arch")
+	cmd := exec.Command("git", "worktree", "add", "-b", "kontora/tst-arch", wtPath, "main")
+	cmd.Dir = h.repoDir
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, "git worktree add: %s", out)
+
+	// Create a done ticket — daemon won't pick it up (not todo).
+	h.writeTicket("tst-arch.md", h.taskMD("tst-arch", "done", "one-stage"))
+	time.Sleep(200 * time.Millisecond)
+
+	archivedContent := strings.Replace(
+		h.taskMD("tst-arch", "done", "one-stage"),
+		"status: done",
+		"status: archived",
+		1,
+	)
+	h.writeTicket("tst-arch.md", archivedContent)
+
+	h.waitForWorktreeGone("tst-arch", 5*time.Second)
+
+	cancel()
+	require.NoError(t, <-errCh)
+}
+
+func TestDaemon_ListTickets_HidesArchived(t *testing.T) {
+	h := newHarness(t)
+	d := h.newDaemon(h.cfg)
+
+	parse := func(id, status string) *ticketState {
+		md := fmt.Sprintf("---\nid: %s\nkontora: true\nstatus: %s\n---\n# %s\n", id, status, id)
+		tk, err := ticket.ParseBytes([]byte(md))
+		require.NoError(t, err)
+		return &ticketState{ticket: tk, filePath: filepath.Join(h.tasksDir, id+".md")}
+	}
+
+	d.tickets["t-todo"] = parse("t-todo", "todo")
+	d.tickets["t-done"] = parse("t-done", "done")
+	d.tickets["t-cancelled"] = parse("t-cancelled", "cancelled")
+	d.tickets["t-arch"] = parse("t-arch", "archived")
+
+	ids := make([]string, 0, 3)
+	for _, ti := range d.ListTickets() {
+		ids = append(ids, ti.ID)
+	}
+	assert.ElementsMatch(t, []string{"t-todo", "t-done", "t-cancelled"}, ids)
 }
 
 func TestSimpleTask(t *testing.T) {

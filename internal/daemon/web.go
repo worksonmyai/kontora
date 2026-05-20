@@ -34,6 +34,11 @@ func (d *Daemon) ListTickets() []web.TicketInfo {
 
 	tickets := make([]web.TicketInfo, 0, len(d.tickets))
 	for _, ts := range d.tickets {
+		// Archived tickets are hidden from the main board; they stay on disk
+		// and remain reachable by ID via GetTicket.
+		if ts.ticket.Status == ticket.StatusArchived {
+			continue
+		}
 		tickets = append(tickets, d.buildTicketInfo(ts, false))
 	}
 	return tickets
@@ -410,7 +415,7 @@ func (d *Daemon) UpdateTicket(id string, req web.UpdateTicketRequest) error {
 	switch ts.ticket.Status {
 	case ticket.StatusOpen, ticket.StatusTodo, ticket.StatusPaused, ticket.StatusHumanReview:
 		// allowed
-	case ticket.StatusInProgress, ticket.StatusDone, ticket.StatusCancelled:
+	case ticket.StatusInProgress, ticket.StatusDone, ticket.StatusCancelled, ticket.StatusArchived:
 		return web.ErrInvalidState
 	default:
 		if !d.cfg.IsCustomStatus(string(ts.ticket.Status)) {

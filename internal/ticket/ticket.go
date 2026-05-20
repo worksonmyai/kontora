@@ -39,6 +39,9 @@ const (
 	StatusHumanReview Status = "human_review"
 	StatusDone        Status = "done"
 	StatusCancelled   Status = "cancelled"
+	// StatusArchived is a terminal status for old closed tickets. Archived
+	// tickets stay on disk but are hidden from the CLI, TUI, and WebUI lists.
+	StatusArchived Status = "archived"
 )
 
 type HistoryEntry struct {

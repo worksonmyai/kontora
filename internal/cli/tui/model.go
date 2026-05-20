@@ -282,7 +282,7 @@ func (m model) handleDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		switch st {
 		case ticket.StatusOpen, ticket.StatusTodo, ticket.StatusPaused, ticket.StatusHumanReview:
 			// allowed
-		case ticket.StatusInProgress, ticket.StatusDone, ticket.StatusCancelled:
+		case ticket.StatusInProgress, ticket.StatusDone, ticket.StatusCancelled, ticket.StatusArchived:
 			return m, nil
 		}
 		if !m.source.Connected() {
@@ -408,7 +408,12 @@ func (m model) createTaskCmd(req web.CreateTicketRequest) tea.Cmd {
 func (m model) handleTaskUpdated(ev web.TicketEvent) model {
 	m.list.updateTicket(ev.Ticket)
 	if m.view == viewDetail && m.detail.ticket.ID == ev.Ticket.ID {
-		m.detail.setTicket(ev.Ticket)
+		// An archived ticket is no longer actionable; return to the board.
+		if ev.Ticket.Status == string(ticket.StatusArchived) {
+			m.view = viewList
+		} else {
+			m.detail.setTicket(ev.Ticket)
+		}
 	}
 	running := 0
 	for _, t := range m.list.tickets {

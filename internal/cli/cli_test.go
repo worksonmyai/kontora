@@ -325,6 +325,42 @@ path: /tmp/testrepo
 			wantIDs: []string{"tst-001", "tst-002", "tst-003"},
 		},
 		{
+			name: "archived tickets are hidden even with ShowClosed",
+			tickets: map[string]string{
+				"tst-001.md": `---
+id: tst-001
+kontora: true
+status: todo
+pipeline: default
+path: /tmp/testrepo
+stage: code
+---
+# Todo ticket
+`,
+				"tst-002.md": `---
+id: tst-002
+kontora: true
+status: done
+pipeline: default
+path: /tmp/testrepo
+---
+# Done ticket
+`,
+				"tst-arch.md": `---
+id: tst-arch
+kontora: true
+status: archived
+pipeline: default
+path: /tmp/testrepo
+---
+# Archived ticket
+`,
+			},
+			opts:        StatusOpts{ShowClosed: true},
+			wantIDs:     []string{"tst-001", "tst-002"},
+			wantMissing: []string{"tst-arch"},
+		},
+		{
 			name: "only closed tickets shows hint",
 			tickets: map[string]string{
 				"tst-001.md": `---

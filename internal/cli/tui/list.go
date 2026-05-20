@@ -73,7 +73,14 @@ func newListModel() listModel {
 }
 
 func (m *listModel) setTickets(tickets []web.TicketInfo, running int) {
-	m.tickets = slices.Clone(tickets)
+	m.tickets = make([]web.TicketInfo, 0, len(tickets))
+	for _, t := range tickets {
+		// Archived tickets are hidden from the board.
+		if t.Status == string(ticket.StatusArchived) {
+			continue
+		}
+		m.tickets = append(m.tickets, t)
+	}
 	m.running = running
 	sortTickets(m.tickets)
 	m.applyFilter()
@@ -81,6 +88,14 @@ func (m *listModel) setTickets(tickets []web.TicketInfo, running int) {
 
 func (m *listModel) updateTicket(info web.TicketInfo) {
 	if info.ID == "" {
+		return
+	}
+	// An archived ticket is dropped from the board (and never added).
+	if info.Status == string(ticket.StatusArchived) {
+		m.tickets = slices.DeleteFunc(m.tickets, func(t web.TicketInfo) bool {
+			return t.ID == info.ID
+		})
+		m.applyFilter()
 		return
 	}
 	for i, t := range m.tickets {

@@ -222,6 +222,56 @@ func TestListModel_NonKontoraVisibility(t *testing.T) {
 	assert.ElementsMatch(t, []string{"ext-002", "kon-001"}, columnIDs, "done tickets stay hidden until showDone is enabled")
 }
 
+func TestListModel_ArchivedHidden(t *testing.T) {
+	m := newListModel()
+	m.width = 100
+	m.height = 30
+	m.setTickets([]web.TicketInfo{
+		{ID: "a", Status: "in_progress", Kontora: true},
+		{ID: "b", Status: "done", Kontora: true},
+		{ID: "arch", Status: "archived", Kontora: true},
+	}, 1)
+
+	// setTickets drops the archived ticket entirely.
+	assert.Len(t, m.tickets, 2)
+	assert.Len(t, m.columns, 1) // in_progress only
+
+	// Even with the done/cancelled toggle on, archived stays hidden.
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	assert.True(t, m.showDone)
+	var columnIDs []string
+	for _, col := range m.columns {
+		for _, ti := range col.tickets {
+			columnIDs = append(columnIDs, ti.ID)
+		}
+	}
+	assert.ElementsMatch(t, []string{"a", "b"}, columnIDs)
+	assert.NotContains(t, columnIDs, "arch")
+}
+
+func TestListModel_UpdateToArchivedRemoves(t *testing.T) {
+	m := newListModel()
+	m.width = 100
+	m.height = 30
+	m.setTickets([]web.TicketInfo{
+		{ID: "a", Status: "done", Kontora: true},
+		{ID: "b", Status: "todo", Kontora: true},
+	}, 0)
+	require.Len(t, m.tickets, 2)
+
+	// A ticket transitioning to archived is dropped from client state.
+	m.updateTicket(web.TicketInfo{ID: "a", Status: "archived", Kontora: true})
+	ids := make([]string, 0, len(m.tickets))
+	for _, ti := range m.tickets {
+		ids = append(ids, ti.ID)
+	}
+	assert.Equal(t, []string{"b"}, ids)
+
+	// An archived ticket never enters the board, even if not previously tracked.
+	m.updateTicket(web.TicketInfo{ID: "c", Status: "archived", Kontora: true})
+	assert.Len(t, m.tickets, 1)
+}
+
 func TestListModel_CtrlCInFilterMode(t *testing.T) {
 	m := newListModel()
 	m.width = 100

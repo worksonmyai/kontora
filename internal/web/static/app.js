@@ -243,20 +243,21 @@ function kontora() {
       return 'logs';
     },
 
-    connectSSE() {
-      if (this._eventSource) this._eventSource.close();
-      const es = new EventSource('/api/events');
-      this._eventSource = es;
-      es.addEventListener('ticket_updated', (e) => {
-        const ticket = JSON.parse(e.data);
+    applyTicketUpdate(ticket) {
+      if (ticket.status === 'archived') {
+        // Archived tickets are hidden from the board: drop them from client
+        // state and close the detail panel if the archived ticket was selected.
+        this.tickets = this.tickets.filter(t => t.id !== ticket.id);
+        if (this.selectedTicket?.id === ticket.id) {
+          this.closeDetail();
+        }
+      } else {
         const idx = this.tickets.findIndex(t => t.id === ticket.id);
         if (idx >= 0) {
           this.tickets[idx] = ticket;
         } else {
           this.tickets.push(ticket);
         }
-        this.runningAgents = this.tickets.filter(t => t.status === 'in_progress' && t.kontora).length;
-        this.updateFavicon();
         if (this.selectedTicket?.id === ticket.id) {
           if (this.editing && !['open', 'todo', 'paused'].concat(this.configCache?.custom_statuses || []).includes(ticket.status)) {
             this.editing = false;
@@ -275,6 +276,17 @@ function kontora() {
             this.activeTab = 'ticket';
           }
         }
+      }
+      this.runningAgents = this.tickets.filter(t => t.status === 'in_progress' && t.kontora).length;
+      this.updateFavicon();
+    },
+
+    connectSSE() {
+      if (this._eventSource) this._eventSource.close();
+      const es = new EventSource('/api/events');
+      this._eventSource = es;
+      es.addEventListener('ticket_updated', (e) => {
+        this.applyTicketUpdate(JSON.parse(e.data));
       });
       es.addEventListener('ticket_deleted', (e) => {
         const ticket = JSON.parse(e.data);

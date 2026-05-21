@@ -672,7 +672,7 @@
           <div class="flex items-center gap-1.5">
             <span class="w-1.5 h-1.5 rounded-full" :style="'background: hsl(' + col.tint + ')'"></span>
             <span class="text-tx-3 lowercase" x-text="col.label.toLowerCase()"></span>
-            <span class="text-tx num" x-text="filteredTicketsByStatuses(col.statuses).length"></span>
+            <span class="text-tx num" x-text="boardTickets(col.key).length"></span>
           </div>
         </template>
         <span class="ml-auto text-surface-600">
@@ -702,7 +702,7 @@
             <div class="col-head" :data-status="col.key" :style="'--col-tint: ' + col.tint">
               <span class="col-head-dot"></span>
               <span class="col-head-label" x-text="col.label"></span>
-              <span class="col-head-count" x-text="filteredTicketsByStatuses(col.statuses).length"></span>
+              <span class="col-head-count" x-text="boardTickets(col.key).length"></span>
               <button type="button" class="tip ml-auto" :data-tip="col.tip" :aria-label="col.tip">i</button>
               <button x-show="col.key === 'open' && colHover"
                       x-transition:enter="transition-opacity duration-150" x-transition:enter-start="opacity-0" x-transition:enter-end="opacity-100"
@@ -741,10 +741,10 @@
                  :data-drop-status="col.dropStatus"
                  :class="col.tint || ''"
                  x-init="initSortable($el)">
-              <div x-show="filteredTicketsByStatuses(col.statuses).length === 0"
+              <div x-show="boardTickets(col.key).length === 0"
                    class="empty-state font-mono text-center text-[12px] text-surface-600 border border-dashed border-surface-700/60 rounded-lg py-7 px-4 mt-1"
                    x-text="'∅ ' + col.emptyText.toLowerCase()"></div>
-              <template x-for="ticket in filteredTicketsByStatuses(col.statuses)" :key="ticket.id">
+              <template x-for="ticket in boardTickets(col.key)" :key="ticket.id">
                 <div :data-ticket-id="ticket.id"
                      role="listitem" tabindex="0"
                      :aria-label="'Ticket ' + ticket.id + ': ' + ticket.title"

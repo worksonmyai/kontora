@@ -2,6 +2,19 @@ function kontora() {
   return {
     tickets: [],
     runningAgents: 0,
+    // Cache of column key -> filtered+sorted ticket list, plus the total across
+    // columns. recomputeBoard() must be called at every point that mutates
+    // this.tickets or searchQuery (load, batched SSE flush, optimistic move,
+    // delete, detail-panel actions, debounced search), so template reads are
+    // O(1) lookups instead of re-filtering and re-sorting every column on every
+    // reactive read.
+    _board: {},
+    _boardTotal: 0,
+    // Buffer of ticket_updated payloads flushed once per animation frame, so a
+    // burst of agent updates triggers a single recompute and repaint.
+    _pendingTicketUpdates: [],
+    _boardRaf: null,
+    _searchDebounce: null,
     selectedTicket: null,
     terminalOpen: false,
     terminalRW: false,
@@ -132,6 +145,10 @@ function kontora() {
       window.addEventListener('resize', () => {
         this.isMobile = window.innerWidth < 768;
       });
+      // Recompute the board when the search query changes. Debounced so typing
+      // doesn't re-filter every column on each keystroke; updateSuggestions()
+      // stays on @input for the autocomplete dropdown.
+      this.$watch('searchQuery', () => this.debounceRecomputeBoard());
       this.$watch('terminalFullscreen', (fs) => {
         if (!this._term?.element || !this.terminalOpen) return;
         var target = fs
@@ -168,6 +185,7 @@ function kontora() {
       this.tickets = data.tickets || [];
       this.runningAgents = data.running_agents || 0;
       this.updateFavicon();
+      this.recomputeBoard();
     },
 
     _cssVar(name, styles) {
@@ -277,8 +295,24 @@ function kontora() {
           }
         }
       }
+    },
+
+    // Buffer SSE ticket_updated payloads and flush them on a single animation
+    // frame so a burst of agent updates collapses into one apply + recompute.
+    queueTicketUpdate(ticket) {
+      this._pendingTicketUpdates.push(ticket);
+      if (this._boardRaf !== null) return;
+      this._boardRaf = requestAnimationFrame(() => this.flushTicketUpdates());
+    },
+
+    flushTicketUpdates() {
+      this._boardRaf = null;
+      var pending = this._pendingTicketUpdates;
+      this._pendingTicketUpdates = [];
+      pending.forEach(t => this.applyTicketUpdate(t));
       this.runningAgents = this.tickets.filter(t => t.status === 'in_progress' && t.kontora).length;
       this.updateFavicon();
+      this.recomputeBoard();
     },
 
     connectSSE() {
@@ -286,7 +320,7 @@ function kontora() {
       const es = new EventSource('/api/events');
       this._eventSource = es;
       es.addEventListener('ticket_updated', (e) => {
-        this.applyTicketUpdate(JSON.parse(e.data));
+        this.queueTicketUpdate(JSON.parse(e.data));
       });
       es.addEventListener('ticket_deleted', (e) => {
         const ticket = JSON.parse(e.data);
@@ -296,6 +330,7 @@ function kontora() {
         }
         this.runningAgents = this.tickets.filter(t => t.status === 'in_progress' && t.kontora).length;
         this.updateFavicon();
+        this.recomputeBoard();
       });
       es.addEventListener('terminal_ready', (e) => {
         const ticket = JSON.parse(e.data);
@@ -657,6 +692,7 @@ function kontora() {
         }
         this.deleteModal = false;
         this.tickets = this.tickets.filter(t => t.id !== ticketId);
+        this.recomputeBoard();
         if (this.selectedTicket?.id === ticketId) this.closeDetail();
         this.runningAgents = this.tickets.filter(t => t.status === 'in_progress' && t.kontora).length;
         this.updateFavicon();
@@ -699,6 +735,7 @@ function kontora() {
           const idx = this.tickets.findIndex(t => t.id === updated.id);
           if (idx >= 0) this.tickets[idx] = updated;
           if (this.selectedTicket?.id === updated.id) this.selectedTicket = updated;
+          this.recomputeBoard();
         }
       } catch (e) {
         this.error = endpoint + ' failed: ' + e.message;
@@ -720,6 +757,7 @@ function kontora() {
       }
       const oldStatus = ticket ? ticket.status : null;
       if (ticket) ticket.status = newStatus;
+      this.recomputeBoard();
       try {
         const res = await fetch('/api/tickets/' + ticketId + '/move', {
           method: 'POST',
@@ -730,10 +768,12 @@ function kontora() {
           const data = await res.json().catch(() => ({}));
           this.error = data.error || 'Move failed';
           if (ticket && oldStatus) ticket.status = oldStatus;
+          this.recomputeBoard();
         }
       } catch (e) {
         this.error = 'Move failed: ' + e.message;
         if (ticket && oldStatus) ticket.status = oldStatus;
+        this.recomputeBoard();
       }
     },
 
@@ -1187,8 +1227,35 @@ function kontora() {
       return all.filter(t => this.ticketMatchesQuery(t, this.searchQuery));
     },
 
+    // Recompute every column's filtered+sorted list in one pass and cache it by
+    // column key. Called imperatively at the few mutation points (load, batched
+    // SSE flush, delete, debounced search) so the filter+sort runs once per
+    // logical change rather than on every reactive template read.
+    recomputeBoard() {
+      var board = {};
+      var total = 0;
+      this.columns.forEach(col => {
+        var list = this.filteredTicketsByStatuses(col.statuses);
+        board[col.key] = list;
+        total += list.length;
+      });
+      this._board = board;
+      this._boardTotal = total;
+    },
+
+    // O(1) lookup of a column's cached list. The board template reads through
+    // this instead of re-running filteredTicketsByStatuses on every render.
+    boardTickets(key) {
+      return this._board[key] || [];
+    },
+
+    debounceRecomputeBoard() {
+      if (this._searchDebounce) clearTimeout(this._searchDebounce);
+      this._searchDebounce = setTimeout(() => this.recomputeBoard(), 150);
+    },
+
     filteredTicketCount() {
-      return this.columns.reduce((n, col) => n + this.filteredTicketsByStatuses(col.statuses).length, 0);
+      return this._boardTotal;
     },
 
     updateSuggestions() {

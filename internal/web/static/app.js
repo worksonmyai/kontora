@@ -918,13 +918,31 @@ function kontora() {
     initSortable(el) {
       if (this.isMobile) return;
       var self = this;
+      // Mark the column wrapper that currently holds the dragged card so it
+      // lights up with the column's own tint. Cleared on drag end.
+      function setDropTarget(listEl) {
+        document.querySelectorAll('.kanban-col.is-drop-target').forEach(function(c) {
+          c.classList.remove('is-drop-target');
+        });
+        if (!listEl) return;
+        var wrapper = listEl.closest('.kanban-col');
+        if (wrapper) wrapper.classList.add('is-drop-target');
+      }
+      function clearDropTarget() {
+        document.querySelectorAll('.kanban-col.is-drop-target').forEach(function(c) {
+          c.classList.remove('is-drop-target');
+        });
+      }
       new Sortable(el, {
         group: 'kanban',
         animation: 150,
         ghostClass: 'sortable-ghost',
         dragClass: 'sortable-drag',
         filter: '.empty-state',
+        onStart: function(evt) { setDropTarget(evt.from); },
+        onChange: function(evt) { setDropTarget(evt.to); },
         onEnd: function(evt) {
+          clearDropTarget();
           var ticketId = evt.item.dataset.ticketId;
           var fromDrop = evt.from.dataset.dropStatus;
           var toDrop = evt.to.dataset.dropStatus;

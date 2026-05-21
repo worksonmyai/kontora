@@ -19,7 +19,7 @@ function deferred() {
   return { promise, resolve, reject };
 }
 
-function loadKontoraState() {
+function loadKontoraState(overrides = {}) {
   const source = fs.readFileSync(appPath, "utf8");
   const context = {
     console,
@@ -83,6 +83,7 @@ function loadKontoraState() {
     },
   };
 
+  Object.assign(context, overrides);
   vm.createContext(context);
   vm.runInContext(`${source}\nthis.kontora = kontora;`, context);
   return context.kontora();
@@ -352,4 +353,125 @@ test("agent running count ignores non-Kontora in-progress tickets", () => {
   ];
 
   assert.equal(state.agentRunningCount("claude"), 1);
+});
+
+test("recomputeBoard caches sorted+filtered lists keyed by column", () => {
+  const state = loadKontoraState();
+  state.tickets = [
+    { id: "kon-a", title: "A", status: "todo", kontora: true, created_at: "2026-05-19T08:00:00Z" },
+    { id: "kon-b", title: "B", status: "todo", kontora: true, created_at: "2026-05-19T10:00:00Z" },
+    { id: "kon-c", title: "C", status: "human_review", kontora: true, updated_at: "2026-05-19T09:00:00Z" },
+  ];
+
+  state.recomputeBoard();
+
+  // In Progress column groups todo/in_progress/paused and sorts newest first.
+  assert.deepEqual(state.boardTickets("in_progress").map(t => t.id), ["kon-b", "kon-a"]);
+  assert.deepEqual(state.boardTickets("human_review").map(t => t.id), ["kon-c"]);
+  assert.equal(state.boardTickets("open").length, 0);
+  assert.equal(state.filteredTicketCount(), 3);
+});
+
+test("recomputeBoard applies the search query to the cached board", () => {
+  const state = loadKontoraState();
+  state.tickets = [
+    { id: "kon-alpha", title: "Alpha", status: "todo", kontora: true },
+    { id: "kon-beta", title: "Beta", status: "todo", kontora: true },
+  ];
+  state.searchQuery = "alpha";
+
+  state.recomputeBoard();
+
+  assert.deepEqual(state.boardTickets("in_progress").map(t => t.id), ["kon-alpha"]);
+  assert.equal(state.filteredTicketCount(), 1);
+});
+
+test("queueTicketUpdate coalesces a burst into a single recompute", () => {
+  const state = loadKontoraState();
+  state.updateFavicon = () => {};
+  let recomputes = 0;
+  const realRecompute = state.recomputeBoard.bind(state);
+  state.recomputeBoard = () => { recomputes += 1; realRecompute(); };
+  state.tickets = [];
+
+  // Pretend a frame is already scheduled so queued updates only buffer.
+  state._boardRaf = 1;
+  state.queueTicketUpdate({ id: "kon-1", title: "One", status: "todo", kontora: true });
+  state.queueTicketUpdate({ id: "kon-2", title: "Two", status: "todo", kontora: true });
+
+  assert.equal(state._pendingTicketUpdates.length, 2);
+  assert.equal(recomputes, 0);
+
+  state.flushTicketUpdates();
+
+  assert.equal(recomputes, 1);
+  assert.equal(state._pendingTicketUpdates.length, 0);
+  assert.equal(state._boardRaf, null);
+  assert.deepEqual(state.boardTickets("in_progress").map(t => t.id).sort(), ["kon-1", "kon-2"]);
+});
+
+test("queueTicketUpdate flushes the buffer and refreshes the cached board", () => {
+  const state = loadKontoraState();
+  state.updateFavicon = () => {};
+  state.tickets = [];
+
+  // The harness runs requestAnimationFrame synchronously, so this flushes now.
+  state.queueTicketUpdate({ id: "kon-1", title: "One", status: "human_review", kontora: true, updated_at: "2026-05-19T09:00:00Z" });
+
+  assert.deepEqual(state.boardTickets("human_review").map(t => t.id), ["kon-1"]);
+  assert.equal(state._pendingTicketUpdates.length, 0);
+});
+
+test("moveTask re-buckets the cached board optimistically and reverts on failure", async () => {
+  // Default harness fetch returns ok:false, so the move request fails.
+  const state = loadKontoraState();
+  state.tickets = [{ id: "kon-1", title: "One", status: "todo", kontora: true }];
+  state.recomputeBoard();
+  assert.deepEqual(state.boardTickets("in_progress").map(t => t.id), ["kon-1"]);
+
+  // Optimistic move reflects in the cache before the request resolves.
+  const pending = state.moveTask("kon-1", "human_review");
+  assert.equal(state.boardTickets("in_progress").length, 0);
+  assert.deepEqual(state.boardTickets("human_review").map(t => t.id), ["kon-1"]);
+
+  // The failed request reverts the optimistic change in the cache too.
+  await pending;
+  assert.deepEqual(state.boardTickets("in_progress").map(t => t.id), ["kon-1"]);
+  assert.equal(state.boardTickets("human_review").length, 0);
+});
+
+test("deleteSelectedTicket drops the card from the cached board on success", async () => {
+  const state = loadKontoraState({
+    fetch: async () => ({ ok: true, json: async () => ({}) }),
+  });
+  state.updateFavicon = () => {};
+  state.tickets = [
+    { id: "kon-1", title: "One", status: "todo", kontora: true },
+    { id: "kon-2", title: "Two", status: "todo", kontora: true },
+  ];
+  state.selectedTicket = { id: "kon-1" };
+  state.recomputeBoard();
+  assert.deepEqual(state.boardTickets("in_progress").map(t => t.id).sort(), ["kon-1", "kon-2"]);
+
+  await state.deleteSelectedTicket();
+
+  assert.deepEqual(state.boardTickets("in_progress").map(t => t.id), ["kon-2"]);
+  assert.equal(state.filteredTicketCount(), 1);
+});
+
+test("moveTicketVia re-buckets the cached board after a status change", async () => {
+  const state = loadKontoraState({
+    fetch: async () => ({
+      ok: true,
+      json: async () => ({ id: "kon-1", title: "One", status: "human_review", kontora: true, updated_at: "2026-05-19T10:00:00Z" }),
+    }),
+  });
+  state.tickets = [{ id: "kon-1", title: "One", status: "in_progress", kontora: true }];
+  state.recomputeBoard();
+  assert.deepEqual(state.boardTickets("in_progress").map(t => t.id), ["kon-1"]);
+
+  await state.moveTicketVia("kon-1", "move", { status: "human_review" });
+
+  assert.equal(state.boardTickets("in_progress").length, 0);
+  assert.deepEqual(state.boardTickets("human_review").map(t => t.id), ["kon-1"]);
 });

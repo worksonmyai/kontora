@@ -442,6 +442,40 @@ func TestExternalSetOpen(t *testing.T) {
 	require.NoError(t, <-errCh)
 }
 
+func TestMoveTicketToOpenKillsAgent(t *testing.T) {
+	h := newHarness(t)
+	cfg := h.defaultConfig("sleep", "sleep")
+	cfg.Agents["agent1"] = config.Agent{Binary: "sleep", Args: []string{"10"}}
+	cfg.Stages["step1"] = config.Stage{Prompt: ""}
+	d := h.newDaemon(cfg)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- d.Run(ctx) }()
+
+	time.Sleep(200 * time.Millisecond)
+
+	h.writeTicket("tst-mv.md", h.taskMD("tst-mv", "todo", "one-stage"))
+	h.waitForStatus("tst-mv.md", ticket.StatusInProgress, 5*time.Second)
+
+	// Let the agent finish spawning so worktree setup has stopped writing the
+	// ticket before we change its status.
+	time.Sleep(100 * time.Millisecond)
+
+	// Move to open via the web/API path (self-write through SetStatus), which
+	// is what the kanban board uses. This must stop the running agent.
+	require.NoError(t, d.MoveTicket("tst-mv", "open"))
+
+	waitForAgentsDone(t, d, 5*time.Second)
+	result := h.readTask("tst-mv.md")
+	assert.Equal(t, ticket.StatusOpen, result.Status)
+
+	cancel()
+	require.NoError(t, <-errCh)
+}
+
 func TestExternalSetDone(t *testing.T) {
 	h := newHarness(t)
 	cfg := h.defaultConfig("sleep", "sleep")

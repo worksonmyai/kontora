@@ -111,6 +111,30 @@ func TestSetStatus_Done_SetsCompletedAt(t *testing.T) {
 	assert.Equal(t, []string{"tst-001"}, rt.updated)
 }
 
+func TestSetStatus_CancelsRunningAgent(t *testing.T) {
+	cases := []struct {
+		name   string
+		status ticket.Status
+	}{
+		{"open", ticket.StatusOpen},
+		{"cancelled", ticket.StatusCancelled},
+		{"done", ticket.StatusDone},
+		{"human_review", ticket.StatusHumanReview},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := newMemRepo()
+			repo.add("tst-001", "---\nid: tst-001\nstatus: in_progress\nkontora: true\npipeline: default\nstage: code\n---\n# Test\n")
+			rt := &spyRuntime{}
+			svc := New(testCfg(), repo, rt)
+
+			_, err := svc.SetStatus("tst-001", tc.status)
+			require.NoError(t, err)
+			assert.Equal(t, []string{"tst-001"}, rt.cancelled)
+		})
+	}
+}
+
 func TestSetStatus_AlreadySame(t *testing.T) {
 	repo := newMemRepo()
 	repo.add("tst-001", "---\nid: tst-001\nstatus: todo\nkontora: true\n---\n# Test\n")

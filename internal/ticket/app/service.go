@@ -116,6 +116,13 @@ func (s *Service) SetStatus(id string, status ticket.Status) (Result, error) {
 		return Result{}, err
 	}
 
+	// Stop any running agent (and its tmux window). SetStatus only moves a
+	// ticket to non-running statuses, so an in_progress ticket being moved
+	// must have its agent torn down. The status was saved as a daemon
+	// self-write, so the file watcher won't fire to do this for us. No-op
+	// when nothing is running.
+	s.runtime.Cancel(resolved)
+
 	s.runtime.BroadcastUpdated(resolved)
 	return Result{ID: resolved, Status: string(status)}, nil
 }

@@ -41,7 +41,10 @@ type HistoryView struct {
 }
 
 // BuildView projects a ticket into a View using config for agent/stage resolution.
-func BuildView(cfg *config.Config, t *ticket.Ticket, includeBody bool) View {
+// When detail is false (the list/board projection) the heavy detail-only fields
+// (History, LastError, LastLog, Body) are left empty; the board cards never read
+// them. The detail endpoint and SSE ticket_updated events pass detail=true.
+func BuildView(cfg *config.Config, t *ticket.Ticket, detail bool) View {
 	v := View{
 		ID:          t.ID,
 		Title:       t.Title(),
@@ -82,23 +85,21 @@ func BuildView(cfg *config.Config, t *ticket.Ticket, includeBody bool) View {
 		v.Stages = []string{"default"}
 	}
 
-	if len(t.History) > 0 {
-		v.History = make([]HistoryView, len(t.History))
-		for i, h := range t.History {
-			v.History[i] = HistoryView{
-				Stage:       h.Stage,
-				Agent:       h.Agent,
-				ExitCode:    h.ExitCode,
-				StartedAt:   h.StartedAt,
-				CompletedAt: h.CompletedAt,
+	if detail {
+		if len(t.History) > 0 {
+			v.History = make([]HistoryView, len(t.History))
+			for i, h := range t.History {
+				v.History[i] = HistoryView{
+					Stage:       h.Stage,
+					Agent:       h.Agent,
+					ExitCode:    h.ExitCode,
+					StartedAt:   h.StartedAt,
+					CompletedAt: h.CompletedAt,
+				}
 			}
 		}
-	}
-
-	v.LastError = t.LastError
-	v.LastLog = t.LastLog
-
-	if includeBody {
+		v.LastError = t.LastError
+		v.LastLog = t.LastLog
 		v.Body = t.Body
 	}
 

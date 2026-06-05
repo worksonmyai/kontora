@@ -34,9 +34,11 @@ func (d *Daemon) ListTickets() []web.TicketInfo {
 
 	tickets := make([]web.TicketInfo, 0, len(d.tickets))
 	for _, ts := range d.tickets {
-		// Archived tickets are hidden from the main board; they stay on disk
-		// and remain reachable by ID via GetTicket.
-		if ts.ticket.Status == ticket.StatusArchived {
+		// Only tickets whose status maps to a board column appear in the list.
+		// This hides archived, plus foreign statuses (closed, tombstone, ...)
+		// that have no column. All of them stay on disk and remain reachable
+		// by ID via GetTicket.
+		if !d.cfg.IsBoardStatus(string(ts.ticket.Status)) {
 			continue
 		}
 		tickets = append(tickets, d.buildTicketInfo(ts, false))
@@ -94,7 +96,7 @@ func (d *Daemon) CreateTicket(req web.CreateTicketRequest) (web.TicketInfo, erro
 	}
 
 	d.mu.Lock()
-	ts := &ticketState{ticket: t, filePath: filePath}
+	ts := newTicketState(t, filePath)
 	d.tickets[id] = ts
 	if t.Status == "todo" {
 		d.enqueue(t)
@@ -152,7 +154,7 @@ func (d *Daemon) UploadTicket(content []byte) (web.TicketInfo, error) {
 	}
 
 	d.mu.Lock()
-	ts := &ticketState{ticket: t, filePath: filePath}
+	ts := newTicketState(t, filePath)
 	d.tickets[t.ID] = ts
 	info := d.buildTicketInfo(ts, false)
 	d.broadcastTicketUpdate(t.ID)
@@ -287,7 +289,7 @@ func (d *Daemon) PauseTicket(id string) error {
 	}
 
 	d.mu.Lock()
-	d.tickets[id] = &ticketState{ticket: t2, filePath: filePath}
+	d.setTicketState(id, t2, filePath)
 	d.broadcastTicketUpdate(id)
 	d.mu.Unlock()
 	return nil
@@ -359,7 +361,7 @@ func (d *Daemon) SetStage(id string, stage string) error {
 	}
 
 	d.mu.Lock()
-	d.tickets[id] = &ticketState{ticket: t2, filePath: filePath}
+	d.setTicketState(id, t2, filePath)
 	d.broadcastTicketUpdate(id)
 	d.mu.Unlock()
 	return nil
@@ -406,24 +408,25 @@ func (d *Daemon) InitTicket(id string, req web.InitTicketRequest) error {
 // Allowed in statuses: open, todo, paused.
 func (d *Daemon) UpdateTicket(id string, req web.UpdateTicketRequest) error {
 	d.mu.Lock()
-	defer d.mu.Unlock()
-
 	ts, ok := d.tickets[id]
 	if !ok {
+		d.mu.Unlock()
 		return web.ErrTicketNotFound
 	}
-	switch ts.ticket.Status {
+	status := ts.ticket.Status
+	filePath := ts.filePath
+	d.mu.Unlock()
+
+	switch status {
 	case ticket.StatusOpen, ticket.StatusTodo, ticket.StatusPaused, ticket.StatusHumanReview:
 		// allowed
 	case ticket.StatusInProgress, ticket.StatusDone, ticket.StatusCancelled, ticket.StatusArchived:
 		return web.ErrInvalidState
 	default:
-		if !d.cfg.IsCustomStatus(string(ts.ticket.Status)) {
+		if !d.cfg.IsCustomStatus(string(status)) {
 			return web.ErrInvalidState
 		}
 	}
-
-	filePath := ts.filePath
 
 	t2, err := ticket.ParseFile(filePath)
 	if err != nil {
@@ -468,8 +471,10 @@ func (d *Daemon) UpdateTicket(id string, req web.UpdateTicketRequest) error {
 		return err
 	}
 
-	d.tickets[id] = &ticketState{ticket: t2, filePath: filePath}
+	d.mu.Lock()
+	d.setTicketState(id, t2, filePath)
 	d.broadcastTicketUpdate(id)
+	d.mu.Unlock()
 	return nil
 }
 
@@ -561,11 +566,14 @@ func (d *Daemon) broadcastTerminalReady(id string) {
 func (d *Daemon) buildTicketInfo(ts *ticketState, includeBody bool) web.TicketInfo {
 	v := app.BuildView(d.cfg, ts.ticket, includeBody)
 	info := web.TicketInfoFromView(v)
-	if ts.filePath != "" {
+	mt := ts.modTime
+	if mt.IsZero() && ts.filePath != "" {
 		if st, err := os.Stat(ts.filePath); err == nil {
-			t := st.ModTime()
-			info.UpdatedAt = &t
+			mt = st.ModTime()
 		}
+	}
+	if !mt.IsZero() {
+		info.UpdatedAt = &mt
 	}
 	return info
 }

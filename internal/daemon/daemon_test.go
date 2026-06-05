@@ -1200,7 +1200,7 @@ func TestWorktreeCleanupOnArchive(t *testing.T) {
 	require.NoError(t, <-errCh)
 }
 
-func TestDaemon_ListTickets_HidesArchived(t *testing.T) {
+func TestDaemon_ListTickets_HidesNonBoardStatuses(t *testing.T) {
 	h := newHarness(t)
 	d := h.newDaemon(h.cfg)
 
@@ -1215,12 +1215,87 @@ func TestDaemon_ListTickets_HidesArchived(t *testing.T) {
 	d.tickets["t-done"] = parse("t-done", "done")
 	d.tickets["t-cancelled"] = parse("t-cancelled", "cancelled")
 	d.tickets["t-arch"] = parse("t-arch", "archived")
+	// Foreign statuses from the external ticket CLI map to no board column.
+	d.tickets["t-closed"] = parse("t-closed", "closed")
+	d.tickets["t-tomb"] = parse("t-tomb", "tombstone")
 
 	ids := make([]string, 0, 3)
 	for _, ti := range d.ListTickets() {
 		ids = append(ids, ti.ID)
 	}
 	assert.ElementsMatch(t, []string{"t-todo", "t-done", "t-cancelled"}, ids)
+
+	// Non-board statuses stay reachable by ID.
+	for _, id := range []string{"t-arch", "t-closed", "t-tomb"} {
+		got, err := d.GetTicket(id)
+		require.NoError(t, err, "GetTicket(%s)", id)
+		assert.Equal(t, id, got.ID)
+	}
+}
+
+func TestDaemon_ListTickets_OmitsDetailFields(t *testing.T) {
+	h := newHarness(t)
+	d := h.newDaemon(h.cfg)
+
+	md := "---\n" +
+		"id: t-detail\n" +
+		"kontora: true\n" +
+		"status: human_review\n" +
+		"last_error: boom\n" +
+		"last_log: /tmp/t-detail/stage.log\n" +
+		"history:\n" +
+		"  - stage: code\n" +
+		"    agent: claude\n" +
+		"    exit_code: 0\n" +
+		"---\n# t-detail\n"
+	tk, err := ticket.ParseBytes([]byte(md))
+	require.NoError(t, err)
+	d.tickets["t-detail"] = &ticketState{ticket: tk, filePath: filepath.Join(h.tasksDir, "t-detail.md")}
+
+	list := d.ListTickets()
+	require.Len(t, list, 1)
+	li := list[0]
+	assert.Empty(t, li.History, "list must omit history")
+	assert.Empty(t, li.LastError, "list must omit last_error")
+	assert.Empty(t, li.LastLog, "list must omit last_log")
+	// The stage bars on in-progress/review cards still need Stages.
+	assert.NotNil(t, li.Stages)
+
+	detail, err := d.GetTicket("t-detail")
+	require.NoError(t, err)
+	assert.Len(t, detail.History, 1, "detail keeps history")
+	assert.Equal(t, "boom", detail.LastError)
+	assert.Equal(t, "/tmp/t-detail/stage.log", detail.LastLog)
+}
+
+func TestDaemon_UpdatedAt_ReflectsFileModTime(t *testing.T) {
+	h := newHarness(t)
+	d := h.newDaemon(h.cfg)
+
+	md := "---\nid: t-mtime\nkontora: true\nstatus: todo\n---\n# t-mtime\n"
+	path := h.writeTicket("t-mtime.md", md)
+	tk, err := ticket.ParseFile(path)
+	require.NoError(t, err)
+	d.tickets["t-mtime"] = newTicketState(tk, path)
+
+	st, err := os.Stat(path)
+	require.NoError(t, err)
+	got, err := d.GetTicket("t-mtime")
+	require.NoError(t, err)
+	require.NotNil(t, got.UpdatedAt)
+	assert.True(t, got.UpdatedAt.Equal(st.ModTime()), "UpdatedAt should match file mtime")
+
+	// A daemon write rewrites the file (new mtime); UpdatedAt must follow even
+	// though the ticketState is reused in place rather than reconstructed.
+	require.NoError(t, tk.SetField("status", "paused"))
+	require.NoError(t, d.writeTicket(tk, path))
+
+	st2, err := os.Stat(path)
+	require.NoError(t, err)
+	got2, err := d.GetTicket("t-mtime")
+	require.NoError(t, err)
+	require.NotNil(t, got2.UpdatedAt)
+	assert.True(t, got2.UpdatedAt.Equal(st2.ModTime()), "UpdatedAt should reflect the new mtime after a write")
 }
 
 func TestSimpleTask(t *testing.T) {

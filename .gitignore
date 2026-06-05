@@ -34,3 +34,6 @@ go.work.sum
 /kontora
 /dist/
 /site/
+
+# Downloaded Tailwind standalone CLI (see hack/get-tailwind.sh)
+/bin/

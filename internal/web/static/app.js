@@ -1004,9 +1004,9 @@ function kontora() {
       try {
         if (!this._TerminalClass || !this._FitAddonClass) {
           var [termMod, fitMod, unicodeMod] = await Promise.all([
-            import('https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/+esm'),
-            import('https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/+esm'),
-            import('https://cdn.jsdelivr.net/npm/@xterm/addon-unicode11@0.8.0/+esm'),
+            import('/vendor/xterm@5.5.0/xterm.mjs'),
+            import('/vendor/addon-fit@0.10.0/addon-fit.mjs'),
+            import('/vendor/addon-unicode11@0.8.0/addon-unicode11.mjs'),
           ]);
           this._TerminalClass = termMod.Terminal;
           this._FitAddonClass = fitMod.FitAddon;

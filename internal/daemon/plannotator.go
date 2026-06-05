@@ -272,7 +272,7 @@ func (d *Daemon) transitionToRework(id string) error {
 	}
 
 	d.mu.Lock()
-	d.tickets[id] = &ticketState{ticket: t2, filePath: filePath}
+	d.setTicketState(id, t2, filePath)
 	d.enqueue(t2)
 	d.broadcastTicketUpdate(id)
 	d.mu.Unlock()
@@ -412,7 +412,7 @@ func (d *Daemon) runReworkStage(ctx, taskCtx context.Context, log *slog.Logger, 
 	}
 
 	d.mu.Lock()
-	d.tickets[ticketID] = &ticketState{ticket: t2, filePath: filePath}
+	d.setTicketState(ticketID, t2, filePath)
 	d.broadcastTicketUpdate(ticketID)
 	d.mu.Unlock()
 }

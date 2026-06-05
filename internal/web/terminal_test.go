@@ -129,28 +129,31 @@ func startTmuxWindow(t *testing.T, session, window string) {
 	t.Helper()
 	env := append(os.Environ(), "TERM=xterm")
 
-	// Check whether the session already exists before deciding which command to use.
-	// Previously, we tried new-window first and fell back to new-session on any error.
-	// That broke when the session existed but new-window failed for another reason
-	// (e.g., duplicate window name), because new-session then also failed with
-	// "duplicate session".
-	hasSession := exec.Command("tmux", "has-session", "-t", "="+session)
-	hasSession.Env = env
+	// This session name is shared with other packages' tmux tests, which run as
+	// separate test binaries in parallel. The session can be created or torn down
+	// concurrently, so a has-session check up front races with concurrent
+	// creation (new-session then fails with "duplicate session"). Instead, try to
+	// create the session; if it already exists, add our window to it. Retry to
+	// cover the reverse race where the session disappears before we add the window.
+	var out []byte
+	var err error
+	for range 3 {
+		newSession := exec.Command("tmux", "new-session", "-d", "-s", session, "-n", window, "-x", "80", "-y", "24")
+		newSession.Env = env
+		if out, err = newSession.CombinedOutput(); err == nil {
+			break
+		}
 
-	if hasSession.Run() != nil {
-		cmd := exec.Command("tmux", "new-session", "-d", "-s", session, "-n", window, "-x", "80", "-y", "24")
-		cmd.Env = env
-		out, err := cmd.CombinedOutput()
-		require.NoError(t, err, "tmux new-session failed: %s", out)
-	} else {
-		// Kill any leftover window with the same name from a previous run.
+		// Session already exists. Replace any leftover window of the same name.
 		_ = exec.Command("tmux", "kill-window", "-t", "="+session+":"+window).Run()
-
-		cmd := exec.Command("tmux", "new-window", "-t", "="+session+":", "-n", window)
-		cmd.Env = env
-		out, err := cmd.CombinedOutput()
-		require.NoError(t, err, "tmux new-window failed: %s", out)
+		newWindow := exec.Command("tmux", "new-window", "-t", "="+session+":", "-n", window)
+		newWindow.Env = env
+		if out, err = newWindow.CombinedOutput(); err == nil {
+			break
+		}
 	}
+	require.NoError(t, err, "failed to create tmux window: %s", out)
+
 	t.Cleanup(func() {
 		_ = exec.Command("tmux", "kill-window", "-t", "="+session+":"+window).Run()
 	})

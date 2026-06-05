@@ -209,6 +209,20 @@ func (c *Config) IsCustomStatus(s string) bool {
 	return slices.Contains(c.Statuses, s)
 }
 
+// boardStatuses are the built-in statuses that map to a board column.
+// archived is intentionally excluded: archived tickets are hidden from the board.
+var boardStatuses = map[string]bool{
+	"open": true, "todo": true, "in_progress": true,
+	"paused": true, "human_review": true, "done": true, "cancelled": true,
+}
+
+// IsBoardStatus reports whether s maps to a board column (a non-archived
+// built-in status or a configured custom status). Tickets with any other
+// status (e.g. foreign "closed"/"tombstone") are hidden from the board list.
+func (c *Config) IsBoardStatus(s string) bool {
+	return boardStatuses[s] || c.IsCustomStatus(s)
+}
+
 func (c *Config) Validate() error {
 	if _, ok := c.Agents[c.DefaultAgent]; !ok {
 		if c.DefaultAgent == "" {

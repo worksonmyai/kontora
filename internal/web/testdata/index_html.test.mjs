@@ -9,6 +9,12 @@ const dirname = path.dirname(fileURLToPath(import.meta.url));
 const htmlPath = path.join(dirname, "../static/index.html");
 const appPath = path.join(dirname, "../static/app.js");
 
+// recomputeBoard builds its column buckets with array literals created inside
+// the VM realm, so their prototype differs from this file's Array and
+// deepStrictEqual's prototype check would fail. Spread into the test realm
+// before asserting.
+const bt = (state, key) => [...state.boardTickets(key)];
+
 function deferred() {
   let resolve;
   let reject;
@@ -366,9 +372,9 @@ test("recomputeBoard caches sorted+filtered lists keyed by column", () => {
   state.recomputeBoard();
 
   // In Progress column groups todo/in_progress/paused and sorts newest first.
-  assert.deepEqual(state.boardTickets("in_progress").map(t => t.id), ["kon-b", "kon-a"]);
-  assert.deepEqual(state.boardTickets("human_review").map(t => t.id), ["kon-c"]);
-  assert.equal(state.boardTickets("open").length, 0);
+  assert.deepEqual(bt(state, "in_progress").map(t => t.id), ["kon-b", "kon-a"]);
+  assert.deepEqual(bt(state, "human_review").map(t => t.id), ["kon-c"]);
+  assert.equal(bt(state, "open").length, 0);
   assert.equal(state.filteredTicketCount(), 3);
 });
 
@@ -382,7 +388,7 @@ test("recomputeBoard applies the search query to the cached board", () => {
 
   state.recomputeBoard();
 
-  assert.deepEqual(state.boardTickets("in_progress").map(t => t.id), ["kon-alpha"]);
+  assert.deepEqual(bt(state, "in_progress").map(t => t.id), ["kon-alpha"]);
   assert.equal(state.filteredTicketCount(), 1);
 });
 
@@ -407,7 +413,7 @@ test("queueTicketUpdate coalesces a burst into a single recompute", () => {
   assert.equal(recomputes, 1);
   assert.equal(state._pendingTicketUpdates.length, 0);
   assert.equal(state._boardRaf, null);
-  assert.deepEqual(state.boardTickets("in_progress").map(t => t.id).sort(), ["kon-1", "kon-2"]);
+  assert.deepEqual(bt(state, "in_progress").map(t => t.id).sort(), ["kon-1", "kon-2"]);
 });
 
 test("queueTicketUpdate flushes the buffer and refreshes the cached board", () => {
@@ -418,7 +424,7 @@ test("queueTicketUpdate flushes the buffer and refreshes the cached board", () =
   // The harness runs requestAnimationFrame synchronously, so this flushes now.
   state.queueTicketUpdate({ id: "kon-1", title: "One", status: "human_review", kontora: true, updated_at: "2026-05-19T09:00:00Z" });
 
-  assert.deepEqual(state.boardTickets("human_review").map(t => t.id), ["kon-1"]);
+  assert.deepEqual(bt(state, "human_review").map(t => t.id), ["kon-1"]);
   assert.equal(state._pendingTicketUpdates.length, 0);
 });
 
@@ -427,17 +433,17 @@ test("moveTask re-buckets the cached board optimistically and reverts on failure
   const state = loadKontoraState();
   state.tickets = [{ id: "kon-1", title: "One", status: "todo", kontora: true }];
   state.recomputeBoard();
-  assert.deepEqual(state.boardTickets("in_progress").map(t => t.id), ["kon-1"]);
+  assert.deepEqual(bt(state, "in_progress").map(t => t.id), ["kon-1"]);
 
   // Optimistic move reflects in the cache before the request resolves.
   const pending = state.moveTask("kon-1", "human_review");
-  assert.equal(state.boardTickets("in_progress").length, 0);
-  assert.deepEqual(state.boardTickets("human_review").map(t => t.id), ["kon-1"]);
+  assert.equal(bt(state, "in_progress").length, 0);
+  assert.deepEqual(bt(state, "human_review").map(t => t.id), ["kon-1"]);
 
   // The failed request reverts the optimistic change in the cache too.
   await pending;
-  assert.deepEqual(state.boardTickets("in_progress").map(t => t.id), ["kon-1"]);
-  assert.equal(state.boardTickets("human_review").length, 0);
+  assert.deepEqual(bt(state, "in_progress").map(t => t.id), ["kon-1"]);
+  assert.equal(bt(state, "human_review").length, 0);
 });
 
 test("deleteSelectedTicket drops the card from the cached board on success", async () => {
@@ -451,11 +457,11 @@ test("deleteSelectedTicket drops the card from the cached board on success", asy
   ];
   state.selectedTicket = { id: "kon-1" };
   state.recomputeBoard();
-  assert.deepEqual(state.boardTickets("in_progress").map(t => t.id).sort(), ["kon-1", "kon-2"]);
+  assert.deepEqual(bt(state, "in_progress").map(t => t.id).sort(), ["kon-1", "kon-2"]);
 
   await state.deleteSelectedTicket();
 
-  assert.deepEqual(state.boardTickets("in_progress").map(t => t.id), ["kon-2"]);
+  assert.deepEqual(bt(state, "in_progress").map(t => t.id), ["kon-2"]);
   assert.equal(state.filteredTicketCount(), 1);
 });
 
@@ -468,10 +474,10 @@ test("moveTicketVia re-buckets the cached board after a status change", async ()
   });
   state.tickets = [{ id: "kon-1", title: "One", status: "in_progress", kontora: true }];
   state.recomputeBoard();
-  assert.deepEqual(state.boardTickets("in_progress").map(t => t.id), ["kon-1"]);
+  assert.deepEqual(bt(state, "in_progress").map(t => t.id), ["kon-1"]);
 
   await state.moveTicketVia("kon-1", "move", { status: "human_review" });
 
-  assert.equal(state.boardTickets("in_progress").length, 0);
-  assert.deepEqual(state.boardTickets("human_review").map(t => t.id), ["kon-1"]);
+  assert.equal(bt(state, "in_progress").length, 0);
+  assert.deepEqual(bt(state, "human_review").map(t => t.id), ["kon-1"]);
 });

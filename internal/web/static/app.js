@@ -10,6 +10,10 @@ function kontora() {
     // reactive read.
     _board: {},
     _boardTotal: 0,
+    // Global kontora status counts from the last recomputeBoard pass, used by
+    // updateFavicon. Tallied ignoring searchQuery (the favicon reflects all
+    // tickets, not the filtered view).
+    _statusCounts: { in_progress: 0, paused: 0, todo: 0, done: 0 },
     // Buffer of ticket_updated payloads flushed once per animation frame, so a
     // burst of agent updates triggers a single recompute and repaint.
     _pendingTicketUpdates: [],
@@ -183,9 +187,11 @@ function kontora() {
       if (!res.ok) throw new Error('Failed to fetch tickets');
       const data = await res.json();
       this.tickets = data.tickets || [];
+      this.recomputeBoard();
+      // recomputeBoard derives runningAgents from in_progress kontora tickets;
+      // prefer the daemon's authoritative running count at load.
       this.runningAgents = data.running_agents || 0;
       this.updateFavicon();
-      this.recomputeBoard();
     },
 
     _cssVar(name, styles) {
@@ -194,8 +200,7 @@ function kontora() {
     },
 
     updateFavicon() {
-      const counts = { in_progress: 0, paused: 0, todo: 0, done: 0 };
-      this.tickets.filter(t => t.kontora).forEach(t => { if (counts[t.status] !== undefined) counts[t.status]++; });
+      const counts = this._statusCounts;
 
       var styles = getComputedStyle(document.documentElement);
       var v = (name) => this._cssVar(name, styles);
@@ -217,36 +222,39 @@ function kontora() {
       if (icon) icon.href = "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><circle cx='8' cy='8' r='7' fill='" + encodeURIComponent(color) + "'/></svg>";
     },
 
+    // Sort a column's ticket list in place. `statuses` is the column's status
+    // list; multi-status columns (IN PROGRESS) rank by status first, the
+    // human_review column sorts by updated_at, others by activity age.
+    _sortColumn(list, statuses) {
+      var self = this;
+      return list.sort((a, b) => {
+        if (statuses.length > 1) {
+          var ra = self._inflightRank[a.status];
+          var rb = self._inflightRank[b.status];
+          if (ra === undefined) ra = 99;
+          if (rb === undefined) rb = 99;
+          if (ra !== rb) return ra - rb;
+        }
+        const isReview = statuses.length === 1 && statuses[0] === 'human_review';
+        let ta, tb;
+        if (isReview) {
+          ta = a.updated_at || a.created_at || '';
+          tb = b.updated_at || b.created_at || '';
+        } else {
+          ta = a.status === 'in_progress' && a.started_at ? a.started_at : (a.created_at || '');
+          tb = b.status === 'in_progress' && b.started_at ? b.started_at : (b.created_at || '');
+        }
+        if (ta !== tb) return ta > tb ? -1 : 1;
+        if (a.title !== b.title) return a.title < b.title ? -1 : 1;
+        if (a.id !== b.id) return a.id < b.id ? -1 : 1;
+        return 0;
+      });
+    },
+
     ticketsByStatuses(statuses) {
       var list = Array.isArray(statuses) ? statuses : [statuses];
       var set = new Set(list);
-      var self = this;
-      return this.tickets
-        .filter(t => set.has(t.status))
-        .sort((a, b) => {
-          // Multi-status columns (IN PROGRESS): sort by status rank first so
-          // running > paused > todo, then by activity age.
-          if (list.length > 1) {
-            var ra = self._inflightRank[a.status];
-            var rb = self._inflightRank[b.status];
-            if (ra === undefined) ra = 99;
-            if (rb === undefined) rb = 99;
-            if (ra !== rb) return ra - rb;
-          }
-          const isReview = list.length === 1 && list[0] === 'human_review';
-          let ta, tb;
-          if (isReview) {
-            ta = a.updated_at || a.created_at || '';
-            tb = b.updated_at || b.created_at || '';
-          } else {
-            ta = a.status === 'in_progress' && a.started_at ? a.started_at : (a.created_at || '');
-            tb = b.status === 'in_progress' && b.started_at ? b.started_at : (b.created_at || '');
-          }
-          if (ta !== tb) return ta > tb ? -1 : 1;
-          if (a.title !== b.title) return a.title < b.title ? -1 : 1;
-          if (a.id !== b.id) return a.id < b.id ? -1 : 1;
-          return 0;
-        });
+      return this._sortColumn(this.tickets.filter(t => set.has(t.status)), list);
     },
 
     showTerminalTab() {
@@ -310,9 +318,10 @@ function kontora() {
       var pending = this._pendingTicketUpdates;
       this._pendingTicketUpdates = [];
       pending.forEach(t => this.applyTicketUpdate(t));
-      this.runningAgents = this.tickets.filter(t => t.status === 'in_progress' && t.kontora).length;
-      this.updateFavicon();
+      // recomputeBoard rebuilds the board and refreshes runningAgents +
+      // _statusCounts, which updateFavicon then reads.
       this.recomputeBoard();
+      this.updateFavicon();
     },
 
     connectSSE() {
@@ -328,9 +337,8 @@ function kontora() {
         if (this.selectedTicket?.id === ticket.id) {
           this.closeDetail();
         }
-        this.runningAgents = this.tickets.filter(t => t.status === 'in_progress' && t.kontora).length;
-        this.updateFavicon();
         this.recomputeBoard();
+        this.updateFavicon();
       });
       es.addEventListener('terminal_ready', (e) => {
         const ticket = JSON.parse(e.data);
@@ -692,9 +700,8 @@ function kontora() {
         }
         this.deleteModal = false;
         this.tickets = this.tickets.filter(t => t.id !== ticketId);
-        this.recomputeBoard();
         if (this.selectedTicket?.id === ticketId) this.closeDetail();
-        this.runningAgents = this.tickets.filter(t => t.status === 'in_progress' && t.kontora).length;
+        this.recomputeBoard();
         this.updateFavicon();
       } catch (e) {
         this.error = 'Delete failed: ' + e.message;
@@ -1221,30 +1228,44 @@ function kontora() {
       return fields.some(f => f && f.toLowerCase().includes(normalized));
     },
 
-    filteredTicketsByStatuses(statuses) {
-      var all = this.ticketsByStatuses(statuses);
-      if (!this.searchQuery) return all;
-      return all.filter(t => this.ticketMatchesQuery(t, this.searchQuery));
-    },
-
     // Recompute every column's filtered+sorted list in one pass and cache it by
     // column key. Called imperatively at the few mutation points (load, batched
     // SSE flush, delete, debounced search) so the filter+sort runs once per
     // logical change rather than on every reactive template read.
     recomputeBoard() {
+      var cols = this.columns;
+      var q = (this.searchQuery || '').trim().toLowerCase();
+      // status -> column key. Each status maps to exactly one column.
+      var colOf = {};
       var board = {};
+      cols.forEach(col => {
+        board[col.key] = [];
+        col.statuses.forEach(s => { colOf[s] = col.key; });
+      });
+      // Global kontora tallies for the favicon/running pill, computed ignoring
+      // the search filter so they reflect all tickets.
+      var counts = { in_progress: 0, paused: 0, todo: 0, done: 0 };
+      for (var i = 0; i < this.tickets.length; i++) {
+        var t = this.tickets[i];
+        if (t.kontora && counts[t.status] !== undefined) counts[t.status]++;
+        var key = colOf[t.status];
+        if (key === undefined) continue;            // no column -> not rendered
+        if (q && !this.ticketMatchesQuery(t, q)) continue;
+        board[key].push(t);
+      }
       var total = 0;
-      this.columns.forEach(col => {
-        var list = this.filteredTicketsByStatuses(col.statuses);
-        board[col.key] = list;
-        total += list.length;
+      cols.forEach(col => {
+        this._sortColumn(board[col.key], col.statuses);
+        total += board[col.key].length;
       });
       this._board = board;
       this._boardTotal = total;
+      this._statusCounts = counts;
+      this.runningAgents = counts.in_progress;
     },
 
     // O(1) lookup of a column's cached list. The board template reads through
-    // this instead of re-running filteredTicketsByStatuses on every render.
+    // this instead of re-filtering and re-sorting on every render.
     boardTickets(key) {
       return this._board[key] || [];
     },

@@ -236,6 +236,19 @@ type Daemon struct {
 type ticketState struct {
 	ticket   *ticket.Ticket
 	filePath string
+	modTime  time.Time
+}
+
+// newTicketState builds a ticketState and stats filePath once to cache its
+// modtime, so buildTicketInfo can set UpdatedAt without a stat per read.
+// Construction sites all run after the file has been written/parsed, so the
+// cached modtime is fresh.
+func newTicketState(t *ticket.Ticket, filePath string) *ticketState {
+	ts := &ticketState{ticket: t, filePath: filePath}
+	if st, err := os.Stat(filePath); err == nil {
+		ts.modTime = st.ModTime()
+	}
+	return ts
 }
 
 func New(cfg *config.Config, opts ...Option) *Daemon {
@@ -285,7 +298,7 @@ func (d *Daemon) buildService() *app.Service {
 		AfterSave: func(id string, st *app.StoredTicket) {
 			d.mu.Lock()
 			defer d.mu.Unlock()
-			d.tickets[id] = &ticketState{ticket: st.Ticket, filePath: st.FilePath}
+			d.tickets[id] = newTicketState(st.Ticket, st.FilePath)
 		},
 		ListTickets: func() []*app.StoredTicket {
 			d.mu.Lock()
@@ -443,7 +456,7 @@ func (d *Daemon) initialScan(dir string) error {
 			}
 		}
 
-		d.tickets[t.ID] = &ticketState{ticket: t, filePath: path}
+		d.tickets[t.ID] = newTicketState(t, path)
 		if t.Kontora && t.Status == ticket.StatusTodo && *d.cfg.AutoPickUp {
 			d.ticketLog(t.ID).Info("enqueuing", "pipeline", t.Pipeline, "stage", t.Stage)
 			d.enqueue(t)
@@ -482,7 +495,7 @@ func (d *Daemon) handleFileChanged(path string) {
 	defer d.mu.Unlock()
 
 	prev, known := d.tickets[t.ID]
-	d.tickets[t.ID] = &ticketState{ticket: t, filePath: path}
+	d.tickets[t.ID] = newTicketState(t, path)
 	d.broadcastTicketUpdate(t.ID)
 
 	if !t.Kontora {
@@ -934,7 +947,7 @@ func (d *Daemon) runSimpleTicket(ctx, taskCtx context.Context, log *slog.Logger,
 			d.killTaskWindow(ticketID)
 		}
 		d.mu.Lock()
-		d.tickets[ticketID] = &ticketState{ticket: t2, filePath: filePath}
+		d.tickets[ticketID] = newTicketState(t2, filePath)
 		d.mu.Unlock()
 		return
 	}
@@ -966,7 +979,7 @@ func (d *Daemon) runSimpleTicket(ctx, taskCtx context.Context, log *slog.Logger,
 	}
 
 	d.mu.Lock()
-	d.tickets[ticketID] = &ticketState{ticket: t2, filePath: filePath}
+	d.setTicketState(ticketID, t2, filePath)
 	d.broadcastTicketUpdate(ticketID)
 	d.mu.Unlock()
 }
@@ -1016,7 +1029,7 @@ func (d *Daemon) handleAgentExit(ctx, taskCtx context.Context, p handleExitParam
 			d.killTaskWindow(p.ticketID)
 		}
 		d.mu.Lock()
-		d.tickets[p.ticketID] = &ticketState{ticket: t2, filePath: p.filePath}
+		d.tickets[p.ticketID] = newTicketState(t2, p.filePath)
 		d.mu.Unlock()
 		return
 	}
@@ -1096,7 +1109,7 @@ func (d *Daemon) handleAgentExit(ctx, taskCtx context.Context, p handleExitParam
 	}
 
 	d.mu.Lock()
-	d.tickets[p.ticketID] = &ticketState{ticket: t2, filePath: p.filePath}
+	d.setTicketState(p.ticketID, t2, p.filePath)
 
 	// Re-enqueue if advance/retry/back.
 	switch exitAction.Kind { //nolint:exhaustive
@@ -1379,7 +1392,33 @@ func (d *Daemon) writeTicket(t *ticket.Ticket, path string) error {
 		return err
 	}
 	d.recordSelfWrite(path)
-	return os.WriteFile(path, data, 0o644)
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		return err
+	}
+	// Refresh the cached modtime so UpdatedAt reflects this write. Paths that
+	// reuse the ticketState in place (pickup, spawn) rely on this; reconstruct
+	// paths reuse the refreshed modtime via setTicketState to avoid a second
+	// stat. Caller must not hold d.mu.
+	if st, err := os.Stat(path); err == nil {
+		d.mu.Lock()
+		if ts, ok := d.tickets[t.ID]; ok {
+			ts.modTime = st.ModTime()
+		}
+		d.mu.Unlock()
+	}
+	return nil
+}
+
+// setTicketState replaces the cached state for id after a writeTicket call,
+// carrying over the modtime writeTicket just refreshed so the swap doesn't
+// stat the file a second time. Must be called with d.mu held, on a path that
+// just wrote the file (so the cached modtime is current).
+func (d *Daemon) setTicketState(id string, t *ticket.Ticket, path string) {
+	var modTime time.Time
+	if ts, ok := d.tickets[id]; ok {
+		modTime = ts.modTime
+	}
+	d.tickets[id] = &ticketState{ticket: t, filePath: path, modTime: modTime}
 }
 
 func (d *Daemon) stageLogPath(ticketID, stageName string) string {
@@ -1402,7 +1441,7 @@ func (d *Daemon) pauseTicket(t *ticket.Ticket, path, reason string) {
 		log.Error("pause: write failed", "err", err)
 	}
 	d.mu.Lock()
-	d.tickets[t.ID] = &ticketState{ticket: t, filePath: path}
+	d.setTicketState(t.ID, t, path)
 	d.broadcastTicketUpdate(t.ID)
 	d.mu.Unlock()
 }

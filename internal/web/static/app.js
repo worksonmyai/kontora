@@ -19,6 +19,10 @@ function kontora() {
     _pendingTicketUpdates: [],
     _boardRaf: null,
     _searchDebounce: null,
+    // Reactive clock, advanced every 30s so relative durations ("Running for
+    // 12m", card age timers) re-render without waiting for an SSE event.
+    now: Date.now(),
+    _nowTimer: null,
     selectedTicket: null,
     terminalOpen: false,
     terminalRW: false,
@@ -117,6 +121,18 @@ function kontora() {
       cancelled:    [{ label: 'Reopen',         endpoint: 'retry' }],
     },
 
+    // Endpoints already covered by the bespoke tooltip-bearing buttons in the
+    // detail panel (Pause for in_progress, Resume/retry for paused), so the
+    // validMoves list rendered there doesn't duplicate them.
+    _detailCoveredMoves: { in_progress: ['pause'], paused: ['retry'] },
+
+    // validMoves entries shown as action buttons in the detail panel sidebar.
+    detailMoves(ticket) {
+      if (!ticket) return [];
+      var covered = this._detailCoveredMoves[ticket.status] || [];
+      return (this.validMoves[ticket.status] || []).filter(mv => !covered.includes(mv.endpoint));
+    },
+
     _knownCustomStatuses: {
       review: { label: 'Review', color: 'bg-review', tint: '267 84% 81%', glow: 'glow-top-review', emptyIcon: '<path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/>' },
     },
@@ -151,6 +167,7 @@ function kontora() {
       window.addEventListener('resize', () => {
         this.isMobile = window.innerWidth < 768;
       });
+      this._nowTimer = setInterval(() => { this.now = Date.now(); }, 30000);
       // Recompute the board when the search query changes. Debounced so typing
       // doesn't re-filter every column on each keystroke; updateSuggestions()
       // stays on @input for the autocomplete dropdown.
@@ -201,20 +218,28 @@ function kontora() {
       return 'rgb(' + s.getPropertyValue(name).trim() + ')';
     },
 
+    // For the --st-* status hues, which are HSL triplets (the theme vars
+    // _cssVar reads are RGB triplets).
+    _cssHsl(name, styles) {
+      var s = styles || getComputedStyle(document.documentElement);
+      return 'hsl(' + s.getPropertyValue(name).trim() + ')';
+    },
+
     updateFavicon() {
       const counts = this._statusCounts;
 
       var styles = getComputedStyle(document.documentElement);
       var v = (name) => this._cssVar(name, styles);
+      var h = (name) => this._cssHsl(name, styles);
       let color, label;
       if (counts.in_progress > 0) {
-        color = v('--accent'); label = counts.in_progress + ' running';
+        color = h('--st-progress'); label = counts.in_progress + ' running';
       } else if (counts.paused > 0) {
-        color = v('--warn'); label = counts.paused + ' paused';
+        color = h('--st-paused'); label = counts.paused + ' paused';
       } else if (counts.todo > 0) {
         color = v('--surface-600'); label = counts.todo + ' queued';
       } else if (counts.done > 0) {
-        color = v('--ok'); label = 'all done';
+        color = h('--st-done'); label = 'all done';
       } else {
         color = v('--surface-600'); label = null;
       }
@@ -758,12 +783,6 @@ function kontora() {
         this.openInitModal(ticket);
         return;
       }
-      if (newStatus === 'in_progress' && ticket && ticket.status === 'open') {
-        if (confirm("Tickets can't run directly from Open. Move to Todo instead?")) {
-          this.moveTask(ticketId, 'todo');
-        }
-        return;
-      }
       const oldStatus = ticket ? ticket.status : null;
       if (ticket) ticket.status = newStatus;
       this.recomputeBoard();
@@ -860,16 +879,6 @@ function kontora() {
       this._editDebounce = setTimeout(() => this.saveEdit(), 800);
     },
 
-    statusStyle(status) {
-      return {
-        open: 'bg-accent/10 text-accent border-accent/20',
-        todo: 'bg-surface-800 text-tx-3 border-surface-700/50',
-        in_progress: 'bg-accent/10 text-accent border-accent/20',
-        paused: 'bg-warn/10 text-warn border-warn/20',
-        done: 'bg-ok/10 text-ok border-ok/20',
-      }[status] || 'bg-surface-800 text-tx-3 border-surface-700/50';
-    },
-
     isStageClickable(stage, ticket) {
       if (!ticket || !ticket.stages || ticket.stages.length === 0) return false;
       if (ticket.status === 'todo' || ticket.status === 'open') return false;
@@ -956,9 +965,8 @@ function kontora() {
       var currentIdx = ticket.stages.indexOf(ticket.stage);
       if (ticket.status === 'done') return 'bg-ok/10 text-ok/60';
       if (stage === ticket.stage) {
-        if (ticket.status === 'in_progress') return 'bg-accent/15 text-accent';
-        if (ticket.status === 'paused') return 'bg-warn/15 text-warn';
-        return 'bg-accent/15 text-accent';
+        if (ticket.status === 'paused') return 'stage-paused';
+        return 'stage-current';
       }
       if (currentIdx >= 0 && stageIdx >= 0 && stageIdx < currentIdx) return 'bg-ok/10 text-ok/60';
       return 'bg-surface-800 text-surface-600';
@@ -1376,9 +1384,7 @@ function kontora() {
 
     formatDuration(ticket) {
       if (!ticket || !ticket.started_at) return '';
-      var start = new Date(ticket.started_at);
-      var now = new Date();
-      var mins = Math.floor((now - start) / 60000);
+      var mins = Math.floor((this.now - new Date(ticket.started_at)) / 60000);
       if (mins < 1) return '<1m';
       if (mins < 60) return mins + 'm';
       return Math.floor(mins / 60) + 'h ' + (mins % 60) + 'm';
@@ -1393,7 +1399,7 @@ function kontora() {
 
     timeAgo(dateStr) {
       if (!dateStr) return '';
-      var diff = Math.floor((Date.now() - new Date(dateStr)) / 1000);
+      var diff = Math.floor((this.now - new Date(dateStr)) / 1000);
       if (diff < 60) return 'just now';
       if (diff < 3600) return Math.floor(diff / 60) + 'm';
       if (diff < 86400) return Math.floor(diff / 3600) + 'h';

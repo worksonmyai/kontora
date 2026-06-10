@@ -30,6 +30,7 @@ func TestServer_VendoredAssets(t *testing.T) {
 		{"/vendor/xterm@5.5.0/xterm.mjs", "javascript"},
 		{"/vendor/addon-fit@0.10.0/addon-fit.mjs", "javascript"},
 		{"/vendor/addon-unicode11@0.8.0/addon-unicode11.mjs", "javascript"},
+		{"/vendor/addon-webgl@0.18.0/addon-webgl.mjs", "javascript"},
 		{"/vendor/fonts/fonts.css", "text/css"},
 		{"/vendor/fonts/dm-sans-latin.woff2", "font/woff2"},
 		{"/vendor/fonts/jetbrains-mono-latin.woff2", "font/woff2"},

@@ -54,7 +54,9 @@ function kontora() {
     _TerminalClass: null,
     _FitAddonClass: null,
     _Unicode11AddonClass: null,
+    _WebglAddonClass: null,
     _fitAddon: null,
+    _webglAddon: null,
     _terminalSeq: 0,
     _terminalOpening: false,
     _resizeObserver: null,
@@ -1010,14 +1012,20 @@ function kontora() {
       this._terminalOpening = true;
       try {
         if (!this._TerminalClass || !this._FitAddonClass) {
-          var [termMod, fitMod, unicodeMod] = await Promise.all([
+          var [termMod, fitMod, unicodeMod, webglMod] = await Promise.all([
             import('/vendor/xterm@5.5.0/xterm.mjs'),
             import('/vendor/addon-fit@0.10.0/addon-fit.mjs'),
             import('/vendor/addon-unicode11@0.8.0/addon-unicode11.mjs'),
+            // Optional: a failed load means the terminal falls back to the DOM renderer.
+            import('/vendor/addon-webgl@0.18.0/addon-webgl.mjs').catch(function(e) {
+              console.warn('webgl addon failed to load, using DOM renderer:', e);
+              return null;
+            }),
           ]);
           this._TerminalClass = termMod.Terminal;
           this._FitAddonClass = fitMod.FitAddon;
           this._Unicode11AddonClass = unicodeMod.Unicode11Addon;
+          this._WebglAddonClass = webglMod ? webglMod.WebglAddon : null;
         }
         await this.$nextTick();
         if (!this.terminalOpen || this._terminalSeq !== seq) return;
@@ -1065,6 +1073,18 @@ function kontora() {
       this._term.loadAddon(new this._Unicode11AddonClass());
       this._term.unicode.activeVersion = '11';
       this._term.open(container);
+
+      // Must load after open(); on any failure the DOM renderer stays active.
+      if (this._WebglAddonClass) {
+        try {
+          var webgl = new this._WebglAddonClass();
+          webgl.onContextLoss(function() { webgl.dispose(); });
+          this._term.loadAddon(webgl);
+          this._webglAddon = webgl;
+        } catch (e) {
+          console.warn('webgl renderer unavailable, using DOM renderer:', e);
+        }
+      }
 
       var self = this;
       self._resizeObserver = new ResizeObserver(function() {
@@ -1135,6 +1155,7 @@ function kontora() {
         this._term = null;
       }
       this._fitAddon = null;
+      this._webglAddon = null;
     },
 
     closeTerminal() {

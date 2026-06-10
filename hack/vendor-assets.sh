@@ -17,6 +17,7 @@ DOMPURIFY=3.3.2
 XTERM=5.5.0
 ADDON_FIT=0.10.0
 ADDON_UNICODE11=0.8.0
+ADDON_WEBGL=0.18.0
 # fonts: DM Sans 400..600 + JetBrains Mono 400..700, latin + latin-ext subsets.
 # Tailwind CLI version lives in hack/build-css.sh.
 
@@ -35,6 +36,7 @@ fetch "$jsd/@xterm/xterm@$XTERM/css/xterm.css"            "$vendor/xterm@$XTERM/
 fetch "$jsd/@xterm/xterm@$XTERM/+esm"                     "$vendor/xterm@$XTERM/xterm.mjs"
 fetch "$jsd/@xterm/addon-fit@$ADDON_FIT/+esm"             "$vendor/addon-fit@$ADDON_FIT/addon-fit.mjs"
 fetch "$jsd/@xterm/addon-unicode11@$ADDON_UNICODE11/+esm" "$vendor/addon-unicode11@$ADDON_UNICODE11/addon-unicode11.mjs"
+fetch "$jsd/@xterm/addon-webgl@$ADDON_WEBGL/+esm"         "$vendor/addon-webgl@$ADDON_WEBGL/addon-webgl.mjs"
 
 echo "vendoring fonts..."
 mkdir -p "$vendor/fonts"

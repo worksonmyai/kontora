@@ -217,6 +217,9 @@ func buildAttachItems(cfg *config.Config) ([]attachItem, error) {
 		if err != nil {
 			continue
 		}
+		if t.Kontora && !ticket.IsCanonicalPath(entry.Name(), t.ID) {
+			continue
+		}
 		if t.Status == ticket.StatusInProgress {
 			tasksByID[t.ID] = t
 		}

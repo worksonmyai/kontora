@@ -76,6 +76,9 @@ func (r *DiskRepo) List() ([]*app.StoredTicket, error) {
 		if err != nil {
 			continue
 		}
+		if t.Kontora && !ticket.IsCanonicalPath(path, t.ID) {
+			continue
+		}
 		result = append(result, &app.StoredTicket{Ticket: t, FilePath: path})
 	}
 	return result, nil

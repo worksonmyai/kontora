@@ -1071,6 +1071,47 @@ func TestCrashRecovery(t *testing.T) {
 	require.NoError(t, <-errCh)
 }
 
+// Sync tools (iCloud, Syncthing) leave stale conflict copies like "<id> 2.md"
+// or "<id>.sync-conflict-*.md" that still carry the same frontmatter id. The
+// daemon must not treat them as the live ticket: no crash recovery, no
+// enqueue, no state updates.
+func TestNonCanonicalFilesIgnored(t *testing.T) {
+	h := newHarness(t)
+
+	// A finished ticket plus a stale conflict copy claiming it still runs.
+	h.writeTicket("tst-cc.md", h.taskMD("tst-cc", "done", "one-stage"))
+	h.writeTicket("tst-cc 2.md", h.taskMD("tst-cc", "in_progress", "one-stage"))
+
+	d := h.newDaemon(h.cfg)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- d.Run(ctx) }()
+
+	time.Sleep(300 * time.Millisecond)
+
+	// Initial scan: the copy is neither crash-recovered nor picked up, and
+	// the canonical ticket stays done.
+	assert.Equal(t, ticket.StatusDone, h.readTask("tst-cc.md").Status)
+	assert.Equal(t, ticket.StatusInProgress, h.readTask("tst-cc 2.md").Status)
+
+	// Watcher: a stale copy rewritten by sync churn must not re-enqueue the
+	// ticket.
+	path := h.writeTicket("tst-cc.sync-conflict-20260610-070128-IDDACTZ.md",
+		h.taskMD("tst-cc", "todo", "one-stage"))
+	d.handleFileChanged(path)
+	time.Sleep(300 * time.Millisecond)
+
+	assert.Equal(t, ticket.StatusDone, h.readTask("tst-cc.md").Status)
+	assert.Equal(t, ticket.StatusTodo, h.readTask("tst-cc.sync-conflict-20260610-070128-IDDACTZ.md").Status)
+	assert.Equal(t, 0, d.RunningAgents())
+
+	cancel()
+	require.NoError(t, <-errCh)
+}
+
 func waitForAgentsDone(t *testing.T, d *Daemon, timeout time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)

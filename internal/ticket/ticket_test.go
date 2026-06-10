@@ -405,6 +405,26 @@ func TestIsSafeID(t *testing.T) {
 	}
 }
 
+func TestIsCanonicalPath(t *testing.T) {
+	tests := []struct {
+		path string
+		id   string
+		want bool
+	}{
+		{"/tickets/kon-q88f.md", "kon-q88f", true},
+		{"kon-q88f.md", "kon-q88f", true},
+		{"/tickets/kon-q88f 2.md", "kon-q88f", false},
+		{"/tickets/kon-q88f.sync-conflict-20260610-070128-IDDACTZ.md", "kon-q88f", false},
+		{"/tickets/kon-q88f.md", "kon-q88g", false},
+		{"/tickets/notes.md", "", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.path, func(t *testing.T) {
+			assert.Equal(t, tt.want, IsCanonicalPath(tt.path, tt.id))
+		})
+	}
+}
+
 func TestParseReader(t *testing.T) {
 	input := "---\nid: reader-001\nstatus: open\ncreated: 2026-01-01T00:00:00Z\n---\n# From reader\n"
 	tkt, err := Parse(bytes.NewReader([]byte(input)))

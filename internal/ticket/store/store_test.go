@@ -72,6 +72,9 @@ func TestDiskRepo_List(t *testing.T) {
 	dir := t.TempDir()
 	writeTestTicket(t, dir, "tst-001", "---\nid: tst-001\nstatus: todo\nkontora: true\n---\n# One\n")
 	writeTestTicket(t, dir, "tst-002", "---\nid: tst-002\nstatus: open\n---\n# Two\n")
+	// Stale sync conflict copies aliasing tst-001 must be skipped.
+	writeTestTicket(t, dir, "tst-001 2", "---\nid: tst-001\nstatus: open\nkontora: true\n---\n# Stale copy\n")
+	writeTestTicket(t, dir, "tst-001.sync-conflict-20260610-070128-IDDACTZ", "---\nid: tst-001\nstatus: open\nkontora: true\n---\n# Stale copy\n")
 
 	repo := NewDiskRepo(dir)
 	tickets, err := repo.List()

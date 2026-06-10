@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -27,6 +28,17 @@ func IsSafeID(id string) bool {
 		return false
 	}
 	return true
+}
+
+// IsCanonicalPath reports whether path is the canonical file for ticket id,
+// i.e. its basename is exactly "<id>.md". Sync tools (iCloud, Syncthing)
+// leave stale conflict copies like "<id> 2.md" or "<id>.sync-conflict-*.md"
+// whose frontmatter still carries the same id; those must not be treated as
+// the live ticket. Callers apply this only to kontora tickets: foreign
+// tickets in a shared dir may legitimately use filenames that differ from
+// their id.
+func IsCanonicalPath(path, id string) bool {
+	return id != "" && filepath.Base(path) == id+".md"
 }
 
 type Status string

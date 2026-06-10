@@ -481,3 +481,73 @@ test("moveTicketVia re-buckets the cached board after a status change", async ()
   assert.equal(bt(state, "in_progress").length, 0);
   assert.deepEqual(bt(state, "human_review").map(t => t.id), ["kon-1"]);
 });
+
+test("detailMoves drops the bespoke Pause/Resume buttons but keeps the rest", () => {
+  const state = loadKontoraState();
+
+  // in_progress: the panel renders a tooltip-bearing Pause button itself, so the
+  // validMoves "pause" entry must not be duplicated.
+  const inProgress = state.detailMoves({ status: "in_progress" });
+  assert.equal(inProgress.some(mv => mv.endpoint === "pause"), false);
+  assert.deepEqual([...inProgress.map(mv => mv.label)], ["Send to review", "Mark done", "Cancel"]);
+
+  // paused: same for the bespoke Resume (retry) button.
+  const paused = state.detailMoves({ status: "paused" });
+  assert.equal(paused.some(mv => mv.endpoint === "retry"), false);
+  assert.deepEqual([...paused.map(mv => mv.label)], ["Mark done", "Cancel"]);
+});
+
+test("detailMoves exposes the per-status actions that only lived in the card menu", () => {
+  const state = loadKontoraState();
+
+  // open gets Queue (run); human_review gets Approve (move->done) and Send back.
+  assert.deepEqual(
+    [...state.detailMoves({ status: "open" }).map(mv => `${mv.label}:${mv.endpoint}`)],
+    ["Queue:run", "Cancel:move"],
+  );
+
+  const review = state.detailMoves({ status: "human_review" });
+  const approve = review.find(mv => mv.label === "Approve");
+  assert.equal(approve.endpoint, "move");
+  assert.equal(approve.status, "done");
+  assert.equal(review.some(mv => mv.label === "Send back" && mv.endpoint === "retry"), true);
+
+  assert.deepEqual([...state.detailMoves(null)], []);
+});
+
+test("formatDuration and timeAgo advance with the reactive clock", () => {
+  const state = loadKontoraState();
+  const started = "2026-05-19T10:00:00Z";
+  const base = new Date(started).getTime();
+
+  state.now = base + 5 * 60000;
+  assert.equal(state.formatDuration({ started_at: started }), "5m");
+  assert.equal(state.timeAgo(started), "5m");
+
+  // Advancing the clock alone re-renders the duration, no SSE event needed.
+  state.now = base + 70 * 60000;
+  assert.equal(state.formatDuration({ started_at: started }), "1h 10m");
+  assert.equal(state.timeAgo(started), "1h");
+});
+
+test("index.html error banner uses the --err token, not raw red palette classes", () => {
+  const html = fs.readFileSync(htmlPath, "utf8");
+
+  assert.equal(/red-400|red-500/.test(html), false);
+  assert.match(html, /border-err/);
+  assert.match(html, /text-err\/80/);
+});
+
+test("index.html drops the stats bar but keeps the matched counter", () => {
+  const html = fs.readFileSync(htmlPath, "utf8");
+
+  assert.equal(/uppercase tracking-widest[^"]*">\s*stats/i.test(html), false);
+  assert.match(html, /filteredTicketCount\(\)[^<]*<\/span>\s*matched/);
+});
+
+test("index.html detail header carries the status chip and pipeline tag", () => {
+  const html = fs.readFileSync(htmlPath, "utf8");
+
+  assert.match(html, /class="status-chip[^"]*"[^>]*:data-status="selectedTicket\?\.status"/);
+  assert.match(html, /class="pipe-tag shrink-0"/);
+});

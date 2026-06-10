@@ -114,15 +114,13 @@
     .copyable:hover { border-color: rgba(var(--accent), 0.5); }
 
     /* IN PROGRESS column: per-card left-edge accent + opacity weighting. */
-    .card-state-running { border-left: 2px solid rgba(var(--ok), 1); }
-    .card-state-paused  { border-left: 2px solid rgba(var(--warn), 0.6); }
     .card-state-todo    { border-left: 2px solid rgba(var(--accent-dim), 0.6); }
     .card-quiet { opacity: 0.6; }
     /* Quiet cards drop the column-top accent glow so they read as backgrounded. */
     .card-quiet::before { display: none !important; }
 
-    .card-glyph-running { color: rgba(var(--ok), 1); }
-    .card-glyph-paused  { color: rgba(var(--warn), 0.8); }
+    .card-glyph-running { color: hsl(var(--st-progress)); }
+    .card-glyph-paused  { color: hsl(var(--st-paused) / 0.8); }
     .card-glyph-todo    { color: rgba(var(--accent-dim), 0.8); }
 
     /* Horizontal-scroll affordance on the kanban board container. */
@@ -183,6 +181,7 @@
     :root {
       --st-open:     227 35% 80%;
       --st-progress: 41 86% 83%;
+      --st-paused:   23 92% 75%;
       --st-review:   267 84% 81%;
       --st-done:     115 54% 76%;
       --st-cancel:   228 24% 72%;
@@ -191,6 +190,7 @@
     [data-theme='light'] {
       --st-open:     227 35% 45%;
       --st-progress: 38 80% 35%;
+      --st-paused:   30 80% 38%;
       --st-review:   267 70% 50%;
       --st-done:     115 50% 30%;
       --st-cancel:   228 15% 45%;
@@ -283,6 +283,10 @@
     .kt-card:hover {
       border-left-color: hsl(var(--pipe-h, 240 10% 55%));
     }
+    /* Running/paused cards swap the pipeline tint for the status hue, so the
+       two states are distinguishable at a glance in the IN PROGRESS column. */
+    .kt-card.card-state-running, .kt-card.card-state-running:hover { border-left-color: hsl(var(--st-progress)); }
+    .kt-card.card-state-paused,  .kt-card.card-state-paused:hover  { border-left-color: hsl(var(--st-paused) / 0.8); }
 
     /* "running" pill in the top header */
     .running-pill {
@@ -303,6 +307,49 @@
     .running-pill.is-idle .running-pill-dot {
       background: rgba(var(--surface-600), 1);
       box-shadow: none;
+    }
+
+    /* Status chip (detail panel header). One hue per status from --st-*;
+       statuses without a rule (todo, custom statuses) keep the neutral base. */
+    .status-chip {
+      display: inline-block;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12px;
+      line-height: 1.5;
+      padding: 2px 8px;
+      border-radius: 9999px;
+      border: 1px solid rgba(var(--surface-700), 0.5);
+      background: rgba(var(--surface-800), 1);
+      color: rgba(var(--tx-3), 1);
+      white-space: nowrap;
+    }
+    .status-chip[data-status="open"]         { color: hsl(var(--st-open));     background: hsl(var(--st-open) / 0.1);     border-color: hsl(var(--st-open) / 0.2); }
+    .status-chip[data-status="in_progress"]  { color: hsl(var(--st-progress)); background: hsl(var(--st-progress) / 0.1); border-color: hsl(var(--st-progress) / 0.2); }
+    .status-chip[data-status="paused"]       { color: hsl(var(--st-paused));   background: hsl(var(--st-paused) / 0.1);   border-color: hsl(var(--st-paused) / 0.2); }
+    .status-chip[data-status="human_review"] { color: hsl(var(--st-review));   background: hsl(var(--st-review) / 0.1);   border-color: hsl(var(--st-review) / 0.2); }
+    .status-chip[data-status="done"]         { color: hsl(var(--st-done));     background: hsl(var(--st-done) / 0.1);     border-color: hsl(var(--st-done) / 0.2); }
+    .status-chip[data-status="cancelled"]    { color: hsl(var(--st-cancel));   background: hsl(var(--st-cancel) / 0.1);   border-color: hsl(var(--st-cancel) / 0.2); }
+
+    /* "live" indicator in the terminal headers — running, so st-progress. */
+    .live-indicator { color: hsl(var(--st-progress)); }
+    .live-indicator-dot { background: hsl(var(--st-progress)); }
+
+    /* Current/paused stage pill in the detail pipeline row. */
+    .stage-current { background: hsl(var(--st-progress) / 0.15); color: hsl(var(--st-progress)); }
+    .stage-paused  { background: hsl(var(--st-paused) / 0.15); color: hsl(var(--st-paused)); }
+
+    .st-paused-dim { color: hsl(var(--st-paused) / 0.6); }
+
+    /* Detail panel slide-in; reduced motion drops the translate (fade only). */
+    .panel-enter { transition: opacity 0.15s ease-out, transform 0.15s ease-out; }
+    .panel-enter-from { opacity: 0; transform: translateX(16px); }
+    .panel-enter-to { opacity: 1; transform: translateX(0); }
+    .panel-leave { transition: opacity 0.1s ease-in; }
+    .panel-leave-from { opacity: 1; }
+    .panel-leave-to { opacity: 0; }
+    @media (prefers-reduced-motion: reduce) {
+      .panel-enter { transition: opacity 0.15s ease-out; }
+      .panel-enter-from, .panel-enter-to { transform: none; }
     }
   </style>
 </head>
@@ -394,8 +441,8 @@
     <div class="shrink-0 px-4 py-2 border-b border-surface-700/30 flex items-center gap-3">
       <span class="font-mono text-xs text-surface-600" x-text="selectedTicket?.id"></span>
       <span class="text-sm text-tx-2 truncate" x-text="selectedTicket?.title"></span>
-      <span x-show="selectedTicket?.status === 'in_progress'" class="flex items-center gap-1 text-[12px] font-mono text-accent">
-        <span class="w-1 h-1 rounded-full bg-accent pulse-dot"></span>
+      <span x-show="selectedTicket?.status === 'in_progress'" class="flex items-center gap-1 text-[12px] font-mono live-indicator">
+        <span class="w-1 h-1 rounded-full live-indicator-dot pulse-dot"></span>
         live
       </span>
       <div class="ml-auto flex items-center gap-2">
@@ -641,22 +688,8 @@
       <span class="text-surface-600 font-mono text-sm">loading...</span>
     </div>
 
-    <!-- Board area (stats bar + kanban) -->
+    <!-- Board area (kanban) -->
     <div x-show="!loading && currentView === 'board'" class="flex flex-col flex-1 min-w-0 min-h-0">
-      <!-- Stats bar -->
-      <div class="flex items-center gap-5 px-5 h-9 border-b border-surface-700/30 shrink-0 font-mono text-[11px]">
-        <span class="text-surface-600 uppercase tracking-widest text-[10px] font-semibold">stats</span>
-        <template x-for="col in columns" :key="col.key">
-          <div class="flex items-center gap-1.5">
-            <span class="w-1.5 h-1.5 rounded-full" :style="'background: hsl(' + col.tint + ')'"></span>
-            <span class="text-tx-3 lowercase" x-text="col.label.toLowerCase()"></span>
-            <span class="text-tx num" x-text="boardTickets(col.key).length"></span>
-          </div>
-        </template>
-        <span class="ml-auto text-surface-600">
-          <span class="text-tx num" x-text="filteredTicketCount()"></span> total
-        </span>
-      </div>
 
     <!-- Kanban board -->
     <div x-data="{ hasOverflowRight: false }"
@@ -737,6 +770,8 @@
                          : 'bg-surface-900 border-surface-700/50 hover:bg-surface-850',
                        !ticket.kontora ? 'border-dashed' : '',
                        ticket.status === 'cancelled' ? 'opacity-60' : '',
+                       ticket.status === 'in_progress' ? 'card-state-running' : '',
+                       ticket.status === 'paused' ? 'card-state-paused' : '',
                      ]">
                   <!-- Top row: pipeline tag + stage / status indicator + 3-dot menu -->
                   <div class="flex items-center justify-between gap-2">
@@ -746,13 +781,13 @@
                         <span class="px-1.5 py-px rounded-full border border-warn/20 bg-warn/10 text-warn text-[10px] font-mono shrink-0">not a kontora ticket</span>
                       </template>
                       <template x-if="col.key === 'in_progress' && ticket.status === 'in_progress'">
-                        <span class="flex items-center gap-1 text-[11px] font-mono">
-                          <span class="pulse-dot text-ok">●</span>
-                          <span class="text-accent" x-text="ticket.stage"></span>
+                        <span class="flex items-center gap-1 text-[11px] font-mono card-glyph-running">
+                          <span class="pulse-dot">●</span>
+                          <span x-text="ticket.stage"></span>
                         </span>
                       </template>
                       <template x-if="col.key === 'in_progress' && ticket.status === 'paused'">
-                        <span class="flex items-center gap-1 text-[11px] font-mono text-warn">
+                        <span class="flex items-center gap-1 text-[11px] font-mono card-glyph-paused">
                           <span>⏸</span>
                           <span x-show="ticket.stage" x-text="ticket.stage"></span>
                         </span>
@@ -852,13 +887,62 @@
 
     <!-- Detail panel (desktop: absolute overlay on the right; mobile: full-screen stacked) -->
     <div x-show="selectedTicket && currentView === 'board'"
-         x-transition.opacity.duration.150ms
-         class="bg-surface-950 overflow-hidden"
-         :class="isMobile ? 'fixed inset-0 z-50 flex flex-col' : 'absolute top-0 right-0 bottom-0 z-30 flex flex-row border-l border-surface-700 shadow-[0_0_40px_-10px_rgba(0,0,0,0.5)]'"
+         x-transition:enter="panel-enter" x-transition:enter-start="panel-enter-from" x-transition:enter-end="panel-enter-to"
+         x-transition:leave="panel-leave" x-transition:leave-start="panel-leave-from" x-transition:leave-end="panel-leave-to"
+         class="bg-surface-950 overflow-hidden flex flex-col"
+         :class="isMobile ? 'fixed inset-0 z-50' : 'absolute top-0 right-0 bottom-0 z-30 border-l border-surface-700 shadow-[0_0_40px_-10px_rgba(0,0,0,0.5)]'"
          :style="!isMobile && selectedTicket ? 'width:' + panelWidth + 'px' : ''">
 
       <!-- Resize handle -->
       <div x-show="!isMobile" class="resize-handle" @mousedown.prevent="startResize($event)"></div>
+
+      <!-- Identity header: pipeline chip + title + status; id / delete menu / close on the right -->
+      <div class="shrink-0 flex items-center gap-3 min-w-0 px-4 py-2.5 border-b border-surface-700/30">
+        <span class="pipe-tag shrink-0"
+              :data-pipe-color="selectedTicket ? ticketPipeColor(selectedTicket) : 'none'"
+              x-text="selectedTicket ? '[' + ticketTagLabel(selectedTicket) + ']' : ''"></span>
+        <h2 class="text-base font-semibold text-tx truncate min-w-0" x-text="selectedTicket?.title"></h2>
+        <span class="status-chip shrink-0" :data-status="selectedTicket?.status" x-text="selectedTicket?.status"></span>
+        <span x-show="selectedTicket && !selectedTicket.kontora"
+              class="text-[12px] font-mono px-2 py-0.5 rounded-full border border-warn/20 bg-warn/10 text-warn shrink-0">not a kontora ticket</span>
+        <span x-show="detailLoading" class="text-[12px] font-mono text-surface-600 shrink-0">loading...</span>
+        <div class="ml-auto flex items-center gap-2 shrink-0" @click.outside="detailMenuOpen = false">
+          <span class="copyable font-mono text-xs text-surface-600 hover:text-tx-3"
+                x-text="copiedId ? '✓ copied' : selectedTicket?.id"
+                @click.stop="copyTicketId(selectedTicket?.id)"></span>
+          <div class="relative">
+            <button @click.stop="detailMenuOpen = !detailMenuOpen"
+                    class="w-6 h-6 rounded-md border border-surface-700/40 bg-surface-900/70 text-surface-600 hover:bg-surface-800 hover:text-tx-2 hover:border-surface-600 transition-colors flex items-center justify-center"
+                    aria-label="More actions">
+              <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="currentColor">
+                <circle cx="5" cy="12" r="2.2"></circle>
+                <circle cx="12" cy="12" r="2.2"></circle>
+                <circle cx="19" cy="12" r="2.2"></circle>
+              </svg>
+            </button>
+            <div x-show="detailMenuOpen"
+                 x-transition.origin.top.right
+                 class="absolute right-0 mt-2 min-w-[9rem] overflow-hidden rounded-lg border border-surface-700/60 bg-surface-900/95 shadow-lg shadow-black/30 z-10"
+                 @click.stop>
+              <button @click="detailMenuOpen = false; openDeleteModal()"
+                      class="w-full px-3 py-2 text-left text-[13px] font-mono text-err hover:bg-err/10 transition-colors flex items-center gap-1.5">
+                <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>
+                delete file
+              </button>
+            </div>
+          </div>
+          <button @click="closeDetail()"
+                  class="w-6 h-6 rounded-md border border-surface-700/40 bg-surface-900/70 text-surface-600 hover:bg-surface-800 hover:text-tx-2 hover:border-surface-600 transition-colors flex items-center justify-center"
+                  aria-label="Close detail">
+            <svg xmlns="http://www.w3.org/2000/svg" width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round">
+              <path d="M6 6l12 12M18 6L6 18"/>
+            </svg>
+          </button>
+        </div>
+      </div>
+
+      <!-- Content + details row -->
+      <div class="flex-1 min-h-0 flex" :class="isMobile ? 'flex-col' : 'flex-row'">
 
       <!-- Wide column: content (terminal / logs / ticket body) -->
       <div class="flex-1 min-w-0 flex flex-col" :class="isMobile ? 'order-2' : ''">
@@ -918,8 +1002,8 @@
             <!-- Terminal viewer -->
             <div x-show="terminalOpen" class="flex-1 min-h-0 flex flex-col">
               <div class="shrink-0 px-4 py-2 border-b border-surface-700/20 flex items-center">
-                <span class="flex items-center gap-1 text-[12px] font-mono text-accent">
-                  <span class="w-1 h-1 rounded-full bg-accent pulse-dot"></span>
+                <span class="flex items-center gap-1 text-[12px] font-mono live-indicator">
+                  <span class="w-1 h-1 rounded-full live-indicator-dot pulse-dot"></span>
                   live
                 </span>
                 <span class="text-[12px] font-mono text-surface-600/40 ml-2" x-show="selectedTicket?.stages?.indexOf(selectedTicket?.stage) > 0">· click stages to view logs</span>
@@ -1005,7 +1089,7 @@
                   </template>
                   <template x-if="selectedTicket?.status === 'paused'">
                     <div>
-                      <p class="text-warn/60 mb-1">⏸ Ticket paused</p>
+                      <p class="st-paused-dim mb-1">⏸ Ticket paused</p>
                       <p class="text-surface-600 text-xs leading-relaxed mb-2">Paused manually or by the pipeline's failure policy after retries were exhausted.</p>
                       <p>Resume: <span class="copyable text-tx-3 hover:text-tx-2"
                         @click.stop="copyCmd('kontora retry ' + selectedTicket?.id)"
@@ -1047,9 +1131,9 @@
                 </div>
               </template>
               <template x-if="selectedTicket?.last_error">
-                <div class="mb-4 border-l-[3px] border-red-500 pl-3 py-1">
-                  <span class="text-red-400 text-xs font-mono font-semibold">Error: </span>
-                  <span class="text-red-400/80 text-xs font-mono break-words whitespace-pre-wrap" x-text="selectedTicket.last_error"></span>
+                <div class="mb-4 border-l-[3px] border-err pl-3 py-1">
+                  <span class="text-err text-xs font-mono font-semibold">Error: </span>
+                  <span class="text-err/80 text-xs font-mono break-words whitespace-pre-wrap" x-text="selectedTicket.last_error"></span>
                 </div>
               </template>
               <!-- Editable form for editable tickets (open/todo/paused) -->
@@ -1132,56 +1216,6 @@
            :class="isMobile ? 'order-1 border-l-0 border-b border-surface-700/30' : ''"
            :style="isMobile ? '' : 'width: 300px'">
         <div class="p-4">
-          <!-- Header: close + menu -->
-          <div class="flex items-center justify-between mb-3">
-            <span class="copyable font-mono text-xs text-surface-600 hover:text-tx-3"
-                  x-text="copiedId ? '✓ copied' : selectedTicket?.id"
-                  @click.stop="copyTicketId(selectedTicket?.id)"></span>
-            <div class="flex items-center gap-2" @click.outside="detailMenuOpen = false">
-              <button @click="closeDetail()"
-                      class="w-6 h-6 rounded-md border border-surface-700/40 bg-surface-900/70 text-surface-600 hover:bg-surface-800 hover:text-tx-2 hover:border-surface-600 transition-colors flex items-center justify-center"
-                      aria-label="Close detail">
-                <svg xmlns="http://www.w3.org/2000/svg" width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round">
-                  <path d="M6 6l12 12M18 6L6 18"/>
-                </svg>
-              </button>
-              <div class="relative">
-                <button @click.stop="detailMenuOpen = !detailMenuOpen"
-                        class="w-6 h-6 rounded-md border border-surface-700/40 bg-surface-900/70 text-surface-600 hover:bg-surface-800 hover:text-tx-2 hover:border-surface-600 transition-colors flex items-center justify-center"
-                        aria-label="More actions">
-                  <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="currentColor">
-                    <circle cx="5" cy="12" r="2.2"></circle>
-                    <circle cx="12" cy="12" r="2.2"></circle>
-                    <circle cx="19" cy="12" r="2.2"></circle>
-                  </svg>
-                </button>
-                <div x-show="detailMenuOpen"
-                     x-transition.origin.top.right
-                     class="absolute right-0 mt-2 min-w-[9rem] overflow-hidden rounded-lg border border-surface-700/60 bg-surface-900/95 shadow-lg shadow-black/30 z-10"
-                     @click.stop>
-                  <button @click="detailMenuOpen = false; openDeleteModal()"
-                          class="w-full px-3 py-2 text-left text-[13px] font-mono text-err hover:bg-err/10 transition-colors flex items-center gap-1.5">
-                    <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>
-                    delete file
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <!-- Title -->
-          <h2 class="text-sm font-semibold text-tx-2 mb-3" x-text="selectedTicket?.title"></h2>
-
-          <!-- Status badge -->
-          <div class="mb-3">
-            <span class="text-[12px] font-mono px-2 py-0.5 rounded-full border"
-                  :class="statusStyle(selectedTicket?.status)"
-                  x-text="selectedTicket?.status"></span>
-            <span x-show="selectedTicket && !selectedTicket.kontora"
-                  class="text-[12px] font-mono px-2 py-0.5 rounded-full border border-warn/20 bg-warn/10 text-warn ml-2">not a kontora ticket</span>
-            <span x-show="detailLoading" class="text-[12px] font-mono text-surface-600 ml-2">loading...</span>
-          </div>
-
           <!-- Metadata -->
           <div class="flex flex-col gap-2.5 mb-4 text-[12px] font-mono">
             <template x-if="selectedTicket?.pipeline">
@@ -1273,8 +1307,20 @@
                 <span x-text="plannotatorInFlight[selectedTicket?.id] ? 'reviewing…' : 'plannotator review'"></span>
               </button>
             </template>
+            <!-- Status transitions from validMoves (same source as the card menu);
+                 entries covered by the bespoke buttons above are deduped in detailMoves. -->
+            <template x-for="mv in detailMoves(selectedTicket)" :key="mv.label">
+              <button type="button"
+                      @click="moveTicketVia(selectedTicket.id, mv.endpoint, mv.status ? { status: mv.status } : null)"
+                      class="w-full text-[13px] font-mono px-3 py-1.5 rounded border transition-colors flex items-center justify-center gap-1.5"
+                      :class="mv.label === 'Approve'
+                        ? 'bg-ok/15 border-ok/25 text-ok hover:bg-ok/25'
+                        : 'bg-surface-800 border-surface-700/50 text-tx-3 hover:text-tx-2 hover:border-surface-600'"
+                      x-text="mv.label.toLowerCase()"></button>
+            </template>
           </div>
         </div>
+      </div>
       </div>
     </div>
 

@@ -1082,6 +1082,12 @@ func TestNonCanonicalFilesIgnored(t *testing.T) {
 	h.writeTicket("tst-cc.md", h.taskMD("tst-cc", "done", "one-stage"))
 	h.writeTicket("tst-cc 2.md", h.taskMD("tst-cc", "in_progress", "one-stage"))
 
+	// Foreign tickets (no kontora frontmatter) get the same protection: a
+	// stale conflict copy shares the id and must not shadow the canonical
+	// file's content.
+	h.writeTicket("for-1.md", "---\nid: for-1\nstatus: open\n---\n# Real foreign body\n")
+	h.writeTicket("for-1.sync-conflict-20260610-070128-IDDACTZ.md", "---\nid: for-1\nstatus: open\n---\n# Stale stub\n")
+
 	d := h.newDaemon(h.cfg)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -1097,6 +1103,10 @@ func TestNonCanonicalFilesIgnored(t *testing.T) {
 	assert.Equal(t, ticket.StatusDone, h.readTask("tst-cc.md").Status)
 	assert.Equal(t, ticket.StatusInProgress, h.readTask("tst-cc 2.md").Status)
 
+	info, err := d.GetTicket("for-1")
+	require.NoError(t, err)
+	assert.Equal(t, "Real foreign body", info.Title)
+
 	// Watcher: a stale copy rewritten by sync churn must not re-enqueue the
 	// ticket.
 	path := h.writeTicket("tst-cc.sync-conflict-20260610-070128-IDDACTZ.md",
@@ -1107,6 +1117,12 @@ func TestNonCanonicalFilesIgnored(t *testing.T) {
 	assert.Equal(t, ticket.StatusDone, h.readTask("tst-cc.md").Status)
 	assert.Equal(t, ticket.StatusTodo, h.readTask("tst-cc.sync-conflict-20260610-070128-IDDACTZ.md").Status)
 	assert.Equal(t, 0, d.RunningAgents())
+
+	// Watcher: same for the foreign ticket's conflict copy.
+	d.handleFileChanged(filepath.Join(h.tasksDir, "for-1.sync-conflict-20260610-070128-IDDACTZ.md"))
+	info, err = d.GetTicket("for-1")
+	require.NoError(t, err)
+	assert.Equal(t, "Real foreign body", info.Title)
 
 	cancel()
 	require.NoError(t, <-errCh)

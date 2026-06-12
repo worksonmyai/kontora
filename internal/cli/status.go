@@ -76,7 +76,7 @@ func Status(cfg *config.Config, w io.Writer, opts StatusOpts) error {
 		if t.ID == "" {
 			continue
 		}
-		if t.Kontora && !ticket.IsCanonicalPath(entry.Name(), t.ID) {
+		if !ticket.IsCanonicalPath(entry.Name(), t.ID) {
 			continue
 		}
 		tickets = append(tickets, t)

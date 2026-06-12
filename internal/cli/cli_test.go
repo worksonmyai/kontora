@@ -426,7 +426,7 @@ path: /tmp/testrepo
 ---
 # Kontora ticket
 `)
-	writeTicket(t, dir, "other.md", `---
+	writeTicket(t, dir, "other-001.md", `---
 id: other-001
 status: todo
 ---

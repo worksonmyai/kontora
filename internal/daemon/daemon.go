@@ -442,7 +442,7 @@ func (d *Daemon) initialScan(dir string) error {
 		if t.ID == "" {
 			continue
 		}
-		if t.Kontora && !ticket.IsCanonicalPath(path, t.ID) {
+		if !ticket.IsCanonicalPath(path, t.ID) {
 			d.log.Warn("skipping non-canonical ticket file", "file", entry.Name(), "id", t.ID)
 			continue
 		}
@@ -492,7 +492,7 @@ func (d *Daemon) handleFileChanged(path string) {
 	if t.ID == "" {
 		return
 	}
-	if t.Kontora && !ticket.IsCanonicalPath(path, t.ID) {
+	if !ticket.IsCanonicalPath(path, t.ID) {
 		d.log.Warn("ignoring non-canonical ticket file", "path", path, "id", t.ID)
 		return
 	}

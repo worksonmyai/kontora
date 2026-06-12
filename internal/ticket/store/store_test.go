@@ -75,6 +75,8 @@ func TestDiskRepo_List(t *testing.T) {
 	// Stale sync conflict copies aliasing tst-001 must be skipped.
 	writeTestTicket(t, dir, "tst-001 2", "---\nid: tst-001\nstatus: open\nkontora: true\n---\n# Stale copy\n")
 	writeTestTicket(t, dir, "tst-001.sync-conflict-20260610-070128-IDDACTZ", "---\nid: tst-001\nstatus: open\nkontora: true\n---\n# Stale copy\n")
+	// Foreign tickets get the same protection.
+	writeTestTicket(t, dir, "tst-002.sync-conflict-20260610-070128-IDDACTZ", "---\nid: tst-002\nstatus: open\n---\n# Stale copy\n")
 
 	repo := NewDiskRepo(dir)
 	tickets, err := repo.List()

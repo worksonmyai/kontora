@@ -34,9 +34,9 @@ func IsSafeID(id string) bool {
 // i.e. its basename is exactly "<id>.md". Sync tools (iCloud, Syncthing)
 // leave stale conflict copies like "<id> 2.md" or "<id>.sync-conflict-*.md"
 // whose frontmatter still carries the same id; those must not be treated as
-// the live ticket. Callers apply this only to kontora tickets: foreign
-// tickets in a shared dir may legitimately use filenames that differ from
-// their id.
+// the live ticket. This applies to all tickets, kontora or not: tickets are
+// keyed by id, so a stale copy of a foreign ticket would otherwise alias the
+// live one and shadow its content.
 func IsCanonicalPath(path, id string) bool {
 	return id != "" && filepath.Base(path) == id+".md"
 }

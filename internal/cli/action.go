@@ -84,7 +84,10 @@ func Run(cfg *config.Config, taskID string) error {
 
 	base := "http://" + net.JoinHostPort(cfg.Web.Host, strconv.Itoa(cfg.Web.Port))
 	if err := remote.New(base, cfg.Web.Token).Run(resolvedID); err != nil {
-		return fmt.Errorf("daemon not reachable: %w", err)
+		if remote.IsTransportError(err) {
+			return fmt.Errorf("daemon not reachable: %w", err)
+		}
+		return err
 	}
 	return nil
 }

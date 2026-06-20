@@ -10,10 +10,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 
@@ -25,6 +27,41 @@ type Client struct {
 	base  string
 	token string
 	hc    *http.Client
+}
+
+var (
+	unaryRequestTimeout = 10 * time.Second
+	sseReconnectDelay   = 2 * time.Second
+)
+
+type transportError struct {
+	err error
+}
+
+func (e *transportError) Error() string { return e.err.Error() }
+func (e *transportError) Unwrap() error { return e.err }
+
+// IsTransportError reports whether err happened before the daemon returned a response.
+func IsTransportError(err error) bool {
+	var target *transportError
+	return errors.As(err, &target)
+}
+
+type httpError struct {
+	status  int
+	message string
+}
+
+func (e *httpError) Error() string {
+	if e.message != "" {
+		return e.message
+	}
+	return fmt.Sprintf("HTTP %d", e.status)
+}
+
+func isHTTPStatus(err error, status int) bool {
+	var target *httpError
+	return errors.As(err, &target) && target.status == status
 }
 
 // New returns a Client for the given base URL (e.g. http://host:8080) and
@@ -48,7 +85,7 @@ func newTransport() http.RoundTripper {
 }
 
 // NewWithClient is New but with a caller-supplied http.Client, used by tests
-// and callers that need custom transport or timeouts.
+// and callers that need custom transport.
 func NewWithClient(base, token string, hc *http.Client) *Client {
 	c := New(base, token)
 	if hc != nil {
@@ -75,7 +112,7 @@ func (c *Client) newRequest(ctx context.Context, method, path string, body io.Re
 }
 
 // doJSON performs a request with an optional JSON body and decodes a JSON
-// response into out (when non-nil). Non-2xx responses become errors.
+// response into out (when non-nil). Responses with status >= 400 become errors.
 func (c *Client) doJSON(method, path string, reqBody, out any) error {
 	var rdr io.Reader
 	if reqBody != nil {
@@ -85,7 +122,9 @@ func (c *Client) doJSON(method, path string, reqBody, out any) error {
 		}
 		rdr = bytes.NewReader(b)
 	}
-	req, err := c.newRequest(context.Background(), method, path, rdr)
+	ctx, cancel := context.WithTimeout(context.Background(), unaryRequestTimeout)
+	defer cancel()
+	req, err := c.newRequest(ctx, method, path, rdr)
 	if err != nil {
 		return err
 	}
@@ -94,7 +133,7 @@ func (c *Client) doJSON(method, path string, reqBody, out any) error {
 	}
 	resp, err := c.hc.Do(req)
 	if err != nil {
-		return err
+		return &transportError{err: err}
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
@@ -111,10 +150,7 @@ func decodeError(resp *http.Response) error {
 		Error string `json:"error"`
 	}
 	_ = json.NewDecoder(resp.Body).Decode(&r)
-	if r.Error != "" {
-		return fmt.Errorf("%s", r.Error)
-	}
-	return fmt.Errorf("HTTP %d", resp.StatusCode)
+	return &httpError{status: resp.StatusCode, message: r.Error}
 }
 
 type listResponse struct {
@@ -150,23 +186,8 @@ func (c *Client) ListTickets() ([]web.TicketInfo, int, error) {
 
 // GetTicket fetches a single ticket by exact ID.
 func (c *Client) GetTicket(id string) (web.TicketInfo, error) {
-	req, err := c.newRequest(context.Background(), http.MethodGet, "/api/tickets/"+id, nil)
-	if err != nil {
-		return web.TicketInfo{}, err
-	}
-	resp, err := c.hc.Do(req)
-	if err != nil {
-		return web.TicketInfo{}, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusNotFound {
-		return web.TicketInfo{}, fmt.Errorf("ticket %q not found", id)
-	}
-	if resp.StatusCode >= 400 {
-		return web.TicketInfo{}, decodeError(resp)
-	}
 	var info web.TicketInfo
-	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
+	if err := c.doJSON(http.MethodGet, "/api/tickets/"+id, nil, &info); err != nil {
 		return web.TicketInfo{}, err
 	}
 	return info, nil
@@ -179,25 +200,10 @@ func (c *Client) Logs(id, stage string) (string, error) {
 	if stage != "" {
 		path += "?stage=" + url.QueryEscape(stage)
 	}
-	req, err := c.newRequest(context.Background(), http.MethodGet, path, nil)
-	if err != nil {
-		return "", err
-	}
-	resp, err := c.hc.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusNotFound {
-		return "", fmt.Errorf("logs not found")
-	}
-	if resp.StatusCode >= 400 {
-		return "", decodeError(resp)
-	}
 	var r struct {
 		Content string `json:"content"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
+	if err := c.doJSON(http.MethodGet, path, nil, &r); err != nil {
 		return "", err
 	}
 	return r.Content, nil
@@ -271,6 +277,8 @@ func (c *Client) ResolveID(input string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	sort.Slice(tickets, func(i, j int) bool { return tickets[i].ID < tickets[j].ID })
+
 	var prefix string
 	for _, t := range tickets {
 		if t.ID == input {
@@ -279,6 +287,11 @@ func (c *Client) ResolveID(input string) (string, error) {
 		if prefix == "" && strings.HasPrefix(t.ID, input) {
 			prefix = t.ID
 		}
+	}
+	if _, err := c.GetTicket(input); err == nil {
+		return input, nil
+	} else if !isHTTPStatus(err, http.StatusNotFound) {
+		return "", err
 	}
 	if prefix != "" {
 		return prefix, nil
@@ -307,12 +320,10 @@ func (c *Client) sseLoop(ctx context.Context, ch chan<- web.TicketEvent) {
 		}
 		resp, err := c.hc.Do(req)
 		if err != nil {
-			select {
-			case <-ctx.Done():
+			if !waitSSEReconnect(ctx) {
 				return
-			case <-time.After(2 * time.Second):
-				continue
 			}
+			continue
 		}
 
 		if resp.StatusCode != http.StatusOK {
@@ -323,12 +334,10 @@ func (c *Client) sseLoop(ctx context.Context, ch chan<- web.TicketEvent) {
 			if resp.StatusCode == http.StatusUnauthorized {
 				return
 			}
-			select {
-			case <-ctx.Done():
+			if !waitSSEReconnect(ctx) {
 				return
-			case <-time.After(2 * time.Second):
-				continue
 			}
+			continue
 		}
 
 		scanner := bufio.NewScanner(resp.Body)
@@ -352,6 +361,24 @@ func (c *Client) sseLoop(ctx context.Context, ch chan<- web.TicketEvent) {
 				eventType = ""
 			}
 		}
+		scanErr := scanner.Err()
 		resp.Body.Close()
+		if scanErr != nil && ctx.Err() != nil {
+			return
+		}
+		if !waitSSEReconnect(ctx) {
+			return
+		}
+	}
+}
+
+func waitSSEReconnect(ctx context.Context) bool {
+	t := time.NewTimer(sseReconnectDelay)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-t.C:
+		return true
 	}
 }

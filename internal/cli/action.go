@@ -1,14 +1,13 @@
 package cli
 
 import (
-	"encoding/json"
 	"fmt"
 	"net"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
 
+	"github.com/worksonmyai/kontora/internal/cli/remote"
 	"github.com/worksonmyai/kontora/internal/config"
 	"github.com/worksonmyai/kontora/internal/ticket"
 	"github.com/worksonmyai/kontora/internal/ticket/app"
@@ -74,31 +73,18 @@ func SetStage(cfg *config.Config, taskID, targetStage string) error {
 	return os.WriteFile(filePath, out, 0o644)
 }
 
-// Run enqueues a ticket for processing via the daemon API.
+// Run enqueues a ticket for processing via the local daemon API.
 func Run(cfg *config.Config, taskID string) error {
-	addr := "http://" + net.JoinHostPort(cfg.Web.Host, strconv.Itoa(cfg.Web.Port))
-
-	// Resolve ticket ID prefix for the API call.
+	// Resolve ticket ID prefix against local files for the API call.
 	tasksDir := config.ExpandTilde(cfg.TicketsDir)
 	resolvedID, err := resolveTaskID(tasksDir, taskID)
 	if err != nil {
 		return err
 	}
 
-	resp, err := http.Post(addr+"/api/tickets/"+resolvedID+"/run", "", nil)
-	if err != nil {
+	base := "http://" + net.JoinHostPort(cfg.Web.Host, strconv.Itoa(cfg.Web.Port))
+	if err := remote.New(base, cfg.Web.Token).Run(resolvedID); err != nil {
 		return fmt.Errorf("daemon not reachable: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		var body struct {
-			Error string `json:"error"`
-		}
-		_ = json.NewDecoder(resp.Body).Decode(&body)
-		if body.Error != "" {
-			return fmt.Errorf("%s", body.Error)
-		}
-		return fmt.Errorf("daemon returned HTTP %d", resp.StatusCode)
 	}
 	return nil
 }

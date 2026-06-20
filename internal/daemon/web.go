@@ -393,6 +393,34 @@ func (d *Daemon) MoveTicket(id string, newStatus string) error {
 	}
 }
 
+// AddNote appends a timestamped note to a ticket's body, using the same
+// AppendNote persistence as the local cli.Note path.
+func (d *Daemon) AddNote(id string, text string) error {
+	d.mu.Lock()
+	ts, ok := d.tickets[id]
+	if !ok {
+		d.mu.Unlock()
+		return web.ErrTicketNotFound
+	}
+	filePath := ts.filePath
+	d.mu.Unlock()
+
+	t2, err := ticket.ParseFile(filePath)
+	if err != nil {
+		return err
+	}
+	t2.AppendNote(text, time.Now())
+	if err := d.writeTicket(t2, filePath); err != nil {
+		return err
+	}
+
+	d.mu.Lock()
+	d.setTicketState(id, t2, filePath)
+	d.broadcastTicketUpdate(id)
+	d.mu.Unlock()
+	return nil
+}
+
 // InitTicket initializes a non-kontora ticket: sets pipeline, path, kontora=true,
 // status=todo, stage to the first pipeline stage, and enqueues it.
 func (d *Daemon) InitTicket(id string, req web.InitTicketRequest) error {

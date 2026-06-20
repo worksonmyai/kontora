@@ -128,6 +128,38 @@ Stages share a git worktree. Artifacts are passed as files — one stage writes 
 
 Full reference: [docs/configuration.md](docs/configuration.md)
 
+## Remote mode
+
+The CLI can drive a daemon running on another machine over the same HTTP API the web UI uses. This is meant for a trusted network such as a [Tailscale](https://tailscale.com) tailnet.
+
+On the daemon host, bind the web server to the tailnet IP and set a shared token:
+
+```yaml
+web:
+  host: 100.x.y.z   # tailnet IP, not 127.0.0.1
+  port: 8080
+  token: <a-long-random-secret>
+```
+
+When `web.token` is set, the daemon requires it on every `/api/*` and `/ws/*` request. `GET /health` and the static UI stay public. The browser UI keeps working: open `http://<host>:8080/?token=<secret>` once and it stores a `kontora_token` cookie for subsequent API, SSE, and WebSocket calls.
+
+From another host, point the CLI at the daemon with `KONTORA_URL` and `KONTORA_TOKEN` (or `--url`/`--token`):
+
+```bash
+export KONTORA_URL=http://100.x.y.z:8080
+export KONTORA_TOKEN=<the-same-secret>
+
+kontora ls
+kontora run <id>
+kontora logs <id>
+kontora attach <id>   # live terminal over WebSocket
+```
+
+Remote mode needs no local config file. It supports `ls`, `view`, `new`, `run`, `pause`, `retry`, `cancel`, `done`, `skip`, `set-stage`, `note`, `logs`, `config`, and `attach`. Verbs that act on local files (`edit`, `archive`, `init`, `fmt`, `doctor`, `start`, `completion`) are rejected in remote mode. Paths passed to `kontora new --path` refer to the daemon host's filesystem, not the caller's.
+
+> [!WARNING]
+> The token is the only thing gating remote access, and the default config runs agents with `--dangerously-skip-permissions` (effectively remote code execution). On a tailnet the transport is already encrypted, so plain HTTP is acceptable. On any untrusted network, put the daemon behind TLS (e.g. a reverse proxy) — the token alone is sent in clear over plain HTTP.
+
 ## Tickets
 
 Tickets are markdown files with YAML frontmatter, inspired by [wedow/ticket](https://github.com/wedow/ticket):

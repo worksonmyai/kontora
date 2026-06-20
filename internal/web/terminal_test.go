@@ -96,6 +96,7 @@ func (m *mockTerminalService) RunTicket(_ string) error                         
 func (m *mockTerminalService) SkipStage(_ string) error                           { return nil }
 func (m *mockTerminalService) SetStage(_ string, _ string) error                  { return nil }
 func (m *mockTerminalService) MoveTicket(_ string, _ string) error                { return nil }
+func (m *mockTerminalService) AddNote(_ string, _ string) error                   { return nil }
 func (m *mockTerminalService) InitTicket(_ string, _ InitTicketRequest) error     { return nil }
 func (m *mockTerminalService) UpdateTicket(_ string, _ UpdateTicketRequest) error { return nil }
 func (m *mockTerminalService) UploadTicket(_ []byte) (TicketInfo, error)          { return TicketInfo{}, nil }
@@ -112,7 +113,7 @@ func (m *mockTerminalService) StartPlannotatorReview(_ string) error {
 
 func startTerminalTestServer(t *testing.T, svc TicketService) *Server {
 	t.Helper()
-	srv := New(svc, NewSSEBroker(), "127.0.0.1", 0, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	srv := New(svc, NewSSEBroker(), "127.0.0.1", 0, "", slog.New(slog.NewTextHandler(io.Discard, nil)))
 	require.NoError(t, srv.Start())
 	t.Cleanup(func() { _ = srv.Shutdown(context.Background()) })
 	return srv

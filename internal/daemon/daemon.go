@@ -345,7 +345,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	d.log.Info("daemon started", "dir", tasksDir, "tasks", len(d.tickets), "queued", d.queue.Len())
 
 	if d.cfg.Web.Enabled != nil && *d.cfg.Web.Enabled {
-		srv := web.New(d, d.broker, d.cfg.Web.Host, d.cfg.Web.Port, d.log)
+		srv := web.New(d, d.broker, d.cfg.Web.Host, d.cfg.Web.Port, d.cfg.Web.Token, d.log)
 		if err := srv.Start(); err != nil {
 			d.log.Warn("web server failed to start, continuing without it", "err", err)
 		} else {

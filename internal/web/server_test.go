@@ -51,7 +51,7 @@ func newTestServer(t *testing.T) *Server {
 	t.Helper()
 	svc := &mockService{}
 	broker := NewSSEBroker()
-	srv := New(svc, broker, "127.0.0.1", 0, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	srv := New(svc, broker, "127.0.0.1", 0, "", slog.New(slog.NewTextHandler(io.Discard, nil)))
 	require.NoError(t, srv.Start())
 	t.Cleanup(func() { _ = srv.Shutdown(context.Background()) })
 	return srv

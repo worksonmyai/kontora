@@ -69,6 +69,12 @@ type Web struct {
 	Enabled *bool  `yaml:"enabled"`
 	Host    string `yaml:"host"`
 	Port    int    `yaml:"port"`
+	// Token, when non-empty, gates /api/ and /ws/ requests with a shared
+	// bearer token. Empty (the default) disables auth and preserves the
+	// original open-access behavior. This is a daemon-side setting only; the
+	// CLI's own KONTORA_TOKEN is deliberately not folded in here to avoid a
+	// stray env var silently locking down a local daemon.
+	Token string `yaml:"token"`
 }
 
 type Agent struct {

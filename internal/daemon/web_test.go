@@ -527,7 +527,7 @@ func TestDaemon_WebServerAPI(t *testing.T) {
 	time.Sleep(300 * time.Millisecond)
 
 	// Create our own web server pointing at the daemon.
-	srv := web.New(d, d.broker, "127.0.0.1", 0, testLogger(t))
+	srv := web.New(d, d.broker, "127.0.0.1", 0, "", testLogger(t))
 	require.NoError(t, srv.Start())
 	defer func() { _ = srv.Shutdown(context.Background()) }()
 
@@ -600,6 +600,54 @@ created: 2026-01-01T00:00:00Z
 	assert.Equal(t, "two-stage", result.Pipeline)
 	assert.Equal(t, "~/new/path", result.Path)
 	assert.Equal(t, ticket.StatusOpen, result.Status)
+
+	cancel()
+	require.NoError(t, <-errCh)
+}
+
+func TestDaemon_AddNote(t *testing.T) {
+	h := newHarness(t)
+	d := h.newDaemon(h.cfg)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	h.writeTicket("tst-note.md", `---
+id: tst-note
+status: open
+pipeline: one-stage
+path: ~/some/path
+created: 2026-01-01T00:00:00Z
+---
+# Note target
+`)
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- d.Run(ctx) }()
+	time.Sleep(200 * time.Millisecond)
+
+	require.NoError(t, d.AddNote("tst-note", "blocked on review"))
+
+	result := h.readTask("tst-note.md")
+	assert.Contains(t, result.Body, "blocked on review")
+
+	cancel()
+	require.NoError(t, <-errCh)
+}
+
+func TestDaemon_AddNote_NotFound(t *testing.T) {
+	h := newHarness(t)
+	d := h.newDaemon(h.cfg)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- d.Run(ctx) }()
+	time.Sleep(200 * time.Millisecond)
+
+	err := d.AddNote("does-not-exist", "x")
+	assert.ErrorIs(t, err, web.ErrTicketNotFound)
 
 	cancel()
 	require.NoError(t, <-errCh)

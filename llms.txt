@@ -80,4 +80,34 @@ Monitor: `kontora attach` (tmux session), `kontora logs <id>`.
 
 Manage: `kontora pause <id>`, `kontora retry <id>`, `kontora done <id>`, `kontora cancel <id>`, `kontora note <id> "message"`.
 
+## Remote mode
+
+The CLI can drive a daemon on another machine over its HTTP/SSE/WebSocket API. Intended for a trusted network (e.g. a Tailscale tailnet).
+
+Daemon host config — bind to the tailnet IP and set a shared token:
+
+```yaml
+web:
+  host: 100.x.y.z   # tailnet IP, not 127.0.0.1
+  port: 8080
+  token: <a-long-random-secret>
+```
+
+When `web.token` is set, the daemon requires it on `/api/*` and `/ws/*`. `GET /health` and the static UI stay public. The browser bootstraps auth by opening `http://<host>:8080/?token=<secret>`, which sets a `kontora_token` cookie.
+
+Client — set `KONTORA_URL` and `KONTORA_TOKEN` (or `--url`/`--token`); no local config file is needed:
+
+```bash
+export KONTORA_URL=http://100.x.y.z:8080
+export KONTORA_TOKEN=<the-same-secret>
+kontora ls
+kontora run <id>
+kontora logs <id>
+kontora attach <id>   # live terminal over WebSocket
+```
+
+Remote mode supports `ls`, `view`, `new`, `run`, `pause`, `retry`, `cancel`, `done`, `skip`, `set-stage`, `note`, `logs`, `config`, `attach`. Local-only verbs (`edit`, `archive`, `init`, `fmt`, `doctor`, `start`, `completion`) are rejected. Paths for `kontora new --path` are on the daemon host, not the caller.
+
+Security: the token is the only access control, and agents run with `--dangerously-skip-permissions`. A tailnet encrypts the transport, so plain HTTP is fine there. On any untrusted network, terminate TLS in front of the daemon — the bearer token is otherwise sent in clear.
+
 Ticket format and lifecycle: [docs/tickets.md](https://github.com/worksonmyai/kontora/blob/main/docs/tickets.md)

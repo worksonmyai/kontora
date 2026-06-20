@@ -141,6 +141,8 @@ web:
   token: <a-long-random-secret>
 ```
 
+Instead of writing the token into the config file, you can pass it to `kontora start` through the `KONTORA_WEB_TOKEN` environment variable, which overrides `web.token`. This lets a deployment inject it from a secret. It is a daemon-side setting, unrelated to the CLI's own `KONTORA_TOKEN`.
+
 When `web.token` is set, the daemon requires it on every `/api/*` and `/ws/*` request. `GET /health` and the static UI stay public. The browser UI keeps working: open `http://<host>:8080/?token=<secret>` once and it stores a `kontora_token` cookie for subsequent API, SSE, and WebSocket calls.
 
 From another host, point the CLI at the daemon with `KONTORA_URL` and `KONTORA_TOKEN` (or `--url`/`--token`):

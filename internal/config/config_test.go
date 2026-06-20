@@ -53,6 +53,24 @@ func TestLoadMinimalDefaults(t *testing.T) {
 	assert.True(t, *cfg.AutoPickUp, "auto_pick_up should default to true")
 }
 
+func TestApplyServerEnvOverridesSetsWebToken(t *testing.T) {
+	t.Setenv(ServerTokenEnvVar, "secret-from-env")
+
+	cfg := &Config{}
+	cfg.ApplyServerEnvOverrides()
+
+	assert.Equal(t, "secret-from-env", cfg.Web.Token)
+}
+
+func TestApplyServerEnvOverridesBlankKeepsConfigToken(t *testing.T) {
+	t.Setenv(ServerTokenEnvVar, "   ")
+
+	cfg := &Config{Web: Web{Token: "from-file"}}
+	cfg.ApplyServerEnvOverrides()
+
+	assert.Equal(t, "from-file", cfg.Web.Token)
+}
+
 func TestAutoPickUpExplicitFalse(t *testing.T) {
 	input := `
 auto_pick_up: false

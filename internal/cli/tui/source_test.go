@@ -14,17 +14,24 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/worksonmyai/kontora/internal/cli/remote"
 	"github.com/worksonmyai/kontora/internal/config"
 	"github.com/worksonmyai/kontora/internal/web"
 )
 
+// listResponseEnvelope mirrors the daemon's GET /api/tickets body for tests.
+type listResponseEnvelope struct {
+	Tickets       []web.TicketInfo `json:"tickets"`
+	RunningAgents int              `json:"running_agents"`
+}
+
 func TestNewSource_APIMode(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_ = json.NewEncoder(w).Encode(ticketsResponse{Tickets: []web.TicketInfo{}, RunningAgents: 0})
+		_ = json.NewEncoder(w).Encode(listResponseEnvelope{Tickets: []web.TicketInfo{}, RunningAgents: 0})
 	}))
 	defer srv.Close()
 
-	src := &apiSource{base: srv.URL, client: &http.Client{Timeout: 2 * time.Second}}
+	src := &apiSource{client: remote.NewWithClient(srv.URL, "", &http.Client{Timeout: 2 * time.Second})}
 	assert.True(t, src.Connected())
 }
 
@@ -43,11 +50,11 @@ func TestAPISource_FetchTickets(t *testing.T) {
 		{ID: "tst-001", Title: "Test", Status: "in_progress"},
 	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_ = json.NewEncoder(w).Encode(ticketsResponse{Tickets: want, RunningAgents: 1})
+		_ = json.NewEncoder(w).Encode(listResponseEnvelope{Tickets: want, RunningAgents: 1})
 	}))
 	defer srv.Close()
 
-	src := &apiSource{base: srv.URL, client: srv.Client()}
+	src := &apiSource{client: remote.NewWithClient(srv.URL, "", srv.Client())}
 	tickets, running, err := src.FetchTickets()
 	require.NoError(t, err)
 	assert.Equal(t, 1, running)
@@ -65,7 +72,7 @@ func TestAPISource_FetchTask(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	src := &apiSource{base: srv.URL, client: srv.Client()}
+	src := &apiSource{client: remote.NewWithClient(srv.URL, "", srv.Client())}
 
 	info, err := src.FetchTask("tst-001")
 	require.NoError(t, err)
@@ -83,7 +90,7 @@ func TestAPISource_Actions(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	src := &apiSource{base: srv.URL, client: srv.Client()}
+	src := &apiSource{client: remote.NewWithClient(srv.URL, "", srv.Client())}
 
 	tests := []struct {
 		name   string
@@ -118,7 +125,7 @@ func TestAPISource_Subscribe(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	src := &apiSource{base: srv.URL, client: srv.Client()}
+	src := &apiSource{client: remote.NewWithClient(srv.URL, "", srv.Client())}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
@@ -181,7 +188,7 @@ func TestAPISource_FetchConfig(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	src := &apiSource{base: srv.URL, client: srv.Client()}
+	src := &apiSource{client: remote.NewWithClient(srv.URL, "", srv.Client())}
 	cfg, err := src.FetchConfig()
 	require.NoError(t, err)
 	assert.Equal(t, []string{"default", "review"}, cfg.Pipelines)
@@ -204,7 +211,7 @@ func TestAPISource_CreateTicket(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	src := &apiSource{base: srv.URL, client: srv.Client()}
+	src := &apiSource{client: remote.NewWithClient(srv.URL, "", srv.Client())}
 	info, err := src.CreateTicket(web.CreateTicketRequest{
 		Title:  "Test Ticket",
 		Path:   "mypath",
@@ -230,7 +237,7 @@ func TestAPISource_UpdateTicket(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	src := &apiSource{base: srv.URL, client: srv.Client()}
+	src := &apiSource{client: remote.NewWithClient(srv.URL, "", srv.Client())}
 	agent := "opus"
 	err := src.UpdateTicket("tst-001", web.UpdateTicketRequest{Agent: &agent})
 	require.NoError(t, err)
@@ -247,7 +254,7 @@ func TestAPISource_UpdateTicket_Error(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	src := &apiSource{base: srv.URL, client: srv.Client()}
+	src := &apiSource{client: remote.NewWithClient(srv.URL, "", srv.Client())}
 	agent := "bad"
 	err := src.UpdateTicket("tst-001", web.UpdateTicketRequest{Agent: &agent})
 	assert.Error(t, err)

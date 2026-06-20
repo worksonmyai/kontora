@@ -1,20 +1,17 @@
 package tui
 
 import (
-	"bufio"
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"net"
-	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/worksonmyai/kontora/internal/cli"
+	"github.com/worksonmyai/kontora/internal/cli/remote"
 	"github.com/worksonmyai/kontora/internal/config"
 	"github.com/worksonmyai/kontora/internal/ticket"
 	"github.com/worksonmyai/kontora/internal/ticket/app"
@@ -47,265 +44,58 @@ func newSource(cfg *config.Config) Source {
 		return &fileSource{cfg: cfg}
 	}
 	base := "http://" + net.JoinHostPort(cfg.Web.Host, fmt.Sprintf("%d", cfg.Web.Port))
-	client := &http.Client{Timeout: 2 * time.Second}
-	resp, err := client.Get(base + "/api/tickets")
-	if err == nil {
-		resp.Body.Close()
-		if resp.StatusCode == http.StatusOK {
-			return &apiSource{base: base, client: &http.Client{Timeout: 10 * time.Second}}
-		}
+	client := remote.New(base, cfg.Web.Token)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := client.Ping(ctx); err == nil {
+		return &apiSource{client: client}
 	}
 	return &fileSource{cfg: cfg}
 }
 
 // --- apiSource ---
 
+// apiSource adapts a remote.Client to the TUI Source interface.
 type apiSource struct {
-	base   string
-	client *http.Client
+	client *remote.Client
 }
 
 func (s *apiSource) Connected() bool { return true }
 
-type ticketsResponse struct {
-	Tickets       []web.TicketInfo `json:"tickets"`
-	RunningAgents int              `json:"running_agents"`
-}
-
 func (s *apiSource) FetchTickets() ([]web.TicketInfo, int, error) {
-	resp, err := s.client.Get(s.base + "/api/tickets")
-	if err != nil {
-		return nil, 0, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, 0, fmt.Errorf("HTTP %d fetching tickets", resp.StatusCode)
-	}
-	var r ticketsResponse
-	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
-		return nil, 0, err
-	}
-	return r.Tickets, r.RunningAgents, nil
+	return s.client.ListTickets()
 }
 
 func (s *apiSource) FetchTask(id string) (web.TicketInfo, error) {
-	resp, err := s.client.Get(s.base + "/api/tickets/" + id)
-	if err != nil {
-		return web.TicketInfo{}, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusNotFound {
-		return web.TicketInfo{}, fmt.Errorf("ticket %q not found", id)
-	}
-	if resp.StatusCode != http.StatusOK {
-		return web.TicketInfo{}, fmt.Errorf("HTTP %d fetching ticket %q", resp.StatusCode, id)
-	}
-	var info web.TicketInfo
-	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
-		return web.TicketInfo{}, err
-	}
-	return info, nil
+	return s.client.GetTicket(id)
 }
 
 func (s *apiSource) FetchLogs(id, stage string) (string, error) {
-	u := s.base + "/api/tickets/" + id + "/logs"
-	if stage != "" {
-		u += "?stage=" + url.QueryEscape(stage)
-	}
-	resp, err := s.client.Get(u)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusNotFound {
-		return "", fmt.Errorf("logs not found")
-	}
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("HTTP %d fetching logs", resp.StatusCode)
-	}
-	var r struct {
-		Content string `json:"content"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
-		return "", err
-	}
-	return r.Content, nil
-}
-
-func (s *apiSource) postAction(path string) error {
-	resp, err := s.client.Post(s.base+path, "application/json", nil)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 400 {
-		var r struct {
-			Error string `json:"error"`
-		}
-		_ = json.NewDecoder(resp.Body).Decode(&r)
-		if r.Error != "" {
-			return fmt.Errorf("%s", r.Error)
-		}
-		return fmt.Errorf("HTTP %d", resp.StatusCode)
-	}
-	return nil
+	return s.client.Logs(id, stage)
 }
 
 func (s *apiSource) FetchConfig() (web.ConfigInfo, error) {
-	resp, err := s.client.Get(s.base + "/api/config")
-	if err != nil {
-		return web.ConfigInfo{}, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return web.ConfigInfo{}, fmt.Errorf("HTTP %d fetching config", resp.StatusCode)
-	}
-	var cfg web.ConfigInfo
-	if err := json.NewDecoder(resp.Body).Decode(&cfg); err != nil {
-		return web.ConfigInfo{}, err
-	}
-	return cfg, nil
+	return s.client.Config()
 }
 
 func (s *apiSource) CreateTicket(req web.CreateTicketRequest) (web.TicketInfo, error) {
-	body, err := json.Marshal(req)
-	if err != nil {
-		return web.TicketInfo{}, err
-	}
-	resp, err := s.client.Post(s.base+"/api/tickets", "application/json", bytes.NewReader(body))
-	if err != nil {
-		return web.TicketInfo{}, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 400 {
-		var r struct {
-			Error string `json:"error"`
-		}
-		_ = json.NewDecoder(resp.Body).Decode(&r)
-		if r.Error != "" {
-			return web.TicketInfo{}, fmt.Errorf("%s", r.Error)
-		}
-		return web.TicketInfo{}, fmt.Errorf("HTTP %d", resp.StatusCode)
-	}
-	var info web.TicketInfo
-	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
-		return web.TicketInfo{}, err
-	}
-	return info, nil
+	return s.client.CreateTicket(req)
 }
 
 func (s *apiSource) UpdateTicket(id string, req web.UpdateTicketRequest) error {
-	body, err := json.Marshal(req)
-	if err != nil {
-		return err
-	}
-	httpReq, err := http.NewRequest(http.MethodPut, s.base+"/api/tickets/"+id, bytes.NewReader(body))
-	if err != nil {
-		return err
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	resp, err := s.client.Do(httpReq)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 400 {
-		var r struct {
-			Error string `json:"error"`
-		}
-		_ = json.NewDecoder(resp.Body).Decode(&r)
-		if r.Error != "" {
-			return fmt.Errorf("%s", r.Error)
-		}
-		return fmt.Errorf("HTTP %d", resp.StatusCode)
-	}
-	return nil
+	return s.client.UpdateTicket(id, req)
 }
 
-func (s *apiSource) PauseTicket(id string) error {
-	return s.postAction("/api/tickets/" + id + "/pause")
-}
-func (s *apiSource) RetryTicket(id string) error {
-	return s.postAction("/api/tickets/" + id + "/retry")
-}
-func (s *apiSource) SkipStage(id string) error { return s.postAction("/api/tickets/" + id + "/skip") }
+func (s *apiSource) PauseTicket(id string) error { return s.client.Pause(id) }
+func (s *apiSource) RetryTicket(id string) error { return s.client.Retry(id) }
+func (s *apiSource) SkipStage(id string) error   { return s.client.Skip(id) }
 
 func (s *apiSource) SetStage(id, stage string) error {
-	body, err := json.Marshal(struct {
-		Stage string `json:"stage"`
-	}{stage})
-	if err != nil {
-		return err
-	}
-	resp, err := s.client.Post(s.base+"/api/tickets/"+id+"/set-stage", "application/json", bytes.NewReader(body))
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 400 {
-		var r struct {
-			Error string `json:"error"`
-		}
-		_ = json.NewDecoder(resp.Body).Decode(&r)
-		if r.Error != "" {
-			return fmt.Errorf("%s", r.Error)
-		}
-		return fmt.Errorf("HTTP %d", resp.StatusCode)
-	}
-	return nil
+	return s.client.SetStage(id, stage)
 }
 
 func (s *apiSource) Subscribe(ctx context.Context) <-chan web.TicketEvent {
-	ch := make(chan web.TicketEvent, 64)
-	go func() {
-		defer close(ch)
-		s.sseLoop(ctx, ch)
-	}()
-	return ch
-}
-
-func (s *apiSource) sseLoop(ctx context.Context, ch chan<- web.TicketEvent) {
-	for {
-		if ctx.Err() != nil {
-			return
-		}
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.base+"/api/events", nil)
-		if err != nil {
-			return
-		}
-		resp, err := s.client.Do(req)
-		if err != nil {
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(2 * time.Second):
-				continue
-			}
-		}
-
-		scanner := bufio.NewScanner(resp.Body)
-		scanner.Buffer(make([]byte, 64*1024), 1024*1024)
-		var eventType string
-		for scanner.Scan() {
-			line := scanner.Text()
-			switch {
-			case strings.HasPrefix(line, "event: "):
-				eventType = strings.TrimPrefix(line, "event: ")
-			case strings.HasPrefix(line, "data: "):
-				data := strings.TrimPrefix(line, "data: ")
-				var info web.TicketInfo
-				if json.Unmarshal([]byte(data), &info) == nil {
-					ev := web.TicketEvent{Type: eventType, Ticket: info}
-					select {
-					case ch <- ev:
-					default:
-					}
-				}
-				eventType = ""
-			}
-		}
-		resp.Body.Close()
-	}
+	return s.client.Subscribe(ctx)
 }
 
 // --- fileSource ---

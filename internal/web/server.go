@@ -20,13 +20,15 @@ type Server struct {
 	httpSrv  *http.Server
 	log      *slog.Logger
 	listener net.Listener
+	token    string
 }
 
-func New(svc TicketService, broker *SSEBroker, host string, port int, log *slog.Logger) *Server {
+func New(svc TicketService, broker *SSEBroker, host string, port int, token string, log *slog.Logger) *Server {
 	s := &Server{
 		svc:    svc,
 		broker: broker,
 		log:    log,
+		token:  token,
 	}
 
 	mux := http.NewServeMux()
@@ -44,6 +46,7 @@ func New(svc TicketService, broker *SSEBroker, host string, port int, log *slog.
 	mux.HandleFunc("POST /api/tickets/{id}/skip", s.handleSkip)
 	mux.HandleFunc("POST /api/tickets/{id}/set-stage", s.handleSetStage)
 	mux.HandleFunc("POST /api/tickets/{id}/move", s.handleMove)
+	mux.HandleFunc("POST /api/tickets/{id}/note", s.handleAddNote)
 	mux.HandleFunc("POST /api/tickets/{id}/init", s.handleInit)
 	mux.HandleFunc("PUT /api/tickets/{id}", s.handleUpdateTicket)
 	mux.HandleFunc("POST /api/tickets/upload", s.handleUploadTickets)
@@ -52,14 +55,36 @@ func New(svc TicketService, broker *SSEBroker, host string, port int, log *slog.
 	mux.HandleFunc("GET /api/events", s.handleSSE)
 	mux.HandleFunc("GET /ws/terminal/{id}", s.handleTerminalWS)
 	subFS, _ := fs.Sub(staticFS, "static")
-	mux.Handle("GET /", http.FileServerFS(subFS))
+	mux.Handle("GET /", s.staticHandler(http.FileServerFS(subFS)))
 
 	s.httpSrv = &http.Server{
 		Addr:              fmt.Sprintf("%s:%d", host, port),
-		Handler:           mux,
+		Handler:           authMiddleware(s.token, mux),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	return s
+}
+
+// staticHandler serves the embedded UI. When a token is configured and the
+// request carries ?token=, it sets the kontora_token cookie so subsequent
+// same-origin fetch/EventSource/WebSocket calls (which cannot set headers)
+// authenticate automatically. The cookie is HttpOnly and SameSite=Lax; Secure
+// is intentionally omitted so the flow works over plain HTTP on a tailnet.
+func (s *Server) staticHandler(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.token != "" {
+			if q := r.URL.Query().Get("token"); q != "" {
+				http.SetCookie(w, &http.Cookie{
+					Name:     tokenCookieName,
+					Value:    q,
+					Path:     "/",
+					HttpOnly: true,
+					SameSite: http.SameSiteLaxMode,
+				})
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (s *Server) Start() error {

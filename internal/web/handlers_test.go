@@ -30,6 +30,7 @@ type mockService struct {
 	deleteFn      func(id string) error
 	initFn        func(id string, req InitTicketRequest) error
 	updateFn      func(id string, req UpdateTicketRequest) error
+	noteFn        func(id, text string) error
 	logsFn        func(id, stage string) (string, error)
 	plannotatorFn func(id string) error
 	configInfo    ConfigInfo
@@ -81,6 +82,12 @@ func (m *mockService) SetStage(id string, stage string) error {
 	return m.actionFn(id)
 }
 func (m *mockService) MoveTicket(id string, _ string) error { return m.actionFn(id) }
+func (m *mockService) AddNote(id string, text string) error {
+	if m.noteFn != nil {
+		return m.noteFn(id, text)
+	}
+	return nil
+}
 func (m *mockService) InitTicket(id string, req InitTicketRequest) error {
 	if m.initFn != nil {
 		return m.initFn(id, req)
@@ -330,6 +337,50 @@ func TestHandleSetStage_MissingStage(t *testing.T) {
 
 	res := post(t, srv, "/api/tickets/t-001/set-stage", `{}`)
 	assert.Equal(t, http.StatusBadRequest, res.statusCode)
+}
+
+// --- POST /api/tickets/{id}/note ---
+
+func TestHandleAddNote_Success(t *testing.T) {
+	var gotID, gotText string
+	tkt := TicketInfo{ID: "t-001", Status: "todo"}
+	svc := &mockService{
+		tickets: []TicketInfo{tkt},
+		noteFn: func(id, text string) error {
+			gotID, gotText = id, text
+			return nil
+		},
+	}
+	srv := startHandlerTestServer(t, svc)
+
+	res := post(t, srv, "/api/tickets/t-001/note", `{"text":"blocked on review"}`)
+	assert.Equal(t, http.StatusOK, res.statusCode)
+	assert.Equal(t, "t-001", gotID)
+	assert.Equal(t, "blocked on review", gotText)
+}
+
+func TestHandleAddNote_MissingText(t *testing.T) {
+	svc := &mockService{}
+	srv := startHandlerTestServer(t, svc)
+
+	res := post(t, srv, "/api/tickets/t-001/note", `{}`)
+	assert.Equal(t, http.StatusBadRequest, res.statusCode)
+}
+
+func TestHandleAddNote_BadJSON(t *testing.T) {
+	svc := &mockService{}
+	srv := startHandlerTestServer(t, svc)
+
+	res := post(t, srv, "/api/tickets/t-001/note", `{bad}`)
+	assert.Equal(t, http.StatusBadRequest, res.statusCode)
+}
+
+func TestHandleAddNote_NotFound(t *testing.T) {
+	svc := &mockService{noteFn: func(_, _ string) error { return ErrTicketNotFound }}
+	srv := startHandlerTestServer(t, svc)
+
+	res := post(t, srv, "/api/tickets/t-404/note", `{"text":"hi"}`)
+	assert.Equal(t, http.StatusNotFound, res.statusCode)
 }
 
 // --- POST /api/tickets/{id}/move ---
@@ -1111,7 +1162,7 @@ func startHandlerTestServer(t *testing.T, svc TicketService) *Server {
 
 func startHandlerTestServerWithBroker(t *testing.T, svc TicketService, broker *SSEBroker) *Server {
 	t.Helper()
-	srv := New(svc, broker, "127.0.0.1", 0, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	srv := New(svc, broker, "127.0.0.1", 0, "", slog.New(slog.NewTextHandler(io.Discard, nil)))
 	require.NoError(t, srv.Start())
 	t.Cleanup(func() { _ = srv.Shutdown(context.Background()) })
 	return srv

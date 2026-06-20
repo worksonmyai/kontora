@@ -19,9 +19,11 @@ import (
 	"github.com/mattn/go-isatty"
 
 	"github.com/worksonmyai/kontora/internal/cli"
+	"github.com/worksonmyai/kontora/internal/cli/remote"
 	"github.com/worksonmyai/kontora/internal/cli/tui"
 	"github.com/worksonmyai/kontora/internal/config"
 	"github.com/worksonmyai/kontora/internal/daemon"
+	"github.com/worksonmyai/kontora/internal/web"
 )
 
 func defaultConfigPath() string {
@@ -120,6 +122,7 @@ func main() {
 	case "config":
 		cmdConfig()
 	case "fmt":
+		rejectInRemoteMode("fmt")
 		if err := cli.Fmt(os.Stdin, os.Stdout); err != nil {
 			log.Fatal(err)
 		}
@@ -135,6 +138,8 @@ func main() {
 }
 
 func cmdStart() {
+	rejectInRemoteMode("start")
+
 	fs := flag.NewFlagSet("start", flag.ExitOnError)
 	configPath := fs.String("config", defaultConfigPath(), "path to config file")
 	address := fs.String("address", "", "web server listen address (overrides config)")
@@ -176,6 +181,8 @@ func runDaemon(cfg *config.Config, configPath string) error {
 }
 
 func cmdInit() {
+	rejectInRemoteMode("init")
+
 	fs := flag.NewFlagSet("init", flag.ExitOnError)
 	configPath := fs.String("config", defaultConfigPath(), "path to config file")
 	if err := fs.Parse(os.Args[2:]); err != nil {
@@ -207,9 +214,20 @@ func cmdLs() {
 	configPath := fs.String("config", defaultConfigPath(), "path to config file")
 	closed := fs.Bool("closed", false, "show done/cancelled tickets")
 	static := fs.Bool("static", false, "print static table instead of interactive TUI")
+	urlFlag, tokenFlag := addRemoteFlags(fs)
 	if err := fs.Parse(args); err != nil {
 		log.Fatalf("parsing flags: %v", err)
 	}
+
+	if rc := remoteClient(*urlFlag, *tokenFlag); rc != nil {
+		tickets, running, err := rc.ListTickets()
+		if err != nil {
+			log.Fatal(err)
+		}
+		printRemoteTickets(os.Stdout, tickets, running)
+		return
+	}
+
 	cfg := mustLoadConfig(*configPath)
 
 	if !*static && !*closed && isatty.IsTerminal(os.Stdout.Fd()) {
@@ -229,6 +247,7 @@ func cmdNew() {
 	configPath := fs.String("config", defaultConfigPath(), "path to config file")
 	repoPath := fs.String("path", "", "repository path (defaults to current git root)")
 	pipeline := fs.String("pipeline", "", "pipeline name (optional)")
+	urlFlag, tokenFlag := addRemoteFlags(fs)
 	if err := fs.Parse(os.Args[2:]); err != nil {
 		log.Fatalf("parsing flags: %v", err)
 	}
@@ -236,6 +255,24 @@ func cmdNew() {
 	title := strings.Join(fs.Args(), " ")
 	if title == "" {
 		log.Fatal("title is required: kontora new [flags] TITLE")
+	}
+
+	if rc := remoteClient(*urlFlag, *tokenFlag); rc != nil {
+		// Paths are on the daemon host, not the caller's machine, so a
+		// local git-root default would be meaningless. Require --path.
+		if *repoPath == "" {
+			log.Fatal("remote new requires --path (a path on the daemon host)")
+		}
+		info, err := rc.CreateTicket(web.CreateTicketRequest{
+			Title:    title,
+			Path:     *repoPath,
+			Pipeline: *pipeline,
+		})
+		if err != nil {
+			log.Fatal(err)
+		}
+		fmt.Printf("%s %s\n", helpCyan.Render(info.ID), helpFaint.Render("created"))
+		return
 	}
 
 	// Default to current git root if --path not specified.
@@ -264,6 +301,7 @@ func cmdNew() {
 func cmdView() {
 	fs := flag.NewFlagSet("view", flag.ExitOnError)
 	configPath := fs.String("config", defaultConfigPath(), "path to config file")
+	urlFlag, tokenFlag := addRemoteFlags(fs)
 	if err := fs.Parse(os.Args[2:]); err != nil {
 		log.Fatalf("parsing flags: %v", err)
 	}
@@ -273,6 +311,15 @@ func cmdView() {
 	}
 	taskID := fs.Arg(0)
 
+	if rc := remoteClient(*urlFlag, *tokenFlag); rc != nil {
+		info, err := rc.GetTicket(mustResolveRemote(rc, taskID))
+		if err != nil {
+			log.Fatal(err)
+		}
+		printRemoteTicket(os.Stdout, info)
+		return
+	}
+
 	cfg := mustLoadConfig(*configPath)
 
 	if err := cli.View(cfg, taskID, os.Stdout); err != nil {
@@ -281,6 +328,8 @@ func cmdView() {
 }
 
 func cmdEdit() {
+	rejectInRemoteMode("edit")
+
 	fs := flag.NewFlagSet("edit", flag.ExitOnError)
 	configPath := fs.String("config", defaultConfigPath(), "path to config file")
 	if err := fs.Parse(os.Args[2:]); err != nil {
@@ -302,6 +351,7 @@ func cmdEdit() {
 func cmdRun() {
 	fs := flag.NewFlagSet("run", flag.ExitOnError)
 	configPath := fs.String("config", defaultConfigPath(), "path to config file")
+	urlFlag, tokenFlag := addRemoteFlags(fs)
 	if err := fs.Parse(os.Args[2:]); err != nil {
 		log.Fatalf("parsing flags: %v", err)
 	}
@@ -310,6 +360,13 @@ func cmdRun() {
 		log.Fatal("ticket ID is required: kontora run TICKET_ID")
 	}
 	taskID := fs.Arg(0)
+
+	if rc := remoteClient(*urlFlag, *tokenFlag); rc != nil {
+		if err := rc.Run(mustResolveRemote(rc, taskID)); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 
 	cfg := mustLoadConfig(*configPath)
 
@@ -321,6 +378,7 @@ func cmdRun() {
 func cmdDone() {
 	fs := flag.NewFlagSet("done", flag.ExitOnError)
 	configPath := fs.String("config", defaultConfigPath(), "path to config file")
+	urlFlag, tokenFlag := addRemoteFlags(fs)
 	if err := fs.Parse(os.Args[2:]); err != nil {
 		log.Fatalf("parsing flags: %v", err)
 	}
@@ -329,6 +387,13 @@ func cmdDone() {
 		log.Fatal("ticket ID is required: kontora done TICKET_ID")
 	}
 	taskID := fs.Arg(0)
+
+	if rc := remoteClient(*urlFlag, *tokenFlag); rc != nil {
+		if err := rc.Done(mustResolveRemote(rc, taskID)); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 
 	cfg := mustLoadConfig(*configPath)
 
@@ -340,6 +405,7 @@ func cmdDone() {
 func cmdNote() {
 	fs := flag.NewFlagSet("note", flag.ExitOnError)
 	configPath := fs.String("config", defaultConfigPath(), "path to config file")
+	urlFlag, tokenFlag := addRemoteFlags(fs)
 	if err := fs.Parse(os.Args[2:]); err != nil {
 		log.Fatalf("parsing flags: %v", err)
 	}
@@ -371,6 +437,13 @@ func cmdNote() {
 		log.Fatal("note text is required (as argument or via stdin)")
 	}
 
+	if rc := remoteClient(*urlFlag, *tokenFlag); rc != nil {
+		if err := rc.Note(mustResolveRemote(rc, taskID), text); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
+
 	cfg := mustLoadConfig(*configPath)
 
 	if err := cli.Note(cfg.TicketsDir, taskID, text); err != nil {
@@ -381,6 +454,7 @@ func cmdNote() {
 func cmdAction(action string) {
 	fs := flag.NewFlagSet(action, flag.ExitOnError)
 	configPath := fs.String("config", defaultConfigPath(), "path to config file")
+	urlFlag, tokenFlag := addRemoteFlags(fs)
 	if err := fs.Parse(os.Args[2:]); err != nil {
 		log.Fatalf("parsing flags: %v", err)
 	}
@@ -389,6 +463,23 @@ func cmdAction(action string) {
 		log.Fatalf("ticket ID is required: kontora %s TICKET_ID", action)
 	}
 	taskID := fs.Arg(0)
+
+	if rc := remoteClient(*urlFlag, *tokenFlag); rc != nil {
+		id := mustResolveRemote(rc, taskID)
+		var err error
+		switch action {
+		case "pause":
+			err = rc.Pause(id)
+		case "retry":
+			err = rc.Retry(id)
+		case "cancel":
+			err = rc.Cancel(id)
+		}
+		if err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 
 	cfg := mustLoadConfig(*configPath)
 
@@ -407,6 +498,8 @@ func cmdAction(action string) {
 }
 
 func cmdArchive() {
+	rejectInRemoteMode("archive")
+
 	fs := flag.NewFlagSet("archive", flag.ExitOnError)
 	configPath := fs.String("config", defaultConfigPath(), "path to config file")
 	days := fs.Int("days", 0, "archive done/cancelled tickets not modified in the last N days")
@@ -425,6 +518,7 @@ func cmdArchive() {
 func cmdSkip() {
 	fs := flag.NewFlagSet("skip", flag.ExitOnError)
 	configPath := fs.String("config", defaultConfigPath(), "path to config file")
+	urlFlag, tokenFlag := addRemoteFlags(fs)
 	if err := fs.Parse(os.Args[2:]); err != nil {
 		log.Fatalf("parsing flags: %v", err)
 	}
@@ -433,6 +527,13 @@ func cmdSkip() {
 		log.Fatal("ticket ID is required: kontora skip TICKET_ID")
 	}
 	taskID := fs.Arg(0)
+
+	if rc := remoteClient(*urlFlag, *tokenFlag); rc != nil {
+		if err := rc.Skip(mustResolveRemote(rc, taskID)); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 
 	cfg := mustLoadConfig(*configPath)
 
@@ -444,6 +545,7 @@ func cmdSkip() {
 func cmdSetStage() {
 	fs := flag.NewFlagSet("set-stage", flag.ExitOnError)
 	configPath := fs.String("config", defaultConfigPath(), "path to config file")
+	urlFlag, tokenFlag := addRemoteFlags(fs)
 	if err := fs.Parse(os.Args[2:]); err != nil {
 		log.Fatalf("parsing flags: %v", err)
 	}
@@ -453,6 +555,13 @@ func cmdSetStage() {
 	}
 	taskID := fs.Arg(0)
 	stage := fs.Arg(1)
+
+	if rc := remoteClient(*urlFlag, *tokenFlag); rc != nil {
+		if err := rc.SetStage(mustResolveRemote(rc, taskID), stage); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 
 	cfg := mustLoadConfig(*configPath)
 
@@ -465,6 +574,7 @@ func cmdLogs() {
 	fs := flag.NewFlagSet("logs", flag.ExitOnError)
 	configPath := fs.String("config", defaultConfigPath(), "path to config file")
 	stage := fs.String("stage", "", "specific stage to show")
+	urlFlag, tokenFlag := addRemoteFlags(fs)
 	if err := fs.Parse(os.Args[2:]); err != nil {
 		log.Fatalf("parsing flags: %v", err)
 	}
@@ -473,6 +583,15 @@ func cmdLogs() {
 		log.Fatal("ticket ID is required: kontora logs [flags] TICKET_ID")
 	}
 	taskID := fs.Arg(0)
+
+	if rc := remoteClient(*urlFlag, *tokenFlag); rc != nil {
+		content, err := rc.Logs(mustResolveRemote(rc, taskID), *stage)
+		if err != nil {
+			log.Fatal(err)
+		}
+		fmt.Fprint(os.Stdout, content)
+		return
+	}
 
 	cfg := mustLoadConfig(*configPath)
 
@@ -485,11 +604,22 @@ func cmdAttach() {
 	fs := flag.NewFlagSet("attach", flag.ExitOnError)
 	configPath := fs.String("config", defaultConfigPath(), "path to config file")
 	rw := fs.Bool("rw", false, "attach in read-write mode")
+	urlFlag, tokenFlag := addRemoteFlags(fs)
 	if err := fs.Parse(os.Args[2:]); err != nil {
 		log.Fatalf("parsing flags: %v", err)
 	}
 
 	taskID := fs.Arg(0)
+
+	if rc := remoteClient(*urlFlag, *tokenFlag); rc != nil {
+		if taskID == "" {
+			log.Fatal("ticket ID is required: kontora attach TICKET_ID")
+		}
+		if err := remote.Attach(context.Background(), rc, mustResolveRemote(rc, taskID), *rw); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 
 	cfg := mustLoadConfig(*configPath)
 
@@ -502,13 +632,31 @@ func cmdAttach() {
 }
 
 func cmdConfig() {
-	cfg := loadConfig(os.Args[2:])
+	fs := flag.NewFlagSet("config", flag.ExitOnError)
+	configPath := fs.String("config", defaultConfigPath(), "path to config file")
+	urlFlag, tokenFlag := addRemoteFlags(fs)
+	if err := fs.Parse(os.Args[2:]); err != nil {
+		log.Fatalf("parsing flags: %v", err)
+	}
+
+	if rc := remoteClient(*urlFlag, *tokenFlag); rc != nil {
+		cfg, err := rc.Config()
+		if err != nil {
+			log.Fatal(err)
+		}
+		printRemoteConfig(os.Stdout, cfg)
+		return
+	}
+
+	cfg := mustLoadConfig(*configPath)
 	if err := cli.ShowConfig(cfg, os.Stdout); err != nil {
 		log.Fatal(err)
 	}
 }
 
 func cmdCompletion() {
+	rejectInRemoteMode("completion")
+
 	if len(os.Args) < 3 {
 		fmt.Fprintf(os.Stderr, "%s kontora completion <shell>\n\n%s fish\n", helpBold.Render("Usage:"), helpFaint.Render("Supported shells:"))
 		os.Exit(1)
@@ -519,6 +667,8 @@ func cmdCompletion() {
 }
 
 func cmdDoctor() {
+	rejectInRemoteMode("doctor")
+
 	fs := flag.NewFlagSet("doctor", flag.ExitOnError)
 	configPath := fs.String("config", defaultConfigPath(), "path to config file")
 	if err := fs.Parse(os.Args[2:]); err != nil {
@@ -529,13 +679,44 @@ func cmdDoctor() {
 	}
 }
 
-func loadConfig(args []string) *config.Config {
-	fs := flag.NewFlagSet("", flag.ExitOnError)
-	configPath := fs.String("config", defaultConfigPath(), "path to config file")
-	if err := fs.Parse(args); err != nil {
-		log.Fatalf("parsing flags: %v", err)
+// addRemoteFlags registers --url and --token on a command's flag set, with
+// KONTORA_URL/KONTORA_TOKEN as defaults. A non-empty resolved URL switches the
+// command into remote mode.
+func addRemoteFlags(fs *flag.FlagSet) (url, token *string) {
+	url = fs.String("url", os.Getenv("KONTORA_URL"), "remote daemon URL (or KONTORA_URL); enables remote mode")
+	token = fs.String("token", os.Getenv("KONTORA_TOKEN"), "bearer token for the remote daemon (or KONTORA_TOKEN)")
+	return url, token
+}
+
+// remoteClient returns a remote.Client when a URL is configured, else nil
+// (local mode).
+func remoteClient(url, token string) *remote.Client {
+	if url == "" {
+		return nil
 	}
-	return mustLoadConfig(*configPath)
+	return remote.New(url, token)
+}
+
+// remoteModeRequested reports whether remote mode is active via the env var.
+// Used by local-only verbs that do not parse remote flags.
+func remoteModeRequested() bool {
+	return os.Getenv("KONTORA_URL") != ""
+}
+
+// rejectInRemoteMode aborts a local-only verb when remote mode is requested.
+func rejectInRemoteMode(verb string) {
+	if remoteModeRequested() {
+		log.Fatalf("%q is not available in remote mode", verb)
+	}
+}
+
+// mustResolveRemote expands a ticket ID prefix against the remote daemon.
+func mustResolveRemote(rc *remote.Client, taskID string) string {
+	id, err := rc.ResolveID(taskID)
+	if err != nil {
+		log.Fatal(err)
+	}
+	return id
 }
 
 func mustLoadConfig(configPath string) *config.Config {

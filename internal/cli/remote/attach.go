@@ -8,11 +8,9 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"os/signal"
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 
 	"github.com/coder/websocket"
 	"golang.org/x/term"
@@ -76,21 +74,10 @@ func Attach(ctx context.Context, c *Client, id string, rw bool) error {
 	var writeMu sync.Mutex
 
 	if isTTY {
-		winch := make(chan os.Signal, 1)
-		signal.Notify(winch, syscall.SIGWINCH)
-		defer signal.Stop(winch)
-		go func() {
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				case <-winch:
-					if w, h, err := term.GetSize(fd); err == nil {
-						_ = writeFrame(ctx, conn, &writeMu, termMsg{Type: "resize", Cols: w, Rows: h})
-					}
-				}
-			}
-		}()
+		stop := watchWinch(ctx, fd, func(cols, rows int) {
+			_ = writeFrame(ctx, conn, &writeMu, termMsg{Type: "resize", Cols: cols, Rows: rows})
+		})
+		defer stop()
 	}
 
 	return runBridge(ctx, conn, os.Stdin, os.Stdout, &writeMu)
@@ -109,6 +96,9 @@ func runBridge(ctx context.Context, conn *websocket.Conn, in io.Reader, out io.W
 			n, err := in.Read(buf)
 			if n > 0 {
 				if werr := writeFrame(ctx, conn, writeMu, termMsg{Type: "input", Data: string(buf[:n])}); werr != nil {
+					// The connection is broken; unblock the output reader instead
+					// of leaving it parked on conn.Read.
+					cancel()
 					return
 				}
 			}

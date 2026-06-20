@@ -33,8 +33,18 @@ func New(base, token string) *Client {
 	return &Client{
 		base:  strings.TrimRight(base, "/"),
 		token: token,
-		hc:    &http.Client{Timeout: 10 * time.Second},
+		hc:    &http.Client{Transport: newTransport()},
 	}
+}
+
+// newTransport bounds connection setup and the wait for response headers, but
+// not the lifetime of the response body. A total http.Client.Timeout would also
+// cap the body, which would tear down the long-lived SSE stream every few
+// seconds even when the daemon is healthy.
+func newTransport() http.RoundTripper {
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.ResponseHeaderTimeout = 10 * time.Second
+	return t
 }
 
 // NewWithClient is New but with a caller-supplied http.Client, used by tests

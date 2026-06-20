@@ -66,19 +66,23 @@ func New(svc TicketService, broker *SSEBroker, host string, port int, token stri
 }
 
 // staticHandler serves the embedded UI. When a token is configured and the
-// request carries ?token=, it sets the kontora_token cookie so subsequent
-// same-origin fetch/EventSource/WebSocket calls (which cannot set headers)
-// authenticate automatically. The cookie is HttpOnly and SameSite=Lax; Secure
-// is intentionally omitted so the flow works over plain HTTP on a tailnet.
+// request carries a ?token= that matches it, it sets the kontora_token cookie
+// so subsequent same-origin fetch/EventSource/WebSocket calls (which cannot set
+// headers) authenticate automatically. Only a valid token writes the cookie, so
+// a /?token=garbage link cannot overwrite a working cookie. The cookie is
+// HttpOnly and SameSite=Lax; Secure is set only when the request arrived over
+// TLS, since marking it Secure on plain HTTP would make the browser drop it and
+// break the tailnet-over-HTTP flow.
 func (s *Server) staticHandler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if s.token != "" {
-			if q := r.URL.Query().Get("token"); q != "" {
+			if q := r.URL.Query().Get("token"); tokenMatches(s.token, q) {
 				http.SetCookie(w, &http.Cookie{
 					Name:     tokenCookieName,
 					Value:    q,
 					Path:     "/",
 					HttpOnly: true,
+					Secure:   r.TLS != nil,
 					SameSite: http.SameSiteLaxMode,
 				})
 			}

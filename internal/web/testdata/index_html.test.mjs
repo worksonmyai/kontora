@@ -530,6 +530,109 @@ test("formatDuration and timeAgo advance with the reactive clock", () => {
   assert.equal(state.timeAgo(started), "1h");
 });
 
+test("_escapeHtml escapes the five HTML-significant characters", () => {
+  const state = loadKontoraState();
+
+  assert.equal(state._escapeHtml('<b>'), "&lt;b&gt;");
+  assert.equal(state._escapeHtml(`a & "b" 'c'`), "a &amp; &quot;b&quot; &#39;c&#39;");
+  assert.equal(state._escapeHtml(null), "");
+  assert.equal(state._escapeHtml(undefined), "");
+});
+
+test("_cardHTML neutralizes HTML in interpolated text (no XSS)", () => {
+  const state = loadKontoraState();
+  const html = state._cardHTML(
+    { id: "sta-1", title: "<img src=x onerror=alert(1)>", status: "todo", created_at: "2026-05-19T08:00:00Z", kontora: true, pipeline: "kontora" },
+    { key: "open" },
+  );
+
+  assert.equal(html.includes("<img src=x"), false);
+  assert.match(html, /&lt;img src=x onerror=alert\(1\)&gt;/);
+});
+
+test("_cardHTML renders an in-progress card with selection, glyph, bars, and a live duration span", () => {
+  const state = loadKontoraState();
+  state.selectedTicket = { id: "sta-2" };
+  const html = state._cardHTML(
+    {
+      id: "sta-2", title: "Run it", status: "in_progress", started_at: "2026-05-19T10:00:00Z",
+      stage: "code", agent: "claude", kontora: true, pipeline: "kontora", stages: ["plan", "code"], attempt: 2,
+    },
+    { key: "in_progress" },
+  );
+
+  assert.match(html, /class="[^"]*\bis-selected\b/);
+  assert.match(html, /class="[^"]*\bcard-state-running\b/);
+  assert.match(html, /card-glyph-running/);
+  assert.match(html, /class="stage-bars"/);
+  assert.match(html, /data-since="2026-05-19T10:00:00Z"/);
+  assert.match(html, /retry 2/);
+  assert.match(html, /data-ticket-id="sta-2"/);
+  assert.match(html, /data-pipe-color="[a-z]+"/);
+});
+
+test("_cardHTML uses data-ago for non-running cards and omits is-selected when unselected", () => {
+  const state = loadKontoraState();
+  state.selectedTicket = null;
+  const html = state._cardHTML(
+    { id: "sta-3", title: "Plain", status: "todo", created_at: "2026-05-19T08:00:00Z", kontora: true, pipeline: "kontora" },
+    { key: "in_progress" },
+  );
+
+  assert.equal(/\bis-selected\b/.test(html), false);
+  assert.match(html, /data-ago="2026-05-19T08:00:00Z"/);
+  assert.match(html, /◌/); // todo glyph in the in_progress column
+});
+
+test("_cardHTML encodes menu actions and the Initialize entry", () => {
+  const state = loadKontoraState();
+
+  // Kontora todo: move actions carry endpoint + target status.
+  const todo = state._cardHTML(
+    { id: "sta-4", title: "T", status: "todo", created_at: "2026-05-19T08:00:00Z", kontora: true },
+    { key: "in_progress" },
+  );
+  assert.match(todo, /data-act="move" data-status="open"/);
+  assert.match(todo, /data-act="move" data-status="cancelled"/);
+
+  // Open ticket: Queue maps to the run endpoint with no status.
+  const open = state._cardHTML(
+    { id: "sta-5", title: "O", status: "open", created_at: "2026-05-19T08:00:00Z", kontora: true },
+    { key: "open" },
+  );
+  assert.match(open, /data-act="run"/);
+
+  // Non-kontora ticket: Initialize action is present.
+  const ext = state._cardHTML(
+    { id: "sta-6", title: "Imported", status: "open", created_at: "2026-05-19T08:00:00Z", kontora: false, path: "/x/proj" },
+    { key: "open" },
+  );
+  assert.match(ext, /data-act="init"/);
+  assert.equal(ext.includes("not a kontora ticket"), false); // badge hidden while open
+
+  // Non-kontora, non-open: the "not a kontora ticket" badge shows.
+  const extTodo = state._cardHTML(
+    { id: "sta-7", title: "Imported2", status: "todo", created_at: "2026-05-19T08:00:00Z", kontora: false, path: "/x/proj" },
+    { key: "in_progress" },
+  );
+  assert.match(extTodo, /not a kontora ticket/);
+
+  // Unknown (custom) status with no valid moves: fallback label.
+  const custom = state._cardHTML(
+    { id: "sta-8", title: "C", status: "review", created_at: "2026-05-19T08:00:00Z", kontora: true },
+    { key: "review" },
+  );
+  assert.match(custom, /No actions available/);
+});
+
+test("_emptyStateHTML keeps the .empty-state class for Sortable's filter", () => {
+  const state = loadKontoraState();
+  const html = state._emptyStateHTML({ key: "open", emptyText: "Nothing Here" });
+
+  assert.match(html, /class="empty-state/);
+  assert.match(html, /∅ nothing here/);
+});
+
 test("index.html error banner uses the --err token, not raw red palette classes", () => {
   const html = fs.readFileSync(htmlPath, "utf8");
 
@@ -550,4 +653,15 @@ test("index.html detail header carries the status chip and pipeline tag", () => 
 
   assert.match(html, /class="status-chip[^"]*"[^>]*:data-status="selectedTicket\?\.status"/);
   assert.match(html, /class="pipe-tag shrink-0"/);
+});
+
+test("index.html board renders cards imperatively, not via an Alpine x-for", () => {
+  const html = fs.readFileSync(htmlPath, "utf8");
+
+  // The columns wrapper carries the event-delegation anchor.
+  assert.match(html, /id="board-cols"/);
+  // The per-ticket card x-for template was removed (cards come from renderColumn).
+  assert.equal(/x-for="ticket in boardTickets\(col\.key\)"/.test(html), false);
+  // The imperative card-list container is still wired for Sortable.
+  assert.match(html, /x-ref="colList"[\s\S]*?x-init="initSortable\(\$el\)"/);
 });

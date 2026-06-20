@@ -279,6 +279,11 @@
       border-left-width: 2px;
       border-left-color: hsl(var(--pipe-h, 240 10% 55%) / 0.55);
       transition: border-color .12s, background-color .12s, box-shadow .12s;
+      /* Cards are imperatively injected (no Alpine); off-screen cards skip layout
+         and paint. contain-intrinsic-size reserves a placeholder until first
+         render; `auto` then remembers the real height to avoid scrollbar jump. */
+      content-visibility: auto;
+      contain-intrinsic-size: auto 92px;
     }
     .kt-card:hover {
       border-left-color: hsl(var(--pipe-h, 240 10% 55%));
@@ -287,6 +292,23 @@
        two states are distinguishable at a glance in the IN PROGRESS column. */
     .kt-card.card-state-running, .kt-card.card-state-running:hover { border-left-color: hsl(var(--st-progress)); }
     .kt-card.card-state-paused,  .kt-card.card-state-paused:hover  { border-left-color: hsl(var(--st-paused) / 0.8); }
+    /* Selected card: a class toggle (set by _markSelectedCard / _cardHTML) instead
+       of a reactive :class, so selection changes don't re-render the column. Only
+       the top/right/bottom borders turn accent; the left border stays pipe/state
+       tinted via the rules above. Specificity + later source order (this inline
+       <style> follows app.css) beat the bg-surface-900/hover utilities. */
+    .kt-card.is-selected, .kt-card.is-selected:hover {
+      background: rgba(var(--surface-800), 1);
+      border-top-color: rgba(var(--accent), 0.3);
+      border-right-color: rgba(var(--accent), 0.3);
+      border-bottom-color: rgba(var(--accent), 0.3);
+      box-shadow: 0 10px 15px -3px rgba(var(--accent), 0.05), 0 4px 6px -4px rgba(var(--accent), 0.05);
+    }
+    /* Per-card 3-dot action menu: hidden until its card gets .menu-open (toggled
+       by the delegated handler in _bindBoardEvents). */
+    .kt-card .card-menu { display: none; }
+    .kt-card.menu-open .card-menu { display: block; }
+    .kt-card.menu-open .card-menu-btn { opacity: 1; }
 
     /* "running" pill in the top header */
     .running-pill {
@@ -721,7 +743,7 @@
          class="board-scroll flex-1 overflow-x-auto overflow-y-hidden transition-opacity duration-200"
          :class="[selectedTicket ? 'opacity-40' : 'opacity-100', hasOverflowRight ? 'has-overflow-right' : '']"
          @click="selectedTicket && closeDetail()">
-      <div class="flex gap-3 p-4 h-full min-w-min">
+      <div id="board-cols" class="flex gap-3 p-4 h-full min-w-min">
         <template x-for="(col, colIdx) in columns" :key="col.key">
           <div class="kanban-col flex flex-col h-full flex-1 min-w-[280px] basis-0 relative"
                :style="'--col-tint: ' + col.tint"
@@ -750,7 +772,7 @@
                    list.addEventListener('scroll', check, { passive: true });
                    window.addEventListener('resize', schedule);
                    const mo = new MutationObserver(schedule);
-                   mo.observe(list, { childList: true, subtree: true });
+                   mo.observe(list, { childList: true });
                    const ro = new ResizeObserver(schedule);
                    ro.observe(list);
                    schedule();
@@ -769,131 +791,8 @@
                  :data-drop-status="col.dropStatus"
                  :class="col.tint || ''"
                  x-init="initSortable($el)">
-              <div x-show="boardTickets(col.key).length === 0"
-                   class="empty-state font-mono text-center text-[12px] text-surface-600 border border-dashed border-surface-700/60 rounded-lg py-7 px-4 mt-1"
-                   x-text="'∅ ' + col.emptyText.toLowerCase()"></div>
-              <template x-for="ticket in boardTickets(col.key)" :key="ticket.id">
-                <div :data-ticket-id="ticket.id"
-                     role="listitem" tabindex="0"
-                     :aria-label="'Ticket ' + ticket.id + ': ' + ticket.title"
-                     :data-pipe-color="ticketPipeColor(ticket)"
-                     @click.stop="selectTicket(ticket)"
-                     @keydown.enter.stop="selectTicket(ticket)"
-                     @keydown.space.stop.prevent="selectTicket(ticket)"
-                     class="kt-card group relative rounded-lg p-3 cursor-pointer border slide-up flex flex-col gap-2"
-                     :class="[
-                       selectedTicket?.id === ticket.id
-                         ? 'bg-surface-800 border-accent/30 shadow-lg shadow-accent/5'
-                         : 'bg-surface-900 border-surface-700/50 hover:bg-surface-850',
-                       !ticket.kontora ? 'border-dashed' : '',
-                       ticket.status === 'cancelled' ? 'opacity-60' : '',
-                       ticket.status === 'in_progress' ? 'card-state-running' : '',
-                       ticket.status === 'paused' ? 'card-state-paused' : '',
-                     ]">
-                  <!-- Top row: pipeline tag + stage / status indicator + 3-dot menu -->
-                  <div class="flex items-center justify-between gap-2">
-                    <div class="flex items-center gap-2 min-w-0">
-                      <span class="pipe-tag truncate" x-text="'[' + ticketTagLabel(ticket) + ']'"></span>
-                      <template x-if="!ticket.kontora && ticket.status !== 'open'">
-                        <span class="px-1.5 py-px rounded-full border border-warn/20 bg-warn/10 text-warn text-[10px] font-mono shrink-0">not a kontora ticket</span>
-                      </template>
-                      <template x-if="col.key === 'in_progress' && ticket.status === 'in_progress'">
-                        <span class="flex items-center gap-1 text-[11px] font-mono card-glyph-running">
-                          <span class="pulse-dot">●</span>
-                          <span x-text="ticket.stage"></span>
-                        </span>
-                      </template>
-                      <template x-if="col.key === 'in_progress' && ticket.status === 'paused'">
-                        <span class="flex items-center gap-1 text-[11px] font-mono card-glyph-paused">
-                          <span>⏸</span>
-                          <span x-show="ticket.stage" x-text="ticket.stage"></span>
-                        </span>
-                      </template>
-                      <template x-if="col.key === 'in_progress' && ticket.status === 'todo'">
-                        <span class="flex items-center gap-1 text-[11px] font-mono text-surface-600">
-                          <span>◌</span>
-                          <span x-show="ticket.stage" x-text="ticket.stage"></span>
-                        </span>
-                      </template>
-                    </div>
-                    <div class="relative flex items-center shrink-0"
-                         @click.outside="if (openMenuTicketId === ticket.id) openMenuTicketId = null"
-                         @keydown.escape.window="if (openMenuTicketId === ticket.id) openMenuTicketId = null">
-                      <button type="button"
-                              class="w-6 h-6 rounded-md border border-surface-700/40 bg-surface-900/70 text-surface-600 hover:bg-surface-800 hover:text-tx-2 hover:border-surface-600 transition-colors flex items-center justify-center opacity-0 group-hover:opacity-100 focus:opacity-100"
-                              :class="openMenuTicketId === ticket.id ? 'opacity-100' : ''"
-                              @click.stop="openMenuTicketId = (openMenuTicketId === ticket.id ? null : ticket.id)"
-                              :aria-expanded="openMenuTicketId === ticket.id"
-                              aria-haspopup="menu"
-                              aria-label="More actions">
-                        <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="currentColor">
-                          <circle cx="5" cy="12" r="2.2"></circle>
-                          <circle cx="12" cy="12" r="2.2"></circle>
-                          <circle cx="19" cy="12" r="2.2"></circle>
-                        </svg>
-                      </button>
-                      <div x-show="openMenuTicketId === ticket.id"
-                           x-transition.origin.top.right
-                           class="absolute right-0 top-7 min-w-[10rem] overflow-hidden rounded-lg border border-surface-700/60 bg-surface-900/95 shadow-lg shadow-black/30 z-20"
-                           @click.stop>
-                        <template x-if="!ticket.kontora">
-                          <button type="button"
-                                  class="w-full px-3 py-2 text-left text-[12px] font-mono text-warn hover:bg-surface-800 hover:text-warn transition-colors"
-                                  @click.stop="openMenuTicketId = null; openInitModal(ticket)">Initialize</button>
-                        </template>
-                        <template x-for="mv in (validMoves[ticket.status] || [])" :key="mv.label">
-                          <button type="button"
-                                  class="w-full px-3 py-2 text-left text-[12px] font-mono text-tx-3 hover:bg-surface-800 hover:text-tx-2 transition-colors"
-                                  @click.stop="openMenuTicketId = null; moveTicketVia(ticket.id, mv.endpoint, mv.status ? { status: mv.status } : null)"
-                                  x-text="mv.label"></button>
-                        </template>
-                        <template x-if="!(validMoves[ticket.status] && validMoves[ticket.status].length)">
-                          <span class="block px-3 py-2 text-[12px] font-mono text-surface-600">No actions available</span>
-                        </template>
-                      </div>
-                    </div>
-                  </div>
-
-                  <!-- Title -->
-                  <p class="text-[13px] text-tx leading-snug"
-                     :class="ticket.status === 'cancelled' ? 'line-through decoration-surface-600/60' : ''"
-                     x-text="ticket.title"></p>
-
-                  <!-- Stage progress bars: only in the In Progress column. -->
-                  <template x-if="col.key === 'in_progress' && ticket.stages && ticket.stages.length > 1">
-                    <div class="stage-bars">
-                      <template x-for="(stage, i) in ticket.stages" :key="i">
-                        <span :class="stageBarClass(i, ticket)" :title="stage"></span>
-                      </template>
-                    </div>
-                  </template>
-
-                  <!-- Meta row -->
-                  <div class="flex items-center gap-2 text-[11px] font-mono text-surface-600 justify-between">
-                    <div class="flex items-center gap-1.5 min-w-0">
-                      <span class="group-hover:text-tx-3 transition-colors truncate" x-text="ticket.id"></span>
-                      <template x-if="ticket.agent">
-                        <span class="flex items-center gap-1.5 min-w-0">
-                          <span class="text-surface-700">·</span>
-                          <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 10 10" fill="none" class="shrink-0 opacity-70"><circle cx="5" cy="5" r="4" stroke="currentColor" stroke-width="1"/><circle cx="5" cy="5" r="1.6" fill="currentColor"/></svg>
-                          <span class="truncate" x-text="ticket.agent"></span>
-                        </span>
-                      </template>
-                    </div>
-                    <div class="flex items-center gap-2 shrink-0">
-                      <template x-if="ticket.attempt > 0 && !['done','cancelled'].includes(ticket.status)">
-                        <span class="px-1.5 py-px rounded text-[10px] bg-err/15 text-err" x-text="'retry ' + ticket.attempt"></span>
-                      </template>
-                      <template x-if="ticket.status === 'in_progress' && ticket.started_at">
-                        <span x-text="formatDuration(ticket)" :data-tip-t="'Started: ' + formatAbsDate(ticket.started_at)"></span>
-                      </template>
-                      <template x-if="ticket.created_at && !(ticket.status === 'in_progress' && ticket.started_at)">
-                        <span x-text="timeAgo(ticket.created_at)" :data-tip-t="formatAbsDate(ticket.created_at)"></span>
-                      </template>
-                    </div>
-                  </div>
-                </div>
-              </template>
+              <!-- Cards are injected imperatively by renderColumn() (app.js); see
+                   _cardHTML for the markup this reproduces. -->
             </div>
             </div>
           </div>

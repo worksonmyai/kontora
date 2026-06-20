@@ -86,7 +86,12 @@ function kontora() {
     currentView: 'board',
     // Map of ticketId → true while a plannotator subprocess is in flight for it.
     plannotatorInFlight: {},
-    openMenuTicketId: null,
+    // Board cards are rendered imperatively (not via Alpine), so the open card
+    // menu and the last-rendered HTML per column are plain (non-reactive) state.
+    // _boardInit gates renderBoard until the column DOM exists (first paint).
+    _openMenuId: null,
+    _renderedHTML: {},
+    _boardInit: false,
 
     _builtinColumns: [
       { key: 'open', statuses: ['open'], dropStatus: 'open', label: 'Open', color: 'bg-accent', tint: '227 35% 80%', tip: 'Draft ticket, not running yet. Drag to In Progress or click Initialize to start.', emptyText: 'Create a ticket to get started', glow: 'glow-top-accent',
@@ -173,11 +178,19 @@ function kontora() {
       window.addEventListener('resize', () => {
         this.isMobile = window.innerWidth < 768;
       });
-      this._nowTimer = setInterval(() => { this.now = Date.now(); }, 30000);
+      // Advance the reactive clock (detail panel duration, mobile cards) and
+      // patch the imperatively rendered card timers in place every 30s.
+      this._nowTimer = setInterval(() => { this.now = Date.now(); this._updateCardTimers(); }, 30000);
       // Recompute the board when the search query changes. Debounced so typing
       // doesn't re-filter every column on each keystroke; updateSuggestions()
       // stays on @input for the autocomplete dropdown.
       this.$watch('searchQuery', () => this.debounceRecomputeBoard());
+      // Selection highlight is a class toggle on the rendered card, not a
+      // re-render, so changing the selected ticket doesn't rebuild a column.
+      this.$watch('selectedTicket', () => this._markSelectedCard());
+      // Custom statuses add columns; recompute so _board gains the new key,
+      // then renderBoard (called by recomputeBoard) fills the new column DOM.
+      this.$watch('configCache', () => this.$nextTick(() => this.recomputeBoard()));
       this.$watch('terminalFullscreen', (fs) => {
         if (!this._term?.element || !this.terminalOpen) return;
         var target = fs
@@ -205,6 +218,14 @@ function kontora() {
       }
       this.loading = false;
       this.connectSSE();
+      // The board DOM (column containers) is created by Alpine once loading
+      // flips false; render cards into it on the next tick, then bind the one
+      // delegated handler that drives card select / menu interactions.
+      this.$nextTick(() => {
+        this._boardInit = true;
+        this.renderBoard();
+        this._bindBoardEvents();
+      });
     },
 
     async fetchTasks() {
@@ -786,6 +807,10 @@ function kontora() {
       this.error = null;
       const ticket = this.tickets.find(t => t.id === ticketId);
       if (ticket && !ticket.kontora && ['todo', 'in_progress'].includes(newStatus)) {
+        // A drag here has already moved the DOM node into the target column;
+        // rebuild from canonical data so the card snaps back if the user
+        // dismisses the init modal.
+        this.recomputeBoard();
         this.openInitModal(ticket);
         return;
       }
@@ -978,6 +1003,268 @@ function kontora() {
       return 'bg-surface-800 text-surface-600';
     },
 
+    // ─── Imperative board card rendering ───
+    // The desktop card list is built as HTML strings and injected with innerHTML
+    // instead of an Alpine x-for, so a board with hundreds of tickets carries no
+    // per-card reactive effects. One delegated handler (_bindBoardEvents) drives
+    // all card interactions; selection and the open menu are class toggles.
+
+    _escapeHtml(s) {
+      if (s === null || s === undefined) return '';
+      return String(s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    },
+
+    // Markup for a column with no matching tickets. Keeps the .empty-state class
+    // so Sortable's filter still excludes it from dragging.
+    _emptyStateHTML(col) {
+      return '<div class="empty-state font-mono text-center text-[12px] text-surface-600 border border-dashed border-surface-700/60 rounded-lg py-7 px-4 mt-1">'
+        + this._escapeHtml('∅ ' + col.emptyText.toLowerCase()) + '</div>';
+    },
+
+    // Build one card's HTML. Every interpolated string is escaped.
+    _cardHTML(ticket, col) {
+      var esc = (s) => this._escapeHtml(s);
+      var inProgressCol = col.key === 'in_progress';
+      var selected = this.selectedTicket && this.selectedTicket.id === ticket.id;
+
+      var cls = ['kt-card group relative rounded-lg p-3 cursor-pointer border',
+                 'bg-surface-900 border-surface-700/50 hover:bg-surface-850',
+                 'flex flex-col gap-2'];
+      if (selected) cls.push('is-selected');
+      if (!ticket.kontora) cls.push('border-dashed');
+      if (ticket.status === 'cancelled') cls.push('opacity-60');
+      if (ticket.status === 'in_progress') cls.push('card-state-running');
+      if (ticket.status === 'paused') cls.push('card-state-paused');
+
+      // Stage / status glyph (IN PROGRESS column only).
+      var glyph = '';
+      if (inProgressCol && ticket.status === 'in_progress') {
+        glyph = '<span class="flex items-center gap-1 text-[11px] font-mono card-glyph-running">'
+          + '<span class="pulse-dot">●</span><span>' + esc(ticket.stage) + '</span></span>';
+      } else if (inProgressCol && ticket.status === 'paused') {
+        glyph = '<span class="flex items-center gap-1 text-[11px] font-mono card-glyph-paused"><span>⏸</span>'
+          + (ticket.stage ? '<span>' + esc(ticket.stage) + '</span>' : '') + '</span>';
+      } else if (inProgressCol && ticket.status === 'todo') {
+        glyph = '<span class="flex items-center gap-1 text-[11px] font-mono text-surface-600"><span>◌</span>'
+          + (ticket.stage ? '<span>' + esc(ticket.stage) + '</span>' : '') + '</span>';
+      }
+
+      var notKontoraBadge = (!ticket.kontora && ticket.status !== 'open')
+        ? '<span class="px-1.5 py-px rounded-full border border-warn/20 bg-warn/10 text-warn text-[10px] font-mono shrink-0">not a kontora ticket</span>'
+        : '';
+
+      // Action menu items: Initialize (non-kontora) + valid moves + fallback.
+      // data-act carries the endpoint ("init" for the init modal); data-status
+      // carries the target status for move actions.
+      var items = '';
+      if (!ticket.kontora) {
+        items += '<button type="button" class="card-menu-item w-full px-3 py-2 text-left text-[12px] font-mono text-warn hover:bg-surface-800 hover:text-warn transition-colors" data-act="init">Initialize</button>';
+      }
+      var moves = this.validMoves[ticket.status] || [];
+      moves.forEach((mv) => {
+        items += '<button type="button" class="card-menu-item w-full px-3 py-2 text-left text-[12px] font-mono text-tx-3 hover:bg-surface-800 hover:text-tx-2 transition-colors" data-act="'
+          + esc(mv.endpoint) + '"' + (mv.status ? ' data-status="' + esc(mv.status) + '"' : '') + '>' + esc(mv.label) + '</button>';
+      });
+      if (!moves.length) {
+        items += '<span class="block px-3 py-2 text-[12px] font-mono text-surface-600">No actions available</span>';
+      }
+
+      // Stage progress bars (IN PROGRESS column, multi-stage pipelines only).
+      var stageBars = '';
+      if (inProgressCol && ticket.stages && ticket.stages.length > 1) {
+        var segs = ticket.stages.map((stage, i) =>
+          '<span class="' + esc(this.stageBarClass(i, ticket)) + '" title="' + esc(stage) + '"></span>').join('');
+        stageBars = '<div class="stage-bars">' + segs + '</div>';
+      }
+
+      var agent = ticket.agent
+        ? '<span class="flex items-center gap-1.5 min-w-0"><span class="text-surface-700">·</span>'
+          + '<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 10 10" fill="none" class="shrink-0 opacity-70"><circle cx="5" cy="5" r="4" stroke="currentColor" stroke-width="1"/><circle cx="5" cy="5" r="1.6" fill="currentColor"/></svg>'
+          + '<span class="truncate">' + esc(ticket.agent) + '</span></span>'
+        : '';
+
+      var retry = (ticket.attempt > 0 && ticket.status !== 'done' && ticket.status !== 'cancelled')
+        ? '<span class="px-1.5 py-px rounded text-[10px] bg-err/15 text-err">' + esc('retry ' + ticket.attempt) + '</span>'
+        : '';
+      // data-since / data-ago let _updateCardTimers patch the text in place on
+      // the 30s tick without rebuilding the card.
+      var timeSpan = '';
+      if (ticket.status === 'in_progress' && ticket.started_at) {
+        timeSpan = '<span data-since="' + esc(ticket.started_at) + '" data-tip-t="' + esc('Started: ' + this.formatAbsDate(ticket.started_at)) + '">'
+          + esc(this.formatDuration(ticket)) + '</span>';
+      } else if (ticket.created_at) {
+        timeSpan = '<span data-ago="' + esc(ticket.created_at) + '" data-tip-t="' + esc(this.formatAbsDate(ticket.created_at)) + '">'
+          + esc(this.timeAgo(ticket.created_at)) + '</span>';
+      }
+
+      var titleCls = 'text-[13px] text-tx leading-snug' + (ticket.status === 'cancelled' ? ' line-through decoration-surface-600/60' : '');
+
+      return '<div class="' + cls.join(' ') + '"'
+        + ' data-ticket-id="' + esc(ticket.id) + '"'
+        + ' data-pipe-color="' + esc(this.ticketPipeColor(ticket)) + '"'
+        + ' role="listitem" tabindex="0"'
+        + ' aria-label="' + esc('Ticket ' + ticket.id + ': ' + (ticket.title || '')) + '">'
+        + '<div class="flex items-center justify-between gap-2">'
+        +   '<div class="flex items-center gap-2 min-w-0">'
+        +     '<span class="pipe-tag truncate">' + esc('[' + this.ticketTagLabel(ticket) + ']') + '</span>'
+        +     notKontoraBadge + glyph
+        +   '</div>'
+        +   '<div class="relative flex items-center shrink-0">'
+        +     '<button type="button" class="card-menu-btn w-6 h-6 rounded-md border border-surface-700/40 bg-surface-900/70 text-surface-600 hover:bg-surface-800 hover:text-tx-2 hover:border-surface-600 transition-colors flex items-center justify-center opacity-0 group-hover:opacity-100 focus:opacity-100" aria-haspopup="menu" aria-expanded="false" aria-label="More actions">'
+        +       '<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="2.2"></circle><circle cx="12" cy="12" r="2.2"></circle><circle cx="19" cy="12" r="2.2"></circle></svg>'
+        +     '</button>'
+        +     '<div class="card-menu absolute right-0 top-7 min-w-[10rem] overflow-hidden rounded-lg border border-surface-700/60 bg-surface-900/95 shadow-lg shadow-black/30 z-20" role="menu">' + items + '</div>'
+        +   '</div>'
+        + '</div>'
+        + '<p class="' + titleCls + '">' + esc(ticket.title) + '</p>'
+        + stageBars
+        + '<div class="flex items-center gap-2 text-[11px] font-mono text-surface-600 justify-between">'
+        +   '<div class="flex items-center gap-1.5 min-w-0">'
+        +     '<span class="group-hover:text-tx-3 transition-colors truncate">' + esc(ticket.id) + '</span>'
+        +     agent
+        +   '</div>'
+        +   '<div class="flex items-center gap-2 shrink-0">' + retry + timeSpan + '</div>'
+        + '</div>'
+        + '</div>';
+    },
+
+    // Replace a single column's cards, skipping the DOM write when the rendered
+    // HTML is unchanged so untouched columns keep their scroll position and any
+    // open menu.
+    renderColumn(key) {
+      var el = document.getElementById('col-' + key);
+      if (!el) return;
+      var col = this.columns.find((c) => c.key === key);
+      if (!col) return;
+      var list = this._board[key] || [];
+      var html = list.length
+        ? list.map((t) => this._cardHTML(t, col)).join('')
+        : this._emptyStateHTML(col);
+      if (this._renderedHTML[key] === html) return;
+      this._renderedHTML[key] = html;
+      el.innerHTML = html;
+    },
+
+    // Render every current column. No-op until the column DOM exists (gated by
+    // _boardInit, set in init's $nextTick).
+    renderBoard() {
+      if (!this._boardInit) return;
+      this._closeCardMenu();
+      this.columns.forEach((col) => this.renderColumn(col.key));
+    },
+
+    // One delegated click/keydown handler for the whole board: menu toggle, menu
+    // action, card select. Bound on #board-cols, a descendant of .board-scroll,
+    // so stopPropagation here pre-empts the board background's closeDetail
+    // handler.
+    _bindBoardEvents() {
+      var self = this;
+      var root = document.getElementById('board-cols');
+      if (!root) return;
+      root.addEventListener('click', function (e) {
+        var item = e.target.closest('.card-menu-item');
+        if (item) {
+          e.stopPropagation();
+          var mcard = item.closest('.kt-card');
+          var mid = mcard && mcard.dataset.ticketId;
+          self._closeCardMenu();
+          if (!mid) return;
+          var act = item.dataset.act;
+          if (act === 'init') {
+            var it = self.tickets.find(function (t) { return t.id === mid; });
+            if (it) self.openInitModal(it);
+          } else {
+            var status = item.dataset.status;
+            self.moveTicketVia(mid, act, status ? { status: status } : null);
+          }
+          return;
+        }
+        var btn = e.target.closest('.card-menu-btn');
+        if (btn) {
+          e.stopPropagation();
+          self._toggleCardMenu(btn.closest('.kt-card'));
+          return;
+        }
+        var card = e.target.closest('.kt-card');
+        if (card) {
+          e.stopPropagation();
+          self._closeCardMenu();
+          var t = self.tickets.find(function (x) { return x.id === card.dataset.ticketId; });
+          if (t) self.selectTicket(t);
+          return;
+        }
+        // Click in the board gutter (not a card): close any menu and let the
+        // event bubble to .board-scroll, which closes the detail panel.
+        self._closeCardMenu();
+      });
+      root.addEventListener('keydown', function (e) {
+        var card = e.target.closest('.kt-card');
+        if (card && (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar')) {
+          e.preventDefault();
+          e.stopPropagation();
+          var t = self.tickets.find(function (x) { return x.id === card.dataset.ticketId; });
+          if (t) self.selectTicket(t);
+        } else if (e.key === 'Escape') {
+          self._closeCardMenu();
+        }
+      });
+      // Close the menu on clicks outside the board, and on a window-level Escape.
+      document.addEventListener('click', function (e) {
+        if (!self._openMenuId) return;
+        if (e.target.closest && e.target.closest('#board-cols')) return;
+        self._closeCardMenu();
+      });
+      document.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape' && self._openMenuId) self._closeCardMenu();
+      });
+    },
+
+    _toggleCardMenu(cardEl) {
+      if (!cardEl) return;
+      var id = cardEl.dataset.ticketId;
+      if (this._openMenuId === id) { this._closeCardMenu(); return; }
+      this._closeCardMenu();
+      cardEl.classList.add('menu-open');
+      var btn = cardEl.querySelector('.card-menu-btn');
+      if (btn) btn.setAttribute('aria-expanded', 'true');
+      this._openMenuId = id;
+    },
+
+    _closeCardMenu() {
+      if (!this._openMenuId) return;
+      document.querySelectorAll('#board-cols .kt-card.menu-open').forEach(function (el) {
+        el.classList.remove('menu-open');
+        var btn = el.querySelector('.card-menu-btn');
+        if (btn) btn.setAttribute('aria-expanded', 'false');
+      });
+      this._openMenuId = null;
+    },
+
+    // Move the .is-selected highlight without re-rendering a column.
+    _markSelectedCard() {
+      var sel = this.selectedTicket ? this.selectedTicket.id : null;
+      document.querySelectorAll('#board-cols .kt-card').forEach(function (el) {
+        el.classList.toggle('is-selected', el.dataset.ticketId === sel);
+      });
+    },
+
+    // Patch the running-duration / age text on the 30s tick, in place, so the
+    // clock doesn't trigger a full board re-render.
+    _updateCardTimers() {
+      var self = this;
+      document.querySelectorAll('#board-cols [data-since]').forEach(function (el) {
+        el.textContent = self.formatDuration({ started_at: el.dataset.since });
+      });
+      document.querySelectorAll('#board-cols [data-ago]').forEach(function (el) {
+        el.textContent = self.timeAgo(el.dataset.ago);
+      });
+    },
+
     initSortable(el) {
       if (this.isMobile) return;
       var self = this;
@@ -996,13 +1283,19 @@ function kontora() {
           c.classList.remove('is-drop-target');
         });
       }
-      new Sortable(el, {
+      // Disable the FLIP animation when the source column is large: animating
+      // every sibling on each drag move is the main drag stutter on big boards.
+      var ANIM_THRESHOLD = 60;
+      var sortable = new Sortable(el, {
         group: 'kanban',
         animation: 150,
         ghostClass: 'sortable-ghost',
         dragClass: 'sortable-drag',
         filter: '.empty-state',
-        onStart: function(evt) { setDropTarget(evt.from); },
+        onStart: function(evt) {
+          sortable.option('animation', evt.from.children.length > ANIM_THRESHOLD ? 0 : 150);
+          setDropTarget(evt.from);
+        },
         onChange: function(evt) { setDropTarget(evt.to); },
         onEnd: function(evt) {
           clearDropTarget();
@@ -1010,9 +1303,9 @@ function kontora() {
           var fromDrop = evt.from.dataset.dropStatus;
           var toDrop = evt.to.dataset.dropStatus;
           if (fromDrop === toDrop || !ticketId) return;
-          evt.item.remove();
-          var ref = evt.from.children[evt.oldIndex];
-          evt.from.insertBefore(evt.item, ref || null);
+          // No manual DOM restore: moveTask sets the status optimistically and
+          // recomputeBoard → renderBoard rebuilds both columns from canonical
+          // data, replacing the node Sortable moved (and reverting on failure).
           self.moveTask(ticketId, toDrop);
         }
       });
@@ -1300,10 +1593,15 @@ function kontora() {
       this._boardTotal = total;
       this._statusCounts = counts;
       this.runningAgents = counts.in_progress;
+      // Repaint the imperatively rendered cards from the fresh board data. Guarded
+      // until the first post-load render (init's $nextTick) so calls during the
+      // initial fetch, before the column DOM exists, are no-ops.
+      this.renderBoard();
     },
 
-    // O(1) lookup of a column's cached list. The board template reads through
-    // this instead of re-filtering and re-sorting on every render.
+    // O(1) lookup of a column's cached list. The board header count and the
+    // mobile board still read this reactively; the desktop card list is rendered
+    // from it imperatively by renderColumn/renderBoard.
     boardTickets(key) {
       return this._board[key] || [];
     },

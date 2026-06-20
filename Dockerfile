@@ -41,6 +41,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
     git \
+    openssh-client \
     tmux \
     xz-utils \
     && rm -rf /var/lib/apt/lists/*

@@ -136,13 +136,17 @@ web:
   enabled: true
   host: 0.0.0.0
   port: 9090
+  token: ""
 ```
 
 | Field | Required | Default | Description |
 |-------|----------|---------|-------------|
 | `enabled` | no | `true` | Start the web server when the daemon runs. |
-| `host` | no | `127.0.0.1` | Bind address. |
+| `host` | no | `127.0.0.1` | Bind address. Set to a tailnet IP to allow remote access. |
 | `port` | no | `8080` | Listen port. |
+| `token` | no | `""` | Shared bearer token. When set, `/api/*` and `/ws/*` require it (via `Authorization: Bearer`, a `kontora_token` cookie, or a `token` query param); empty leaves the API open. `GET /health` and the static UI stay public. |
+
+When a token is set, the CLI can drive the daemon remotely with `KONTORA_URL` and `KONTORA_TOKEN` (see the Remote mode section of the README). The token is the only access control and agents run with `--dangerously-skip-permissions`; a tailnet encrypts the transport, but on untrusted networks put the daemon behind TLS.
 
 See [API Reference](api.md) for the full list of endpoints.
 

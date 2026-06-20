@@ -70,9 +70,20 @@ func TestClient_ResolveID(t *testing.T) {
 		{ID: "abc123def"},
 		{ID: "xyz999"},
 		{ID: "abc"},
+		{ID: "pre-b"},
+		{ID: "pre-a"},
+		{ID: "hidden-123-visible"},
 	}
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		encodeList(w, tickets)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/tickets":
+			encodeList(w, tickets)
+		case "/api/tickets/hidden-1":
+			_ = json.NewEncoder(w).Encode(web.TicketInfo{ID: "hidden-1"})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "ticket not found"})
+		}
 	}))
 	defer srv.Close()
 
@@ -88,6 +99,18 @@ func TestClient_ResolveID(t *testing.T) {
 		id, err := c.ResolveID("xyz")
 		require.NoError(t, err)
 		assert.Equal(t, "xyz999", id)
+	})
+
+	t.Run("prefix match is deterministic", func(t *testing.T) {
+		id, err := c.ResolveID("pre-")
+		require.NoError(t, err)
+		assert.Equal(t, "pre-a", id)
+	})
+
+	t.Run("exact hidden ticket wins over visible prefix", func(t *testing.T) {
+		id, err := c.ResolveID("hidden-1")
+		require.NoError(t, err)
+		assert.Equal(t, "hidden-1", id)
 	})
 
 	t.Run("no match errors", func(t *testing.T) {
@@ -149,6 +172,27 @@ func TestClient_ServerErrorSurfaced(t *testing.T) {
 	assert.Contains(t, err.Error(), "unknown pipeline")
 }
 
+func TestClient_UnaryRequestTimesOutReadingBody(t *testing.T) {
+	oldTimeout := unaryRequestTimeout
+	unaryRequestTimeout = 20 * time.Millisecond
+	t.Cleanup(func() { unaryRequestTimeout = oldTimeout })
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		<-r.Context().Done()
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "")
+	started := time.Now()
+	_, _, err := c.ListTickets()
+	require.Error(t, err)
+	assert.Less(t, time.Since(started), time.Second)
+}
+
 func TestClient_SSEUnauthorizedStopsReconnecting(t *testing.T) {
 	var hits atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -167,4 +211,32 @@ func TestClient_SSEUnauthorizedStopsReconnecting(t *testing.T) {
 		t.Fatal("sseLoop did not stop after a 401")
 	}
 	assert.Equal(t, int32(1), hits.Load(), "a 401 must not trigger a reconnect")
+}
+
+func TestClient_SSEStreamEOFBacksOff(t *testing.T) {
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	c := New(srv.URL, "")
+	ch := c.Subscribe(ctx)
+
+	require.Eventually(t, func() bool { return hits.Load() == 1 }, time.Second, 10*time.Millisecond)
+	time.Sleep(50 * time.Millisecond)
+	assert.Equal(t, int32(1), hits.Load(), "a closed 200 stream should back off before reconnecting")
+
+	cancel()
+	select {
+	case _, ok := <-ch:
+		assert.False(t, ok)
+	case <-time.After(time.Second):
+		t.Fatal("sseLoop did not stop after context cancellation")
+	}
 }

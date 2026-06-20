@@ -66,9 +66,10 @@ func Attach(ctx context.Context, c *Client, id string, rw bool) error {
 
 	if rw && isTTY {
 		old, err := term.MakeRaw(fd)
-		if err == nil {
-			defer func() { _ = term.Restore(fd, old) }()
+		if err != nil {
+			return fmt.Errorf("setting terminal raw mode: %w", err)
 		}
+		defer func() { _ = term.Restore(fd, old) }()
 	}
 
 	ctx, cancel := context.WithCancel(ctx)
@@ -89,7 +90,7 @@ func Attach(ctx context.Context, c *Client, id string, rw bool) error {
 // runBridge writes binary output frames to out and, when rw is true, copies
 // input -> JSON input frames. A read-only bridge does not read stdin at all, so
 // the local terminal stays interactive (e.g. Ctrl-C). It returns when the
-// connection closes or an output write fails. Factored out of Attach so the
+// connection closes or an output write fails. Kept separate from Attach so the
 // framing can be tested without a real TTY.
 func runBridge(ctx context.Context, conn *websocket.Conn, in io.Reader, out io.Writer, writeMu *sync.Mutex, rw bool) error {
 	ctx, cancel := context.WithCancel(ctx)

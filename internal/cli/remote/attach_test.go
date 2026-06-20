@@ -3,10 +3,12 @@ package remote
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/coder/websocket"
@@ -67,12 +69,48 @@ func TestRunBridge_Framing(t *testing.T) {
 
 	var out strings.Builder
 	var mu sync.Mutex
-	err = runBridge(context.Background(), conn, strings.NewReader("hello"), &out, &mu)
+	err = runBridge(context.Background(), conn, strings.NewReader("hello"), &out, &mu, true)
 	require.NoError(t, err)
 
 	assert.Equal(t, "input", gotType)
 	assert.Equal(t, "hello", gotData)
 	assert.Equal(t, "echo:hello", out.String())
+}
+
+func TestRunBridge_ReadOnlyDoesNotForwardInput(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		ctx := r.Context()
+		_ = conn.Write(ctx, websocket.MessageBinary, []byte("out"))
+		conn.Close(websocket.StatusNormalClosure, "")
+	}))
+	defer srv.Close()
+
+	conn, resp, err := websocket.Dial(context.Background(), "ws"+strings.TrimPrefix(srv.URL, "http")+"/ws/terminal/tst-001", nil)
+	require.NoError(t, err)
+	if resp != nil && resp.Body != nil {
+		_ = resp.Body.Close()
+	}
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	var out strings.Builder
+	var mu sync.Mutex
+	in := &trackingReader{}
+	err = runBridge(context.Background(), conn, in, &out, &mu, false)
+	require.NoError(t, err)
+	assert.Equal(t, "out", out.String())
+	assert.False(t, in.used.Load(), "read-only bridge must not read stdin")
+}
+
+// trackingReader records whether Read was ever called.
+type trackingReader struct{ used atomic.Bool }
+
+func (r *trackingReader) Read([]byte) (int, error) {
+	r.used.Store(true)
+	return 0, io.EOF
 }
 
 func TestRunBridge_AbnormalCloseSurfaced(t *testing.T) {
@@ -95,7 +133,7 @@ func TestRunBridge_AbnormalCloseSurfaced(t *testing.T) {
 
 	var out strings.Builder
 	var mu sync.Mutex
-	err = runBridge(context.Background(), conn, strings.NewReader(""), &out, &mu)
+	err = runBridge(context.Background(), conn, strings.NewReader(""), &out, &mu, true)
 	require.Error(t, err)
 }
 

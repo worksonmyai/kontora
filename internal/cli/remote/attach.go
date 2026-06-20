@@ -26,10 +26,13 @@ type termMsg struct {
 }
 
 // Attach connects to a running ticket's terminal over the WebSocket endpoint
-// and bridges the local TTY bidirectionally. The Bearer token (if any) is sent
-// on the handshake. Keystrokes go up as input frames; the agent's output comes
-// down as binary frames and is written to stdout. SIGWINCH triggers a resize
-// frame. It returns when the connection closes.
+// and bridges the local TTY. The Bearer token (if any) is sent on the
+// handshake. The agent's output comes down as binary frames and is written to
+// stdout; SIGWINCH triggers a resize frame so the view renders at the right
+// size. When rw is true, keystrokes go up as input frames and the local TTY is
+// put into raw mode. For a read-only attach the terminal stays in cooked mode
+// and stdin is not forwarded, so Ctrl-C still interrupts the local process. It
+// returns when the connection closes.
 func Attach(ctx context.Context, c *Client, id string, rw bool) error {
 	fd := int(os.Stdin.Fd())
 	isTTY := term.IsTerminal(fd)
@@ -61,7 +64,7 @@ func Attach(ctx context.Context, c *Client, id string, rw bool) error {
 	defer conn.Close(websocket.StatusNormalClosure, "")
 	conn.SetReadLimit(1 << 20)
 
-	if isTTY {
+	if rw && isTTY {
 		old, err := term.MakeRaw(fd)
 		if err == nil {
 			defer func() { _ = term.Restore(fd, old) }()
@@ -80,33 +83,37 @@ func Attach(ctx context.Context, c *Client, id string, rw bool) error {
 		defer stop()
 	}
 
-	return runBridge(ctx, conn, os.Stdin, os.Stdout, &writeMu)
+	return runBridge(ctx, conn, os.Stdin, os.Stdout, &writeMu, rw)
 }
 
-// runBridge copies input -> JSON input frames and binary output frames -> out.
-// It returns when the connection closes or an output write fails. Factored out
-// of Attach so the framing can be tested without a real TTY.
-func runBridge(ctx context.Context, conn *websocket.Conn, in io.Reader, out io.Writer, writeMu *sync.Mutex) error {
+// runBridge writes binary output frames to out and, when rw is true, copies
+// input -> JSON input frames. A read-only bridge does not read stdin at all, so
+// the local terminal stays interactive (e.g. Ctrl-C). It returns when the
+// connection closes or an output write fails. Factored out of Attach so the
+// framing can be tested without a real TTY.
+func runBridge(ctx context.Context, conn *websocket.Conn, in io.Reader, out io.Writer, writeMu *sync.Mutex, rw bool) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	go func() {
-		buf := make([]byte, 4096)
-		for {
-			n, err := in.Read(buf)
-			if n > 0 {
-				if werr := writeFrame(ctx, conn, writeMu, termMsg{Type: "input", Data: string(buf[:n])}); werr != nil {
-					// The connection is broken; unblock the output reader instead
-					// of leaving it parked on conn.Read.
-					cancel()
+	if rw {
+		go func() {
+			buf := make([]byte, 4096)
+			for {
+				n, err := in.Read(buf)
+				if n > 0 {
+					if werr := writeFrame(ctx, conn, writeMu, termMsg{Type: "input", Data: string(buf[:n])}); werr != nil {
+						// The connection is broken; unblock the output reader instead
+						// of leaving it parked on conn.Read.
+						cancel()
+						return
+					}
+				}
+				if err != nil {
 					return
 				}
 			}
-			if err != nil {
-				return
-			}
-		}
-	}()
+		}()
+	}
 
 	for {
 		_, data, err := conn.Read(ctx)

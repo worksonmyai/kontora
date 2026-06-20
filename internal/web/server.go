@@ -73,6 +73,10 @@ func New(svc TicketService, broker *SSEBroker, host string, port int, token stri
 // HttpOnly and SameSite=Lax; Secure is set only when the request arrived over
 // TLS, since marking it Secure on plain HTTP would make the browser drop it and
 // break the tailnet-over-HTTP flow.
+//
+// After setting the cookie it redirects to the same URL with the token query
+// param removed, so the token is not retained in browser history, server logs,
+// or the Referer header.
 func (s *Server) staticHandler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if s.token != "" {
@@ -85,6 +89,14 @@ func (s *Server) staticHandler(next http.Handler) http.Handler {
 					Secure:   r.TLS != nil,
 					SameSite: http.SameSiteLaxMode,
 				})
+				vals := r.URL.Query()
+				vals.Del("token")
+				dest := r.URL.Path
+				if enc := vals.Encode(); enc != "" {
+					dest += "?" + enc
+				}
+				http.Redirect(w, r, dest, http.StatusSeeOther)
+				return
 			}
 		}
 		next.ServeHTTP(w, r)

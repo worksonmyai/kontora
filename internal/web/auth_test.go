@@ -107,17 +107,29 @@ func TestAuth_HealthAndStaticPublic(t *testing.T) {
 	assert.Equal(t, http.StatusUnauthorized, ws.statusCode)
 }
 
-func TestAuth_QueryTokenOnStaticSetsCookie(t *testing.T) {
+func TestAuth_QueryTokenOnStaticSetsCookieAndRedirects(t *testing.T) {
 	srv := startAuthTestServer(t, &mockService{}, "secret")
 
-	res := doAuthRequest(t, srv, "/?token=secret", nil)
-	assert.Equal(t, http.StatusOK, res.statusCode)
+	req, err := http.NewRequest(http.MethodGet, "http://"+srv.Addr()+"/?token=secret", nil)
+	require.NoError(t, err)
+	// Don't follow the redirect so we can inspect the cookie and Location.
+	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}}
+	resp, err := client.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusSeeOther, resp.StatusCode)
 
 	var found bool
-	for _, c := range res.cookies {
+	for _, c := range resp.Cookies() {
 		if c.Name == tokenCookieName && c.Value == "secret" {
 			found = true
 		}
 	}
 	assert.True(t, found, "expected kontora_token cookie to be set")
+
+	loc := resp.Header.Get("Location")
+	assert.NotContains(t, loc, "token", "token must be stripped from the redirect target")
 }

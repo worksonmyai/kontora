@@ -135,6 +135,21 @@ func LoadReader(r io.Reader) (*Config, error) {
 	return &cfg, nil
 }
 
+// ServerTokenEnvVar overrides web.token for the daemon. Unlike the CLI's own
+// KONTORA_TOKEN (a client credential), this is read only by `kontora start`, so
+// it can carry the token from a secret-backed env var without the risk the
+// config comment warns about: a stray env var silently locking down a daemon.
+const ServerTokenEnvVar = "KONTORA_WEB_TOKEN"
+
+// ApplyServerEnvOverrides folds daemon-only environment overrides into the
+// config after it is loaded. Today that is just the web token, so deployments
+// can inject it from a secret instead of writing it into the on-disk config.
+func (c *Config) ApplyServerEnvOverrides() {
+	if v := strings.TrimSpace(os.Getenv(ServerTokenEnvVar)); v != "" {
+		c.Web.Token = v
+	}
+}
+
 func (c *Config) applyDefaults() {
 	if c.TicketsDir == "" {
 		c.TicketsDir = "~/.kontora/tickets"

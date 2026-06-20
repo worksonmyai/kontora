@@ -156,6 +156,7 @@ func cmdStart() {
 	if *port != 0 {
 		cfg.Web.Port = *port
 	}
+	cfg.ApplyServerEnvOverrides()
 
 	if err := runDaemon(cfg, *configPath); err != nil {
 		log.Fatalf("daemon: %v", err)

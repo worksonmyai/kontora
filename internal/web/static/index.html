@@ -351,11 +351,28 @@
       .panel-enter { transition: opacity 0.15s ease-out; }
       .panel-enter-from, .panel-enter-to { transform: none; }
     }
+
+    /* ─── Mobile (phone-width) layer ─── */
+    /* Blinking terminal caret + entrance transitions for the detail overlay and
+       bottom sheets. Resting states are the final keyframe, so nothing is left
+       invisible if the animation is skipped. Looping pulses reuse .pulse-dot. */
+    @keyframes kblink { 0%, 49% { opacity: 1; } 50%, 100% { opacity: 0; } }
+    .kblink { animation: kblink 1.1s step-end infinite; }
+    @keyframes ksheet { from { transform: translateY(100%); } to { transform: translateY(0); } }
+    @keyframes kscrim { from { opacity: 0; } to { opacity: 1; } }
+    @keyframes kdetail { from { transform: translateX(8%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+    .sheet-panel { animation: ksheet 0.26s cubic-bezier(.32,.72,0,1) both; }
+    .sheet-scrim { animation: kscrim 0.18s ease-out both; }
+    .detail-enter { animation: kdetail 0.22s ease-out both; }
+    @media (prefers-reduced-motion: reduce) {
+      .kblink { animation: none; }
+      .sheet-panel, .sheet-scrim, .detail-enter { animation: none; }
+    }
   </style>
 </head>
 
 <body class="h-full bg-surface-950 text-tx font-sans overflow-hidden" x-data="kontora()" x-cloak
-      @keydown.escape.window="if (deleteModal) closeDeleteModal(); else if (initModal) closeInitModal(); else if (currentView === 'new') closeCreateModal(); else if (detailMenuOpen) detailMenuOpen = false; else if (terminalFullscreen) terminalFullscreen = false; else if (ticketFullscreen) ticketFullscreen = false; else if (selectedTicket) closeDetail();"
+      @keydown.escape.window="if (deleteModal) closeDeleteModal(); else if (initModal) closeInitModal(); else if (currentView === 'new') closeCreateModal(); else if (detailMenuOpen) detailMenuOpen = false; else if (terminalFullscreen) terminalFullscreen = false; else if (ticketFullscreen) ticketFullscreen = false; else if (sheet) closeSheet(); else if (selectedTicket) closeDetail();"
       @dragenter.prevent="if ($event.dataTransfer && $event.dataTransfer.types.includes('Files')) uploadDragging = true"
       @dragover.prevent>
 
@@ -555,8 +572,8 @@
     </div>
   </div>
 
-  <!-- Top bar -->
-  <header class="h-12 border-b border-surface-700/50 flex items-center gap-4 px-5 shrink-0">
+  <!-- Top bar (desktop / tablet; the phone-width layer has its own app bar) -->
+  <header x-show="!isMobile" class="h-12 border-b border-surface-700/50 flex items-center gap-4 px-5 shrink-0">
     <button @click="toggleSidebar()"
             class="w-7 h-7 -ml-1 rounded text-surface-600 hover:text-tx-3 hover:bg-surface-900 transition-colors flex items-center justify-center shrink-0"
             :aria-label="sidebarHidden ? 'Show sidebar' : 'Hide sidebar'"
@@ -636,8 +653,8 @@
     </div>
   </header>
 
-  <!-- Main layout -->
-  <main class="flex h-[calc(100%-3rem)] min-h-0 relative">
+  <!-- Main layout (desktop / tablet) -->
+  <main x-show="!isMobile" class="flex h-[calc(100%-3rem)] min-h-0 relative">
 
     <!-- Left sidebar (hideable) -->
     <aside x-show="!sidebarHidden" x-cloak
@@ -1426,6 +1443,306 @@
       </div>
     </div>
   </main>
+
+  <!-- ============================================================= -->
+  <!-- Mobile (phone-width) layer. Hidden on desktop/tablet. Reuses   -->
+  <!-- the same Alpine data + ticket operations; only the layout and  -->
+  <!-- a few view-state fields (activeColumn, detailTab, sheet) differ.-->
+  <!-- ============================================================= -->
+  <div x-show="isMobile" x-cloak class="h-full flex flex-col" style="background:rgba(var(--surface-950),1);">
+
+    <!-- ===== Board chrome: app bar + search + status tabs ===== -->
+    <div style="flex:none;background:rgba(var(--surface-950),1);border-bottom:1px solid rgba(var(--surface-700),.5);padding-top:54px;">
+      <div style="display:flex;align-items:center;gap:10px;padding:6px 16px 10px;">
+        <span style="width:34px;height:34px;margin-left:-6px;color:rgba(var(--surface-600),1);display:flex;align-items:center;justify-content:center;flex:none;" aria-hidden="true">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+        </span>
+        <div style="display:flex;align-items:baseline;gap:8px;flex:1;min-width:0;">
+          <span style="font-family:'JetBrains Mono',monospace;font-weight:700;font-size:16px;letter-spacing:.04em;color:rgba(var(--tx-2),1);">kontora</span>
+        </div>
+        <span class="running-pill" :class="runningAgents === 0 ? 'is-idle' : ''" style="height:26px;border-radius:7px;flex:none;">
+          <span class="running-pill-dot" :class="runningAgents > 0 ? 'pulse-dot' : ''"></span>
+          <span style="color:rgba(var(--tx),1);" x-text="runningAgents"></span>
+          <span style="color:rgba(var(--surface-600),1);">running</span>
+        </span>
+        <button @click="toggleTheme()" style="width:34px;height:34px;border:1px solid rgba(var(--surface-700),.6);background:rgba(var(--surface-900),1);color:rgba(var(--surface-600),1);border-radius:8px;display:flex;align-items:center;justify-content:center;flex:none;" aria-label="Toggle theme">
+          <svg x-show="!lightTheme" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+          <svg x-show="lightTheme" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+        </button>
+        <button @click="openNewSheet()" style="height:34px;padding:0 12px;border:1px solid rgba(var(--accent),1);background:rgba(var(--accent),1);color:rgba(var(--accent-fg),1);border-radius:8px;display:flex;align-items:center;gap:5px;font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:600;flex:none;" aria-label="New ticket">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>new
+        </button>
+      </div>
+      <div style="padding:0 16px 10px;">
+        <div style="position:relative;display:flex;align-items:center;">
+          <svg style="position:absolute;left:11px;width:14px;height:14px;color:rgba(var(--surface-600),1);" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+          <input x-model="searchQuery" placeholder="Filter tickets…" aria-label="Filter tickets" style="width:100%;height:38px;padding:0 12px 0 34px;font-family:'JetBrains Mono',monospace;font-size:13px;border-radius:9px;background:rgba(var(--surface-900),1);border:1px solid rgba(var(--surface-700),.5);color:rgba(var(--tx),1);outline:none;"/>
+        </div>
+      </div>
+      <div style="display:flex;gap:4px;overflow-x:auto;padding:0 12px;">
+        <template x-for="(col, ci) in columns" :key="col.key">
+          <button @click="setActiveColumn(ci)"
+                  :style="'display:flex;align-items:center;gap:7px;flex:none;padding:9px 6px 11px;border:none;background:transparent;cursor:pointer;border-bottom:2px solid ' + (activeColumn===ci ? 'hsl('+col.tint+')' : 'transparent') + ';color:' + (activeColumn===ci ? 'hsl('+col.tint+')' : 'rgba(var(--tx-3),1)') + ';'">
+            <span :style="'width:7px;height:7px;border-radius:9999px;flex:none;background:hsl('+col.tint+');'"></span>
+            <span style="font-family:'JetBrains Mono',monospace;font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;white-space:nowrap;" x-text="col.label"></span>
+            <span :style="'font-family:\'JetBrains Mono\',monospace;font-size:10px;font-weight:700;padding:1px 6px;border-radius:9999px;' + (activeColumn===ci ? 'color:hsl('+col.tint+');background:hsl('+col.tint+' / .15);' : 'color:rgba(var(--surface-600),1);background:rgba(var(--surface-800),1);')" x-text="boardTickets(col.key).length"></span>
+          </button>
+        </template>
+      </div>
+    </div>
+
+    <!-- ===== Card list (swipe to change column) ===== -->
+    <div class="flex-1 min-h-0 overflow-y-auto"
+         style="padding:14px 12px 48px;display:flex;flex-direction:column;gap:9px;"
+         @touchstart.passive="onBoardTouchStart($event)" @touchend="onBoardTouchEnd($event)">
+      <template x-if="boardTickets(mobileColumn().key).length === 0">
+        <div style="font-family:'JetBrains Mono',monospace;text-align:center;font-size:12px;color:rgba(var(--surface-600),1);border:1px dashed rgba(var(--surface-700),.6);border-radius:10px;padding:34px 16px;margin-top:6px;" x-text="'∅ ' + mobileColumn().emptyText.toLowerCase()"></div>
+      </template>
+      <template x-for="ticket in boardTickets(mobileColumn().key)" :key="ticket.id">
+        <button @click="openMobileTicket(ticket)"
+                :data-pipe-color="ticketPipeColor(ticket)"
+                :style="'display:flex;flex-direction:column;gap:9px;text-align:left;width:100%;padding:12px 13px;border-radius:11px;background:rgba(var(--surface-900),1);border:1px solid rgba(var(--surface-700),.5);border-left:2px solid ' + (ticket.status==='in_progress' ? 'hsl(var(--st-progress))' : (ticket.status==='paused' ? 'hsl(var(--st-paused) / .8)' : 'hsl(var(--pipe-h) / .55)')) + ';cursor:pointer;' + (ticket.status==='cancelled' ? 'opacity:.62;' : '') + (!ticket.kontora ? 'border-style:dashed;' : '')">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+            <div style="display:flex;align-items:center;gap:8px;min-width:0;">
+              <span class="pipe-tag" style="overflow:hidden;text-overflow:ellipsis;max-width:100%;" x-text="'[' + ticketTagLabel(ticket) + ']'"></span>
+              <template x-if="ticket.status==='in_progress'">
+                <span style="display:flex;align-items:center;gap:5px;font-family:'JetBrains Mono',monospace;font-size:11px;color:hsl(var(--st-progress));flex:none;">
+                  <span class="pulse-dot">●</span><span x-text="ticket.stage"></span>
+                </span>
+              </template>
+            </div>
+            <template x-if="!ticket.kontora">
+              <span style="padding:1px 7px;border-radius:9999px;border:1px solid hsl(var(--st-paused) / .25);background:hsl(var(--st-paused) / .12);color:hsl(var(--st-paused));font-family:'JetBrains Mono',monospace;font-size:9px;white-space:nowrap;flex:none;">not init'd</span>
+            </template>
+          </div>
+          <p :style="'font-size:13.5px;line-height:1.45;color:rgba(var(--tx),1);margin:0;' + (ticket.status==='cancelled' ? 'text-decoration:line-through;text-decoration-color:rgba(var(--surface-600),.6);' : '')" x-text="ticket.title"></p>
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;font-family:'JetBrains Mono',monospace;font-size:11px;color:rgba(var(--surface-600),1);">
+            <span style="display:flex;align-items:center;gap:7px;min-width:0;">
+              <span style="white-space:nowrap;" x-text="ticket.id"></span>
+              <template x-if="ticket.agent">
+                <span style="display:flex;align-items:center;gap:6px;min-width:0;">
+                  <span style="color:rgba(var(--surface-700),1);">·</span>
+                  <svg width="9" height="9" viewBox="0 0 10 10" fill="none" style="flex:none;opacity:.7;"><circle cx="5" cy="5" r="4" stroke="currentColor" stroke-width="1"/><circle cx="5" cy="5" r="1.6" fill="currentColor"/></svg>
+                  <span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" x-text="ticket.agent"></span>
+                </span>
+              </template>
+            </span>
+            <span style="flex:none;" x-text="ticket.status==='in_progress' && ticket.started_at ? formatDuration(ticket) : timeAgo(ticket.created_at)"></span>
+          </div>
+        </button>
+      </template>
+    </div>
+
+    <!-- ===== Ticket detail (full-screen overlay) ===== -->
+    <div x-show="isMobile && selectedTicket && currentView === 'board'" x-cloak class="detail-enter"
+         style="position:fixed;inset:0;z-index:40;display:flex;flex-direction:column;background:rgba(var(--surface-950),1);">
+      <!-- header -->
+      <div style="flex:none;padding-top:54px;border-bottom:1px solid rgba(var(--surface-700),.4);background:rgba(var(--surface-deep),1);">
+        <div style="display:flex;align-items:center;gap:10px;padding:6px 14px 10px;">
+          <button @click="closeDetail()" style="width:32px;height:32px;margin-left:-4px;border:none;background:transparent;color:rgba(var(--tx-3),1);display:flex;align-items:center;justify-content:center;flex:none;" aria-label="Back">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
+          </button>
+          <span style="font-family:'JetBrains Mono',monospace;font-size:11px;color:rgba(var(--surface-600),1);flex:1;" x-text="selectedTicket?.id"></span>
+          <button @click="openActionsSheet(selectedTicket)" style="width:32px;height:32px;border:1px solid rgba(var(--surface-700),.5);background:rgba(var(--surface-900),1);color:rgba(var(--tx-3),1);border-radius:8px;display:flex;align-items:center;justify-content:center;flex:none;" aria-label="Actions">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="2.2"/><circle cx="12" cy="12" r="2.2"/><circle cx="19" cy="12" r="2.2"/></svg>
+          </button>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;padding:0 16px 10px;flex-wrap:wrap;">
+          <span class="pipe-tag" :data-pipe-color="selectedTicket ? ticketPipeColor(selectedTicket) : 'none'" x-text="selectedTicket ? '[' + ticketTagLabel(selectedTicket) + ']' : ''"></span>
+          <span class="status-chip" :data-status="selectedTicket?.status" x-text="selectedTicket?.status"></span>
+          <template x-if="selectedTicket && !selectedTicket.kontora">
+            <span style="padding:2px 8px;border-radius:9999px;border:1px solid hsl(var(--st-paused) / .25);background:hsl(var(--st-paused) / .12);color:hsl(var(--st-paused));font-family:'JetBrains Mono',monospace;font-size:11px;">not a kontora ticket</span>
+          </template>
+        </div>
+        <template x-if="mobileHasRun(selectedTicket)">
+          <div style="display:flex;gap:18px;padding:0 16px;">
+            <button @click="mobileSwitchTab(mobileFirstTab())"
+                    :style="'border:none;background:transparent;padding:10px 0;font-family:\'JetBrains Mono\',monospace;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;cursor:pointer;border-bottom:2px solid ' + (detailTab!=='ticket' ? 'rgba(var(--accent),1)' : 'transparent') + ';color:' + (detailTab!=='ticket' ? 'rgba(var(--tx),1)' : 'rgba(var(--surface-600),1)') + ';'"
+                    x-text="mobileFirstTabLabel()"></button>
+            <button @click="mobileSwitchTab('ticket')"
+                    :style="'border:none;background:transparent;padding:10px 0;font-family:\'JetBrains Mono\',monospace;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;cursor:pointer;border-bottom:2px solid ' + (detailTab==='ticket' ? 'rgba(var(--accent),1)' : 'transparent') + ';color:' + (detailTab==='ticket' ? 'rgba(var(--tx),1)' : 'rgba(var(--surface-600),1)') + ';'">▤ ticket</button>
+          </div>
+        </template>
+      </div>
+
+      <!-- content -->
+      <div style="flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden;">
+
+        <!-- terminal (live; in_progress) -->
+        <div x-show="detailTab==='terminal'" style="flex:1;min-height:0;display:flex;flex-direction:column;">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:12px 16px 8px;flex-wrap:wrap;flex:none;">
+            <span style="font-family:'JetBrains Mono',monospace;font-size:11px;padding:3px 9px;border-radius:5px;background:rgba(var(--surface-800),1);color:rgba(var(--tx-3),1);" x-text="selectedTicket?.agent || 'default'"></span>
+            <div style="display:flex;align-items:center;gap:12px;font-family:'JetBrains Mono',monospace;font-size:11px;">
+              <span style="display:flex;align-items:center;gap:5px;color:hsl(var(--st-progress));"><span class="pulse-dot" style="width:6px;height:6px;border-radius:9999px;background:hsl(var(--st-progress));"></span>live</span>
+              <button @click="toggleTerminalRW()" :style="'background:transparent;border:none;cursor:pointer;font-family:\'JetBrains Mono\',monospace;font-size:11px;color:' + (terminalRW ? 'rgba(var(--err),1)' : 'rgba(var(--surface-600),1)') + ';'" x-text="terminalRW ? 'read-write' : 'read-only'"></button>
+            </div>
+          </div>
+          <div id="terminal-container-mobile" :style="'flex:1;min-height:0;margin:0 12px 10px;padding:6px;border-radius:10px;background:rgba(var(--surface-deep),1);border:1px solid ' + (terminalRW ? 'rgba(var(--err),.4)' : 'rgba(var(--surface-700),.4)') + ';overflow:hidden;'"></div>
+          <div style="flex:none;margin:0 12px;padding:10px 12px;border-top:1px solid rgba(var(--surface-700),.4);">
+            <div style="font-family:'JetBrains Mono',monospace;font-size:11px;line-height:1.6;display:flex;flex-wrap:wrap;gap:8px;align-items:center;">
+              <span style="color:rgba(var(--accent),1);" x-text="'[' + (selectedTicket?.agent || 'default') + ']'"></span>
+              <template x-if="selectedTicket?.branch">
+                <span style="color:rgba(var(--accent-bright),1);" x-text="'[' + selectedTicket.branch + ']'"></span>
+              </template>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px;margin-top:8px;font-family:'JetBrains Mono',monospace;font-size:11px;color:rgba(var(--tx-4),1);">
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M8 9l3 3-3 3M13 15h3"/></svg>
+              <span class="copyable" @click="copyCmd('kontora attach ' + selectedTicket?.id)" x-text="copiedCmd === 'kontora attach ' + selectedTicket?.id ? '✓ copied' : 'kontora attach ' + selectedTicket?.id"></span>
+            </div>
+          </div>
+        </div>
+
+        <!-- logs (stage history) -->
+        <div x-show="detailTab==='logs'" class="overflow-y-auto" style="flex:1;min-height:0;padding:14px 16px 24px;">
+          <template x-if="selectedTicket?.stages?.length">
+            <div style="display:flex;align-items:center;gap:7px;overflow-x:auto;padding-bottom:12px;">
+              <template x-for="(s, si) in selectedTicket.stages" :key="s">
+                <span style="display:flex;align-items:center;gap:7px;flex:none;">
+                  <template x-if="si>0"><span style="color:rgba(var(--surface-700),1);">→</span></template>
+                  <button @click="clickStage(s)" :style="mobileStageStyle(s)" x-text="s"></button>
+                </span>
+              </template>
+            </div>
+          </template>
+          <div style="font-family:'JetBrains Mono',monospace;font-size:11px;color:rgba(var(--surface-600),1);margin-bottom:12px;">stage <span style="color:rgba(var(--tx-2),1);" x-text="logViewStage || selectedTicket?.stage || '—'"></span> · tap a stage to switch</div>
+          <div style="padding:13px 14px;border-radius:10px;background:rgba(var(--surface-deep),1);border:1px solid rgba(var(--surface-700),.4);">
+            <template x-if="logViewLoading">
+              <div style="font-family:'JetBrains Mono',monospace;font-size:11.5px;color:rgba(var(--surface-600),1);">Loading logs…</div>
+            </template>
+            <template x-if="!logViewLoading && logViewContent">
+              <pre style="font-family:'JetBrains Mono',monospace;font-size:11.5px;line-height:1.6;white-space:pre-wrap;word-break:break-word;color:rgba(var(--tx),1);margin:0;" x-text="logViewContent"></pre>
+            </template>
+            <template x-if="!logViewLoading && !logViewContent">
+              <div style="font-family:'JetBrains Mono',monospace;font-size:11.5px;color:rgba(var(--surface-600),1);">No logs for this stage.</div>
+            </template>
+          </div>
+        </div>
+
+        <!-- ticket (body) -->
+        <div x-show="detailTab==='ticket'" class="overflow-y-auto" style="flex:1;min-height:0;padding:18px 16px 24px;">
+          <h1 style="font-family:'JetBrains Mono',monospace;font-size:19px;font-weight:700;line-height:1.35;color:rgba(var(--tx),1);margin:0 0 18px;" x-text="selectedTicket?.title"></h1>
+          <div style="border:1px solid rgba(var(--surface-700),.4);border-radius:12px;overflow:hidden;background:rgba(var(--surface-900),1);margin-bottom:20px;">
+            <div style="display:flex;align-items:flex-start;gap:12px;padding:11px 14px;border-bottom:1px solid rgba(var(--surface-700),.3);">
+              <span style="font-family:'JetBrains Mono',monospace;font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:rgba(var(--surface-600),1);width:74px;flex:none;padding-top:1px;">Pipeline</span>
+              <span style="font-family:'JetBrains Mono',monospace;font-size:12px;color:rgba(var(--tx-2),1);flex:1;min-width:0;word-break:break-all;line-height:1.5;" x-text="selectedTicket && !selectedTicket.kontora ? '— (not initialized)' : (selectedTicket?.pipeline || '—')"></span>
+            </div>
+            <div style="display:flex;align-items:flex-start;gap:12px;padding:11px 14px;border-bottom:1px solid rgba(var(--surface-700),.3);">
+              <span style="font-family:'JetBrains Mono',monospace;font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:rgba(var(--surface-600),1);width:74px;flex:none;padding-top:1px;">Agent</span>
+              <span style="font-family:'JetBrains Mono',monospace;font-size:12px;color:rgba(var(--tx-2),1);flex:1;min-width:0;word-break:break-all;line-height:1.5;" x-text="selectedTicket?.agent || 'Default'"></span>
+            </div>
+            <div style="display:flex;align-items:flex-start;gap:12px;padding:11px 14px;border-bottom:1px solid rgba(var(--surface-700),.3);">
+              <span style="font-family:'JetBrains Mono',monospace;font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:rgba(var(--surface-600),1);width:74px;flex:none;padding-top:1px;">Path</span>
+              <span style="font-family:'JetBrains Mono',monospace;font-size:12px;color:rgba(var(--tx-2),1);flex:1;min-width:0;word-break:break-all;line-height:1.5;" x-text="selectedTicket?.path || '—'"></span>
+            </div>
+            <div style="display:flex;align-items:flex-start;gap:12px;padding:11px 14px;border-bottom:1px solid rgba(var(--surface-700),.3);">
+              <span style="font-family:'JetBrains Mono',monospace;font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:rgba(var(--surface-600),1);width:74px;flex:none;padding-top:1px;">Branch</span>
+              <span style="font-family:'JetBrains Mono',monospace;font-size:12px;color:rgba(var(--tx-2),1);flex:1;min-width:0;word-break:break-all;line-height:1.5;" x-text="selectedTicket?.branch || '—'"></span>
+            </div>
+            <template x-if="mobileHasRun(selectedTicket) && selectedTicket?.stage">
+              <div style="display:flex;align-items:flex-start;gap:12px;padding:11px 14px;border-bottom:1px solid rgba(var(--surface-700),.3);">
+                <span style="font-family:'JetBrains Mono',monospace;font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:rgba(var(--surface-600),1);width:74px;flex:none;padding-top:1px;">Stage</span>
+                <span style="font-family:'JetBrains Mono',monospace;font-size:12px;color:rgba(var(--tx-2),1);flex:1;min-width:0;word-break:break-all;line-height:1.5;" x-text="selectedTicket.stage"></span>
+              </div>
+            </template>
+            <template x-if="selectedTicket?.status==='in_progress' && selectedTicket?.started_at">
+              <div style="display:flex;align-items:flex-start;gap:12px;padding:11px 14px;">
+                <span style="font-family:'JetBrains Mono',monospace;font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:rgba(var(--surface-600),1);width:74px;flex:none;padding-top:1px;">Running</span>
+                <span style="font-family:'JetBrains Mono',monospace;font-size:12px;color:rgba(var(--tx-2),1);flex:1;min-width:0;word-break:break-all;line-height:1.5;" x-text="formatDuration(selectedTicket)"></span>
+              </div>
+            </template>
+          </div>
+          <template x-if="selectedTicket?.body">
+            <div class="ticket-prose text-sm" x-html="renderMarkdown(selectedTicket.body)"></div>
+          </template>
+          <template x-if="!selectedTicket?.body">
+            <div style="font-family:'JetBrains Mono',monospace;font-size:13px;color:rgba(var(--surface-600),1);">No ticket description.</div>
+          </template>
+        </div>
+      </div>
+
+      <!-- action bar -->
+      <div style="flex:none;display:flex;gap:10px;padding:12px 16px 32px;border-top:1px solid rgba(var(--surface-700),.4);background:rgba(var(--surface-deep),1);">
+        <button @click="mobileSecondaryAction(selectedTicket).run()" style="flex:1;height:46px;border-radius:11px;border:1px solid rgba(var(--surface-700),.7);background:rgba(var(--surface-900),1);color:rgba(var(--tx-3),1);font-family:'JetBrains Mono',monospace;font-size:14px;font-weight:600;" x-text="mobileSecondaryAction(selectedTicket).label"></button>
+        <button @click="mobilePrimaryAction(selectedTicket).run()" style="flex:1.4;height:46px;border-radius:11px;border:1px solid rgba(var(--accent),1);background:rgba(var(--accent),1);color:rgba(var(--accent-fg),1);font-family:'JetBrains Mono',monospace;font-size:14px;font-weight:700;display:flex;align-items:center;justify-content:center;gap:8px;">
+          <span style="width:7px;height:7px;border-radius:9999px;background:rgba(var(--accent-fg),.55);flex:none;"></span>
+          <span x-text="mobilePrimaryAction(selectedTicket).label"></span>
+        </button>
+      </div>
+    </div>
+
+    <!-- ===== Bottom sheet (actions / new ticket) ===== -->
+    <template x-if="isMobile && sheet">
+      <div>
+        <div @click="closeSheet()" class="sheet-scrim" style="position:fixed;inset:0;z-index:60;background:rgba(0,0,0,.55);"></div>
+        <div class="sheet-panel" style="position:fixed;left:0;right:0;bottom:0;z-index:61;background:rgba(var(--surface-900),1);border-top:1px solid rgba(var(--surface-700),.6);border-radius:20px 20px 0 0;padding:10px 0 34px;max-height:82%;display:flex;flex-direction:column;box-shadow:0 -10px 40px rgba(0,0,0,.4);">
+          <div style="width:38px;height:4px;border-radius:9999px;background:rgba(var(--surface-700),1);margin:2px auto 12px;flex:none;"></div>
+
+          <!-- actions sheet -->
+          <template x-if="sheet.type==='actions'">
+            <div style="display:flex;flex-direction:column;min-height:0;">
+              <div style="padding:0 18px 12px;border-bottom:1px solid rgba(var(--surface-700),.4);">
+                <div style="font-family:'JetBrains Mono',monospace;font-size:11px;color:rgba(var(--surface-600),1);" x-text="sheet.ticket.id"></div>
+                <div style="font-size:14px;color:rgba(var(--tx),1);line-height:1.4;margin-top:3px;" x-text="sheet.ticket.title"></div>
+              </div>
+              <div style="overflow-y:auto;padding:6px 0;">
+                <template x-for="(a, ai) in mobileSheetActions(sheet.ticket)" :key="ai">
+                  <button @click="a.run()" :style="'display:flex;align-items:center;gap:11px;width:100%;text-align:left;padding:14px 20px;border:none;background:transparent;font-family:\'JetBrains Mono\',monospace;font-size:14px;cursor:pointer;font-weight:' + (a.kind==='primary' ? '700' : '500') + ';color:' + mobileActionColor(a.kind) + ';'">
+                    <span :style="'width:6px;height:6px;border-radius:9999px;flex:none;background:' + mobileActionDotColor(a.kind) + ';'"></span>
+                    <span x-text="a.label"></span>
+                  </button>
+                </template>
+              </div>
+            </div>
+          </template>
+
+          <!-- new-ticket sheet -->
+          <template x-if="sheet.type==='new'">
+            <div style="display:flex;flex-direction:column;min-height:0;">
+              <div style="padding:0 18px 14px;border-bottom:1px solid rgba(var(--surface-700),.4);">
+                <div style="font-size:16px;font-weight:600;color:rgba(var(--tx),1);">New ticket</div>
+                <div style="font-size:12px;color:rgba(var(--surface-600),1);margin-top:2px;">Create a ticket for an agent to pick up.</div>
+              </div>
+              <div style="overflow-y:auto;padding:16px 18px;display:flex;flex-direction:column;gap:14px;">
+                <div>
+                  <div style="font-family:'JetBrains Mono',monospace;font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:rgba(var(--surface-600),1);margin-bottom:6px;">Title</div>
+                  <input x-model="createForm.title" placeholder="What should the agent build?" style="width:100%;height:42px;padding:0 12px;font-size:14px;border-radius:10px;background:rgba(var(--surface-950),1);border:1px solid rgba(var(--surface-700),.6);color:rgba(var(--tx),1);outline:none;"/>
+                </div>
+                <div>
+                  <div style="font-family:'JetBrains Mono',monospace;font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:rgba(var(--surface-600),1);margin-bottom:6px;">Path</div>
+                  <input x-model="createForm.path" placeholder="~/projects/myrepo" style="width:100%;height:42px;padding:0 12px;font-family:'JetBrains Mono',monospace;font-size:13px;border-radius:10px;background:rgba(var(--surface-950),1);border:1px solid rgba(var(--surface-700),.6);color:rgba(var(--tx),1);outline:none;"/>
+                </div>
+                <div style="display:flex;gap:12px;">
+                  <div style="flex:1;min-width:0;">
+                    <div style="font-family:'JetBrains Mono',monospace;font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:rgba(var(--surface-600),1);margin-bottom:6px;">Pipeline</div>
+                    <select x-model="createForm.pipeline" @change="onPipelineChange()" style="width:100%;height:42px;padding:0 10px;font-family:'JetBrains Mono',monospace;font-size:13px;border-radius:10px;background:rgba(var(--surface-950),1);border:1px solid rgba(var(--surface-700),.6);color:rgba(var(--tx-3),1);outline:none;">
+                      <option value="">none</option>
+                      <template x-for="p in (configCache?.pipelines || [])" :key="p"><option :value="p" x-text="p"></option></template>
+                    </select>
+                  </div>
+                  <div style="flex:1;min-width:0;">
+                    <div style="font-family:'JetBrains Mono',monospace;font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:rgba(var(--surface-600),1);margin-bottom:6px;">Agent</div>
+                    <select x-model="createForm.agent" style="width:100%;height:42px;padding:0 10px;font-family:'JetBrains Mono',monospace;font-size:13px;border-radius:10px;background:rgba(var(--surface-950),1);border:1px solid rgba(var(--surface-700),.6);color:rgba(var(--tx-3),1);outline:none;">
+                      <option value="">default</option>
+                      <template x-for="a in (configCache?.agents || [])" :key="a"><option :value="a" x-text="a"></option></template>
+                    </select>
+                  </div>
+                </div>
+                <div>
+                  <div style="font-family:'JetBrains Mono',monospace;font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:rgba(var(--surface-600),1);margin-bottom:6px;">Body</div>
+                  <textarea x-model="createForm.body" placeholder="Context, acceptance criteria, links…" style="width:100%;height:84px;padding:10px 12px;font-size:13.5px;line-height:1.5;border-radius:10px;background:rgba(var(--surface-950),1);border:1px solid rgba(var(--surface-700),.6);color:rgba(var(--tx),1);outline:none;resize:none;font-family:'DM Sans',sans-serif;"></textarea>
+                </div>
+                <div style="display:flex;gap:10px;margin-top:2px;">
+                  <button @click="closeSheet()" style="flex:1;height:46px;border-radius:11px;border:1px solid rgba(var(--surface-700),.7);background:rgba(var(--surface-950),1);color:rgba(var(--tx-3),1);font-family:'JetBrains Mono',monospace;font-size:14px;font-weight:600;">cancel</button>
+                  <button @click="submitCreateTicketMobile()" :disabled="createSubmitting || !createForm.title || !createForm.path" style="flex:1.4;height:46px;border-radius:11px;border:1px solid rgba(var(--accent),1);background:rgba(var(--accent),1);color:rgba(var(--accent-fg),1);font-family:'JetBrains Mono',monospace;font-size:14px;font-weight:700;" :style="(createSubmitting || !createForm.title || !createForm.path) ? 'opacity:.5;' : ''" x-text="createSubmitting ? 'creating…' : 'create ticket'"></button>
+                </div>
+              </div>
+            </div>
+          </template>
+        </div>
+      </div>
+    </template>
+
+  </div>
 
   <script src="/app.js"></script>
 </body>

@@ -1123,7 +1123,7 @@
                   <template x-if="editingBody">
                     <textarea x-model="editForm.body" @input="debounceSaveEdit()"
                       @blur="if (_editDebounce) { clearTimeout(_editDebounce); _editDebounce = null; } editingBody = false; saveEdit()"
-                      x-init="$nextTick(() => $el.focus())"
+                      x-init="$nextTick(() => $el.focus({ preventScroll: true }))"
                       class="w-full h-[calc(100vh-280px)] bg-surface-800 border border-surface-700 rounded px-3 py-2 text-sm text-tx-2 font-mono resize-none focus:outline-none focus:border-accent"
                       spellcheck="false"></textarea>
                   </template>

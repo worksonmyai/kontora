@@ -103,6 +103,8 @@ func (m *mockTerminalService) UploadTicket(_ []byte) (TicketInfo, error)        
 func (m *mockTerminalService) GetLogs(_ string, _ string) (string, error) {
 	return "", nil
 }
+func (m *mockTerminalService) GetRawConfig() (string, error) { return "", nil }
+func (m *mockTerminalService) PutRawConfig(_ string) error   { return nil }
 func (m *mockTerminalService) Subscribe() (<-chan TicketEvent, func()) {
 	return nil, func() {}
 }

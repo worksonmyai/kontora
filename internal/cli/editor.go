@@ -7,6 +7,13 @@ import (
 	"strings"
 )
 
+// EditFile opens an arbitrary file at path in the user's editor. It is a thin
+// exported wrapper over openEditor for callers outside the ticket flow (e.g.
+// `config edit`).
+func EditFile(editor, path string) error {
+	return openEditor(editor, path)
+}
+
 // openEditor launches the given editor with the file at path.
 // Falls back to $EDITOR, then "vi" if editor is empty.
 // Supports editors with arguments (e.g., "nvim -u init.lua").

@@ -526,6 +526,54 @@ func (d *Daemon) GetLogs(id string, stage string) (string, error) {
 	return buf.String(), nil
 }
 
+// GetRawConfig returns the daemon's on-disk config file contents.
+func (d *Daemon) GetRawConfig() (string, error) {
+	if d.configPath == "" {
+		return "", web.ErrConfigPathNotSet
+	}
+	data, err := os.ReadFile(d.configPath)
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
+// PutRawConfig validates content and writes it to the daemon's config file
+// atomically. It does not touch the running daemon's in-memory config: changes
+// take effect only on the next restart.
+func (d *Daemon) PutRawConfig(content string) error {
+	if d.configPath == "" {
+		return web.ErrConfigPathNotSet
+	}
+	if _, err := config.LoadReader(strings.NewReader(content)); err != nil {
+		return fmt.Errorf("%w: %s", web.ErrInvalidConfig, err)
+	}
+	return atomicWriteFile(d.configPath, []byte(content), 0o644)
+}
+
+// atomicWriteFile writes data to a temp file in the same directory and renames
+// it over path, so a crash or concurrent reader never sees a half-written file.
+func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
+	f, err := os.CreateTemp(filepath.Dir(path), ".kontora-config-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	defer os.Remove(tmp)
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Chmod(perm); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
 // Subscribe returns a channel that receives ticket events and an unsubscribe function.
 func (d *Daemon) Subscribe() (<-chan web.TicketEvent, func()) {
 	return d.broker.Subscribe()

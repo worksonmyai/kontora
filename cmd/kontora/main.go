@@ -47,6 +47,8 @@ func renderUsage() string {
 		{"new", "Create a ticket"},
 		{"view", "Print ticket details"},
 		{"edit", "Open a ticket in $EDITOR"},
+		{"update", "Update ticket body/frontmatter fields"},
+		{"delete", "Delete a ticket file"},
 		{"init", "Set up a ticket for daemon processing"},
 		{"run", "Enqueue a ticket for processing"},
 		{"done", "Mark a ticket as done"},
@@ -91,6 +93,10 @@ func main() {
 		cmdView()
 	case "edit":
 		cmdEdit()
+	case "update":
+		cmdUpdate()
+	case "delete":
+		cmdDelete()
 	case "init":
 		cmdInit()
 	case "run":
@@ -177,23 +183,38 @@ func runDaemon(cfg *config.Config, configPath string) error {
 	logger := slog.New(charmlog.NewWithOptions(os.Stderr, charmlog.Options{
 		ReportTimestamp: true,
 	}))
-	d := daemon.New(cfg, daemon.WithLogger(logger), daemon.WithLockPath(lockPath))
+	d := daemon.New(cfg, daemon.WithLogger(logger), daemon.WithLockPath(lockPath), daemon.WithConfigPath(configPath))
 	return d.Run(ctx)
 }
 
 func cmdInit() {
-	rejectInRemoteMode("init")
-
 	fs := flag.NewFlagSet("init", flag.ExitOnError)
 	configPath := fs.String("config", defaultConfigPath(), "path to config file")
-	if err := fs.Parse(os.Args[2:]); err != nil {
-		log.Fatalf("parsing flags: %v", err)
-	}
+	pipeline := fs.String("pipeline", "", "pipeline name (required in remote mode)")
+	repoPath := fs.String("path", "", "repository path on the daemon host (required in remote mode)")
+	agent := fs.String("agent", "", "agent override (optional)")
+	urlFlag, tokenFlag := addRemoteFlags(fs)
+	taskID := parseTicketFlags(fs, os.Args[2:])
 
-	if fs.NArg() < 1 {
+	if taskID == "" {
 		log.Fatal("ticket ID is required: kontora init TICKET_ID")
 	}
-	taskID := fs.Arg(0)
+
+	// Remote init is non-interactive: the TUI pickers don't work over HTTP, so
+	// pipeline and path must be supplied as flags.
+	if rc := remoteClient(*urlFlag, *tokenFlag); rc != nil {
+		if *pipeline == "" || *repoPath == "" {
+			log.Fatal("remote init requires --pipeline and --path")
+		}
+		if err := rc.Init(mustResolveRemote(rc, taskID), web.InitTicketRequest{
+			Pipeline: *pipeline,
+			Path:     *repoPath,
+			Agent:    *agent,
+		}); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 
 	cfg := mustLoadConfig(*configPath)
 
@@ -345,6 +366,110 @@ func cmdEdit() {
 	cfg := mustLoadConfig(*configPath)
 
 	if err := cli.Edit(cfg.TicketsDir, cfg.Editor, taskID); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func cmdUpdate() {
+	fs := flag.NewFlagSet("update", flag.ExitOnError)
+	configPath := fs.String("config", defaultConfigPath(), "path to config file")
+	bodyFile := fs.String("body-file", "", "read ticket body from a file ('-' for stdin)")
+	pipeline := fs.String("pipeline", "", "set pipeline")
+	repoPath := fs.String("path", "", "set repository path")
+	agent := fs.String("agent", "", "set agent override (pass \"\" to clear)")
+	branch := fs.String("branch", "", "set branch (pass \"\" to clear)")
+	urlFlag, tokenFlag := addRemoteFlags(fs)
+	taskID := parseTicketFlags(fs, os.Args[2:])
+
+	if taskID == "" {
+		log.Fatal("ticket ID is required: kontora update TICKET_ID [flags]")
+	}
+
+	// Track which flags were actually passed so an explicit empty value (e.g.
+	// --agent "") clears the field, distinct from a flag that was omitted.
+	set := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
+
+	var req web.UpdateTicketRequest
+	if set["body-file"] {
+		body, err := readBodyFile(*bodyFile)
+		if err != nil {
+			log.Fatal(err)
+		}
+		req.Body = &body
+	}
+	if set["pipeline"] {
+		req.Pipeline = pipeline
+	}
+	if set["path"] {
+		req.Path = repoPath
+	}
+	if set["agent"] {
+		req.Agent = agent
+	}
+	if set["branch"] {
+		req.Branch = branch
+	}
+
+	if req.Body == nil && req.Pipeline == nil && req.Path == nil && req.Agent == nil && req.Branch == nil {
+		log.Fatal("nothing to update: pass at least one of --body-file, --pipeline, --path, --agent, --branch")
+	}
+
+	if rc := remoteClient(*urlFlag, *tokenFlag); rc != nil {
+		if err := rc.UpdateTicket(mustResolveRemote(rc, taskID), req); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
+
+	cfg := mustLoadConfig(*configPath)
+
+	if err := cli.Update(cfg, taskID, req); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func readBodyFile(path string) (string, error) {
+	if path == "-" {
+		data, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			return "", fmt.Errorf("reading body from stdin: %w", err)
+		}
+		return string(data), nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("reading body file: %w", err)
+	}
+	return string(data), nil
+}
+
+func cmdDelete() {
+	fs := flag.NewFlagSet("delete", flag.ExitOnError)
+	configPath := fs.String("config", defaultConfigPath(), "path to config file")
+	force := fs.Bool("f", false, "confirm deletion (required)")
+	yes := fs.Bool("yes", false, "confirm deletion (required)")
+	urlFlag, tokenFlag := addRemoteFlags(fs)
+	taskID := parseTicketFlags(fs, os.Args[2:])
+
+	if taskID == "" {
+		log.Fatal("ticket ID is required: kontora delete TICKET_ID -f")
+	}
+
+	if !*force && !*yes {
+		log.Fatal("refusing to delete without confirmation: pass -f or --yes")
+	}
+
+	if rc := remoteClient(*urlFlag, *tokenFlag); rc != nil {
+		if err := rc.DeleteTicket(mustResolveRemote(rc, taskID)); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
+
+	cfg := mustLoadConfig(*configPath)
+
+	if err := cli.Delete(cfg.TicketsDir, taskID); err != nil {
 		log.Fatal(err)
 	}
 }
@@ -633,6 +758,11 @@ func cmdAttach() {
 }
 
 func cmdConfig() {
+	if len(os.Args) >= 3 && os.Args[2] == "edit" {
+		cmdConfigEdit()
+		return
+	}
+
 	fs := flag.NewFlagSet("config", flag.ExitOnError)
 	configPath := fs.String("config", defaultConfigPath(), "path to config file")
 	urlFlag, tokenFlag := addRemoteFlags(fs)
@@ -653,6 +783,79 @@ func cmdConfig() {
 	if err := cli.ShowConfig(cfg, os.Stdout); err != nil {
 		log.Fatal(err)
 	}
+}
+
+// cmdConfigEdit edits the daemon's config. In remote mode it fetches the raw
+// config, opens it in $EDITOR, validates locally, and uploads it; changes apply
+// only after the daemon restarts. In local mode it opens the on-disk config file
+// in the editor directly.
+func cmdConfigEdit() {
+	fs := flag.NewFlagSet("config edit", flag.ExitOnError)
+	configPath := fs.String("config", defaultConfigPath(), "path to config file")
+	urlFlag, tokenFlag := addRemoteFlags(fs)
+	if err := fs.Parse(os.Args[3:]); err != nil {
+		log.Fatalf("parsing flags: %v", err)
+	}
+
+	if rc := remoteClient(*urlFlag, *tokenFlag); rc != nil {
+		if err := remoteConfigEdit(rc); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
+
+	// Local: open the on-disk config file directly. Use the configured editor
+	// when the config loads, otherwise fall back to $EDITOR/vi so a broken
+	// config can still be repaired.
+	editor := ""
+	if cfg, err := config.Load(*configPath); err == nil {
+		editor = cfg.Editor
+	}
+	if err := cli.EditFile(editor, *configPath); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func remoteConfigEdit(rc *remote.Client) error {
+	content, err := rc.RawConfig()
+	if err != nil {
+		return err
+	}
+
+	tmp, err := os.CreateTemp("", "kontora-config-*.yaml")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if _, err := tmp.WriteString(content); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+
+	if err := cli.EditFile("", tmpPath); err != nil {
+		return err
+	}
+
+	edited, err := os.ReadFile(tmpPath)
+	if err != nil {
+		return err
+	}
+
+	// Validate locally first for a fast, clear error before the round-trip.
+	if _, err := config.LoadReader(strings.NewReader(string(edited))); err != nil {
+		return fmt.Errorf("edited config is invalid, not saving: %w", err)
+	}
+
+	if err := rc.PutRawConfig(string(edited)); err != nil {
+		return err
+	}
+
+	fmt.Println("Config saved. Restart the daemon for the changes to take effect.")
+	return nil
 }
 
 func cmdCompletion() {
@@ -677,6 +880,30 @@ func cmdDoctor() {
 	}
 	if err := cli.Doctor(*configPath, os.Stdout); err != nil {
 		os.Exit(1)
+	}
+}
+
+// parseTicketFlags parses a command whose single positional is the ticket ID,
+// allowing flags to appear before and/or after the ID. Go's flag parser stops
+// at the first positional, so we keep re-parsing the remaining args to pick up
+// any flags written after the ID (e.g. `delete abc -f`). A second positional is
+// rejected with a clear error instead of silently swallowing trailing flags.
+// Returns the ID, or "" when none was given.
+func parseTicketFlags(fs *flag.FlagSet, args []string) string {
+	var id string
+	for {
+		if err := fs.Parse(args); err != nil {
+			log.Fatalf("parsing flags: %v", err)
+		}
+		rest := fs.Args()
+		if len(rest) == 0 {
+			return id
+		}
+		if id != "" {
+			log.Fatalf("unexpected argument %q", rest[0])
+		}
+		id = rest[0]
+		args = rest[1:]
 	}
 }
 

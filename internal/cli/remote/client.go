@@ -232,6 +232,50 @@ func (c *Client) UpdateTicket(id string, req web.UpdateTicketRequest) error {
 	return c.doJSON(http.MethodPut, "/api/tickets/"+id, req, nil)
 }
 
+// DeleteTicket removes a ticket file on the daemon host. The request carries the
+// X-Kontora-Confirm header the daemon requires; postAction can't set headers, so
+// the request is issued directly here.
+func (c *Client) DeleteTicket(id string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), unaryRequestTimeout)
+	defer cancel()
+	req, err := c.newRequest(ctx, http.MethodDelete, "/api/tickets/"+id, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("X-Kontora-Confirm", "delete-ticket-file")
+	resp, err := c.hc.Do(req)
+	if err != nil {
+		return &transportError{err: err}
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return decodeError(resp)
+	}
+	return nil
+}
+
+// Init initializes a foreign ticket for daemon processing.
+func (c *Client) Init(id string, req web.InitTicketRequest) error {
+	return c.doJSON(http.MethodPost, "/api/tickets/"+id+"/init", req, nil)
+}
+
+// RawConfig fetches the daemon's on-disk config file contents.
+func (c *Client) RawConfig() (string, error) {
+	var r struct {
+		Content string `json:"content"`
+	}
+	if err := c.doJSON(http.MethodGet, "/api/config/raw", nil, &r); err != nil {
+		return "", err
+	}
+	return r.Content, nil
+}
+
+// PutRawConfig replaces the daemon's on-disk config file with content. The
+// daemon validates it before writing; changes apply on the next restart.
+func (c *Client) PutRawConfig(content string) error {
+	return c.doJSON(http.MethodPut, "/api/config/raw", map[string]string{"content": content}, nil)
+}
+
 func (c *Client) postAction(path string) error {
 	return c.doJSON(http.MethodPost, path, nil, nil)
 }

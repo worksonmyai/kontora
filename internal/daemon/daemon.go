@@ -140,6 +140,12 @@ func WithLockPath(path string) Option {
 	return func(d *Daemon) { d.lockPath = path }
 }
 
+// WithConfigPath records the path the config was loaded from, so the daemon can
+// serve and rewrite the on-disk config via the raw-config API.
+func WithConfigPath(path string) Option {
+	return func(d *Daemon) { d.configPath = path }
+}
+
 // WithRunner overrides the default runner (tmux-based). Use DirectRunner for
 // tests that don't need tmux.
 func WithRunner(fn RunnerFunc) Option {
@@ -214,9 +220,10 @@ type Daemon struct {
 	broker             *web.SSEBroker
 	svc                *app.Service
 
-	debounce time.Duration
-	lockPath string
-	log      *slog.Logger
+	debounce   time.Duration
+	lockPath   string
+	configPath string
+	log        *slog.Logger
 
 	mu              sync.Mutex
 	tickets         map[string]*ticketState

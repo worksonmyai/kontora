@@ -65,6 +65,103 @@ func TestClient_BearerOnPostAction(t *testing.T) {
 	assert.Equal(t, "/api/tickets/tst-001/run", gotPath)
 }
 
+func TestClient_DeleteTicket(t *testing.T) {
+	var gotMethod, gotPath, gotConfirm, gotAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		gotConfirm = r.Header.Get("X-Kontora-Confirm")
+		gotAuth = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "secret")
+	require.NoError(t, c.DeleteTicket("tst-001"))
+	assert.Equal(t, http.MethodDelete, gotMethod)
+	assert.Equal(t, "/api/tickets/tst-001", gotPath)
+	assert.Equal(t, "delete-ticket-file", gotConfirm)
+	assert.Equal(t, "Bearer secret", gotAuth)
+}
+
+func TestClient_DeleteTicket_ErrorSurfaced(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "ticket not found"})
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "")
+	err := c.DeleteTicket("missing")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "ticket not found")
+}
+
+func TestClient_Init(t *testing.T) {
+	var gotPath string
+	var gotReq web.InitTicketRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		_ = json.NewDecoder(r.Body).Decode(&gotReq)
+		_ = json.NewEncoder(w).Encode(web.TicketInfo{ID: "tst-001"})
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "")
+	req := web.InitTicketRequest{Pipeline: "two-stage", Path: "/repo", Agent: "claude"}
+	require.NoError(t, c.Init("tst-001", req))
+	assert.Equal(t, "/api/tickets/tst-001/init", gotPath)
+	assert.Equal(t, req, gotReq)
+}
+
+func TestClient_RawConfig(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodGet, r.Method)
+		assert.Equal(t, "/api/config/raw", r.URL.Path)
+		_ = json.NewEncoder(w).Encode(map[string]string{"content": "tickets_dir: ~/x\n"})
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "")
+	got, err := c.RawConfig()
+	require.NoError(t, err)
+	assert.Equal(t, "tickets_dir: ~/x\n", got)
+}
+
+func TestClient_PutRawConfig(t *testing.T) {
+	var gotMethod, gotPath, gotContent string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		var body struct {
+			Content string `json:"content"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		gotContent = body.Content
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "")
+	require.NoError(t, c.PutRawConfig("foo: bar\n"))
+	assert.Equal(t, http.MethodPut, gotMethod)
+	assert.Equal(t, "/api/config/raw", gotPath)
+	assert.Equal(t, "foo: bar\n", gotContent)
+}
+
+func TestClient_PutRawConfig_ValidationErrorSurfaced(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "invalid config: bad agent"})
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "")
+	err := c.PutRawConfig("nonsense")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid config")
+}
+
 func TestClient_ResolveID(t *testing.T) {
 	tickets := []web.TicketInfo{
 		{ID: "abc123def"},

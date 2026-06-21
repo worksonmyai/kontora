@@ -13,6 +13,8 @@ var (
 	ErrLogNotFound         = errors.New("log not found")
 	ErrUnknownAgent        = errors.New("unknown agent")
 	ErrDeleteRejected      = errors.New("delete rejected")
+	ErrInvalidConfig       = errors.New("invalid config")
+	ErrConfigPathNotSet    = errors.New("config path not configured")
 	ErrPlannotatorInFlight = errors.New("plannotator review already in progress")
 	ErrPlannotatorBinary   = errors.New("plannotator not installed: https://plannotator.ai")
 )
@@ -37,6 +39,8 @@ type TicketService interface {
 	UpdateTicket(id string, req UpdateTicketRequest) error
 	UploadTicket(content []byte) (TicketInfo, error)
 	GetLogs(id string, stage string) (string, error)
+	GetRawConfig() (string, error)
+	PutRawConfig(content string) error
 	Subscribe() (ch <-chan TicketEvent, unsubscribe func())
 	HasTerminalSession(id string) bool
 	StartPlannotatorReview(id string) error

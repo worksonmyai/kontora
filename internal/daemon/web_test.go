@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/worksonmyai/kontora/internal/cli/remote"
 	"github.com/worksonmyai/kontora/internal/config"
 	"github.com/worksonmyai/kontora/internal/ticket"
 	"github.com/worksonmyai/kontora/internal/web"
@@ -776,6 +777,87 @@ func TestDaemon_InitTicket_AlreadyKontora(t *testing.T) {
 
 	cancel()
 	require.NoError(t, <-errCh)
+}
+
+func TestDaemon_RemoteInit_MovesForeignTicketToTodo(t *testing.T) {
+	h := newHarness(t)
+	d := h.newDaemon(h.cfg)
+
+	// Register a foreign (non-kontora) ticket without running the scheduler, so
+	// the assertion observes the post-init state directly rather than the daemon
+	// picking it up and racing forward.
+	path := h.writeTicket("tst-rinit.md", `---
+id: tst-rinit
+status: open
+created: 2026-01-01T00:00:00Z
+---
+# Foreign ticket
+`)
+	tk, err := ticket.ParseFile(path)
+	require.NoError(t, err)
+	d.tickets["tst-rinit"] = newTicketState(tk, path)
+
+	srv := web.New(d, d.broker, "127.0.0.1", 0, "", testLogger(t))
+	require.NoError(t, srv.Start())
+	defer func() { _ = srv.Shutdown(context.Background()) }()
+
+	c := remote.New("http://"+srv.Addr(), "")
+	require.NoError(t, c.Init("tst-rinit", web.InitTicketRequest{
+		Pipeline: "one-stage",
+		Path:     h.repoDir,
+	}))
+
+	// The foreign ticket is now kontora-managed, todo, at the first stage.
+	result := h.readTask("tst-rinit.md")
+	assert.True(t, result.Kontora)
+	assert.Equal(t, ticket.StatusTodo, result.Status)
+	assert.Equal(t, "one-stage", result.Pipeline)
+	assert.Equal(t, "step1", result.Stage)
+	assert.Equal(t, h.repoDir, result.Path)
+}
+
+func TestDaemon_RawConfig(t *testing.T) {
+	h := newHarness(t)
+	d := h.newDaemon(h.cfg)
+
+	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
+	const valid = "agents:\n  claude:\n    binary: claude\n"
+	require.NoError(t, os.WriteFile(cfgPath, []byte(valid), 0o644))
+	d.configPath = cfgPath
+
+	got, err := d.GetRawConfig()
+	require.NoError(t, err)
+	assert.Equal(t, valid, got)
+
+	// A valid replacement is written to disk; the in-memory config is untouched
+	// (changes apply only on restart).
+	inMemoryBefore := d.cfg
+	const updated = "max_concurrent_agents: 7\nagents:\n  claude:\n    binary: claude\n"
+	require.NoError(t, d.PutRawConfig(updated))
+
+	onDisk, err := os.ReadFile(cfgPath)
+	require.NoError(t, err)
+	assert.Equal(t, updated, string(onDisk))
+	assert.Same(t, inMemoryBefore, d.cfg, "in-memory config pointer must not change")
+	assert.Equal(t, h.cfg.MaxConcurrentAgents, d.cfg.MaxConcurrentAgents, "in-memory config values unchanged")
+
+	// An invalid config is rejected and the on-disk file is left intact.
+	err = d.PutRawConfig("max_concurrent_agents: 3\nunknown_field: x\n")
+	require.ErrorIs(t, err, web.ErrInvalidConfig)
+	onDiskAfter, err := os.ReadFile(cfgPath)
+	require.NoError(t, err)
+	assert.Equal(t, updated, string(onDiskAfter), "rejected config must not overwrite the file")
+}
+
+func TestDaemon_RawConfig_NoPathConfigured(t *testing.T) {
+	h := newHarness(t)
+	d := h.newDaemon(h.cfg) // no WithConfigPath
+
+	_, err := d.GetRawConfig()
+	require.ErrorIs(t, err, web.ErrConfigPathNotSet)
+
+	err = d.PutRawConfig("agents:\n  claude:\n    binary: claude\n")
+	require.ErrorIs(t, err, web.ErrConfigPathNotSet)
 }
 
 func TestDaemon_GetConfig_ReturnsAgents(t *testing.T) {

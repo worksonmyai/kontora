@@ -20,20 +20,23 @@ import (
 
 // mockService implements TicketService for handler tests.
 type mockService struct {
-	setStageStage *string
-	tickets       []TicketInfo
-	getTicket     *TicketInfo
-	getErr        error
-	actionFn      func(id string) error
-	createFn      func(req CreateTicketRequest) (TicketInfo, error)
-	uploadFn      func(content []byte) (TicketInfo, error)
-	deleteFn      func(id string) error
-	initFn        func(id string, req InitTicketRequest) error
-	updateFn      func(id string, req UpdateTicketRequest) error
-	noteFn        func(id, text string) error
-	logsFn        func(id, stage string) (string, error)
-	plannotatorFn func(id string) error
-	configInfo    ConfigInfo
+	setStageStage  *string
+	tickets        []TicketInfo
+	getTicket      *TicketInfo
+	getErr         error
+	actionFn       func(id string) error
+	createFn       func(req CreateTicketRequest) (TicketInfo, error)
+	uploadFn       func(content []byte) (TicketInfo, error)
+	deleteFn       func(id string) error
+	initFn         func(id string, req InitTicketRequest) error
+	updateFn       func(id string, req UpdateTicketRequest) error
+	noteFn         func(id, text string) error
+	logsFn         func(id, stage string) (string, error)
+	plannotatorFn  func(id string) error
+	rawConfig      string
+	rawConfigErr   error
+	putRawConfigFn func(content string) error
+	configInfo     ConfigInfo
 }
 
 func (m *mockService) ListTickets() []TicketInfo { return m.tickets }
@@ -105,6 +108,15 @@ func (m *mockService) GetLogs(id, stage string) (string, error) {
 		return m.logsFn(id, stage)
 	}
 	return "", nil
+}
+func (m *mockService) GetRawConfig() (string, error) {
+	return m.rawConfig, m.rawConfigErr
+}
+func (m *mockService) PutRawConfig(content string) error {
+	if m.putRawConfigFn != nil {
+		return m.putRawConfigFn(content)
+	}
+	return nil
 }
 func (m *mockService) Subscribe() (<-chan TicketEvent, func()) { return nil, func() {} }
 func (m *mockService) HasTerminalSession(_ string) bool        { return false }
@@ -917,6 +929,76 @@ func TestHandleConfig(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(res.body), &cfg))
 	assert.Equal(t, []string{"default", "review"}, cfg.Pipelines)
 	assert.Equal(t, []string{"opus", "sonnet"}, cfg.Agents)
+}
+
+// --- GET/PUT /api/config/raw ---
+
+func TestHandleGetRawConfig(t *testing.T) {
+	svc := &mockService{rawConfig: "tickets_dir: ~/x\nmax_concurrent_agents: 2\n"}
+	srv := startHandlerTestServer(t, svc)
+
+	res := get(t, srv, "/api/config/raw")
+	assert.Equal(t, http.StatusOK, res.statusCode)
+
+	var body struct {
+		Content string `json:"content"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(res.body), &body))
+	assert.Equal(t, "tickets_dir: ~/x\nmax_concurrent_agents: 2\n", body.Content)
+}
+
+func TestHandleGetRawConfig_NoPath(t *testing.T) {
+	svc := &mockService{rawConfigErr: ErrConfigPathNotSet}
+	srv := startHandlerTestServer(t, svc)
+
+	res := get(t, srv, "/api/config/raw")
+	assert.Equal(t, http.StatusNotImplemented, res.statusCode)
+}
+
+func TestHandlePutRawConfig_NoPath(t *testing.T) {
+	svc := &mockService{
+		putRawConfigFn: func(_ string) error { return ErrConfigPathNotSet },
+	}
+	srv := startHandlerTestServer(t, svc)
+
+	res := put(t, srv, "/api/config/raw", `{"content":"max_concurrent_agents: 5\n"}`)
+	assert.Equal(t, http.StatusNotImplemented, res.statusCode)
+}
+
+func TestHandlePutRawConfig_Success(t *testing.T) {
+	var got string
+	svc := &mockService{
+		putRawConfigFn: func(content string) error {
+			got = content
+			return nil
+		},
+	}
+	srv := startHandlerTestServer(t, svc)
+
+	res := put(t, srv, "/api/config/raw", `{"content":"max_concurrent_agents: 5\n"}`)
+	assert.Equal(t, http.StatusNoContent, res.statusCode)
+	assert.Equal(t, "max_concurrent_agents: 5\n", got)
+}
+
+func TestHandlePutRawConfig_Invalid(t *testing.T) {
+	svc := &mockService{
+		putRawConfigFn: func(_ string) error {
+			return fmt.Errorf("%w: bad agent", ErrInvalidConfig)
+		},
+	}
+	srv := startHandlerTestServer(t, svc)
+
+	res := put(t, srv, "/api/config/raw", `{"content":"nonsense"}`)
+	assert.Equal(t, http.StatusBadRequest, res.statusCode)
+	assert.Contains(t, res.body, "invalid config")
+}
+
+func TestHandlePutRawConfig_BadJSON(t *testing.T) {
+	srv := startHandlerTestServer(t, &mockService{})
+
+	res := put(t, srv, "/api/config/raw", `{not json`)
+	assert.Equal(t, http.StatusBadRequest, res.statusCode)
+	assert.Contains(t, res.body, "invalid JSON body")
 }
 
 func TestHandleCreateTicket_WithAgent(t *testing.T) {

@@ -32,6 +32,11 @@ function kontora() {
     panelWidth: parseInt(localStorage.getItem('kontora-panel-width')) || Math.floor(window.innerWidth * 0.66),
     loading: true,
     error: null,
+    // Set when the daemon answers 401: the web token gate is on and this
+    // browser has no valid kontora_token cookie yet. Drives the login modal.
+    needsAuth: false,
+    tokenInput: '',
+    authError: null,
     isMobile: window.innerWidth < 768,
     // Mobile-only UI state (phone-width layer). activeColumn is which status
     // tab the board shows; detailTab is the open ticket's content tab; sheet is
@@ -207,16 +212,28 @@ function kontora() {
       });
       try {
         var cfgRes = await fetch('/api/config');
-        if (cfgRes.ok) this.configCache = await cfgRes.json();
+        if (cfgRes.status === 401) this.needsAuth = true;
+        else if (cfgRes.ok) this.configCache = await cfgRes.json();
       } catch (e) {
         this.error = 'Failed to load config';
       }
       try {
         await this.fetchTasks();
       } catch (e) {
-        this.error = 'Failed to load tickets';
+        if (!this.needsAuth) this.error = 'Failed to load tickets';
       }
       this.loading = false;
+      if (this.needsAuth) {
+        // Show the login modal instead of a board with a generic error toast.
+        // A leftover ?token= in the URL means the previous attempt's token was
+        // rejected (a valid one would have been consumed and stripped by the
+        // server redirect), so surface that.
+        this.error = null;
+        if (new URLSearchParams(location.search).has('token')) {
+          this.authError = 'That token was rejected. Check it and try again.';
+        }
+        return;
+      }
       this.connectSSE();
       // The board DOM (column containers) is created by Alpine once loading
       // flips false; render cards into it on the next tick, then bind the one
@@ -230,6 +247,7 @@ function kontora() {
 
     async fetchTasks() {
       const res = await fetch('/api/tickets');
+      if (res.status === 401) { this.needsAuth = true; throw new Error('unauthorized'); }
       if (!res.ok) throw new Error('Failed to fetch tickets');
       const data = await res.json();
       this.tickets = data.tickets || [];
@@ -238,6 +256,16 @@ function kontora() {
       // prefer the daemon's authoritative running count at load.
       this.runningAgents = data.running_agents || 0;
       this.updateFavicon();
+    },
+
+    // Hand the token to the server via /?token=, which validates it, sets the
+    // HttpOnly kontora_token cookie, and redirects back with the query param
+    // stripped. Keeping the cookie server-set and HttpOnly means JS never holds
+    // the token and it stays out of browser history.
+    submitToken() {
+      var t = (this.tokenInput || '').trim();
+      if (!t) return;
+      window.location.assign('/?token=' + encodeURIComponent(t));
     },
 
     _cssVar(name, styles) {

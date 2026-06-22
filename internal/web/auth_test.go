@@ -2,9 +2,11 @@ package web
 
 import (
 	"context"
+	"crypto/tls"
 	"io"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -122,14 +124,45 @@ func TestAuth_QueryTokenOnStaticSetsCookieAndRedirects(t *testing.T) {
 
 	assert.Equal(t, http.StatusSeeOther, resp.StatusCode)
 
-	var found bool
+	var cookie *http.Cookie
 	for _, c := range resp.Cookies() {
 		if c.Name == tokenCookieName && c.Value == "secret" {
-			found = true
+			cookie = c
 		}
 	}
-	assert.True(t, found, "expected kontora_token cookie to be set")
+	require.NotNil(t, cookie, "expected kontora_token cookie to be set")
+	assert.Equal(t, int(tokenCookieMaxAge.Seconds()), cookie.MaxAge, "cookie should persist for a fixed lifetime, not be a session cookie")
+	assert.True(t, cookie.HttpOnly)
+	assert.False(t, cookie.Secure, "plain HTTP must not mark the cookie Secure, or the browser drops it")
 
 	loc := resp.Header.Get("Location")
 	assert.NotContains(t, loc, "token", "token must be stripped from the redirect target")
+}
+
+func TestIsHTTPS(t *testing.T) {
+	tests := []struct {
+		name           string
+		directTLS      bool
+		forwardedProto string
+		want           bool
+	}{
+		{name: "plain http", want: false},
+		{name: "direct tls", directTLS: true, want: true},
+		{name: "proxy https", forwardedProto: "https", want: true},
+		{name: "proxy https uppercase", forwardedProto: "HTTPS", want: true},
+		{name: "proxy http", forwardedProto: "http", want: false},
+		{name: "proxy chain takes first", forwardedProto: "https, http", want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := httptest.NewRequest(http.MethodGet, "/", nil)
+			if tt.directTLS {
+				r.TLS = &tls.ConnectionState{}
+			}
+			if tt.forwardedProto != "" {
+				r.Header.Set("X-Forwarded-Proto", tt.forwardedProto)
+			}
+			assert.Equal(t, tt.want, isHTTPS(r))
+		})
+	}
 }

@@ -72,9 +72,12 @@ func New(svc TicketService, broker *SSEBroker, host string, port int, token stri
 // so subsequent same-origin fetch/EventSource/WebSocket calls (which cannot set
 // headers) authenticate automatically. Only a valid token writes the cookie, so
 // a /?token=garbage link cannot overwrite a working cookie. The cookie is
-// HttpOnly and SameSite=Lax; Secure is set only when the request arrived over
-// TLS, since marking it Secure on plain HTTP would make the browser drop it and
-// break the tailnet-over-HTTP flow.
+// HttpOnly and SameSite=Lax; Secure is set whenever the browser connection is
+// HTTPS, including behind a TLS-terminating proxy (via X-Forwarded-Proto). On
+// plain HTTP it stays unset, since marking it Secure there would make the
+// browser drop it and break the tailnet-over-HTTP flow. A MaxAge makes it a
+// persistent cookie so the token survives browser restarts instead of being
+// cleared at session end.
 //
 // After setting the cookie it redirects to the same URL with the token query
 // param removed, so the token is not retained in browser history, server logs,
@@ -87,8 +90,9 @@ func (s *Server) staticHandler(next http.Handler) http.Handler {
 					Name:     tokenCookieName,
 					Value:    q,
 					Path:     "/",
+					MaxAge:   int(tokenCookieMaxAge.Seconds()),
 					HttpOnly: true,
-					Secure:   r.TLS != nil,
+					Secure:   isHTTPS(r),
 					SameSite: http.SameSiteLaxMode,
 				})
 				vals := r.URL.Query()

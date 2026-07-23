@@ -81,6 +81,13 @@ type Agent struct {
 	Binary      string            `yaml:"binary"`
 	Args        []string          `yaml:"args"`
 	Environment map[string]string `yaml:"environment"`
+	// FailurePatterns are regexes matched against the agent's output log after
+	// it exits. A match pauses the ticket even when the agent exited cleanly —
+	// catching agents that report errors (quota, API failures) without a
+	// non-zero exit code. When unset, DefaultFailurePatterns apply; set an
+	// explicit list to override them, or [] to disable detection for this agent.
+	// Claude also gets structural detection from its session JSONL regardless.
+	FailurePatterns []string `yaml:"failure_patterns"`
 }
 
 func (a Agent) IsClaude() bool {
@@ -199,6 +206,15 @@ func (c *Config) applyDefaults() {
 		c.Plannotator.ReviewsDir = "~/.kontora/plannotator-reviews"
 	}
 
+	// Agents with no explicit failure_patterns get the built-in defaults. A nil
+	// slice means the key was absent; an explicit [] (non-nil, empty) opts out.
+	for name, agent := range c.Agents {
+		if agent.FailurePatterns == nil {
+			agent.FailurePatterns = DefaultFailurePatterns
+			c.Agents[name] = agent
+		}
+	}
+
 	if _, ok := c.Stages[ReworkStageName]; !ok {
 		if c.Stages == nil {
 			c.Stages = map[string]Stage{}
@@ -255,6 +271,11 @@ func (c *Config) Validate() error {
 	for name, agent := range c.Agents {
 		if agent.Binary == "" {
 			return fmt.Errorf("agent %q: binary is required", name)
+		}
+		for _, p := range agent.FailurePatterns {
+			if _, err := regexp.Compile(p); err != nil {
+				return fmt.Errorf("agent %q: invalid failure_pattern %q: %w", name, p, err)
+			}
 		}
 	}
 

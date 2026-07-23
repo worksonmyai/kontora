@@ -1,6 +1,8 @@
 package config
 
 import (
+	"fmt"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -127,6 +129,98 @@ func TestLoadMissingTicketsDir(t *testing.T) {
 func TestLoadMissingAgentBinary(t *testing.T) {
 	_, err := Load("testdata/missing_agent_binary.yaml")
 	require.ErrorContains(t, err, "binary")
+}
+
+func TestDefaultFailurePatternsApplied(t *testing.T) {
+	base := `
+agents:
+  claude:
+    binary: claude%s
+stages:
+  s:
+    prompt: do stuff
+pipelines:
+  p:
+    - stage: s
+      agent: claude
+      on_success: done
+      on_failure: pause
+`
+	tests := []struct {
+		name      string
+		agentYAML string
+		want      []string
+	}{
+		{
+			name:      "unset gets defaults",
+			agentYAML: "",
+			want:      DefaultFailurePatterns,
+		},
+		{
+			name:      "explicit list overrides defaults",
+			agentYAML: "\n    failure_patterns:\n      - custom",
+			want:      []string{"custom"},
+		},
+		{
+			name:      "empty list disables detection",
+			agentYAML: "\n    failure_patterns: []",
+			want:      []string{},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg, err := LoadReader(strings.NewReader(fmt.Sprintf(base, tt.agentYAML)))
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, cfg.Agents["claude"].FailurePatterns)
+		})
+	}
+}
+
+func TestDefaultFailurePatternsCompile(t *testing.T) {
+	for _, p := range DefaultFailurePatterns {
+		_, err := regexp.Compile(p)
+		assert.NoErrorf(t, err, "default pattern %q must compile", p)
+	}
+}
+
+func TestLoadFailurePatterns(t *testing.T) {
+	tmpl := `
+agents:
+  claude:
+    binary: claude
+    failure_patterns:
+      - %q
+stages:
+  s:
+    prompt: do stuff
+pipelines:
+  p:
+    - stage: s
+      agent: claude
+      on_success: done
+      on_failure: pause
+`
+	tests := []struct {
+		name    string
+		pattern string
+		wantErr string
+	}{
+		{name: "valid regex", pattern: `usage limit reached`},
+		{name: "valid anchored regex", pattern: `^API Error:`},
+		{name: "invalid regex", pattern: `[unterminated`, wantErr: "invalid failure_pattern"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			input := fmt.Sprintf(tmpl, tt.pattern)
+			cfg, err := LoadReader(strings.NewReader(input))
+			if tt.wantErr != "" {
+				require.ErrorContains(t, err, tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, []string{tt.pattern}, cfg.Agents["claude"].FailurePatterns)
+		})
+	}
 }
 
 func TestDurationParsing(t *testing.T) {

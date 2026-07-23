@@ -298,10 +298,11 @@ func (d *Daemon) runReworkStage(ctx, taskCtx context.Context, log *slog.Logger, 
 		return
 	}
 
-	// Set status=in_progress, started_at.
+	// Set status=in_progress, started_at, and claim for this instance.
 	now := time.Now()
 	_ = t.SetField("status", string(ticket.StatusInProgress))
 	_ = t.SetField("started_at", now.Format(time.RFC3339))
+	_ = t.SetField("claimed_by", d.instanceName)
 	if err := d.writeTicket(t, filePath); err != nil {
 		log.Error("rework: write failed", "phase", "pickup", "err", err)
 		return
@@ -382,6 +383,14 @@ func (d *Daemon) runReworkStage(ctx, taskCtx context.Context, log *slog.Logger, 
 	}
 	if d.isUserOverride(t2.Status) {
 		log.Info("rework: user override during execution", "status", t2.Status)
+		return
+	}
+
+	// If another instance claimed the ticket while the rework agent ran, discard
+	// the result: write nothing and keep the worktree.
+	if d.claimedElsewhere(t2) {
+		log.Info("rework: discarding exit result, claimed by another instance", "claimed_by", t2.ClaimedBy)
+		d.killTaskWindow(ticketID)
 		return
 	}
 

@@ -80,6 +80,10 @@ type Ticket struct {
 	Created     *time.Time     `yaml:"created"`
 	LastError   string         `yaml:"last_error"`
 	LastLog     string         `yaml:"last_log"`
+	// ClaimedBy records the daemon instance that last picked the ticket up. It
+	// is consulted only while Status is in_progress, to keep daemons on a shared
+	// tickets_dir from stealing or killing each other's work.
+	ClaimedBy string `yaml:"claimed_by"`
 
 	Body     string `yaml:"-"`
 	FilePath string `yaml:"-"`

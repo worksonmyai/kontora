@@ -109,6 +109,7 @@ type TicketInfo struct {
 	StartedAt     *time.Time    `json:"started_at,omitempty"`
 	UpdatedAt     *time.Time    `json:"updated_at,omitempty"`
 	Branch        string        `json:"branch,omitempty"`
+	ClaimedBy     string        `json:"claimed_by,omitempty"`
 	Stages        []string      `json:"stages,omitempty"`
 	History       []HistoryInfo `json:"history,omitempty"`
 	Body          string        `json:"body,omitempty"`
@@ -150,6 +151,7 @@ func TicketInfoFromView(v app.View) TicketInfo {
 		CreatedAt:     v.CreatedAt,
 		StartedAt:     v.StartedAt,
 		Branch:        v.Branch,
+		ClaimedBy:     v.ClaimedBy,
 		Stages:        v.Stages,
 		Body:          v.Body,
 		LastError:     v.LastError,

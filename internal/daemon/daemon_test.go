@@ -77,6 +77,7 @@ func (h *testHarness) defaultConfig(agent1Binary, agent2Binary string) *config.C
 		DefaultAgent:        "agent1",
 		MaxConcurrentAgents: 4,
 		AutoPickUp:          new(true),
+		InstanceName:        "test-instance",
 		Agents: map[string]config.Agent{
 			"agent1": {Binary: agent1Binary},
 			"agent2": {Binary: agent2Binary},
@@ -1043,6 +1044,54 @@ func TestAgentEnvironmentOverride(t *testing.T) {
 	require.NoError(t, <-errCh)
 }
 
+// TestPickupWritesClaim asserts that the pipeline and simple pickup paths
+// persist claimed_by=test-instance alongside status=in_progress, overwriting any
+// stale foreign claim. A sleep agent keeps the ticket parked in_progress so we
+// can read the claim off disk.
+func TestPickupWritesClaim(t *testing.T) {
+	cases := []struct {
+		name       string
+		pipeline   string // empty → simple (no-pipeline) ticket
+		startClaim string // a stale claim already on the todo ticket
+	}{
+		{name: "pipeline", pipeline: "one-stage"},
+		{name: "simple", pipeline: ""},
+		{name: "pipeline overwrites stale foreign claim", pipeline: "one-stage", startClaim: "beta"},
+		{name: "simple overwrites stale foreign claim", pipeline: "", startClaim: "beta"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			cfg := h.defaultConfig("sleep", "sleep")
+			cfg.Agents["agent1"] = config.Agent{Binary: "sleep", Args: []string{"10"}}
+			cfg.Stages["step1"] = config.Stage{Prompt: ""}
+			d := h.newDaemon(cfg)
+
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			errCh := make(chan error, 1)
+			go func() { errCh <- d.Run(ctx) }()
+			time.Sleep(200 * time.Millisecond)
+
+			md := simpleTaskMD("tst-clm", "todo", h.repoDir)
+			if tc.pipeline != "" {
+				md = h.taskMD("tst-clm", "todo", tc.pipeline)
+			}
+			if tc.startClaim != "" {
+				md = strings.Replace(md, "status: todo\n",
+					"status: todo\nclaimed_by: "+tc.startClaim+"\n", 1)
+			}
+			h.writeTicket("tst-clm.md", md)
+
+			result := h.waitForStatus("tst-clm.md", ticket.StatusInProgress, 5*time.Second)
+			assert.Equal(t, "test-instance", result.ClaimedBy)
+
+			cancel()
+			require.NoError(t, <-errCh)
+		})
+	}
+}
+
 func TestCrashRecovery(t *testing.T) {
 	h := newHarness(t)
 
@@ -1069,6 +1118,66 @@ func TestCrashRecovery(t *testing.T) {
 
 	cancel()
 	require.NoError(t, <-errCh)
+}
+
+// TestCrashRecoveryClaims checks that startup crash recovery respects claims:
+// unclaimed and locally claimed in_progress tickets recover to todo and run,
+// while a foreign-claimed ticket is left untouched and never started — even
+// with auto_pick_up disabled.
+func TestCrashRecoveryClaims(t *testing.T) {
+	cases := []struct {
+		name        string
+		claimedBy   string
+		autoPickUp  bool
+		wantRecover bool
+	}{
+		{name: "unclaimed recovers", claimedBy: "", autoPickUp: true, wantRecover: true},
+		{name: "local claim recovers", claimedBy: "test-instance", autoPickUp: true, wantRecover: true},
+		{name: "foreign claim left alone", claimedBy: "other-host", autoPickUp: true, wantRecover: false},
+		{name: "foreign claim, auto pickup off", claimedBy: "other-host", autoPickUp: false, wantRecover: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			cfg := h.defaultConfig("true", "true")
+			autoPickUp := tc.autoPickUp
+			cfg.AutoPickUp = &autoPickUp
+
+			md := strings.Replace(h.taskMD("tst-cr", "todo", "one-stage"),
+				"status: todo", "status: in_progress", 1)
+			if tc.claimedBy != "" {
+				md = strings.Replace(md, "status: in_progress\n",
+					"status: in_progress\nclaimed_by: "+tc.claimedBy+"\n", 1)
+			}
+			path := h.writeTicket("tst-cr.md", md)
+			origBytes, err := os.ReadFile(path)
+			require.NoError(t, err)
+
+			d := h.newDaemon(cfg)
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			errCh := make(chan error, 1)
+			go func() { errCh <- d.Run(ctx) }()
+
+			if tc.wantRecover {
+				h.waitForStatus("tst-cr.md", ticket.StatusDone, 10*time.Second)
+			} else {
+				// Foreign claim: the file must be byte-for-byte untouched and no
+				// agent may run.
+				time.Sleep(500 * time.Millisecond)
+				got := h.readTask("tst-cr.md")
+				assert.Equal(t, ticket.StatusInProgress, got.Status)
+				assert.Equal(t, tc.claimedBy, got.ClaimedBy)
+				nowBytes, rErr := os.ReadFile(path)
+				require.NoError(t, rErr)
+				assert.Equal(t, origBytes, nowBytes, "foreign-claimed ticket must not be modified")
+				assert.Equal(t, 0, d.RunningAgents())
+			}
+
+			cancel()
+			require.NoError(t, <-errCh)
+		})
+	}
 }
 
 // Sync tools (iCloud, Syncthing) leave stale conflict copies like "<id> 2.md"
@@ -1123,6 +1232,162 @@ func TestNonCanonicalFilesIgnored(t *testing.T) {
 	info, err = d.GetTicket("for-1")
 	require.NoError(t, err)
 	assert.Equal(t, "Real foreign body", info.Title)
+
+	cancel()
+	require.NoError(t, <-errCh)
+}
+
+// TestForeignClaimYield covers the watcher yield rule: while an agent runs, a
+// foreign claim arriving through sync must cancel the local agent and leave the
+// file untouched (no status, history, or last_error write).
+func TestForeignClaimYield(t *testing.T) {
+	h := newHarness(t)
+	cfg := h.defaultConfig("sleep", "sleep")
+	cfg.Agents["agent1"] = config.Agent{Binary: "sleep", Args: []string{"10"}}
+	cfg.Stages["step1"] = config.Stage{Prompt: ""}
+	d := h.newDaemon(cfg)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() { errCh <- d.Run(ctx) }()
+	time.Sleep(200 * time.Millisecond)
+
+	h.writeTicket("tst-yld.md", h.taskMD("tst-yld", "todo", "one-stage"))
+	h.waitForStatus("tst-yld.md", ticket.StatusInProgress, 5*time.Second)
+	time.Sleep(100 * time.Millisecond)
+
+	// A foreign claim arrives: same in_progress status, different owner.
+	foreign := strings.Replace(h.taskMD("tst-yld", "in_progress", "one-stage"),
+		"status: in_progress\n", "status: in_progress\nclaimed_by: other-host\n", 1)
+	path := h.writeTicket("tst-yld.md", foreign)
+	d.handleFileChanged(path)
+
+	// The local agent is cancelled and we write nothing.
+	waitForAgentsDone(t, d, 5*time.Second)
+	got := h.readTask("tst-yld.md")
+	assert.Equal(t, ticket.StatusInProgress, got.Status)
+	assert.Equal(t, "other-host", got.ClaimedBy)
+	assert.Empty(t, got.LastError)
+	assert.Empty(t, got.History)
+
+	cancel()
+	require.NoError(t, <-errCh)
+}
+
+// TestHandleAgentExitForeignClaimGuard covers the pipeline exit guard: when the
+// re-read ticket is claimed by another instance, handleAgentExit must write
+// nothing — for both success and failure exits.
+func TestHandleAgentExitForeignClaimGuard(t *testing.T) {
+	cases := []struct {
+		name     string
+		exitCode int
+	}{
+		{name: "success exit", exitCode: 0},
+		{name: "failed exit", exitCode: 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			d := h.newDaemon(h.cfg)
+
+			md := strings.Replace(h.taskMD("tst-eg", "in_progress", "one-stage"),
+				"status: in_progress\n", "status: in_progress\nclaimed_by: other-host\n", 1)
+			path := h.writeTicket("tst-eg.md", md)
+			before, err := os.ReadFile(path)
+			require.NoError(t, err)
+
+			d.handleAgentExit(context.Background(), context.Background(), handleExitParams{
+				log:         testLogger(t),
+				ticketID:    "tst-eg",
+				filePath:    path,
+				stageName:   "step1",
+				result:      process.Result{ExitCode: tc.exitCode, ExitedAt: time.Now()},
+				pipelineCfg: h.cfg.Pipelines["one-stage"],
+				repoPath:    h.repoDir,
+				wtPath:      filepath.Join(h.wtDir, h.repoName, "tst-eg"),
+			})
+
+			after, err := os.ReadFile(path)
+			require.NoError(t, err)
+			assert.Equal(t, string(before), string(after), "foreign-claimed ticket must not be written on exit")
+		})
+	}
+}
+
+// TestSimpleTicketExitForeignClaimGuard covers the simple-ticket exit guard. A
+// custom runner claims the ticket for another instance mid-run (suppressing the
+// watcher event via recordSelfWrite), so the exit path — not the watcher —
+// handles it. On a clean exit the guard must leave the ticket in_progress and
+// foreign-claimed, with no done/last_error write.
+func TestSimpleTicketExitForeignClaimGuard(t *testing.T) {
+	h := newHarness(t)
+	cfg := h.defaultConfig("true", "true")
+	ticketPath := filepath.Join(h.tasksDir, "tst-sg.md")
+
+	var d *Daemon
+	runner := func(_ context.Context, _ RunnerParams) (process.Result, error) {
+		if tk, err := ticket.ParseFile(ticketPath); err == nil {
+			_ = tk.SetField("claimed_by", "other-host")
+			if data, mErr := tk.Marshal(); mErr == nil {
+				d.recordSelfWrite(ticketPath)
+				_ = os.WriteFile(ticketPath, data, 0o644)
+			}
+		}
+		return process.Result{ExitCode: 0, ExitedAt: time.Now()}, nil
+	}
+	d = New(cfg,
+		WithLogger(testLogger(t)),
+		WithDebounce(50*time.Millisecond),
+		WithLockPath(h.lockPath),
+		WithRunner(runner),
+		WithAgentLookup(passthroughAgentLookup),
+		WithSkipOrphanCleanup(),
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() { errCh <- d.Run(ctx) }()
+	time.Sleep(200 * time.Millisecond)
+
+	h.writeTicket("tst-sg.md", simpleTaskMD("tst-sg", "todo", h.repoDir))
+
+	// Wait until the runner has claimed the ticket for other-host (the agent
+	// started and ran), then wait for the exit handler to finish.
+	require.Eventually(t, func() bool {
+		return h.readTask("tst-sg.md").ClaimedBy == "other-host"
+	}, 5*time.Second, 20*time.Millisecond, "runner should claim for other-host")
+	waitForAgentsDone(t, d, 5*time.Second)
+
+	got := h.readTask("tst-sg.md")
+	assert.Equal(t, ticket.StatusInProgress, got.Status, "guard must not write status=done")
+	assert.Equal(t, "other-host", got.ClaimedBy)
+	assert.Empty(t, got.LastError)
+
+	cancel()
+	require.NoError(t, <-errCh)
+}
+
+// TestStaleSelfClaimRecovery covers the both-sides-yielded recovery: an
+// in_progress ticket claimed by this instance with no local agent must be reset
+// to todo, enqueued, and run to completion.
+func TestStaleSelfClaimRecovery(t *testing.T) {
+	h := newHarness(t)
+	d := h.newDaemon(h.cfg)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() { errCh <- d.Run(ctx) }()
+	time.Sleep(200 * time.Millisecond)
+
+	md := strings.Replace(h.taskMD("tst-ss", "in_progress", "one-stage"),
+		"status: in_progress\n", "status: in_progress\nclaimed_by: test-instance\n", 1)
+	path := h.writeTicket("tst-ss.md", md)
+	d.handleFileChanged(path)
+
+	h.waitForStatus("tst-ss.md", ticket.StatusDone, 10*time.Second)
 
 	cancel()
 	require.NoError(t, <-errCh)

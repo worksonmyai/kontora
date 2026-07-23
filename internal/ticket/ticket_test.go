@@ -158,6 +158,34 @@ func TestDashesInBody(t *testing.T) {
 	assert.Equal(t, 2, strings.Count(tkt.Body, "---"))
 }
 
+func TestClaimedByDecodeAndRoundTrip(t *testing.T) {
+	src := "---\nid: clm-001\nkontora: true\nstatus: in_progress\nclaimed_by: alpha\n---\n# Claimed ticket\n"
+
+	tkt, err := ParseBytes([]byte(src))
+	require.NoError(t, err)
+	assert.Equal(t, "alpha", tkt.ClaimedBy)
+
+	// A rewrite that touches an unrelated field must preserve claimed_by.
+	require.NoError(t, tkt.SetField("status", "done"))
+	out, err := tkt.Marshal()
+	require.NoError(t, err)
+	assert.Contains(t, string(out), "claimed_by: alpha")
+
+	reparsed, err := ParseBytes(out)
+	require.NoError(t, err)
+	assert.Equal(t, "alpha", reparsed.ClaimedBy)
+
+	// Setting the claim on a ticket that had none appends it and decodes back.
+	fresh, err := ParseBytes([]byte("---\nid: clm-002\nkontora: true\nstatus: in_progress\n---\n# body\n"))
+	require.NoError(t, err)
+	assert.Empty(t, fresh.ClaimedBy)
+	require.NoError(t, fresh.SetField("claimed_by", "beta"))
+	assert.Equal(t, "beta", fresh.ClaimedBy)
+	out2, err := fresh.Marshal()
+	require.NoError(t, err)
+	assert.Contains(t, string(out2), "claimed_by: beta")
+}
+
 func TestSetFieldExisting(t *testing.T) {
 	tkt, err := ParseFile("testdata/basic.md")
 	require.NoError(t, err)

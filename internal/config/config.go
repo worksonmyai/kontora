@@ -44,6 +44,7 @@ type Config struct {
 	DefaultAgent        string              `yaml:"default_agent"`
 	MaxConcurrentAgents int                 `yaml:"max_concurrent_agents"`
 	AutoPickUp          *bool               `yaml:"auto_pick_up"`
+	InstanceName        string              `yaml:"instance_name"`
 	Web                 Web                 `yaml:"web"`
 	Agents              map[string]Agent    `yaml:"agents"`
 	Stages              map[string]Stage    `yaml:"stages"`
@@ -116,6 +117,10 @@ type PipelineStep struct {
 // ErrNotFound is returned by Load when the config file does not exist.
 var ErrNotFound = errors.New("config not found")
 
+// osHostname is indirected so tests can exercise the instance_name fallback
+// when hostname lookup fails.
+var osHostname = os.Hostname
+
 func Load(path string) (*Config, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -184,6 +189,18 @@ func (c *Config) applyDefaults() {
 	}
 	if c.AutoPickUp == nil {
 		c.AutoPickUp = new(true)
+	}
+	if c.InstanceName == "" {
+		// The instance name identifies this daemon when several run against the
+		// same synced tickets_dir. Default to the hostname; fall back to
+		// "default" when the OS can't report one. Two machines that share a
+		// hostname must set instance_name explicitly, or the claim protection
+		// can't tell them apart.
+		if host, err := osHostname(); err == nil && host != "" {
+			c.InstanceName = host
+		} else {
+			c.InstanceName = "default"
+		}
 	}
 	if c.Web.Enabled == nil {
 		enabled := true

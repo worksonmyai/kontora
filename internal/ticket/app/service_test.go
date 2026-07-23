@@ -479,6 +479,17 @@ func TestBuildView_Stages(t *testing.T) {
 	}
 }
 
+func TestBuildView_ClaimedBy(t *testing.T) {
+	cfg := testCfg()
+	tkt, err := ticket.ParseBytes([]byte(
+		"---\nid: t1\nstatus: in_progress\nkontora: true\npipeline: default\nstage: code\nclaimed_by: alpha\n---\n# T\n"))
+	require.NoError(t, err)
+
+	// ClaimedBy is populated in both the list and detail projections.
+	assert.Equal(t, "alpha", BuildView(cfg, tkt, false).ClaimedBy)
+	assert.Equal(t, "alpha", BuildView(cfg, tkt, true).ClaimedBy)
+}
+
 func TestRun_FromOpen(t *testing.T) {
 	repo := newMemRepo()
 	repo.add("tst-001", "---\nid: tst-001\nstatus: open\nkontora: true\npipeline: default\nstage: code\n---\n# Test\n")

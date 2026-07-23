@@ -969,6 +969,9 @@
               <template x-if="selectedTicket?.status === 'in_progress' && logViewContent === null && !logViewLoading">
                 <div class="text-sm text-tx-3 font-mono">
                   <p class="text-surface-600 mb-1">Agent: <span class="text-tx-3" x-text="selectedTicket?.agent || 'unknown'"></span></p>
+                  <template x-if="selectedTicket?.claimed_by">
+                    <p class="text-surface-600 mb-1">Claimed by: <span class="text-tx-3" x-text="selectedTicket?.claimed_by"></span></p>
+                  </template>
                   <template x-if="selectedTicket?.started_at">
                     <p class="text-surface-600">Running for <span class="text-tx-3" x-text="formatDuration(selectedTicket)" :data-tip-t="'Started: ' + formatAbsDate(selectedTicket?.started_at)"></span></p>
                   </template>

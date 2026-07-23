@@ -220,10 +220,11 @@ type Daemon struct {
 	broker             *web.SSEBroker
 	svc                *app.Service
 
-	debounce   time.Duration
-	lockPath   string
-	configPath string
-	log        *slog.Logger
+	debounce     time.Duration
+	lockPath     string
+	configPath   string
+	instanceName string
+	log          *slog.Logger
 
 	mu              sync.Mutex
 	tickets         map[string]*ticketState
@@ -269,6 +270,7 @@ func New(cfg *config.Config, opts ...Option) *Daemon {
 		broker:             web.NewSSEBroker(),
 		debounce:           time.Second,
 		lockPath:           defaultLockPath(),
+		instanceName:       cfg.InstanceName,
 		log: slog.New(charmlog.NewWithOptions(os.Stderr, charmlog.Options{
 			ReportTimestamp: true,
 		})),
@@ -456,14 +458,22 @@ func (d *Daemon) initialScan(dir string) error {
 
 		d.mu.Lock()
 
-		// Crash recovery: reset running → todo (kontora tickets only).
+		// Crash recovery: reset running → todo (kontora tickets only). Only
+		// recover tickets this instance owns: an empty claim (single-machine
+		// installs, pre-upgrade tickets) or our own name. A ticket claimed by
+		// another instance sharing this tickets_dir is left in_progress and not
+		// enqueued, so starting a second daemon can't steal or kill its work.
 		if t.Kontora && t.Status == ticket.StatusInProgress {
-			d.ticketLog(t.ID).Warn("crash recovery: resetting to todo")
-			_ = t.SetField("status", string(ticket.StatusTodo))
-			data, merr := t.Marshal()
-			if merr == nil {
-				d.recordSelfWrite(path)
-				_ = os.WriteFile(path, data, 0o644)
+			if t.ClaimedBy == "" || t.ClaimedBy == d.instanceName {
+				d.ticketLog(t.ID).Warn("crash recovery: resetting to todo")
+				_ = t.SetField("status", string(ticket.StatusTodo))
+				data, merr := t.Marshal()
+				if merr == nil {
+					d.recordSelfWrite(path)
+					_ = os.WriteFile(path, data, 0o644)
+				}
+			} else {
+				d.ticketLog(t.ID).Info("in_progress on another instance, leaving alone", "claimed_by", t.ClaimedBy)
 			}
 		}
 
@@ -536,6 +546,35 @@ func (d *Daemon) handleFileChanged(path string) {
 				log.Info("enqueuing", "previous_status", string(prev.ticket.Status), "pipeline", t.Pipeline, "stage", t.Stage)
 				d.enqueue(t)
 			}
+		}
+	case ticket.StatusInProgress:
+		if d.claimedElsewhere(t) {
+			// Another instance claimed this ticket and its claim reached us
+			// through sync. If we're running it, yield: cancel our agent and
+			// leave the file alone. The cancelled-context path in the exit
+			// handlers writes nothing, so the foreign claim and worktree survive.
+			if cancel, ok := d.running[t.ID]; ok {
+				log.Info("yielding: ticket claimed by another instance", "claimed_by", t.ClaimedBy)
+				cancel()
+			}
+			return
+		}
+		// Claimed by us but no local agent is running it: a stale self-claim that
+		// came back through sync, or the both-sides-yielded state. Reset it to
+		// todo and re-enqueue, matching live crash recovery.
+		if _, running := d.running[t.ID]; !running && t.ClaimedBy == d.instanceName {
+			log.Info("recovering stale self-claim", "claimed_by", t.ClaimedBy)
+			_ = t.SetField("status", string(ticket.StatusTodo))
+			if data, merr := t.Marshal(); merr == nil {
+				d.recordSelfWrite(path)
+				if werr := os.WriteFile(path, data, 0o644); werr != nil {
+					log.Error("recover stale self-claim: write failed", "err", werr)
+					return
+				}
+			}
+			d.tickets[t.ID] = newTicketState(t, path)
+			d.enqueue(t)
+			d.broadcastTicketUpdate(t.ID)
 		}
 	case ticket.StatusPaused, ticket.StatusHumanReview, ticket.StatusCancelled, ticket.StatusOpen:
 		if cancel, ok := d.running[t.ID]; ok {
@@ -611,6 +650,14 @@ func (d *Daemon) logRemoveResult(log *slog.Logger, err error) {
 	default:
 		log.Info("worktree removed")
 	}
+}
+
+// claimedElsewhere reports whether the ticket carries a non-empty claim owned
+// by a different instance. It guards every place the daemon would otherwise
+// overwrite a ticket that another machine on the shared tickets_dir is running.
+// Callers consult it only for in_progress tickets, per the claim model.
+func (d *Daemon) claimedElsewhere(t *ticket.Ticket) bool {
+	return t.ClaimedBy != "" && t.ClaimedBy != d.instanceName
 }
 
 // isUserOverride returns true if the status represents a user-initiated
@@ -802,6 +849,10 @@ func (d *Daemon) runTicket(ctx context.Context, ticketID string) {
 		log.Error("apply action failed", "phase", "pickup", "err", err)
 		return
 	}
+	// Claim the ticket for this instance in the same write that flips it to
+	// in_progress, so a daemon on another machine sharing the tickets_dir sees
+	// the owner before it acts.
+	_ = t.SetField("claimed_by", d.instanceName)
 	if err := d.writeTicket(t, filePath); err != nil {
 		log.Error("write failed", "phase", "pickup", "err", err)
 		return
@@ -884,10 +935,11 @@ func (d *Daemon) runSimpleTicket(ctx, taskCtx context.Context, log *slog.Logger,
 		return
 	}
 
-	// Set status=in_progress, started_at.
+	// Set status=in_progress, started_at, and claim for this instance.
 	now := time.Now()
 	_ = t.SetField("status", string(ticket.StatusInProgress))
 	_ = t.SetField("started_at", now.Format(time.RFC3339))
+	_ = t.SetField("claimed_by", d.instanceName)
 	if err := d.writeTicket(t, filePath); err != nil {
 		log.Error("write failed", "phase", "pickup", "err", err)
 		return
@@ -961,6 +1013,17 @@ func (d *Daemon) runSimpleTicket(ctx, taskCtx context.Context, log *slog.Logger,
 			d.removeWorktreeAt(log, repoPath, wtPath)
 			d.killTaskWindow(ticketID)
 		}
+		d.mu.Lock()
+		d.tickets[ticketID] = newTicketState(t2, filePath)
+		d.mu.Unlock()
+		return
+	}
+
+	// If another instance claimed the ticket while we ran, discard the result:
+	// write nothing and keep the worktree.
+	if d.claimedElsewhere(t2) {
+		log.Info("discarding exit result: claimed by another instance", "claimed_by", t2.ClaimedBy)
+		d.killTaskWindow(ticketID)
 		d.mu.Lock()
 		d.tickets[ticketID] = newTicketState(t2, filePath)
 		d.mu.Unlock()
@@ -1043,6 +1106,18 @@ func (d *Daemon) handleAgentExit(ctx, taskCtx context.Context, p handleExitParam
 			d.removeWorktreeAt(p.log, p.repoPath, p.wtPath)
 			d.killTaskWindow(p.ticketID)
 		}
+		d.mu.Lock()
+		d.tickets[p.ticketID] = newTicketState(t2, p.filePath)
+		d.mu.Unlock()
+		return
+	}
+
+	// If another instance claimed the ticket while we ran (its claim arrived
+	// through sync), discard our result: write nothing and keep the worktree,
+	// which may hold unpushed commits.
+	if d.claimedElsewhere(t2) {
+		p.log.Info("discarding exit result: claimed by another instance", "claimed_by", t2.ClaimedBy)
+		d.killTaskWindow(p.ticketID)
 		d.mu.Lock()
 		d.tickets[p.ticketID] = newTicketState(t2, p.filePath)
 		d.mu.Unlock()

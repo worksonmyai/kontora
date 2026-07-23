@@ -24,6 +24,7 @@ type View struct {
 	StartedAt     *time.Time
 	CompletedAt   *time.Time
 	Branch        string
+	ClaimedBy     string
 	Stages        []string
 	History       []HistoryView
 	Body          string
@@ -58,6 +59,7 @@ func BuildView(cfg *config.Config, t *ticket.Ticket, detail bool) View {
 		StartedAt:   t.StartedAt,
 		CompletedAt: t.CompletedAt,
 		Branch:      t.Branch,
+		ClaimedBy:   t.ClaimedBy,
 	}
 
 	if t.Agent != "" {

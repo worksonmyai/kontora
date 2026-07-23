@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -93,6 +94,43 @@ pipelines:
 	require.NoError(t, err)
 	require.NotNil(t, cfg.AutoPickUp)
 	assert.False(t, *cfg.AutoPickUp)
+}
+
+func TestInstanceNameDefault(t *testing.T) {
+	orig := osHostname
+	t.Cleanup(func() { osHostname = orig })
+
+	tests := []struct {
+		name     string
+		explicit string
+		hostname func() (string, error)
+		want     string
+	}{
+		{
+			name:     "defaults to hostname",
+			hostname: func() (string, error) { return "alpha", nil },
+			want:     "alpha",
+		},
+		{
+			name:     "explicit value preserved",
+			explicit: "alpha",
+			hostname: func() (string, error) { return "beta", nil },
+			want:     "alpha",
+		},
+		{
+			name:     "hostname lookup fails",
+			hostname: func() (string, error) { return "", errors.New("no hostname") },
+			want:     "default",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			osHostname = tt.hostname
+			cfg := &Config{InstanceName: tt.explicit}
+			cfg.applyDefaults()
+			assert.Equal(t, tt.want, cfg.InstanceName)
+		})
+	}
 }
 
 func TestLoadUnknownStage(t *testing.T) {

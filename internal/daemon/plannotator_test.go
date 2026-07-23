@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/worksonmyai/kontora/internal/config"
+	"github.com/worksonmyai/kontora/internal/process"
 	"github.com/worksonmyai/kontora/internal/ticket"
 	"github.com/worksonmyai/kontora/internal/web"
 )
@@ -228,6 +229,105 @@ func TestPlannotator_NoStateChangePaths(t *testing.T) {
 			require.NoError(t, <-errCh)
 		})
 	}
+}
+
+// TestPlannotator_ReworkClaim asserts the rework pickup writes claimed_by in
+// the same in_progress transition, matching the pipeline and simple paths.
+func TestPlannotator_ReworkClaim(t *testing.T) {
+	h := newPlannotatorHarness(t)
+	h.cfg.Agents["agent2"] = config.Agent{Binary: "sleep", Args: []string{"30"}}
+	h.cfg.Stages[config.ReworkStageName] = config.Stage{
+		Prompt:  "",
+		Timeout: config.Duration{Duration: time.Minute},
+	}
+	d := h.newDaemonWithSpawner()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- d.Run(ctx) }()
+	time.Sleep(200 * time.Millisecond)
+
+	filePath := h.seedReviewTicket("tst-rc01")
+	require.Eventually(t, func() bool {
+		_, err := d.GetTicket("tst-rc01")
+		return err == nil
+	}, 2*time.Second, 20*time.Millisecond)
+
+	require.NoError(t, d.StartPlannotatorReview("tst-rc01"))
+	h.stdoutCh <- "please fix this"
+
+	require.Eventually(t, func() bool {
+		tk, err := ticket.ParseFile(filePath)
+		return err == nil && tk.Stage == "rework" &&
+			tk.Status == ticket.StatusInProgress && tk.ClaimedBy == "test-instance"
+	}, 3*time.Second, 20*time.Millisecond, "rework pickup should claim for test-instance")
+
+	cancel()
+	require.NoError(t, <-errCh)
+}
+
+// TestPlannotator_ReworkExitForeignClaimGuard covers the rework exit guard: a
+// custom runner claims the ticket for another instance mid-run (suppressing the
+// watcher event), so the exit path handles it. The guard must leave the ticket
+// in_progress and foreign-claimed — not routed to human_review, no new history.
+func TestPlannotator_ReworkExitForeignClaimGuard(t *testing.T) {
+	h := newPlannotatorHarness(t)
+	h.cfg.Stages[config.ReworkStageName] = config.Stage{
+		Prompt:  "",
+		Timeout: config.Duration{Duration: time.Minute},
+	}
+
+	ticketPath := filepath.Join(h.tasksDir, "tst-rg01.md")
+	var d *Daemon
+	runner := func(_ context.Context, _ RunnerParams) (process.Result, error) {
+		if tk, err := ticket.ParseFile(ticketPath); err == nil {
+			_ = tk.SetField("claimed_by", "other-host")
+			if data, mErr := tk.Marshal(); mErr == nil {
+				d.recordSelfWrite(ticketPath)
+				_ = os.WriteFile(ticketPath, data, 0o644)
+			}
+		}
+		return process.Result{ExitCode: 0, ExitedAt: time.Now()}, nil
+	}
+	d = New(h.cfg,
+		WithLogger(testLogger(h.t)),
+		WithDebounce(50*time.Millisecond),
+		WithLockPath(h.lockPath),
+		WithRunner(runner),
+		WithSkipOrphanCleanup(),
+		WithPlannotatorSpawner(h.spawner()),
+		WithPlannotatorLookup(h.lookup()),
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() { errCh <- d.Run(ctx) }()
+	time.Sleep(200 * time.Millisecond)
+
+	h.seedReviewTicket("tst-rg01")
+	require.Eventually(t, func() bool {
+		_, err := d.GetTicket("tst-rg01")
+		return err == nil
+	}, 2*time.Second, 20*time.Millisecond)
+
+	require.NoError(t, d.StartPlannotatorReview("tst-rg01"))
+	h.stdoutCh <- "please fix this"
+
+	require.Eventually(t, func() bool {
+		return h.readTask("tst-rg01.md").ClaimedBy == "other-host"
+	}, 5*time.Second, 20*time.Millisecond, "rework runner should claim for other-host")
+	waitForAgentsDone(t, d, 5*time.Second)
+
+	got := h.readTask("tst-rg01.md")
+	assert.Equal(t, "other-host", got.ClaimedBy)
+	assert.Equal(t, ticket.StatusInProgress, got.Status, "rework guard must not route to human_review")
+	assert.Len(t, got.History, 2, "rework guard must not append history")
+
+	cancel()
+	require.NoError(t, <-errCh)
 }
 
 func TestPlannotator_ReworkPath(t *testing.T) {

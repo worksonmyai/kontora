@@ -26,10 +26,12 @@ function kontora() {
     selectedTicket: null,
     terminalOpen: false,
     terminalRW: false,
-    terminalFullscreen: false,
-    ticketFullscreen: false,
+    // Expands the whole detail panel to a full-screen view (2a layout). One
+    // flag for both tabs — the panel DOM stays in place, so the live terminal
+    // survives the transition (ResizeObserver refits it).
+    detailFullscreen: false,
     activeTab: 'terminal',
-    panelWidth: parseInt(localStorage.getItem('kontora-panel-width')) || Math.floor(window.innerWidth * 0.66),
+    panelWidth: parseInt(localStorage.getItem('kontora-panel-width')) || 430,
     loading: true,
     error: null,
     // Set when the daemon answers 401: the web token gate is on and this
@@ -88,6 +90,20 @@ function kontora() {
     uploadDragging: false,
     lightTheme: getStoredTheme() === 'light',
     sidebarHidden: (function() { try { return localStorage.getItem('kontora-sidebar-hidden') !== '0'; } catch (e) { return true; } })(),
+    // Columns collapsed to a vertical rail. Cancelled starts collapsed unless
+    // the user has saved their own set.
+    collapsedCols: (function() {
+      try {
+        var v = localStorage.getItem('kontora-collapsed-cols');
+        if (v === null) return ['cancelled'];
+        var parsed = JSON.parse(v);
+        return Array.isArray(parsed) ? parsed : ['cancelled'];
+      } catch (e) { return ['cancelled']; }
+    })(),
+    // Card display toggles (column ⋯ menu): pipeline badge row and agent meta.
+    showPipelineBadges: (function() { try { return localStorage.getItem('kontora-show-badges') !== '0'; } catch (e) { return true; } })(),
+    showAgentMeta: (function() { try { return localStorage.getItem('kontora-show-agent-meta') !== '0'; } catch (e) { return true; } })(),
+    colMenuOpen: null,
     currentView: 'board',
     // Map of ticketId → true while a plannotator subprocess is in flight for it.
     plannotatorInFlight: {},
@@ -99,15 +115,15 @@ function kontora() {
     _boardInit: false,
 
     _builtinColumns: [
-      { key: 'open', statuses: ['open'], dropStatus: 'open', label: 'Open', color: 'bg-accent', tint: '227 35% 80%', tip: 'Draft ticket, not running yet. Drag to In Progress or click Initialize to start.', emptyText: 'Create a ticket to get started', glow: 'glow-top-accent',
+      { key: 'open', statuses: ['open'], dropStatus: 'open', label: 'Open', color: 'bg-accent', tint: 'var(--st-open)', tip: 'Draft ticket, not running yet. Drag to In Progress or click Initialize to start.', emptyText: 'Create a ticket to get started',
         emptyIcon: '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M9 15h6"/><path d="M12 18v-6"/>' },
-      { key: 'in_progress', statuses: ['todo', 'in_progress', 'paused'], dropStatus: 'todo', label: 'In Progress', color: 'bg-ok', tint: '41 86% 83%', tip: 'Queued, running, or paused tickets. The daemon auto-promotes queued tickets when a worker is free.', emptyText: 'No active tickets', glow: 'glow-top-ok',
+      { key: 'in_progress', statuses: ['todo', 'in_progress', 'paused'], dropStatus: 'todo', label: 'In Progress', color: 'bg-ok', tint: 'var(--st-progress)', tip: 'Queued, running, or paused tickets. The daemon auto-promotes queued tickets when a worker is free.', emptyText: 'No active tickets',
         emptyIcon: '<path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/>' },
-      { key: 'human_review', statuses: ['human_review'], dropStatus: 'human_review', label: 'Human Review', color: 'bg-review', tint: '267 84% 81%', tip: 'Waiting for a human to look at the result.', emptyText: 'No tickets waiting for review', glow: 'glow-top-review',
+      { key: 'human_review', statuses: ['human_review'], dropStatus: 'human_review', label: 'Human Review', color: 'bg-review', tint: 'var(--st-review)', tip: 'Waiting for a human to look at the result.', emptyText: 'No tickets waiting for review',
         emptyIcon: '<path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/>' },
-      { key: 'done', statuses: ['done'], dropStatus: 'done', label: 'Done', color: 'bg-ok', tint: '115 54% 76%', tip: 'Ticket completed successfully.', emptyText: 'No completed tickets yet', glow: 'glow-top-ok',
+      { key: 'done', statuses: ['done'], dropStatus: 'done', label: 'Done', color: 'bg-ok', tint: 'var(--st-done)', tip: 'Ticket completed successfully.', emptyText: 'No completed tickets yet',
         emptyIcon: '<circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/>' },
-      { key: 'cancelled', statuses: ['cancelled'], dropStatus: 'cancelled', label: 'Cancelled', color: 'bg-surface-600', tint: '228 24% 72%', tip: 'Stopped manually. Drag to In Progress to run it again.', emptyText: 'No cancelled tickets', glow: 'glow-top-muted',
+      { key: 'cancelled', statuses: ['cancelled'], dropStatus: 'cancelled', label: 'Cancelled', color: 'bg-surface-600', tint: 'var(--st-cancel)', tip: 'Stopped manually. Drag to In Progress to run it again.', emptyText: 'No cancelled tickets',
         emptyIcon: '<path d="m15 9-6 6"/><path d="m9 9 6 6"/><circle cx="12" cy="12" r="10"/>' },
     ],
 
@@ -150,7 +166,7 @@ function kontora() {
     },
 
     _knownCustomStatuses: {
-      review: { label: 'Review', color: 'bg-review', tint: '267 84% 81%', glow: 'glow-top-review', emptyIcon: '<path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/>' },
+      review: { label: 'Review', color: 'bg-review', tint: 'var(--st-review)', emptyIcon: '<path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/>' },
     },
 
     get columns() {
@@ -167,10 +183,9 @@ function kontora() {
             dropStatus: s,
             label: known?.label || s.charAt(0).toUpperCase() + s.slice(1).replace(/_/g, ' '),
             color: known?.color || 'bg-surface-600',
-            tint: known?.tint || '267 84% 81%',
+            tint: known?.tint || 'var(--st-review)',
             tip: 'Custom status: ' + s,
             emptyText: 'No ' + (known?.label || s).toLowerCase() + ' tickets',
-            glow: known?.glow || 'glow-top-muted',
             emptyIcon: known?.emptyIcon || '<circle cx="12" cy="12" r="10"/><path d="M12 8v4"/><path d="M12 16h.01"/>',
           };
         });
@@ -196,17 +211,7 @@ function kontora() {
       // Custom statuses add columns; recompute so _board gains the new key,
       // then renderBoard (called by recomputeBoard) fills the new column DOM.
       this.$watch('configCache', () => this.$nextTick(() => this.recomputeBoard()));
-      this.$watch('terminalFullscreen', (fs) => {
-        if (!this._term?.element || !this.terminalOpen) return;
-        var target = fs
-          ? document.getElementById('terminal-container-fullscreen')
-          : document.getElementById('terminal-container');
-        if (!target) return;
-        target.appendChild(this._term.element);
-        if (this._resizeObserver) {
-          this._resizeObserver.disconnect();
-          this._resizeObserver.observe(target);
-        }
+      this.$watch('detailFullscreen', () => {
         var self = this;
         requestAnimationFrame(function() { self.refitTerminal(); });
       });
@@ -515,6 +520,37 @@ function kontora() {
       try { localStorage.setItem('kontora-sidebar-hidden', this.sidebarHidden ? '1' : '0'); } catch (e) {}
     },
 
+    isCollapsed(key) {
+      return this.collapsedCols.includes(key);
+    },
+
+    toggleColumnCollapsed(key) {
+      if (this.isCollapsed(key)) {
+        this.collapsedCols = this.collapsedCols.filter(k => k !== key);
+      } else {
+        this.collapsedCols = this.collapsedCols.concat([key]);
+      }
+      try { localStorage.setItem('kontora-collapsed-cols', JSON.stringify(this.collapsedCols)); } catch (e) {}
+      // Alpine recreates the column's card container on expand, so the cached
+      // HTML would make renderColumn skip filling the fresh (empty) element.
+      delete this._renderedHTML[key];
+      this.$nextTick(() => this.renderColumn(key));
+    },
+
+    toggleShowBadges() {
+      this.showPipelineBadges = !this.showPipelineBadges;
+      try { localStorage.setItem('kontora-show-badges', this.showPipelineBadges ? '1' : '0'); } catch (e) {}
+      this._renderedHTML = {};
+      this.renderBoard();
+    },
+
+    toggleShowAgentMeta() {
+      this.showAgentMeta = !this.showAgentMeta;
+      try { localStorage.setItem('kontora-show-agent-meta', this.showAgentMeta ? '1' : '0'); } catch (e) {}
+      this._renderedHTML = {};
+      this.renderBoard();
+    },
+
     // Number of tickets currently running on a given agent. Used by the sidebar.
     agentRunningCount(agent) {
       if (!agent) return 0;
@@ -682,7 +718,6 @@ function kontora() {
     },
 
     switchTab(tab) {
-      if (tab !== 'ticket') this.ticketFullscreen = false;
       this.activeTab = tab;
       if (tab === 'terminal' && this.selectedTicket?.status === 'in_progress' && !this.terminalOpen) {
         this.openTerminal();
@@ -695,8 +730,7 @@ function kontora() {
     },
 
     closeDetail() {
-      this.terminalFullscreen = false;
-      this.ticketFullscreen = false;
+      this.detailFullscreen = false;
       this.closeTerminal();
       this.terminalRW = false;
       this.detailMenuOpen = false;
@@ -1008,27 +1042,107 @@ function kontora() {
       this.logViewLoading = false;
     },
 
-    stageDotClass(i, ticket) {
-      if (!ticket || !ticket.stages) return 'stage-dot-todo';
-      if (ticket.status === 'done') return 'stage-dot-done';
-      var currentIdx = ticket.stages.indexOf(ticket.stage);
-      if (currentIdx < 0) return 'stage-dot-todo';
-      if (i < currentIdx) return 'stage-dot-done';
-      if (i === currentIdx) return 'stage-dot-current';
-      return 'stage-dot-todo';
-    },
-
+    // Classes for one stepper pill in the stages row. Completed stages get the
+    // green tint treatment, the active stage a solid status-colored pill with
+    // dark text, queued stages stay dimmed.
     stageStyle(stage, ticket) {
-      if (!ticket || !ticket.stages) return 'bg-surface-800 text-surface-600';
+      if (!ticket || !ticket.stages) return 'text-surface-600 border-surface-700/60';
       var stageIdx = ticket.stages.indexOf(stage);
       var currentIdx = ticket.stages.indexOf(ticket.stage);
-      if (ticket.status === 'done') return 'bg-ok/10 text-ok/60';
+      var doneCls = 'text-st-done bg-st-done/[0.08] border-st-done/[0.24]';
+      if (ticket.status === 'done') return doneCls;
       if (stage === ticket.stage) {
-        if (ticket.status === 'paused') return 'stage-paused';
-        return 'stage-current';
+        if (ticket.status === 'paused') return 'text-st-paused bg-st-paused/[0.12] border-st-paused/[0.3]';
+        if (ticket.status === 'in_progress') return 'stage-active-progress';
+        if (ticket.status === 'human_review') return 'stage-active-review';
+        return 'text-tx-2 bg-surface-800 border-edge-input';
       }
-      if (currentIdx >= 0 && stageIdx >= 0 && stageIdx < currentIdx) return 'bg-ok/10 text-ok/60';
-      return 'bg-surface-800 text-surface-600';
+      if (currentIdx >= 0 && stageIdx >= 0 && stageIdx < currentIdx) return doneCls;
+      return 'text-surface-600 border-surface-700/60 opacity-70';
+    },
+
+    // Whether a stage is behind the current one (renders with a ✓ prefix).
+    isStageDone(stage, ticket) {
+      if (!ticket || !ticket.stages) return false;
+      if (ticket.status === 'done') return true;
+      var si = ticket.stages.indexOf(stage);
+      var ci = ticket.stages.indexOf(ticket.stage);
+      return ci >= 0 && si >= 0 && si < ci;
+    },
+
+    statusLabel(status) {
+      return (status || '').replace(/_/g, ' ');
+    },
+
+    // Duration between two timestamps, for history rows ("38m", "1h 4m", "45s").
+    formatElapsed(start, end) {
+      if (!start || !end) return '';
+      var secs = Math.floor((new Date(end) - new Date(start)) / 1000);
+      if (isNaN(secs) || secs < 0) return '';
+      if (secs < 60) return secs + 's';
+      var mins = Math.floor(secs / 60);
+      if (mins < 60) return mins + 'm';
+      return Math.floor(mins / 60) + 'h ' + (mins % 60) + 'm';
+    },
+
+    // Narrow docked panel stacks the details rail under the content column.
+    // Fullscreen always has room for the side-by-side layout.
+    panelStacked() {
+      if (this.detailFullscreen) return false;
+      return this.isMobile || this.panelWidth < 720;
+    },
+
+    // "⌁ attach tmux session": running tickets jump to the live terminal,
+    // otherwise the attach command is copied.
+    attachTerminal() {
+      if (!this.selectedTicket) return;
+      if (this.selectedTicket.status === 'in_progress') {
+        this.logViewContent = null;
+        this.logViewStage = null;
+        this.switchTab('terminal');
+      } else {
+        this.copyCmd('kontora attach ' + this.selectedTicket.id);
+      }
+    },
+
+    // Follow (autoscroll) toggle for the log pane. The live terminal already
+    // sticks to the bottom while it is at the bottom; enabling re-pins it.
+    logFollow: true,
+    toggleLogFollow() {
+      this.logFollow = !this.logFollow;
+      if (this.logFollow) this.scrollLogToEnd();
+    },
+    scrollLogToEnd() {
+      if (this.terminalOpen && this._term) {
+        try { this._term.scrollToBottom(); } catch (e) {}
+        return;
+      }
+      var el = document.getElementById('stage-log-pre');
+      if (el) el.scrollTop = el.scrollHeight;
+    },
+
+    // Open the currently viewed log as plain text in a new tab.
+    async openRawLog() {
+      if (!this.selectedTicket) return;
+      var content = this.logViewContent;
+      if (content === null) {
+        try {
+          var url = '/api/tickets/' + this.selectedTicket.id + '/logs';
+          var stage = this.logViewStage || this.selectedTicket.stage;
+          if (stage) url += '?stage=' + encodeURIComponent(stage);
+          var res = await fetch(url);
+          if (res.ok) {
+            var data = await res.json();
+            content = data.content || '';
+          }
+        } catch (e) { /* fall through to the guard below */ }
+      }
+      if (content === null || content === undefined) {
+        this.error = 'No log available yet';
+        return;
+      }
+      var blob = new Blob([content], { type: 'text/plain' });
+      window.open(URL.createObjectURL(blob));
     },
 
     // ─── Imperative board card rendering ───
@@ -1060,9 +1174,9 @@ function kontora() {
       var inProgressCol = col.key === 'in_progress';
       var selected = this.selectedTicket && this.selectedTicket.id === ticket.id;
 
-      var cls = ['kt-card group relative rounded-lg p-3 cursor-pointer border',
-                 'bg-surface-900 border-surface-700/50 hover:bg-surface-850',
-                 'flex flex-col gap-2'];
+      var cls = ['kt-card group relative rounded-[9px] px-3 py-2.5 cursor-pointer border',
+                 'bg-surface-900 border-edge-card hover:border-edge-hover hover:bg-surface-850',
+                 'flex flex-col gap-1.5'];
       if (selected) cls.push('is-selected');
       if (!ticket.kontora) cls.push('border-dashed');
       if (ticket.status === 'cancelled') cls.push('opacity-60');
@@ -1072,13 +1186,13 @@ function kontora() {
       // Stage / status glyph (IN PROGRESS column only).
       var glyph = '';
       if (inProgressCol && ticket.status === 'in_progress') {
-        glyph = '<span class="flex items-center gap-1 text-[11px] font-mono card-glyph-running">'
-          + '<span class="pulse-dot">●</span><span>' + esc(ticket.stage) + '</span></span>';
+        glyph = '<span class="flex items-center gap-[5px] text-[10px] font-mono card-glyph-running">'
+          + '<span class="w-[5px] h-[5px] rounded-full pulse-dot" style="background: hsl(var(--st-progress))"></span><span>' + esc(ticket.stage) + '</span></span>';
       } else if (inProgressCol && ticket.status === 'paused') {
-        glyph = '<span class="flex items-center gap-1 text-[11px] font-mono card-glyph-paused"><span>⏸</span>'
+        glyph = '<span class="flex items-center gap-1 text-[10px] font-mono card-glyph-paused"><span>⏸</span>'
           + (ticket.stage ? '<span>' + esc(ticket.stage) + '</span>' : '') + '</span>';
       } else if (inProgressCol && ticket.status === 'todo') {
-        glyph = '<span class="flex items-center gap-1 text-[11px] font-mono text-surface-600"><span>◌</span>'
+        glyph = '<span class="flex items-center gap-1 text-[10px] font-mono text-surface-600"><span>◌</span>'
           + (ticket.stage ? '<span>' + esc(ticket.stage) + '</span>' : '') + '</span>';
       }
 
@@ -1091,28 +1205,31 @@ function kontora() {
       // carries the target status for move actions.
       var items = '';
       if (!ticket.kontora) {
-        items += '<button type="button" class="card-menu-item w-full px-3 py-2 text-left text-[12px] font-mono text-warn hover:bg-surface-800 hover:text-warn transition-colors" data-act="init">Initialize</button>';
+        items += '<button type="button" class="card-menu-item w-full px-3 py-2 text-left text-[12px] font-mono text-warn hover:bg-surface-850 hover:text-warn transition-colors" data-act="init">Initialize</button>';
       }
       var moves = this.validMoves[ticket.status] || [];
       moves.forEach((mv) => {
-        items += '<button type="button" class="card-menu-item w-full px-3 py-2 text-left text-[12px] font-mono text-tx-3 hover:bg-surface-800 hover:text-tx-2 transition-colors" data-act="'
+        items += '<button type="button" class="card-menu-item w-full px-3 py-2 text-left text-[12px] font-mono text-tx-3 hover:bg-surface-850 hover:text-tx-2 transition-colors" data-act="'
           + esc(mv.endpoint) + '"' + (mv.status ? ' data-status="' + esc(mv.status) + '"' : '') + '>' + esc(mv.label) + '</button>';
       });
       if (!moves.length) {
         items += '<span class="block px-3 py-2 text-[12px] font-mono text-surface-600">No actions available</span>';
       }
 
-      // Stage progress bars (IN PROGRESS column, multi-stage pipelines only).
-      var stageBars = '';
-      if (inProgressCol && ticket.stages && ticket.stages.length > 1) {
-        var segs = ticket.stages.map((stage, i) =>
-          '<span class="' + esc(this.stageBarClass(i, ticket)) + '" title="' + esc(stage) + '"></span>').join('');
-        stageBars = '<div class="stage-bars">' + segs + '</div>';
+      // Single-track progress bar: running tickets on multi-stage pipelines.
+      // The current stage counts as half done — the stage index is the only
+      // progress signal available.
+      var progress = '';
+      if (ticket.status === 'in_progress' && ticket.stages && ticket.stages.length > 1) {
+        var ci = ticket.stages.indexOf(ticket.stage);
+        if (ci >= 0) {
+          var pct = Math.round(((ci + 0.5) / ticket.stages.length) * 100);
+          progress = '<div class="card-progress" title="' + esc('stage ' + (ci + 1) + '/' + ticket.stages.length + ': ' + ticket.stage) + '"><div style="width:' + pct + '%"></div></div>';
+        }
       }
 
-      var agent = ticket.agent
-        ? '<span class="flex items-center gap-1.5 min-w-0"><span class="text-surface-700">·</span>'
-          + '<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 10 10" fill="none" class="shrink-0 opacity-70"><circle cx="5" cy="5" r="4" stroke="currentColor" stroke-width="1"/><circle cx="5" cy="5" r="1.6" fill="currentColor"/></svg>'
+      var agent = (this.showAgentMeta && ticket.agent)
+        ? '<span class="flex items-center gap-1.5 min-w-0"><span class="text-edge-faint">·</span>'
           + '<span class="truncate">' + esc(ticket.agent) + '</span></span>'
         : '';
 
@@ -1130,27 +1247,41 @@ function kontora() {
           + esc(this.timeAgo(ticket.created_at)) + '</span>';
       }
 
-      var titleCls = 'text-[13px] text-tx leading-snug' + (ticket.status === 'cancelled' ? ' line-through decoration-surface-600/60' : '');
+      // Badge row: pipeline badge (toggleable) + status glyph + import badge.
+      // The kebab menu is absolutely positioned so the row can be omitted
+      // entirely when it has no content.
+      var badgeRow = '';
+      var badgeParts = (this.showPipelineBadges
+        ? '<span class="pipe-tag truncate">' + esc(this.ticketTagLabel(ticket)) + '</span>'
+        : '') + notKontoraBadge + glyph;
+      if (badgeParts) {
+        badgeRow = '<div class="flex items-center gap-2 min-w-0 pr-5">' + badgeParts + '</div>';
+      }
+
+      var menu = '<div class="absolute top-1.5 right-1.5 z-[2] flex items-center">'
+        + '<button type="button" class="card-menu-btn w-6 h-6 rounded-md border border-surface-700/40 bg-surface-900/70 text-surface-600 hover:bg-surface-850 hover:text-tx-2 hover:border-edge-hover transition-colors flex items-center justify-center opacity-0 group-hover:opacity-100 focus:opacity-100" aria-haspopup="menu" aria-expanded="false" aria-label="More actions">'
+        +   '<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="2.2"></circle><circle cx="12" cy="12" r="2.2"></circle><circle cx="19" cy="12" r="2.2"></circle></svg>'
+        + '</button>'
+        + '<div class="card-menu absolute right-0 top-7 min-w-[10rem] overflow-hidden rounded-lg border border-surface-700/60 bg-surface-900/95 shadow-lg shadow-black/30 z-20" role="menu">' + items + '</div>'
+        + '</div>';
+
+      // Colored mono [tag] prefix: taken from the title's own "[tag] ..."
+      // prefix when present, otherwise the project basename.
+      var pt = this.parseTitleTag(ticket);
+      var tagSpan = pt.tag
+        ? '<span class="title-tag" data-pipe-color="' + esc(this.pipelineColorByName(pt.tag)) + '">' + esc('[' + pt.tag + ']') + '</span> '
+        : '';
+      var titleCls = 'text-[13px] text-tx leading-[1.45]' + (ticket.status === 'cancelled' ? ' line-through decoration-surface-600/60' : '');
 
       return '<div class="' + cls.join(' ') + '"'
         + ' data-ticket-id="' + esc(ticket.id) + '"'
         + ' data-pipe-color="' + esc(this.ticketPipeColor(ticket)) + '"'
         + ' role="listitem" tabindex="0"'
         + ' aria-label="' + esc('Ticket ' + ticket.id + ': ' + (ticket.title || '')) + '">'
-        + '<div class="flex items-center justify-between gap-2">'
-        +   '<div class="flex items-center gap-2 min-w-0">'
-        +     '<span class="pipe-tag truncate">' + esc('[' + this.ticketTagLabel(ticket) + ']') + '</span>'
-        +     notKontoraBadge + glyph
-        +   '</div>'
-        +   '<div class="relative flex items-center shrink-0">'
-        +     '<button type="button" class="card-menu-btn w-6 h-6 rounded-md border border-surface-700/40 bg-surface-900/70 text-surface-600 hover:bg-surface-800 hover:text-tx-2 hover:border-surface-600 transition-colors flex items-center justify-center opacity-0 group-hover:opacity-100 focus:opacity-100" aria-haspopup="menu" aria-expanded="false" aria-label="More actions">'
-        +       '<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="2.2"></circle><circle cx="12" cy="12" r="2.2"></circle><circle cx="19" cy="12" r="2.2"></circle></svg>'
-        +     '</button>'
-        +     '<div class="card-menu absolute right-0 top-7 min-w-[10rem] overflow-hidden rounded-lg border border-surface-700/60 bg-surface-900/95 shadow-lg shadow-black/30 z-20" role="menu">' + items + '</div>'
-        +   '</div>'
-        + '</div>'
-        + '<p class="' + titleCls + '">' + esc(ticket.title) + '</p>'
-        + stageBars
+        + menu
+        + badgeRow
+        + '<p class="' + titleCls + '">' + tagSpan + esc(pt.rest) + '</p>'
+        + progress
         + '<div class="flex items-center gap-2 text-[11px] font-mono text-surface-600 justify-between">'
         +   '<div class="flex items-center gap-1.5 min-w-0">'
         +     '<span class="group-hover:text-tx-3 transition-colors truncate">' + esc(ticket.id) + '</span>'
@@ -1167,6 +1298,13 @@ function kontora() {
     renderColumn(key) {
       var el = document.getElementById('col-' + key);
       if (!el) return;
+      if (this.isCollapsed(key)) {
+        // Collapsed rail: the container exists only as a drop target. Remove
+        // any node Sortable dropped into it; moveTask re-buckets from data.
+        if (el.firstChild) el.innerHTML = '';
+        this._renderedHTML[key] = '';
+        return;
+      }
       var col = this.columns.find((c) => c.key === key);
       if (!col) return;
       var list = this._board[key] || [];
@@ -1390,8 +1528,8 @@ function kontora() {
 
     _connectTerminal(seq) {
       // On phone width the live terminal attaches into the mobile detail's own
-      // container; on desktop into the panel container (fullscreen moves are
-      // handled by the terminalFullscreen watcher).
+      // container; on desktop into the panel container (fullscreen keeps the
+      // same container — the panel just grows to fill the viewport).
       var container = document.getElementById(this.isMobile ? 'terminal-container-mobile' : 'terminal-container');
       if (!container) return;
       if (this._terminalSeq !== seq || !this.terminalOpen) return;
@@ -1569,15 +1707,13 @@ function kontora() {
       return this.pipelineColorByName(ticket.pipeline || this.pathBasename(ticket.path));
     },
 
-    // Class for a single segment of the slim stage progress bar.
-    stageBarClass(i, ticket) {
-      if (!ticket || !ticket.stages) return '';
-      if (ticket.status === 'done') return 'done';
-      var currentIdx = ticket.stages.indexOf(ticket.stage);
-      if (currentIdx < 0) return '';
-      if (i < currentIdx) return 'done';
-      if (i === currentIdx) return 'current';
-      return '';
+    // Colored mono [tag] prefix for titles: a literal "[tag] ..." title prefix
+    // wins; otherwise the project basename stands in (title left untouched).
+    parseTitleTag(ticket) {
+      var m = /^\[([^\]]+)\]\s*(.*)$/.exec(ticket.title || '');
+      if (m) return { tag: m[1], rest: m[2] };
+      var b = this.pathBasename(ticket.path);
+      return { tag: b || null, rest: ticket.title || '' };
     },
 
     ticketMatchesQuery(ticket, q) {
@@ -1745,6 +1881,26 @@ function kontora() {
     renderMarkdown(md) {
       if (!md) return '';
       try { return DOMPurify.sanitize(marked.parse(md)); } catch (e) { return ''; }
+    },
+
+    // Lexical colorizer for the stage-log pane: "> tool …" lines get an accent
+    // marker and a highlighted tool name, "└ …" result lines and "[banner]"
+    // lines dim. Every character passes through _escapeHtml; no parsing of
+    // agent-specific formats beyond these three line shapes.
+    renderLogHTML(content) {
+      var esc = (s) => this._escapeHtml(s);
+      return (content || '').split('\n').map(function (line) {
+        if (/^>\s/.test(line)) {
+          var rest = line.slice(2);
+          var sp = rest.indexOf(' ');
+          var tool = sp < 0 ? rest : rest.slice(0, sp);
+          var tail = sp < 0 ? '' : rest.slice(sp);
+          return '<span class="log-marker">&gt;</span> <span class="log-tool">' + esc(tool) + '</span>' + esc(tail);
+        }
+        if (/^\s*└/.test(line)) return '<span class="log-dim">' + esc(line) + '</span>';
+        if (/^\[.*\]\s*$/.test(line)) return '<span class="log-banner">' + esc(line) + '</span>';
+        return esc(line);
+      }).join('\n');
     },
 
     startResize(e) {

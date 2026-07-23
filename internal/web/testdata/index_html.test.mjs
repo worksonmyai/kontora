@@ -100,7 +100,7 @@ test("kontora inline app initializes in a minimal VM context", () => {
 
   assert.equal(typeof state.openTerminal, "function");
   assert.equal(typeof state.reconnectTerminal, "function");
-  assert.equal(state.panelWidth, Math.floor(1200 * 0.66));
+  assert.equal(state.panelWidth, 430);
 });
 
 test("index.html loads the external app script", () => {
@@ -564,7 +564,9 @@ test("_cardHTML renders an in-progress card with selection, glyph, bars, and a l
   assert.match(html, /class="[^"]*\bis-selected\b/);
   assert.match(html, /class="[^"]*\bcard-state-running\b/);
   assert.match(html, /card-glyph-running/);
-  assert.match(html, /class="stage-bars"/);
+  // Single-track progress bar: stage 2 of 2 renders as (1 + 0.5) / 2 = 75%.
+  assert.match(html, /class="card-progress"/);
+  assert.match(html, /width:75%/);
   assert.match(html, /data-since="2026-05-19T10:00:00Z"/);
   assert.match(html, /retry 2/);
   assert.match(html, /data-ticket-id="sta-2"/);
@@ -652,7 +654,98 @@ test("index.html detail header carries the status chip and pipeline tag", () => 
   const html = fs.readFileSync(htmlPath, "utf8");
 
   assert.match(html, /class="status-chip[^"]*"[^>]*:data-status="selectedTicket\?\.status"/);
-  assert.match(html, /class="pipe-tag shrink-0"/);
+  assert.match(html, /class="pipe-tag shrink-0[^"]*"/);
+});
+
+test("parseTitleTag extracts a [tag] title prefix and falls back to the project basename", () => {
+  const state = loadKontoraState();
+
+  assert.deepEqual({ ...state.parseTitleTag({ title: "[api] Add retry backoff", path: "/x/proj" }) },
+    { tag: "api", rest: "Add retry backoff" });
+  assert.deepEqual({ ...state.parseTitleTag({ title: "No prefix here", path: "/x/proj" }) },
+    { tag: "proj", rest: "No prefix here" });
+  assert.deepEqual({ ...state.parseTitleTag({ title: "No prefix" }) },
+    { tag: null, rest: "No prefix" });
+});
+
+test("cancelled column starts collapsed and toggling persists the set", () => {
+  const stored = {};
+  const state = loadKontoraState({
+    localStorage: {
+      getItem(k) { return Object.prototype.hasOwnProperty.call(stored, k) ? stored[k] : null; },
+      setItem(k, v) { stored[k] = String(v); },
+    },
+  });
+  state.$nextTick = (fn) => { if (fn) fn(); };
+
+  assert.equal(state.isCollapsed("cancelled"), true);
+  assert.equal(state.isCollapsed("open"), false);
+
+  state.toggleColumnCollapsed("cancelled");
+  assert.equal(state.isCollapsed("cancelled"), false);
+  assert.equal(stored["kontora-collapsed-cols"], "[]");
+
+  state.toggleColumnCollapsed("done");
+  assert.equal(stored["kontora-collapsed-cols"], JSON.stringify(["done"]));
+});
+
+test("renderColumn fills expanded columns but clears collapsed rails", () => {
+  const els = {
+    "col-open": { innerHTML: "", firstChild: null },
+    "col-cancelled": { innerHTML: "<div>dropped card</div>", firstChild: {} },
+  };
+  const state = loadKontoraState({
+    document: {
+      getElementById(id) { return els[id] || null; },
+      querySelector() { return null; },
+      querySelectorAll() { return []; },
+      documentElement: { style: {} },
+    },
+  });
+  state.tickets = [
+    { id: "kon-open", title: "O", status: "open", kontora: true },
+    { id: "kon-cxl", title: "C", status: "cancelled", kontora: true },
+  ];
+  state.recomputeBoard();
+
+  state.renderColumn("open");
+  assert.match(els["col-open"].innerHTML, /data-ticket-id="kon-open"/);
+
+  // Collapsed rail: any node Sortable dropped in is removed, no cards rendered.
+  state.renderColumn("cancelled");
+  assert.equal(els["col-cancelled"].innerHTML, "");
+  assert.equal(state._renderedHTML["cancelled"], "");
+});
+
+test("formatElapsed renders history durations", () => {
+  const state = loadKontoraState();
+
+  assert.equal(state.formatElapsed("2026-05-19T10:00:00Z", "2026-05-19T10:00:45Z"), "45s");
+  assert.equal(state.formatElapsed("2026-05-19T10:00:00Z", "2026-05-19T10:38:00Z"), "38m");
+  assert.equal(state.formatElapsed("2026-05-19T10:00:00Z", "2026-05-19T11:04:00Z"), "1h 4m");
+  assert.equal(state.formatElapsed(null, "2026-05-19T10:00:00Z"), "");
+});
+
+test("display toggles invalidate the rendered-card cache and drop card sections", () => {
+  const state = loadKontoraState();
+  state._renderedHTML = { open: "<div></div>" };
+
+  state.toggleShowBadges();
+  assert.equal(state.showPipelineBadges, false);
+  assert.deepEqual({ ...state._renderedHTML }, {});
+  const noBadge = state._cardHTML(
+    { id: "sta-9", title: "T", status: "open", created_at: "2026-05-19T08:00:00Z", kontora: true, pipeline: "kontora" },
+    { key: "open" },
+  );
+  assert.equal(noBadge.includes("pipe-tag"), false);
+
+  state.toggleShowAgentMeta();
+  assert.equal(state.showAgentMeta, false);
+  const noAgent = state._cardHTML(
+    { id: "sta-10", title: "T", status: "open", created_at: "2026-05-19T08:00:00Z", kontora: true, agent: "claude-agent" },
+    { key: "open" },
+  );
+  assert.equal(noAgent.includes("claude-agent"), false);
 });
 
 test("index.html board renders cards imperatively, not via an Alpine x-for", () => {
@@ -663,5 +756,5 @@ test("index.html board renders cards imperatively, not via an Alpine x-for", () 
   // The per-ticket card x-for template was removed (cards come from renderColumn).
   assert.equal(/x-for="ticket in boardTickets\(col\.key\)"/.test(html), false);
   // The imperative card-list container is still wired for Sortable.
-  assert.match(html, /x-ref="colList"[\s\S]*?x-init="initSortable\(\$el\)"/);
+  assert.match(html, /x-ref="colList"[\s\S]*?x-init="initSortable\(\$el\)/);
 });

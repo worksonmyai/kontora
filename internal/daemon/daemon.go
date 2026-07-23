@@ -1206,6 +1206,10 @@ func (d *Daemon) spawnAgentRun(taskCtx context.Context, t *ticket.Ticket, p spaw
 	}
 
 	params := d.buildRunnerParams(p.agentCfg, p.stageCfg, binaryPath, args, p.wtPath, p.ticketID, p.stageName, sessionID)
+	// Stage logs are appended across retries (pipe-pane, DirectRunner), so record
+	// where this run's output starts. Failure-pattern detection only scans from
+	// here, otherwise a previous attempt's error would keep matching on retry.
+	logStart := fileSize(params.LogFile)
 	result, runnerErr := d.runner(taskCtx, params)
 	if runnerErr != nil && taskCtx.Err() == nil {
 		d.materializeAgentLogs(p.log, params)
@@ -1232,6 +1236,20 @@ func (d *Daemon) spawnAgentRun(taskCtx context.Context, t *ticket.Ticket, p spaw
 		attrs = append(attrs, "err", runnerErr)
 	}
 	p.log.Info("agent exited", attrs...)
+
+	// A clean exit can still hide a failed run: Claude ends the turn (firing the
+	// Stop hook, exit 0) after a quota/usage limit or API error, so the pipeline
+	// would read exit 0 as success and advance the ticket. Detect that and pause
+	// instead. Non-zero exits already flow through the pipeline's on_failure
+	// handling, so leave those alone. Skip when the run was cancelled.
+	if result.ExitCode == 0 && taskCtx.Err() == nil {
+		if reason, detected := d.detectAgentError(p.agentCfg, params, logStart); detected {
+			p.log.Warn("agent error detected despite clean exit", "stage", p.stageName, "reason", reason)
+			d.killTaskWindow(p.ticketID)
+			d.pauseTicket(t, p.filePath, "agent error: "+reason)
+			return result, false
+		}
+	}
 
 	return result, true
 }
@@ -1545,18 +1563,24 @@ func (pq *priorityQueue) Pop() any {
 	return item
 }
 
-// materializeSessionLog locates the Claude session JSONL file, formats it
-// with logfmt.Fmt(), and writes the result to logFile. Non-fatal: logs a warning
-// if the session file is not found.
-func (d *Daemon) materializeSessionLog(log *slog.Logger, sessionID, logFile string, env map[string]string) error {
+// claudeSessionFiles globs the Claude config dir for the JSONL files of the
+// given session.
+func claudeSessionFiles(env map[string]string, sessionID string) (matches []string, pattern string, err error) {
 	configDir := "~/.claude"
 	if v, ok := env["CLAUDE_CONFIG_DIR"]; ok && v != "" {
 		configDir = v
 	}
 	configDir = expandTilde(configDir)
+	pattern = filepath.Join(configDir, "projects", "*", sessionID+".jsonl")
+	matches, err = filepath.Glob(pattern)
+	return matches, pattern, err
+}
 
-	pattern := filepath.Join(configDir, "projects", "*", sessionID+".jsonl")
-	matches, err := filepath.Glob(pattern)
+// materializeSessionLog locates the Claude session JSONL file, formats it
+// with logfmt.Fmt(), and writes the result to logFile. Non-fatal: logs a warning
+// if the session file is not found.
+func (d *Daemon) materializeSessionLog(log *slog.Logger, sessionID, logFile string, env map[string]string) error {
+	matches, pattern, err := claudeSessionFiles(env, sessionID)
 	if err != nil {
 		return fmt.Errorf("glob session file: %w", err)
 	}
@@ -1607,6 +1631,61 @@ func (d *Daemon) materializeAgentLogs(log *slog.Logger, params RunnerParams) {
 			log.Warn("pi session log materialization failed", "err", err)
 		}
 	}
+}
+
+// detectAgentError inspects a finished agent run for failures that leave a
+// clean exit code: quota/usage limits and API errors. Claude runs are checked
+// structurally from the session JSONL; any agent's output log is matched
+// against the agent's configured failure_patterns. Returns a human-readable
+// reason and true when a failure is detected. Call after materializeAgentLogs
+// so the log file reflects the final session.
+func (d *Daemon) detectAgentError(agentCfg config.Agent, params RunnerParams, logStart int64) (string, bool) {
+	if agentCfg.IsClaude() && params.SessionID != "" {
+		if matches, _, err := claudeSessionFiles(params.Env, params.SessionID); err == nil && len(matches) > 0 {
+			if reason, ok := scanClaudeSessionError(matches[0]); ok {
+				return reason, true
+			}
+		}
+	}
+	if len(agentCfg.FailurePatterns) > 0 && params.LogFile != "" {
+		// Session-materialized logs are rewritten each run, so read the whole
+		// file. Raw pipe-pane/DirectRunner logs accumulate across retries, so
+		// only scan the bytes this run appended (past logStart).
+		materialized := params.SessionID != "" || params.SessionDir != ""
+		if content, err := currentRunLog(params.LogFile, materialized, logStart); err == nil && content != "" {
+			if reason, ok := matchFailurePatterns(content, agentCfg.FailurePatterns); ok {
+				return reason, true
+			}
+		}
+	}
+	return "", false
+}
+
+// currentRunLog returns the portion of an agent log written by the most recent
+// run. Appended logs carry earlier attempts, so only bytes at or after start
+// are returned; a rewritten (materialized) log already holds just the last run.
+func currentRunLog(path string, materialized bool, start int64) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	if !materialized && start > 0 && start <= int64(len(data)) {
+		return string(data[start:]), nil
+	}
+	return string(data), nil
+}
+
+// fileSize returns the size of path, or 0 if it does not exist or cannot be
+// stat'd (e.g. the log file has not been created yet).
+func fileSize(path string) int64 {
+	if path == "" {
+		return 0
+	}
+	fi, err := os.Stat(path)
+	if err != nil {
+		return 0
+	}
+	return fi.Size()
 }
 
 // materializePiSessionLog globs the pi session directory for JSONL files,

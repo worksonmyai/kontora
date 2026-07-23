@@ -166,6 +166,22 @@ agents:
 | `binary` | yes | Executable name or path. |
 | `args` | no | Arguments passed to the binary. The rendered prompt is appended as the last argument. |
 | `environment` | no | Map of environment variables to set for this agent's processes (merged with top-level `environment`). |
+| `failure_patterns` | no | Regexes matched against the agent's output log after it exits. A match pauses the ticket even on a clean exit — catching agents that report failures (quota, API errors) without a non-zero exit code. Unset uses the built-in defaults (below); set an explicit list to override, or `[]` to disable. Claude also gets structural detection from its session log regardless. |
+
+When `failure_patterns` is omitted, an agent inherits these defaults, tuned to match agent/provider error output rather than source code or prose (so implementing a rate limiter won't self-pause):
+
+```
+(?im)^\s*API Error:               # Claude Code: 4xx/5xx, overloaded, timeouts, ECONNRESET
+(?i)Please run /login             # auth lost: "Not logged in" / "Invalid API key"
+(?i)usage limit reached           # "Claude AI usage limit reached"
+(?i)You've hit your (usage )?limit # usage/session limit stop
+(?i)Prompt is too long            # context window exceeded
+(?i)insufficient_quota            # OpenAI-backed agents: billing
+(?i)exceeded your current quota   # OpenAI-backed agents: billing
+(?i)Rate limit reached for        # OpenAI-backed agents: rate limit
+```
+
+To turn detection off for an agent, set `failure_patterns: []`.
 
 ## stages
 

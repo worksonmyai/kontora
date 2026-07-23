@@ -1593,6 +1593,147 @@ func TestSessionLogMaterializationMissing(t *testing.T) {
 	require.NoError(t, <-errCh)
 }
 
+func TestPipelinePausesOnClaudeAPIError(t *testing.T) {
+	h := newHarness(t)
+
+	claudeConfigDir := t.TempDir()
+	projectsDir := filepath.Join(claudeConfigDir, "projects", "encoded-path")
+	require.NoError(t, os.MkdirAll(projectsDir, 0o755))
+
+	// Claude hits a quota limit: it ends the turn (exit 0) but writes a
+	// synthetic isApiErrorMessage entry to the session JSONL.
+	runner := func(_ context.Context, p RunnerParams) (process.Result, error) {
+		require.NotEmpty(t, p.SessionID, "claude agent should get a session id")
+		sessionFile := filepath.Join(projectsDir, p.SessionID+".jsonl")
+		jsonl := strings.Join([]string{
+			`{"type":"assistant","message":{"content":[{"type":"text","text":"Starting work."}]}}`,
+			`{"type":"assistant","isApiErrorMessage":true,"message":{"model":"<synthetic>","content":[{"type":"text","text":"You've hit your limit · resets 5pm (Europe/Amsterdam)"}]}}`,
+		}, "\n")
+		require.NoError(t, os.WriteFile(sessionFile, []byte(jsonl), 0o644))
+		return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now()}, nil
+	}
+
+	cfg := h.defaultConfig("claude", "claude")
+	cfg.Environment = map[string]string{"CLAUDE_CONFIG_DIR": claudeConfigDir}
+
+	d := New(cfg,
+		WithLogger(testLogger(t)),
+		WithDebounce(50*time.Millisecond),
+		WithLockPath(h.lockPath),
+		WithRunner(runner),
+		WithAgentLookup(passthroughAgentLookup),
+		WithSkipOrphanCleanup(),
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() { errCh <- d.Run(ctx) }()
+	time.Sleep(200 * time.Millisecond)
+
+	h.writeTicket("tst-quota.md", h.taskMD("tst-quota", "todo", "two-stage"))
+
+	result := h.waitForStatus("tst-quota.md", ticket.StatusPaused, 10*time.Second)
+	// The clean exit must not be read as success: the ticket stays on the
+	// first stage instead of advancing to step2.
+	assert.Equal(t, "step1", result.Stage)
+	assert.Empty(t, result.History, "a quota failure should not record a success history entry")
+	assert.Contains(t, result.LastError, "hit your limit")
+
+	cancel()
+	require.NoError(t, <-errCh)
+}
+
+func TestPipelinePausesOnFailurePattern(t *testing.T) {
+	h := newHarness(t)
+
+	// A non-claude agent swallows an error into a zero exit code; the
+	// configured failure_patterns catches it in the output log.
+	runner := func(_ context.Context, p RunnerParams) (process.Result, error) {
+		require.NoError(t, os.MkdirAll(filepath.Dir(p.LogFile), 0o755))
+		require.NoError(t, os.WriteFile(p.LogFile, []byte("working...\nError: quota exceeded for today\n"), 0o644))
+		return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now()}, nil
+	}
+
+	cfg := h.defaultConfig("some-agent", "some-agent")
+	cfg.Agents["agent1"] = config.Agent{Binary: "some-agent", FailurePatterns: []string{"(?i)quota exceeded"}}
+
+	d := New(cfg,
+		WithLogger(testLogger(t)),
+		WithDebounce(50*time.Millisecond),
+		WithLockPath(h.lockPath),
+		WithRunner(runner),
+		WithAgentLookup(passthroughAgentLookup),
+		WithSkipOrphanCleanup(),
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() { errCh <- d.Run(ctx) }()
+	time.Sleep(200 * time.Millisecond)
+
+	h.writeTicket("tst-pat.md", h.taskMD("tst-pat", "todo", "one-stage"))
+
+	result := h.waitForStatus("tst-pat.md", ticket.StatusPaused, 10*time.Second)
+	assert.Contains(t, result.LastError, "failure pattern")
+
+	cancel()
+	require.NoError(t, <-errCh)
+}
+
+func TestFailurePatternNotPoisonedByPreviousAttempt(t *testing.T) {
+	h := newHarness(t)
+
+	// Attempt 1 fails (non-zero) and appends an error line matching the pattern;
+	// attempt 2 appends clean output and exits 0. Because stage logs accumulate
+	// across retries, detection must only scan the current run's output, or the
+	// clean retry would keep matching attempt 1's stale error and pause forever.
+	var attempt int
+	runner := func(_ context.Context, p RunnerParams) (process.Result, error) {
+		attempt++
+		require.NoError(t, os.MkdirAll(filepath.Dir(p.LogFile), 0o755))
+		f, err := os.OpenFile(p.LogFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+		require.NoError(t, err)
+		defer f.Close()
+		if attempt == 1 {
+			_, _ = f.WriteString("attempt 1\nError: quota exceeded for today\n")
+			return process.Result{ExitCode: 1, StartedAt: time.Now(), ExitedAt: time.Now()}, nil
+		}
+		_, _ = f.WriteString("attempt 2\nall good\n")
+		return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now()}, nil
+	}
+
+	cfg := h.defaultConfig("some-agent", "some-agent")
+	cfg.Agents["agent1"] = config.Agent{Binary: "some-agent", FailurePatterns: []string{"(?i)quota exceeded"}}
+
+	d := New(cfg,
+		WithLogger(testLogger(t)),
+		WithDebounce(50*time.Millisecond),
+		WithLockPath(h.lockPath),
+		WithRunner(runner),
+		WithAgentLookup(passthroughAgentLookup),
+		WithSkipOrphanCleanup(),
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() { errCh <- d.Run(ctx) }()
+	time.Sleep(200 * time.Millisecond)
+
+	// retry-stage: on_failure retry (max_retries 1), on_success done.
+	h.writeTicket("tst-poison.md", h.taskMD("tst-poison", "todo", "retry-stage"))
+
+	// Attempt 1 exits non-zero -> retry; attempt 2 exits 0 with a clean log.
+	// The stale attempt-1 error must not trip detection on attempt 2.
+	h.waitForStatus("tst-poison.md", ticket.StatusDone, 10*time.Second)
+	assert.Equal(t, 2, attempt)
+
+	cancel()
+	require.NoError(t, <-errCh)
+}
+
 func TestNonClaudeAgentStillUsesPipePaneLogging(t *testing.T) {
 	h := newHarness(t)
 

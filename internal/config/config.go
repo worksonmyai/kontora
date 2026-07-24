@@ -91,12 +91,31 @@ type Agent struct {
 	FailurePatterns []string `yaml:"failure_patterns"`
 }
 
+// wrapperBinaries are launcher commands that run the real agent binary after
+// a "--" separator (e.g. `nono run --profile pi -- pi ...`, `op run -- pi ...`).
+var wrapperBinaries = map[string]bool{"nono": true, "op": true}
+
+// effectiveBinary returns the binary that actually runs the agent. When the
+// configured binary is a known wrapper, the first argument after the "--"
+// separator is the real agent binary.
+func (a Agent) effectiveBinary() string {
+	if !wrapperBinaries[filepath.Base(a.Binary)] {
+		return a.Binary
+	}
+	for i, arg := range a.Args {
+		if arg == "--" && i+1 < len(a.Args) {
+			return a.Args[i+1]
+		}
+	}
+	return a.Binary
+}
+
 func (a Agent) IsClaude() bool {
-	return filepath.Base(a.Binary) == "claude"
+	return filepath.Base(a.effectiveBinary()) == "claude"
 }
 
 func (a Agent) IsPi() bool {
-	return filepath.Base(a.Binary) == "pi"
+	return filepath.Base(a.effectiveBinary()) == "pi"
 }
 
 type Stage struct {

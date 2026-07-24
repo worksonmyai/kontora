@@ -1062,8 +1062,10 @@ func TestPickupWritesClaim(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t)
-			cfg := h.defaultConfig("sleep", "sleep")
-			cfg.Agents["agent1"] = config.Agent{Binary: "sleep", Args: []string{"10"}}
+			cfg := h.defaultConfig("sh", "sh")
+			// The rendered prompt is appended as a trailing argument, so the
+			// sleep is wrapped in sh -c to keep it from being read as an interval.
+			cfg.Agents["agent1"] = config.Agent{Binary: "sh", Args: []string{"-c", "sleep 10"}}
 			cfg.Stages["step1"] = config.Stage{Prompt: ""}
 			d := h.newDaemon(cfg)
 

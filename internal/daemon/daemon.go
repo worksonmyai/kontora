@@ -1437,7 +1437,7 @@ func (d *Daemon) buildRunnerParams(agentCfg config.Agent, stageCfg config.Stage,
 	logDir := filepath.Join(logsDir, ticketID)
 
 	var sessionDir string
-	if agentCfg.Binary == "pi" {
+	if agentCfg.IsPi() {
 		sessionDir = filepath.Join(logDir, "pi-sessions")
 		args = append(args, "--session-dir", sessionDir)
 	}

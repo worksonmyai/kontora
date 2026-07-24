@@ -289,6 +289,51 @@ func TestDurationParsing(t *testing.T) {
 	}
 }
 
+func TestAgentKindDetection(t *testing.T) {
+	tests := []struct {
+		name       string
+		agent      Agent
+		wantPi     bool
+		wantClaude bool
+	}{
+		{name: "bare pi", agent: Agent{Binary: "pi"}, wantPi: true},
+		{name: "bare claude", agent: Agent{Binary: "claude"}, wantClaude: true},
+		{name: "absolute path pi", agent: Agent{Binary: "/opt/homebrew/bin/pi"}, wantPi: true},
+		{name: "absolute path claude", agent: Agent{Binary: "/opt/homebrew/bin/claude"}, wantClaude: true},
+		{name: "other binary", agent: Agent{Binary: "programmator", Args: []string{"start"}}},
+		{
+			name:   "nono wrapped pi",
+			agent:  Agent{Binary: "nono", Args: []string{"run", "-s", "--profile", "pi", "--", "pi", "--model", "acme-gateway/claude-fable-5"}},
+			wantPi: true,
+		},
+		{
+			name:       "nono wrapped claude",
+			agent:      Agent{Binary: "nono", Args: []string{"run", "--profile", "claude", "--", "claude", "--dangerously-skip-permissions"}},
+			wantClaude: true,
+		},
+		{
+			name:   "op wrapped pi",
+			agent:  Agent{Binary: "op", Args: []string{"run", "--", "pi"}},
+			wantPi: true,
+		},
+		{
+			name:   "nono wrapped pi with path",
+			agent:  Agent{Binary: "nono", Args: []string{"run", "--", "/opt/homebrew/bin/pi"}},
+			wantPi: true,
+		},
+		{name: "nono without separator", agent: Agent{Binary: "nono", Args: []string{"run", "pi"}}},
+		{name: "nono with trailing separator", agent: Agent{Binary: "nono", Args: []string{"run", "--"}}},
+		{name: "pi flag value is not the wrapped binary", agent: Agent{Binary: "nono", Args: []string{"run", "--profile", "pi", "--", "claude"}}, wantClaude: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.wantPi, tt.agent.IsPi())
+			assert.Equal(t, tt.wantClaude, tt.agent.IsClaude())
+		})
+	}
+}
+
 func TestLoadFileNotFound(t *testing.T) {
 	_, err := Load("testdata/does_not_exist.yaml")
 	require.ErrorIs(t, err, ErrNotFound)

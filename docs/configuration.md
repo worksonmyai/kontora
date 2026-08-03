@@ -262,6 +262,63 @@ pipelines:
 - The last stage must not have `on_success=next` (it must terminate with `done`, `human_review`, or a custom status).
 - A stage cannot appear more than once in the same pipeline.
 
+## Reloading the config
+
+The running daemon applies most config edits without a restart, so you can
+change a prompt or an agent's arguments while agents are working.
+
+### What reloads live
+
+`agents`, `stages`, `pipelines`, `statuses`, `environment`, `auto_pick_up`,
+`default_agent`, `branch_prefix`, and the whole `plannotator` block.
+
+### What needs a restart
+
+`tickets_dir`, `worktrees_dir`, `logs_dir`, `instance_name`,
+`max_concurrent_agents`, and the whole `web` block. The daemon reads these once
+at startup: the watched directory, the worktree root, the claim name, the
+semaphore size, and the HTTP listener are all fixed by then. A reload keeps the
+running value and logs one warning per field that differs on disk, naming the
+field, the running value, and the value it ignored. The `web.token` value is
+never logged.
+
+`editor` is read by the CLI, not the daemon, so it takes effect on the next
+command either way.
+
+If you started the daemon with `--address` or `--port`, those keep winning over
+the file after a reload, the same as at startup. Editing `web.host` or
+`web.port` on disk then changes nothing and logs no warning: the flag already
+overrides it, and a restart with the same flag would too.
+
+### How to trigger a reload
+
+- Send `SIGHUP`: `kill -HUP $(pgrep -f 'kontora start')`.
+- Edit the config file. The daemon watches it and reloads after the debounce
+  interval, whether the editor writes in place or replaces the file with an
+  atomic rename. If the config path is a symlink, the daemon watches the
+  symlink's directory and the target's directory, so an edit through a dotfiles
+  symlink also reloads. Other files in the same directory (the daemon lock file,
+  the `.kontora-config-*.tmp` files an atomic save creates and renames away)
+  trigger nothing.
+- Save through `kontora config edit --url ...`. The daemon writes the file and
+  reloads it before the request returns.
+
+### Rules
+
+A reload is all-or-nothing. The daemon parses and validates the whole file
+before applying any of it: if anything fails, it logs the error and keeps
+running on the old config. Saving a half-written file mid-edit is harmless, and
+the next complete save reloads.
+
+**A running agent keeps the settings it started with.** The prompt, arguments,
+timeout, and binary are fixed when the stage spawns. Editing a prompt while a
+ticket is mid-stage does nothing visible until the next stage starts. That is
+expected, not a failed reload.
+
+If a reload removes the pipeline or the stage a `todo` ticket sits on, the
+daemon pauses that ticket and writes the reason to `last_error` rather than
+leaving it stuck with no explanation.
+
 ## Shell completions
 
 ```bash

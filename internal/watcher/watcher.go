@@ -21,11 +21,16 @@ type Event struct {
 	Op   Op
 }
 
+// Filter decides whether a path the watcher saw is worth reporting. It runs
+// before the debounce, so a rejected path never starts a timer.
+type Filter func(path string) bool
+
 type Watcher struct {
 	fsw      *fsnotify.Watcher
 	events   chan Event
 	errors   chan error
 	debounce time.Duration
+	filter   Filter
 
 	mu     sync.Mutex
 	timers map[string]*time.Timer
@@ -33,7 +38,9 @@ type Watcher struct {
 	done chan struct{}
 }
 
-func New(dir string, debounce time.Duration) (*Watcher, error) {
+// New watches dir and reports debounced events for the paths filter accepts.
+// A nil filter reports every path.
+func New(dir string, debounce time.Duration, filter Filter) (*Watcher, error) {
 	fsw, err := fsnotify.NewWatcher()
 	if err != nil {
 		return nil, err
@@ -48,6 +55,7 @@ func New(dir string, debounce time.Duration) (*Watcher, error) {
 		events:   make(chan Event, 64),
 		errors:   make(chan error, 8),
 		debounce: debounce,
+		filter:   filter,
 		timers:   make(map[string]*time.Timer),
 		done:     make(chan struct{}),
 	}
@@ -88,13 +96,13 @@ func (w *Watcher) loop() {
 }
 
 func (w *Watcher) handle(ev fsnotify.Event) {
-	if !isMD(ev.Name) {
-		return
-	}
-
 	path, err := filepath.Abs(ev.Name)
 	if err != nil {
 		path = ev.Name
+	}
+
+	if w.filter != nil && !w.filter(path) {
+		return
 	}
 
 	var op Op
@@ -127,6 +135,27 @@ func (w *Watcher) debounceEmit(path string, op Op) {
 	})
 }
 
-func isMD(path string) bool {
+// MarkdownFilter accepts paths that end in .md. It is the filter the tickets
+// watcher uses.
+func MarkdownFilter(path string) bool {
 	return strings.HasSuffix(path, ".md")
+}
+
+// PathSet accepts only the exact paths given, compared as absolute paths
+// without resolving symlinks. That is the same form the watcher reports, so a
+// path reached through a symlinked parent still matches. The config watcher
+// uses it so unrelated files in the same directory (the daemon lock file,
+// atomic-write temp files) report nothing.
+func PathSet(paths ...string) Filter {
+	want := make(map[string]bool, len(paths))
+	for _, p := range paths {
+		if p == "" {
+			continue
+		}
+		if abs, err := filepath.Abs(p); err == nil {
+			p = abs
+		}
+		want[p] = true
+	}
+	return func(path string) bool { return want[path] }
 }

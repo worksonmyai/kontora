@@ -160,7 +160,7 @@ func (s *fileSource) SetStage(string, string) error                      { retur
 func (s *fileSource) Subscribe(context.Context) <-chan web.TicketEvent   { return nil }
 
 func (s *fileSource) newService() *app.Service {
-	return app.New(s.cfg, store.NewDiskRepo(s.cfg.TicketsDir), app.NoopRuntime{})
+	return app.New(app.Static(s.cfg), store.NewDiskRepo(s.cfg.TicketsDir), app.NoopRuntime{})
 }
 
 // augmentStages discovers log-file stages for simple kontora tickets.

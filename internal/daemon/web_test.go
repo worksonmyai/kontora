@@ -829,24 +829,30 @@ func TestDaemon_RawConfig(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, valid, got)
 
-	// A valid replacement is written to disk; the in-memory config is untouched
-	// (changes apply only on restart).
-	inMemoryBefore := d.cfg
-	const updated = "max_concurrent_agents: 7\nagents:\n  claude:\n    binary: claude\n"
+	// A valid replacement is written to disk and reloaded before the call
+	// returns. Live fields take effect; restart-only fields keep their running
+	// value (max_concurrent_agents is pinned, branch_prefix is not).
+	inMemoryBefore := d.config()
+	const updated = "max_concurrent_agents: 7\nbranch_prefix: reloaded\nagents:\n  claude:\n    binary: claude\n"
 	require.NoError(t, d.PutRawConfig(updated))
 
 	onDisk, err := os.ReadFile(cfgPath)
 	require.NoError(t, err)
 	assert.Equal(t, updated, string(onDisk))
-	assert.Same(t, inMemoryBefore, d.cfg, "in-memory config pointer must not change")
-	assert.Equal(t, h.cfg.MaxConcurrentAgents, d.cfg.MaxConcurrentAgents, "in-memory config values unchanged")
+	assert.NotSame(t, inMemoryBefore, d.config(), "a saved config must be reloaded in memory")
+	assert.Equal(t, "reloaded", d.config().BranchPrefix, "live fields take effect immediately")
+	assert.Equal(t, h.cfg.MaxConcurrentAgents, d.config().MaxConcurrentAgents,
+		"max_concurrent_agents is restart-only and stays pinned")
 
-	// An invalid config is rejected and the on-disk file is left intact.
+	// An invalid config is rejected before the write, so the on-disk file and
+	// the running config are both left intact.
+	afterSave := d.config()
 	err = d.PutRawConfig("max_concurrent_agents: 3\nunknown_field: x\n")
 	require.ErrorIs(t, err, web.ErrInvalidConfig)
 	onDiskAfter, err := os.ReadFile(cfgPath)
 	require.NoError(t, err)
 	assert.Equal(t, updated, string(onDiskAfter), "rejected config must not overwrite the file")
+	assert.Same(t, afterSave, d.config(), "rejected config must not change the running config")
 }
 
 func TestDaemon_RawConfig_NoPathConfigured(t *testing.T) {

@@ -148,7 +148,7 @@ func TestArchive(t *testing.T) {
 			}
 
 			rt := &spyRuntime{}
-			svc := New(testCfg(), repo, rt)
+			svc := New(Static(testCfg()), repo, rt)
 
 			result, err := svc.archive(ArchiveOptions{Days: tc.days, DryRun: tc.dryRun}, archiveNow, stat)
 			if tc.wantErr {
@@ -188,7 +188,7 @@ func TestArchive_PreservesBodyAndUnknownFields(t *testing.T) {
 	mtime := archiveNow.AddDate(0, 0, -40)
 	stat := func(string) (fs.FileInfo, error) { return fakeFileInfo{modTime: mtime}, nil }
 
-	svc := New(testCfg(), repo, &spyRuntime{})
+	svc := New(Static(testCfg()), repo, &spyRuntime{})
 	_, err := svc.archive(ArchiveOptions{Days: 30}, archiveNow, stat)
 	require.NoError(t, err)
 

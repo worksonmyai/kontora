@@ -104,10 +104,11 @@ func (d *Daemon) StartPlannotatorReview(id string) error {
 	if err != nil {
 		return fmt.Errorf("resolve path: %w", err)
 	}
-	branch := d.ticketBranch(t)
+	cfg := d.config()
+	branch := ticketBranch(cfg, t)
 	reviewPath := d.worktrees.Path(repoName, id) + ".plannotator"
 
-	binaryPath, err := d.plannotatorLookup(d.cfg.Plannotator.Binary)
+	binaryPath, err := d.plannotatorLookup(cfg.Plannotator.Binary)
 	if err != nil {
 		return fmt.Errorf("%w: %s", web.ErrPlannotatorBinary, err)
 	}
@@ -159,7 +160,7 @@ func (d *Daemon) runPlannotator(ctx context.Context, log *slog.Logger, id, binar
 		Binary:  binaryPath,
 		Dir:     reviewWt,
 		Env:     map[string]string{"PLANNOTATOR_REMOTE": "0"},
-		Timeout: d.cfg.Plannotator.Timeout.Duration,
+		Timeout: d.config().Plannotator.Timeout.Duration,
 	}
 
 	stdout, err := d.plannotatorSpawner(ctx, params)
@@ -193,7 +194,7 @@ func (d *Daemon) runPlannotator(ctx context.Context, log *slog.Logger, id, binar
 		return
 	}
 
-	reviewsDir := config.ExpandTilde(d.cfg.Plannotator.ReviewsDir)
+	reviewsDir := config.ExpandTilde(d.config().Plannotator.ReviewsDir)
 	if mkErr := os.MkdirAll(reviewsDir, 0o755); mkErr != nil {
 		log.Error("plannotator: mkdir reviews_dir failed", "err", mkErr)
 		d.broker.Broadcast(web.TicketEvent{
@@ -282,9 +283,9 @@ func (d *Daemon) transitionToRework(id string) error {
 // runReworkStage executes the built-in rework stage: use the last-known agent
 // for the ticket (or the config default), spawn it with the rework prompt, and
 // on success route the ticket back to status=review.
-func (d *Daemon) runReworkStage(ctx, taskCtx context.Context, log *slog.Logger, ticketID string, t *ticket.Ticket, filePath string) {
-	agentName := d.reworkAgent(t)
-	agentCfg, ok := d.cfg.Agents[agentName]
+func (d *Daemon) runReworkStage(ctx, taskCtx context.Context, cfg *config.Config, log *slog.Logger, ticketID string, t *ticket.Ticket, filePath string) {
+	agentName := d.reworkAgent(cfg, t)
+	agentCfg, ok := cfg.Agents[agentName]
 	if !ok {
 		log.Error("rework: unknown agent", "agent", agentName)
 		d.pauseTicket(t, filePath, fmt.Sprintf("rework: unknown agent %q", agentName))
@@ -322,7 +323,7 @@ func (d *Daemon) runReworkStage(ctx, taskCtx context.Context, log *slog.Logger, 
 		return
 	}
 
-	branch := d.ticketBranch(t)
+	branch := ticketBranch(cfg, t)
 	wtPath, _, err := d.worktrees.Create(repoPath, repoName, ticketID, branch)
 	if err != nil {
 		log.Error("rework: create worktree failed", "err", err)
@@ -335,8 +336,8 @@ func (d *Daemon) runReworkStage(ctx, taskCtx context.Context, log *slog.Logger, 
 		return
 	}
 
-	stageCfg := d.cfg.Stages[config.ReworkStageName]
-	rendered, err := d.renderTicketPrompt(stageCfg.Prompt, t, filePath, wtPath)
+	stageCfg := cfg.Stages[config.ReworkStageName]
+	rendered, err := d.renderTicketPrompt(cfg, stageCfg.Prompt, t, filePath, wtPath)
 	if err != nil {
 		log.Error("rework: render prompt failed", "err", err)
 		d.pauseTicket(t, filePath, "rework: render prompt failed: "+err.Error())
@@ -356,7 +357,7 @@ func (d *Daemon) runReworkStage(ctx, taskCtx context.Context, log *slog.Logger, 
 		defer os.Remove(settingsFile)
 	}
 
-	params := d.buildRunnerParams(agentCfg, stageCfg, binaryPath, args, wtPath, ticketID, config.ReworkStageName, sessionID)
+	params := d.buildRunnerParams(cfg, agentCfg, stageCfg, binaryPath, args, wtPath, ticketID, config.ReworkStageName, sessionID)
 	result, runnerErr := d.runner(taskCtx, params)
 	if runnerErr != nil && taskCtx.Err() == nil {
 		log.Error("rework: runner failed", "err", runnerErr)
@@ -430,7 +431,7 @@ func (d *Daemon) runReworkStage(ctx, taskCtx context.Context, log *slog.Logger, 
 //  1. explicit agent override on the ticket
 //  2. the agent recorded on the most recent history entry
 //  3. the default agent from config
-func (d *Daemon) reworkAgent(t *ticket.Ticket) string {
+func (d *Daemon) reworkAgent(cfg *config.Config, t *ticket.Ticket) string {
 	if t.Agent != "" {
 		return t.Agent
 	}
@@ -439,7 +440,7 @@ func (d *Daemon) reworkAgent(t *ticket.Ticket) string {
 			return a
 		}
 	}
-	return d.cfg.DefaultAgent
+	return cfg.DefaultAgent
 }
 
 // setupPlannotatorWorktree creates a disposable detached worktree at the

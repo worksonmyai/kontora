@@ -318,7 +318,7 @@ func TestRemoteDispatch_ConfigEditSavesValid(t *testing.T) {
 	out, err := runCLI(t, []string{"KONTORA_URL=" + srv.URL, "EDITOR=" + editor}, "config", "edit")
 	require.NoError(t, err, out)
 	assert.Contains(t, putContent, "max_concurrent_agents: 9")
-	assert.Contains(t, out, "Restart the daemon")
+	assert.Contains(t, out, "Config saved and reloaded.")
 }
 
 func TestRemoteDispatch_ConfigEditInvalidNotSaved(t *testing.T) {

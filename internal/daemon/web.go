@@ -42,7 +42,7 @@ func (d *Daemon) ListTickets() []web.TicketInfo {
 		if !cfg.IsBoardStatus(string(ts.ticket.Status)) {
 			continue
 		}
-		tickets = append(tickets, d.buildTicketInfo(ts, false))
+		tickets = append(tickets, d.buildTicketInfo(cfg, ts, false))
 	}
 	return tickets
 }
@@ -56,7 +56,7 @@ func (d *Daemon) GetTicket(id string) (web.TicketInfo, error) {
 	if !ok {
 		return web.TicketInfo{}, web.ErrTicketNotFound
 	}
-	return d.buildTicketInfo(ts, true), nil
+	return d.buildTicketInfo(d.config(), ts, true), nil
 }
 
 // CreateTicket creates a new ticket file and registers it in the daemon.
@@ -103,7 +103,7 @@ func (d *Daemon) CreateTicket(req web.CreateTicketRequest) (web.TicketInfo, erro
 	if t.Status == "todo" {
 		d.enqueue(t)
 	}
-	info := d.buildTicketInfo(ts, false)
+	info := d.buildTicketInfo(cfg, ts, false)
 	d.broadcastTicketUpdate(id)
 	d.mu.Unlock()
 
@@ -159,7 +159,7 @@ func (d *Daemon) UploadTicket(content []byte) (web.TicketInfo, error) {
 	d.mu.Lock()
 	ts := newTicketState(t, filePath)
 	d.tickets[t.ID] = ts
-	info := d.buildTicketInfo(ts, false)
+	info := d.buildTicketInfo(cfg, ts, false)
 	d.broadcastTicketUpdate(t.ID)
 	d.mu.Unlock()
 
@@ -614,7 +614,7 @@ func (d *Daemon) broadcastTicketUpdate(id string) {
 	}
 	d.broker.Broadcast(web.TicketEvent{
 		Type:   "ticket_updated",
-		Ticket: d.buildTicketInfo(ts, true),
+		Ticket: d.buildTicketInfo(d.config(), ts, true),
 	})
 }
 
@@ -633,7 +633,7 @@ func (d *Daemon) broadcastTicketDeleted(ts *ticketState) {
 	}
 	d.broker.Broadcast(web.TicketEvent{
 		Type:   "ticket_deleted",
-		Ticket: d.buildTicketInfo(ts, false),
+		Ticket: d.buildTicketInfo(d.config(), ts, false),
 	})
 }
 
@@ -651,14 +651,16 @@ func (d *Daemon) broadcastTerminalReady(id string) {
 	}
 	d.broker.Broadcast(web.TicketEvent{
 		Type:   "terminal_ready",
-		Ticket: d.buildTicketInfo(ts, false),
+		Ticket: d.buildTicketInfo(d.config(), ts, false),
 	})
 }
 
-// buildTicketInfo converts internal ticket state to a web.TicketInfo.
+// buildTicketInfo converts internal ticket state to a web.TicketInfo. The
+// caller passes the config snapshot so that every ticket in one response is
+// rendered from the same config version, whatever a concurrent reload does.
 // Must be called with d.mu held.
-func (d *Daemon) buildTicketInfo(ts *ticketState, includeBody bool) web.TicketInfo {
-	v := app.BuildView(d.config(), ts.ticket, includeBody)
+func (d *Daemon) buildTicketInfo(cfg *config.Config, ts *ticketState, includeBody bool) web.TicketInfo {
+	v := app.BuildView(cfg, ts.ticket, includeBody)
 	info := web.TicketInfoFromView(v)
 	mt := ts.modTime
 	if mt.IsZero() && ts.filePath != "" {

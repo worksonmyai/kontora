@@ -128,12 +128,14 @@ func (d *Daemon) StartPlannotatorReview(id string) error {
 		Ticket: web.TicketInfo{ID: id},
 	})
 
-	go d.runPlannotator(ctx, log, id, binaryPath, repoPath, branch, reviewPath)
+	// The whole run uses the settings the review started with, so a reload
+	// mid-review cannot change the timeout or the reviews directory.
+	go d.runPlannotator(ctx, log, cfg.Plannotator, id, binaryPath, repoPath, branch, reviewPath)
 
 	return nil
 }
 
-func (d *Daemon) runPlannotator(ctx context.Context, log *slog.Logger, id, binaryPath, repoPath, branch, reviewPath string) {
+func (d *Daemon) runPlannotator(ctx context.Context, log *slog.Logger, pcfg config.Plannotator, id, binaryPath, repoPath, branch, reviewPath string) {
 	defer func() {
 		d.mu.Lock()
 		if cancel, ok := d.plannotator[id]; ok {
@@ -160,7 +162,7 @@ func (d *Daemon) runPlannotator(ctx context.Context, log *slog.Logger, id, binar
 		Binary:  binaryPath,
 		Dir:     reviewWt,
 		Env:     map[string]string{"PLANNOTATOR_REMOTE": "0"},
-		Timeout: d.config().Plannotator.Timeout.Duration,
+		Timeout: pcfg.Timeout.Duration,
 	}
 
 	stdout, err := d.plannotatorSpawner(ctx, params)
@@ -194,7 +196,7 @@ func (d *Daemon) runPlannotator(ctx context.Context, log *slog.Logger, id, binar
 		return
 	}
 
-	reviewsDir := config.ExpandTilde(d.config().Plannotator.ReviewsDir)
+	reviewsDir := config.ExpandTilde(pcfg.ReviewsDir)
 	if mkErr := os.MkdirAll(reviewsDir, 0o755); mkErr != nil {
 		log.Error("plannotator: mkdir reviews_dir failed", "err", mkErr)
 		d.broker.Broadcast(web.TicketEvent{

@@ -27,6 +27,7 @@ type plannotatorHarness struct {
 	reviewsDir  string
 	stdoutCh    chan string
 	errCh       chan error
+	spawnParams chan PlannotatorParams
 	callCount   *atomic.Int32
 	lookupFails bool
 }
@@ -55,13 +56,18 @@ func newPlannotatorHarness(t *testing.T) *plannotatorHarness {
 		reviewsDir:  reviewsDir,
 		stdoutCh:    make(chan string, 1),
 		errCh:       make(chan error, 1),
+		spawnParams: make(chan PlannotatorParams, 1),
 		callCount:   &atomic.Int32{},
 	}
 	return ph
 }
 
 func (h *plannotatorHarness) spawner() PlannotatorSpawner {
-	return func(ctx context.Context, _ PlannotatorParams) (string, error) {
+	return func(ctx context.Context, p PlannotatorParams) (string, error) {
+		select {
+		case h.spawnParams <- p:
+		default:
+		}
 		h.callCount.Add(1)
 		select {
 		case out := <-h.stdoutCh:
@@ -429,6 +435,67 @@ func TestPlannotator_ReworkCompletion(t *testing.T) {
 	// Review file consumed by the rework agent's prompt render.
 	_, statErr := os.Stat(filepath.Join(h.reviewsDir, "tst-prc01.md"))
 	assert.True(t, os.IsNotExist(statErr), "review file should be removed after rework consumes it")
+
+	cancel()
+	require.NoError(t, <-errCh)
+}
+
+// TestPlannotator_ReloadKeepsStartingSettings pins the plannotator settings to
+// the values the review started with: a reload while the subprocess runs must
+// not move the review file to the new reviews_dir.
+func TestPlannotator_ReloadKeepsStartingSettings(t *testing.T) {
+	h := newPlannotatorHarness(t)
+	// Empty rework prompt so the plannotatorReview helper does not consume the
+	// review file before the assertion, and a rework agent that blocks.
+	h.cfg.Agents["agent2"] = config.Agent{Binary: "sleep", Args: []string{"30"}}
+	h.cfg.Stages[config.ReworkStageName] = config.Stage{
+		Prompt:  "",
+		Timeout: config.Duration{Duration: time.Minute},
+	}
+	d := h.newDaemonWithSpawner()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- d.Run(ctx) }()
+	time.Sleep(200 * time.Millisecond)
+
+	filePath := h.seedReviewTicket("tst-prl01")
+	require.Eventually(t, func() bool {
+		_, err := d.GetTicket("tst-prl01")
+		return err == nil
+	}, 2*time.Second, 20*time.Millisecond)
+
+	require.NoError(t, d.StartPlannotatorReview("tst-prl01"))
+
+	var params PlannotatorParams
+	select {
+	case params = <-h.spawnParams:
+	case <-time.After(2 * time.Second):
+		t.Fatal("spawner should be invoked")
+	}
+	assert.Equal(t, 5*time.Second, params.Timeout)
+
+	// Reload to a config pointing elsewhere while the subprocess still runs.
+	movedDir := t.TempDir()
+	next := *h.cfg
+	next.Plannotator.ReviewsDir = movedDir
+	next.Plannotator.Timeout = config.Duration{Duration: time.Hour}
+	d.cfg.Store(&next)
+
+	feedback := "please tweak"
+	h.stdoutCh <- feedback
+
+	require.Eventually(t, func() bool {
+		tk, err := ticket.ParseFile(filePath)
+		return err == nil && tk.Stage == "rework"
+	}, 3*time.Second, 20*time.Millisecond, "ticket should move to rework stage")
+
+	data, err := os.ReadFile(filepath.Join(h.reviewsDir, "tst-prl01.md"))
+	require.NoError(t, err, "review should land in the dir the run started with")
+	assert.Equal(t, feedback, string(data))
+	assert.NoFileExists(t, filepath.Join(movedDir, "tst-prl01.md"))
 
 	cancel()
 	require.NoError(t, <-errCh)

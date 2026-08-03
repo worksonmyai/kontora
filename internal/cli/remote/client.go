@@ -271,7 +271,9 @@ func (c *Client) RawConfig() (string, error) {
 }
 
 // PutRawConfig replaces the daemon's on-disk config file with content. The
-// daemon validates it before writing; changes apply on the next restart.
+// daemon validates it before writing, then reloads it, so most changes apply
+// before the request returns. The settings that need a restart are listed in
+// docs/configuration.md.
 func (c *Client) PutRawConfig(content string) error {
 	return c.doJSON(http.MethodPut, "/api/config/raw", map[string]string{"content": content}, nil)
 }

@@ -9,9 +9,11 @@ import (
 	"log/slog"
 	"maps"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -33,9 +35,9 @@ import (
 
 const defaultPromptTemplate = "Work on this ticket: {{ .Ticket.ID }} — {{ .Ticket.Title }}\n\n{{ .Ticket.Description }}"
 
-func (d *Daemon) renderTicketPrompt(tmpl string, t *ticket.Ticket, filePath, wtPath string) (string, error) {
+func (d *Daemon) renderTicketPrompt(cfg *config.Config, tmpl string, t *ticket.Ticket, filePath, wtPath string) (string, error) {
 	opts := prompt.Options{
-		ReviewsDir: expandTilde(d.cfg.Plannotator.ReviewsDir),
+		ReviewsDir: expandTilde(cfg.Plannotator.ReviewsDir),
 		Logger:     d.log,
 	}
 	rendered, err := prompt.RenderWithOptions(tmpl, prompt.Data{
@@ -146,6 +148,20 @@ func WithConfigPath(path string) Option {
 	return func(d *Daemon) { d.configPath = path }
 }
 
+// WithConfigOverride registers the caller's command-line overrides. New applies
+// fn to the starting config and every reload applies it again, so the running
+// config and a freshly loaded one never disagree about a flag.
+//
+// `kontora start --address` and `--port` set fields that are never written to
+// the config file. Without this, a reload would drop them: the daemon would
+// keep serving on the flag's address, because the web listener is pinned, while
+// warning on every reload that the file says otherwise.
+//
+// fn runs on each load, so it must be idempotent.
+func WithConfigOverride(fn func(*config.Config)) Option {
+	return func(d *Daemon) { d.configOverride = fn }
+}
+
 // WithRunner overrides the default runner (tmux-based). Use DirectRunner for
 // tests that don't need tmux.
 func WithRunner(fn RunnerFunc) Option {
@@ -210,7 +226,7 @@ func defaultAgentLookup(binary string) (string, error) {
 }
 
 type Daemon struct {
-	cfg                *config.Config
+	cfg                atomic.Pointer[config.Config]
 	worktrees          *worktree.Manager
 	runner             RunnerFunc
 	plannotatorSpawner PlannotatorSpawner
@@ -225,6 +241,14 @@ type Daemon struct {
 	configPath   string
 	instanceName string
 	log          *slog.Logger
+
+	// configOverride re-applies the caller's command-line overrides to every
+	// config a reload loads. Set once at construction, read without a lock.
+	configOverride func(*config.Config)
+
+	// reloadMu serializes config reloads from the different triggers (SIGHUP,
+	// the config file watcher, and the raw-config endpoint).
+	reloadMu sync.Mutex
 
 	mu              sync.Mutex
 	tickets         map[string]*ticketState
@@ -261,7 +285,6 @@ func newTicketState(t *ticket.Ticket, filePath string) *ticketState {
 
 func New(cfg *config.Config, opts ...Option) *Daemon {
 	d := &Daemon{
-		cfg:                cfg,
 		worktrees:          worktree.New(expandTilde(cfg.WorktreesDir)),
 		runner:             tmuxRunner,
 		plannotatorSpawner: defaultPlannotatorSpawner,
@@ -282,13 +305,26 @@ func New(cfg *config.Config, opts ...Option) *Daemon {
 		plannotator:     make(map[string]context.CancelFunc),
 		selfWrites:      make(map[string]int),
 	}
+	d.cfg.Store(cfg)
 	for _, opt := range opts {
 		opt(d)
+	}
+	// Same treatment the starting config gets and every reloaded one gets, in
+	// the same order, so pinRestartOnly never compares a flag-set field against
+	// the file's own value.
+	if d.configOverride != nil {
+		d.configOverride(cfg)
 	}
 	d.queueCond = sync.NewCond(&d.mu)
 	d.svc = d.buildService()
 	return d
 }
+
+// config returns the config currently in effect. A reload replaces the whole
+// pointer, so a function that reads several fields must take one snapshot and
+// use it throughout. Otherwise a concurrent reload can leave it with half the
+// old values and half the new ones.
+func (d *Daemon) config() *config.Config { return d.cfg.Load() }
 
 func (d *Daemon) buildService() *app.Service {
 	repo := store.NewDaemonRepo(store.DaemonRepoCallbacks{
@@ -320,7 +356,7 @@ func (d *Daemon) buildService() *app.Service {
 		},
 	})
 	rt := &daemonRuntime{d: d}
-	return app.New(d.cfg, repo, rt)
+	return app.New(d.config, repo, rt)
 }
 
 // ticketLog returns a logger with the ticket ID pre-set.
@@ -329,6 +365,14 @@ func (d *Daemon) ticketLog(ticketID string) *slog.Logger {
 }
 
 func (d *Daemon) Run(ctx context.Context) error {
+	// Claim SIGHUP first. A signal delivered before signal.Notify takes its
+	// default disposition and terminates the process, so every statement above
+	// this one would be a window where a reload request kills the daemon. The
+	// buffered channel holds one signal until the consumer goroutine starts.
+	hup := make(chan os.Signal, 1)
+	signal.Notify(hup, syscall.SIGHUP)
+	defer signal.Stop(hup)
+
 	lockFile, err := d.acquireLock()
 	if err != nil {
 		return fmt.Errorf("acquiring lock: %w", err)
@@ -339,11 +383,15 @@ func (d *Daemon) Run(ctx context.Context) error {
 		d.cleanOrphanedWindows()
 	}
 
-	tasksDir := expandTilde(d.cfg.TicketsDir)
+	// Startup snapshot. The values read here are frozen for the daemon's
+	// lifetime, which is why reloadConfig pins them (see pinRestartOnly).
+	cfg := d.config()
+
+	tasksDir := expandTilde(cfg.TicketsDir)
 	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
 		return fmt.Errorf("creating tickets dir: %w", err)
 	}
-	logsDir := expandTilde(d.cfg.LogsDir)
+	logsDir := expandTilde(cfg.LogsDir)
 	if err := os.MkdirAll(logsDir, 0o755); err != nil {
 		return fmt.Errorf("creating logs dir: %w", err)
 	}
@@ -353,8 +401,8 @@ func (d *Daemon) Run(ctx context.Context) error {
 	}
 	d.log.Info("daemon started", "dir", tasksDir, "tasks", len(d.tickets), "queued", d.queue.Len())
 
-	if d.cfg.Web.Enabled != nil && *d.cfg.Web.Enabled {
-		srv := web.New(d, d.broker, d.cfg.Web.Host, d.cfg.Web.Port, d.cfg.Web.Token, d.log)
+	if cfg.Web.Enabled != nil && *cfg.Web.Enabled {
+		srv := web.New(d, d.broker, cfg.Web.Host, cfg.Web.Port, cfg.Web.Token, d.log)
 		if err := srv.Start(); err != nil {
 			d.log.Warn("web server failed to start, continuing without it", "err", err)
 		} else {
@@ -367,7 +415,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 		}
 	}
 
-	w, err := watcher.New(tasksDir, d.debounce)
+	w, err := watcher.New(tasksDir, d.debounce, watcher.MarkdownFilter)
 	if err != nil {
 		return fmt.Errorf("starting watcher: %w", err)
 	}
@@ -382,6 +430,9 @@ func (d *Daemon) Run(ctx context.Context) error {
 	wg.Go(func() {
 		d.scheduler(ctx, &wg)
 	})
+
+	stopReloadTriggers := d.startReloadTriggers(ctx, &wg, hup)
+	defer stopReloadTriggers()
 
 	// Event loop.
 	for {
@@ -438,6 +489,7 @@ func (d *Daemon) initialScan(dir string) error {
 	if err != nil {
 		return err
 	}
+	cfg := d.config()
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".md") {
 			continue
@@ -478,7 +530,7 @@ func (d *Daemon) initialScan(dir string) error {
 		}
 
 		d.tickets[t.ID] = newTicketState(t, path)
-		if t.Kontora && t.Status == ticket.StatusTodo && *d.cfg.AutoPickUp {
+		if t.Kontora && t.Status == ticket.StatusTodo && *cfg.AutoPickUp {
 			d.ticketLog(t.ID).Info("enqueuing", "pipeline", t.Pipeline, "stage", t.Stage)
 			d.enqueue(t)
 		}
@@ -515,6 +567,7 @@ func (d *Daemon) handleFileChanged(path string) {
 	}
 
 	log := d.ticketLog(t.ID)
+	cfg := d.config()
 
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -537,7 +590,7 @@ func (d *Daemon) handleFileChanged(path string) {
 			// Kill any leftover tmux window (e.g. from a paused ticket being retried).
 			d.killTaskWindow(t.ID)
 
-			if !*d.cfg.AutoPickUp {
+			if !*cfg.AutoPickUp {
 				log.Info("skipping auto pick-up", "pipeline", t.Pipeline)
 			} else if !known {
 				log.Info("new ticket", "pipeline", t.Pipeline)
@@ -591,7 +644,7 @@ func (d *Daemon) handleFileChanged(path string) {
 		}
 		go d.cleanupWorktree(log, t)
 	default:
-		if d.cfg.IsCustomStatus(string(t.Status)) {
+		if cfg.IsCustomStatus(string(t.Status)) {
 			if cancel, ok := d.running[t.ID]; ok {
 				log.Info("killing agent", "reason", "user set "+string(t.Status))
 				cancel()
@@ -620,11 +673,13 @@ func (d *Daemon) handleFileRemoved(path string) {
 
 // ticketBranch returns the branch name for a ticket, using the ticket's
 // existing branch if set, otherwise generating one from the config prefix.
-func (d *Daemon) ticketBranch(t *ticket.Ticket) string {
+// It takes the caller's config snapshot because branch_prefix reloads live: a
+// caller that reads it twice can reserve one branch name and check out another.
+func ticketBranch(cfg *config.Config, t *ticket.Ticket) string {
 	if b := strings.TrimSpace(t.Branch); b != "" {
 		return b
 	}
-	return worktree.BranchName(d.cfg.BranchPrefix, t.ID)
+	return worktree.BranchName(cfg.BranchPrefix, t.ID)
 }
 
 // removeWorktreeAt removes the git worktree at wtPath. Logs but does not
@@ -666,7 +721,7 @@ func (d *Daemon) isUserOverride(s ticket.Status) bool {
 	return s == ticket.StatusPaused || s == ticket.StatusHumanReview ||
 		s == ticket.StatusCancelled || s == ticket.StatusOpen ||
 		s == ticket.StatusDone || s == ticket.StatusArchived ||
-		d.cfg.IsCustomStatus(string(s))
+		d.config().IsCustomStatus(string(s))
 }
 
 // isTerminalOverride returns true if the status is a terminal user override
@@ -683,7 +738,7 @@ func (d *Daemon) cleanupWorktree(log *slog.Logger, t *ticket.Ticket) {
 		log.Warn("worktree cleanup: resolve path failed", "err", err)
 		return
 	}
-	d.removeWorktreeByBranch(log, repoPath, d.ticketBranch(t))
+	d.removeWorktreeByBranch(log, repoPath, ticketBranch(d.config(), t))
 }
 
 // enqueue adds a ticket to the queue. Must be called with d.mu held.
@@ -746,6 +801,7 @@ func (d *Daemon) scheduler(ctx context.Context, wg *sync.WaitGroup) {
 
 func (d *Daemon) runTicket(ctx context.Context, ticketID string) {
 	log := d.ticketLog(ticketID)
+	cfg := d.config()
 
 	d.mu.Lock()
 	if _, isRunning := d.running[ticketID]; isRunning {
@@ -782,7 +838,7 @@ func (d *Daemon) runTicket(ctx context.Context, ticketID string) {
 	// repository and branch can't both pass this guard and reuse each
 	// other's worktree by surprise. Keyed by (repoPath, branch) because
 	// identical branch names in different repos don't collide.
-	branch := d.ticketBranch(t)
+	branch := ticketBranch(cfg, t)
 	branchKey := expandTilde(t.Path) + "\x00" + branch
 	if holder, ok := d.runningBranches[branchKey]; ok && holder != ticketID {
 		taskCancel()
@@ -805,14 +861,17 @@ func (d *Daemon) runTicket(ctx context.Context, ticketID string) {
 
 	if t.Pipeline == "" {
 		d.mu.Unlock()
-		d.runSimpleTicket(ctx, taskCtx, log, ticketID, t, filePath)
+		d.runSimpleTicket(ctx, taskCtx, cfg, log, ticketID, t, filePath)
 		return
 	}
 
-	pipelineCfg, ok := d.cfg.Pipelines[t.Pipeline]
+	pipelineCfg, ok := cfg.Pipelines[t.Pipeline]
 	if !ok {
+		// A config reload can drop a pipeline out from under a todo ticket.
+		// Pause it with a reason so it does not sit in todo unexplained.
 		log.Error("unknown pipeline", "pipeline", t.Pipeline)
 		d.mu.Unlock()
+		d.pauseTicket(t, filePath, fmt.Sprintf("unknown pipeline %q", t.Pipeline))
 		return
 	}
 
@@ -827,10 +886,10 @@ func (d *Daemon) runTicket(ctx context.Context, ticketID string) {
 	// and the user's pipeline doesn't declare it as a step, run it via the
 	// dedicated path so we can route back to status=review after the agent
 	// exits. A user-defined rework stage is left alone.
-	if d.cfg.ReworkIsBuiltin &&
+	if cfg.ReworkIsBuiltin &&
 		t.Stage == config.ReworkStageName &&
 		!stageInPipeline(pipelineCfg, config.ReworkStageName) {
-		d.runReworkStage(ctx, taskCtx, log, ticketID, t, filePath)
+		d.runReworkStage(ctx, taskCtx, cfg, log, ticketID, t, filePath)
 		return
 	}
 
@@ -840,7 +899,10 @@ func (d *Daemon) runTicket(ctx context.Context, ticketID string) {
 		Timestamp: time.Now(),
 	})
 	if err != nil {
+		// A reload that removes the ticket's stage reaches here. Pause with the
+		// reason rather than leaving the ticket stuck in todo.
 		log.Error("evaluate pickup failed", "err", err)
+		d.pauseTicket(t, filePath, "evaluate pickup failed: "+err.Error())
 		return
 	}
 
@@ -872,20 +934,20 @@ func (d *Daemon) runTicket(ctx context.Context, ticketID string) {
 		agentName = t.Agent
 	}
 
-	agentCfg, agentOK := d.cfg.Agents[agentName]
+	agentCfg, agentOK := cfg.Agents[agentName]
 	if !agentOK {
 		log.Error("unknown agent", "agent", agentName)
 		d.pauseTicket(t, filePath, fmt.Sprintf("unknown agent %q", agentName))
 		return
 	}
-	stageCfg := d.cfg.Stages[stageName]
+	stageCfg := cfg.Stages[stageName]
 
-	repoPath, wtPath, prepOK := d.prepareWorktreeForAgent(log, t, filePath, ticketID, stageName)
+	repoPath, wtPath, prepOK := d.prepareWorktreeForAgent(log, t, filePath, ticketID, stageName, branch)
 	if !prepOK {
 		return
 	}
 
-	rendered, err := d.renderTicketPrompt(stageCfg.Prompt, t, filePath, wtPath)
+	rendered, err := d.renderTicketPrompt(cfg, stageCfg.Prompt, t, filePath, wtPath)
 	if err != nil {
 		log.Error("render prompt failed", "stage", stageName, "err", err)
 		d.pauseTicket(t, filePath, "render prompt failed: "+err.Error())
@@ -898,6 +960,7 @@ func (d *Daemon) runTicket(ctx context.Context, ticketID string) {
 	log.Info("spawning agent", "agent", agentName, "stage", stageName, "binary", agentCfg.Binary)
 
 	result, spawnOK := d.spawnAgentRun(taskCtx, t, spawnAgentParams{
+		cfg:       cfg,
 		log:       log,
 		ticketID:  ticketID,
 		filePath:  filePath,
@@ -923,12 +986,12 @@ func (d *Daemon) runTicket(ctx context.Context, ticketID string) {
 	})
 }
 
-func (d *Daemon) runSimpleTicket(ctx, taskCtx context.Context, log *slog.Logger, ticketID string, t *ticket.Ticket, filePath string) {
-	agentName := d.cfg.DefaultAgent
+func (d *Daemon) runSimpleTicket(ctx, taskCtx context.Context, cfg *config.Config, log *slog.Logger, ticketID string, t *ticket.Ticket, filePath string) {
+	agentName := cfg.DefaultAgent
 	if t.Agent != "" {
 		agentName = t.Agent
 	}
-	agentCfg, ok := d.cfg.Agents[agentName]
+	agentCfg, ok := cfg.Agents[agentName]
 	if !ok {
 		log.Error("unknown agent", "agent", agentName)
 		d.pauseTicket(t, filePath, fmt.Sprintf("unknown agent %q", agentName))
@@ -952,12 +1015,12 @@ func (d *Daemon) runSimpleTicket(ctx, taskCtx context.Context, log *slog.Logger,
 		return
 	}
 
-	repoPath, wtPath, prepOK := d.prepareWorktreeForAgent(log, t, filePath, ticketID, "default")
+	repoPath, wtPath, prepOK := d.prepareWorktreeForAgent(log, t, filePath, ticketID, "default", ticketBranch(cfg, t))
 	if !prepOK {
 		return
 	}
 
-	rendered, err := d.renderTicketPrompt(defaultPromptTemplate, t, filePath, wtPath)
+	rendered, err := d.renderTicketPrompt(cfg, defaultPromptTemplate, t, filePath, wtPath)
 	if err != nil {
 		log.Error("render prompt failed", "err", err)
 		d.pauseTicket(t, filePath, "render prompt failed: "+err.Error())
@@ -970,6 +1033,7 @@ func (d *Daemon) runSimpleTicket(ctx, taskCtx context.Context, log *slog.Logger,
 	log.Info("spawning agent", "agent", agentName, "binary", agentCfg.Binary)
 
 	result, spawnOK := d.spawnAgentRun(taskCtx, t, spawnAgentParams{
+		cfg:       cfg,
 		log:       log,
 		ticketID:  ticketID,
 		filePath:  filePath,
@@ -1211,10 +1275,14 @@ func (d *Daemon) handleAgentExit(ctx, taskCtx context.Context, p handleExitParam
 }
 
 // prepareWorktreeForAgent resolves the ticket's repo path, creates (or reuses)
-// a worktree for the ticket's branch, and writes the branch/last_log fields.
+// a worktree for the given branch, and writes the branch/last_log fields.
 // On failure the ticket is paused and ok=false is returned so the caller can
 // return immediately.
-func (d *Daemon) prepareWorktreeForAgent(log *slog.Logger, t *ticket.Ticket, filePath, ticketID, stageName string) (repoPath, wtPath string, ok bool) {
+//
+// The branch is passed in rather than recomputed: runTicket already reserved it
+// in runningBranches, and branch_prefix reloads live, so a second
+// ticketBranch call could return a different name from the one under guard.
+func (d *Daemon) prepareWorktreeForAgent(log *slog.Logger, t *ticket.Ticket, filePath, ticketID, stageName, branch string) (repoPath, wtPath string, ok bool) {
 	repoName, repoPath, err := d.resolvePath(t)
 	if err != nil {
 		log.Error("resolve path failed", "err", err)
@@ -1222,7 +1290,6 @@ func (d *Daemon) prepareWorktreeForAgent(log *slog.Logger, t *ticket.Ticket, fil
 		return "", "", false
 	}
 
-	branch := d.ticketBranch(t)
 	wtPath, created, err := d.worktrees.Create(repoPath, repoName, ticketID, branch)
 	if err != nil {
 		log.Error("create worktree failed", "path", repoPath, "err", err)
@@ -1249,6 +1316,10 @@ func (d *Daemon) prepareWorktreeForAgent(log *slog.Logger, t *ticket.Ticket, fil
 }
 
 type spawnAgentParams struct {
+	// cfg is the caller's config snapshot. It is threaded through rather than
+	// re-read so the environment and log paths a stage runs with come from the
+	// same config version as its agent and stage definitions.
+	cfg       *config.Config
 	log       *slog.Logger
 	ticketID  string
 	filePath  string
@@ -1280,7 +1351,7 @@ func (d *Daemon) spawnAgentRun(taskCtx context.Context, t *ticket.Ticket, p spaw
 		defer os.Remove(settingsFile)
 	}
 
-	params := d.buildRunnerParams(p.agentCfg, p.stageCfg, binaryPath, args, p.wtPath, p.ticketID, p.stageName, sessionID)
+	params := d.buildRunnerParams(p.cfg, p.agentCfg, p.stageCfg, binaryPath, args, p.wtPath, p.ticketID, p.stageName, sessionID)
 	// Stage logs are appended across retries (pipe-pane, DirectRunner), so record
 	// where this run's output starts. Failure-pattern detection only scans from
 	// here, otherwise a previous attempt's error would keep matching on retry.
@@ -1432,8 +1503,8 @@ export default function (pi: ExtensionAPI) {
 	return f.Name(), nil
 }
 
-func (d *Daemon) buildRunnerParams(agentCfg config.Agent, stageCfg config.Stage, binaryPath string, args []string, dir, ticketID, stageName, sessionID string) RunnerParams {
-	logsDir := expandTilde(d.cfg.LogsDir)
+func (d *Daemon) buildRunnerParams(cfg *config.Config, agentCfg config.Agent, stageCfg config.Stage, binaryPath string, args []string, dir, ticketID, stageName, sessionID string) RunnerParams {
+	logsDir := expandTilde(cfg.LogsDir)
 	logDir := filepath.Join(logsDir, ticketID)
 
 	var sessionDir string
@@ -1442,8 +1513,8 @@ func (d *Daemon) buildRunnerParams(agentCfg config.Agent, stageCfg config.Stage,
 		args = append(args, "--session-dir", sessionDir)
 	}
 
-	env := make(map[string]string, len(d.cfg.Environment)+len(agentCfg.Environment))
-	maps.Copy(env, d.cfg.Environment)
+	env := make(map[string]string, len(cfg.Environment)+len(agentCfg.Environment))
+	maps.Copy(env, cfg.Environment)
 	for k, v := range agentCfg.Environment {
 		if v == "" {
 			delete(env, k)
@@ -1458,7 +1529,7 @@ func (d *Daemon) buildRunnerParams(agentCfg config.Agent, stageCfg config.Stage,
 		Dir:         dir,
 		Timeout:     stageCfg.Timeout.Duration,
 		TicketID:    ticketID,
-		LogFile:     d.stageLogPath(ticketID, stageName),
+		LogFile:     stageLogPath(cfg, ticketID, stageName),
 		Interactive: agentCfg.IsClaude(),
 		SessionID:   sessionID,
 		SessionDir:  sessionDir,
@@ -1530,7 +1601,11 @@ func (d *Daemon) setTicketState(id string, t *ticket.Ticket, path string) {
 }
 
 func (d *Daemon) stageLogPath(ticketID, stageName string) string {
-	return filepath.Join(expandTilde(d.cfg.LogsDir), ticketID, stageName+".log")
+	return stageLogPath(d.config(), ticketID, stageName)
+}
+
+func stageLogPath(cfg *config.Config, ticketID, stageName string) string {
+	return filepath.Join(expandTilde(cfg.LogsDir), ticketID, stageName+".log")
 }
 
 func (d *Daemon) pauseTicket(t *ticket.Ticket, path, reason string) {

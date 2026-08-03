@@ -372,7 +372,7 @@ test("non-Kontora start and resume actions open initialization instead of postin
   assert.deepEqual(opened, ["ext-run", "ext-retry", "ext-retry"]);
 });
 
-test("human_review column sorts by updated_at descending", () => {
+test("human_review column sorts by the last stage's finish, newest first", () => {
   const state = loadKontoraState();
   state.tickets = [
     {
@@ -380,16 +380,22 @@ test("human_review column sorts by updated_at descending", () => {
       title: "Old",
       status: "human_review",
       kontora: true,
-      created_at: "2026-05-19T09:00:00Z",
-      updated_at: "2026-05-19T10:00:00Z",
+      created_at: "2026-05-19T07:00:00Z",
+      // Edited after review started: a later mtime must not win.
+      updated_at: "2026-05-19T20:00:00Z",
+      history: [
+        { stage: "plan", completed_at: "2026-05-19T08:00:00Z" },
+        { stage: "code", completed_at: "2026-05-19T09:00:00Z" },
+      ],
     },
     {
       id: "rev-new",
       title: "New",
       status: "human_review",
       kontora: true,
-      created_at: "2026-05-19T08:00:00Z",
-      updated_at: "2026-05-19T11:00:00Z",
+      created_at: "2026-05-19T06:00:00Z",
+      updated_at: "2026-05-19T12:00:00Z",
+      history: [{ stage: "code", completed_at: "2026-05-19T11:00:00Z" }],
     },
   ];
 
@@ -398,9 +404,17 @@ test("human_review column sorts by updated_at descending", () => {
   assert.deepEqual(ids, ["rev-new", "rev-old"]);
 });
 
-test("human_review column falls back to created_at when updated_at is missing", () => {
+test("human_review column falls back to updated_at, then created_at, without a finished stage", () => {
   const state = loadKontoraState();
   state.tickets = [
+    {
+      id: "rev-moved",
+      title: "Moved by hand",
+      status: "human_review",
+      kontora: true,
+      created_at: "2026-05-19T08:00:00Z",
+      updated_at: "2026-05-19T11:00:00Z",
+    },
     {
       id: "rev-no-update",
       title: "NoUpdate",
@@ -409,18 +423,28 @@ test("human_review column falls back to created_at when updated_at is missing", 
       created_at: "2026-05-19T12:00:00Z",
     },
     {
-      id: "rev-updated",
-      title: "Updated",
+      id: "rev-running-stage",
+      title: "Stage still open",
       status: "human_review",
       kontora: true,
-      created_at: "2026-05-19T08:00:00Z",
-      updated_at: "2026-05-19T11:00:00Z",
+      created_at: "2026-05-19T09:00:00Z",
+      updated_at: "2026-05-19T09:30:00Z",
+      history: [{ stage: "code" }],
     },
   ];
 
   const ids = state.ticketsByStatuses("human_review").map(t => t.id);
 
-  assert.deepEqual(ids, ["rev-no-update", "rev-updated"]);
+  assert.deepEqual(ids, ["rev-no-update", "rev-moved", "rev-running-stage"]);
+});
+
+test("reviewFinishedAt only reports a finish time for tickets waiting on review", () => {
+  const state = loadKontoraState();
+  const history = [{ stage: "code", completed_at: "2026-05-19T09:00:00Z" }];
+
+  assert.equal(state.reviewFinishedAt({ status: "human_review", history }), "2026-05-19T09:00:00Z");
+  assert.equal(state.reviewFinishedAt({ status: "done", history }), "");
+  assert.equal(state.reviewFinishedAt({ status: "todo", created_at: "2026-05-19T08:00:00Z" }), "");
 });
 
 test("non-review columns ignore updated_at and keep existing sort", () => {
@@ -757,6 +781,31 @@ test("_cardHTML renders an in-progress card with selection, glyph, bars, and a l
   assert.match(html, /data-pipe-color="[a-z]+"/);
 });
 
+test("_cardHTML shows the finish time on review cards", () => {
+  const state = loadKontoraState();
+  state.now = new Date("2026-05-19T11:00:00Z").getTime();
+  const html = state._cardHTML(
+    {
+      id: "sta-rev", title: "Check it", status: "human_review", kontora: true, pipeline: "kontora",
+      created_at: "2026-05-19T06:00:00Z", updated_at: "2026-05-19T10:30:00Z",
+      history: [{ stage: "code", completed_at: "2026-05-19T09:00:00Z" }],
+    },
+    { key: "human_review" },
+  );
+
+  assert.match(html, /data-finished="2026-05-19T09:00:00Z"/);
+  assert.match(html, /finished 2h ago/);
+  assert.equal(/data-ago=/.test(html), false);
+});
+
+test("finishedAgo drops the trailing ago for a fresh finish", () => {
+  const state = loadKontoraState();
+  state.now = new Date("2026-05-19T09:00:20Z").getTime();
+
+  assert.equal(state.finishedAgo("2026-05-19T09:00:00Z"), "finished just now");
+  assert.equal(state.finishedAgo(""), "");
+});
+
 test("_cardHTML uses data-ago for non-running cards and omits is-selected when unselected", () => {
   const state = loadKontoraState();
   state.selectedTicket = null;
@@ -1007,6 +1056,7 @@ test("_cardSig changes for every field _cardHTML renders", () => {
     { name: "stages", ticket: { stages: ["plan", "code", "commit"] } },
     { name: "started_at", ticket: { started_at: "2026-05-19T11:00:00Z" } },
     { name: "created_at", ticket: { created_at: "2026-05-19T09:00:00Z" } },
+
     { name: "showPipelineBadges", toggle: "showPipelineBadges" },
     { name: "showAgentMeta", toggle: "showAgentMeta" },
   ];
@@ -1017,6 +1067,24 @@ test("_cardSig changes for every field _cardHTML renders", () => {
     if (c.toggle) state[c.toggle] = !state[c.toggle];
     assert.notEqual(got, sig, `${c.name} must change the card signature`);
   }
+});
+
+test("_cardSig follows the review finish time", () => {
+  const state = loadKontoraState();
+  const base = {
+    id: "sig-rev", title: "Review", status: "human_review", kontora: true,
+    created_at: "2026-05-19T08:00:00Z", updated_at: "2026-05-19T10:00:00Z",
+    history: [{ stage: "code", completed_at: "2026-05-19T09:00:00Z" }],
+  };
+  const col = { key: "human_review" };
+  const sig = state._cardSig(base, col);
+
+  const relanded = { ...base, history: [...base.history, { stage: "code", completed_at: "2026-05-19T12:00:00Z" }] };
+  assert.notEqual(state._cardSig(relanded, col), sig);
+
+  // A plain edit to the markdown bumps the mtime but no card text, so the
+  // signature must not change and the card must not be rebuilt.
+  assert.equal(state._cardSig({ ...base, updated_at: "2026-05-19T20:00:00Z" }, col), sig);
 });
 
 test("_cardSig ignores the reactive clock and the selection highlight", () => {
@@ -1133,22 +1201,27 @@ test("a clock tick alone patches nothing", () => {
 });
 
 test("a reordered card is moved, not rebuilt", () => {
+  const rev = (id, finish) => ({
+    id, title: id.toUpperCase(), status: "human_review", kontora: true,
+    created_at: "2026-05-19T06:00:00Z", history: [{ stage: "code", completed_at: finish }],
+  });
   const { board, state, built } = renderedBoard([
-    { id: "rev-a", title: "A", status: "human_review", kontora: true, updated_at: "2026-05-19T09:00:00Z" },
-    { id: "rev-b", title: "B", status: "human_review", kontora: true, updated_at: "2026-05-19T08:00:00Z" },
+    rev("rev-a", "2026-05-19T09:00:00Z"),
+    rev("rev-b", "2026-05-19T08:00:00Z"),
+    rev("rev-c", "2026-05-19T07:00:00Z"),
   ]);
   const before = board.uids("human_review");
-  assert.deepEqual(board.ids("human_review"), ["rev-a", "rev-b"]);
+  assert.deepEqual(board.ids("human_review"), ["rev-a", "rev-b", "rev-c"]);
 
-  // human_review sorts on updated_at, which the card doesn't render, so this
-  // reorders the column without changing any signature.
-  state.tickets[1].updated_at = "2026-05-19T10:00:00Z";
+  // A corrected finish on rev-a drops it to the bottom. Only rev-a's own card
+  // text changed, so rev-b and rev-c are moved with their nodes intact.
+  state.tickets[0].history = [{ stage: "code", completed_at: "2026-05-19T06:30:00Z" }];
   state.recomputeBoard();
 
-  assert.deepEqual(built, []);
-  assert.deepEqual(board.ops, ["insert:rev-b"]);
-  assert.deepEqual(board.ids("human_review"), ["rev-b", "rev-a"]);
-  assert.deepEqual(board.uids("human_review"), [before[1], before[0]]);
+  assert.deepEqual(built, ["rev-a"]);
+  assert.deepEqual(board.ops, ["insert:rev-b", "insert:rev-c", "replace:rev-a"]);
+  assert.deepEqual(board.ids("human_review"), ["rev-b", "rev-c", "rev-a"]);
+  assert.deepEqual(board.uids("human_review").slice(0, 2), [before[1], before[2]]);
 });
 
 test("a ticket that changes column moves node-for-node and spares the others", () => {

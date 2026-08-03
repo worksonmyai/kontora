@@ -316,9 +316,25 @@ function kontora() {
       if (icon) icon.href = "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><circle cx='8' cy='8' r='7' fill='" + encodeURIComponent(color) + "'/></svg>";
     },
 
+    // Finish time of a ticket that waits in HUMAN REVIEW: the completed_at of
+    // the last stage that ran. The stage that parks the ticket writes it, so it
+    // stays put when the file is edited later. A manual "send to review" adds no
+    // history entry, so fall back to the file mtime and then to creation.
+    // Returns '' for any other status.
+    reviewFinishedAt(ticket) {
+      if (!ticket || ticket.status !== 'human_review') return '';
+      var h = ticket.history;
+      if (Array.isArray(h)) {
+        for (var i = h.length - 1; i >= 0; i--) {
+          if (h[i] && h[i].completed_at) return h[i].completed_at;
+        }
+      }
+      return ticket.updated_at || ticket.created_at || '';
+    },
+
     // Sort a column's ticket list in place. `statuses` is the column's status
     // list; multi-status columns (IN PROGRESS) rank by status first, the
-    // human_review column sorts by updated_at, others by activity age.
+    // human_review column sorts by finish time, others by activity age.
     _sortColumn(list, statuses) {
       var self = this;
       return list.sort((a, b) => {
@@ -332,8 +348,8 @@ function kontora() {
         const isReview = statuses.length === 1 && statuses[0] === 'human_review';
         let ta, tb;
         if (isReview) {
-          ta = a.updated_at || a.created_at || '';
-          tb = b.updated_at || b.created_at || '';
+          ta = self.reviewFinishedAt(a);
+          tb = self.reviewFinishedAt(b);
         } else {
           ta = a.status === 'in_progress' && a.started_at ? a.started_at : (a.created_at || '');
           tb = b.status === 'in_progress' && b.started_at ? b.started_at : (b.created_at || '');
@@ -1237,9 +1253,13 @@ function kontora() {
       // data-since / data-ago let _updateCardTimers patch the text in place on
       // the 30s tick without rebuilding the card.
       var timeSpan = '';
+      var finishedAt = this.reviewFinishedAt(ticket);
       if (ticket.status === 'in_progress' && ticket.started_at) {
         timeSpan = '<span data-since="' + esc(ticket.started_at) + '" data-tip-t="' + esc('Started: ' + this.formatAbsDate(ticket.started_at)) + '">'
           + esc(this.formatDuration(ticket)) + '</span>';
+      } else if (finishedAt) {
+        timeSpan = '<span data-finished="' + esc(finishedAt) + '" data-tip-t="' + esc('Finished: ' + this.formatAbsDate(finishedAt)) + '">'
+          + esc(this.finishedAgo(finishedAt)) + '</span>';
       } else if (ticket.created_at) {
         timeSpan = '<span data-ago="' + esc(ticket.created_at) + '" data-tip-t="' + esc(this.formatAbsDate(ticket.created_at)) + '">'
           + esc(this.timeAgo(ticket.created_at)) + '</span>';
@@ -1299,9 +1319,12 @@ function kontora() {
     // with _cardHTML — the "card signature covers every rendered field" test
     // guards each field.
     _cardSig(ticket, col) {
+      // ticket.history and ticket.updated_at reach the card only through
+      // reviewFinishedAt, so its result stands in for both here.
       return [col.key, ticket.id, ticket.title, ticket.status, ticket.stage,
               ticket.pipeline, ticket.path, ticket.agent, ticket.attempt,
               ticket.kontora ? 1 : 0, ticket.started_at, ticket.created_at,
+              this.reviewFinishedAt(ticket),
               (ticket.stages || []).join('>'),
               this.showPipelineBadges ? 1 : 0, this.showAgentMeta ? 1 : 0].join('\u0001');
     },
@@ -1574,6 +1597,9 @@ function kontora() {
       });
       document.querySelectorAll('#board-cols [data-ago]').forEach(function (el) {
         el.textContent = self.timeAgo(el.dataset.ago);
+      });
+      document.querySelectorAll('#board-cols [data-finished]').forEach(function (el) {
+        el.textContent = self.finishedAgo(el.dataset.finished);
       });
     },
 
@@ -2019,6 +2045,13 @@ function kontora() {
       var d = new Date(dateStr);
       var pad = function(n) { return n < 10 ? '0' + n : '' + n; };
       return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+    },
+
+    // Review-card label for a finish time: "finished 2h ago", "finished just now".
+    finishedAgo(dateStr) {
+      var ago = this.timeAgo(dateStr);
+      if (!ago) return '';
+      return ago === 'just now' ? 'finished just now' : 'finished ' + ago + ' ago';
     },
 
     timeAgo(dateStr) {

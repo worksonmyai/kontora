@@ -1555,7 +1555,7 @@
                 </span>
               </template>
             </span>
-            <span style="flex:none;" x-text="ticket.status==='in_progress' && ticket.started_at ? formatDuration(ticket) : timeAgo(ticket.created_at)"></span>
+            <span style="flex:none;" x-text="ticket.status==='in_progress' && ticket.started_at ? formatDuration(ticket) : (reviewFinishedAt(ticket) ? finishedAgo(reviewFinishedAt(ticket)) : timeAgo(ticket.created_at))"></span>
           </div>
         </button>
       </template>

@@ -155,21 +155,26 @@ func cmdStart() {
 	}
 
 	cfg := loadConfigOrSetup(*configPath)
-
-	if *address != "" {
-		cfg.Web.Host = *address
-	}
-	if *port != 0 {
-		cfg.Web.Port = *port
-	}
 	cfg.ApplyServerEnvOverrides()
 
-	if err := runDaemon(cfg, *configPath); err != nil {
+	// The daemon applies this to the starting config and to every reload. The
+	// flags never reach the config file, so a reload that only re-read the file
+	// would drop them.
+	override := func(c *config.Config) {
+		if *address != "" {
+			c.Web.Host = *address
+		}
+		if *port != 0 {
+			c.Web.Port = *port
+		}
+	}
+
+	if err := runDaemon(cfg, *configPath, override); err != nil {
 		log.Fatalf("daemon: %v", err)
 	}
 }
 
-func runDaemon(cfg *config.Config, configPath string) error {
+func runDaemon(cfg *config.Config, configPath string, override func(*config.Config)) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
@@ -183,7 +188,12 @@ func runDaemon(cfg *config.Config, configPath string) error {
 	logger := slog.New(charmlog.NewWithOptions(os.Stderr, charmlog.Options{
 		ReportTimestamp: true,
 	}))
-	d := daemon.New(cfg, daemon.WithLogger(logger), daemon.WithLockPath(lockPath), daemon.WithConfigPath(configPath))
+	d := daemon.New(cfg,
+		daemon.WithLogger(logger),
+		daemon.WithLockPath(lockPath),
+		daemon.WithConfigPath(configPath),
+		daemon.WithConfigOverride(override),
+	)
 	return d.Run(ctx)
 }
 
@@ -786,9 +796,9 @@ func cmdConfig() {
 }
 
 // cmdConfigEdit edits the daemon's config. In remote mode it fetches the raw
-// config, opens it in $EDITOR, validates locally, and uploads it; changes apply
-// only after the daemon restarts. In local mode it opens the on-disk config file
-// in the editor directly.
+// config, opens it in $EDITOR, validates locally, and uploads it; the daemon
+// reloads as part of the save. In local mode it opens the on-disk config file
+// in the editor directly, and the daemon's config watcher picks up the save.
 func cmdConfigEdit() {
 	fs := flag.NewFlagSet("config edit", flag.ExitOnError)
 	configPath := fs.String("config", defaultConfigPath(), "path to config file")
@@ -854,7 +864,7 @@ func remoteConfigEdit(rc *remote.Client) error {
 		return err
 	}
 
-	fmt.Println("Config saved. Restart the daemon for the changes to take effect.")
+	fmt.Println("Config saved and reloaded. Settings that need a restart are listed in docs/configuration.md.")
 	return nil
 }
 

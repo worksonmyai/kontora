@@ -20,7 +20,7 @@ type ArchiveOpts struct {
 // before touching any files.
 func Archive(cfg *config.Config, w io.Writer, opts ArchiveOpts) error {
 	repo := store.NewDiskRepo(cfg.TicketsDir)
-	svc := app.New(cfg, repo, app.NoopRuntime{})
+	svc := app.New(app.Static(cfg), repo, app.NoopRuntime{})
 
 	result, err := svc.Archive(app.ArchiveOptions{Days: opts.Days, DryRun: opts.DryRun})
 

@@ -27,15 +27,25 @@ var builtinSetStatuses = map[ticket.Status]bool{
 	ticket.StatusCancelled:   true,
 }
 
+// ConfigFunc returns the config to use for the current call. The daemon passes
+// its own accessor so the service follows a config reload; callers with a fixed
+// config pass Static.
+type ConfigFunc func() *config.Config
+
+// Static wraps a fixed config as a ConfigFunc.
+func Static(cfg *config.Config) ConfigFunc {
+	return func() *config.Config { return cfg }
+}
+
 // Service owns ticket use-cases: mutations, projection, and listing.
 type Service struct {
-	cfg     *config.Config
+	cfg     ConfigFunc
 	repo    Repository
 	runtime RuntimeHooks
 }
 
 // New creates a Service.
-func New(cfg *config.Config, repo Repository, runtime RuntimeHooks) *Service {
+func New(cfg ConfigFunc, repo Repository, runtime RuntimeHooks) *Service {
 	return &Service{cfg: cfg, repo: repo, runtime: runtime}
 }
 
@@ -49,7 +59,7 @@ func (s *Service) Get(id string, opts GetOptions) (View, error) {
 	if err != nil {
 		return View{}, err
 	}
-	return BuildView(s.cfg, st.Ticket, opts.IncludeBody), nil
+	return BuildView(s.cfg(), st.Ticket, opts.IncludeBody), nil
 }
 
 // List returns views of all valid tickets. Markdown files that parse but do not
@@ -59,12 +69,13 @@ func (s *Service) List(_ ListOptions) ([]View, error) {
 	if err != nil {
 		return nil, err
 	}
+	cfg := s.cfg()
 	var views []View
 	for _, st := range stored {
 		if st.Ticket.ID == "" {
 			continue
 		}
-		views = append(views, BuildView(s.cfg, st.Ticket, false))
+		views = append(views, BuildView(cfg, st.Ticket, false))
 	}
 	return views, nil
 }
@@ -73,7 +84,7 @@ func (s *Service) isValidSetStatus(status ticket.Status) bool {
 	if builtinSetStatuses[status] {
 		return true
 	}
-	return s.cfg.IsCustomStatus(string(status))
+	return s.cfg().IsCustomStatus(string(status))
 }
 
 // SetStatus changes a ticket's status with validation.
@@ -185,7 +196,7 @@ func (s *Service) Skip(id string) (Result, error) {
 		return Result{}, fmt.Errorf("%w: cannot skip archived ticket %s", ErrInvalidState, resolved)
 	}
 
-	pipelineCfg, ok := s.cfg.Pipelines[t.Pipeline]
+	pipelineCfg, ok := s.cfg().Pipelines[t.Pipeline]
 	if !ok {
 		return Result{}, fmt.Errorf("unknown pipeline %q for ticket %s", t.Pipeline, resolved)
 	}
@@ -252,14 +263,15 @@ func (s *Service) Init(id string, req InitRequest) (Result, error) {
 		return Result{}, fmt.Errorf("%w: ticket already initialized", ErrInvalidState)
 	}
 
+	cfg := s.cfg()
 	if req.Pipeline != "" {
-		pipelineCfg, ok := s.cfg.Pipelines[req.Pipeline]
+		pipelineCfg, ok := cfg.Pipelines[req.Pipeline]
 		if !ok || len(pipelineCfg) == 0 {
 			return Result{}, fmt.Errorf("%w: unknown pipeline %q", ErrInvalidState, req.Pipeline)
 		}
 	}
 	if req.Agent != "" {
-		if _, ok := s.cfg.Agents[req.Agent]; !ok {
+		if _, ok := cfg.Agents[req.Agent]; !ok {
 			return Result{}, fmt.Errorf("%w %q", ErrUnknownAgent, req.Agent)
 		}
 	}
@@ -297,7 +309,7 @@ func (s *Service) Init(id string, req InitRequest) (Result, error) {
 	if req.Pipeline != "" {
 		stageName := req.Stage
 		if stageName == "" {
-			stageName = s.cfg.Pipelines[req.Pipeline][0].Stage
+			stageName = cfg.Pipelines[req.Pipeline][0].Stage
 		}
 		if err := t.SetField("stage", stageName); err != nil {
 			return Result{}, fmt.Errorf("setting stage: %w", err)

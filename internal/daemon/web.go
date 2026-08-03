@@ -32,16 +32,17 @@ func (d *Daemon) ListTickets() []web.TicketInfo {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
+	cfg := d.config()
 	tickets := make([]web.TicketInfo, 0, len(d.tickets))
 	for _, ts := range d.tickets {
 		// Only tickets whose status maps to a board column appear in the list.
 		// This hides archived, plus foreign statuses (closed, tombstone, ...)
 		// that have no column. All of them stay on disk and remain reachable
 		// by ID via GetTicket.
-		if !d.cfg.IsBoardStatus(string(ts.ticket.Status)) {
+		if !cfg.IsBoardStatus(string(ts.ticket.Status)) {
 			continue
 		}
-		tickets = append(tickets, d.buildTicketInfo(ts, false))
+		tickets = append(tickets, d.buildTicketInfo(cfg, ts, false))
 	}
 	return tickets
 }
@@ -55,27 +56,28 @@ func (d *Daemon) GetTicket(id string) (web.TicketInfo, error) {
 	if !ok {
 		return web.TicketInfo{}, web.ErrTicketNotFound
 	}
-	return d.buildTicketInfo(ts, true), nil
+	return d.buildTicketInfo(d.config(), ts, true), nil
 }
 
 // CreateTicket creates a new ticket file and registers it in the daemon.
 func (d *Daemon) CreateTicket(req web.CreateTicketRequest) (web.TicketInfo, error) {
-	id, err := cli.GenerateID(d.cfg.TicketsDir, req.Path)
+	cfg := d.config()
+	id, err := cli.GenerateID(cfg.TicketsDir, req.Path)
 	if err != nil {
 		return web.TicketInfo{}, fmt.Errorf("generating ticket id: %w", err)
 	}
 
-	filePath := filepath.Join(config.ExpandTilde(d.cfg.TicketsDir), id+".md")
+	filePath := filepath.Join(config.ExpandTilde(cfg.TicketsDir), id+".md")
 
 	if req.Agent != "" {
-		if _, ok := d.cfg.Agents[req.Agent]; !ok {
+		if _, ok := cfg.Agents[req.Agent]; !ok {
 			return web.TicketInfo{}, fmt.Errorf("%w %q", web.ErrUnknownAgent, req.Agent)
 		}
 	}
 
 	d.recordSelfWrite(filePath)
 
-	_, err = cli.New(d.cfg, cli.NewOpts{
+	_, err = cli.New(cfg, cli.NewOpts{
 		ID:       id,
 		Path:     req.Path,
 		Pipeline: req.Pipeline,
@@ -101,7 +103,7 @@ func (d *Daemon) CreateTicket(req web.CreateTicketRequest) (web.TicketInfo, erro
 	if t.Status == "todo" {
 		d.enqueue(t)
 	}
-	info := d.buildTicketInfo(ts, false)
+	info := d.buildTicketInfo(cfg, ts, false)
 	d.broadcastTicketUpdate(id)
 	d.mu.Unlock()
 
@@ -110,6 +112,7 @@ func (d *Daemon) CreateTicket(req web.CreateTicketRequest) (web.TicketInfo, erro
 
 // UploadTicket imports a ticket from raw .md file content.
 func (d *Daemon) UploadTicket(content []byte) (web.TicketInfo, error) {
+	cfg := d.config()
 	t, err := ticket.ParseBytes(content)
 	if err != nil {
 		return web.TicketInfo{}, fmt.Errorf("invalid ticket file: %w", err)
@@ -127,7 +130,7 @@ func (d *Daemon) UploadTicket(content []byte) (web.TicketInfo, error) {
 	if prefix == "" {
 		prefix = "upload"
 	}
-	id, err := cli.GenerateID(d.cfg.TicketsDir, prefix)
+	id, err := cli.GenerateID(cfg.TicketsDir, prefix)
 	if err != nil {
 		return web.TicketInfo{}, fmt.Errorf("generating ticket id: %w", err)
 	}
@@ -148,7 +151,7 @@ func (d *Daemon) UploadTicket(content []byte) (web.TicketInfo, error) {
 		}
 	}
 
-	filePath := filepath.Join(config.ExpandTilde(d.cfg.TicketsDir), t.ID+".md")
+	filePath := filepath.Join(config.ExpandTilde(cfg.TicketsDir), t.ID+".md")
 	if err := d.writeTicket(t, filePath); err != nil {
 		return web.TicketInfo{}, fmt.Errorf("writing ticket file: %w", err)
 	}
@@ -156,7 +159,7 @@ func (d *Daemon) UploadTicket(content []byte) (web.TicketInfo, error) {
 	d.mu.Lock()
 	ts := newTicketState(t, filePath)
 	d.tickets[t.ID] = ts
-	info := d.buildTicketInfo(ts, false)
+	info := d.buildTicketInfo(cfg, ts, false)
 	d.broadcastTicketUpdate(t.ID)
 	d.mu.Unlock()
 
@@ -165,10 +168,11 @@ func (d *Daemon) UploadTicket(content []byte) (web.TicketInfo, error) {
 
 // GetConfig returns available pipelines and agents from the daemon config.
 func (d *Daemon) GetConfig() web.ConfigInfo {
-	pipelines := slices.Sorted(maps.Keys(d.cfg.Pipelines))
+	cfg := d.config()
+	pipelines := slices.Sorted(maps.Keys(cfg.Pipelines))
 	infos := make([]web.PipelineInfo, len(pipelines))
 	for i, name := range pipelines {
-		steps := d.cfg.Pipelines[name]
+		steps := cfg.Pipelines[name]
 		stageNames := make([]string, len(steps))
 		for j, s := range steps {
 			stageNames[j] = s.Stage
@@ -179,14 +183,14 @@ func (d *Daemon) GetConfig() web.ConfigInfo {
 		}
 		infos[i] = web.PipelineInfo{Name: name, Stages: stageNames, DefaultAgent: defaultAgent}
 	}
-	agents := slices.Sorted(maps.Keys(d.cfg.Agents))
+	agents := slices.Sorted(maps.Keys(cfg.Agents))
 	return web.ConfigInfo{
 		Pipelines:      pipelines,
 		PipelineInfos:  infos,
 		Agents:         agents,
-		DefaultAgent:   d.cfg.DefaultAgent,
-		BranchPrefix:   d.cfg.BranchPrefix,
-		CustomStatuses: d.cfg.Statuses,
+		DefaultAgent:   cfg.DefaultAgent,
+		BranchPrefix:   cfg.BranchPrefix,
+		CustomStatuses: cfg.Statuses,
 	}
 }
 
@@ -228,7 +232,7 @@ func (d *Daemon) DeleteTicket(id string) error {
 }
 
 func (d *Daemon) guardDeletePath(filePath string) error {
-	ticketsDir, err := filepath.Abs(config.ExpandTilde(d.cfg.TicketsDir))
+	ticketsDir, err := filepath.Abs(config.ExpandTilde(d.config().TicketsDir))
 	if err != nil {
 		return fmt.Errorf("resolve tickets dir: %w", err)
 	}
@@ -327,7 +331,7 @@ func (d *Daemon) SetStage(id string, stage string) error {
 	pipelineName := ts.ticket.Pipeline
 	filePath := ts.filePath
 
-	pipelineCfg, ok := d.cfg.Pipelines[pipelineName]
+	pipelineCfg, ok := d.config().Pipelines[pipelineName]
 	if !ok {
 		d.mu.Unlock()
 		return web.ErrInvalidState
@@ -384,7 +388,7 @@ func (d *Daemon) MoveTicket(id string, newStatus string) error {
 		case "open", "done", "cancelled", "human_review":
 			// valid
 		default:
-			if !d.cfg.IsCustomStatus(newStatus) {
+			if !d.config().IsCustomStatus(newStatus) {
 				return web.ErrInvalidState
 			}
 		}
@@ -451,7 +455,7 @@ func (d *Daemon) UpdateTicket(id string, req web.UpdateTicketRequest) error {
 	case ticket.StatusInProgress, ticket.StatusDone, ticket.StatusCancelled, ticket.StatusArchived:
 		return web.ErrInvalidState
 	default:
-		if !d.cfg.IsCustomStatus(string(status)) {
+		if !d.config().IsCustomStatus(string(status)) {
 			return web.ErrInvalidState
 		}
 	}
@@ -461,9 +465,10 @@ func (d *Daemon) UpdateTicket(id string, req web.UpdateTicketRequest) error {
 		return err
 	}
 
+	cfg := d.config()
 	if req.Pipeline != nil {
 		if *req.Pipeline != "" {
-			if _, ok := d.cfg.Pipelines[*req.Pipeline]; !ok {
+			if _, ok := cfg.Pipelines[*req.Pipeline]; !ok {
 				return fmt.Errorf("unknown pipeline %q", *req.Pipeline)
 			}
 		}
@@ -478,7 +483,7 @@ func (d *Daemon) UpdateTicket(id string, req web.UpdateTicketRequest) error {
 	}
 	if req.Agent != nil {
 		if *req.Agent != "" {
-			if _, ok := d.cfg.Agents[*req.Agent]; !ok {
+			if _, ok := cfg.Agents[*req.Agent]; !ok {
 				return fmt.Errorf("%w %q", web.ErrUnknownAgent, *req.Agent)
 			}
 		}
@@ -516,8 +521,9 @@ func (d *Daemon) GetLogs(id string, stage string) (string, error) {
 		return "", web.ErrTicketNotFound
 	}
 
+	cfg := d.config()
 	var buf bytes.Buffer
-	if err := cli.Logs(d.cfg.TicketsDir, d.cfg.LogsDir, id, stage, &buf); err != nil {
+	if err := cli.Logs(cfg.TicketsDir, cfg.LogsDir, id, stage, &buf); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return "", web.ErrLogNotFound
 		}
@@ -538,9 +544,11 @@ func (d *Daemon) GetRawConfig() (string, error) {
 	return string(data), nil
 }
 
-// PutRawConfig validates content and writes it to the daemon's config file
-// atomically. It does not touch the running daemon's in-memory config: changes
-// take effect only on the next restart.
+// PutRawConfig validates content, writes it to the daemon's config file
+// atomically, and reloads the running config before returning. Settings outside
+// the live-reload set keep their startup values until the daemon restarts; see
+// pinRestartOnly. If the write succeeds but the reload fails, the file stays on
+// disk and the running config is unchanged.
 func (d *Daemon) PutRawConfig(content string) error {
 	if d.configPath == "" {
 		return web.ErrConfigPathNotSet
@@ -548,7 +556,17 @@ func (d *Daemon) PutRawConfig(content string) error {
 	if _, err := config.LoadReader(strings.NewReader(content)); err != nil {
 		return fmt.Errorf("%w: %s", web.ErrInvalidConfig, err)
 	}
-	return atomicWriteFile(d.configPath, []byte(content), 0o644)
+	if err := atomicWriteFile(d.configPath, []byte(content), 0o644); err != nil {
+		return err
+	}
+	// The write also fires the config watcher, so a second, idempotent reload
+	// usually follows. Reloading here as well keeps the behaviour the same
+	// whether or not the config path is a symlink, which the watcher's coverage
+	// depends on.
+	if err := d.reloadConfig(); err != nil {
+		return fmt.Errorf("config saved but reload failed: %w", err)
+	}
+	return nil
 }
 
 // atomicWriteFile writes data to a temp file in the same directory and renames
@@ -596,7 +614,7 @@ func (d *Daemon) broadcastTicketUpdate(id string) {
 	}
 	d.broker.Broadcast(web.TicketEvent{
 		Type:   "ticket_updated",
-		Ticket: d.buildTicketInfo(ts, true),
+		Ticket: d.buildTicketInfo(d.config(), ts, true),
 	})
 }
 
@@ -615,7 +633,7 @@ func (d *Daemon) broadcastTicketDeleted(ts *ticketState) {
 	}
 	d.broker.Broadcast(web.TicketEvent{
 		Type:   "ticket_deleted",
-		Ticket: d.buildTicketInfo(ts, false),
+		Ticket: d.buildTicketInfo(d.config(), ts, false),
 	})
 }
 
@@ -633,14 +651,16 @@ func (d *Daemon) broadcastTerminalReady(id string) {
 	}
 	d.broker.Broadcast(web.TicketEvent{
 		Type:   "terminal_ready",
-		Ticket: d.buildTicketInfo(ts, false),
+		Ticket: d.buildTicketInfo(d.config(), ts, false),
 	})
 }
 
-// buildTicketInfo converts internal ticket state to a web.TicketInfo.
+// buildTicketInfo converts internal ticket state to a web.TicketInfo. The
+// caller passes the config snapshot so that every ticket in one response is
+// rendered from the same config version, whatever a concurrent reload does.
 // Must be called with d.mu held.
-func (d *Daemon) buildTicketInfo(ts *ticketState, includeBody bool) web.TicketInfo {
-	v := app.BuildView(d.cfg, ts.ticket, includeBody)
+func (d *Daemon) buildTicketInfo(cfg *config.Config, ts *ticketState, includeBody bool) web.TicketInfo {
+	v := app.BuildView(cfg, ts.ticket, includeBody)
 	info := web.TicketInfoFromView(v)
 	mt := ts.modTime
 	if mt.IsZero() && ts.filePath != "" {

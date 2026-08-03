@@ -1357,8 +1357,12 @@ func TestSimpleTicketExitForeignClaimGuard(t *testing.T) {
 
 	// Wait until the runner has claimed the ticket for other-host (the agent
 	// started and ran), then wait for the exit handler to finish.
+	// Parse without failing the test: the runner writes the ticket in place
+	// while this polls it, so a read can catch a truncated file. That is a torn
+	// read, not a failed claim, and the next tick sees the whole file.
 	require.Eventually(t, func() bool {
-		return h.readTask("tst-sg.md").ClaimedBy == "other-host"
+		tk, err := ticket.ParseFile(ticketPath)
+		return err == nil && tk.ClaimedBy == "other-host"
 	}, 5*time.Second, 20*time.Millisecond, "runner should claim for other-host")
 	waitForAgentsDone(t, d, 5*time.Second)
 

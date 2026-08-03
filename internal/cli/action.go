@@ -22,7 +22,7 @@ func Pause(tasksDir, taskID string) error {
 // Retry resets a ticket to todo with attempt=0 for re-processing.
 func Retry(tasksDir, taskID string) error {
 	repo := store.NewDiskRepo(tasksDir)
-	svc := app.New(nil, repo, app.NoopRuntime{})
+	svc := app.New(app.Static(nil), repo, app.NoopRuntime{})
 	_, err := svc.Retry(taskID)
 	return err
 }
@@ -96,7 +96,7 @@ func Run(cfg *config.Config, taskID string) error {
 // if it is on the final stage.
 func Skip(cfg *config.Config, taskID string) error {
 	repo := store.NewDiskRepo(cfg.TicketsDir)
-	svc := app.New(cfg, repo, app.NoopRuntime{})
+	svc := app.New(app.Static(cfg), repo, app.NoopRuntime{})
 	_, err := svc.Skip(taskID)
 	return err
 }

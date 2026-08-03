@@ -102,7 +102,7 @@ func TestSetStatus_Done_SetsCompletedAt(t *testing.T) {
 	repo := newMemRepo()
 	repo.add("tst-001", "---\nid: tst-001\nstatus: todo\nkontora: true\npipeline: default\n---\n# Test\n")
 	rt := &spyRuntime{}
-	svc := New(testCfg(), repo, rt)
+	svc := New(Static(testCfg()), repo, rt)
 
 	result, err := svc.SetStatus("tst-001", ticket.StatusDone)
 	require.NoError(t, err)
@@ -126,7 +126,7 @@ func TestSetStatus_CancelsRunningAgent(t *testing.T) {
 			repo := newMemRepo()
 			repo.add("tst-001", "---\nid: tst-001\nstatus: in_progress\nkontora: true\npipeline: default\nstage: code\n---\n# Test\n")
 			rt := &spyRuntime{}
-			svc := New(testCfg(), repo, rt)
+			svc := New(Static(testCfg()), repo, rt)
 
 			_, err := svc.SetStatus("tst-001", tc.status)
 			require.NoError(t, err)
@@ -138,7 +138,7 @@ func TestSetStatus_CancelsRunningAgent(t *testing.T) {
 func TestSetStatus_AlreadySame(t *testing.T) {
 	repo := newMemRepo()
 	repo.add("tst-001", "---\nid: tst-001\nstatus: todo\nkontora: true\n---\n# Test\n")
-	svc := New(testCfg(), repo, &spyRuntime{})
+	svc := New(Static(testCfg()), repo, &spyRuntime{})
 
 	_, err := svc.SetStatus("tst-001", ticket.StatusTodo)
 	require.ErrorIs(t, err, ErrInvalidState)
@@ -148,7 +148,7 @@ func TestSetStatus_AlreadySame(t *testing.T) {
 func TestSetStatus_InvalidStatus(t *testing.T) {
 	repo := newMemRepo()
 	repo.add("tst-001", "---\nid: tst-001\nstatus: todo\nkontora: true\n---\n# Test\n")
-	svc := New(testCfg(), repo, &spyRuntime{})
+	svc := New(Static(testCfg()), repo, &spyRuntime{})
 
 	_, err := svc.SetStatus("tst-001", ticket.Status("bogus"))
 	require.ErrorContains(t, err, "invalid status")
@@ -158,7 +158,7 @@ func TestRetry_ResetsAttempt(t *testing.T) {
 	repo := newMemRepo()
 	repo.add("tst-001", "---\nid: tst-001\nstatus: paused\nkontora: true\nattempt: 3\npipeline: default\nstage: code\n---\n# Test\n")
 	rt := &spyRuntime{}
-	svc := New(testCfg(), repo, rt)
+	svc := New(Static(testCfg()), repo, rt)
 
 	result, err := svc.Retry("tst-001")
 	require.NoError(t, err)
@@ -171,7 +171,7 @@ func TestRetry_ClearsLastError(t *testing.T) {
 	repo := newMemRepo()
 	repo.add("tst-001", "---\nid: tst-001\nstatus: paused\nkontora: true\nattempt: 1\npipeline: default\nstage: code\nlast_error: \"agent exited with code 1\"\n---\n# Test\n")
 	rt := &spyRuntime{}
-	svc := New(testCfg(), repo, rt)
+	svc := New(Static(testCfg()), repo, rt)
 
 	_, err := svc.Retry("tst-001")
 	require.NoError(t, err)
@@ -181,7 +181,7 @@ func TestRetry_ClearsLastError(t *testing.T) {
 func TestRetry_RejectsInProgress(t *testing.T) {
 	repo := newMemRepo()
 	repo.add("tst-001", "---\nid: tst-001\nstatus: in_progress\nkontora: true\n---\n# Test\n")
-	svc := New(testCfg(), repo, &spyRuntime{})
+	svc := New(Static(testCfg()), repo, &spyRuntime{})
 
 	_, err := svc.Retry("tst-001")
 	require.ErrorIs(t, err, ErrInvalidState)
@@ -190,7 +190,7 @@ func TestRetry_RejectsInProgress(t *testing.T) {
 func TestRetry_RejectsTodo(t *testing.T) {
 	repo := newMemRepo()
 	repo.add("tst-001", "---\nid: tst-001\nstatus: todo\nkontora: true\n---\n# Test\n")
-	svc := New(testCfg(), repo, &spyRuntime{})
+	svc := New(Static(testCfg()), repo, &spyRuntime{})
 
 	_, err := svc.Retry("tst-001")
 	require.ErrorIs(t, err, ErrInvalidState)
@@ -200,7 +200,7 @@ func TestRetry_RejectsNonKontora(t *testing.T) {
 	repo := newMemRepo()
 	repo.add("tst-001", "---\nid: tst-001\nstatus: paused\n---\n# Test\n")
 	rt := &spyRuntime{}
-	svc := New(testCfg(), repo, rt)
+	svc := New(Static(testCfg()), repo, rt)
 
 	_, err := svc.Retry("tst-001")
 	require.ErrorIs(t, err, ErrInvalidState)
@@ -212,7 +212,7 @@ func TestRetry_RejectsArchived(t *testing.T) {
 	repo := newMemRepo()
 	repo.add("tst-001", "---\nid: tst-001\nstatus: archived\nkontora: true\n---\n# Test\n")
 	rt := &spyRuntime{}
-	svc := New(testCfg(), repo, rt)
+	svc := New(Static(testCfg()), repo, rt)
 
 	_, err := svc.Retry("tst-001")
 	require.ErrorIs(t, err, ErrInvalidState)
@@ -224,7 +224,7 @@ func TestSkip_AdvancesToNextStage(t *testing.T) {
 	repo := newMemRepo()
 	repo.add("tst-001", "---\nid: tst-001\nstatus: in_progress\nkontora: true\npipeline: default\nstage: code\n---\n# Test\n")
 	rt := &spyRuntime{}
-	svc := New(testCfg(), repo, rt)
+	svc := New(Static(testCfg()), repo, rt)
 
 	result, err := svc.Skip("tst-001")
 	require.NoError(t, err)
@@ -238,7 +238,7 @@ func TestSkip_LastStage_MarksDone(t *testing.T) {
 	repo := newMemRepo()
 	repo.add("tst-001", "---\nid: tst-001\nstatus: in_progress\nkontora: true\npipeline: default\nstage: review\n---\n# Test\n")
 	rt := &spyRuntime{}
-	svc := New(testCfg(), repo, rt)
+	svc := New(Static(testCfg()), repo, rt)
 
 	result, err := svc.Skip("tst-001")
 	require.NoError(t, err)
@@ -250,7 +250,7 @@ func TestSkip_LastStage_MarksDone(t *testing.T) {
 func TestSkip_UnknownPipeline(t *testing.T) {
 	repo := newMemRepo()
 	repo.add("tst-001", "---\nid: tst-001\nstatus: in_progress\nkontora: true\npipeline: nonexistent\nstage: code\n---\n# Test\n")
-	svc := New(testCfg(), repo, &spyRuntime{})
+	svc := New(Static(testCfg()), repo, &spyRuntime{})
 
 	_, err := svc.Skip("tst-001")
 	require.ErrorContains(t, err, "unknown pipeline")
@@ -260,7 +260,7 @@ func TestSkip_RejectsNonKontora(t *testing.T) {
 	repo := newMemRepo()
 	repo.add("tst-001", "---\nid: tst-001\nstatus: paused\npipeline: default\nstage: code\n---\n# Test\n")
 	rt := &spyRuntime{}
-	svc := New(testCfg(), repo, rt)
+	svc := New(Static(testCfg()), repo, rt)
 
 	_, err := svc.Skip("tst-001")
 	require.ErrorIs(t, err, ErrInvalidState)
@@ -272,7 +272,7 @@ func TestSkip_RejectsArchived(t *testing.T) {
 	repo := newMemRepo()
 	repo.add("tst-001", "---\nid: tst-001\nstatus: archived\nkontora: true\npipeline: default\nstage: code\n---\n# Test\n")
 	rt := &spyRuntime{}
-	svc := New(testCfg(), repo, rt)
+	svc := New(Static(testCfg()), repo, rt)
 
 	_, err := svc.Skip("tst-001")
 	require.ErrorIs(t, err, ErrInvalidState)
@@ -284,7 +284,7 @@ func TestInit_SetsAllFields(t *testing.T) {
 	repo := newMemRepo()
 	repo.add("tst-001", "---\nid: tst-001\nstatus: open\npath: ~/projects/test\n---\n# Test\n")
 	rt := &spyRuntime{}
-	svc := New(testCfg(), repo, rt)
+	svc := New(Static(testCfg()), repo, rt)
 
 	result, err := svc.Init("tst-001", InitRequest{
 		Pipeline: "default",
@@ -304,7 +304,7 @@ func TestInit_SetsAllFields(t *testing.T) {
 func TestInit_AlreadyInitialized(t *testing.T) {
 	repo := newMemRepo()
 	repo.add("tst-001", "---\nid: tst-001\nstatus: todo\nkontora: true\npipeline: default\n---\n# Test\n")
-	svc := New(testCfg(), repo, &spyRuntime{})
+	svc := New(Static(testCfg()), repo, &spyRuntime{})
 
 	_, err := svc.Init("tst-001", InitRequest{Pipeline: "default"})
 	require.ErrorIs(t, err, ErrInvalidState)
@@ -313,7 +313,7 @@ func TestInit_AlreadyInitialized(t *testing.T) {
 func TestInit_UnknownAgent(t *testing.T) {
 	repo := newMemRepo()
 	repo.add("tst-001", "---\nid: tst-001\nstatus: open\npath: ~/projects/test\n---\n# Test\n")
-	svc := New(testCfg(), repo, &spyRuntime{})
+	svc := New(Static(testCfg()), repo, &spyRuntime{})
 
 	_, err := svc.Init("tst-001", InitRequest{
 		Pipeline: "default",
@@ -325,7 +325,7 @@ func TestInit_UnknownAgent(t *testing.T) {
 func TestInit_CustomStage(t *testing.T) {
 	repo := newMemRepo()
 	repo.add("tst-001", "---\nid: tst-001\nstatus: open\npath: ~/projects/test\n---\n# Test\n")
-	svc := New(testCfg(), repo, &spyRuntime{})
+	svc := New(Static(testCfg()), repo, &spyRuntime{})
 
 	_, err := svc.Init("tst-001", InitRequest{
 		Pipeline: "default",
@@ -338,7 +338,7 @@ func TestInit_CustomStage(t *testing.T) {
 func TestInit_InvalidStatus(t *testing.T) {
 	repo := newMemRepo()
 	repo.add("tst-001", "---\nid: tst-001\nstatus: open\npath: ~/projects/test\n---\n# Test\n")
-	svc := New(testCfg(), repo, &spyRuntime{})
+	svc := New(Static(testCfg()), repo, &spyRuntime{})
 
 	_, err := svc.Init("tst-001", InitRequest{
 		Pipeline: "default",
@@ -350,7 +350,7 @@ func TestInit_InvalidStatus(t *testing.T) {
 func TestGet_IncludesBody(t *testing.T) {
 	repo := newMemRepo()
 	repo.add("tst-001", "---\nid: tst-001\nstatus: todo\nkontora: true\npipeline: default\nstage: code\n---\n# Hello world\n")
-	svc := New(testCfg(), repo, &spyRuntime{})
+	svc := New(Static(testCfg()), repo, &spyRuntime{})
 
 	v, err := svc.Get("tst-001", GetOptions{IncludeBody: true})
 	require.NoError(t, err)
@@ -361,7 +361,7 @@ func TestGet_IncludesBody(t *testing.T) {
 func TestGet_ExcludesBody(t *testing.T) {
 	repo := newMemRepo()
 	repo.add("tst-001", "---\nid: tst-001\nstatus: todo\nkontora: true\n---\n# Hello world\n")
-	svc := New(testCfg(), repo, &spyRuntime{})
+	svc := New(Static(testCfg()), repo, &spyRuntime{})
 
 	v, err := svc.Get("tst-001", GetOptions{})
 	require.NoError(t, err)
@@ -372,7 +372,7 @@ func TestGet_ExcludesBody(t *testing.T) {
 func TestGet_PrefixResolve(t *testing.T) {
 	repo := newMemRepo()
 	repo.add("tst-001", "---\nid: tst-001\nstatus: todo\nkontora: true\n---\n# Test\n")
-	svc := New(testCfg(), repo, &spyRuntime{})
+	svc := New(Static(testCfg()), repo, &spyRuntime{})
 
 	v, err := svc.Get("tst", GetOptions{})
 	require.NoError(t, err)
@@ -384,7 +384,7 @@ func TestList_IncludesKontoraAndNonKontoraTickets(t *testing.T) {
 	repo.add("tst-001", "---\nid: tst-001\nstatus: todo\nkontora: true\n---\n# Kontora ticket\n")
 	repo.add("tst-002", "---\nid: tst-002\nstatus: todo\n---\n# Not kontora\n")
 	repo.add("notes", "---\ntitle: Just some notes\n---\n# Notes\n")
-	svc := New(testCfg(), repo, &spyRuntime{})
+	svc := New(Static(testCfg()), repo, &spyRuntime{})
 
 	views, err := svc.List(ListOptions{})
 	require.NoError(t, err)
@@ -398,7 +398,7 @@ func TestList_IncludesKontoraAndNonKontoraTickets(t *testing.T) {
 func TestList_OpenNonKontoraIncluded(t *testing.T) {
 	repo := newMemRepo()
 	repo.add("tst-001", "---\nid: tst-001\nstatus: open\n---\n# Open non-kontora\n")
-	svc := New(testCfg(), repo, &spyRuntime{})
+	svc := New(Static(testCfg()), repo, &spyRuntime{})
 
 	views, err := svc.List(ListOptions{})
 	require.NoError(t, err)
@@ -494,7 +494,7 @@ func TestRun_FromOpen(t *testing.T) {
 	repo := newMemRepo()
 	repo.add("tst-001", "---\nid: tst-001\nstatus: open\nkontora: true\npipeline: default\nstage: code\n---\n# Test\n")
 	rt := &spyRuntime{}
-	svc := New(testCfg(), repo, rt)
+	svc := New(Static(testCfg()), repo, rt)
 
 	result, err := svc.Run("tst-001")
 	require.NoError(t, err)
@@ -507,7 +507,7 @@ func TestRun_FromTodo(t *testing.T) {
 	repo := newMemRepo()
 	repo.add("tst-001", "---\nid: tst-001\nstatus: todo\nkontora: true\npipeline: default\nstage: code\n---\n# Test\n")
 	rt := &spyRuntime{}
-	svc := New(testCfg(), repo, rt)
+	svc := New(Static(testCfg()), repo, rt)
 
 	result, err := svc.Run("tst-001")
 	require.NoError(t, err)
@@ -518,7 +518,7 @@ func TestRun_FromTodo(t *testing.T) {
 func TestRun_RejectsInProgress(t *testing.T) {
 	repo := newMemRepo()
 	repo.add("tst-001", "---\nid: tst-001\nstatus: in_progress\nkontora: true\n---\n# Test\n")
-	svc := New(testCfg(), repo, &spyRuntime{})
+	svc := New(Static(testCfg()), repo, &spyRuntime{})
 
 	_, err := svc.Run("tst-001")
 	require.ErrorIs(t, err, ErrInvalidState)
@@ -527,7 +527,7 @@ func TestRun_RejectsInProgress(t *testing.T) {
 func TestRun_RejectsNonKontora(t *testing.T) {
 	repo := newMemRepo()
 	repo.add("tst-001", "---\nid: tst-001\nstatus: todo\n---\n# Test\n")
-	svc := New(testCfg(), repo, &spyRuntime{})
+	svc := New(Static(testCfg()), repo, &spyRuntime{})
 
 	_, err := svc.Run("tst-001")
 	require.ErrorIs(t, err, ErrInvalidState)
@@ -541,4 +541,42 @@ func TestAgentForStage(t *testing.T) {
 	assert.Equal(t, "", AgentForStage(cfg, "default", "nonexistent"))
 	assert.Equal(t, "", AgentForStage(cfg, "nonexistent", "code"))
 	assert.Equal(t, "", AgentForStage(cfg, "default", ""))
+}
+
+// TestService_LiveConfig verifies one Service instance follows the config its
+// ConfigFunc returns, so a daemon reload reaches the service without the
+// service being rebuilt.
+func TestService_LiveConfig(t *testing.T) {
+	cfg := testCfg()
+	repo := newMemRepo()
+	repo.add("tst-001", "---\nid: tst-001\nstatus: todo\nkontora: true\npipeline: default\n---\n# Test\n")
+	svc := New(func() *config.Config { return cfg }, repo, &spyRuntime{})
+
+	_, err := svc.SetStatus("tst-001", ticket.Status("waiting_external"))
+	require.Error(t, err, "an unknown custom status must be rejected before the reload")
+
+	// Agents and pipelines.
+	repo.add("tst-002", "---\nid: tst-002\nstatus: open\npath: ~/p\n---\n# Test\n")
+	_, err = svc.Init("tst-002", InitRequest{Pipeline: "verify-only", Path: "~/p"})
+	require.ErrorIs(t, err, ErrInvalidState, "an unknown pipeline must be rejected before the reload")
+	_, err = svc.Init("tst-002", InitRequest{Pipeline: "default", Path: "~/p", Agent: "codex"})
+	require.ErrorIs(t, err, ErrUnknownAgent, "an unknown agent must be rejected before the reload")
+
+	// Swap the config the same instance reads.
+	next := testCfg()
+	next.Statuses = []string{"waiting_external"}
+	next.Agents["codex"] = config.Agent{Binary: "codex"}
+	next.Stages["verify"] = config.Stage{Prompt: "verify"}
+	next.Pipelines["verify-only"] = config.Pipeline{
+		{Stage: "verify", Agent: "codex", OnSuccess: "done", OnFailure: "pause"},
+	}
+	cfg = next
+
+	_, err = svc.SetStatus("tst-001", ticket.Status("waiting_external"))
+	require.NoError(t, err, "the reloaded custom status must be accepted")
+
+	_, err = svc.Init("tst-002", InitRequest{Pipeline: "verify-only", Path: "~/p", Agent: "codex"})
+	require.NoError(t, err, "the reloaded pipeline and agent must be accepted")
+	assert.Equal(t, "verify", repo.tickets["tst-002"].Ticket.Stage,
+		"init must use the reloaded pipeline's first stage")
 }

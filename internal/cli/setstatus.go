@@ -9,7 +9,7 @@ import (
 
 func SetStatus(tasksDir string, taskID string, status string) error {
 	repo := store.NewDiskRepo(tasksDir)
-	svc := app.New(&config.Config{}, repo, app.NoopRuntime{})
+	svc := app.New(app.Static(&config.Config{}), repo, app.NoopRuntime{})
 	_, err := svc.SetStatus(taskID, ticket.Status(status))
 	return err
 }

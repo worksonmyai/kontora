@@ -15,6 +15,127 @@ const appPath = path.join(dirname, "../static/app.js");
 // before asserting.
 const bt = (state, key) => [...state.boardTickets(key)];
 
+// Minimal DOM double for the board: enough for the keyed reconcile in
+// renderColumn / _patchColumn, and it records every structural operation so a
+// test can assert that an update touched only the cards that changed.
+// Card nodes carry a uid so a test can tell "moved" from "rebuilt".
+function fakeBoard(colKeys) {
+  const ops = [];
+  const els = {};
+  let seq = 0;
+
+  function detach(n) {
+    if (!n.parent) return;
+    const i = n.parent.children.indexOf(n);
+    if (i >= 0) n.parent.children.splice(i, 1);
+    n.parent = null;
+  }
+
+  function node(id) {
+    return {
+      dataset: { ticketId: id },
+      uid: ++seq,
+      parent: null,
+      remove() {
+        ops.push(`remove:${id}`);
+        detach(this);
+      },
+    };
+  }
+
+  function element(key) {
+    const el = {
+      children: [],
+      _html: "",
+      get firstChild() {
+        return this.children[0] || null;
+      },
+      get innerHTML() {
+        return this._html;
+      },
+      // The real innerHTML parses the card markup into nodes; the stub picks the
+      // card roots out by their data-ticket-id so both render paths agree.
+      set innerHTML(v) {
+        ops.push(`innerHTML:${key}`);
+        this._html = v;
+        this.children.forEach((c) => { c.parent = null; });
+        this.children = [...v.matchAll(/data-ticket-id="([^"]+)"/g)].map((m) => {
+          const n = node(m[1]);
+          n.parent = el;
+          return n;
+        });
+      },
+      insertBefore(n, ref) {
+        ops.push(`insert:${n.dataset.ticketId}`);
+        detach(n);
+        const at = ref ? this.children.indexOf(ref) : -1;
+        this.children.splice(at < 0 ? this.children.length : at, 0, n);
+        n.parent = el;
+        return n;
+      },
+      replaceChild(fresh, old) {
+        ops.push(`replace:${fresh.dataset.ticketId}`);
+        detach(fresh);
+        const at = this.children.indexOf(old);
+        this.children[at] = fresh;
+        fresh.parent = el;
+        old.parent = null;
+        return old;
+      },
+    };
+    return el;
+  }
+
+  function boardCols() {
+    return { listeners: [], addEventListener(type) { this.listeners.push(type); } };
+  }
+
+  function build() {
+    colKeys.forEach((k) => { els[`col-${k}`] = element(k); });
+    els["board-cols"] = boardCols();
+  }
+  build();
+
+  const documentEvents = [];
+
+  return {
+    ops,
+    els,
+    node,
+    documentEvents,
+    // Alpine rebuilds the whole layer when the breakpoint flips: fresh, empty
+    // column elements and a fresh delegation root.
+    remount() { build(); },
+    document: {
+      getElementById(id) { return els[id] || null; },
+      querySelector() { return null; },
+      querySelectorAll() { return []; },
+      addEventListener(type) { documentEvents.push(type); },
+      documentElement: { style: {} },
+    },
+    // Card ids currently in a column, in DOM order.
+    ids(key) { return els[`col-${key}`].children.map((c) => c.dataset.ticketId); },
+    uids(key) { return els[`col-${key}`].children.map((c) => c.uid); },
+  };
+}
+
+// Board wired to the fake DOM, rendered once. Returns the harness plus the list
+// of ticket ids each later render rebuilt through _cardNode.
+function renderedBoard(tickets, overrides = {}) {
+  const board = fakeBoard(["open", "in_progress", "human_review", "done", "cancelled"]);
+  const state = loadKontoraState({ document: board.document, ...overrides });
+  const built = [];
+  state.tickets = tickets;
+  state._boardInit = true;
+  state.recomputeBoard();
+  state._cardNode = (t) => {
+    built.push(t.id);
+    return board.node(t.id);
+  };
+  board.ops.length = 0;
+  return { board, state, built };
+}
+
 function deferred() {
   let resolve;
   let reject;
@@ -351,14 +472,64 @@ test("applyTicketUpdate keeps non-archived updates on the board", () => {
   assert.equal(state.tickets[0].status, "paused");
 });
 
-test("agent running count ignores non-Kontora in-progress tickets", () => {
+test("agent running counts come from the recompute pass and skip non-running tickets", () => {
   const state = loadKontoraState();
   state.tickets = [
-    { id: "ext-001", agent: "claude", status: "in_progress", kontora: false },
-    { id: "kon-001", agent: "claude", status: "in_progress", kontora: true },
+    { id: "kon-001", agent: "a1", status: "in_progress", kontora: true },
+    { id: "kon-002", agent: "a1", status: "in_progress", kontora: true },
+    { id: "ext-001", agent: "a1", status: "in_progress", kontora: false },
+    { id: "kon-003", agent: "a1", status: "done", kontora: true },
+    { id: "kon-004", status: "in_progress", kontora: true },
+    { id: "kon-005", agent: "a2", status: "in_progress", kontora: true },
   ];
 
-  assert.equal(state.agentRunningCount("claude"), 1);
+  state.recomputeBoard();
+
+  assert.equal(state.agentRunningCount("a1"), 2);
+  assert.equal(state.agentRunningCount("a2"), 1);
+  assert.equal(state.agentRunningCount("missing"), 0);
+  assert.equal(state.agentRunningCount(""), 0);
+  assert.equal(state.agentRunningCount(undefined), 0);
+});
+
+test("columns and agents named after Object.prototype members stay data", () => {
+  // Column keys come from config custom_statuses and agent names from ticket
+  // data, so both key maps have to carry no prototype.
+  assert.equal(loadKontoraState().agentRunningCount("constructor"), 0);
+
+  const board = fakeBoard(["open", "in_progress", "constructor", "human_review", "done", "cancelled"]);
+  const state = loadKontoraState({ document: board.document });
+  state.configCache = { custom_statuses: ["constructor"] };
+  state.tickets = [
+    { id: "kon-a", title: "A", status: "constructor", kontora: true, agent: "constructor", created_at: "2026-05-19T08:00:00Z" },
+    { id: "kon-b", title: "B", status: "in_progress", kontora: true, agent: "constructor", created_at: "2026-05-19T09:00:00Z" },
+  ];
+  state._boardInit = true;
+  state.recomputeBoard();
+
+  assert.deepEqual(board.ids("constructor"), ["kon-a"]);
+  assert.equal(state.agentRunningCount("constructor"), 1);
+
+  // The cached render state has to be readable back, not a function.
+  board.ops.length = 0;
+  state.recomputeBoard();
+  assert.deepEqual(board.ops, []);
+});
+
+test("selectTicket refreshes the agent counts after replacing a ticket", async () => {
+  const full = { id: "kon-001", title: "One", status: "in_progress", agent: "a2", kontora: true };
+  const state = loadKontoraState({
+    fetch: async () => ({ ok: true, json: async () => full }),
+  });
+  state.openTerminal = () => {};
+  state.tickets = [{ id: "kon-001", title: "One", status: "in_progress", agent: "a1", kontora: true }];
+  state.recomputeBoard();
+  assert.equal(state.agentRunningCount("a1"), 1);
+
+  await state.selectTicket(state.tickets[0]);
+
+  assert.equal(state.agentRunningCount("a1"), 0);
+  assert.equal(state.agentRunningCount("a2"), 1);
 });
 
 test("recomputeBoard caches sorted+filtered lists keyed by column", () => {
@@ -586,45 +757,126 @@ test("_cardHTML uses data-ago for non-running cards and omits is-selected when u
   assert.match(html, /◌/); // todo glyph in the in_progress column
 });
 
-test("_cardHTML encodes menu actions and the Initialize entry", () => {
+test("_cardHTML ships the menu button but no menu", () => {
   const state = loadKontoraState();
-
-  // Kontora todo: move actions carry endpoint + target status.
-  const todo = state._cardHTML(
+  const html = state._cardHTML(
     { id: "sta-4", title: "T", status: "todo", created_at: "2026-05-19T08:00:00Z", kontora: true },
     { key: "in_progress" },
   );
+
+  assert.match(html, /class="card-menu-btn/);
+  assert.match(html, /aria-label="More actions"/);
+  assert.match(html, /aria-expanded="false"/);
+  // The menu itself is built on demand by _toggleCardMenu.
+  assert.equal(html.includes("card-menu-item"), false);
+  assert.equal(/class="card-menu /.test(html), false);
+  // Text glyph instead of a three-circle SVG (4 fewer nodes per card).
+  assert.equal(html.includes("<svg"), false);
+});
+
+test("_cardMenuHTML encodes menu actions and the Initialize entry", () => {
+  const state = loadKontoraState();
+
+  // Kontora todo: move actions carry endpoint + target status.
+  const todo = state._cardMenuHTML({ id: "sta-4", title: "T", status: "todo", kontora: true });
+  assert.match(todo, /class="card-menu /);
   assert.match(todo, /data-act="move" data-status="open"/);
   assert.match(todo, /data-act="move" data-status="cancelled"/);
 
   // Open ticket: Queue maps to the run endpoint with no status.
-  const open = state._cardHTML(
-    { id: "sta-5", title: "O", status: "open", created_at: "2026-05-19T08:00:00Z", kontora: true },
-    { key: "open" },
-  );
-  assert.match(open, /data-act="run"/);
+  assert.match(state._cardMenuHTML({ id: "sta-5", title: "O", status: "open", kontora: true }), /data-act="run"/);
 
   // Non-kontora ticket: Initialize action is present.
+  assert.match(state._cardMenuHTML({ id: "sta-6", title: "Imported", status: "open", kontora: false, path: "/x/proj" }), /data-act="init"/);
+  // Kontora ticket: it is not.
+  assert.equal(state._cardMenuHTML({ id: "sta-5", title: "O", status: "open", kontora: true }).includes('data-act="init"'), false);
+
+  // Unknown (custom) status with no valid moves: fallback label.
+  assert.match(state._cardMenuHTML({ id: "sta-8", title: "C", status: "review", kontora: true }), /No actions available/);
+});
+
+test("_cardHTML keeps the not-a-kontora-ticket badge off open tickets", () => {
+  const state = loadKontoraState();
+
   const ext = state._cardHTML(
     { id: "sta-6", title: "Imported", status: "open", created_at: "2026-05-19T08:00:00Z", kontora: false, path: "/x/proj" },
     { key: "open" },
   );
-  assert.match(ext, /data-act="init"/);
-  assert.equal(ext.includes("not a kontora ticket"), false); // badge hidden while open
+  assert.equal(ext.includes("not a kontora ticket"), false);
 
-  // Non-kontora, non-open: the "not a kontora ticket" badge shows.
   const extTodo = state._cardHTML(
     { id: "sta-7", title: "Imported2", status: "todo", created_at: "2026-05-19T08:00:00Z", kontora: false, path: "/x/proj" },
     { key: "in_progress" },
   );
   assert.match(extTodo, /not a kontora ticket/);
+});
 
-  // Unknown (custom) status with no valid moves: fallback label.
-  const custom = state._cardHTML(
-    { id: "sta-8", title: "C", status: "review", created_at: "2026-05-19T08:00:00Z", kontora: true },
-    { key: "review" },
-  );
-  assert.match(custom, /No actions available/);
+test("card menus are built on open and removed on close", () => {
+  const menus = [];
+  const cards = {};
+  function fakeCard(id) {
+    const btnWrap = { children: [], appendChild(n) { this.children.push(n); n.parent = this; } };
+    const btn = { parentElement: btnWrap, attrs: {}, setAttribute(k, v) { this.attrs[k] = v; } };
+    return {
+      dataset: { ticketId: id },
+      classes: new Set(),
+      classList: {
+        add(c) { cards[id].classes.add(c); },
+        remove(c) { cards[id].classes.delete(c); },
+      },
+      querySelector(sel) { return sel === ".card-menu-btn" ? btn : null; },
+      btn,
+      btnWrap,
+    };
+  }
+  cards["kon-1"] = fakeCard("kon-1");
+  cards["kon-2"] = fakeCard("kon-2");
+
+  const state = loadKontoraState({
+    document: {
+      getElementById() { return null; },
+      querySelector() { return null; },
+      querySelectorAll(sel) {
+        if (sel.includes(".kt-card.menu-open")) return Object.values(cards).filter((c) => c.classes.has("menu-open"));
+        if (sel.includes(".card-menu")) return menus.filter((m) => m.attached);
+        return [];
+      },
+      documentElement: { style: {} },
+    },
+  });
+  state._nodeFromHTML = (html) => {
+    const menu = { html, attached: true, parent: null, remove() { this.attached = false; } };
+    menus.push(menu);
+    return menu;
+  };
+  state.tickets = [
+    { id: "kon-1", title: "One", status: "todo", kontora: true },
+    { id: "kon-2", title: "Two", status: "open", kontora: false },
+  ];
+
+  state._toggleCardMenu(cards["kon-1"]);
+  assert.equal(state._openMenuId, "kon-1");
+  assert.equal(menus.filter((m) => m.attached).length, 1);
+  assert.deepEqual(cards["kon-1"].btnWrap.children, [menus[0]]);
+  assert.match(menus[0].html, /data-act="move" data-status="open"/);
+  assert.equal(menus[0].html.includes('data-act="init"'), false);
+  assert.equal(cards["kon-1"].btn.attrs["aria-expanded"], "true");
+
+  // Opening another card's menu removes the first one.
+  state._toggleCardMenu(cards["kon-2"]);
+  assert.equal(state._openMenuId, "kon-2");
+  assert.equal(menus[0].attached, false);
+  assert.equal(menus.filter((m) => m.attached).length, 1);
+  assert.match(menus[1].html, /data-act="init"/);   // non-kontora gets Initialize
+  assert.equal(cards["kon-1"].btn.attrs["aria-expanded"], "false");
+  assert.equal(cards["kon-1"].classes.has("menu-open"), false);
+
+  // Toggling the open card closes it and leaves no menu behind.
+  state._toggleCardMenu(cards["kon-2"]);
+  assert.equal(state._openMenuId, null);
+  assert.equal(menus.filter((m) => m.attached).length, 0);
+  assert.equal(cards["kon-2"].classes.has("menu-open"), false);
+  assert.equal(cards["kon-2"].btn.attrs["aria-expanded"], "false");
 });
 
 test("_emptyStateHTML keeps the .empty-state class for Sortable's filter", () => {
@@ -690,31 +942,278 @@ test("cancelled column starts collapsed and toggling persists the set", () => {
 });
 
 test("renderColumn fills expanded columns but clears collapsed rails", () => {
-  const els = {
-    "col-open": { innerHTML: "", firstChild: null },
-    "col-cancelled": { innerHTML: "<div>dropped card</div>", firstChild: {} },
-  };
-  const state = loadKontoraState({
-    document: {
-      getElementById(id) { return els[id] || null; },
-      querySelector() { return null; },
-      querySelectorAll() { return []; },
-      documentElement: { style: {} },
-    },
-  });
+  const board = fakeBoard(["open", "cancelled"]);
+  const state = loadKontoraState({ document: board.document });
   state.tickets = [
     { id: "kon-open", title: "O", status: "open", kontora: true },
     { id: "kon-cxl", title: "C", status: "cancelled", kontora: true },
   ];
   state.recomputeBoard();
+  // A card Sortable dropped onto the collapsed rail.
+  board.els["col-cancelled"].innerHTML = '<div data-ticket-id="kon-cxl"></div>';
 
   state.renderColumn("open");
-  assert.match(els["col-open"].innerHTML, /data-ticket-id="kon-open"/);
+  assert.match(board.els["col-open"].innerHTML, /data-ticket-id="kon-open"/);
+  assert.deepEqual(board.ids("open"), ["kon-open"]);
+  const open = state._rendered["open"];
+  assert.equal(open.empty, false);
+  assert.deepEqual([...open.ids], ["kon-open"]);
+  assert.deepEqual({ ...open.sigs }, { "kon-open": state._cardSig(state.tickets[0], { key: "open" }) });
 
   // Collapsed rail: any node Sortable dropped in is removed, no cards rendered.
   state.renderColumn("cancelled");
-  assert.equal(els["col-cancelled"].innerHTML, "");
-  assert.equal(state._renderedHTML["cancelled"], "");
+  assert.equal(board.els["col-cancelled"].innerHTML, "");
+  assert.deepEqual(board.ids("cancelled"), []);
+  const cancelled = state._rendered["cancelled"];
+  assert.equal(cancelled.empty, true);
+  assert.deepEqual([...cancelled.ids], []);
+  assert.deepEqual({ ...cancelled.sigs }, {});
+});
+
+test("_cardSig changes for every field _cardHTML renders", () => {
+  const state = loadKontoraState();
+  const base = {
+    id: "sig-1", title: "Base", status: "in_progress", stage: "code", pipeline: "kontora",
+    path: "/x/proj", agent: "claude", attempt: 0, kontora: true,
+    started_at: "2026-05-19T10:00:00Z", created_at: "2026-05-19T08:00:00Z", stages: ["plan", "code"],
+  };
+  const col = { key: "in_progress" };
+  const sig = state._cardSig(base, col);
+
+  const cases = [
+    { name: "col.key", col: { key: "done" } },
+    { name: "id", ticket: { id: "sig-2" } },
+    { name: "title", ticket: { title: "Changed" } },
+    { name: "status", ticket: { status: "paused" } },
+    { name: "stage", ticket: { stage: "review" } },
+    { name: "pipeline", ticket: { pipeline: "other" } },
+    { name: "path", ticket: { path: "/x/other" } },
+    { name: "agent", ticket: { agent: "codex" } },
+    { name: "attempt", ticket: { attempt: 2 } },
+    { name: "kontora", ticket: { kontora: false } },
+    { name: "stages", ticket: { stages: ["plan", "code", "commit"] } },
+    { name: "started_at", ticket: { started_at: "2026-05-19T11:00:00Z" } },
+    { name: "created_at", ticket: { created_at: "2026-05-19T09:00:00Z" } },
+    { name: "showPipelineBadges", toggle: "showPipelineBadges" },
+    { name: "showAgentMeta", toggle: "showAgentMeta" },
+  ];
+
+  for (const c of cases) {
+    if (c.toggle) state[c.toggle] = !state[c.toggle];
+    const got = state._cardSig({ ...base, ...(c.ticket || {}) }, c.col || col);
+    if (c.toggle) state[c.toggle] = !state[c.toggle];
+    assert.notEqual(got, sig, `${c.name} must change the card signature`);
+  }
+});
+
+test("_cardSig ignores the reactive clock and the selection highlight", () => {
+  const state = loadKontoraState();
+  const ticket = { id: "sig-3", title: "T", status: "in_progress", started_at: "2026-05-19T10:00:00Z", kontora: true };
+  const col = { key: "in_progress" };
+
+  state.now = new Date("2026-05-19T10:05:00Z").getTime();
+  const early = state._cardSig(ticket, col);
+  state.now = new Date("2026-05-19T12:00:00Z").getTime();
+  assert.equal(state._cardSig(ticket, col), early);
+
+  // Selection is a class toggle (_markSelectedCard), not a rebuild.
+  state.selectedTicket = { id: "sig-3" };
+  assert.equal(state._cardSig(ticket, col), early);
+});
+
+// Pull one method body out of app.js. Methods sit at four-space indent and close
+// with "    }," at the same indent, so the slice needs no brace counting.
+function methodBody(source, name) {
+  const start = source.indexOf(`\n    ${name}(`);
+  assert.notEqual(start, -1, `${name} is not a method in app.js`);
+  const end = source.indexOf("\n    },", start);
+  assert.notEqual(end, -1, `${name} has no closing brace at method indent`);
+  return source.slice(start, end);
+}
+
+// Everything _cardHTML reads, following the helpers that take the whole ticket.
+// Returns ticket fields and plain state reads (this.foo, not this.foo(...) —
+// those are followed instead).
+function cardRenderReads() {
+  const source = fs.readFileSync(appPath, "utf8");
+  const fields = new Set();
+  const stateReads = new Set();
+  const seen = new Set();
+  const queue = ["_cardHTML"];
+  while (queue.length) {
+    const name = queue.shift();
+    if (seen.has(name)) continue;
+    seen.add(name);
+    const body = methodBody(source, name);
+    for (const m of body.matchAll(/(?<![\w$])ticket\.([A-Za-z_$][\w$]*)/g)) fields.add(m[1]);
+    for (const m of body.matchAll(/this\.([A-Za-z_$][\w$]*)\(ticket\)/g)) queue.push(m[1]);
+    for (const m of body.matchAll(/this\.([A-Za-z_$][\w$]*)\b(?!\s*\()/g)) stateReads.add(m[1]);
+  }
+  return { fields, stateReads, source };
+}
+
+// The forward test above proves each signature field matters. This is the other
+// direction, and it is the one that goes stale: a field added to _cardHTML but
+// not to _cardSig leaves cards showing old data until something else in the
+// column changes. Deriving the read set from the source keeps the check honest
+// when the markup grows.
+test("_cardSig covers every ticket field _cardHTML reads", () => {
+  const { fields, source } = cardRenderReads();
+  const sig = methodBody(source, "_cardSig");
+
+  // Sanity: the scan found the helpers, not just _cardHTML's own reads.
+  assert.ok(fields.has("pipeline"), "expected ticketTagLabel/ticketPipeColor to be followed");
+  assert.ok(fields.has("path"), "expected parseTitleTag to be followed");
+  assert.ok(fields.size >= 10, `expected a full field set, got ${[...fields].join(", ")}`);
+
+  const missing = [...fields].filter((f) => !sig.includes(`ticket.${f}`));
+  assert.deepEqual(missing, [], `_cardSig must include: ${missing.join(", ")}`);
+});
+
+test("_cardHTML reads no board state beyond the two the signature tracks", () => {
+  const { stateReads, source } = cardRenderReads();
+  const sig = methodBody(source, "_cardSig");
+
+  // now: the 30s clock, patched in place by _updateCardTimers.
+  // selectedTicket: a class toggle applied by _markSelectedCard.
+  const patchedInPlace = new Set(["now", "selectedTicket"]);
+  const untracked = [...stateReads].filter((s) => !patchedInPlace.has(s) && !sig.includes(`this.${s}`));
+  assert.deepEqual(untracked, [], `_cardSig must track, or _updateCardTimers must patch: ${untracked.join(", ")}`);
+
+  // Sanity: the scan sees the display toggles, so an empty result means covered.
+  assert.ok(stateReads.has("showAgentMeta") && stateReads.has("showPipelineBadges"));
+});
+
+test("one changed ticket patches one card and leaves the rest of the board alone", () => {
+  const { board, state, built } = renderedBoard([
+    { id: "kon-a", title: "A", status: "todo", kontora: true, created_at: "2026-05-19T08:00:00Z" },
+    { id: "kon-b", title: "B", status: "todo", kontora: true, created_at: "2026-05-19T09:00:00Z" },
+    { id: "kon-c", title: "C", status: "todo", kontora: true, created_at: "2026-05-19T10:00:00Z" },
+  ]);
+  const before = board.uids("in_progress");
+  assert.deepEqual(board.ids("in_progress"), ["kon-c", "kon-b", "kon-a"]);
+
+  state.tickets[1].title = "B renamed";
+  state.recomputeBoard();
+
+  assert.deepEqual(built, ["kon-b"]);
+  assert.deepEqual(board.ops, ["replace:kon-b"]);
+  assert.deepEqual(board.ids("in_progress"), ["kon-c", "kon-b", "kon-a"]);
+  // The two untouched cards keep their nodes; only the changed one is new.
+  const after = board.uids("in_progress");
+  assert.equal(after[0], before[0]);
+  assert.equal(after[2], before[2]);
+  assert.notEqual(after[1], before[1]);
+});
+
+test("a clock tick alone patches nothing", () => {
+  const { board, state, built } = renderedBoard([
+    { id: "kon-a", title: "A", status: "in_progress", kontora: true, started_at: "2026-05-19T08:00:00Z" },
+    { id: "kon-b", title: "B", status: "human_review", kontora: true, updated_at: "2026-05-19T09:00:00Z" },
+  ]);
+
+  state.now += 30000;
+  state.recomputeBoard();
+
+  assert.deepEqual(built, []);
+  assert.deepEqual(board.ops, []);
+});
+
+test("a reordered card is moved, not rebuilt", () => {
+  const { board, state, built } = renderedBoard([
+    { id: "rev-a", title: "A", status: "human_review", kontora: true, updated_at: "2026-05-19T09:00:00Z" },
+    { id: "rev-b", title: "B", status: "human_review", kontora: true, updated_at: "2026-05-19T08:00:00Z" },
+  ]);
+  const before = board.uids("human_review");
+  assert.deepEqual(board.ids("human_review"), ["rev-a", "rev-b"]);
+
+  // human_review sorts on updated_at, which the card doesn't render, so this
+  // reorders the column without changing any signature.
+  state.tickets[1].updated_at = "2026-05-19T10:00:00Z";
+  state.recomputeBoard();
+
+  assert.deepEqual(built, []);
+  assert.deepEqual(board.ops, ["insert:rev-b"]);
+  assert.deepEqual(board.ids("human_review"), ["rev-b", "rev-a"]);
+  assert.deepEqual(board.uids("human_review"), [before[1], before[0]]);
+});
+
+test("a ticket that changes column moves node-for-node and spares the others", () => {
+  const { board, state, built } = renderedBoard([
+    { id: "kon-a", title: "A", status: "todo", kontora: true, created_at: "2026-05-19T08:00:00Z" },
+    { id: "kon-b", title: "B", status: "todo", kontora: true, created_at: "2026-05-19T09:00:00Z" },
+    { id: "rev-old", title: "Old", status: "human_review", kontora: true, updated_at: "2026-05-19T07:00:00Z" },
+  ]);
+  const keptInProgress = board.uids("in_progress")[1];   // kon-a, below kon-b
+  const keptReview = board.uids("human_review")[0];
+
+  state.tickets[1].status = "human_review";
+  state.tickets[1].updated_at = "2026-05-19T12:00:00Z";
+  state.recomputeBoard();
+
+  assert.deepEqual(built, ["kon-b"]);
+  assert.deepEqual(board.ops, ["remove:kon-b", "insert:kon-b"]);
+  assert.deepEqual(board.ids("in_progress"), ["kon-a"]);
+  assert.deepEqual(board.ids("human_review"), ["kon-b", "rev-old"]);
+  assert.equal(board.uids("in_progress")[0], keptInProgress);
+  assert.equal(board.uids("human_review")[1], keptReview);
+});
+
+test("a search query removes only the cards that stopped matching", () => {
+  const { board, state, built } = renderedBoard([
+    { id: "kon-alpha", title: "Alpha", status: "todo", kontora: true, created_at: "2026-05-19T08:00:00Z" },
+    { id: "kon-beta", title: "Beta", status: "todo", kontora: true, created_at: "2026-05-19T09:00:00Z" },
+  ]);
+  const kept = board.uids("in_progress")[1];   // kon-alpha, below kon-beta
+
+  state.searchQuery = "alpha";
+  state.recomputeBoard();
+
+  assert.deepEqual(built, []);
+  assert.deepEqual(board.ops, ["remove:kon-beta"]);
+  assert.deepEqual(board.ids("in_progress"), ["kon-alpha"]);
+  assert.equal(board.uids("in_progress")[0], kept);
+});
+
+test("a column emptied of cards renders the empty state once", () => {
+  const { board, state, built } = renderedBoard([
+    { id: "kon-a", title: "A", status: "todo", kontora: true, created_at: "2026-05-19T08:00:00Z" },
+  ]);
+
+  state.tickets = [];
+  state.recomputeBoard();
+
+  assert.deepEqual(built, []);
+  assert.deepEqual(board.ops, ["innerHTML:in_progress"]);
+  assert.match(board.els["col-in_progress"].innerHTML, /empty-state/);
+  assert.equal(state._rendered["in_progress"].empty, true);
+
+  // A second recompute with the column still empty writes nothing.
+  board.ops.length = 0;
+  state.recomputeBoard();
+  assert.deepEqual(board.ops, []);
+
+  // Refilling the column builds it in one innerHTML write, not node by node.
+  state.tickets = [{ id: "kon-b", title: "B", status: "todo", kontora: true, created_at: "2026-05-19T08:00:00Z" }];
+  state.recomputeBoard();
+  assert.deepEqual(built, []);
+  assert.deepEqual(board.ops, ["innerHTML:in_progress"]);
+  assert.deepEqual(board.ids("in_progress"), ["kon-b"]);
+});
+
+test("renderColumn clears a card dropped onto a collapsed rail", () => {
+  const { board, state } = renderedBoard([
+    { id: "kon-cxl", title: "C", status: "cancelled", kontora: true },
+  ]);
+  // cancelled starts collapsed: the rail is a drop target only.
+  assert.equal(state.isCollapsed("cancelled"), true);
+  board.els["col-cancelled"].innerHTML = '<div data-ticket-id="kon-cxl"></div>';
+  board.ops.length = 0;
+
+  state.renderColumn("cancelled");
+
+  assert.equal(board.els["col-cancelled"].innerHTML, "");
+  assert.deepEqual(board.ids("cancelled"), []);
 });
 
 test("formatElapsed renders history durations", () => {
@@ -728,11 +1227,11 @@ test("formatElapsed renders history durations", () => {
 
 test("display toggles invalidate the rendered-card cache and drop card sections", () => {
   const state = loadKontoraState();
-  state._renderedHTML = { open: "<div></div>" };
+  state._rendered = { open: { empty: false, ids: ["kon-1"], sigs: { "kon-1": "x" } } };
 
   state.toggleShowBadges();
   assert.equal(state.showPipelineBadges, false);
-  assert.deepEqual({ ...state._renderedHTML }, {});
+  assert.deepEqual({ ...state._rendered }, {});
   const noBadge = state._cardHTML(
     { id: "sta-9", title: "T", status: "open", created_at: "2026-05-19T08:00:00Z", kontora: true, pipeline: "kontora" },
     { key: "open" },
@@ -748,6 +1247,66 @@ test("display toggles invalidate the rendered-card cache and drop card sections"
   assert.equal(noAgent.includes("claude-agent"), false);
 });
 
+test("index.html builds one layout layer with complementary x-if templates", () => {
+  const html = fs.readFileSync(htmlPath, "utf8");
+
+  // Desktop and mobile layers are built exclusively, so the inactive one costs
+  // no DOM nodes. x-show would keep both in the document.
+  assert.match(html, /<template x-if="!isMobile">\s*<main /);
+  assert.match(html, /<template x-if="isMobile">\s*<div class="h-full flex flex-col"/);
+  assert.equal(/<main x-show=/.test(html), false);
+  assert.equal(/<div x-show="isMobile" x-cloak class="h-full flex flex-col"/.test(html), false);
+});
+
+test("_mountBoard rebuilds the board and binds the delegated handler per mount", () => {
+  const board = fakeBoard(["open", "in_progress", "human_review", "done", "cancelled"]);
+  const state = loadKontoraState({ document: board.document });
+  state.tickets = [{ id: "kon-a", title: "A", status: "todo", kontora: true, created_at: "2026-05-19T08:00:00Z" }];
+  state.recomputeBoard();
+  // Nothing renders before the first mount.
+  assert.deepEqual(board.ops, []);
+
+  state._bindGlobalEvents();
+  state._mountBoard();
+
+  assert.equal(state._boardInit, true);
+  assert.deepEqual(board.ids("in_progress"), ["kon-a"]);
+  assert.deepEqual(board.els["board-cols"].listeners, ["click", "keydown"]);
+  assert.deepEqual(board.documentEvents, ["click", "keydown"]);
+
+  // Crossing the breakpoint: Alpine replaces the layer, so the cache must reset
+  // and the fresh root must get its own listeners without duplicating the
+  // document-level ones.
+  board.remount();
+  board.ops.length = 0;
+  state._mountBoard();
+
+  // Every expanded column is filled from scratch; the collapsed rail is already
+  // empty, so it takes no write.
+  assert.deepEqual(board.ops,
+    ["innerHTML:open", "innerHTML:in_progress", "innerHTML:human_review", "innerHTML:done"]);
+  assert.deepEqual(board.ids("in_progress"), ["kon-a"]);
+  assert.deepEqual(board.els["board-cols"].listeners, ["click", "keydown"]);
+  assert.deepEqual(board.documentEvents, ["click", "keydown"]);
+});
+
+test("crossing the breakpoint closes the terminal before the replacement board mounts", () => {
+  const board = fakeBoard(["open", "in_progress", "human_review", "done", "cancelled"]);
+  const state = loadKontoraState({ document: board.document });
+  const order = [];
+  state.tickets = [];
+  state._mountBoard();
+
+  state.closeTerminal = () => { order.push("closeTerminal"); };
+  state._mountBoard = () => { order.push("mountBoard"); };
+  state.$nextTick = (fn) => { order.push("nextTick"); fn(); };
+
+  state._onBreakpointChange();
+
+  // The terminal container belongs to the layer Alpine is about to destroy.
+  assert.deepEqual(order, ["closeTerminal", "nextTick", "mountBoard"]);
+});
+
 test("index.html board renders cards imperatively, not via an Alpine x-for", () => {
   const html = fs.readFileSync(htmlPath, "utf8");
 
@@ -757,4 +1316,19 @@ test("index.html board renders cards imperatively, not via an Alpine x-for", () 
   assert.equal(/x-for="ticket in boardTickets\(col\.key\)"/.test(html), false);
   // The imperative card-list container is still wired for Sortable.
   assert.match(html, /x-ref="colList"[\s\S]*?x-init="initSortable\(\$el\)/);
+});
+
+test("index.html column x-init drops the render state Alpine just invalidated", () => {
+  const html = fs.readFileSync(htmlPath, "utf8");
+  const app = fs.readFileSync(appPath, "utf8");
+
+  // Alpine builds the column element empty, so the x-init must drop that
+  // column's cached signatures or renderColumn would skip filling it. The name
+  // has to be the field app.js actually keeps, hence the pair of assertions.
+  assert.match(html, /x-init="initSortable\(\$el\)[^"]*delete _rendered\[col\.key\]/);
+  assert.match(app, /^ {4}_rendered: .+,$/m);
+  // _renderedHTML was replaced by the per-card cache; a leftover reference in an
+  // Alpine expression throws at evaluation time and skips the renderColumn call.
+  assert.equal(html.includes("_renderedHTML"), false);
+  assert.equal(app.includes("_renderedHTML"), false);
 });

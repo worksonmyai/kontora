@@ -260,8 +260,9 @@
       background: rgba(var(--surface-850), 1);
       border-color: rgba(var(--accent), 0.45);
     }
-    /* Per-card 3-dot action menu: hidden until its card gets .menu-open (toggled
-       by the delegated handler in _bindBoardEvents). */
+    /* Per-card action menu. _toggleCardMenu builds it only while it is open, so
+       the display rules below are a fallback: they keep a menu that outlives its
+       .menu-open card (a stray node after a re-render) from showing. */
     .kt-card .card-menu { display: none; }
     .kt-card.menu-open .card-menu { display: block; }
     .kt-card.menu-open .card-menu-btn { opacity: 1; }
@@ -676,8 +677,11 @@
     </div>
   </header>
 
-  <!-- Main layout (desktop / tablet) -->
-  <main x-show="!isMobile" class="flex h-[calc(100%-54px)] min-h-0 relative">
+  <!-- Main layout (desktop / tablet). x-if, not x-show: the two layers are
+       built exclusively so the inactive one costs no DOM nodes. _mountBoard()
+       re-renders and re-binds the board whenever this layer is (re)built. -->
+  <template x-if="!isMobile">
+  <main class="flex h-[calc(100%-54px)] min-h-0 relative">
 
     <!-- Left sidebar (hideable) -->
     <aside x-show="!sidebarHidden" x-cloak
@@ -848,7 +852,7 @@
                      x-ref="colList"
                      :id="'col-' + col.key"
                      :data-drop-status="col.dropStatus"
-                     x-init="initSortable($el); $nextTick(() => { delete _renderedHTML[col.key]; renderColumn(col.key); })">
+                     x-init="initSortable($el); $nextTick(() => { delete _rendered[col.key]; renderColumn(col.key); })">
                   <!-- Cards are injected imperatively by renderColumn() (app.js); see
                        _cardHTML for the markup this reproduces. -->
                   </div>
@@ -1465,13 +1469,16 @@
       </div>
     </div>
   </main>
+  </template>
 
   <!-- ============================================================= -->
-  <!-- Mobile (phone-width) layer. Hidden on desktop/tablet. Reuses   -->
-  <!-- the same Alpine data + ticket operations; only the layout and  -->
-  <!-- a few view-state fields (activeColumn, detailTab, sheet) differ.-->
+  <!-- Mobile (phone-width) layer. Not built at all on desktop/tablet.-->
+  <!-- Reuses the same Alpine data + ticket operations; only the      -->
+  <!-- layout and a few view-state fields (activeColumn, detailTab,   -->
+  <!-- sheet) differ.                                                 -->
   <!-- ============================================================= -->
-  <div x-show="isMobile" x-cloak class="h-full flex flex-col" style="background:rgba(var(--surface-950),1);">
+  <template x-if="isMobile">
+  <div class="h-full flex flex-col" style="background:rgba(var(--surface-950),1);">
 
     <!-- ===== Board chrome: app bar + search + status tabs ===== -->
     <div style="flex:none;background:rgba(var(--surface-950),1);border-bottom:1px solid rgba(var(--surface-700),.5);padding-top:54px;">
@@ -1764,6 +1771,7 @@
     </template>
 
   </div>
+  </template>
 
   <script src="/app.js"></script>
 </body>

@@ -98,6 +98,13 @@ function fakeBoard(colKeys) {
 
   const documentEvents = [];
 
+  // _toggleCardMenu appends the menu inside its card, so the menu is in the
+  // document exactly as long as that card node is still in a column.
+  let openMenu = null;
+  function menuIsLive() {
+    return !!openMenu && colKeys.some((k) => els[`col-${k}`].children.includes(openMenu.host));
+  }
+
   return {
     ops,
     els,
@@ -106,9 +113,15 @@ function fakeBoard(colKeys) {
     // Alpine rebuilds the whole layer when the breakpoint flips: fresh, empty
     // column elements and a fresh delegation root.
     remount() { build(); },
+    // Attach a menu to the card that renders ticket `id` in column `key`.
+    openMenuOn(key, id) {
+      openMenu = { host: els[`col-${key}`].children.find((c) => c.dataset.ticketId === id) };
+      assert.ok(openMenu.host, `no card for ${id} in ${key}`);
+    },
+    menuIsLive,
     document: {
       getElementById(id) { return els[id] || null; },
-      querySelector() { return null; },
+      querySelector(sel) { return sel.includes(".card-menu") && menuIsLive() ? openMenu : null; },
       querySelectorAll() { return []; },
       addEventListener(type) { documentEvents.push(type); },
       documentElement: { style: {} },
@@ -1173,6 +1186,44 @@ test("a search query removes only the cards that stopped matching", () => {
   assert.deepEqual(board.ops, ["remove:kon-beta"]);
   assert.deepEqual(board.ids("in_progress"), ["kon-alpha"]);
   assert.equal(board.uids("in_progress")[0], kept);
+});
+
+test("an open card menu survives a render that leaves its card alone", () => {
+  const cases = [
+    { name: "a clock tick", change: (s) => { s.now += 30000; }, live: true },
+    { name: "another card rebuilt", change: (s) => { s.tickets[1].title = "Beta renamed"; }, live: true },
+    { name: "another card removed", change: (s) => { s.searchQuery = "alpha"; }, live: true },
+    { name: "its own card rebuilt", change: (s) => { s.tickets[0].title = "Alpha renamed"; }, live: false },
+    { name: "its own card filtered out", change: (s) => { s.searchQuery = "beta"; }, live: false },
+    {
+      name: "its own card moved to another column",
+      change: (s) => { s.tickets[0].status = "human_review"; s.tickets[0].updated_at = "2026-05-19T12:00:00Z"; },
+      live: false,
+    },
+    { name: "the column emptied", change: (s) => { s.tickets = []; }, live: false },
+    {
+      name: "the board remounted at the breakpoint",
+      change: () => {},
+      render: (s, b) => { b.remount(); s._mountBoard(); },
+      live: false,
+    },
+  ];
+
+  for (const c of cases) {
+    const { board, state } = renderedBoard([
+      { id: "menu-a", title: "Alpha", status: "todo", kontora: true, created_at: "2026-05-19T08:00:00Z" },
+      { id: "menu-b", title: "Beta", status: "todo", kontora: true, created_at: "2026-05-19T09:00:00Z" },
+    ]);
+    board.openMenuOn("in_progress", "menu-a");
+    state._openMenuId = "menu-a";
+
+    c.change(state);
+    if (c.render) c.render(state, board);
+    else state.recomputeBoard();
+
+    assert.equal(board.menuIsLive(), c.live, `${c.name}: menu node`);
+    assert.equal(state._openMenuId, c.live ? "menu-a" : null, `${c.name}: open-menu state`);
+  }
 });
 
 test("a column emptied of cards renders the empty state once", () => {

@@ -1424,8 +1424,17 @@ function kontora() {
     // _boardInit, set in init's $nextTick).
     renderBoard() {
       if (!this._boardInit) return;
-      this._closeCardMenu();
       this.columns.forEach((col) => this.renderColumn(col.key));
+      this._dropStaleCardMenu();
+    },
+
+    // The menu node lives inside its card, so a card the reconcile removed or
+    // rebuilt took the menu with it. Forget the open menu in that case, or the
+    // next kebab click would toggle a menu that is no longer in the document.
+    // A card the reconcile left alone keeps its menu open.
+    _dropStaleCardMenu() {
+      if (!this._openMenuId) return;
+      if (!document.querySelector('#board-cols .card-menu')) this._openMenuId = null;
     },
 
     // Reset the render cache, render the cards, and bind the delegated handler

@@ -10,8 +10,9 @@ import (
 )
 
 // CheckRepo validates that the given path is a git repository with at least
-// one commit and that a default branch can be detected.
-func CheckRepo(path string) error {
+// one commit and that the base branch resolves. An empty baseBranch checks that
+// a default branch can be detected, which is what the repository falls back to.
+func CheckRepo(path, baseBranch string) error {
 	path = config.ExpandTilde(path)
 
 	if err := git(path, "rev-parse", "--git-dir"); err != nil {
@@ -20,7 +21,7 @@ func CheckRepo(path string) error {
 	if err := git(path, "rev-parse", "HEAD"); err != nil {
 		return fmt.Errorf("path %q: repository has no commits", path)
 	}
-	if _, err := worktree.DetectDefaultBranch(path); err != nil {
+	if _, err := worktree.ResolveBase(path, baseBranch); err != nil {
 		return fmt.Errorf("path %q: %w", path, err)
 	}
 	return nil

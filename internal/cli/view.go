@@ -49,6 +49,9 @@ func View(cfg *config.Config, taskID string, w io.Writer) error {
 	if t.Branch != "" {
 		fmt.Fprintf(w, "branch:    %s\n", t.Branch)
 	}
+	if t.BaseBranch != "" {
+		fmt.Fprintf(w, "base:      %s\n", t.BaseBranch)
+	}
 	if t.Stage != "" {
 		agent := app.AgentForStage(cfg, t.Pipeline, t.Stage)
 		if agent != "" {

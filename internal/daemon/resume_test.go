@@ -18,6 +18,7 @@ import (
 	"github.com/worksonmyai/kontora/internal/config"
 	"github.com/worksonmyai/kontora/internal/process"
 	"github.com/worksonmyai/kontora/internal/ticket"
+	"github.com/worksonmyai/kontora/internal/worktree"
 )
 
 const (
@@ -347,7 +348,12 @@ func newResumeDaemon(t *testing.T, agentBinary string, run func(ctx context.Cont
 
 	// Create the worktree ahead of the daemon so a record can name its path;
 	// worktree creation is idempotent, so the daemon reuses this one.
-	wtPath, _, err := rd.d.worktrees.Create(h.repoDir, h.repoName, resumeTicketID, "kontora/"+resumeTicketID)
+	wtPath, _, err := rd.d.worktrees.Create(worktree.CreateOpts{
+		RepoPath: h.repoDir,
+		RepoName: h.repoName,
+		TaskID:   resumeTicketID,
+		Branch:   "kontora/" + resumeTicketID,
+	})
 	require.NoError(t, err)
 	rd.wtPath = wtPath
 	return rd

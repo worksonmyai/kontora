@@ -168,7 +168,7 @@ function kontora() {
     detailTab: 'ticket',
     sheet: null,
     createSubmitting: false,
-    createForm: { title: '', path: '', pipeline: '', agent: '', status: 'todo', body: '', branch: '' },
+    createForm: { title: '', path: '', pipeline: '', agent: '', status: 'todo', body: '', branch: '', base_branch: '' },
     createTouched: { pipeline: false, agent: false },
     initModal: false,
     initSubmitting: false,
@@ -729,7 +729,7 @@ function kontora() {
     },
 
     async openCreateModal() {
-      this.createForm = { title: '', path: '', pipeline: '', agent: '', status: 'todo', body: '', branch: '' };
+      this.createForm = { title: '', path: '', pipeline: '', agent: '', status: 'todo', body: '', branch: '', base_branch: '' };
       this.createTouched = { pipeline: false, agent: false };
       this.currentView = 'new';
       this.writeHash();
@@ -859,6 +859,7 @@ function kontora() {
       if (f.agent)    lines.push('agent: ' + f.agent);
       if (f.path)     lines.push('path: ' + f.path);
       if (f.branch)   lines.push('branch: ' + f.branch);
+      if (f.base_branch) lines.push('base_branch: ' + f.base_branch);
       lines.push('---');
       if (f.title) {
         lines.push('');
@@ -885,6 +886,7 @@ function kontora() {
         if (this.createForm.status) body.status = this.createForm.status;
         if (this.createForm.body) body.body = this.createForm.body;
         if (this.createForm.branch) body.branch = this.createForm.branch;
+        if (this.createForm.base_branch) body.base_branch = this.createForm.base_branch;
         const res = await fetch('/api/tickets', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -1382,6 +1384,7 @@ function kontora() {
         path: this.selectedTicket.path || '',
         agent: '',
         branch: this.selectedTicket.branch || '',
+        base_branch: this.selectedTicket.base_branch || '',
       };
       this.editing = true;
       this.editSaved = false;
@@ -1454,6 +1457,7 @@ function kontora() {
         if (this.editForm.path !== (this.selectedTicket.path || '')) body.path = this.editForm.path;
         if (this.editForm.agent !== (this.selectedTicket.agent || '')) body.agent = this.editForm.agent;
         if (this.editForm.branch !== (this.selectedTicket.branch || '')) body.branch = this.editForm.branch;
+        if (this.editForm.base_branch !== (this.selectedTicket.base_branch || '')) body.base_branch = this.editForm.base_branch;
         if (Object.keys(body).length === 0) { this.editSubmitting = false; return; }
         const res = await fetch('/api/tickets/' + this.selectedTicket.id, {
           method: 'PUT',
@@ -3858,7 +3862,7 @@ function kontora() {
       this.sheet = { type: 'actions', ticket: t };
     },
     async openNewSheet() {
-      this.createForm = { title: '', path: '', pipeline: '', agent: '', status: 'todo', body: '', branch: '' };
+      this.createForm = { title: '', path: '', pipeline: '', agent: '', status: 'todo', body: '', branch: '', base_branch: '' };
       this.createTouched = { pipeline: false, agent: false };
       this.error = null;
       this.sheet = { type: 'new' };

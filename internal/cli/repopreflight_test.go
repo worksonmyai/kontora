@@ -11,10 +11,25 @@ import (
 )
 
 func TestCheckRepo(t *testing.T) {
+	// repoWithDevelopAndTag builds a repo on main that also holds a develop
+	// branch and a branch-shaped v1.0 tag.
+	repoWithDevelopAndTag := func(t *testing.T) string {
+		t.Helper()
+		dir := testutil.InitRepoWithBranch(t, "main")
+		for _, args := range [][]string{{"branch", "develop"}, {"tag", "v1.0"}} {
+			cmd := exec.Command("git", args...)
+			cmd.Dir = dir
+			out, err := cmd.CombinedOutput()
+			require.NoError(t, err, "git %v: %s", args, out)
+		}
+		return dir
+	}
+
 	cases := []struct {
-		name    string
-		setup   func(t *testing.T) string
-		wantErr string
+		name       string
+		setup      func(t *testing.T) string
+		baseBranch string
+		wantErr    string
 	}{
 		{
 			name:  "valid repo with main",
@@ -45,12 +60,34 @@ func TestCheckRepo(t *testing.T) {
 			},
 			wantErr: "repository has no commits",
 		},
+		{
+			name:       "existing base branch",
+			setup:      repoWithDevelopAndTag,
+			baseBranch: "develop",
+		},
+		{
+			name:       "empty base still checks the default branch",
+			setup:      repoWithDevelopAndTag,
+			baseBranch: "",
+		},
+		{
+			name:       "missing base branch",
+			setup:      repoWithDevelopAndTag,
+			baseBranch: "devlop",
+			wantErr:    `base branch "devlop" not found`,
+		},
+		{
+			name:       "tag is not a branch",
+			setup:      repoWithDevelopAndTag,
+			baseBranch: "v1.0",
+			wantErr:    `base branch "v1.0" not found`,
+		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := tc.setup(t)
-			err := CheckRepo(dir)
+			err := CheckRepo(dir, tc.baseBranch)
 			if tc.wantErr != "" {
 				require.Error(t, err)
 				assert.Contains(t, err.Error(), tc.wantErr)

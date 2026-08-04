@@ -625,9 +625,15 @@ func TestSetupPlannotatorWorktree(t *testing.T) {
 	cases := []struct {
 		name  string
 		setup func(t *testing.T, repo, wt string)
+		// base is the ticket's base_branch. Empty means the repo default.
+		base string
 		// expectedFiles maps paths (relative to the review worktree) to their
 		// expected content on disk after setup.
 		expectedFiles map[string]string
+		// expectChangedFiles is the exact set of paths the review worktree
+		// presents as pending changes. Files that are committed at the
+		// merge-base exist on disk but must not appear here.
+		expectChangedFiles []string
 		// expectDiffEmpty asserts `git diff HEAD` is empty — used for the
 		// no-commits-ahead case where the review worktree should match base.
 		expectDiffEmpty bool
@@ -679,6 +685,32 @@ func TestSetupPlannotatorWorktree(t *testing.T) {
 			},
 			expectedFiles: map[string]string{"orphan.txt": "kept\n"},
 		},
+		{
+			// main -> A, develop -> A+D1, feature -> A+D1+T1. Measured against
+			// develop the review shows only T1. Measured against main it would
+			// also show D1, presenting develop's commits as the agent's work.
+			name: "base branch diverged from the default branch",
+			setup: func(t *testing.T, repo, wt string) {
+				commitFile(t, wt, "d.txt", "d1\n", "D1")
+				mustGit(t, repo, "branch", "develop", "feature")
+				commitFile(t, wt, "t.txt", "t1\n", "T1")
+			},
+			base:               "develop",
+			expectedFiles:      map[string]string{"t.txt": "t1\n"},
+			expectChangedFiles: []string{"t.txt"},
+		},
+		{
+			// The same history with no base_branch falls back to main, so both
+			// commits show up. This pins the fallback the case above overrides.
+			name: "no base branch falls back to the default branch",
+			setup: func(t *testing.T, repo, wt string) {
+				commitFile(t, wt, "d.txt", "d1\n", "D1")
+				mustGit(t, repo, "branch", "develop", "feature")
+				commitFile(t, wt, "t.txt", "t1\n", "T1")
+			},
+			expectedFiles:      map[string]string{"d.txt": "d1\n", "t.txt": "t1\n"},
+			expectChangedFiles: []string{"d.txt", "t.txt"},
+		},
 	}
 
 	for _, tc := range cases {
@@ -687,7 +719,7 @@ func TestSetupPlannotatorWorktree(t *testing.T) {
 			tc.setup(t, repo, wt)
 
 			reviewPath := filepath.Join(t.TempDir(), "review.plannotator")
-			reviewPath, cleanup, err := setupPlannotatorWorktree(testLogger(t), repo, "feature", reviewPath)
+			reviewPath, cleanup, err := setupPlannotatorWorktree(testLogger(t), repo, "feature", tc.base, reviewPath)
 			require.NoError(t, err)
 			t.Cleanup(cleanup)
 
@@ -695,6 +727,10 @@ func TestSetupPlannotatorWorktree(t *testing.T) {
 				got, rErr := os.ReadFile(filepath.Join(reviewPath, rel))
 				require.NoError(t, rErr, "read %s", rel)
 				assert.Equal(t, want, string(got), "file %s", rel)
+			}
+			if tc.expectChangedFiles != nil {
+				assert.ElementsMatch(t, tc.expectChangedFiles, changedFiles(t, reviewPath),
+					"pending changes in the review worktree")
 			}
 
 			// The review worktree's HEAD is the merge-base; any applied diff
@@ -725,7 +761,7 @@ func TestSetupPlannotatorWorktree_CleanupIsIdempotent(t *testing.T) {
 	commitFile(t, wt, "x.txt", "y\n", "c")
 
 	reviewPath := filepath.Join(t.TempDir(), "review.plannotator")
-	reviewPath, cleanup, err := setupPlannotatorWorktree(testLogger(t), repo, "feature", reviewPath)
+	reviewPath, cleanup, err := setupPlannotatorWorktree(testLogger(t), repo, "feature", "", reviewPath)
 	require.NoError(t, err)
 	cleanup()
 	// Directory gone after first cleanup.
@@ -748,6 +784,24 @@ func setupRealGitWorktree(t *testing.T) (repo, wt string) {
 	wt = filepath.Join(t.TempDir(), "wt")
 	mustGit(t, repo, "worktree", "add", "-b", "feature", wt, "main")
 	return repo, wt
+}
+
+// changedFiles returns the paths the review worktree presents as pending
+// changes: tracked modifications against HEAD plus untracked files. This is the
+// same data plannotator's default view reads.
+func changedFiles(t *testing.T, reviewPath string) []string {
+	t.Helper()
+	sources := [][]string{
+		{"diff", "HEAD", "--name-only", "--", "."},
+		{"ls-files", "--others", "--exclude-standard"},
+	}
+	files := make([]string, 0, len(sources))
+	for _, args := range sources {
+		out, err := runGit(reviewPath, args...)
+		require.NoError(t, err)
+		files = append(files, strings.Fields(out)...)
+	}
+	return files
 }
 
 func commitFile(t *testing.T, dir, name, content, msg string) {

@@ -24,6 +24,7 @@ import (
 	"github.com/worksonmyai/kontora/internal/process"
 	"github.com/worksonmyai/kontora/internal/testutil"
 	"github.com/worksonmyai/kontora/internal/ticket"
+	"github.com/worksonmyai/kontora/internal/worktree"
 )
 
 func testLogger(t *testing.T) *slog.Logger {
@@ -220,6 +221,89 @@ func TestFullPipeline(t *testing.T) {
 
 	cancel()
 	require.NoError(t, <-errCh)
+}
+
+// TestTicketBaseBranch covers the two ends of base_branch through the daemon:
+// a ticket based on a diverged branch gets a work branch cut from it, and a
+// base naming the ticket's own work branch pauses instead of silently checking
+// the base out and letting the agent commit onto it.
+func TestTicketBaseBranch(t *testing.T) {
+	cases := []struct {
+		name       string
+		branch     string
+		base       string
+		wantStatus ticket.Status
+		// wantCommits are commit subjects the work branch must contain.
+		wantCommits []string
+		wantErr     string
+	}{
+		{
+			name:        "worktree is cut from the declared base",
+			base:        "develop",
+			wantStatus:  ticket.StatusDone,
+			wantCommits: []string{"D1"},
+		},
+		{
+			name:       "base equal to the work branch pauses the ticket",
+			branch:     "develop",
+			base:       "develop",
+			wantStatus: ticket.StatusPaused,
+			wantErr:    "own work branch",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			// main -> A, develop -> A+D1.
+			mustGit(t, h.repoDir, "checkout", "-b", "develop")
+			require.NoError(t, os.WriteFile(filepath.Join(h.repoDir, "d.txt"), []byte("d1\n"), 0o644))
+			mustGit(t, h.repoDir, "add", "d.txt")
+			mustGit(t, h.repoDir, "commit", "-m", "D1")
+			mustGit(t, h.repoDir, "checkout", "main")
+
+			d := h.newDaemon(h.cfg)
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			errCh := make(chan error, 1)
+			go func() { errCh <- d.Run(ctx) }()
+			time.Sleep(200 * time.Millisecond)
+
+			branchLine := ""
+			if tc.branch != "" {
+				branchLine = "branch: " + tc.branch + "\n"
+			}
+			h.writeTicket("tst-base.md", fmt.Sprintf(`---
+id: tst-base
+kontora: true
+status: todo
+pipeline: one-stage
+path: %s
+%sbase_branch: %s
+created: 2026-01-01T00:00:00Z
+---
+# Base branch ticket
+`, h.repoDir, branchLine, tc.base))
+
+			result := h.waitForStatus("tst-base.md", tc.wantStatus, 10*time.Second)
+
+			if tc.wantErr != "" {
+				assert.Contains(t, result.LastError, tc.wantErr)
+				// The base must not have been checked out as the work branch.
+				found, err := worktree.FindWorktreeForBranch(h.repoDir, tc.base)
+				require.NoError(t, err)
+				assert.Equal(t, "", found, "base branch must not be checked out in a worktree")
+			}
+			for _, subject := range tc.wantCommits {
+				out, err := runGit(h.repoDir, "log", "--format=%s", "kontora/tst-base")
+				require.NoError(t, err)
+				assert.Contains(t, out, subject, "work branch should contain the base's commits")
+			}
+
+			cancel()
+			require.NoError(t, <-errCh)
+		})
+	}
 }
 
 func TestFailureRetry(t *testing.T) {

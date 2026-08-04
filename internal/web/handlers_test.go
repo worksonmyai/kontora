@@ -593,6 +593,49 @@ func TestHandleCreateTicket_NewlineInTitle(t *testing.T) {
 	assert.Contains(t, res.body, "newlines")
 }
 
+// TestHandleCreateTicket_BaseBranch covers format validation of base_branch on
+// creation. Whether the branch exists is checked further in by CheckRepo, which
+// needs the repository path.
+func TestHandleCreateTicket_BaseBranch(t *testing.T) {
+	cases := []struct {
+		name       string
+		baseBranch string
+		wantStatus int
+	}{
+		{name: "plain name", baseBranch: "develop", wantStatus: http.StatusCreated},
+		{name: "remote-tracking name", baseBranch: "origin/develop", wantStatus: http.StatusCreated},
+		{name: "trimmed", baseBranch: "  develop  ", wantStatus: http.StatusCreated},
+		{name: "space inside", baseBranch: "bad name", wantStatus: http.StatusBadRequest},
+		{name: "leading dash", baseBranch: "-nope", wantStatus: http.StatusBadRequest},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var got string
+			svc := &mockService{
+				createFn: func(req CreateTicketRequest) (TicketInfo, error) {
+					got = req.BaseBranch
+					return TicketInfo{ID: "tst-001", BaseBranch: req.BaseBranch}, nil
+				},
+			}
+			srv := startHandlerTestServer(t, svc)
+
+			body := fmt.Sprintf(`{"title":"t","path":"~/repo","base_branch":%q}`, tc.baseBranch)
+			res := post(t, srv, "/api/tickets", body)
+			assert.Equal(t, tc.wantStatus, res.statusCode)
+
+			if tc.wantStatus == http.StatusCreated {
+				assert.Equal(t, strings.TrimSpace(tc.baseBranch), got, "handler should trim before passing on")
+				var tkt TicketInfo
+				require.NoError(t, json.Unmarshal([]byte(res.body), &tkt))
+				assert.Equal(t, strings.TrimSpace(tc.baseBranch), tkt.BaseBranch)
+			} else {
+				assert.Contains(t, res.body, "invalid base branch name")
+				assert.Equal(t, "", got, "no ticket should have been created")
+			}
+		})
+	}
+}
+
 // --- POST /api/tickets/{id}/init ---
 
 func TestHandleInit_Success(t *testing.T) {
@@ -825,6 +868,55 @@ func TestHandleUpdateTicket_AgentNewline(t *testing.T) {
 	res := put(t, srv, "/api/tickets/t-001", `{"agent":"claude\nevil"}`)
 	assert.Equal(t, http.StatusBadRequest, res.statusCode)
 	assert.Contains(t, res.body, "newlines")
+}
+
+// TestHandleUpdateTicket_BaseBranch covers base_branch on update. Only the
+// name's format is checked here: a branch that does not exist is accepted,
+// because whether it exists depends on the repository at the ticket's path,
+// which can change after the update. The daemon fails at worktree creation and
+// pauses the ticket instead.
+func TestHandleUpdateTicket_BaseBranch(t *testing.T) {
+	cases := []struct {
+		name       string
+		body       string
+		wantStatus int
+		wantValue  string
+	}{
+		{name: "set", body: `{"base_branch":"develop"}`, wantStatus: http.StatusOK, wantValue: "develop"},
+		{name: "clear", body: `{"base_branch":""}`, wantStatus: http.StatusOK, wantValue: ""},
+		{name: "trimmed", body: `{"base_branch":"  develop  "}`, wantStatus: http.StatusOK, wantValue: "develop"},
+		{
+			name:       "branch that does not exist is still accepted",
+			body:       `{"base_branch":"devlop"}`,
+			wantStatus: http.StatusOK,
+			wantValue:  "devlop",
+		},
+		{name: "malformed", body: `{"base_branch":"bad name"}`, wantStatus: http.StatusBadRequest},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tkt := TicketInfo{ID: "t-001", Title: "My ticket", Status: "open", BaseBranch: "existing"}
+			svc := &mockService{tickets: []TicketInfo{tkt}}
+			svc.updateFn = func(_ string, req UpdateTicketRequest) error {
+				require.NotNil(t, req.BaseBranch)
+				svc.tickets[0].BaseBranch = *req.BaseBranch
+				return nil
+			}
+			srv := startHandlerTestServer(t, svc)
+
+			res := put(t, srv, "/api/tickets/t-001", tc.body)
+			assert.Equal(t, tc.wantStatus, res.statusCode)
+
+			if tc.wantStatus != http.StatusOK {
+				assert.Contains(t, res.body, "invalid base branch name")
+				assert.Equal(t, "existing", svc.tickets[0].BaseBranch, "existing value must be untouched")
+				return
+			}
+			var result TicketInfo
+			require.NoError(t, json.Unmarshal([]byte(res.body), &result))
+			assert.Equal(t, tc.wantValue, result.BaseBranch)
+		})
+	}
 }
 
 // --- POST /api/tickets/upload ---

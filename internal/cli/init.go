@@ -85,7 +85,9 @@ func Enable(cfg *config.Config, taskID string, w io.Writer) error {
 		return err
 	}
 	if val == string(ticket.StatusTodo) {
-		if err := CheckRepo(t.Path); err != nil {
+		// Empty base: init is not a creation surface, so an unresolvable
+		// base_branch on the ticket stays uncaught here and pauses at pickup.
+		if err := CheckRepo(t.Path, ""); err != nil {
 			return err
 		}
 	}

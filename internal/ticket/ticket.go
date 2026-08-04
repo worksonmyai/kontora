@@ -70,22 +70,25 @@ type HistoryEntry struct {
 }
 
 type Ticket struct {
-	ID          string         `yaml:"id"`
-	Kontora     bool           `yaml:"kontora"`
-	Status      Status         `yaml:"status"`
-	Pipeline    string         `yaml:"pipeline"`
-	Path        string         `yaml:"path"`
-	Agent       string         `yaml:"agent"`
-	Stage       string         `yaml:"stage"`
-	Attempt     int            `yaml:"attempt"`
-	StartedAt   *time.Time     `yaml:"started_at"`
-	CompletedAt *time.Time     `yaml:"completed_at"`
-	Branch      string         `yaml:"branch"`
-	History     []HistoryEntry `yaml:"history"`
-	Created     *time.Time     `yaml:"created"`
-	LastError   string         `yaml:"last_error"`
-	LastLog     string         `yaml:"last_log"`
-	Summary     string         `yaml:"summary"`
+	ID          string     `yaml:"id"`
+	Kontora     bool       `yaml:"kontora"`
+	Status      Status     `yaml:"status"`
+	Pipeline    string     `yaml:"pipeline"`
+	Path        string     `yaml:"path"`
+	Agent       string     `yaml:"agent"`
+	Stage       string     `yaml:"stage"`
+	Attempt     int        `yaml:"attempt"`
+	StartedAt   *time.Time `yaml:"started_at"`
+	CompletedAt *time.Time `yaml:"completed_at"`
+	Branch      string     `yaml:"branch"`
+	// BaseBranch names the branch the work branch starts from. Empty means the
+	// repository's default branch.
+	BaseBranch string         `yaml:"base_branch"`
+	History    []HistoryEntry `yaml:"history"`
+	Created    *time.Time     `yaml:"created"`
+	LastError  string         `yaml:"last_error"`
+	LastLog    string         `yaml:"last_log"`
+	Summary    string         `yaml:"summary"`
 	// ClaimedBy records the daemon instance that last picked the ticket up. It
 	// is consulted only while Status is in_progress, to keep daemons on a shared
 	// tickets_dir from stealing or killing each other's work.

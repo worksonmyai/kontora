@@ -720,6 +720,13 @@ func ticketBranch(cfg *config.Config, t *ticket.Ticket) string {
 	return worktree.BranchName(cfg.BranchPrefixFor(t.Path), t.ID)
 }
 
+// ticketBase returns the branch a ticket's worktree is cut from. Empty means
+// the repository's default branch. Unlike ticketBranch it takes no config
+// snapshot, because no config value feeds it.
+func ticketBase(t *ticket.Ticket) string {
+	return strings.TrimSpace(t.BaseBranch)
+}
+
 // removeWorktreeAt removes the git worktree at wtPath. Logs but does not
 // propagate errors — a failed cleanup should not block ticket completion.
 // Dirty worktrees are preserved (branch and directory kept intact).
@@ -1348,7 +1355,10 @@ func (d *Daemon) prepareWorktreeForAgent(log *slog.Logger, t *ticket.Ticket, fil
 		return "", "", false
 	}
 
-	wtPath, created, err := d.worktrees.Create(repoPath, repoName, ticketID, branch)
+	wtPath, created, err := d.worktrees.Create(worktree.CreateOpts{
+		RepoPath: repoPath, RepoName: repoName, TaskID: ticketID,
+		Branch: branch, Base: ticketBase(t),
+	})
 	if err != nil {
 		log.Error("create worktree failed", "path", repoPath, "err", err)
 		d.pauseTicket(t, filePath, "create worktree failed: "+err.Error())

@@ -1556,6 +1556,12 @@
                           class="w-full h-8 bg-surface-800 border border-surface-700 rounded-[7px] px-[10px] text-[12.5px] text-tx-2 font-mono focus:outline-none focus:border-accent"
                           :placeholder="branchPrefixFor(editForm.path) + '/' + selectedTicket?.id">
                       </div>
+                      <div class="mb-4">
+                        <label class="text-xs font-mono text-surface-600 mb-1 flex items-center gap-1.5"><svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="opacity-50"><line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>Base branch</label>
+                        <input type="text" x-model="editForm.base_branch" @change="saveEdit()"
+                          class="w-full h-8 bg-surface-800 border border-surface-700 rounded-[7px] px-[10px] text-[12.5px] text-tx-2 font-mono focus:outline-none focus:border-accent"
+                          placeholder="repo default">
+                      </div>
                       <div class="flex items-center justify-between mb-1">
                         <label class="text-xs font-mono text-surface-600 flex items-center gap-1.5"><svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="opacity-50"><line x1="17" y1="10" x2="3" y2="10"/><line x1="21" y1="6" x2="3" y2="6"/><line x1="21" y1="14" x2="3" y2="14"/><line x1="17" y1="18" x2="3" y2="18"/></svg>Body</label>
                         <span x-show="editSubmitting" class="text-xs font-mono text-surface-600">saving...</span>
@@ -1695,6 +1701,10 @@
                         @click.stop="copyBranch(selectedTicket?.branch)"
                         x-text="copiedBranch === selectedTicket?.branch ? '✓ copied' : selectedTicket?.branch"></button>
                 </template>
+                <template x-if="selectedTicket?.base_branch"><span class="text-surface-600">base branch</span></template>
+                <template x-if="selectedTicket?.base_branch">
+                  <span class="text-tx-2 break-all" x-text="selectedTicket?.base_branch"></span>
+                </template>
                 <span class="text-surface-600">path</span>
                 <span class="text-tx-2 break-all" x-text="selectedTicket?.path" :title="selectedTicket?.path"></span>
                 <template x-if="selectedTicket?.last_log"><span class="text-surface-600">log</span></template>
@@ -1818,6 +1828,14 @@
                      class="w-full bg-surface-800 border border-surface-700/50 rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40"
                      :placeholder="branchPrefixFor(createForm.path) + '/…'">
               <p class="text-[11px] text-surface-600 mt-0.5">Leave empty to auto-generate from ticket ID.</p>
+            </div>
+
+            <div>
+              <label for="new-base-branch" class="text-[13px] font-mono text-tx-3 mb-1 flex items-center gap-1.5"><svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="opacity-50"><line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>Base branch</label>
+              <input id="new-base-branch" x-model="createForm.base_branch" type="text"
+                     class="w-full bg-surface-800 border border-surface-700/50 rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40"
+                     placeholder="repo default">
+              <p class="text-[11px] text-surface-600 mt-0.5">Branch the work branch starts from. Leave empty for the repository's default branch.</p>
             </div>
 
             <div class="flex justify-end gap-2 pt-3 border-t border-surface-700/30">
@@ -2524,6 +2542,10 @@
             <div style="display:flex;align-items:flex-start;gap:12px;padding:11px 14px;border-bottom:1px solid rgba(var(--surface-700),.3);">
               <span style="font-family:'JetBrains Mono',monospace;font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:rgba(var(--surface-600),1);width:74px;flex:none;padding-top:1px;">Branch</span>
               <span style="font-family:'JetBrains Mono',monospace;font-size:12px;color:rgba(var(--tx-2),1);flex:1;min-width:0;word-break:break-all;line-height:1.5;" x-text="selectedTicket?.branch || '—'"></span>
+            </div>
+            <div style="display:flex;align-items:flex-start;gap:12px;padding:11px 14px;border-bottom:1px solid rgba(var(--surface-700),.3);">
+              <span style="font-family:'JetBrains Mono',monospace;font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:rgba(var(--surface-600),1);width:74px;flex:none;padding-top:1px;">Base</span>
+              <span style="font-family:'JetBrains Mono',monospace;font-size:12px;color:rgba(var(--tx-2),1);flex:1;min-width:0;word-break:break-all;line-height:1.5;" x-text="selectedTicket?.base_branch || 'repo default'"></span>
             </div>
             <template x-if="mobileHasRun(selectedTicket) && selectedTicket?.stage">
               <div style="display:flex;align-items:flex-start;gap:12px;padding:11px 14px;border-bottom:1px solid rgba(var(--surface-700),.3);">

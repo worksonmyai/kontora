@@ -283,6 +283,8 @@ func cmdNew() {
 	repoPath := fs.String("path", "", "repository path (defaults to current git root)")
 	pipeline := fs.String("pipeline", "", "pipeline name, or \"none\" to skip the project default")
 	agent := fs.String("agent", "", "agent name, or \"none\" to skip the project default")
+	branch := fs.String("branch", "", "work branch name (defaults to <branch_prefix>/<id>)")
+	baseBranch := fs.String("base-branch", "", "branch the work branch starts from (defaults to the repo default branch)")
 	urlFlag, tokenFlag := addRemoteFlags(fs)
 	if err := fs.Parse(os.Args[2:]); err != nil {
 		log.Fatalf("parsing flags: %v", err)
@@ -300,10 +302,12 @@ func cmdNew() {
 			log.Fatal("remote new requires --path (a path on the daemon host)")
 		}
 		info, err := rc.CreateTicket(web.CreateTicketRequest{
-			Title:    title,
-			Path:     *repoPath,
-			Pipeline: *pipeline,
-			Agent:    *agent,
+			Title:      title,
+			Path:       *repoPath,
+			Pipeline:   *pipeline,
+			Agent:      *agent,
+			Branch:     *branch,
+			BaseBranch: *baseBranch,
 		})
 		if err != nil {
 			log.Fatal(err)
@@ -325,10 +329,12 @@ func cmdNew() {
 	cfg := mustLoadConfig(*configPath)
 
 	id, err := cli.Quick(cfg, cli.QuickOpts{
-		Path:     path,
-		Pipeline: *pipeline,
-		Agent:    *agent,
-		Title:    title,
+		Path:       path,
+		Pipeline:   *pipeline,
+		Agent:      *agent,
+		Title:      title,
+		Branch:     *branch,
+		BaseBranch: *baseBranch,
 	})
 	if err != nil {
 		log.Fatal(err)
@@ -394,6 +400,7 @@ func cmdUpdate() {
 	repoPath := fs.String("path", "", "set repository path")
 	agent := fs.String("agent", "", "set agent override (pass \"\" or \"none\" to clear)")
 	branch := fs.String("branch", "", "set branch (pass \"\" to clear)")
+	baseBranch := fs.String("base-branch", "", "set base branch (pass \"\" to clear)")
 	urlFlag, tokenFlag := addRemoteFlags(fs)
 	taskID := parseTicketFlags(fs, os.Args[2:])
 
@@ -426,9 +433,12 @@ func cmdUpdate() {
 	if set["branch"] {
 		req.Branch = branch
 	}
+	if set["base-branch"] {
+		req.BaseBranch = baseBranch
+	}
 
-	if req.Body == nil && req.Pipeline == nil && req.Path == nil && req.Agent == nil && req.Branch == nil {
-		log.Fatal("nothing to update: pass at least one of --body-file, --pipeline, --path, --agent, --branch")
+	if req.Body == nil && req.Pipeline == nil && req.Path == nil && req.Agent == nil && req.Branch == nil && req.BaseBranch == nil {
+		log.Fatal("nothing to update: pass at least one of --body-file, --pipeline, --path, --agent, --branch, --base-branch")
 	}
 
 	if rc := remoteClient(*urlFlag, *tokenFlag); rc != nil {

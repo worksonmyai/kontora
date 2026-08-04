@@ -82,17 +82,38 @@ func FindWorktreeForBranch(repoPath, branch string) (string, error) {
 	return "", nil
 }
 
-func (m *Manager) Create(repoPath, repoName, taskID, branch string) (wtPath string, created bool, err error) {
+// CreateOpts describes the worktree to create.
+type CreateOpts struct {
+	RepoPath string
+	RepoName string
+	TaskID   string
+	Branch   string
+	// Base names the branch the work branch starts from. Empty means the
+	// repository's default branch. It is read only when the worktree is first
+	// created; an existing worktree for Branch is reused as-is.
+	Base string
+}
+
+func (m *Manager) Create(opts CreateOpts) (wtPath string, created bool, err error) {
+	// Reject a base that names the work branch before anything else. Behind the
+	// reuse short-circuit below, the collision would be silent: `git worktree
+	// add -b develop <path> develop` fails with "a branch named 'develop'
+	// already exists", the recovery path further down reads that as "reuse the
+	// branch", and the agent commits straight onto the base.
+	if opts.Base != "" && strings.TrimSpace(opts.Base) == opts.Branch {
+		return "", false, fmt.Errorf("base branch %q is the ticket's own work branch", opts.Branch)
+	}
+
 	// Ask git, not the filesystem, whether a worktree for this branch already
 	// exists. This handles old-layout worktrees, user-created worktrees in
 	// arbitrary locations, and idempotent re-entry for this ticket.
-	if existing, err := FindWorktreeForBranch(repoPath, branch); err != nil {
+	if existing, err := FindWorktreeForBranch(opts.RepoPath, opts.Branch); err != nil {
 		return "", false, fmt.Errorf("finding existing worktree: %w", err)
 	} else if existing != "" {
 		return existing, false, nil
 	}
 
-	wtPath = m.Path(repoName, taskID)
+	wtPath = m.Path(opts.RepoName, opts.TaskID)
 
 	if err := os.MkdirAll(filepath.Dir(wtPath), 0o755); err != nil {
 		return "", false, fmt.Errorf("creating worktree parent dir: %w", err)
@@ -108,13 +129,13 @@ func (m *Manager) Create(repoPath, repoName, taskID, branch string) (wtPath stri
 	}
 	wtPath = filepath.Join(resolved, filepath.Base(wtPath))
 
-	base, err := DetectDefaultBranch(repoPath)
+	base, err := ResolveBase(opts.RepoPath, opts.Base)
 	if err != nil {
-		return "", false, fmt.Errorf("detecting default branch: %w", err)
+		return "", false, err
 	}
 
-	cmd := exec.Command("git", "worktree", "add", "-b", branch, wtPath, base)
-	cmd.Dir = repoPath
+	cmd := exec.Command("git", "worktree", "add", "-b", opts.Branch, wtPath, base)
+	cmd.Dir = opts.RepoPath
 	if out, err := cmd.CombinedOutput(); err != nil {
 		msg := strings.TrimSpace(string(out))
 		if !strings.Contains(msg, "already exists") {
@@ -122,8 +143,8 @@ func (m *Manager) Create(repoPath, repoName, taskID, branch string) (wtPath stri
 		}
 		// Branch exists but worktree directory is gone (e.g. after crash or manual removal).
 		// Reuse the existing branch.
-		cmd = exec.Command("git", "worktree", "add", wtPath, branch)
-		cmd.Dir = repoPath
+		cmd = exec.Command("git", "worktree", "add", wtPath, opts.Branch)
+		cmd.Dir = opts.RepoPath
 		if out, err := cmd.CombinedOutput(); err != nil {
 			// Another goroutine may have created the worktree concurrently.
 			if _, statErr := os.Stat(wtPath); statErr == nil {
@@ -134,6 +155,31 @@ func (m *Manager) Create(repoPath, repoName, taskID, branch string) (wtPath stri
 	}
 
 	return wtPath, true, nil
+}
+
+// ResolveBase returns the ref to branch from. An empty base falls back to the
+// repository's default branch. A non-empty base must name a branch: it is
+// looked up as a local branch first, then as a remote-tracking branch, so
+// "develop" and "origin/develop" both work while tags, raw SHAs, and revisions
+// like "HEAD~1" do not. Kontora never fetches, so a branch that exists only on
+// the remote does not resolve.
+func ResolveBase(repoPath, base string) (string, error) {
+	base = strings.TrimSpace(base)
+	if base == "" {
+		branch, err := DetectDefaultBranch(repoPath)
+		if err != nil {
+			return "", fmt.Errorf("detecting default branch: %w", err)
+		}
+		return branch, nil
+	}
+	for _, ns := range []string{"refs/heads/", "refs/remotes/"} {
+		cmd := exec.Command("git", "rev-parse", "--verify", "--quiet", ns+base)
+		cmd.Dir = repoPath
+		if err := cmd.Run(); err == nil {
+			return ns + base, nil
+		}
+	}
+	return "", fmt.Errorf("base branch %q not found in %s (looked for a local or remote-tracking branch)", base, repoPath)
 }
 
 // DetectDefaultBranch determines the default branch for a git repository.

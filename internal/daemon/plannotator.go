@@ -106,6 +106,9 @@ func (d *Daemon) StartPlannotatorReview(id string) error {
 	}
 	cfg := d.config()
 	branch := ticketBranch(cfg, t)
+	// Snapshot the base for the same reason as the branch: the review runs in a
+	// goroutine and the ticket file can change while it is running.
+	base := ticketBase(t)
 	reviewPath := d.worktrees.Path(repoName, id) + ".plannotator"
 
 	binaryPath, err := d.plannotatorLookup(cfg.Plannotator.Binary)
@@ -130,12 +133,12 @@ func (d *Daemon) StartPlannotatorReview(id string) error {
 
 	// The whole run uses the settings the review started with, so a reload
 	// mid-review cannot change the timeout or the reviews directory.
-	go d.runPlannotator(ctx, log, cfg.Plannotator, id, binaryPath, repoPath, branch, reviewPath)
+	go d.runPlannotator(ctx, log, cfg.Plannotator, id, binaryPath, repoPath, branch, base, reviewPath)
 
 	return nil
 }
 
-func (d *Daemon) runPlannotator(ctx context.Context, log *slog.Logger, pcfg config.Plannotator, id, binaryPath, repoPath, branch, reviewPath string) {
+func (d *Daemon) runPlannotator(ctx context.Context, log *slog.Logger, pcfg config.Plannotator, id, binaryPath, repoPath, branch, base, reviewPath string) {
 	defer func() {
 		d.mu.Lock()
 		if cancel, ok := d.plannotator[id]; ok {
@@ -145,7 +148,7 @@ func (d *Daemon) runPlannotator(ctx context.Context, log *slog.Logger, pcfg conf
 		d.mu.Unlock()
 	}()
 
-	reviewWt, cleanup, err := setupPlannotatorWorktree(log, repoPath, branch, reviewPath)
+	reviewWt, cleanup, err := setupPlannotatorWorktree(log, repoPath, branch, base, reviewPath)
 	if err != nil {
 		log.Error("plannotator: setup review worktree failed", "err", err)
 		d.broker.Broadcast(web.TicketEvent{
@@ -326,7 +329,10 @@ func (d *Daemon) runReworkStage(ctx, taskCtx context.Context, cfg *config.Config
 	}
 
 	branch := ticketBranch(cfg, t)
-	wtPath, _, err := d.worktrees.Create(repoPath, repoName, ticketID, branch)
+	wtPath, _, err := d.worktrees.Create(worktree.CreateOpts{
+		RepoPath: repoPath, RepoName: repoName, TaskID: ticketID,
+		Branch: branch, Base: ticketBase(t),
+	})
 	if err != nil {
 		log.Error("rework: create worktree failed", "err", err)
 		d.pauseTicket(t, filePath, "rework: create worktree failed: "+err.Error())
@@ -448,7 +454,8 @@ func (d *Daemon) reworkAgent(cfg *config.Config, t *ticket.Ticket) string {
 }
 
 // setupPlannotatorWorktree creates a disposable detached worktree at the
-// merge-base of the ticket branch and the repo's default branch, then applies
+// merge-base of the ticket branch and the ticket's base branch, or the repo's
+// default branch when unset, then applies
 // the branch's diff on top as unstaged changes. Plannotator's default
 // "unstaged" view then shows everything the agent committed without the
 // daemon having to touch the ticket branch itself.
@@ -458,13 +465,13 @@ func (d *Daemon) reworkAgent(cfg *config.Config, t *ticket.Ticket) string {
 // branch itself does. Returns the path to the review worktree and a cleanup
 // function that removes it. The cleanup is safe to call once, regardless of
 // outcome.
-func setupPlannotatorWorktree(log *slog.Logger, repoPath, branch, reviewPath string) (string, func(), error) {
-	defaultBranch, err := worktree.DetectDefaultBranch(repoPath)
+func setupPlannotatorWorktree(log *slog.Logger, repoPath, branch, base, reviewPath string) (string, func(), error) {
+	baseRef, err := worktree.ResolveBase(repoPath, base)
 	if err != nil {
-		return "", nil, fmt.Errorf("detect default branch: %w", err)
+		return "", nil, fmt.Errorf("resolve base branch: %w", err)
 	}
 
-	mergeBase, err := runGit(repoPath, "merge-base", defaultBranch, branch)
+	mergeBase, err := runGit(repoPath, "merge-base", baseRef, branch)
 	if err != nil {
 		return "", nil, fmt.Errorf("merge-base: %w", err)
 	}

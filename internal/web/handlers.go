@@ -211,6 +211,13 @@ func (s *Server) handleCreateTicket(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid branch name"})
 		return
 	}
+	// Format only. That the base names an existing branch is checked further
+	// down in CheckRepo, which has the repository path.
+	req.BaseBranch = strings.TrimSpace(req.BaseBranch)
+	if req.BaseBranch != "" && !validBranchName(req.BaseBranch) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid base branch name"})
+		return
+	}
 
 	tkt, err := s.svc.CreateTicket(req)
 	if err != nil {
@@ -279,6 +286,17 @@ func (s *Server) handleUpdateTicket(w http.ResponseWriter, r *http.Request) {
 		req.Branch = &trimmed
 		if trimmed != "" && !validBranchName(trimmed) {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid branch name"})
+			return
+		}
+	}
+	// Format only. Whether the base exists depends on the repository at the
+	// ticket's path, which can change after an update, so it is left to the
+	// daemon: worktree.Create fails and pauses the ticket with the git error.
+	if req.BaseBranch != nil {
+		trimmed := strings.TrimSpace(*req.BaseBranch)
+		req.BaseBranch = &trimmed
+		if trimmed != "" && !validBranchName(trimmed) {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid base branch name"})
 			return
 		}
 	}

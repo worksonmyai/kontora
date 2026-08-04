@@ -34,7 +34,26 @@ These are set when creating a ticket (manually or via `kontora new`):
 | `pipeline` | no | — | Name of the pipeline to run (must exist in config). Filled in at creation from a matching [project](configuration.md#projects) when one is configured and no pipeline is given. When it ends up empty, the ticket runs in standalone mode with the default agent. |
 | `agent` | no | — | Override the agent for this ticket. Applies to standalone tickets or overrides the pipeline's agent at every stage. Filled in at creation from a matching [project](configuration.md#projects) when one is configured and no agent is given. |
 | `path` | yes | — | Path to the repository (supports `~`, e.g., `~/projects/kontora`). |
+| `base_branch` | no | — | Branch the ticket's work branch starts from. Empty means the repository's default branch. See [Base branch](#base-branch). |
 | `created` | no | — | RFC 3339 timestamp. Set automatically by `kontora new`. |
+
+#### Base branch
+
+Kontora normally cuts a ticket's worktree from the repository's default branch. Set `base_branch` to start it somewhere else:
+
+```yaml
+base_branch: develop
+```
+
+The value must name a branch. Kontora looks it up as a local branch first (`refs/heads/develop`) and then as a remote-tracking branch (`refs/remotes/origin/develop`), so both `develop` and `origin/develop` work. Tags, raw commit SHAs, and revision expressions such as `HEAD~1` are rejected, even when the name looks like a branch: a `v1.0` tag does not resolve unless a `v1.0` branch also exists.
+
+Kontora never runs `git fetch`, so `base_branch: develop` uses whatever the local `develop` points at right now. A branch that exists only on the remote does not resolve.
+
+The base applies once, when the worktree is first created. Changing `base_branch` afterwards does not move, recreate, or rebase the work branch, because that could discard the agent's work. It does change how later human reviews are built: the review diff is measured from the merge-base of the work branch and the resolved base, so a ticket based on `develop` shows only the agent's commits and not `develop`'s.
+
+`base_branch` must not name the ticket's own work branch. That combination fails worktree creation and pauses the ticket. Without the check, git would silently check the base branch out and the agent would commit onto it.
+
+When `base_branch` is set through `kontora new` or `POST /api/tickets`, Kontora checks that the branch exists before writing the ticket file. The check is skipped for a ticket created with `status: open`, which is not ready to run and never reaches the repository check. A hand-written ticket or a value set through `kontora update` is not checked up front either, because the repository at `path` can change afterwards. Such a value surfaces later: `git worktree add` fails, the daemon pauses the ticket, and the resolution error is written to `last_error`.
 
 ### Daemon-managed fields
 

@@ -70,6 +70,9 @@ type CreateTicketRequest struct {
 	Status   string `json:"status,omitempty"`
 	Body     string `json:"body,omitempty"`
 	Branch   string `json:"branch,omitempty"`
+	// BaseBranch names the branch the work branch starts from. Empty means the
+	// repository's default branch.
+	BaseBranch string `json:"base_branch,omitempty"`
 }
 
 type InitTicketRequest struct {
@@ -80,11 +83,12 @@ type InitTicketRequest struct {
 }
 
 type UpdateTicketRequest struct {
-	Body     *string `json:"body,omitempty"`
-	Pipeline *string `json:"pipeline,omitempty"`
-	Path     *string `json:"path,omitempty"`
-	Agent    *string `json:"agent,omitempty"`
-	Branch   *string `json:"branch,omitempty"`
+	Body       *string `json:"body,omitempty"`
+	Pipeline   *string `json:"pipeline,omitempty"`
+	Path       *string `json:"path,omitempty"`
+	Agent      *string `json:"agent,omitempty"`
+	Branch     *string `json:"branch,omitempty"`
+	BaseBranch *string `json:"base_branch,omitempty"`
 }
 
 type PipelineInfo struct {
@@ -147,6 +151,7 @@ type TicketInfo struct {
 	StartedAt     *time.Time    `json:"started_at,omitempty"`
 	UpdatedAt     *time.Time    `json:"updated_at,omitempty"`
 	Branch        string        `json:"branch,omitempty"`
+	BaseBranch    string        `json:"base_branch,omitempty"`
 	ClaimedBy     string        `json:"claimed_by,omitempty"`
 	Stages        []string      `json:"stages,omitempty"`
 	History       []HistoryInfo `json:"history,omitempty"`
@@ -267,6 +272,7 @@ func TicketInfoFromView(v app.View) TicketInfo {
 		CreatedAt:     v.CreatedAt,
 		StartedAt:     v.StartedAt,
 		Branch:        v.Branch,
+		BaseBranch:    v.BaseBranch,
 		ClaimedBy:     v.ClaimedBy,
 		Stages:        v.Stages,
 		Body:          v.Body,

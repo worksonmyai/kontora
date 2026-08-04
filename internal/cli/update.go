@@ -73,6 +73,11 @@ func Update(cfg *config.Config, id string, req web.UpdateTicketRequest) error {
 			return err
 		}
 	}
+	if req.BaseBranch != nil {
+		if err := t.SetField("base_branch", *req.BaseBranch); err != nil {
+			return err
+		}
+	}
 	if req.Body != nil {
 		t.SetBody(*req.Body)
 	}

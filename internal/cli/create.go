@@ -34,7 +34,10 @@ type NewOpts struct {
 	Title    string
 	Body     string
 	Branch   string
-	NoEdit   bool
+	// BaseBranch names the branch the work branch starts from. Empty means the
+	// repository's default branch.
+	BaseBranch string
+	NoEdit     bool
 }
 
 // New creates a ticket file and optionally opens it in $EDITOR.
@@ -67,7 +70,7 @@ func New(cfg *config.Config, opts NewOpts) (string, error) {
 	}
 
 	if opts.Status != "open" {
-		if err := CheckRepo(opts.Path); err != nil {
+		if err := CheckRepo(opts.Path, opts.BaseBranch); err != nil {
 			return "", err
 		}
 	}
@@ -94,12 +97,16 @@ func New(cfg *config.Config, opts NewOpts) (string, error) {
 	if opts.Branch != "" {
 		branchLine = fmt.Sprintf("branch: %s\n", yamlQuote(opts.Branch))
 	}
+	baseBranchLine := ""
+	if opts.BaseBranch != "" {
+		baseBranchLine = fmt.Sprintf("base_branch: %s\n", yamlQuote(opts.BaseBranch))
+	}
 	body := "\n"
 	if opts.Body != "" {
 		body = "\n" + opts.Body + "\n"
 	}
-	content := fmt.Sprintf("---\nid: %s\nkontora: true\nstatus: %s\n%s%s%spath: %s\ncreated: %s\n---\n# %s\n%s",
-		id, yamlQuote(opts.Status), pipelineLine, agentLine, branchLine, yamlQuote(opts.Path), now, opts.Title, body)
+	content := fmt.Sprintf("---\nid: %s\nkontora: true\nstatus: %s\n%s%s%s%spath: %s\ncreated: %s\n---\n# %s\n%s",
+		id, yamlQuote(opts.Status), pipelineLine, agentLine, branchLine, baseBranchLine, yamlQuote(opts.Path), now, opts.Title, body)
 
 	dir := config.ExpandTilde(cfg.TicketsDir)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -120,20 +127,24 @@ func New(cfg *config.Config, opts NewOpts) (string, error) {
 }
 
 type QuickOpts struct {
-	Path     string
-	Pipeline string
-	Agent    string
-	Title    string
+	Path       string
+	Pipeline   string
+	Agent      string
+	Title      string
+	Branch     string
+	BaseBranch string
 }
 
 // Quick creates a ticket file without opening an editor. Status defaults to todo.
 func Quick(cfg *config.Config, opts QuickOpts) (string, error) {
 	return New(cfg, NewOpts{
-		Path:     opts.Path,
-		Pipeline: opts.Pipeline,
-		Agent:    opts.Agent,
-		Status:   "todo",
-		Title:    opts.Title,
-		NoEdit:   true,
+		Path:       opts.Path,
+		Pipeline:   opts.Pipeline,
+		Agent:      opts.Agent,
+		Status:     "todo",
+		Title:      opts.Title,
+		Branch:     opts.Branch,
+		BaseBranch: opts.BaseBranch,
+		NoEdit:     true,
 	})
 }

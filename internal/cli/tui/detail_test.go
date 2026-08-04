@@ -140,6 +140,17 @@ func TestDetailModel_View(t *testing.T) {
 	assert.Contains(t, view, "p pause")
 }
 
+func TestDetailModel_ViewBaseBranch(t *testing.T) {
+	info := testDetailTicket()
+	assert.NotContains(t, newDetailModel(info, 100, 30).View(), "base",
+		"no base row when the ticket uses the repo default")
+
+	info.BaseBranch = "develop"
+	view := newDetailModel(info, 100, 30).View()
+	assert.Contains(t, view, "base")
+	assert.Contains(t, view, "develop")
+}
+
 func TestDetailModel_ViewShowsAgent(t *testing.T) {
 	info := testDetailTicket()
 	m := newDetailModel(info, 100, 30)

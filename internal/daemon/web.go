@@ -89,15 +89,16 @@ func (d *Daemon) CreateTicket(req web.CreateTicketRequest) (web.TicketInfo, erro
 	d.recordSelfWrite(filePath)
 
 	_, err = cli.New(cfg, cli.NewOpts{
-		ID:       id,
-		Path:     req.Path,
-		Pipeline: req.Pipeline,
-		Agent:    req.Agent,
-		Status:   req.Status,
-		Title:    req.Title,
-		Body:     req.Body,
-		Branch:   req.Branch,
-		NoEdit:   true,
+		ID:         id,
+		Path:       req.Path,
+		Pipeline:   req.Pipeline,
+		Agent:      req.Agent,
+		Status:     req.Status,
+		Title:      req.Title,
+		Body:       req.Body,
+		Branch:     req.Branch,
+		BaseBranch: req.BaseBranch,
+		NoEdit:     true,
 	})
 	if err != nil {
 		return web.TicketInfo{}, fmt.Errorf("creating ticket: %w", err)
@@ -556,6 +557,11 @@ func (d *Daemon) UpdateTicket(id string, req web.UpdateTicketRequest) error {
 			return err
 		}
 	}
+	if req.BaseBranch != nil {
+		if err := t2.SetField("base_branch", *req.BaseBranch); err != nil {
+			return err
+		}
+	}
 	if req.Body != nil {
 		t2.SetBody(*req.Body)
 	}
@@ -636,10 +642,11 @@ func (d *Daemon) GetActivity(id string, stage string, run int) (web.ActivityInfo
 }
 
 // GetChanges reports the commits and changed files on a ticket's branch
-// relative to the repository's default branch, computed at request time so
-// the data stays available after the worktree is removed. An empty branch
-// field or a branch that no longer exists yields an empty payload rather
-// than an error: the branch may have been merged and deleted.
+// relative to the ticket's base branch, or the repository's default branch
+// when the ticket sets none, computed at request time so the data stays
+// available after the worktree is removed. An empty branch field or a branch
+// that no longer exists yields an empty payload rather than an error: the
+// branch may have been merged and deleted.
 func (d *Daemon) GetChanges(id string) (web.ChangesInfo, error) {
 	d.mu.Lock()
 	ts, ok := d.tickets[id]
@@ -649,6 +656,7 @@ func (d *Daemon) GetChanges(id string) (web.ChangesInfo, error) {
 	}
 	branch := ts.ticket.Branch
 	ticketPath := ts.ticket.Path
+	base := ticketBase(ts.ticket)
 	d.mu.Unlock()
 
 	info := web.ChangesInfo{
@@ -661,9 +669,12 @@ func (d *Daemon) GetChanges(id string) (web.ChangesInfo, error) {
 	}
 	repoPath := expandTilde(ticketPath)
 
-	base, err := worktree.DetectDefaultBranch(repoPath)
+	baseRef, err := worktree.ResolveBase(repoPath, base)
 	if err != nil {
 		return web.ChangesInfo{}, err
+	}
+	if base == "" {
+		base = baseRef
 	}
 	info.Base = base
 
@@ -671,13 +682,13 @@ func (d *Daemon) GetChanges(id string) (web.ChangesInfo, error) {
 		return info, nil
 	}
 
-	commits, err := gitCommits(repoPath, base, branch)
+	commits, err := gitCommits(repoPath, baseRef, branch)
 	if err != nil {
 		return web.ChangesInfo{}, err
 	}
 	info.Commits = commits
 
-	files, err := gitNumstat(repoPath, base, branch)
+	files, err := gitNumstat(repoPath, baseRef, branch)
 	if err != nil {
 		return web.ChangesInfo{}, err
 	}

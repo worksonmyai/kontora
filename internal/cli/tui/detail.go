@@ -155,6 +155,9 @@ func (m detailModel) View() string {
 	}
 	if m.ticket.Kontora {
 		writeMeta(&b, "branch", m.ticket.Branch)
+		if m.ticket.BaseBranch != "" {
+			writeMeta(&b, "base", m.ticket.BaseBranch)
+		}
 	}
 
 	// Stage progress

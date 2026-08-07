@@ -884,26 +884,27 @@ func TestPiSessionLogMaterialization(t *testing.T) {
 
 	capturingRunner := func(_ context.Context, p RunnerParams) (process.Result, error) {
 		capturedParams = p
+		stage := strings.TrimSuffix(filepath.Base(p.LogFile), ".log")
 		// Simulate pipe-pane writing raw PTY output to the log file.
 		require.NoError(t, os.MkdirAll(filepath.Dir(p.LogFile), 0o755))
 		require.NoError(t, os.WriteFile(p.LogFile, []byte("raw PTY output from pipe-pane"), 0o644))
 		// Write a fake pi session JSONL to the session dir.
 		if p.SessionDir != "" {
 			require.NoError(t, os.MkdirAll(p.SessionDir, 0o755))
-			sessionFile := filepath.Join(p.SessionDir, "session-abc.jsonl")
+			sessionFile := filepath.Join(p.SessionDir, "session-"+stage+".jsonl")
 			jsonl := strings.Join([]string{
 				`{"type":"model_change","modelId":"opus-4"}`,
 				`{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"I will check the tests."}]}}`,
 				`{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","name":"bash","arguments":{"command":"go test ./..."}}]}}`,
 				`{"type":"message","message":{"role":"toolResult","toolName":"bash","content":[{"type":"text","text":"PASS\n"}]}}`,
-				`{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"All tests pass."}]}}`,
+				`{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"finished ` + stage + `."}]}}`,
 			}, "\n")
 			require.NoError(t, os.WriteFile(sessionFile, []byte(jsonl), 0o644))
 		}
 		return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now()}, nil
 	}
 
-	cfg := h.defaultConfig("pi", "true")
+	cfg := h.defaultConfig("pi", "pi")
 	d := New(cfg,
 		WithLogger(testLogger(t)),
 		WithDebounce(50*time.Millisecond),
@@ -921,7 +922,7 @@ func TestPiSessionLogMaterialization(t *testing.T) {
 
 	time.Sleep(200 * time.Millisecond)
 
-	h.writeTicket("tst-pisl.md", h.taskMD("tst-pisl", "todo", "one-stage"))
+	h.writeTicket("tst-pisl.md", h.taskMD("tst-pisl", "todo", "two-stage"))
 	h.waitForStatus("tst-pisl.md", ticket.StatusDone, 10*time.Second)
 
 	// Verify SessionDir was set and --session-dir was in args.
@@ -930,19 +931,21 @@ func TestPiSessionLogMaterialization(t *testing.T) {
 	idx := slices.Index(capturedParams.Args, "--session-dir")
 	assert.Equal(t, capturedParams.SessionDir, capturedParams.Args[idx+1])
 
-	// Verify the log file contains formatted output, not raw JSONL.
-	logFile := filepath.Join(h.logsDir, "tst-pisl", "step1.log")
-	logContent, err := os.ReadFile(logFile)
-	require.NoError(t, err, "log file should exist")
+	// Verify each stage log holds formatted output from its own session, not
+	// raw JSONL and not the other stage's session.
+	for _, stage := range []string{"step1", "step2"} {
+		logContent, err := os.ReadFile(filepath.Join(h.logsDir, "tst-pisl", stage+".log"))
+		require.NoError(t, err, "log file for %s should exist", stage)
 
-	content := string(logContent)
-	assert.Contains(t, content, "[opus-4]")
-	assert.Contains(t, content, "I will check the tests.")
-	assert.Contains(t, content, "> bash go test ./...")
-	assert.Contains(t, content, "PASS")
-	assert.Contains(t, content, "All tests pass.")
-	assert.NotContains(t, content, `"type":"message"`, "log should be formatted, not raw JSONL")
-	assert.NotContains(t, content, "raw PTY output", "JSONL materialization should overwrite pipe-pane output")
+		content := string(logContent)
+		assert.Contains(t, content, "[opus-4]")
+		assert.Contains(t, content, "I will check the tests.")
+		assert.Contains(t, content, "> bash go test ./...")
+		assert.Contains(t, content, "PASS")
+		assert.Contains(t, content, "finished "+stage+".")
+		assert.NotContains(t, content, `"type":"message"`, "log should be formatted, not raw JSONL")
+		assert.NotContains(t, content, "raw PTY output", "JSONL materialization should overwrite pipe-pane output")
+	}
 
 	cancel()
 	require.NoError(t, <-errCh)
@@ -952,14 +955,21 @@ func TestPiSessionLogMaterializationMissing(t *testing.T) {
 	h := newHarness(t)
 
 	capturingRunner := func(_ context.Context, p RunnerParams) (process.Result, error) {
+		stage := strings.TrimSuffix(filepath.Base(p.LogFile), ".log")
 		// Simulate pipe-pane writing raw PTY output to the log file.
 		require.NoError(t, os.MkdirAll(filepath.Dir(p.LogFile), 0o755))
 		require.NoError(t, os.WriteFile(p.LogFile, []byte("raw PTY fallback output"), 0o644))
-		// Don't create session dir — simulate pi not writing any session files.
+		// Only the first stage writes a session file; the second simulates pi
+		// writing none.
+		if p.SessionDir != "" && stage == "step1" {
+			require.NoError(t, os.MkdirAll(p.SessionDir, 0o755))
+			jsonl := `{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"step1 session text."}]}}`
+			require.NoError(t, os.WriteFile(filepath.Join(p.SessionDir, "session-step1.jsonl"), []byte(jsonl), 0o644))
+		}
 		return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now()}, nil
 	}
 
-	cfg := h.defaultConfig("pi", "true")
+	cfg := h.defaultConfig("pi", "pi")
 	d := New(cfg,
 		WithLogger(testLogger(t)),
 		WithDebounce(50*time.Millisecond),
@@ -977,16 +987,17 @@ func TestPiSessionLogMaterializationMissing(t *testing.T) {
 
 	time.Sleep(200 * time.Millisecond)
 
-	h.writeTicket("tst-pmis.md", h.taskMD("tst-pmis", "todo", "one-stage"))
+	h.writeTicket("tst-pmis.md", h.taskMD("tst-pmis", "todo", "two-stage"))
 
 	// Ticket should still complete even if pi session JSONL is missing.
 	h.waitForStatus("tst-pmis.md", ticket.StatusDone, 10*time.Second)
 
-	// Verify the raw PTY output survives as fallback when JSONL is missing.
-	logFile := filepath.Join(h.logsDir, "tst-pmis", "step1.log")
-	logContent, err := os.ReadFile(logFile)
+	// Verify the raw PTY output survives as fallback when JSONL is missing, and
+	// that the stage without a session does not inherit the other stage's.
+	logContent, err := os.ReadFile(filepath.Join(h.logsDir, "tst-pmis", "step2.log"))
 	require.NoError(t, err, "log file should exist from pipe-pane")
 	assert.Contains(t, string(logContent), "raw PTY fallback output", "pipe-pane output should survive when JSONL materialization fails")
+	assert.NotContains(t, string(logContent), "step1 session text.", "a stage without a session must not show another stage's log")
 
 	cancel()
 	require.NoError(t, <-errCh)

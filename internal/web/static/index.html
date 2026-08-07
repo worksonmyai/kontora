@@ -1146,6 +1146,59 @@
                   <span class="text-err/80 text-xs font-mono break-words whitespace-pre-wrap" x-text="selectedTicket.last_error"></span>
                 </div>
               </template>
+              <!-- Summary card: what the last stage run did, plus the branch's
+                   commits and changed files from the changes endpoint. -->
+              <template x-if="selectedTicket?.summary">
+                <div class="mb-5 rounded-lg border border-surface-700/50 bg-surface-900 px-4 py-3">
+                  <div class="flex items-baseline gap-2 mb-2">
+                    <span class="side-label">summary</span>
+                    <template x-if="summaryStage()">
+                      <span class="text-[10.5px] font-mono text-surface-600" x-text="'· ' + summaryStage()"></span>
+                    </template>
+                  </div>
+                  <div class="ticket-prose text-sm" x-html="renderMarkdown(selectedTicket.summary)"></div>
+                  <template x-if="earlierSummaries().length">
+                    <details class="mt-3">
+                      <summary class="text-[11px] font-mono text-surface-600 cursor-pointer hover:text-tx-2">earlier stage summaries</summary>
+                      <div class="mt-2 flex flex-col gap-3">
+                        <template x-for="(h, hi) in earlierSummaries()" :key="hi">
+                          <div>
+                            <span class="text-[10.5px] font-mono text-surface-600" x-text="h.stage"></span>
+                            <div class="ticket-prose text-sm" x-html="renderMarkdown(h.summary)"></div>
+                          </div>
+                        </template>
+                      </div>
+                    </details>
+                  </template>
+                  <template x-if="ticketChanges?.commits?.length">
+                    <div class="mt-3 pt-3 border-t border-surface-700/50">
+                      <div class="flex items-baseline gap-2 mb-2">
+                        <span class="side-label">changes</span>
+                        <span class="text-[10.5px] font-mono text-surface-600"
+                              x-text="ticketChanges.commits.length + ' commit' + (ticketChanges.commits.length === 1 ? '' : 's') + ' · ' + ticketChanges.files.length + ' file' + (ticketChanges.files.length === 1 ? '' : 's') + ' vs ' + ticketChanges.base"></span>
+                      </div>
+                      <div class="flex flex-col gap-1 font-mono text-[11px]">
+                        <template x-for="c in ticketChanges.commits" :key="c.sha">
+                          <div class="flex items-baseline gap-2 min-w-0">
+                            <span class="text-surface-600 shrink-0" x-text="c.sha"></span>
+                            <span class="text-tx-2 truncate" x-text="c.subject"></span>
+                          </div>
+                        </template>
+                      </div>
+                      <div class="mt-2 flex flex-col gap-1 font-mono text-[11px]">
+                        <template x-for="f in ticketChanges.files" :key="f.path">
+                          <div class="flex items-baseline gap-2 min-w-0">
+                            <span class="text-tx-3 truncate" x-text="f.path"></span>
+                            <span class="flex-1"></span>
+                            <span class="text-ok shrink-0" x-text="'+' + f.added"></span>
+                            <span class="text-err shrink-0" x-text="'−' + f.deleted"></span>
+                          </div>
+                        </template>
+                      </div>
+                    </div>
+                  </template>
+                </div>
+              </template>
               <!-- Editable form for editable tickets (open/todo/paused) -->
               <template x-if="editing && ['open', 'todo', 'paused'].includes(selectedTicket?.status)">
                 <div>
@@ -1649,6 +1702,30 @@
         <!-- ticket (body) -->
         <div x-show="detailTab==='ticket'" class="overflow-y-auto" style="flex:1;min-height:0;padding:18px 16px 24px;">
           <h1 style="font-family:'JetBrains Mono',monospace;font-size:19px;font-weight:700;line-height:1.35;color:rgba(var(--tx),1);margin:0 0 18px;" x-text="selectedTicket?.title"></h1>
+          <!-- Summary card: what the last stage run did, plus the branch's commits. -->
+          <template x-if="selectedTicket?.summary">
+            <div style="border:1px solid rgba(var(--surface-700),.4);border-radius:12px;background:rgba(var(--surface-900),1);padding:12px 14px;margin-bottom:20px;">
+              <div style="display:flex;align-items:baseline;gap:8px;margin-bottom:8px;font-family:'JetBrains Mono',monospace;font-size:11px;">
+                <span style="text-transform:uppercase;letter-spacing:.06em;color:rgba(var(--surface-600),1);">Summary</span>
+                <template x-if="summaryStage()">
+                  <span style="color:rgba(var(--surface-600),1);" x-text="'· ' + summaryStage()"></span>
+                </template>
+              </div>
+              <div class="ticket-prose text-sm" x-html="renderMarkdown(selectedTicket.summary)"></div>
+              <template x-if="ticketChanges?.commits?.length">
+                <div style="margin-top:10px;padding-top:10px;border-top:1px solid rgba(var(--surface-700),.3);font-family:'JetBrains Mono',monospace;font-size:11px;">
+                  <div style="color:rgba(var(--surface-600),1);margin-bottom:6px;"
+                       x-text="ticketChanges.commits.length + ' commit' + (ticketChanges.commits.length === 1 ? '' : 's') + ' · ' + ticketChanges.files.length + ' file' + (ticketChanges.files.length === 1 ? '' : 's') + ' vs ' + ticketChanges.base"></div>
+                  <template x-for="c in ticketChanges.commits" :key="c.sha">
+                    <div style="display:flex;align-items:baseline;gap:8px;min-width:0;line-height:1.7;">
+                      <span style="color:rgba(var(--surface-600),1);flex:none;" x-text="c.sha"></span>
+                      <span style="color:rgba(var(--tx-2),1);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" x-text="c.subject"></span>
+                    </div>
+                  </template>
+                </div>
+              </template>
+            </div>
+          </template>
           <div style="border:1px solid rgba(var(--surface-700),.4);border-radius:12px;overflow:hidden;background:rgba(var(--surface-900),1);margin-bottom:20px;">
             <div style="display:flex;align-items:flex-start;gap:12px;padding:11px 14px;border-bottom:1px solid rgba(var(--surface-700),.3);">
               <span style="font-family:'JetBrains Mono',monospace;font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:rgba(var(--surface-600),1);width:74px;flex:none;padding-top:1px;">Pipeline</span>

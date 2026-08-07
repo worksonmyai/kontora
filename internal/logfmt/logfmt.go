@@ -80,6 +80,45 @@ func Fmt(r io.Reader, w io.Writer) error {
 	return scanner.Err()
 }
 
+// LastAssistantText reads Claude session JSONL from r and returns the joined
+// text blocks of the last assistant message that carries text. Messages whose
+// content is tool calls only are skipped. Returns "" when no assistant message
+// has text.
+func LastAssistantText(r io.Reader) (string, error) {
+	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, 0, maxScanBuf), maxScanBuf)
+
+	var last string
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+
+		var ev streamEvent
+		if err := json.Unmarshal(line, &ev); err != nil {
+			continue
+		}
+		if ev.Type != "assistant" {
+			continue
+		}
+		if text := joinTextBlocks(ev.Message.Content); text != "" {
+			last = text
+		}
+	}
+	return last, scanner.Err()
+}
+
+func joinTextBlocks(blocks []contentBlock) string {
+	var parts []string
+	for _, b := range blocks {
+		if b.Type == "text" && b.Text != "" {
+			parts = append(parts, b.Text)
+		}
+	}
+	return strings.Join(parts, "\n")
+}
+
 type streamEvent struct {
 	Type       string `json:"type"`
 	Subtype    string `json:"subtype"`
@@ -200,7 +239,7 @@ func FmtPi(r io.Reader, w io.Writer) error {
 					}
 				}
 			case "toolResult":
-				resultText := piToolResultText(ev.Message.Content)
+				resultText := piTextBlocks(ev.Message.Content)
 				if summary := formatToolResultSummary(ev.Message.ToolName, resultText); summary != "" {
 					fmt.Fprintf(w, "  ⎿  %s\n", summary)
 				}
@@ -208,6 +247,35 @@ func FmtPi(r io.Reader, w io.Writer) error {
 		}
 	}
 	return scanner.Err()
+}
+
+// LastAssistantTextPi reads pi session JSONL from r and returns the joined
+// text blocks of the last assistant message that carries text. Messages whose
+// content is tool calls or thinking only are skipped. Returns "" when no
+// assistant message has text.
+func LastAssistantTextPi(r io.Reader) (string, error) {
+	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, 0, maxScanBuf), maxScanBuf)
+
+	var last string
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+
+		var ev piEntry
+		if err := json.Unmarshal(line, &ev); err != nil {
+			continue
+		}
+		if ev.Type != "message" || ev.Message.Role != "assistant" {
+			continue
+		}
+		if text := piTextBlocks(ev.Message.Content); text != "" {
+			last = text
+		}
+	}
+	return last, scanner.Err()
 }
 
 type piEntry struct {
@@ -227,9 +295,10 @@ type piContentBlock struct {
 	Arguments map[string]any `json:"arguments,omitempty"` // toolCall arguments
 }
 
-// piToolResultText extracts the result text from pi's toolResult content blocks.
-// Pi stores results as [{"type":"text","text":"..."}] arrays.
-func piToolResultText(blocks []piContentBlock) string {
+// piTextBlocks joins the text blocks of a pi message's content. Pi stores
+// text as [{"type":"text","text":"..."}] arrays in both toolResult and
+// assistant messages.
+func piTextBlocks(blocks []piContentBlock) string {
 	var parts []string
 	for _, b := range blocks {
 		if b.Type == "text" && b.Text != "" {

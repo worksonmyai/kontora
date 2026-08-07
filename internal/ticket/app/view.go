@@ -30,6 +30,7 @@ type View struct {
 	Body          string
 	LastError     string
 	LastLog       string
+	Summary       string
 }
 
 // HistoryView is a single history entry in a View.
@@ -39,6 +40,7 @@ type HistoryView struct {
 	ExitCode    int
 	StartedAt   *time.Time
 	CompletedAt *time.Time
+	Summary     string
 }
 
 // BuildView projects a ticket into a View using config for agent/stage resolution.
@@ -97,11 +99,13 @@ func BuildView(cfg *config.Config, t *ticket.Ticket, detail bool) View {
 					ExitCode:    h.ExitCode,
 					StartedAt:   h.StartedAt,
 					CompletedAt: h.CompletedAt,
+					Summary:     h.Summary,
 				}
 			}
 		}
 		v.LastError = t.LastError
 		v.LastLog = t.LastLog
+		v.Summary = t.Summary
 		v.Body = t.Body
 	}
 

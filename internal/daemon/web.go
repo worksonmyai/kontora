@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"maps"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -18,6 +20,7 @@ import (
 	"github.com/worksonmyai/kontora/internal/ticket/app"
 	"github.com/worksonmyai/kontora/internal/tmux"
 	"github.com/worksonmyai/kontora/internal/web"
+	"github.com/worksonmyai/kontora/internal/worktree"
 )
 
 // RunningAgents returns the number of agents currently running.
@@ -425,6 +428,36 @@ func (d *Daemon) AddNote(id string, text string) error {
 	return nil
 }
 
+// SetSummary sets a ticket's summary frontmatter field, mirroring the local
+// cli.Summary path.
+func (d *Daemon) SetSummary(id string, text string) error {
+	d.mu.Lock()
+	ts, ok := d.tickets[id]
+	if !ok {
+		d.mu.Unlock()
+		return web.ErrTicketNotFound
+	}
+	filePath := ts.filePath
+	d.mu.Unlock()
+
+	t2, err := ticket.ParseFile(filePath)
+	if err != nil {
+		return err
+	}
+	if err := t2.SetField("summary", text); err != nil {
+		return fmt.Errorf("setting summary: %w", err)
+	}
+	if err := d.writeTicket(t2, filePath); err != nil {
+		return err
+	}
+
+	d.mu.Lock()
+	d.setTicketState(id, t2, filePath)
+	d.broadcastTicketUpdate(id)
+	d.mu.Unlock()
+	return nil
+}
+
 // InitTicket initializes a non-kontora ticket: sets pipeline, path, kontora=true,
 // status=todo, stage to the first pipeline stage, and enqueues it.
 func (d *Daemon) InitTicket(id string, req web.InitTicketRequest) error {
@@ -530,6 +563,103 @@ func (d *Daemon) GetLogs(id string, stage string) (string, error) {
 		return "", err
 	}
 	return buf.String(), nil
+}
+
+// GetChanges reports the commits and changed files on a ticket's branch
+// relative to the repository's default branch, computed at request time so
+// the data stays available after the worktree is removed. An empty branch
+// field or a branch that no longer exists yields an empty payload rather
+// than an error: the branch may have been merged and deleted.
+func (d *Daemon) GetChanges(id string) (web.ChangesInfo, error) {
+	d.mu.Lock()
+	ts, ok := d.tickets[id]
+	if !ok {
+		d.mu.Unlock()
+		return web.ChangesInfo{}, web.ErrTicketNotFound
+	}
+	branch := ts.ticket.Branch
+	ticketPath := ts.ticket.Path
+	d.mu.Unlock()
+
+	info := web.ChangesInfo{
+		Branch:  branch,
+		Commits: []web.CommitInfo{},
+		Files:   []web.FileChangeInfo{},
+	}
+	if branch == "" || ticketPath == "" {
+		return info, nil
+	}
+	repoPath := expandTilde(ticketPath)
+
+	base, err := worktree.DetectDefaultBranch(repoPath)
+	if err != nil {
+		return web.ChangesInfo{}, err
+	}
+	info.Base = base
+
+	if !gitBranchExists(repoPath, branch) {
+		return info, nil
+	}
+
+	commits, err := gitCommits(repoPath, base, branch)
+	if err != nil {
+		return web.ChangesInfo{}, err
+	}
+	info.Commits = commits
+
+	files, err := gitNumstat(repoPath, base, branch)
+	if err != nil {
+		return web.ChangesInfo{}, err
+	}
+	info.Files = files
+	return info, nil
+}
+
+func gitBranchExists(repoPath, branch string) bool {
+	cmd := exec.Command("git", "rev-parse", "--verify", "--quiet", "refs/heads/"+branch)
+	cmd.Dir = repoPath
+	return cmd.Run() == nil
+}
+
+// gitCommits lists the commits on branch that are not on base, newest first.
+func gitCommits(repoPath, base, branch string) ([]web.CommitInfo, error) {
+	cmd := exec.Command("git", "log", "--no-merges", "--format=%h%x09%s", base+".."+branch)
+	cmd.Dir = repoPath
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("git log: %s: %w", strings.TrimSpace(string(out)), err)
+	}
+	commits := []web.CommitInfo{}
+	for line := range strings.SplitSeq(strings.TrimSpace(string(out)), "\n") {
+		sha, subject, ok := strings.Cut(line, "\t")
+		if !ok {
+			continue
+		}
+		commits = append(commits, web.CommitInfo{SHA: sha, Subject: subject})
+	}
+	return commits, nil
+}
+
+// gitNumstat lists per-file added/deleted line counts for branch relative to
+// its merge base with base. Binary files report zero counts.
+func gitNumstat(repoPath, base, branch string) ([]web.FileChangeInfo, error) {
+	cmd := exec.Command("git", "diff", "--numstat", base+"..."+branch)
+	cmd.Dir = repoPath
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("git diff: %s: %w", strings.TrimSpace(string(out)), err)
+	}
+	files := []web.FileChangeInfo{}
+	for line := range strings.SplitSeq(strings.TrimSpace(string(out)), "\n") {
+		parts := strings.SplitN(line, "\t", 3)
+		if len(parts) != 3 {
+			continue
+		}
+		added, _ := strconv.Atoi(parts[0])
+		deleted, _ := strconv.Atoi(parts[1])
+		files = append(files, web.FileChangeInfo{Path: parts[2], Added: added, Deleted: deleted})
+	}
+	return files, nil
 }
 
 // GetRawConfig returns the daemon's on-disk config file contents.

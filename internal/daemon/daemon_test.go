@@ -2878,3 +2878,136 @@ created: 2026-01-01T00:00:00Z
 	cancel()
 	<-errCh
 }
+
+// TestStageSummaryCapture covers summary capture at stage exit: a summary the
+// agent writes into the ticket file during the run lands in both the top-level
+// field and the stage's history entry.
+func TestStageSummaryCapture(t *testing.T) {
+	h := newHarness(t)
+	ticketPath := filepath.Join(h.tasksDir, "tst-sum.md")
+
+	runner := func(_ context.Context, _ RunnerParams) (process.Result, error) {
+		tk, err := ticket.ParseFile(ticketPath)
+		require.NoError(t, err)
+		require.NoError(t, tk.SetField("summary", "agent-written summary"))
+		data, err := tk.Marshal()
+		require.NoError(t, err)
+		require.NoError(t, os.WriteFile(ticketPath, data, 0o644))
+		return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now()}, nil
+	}
+
+	d := New(h.cfg,
+		WithLogger(testLogger(t)),
+		WithDebounce(50*time.Millisecond),
+		WithLockPath(h.lockPath),
+		WithRunner(runner),
+		WithAgentLookup(passthroughAgentLookup),
+		WithSkipOrphanCleanup(),
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() { errCh <- d.Run(ctx) }()
+	time.Sleep(200 * time.Millisecond)
+
+	h.writeTicket("tst-sum.md", h.taskMD("tst-sum", "todo", "one-stage"))
+
+	result := h.waitForStatus("tst-sum.md", ticket.StatusDone, 10*time.Second)
+	assert.Equal(t, "agent-written summary", result.Summary)
+	require.Len(t, result.History, 1)
+	assert.Equal(t, "agent-written summary", result.History[0].Summary)
+
+	cancel()
+	require.NoError(t, <-errCh)
+}
+
+// TestStageSummaryFallback covers the fallback: when the agent writes no
+// summary, the last assistant message from the session JSONL fills the field.
+func TestStageSummaryFallback(t *testing.T) {
+	h := newHarness(t)
+
+	runner := func(_ context.Context, p RunnerParams) (process.Result, error) {
+		require.NotEmpty(t, p.SessionDir, "SessionDir should be set for pi agents")
+		require.NoError(t, os.MkdirAll(p.SessionDir, 0o755))
+		jsonl := strings.Join([]string{
+			`{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Working on it."}]}}`,
+			`{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Implemented the fix and ran the tests."}]}}`,
+		}, "\n")
+		require.NoError(t, os.WriteFile(filepath.Join(p.SessionDir, "session.jsonl"), []byte(jsonl), 0o644))
+		return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now()}, nil
+	}
+
+	cfg := h.defaultConfig("pi", "pi")
+	d := New(cfg,
+		WithLogger(testLogger(t)),
+		WithDebounce(50*time.Millisecond),
+		WithLockPath(h.lockPath),
+		WithRunner(runner),
+		WithAgentLookup(passthroughAgentLookup),
+		WithSkipOrphanCleanup(),
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() { errCh <- d.Run(ctx) }()
+	time.Sleep(200 * time.Millisecond)
+
+	h.writeTicket("tst-sfb.md", h.taskMD("tst-sfb", "todo", "one-stage"))
+
+	result := h.waitForStatus("tst-sfb.md", ticket.StatusDone, 10*time.Second)
+	assert.Equal(t, "Implemented the fix and ran the tests.", result.Summary)
+	require.Len(t, result.History, 1)
+	assert.Equal(t, "Implemented the fix and ran the tests.", result.History[0].Summary)
+
+	cancel()
+	require.NoError(t, <-errCh)
+}
+
+// TestStageSummaryPerStageRetention: a later stage that records nothing does
+// not erase the earlier stage's history summary, and the top-level field is
+// left empty rather than holding the earlier stage's text.
+func TestStageSummaryPerStageRetention(t *testing.T) {
+	h := newHarness(t)
+	ticketPath := filepath.Join(h.tasksDir, "tst-ret.md")
+
+	runner := func(_ context.Context, p RunnerParams) (process.Result, error) {
+		stage := strings.TrimSuffix(filepath.Base(p.LogFile), ".log")
+		if stage == "step1" {
+			tk, err := ticket.ParseFile(ticketPath)
+			require.NoError(t, err)
+			require.NoError(t, tk.SetField("summary", "step1 summary"))
+			data, err := tk.Marshal()
+			require.NoError(t, err)
+			require.NoError(t, os.WriteFile(ticketPath, data, 0o644))
+		}
+		return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now()}, nil
+	}
+
+	d := New(h.cfg,
+		WithLogger(testLogger(t)),
+		WithDebounce(50*time.Millisecond),
+		WithLockPath(h.lockPath),
+		WithRunner(runner),
+		WithAgentLookup(passthroughAgentLookup),
+		WithSkipOrphanCleanup(),
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() { errCh <- d.Run(ctx) }()
+	time.Sleep(200 * time.Millisecond)
+
+	h.writeTicket("tst-ret.md", h.taskMD("tst-ret", "todo", "two-stage"))
+
+	result := h.waitForStatus("tst-ret.md", ticket.StatusDone, 10*time.Second)
+	assert.Empty(t, result.Summary)
+	require.Len(t, result.History, 2)
+	assert.Equal(t, "step1 summary", result.History[0].Summary)
+	assert.Empty(t, result.History[1].Summary)
+
+	cancel()
+	require.NoError(t, <-errCh)
+}

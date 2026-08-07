@@ -315,6 +315,11 @@ func (c *Client) Note(id, text string) error {
 	return c.doJSON(http.MethodPost, "/api/tickets/"+id+"/note", map[string]string{"text": text}, nil)
 }
 
+// Summary sets a ticket's summary field.
+func (c *Client) Summary(id, text string) error {
+	return c.doJSON(http.MethodPost, "/api/tickets/"+id+"/summary", map[string]string{"text": text}, nil)
+}
+
 // ResolveID expands a ticket ID prefix to a full ID by listing tickets and
 // matching client-side, mirroring DiskRepo.Resolve: an exact match wins,
 // otherwise the first prefix match is returned.

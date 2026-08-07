@@ -795,6 +795,36 @@ func TestNote_TaskNotFound(t *testing.T) {
 	require.Error(t, Note(dir, "nonexistent", "text"))
 }
 
+func TestSummary_SetsFieldPreservingRest(t *testing.T) {
+	dir := t.TempDir()
+	writeTicket(t, dir, "tst-001.md", `---
+id: tst-001
+status: todo
+pipeline: default
+path: /tmp/testrepo
+custom_field: keep me
+---
+# Ticket one
+
+Body stays.
+`)
+
+	require.NoError(t, Summary(dir, "tst-001", "implemented the fix"))
+
+	data, err := os.ReadFile(filepath.Join(dir, "tst-001.md"))
+	require.NoError(t, err)
+	content := string(data)
+
+	assert.Contains(t, content, "summary: implemented the fix")
+	assert.Contains(t, content, "custom_field: keep me")
+	assert.Contains(t, content, "Body stays.")
+}
+
+func TestSummary_TaskNotFound(t *testing.T) {
+	dir := t.TempDir()
+	require.Error(t, Summary(dir, "nonexistent", "text"))
+}
+
 func TestDone_SetsStatusDone(t *testing.T) {
 	dir := t.TempDir()
 	writeTicket(t, dir, "tst-001.md", `---

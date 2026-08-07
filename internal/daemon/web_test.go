@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
@@ -652,6 +653,128 @@ func TestDaemon_AddNote_NotFound(t *testing.T) {
 
 	cancel()
 	require.NoError(t, <-errCh)
+}
+
+func TestDaemon_SetSummary(t *testing.T) {
+	h := newHarness(t)
+	d := h.newDaemon(h.cfg)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	h.writeTicket("tst-ssum.md", `---
+id: tst-ssum
+status: open
+pipeline: one-stage
+path: ~/some/path
+created: 2026-01-01T00:00:00Z
+---
+# Summary target
+`)
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- d.Run(ctx) }()
+	time.Sleep(200 * time.Millisecond)
+
+	require.NoError(t, d.SetSummary("tst-ssum", "implemented the fix"))
+
+	result := h.readTask("tst-ssum.md")
+	assert.Equal(t, "implemented the fix", result.Summary)
+
+	err := d.SetSummary("does-not-exist", "x")
+	assert.ErrorIs(t, err, web.ErrTicketNotFound)
+
+	cancel()
+	require.NoError(t, <-errCh)
+}
+
+func TestDaemon_GetChanges(t *testing.T) {
+	h := newHarness(t)
+	d := h.newDaemon(h.cfg)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// A ticket whose branch has one commit ahead of main, one with no branch
+	// field, and one whose branch does not exist in the repo.
+	ticketMD := func(id, branchLine string) string {
+		return fmt.Sprintf(`---
+id: %s
+status: open
+pipeline: one-stage
+path: %s
+%screated: 2026-01-01T00:00:00Z
+---
+# Changes target %s
+`, id, h.repoDir, branchLine, id)
+	}
+	h.writeTicket("tst-chg.md", ticketMD("tst-chg", "branch: feat-x\n"))
+	h.writeTicket("tst-nob.md", ticketMD("tst-nob", ""))
+	h.writeTicket("tst-gone.md", ticketMD("tst-gone", "branch: deleted-branch\n"))
+
+	for _, args := range [][]string{
+		{"checkout", "-b", "feat-x"},
+		{"commit", "--allow-empty", "-m", "add feature"},
+		{"checkout", "main"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = h.repoDir
+		out, err := cmd.CombinedOutput()
+		require.NoError(t, err, "git %v: %s", args, out)
+	}
+	writeFileOnBranch(t, h.repoDir, "feat-x", "a.txt", "one\ntwo\n")
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- d.Run(ctx) }()
+	time.Sleep(200 * time.Millisecond)
+
+	changes, err := d.GetChanges("tst-chg")
+	require.NoError(t, err)
+	assert.Equal(t, "main", changes.Base)
+	assert.Equal(t, "feat-x", changes.Branch)
+	require.Len(t, changes.Commits, 2)
+	assert.Equal(t, "add a.txt", changes.Commits[0].Subject)
+	assert.Equal(t, "add feature", changes.Commits[1].Subject)
+	assert.NotEmpty(t, changes.Commits[0].SHA)
+	require.Len(t, changes.Files, 1)
+	assert.Equal(t, web.FileChangeInfo{Path: "a.txt", Added: 2, Deleted: 0}, changes.Files[0])
+
+	// No branch field: empty payload, not an error.
+	changes, err = d.GetChanges("tst-nob")
+	require.NoError(t, err)
+	assert.Empty(t, changes.Branch)
+	assert.Empty(t, changes.Commits)
+	assert.Empty(t, changes.Files)
+
+	// Branch missing from the repo: empty payload, not an error.
+	changes, err = d.GetChanges("tst-gone")
+	require.NoError(t, err)
+	assert.Equal(t, "deleted-branch", changes.Branch)
+	assert.Empty(t, changes.Commits)
+	assert.Empty(t, changes.Files)
+
+	_, err = d.GetChanges("does-not-exist")
+	assert.ErrorIs(t, err, web.ErrTicketNotFound)
+
+	cancel()
+	require.NoError(t, <-errCh)
+}
+
+// writeFileOnBranch commits a file on the given branch and returns to main.
+func writeFileOnBranch(t *testing.T, repoDir, branch, name, content string) {
+	t.Helper()
+	require.NoError(t, os.WriteFile(filepath.Join(repoDir, name), []byte(content), 0o644))
+	for _, args := range [][]string{
+		{"checkout", branch},
+		{"add", name},
+		{"commit", "-m", "add " + name},
+		{"checkout", "main"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repoDir
+		out, err := cmd.CombinedOutput()
+		require.NoError(t, err, "git %v: %s", args, out)
+	}
 }
 
 func TestDaemon_UpdateTicket_DoneRejects(t *testing.T) {

@@ -256,6 +256,25 @@ func TestClient_NoteSendsText(t *testing.T) {
 	assert.Equal(t, "blocked on review", gotText)
 }
 
+func TestClient_SummarySendsText(t *testing.T) {
+	var gotText, gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		var body struct {
+			Text string `json:"text"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		gotText = body.Text
+		_ = json.NewEncoder(w).Encode(web.TicketInfo{ID: "tst-001"})
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "")
+	require.NoError(t, c.Summary("tst-001", "implemented the fix"))
+	assert.Equal(t, "/api/tickets/tst-001/summary", gotPath)
+	assert.Equal(t, "implemented the fix", gotText)
+}
+
 func TestClient_ServerErrorSurfaced(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)

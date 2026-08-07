@@ -139,6 +139,114 @@ func TestFmtPi(t *testing.T) {
 	}
 }
 
+func TestLastAssistantText(t *testing.T) {
+	cases := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name: "normal session returns last text message",
+			input: strings.Join([]string{
+				`{"type":"system","subtype":"init","model":"claude-opus-4-6"}`,
+				`{"type":"assistant","message":{"content":[{"type":"text","text":"Starting work."}]}}`,
+				`{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_1","name":"Bash"}]}}`,
+				`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"ok"}]}}`,
+				`{"type":"assistant","message":{"content":[{"type":"text","text":"All done."}]}}`,
+			}, "\n"),
+			want: "All done.",
+		},
+		{
+			name: "last assistant message is tool calls only",
+			input: strings.Join([]string{
+				`{"type":"assistant","message":{"content":[{"type":"text","text":"Running tests."}]}}`,
+				`{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_1","name":"Bash"}]}}`,
+			}, "\n"),
+			want: "Running tests.",
+		},
+		{
+			name:  "multiple text blocks are joined",
+			input: `{"type":"assistant","message":{"content":[{"type":"text","text":"First."},{"type":"text","text":"Second."}]}}`,
+			want:  "First.\nSecond.",
+		},
+		{
+			name:  "empty file",
+			input: "",
+			want:  "",
+		},
+		{
+			name: "malformed lines are skipped",
+			input: strings.Join([]string{
+				`{"type":"assistant","message":{"content":[{"type":"text","text":"Kept."}]}}`,
+				`not json at all`,
+			}, "\n"),
+			want: "Kept.",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := LastAssistantText(strings.NewReader(tc.input))
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
+func TestLastAssistantTextPi(t *testing.T) {
+	cases := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name: "normal session returns last assistant text",
+			input: strings.Join([]string{
+				`{"type":"model_change","modelId":"opus-4"}`,
+				`{"type":"message","message":{"role":"user","content":[{"type":"text","text":"fix tests"}]}}`,
+				`{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"I'll check the tests."}]}}`,
+				`{"type":"message","message":{"role":"toolResult","toolName":"bash","content":[{"type":"text","text":"PASS\n"}]}}`,
+				`{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"All tests pass."}]}}`,
+			}, "\n"),
+			want: "All tests pass.",
+		},
+		{
+			name: "last assistant message is tool calls only",
+			input: strings.Join([]string{
+				`{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Running tests."}]}}`,
+				`{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","name":"bash","arguments":{"command":"go test"}}]}}`,
+			}, "\n"),
+			want: "Running tests.",
+		},
+		{
+			name:  "thinking-only message is skipped",
+			input: `{"type":"message","message":{"role":"assistant","content":[{"type":"thinking","text":"hmm"}]}}`,
+			want:  "",
+		},
+		{
+			name:  "empty file",
+			input: "",
+			want:  "",
+		},
+		{
+			name: "malformed lines are skipped",
+			input: strings.Join([]string{
+				`{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Kept."}]}}`,
+				`not json at all`,
+			}, "\n"),
+			want: "Kept.",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := LastAssistantTextPi(strings.NewReader(tc.input))
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
 func TestFormatToolArg(t *testing.T) {
 	cases := []struct {
 		name     string

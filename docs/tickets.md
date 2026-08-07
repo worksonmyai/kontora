@@ -50,6 +50,7 @@ These are set and updated by the daemon as the ticket progresses through its pip
 | `branch` | Git worktree branch name (`kontora/<ticket-id>`). |
 | `history` | List of completed stage records. |
 | `last_error` | Error message from the last failed stage run. |
+| `summary` | Summary of the stage run that ended most recently: the text the agent wrote with `kontora summary`, or its final session message as a fallback. Cleared when a new stage starts; each stage keeps its own copy on its `history` entry. |
 | `claimed_by` | The daemon [`instance_name`](configuration.md) that last picked the ticket up. Written in the same update that sets `status: in_progress`. Consulted only while the ticket is `in_progress`; a stale value on a `todo` or `done` ticket is ignored. |
 
 ### Custom fields

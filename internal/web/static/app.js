@@ -1,3 +1,6 @@
+// How long the first key of a two-key shortcut stays armed.
+const KEY_SEQ_MS = 800;
+
 function kontora() {
   return {
     tickets: [],
@@ -116,6 +119,9 @@ function kontora() {
     // ticket data (agent names), so they carry no prototype: a column called
     // "constructor" must not read a function where a record is expected.
     _openMenuId: null,
+    // First key of a pending two-key shortcut, and when it was pressed.
+    _keySeq: '',
+    _keySeqAt: 0,
     _rendered: Object.create(null),
     _boardInit: false,
     // agent name -> running kontora ticket count, filled by recomputeBoard.
@@ -1547,7 +1553,38 @@ function kontora() {
       });
       document.addEventListener('keydown', function (e) {
         if (e.key === 'Escape' && self._openMenuId) self._closeCardMenu();
+        self._handleKeySequence(e);
       });
+    },
+
+    // Two-key sequences, vim style: "c" then "t" within KEY_SEQ_MS toggles the
+    // theme. A key that starts no sequence, or arrives too late, resets the
+    // buffer, so a stray "c" never leaves the next keystroke armed.
+    _handleKeySequence(e) {
+      if (e.ctrlKey || e.metaKey || e.altKey || this._isTypingTarget(e.target)) {
+        this._keySeq = '';
+        return;
+      }
+      var key = (e.key || '').toLowerCase();
+      var now = Date.now();
+      if (this._keySeq && now - this._keySeqAt > KEY_SEQ_MS) this._keySeq = '';
+      if (this._keySeq === 'c' && key === 't') {
+        this._keySeq = '';
+        e.preventDefault();
+        this.toggleTheme();
+        return;
+      }
+      this._keySeq = key === 'c' ? 'c' : '';
+      this._keySeqAt = now;
+    },
+
+    // True when the event target takes text input, so a bare shortcut key must
+    // not swallow it. Includes the terminal: xterm reads keys from a hidden
+    // textarea, and every keystroke there belongs to the agent.
+    _isTypingTarget(el) {
+      if (!el || !el.tagName) return false;
+      var tag = el.tagName.toLowerCase();
+      return tag === 'input' || tag === 'textarea' || tag === 'select' || el.isContentEditable === true;
     },
 
     // Build the clicked card's menu next to its kebab button. Closing the

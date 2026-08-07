@@ -31,8 +31,8 @@ These are set when creating a ticket (manually or via `kontora new`):
 |-------|----------|---------|-------------|
 | `id` | yes | — | Unique identifier, format `<prefix>-<4 alphanum>` (e.g., `kon-q88f`). |
 | `status` | yes | `todo` | Current ticket status (see [Status lifecycle](#status-lifecycle)). |
-| `pipeline` | no | — | Name of the pipeline to run (must exist in config). When omitted, the ticket runs in standalone mode with the default agent. |
-| `agent` | no | — | Override the agent for this ticket. Applies to standalone tickets or overrides the pipeline's agent at every stage. |
+| `pipeline` | no | — | Name of the pipeline to run (must exist in config). Filled in at creation from a matching [project](configuration.md#projects) when one is configured and no pipeline is given. When it ends up empty, the ticket runs in standalone mode with the default agent. |
+| `agent` | no | — | Override the agent for this ticket. Applies to standalone tickets or overrides the pipeline's agent at every stage. Filled in at creation from a matching [project](configuration.md#projects) when one is configured and no agent is given. |
 | `path` | yes | — | Path to the repository (supports `~`, e.g., `~/projects/kontora`). |
 | `created` | no | — | RFC 3339 timestamp. Set automatically by `kontora new`. |
 

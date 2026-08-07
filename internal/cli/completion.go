@@ -61,6 +61,7 @@ end
 # Flags: new
 complete -c kontora -n '__fish_seen_subcommand_from new' -o path -d 'Repository path' -r -F
 complete -c kontora -n '__fish_seen_subcommand_from new' -o pipeline -d 'Pipeline name' -r
+complete -c kontora -n '__fish_seen_subcommand_from new' -o agent -d 'Agent name' -r
 
 # Flags: ls
 complete -c kontora -n '__fish_seen_subcommand_from ls' -l closed -d 'Show done/cancelled tickets'

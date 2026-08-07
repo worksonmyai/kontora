@@ -123,6 +123,7 @@ pipelines:
 | `max_concurrent_agents` | no | `3` | Maximum number of agents running simultaneously. |
 | `instance_name` | no | `os.Hostname()` | Identifies this daemon when several run against one synced `tickets_dir`. Written to a ticket's `claimed_by` on pickup so daemons don't steal or kill each other's work (see [multi-machine tickets](tickets.md#running-on-multiple-machines)). Falls back to `default` if the hostname can't be read. Two machines that share a hostname must set this explicitly, or the protection can't tell them apart. |
 | `statuses` | no | — | Extra parked statuses beyond the built-ins. Agents can park tickets here via `on_success`/`on_failure`. |
+| `projects` | no | — | Per-repository default pipeline and agent (see [projects](#projects)). |
 | `environment` | no | — | Map of environment variables to set for all agent processes. |
 | `web` | no | — | Web dashboard settings (see [web](#web)). Enabled by default. |
 
@@ -262,6 +263,54 @@ pipelines:
 - The last stage must not have `on_success=next` (it must terminate with `done`, `human_review`, or a custom status).
 - A stage cannot appear more than once in the same pipeline.
 
+## projects
+
+Map of project name to a repository and the defaults tickets for it should get.
+Without a `projects:` block nothing changes: a ticket created for a repository
+with no entry still gets no pipeline and no agent.
+
+```yaml
+projects:
+  kontora:
+    path: ~/projects/kontora
+    pipeline: implement-review-commit
+    agent: claude
+  widget-api:
+    path: ~/projects/widget-api
+    pipeline: default
+```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `path` | yes | Repository the entry applies to. |
+| `pipeline` | no | Pipeline written into new tickets for this repository. |
+| `agent` | no | Agent written into new tickets for this repository. |
+
+The defaults are applied when a ticket is created (`kontora new`, `POST /api/tickets`, the TUI and web create forms) or initialized (`kontora init`, `POST /api/tickets/{id}/init`), and are written into the ticket's frontmatter. The ticket file keeps saying exactly what will run, and an existing ticket is never rewritten.
+
+A value you supply yourself wins over the project default. On `kontora init` a value the ticket file already declares wins too: the project fills a blank field, it never replaces a pipeline or an agent the ticket chose. The two fields are independent: naming a pipeline still lets the agent come from the project.
+
+`path` is matched after `~` expansion and cleaning, so `~/projects/kontora`, `/home/you/projects/kontora`, and a trailing slash all reach the same entry. Only the complete path matches. A ticket pointing at `~/projects/kontora/internal` inherits nothing, and symlinks are not resolved. A relative path is not resolved either, because only the daemon host knows what it would be relative to: `kontora new --path . "..."` matches no project. Without `--path`, `kontora new` fills in the current git root, which is absolute and does match.
+
+### Opting out with `none`
+
+Once a project sets a default pipeline, leaving `--pipeline` blank no longer produces a standalone ticket. Pass the literal `none` instead:
+
+```bash
+kontora new --path ~/projects/kontora --pipeline none "one agent run, no stages"
+```
+
+`none` means "leave this field blank and skip the project default". It is accepted wherever a command takes a pipeline or agent name: the `kontora new`, `kontora update`, and remote `kontora init` flags, the `pipeline` and `agent` fields of `POST /api/tickets`, `POST /api/tickets/{id}/init`, and `PUT /api/tickets/{id}`, the TUI create form, and the web selects. The literal string never reaches the frontmatter. Because it is reserved, a pipeline or an agent named `none` fails config validation.
+
+Only those commands read the sentinel. `pipeline: none` written by hand into a ticket that is already initialized stays there, and the daemon pauses the ticket with `unknown pipeline "none"`. Leave the field out instead.
+
+### Validation rules
+
+- `path` is required.
+- `pipeline` and `agent`, when set, must exist in `pipelines:` and `agents:`.
+- Two projects may not have paths that expand and clean to the same directory, which would make the lookup pick one at random.
+- No pipeline and no agent may be named `none`.
+
 ## Reloading the config
 
 The running daemon applies most config edits without a restart, so you can
@@ -269,8 +318,13 @@ change a prompt or an agent's arguments while agents are working.
 
 ### What reloads live
 
-`agents`, `stages`, `pipelines`, `statuses`, `environment`, `auto_pick_up`,
-`default_agent`, `branch_prefix`, and the whole `plannotator` block.
+`agents`, `stages`, `pipelines`, `projects`, `statuses`, `environment`,
+`auto_pick_up`, `default_agent`, `branch_prefix`, and the whole `plannotator`
+block.
+
+Editing `projects` reloads live, but the defaults are stamped into a ticket when
+it is created or initialized. A reload changes what the next ticket gets, never
+what an existing one already carries.
 
 ### What needs a restart
 

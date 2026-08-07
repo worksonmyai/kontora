@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -13,6 +14,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/worksonmyai/kontora/internal/testutil"
 )
 
 var (
@@ -367,6 +370,101 @@ func TestRemoteDispatch_LocalOnlyVerbsRejected(t *testing.T) {
 			out, err := runCLI(t, []string{"KONTORA_URL=http://127.0.0.1:1"}, args...)
 			require.Error(t, err, out)
 			assert.Contains(t, out, "not available in remote mode")
+		})
+	}
+}
+
+func TestNewSendsAgentToDaemon(t *testing.T) {
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/tickets" && r.Method == http.MethodPost {
+			_ = json.NewDecoder(r.Body).Decode(&gotBody)
+			_ = json.NewEncoder(w).Encode(map[string]string{"id": "abc123"})
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	out, err := runCLI(t, []string{"KONTORA_URL=" + srv.URL},
+		"new", "--path", "/repo", "--agent", "codex", "--pipeline", "none", "Remote ticket")
+	require.NoError(t, err, out)
+
+	require.NotNil(t, gotBody)
+	assert.Equal(t, "codex", gotBody["agent"])
+	assert.Equal(t, "none", gotBody["pipeline"], "the sentinel is resolved by the daemon, not the CLI")
+	assert.Equal(t, "/repo", gotBody["path"])
+}
+
+func TestNewWritesAgentAndProjectDefaults(t *testing.T) {
+	repoDir := testutil.InitRepo(t)
+	ticketsDir := t.TempDir()
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	require.NoError(t, os.WriteFile(configPath, fmt.Appendf(nil, `
+tickets_dir: %s
+default_agent: claude
+agents:
+  claude:
+    binary: claude
+  codex:
+    binary: codex
+stages:
+  code:
+    prompt: Write code.
+pipelines:
+  implement:
+    - stage: code
+      agent: claude
+      on_success: done
+      on_failure: pause
+projects:
+  repo:
+    path: %s
+    pipeline: implement
+    agent: claude
+`, ticketsDir, repoDir), 0o644))
+
+	cases := []struct {
+		name     string
+		args     []string
+		contains []string
+		absent   []string
+	}{
+		{
+			name:     "project defaults fill blank fields",
+			args:     []string{"Inherited"},
+			contains: []string{"pipeline: implement", "agent: claude"},
+		},
+		{
+			name:     "explicit agent overrides the project default",
+			args:     []string{"--agent", "codex", "Explicit agent"},
+			contains: []string{"pipeline: implement", "agent: codex"},
+		},
+		{
+			name:     "none opts the pipeline out",
+			args:     []string{"--pipeline", "none", "Standalone"},
+			contains: []string{"agent: claude"},
+			absent:   []string{"pipeline:"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			args := append([]string{"new", "--config", configPath, "--path", repoDir}, tc.args...)
+			out, err := runCLI(t, nil, args...)
+			require.NoError(t, err, out)
+
+			id := strings.Fields(out)[0]
+			data, err := os.ReadFile(filepath.Join(ticketsDir, id+".md"))
+			require.NoError(t, err)
+			content := string(data)
+
+			for _, want := range tc.contains {
+				assert.Contains(t, content, want)
+			}
+			for _, unwanted := range tc.absent {
+				assert.NotContains(t, content, unwanted)
+			}
 		})
 	}
 }

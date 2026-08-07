@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -49,6 +50,7 @@ type Config struct {
 	Agents              map[string]Agent    `yaml:"agents"`
 	Stages              map[string]Stage    `yaml:"stages"`
 	Pipelines           map[string]Pipeline `yaml:"pipelines"`
+	Projects            map[string]Project  `yaml:"projects"`
 	Statuses            []string            `yaml:"statuses"`
 	Environment         map[string]string   `yaml:"environment"`
 	Plannotator         Plannotator         `yaml:"plannotator"`
@@ -121,6 +123,30 @@ func (a Agent) IsPi() bool {
 type Stage struct {
 	Prompt  string   `yaml:"prompt"`
 	Timeout Duration `yaml:"timeout"`
+}
+
+// NoneSentinel is the literal pipeline or agent value that opts a ticket out of
+// its project's default. Validate rejects a pipeline or an agent named "none",
+// so the sentinel can never collide with a real definition.
+const NoneSentinel = "none"
+
+// ClearNone maps the sentinel to a blank value and passes everything else
+// through, so every command that takes a pipeline or an agent name reads "none"
+// the same way: leave the field empty.
+func ClearNone(value string) string {
+	if value == NoneSentinel {
+		return ""
+	}
+	return value
+}
+
+// Project names a repository and the pipeline and agent tickets created for it
+// should default to. Both defaults are optional; an entry may set one, the
+// other, or neither.
+type Project struct {
+	Path     string `yaml:"path"`
+	Pipeline string `yaml:"pipeline"`
+	Agent    string `yaml:"agent"`
 }
 
 type Pipeline []PipelineStep
@@ -305,6 +331,9 @@ func (c *Config) Validate() error {
 	}
 
 	for name, agent := range c.Agents {
+		if name == NoneSentinel {
+			return fmt.Errorf("agent %q: name is reserved for the project-default opt-out", name)
+		}
 		if agent.Binary == "" {
 			return fmt.Errorf("agent %q: binary is required", name)
 		}
@@ -342,6 +371,9 @@ func (c *Config) Validate() error {
 	}
 
 	for name, pipeline := range c.Pipelines {
+		if name == NoneSentinel {
+			return fmt.Errorf("pipeline %q: name is reserved for the project-default opt-out", name)
+		}
 		if len(pipeline) == 0 {
 			return fmt.Errorf("pipeline %q: must have at least one stage", name)
 		}
@@ -373,7 +405,93 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	return c.validateProjects()
+}
+
+// validateProjects checks entries in name order so the duplicate-path error
+// always names the same pair, whatever order the YAML map decoded in.
+func (c *Config) validateProjects() error {
+	pathOwner := make(map[string]string, len(c.Projects))
+	for _, name := range slices.Sorted(maps.Keys(c.Projects)) {
+		p := c.Projects[name]
+		if p.Path == "" {
+			return fmt.Errorf("project %q: path is required", name)
+		}
+		if p.Pipeline != "" {
+			if _, ok := c.Pipelines[p.Pipeline]; !ok {
+				return fmt.Errorf("project %q: unknown pipeline %q", name, p.Pipeline)
+			}
+		}
+		if p.Agent != "" {
+			if _, ok := c.Agents[p.Agent]; !ok {
+				return fmt.Errorf("project %q: unknown agent %q", name, p.Agent)
+			}
+		}
+		// ProjectFor matches on the normalized path, so two entries that expand
+		// to the same directory would make the lookup pick one at random.
+		norm := NormalizeRepoPath(p.Path)
+		if owner, ok := pathOwner[norm]; ok {
+			return fmt.Errorf("project %q: path %s duplicates project %q", name, norm, owner)
+		}
+		pathOwner[norm] = name
+	}
 	return nil
+}
+
+// ProjectFor returns the project configured for repoPath. Both sides are
+// compared after tilde expansion and filepath.Clean, so "~/projects/kontora",
+// the same directory written in absolute form, and a trailing slash all reach
+// the same entry.
+//
+// Only the complete path matches. A ticket pointing at a subdirectory of a
+// configured project does not inherit that project's defaults, and symlinks are
+// not resolved: a silent ancestor match would be hard to predict.
+func (c *Config) ProjectFor(repoPath string) (string, Project, bool) {
+	if len(c.Projects) == 0 || repoPath == "" {
+		return "", Project{}, false
+	}
+	want := NormalizeRepoPath(repoPath)
+	for name, p := range c.Projects {
+		if NormalizeRepoPath(p.Path) == want {
+			return name, p, true
+		}
+	}
+	return "", Project{}, false
+}
+
+// ApplyProjectDefaults resolves the pipeline and agent a ticket for repoPath
+// should carry. A blank field takes the matching project's default; the literal
+// "none" clears the field and skips that default, so a standalone ticket stays
+// reachable inside a configured project. The two fields resolve independently:
+// opting the pipeline out still inherits the project agent.
+func (c *Config) ApplyProjectDefaults(repoPath, pipeline, agent string) (resolvedPipeline, resolvedAgent string) {
+	pipelineOptOut := pipeline == NoneSentinel
+	pipeline = ClearNone(pipeline)
+	agentOptOut := agent == NoneSentinel
+	agent = ClearNone(agent)
+
+	_, project, ok := c.ProjectFor(repoPath)
+	if !ok {
+		return pipeline, agent
+	}
+	if pipeline == "" && !pipelineOptOut {
+		pipeline = project.Pipeline
+	}
+	if agent == "" && !agentOptOut {
+		agent = project.Agent
+	}
+	return pipeline, agent
+}
+
+// NormalizeRepoPath is the form in which repository paths are compared: tilde
+// expanded and cleaned. Clients that must match a project against a path typed
+// by a user need the same form, since only the daemon host knows its home
+// directory.
+func NormalizeRepoPath(path string) string {
+	if path == "" {
+		return ""
+	}
+	return filepath.Clean(ExpandTilde(path))
 }
 
 // ExpandTilde replaces a leading ~/ with the user's home directory.

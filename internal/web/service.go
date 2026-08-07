@@ -12,6 +12,7 @@ var (
 	ErrInvalidState        = errors.New("invalid state transition")
 	ErrLogNotFound         = errors.New("log not found")
 	ErrUnknownAgent        = errors.New("unknown agent")
+	ErrUnknownPipeline     = errors.New("unknown pipeline")
 	ErrDeleteRejected      = errors.New("delete rejected")
 	ErrInvalidConfig       = errors.New("invalid config")
 	ErrConfigPathNotSet    = errors.New("config path not configured")
@@ -87,10 +88,23 @@ type PipelineInfo struct {
 	DefaultAgent string   `json:"default_agent,omitempty"`
 }
 
+// ProjectInfo describes one configured project. Path is the value as written in
+// the config file; ResolvedPath is the same path tilde-expanded and cleaned, so
+// a browser can match it against an absolute path a user typed without knowing
+// the daemon host's home directory.
+type ProjectInfo struct {
+	Name         string `json:"name"`
+	Path         string `json:"path"`
+	ResolvedPath string `json:"resolved_path"`
+	Pipeline     string `json:"pipeline"`
+	Agent        string `json:"agent"`
+}
+
 type ConfigInfo struct {
 	Pipelines      []string       `json:"pipelines"`
 	PipelineInfos  []PipelineInfo `json:"pipeline_infos"`
 	Agents         []string       `json:"agents"`
+	Projects       []ProjectInfo  `json:"projects,omitempty"`
 	DefaultAgent   string         `json:"default_agent,omitempty"`
 	BranchPrefix   string         `json:"branch_prefix"`
 	CustomStatuses []string       `json:"custom_statuses,omitempty"`

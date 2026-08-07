@@ -45,7 +45,14 @@ func Enable(cfg *config.Config, taskID string, w io.Writer) error {
 		return fmt.Errorf("ticket %s has no path set — add 'path: ~/projects/...' to frontmatter", resolved)
 	}
 
-	if t.Pipeline == "" {
+	// A ticket that already says "none" asked for standalone mode; the picker
+	// would put a pipeline back.
+	standalone := t.Pipeline == config.NoneSentinel
+	if err := applyProjectDefaults(cfg, t, w); err != nil {
+		return err
+	}
+
+	if t.Pipeline == "" && !standalone {
 		names := sortedKeys(cfg.Pipelines)
 		descs := pipelineDescs(cfg, names)
 		val, err := pickOneDescsFn("pipeline", names, descs)
@@ -99,6 +106,38 @@ func Enable(cfg *config.Config, taskID string, w io.Writer) error {
 	}
 
 	fmt.Fprintf(w, "%s %s\n", styleFaint.Render(resolved), styleOK.Render("initialized"))
+	return nil
+}
+
+// applyProjectDefaults fills the ticket's blank pipeline and agent from the
+// project configured for its path and clears the "none" opt-out, so neither the
+// picker nor the frontmatter ever sees the sentinel.
+func applyProjectDefaults(cfg *config.Config, t *ticket.Ticket, w io.Writer) error {
+	pipeline, agent := cfg.ApplyProjectDefaults(t.Path, t.Pipeline, t.Agent)
+	if pipeline == t.Pipeline && agent == t.Agent {
+		return nil
+	}
+
+	var taken []string
+	if pipeline != t.Pipeline {
+		if err := t.SetField("pipeline", pipeline); err != nil {
+			return fmt.Errorf("setting pipeline: %w", err)
+		}
+		if pipeline != "" {
+			taken = append(taken, "pipeline "+pipeline)
+		}
+	}
+	if agent != t.Agent {
+		if err := t.SetField("agent", agent); err != nil {
+			return fmt.Errorf("setting agent: %w", err)
+		}
+		if agent != "" {
+			taken = append(taken, "agent "+agent)
+		}
+	}
+	if name, _, ok := cfg.ProjectFor(t.Path); ok && len(taken) > 0 {
+		fmt.Fprintf(w, "%s %s\n", styleFaint.Render("project "+name), strings.Join(taken, " · "))
+	}
 	return nil
 }
 

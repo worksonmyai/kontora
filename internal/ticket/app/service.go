@@ -264,19 +264,41 @@ func (s *Service) Init(id string, req InitRequest) (Result, error) {
 	}
 
 	cfg := s.cfg()
-	if req.Pipeline != "" {
-		pipelineCfg, ok := cfg.Pipelines[req.Pipeline]
+
+	// The project is keyed by the path the ticket ends up with, which req.Path
+	// overrides when set.
+	repoPath := req.Path
+	if repoPath == "" {
+		repoPath = t.Path
+	}
+	// A blank request field keeps what the ticket file already declares, so a
+	// project default fills a field instead of replacing a value the ticket
+	// chose. "none" is how a caller asks for the field to be cleared.
+	pipeline, agent := req.Pipeline, req.Agent
+	if pipeline == "" {
+		pipeline = t.Pipeline
+	}
+	if agent == "" {
+		agent = t.Agent
+	}
+	pipeline, agent = cfg.ApplyProjectDefaults(repoPath, pipeline, agent)
+
+	if pipeline != "" {
+		pipelineCfg, ok := cfg.Pipelines[pipeline]
 		if !ok || len(pipelineCfg) == 0 {
-			return Result{}, fmt.Errorf("%w: unknown pipeline %q", ErrInvalidState, req.Pipeline)
+			return Result{}, fmt.Errorf("%w: unknown pipeline %q", ErrInvalidState, pipeline)
 		}
 	}
-	if req.Agent != "" {
-		if _, ok := cfg.Agents[req.Agent]; !ok {
-			return Result{}, fmt.Errorf("%w %q", ErrUnknownAgent, req.Agent)
+	// Init validates what it writes. An agent the ticket already carries is
+	// left alone, and the daemon reports it at spawn if the config has since
+	// dropped it.
+	if agent != "" && agent != t.Agent {
+		if _, ok := cfg.Agents[agent]; !ok {
+			return Result{}, fmt.Errorf("%w %q", ErrUnknownAgent, agent)
 		}
 	}
 
-	if err := t.SetField("pipeline", req.Pipeline); err != nil {
+	if err := t.SetField("pipeline", pipeline); err != nil {
 		return Result{}, fmt.Errorf("setting pipeline: %w", err)
 	}
 	if req.Path != "" {
@@ -284,8 +306,11 @@ func (s *Service) Init(id string, req InitRequest) (Result, error) {
 			return Result{}, fmt.Errorf("setting path: %w", err)
 		}
 	}
-	if req.Agent != "" {
-		if err := t.SetField("agent", req.Agent); err != nil {
+	// Writing only on a change keeps init from stamping an empty agent field
+	// onto a ticket that never had one, while still clearing one that "none"
+	// opted out of.
+	if agent != t.Agent {
+		if err := t.SetField("agent", agent); err != nil {
 			return Result{}, fmt.Errorf("setting agent: %w", err)
 		}
 	}
@@ -306,10 +331,10 @@ func (s *Service) Init(id string, req InitRequest) (Result, error) {
 		return Result{}, fmt.Errorf("setting status: %w", err)
 	}
 
-	if req.Pipeline != "" {
+	if pipeline != "" {
 		stageName := req.Stage
 		if stageName == "" {
-			stageName = cfg.Pipelines[req.Pipeline][0].Stage
+			stageName = cfg.Pipelines[pipeline][0].Stage
 		}
 		if err := t.SetField("stage", stageName); err != nil {
 			return Result{}, fmt.Errorf("setting stage: %w", err)

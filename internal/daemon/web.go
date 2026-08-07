@@ -205,6 +205,7 @@ func (d *Daemon) GetConfig() web.ConfigInfo {
 			ResolvedPath: config.NormalizeRepoPath(p.Path),
 			Pipeline:     p.Pipeline,
 			Agent:        p.Agent,
+			BranchPrefix: p.BranchPrefix,
 		}
 	}
 	return web.ConfigInfo{

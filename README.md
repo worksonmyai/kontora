@@ -126,7 +126,7 @@ pipelines:
 
 Stages share a git worktree. Artifacts are passed as files — one stage writes `PLAN.md`, the next reads it via `{{ file "PLAN.md" }}`.
 
-**Projects** are optional. Each one names a repository and the pipeline and agent that new tickets for it should default to:
+**Projects** are optional. Each one names a repository and the pipeline, agent, and branch prefix that new tickets for it should default to:
 
 ```yaml
 projects:
@@ -134,6 +134,7 @@ projects:
     path: ~/projects/kontora
     pipeline: implement-review-commit
     agent: claude
+    branch_prefix: kontora
 ```
 
 `kontora new --path ~/projects/kontora "..."` then writes both fields into the ticket. Pass `--pipeline none` for a standalone ticket instead.

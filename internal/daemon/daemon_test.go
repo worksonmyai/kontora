@@ -1435,6 +1435,49 @@ func (h *testHarness) waitForWorktreeGone(ticketID string, timeout time.Duration
 	h.t.Fatalf("worktree still exists at %s after %v", wtPath, timeout)
 }
 
+func TestTicketBranch(t *testing.T) {
+	cfg := &config.Config{
+		BranchPrefix: "kontora",
+		Projects: map[string]config.Project{
+			"kontora": {Path: "/repos/kontora", BranchPrefix: "feature"},
+			"sigil":   {Path: "/repos/sigil"},
+		},
+	}
+
+	cases := []struct {
+		name string
+		tkt  ticket.Ticket
+		want string
+	}{
+		{
+			name: "project prefix",
+			tkt:  ticket.Ticket{ID: "tst-1", Path: "/repos/kontora"},
+			want: "feature/tst-1",
+		},
+		{
+			name: "project without a prefix falls back",
+			tkt:  ticket.Ticket{ID: "tst-2", Path: "/repos/sigil"},
+			want: "kontora/tst-2",
+		},
+		{
+			name: "unconfigured repository falls back",
+			tkt:  ticket.Ticket{ID: "tst-3", Path: "/repos/other"},
+			want: "kontora/tst-3",
+		},
+		{
+			name: "branch already set wins",
+			tkt:  ticket.Ticket{ID: "tst-4", Path: "/repos/kontora", Branch: "mine/tst-4"},
+			want: "mine/tst-4",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, ticketBranch(cfg, &tc.tkt))
+		})
+	}
+}
+
 func TestWorktreeCleanupOnComplete(t *testing.T) {
 	h := newHarness(t)
 	d := h.newDaemon(h.cfg)

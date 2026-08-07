@@ -98,6 +98,7 @@ type ProjectInfo struct {
 	ResolvedPath string `json:"resolved_path"`
 	Pipeline     string `json:"pipeline"`
 	Agent        string `json:"agent"`
+	BranchPrefix string `json:"branch_prefix,omitempty"`
 }
 
 type ConfigInfo struct {

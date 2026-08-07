@@ -140,13 +140,14 @@ func ClearNone(value string) string {
 	return value
 }
 
-// Project names a repository and the pipeline and agent tickets created for it
-// should default to. Both defaults are optional; an entry may set one, the
-// other, or neither.
+// Project names a repository and the pipeline, agent, and branch prefix
+// tickets created for it should default to. Every default is optional; an entry
+// may set any of them, or none.
 type Project struct {
-	Path     string `yaml:"path"`
-	Pipeline string `yaml:"pipeline"`
-	Agent    string `yaml:"agent"`
+	Path         string `yaml:"path"`
+	Pipeline     string `yaml:"pipeline"`
+	Agent        string `yaml:"agent"`
+	BranchPrefix string `yaml:"branch_prefix"`
 }
 
 type Pipeline []PipelineStep
@@ -481,6 +482,16 @@ func (c *Config) ApplyProjectDefaults(repoPath, pipeline, agent string) (resolve
 		agent = project.Agent
 	}
 	return pipeline, agent
+}
+
+// BranchPrefixFor returns the branch prefix branches for repoPath are named
+// with: the prefix of the project that owns the path, or the top-level
+// branch_prefix when the project sets none or the path belongs to no project.
+func (c *Config) BranchPrefixFor(repoPath string) string {
+	if _, project, ok := c.ProjectFor(repoPath); ok && project.BranchPrefix != "" {
+		return project.BranchPrefix
+	}
+	return c.BranchPrefix
 }
 
 // NormalizeRepoPath is the form in which repository paths are compared: tilde

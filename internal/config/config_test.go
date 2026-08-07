@@ -816,7 +816,7 @@ func TestLoadProjects(t *testing.T) {
 	name, p, ok := cfg.ProjectFor(filepath.Join(home, "projects", "kontora"))
 	require.True(t, ok)
 	assert.Equal(t, "kontora", name)
-	assert.Equal(t, Project{Path: "~/projects/kontora", Pipeline: "implement", Agent: "claude"}, p)
+	assert.Equal(t, Project{Path: "~/projects/kontora", Pipeline: "implement", Agent: "claude", BranchPrefix: "feature"}, p)
 }
 
 func TestLoadProjectsRejected(t *testing.T) {
@@ -908,6 +908,37 @@ func TestProjectFor(t *testing.T) {
 			assert.Equal(t, tc.wantName, name)
 			assert.Equal(t, "implement", p.Pipeline)
 			assert.Equal(t, "claude", p.Agent)
+		})
+	}
+}
+
+func TestBranchPrefixFor(t *testing.T) {
+	home := t.TempDir()
+	cfg := &Config{
+		BranchPrefix: "kontora",
+		Projects: map[string]Project{
+			"kontora": {Path: "~/projects/kontora", BranchPrefix: "feature"},
+			"sigil":   {Path: "~/projects/sigil"},
+		},
+	}
+
+	cases := []struct {
+		name   string
+		lookup string
+		want   string
+	}{
+		{name: "project prefix", lookup: "~/projects/kontora", want: "feature"},
+		{name: "project prefix by absolute path", lookup: filepath.Join(home, "projects", "kontora"), want: "feature"},
+		{name: "project without a prefix falls back", lookup: "~/projects/sigil", want: "kontora"},
+		{name: "unconfigured path falls back", lookup: "~/projects/other", want: "kontora"},
+		{name: "no path falls back", lookup: "", want: "kontora"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("HOME", home)
+
+			assert.Equal(t, tc.want, cfg.BranchPrefixFor(tc.lookup))
 		})
 	}
 }

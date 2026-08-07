@@ -115,7 +115,7 @@ pipelines:
 | Field | Required | Default | Description |
 |-------|----------|---------|-------------|
 | `tickets_dir` | no | `~/.kontora/tickets` | Directory containing ticket markdown files. |
-| `branch_prefix` | no | `kontora` | Git branch prefix. Branches are named `<prefix>/<ticket-id>`. |
+| `branch_prefix` | no | `kontora` | Git branch prefix. Branches are named `<prefix>/<ticket-id>`. A project can override it (see [projects](#projects)). |
 | `worktrees_dir` | no | `~/.kontora/worktrees` | Where git worktrees are created. |
 | `logs_dir` | no | `~/.kontora/logs` | Where agent output logs are stored. |
 | `editor` | no | `$EDITOR` or `vi` | Editor for `kontora edit`. Falls back to `$EDITOR`, then `vi`. |
@@ -123,7 +123,7 @@ pipelines:
 | `max_concurrent_agents` | no | `3` | Maximum number of agents running simultaneously. |
 | `instance_name` | no | `os.Hostname()` | Identifies this daemon when several run against one synced `tickets_dir`. Written to a ticket's `claimed_by` on pickup so daemons don't steal or kill each other's work (see [multi-machine tickets](tickets.md#running-on-multiple-machines)). Falls back to `default` if the hostname can't be read. Two machines that share a hostname must set this explicitly, or the protection can't tell them apart. |
 | `statuses` | no | — | Extra parked statuses beyond the built-ins. Agents can park tickets here via `on_success`/`on_failure`. |
-| `projects` | no | — | Per-repository default pipeline and agent (see [projects](#projects)). |
+| `projects` | no | — | Per-repository default pipeline, agent, and branch prefix (see [projects](#projects)). |
 | `environment` | no | — | Map of environment variables to set for all agent processes. |
 | `web` | no | — | Web dashboard settings (see [web](#web)). Enabled by default. |
 
@@ -285,8 +285,15 @@ projects:
 | `path` | yes | Repository the entry applies to. |
 | `pipeline` | no | Pipeline written into new tickets for this repository. |
 | `agent` | no | Agent written into new tickets for this repository. |
+| `branch_prefix` | no | Overrides the top-level `branch_prefix` for this repository. |
 
-The defaults are applied when a ticket is created (`kontora new`, `POST /api/tickets`, the TUI and web create forms) or initialized (`kontora init`, `POST /api/tickets/{id}/init`), and are written into the ticket's frontmatter. The ticket file keeps saying exactly what will run, and an existing ticket is never rewritten.
+`branch_prefix` is resolved differently from the other two. `pipeline` and
+`agent` are stamped into the ticket when it is created; the branch prefix is
+read when the daemon generates the branch name, so a ticket whose `branch` field
+is empty picks up the current value. A ticket that already carries a `branch`
+keeps it.
+
+The pipeline and agent defaults are applied when a ticket is created (`kontora new`, `POST /api/tickets`, the TUI and web create forms) or initialized (`kontora init`, `POST /api/tickets/{id}/init`), and are written into the ticket's frontmatter. The ticket file keeps saying exactly what will run, and an existing ticket is never rewritten.
 
 A value you supply yourself wins over the project default. On `kontora init` a value the ticket file already declares wins too: the project fills a blank field, it never replaces a pipeline or an agent the ticket chose. The two fields are independent: naming a pipeline still lets the agent come from the project.
 
@@ -322,9 +329,11 @@ change a prompt or an agent's arguments while agents are working.
 `auto_pick_up`, `default_agent`, `branch_prefix`, and the whole `plannotator`
 block.
 
-Editing `projects` reloads live, but the defaults are stamped into a ticket when
-it is created or initialized. A reload changes what the next ticket gets, never
-what an existing one already carries.
+Editing `projects` reloads live, but the pipeline and agent defaults are stamped
+into a ticket when it is created or initialized. A reload changes what the next
+ticket gets, never what an existing one already carries. A project's
+`branch_prefix` is not stamped, so a reload also changes the branch of an
+existing ticket that has not been given one yet.
 
 ### What needs a restart
 

@@ -20,5 +20,6 @@ projects:
     path: ~/projects/kontora
     pipeline: implement
     agent: claude
+    branch_prefix: feature
   widget-api:
     path: ~/projects/widget-api

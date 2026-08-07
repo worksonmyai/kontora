@@ -680,7 +680,7 @@ func ticketBranch(cfg *config.Config, t *ticket.Ticket) string {
 	if b := strings.TrimSpace(t.Branch); b != "" {
 		return b
 	}
-	return worktree.BranchName(cfg.BranchPrefix, t.ID)
+	return worktree.BranchName(cfg.BranchPrefixFor(t.Path), t.ID)
 }
 
 // removeWorktreeAt removes the git worktree at wtPath. Logs but does not

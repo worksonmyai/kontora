@@ -547,17 +547,29 @@ function kontora() {
       return (this.configCache?.projects || []).length > 0;
     },
 
-    // The project whose path matches what the create form's path field says.
-    // Both the configured form (which may start with ~) and the resolved
-    // absolute form are compared, since the browser cannot expand ~ itself.
-    createProject() {
-      var typed = (this.createForm.path || '').trim().replace(/\/+$/, '');
+    // The project configured for a repository path. Both the configured form
+    // (which may start with ~) and the resolved absolute form are compared,
+    // since the browser cannot expand ~ itself.
+    projectForPath(path) {
+      var typed = (path || '').trim().replace(/\/+$/, '');
       if (!typed) return null;
       var projects = this.configCache?.projects || [];
       return projects.find(p =>
         typed === (p.path || '').replace(/\/+$/, '') ||
         typed === (p.resolved_path || '').replace(/\/+$/, '')
       ) || null;
+    },
+
+    // The project whose path matches what the create form's path field says.
+    createProject() {
+      return this.projectForPath(this.createForm.path);
+    },
+
+    // The prefix the daemon names a branch for a ticket in this repository
+    // with: the project's own prefix outranks the global one.
+    branchPrefixFor(path) {
+      var project = this.projectForPath(path);
+      return (project && project.branch_prefix) || this.configCache?.branch_prefix || 'kontora';
     },
 
     // Prefill the selects the user has not touched from the project that owns

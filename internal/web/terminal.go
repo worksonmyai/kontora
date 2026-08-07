@@ -10,11 +10,29 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+	"time"
 
 	"github.com/coder/websocket"
 	"github.com/creack/pty/v2"
 
 	"github.com/worksonmyai/kontora/internal/tmux"
+)
+
+const (
+	// A blocking pty read returns whatever is already queued, so a buffer this
+	// size turns a burst into a few WebSocket frames instead of dozens without
+	// making a lone keystroke wait for more bytes.
+	ptyReadBufSize = 32 * 1024
+
+	// Without a per-write bound, a browser tab that stops reading blocks the pty
+	// read loop. That backpressure reaches the tmux server and slows the pane for
+	// every viewer, including a CLI user attached to the main session.
+	wsWriteTimeout = 10 * time.Second
+
+	// Upper bound on browser-requested geometry. pty.Winsize stores dimensions as
+	// uint16, so an unclamped 65536 truncates to 0. At the UI's 13px JetBrains
+	// Mono, 1000 columns needs a viewport near 7800px, past any real display.
+	maxTerminalDim = 1000
 )
 
 type clientMsg struct {
@@ -23,6 +41,9 @@ type clientMsg struct {
 	Rows int    `json:"rows,omitempty"`
 	Data string `json:"data,omitempty"`
 }
+
+// Callers reject non-positive dimensions first, so only the upper end is capped.
+func clampDim(v int) int { return min(v, maxTerminalDim) }
 
 func (s *Server) handleTerminalWS(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
@@ -40,10 +61,10 @@ func (s *Server) handleTerminalWS(w http.ResponseWriter, r *http.Request) {
 
 	cols, rows := 80, 24
 	if c, err := strconv.Atoi(r.URL.Query().Get("cols")); err == nil && c > 0 {
-		cols = c
+		cols = clampDim(c)
 	}
 	if ro, err := strconv.Atoi(r.URL.Query().Get("rows")); err == nil && ro > 0 {
-		rows = ro
+		rows = clampDim(ro)
 	}
 
 	ctx, cancel := context.WithCancel(r.Context())
@@ -66,10 +87,9 @@ func (s *Server) handleTerminalWS(w http.ResponseWriter, r *http.Request) {
 	}
 	defer func() { _ = exec.Command("tmux", "kill-session", "-t", "="+viewSession).Run() }()
 
-	// Select the ticket's window inside the linked session.
-	_ = exec.Command("tmux", "select-window", "-t", "="+viewSession+":"+id).Run()
-
-	args := []string{"attach-session", "-t", "=" + viewSession}
+	// tmux resolves a window-qualified attach target and makes that window
+	// current, so the ticket's window needs no separate select-window spawn.
+	args := []string{"attach-session", "-t", tmux.WindowTarget(viewSession, id)}
 	if !rw {
 		args = append(args, "-r")
 	}
@@ -93,7 +113,7 @@ func (s *Server) handleTerminalWS(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	s.log.Info("terminal session connected", "ticket", id, "view_session", viewSession)
-	s.pipeOutput(ctx, conn, ptmx, id)
+	s.pipeOutput(ctx, conn, ptmx, id, wsWriteTimeout)
 	s.log.Info("terminal session disconnected", "ticket", id, "view_session", viewSession)
 }
 
@@ -111,8 +131,8 @@ func (s *Server) readClientMessages(ctx context.Context, conn *websocket.Conn, p
 		case "resize":
 			if msg.Cols > 0 && msg.Rows > 0 {
 				_ = pty.Setsize(ptmx, &pty.Winsize{
-					Rows: uint16(msg.Rows),
-					Cols: uint16(msg.Cols),
+					Rows: uint16(clampDim(msg.Rows)),
+					Cols: uint16(clampDim(msg.Cols)),
 				})
 				// Force tmux to redraw after PTY resize to prevent
 				// rendering artifacts from stale cursor positions.
@@ -126,12 +146,21 @@ func (s *Server) readClientMessages(ctx context.Context, conn *websocket.Conn, p
 	}
 }
 
-func (s *Server) pipeOutput(ctx context.Context, conn *websocket.Conn, r io.Reader, taskID string) {
-	buf := make([]byte, 4096)
+// binaryWriter is the part of *websocket.Conn that pipeOutput uses, so a test
+// can supply a writer that stalls.
+type binaryWriter interface {
+	Write(ctx context.Context, typ websocket.MessageType, p []byte) error
+}
+
+func (s *Server) pipeOutput(ctx context.Context, conn binaryWriter, r io.Reader, taskID string, writeTimeout time.Duration) {
+	buf := make([]byte, ptyReadBufSize)
 	for {
 		n, err := r.Read(buf)
 		if n > 0 {
-			if writeErr := conn.Write(ctx, websocket.MessageBinary, buf[:n]); writeErr != nil {
+			writeCtx, cancel := context.WithTimeout(ctx, writeTimeout)
+			writeErr := conn.Write(writeCtx, websocket.MessageBinary, buf[:n])
+			cancel()
+			if writeErr != nil {
 				return
 			}
 		}

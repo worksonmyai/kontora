@@ -1,6 +1,28 @@
 // How long the first key of a two-key shortcut stays armed.
 const KEY_SEQ_MS = 800;
 
+// xterm handles live here, not on the Alpine component. Alpine wraps the whole
+// x-data object in a deep reactive Proxy, so a Terminal stored there reads back
+// proxied, and every internal property hop in xterm's parser, buffer, and
+// renderer pays a trap; loadAddon hands the same proxy to the addons. Reach
+// these through termState only: one hop through the component brings the proxy
+// back. Module scope is safe because only one kontora() component exists.
+var termState = {
+  ws: null,
+  term: null,
+  fit: null,
+  webgl: null,
+  // Set once the vendored xterm modules have been imported.
+  Terminal: null,
+  FitAddon: null,
+  Unicode11Addon: null,
+  WebglAddon: null,
+  inputDisposable: null,
+  resizeObserver: null,
+  resizeTimer: null,
+  webglRetried: false,
+};
+
 function kontora() {
   return {
     tickets: [],
@@ -73,18 +95,8 @@ function kontora() {
     searchOpen: false,
     suggestions: [],
     selectedIndex: -1,
-    _termWs: null,
-    _term: null,
-    _TerminalClass: null,
-    _FitAddonClass: null,
-    _Unicode11AddonClass: null,
-    _WebglAddonClass: null,
-    _fitAddon: null,
-    _webglAddon: null,
     _terminalSeq: 0,
     _terminalOpening: false,
-    _resizeObserver: null,
-    _resizeTimer: null,
     _eventSource: null,
     editing: false,
     editingBody: false,
@@ -868,10 +880,17 @@ function kontora() {
         this.editingBody = false;
       }
       this.activeTab = tab;
-      if (tab === 'terminal' && this.selectedTicket?.status === 'in_progress' && !this.terminalOpen) {
-        this.openTerminal();
-      } else if (tab !== 'terminal' && this.terminalOpen) {
-        this.closeTerminal();
+      // Leaving the terminal tab keeps the stream and the terminal: the tab
+      // content is x-show, so the container survives, and output that arrives
+      // while it is hidden is already in the buffer on return. Only the fit is
+      // owed, because a hidden container measures zero.
+      if (tab === 'terminal' && this.selectedTicket?.status === 'in_progress') {
+        if (this.terminalOpen) {
+          var self = this;
+          requestAnimationFrame(function() { self.refitTerminal(); });
+        } else {
+          this.openTerminal();
+        }
       }
       if (tab === 'ticket' && !this.editing) {
         this.startEditing();
@@ -1391,8 +1410,8 @@ function kontora() {
       if (this.logFollow) this.scrollLogToEnd();
     },
     scrollLogToEnd() {
-      if (this.terminalOpen && this._term) {
-        try { this._term.scrollToBottom(); } catch (e) {}
+      if (this.terminalOpen && termState.term) {
+        try { termState.term.scrollToBottom(); } catch (e) {}
         return;
       }
       var el = document.getElementById('stage-log-pre');
@@ -1720,10 +1739,11 @@ function kontora() {
     },
 
     // Crossing the 768px breakpoint destroys the layer that held the board and
-    // the terminal container, so close the terminal before its container goes
-    // away, then mount the board Alpine builds in the replacement layer.
+    // the terminal container. This is the one path that disposes the terminal:
+    // its container is going away, so the instance cannot be carried over.
     _onBreakpointChange() {
       this.closeTerminal();
+      this._destroyTerminal();
       this.$nextTick(() => this._mountBoard());
     },
 
@@ -1935,7 +1955,7 @@ function kontora() {
       this.terminalOpen = true;
       this._terminalOpening = true;
       try {
-        if (!this._TerminalClass || !this._FitAddonClass) {
+        if (!termState.Terminal || !termState.FitAddon) {
           var [termMod, fitMod, unicodeMod, webglMod] = await Promise.all([
             import('/vendor/xterm@5.5.0/xterm.mjs'),
             import('/vendor/addon-fit@0.10.0/addon-fit.mjs'),
@@ -1946,23 +1966,23 @@ function kontora() {
               return null;
             }),
           ]);
-          this._TerminalClass = termMod.Terminal;
-          this._FitAddonClass = fitMod.FitAddon;
-          this._Unicode11AddonClass = unicodeMod.Unicode11Addon;
-          this._WebglAddonClass = webglMod ? webglMod.WebglAddon : null;
+          termState.Terminal = termMod.Terminal;
+          termState.FitAddon = fitMod.FitAddon;
+          termState.Unicode11Addon = unicodeMod.Unicode11Addon;
+          termState.WebglAddon = webglMod ? webglMod.WebglAddon : null;
         }
         await this.$nextTick();
         if (!this.terminalOpen || this._terminalSeq !== seq) return;
         if (this.activeTab !== 'terminal' || this.selectedTicket?.id !== ticketId) {
-          this._teardownTransport();
-          this.terminalOpen = false;
+          this.closeTerminal();
           return;
         }
         this._connectTerminal(seq);
       } catch (e) {
         console.error('terminal load error:', e);
         this.error = 'Failed to load terminal';
-        this.terminalOpen = false;
+        // _connectTerminal may already have attached the resize observer.
+        this.closeTerminal();
       } finally {
         if (this._terminalSeq === seq) this._terminalOpening = false;
       }
@@ -1970,24 +1990,53 @@ function kontora() {
 
     reconnectTerminal() {
       if (!this.selectedTicket || this.activeTab !== 'terminal' || this._terminalOpening) return;
-      if (this.terminalOpen) {
-        this._teardownTransport();
-        this.terminalOpen = false;
-      }
+      if (this.terminalOpen) this.closeTerminal();
       this.openTerminal();
     },
 
     _connectTerminal(seq) {
+      if (this._terminalSeq !== seq || !this.terminalOpen) return;
       // On phone width the live terminal attaches into the mobile detail's own
       // container; on desktop into the panel container (fullscreen keeps the
       // same container — the panel just grows to fill the viewport).
       var container = document.getElementById(this.isMobile ? 'terminal-container-mobile' : 'terminal-container');
-      if (!container) return;
-      if (this._terminalSeq !== seq || !this.terminalOpen) return;
-      container.textContent = '';
+      // Returning with terminalOpen still set would strand the tab: switchTab
+      // only refits a terminal it believes is open, so nothing would retry.
+      if (!container) {
+        this.closeTerminal();
+        return;
+      }
 
-      this._fitAddon = new this._FitAddonClass();
-      this._term = new this._TerminalClass({
+      // A terminal whose element sits somewhere else lost its layout layer when
+      // the breakpoint changed, and cannot be reattached.
+      if (termState.term && termState.term.element && termState.term.element.parentNode !== container) {
+        this._destroyTerminal();
+      }
+      if (termState.term) {
+        // The buffer still holds whatever the last stream wrote into it.
+        termState.term.reset();
+      } else {
+        this._createTerminal(container);
+      }
+
+      var self = this;
+      termState.resizeObserver = new ResizeObserver(function() {
+        clearTimeout(termState.resizeTimer);
+        termState.resizeTimer = setTimeout(function() { self.refitTerminal(); }, 100);
+      });
+      termState.resizeObserver.observe(container);
+
+      requestAnimationFrame(function() {
+        if (!termState.term || !self.terminalOpen || self._terminalSeq !== seq) return;
+        termState.fit.fit();
+        self._connectWs(seq);
+      });
+    },
+
+    _createTerminal(container) {
+      container.textContent = '';
+      var fit = new termState.FitAddon();
+      var term = new termState.Terminal({
         theme: this._getTerminalTheme(),
         fontSize: 13,
         fontFamily: "'JetBrains Mono', monospace",
@@ -1996,64 +2045,81 @@ function kontora() {
         scrollback: 5000,
         allowProposedApi: true,
       });
-      this._term.loadAddon(this._fitAddon);
-      this._term.loadAddon(new this._Unicode11AddonClass());
-      this._term.unicode.activeVersion = '11';
-      this._term.open(container);
+      term.loadAddon(fit);
+      term.loadAddon(new termState.Unicode11Addon());
+      term.unicode.activeVersion = '11';
+      term.open(container);
+      termState.term = term;
+      termState.fit = fit;
+      termState.webglRetried = false;
+      this._loadWebgl();
+    },
 
-      // Must load after open(); on any failure the DOM renderer stays active.
-      if (this._WebglAddonClass) {
-        try {
-          var webgl = new this._WebglAddonClass();
-          webgl.onContextLoss(function() { webgl.dispose(); });
-          this._term.loadAddon(webgl);
-          this._webglAddon = webgl;
-        } catch (e) {
-          console.warn('webgl renderer unavailable, using DOM renderer:', e);
-        }
-      }
-
+    // Must run after open(). Returns false when the DOM renderer stays active.
+    _loadWebgl() {
+      if (!termState.WebglAddon || !termState.term) return false;
       var self = this;
-      self._resizeObserver = new ResizeObserver(function() {
-        clearTimeout(self._resizeTimer);
-        self._resizeTimer = setTimeout(function() { self.refitTerminal(); }, 100);
-      });
-      self._resizeObserver.observe(container);
+      try {
+        var addon = new termState.WebglAddon();
+        addon.onContextLoss(function() { self._onWebglContextLoss(addon); });
+        termState.term.loadAddon(addon);
+        termState.webgl = addon;
+        return true;
+      } catch (e) {
+        console.warn('webgl renderer unavailable, using DOM renderer:', e);
+        return false;
+      }
+    },
 
-      requestAnimationFrame(function() {
-        if (!self._term || !self.terminalOpen || self._terminalSeq !== seq) return;
-        self._fitAddon.fit();
-        self._connectWs(seq);
-      });
+    // A lost context is recoverable, and the terminal outlives navigation, so
+    // giving up on the first loss would pin the page to the DOM renderer for the
+    // rest of its life. One retry only: retrying every loss would spin.
+    _onWebglContextLoss(addon) {
+      addon.dispose();
+      if (termState.webgl !== addon) return;
+      termState.webgl = null;
+      if (termState.webglRetried || !this._loadWebgl()) {
+        console.warn('webgl context lost, using DOM renderer');
+        return;
+      }
+      termState.webglRetried = true;
     },
 
     _connectWs(seq) {
-      if (this._termInputDisposable) {
-        this._termInputDisposable.dispose();
-        this._termInputDisposable = null;
+      if (termState.inputDisposable) {
+        termState.inputDisposable.dispose();
+        termState.inputDisposable = null;
       }
-      if (this._terminalSeq !== seq || !this._term) return;
+      if (this._terminalSeq !== seq || !termState.term) return;
+      // Whoever asked for a stream gets exactly one. Without this, a read-write
+      // toggle landing before _connectTerminal's requestAnimationFrame orphans
+      // the socket it opened, and its kontora-view session outlives the page.
+      if (termState.ws) {
+        termState.ws.close();
+        termState.ws = null;
+      }
       var self = this;
-      var cols = self._term.cols;
-      var rows = self._term.rows;
+      var term = termState.term;
+      // A reused terminal keeps the cursor of whatever mode built it, and
+      // terminalRW resets to false on ticket switch and detail close.
+      term.options.cursorBlink = this.terminalRW;
       var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
       var url = proto + '//' + location.host + '/ws/terminal/' + self.selectedTicket.id
-        + '?cols=' + cols + '&rows=' + rows + (self.terminalRW ? '&rw=1' : '');
+        + '?cols=' + term.cols + '&rows=' + term.rows + (self.terminalRW ? '&rw=1' : '');
       var ws = new WebSocket(url);
       ws.binaryType = 'arraybuffer';
-      self._termWs = ws;
-      var term = self._term;
+      termState.ws = ws;
       ws.onmessage = function(e) {
         if (self._terminalSeq !== seq) {
           ws.close();
           return;
         }
-        if (term) term.write(new Uint8Array(e.data));
+        term.write(new Uint8Array(e.data));
       };
-      ws.onclose = function() { if (self._termWs === ws) self._termWs = null; };
-      ws.onerror = function() { if (self._termWs === ws) self._termWs = null; };
+      ws.onclose = function() { if (termState.ws === ws) termState.ws = null; };
+      ws.onerror = function() { if (termState.ws === ws) termState.ws = null; };
       if (self.terminalRW) {
-        self._termInputDisposable = term.onData(function(data) {
+        termState.inputDisposable = term.onData(function(data) {
           if (self._terminalSeq === seq && ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({ type: 'input', data: data }));
           }
@@ -2061,54 +2127,69 @@ function kontora() {
       }
     },
 
-    _teardownTransport() {
-      this._terminalSeq++;
-      this._terminalOpening = false;
-      clearTimeout(this._resizeTimer);
-      if (this._resizeObserver) {
-        this._resizeObserver.disconnect();
-        this._resizeObserver = null;
+    // Ends the stream and its listeners but keeps the terminal, so returning to
+    // it costs no Terminal construction and no new WebGL context. _terminalSeq is
+    // left alone: cancelling an in-flight openTerminal is the caller's call.
+    _disconnectStream() {
+      clearTimeout(termState.resizeTimer);
+      termState.resizeTimer = null;
+      if (termState.resizeObserver) {
+        termState.resizeObserver.disconnect();
+        termState.resizeObserver = null;
       }
-      if (this._termInputDisposable) {
-        this._termInputDisposable.dispose();
-        this._termInputDisposable = null;
+      if (termState.inputDisposable) {
+        termState.inputDisposable.dispose();
+        termState.inputDisposable = null;
       }
-      if (this._termWs) {
-        this._termWs.close();
-        this._termWs = null;
+      if (termState.ws) {
+        termState.ws.close();
+        termState.ws = null;
       }
-      if (this._term) {
-        try { this._term.dispose(); } catch (e) {}
-        this._term = null;
+    },
+
+    // Browsers cap live WebGL contexts, so this runs only when the container
+    // itself is going away: crossing the 768px breakpoint.
+    _destroyTerminal() {
+      this._disconnectStream();
+      if (termState.term) {
+        try { termState.term.dispose(); } catch (e) {}
       }
-      this._fitAddon = null;
-      this._webglAddon = null;
+      termState.term = null;
+      termState.fit = null;
+      termState.webgl = null;
     },
 
     closeTerminal() {
-      this._teardownTransport();
+      this._terminalSeq++;
+      this._terminalOpening = false;
+      this._disconnectStream();
       this.terminalOpen = false;
     },
 
     toggleTerminalRW() {
       this.terminalRW = !this.terminalRW;
-      if (!this.terminalOpen || !this._term) return;
-      if (this._termWs) this._termWs.close();
+      if (!this.terminalOpen || !termState.term) return;
+      // Read-only is a flag on the tmux attach, so the mode change needs a fresh
+      // stream. The terminal and its WebGL context stay.
       this._connectWs(this._terminalSeq);
     },
 
     refitTerminal() {
-      if (!this._term || !this._fitAddon || !this.terminalOpen) return;
-      var oldCols = this._term.cols;
-      var oldRows = this._term.rows;
-      this._fitAddon.fit();
-      if (this._term.cols === oldCols && this._term.rows === oldRows) return;
-      if (this._termWs && this._termWs.readyState === WebSocket.OPEN) {
-        this._termWs.send(JSON.stringify({ type: 'resize', cols: this._term.cols, rows: this._term.rows }));
+      if (!termState.term || !termState.fit || !this.terminalOpen) return;
+      // A container hidden by x-show measures zero, and fitting to that would
+      // reflow the whole scrollback twice: once down to nothing, once on return.
+      var el = termState.term.element;
+      if (!el || !el.clientWidth || !el.clientHeight) return;
+      var oldCols = termState.term.cols;
+      var oldRows = termState.term.rows;
+      termState.fit.fit();
+      if (termState.term.cols === oldCols && termState.term.rows === oldRows) return;
+      if (termState.ws && termState.ws.readyState === WebSocket.OPEN) {
+        termState.ws.send(JSON.stringify({ type: 'resize', cols: termState.term.cols, rows: termState.term.rows }));
       }
       // Clear viewport to remove reflow artifacts from cursor-positioned content.
       // tmux will redraw the screen after receiving the resize via SIGWINCH.
-      this._term.write('\x1b[2J\x1b[H');
+      termState.term.write('\x1b[2J\x1b[H');
     },
 
     pathBasename(p) {
@@ -2504,7 +2585,7 @@ function kontora() {
       var t = this.lightTheme ? 'light' : 'dark';
       applyTheme(t);
       setStoredTheme(t);
-      if (this._term) this._applyTerminalTheme();
+      if (termState.term) this._applyTerminalTheme();
       this.updateFavicon();
     },
 
@@ -2514,9 +2595,8 @@ function kontora() {
     },
 
     _applyTerminalTheme() {
-      if (!this._term) return;
-      var theme = this._getTerminalTheme();
-      this._term.options.theme = theme;
+      if (!termState.term) return;
+      termState.term.options.theme = this._getTerminalTheme();
     },
 
     // ── Mobile UI ────────────────────────────────────────────────────────

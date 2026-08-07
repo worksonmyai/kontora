@@ -160,7 +160,139 @@ function deferred() {
 }
 
 function loadKontoraState(overrides = {}) {
-  const source = fs.readFileSync(appPath, "utf8");
+  return loadKontoraContext(overrides).state;
+}
+
+// The terminal handles live on a module-scope `termState` in app.js rather than
+// on the component, so a lifecycle test needs the VM context to reach them. A
+// top-level `var` lands on the context object, so `ctx.termState` is the holder.
+function loadKontoraContext(overrides = {}) {
+  const context = kontoraContext(overrides);
+  vm.createContext(context);
+  vm.runInContext(`${fs.readFileSync(appPath, "utf8")}\nthis.kontora = kontora;`, context);
+  return { ctx: context, state: context.kontora() };
+}
+
+const flushMicrotasks = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+// Doubles for the vendored xterm modules, installed on termState so the
+// lifecycle runs without the dynamic import(). Each records what the terminal
+// lifecycle did to it, so a test can tell reuse from a rebuild.
+function stubXterm(termState) {
+  const created = [];
+
+  termState.Terminal = class {
+    constructor(options) {
+      this.options = options;
+      this.cols = 80;
+      this.rows = 24;
+      this.unicode = {};
+      this.element = { clientWidth: 800, clientHeight: 400, parentNode: null };
+      this.resets = 0;
+      this.disposed = false;
+      created.push(this);
+    }
+    loadAddon() {}
+    open(container) {
+      this.element.parentNode = container;
+    }
+    reset() {
+      this.resets += 1;
+    }
+    write() {}
+    onData() {
+      return { dispose() {} };
+    }
+    scrollToBottom() {}
+    dispose() {
+      this.disposed = true;
+    }
+  };
+  termState.Terminal.created = created;
+
+  termState.FitAddon = class {
+    constructor() {
+      this.fits = 0;
+    }
+    fit() {
+      this.fits += 1;
+    }
+  };
+  termState.Unicode11Addon = class {};
+  termState.WebglAddon = class {
+    constructor() {
+      this.disposed = false;
+    }
+    onContextLoss(handler) {
+      this._handler = handler;
+    }
+    // Stands in for the browser dropping the GPU context.
+    loseContext() {
+      this._handler();
+    }
+    dispose() {
+      this.disposed = true;
+    }
+  };
+}
+
+// A component with a terminal open and streaming, on the real openTerminal path.
+async function liveTerminal() {
+  const { ctx, state } = await openedTerminal();
+  assert.ok(ctx.termState.ws, "stream did not connect");
+  return { ctx, state };
+}
+
+// liveTerminal without the streaming half, so a test can hold back the frame
+// _connectTerminal defers the connect to.
+async function openedTerminal(overrides = {}) {
+  const container = { textContent: "" };
+  const { ctx, state } = loadKontoraContext({
+    document: {
+      getElementById(id) {
+        return id === "terminal-container" ? container : null;
+      },
+      querySelector() {
+        return null;
+      },
+      hasFocus() {
+        return true;
+      },
+      documentElement: { style: {} },
+    },
+    WebSocket: class {
+      static OPEN = 1;
+      constructor(url) {
+        this.url = url;
+        this.readyState = 1;
+        this.closed = false;
+      }
+      send() {}
+      close() {
+        this.closed = true;
+        this.readyState = 3;
+      }
+    },
+    ...overrides,
+  });
+
+  stubXterm(ctx.termState);
+  state.selectedTicket = { id: "tst-001", status: "in_progress" };
+  state.activeTab = "terminal";
+  state.$nextTick = (callback) => {
+    if (callback) callback();
+    return Promise.resolve();
+  };
+  state.startEditing = () => {};
+  state.flushEditSave = () => {};
+  state.recomputeBoard = () => {};
+
+  await state.openTerminal();
+  assert.ok(ctx.termState.term, "terminal did not open");
+  return { ctx, state };
+}
+
+function kontoraContext(overrides = {}) {
   const context = {
     console,
     setTimeout,
@@ -178,6 +310,10 @@ function loadKontoraState(overrides = {}) {
         return null;
       },
       setItem() {},
+    },
+    // _cssVar and _getTerminalTheme call the bare global, not window's.
+    getComputedStyle() {
+      return { getPropertyValue: () => "" };
     },
     getStoredTheme() {
       return null;
@@ -230,9 +366,7 @@ function loadKontoraState(overrides = {}) {
   };
 
   Object.assign(context, overrides);
-  vm.createContext(context);
-  vm.runInContext(`${source}\nthis.kontora = kontora;`, context);
-  return context.kontora();
+  return context;
 }
 
 // The vendored marked bundle, loaded through its CommonJS branch. The built-in
@@ -334,15 +468,15 @@ test("index.html loads the external app script", () => {
 });
 
 test("openTerminal cancels stale startup after teardown", async () => {
-  const state = loadKontoraState();
+  const { ctx, state } = loadKontoraContext();
   const nextTick = deferred();
   const connectCalls = [];
 
   state.selectedTicket = { id: "tst-001" };
   state.activeTab = "terminal";
   state.$nextTick = () => nextTick.promise;
-  state._TerminalClass = class {};
-  state._FitAddonClass = class {};
+  ctx.termState.Terminal = class {};
+  ctx.termState.FitAddon = class {};
   state._connectTerminal = (seq) => {
     connectCalls.push(seq);
   };
@@ -351,8 +485,7 @@ test("openTerminal cancels stale startup after teardown", async () => {
   assert.equal(state.terminalOpen, true);
   assert.equal(state._terminalOpening, true);
 
-  state._teardownTransport();
-  state.terminalOpen = false;
+  state.closeTerminal();
 
   nextTick.resolve();
   await openPromise;
@@ -361,21 +494,22 @@ test("openTerminal cancels stale startup after teardown", async () => {
 });
 
 test("openTerminal clears terminalOpen if the tab changes before startup completes", async () => {
-  const state = loadKontoraState();
+  const { ctx, state } = loadKontoraContext();
   const nextTick = deferred();
   const connectCalls = [];
-  let teardownCalls = 0;
+  let closeCalls = 0;
 
   state.selectedTicket = { id: "tst-001" };
   state.activeTab = "terminal";
   state.$nextTick = () => nextTick.promise;
-  state._TerminalClass = class {};
-  state._FitAddonClass = class {};
+  ctx.termState.Terminal = class {};
+  ctx.termState.FitAddon = class {};
   state._connectTerminal = (seq) => {
     connectCalls.push(seq);
   };
-  state._teardownTransport = () => {
-    teardownCalls += 1;
+  state.closeTerminal = () => {
+    closeCalls += 1;
+    state.terminalOpen = false;
   };
 
   const openPromise = state.openTerminal();
@@ -386,21 +520,21 @@ test("openTerminal clears terminalOpen if the tab changes before startup complet
 
   assert.equal(state.terminalOpen, false);
   assert.equal(state._terminalOpening, false);
-  assert.equal(teardownCalls, 1);
+  assert.equal(closeCalls, 1);
   assert.deepEqual(connectCalls, []);
 });
 
 test("reconnectTerminal does nothing while the terminal is already opening", () => {
   const state = loadKontoraState();
-  let teardownCalls = 0;
+  let closeCalls = 0;
   let openCalls = 0;
 
   state.selectedTicket = { id: "tst-001" };
   state.activeTab = "terminal";
   state.terminalOpen = true;
   state._terminalOpening = true;
-  state._teardownTransport = () => {
-    teardownCalls += 1;
+  state.closeTerminal = () => {
+    closeCalls += 1;
   };
   state.openTerminal = () => {
     openCalls += 1;
@@ -408,21 +542,21 @@ test("reconnectTerminal does nothing while the terminal is already opening", () 
 
   state.reconnectTerminal();
 
-  assert.equal(teardownCalls, 0);
+  assert.equal(closeCalls, 0);
   assert.equal(openCalls, 0);
 });
 
 test("reconnectTerminal tears down and reopens once when transport is ready", () => {
   const state = loadKontoraState();
-  let teardownCalls = 0;
+  let closeCalls = 0;
   let openCalls = 0;
 
   state.selectedTicket = { id: "tst-001" };
   state.activeTab = "terminal";
   state.terminalOpen = true;
   state._terminalOpening = false;
-  state._teardownTransport = () => {
-    teardownCalls += 1;
+  state.closeTerminal = () => {
+    closeCalls += 1;
   };
   state.openTerminal = () => {
     openCalls += 1;
@@ -430,8 +564,178 @@ test("reconnectTerminal tears down and reopens once when transport is ready", ()
 
   state.reconnectTerminal();
 
-  assert.equal(teardownCalls, 1);
+  assert.equal(closeCalls, 1);
   assert.equal(openCalls, 1);
+});
+
+test("the component holds no xterm handles", () => {
+  const state = loadKontoraState();
+
+  // Anything reachable through the component is wrapped in Alpine's reactive
+  // Proxy, which taxes every property read inside xterm.
+  for (const key of [
+    "_term",
+    "_termWs",
+    "_fitAddon",
+    "_webglAddon",
+    "_termInputDisposable",
+    "_resizeObserver",
+    "_resizeTimer",
+    "_TerminalClass",
+    "_FitAddonClass",
+    "_Unicode11AddonClass",
+    "_WebglAddonClass",
+  ]) {
+    assert.equal(key in state, false, `${key} must stay off the Alpine component`);
+  }
+});
+
+test("switching away from the terminal tab and back keeps one Terminal", async () => {
+  const { ctx, state } = await liveTerminal();
+  const term = ctx.termState.term;
+  const created = ctx.termState.Terminal.created;
+
+  for (let i = 0; i < 10; i++) {
+    state.switchTab("ticket");
+    state.switchTab("terminal");
+  }
+
+  assert.equal(ctx.termState.Terminal.created.length, created.length, "no extra Terminal built");
+  assert.equal(ctx.termState.term, term);
+  assert.equal(term.disposed, false);
+  assert.equal(ctx.termState.webgl.disposed, false, "the WebGL context survives");
+});
+
+test("selecting another ticket reuses the terminal after reset", async () => {
+  const { ctx, state } = await liveTerminal();
+  const term = ctx.termState.term;
+  const firstWs = ctx.termState.ws;
+
+  await state.selectTicket({ id: "tst-002", status: "in_progress" });
+  await flushMicrotasks();
+
+  assert.equal(ctx.termState.term, term, "same Terminal reused");
+  assert.equal(term.disposed, false);
+  assert.equal(term.resets, 1, "previous ticket's output cleared");
+  assert.equal(firstWs.closed, true, "previous socket closed");
+  assert.notEqual(ctx.termState.ws, firstWs);
+  assert.match(ctx.termState.ws.url, /\/ws\/terminal\/tst-002\?/);
+});
+
+test("closing the detail panel drops the stream and keeps the terminal", async () => {
+  const { ctx, state } = await liveTerminal();
+  const term = ctx.termState.term;
+  const ws = ctx.termState.ws;
+
+  state.closeDetail();
+
+  assert.equal(ws.closed, true, "no viewer session left running for a hidden ticket");
+  assert.equal(ctx.termState.ws, null);
+  assert.equal(ctx.termState.term, term);
+  assert.equal(term.disposed, false);
+});
+
+test("toggling read-write reconnects the stream but keeps the terminal", async () => {
+  const { ctx, state } = await liveTerminal();
+  const term = ctx.termState.term;
+  const webgl = ctx.termState.webgl;
+  const firstWs = ctx.termState.ws;
+
+  state.toggleTerminalRW();
+
+  assert.equal(ctx.termState.term, term);
+  assert.equal(ctx.termState.webgl, webgl, "same WebGL context");
+  assert.equal(term.disposed, false);
+  assert.equal(firstWs.closed, true);
+  assert.match(ctx.termState.ws.url, /rw=1/);
+  assert.equal(term.options.cursorBlink, true, "cursor follows the mode");
+});
+
+test("crossing the breakpoint rebuilds the terminal", async () => {
+  const { ctx, state } = await liveTerminal();
+  const term = ctx.termState.term;
+  state._mountBoard = () => {};
+
+  state._onBreakpointChange();
+
+  assert.equal(term.disposed, true, "the container's layout layer is gone");
+  assert.equal(ctx.termState.term, null);
+  assert.equal(ctx.termState.webgl, null);
+});
+
+test("a lost webgl context is retried once before falling back", async () => {
+  const { ctx } = await liveTerminal();
+  const first = ctx.termState.webgl;
+
+  first.loseContext();
+
+  const second = ctx.termState.webgl;
+  assert.equal(first.disposed, true);
+  assert.notEqual(second, first);
+  assert.ok(second, "one fresh WebglAddon is attempted");
+
+  second.loseContext();
+
+  assert.equal(second.disposed, true);
+  assert.equal(ctx.termState.webgl, null, "second loss falls back to the DOM renderer");
+});
+
+test("the cursor stops blinking when the next stream is read-only", async () => {
+  const { ctx, state } = await liveTerminal();
+  state.toggleTerminalRW();
+  assert.equal(ctx.termState.term.options.cursorBlink, true);
+
+  // selectTicket resets terminalRW, and the reused terminal keeps the cursor it
+  // was built with unless the reconnect resyncs it.
+  await state.selectTicket({ id: "tst-002", status: "in_progress" });
+  await flushMicrotasks();
+
+  assert.equal(state.terminalRW, false);
+  assert.equal(ctx.termState.term.options.cursorBlink, false, "cursor follows the mode");
+});
+
+test("a read-write toggle racing the first connect leaves one socket", async () => {
+  // _connectTerminal builds the terminal now and connects a frame later, so the
+  // read-write button is live for a frame before the first socket exists.
+  const frames = [];
+  const { ctx, state } = await openedTerminal({
+    requestAnimationFrame(callback) {
+      frames.push(callback);
+      return frames.length;
+    },
+  });
+  assert.equal(ctx.termState.ws, null, "the connect is still queued");
+
+  state.toggleTerminalRW();
+  const raced = ctx.termState.ws;
+  assert.ok(raced, "the toggle opened a stream of its own");
+
+  frames.forEach((frame) => frame());
+
+  assert.equal(raced.closed, true, "no orphaned kontora-view session");
+  assert.notEqual(ctx.termState.ws, raced);
+  assert.equal(ctx.termState.ws.closed, false);
+});
+
+test("a terminal with no container closes instead of stranding the tab", async () => {
+  const { ctx, state } = await liveTerminal();
+  state.closeTerminal();
+  ctx.document.getElementById = () => null;
+
+  await state.openTerminal();
+
+  assert.equal(state.terminalOpen, false, "switchTab can retry the open");
+  assert.equal(ctx.termState.ws, null);
+});
+
+test("refitTerminal skips a container it cannot measure", async () => {
+  const { ctx, state } = await liveTerminal();
+  const fitsWhileVisible = ctx.termState.fit.fits;
+
+  ctx.termState.term.element.clientWidth = 0;
+  state.refitTerminal();
+
+  assert.equal(ctx.termState.fit.fits, fitsWhileVisible, "no reflow against a hidden container");
 });
 
 test("board columns include non-Kontora tickets in their status columns", () => {

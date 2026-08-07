@@ -1,6 +1,7 @@
 package web
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -73,6 +74,90 @@ func TestHandleTerminalWS_SessionExists_UpgradesWebSocket(t *testing.T) {
 
 	assert.Contains(t, received.String(), "hello-from-tmux")
 	conn.Close(websocket.StatusNormalClosure, "")
+}
+
+func TestClampDim(t *testing.T) {
+	tests := []struct {
+		name string
+		in   int
+		want int
+	}{
+		{"below the cap", 240, 240},
+		{"at the cap", maxTerminalDim, maxTerminalDim},
+		{"above the cap", maxTerminalDim + 1, maxTerminalDim},
+		// uint16(65536) is 0, which would leave tmux and the pty with no columns.
+		{"past uint16", 65536, maxTerminalDim},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, clampDim(tt.in))
+		})
+	}
+}
+
+// stubWriter records the payload of every websocket write, and blocks until the
+// write context expires once blocked is set.
+type stubWriter struct {
+	blocked bool
+	writes  [][]byte
+}
+
+func (w *stubWriter) Write(ctx context.Context, _ websocket.MessageType, p []byte) error {
+	if w.blocked {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	w.writes = append(w.writes, append([]byte(nil), p...))
+	return nil
+}
+
+func TestPipeOutput(t *testing.T) {
+	tests := []struct {
+		name         string
+		payload      []byte
+		blocked      bool
+		writeTimeout time.Duration
+		wantWrites   [][]byte
+	}{
+		{
+			name:         "burst filling the read buffer becomes one frame",
+			payload:      bytes.Repeat([]byte("x"), ptyReadBufSize),
+			writeTimeout: time.Second,
+			wantWrites:   [][]byte{bytes.Repeat([]byte("x"), ptyReadBufSize)},
+		},
+		{
+			name:         "echo-sized output is forwarded without waiting",
+			payload:      []byte("ls\r\n"),
+			writeTimeout: time.Second,
+			wantWrites:   [][]byte{[]byte("ls\r\n")},
+		},
+		{
+			name:         "a client that stops reading is dropped at the deadline",
+			payload:      []byte("hello"),
+			blocked:      true,
+			writeTimeout: 50 * time.Millisecond,
+			wantWrites:   nil,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := &Server{log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+			w := &stubWriter{blocked: tt.blocked}
+
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				srv.pipeOutput(context.Background(), w, bytes.NewReader(tt.payload), "tst-001", tt.writeTimeout)
+			}()
+
+			select {
+			case <-done:
+			case <-time.After(5 * time.Second):
+				t.Fatal("pipeOutput did not return; a stalled client would hold the pty read loop")
+			}
+			assert.Equal(t, tt.wantWrites, w.writes)
+		})
+	}
 }
 
 // mockTerminalService is a minimal TicketService mock for terminal tests.

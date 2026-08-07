@@ -16,6 +16,8 @@ When the web server is enabled, the following endpoints are exposed:
 | `POST /api/tickets/{id}/move` | Set ticket status (`{"status": "..."}` body). |
 | `GET /api/config` | Available repos and pipelines (JSON). |
 | `GET /api/tickets/{id}/logs` | Get agent logs for a ticket (optional `?stage=` query param). |
+| `POST /api/tickets/{id}/summary` | Set the ticket's `summary` field (`{"text": "..."}` body). |
+| `GET /api/tickets/{id}/changes` | Commits and changed files on the ticket's branch relative to the repo's default branch. Empty payload when the ticket has no branch or the branch was deleted. |
 | `POST /api/tickets/{id}/init` | Initialize a non-kontora ticket (`pipeline`, `path`, optional `agent`). |
 | `PUT /api/tickets/{id}` | Update an open ticket's body or frontmatter fields. |
 | `POST /api/tickets/upload` | Import tickets from raw `.md` file content (multipart form). |

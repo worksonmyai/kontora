@@ -16,6 +16,7 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	charmlog "github.com/charmbracelet/log"
 
@@ -959,7 +960,7 @@ func (d *Daemon) runTicket(ctx context.Context, ticketID string) {
 
 	log.Info("spawning agent", "agent", agentName, "stage", stageName, "binary", agentCfg.Binary)
 
-	result, spawnOK := d.spawnAgentRun(taskCtx, t, spawnAgentParams{
+	run, spawnOK := d.spawnAgentRun(taskCtx, t, spawnAgentParams{
 		cfg:       cfg,
 		log:       log,
 		ticketID:  ticketID,
@@ -975,14 +976,15 @@ func (d *Daemon) runTicket(ctx context.Context, ticketID string) {
 	}
 
 	d.handleAgentExit(ctx, taskCtx, handleExitParams{
-		log:         log,
-		ticketID:    ticketID,
-		filePath:    filePath,
-		stageName:   stageName,
-		result:      result,
-		pipelineCfg: pipelineCfg,
-		repoPath:    repoPath,
-		wtPath:      wtPath,
+		log:          log,
+		ticketID:     ticketID,
+		filePath:     filePath,
+		stageName:    stageName,
+		result:       run.Result,
+		finalMessage: run.FinalMessage,
+		pipelineCfg:  pipelineCfg,
+		repoPath:     repoPath,
+		wtPath:       wtPath,
 	})
 }
 
@@ -1032,7 +1034,7 @@ func (d *Daemon) runSimpleTicket(ctx, taskCtx context.Context, cfg *config.Confi
 
 	log.Info("spawning agent", "agent", agentName, "binary", agentCfg.Binary)
 
-	result, spawnOK := d.spawnAgentRun(taskCtx, t, spawnAgentParams{
+	run, spawnOK := d.spawnAgentRun(taskCtx, t, spawnAgentParams{
 		cfg:       cfg,
 		log:       log,
 		ticketID:  ticketID,
@@ -1046,6 +1048,7 @@ func (d *Daemon) runSimpleTicket(ctx, taskCtx context.Context, cfg *config.Confi
 	if !spawnOK {
 		return
 	}
+	result := run.Result
 
 	// Handle context cancellation.
 	if taskCtx.Err() != nil {
@@ -1098,6 +1101,7 @@ func (d *Daemon) runSimpleTicket(ctx, taskCtx context.Context, cfg *config.Confi
 	if result.ExitCode == 0 {
 		_ = t2.SetField("status", string(ticket.StatusDone))
 		_ = t2.SetField("last_error", "")
+		_ = t2.SetField("summary", runSummary(t2.Summary, run.FinalMessage))
 		completedAt := result.ExitedAt
 		if completedAt.IsZero() {
 			completedAt = time.Now()
@@ -1127,14 +1131,15 @@ func (d *Daemon) runSimpleTicket(ctx, taskCtx context.Context, cfg *config.Confi
 }
 
 type handleExitParams struct {
-	log         *slog.Logger
-	ticketID    string
-	filePath    string
-	stageName   string
-	result      process.Result
-	pipelineCfg config.Pipeline
-	repoPath    string
-	wtPath      string
+	log          *slog.Logger
+	ticketID     string
+	filePath     string
+	stageName    string
+	result       process.Result
+	finalMessage string
+	pipelineCfg  config.Pipeline
+	repoPath     string
+	wtPath       string
 }
 
 func (d *Daemon) handleAgentExit(ctx, taskCtx context.Context, p handleExitParams) {
@@ -1209,6 +1214,11 @@ func (d *Daemon) handleAgentExit(ctx, taskCtx context.Context, p handleExitParam
 		exitAction.History.Agent = t2.Agent
 	}
 
+	summary := runSummary(t2.Summary, p.finalMessage)
+	if exitAction.History != nil {
+		exitAction.History.Summary = summary
+	}
+
 	nextStage := fieldValue(exitAction.Fields, "stage")
 	switch exitAction.Kind {
 	case pipeline.ActionAdvance:
@@ -1243,6 +1253,7 @@ func (d *Daemon) handleAgentExit(ctx, taskCtx context.Context, p handleExitParam
 	default:
 		_ = t2.SetField("last_error", "")
 	}
+	_ = t2.SetField("summary", summary)
 
 	if err := d.writeTicket(t2, p.filePath); err != nil {
 		p.log.Error("write failed", "phase", "exit", "err", err)
@@ -1308,6 +1319,11 @@ func (d *Daemon) prepareWorktreeForAgent(log *slog.Logger, t *ticket.Ticket, fil
 	if err := t.SetField("last_log", d.stageLogPath(ticketID, stageName)); err != nil {
 		log.Error("set field failed", "field", "last_log", "err", err)
 	}
+	// Clear the previous run's summary so the field always describes the run
+	// that ended most recently.
+	if err := t.SetField("summary", ""); err != nil {
+		log.Error("set field failed", "field", "summary", "err", err)
+	}
 	if err := d.writeTicket(t, filePath); err != nil {
 		log.Error("write failed", "phase", "spawn_fields", "err", err)
 		return "", "", false
@@ -1330,22 +1346,30 @@ type spawnAgentParams struct {
 	stageCfg  config.Stage
 }
 
+// agentRun is the outcome of one agent invocation: the process result and the
+// agent's final assistant message from its session JSONL ("" when no session
+// file was written).
+type agentRun struct {
+	Result       process.Result
+	FinalMessage string
+}
+
 // spawnAgentRun builds agent args, invokes the runner, materializes session
 // logs, and logs exit info. On a spawn or runner failure the ticket is paused
 // and ok=false is returned so the caller can return immediately.
-func (d *Daemon) spawnAgentRun(taskCtx context.Context, t *ticket.Ticket, p spawnAgentParams) (process.Result, bool) {
+func (d *Daemon) spawnAgentRun(taskCtx context.Context, t *ticket.Ticket, p spawnAgentParams) (agentRun, bool) {
 	binaryPath, err := d.agentLookup(p.agentCfg.Binary)
 	if err != nil {
 		p.log.Error("agent binary lookup failed", "binary", p.agentCfg.Binary, "err", err)
 		d.pauseTicket(t, p.filePath, fmt.Sprintf("agent binary unavailable: %s", err))
-		return process.Result{}, false
+		return agentRun{}, false
 	}
 
 	args, settingsFile, sessionID, err := buildAgentArgs(p.agentCfg, p.rendered, tmux.ChannelName(p.ticketID))
 	if err != nil {
 		p.log.Error("build agent args failed", "err", err)
 		d.pauseTicket(t, p.filePath, "build agent args failed: "+err.Error())
-		return process.Result{}, false
+		return agentRun{}, false
 	}
 	if settingsFile != "" {
 		defer os.Remove(settingsFile)
@@ -1366,10 +1390,12 @@ func (d *Daemon) spawnAgentRun(taskCtx context.Context, t *ticket.Ticket, p spaw
 		p.log.Error("runner failed", errAttrs...)
 		d.killTaskWindow(p.ticketID)
 		d.pauseTicket(t, p.filePath, fmt.Sprintf("runner failed: %s", runnerErr.Error()))
-		return result, false
+		return agentRun{Result: result}, false
 	}
 
 	d.materializeAgentLogs(p.log, params)
+
+	run := agentRun{Result: result, FinalMessage: finalAssistantMessage(p.log, params)}
 
 	dur := result.ExitedAt.Sub(result.StartedAt).Truncate(time.Second)
 	attrs := []any{"stage", p.stageName, "exit_code", result.ExitCode, "duration", dur}
@@ -1393,11 +1419,38 @@ func (d *Daemon) spawnAgentRun(taskCtx context.Context, t *ticket.Ticket, p spaw
 			p.log.Warn("agent error detected despite clean exit", "stage", p.stageName, "reason", reason)
 			d.killTaskWindow(p.ticketID)
 			d.pauseTicket(t, p.filePath, "agent error: "+reason)
-			return result, false
+			return run, false
 		}
 	}
 
-	return result, true
+	return run, true
+}
+
+// runSummary returns the summary for a finished run: the text the agent wrote
+// on the ticket during the run, else the agent's final assistant message,
+// capped for frontmatter.
+func runSummary(agentWritten, finalMessage string) string {
+	if agentWritten == "" {
+		agentWritten = finalMessage
+	}
+	return truncateSummary(agentWritten)
+}
+
+// summaryMaxLen caps a stored stage summary so a long final assistant message
+// does not bloat ticket frontmatter.
+const summaryMaxLen = 4000
+
+// truncateSummary caps s at summaryMaxLen bytes, cutting on a rune boundary
+// and marking the cut.
+func truncateSummary(s string) string {
+	if len(s) <= summaryMaxLen {
+		return s
+	}
+	cut := summaryMaxLen
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "\n[truncated]"
 }
 
 // buildOperationalAppendix returns a context block appended to every rendered prompt.
@@ -1412,6 +1465,7 @@ func buildOperationalAppendix(taskID, filePath, wtPath string, isPipeline bool) 
 	fmt.Fprintf(&b, "- `kontora note %s \"...\"` — appends a timestamped note\n", taskID)
 	fmt.Fprintf(&b, "- `kontora view %s` — prints ticket contents to stdout\n", taskID)
 	b.WriteString("- Do not search $HOME for tickets or config; use the paths above.\n")
+	fmt.Fprintf(&b, "\nWhen you finish, record a few-line summary of what this run did with:\n  kontora summary %s \"...\"\n", taskID)
 	if isPipeline {
 		fmt.Fprintf(&b, "\nIMPORTANT: When you finish your work, write your results as a note on the ticket. Include all relevant details — the next stage of the pipeline will read this note to continue the work. Use:\n  kontora note %s \"your results here\"", taskID)
 	}
@@ -1728,25 +1782,50 @@ func claudeSessionFiles(env map[string]string, sessionID string) (matches []stri
 	return matches, pattern, err
 }
 
-// materializeSessionLog locates the Claude session JSONL file, formats it
-// with logfmt.Fmt(), and writes the result to logFile. Non-fatal: logs a warning
-// if the session file is not found.
-func (d *Daemon) materializeSessionLog(log *slog.Logger, sessionID, logFile string, env map[string]string) error {
-	matches, pattern, err := claudeSessionFiles(env, sessionID)
-	if err != nil {
-		return fmt.Errorf("glob session file: %w", err)
+// sessionFile locates the session JSONL of a run: the Claude session file
+// matching params.SessionID, or the newest file in the pi params.SessionDir
+// (a retried stage reuses its session directory, so the newest file is the
+// run that just finished). Returns "" when the run has no session or no file
+// was written.
+func sessionFile(params RunnerParams) (path string, isPi bool) {
+	switch {
+	case params.SessionID != "":
+		if matches, _, err := claudeSessionFiles(params.Env, params.SessionID); err == nil && len(matches) > 0 {
+			return matches[0], false
+		}
+		return "", false
+	case params.SessionDir != "":
+		matches, err := filepath.Glob(filepath.Join(params.SessionDir, "*.jsonl"))
+		if err != nil || len(matches) == 0 {
+			return "", true
+		}
+		return newestFile(matches), true
 	}
-	if len(matches) == 0 {
-		log.Warn("session JSONL not found", "session_id", sessionID, "pattern", pattern)
-		return nil
-	}
+	return "", false
+}
 
-	sessionFile := matches[0]
-	if len(matches) > 1 {
-		log.Warn("multiple session JSONL files found, using first", "session_id", sessionID, "count", len(matches))
+// materializeAgentLogs materializes session logs for agents that write
+// structured JSONL (Claude via SessionID, pi via SessionDir).
+func (d *Daemon) materializeAgentLogs(log *slog.Logger, params RunnerParams) {
+	if params.SessionID == "" && params.SessionDir == "" {
+		return
 	}
+	path, isPi := sessionFile(params)
+	if path == "" {
+		log.Warn("session JSONL not found", "session_id", params.SessionID, "session_dir", params.SessionDir)
+		return
+	}
+	if err := materializeSessionLog(path, isPi, params.LogFile); err != nil {
+		log.Warn("session log materialization failed", "session_file", path, "err", err)
+		return
+	}
+	log.Info("session log materialized", "session_file", path, "log_file", params.LogFile)
+}
 
-	src, err := os.Open(sessionFile)
+// materializeSessionLog formats the session JSONL at path with logfmt and
+// writes the result to logFile.
+func materializeSessionLog(path string, isPi bool, logFile string) error {
+	src, err := os.Open(path)
 	if err != nil {
 		return fmt.Errorf("open session file: %w", err)
 	}
@@ -1762,27 +1841,40 @@ func (d *Daemon) materializeSessionLog(log *slog.Logger, sessionID, logFile stri
 	}
 	defer dst.Close()
 
-	if err := logfmt.Fmt(src, dst); err != nil {
+	if isPi {
+		err = logfmt.FmtPi(src, dst)
+	} else {
+		err = logfmt.Fmt(src, dst)
+	}
+	if err != nil {
 		return fmt.Errorf("format session JSONL: %w", err)
 	}
-
-	log.Info("session log materialized", "session_id", sessionID, "log_file", logFile)
 	return nil
 }
 
-// materializeAgentLogs materializes session logs for agents that write
-// structured JSONL (Claude via SessionID, pi via SessionDir).
-func (d *Daemon) materializeAgentLogs(log *slog.Logger, params RunnerParams) {
-	if params.SessionID != "" {
-		if err := d.materializeSessionLog(log, params.SessionID, params.LogFile, params.Env); err != nil {
-			log.Warn("session log materialization failed", "err", err)
-		}
+// finalAssistantMessage returns the last assistant text from the run's session
+// JSONL, or "" when no session file exists.
+func finalAssistantMessage(log *slog.Logger, params RunnerParams) string {
+	path, isPi := sessionFile(params)
+	if path == "" {
+		return ""
 	}
-	if params.SessionDir != "" {
-		if err := d.materializePiSessionLog(log, params.SessionDir, params.LogFile); err != nil {
-			log.Warn("pi session log materialization failed", "err", err)
-		}
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
 	}
+	defer f.Close()
+
+	var text string
+	if isPi {
+		text, err = logfmt.LastAssistantTextPi(f)
+	} else {
+		text, err = logfmt.LastAssistantText(f)
+	}
+	if err != nil {
+		log.Warn("final assistant message extraction failed", "session_file", path, "err", err)
+	}
+	return text
 }
 
 // detectAgentError inspects a finished agent run for failures that leave a
@@ -1793,8 +1885,8 @@ func (d *Daemon) materializeAgentLogs(log *slog.Logger, params RunnerParams) {
 // so the log file reflects the final session.
 func (d *Daemon) detectAgentError(agentCfg config.Agent, params RunnerParams, logStart int64) (string, bool) {
 	if agentCfg.IsClaude() && params.SessionID != "" {
-		if matches, _, err := claudeSessionFiles(params.Env, params.SessionID); err == nil && len(matches) > 0 {
-			if reason, ok := scanClaudeSessionError(matches[0]); ok {
+		if path, _ := sessionFile(params); path != "" {
+			if reason, ok := scanClaudeSessionError(path); ok {
 				return reason, true
 			}
 		}
@@ -1838,51 +1930,6 @@ func fileSize(path string) int64 {
 		return 0
 	}
 	return fi.Size()
-}
-
-// materializePiSessionLog globs the pi session directory for JSONL files,
-// formats the session with logfmt.FmtPi, and writes the result to logFile.
-// Non-fatal: logs a warning if no files found.
-func (d *Daemon) materializePiSessionLog(log *slog.Logger, sessionDir, logFile string) error {
-	pattern := filepath.Join(sessionDir, "*.jsonl")
-	matches, err := filepath.Glob(pattern)
-	if err != nil {
-		return fmt.Errorf("glob pi session files: %w", err)
-	}
-	if len(matches) == 0 {
-		log.Warn("pi session JSONL not found", "dir", sessionDir)
-		return nil
-	}
-
-	// A retried stage reuses its session directory, so the newest file is the
-	// run that just finished.
-	sessionFile := newestFile(matches)
-	if len(matches) > 1 {
-		log.Info("multiple pi session JSONL files found, using newest", "dir", sessionDir, "count", len(matches), "file", sessionFile)
-	}
-
-	src, err := os.Open(sessionFile)
-	if err != nil {
-		return fmt.Errorf("open pi session file: %w", err)
-	}
-	defer src.Close()
-
-	if err := os.MkdirAll(filepath.Dir(logFile), 0o755); err != nil {
-		return fmt.Errorf("create log directory: %w", err)
-	}
-
-	dst, err := os.Create(logFile)
-	if err != nil {
-		return fmt.Errorf("create log file: %w", err)
-	}
-	defer dst.Close()
-
-	if err := logfmt.FmtPi(src, dst); err != nil {
-		return fmt.Errorf("format pi session JSONL: %w", err)
-	}
-
-	log.Info("pi session log materialized", "dir", sessionDir, "log_file", logFile)
-	return nil
 }
 
 // newestFile returns the path with the latest modification time, breaking ties

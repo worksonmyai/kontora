@@ -31,7 +31,9 @@ type mockService struct {
 	initFn         func(id string, req InitTicketRequest) error
 	updateFn       func(id string, req UpdateTicketRequest) error
 	noteFn         func(id, text string) error
+	summaryFn      func(id, text string) error
 	logsFn         func(id, stage string) (string, error)
+	changesFn      func(id string) (ChangesInfo, error)
 	plannotatorFn  func(id string) error
 	rawConfig      string
 	rawConfigErr   error
@@ -91,6 +93,12 @@ func (m *mockService) AddNote(id string, text string) error {
 	}
 	return nil
 }
+func (m *mockService) SetSummary(id string, text string) error {
+	if m.summaryFn != nil {
+		return m.summaryFn(id, text)
+	}
+	return nil
+}
 func (m *mockService) InitTicket(id string, req InitTicketRequest) error {
 	if m.initFn != nil {
 		return m.initFn(id, req)
@@ -108,6 +116,12 @@ func (m *mockService) GetLogs(id, stage string) (string, error) {
 		return m.logsFn(id, stage)
 	}
 	return "", nil
+}
+func (m *mockService) GetChanges(id string) (ChangesInfo, error) {
+	if m.changesFn != nil {
+		return m.changesFn(id)
+	}
+	return ChangesInfo{}, nil
 }
 func (m *mockService) GetRawConfig() (string, error) {
 	return m.rawConfig, m.rawConfigErr
@@ -392,6 +406,78 @@ func TestHandleAddNote_NotFound(t *testing.T) {
 	srv := startHandlerTestServer(t, svc)
 
 	res := post(t, srv, "/api/tickets/t-404/note", `{"text":"hi"}`)
+	assert.Equal(t, http.StatusNotFound, res.statusCode)
+}
+
+// --- POST /api/tickets/{id}/summary ---
+
+func TestHandleSetSummary_Success(t *testing.T) {
+	var gotID, gotText string
+	tkt := TicketInfo{ID: "t-001", Status: "human_review"}
+	svc := &mockService{
+		tickets: []TicketInfo{tkt},
+		summaryFn: func(id, text string) error {
+			gotID, gotText = id, text
+			return nil
+		},
+	}
+	srv := startHandlerTestServer(t, svc)
+
+	res := post(t, srv, "/api/tickets/t-001/summary", `{"text":"implemented the fix"}`)
+	assert.Equal(t, http.StatusOK, res.statusCode)
+	assert.Equal(t, "t-001", gotID)
+	assert.Equal(t, "implemented the fix", gotText)
+}
+
+func TestHandleSetSummary_MissingText(t *testing.T) {
+	svc := &mockService{}
+	srv := startHandlerTestServer(t, svc)
+
+	res := post(t, srv, "/api/tickets/t-001/summary", `{}`)
+	assert.Equal(t, http.StatusBadRequest, res.statusCode)
+}
+
+func TestHandleSetSummary_NotFound(t *testing.T) {
+	svc := &mockService{summaryFn: func(_, _ string) error { return ErrTicketNotFound }}
+	srv := startHandlerTestServer(t, svc)
+
+	res := post(t, srv, "/api/tickets/t-404/summary", `{"text":"hi"}`)
+	assert.Equal(t, http.StatusNotFound, res.statusCode)
+}
+
+// --- GET /api/tickets/{id}/changes ---
+
+func TestHandleGetChanges_Success(t *testing.T) {
+	svc := &mockService{changesFn: func(id string) (ChangesInfo, error) {
+		return ChangesInfo{
+			Base:    "main",
+			Branch:  "kontora/" + id,
+			Commits: []CommitInfo{{SHA: "abc1234", Subject: "add feature"}},
+			Files:   []FileChangeInfo{{Path: "a.go", Added: 10, Deleted: 2}},
+		}, nil
+	}}
+	srv := startHandlerTestServer(t, svc)
+
+	res := get(t, srv, "/api/tickets/t-001/changes")
+	require.Equal(t, http.StatusOK, res.statusCode)
+
+	var changes ChangesInfo
+	require.NoError(t, json.Unmarshal([]byte(res.body), &changes))
+	assert.Equal(t, "main", changes.Base)
+	assert.Equal(t, "kontora/t-001", changes.Branch)
+	require.Len(t, changes.Commits, 1)
+	assert.Equal(t, "add feature", changes.Commits[0].Subject)
+	require.Len(t, changes.Files, 1)
+	assert.Equal(t, FileChangeInfo{Path: "a.go", Added: 10, Deleted: 2}, changes.Files[0])
+}
+
+func TestHandleGetChanges_NotFound(t *testing.T) {
+	svc := &mockService{changesFn: func(_ string) (ChangesInfo, error) {
+		return ChangesInfo{}, ErrTicketNotFound
+	}}
+	srv := startHandlerTestServer(t, svc)
+
+	res := get(t, srv, "/api/tickets/t-404/changes")
 	assert.Equal(t, http.StatusNotFound, res.statusCode)
 }
 

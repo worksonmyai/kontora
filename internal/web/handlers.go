@@ -115,6 +115,33 @@ func (s *Server) handleAddNote(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, tkt)
 }
 
+func (s *Server) handleSetSummary(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+
+	var body struct {
+		Text string `json:"text"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON body"})
+		return
+	}
+	if body.Text == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "text is required"})
+		return
+	}
+
+	if err := s.svc.SetSummary(id, body.Text); err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	tkt, err := s.svc.GetTicket(id)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, tkt)
+}
+
 func (s *Server) handleMove(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 
@@ -339,6 +366,16 @@ func (s *Server) handleGetLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"content": content})
+}
+
+func (s *Server) handleGetChanges(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	changes, err := s.svc.GetChanges(id)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, changes)
 }
 
 func (s *Server) handleConfig(w http.ResponseWriter, _ *http.Request) {

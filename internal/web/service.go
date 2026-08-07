@@ -35,10 +35,12 @@ type TicketService interface {
 	SetStage(id string, stage string) error
 	MoveTicket(id string, newStatus string) error
 	AddNote(id string, text string) error
+	SetSummary(id string, text string) error
 	InitTicket(id string, req InitTicketRequest) error
 	UpdateTicket(id string, req UpdateTicketRequest) error
 	UploadTicket(content []byte) (TicketInfo, error)
 	GetLogs(id string, stage string) (string, error)
+	GetChanges(id string) (ChangesInfo, error)
 	GetRawConfig() (string, error)
 	PutRawConfig(content string) error
 	Subscribe() (ch <-chan TicketEvent, unsubscribe func())
@@ -115,6 +117,7 @@ type TicketInfo struct {
 	Body          string        `json:"body,omitempty"`
 	LastError     string        `json:"last_error,omitempty"`
 	LastLog       string        `json:"last_log,omitempty"`
+	Summary       string        `json:"summary,omitempty"`
 }
 
 type HistoryInfo struct {
@@ -123,6 +126,27 @@ type HistoryInfo struct {
 	ExitCode    int        `json:"exit_code"`
 	StartedAt   *time.Time `json:"started_at,omitempty"`
 	CompletedAt *time.Time `json:"completed_at,omitempty"`
+	Summary     string     `json:"summary,omitempty"`
+}
+
+// ChangesInfo lists the commits and changed files on a ticket's branch
+// relative to the repository's default branch.
+type ChangesInfo struct {
+	Base    string           `json:"base"`
+	Branch  string           `json:"branch"`
+	Commits []CommitInfo     `json:"commits"`
+	Files   []FileChangeInfo `json:"files"`
+}
+
+type CommitInfo struct {
+	SHA     string `json:"sha"`
+	Subject string `json:"subject"`
+}
+
+type FileChangeInfo struct {
+	Path    string `json:"path"`
+	Added   int    `json:"added"`
+	Deleted int    `json:"deleted"`
 }
 
 type TicketEvent struct {
@@ -156,6 +180,7 @@ func TicketInfoFromView(v app.View) TicketInfo {
 		Body:          v.Body,
 		LastError:     v.LastError,
 		LastLog:       v.LastLog,
+		Summary:       v.Summary,
 	}
 	if len(v.History) > 0 {
 		info.History = make([]HistoryInfo, len(v.History))
@@ -166,6 +191,7 @@ func TicketInfoFromView(v app.View) TicketInfo {
 				ExitCode:    h.ExitCode,
 				StartedAt:   h.StartedAt,
 				CompletedAt: h.CompletedAt,
+				Summary:     h.Summary,
 			}
 		}
 	}

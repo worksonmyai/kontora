@@ -53,6 +53,7 @@ func renderUsage() string {
 		{"run", "Enqueue a ticket for processing"},
 		{"done", "Mark a ticket as done"},
 		{"note", "Append a note to a ticket"},
+		{"summary", "Set a ticket's summary"},
 		{"pause", "Pause a running or queued ticket"},
 		{"retry", "Re-queue a paused ticket"},
 		{"skip", "Skip to the next pipeline stage"},
@@ -105,6 +106,8 @@ func main() {
 		cmdDone()
 	case "note":
 		cmdNote()
+	case "summary":
+		cmdSummary()
 	case "pause":
 		cmdAction("pause")
 	case "retry":
@@ -583,6 +586,55 @@ func cmdNote() {
 	cfg := mustLoadConfig(*configPath)
 
 	if err := cli.Note(cfg.TicketsDir, taskID, text); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func cmdSummary() {
+	fs := flag.NewFlagSet("summary", flag.ExitOnError)
+	configPath := fs.String("config", defaultConfigPath(), "path to config file")
+	urlFlag, tokenFlag := addRemoteFlags(fs)
+	if err := fs.Parse(os.Args[2:]); err != nil {
+		log.Fatalf("parsing flags: %v", err)
+	}
+
+	if fs.NArg() < 1 {
+		log.Fatal("ticket ID is required: kontora summary TICKET_ID [TEXT]")
+	}
+	taskID := fs.Arg(0)
+
+	var text string
+	if fs.NArg() >= 2 {
+		text = strings.Join(fs.Args()[1:], " ")
+	} else {
+		fi, err := os.Stdin.Stat()
+		if err != nil {
+			log.Fatalf("stat stdin: %v", err)
+		}
+		if fi.Mode()&os.ModeCharDevice != 0 {
+			log.Fatal("summary text is required: kontora summary TICKET_ID TEXT or echo TEXT | kontora summary TICKET_ID")
+		}
+		data, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			log.Fatalf("reading stdin: %v", err)
+		}
+		text = strings.TrimRight(string(data), "\n")
+	}
+
+	if text == "" {
+		log.Fatal("summary text is required (as argument or via stdin)")
+	}
+
+	if rc := remoteClient(*urlFlag, *tokenFlag); rc != nil {
+		if err := rc.Summary(mustResolveRemote(rc, taskID), text); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
+
+	cfg := mustLoadConfig(*configPath)
+
+	if err := cli.Summary(cfg.TicketsDir, taskID, text); err != nil {
 		log.Fatal(err)
 	}
 }

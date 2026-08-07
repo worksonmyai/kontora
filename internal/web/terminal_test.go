@@ -97,6 +97,8 @@ func (m *mockTerminalService) SkipStage(_ string) error                         
 func (m *mockTerminalService) SetStage(_ string, _ string) error                  { return nil }
 func (m *mockTerminalService) MoveTicket(_ string, _ string) error                { return nil }
 func (m *mockTerminalService) AddNote(_ string, _ string) error                   { return nil }
+func (m *mockTerminalService) SetSummary(_ string, _ string) error                { return nil }
+func (m *mockTerminalService) GetChanges(_ string) (ChangesInfo, error)           { return ChangesInfo{}, nil }
 func (m *mockTerminalService) InitTicket(_ string, _ InitTicketRequest) error     { return nil }
 func (m *mockTerminalService) UpdateTicket(_ string, _ UpdateTicketRequest) error { return nil }
 func (m *mockTerminalService) UploadTicket(_ []byte) (TicketInfo, error)          { return TicketInfo{}, nil }

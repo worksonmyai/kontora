@@ -65,6 +65,9 @@ function kontora() {
     logViewStage: null,
     logViewLoading: false,
     detailLoading: false,
+    // Commits and changed files for the open ticket's branch, from the changes
+    // endpoint. Null until fetched; fetched for finished tickets only.
+    ticketChanges: null,
     searchQuery: '',
     searchOpen: false,
     suggestions: [],
@@ -720,6 +723,7 @@ function kontora() {
       this.logViewStage = null;
       this.logViewLoading = false;
       this.setStageOpen = false;
+      this.ticketChanges = null;
       this.selectedTicket = ticket;
       this.detailLoading = true;
       try {
@@ -739,11 +743,16 @@ function kontora() {
         this.error = 'Failed to load ticket details';
       }
       this.detailLoading = false;
+      if (this.summaryFirst(this.selectedTicket)) {
+        this.fetchChanges(this.selectedTicket.id);
+      }
       if (this.selectedTicket?.status !== 'in_progress' && this.selectedTicket?.status !== 'todo' && this.selectedTicket?.status !== 'open'
           && this.selectedTicket?.history?.length > 0) {
         var lastStage = this.selectedTicket.history[this.selectedTicket.history.length - 1].stage;
         this.fetchStageLogs(this.selectedTicket.id, lastStage);
-        this.activeTab = 'terminal';
+        // Finished tickets with a summary open on the ticket tab, where the
+        // summary card sits; the logs stay prefetched for the log tab.
+        this.activeTab = this.summaryFirst(this.selectedTicket) ? 'ticket' : 'terminal';
       } else if (this.selectedTicket?.status === 'in_progress') {
         this.activeTab = 'terminal';
         this.openTerminal();
@@ -751,6 +760,35 @@ function kontora() {
         this.activeTab = 'ticket';
         if (['open', 'todo', 'paused'].concat(this.configCache?.custom_statuses || []).includes(this.selectedTicket?.status)) this.startEditing();
       }
+    },
+
+    // Whether the detail panel should open on the summary (ticket tab): the
+    // ticket finished and a stage run recorded a summary.
+    summaryFirst(t) {
+      return !!t && ['human_review', 'done'].includes(t.status) && !!t.summary;
+    },
+
+    // The stage that produced the current summary: the most recent history
+    // entry, whose exit wrote the top-level summary field.
+    summaryStage() {
+      var h = this.selectedTicket?.history;
+      return h && h.length ? h[h.length - 1].stage : '';
+    },
+
+    // History entries before the last one that carry their own summary.
+    earlierSummaries() {
+      var h = this.selectedTicket?.history || [];
+      return h.slice(0, -1).filter(function (e) { return e.summary; });
+    },
+
+    async fetchChanges(id) {
+      try {
+        var res = await fetch('/api/tickets/' + id + '/changes');
+        if (res.ok) {
+          var changes = await res.json();
+          if (this.selectedTicket?.id === id) this.ticketChanges = changes;
+        }
+      } catch (e) { /* the card simply shows no commit list */ }
     },
 
     switchTab(tab) {
@@ -779,6 +817,7 @@ function kontora() {
       this.logViewContent = null;
       this.logViewStage = null;
       this.logViewLoading = false;
+      this.ticketChanges = null;
     },
 
     copyTicketId(id) {
@@ -2228,6 +2267,11 @@ function kontora() {
       else if (this.mobileHasRun(t)) this.detailTab = 'logs';
       else this.detailTab = 'ticket';
       await this.selectTicket(t);
+      // The board card lacks detail fields, so the summary check runs on the
+      // full ticket selectTicket fetched.
+      if (this.detailTab === 'logs' && this.summaryFirst(this.selectedTicket)) {
+        this.detailTab = 'ticket';
+      }
       // selectTicket() applies the desktop tab heuristics, which only fetch logs
       // when the ticket carries history. The mobile logs tab needs them either
       // way, so load them here if nothing started (logViewLoading is set

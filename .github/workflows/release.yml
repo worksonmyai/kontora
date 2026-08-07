@@ -133,4 +133,3 @@ jobs:
           if ! gh pr view "$BRANCH" &>/dev/null; then
             gh pr create --title "Update Homebrew formula to ${TAG}" --body "Automated formula update for release ${TAG}." --base main
           fi
-          gh pr merge --squash --delete-branch

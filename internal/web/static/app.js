@@ -91,6 +91,8 @@ function kontora() {
     editSubmitting: false,
     editSaved: false,
     _editDebounce: null,
+    _blockOffsetsSrc: null,
+    _blockOffsetsFor: null,
     setStageOpen: false,
     deleteSubmitting: false,
     uploadDragging: false,
@@ -405,6 +407,7 @@ function kontora() {
         }
         if (this.selectedTicket?.id === ticket.id) {
           if (this.editing && !['open', 'todo', 'paused'].concat(this.configCache?.custom_statuses || []).includes(ticket.status)) {
+            this.flushEditSave();
             this.editing = false;
             this.editingBody = false;
           }
@@ -717,6 +720,12 @@ function kontora() {
         this.closeDetail();
         return;
       }
+      // The editor holds the previous ticket's body. Saving it before the swap,
+      // then dropping it, keeps a pending debounce or a later flush from writing
+      // that body onto the ticket being opened. startEditing re-arms it below.
+      this.flushEditSave();
+      this.editing = false;
+      this.editingBody = false;
       this.closeTerminal();
       this.terminalRW = false;
       this.logViewContent = null;
@@ -792,6 +801,12 @@ function kontora() {
     },
 
     switchTab(tab) {
+      // The tab content uses x-show, so leaving it would otherwise keep a
+      // focused textarea mounted and bring it back with stale geometry.
+      if (tab !== 'ticket' && this.editingBody) {
+        this.flushEditSave();
+        this.editingBody = false;
+      }
       this.activeTab = tab;
       if (tab === 'terminal' && this.selectedTicket?.status === 'in_progress' && !this.terminalOpen) {
         this.openTerminal();
@@ -804,6 +819,7 @@ function kontora() {
     },
 
     closeDetail() {
+      this.flushEditSave();
       this.detailFullscreen = false;
       this.closeTerminal();
       this.terminalRW = false;
@@ -1029,9 +1045,13 @@ function kontora() {
           const updated = await res.json();
           const idx = this.tickets.findIndex(t => t.id === updated.id);
           if (idx >= 0) this.tickets[idx] = updated;
-          this.selectedTicket = updated;
-          this.editSaved = true;
-          setTimeout(() => { this.editSaved = false; }, 1500);
+          // A save flushed on the way out resolves after the panel closed or
+          // selected another ticket, and an unguarded assignment reopens it.
+          if (this.selectedTicket?.id === updated.id) {
+            this.selectedTicket = updated;
+            this.editSaved = true;
+            setTimeout(() => { this.editSaved = false; }, 1500);
+          }
         } else {
           const data = await res.json().catch(() => ({}));
           this.error = data.error || 'Failed to save';
@@ -1045,6 +1065,129 @@ function kontora() {
     debounceSaveEdit() {
       if (this._editDebounce) clearTimeout(this._editDebounce);
       this._editDebounce = setTimeout(() => this.saveEdit(), 800);
+    },
+
+    // Cancel the pending debounce and save now. saveEdit reads selectedTicket
+    // and editForm before its first await, so a caller may clear editor state
+    // as soon as this returns without dropping the in-flight request.
+    flushEditSave() {
+      if (this._editDebounce) {
+        clearTimeout(this._editDebounce);
+        this._editDebounce = null;
+      }
+      this.saveEdit();
+    },
+
+    // Enter body edit mode with the clicked block left where it is on screen.
+    beginBodyEdit(event) {
+      var anchor = this._blockAnchor(event.target);
+      this.editingBody = true;
+      // Alpine runs x-init before x-model, so the textarea carries no value
+      // until the flush that $nextTick waits for.
+      this.$nextTick(() => this._anchorEditor(anchor));
+    },
+
+    // Leave body edit mode with the block holding the caret left where it is.
+    exitBodyEdit() {
+      var anchor = this._caretAnchor(this.$refs.bodyEditor);
+      this.flushEditSave();
+      this.editingBody = false;
+      this.$nextTick(() => this._anchorPreview(anchor));
+    },
+
+    // A blur while the window still has focus is a click elsewhere in the page:
+    // save and collapse to the preview. Losing the window is an application
+    // switch, so save but stay in edit mode and resume in place on return.
+    blurBodyEdit() {
+      if (!document.hasFocus()) {
+        this.flushEditSave();
+        return;
+      }
+      this.exitBodyEdit();
+    },
+
+    // Where the clicked rendered block sits, and which source offset produced
+    // it. A click on the wrapper rather than on a block, or a body whose token
+    // stream does not line up with the rendered elements, leaves offset null
+    // and takes the ratio-preserving fallback.
+    _blockAnchor(target) {
+      var prose = this.$refs.bodyPreview;
+      var scroller = this.closestScroller(prose || target);
+      if (!scroller) return null;
+      var anchor = { scroller: scroller, top: scroller.scrollTop, height: scroller.scrollHeight, offset: null, y: 0 };
+      var offsets = this.bodyBlockOffsets(this.editForm.body);
+      if (!prose || !offsets || offsets.length !== prose.children.length) return anchor;
+      var block = target;
+      while (block && block.parentElement !== prose) block = block.parentElement;
+      var idx = block ? Array.prototype.indexOf.call(prose.children, block) : -1;
+      if (idx < 0) return anchor;
+      anchor.offset = offsets[idx];
+      anchor.y = this.topWithin(block, scroller) - scroller.scrollTop;
+      return anchor;
+    },
+
+    // Where the block holding the caret sits inside the textarea. count is the
+    // number of source blocks, which the preview checks against its own child
+    // count before trusting index.
+    _caretAnchor(el) {
+      var scroller = el && this.closestScroller(el);
+      if (!scroller) return null;
+      var anchor = { scroller: scroller, top: scroller.scrollTop, height: scroller.scrollHeight, index: -1, count: 0, y: 0 };
+      var offsets = this.bodyBlockOffsets(this.editForm.body);
+      if (!offsets || !offsets.length) return anchor;
+      var caret = el.selectionStart || 0;
+      var idx = 0;
+      for (var i = 0; i < offsets.length && offsets[i] <= caret; i++) idx = i;
+      anchor.index = idx;
+      anchor.count = offsets.length;
+      anchor.y = this.topWithin(el, scroller) + this.caretLineTop(el, offsets[idx]) - scroller.scrollTop;
+      return anchor;
+    },
+
+    _anchorEditor(anchor) {
+      var el = this.$refs.bodyEditor;
+      if (!el) return;
+      this.autoGrowBody(el);
+      var offset = 0;
+      if (anchor && anchor.offset === null) {
+        this._restoreScrollRatio(anchor);
+      } else if (anchor) {
+        offset = anchor.offset;
+        this._scrollTo(anchor.scroller, this.topWithin(el, anchor.scroller) + this.caretLineTop(el, offset) - anchor.y);
+      }
+      // caretLineTop assigns .value, which resets the selection and clears the
+      // native undo stack, so the caret goes in last.
+      el.focus({ preventScroll: true });
+      el.setSelectionRange(offset, offset);
+    },
+
+    _anchorPreview(anchor) {
+      if (!anchor) return;
+      var prose = this.$refs.bodyPreview;
+      // One offset per rendered child, or the indexes name the wrong elements:
+      // sanitizing drops an HTML comment that the lexer counted as a block, and
+      // every block after it shifts by one.
+      var trusted = !!prose && anchor.count === prose.children.length;
+      var block = trusted && anchor.index >= 0 ? prose.children[anchor.index] : null;
+      if (!block) {
+        this._restoreScrollRatio(anchor);
+        return;
+      }
+      this._scrollTo(anchor.scroller, this.topWithin(block, anchor.scroller) - anchor.y);
+    },
+
+    // Fallback for every case with no exact anchor: hold the same fraction of
+    // the document rather than letting the swap clamp the reader to the top.
+    _restoreScrollRatio(anchor) {
+      var height = anchor.scroller.scrollHeight;
+      this._scrollTo(anchor.scroller, anchor.height ? anchor.top * height / anchor.height : anchor.top);
+    },
+
+    // Clamp here rather than leaving it to the browser. The textarea is shorter
+    // than the rendered preview, so an entry target for a block near the end
+    // lands past the maximum.
+    _scrollTo(scroller, top) {
+      scroller.scrollTop = Math.max(0, Math.min(top, scroller.scrollHeight - scroller.clientHeight));
     },
 
     isStageClickable(stage, ticket) {
@@ -2143,6 +2286,111 @@ function kontora() {
     renderMarkdown(md) {
       if (!md) return '';
       try { return DOMPurify.sanitize(marked.parse(md)); } catch (e) { return ''; }
+    },
+
+    // x-html rewrites innerHTML on every effect run. An SSE refresh that leaves
+    // the markdown untouched still tears the rendered body down and rebuilds
+    // it, and the scroll container clamps to the top while it is empty. Write
+    // only when the source changed. Plain innerHTML is enough here because
+    // sanitized markdown carries no Alpine directives.
+    setProse(el, md) {
+      var src = md || '';
+      if (el._proseSrc === src) return;
+      el._proseSrc = src;
+      el.innerHTML = this.renderMarkdown(src);
+    },
+
+    // Height from content, so the panel stays the only scroller while editing.
+    autoGrowBody(el) {
+      if (!el) return;
+      el.style.height = 'auto';
+      el.style.height = el.scrollHeight + 'px';
+    },
+
+    // The element that actually scrolls the ticket body. A stacked panel turns
+    // an extra ancestor into a scroller, so resolve it from the node rather
+    // than hardcoding one container. Do not also require that the ancestor
+    // overflows: during the preview/editor swap it transiently does not, and
+    // the walk would run past it to <body>.
+    closestScroller(el) {
+      for (var n = el && el.parentElement; n; n = n.parentElement) {
+        var oy = window.getComputedStyle(n).overflowY;
+        if (oy === 'auto' || oy === 'scroll') return n;
+      }
+      return null;
+    },
+
+    // Distance from the scroller's scrollable origin to el's top. Anchor and
+    // target go through this one helper so border and padding cancel out.
+    topWithin(el, scroller) {
+      return el.getBoundingClientRect().top
+        - scroller.getBoundingClientRect().top
+        - scroller.clientTop
+        + scroller.scrollTop;
+    },
+
+    // Source offset of each top-level rendered block, or null when the source
+    // and the token stream cannot be lined up.
+    //
+    // Do not replace the cursor walk with a running sum of raw.length. marked
+    // consumes a top-level link-reference definition ("[ref]: https://…")
+    // without pushing a token, which silently shortens every later offset, and
+    // it appends a synthetic newline to raw in some paragraph sequences, after
+    // which raw is no longer a substring of the source. Re-finding each raw
+    // heals the first case and gives up on the second.
+    //
+    // The caller must still compare the length against the rendered container's
+    // children. DOMPurify drops comment nodes, so a markdown comment is one
+    // token and no element, and every offset after it names the wrong block.
+    bodyBlockOffsets(md) {
+      var src = (md || '').replace(/\r\n|\r/g, '\n');
+      if (this._blockOffsetsSrc === src) return this._blockOffsetsFor;
+      var offsets = [];
+      try {
+        var tokens = marked.lexer(src).filter(function (t) { return t.type !== 'space'; });
+        var cursor = 0;
+        for (var i = 0; i < tokens.length; i++) {
+          var raw = tokens[i].raw;
+          var off = cursor;
+          if (!raw) { offsets = null; break; }
+          if (src.substr(cursor, raw.length) !== raw) {
+            off = src.indexOf(raw, cursor);
+            if (off < 0) { offsets = null; break; }
+          }
+          offsets.push(off);
+          cursor = off + raw.length;
+        }
+      } catch (e) {
+        offsets = null;
+      }
+      this._blockOffsetsSrc = src;
+      this._blockOffsetsFor = offsets;
+      return offsets;
+    },
+
+    // Y of the line holding source offset off, measured from the textarea's
+    // border-box top.
+    caretLineTop(el, off) {
+      var cs = window.getComputedStyle(el);
+      var padTop = parseFloat(cs.paddingTop) || 0;
+      var padBottom = parseFloat(cs.paddingBottom) || 0;
+      var full = el.value;
+      var savedHeight = el.style.height;
+      // scrollHeight is max(contentHeight, clientHeight) and auto-grow has
+      // already set the box to the full content height, so without zeroing it
+      // every prefix measures the same number. The sentinel character matters
+      // because block offsets are line starts: the prefix ends in "\n" and
+      // engines disagree on whether that trailing empty line counts.
+      el.style.height = '0px';
+      var measure = function (text) { el.value = text; return el.scrollHeight; };
+      // getComputedStyle returns "normal" for an unset line-height, so derive
+      // it from a single rendered line instead.
+      var lineHeight = measure('x') - padTop - padBottom;
+      var height = measure(full.slice(0, off) + 'x');
+      el.value = full;
+      el.style.height = savedHeight;
+      // scrollHeight includes both paddings and excludes the border.
+      return (parseFloat(cs.borderTopWidth) || 0) + height - padBottom - lineHeight;
     },
 
     // Lexical colorizer for the stage-log pane: "> tool …" lines get an accent

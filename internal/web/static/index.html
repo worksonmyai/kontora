@@ -1156,7 +1156,7 @@
                       <span class="text-[10.5px] font-mono text-surface-600" x-text="'· ' + summaryStage()"></span>
                     </template>
                   </div>
-                  <div class="ticket-prose text-sm" x-html="renderMarkdown(selectedTicket.summary)"></div>
+                  <div class="ticket-prose text-sm" x-effect="setProse($el, selectedTicket.summary)"></div>
                   <template x-if="earlierSummaries().length">
                     <details class="mt-3">
                       <summary class="text-[11px] font-mono text-surface-600 cursor-pointer hover:text-tx-2">earlier stage summaries</summary>
@@ -1164,7 +1164,7 @@
                         <template x-for="(h, hi) in earlierSummaries()" :key="hi">
                           <div>
                             <span class="text-[10.5px] font-mono text-surface-600" x-text="h.stage"></span>
-                            <div class="ticket-prose text-sm" x-html="renderMarkdown(h.summary)"></div>
+                            <div class="ticket-prose text-sm" x-effect="setProse($el, h.summary)"></div>
                           </div>
                         </template>
                       </div>
@@ -1240,18 +1240,23 @@
                     <span x-show="editSubmitting" class="text-xs font-mono text-surface-600">saving...</span>
                     <span x-show="editSaved && !editSubmitting" class="text-xs font-mono text-ok/60">saved</span>
                   </div>
-                  <!-- Body: click-to-edit toggle -->
+                  <!-- Body: click-to-edit toggle. Overflow must stay hidden: it
+                       holds the scrollbar gutter at zero, so a short value
+                       wraps at the same width as the full text, which is what
+                       caretLineTop measures a prefix against. -->
                   <template x-if="editingBody">
-                    <textarea x-model="editForm.body" @input="debounceSaveEdit()"
-                      @blur="if (_editDebounce) { clearTimeout(_editDebounce); _editDebounce = null; } editingBody = false; saveEdit()"
-                      x-init="$nextTick(() => $el.focus({ preventScroll: true }))"
-                      class="w-full h-[calc(100vh-280px)] bg-surface-800 border border-surface-700 rounded px-3 py-2 text-sm text-tx-2 font-mono resize-none focus:outline-none focus:border-accent"
+                    <textarea x-model="editForm.body" x-ref="bodyEditor"
+                      @input="autoGrowBody($el); debounceSaveEdit()"
+                      @blur="blurBodyEdit()"
+                      @keydown.escape="$event.stopPropagation(); exitBodyEdit()"
+                      @keydown.enter="if ($event.metaKey || $event.ctrlKey) { $event.preventDefault(); exitBodyEdit(); }"
+                      class="w-full min-h-[100px] overflow-hidden bg-surface-800 border border-surface-700 rounded px-3 py-2 text-sm text-tx-2 font-mono resize-none focus:outline-none focus:border-accent"
                       spellcheck="false"></textarea>
                   </template>
                   <template x-if="!editingBody">
-                    <div @click="editingBody = true"
+                    <div @click="beginBodyEdit($event)"
                       class="group/edit cursor-text rounded border border-transparent hover:border-surface-700/50 transition-colors min-h-[100px] relative">
-                      <div x-show="editForm.body" class="ticket-prose text-sm" x-html="renderMarkdown(editForm.body)"></div>
+                      <div x-show="editForm.body" x-ref="bodyPreview" class="ticket-prose text-sm" x-effect="setProse($el, editForm.body)"></div>
                       <p x-show="!editForm.body" class="text-sm font-mono text-surface-600">Click to add a description...</p>
                       <span x-show="editForm.body" class="absolute top-1 right-1 text-[11px] font-mono text-surface-600 opacity-0 group-hover/edit:opacity-100 transition-opacity">click to edit</span>
                     </div>
@@ -1261,7 +1266,7 @@
               <!-- Read-only view for non-editable tickets -->
               <template x-if="!editing || !['open', 'todo', 'paused'].includes(selectedTicket?.status)">
                 <div>
-                  <div class="ticket-prose text-sm" x-html="renderMarkdown(selectedTicket?.body || '')"></div>
+                  <div class="ticket-prose text-sm" x-effect="setProse($el, selectedTicket?.body || '')"></div>
                   <div x-show="!selectedTicket?.body" class="text-sm font-mono text-surface-600">
                     <p>No ticket description.</p>
                   </div>
@@ -1711,7 +1716,7 @@
                   <span style="color:rgba(var(--surface-600),1);" x-text="'· ' + summaryStage()"></span>
                 </template>
               </div>
-              <div class="ticket-prose text-sm" x-html="renderMarkdown(selectedTicket.summary)"></div>
+              <div class="ticket-prose text-sm" x-effect="setProse($el, selectedTicket.summary)"></div>
               <template x-if="ticketChanges?.commits?.length">
                 <div style="margin-top:10px;padding-top:10px;border-top:1px solid rgba(var(--surface-700),.3);font-family:'JetBrains Mono',monospace;font-size:11px;">
                   <div style="color:rgba(var(--surface-600),1);margin-bottom:6px;"
@@ -1757,7 +1762,7 @@
             </template>
           </div>
           <template x-if="selectedTicket?.body">
-            <div class="ticket-prose text-sm" x-html="renderMarkdown(selectedTicket.body)"></div>
+            <div class="ticket-prose text-sm" x-effect="setProse($el, selectedTicket.body)"></div>
           </template>
           <template x-if="!selectedTicket?.body">
             <div style="font-family:'JetBrains Mono',monospace;font-size:13px;color:rgba(var(--surface-600),1);">No ticket description.</div>

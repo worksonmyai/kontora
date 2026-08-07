@@ -51,6 +51,7 @@ function kontora() {
     sheet: null,
     createSubmitting: false,
     createForm: { title: '', path: '', pipeline: '', agent: '', status: 'todo', body: '', branch: '' },
+    createTouched: { pipeline: false, agent: false },
     initModal: false,
     initSubmitting: false,
     initForm: { ticketId: '', title: '', pipeline: '', agent: '', path: '' },
@@ -521,6 +522,7 @@ function kontora() {
 
     async openCreateModal() {
       this.createForm = { title: '', path: '', pipeline: '', agent: '', status: 'todo', body: '', branch: '' };
+      this.createTouched = { pipeline: false, agent: false };
       this.currentView = 'new';
       this.error = null;
       if (!this.configCache) {
@@ -538,16 +540,62 @@ function kontora() {
       this.createSubmitting = false;
     },
 
-    // Auto-pick the agent that the picked pipeline runs first, with a fallback
-    // to the global default. Mirrors what the daemon would resolve on submit
-    // when agent is left blank.
-    onPipelineChange() {
+    // Whether the config names any project. With none configured a blank
+    // pipeline or agent select cannot inherit anything, so the selects drop the
+    // "project default" wording and the "none" opt-out.
+    hasProjects() {
+      return (this.configCache?.projects || []).length > 0;
+    },
+
+    // The project whose path matches what the create form's path field says.
+    // Both the configured form (which may start with ~) and the resolved
+    // absolute form are compared, since the browser cannot expand ~ itself.
+    createProject() {
+      var typed = (this.createForm.path || '').trim().replace(/\/+$/, '');
+      if (!typed) return null;
+      var projects = this.configCache?.projects || [];
+      return projects.find(p =>
+        typed === (p.path || '').replace(/\/+$/, '') ||
+        typed === (p.resolved_path || '').replace(/\/+$/, '')
+      ) || null;
+    },
+
+    // Prefill the selects the user has not touched from the project that owns
+    // the typed path. cli.New applies the same defaults on submit, so this is a
+    // preview of what the server will do, not the mechanism.
+    //
+    // Every untouched select is rewritten on each keystroke, including back to
+    // blank once the path stops matching: leaving the previous project's values
+    // in place would create the ticket with a pipeline picked for another repo.
+    onCreatePathChange() {
+      var project = this.createProject();
+      if (!this.createTouched.pipeline) this.createForm.pipeline = (project && project.pipeline) || '';
+      this.syncCreateAgent();
+    },
+
+    // The agent an untouched select shows: the project's own agent outranks the
+    // agent the picked pipeline runs first, which in turn beats the global
+    // default. Mirrors what the daemon would resolve on submit.
+    syncCreateAgent() {
+      if (this.createTouched.agent) return;
+      var project = this.createProject();
+      if (project && project.agent) {
+        this.createForm.agent = project.agent;
+        return;
+      }
       var name = this.createForm.pipeline;
-      if (!name) return;
+      if (!name || name === 'none') {
+        this.createForm.agent = '';
+        return;
+      }
       var infos = this.configCache?.pipeline_infos || [];
       var info = infos.find(i => i.name === name);
-      var def = (info && info.default_agent) || this.configCache?.default_agent || '';
-      if (def) this.createForm.agent = def;
+      this.createForm.agent = (info && info.default_agent) || this.configCache?.default_agent || '';
+    },
+
+    onPipelineChange() {
+      this.createTouched.pipeline = true;
+      this.syncCreateAgent();
     },
 
     toggleSidebar() {
@@ -2601,6 +2649,7 @@ function kontora() {
     },
     async openNewSheet() {
       this.createForm = { title: '', path: '', pipeline: '', agent: '', status: 'todo', body: '', branch: '' };
+      this.createTouched = { pipeline: false, agent: false };
       this.error = null;
       this.sheet = { type: 'new' };
       if (!this.configCache) {

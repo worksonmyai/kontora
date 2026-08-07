@@ -580,3 +580,77 @@ func TestService_LiveConfig(t *testing.T) {
 	assert.Equal(t, "verify", repo.tickets["tst-002"].Ticket.Stage,
 		"init must use the reloaded pipeline's first stage")
 }
+
+func TestInit_ProjectDefaults(t *testing.T) {
+	cases := []struct {
+		name         string
+		frontmatter  string // extra ticket fields, one per line
+		req          InitRequest
+		wantPipeline string
+		wantAgent    string
+		wantStage    string
+	}{
+		{
+			name:         "blank fields take project defaults",
+			req:          InitRequest{Path: "~/projects/test"},
+			wantPipeline: "default",
+			wantAgent:    "claude-sonnet",
+			wantStage:    "code",
+		},
+		{
+			name:         "the ticket's own values win over project defaults",
+			frontmatter:  "pipeline: release\nagent: codex\n",
+			req:          InitRequest{Path: "~/projects/test"},
+			wantPipeline: "release",
+			wantAgent:    "codex",
+			wantStage:    "code",
+		},
+		{
+			name:         "none clears an agent the ticket already carries",
+			frontmatter:  "agent: codex\n",
+			req:          InitRequest{Path: "~/projects/test", Agent: "none"},
+			wantPipeline: "default",
+			wantStage:    "code",
+		},
+		{
+			name:         "explicit values win",
+			req:          InitRequest{Path: "~/projects/test", Pipeline: "release", Agent: "codex"},
+			wantPipeline: "release",
+			wantAgent:    "codex",
+			wantStage:    "code",
+		},
+		{
+			name:      "none opts the pipeline out and keeps the project agent",
+			req:       InitRequest{Path: "~/projects/test", Pipeline: "none"},
+			wantAgent: "claude-sonnet",
+		},
+		{
+			name:         "path with no project entry stays blank",
+			req:          InitRequest{Path: "~/projects/other"},
+			wantPipeline: "",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := testCfg()
+			cfg.Pipelines["release"] = cfg.Pipelines["default"]
+			cfg.Agents["codex"] = config.Agent{Binary: "codex"}
+			cfg.Projects = map[string]config.Project{
+				"test": {Path: "~/projects/test", Pipeline: "default", Agent: "claude-sonnet"},
+			}
+
+			repo := newMemRepo()
+			repo.add("tst-001", "---\nid: tst-001\nstatus: open\n"+tc.frontmatter+"---\n# Test\n")
+			svc := New(Static(cfg), repo, &spyRuntime{})
+
+			_, err := svc.Init("tst-001", tc.req)
+			require.NoError(t, err)
+
+			tkt := repo.tickets["tst-001"].Ticket
+			assert.Equal(t, tc.wantPipeline, tkt.Pipeline)
+			assert.Equal(t, tc.wantAgent, tkt.Agent)
+			assert.Equal(t, tc.wantStage, tkt.Stage)
+		})
+	}
+}

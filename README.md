@@ -71,7 +71,7 @@ kontora attach # attach to the agent's tmux session
 
 ## Configuration
 
-Config is stored in `~/.config/kontora/config.yaml` and defines three things: agents, stages, and pipelines.
+Config is stored in `~/.config/kontora/config.yaml` and defines four things: agents, stages, pipelines, and projects.
 
 **Agents** are binaries kontora spawns — Claude Code, Aider, or anything with a CLI:
 
@@ -125,6 +125,18 @@ pipelines:
 ```
 
 Stages share a git worktree. Artifacts are passed as files — one stage writes `PLAN.md`, the next reads it via `{{ file "PLAN.md" }}`.
+
+**Projects** are optional. Each one names a repository and the pipeline and agent that new tickets for it should default to:
+
+```yaml
+projects:
+  kontora:
+    path: ~/projects/kontora
+    pipeline: implement-review-commit
+    agent: claude
+```
+
+`kontora new --path ~/projects/kontora "..."` then writes both fields into the ticket. Pass `--pipeline none` for a standalone ticket instead.
 
 Full reference: [docs/configuration.md](docs/configuration.md)
 

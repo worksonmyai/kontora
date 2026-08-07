@@ -1067,8 +1067,30 @@ func TestDaemon_CreateTicket_UnknownAgent(t *testing.T) {
 		Agent:  "nonexistent",
 		Status: "open",
 	})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "unknown agent")
+	require.ErrorIs(t, err, web.ErrUnknownAgent)
+
+	cancel()
+	require.NoError(t, <-errCh)
+}
+
+func TestDaemon_CreateTicket_UnknownPipeline(t *testing.T) {
+	h := newHarness(t)
+	d := h.newDaemon(h.cfg)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- d.Run(ctx) }()
+	time.Sleep(200 * time.Millisecond)
+
+	_, err := d.CreateTicket(web.CreateTicketRequest{
+		Title:    "Bad pipeline",
+		Path:     h.repoDir,
+		Pipeline: "nonexistent",
+		Status:   "open",
+	})
+	require.ErrorIs(t, err, web.ErrUnknownPipeline)
 
 	cancel()
 	require.NoError(t, <-errCh)
@@ -1325,4 +1347,91 @@ func TestDaemon_InitTicket_NotFound(t *testing.T) {
 
 	cancel()
 	require.NoError(t, <-errCh)
+}
+
+func TestDaemon_GetConfig_ReturnsProjectsSortedByName(t *testing.T) {
+	h := newHarness(t)
+	h.cfg.Projects = map[string]config.Project{
+		"sigil":   {Path: "~/projects/sigil", Pipeline: "one-stage"},
+		"kontora": {Path: h.repoDir, Pipeline: "two-stage", Agent: "agent2"},
+	}
+	d := h.newDaemon(h.cfg)
+
+	got := d.GetConfig().Projects
+	require.Len(t, got, 2)
+	assert.Equal(t, web.ProjectInfo{
+		Name:         "kontora",
+		Path:         h.repoDir,
+		ResolvedPath: h.repoDir,
+		Pipeline:     "two-stage",
+		Agent:        "agent2",
+	}, got[0])
+	assert.Equal(t, web.ProjectInfo{
+		Name:         "sigil",
+		Path:         "~/projects/sigil",
+		ResolvedPath: config.NormalizeRepoPath("~/projects/sigil"),
+		Pipeline:     "one-stage",
+	}, got[1])
+}
+
+func TestDaemon_CreateTicket_ProjectDefaults(t *testing.T) {
+	cases := []struct {
+		name         string
+		req          web.CreateTicketRequest
+		wantPipeline string
+		wantAgent    string
+	}{
+		{
+			name:         "blank fields take project defaults",
+			req:          web.CreateTicketRequest{Title: "Inherited"},
+			wantPipeline: "two-stage",
+			wantAgent:    "agent2",
+		},
+		{
+			name:         "explicit values win",
+			req:          web.CreateTicketRequest{Title: "Explicit", Pipeline: "one-stage", Agent: "agent1"},
+			wantPipeline: "one-stage",
+			wantAgent:    "agent1",
+		},
+		{
+			name:      "none opts the pipeline out",
+			req:       web.CreateTicketRequest{Title: "Standalone", Pipeline: "none"},
+			wantAgent: "agent2",
+		},
+		{
+			name:         "none opts the agent out",
+			req:          web.CreateTicketRequest{Title: "No agent", Agent: "none"},
+			wantPipeline: "two-stage",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			h.cfg.Projects = map[string]config.Project{
+				"repo": {Path: h.repoDir, Pipeline: "two-stage", Agent: "agent2"},
+			}
+			d := h.newDaemon(h.cfg)
+
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+
+			errCh := make(chan error, 1)
+			go func() { errCh <- d.Run(ctx) }()
+			time.Sleep(200 * time.Millisecond)
+
+			req := tc.req
+			req.Path = h.repoDir
+			req.Status = "open"
+			info, err := d.CreateTicket(req)
+			require.NoError(t, err)
+
+			created := h.readTask(info.ID + ".md")
+			assert.Equal(t, tc.wantPipeline, created.Pipeline)
+			assert.Equal(t, tc.wantAgent, created.Agent)
+
+			cancel()
+			require.NoError(t, <-errCh)
+		})
+	}
 }

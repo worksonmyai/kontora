@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -800,4 +801,113 @@ pipelines:
 	cfg, err := LoadReader(strings.NewReader(input))
 	require.NoError(t, err)
 	assert.Equal(t, "/tmp/tasks", cfg.TicketsDir)
+}
+
+func TestLoadProjects(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	cfg, err := Load("testdata/projects.yaml")
+	require.NoError(t, err)
+
+	require.Len(t, cfg.Projects, 2)
+	assert.Equal(t, Project{Path: "~/projects/sigil"}, cfg.Projects["sigil"])
+
+	name, p, ok := cfg.ProjectFor(filepath.Join(home, "projects", "kontora"))
+	require.True(t, ok)
+	assert.Equal(t, "kontora", name)
+	assert.Equal(t, Project{Path: "~/projects/kontora", Pipeline: "implement", Agent: "claude"}, p)
+}
+
+func TestLoadProjectsRejected(t *testing.T) {
+	cases := []struct {
+		name    string
+		fixture string
+		wantErr []string
+	}{
+		{
+			name:    "missing path",
+			fixture: "project_missing_path.yaml",
+			wantErr: []string{`project "kontora"`, "path is required"},
+		},
+		{
+			name:    "unknown pipeline",
+			fixture: "project_unknown_pipeline.yaml",
+			wantErr: []string{`project "kontora"`, `unknown pipeline "missing-pipeline"`},
+		},
+		{
+			name:    "unknown agent",
+			fixture: "project_unknown_agent.yaml",
+			wantErr: []string{`project "kontora"`, `unknown agent "missing-agent"`},
+		},
+		{
+			name:    "duplicate normalized path",
+			fixture: "project_duplicate_path.yaml",
+			wantErr: []string{`project "second"`, "projects/foo", `duplicates project "first"`},
+		},
+		{
+			name:    "reserved pipeline name",
+			fixture: "reserved_pipeline_name.yaml",
+			wantErr: []string{`pipeline "none"`, "reserved"},
+		},
+		{
+			name:    "reserved agent name",
+			fixture: "reserved_agent_name.yaml",
+			wantErr: []string{`agent "none"`, "reserved"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+
+			_, err := Load(filepath.Join("testdata", tc.fixture))
+			require.Error(t, err)
+			for _, want := range tc.wantErr {
+				assert.ErrorContains(t, err, want)
+			}
+		})
+	}
+}
+
+func TestProjectFor(t *testing.T) {
+	home := t.TempDir()
+	abs := filepath.Join(home, "projects", "kontora")
+
+	configured := &Config{Projects: map[string]Project{
+		"kontora": {Path: "~/projects/kontora", Pipeline: "implement", Agent: "claude"},
+	}}
+
+	cases := []struct {
+		name     string
+		cfg      *Config
+		lookup   string
+		wantName string
+	}{
+		{name: "tilde form", cfg: configured, lookup: "~/projects/kontora", wantName: "kontora"},
+		{name: "absolute form", cfg: configured, lookup: abs, wantName: "kontora"},
+		{name: "trailing slash", cfg: configured, lookup: abs + "/", wantName: "kontora"},
+		{name: "subdirectory does not match", cfg: configured, lookup: filepath.Join(abs, "internal")},
+		{name: "parent does not match", cfg: configured, lookup: filepath.Dir(abs)},
+		{name: "empty lookup", cfg: configured, lookup: ""},
+		{name: "no projects configured", cfg: &Config{}, lookup: abs},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("HOME", home)
+
+			name, p, ok := tc.cfg.ProjectFor(tc.lookup)
+			if tc.wantName == "" {
+				assert.False(t, ok)
+				assert.Empty(t, name)
+				assert.Equal(t, Project{}, p)
+				return
+			}
+			require.True(t, ok)
+			assert.Equal(t, tc.wantName, name)
+			assert.Equal(t, "implement", p.Pipeline)
+			assert.Equal(t, "claude", p.Agent)
+		})
+	}
 }

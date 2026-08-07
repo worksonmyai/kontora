@@ -500,7 +500,10 @@
             <label for="init-pipeline" class="text-[13px] font-mono text-tx-3 mb-1 flex items-center gap-1.5"><svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="opacity-50"><polyline points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="3"/><polyline points="21 16 21 21 16 21"/><line x1="15" y1="15" x2="21" y2="21"/><line x1="4" y1="4" x2="9" y2="9"/></svg>Pipeline</label>
             <select id="init-pipeline" x-model="initForm.pipeline"
                     class="w-full bg-surface-800 border border-surface-700/50 rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40">
-              <option value="">simple (single run, no stages)</option>
+              <option value="" x-text="hasProjects() ? 'project default' : 'simple (single run, no stages)'"></option>
+              <template x-if="hasProjects()">
+                <option value="none">none (single run, no stages)</option>
+              </template>
               <template x-for="p in configCache?.pipelines || []" :key="p">
                 <option :value="p" x-text="pipelineLabel(p)"></option>
               </template>
@@ -511,6 +514,9 @@
             <select id="init-agent" x-model="initForm.agent"
                     class="w-full bg-surface-800 border border-surface-700/50 rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40">
               <option value="">Default</option>
+              <template x-if="hasProjects()">
+                <option value="none">none (skip project default)</option>
+              </template>
               <template x-for="a in configCache?.agents || []" :key="a">
                 <option :value="a" x-text="a"></option>
               </template>
@@ -1457,7 +1463,7 @@
 
             <div>
               <label for="new-path" class="text-[13px] font-mono text-tx-3 mb-1 flex items-center gap-1.5"><svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="opacity-50"><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"/></svg>Path *</label>
-              <input id="new-path" x-model="createForm.path" type="text" required
+              <input id="new-path" x-model="createForm.path" @input="onCreatePathChange()" type="text" required
                      class="w-full bg-surface-800 border border-surface-700/50 rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40"
                      placeholder="~/projects/myrepo">
               <p class="text-[11px] text-surface-600 mt-0.5">Repository the agent will work in. Supports ~.</p>
@@ -1468,7 +1474,10 @@
                 <label for="new-pipeline" class="text-[13px] font-mono text-tx-3 mb-1 flex items-center gap-1.5"><svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="opacity-50"><polyline points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="3"/><polyline points="21 16 21 21 16 21"/><line x1="15" y1="15" x2="21" y2="21"/><line x1="4" y1="4" x2="9" y2="9"/></svg>Pipeline</label>
                 <select id="new-pipeline" x-model="createForm.pipeline" @change="onPipelineChange()"
                         class="w-full bg-surface-800 border border-surface-700/50 rounded px-2 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40">
-                  <option value="">none</option>
+                  <option value="" x-text="hasProjects() ? 'project default' : 'none'"></option>
+                  <template x-if="hasProjects()">
+                    <option value="none">none (standalone)</option>
+                  </template>
                   <template x-for="p in configCache?.pipelines || []" :key="p">
                     <option :value="p" x-text="p"></option>
                   </template>
@@ -1476,9 +1485,12 @@
               </div>
               <div>
                 <label for="new-agent" class="text-[13px] font-mono text-tx-3 mb-1 flex items-center gap-1.5"><svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="opacity-50"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/></svg>Agent</label>
-                <select id="new-agent" x-model="createForm.agent"
+                <select id="new-agent" x-model="createForm.agent" @change="createTouched.agent = true"
                         class="w-full bg-surface-800 border border-surface-700/50 rounded px-2 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40">
                   <option value="">default</option>
+                  <template x-if="hasProjects()">
+                    <option value="none">none (skip project default)</option>
+                  </template>
                   <template x-for="a in configCache?.agents || []" :key="a">
                     <option :value="a" x-text="a"></option>
                   </template>
@@ -1494,6 +1506,7 @@
               </div>
             </div>
             <p class="text-[11px] text-surface-600 -mt-2">Pipeline → stages the ticket runs through. Agent → defaults to pipeline's. Status → <span class="text-tx-3">todo</span> queues automatically; <span class="text-tx-3">open</span> stays a draft.</p>
+            <p x-show="createProject()" class="text-[11px] text-surface-600 -mt-2">Defaults from project <span class="text-tx-3" x-text="createProject()?.name"></span>.</p>
 
             <div>
               <label for="new-branch" class="text-[13px] font-mono text-tx-3 mb-1 flex items-center gap-1.5"><svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="opacity-50"><line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>Branch</label>
@@ -1819,20 +1832,22 @@
                 </div>
                 <div>
                   <div style="font-family:'JetBrains Mono',monospace;font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:rgba(var(--surface-600),1);margin-bottom:6px;">Path</div>
-                  <input x-model="createForm.path" placeholder="~/projects/myrepo" style="width:100%;height:42px;padding:0 12px;font-family:'JetBrains Mono',monospace;font-size:13px;border-radius:10px;background:rgba(var(--surface-950),1);border:1px solid rgba(var(--surface-700),.6);color:rgba(var(--tx),1);outline:none;"/>
+                  <input x-model="createForm.path" @input="onCreatePathChange()" placeholder="~/projects/myrepo" style="width:100%;height:42px;padding:0 12px;font-family:'JetBrains Mono',monospace;font-size:13px;border-radius:10px;background:rgba(var(--surface-950),1);border:1px solid rgba(var(--surface-700),.6);color:rgba(var(--tx),1);outline:none;"/>
                 </div>
                 <div style="display:flex;gap:12px;">
                   <div style="flex:1;min-width:0;">
                     <div style="font-family:'JetBrains Mono',monospace;font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:rgba(var(--surface-600),1);margin-bottom:6px;">Pipeline</div>
                     <select x-model="createForm.pipeline" @change="onPipelineChange()" style="width:100%;height:42px;padding:0 10px;font-family:'JetBrains Mono',monospace;font-size:13px;border-radius:10px;background:rgba(var(--surface-950),1);border:1px solid rgba(var(--surface-700),.6);color:rgba(var(--tx-3),1);outline:none;">
-                      <option value="">none</option>
+                      <option value="" x-text="hasProjects() ? 'project default' : 'none'"></option>
+                      <template x-if="hasProjects()"><option value="none">none (standalone)</option></template>
                       <template x-for="p in (configCache?.pipelines || [])" :key="p"><option :value="p" x-text="p"></option></template>
                     </select>
                   </div>
                   <div style="flex:1;min-width:0;">
                     <div style="font-family:'JetBrains Mono',monospace;font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:rgba(var(--surface-600),1);margin-bottom:6px;">Agent</div>
-                    <select x-model="createForm.agent" style="width:100%;height:42px;padding:0 10px;font-family:'JetBrains Mono',monospace;font-size:13px;border-radius:10px;background:rgba(var(--surface-950),1);border:1px solid rgba(var(--surface-700),.6);color:rgba(var(--tx-3),1);outline:none;">
+                    <select x-model="createForm.agent" @change="createTouched.agent = true" style="width:100%;height:42px;padding:0 10px;font-family:'JetBrains Mono',monospace;font-size:13px;border-radius:10px;background:rgba(var(--surface-950),1);border:1px solid rgba(var(--surface-700),.6);color:rgba(var(--tx-3),1);outline:none;">
                       <option value="">default</option>
+                      <template x-if="hasProjects()"><option value="none">none (skip project default)</option></template>
                       <template x-for="a in (configCache?.agents || [])" :key="a"><option :value="a" x-text="a"></option></template>
                     </select>
                   </div>

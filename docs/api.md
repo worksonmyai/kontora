@@ -6,7 +6,7 @@ When the web server is enabled, the following endpoints are exposed:
 |----------|-------------|
 | `GET /` | Static dashboard UI. |
 | `GET /api/tickets` | List all tickets (JSON). |
-| `POST /api/tickets` | Create a new ticket (JSON body: `title`, `path`, optional `pipeline`, `status`). |
+| `POST /api/tickets` | Create a new ticket (JSON body: `title`, `path`, optional `pipeline`, `agent`, `status`, `body`, `branch`). |
 | `GET /api/tickets/{id}` | Get ticket details (JSON). |
 | `DELETE /api/tickets/{id}` | Delete the ticket markdown file without worktree cleanup. Requires `X-Kontora-Confirm: delete-ticket-file`. Only deletes files inside `tickets_dir`. |
 | `POST /api/tickets/{id}/pause` | Pause a running ticket. |
@@ -14,7 +14,7 @@ When the web server is enabled, the following endpoints are exposed:
 | `POST /api/tickets/{id}/skip` | Skip the current pipeline stage. |
 | `POST /api/tickets/{id}/set-stage` | Move ticket to a specific pipeline stage (`{"stage": "..."}` body). |
 | `POST /api/tickets/{id}/move` | Set ticket status (`{"status": "..."}` body). |
-| `GET /api/config` | Available repos and pipelines (JSON). |
+| `GET /api/config` | Available pipelines, agents, and projects (JSON). Projects are sorted by name and carry `name`, `path`, `resolved_path` (`~` expanded), `pipeline`, and `agent`. |
 | `GET /api/tickets/{id}/logs` | Get agent logs for a ticket (optional `?stage=` query param). |
 | `POST /api/tickets/{id}/summary` | Set the ticket's `summary` field (`{"text": "..."}` body). |
 | `GET /api/tickets/{id}/changes` | Commits and changed files on the ticket's branch relative to the repo's default branch. Empty payload when the ticket has no branch or the branch was deleted. |
@@ -24,3 +24,7 @@ When the web server is enabled, the following endpoints are exposed:
 | `GET /api/events` | Server-Sent Events stream of ticket updates. |
 | `GET /ws/terminal/{id}` | Read-only WebSocket relay of a running agent's tmux session. |
 | `GET /health` | Health check (returns 200). |
+
+On `POST /api/tickets` and `POST /api/tickets/{id}/init`, a blank `pipeline` or `agent` takes the default of the [project](configuration.md#projects) matching `path`. Send the literal `none` to leave that field blank and skip its project default. `PUT /api/tickets/{id}` reads `none` the same way, as "clear this field"; it has no project default to skip.
+
+On `POST /api/tickets/{id}/init`, a blank `pipeline` or `agent` first falls back to what the ticket file already declares, so the project default fills an empty field instead of replacing the ticket's own value.

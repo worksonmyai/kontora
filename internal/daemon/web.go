@@ -72,7 +72,15 @@ func (d *Daemon) CreateTicket(req web.CreateTicketRequest) (web.TicketInfo, erro
 
 	filePath := filepath.Join(config.ExpandTilde(cfg.TicketsDir), id+".md")
 
-	if req.Agent != "" {
+	// "none" is the opt-out sentinel, not a pipeline or agent name; cli.New
+	// clears it. Checking here rather than relying on cli.New keeps the API
+	// answering 400 instead of 500.
+	if req.Pipeline != "" && req.Pipeline != config.NoneSentinel {
+		if _, ok := cfg.Pipelines[req.Pipeline]; !ok {
+			return web.TicketInfo{}, fmt.Errorf("%w %q", web.ErrUnknownPipeline, req.Pipeline)
+		}
+	}
+	if req.Agent != "" && req.Agent != config.NoneSentinel {
 		if _, ok := cfg.Agents[req.Agent]; !ok {
 			return web.TicketInfo{}, fmt.Errorf("%w %q", web.ErrUnknownAgent, req.Agent)
 		}
@@ -187,10 +195,23 @@ func (d *Daemon) GetConfig() web.ConfigInfo {
 		infos[i] = web.PipelineInfo{Name: name, Stages: stageNames, DefaultAgent: defaultAgent}
 	}
 	agents := slices.Sorted(maps.Keys(cfg.Agents))
+	projectNames := slices.Sorted(maps.Keys(cfg.Projects))
+	projects := make([]web.ProjectInfo, len(projectNames))
+	for i, name := range projectNames {
+		p := cfg.Projects[name]
+		projects[i] = web.ProjectInfo{
+			Name:         name,
+			Path:         p.Path,
+			ResolvedPath: config.NormalizeRepoPath(p.Path),
+			Pipeline:     p.Pipeline,
+			Agent:        p.Agent,
+		}
+	}
 	return web.ConfigInfo{
 		Pipelines:      pipelines,
 		PipelineInfos:  infos,
 		Agents:         agents,
+		Projects:       projects,
 		DefaultAgent:   cfg.DefaultAgent,
 		BranchPrefix:   cfg.BranchPrefix,
 		CustomStatuses: cfg.Statuses,
@@ -500,12 +521,13 @@ func (d *Daemon) UpdateTicket(id string, req web.UpdateTicketRequest) error {
 
 	cfg := d.config()
 	if req.Pipeline != nil {
-		if *req.Pipeline != "" {
-			if _, ok := cfg.Pipelines[*req.Pipeline]; !ok {
-				return fmt.Errorf("unknown pipeline %q", *req.Pipeline)
+		pipeline := config.ClearNone(*req.Pipeline)
+		if pipeline != "" {
+			if _, ok := cfg.Pipelines[pipeline]; !ok {
+				return fmt.Errorf("%w %q", web.ErrUnknownPipeline, pipeline)
 			}
 		}
-		if err := t2.SetField("pipeline", *req.Pipeline); err != nil {
+		if err := t2.SetField("pipeline", pipeline); err != nil {
 			return err
 		}
 	}
@@ -515,12 +537,13 @@ func (d *Daemon) UpdateTicket(id string, req web.UpdateTicketRequest) error {
 		}
 	}
 	if req.Agent != nil {
-		if *req.Agent != "" {
-			if _, ok := cfg.Agents[*req.Agent]; !ok {
-				return fmt.Errorf("%w %q", web.ErrUnknownAgent, *req.Agent)
+		agent := config.ClearNone(*req.Agent)
+		if agent != "" {
+			if _, ok := cfg.Agents[agent]; !ok {
+				return fmt.Errorf("%w %q", web.ErrUnknownAgent, agent)
 			}
 		}
-		if err := t2.SetField("agent", *req.Agent); err != nil {
+		if err := t2.SetField("agent", agent); err != nil {
 			return err
 		}
 	}

@@ -79,6 +79,41 @@ agent: a1
 	assert.Contains(t, content, "path: ~/repo")
 }
 
+// TestUpdate_NoneClearsFields covers the opt-out sentinel reaching update, so a
+// user who learned "none" from kontora new does not get "unknown pipeline" here.
+func TestUpdate_NoneClearsFields(t *testing.T) {
+	cases := []struct {
+		name string
+		req  web.UpdateTicketRequest
+		want string
+	}{
+		{name: "pipeline", req: web.UpdateTicketRequest{Pipeline: new(config.NoneSentinel)}, want: `pipeline: ""`},
+		{name: "agent", req: web.UpdateTicketRequest{Agent: new(config.NoneSentinel)}, want: `agent: ""`},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeTicket(t, dir, "tst-none.md", `---
+id: tst-none
+status: open
+pipeline: one-stage
+path: ~/repo
+agent: a1
+---
+# Body
+`)
+
+			cfg := updateTestConfig(dir)
+			require.NoError(t, Update(cfg, "tst-none", tc.req))
+
+			data, err := os.ReadFile(filepath.Join(dir, "tst-none.md"))
+			require.NoError(t, err)
+			assert.Contains(t, string(data), tc.want)
+		})
+	}
+}
+
 func TestUpdate_RejectedByState(t *testing.T) {
 	cases := []string{"in_progress", "done", "cancelled", "archived"}
 	for _, status := range cases {

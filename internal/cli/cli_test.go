@@ -503,6 +503,41 @@ func TestNew_OmitsAgentWhenEmpty(t *testing.T) {
 	assert.NotContains(t, string(data), "agent:")
 }
 
+// TestNew_RejectsUnknownNames keeps a typo out of the frontmatter, where it
+// would sit until the daemon picked the ticket up and paused the ticket.
+func TestNew_RejectsUnknownNames(t *testing.T) {
+	cases := []struct {
+		name     string
+		pipeline string
+		agent    string
+		wantErr  string
+	}{
+		{name: "unknown pipeline", pipeline: "ghost", wantErr: `unknown pipeline "ghost"`},
+		{name: "unknown agent", agent: "claud", wantErr: `unknown agent "claud"`},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			cfg := testConfig(dir)
+			repoDir := initTestRepo(t)
+
+			_, err := New(cfg, NewOpts{
+				Path:     repoDir,
+				Pipeline: tc.pipeline,
+				Agent:    tc.agent,
+				Title:    "T",
+				NoEdit:   true,
+			})
+			require.ErrorContains(t, err, tc.wantErr)
+
+			entries, err := os.ReadDir(dir)
+			require.NoError(t, err)
+			assert.Empty(t, entries, "no ticket file may be written")
+		})
+	}
+}
+
 func TestNew_WritesBody(t *testing.T) {
 	dir := t.TempDir()
 	cfg := testConfig(dir)
@@ -1363,4 +1398,230 @@ func TestAttachModel_ToggleRW(t *testing.T) {
 	assert.False(t, m.readWrite, "tab toggles back to RO")
 
 	assert.Contains(t, m.View(), "[RO]")
+}
+
+func TestNew_ProjectDefaults(t *testing.T) {
+	repoDir := initTestRepo(t)
+	unlistedRepo := initTestRepo(t)
+
+	cases := []struct {
+		name            string
+		path            string
+		pipeline        string
+		agent           string
+		projectPipeline string
+		projectAgent    string
+		wantPipeline    string
+		wantAgent       string
+	}{
+		{
+			name:            "blank fields inherit both defaults",
+			path:            repoDir,
+			projectPipeline: "default",
+			projectAgent:    "claude-sonnet",
+			wantPipeline:    "default",
+			wantAgent:       "claude-sonnet",
+		},
+		{
+			name:            "explicit pipeline wins",
+			path:            repoDir,
+			pipeline:        "release",
+			projectPipeline: "default",
+			projectAgent:    "claude-sonnet",
+			wantPipeline:    "release",
+			wantAgent:       "claude-sonnet",
+		},
+		{
+			name:            "explicit agent wins",
+			path:            repoDir,
+			agent:           "codex",
+			projectPipeline: "default",
+			projectAgent:    "claude-sonnet",
+			wantPipeline:    "default",
+			wantAgent:       "codex",
+		},
+		{
+			name:            "project supplies only a pipeline",
+			path:            repoDir,
+			projectPipeline: "default",
+			wantPipeline:    "default",
+		},
+		{
+			name:         "project supplies only an agent",
+			path:         repoDir,
+			projectAgent: "claude-sonnet",
+			wantAgent:    "claude-sonnet",
+		},
+		{
+			name:            "none opts the pipeline out and keeps the project agent",
+			path:            repoDir,
+			pipeline:        "none",
+			projectPipeline: "default",
+			projectAgent:    "claude-sonnet",
+			wantAgent:       "claude-sonnet",
+		},
+		{
+			name:            "none opts the agent out and keeps the project pipeline",
+			path:            repoDir,
+			agent:           "none",
+			projectPipeline: "default",
+			projectAgent:    "claude-sonnet",
+			wantPipeline:    "default",
+		},
+		{
+			name:            "none opts both out",
+			path:            repoDir,
+			pipeline:        "none",
+			agent:           "none",
+			projectPipeline: "default",
+			projectAgent:    "claude-sonnet",
+		},
+		{
+			name:            "path with no project entry stays blank",
+			path:            unlistedRepo,
+			projectPipeline: "default",
+			projectAgent:    "claude-sonnet",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			cfg := testConfig(dir)
+			cfg.Pipelines["release"] = cfg.Pipelines["default"]
+			cfg.Agents["codex"] = config.Agent{Binary: "codex"}
+			cfg.Projects = map[string]config.Project{
+				"repo": {Path: repoDir, Pipeline: tc.projectPipeline, Agent: tc.projectAgent},
+			}
+
+			id, err := New(cfg, NewOpts{
+				Path:     tc.path,
+				Pipeline: tc.pipeline,
+				Agent:    tc.agent,
+				Title:    "T",
+				NoEdit:   true,
+			})
+			require.NoError(t, err)
+
+			data, err := os.ReadFile(filepath.Join(dir, id+".md"))
+			require.NoError(t, err)
+			content := string(data)
+
+			if tc.wantPipeline == "" {
+				assert.NotContains(t, content, "pipeline:")
+			} else {
+				assert.Contains(t, content, "pipeline: "+tc.wantPipeline)
+			}
+			if tc.wantAgent == "" {
+				assert.NotContains(t, content, "agent:")
+			} else {
+				assert.Contains(t, content, "agent: "+tc.wantAgent)
+			}
+		})
+	}
+}
+
+func TestInit_ProjectDefaults(t *testing.T) {
+	repoDir := initTestRepo(t)
+	unlistedRepo := initTestRepo(t)
+
+	cases := []struct {
+		name            string
+		path            string
+		ticketPipeline  string
+		ticketAgent     string
+		pipelinePick    string // pipeline picker return; empty means it must not open
+		wantOutput      string
+		wantContains    []string
+		wantNotContains []string
+	}{
+		{
+			name:         "blank fields take project defaults",
+			path:         repoDir,
+			wantOutput:   "project repo pipeline default · agent claude-sonnet",
+			wantContains: []string{"pipeline: default", "agent: claude-sonnet"},
+		},
+		{
+			name:           "explicit pipeline wins",
+			path:           repoDir,
+			ticketPipeline: "release",
+			wantContains:   []string{"pipeline: release", "agent: claude-sonnet"},
+		},
+		{
+			name:         "explicit agent wins",
+			path:         repoDir,
+			ticketAgent:  "codex",
+			wantContains: []string{"pipeline: default", "agent: codex"},
+		},
+		{
+			name:            "no project falls back to the picker",
+			path:            unlistedRepo,
+			pipelinePick:    "default",
+			wantContains:    []string{"pipeline: default"},
+			wantNotContains: []string{"agent:"},
+		},
+		{
+			name:           "none keeps the ticket standalone",
+			path:           repoDir,
+			ticketPipeline: "none",
+			wantContains:   []string{`pipeline: ""`, "agent: claude-sonnet"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			cfg := testConfig(dir)
+			cfg.Pipelines["release"] = cfg.Pipelines["default"]
+			cfg.Agents["codex"] = config.Agent{Binary: "codex"}
+			cfg.Projects = map[string]config.Project{
+				"repo": {Path: repoDir, Pipeline: "default", Agent: "claude-sonnet"},
+			}
+
+			frontmatter := fmt.Sprintf("---\nid: tst-001\nstatus: open\npath: %s\n", tc.path)
+			if tc.ticketPipeline != "" {
+				frontmatter += "pipeline: " + tc.ticketPipeline + "\n"
+			}
+			if tc.ticketAgent != "" {
+				frontmatter += "agent: " + tc.ticketAgent + "\n"
+			}
+			writeTicket(t, dir, "tst-001.md", frontmatter+"---\n# Init me\n")
+
+			pickOneFn = func(field string, _ []string) (string, error) {
+				switch field {
+				case "status":
+					return "todo", nil
+				case "starting stage":
+					return "code", nil
+				}
+				return "", fmt.Errorf("unexpected pick for field %q", field)
+			}
+			t.Cleanup(func() { pickOneFn = pickOne })
+
+			pipelinePicked := false
+			pickOneDescsFn = func(_ string, _, _ []string) (string, error) {
+				pipelinePicked = true
+				return tc.pipelinePick, nil
+			}
+			t.Cleanup(func() { pickOneDescsFn = pickOneDescs })
+
+			var buf bytes.Buffer
+			require.NoError(t, Enable(cfg, "tst-001", &buf))
+			assert.Equal(t, tc.pipelinePick != "", pipelinePicked, "pipeline picker")
+			if tc.wantOutput != "" {
+				assert.Contains(t, buf.String(), tc.wantOutput)
+			}
+
+			data, err := os.ReadFile(filepath.Join(dir, "tst-001.md"))
+			require.NoError(t, err)
+			content := string(data)
+
+			for _, want := range tc.wantContains {
+				assert.Contains(t, content, want)
+			}
+			for _, unwanted := range tc.wantNotContains {
+				assert.NotContains(t, content, unwanted)
+			}
+		})
+	}
 }

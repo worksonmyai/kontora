@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/worksonmyai/kontora/internal/config"
+	"github.com/worksonmyai/kontora/internal/ticket/app"
 )
 
 // yamlQuote wraps a string in double quotes if it contains characters
@@ -46,6 +47,23 @@ func New(cfg *config.Config, opts NewOpts) (string, error) {
 	}
 	if opts.Status == "" {
 		opts.Status = "todo"
+	}
+
+	// Every creation path reaches New, so this is the one place where a
+	// project's defaults are stamped into the ticket.
+	opts.Pipeline, opts.Agent = cfg.ApplyProjectDefaults(opts.Path, opts.Pipeline, opts.Agent)
+
+	// A name the config does not know would otherwise sit in the frontmatter
+	// until the daemon picked the ticket up and paused it.
+	if opts.Pipeline != "" {
+		if _, ok := cfg.Pipelines[opts.Pipeline]; !ok {
+			return "", fmt.Errorf("unknown pipeline %q", opts.Pipeline)
+		}
+	}
+	if opts.Agent != "" {
+		if _, ok := cfg.Agents[opts.Agent]; !ok {
+			return "", fmt.Errorf("%w %q", app.ErrUnknownAgent, opts.Agent)
+		}
 	}
 
 	if opts.Status != "open" {
@@ -104,6 +122,7 @@ func New(cfg *config.Config, opts NewOpts) (string, error) {
 type QuickOpts struct {
 	Path     string
 	Pipeline string
+	Agent    string
 	Title    string
 }
 
@@ -112,6 +131,7 @@ func Quick(cfg *config.Config, opts QuickOpts) (string, error) {
 	return New(cfg, NewOpts{
 		Path:     opts.Path,
 		Pipeline: opts.Pipeline,
+		Agent:    opts.Agent,
 		Status:   "todo",
 		Title:    opts.Title,
 		NoEdit:   true,

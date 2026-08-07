@@ -1,0 +1,22 @@
+tickets_dir: ~/org/tickets
+
+agents:
+  claude:
+    binary: claude
+
+stages:
+  code:
+    prompt: Write code.
+
+pipelines:
+  implement:
+    - stage: code
+      agent: claude
+      on_success: done
+      on_failure: pause
+
+projects:
+  first:
+    path: ~/projects/foo
+  second:
+    path: ~/projects/bar/../foo/

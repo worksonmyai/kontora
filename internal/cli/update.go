@@ -39,12 +39,16 @@ func Update(cfg *config.Config, id string, req web.UpdateTicketRequest) error {
 	}
 
 	if req.Pipeline != nil {
-		if *req.Pipeline != "" {
-			if _, ok := cfg.Pipelines[*req.Pipeline]; !ok {
-				return fmt.Errorf("unknown pipeline %q", *req.Pipeline)
+		// There is no project default to skip here, but "none" still has to
+		// mean "no pipeline", or the word would work in new and init and error
+		// out in update.
+		pipeline := config.ClearNone(*req.Pipeline)
+		if pipeline != "" {
+			if _, ok := cfg.Pipelines[pipeline]; !ok {
+				return fmt.Errorf("unknown pipeline %q", pipeline)
 			}
 		}
-		if err := t.SetField("pipeline", *req.Pipeline); err != nil {
+		if err := t.SetField("pipeline", pipeline); err != nil {
 			return err
 		}
 	}
@@ -54,12 +58,13 @@ func Update(cfg *config.Config, id string, req web.UpdateTicketRequest) error {
 		}
 	}
 	if req.Agent != nil {
-		if *req.Agent != "" {
-			if _, ok := cfg.Agents[*req.Agent]; !ok {
-				return fmt.Errorf("%w %q", app.ErrUnknownAgent, *req.Agent)
+		agent := config.ClearNone(*req.Agent)
+		if agent != "" {
+			if _, ok := cfg.Agents[agent]; !ok {
+				return fmt.Errorf("%w %q", app.ErrUnknownAgent, agent)
 			}
 		}
-		if err := t.SetField("agent", *req.Agent); err != nil {
+		if err := t.SetField("agent", agent); err != nil {
 			return err
 		}
 	}

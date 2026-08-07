@@ -281,7 +281,8 @@ func cmdNew() {
 	fs := flag.NewFlagSet("new", flag.ExitOnError)
 	configPath := fs.String("config", defaultConfigPath(), "path to config file")
 	repoPath := fs.String("path", "", "repository path (defaults to current git root)")
-	pipeline := fs.String("pipeline", "", "pipeline name (optional)")
+	pipeline := fs.String("pipeline", "", "pipeline name, or \"none\" to skip the project default")
+	agent := fs.String("agent", "", "agent name, or \"none\" to skip the project default")
 	urlFlag, tokenFlag := addRemoteFlags(fs)
 	if err := fs.Parse(os.Args[2:]); err != nil {
 		log.Fatalf("parsing flags: %v", err)
@@ -302,6 +303,7 @@ func cmdNew() {
 			Title:    title,
 			Path:     *repoPath,
 			Pipeline: *pipeline,
+			Agent:    *agent,
 		})
 		if err != nil {
 			log.Fatal(err)
@@ -325,6 +327,7 @@ func cmdNew() {
 	id, err := cli.Quick(cfg, cli.QuickOpts{
 		Path:     path,
 		Pipeline: *pipeline,
+		Agent:    *agent,
 		Title:    title,
 	})
 	if err != nil {
@@ -387,9 +390,9 @@ func cmdUpdate() {
 	fs := flag.NewFlagSet("update", flag.ExitOnError)
 	configPath := fs.String("config", defaultConfigPath(), "path to config file")
 	bodyFile := fs.String("body-file", "", "read ticket body from a file ('-' for stdin)")
-	pipeline := fs.String("pipeline", "", "set pipeline")
+	pipeline := fs.String("pipeline", "", "set pipeline (pass \"\" or \"none\" to clear)")
 	repoPath := fs.String("path", "", "set repository path")
-	agent := fs.String("agent", "", "set agent override (pass \"\" to clear)")
+	agent := fs.String("agent", "", "set agent override (pass \"\" or \"none\" to clear)")
 	branch := fs.String("branch", "", "set branch (pass \"\" to clear)")
 	urlFlag, tokenFlag := addRemoteFlags(fs)
 	taskID := parseTicketFlags(fs, os.Args[2:])

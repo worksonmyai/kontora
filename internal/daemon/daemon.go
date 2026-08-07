@@ -1509,7 +1509,9 @@ func (d *Daemon) buildRunnerParams(cfg *config.Config, agentCfg config.Agent, st
 
 	var sessionDir string
 	if agentCfg.IsPi() {
-		sessionDir = filepath.Join(logDir, "pi-sessions")
+		// Per-stage directory: every stage of a ticket materializes its log from
+		// this directory, so a shared one would give each stage the same session.
+		sessionDir = filepath.Join(logDir, "pi-sessions", stageName)
 		args = append(args, "--session-dir", sessionDir)
 	}
 
@@ -1852,9 +1854,11 @@ func (d *Daemon) materializePiSessionLog(log *slog.Logger, sessionDir, logFile s
 		return nil
 	}
 
-	sessionFile := matches[0]
+	// A retried stage reuses its session directory, so the newest file is the
+	// run that just finished.
+	sessionFile := newestFile(matches)
 	if len(matches) > 1 {
-		log.Warn("multiple pi session JSONL files found, using first", "dir", sessionDir, "count", len(matches))
+		log.Info("multiple pi session JSONL files found, using newest", "dir", sessionDir, "count", len(matches), "file", sessionFile)
 	}
 
 	src, err := os.Open(sessionFile)
@@ -1879,6 +1883,27 @@ func (d *Daemon) materializePiSessionLog(log *slog.Logger, sessionDir, logFile s
 
 	log.Info("pi session log materialized", "dir", sessionDir, "log_file", logFile)
 	return nil
+}
+
+// newestFile returns the path with the latest modification time, breaking ties
+// on the name. Paths that cannot be stat'd are treated as oldest.
+func newestFile(paths []string) string {
+	var best string
+	var bestTime time.Time
+	for _, p := range paths {
+		fi, err := os.Stat(p)
+		if err != nil {
+			continue
+		}
+		mt := fi.ModTime()
+		if best == "" || mt.After(bestTime) || (mt.Equal(bestTime) && p > best) {
+			best, bestTime = p, mt
+		}
+	}
+	if best == "" && len(paths) > 0 {
+		return paths[len(paths)-1]
+	}
+	return best
 }
 
 // newSessionID generates a UUID v4 string for Claude session identification.

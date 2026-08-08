@@ -259,7 +259,7 @@ async function openedTerminal(overrides = {}) {
   const { ctx, state } = loadKontoraContext({
     document: {
       getElementById(id) {
-        return id === "terminal-container" ? container : null;
+        return id === "terminal-session" ? container : null;
       },
       querySelector() {
         return null;
@@ -287,7 +287,7 @@ async function openedTerminal(overrides = {}) {
 
   stubXterm(ctx.termState);
   state.selectedTicket = { id: "tst-001", status: "in_progress" };
-  state.activeTab = "terminal";
+  state.activeTab = "session";
   state.$nextTick = (callback) => {
     if (callback) callback();
     return Promise.resolve();
@@ -468,7 +468,6 @@ test("kontora inline app initializes in a minimal VM context", () => {
 
   assert.equal(typeof state.openTerminal, "function");
   assert.equal(typeof state.reconnectTerminal, "function");
-  assert.equal(state.panelWidth, 430);
 });
 
 test("index.html loads the external app script", () => {
@@ -483,7 +482,7 @@ test("openTerminal cancels stale startup after teardown", async () => {
   const connectCalls = [];
 
   state.selectedTicket = { id: "tst-001" };
-  state.activeTab = "terminal";
+  state.activeTab = "session";
   state.$nextTick = () => nextTick.promise;
   ctx.termState.Terminal = class {};
   ctx.termState.FitAddon = class {};
@@ -510,7 +509,7 @@ test("openTerminal clears terminalOpen if the tab changes before startup complet
   let closeCalls = 0;
 
   state.selectedTicket = { id: "tst-001" };
-  state.activeTab = "terminal";
+  state.activeTab = "session";
   state.$nextTick = () => nextTick.promise;
   ctx.termState.Terminal = class {};
   ctx.termState.FitAddon = class {};
@@ -540,7 +539,7 @@ test("reconnectTerminal does nothing while the terminal is already opening", () 
   let openCalls = 0;
 
   state.selectedTicket = { id: "tst-001" };
-  state.activeTab = "terminal";
+  state.activeTab = "session";
   state.terminalOpen = true;
   state._terminalOpening = true;
   state.closeTerminal = () => {
@@ -562,7 +561,7 @@ test("reconnectTerminal tears down and reopens once when transport is ready", ()
   let openCalls = 0;
 
   state.selectedTicket = { id: "tst-001" };
-  state.activeTab = "terminal";
+  state.activeTab = "session";
   state.terminalOpen = true;
   state._terminalOpening = false;
   state.closeTerminal = () => {
@@ -600,14 +599,14 @@ test("the component holds no xterm handles", () => {
   }
 });
 
-test("switching away from the terminal tab and back keeps one Terminal", async () => {
+test("switching away from the session tab and back keeps one Terminal", async () => {
   const { ctx, state } = await liveTerminal();
   const term = ctx.termState.term;
   const created = ctx.termState.Terminal.created;
 
   for (let i = 0; i < 10; i++) {
     state.switchTab("ticket");
-    state.switchTab("terminal");
+    state.switchTab("session");
   }
 
   assert.equal(ctx.termState.Terminal.created.length, created.length, "no extra Terminal built");
@@ -1368,11 +1367,14 @@ test("index.html drops the stats bar but keeps the matched counter", () => {
   assert.match(html, /filteredTicketCount\(\)[^<]*<\/span>\s*matched/);
 });
 
-test("index.html detail header carries the status chip and pipeline tag", () => {
+test("the ticket page's identity block carries the status chip and pipeline tag", () => {
   const html = fs.readFileSync(htmlPath, "utf8");
 
-  assert.match(html, /class="status-chip[^"]*"[^>]*:data-status="selectedTicket\?\.status"/);
-  assert.match(html, /class="pipe-tag shrink-0[^"]*"/);
+  // shrink-0 pins these to the desktop page's identity block; the mobile
+  // overlay's own chips carry neither class, so a match here cannot come from
+  // the wrong layer.
+  assert.match(html, /class="status-chip shrink-0"[^>]*:data-status="selectedTicket\?\.status"/);
+  assert.match(html, /class="pipe-tag shrink-0"\s*\n\s*:data-pipe-color="selectedTicket \? ticketPipeColor\(selectedTicket\) : 'none'"/);
 });
 
 test("parseTitleTag extracts a [tag] title prefix and falls back to the project basename", () => {
@@ -2132,7 +2134,7 @@ test("closeDetail, the SSE editability guard, and switchTab flush before clearin
     },
     {
       name: "switchTab away from the ticket tab",
-      act: (s) => s.switchTab("terminal"),
+      act: (s) => s.switchTab("session"),
       check: (s) => { assert.equal(s.editingBody, false); assert.equal(s.editing, true); },
     },
   ];
@@ -2958,4 +2960,371 @@ test("every color utility the page writes exists in the built app.css", () => {
     if (!new RegExp(escape(m[1].replace("/", "\\/")) + "(?!\\d)").test(css)) missing.add(m[1]);
   }
   assert.deepEqual([...missing], []);
+});
+
+// The fake location a router test drives. Assigning hash records the write so
+// a test can assert the inverse mapping without a real browser.
+function routerState(hash = "") {
+  const location = { protocol: "http:", host: "localhost:8080", hash };
+  const state = loadKontoraState({ location });
+  state.$nextTick = (cb) => { if (cb) cb(); return Promise.resolve(); };
+  state.closeTerminal = () => {};
+  state.startEditing = () => {};
+  state.flushEditSave = () => {};
+  state.recomputeBoard = () => {};
+  state.fetchChanges = () => {};
+  state.fetchStageLogs = () => {};
+  state.openTerminal = () => {};
+  state.openSettings = async () => { state.currentView = "settings"; };
+  return { state, location };
+}
+
+test("the hash router maps each route to a view", async () => {
+  const cases = [
+    { hash: "#/", view: "board", ticket: null },
+    { hash: "", view: "board", ticket: null },
+    { hash: "#/new", view: "new", ticket: null },
+    { hash: "#/settings", view: "settings", ticket: null },
+    { hash: "#/t/kon-vd0j", view: "board", ticket: "kon-vd0j" },
+    { hash: "#/nonsense", view: "board", ticket: null },
+  ];
+
+  for (const tc of cases) {
+    const { state, location } = routerState(tc.hash);
+    state.tickets = [{ id: "kon-vd0j", status: "todo" }];
+    await state.applyRoute();
+    assert.equal(state.currentView, tc.view, tc.hash);
+    assert.equal(state.selectedTicket ? state.selectedTicket.id : null, tc.ticket, tc.hash);
+    // Serializing the resulting view restores the same hash.
+    assert.equal(state.routeHash(), tc.hash === "" || tc.hash === "#/nonsense" ? "#/" : tc.hash, tc.hash);
+    assert.equal(location.hash, state.routeHash(), tc.hash);
+  }
+});
+
+test("selecting and closing a ticket writes and clears the hash", async () => {
+  const { state, location } = routerState("#/");
+  state.tickets = [{ id: "kon-1", status: "todo" }];
+
+  await state.selectTicket(state.tickets[0]);
+  assert.equal(location.hash, "#/t/kon-1");
+
+  state.closeDetail();
+  assert.equal(location.hash, "#/");
+  assert.equal(state.selectedTicket, null);
+});
+
+test("a hash naming an unknown ticket falls back to the board", async () => {
+  const { state, location } = routerState("#/t/ghost");
+  state.tickets = [{ id: "kon-1", status: "todo" }];
+
+  await state.applyRoute();
+
+  assert.equal(state.selectedTicket, null);
+  assert.equal(state.currentView, "board");
+  assert.equal(location.hash, "#/");
+});
+
+test("a malformed escape in the hash does not throw", async () => {
+  const { state, location } = routerState("#/t/%");
+  state.tickets = [{ id: "kon-1", status: "todo" }];
+
+  // applyRoute is awaited in init() before the board is rendered, so a throw
+  // here would leave the page blank rather than just mis-routing.
+  await state.applyRoute();
+
+  assert.equal(state.parseHash("#/t/%").ticketId, "%");
+  assert.equal(state.selectedTicket, null);
+  assert.equal(location.hash, "#/");
+});
+
+test("mobileSwitchTab drives the terminal without touching the desktop tab", () => {
+  const cases = [
+    {
+      name: "opening the mobile terminal",
+      tab: "terminal",
+      status: "in_progress",
+      check: (s, calls) => {
+        assert.equal(s.detailTab, "terminal");
+        assert.deepEqual(calls, ["open"]);
+        assert.equal(s.terminalWanted(), true);
+      },
+    },
+    {
+      name: "leaving it for the logs tab",
+      tab: "logs",
+      status: "in_progress",
+      check: (s, calls) => {
+        assert.equal(s.detailTab, "logs");
+        assert.deepEqual(calls, ["close"]);
+        assert.equal(s.terminalWanted(), false);
+      },
+    },
+  ];
+
+  for (const c of cases) {
+    const state = loadKontoraState();
+    const calls = [];
+    state.isMobile = true;
+    state.activeTab = "ticket";
+    state.terminalOpen = true;
+    state.selectedTicket = { id: "kon-1", status: c.status, stage: "plan" };
+    state.openTerminal = () => calls.push("open");
+    state.closeTerminal = () => calls.push("close");
+    state.fetchStageLogs = () => {};
+
+    state.mobileSwitchTab(c.tab);
+
+    assert.equal(state.activeTab, "ticket", `${c.name}: desktop tab must not move`);
+    c.check(state, calls);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Ticket page: ribbon, transcript, rail
+// ---------------------------------------------------------------------------
+
+// A state wired for the page's derived views, with no network of its own.
+function pageState(ticket, overrides = {}) {
+  const state = loadKontoraState();
+  state.selectedTicket = ticket;
+  state.now = Date.parse("2026-08-08T12:00:00Z");
+  Object.assign(state, overrides);
+  return state;
+}
+
+const TAPE_TICKET = {
+  id: "kon-1",
+  status: "human_review",
+  pipeline: "review-pipe",
+  stage: "commit",
+  stages: ["plan", "review", "commit"],
+  history: [
+    { stage: "plan", exit_code: 0, run: 0, started_at: "2026-08-08T11:00:00Z", completed_at: "2026-08-08T11:00:40Z" },
+    { stage: "review", exit_code: 1, run: 0, started_at: "2026-08-08T11:01:00Z", completed_at: "2026-08-08T11:01:20Z" },
+    { stage: "review", exit_code: 0, run: 1, started_at: "2026-08-08T11:06:00Z", completed_at: "2026-08-08T11:06:30Z" },
+  ],
+};
+
+test("the ribbon sizes each stage by its real duration", () => {
+  const state = pageState(TAPE_TICKET);
+  const segs = state.stageRibbon();
+
+  assert.deepEqual(segs.map((s) => s.name), ["plan", "review", "commit"]);
+  assert.equal(segs[0].seconds, 40);
+  // Two runs of 20s and 30s, five minutes apart: the queue gap does not count.
+  assert.equal(segs[1].seconds, 50);
+  assert.equal(segs[1].runs, 2);
+  assert.equal(segs[2].seconds, 0, "a stage with no run has no duration");
+  assert.equal(segs[2].state, "queued");
+  assert.equal(segs[2].meta, "not started");
+});
+
+test("a long stage grows more than a short one", () => {
+  const state = pageState({
+    id: "kon-2", status: "done", stage: "build", stages: ["lint", "build"],
+    history: [
+      { stage: "lint", exit_code: 0, run: 0, started_at: "2026-08-08T11:00:00Z", completed_at: "2026-08-08T11:00:40Z" },
+      { stage: "build", exit_code: 0, run: 0, started_at: "2026-08-08T11:01:00Z", completed_at: "2026-08-08T11:13:00Z" },
+    ],
+  });
+  const segs = state.stageRibbon();
+
+  assert.equal(segs[0].seconds, 40);
+  assert.equal(segs[1].seconds, 720);
+  assert.equal(segs.every((s) => s.state === "done"), true);
+});
+
+test("the running stage animates and returns to the live session on click", () => {
+  const state = pageState({
+    id: "kon-3", status: "in_progress", stage: "build", stages: ["lint", "build"],
+    started_at: "2026-08-08T11:59:00Z",
+    history: [{ stage: "lint", exit_code: 0, run: 0, started_at: "2026-08-08T11:00:00Z", completed_at: "2026-08-08T11:00:40Z" }],
+  });
+  state.openTerminal = () => {};
+  state.closeTerminal = () => {};
+
+  const segs = state.stageRibbon();
+  assert.equal(segs[1].state, "running");
+  assert.equal(segs[1].seconds, 60, "a running stage counts the time since pickup");
+
+  state.clickRibbon(segs[1]);
+  assert.equal(state.activeTab, "session");
+});
+
+test("clicking a finished segment loads that run's transcript", () => {
+  const asked = [];
+  const state = pageState(TAPE_TICKET, { fetchActivity: (stage, run) => asked.push([stage, run]) });
+
+  const review = state.stageRibbon()[1];
+  state.clickRibbon(review);
+
+  assert.equal(state.activeTab, "activity");
+  // The segment addresses the newest run of the stage it stands for.
+  assert.deepEqual(asked, [["review", 1]]);
+});
+
+test("meters follow the ticket's status", () => {
+  const configCache = {
+    pipeline_infos: [{ name: "review-pipe", stages: ["plan", "review", "commit"], max_retries: [0, 1, 0] }],
+  };
+  const running = pageState({
+    ...TAPE_TICKET, status: "in_progress", stage: "review", attempt: 1,
+    started_at: "2026-08-08T11:59:00Z",
+  }, { configCache });
+  running.activity = { tape: { totals: { input: 100, output: 200, cache_create: 300, cache_read: 400 } } };
+
+  // ribbonMeters builds its array inside the VM realm, so copy it out before
+  // a deep-equal against a literal.
+  const keys = Array.from(running.ribbonMeters(), (m) => m.k);
+  assert.deepEqual(keys, ["elapsed", "tokens", "attempt"]);
+  assert.equal(running.ribbonMeters().find((m) => m.k === "attempt").v, "2 / 2");
+  assert.equal(running.ribbonMeters().find((m) => m.k === "tokens").v, "1k");
+
+  // started_at is rewritten at every stage spawn, so here it is the last
+  // stage's pickup. Wall spans the whole ticket instead: the first history
+  // entry's start (11:00:00) to the last exit (11:06:30).
+  const review = pageState({ ...TAPE_TICKET, started_at: "2026-08-08T11:06:00Z" }, { configCache });
+  assert.deepEqual(Array.from(review.ribbonMeters(), (m) => m.k), ["wall"], "no verified usage means no tokens meter");
+  assert.equal(review.ribbonMeters()[0].v, "6m");
+});
+
+test("a tape that declares usage partial shows no token count", () => {
+  const state = pageState(TAPE_TICKET);
+  state.activity = { tape: { partial: ["time", "usage", "is_error"], totals: { input: 5 } } };
+
+  assert.equal(state.tapeTokens(state.activity.tape), "");
+  assert.equal(state.tapePartial("time"), true);
+  assert.equal(state.eventTime({ time: "2026-08-08T11:00:00Z" }), "", "a partial tape has no timestamp gutter");
+});
+
+test("tool rows expand by id, and a failure starts expanded", () => {
+  const state = pageState(TAPE_TICKET);
+  state.activity = {
+    source: "events",
+    tape: {
+      events: [
+        { kind: "model", model: "claude-opus-4-6" },
+        { kind: "text", text: "Running the tests." },
+        { kind: "tool", id: "t1", tool: "Bash", arg: " go test ./...", summary: "ok", result: "ok" },
+        { kind: "tool", id: "t2", tool: "Read", arg: " /x.go", summary: "err", result: "File does not exist.", is_error: true },
+      ],
+    },
+  };
+  const events = state.tapeEvents();
+  assert.equal(events.length, 4);
+
+  assert.equal(state.toolExpanded(events[2], 2), false);
+  state.toggleTool(events[2], 2);
+  assert.equal(state.toolExpanded(events[2], 2), true);
+
+  assert.equal(state.toolFailed(events[3]), true);
+  assert.equal(state.toolExpanded(events[3], 3), true, "a failure is never collapsed by default");
+});
+
+test("error styling is suppressed when the tape cannot verify it", () => {
+  const state = pageState(TAPE_TICKET);
+  state.activity = { tape: { partial: ["time", "usage", "is_error"], events: [{ kind: "tool", tool: "read", is_error: true }] } };
+
+  assert.equal(state.toolFailed(state.tapeEvents()[0]), false);
+  assert.equal(state.toolExpanded(state.tapeEvents()[0], 0), false);
+});
+
+test("the plaintext fallback is escaped before it reaches the DOM", () => {
+  const state = pageState(TAPE_TICKET);
+  const html = state.renderLogHTML('> Bash <img src=x onerror=alert(1)>\nplain <b>text</b>');
+
+  assert.equal(html.includes("<img"), false);
+  assert.equal(html.includes("<b>text</b>"), false);
+  assert.match(html, /&lt;img/);
+});
+
+test("the activity tab opens the most recently completed run", async () => {
+  const asked = [];
+  const state = pageState({ ...TAPE_TICKET, status: "in_progress", stage: "commit" }, {
+    fetchActivity: (stage, run) => asked.push([stage, run]),
+  });
+  state.flushEditSave = () => {};
+  state.openTerminal = () => {};
+
+  state.switchTab("activity");
+
+  assert.equal(state.activeTab, "activity");
+  assert.deepEqual(asked, [["review", 1]]);
+});
+
+test("switchTab('session') falls back to activity on a finished ticket", () => {
+  const asked = [];
+  const state = pageState(TAPE_TICKET, { fetchActivity: (stage, run) => asked.push([stage, run]) });
+  state.flushEditSave = () => {};
+
+  state.switchTab("session");
+
+  assert.equal(state.activeTab, "activity");
+  assert.deepEqual(asked, [["review", 1]]);
+});
+
+test("a stage finishing under the live session loads its transcript", () => {
+  const asked = [];
+  const state = pageState({ ...TAPE_TICKET, status: "in_progress", stage: "review" }, {
+    fetchActivity: (stage, run) => asked.push([stage, run]),
+  });
+  state.activeTab = "session";
+  state.tickets = [state.selectedTicket];
+  state.recomputeBoard = () => {};
+  state.closeTerminal = () => {};
+
+  // The SSE update that ends the run switches the column to the transcript.
+  // Nothing else fetches it, so the pane would otherwise read "no completed
+  // stage yet" for a run that just produced one.
+  state.applyTicketUpdate({ ...TAPE_TICKET, status: "human_review" });
+
+  assert.equal(state.activeTab, "activity");
+  assert.deepEqual(asked, [["review", 1]]);
+});
+
+test("the churn block bounds a large change set", () => {
+  const files = [];
+  for (let i = 0; i < 70; i++) files.push({ path: `pkg/f${i}.go`, added: i, deleted: 0 });
+  const state = pageState(TAPE_TICKET, { ticketChanges: { base: "main", files, commits: [] } });
+
+  const c = state.churn();
+  assert.equal(c.count, 70);
+  assert.equal(c.added, files.reduce((n, f) => n + f.added, 0));
+  assert.deepEqual(c.top.map((f) => f.path), ["pkg/f69.go", "pkg/f68.go", "pkg/f67.go"]);
+  assert.equal(c.more, 67);
+});
+
+test("files with equal churn are ordered by path", () => {
+  const state = pageState(TAPE_TICKET, {
+    ticketChanges: {
+      base: "main", commits: [],
+      files: [
+        { path: "z.go", added: 5, deleted: 5 },
+        { path: "a.go", added: 5, deleted: 5 },
+        { path: "m.go", added: 5, deleted: 5 },
+        { path: "b.go", added: 1, deleted: 0 },
+      ],
+    },
+  });
+
+  const first = state.churn().top.map((f) => f.path);
+  assert.deepEqual(first, ["a.go", "m.go", "z.go"]);
+  assert.deepEqual(state.churn().top.map((f) => f.path), first, "repeated renders agree");
+});
+
+test("index.html renders the ribbon, transcript and rail the page needs", () => {
+  const html = fs.readFileSync(htmlPath, "utf8");
+
+  // flex-grow carries the duration; the floor and basis stay in Tailwind.
+  assert.match(html, /:style="'flex-grow:' \+ seg\.seconds"/);
+  assert.match(html, /min-w-\[136px\] basis-0/);
+  // A 308px rail, and a churn block whose height does not follow the file count.
+  assert.match(html, /w-\[308px\] border-l border-surface-700\/50/);
+  assert.match(html, /class="flex flex-col gap-\[9px\] h-\[152px\] shrink-0"/);
+  // One resolvable desktop terminal target.
+  assert.equal((html.match(/id="terminal-session"/g) || []).length, 1);
+  assert.equal(html.includes('id="terminal-container"'), false);
+  // The sweep is declared next to the other loops and stops under reduced motion.
+  assert.match(html, /@keyframes sweep \{/);
+  assert.match(html, /@media \(prefers-reduced-motion: reduce\) \{[\s\S]{0,200}?\.sweep \{ animation: none; \}/);
 });

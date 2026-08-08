@@ -876,8 +876,16 @@
       <span class="text-surface-600 font-mono text-sm">loading...</span>
     </div>
 
+    <!-- Board view: the kanban board with the ticket page stacked over it.
+         Cards use content-visibility: auto, whose rendering state the browser
+         drops when a subtree stops being displayed. Hiding the board with
+         display:none while a ticket is open would make every close repaint all
+         cards, which reads as a board that fills in over several seconds.
+         Stacking keeps the board displayed; inert keeps it out of tab order. -->
+    <div x-show="!loading && currentView === 'board'" class="relative flex flex-1 min-w-0 min-h-0">
+
     <!-- Board area (kanban) -->
-    <div x-show="!loading && currentView === 'board' && !selectedTicket" class="flex flex-col flex-1 min-w-0 min-h-0 bg-surface-frame">
+    <div :inert="!!selectedTicket" class="flex flex-col flex-1 min-w-0 min-h-0 bg-surface-frame">
 
     <!-- Kanban board -->
     <div x-data="{ hasOverflowRight: false }"
@@ -995,10 +1003,10 @@
     </div>
     </div>
 
-    <!-- Ticket page (desktop). Sibling of the board inside <main>: selecting a
-         ticket replaces the board rather than overlaying it. -->
-    <div x-show="!loading && currentView === 'board' && selectedTicket" x-cloak
-         class="flex flex-col flex-1 min-w-0 min-h-0 bg-surface-950">
+    <!-- Ticket page (desktop). Opaque, and above the card menus (z-20) the
+         board can leave open behind it. -->
+    <div x-show="selectedTicket" x-cloak
+         class="absolute inset-0 z-30 flex flex-col bg-surface-950">
 
       <!-- Top bar: wordmark, breadcrumb, status-dependent actions -->
       <div class="shrink-0 h-12 bg-surface-rail border-b border-surface-700 flex items-center gap-3 px-[18px]">
@@ -1612,6 +1620,7 @@
           </div>
         </div>
       </div>
+    </div>
     </div>
 
     <!-- New ticket page -->

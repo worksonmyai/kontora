@@ -966,6 +966,65 @@ test("applyTicketUpdate keeps non-archived updates on the board", () => {
   assert.equal(state.tickets[0].status, "paused");
 });
 
+test("applyTicketUpdate keeps the body off the board entry and on the open ticket", () => {
+  const state = loadKontoraState();
+  state.updateFavicon = () => {};
+  state.tickets = [{ id: "kon-001", title: "Todo", status: "todo", kontora: true }];
+  state.selectedTicket = { id: "kon-001", title: "Todo", status: "todo", body: "fetched body" };
+
+  state.applyTicketUpdate({
+    id: "kon-001",
+    title: "Todo",
+    status: "in_progress",
+    kontora: true,
+    body: "event body",
+    notes: [{ at: "2026-05-19T09:00:00Z", text: "a note" }],
+    history: [{ stage: "code", completed_at: "2026-05-19T09:00:00Z" }],
+    summary: "did the thing",
+  });
+
+  assert.equal(state.tickets[0].status, "in_progress");
+  assert.equal(state.tickets[0].history.length, 1);
+  assert.equal(Object.hasOwn(state.tickets[0], "body"), false);
+  assert.equal(Object.hasOwn(state.tickets[0], "notes"), false);
+  // The panel keeps the body it fetched and takes the event's live fields.
+  assert.equal(state.selectedTicket.body, "fetched body");
+  assert.equal(state.selectedTicket.summary, "did the thing");
+  assert.equal(state.selectedTicket.notes.length, 1);
+});
+
+test("applyTicketUpdate appends a new ticket without its body", () => {
+  const state = loadKontoraState();
+  state.updateFavicon = () => {};
+  state.tickets = [];
+
+  state.applyTicketUpdate({ id: "kon-002", title: "New", status: "todo", kontora: true, body: "event body" });
+
+  assert.equal(state.tickets.length, 1);
+  assert.equal(state.tickets[0].title, "New");
+  assert.equal(Object.hasOwn(state.tickets[0], "body"), false);
+});
+
+test("a board taking updates for every ticket does not grow with their bodies", () => {
+  // The board held 59 KB per opened ticket before entries dropped the body:
+  // 359 tickets converged on ~21 MB of retained JSON.
+  const body = "x".repeat(55 * 1024);
+  const state = loadKontoraState();
+  state.updateFavicon = () => {};
+  state.tickets = Array.from({ length: 80 }, (_, i) => ({
+    id: "kon-" + i, title: "T" + i, status: "todo", kontora: true,
+  }));
+  const before = JSON.stringify(state.tickets).length;
+
+  for (const t of state.tickets.slice()) {
+    state.applyTicketUpdate({ ...t, status: "in_progress", body, notes: [{ at: "", text: body }] });
+  }
+
+  const after = JSON.stringify(state.tickets).length;
+  assert.equal(state.tickets.length, 80);
+  assert.ok(after < before * 2, `board grew from ${before} to ${after} bytes`);
+});
+
 test("agent running counts come from the recompute pass and skip non-running tickets", () => {
   const state = loadKontoraState();
   state.tickets = [
@@ -1010,8 +1069,16 @@ test("columns and agents named after Object.prototype members stay data", () => 
   assert.deepEqual(board.ops, []);
 });
 
-test("selectTicket refreshes the agent counts after replacing a ticket", async () => {
-  const full = { id: "kon-001", title: "One", status: "in_progress", agent: "a2", kontora: true };
+test("selectTicket refreshes the board entry from the fetched ticket but leaves its body behind", async () => {
+  const full = {
+    id: "kon-001",
+    title: "One",
+    status: "in_progress",
+    agent: "a2",
+    kontora: true,
+    body: "# One\n\nlong body",
+    notes: [{ at: "2026-05-19T09:00:00Z", text: "a note" }],
+  };
   const state = loadKontoraState({
     fetch: async () => ({ ok: true, json: async () => full }),
   });
@@ -1024,6 +1091,33 @@ test("selectTicket refreshes the agent counts after replacing a ticket", async (
 
   assert.equal(state.agentRunningCount("a1"), 0);
   assert.equal(state.agentRunningCount("a2"), 1);
+  assert.equal(state.tickets[0].agent, "a2");
+  assert.equal(Object.hasOwn(state.tickets[0], "body"), false);
+  assert.equal(Object.hasOwn(state.tickets[0], "notes"), false);
+  assert.equal(state.selectedTicket.body, "# One\n\nlong body");
+});
+
+// GET /api/tickets is projected server-side today, so the client projection is
+// what keeps the invariant if that endpoint ever starts answering with a body.
+test("fetchTasks keeps the body off the board even when the list carries one", async () => {
+  const state = loadKontoraState({
+    fetch: async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        tickets: [{ id: "kon-001", title: "One", status: "todo", kontora: true, body: "# One", notes: [{ at: "", text: "a note" }] }],
+        running_agents: 0,
+      }),
+    }),
+  });
+  state.updateFavicon = () => {};
+
+  await state.fetchTasks();
+
+  assert.equal(state.tickets.length, 1);
+  assert.equal(state.tickets[0].title, "One");
+  assert.equal(Object.hasOwn(state.tickets[0], "body"), false);
+  assert.equal(Object.hasOwn(state.tickets[0], "notes"), false);
 });
 
 test("recomputeBoard caches sorted+filtered lists keyed by column", () => {
@@ -1609,6 +1703,20 @@ test("_cardSig covers every ticket field _cardHTML reads", () => {
 
   const missing = [...fields].filter((f) => !sig.includes(`ticket.${f}`));
   assert.deepEqual(missing, [], `_cardSig must include: ${missing.join(", ")}`);
+});
+
+// The card fields are read off list entries, which boardEntry has already
+// stripped. A field added to boardEntry that a card renders would blank that
+// part of every card at runtime, and _cardSig's static scan would not see it.
+test("boardEntry drops no field the cards render", () => {
+  const { fields, source } = cardRenderReads();
+  const dropped = methodBody(source, "boardEntry").match(/var \{([^}]*?),\s*\.\.\.rest \}/);
+  assert.ok(dropped, "boardEntry must destructure the dropped fields into rest");
+
+  const names = dropped[1].split(",").map((s) => s.trim());
+  // Sanity: the parse found the names, so an empty result below means covered.
+  assert.ok(names.includes("body"), `expected body among ${names.join(", ")}`);
+  assert.deepEqual(names.filter((n) => fields.has(n)), [], `boardEntry drops rendered fields: ${names.join(", ")}`);
 });
 
 test("_cardHTML reads no board state beyond the two the signature tracks", () => {
@@ -2202,10 +2310,16 @@ test("leaving edit mode puts the caret's block back at the same screen position"
 });
 
 test("a save that lands after the panel closed does not reopen it", async () => {
-  const updated = { id: "kon-1", title: "One", status: "todo", kontora: true, body: "typed" };
-  const state = loadKontoraState({ fetch: async () => ({ ok: true, json: async () => updated }) });
-  state.tickets = [{ id: "kon-1", title: "One", status: "todo", kontora: true, body: "old" }];
-  state.selectedTicket = state.tickets[0];
+  const updated = { id: "kon-1", title: "One", status: "paused", kontora: true, body: "typed" };
+  let sent = null;
+  const state = loadKontoraState({
+    fetch: async (url, options) => {
+      sent = JSON.parse(options.body);
+      return { ok: true, json: async () => updated };
+    },
+  });
+  state.tickets = [{ id: "kon-1", title: "One", status: "todo", kontora: true }];
+  state.selectedTicket = { id: "kon-1", title: "One", status: "todo", kontora: true, body: "old" };
   state.editing = true;
   state.editForm = { body: "typed", pipeline: "", path: "", agent: "", branch: "" };
 
@@ -2217,7 +2331,8 @@ test("a save that lands after the panel closed does not reopen it", async () => 
 
   assert.equal(state.selectedTicket, null);
   assert.equal(state.editSubmitting, false);
-  assert.equal(state.tickets[0].body, "typed");
+  assert.equal(sent.body, "typed");
+  assert.equal(state.tickets[0].status, "paused");
 });
 
 test("flushEditSave cancels the pending debounce and saves once", () => {

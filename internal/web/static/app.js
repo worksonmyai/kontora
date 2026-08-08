@@ -348,7 +348,7 @@ function kontora() {
       if (res.status === 401) { this.needsAuth = true; throw new Error('unauthorized'); }
       if (!res.ok) throw new Error('Failed to fetch tickets');
       const data = await res.json();
-      this.tickets = data.tickets || [];
+      this.tickets = (data.tickets || []).map(t => this.boardEntry(t));
       this.recomputeBoard();
       // recomputeBoard derives runningAgents from in_progress kontora tickets;
       // prefer the daemon's authoritative running count at load.
@@ -486,6 +486,15 @@ function kontora() {
       return !!t.summary || (t.history || []).some(function (e) { return !!e.summary; });
     },
 
+    // Board cards render neither the body nor the notes parsed out of it, and
+    // an entry holding them pins that ticket's full text for the life of the
+    // tab. Every ticket stored in this.tickets goes through here; the detail
+    // panel reads selectedTicket, which keeps the whole ticket.
+    boardEntry(ticket) {
+      var { body, notes, ...rest } = ticket;
+      return rest;
+    },
+
     applyTicketUpdate(ticket) {
       if (ticket.status === 'archived') {
         // Archived tickets are hidden from the board: drop them from client
@@ -497,9 +506,9 @@ function kontora() {
       } else {
         const idx = this.tickets.findIndex(t => t.id === ticket.id);
         if (idx >= 0) {
-          this.tickets[idx] = ticket;
+          this.tickets[idx] = this.boardEntry(ticket);
         } else {
-          this.tickets.push(ticket);
+          this.tickets.push(this.boardEntry(ticket));
         }
         if (this.selectedTicket?.id === ticket.id) {
           var prevSummary = this.selectedTicket.summary;
@@ -950,7 +959,7 @@ function kontora() {
           this.selectedTicket = full;
           var idx = this.tickets.findIndex(function(t) { return t.id === full.id; });
           if (idx >= 0) {
-            this.tickets[idx] = full;
+            this.tickets[idx] = this.boardEntry(full);
             // The replacement can change agent, status, or any rendered field,
             // so refresh the cached board and the agent tally from it.
             this.recomputeBoard();
@@ -1161,7 +1170,7 @@ function kontora() {
         }
         const updated = await res.json();
         const idx = this.tickets.findIndex(t => t.id === updated.id);
-        if (idx >= 0) this.tickets[idx] = updated;
+        if (idx >= 0) this.tickets[idx] = this.boardEntry(updated);
         this.selectedTicket = updated;
         if (type === 'pause' || type === 'skip') this.closeTerminal();
       } catch (e) {
@@ -1238,7 +1247,7 @@ function kontora() {
         const updated = await res.json().catch(() => null);
         if (updated && updated.id) {
           const idx = this.tickets.findIndex(t => t.id === updated.id);
-          if (idx >= 0) this.tickets[idx] = updated;
+          if (idx >= 0) this.tickets[idx] = this.boardEntry(updated);
           if (this.selectedTicket?.id === updated.id) this.selectedTicket = updated;
           this.recomputeBoard();
         }
@@ -1373,7 +1382,7 @@ function kontora() {
         if (res.ok) {
           const updated = await res.json();
           const idx = this.tickets.findIndex(t => t.id === updated.id);
-          if (idx >= 0) this.tickets[idx] = updated;
+          if (idx >= 0) this.tickets[idx] = this.boardEntry(updated);
           // A save flushed on the way out resolves after the panel closed or
           // selected another ticket, and an unguarded assignment reopens it.
           if (this.selectedTicket?.id === updated.id) {
@@ -1561,7 +1570,7 @@ function kontora() {
         }
         const updated = await res.json();
         const idx = this.tickets.findIndex(t => t.id === updated.id);
-        if (idx >= 0) this.tickets[idx] = updated;
+        if (idx >= 0) this.tickets[idx] = this.boardEntry(updated);
         this.selectedTicket = updated;
       } catch (e) {
         this.error = 'set-stage failed: ' + e.message;
@@ -3561,7 +3570,7 @@ function kontora() {
           this.noteDraft = '';
           if (this.selectedTicket && this.selectedTicket.id === id) this.selectedTicket = full;
           var idx = this.tickets.findIndex(function (x) { return x.id === id; });
-          if (idx >= 0) { this.tickets[idx] = full; this.recomputeBoard(); }
+          if (idx >= 0) { this.tickets[idx] = this.boardEntry(full); this.recomputeBoard(); }
         }
       } catch (e) {
         this.error = 'Failed to add note';

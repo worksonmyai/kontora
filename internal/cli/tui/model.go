@@ -23,8 +23,16 @@ type (
 		tickets []web.TicketInfo
 		running int
 	}
-	taskUpdatedMsg   web.TicketEvent
-	taskDetailMsg    web.TicketInfo
+	taskUpdatedMsg web.TicketEvent
+	taskDetailMsg  web.TicketInfo
+	// taskRefreshedMsg is a refetch of the ticket the detail view already
+	// shows. Unlike taskDetailMsg it never opens the view: a refresh that
+	// resolves after the user went back to the board must not reopen it.
+	// seq carries the request it answers, so an overtaken response is dropped.
+	taskRefreshedMsg struct {
+		info web.TicketInfo
+		seq  int
+	}
 	logsMsg          struct{ content string }
 	tickMsg          struct{}
 	errMsg           struct{ err error }
@@ -61,6 +69,7 @@ type model struct {
 	height int
 
 	attachTarget string
+	refreshSeq   int
 }
 
 func newModel(src Source) model {
@@ -107,17 +116,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case taskUpdatedMsg:
-		return m.handleTaskUpdated(web.TicketEvent(msg)), nil
+		return m.handleTaskUpdated(web.TicketEvent(msg))
+
+	case taskRefreshedMsg:
+		return m.handleTaskRefreshed(msg), nil
 
 	case taskDetailMsg:
-		info := web.TicketInfo(msg)
-		m.detail = newDetailModel(info, m.width, m.height)
-		m.view = viewDetail
-		stage := ""
-		if len(info.Stages) > 0 {
-			stage = info.Stages[0]
-		}
-		return m, m.fetchLogsCmd(info.ID, stage)
+		return m.openDetail(web.TicketInfo(msg))
 
 	case fetchLogsRequest:
 		return m, m.fetchLogsCmd(msg.id, msg.stage)
@@ -359,6 +364,17 @@ func (m model) fetchTaskCmd(id string) tea.Cmd {
 	}
 }
 
+func (m model) refreshTaskCmd(id string, seq int) tea.Cmd {
+	src := m.source
+	return func() tea.Msg {
+		info, err := src.FetchTask(id)
+		if err != nil {
+			return errMsg{err: err}
+		}
+		return taskRefreshedMsg{info: info, seq: seq}
+	}
+}
+
 func (m model) fetchLogsCmd(id, stage string) tea.Cmd {
 	src := m.source
 	return func() tea.Msg {
@@ -405,14 +421,48 @@ func (m model) createTaskCmd(req web.CreateTicketRequest) tea.Cmd {
 	}
 }
 
-func (m model) handleTaskUpdated(ev web.TicketEvent) model {
+func (m model) openDetail(info web.TicketInfo) (model, tea.Cmd) {
+	m.detail = newDetailModel(info, m.width, m.height)
+	m.view = viewDetail
+	// This body is newer than anything a refresh in flight can carry.
+	m.refreshSeq++
+	stage := ""
+	if len(info.Stages) > 0 {
+		stage = info.Stages[0]
+	}
+	return m, m.fetchLogsCmd(info.ID, stage)
+}
+
+func (m model) handleTaskRefreshed(msg taskRefreshedMsg) model {
+	// Nothing sequences these fetches, so an overtaken one would put an older
+	// body back on screen.
+	if msg.seq != m.refreshSeq {
+		return m
+	}
+	if m.view == viewDetail && m.detail.ticket.ID == msg.info.ID {
+		m.detail.setTicket(msg.info)
+	}
+	return m
+}
+
+func (m model) handleTaskUpdated(ev web.TicketEvent) (model, tea.Cmd) {
 	m.list.updateTicket(ev.Ticket)
+	var cmd tea.Cmd
 	if m.view == viewDetail && m.detail.ticket.ID == ev.Ticket.ID {
 		// An archived ticket is no longer actionable; return to the board.
 		if ev.Ticket.Status == string(ticket.StatusArchived) {
 			m.view = viewList
 		} else {
-			m.detail.setTicket(ev.Ticket)
+			// The event carries every header field but no body, so it is
+			// applied over the body on screen: waiting for the refetch would
+			// leave the header stale for a round trip, and until the next
+			// event if that fetch fails. The refetch is still needed for
+			// notes appended mid-run, which live in the body.
+			info := ev.Ticket
+			info.Body = m.detail.ticket.Body
+			m.detail.setTicket(info)
+			m.refreshSeq++
+			cmd = m.refreshTaskCmd(ev.Ticket.ID, m.refreshSeq)
 		}
 	}
 	running := 0
@@ -422,7 +472,7 @@ func (m model) handleTaskUpdated(ev web.TicketEvent) model {
 		}
 	}
 	m.list.running = running
-	return m
+	return m, cmd
 }
 
 func (m model) handleAgentConfig(msg agentConfigMsg) (tea.Model, tea.Cmd) {

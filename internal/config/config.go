@@ -46,6 +46,7 @@ type Config struct {
 	MaxConcurrentAgents int                 `yaml:"max_concurrent_agents"`
 	AutoPickUp          *bool               `yaml:"auto_pick_up"`
 	InstanceName        string              `yaml:"instance_name"`
+	TmuxSession         string              `yaml:"tmux_session"`
 	Web                 Web                 `yaml:"web"`
 	Agents              map[string]Agent    `yaml:"agents"`
 	Stages              map[string]Stage    `yaml:"stages"`
@@ -248,6 +249,9 @@ func (c *Config) applyDefaults() {
 			c.InstanceName = "default"
 		}
 	}
+	if c.TmuxSession == "" {
+		c.TmuxSession = defaultTmuxSession
+	}
 	if c.Web.Enabled == nil {
 		enabled := true
 		c.Web.Enabled = &enabled
@@ -294,6 +298,29 @@ func (c *Config) applyDefaults() {
 
 var validStatusNameRe = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
 
+// defaultTmuxSession duplicates tmux.DefaultSessionName because config imports
+// no internal packages. Change both together.
+const defaultTmuxSession = "kontora"
+
+// validTmuxSessionRe rejects the characters tmux itself cannot address (`.`,
+// `:`) and the ones that would break out of the wait-for channel name, which
+// the daemon interpolates raw into a JSON string and a shell command. A leading
+// `-` is rejected too: the session name starts the channel name, and tmux reads
+// `tmux wait-for -S -x-tst-001` as an unknown flag, so the Stop hook could never
+// signal an interactive agent's completion.
+var validTmuxSessionRe = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_-]{0,63}$`)
+
+// TmuxSessionName returns the tmux session this config addresses. It is the
+// single place an empty value becomes the default, so the daemon, CLI, TUI, and
+// web cannot disagree. Configs built in memory never run applyDefaults, which
+// is why the fallback lives here and not at each caller.
+func (c *Config) TmuxSessionName() string {
+	if c.TmuxSession == "" {
+		return defaultTmuxSession
+	}
+	return c.TmuxSession
+}
+
 var builtinStatuses = map[string]bool{
 	"open": true, "todo": true, "in_progress": true,
 	"paused": true, "human_review": true, "done": true, "cancelled": true,
@@ -329,6 +356,10 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("default_agent: could not infer (set it explicitly or name an agent \"claude\")")
 		}
 		return fmt.Errorf("default_agent %q: not found in agents", c.DefaultAgent)
+	}
+
+	if !validTmuxSessionRe.MatchString(c.TmuxSession) {
+		return fmt.Errorf("tmux_session %q: must be 1-64 characters from [A-Za-z0-9_-] and must not start with %q", c.TmuxSession, "-")
 	}
 
 	for name, agent := range c.Agents {

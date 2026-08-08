@@ -92,6 +92,7 @@ branch_prefix: %s
 default_agent: %s
 max_concurrent_agents: 4
 instance_name: test-instance
+tmux_session: kontora-test
 web:
   enabled: false
 agents:
@@ -201,6 +202,7 @@ func TestReload_PinsRestartOnlyFields(t *testing.T) {
 	changed = strings.Replace(changed, "logs_dir: "+h.logsDir, "logs_dir: "+otherDir, 1)
 	changed = strings.Replace(changed, "max_concurrent_agents: 4", "max_concurrent_agents: 8", 1)
 	changed = strings.Replace(changed, "instance_name: test-instance", "instance_name: other-instance", 1)
+	changed = strings.Replace(changed, "tmux_session: kontora-test", "tmux_session: kontora-other", 1)
 	changed = strings.Replace(changed, "  enabled: false", "  enabled: false\n  host: 0.0.0.0\n  port: 9090\n  token: secret", 1)
 
 	h.writeConfig(t, changed)
@@ -212,12 +214,13 @@ func TestReload_PinsRestartOnlyFields(t *testing.T) {
 	assert.Equal(t, h.wtDir, got.WorktreesDir)
 	assert.Equal(t, h.logsDir, got.LogsDir)
 	assert.Equal(t, "test-instance", got.InstanceName)
+	assert.Equal(t, "kontora-test", got.TmuxSession)
 	assert.Equal(t, 4, got.MaxConcurrentAgents)
 	assert.Equal(t, before.Web, got.Web, "the web block is pinned whole")
 
 	logs := h.logBuf.String()
 	for _, field := range []string{
-		"tickets_dir", "worktrees_dir", "logs_dir", "instance_name",
+		"tickets_dir", "worktrees_dir", "logs_dir", "instance_name", "tmux_session",
 		"max_concurrent_agents", "web.host", "web.port", "web.token",
 	} {
 		assert.Contains(t, logs, "field="+field, "expected a restart-only warning for %s", field)

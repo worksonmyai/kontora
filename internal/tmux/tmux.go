@@ -10,15 +10,14 @@ import (
 	"strings"
 )
 
-const (
-	// DefaultSessionName is the default tmux session name used by the daemon.
-	DefaultSessionName = "kontora"
-	channelPrefix      = "kontora-"
-)
+// DefaultSessionName is the default tmux session name used by the daemon.
+const DefaultSessionName = "kontora"
 
-// ChannelName returns the tmux wait-for channel name for a ticket.
-func ChannelName(ticketID string) string {
-	return channelPrefix + ticketID
+// ChannelName returns the tmux wait-for channel name for a ticket. wait-for
+// channels are global to the tmux server, so the session name scopes them:
+// without it, two daemons running the same ticket ID would signal each other.
+func ChannelName(sessionName, ticketID string) string {
+	return sessionName + "-" + ticketID
 }
 
 // WindowTarget returns the tmux target for a ticket's window (=session:window).

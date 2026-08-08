@@ -75,7 +75,7 @@ func (s *Server) handleTerminalWS(w http.ResponseWriter, r *http.Request) {
 	// Create a linked tmux session so the web viewer gets independent sizing
 	// without shrinking the pane in the main session.
 	viewSession := fmt.Sprintf("kontora-view-%s-%x", id, rand.Uint32())
-	mainSession := "=" + tmux.DefaultSessionName
+	mainSession := "=" + s.tmuxSession
 	newCmd := exec.Command("tmux", "new-session", "-d", "-t", mainSession, "-s", viewSession,
 		"-x", strconv.Itoa(cols), "-y", strconv.Itoa(rows))
 	newCmd.Env = append(os.Environ(), "LANG=en_US.UTF-8")

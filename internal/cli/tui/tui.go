@@ -42,17 +42,17 @@ func Run(cfg *config.Config) error {
 	}
 
 	if final, ok := result.(model); ok && final.attachTarget != "" {
-		return doAttach(final.attachTarget)
+		return doAttach(cfg.TmuxSessionName(), final.attachTarget)
 	}
 	return nil
 }
 
-func doAttach(taskID string) error {
+func doAttach(sessionName, taskID string) error {
 	tmuxBin, err := exec.LookPath("tmux")
 	if err != nil {
 		return fmt.Errorf("tmux not found: %w", err)
 	}
-	target := tmux.WindowTarget(tmux.DefaultSessionName, taskID)
+	target := tmux.WindowTarget(sessionName, taskID)
 	args := []string{"tmux", "attach-session", "-t", target, "-r"}
 	return syscall.Exec(tmuxBin, args, os.Environ())
 }

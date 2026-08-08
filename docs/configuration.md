@@ -122,6 +122,7 @@ pipelines:
 | `default_agent` | no | (inferred) | Agent used for tickets without a pipeline. Defaults to `claude` if an agent with that name exists, otherwise inferred when there is exactly one agent. Must be set explicitly when multiple agents are defined and none is named `claude`. |
 | `max_concurrent_agents` | no | `3` | Maximum number of agents running simultaneously. |
 | `instance_name` | no | `os.Hostname()` | Identifies this daemon when several run against one synced `tickets_dir`. Written to a ticket's `claimed_by` on pickup so daemons don't steal or kill each other's work (see [multi-machine tickets](tickets.md#running-on-multiple-machines)). Falls back to `default` if the hostname can't be read. Two machines that share a hostname must set this explicitly, or the protection can't tell them apart. |
+| `tmux_session` | no | `kontora` | The tmux session the daemon puts agent windows in. Allowed characters are `A-Z a-z 0-9 _ -`, 1 to 64 of them, and the name cannot start with `-`. Set a distinct value per daemon when you run more than one on a machine: startup cleanup, `kontora attach`, the TUI, and the web terminal are all scoped to this session, and two daemons sharing it can also signal each other's agents through the tmux `wait-for` channel when their ticket IDs collide. |
 | `statuses` | no | — | Extra parked statuses beyond the built-ins. Agents can park tickets here via `on_success`/`on_failure`. |
 | `projects` | no | — | Per-repository default pipeline, agent, and branch prefix (see [projects](#projects)). |
 | `environment` | no | — | Map of environment variables to set for all agent processes. |
@@ -337,13 +338,19 @@ existing ticket that has not been given one yet.
 
 ### What needs a restart
 
-`tickets_dir`, `worktrees_dir`, `logs_dir`, `instance_name`,
+`tickets_dir`, `worktrees_dir`, `logs_dir`, `instance_name`, `tmux_session`,
 `max_concurrent_agents`, and the whole `web` block. The daemon reads these once
-at startup: the watched directory, the worktree root, the claim name, the
-semaphore size, and the HTTP listener are all fixed by then. A reload keeps the
-running value and logs one warning per field that differs on disk, naming the
-field, the running value, and the value it ignored. The `web.token` value is
-never logged.
+at startup: the watched directory, the worktree root, the claim name, the tmux
+session, the semaphore size, and the HTTP listener are all fixed by then. A
+reload keeps the running value and logs one warning per field that differs on
+disk, naming the field, the running value, and the value it ignored. The
+`web.token` value is never logged.
+
+To rename `tmux_session`, stop the daemon, run `tmux kill-session -t =<old-name>`,
+then start it with the new name. The old session is not renamed for you, and it
+must not be left running: its windows are invisible to the new daemon, so crash
+recovery re-queues a ticket whose first agent is still alive and starts a second
+agent on the same worktree and branch.
 
 `editor` is read by the CLI, not the daemon, so it takes effect on the next
 command either way.

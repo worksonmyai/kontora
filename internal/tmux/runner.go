@@ -56,8 +56,8 @@ func Run(ctx context.Context, p RunParams) (process.Result, error) {
 // to close the window.
 func runInteractive(ctx context.Context, p RunParams) (process.Result, error) {
 	cmd := append([]string{p.Binary}, p.Args...)
-	channel := ChannelName(p.TicketID)
 	sess := p.session()
+	channel := ChannelName(sess, p.TicketID)
 
 	usePipePaneLogging := p.LogFile != ""
 

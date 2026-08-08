@@ -753,7 +753,7 @@ func (d *Daemon) Subscribe() (<-chan web.TicketEvent, func()) {
 
 // HasTerminalSession returns true if a tmux session exists for the given ticket.
 func (d *Daemon) HasTerminalSession(id string) bool {
-	return tmux.HasWindow(tmux.DefaultSessionName, id)
+	return tmux.HasWindow(d.tmuxSession, id)
 }
 
 // broadcastTicketUpdate sends a ticket_updated event for the given ticket ID.

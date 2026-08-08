@@ -430,6 +430,61 @@ func TestLoadMinimalDefaultsBranchPrefix(t *testing.T) {
 	assert.Equal(t, "kontora", cfg.BranchPrefix)
 }
 
+func TestLoadMinimalDefaultsTmuxSession(t *testing.T) {
+	cfg, err := Load("testdata/minimal.yaml")
+	require.NoError(t, err)
+	assert.Equal(t, "kontora", cfg.TmuxSession)
+	assert.Equal(t, "kontora", cfg.TmuxSessionName())
+
+	// Configs built in memory skip applyDefaults, so TmuxSessionName has to
+	// carry the fallback as well. The daemon, CLI, TUI, and web all read it.
+	assert.Equal(t, "kontora", (&Config{}).TmuxSessionName())
+}
+
+// A tmux session name reaches both a JSON string literal and a shell command
+// through the wait-for channel the daemon writes into the agent's hook
+// settings, so anything outside [A-Za-z0-9_-] has to be rejected at load. A
+// leading "-" goes too: it makes the channel name look like a tmux flag.
+func TestValidateTmuxSession(t *testing.T) {
+	cases := []struct {
+		name    string
+		session string
+		wantErr bool
+	}{
+		{name: "default", session: "kontora"},
+		{name: "hyphen", session: "kontora-work"},
+		{name: "underscore and digit", session: "k_1"},
+		{name: "64 characters", session: strings.Repeat("a", 64)},
+		{name: "empty", session: "", wantErr: true},
+		{name: "leading hyphen", session: "-x", wantErr: true},
+		{name: "dot", session: "a.b", wantErr: true},
+		{name: "colon", session: "a:b", wantErr: true},
+		{name: "space", session: "a b", wantErr: true},
+		{name: "double quote", session: `a"b`, wantErr: true},
+		{name: "backtick", session: "a`b", wantErr: true},
+		{name: "command substitution", session: "$(x)", wantErr: true},
+		{name: "65 characters", session: strings.Repeat("a", 65), wantErr: true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &Config{
+				DefaultAgent: "a",
+				TmuxSession:  tc.session,
+				Agents:       map[string]Agent{"a": {Binary: "agent-bin"}},
+			}
+			err := cfg.Validate()
+			if !tc.wantErr {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "tmux_session")
+			assert.Contains(t, err.Error(), "[A-Za-z0-9_-]")
+		})
+	}
+}
+
 func TestLoadWebConfig(t *testing.T) {
 	input := `
 tickets_dir: /tmp/tasks

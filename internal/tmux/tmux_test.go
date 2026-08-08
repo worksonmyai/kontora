@@ -16,6 +16,16 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// testSession keeps this package's tmux windows out of the session a real
+// daemon owns, so `go test` can never kill a running agent.
+var testSession = fmt.Sprintf("kontora-tmuxtest-%d", os.Getpid())
+
+func TestMain(m *testing.M) {
+	code := m.Run()
+	_ = exec.Command("tmux", "kill-session", "-t", "="+testSession).Run()
+	os.Exit(code)
+}
+
 func skipIfNoTmux(t *testing.T) {
 	t.Helper()
 	if _, err := exec.LookPath("tmux"); err != nil {
@@ -27,7 +37,7 @@ func waitForWindow(t *testing.T, ticketID string, want bool, timeout time.Durati
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		if HasWindow(DefaultSessionName, ticketID) == want {
+		if HasWindow(testSession, ticketID) == want {
 			return
 		}
 		time.Sleep(50 * time.Millisecond)
@@ -35,19 +45,19 @@ func waitForWindow(t *testing.T, ticketID string, want bool, timeout time.Durati
 	t.Fatalf("timed out waiting for window %s exists=%v", ticketID, want)
 }
 
-// startTestWindow creates a tmux window in the kontora session running cmd in dir.
+// startTestWindow creates a tmux window in the test session running cmd in dir.
 // Lazily creates the session if it doesn't exist.
 func startTestWindow(t *testing.T, ticketID, dir string, cmd ...string) {
 	t.Helper()
-	if exec.Command("tmux", "has-session", "-t", "="+DefaultSessionName).Run() != nil {
+	if exec.Command("tmux", "has-session", "-t", "="+testSession).Run() != nil {
 		args := make([]string, 0, 8+len(cmd))
-		args = append(args, "new-session", "-d", "-s", DefaultSessionName, "-n", ticketID, "-c", dir, "--")
+		args = append(args, "new-session", "-d", "-s", testSession, "-n", ticketID, "-c", dir, "--")
 		args = append(args, cmd...)
 		out, err := exec.Command("tmux", args...).CombinedOutput()
 		require.NoError(t, err, "tmux new-session: %s", strings.TrimSpace(string(out)))
 	} else {
 		args := make([]string, 0, 7+len(cmd))
-		args = append(args, "new-window", "-t", "="+DefaultSessionName+":", "-n", ticketID, "-c", dir, "--")
+		args = append(args, "new-window", "-t", "="+testSession+":", "-n", ticketID, "-c", dir, "--")
 		args = append(args, cmd...)
 		out, err := exec.Command("tmux", args...).CombinedOutput()
 		require.NoError(t, err, "tmux new-window: %s", strings.TrimSpace(string(out)))
@@ -55,7 +65,7 @@ func startTestWindow(t *testing.T, ticketID, dir string, cmd ...string) {
 }
 
 func TestChannelName(t *testing.T) {
-	assert.Equal(t, "kontora-tst-001", ChannelName("tst-001"))
+	assert.Equal(t, "kontora-tst-001", ChannelName(DefaultSessionName, "tst-001"))
 }
 
 func TestWindowTarget(t *testing.T) {
@@ -72,12 +82,12 @@ func TestSendKeys(t *testing.T) {
 	// Start a window running a shell that waits for commands.
 	// SendKeys sends a command that creates a file, proving keystrokes arrive.
 	startTestWindow(t, ticketID, dir, "sh")
-	t.Cleanup(func() { _ = KillWindow(DefaultSessionName, ticketID) })
+	t.Cleanup(func() { _ = KillWindow(testSession, ticketID) })
 	waitForWindow(t, ticketID, true, 5*time.Second)
 	// Give the shell inside tmux a moment to initialize.
 	time.Sleep(300 * time.Millisecond)
 
-	require.NoError(t, SendKeys(DefaultSessionName, ticketID, "echo SENDKEYS_OK > "+outFile))
+	require.NoError(t, SendKeys(testSession, ticketID, "echo SENDKEYS_OK > "+outFile))
 
 	// Wait for the command to execute and write the file.
 	deadline := time.Now().Add(5 * time.Second)
@@ -98,7 +108,7 @@ func TestKillWindow(t *testing.T) {
 
 	waitForWindow(t, ticketID, true, 5*time.Second)
 
-	require.NoError(t, KillWindow(DefaultSessionName, ticketID))
+	require.NoError(t, KillWindow(testSession, ticketID))
 
 	waitForWindow(t, ticketID, false, 5*time.Second)
 }
@@ -115,14 +125,14 @@ func TestListWindows(t *testing.T) {
 	startTestWindow(t, taskID1, dir, "sleep", "999")
 	startTestWindow(t, taskID2, dir, "sleep", "999")
 	t.Cleanup(func() {
-		_ = KillWindow(DefaultSessionName, taskID1)
-		_ = KillWindow(DefaultSessionName, taskID2)
+		_ = KillWindow(testSession, taskID1)
+		_ = KillWindow(testSession, taskID2)
 	})
 
 	waitForWindow(t, taskID1, true, 5*time.Second)
 	waitForWindow(t, taskID2, true, 5*time.Second)
 
-	windows, err := ListWindows(DefaultSessionName)
+	windows, err := ListWindows(testSession)
 	require.NoError(t, err)
 
 	assert.Contains(t, windows, taskID1)
@@ -137,11 +147,11 @@ func TestPipePaneTo(t *testing.T) {
 	logPath := filepath.Join(dir, "output.log")
 
 	startTestWindow(t, ticketID, dir, "sh", "-c", "echo KONTORA_TEST_OUTPUT; sleep 1")
-	t.Cleanup(func() { _ = KillWindow(DefaultSessionName, ticketID) })
+	t.Cleanup(func() { _ = KillWindow(testSession, ticketID) })
 
 	waitForWindow(t, ticketID, true, 5*time.Second)
 
-	require.NoError(t, PipePaneTo(DefaultSessionName, ticketID, logPath))
+	require.NoError(t, PipePaneTo(testSession, ticketID, logPath))
 
 	// Wait for the window to exit.
 	waitForWindow(t, ticketID, false, 30*time.Second)
@@ -276,11 +286,12 @@ func TestRunExitCode(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			ticketID := "test-r-" + tc.name + "-" + randomSuffix()
-			t.Cleanup(func() { _ = KillWindow(DefaultSessionName, ticketID) })
+			t.Cleanup(func() { _ = KillWindow(testSession, ticketID) })
 			result, err := Run(context.Background(), RunParams{
-				Binary:   tc.binary,
-				Dir:      t.TempDir(),
-				TicketID: ticketID,
+				SessionName: testSession,
+				Binary:      tc.binary,
+				Dir:         t.TempDir(),
+				TicketID:    ticketID,
 			})
 			require.NoError(t, err)
 			assert.Equal(t, tc.wantExitCode, result.ExitCode)
@@ -295,11 +306,12 @@ func TestRunTimeout(t *testing.T) {
 
 	ticketID := "test-rtmo-" + randomSuffix()
 	result, err := Run(context.Background(), RunParams{
-		Binary:   "sleep",
-		Args:     []string{"999"},
-		Dir:      t.TempDir(),
-		Timeout:  500 * time.Millisecond,
-		TicketID: ticketID,
+		SessionName: testSession,
+		Binary:      "sleep",
+		Args:        []string{"999"},
+		Dir:         t.TempDir(),
+		Timeout:     500 * time.Millisecond,
+		TicketID:    ticketID,
 	})
 	require.Error(t, err)
 	assert.Equal(t, -1, result.ExitCode)
@@ -319,10 +331,11 @@ func TestRunContextCancel(t *testing.T) {
 	}()
 
 	result, err := Run(ctx, RunParams{
-		Binary:   "sleep",
-		Args:     []string{"999"},
-		Dir:      t.TempDir(),
-		TicketID: ticketID,
+		SessionName: testSession,
+		Binary:      "sleep",
+		Args:        []string{"999"},
+		Dir:         t.TempDir(),
+		TicketID:    ticketID,
 	})
 	require.Error(t, err)
 	assert.Equal(t, -1, result.ExitCode)
@@ -336,14 +349,15 @@ func TestRunLogCapture(t *testing.T) {
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "test.log")
 	ticketID := "test-rlog-" + randomSuffix()
-	t.Cleanup(func() { _ = KillWindow(DefaultSessionName, ticketID) })
+	t.Cleanup(func() { _ = KillWindow(testSession, ticketID) })
 
 	result, err := Run(context.Background(), RunParams{
-		Binary:   "sh",
-		Args:     []string{"-c", "echo RUNNER_LOG_TEST; sleep 1"},
-		Dir:      dir,
-		TicketID: ticketID,
-		LogFile:  logPath,
+		SessionName: testSession,
+		Binary:      "sh",
+		Args:        []string{"-c", "echo RUNNER_LOG_TEST; sleep 1"},
+		Dir:         dir,
+		TicketID:    ticketID,
+		LogFile:     logPath,
 	})
 	require.NoError(t, err)
 	assert.Equal(t, 0, result.ExitCode)
@@ -366,14 +380,15 @@ func TestRunWindowVanished(t *testing.T) {
 
 	go func() {
 		time.Sleep(300 * time.Millisecond)
-		_ = KillWindow(DefaultSessionName, ticketID)
+		_ = KillWindow(testSession, ticketID)
 	}()
 
 	result, err := Run(context.Background(), RunParams{
-		Binary:   "sleep",
-		Args:     []string{"999"},
-		Dir:      t.TempDir(),
-		TicketID: ticketID,
+		SessionName: testSession,
+		Binary:      "sleep",
+		Args:        []string{"999"},
+		Dir:         t.TempDir(),
+		TicketID:    ticketID,
 	})
 	require.ErrorContains(t, err, "vanished")
 	assert.Equal(t, -1, result.ExitCode)
@@ -386,16 +401,17 @@ func TestRunInteractiveWindowVanished(t *testing.T) {
 	// forcing the windowGone poll path instead of hookFired.
 	anchor := "test-rivan-anchor-" + randomSuffix()
 	startTestWindow(t, anchor, t.TempDir(), "sleep", "999")
-	t.Cleanup(func() { _ = KillWindow(DefaultSessionName, anchor) })
+	t.Cleanup(func() { _ = KillWindow(testSession, anchor) })
 
 	ticketID := "test-rivan-" + randomSuffix()
 
 	go func() {
 		time.Sleep(300 * time.Millisecond)
-		_ = KillWindow(DefaultSessionName, ticketID)
+		_ = KillWindow(testSession, ticketID)
 	}()
 
 	result, err := Run(context.Background(), RunParams{
+		SessionName: testSession,
 		Binary:      "sleep",
 		Args:        []string{"999"},
 		Dir:         t.TempDir(),
@@ -412,6 +428,7 @@ func TestRunInteractiveTimeout(t *testing.T) {
 
 	ticketID := "test-rito-" + randomSuffix()
 	result, err := Run(context.Background(), RunParams{
+		SessionName: testSession,
 		Binary:      "sleep",
 		Args:        []string{"999"},
 		Dir:         t.TempDir(),
@@ -429,7 +446,7 @@ func TestRunInteractiveMinDuration(t *testing.T) {
 	skipIfNoTmux(t)
 
 	ticketID := "test-rimd-" + randomSuffix()
-	channel := ChannelName(ticketID)
+	channel := ChannelName(testSession, ticketID)
 
 	// Signal quickly — simulates agent crash on startup.
 	go func() {
@@ -437,9 +454,10 @@ func TestRunInteractiveMinDuration(t *testing.T) {
 		_ = exec.Command("tmux", "wait-for", "-S", channel).Run()
 	}()
 
-	t.Cleanup(func() { _ = KillWindow(DefaultSessionName, ticketID) })
+	t.Cleanup(func() { _ = KillWindow(testSession, ticketID) })
 
 	result, err := Run(context.Background(), RunParams{
+		SessionName: testSession,
 		Binary:      "sleep",
 		Args:        []string{"999"},
 		Dir:         t.TempDir(),
@@ -455,7 +473,7 @@ func TestRunInteractiveWaitFor(t *testing.T) {
 	skipIfNoTmux(t)
 
 	ticketID := "test-riwf-" + randomSuffix()
-	channel := ChannelName(ticketID)
+	channel := ChannelName(testSession, ticketID)
 
 	// Signal the wait-for channel after a short delay (simulating the hook).
 	go func() {
@@ -463,9 +481,10 @@ func TestRunInteractiveWaitFor(t *testing.T) {
 		_ = exec.Command("tmux", "wait-for", "-S", channel).Run()
 	}()
 
-	t.Cleanup(func() { _ = KillWindow(DefaultSessionName, ticketID) })
+	t.Cleanup(func() { _ = KillWindow(testSession, ticketID) })
 
 	result, err := Run(context.Background(), RunParams{
+		SessionName: testSession,
 		Binary:      "sleep",
 		Args:        []string{"999"},
 		Dir:         t.TempDir(),

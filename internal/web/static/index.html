@@ -970,6 +970,8 @@
             <div class="seg-tab">
               <button x-show="showTerminalTab()" @click="switchTab('terminal')"
                       class="seg-tab-btn uppercase" :class="activeTab === 'terminal' ? 'seg-tab-active' : ''">logs</button>
+              <button x-show="showSummaryTab()" @click="switchTab('summary')"
+                      class="seg-tab-btn uppercase" :class="activeTab === 'summary' ? 'seg-tab-active' : ''">summary</button>
               <button @click="switchTab('ticket')"
                       class="seg-tab-btn uppercase" :class="activeTab === 'ticket' ? 'seg-tab-active' : ''">ticket</button>
             </div>
@@ -1133,36 +1135,27 @@
             </div>
           </div>
 
-          <!-- Ticket tab -->
-          <div x-show="activeTab === 'ticket'"
+          <!-- Summary tab: what the last finished stage did, plus the branch's
+               commits and changed files from the changes endpoint. Shown while
+               the ticket still runs, so earlier stages stay readable. -->
+          <div x-show="activeTab === 'summary'"
                x-transition.opacity.duration.150ms
                class="h-full flex flex-col bg-surface-rail">
-            <!-- Scrollable content wrapper -->
             <div class="flex-1 min-h-0 overflow-y-auto">
-            <div class="max-w-3xl mx-auto px-8 py-6">
-              <template x-if="selectedTicket && !selectedTicket.kontora">
-                <div class="mb-4 border-l-[3px] border-warn pl-3 py-1">
-                  <span class="text-warn text-xs font-mono font-semibold">not a kontora ticket</span>
-                  <p class="text-surface-600 text-xs font-mono mt-1">Initialize this ticket from the card menu before queueing, resuming, or running an agent.</p>
-                </div>
-              </template>
-              <template x-if="selectedTicket?.last_error">
-                <div class="mb-4 border-l-[3px] border-err pl-3 py-1">
-                  <span class="text-err text-xs font-mono font-semibold">Error: </span>
-                  <span class="text-err/80 text-xs font-mono break-words whitespace-pre-wrap" x-text="selectedTicket.last_error"></span>
-                </div>
-              </template>
-              <!-- Summary card: what the last stage run did, plus the branch's
-                   commits and changed files from the changes endpoint. -->
-              <template x-if="selectedTicket?.summary">
-                <div class="mb-5 rounded-lg border border-surface-700/50 bg-surface-900 px-4 py-3">
+              <div class="max-w-3xl mx-auto px-8 py-6">
+                <div class="rounded-lg border border-surface-700/50 bg-surface-900 px-4 py-3">
                   <div class="flex items-baseline gap-2 mb-2">
                     <span class="side-label">summary</span>
                     <template x-if="summaryStage()">
                       <span class="text-[10.5px] font-mono text-surface-600" x-text="'· ' + summaryStage()"></span>
                     </template>
+                    <template x-if="selectedTicket?.status === 'in_progress' && selectedTicket?.stage">
+                      <span class="text-[10.5px] font-mono text-surface-600" x-text="'· running ' + selectedTicket.stage"></span>
+                    </template>
                   </div>
-                  <div class="ticket-prose text-sm" x-effect="setProse($el, selectedTicket.summary)"></div>
+                  <template x-if="selectedTicket?.summary">
+                    <div class="ticket-prose text-sm" x-effect="setProse($el, selectedTicket.summary)"></div>
+                  </template>
                   <template x-if="earlierSummaries().length">
                     <details class="mt-3">
                       <summary class="text-[11px] font-mono text-surface-600 cursor-pointer hover:text-tx-2">earlier stage summaries</summary>
@@ -1203,6 +1196,28 @@
                       </div>
                     </div>
                   </template>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Ticket tab -->
+          <div x-show="activeTab === 'ticket'"
+               x-transition.opacity.duration.150ms
+               class="h-full flex flex-col bg-surface-rail">
+            <!-- Scrollable content wrapper -->
+            <div class="flex-1 min-h-0 overflow-y-auto">
+            <div class="max-w-3xl mx-auto px-8 py-6">
+              <template x-if="selectedTicket && !selectedTicket.kontora">
+                <div class="mb-4 border-l-[3px] border-warn pl-3 py-1">
+                  <span class="text-warn text-xs font-mono font-semibold">not a kontora ticket</span>
+                  <p class="text-surface-600 text-xs font-mono mt-1">Initialize this ticket from the card menu before queueing, resuming, or running an agent.</p>
+                </div>
+              </template>
+              <template x-if="selectedTicket?.last_error">
+                <div class="mb-4 border-l-[3px] border-err pl-3 py-1">
+                  <span class="text-err text-xs font-mono font-semibold">Error: </span>
+                  <span class="text-err/80 text-xs font-mono break-words whitespace-pre-wrap" x-text="selectedTicket.last_error"></span>
                 </div>
               </template>
               <!-- Editable form for editable tickets (open/todo/paused) -->

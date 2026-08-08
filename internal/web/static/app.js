@@ -403,6 +403,14 @@ function kontora() {
       return 'logs';
     },
 
+    // The summary tab appears as soon as any stage has recorded a summary, so a
+    // running ticket can show what the stages before the current one did.
+    showSummaryTab() {
+      var t = this.selectedTicket;
+      if (!t) return false;
+      return !!t.summary || (t.history || []).some(function (e) { return !!e.summary; });
+    },
+
     applyTicketUpdate(ticket) {
       if (ticket.status === 'archived') {
         // Archived tickets are hidden from the board: drop them from client
@@ -419,6 +427,7 @@ function kontora() {
           this.tickets.push(ticket);
         }
         if (this.selectedTicket?.id === ticket.id) {
+          var prevSummary = this.selectedTicket.summary;
           if (this.editing && !['open', 'todo', 'paused'].concat(this.configCache?.custom_statuses || []).includes(ticket.status)) {
             this.flushEditSave();
             this.editing = false;
@@ -435,6 +444,14 @@ function kontora() {
           }
           if (this.activeTab === 'terminal' && !this.showTerminalTab()) {
             this.activeTab = 'ticket';
+          }
+          if (this.activeTab === 'summary' && !this.showSummaryTab()) {
+            this.activeTab = 'ticket';
+          }
+          // A stage that just wrote a new summary usually also committed, so
+          // the open summary tab re-reads the commit list.
+          if (this.activeTab === 'summary' && ticket.summary !== prevSummary) {
+            this.fetchChanges(ticket.id);
           }
         }
       }
@@ -824,16 +841,16 @@ function kontora() {
         this.error = 'Failed to load ticket details';
       }
       this.detailLoading = false;
-      if (this.summaryFirst(this.selectedTicket)) {
+      if (this.showSummaryTab()) {
         this.fetchChanges(this.selectedTicket.id);
       }
       if (this.selectedTicket?.status !== 'in_progress' && this.selectedTicket?.status !== 'todo' && this.selectedTicket?.status !== 'open'
           && this.selectedTicket?.history?.length > 0) {
         var lastStage = this.selectedTicket.history[this.selectedTicket.history.length - 1].stage;
         this.fetchStageLogs(this.selectedTicket.id, lastStage);
-        // Finished tickets with a summary open on the ticket tab, where the
-        // summary card sits; the logs stay prefetched for the log tab.
-        this.activeTab = this.summaryFirst(this.selectedTicket) ? 'ticket' : 'terminal';
+        // Finished tickets with a summary open on the summary tab; the logs
+        // stay prefetched for the log tab.
+        this.activeTab = this.summaryFirst(this.selectedTicket) ? 'summary' : 'terminal';
       } else if (this.selectedTicket?.status === 'in_progress') {
         this.activeTab = 'terminal';
         this.openTerminal();
@@ -894,6 +911,11 @@ function kontora() {
       }
       if (tab === 'ticket' && !this.editing) {
         this.startEditing();
+      }
+      // A running ticket keeps committing, so the commit list is re-read every
+      // time the tab is opened rather than only once on select.
+      if (tab === 'summary' && this.selectedTicket) {
+        this.fetchChanges(this.selectedTicket.id);
       }
     },
 

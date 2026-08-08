@@ -4,8 +4,8 @@ class Kontora < Formula
   license "Apache-2.0"
 
   url "https://github.com/worksonmyai/kontora.git",
-      tag: "v0.25.0",
-      revision: "47db65fc5f9e5af5c33923ca30c3c6069cf0140b",
+      tag: "v0.27.0",
+      revision: "033534e86662694548b644c7fcb9ed9a29f8c804",
       using: :git
   head "https://github.com/worksonmyai/kontora.git", branch: "main", using: :git
 

@@ -11,6 +11,12 @@ const PALETTE_MAX_TICKETS = 6;
 // reader starts at the bottom, so the rest of the tape can wait for a click.
 const TAPE_WINDOW_SIZE = 200;
 
+// Rendered markdown, keyed by its source. Module scope rather than component
+// state so Alpine's proxy never wraps it. The cap bounds the cache at roughly
+// a megabyte of HTML, since ticket bodies run to tens of kilobytes.
+var mdCache = new Map();
+var MD_CACHE_MAX = 16;
+
 // xterm handles live here, not on the Alpine component. Alpine wraps the whole
 // x-data object in a deep reactive Proxy, so a Terminal stored there reads back
 // proxied, and every internal property hop in xterm's parser, buffer, and
@@ -3097,9 +3103,21 @@ function kontora() {
       return Math.floor(diff / 604800) + 'w';
     },
 
+    // Parsing and sanitising a ticket body costs 4-13ms at the sizes agents
+    // write (30-50KB), and the same text is asked for more than once: the
+    // editor preview and the read view render the same body, and stepping back
+    // to a ticket renders it again. Keyed by the markdown itself, so a body
+    // that changed is a miss and re-renders.
     renderMarkdown(md) {
       if (!md) return '';
-      try { return DOMPurify.sanitize(marked.parse(md)); } catch (e) { return ''; }
+      var hit = mdCache.get(md);
+      if (hit !== undefined) return hit;
+      var html;
+      try { html = DOMPurify.sanitize(marked.parse(md)); } catch (e) { html = ''; }
+      // Insertion-ordered, so the first key is the least recently added.
+      if (mdCache.size >= MD_CACHE_MAX) mdCache.delete(mdCache.keys().next().value);
+      mdCache.set(md, html);
+      return html;
     },
 
     // x-html rewrites innerHTML on every effect run. An SSE refresh that leaves

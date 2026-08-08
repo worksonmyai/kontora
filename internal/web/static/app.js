@@ -5,6 +5,12 @@ const KEY_SEQ_MS = 800;
 // by typing more, and the group hint says how many were left out.
 const PALETTE_MAX_TICKETS = 6;
 
+// Tape events the activity transcript renders at once, counted back from the
+// newest. A whole 5000-event tape is 60,000 elements: 660ms to mount and 135ms
+// to tear down, both on the main thread. 200 events cost 27ms and 9ms. The
+// reader starts at the bottom, so the rest of the tape can wait for a click.
+const TAPE_WINDOW_SIZE = 200;
+
 // xterm handles live here, not on the Alpine component. Alpine wraps the whole
 // x-data object in a deep reactive Proxy, so a Terminal stored there reads back
 // proxied, and every internal property hop in xterm's parser, buffer, and
@@ -96,6 +102,10 @@ function kontora() {
     activityLoading: false,
     activityError: null,
     expandedTools: {},
+    // How many of the newest tape events the transcript renders. Grows one step
+    // at a time through loadEarlierTapeEvents(); every activity load starts over
+    // at one step.
+    tapeWindow: TAPE_WINDOW_SIZE,
     noteDraft: '',
     noteSubmitting: false,
     detailLoading: false,
@@ -3203,6 +3213,7 @@ function kontora() {
       this.activityLoading = false;
       this.activityError = null;
       this.expandedTools = {};
+      this.tapeWindow = TAPE_WINDOW_SIZE;
     },
 
     async fetchActivity(stage, run) {
@@ -3214,6 +3225,7 @@ function kontora() {
       this.activityError = null;
       this.activity = null;
       this.expandedTools = {};
+      this.tapeWindow = TAPE_WINDOW_SIZE;
       try {
         var url = '/api/tickets/' + encodeURIComponent(id) + '/activity'
           + '?stage=' + encodeURIComponent(stage || '') + '&run=' + (run || 0);
@@ -3246,6 +3258,35 @@ function kontora() {
 
     tapeEvents() {
       return (this.activity && this.activity.tape && this.activity.tape.events) || [];
+    },
+
+    // The rendered tail of the tape: the newest tapeWindow events, each paired
+    // with its position in the full events array. Row identity (toolKey) and the
+    // x-for key both read that position, so loading earlier events prepends rows
+    // without renaming the ones already on screen.
+    visibleTapeEvents() {
+      var events = this.tapeEvents();
+      var start = Math.max(0, events.length - this.tapeWindow);
+      var out = [];
+      for (var i = start; i < events.length; i++) out.push({ ev: events[i], idx: i });
+      return out;
+    },
+
+    hiddenTapeEventCount() {
+      return Math.max(0, this.tapeEvents().length - this.tapeWindow);
+    },
+
+    // Grow the window by one step. The rows appear above the viewport, so the
+    // scroll offset moves down by the height they add; without that the reader
+    // is thrown back to older events.
+    loadEarlierTapeEvents() {
+      var el = document.getElementById('activity-scroll');
+      var height = el ? el.scrollHeight : 0;
+      var top = el ? el.scrollTop : 0;
+      this.tapeWindow = Math.min(this.tapeEvents().length, this.tapeWindow + TAPE_WINDOW_SIZE);
+      this.$nextTick(function () {
+        if (el) el.scrollTop = top + (el.scrollHeight - height);
+      });
     },
 
     // Row identity for the expand map. Pi tool calls carry no id, so the index

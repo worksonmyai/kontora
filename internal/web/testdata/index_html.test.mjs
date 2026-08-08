@@ -396,8 +396,12 @@ function realMarked() {
 const LINE = 20;
 const PAD = 8;
 const BORDER = 1;
+// The shipped min-h-[100px]: the box never gets shorter than this, whatever
+// the inline height says, so a measurement that only zeroes the height reads
+// the floor rather than the text.
+const MIN_HEIGHT = 100;
 
-function fakeBodyDom({ body, blockHeights = [], proseTop = 500, editorTop = 500, scrollTop = 0, scrollHeight = 2000, clientHeight = 400 }) {
+function fakeBodyDom({ body, blockHeights = [], proseTop = 500, editorTop = 500, scrollTop = 0, scrollHeight = 2000, clientHeight = 400, scrollFollowsEditor = false }) {
   const scroller = {
     clientTop: 2,
     clientHeight,
@@ -422,14 +426,15 @@ function fakeBodyDom({ body, blockHeights = [], proseTop = 500, editorTop = 500,
   const textarea = {
     parentElement: wrapper,
     value: body,
-    style: { height: "" },
+    style: { height: "", minHeight: `${MIN_HEIGHT}px` },
     selectionStart: 0,
     selectionEnd: 0,
     focusOptions: null,
     getBoundingClientRect: rectAt(editorTop),
     get clientHeight() {
       const h = parseFloat(this.style.height);
-      return Number.isNaN(h) ? 0 : Math.max(0, h);
+      const min = parseFloat(this.style.minHeight) || 0;
+      return Math.max(Number.isNaN(h) ? 0 : h, min);
     },
     get scrollHeight() {
       return Math.max(this.clientHeight, this.value.split("\n").length * LINE + 2 * PAD);
@@ -437,6 +442,24 @@ function fakeBodyDom({ body, blockHeights = [], proseTop = 500, editorTop = 500,
     focus(options) { this.focusOptions = options; },
     setSelectionRange(start, end) { this.selectionStart = start; this.selectionEnd = end; },
   };
+
+  // While the editor is open the textarea is what makes the panel scrollable,
+  // so its height is part of the panel's content: shrinking it shrinks the
+  // content and the browser clamps scrollTop to fit. Growing it back does not
+  // restore the clamped position. Opt-in, because the other cases stage the
+  // preview/editor swap by setting scroller.scrollHeight directly.
+  if (scrollFollowsEditor) {
+    let height = "";
+    textarea.style = {
+      minHeight: `${MIN_HEIGHT}px`,
+      get height() { return height; },
+      set height(value) {
+        scroller.scrollHeight += (parseFloat(value) || 0) - (parseFloat(height) || 0);
+        height = value;
+        scroller.scrollTop = Math.min(scroller.scrollTop, Math.max(0, scroller.scrollHeight - scroller.clientHeight));
+      },
+    };
+  }
 
   const window = {
     innerWidth: 1200,
@@ -1971,15 +1994,55 @@ test("closestScroller takes the innermost scrolling ancestor, overflowing or not
 
 test("caretLineTop returns the line's top and leaves the textarea untouched", () => {
   const body = "# Title\n\npara one\n\npara two\n";
-  const dom = fakeBodyDom({ body });
+  // 600 of content besides the editor, so the 700 the editor adds is the only
+  // reason a scrollTop of 900 is reachable.
+  const dom = fakeBodyDom({ body, scrollFollowsEditor: true, scrollHeight: 600, clientHeight: 400, scrollTop: 900 });
   const state = bodyEditState(dom, body);
-  dom.textarea.style.height = "136px";
+  dom.textarea.style.height = "700px";
+
+  // The measurement collapses the editor, which is what makes the panel clamp.
+  // Zeroing the height alone leaves the box at its min-height floor, so the
+  // measurement has to clear that too or every short prefix reads 100.
+  dom.textarea.style.height = "0px";
+  assert.equal(dom.scroller.scrollHeight, 600);
+  assert.equal(dom.scroller.scrollTop, 200);
+  assert.equal(dom.textarea.clientHeight, MIN_HEIGHT);
+  dom.textarea.style.height = "700px";
+  dom.scroller.scrollTop = 900;
 
   // Offset 19 starts "para two" on the fifth line: border + padding + 4 lines.
   assert.equal(state.caretLineTop(dom.textarea, 19), BORDER + PAD + 4 * LINE);
   assert.equal(state.caretLineTop(dom.textarea, 0), BORDER + PAD);
   assert.equal(dom.textarea.value, body);
-  assert.equal(dom.textarea.style.height, "136px");
+  assert.equal(dom.textarea.style.height, "700px");
+  assert.equal(dom.textarea.style.minHeight, `${MIN_HEIGHT}px`);
+  assert.equal(dom.scroller.scrollTop, 900);
+
+  // A textarea with no scroller above it still measures.
+  dom.textarea.parentElement = null;
+  assert.equal(state.caretLineTop(dom.textarea, 19), BORDER + PAD + 4 * LINE);
+  assert.equal(dom.textarea.value, body);
+  assert.equal(dom.textarea.style.height, "700px");
+
+  // A caller that already resolved the panel passes it in, and the scroll
+  // position comes back although there is no ancestor to walk to.
+  dom.scroller.scrollTop = 900;
+  assert.equal(state.caretLineTop(dom.textarea, 19, dom.scroller), BORDER + PAD + 4 * LINE);
+  assert.equal(dom.scroller.scrollTop, 900);
+});
+
+test("autoGrowBody sizes the editor without moving the panel", () => {
+  const body = "# Title\n\n" + "one\n".repeat(33);
+  // Only the editor makes this panel scrollable, so the 'auto' step of the
+  // grow shrinks the content to 600 and clamps the panel from 900 to 200.
+  const dom = fakeBodyDom({ body, scrollFollowsEditor: true, scrollHeight: 600, clientHeight: 400, scrollTop: 900 });
+  const state = bodyEditState(dom, body);
+  dom.textarea.style.height = "700px";
+
+  state.autoGrowBody(dom.textarea);
+
+  assert.equal(dom.textarea.style.height, `${body.split("\n").length * LINE + 2 * PAD}px`);
+  assert.equal(dom.scroller.scrollTop, 900);
 });
 
 test("entering edit mode holds the clicked block on screen", () => {
@@ -2040,6 +2103,9 @@ test("leaving edit mode puts the caret's block back at the same screen position"
   // three offsets meet two rendered children and every index after the comment
   // names the block before the one it should.
   const commented = "<!-- note -->\n\npara one\n\npara two\n";
+  // A heading and two 33-line paragraphs: 70 lines, so the editor is 1416 tall
+  // and by itself makes a 400-tall panel scrollable.
+  const long = "# Title\n\n" + "one\n".repeat(33) + "\n" + "two\n".repeat(33);
   const ratio = 300 * 2000 / 1500;
   const cases = [
     {
@@ -2064,15 +2130,34 @@ test("leaving edit mode puts the caret's block back at the same screen position"
       body: commented, blockHeights: [40, 40], caret: 17,
       wantTop: ratio,
     },
+    {
+      // Only the editor makes this panel scrollable, so measuring the caret
+      // line collapses the content from 2016 to 600 and the panel clamps from
+      // 900 to 200. An anchor taken across that clamp is 700 short, which puts
+      // the reader back at the top.
+      name: "a caret halfway down a ticket the editor makes scrollable",
+      body: long, blockHeights: [40, 40, 40], caret: 150,
+      scrollFollowsEditor: true, scrollTop: 900, scrollHeight: 600, editorHeight: "1416px",
+      // The third block starts at 142 on the 37th line, so a caret at 150
+      // belongs to it and its line sat at screen Y 500 + 729 - 900. The
+      // rendered block is 580 into the content.
+      wantTop: 580 - (500 + BORDER + PAD + 36 * LINE - 900),
+    },
   ];
 
   for (const c of cases) {
-    const dom = fakeBodyDom({ body: c.body, blockHeights: c.blockHeights, scrollTop: 300, scrollHeight: 1500 });
+    const dom = fakeBodyDom({
+      body: c.body,
+      blockHeights: c.blockHeights,
+      scrollTop: c.scrollTop ?? 300,
+      scrollHeight: c.scrollHeight ?? 1500,
+      scrollFollowsEditor: !!c.scrollFollowsEditor,
+    });
     const state = bodyEditState(dom, c.body);
     state.editingBody = true;
     state.$refs.bodyEditor = dom.textarea;
     dom.textarea.selectionStart = c.caret;
-    dom.textarea.style.height = "136px";
+    dom.textarea.style.height = c.editorHeight ?? "136px";
     state.$nextTick = (fn) => {
       dom.scroller.scrollHeight = 2000;
       fn();

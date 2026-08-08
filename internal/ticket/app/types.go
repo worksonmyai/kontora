@@ -56,6 +56,7 @@ type InitRequest struct {
 	Pipeline string
 	Path     string
 	Agent    string
+	Branch   string // git branch; if empty, the daemon names one from the ticket ID
 	Status   string // "open" or "todo"; defaults to "todo"
 	Stage    string // starting stage; if empty, defaults to first pipeline stage
 }

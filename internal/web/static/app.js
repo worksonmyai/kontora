@@ -1461,7 +1461,10 @@ function kontora() {
       for (var i = 0; i < offsets.length && offsets[i] <= caret; i++) idx = i;
       anchor.index = idx;
       anchor.count = offsets.length;
-      anchor.y = this.topWithin(el, scroller) + this.caretLineTop(el, offsets[idx]) - scroller.scrollTop;
+      // topWithin adds the panel's scroll position and this subtracts it again,
+      // so the two must be the same number: anchor.top, not a fresh read taken
+      // after the measurement.
+      anchor.y = this.topWithin(el, scroller) + this.caretLineTop(el, offsets[idx], scroller) - anchor.top;
       return anchor;
     },
 
@@ -1474,7 +1477,7 @@ function kontora() {
         this._restoreScrollRatio(anchor);
       } else if (anchor) {
         offset = anchor.offset;
-        this._scrollTo(anchor.scroller, this.topWithin(el, anchor.scroller) + this.caretLineTop(el, offset) - anchor.y);
+        this._scrollTo(anchor.scroller, this.topWithin(el, anchor.scroller) + this.caretLineTop(el, offset, anchor.scroller) - anchor.y);
       }
       // caretLineTop assigns .value, which resets the selection and clears the
       // native undo stack, so the caret goes in last.
@@ -3082,10 +3085,17 @@ function kontora() {
     },
 
     // Height from content, so the panel stays the only scroller while editing.
+    // Collapsing the box to its 'auto' floor shrinks the panel's content and
+    // the browser clamps the panel's scrollTop to fit; growing the box back
+    // does not undo the clamp. This runs on every keystroke, so without the
+    // restore a single character sends the reader to the top of the ticket.
     autoGrowBody(el) {
       if (!el) return;
+      var scroller = this.closestScroller(el);
+      var savedScroll = scroller ? scroller.scrollTop : 0;
       el.style.height = 'auto';
       el.style.height = el.scrollHeight + 'px';
+      if (scroller) scroller.scrollTop = savedScroll;
     },
 
     // The element that actually scrolls the ticket body. A stacked panel turns
@@ -3150,19 +3160,32 @@ function kontora() {
     },
 
     // Y of the line holding source offset off, measured from the textarea's
-    // border-box top.
-    caretLineTop(el, off) {
+    // border-box top. Callers that already resolved the panel pass it in, so
+    // the measurement and the anchor arithmetic use the same node.
+    caretLineTop(el, off, scroller) {
       var cs = window.getComputedStyle(el);
       var padTop = parseFloat(cs.paddingTop) || 0;
       var padBottom = parseFloat(cs.paddingBottom) || 0;
       var full = el.value;
       var savedHeight = el.style.height;
+      var savedMinHeight = el.style.minHeight;
+      // The textarea is what makes the panel scrollable, so zeroing its height
+      // for the measurement shrinks the panel's content and the browser clamps
+      // the panel's scrollTop to fit. Restoring the height grows the content
+      // back but leaves the scroll position clamped.
+      if (scroller === undefined) scroller = this.closestScroller(el);
+      var savedScroll = scroller ? scroller.scrollTop : 0;
       // scrollHeight is max(contentHeight, clientHeight) and auto-grow has
       // already set the box to the full content height, so without zeroing it
-      // every prefix measures the same number. The sentinel character matters
-      // because block offsets are line starts: the prefix ends in "\n" and
-      // engines disagree on whether that trailing empty line counts.
+      // every prefix measures the same number. The min-height floor has to go
+      // with the height: it holds the box at 100px, which is taller than the
+      // first few lines, so every short prefix measures the floor and the line
+      // height comes out as the floor instead of one line. The sentinel
+      // character matters because block offsets are line starts: the prefix
+      // ends in "\n" and engines disagree on whether that trailing empty line
+      // counts.
       el.style.height = '0px';
+      el.style.minHeight = '0px';
       var measure = function (text) { el.value = text; return el.scrollHeight; };
       // getComputedStyle returns "normal" for an unset line-height, so derive
       // it from a single rendered line instead.
@@ -3170,6 +3193,8 @@ function kontora() {
       var height = measure(full.slice(0, off) + 'x');
       el.value = full;
       el.style.height = savedHeight;
+      el.style.minHeight = savedMinHeight;
+      if (scroller) scroller.scrollTop = savedScroll;
       // scrollHeight includes both paddings and excludes the border.
       return (parseFloat(cs.borderTopWidth) || 0) + height - padBottom - lineHeight;
     },

@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -37,15 +38,20 @@ func (f writerFunc) Write(p []byte) (int, error) { return f(p) }
 
 // testHarness sets up temp dirs, a real git repo, and an in-memory config.
 type testHarness struct {
-	t        *testing.T
-	tasksDir string
-	wtDir    string
-	logsDir  string
-	lockPath string
-	repoDir  string
-	repoName string
-	cfg      *config.Config
+	t           *testing.T
+	tasksDir    string
+	wtDir       string
+	logsDir     string
+	lockPath    string
+	repoDir     string
+	repoName    string
+	tmuxSession string
+	cfg         *config.Config
 }
+
+// tmuxNameUnsafe matches what a tmux session name cannot hold. Subtest names
+// arrive with "/" in them, and tmux reads "." and ":" as target separators.
+var tmuxNameUnsafe = regexp.MustCompile(`[^A-Za-z0-9_-]`)
 
 func newHarness(t *testing.T) *testHarness {
 	t.Helper()
@@ -55,14 +61,22 @@ func newHarness(t *testing.T) *testHarness {
 	lockDir := t.TempDir()
 	repoDir := initRepo(t)
 
+	// Own session per harness, so a test that really spawns tmux can never
+	// address a developer's running agents, and the cleanup below can never
+	// tear down a sibling test's session. The name comes from the test name
+	// because t.TempDir's last element is "001" for every test.
+	session := fmt.Sprintf("kontora-test-%d-%s", os.Getpid(), tmuxNameUnsafe.ReplaceAllString(t.Name(), "-"))
+	t.Cleanup(func() { _ = exec.Command("tmux", "kill-session", "-t", "="+session).Run() })
+
 	h := &testHarness{
-		t:        t,
-		tasksDir: tasksDir,
-		wtDir:    wtDir,
-		logsDir:  logsDir,
-		lockPath: filepath.Join(lockDir, "lock"),
-		repoDir:  repoDir,
-		repoName: filepath.Base(repoDir),
+		t:           t,
+		tasksDir:    tasksDir,
+		wtDir:       wtDir,
+		logsDir:     logsDir,
+		lockPath:    filepath.Join(lockDir, "lock"),
+		repoDir:     repoDir,
+		repoName:    filepath.Base(repoDir),
+		tmuxSession: session,
 	}
 	h.cfg = h.defaultConfig("true", "true")
 	return h
@@ -78,6 +92,7 @@ func (h *testHarness) defaultConfig(agent1Binary, agent2Binary string) *config.C
 		MaxConcurrentAgents: 4,
 		AutoPickUp:          new(true),
 		InstanceName:        "test-instance",
+		TmuxSession:         h.tmuxSession,
 		Agents: map[string]config.Agent{
 			"agent1": {Binary: agent1Binary},
 			"agent2": {Binary: agent2Binary},
@@ -611,7 +626,7 @@ func TestTmuxRunner(t *testing.T) {
 	assert.Equal(t, 0, result.History[0].ExitCode)
 
 	// Verify no orphaned tmux windows remain.
-	out, err := exec.Command("tmux", "list-windows", "-t", "=kontora", "-F", "#{window_name}").CombinedOutput()
+	out, err := exec.Command("tmux", "list-windows", "-t", "="+h.tmuxSession, "-F", "#{window_name}").CombinedOutput()
 	if err == nil {
 		for line := range strings.SplitSeq(string(out), "\n") {
 			assert.NotEqual(t, "tst-tmx", strings.TrimSpace(line), "orphaned window found")
@@ -1191,6 +1206,98 @@ func TestCrashRecoveryClaims(t *testing.T) {
 			require.NoError(t, <-errCh)
 		})
 	}
+}
+
+// TestPartitionWindows checks the ownership predicate startup cleanup runs on:
+// a window is this daemon's only when it is named after a ticket in its own
+// tickets_dir that no other instance has claimed.
+func TestPartitionWindows(t *testing.T) {
+	cases := []struct {
+		name        string
+		windows     []string
+		wantMine    []string
+		wantForeign []string
+	}{
+		{name: "unclaimed is mine", windows: []string{"tst-free"}, wantMine: []string{"tst-free"}},
+		{name: "own claim is mine", windows: []string{"tst-mine"}, wantMine: []string{"tst-mine"}},
+		{name: "foreign claim is not mine", windows: []string{"tst-them"}, wantForeign: []string{"tst-them"}},
+		{
+			name:        "unknown ticket is not mine",
+			windows:     []string{"kon-4y7b"},
+			wantForeign: []string{"kon-4y7b"},
+		},
+		{
+			name:        "mixed set",
+			windows:     []string{"tst-free", "kon-4y7b", "tst-mine", "tst-them"},
+			wantMine:    []string{"tst-free", "tst-mine"},
+			wantForeign: []string{"kon-4y7b", "tst-them"},
+		},
+		{name: "empty input"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			d := h.newDaemon(h.cfg)
+			for id, claimedBy := range map[string]string{
+				"tst-free": "",
+				"tst-mine": "test-instance",
+				"tst-them": "other-host",
+			} {
+				md := h.taskMD(id, "in_progress", "one-stage")
+				if claimedBy != "" {
+					md = strings.Replace(md, "status: in_progress\n",
+						"status: in_progress\nclaimed_by: "+claimedBy+"\n", 1)
+				}
+				path := h.writeTicket(id+".md", md)
+				tk, err := ticket.ParseFile(path)
+				require.NoError(t, err)
+				d.tickets[id] = newTicketState(tk, path)
+			}
+
+			mine, foreign := d.partitionWindows(tc.windows)
+			assert.Equal(t, tc.wantMine, mine)
+			assert.Equal(t, tc.wantForeign, foreign)
+		})
+	}
+}
+
+// A daemon started against its own tickets_dir must leave the windows of every
+// agent another daemon is running alone. The ordering is pinned here too: with
+// cleanup back before initialScan the ticket set is empty, nothing counts as
+// owned, and tst-own survives.
+func TestStartupCleanupKillsOnlyOwnWindows(t *testing.T) {
+	h := newHarness(t)
+	h.writeTicket("tst-own.md", h.taskMD("tst-own", "paused", "one-stage"))
+
+	var killed []string
+	d := New(h.cfg,
+		WithLogger(testLogger(t)),
+		WithDebounce(50*time.Millisecond),
+		WithLockPath(h.lockPath),
+		WithRunner(DirectRunner),
+		WithAgentLookup(passthroughAgentLookup),
+	)
+	d.windows = windowOps{
+		list: func(string) ([]string, error) {
+			return []string{"tst-own", "tst-other", "kon-4y7b"}, nil
+		},
+		kill: func(_, window string) error {
+			killed = append(killed, window)
+			return nil
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() { errCh <- d.Run(ctx) }()
+
+	time.Sleep(300 * time.Millisecond)
+	cancel()
+	require.NoError(t, <-errCh)
+
+	assert.Equal(t, []string{"tst-own"}, killed)
 }
 
 // Sync tools (iCloud, Syncthing) leave stale conflict copies like "<id> 2.md"

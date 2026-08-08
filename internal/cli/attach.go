@@ -29,7 +29,7 @@ func Attach(cfg *config.Config, taskID string, readWrite bool) error {
 	if taskID == "" {
 		return attachInteractive(cfg, readWrite)
 	}
-	target, err := resolveAttach(cfg.TicketsDir, taskID)
+	target, err := resolveAttach(cfg.TmuxSessionName(), cfg.TicketsDir, taskID)
 	if err != nil {
 		return err
 	}
@@ -61,7 +61,7 @@ func execAttach(target string, readWrite bool) error {
 
 // resolveAttach validates that the ticket exists, is running, and has a tmux
 // window. Returns the window target to attach to.
-func resolveAttach(tasksDir, taskID string) (string, error) {
+func resolveAttach(sessionName, tasksDir, taskID string) (string, error) {
 	tasksDir = config.ExpandTilde(tasksDir)
 	resolvedID, err := resolveTaskID(tasksDir, taskID)
 	if err != nil {
@@ -77,11 +77,11 @@ func resolveAttach(tasksDir, taskID string) (string, error) {
 		return "", fmt.Errorf("ticket %s has status %q, must be in_progress to attach", resolvedID, t.Status)
 	}
 
-	if !tmux.HasWindow(tmux.DefaultSessionName, resolvedID) {
-		return "", fmt.Errorf("tmux window %q not found for ticket %s", tmux.WindowTarget(tmux.DefaultSessionName, resolvedID), resolvedID)
+	if !tmux.HasWindow(sessionName, resolvedID) {
+		return "", fmt.Errorf("tmux window %q not found for ticket %s", tmux.WindowTarget(sessionName, resolvedID), resolvedID)
 	}
 
-	return tmux.WindowTarget(tmux.DefaultSessionName, resolvedID), nil
+	return tmux.WindowTarget(sessionName, resolvedID), nil
 }
 
 // attachItem represents a running kontora tmux window with optional ticket metadata.
@@ -176,7 +176,7 @@ func pickSession(cfg *config.Config, readWrite bool) (string, bool, error) {
 		return "", false, err
 	}
 	if len(items) == 0 {
-		return "", false, fmt.Errorf("no running kontora windows")
+		return "", false, fmt.Errorf("no running kontora windows in tmux session %q", cfg.TmuxSessionName())
 	}
 
 	m := attachModel{
@@ -198,7 +198,8 @@ func pickSession(cfg *config.Config, readWrite bool) (string, bool, error) {
 
 // buildAttachItems cross-references tmux windows with ticket files.
 func buildAttachItems(cfg *config.Config) ([]attachItem, error) {
-	windows, err := tmux.ListWindows(tmux.DefaultSessionName)
+	sessionName := cfg.TmuxSessionName()
+	windows, err := tmux.ListWindows(sessionName)
 	if err != nil {
 		return nil, err
 	}
@@ -228,7 +229,7 @@ func buildAttachItems(cfg *config.Config) ([]attachItem, error) {
 	var items []attachItem
 	for _, windowName := range windows {
 		item := attachItem{
-			target: tmux.WindowTarget(tmux.DefaultSessionName, windowName),
+			target: tmux.WindowTarget(sessionName, windowName),
 			id:     windowName,
 			title:  "—",
 			stage:  "—",

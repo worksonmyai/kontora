@@ -59,8 +59,9 @@ func (d *Daemon) reloadConfig() error {
 // pinRestartOnly copies the settings a live reload cannot apply from the
 // running config into next, and warns once per field whose on-disk value
 // differs. These are the values the daemon freezes at construction or in Run:
-// the worktree manager root, the instance name used for ticket claims, the
-// semaphore capacity, the web listener, and the directories the watcher and
+// the worktree manager root, the instance name used for ticket claims, the tmux
+// session holding every running agent's window, the semaphore capacity, the web
+// listener, and the directories the watcher and
 // the initial scan were pointed at. The log directory is pinned too, for a
 // different reason: nothing freezes it, but `kontora logs` reads it live, so a
 // change would strand every existing log file. Applying half of one of these
@@ -90,6 +91,10 @@ func pinRestartOnly(cur, next *config.Config, log *slog.Logger) {
 	if next.InstanceName != cur.InstanceName {
 		warn("instance_name", cur.InstanceName, next.InstanceName)
 		next.InstanceName = cur.InstanceName
+	}
+	if next.TmuxSession != cur.TmuxSession {
+		warn("tmux_session", cur.TmuxSession, next.TmuxSession)
+		next.TmuxSession = cur.TmuxSession
 	}
 	if next.MaxConcurrentAgents != cur.MaxConcurrentAgents {
 		warn("max_concurrent_agents", cur.MaxConcurrentAgents, next.MaxConcurrentAgents)

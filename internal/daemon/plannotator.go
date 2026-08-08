@@ -349,7 +349,7 @@ func (d *Daemon) runReworkStage(ctx, taskCtx context.Context, cfg *config.Config
 		rendered += buildOperationalAppendix(t.ID, filePath, wtPath, true)
 	}
 
-	args, settingsFile, sessionID, err := buildAgentArgs(agentCfg, rendered, tmux.ChannelName(ticketID))
+	args, settingsFile, sessionID, err := buildAgentArgs(agentCfg, rendered, tmux.ChannelName(d.tmuxSession, ticketID))
 	if err != nil {
 		log.Error("rework: build agent args failed", "err", err)
 		d.pauseTicket(t, filePath, "rework: build agent args failed: "+err.Error())

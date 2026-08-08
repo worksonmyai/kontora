@@ -14,6 +14,7 @@ import (
 
 	"github.com/worksonmyai/kontora/internal/config"
 	"github.com/worksonmyai/kontora/internal/testutil"
+	"github.com/worksonmyai/kontora/internal/tmux"
 )
 
 func TestYamlQuote(t *testing.T) {
@@ -1051,6 +1052,7 @@ func TestShowConfig_IncludesDefaults(t *testing.T) {
 func TestResolveAttach(t *testing.T) {
 	cases := []struct {
 		name       string
+		session    string
 		ticketFile string
 		ticketID   string
 		wantErrMsg string
@@ -1086,6 +1088,21 @@ path: /tmp/testrepo
 			ticketID:   "tst-001",
 			wantErrMsg: "not found",
 		},
+		{
+			// The window is looked up in the configured session, not "kontora".
+			name:    "no tmux session, non-default session name",
+			session: "kontora-scratch",
+			ticketFile: `---
+id: tst-001
+status: in_progress
+pipeline: default
+path: /tmp/testrepo
+---
+# Ticket
+`,
+			ticketID:   "tst-001",
+			wantErrMsg: `"=kontora-scratch:tst-001" not found`,
+		},
 	}
 
 	for _, tc := range cases {
@@ -1094,10 +1111,23 @@ path: /tmp/testrepo
 			if tc.ticketFile != "" {
 				writeTicket(t, dir, tc.ticketID+".md", tc.ticketFile)
 			}
-			_, err := resolveAttach(dir, tc.ticketID)
+			session := tc.session
+			if session == "" {
+				session = tmux.DefaultSessionName
+			}
+			_, err := resolveAttach(session, dir, tc.ticketID)
 			require.ErrorContains(t, err, tc.wantErrMsg)
 		})
 	}
+}
+
+// The picker error is what a user sees when their CLI loaded a different config
+// than the daemon, so it has to name the session that was searched instead of
+// implying no agent is running anywhere.
+func TestPickSessionNamesSearchedSession(t *testing.T) {
+	cfg := &config.Config{TicketsDir: t.TempDir(), TmuxSession: "kontora-other"}
+	_, _, err := pickSession(cfg, false)
+	require.ErrorContains(t, err, "kontora-other")
 }
 
 func TestInit(t *testing.T) {

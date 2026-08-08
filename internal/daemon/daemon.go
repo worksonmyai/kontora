@@ -78,6 +78,7 @@ type RunnerParams struct {
 	Dir         string
 	Timeout     time.Duration
 	TicketID    string            // ticket ID used as tmux window name
+	SessionName string            // tmux session; ignored by DirectRunner
 	LogFile     string            // path for agent output log (PTY capture or materialized session log)
 	Interactive bool              // use interactive tmux wait-for flow (for Claude agents)
 	SessionID   string            // Claude session ID; used for session JSONL materialization after agent exit
@@ -121,6 +122,7 @@ func tmuxRunner(ctx context.Context, p RunnerParams) (process.Result, error) {
 		Dir:         p.Dir,
 		Timeout:     p.Timeout,
 		TicketID:    p.TicketID,
+		SessionName: p.SessionName,
 		LogFile:     p.LogFile,
 		Interactive: p.Interactive,
 		SessionID:   p.SessionID,
@@ -169,9 +171,10 @@ func WithRunner(fn RunnerFunc) Option {
 	return func(d *Daemon) { d.runner = fn }
 }
 
-// WithSkipOrphanCleanup disables the startup cleanup of orphaned tmux
-// windows in the kontora session. Used in tests to avoid killing windows
-// owned by other concurrently running test packages.
+// WithSkipOrphanCleanup disables the startup cleanup of tmux windows left
+// behind by a previous run. Tests use it to avoid forking `tmux list-windows`
+// on every daemon start; windows they don't own are already safe, because
+// cleanup only kills windows named after a ticket in this daemon's tickets_dir.
 func WithSkipOrphanCleanup() Option {
 	return func(d *Daemon) { d.skipOrphanCleanup = true }
 }
@@ -226,6 +229,15 @@ func defaultAgentLookup(binary string) (string, error) {
 	return process.LookupBinary(binary)
 }
 
+// windowOps is the tmux surface startup cleanup needs. Tests substitute it to
+// run cleanup without a tmux server.
+type windowOps struct {
+	list func(session string) ([]string, error)
+	kill func(session, window string) error
+}
+
+var defaultWindowOps = windowOps{list: tmux.ListWindows, kill: tmux.KillWindow}
+
 type Daemon struct {
 	cfg                atomic.Pointer[config.Config]
 	worktrees          *worktree.Manager
@@ -234,6 +246,7 @@ type Daemon struct {
 	plannotatorLookup  PlannotatorLookup
 	agentLookup        AgentLookup
 	skipOrphanCleanup  bool
+	windows            windowOps
 	broker             *web.SSEBroker
 	svc                *app.Service
 
@@ -241,6 +254,7 @@ type Daemon struct {
 	lockPath     string
 	configPath   string
 	instanceName string
+	tmuxSession  string
 	log          *slog.Logger
 
 	// configOverride re-applies the caller's command-line overrides to every
@@ -291,10 +305,12 @@ func New(cfg *config.Config, opts ...Option) *Daemon {
 		plannotatorSpawner: defaultPlannotatorSpawner,
 		plannotatorLookup:  defaultPlannotatorLookup,
 		agentLookup:        defaultAgentLookup,
+		windows:            defaultWindowOps,
 		broker:             web.NewSSEBroker(),
 		debounce:           time.Second,
 		lockPath:           defaultLockPath(),
 		instanceName:       cfg.InstanceName,
+		tmuxSession:        cfg.TmuxSessionName(),
 		log: slog.New(charmlog.NewWithOptions(os.Stderr, charmlog.Options{
 			ReportTimestamp: true,
 		})),
@@ -380,10 +396,6 @@ func (d *Daemon) Run(ctx context.Context) error {
 	}
 	defer d.releaseLock(lockFile)
 
-	if !d.skipOrphanCleanup {
-		d.cleanOrphanedWindows()
-	}
-
 	// Startup snapshot. The values read here are frozen for the daemon's
 	// lifetime, which is why reloadConfig pins them (see pinRestartOnly).
 	cfg := d.config()
@@ -400,10 +412,18 @@ func (d *Daemon) Run(ctx context.Context) error {
 	if err := d.initialScan(tasksDir); err != nil {
 		return fmt.Errorf("initial scan: %w", err)
 	}
-	d.log.Info("daemon started", "dir", tasksDir, "tasks", len(d.tickets), "queued", d.queue.Len())
+
+	// Cleanup sits between the scan and the scheduler: it needs the ticket set
+	// the scan populates to tell its own windows from another daemon's, and it
+	// must finish before the scheduler starts creating windows of its own.
+	if !d.skipOrphanCleanup {
+		d.cleanOrphanedWindows()
+	}
+
+	d.log.Info("daemon started", "dir", tasksDir, "tasks", len(d.tickets), "queued", d.queue.Len(), "tmux_session", d.tmuxSession)
 
 	if cfg.Web.Enabled != nil && *cfg.Web.Enabled {
-		srv := web.New(d, d.broker, cfg.Web.Host, cfg.Web.Port, cfg.Web.Token, d.log)
+		srv := web.New(d, d.broker, cfg.Web.Host, cfg.Web.Port, cfg.Web.Token, d.tmuxSession, d.log)
 		if err := srv.Start(); err != nil {
 			d.log.Warn("web server failed to start, continuing without it", "err", err)
 		} else {
@@ -1365,7 +1385,7 @@ func (d *Daemon) spawnAgentRun(taskCtx context.Context, t *ticket.Ticket, p spaw
 		return agentRun{}, false
 	}
 
-	args, settingsFile, sessionID, err := buildAgentArgs(p.agentCfg, p.rendered, tmux.ChannelName(p.ticketID))
+	args, settingsFile, sessionID, err := buildAgentArgs(p.agentCfg, p.rendered, tmux.ChannelName(d.tmuxSession, p.ticketID))
 	if err != nil {
 		p.log.Error("build agent args failed", "err", err)
 		d.pauseTicket(t, p.filePath, "build agent args failed: "+err.Error())
@@ -1585,6 +1605,7 @@ func (d *Daemon) buildRunnerParams(cfg *config.Config, agentCfg config.Agent, st
 		Dir:         dir,
 		Timeout:     stageCfg.Timeout.Duration,
 		TicketID:    ticketID,
+		SessionName: d.tmuxSession,
 		LogFile:     stageLogPath(cfg, ticketID, stageName),
 		Interactive: agentCfg.IsClaude(),
 		SessionID:   sessionID,
@@ -1720,23 +1741,53 @@ func (d *Daemon) killAll() {
 }
 
 func (d *Daemon) killTaskWindow(ticketID string) {
-	if tmux.HasWindow(tmux.DefaultSessionName, ticketID) {
-		_ = tmux.KillWindow(tmux.DefaultSessionName, ticketID)
+	if tmux.HasWindow(d.tmuxSession, ticketID) {
+		_ = tmux.KillWindow(d.tmuxSession, ticketID)
 	}
 }
 
+// partitionWindows sorts tmux window names by ownership. A window is this
+// daemon's when it is named after a ticket in its own tickets_dir that no other
+// instance has claimed — the same boundary crash recovery uses.
+func (d *Daemon) partitionWindows(windows []string) (mine, foreign []string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	for _, name := range windows {
+		ts, known := d.tickets[name]
+		if known && !d.claimedElsewhere(ts.ticket) {
+			mine = append(mine, name)
+		} else {
+			foreign = append(foreign, name)
+		}
+	}
+	return mine, foreign
+}
+
+// cleanOrphanedWindows kills the tmux windows a previous run of this daemon
+// left behind. Windows belonging to another daemon sharing the session survive:
+// killing them would strand its agents mid-stage.
+//
+// A window named after no ticket in this tickets_dir looks the same as another
+// daemon's, so it survives too. Deleting a ticket while the daemon is down
+// therefore leaks its window; telling the two apart needs a per-window owner
+// tag, which giving each daemon its own session makes unnecessary.
 func (d *Daemon) cleanOrphanedWindows() {
-	windows, err := tmux.ListWindows(tmux.DefaultSessionName)
+	windows, err := d.windows.list(d.tmuxSession)
 	if err != nil {
 		d.log.Error("listing orphaned tmux windows", "err", err)
 		return
 	}
-	for _, name := range windows {
-		d.log.Warn("killing orphaned tmux window", "window", name)
-		if err := tmux.KillWindow(tmux.DefaultSessionName, name); err != nil {
+	mine, foreign := d.partitionWindows(windows)
+	for _, name := range foreign {
+		d.log.Debug("keeping tmux window this daemon does not own", "window", name, "tmux_session", d.tmuxSession)
+	}
+	for _, name := range mine {
+		d.log.Warn("killing orphaned tmux window", "ticket", name, "tmux_session", d.tmuxSession)
+		if err := d.windows.kill(d.tmuxSession, name); err != nil {
 			d.log.Error("killing tmux window", "window", name, "err", err)
 		}
 	}
+	d.log.Info("tmux window cleanup done", "killed", len(mine), "kept", len(foreign), "tmux_session", d.tmuxSession)
 }
 
 // Ticket queue implementation (FIFO by creation time).

@@ -38,7 +38,7 @@ Kontora is an agent orchestration daemon that coordinates AI coding agents throu
 
 **Pipeline engine** (`internal/pipeline`) — pure state machine: `Evaluate(ticket, pipeline, event) → Action`. No side effects — all state changes are expressed as field updates in the returned Action.
 
-**Daemon** (`internal/daemon`) — acquires a file lock (single instance), recovers from crashes (resets `in_progress` → `todo`, cleans orphaned tmux windows), schedules via FIFO min-heap bounded by semaphore. Self-write tracking (`selfWrites`) skips its own file change events from the watcher.
+**Daemon** (`internal/daemon`) — acquires a file lock (single instance), recovers from crashes (resets `in_progress` → `todo`, cleans tmux windows orphaned by its own previous run), schedules via FIFO min-heap bounded by semaphore. Self-write tracking (`selfWrites`) skips its own file change events from the watcher.
 
 **Runner abstraction** — `RunnerFunc` injected via `WithRunner()`. Production uses `tmuxRunner` (detached tmux sessions). Tests use `DirectRunner` (wraps `process.Run`).
 

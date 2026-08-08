@@ -20,7 +20,7 @@ import (
 
 func TestHandleTerminalWS_NoSession(t *testing.T) {
 	svc := &mockTerminalService{hasSession: false}
-	srv := startTerminalTestServer(t, svc)
+	srv := startTerminalTestServer(t, svc, uniqueSession(t))
 
 	// Attempt a plain HTTP GET — should get 404 before WebSocket upgrade.
 	resp, err := http.Get(fmt.Sprintf("http://%s/ws/terminal/nonexistent", srv.Addr()))
@@ -36,11 +36,14 @@ func TestHandleTerminalWS_SessionExists_UpgradesWebSocket(t *testing.T) {
 	}
 	requireTmux(t)
 
+	// A non-default session name also proves the handler attaches to the
+	// session the server was given rather than probing "kontora".
+	session := uniqueSession(t)
 	taskID := "test-term-ws"
-	startTmuxWindow(t, "kontora", taskID)
+	startTmuxWindow(t, session, taskID)
 
 	svc := &mockTerminalService{hasSession: true}
-	srv := startTerminalTestServer(t, svc)
+	srv := startTerminalTestServer(t, svc, session)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -53,7 +56,7 @@ func TestHandleTerminalWS_SessionExists_UpgradesWebSocket(t *testing.T) {
 	defer func() { _ = conn.CloseNow() }()
 
 	// Send some output to the tmux window.
-	err = exec.Command("tmux", "send-keys", "-t", "=kontora:"+taskID, "echo hello-from-tmux", "Enter").Run()
+	err = exec.Command("tmux", "send-keys", "-t", "="+session+":"+taskID, "echo hello-from-tmux", "Enter").Run()
 	require.NoError(t, err)
 
 	// Read until we see the expected output or timeout.
@@ -200,9 +203,16 @@ func (m *mockTerminalService) StartPlannotatorReview(_ string) error {
 	return nil
 }
 
-func startTerminalTestServer(t *testing.T, svc TicketService) *Server {
+// uniqueSession names a tmux session no other test binary or running daemon
+// can share, so these tests never attach to or tear down real agent windows.
+func uniqueSession(t *testing.T) string {
 	t.Helper()
-	srv := New(svc, NewSSEBroker(), "127.0.0.1", 0, "", slog.New(slog.NewTextHandler(io.Discard, nil)))
+	return fmt.Sprintf("kontora-webtest-%d-%s", os.Getpid(), strings.ToLower(t.Name()))
+}
+
+func startTerminalTestServer(t *testing.T, svc TicketService, tmuxSession string) *Server {
+	t.Helper()
+	srv := New(svc, NewSSEBroker(), "127.0.0.1", 0, "", tmuxSession, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	require.NoError(t, srv.Start())
 	t.Cleanup(func() { _ = srv.Shutdown(context.Background()) })
 	return srv
@@ -217,34 +227,12 @@ func requireTmux(t *testing.T) {
 
 func startTmuxWindow(t *testing.T, session, window string) {
 	t.Helper()
-	env := append(os.Environ(), "TERM=xterm")
-
-	// This session name is shared with other packages' tmux tests, which run as
-	// separate test binaries in parallel. The session can be created or torn down
-	// concurrently, so a has-session check up front races with concurrent
-	// creation (new-session then fails with "duplicate session"). Instead, try to
-	// create the session; if it already exists, add our window to it. Retry to
-	// cover the reverse race where the session disappears before we add the window.
-	var out []byte
-	var err error
-	for range 3 {
-		newSession := exec.Command("tmux", "new-session", "-d", "-s", session, "-n", window, "-x", "80", "-y", "24")
-		newSession.Env = env
-		if out, err = newSession.CombinedOutput(); err == nil {
-			break
-		}
-
-		// Session already exists. Replace any leftover window of the same name.
-		_ = exec.Command("tmux", "kill-window", "-t", "="+session+":"+window).Run()
-		newWindow := exec.Command("tmux", "new-window", "-t", "="+session+":", "-n", window)
-		newWindow.Env = env
-		if out, err = newWindow.CombinedOutput(); err == nil {
-			break
-		}
-	}
-	require.NoError(t, err, "failed to create tmux window: %s", out)
+	newSession := exec.Command("tmux", "new-session", "-d", "-s", session, "-n", window, "-x", "80", "-y", "24")
+	newSession.Env = append(os.Environ(), "TERM=xterm")
+	out, err := newSession.CombinedOutput()
+	require.NoError(t, err, "failed to create tmux session: %s", out)
 
 	t.Cleanup(func() {
-		_ = exec.Command("tmux", "kill-window", "-t", "="+session+":"+window).Run()
+		_ = exec.Command("tmux", "kill-session", "-t", "="+session).Run()
 	})
 }

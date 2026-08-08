@@ -15,20 +15,22 @@ import (
 var staticFS embed.FS
 
 type Server struct {
-	svc      TicketService
-	broker   *SSEBroker
-	httpSrv  *http.Server
-	log      *slog.Logger
-	listener net.Listener
-	token    string
+	svc         TicketService
+	broker      *SSEBroker
+	httpSrv     *http.Server
+	log         *slog.Logger
+	listener    net.Listener
+	token       string
+	tmuxSession string
 }
 
-func New(svc TicketService, broker *SSEBroker, host string, port int, token string, log *slog.Logger) *Server {
+func New(svc TicketService, broker *SSEBroker, host string, port int, token, tmuxSession string, log *slog.Logger) *Server {
 	s := &Server{
-		svc:    svc,
-		broker: broker,
-		log:    log,
-		token:  token,
+		svc:         svc,
+		broker:      broker,
+		log:         log,
+		token:       token,
+		tmuxSession: tmuxSession,
 	}
 
 	mux := http.NewServeMux()

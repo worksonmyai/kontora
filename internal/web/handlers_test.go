@@ -16,6 +16,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/worksonmyai/kontora/internal/tmux"
 )
 
 // mockService implements TicketService for handler tests.
@@ -1330,7 +1332,7 @@ func startHandlerTestServer(t *testing.T, svc TicketService) *Server {
 
 func startHandlerTestServerWithBroker(t *testing.T, svc TicketService, broker *SSEBroker) *Server {
 	t.Helper()
-	srv := New(svc, broker, "127.0.0.1", 0, "", slog.New(slog.NewTextHandler(io.Discard, nil)))
+	srv := New(svc, broker, "127.0.0.1", 0, "", tmux.DefaultSessionName, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	require.NoError(t, srv.Start())
 	t.Cleanup(func() { _ = srv.Shutdown(context.Background()) })
 	return srv

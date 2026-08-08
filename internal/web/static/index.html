@@ -1753,13 +1753,6 @@
                     x-text="settingsDirty() ? 'unsaved edits' : 'in sync with disk'"></span>
             </div>
 
-            <!-- Saving reformats the file whatever the form touches, so say so before the user finds it in git diff. -->
-            <div x-show="settingsState === 'ok' && settingsReformats" x-cloak
-                 class="mb-4 flex items-start gap-2 bg-warn/10 border border-warn/20 rounded-md p-2.5 px-3">
-              <span class="text-warn font-mono text-[12px] leading-[1.5]">!</span>
-              <span class="text-[12px] leading-[1.5] text-tx-3">This file does not re-serialize byte for byte. Saving will reformat parts of it that no field here touched.</span>
-            </div>
-
             <!-- Load states -->
             <div x-show="settingsLoading" class="font-mono text-sm text-surface-600">loading config…</div>
 

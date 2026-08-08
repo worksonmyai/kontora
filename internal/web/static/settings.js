@@ -111,9 +111,6 @@ function kontoraSettings() {
     // path (501); 'parse-error' when the YAML itself does not parse.
     settingsState: 'idle',
     settingsLoadError: '',
-    // True when re-serializing the freshly parsed document does not reproduce
-    // the file byte for byte. Saving then reformats it whatever the form does.
-    settingsReformats: false,
     settingsNewStage: '',
     settingsNewStageOpen: false,
     settingsNewEnvOpen: false,
@@ -164,7 +161,6 @@ function kontoraSettings() {
       if (doc.errors && doc.errors.length) throw new Error(doc.errors[0].message);
       this._settingsDoc = doc;
       this._settingsRawText = text;
-      this.settingsReformats = String(yaml.parseDocument(text)) !== text;
       this.settingsConfig = settingsModel(doc.toJS({ maxAliasCount: -1 }) || {});
       this.settingsBaseline = settingsClone(this.settingsConfig);
       this.settingsState = 'ok';

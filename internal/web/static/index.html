@@ -65,10 +65,17 @@
     @keyframes sweep { from { transform: translateX(-100%); } to { transform: translateX(340%); } }
     .sweep { animation: sweep 1.9s linear infinite; }
 
+    /* Command palette entry. */
+    @keyframes pal-in { from { opacity: 0; transform: translateY(-6px) scale(0.995); } to { opacity: 1; transform: none; } }
+    @keyframes scrim-in { from { opacity: 0; } to { opacity: 1; } }
+    .pal-panel { animation: pal-in 0.14s ease-out; }
+    .pal-scrim { animation: scrim-in 0.12s ease-out; }
+
     @media (prefers-reduced-motion: reduce) {
       .pulse-dot { animation: none; }
       .slide-up { animation: none; }
       .sweep { animation: none; }
+      .pal-panel, .pal-scrim { animation: none; }
       .status-chip[data-status="in_progress"]::before { animation: none; }
     }
 
@@ -250,6 +257,15 @@
       font-weight: 600;
       color: hsl(var(--pipe-h, 240 10% 55%));
     }
+    /* The same tag one size down, for palette result rows. Its own class rather
+       than .title-tag plus a utility: this inline <style> follows app.css, so a
+       font-size utility would lose to .title-tag. */
+    .pal-tag {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px;
+      font-weight: 600;
+      color: hsl(var(--pipe-h, 240 10% 55%));
+    }
 
     /* Slim single-track stage progress bar on running cards. */
     .card-progress { height: 3px; background: rgba(var(--surface-700), 1); border-radius: 9999px; overflow: hidden; }
@@ -329,6 +345,11 @@
       background: hsl(var(--st-progress));
       animation: pulse-dot 1.6s ease-in-out infinite;
     }
+    /* Palette row pill: the chip above one notch down and without the dot,
+       because the row's glyph column already carries the running mark. Both
+       rules must stay after it — same specificity, source order decides. */
+    .status-chip-sm { font-size: 9.5px; padding: 2px 7px; gap: 0; }
+    .status-chip-sm[data-status="in_progress"]::before { content: none; }
 
     /* "live" indicator in the terminal headers — running, so st-progress. */
     .live-indicator { color: hsl(var(--st-progress)); }
@@ -402,7 +423,7 @@
 </head>
 
 <body class="h-full bg-surface-950 text-tx font-sans overflow-hidden" x-data="kontora()" x-cloak
-      @keydown.escape.window="if (deleteModal) closeDeleteModal(); else if (initModal) closeInitModal(); else if (settingsGuard) settingsGuard = false; else if (currentView === 'new') closeCreateModal(); else if (detailMenuOpen) detailMenuOpen = false; else if (colMenuOpen) colMenuOpen = null; else if (sheet) closeSheet(); else if (selectedTicket) closeDetail();"
+      @keydown.escape.window="if (paletteOpen) palettePop(); else if (deleteModal) closeDeleteModal(); else if (initModal) closeInitModal(); else if (settingsGuard) settingsGuard = false; else if (currentView === 'new') closeCreateModal(); else if (detailMenuOpen) detailMenuOpen = false; else if (colMenuOpen) colMenuOpen = null; else if (sheet) closeSheet(); else if (selectedTicket) closeDetail();"
       @dragenter.prevent="if ($event.dataTransfer && $event.dataTransfer.types.includes('Files')) uploadDragging = true"
       @dragover.prevent>
 
@@ -462,6 +483,86 @@
        role="alert"
        class="fixed bottom-4 right-4 z-[60] bg-err/20 border border-err/30 text-err text-sm font-mono px-4 py-2 rounded-lg cursor-pointer max-w-sm">
     <span x-text="error"></span>
+  </div>
+
+  <!-- Command palette (⌘K). Desktop only: the phone layout has its own sheets.
+       Above the init/delete modals (z-50) and the auth modal (z-[60]). -->
+  <div x-show="paletteOpen" x-cloak @mousedown.self="closePalette()"
+       class="fixed inset-0 z-[80] bg-surface-deep/70 flex justify-center items-start pt-[90px] pal-scrim">
+    <div role="dialog" aria-modal="true" aria-label="Command palette"
+         class="w-[640px] max-w-[calc(100%-48px)] max-h-[calc(100vh-190px)] flex flex-col bg-surface-900 border border-edge-input rounded-[11px] shadow-[0_28px_70px_-20px_rgba(0,0,0,.75)] overflow-hidden pal-panel">
+
+      <!-- Input row. Every key except ⌘K is bound here: the input holds focus
+           the whole time the palette is open. -->
+      <div class="shrink-0 flex items-center gap-[9px] h-12 px-3.5 border-b border-surface-700/50">
+        <svg class="w-3.5 h-3.5 shrink-0 text-surface-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+        </svg>
+        <template x-if="paletteScope">
+          <span :data-pipe-color="paletteScopePipeColor()"
+                class="shrink-0 inline-flex items-center gap-1.5 h-[22px] px-2 rounded-md font-mono text-[11px]"
+                style="color: hsl(var(--pipe-h)); background: hsl(var(--pipe-h) / 0.12); border: 1px solid hsl(var(--pipe-h) / 0.3)">
+            <span x-text="paletteScope"></span><span class="opacity-55">▸</span>
+          </span>
+        </template>
+        <input x-ref="paletteInput" type="text" x-model="paletteQuery"
+               role="combobox" aria-expanded="true" aria-controls="palette-list"
+               :aria-activedescendant="_paletteSelId ? 'palette-row-' + _paletteSelId : null"
+               :placeholder="palettePlaceholder()" aria-label="Command palette input"
+               @keydown.arrow-down.prevent="paletteMove(1)"
+               @keydown.arrow-up.prevent="paletteMove(-1)"
+               @keydown.enter.prevent="paletteRun(_paletteRows[paletteSel], $event.metaKey || $event.ctrlKey)"
+               @keydown.arrow-right="paletteDrillFromKey($event)"
+               @keydown.tab.prevent="paletteDrillFromKey($event)"
+               @keydown.backspace="if (!paletteQuery && paletteScope) { $event.preventDefault(); palettePop(); }"
+               @keydown.arrow-left="if (!paletteQuery && paletteScope) { $event.preventDefault(); palettePop(); }"
+               class="flex-1 min-w-0 bg-transparent border-0 outline-none p-0 font-mono text-[13px] text-tx placeholder-surface-600">
+        <span class="shrink-0 font-mono text-[10px] text-tx-faint border border-edge-input rounded px-1.5 py-0.5">esc</span>
+      </div>
+
+      <!-- Results -->
+      <div id="palette-list" role="listbox" aria-label="Palette results" class="flex-1 min-h-0 overflow-y-auto pt-1.5 pb-2">
+        <!-- The wrapper and the header sit between the listbox and its options,
+             so they carry role="presentation" to keep the options owned. -->
+        <template x-for="group in paletteGroups" :key="group.label">
+          <div role="presentation" class="px-1.5">
+            <div role="presentation" class="flex items-baseline gap-2 px-2.5 pt-[9px] pb-[5px]">
+              <span class="side-label shrink-0" x-text="group.label"></span>
+              <span class="ml-auto min-w-0 font-mono text-[10px] text-surface-600 truncate" x-text="group.hint"></span>
+            </div>
+            <template x-for="row in group.items" :key="row.id">
+              <div :id="'palette-row-' + row.id" role="option" :aria-selected="_paletteSelId === row.id"
+                   @click="paletteRun(row, $event.metaKey || $event.ctrlKey)"
+                   @mousemove="paletteHover(row.id)"
+                   class="flex items-center gap-2.5 px-2.5 py-1.5 rounded-[7px] cursor-pointer"
+                   :class="_paletteSelId === row.id ? 'bg-accent/[.14] shadow-[inset_0_0_0_1px_rgba(var(--accent),.42)]' : ''">
+                <span class="shrink-0 w-3.5 text-center font-mono text-[11px]" :class="row.glyphClass" x-text="row.glyph"></span>
+                <div class="flex-1 min-w-0 flex flex-col gap-0.5">
+                  <div class="flex items-baseline gap-[7px] min-w-0" :data-pipe-color="row.pipeColor">
+                    <span x-show="row.tag" class="shrink-0 pal-tag" x-text="row.tag"></span>
+                    <span class="text-[12.5px] truncate" :class="row.danger ? 'text-err' : 'text-tx-hi'" x-text="row.title"></span>
+                  </div>
+                  <div x-show="row.sub" class="font-mono text-[10.5px] text-surface-600 truncate" x-text="row.sub"></div>
+                </div>
+                <span x-show="row.status" class="status-chip status-chip-sm shrink-0" :data-status="row.status" x-text="row.statusText"></span>
+                <span class="shrink-0 font-mono text-[10.5px] min-w-[34px] text-right" :class="row.metaClass" x-text="row.meta"></span>
+              </div>
+            </template>
+          </div>
+        </template>
+        <div x-show="paletteQuery && !_paletteRows.length" role="presentation"
+             class="px-4 py-[26px] text-center font-mono text-[12px] text-surface-600">
+          no match for “<span x-text="paletteQuery"></span>”
+        </div>
+      </div>
+
+      <!-- Legend: the only place the palette teaches its own shortcuts. -->
+      <div class="shrink-0 flex items-center gap-3.5 px-3.5 py-2 border-t border-surface-700/50 bg-surface-rail font-mono text-[10.5px] text-tx-faint">
+        <template x-for="k in paletteLegend()" :key="k.key">
+          <span class="flex items-center gap-[5px]"><span class="text-tx-3" x-text="k.key"></span><span x-text="k.label"></span></span>
+        </template>
+      </div>
+    </div>
   </div>
 
   <!-- Upload drag-and-drop overlay -->
@@ -640,39 +741,25 @@
       <span class="text-[10px] font-medium text-tx-faint uppercase tracking-[.2em] hidden sm:inline">agent orchestration</span>
     </div>
 
-    <!-- Search -->
-    <div class="flex-1 min-w-[120px] max-w-[300px] relative" @click.outside="searchOpen = false">
+    <!-- Board filter. Jumping somewhere is the command palette's job (⌘K); this
+         input only narrows the board. -->
+    <div class="flex-1 min-w-[120px] max-w-[300px] relative">
       <div class="relative flex items-center">
         <svg class="absolute left-2.5 w-3.5 h-3.5 text-surface-600 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
         </svg>
-        <input type="text" x-model="searchQuery" @input="updateSuggestions()" @focus="if (suggestions.length) searchOpen = true"
-               @keydown.arrow-down.prevent="moveSelection(1)" @keydown.arrow-up.prevent="moveSelection(-1)"
-               @keydown.enter.prevent="acceptSelection()" @keydown.escape="searchOpen = false; selectedIndex = -1; $el.blur()"
+        <input type="text" x-model="searchQuery" @keydown.escape="$el.blur()"
                placeholder="Filter tickets…" aria-label="Filter tickets"
-               class="w-full pl-8 pr-7 py-[7px] text-[12px] font-mono rounded-[7px] bg-surface-900 border border-edge-input text-tx placeholder-surface-600 focus:outline-none focus:border-accent transition-colors">
+               class="w-full pl-8 pr-11 py-[7px] text-[12px] font-mono rounded-[7px] bg-surface-900 border border-edge-input text-tx placeholder-surface-600 focus:outline-none focus:border-accent transition-colors">
         <button x-show="searchQuery" @click="clearSearch()" aria-label="Clear filter" class="absolute right-2 text-surface-600 hover:text-tx-3">
           <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
           </svg>
         </button>
-      </div>
-      <!-- Autocomplete dropdown -->
-      <div x-show="searchOpen && suggestions.length" x-cloak
-           class="absolute z-50 top-full mt-1 w-full bg-surface-900 border border-edge-input rounded-lg shadow-xl overflow-hidden">
-        <template x-for="(group, gi) in suggestions" :key="group.label">
-          <div>
-            <div class="px-3 py-1 text-[12px] font-mono uppercase tracking-wider text-surface-600 bg-surface-rail" x-text="group.label"></div>
-            <template x-for="(item, ii) in group.items" :key="item.value">
-              <button @click="applySuggestion(item)" @mouseenter="selectedIndex = flatIndex(gi, ii)"
-                      class="w-full text-left px-3 py-1.5 text-xs font-mono flex items-center justify-between transition-colors"
-                      :class="selectedIndex === flatIndex(gi, ii) ? 'bg-accent/15 text-accent' : 'text-tx-3 hover:bg-surface-850'">
-                <span class="truncate" x-text="item.display"></span>
-                <span x-show="item.count !== null" class="text-[12px] text-surface-600 ml-2 shrink-0" x-text="item.count"></span>
-              </button>
-            </template>
-          </div>
-        </template>
+        <button x-show="!searchQuery" @click="openPalette()"
+                aria-label="Open command palette" title="Command palette"
+                class="absolute right-1.5 h-[19px] px-[5px] flex items-center border border-edge-input rounded bg-surface-800 text-tx-faint font-mono text-[10px] hover:text-accent hover:border-accent/[.38] focus-visible:text-accent transition-colors"
+                x-text="isMac ? '⌘K' : 'Ctrl K'"></button>
       </div>
     </div>
 
@@ -711,6 +798,12 @@
        re-renders and re-binds the board whenever this layer is (re)built. -->
   <template x-if="!isMobile">
   <main class="flex h-[calc(100%-54px)] min-h-0 relative">
+
+    <!-- Palette command confirmation. Neutral, unlike the red error alert. -->
+    <div x-show="toast" x-transition.opacity x-cloak role="status"
+         class="absolute left-1/2 bottom-[22px] -translate-x-1/2 z-[70] flex items-center gap-2.5 px-3.5 py-2 rounded-[9px] bg-surface-800 border border-surface-700 shadow-[0_10px_30px_-12px_rgba(0,0,0,.6)] font-mono text-[11.5px] text-tx-2">
+      <span class="text-accent">▸</span><span x-text="toast"></span>
+    </div>
 
     <!-- Left sidebar (hideable) -->
     <aside x-show="!sidebarHidden" x-cloak

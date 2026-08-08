@@ -53,12 +53,7 @@ function kontora() {
     selectedTicket: null,
     terminalOpen: false,
     terminalRW: false,
-    // Expands the whole detail panel to a full-screen view (2a layout). One
-    // flag for both tabs — the panel DOM stays in place, so the live terminal
-    // survives the transition (ResizeObserver refits it).
-    detailFullscreen: false,
-    activeTab: 'terminal',
-    panelWidth: parseInt(localStorage.getItem('kontora-panel-width')) || 430,
+    activeTab: 'session',
     loading: true,
     error: null,
     // Set when the daemon answers 401: the web token gate is on and this
@@ -89,6 +84,16 @@ function kontora() {
     logViewContent: null,
     logViewStage: null,
     logViewLoading: false,
+    // Structured transcript of one completed stage run: the /activity payload,
+    // which stage and run it describes, and the tool rows opened by hand.
+    activity: null,
+    activityStage: null,
+    activityRun: 0,
+    activityLoading: false,
+    activityError: null,
+    expandedTools: {},
+    noteDraft: '',
+    noteSubmitting: false,
     detailLoading: false,
     // Commits and changed files for the open ticket's branch, from the changes
     // endpoint. Null until fetched; fetched for finished tickets only.
@@ -128,6 +133,9 @@ function kontora() {
     showAgentMeta: (function() { try { return localStorage.getItem('kontora-show-agent-meta') !== '0'; } catch (e) { return true; } })(),
     colMenuOpen: null,
     currentView: 'board',
+    // Set while applyRoute drives state from the hash, so the transitions it
+    // calls do not write the hash back and stack up history entries.
+    _applyingRoute: false,
     // Map of ticketId → true while a plannotator subprocess is in flight for it.
     plannotatorInFlight: {},
     // Board cards are rendered imperatively (not via Alpine), so the open card
@@ -231,6 +239,7 @@ function kontora() {
       window.addEventListener('resize', () => {
         this.isMobile = window.innerWidth < 768;
       });
+      window.addEventListener('hashchange', () => { this.applyRoute(); });
       // Advance the reactive clock (detail panel duration, mobile cards) and
       // patch the imperatively rendered card timers in place every 30s.
       this._nowTimer = setInterval(() => { this.now = Date.now(); this._updateCardTimers(); }, 30000);
@@ -244,10 +253,6 @@ function kontora() {
       // Custom statuses add columns; recompute so _board gains the new key,
       // then renderBoard (called by recomputeBoard) fills the new column DOM.
       this.$watch('configCache', () => this.$nextTick(() => this.recomputeBoard()));
-      this.$watch('detailFullscreen', () => {
-        var self = this;
-        requestAnimationFrame(function() { self.refitTerminal(); });
-      });
       // Desktop and mobile are complementary x-if layers, so only one board
       // exists at a time and crossing the breakpoint rebuilds it.
       this.$watch('isMobile', () => this._onBreakpointChange());
@@ -277,6 +282,9 @@ function kontora() {
         return;
       }
       this.connectSSE();
+      // Open whatever the URL addresses. Tickets are loaded by now, so a
+      // #/t/<id> link can resolve against the board.
+      await this.applyRoute();
       // The board DOM (column containers) is created by Alpine once loading
       // flips false; render cards into it on the next tick, then bind the one
       // delegated handler that drives card select / menu interactions.
@@ -393,6 +401,19 @@ function kontora() {
       return this._sortColumn(this.tickets.filter(t => set.has(t.status)), list);
     },
 
+    // Whether the content column is showing agent output: the live session
+    // while a stage runs, or a finished stage's activity.
+    logTabActive() {
+      return this.activeTab === 'session' || this.activeTab === 'activity';
+    },
+
+    // Whether the live terminal should be attached right now. The desktop
+    // reads the session tab; mobile has its own tab state and must not depend
+    // on a desktop-only value.
+    terminalWanted() {
+      return this.isMobile ? this.detailTab === 'terminal' : this.activeTab === 'session';
+    },
+
     showTerminalTab() {
       if (!this.selectedTicket) return false;
       if (this.selectedTicket.status === 'in_progress') return true;
@@ -444,8 +465,20 @@ function kontora() {
             this.selectedTicket = ticket;
             if (body) this.selectedTicket.body = body;
           }
-          if (this.activeTab === 'terminal' && !this.showTerminalTab()) {
+          if (this.logTabActive() && !this.showTerminalTab()) {
             this.activeTab = 'ticket';
+          }
+          // A stage that finished while its live session was open has no
+          // terminal left to show, so the same column becomes the transcript.
+          // Nothing has fetched that transcript yet, so load it here too:
+          // switchTab is bypassed, and an unloaded activity tab reads as
+          // "no completed stage yet" right after a run that produced one.
+          if (this.activeTab === 'session' && this.selectedTicket.status !== 'in_progress') {
+            this.activeTab = 'activity';
+            if (!this.activity && !this.activityLoading) {
+              var latestRun = this.latestCompletedRun();
+              if (latestRun) this.fetchActivity(latestRun.stage, latestRun.run);
+            }
           }
           if (this.activeTab === 'summary' && !this.showSummaryTab()) {
             this.activeTab = 'ticket';
@@ -496,7 +529,7 @@ function kontora() {
       });
       es.addEventListener('terminal_ready', (e) => {
         const ticket = JSON.parse(e.data);
-        if (this.selectedTicket?.id === ticket.id && this.activeTab === 'terminal') {
+        if (this.selectedTicket?.id === ticket.id && this.terminalWanted()) {
           this.reconnectTerminal();
         }
       });
@@ -555,6 +588,7 @@ function kontora() {
       this.createForm = { title: '', path: '', pipeline: '', agent: '', status: 'todo', body: '', branch: '' };
       this.createTouched = { pipeline: false, agent: false };
       this.currentView = 'new';
+      this.writeHash();
       this.error = null;
       if (!this.configCache) {
         try {
@@ -569,6 +603,7 @@ function kontora() {
     closeCreateModal() {
       this.currentView = 'board';
       this.createSubmitting = false;
+      this.writeHash();
     },
 
     // Whether the config names any project. With none configured a blank
@@ -822,6 +857,7 @@ function kontora() {
       this.logViewContent = null;
       this.logViewStage = null;
       this.logViewLoading = false;
+      this._resetActivity();
       this.setStageOpen = false;
       this.ticketChanges = null;
       this.selectedTicket = ticket;
@@ -843,23 +879,26 @@ function kontora() {
         this.error = 'Failed to load ticket details';
       }
       this.detailLoading = false;
-      if (this.showSummaryTab()) {
+      // The rail's churn block is always on, so the branch diff is read for
+      // every ticket that has one rather than only for summarised runs.
+      if (this.selectedTicket?.branch) {
         this.fetchChanges(this.selectedTicket.id);
       }
       if (this.selectedTicket?.status !== 'in_progress' && this.selectedTicket?.status !== 'todo' && this.selectedTicket?.status !== 'open'
           && this.selectedTicket?.history?.length > 0) {
-        var lastStage = this.selectedTicket.history[this.selectedTicket.history.length - 1].stage;
-        this.fetchStageLogs(this.selectedTicket.id, lastStage);
-        // Finished tickets with a summary open on the summary tab; the logs
-        // stay prefetched for the log tab.
-        this.activeTab = this.summaryFirst(this.selectedTicket) ? 'summary' : 'terminal';
+        var latest = this.latestCompletedRun();
+        if (latest) this.fetchActivity(latest.stage, latest.run);
+        // Finished tickets with a summary open on the summary tab; the
+        // transcript stays prefetched for the activity tab.
+        this.activeTab = this.summaryFirst(this.selectedTicket) ? 'summary' : 'activity';
       } else if (this.selectedTicket?.status === 'in_progress') {
-        this.activeTab = 'terminal';
+        this.activeTab = 'session';
         this.openTerminal();
       } else {
         this.activeTab = 'ticket';
         if (['open', 'todo', 'paused'].concat(this.configCache?.custom_statuses || []).includes(this.selectedTicket?.status)) this.startEditing();
       }
+      this.writeHash();
     },
 
     // Whether the detail panel should open on the summary (ticket tab): the
@@ -898,12 +937,15 @@ function kontora() {
         this.flushEditSave();
         this.editingBody = false;
       }
+      // The live session only exists while a stage runs. Asking for it on a
+      // finished ticket lands on that stage's transcript instead.
+      if (tab === 'session' && this.selectedTicket?.status !== 'in_progress') tab = 'activity';
       this.activeTab = tab;
-      // Leaving the terminal tab keeps the stream and the terminal: the tab
+      // Leaving the session tab keeps the stream and the terminal: the tab
       // content is x-show, so the container survives, and output that arrives
       // while it is hidden is already in the buffer on return. Only the fit is
       // owed, because a hidden container measures zero.
-      if (tab === 'terminal' && this.selectedTicket?.status === 'in_progress') {
+      if (tab === 'session' && this.selectedTicket?.status === 'in_progress') {
         if (this.terminalOpen) {
           var self = this;
           requestAnimationFrame(function() { self.refitTerminal(); });
@@ -911,19 +953,22 @@ function kontora() {
           this.openTerminal();
         }
       }
+      if (tab === 'activity' && !this.activity && !this.activityLoading) {
+        var latest = this.latestCompletedRun();
+        if (latest) this.fetchActivity(latest.stage, latest.run);
+      }
       if (tab === 'ticket' && !this.editing) {
         this.startEditing();
       }
       // A running ticket keeps committing, so the commit list is re-read every
-      // time the tab is opened rather than only once on select.
-      if (tab === 'summary' && this.selectedTicket) {
+      // time a tab that shows it is opened rather than only once on select.
+      if ((tab === 'summary' || tab === 'diff') && this.selectedTicket) {
         this.fetchChanges(this.selectedTicket.id);
       }
     },
 
     closeDetail() {
       this.flushEditSave();
-      this.detailFullscreen = false;
       this.closeTerminal();
       this.terminalRW = false;
       this.detailMenuOpen = false;
@@ -936,7 +981,69 @@ function kontora() {
       this.logViewContent = null;
       this.logViewStage = null;
       this.logViewLoading = false;
+      this._resetActivity();
       this.ticketChanges = null;
+      this.noteDraft = '';
+      this.writeHash();
+    },
+
+    // ---- hash routing ------------------------------------------------------
+
+    // Parse a URL hash into {view, ticketId}. Anything unrecognised is the
+    // board, so a stale or hand-typed link never leaves the app blank.
+    parseHash(hash) {
+      var h = String(hash == null ? '' : hash).replace(/^#/, '');
+      if (h.indexOf('/t/') === 0 && h.length > 3) {
+        var raw = h.slice(3);
+        // A malformed escape ("#/t/%") makes decodeURIComponent throw. Left
+        // uncaught it would reject applyRoute, and the await in init() would
+        // skip the board render that follows it.
+        var id;
+        try { id = decodeURIComponent(raw); } catch (e) { id = raw; }
+        return { view: 'board', ticketId: id };
+      }
+      if (h === '/new') return { view: 'new', ticketId: null };
+      if (h === '/settings') return { view: 'settings', ticketId: null };
+      return { view: 'board', ticketId: null };
+    },
+
+    // Serialize the current view back to a hash. Inverse of parseHash.
+    routeHash() {
+      if (this.selectedTicket) return '#/t/' + encodeURIComponent(this.selectedTicket.id);
+      if (this.currentView === 'new') return '#/new';
+      if (this.currentView === 'settings') return '#/settings';
+      return '#/';
+    },
+
+    writeHash() {
+      if (this._applyingRoute) return;
+      var next = this.routeHash();
+      if (location.hash === next) return;
+      location.hash = next;
+    },
+
+    // Drive state from the hash. Browser Back and a pasted link both land here.
+    // Every branch is a no-op when the state already matches, so the hashchange
+    // fired by our own writeHash costs nothing.
+    async applyRoute() {
+      var r = this.parseHash(location.hash);
+      this._applyingRoute = true;
+      try {
+        if (r.ticketId) {
+          if (this.selectedTicket && this.selectedTicket.id === r.ticketId) return;
+          var t = this.tickets.find(function(x) { return x.id === r.ticketId; });
+          if (t) { await this.selectTicket(t); return; }
+          // The hash names a ticket this board does not have. Fall back to the
+          // board rather than rendering an empty shell.
+          if (this.selectedTicket) this.closeDetail();
+        } else if (this.selectedTicket) {
+          this.closeDetail();
+        }
+        if (this.currentView !== r.view) await this.gotoView(r.view);
+      } finally {
+        this._applyingRoute = false;
+      }
+      this.writeHash();
     },
 
     copyTicketId(id) {
@@ -1406,13 +1513,6 @@ function kontora() {
       return Math.floor(mins / 60) + 'h ' + (mins % 60) + 'm';
     },
 
-    // Narrow docked panel stacks the details rail under the content column.
-    // Fullscreen always has room for the side-by-side layout.
-    panelStacked() {
-      if (this.detailFullscreen) return false;
-      return this.isMobile || this.panelWidth < 720;
-    },
-
     // "⌁ attach tmux session": running tickets jump to the live terminal,
     // otherwise the attach command is copied.
     attachTerminal() {
@@ -1420,7 +1520,7 @@ function kontora() {
       if (this.selectedTicket.status === 'in_progress') {
         this.logViewContent = null;
         this.logViewStage = null;
-        this.switchTab('terminal');
+        this.switchTab('session');
       } else {
         this.copyCmd('kontora attach ' + this.selectedTicket.id);
       }
@@ -1438,7 +1538,7 @@ function kontora() {
         try { termState.term.scrollToBottom(); } catch (e) {}
         return;
       }
-      var el = document.getElementById('stage-log-pre');
+      var el = document.getElementById('activity-scroll') || document.getElementById('stage-log-pre');
       if (el) el.scrollTop = el.scrollHeight;
     },
 
@@ -1446,10 +1546,11 @@ function kontora() {
     async openRawLog() {
       if (!this.selectedTicket) return;
       var content = this.logViewContent;
-      if (content === null) {
+      if (content === null && this.activity && !this.activity.tape) content = this.activity.content;
+      if (content === null || content === undefined) {
         try {
           var url = '/api/tickets/' + this.selectedTicket.id + '/logs';
-          var stage = this.logViewStage || this.selectedTicket.stage;
+          var stage = this.activityStage || this.logViewStage || this.selectedTicket.stage;
           if (stage) url += '?stage=' + encodeURIComponent(stage);
           var res = await fetch(url);
           if (res.ok) {
@@ -1997,7 +2098,7 @@ function kontora() {
         }
         await this.$nextTick();
         if (!this.terminalOpen || this._terminalSeq !== seq) return;
-        if (this.activeTab !== 'terminal' || this.selectedTicket?.id !== ticketId) {
+        if (!this.terminalWanted() || this.selectedTicket?.id !== ticketId) {
           this.closeTerminal();
           return;
         }
@@ -2013,7 +2114,7 @@ function kontora() {
     },
 
     reconnectTerminal() {
-      if (!this.selectedTicket || this.activeTab !== 'terminal' || this._terminalOpening) return;
+      if (!this.selectedTicket || !this.terminalWanted() || this._terminalOpening) return;
       if (this.terminalOpen) this.closeTerminal();
       this.openTerminal();
     },
@@ -2023,7 +2124,7 @@ function kontora() {
       // On phone width the live terminal attaches into the mobile detail's own
       // container; on desktop into the panel container (fullscreen keeps the
       // same container — the panel just grows to fill the viewport).
-      var container = document.getElementById(this.isMobile ? 'terminal-container-mobile' : 'terminal-container');
+      var container = document.getElementById(this.isMobile ? 'terminal-container-mobile' : 'terminal-session');
       // Returning with terminalOpen still set would strand the tab: switchTab
       // only refits a terminal it believes is open, so nothing would retry.
       if (!container) {
@@ -2578,30 +2679,275 @@ function kontora() {
       }).join('\n');
     },
 
-    startResize(e) {
-      var self = this;
-      var startX = e.clientX;
-      var startW = self.panelWidth;
-      var handle = e.target;
-      handle.classList.add('active');
-      document.body.style.cursor = 'col-resize';
-      document.body.style.userSelect = 'none';
+    // ---- activity tape -----------------------------------------------------
 
-      function onMove(ev) {
-        var delta = startX - ev.clientX;
-        var maxW = Math.floor(window.innerWidth * 0.9);
-        self.panelWidth = Math.max(320, Math.min(maxW, startW + delta));
+    // The newest run the transcript can show. Every history entry describes a
+    // finished run, so the last one is the most recently completed stage; the
+    // running stage's partial output belongs to the live session, not here.
+    latestCompletedRun() {
+      var h = (this.selectedTicket && this.selectedTicket.history) || [];
+      if (!h.length) return null;
+      var last = h[h.length - 1];
+      return { stage: last.stage, run: last.run || 0 };
+    },
+
+    _resetActivity() {
+      this.activity = null;
+      this.activityStage = null;
+      this.activityRun = 0;
+      this.activityLoading = false;
+      this.activityError = null;
+      this.expandedTools = {};
+    },
+
+    async fetchActivity(stage, run) {
+      if (!this.selectedTicket) return;
+      var id = this.selectedTicket.id;
+      this.activityStage = stage || '';
+      this.activityRun = run || 0;
+      this.activityLoading = true;
+      this.activityError = null;
+      this.activity = null;
+      this.expandedTools = {};
+      try {
+        var url = '/api/tickets/' + encodeURIComponent(id) + '/activity'
+          + '?stage=' + encodeURIComponent(stage || '') + '&run=' + (run || 0);
+        var res = await fetch(url);
+        if (!res.ok) {
+          var err = await res.json().catch(function () { return {}; });
+          this.activityError = err.error || 'Failed to load activity';
+        } else {
+          var data = await res.json();
+          if (this.selectedTicket && this.selectedTicket.id === id) this.activity = data;
+        }
+      } catch (e) {
+        this.activityError = 'Failed to load activity';
       }
-      function onUp() {
-        document.removeEventListener('mousemove', onMove);
-        document.removeEventListener('mouseup', onUp);
-        handle.classList.remove('active');
-        document.body.style.cursor = '';
-        document.body.style.userSelect = '';
-        localStorage.setItem('kontora-panel-width', self.panelWidth);
+      this.activityLoading = false;
+    },
+
+    // Show the transcript for one run and bring the activity tab forward.
+    openActivity(stage, run) {
+      this.activeTab = 'activity';
+      this.fetchActivity(stage, run);
+    },
+
+    // Whether the agent's session format leaves this dimension unverified. The
+    // view hides the affordance rather than showing a zero or the wrong colour.
+    tapePartial(dim) {
+      var p = this.activity && this.activity.tape && this.activity.tape.partial;
+      return !!p && p.indexOf(dim) >= 0;
+    },
+
+    tapeEvents() {
+      return (this.activity && this.activity.tape && this.activity.tape.events) || [];
+    },
+
+    // Row identity for the expand map. Pi tool calls carry no id, so the index
+    // stands in.
+    toolKey(ev, i) {
+      return ev.id || ('i' + i);
+    },
+
+    // A failure is expanded on first render: it is why the reader opened the
+    // tape. Everything else starts collapsed.
+    toolExpanded(ev, i) {
+      if (ev.is_error && !this.tapePartial('is_error')) return true;
+      return !!this.expandedTools[this.toolKey(ev, i)];
+    },
+
+    toolFailed(ev) {
+      return !!ev.is_error && !this.tapePartial('is_error');
+    },
+
+    toggleTool(ev, i) {
+      var k = this.toolKey(ev, i);
+      this.expandedTools[k] = !this.expandedTools[k];
+    },
+
+    eventTime(ev) {
+      if (this.tapePartial('time') || !ev || !ev.time) return '';
+      var d = new Date(ev.time);
+      if (isNaN(d.getTime())) return '';
+      var pad = function (n) { return String(n).padStart(2, '0'); };
+      return pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
+    },
+
+    // Total tokens over the four categories the session record reports, or ''
+    // when usage is unverified for this agent. There is no monetary figure:
+    // neither the session record nor the config carries a price.
+    tapeTokens(tape) {
+      if (!tape || (tape.partial || []).indexOf('usage') >= 0) return '';
+      var t = tape.totals || {};
+      var n = (t.input || 0) + (t.output || 0) + (t.cache_create || 0) + (t.cache_read || 0);
+      if (!n) return '';
+      if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
+      if (n >= 1000) return Math.round(n / 1000) + 'k';
+      return String(n);
+    },
+
+    // ---- stage ribbon ------------------------------------------------------
+
+    // One segment per pipeline stage, sized by the summed duration of its runs.
+    // Gaps between runs are queue time and do not count toward a stage.
+    stageRibbon() {
+      var t = this.selectedTicket;
+      if (!t) return [];
+      var self = this;
+      var agg = Object.create(null);
+      (t.history || []).forEach(function (h) {
+        var e = agg[h.stage] || (agg[h.stage] = { seconds: 0, runs: 0, last: null });
+        e.runs++;
+        e.last = h;
+        if (h.started_at && h.completed_at) {
+          var s = Math.floor((new Date(h.completed_at) - new Date(h.started_at)) / 1000);
+          if (s > 0) e.seconds += s;
+        }
+      });
+
+      var stages = t.stages || [];
+      var currentIdx = stages.indexOf(t.stage);
+      return stages.map(function (name, i) {
+        var a = agg[name] || { seconds: 0, runs: 0, last: null };
+        var running = t.status === 'in_progress' && name === t.stage;
+        var done = !running && (t.status === 'done' || a.runs > 0 || (currentIdx >= 0 && i < currentIdx));
+        var seconds = a.seconds;
+        if (running && t.started_at) {
+          var live = Math.floor((self.now - new Date(t.started_at)) / 1000);
+          if (live > 0) seconds += live;
+        }
+        return {
+          name: name,
+          runs: a.runs,
+          run: a.last ? (a.last.run || 0) : 0,
+          seconds: seconds,
+          state: running ? 'running' : (done ? 'done' : 'queued'),
+          meta: running || done ? self.formatSeconds(seconds) : 'not started',
+        };
+      });
+    },
+
+    // "45s" / "2m 04s" / "1h 12m" — the ribbon's per-stage meta line.
+    formatSeconds(secs) {
+      if (typeof secs !== 'number' || isNaN(secs) || secs < 0) return '';
+      if (secs < 60) return secs + 's';
+      var m = Math.floor(secs / 60);
+      if (m < 60) return m + 'm ' + String(secs % 60).padStart(2, '0') + 's';
+      return Math.floor(m / 60) + 'h ' + (m % 60) + 'm';
+    },
+
+    // Clicking a segment: the running stage returns to the live session, a
+    // finished one loads its transcript, a queued one does nothing.
+    clickRibbon(seg) {
+      if (seg.state === 'running') {
+        this.switchTab('session');
+        return;
       }
-      document.addEventListener('mousemove', onMove);
-      document.addEventListener('mouseup', onUp);
+      if (seg.state !== 'done' || !seg.runs) return;
+      this.openActivity(seg.name, seg.run);
+    },
+
+    // Attempt denominator: the initial attempt plus the stage's max_retries.
+    stageMaxAttempts() {
+      var t = this.selectedTicket;
+      if (!t || !t.pipeline || !t.stage) return 0;
+      var infos = (this.configCache && this.configCache.pipeline_infos) || [];
+      for (var i = 0; i < infos.length; i++) {
+        if (infos[i].name !== t.pipeline) continue;
+        var idx = (infos[i].stages || []).indexOf(t.stage);
+        if (idx < 0) return 0;
+        return ((infos[i].max_retries || [])[idx] || 0) + 1;
+      }
+      return 0;
+    },
+
+    // Wall time across the whole ticket: the first stage's pickup to the last
+    // recorded exit, queue gaps included. The frontmatter's started_at is
+    // rewritten at every stage spawn, so it holds the current stage's pickup
+    // and would report only the last stage's duration.
+    ticketWall() {
+      var t = this.selectedTicket;
+      if (!t) return '';
+      var h = t.history || [];
+      var start = h.length ? (h[0].started_at || t.started_at) : t.started_at;
+      var end = h.length ? h[h.length - 1].completed_at : t.updated_at;
+      return this.formatElapsed(start, end);
+    },
+
+    // Meters beside the ribbon. A meter with no verified data is left out
+    // rather than rendered as a zero.
+    ribbonMeters() {
+      var t = this.selectedTicket;
+      if (!t) return [];
+      var out = [];
+      var tokens = this.tapeTokens(this.activity && this.activity.tape);
+      if (t.status === 'in_progress') {
+        if (t.started_at) out.push({ k: 'elapsed', v: this.formatDuration(t) });
+        if (tokens) out.push({ k: 'tokens', v: tokens });
+        var max = this.stageMaxAttempts();
+        var n = (t.attempt || 0) + 1;
+        out.push({ k: 'attempt', v: max ? n + ' / ' + max : String(n) });
+      } else if (t.status === 'human_review') {
+        var wall = this.ticketWall();
+        if (wall) out.push({ k: 'wall', v: wall });
+        if (tokens) out.push({ k: 'tokens', v: tokens });
+      }
+      return out;
+    },
+
+    // ---- changed files -----------------------------------------------------
+
+    // Bounded churn summary for the rail: the totals, the stacked bar's split,
+    // and the three files with the most change. Equal churn breaks on path so
+    // repeated renders agree on the same three.
+    churn() {
+      var files = (this.ticketChanges && this.ticketChanges.files) || [];
+      var added = 0;
+      var deleted = 0;
+      files.forEach(function (f) { added += f.added || 0; deleted += f.deleted || 0; });
+      var sorted = files.slice().sort(function (a, b) {
+        var d = ((b.added || 0) + (b.deleted || 0)) - ((a.added || 0) + (a.deleted || 0));
+        if (d !== 0) return d;
+        return a.path < b.path ? -1 : (a.path > b.path ? 1 : 0);
+      });
+      var total = added + deleted;
+      return {
+        count: files.length,
+        added: added,
+        deleted: deleted,
+        addedPct: total ? (added / total) * 100 : 0,
+        top: sorted.slice(0, 3),
+        more: Math.max(0, files.length - 3),
+      };
+    },
+
+    // ---- notes -------------------------------------------------------------
+
+    async submitNote() {
+      var text = (this.noteDraft || '').trim();
+      if (!text || !this.selectedTicket || this.noteSubmitting) return;
+      var id = this.selectedTicket.id;
+      this.noteSubmitting = true;
+      try {
+        var res = await fetch('/api/tickets/' + encodeURIComponent(id) + '/note', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text: text }),
+        });
+        if (!res.ok) {
+          var err = await res.json().catch(function () { return {}; });
+          this.error = err.error || 'Failed to add note';
+        } else {
+          var full = await res.json();
+          this.noteDraft = '';
+          if (this.selectedTicket && this.selectedTicket.id === id) this.selectedTicket = full;
+          var idx = this.tickets.findIndex(function (x) { return x.id === id; });
+          if (idx >= 0) { this.tickets[idx] = full; this.recomputeBoard(); }
+        }
+      } catch (e) {
+        this.error = 'Failed to add note';
+      }
+      this.noteSubmitting = false;
     },
 
     toggleTheme() {
@@ -2699,11 +3045,9 @@ function kontora() {
       if (tab === 'terminal') {
         this.logViewContent = null;
         this.logViewStage = null;
-        this.activeTab = 'terminal';
         if (this.selectedTicket.status === 'in_progress') this.openTerminal();
       } else {
         if (this.terminalOpen) this.closeTerminal();
-        this.activeTab = 'ticket';
         if (tab === 'logs') {
           var t = this.selectedTicket;
           var stage = t.stage;

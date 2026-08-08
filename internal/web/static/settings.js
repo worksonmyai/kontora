@@ -504,9 +504,10 @@ function kontoraSettings() {
         this.settingsGuard = true;
         return;
       }
-      if (view === 'settings') { await this.openSettings(); return; }
-      if (view === 'new') { await this.openCreateModal(); return; }
+      if (view === 'settings') { await this.openSettings(); this.writeHash(); return; }
+      if (view === 'new') { await this.openCreateModal(); this.writeHash(); return; }
       this.currentView = 'board';
+      this.writeHash();
     },
 
     settingsGuardDiscard() {

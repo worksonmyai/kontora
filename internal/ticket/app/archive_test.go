@@ -4,12 +4,15 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/worksonmyai/kontora/internal/config"
 	"github.com/worksonmyai/kontora/internal/ticket"
 )
 
@@ -27,17 +30,30 @@ func (f fakeFileInfo) Sys() any           { return nil }
 
 var archiveNow = time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
 
+func homeDir(t *testing.T) string {
+	t.Helper()
+	home, err := os.UserHomeDir()
+	require.NoError(t, err)
+	return home
+}
+
 func TestArchive(t *testing.T) {
 	type fixture struct {
 		id      string
 		status  string
 		ageDays int // file mtime = archiveNow - ageDays
+		path    string
 	}
 	cases := []struct {
-		name         string
-		tickets      []fixture
-		days         int
-		dryRun       bool
+		name    string
+		tickets []fixture
+		days    int
+		dryRun  bool
+		path    string
+		// project names an entry of the config below, which configures "alpha"
+		// at /repos/a.
+		project      string
+		status       ticket.Status
 		statErr      bool
 		saveErr      bool
 		wantArchived []string
@@ -77,6 +93,83 @@ func TestArchive(t *testing.T) {
 				{id: "tst-arch", status: "archived", ageDays: 90},
 			},
 			days:         30,
+			wantArchived: nil,
+		},
+		{
+			name: "path filter keeps only tickets for that repository",
+			tickets: []fixture{
+				{id: "tst-a", status: "done", ageDays: 40, path: "/repos/a"},
+				{id: "tst-b", status: "done", ageDays: 40, path: "/repos/b"},
+				{id: "tst-none", status: "done", ageDays: 40},
+			},
+			days:         30,
+			path:         "/repos/a",
+			wantArchived: []string{"tst-a"},
+		},
+		{
+			name: "path filter matches a tilde path given in absolute form",
+			tickets: []fixture{
+				{id: "tst-tilde", status: "done", ageDays: 40, path: "~/repos/a"},
+			},
+			days:         30,
+			path:         filepath.Join(homeDir(t), "repos/a") + "/",
+			wantArchived: []string{"tst-tilde"},
+		},
+		{
+			name: "project filter uses the configured project path",
+			tickets: []fixture{
+				{id: "tst-a", status: "done", ageDays: 40, path: "/repos/a"},
+				{id: "tst-b", status: "done", ageDays: 40, path: "/repos/b"},
+			},
+			days:         30,
+			project:      "alpha",
+			wantArchived: []string{"tst-a"},
+		},
+		{
+			name: "unknown project is rejected",
+			tickets: []fixture{
+				{id: "tst-a", status: "done", ageDays: 40, path: "/repos/a"},
+			},
+			days:    30,
+			project: "nope",
+			wantErr: true,
+		},
+		{
+			name: "path and project cannot be combined",
+			tickets: []fixture{
+				{id: "tst-a", status: "done", ageDays: 40, path: "/repos/a"},
+			},
+			days:    30,
+			path:    "/repos/a",
+			project: "alpha",
+			wantErr: true,
+		},
+		{
+			name: "status filter archives only that status",
+			tickets: []fixture{
+				{id: "tst-done", status: "done", ageDays: 40},
+				{id: "tst-cancelled", status: "cancelled", ageDays: 40},
+			},
+			days:         30,
+			status:       ticket.StatusCancelled,
+			wantArchived: []string{"tst-cancelled"},
+		},
+		{
+			name: "status filter rejects a status that is not closed",
+			tickets: []fixture{
+				{id: "tst-done", status: "done", ageDays: 40},
+			},
+			days:    30,
+			status:  ticket.StatusTodo,
+			wantErr: true,
+		},
+		{
+			name: "path filter does not match a subdirectory",
+			tickets: []fixture{
+				{id: "tst-sub", status: "done", ageDays: 40, path: "/repos/a/sub"},
+			},
+			days:         30,
+			path:         "/repos/a",
 			wantArchived: nil,
 		},
 		{
@@ -129,7 +222,11 @@ func TestArchive(t *testing.T) {
 			repo := newMemRepo()
 			mtimes := make(map[string]time.Time, len(tc.tickets))
 			for _, f := range tc.tickets {
-				repo.add(f.id, fmt.Sprintf("---\nid: %s\nstatus: %s\nkontora: true\n---\n# %s\n", f.id, f.status, f.id))
+				path := ""
+				if f.path != "" {
+					path = fmt.Sprintf("path: %s\n", f.path)
+				}
+				repo.add(f.id, fmt.Sprintf("---\nid: %s\nstatus: %s\nkontora: true\n%s---\n# %s\n", f.id, f.status, path, f.id))
 				mtimes[repo.tickets[f.id].FilePath] = archiveNow.AddDate(0, 0, -f.ageDays)
 			}
 			if tc.saveErr {
@@ -148,9 +245,12 @@ func TestArchive(t *testing.T) {
 			}
 
 			rt := &spyRuntime{}
-			svc := New(Static(testCfg()), repo, rt)
+			cfg := testCfg()
+			cfg.Projects = map[string]config.Project{"alpha": {Path: "/repos/a"}}
+			svc := New(Static(cfg), repo, rt)
 
-			result, err := svc.archive(ArchiveOptions{Days: tc.days, DryRun: tc.dryRun}, archiveNow, stat)
+			opts := ArchiveOptions{Days: tc.days, DryRun: tc.dryRun, Path: tc.path, Project: tc.project, Status: tc.status}
+			result, err := svc.archive(opts, archiveNow, stat)
 			if tc.wantErr {
 				require.Error(t, err)
 				return

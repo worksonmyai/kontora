@@ -695,13 +695,17 @@ func cmdArchive() {
 	configPath := fs.String("config", defaultConfigPath(), "path to config file")
 	days := fs.Int("days", 0, "archive done/cancelled tickets not modified in the last N days")
 	dryRun := fs.Bool("dry-run", false, "list tickets that would be archived without writing")
+	repoPath := fs.String("path", "", "only archive tickets for this repository path")
+	project := fs.String("project", "", "only archive tickets for this configured project")
+	status := fs.String("status", "", "only archive tickets with this status (done or cancelled)")
 	if err := fs.Parse(os.Args[2:]); err != nil {
 		log.Fatalf("parsing flags: %v", err)
 	}
 
 	cfg := mustLoadConfig(*configPath)
 
-	if err := cli.Archive(cfg, os.Stdout, cli.ArchiveOpts{Days: *days, DryRun: *dryRun}); err != nil {
+	opts := cli.ArchiveOpts{Days: *days, DryRun: *dryRun, Path: *repoPath, Project: *project, Status: *status}
+	if err := cli.Archive(cfg, os.Stdout, opts); err != nil {
 		log.Fatal(err)
 	}
 }

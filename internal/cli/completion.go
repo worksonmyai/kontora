@@ -70,6 +70,9 @@ complete -c kontora -n '__fish_seen_subcommand_from ls' -l static -d 'Static tab
 # Flags: archive
 complete -c kontora -n '__fish_seen_subcommand_from archive' -o days -d 'Age threshold in days' -r
 complete -c kontora -n '__fish_seen_subcommand_from archive' -l dry-run -d 'List without writing'
+complete -c kontora -n '__fish_seen_subcommand_from archive' -o path -d 'Repository path' -r -F
+complete -c kontora -n '__fish_seen_subcommand_from archive' -o project -d 'Configured project name' -r
+complete -c kontora -n '__fish_seen_subcommand_from archive' -o status -d 'Closed status' -x -a 'done cancelled'
 
 # Flags: logs
 complete -c kontora -n '__fish_seen_subcommand_from logs' -o stage -d 'Stage name' -r

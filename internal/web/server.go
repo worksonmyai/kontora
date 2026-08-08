@@ -4,7 +4,6 @@ import (
 	"context"
 	"embed"
 	"fmt"
-	"io/fs"
 	"log/slog"
 	"net"
 	"net/http"
@@ -22,6 +21,7 @@ type Server struct {
 	listener    net.Listener
 	token       string
 	tmuxSession string
+	assets      map[string]*staticAsset
 }
 
 func New(svc TicketService, broker *SSEBroker, host string, port int, token, tmuxSession string, log *slog.Logger) *Server {
@@ -31,6 +31,7 @@ func New(svc TicketService, broker *SSEBroker, host string, port int, token, tmu
 		log:         log,
 		token:       token,
 		tmuxSession: tmuxSession,
+		assets:      loadAssets(),
 	}
 
 	mux := http.NewServeMux()
@@ -61,12 +62,11 @@ func New(svc TicketService, broker *SSEBroker, host string, port int, token, tmu
 	mux.HandleFunc("POST /api/tickets/{id}/plannotator-review", s.handlePlannotatorReview)
 	mux.HandleFunc("GET /api/events", s.handleSSE)
 	mux.HandleFunc("GET /ws/terminal/{id}", s.handleTerminalWS)
-	subFS, _ := fs.Sub(staticFS, "static")
-	mux.Handle("GET /", s.staticHandler(http.FileServerFS(subFS)))
+	mux.Handle("GET /", s.staticHandler(http.HandlerFunc(s.serveAsset)))
 
 	s.httpSrv = &http.Server{
 		Addr:              fmt.Sprintf("%s:%d", host, port),
-		Handler:           authMiddleware(s.token, mux),
+		Handler:           authMiddleware(s.token, gzipMiddleware(mux)),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	return s

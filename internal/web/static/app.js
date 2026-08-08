@@ -57,7 +57,7 @@ function kontora() {
     // burst of agent updates triggers a single recompute and repaint.
     _pendingTicketUpdates: [],
     _boardRaf: null,
-    _searchDebounce: null,
+    _searchRaf: null,
     // Reactive clock, advanced every 30s so relative durations ("Running for
     // 12m", card age timers) re-render without waiting for an SSE event.
     now: Date.now(),
@@ -2587,9 +2587,18 @@ function kontora() {
       return this._board[key] || [];
     },
 
+    // Re-filter on the next frame rather than after a fixed delay. Filtering
+    // and reconciling the board costs a few milliseconds, so it fits in the
+    // frame the keystroke already paints; the 150ms timer this replaces put
+    // that much lag between a typed character and the board reacting to it.
+    // Coalescing on the frame still collapses a fast burst of keystrokes into
+    // one pass.
     debounceRecomputeBoard() {
-      if (this._searchDebounce) clearTimeout(this._searchDebounce);
-      this._searchDebounce = setTimeout(() => this.recomputeBoard(), 150);
+      if (this._searchRaf !== null) return;
+      this._searchRaf = requestAnimationFrame(() => {
+        this._searchRaf = null;
+        this.recomputeBoard();
+      });
     },
 
     filteredTicketCount() {

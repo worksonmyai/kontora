@@ -2945,6 +2945,720 @@ test("index.html renders every settings section the rail lists", () => {
   assert.match(html, /id="web-token" :type="settingsShowToken \? 'text' : 'password'"/);
 });
 
+// ── Command palette ──────────────────────────────────────────────────────
+
+// Three tickets across the statuses the palette rows differ on.
+const PALETTE_TICKETS = [
+  { id: "kon-1", title: "[kontora] Add a settings view", path: "/w/kontora", pipeline: "default", status: "in_progress", stage: "code", stages: ["plan", "code", "review"], agent: "claude", kontora: true },
+  { id: "kon-2", title: "[kontora] Vendor the fonts", path: "/w/kontora", pipeline: "default", status: "paused", stage: "plan", stages: ["plan", "code", "review"], agent: "codex", kontora: true },
+  { id: "gol-3", title: "Toroidal grid wrapping", path: "/w/game-of-life", pipeline: "simple", status: "open", stage: "", stages: [], agent: "claude", kontora: false },
+];
+
+// A component with the palette open. The harness runs requestAnimationFrame and
+// the focus retry straight away, so $refs.paletteInput records the focus calls.
+// `recents` seeds the persisted recent-ticket ids read on construction.
+function paletteState(tickets = PALETTE_TICKETS, { recents = [], ...overrides } = {}) {
+  const state = loadKontoraState({
+    localStorage: {
+      getItem: (k) => (k === "kontora-recent-tickets" ? JSON.stringify(recents) : null),
+      setItem() {},
+    },
+    ...overrides,
+  });
+  state.$nextTick = (callback) => { if (callback) callback(); return Promise.resolve(); };
+  state.$refs = { paletteInput: { focused: 0, focus() { this.focused += 1; } } };
+  state.updateFavicon = () => {};
+  state.tickets = tickets.map((t) => ({ ...t }));
+  state.recomputeBoard();
+  state.openPalette();
+  return state;
+}
+
+// Group labels and row ids, rebuilt in this realm (see vmValue).
+const groupLabels = (state) => [...state.paletteGroups.map((g) => g.label)];
+const groupIn = (state, label) => state.paletteGroups.find((g) => g.label === label);
+const rowIds = (items) => [...items.map((r) => r.id)];
+const rowTitles = (items) => [...items.map((r) => r.title)];
+
+test("typing in the board filter still narrows the columns", async () => {
+  const state = loadKontoraState();
+  state.tickets = [
+    { id: "kon-alpha", title: "Alpha", status: "todo", kontora: true },
+    { id: "kon-beta", title: "Beta", status: "todo", kontora: true },
+  ];
+  state.recomputeBoard();
+  assert.equal(bt(state, "in_progress").length, 2);
+
+  // What the $watch on searchQuery calls; the autocomplete no longer sits in
+  // front of it.
+  state.searchQuery = "alpha";
+  state.debounceRecomputeBoard();
+  await new Promise((resolve) => setTimeout(resolve, 200));
+
+  assert.deepEqual(bt(state, "in_progress").map((t) => t.id), ["kon-alpha"]);
+});
+
+test("an empty palette query lists the recent tickets then the navigation commands", () => {
+  const state = paletteState(PALETTE_TICKETS, { recents: ["kon-2", "gol-3"] });
+
+  assert.deepEqual(groupLabels(state), ["Recent", "Go to"]);
+  assert.deepEqual(rowIds(groupIn(state, "Recent").items), ["ticket:kon-2", "ticket:gol-3"]);
+  assert.deepEqual(rowTitles(groupIn(state, "Go to").items),
+    ["Go to board", "New ticket", "Settings", "Toggle sidebar", "Toggle theme"]);
+});
+
+test("the open ticket leads the root list with its actions and its live logs", () => {
+  const state = paletteState(PALETTE_TICKETS, { recents: ["kon-2"] });
+  state.selectedTicket = { id: "kon-1" };
+  state.recomputePalette();
+
+  assert.deepEqual(groupLabels(state), ["This ticket · kon-1", "Recent", "Go to"]);
+  const lead = groupIn(state, "This ticket · kon-1");
+  assert.equal(lead.hint, "Add a settings view");
+  assert.deepEqual(rowIds(lead.items), ["drill:kon-1", "tab:kon-1:session"]);
+  assert.equal(lead.items[0].meta, "4 →");
+  assert.equal(lead.items[1].meta, "live");
+});
+
+test("a query replaces the recent group with the matching tickets", () => {
+  const state = paletteState(PALETTE_TICKETS, { recents: ["kon-1"] });
+  state.paletteQuery = "fonts";
+  state.recomputePalette();
+
+  assert.deepEqual(groupLabels(state), ["Tickets"]);
+  const found = groupIn(state, "Tickets");
+  assert.equal(found.hint, "1 of 3");
+  assert.deepEqual(rowIds(found.items), ["ticket:kon-2"]);
+});
+
+test("a query narrows the navigation commands by label", () => {
+  const state = paletteState();
+  state.paletteQuery = "theme";
+  state.recomputePalette();
+
+  assert.deepEqual(groupLabels(state), ["Go to"]);
+  assert.deepEqual(rowTitles(groupIn(state, "Go to").items), ["Toggle theme"]);
+});
+
+test("a query that matches nothing leaves no rows to render", () => {
+  const state = paletteState();
+  state.paletteQuery = "nothing matches this";
+  state.recomputePalette();
+
+  assert.equal(state.paletteGroups.length, 0);
+  assert.equal(state._paletteRows.length, 0);
+  assert.equal(state._paletteSelId, null);
+});
+
+test("the palette matches on stage and agent, which the board filter ignores", () => {
+  const state = paletteState();
+
+  for (const q of ["codex", "plan"]) {
+    assert.equal(state.ticketMatchesQuery(state.tickets[1], q), false, q);
+    state.paletteQuery = q;
+    state.recomputePalette();
+    assert.deepEqual(rowIds(groupIn(state, "Tickets").items), ["ticket:kon-2"], q);
+  }
+});
+
+test("a ticket row carries its status pill, project tag, and stage position", () => {
+  const state = paletteState(PALETTE_TICKETS, { recents: ["kon-1"] });
+
+  const row = groupIn(state, "Recent").items[0];
+  assert.equal(row.glyph, "●");
+  assert.equal(row.glyphClass, "text-st-progress");
+  assert.equal(row.tag, "[kontora]");
+  assert.equal(row.status, "in_progress");
+  assert.equal(row.statusText, "running");
+  assert.equal(row.sub, "kon-1  ·  code 2/3  ·  claude");
+  assert.equal(row.meta, "→");
+});
+
+test("an unstarted ticket reports its stage count and whether kontora manages it", () => {
+  const state = paletteState([
+    { id: "gol-4", title: "Add a CLI", path: "/w/game-of-life", status: "open", stages: ["plan", "code"], agent: "claude", kontora: false },
+  ], { recents: ["gol-4"] });
+
+  const row = groupIn(state, "Recent").items[0];
+  assert.equal(row.sub, "gol-4  ·  2 stages  ·  claude  ·  unmanaged");
+  assert.equal(row.statusText, "open");
+});
+
+test("drilling into a paused ticket lists its legal moves then the three tab targets", () => {
+  const state = paletteState();
+  state.palettePush("kon-2");
+
+  assert.deepEqual(groupLabels(state), ["Actions", "Open"]);
+  const actions = groupIn(state, "Actions");
+  assert.equal(actions.hint, "paused · 3 legal");
+  assert.deepEqual(rowTitles(actions.items), ["Resume", "Mark done", "Cancel"]);
+  assert.deepEqual(rowTitles(groupIn(state, "Open").items),
+    ["Open logs", "Open summary", "Open ticket body"]);
+});
+
+test("an unmanaged ticket gets Initialize before its other moves", () => {
+  const state = paletteState();
+  state.palettePush("gol-3");
+
+  assert.deepEqual(rowTitles(groupIn(state, "Actions").items), ["Initialize", "Queue", "Cancel"]);
+});
+
+test("the palette offers no Delete anywhere", () => {
+  const state = paletteState();
+  state.selectedTicket = { id: "kon-1" };
+  state.recomputePalette();
+  assert.equal(rowTitles(state._paletteRows).includes("Delete"), false);
+
+  state.palettePush("kon-1");
+  assert.equal(rowTitles(state._paletteRows).includes("Delete"), false);
+});
+
+test("the highlight wraps across group boundaries", () => {
+  const state = paletteState(PALETTE_TICKETS, { recents: ["kon-1"] });
+  const ids = rowIds(state._paletteRows);
+  assert.equal(ids.length, 6);
+  assert.equal(state._paletteSelId, ids[0]);
+
+  state.paletteMove(-1);
+  assert.equal(state._paletteSelId, ids[ids.length - 1]);
+
+  state.paletteMove(1);
+  assert.equal(state._paletteSelId, ids[0]);
+});
+
+test("a live status change keeps the highlight on the same row", () => {
+  const state = paletteState(PALETTE_TICKETS, { recents: ["kon-2", "kon-1"] });
+  state.paletteMove(1);
+  assert.equal(state._paletteSelId, "ticket:kon-1");
+
+  state.queueTicketUpdate({ ...PALETTE_TICKETS[0], status: "human_review" });
+
+  assert.equal(state._paletteSelId, "ticket:kon-1");
+  const row = state._paletteRows[state.paletteSel];
+  assert.equal(row.id, "ticket:kon-1");
+  assert.equal(row.statusText, "review");
+});
+
+test("a scope whose ticket disappears falls back to the root list", () => {
+  const state = paletteState();
+  state.palettePush("kon-2");
+  assert.deepEqual(groupLabels(state), ["Actions", "Open"]);
+
+  state.tickets = state.tickets.filter((t) => t.id !== "kon-2");
+  state.recomputePalette();
+
+  assert.equal(state.paletteScope, null);
+  assert.deepEqual(groupLabels(state), ["Go to"]);
+});
+
+test("opening a ticket row closes the palette and opens the detail panel", async () => {
+  const state = paletteState(PALETTE_TICKETS, { recents: ["kon-1"] });
+  const opened = [];
+  state.selectTicket = async (t) => { opened.push(t.id); state.selectedTicket = t; };
+
+  await state.paletteRun(state._paletteRows[0], false);
+
+  assert.deepEqual(opened, ["kon-1"]);
+  assert.equal(state.paletteOpen, false);
+  assert.equal(state.toast, "opened kon-1 · live logs");
+});
+
+test("opening a ticket row from another view returns to the board first", async () => {
+  const state = paletteState(PALETTE_TICKETS, { recents: ["kon-2"] });
+  const calls = [];
+  state.currentView = "settings";
+  state.gotoView = async (v) => { calls.push("goto:" + v); state.currentView = "board"; };
+  state.selectTicket = async (t) => { calls.push("select:" + t.id); };
+
+  await state.paletteRun(state._paletteRows[0], false);
+
+  assert.deepEqual(calls, ["goto:board", "select:kon-2"]);
+  assert.equal(state.toast, "opened kon-2");
+});
+
+test("a Settings form that refuses to navigate leaves the ticket unselected", async () => {
+  const state = paletteState(PALETTE_TICKETS, { recents: ["kon-2"] });
+  const calls = [];
+  state.currentView = "settings";
+  // What gotoView does with a dirty form: it opens its guard and stays put.
+  // Selecting behind it would attach a live terminal to a hidden container.
+  state.gotoView = async (v) => { calls.push("goto:" + v); state.settingsGuard = true; };
+  state.selectTicket = async (t) => { calls.push("select:" + t.id); };
+
+  await state.paletteRun(state._paletteRows[0], false);
+
+  assert.deepEqual(calls, ["goto:board"]);
+  assert.equal(state.settingsGuard, true);
+  assert.equal(state.toast, null);
+});
+
+test("a ticket already open is not handed to selectTicket, which would close it", async () => {
+  const state = paletteState();
+  let selects = 0;
+  state.selectTicket = async () => { selects += 1; };
+  state.selectedTicket = { ...PALETTE_TICKETS[0] };
+  state.recomputePalette();
+
+  await state.paletteRun(state._paletteRows.find((r) => r.id === "tab:kon-1:session"), false);
+
+  assert.equal(selects, 0);
+  assert.equal(state.activeTab, "session");
+});
+
+test("a tab row applies its tab only after selectTicket resolves", async () => {
+  const state = paletteState();
+  const gate = deferred();
+  const calls = [];
+  state.selectTicket = async (t) => { calls.push("select"); state.selectedTicket = t; await gate.promise; };
+  state.switchTab = (tab) => { calls.push("tab:" + tab); state.activeTab = tab; };
+  state.palettePush("kon-1");
+
+  const running = state.paletteRun(state._paletteRows.find((r) => r.id === "tab:kon-1:session"), false);
+  assert.deepEqual(calls, ["select"]);
+
+  gate.resolve();
+  await running;
+
+  assert.deepEqual(calls, ["select", "tab:session"]);
+  assert.equal(state.toast, "kon-1 · open logs");
+});
+
+test("a tab the ticket cannot show falls back to the ticket body", async () => {
+  const state = paletteState();
+  state.selectTicket = async (t) => { state.selectedTicket = t; };
+  state.startEditing = () => {};
+  state.palettePush("kon-2");
+
+  // kon-2 recorded no summary, so the summary tab would render nothing.
+  await state.paletteRun(state._paletteRows.find((r) => r.id === "tab:kon-2:summary"), false);
+
+  assert.equal(state.activeTab, "ticket");
+  assert.equal(state.toast, "kon-2 · open ticket body");
+});
+
+test("navigation rows dispatch through the existing view and toggle methods", async () => {
+  const cases = [
+    { id: "nav-board", expect: "goto:board" },
+    { id: "nav-new", expect: "goto:new" },
+    { id: "nav-settings", expect: "goto:settings" },
+    { id: "nav-sidebar", expect: "sidebar" },
+    { id: "nav-theme", expect: "theme" },
+  ];
+  for (const c of cases) {
+    const state = paletteState();
+    const calls = [];
+    // Recorded before dispatch: the palette must be closed by then.
+    const note = (what) => calls.push(state.paletteOpen ? what + ":open" : what);
+    state.gotoView = async (v) => note("goto:" + v);
+    state.toggleSidebar = () => note("sidebar");
+    state.toggleTheme = () => note("theme");
+    state.recomputePalette();
+
+    await state.paletteRun(state._paletteRows.find((r) => r.id === c.id), false);
+
+    assert.deepEqual(calls, [c.expect], c.id);
+    assert.equal(state.paletteOpen, false, c.id);
+  }
+});
+
+test("⌘Enter on a ticket drills into its actions instead of opening it", async () => {
+  const state = paletteState(PALETTE_TICKETS, { recents: ["kon-2"] });
+  state.selectTicket = async () => { throw new Error("should not open the ticket"); };
+
+  await state.paletteRun(state._paletteRows[0], true);
+
+  assert.equal(state.paletteScope, "kon-2");
+  assert.equal(state.paletteOpen, true);
+});
+
+test("an action that is no longer legal sends nothing and says so", async () => {
+  let posts = 0;
+  const state = paletteState(PALETTE_TICKETS, {
+    fetch: async () => { posts += 1; return { ok: true, json: async () => ({}) }; },
+  });
+  state.palettePush("kon-1");
+  const pause = state._paletteRows.find((r) => r.id === "action:kon-1:pause");
+
+  // The agent finished between building the row and pressing Enter.
+  state.tickets[0].status = "human_review";
+
+  await state.paletteRun(pause, false);
+
+  assert.equal(posts, 0);
+  assert.equal(state.toast, "kon-1 is no longer running");
+  assert.equal(state.paletteOpen, false);
+});
+
+test("a legal action posts through moveTicketVia and confirms in past tense", async () => {
+  const state = paletteState();
+  const calls = [];
+  state.moveTicketVia = async (id, endpoint, body) => { calls.push([id, endpoint, vmValue(body)]); };
+  state.palettePush("kon-1");
+
+  await state.paletteRun(state._paletteRows.find((r) => r.id === "action:kon-1:pause"), false);
+
+  assert.deepEqual(vmValue(calls), [["kon-1", "pause", null]]);
+  assert.equal(state.paletteOpen, false);
+  assert.equal(state.toast, "kon-1 paused");
+});
+
+test("an action carrying a target status sends it as the request body", async () => {
+  const state = paletteState();
+  const calls = [];
+  state.moveTicketVia = async (id, endpoint, body) => { calls.push([id, endpoint, vmValue(body)]); };
+  state.palettePush("kon-1");
+
+  await state.paletteRun(state._paletteRows.find((r) => r.id === "action:kon-1:send-to-review"), false);
+
+  assert.deepEqual(vmValue(calls), [["kon-1", "move", { status: "human_review" }]]);
+  assert.equal(state.toast, "kon-1 sent to review");
+});
+
+test("a failed action is not confirmed as done", async () => {
+  // The default harness fetch answers ok:false, so moveTicketVia sets error.
+  const state = paletteState();
+  state.palettePush("kon-1");
+
+  await state.paletteRun(state._paletteRows.find((r) => r.id === "action:kon-1:pause"), false);
+
+  assert.equal(state.toast, null);
+  assert.match(state.error, /pause failed/);
+});
+
+test("starting an unmanaged ticket opens initialization and confirms nothing", async () => {
+  const state = paletteState();
+  let posts = 0;
+  state.fetch = async () => { posts += 1; return { ok: true, json: async () => ({}) }; };
+  state.palettePush("gol-3");
+
+  await state.paletteRun(state._paletteRows.find((r) => r.id === "action:gol-3:initialize"), false);
+
+  assert.equal(state.initModal, true);
+  assert.equal(posts, 0);
+  assert.equal(state.toast, null);
+});
+
+test("Escape pops the ticket scope before it closes the palette", () => {
+  const state = paletteState();
+  state.palettePush("kon-1");
+
+  state.palettePop();
+  assert.equal(state.paletteScope, null);
+  assert.equal(state.paletteOpen, true);
+
+  state.palettePop();
+  assert.equal(state.paletteOpen, false);
+});
+
+test("opening the palette focuses its input", () => {
+  // The panel's display flips a frame after paletteOpen, so a focus call in the
+  // same tick lands on a hidden input and does nothing.
+  const state = paletteState();
+
+  assert.equal(state.$refs.paletteInput.focused > 0, true);
+});
+
+test("closing the palette returns focus to whatever had it", () => {
+  let focused = 0;
+  const terminalInput = { focus() { focused += 1; } };
+  const state = paletteState(PALETTE_TICKETS, {
+    document: { getElementById: () => null, querySelector: () => null, documentElement: { style: {} }, activeElement: terminalInput },
+  });
+
+  state.closePalette();
+
+  assert.equal(focused, 1);
+  assert.equal(state.paletteGroups.length, 0);
+});
+
+test("the palette chord is ⌘K on macOS and Ctrl+K elsewhere, from a capture-phase window listener", () => {
+  // On macOS Ctrl+K is readline's kill-to-end-of-line, so taking it would break
+  // editing the agent's command line in the terminal tab.
+  const cases = [
+    { platform: "MacIntel", ours: { metaKey: true }, theirs: { ctrlKey: true } },
+    { platform: "Win32", ours: { ctrlKey: true }, theirs: { metaKey: true } },
+  ];
+  for (const c of cases) {
+    const listeners = [];
+    const state = loadKontoraState({
+      navigator: { platform: c.platform, clipboard: { writeText() {} } },
+      window: { innerWidth: 1200, addEventListener(type, handler, capture) { listeners.push({ type, handler, capture }); } },
+      document: { getElementById: () => null, querySelector: () => null, documentElement: { style: {} }, addEventListener() {} },
+    });
+    state.$nextTick = (callback) => { if (callback) callback(); return Promise.resolve(); };
+    state.$refs = {};
+    state._bindGlobalEvents();
+
+    // Capture phase, because xterm reads the keystroke from a hidden textarea
+    // and a bubble listener never sees it.
+    const captured = listeners.filter((l) => l.type === "keydown" && l.capture === true);
+    assert.equal(captured.length, 1, c.platform);
+
+    let prevented = 0;
+    let stopped = 0;
+    const press = (init) => captured[0].handler({
+      preventDefault() { prevented += 1; },
+      stopPropagation() { stopped += 1; },
+      ...init,
+    });
+
+    press({ key: "k", ...c.ours });
+    assert.equal(state.paletteOpen, true, c.platform);
+    // The "k" must not reach the agent's stdin.
+    assert.equal(prevented, 1, c.platform);
+    assert.equal(stopped, 1, c.platform);
+
+    press({ key: "K", ...c.ours });
+    assert.equal(state.paletteOpen, false, c.platform);
+
+    // The other platform's chord, and a bare "k", pass through untouched.
+    press({ key: "k", ...c.theirs });
+    press({ key: "k" });
+    assert.equal(state.paletteOpen, false, c.platform);
+    assert.equal(prevented, 2, c.platform);
+  }
+});
+
+test("the phone layout leaves the palette closed", () => {
+  const state = loadKontoraState({ window: { innerWidth: 500, addEventListener() {} } });
+  assert.equal(state.isMobile, true);
+
+  state.openPalette();
+
+  assert.equal(state.paletteOpen, false);
+  assert.equal(state.paletteGroups.length, 0);
+});
+
+test("→ drills only with the caret at the end of the query", () => {
+  const state = paletteState();
+  state.paletteQuery = "kon";
+  state.recomputePalette();
+  const event = (caret) => ({ key: "ArrowRight", target: { selectionStart: caret }, preventDefault() { this.prevented = true; } });
+
+  const mid = event(1);
+  state.paletteDrillFromKey(mid);
+  assert.equal(state.paletteScope, null);
+  assert.equal(mid.prevented, undefined);
+
+  const end = event(3);
+  state.paletteDrillFromKey(end);
+  assert.equal(state.paletteScope, "kon-1");
+  assert.equal(end.prevented, true);
+});
+
+test("→ on a command row does nothing", () => {
+  const state = paletteState();
+  state.paletteQuery = "theme";
+  state.recomputePalette();
+
+  state.paletteDrillFromKey({ key: "ArrowRight", target: { selectionStart: 5 }, preventDefault() { throw new Error("should not drill"); } });
+
+  assert.equal(state.paletteScope, null);
+});
+
+test("keyboard movement scrolls the highlighted row into view", () => {
+  // The list scrolls inside a panel capped at the viewport height, so a
+  // highlight arrowed past the fold would leave the screen.
+  const scrolled = [];
+  const state = paletteState(PALETTE_TICKETS, {
+    recents: ["kon-1", "kon-2"],
+    document: {
+      getElementById: (id) => (id.startsWith("palette-row-")
+        ? { scrollIntoView(options) { scrolled.push([id, vmValue(options)]); } }
+        : null),
+      querySelector: () => null,
+      documentElement: { style: {} },
+    },
+  });
+
+  state.paletteMove(1);
+
+  assert.deepEqual(vmValue(scrolled), [["palette-row-ticket:kon-2", { block: "nearest" }]]);
+});
+
+test("editing the query moves the highlight back to the top of the new list", () => {
+  const state = paletteState(PALETTE_TICKETS, { recents: ["kon-2"] });
+  state.paletteMove(1);
+  state.paletteMove(1);
+  assert.equal(state._paletteSelId, "nav-new");
+
+  // recomputePalette follows the highlighted row across a rebuild, which is
+  // right for an SSE re-rank and wrong here: "New ticket" survives the query
+  // and Enter would run it over the ticket matches now above it.
+  state.paletteQuery = "n";
+  state.onPaletteQueryChanged();
+
+  assert.equal(state.paletteSel, 0);
+  assert.equal(state._paletteSelId, state._paletteRows[0].id);
+  assert.equal(state._paletteRows[0].kind, "ticket");
+});
+
+test("query matches are ordered like the board, and the hint counts the rows left out", () => {
+  const many = Array.from({ length: 8 }, (_, i) => ({
+    id: "kon-" + (i + 1), title: "[kontora] Task " + (i + 1), path: "/w/kontora",
+    status: i === 7 ? "in_progress" : "todo", stages: [], agent: "claude", kontora: true,
+  }));
+  const state = paletteState(many);
+
+  state.paletteQuery = "task";
+  state.onPaletteQueryChanged();
+
+  const found = groupIn(state, "Tickets");
+  assert.equal(found.hint, "8 of 8 · 6 shown");
+  // Raw server order leaves the running ticket last; the board ranks it first.
+  assert.deepEqual(rowIds(found.items),
+    ["ticket:kon-8", "ticket:kon-1", "ticket:kon-2", "ticket:kon-3", "ticket:kon-4", "ticket:kon-5"]);
+});
+
+test("a scoped query that matches nothing renders no group headers", () => {
+  const state = paletteState();
+  state.palettePush("kon-2");
+
+  state.paletteQuery = "zzzz";
+  state.onPaletteQueryChanged();
+
+  assert.deepEqual(groupLabels(state), []);
+  assert.equal(state._paletteRows.length, 0);
+});
+
+test("the legal-move count in the scope header does not move with the query", () => {
+  const state = paletteState();
+  state.palettePush("kon-2");
+  assert.equal(groupIn(state, "Actions").hint, "paused · 3 legal");
+
+  state.paletteQuery = "cancel";
+  state.onPaletteQueryChanged();
+
+  assert.equal(groupIn(state, "Actions").hint, "paused · 3 legal");
+  assert.deepEqual(rowTitles(groupIn(state, "Actions").items), ["Cancel"]);
+});
+
+test("hovering a row moves the highlight to it", () => {
+  const state = paletteState(PALETTE_TICKETS, { recents: ["kon-1", "kon-2"] });
+
+  state.paletteHover("ticket:kon-2");
+
+  assert.equal(state._paletteSelId, "ticket:kon-2");
+  assert.equal(state.paletteSel, 1);
+});
+
+test("opened tickets are remembered most recent first, deduplicated and capped at three", async () => {
+  const stored = {};
+  const state = loadKontoraState({
+    localStorage: {
+      getItem(k) { return Object.prototype.hasOwnProperty.call(stored, k) ? stored[k] : null; },
+      setItem(k, v) { stored[k] = String(v); },
+    },
+    fetch: async () => ({ ok: false, json: async () => ({}) }),
+  });
+  state.tickets = ["kon-1", "kon-2", "kon-3", "kon-4"].map((id) => ({ id, title: id, status: "todo", kontora: true }));
+  state.startEditing = () => {};
+
+  for (const id of ["kon-1", "kon-2", "kon-1", "kon-3", "kon-4"]) {
+    state.selectedTicket = null;
+    await state.selectTicket(state.tickets.find((t) => t.id === id));
+  }
+
+  assert.deepEqual([...state.recentTickets], ["kon-4", "kon-3", "kon-1"]);
+  assert.deepEqual(JSON.parse(stored["kontora-recent-tickets"]), ["kon-4", "kon-3", "kon-1"]);
+});
+
+test("recent tickets survive a reload and drop ids that no longer exist", () => {
+  const state = paletteState(PALETTE_TICKETS, { recents: ["kon-2", "gone-9", "kon-1"] });
+
+  assert.deepEqual(rowIds(groupIn(state, "Recent").items), ["ticket:kon-2", "ticket:kon-1"]);
+});
+
+test("the palette input and rows carry the listbox semantics", () => {
+  const html = fs.readFileSync(htmlPath, "utf8");
+
+  assert.match(html, /role="dialog" aria-modal="true" aria-label="Command palette"/);
+  assert.match(html, /id="palette-list" role="listbox"/);
+  assert.match(html, /role="combobox"[\s\S]{0,200}?:aria-activedescendant="_paletteSelId \? 'palette-row-' \+ _paletteSelId : null"/);
+  assert.match(html, /:id="'palette-row-' \+ row\.id" role="option" :aria-selected="_paletteSelId === row\.id"/);
+  // The group wrapper, its header, and the no-match line stand between the
+  // listbox and its options; ARIA only keeps the options owned when they do
+  // not carry a role of their own.
+  assert.match(html, /<div role="presentation" class="px-1\.5">/);
+  assert.match(html, /<div role="presentation" class="flex items-baseline gap-2 px-2\.5/);
+  assert.match(html, /x-show="paletteQuery && !_paletteRows\.length" role="presentation"/);
+});
+
+test("a row id can be referenced by aria-activedescendant, which takes no whitespace", () => {
+  const state = paletteState(PALETTE_TICKETS, { recents: ["kon-1"] });
+  state.selectedTicket = { id: "kon-1" };
+  state.recomputePalette();
+  const ids = rowIds(state._paletteRows);
+  state.palettePush("kon-1");
+  ids.push(...rowIds(state._paletteRows));
+
+  assert.deepEqual(ids.filter((id) => /\s/.test(id)), []);
+  assert.equal(ids.includes("action:kon-1:send-to-review"), true);
+});
+
+test("the palette dismisses on a press that starts on the scrim, not on a drag that ends there", () => {
+  const html = fs.readFileSync(htmlPath, "utf8");
+
+  // A drag from the input that ends outside the panel dispatches its click on
+  // the scrim, so dismissing on click would discard the query being selected.
+  assert.match(html, /x-show="paletteOpen" x-cloak @mousedown\.self="closePalette\(\)"/);
+  assert.equal(/@click="closePalette\(\)"/.test(html), false);
+});
+
+test("⌫ and ← pop a ticket scope and leave the root palette open", () => {
+  const html = fs.readFileSync(htmlPath, "utf8");
+
+  // Both keys reach palettePop, which closes the palette when there is no
+  // scope. At the root ← only moves the caret, and closing on it is a surprise.
+  assert.match(html, /@keydown\.backspace="if \(!paletteQuery && paletteScope\) \{ \$event\.preventDefault\(\); palettePop\(\); \}"/);
+  assert.match(html, /@keydown\.arrow-left="if \(!paletteQuery && paletteScope\) \{ \$event\.preventDefault\(\); palettePop\(\); \}"/);
+});
+
+test("init wires the palette query watcher to the query handler", () => {
+  const app = fs.readFileSync(appPath, "utf8");
+
+  // Every palette test below drives recomputePalette by hand, because the VM
+  // harness has no Alpine $watch. Without this assertion, dropping the watcher
+  // leaves the suite green and the palette deaf to typing.
+  assert.match(app, /this\.\$watch\('paletteQuery', \(\) => this\.onPaletteQueryChanged\(\)\)/);
+});
+
+test("the palette leads the Escape stack and the highlight follows the mouse, not the pointer entering", () => {
+  const html = fs.readFileSync(htmlPath, "utf8");
+
+  assert.match(html, /@keydown\.escape\.window="if \(paletteOpen\) palettePop\(\); else if \(deleteModal\)/);
+  // mouseenter would move the highlight when the list re-renders under a
+  // stationary cursor.
+  assert.match(html, /@mousemove="paletteHover\(row\.id\)"/);
+  assert.equal(/@mouseenter="paletteHover/.test(html), false);
+});
+
+test("the filter input keeps a plain filter and a ⌘K keycap", () => {
+  const html = fs.readFileSync(htmlPath, "utf8");
+
+  // The autocomplete dropdown and its handlers are gone.
+  assert.equal(/searchOpen|suggestions|selectedIndex|updateSuggestions|applySuggestion|acceptSelection|moveSelection|flatIndex/.test(html), false);
+  assert.match(html, /x-show="!searchQuery" @click="openPalette\(\)"/);
+  assert.match(html, /x-text="isMac \? '⌘K' : 'Ctrl K'"/);
+  // Room for the keycap next to the clear button.
+  assert.match(html, /placeholder="Filter tickets…"[\s\S]{0,200}?pr-11/);
+});
+
+test("the palette animations are dropped under reduced motion", () => {
+  const html = fs.readFileSync(htmlPath, "utf8");
+
+  assert.match(html, /\.pal-panel \{ animation: pal-in/);
+  assert.match(html, /\.pal-scrim \{ animation: scrim-in/);
+  const reduced = html.match(/@media \(prefers-reduced-motion: reduce\) \{(?:[^{}]|\{[^{}]*\})*?\.pal-panel, \.pal-scrim \{ animation: none; \}/);
+  assert.notEqual(reduced, null);
+});
+
+test("app.js keeps no autocomplete leftovers", () => {
+  const app = fs.readFileSync(appPath, "utf8");
+
+  assert.equal(/searchOpen|suggestions|selectedIndex/.test(app), false);
+});
+
 test("every color utility the page writes exists in the built app.css", () => {
   // Tailwind's opacity scale runs in steps of 5, so bg-ok/14 silently emits
   // nothing and the element renders with no fill. Arbitrary values (/[0.14])

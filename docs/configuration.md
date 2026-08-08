@@ -126,6 +126,7 @@ pipelines:
 | `statuses` | no | — | Extra parked statuses beyond the built-ins. Agents can park tickets here via `on_success`/`on_failure`. |
 | `projects` | no | — | Per-repository default pipeline, agent, and branch prefix (see [projects](#projects)). |
 | `environment` | no | — | Map of environment variables to set for all agent processes. |
+| `resume_prompt` | no | (built-in) | Prompt sent to an agent whose stage a daemon restart interrupted, in place of the stage prompt (see [resuming after a restart](#resuming-after-a-restart)). Same template fields as a stage prompt. |
 | `web` | no | — | Web dashboard settings (see [web](#web)). Enabled by default. |
 
 All paths support `~` for the home directory. Tilde expansion happens at runtime, not at config load time.
@@ -170,6 +171,7 @@ agents:
 | `args` | no | Arguments passed to the binary. The rendered prompt is appended as the last argument. |
 | `environment` | no | Map of environment variables to set for this agent's processes (merged with top-level `environment`). |
 | `failure_patterns` | no | Regexes matched against the agent's output log after it exits. A match pauses the ticket even on a clean exit — catching agents that report failures (quota, API errors) without a non-zero exit code. Unset uses the built-in defaults (below); set an explicit list to override, or `[]` to disable. Claude also gets structural detection from its session log regardless. |
+| `resume` | no | Set `false` to make every stage this agent runs start a new conversation, even after a daemon restart interrupted one (see [resuming after a restart](#resuming-after-a-restart)). Unset means resume is on for `claude` and `pi`; any other agent always starts fresh. |
 
 When `failure_patterns` is omitted, an agent inherits these defaults, tuned to match agent/provider error output rather than source code or prose (so implementing a rate limiter won't self-pause):
 
@@ -185,6 +187,23 @@ When `failure_patterns` is omitted, an agent inherits these defaults, tuned to m
 ```
 
 To turn detection off for an agent, set `failure_patterns: []`.
+
+### Resuming after a restart
+
+When the daemon stops while an agent is mid-stage, the ticket goes back to `todo` and the stage is scheduled again. The worktree and branch survive, so without resume the agent starts a new conversation on top of its own half-finished work, with no memory of why it made those changes. Resume reattaches the stage to the conversation it was in, and sends `resume_prompt` instead of the stage prompt so the agent continues rather than starts over.
+
+The daemon writes `<logs_dir>/<ticket-id>/<stage>.session` while a stage's agent runs and deletes it as soon as the agent returns. A record left on disk therefore means the daemon itself went away. It is not part of the ticket file: everything it points at, including the Claude session files under `~/.claude/projects/`, is local to one machine.
+
+A stage resumes only when every one of these holds. Any other case runs the stage fresh and logs why; nothing here pauses a ticket.
+
+- The agent is `claude` or `pi` and its `resume` is not `false`.
+- The record names this same stage, this same agent, this daemon's `instance_name`, and this worktree.
+- The agent's session file still exists.
+- No tmux window for the ticket is live, which would mean a process may still hold the session.
+
+Pausing a ticket and running `kontora retry` are deliberate restarts: the daemon is still up when the agent dies, so the record is already gone and the stage starts over.
+
+An agent that had in fact finished its work can exit within a second of resuming, which the tmux startup guard reads as a crash. Rather than pause the ticket, the daemon runs the stage once more from its normal prompt in a new session. That fallback happens at most once per scheduled stage and does not consume a pipeline retry. It only covers a resumed run that failed inside its first two seconds: a run that failed later did work that is now in the worktree, so the ticket pauses instead of repeating it.
 
 ## stages
 

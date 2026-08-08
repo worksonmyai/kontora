@@ -56,6 +56,11 @@ type Config struct {
 	Environment         map[string]string   `yaml:"environment"`
 	Plannotator         Plannotator         `yaml:"plannotator"`
 
+	// ResumePrompt replaces the built-in prompt sent to an agent whose stage a
+	// daemon restart interrupted. It is a stage prompt template with the same
+	// `{{ .Ticket.* }}` fields.
+	ResumePrompt string `yaml:"resume_prompt"`
+
 	// ReworkIsBuiltin is true when the rework stage was injected by
 	// applyDefaults. It flips to false when the user defines their own
 	// `stages.rework:` block, signalling the daemon to leave routing to the
@@ -92,6 +97,11 @@ type Agent struct {
 	// explicit list to override them, or [] to disable detection for this agent.
 	// Claude also gets structural detection from its session JSONL regardless.
 	FailurePatterns []string `yaml:"failure_patterns"`
+	// Resume, when false, makes every stage this agent runs start a new
+	// conversation even after a daemon restart interrupted one. Unset means
+	// resume is on for Claude and pi, the two CLIs whose resume flags Kontora
+	// knows. Any other agent ignores this field and always starts fresh.
+	Resume *bool `yaml:"resume"`
 }
 
 // wrapperBinaries are launcher commands that run the real agent binary after

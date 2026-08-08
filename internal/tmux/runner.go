@@ -13,8 +13,11 @@ import (
 )
 
 const (
-	pollInterval      = 100 * time.Millisecond
-	minInteractiveDur = 2 * time.Second
+	pollInterval = 100 * time.Millisecond
+	// MinInteractiveDuration is how long an interactive agent must stay alive
+	// before its exit counts as a real one. A faster exit is reported as an
+	// error, because the agent crashed on startup instead of doing any work.
+	MinInteractiveDuration = 2 * time.Second
 )
 
 // RunParams contains parameters for running a command inside a tmux window.
@@ -158,7 +161,7 @@ func runInteractive(ctx context.Context, p RunParams) (process.Result, error) {
 		// startup before doing any real work.
 		minDur := p.MinDuration
 		if minDur == 0 {
-			minDur = minInteractiveDur
+			minDur = MinInteractiveDuration
 		}
 		if minDur > 0 {
 			if dur := time.Since(startedAt); dur < minDur {

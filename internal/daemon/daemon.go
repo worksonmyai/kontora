@@ -36,6 +36,15 @@ import (
 
 const defaultPromptTemplate = "Work on this ticket: {{ .Ticket.ID }} — {{ .Ticket.Title }}\n\n{{ .Ticket.Description }}"
 
+// defaultResumePrompt is sent instead of the stage prompt when a restart
+// interrupted a stage and the daemon reattaches the agent to its own session.
+// The stage prompt would tell the agent to begin the stage, which is the one
+// thing a resumed run must not do.
+const defaultResumePrompt = "Your previous run on ticket {{ .Ticket.ID }} — {{ .Ticket.Title }} was interrupted when the daemon restarted. " +
+	"This is the same conversation, and the worktree still holds every change you made.\n\n" +
+	"Re-read the ticket and check the worktree to see how far you got, then finish the stage you were working on. " +
+	"Do not start it over and do not undo work that is already there."
+
 func (d *Daemon) renderTicketPrompt(cfg *config.Config, tmpl string, t *ticket.Ticket, filePath, wtPath string) (string, error) {
 	opts := prompt.Options{
 		ReviewsDir: expandTilde(cfg.Plannotator.ReviewsDir),
@@ -981,15 +990,17 @@ func (d *Daemon) runTicket(ctx context.Context, ticketID string) {
 	log.Info("spawning agent", "agent", agentName, "stage", stageName, "binary", agentCfg.Binary)
 
 	run, spawnOK := d.spawnAgentRun(taskCtx, t, spawnAgentParams{
-		cfg:       cfg,
-		log:       log,
-		ticketID:  ticketID,
-		filePath:  filePath,
-		stageName: stageName,
-		wtPath:    wtPath,
-		rendered:  rendered,
-		agentCfg:  agentCfg,
-		stageCfg:  stageCfg,
+		cfg:        cfg,
+		ctx:        ctx,
+		log:        log,
+		ticketID:   ticketID,
+		filePath:   filePath,
+		stageName:  stageName,
+		wtPath:     wtPath,
+		rendered:   rendered,
+		agentCfg:   agentCfg,
+		stageCfg:   stageCfg,
+		isPipeline: true,
 	})
 	if !spawnOK {
 		return
@@ -1055,15 +1066,17 @@ func (d *Daemon) runSimpleTicket(ctx, taskCtx context.Context, cfg *config.Confi
 	log.Info("spawning agent", "agent", agentName, "binary", agentCfg.Binary)
 
 	run, spawnOK := d.spawnAgentRun(taskCtx, t, spawnAgentParams{
-		cfg:       cfg,
-		log:       log,
-		ticketID:  ticketID,
-		filePath:  filePath,
-		stageName: "default",
-		wtPath:    wtPath,
-		rendered:  rendered,
-		agentCfg:  agentCfg,
-		stageCfg:  config.Stage{},
+		cfg:        cfg,
+		ctx:        ctx,
+		log:        log,
+		ticketID:   ticketID,
+		filePath:   filePath,
+		stageName:  "default",
+		wtPath:     wtPath,
+		rendered:   rendered,
+		agentCfg:   agentCfg,
+		stageCfg:   config.Stage{},
+		isPipeline: false,
 	})
 	if !spawnOK {
 		return
@@ -1355,15 +1368,20 @@ type spawnAgentParams struct {
 	// cfg is the caller's config snapshot. It is threaded through rather than
 	// re-read so the environment and log paths a stage runs with come from the
 	// same config version as its agent and stage definitions.
-	cfg       *config.Config
-	log       *slog.Logger
-	ticketID  string
-	filePath  string
-	stageName string
-	wtPath    string
-	rendered  string
-	agentCfg  config.Agent
-	stageCfg  config.Stage
+	cfg *config.Config
+	// ctx is the daemon's context, not the ticket's. A live ctx when the runner
+	// returns means the daemon is still up, so the run ended for a reason of its
+	// own and its resume record must go.
+	ctx        context.Context
+	log        *slog.Logger
+	ticketID   string
+	filePath   string
+	stageName  string
+	wtPath     string
+	rendered   string
+	agentCfg   config.Agent
+	stageCfg   config.Stage
+	isPipeline bool
 }
 
 // agentRun is the outcome of one agent invocation: the process result and the
@@ -1374,9 +1392,26 @@ type agentRun struct {
 	FinalMessage string
 }
 
-// spawnAgentRun builds agent args, invokes the runner, materializes session
-// logs, and logs exit info. On a spawn or runner failure the ticket is paused
-// and ok=false is returned so the caller can return immediately.
+// agentAttempt is the outcome of one runAgentOnce call.
+type agentAttempt struct {
+	run agentRun
+	// ok reports that the run produced a result the caller can act on.
+	ok bool
+	// started reports that the agent ran. False means the invocation was
+	// refused, or the agent died in its first seconds, while the ticket was
+	// still live: nothing was done, so a fresh run repeats no work.
+	started bool
+	// pauseReason, when set, is why the ticket must be paused. The caller
+	// pauses, so a refused resume can fall back before the ticket is touched.
+	pauseReason string
+}
+
+// spawnAgentRun runs the stage's agent and returns its outcome. When a resume
+// record survives from a run the daemon interrupted, the stage continues in that
+// session; if that invocation dies before the agent does anything, the stage
+// runs once more from its own prompt in a new session rather than pausing the
+// ticket. On a spawn or runner failure the ticket is paused and ok=false is
+// returned so the caller can return immediately.
 func (d *Daemon) spawnAgentRun(taskCtx context.Context, t *ticket.Ticket, p spawnAgentParams) (agentRun, bool) {
 	binaryPath, err := d.agentLookup(p.agentCfg.Binary)
 	if err != nil {
@@ -1385,14 +1420,54 @@ func (d *Daemon) spawnAgentRun(taskCtx context.Context, t *ticket.Ticket, p spaw
 		return agentRun{}, false
 	}
 
-	args, settingsFile, sessionID, err := buildAgentArgs(p.agentCfg, p.rendered, tmux.ChannelName(d.tmuxSession, p.ticketID))
+	if rec := d.resumableRecord(p); rec != nil {
+		attempt := d.runAgentOnce(taskCtx, t, p, binaryPath, rec)
+		if attempt.started {
+			return d.finishAttempt(t, p, attempt)
+		}
+		// An agent that already finished its work can exit inside the tmux
+		// startup guard, which reads as a refused invocation. Give the stage its
+		// normal run rather than pausing on that.
+		p.log.Warn("resumed agent did no work; running the stage fresh", "stage", p.stageName)
+		d.removeResumeRecord(p.cfg, p.ticketID, p.stageName)
+	}
+
+	return d.finishAttempt(t, p, d.runAgentOnce(taskCtx, t, p, binaryPath, nil))
+}
+
+func (d *Daemon) finishAttempt(t *ticket.Ticket, p spawnAgentParams, attempt agentAttempt) (agentRun, bool) {
+	if attempt.pauseReason != "" {
+		d.pauseTicket(t, p.filePath, attempt.pauseReason)
+	}
+	return attempt.run, attempt.ok
+}
+
+// runAgentOnce builds agent args, invokes the runner, materializes session logs,
+// and logs exit info. A non-nil rec continues that record's session with the
+// resume prompt in place of the stage prompt.
+func (d *Daemon) runAgentOnce(taskCtx context.Context, t *ticket.Ticket, p spawnAgentParams, binaryPath string, rec *resumeRecord) agentAttempt {
+	rendered := p.rendered
+	if rec != nil {
+		resumePrompt, err := d.buildResumePrompt(t, p)
+		if err != nil {
+			p.log.Error("render resume prompt failed", "stage", p.stageName, "err", err)
+			return agentAttempt{}
+		}
+		rendered = resumePrompt
+		p.log.Info("resuming interrupted agent session", "stage", p.stageName, "agent", rec.Agent, "session_id", rec.SessionID)
+	}
+
+	args, settingsFile, sessionID, err := buildAgentArgs(p.agentCfg, rendered, tmux.ChannelName(d.tmuxSession, p.ticketID), rec)
 	if err != nil {
 		p.log.Error("build agent args failed", "err", err)
-		d.pauseTicket(t, p.filePath, "build agent args failed: "+err.Error())
-		return agentRun{}, false
+		return agentAttempt{pauseReason: "build agent args failed: " + err.Error()}
 	}
 	if settingsFile != "" {
 		defer os.Remove(settingsFile)
+	}
+
+	if kind := resumeAgentKind(p.agentCfg); kind != "" {
+		d.writeResumeRecord(p, kind, sessionID)
 	}
 
 	params := d.buildRunnerParams(p.cfg, p.agentCfg, p.stageCfg, binaryPath, args, p.wtPath, p.ticketID, p.stageName, sessionID)
@@ -1401,6 +1476,14 @@ func (d *Daemon) spawnAgentRun(taskCtx context.Context, t *ticket.Ticket, p spaw
 	// here, otherwise a previous attempt's error would keep matching on retry.
 	logStart := fileSize(params.LogFile)
 	result, runnerErr := d.runner(taskCtx, params)
+	// The record exists to mark a run the daemon never saw end. Once the runner
+	// returns with the daemon still up, the run has ended for a reason of its
+	// own — clean exit, failure, pause, or user cancellation — and starting it
+	// over later must start it fresh. Only a shutdown, or a kill that runs no
+	// code at all, leaves the record behind.
+	if p.ctx.Err() == nil {
+		d.removeResumeRecord(p.cfg, p.ticketID, p.stageName)
+	}
 	if runnerErr != nil && taskCtx.Err() == nil {
 		d.materializeAgentLogs(p.log, params)
 		errAttrs := []any{"stage", p.stageName, "err", runnerErr}
@@ -1409,8 +1492,11 @@ func (d *Daemon) spawnAgentRun(taskCtx context.Context, t *ticket.Ticket, p spaw
 		}
 		p.log.Error("runner failed", errAttrs...)
 		d.killTaskWindow(p.ticketID)
-		d.pauseTicket(t, p.filePath, fmt.Sprintf("runner failed: %s", runnerErr.Error()))
-		return agentRun{Result: result}, false
+		return agentAttempt{
+			run:         agentRun{Result: result},
+			started:     agentDidWork(result),
+			pauseReason: fmt.Sprintf("runner failed: %s", runnerErr.Error()),
+		}
 	}
 
 	d.materializeAgentLogs(p.log, params)
@@ -1438,12 +1524,41 @@ func (d *Daemon) spawnAgentRun(taskCtx context.Context, t *ticket.Ticket, p spaw
 		if reason, detected := d.detectAgentError(p.agentCfg, params, logStart); detected {
 			p.log.Warn("agent error detected despite clean exit", "stage", p.stageName, "reason", reason)
 			d.killTaskWindow(p.ticketID)
-			d.pauseTicket(t, p.filePath, "agent error: "+reason)
-			return run, false
+			return agentAttempt{run: run, started: true, pauseReason: "agent error: " + reason}
 		}
 	}
 
-	return run, true
+	return agentAttempt{run: run, ok: true, started: true}
+}
+
+// agentDidWork reports whether a failed invocation lasted long enough for the
+// agent to have done something. The runner can fail after a complete turn: a
+// tmux wait-for that breaks, or a /exit keystroke it cannot send once the Stop
+// hook has already fired. Running the stage again after that repeats work the
+// worktree already holds, so only a failure inside the startup window is
+// eligible for a fresh run.
+func agentDidWork(result process.Result) bool {
+	if result.StartedAt.IsZero() {
+		return false
+	}
+	return result.ExitedAt.Sub(result.StartedAt) >= tmux.MinInteractiveDuration
+}
+
+// buildResumePrompt renders the configured or built-in resume prompt with the
+// same operational appendix a stage prompt gets.
+func (d *Daemon) buildResumePrompt(t *ticket.Ticket, p spawnAgentParams) (string, error) {
+	tmpl := p.cfg.ResumePrompt
+	if tmpl == "" {
+		tmpl = defaultResumePrompt
+	}
+	rendered, err := d.renderTicketPrompt(p.cfg, tmpl, t, p.filePath, p.wtPath)
+	if err != nil {
+		return "", err
+	}
+	if rendered != "" {
+		rendered += buildOperationalAppendix(t.ID, p.filePath, p.wtPath, p.isPipeline)
+	}
+	return rendered, nil
 }
 
 // runSummary returns the summary for a finished run: the text the agent wrote
@@ -1498,9 +1613,11 @@ func buildOperationalAppendix(taskID, filePath, wtPath string, isPipeline bool) 
 // logging.
 // For pi agents it injects -e with a temporary TypeScript extension that
 // calls ctx.shutdown() on agent_end so pi exits cleanly after ticket completion.
+// A non-nil rec attaches the run to the session that record names instead of
+// opening a new one.
 // Returns the args, the path to the temporary settings/extension file (empty
 // for other agents), the session ID (empty for non-Claude agents), and any error.
-func buildAgentArgs(agentCfg config.Agent, rendered, channelName string) ([]string, string, string, error) {
+func buildAgentArgs(agentCfg config.Agent, rendered, channelName string, rec *resumeRecord) ([]string, string, string, error) {
 	args := make([]string, len(agentCfg.Args))
 	copy(args, agentCfg.Args)
 	var settingsFile string
@@ -1513,8 +1630,15 @@ func buildAgentArgs(agentCfg config.Agent, rendered, channelName string) ([]stri
 			return nil, "", "", fmt.Errorf("writing hooks settings: %w", err)
 		}
 		args = append(args, "--settings", settingsFile)
-		sessionID = newSessionID()
-		args = append(args, "--session-id", sessionID)
+		if rec != nil {
+			// --resume appends to the recorded session's JSONL, so the ID stays
+			// the one log materialization and error detection already read.
+			sessionID = rec.SessionID
+			args = append(args, "--resume", sessionID)
+		} else {
+			sessionID = newSessionID()
+			args = append(args, "--session-id", sessionID)
+		}
 	case agentCfg.IsPi():
 		var err error
 		settingsFile, err = writePiExitExtension()
@@ -1522,6 +1646,9 @@ func buildAgentArgs(agentCfg config.Agent, rendered, channelName string) ([]stri
 			return nil, "", "", fmt.Errorf("writing pi exit extension: %w", err)
 		}
 		args = append(args, "-e", settingsFile)
+		if rec != nil {
+			args = append(args, "--session", rec.sessionPath)
+		}
 	}
 	if rendered != "" {
 		args = append(args, rendered)
@@ -1578,25 +1705,10 @@ export default function (pi: ExtensionAPI) {
 }
 
 func (d *Daemon) buildRunnerParams(cfg *config.Config, agentCfg config.Agent, stageCfg config.Stage, binaryPath string, args []string, dir, ticketID, stageName, sessionID string) RunnerParams {
-	logsDir := expandTilde(cfg.LogsDir)
-	logDir := filepath.Join(logsDir, ticketID)
-
 	var sessionDir string
 	if agentCfg.IsPi() {
-		// Per-stage directory: every stage of a ticket materializes its log from
-		// this directory, so a shared one would give each stage the same session.
-		sessionDir = filepath.Join(logDir, "pi-sessions", stageName)
+		sessionDir = piSessionDir(cfg, ticketID, stageName)
 		args = append(args, "--session-dir", sessionDir)
-	}
-
-	env := make(map[string]string, len(cfg.Environment)+len(agentCfg.Environment))
-	maps.Copy(env, cfg.Environment)
-	for k, v := range agentCfg.Environment {
-		if v == "" {
-			delete(env, k)
-		} else {
-			env[k] = v
-		}
 	}
 
 	return RunnerParams{
@@ -1610,11 +1722,26 @@ func (d *Daemon) buildRunnerParams(cfg *config.Config, agentCfg config.Agent, st
 		Interactive: agentCfg.IsClaude(),
 		SessionID:   sessionID,
 		SessionDir:  sessionDir,
-		Env:         env,
+		Env:         agentEnv(cfg, agentCfg),
 		OnReady: func() {
 			d.broadcastTerminalReady(ticketID)
 		},
 	}
+}
+
+// agentEnv merges the agent's environment over the top-level one. An agent entry
+// with an empty value unsets the variable rather than setting it to "".
+func agentEnv(cfg *config.Config, agentCfg config.Agent) map[string]string {
+	env := make(map[string]string, len(cfg.Environment)+len(agentCfg.Environment))
+	maps.Copy(env, cfg.Environment)
+	for k, v := range agentCfg.Environment {
+		if v == "" {
+			delete(env, k)
+		} else {
+			env[k] = v
+		}
+	}
+	return env
 }
 
 func (d *Daemon) applyAction(t *ticket.Ticket, action pipeline.Action) error {

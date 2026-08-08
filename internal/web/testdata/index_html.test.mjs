@@ -4049,6 +4049,158 @@ test("tool rows expand by id, and a failure starts expanded", () => {
   assert.equal(state.toolExpanded(events[3], 3), true, "a failure is never collapsed by default");
 });
 
+// A state holding a synthetic tape of n events. Even indices are tool rows with
+// no id, the shape a Pi session produces, so the expand map has to fall back to
+// the event's place in the tape.
+function tapeState(n, overrides = {}) {
+  const events = [];
+  for (let i = 0; i < n; i++) {
+    events.push(i % 2 === 0
+      ? { kind: "tool", tool: "Bash", arg: `step ${i}`, result: `out ${i}` }
+      : { kind: "text", text: `line ${i}` });
+  }
+  const state = pageState(TAPE_TICKET, overrides);
+  state.activity = { source: "events", tape: { events } };
+  state.$nextTick = (callback) => { callback(); };
+  return state;
+}
+
+// A state whose activity-scroll element reports a height that follows the
+// rendered row count, at 10px a row.
+function scrolledTape(n, scrollTop) {
+  let state;
+  const scroller = {
+    scrollTop,
+    clientHeight: 400,
+    get scrollHeight() { return Math.min(state.tapeWindow, n) * 10; },
+  };
+  state = loadKontoraState({
+    document: {
+      getElementById: (id) => (id === "activity-scroll" ? scroller : null),
+      querySelector: () => null,
+      documentElement: { style: {} },
+    },
+  });
+  state.selectedTicket = TAPE_TICKET;
+  state.activity = { tape: { events: Array.from({ length: n }, (_, i) => ({ kind: "text", text: `line ${i}` })) } };
+  state.$nextTick = (callback) => { callback(); };
+  return { state, scroller };
+}
+
+test("a tape at the event cap mounts only its newest window", () => {
+  const state = tapeState(5000);
+  const size = state.tapeWindow;
+
+  assert.equal(size, 200, "the measured step: 5000 events cost 700ms to mount, this many cost 30ms");
+  const shown = Array.from(state.visibleTapeEvents(), (r) => r.idx);
+  assert.deepEqual(shown, Array.from({ length: size }, (_, i) => 5000 - size + i));
+  assert.equal(state.hiddenTapeEventCount(), 5000 - size);
+  assert.equal(state.visibleTapeEvents()[0].ev, state.tapeEvents()[5000 - size], "a row carries the event at its own index");
+});
+
+test("a tape shorter than the window renders whole", () => {
+  const state = tapeState(12);
+
+  assert.deepEqual(Array.from(state.visibleTapeEvents(), (r) => r.idx), [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+  assert.equal(state.hiddenTapeEventCount(), 0, "no control appears when the whole tape is on screen");
+});
+
+test("loading earlier events grows the range one step at a time", () => {
+  const state = tapeState(1000);
+  const step = state.tapeWindow;
+  const shown = () => Array.from(state.visibleTapeEvents(), (r) => r.idx);
+
+  assert.deepEqual([shown()[0], shown().at(-1), state.hiddenTapeEventCount()], [1000 - step, 999, 1000 - step]);
+
+  state.loadEarlierTapeEvents();
+  assert.deepEqual([shown()[0], shown().at(-1), state.hiddenTapeEventCount()], [1000 - 2 * step, 999, 1000 - 2 * step]);
+
+  // The last step is clamped to the tape, and the control goes away with it.
+  while (state.hiddenTapeEventCount() > 0) state.loadEarlierTapeEvents();
+  assert.equal(state.tapeWindow, 1000);
+  assert.deepEqual([shown()[0], shown().length], [0, 1000]);
+});
+
+test("loading earlier events holds the reader's place", () => {
+  const { state, scroller } = scrolledTape(1000, 300);
+  const step = state.tapeWindow;
+  const before = scroller.scrollHeight;
+
+  state.loadEarlierTapeEvents();
+
+  assert.equal(scroller.scrollHeight, before + step * 10, "one step of rows was prepended");
+  assert.equal(scroller.scrollTop, 300 + step * 10, "the reader is still on the row they were reading");
+});
+
+test("follow still lands the transcript on the newest event", () => {
+  const { state, scroller } = scrolledTape(5000, 0);
+
+  assert.equal(state.logFollow, true);
+  state.scrollLogToEnd();
+
+  // The browser clamps this write to scrollHeight - clientHeight; the stub
+  // records it raw.
+  assert.equal(scroller.scrollTop, scroller.scrollHeight);
+});
+
+test("an expanded row keeps its identity when earlier events load", () => {
+  const state = tapeState(1000);
+  const rowAt = (i) => state.visibleTapeEvents().find((r) => r.idx === i);
+
+  const row = rowAt(900);
+  assert.equal(state.toolKey(row.ev, row.idx), "i900", "an id-less row is keyed by its place in the full tape");
+  state.toggleTool(row.ev, row.idx);
+
+  state.loadEarlierTapeEvents();
+
+  const grown = rowAt(900);
+  assert.equal(state.toolExpanded(grown.ev, grown.idx), true);
+  assert.deepEqual(vmValue(state.expandedTools), { i900: true });
+  const earlier = rowAt(700);
+  assert.equal(state.toolExpanded(earlier.ev, earlier.idx), false, "the row 200 places back did not inherit the expansion");
+});
+
+test("every activity load starts back at the newest window", async () => {
+  const state = tapeState(1000);
+  const size = state.tapeWindow;
+  state.loadEarlierTapeEvents();
+  assert.equal(state.tapeWindow, size * 2);
+
+  state._resetActivity();
+  assert.equal(state.tapeWindow, size, "closing the detail view drops the grown window");
+
+  state.tapeWindow = size * 3;
+  await state.fetchActivity("review", 1);
+  assert.equal(state.tapeWindow, size, "another run opens at its own tail");
+});
+
+test("the plaintext fallback renders one block and no window control", () => {
+  const state = pageState(TAPE_TICKET);
+  state.activity = { content: "alpha\nbeta" };
+
+  assert.equal(state.renderLogHTML(state.activity.content), "alpha\nbeta");
+  assert.equal(state.hiddenTapeEventCount(), 0);
+  assert.deepEqual(Array.from(state.visibleTapeEvents()), []);
+});
+
+test("index.html binds the transcript to the windowed tail", () => {
+  const html = fs.readFileSync(htmlPath, "utf8");
+
+  assert.match(html, /x-for="\{ ev, idx \} in visibleTapeEvents\(\)" :key="idx"/);
+  // Tool state is read by the full-array index, never by the window offset.
+  assert.match(html, /@click="toggleTool\(ev, idx\)"/);
+  assert.equal((html.match(/toolExpanded\(ev, idx\)/g) || []).length, 2);
+  assert.equal(/\b(toggleTool|toolExpanded)\(ev, i\)/.test(html), false);
+  // One control above the first rendered event, carrying the hidden count.
+  assert.match(html, /<template x-if="hiddenTapeEventCount\(\) > 0">/);
+  assert.match(html, /<button type="button" @click="loadEarlierTapeEvents\(\)"/);
+  assert.match(html, /'load earlier events \(' \+ hiddenTapeEventCount\(\)/);
+  // The fallback keeps its single block, and follow still fires on the payload
+  // rather than on the window.
+  assert.equal((html.match(/id="stage-log-pre"/g) || []).length, 1);
+  assert.match(html, /x-effect="activity; if \(logFollow\)/);
+});
+
 test("error styling is suppressed when the tape cannot verify it", () => {
   const state = pageState(TAPE_TICKET);
   state.activity = { tape: { partial: ["time", "usage", "is_error"], events: [{ kind: "tool", tool: "read", is_error: true }] } };

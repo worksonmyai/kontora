@@ -1244,7 +1244,12 @@
                     <template x-if="!tapeEvents().length">
                       <p class="font-mono text-[12px] text-surface-600">This run produced no recorded activity.</p>
                     </template>
-                    <template x-for="(ev, i) in tapeEvents()" :key="i">
+                    <template x-if="hiddenTapeEventCount() > 0">
+                      <button type="button" @click="loadEarlierTapeEvents()"
+                              class="self-start my-2 font-mono text-[11px] text-tx-3 border border-surface-700 rounded-md px-3 py-1 hover:text-tx hover:border-surface-600 transition-colors"
+                              x-text="'load earlier events (' + hiddenTapeEventCount() + ' hidden)'"></button>
+                    </template>
+                    <template x-for="{ ev, idx } in visibleTapeEvents()" :key="idx">
                       <div>
                         <!-- Model banner -->
                         <template x-if="ev.kind === 'model'">
@@ -1271,7 +1276,7 @@
                             <span x-show="!tapePartial('time')" class="shrink-0 w-[46px] font-mono text-[10.5px] text-tx-faint pt-1" x-text="eventTime(ev)"></span>
                             <div class="flex-1 min-w-0 rounded-md transition-colors cursor-pointer"
                                  :class="toolFailed(ev) ? 'border-l-2 border-st-cancel/60 bg-st-cancel/[0.06] rounded-r-md px-3 py-[7px]' : 'px-[9px] py-1 hover:bg-surface-900'"
-                                 @click="toggleTool(ev, i)">
+                                 @click="toggleTool(ev, idx)">
                               <div class="flex items-baseline gap-[9px] min-w-0">
                                 <span class="shrink-0 min-w-[42px] font-mono text-[11.5px] font-bold"
                                       :class="toolFailed(ev) ? 'text-st-cancel' : 'text-accent-bright'" x-text="ev.tool"></span>
@@ -1279,9 +1284,9 @@
                                 <span class="shrink-0 font-mono text-[11px] text-surface-600" x-show="ev.summary" x-text="'⎿ ' + ev.summary"></span>
                                 <span x-show="toolFailed(ev)" class="shrink-0 font-mono text-[11px] text-st-cancel">failed</span>
                               </div>
-                              <pre x-show="toolExpanded(ev, i) && ev.result"
+                              <pre x-show="toolExpanded(ev, idx) && ev.result"
                                    class="mt-2 mb-0 max-h-[320px] overflow-auto font-mono text-[11px] leading-[1.7] text-tx-log whitespace-pre-wrap break-words" x-text="ev.result"></pre>
-                              <p x-show="toolExpanded(ev, i) && ev.truncated" class="mt-1 mb-0 font-mono text-[10.5px] text-surface-600">result truncated</p>
+                              <p x-show="toolExpanded(ev, idx) && ev.truncated" class="mt-1 mb-0 font-mono text-[10.5px] text-surface-600">result truncated</p>
                             </div>
                           </div>
                         </template>

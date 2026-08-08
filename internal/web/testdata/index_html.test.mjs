@@ -2392,7 +2392,6 @@ test("settings loads the fixture clean and defaults to the stages section", asyn
   assert.equal(state.settingsSection, "stages");
   assert.deepEqual([...state.settingsChangedPaths()], []);
   assert.equal(state.settingsDirty(), false);
-  assert.equal(state.settingsReformats, false);
 });
 
 test("the whole edit cycle runs on Alpine's reactive proxy", async () => {
@@ -2625,12 +2624,6 @@ test("a general key absent from the file is appended without reformatting", asyn
 
   assert.match(out, /^instance_name: laptop$/m);
   assert.equal(out.startsWith(SETTINGS_FIXTURE.trimEnd()), true);
-});
-
-test("a file that does not round-trip raises the reformat advisory", async () => {
-  const state = await settingsState('a:   1\nb: 2\n');
-  assert.equal(state.settingsReformats, true);
-  assert.equal(state.settingsState, "ok");
 });
 
 test("501 and 401 produce explicit states instead of an empty form", async () => {

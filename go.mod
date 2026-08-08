@@ -15,7 +15,7 @@ require (
 	github.com/coder/websocket v1.8.15
 	github.com/creack/pty/v2 v2.0.1
 	github.com/fsnotify/fsnotify v1.9.0
-	github.com/mattn/go-isatty v0.0.21
+	github.com/mattn/go-isatty v0.0.24
 	github.com/stretchr/testify v1.11.1
 	golang.org/x/term v0.45.0
 	gopkg.in/yaml.v3 v3.0.1

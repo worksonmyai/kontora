@@ -2344,6 +2344,28 @@ async function settingsState(text = SETTINGS_FIXTURE, overrides = {}) {
   return state;
 }
 
+// Alpine wraps the x-data object in a deep reactive Proxy, so in the browser
+// every read of settingsConfig hands back a Proxy rather than the stored
+// object. loadKontoraState returns the bare object, which hides anything that
+// breaks on a Proxy (structuredClone throws DataCloneError on one). Wrap the
+// state the way @vue/reactivity does: plain objects, arrays, maps and sets are
+// proxied on read, everything else (RegExp, module namespaces) is handed back
+// as it is.
+const REACTIVE_TAGS = new Set(["[object Object]", "[object Array]", "[object Map]", "[object Set]"]);
+
+function settingsReactive(target, cache = new WeakMap()) {
+  if (cache.has(target)) return cache.get(target);
+  const proxy = new Proxy(target, {
+    get(obj, key, receiver) {
+      const value = Reflect.get(obj, key, receiver);
+      const proxyable = value !== null && typeof value === "object" && REACTIVE_TAGS.has(Object.prototype.toString.call(value));
+      return proxyable ? settingsReactive(value, cache) : value;
+    },
+  });
+  cache.set(target, proxy);
+  return proxy;
+}
+
 // A daemon double for the save path. One save is three requests: GET the file
 // to check it did not change under the tab, PUT the new content, then GET
 // /api/config so the board picks up the reloaded values.
@@ -2371,6 +2393,31 @@ test("settings loads the fixture clean and defaults to the stages section", asyn
   assert.deepEqual([...state.settingsChangedPaths()], []);
   assert.equal(state.settingsDirty(), false);
   assert.equal(state.settingsReformats, false);
+});
+
+test("the whole edit cycle runs on Alpine's reactive proxy", async () => {
+  const daemon = settingsFetch();
+  const state = settingsReactive(loadKontoraState({ fetch: daemon.fetch }));
+  state._settingsYAML = await import(yamlPath);
+
+  await state._settingsParse(SETTINGS_FIXTURE);
+  assert.equal(state.settingsState, "ok");
+  assert.equal(state.settingsLoadError, "");
+
+  state.settingsConfig.stages.plan.timeout = "1h30m";
+  assert.deepEqual([...state.settingsChangedPaths()], ["stages.plan.timeout"]);
+
+  state.revertSettingsStage("plan");
+  assert.equal(state.settingsDirty(), false);
+
+  state.settingsConfig.general.branch_prefix = "agent";
+  state.discardSettings();
+  assert.equal(state.settingsDirty(), false);
+
+  state.settingsConfig.stages.plan.timeout = "1h30m";
+  assert.equal(await state.saveSettings(), true);
+  assert.match(JSON.parse(daemon.puts()[0].init.body).content, /timeout: 1h30m/);
+  assert.equal(state.settingsDirty(), false);
 });
 
 test("settingsChangedPaths reports exactly the edited field", async () => {

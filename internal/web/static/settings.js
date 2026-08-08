@@ -122,9 +122,8 @@ function kontoraSettings() {
     settingsNewStatusOpen: false,
     settingsShowToken: false,
 
-    // Non-reactive: the parsed Document and the text it came from. Alpine's
-    // deep proxy would wrap every node in the AST and mutations would go
-    // through a trap on each hop.
+    // The parsed Document, the text it came from, and the yaml module. Never
+    // rendered and never part of the form model, so no template reads them.
     _settingsDoc: null,
     _settingsRawText: '',
     _settingsYAML: null,
@@ -167,7 +166,7 @@ function kontoraSettings() {
       this._settingsRawText = text;
       this.settingsReformats = String(yaml.parseDocument(text)) !== text;
       this.settingsConfig = settingsModel(doc.toJS({ maxAliasCount: -1 }) || {});
-      this.settingsBaseline = structuredClone(this.settingsConfig);
+      this.settingsBaseline = settingsClone(this.settingsConfig);
       this.settingsState = 'ok';
       this.settingsErrors = [];
       this.settingsSavedAt = '';
@@ -272,7 +271,7 @@ function kontoraSettings() {
         if (res.status === 401) { this.needsAuth = true; return false; }
         if (res.status === 204) {
           this._settingsRawText = content;
-          this.settingsBaseline = structuredClone(this.settingsConfig);
+          this.settingsBaseline = settingsClone(this.settingsConfig);
           this.settingsSavedAt = settingsClock(new Date());
           this.settingsSavedRestart = changed.some(p => this.settingsIsRestartOnly(p));
           this.settingsDiffOpen = false;
@@ -330,7 +329,7 @@ function kontoraSettings() {
     },
 
     discardSettings() {
-      this.settingsConfig = structuredClone(this.settingsBaseline);
+      this.settingsConfig = settingsClone(this.settingsBaseline);
       this.settingsErrors = [];
       this.settingsDiffOpen = false;
       this.settingsSavedAt = '';
@@ -341,7 +340,7 @@ function kontoraSettings() {
     // from the model instead, so reverting leaves no half-created key.
     revertSettingsStage(name) {
       const base = this.settingsBaseline.stages[name];
-      if (base) this.settingsConfig.stages[name] = structuredClone(base);
+      if (base) this.settingsConfig.stages[name] = settingsClone(base);
       else {
         delete this.settingsConfig.stages[name];
         if (this.settingsOpenStage === name) this.settingsOpenStage = null;
@@ -526,6 +525,20 @@ function kontoraSettings() {
       await this.gotoView(target || 'board');
     },
   };
+}
+
+// Deep copy of the form model. Not structuredClone: settingsConfig and
+// settingsBaseline live on the Alpine component, so every read hands back a
+// reactive Proxy, and structuredClone throws DataCloneError on a Proxy. The
+// model holds only strings, numbers, booleans, null, arrays and plain objects.
+function settingsClone(value) {
+  if (Array.isArray(value)) return value.map(settingsClone);
+  if (value !== null && typeof value === 'object') {
+    const out = {};
+    for (const [k, v] of Object.entries(value)) out[k] = settingsClone(v);
+    return out;
+  }
+  return value;
 }
 
 // Build the form model from the parsed document's plain-JS view. Values are

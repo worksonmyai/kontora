@@ -214,6 +214,17 @@
       font-variant-numeric: tabular-nums;
     }
 
+    /* Pipeline step row. The last track is auto, not 1fr: routing text must
+       claim its width first so the two ellipsizing cells give way instead. */
+    .settings-step {
+      display: grid;
+      grid-template-columns: 1.25rem minmax(0, 1fr) minmax(0, 1fr) auto;
+      gap: 0.5rem;
+      padding: 5px 0.5rem;
+      border-radius: 0.25rem;
+      background: rgba(var(--surface-850), .5);
+    }
+
     /* Pipeline tag badge: colored text over a 10% tint fill and 26% tint border. */
     .pipe-tag {
       font-family: 'JetBrains Mono', monospace;
@@ -403,7 +414,7 @@
 </head>
 
 <body class="h-full bg-surface-950 text-tx font-sans overflow-hidden" x-data="kontora()" x-cloak
-      @keydown.escape.window="if (deleteModal) closeDeleteModal(); else if (initModal) closeInitModal(); else if (currentView === 'new') closeCreateModal(); else if (detailMenuOpen) detailMenuOpen = false; else if (colMenuOpen) colMenuOpen = null; else if (detailFullscreen) detailFullscreen = false; else if (sheet) closeSheet(); else if (selectedTicket) closeDetail();"
+      @keydown.escape.window="if (deleteModal) closeDeleteModal(); else if (initModal) closeInitModal(); else if (settingsGuard) settingsGuard = false; else if (currentView === 'new') closeCreateModal(); else if (detailMenuOpen) detailMenuOpen = false; else if (colMenuOpen) colMenuOpen = null; else if (detailFullscreen) detailFullscreen = false; else if (sheet) closeSheet(); else if (selectedTicket) closeDetail();"
       @dragenter.prevent="if ($event.dataTransfer && $event.dataTransfer.types.includes('Files')) uploadDragging = true"
       @dragover.prevent>
 
@@ -576,6 +587,30 @@
     </div>
   </div>
 
+  <!-- Unsaved-settings guard: in-app navigation out of a dirty Settings view. -->
+  <div x-show="settingsGuard" x-transition.opacity x-cloak class="fixed inset-0 z-50 flex items-center justify-center bg-black/60" @click.self="settingsGuard = false">
+    <div role="dialog" aria-modal="true" aria-labelledby="settings-guard-title"
+         class="bg-surface-900 border border-surface-700 rounded-xl shadow-xl p-5 w-[28rem] max-w-[90%] mx-4 slide-up" @click.stop>
+      <h2 id="settings-guard-title" class="text-base font-semibold text-tx-hi m-0 mb-2">Leave settings?</h2>
+      <p class="text-[13px] leading-[1.5] text-tx-3 mb-4">
+        You have <span x-text="settingsChangedPaths().length"></span> unsaved <span x-text="settingsChangedPaths().length === 1 ? 'change' : 'changes'"></span> to config.yaml. Leaving now throws them away.
+      </p>
+      <div x-show="settingsErrors.length" class="mb-3">
+        <template x-for="e in settingsErrors" :key="e">
+          <div class="font-mono text-[11.5px] text-err whitespace-pre-wrap break-words" x-text="e"></div>
+        </template>
+      </div>
+      <div class="flex justify-end gap-2">
+        <button type="button" @click="settingsGuard = false"
+                class="font-mono text-[12px] h-8 px-4 rounded bg-surface-900 border border-surface-700/60 text-tx-3 hover:text-tx-2 transition-colors">keep editing</button>
+        <button type="button" @click="settingsGuardDiscard()"
+                class="font-mono text-[12px] h-8 px-4 rounded bg-err/15 border border-err/30 text-err hover:bg-err/25 transition-colors">discard changes</button>
+        <button type="button" @click="settingsGuardSave()" :disabled="settingsSaving"
+                class="font-mono text-[12px] h-8 px-4 rounded bg-accent border border-accent text-accent-fg hover:bg-accent-bright transition-colors disabled:opacity-50">save &amp; leave</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Login modal: shown when the daemon's web token gate rejects this browser
        (no valid kontora_token cookie). Not dismissable; the board stays gated. -->
   <div x-show="needsAuth" x-transition.opacity class="fixed inset-0 z-[60] flex items-center justify-center bg-black/70">
@@ -618,7 +653,7 @@
     </div>
 
     <!-- Search -->
-    <div class="w-[300px] relative" @click.outside="searchOpen = false">
+    <div class="flex-1 min-w-[120px] max-w-[300px] relative" @click.outside="searchOpen = false">
       <div class="relative flex items-center">
         <svg class="absolute left-2.5 w-3.5 h-3.5 text-surface-600 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
@@ -670,7 +705,7 @@
         <svg x-show="!lightTheme" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
         <svg x-show="lightTheme" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
       </button>
-      <button @click="openCreateModal()"
+      <button @click="gotoView('new')"
               class="text-[13px] font-sans font-semibold h-[31px] px-[14px] rounded-[7px] bg-accent text-accent-fg hover:bg-accent-bright transition-colors flex items-center gap-1.5">
         <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
         New ticket
@@ -697,17 +732,24 @@
            class="w-[220px] shrink-0 border-r border-surface-700 bg-surface-rail flex flex-col overflow-y-auto">
       <!-- Nav -->
       <nav class="p-2.5 flex flex-col gap-0.5">
-        <button @click="currentView = 'board'"
+        <button @click="gotoView('board')"
                 class="flex items-center gap-2.5 h-7 px-2.5 rounded text-[13px] transition-colors"
                 :class="currentView === 'board' ? 'bg-surface-850 text-tx' : 'text-tx-3 hover:bg-surface-900 hover:text-tx-2'">
           <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 14 14" fill="none" class="opacity-80"><rect x="2" y="2" width="3" height="10" rx="0.8" stroke="currentColor" stroke-width="1.1"/><rect x="6" y="2" width="3" height="6" rx="0.8" stroke="currentColor" stroke-width="1.1"/><rect x="10" y="2" width="2" height="8" rx="0.8" stroke="currentColor" stroke-width="1.1"/></svg>
           <span>Dashboard</span>
         </button>
-        <button @click="openCreateModal()"
+        <button @click="gotoView('new')"
                 class="flex items-center gap-2.5 h-7 px-2.5 rounded text-[13px] transition-colors"
                 :class="currentView === 'new' ? 'bg-surface-850 text-tx' : 'text-tx-3 hover:bg-surface-900 hover:text-tx-2'">
           <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 12 12" fill="none" class="opacity-80"><path d="M6 2v8M2 6h8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
           <span>New ticket</span>
+        </button>
+        <button @click="gotoView('settings')"
+                class="flex items-center gap-2.5 h-7 px-2.5 rounded text-[13px] transition-colors"
+                :class="currentView === 'settings' ? 'bg-surface-850 text-tx' : 'text-tx-3 hover:bg-surface-900 hover:text-tx-2'">
+          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" class="opacity-80"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>
+          <span>Settings</span>
+          <span x-show="settingsDirty()" class="ml-auto w-[5px] h-[5px] rounded-full bg-accent"></span>
         </button>
       </nav>
 
@@ -1554,6 +1596,473 @@
         <pre class="flex-1 min-h-0 overflow-auto p-4 font-mono text-[12px] text-tx-3 leading-relaxed whitespace-pre-wrap" x-text="createPreviewYaml"></pre>
       </div>
     </div>
+
+    <!-- Settings -->
+    <div x-show="!loading && currentView === 'settings'" x-cloak class="flex flex-1 min-w-0 min-h-0">
+
+      <!-- Section rail -->
+      <nav class="w-[168px] shrink-0 bg-surface-frame border-r border-surface-700/50 flex flex-col p-2.5 overflow-y-auto">
+        <div class="font-mono text-[10px] font-semibold text-surface-600 uppercase tracking-widest px-2 pb-2">config.yaml</div>
+        <template x-for="s in settingsSections" :key="s.key">
+          <button @click="settingsSection = s.key"
+                  class="flex items-center justify-between gap-2 h-7 px-2 rounded font-mono text-[11.5px] transition-colors"
+                  :class="settingsSection === s.key ? 'bg-surface-850 text-tx' : 'text-tx-3 hover:bg-surface-900'">
+            <span x-text="s.label"></span>
+            <span class="text-[10px] text-surface-600" x-text="settingsSectionCount(s.key)"></span>
+          </button>
+        </template>
+        <div class="mt-auto pt-2.5 border-t border-surface-700/30 font-mono text-[10px] text-tx-4">
+          <div class="px-2">~/.config/kontora/</div>
+          <div class="px-2 text-tx-faint">config.yaml</div>
+        </div>
+      </nav>
+
+      <!-- Content pane -->
+      <div class="flex-1 min-w-0 flex flex-col min-h-0">
+        <div class="flex-1 min-h-0 overflow-y-auto">
+          <div class="max-w-[56rem] p-5 pb-10">
+
+            <!-- Page header -->
+            <div class="flex items-center justify-between gap-3 mb-5">
+              <div class="flex items-baseline gap-3 min-w-0">
+                <h1 class="text-base font-semibold text-tx-2 m-0">Settings</h1>
+                <span class="font-mono text-[10px] text-surface-600 uppercase tracking-widest hidden sm:inline truncate">edits are written to ~/.config/kontora/config.yaml</span>
+              </div>
+              <span x-show="settingsState === 'ok'"
+                    class="font-mono text-[11px] px-2 py-px rounded border border-surface-700/50 shrink-0"
+                    :class="settingsDirty() ? 'text-accent' : 'text-surface-600'"
+                    x-text="settingsDirty() ? 'unsaved edits' : 'in sync with disk'"></span>
+            </div>
+
+            <!-- Saving reformats the file whatever the form touches, so say so before the user finds it in git diff. -->
+            <div x-show="settingsState === 'ok' && settingsReformats" x-cloak
+                 class="mb-4 flex items-start gap-2 bg-warn/10 border border-warn/20 rounded-md p-2.5 px-3">
+              <span class="text-warn font-mono text-[12px] leading-[1.5]">!</span>
+              <span class="text-[12px] leading-[1.5] text-tx-3">This file does not re-serialize byte for byte. Saving will reformat parts of it that no field here touched.</span>
+            </div>
+
+            <!-- Load states -->
+            <div x-show="settingsLoading" class="font-mono text-sm text-surface-600">loading config…</div>
+
+            <div x-show="!settingsLoading && settingsState === 'unavailable'" x-cloak
+                 class="border border-edge-card rounded-lg bg-surface-900 p-5">
+              <div class="font-mono text-[13px] font-bold text-tx-hi mb-1.5">No config file</div>
+              <p class="text-[12px] leading-[1.6] text-tx-3 m-0">This daemon is running without a config file, so there is nothing to edit here. Start it with <span class="font-mono text-tx-2">--config</span>, or run <span class="font-mono text-tx-2">kontora init</span> to create one, then reload this page.</p>
+            </div>
+
+            <div x-show="!settingsLoading && settingsState === 'parse-error'" x-cloak
+                 class="border border-err/30 bg-err/10 rounded-lg p-5">
+              <div class="font-mono text-[10px] font-bold tracking-[.1em] uppercase text-err mb-1.5">could not read config.yaml</div>
+              <p class="font-mono text-[11.5px] leading-[1.6] text-tx-2 m-0 whitespace-pre-wrap break-words" x-text="settingsLoadError"></p>
+            </div>
+
+            <template x-if="settingsState === 'ok'">
+              <div>
+                <!-- Section header -->
+                <div class="flex items-baseline gap-3 pb-2 border-b border-surface-700/40 mb-4">
+                  <h2 class="font-mono text-[13px] font-bold text-tx-hi m-0" x-text="settingsSection"></h2>
+                  <span class="text-[11px] text-surface-600" x-text="settingsSections.find(s => s.key === settingsSection).blurb"></span>
+                </div>
+
+                <!-- ===== stages ===== -->
+                <div x-show="settingsSection === 'stages'" class="flex flex-col gap-1.5">
+                  <template x-for="name in settingsStageNames()" :key="name">
+                    <div class="border rounded-lg transition-colors"
+                         :class="settingsOpenStage === name ? 'border-accent/45 bg-surface-850' : 'border-edge-card bg-surface-900'">
+                      <button @click="settingsToggleStage(name)" class="w-full flex items-center gap-2.5 p-2.5 px-3 text-left">
+                        <span class="w-[9px] font-mono text-[10px] text-surface-600 shrink-0" x-text="settingsOpenStage === name ? '▾' : '▸'"></span>
+                        <span class="font-mono text-[13px] font-semibold text-tx-2 shrink-0" x-text="name"></span>
+                        <span x-show="settingsConfig.stages[name].builtin"
+                              class="font-mono text-[9.5px] uppercase tracking-[.08em] text-tx-faint border border-surface-700/60 rounded px-[5px] py-px shrink-0">built-in</span>
+                        <span x-show="settingsPathDirty('stages.' + name)" class="w-[5px] h-[5px] rounded-full bg-accent shrink-0"></span>
+                        <template x-if="settingsOpenStage !== name">
+                          <span class="flex-1 min-w-0 truncate text-[12px] text-tx-4"
+                                x-text="(settingsConfig.stages[name].prompt || '').split('\n')[0].slice(0, 68)"></span>
+                        </template>
+                        <template x-if="settingsOpenStage !== name">
+                          <span class="flex items-center gap-1 shrink-0">
+                            <template x-for="p in settingsStagePipelines(name)" :key="p">
+                              <span class="pipe-tag" :data-pipe-color="pipelineColorByName(p)" x-text="p"></span>
+                            </template>
+                          </span>
+                        </template>
+                        <span class="font-mono text-[11px] text-surface-600 w-12 text-right shrink-0 ml-auto" x-text="settingsConfig.stages[name].timeout"></span>
+                      </button>
+
+                      <div x-show="settingsOpenStage === name" x-cloak class="border-t border-surface-700/40 p-3 flex flex-col gap-2.5">
+                        <!-- Once stages.rework exists in the file, ReworkIsBuiltin is false and
+                             the daemon stops routing a ticket parked there through runReworkStage. -->
+                        <div x-show="settingsConfig.stages[name].builtin" class="flex items-start gap-2 bg-warn/10 border border-warn/20 rounded-md p-2.5 px-3">
+                          <span class="text-warn font-mono text-[12px] leading-[1.5]">!</span>
+                          <span class="text-[12px] leading-[1.5] text-tx-3">kontora injects this stage and runs it out of band after a plannotator review. Saving an edit writes <span class="font-mono text-tx-2">stages.rework</span> into config.yaml, and it then becomes an ordinary stage: add a rework step to the pipeline, or a ticket sent back for rework pauses.</span>
+                        </div>
+                        <div class="flex flex-wrap items-center gap-1.5">
+                          <span class="font-mono text-[10px] font-bold tracking-[.12em] uppercase text-tx-faint mr-1">insert</span>
+                          <template x-for="t in settingsTokens" :key="t.token">
+                            <button type="button" :title="t.help"
+                                    @click="insertTemplateToken('stage-prompt-' + name, name, t.token)"
+                                    class="font-mono text-[11px] px-2 py-[3px] rounded border border-surface-700/60 bg-surface-800 text-accent-bright hover:border-accent/40 hover:bg-surface-850 transition-colors"
+                                    x-text="t.token"></button>
+                          </template>
+                        </div>
+
+                        <textarea :id="'stage-prompt-' + name" x-model="settingsConfig.stages[name].prompt" spellcheck="false"
+                                  class="w-full min-h-[230px] resize-y bg-surface-deep border border-surface-700 rounded-md px-4 py-3 font-mono text-[12px] leading-[1.7] text-tx focus:outline-none focus:border-accent/40"></textarea>
+
+                        <div class="flex items-end gap-4 flex-wrap">
+                          <div>
+                            <label class="font-mono text-[11px] text-tx-3 mb-1 block" :for="'stage-timeout-' + name">timeout</label>
+                            <input :id="'stage-timeout-' + name" type="text" x-model="settingsConfig.stages[name].timeout"
+                                   class="w-24 bg-surface-800 border rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40"
+                                   :class="settingsDurationValid(settingsConfig.stages[name].timeout) ? 'border-surface-700/50' : 'border-err'"
+                                   placeholder="no limit">
+                          </div>
+                          <div class="text-[11px] text-surface-600 flex-1 min-w-0">
+                            <div><span x-text="(settingsConfig.stages[name].prompt || '').split('\n').length"></span> lines · <span x-text="(settingsConfig.stages[name].prompt || '').length"></span> chars</div>
+                            <div>Go text/template. An unknown field fails the stage at render time, before the agent starts.</div>
+                            <div x-show="!settingsConfig.stages[name].timeout.trim()">There is no default timeout. Left empty, the stage runs until the agent exits.</div>
+                          </div>
+                          <button type="button" x-show="settingsPathDirty('stages.' + name)" @click="revertSettingsStage(name)"
+                                  class="font-mono text-[11px] h-7 px-3 rounded bg-surface-900 border border-surface-700/60 text-tx-3 hover:text-tx-2 transition-colors">revert</button>
+                        </div>
+                      </div>
+                    </div>
+                  </template>
+
+                  <div x-show="!settingsNewStageOpen">
+                    <button type="button" @click="settingsNewStageOpen = true; $nextTick(() => $refs.newStage && $refs.newStage.focus())"
+                            class="w-full flex items-center justify-center gap-1.5 p-2.5 px-3 border border-dashed border-surface-700 rounded-lg text-surface-600 font-mono text-[12px] hover:text-tx-3 hover:border-edge-hover transition-colors">
+                      <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M6 2v8M2 6h8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+                      add stage
+                    </button>
+                  </div>
+                  <div x-show="settingsNewStageOpen" x-cloak class="flex items-center gap-2">
+                    <input x-ref="newStage" type="text" x-model="settingsNewStage" placeholder="stage name"
+                           @keydown.enter.prevent="settingsAddStage()" @keydown.escape="settingsNewStageOpen = false; settingsNewStage = ''"
+                           class="flex-1 min-w-0 bg-surface-800 border border-surface-700/50 rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40">
+                    <button type="button" @click="settingsAddStage()" :disabled="!settingsNewStage.trim() || !!settingsConfig.stages[settingsNewStage.trim()]"
+                            class="font-mono text-[12px] h-8 px-4 rounded bg-accent border border-accent text-accent-fg hover:bg-accent-bright transition-colors disabled:opacity-50">add</button>
+                    <button type="button" @click="settingsNewStageOpen = false; settingsNewStage = ''"
+                            class="font-mono text-[12px] h-8 px-4 rounded bg-surface-900 border border-surface-700/60 text-tx-3">cancel</button>
+                  </div>
+                </div>
+
+                <!-- ===== general ===== -->
+                <div x-show="settingsSection === 'general'" class="flex flex-col gap-3.5">
+                  <template x-for="f in settingsGeneralFields" :key="f.key">
+                    <div>
+                      <label :for="'gen-' + f.key" class="font-mono text-[13px] text-tx-3 mb-1 flex items-center gap-2">
+                        <span x-text="f.key"></span>
+                        <span x-show="!settingsConfig.general[f.key]" class="font-mono text-[9.5px] uppercase tracking-[.08em] text-tx-faint border border-surface-700/60 rounded px-[5px] py-px">default</span>
+                        <span x-show="settingsIsRestartOnly(f.key)" class="font-mono text-[9.5px] uppercase tracking-[.08em] text-warn bg-warn/10 border border-warn/20 rounded px-[5px] py-px">restart</span>
+                      </label>
+                      <input :id="'gen-' + f.key" type="text" x-model="settingsConfig.general[f.key]" :placeholder="f.placeholder"
+                             class="w-full max-w-[32rem] bg-surface-800 border rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40"
+                             :class="f.key === 'max_concurrent_agents' && !settingsIntValid(settingsConfig.general[f.key]) ? 'border-err' : 'border-surface-700/50'">
+                      <p class="text-[11px] text-surface-600 mt-0.5" x-text="f.help"></p>
+                    </div>
+                  </template>
+
+                  <div>
+                    <label class="font-mono text-[13px] text-tx-3 mb-1 block">auto_pick_up</label>
+                    <button type="button" @click="settingsConfig.auto_pick_up = !settingsConfig.auto_pick_up"
+                            class="flex items-center gap-2.5 bg-surface-800 border border-surface-700/50 rounded px-3 py-1.5 text-sm text-tx-2">
+                      <span class="relative w-8 h-4 rounded-full transition-colors" :class="settingsConfig.auto_pick_up ? 'bg-accent' : 'bg-surface-700'">
+                        <span class="absolute top-[2px] w-3 h-3 rounded-full bg-accent-fg transition-[left] duration-150" :style="settingsConfig.auto_pick_up ? 'left:18px' : 'left:2px'"></span>
+                      </span>
+                      <span class="font-mono text-[12px]" x-text="settingsConfig.auto_pick_up ? 'on — todo tickets start automatically' : 'off — start tickets by hand'"></span>
+                    </button>
+                    <p class="text-[11px] text-surface-600 mt-0.5">Off leaves todo tickets queued until you start them by hand.</p>
+                  </div>
+                </div>
+
+                <!-- ===== environment ===== -->
+                <div x-show="settingsSection === 'environment'" class="flex flex-col gap-2">
+                  <template x-for="key in settingsEnvKeys()" :key="key">
+                    <div class="flex items-center gap-2">
+                      <input type="text" :value="key" readonly aria-label="variable name"
+                             class="w-64 flex-none bg-surface-800 border border-surface-700/50 rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none">
+                      <span class="text-surface-600 font-mono">=</span>
+                      <input type="text" x-model="settingsConfig.environment[key]" :aria-label="key + ' value'"
+                             class="flex-1 min-w-0 bg-surface-800 border border-surface-700/50 rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40">
+                      <button type="button" @click="settingsRemoveEnv(key)" :aria-label="'Remove ' + key"
+                              class="w-7 h-7 shrink-0 flex items-center justify-center border border-surface-700/50 rounded text-surface-600 hover:text-err hover:border-err/30 transition-colors">
+                        <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+                      </button>
+                    </div>
+                  </template>
+
+                  <button type="button" x-show="!settingsNewEnvOpen" @click="settingsNewEnvOpen = true; $nextTick(() => $refs.newEnv && $refs.newEnv.focus())"
+                          class="w-full flex items-center justify-center gap-1.5 p-2.5 px-3 border border-dashed border-surface-700 rounded-lg text-surface-600 font-mono text-[12px] hover:text-tx-3 hover:border-edge-hover transition-colors">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M6 2v8M2 6h8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+                    add variable
+                  </button>
+                  <div x-show="settingsNewEnvOpen" x-cloak class="flex items-center gap-2">
+                    <input x-ref="newEnv" type="text" x-model="settingsNewEnvKey" placeholder="VARIABLE_NAME"
+                           @keydown.enter.prevent="settingsAddEnv()" @keydown.escape="settingsNewEnvOpen = false; settingsNewEnvKey = ''"
+                           class="w-64 flex-none bg-surface-800 border border-surface-700/50 rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40">
+                    <button type="button" @click="settingsAddEnv()" :disabled="!settingsNewEnvKey.trim() || settingsNewEnvKey.trim() in settingsConfig.environment"
+                            class="font-mono text-[12px] h-8 px-4 rounded bg-accent border border-accent text-accent-fg hover:bg-accent-bright transition-colors disabled:opacity-50">add</button>
+                    <button type="button" @click="settingsNewEnvOpen = false; settingsNewEnvKey = ''"
+                            class="font-mono text-[12px] h-8 px-4 rounded bg-surface-900 border border-surface-700/60 text-tx-3">cancel</button>
+                  </div>
+                </div>
+
+                <!-- ===== agents ===== -->
+                <div x-show="settingsSection === 'agents'" class="flex flex-col gap-1.5">
+                  <template x-for="name in settingsAgentNames()" :key="name">
+                    <div class="border rounded-lg transition-colors"
+                         :class="settingsOpenAgent === name ? 'border-accent/45 bg-surface-850' : 'border-edge-card bg-surface-900'">
+                      <button @click="settingsToggleAgent(name)" class="w-full flex items-center gap-2.5 p-2.5 px-3 text-left">
+                        <span class="w-[9px] font-mono text-[10px] text-surface-600 shrink-0" x-text="settingsOpenAgent === name ? '▾' : '▸'"></span>
+                        <span class="font-mono text-[13px] font-semibold text-tx-2 shrink-0" x-text="name"></span>
+                        <span x-show="configCache?.default_agent === name"
+                              class="font-mono text-[9.5px] uppercase tracking-[.08em] text-accent border border-accent/30 bg-accent/[0.12] rounded px-[5px] py-px shrink-0">default</span>
+                        <span x-show="settingsPathDirty('agents.' + name)" class="w-[5px] h-[5px] rounded-full bg-accent shrink-0"></span>
+                        <span class="flex-1 min-w-0 truncate font-mono text-[11.5px] text-tx-4" x-text="settingsAgentCommand(name)"></span>
+                        <span x-show="settingsAgentSkipsPermissions(name)"
+                              class="shrink-0 font-mono text-[10px] text-warn bg-warn/10 border border-warn/20 rounded px-1.5">skips permissions</span>
+                      </button>
+
+                      <div x-show="settingsOpenAgent === name" x-cloak class="border-t border-surface-700/40 p-3 flex flex-col gap-3">
+                        <div>
+                          <label :for="'agent-bin-' + name" class="font-mono text-[13px] text-tx-3 mb-1 block">binary</label>
+                          <input :id="'agent-bin-' + name" type="text" x-model="settingsConfig.agents[name].binary"
+                                 class="w-56 bg-surface-800 border rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40"
+                                 :class="settingsConfig.agents[name].binary.trim() ? 'border-surface-700/50' : 'border-err'">
+                          <p class="text-[11px] mt-0.5" :class="settingsConfig.agents[name].binary.trim() ? 'text-surface-600' : 'text-err'"
+                             x-text="settingsConfig.agents[name].binary.trim() ? 'Resolved on PATH. nono and op are treated as wrappers — the binary after -- is the real agent.' : 'agent &quot;' + name + '&quot;: binary is required'"></p>
+                        </div>
+
+                        <div>
+                          <label :for="'agent-args-' + name" class="font-mono text-[13px] text-tx-3 mb-1 block">args</label>
+                          <textarea :id="'agent-args-' + name" x-model="settingsConfig.agents[name].args" spellcheck="false"
+                                    class="w-full min-h-[5rem] resize-y bg-surface-deep border border-surface-700 rounded-md px-4 py-3 font-mono text-[12px] leading-[1.7] text-tx focus:outline-none focus:border-accent/40"></textarea>
+                          <p class="text-[11px] text-surface-600 mt-0.5">One argument per line. Everything after -- is the real agent when the binary is a wrapper.</p>
+                        </div>
+
+                        <div>
+                          <div class="font-mono text-[13px] text-tx-3 mb-1">failure_patterns</div>
+                          <div class="flex flex-wrap gap-1.5" x-show="settingsFailurePatterns(name).patterns.length">
+                            <template x-for="p in settingsFailurePatterns(name).patterns" :key="p">
+                              <span class="font-mono text-[10.5px] text-tx-log bg-surface-800 border border-surface-700/60 rounded px-1.5" x-text="p"></span>
+                            </template>
+                          </div>
+                          <p class="text-[11px] text-surface-600 mt-0.5"
+                             x-text="settingsFailurePatterns(name).mode === 'default' ? 'Using the 8 built-in defaults — API errors, usage limits, prompt-too-long, provider quota. Set an explicit list in config.yaml to override, or [] to disable.' : (settingsFailurePatterns(name).mode === 'disabled' ? 'Set to []. Failure detection is off for this agent; only a non-zero exit pauses the ticket.' : 'An explicit list in config.yaml, replacing the built-in defaults.')"></p>
+                        </div>
+                      </div>
+                    </div>
+                  </template>
+                </div>
+
+                <!-- ===== pipelines (read-only) ===== -->
+                <div x-show="settingsSection === 'pipelines'" class="flex flex-col gap-2">
+                  <template x-for="name in settingsPipelineNames()" :key="name">
+                    <div class="border border-edge-card rounded-lg bg-surface-900 p-3" :data-pipe-color="pipelineColorByName(name)">
+                      <div class="flex items-baseline gap-2.5 mb-2 min-w-0">
+                        <span class="pipe-tag shrink-0" x-text="name"></span>
+                        <span class="font-mono text-[11px] text-surface-600 truncate">
+                          <span x-text="settingsConfig.pipelines[name].length"></span> stages<span x-show="settingsPipelineEnds(name)"> · ends <span x-text="settingsPipelineEnds(name)"></span></span>
+                        </span>
+                      </div>
+                      <div class="flex flex-col gap-0.5">
+                        <template x-for="(step, i) in settingsConfig.pipelines[name]" :key="i">
+                          <div class="settings-step font-mono text-[12px]">
+                            <span class="text-[10px] text-surface-600" x-text="i"></span>
+                            <span class="text-tx-2 min-w-0 truncate" x-text="step.stage"></span>
+                            <span class="text-tx-4 min-w-0 truncate" x-text="step.agent"></span>
+                            <span class="flex justify-end gap-2 whitespace-nowrap min-w-0">
+                              <span class="text-ok">✓ <span x-text="step.on_success"></span></span>
+                              <span class="text-edge-faint">·</span>
+                              <span class="text-err/80">✕ <span x-text="step.on_failure"></span></span>
+                              <span x-show="step.max_retries > 0" class="text-surface-600">max <span x-text="step.max_retries"></span></span>
+                            </span>
+                          </div>
+                        </template>
+                      </div>
+                    </div>
+                  </template>
+                </div>
+
+                <!-- ===== projects (read-only) ===== -->
+                <div x-show="settingsSection === 'projects'" class="flex flex-col gap-1.5">
+                  <template x-for="name in settingsProjectNames()" :key="name">
+                    <div class="border border-edge-card rounded-lg bg-surface-900 p-2.5 px-3" :data-pipe-color="pipelineColorByName(name)">
+                      <div class="flex items-baseline gap-2.5 min-w-0">
+                        <span class="font-mono text-[13px] font-semibold shrink-0" style="color: hsl(var(--pipe-h))" x-text="name"></span>
+                        <span class="font-mono text-[11.5px] text-tx-4 min-w-0 truncate" x-text="settingsConfig.projects[name].path"></span>
+                      </div>
+                      <div class="flex flex-wrap items-center gap-x-2.5 gap-y-1.5 font-mono text-[11px] mt-1.5">
+                        <span x-show="settingsConfig.projects[name].pipeline" class="pipe-tag" :data-pipe-color="pipelineColorByName(settingsConfig.projects[name].pipeline)" x-text="settingsConfig.projects[name].pipeline"></span>
+                        <span x-show="settingsConfig.projects[name].agent"><span class="text-tx-faint">agent</span> <span class="text-tx-2" x-text="settingsConfig.projects[name].agent"></span></span>
+                        <span x-show="settingsConfig.projects[name].branch_prefix"><span class="text-tx-faint">branch</span> <span class="text-tx-2" x-text="settingsConfig.projects[name].branch_prefix + '/…'"></span></span>
+                      </div>
+                    </div>
+                  </template>
+                </div>
+
+                <!-- ===== web ===== -->
+                <div x-show="settingsSection === 'web'" class="flex flex-col gap-3.5">
+                  <div class="flex gap-3 flex-wrap">
+                    <div class="flex-1 min-w-[12rem]">
+                      <label for="web-host" class="font-mono text-[13px] text-tx-3 mb-1 flex items-center gap-2">
+                        host
+                        <span class="font-mono text-[9.5px] uppercase tracking-[.08em] text-warn bg-warn/10 border border-warn/20 rounded px-[5px] py-px">restart</span>
+                      </label>
+                      <input id="web-host" type="text" x-model="settingsConfig.web.host" placeholder="127.0.0.1"
+                             class="w-full bg-surface-800 border border-surface-700/50 rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40">
+                    </div>
+                    <div>
+                      <label for="web-port" class="font-mono text-[13px] text-tx-3 mb-1 flex items-center gap-2">
+                        port
+                        <span class="font-mono text-[9.5px] uppercase tracking-[.08em] text-warn bg-warn/10 border border-warn/20 rounded px-[5px] py-px">restart</span>
+                      </label>
+                      <input id="web-port" type="text" x-model="settingsConfig.web.port" placeholder="8080"
+                             class="w-28 bg-surface-800 border rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40"
+                             :class="settingsIntValid(settingsConfig.web.port) ? 'border-surface-700/50' : 'border-err'">
+                    </div>
+                  </div>
+                  <div>
+                    <label for="web-token" class="font-mono text-[13px] text-tx-3 mb-1 flex items-center gap-2">
+                      token
+                      <span class="font-mono text-[9.5px] uppercase tracking-[.08em] text-warn bg-warn/10 border border-warn/20 rounded px-[5px] py-px">restart</span>
+                    </label>
+                    <!-- Masked by default: this is the credential for every /api and /ws call. -->
+                    <div class="flex items-center gap-2">
+                      <input id="web-token" :type="settingsShowToken ? 'text' : 'password'" x-model="settingsConfig.web.token" placeholder="unset — no auth on /api and /ws"
+                             class="flex-1 min-w-0 bg-surface-800 border border-surface-700/50 rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40">
+                      <button type="button" @click="settingsShowToken = !settingsShowToken"
+                              class="shrink-0 font-mono text-[11px] h-8 px-3 rounded bg-surface-900 border border-surface-700/60 text-tx-3 hover:text-tx-2 transition-colors"
+                              x-text="settingsShowToken ? 'hide' : 'show'"></button>
+                    </div>
+                  </div>
+                  <div class="flex items-start gap-2 bg-warn/10 border border-warn/20 rounded-md p-2.5 px-3">
+                    <span class="text-warn font-mono text-[12px] leading-[1.5]">!</span>
+                    <span class="text-[12px] leading-[1.5] text-tx-3" x-text="settingsWebAdvisory()"></span>
+                  </div>
+                </div>
+
+                <!-- ===== plannotator ===== -->
+                <div x-show="settingsSection === 'plannotator'" class="flex flex-col gap-3.5">
+                  <template x-for="f in settingsPlannotatorFields" :key="f.key">
+                    <div>
+                      <label :for="'pl-' + f.key" class="font-mono text-[13px] text-tx-3 mb-1 flex items-center gap-2">
+                        <span x-text="f.key"></span>
+                        <span x-show="!settingsConfig.plannotator[f.key]" class="font-mono text-[9.5px] uppercase tracking-[.08em] text-tx-faint border border-surface-700/60 rounded px-[5px] py-px">default</span>
+                      </label>
+                      <input :id="'pl-' + f.key" type="text" x-model="settingsConfig.plannotator[f.key]" :placeholder="f.placeholder"
+                             class="w-full max-w-[32rem] bg-surface-800 border rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40"
+                             :class="f.key === 'timeout' && !settingsDurationValid(settingsConfig.plannotator[f.key]) ? 'border-err' : 'border-surface-700/50'">
+                      <p class="text-[11px] text-surface-600 mt-0.5" x-text="f.help + (settingsConfig.plannotator[f.key] ? '' : ' Default: ' + f.placeholder)"></p>
+                    </div>
+                  </template>
+                </div>
+
+                <!-- ===== statuses ===== -->
+                <div x-show="settingsSection === 'statuses'" class="flex flex-col gap-4">
+                  <div>
+                    <div class="font-mono text-[10px] font-bold tracking-[.12em] uppercase text-tx-faint mb-2">built-in</div>
+                    <div class="flex flex-wrap gap-1.5">
+                      <template x-for="s in settingsBuiltinStatuses" :key="s">
+                        <span class="status-chip" :data-status="s" x-text="s"></span>
+                      </template>
+                    </div>
+                  </div>
+                  <div>
+                    <div class="font-mono text-[10px] font-bold tracking-[.12em] uppercase text-tx-faint mb-2">custom</div>
+                    <div class="flex flex-wrap items-center gap-1.5">
+                      <template x-for="s in settingsConfig.statuses" :key="s">
+                        <span class="status-chip" :class="s.match(/^[a-z][a-z0-9_]*$/) ? '' : 'border-err text-err'">
+                          <span x-text="s"></span>
+                          <button type="button" @click="settingsRemoveStatus(s)" :aria-label="'Remove ' + s" class="text-surface-600 hover:text-err">✕</button>
+                        </span>
+                      </template>
+                      <button type="button" x-show="!settingsNewStatusOpen" @click="settingsNewStatusOpen = true; $nextTick(() => $refs.newStatus && $refs.newStatus.focus())"
+                              class="font-mono text-[10px] uppercase tracking-[.08em] px-2.5 py-1 rounded-full border border-dashed border-surface-700 text-surface-600 hover:text-tx-3 hover:border-edge-hover transition-colors">add status</button>
+                    </div>
+                    <p x-show="!settingsConfig.statuses.length && !settingsNewStatusOpen" class="text-[11px] text-surface-600 mt-1.5">None. A custom status must match [a-z][a-z0-9_]* and can be used as an on_success or on_failure target.</p>
+                    <div x-show="settingsNewStatusOpen" x-cloak class="flex items-center gap-2 mt-2">
+                      <input x-ref="newStatus" type="text" x-model="settingsNewStatus" placeholder="needs_review"
+                             @keydown.enter.prevent="settingsAddStatus()" @keydown.escape="settingsNewStatusOpen = false; settingsNewStatus = ''"
+                             class="w-64 bg-surface-800 border rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40"
+                             :class="!settingsNewStatus.trim() || settingsNewStatus.trim().match(/^[a-z][a-z0-9_]*$/) ? 'border-surface-700/50' : 'border-err'">
+                      <button type="button" @click="settingsAddStatus()" :disabled="!settingsNewStatus.trim() || settingsConfig.statuses.includes(settingsNewStatus.trim())"
+                              class="font-mono text-[12px] h-8 px-4 rounded bg-accent border border-accent text-accent-fg hover:bg-accent-bright transition-colors disabled:opacity-50">add</button>
+                      <button type="button" @click="settingsNewStatusOpen = false; settingsNewStatus = ''"
+                              class="font-mono text-[12px] h-8 px-4 rounded bg-surface-900 border border-surface-700/60 text-tx-3">cancel</button>
+                    </div>
+                    <p x-show="settingsNewStatus.trim() && !settingsNewStatus.trim().match(/^[a-z][a-z0-9_]*$/)" x-cloak class="text-[11px] text-err mt-1"
+                       x-text="'custom status &quot;' + settingsNewStatus.trim() + '&quot;: must match [a-z][a-z0-9_]*'"></p>
+                  </div>
+                </div>
+
+                <!-- ===== display (localStorage, never written to YAML) ===== -->
+                <div x-show="settingsSection === 'display'" class="flex flex-col gap-1.5">
+                  <button type="button" @click="toggleShowBadges()"
+                          class="flex items-center justify-between border border-edge-card rounded-md bg-surface-900 p-2.5 px-3 text-[13px] text-tx-2 hover:border-edge-hover transition-colors">
+                    <span>Pipeline badges</span><span class="text-ok font-mono" x-show="showPipelineBadges">✓</span>
+                  </button>
+                  <button type="button" @click="toggleShowAgentMeta()"
+                          class="flex items-center justify-between border border-edge-card rounded-md bg-surface-900 p-2.5 px-3 text-[13px] text-tx-2 hover:border-edge-hover transition-colors">
+                    <span>Agent meta</span><span class="text-ok font-mono" x-show="showAgentMeta">✓</span>
+                  </button>
+                  <button type="button" @click="toggleTheme()"
+                          class="flex items-center justify-between border border-edge-card rounded-md bg-surface-900 p-2.5 px-3 text-[13px] text-tx-2 hover:border-edge-hover transition-colors">
+                    <span>Theme</span><span class="font-mono text-[11px] text-tx-4" x-text="lightTheme ? 'light' : 'dark'"></span>
+                  </button>
+                </div>
+              </div>
+            </template>
+          </div>
+        </div>
+
+        <!-- Post-save strip. Cleared by the next edit, which makes the review bar reappear. -->
+        <div x-show="settingsSavedAt && !settingsDirty()" x-cloak
+             class="shrink-0 border-t border-ok/40 bg-ok/[0.14] p-2 px-5 font-mono text-[11px] text-ok">
+          saved <span x-text="settingsSavedAt"></span> · daemon reloaded<span x-show="settingsSavedRestart"> · restart to apply</span>
+        </div>
+
+        <!-- Review bar -->
+        <div x-show="settingsDirty()" x-cloak class="shrink-0 border-t border-surface-700/60 bg-surface-deep slide-up">
+          <div x-show="settingsDiffOpen" x-cloak class="max-h-64 overflow-auto py-2.5 border-b border-surface-700/40">
+            <div x-show="settingsErrors.length" class="bg-err/10 border-b border-err/25 p-2.5 px-5 mb-2">
+              <div class="font-mono text-[10px] font-bold tracking-[.1em] uppercase text-err mb-1">daemon rejected the config</div>
+              <template x-for="e in settingsErrors" :key="e">
+                <div class="font-mono text-[11.5px] text-tx-2 whitespace-pre-wrap break-words" x-text="e"></div>
+              </template>
+            </div>
+            <template x-for="h in settingsDiffHunks()" :key="h.path">
+              <div>
+                <div class="font-mono text-[11px] text-tx-faint pt-2 pb-1 px-5" x-text="'@@ ' + h.path + ' @@'"></div>
+                <template x-for="(l, i) in h.lines" :key="i">
+                  <div class="font-mono text-[11.5px] leading-[1.6] px-5 whitespace-pre-wrap break-words"
+                       :class="l.kind === 'del' ? 'text-err bg-err/[.08]' : (l.kind === 'add' ? 'text-ok bg-ok/10' : 'text-tx-4')"
+                       x-text="(l.kind === 'del' ? '- ' : (l.kind === 'add' ? '+ ' : '  ')) + l.text"></div>
+                </template>
+              </div>
+            </template>
+          </div>
+
+          <div class="p-2.5 px-5 flex items-center gap-2.5">
+            <button type="button" @click="settingsDiffOpen = !settingsDiffOpen" class="flex-1 min-w-0 flex items-center gap-2 text-left">
+              <span class="font-mono text-[11px] text-surface-600 shrink-0" x-text="settingsDiffOpen ? '▾' : '▸'"></span>
+              <span class="font-mono text-[11px] text-accent shrink-0">
+                <span x-text="settingsChangedPaths().length"></span> <span x-text="settingsChangedPaths().length === 1 ? 'field' : 'fields'"></span> changed
+              </span>
+              <span class="text-[11px] text-surface-600 min-w-0 truncate"
+                    x-text="settingsDiffOpen ? settingsChangedPaths().join('  ·  ') : 'review the yaml diff'"></span>
+            </button>
+            <span class="font-mono text-[11px] shrink-0" :class="settingsSaving ? 'text-tx-3' : 'text-surface-600'"
+                  x-text="settingsSaving ? 'writing config.yaml' : 'not written yet'"></span>
+            <button type="button" @click="discardSettings()"
+                    class="shrink-0 font-mono text-[12px] h-8 px-4 rounded bg-surface-900 border border-surface-700/60 text-tx-3 hover:text-tx-2 transition-colors">discard</button>
+            <button type="button" @click="saveSettings()" :disabled="settingsSaving"
+                    class="shrink-0 font-mono text-[12px] h-8 px-4 rounded bg-accent border border-accent text-accent-fg hover:bg-accent-bright transition-colors disabled:opacity-50">save &amp; reload</button>
+          </div>
+        </div>
+      </div>
+    </div>
   </main>
   </template>
 
@@ -1885,6 +2394,7 @@
   </div>
   </template>
 
+  <script src="/settings.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

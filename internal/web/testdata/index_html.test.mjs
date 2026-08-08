@@ -8,12 +8,18 @@ import { fileURLToPath } from "node:url";
 const dirname = path.dirname(fileURLToPath(import.meta.url));
 const htmlPath = path.join(dirname, "../static/index.html");
 const appPath = path.join(dirname, "../static/app.js");
+const settingsPath = path.join(dirname, "../static/settings.js");
 
 // recomputeBoard builds its column buckets with array literals created inside
 // the VM realm, so their prototype differs from this file's Array and
 // deepStrictEqual's prototype check would fail. Spread into the test realm
 // before asserting.
 const bt = (state, key) => [...state.boardTickets(key)];
+
+// Same realm problem, one level deeper: settings values are nested arrays and
+// objects built inside the VM, so a spread is not enough. Rebuild in this
+// realm before asserting on structure.
+const vmValue = (v) => JSON.parse(JSON.stringify(v));
 
 // Minimal DOM double for the board: enough for the keyed reconcile in
 // renderColumn / _patchColumn, and it records every structural operation so a
@@ -166,10 +172,13 @@ function loadKontoraState(overrides = {}) {
 // The terminal handles live on a module-scope `termState` in app.js rather than
 // on the component, so a lifecycle test needs the VM context to reach them. A
 // top-level `var` lands on the context object, so `ctx.termState` is the holder.
+// settings.js runs first because kontora() merges kontoraSettings() into the
+// object it returns, the same order index.html loads the two script tags in.
 function loadKontoraContext(overrides = {}) {
   const context = kontoraContext(overrides);
   vm.createContext(context);
-  vm.runInContext(`${fs.readFileSync(appPath, "utf8")}\nthis.kontora = kontora;`, context);
+  const src = [fs.readFileSync(settingsPath, "utf8"), fs.readFileSync(appPath, "utf8")].join("\n");
+  vm.runInContext(`${src}\nthis.kontora = kontora;`, context);
   return { ctx: context, state: context.kontora() };
 }
 
@@ -297,6 +306,7 @@ function kontoraContext(overrides = {}) {
     console,
     setTimeout,
     clearTimeout,
+    structuredClone,
     requestAnimationFrame(callback) {
       callback();
       return 1;
@@ -2246,4 +2256,706 @@ test("index.html renders every prose block through the idempotent write", () => 
   // the subtree and the scroller clamps to the top while it is empty.
   assert.equal(html.includes('x-html="renderMarkdown'), false);
   assert.equal(html.match(/x-effect="setProse\(\$el, /g).length, 6);
+});
+
+// ---------------------------------------------------------------------------
+// Settings view
+// ---------------------------------------------------------------------------
+
+const yamlPath = path.join(dirname, "../static/vendor/yaml@2.8.1/yaml.mjs");
+
+// A commented config exercising everything the form must preserve but does not
+// model: an editor key, a per-agent environment map, a | block prompt with a
+// trailing comment, and an agent that disables failure detection with [].
+const SETTINGS_FIXTURE = `# kontora configuration
+tickets_dir: ~/org/tickets
+editor: nvim # not modelled by the form
+
+agents:
+  claude:
+    binary: claude
+    args:
+      - --dangerously-skip-permissions
+    environment:
+      ANTHROPIC_LOG: debug
+  pi:
+    binary: pi
+    args: []
+    failure_patterns: []
+
+stages:
+  # the planning pass
+  plan:
+    prompt: |
+      Read the ticket.
+      Draft a plan.
+      Write it to PLAN.md.
+    timeout: 45m
+  implement:
+    prompt: Implement PLAN.md
+    timeout: 2h
+
+pipelines:
+  full:
+    - stage: plan
+      agent: claude
+      on_success: next
+      on_failure: retry
+      max_retries: 2
+    - stage: implement
+      agent: claude
+      on_success: human_review
+      on_failure: pause
+
+projects:
+  kontora:
+    path: ~/projects/kontora
+    pipeline: full
+
+environment:
+  KONTORA_MODE: dev
+
+web:
+  host: 127.0.0.1
+  port: 8080
+`;
+
+// Every collection key present with an empty value, which is how a key parses
+// when all of its entries are commented out. Nothing can be written under one
+// of these without replacing the null scalar the parser produced.
+const SETTINGS_BARE_FIXTURE = `# nothing configured yet
+statuses:
+environment:
+stages:
+agents:
+  claude:
+    binary: claude
+    args:
+`;
+
+// A Settings view with the fixture parsed, using the real vendored yaml module
+// in place of the dynamic import() the browser resolves.
+async function settingsState(text = SETTINGS_FIXTURE, overrides = {}) {
+  const state = loadKontoraState(overrides);
+  state._settingsYAML = await import(yamlPath);
+  await state._settingsParse(text);
+  return state;
+}
+
+// A daemon double for the save path. One save is three requests: GET the file
+// to check it did not change under the tab, PUT the new content, then GET
+// /api/config so the board picks up the reloaded values.
+function settingsFetch({ raw = SETTINGS_FIXTURE, put = { status: 204, ok: true }, config } = {}) {
+  const sent = [];
+  const fetch = async (url, init = {}) => {
+    sent.push({ url, init });
+    const method = init.method || "GET";
+    if (url === "/api/config/raw" && method === "GET") {
+      return { status: 200, ok: true, json: async () => ({ content: typeof raw === "function" ? raw() : raw }) };
+    }
+    if (url === "/api/config/raw") return typeof put === "function" ? put() : put;
+    if (url === "/api/config") return { status: 200, ok: true, json: async () => config || {} };
+    return { status: 404, ok: false, json: async () => ({}) };
+  };
+  const of = (method) => sent.filter((s) => (s.init.method || "GET") === method);
+  return { fetch, sent, puts: () => of("PUT"), gets: () => of("GET") };
+}
+
+test("settings loads the fixture clean and defaults to the stages section", async () => {
+  const state = await settingsState();
+
+  assert.equal(state.settingsState, "ok");
+  assert.equal(state.settingsSection, "stages");
+  assert.deepEqual([...state.settingsChangedPaths()], []);
+  assert.equal(state.settingsDirty(), false);
+  assert.equal(state.settingsReformats, false);
+});
+
+test("settingsChangedPaths reports exactly the edited field", async () => {
+  const state = await settingsState();
+
+  state.settingsConfig.stages.plan.prompt = "Read the ticket.\nDraft a plan.\nWrite it to PLAN.md.\n";
+  assert.deepEqual([...state.settingsChangedPaths()], []);
+
+  state.settingsConfig.stages.plan.prompt = "Read the ticket.\nDraft a better plan.\nWrite it to PLAN.md.\n";
+  assert.deepEqual([...state.settingsChangedPaths()], ["stages.plan.prompt"]);
+  assert.equal(state.settingsDirty(), true);
+  assert.equal(state.settingsPathDirty("stages.plan"), true);
+  assert.equal(state.settingsPathDirty("stages.implement"), false);
+});
+
+test("a multiline change diffs the middle with one context line each side", async () => {
+  const state = await settingsState();
+
+  state.settingsConfig.stages.plan.prompt = "Read the ticket.\nDraft a better plan.\nWrite it to PLAN.md.\n";
+  const hunks = state.settingsDiffHunks();
+
+  assert.equal(hunks.length, 1);
+  assert.equal(hunks[0].path, "stages.plan.prompt");
+  assert.deepEqual(vmValue(hunks[0].lines).map((l) => [l.kind, l.text]), [
+    ["context", "Read the ticket."],
+    ["del", "Draft a plan."],
+    ["add", "Draft a better plan."],
+    ["context", "Write it to PLAN.md."],
+  ]);
+});
+
+test("inserting a token replaces the selection and reports the caret after it", async () => {
+  let restored = null;
+  const el = {
+    selectionStart: 5,
+    selectionEnd: 12,
+    focus() {},
+    setSelectionRange(from, to) { restored = [from, to]; },
+  };
+  const state = await settingsState(SETTINGS_FIXTURE, {
+    document: { getElementById: () => el, querySelector: () => null, documentElement: { style: {} } },
+  });
+  state.settingsConfig.stages.implement.prompt = "Impl PLAN.md now";
+
+  const caret = state.insertTemplateToken("prompt", "implement", "{{ .Ticket.ID }}");
+
+  assert.equal(state.settingsConfig.stages.implement.prompt, "Impl {{ .Ticket.ID }} now");
+  assert.equal(caret, 5 + "{{ .Ticket.ID }}".length);
+  assert.deepEqual(restored, [caret, caret]);
+});
+
+test("client validation uses the daemon's exact wording", async () => {
+  const state = await settingsState();
+
+  state.settingsConfig.agents.claude.binary = "";
+  state.settingsConfig.general.default_agent = "codex";
+  state.settingsConfig.projects.kontora.path = "";
+  state.settingsConfig.statuses = ["Needs-QA"];
+
+  assert.deepEqual(vmValue(state.settingsClientErrors()), [
+    'agent "claude": binary is required',
+    'default_agent "codex": not found in agents',
+    'project "kontora": path is required',
+    'custom status "Needs-QA": must match [a-z][a-z0-9_]*',
+  ]);
+});
+
+test("durations the daemon accepts are not marked invalid", async () => {
+  const state = await settingsState();
+
+  for (const ok of ["30m", "1h30m", "1.5h", "500ms", ""]) {
+    assert.equal(state.settingsDurationValid(ok), true, ok);
+  }
+  assert.equal(state.settingsDurationValid("not-a-duration"), false);
+
+  assert.equal(state.settingsIntValid("4"), true);
+  assert.equal(state.settingsIntValid("many"), false);
+
+  // Neither check blocks the save: the daemon owns both messages.
+  state.settingsConfig.stages.plan.timeout = "not-a-duration";
+  state.settingsConfig.general.max_concurrent_agents = "many";
+  assert.deepEqual(vmValue(state.settingsClientErrors()), []);
+});
+
+test("the built-in rework stage is listed, marked, and creates a real key when edited", async () => {
+  const state = await settingsState();
+
+  assert.equal(state.settingsConfig.stages.rework.builtin, true);
+  assert.match(state.settingsConfig.stages.rework.prompt, /plannotatorReview/);
+  assert.deepEqual(vmValue(state.settingsStageNames()), ["implement", "plan", "rework"]);
+  assert.deepEqual([...state.settingsChangedPaths()], []);
+
+  state.settingsConfig.stages.rework.prompt = "Redo it.";
+  await state._settingsWrite();
+
+  // The timeout is written with the prompt even though it did not change. A
+  // materialised rework without one runs unbounded: process.Run starts the
+  // timer only above zero.
+  assert.match(String(state._settingsDoc), /rework:\n\s+prompt: Redo it\.\n\s+timeout: 30m/);
+});
+
+test("a stage added to a file with none is written whole", async () => {
+  const state = await settingsState(SETTINGS_BARE_FIXTURE);
+
+  state.settingsNewStage = "qa";
+  state.settingsAddStage();
+  state.settingsConfig.stages.qa.prompt = "Review {{ .Ticket.ID }}";
+  state.settingsConfig.stages.qa.timeout = "30m";
+  await state._settingsWrite();
+
+  assert.match(String(state._settingsDoc), /stages:\n\s+qa:\n\s+prompt: Review \{\{ \.Ticket\.ID \}\}\n\s+timeout: 30m/);
+});
+
+test("keys the file leaves empty accept a value instead of throwing", async () => {
+  // A list cannot be assigned into the null scalar an empty key parses as, and
+  // setIn cannot descend through one. Both used to throw and write nothing.
+  const statuses = await settingsState(SETTINGS_BARE_FIXTURE);
+  statuses.settingsNewStatus = "needs_qa";
+  statuses.settingsAddStatus();
+  assert.match(await statuses._settingsWrite(), /statuses:\n\s+- needs_qa/);
+
+  const args = await settingsState(SETTINGS_BARE_FIXTURE);
+  args.settingsConfig.agents.claude.args = "--dangerously-skip-permissions";
+  assert.match(await args._settingsWrite(), /args:\n\s+- --dangerously-skip-permissions/);
+
+  const env = await settingsState(SETTINGS_BARE_FIXTURE);
+  env.settingsNewEnvKey = "KONTORA_TEST";
+  env.settingsAddEnv();
+  env.settingsConfig.environment.KONTORA_TEST = "enabled";
+  assert.match(await env._settingsWrite(), /environment:\n\s+KONTORA_TEST: enabled/);
+
+  // The keys keep their position and the file keeps its comment.
+  assert.match(await env._settingsWrite(), /^# nothing configured yet\nstatuses:/);
+});
+
+test("a field left blank on a new entry is skipped, not deleted through a null key", async () => {
+  // A new stage writes prompt and timeout together, so one of them is blank
+  // whenever the user fills in only the other. Deleting the blank one used to
+  // throw on the null scalar `stages:` parses as, and the save wrote nothing.
+  const state = await settingsState(SETTINGS_BARE_FIXTURE);
+  state.settingsNewStage = "qa";
+  state.settingsAddStage();
+  state.settingsConfig.stages.qa.timeout = "10m";
+
+  const out = await state._settingsWrite();
+  assert.match(out, /stages:\n\s+qa:\n\s+timeout: 10m/);
+  assert.equal(/prompt:/.test(out), false);
+});
+
+test("paths and durations are trimmed, prompts and environment values are not", async () => {
+  const state = await settingsState();
+
+  state.settingsConfig.general.tickets_dir = "~/org/other ";
+  state.settingsConfig.stages.plan.timeout = " 45m ";
+  state.settingsConfig.environment.KONTORA_MODE = "dev ";
+  state.settingsConfig.stages.implement.prompt = "Implement PLAN.md ";
+  const out = await state._settingsWrite();
+
+  assert.match(out, /^tickets_dir: ~\/org\/other$/m);
+  assert.match(out, /timeout: 45m$/m);
+  // yaml quotes a value whose whitespace matters, which is the tell that these
+  // two reached the file untouched.
+  assert.match(out, /KONTORA_MODE: "dev "/);
+  assert.match(out, /prompt: "Implement PLAN\.md "/);
+});
+
+test("failure_patterns keeps its three states apart", async () => {
+  const state = await settingsState();
+
+  const claude = state.settingsFailurePatterns("claude");
+  assert.equal(claude.mode, "default");
+  assert.equal(claude.patterns.length, 8);
+
+  assert.deepEqual(vmValue(state.settingsFailurePatterns("pi")), { mode: "disabled", patterns: [] });
+
+  state.settingsConfig.agents.pi.failure_patterns = ["quota exceeded"];
+  assert.deepEqual(vmValue(state.settingsFailurePatterns("pi")), { mode: "override", patterns: ["quota exceeded"] });
+});
+
+test("saving one prompt leaves comments, unmodelled keys, and block style intact", async () => {
+  const state = await settingsState();
+
+  state.settingsConfig.stages.plan.prompt = "Read the ticket.\nDraft a better plan.\nWrite it to PLAN.md.\n";
+  await state._settingsWrite();
+  const out = String(state._settingsDoc);
+
+  assert.match(out, /^# kontora configuration$/m);
+  assert.match(out, /editor: nvim # not modelled by the form/);
+  assert.match(out, /ANTHROPIC_LOG: debug/);
+  assert.match(out, /# the planning pass\n {2}plan:/);
+  assert.match(out, /prompt: \|/);
+  assert.match(out, /Draft a better plan\./);
+
+  // Everything except the edited line is byte-for-byte what came in.
+  const changed = out.split("\n").filter((l, i) => l !== SETTINGS_FIXTURE.split("\n")[i]);
+  assert.deepEqual(changed, ["      Draft a better plan."]);
+});
+
+test("a general key absent from the file is appended without reformatting", async () => {
+  const state = await settingsState();
+
+  state.settingsConfig.general.instance_name = "laptop";
+  await state._settingsWrite();
+  const out = String(state._settingsDoc);
+
+  assert.match(out, /^instance_name: laptop$/m);
+  assert.equal(out.startsWith(SETTINGS_FIXTURE.trimEnd()), true);
+});
+
+test("a file that does not round-trip raises the reformat advisory", async () => {
+  const state = await settingsState('a:   1\nb: 2\n');
+  assert.equal(state.settingsReformats, true);
+  assert.equal(state.settingsState, "ok");
+});
+
+test("501 and 401 produce explicit states instead of an empty form", async () => {
+  const unavailable = loadKontoraState({ fetch: async () => ({ status: 501, ok: false }) });
+  await unavailable.openSettings();
+  assert.equal(unavailable.settingsState, "unavailable");
+  assert.equal(unavailable.settingsConfig, null);
+
+  const unauthorized = loadKontoraState({ fetch: async () => ({ status: 401, ok: false }) });
+  await unauthorized.openSettings();
+  assert.equal(unauthorized.needsAuth, true);
+  assert.equal(unauthorized.settingsConfig, null);
+});
+
+test("a successful save PUTs the serialized document and adopts it as the baseline", async () => {
+  const daemon = settingsFetch({ config: { default_agent: "claude", custom_statuses: ["needs_qa"] } });
+  const state = await settingsState(SETTINGS_FIXTURE, { fetch: daemon.fetch });
+
+  state.settingsConfig.stages.plan.timeout = "1h30m";
+  assert.equal(await state.saveSettings(), true);
+
+  const puts = daemon.puts();
+  assert.equal(puts.length, 1);
+  assert.equal(puts[0].url, "/api/config/raw");
+  assert.equal(JSON.parse(puts[0].init.body).content, String(state._settingsDoc));
+  assert.deepEqual([...state.settingsChangedPaths()], []);
+  assert.match(state.settingsSavedAt, /^\d{2}:\d{2}$/);
+  assert.equal(state.settingsSavedRestart, false);
+
+  // The daemon reloaded, so the config the board reads is refetched. Nothing
+  // broadcasts a config reload over SSE.
+  assert.deepEqual(vmValue(state.configCache), { default_agent: "claude", custom_statuses: ["needs_qa"] });
+});
+
+test("a daemon rejection renders unchanged and keeps the edits", async () => {
+  const message = 'parsing config: invalid duration "not-a-duration": time: invalid duration "not-a-duration"';
+  const daemon = settingsFetch({ put: { status: 400, ok: false, json: async () => ({ error: message }) } });
+  const state = await settingsState(SETTINGS_FIXTURE, { fetch: daemon.fetch });
+
+  state.settingsConfig.stages.plan.timeout = "not-a-duration";
+  assert.equal(await state.saveSettings(), false);
+
+  assert.deepEqual(vmValue(state.settingsErrors), [message]);
+  assert.equal(state.settingsConfig.stages.plan.timeout, "not-a-duration");
+  assert.deepEqual([...state.settingsChangedPaths()], ["stages.plan.timeout"]);
+});
+
+test("a rejected value does not reappear in the next save", async () => {
+  let reject = true;
+  const daemon = settingsFetch({
+    put: () => (reject
+      ? { status: 400, ok: false, json: async () => ({ error: "parsing config: boom" }) }
+      : { status: 204, ok: true }),
+  });
+  const state = await settingsState(SETTINGS_FIXTURE, { fetch: daemon.fetch });
+
+  // A rejected save used to leave its value in the parsed document. Discard
+  // drops it from the form, so no later save would ever overwrite it.
+  state.settingsConfig.web.token = "LEAKED";
+  assert.equal(await state.saveSettings(), false);
+  state.discardSettings();
+
+  reject = false;
+  state.settingsConfig.web.host = "0.0.0.0";
+  assert.equal(await state.saveSettings(), true);
+
+  const body = JSON.parse(daemon.puts().at(-1).init.body).content;
+  assert.equal(body.includes("LEAKED"), false);
+  assert.match(body, /host: 0\.0\.0\.0/);
+});
+
+test("a save refuses when config.yaml changed under the tab", async () => {
+  const daemon = settingsFetch({ raw: SETTINGS_FIXTURE + "instance_name: edited-elsewhere\n" });
+  const state = await settingsState(SETTINGS_FIXTURE, { fetch: daemon.fetch });
+
+  state.settingsConfig.stages.plan.timeout = "1h";
+  assert.equal(await state.saveSettings(), false);
+
+  assert.equal(daemon.puts().length, 0);
+  assert.match(vmValue(state.settingsErrors)[0], /changed on disk/);
+  assert.equal(state.settingsDiffOpen, true);
+  assert.deepEqual([...state.settingsChangedPaths()], ["stages.plan.timeout"]);
+});
+
+test("a save that throws opens the diff panel so the error is visible", async () => {
+  const state = await settingsState(SETTINGS_FIXTURE, {
+    fetch: async () => { throw new Error("Failed to fetch"); },
+  });
+
+  state.settingsConfig.stages.plan.timeout = "1h";
+  assert.equal(await state.saveSettings(), false);
+
+  // settingsErrors only renders inside the diff panel, collapsed by default.
+  assert.equal(state.settingsDiffOpen, true);
+  assert.deepEqual(vmValue(state.settingsErrors), ["Failed to fetch"]);
+  assert.equal(state.settingsSaving, false);
+});
+
+test("client validation blocks the request before it is sent", async () => {
+  let calls = 0;
+  const state = await settingsState(SETTINGS_FIXTURE, {
+    fetch: async () => { calls++; return { status: 204, ok: true }; },
+  });
+
+  state.settingsConfig.agents.claude.binary = "";
+  assert.equal(await state.saveSettings(), false);
+
+  assert.equal(calls, 0);
+  assert.deepEqual(vmValue(state.settingsErrors), ['agent "claude": binary is required']);
+  assert.equal(state.settingsConfig.agents.claude.binary, "");
+});
+
+test("saving a restart-only field says so", async () => {
+  const state = await settingsState(SETTINGS_FIXTURE, { fetch: settingsFetch().fetch });
+
+  state.settingsConfig.web.port = "9090";
+  assert.equal(await state.saveSettings(), true);
+  assert.equal(state.settingsSavedRestart, true);
+});
+
+test("discard restores the baseline without writing", async () => {
+  let calls = 0;
+  const state = await settingsState(SETTINGS_FIXTURE, {
+    fetch: async () => { calls++; return { status: 204, ok: true }; },
+  });
+
+  state.settingsConfig.stages.plan.prompt = "changed";
+  state.settingsConfig.web.host = "0.0.0.0";
+  state.discardSettings();
+
+  assert.equal(state.settingsConfig.stages.plan.prompt, state.settingsBaseline.stages.plan.prompt);
+  assert.equal(state.settingsConfig.web.host, "127.0.0.1");
+  assert.deepEqual([...state.settingsChangedPaths()], []);
+  assert.equal(calls, 0);
+});
+
+test("revert restores a stage, and drops one the baseline never had", async () => {
+  const state = await settingsState();
+
+  // The built-in rework is in the baseline, so reverting puts its default
+  // prompt back rather than deleting a stage the daemon still runs.
+  state.settingsConfig.stages.rework.prompt = "Redo it.";
+  state.revertSettingsStage("rework");
+  assert.match(state.settingsConfig.stages.rework.prompt, /plannotatorReview/);
+  assert.deepEqual([...state.settingsChangedPaths()], []);
+
+  state.settingsNewStage = "qa";
+  state.settingsAddStage();
+  state.settingsConfig.stages.qa.prompt = "Review {{ .Ticket.ID }}";
+  assert.equal(state.settingsOpenStage, "qa");
+
+  state.revertSettingsStage("qa");
+  assert.equal(state.settingsConfig.stages.qa, undefined);
+  assert.equal(state.settingsOpenStage, null);
+  assert.deepEqual([...state.settingsChangedPaths()], []);
+});
+
+test("add flows create modelled entries and removal undoes them", async () => {
+  const state = await settingsState();
+
+  state.settingsNewStage = "qa";
+  state.settingsAddStage();
+  state.settingsConfig.stages.qa.prompt = "Review {{ .Ticket.ID }}";
+  state.settingsConfig.stages.qa.timeout = "30m";
+  assert.equal(state.settingsOpenStage, "qa");
+  assert.deepEqual([...state.settingsChangedPaths()], ["stages.qa.prompt", "stages.qa.timeout"]);
+
+  state.settingsNewEnvKey = "KONTORA_TEST";
+  state.settingsAddEnv();
+  state.settingsConfig.environment.KONTORA_TEST = "enabled";
+  assert.equal(state.settingsChangedPaths().includes("environment.KONTORA_TEST"), true);
+
+  state.settingsRemoveEnv("KONTORA_TEST");
+  assert.equal(state.settingsChangedPaths().includes("environment.KONTORA_TEST"), false);
+  assert.equal(state.settingsConfig.environment.KONTORA_MODE, "dev");
+
+  state.settingsNewStatus = "needs_qa";
+  state.settingsAddStatus();
+  assert.equal(state.settingsChangedPaths().includes("statuses"), true);
+  assert.deepEqual(vmValue(state.settingsClientErrors()), []);
+
+  await state._settingsWrite();
+  const out = String(state._settingsDoc);
+  assert.match(out, /qa:\n\s+prompt: Review \{\{ \.Ticket\.ID \}\}\n\s+timeout: 30m/);
+  assert.match(out, /statuses:\n\s+- needs_qa/);
+});
+
+test("an invalid custom status blocks the save with the daemon's wording", async () => {
+  let calls = 0;
+  const state = await settingsState(SETTINGS_FIXTURE, {
+    fetch: async () => { calls++; return { status: 204, ok: true }; },
+  });
+
+  state.settingsNewStatus = "Needs-QA";
+  state.settingsAddStatus();
+
+  assert.deepEqual(vmValue(state.settingsClientErrors()), ['custom status "Needs-QA": must match [a-z][a-z0-9_]*']);
+  assert.equal(await state.saveSettings(), false);
+  assert.equal(calls, 0);
+
+  state.settingsRemoveStatus("Needs-QA");
+  assert.deepEqual(vmValue(state.settingsClientErrors()), []);
+});
+
+test("display preferences stay in localStorage and never enter the diff", async () => {
+  const stored = {};
+  const state = await settingsState(SETTINGS_FIXTURE, {
+    localStorage: { getItem: (k) => stored[k] ?? null, setItem: (k, v) => { stored[k] = v; } },
+  });
+
+  state.renderBoard = () => {};
+  state.toggleShowBadges();
+  state.toggleShowAgentMeta();
+  state.toggleTheme();
+
+  assert.equal(stored["kontora-show-badges"], "0");
+  assert.equal(stored["kontora-show-agent-meta"], "0");
+  assert.equal(state.lightTheme, true);
+  assert.deepEqual([...state.settingsChangedPaths()], []);
+  assert.equal(state.settingsDirty(), false);
+});
+
+test("switching sections keeps edits made in another one", async () => {
+  const state = await settingsState();
+
+  state.settingsConfig.stages.plan.timeout = "1h";
+  state.settingsSection = "web";
+  state.settingsConfig.web.host = "0.0.0.0";
+  state.settingsSection = "agents";
+
+  assert.deepEqual([...state.settingsChangedPaths()], ["stages.plan.timeout", "web.host"]);
+});
+
+test("leaving a dirty settings view records the target instead of navigating", async () => {
+  const state = await settingsState(SETTINGS_FIXTURE, { fetch: settingsFetch().fetch });
+  state.currentView = "settings";
+  state.settingsConfig.stages.plan.timeout = "1h";
+
+  await state.gotoView("board");
+  assert.equal(state.settingsGuard, true);
+  assert.equal(state.settingsGuardTarget, "board");
+  assert.equal(state.currentView, "settings");
+
+  await state.settingsGuardSave();
+  assert.equal(state.settingsGuard, false);
+  assert.equal(state.currentView, "board");
+  assert.deepEqual([...state.settingsChangedPaths()], []);
+});
+
+test("save & leave that the daemon rejects stays on settings with the edits", async () => {
+  const state = await settingsState(SETTINGS_FIXTURE, {
+    fetch: settingsFetch({ put: { status: 400, ok: false, json: async () => ({ error: "parsing config: boom" }) } }).fetch,
+  });
+  state.currentView = "settings";
+  state.settingsConfig.stages.plan.timeout = "nope";
+
+  await state.gotoView("board");
+  await state.settingsGuardSave();
+
+  assert.equal(state.currentView, "settings");
+  assert.equal(state.settingsGuard, true);
+  assert.deepEqual(vmValue(state.settingsErrors), ["parsing config: boom"]);
+  assert.equal(state.settingsConfig.stages.plan.timeout, "nope");
+});
+
+test("discarding from the guard leaves without writing", async () => {
+  let calls = 0;
+  const state = await settingsState(SETTINGS_FIXTURE, {
+    fetch: async () => { calls++; return { status: 204, ok: true }; },
+  });
+  state.currentView = "settings";
+  state.settingsConfig.stages.plan.timeout = "1h";
+
+  await state.gotoView("board");
+  await state.settingsGuardDiscard();
+
+  assert.equal(calls, 0);
+  assert.equal(state.currentView, "board");
+  assert.equal(state.settingsGuard, false);
+  assert.equal(state.settingsConfig.stages.plan.timeout, "45m");
+});
+
+test("a clean settings view navigates away immediately", async () => {
+  const state = await settingsState();
+  state.currentView = "settings";
+
+  await state.gotoView("board");
+  assert.equal(state.currentView, "board");
+  assert.equal(state.settingsGuard, false);
+});
+
+test("index.html wires the settings shell to the guard and the section rail", () => {
+  const html = fs.readFileSync(htmlPath, "utf8");
+
+  // Every nav button goes through the guard; none assigns currentView inline.
+  assert.match(html, /@click="gotoView\('board'\)"/);
+  assert.match(html, /@click="gotoView\('new'\)"/);
+  assert.match(html, /@click="gotoView\('settings'\)"/);
+  assert.equal(html.includes(`@click="currentView = 'board'"`), false);
+
+  // The header is visible in the Settings view, so its New-ticket button needs
+  // the guard too. The one direct openCreateModal() left is the board column
+  // header, which only exists while the board is the current view.
+  const direct = [...html.matchAll(/@click(?:\.stop)?="openCreateModal\(\)"/g)];
+  assert.equal(direct.length, 1);
+  assert.ok(direct[0].index > html.indexOf(`x-show="col.key === 'open' && colHover"`));
+
+  // The guard closes before the create form and every other overlay below it.
+  assert.match(html, /else if \(settingsGuard\) settingsGuard = false; else if \(currentView === 'new'\)/);
+
+  assert.match(html, /x-show="!loading && currentView === 'settings'" x-cloak/);
+  assert.match(html, /w-\[168px\][^"]*bg-surface-frame border-r border-surface-700\/50/);
+
+  // The board's search box shrinks so the three-column settings layout fits.
+  assert.match(html, /flex-1 min-w-\[120px\] max-w-\[300px\] relative/);
+  assert.equal(html.includes('class="w-[300px] relative"'), false);
+
+  // settings.js must load before app.js, which merges it into kontora().
+  assert.ok(html.indexOf('src="/settings.js"') < html.indexOf('src="/app.js"'));
+
+  // The 501 state offers no way to edit or save: it renders before the
+  // settingsState === 'ok' template, and every editable control is inside it.
+  const empty = html.slice(
+    html.indexOf(`settingsState === 'unavailable'`),
+    html.indexOf(`settingsState === 'parse-error'`),
+  );
+  assert.equal(/x-model|saveSettings/.test(empty), false);
+  const editable = html.indexOf(`<template x-if="settingsState === 'ok'">`);
+  assert.ok(editable > 0);
+  for (const m of html.matchAll(/x-model="settingsConfig/g)) assert.ok(m.index > editable);
+});
+
+test("index.html renders every settings section the rail lists", () => {
+  const html = fs.readFileSync(htmlPath, "utf8");
+  const app = fs.readFileSync(settingsPath, "utf8");
+
+  const rail = [...app.matchAll(/\{ key: '([a-z]+)', label:/g)].map((m) => m[1]);
+  assert.deepEqual(rail, [
+    "general", "environment", "agents", "stages", "pipelines",
+    "projects", "web", "plannotator", "statuses", "display",
+  ]);
+  for (const key of rail) {
+    assert.match(html, new RegExp(`x-show="settingsSection === '${key}'"`), key);
+  }
+
+  // Read-only sections carry no editable control.
+  for (const key of ["pipelines", "projects"]) {
+    const section = html.match(new RegExp(`x-show="settingsSection === '${key}'"[\\s\\S]*?\\n                </div>`))[0];
+    assert.equal(/x-model/.test(section), false, key);
+  }
+
+  // A stage has no default timeout, so a placeholder naming one reads as a
+  // fallback that does not exist. Blank means the stage runs unbounded.
+  assert.equal(html.includes(`x-model="settingsConfig.stages[name].timeout"`), true);
+  assert.equal(/settingsConfig\.stages\[name\]\.timeout"[\s\S]{0,300}?placeholder="30m"/.test(html), false);
+
+  // The daemon token is the credential for every /api and /ws call, so it is
+  // masked until asked for.
+  assert.match(html, /id="web-token" :type="settingsShowToken \? 'text' : 'password'"/);
+});
+
+test("every color utility the page writes exists in the built app.css", () => {
+  // Tailwind's opacity scale runs in steps of 5, so bg-ok/14 silently emits
+  // nothing and the element renders with no fill. Arbitrary values (/[0.14])
+  // always emit. Nothing else catches this: the class is valid-looking text.
+  const css = fs.readFileSync(path.join(dirname, "../static/app.css"), "utf8");
+  const sources = [htmlPath, appPath, settingsPath].map((p) => fs.readFileSync(p, "utf8")).join("\n");
+
+  // Match the class anywhere, not just after a dot: hover:bg-accent/30 is
+  // emitted as .hover\:bg-accent\/30:hover.
+  const escape = (s) => s.replace(/[\\^$.*+?()[\]{}|/]/g, "\\$&");
+  const missing = new Set();
+  for (const m of sources.matchAll(/\b((?:bg|text|border|ring|from|via|to)-[a-z]+(?:-[a-z0-9]+)?\/\d+)\b/g)) {
+    if (!new RegExp(escape(m[1].replace("/", "\\/")) + "(?!\\d)").test(css)) missing.add(m[1]);
+  }
+  assert.deepEqual([...missing], []);
 });

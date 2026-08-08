@@ -215,6 +215,55 @@ pipelines:
 	}
 }
 
+func TestLoadResumeSettings(t *testing.T) {
+	base := `%s
+agents:
+  claude:
+    binary: claude%s
+stages:
+  s:
+    prompt: do stuff
+pipelines:
+  p:
+    - stage: s
+      agent: claude
+      on_success: done
+      on_failure: pause
+`
+	tests := []struct {
+		name       string
+		topYAML    string
+		agentYAML  string
+		wantResume *bool
+		wantPrompt string
+	}{
+		{name: "both unset"},
+		{
+			name:       "resume disabled for the agent",
+			agentYAML:  "\n    resume: false",
+			wantResume: new(false),
+		},
+		{
+			name:       "resume enabled for the agent",
+			agentYAML:  "\n    resume: true",
+			wantResume: new(true),
+		},
+		{
+			name:       "custom resume prompt",
+			topYAML:    "resume_prompt: Continue the interrupted work",
+			wantPrompt: "Continue the interrupted work",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg, err := LoadReader(strings.NewReader(fmt.Sprintf(base, tt.topYAML, tt.agentYAML)))
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantResume, cfg.Agents["claude"].Resume)
+			assert.Equal(t, tt.wantPrompt, cfg.ResumePrompt)
+		})
+	}
+}
+
 func TestDefaultFailurePatternsCompile(t *testing.T) {
 	for _, p := range DefaultFailurePatterns {
 		_, err := regexp.Compile(p)

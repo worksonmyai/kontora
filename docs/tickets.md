@@ -109,13 +109,16 @@ There is no automatic takeover of a claim by claim age or a heartbeat. If the ow
 
 ```bash
 kontora archive --days 30            # archive done/cancelled tickets untouched for 30+ days
+kontora archive --days 30 --yes      # skip the confirmation prompt
 kontora archive --days 30 --dry-run  # list what would be archived, write nothing
 kontora archive --days 30 --path ~/projects/kontora  # limit the run to one repository
 kontora archive --days 30 --project kontora          # the same, by configured project name
 kontora archive --days 7 --status cancelled          # sweep cancelled tickets sooner than done ones
 ```
 
-`kontora archive --days N` marks every `done` or `cancelled` ticket whose markdown file was last modified at or before `now - N days` as `archived`. The cutoff uses the file's modification time (the same value the WebUI shows as "updated"), because cancelled tickets have no `completed_at`. `--days` is required and must be a positive number. `--dry-run` prints the matching ticket IDs without changing any files, and a real run prints the IDs it archived followed by a one-line summary.
+`kontora archive --days N` marks every `done` or `cancelled` ticket whose markdown file was last modified at or before `now - N days` as `archived`. The cutoff uses the file's modification time (the same value the WebUI shows as "updated"), because cancelled tickets have no `completed_at`. `--days` is required and must be a positive number.
+
+Every run first prints a table of the matching tickets, with the ID, the closed status, the title taken from the ticket's first markdown heading, and the repository path. `--dry-run` stops there and changes nothing. Otherwise the command asks `Archive N tickets? [y/N]` and archives only on `y` or `yes`; any other answer leaves every file alone. `-y`/`--yes` archives without asking. When stdin is not a terminal, the prompt cannot be answered, so a run that would write files fails and asks for `--yes` instead.
 
 `--path` limits the run to tickets whose `path` field is that repository. Both sides are compared after tilde expansion and cleaning, so `~/projects/kontora`, the same directory in absolute form, and a trailing slash all select the same tickets. Only the complete path matches: a ticket pointing at a subdirectory of the given path is left alone, as is a ticket with no `path` field.
 

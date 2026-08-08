@@ -73,6 +73,7 @@ complete -c kontora -n '__fish_seen_subcommand_from archive' -l dry-run -d 'List
 complete -c kontora -n '__fish_seen_subcommand_from archive' -o path -d 'Repository path' -r -F
 complete -c kontora -n '__fish_seen_subcommand_from archive' -o project -d 'Configured project name' -r
 complete -c kontora -n '__fish_seen_subcommand_from archive' -o status -d 'Closed status' -x -a 'done cancelled'
+complete -c kontora -n '__fish_seen_subcommand_from archive' -s y -l yes -d 'Skip the confirmation prompt'
 
 # Flags: logs
 complete -c kontora -n '__fish_seen_subcommand_from logs' -o stage -d 'Stage name' -r

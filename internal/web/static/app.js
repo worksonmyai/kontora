@@ -24,7 +24,9 @@ var termState = {
 };
 
 function kontora() {
-  return {
+  // The Settings view lives in settings.js and is merged in here, so the
+  // template sees one component. Its keys are distinct from everything below.
+  return Object.assign({
     tickets: [],
     runningAgents: 0,
     // Cache of column key -> filtered+sorted ticket list, plus the total across
@@ -2843,5 +2845,5 @@ function kontora() {
       if (kind === 'primary') return 'rgba(var(--accent),1)';
       return 'rgba(var(--surface-600),1)';
     },
-  };
+  }, kontoraSettings());
 }

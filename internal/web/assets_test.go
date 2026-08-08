@@ -22,6 +22,8 @@ func TestServer_VendoredAssets(t *testing.T) {
 		wantType string
 	}{
 		{"/app.css", "text/css"},
+		{"/settings.js", "javascript"},
+		{"/vendor/yaml@2.8.1/yaml.mjs", "javascript"},
 		{"/vendor/alpinejs@3.14.8/cdn.min.js", "javascript"},
 		{"/vendor/sortablejs@1.15.6/Sortable.min.js", "javascript"},
 		{"/vendor/marked@15.0.7/marked.min.js", "javascript"},

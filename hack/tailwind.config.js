@@ -7,6 +7,7 @@ module.exports = {
   content: [
     './internal/web/static/index.html',
     './internal/web/static/app.js',
+    './internal/web/static/settings.js',
   ],
   theme: {
     extend: {

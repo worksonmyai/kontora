@@ -4,6 +4,7 @@ import (
 	"container/heap"
 	"context"
 	"crypto/rand"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -989,6 +990,7 @@ func (d *Daemon) runTicket(ctx context.Context, ticketID string) {
 
 	log.Info("spawning agent", "agent", agentName, "stage", stageName, "binary", agentCfg.Binary)
 
+	runIndex := stageRunIndex(t, stageName)
 	run, spawnOK := d.spawnAgentRun(taskCtx, t, spawnAgentParams{
 		cfg:        cfg,
 		ctx:        ctx,
@@ -996,6 +998,7 @@ func (d *Daemon) runTicket(ctx context.Context, ticketID string) {
 		ticketID:   ticketID,
 		filePath:   filePath,
 		stageName:  stageName,
+		run:        runIndex,
 		wtPath:     wtPath,
 		rendered:   rendered,
 		agentCfg:   agentCfg,
@@ -1011,6 +1014,7 @@ func (d *Daemon) runTicket(ctx context.Context, ticketID string) {
 		ticketID:     ticketID,
 		filePath:     filePath,
 		stageName:    stageName,
+		run:          runIndex,
 		result:       run.Result,
 		finalMessage: run.FinalMessage,
 		pipelineCfg:  pipelineCfg,
@@ -1072,6 +1076,7 @@ func (d *Daemon) runSimpleTicket(ctx, taskCtx context.Context, cfg *config.Confi
 		ticketID:   ticketID,
 		filePath:   filePath,
 		stageName:  "default",
+		run:        stageRunIndex(t, "default"),
 		wtPath:     wtPath,
 		rendered:   rendered,
 		agentCfg:   agentCfg,
@@ -1168,6 +1173,7 @@ type handleExitParams struct {
 	ticketID     string
 	filePath     string
 	stageName    string
+	run          int
 	result       process.Result
 	finalMessage string
 	pipelineCfg  config.Pipeline
@@ -1250,6 +1256,7 @@ func (d *Daemon) handleAgentExit(ctx, taskCtx context.Context, p handleExitParam
 	summary := runSummary(t2.Summary, p.finalMessage)
 	if exitAction.History != nil {
 		exitAction.History.Summary = summary
+		exitAction.History.Run = p.run
 	}
 
 	nextStage := fieldValue(exitAction.Fields, "stage")
@@ -1372,11 +1379,14 @@ type spawnAgentParams struct {
 	// ctx is the daemon's context, not the ticket's. A live ctx when the runner
 	// returns means the daemon is still up, so the run ended for a reason of its
 	// own and its resume record must go.
-	ctx        context.Context
-	log        *slog.Logger
-	ticketID   string
-	filePath   string
-	stageName  string
+	ctx       context.Context
+	log       *slog.Logger
+	ticketID  string
+	filePath  string
+	stageName string
+	// run keys this run's structured activity sidecar. It must match the Run
+	// stamped on the history entry the same run produces.
+	run        int
 	wtPath     string
 	rendered   string
 	agentCfg   config.Agent
@@ -1475,6 +1485,7 @@ func (d *Daemon) runAgentOnce(taskCtx context.Context, t *ticket.Ticket, p spawn
 	// where this run's output starts. Failure-pattern detection only scans from
 	// here, otherwise a previous attempt's error would keep matching on retry.
 	logStart := fileSize(params.LogFile)
+	eventsFile := stageEventsPath(p.cfg, p.ticketID, p.stageName, p.run)
 	result, runnerErr := d.runner(taskCtx, params)
 	// The record exists to mark a run the daemon never saw end. Once the runner
 	// returns with the daemon still up, the run has ended for a reason of its
@@ -1485,7 +1496,7 @@ func (d *Daemon) runAgentOnce(taskCtx context.Context, t *ticket.Ticket, p spawn
 		d.removeResumeRecord(p.cfg, p.ticketID, p.stageName)
 	}
 	if runnerErr != nil && taskCtx.Err() == nil {
-		d.materializeAgentLogs(p.log, params)
+		d.materializeAgentLogs(p.log, params, eventsFile)
 		errAttrs := []any{"stage", p.stageName, "err", runnerErr}
 		if tail := tailFile(params.LogFile); tail != "" {
 			errAttrs = append(errAttrs, "output", tail)
@@ -1499,7 +1510,7 @@ func (d *Daemon) runAgentOnce(taskCtx context.Context, t *ticket.Ticket, p spawn
 		}
 	}
 
-	d.materializeAgentLogs(p.log, params)
+	d.materializeAgentLogs(p.log, params, eventsFile)
 
 	run := agentRun{Result: result, FinalMessage: finalAssistantMessage(p.log, params)}
 
@@ -1812,6 +1823,27 @@ func stageLogPath(cfg *config.Config, ticketID, stageName string) string {
 	return filepath.Join(expandTilde(cfg.LogsDir), ticketID, stageName+".log")
 }
 
+// stageEventsPath is the structured activity sidecar for one run of a stage.
+// It sits beside <stage>.log; the .json suffix keeps it out of every existing
+// log-directory scanner, all of which filter on .log.
+func stageEventsPath(cfg *config.Config, ticketID, stageName string, run int) string {
+	name := fmt.Sprintf("%s.%d.events.json", stageName, run)
+	return filepath.Join(expandTilde(cfg.LogsDir), ticketID, name)
+}
+
+// stageRunIndex returns the zero-based key for the next run of stageName,
+// counting the runs of that stage already recorded in history. It is not
+// derived from t.Attempt, which ActionBack resets to 0.
+func stageRunIndex(t *ticket.Ticket, stageName string) int {
+	n := 0
+	for _, h := range t.History {
+		if h.Stage == stageName {
+			n++
+		}
+	}
+	return n
+}
+
 func (d *Daemon) pauseTicket(t *ticket.Ticket, path, reason string) {
 	log := d.ticketLog(t.ID)
 	log.Warn("pausing")
@@ -1983,8 +2015,13 @@ func sessionFile(params RunnerParams) (path string, isPi bool) {
 }
 
 // materializeAgentLogs materializes session logs for agents that write
-// structured JSONL (Claude via SessionID, pi via SessionDir).
-func (d *Daemon) materializeAgentLogs(log *slog.Logger, params RunnerParams) {
+// structured JSONL (Claude via SessionID, pi via SessionDir). It also writes
+// the structured activity sidecar for the same session file to eventsFile.
+//
+// A sidecar failure only warns: the plaintext log is the contract every
+// existing reader depends on and must never be lost because the sidecar
+// could not be written.
+func (d *Daemon) materializeAgentLogs(log *slog.Logger, params RunnerParams, eventsFile string) {
 	if params.SessionID == "" && params.SessionDir == "" {
 		return
 	}
@@ -1998,6 +2035,15 @@ func (d *Daemon) materializeAgentLogs(log *slog.Logger, params RunnerParams) {
 		return
 	}
 	log.Info("session log materialized", "session_file", path, "log_file", params.LogFile)
+
+	if eventsFile == "" {
+		return
+	}
+	if err := materializeSessionEvents(path, isPi, eventsFile); err != nil {
+		log.Warn("session events materialization failed", "session_file", path, "events_file", eventsFile, "err", err)
+		return
+	}
+	log.Info("session events materialized", "session_file", path, "events_file", eventsFile)
 }
 
 // materializeSessionLog formats the session JSONL at path with logfmt and
@@ -2026,6 +2072,56 @@ func materializeSessionLog(path string, isPi bool, logFile string) error {
 	}
 	if err != nil {
 		return fmt.Errorf("format session JSONL: %w", err)
+	}
+	return nil
+}
+
+// materializeSessionEvents parses the session JSONL at path into a structured
+// tape and writes it to eventsFile. The write is atomic (temp file plus
+// rename) so a concurrent reader never sees half a document.
+func materializeSessionEvents(path string, isPi bool, eventsFile string) error {
+	src, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("open session file: %w", err)
+	}
+	defer src.Close()
+
+	var tape logfmt.Tape
+	if isPi {
+		tape, err = logfmt.EventsPi(src)
+	} else {
+		tape, err = logfmt.Events(src)
+	}
+	if err != nil {
+		return fmt.Errorf("parse session JSONL: %w", err)
+	}
+
+	data, err := json.Marshal(tape)
+	if err != nil {
+		return fmt.Errorf("encode tape: %w", err)
+	}
+
+	dir := filepath.Dir(eventsFile)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("create log directory: %w", err)
+	}
+	tmp, err := os.CreateTemp(dir, filepath.Base(eventsFile)+".*")
+	if err != nil {
+		return fmt.Errorf("create temp file: %w", err)
+	}
+	tmpName := tmp.Name()
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		os.Remove(tmpName)
+		return fmt.Errorf("write tape: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpName)
+		return fmt.Errorf("close temp file: %w", err)
+	}
+	if err := os.Rename(tmpName, eventsFile); err != nil {
+		os.Remove(tmpName)
+		return fmt.Errorf("rename tape: %w", err)
 	}
 	return nil
 }

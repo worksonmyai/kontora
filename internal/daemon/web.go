@@ -185,14 +185,16 @@ func (d *Daemon) GetConfig() web.ConfigInfo {
 	for i, name := range pipelines {
 		steps := cfg.Pipelines[name]
 		stageNames := make([]string, len(steps))
+		maxRetries := make([]int, len(steps))
 		for j, s := range steps {
 			stageNames[j] = s.Stage
+			maxRetries[j] = s.MaxRetries
 		}
 		var defaultAgent string
 		if len(steps) > 0 {
 			defaultAgent = steps[0].Agent
 		}
-		infos[i] = web.PipelineInfo{Name: name, Stages: stageNames, DefaultAgent: defaultAgent}
+		infos[i] = web.PipelineInfo{Name: name, Stages: stageNames, MaxRetries: maxRetries, DefaultAgent: defaultAgent}
 	}
 	agents := slices.Sorted(maps.Keys(cfg.Agents))
 	projectNames := slices.Sorted(maps.Keys(cfg.Projects))
@@ -587,6 +589,49 @@ func (d *Daemon) GetLogs(id string, stage string) (string, error) {
 		return "", err
 	}
 	return buf.String(), nil
+}
+
+// GetActivity returns the transcript of one run of a stage: the structured
+// tape when that run's sidecar exists, and the shared plaintext log otherwise.
+//
+// A fallback is marked stale when its bytes may describe a different run than
+// the one asked for. That happens two ways, because <stage>.log holds only the
+// newest run: the ticket's history records a newer run of the same stage, or
+// the stage is running right now and appending to the same file.
+func (d *Daemon) GetActivity(id string, stage string, run int) (web.ActivityInfo, error) {
+	d.mu.Lock()
+	ts, ok := d.tickets[id]
+	var newestRun int
+	var stageRunning bool
+	if ok {
+		for _, h := range ts.ticket.History {
+			if h.Stage == stage && h.Run > newestRun {
+				newestRun = h.Run
+			}
+		}
+		stageRunning = ts.ticket.Status == ticket.StatusInProgress && ts.ticket.Stage == stage
+	}
+	d.mu.Unlock()
+	if !ok {
+		return web.ActivityInfo{}, web.ErrTicketNotFound
+	}
+
+	cfg := d.config()
+	tape, content, err := cli.StageActivity(cfg.TicketsDir, cfg.LogsDir, id, stage, run)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return web.ActivityInfo{}, web.ErrLogNotFound
+		}
+		return web.ActivityInfo{}, err
+	}
+
+	info := web.ActivityInfo{Source: "events", Stage: stage, Run: run, Tape: tape}
+	if tape == nil {
+		info.Source = "log"
+		info.Content = content
+		info.Stale = run < newestRun || stageRunning
+	}
+	return info, nil
 }
 
 // GetChanges reports the commits and changed files on a ticket's branch

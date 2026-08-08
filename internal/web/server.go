@@ -56,6 +56,7 @@ func New(svc TicketService, broker *SSEBroker, host string, port int, token, tmu
 	mux.HandleFunc("PUT /api/tickets/{id}", s.handleUpdateTicket)
 	mux.HandleFunc("POST /api/tickets/upload", s.handleUploadTickets)
 	mux.HandleFunc("GET /api/tickets/{id}/logs", s.handleGetLogs)
+	mux.HandleFunc("GET /api/tickets/{id}/activity", s.handleGetActivity)
 	mux.HandleFunc("GET /api/tickets/{id}/changes", s.handleGetChanges)
 	mux.HandleFunc("POST /api/tickets/{id}/plannotator-review", s.handlePlannotatorReview)
 	mux.HandleFunc("GET /api/events", s.handleSSE)

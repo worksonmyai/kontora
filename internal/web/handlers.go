@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -366,6 +367,29 @@ func (s *Server) handleGetLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"content": content})
+}
+
+func (s *Server) handleGetActivity(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	stage := r.URL.Query().Get("stage")
+	if stage != "" {
+		stage = filepath.Base(stage)
+	}
+	run := 0
+	if raw := r.URL.Query().Get("run"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 0 {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "run must be a non-negative integer"})
+			return
+		}
+		run = n
+	}
+	activity, err := s.svc.GetActivity(id, stage, run)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, activity)
 }
 
 func (s *Server) handleGetChanges(w http.ResponseWriter, r *http.Request) {

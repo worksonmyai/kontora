@@ -360,6 +360,7 @@ func (d *Daemon) runReworkStage(ctx, taskCtx context.Context, cfg *config.Config
 	}
 
 	params := d.buildRunnerParams(cfg, agentCfg, stageCfg, binaryPath, args, wtPath, ticketID, config.ReworkStageName, sessionID)
+	runIndex := stageRunIndex(t, config.ReworkStageName)
 	result, runnerErr := d.runner(taskCtx, params)
 	if runnerErr != nil && taskCtx.Err() == nil {
 		log.Error("rework: runner failed", "err", runnerErr)
@@ -368,7 +369,7 @@ func (d *Daemon) runReworkStage(ctx, taskCtx context.Context, cfg *config.Config
 		return
 	}
 
-	d.materializeAgentLogs(log, params)
+	d.materializeAgentLogs(log, params, stageEventsPath(cfg, ticketID, config.ReworkStageName, runIndex))
 
 	if taskCtx.Err() != nil {
 		if ctx.Err() != nil {
@@ -402,6 +403,7 @@ func (d *Daemon) runReworkStage(ctx, taskCtx context.Context, cfg *config.Config
 		Stage:       config.ReworkStageName,
 		Agent:       agentName,
 		ExitCode:    result.ExitCode,
+		Run:         runIndex,
 		StartedAt:   t2.StartedAt,
 		CompletedAt: &result.ExitedAt,
 	})

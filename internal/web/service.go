@@ -2,8 +2,11 @@ package web
 
 import (
 	"errors"
+	"regexp"
+	"strings"
 	"time"
 
+	"github.com/worksonmyai/kontora/internal/logfmt"
 	"github.com/worksonmyai/kontora/internal/ticket/app"
 )
 
@@ -41,6 +44,7 @@ type TicketService interface {
 	UpdateTicket(id string, req UpdateTicketRequest) error
 	UploadTicket(content []byte) (TicketInfo, error)
 	GetLogs(id string, stage string) (string, error)
+	GetActivity(id string, stage string, run int) (ActivityInfo, error)
 	GetChanges(id string) (ChangesInfo, error)
 	GetRawConfig() (string, error)
 	PutRawConfig(content string) error
@@ -83,9 +87,25 @@ type UpdateTicketRequest struct {
 }
 
 type PipelineInfo struct {
-	Name         string   `json:"name"`
-	Stages       []string `json:"stages"`
-	DefaultAgent string   `json:"default_agent,omitempty"`
+	Name   string   `json:"name"`
+	Stages []string `json:"stages"`
+	// MaxRetries is the per-stage retry allowance, positionally aligned with
+	// Stages. It is the denominator of the "attempt 2 / 2" meter.
+	MaxRetries   []int  `json:"max_retries,omitempty"`
+	DefaultAgent string `json:"default_agent,omitempty"`
+}
+
+// ActivityInfo is one stage run's transcript. Source is "events" when the run's
+// structured sidecar was found and "log" when the response fell back to the
+// shared plaintext log. Stale marks a fallback whose bytes may describe a newer
+// run of the same stage.
+type ActivityInfo struct {
+	Source  string       `json:"source"`
+	Stage   string       `json:"stage"`
+	Run     int          `json:"run"`
+	Stale   bool         `json:"stale,omitempty"`
+	Content string       `json:"content,omitempty"`
+	Tape    *logfmt.Tape `json:"tape,omitempty"`
 }
 
 // ProjectInfo describes one configured project. Path is the value as written in
@@ -133,12 +153,22 @@ type TicketInfo struct {
 	LastError     string        `json:"last_error,omitempty"`
 	LastLog       string        `json:"last_log,omitempty"`
 	Summary       string        `json:"summary,omitempty"`
+	Notes         []NoteInfo    `json:"notes,omitempty"`
+}
+
+// NoteInfo is one entry from the ticket body's "## Notes" section. At is the
+// bold line that opened the note: a UTC RFC3339 timestamp for notes written
+// through AddNote, and whatever the author typed for hand-written ones.
+type NoteInfo struct {
+	At   string `json:"at,omitempty"`
+	Text string `json:"text"`
 }
 
 type HistoryInfo struct {
 	Stage       string     `json:"stage"`
 	Agent       string     `json:"agent,omitempty"`
 	ExitCode    int        `json:"exit_code"`
+	Run         int        `json:"run"`
 	StartedAt   *time.Time `json:"started_at,omitempty"`
 	CompletedAt *time.Time `json:"completed_at,omitempty"`
 	Summary     string     `json:"summary,omitempty"`
@@ -174,6 +204,52 @@ type TicketEvent struct {
 	Message string `json:"message,omitempty"`
 }
 
+// noteByline matches the bold line AddNote writes above each note body.
+var noteByline = regexp.MustCompile(`^\*\*(.+)\*\*$`)
+
+// ParseNotes reads the "## Notes" section of a ticket body. AddNote writes
+// each entry as a bold timestamp line, a blank line, and the text, so a bold
+// line opens a note and everything up to the next one is its body. The section
+// ends at the next heading. Body content outside the section is not touched.
+func ParseNotes(body string) []NoteInfo {
+	lines := strings.Split(body, "\n")
+	start := -1
+	for i, line := range lines {
+		if strings.TrimSpace(line) == "## Notes" {
+			start = i + 1
+			break
+		}
+	}
+	if start < 0 {
+		return nil
+	}
+
+	var notes []NoteInfo
+	cur := NoteInfo{}
+	var buf []string
+	flush := func() {
+		if text := strings.TrimSpace(strings.Join(buf, "\n")); text != "" {
+			cur.Text = text
+			notes = append(notes, cur)
+		}
+		cur, buf = NoteInfo{}, nil
+	}
+
+	for _, line := range lines[start:] {
+		if strings.HasPrefix(line, "# ") || strings.HasPrefix(line, "## ") {
+			break
+		}
+		if m := noteByline.FindStringSubmatch(strings.TrimSpace(line)); m != nil {
+			flush()
+			cur.At = m[1]
+			continue
+		}
+		buf = append(buf, line)
+	}
+	flush()
+	return notes
+}
+
 // TicketInfoFromView converts an app.View to a TicketInfo.
 func TicketInfoFromView(v app.View) TicketInfo {
 	info := TicketInfo{
@@ -196,6 +272,7 @@ func TicketInfoFromView(v app.View) TicketInfo {
 		LastError:     v.LastError,
 		LastLog:       v.LastLog,
 		Summary:       v.Summary,
+		Notes:         ParseNotes(v.Body),
 	}
 	if len(v.History) > 0 {
 		info.History = make([]HistoryInfo, len(v.History))
@@ -204,6 +281,7 @@ func TicketInfoFromView(v app.View) TicketInfo {
 				Stage:       h.Stage,
 				Agent:       h.Agent,
 				ExitCode:    h.ExitCode,
+				Run:         h.Run,
 				StartedAt:   h.StartedAt,
 				CompletedAt: h.CompletedAt,
 				Summary:     h.Summary,

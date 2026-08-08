@@ -489,6 +489,7 @@ func (d *Daemon) InitTicket(id string, req web.InitTicketRequest) error {
 		Pipeline: req.Pipeline,
 		Path:     req.Path,
 		Agent:    req.Agent,
+		Branch:   req.Branch,
 	})
 	return mapAppError(err)
 }

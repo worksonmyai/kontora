@@ -1265,6 +1265,44 @@ func TestHandleInit_WithAgent(t *testing.T) {
 	assert.Equal(t, "opus", result.Agent)
 }
 
+func TestHandleInit_Branch(t *testing.T) {
+	cases := []struct {
+		name       string
+		body       string
+		wantStatus int
+		wantBranch string
+	}{
+		{
+			name:       "branch is passed through trimmed",
+			body:       `{"pipeline":"default","path":"~/projects/myrepo","branch":"  feat/login  "}`,
+			wantStatus: http.StatusOK,
+			wantBranch: "feat/login",
+		},
+		{
+			name:       "invalid branch is rejected",
+			body:       `{"pipeline":"default","path":"~/projects/myrepo","branch":"bad branch"}`,
+			wantStatus: http.StatusBadRequest,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := &mockService{}
+			var got string
+			svc.initFn = func(_ string, req InitTicketRequest) error {
+				got = req.Branch
+				return nil
+			}
+			svc.getTicket = &TicketInfo{ID: "t-001", Kontora: true, Status: "todo"}
+			srv := startHandlerTestServer(t, svc)
+
+			res := post(t, srv, "/api/tickets/t-001/init", tc.body)
+			assert.Equal(t, tc.wantStatus, res.statusCode)
+			assert.Equal(t, tc.wantBranch, got)
+		})
+	}
+}
+
 // --- GET /api/events (SSE) ---
 
 func TestHandleSSE_StreamsEvents(t *testing.T) {

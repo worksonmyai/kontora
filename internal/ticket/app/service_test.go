@@ -589,7 +589,25 @@ func TestInit_ProjectDefaults(t *testing.T) {
 		wantPipeline string
 		wantAgent    string
 		wantStage    string
+		wantBranch   string
 	}{
+		{
+			name:         "branch is written when given",
+			req:          InitRequest{Path: "~/projects/test", Branch: "feat/login"},
+			wantPipeline: "default",
+			wantAgent:    "claude-sonnet",
+			wantStage:    "code",
+			wantBranch:   "feat/login",
+		},
+		{
+			name:         "a blank branch keeps the one the ticket carries",
+			frontmatter:  "branch: kontora/tst-001\n",
+			req:          InitRequest{Path: "~/projects/test"},
+			wantPipeline: "default",
+			wantAgent:    "claude-sonnet",
+			wantStage:    "code",
+			wantBranch:   "kontora/tst-001",
+		},
 		{
 			name:         "blank fields take project defaults",
 			req:          InitRequest{Path: "~/projects/test"},
@@ -651,6 +669,7 @@ func TestInit_ProjectDefaults(t *testing.T) {
 			assert.Equal(t, tc.wantPipeline, tkt.Pipeline)
 			assert.Equal(t, tc.wantAgent, tkt.Agent)
 			assert.Equal(t, tc.wantStage, tkt.Stage)
+			assert.Equal(t, tc.wantBranch, tkt.Branch)
 		})
 	}
 }

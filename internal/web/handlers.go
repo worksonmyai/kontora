@@ -236,6 +236,11 @@ func (s *Server) handleInit(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "fields must not contain newlines"})
 		return
 	}
+	req.Branch = strings.TrimSpace(req.Branch)
+	if req.Branch != "" && !validBranchName(req.Branch) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid branch name"})
+		return
+	}
 
 	if err := s.svc.InitTicket(id, req); err != nil {
 		writeServiceError(w, err)

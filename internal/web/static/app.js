@@ -77,7 +77,7 @@ function kontora() {
     createTouched: { pipeline: false, agent: false },
     initModal: false,
     initSubmitting: false,
-    initForm: { ticketId: '', title: '', pipeline: '', agent: '', path: '' },
+    initForm: { ticketId: '', title: '', pipeline: '', agent: '', path: '', branch: '' },
     actionLoading: null,
     deleteModal: false,
     detailMenuOpen: false,
@@ -834,9 +834,10 @@ function kontora() {
       this.initForm = {
         ticketId: ticket.id,
         title: ticket.title || '',
-        pipeline: ticket.pipeline || '',
-        agent: ticket.agent || '',
+        pipeline: '',
+        agent: '',
         path: ticket.path || '',
+        branch: ticket.branch || '',
       };
       this.initModal = true;
       if (!this.configCache) {
@@ -847,6 +848,37 @@ function kontora() {
           this.error = 'Failed to load config';
         }
       }
+      // The form shows what the ticket would run with, not a "project default"
+      // placeholder: the fields the ticket leaves blank are filled from the
+      // project that owns the path, the same values the daemon would resolve.
+      this._initInherited = this.projectDefaultsFor(this.initForm.path, ticket.id);
+      var pipeline = ticket.pipeline || this._initInherited.pipeline;
+      var agent = ticket.agent || this._initInherited.agent;
+      if (!this.initForm.branch) this.initForm.branch = this._initInherited.branch;
+      // Defer select values until after x-for has created <option> elements.
+      await this.$nextTick();
+      this.initForm.pipeline = pipeline;
+      this.initForm.agent = agent;
+    },
+
+    // Re-apply the project defaults after the path field changes. A value the
+    // user chose is kept; one that only got there by inheriting from the
+    // previous path is replaced, so retargeting the ticket cannot start it with
+    // another repository's pipeline.
+    onInitPathChange() {
+      var prev = this._initInherited || { pipeline: '', agent: '', branch: '' };
+      var next = this.projectDefaultsFor(this.initForm.path, this.initForm.ticketId);
+
+      if (!this.initForm.pipeline || this.initForm.pipeline === prev.pipeline) {
+        this.initForm.pipeline = next.pipeline;
+      }
+      if (!this.initForm.agent || this.initForm.agent === prev.agent) {
+        this.initForm.agent = next.agent;
+      }
+      if (!this.initForm.branch || this.initForm.branch === prev.branch) {
+        this.initForm.branch = next.branch;
+      }
+      this._initInherited = next;
     },
 
     closeInitModal() {
@@ -862,7 +894,15 @@ function kontora() {
         const res = await fetch('/api/tickets/' + this.initForm.ticketId + '/init', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ pipeline: this.initForm.pipeline, path: this.initForm.path, agent: this.initForm.agent || undefined }),
+          // The selects carry the resolved values, so an empty one is a
+          // deliberate opt-out. "none" says so; a blank field would make the
+          // daemon inherit the project default the user just cleared.
+          body: JSON.stringify({
+            pipeline: this.initForm.pipeline || 'none',
+            path: this.initForm.path,
+            agent: this.initForm.agent || 'none',
+            branch: (this.initForm.branch || '').trim() || undefined,
+          }),
         });
         if (!res.ok) {
           const data = await res.json().catch(() => ({}));
@@ -1274,12 +1314,12 @@ function kontora() {
 
     // What the project that owns path gives a ticket: its pipeline, its agent,
     // and the branch name the daemon would generate there.
-    projectDefaultsFor(path) {
+    projectDefaultsFor(path, ticketId) {
       var project = this.projectForPath(path) || {};
       return {
         pipeline: project.pipeline || '',
         agent: project.agent || '',
-        branch: this.branchPrefixFor(path) + '/' + (this.selectedTicket?.id || ''),
+        branch: this.branchPrefixFor(path) + '/' + (ticketId || this.selectedTicket?.id || ''),
       };
     },
 

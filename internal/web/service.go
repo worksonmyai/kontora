@@ -76,6 +76,7 @@ type InitTicketRequest struct {
 	Pipeline string `json:"pipeline"`
 	Path     string `json:"path"`
 	Agent    string `json:"agent,omitempty"`
+	Branch   string `json:"branch,omitempty"`
 }
 
 type UpdateTicketRequest struct {

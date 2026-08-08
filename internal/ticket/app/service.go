@@ -246,6 +246,44 @@ func (s *Service) Skip(id string) (Result, error) {
 	return Result{ID: resolved, Status: newStatus}, nil
 }
 
+// resolveInitFields decides the pipeline and agent Init writes, and rejects a
+// value the config does not know.
+//
+// A blank request field keeps what the ticket file already declares, so a
+// project default fills a field instead of replacing a value the ticket chose.
+// "none" is how a caller asks for the field to be cleared.
+func resolveInitFields(cfg *config.Config, t *ticket.Ticket, req InitRequest) (pipeline, agent string, err error) {
+	// The project is keyed by the path the ticket ends up with, which req.Path
+	// overrides when set.
+	repoPath := req.Path
+	if repoPath == "" {
+		repoPath = t.Path
+	}
+	pipeline, agent = req.Pipeline, req.Agent
+	if pipeline == "" {
+		pipeline = t.Pipeline
+	}
+	if agent == "" {
+		agent = t.Agent
+	}
+	pipeline, agent = cfg.ApplyProjectDefaults(repoPath, pipeline, agent)
+
+	if pipeline != "" {
+		if steps, ok := cfg.Pipelines[pipeline]; !ok || len(steps) == 0 {
+			return "", "", fmt.Errorf("%w: unknown pipeline %q", ErrInvalidState, pipeline)
+		}
+	}
+	// Init validates what it writes. An agent the ticket already carries is
+	// left alone, and the daemon reports it at spawn if the config has since
+	// dropped it.
+	if agent != "" && agent != t.Agent {
+		if _, ok := cfg.Agents[agent]; !ok {
+			return "", "", fmt.Errorf("%w %q", ErrUnknownAgent, agent)
+		}
+	}
+	return pipeline, agent, nil
+}
+
 // Init initializes a ticket for daemon processing: sets pipeline, path,
 // kontora=true, status, and stage.
 func (s *Service) Init(id string, req InitRequest) (Result, error) {
@@ -265,37 +303,9 @@ func (s *Service) Init(id string, req InitRequest) (Result, error) {
 
 	cfg := s.cfg()
 
-	// The project is keyed by the path the ticket ends up with, which req.Path
-	// overrides when set.
-	repoPath := req.Path
-	if repoPath == "" {
-		repoPath = t.Path
-	}
-	// A blank request field keeps what the ticket file already declares, so a
-	// project default fills a field instead of replacing a value the ticket
-	// chose. "none" is how a caller asks for the field to be cleared.
-	pipeline, agent := req.Pipeline, req.Agent
-	if pipeline == "" {
-		pipeline = t.Pipeline
-	}
-	if agent == "" {
-		agent = t.Agent
-	}
-	pipeline, agent = cfg.ApplyProjectDefaults(repoPath, pipeline, agent)
-
-	if pipeline != "" {
-		pipelineCfg, ok := cfg.Pipelines[pipeline]
-		if !ok || len(pipelineCfg) == 0 {
-			return Result{}, fmt.Errorf("%w: unknown pipeline %q", ErrInvalidState, pipeline)
-		}
-	}
-	// Init validates what it writes. An agent the ticket already carries is
-	// left alone, and the daemon reports it at spawn if the config has since
-	// dropped it.
-	if agent != "" && agent != t.Agent {
-		if _, ok := cfg.Agents[agent]; !ok {
-			return Result{}, fmt.Errorf("%w %q", ErrUnknownAgent, agent)
-		}
+	pipeline, agent, err := resolveInitFields(cfg, t, req)
+	if err != nil {
+		return Result{}, err
 	}
 
 	if err := t.SetField("pipeline", pipeline); err != nil {
@@ -312,6 +322,11 @@ func (s *Service) Init(id string, req InitRequest) (Result, error) {
 	if agent != t.Agent {
 		if err := t.SetField("agent", agent); err != nil {
 			return Result{}, fmt.Errorf("setting agent: %w", err)
+		}
+	}
+	if req.Branch != "" {
+		if err := t.SetField("branch", req.Branch); err != nil {
+			return Result{}, fmt.Errorf("setting branch: %w", err)
 		}
 	}
 	if err := t.SetField("kontora", true); err != nil {

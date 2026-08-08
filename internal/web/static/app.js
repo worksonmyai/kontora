@@ -139,6 +139,10 @@ function kontora() {
     editSubmitting: false,
     editSaved: false,
     _editDebounce: null,
+    // The pipeline, agent, and branch the edit form inherited from the project
+    // that owns its current path. onEditPathChange tells an inherited value from
+    // a user-chosen one by comparing against it.
+    _editInherited: null,
     _blockOffsetsSrc: null,
     _blockOffsetsFor: null,
     setStageOpen: false,
@@ -1259,12 +1263,50 @@ function kontora() {
           this.error = 'Failed to load configuration: ' + (e.message || e);
         }
       }
+      this._editInherited = this.projectDefaultsFor(this.editForm.path);
       // Defer select values until after x-for has created <option> elements.
       // Alpine's x-model effect on the <select> fires before x-for populates
       // options, so setting the value immediately would fail to match.
       await this.$nextTick();
       this.editForm.pipeline = pipeline;
       this.editForm.agent = agent;
+    },
+
+    // What the project that owns path gives a ticket: its pipeline, its agent,
+    // and the branch name the daemon would generate there.
+    projectDefaultsFor(path) {
+      var project = this.projectForPath(path) || {};
+      return {
+        pipeline: project.pipeline || '',
+        agent: project.agent || '',
+        branch: this.branchPrefixFor(path) + '/' + (this.selectedTicket?.id || ''),
+      };
+    },
+
+    // Re-apply the project defaults after the path field changes, so a ticket
+    // pointed at a configured repository runs the way that project says without
+    // the user filling the same three fields by hand.
+    //
+    // A value the user chose is kept. A value that only got there by inheriting
+    // from the previous path is replaced, otherwise retargeting a ticket would
+    // leave it with another repository's pipeline. The branch is always named,
+    // since every ticket gets one anyway.
+    onEditPathChange() {
+      var prev = this._editInherited || { pipeline: '', agent: '', branch: '' };
+      var next = this.projectDefaultsFor(this.editForm.path);
+
+      if (!this.editForm.pipeline || this.editForm.pipeline === prev.pipeline) {
+        this.editForm.pipeline = next.pipeline;
+      }
+      if (!this.editForm.agent || this.editForm.agent === prev.agent) {
+        this.editForm.agent = next.agent;
+      }
+      if (!this.editForm.branch || this.editForm.branch === prev.branch) {
+        this.editForm.branch = next.branch;
+      }
+      this._editInherited = next;
+
+      this.saveEdit();
     },
 
     async saveEdit() {

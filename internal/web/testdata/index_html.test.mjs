@@ -2120,6 +2120,80 @@ test("flushEditSave cancels the pending debounce and saves once", () => {
   assert.equal(state._editDebounce, null);
 });
 
+// Two projects with different defaults, so a retarget has something to move
+// between, plus the global branch prefix a path outside both falls back to.
+const EDIT_PROJECTS = [
+  { name: "kontora", path: "~/projects/kontora", resolved_path: "/home/u/projects/kontora", pipeline: "implement", agent: "claude", branch_prefix: "kontora" },
+  { name: "widget-api", path: "~/projects/widget-api", resolved_path: "/home/u/projects/widget-api", pipeline: "commit-no-push", agent: "pi-opus", branch_prefix: "acme" },
+];
+
+// The edit form as startEditing leaves it for a ticket at fromPath, with the
+// project defaults for that path recorded as what the fields inherited.
+function editPathState(fromPath, fields) {
+  const state = loadKontoraState();
+  state.configCache = { projects: EDIT_PROJECTS, branch_prefix: "global", pipelines: [], agents: [] };
+  state.selectedTicket = { id: "kon-1", status: "open", path: fromPath, ...fields };
+  state.editing = true;
+  state.editForm = { body: "", path: fromPath, pipeline: "", agent: "", branch: "", ...fields };
+  state._editInherited = state.projectDefaultsFor(fromPath);
+  state.saveEdit = () => { state.savedPath = state.editForm.path; };
+  return state;
+}
+
+test("the edit form takes its pipeline, agent, and branch from the project the path names", () => {
+  const cases = [
+    {
+      name: "blank fields inherit from the project",
+      from: "", fields: {}, to: "~/projects/kontora",
+      want: { pipeline: "implement", agent: "claude", branch: "kontora/kon-1" },
+    },
+    {
+      name: "an absolute path matches the same project",
+      from: "", fields: {}, to: "/home/u/projects/kontora",
+      want: { pipeline: "implement", agent: "claude", branch: "kontora/kon-1" },
+    },
+    {
+      name: "values inherited from the previous project follow the retarget",
+      from: "~/projects/kontora",
+      fields: { pipeline: "implement", agent: "claude", branch: "kontora/kon-1" },
+      to: "~/projects/widget-api",
+      want: { pipeline: "commit-no-push", agent: "pi-opus", branch: "acme/kon-1" },
+    },
+    {
+      name: "values the user chose are kept",
+      from: "~/projects/kontora",
+      fields: { pipeline: "review-only", agent: "codex", branch: "wip/experiment" },
+      to: "~/projects/widget-api",
+      want: { pipeline: "review-only", agent: "codex", branch: "wip/experiment" },
+    },
+    {
+      name: "a path outside every project falls back to the global prefix",
+      from: "~/projects/kontora",
+      fields: { pipeline: "implement", agent: "claude", branch: "kontora/kon-1" },
+      to: "~/projects/other",
+      want: { pipeline: "", agent: "", branch: "global/kon-1" },
+    },
+  ];
+
+  for (const c of cases) {
+    const state = editPathState(c.from, c.fields);
+    state.editForm.path = c.to;
+
+    state.onEditPathChange();
+
+    assert.equal(state.editForm.pipeline, c.want.pipeline, c.name);
+    assert.equal(state.editForm.agent, c.want.agent, c.name);
+    assert.equal(state.editForm.branch, c.want.branch, c.name);
+    assert.equal(state.savedPath, c.to, `${c.name}: saved`);
+  }
+});
+
+test("index.html applies the project defaults when the edit form's path changes", () => {
+  const html = fs.readFileSync(htmlPath, "utf8");
+
+  assert.match(html, /<input type="text" x-model="editForm\.path" @change="onEditPathChange\(\)"/);
+});
+
 test("closeDetail, the SSE editability guard, and switchTab flush before clearing the editor", () => {
   const cases = [
     {

@@ -812,10 +812,12 @@ func (d *Daemon) broadcastTicketUpdate(id string) {
 	if !ok {
 		return
 	}
-	d.broker.Broadcast(web.TicketEvent{
-		Type:   "ticket_updated",
-		Ticket: d.buildTicketInfo(d.config(), ts, true),
-	})
+	info := d.buildTicketInfo(d.config(), ts, true)
+	// No subscriber renders the body off this event: the board never shows it
+	// and both detail views fetch their own copy. It is the largest field by
+	// far, and the event stream is excluded from gzip.
+	info.Body = ""
+	d.broker.Broadcast(web.TicketEvent{Type: "ticket_updated", Ticket: info})
 }
 
 // broadcastTicketUpdateLocking is like broadcastTicketUpdate but acquires d.mu.

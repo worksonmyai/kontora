@@ -16,6 +16,7 @@ type mockSource struct {
 	running     int
 	connected   bool
 	detail      web.TicketInfo
+	fetched     []string
 	logs        string
 	actions     []string
 	actionErr   error
@@ -30,7 +31,8 @@ func (s *mockSource) FetchTickets() ([]web.TicketInfo, int, error) {
 	return s.tickets, s.running, nil
 }
 
-func (s *mockSource) FetchTask(string) (web.TicketInfo, error) {
+func (s *mockSource) FetchTask(id string) (web.TicketInfo, error) {
+	s.fetched = append(s.fetched, id)
 	return s.detail, nil
 }
 
@@ -114,6 +116,95 @@ func TestModel_TaskUpdated(t *testing.T) {
 		}
 	}
 	assert.True(t, found)
+}
+
+// An update event carries no body, so the open detail refetches the ticket.
+func TestModel_TaskUpdated_RefetchesOpenDetail(t *testing.T) {
+	opened := web.TicketInfo{ID: "tst-001", Title: "Test", Status: "in_progress", Body: "# Test\n\noriginal"}
+	withNote := opened
+	withNote.Body = "# Test\n\noriginal\n\n## Notes\n\nappended by the agent"
+
+	src := &mockSource{connected: true, detail: opened}
+	m := newModel(src)
+	m.width, m.height = 100, 30
+	m.list.setTickets(testTickets(), 1)
+	result, _ := m.Update(taskDetailMsg(opened))
+	m = result.(model)
+	require.Equal(t, viewDetail, m.view)
+
+	src.detail = withNote
+	src.fetched = nil
+	ev := web.TicketEvent{Type: "ticket_updated", Ticket: web.TicketInfo{ID: "tst-001", Title: "Test", Status: "human_review", Stage: "review", Kontora: true}}
+	result, cmd := m.Update(taskUpdatedMsg(ev))
+	m = result.(model)
+
+	require.NotNil(t, cmd, "an update for the open ticket must refetch it")
+	assert.Equal(t, "# Test\n\noriginal", m.detail.ticket.Body, "the event must not replace the body")
+	// The header must not wait for the refetch, which may also fail.
+	assert.Equal(t, "human_review", m.detail.ticket.Status)
+	assert.Equal(t, "review", m.detail.ticket.Stage)
+
+	msg := cmd()
+	require.Equal(t, []string{"tst-001"}, src.fetched)
+	require.IsType(t, taskRefreshedMsg{}, msg)
+
+	result, _ = m.Update(msg)
+	m = result.(model)
+	assert.Contains(t, m.detail.ticket.Body, "appended by the agent")
+	assert.Contains(t, m.detail.viewport.View(), "appended by the agent")
+}
+
+func TestModel_TaskRefreshed(t *testing.T) {
+	refreshed := web.TicketInfo{ID: "tst-001", Title: "Test", Status: "in_progress", Body: "refreshed body"}
+
+	tests := []struct {
+		name     string
+		view     viewState
+		seqDelta int
+		wantView viewState
+		wantBody string
+	}{
+		{
+			name:     "the open ticket takes the refreshed body",
+			view:     viewDetail,
+			wantView: viewDetail,
+			wantBody: "refreshed body",
+		},
+		{
+			// A refresh started before the user pressed esc must not put the
+			// panel back on screen.
+			name:     "a refresh that lands on the board does not reopen the detail",
+			view:     viewList,
+			wantView: viewList,
+			wantBody: "opened body",
+		},
+		{
+			// Two updates in quick succession each refetch; the response to
+			// the older one must not overwrite the newer body.
+			name:     "a refresh overtaken by a newer one is dropped",
+			view:     viewDetail,
+			seqDelta: -1,
+			wantView: viewDetail,
+			wantBody: "opened body",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			opened := web.TicketInfo{ID: "tst-001", Title: "Test", Status: "in_progress", Body: "opened body"}
+			m := newModel(&mockSource{connected: true, detail: opened})
+			m.width, m.height = 100, 30
+			result, _ := m.Update(taskDetailMsg(opened))
+			m = result.(model)
+			m.view = tt.view
+
+			result, _ = m.Update(taskRefreshedMsg{info: refreshed, seq: m.refreshSeq + tt.seqDelta})
+			m = result.(model)
+
+			assert.Equal(t, tt.wantView, m.view)
+			assert.Equal(t, tt.wantBody, m.detail.ticket.Body)
+		})
+	}
 }
 
 func TestModel_NavigateToDetail(t *testing.T) {

@@ -448,21 +448,59 @@ func TestDaemon_Subscribe_ReceivesUpdates(t *testing.T) {
 	ch, unsub := d.Subscribe()
 	defer unsub()
 
-	h.writeTicket("tst-sub.md", h.taskMD("tst-sub", "todo", "one-stage"))
+	h.writeTicket("tst-sub.md", fmt.Sprintf(`---
+id: tst-sub
+kontora: true
+status: todo
+pipeline: one-stage
+path: %s
+created: 2026-01-01T00:00:00Z
+summary: what the stage did
+last_error: it failed once
+last_log: step1.log
+history:
+  - stage: step1
+    agent: agent1
+    exit_code: 0
+    run: 0
+---
+# Test ticket tst-sub
+
+Body text the board never renders.
+
+## Notes
+
+**2026-01-01T00:00:00Z**
+
+a note
+`, h.repoDir))
 
 	// Should receive at least one event about tst-sub.
 	deadline := time.After(10 * time.Second)
-	var received bool
-	for !received {
+	var got web.TicketInfo
+	for got.ID == "" {
 		select {
 		case ev := <-ch:
 			if ev.Ticket.ID == "tst-sub" {
-				received = true
+				got = ev.Ticket
 			}
 		case <-deadline:
 			t.Fatal("timed out waiting for SSE event")
 		}
 	}
+
+	assert.Empty(t, got.Body, "ticket_updated must not carry the body")
+	// The board sorts human_review by history, and the open detail panel
+	// renders the rest of these straight off the event.
+	assert.NotEmpty(t, got.History)
+	assert.NotEmpty(t, got.Notes)
+	assert.Equal(t, "what the stage did", got.Summary)
+	assert.Equal(t, "it failed once", got.LastError)
+	assert.Equal(t, "step1.log", got.LastLog)
+
+	raw, err := json.Marshal(got)
+	require.NoError(t, err)
+	assert.NotContains(t, string(raw), `"body"`)
 
 	cancel()
 	require.NoError(t, <-errCh)

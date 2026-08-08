@@ -8,11 +8,19 @@
   <title>kontora</title>
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><circle cx='8' cy='8' r='7' fill='%235b6078'/></svg>">
   <link rel="stylesheet" href="/app.css">
+  <!-- The fonts are reachable only through an @font-face inside fonts.css, so
+       without these the browser cannot start them until that file has parsed.
+       Only the latin subsets are preloaded; latin-ext loads on demand. -->
+  <link rel="preload" as="font" type="font/woff2" href="/vendor/fonts/dm-sans-latin.woff2" crossorigin>
+  <link rel="preload" as="font" type="font/woff2" href="/vendor/fonts/jetbrains-mono-latin.woff2" crossorigin>
+  <!-- All deferred, so none of them block the parser. Order matters and Alpine
+       must stay last: deferred scripts run in document order, and Alpine's CDN
+       build calls Alpine.start() as it loads, which walks the board's x-init
+       and calls initSortable. Sortable has to be defined by then. -->
+  <script defer src="/vendor/sortablejs@1.15.6/Sortable.min.js"></script>
+  <script defer src="/vendor/marked@15.0.7/marked.min.js"></script>
+  <script defer src="/vendor/dompurify@3.3.2/purify.min.js"></script>
   <script defer src="/vendor/alpinejs@3.14.8/cdn.min.js"></script>
-  <script src="/vendor/sortablejs@1.15.6/Sortable.min.js"></script>
-  <script src="/vendor/marked@15.0.7/marked.min.js"></script>
-  <script src="/vendor/dompurify@3.3.2/purify.min.js"></script>
-  <link rel="stylesheet" href="/vendor/xterm@5.5.0/xterm.css">
   <link rel="stylesheet" href="/vendor/fonts/fonts.css">
   <style id="kontora-theme"></style>
   <script>

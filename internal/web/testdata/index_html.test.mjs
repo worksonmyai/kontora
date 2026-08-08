@@ -499,6 +499,37 @@ test("index.html loads the external app script", () => {
   assert.match(html, /<script src="\/app\.js"><\/script>/);
 });
 
+// The head scripts are deferred so they do not block the parser, which makes
+// their execution order the document order. Alpine's CDN build starts itself as
+// it loads and immediately walks x-init, where initSortable calls Sortable, so
+// a Sortable tag placed after Alpine's leaves the board with no drop targets.
+test("head scripts are deferred, with Alpine after the libraries it uses", () => {
+  const html = fs.readFileSync(htmlPath, "utf8");
+  const head = html.slice(0, html.indexOf("</head>"));
+
+  const tags = [...head.matchAll(/<script([^>]*)src="([^"]+)"/g)];
+  const vendor = tags.filter((m) => m[2].startsWith("/vendor/"));
+  assert.ok(vendor.length >= 4, "expected the vendored libraries in <head>");
+  for (const m of vendor) {
+    assert.ok(m[1].includes("defer"), `${m[2]} must be deferred`);
+  }
+
+  const order = vendor.map((m) => m[2]);
+  const alpine = order.findIndex((s) => s.includes("alpinejs"));
+  const sortable = order.findIndex((s) => s.includes("sortablejs"));
+  assert.ok(sortable >= 0 && alpine >= 0, "expected both Alpine and Sortable");
+  assert.ok(sortable < alpine, "Sortable must load before Alpine starts");
+});
+
+// xterm is the one vendored library the board never needs. Its stylesheet is
+// render-blocking, so it loads from openTerminal instead of <head>.
+test("xterm is kept out of the initial page", () => {
+  const html = fs.readFileSync(htmlPath, "utf8");
+
+  assert.ok(!html.includes("xterm"), "index.html must not reference xterm");
+  assert.match(fs.readFileSync(appPath, "utf8"), /_loadTerminalCSS/);
+});
+
 test("openTerminal cancels stale startup after teardown", async () => {
   const { ctx, state } = loadKontoraContext();
   const nextTick = deferred();

@@ -22,6 +22,8 @@ var termState = {
   term: null,
   fit: null,
   webgl: null,
+  // Resolves once xterm's stylesheet is in the document.
+  cssLoad: null,
   // Set once the vendored xterm modules have been imported.
   Terminal: null,
   FitAddon: null,
@@ -2205,6 +2207,22 @@ function kontora() {
       });
     },
 
+    // xterm's stylesheet used to sit in <head>, where it blocked the first
+    // paint of every board for a terminal most visits never open. It loads
+    // here instead, alongside the xterm modules.
+    _loadTerminalCSS() {
+      if (termState.cssLoad) return termState.cssLoad;
+      termState.cssLoad = new Promise(function (resolve, reject) {
+        var link = document.createElement('link');
+        link.rel = 'stylesheet';
+        link.href = '/vendor/xterm@5.5.0/xterm.css';
+        link.onload = resolve;
+        link.onerror = reject;
+        document.head.appendChild(link);
+      });
+      return termState.cssLoad;
+    },
+
     async openTerminal() {
       if (!this.selectedTicket || this.terminalOpen) return;
       var seq = ++this._terminalSeq;
@@ -2222,6 +2240,9 @@ function kontora() {
               console.warn('webgl addon failed to load, using DOM renderer:', e);
               return null;
             }),
+            // Last on purpose, after the four entries destructured above: it
+            // resolves to nothing and only has to finish before the first paint.
+            this._loadTerminalCSS(),
           ]);
           termState.Terminal = termMod.Terminal;
           termState.FitAddon = fitMod.FitAddon;

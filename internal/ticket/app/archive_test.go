@@ -256,7 +256,7 @@ func TestArchive(t *testing.T) {
 				return
 			}
 			require.NoError(t, err)
-			assert.Equal(t, tc.wantArchived, result.Archived)
+			assert.Equal(t, tc.wantArchived, result.IDs())
 			assert.Equal(t, tc.dryRun, result.DryRun)
 
 			archived := make(map[string]bool, len(tc.wantArchived))
@@ -279,6 +279,24 @@ func TestArchive(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestArchive_EntriesCarryTitlePathAndClosedStatus(t *testing.T) {
+	repo := newMemRepo()
+	repo.add("tst-001", "---\nid: tst-001\nstatus: cancelled\nkontora: true\npath: /repos/a\n---\n# Fix the flaky watcher test\n")
+	repo.add("tst-002", "---\nid: tst-002\nstatus: done\nkontora: true\n---\n")
+	mtime := archiveNow.AddDate(0, 0, -40)
+	stat := func(string) (fs.FileInfo, error) { return fakeFileInfo{modTime: mtime}, nil }
+
+	svc := New(Static(testCfg()), repo, &spyRuntime{})
+	result, err := svc.archive(ArchiveOptions{Days: 30}, archiveNow, stat)
+	require.NoError(t, err)
+
+	// Status is the one the ticket had before the run, not archived.
+	assert.Equal(t, []ArchiveEntry{
+		{ID: "tst-001", Title: "Fix the flaky watcher test", Path: "/repos/a", Status: ticket.StatusCancelled},
+		{ID: "tst-002", Status: ticket.StatusDone},
+	}, result.Archived)
 }
 
 func TestArchive_PreservesBodyAndUnknownFields(t *testing.T) {

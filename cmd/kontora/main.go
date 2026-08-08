@@ -698,13 +698,22 @@ func cmdArchive() {
 	repoPath := fs.String("path", "", "only archive tickets for this repository path")
 	project := fs.String("project", "", "only archive tickets for this configured project")
 	status := fs.String("status", "", "only archive tickets with this status (done or cancelled)")
+	yes := fs.Bool("yes", false, "archive without asking for confirmation")
+	yesShort := fs.Bool("y", false, "archive without asking for confirmation")
 	if err := fs.Parse(os.Args[2:]); err != nil {
 		log.Fatalf("parsing flags: %v", err)
 	}
 
 	cfg := mustLoadConfig(*configPath)
 
-	opts := cli.ArchiveOpts{Days: *days, DryRun: *dryRun, Path: *repoPath, Project: *project, Status: *status}
+	// Only offer the prompt when stdin is a terminal. Piped input would answer
+	// it by accident, so a non-interactive run has to pass --yes.
+	var in io.Reader
+	if isatty.IsTerminal(os.Stdin.Fd()) {
+		in = os.Stdin
+	}
+
+	opts := cli.ArchiveOpts{Days: *days, DryRun: *dryRun, Path: *repoPath, Project: *project, Status: *status, Yes: *yes || *yesShort, In: in}
 	if err := cli.Archive(cfg, os.Stdout, opts); err != nil {
 		log.Fatal(err)
 	}

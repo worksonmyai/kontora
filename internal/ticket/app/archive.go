@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/worksonmyai/kontora/internal/config"
@@ -29,13 +30,38 @@ type ArchiveOptions struct {
 	Status ticket.Status
 }
 
+// ArchiveEntry describes one ticket an archive run selected.
+type ArchiveEntry struct {
+	ID string
+	// Title is the first markdown heading of the body, empty when there is none.
+	Title string
+	// Path is the ticket's repository path, empty when the ticket has no path
+	// field.
+	Path string
+	// Status is the closed status the ticket had before the run, done or
+	// cancelled.
+	Status ticket.Status
+}
+
 // ArchiveResult summarizes an archive run.
 type ArchiveResult struct {
-	// Archived holds the IDs of the tickets that were archived, or that would
-	// be archived in a dry run, sorted by ID.
-	Archived []string
+	// Archived holds the tickets that were archived, or that would be archived
+	// in a dry run, sorted by ID.
+	Archived []ArchiveEntry
 	// DryRun mirrors the option, so callers can format their summary.
 	DryRun bool
+}
+
+// IDs returns the archived ticket IDs, in the order of Archived.
+func (r ArchiveResult) IDs() []string {
+	if len(r.Archived) == 0 {
+		return nil
+	}
+	ids := make([]string, len(r.Archived))
+	for i, e := range r.Archived {
+		ids[i] = e.ID
+	}
+	return ids
 }
 
 // Archive marks old done/cancelled tickets as archived. A ticket is eligible
@@ -111,8 +137,12 @@ func (s *Service) archive(opts ArchiveOptions, now time.Time, stat func(string) 
 			continue
 		}
 
+		// Capture the entry before the write, so Status holds the closed status
+		// the ticket had rather than archived.
+		entry := ArchiveEntry{ID: t.ID, Title: t.Title(), Path: t.Path, Status: t.Status}
+
 		if opts.DryRun {
-			result.Archived = append(result.Archived, t.ID)
+			result.Archived = append(result.Archived, entry)
 			continue
 		}
 
@@ -122,12 +152,14 @@ func (s *Service) archive(opts ArchiveOptions, now time.Time, stat func(string) 
 		if err := s.repo.Save(st); err != nil {
 			return result, fmt.Errorf("saving %s: %w", t.ID, err)
 		}
-		// Record the ID only after the file is persisted, so a mid-loop failure
-		// reports the tickets that were actually archived.
-		result.Archived = append(result.Archived, t.ID)
+		// Record the entry only after the file is persisted, so a mid-loop
+		// failure reports the tickets that were actually archived.
+		result.Archived = append(result.Archived, entry)
 		s.runtime.BroadcastUpdated(t.ID)
 	}
 
-	slices.Sort(result.Archived)
+	slices.SortFunc(result.Archived, func(a, b ArchiveEntry) int {
+		return strings.Compare(a.ID, b.ID)
+	})
 	return result, nil
 }

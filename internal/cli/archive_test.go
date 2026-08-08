@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,14 +16,18 @@ import (
 )
 
 // writeTicketAged writes a ticket file and backdates its mtime by ageDays. A
-// blank repoPath leaves the path field out of the frontmatter.
-func writeTicketAged(t *testing.T, dir, id, status, repoPath string, ageDays int) {
+// blank repoPath leaves the path field out of the frontmatter, and a blank
+// title falls back to the ID as the markdown heading.
+func writeTicketAged(t *testing.T, dir, id, status, repoPath, title string, ageDays int) {
 	t.Helper()
 	pathField := ""
 	if repoPath != "" {
 		pathField = fmt.Sprintf("path: %s\n", repoPath)
 	}
-	content := fmt.Sprintf("---\nid: %s\nkontora: true\nstatus: %s\n%s---\n# %s\n", id, status, pathField, id)
+	if title == "" {
+		title = id
+	}
+	content := fmt.Sprintf("---\nid: %s\nkontora: true\nstatus: %s\n%s---\n# %s\n", id, status, pathField, title)
 	writeTicket(t, dir, id+".md", content)
 	mt := time.Now().AddDate(0, 0, -ageDays)
 	require.NoError(t, os.Chtimes(filepath.Join(dir, id+".md"), mt, mt))
@@ -34,12 +39,16 @@ func TestArchive(t *testing.T) {
 		status  string
 		ageDays int
 		path    string
+		title   string
 	}
 	cases := []struct {
 		name string
 		// tickets seeded into a temp tickets dir.
 		tickets []fixture
 		opts    ArchiveOpts
+		// stdin answers the confirmation prompt. An empty string stands for a
+		// run with no terminal attached.
+		stdin string
 		// wantErr, when set, must appear in the returned error.
 		wantErr string
 		// wantOut lists substrings expected in stdout.
@@ -66,7 +75,7 @@ func TestArchive(t *testing.T) {
 			noWrite:    true,
 		},
 		{
-			name: "archives eligible done and cancelled tickets",
+			name: "archives eligible done and cancelled tickets after confirmation",
 			tickets: []fixture{
 				{id: "tst-done", status: "done", ageDays: 40},
 				{id: "tst-cancelled", status: "cancelled", ageDays: 35},
@@ -74,7 +83,8 @@ func TestArchive(t *testing.T) {
 				{id: "tst-todo", status: "todo", ageDays: 90},
 			},
 			opts:    ArchiveOpts{Days: 30},
-			wantOut: []string{"tst-done", "tst-cancelled", "Archived 2 tickets"},
+			stdin:   "y\n",
+			wantOut: []string{"tst-done", "tst-cancelled", "Archive 2 tickets?", "Archived 2 tickets"},
 			wantStatus: map[string]string{
 				"tst-done":      "archived",
 				"tst-cancelled": "archived",
@@ -83,18 +93,62 @@ func TestArchive(t *testing.T) {
 			},
 		},
 		{
-			name:       "dry run reports without writing",
+			name: "listing shows the title and repository path",
+			tickets: []fixture{
+				{id: "tst-a", status: "done", ageDays: 40, path: "/repos/a", title: "Fix the flaky watcher test"},
+			},
+			opts:       ArchiveOpts{Days: 30},
+			stdin:      "n\n",
+			wantOut:    []string{"TITLE", "PATH", "Fix the flaky watcher test", "/repos/a"},
+			wantStatus: map[string]string{"tst-a": "done"},
+			noWrite:    true,
+		},
+		{
+			name:       "a declined prompt changes nothing",
 			tickets:    []fixture{{id: "tst-done", status: "done", ageDays: 40}},
-			opts:       ArchiveOpts{Days: 30, DryRun: true},
-			wantOut:    []string{"tst-done", "Would archive 1 ticket", "dry run"},
+			opts:       ArchiveOpts{Days: 30},
+			stdin:      "n\n",
+			wantOut:    []string{"tst-done", "Cancelled"},
 			wantStatus: map[string]string{"tst-done": "done"},
 			noWrite:    true,
 		},
 		{
-			name:       "nothing eligible reports zero",
+			name:       "an empty answer changes nothing",
+			tickets:    []fixture{{id: "tst-done", status: "done", ageDays: 40}},
+			opts:       ArchiveOpts{Days: 30},
+			stdin:      "\n",
+			wantOut:    []string{"Cancelled"},
+			wantStatus: map[string]string{"tst-done": "done"},
+			noWrite:    true,
+		},
+		{
+			name:       "yes skips the prompt",
+			tickets:    []fixture{{id: "tst-done", status: "done", ageDays: 40}},
+			opts:       ArchiveOpts{Days: 30, Yes: true},
+			wantOut:    []string{"Archived 1 ticket"},
+			wantStatus: map[string]string{"tst-done": "archived"},
+		},
+		{
+			name:       "without a terminal the run asks for yes instead of writing",
+			tickets:    []fixture{{id: "tst-done", status: "done", ageDays: 40}},
+			opts:       ArchiveOpts{Days: 30},
+			wantErr:    "pass --yes",
+			wantStatus: map[string]string{"tst-done": "done"},
+			noWrite:    true,
+		},
+		{
+			name:       "dry run lists without writing or prompting",
+			tickets:    []fixture{{id: "tst-done", status: "done", ageDays: 40}},
+			opts:       ArchiveOpts{Days: 30, DryRun: true},
+			wantOut:    []string{"tst-done", "1 ticket closed for at least 30 days", "Dry run"},
+			wantStatus: map[string]string{"tst-done": "done"},
+			noWrite:    true,
+		},
+		{
+			name:       "nothing eligible reports it and does not prompt",
 			tickets:    []fixture{{id: "tst-recent", status: "done", ageDays: 5}},
 			opts:       ArchiveOpts{Days: 30},
-			wantOut:    []string{"Archived 0 tickets"},
+			wantOut:    []string{"No tickets closed for at least 30 days"},
 			wantStatus: map[string]string{"tst-recent": "done"},
 		},
 		{
@@ -103,8 +157,8 @@ func TestArchive(t *testing.T) {
 				{id: "tst-a", status: "done", ageDays: 40, path: "/repos/a"},
 				{id: "tst-b", status: "done", ageDays: 40, path: "/repos/b"},
 			},
-			opts:    ArchiveOpts{Days: 30, Project: "alpha"},
-			wantOut: []string{"tst-a", "Archived 1 ticket closed for at least 30 days in project alpha"},
+			opts:    ArchiveOpts{Days: 30, Project: "alpha", Yes: true},
+			wantOut: []string{"tst-a", "1 ticket closed for at least 30 days in project alpha"},
 			wantStatus: map[string]string{
 				"tst-a": "archived",
 				"tst-b": "done",
@@ -124,8 +178,8 @@ func TestArchive(t *testing.T) {
 				{id: "tst-done", status: "done", ageDays: 40},
 				{id: "tst-cancelled", status: "cancelled", ageDays: 40},
 			},
-			opts:    ArchiveOpts{Days: 30, Status: "cancelled"},
-			wantOut: []string{"tst-cancelled", "Archived 1 cancelled ticket closed for at least 30 days"},
+			opts:    ArchiveOpts{Days: 30, Status: "cancelled", Yes: true},
+			wantOut: []string{"tst-cancelled", "1 cancelled ticket closed for at least 30 days", "Archived 1 cancelled ticket"},
 			wantStatus: map[string]string{
 				"tst-done":      "done",
 				"tst-cancelled": "archived",
@@ -146,8 +200,8 @@ func TestArchive(t *testing.T) {
 				{id: "tst-b", status: "done", ageDays: 40, path: "/repos/b"},
 				{id: "tst-none", status: "done", ageDays: 40},
 			},
-			opts:    ArchiveOpts{Days: 30, Path: "/repos/a"},
-			wantOut: []string{"tst-a", "Archived 1 ticket closed for at least 30 days in /repos/a"},
+			opts:    ArchiveOpts{Days: 30, Path: "/repos/a", Yes: true},
+			wantOut: []string{"tst-a", "1 ticket closed for at least 30 days in /repos/a"},
 			wantStatus: map[string]string{
 				"tst-a":    "archived",
 				"tst-b":    "done",
@@ -161,7 +215,7 @@ func TestArchive(t *testing.T) {
 			dir := t.TempDir()
 			before := make(map[string]time.Time, len(tc.tickets))
 			for _, f := range tc.tickets {
-				writeTicketAged(t, dir, f.id, f.status, f.path, f.ageDays)
+				writeTicketAged(t, dir, f.id, f.status, f.path, f.title, f.ageDays)
 				info, err := os.Stat(filepath.Join(dir, f.id+".md"))
 				require.NoError(t, err)
 				before[f.id] = info.ModTime()
@@ -170,8 +224,13 @@ func TestArchive(t *testing.T) {
 			cfg := testConfig(dir)
 			cfg.Projects = map[string]config.Project{"alpha": {Path: "/repos/a"}}
 
+			opts := tc.opts
+			if tc.stdin != "" {
+				opts.In = strings.NewReader(tc.stdin)
+			}
+
 			var buf bytes.Buffer
-			err := Archive(cfg, &buf, tc.opts)
+			err := Archive(cfg, &buf, opts)
 			if tc.wantErr != "" {
 				require.ErrorContains(t, err, tc.wantErr)
 			} else {

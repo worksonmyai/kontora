@@ -3299,19 +3299,39 @@ const PALETTE_TICKETS = [
   { id: "gol-3", title: "Toroidal grid wrapping", path: "/w/game-of-life", pipeline: "simple", status: "open", stage: "", stages: [], agent: "claude", kontora: false },
 ];
 
-// A component with the palette open. The harness runs requestAnimationFrame and
-// the focus retry straight away, so $refs.paletteInput records the focus calls.
+// A component with the palette open. $refs.paletteInput records the focus and
+// blur calls and ignores focus while it is hidden, as a browser does.
+//
+// Alpine reveals an x-show panel from its own animation frame, queued behind
+// the one the open scheduled, so the stub panel is hidden (offsetParent null)
+// for the first frame and on screen from the second. The harness runs each
+// frame straight away, so the focus retry resolves in line.
+//
 // `recents` seeds the persisted recent-ticket ids read on construction.
 function paletteState(tickets = PALETTE_TICKETS, { recents = [], ...overrides } = {}) {
+  const input = {
+    focused: 0,
+    blurred: 0,
+    offsetParent: null,
+    focus() { if (this.offsetParent) this.focused += 1; },
+    blur() { this.blurred += 1; },
+  };
+  let frame = 0;
   const state = loadKontoraState({
     localStorage: {
       getItem: (k) => (k === "kontora-recent-tickets" ? JSON.stringify(recents) : null),
       setItem() {},
     },
+    requestAnimationFrame(callback) {
+      frame += 1;
+      if (frame > 1) input.offsetParent = {};
+      callback();
+      return frame;
+    },
     ...overrides,
   });
   state.$nextTick = (callback) => { if (callback) callback(); return Promise.resolve(); };
-  state.$refs = { paletteInput: { focused: 0, focus() { this.focused += 1; } } };
+  state.$refs = { paletteInput: input };
   state.updateFavicon = () => {};
   state.tickets = tickets.map((t) => ({ ...t }));
   state.recomputeBoard();
@@ -3695,12 +3715,13 @@ test("Escape pops the ticket scope before it closes the palette", () => {
   assert.equal(state.paletteOpen, false);
 });
 
-test("opening the palette focuses its input", () => {
+test("opening the palette focuses its input once the panel is on screen", () => {
   // The panel's display flips a frame after paletteOpen, so a focus call in the
-  // same tick lands on a hidden input and does nothing.
+  // same tick lands on a hidden input and does nothing: the stub input counts
+  // only the calls it took while visible.
   const state = paletteState();
 
-  assert.equal(state.$refs.paletteInput.focused > 0, true);
+  assert.equal(state.$refs.paletteInput.focused, 1);
 });
 
 test("closing the palette returns focus to whatever had it", () => {
@@ -3713,6 +3734,9 @@ test("closing the palette returns focus to whatever had it", () => {
   state.closePalette();
 
   assert.equal(focused, 1);
+  // A hidden input that keeps focus is still a typing target, so every bare
+  // shortcut would go dead after one ⌘K.
+  assert.equal(state.$refs.paletteInput.blurred, 1);
   assert.equal(state.paletteGroups.length, 0);
 });
 

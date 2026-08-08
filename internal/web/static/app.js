@@ -5,6 +5,10 @@ const KEY_SEQ_MS = 800;
 // by typing more, and the group hint says how many were left out.
 const PALETTE_MAX_TICKETS = 6;
 
+// Retries the palette makes to focus its input, one per frame. Alpine needs
+// one frame, so the rest are slack for a dropped one.
+const PALETTE_FOCUS_FRAMES = 10;
+
 // Tape events the activity transcript renders at once, counted back from the
 // newest. A whole 5000-event tape is 60,000 elements: 660ms to mount and 135ms
 // to tear down, both on the main thread. 200 events cost 27ms and 9ms. The
@@ -2868,20 +2872,24 @@ function kontora() {
       this._focusPaletteInput();
     },
 
-    // x-show applies the panel's display in a later frame, and a hidden element
-    // cannot take focus, so one attempt can land too early. Both schedules run;
-    // whichever comes after the display flip wins, and focusing the input twice
-    // is a no-op.
+    // Alpine defers an x-show reveal to the next animation frame, and focus on
+    // a display:none element is a no-op that reports no error, so a single
+    // attempt right after paletteOpen = true races the reveal and usually
+    // loses. Retry per frame: the first attempt covers a panel already on
+    // screen (drilling into a ticket scope), the loop covers the reveal.
     _focusPaletteInput() {
       var self = this;
-      var focus = function () {
+      var tries = 0;
+      var attempt = function () {
         // A palette closed again before this ran has already restored focus.
         if (!self.paletteOpen) return;
         var el = self.$refs && self.$refs.paletteInput;
-        if (el && document.activeElement !== el) el.focus();
+        // offsetParent is null while the panel is still hidden.
+        if (el && el.offsetParent) { el.focus(); return; }
+        if (++tries > PALETTE_FOCUS_FRAMES) return;
+        requestAnimationFrame(attempt);
       };
-      requestAnimationFrame(focus);
-      setTimeout(focus, 0);
+      attempt();
     },
 
     closePalette() {
@@ -2891,6 +2899,11 @@ function kontora() {
       this.paletteGroups = [];
       this._paletteRows = [];
       this._paletteSelId = null;
+      // Hiding the panel does not move focus off its input, and focus() on the
+      // body below is a no-op while another element holds it. A hidden input
+      // left focused is still a typing target, which kills every bare shortcut.
+      var input = this.$refs && this.$refs.paletteInput;
+      if (input) input.blur();
       var back = this._paletteReturnFocus;
       this._paletteReturnFocus = null;
       if (back && back.focus) back.focus();

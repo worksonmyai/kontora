@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -12,6 +14,7 @@ import (
 	"github.com/charmbracelet/lipgloss/table"
 
 	"github.com/worksonmyai/kontora/internal/config"
+	"github.com/worksonmyai/kontora/internal/logfmt"
 	"github.com/worksonmyai/kontora/internal/ticket"
 )
 
@@ -61,6 +64,50 @@ func Logs(tasksDir, logsDir, taskID, stage string, w io.Writer) error {
 	}
 
 	return printFile(filepath.Join(logDir, newest), w)
+}
+
+// StageActivity returns the structured activity tape for one run of a stage.
+// When that run has no sidecar it returns tape == nil and the shared plaintext
+// <stage>.log instead, which is the permanent case for agents that write no
+// session JSONL.
+//
+// Unlike Logs, a named stage with no log of its own is os.ErrNotExist rather
+// than the newest log in the directory: this response names the stage and run
+// it describes, so returning another stage's bytes would mislabel them. An
+// empty stage keeps the newest-log fallback.
+func StageActivity(tasksDir, logsDir, taskID, stage string, run int) (tape *logfmt.Tape, content string, err error) {
+	tasksDir = config.ExpandTilde(tasksDir)
+	resolvedID, err := resolveTaskID(tasksDir, taskID)
+	if err != nil {
+		return nil, "", err
+	}
+	logDir := filepath.Join(config.ExpandTilde(logsDir), resolvedID)
+
+	if stage == "" {
+		var buf bytes.Buffer
+		if err := Logs(tasksDir, logsDir, resolvedID, "", &buf); err != nil {
+			return nil, "", err
+		}
+		return nil, buf.String(), nil
+	}
+
+	sidecar := filepath.Join(logDir, fmt.Sprintf("%s.%d.events.json", stage, run))
+	switch data, readErr := os.ReadFile(sidecar); {
+	case readErr == nil:
+		var t logfmt.Tape
+		if err := json.Unmarshal(data, &t); err != nil {
+			return nil, "", fmt.Errorf("parsing activity sidecar %s: %w", sidecar, err)
+		}
+		return &t, "", nil
+	case !errors.Is(readErr, os.ErrNotExist):
+		return nil, "", readErr
+	}
+
+	data, err := os.ReadFile(filepath.Join(logDir, stage+".log"))
+	if err != nil {
+		return nil, "", err
+	}
+	return nil, string(data), nil
 }
 
 func resolveTaskID(tasksDir, input string) (string, error) {

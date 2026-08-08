@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 )
 
 const maxScanBuf = 1 << 20 // 1 MB
@@ -120,14 +121,32 @@ func joinTextBlocks(blocks []contentBlock) string {
 }
 
 type streamEvent struct {
-	Type       string `json:"type"`
-	Subtype    string `json:"subtype"`
-	Model      string `json:"model"`
-	ToolName   string `json:"tool_name,omitempty"`
-	ToolResult string `json:"tool_result,omitempty"`
+	Type       string     `json:"type"`
+	Subtype    string     `json:"subtype"`
+	Model      string     `json:"model"`
+	Timestamp  *time.Time `json:"timestamp,omitempty"`
+	ToolName   string     `json:"tool_name,omitempty"`
+	ToolResult string     `json:"tool_result,omitempty"`
 	Message    struct {
+		Model   string         `json:"model,omitempty"`
+		Usage   *usageBlock    `json:"usage,omitempty"`
 		Content []contentBlock `json:"content"`
 	} `json:"message"`
+}
+
+// usageBlock is the token accounting on an assistant message.
+type usageBlock struct {
+	Input       int `json:"input_tokens"`
+	Output      int `json:"output_tokens"`
+	CacheCreate int `json:"cache_creation_input_tokens"`
+	CacheRead   int `json:"cache_read_input_tokens"`
+}
+
+func (u *usageBlock) total() Usage {
+	if u == nil {
+		return Usage{}
+	}
+	return Usage{Input: u.Input, Output: u.Output, CacheCreate: u.CacheCreate, CacheRead: u.CacheRead}
 }
 
 type contentBlock struct {
@@ -138,6 +157,7 @@ type contentBlock struct {
 	Input     map[string]any  `json:"input,omitempty"`
 	ToolUseID string          `json:"tool_use_id,omitempty"` // session JSONL: tool_result blocks
 	Content   json.RawMessage `json:"content,omitempty"`     // session JSONL: tool result content (string or array)
+	IsError   bool            `json:"is_error,omitempty"`    // session JSONL: tool_result blocks
 }
 
 // extractToolResultText extracts the result text from a tool_result content

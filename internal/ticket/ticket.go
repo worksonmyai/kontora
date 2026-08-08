@@ -57,9 +57,13 @@ const (
 )
 
 type HistoryEntry struct {
-	Stage       string     `yaml:"stage"`
-	Agent       string     `yaml:"agent"`
-	ExitCode    int        `yaml:"exit_code"`
+	Stage    string `yaml:"stage"`
+	Agent    string `yaml:"agent"`
+	ExitCode int    `yaml:"exit_code"`
+	// Run is the zero-based index of this run among the runs of the same stage.
+	// It keys the structured activity sidecar, which is written per run while
+	// <stage>.log holds only the newest one.
+	Run         int        `yaml:"run,omitempty"`
 	StartedAt   *time.Time `yaml:"started_at"`
 	CompletedAt *time.Time `yaml:"completed_at"`
 	Summary     string     `yaml:"summary,omitempty"`

@@ -17,6 +17,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/worksonmyai/kontora/internal/logfmt"
 	"github.com/worksonmyai/kontora/internal/tmux"
 )
 
@@ -35,6 +36,7 @@ type mockService struct {
 	noteFn         func(id, text string) error
 	summaryFn      func(id, text string) error
 	logsFn         func(id, stage string) (string, error)
+	activityFn     func(id, stage string, run int) (ActivityInfo, error)
 	changesFn      func(id string) (ChangesInfo, error)
 	plannotatorFn  func(id string) error
 	rawConfig      string
@@ -118,6 +120,12 @@ func (m *mockService) GetLogs(id, stage string) (string, error) {
 		return m.logsFn(id, stage)
 	}
 	return "", nil
+}
+func (m *mockService) GetActivity(id, stage string, run int) (ActivityInfo, error) {
+	if m.activityFn != nil {
+		return m.activityFn(id, stage, run)
+	}
+	return ActivityInfo{}, nil
 }
 func (m *mockService) GetChanges(id string) (ChangesInfo, error) {
 	if m.changesFn != nil {
@@ -997,6 +1005,110 @@ func TestHandleGetLogs_PathTraversal(t *testing.T) {
 
 	res := get(t, srv, "/api/tickets/t-001/logs?stage=../../etc/passwd")
 	assert.Equal(t, http.StatusNotFound, res.statusCode)
+}
+
+// --- GET /api/tickets/{id}/activity ---
+
+func TestHandleGetActivity(t *testing.T) {
+	cases := []struct {
+		name       string
+		query      string
+		activityFn func(id, stage string, run int) (ActivityInfo, error)
+		wantStatus int
+		assert     func(t *testing.T, body string)
+	}{
+		{
+			name:  "structured tape",
+			query: "?stage=review&run=1",
+			activityFn: func(id, stage string, run int) (ActivityInfo, error) {
+				assert.Equal(t, "t-001", id)
+				assert.Equal(t, "review", stage)
+				assert.Equal(t, 1, run)
+				return ActivityInfo{
+					Source: "events", Stage: stage, Run: run,
+					Tape: &logfmt.Tape{Version: logfmt.TapeVersion, Agent: "claude"},
+				}, nil
+			},
+			wantStatus: http.StatusOK,
+			assert: func(t *testing.T, body string) {
+				var got ActivityInfo
+				require.NoError(t, json.Unmarshal([]byte(body), &got))
+				assert.Equal(t, "events", got.Source)
+				assert.Equal(t, 1, got.Run)
+				require.NotNil(t, got.Tape)
+				assert.Equal(t, "claude", got.Tape.Agent)
+			},
+		},
+		{
+			name:  "plaintext fallback marked stale",
+			query: "?stage=review&run=0",
+			activityFn: func(_, stage string, run int) (ActivityInfo, error) {
+				return ActivityInfo{Source: "log", Stage: stage, Run: run, Stale: true, Content: "raw log"}, nil
+			},
+			wantStatus: http.StatusOK,
+			assert: func(t *testing.T, body string) {
+				var got ActivityInfo
+				require.NoError(t, json.Unmarshal([]byte(body), &got))
+				assert.Equal(t, "log", got.Source)
+				assert.True(t, got.Stale)
+				assert.Equal(t, "raw log", got.Content)
+				assert.Nil(t, got.Tape)
+			},
+		},
+		{
+			name:  "run defaults to zero",
+			query: "?stage=review",
+			activityFn: func(_, _ string, run int) (ActivityInfo, error) {
+				assert.Equal(t, 0, run)
+				return ActivityInfo{Source: "log", Run: run}, nil
+			},
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:  "path traversal is stripped to a basename",
+			query: "?stage=../../etc/passwd",
+			activityFn: func(_, stage string, _ int) (ActivityInfo, error) {
+				assert.Equal(t, "passwd", stage)
+				return ActivityInfo{}, ErrLogNotFound
+			},
+			wantStatus: http.StatusNotFound,
+		},
+		{
+			name:       "unknown ticket",
+			query:      "?stage=review",
+			activityFn: func(_, _ string, _ int) (ActivityInfo, error) { return ActivityInfo{}, ErrTicketNotFound },
+			wantStatus: http.StatusNotFound,
+		},
+		{
+			name:  "negative run is rejected before the service is reached",
+			query: "?stage=review&run=-1",
+			activityFn: func(_, _ string, _ int) (ActivityInfo, error) {
+				t.Fatal("service must not be called for an invalid run")
+				return ActivityInfo{}, nil
+			},
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:  "non-integer run is rejected before the service is reached",
+			query: "?stage=review&run=abc",
+			activityFn: func(_, _ string, _ int) (ActivityInfo, error) {
+				t.Fatal("service must not be called for an invalid run")
+				return ActivityInfo{}, nil
+			},
+			wantStatus: http.StatusBadRequest,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := startHandlerTestServer(t, &mockService{activityFn: tc.activityFn})
+			res := get(t, srv, "/api/tickets/t-001/activity"+tc.query)
+			assert.Equal(t, tc.wantStatus, res.statusCode)
+			if tc.assert != nil {
+				tc.assert(t, res.body)
+			}
+		})
+	}
 }
 
 // --- GET /api/config ---

@@ -3,6 +3,7 @@ package daemon
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net"
@@ -19,6 +20,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/worksonmyai/kontora/internal/config"
+	"github.com/worksonmyai/kontora/internal/logfmt"
 	"github.com/worksonmyai/kontora/internal/process"
 	"github.com/worksonmyai/kontora/internal/testutil"
 	"github.com/worksonmyai/kontora/internal/ticket"
@@ -3160,4 +3162,101 @@ func TestStageSummaryPerStageRetention(t *testing.T) {
 
 	cancel()
 	require.NoError(t, <-errCh)
+}
+
+// piSessionRunner writes a pi session JSONL into the run's session directory,
+// standing in for an agent that produces a structured session record.
+func piSessionRunner(exitCode int) RunnerFunc {
+	return func(_ context.Context, p RunnerParams) (process.Result, error) {
+		if p.SessionDir != "" {
+			_ = os.MkdirAll(p.SessionDir, 0o755)
+			line := `{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"working"}]}}` + "\n"
+			_ = os.WriteFile(filepath.Join(p.SessionDir, "session.jsonl"), []byte(line), 0o644)
+		}
+		now := time.Now()
+		return process.Result{ExitCode: exitCode, StartedAt: now, ExitedAt: now}, nil
+	}
+}
+
+func TestStageRunKeysHistoryAndEventsSidecar(t *testing.T) {
+	h := newHarness(t)
+	cfg := h.defaultConfig("pi", "pi")
+	d := New(cfg,
+		WithLogger(testLogger(t)),
+		WithDebounce(50*time.Millisecond),
+		WithLockPath(h.lockPath),
+		WithRunner(piSessionRunner(1)),
+		WithAgentLookup(passthroughAgentLookup),
+		WithSkipOrphanCleanup(),
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() { errCh <- d.Run(ctx) }()
+	time.Sleep(200 * time.Millisecond)
+
+	h.writeTicket("tst-run.md", h.taskMD("tst-run", "todo", "retry-stage"))
+
+	// max_retries=1 runs step1 twice, so its two history entries carry run
+	// keys 0 and 1 and each run writes its own sidecar.
+	result := h.waitForStatus("tst-run.md", ticket.StatusPaused, 10*time.Second)
+	require.Len(t, result.History, 2)
+	assert.Equal(t, 0, result.History[0].Run)
+	assert.Equal(t, 1, result.History[1].Run)
+
+	logDir := filepath.Join(h.logsDir, "tst-run")
+	assert.FileExists(t, filepath.Join(logDir, "step1.0.events.json"))
+	assert.FileExists(t, filepath.Join(logDir, "step1.1.events.json"))
+	assert.FileExists(t, filepath.Join(logDir, "step1.log"),
+		"the plaintext log keeps its unsuffixed name")
+
+	data, err := os.ReadFile(filepath.Join(logDir, "step1.1.events.json"))
+	require.NoError(t, err)
+	var tape logfmt.Tape
+	require.NoError(t, json.Unmarshal(data, &tape))
+	assert.Equal(t, "pi", tape.Agent)
+	require.Len(t, tape.Events, 1)
+	assert.Equal(t, "working", tape.Events[0].Text)
+
+	cancel()
+	require.NoError(t, <-errCh)
+}
+
+func TestMaterializeSessionEvents(t *testing.T) {
+	sessionLine := `{"type":"assistant","message":{"model":"m1","content":[{"type":"text","text":"hi"}]}}` + "\n"
+
+	t.Run("writes a tape atomically", func(t *testing.T) {
+		dir := t.TempDir()
+		session := filepath.Join(dir, "session.jsonl")
+		require.NoError(t, os.WriteFile(session, []byte(sessionLine), 0o644))
+
+		out := filepath.Join(dir, "logs", "step1.0.events.json")
+		require.NoError(t, materializeSessionEvents(session, false, out))
+
+		data, err := os.ReadFile(out)
+		require.NoError(t, err)
+		var tape logfmt.Tape
+		require.NoError(t, json.Unmarshal(data, &tape))
+		assert.Equal(t, "m1", tape.Model)
+
+		entries, err := os.ReadDir(filepath.Dir(out))
+		require.NoError(t, err)
+		assert.Len(t, entries, 1, "the temp file must not survive the rename")
+	})
+
+	t.Run("a failed sidecar leaves the plaintext log alone", func(t *testing.T) {
+		dir := t.TempDir()
+		session := filepath.Join(dir, "session.jsonl")
+		require.NoError(t, os.WriteFile(session, []byte(sessionLine), 0o644))
+		logFile := filepath.Join(dir, "logs", "step1.log")
+
+		// A directory where the sidecar's parent should be makes MkdirAll fail.
+		blocker := filepath.Join(dir, "blocked")
+		require.NoError(t, os.WriteFile(blocker, nil, 0o644))
+
+		require.NoError(t, materializeSessionLog(session, false, logFile))
+		require.Error(t, materializeSessionEvents(session, false, filepath.Join(blocker, "step1.0.events.json")))
+		assert.FileExists(t, logFile)
+	})
 }

@@ -38,6 +38,7 @@ type HistoryView struct {
 	Stage       string
 	Agent       string
 	ExitCode    int
+	Run         int
 	StartedAt   *time.Time
 	CompletedAt *time.Time
 	Summary     string
@@ -97,6 +98,7 @@ func BuildView(cfg *config.Config, t *ticket.Ticket, detail bool) View {
 					Stage:       h.Stage,
 					Agent:       h.Agent,
 					ExitCode:    h.ExitCode,
+					Run:         h.Run,
 					StartedAt:   h.StartedAt,
 					CompletedAt: h.CompletedAt,
 					Summary:     h.Summary,

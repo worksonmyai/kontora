@@ -1435,3 +1435,105 @@ func TestDaemon_CreateTicket_ProjectDefaults(t *testing.T) {
 		})
 	}
 }
+
+func TestDaemon_GetConfig_ExposesMaxRetries(t *testing.T) {
+	h := newHarness(t)
+	d := h.newDaemon(h.cfg)
+
+	var retry web.PipelineInfo
+	for _, p := range d.GetConfig().PipelineInfos {
+		if p.Name == "retry-stage" {
+			retry = p
+		}
+	}
+	require.Equal(t, []string{"step1"}, retry.Stages)
+	assert.Equal(t, []int{1}, retry.MaxRetries)
+}
+
+func TestDaemon_GetActivity(t *testing.T) {
+	h := newHarness(t)
+	d := h.newDaemon(h.cfg)
+
+	path := h.writeTicket("tst-act.md", `---
+id: tst-act
+kontora: true
+status: paused
+pipeline: retry-stage
+stage: step1
+history:
+  - stage: step1
+    agent: agent1
+    exit_code: 1
+    run: 0
+  - stage: step1
+    agent: agent1
+    exit_code: 1
+    run: 1
+---
+# Activity ticket
+`)
+	tk, err := ticket.ParseFile(path)
+	require.NoError(t, err)
+	d.tickets["tst-act"] = newTicketState(tk, path)
+
+	logDir := filepath.Join(h.logsDir, "tst-act")
+	require.NoError(t, os.MkdirAll(logDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(logDir, "step1.log"), []byte("newest run output"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(logDir, "step1.1.events.json"),
+		[]byte(`{"version":1,"agent":"claude","events":[]}`), 0o644))
+
+	t.Run("a run with a sidecar reports source events", func(t *testing.T) {
+		got, err := d.GetActivity("tst-act", "step1", 1)
+		require.NoError(t, err)
+		assert.Equal(t, "events", got.Source)
+		assert.Equal(t, 1, got.Run)
+		assert.False(t, got.Stale)
+		require.NotNil(t, got.Tape)
+	})
+
+	t.Run("an older run without a sidecar is stale plaintext", func(t *testing.T) {
+		got, err := d.GetActivity("tst-act", "step1", 0)
+		require.NoError(t, err)
+		assert.Equal(t, "log", got.Source)
+		assert.True(t, got.Stale, "run 0 is not the newest run of step1")
+		assert.Equal(t, "newest run output", got.Content)
+		assert.Nil(t, got.Tape)
+	})
+
+	t.Run("a fallback taken while the stage runs again is stale", func(t *testing.T) {
+		running := h.writeTicket("tst-live.md", `---
+id: tst-live
+kontora: true
+status: in_progress
+pipeline: retry-stage
+stage: step1
+history:
+  - stage: step1
+    agent: agent1
+    exit_code: 1
+    run: 0
+---
+# Live ticket
+`)
+		tk, err := ticket.ParseFile(running)
+		require.NoError(t, err)
+		d.tickets["tst-live"] = newTicketState(tk, running)
+
+		liveDir := filepath.Join(h.logsDir, "tst-live")
+		require.NoError(t, os.MkdirAll(liveDir, 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(liveDir, "step1.log"),
+			[]byte("run 0 output, then the live run appended"), 0o644))
+
+		// Run 0 is the newest run in history, but step1 is running again and
+		// appending to the same file, so its bytes are not run 0's alone.
+		got, err := d.GetActivity("tst-live", "step1", 0)
+		require.NoError(t, err)
+		assert.Equal(t, "log", got.Source)
+		assert.True(t, got.Stale)
+	})
+
+	t.Run("an unknown ticket is not found", func(t *testing.T) {
+		_, err := d.GetActivity("nope", "step1", 0)
+		assert.ErrorIs(t, err, web.ErrTicketNotFound)
+	})
+}

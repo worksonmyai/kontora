@@ -642,13 +642,6 @@ function kontora() {
       this.writeHash();
     },
 
-    // Whether the config names any project. With none configured a blank
-    // pipeline or agent select cannot inherit anything, so the selects drop the
-    // "project default" wording and the "none" opt-out.
-    hasProjects() {
-      return (this.configCache?.projects || []).length > 0;
-    },
-
     // The project configured for a repository path. Both the configured form
     // (which may start with ~) and the resolved absolute form are compared,
     // since the browser cannot expand ~ itself.
@@ -687,24 +680,14 @@ function kontora() {
       this.syncCreateAgent();
     },
 
-    // The agent an untouched select shows: the project's own agent outranks the
-    // agent the picked pipeline runs first, which in turn beats the global
-    // default. Mirrors what the daemon would resolve on submit.
+    // The agent an untouched select shows: the one the project names, and
+    // nothing else. Filling in the agent of the pipeline's first stage would
+    // write that name onto the ticket, and a ticket agent overrides every
+    // stage, so a two-stage pipeline would run stage two with the wrong agent.
     syncCreateAgent() {
       if (this.createTouched.agent) return;
       var project = this.createProject();
-      if (project && project.agent) {
-        this.createForm.agent = project.agent;
-        return;
-      }
-      var name = this.createForm.pipeline;
-      if (!name || name === 'none') {
-        this.createForm.agent = '';
-        return;
-      }
-      var infos = this.configCache?.pipeline_infos || [];
-      var info = infos.find(i => i.name === name);
-      this.createForm.agent = (info && info.default_agent) || this.configCache?.default_agent || '';
+      this.createForm.agent = (project && project.agent) || '';
     },
 
     onPipelineChange() {
@@ -786,8 +769,11 @@ function kontora() {
       this.error = null;
       try {
         const body = { title: this.createForm.title, path: this.createForm.path };
-        if (this.createForm.pipeline) body.pipeline = this.createForm.pipeline;
-        if (this.createForm.agent) body.agent = this.createForm.agent;
+        // The selects carry the resolved values, so an empty one is a
+        // deliberate opt-out. "none" says so; a blank field would make the
+        // daemon inherit the project default the user just cleared.
+        body.pipeline = this.createForm.pipeline || 'none';
+        body.agent = this.createForm.agent || 'none';
         if (this.createForm.status) body.status = this.createForm.status;
         if (this.createForm.body) body.body = this.createForm.body;
         if (this.createForm.branch) body.branch = this.createForm.branch;

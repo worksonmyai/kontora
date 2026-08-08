@@ -1652,10 +1652,7 @@
                 <label for="new-pipeline" class="text-[13px] font-mono text-tx-3 mb-1 flex items-center gap-1.5"><svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="opacity-50"><polyline points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="3"/><polyline points="21 16 21 21 16 21"/><line x1="15" y1="15" x2="21" y2="21"/><line x1="4" y1="4" x2="9" y2="9"/></svg>Pipeline</label>
                 <select id="new-pipeline" x-model="createForm.pipeline" @change="onPipelineChange()"
                         class="w-full bg-surface-800 border border-surface-700/50 rounded px-2 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40">
-                  <option value="" x-text="hasProjects() ? 'project default' : 'none'"></option>
-                  <template x-if="hasProjects()">
-                    <option value="none">none (standalone)</option>
-                  </template>
+                  <option value="">none (single run, no stages)</option>
                   <template x-for="p in configCache?.pipelines || []" :key="p">
                     <option :value="p" x-text="p"></option>
                   </template>
@@ -1665,10 +1662,7 @@
                 <label for="new-agent" class="text-[13px] font-mono text-tx-3 mb-1 flex items-center gap-1.5"><svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="opacity-50"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/></svg>Agent</label>
                 <select id="new-agent" x-model="createForm.agent" @change="createTouched.agent = true"
                         class="w-full bg-surface-800 border border-surface-700/50 rounded px-2 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40">
-                  <option value="">default</option>
-                  <template x-if="hasProjects()">
-                    <option value="none">none (skip project default)</option>
-                  </template>
+                  <option value="">default (each stage picks its own)</option>
                   <template x-for="a in configCache?.agents || []" :key="a">
                     <option :value="a" x-text="a"></option>
                   </template>
@@ -2476,16 +2470,14 @@
                   <div style="flex:1;min-width:0;">
                     <div style="font-family:'JetBrains Mono',monospace;font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:rgba(var(--surface-600),1);margin-bottom:6px;">Pipeline</div>
                     <select x-model="createForm.pipeline" @change="onPipelineChange()" style="width:100%;height:42px;padding:0 10px;font-family:'JetBrains Mono',monospace;font-size:13px;border-radius:10px;background:rgba(var(--surface-950),1);border:1px solid rgba(var(--surface-700),.6);color:rgba(var(--tx-3),1);outline:none;">
-                      <option value="" x-text="hasProjects() ? 'project default' : 'none'"></option>
-                      <template x-if="hasProjects()"><option value="none">none (standalone)</option></template>
+                      <option value="">none (single run, no stages)</option>
                       <template x-for="p in (configCache?.pipelines || [])" :key="p"><option :value="p" x-text="p"></option></template>
                     </select>
                   </div>
                   <div style="flex:1;min-width:0;">
                     <div style="font-family:'JetBrains Mono',monospace;font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:rgba(var(--surface-600),1);margin-bottom:6px;">Agent</div>
                     <select x-model="createForm.agent" @change="createTouched.agent = true" style="width:100%;height:42px;padding:0 10px;font-family:'JetBrains Mono',monospace;font-size:13px;border-radius:10px;background:rgba(var(--surface-950),1);border:1px solid rgba(var(--surface-700),.6);color:rgba(var(--tx-3),1);outline:none;">
-                      <option value="">default</option>
-                      <template x-if="hasProjects()"><option value="none">none (skip project default)</option></template>
+                      <option value="">default (each stage picks its own)</option>
                       <template x-for="a in (configCache?.agents || [])" :key="a"><option :value="a" x-text="a"></option></template>
                     </select>
                   </div>

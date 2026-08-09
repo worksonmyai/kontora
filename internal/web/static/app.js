@@ -242,6 +242,11 @@ function kontora() {
     // that owns its current path. onEditPathChange tells an inherited value from
     // a user-chosen one by comparing against it.
     _editInherited: null,
+    // The newline between the closing --- and the first line of the body, which
+    // the file has and the source editor must not show as an empty first line.
+    // Stripped when the form is filled and put back when it is saved, so a body
+    // that came without it stays without it.
+    _bodyLead: '',
     _blockOffsetsSrc: null,
     _blockOffsetsFor: null,
     setStageOpen: false,
@@ -1378,8 +1383,10 @@ function kontora() {
       this.editingBody = false;
       var pipeline = this.selectedTicket.pipeline || '';
       var agent = this.selectedTicket.agent || '';
+      var body = this.selectedTicket.body || '';
+      this._bodyLead = body.startsWith('\n') ? '\n' : '';
       this.editForm = {
-        body: this.selectedTicket.body || '',
+        body: body.slice(this._bodyLead.length),
         pipeline: '',
         path: this.selectedTicket.path || '',
         agent: '',
@@ -1452,7 +1459,8 @@ function kontora() {
       this.editSaved = false;
       try {
         const body = {};
-        if (this.editForm.body !== (this.selectedTicket.body || '')) body.body = this.editForm.body;
+        const editedBody = this._bodyLead + this.editForm.body;
+        if (editedBody !== (this.selectedTicket.body || '')) body.body = editedBody;
         if (this.editForm.pipeline !== (this.selectedTicket.pipeline || '')) body.pipeline = this.editForm.pipeline;
         if (this.editForm.path !== (this.selectedTicket.path || '')) body.path = this.editForm.path;
         if (this.editForm.agent !== (this.selectedTicket.agent || '')) body.agent = this.editForm.agent;

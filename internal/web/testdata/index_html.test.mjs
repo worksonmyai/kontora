@@ -5052,6 +5052,7 @@ const ENTITY_CHANGES = {
   base: "main",
   commits: [{ sha: "abc1234", subject: "Fix summary rail" }],
   files: [{ path: "internal/web/static/app.js", added: 2, deleted: 1 }],
+  remote: "https://github.com/owner/repo",
 };
 
 // Tickets a summary may name, one status each: a ticket chip wears the status
@@ -5233,6 +5234,37 @@ test("the branch chip carries the base it forked from", () => {
 
   assert.equal(chip.textContent, "kontora/kon-s1");
   assert.match(chip.getAttribute("data-tip-e-body"), /main/);
+});
+
+test("a pull request number links under the project's own origin", () => {
+  const dom = fakeProseDom();
+  const state = entityState(dom);
+  const root = dom.build(["div", "Merged PR #511."]);
+
+  state._markEntities(root);
+  const chip = dom.chips(root)[0];
+
+  assert.equal(chip.tagName, "A");
+  assert.equal(chip.getAttribute("href"), "https://github.com/owner/repo/pull/511");
+  // A new tab, and no window handle back to this page.
+  assert.equal(chip.getAttribute("target"), "_blank");
+  assert.equal(chip.getAttribute("rel"), "noopener noreferrer");
+  assert.equal(chip.getAttribute("data-tip-e-body"), "owner/repo");
+});
+
+test("a number stays prose without a github origin behind it", () => {
+  // The path a number sits under is the host's convention, so a remote that is
+  // not GitHub, and a project with no origin at all, both decline the chip.
+  for (const remote of ["https://gitlab.com/owner/repo", "", undefined]) {
+    const dom = fakeProseDom();
+    const state = entityState(dom, { ticketChanges: { ...ENTITY_CHANGES, remote } });
+    const root = dom.build(["div", "Merged PR #511."]);
+
+    state._markEntities(root);
+
+    assert.deepEqual(dom.chips(root), [], String(remote));
+    assert.equal(root.textContent, "Merged PR #511.");
+  }
 });
 
 test("a ticket chip opens the ticket it names and keeps the prose around it", () => {

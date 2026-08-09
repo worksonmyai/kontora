@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -677,6 +678,7 @@ func (d *Daemon) GetChanges(id string) (web.ChangesInfo, error) {
 		base = baseRef
 	}
 	info.Base = base
+	info.Remote = gitRemoteURL(repoPath)
 
 	if !gitBranchExists(repoPath, branch) {
 		return info, nil
@@ -700,6 +702,84 @@ func gitBranchExists(repoPath, branch string) bool {
 	cmd := exec.Command("git", "rev-parse", "--verify", "--quiet", "refs/heads/"+branch)
 	cmd.Dir = repoPath
 	return cmd.Run() == nil
+}
+
+// gitRemoteURL reads the repository's origin. A repository without one, or one
+// this cannot render as an address, reports no remote rather than an error: the
+// changes payload is still correct without it.
+func gitRemoteURL(repoPath string) string {
+	cmd := exec.Command("git", "config", "--get", "remote.origin.url")
+	cmd.Dir = repoPath
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return normalizeRemoteURL(string(out))
+}
+
+// normalizeRemoteURL rewrites a git remote as the https address of the same
+// repository, without the .git suffix.
+//
+// Two forms need care. git@host:owner/repo.git is scp syntax rather than a URL,
+// so it is given a scheme before parsing. And a remote may carry credentials
+// (https://user:token@host/...), which url.Parse keeps apart from the host, so
+// rebuilding the address from the host drops them instead of publishing a token
+// to every reader of the page.
+//
+// A remote that does not end up as http or https yields "": the result is a
+// link target in the browser, where a javascript: URL is not a broken link.
+func normalizeRemoteURL(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if !strings.Contains(raw, "://") {
+		host, path, ok := strings.Cut(raw, ":")
+		// A local path has no colon, and a Windows drive letter puts the colon
+		// in front of a rooted path.
+		if !ok || path == "" || strings.HasPrefix(path, "/") || !looksLikeHost(host) {
+			return ""
+		}
+		raw = "ssh://" + host + "/" + path
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return ""
+	}
+	host := u.Host
+	switch u.Scheme {
+	case "http", "https":
+	case "ssh", "git":
+		// An ssh port says nothing about where the web UI listens.
+		host = u.Hostname()
+	default:
+		return ""
+	}
+	path := strings.TrimSuffix(strings.TrimSuffix(u.Path, "/"), ".git")
+	if path == "" || path == "/" {
+		return ""
+	}
+	return "https://" + host + path
+}
+
+// looksLikeHost accepts the left half of scp syntax: an optional user, then a
+// dotted name. Cutting on the colon alone would read "javascript:alert(1)" as a
+// host and a path, and hand back an https URL built out of it.
+func looksLikeHost(s string) bool {
+	if _, after, ok := strings.Cut(s, "@"); ok {
+		s = after
+	}
+	if !strings.Contains(s, ".") {
+		return false
+	}
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '.', r == '-':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // gitCommits lists the commits on branch that are not on base, newest first.

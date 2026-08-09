@@ -5054,6 +5054,13 @@ const ENTITY_CHANGES = {
   files: [{ path: "internal/web/static/app.js", added: 2, deleted: 1 }],
 };
 
+// Tickets a summary may name, one status each: a ticket chip wears the status
+// colour of the ticket it points at.
+const ENTITY_TICKETS = [
+  { id: "kon-4h2p", title: "Rebuild the summary tab", status: "done" },
+  { id: "kon-9xz1", title: "Drop the stale rail", status: "cancelled" },
+];
+
 // The entity pass reaches the document global, so the double has to be the
 // context's document rather than a field on the component.
 function entityState(dom, overrides = {}) {
@@ -5061,6 +5068,7 @@ function entityState(dom, overrides = {}) {
   state.selectedTicket = { ...SUMMARY_TICKET, branch: "kontora/kon-s1" };
   state.now = Date.parse("2026-08-08T12:00:00Z");
   state.ticketChanges = ENTITY_CHANGES;
+  state.tickets = ENTITY_TICKETS;
   Object.assign(state, overrides);
   return state;
 }
@@ -5190,6 +5198,13 @@ test("each pattern claims only the text it names", () => {
       want: [["exits 0", "ent ent-ok"], ["exited 5", "ent ent-bad"]],
     },
     {
+      // test-lisp has the shape of an id and names no ticket.
+      name: "a ticket id chips only when the board holds that ticket",
+      branch: "kontora/kon-s1",
+      text: "Follows kon-4h2p, and test-lisp still runs.",
+      want: [["kon-4h2p", "ent ent-ticket text-st-done"]],
+    },
+    {
       name: "a counted noun takes one word in front of it",
       branch: "kontora/kon-s1",
       text: "239 node tests and 1 skipped.",
@@ -5218,6 +5233,31 @@ test("the branch chip carries the base it forked from", () => {
 
   assert.equal(chip.textContent, "kontora/kon-s1");
   assert.match(chip.getAttribute("data-tip-e-body"), /main/);
+});
+
+test("a ticket chip opens the ticket it names and keeps the prose around it", () => {
+  const dom = fakeProseDom();
+  const state = entityState(dom);
+  let opened = null;
+  state._paletteOpenTicket = (t) => { opened = t; };
+  const text = "no-push, then kon-9xz1, then test-lisp.";
+  const root = dom.build(["div", text]);
+
+  state._markEntities(root);
+  const chip = dom.chips(root)[0];
+
+  // The id says nothing about the ticket, so the card leads with the title.
+  assert.equal(chip.textContent, "kon-9xz1");
+  assert.equal(chip.className, "ent ent-ticket text-st-cancel");
+  assert.equal(chip.getAttribute("data-tip-e"), "Drop the stale rail");
+  assert.equal(chip.getAttribute("data-tip-e-body"), "cancelled");
+  assert.equal(chip.getAttribute("data-tip-e-hint"), "click to open");
+
+  chip.events.click[0]();
+  assert.equal(opened.id, "kon-9xz1");
+  // The two declined runs sit either side of the chip, so a splice that drops
+  // them would show up here.
+  assert.equal(root.textContent, text);
 });
 
 test("a file the branch changed carries its diff stat", () => {

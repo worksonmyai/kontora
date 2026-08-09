@@ -21,6 +21,27 @@ const TAPE_WINDOW_SIZE = 200;
 var mdCache = new Map();
 var MD_CACHE_MAX = 16;
 
+// Entities one summary may chip. The patterns below are heuristics: an
+// uppercase word is an env var only most of the time, so the cap bounds a
+// wrong guess as well as a long body.
+var ENTITY_MAX = 40;
+// NodeFilter constants, spelled out rather than read off the global.
+var SHOW_TEXT = 4;
+var FILTER_ACCEPT = 1;
+var FILTER_REJECT = 2;
+
+function reEscape(s) {
+  return String(s).replace(/[\\^$.*+?()[\]{}|]/g, '\\$&');
+}
+
+// Wall-clock seconds one history entry ran. Queue time sits between entries,
+// so it never counts toward a stage.
+function runSeconds(h) {
+  if (!h || !h.started_at || !h.completed_at) return 0;
+  var s = Math.floor((new Date(h.completed_at) - new Date(h.started_at)) / 1000);
+  return s > 0 ? s : 0;
+}
+
 // Markdown source highlighting for the ticket editor. The result is painted
 // under a transparent textarea, so it must reproduce the source character for
 // character: only <span>s are added, and the whole line goes through the
@@ -178,6 +199,9 @@ function kontora() {
     detailMenuOpen: false,
     copiedId: false,
     copiedBranch: null,
+    // Summary cards folded shut, keyed "stage#run". A stage can run more than
+    // once, so the run is part of the key or two attempts collapse together.
+    collapsedStages: {},
     copiedCmd: null,
     configCache: null,
     logViewContent: null,
@@ -1037,6 +1061,7 @@ function kontora() {
       this._resetActivity();
       this.setStageOpen = false;
       this.ticketChanges = null;
+      this.collapsedStages = {};
       this.selectedTicket = ticket;
       this._pushRecentTicket(ticket.id);
       this.detailLoading = true;
@@ -1085,17 +1110,117 @@ function kontora() {
       return !!t && ['human_review', 'done'].includes(t.status) && !!t.summary;
     },
 
-    // The stage that produced the current summary: the most recent history
-    // entry, whose exit wrote the top-level summary field.
+    // The stage of the last history entry. It usually wrote the top-level
+    // summary, but a manual SetSummary and the non-pipeline exit path do not
+    // append history.
     summaryStage() {
       var h = this.selectedTicket?.history;
       return h && h.length ? h[h.length - 1].stage : '';
     },
 
-    // History entries before the last one that carry their own summary.
-    earlierSummaries() {
-      var h = this.selectedTicket?.history || [];
-      return h.slice(0, -1).filter(function (e) { return e.summary; });
+    // One card per run that recorded a summary, newest first. Duration and run
+    // count come from stageRibbon(), so a card and the ribbon segment above it
+    // cannot disagree. Both are per stage, so two runs of one stage show the
+    // same stage total.
+    //
+    // The run number counts the stage's earlier history rows, as the daemon
+    // does, rather than reading h.run: rows written before that field existed
+    // carry none, and two cards keyed stage#0 make Alpine throw on the
+    // duplicate x-for key.
+    summaryCards() {
+      var t = this.selectedTicket;
+      if (!t) return [];
+      var segs = Object.create(null);
+      this.stageRibbon().forEach(function (s) { segs[s.name] = s; });
+      var hist = t.history || [];
+      var totalRuns = Object.create(null);
+      hist.forEach(function (h) { totalRuns[h.stage] = (totalRuns[h.stage] || 0) + 1; });
+      var walked = Object.create(null);
+      var cards = [];
+      hist.forEach(function (h) {
+        var run = walked[h.stage] || 0;
+        walked[h.stage] = run + 1;
+        if (!h.summary) return;
+        // A stage the current pipeline no longer lists has no ribbon segment to
+        // agree with, so the card reads this run's own clock.
+        var seg = segs[h.stage];
+        cards.push({
+          key: h.stage + '#' + run,
+          stage: h.stage,
+          run: run,
+          summary: h.summary,
+          failed: h.exit_code !== 0,
+          agent: h.agent || '',
+          seconds: seg ? seg.seconds : runSeconds(h),
+          runs: seg ? seg.runs : totalRuns[h.stage],
+        });
+      });
+      cards.reverse();
+      // Prepend the top-level field only when it says something the newest run
+      // does not.
+      var top = t.summary || '';
+      if (top && (!cards.length || cards[0].summary !== top)) {
+        cards.unshift({
+          key: 'summary#top', stage: this.summaryStage(), run: -1,
+          summary: top, failed: false, agent: '', seconds: 0, runs: 1,
+        });
+      }
+      return cards;
+    },
+
+    // A failed run keeps the error hue wherever it sits. Otherwise the newest
+    // card is the outcome and carries the done hue whatever stage produced it,
+    // and an earlier card takes its hue from the stage's position in the
+    // pipeline rather than from its name.
+    stageHue(card, i) {
+      if (card.failed) return '--st-error';
+      if (i === 0) return '--st-done';
+      var stages = this.selectedTicket?.stages || [];
+      var idx = stages.indexOf(card.stage);
+      var cycle = ['--st-open', '--st-review', '--st-paused'];
+      return cycle[(idx >= 0 ? idx : i) % cycle.length];
+    },
+
+    // "50m 00s · ×2 · codex · failed" — the right side of a card header.
+    stageCardMeta(card) {
+      var parts = [];
+      if (card.seconds > 0) parts.push(this.formatSeconds(card.seconds));
+      if (card.runs > 1) parts.push('×' + card.runs);
+      if (card.agent) parts.push(card.agent);
+      if (card.failed) parts.push('failed');
+      return parts.join(' · ');
+    },
+
+    toggleStageCard(card) {
+      this.collapsedStages[card.key] = !this.collapsedStages[card.key];
+    },
+
+    // Collapse-all skips the newest card: it is the answer the reader came for.
+    earlierAllCollapsed() {
+      var self = this;
+      var rest = this.summaryCards().slice(1);
+      return rest.length > 0 && rest.every(function (c) { return !!self.collapsedStages[c.key]; });
+    },
+
+    toggleAllStages() {
+      var collapse = !this.earlierAllCollapsed();
+      var self = this;
+      this.summaryCards().slice(1).forEach(function (c) { self.collapsedStages[c.key] = collapse; });
+    },
+
+    // "4 stages · 42 files · +14015 −0 · 1 commit" — the right side of the
+    // outcome rule. Distinct stages rather than cards: a stage that ran twice
+    // is one segment on the ribbon above and must not read as two here.
+    summaryHeadline() {
+      var stages = Object.create(null);
+      this.summaryCards().forEach(function (c) { stages[c.stage] = true; });
+      var n = Object.keys(stages).length;
+      var parts = [n + ' stage' + (n === 1 ? '' : 's')];
+      var c = this.churn();
+      if (c.count) parts.push(c.count + ' file' + (c.count === 1 ? '' : 's'), '+' + c.added + ' −' + c.deleted);
+      var commits = this.ticketChanges?.commits?.length || 0;
+      if (commits) parts.push(commits + ' commit' + (commits === 1 ? '' : 's'));
+      return parts.join(' · ');
     },
 
     async fetchChanges(id) {
@@ -1161,6 +1286,7 @@ function kontora() {
       this.logViewLoading = false;
       this._resetActivity();
       this.ticketChanges = null;
+      this.collapsedStages = {};
       this.noteDraft = '';
       this.writeHash();
     },
@@ -3254,6 +3380,122 @@ function kontora() {
       el.innerHTML = this.renderMarkdown(src);
     },
 
+    // The same write for stage summaries, with entity chips on top. A separate
+    // method rather than a flag on setProse: the ticket body is text a person
+    // wrote, and chipping a sha inside it would rewrite what they typed.
+    //
+    // The memo key adds the branch and the commit shas, which the chips read
+    // and which fetchChanges delivers after the first paint.
+    setSummaryProse(el, md) {
+      var shas = (this.ticketChanges?.commits || []).map(function (c) { return c.sha; }).join(',');
+      var src = (md || '') + '\u0000' + (this.selectedTicket?.branch || '') + '\u0000' + shas;
+      if (el._proseSrc === src) return;
+      el._proseSrc = src;
+      el.innerHTML = this.renderMarkdown(md || '');
+      this._markEntities(el);
+    },
+
+    // Chip the entities in already-sanitised prose. One combined alternation,
+    // so two patterns cannot claim overlapping text, and one pass.
+    _markEntities(root) {
+      var re = this._entityRe();
+      var walker = document.createTreeWalker(root, SHOW_TEXT, {
+        acceptNode: function (node) {
+          // Code and links own their text: a fence has to render character for
+          // character, and a chip inside a link would eat the click.
+          var p = node.parentElement;
+          return p && p.closest('pre, code, a') ? FILTER_REJECT : FILTER_ACCEPT;
+        },
+      });
+      // Collect before wrapping. A TreeWalker reads the live tree, and each
+      // wrap replaces the node it is standing on.
+      var targets = [];
+      for (var n = walker.nextNode(); n; n = walker.nextNode()) targets.push(n);
+      var budget = ENTITY_MAX;
+      for (var i = 0; i < targets.length && budget > 0; i++) budget = this._wrapEntities(targets[i], re, budget);
+    },
+
+    _entityRe() {
+      var parts = [];
+      var branch = this.selectedTicket?.branch || '';
+      // A branch name may hold a slash or a dash, so \b cannot bound it. Left
+      // unbounded, a short name such as main chips the middle of domain and
+      // maintenance, and takes those characters from the file pattern.
+      if (branch) parts.push('(?<branch>(?<![\\w/-])' + reEscape(branch) + '(?![\\w/-]))');
+      var shas = (this.ticketChanges?.commits || []).map(function (c) { return c.sha; }).filter(Boolean);
+      // Only shas this branch produced. A bare \b[0-9a-f]{7,40}\b chips
+      // deadbeef, feedface and every other hex-looking word in the prose. The
+      // commit list holds short shas, so allow a longer form of one.
+      if (shas.length) parts.push('(?<sha>\\b(?:' + shas.map(reEscape).join('|') + ')[0-9a-f]*\\b)');
+      // Dotted stems, so contract.test.ts reads as a file: attr matches the
+      // same run and, without them, claims it first.
+      parts.push('(?<file>\\b[\\w-]+(?:\\.[\\w-]+)*\\.(?:json|ts|tsx|go|md|ya?ml|lock)\\b|\\bnode_modules\\b)');
+      parts.push('(?<env>\\b[A-Z][A-Z0-9_]{3,}\\b)');
+      parts.push('(?<attr>\\b[a-z_]+(?:\\.[a-z_]+){2,}\\b)');
+      parts.push('(?<count>\\b\\d+ (?:files?|insertions?|deletions?|tests?)\\b)');
+      return new RegExp(parts.join('|'), 'g');
+    },
+
+    // Split one text node around its matches. Returns what is left of the cap.
+    _wrapEntities(node, re, budget) {
+      var text = node.nodeValue;
+      re.lastIndex = 0;
+      var frag = null;
+      var last = 0;
+      var m;
+      while (budget > 0 && (m = re.exec(text)) !== null) {
+        if (!frag) frag = document.createDocumentFragment();
+        if (m.index > last) frag.appendChild(document.createTextNode(text.slice(last, m.index)));
+        frag.appendChild(this._entityChip(m));
+        last = m.index + m[0].length;
+        budget--;
+      }
+      if (!frag) return budget;
+      if (last < text.length) frag.appendChild(document.createTextNode(text.slice(last)));
+      node.parentNode.replaceChild(frag, node);
+      return budget;
+    },
+
+    _entityChip(m) {
+      var g = m.groups;
+      var text = m[0];
+      var span = document.createElement('span');
+      span.textContent = text;
+      if (g.count) {
+        span.className = 'ent-count';
+        return span;
+      }
+      var kind = g.branch ? 'branch' : (g.sha ? 'sha' : (g.file ? 'file' : (g.env ? 'env' : 'attr')));
+      span.className = 'ent ent-' + kind;
+      // Only a sha and a branch have something behind them. A file name says
+      // what it is, and an env var or a dotted attribute has no record at all,
+      // so those are coloured and nothing more.
+      var card = this._entityCard(kind, text);
+      if (!card) return span;
+      span.setAttribute('data-tip-e', text);
+      span.setAttribute('data-tip-e-body', card);
+      span.setAttribute('data-tip-e-hint', 'click to copy');
+      var self = this;
+      span.addEventListener('click', function () {
+        self.copyBranch(text);
+        span.classList.add('is-copied');
+        setTimeout(function () { span.classList.remove('is-copied'); }, 1200);
+      });
+      return span;
+    },
+
+    _entityCard(kind, text) {
+      if (kind === 'sha') {
+        var hit = (this.ticketChanges?.commits || []).find(function (c) { return text.indexOf(c.sha) === 0; });
+        return hit ? hit.subject : '';
+      }
+      if (kind === 'branch') {
+        var base = this.ticketChanges?.base;
+        return base ? 'Branched from ' + base : 'This ticket\u2019s branch';
+      }
+      return '';
+    },
+
     // Repaint the layer under the editor's transparent text. The typed
     // character only becomes visible when this runs, so it cannot be deferred
     // past the frame that draws it; one frame's worth of coalescing collapses
@@ -3561,10 +3803,7 @@ function kontora() {
         var e = agg[h.stage] || (agg[h.stage] = { seconds: 0, runs: 0, last: null });
         e.runs++;
         e.last = h;
-        if (h.started_at && h.completed_at) {
-          var s = Math.floor((new Date(h.completed_at) - new Date(h.started_at)) / 1000);
-          if (s > 0) e.seconds += s;
-        }
+        e.seconds += runSeconds(h);
       });
 
       var stages = t.stages || [];

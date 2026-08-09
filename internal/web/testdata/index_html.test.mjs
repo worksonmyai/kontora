@@ -2663,7 +2663,11 @@ test("index.html renders every prose block through the idempotent write", () => 
   // x-html reassigns innerHTML on every effect run, so an SSE refresh rebuilds
   // the subtree and the scroller clamps to the top while it is empty.
   assert.equal(html.includes('x-html="renderMarkdown'), false);
-  assert.equal(html.match(/x-effect="setProse\(\$el, /g).length, 6);
+  // Two writers share the pattern, counted apart: entity chips belong to the
+  // stage summary, and a ticket body swapped onto setSummaryProse would keep
+  // any combined total the same.
+  assert.equal(html.match(/x-effect="setProse\(\$el, /g).length, 4);
+  assert.equal(html.match(/x-effect="setSummaryProse\(\$el, /g).length, 1);
 });
 
 // ---------------------------------------------------------------------------
@@ -4663,4 +4667,543 @@ test("index.html renders the ribbon, transcript and rail the page needs", () => 
   // The sweep is declared next to the other loops and stops under reduced motion.
   assert.match(html, /@keyframes sweep \{/);
   assert.match(html, /@media \(prefers-reduced-motion: reduce\) \{[\s\S]{0,200}?\.sweep \{ animation: none; \}/);
+});
+
+// ---------------------------------------------------------------------------
+// Ticket page: summary tab
+// ---------------------------------------------------------------------------
+
+// A finished four-stage run, one summarised attempt per stage. The top-level
+// summary repeats the last stage's text, which is what the daemon writes.
+const SUMMARY_TICKET = {
+  id: "kon-s1",
+  status: "human_review",
+  stage: "commit",
+  branch: "kontora/kon-s1",
+  summary: "Committed the redesign.",
+  stages: ["implement", "review", "fix-review", "commit"],
+  history: [
+    { stage: "implement", agent: "claude", exit_code: 0, run: 0, summary: "Wrote the cards.", started_at: "2026-08-08T11:00:00Z", completed_at: "2026-08-08T11:10:41Z" },
+    { stage: "review", agent: "codex", exit_code: 0, run: 0, summary: "Reviewed them.", started_at: "2026-08-08T11:11:00Z", completed_at: "2026-08-08T11:31:34Z" },
+    { stage: "fix-review", agent: "claude", exit_code: 0, run: 0, summary: "Fixed the findings.", started_at: "2026-08-08T11:32:00Z", completed_at: "2026-08-08T12:22:04Z" },
+    { stage: "commit", agent: "claude", exit_code: 0, run: 0, summary: "Committed the redesign.", started_at: "2026-08-08T12:23:00Z", completed_at: "2026-08-08T12:23:32Z" },
+  ],
+};
+
+// The same review stage twice: 30m that failed, then 20m that passed.
+const RETRY_TICKET = {
+  id: "kon-s2",
+  status: "human_review",
+  stage: "review",
+  summary: "",
+  stages: ["implement", "review"],
+  history: [
+    { stage: "implement", agent: "claude", exit_code: 0, run: 0, summary: "Implemented.", started_at: "2026-08-08T10:00:00Z", completed_at: "2026-08-08T10:05:00Z" },
+    { stage: "review", agent: "codex", exit_code: 1, run: 0, summary: "First pass found a bug.", started_at: "2026-08-08T11:00:00Z", completed_at: "2026-08-08T11:30:00Z" },
+    { stage: "review", agent: "codex", exit_code: 0, run: 1, summary: "Second pass is clean.", started_at: "2026-08-08T11:40:00Z", completed_at: "2026-08-08T12:00:00Z" },
+  ],
+};
+
+// The same two review runs, recorded before the run field existed. Every row
+// on disk older than a209f5b looks like this.
+const LEGACY_TICKET = {
+  ...RETRY_TICKET,
+  id: "kon-s4",
+  history: RETRY_TICKET.history.map(({ run, ...rest }) => rest),
+};
+
+// The pipeline was repointed after the run, so review is no longer one of its
+// stages and the ribbon has no segment for it.
+const DROPPED_STAGE_TICKET = { ...RETRY_TICKET, id: "kon-s5", stages: ["implement"] };
+
+test("summaryCards builds one card per summarised run", () => {
+  const cases = [
+    {
+      name: "finished four-stage pipeline",
+      ticket: SUMMARY_TICKET,
+      keys: ["commit#0", "fix-review#0", "review#0", "implement#0"],
+      hues: ["--st-done", "--st-paused", "--st-review", "--st-open"],
+    },
+    {
+      name: "stage that ran twice",
+      ticket: RETRY_TICKET,
+      keys: ["review#1", "review#0", "implement#0"],
+      hues: ["--st-done", "--st-error", "--st-open"],
+      meta: ["50m 00s · ×2 · codex", "50m 00s · ×2 · codex · failed", "5m 00s · claude"],
+    },
+    {
+      // Alpine throws on a duplicate x-for key, so the whole tab would render
+      // empty if the two review runs both keyed review#0.
+      name: "history recorded before the run field existed",
+      ticket: LEGACY_TICKET,
+      keys: ["review#1", "review#0", "implement#0"],
+    },
+    {
+      // No ribbon segment for review, so each card reads its own clock and the
+      // stage's own attempt count.
+      name: "stage dropped from the pipeline",
+      ticket: DROPPED_STAGE_TICKET,
+      keys: ["review#1", "review#0", "implement#0"],
+      meta: ["20m 00s · ×2 · codex", "30m 00s · ×2 · codex · failed", "5m 00s · claude"],
+    },
+    {
+      name: "running ticket with an empty top-level summary",
+      ticket: { ...RETRY_TICKET, status: "in_progress", summary: "" },
+      keys: ["review#1", "review#0", "implement#0"],
+    },
+    {
+      name: "summary set by hand, differing from every run",
+      ticket: { ...SUMMARY_TICKET, summary: "Closed by hand." },
+      keys: ["summary#top", "commit#0", "fix-review#0", "review#0", "implement#0"],
+    },
+    {
+      name: "no pipeline history at all",
+      ticket: { id: "kon-s3", status: "done", summary: "Done outside a pipeline.", stages: [], history: [] },
+      keys: ["summary#top"],
+    },
+    {
+      name: "runs without a summary are skipped",
+      ticket: { ...SUMMARY_TICKET, summary: "", history: SUMMARY_TICKET.history.map((h, i) => (i === 1 ? { ...h, summary: "" } : h)) },
+      keys: ["commit#0", "fix-review#0", "implement#0"],
+    },
+  ];
+
+  for (const c of cases) {
+    const state = pageState(c.ticket);
+    const cards = vmValue(state.summaryCards());
+    assert.deepEqual(cards.map((k) => k.key), c.keys, c.name);
+    if (c.hues) assert.deepEqual(cards.map((card, i) => state.stageHue(card, i)), c.hues, c.name);
+    if (c.meta) assert.deepEqual(cards.map((card) => state.stageCardMeta(card)), c.meta, c.name);
+  }
+});
+
+test("a running ticket keeps the last completed summary on screen", () => {
+  // The top-level field is cleared while a stage runs, and the old markup read
+  // only that field, so the tab went blank mid-run.
+  const state = pageState({ ...RETRY_TICKET, status: "in_progress", summary: "" });
+
+  const cards = state.summaryCards();
+  assert.equal(cards[0].summary, "Second pass is clean.");
+  assert.equal(cards.some((c) => c.key === "summary#top"), false);
+});
+
+test("the synthetic card names the stage that ended the run", () => {
+  const state = pageState({ ...SUMMARY_TICKET, summary: "Closed by hand." });
+
+  const top = state.summaryCards()[0];
+  assert.equal(top.key, "summary#top");
+  assert.equal(top.stage, "commit");
+  assert.equal(top.summary, "Closed by hand.");
+});
+
+test("card meta reports the aggregate the ribbon reports", () => {
+  const state = pageState(RETRY_TICKET);
+  const cards = state.summaryCards();
+  const ribbon = state.stageRibbon().find((s) => s.name === "review");
+
+  // Both review runs read the stage total, so a card and the ribbon segment
+  // above it can never disagree.
+  assert.equal(ribbon.seconds, 3000);
+  assert.equal(cards[0].seconds, 3000);
+  assert.equal(cards[1].seconds, 3000);
+});
+
+test("the outcome headline counts stages, churn and commits", () => {
+  const cases = [
+    { name: "no changes fetched", changes: null, want: "4 stages" },
+    // The ribbon above the headline draws one segment per stage, so a retried
+    // stage and a hand-set summary must not push the count past it.
+    { name: "a stage that ran twice", ticket: RETRY_TICKET, changes: null, want: "2 stages" },
+    { name: "a summary set by hand", ticket: { ...SUMMARY_TICKET, summary: "Closed by hand." }, changes: null, want: "4 stages" },
+    {
+      name: "churn and one commit",
+      changes: { base: "main", commits: [{ sha: "abc1234", subject: "Fix summary rail" }], files: [{ path: "a.go", added: 3, deleted: 1 }] },
+      want: "4 stages · 1 file · +3 −1 · 1 commit",
+    },
+    {
+      name: "several files and commits",
+      changes: {
+        base: "main",
+        commits: [{ sha: "abc1234", subject: "One" }, { sha: "def5678", subject: "Two" }],
+        files: [{ path: "a.go", added: 3, deleted: 1 }, { path: "b.go", added: 0, deleted: 4 }],
+      },
+      want: "4 stages · 2 files · +3 −5 · 2 commits",
+    },
+  ];
+
+  for (const c of cases) {
+    const state = pageState(c.ticket || SUMMARY_TICKET, { ticketChanges: c.changes });
+    assert.equal(state.summaryHeadline(), c.want, c.name);
+  }
+});
+
+test("collapse-all leaves the newest card open and flips its label", () => {
+  const state = pageState(SUMMARY_TICKET);
+  const cards = state.summaryCards();
+
+  assert.equal(state.earlierAllCollapsed(), false);
+  state.toggleAllStages();
+  assert.deepEqual(vmValue(state.collapsedStages), {
+    "fix-review#0": true, "review#0": true, "implement#0": true,
+  });
+  assert.equal(state.collapsedStages[cards[0].key], undefined, "the outcome stays open");
+  assert.equal(state.earlierAllCollapsed(), true);
+
+  state.toggleAllStages();
+  assert.equal(state.earlierAllCollapsed(), false);
+  assert.equal(Object.values(vmValue(state.collapsedStages)).some(Boolean), false);
+});
+
+test("a card collapses on its own, including the newest", () => {
+  const state = pageState(SUMMARY_TICKET);
+  const cards = state.summaryCards();
+
+  state.toggleStageCard(cards[0]);
+  assert.equal(state.collapsedStages["commit#0"], true);
+  assert.equal(state.earlierAllCollapsed(), false, "the outcome does not count");
+
+  state.toggleStageCard(cards[0]);
+  assert.equal(state.collapsedStages["commit#0"], false);
+});
+
+test("two runs of one stage collapse independently", () => {
+  const state = pageState(RETRY_TICKET);
+  const cards = state.summaryCards();
+
+  state.toggleStageCard(cards[1]);
+  assert.equal(state.collapsedStages["review#0"], true);
+  assert.equal(state.collapsedStages["review#1"], undefined);
+});
+
+test("collapse state survives a refresh and resets between tickets", async () => {
+  const { state } = routerState("#/");
+  state.tickets = [RETRY_TICKET, { id: "kon-other", status: "todo" }];
+  state.selectedTicket = RETRY_TICKET;
+  state.collapsedStages = { "review#1": true };
+
+  // An SSE refresh replaces selectedTicket wholesale; a collapse keyed on the
+  // component rather than on the DOM is unaffected.
+  state.applyTicketUpdate({ ...RETRY_TICKET, stage: "review" });
+  assert.equal(state.collapsedStages["review#1"], true);
+
+  await state.selectTicket(state.tickets[1]);
+  assert.deepEqual(vmValue(state.collapsedStages), {}, "a different ticket starts clean");
+
+  state.collapsedStages = { "review#1": true };
+  state.closeDetail();
+  assert.deepEqual(vmValue(state.collapsedStages), {}, "closing detail starts clean");
+});
+
+test("the summary tab renders one card per run and a commit rail", () => {
+  const html = fs.readFileSync(htmlPath, "utf8");
+  const tab = html.slice(html.indexOf(`x-show="activeTab === 'summary'"`), html.indexOf("<!-- Diff:"));
+
+  // One card per summarised run, keyed stage#run so a retried stage keeps two.
+  assert.match(tab, /x-for="\(card, ci\) in summaryCards\(\)" :key="card\.key"/);
+  // The hue rides a custom property, the same shape the board columns use for
+  // --col-tint, so no per-hue Tailwind opacity utility is needed.
+  assert.match(tab, /:style="'--stage-h: var\(' \+ stageHue\(card, ci\) \+ '\)'"/);
+  // Collapse is Alpine state, not a style.display mutation, so it survives the
+  // re-render an SSE update triggers.
+  assert.match(tab, /@click="toggleStageCard\(card\)"/);
+  assert.match(tab, /x-show="!collapsedStages\[card\.key\]"/);
+  assert.match(tab, /:aria-expanded="!collapsedStages\[card\.key\]"/);
+  assert.match(tab, /x-text="earlierAllCollapsed\(\) \? 'expand all' : 'collapse all'"/);
+  assert.match(tab, /x-text="summaryHeadline\(\)"/);
+  assert.match(tab, /x-text="stageCardMeta\(card\)"/);
+
+  // The error banner keeps its shape and sits above the outcome rule.
+  assert.ok(tab.indexOf('x-text="selectedTicket.last_error"') < tab.indexOf(">outcome<"));
+  assert.match(tab, /border-l-\[3px\] border-err pl-3 py-1/);
+
+  // The rail is dropped, not hidden, when the branch has no commit, and every
+  // fact on it comes out of the one changes payload.
+  assert.match(tab, /<template x-if="ticketChanges\?\.commits\?\.length">/);
+  assert.match(tab, /x-text="ticketChanges\?\.branch"/);
+  assert.match(tab, /x-text="ticketChanges\?\.base"/);
+  // copyBranch stores the copied string, so each sha chip ticks on its own;
+  // copiedId is one boolean and would tick every chip at once.
+  assert.match(tab, /@click="copyBranch\(c\.sha\)"/);
+  assert.match(tab, /copiedBranch === c\.sha/);
+  // The old centered card and its details disclosure are gone.
+  assert.equal(/earlierSummaries|max-w-3xl mx-auto px-6 py-6[\s\S]{0,80}last_error/.test(tab), false);
+});
+
+test("the summary rail wraps on a container query, not a viewport one", () => {
+  const html = fs.readFileSync(htmlPath, "utf8");
+
+  // The ticket page keeps a fixed 308px rail, so the pane is ~300px narrower
+  // than the window and a viewport breakpoint would fire far too late.
+  assert.match(html, /\.summary-scroll \{ container-type: inline-size; \}/);
+  assert.match(html, /@container \(max-width: 1000px\) \{\s*\.summary-rail \{ width: 100%; position: static; \}\s*\}/);
+  assert.match(html, /\.summary-rail \{[^}]*position: sticky/);
+  assert.match(html, /\.summary-rail \{[^}]*width: 264px/);
+});
+
+test("app.js no longer defines earlierSummaries", () => {
+  const app = fs.readFileSync(appPath, "utf8");
+  const html = fs.readFileSync(htmlPath, "utf8");
+
+  // earlierSummaries fed the <details> disclosure the cards replaced.
+  assert.equal(/earlierSummaries/.test(app + html), false);
+});
+
+// A DOM double deep enough for the entity pass: an element/text tree, the
+// TreeWalker it walks, and the fragment splice it ends on. innerHTML does not
+// parse — the harness stubs marked and DOMPurify with identity, so the "HTML"
+// a prose writer assigns is the source text, and one text node is all the
+// entity pass needs to chew on.
+function fakeProseDom() {
+  const doc = {
+    getElementById: () => null,
+    querySelector: () => null,
+    hasFocus: () => true,
+    documentElement: { style: {} },
+    createTextNode(nodeValue) {
+      return { nodeType: 3, nodeValue, parentNode: null, get parentElement() { return this.parentNode; } };
+    },
+    createDocumentFragment() {
+      return { nodeType: 11, childNodes: [], appendChild(n) { this.childNodes.push(n); return n; } };
+    },
+    createElement(tag) {
+      const el = {
+        nodeType: 1,
+        tagName: tag.toUpperCase(),
+        className: "",
+        style: {},
+        childNodes: [],
+        parentNode: null,
+        attrs: {},
+        events: {},
+        _html: "",
+        get parentElement() { return this.parentNode; },
+        get textContent() {
+          return this.childNodes.map((n) => (n.nodeType === 3 ? n.nodeValue : n.textContent)).join("");
+        },
+        set textContent(v) { this.childNodes = [doc.createTextNode(v)]; this.childNodes[0].parentNode = this; },
+        get innerHTML() { return this._html; },
+        set innerHTML(v) { this._html = v; this.textContent = v; },
+        classList: {
+          add: (c) => { if (!el.className.split(" ").includes(c)) el.className = `${el.className} ${c}`.trim(); },
+          remove: (c) => { el.className = el.className.split(" ").filter((x) => x && x !== c).join(" "); },
+        },
+        setAttribute(k, v) { this.attrs[k] = String(v); },
+        getAttribute(k) { return k in this.attrs ? this.attrs[k] : null; },
+        addEventListener(type, fn) { (this.events[type] = this.events[type] || []).push(fn); },
+        appendChild(n) { n.parentNode = this; this.childNodes.push(n); return n; },
+        replaceChild(fresh, old) {
+          const at = this.childNodes.indexOf(old);
+          const kids = fresh.nodeType === 11 ? fresh.childNodes : [fresh];
+          kids.forEach((k) => { k.parentNode = this; });
+          this.childNodes.splice(at, 1, ...kids);
+          return old;
+        },
+        closest(selector) {
+          const tags = selector.split(",").map((s) => s.trim().toUpperCase());
+          for (let n = this; n; n = n.parentNode) if (tags.includes(n.tagName)) return n;
+          return null;
+        },
+      };
+      return el;
+    },
+    // Snapshot rather than live: the caller mutates the tree as it goes, which
+    // is the same reason the implementation collects before it wraps.
+    createTreeWalker(root, whatToShow, filter) {
+      const out = [];
+      (function walk(n) {
+        (n.childNodes || []).forEach((c) => {
+          if (c.nodeType === 3) {
+            if (!filter || filter.acceptNode(c) === 1) out.push(c);
+          } else {
+            walk(c);
+          }
+        });
+      })(root);
+      let i = 0;
+      return { nextNode: () => (i < out.length ? out[i++] : null) };
+    },
+  };
+
+  // ["tag", child, ...] builds an element; a string builds a text node.
+  const build = (spec) => {
+    if (typeof spec === "string") return doc.createTextNode(spec);
+    const el = doc.createElement(spec[0]);
+    spec.slice(1).forEach((c) => el.appendChild(build(c)));
+    return el;
+  };
+
+  const chips = (root) => {
+    const out = [];
+    (function walk(n) {
+      (n.childNodes || []).forEach((c) => {
+        if (c.nodeType !== 1) return;
+        if (/^ent[\s-]/.test(c.className)) out.push(c);
+        walk(c);
+      });
+    })(root);
+    return out;
+  };
+
+  return { doc, build, chips };
+}
+
+// The commit the summary talks about, plus a hex word that is not a commit.
+const ENTITY_CHANGES = {
+  base: "main",
+  commits: [{ sha: "abc1234", subject: "Fix summary rail" }],
+  files: [{ path: "internal/web/static/app.js", added: 2, deleted: 1 }],
+};
+
+// The entity pass reaches the document global, so the double has to be the
+// context's document rather than a field on the component.
+function entityState(dom, overrides = {}) {
+  const state = loadKontoraState({ document: dom.doc });
+  state.selectedTicket = { ...SUMMARY_TICKET, branch: "kontora/kon-s1" };
+  state.now = Date.parse("2026-08-08T12:00:00Z");
+  state.ticketChanges = ENTITY_CHANGES;
+  Object.assign(state, overrides);
+  return state;
+}
+
+test("entity chips skip code and links and stop at the cap", () => {
+  const dom = fakeProseDom();
+  const state = entityState(dom);
+  const many = Array.from({ length: 50 }, (_, i) => `ENVVAR${i}`).join(" ");
+  const root = dom.build(["div",
+    `Committed abc1234 on kontora/kon-s1. ${many}`,
+    ["code", "abc1234"],
+    ["pre", ["code", "abc1234 in a fence"]],
+    ["a", "abc1234"],
+  ]);
+
+  state._markEntities(root);
+  const marked = dom.chips(root);
+
+  // The hover card carries the commit subject the rail would otherwise hide.
+  const sha = marked.find((c) => c.textContent === "abc1234");
+  assert.equal(sha.getAttribute("data-tip-e"), "abc1234");
+  assert.equal(sha.getAttribute("data-tip-e-body"), "Fix summary rail");
+  // A long summary is not confetti.
+  assert.equal(marked.length, 40);
+  // Code and links own their text, so their copies are untouched.
+  const owned = root.childNodes.filter((n) => n.nodeType === 1 && !["SPAN"].includes(n.tagName));
+  assert.deepEqual(owned.map((n) => n.tagName), ["CODE", "PRE", "A"]);
+  owned.forEach((n) => {
+    assert.deepEqual(dom.chips(n), [], n.tagName);
+    assert.match(n.textContent, /abc1234/);
+  });
+});
+
+test("only shas the branch produced become chips", () => {
+  const dom = fakeProseDom();
+  const state = entityState(dom);
+  const root = dom.build(["div", "abc1234 is real, deadbeef and feedface are not."]);
+
+  state._markEntities(root);
+
+  // \b[0-9a-f]{7,40}\b alone chips every hex-looking word in the prose.
+  assert.deepEqual(dom.chips(root).map((c) => c.textContent), ["abc1234"]);
+});
+
+test("each pattern claims only the text it names", () => {
+  const cases = [
+    {
+      // \b sits inside domain and maintenance, because a branch name may hold
+      // a slash or a dash and those are not word characters.
+      name: "a short branch name does not chip the middle of a word",
+      branch: "main",
+      text: "The remaining domain maintenance work landed on main.",
+      want: [["main", "ent ent-branch"]],
+    },
+    {
+      name: "a file whose name starts with the branch name",
+      branch: "main",
+      text: "Rewrote maintenance.go.",
+      want: [["maintenance.go", "ent ent-file"]],
+    },
+    {
+      name: "a dotted file name is a file, not an attribute path",
+      branch: "kontora/kon-s1",
+      text: "Added cases to contract.test.ts.",
+      want: [["contract.test.ts", "ent ent-file"]],
+    },
+    {
+      name: "a dotted attribute path is still an attribute",
+      branch: "kontora/kon-s1",
+      text: "Raised api.client.timeout.",
+      want: [["api.client.timeout", "ent ent-attr"]],
+    },
+  ];
+
+  for (const c of cases) {
+    const dom = fakeProseDom();
+    const state = entityState(dom, { selectedTicket: { ...SUMMARY_TICKET, branch: c.branch } });
+    const root = dom.build(["div", c.text]);
+
+    state._markEntities(root);
+
+    assert.deepEqual(dom.chips(root).map((n) => [n.textContent, n.className]), c.want, c.name);
+  }
+});
+
+test("the branch chip carries the base it forked from", () => {
+  const dom = fakeProseDom();
+  const state = entityState(dom);
+  const root = dom.build(["div", "Pushed kontora/kon-s1."]);
+
+  state._markEntities(root);
+  const chip = dom.chips(root)[0];
+
+  assert.equal(chip.textContent, "kontora/kon-s1");
+  assert.match(chip.getAttribute("data-tip-e-body"), /main/);
+});
+
+test("only summary prose gets chips", () => {
+  const dom = fakeProseDom();
+  const state = entityState(dom);
+  const body = dom.doc.createElement("div");
+  const summary = dom.doc.createElement("div");
+
+  // The ticket body is authored text: a chip there would rewrite what the
+  // reporter typed.
+  state.setProse(body, "Reverted in abc1234.");
+  assert.deepEqual(dom.chips(body), []);
+  assert.equal(body.textContent, "Reverted in abc1234.");
+
+  state.setSummaryProse(summary, "Reverted in abc1234.");
+  assert.deepEqual(dom.chips(summary).map((c) => c.textContent), ["abc1234"]);
+});
+
+test("the summary prose write re-runs when the commit list lands", () => {
+  const dom = fakeProseDom();
+  const state = entityState(dom, { ticketChanges: null });
+  const el = dom.doc.createElement("div");
+
+  // fetchChanges resolves after the first paint, so a memo keyed on the
+  // markdown alone would leave the summary with no sha chip for good.
+  state.setSummaryProse(el, "Reverted in abc1234.");
+  assert.deepEqual(dom.chips(el), []);
+
+  state.ticketChanges = ENTITY_CHANGES;
+  state.setSummaryProse(el, "Reverted in abc1234.");
+  assert.deepEqual(dom.chips(el).map((c) => c.textContent), ["abc1234"]);
+});
+
+test("the entity hover card is a third tip instance that stops under reduced motion", () => {
+  const html = fs.readFileSync(htmlPath, "utf8");
+
+  assert.match(html, /<div id="global-tip-e">/);
+  assert.match(html, /setupTip\('global-tip-e', '\[data-tip-e\]', 'data-tip-e'/);
+  // Left-aligned to the entity, 12px off either window edge, flipped below
+  // when it does not fit above.
+  assert.match(html, /if \(left < 12\) left = 12;/);
+  assert.match(html, /if \(left \+ tw > window\.innerWidth - 12\)/);
+  assert.match(html, /if \(top < 8\) top = r\.bottom \+ 10;/);
+  // After the rule it overrides, not in the reduced-motion block near the top:
+  // one id selector loses to a later id selector whatever the media query says.
+  const reduced = html.indexOf("#global-tip-e { transition: none; transform: none; }");
+  assert.ok(reduced > html.indexOf("transition: opacity .12s ease"));
+  assert.match(html.slice(0, reduced), /@media \(prefers-reduced-motion: reduce\) \{\s*$/);
+  // em, so a chip tracks the prose it interrupts.
+  assert.match(html, /\.ent \{[^}]*font-size: \.86em/);
 });

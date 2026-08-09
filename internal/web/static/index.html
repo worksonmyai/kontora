@@ -531,6 +531,105 @@
       .kblink { animation: none; }
       .sheet-panel, .sheet-scrim, .detail-enter { animation: none; }
     }
+
+    /* Figures that count up in place. */
+    .num { font-variant-numeric: tabular-nums; }
+
+    /* ─── Summary tab: one card per stage run, plus a commit rail ─── */
+    /* A container query, not a viewport one: the ticket page keeps a fixed
+       308px rail, so the pane is ~300px narrower than the window and a
+       viewport breakpoint would fire far too late. */
+    .summary-scroll { container-type: inline-size; }
+    .summary-layout {
+      display: flex; flex-wrap: wrap; align-items: flex-start;
+      gap: 28px; padding: 20px 24px 48px; max-width: 1240px;
+    }
+    .summary-col { flex: 1 1 480px; min-width: 0; display: flex; flex-direction: column; gap: 14px; }
+    .summary-rail {
+      width: 264px; flex-shrink: 0; position: sticky; top: 20px;
+      display: flex; flex-direction: column; gap: 14px;
+    }
+    @container (max-width: 1000px) {
+      .summary-rail { width: 100%; position: static; }
+    }
+
+    /* --stage-h is set per card from stageHue(), the same shape the board
+       columns use for --col-tint. */
+    .stage-card {
+      border: 1px solid hsl(var(--stage-h) / .22); border-radius: 12px;
+      overflow: hidden; background: rgba(var(--surface-900), .45);
+    }
+    .stage-card-head {
+      display: flex; align-items: center; gap: 10px; padding: 9px 16px; min-height: 36px;
+      background: hsl(var(--stage-h) / .10);
+      border-bottom: 1px solid hsl(var(--stage-h) / .18);
+      cursor: pointer; width: 100%; text-align: left;
+    }
+    .stage-card-head:hover { background: hsl(var(--stage-h) / .15); }
+    /* Earlier stages sit one notch lower so the outcome stays the loudest. */
+    .stage-card.is-earlier .stage-card-head { background: hsl(var(--stage-h) / .09); border-bottom-color: hsl(var(--stage-h) / .16); }
+    .stage-card.is-earlier .stage-card-head:hover { background: hsl(var(--stage-h) / .14); }
+    .stage-card-dot { width: 6px; height: 6px; border-radius: 9999px; background: hsl(var(--stage-h)); flex-shrink: 0; }
+    .stage-card-name {
+      font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 700;
+      letter-spacing: .12em; text-transform: uppercase; color: hsl(var(--stage-h));
+    }
+    .stage-card-pill {
+      font-family: 'JetBrains Mono', monospace; font-size: 10px; letter-spacing: .06em;
+      text-transform: uppercase; padding: 1px 6px; border-radius: 4px;
+      color: hsl(var(--stage-h)); background: hsl(var(--stage-h) / .12);
+      border: 1px solid hsl(var(--stage-h) / .3);
+    }
+    .stage-card-body { padding: 14px 18px 16px; line-height: 1.72; text-wrap: pretty; }
+    .stage-card-body p { margin: 0 0 10px; }
+    .stage-card-body p:last-child { margin: 0; }
+    .stage-card-body.is-latest { font-size: 15px; color: rgba(var(--tx), 1); }
+    .stage-card-body.is-earlier { font-size: 14.5px; color: rgba(var(--tx-2), 1); }
+
+    .rail-card {
+      border: 1px solid rgba(var(--surface-700), .8); border-radius: 12px;
+      background: rgba(var(--surface-900), .6); padding: 13px 15px 14px;
+    }
+    .rail-label { font-family: 'JetBrains Mono', monospace; font-size: 10px; color: rgba(var(--tx-faint), 1); width: 52px; flex-shrink: 0; }
+
+    /* Entity chips, written into summary prose by setSummaryProse. em, not a
+       fixed size, for the reason .ticket-prose code gives above. */
+    .ent {
+      font-family: 'JetBrains Mono', monospace; font-size: .86em;
+      border-radius: 5px; padding: 1px 6px; border: 1px solid transparent;
+      cursor: default;
+    }
+    .ent-sha, .ent-branch { cursor: pointer; }
+    .ent-sha { color: hsl(var(--st-done)); background: hsl(var(--st-done) / .10); border-color: hsl(var(--st-done) / .24); }
+    .ent-sha:hover { background: hsl(var(--st-done) / .20); }
+    .ent-sha.is-copied { background: hsl(var(--st-done) / .28); }
+    .ent-branch { color: rgba(var(--accent-bright), 1); background: rgba(var(--accent), .10); border-color: rgba(var(--accent), .24); }
+    .ent-branch:hover { background: rgba(var(--accent), .20); }
+    .ent-branch.is-copied { background: rgba(var(--accent), .28); }
+    /* Neutral: neither one copies or carries a hover card, and the accent
+       above means click to copy. */
+    .ent-file, .ent-attr { color: rgba(var(--tx-2), 1); background: rgba(var(--surface-700), .5); border-color: rgba(var(--surface-700), 1); padding: 1px 5px; }
+    .ent-env { color: rgba(var(--warn), 1); background: rgba(var(--warn), .10); border-color: rgba(var(--warn), .24); }
+    .ent-count { border-bottom: 1px dotted rgba(var(--edge-hover), 1); cursor: default; }
+
+    /* Entity hover card: title, body, and a hint shown only when the chip
+       copies something. */
+    #global-tip-e {
+      position: fixed; z-index: 60; display: flex; flex-direction: column; gap: 3px;
+      max-width: 320px; padding: 9px 11px; border-radius: 9px;
+      border: 1px solid rgba(var(--surface-700), 1); background: rgba(var(--surface-900), 1);
+      box-shadow: 0 14px 34px -12px rgba(0, 0, 0, .8);
+      pointer-events: none; opacity: 0; transform: translateY(4px);
+      transition: opacity .12s ease, transform .12s ease;
+    }
+    #global-tip-e .tip-e-title { font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 700; color: rgba(var(--tx-hi), 1); }
+    #global-tip-e .tip-e-body { font-size: 12px; line-height: 1.55; color: rgba(var(--tx-3), 1); }
+    #global-tip-e .tip-e-hint { font-family: 'JetBrains Mono', monospace; font-size: 10px; color: rgba(var(--tx-faint), 1); }
+    /* Here rather than in the reduced-motion block near the top of the file:
+       the two id selectors have equal specificity, so the later one wins. */
+    @media (prefers-reduced-motion: reduce) {
+      #global-tip-e { transition: none; transform: none; }
+    }
   </style>
 </head>
 
@@ -542,9 +641,17 @@
   <!-- Global tooltips (teleported outside overflow containers) -->
   <div id="global-tip"></div>
   <div id="global-tip-t"></div>
+  <div id="global-tip-e">
+    <span class="tip-e-title"></span>
+    <span class="tip-e-body"></span>
+    <span class="tip-e-hint"></span>
+  </div>
   <script>
     (function() {
-      function setupTip(id, selector, attr, positionFn) {
+      // fillFn replaces the default single-line text for a tip that has
+      // structure. Clearing the inline transform on hide lets the CSS resting
+      // transform apply again, so the next hover animates in.
+      function setupTip(id, selector, attr, positionFn, fillFn) {
         var el = document.getElementById(id);
         var timer;
         document.addEventListener('mouseenter', function(e) {
@@ -553,14 +660,15 @@
           var text = trig.getAttribute(attr);
           if (!text) return;
           clearTimeout(timer);
-          el.textContent = text;
+          if (fillFn) fillFn(el, trig); else el.textContent = text;
           el.style.opacity = '1';
+          el.style.transform = 'none';
           el.style.left = '0'; el.style.top = '0';
           positionFn(el, trig.getBoundingClientRect());
         }, true);
         document.addEventListener('mouseleave', function(e) {
           if (!e.target.closest || !e.target.closest(selector)) return;
-          timer = setTimeout(function() { el.style.opacity = '0'; }, 80);
+          timer = setTimeout(function() { el.style.opacity = '0'; el.style.transform = ''; }, 80);
         }, true);
       }
 
@@ -583,6 +691,25 @@
         if (top < 4) top = r.bottom + 4;
         el.style.left = left + 'px';
         el.style.top = top + 'px';
+      });
+
+      // Entity chips in summary prose. Left-aligned to the chip rather than
+      // centred, because the card is wider than the word it describes.
+      setupTip('global-tip-e', '[data-tip-e]', 'data-tip-e', function(el, r) {
+        var tw = el.offsetWidth, th = el.offsetHeight;
+        var left = r.left;
+        var top = r.top - th - 10;
+        if (left < 12) left = 12;
+        if (left + tw > window.innerWidth - 12) left = window.innerWidth - 12 - tw;
+        if (top < 8) top = r.bottom + 10;
+        el.style.left = left + 'px';
+        el.style.top = top + 'px';
+      }, function(el, trig) {
+        var hint = trig.getAttribute('data-tip-e-hint') || '';
+        el.children[0].textContent = trig.getAttribute('data-tip-e');
+        el.children[1].textContent = trig.getAttribute('data-tip-e-body') || '';
+        el.children[2].textContent = hint;
+        el.children[2].style.display = hint ? '' : 'none';
       });
     })();
   </script>
@@ -1423,42 +1550,84 @@
               </div>
             </div>
 
-            <!-- Summary: what the last finished stage did -->
+            <!-- Summary: one card per stage run, newest first -->
             <div x-show="activeTab === 'summary'" x-transition.opacity.duration.150ms
                  class="h-full flex flex-col bg-surface-frame">
-              <div class="flex-1 min-h-0 overflow-y-auto">
-                <div class="max-w-3xl mx-auto px-6 py-6">
-                  <template x-if="selectedTicket?.last_error">
-                    <div class="mb-4 border-l-[3px] border-err pl-3 py-1">
-                      <span class="text-err text-xs font-mono font-semibold">Error: </span>
-                      <span class="text-err/80 text-xs font-mono break-words whitespace-pre-wrap" x-text="selectedTicket.last_error"></span>
+              <div class="summary-scroll flex-1 min-h-0 overflow-y-auto">
+                <template x-if="selectedTicket?.last_error">
+                  <div class="mx-6 mt-5 border-l-[3px] border-err pl-3 py-1">
+                    <span class="text-err text-xs font-mono font-semibold">Error: </span>
+                    <span class="text-err/80 text-xs font-mono break-words whitespace-pre-wrap" x-text="selectedTicket.last_error"></span>
+                  </div>
+                </template>
+                <div class="summary-layout">
+
+                  <div class="summary-col">
+                    <div class="flex items-center gap-2.5">
+                      <span class="side-label">outcome</span>
+                      <span class="flex-1 h-px bg-surface-700/80"></span>
+                      <span class="num font-mono text-[10.5px] text-surface-600" x-text="summaryHeadline()"></span>
                     </div>
-                  </template>
-                  <div class="rounded-[10px] border border-st-done/[0.28] bg-st-done/[0.05] px-[18px] py-4">
-                    <div class="flex items-center gap-2.5 mb-2.5">
-                      <span class="side-label text-st-done" x-text="'summary' + (summaryStage() ? ' · ' + summaryStage() : '')"></span>
-                      <span class="flex-1 h-px bg-st-done/20"></span>
-                      <span x-show="ticketChanges" class="font-mono text-[11px] text-surface-600"
-                            x-text="churn().count + ' files · +' + churn().added + ' −' + churn().deleted + (ticketChanges?.commits?.length ? ' · ' + ticketChanges.commits.length + ' commit' + (ticketChanges.commits.length === 1 ? '' : 's') : '')"></span>
-                    </div>
-                    <template x-if="selectedTicket?.summary">
-                      <div class="ticket-prose text-[15px]" x-effect="setProse($el, selectedTicket.summary)"></div>
-                    </template>
-                    <template x-if="earlierSummaries().length">
-                      <details class="mt-3">
-                        <summary class="font-mono text-[11px] text-surface-600 cursor-pointer hover:text-tx-2"
-                                 x-text="'▸ earlier stage summaries (' + earlierSummaries().length + ')'"></summary>
-                        <div class="mt-2 flex flex-col gap-3">
-                          <template x-for="(h, hi) in earlierSummaries()" :key="hi">
-                            <div>
-                              <span class="font-mono text-[10.5px] text-surface-600" x-text="h.stage"></span>
-                              <div class="ticket-prose text-sm" x-effect="setProse($el, h.summary)"></div>
-                            </div>
-                          </template>
+
+                    <template x-for="(card, ci) in summaryCards()" :key="card.key">
+                      <div>
+                        <!-- x-if, not x-show: one collapse-all button in the
+                             document rather than one per card with all but
+                             this one hidden. -->
+                        <template x-if="ci === 1">
+                          <div class="flex items-center gap-2.5 mt-1.5 mb-3.5">
+                            <span class="side-label">earlier stages</span>
+                            <span class="flex-1 h-px bg-surface-700/80"></span>
+                            <button type="button" @click="toggleAllStages()"
+                                    class="font-mono text-[10px] text-surface-600 border border-edge-input rounded-md px-2 py-[3px] hover:text-tx-2 hover:border-edge-hover transition-colors"
+                                    x-text="earlierAllCollapsed() ? 'expand all' : 'collapse all'"></button>
+                          </div>
+                        </template>
+                        <div class="stage-card" :class="ci > 0 ? 'is-earlier' : ''"
+                             :style="'--stage-h: var(' + stageHue(card, ci) + ')'">
+                          <button type="button" class="stage-card-head" @click="toggleStageCard(card)"
+                                  :aria-expanded="!collapsedStages[card.key]">
+                            <span class="stage-card-dot"></span>
+                            <span class="stage-card-name" x-text="card.stage"></span>
+                            <span x-show="ci === 0" class="stage-card-pill">latest</span>
+                            <span class="flex-1"></span>
+                            <span class="num font-mono text-[10.5px] text-surface-600" x-text="stageCardMeta(card)"></span>
+                          </button>
+                          <div x-show="!collapsedStages[card.key]"
+                               class="ticket-prose stage-card-body"
+                               :class="ci === 0 ? 'is-latest' : 'is-earlier'"
+                               x-effect="setSummaryProse($el, card.summary)"></div>
                         </div>
-                      </details>
+                      </div>
                     </template>
                   </div>
+
+                  <template x-if="ticketChanges?.commits?.length">
+                    <div class="summary-rail">
+                      <div class="rail-card">
+                        <div class="side-label mb-[11px]">commits</div>
+                        <div class="flex flex-col gap-2">
+                          <template x-for="c in ticketChanges.commits" :key="c.sha">
+                            <button type="button" class="flex items-center gap-2 min-w-0 text-left" @click="copyBranch(c.sha)"
+                                    :aria-label="'Copy commit ' + c.sha">
+                              <span class="font-mono text-[11.5px] text-st-done bg-st-done/10 border border-st-done/25 rounded-[5px] px-1.5 shrink-0"
+                                    x-text="copiedBranch === c.sha ? '✓' : c.sha"></span>
+                              <span class="text-[12.5px] text-tx-3 truncate" x-text="c.subject"></span>
+                            </button>
+                          </template>
+                          <div class="flex items-center gap-2 min-w-0" x-show="ticketChanges?.branch">
+                            <span class="rail-label">branch</span>
+                            <span class="font-mono text-[11px] text-accent-bright truncate" x-text="ticketChanges?.branch"></span>
+                          </div>
+                          <div class="flex items-center gap-2 min-w-0" x-show="ticketChanges?.base">
+                            <span class="rail-label">base</span>
+                            <span class="font-mono text-[11px] text-tx-3 truncate" x-text="ticketChanges?.base"></span>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </template>
+
                 </div>
               </div>
             </div>

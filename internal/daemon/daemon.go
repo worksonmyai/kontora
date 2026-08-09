@@ -419,6 +419,19 @@ func (d *Daemon) Run(ctx context.Context) error {
 		return fmt.Errorf("creating logs dir: %w", err)
 	}
 
+	// Watch before scanning. A ticket written after the scan reads the
+	// directory but before the watch is in place produces no event and no scan
+	// entry, so it sits at todo until someone touches the file again. Events
+	// that arrive during the rest of startup wait in the watcher's buffer until
+	// the event loop below drains them; a ticket the scan already enqueued is
+	// not enqueued twice, because handleFileChanged only acts on a status that
+	// changed.
+	w, err := watcher.New(tasksDir, d.debounce, watcher.MarkdownFilter)
+	if err != nil {
+		return fmt.Errorf("starting watcher: %w", err)
+	}
+	defer w.Close()
+
 	if err := d.initialScan(tasksDir); err != nil {
 		return fmt.Errorf("initial scan: %w", err)
 	}
@@ -445,12 +458,6 @@ func (d *Daemon) Run(ctx context.Context) error {
 			d.log.Info("web server started", "addr", srv.Addr())
 		}
 	}
-
-	w, err := watcher.New(tasksDir, d.debounce, watcher.MarkdownFilter)
-	if err != nil {
-		return fmt.Errorf("starting watcher: %w", err)
-	}
-	defer w.Close()
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()

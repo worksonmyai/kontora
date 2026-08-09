@@ -24,6 +24,7 @@ import (
 	"github.com/worksonmyai/kontora/internal/process"
 	"github.com/worksonmyai/kontora/internal/testutil"
 	"github.com/worksonmyai/kontora/internal/ticket"
+	"github.com/worksonmyai/kontora/internal/web"
 	"github.com/worksonmyai/kontora/internal/worktree"
 )
 
@@ -3302,6 +3303,82 @@ func TestStageRunKeysHistoryAndEventsSidecar(t *testing.T) {
 	assert.Equal(t, "pi", tape.Agent)
 	require.Len(t, tape.Events, 1)
 	assert.Equal(t, "working", tape.Events[0].Text)
+
+	cancel()
+	require.NoError(t, <-errCh)
+}
+
+// TestActivityFollowsTheRunningStage drives the activity endpoint from inside
+// the run, which is the only way to observe the registration: the entry exists
+// for exactly as long as the runner call. It also puts a reader on one
+// goroutine and the run on another, which is what -race checks here.
+func TestActivityFollowsTheRunningStage(t *testing.T) {
+	h := newHarness(t)
+	cfg := h.defaultConfig("pi", "pi")
+
+	type reading struct {
+		info web.ActivityInfo
+		err  error
+	}
+
+	var d *Daemon
+	// The read happens on the run's goroutine, so its outcome travels back to
+	// the test goroutine rather than being asserted here.
+	midRun := make(chan reading, 1)
+	runner := func(_ context.Context, p RunnerParams) (process.Result, error) {
+		// Stand in for the agent appending its session JSONL as it works.
+		_ = os.MkdirAll(p.SessionDir, 0o755)
+		line := `{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"working"}]}}` + "\n"
+		_ = os.WriteFile(filepath.Join(p.SessionDir, "session.jsonl"), []byte(line), 0o644)
+
+		info, err := d.GetActivity(web.ActivityQuery{ID: p.TicketID, Stage: "step1", Run: 0})
+		midRun <- reading{info: info, err: err}
+
+		now := time.Now()
+		return process.Result{ExitCode: 0, StartedAt: now, ExitedAt: now}, nil
+	}
+	d = New(cfg,
+		WithLogger(testLogger(t)),
+		WithDebounce(50*time.Millisecond),
+		WithLockPath(h.lockPath),
+		WithRunner(runner),
+		WithAgentLookup(passthroughAgentLookup),
+		WithSkipOrphanCleanup(),
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() { errCh <- d.Run(ctx) }()
+	time.Sleep(200 * time.Millisecond)
+
+	h.writeTicket("tst-live.md", h.taskMD("tst-live", "todo", "one-stage"))
+	h.waitForStatus("tst-live.md", ticket.StatusDone, 10*time.Second)
+
+	got := <-midRun
+	require.NoError(t, got.err)
+	during := got.info
+	assert.True(t, during.Live)
+	assert.Equal(t, "events", during.Source)
+	assert.Equal(t, "step1", during.Stage)
+	assert.Equal(t, 0, during.Run)
+	require.NotNil(t, during.Tape)
+	require.Len(t, during.Tape.Events, 1)
+	assert.Equal(t, "working", during.Tape.Events[0].Text)
+
+	// The ticket file says done before the daemon's own view catches up, and
+	// until it does the endpoint still answers for the stage it thinks is
+	// running.
+	var after web.ActivityInfo
+	require.Eventually(t, func() bool {
+		var err error
+		after, err = d.GetActivity(web.ActivityQuery{ID: "tst-live", Stage: "step1", Run: 0})
+		return err == nil && !after.Live
+	}, 5*time.Second, 50*time.Millisecond, "the finished run must stop reporting itself live")
+	assert.Equal(t, "events", after.Source)
+	require.NotNil(t, after.Tape)
+	require.Len(t, after.Tape.Events, 1)
+	assert.Equal(t, "working", after.Tape.Events[0].Text)
 
 	cancel()
 	require.NoError(t, <-errCh)

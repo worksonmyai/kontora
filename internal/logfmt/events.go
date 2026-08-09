@@ -78,6 +78,23 @@ type Tape struct {
 	Events    []Event  `json:"events"`
 }
 
+// StableCount is the number of leading events that can no longer change. A tool
+// event's result is written onto the event when the tool returns, so everything
+// from the earliest tool still awaiting its result onward may still be
+// rewritten. A reader that has consumed the whole tape can freeze at this index
+// and ask only for what follows.
+//
+// Indices never shift: append drops new events once the tape is full and keeps
+// the ones already there.
+func (t Tape) StableCount() int {
+	for i, e := range t.Events {
+		if e.Kind == "tool" && e.Summary == "" && e.Result == "" {
+			return i
+		}
+	}
+	return len(t.Events)
+}
+
 // Events reads Claude stream-json or session JSONL from r and returns it as a
 // Tape. It walks the same shapes as Fmt and reuses formatToolArg and
 // formatToolResultSummary, so Arg and Summary match the plaintext byte for

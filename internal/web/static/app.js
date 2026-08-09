@@ -15,6 +15,11 @@ const PALETTE_FOCUS_FRAMES = 10;
 // reader starts at the bottom, so the rest of the tape can wait for a click.
 const TAPE_WINDOW_SIZE = 200;
 
+// How often the activity tab re-reads a running stage's transcript. Fast enough
+// that a tool call and its result land while the reader is still on the row,
+// slow enough that a poll costs one stat on the daemon when nothing changed.
+const ACTIVITY_POLL_MS = 2000;
+
 // Rendered markdown, keyed by its source. Module scope rather than component
 // state so Alpine's proxy never wraps it. The cap bounds the cache at roughly
 // a megabyte of HTML, since ticket bodies run to tens of kilobytes.
@@ -226,6 +231,13 @@ function kontora() {
     // at a time through loadEarlierTapeEvents(); every activity load starts over
     // at one step.
     tapeWindow: TAPE_WINDOW_SIZE,
+    // Refresh of a running stage's transcript: the pending timer, the validator
+    // of the last payload, how many polls have failed in a row, and a counter
+    // that tells the newest request from one already overtaken.
+    _activityPoll: null,
+    _activityETag: null,
+    _activityFailures: 0,
+    _activityLoadSeq: 0,
     noteDraft: '',
     noteSubmitting: false,
     detailLoading: false,
@@ -645,6 +657,14 @@ function kontora() {
           }
           if (this.logTabActive() && !this.showTerminalTab()) {
             this.activeTab = 'ticket';
+          }
+          if (this.selectedTicket.status !== 'in_progress') {
+            this._stopActivityPoll();
+            // The stage that was live has exited and written its sidecar, so one
+            // last read swaps the partial tape for the completed transcript.
+            if (this.activity?.live && this.activeTab === 'activity') {
+              this._loadActivity(this.activityStage, this.activityRun, { merge: true });
+            }
           }
           // A stage that finished while its live session was open has no
           // terminal left to show, so the same column becomes the transcript.
@@ -1263,9 +1283,13 @@ function kontora() {
           this.openTerminal();
         }
       }
-      if (tab === 'activity' && !this.activity && !this.activityLoading) {
-        var latest = this.latestCompletedRun();
-        if (latest) this.fetchActivity(latest.stage, latest.run);
+      if (tab !== 'activity') {
+        this._stopActivityPoll();
+      } else if (!this.activity && !this.activityLoading) {
+        var target = this.activityTarget();
+        if (target) this.fetchActivity(target.stage, target.run);
+      } else if (this.activity?.live) {
+        this._armActivityPoll(this.activityStage, this.activityRun, true);
       }
       if (tab === 'ticket' && !this.editing) {
         this.startEditing();
@@ -3768,9 +3792,9 @@ function kontora() {
 
     // ---- activity tape -----------------------------------------------------
 
-    // The newest run the transcript can show. Every history entry describes a
-    // finished run, so the last one is the most recently completed stage; the
-    // running stage's partial output belongs to the live session, not here.
+    // The newest run the transcript can show from history. Every history entry
+    // describes a finished run, so the last one is the most recently completed
+    // stage.
     latestCompletedRun() {
       var h = (this.selectedTicket && this.selectedTicket.history) || [];
       if (!h.length) return null;
@@ -3778,7 +3802,24 @@ function kontora() {
       return { stage: last.stage, run: last.run || 0 };
     },
 
+    // The run in flight, or null when nothing is running. The run number counts
+    // that stage's history rows, as the daemon does: a history row is written
+    // when a run ends, so the running one is the next index.
+    runningRun() {
+      var t = this.selectedTicket;
+      if (!t || t.status !== 'in_progress' || !t.stage) return null;
+      var run = 0;
+      (t.history || []).forEach(function (h) { if (h.stage === t.stage) run++; });
+      return { stage: t.stage, run: run };
+    },
+
+    // The run the activity tab shows: the one in flight, else the last finished.
+    activityTarget() {
+      return this.runningRun() || this.latestCompletedRun();
+    },
+
     _resetActivity() {
+      this._stopActivityPoll();
       this.activity = null;
       this.activityStage = null;
       this.activityRun = 0;
@@ -3788,9 +3829,17 @@ function kontora() {
       this.tapeWindow = TAPE_WINDOW_SIZE;
     },
 
+    _stopActivityPoll() {
+      if (this._activityPoll !== null) clearTimeout(this._activityPoll);
+      this._activityPoll = null;
+      this._activityETag = null;
+      this._activityFailures = 0;
+    },
+
+    // Load one run's transcript, replacing everything the pane holds.
     async fetchActivity(stage, run) {
       if (!this.selectedTicket) return;
-      var id = this.selectedTicket.id;
+      this._stopActivityPoll();
       this.activityStage = stage || '';
       this.activityRun = run || 0;
       this.activityLoading = true;
@@ -3798,21 +3847,121 @@ function kontora() {
       this.activity = null;
       this.expandedTools = {};
       this.tapeWindow = TAPE_WINDOW_SIZE;
+      await this._loadActivity(stage, run, { merge: false });
+      this.activityLoading = false;
+    },
+
+    // Fetch one activity payload. merge=true is the polling path: only the
+    // payload is replaced, so the expand map, the grown window and the scroll
+    // offset all survive the tick.
+    async _loadActivity(stage, run, { merge = false } = {}) {
+      if (!this.selectedTicket) return;
+      var id = this.selectedTicket.id;
+      var seq = ++this._activityLoadSeq;
+      var url = '/api/tickets/' + encodeURIComponent(id) + '/activity'
+        + '?stage=' + encodeURIComponent(stage || '') + '&run=' + (run || 0);
+      var headers = {};
+      if (merge) {
+        url += '&after=' + this.tapeEvents().length;
+        if (this._activityETag) headers['If-None-Match'] = this._activityETag;
+      }
+      var data = null;
+      var res = null;
       try {
-        var url = '/api/tickets/' + encodeURIComponent(id) + '/activity'
-          + '?stage=' + encodeURIComponent(stage || '') + '&run=' + (run || 0);
-        var res = await fetch(url);
+        res = await fetch(url, { headers: headers });
+        // A ribbon click or a ticket switch while this was in flight makes the
+        // answer describe a run nobody is looking at.
+        if (!this._activityCurrent(id, stage, run, seq)) return;
+        if (res.status === 304) {
+          this._activityFailures = 0;
+          this._armActivityPoll(stage, run, true);
+          return;
+        }
         if (!res.ok) {
           var err = await res.json().catch(function () { return {}; });
-          this.activityError = err.error || 'Failed to load activity';
-        } else {
-          var data = await res.json();
-          if (this.selectedTicket && this.selectedTicket.id === id) this.activity = data;
+          this._activityFailed(merge, err.error || 'Failed to load activity');
+          this._armActivityPoll(stage, run, merge);
+          return;
         }
+        data = await res.json();
       } catch (e) {
-        this.activityError = 'Failed to load activity';
+        if (!this._activityCurrent(id, stage, run, seq)) return;
+        this._activityFailed(merge, 'Failed to load activity');
+        this._armActivityPoll(stage, run, merge);
+        return;
       }
-      this.activityLoading = false;
+      if (!this._activityCurrent(id, stage, run, seq)) return;
+
+      this._activityFailures = 0;
+      this._activityETag = res.headers.get('ETag');
+      if (merge) {
+        this._mergeActivity(data);
+      } else {
+        this.activity = data;
+        this.activityError = null;
+      }
+      this._armActivityPoll(stage, run, !!data.live);
+    },
+
+    // Whether a response still describes what the pane is showing. seq drops an
+    // answer a later load has already superseded: the run ending starts a read
+    // of the finished transcript while a poll is still in flight, and merging
+    // that poll's partial tape afterwards would cut the transcript back down.
+    _activityCurrent(id, stage, run, seq) {
+      return seq === this._activityLoadSeq
+        && !!this.selectedTicket && this.selectedTicket.id === id
+        && this.activityStage === (stage || '') && this.activityRun === (run || 0);
+    },
+
+    // A poll that fails keeps the transcript on screen: a single dropped request
+    // must not replace a good tape with an error. Three in a row is a daemon the
+    // reader needs to know about.
+    _activityFailed(merge, message) {
+      if (!merge) {
+        this.activityError = message;
+        return;
+      }
+      this._activityFailures++;
+      if (this._activityFailures >= 3) this.activityError = message;
+    },
+
+    // Splice the new suffix onto the events already held. The server sends its
+    // own cursor, which can walk back over tool rows whose results arrived late.
+    _mergeActivity(data) {
+      // A run with no structured record tails the plaintext log, which carries
+      // no cursor: the payload is whole every time.
+      if (!data.tape) {
+        this.activity = data;
+        return;
+      }
+      var existing = this.tapeEvents();
+      var offset = data.offset || 0;
+      var events = existing.slice(0, offset).concat((data.tape && data.tape.events) || []);
+      var added = events.length - existing.length;
+      // A new object rather than a field write: the autoscroll effect watches
+      // the activity property itself.
+      this.activity = Object.assign({}, data, { tape: Object.assign({}, data.tape, { events: events }) });
+      // With follow off the reader is holding a position, so the window grows by
+      // what arrived and no row slides off the top. With follow on the window
+      // stays put and the effect pins the view to the newest event.
+      if (!this.logFollow && added > 0) this.tapeWindow += added;
+    },
+
+    // Re-arm the two-second poll while the run is live and its pane is visible.
+    // A chained timeout, not an interval: it cannot stack requests on a slow
+    // daemon. Once the run ends the payload stops saying live, nothing is armed,
+    // and the completed transcript is what stays on screen.
+    _armActivityPoll(stage, run, live) {
+      if (this._activityPoll !== null) {
+        clearTimeout(this._activityPoll);
+        this._activityPoll = null;
+      }
+      if (!live || this.activeTab !== 'activity' || !this.selectedTicket) return;
+      var self = this;
+      this._activityPoll = setTimeout(function () {
+        self._activityPoll = null;
+        self._loadActivity(stage, run, { merge: true });
+      }, ACTIVITY_POLL_MS);
     },
 
     // Show the transcript for one run and bring the activity tab forward.

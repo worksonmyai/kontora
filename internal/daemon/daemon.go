@@ -278,8 +278,9 @@ type Daemon struct {
 	mu              sync.Mutex
 	tickets         map[string]*ticketState
 	running         map[string]context.CancelFunc
-	queued          map[string]bool   // dedupe: prevents same ticket being enqueued twice
-	runningBranches map[string]string // repoPath\x00branch → ticketID holding the branch
+	liveRuns        map[string]liveRun // ticket ID → the agent invocation in flight
+	queued          map[string]bool    // dedupe: prevents same ticket being enqueued twice
+	runningBranches map[string]string  // repoPath\x00branch → ticketID holding the branch
 	sem             chan struct{}
 	plannotator     map[string]context.CancelFunc // in-flight plannotator subprocesses
 
@@ -294,6 +295,33 @@ type ticketState struct {
 	ticket   *ticket.Ticket
 	filePath string
 	modTime  time.Time
+}
+
+// liveRun addresses the agent invocation a ticket is running right now, so a
+// reader can follow the session JSONL the agent is still appending to. params
+// is read for its session locators only (SessionID, SessionDir, Env);
+// startedAt tells a pi retry's session file apart from the previous attempt's
+// in the directory they share.
+//
+// It is deliberately not a ticketState field: an agent rewrites its own ticket
+// mid-run, and every write replaces that struct.
+type liveRun struct {
+	stage     string
+	run       int
+	params    RunnerParams
+	startedAt time.Time
+}
+
+func (d *Daemon) setLiveRun(ticketID string, lr liveRun) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.liveRuns[ticketID] = lr
+}
+
+func (d *Daemon) clearLiveRun(ticketID string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	delete(d.liveRuns, ticketID)
 }
 
 // newTicketState builds a ticketState and stats filePath once to cache its
@@ -326,6 +354,7 @@ func New(cfg *config.Config, opts ...Option) *Daemon {
 		})),
 		tickets:         make(map[string]*ticketState),
 		running:         make(map[string]context.CancelFunc),
+		liveRuns:        make(map[string]liveRun),
 		queued:          make(map[string]bool),
 		runningBranches: make(map[string]string),
 		sem:             make(chan struct{}, cfg.MaxConcurrentAgents),
@@ -1498,6 +1527,11 @@ func (d *Daemon) runAgentOnce(taskCtx context.Context, t *ticket.Ticket, p spawn
 	}
 
 	params := d.buildRunnerParams(p.cfg, p.agentCfg, p.stageCfg, binaryPath, args, p.wtPath, p.ticketID, p.stageName, sessionID)
+	// The clear is deferred so that every way this function can end, including a
+	// runner error or a cancelled ticket, leaves no entry claiming the run is
+	// still going.
+	d.setLiveRun(p.ticketID, liveRun{stage: p.stageName, run: p.run, params: params, startedAt: time.Now()})
+	defer d.clearLiveRun(p.ticketID)
 	// Stage logs are appended across retries (pipe-pane, DirectRunner), so record
 	// where this run's output starts. Failure-pattern detection only scans from
 	// here, otherwise a previous attempt's error would keep matching on retry.
@@ -2031,6 +2065,44 @@ func sessionFile(params RunnerParams) (path string, isPi bool) {
 	return "", false
 }
 
+// liveSessionFile picks the JSONL the in-flight run is appending to, and
+// reports whether it is a pi session. It is not sessionFile: pi reuses one
+// session directory per stage, so until pi creates this attempt's file the
+// newest one there belongs to the previous attempt. An agent with neither
+// locator, such as one driven by DirectRunner, has no session file at all.
+func liveSessionFile(cfg *config.Config, ticketID string, lr liveRun) (path string, isPi bool) {
+	switch {
+	case lr.params.SessionID != "":
+		if matches, _, err := claudeSessionFiles(lr.params.Env, lr.params.SessionID); err == nil && len(matches) > 0 {
+			return matches[0], false
+		}
+		return "", false
+	case lr.params.SessionDir != "":
+		return piResumeSessionFile(cfg, ticketID, lr.stage, lr.startedAt), true
+	}
+	return "", false
+}
+
+// sessionTape parses the session JSONL at path into a tape.
+func sessionTape(path string, isPi bool) (logfmt.Tape, error) {
+	src, err := os.Open(path)
+	if err != nil {
+		return logfmt.Tape{}, fmt.Errorf("open session file: %w", err)
+	}
+	defer src.Close()
+
+	var tape logfmt.Tape
+	if isPi {
+		tape, err = logfmt.EventsPi(src)
+	} else {
+		tape, err = logfmt.Events(src)
+	}
+	if err != nil {
+		return logfmt.Tape{}, fmt.Errorf("parse session JSONL: %w", err)
+	}
+	return tape, nil
+}
+
 // materializeAgentLogs materializes session logs for agents that write
 // structured JSONL (Claude via SessionID, pi via SessionDir). It also writes
 // the structured activity sidecar for the same session file to eventsFile.
@@ -2097,20 +2169,9 @@ func materializeSessionLog(path string, isPi bool, logFile string) error {
 // tape and writes it to eventsFile. The write is atomic (temp file plus
 // rename) so a concurrent reader never sees half a document.
 func materializeSessionEvents(path string, isPi bool, eventsFile string) error {
-	src, err := os.Open(path)
+	tape, err := sessionTape(path, isPi)
 	if err != nil {
-		return fmt.Errorf("open session file: %w", err)
-	}
-	defer src.Close()
-
-	var tape logfmt.Tape
-	if isPi {
-		tape, err = logfmt.EventsPi(src)
-	} else {
-		tape, err = logfmt.Events(src)
-	}
-	if err != nil {
-		return fmt.Errorf("parse session JSONL: %w", err)
+		return err
 	}
 
 	data, err := json.Marshal(tape)

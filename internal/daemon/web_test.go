@@ -9,6 +9,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -17,6 +19,7 @@ import (
 
 	"github.com/worksonmyai/kontora/internal/cli/remote"
 	"github.com/worksonmyai/kontora/internal/config"
+	"github.com/worksonmyai/kontora/internal/logfmt"
 	"github.com/worksonmyai/kontora/internal/ticket"
 	"github.com/worksonmyai/kontora/internal/web"
 )
@@ -1553,16 +1556,29 @@ history:
 		[]byte(`{"version":1,"agent":"claude","events":[]}`), 0o644))
 
 	t.Run("a run with a sidecar reports source events", func(t *testing.T) {
-		got, err := d.GetActivity("tst-act", "step1", 1)
+		got, err := d.GetActivity(web.ActivityQuery{ID: "tst-act", Stage: "step1", Run: 1})
 		require.NoError(t, err)
 		assert.Equal(t, "events", got.Source)
 		assert.Equal(t, 1, got.Run)
 		assert.False(t, got.Stale)
+		assert.False(t, got.Live)
 		require.NotNil(t, got.Tape)
 	})
 
+	t.Run("a finished run answers 304 for its own validator", func(t *testing.T) {
+		first, err := d.GetActivity(web.ActivityQuery{ID: "tst-act", Stage: "step1", Run: 1})
+		require.NoError(t, err)
+		require.NotEmpty(t, first.ETag)
+
+		again, err := d.GetActivity(web.ActivityQuery{ID: "tst-act", Stage: "step1", Run: 1, IfNoneMatch: first.ETag})
+		require.NoError(t, err)
+		assert.True(t, again.NotModified)
+		assert.Nil(t, again.Tape, "a 304 must not parse the transcript")
+		assert.Equal(t, first.ETag, again.ETag)
+	})
+
 	t.Run("an older run without a sidecar is stale plaintext", func(t *testing.T) {
-		got, err := d.GetActivity("tst-act", "step1", 0)
+		got, err := d.GetActivity(web.ActivityQuery{ID: "tst-act", Stage: "step1", Run: 0})
 		require.NoError(t, err)
 		assert.Equal(t, "log", got.Source)
 		assert.True(t, got.Stale, "run 0 is not the newest run of step1")
@@ -1596,14 +1612,287 @@ history:
 
 		// Run 0 is the newest run in history, but step1 is running again and
 		// appending to the same file, so its bytes are not run 0's alone.
-		got, err := d.GetActivity("tst-live", "step1", 0)
+		got, err := d.GetActivity(web.ActivityQuery{ID: "tst-live", Stage: "step1", Run: 0})
 		require.NoError(t, err)
+		assert.Equal(t, "log", got.Source)
+		assert.True(t, got.Stale)
+		assert.False(t, got.Live, "run 0 has finished; the run in flight is run 1")
+	})
+
+	t.Run("an unknown ticket is not found", func(t *testing.T) {
+		_, err := d.GetActivity(web.ActivityQuery{ID: "nope", Stage: "step1", Run: 0})
+		assert.ErrorIs(t, err, web.ErrTicketNotFound)
+	})
+}
+
+// TestDaemon_GetActivity_Live covers reads of a run still in flight, which the
+// daemon serves from the session JSONL the agent is appending to rather than
+// from the sidecar written when the stage exits.
+func TestDaemon_GetActivity_Live(t *testing.T) {
+	// liveTicket registers a ticket running its first run of step1.
+	liveTicket := func(t *testing.T, h *testHarness, id string) *Daemon {
+		t.Helper()
+		d := h.newDaemon(h.cfg)
+		path := h.writeTicket(id+".md", "---\nid: "+id+`
+kontora: true
+status: in_progress
+pipeline: retry-stage
+stage: step1
+---
+# Live ticket
+`)
+		tk, err := ticket.ParseFile(path)
+		require.NoError(t, err)
+		d.tickets[id] = newTicketState(tk, path)
+		return d
+	}
+
+	claudeLines := []string{
+		`{"type":"assistant","message":{"model":"m1","content":[{"type":"text","text":"planning"}]}}`,
+		`{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"go test ./..."}}]}}`,
+		`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}}`,
+	}
+
+	// plantClaudeSession writes the session JSONL a Claude run appends to and
+	// returns the config directory holding it alongside the file itself.
+	plantClaudeSession := func(t *testing.T, id, sessionID string, lines []string) (claudeDir, file string) {
+		t.Helper()
+		claudeDir = t.TempDir()
+		dir := filepath.Join(claudeDir, "projects", "-worktree-"+id)
+		require.NoError(t, os.MkdirAll(dir, 0o755))
+		file = filepath.Join(dir, sessionID+".jsonl")
+		require.NoError(t, os.WriteFile(file, []byte(strings.Join(lines, "\n")+"\n"), 0o644))
+		return claudeDir, file
+	}
+
+	// plantClaudeRun plants a session and registers it as the first run of step1.
+	plantClaudeRun := func(t *testing.T, d *Daemon, id, sessionID string, lines []string) string {
+		t.Helper()
+		claudeDir, file := plantClaudeSession(t, id, sessionID, lines)
+		d.setLiveRun(id, liveRun{
+			stage: "step1",
+			run:   0,
+			params: RunnerParams{
+				SessionID: sessionID,
+				Env:       map[string]string{"CLAUDE_CONFIG_DIR": claudeDir},
+			},
+			startedAt: time.Now(),
+		})
+		return file
+	}
+
+	t.Run("a truncated trailing line yields the complete events only", func(t *testing.T) {
+		h := newHarness(t)
+		d := liveTicket(t, h, "tst-lv1")
+		plantClaudeRun(t, d, "tst-lv1", "sess-1",
+			append(slices.Clone(claudeLines), `{"type":"assistant","message":{"content":[{"type":"te`))
+
+		got, err := d.GetActivity(web.ActivityQuery{ID: "tst-lv1", Stage: "step1", Run: 0})
+		require.NoError(t, err)
+		assert.Equal(t, "events", got.Source)
+		assert.True(t, got.Live)
+		require.NotNil(t, got.Tape)
+		assert.Equal(t, []string{"model", "text", "tool"}, eventKinds(got.Tape))
+		assert.Equal(t, "ok", got.Tape.Events[2].Result)
+	})
+
+	t.Run("a pi retry reads its own attempt, not the previous one", func(t *testing.T) {
+		h := newHarness(t)
+		d := liveTicket(t, h, "tst-lv2")
+
+		dir := piSessionDir(h.cfg, "tst-lv2", "step1")
+		require.NoError(t, os.MkdirAll(dir, 0o755))
+		previous := filepath.Join(dir, "attempt-1.jsonl")
+		require.NoError(t, os.WriteFile(previous,
+			[]byte(`{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"first attempt"}]}}`+"\n"), 0o644))
+		hourAgo := time.Now().Add(-time.Hour)
+		require.NoError(t, os.Chtimes(previous, hourAgo, hourAgo))
+
+		d.setLiveRun("tst-lv2", liveRun{
+			stage:     "step1",
+			run:       0,
+			params:    RunnerParams{SessionDir: dir},
+			startedAt: time.Now(),
+		})
+
+		// Until pi creates this attempt's file the newest one in the shared
+		// directory belongs to the previous attempt and must not be served.
+		got, err := d.GetActivity(web.ActivityQuery{ID: "tst-lv2", Stage: "step1", Run: 0})
+		require.NoError(t, err)
+		assert.Equal(t, "events", got.Source)
+		assert.True(t, got.Live)
+		require.NotNil(t, got.Tape)
+		assert.Equal(t, "pi", got.Tape.Agent)
+		assert.Empty(t, got.Tape.Events)
+
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "attempt-2.jsonl"),
+			[]byte(`{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"second attempt"}]}}`+"\n"), 0o644))
+
+		got, err = d.GetActivity(web.ActivityQuery{ID: "tst-lv2", Stage: "step1", Run: 0})
+		require.NoError(t, err)
+		require.NotNil(t, got.Tape)
+		require.Len(t, got.Tape.Events, 1)
+		assert.Equal(t, "second attempt", got.Tape.Events[0].Text)
+	})
+
+	t.Run("a run with no session file yet is an empty live tape", func(t *testing.T) {
+		h := newHarness(t)
+		d := liveTicket(t, h, "tst-lv3")
+		d.setLiveRun("tst-lv3", liveRun{
+			stage:     "step1",
+			run:       0,
+			params:    RunnerParams{SessionID: "sess-missing", Env: map[string]string{"CLAUDE_CONFIG_DIR": t.TempDir()}},
+			startedAt: time.Now(),
+		})
+
+		got, err := d.GetActivity(web.ActivityQuery{ID: "tst-lv3", Stage: "step1", Run: 0})
+		require.NoError(t, err)
+		assert.Equal(t, "events", got.Source)
+		assert.True(t, got.Live)
+		require.NotNil(t, got.Tape)
+		assert.Equal(t, logfmt.TapeVersion, got.Tape.Version)
+		assert.Equal(t, "claude", got.Tape.Agent)
+		assert.Empty(t, got.Tape.Events)
+	})
+
+	t.Run("a run with no session at all serves the live plaintext log", func(t *testing.T) {
+		h := newHarness(t)
+		d := liveTicket(t, h, "tst-lv4")
+		d.setLiveRun("tst-lv4", liveRun{stage: "step1", run: 0, startedAt: time.Now()})
+
+		logDir := filepath.Join(h.logsDir, "tst-lv4")
+		require.NoError(t, os.MkdirAll(logDir, 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(logDir, "step1.log"), []byte("direct runner output"), 0o644))
+
+		got, err := d.GetActivity(web.ActivityQuery{ID: "tst-lv4", Stage: "step1", Run: 0})
+		require.NoError(t, err)
+		assert.Equal(t, "log", got.Source)
+		assert.True(t, got.Live)
+		assert.Equal(t, "direct runner output", got.Content)
+	})
+
+	t.Run("a run that has not registered yet is live and empty", func(t *testing.T) {
+		h := newHarness(t)
+		d := liveTicket(t, h, "tst-lv5")
+
+		// Nothing registered and no log on disk: the seconds between the ticket
+		// flipping to in_progress and the invocation starting.
+		got, err := d.GetActivity(web.ActivityQuery{ID: "tst-lv5", Stage: "step1", Run: 0})
+		require.NoError(t, err)
+		assert.Equal(t, "log", got.Source)
+		assert.True(t, got.Live)
+		assert.Empty(t, got.Content)
+	})
+
+	t.Run("a run older than the live one is not live", func(t *testing.T) {
+		h := newHarness(t)
+		d := liveTicket(t, h, "tst-lv6")
+		plantClaudeRun(t, d, "tst-lv6", "sess-6", claudeLines)
+
+		logDir := filepath.Join(h.logsDir, "tst-lv6")
+		require.NoError(t, os.MkdirAll(logDir, 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(logDir, "step1.log"), []byte("earlier attempt"), 0o644))
+
+		got, err := d.GetActivity(web.ActivityQuery{ID: "tst-lv6", Stage: "step1", Run: 1})
+		require.NoError(t, err)
+		assert.False(t, got.Live, "run 1 is not the run registered as live")
 		assert.Equal(t, "log", got.Source)
 		assert.True(t, got.Stale)
 	})
 
-	t.Run("an unknown ticket is not found", func(t *testing.T) {
-		_, err := d.GetActivity("nope", "step1", 0)
-		assert.ErrorIs(t, err, web.ErrTicketNotFound)
+	t.Run("a rework run does not answer for the stage it interrupts", func(t *testing.T) {
+		h := newHarness(t)
+		d := liveTicket(t, h, "tst-lv9")
+
+		// Rework runs while the ticket's stage field still names the pipeline
+		// stage it interrupted, so a client polling that stage must not be given
+		// the rework transcript under its name.
+		claudeDir, _ := plantClaudeSession(t, "tst-lv9", "sess-9", claudeLines)
+		d.setLiveRun("tst-lv9", liveRun{
+			stage: config.ReworkStageName,
+			run:   0,
+			params: RunnerParams{
+				SessionID: "sess-9",
+				Env:       map[string]string{"CLAUDE_CONFIG_DIR": claudeDir},
+			},
+			startedAt: time.Now(),
+		})
+
+		logDir := filepath.Join(h.logsDir, "tst-lv9")
+		require.NoError(t, os.MkdirAll(logDir, 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(logDir, "step1.log"), []byte("step1 output"), 0o644))
+
+		got, err := d.GetActivity(web.ActivityQuery{ID: "tst-lv9", Stage: "step1", Run: 0})
+		require.NoError(t, err)
+		assert.False(t, got.Live, "the run in flight is rework, not step1")
+		assert.Equal(t, "log", got.Source)
+		assert.Equal(t, "step1 output", got.Content)
+		assert.True(t, got.Stale)
+
+		// Asked for by name, the rework run reads live like any other.
+		got, err = d.GetActivity(web.ActivityQuery{ID: "tst-lv9", Stage: config.ReworkStageName, Run: 0})
+		require.NoError(t, err)
+		assert.True(t, got.Live)
+		require.NotNil(t, got.Tape)
+		assert.Equal(t, []string{"model", "text", "tool"}, eventKinds(got.Tape))
 	})
+
+	t.Run("the cursor clamps to the stable prefix and reports its offset", func(t *testing.T) {
+		h := newHarness(t)
+		d := liveTicket(t, h, "tst-lv7")
+		plantClaudeRun(t, d, "tst-lv7", "sess-7", append(slices.Clone(claudeLines),
+			`{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t2","name":"Read","input":{"file_path":"/x.go"}}]}}`))
+
+		// The tape is model, text, answered tool, pending tool. Everything from
+		// the pending tool on may still be rewritten, so a cursor past it is
+		// pulled back.
+		got, err := d.GetActivity(web.ActivityQuery{ID: "tst-lv7", Stage: "step1", Run: 0, After: 99})
+		require.NoError(t, err)
+		assert.Equal(t, 3, got.Offset)
+		require.NotNil(t, got.Tape)
+		require.Len(t, got.Tape.Events, 1)
+		assert.Equal(t, "Read", got.Tape.Events[0].Tool)
+
+		got, err = d.GetActivity(web.ActivityQuery{ID: "tst-lv7", Stage: "step1", Run: 0, After: 1})
+		require.NoError(t, err)
+		assert.Equal(t, 1, got.Offset)
+		assert.Len(t, got.Tape.Events, 3)
+	})
+
+	t.Run("the validator changes only when the session file does", func(t *testing.T) {
+		h := newHarness(t)
+		d := liveTicket(t, h, "tst-lv8")
+		file := plantClaudeRun(t, d, "tst-lv8", "sess-8", claudeLines)
+
+		first, err := d.GetActivity(web.ActivityQuery{ID: "tst-lv8", Stage: "step1", Run: 0})
+		require.NoError(t, err)
+		require.NotEmpty(t, first.ETag)
+
+		again, err := d.GetActivity(web.ActivityQuery{ID: "tst-lv8", Stage: "step1", Run: 0, IfNoneMatch: first.ETag})
+		require.NoError(t, err)
+		assert.True(t, again.NotModified)
+		assert.Nil(t, again.Tape, "a 304 must not parse the transcript")
+		assert.Equal(t, first.ETag, again.ETag)
+
+		f, err := os.OpenFile(file, os.O_APPEND|os.O_WRONLY, 0o644)
+		require.NoError(t, err)
+		_, err = f.WriteString(`{"type":"assistant","message":{"content":[{"type":"text","text":"more"}]}}` + "\n")
+		require.NoError(t, err)
+		require.NoError(t, f.Close())
+
+		grown, err := d.GetActivity(web.ActivityQuery{ID: "tst-lv8", Stage: "step1", Run: 0, IfNoneMatch: first.ETag})
+		require.NoError(t, err)
+		assert.False(t, grown.NotModified)
+		assert.NotEqual(t, first.ETag, grown.ETag)
+		require.NotNil(t, grown.Tape)
+		assert.Equal(t, "more", grown.Tape.Events[len(grown.Tape.Events)-1].Text)
+	})
+}
+
+func eventKinds(tape *logfmt.Tape) []string {
+	out := make([]string, len(tape.Events))
+	for i, e := range tape.Events {
+		out[i] = e.Kind
+	}
+	return out
 }

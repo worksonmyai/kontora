@@ -407,9 +407,31 @@ func (s *Server) handleGetActivity(w http.ResponseWriter, r *http.Request) {
 		}
 		run = n
 	}
-	activity, err := s.svc.GetActivity(id, stage, run)
+	after := 0
+	if raw := r.URL.Query().Get("after"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 0 {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "after must be a non-negative integer"})
+			return
+		}
+		after = n
+	}
+	activity, err := s.svc.GetActivity(ActivityQuery{
+		ID:          id,
+		Stage:       stage,
+		Run:         run,
+		After:       after,
+		IfNoneMatch: r.Header.Get("If-None-Match"),
+	})
 	if err != nil {
 		writeServiceError(w, err)
+		return
+	}
+	if activity.ETag != "" {
+		w.Header().Set("ETag", activity.ETag)
+	}
+	if activity.NotModified {
+		w.WriteHeader(http.StatusNotModified)
 		return
 	}
 	writeJSON(w, http.StatusOK, activity)

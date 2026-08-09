@@ -367,7 +367,9 @@ func (d *Daemon) runReworkStage(ctx, taskCtx context.Context, cfg *config.Config
 
 	params := d.buildRunnerParams(cfg, agentCfg, stageCfg, binaryPath, args, wtPath, ticketID, config.ReworkStageName, sessionID)
 	runIndex := stageRunIndex(t, config.ReworkStageName)
+	d.setLiveRun(ticketID, liveRun{stage: config.ReworkStageName, run: runIndex, params: params, startedAt: time.Now()})
 	result, runnerErr := d.runner(taskCtx, params)
+	d.clearLiveRun(ticketID)
 	if runnerErr != nil && taskCtx.Err() == nil {
 		log.Error("rework: runner failed", "err", runnerErr)
 		d.killTaskWindow(ticketID)

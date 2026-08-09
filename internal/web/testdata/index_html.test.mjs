@@ -2541,7 +2541,9 @@ test("index.html body editor grows with its content and owns its exit gestures",
   // the top; overflow stays hidden so caretLineTop measures a stable wrap width.
   assert.equal(/h-\[calc\(/.test(textarea), false);
   assert.match(textarea, /overflow-hidden/);
-  assert.match(textarea, /min-h-\[100px\]/);
+  // 148px is the content box of a 150px .md-editor, which is the height the
+  // rendered body it replaces holds when the ticket has no description yet.
+  assert.match(textarea, /min-h-\[148px\]/);
   assert.match(textarea, /@input="autoGrowBody\(\$el\); debounceSaveEdit\(\)"/);
   assert.match(textarea, /x-ref="bodyEditor"/);
   assert.equal(/x-init=/.test(textarea), false);

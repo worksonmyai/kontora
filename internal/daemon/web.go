@@ -17,6 +17,7 @@ import (
 
 	"github.com/worksonmyai/kontora/internal/cli"
 	"github.com/worksonmyai/kontora/internal/config"
+	"github.com/worksonmyai/kontora/internal/logfmt"
 	"github.com/worksonmyai/kontora/internal/ticket"
 	"github.com/worksonmyai/kontora/internal/ticket/app"
 	"github.com/worksonmyai/kontora/internal/tmux"
@@ -599,47 +600,143 @@ func (d *Daemon) GetLogs(id string, stage string) (string, error) {
 	return buf.String(), nil
 }
 
-// GetActivity returns the transcript of one run of a stage: the structured
-// tape when that run's sidecar exists, and the shared plaintext log otherwise.
+// GetActivity returns the transcript of one run of a stage. A run still in
+// flight is read from the session JSONL the agent is appending to; a finished
+// run is read from its structured sidecar, and from the shared plaintext log
+// when it has none.
 //
 // A fallback is marked stale when its bytes may describe a different run than
 // the one asked for. That happens two ways, because <stage>.log holds only the
 // newest run: the ticket's history records a newer run of the same stage, or
 // the stage is running right now and appending to the same file.
-func (d *Daemon) GetActivity(id string, stage string, run int) (web.ActivityInfo, error) {
+func (d *Daemon) GetActivity(q web.ActivityQuery) (web.ActivityInfo, error) {
 	d.mu.Lock()
-	ts, ok := d.tickets[id]
+	ts, ok := d.tickets[q.ID]
 	var newestRun int
 	var stageRunning bool
+	var nextRun int
+	var lr liveRun
+	var registered bool
 	if ok {
 		for _, h := range ts.ticket.History {
-			if h.Stage == stage && h.Run > newestRun {
+			if h.Stage == q.Stage && h.Run > newestRun {
 				newestRun = h.Run
 			}
 		}
-		stageRunning = ts.ticket.Status == ticket.StatusInProgress && ts.ticket.Stage == stage
+		stageRunning = ts.ticket.Status == ticket.StatusInProgress && ts.ticket.Stage == q.Stage
+		nextRun = stageRunIndex(ts.ticket, q.Stage)
+		lr, registered = d.liveRuns[q.ID]
 	}
 	d.mu.Unlock()
 	if !ok {
 		return web.ActivityInfo{}, web.ErrTicketNotFound
 	}
 
+	// liveMatch is the run the daemon has registered as in flight. The second
+	// clause covers the seconds between the ticket flipping to in_progress and
+	// the invocation registering, which happens only after the worktree exists
+	// and the prompt is rendered; without it a polling client gets an error per
+	// tick at the start of every run. Once another run is registered this one is
+	// not live: the rework stage runs while the ticket's stage field still names
+	// a pipeline stage, and its transcript must not answer for that stage.
+	liveMatch := registered && q.Stage == lr.stage && q.Run == lr.run
+	live := q.Stage != "" && (liveMatch || (!registered && stageRunning && q.Run == nextRun))
+
 	cfg := d.config()
-	tape, content, err := cli.StageActivity(cfg.TicketsDir, cfg.LogsDir, id, stage, run)
+	if liveMatch {
+		if info, ok := d.liveActivity(cfg, q, lr); ok {
+			return info, nil
+		}
+	}
+
+	sidecarETag := fileETag(stageEventsPath(cfg, q.ID, q.Stage, q.Run), q.Run)
+	if sidecarETag != "" && sidecarETag == q.IfNoneMatch {
+		return web.ActivityInfo{NotModified: true, ETag: sidecarETag}, nil
+	}
+
+	tape, content, err := cli.StageActivity(cfg.TicketsDir, cfg.LogsDir, q.ID, q.Stage, q.Run)
 	if err != nil {
+		// A live run whose first bytes are still being written has nothing to
+		// read yet. Answering with an error would flash one on every poll.
+		if errors.Is(err, os.ErrNotExist) && live {
+			return web.ActivityInfo{Source: "log", Stage: q.Stage, Run: q.Run, Live: true}, nil
+		}
 		if errors.Is(err, os.ErrNotExist) {
 			return web.ActivityInfo{}, web.ErrLogNotFound
 		}
 		return web.ActivityInfo{}, err
 	}
 
-	info := web.ActivityInfo{Source: "events", Stage: stage, Run: run, Tape: tape}
+	info := web.ActivityInfo{Source: "events", Stage: q.Stage, Run: q.Run, Tape: tape, Live: live}
 	if tape == nil {
 		info.Source = "log"
 		info.Content = content
-		info.Stale = run < newestRun || stageRunning
+		info.Stale = q.Run < newestRun || stageRunning
+		return info, nil
 	}
+	info.ETag = sidecarETag
 	return info, nil
+}
+
+// liveActivity reads the tape of a registered in-flight run from the session
+// JSONL the agent is appending to. It reports false when this run has no
+// session file to read, so the caller can fall back to the plaintext log.
+func (d *Daemon) liveActivity(cfg *config.Config, q web.ActivityQuery, lr liveRun) (web.ActivityInfo, bool) {
+	if lr.params.SessionID == "" && lr.params.SessionDir == "" {
+		return web.ActivityInfo{}, false
+	}
+	path, isPi := liveSessionFile(cfg, q.ID, lr)
+
+	info := web.ActivityInfo{Source: "events", Stage: q.Stage, Run: q.Run, Live: true}
+	if path == "" {
+		// The agent has started but written nothing yet. The tape comes from the
+		// parser rather than a bare literal, so it carries the version, agent and
+		// partial fields the client reads from the first poll on.
+		tape := emptyTape(isPi)
+		info.Tape = &tape
+		return info, true
+	}
+
+	info.ETag = fileETag(path, q.Run)
+	if info.ETag != "" && info.ETag == q.IfNoneMatch {
+		return web.ActivityInfo{NotModified: true, ETag: info.ETag}, true
+	}
+
+	tape, err := sessionTape(path, isPi)
+	if err != nil {
+		return web.ActivityInfo{}, false
+	}
+	// Everything from the earliest tool still awaiting its result onward may
+	// still be rewritten, so a cursor past that point is pulled back to it.
+	off := max(0, min(q.After, tape.StableCount()))
+	tape.Events = tape.Events[off:]
+	info.Tape = &tape
+	info.Offset = off
+	return info, true
+}
+
+// emptyTape is the tape of a run that has produced no session file yet. Parsing
+// nothing fills the fields a Tape literal would leave zero.
+func emptyTape(isPi bool) logfmt.Tape {
+	var tape logfmt.Tape
+	if isPi {
+		tape, _ = logfmt.EventsPi(bytes.NewReader(nil))
+	} else {
+		tape, _ = logfmt.Events(bytes.NewReader(nil))
+	}
+	return tape
+}
+
+// fileETag is a validator over a transcript file's metadata, so a poll that
+// changes nothing costs one stat instead of a full parse. The run index is
+// folded in because two runs of a stage can share a session file. An
+// unstattable file yields "", which never matches a client's validator.
+func fileETag(path string, run int) string {
+	st, err := os.Stat(path)
+	if err != nil {
+		return ""
+	}
+	return web.ContentETag(fmt.Appendf(nil, "%d-%d-%d", st.Size(), st.ModTime().UnixNano(), run), "")
 }
 
 // GetChanges reports the commits and changed files on a ticket's branch

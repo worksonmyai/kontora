@@ -44,7 +44,7 @@ type TicketService interface {
 	UpdateTicket(id string, req UpdateTicketRequest) error
 	UploadTicket(content []byte) (TicketInfo, error)
 	GetLogs(id string, stage string) (string, error)
-	GetActivity(id string, stage string, run int) (ActivityInfo, error)
+	GetActivity(q ActivityQuery) (ActivityInfo, error)
 	GetChanges(id string) (ChangesInfo, error)
 	GetRawConfig() (string, error)
 	PutRawConfig(content string) error
@@ -100,17 +100,38 @@ type PipelineInfo struct {
 	DefaultAgent string `json:"default_agent,omitempty"`
 }
 
-// ActivityInfo is one stage run's transcript. Source is "events" when the run's
-// structured sidecar was found and "log" when the response fell back to the
-// shared plaintext log. Stale marks a fallback whose bytes may describe a newer
-// run of the same stage.
+// ActivityQuery addresses one stage run. After is the number of events the
+// caller already holds, and only a live response honours it. IfNoneMatch is the
+// validator the caller last saw.
+type ActivityQuery struct {
+	ID          string
+	Stage       string
+	Run         int
+	After       int
+	IfNoneMatch string
+}
+
+// ActivityInfo is one stage run's transcript. Source is "events" when the tape
+// was read from the run's structured record and "log" when the response fell
+// back to the shared plaintext log.
+//
+// Live and Stale are orthogonal. Live means the run is in flight, so the tape
+// will grow. Stale means a plaintext fallback whose bytes may describe another
+// run of the same stage; a live run reading that shared file is both.
 type ActivityInfo struct {
 	Source  string       `json:"source"`
 	Stage   string       `json:"stage"`
 	Run     int          `json:"run"`
 	Stale   bool         `json:"stale,omitempty"`
+	Live    bool         `json:"live,omitempty"`
+	Offset  int          `json:"offset,omitempty"` // index of the first event in Tape.Events
 	Content string       `json:"content,omitempty"`
 	Tape    *logfmt.Tape `json:"tape,omitempty"`
+
+	// ETag and NotModified drive HTTP revalidation and are not part of the
+	// payload the client parses.
+	ETag        string `json:"-"`
+	NotModified bool   `json:"-"`
 }
 
 // ProjectInfo describes one configured project. Path is the value as written in

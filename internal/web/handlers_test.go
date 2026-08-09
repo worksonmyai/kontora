@@ -36,7 +36,7 @@ type mockService struct {
 	noteFn         func(id, text string) error
 	summaryFn      func(id, text string) error
 	logsFn         func(id, stage string) (string, error)
-	activityFn     func(id, stage string, run int) (ActivityInfo, error)
+	activityFn     func(q ActivityQuery) (ActivityInfo, error)
 	changesFn      func(id string) (ChangesInfo, error)
 	plannotatorFn  func(id string) error
 	rawConfig      string
@@ -121,9 +121,9 @@ func (m *mockService) GetLogs(id, stage string) (string, error) {
 	}
 	return "", nil
 }
-func (m *mockService) GetActivity(id, stage string, run int) (ActivityInfo, error) {
+func (m *mockService) GetActivity(q ActivityQuery) (ActivityInfo, error) {
 	if m.activityFn != nil {
-		return m.activityFn(id, stage, run)
+		return m.activityFn(q)
 	}
 	return ActivityInfo{}, nil
 }
@@ -1105,19 +1105,21 @@ func TestHandleGetActivity(t *testing.T) {
 	cases := []struct {
 		name       string
 		query      string
-		activityFn func(id, stage string, run int) (ActivityInfo, error)
+		headers    map[string]string
+		activityFn func(q ActivityQuery) (ActivityInfo, error)
 		wantStatus int
+		wantETag   string
 		assert     func(t *testing.T, body string)
 	}{
 		{
 			name:  "structured tape",
 			query: "?stage=review&run=1",
-			activityFn: func(id, stage string, run int) (ActivityInfo, error) {
-				assert.Equal(t, "t-001", id)
-				assert.Equal(t, "review", stage)
-				assert.Equal(t, 1, run)
+			activityFn: func(q ActivityQuery) (ActivityInfo, error) {
+				assert.Equal(t, "t-001", q.ID)
+				assert.Equal(t, "review", q.Stage)
+				assert.Equal(t, 1, q.Run)
 				return ActivityInfo{
-					Source: "events", Stage: stage, Run: run,
+					Source: "events", Stage: q.Stage, Run: q.Run,
 					Tape: &logfmt.Tape{Version: logfmt.TapeVersion, Agent: "claude"},
 				}, nil
 			},
@@ -1127,6 +1129,7 @@ func TestHandleGetActivity(t *testing.T) {
 				require.NoError(t, json.Unmarshal([]byte(body), &got))
 				assert.Equal(t, "events", got.Source)
 				assert.Equal(t, 1, got.Run)
+				assert.False(t, got.Live)
 				require.NotNil(t, got.Tape)
 				assert.Equal(t, "claude", got.Tape.Agent)
 			},
@@ -1134,8 +1137,8 @@ func TestHandleGetActivity(t *testing.T) {
 		{
 			name:  "plaintext fallback marked stale",
 			query: "?stage=review&run=0",
-			activityFn: func(_, stage string, run int) (ActivityInfo, error) {
-				return ActivityInfo{Source: "log", Stage: stage, Run: run, Stale: true, Content: "raw log"}, nil
+			activityFn: func(q ActivityQuery) (ActivityInfo, error) {
+				return ActivityInfo{Source: "log", Stage: q.Stage, Run: q.Run, Stale: true, Content: "raw log"}, nil
 			},
 			wantStatus: http.StatusOK,
 			assert: func(t *testing.T, body string) {
@@ -1148,19 +1151,73 @@ func TestHandleGetActivity(t *testing.T) {
 			},
 		},
 		{
+			name:  "a live run carries its cursor and validator",
+			query: "?stage=review&run=2&after=7",
+			headers: map[string]string{
+				"If-None-Match": `"prev"`,
+			},
+			activityFn: func(q ActivityQuery) (ActivityInfo, error) {
+				assert.Equal(t, 7, q.After)
+				assert.Equal(t, `"prev"`, q.IfNoneMatch)
+				return ActivityInfo{
+					Source: "events", Stage: q.Stage, Run: q.Run, Live: true, Offset: 5,
+					Tape: &logfmt.Tape{Version: logfmt.TapeVersion, Agent: "claude"},
+					ETag: `"next"`,
+				}, nil
+			},
+			wantStatus: http.StatusOK,
+			wantETag:   `"next"`,
+			assert: func(t *testing.T, body string) {
+				assert.Contains(t, body, `"live":true`)
+				var got ActivityInfo
+				require.NoError(t, json.Unmarshal([]byte(body), &got))
+				assert.Equal(t, 5, got.Offset)
+			},
+		},
+		{
+			name:  "a live run with nothing written yet is an empty 200",
+			query: "?stage=review&run=0",
+			activityFn: func(q ActivityQuery) (ActivityInfo, error) {
+				return ActivityInfo{Source: "log", Stage: q.Stage, Run: q.Run, Live: true}, nil
+			},
+			wantStatus: http.StatusOK,
+			assert: func(t *testing.T, body string) {
+				var got ActivityInfo
+				require.NoError(t, json.Unmarshal([]byte(body), &got))
+				assert.True(t, got.Live)
+				assert.Empty(t, got.Content)
+				assert.Nil(t, got.Tape)
+			},
+		},
+		{
+			name:    "an unchanged transcript is 304 with the validator",
+			query:   "?stage=review&run=1",
+			headers: map[string]string{"If-None-Match": `"same"`},
+			activityFn: func(q ActivityQuery) (ActivityInfo, error) {
+				assert.Equal(t, `"same"`, q.IfNoneMatch)
+				return ActivityInfo{NotModified: true, ETag: `"same"`}, nil
+			},
+			wantStatus: http.StatusNotModified,
+			wantETag:   `"same"`,
+			assert: func(t *testing.T, body string) {
+				assert.Empty(t, body)
+			},
+		},
+		{
 			name:  "run defaults to zero",
 			query: "?stage=review",
-			activityFn: func(_, _ string, run int) (ActivityInfo, error) {
-				assert.Equal(t, 0, run)
-				return ActivityInfo{Source: "log", Run: run}, nil
+			activityFn: func(q ActivityQuery) (ActivityInfo, error) {
+				assert.Equal(t, 0, q.Run)
+				assert.Equal(t, 0, q.After)
+				return ActivityInfo{Source: "log", Run: q.Run}, nil
 			},
 			wantStatus: http.StatusOK,
 		},
 		{
 			name:  "path traversal is stripped to a basename",
 			query: "?stage=../../etc/passwd",
-			activityFn: func(_, stage string, _ int) (ActivityInfo, error) {
-				assert.Equal(t, "passwd", stage)
+			activityFn: func(q ActivityQuery) (ActivityInfo, error) {
+				assert.Equal(t, "passwd", q.Stage)
 				return ActivityInfo{}, ErrLogNotFound
 			},
 			wantStatus: http.StatusNotFound,
@@ -1168,13 +1225,13 @@ func TestHandleGetActivity(t *testing.T) {
 		{
 			name:       "unknown ticket",
 			query:      "?stage=review",
-			activityFn: func(_, _ string, _ int) (ActivityInfo, error) { return ActivityInfo{}, ErrTicketNotFound },
+			activityFn: func(ActivityQuery) (ActivityInfo, error) { return ActivityInfo{}, ErrTicketNotFound },
 			wantStatus: http.StatusNotFound,
 		},
 		{
 			name:  "negative run is rejected before the service is reached",
 			query: "?stage=review&run=-1",
-			activityFn: func(_, _ string, _ int) (ActivityInfo, error) {
+			activityFn: func(ActivityQuery) (ActivityInfo, error) {
 				t.Fatal("service must not be called for an invalid run")
 				return ActivityInfo{}, nil
 			},
@@ -1183,8 +1240,17 @@ func TestHandleGetActivity(t *testing.T) {
 		{
 			name:  "non-integer run is rejected before the service is reached",
 			query: "?stage=review&run=abc",
-			activityFn: func(_, _ string, _ int) (ActivityInfo, error) {
+			activityFn: func(ActivityQuery) (ActivityInfo, error) {
 				t.Fatal("service must not be called for an invalid run")
+				return ActivityInfo{}, nil
+			},
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:  "negative after is rejected before the service is reached",
+			query: "?stage=review&after=-1",
+			activityFn: func(ActivityQuery) (ActivityInfo, error) {
+				t.Fatal("service must not be called for an invalid cursor")
 				return ActivityInfo{}, nil
 			},
 			wantStatus: http.StatusBadRequest,
@@ -1194,8 +1260,9 @@ func TestHandleGetActivity(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			srv := startHandlerTestServer(t, &mockService{activityFn: tc.activityFn})
-			res := get(t, srv, "/api/tickets/t-001/activity"+tc.query)
+			res := getWithHeaders(t, srv, "/api/tickets/t-001/activity"+tc.query, tc.headers)
 			assert.Equal(t, tc.wantStatus, res.statusCode)
+			assert.Equal(t, tc.wantETag, res.etag)
 			if tc.assert != nil {
 				tc.assert(t, res.body)
 			}
@@ -1564,6 +1631,7 @@ func TestHandlePlannotatorReview(t *testing.T) {
 type httpResult struct {
 	statusCode  int
 	contentType string
+	etag        string
 	body        string
 }
 
@@ -1582,12 +1650,27 @@ func startHandlerTestServerWithBroker(t *testing.T, svc TicketService, broker *S
 
 func get(t *testing.T, srv *Server, path string) httpResult {
 	t.Helper()
-	resp, err := http.Get(fmt.Sprintf("http://%s%s", srv.Addr(), path))
+	return getWithHeaders(t, srv, path, nil)
+}
+
+func getWithHeaders(t *testing.T, srv *Server, path string, headers map[string]string) httpResult {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("http://%s%s", srv.Addr(), path), nil)
+	require.NoError(t, err)
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
 	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body)
 	require.NoError(t, err)
-	return httpResult{statusCode: resp.StatusCode, contentType: resp.Header.Get("Content-Type"), body: string(body)}
+	return httpResult{
+		statusCode:  resp.StatusCode,
+		contentType: resp.Header.Get("Content-Type"),
+		etag:        resp.Header.Get("ETag"),
+		body:        string(body),
+	}
 }
 
 func put(t *testing.T, srv *Server, path string, jsonBody string) httpResult {

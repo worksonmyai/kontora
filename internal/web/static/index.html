@@ -1494,16 +1494,17 @@
               </div>
             </div>
 
-            <!-- Activity: the structured transcript of one completed run -->
+            <!-- Activity: the structured transcript of one stage run, live while it runs -->
             <div x-show="activeTab === 'activity'" class="h-full min-h-0 flex flex-col bg-surface-frame">
               <div class="shrink-0 px-6 pt-[14px] flex items-center gap-2.5 flex-wrap">
                 <span class="side-label">activity</span>
                 <span class="font-mono text-[11px] text-tx-3" x-text="activityStage || 'latest'"></span>
                 <span x-show="activityRun > 0" class="font-mono text-[10.5px] text-surface-600" x-text="'attempt ' + (activityRun + 1)"></span>
+                <span x-show="activity?.live" class="font-mono text-[10.5px] px-2 py-[2px] rounded-full border border-st-progress/40 text-st-progress">live</span>
                 <span x-show="activity?.tape?.model" class="font-mono text-[10.5px] px-2 py-[2px] rounded-full border border-surface-700 text-tx-faint" x-text="activity?.tape?.model"></span>
                 <span x-show="tapeTokens(activity?.tape)" class="font-mono text-[10.5px] text-surface-600" x-text="tapeTokens(activity?.tape) + ' tokens'"></span>
               </div>
-              <div x-show="activity?.stale" class="shrink-0 px-6 pt-2 font-mono text-[11px] text-warn">
+              <div x-show="activity?.stale && !activity?.live" class="shrink-0 px-6 pt-2 font-mono text-[11px] text-warn">
                 showing the latest run of this stage — no structured record was kept for attempt <span x-text="activityRun + 1"></span>
               </div>
               <div x-show="activity?.tape?.truncated" class="shrink-0 px-6 pt-2 font-mono text-[11px] text-surface-600">
@@ -1518,14 +1519,19 @@
                 <template x-if="!activityLoading && activityError">
                   <p class="font-mono text-[12px] text-err" x-text="activityError"></p>
                 </template>
-                <template x-if="!activityLoading && !activityError && !activity">
+                <template x-if="!activityLoading && !activityError && !activity && !runningRun()">
                   <p class="font-mono text-[12px] text-surface-600">No completed stage yet.</p>
+                </template>
+                <!-- A run in flight that has recorded nothing yet: the first
+                     seconds of every stage, before the agent's first step -->
+                <template x-if="!activityLoading && activity?.live && !tapeEvents().length && !activity.content">
+                  <p class="font-mono text-[12px] text-surface-600">Waiting for the agent's first step...</p>
                 </template>
 
                 <!-- Structured tape -->
                 <template x-if="!activityLoading && activity?.tape">
                   <div class="flex flex-col gap-px">
-                    <template x-if="!tapeEvents().length">
+                    <template x-if="!tapeEvents().length && !activity?.live">
                       <p class="font-mono text-[12px] text-surface-600">This run produced no recorded activity.</p>
                     </template>
                     <template x-if="hiddenTapeEventCount() > 0">
@@ -1580,7 +1586,7 @@
                 </template>
 
                 <!-- Plaintext fallback: no structured record exists for this run -->
-                <template x-if="!activityLoading && activity && !activity.tape">
+                <template x-if="!activityLoading && activity && !activity.tape && activity.content">
                   <pre id="stage-log-pre"
                        class="m-0 font-mono text-[12px] leading-[1.85] text-tx-log whitespace-pre-wrap break-words" x-html="renderLogHTML(activity.content)"></pre>
                 </template>

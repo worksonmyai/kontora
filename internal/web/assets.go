@@ -70,7 +70,7 @@ func buildAssets() map[string]*staticAsset {
 			contentType:  assetContentTypes[path.Ext(name)],
 			cacheControl: cacheRevalidate,
 			body:         body,
-			etag:         contentETag(body, ""),
+			etag:         ContentETag(body, ""),
 		}
 		if a.contentType == "" {
 			a.contentType = "application/octet-stream"
@@ -80,7 +80,7 @@ func buildAssets() map[string]*staticAsset {
 		}
 		if gz := gzipAsset(name, body); gz != nil {
 			a.gzipBody = gz
-			a.gzipETag = contentETag(body, "-gz")
+			a.gzipETag = ContentETag(body, "-gz")
 		}
 		assets[name] = a
 		return nil
@@ -101,10 +101,10 @@ func versionedVendorPath(name string) bool {
 	return ok && strings.Contains(dir, "@")
 }
 
-// contentETag is a strong validator over the file's bytes. The suffix
-// distinguishes the gzip representation from the identity one, which HTTP
-// treats as two different entities.
-func contentETag(body []byte, suffix string) string {
+// ContentETag is a strong validator over the given bytes. The suffix
+// distinguishes the gzip representation of an asset from the identity one,
+// which HTTP treats as two different entities.
+func ContentETag(body []byte, suffix string) string {
 	sum := sha256.Sum256(body)
 	return `"` + hex.EncodeToString(sum[:16]) + suffix + `"`
 }

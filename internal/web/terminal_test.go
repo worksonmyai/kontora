@@ -193,7 +193,7 @@ func (m *mockTerminalService) UploadTicket(_ []byte) (TicketInfo, error)        
 func (m *mockTerminalService) GetLogs(_ string, _ string) (string, error) {
 	return "", nil
 }
-func (m *mockTerminalService) GetActivity(_ string, _ string, _ int) (ActivityInfo, error) {
+func (m *mockTerminalService) GetActivity(ActivityQuery) (ActivityInfo, error) {
 	return ActivityInfo{}, nil
 }
 func (m *mockTerminalService) GetRawConfig() (string, error) { return "", nil }

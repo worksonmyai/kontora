@@ -251,6 +251,71 @@ func TestEventsPi(t *testing.T) {
 	}
 }
 
+func TestStableCount(t *testing.T) {
+	assistant := func(blocks string) string {
+		return `{"type":"assistant","message":{"content":[` + blocks + `]}}`
+	}
+	toolUse := func(id, name string) string {
+		return `{"type":"tool_use","id":"` + id + `","name":"` + name + `","input":{"command":"ls"}}`
+	}
+	toolResult := func(id string) string {
+		return `{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"` + id + `","content":"ok"}]}}`
+	}
+
+	cases := []struct {
+		name  string
+		input []string
+		want  int
+	}{
+		{
+			name:  "a tape without tools is stable to its end",
+			input: []string{assistant(`{"type":"text","text":"a"}`), assistant(`{"type":"text","text":"b"}`)},
+			want:  2,
+		},
+		{
+			name: "every tool answered leaves nothing pending",
+			input: []string{
+				assistant(toolUse("t1", "Bash")),
+				toolResult("t1"),
+				assistant(toolUse("t2", "Read")),
+				toolResult("t2"),
+			},
+			want: 2,
+		},
+		{
+			name: "one pending tool freezes the tape at its index",
+			input: []string{
+				assistant(toolUse("t1", "Bash")),
+				toolResult("t1"),
+				assistant(toolUse("t2", "Read")),
+				assistant(`{"type":"text","text":"still working"}`),
+			},
+			want: 1, // the answered tool; the pending one sits at index 1
+		},
+		{
+			name: "two tools from one turn freeze at the earlier one",
+			input: []string{
+				assistant(toolUse("t1", "Bash") + `,` + toolUse("t2", "Read")),
+				toolResult("t2"),
+			},
+			want: 0, // t1 is still pending even though t2 already returned
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tape, err := Events(strings.NewReader(strings.Join(tc.input, "\n")))
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, tape.StableCount())
+			assert.LessOrEqual(t, tape.StableCount(), len(tape.Events))
+		})
+	}
+
+	t.Run("an empty tape is stable", func(t *testing.T) {
+		assert.Equal(t, 0, Tape{}.StableCount())
+	})
+}
+
 func kinds(tape Tape) []string {
 	out := make([]string, len(tape.Events))
 	for i, e := range tape.Events {

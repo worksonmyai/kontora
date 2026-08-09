@@ -4561,6 +4561,22 @@ test("index.html binds the transcript to the windowed tail", () => {
   assert.match(html, /x-effect="activity; if \(logFollow\)/);
 });
 
+test("index.html marks a live run and holds back the finished-run states", () => {
+  const html = fs.readFileSync(htmlPath, "utf8");
+
+  // The pill sits beside the attempt chip and takes the running ribbon's colour.
+  assert.match(html, /x-show="activity\?\.live"[^>]*text-st-progress">live<\/span>/);
+  // The stale banner names a finished attempt, which a run in flight is not.
+  assert.match(html, /x-show="activity\?\.stale && !activity\?\.live"/);
+  // "No completed stage yet." is false while a stage is running.
+  assert.match(html, /x-if="!activityLoading && !activityError && !activity && !runningRun\(\)"/);
+  // A run in flight with nothing recorded yet is waiting, not empty, and says
+  // so once for both the structured and the plaintext source.
+  assert.match(html, /x-if="!activityLoading && activity\?\.live && !tapeEvents\(\)\.length && !activity\.content"/);
+  assert.equal((html.match(/Waiting for the agent's first step/g) || []).length, 1);
+  assert.match(html, /x-if="!tapeEvents\(\)\.length && !activity\?\.live"/);
+});
+
 test("error styling is suppressed when the tape cannot verify it", () => {
   const state = pageState(TAPE_TICKET);
   state.activity = { tape: { partial: ["time", "usage", "is_error"], events: [{ kind: "tool", tool: "read", is_error: true }] } };
@@ -4578,7 +4594,7 @@ test("the plaintext fallback is escaped before it reaches the DOM", () => {
   assert.match(html, /&lt;img/);
 });
 
-test("the activity tab opens the most recently completed run", async () => {
+test("the activity tab opens the run in flight", async () => {
   const asked = [];
   const state = pageState({ ...TAPE_TICKET, status: "in_progress", stage: "commit" }, {
     fetchActivity: (stage, run) => asked.push([stage, run]),
@@ -4589,7 +4605,315 @@ test("the activity tab opens the most recently completed run", async () => {
   state.switchTab("activity");
 
   assert.equal(state.activeTab, "activity");
+  assert.deepEqual(asked, [["commit", 0]], "commit has no history rows, so it is running its first run");
+});
+
+test("the run in flight is numbered by the stage's finished runs", () => {
+  // review already ran twice, so the run under way is run 2.
+  const state = pageState({ ...TAPE_TICKET, status: "in_progress", stage: "review" });
+
+  assert.deepEqual(vmValue(state.runningRun()), { stage: "review", run: 2 });
+  assert.deepEqual(vmValue(state.activityTarget()), { stage: "review", run: 2 });
+
+  const finished = pageState(TAPE_TICKET);
+  assert.equal(finished.runningRun(), null);
+  assert.deepEqual(vmValue(finished.activityTarget()), { stage: "review", run: 1 });
+});
+
+test("the activity tab of a finished ticket still opens its last run", async () => {
+  const asked = [];
+  const state = pageState(TAPE_TICKET, { fetchActivity: (stage, run) => asked.push([stage, run]) });
+  state.flushEditSave = () => {};
+
+  state.switchTab("activity");
+
   assert.deepEqual(asked, [["review", 1]]);
+});
+
+// --- the live activity poll ---
+
+const RUNNING_TICKET = { ...TAPE_TICKET, status: "in_progress", stage: "commit" };
+
+const tapeEvent = (n) => ({ kind: "text", text: `line ${n}` });
+
+// livePayload builds one /activity response body for the running commit run.
+const livePayload = (events, { offset = 0, live = true } = {}) => ({
+  source: "events", stage: "commit", run: 0, live, offset,
+  tape: { version: 1, agent: "claude", events },
+});
+
+// activityHarness drives the poll with a queue of responses and a timer double,
+// so a test advances time itself rather than waiting two seconds per tick.
+// Each queue entry is [status, body, etag, hold]; a held entry answers only when
+// the test calls release(), which is how a request is made to land out of order.
+function activityHarness(responses, ticket = RUNNING_TICKET) {
+  const calls = [];
+  const timers = new Map();
+  const held = [];
+  let nextTimer = 1;
+  const state = loadKontoraState({
+    setTimeout: (fn, ms) => {
+      timers.set(nextTimer, { fn, ms });
+      return nextTimer++;
+    },
+    clearTimeout: (id) => timers.delete(id),
+    fetch: async (url, init = {}) => {
+      calls.push({ url, ifNoneMatch: ((init && init.headers) || {})["If-None-Match"] || null });
+      const [status, body, etag, hold] = responses.shift() || [500, {}, null];
+      const response = {
+        ok: status >= 200 && status < 300,
+        status,
+        headers: { get: (name) => (name.toLowerCase() === "etag" ? etag || null : null) },
+        json: async () => body,
+      };
+      if (hold) return new Promise((resolve) => held.push(() => resolve(response)));
+      return response;
+    },
+  });
+  state.selectedTicket = ticket;
+  state.activeTab = "activity";
+  state.flushEditSave = () => {};
+  state.closeTerminal = () => {};
+  state.startEditing = () => {};
+  state.recomputeBoard = () => {};
+  state.writeHash = () => {};
+  state.$nextTick = (callback) => { if (callback) callback(); return Promise.resolve(); };
+
+  return {
+    state,
+    calls,
+    // Whether a poll is armed, and how far out.
+    pending: () => (state._activityPoll === null ? 0 : 1),
+    delay: () => timers.get(state._activityPoll).ms,
+    // Fire the armed poll.
+    tick: async () => {
+      const armed = timers.get(state._activityPoll);
+      assert.ok(armed, "no poll was armed");
+      timers.delete(state._activityPoll);
+      armed.fn();
+      await flushMicrotasks();
+    },
+    // Answer the oldest held request.
+    release: async () => {
+      const answer = held.shift();
+      assert.ok(answer, "no request was held");
+      answer();
+      await flushMicrotasks();
+    },
+  };
+}
+
+test("a running stage keeps polling its transcript every two seconds", async () => {
+  const h = activityHarness([
+    [200, livePayload([tapeEvent(0)]), '"a"'],
+    [200, livePayload([tapeEvent(1)], { offset: 1 }), '"b"'],
+    [200, { ...livePayload([tapeEvent(0), tapeEvent(1), tapeEvent(2)]), live: false }, '"c"'],
+  ]);
+
+  await h.state.fetchActivity("commit", 0);
+  assert.equal(h.state.activity.live, true);
+  assert.equal(h.pending(), 1, "a live payload arms the next poll");
+  assert.equal(h.delay(), 2000);
+
+  await h.tick();
+  assert.deepEqual(h.state.tapeEvents().map((e) => e.text), ["line 0", "line 1"]);
+  assert.match(h.calls[1].url, /after=1/, "the poll sends the count of events it already holds");
+  assert.equal(h.calls[1].ifNoneMatch, '"a"', "and the validator of the payload it holds");
+  assert.equal(h.pending(), 1);
+
+  // The run has ended: the payload is the completed transcript and nothing is
+  // scheduled after it.
+  await h.tick();
+  assert.equal(h.state.activity.live, false);
+  assert.deepEqual(h.state.tapeEvents().map((e) => e.text), ["line 0", "line 1", "line 2"]);
+  assert.equal(h.pending(), 0, "a finished run schedules no further request");
+});
+
+test("a poll leaves the reader's expansions, window and loading state alone", async () => {
+  const h = activityHarness([
+    [200, livePayload([{ kind: "tool", tool: "Bash", id: "t1", arg: "go test" }]), '"a"'],
+    [200, livePayload([{ kind: "tool", tool: "Bash", id: "t1", arg: "go test", summary: "FAIL", result: "boom", is_error: true }, tapeEvent(1)]), '"b"'],
+  ]);
+
+  await h.state.fetchActivity("commit", 0);
+  h.state.toggleTool(h.state.tapeEvents()[0], 0);
+  assert.deepEqual(vmValue(h.state.expandedTools), { t1: true });
+
+  await h.tick();
+
+  assert.deepEqual(vmValue(h.state.expandedTools), { t1: true }, "the expanded row survives the tick");
+  assert.equal(h.state.activityLoading, false, "a refresh shows no spinner");
+  assert.equal(h.state.activityError, null);
+  // The server walked its cursor back over the tool row, so the result lands on
+  // the row already on screen instead of being lost.
+  assert.equal(h.state.tapeEvents()[0].result, "boom");
+  assert.equal(h.state.toolFailed(h.state.tapeEvents()[0]), true);
+});
+
+test("a live run without a structured record keeps tailing its plaintext log", async () => {
+  const logPayload = (content) => ({ source: "log", stage: "commit", run: 0, live: true, stale: true, content });
+  const h = activityHarness([
+    [200, logPayload("first line\n"), null],
+    [200, logPayload("first line\nsecond line\n"), null],
+  ]);
+
+  await h.state.fetchActivity("commit", 0);
+  await h.tick();
+
+  assert.equal(h.state.activity.content, "first line\nsecond line\n");
+  assert.equal(h.state.activity.tape, undefined, "a plaintext payload must not grow an empty tape");
+});
+
+test("a poll with follow off keeps every visible row in the window", async () => {
+  const first = [];
+  for (let i = 0; i < 250; i++) first.push(tapeEvent(i));
+  const h = activityHarness([
+    [200, livePayload(first), '"a"'],
+    [200, livePayload([tapeEvent(250), tapeEvent(251)], { offset: 250 }), '"b"'],
+  ]);
+
+  await h.state.fetchActivity("commit", 0);
+  h.state.logFollow = false;
+  const oldest = h.state.visibleTapeEvents()[0].idx;
+
+  await h.tick();
+
+  assert.equal(h.state.tapeWindow, 202, "the window grew by the two events that arrived");
+  assert.equal(h.state.visibleTapeEvents()[0].idx, oldest, "no row fell off the top");
+});
+
+test("a poll with follow on leaves the window at its own size", async () => {
+  const h = activityHarness([
+    [200, livePayload([tapeEvent(0)]), '"a"'],
+    [200, livePayload([tapeEvent(1)], { offset: 1 }), '"b"'],
+  ]);
+
+  await h.state.fetchActivity("commit", 0);
+  assert.equal(h.state.logFollow, true);
+
+  await h.tick();
+
+  assert.equal(h.state.tapeWindow, 200);
+});
+
+test("an unchanged transcript costs a 304 and changes nothing", async () => {
+  const h = activityHarness([
+    [200, livePayload([tapeEvent(0)]), '"a"'],
+    [304, {}, '"a"'],
+  ]);
+
+  await h.state.fetchActivity("commit", 0);
+  const before = vmValue(h.state.activity);
+
+  await h.tick();
+
+  assert.deepEqual(vmValue(h.state.activity), before);
+  assert.equal(h.pending(), 1, "the poll keeps running while the run does");
+});
+
+test("a failed poll keeps the transcript and only the third one is reported", async () => {
+  const h = activityHarness([
+    [200, livePayload([tapeEvent(0)]), '"a"'],
+    [500, {}, null],
+    [500, {}, null],
+    [500, { error: "daemon unreachable" }, null],
+  ]);
+
+  await h.state.fetchActivity("commit", 0);
+
+  await h.tick();
+  assert.equal(h.state.activityError, null, "one dropped request is not worth an error");
+  assert.deepEqual(h.state.tapeEvents().map((e) => e.text), ["line 0"]);
+
+  await h.tick();
+  assert.equal(h.state.activityError, null);
+
+  await h.tick();
+  assert.equal(h.state.activityError, "daemon unreachable");
+  assert.deepEqual(h.state.tapeEvents().map((e) => e.text), ["line 0"], "the transcript is still on screen");
+});
+
+test("a payload for a run the reader has left is discarded", async () => {
+  const h = activityHarness([
+    [200, livePayload([tapeEvent(0)]), '"a"'],
+    [200, livePayload([tapeEvent(1)], { offset: 1 }), '"b"'],
+  ]);
+
+  await h.state.fetchActivity("commit", 0);
+
+  // The reader clicks another stage in the ribbon while the poll is in flight.
+  const inFlight = h.state._loadActivity("commit", 0, { merge: true });
+  h.state.activityStage = "review";
+  h.state.activityRun = 1;
+  await inFlight;
+
+  assert.deepEqual(h.state.tapeEvents().map((e) => e.text), ["line 0"], "the answer for the old run was dropped");
+});
+
+test("a poll answered after the finished transcript arrived is discarded", async () => {
+  const h = activityHarness([
+    [200, livePayload([tapeEvent(0)]), '"a"'],
+    // The poll in flight when the run ended. Its answer is held back until
+    // after the finished transcript has arrived.
+    [200, livePayload([tapeEvent(1)], { offset: 1 }), '"b"', true],
+    [200, { ...livePayload([tapeEvent(0), tapeEvent(1), tapeEvent(2)]), live: false }, '"done"'],
+  ]);
+  h.state.tickets = [RUNNING_TICKET];
+
+  await h.state.fetchActivity("commit", 0);
+
+  const inFlight = h.state._loadActivity("commit", 0, { merge: true });
+  h.state.applyTicketUpdate({ ...RUNNING_TICKET, status: "human_review" });
+  await flushMicrotasks();
+  assert.deepEqual(h.state.tapeEvents().map((e) => e.text), ["line 0", "line 1", "line 2"]);
+
+  await h.release();
+  await inFlight;
+
+  assert.deepEqual(h.state.tapeEvents().map((e) => e.text), ["line 0", "line 1", "line 2"],
+    "the late poll must not cut the transcript back to its partial tape");
+  assert.equal(h.state.activity.live, false);
+  assert.equal(h.pending(), 0);
+});
+
+test("leaving the activity tab and closing the panel both stop the poll", async () => {
+  const h = activityHarness([
+    [200, livePayload([tapeEvent(0)]), '"a"'],
+    [200, livePayload([tapeEvent(0)]), '"a"'],
+  ]);
+
+  await h.state.fetchActivity("commit", 0);
+  assert.equal(h.pending(), 1);
+
+  h.state.switchTab("ticket");
+  assert.equal(h.pending(), 0, "a hidden pane is not worth a request every two seconds");
+
+  h.state.activity = null;
+  h.state.switchTab("activity");
+  await flushMicrotasks();
+  assert.equal(h.pending(), 1);
+
+  h.state.closeDetail();
+  assert.equal(h.pending(), 0);
+  assert.equal(h.state.activity, null);
+});
+
+test("a ticket that leaves in_progress reads the finished transcript once", async () => {
+  const h = activityHarness([
+    [200, livePayload([tapeEvent(0)]), '"a"'],
+    [200, { ...livePayload([tapeEvent(0), tapeEvent(1)]), live: false }, '"done"'],
+  ]);
+  h.state.tickets = [RUNNING_TICKET];
+
+  await h.state.fetchActivity("commit", 0);
+  assert.equal(h.pending(), 1);
+
+  h.state.applyTicketUpdate({ ...RUNNING_TICKET, status: "human_review" });
+  await flushMicrotasks();
+
+  assert.deepEqual(h.state.tapeEvents().map((e) => e.text), ["line 0", "line 1"]);
+  assert.equal(h.state.activity.live, false);
+  assert.equal(h.pending(), 0, "the run has ended, so nothing is scheduled");
 });
 
 test("switchTab('session') falls back to activity on a finished ticket", () => {

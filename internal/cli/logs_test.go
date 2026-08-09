@@ -50,6 +50,15 @@ func TestStageActivity(t *testing.T) {
 		assert.ErrorIs(t, err, os.ErrNotExist)
 	})
 
+	// The daemon turns this into an empty live payload rather than a 404, so a
+	// poll that arrives before the first bytes are written shows no error.
+	t.Run("a sidecar for another run of the stage is not borrowed", func(t *testing.T) {
+		require.NoError(t, os.WriteFile(filepath.Join(logDir, "plan.2.events.json"),
+			[]byte(`{"version":1,"agent":"claude","events":[]}`), 0o644))
+		_, _, err := StageActivity(ticketsDir, logsDir, "act-001", "plan", 0)
+		assert.ErrorIs(t, err, os.ErrNotExist)
+	})
+
 	t.Run("an unnamed stage keeps the newest-log fallback", func(t *testing.T) {
 		tape, content, err := StageActivity(ticketsDir, logsDir, "act-001", "", 0)
 		require.NoError(t, err)

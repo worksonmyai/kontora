@@ -2412,6 +2412,44 @@ test("flushEditSave cancels the pending debounce and saves once", () => {
   assert.equal(state._editDebounce, null);
 });
 
+// A ticket file separates its frontmatter from its body with a blank line, so
+// the body the API returns begins with that newline. The source editor must not
+// open on an empty first line, and a save must put the newline back or the file
+// loses the blank line. A body that arrived without one stays without one.
+test("the editor hides the newline the frontmatter left on the body", async () => {
+  const cases = [
+    { name: "separator newline", body: "\n# Title\n", shown: "# Title\n" },
+    { name: "no separator newline", body: "# Title\n", shown: "# Title\n" },
+    { name: "a second newline is a blank line the user wrote", body: "\n\n# Title\n", shown: "\n# Title\n" },
+    { name: "empty body", body: "", shown: "" },
+  ];
+  for (const c of cases) {
+    let sent = null;
+    const state = loadKontoraState({
+      fetch: async (url, options) => {
+        sent = JSON.parse(options.body);
+        return { ok: true, json: async () => ({ id: "kon-1", status: "open", body: c.body + "typed" }) };
+      },
+    });
+    state.configCache = { projects: [], pipelines: [], agents: [] };
+    state.$nextTick = async () => {};
+    state.selectedTicket = { id: "kon-1", status: "open", body: c.body };
+    state.tickets = [{ id: "kon-1", status: "open" }];
+
+    await state.startEditing();
+    assert.equal(state.editForm.body, c.shown, c.name);
+
+    // Nothing typed: the body is unchanged, so the request carries no body at
+    // all and the file keeps its bytes.
+    await state.saveEdit();
+    assert.equal(sent, null, c.name);
+
+    state.editForm.body += "typed";
+    await state.saveEdit();
+    assert.equal(sent.body, c.body + "typed", c.name);
+  }
+});
+
 // Two projects with different defaults, so a retarget has something to move
 // between, plus the global branch prefix a path outside both falls back to.
 const EDIT_PROJECTS = [

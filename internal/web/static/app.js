@@ -3391,13 +3391,16 @@ function kontora() {
     // method rather than a flag on setProse: the ticket body is text a person
     // wrote, and chipping a sha inside it would rewrite what they typed.
     //
-    // The memo key adds the branch, the commit shas and the changed-file count,
-    // which the chips read and which fetchChanges delivers after the first
-    // paint. A branch with changed files but no commit yet has no sha to key on.
+    // The memo key adds the branch, the commit shas, the changed-file count and
+    // the size of the board, all of which the chips read and none of which is
+    // there on the first paint: fetchChanges resolves after it, and a ticket id
+    // only chips once the board holding that ticket has loaded. A branch with
+    // changed files but no commit yet has no sha to key on.
     setSummaryProse(el, md) {
       var shas = (this.ticketChanges?.commits || []).map(function (c) { return c.sha; }).join(',');
       var files = (this.ticketChanges?.files || []).length;
-      var src = (md || '') + '\u0000' + (this.selectedTicket?.branch || '') + '\u0000' + shas + '\u0000' + files;
+      var src = (md || '') + '\u0000' + (this.selectedTicket?.branch || '') + '\u0000' + shas
+        + '\u0000' + files + '\u0000' + (this.tickets || []).length;
       if (el._proseSrc === src) return;
       el._proseSrc = src;
       el.innerHTML = this.renderMarkdown(md || '');
@@ -3454,6 +3457,10 @@ function kontora() {
       // matches across the ticket corpus, 24 were env vars.
       parts.push('(?<env>\\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+\\b)');
       parts.push('(?<attr>\\b[a-z_]+(?:\\.[a-z_]+){2,}\\b)');
+      // A ticket id is checked against the loaded board, not trusted from its
+      // shape: of 164 words of this shape across the ticket corpus, 87 were
+      // ordinary hyphenated words such as test-lisp and no-push.
+      parts.push('(?<ticket>\\b[a-z]{2,8}-[a-z0-9]{4}\\b)');
       // One optional word between the number and the noun, for 239 node tests
       // and 22 modified files.
       parts.push('(?<count>\\b\\d+(?:,\\d{3})* (?:[a-z][\\w-]* )?(?:files?|insertions?|deletions?|tests?|cases?|checks?|assertions?|passed|failed|skipped)\\b)');
@@ -3468,9 +3475,14 @@ function kontora() {
       var last = 0;
       var m;
       while (budget > 0 && (m = re.exec(text)) !== null) {
+        // A pattern may decline the run it matched. Leaving last where it is
+        // hands that text to the slice in front of the next chip, so the words
+        // reach the fragment once, as prose.
+        var chip = this._entityChip(m);
+        if (!chip) continue;
         if (!frag) frag = document.createDocumentFragment();
         if (m.index > last) frag.appendChild(document.createTextNode(text.slice(last, m.index)));
-        frag.appendChild(this._entityChip(m));
+        frag.appendChild(chip);
         last = m.index + m[0].length;
         budget--;
       }
@@ -3484,8 +3496,13 @@ function kontora() {
       var g = m.groups;
       var text = m[0];
       if (g.diff) return this._diffChip(text);
+      // A word shaped like a ticket id that names no ticket on the board is
+      // prose, and declining it here is what keeps test-lisp a plain word.
+      var t = g.ticket ? this._ticketById(text) : null;
+      if (g.ticket && !t) return null;
       var span = document.createElement('span');
       span.textContent = text;
+      if (t) return this._ticketChip(span, t);
       if (g.count) {
         span.className = 'ent-count';
         return span;
@@ -3510,6 +3527,26 @@ function kontora() {
         span.classList.add('is-copied');
         setTimeout(function () { span.classList.remove('is-copied'); }, 1200);
       });
+      return span;
+    },
+
+    _ticketById(id) {
+      return (this.tickets || []).find(function (t) { return t.id === id; }) || null;
+    },
+
+    // A ticket chip wears the referenced ticket's own status colour, the same
+    // hue the palette row and the board column use, so a summary that names a
+    // done ticket reads apart from one that names a cancelled one. Clicking
+    // opens that ticket rather than copying its id, and the card leads with the
+    // title, which is the part the id does not say.
+    _ticketChip(span, t) {
+      var mark = this._paletteStatusMarks[t.status];
+      span.className = 'ent ent-ticket ' + (mark ? mark.cls : 'text-surface-600');
+      span.setAttribute('data-tip-e', t.title || t.id);
+      span.setAttribute('data-tip-e-body', this.paletteStatusLabel(t.status));
+      span.setAttribute('data-tip-e-hint', 'click to open');
+      var self = this;
+      span.addEventListener('click', function () { self._paletteOpenTicket(t); });
       return span;
     },
 

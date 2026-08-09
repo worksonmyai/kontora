@@ -2423,6 +2423,17 @@ function kontora() {
       term.loadAddon(new termState.Unicode11Addon());
       term.unicode.activeVersion = '11';
       term.open(container);
+      // Escape drops read-write mode instead of reaching the agent, and stops
+      // there: the body Escape chain would otherwise see a read-only terminal
+      // on the same keypress and close the ticket.
+      var self = this;
+      term.attachCustomKeyEventHandler(function(e) {
+        if (e.type !== 'keydown' || e.key !== 'Escape' || !self.terminalRW) return true;
+        e.preventDefault();
+        e.stopPropagation();
+        self.toggleTerminalRW();
+        return false;
+      });
       termState.term = term;
       termState.fit = fit;
       termState.webglRetried = false;

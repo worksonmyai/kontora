@@ -1000,7 +1000,9 @@
     </div>
 
     <!-- Board filter. Jumping somewhere is the command palette's job (⌘K); this
-         input only narrows the board. -->
+         input only narrows the board. A ticket page has nothing to filter, so
+         the slot carries its breadcrumb instead. -->
+    <template x-if="!selectedTicket">
     <div class="flex-1 min-w-[120px] max-w-[300px] relative">
       <div class="relative flex items-center">
         <svg class="absolute left-2.5 w-3.5 h-3.5 text-surface-600 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -1020,9 +1022,20 @@
                 x-text="isMac ? '⌘K' : 'Ctrl K'"></button>
       </div>
     </div>
+    </template>
+
+    <template x-if="selectedTicket">
+      <div class="flex items-center gap-3 min-w-0">
+        <button type="button" @click="closeDetail()"
+                class="font-mono text-[12px] text-tx-3 hover:text-tx-2 transition-colors">board</button>
+        <span class="text-edge-faint">/</span>
+        <span class="font-mono text-[12px] text-tx-2 truncate" x-text="selectedTicket?.id"></span>
+        <span x-show="detailLoading" class="font-mono text-[11px] text-surface-600">loading...</span>
+      </div>
+    </template>
 
     <div class="flex items-center gap-2 text-xs font-mono shrink-0 ml-auto">
-      <template x-if="searchQuery && searchQuery.trim()">
+      <template x-if="!selectedTicket && searchQuery && searchQuery.trim()">
         <span class="text-[11px] text-surface-600 mx-1">
           <span class="text-tx-3" x-text="filteredTicketCount()"></span> matched
         </span>
@@ -1038,16 +1051,88 @@
         <svg x-show="!lightTheme" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
         <svg x-show="lightTheme" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
       </button>
-      <button @click="gotoView('new')"
-              class="text-[13px] font-sans font-semibold h-[31px] px-[14px] rounded-[7px] bg-accent text-accent-fg hover:bg-accent-bright transition-colors flex items-center gap-1.5">
-        <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
-        New ticket
-      </button>
-      <button @click="$refs.uploadInput.click()"
-              class="text-[12px] font-mono h-[31px] px-3 rounded-[7px] bg-surface-900 border border-edge-input text-tx-3 hover:text-tx-2 hover:border-edge-hover transition-colors flex items-center gap-1.5">
-        <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-        upload
-      </button>
+      <template x-if="!selectedTicket">
+        <div class="flex items-center gap-2">
+          <button @click="gotoView('new')"
+                  class="text-[13px] font-sans font-semibold h-[31px] px-[14px] rounded-[7px] bg-accent text-accent-fg hover:bg-accent-bright transition-colors flex items-center gap-1.5">
+            <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
+            New ticket
+          </button>
+          <button @click="$refs.uploadInput.click()"
+                  class="text-[12px] font-mono h-[31px] px-3 rounded-[7px] bg-surface-900 border border-edge-input text-tx-3 hover:text-tx-2 hover:border-edge-hover transition-colors flex items-center gap-1.5">
+            <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+            upload
+          </button>
+        </div>
+      </template>
+
+      <!-- Ticket actions. Same bar as the board's, because a ticket page fills
+           the same frame and has no second header of its own. -->
+      <template x-if="selectedTicket">
+        <div class="flex items-center gap-2">
+          <template x-if="selectedTicket?.status === 'in_progress'">
+            <button @click="action('pause')" :disabled="!!actionLoading"
+                    class="h-7 px-3 rounded-[7px] font-mono text-[11.5px] bg-surface-900 border border-edge-input text-tx-2 hover:text-st-paused hover:border-st-paused/35 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5"
+                    data-tip-t="Stops the running agent and pauses the ticket.">
+              <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="14" y="4" width="4" height="16" rx="1"/><rect x="6" y="4" width="4" height="16" rx="1"/></svg>
+              <span x-text="actionLoading === 'pause' ? 'pausing...' : 'pause'"></span>
+            </button>
+          </template>
+          <template x-if="selectedTicket?.status === 'in_progress'">
+            <button @click="action('skip')" :disabled="!!actionLoading"
+                    class="h-7 px-3 rounded-[7px] font-mono text-[11.5px] bg-surface-900 border border-edge-input text-tx-2 hover:text-tx hover:border-edge-hover transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5"
+                    data-tip-t="Skips the current stage and advances to the next one.">
+              <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 4 15 12 5 20 5 4"/><line x1="19" y1="5" x2="19" y2="19"/></svg>
+              <span x-text="actionLoading === 'skip' ? 'skipping...' : 'skip stage'"></span>
+            </button>
+          </template>
+          <template x-if="selectedTicket?.status === 'paused'">
+            <button @click="action('retry')" :disabled="!!actionLoading"
+                    class="h-7 px-3 rounded-[7px] font-mono text-[11.5px] bg-surface-900 border border-edge-input text-tx-2 hover:text-ok hover:border-ok/30 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5"
+                    data-tip-t="Re-runs the current stage in the same worktree.">
+              <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M3 21v-5h5"/></svg>
+              <span x-text="actionLoading === 'retry' ? 'retrying...' : 'retry'"></span>
+            </button>
+          </template>
+          <template x-if="selectedTicket?.status === 'human_review' && selectedTicket?.kontora">
+            <button type="button" :disabled="!!plannotatorInFlight[selectedTicket?.id]"
+                    @click="startPlannotatorReview(selectedTicket)"
+                    class="h-7 px-3 rounded-[7px] font-mono text-[11.5px] bg-surface-900 border border-edge-input text-tx-2 hover:text-accent hover:border-accent/40 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5"
+                    data-tip-t="Open Plannotator to annotate the diff; submitting feedback sends it back to the agent.">
+              <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
+              <span x-text="plannotatorInFlight[selectedTicket?.id] ? 'reviewing…' : 'plannotator review'"></span>
+            </button>
+          </template>
+          <!-- Status transitions from validMoves, the same source as the card menu. -->
+          <template x-for="mv in detailMoves(selectedTicket)" :key="mv.label">
+            <button type="button"
+                    @click="moveTicketVia(selectedTicket.id, mv.endpoint, mv.status ? { status: mv.status } : null)"
+                    class="h-7 px-3 rounded-[7px] font-mono text-[11.5px] border transition-colors flex items-center gap-1.5"
+                    :class="mv.label === 'Approve'
+                      ? 'bg-st-done/[0.16] border-st-done/[0.42] text-st-done font-bold hover:bg-st-done/[0.26]'
+                      : (mv.label === 'Cancel'
+                        ? 'bg-transparent border-st-cancel/25 text-st-cancel hover:bg-st-cancel/10'
+                        : 'bg-surface-900 border-edge-input text-tx-2 hover:text-tx hover:border-edge-hover')"
+                    x-text="(mv.label === 'Approve' ? '✓ ' : (mv.label === 'Cancel' ? '✕ ' : (mv.label === 'Send back' ? '↩ ' : ''))) + mv.label.toLowerCase()"></button>
+          </template>
+
+          <div class="relative" @click.outside="detailMenuOpen = false">
+            <button @click.stop="detailMenuOpen = !detailMenuOpen"
+                    class="w-7 h-7 rounded-[7px] bg-surface-850 border border-edge-hover text-tx-2 hover:bg-surface-800 transition-colors flex items-center justify-center"
+                    aria-haspopup="menu" :aria-expanded="detailMenuOpen" aria-label="More actions">
+              <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="2.2"/><circle cx="12" cy="12" r="2.2"/><circle cx="19" cy="12" r="2.2"/></svg>
+            </button>
+            <div x-show="detailMenuOpen" x-cloak x-transition.origin.top.right @click.stop
+                 class="absolute right-0 top-9 min-w-[186px] overflow-hidden rounded-[9px] border border-surface-700 bg-surface-900 shadow-[0_12px_30px_-10px_rgba(0,0,0,.7)] z-40" role="menu">
+              <button @click="detailMenuOpen = false; openDeleteModal()"
+                      class="w-full px-3 py-2 text-left font-mono text-[12px] text-err hover:bg-err/10 transition-colors flex items-center gap-[7px]">
+                <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>
+                delete file
+              </button>
+            </div>
+          </div>
+        </div>
+      </template>
     </div>
   </header>
 
@@ -1264,90 +1349,16 @@
     <div x-show="selectedTicket" x-cloak
          class="absolute inset-0 z-30 flex flex-col bg-surface-950">
 
-      <!-- Top bar: wordmark, breadcrumb, status-dependent actions -->
-      <div class="shrink-0 h-12 bg-surface-rail border-b border-surface-700 flex items-center gap-3 px-[18px]">
-        <button type="button" @click="closeDetail()"
-                class="font-mono text-[12px] text-tx-3 hover:text-tx-2 transition-colors">board</button>
-        <span class="text-edge-faint">/</span>
-        <span class="font-mono text-[12px] text-tx-2" x-text="selectedTicket?.id"></span>
-        <span x-show="detailLoading" class="font-mono text-[11px] text-surface-600">loading...</span>
-        <div class="flex-1"></div>
-
-        <template x-if="selectedTicket?.status === 'in_progress'">
-          <button @click="action('pause')" :disabled="!!actionLoading"
-                  class="h-7 px-3 rounded-[7px] font-mono text-[11.5px] bg-surface-900 border border-edge-input text-tx-2 hover:text-st-paused hover:border-st-paused/35 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5"
-                  data-tip-t="Stops the running agent and pauses the ticket.">
-            <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="14" y="4" width="4" height="16" rx="1"/><rect x="6" y="4" width="4" height="16" rx="1"/></svg>
-            <span x-text="actionLoading === 'pause' ? 'pausing...' : 'pause'"></span>
-          </button>
-        </template>
-        <template x-if="selectedTicket?.status === 'in_progress'">
-          <button @click="action('skip')" :disabled="!!actionLoading"
-                  class="h-7 px-3 rounded-[7px] font-mono text-[11.5px] bg-surface-900 border border-edge-input text-tx-2 hover:text-tx hover:border-edge-hover transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5"
-                  data-tip-t="Skips the current stage and advances to the next one.">
-            <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 4 15 12 5 20 5 4"/><line x1="19" y1="5" x2="19" y2="19"/></svg>
-            <span x-text="actionLoading === 'skip' ? 'skipping...' : 'skip stage'"></span>
-          </button>
-        </template>
-        <template x-if="selectedTicket?.status === 'paused'">
-          <button @click="action('retry')" :disabled="!!actionLoading"
-                  class="h-7 px-3 rounded-[7px] font-mono text-[11.5px] bg-surface-900 border border-edge-input text-tx-2 hover:text-ok hover:border-ok/30 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5"
-                  data-tip-t="Re-runs the current stage in the same worktree.">
-            <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M3 21v-5h5"/></svg>
-            <span x-text="actionLoading === 'retry' ? 'retrying...' : 'retry'"></span>
-          </button>
-        </template>
-        <template x-if="selectedTicket?.status === 'human_review' && selectedTicket?.kontora">
-          <button type="button" :disabled="!!plannotatorInFlight[selectedTicket?.id]"
-                  @click="startPlannotatorReview(selectedTicket)"
-                  class="h-7 px-3 rounded-[7px] font-mono text-[11.5px] bg-surface-900 border border-edge-input text-tx-2 hover:text-accent hover:border-accent/40 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5"
-                  data-tip-t="Open Plannotator to annotate the diff; submitting feedback sends it back to the agent.">
-            <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
-            <span x-text="plannotatorInFlight[selectedTicket?.id] ? 'reviewing…' : 'plannotator review'"></span>
-          </button>
-        </template>
-        <!-- Status transitions from validMoves, the same source as the card menu. -->
-        <template x-for="mv in detailMoves(selectedTicket)" :key="mv.label">
-          <button type="button"
-                  @click="moveTicketVia(selectedTicket.id, mv.endpoint, mv.status ? { status: mv.status } : null)"
-                  class="h-7 px-3 rounded-[7px] font-mono text-[11.5px] border transition-colors flex items-center gap-1.5"
-                  :class="mv.label === 'Approve'
-                    ? 'bg-st-done/[0.16] border-st-done/[0.42] text-st-done font-bold hover:bg-st-done/[0.26]'
-                    : (mv.label === 'Cancel'
-                      ? 'bg-transparent border-st-cancel/25 text-st-cancel hover:bg-st-cancel/10'
-                      : 'bg-surface-900 border-edge-input text-tx-2 hover:text-tx hover:border-edge-hover')"
-                  x-text="(mv.label === 'Approve' ? '✓ ' : (mv.label === 'Cancel' ? '✕ ' : (mv.label === 'Send back' ? '↩ ' : ''))) + mv.label.toLowerCase()"></button>
-        </template>
-
-        <div class="relative" @click.outside="detailMenuOpen = false">
-          <button @click.stop="detailMenuOpen = !detailMenuOpen"
-                  class="w-7 h-7 rounded-[7px] bg-surface-850 border border-edge-hover text-tx-2 hover:bg-surface-800 transition-colors flex items-center justify-center"
-                  aria-haspopup="menu" :aria-expanded="detailMenuOpen" aria-label="More actions">
-            <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="2.2"/><circle cx="12" cy="12" r="2.2"/><circle cx="19" cy="12" r="2.2"/></svg>
-          </button>
-          <div x-show="detailMenuOpen" x-cloak x-transition.origin.top.right @click.stop
-               class="absolute right-0 top-9 min-w-[186px] overflow-hidden rounded-[9px] border border-surface-700 bg-surface-900 shadow-[0_12px_30px_-10px_rgba(0,0,0,.7)] z-20" role="menu">
-            <button @click="detailMenuOpen = false; openDeleteModal()"
-                    class="w-full px-3 py-2 text-left font-mono text-[12px] text-err hover:bg-err/10 transition-colors flex items-center gap-[7px]">
-              <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>
-              delete file
-            </button>
-          </div>
-        </div>
-      </div>
-
-      <!-- Identity block -->
+      <!-- Identity block. The breadcrumb and the actions live in the app header. -->
       <div class="shrink-0 px-6 pt-[15px] pb-[11px] flex flex-col gap-2 min-w-0">
         <div class="flex items-center gap-2.5 flex-wrap min-w-0">
           <span class="status-chip shrink-0" :data-status="selectedTicket?.status" x-text="statusLabel(selectedTicket?.status)"></span>
           <span class="pipe-tag shrink-0"
                 :data-pipe-color="selectedTicket ? ticketPipeColor(selectedTicket) : 'none'"
                 x-text="selectedTicket ? ticketTagLabel(selectedTicket) : ''"></span>
-          <span class="copyable font-mono text-[11px] text-surface-600 hover:text-tx-3 shrink-0"
-                x-text="copiedId ? '✓ copied' : selectedTicket?.id"
-                @click.stop="copyTicketId(selectedTicket?.id)"></span>
+          <!-- The id sits in the breadcrumb, the path in the details rail. -->
           <span class="font-mono text-[11px] text-surface-600 truncate"
-                x-text="[selectedTicket?.agent, selectedTicket?.branch, selectedTicket?.path].filter(Boolean).map(s => '· ' + s).join(' ')"></span>
+                x-text="[selectedTicket?.agent, selectedTicket?.branch].filter(Boolean).join(' · ')"></span>
           <span x-show="selectedTicket && !selectedTicket.kontora"
                 class="font-mono text-[11px] px-2 py-0.5 rounded-full border border-warn/20 bg-warn/10 text-warn shrink-0">not a kontora ticket</span>
         </div>
@@ -1404,14 +1415,14 @@
               class="shrink-0 font-mono text-[10.5px] text-surface-600 pl-5 border-l border-surface-700/70">no runs yet</span>
       </div>
 
-      <!-- Body: content column + fixed-width rail -->
-      <div class="flex-1 min-h-0 flex">
+      <!-- Body: content column + fixed-width rail. The tab bar and the rail's
+           top rule share one stretched row, so both rules land on the same
+           baseline whatever the tab bar's height turns out to be. -->
+      <div class="flex-1 min-h-0 flex flex-col">
 
-        <!-- Content column -->
-        <div class="flex-1 min-w-0 flex flex-col min-h-0">
-
+        <div class="shrink-0 flex items-stretch">
           <!-- Tab bar -->
-          <div class="shrink-0 px-6 pt-[11px]">
+          <div class="flex-1 min-w-0 px-6 pt-[11px]">
             <div class="flex items-center gap-5 border-b border-surface-700/70">
               <button x-show="selectedTicket?.status === 'in_progress'" @click="switchTab('session')"
                       class="flex items-center gap-[7px] font-mono text-[12px] pb-[9px] border-b-2 transition-colors"
@@ -1444,6 +1455,15 @@
                       class="font-mono text-[11px] pb-[9px] text-accent hover:underline">← back to live</button>
             </div>
           </div>
+          <div class="shrink-0 w-[308px] border-l border-surface-700/50 bg-surface-frame px-4 pt-[11px]">
+            <div class="h-full border-b border-surface-700/70"></div>
+          </div>
+        </div>
+
+        <div class="flex-1 min-h-0 flex">
+
+        <!-- Content column -->
+        <div class="flex-1 min-w-0 flex flex-col min-h-0">
 
           <!-- Tab content -->
           <div class="flex-1 min-h-0 overflow-hidden">
@@ -1836,7 +1856,7 @@
             <!-- History: one row per run, addressing that run's transcript -->
             <template x-if="selectedTicket?.history?.length > 0">
               <div class="flex flex-col gap-[9px]">
-                <div class="h-px bg-surface-700"></div>
+                <div class="h-px bg-surface-700" x-show="churn().count > 0"></div>
                 <span class="side-label">history</span>
                 <div class="flex flex-col gap-[7px] font-mono text-[10.5px]">
                   <template x-for="(h, hi) in selectedTicket.history" :key="hi">
@@ -1853,11 +1873,16 @@
               </div>
             </template>
 
-            <!-- Details: the frontmatter grid -->
+            <!-- Details: the frontmatter grid. The leading rules only separate
+                 sections; the rail's top rule is the one in the header row. -->
             <div class="flex flex-col gap-[9px]">
-              <div class="h-px bg-surface-700"></div>
+              <div class="h-px bg-surface-700" x-show="churn().count > 0 || selectedTicket?.history?.length > 0"></div>
               <span class="side-label">details</span>
               <div class="grid grid-cols-[58px_1fr] gap-x-[10px] gap-y-[6px] font-mono text-[11px] items-start">
+                <span class="text-surface-600">id</span>
+                <button type="button" class="copyable text-tx-2 hover:text-tx text-left break-all justify-self-start"
+                        @click.stop="copyTicketId(selectedTicket?.id)"
+                        x-text="copiedId ? '✓ copied' : selectedTicket?.id"></button>
                 <template x-if="selectedTicket?.agent"><span class="text-surface-600">agent</span></template>
                 <template x-if="selectedTicket?.agent"><span class="text-tx-2 break-all" x-text="selectedTicket?.agent"></span></template>
                 <template x-if="selectedTicket?.stage && selectedTicket?.stages?.length > 1"><span class="text-surface-600">stage</span></template>
@@ -1914,7 +1939,11 @@
                   <div class="text-[13px] leading-[1.55] text-tx-2 whitespace-pre-wrap break-words" x-text="n.text"></div>
                 </div>
               </template>
-              <p x-show="!(selectedTicket?.notes || []).length" class="font-mono text-[11px] text-surface-600">No notes yet.</p>
+              <p x-show="!(selectedTicket?.notes || []).length" class="font-mono text-[11px] leading-[1.6] text-surface-600">
+                Reply to an agent between stages: notes live in the ticket body, so a stage prompt that
+                includes the body carries them. Kontora writes a note when it pauses a ticket, and an agent
+                adds its own with <span class="text-tx-3">kontora note</span>.
+              </p>
               <textarea x-model="noteDraft" rows="2" placeholder="Add a note…"
                         @keydown.enter="if ($event.metaKey || $event.ctrlKey) { $event.preventDefault(); submitNote(); }"
                         @keydown.escape.stop
@@ -1932,6 +1961,7 @@
                     class="w-full font-mono text-[12px] px-3 py-2.5 rounded-lg bg-surface-900 border border-edge-input text-accent hover:border-accent transition-colors flex items-center justify-center gap-2"
                     x-text="copiedCmd === 'kontora attach ' + selectedTicket?.id ? '✓ copied attach command' : '⌁ attach tmux session'"></button>
           </div>
+        </div>
         </div>
       </div>
     </div>

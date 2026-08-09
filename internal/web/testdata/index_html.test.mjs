@@ -5068,7 +5068,7 @@ function entityState(dom, overrides = {}) {
 test("entity chips skip code and links and stop at the cap", () => {
   const dom = fakeProseDom();
   const state = entityState(dom);
-  const many = Array.from({ length: 50 }, (_, i) => `ENVVAR${i}`).join(" ");
+  const many = Array.from({ length: 50 }, (_, i) => `ENV_VAR${i}`).join(" ");
   const root = dom.build(["div",
     `Committed abc1234 on kontora/kon-s1. ${many}`,
     ["code", "abc1234"],
@@ -5133,6 +5133,68 @@ test("each pattern claims only the text it names", () => {
       text: "Raised api.client.timeout.",
       want: [["api.client.timeout", "ent ent-attr"]],
     },
+    {
+      // The extension list decides this one: an extension missing from it
+      // leaves the run to the attribute pattern, which claims it on the dots.
+      name: "a test file with two dots is a file, not an attribute path",
+      branch: "kontora/kon-s1",
+      text: "Extended index_html.test.mjs.",
+      want: [["index_html.test.mjs", "ent ent-file"]],
+    },
+    {
+      name: "a file chips with the directories it was written with",
+      branch: "kontora/kon-s1",
+      text: "Rewrote /Users/a/org/x.md and internal/web/static/app.css.",
+      want: [
+        ["/Users/a/org/x.md", "ent ent-file"],
+        ["internal/web/static/app.css", "ent ent-file"],
+      ],
+    },
+    {
+      name: "a library named after an extension stays prose",
+      branch: "kontora/kon-s1",
+      text: "Alpine.js reads app.js.",
+      want: [["app.js", "ent ent-file"]],
+    },
+    {
+      name: "an uppercase word is an env var only with an underscore",
+      branch: "kontora/kon-s1",
+      text: "README and CHANGELOG describe ASTRA_BENCH_GATE.",
+      want: [["ASTRA_BENCH_GATE", "ent ent-env"]],
+    },
+    {
+      // chips() walks into the chip, so the halves follow their parent.
+      name: "a diff stat splits into a green half and a red one",
+      branch: "kontora/kon-s1",
+      text: "The branch is +750/-350 so far.",
+      want: [
+        ["+750/-350", "ent ent-diff"],
+        ["+750", "ent-add"],
+        ["-350", "ent-del"],
+      ],
+    },
+    {
+      name: "the deleted half is red whichever side it was written on",
+      branch: "kontora/kon-s1",
+      text: "Reverted, -50/+350 against main.",
+      want: [
+        ["-50/+350", "ent ent-diff"],
+        ["-50", "ent-del"],
+        ["+350", "ent-add"],
+      ],
+    },
+    {
+      name: "the exit code is coloured by zero against everything else",
+      branch: "kontora/kon-s1",
+      text: "The stage exits 0; the retry exited 5.",
+      want: [["exits 0", "ent ent-ok"], ["exited 5", "ent ent-bad"]],
+    },
+    {
+      name: "a counted noun takes one word in front of it",
+      branch: "kontora/kon-s1",
+      text: "239 node tests and 1 skipped.",
+      want: [["239 node tests", "ent-count"], ["1 skipped", "ent-count"]],
+    },
   ];
 
   for (const c of cases) {
@@ -5156,6 +5218,24 @@ test("the branch chip carries the base it forked from", () => {
 
   assert.equal(chip.textContent, "kontora/kon-s1");
   assert.match(chip.getAttribute("data-tip-e-body"), /main/);
+});
+
+test("a file the branch changed carries its diff stat", () => {
+  const dom = fakeProseDom();
+  const state = entityState(dom);
+  const root = dom.build(["div", "Rewrote app.js, left docs/plan.md alone."]);
+
+  state._markEntities(root);
+  const [changed, untouched] = dom.chips(root);
+
+  // The summary names the file by its basename; the changed-file list holds
+  // the path it was committed under.
+  assert.equal(changed.textContent, "app.js");
+  assert.equal(changed.getAttribute("data-tip-e-body"), "+2/-1 on this branch");
+  assert.equal(changed.getAttribute("data-tip-e-hint"), "click to copy");
+  // A file outside the diff has no record behind it, so it stays a plain chip.
+  assert.equal(untouched.textContent, "docs/plan.md");
+  assert.equal(untouched.getAttribute("data-tip-e"), null);
 });
 
 test("only summary prose gets chips", () => {

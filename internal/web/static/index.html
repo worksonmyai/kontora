@@ -606,11 +606,20 @@
     .ent-branch { color: rgba(var(--accent-bright), 1); background: rgba(var(--accent), .10); border-color: rgba(var(--accent), .24); }
     .ent-branch:hover { background: rgba(var(--accent), .20); }
     .ent-branch.is-copied { background: rgba(var(--accent), .28); }
-    /* Neutral: neither one copies or carries a hover card, and the accent
-       above means click to copy. */
-    .ent-file, .ent-attr { color: rgba(var(--tx-2), 1); background: rgba(var(--surface-700), .5); border-color: rgba(var(--surface-700), 1); padding: 1px 5px; }
+    /* Neutral, since the accent above means click to copy. A file the branch
+       changed does carry a card, and only that one turns into a target. */
+    .ent-file, .ent-attr, .ent-diff { color: rgba(var(--tx-2), 1); background: rgba(var(--surface-700), .5); border-color: rgba(var(--surface-700), 1); padding: 1px 5px; }
+    .ent-file[data-tip-e] { cursor: pointer; }
+    .ent-file[data-tip-e]:hover { background: rgba(var(--surface-700), .9); }
+    .ent-file.is-copied { background: rgba(var(--surface-600), .45); }
     .ent-env { color: rgba(var(--warn), 1); background: rgba(var(--warn), .10); border-color: rgba(var(--warn), .24); }
     .ent-count { border-bottom: 1px dotted rgba(var(--edge-hover), 1); cursor: default; }
+    /* The two halves of a diff stat, and the exit code that decided whether the
+       stage advanced: green for what was added or passed, red for the rest. */
+    .ent-add { color: rgba(var(--ok), 1); }
+    .ent-del { color: rgba(var(--err), 1); }
+    .ent-ok { color: rgba(var(--ok), 1); background: rgba(var(--ok), .10); border-color: rgba(var(--ok), .24); }
+    .ent-bad { color: rgba(var(--err), 1); background: rgba(var(--err), .10); border-color: rgba(var(--err), .24); }
 
     /* Entity hover card: title, body, and a hint shown only when the chip
        copies something. */

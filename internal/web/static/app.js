@@ -21,6 +21,83 @@ const TAPE_WINDOW_SIZE = 200;
 var mdCache = new Map();
 var MD_CACHE_MAX = 16;
 
+// Markdown source highlighting for the ticket editor. The result is painted
+// under a transparent textarea, so it must reproduce the source character for
+// character: only <span>s are added, and the whole line goes through the
+// escaper before any markup does.
+var MD_HL_SPECIAL = /[&<>]/g;
+var MD_HL_ENTITY = { '&': '&amp;', '<': '&lt;', '>': '&gt;' };
+
+function mdEscape(s) {
+  return s.replace(MD_HL_SPECIAL, function (c) { return MD_HL_ENTITY[c]; });
+}
+
+function mdSpan(cls, text) {
+  return '<span class="md-hl-' + cls + '">' + text + '</span>';
+}
+
+// Inline spans, in one left-to-right pass. Order matters: code comes first, so
+// a `*` inside backticks is consumed as code and cannot also open emphasis.
+var MD_HL_INLINE = /(`[^`\n]+`)|(\*\*[^\n]+?\*\*|__[^\n]+?__)|(\*[^*\n]+?\*)|(\[[^\]\n]*\]\([^)\n]*\))|(https?:\/\/[^\s)]+)/g;
+
+function mdInline(raw) {
+  return mdEscape(raw).replace(MD_HL_INLINE, function (m, code, strong, em, link, url) {
+    if (code) return mdSpan('mark', '`') + mdSpan('code', code.slice(1, -1)) + mdSpan('mark', '`');
+    if (strong) return mdSpan('mark', strong.slice(0, 2)) + mdSpan('strong', strong.slice(2, -2)) + mdSpan('mark', strong.slice(-2));
+    if (em) return mdSpan('mark', '*') + mdSpan('em', em.slice(1, -1)) + mdSpan('mark', '*');
+    if (link) {
+      var cut = link.indexOf('](');
+      return mdSpan('mark', '[') + mdSpan('link', link.slice(1, cut))
+        + mdSpan('mark', '](') + mdSpan('url', link.slice(cut + 2, -1)) + mdSpan('mark', ')');
+    }
+    return mdSpan('url', url);
+  });
+}
+
+var MD_HL_FENCE = /^\s*(```|~~~)/;
+var MD_HL_RULE = /^\s*([-*_])(\s*\1){2,}\s*$/;
+var MD_HL_HEADING = /^(\s*)(#{1,6} +)(.*)$/;
+var MD_HL_QUOTE = /^(\s*>+ ?)(.*)$/;
+var MD_HL_ITEM = /^(\s*)([-*+]|\d+[.)])( +)(.*)$/;
+var MD_HL_TASK = /^(\[[ xX]\])( *)(.*)$/;
+var MD_HL_ROW = /^\s*\|/;
+
+function highlightMarkdown(src) {
+  var lines = (src || '').split('\n');
+  var out = [];
+  var inFence = false;
+  for (var i = 0; i < lines.length; i++) {
+    var line = lines[i];
+    var m;
+    if (MD_HL_FENCE.test(line)) {
+      inFence = !inFence;
+      out.push(mdSpan('mark', mdEscape(line)));
+    } else if (inFence) {
+      out.push(mdSpan('code', mdEscape(line)));
+    } else if (MD_HL_RULE.test(line)) {
+      out.push(mdSpan('mark', mdEscape(line)));
+    } else if ((m = MD_HL_HEADING.exec(line))) {
+      // The heading text keeps one colour: nesting inline spans inside it would
+      // repaint parts of it in the body palette.
+      out.push(m[1] + mdSpan('mark', m[2]) + mdSpan('head', mdEscape(m[3])));
+    } else if ((m = MD_HL_QUOTE.exec(line))) {
+      out.push(mdSpan('mark', mdEscape(m[1])) + mdSpan('quote', mdInline(m[2])));
+    } else if ((m = MD_HL_ITEM.exec(line))) {
+      var rest = m[4];
+      var task = MD_HL_TASK.exec(rest);
+      var tail = task
+        ? mdSpan(task[1][1] === ' ' ? 'mark' : 'done', task[1]) + task[2] + mdInline(task[3])
+        : mdInline(rest);
+      out.push(m[1] + mdSpan('mark', m[2]) + m[3] + tail);
+    } else if (MD_HL_ROW.test(line)) {
+      out.push(line.split('|').map(function (cell) { return mdInline(cell); }).join(mdSpan('mark', '|')));
+    } else {
+      out.push(mdInline(line));
+    }
+  }
+  return out.join('\n');
+}
+
 // xterm handles live here, not on the Alpine component. Alpine wraps the whole
 // x-data object in a deep reactive Proxy, so a Terminal stored there reads back
 // proxied, and every internal property hop in xterm's parser, buffer, and
@@ -3152,6 +3229,27 @@ function kontora() {
       if (el._proseSrc === src) return;
       el._proseSrc = src;
       el.innerHTML = this.renderMarkdown(src);
+    },
+
+    // Repaint the layer under the editor's transparent text. The typed
+    // character only becomes visible when this runs, so it cannot be deferred
+    // past the frame that draws it; one frame's worth of coalescing collapses
+    // repeated effect runs into a single pass over the body, which costs 1.6ms
+    // at 50KB. On a highlighter failure the text still has to be readable, so
+    // fall back to the plain source rather than leaving the layer empty.
+    setEditorHighlight(el, src) {
+      var text = src || '';
+      if (el._hlSrc === text) return;
+      el._hlSrc = text;
+      if (el._hlFrame) return;
+      el._hlFrame = requestAnimationFrame(function () {
+        el._hlFrame = 0;
+        try {
+          el.innerHTML = highlightMarkdown(el._hlSrc);
+        } catch (e) {
+          el.textContent = el._hlSrc;
+        }
+      });
     },
 
     // Height from content, so the panel stays the only scroller while editing.

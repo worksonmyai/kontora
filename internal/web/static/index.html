@@ -89,26 +89,85 @@
 
     .ticket-prose { color: rgba(var(--tx), 1); line-height: 1.7; }
     .ticket-prose h1 { font-size: 1.25rem; font-weight: 700; margin: 1.5rem 0 0.75rem; font-family: 'JetBrains Mono', monospace; }
-    .ticket-prose h2 { font-size: 1.05rem; font-weight: 600; margin: 1.25rem 0 0.5rem; font-family: 'JetBrains Mono', monospace; border-bottom: 1px solid rgba(var(--surface-700), 1); padding-bottom: 0.35rem; }
-    .ticket-prose h3 { font-size: 0.95rem; font-weight: 600; margin: 1rem 0 0.4rem; font-family: 'JetBrains Mono', monospace; }
-    .ticket-prose h4 { font-size: 0.85rem; font-weight: 600; color: rgba(var(--tx-2), 1); margin: 0.75rem 0 0.3rem; font-family: 'JetBrains Mono', monospace; }
-    .ticket-prose p { margin: 0.5rem 0; }
-    .ticket-prose ul, .ticket-prose ol { margin: 0.5rem 0; padding-left: 1.5rem; }
-    .ticket-prose li { margin: 0.2rem 0; }
+    .ticket-prose h2 { font-size: 1.05rem; font-weight: 600; margin: 1.75rem 0 0.6rem; font-family: 'JetBrains Mono', monospace; border-bottom: 1px solid rgba(var(--surface-700), 1); padding-bottom: 0.35rem; }
+    .ticket-prose h3 { font-size: 0.95rem; font-weight: 600; margin: 1.35rem 0 0.4rem; font-family: 'JetBrains Mono', monospace; }
+    .ticket-prose h4 { font-size: 0.85rem; font-weight: 600; color: rgba(var(--tx-2), 1); margin: 1rem 0 0.3rem; font-family: 'JetBrains Mono', monospace; }
+    .ticket-prose h1:first-child, .ticket-prose h2:first-child, .ticket-prose h3:first-child, .ticket-prose h4:first-child { margin-top: 0; }
+    .ticket-prose p { margin: 0.7rem 0; }
+    .ticket-prose ul, .ticket-prose ol { margin: 0.7rem 0; padding-left: 1.4rem; }
+    .ticket-prose li { margin: 0.35rem 0; }
+    .ticket-prose li > ul, .ticket-prose li > ol { margin: 0.35rem 0; }
+    .ticket-prose li > p { margin: 0.35rem 0; }
     .ticket-prose ul li { list-style-type: disc; }
     .ticket-prose ol li { list-style-type: decimal; }
     .ticket-prose li::marker { color: rgba(var(--surface-600), 1); }
-    .ticket-prose code { font-family: 'JetBrains Mono', monospace; font-size: 0.8rem; background: rgba(var(--surface-800), 1); padding: 0.15rem 0.4rem; border-radius: 3px; color: rgba(var(--accent-bright), 1); }
-    .ticket-prose pre { background: rgba(var(--surface-deep), 1); border: 1px solid rgba(var(--surface-700), 1); border-radius: 6px; padding: 0.75rem 1rem; margin: 0.75rem 0; overflow-x: auto; }
-    .ticket-prose pre code { background: none; padding: 0; color: rgba(var(--tx), 1); font-size: 0.78rem; }
+    /* em, not rem: an inline chip has to track the size of the text it sits in,
+       or it shrinks against the body it interrupts. */
+    .ticket-prose code { font-family: 'JetBrains Mono', monospace; font-size: 0.85em; background: rgba(var(--surface-800), 1); padding: 0.1em 0.35em; border-radius: 3px; color: rgba(var(--accent-bright), 1); }
+    .ticket-prose pre { background: rgba(var(--surface-deep), 1); border: 1px solid rgba(var(--surface-700), 1); border-radius: 6px; padding: 0.75rem 1rem; margin: 0.9rem 0; overflow-x: auto; }
+    .ticket-prose pre code { background: none; padding: 0; color: rgba(var(--tx), 1); font-size: 0.85em; line-height: 1.55; }
     .ticket-prose a { color: rgba(var(--accent), 1); text-decoration: underline; text-underline-offset: 2px; }
-    .ticket-prose blockquote { border-left: 3px solid rgba(var(--surface-700), 1); padding-left: 1rem; color: rgba(var(--tx-3), 1); margin: 0.75rem 0; }
-    .ticket-prose table { width: 100%; border-collapse: collapse; margin: 0.75rem 0; font-size: 0.85rem; }
-    .ticket-prose th { text-align: left; padding: 0.4rem 0.75rem; border-bottom: 1px solid rgba(var(--surface-600), 1); color: rgba(var(--tx-2), 1); font-family: 'JetBrains Mono', monospace; font-size: 0.78rem; }
+    .ticket-prose blockquote { border-left: 3px solid rgba(var(--surface-700), 1); padding-left: 1rem; color: rgba(var(--tx-3), 1); margin: 0.9rem 0; }
+    .ticket-prose table { width: 100%; border-collapse: collapse; margin: 0.9rem 0; font-size: 0.9em; }
+    .ticket-prose th { text-align: left; padding: 0.4rem 0.75rem; border-bottom: 1px solid rgba(var(--surface-600), 1); color: rgba(var(--tx-2), 1); font-family: 'JetBrains Mono', monospace; font-size: 0.85em; }
     .ticket-prose td { padding: 0.35rem 0.75rem; border-bottom: 1px solid rgba(var(--surface-800), 1); }
     .ticket-prose hr { border: none; border-top: 1px solid rgba(var(--surface-700), 1); margin: 1.5rem 0; }
     .ticket-prose input[type="checkbox"] { margin-right: 0.4rem; accent-color: rgba(var(--accent), 1); }
-    .ticket-prose strong { font-weight: 600; }
+    .ticket-prose strong { font-weight: 600; color: rgba(var(--tx-hi), 1); }
+
+    /* The ticket tab is the one place a body is read end to end rather than
+       skimmed in a side panel, so it gets its own size and a line length that
+       stops at --measure: 42rem is around 84 characters of DM Sans at 1rem,
+       against the 107 the full 960px column would hold. The cap sits on the
+       children, not on the container, so code blocks and tables still get the
+       whole width. */
+    .ticket-read { font-size: 1rem; line-height: 1.75; --measure: 42rem; }
+    .ticket-read > * { max-width: var(--measure); }
+    .ticket-read > pre, .ticket-read > table { max-width: none; }
+
+    /* Markdown source editor: a coloured copy of the text sits under a
+       transparent textarea. The two layers must lay their text out the same
+       way or the caret drifts away from the glyph it sits on, so every
+       property that moves a glyph is set on both and the frame around them
+       (border, background) belongs to the wrapper, which neither layer has.
+       The colouring adds weight but never size or family: JetBrains Mono keeps
+       one advance width from 400 to 700. */
+    .md-editor { position: relative; background: rgba(var(--surface-800), 1); border: 1px solid rgba(var(--surface-700), 1); border-radius: 8px; }
+    .md-editor:focus-within { border-color: rgba(var(--accent), 1); }
+    .md-editor > textarea, .md-editor-hl {
+      /* Block, or the textarea keeps its inline-block baseline gap and the
+         wrapper grows a strip of background below the last line. */
+      display: block;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.875rem;
+      line-height: 1.75;
+      letter-spacing: 0;
+      /* The right padding, not a narrower box, is what holds the source to the
+         reading measure: both layers keep the full width of the panel, so the
+         swap between the editor and the rendered body does not move anything,
+         and a percentage padding resolves against the same wrapper for both. */
+      padding: 12px max(14px, 100% - 42rem) 12px 14px;
+      margin: 0;
+      border: 0;
+      white-space: pre-wrap;
+      overflow-wrap: break-word;
+      word-break: normal;
+      tab-size: 2;
+    }
+    .md-editor-hl { position: absolute; inset: 0; overflow: hidden; pointer-events: none; color: rgba(var(--tx-2), 1); }
+    .md-editor > textarea { position: relative; background: transparent; color: transparent; caret-color: rgba(var(--tx-hi), 1); }
+    /* Translucent, so the layer underneath still reads through a selection. */
+    .md-editor > textarea::selection { background: rgba(var(--accent), 0.3); }
+
+    .md-hl-mark { color: rgba(var(--surface-600), 1); }
+    .md-hl-head { color: rgba(var(--accent-bright), 1); font-weight: 700; }
+    .md-hl-strong { color: rgba(var(--tx-hi), 1); font-weight: 700; }
+    .md-hl-em { color: rgba(var(--tx-hi), 1); }
+    .md-hl-code { color: rgba(var(--ok), 1); }
+    .md-hl-quote { color: rgba(var(--tx-3), 1); }
+    .md-hl-link { color: rgba(var(--accent), 1); }
+    .md-hl-url { color: rgba(var(--tx-4), 1); }
+    .md-hl-done { color: rgba(var(--ok), 1); }
 
     .tip { position: relative; display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; border-radius: 50%; font-size: 11px; font-style: italic; font-family: 'DM Sans', serif; color: rgba(var(--surface-600), 1); border: 1px solid rgba(var(--surface-700), 1); cursor: default; margin-left: 4px; flex-shrink: 0; line-height: 1; background: rgba(var(--surface-800), 0.5); padding: 0; }
     .tip:hover, .tip:focus-visible { color: rgba(var(--accent), 1); border-color: rgba(var(--accent), 0.38); outline: none; }
@@ -1462,18 +1521,21 @@
                            wraps at the same width as the full text, which is what
                            caretLineTop measures a prefix against. -->
                       <template x-if="editingBody">
-                        <textarea x-model="editForm.body" x-ref="bodyEditor"
-                          @input="autoGrowBody($el); debounceSaveEdit()"
-                          @blur="blurBodyEdit()"
-                          @keydown.escape="$event.stopPropagation(); exitBodyEdit()"
-                          @keydown.enter="if ($event.metaKey || $event.ctrlKey) { $event.preventDefault(); exitBodyEdit(); }"
-                          class="w-full min-h-[100px] overflow-hidden bg-surface-800 border border-surface-700 rounded px-3 py-2 text-sm text-tx-2 font-mono resize-none focus:outline-none focus:border-accent"
-                          spellcheck="false"></textarea>
+                        <div class="md-editor">
+                          <div class="md-editor-hl" aria-hidden="true" x-effect="setEditorHighlight($el, editForm.body)"></div>
+                          <textarea x-model="editForm.body" x-ref="bodyEditor"
+                            @input="autoGrowBody($el); debounceSaveEdit()"
+                            @blur="blurBodyEdit()"
+                            @keydown.escape="$event.stopPropagation(); exitBodyEdit()"
+                            @keydown.enter="if ($event.metaKey || $event.ctrlKey) { $event.preventDefault(); exitBodyEdit(); }"
+                            class="w-full min-h-[100px] overflow-hidden resize-none focus:outline-none"
+                            spellcheck="false"></textarea>
+                        </div>
                       </template>
                       <template x-if="!editingBody">
                         <div @click="beginBodyEdit($event)"
                           class="group/edit cursor-text rounded-lg border border-surface-700/50 hover:border-edge-hover transition-colors min-h-[150px] px-4 py-[14px] relative">
-                          <div x-show="editForm.body" x-ref="bodyPreview" class="ticket-prose text-sm" x-effect="setProse($el, editForm.body)"></div>
+                          <div x-show="editForm.body" x-ref="bodyPreview" class="ticket-prose ticket-read" x-effect="setProse($el, editForm.body)"></div>
                           <p x-show="!editForm.body" class="text-sm font-mono text-surface-600">Click to add a description...</p>
                           <span x-show="editForm.body" class="absolute top-1 right-2 text-[11px] font-mono text-surface-600 opacity-0 group-hover/edit:opacity-100 transition-opacity">click to edit</span>
                         </div>
@@ -1483,7 +1545,7 @@
                   <!-- Read-only view for non-editable tickets -->
                   <template x-if="!editing || !['open', 'todo', 'paused'].includes(selectedTicket?.status)">
                     <div>
-                      <div class="ticket-prose text-sm" x-effect="setProse($el, selectedTicket?.body || '')"></div>
+                      <div class="ticket-prose ticket-read" x-effect="setProse($el, selectedTicket?.body || '')"></div>
                       <div x-show="!selectedTicket?.body" class="text-sm font-mono text-surface-600">
                         <p>No ticket description.</p>
                       </div>

@@ -202,6 +202,9 @@ function stubXterm(termState) {
       created.push(this);
     }
     loadAddon() {}
+    attachCustomKeyEventHandler(handler) {
+      this.keyHandler = handler;
+    }
     open(container) {
       this.element.parentNode = container;
     }
@@ -755,6 +758,64 @@ test("the cursor stops blinking when the next stream is read-only", async () => 
 
   assert.equal(state.terminalRW, false);
   assert.equal(ctx.termState.term.options.cursorBlink, false, "cursor follows the mode");
+});
+
+test("Escape in the terminal drops read-write instead of reaching the agent", async () => {
+  const cases = [
+    {
+      name: "Escape while read-write",
+      rw: true,
+      event: { type: "keydown", key: "Escape" },
+      wantToAgent: false,
+      wantRW: false,
+      wantStopped: true,
+    },
+    {
+      name: "Escape while read-only",
+      rw: false,
+      event: { type: "keydown", key: "Escape" },
+      wantToAgent: true,
+      wantRW: false,
+      wantStopped: false,
+    },
+    {
+      name: "another key while read-write",
+      rw: true,
+      event: { type: "keydown", key: "a" },
+      wantToAgent: true,
+      wantRW: true,
+      wantStopped: false,
+    },
+    {
+      name: "the keyup half of Escape",
+      rw: true,
+      event: { type: "keyup", key: "Escape" },
+      wantToAgent: true,
+      wantRW: true,
+      wantStopped: false,
+    },
+  ];
+
+  for (const tc of cases) {
+    const { ctx, state } = await liveTerminal();
+    if (tc.rw) state.toggleTerminalRW();
+    assert.equal(state.terminalRW, tc.rw, `${tc.name}: mode setup`);
+
+    let stopped = false;
+    const event = {
+      ...tc.event,
+      preventDefault() {},
+      stopPropagation() {
+        stopped = true;
+      },
+    };
+
+    assert.equal(ctx.termState.term.keyHandler(event), tc.wantToAgent, `${tc.name}: key to agent`);
+    assert.equal(state.terminalRW, tc.wantRW, `${tc.name}: read-write mode`);
+    // A stopped event never reaches the body Escape chain, which would close
+    // the ticket on the same keypress.
+    assert.equal(stopped, tc.wantStopped, `${tc.name}: event stopped`);
+  }
 });
 
 test("a read-write toggle racing the first connect leaves one socket", async () => {

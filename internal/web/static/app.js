@@ -21,10 +21,17 @@ const TAPE_WINDOW_SIZE = 200;
 var mdCache = new Map();
 var MD_CACHE_MAX = 16;
 
-// Entities one summary may chip. The patterns below are heuristics: an
-// uppercase word is an env var only most of the time, so the cap bounds a
-// wrong guess as well as a long body.
+// Entities one summary may chip. The patterns below are heuristics: a dotted
+// lowercase run is an attribute path only most of the time, so the cap bounds a
+// wrong guess as well as a long body. The widest summary in the ticket corpus
+// matches nine.
 var ENTITY_MAX = 40;
+// File extensions a summary may name, as an allowlist. A bare \.\w+ tail would
+// read github.com and every other domain as a file, and every method call as
+// one too. The list covers what the ticket corpus writes; an extension missing
+// from it falls through to the dotted-attribute pattern, which is how
+// index_html.test.mjs used to render as an attribute path.
+var ENTITY_EXT = 'go|ts|tsx|js|jsx|mjs|cjs|json|md|ya?ml|toml|lock|css|html?|lisp|asd|exs?|py|rb|rs|sh|sql|csv|log|txt|tmpl|proto';
 // NodeFilter constants, spelled out rather than read off the global.
 var SHOW_TEXT = 4;
 var FILTER_ACCEPT = 1;
@@ -3384,11 +3391,13 @@ function kontora() {
     // method rather than a flag on setProse: the ticket body is text a person
     // wrote, and chipping a sha inside it would rewrite what they typed.
     //
-    // The memo key adds the branch and the commit shas, which the chips read
-    // and which fetchChanges delivers after the first paint.
+    // The memo key adds the branch, the commit shas and the changed-file count,
+    // which the chips read and which fetchChanges delivers after the first
+    // paint. A branch with changed files but no commit yet has no sha to key on.
     setSummaryProse(el, md) {
       var shas = (this.ticketChanges?.commits || []).map(function (c) { return c.sha; }).join(',');
-      var src = (md || '') + '\u0000' + (this.selectedTicket?.branch || '') + '\u0000' + shas;
+      var files = (this.ticketChanges?.files || []).length;
+      var src = (md || '') + '\u0000' + (this.selectedTicket?.branch || '') + '\u0000' + shas + '\u0000' + files;
       if (el._proseSrc === src) return;
       el._proseSrc = src;
       el.innerHTML = this.renderMarkdown(md || '');
@@ -3427,12 +3436,27 @@ function kontora() {
       // deadbeef, feedface and every other hex-looking word in the prose. The
       // commit list holds short shas, so allow a longer form of one.
       if (shas.length) parts.push('(?<sha>\\b(?:' + shas.map(reEscape).join('|') + ')[0-9a-f]*\\b)');
-      // Dotted stems, so contract.test.ts reads as a file: attr matches the
+      // A diff stat, either order: the added half green and the deleted half
+      // red, so +750/-350 and -350/+750 read the same way.
+      parts.push('(?<diff>(?<![\\w/])[+-]\\d+(?:,\\d{3})* ?/ ?[+-]\\d+(?:,\\d{3})*(?![\\w/]))');
+      // The exit code decides whether the pipeline advanced, so it is coloured
+      // by zero against everything else rather than left as prose.
+      parts.push('(?<exit>\\bexits?(?:ed)?(?: code)? (?<code>\\d+)\\b)');
+      // Leading directories, so internal/web/static/app.js chips as one path
+      // rather than leaving internal/web/static/ beside a chip. Dotted stems
+      // come with it, so contract.test.ts reads as a file: attr matches the
       // same run and, without them, claims it first.
-      parts.push('(?<file>\\b[\\w-]+(?:\\.[\\w-]+)*\\.(?:json|ts|tsx|go|md|ya?ml|lock)\\b|\\bnode_modules\\b)');
-      parts.push('(?<env>\\b[A-Z][A-Z0-9_]{3,}\\b)');
+      // The library names are prose, not files: a summary writes Alpine.js the
+      // way it writes tmux, and the extension list cannot tell the two apart.
+      parts.push('(?<file>(?<![\\w/.-])(?!(?:Alpine|Node|Next|Vue|React)\\.js\\b)/?(?:[\\w.-]+/)*[\\w-]+(?:\\.[\\w-]+)*\\.(?:' + ENTITY_EXT + ')\\b|\\bnode_modules\\b)');
+      // An env var carries an underscore. Without that, the pattern claims
+      // README, JSON, HTTP and every other shouted word: of 252 uppercase-word
+      // matches across the ticket corpus, 24 were env vars.
+      parts.push('(?<env>\\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+\\b)');
       parts.push('(?<attr>\\b[a-z_]+(?:\\.[a-z_]+){2,}\\b)');
-      parts.push('(?<count>\\b\\d+ (?:files?|insertions?|deletions?|tests?)\\b)');
+      // One optional word between the number and the noun, for 239 node tests
+      // and 22 modified files.
+      parts.push('(?<count>\\b\\d+(?:,\\d{3})* (?:[a-z][\\w-]* )?(?:files?|insertions?|deletions?|tests?|cases?|checks?|assertions?|passed|failed|skipped)\\b)');
       return new RegExp(parts.join('|'), 'g');
     },
 
@@ -3459,17 +3483,22 @@ function kontora() {
     _entityChip(m) {
       var g = m.groups;
       var text = m[0];
+      if (g.diff) return this._diffChip(text);
       var span = document.createElement('span');
       span.textContent = text;
       if (g.count) {
         span.className = 'ent-count';
         return span;
       }
+      if (g.exit) {
+        span.className = 'ent ent-' + (g.code === '0' ? 'ok' : 'bad');
+        return span;
+      }
       var kind = g.branch ? 'branch' : (g.sha ? 'sha' : (g.file ? 'file' : (g.env ? 'env' : 'attr')));
       span.className = 'ent ent-' + kind;
-      // Only a sha and a branch have something behind them. A file name says
-      // what it is, and an env var or a dotted attribute has no record at all,
-      // so those are coloured and nothing more.
+      // A sha, a branch and a file the branch touched have a record behind
+      // them. An env var, a dotted attribute and a file this branch never
+      // changed have none, so those are coloured and nothing more.
       var card = this._entityCard(kind, text);
       if (!card) return span;
       span.setAttribute('data-tip-e', text);
@@ -3484,6 +3513,21 @@ function kontora() {
       return span;
     },
 
+    // One chip holding both halves of a diff stat, each in its own colour.
+    _diffChip(text) {
+      var span = document.createElement('span');
+      span.className = 'ent ent-diff';
+      var halves = text.split('/');
+      for (var i = 0; i < halves.length; i++) {
+        if (i) span.appendChild(document.createTextNode('/'));
+        var half = document.createElement('span');
+        half.className = halves[i].trim().charAt(0) === '-' ? 'ent-del' : 'ent-add';
+        half.textContent = halves[i];
+        span.appendChild(half);
+      }
+      return span;
+    },
+
     _entityCard(kind, text) {
       if (kind === 'sha') {
         var hit = (this.ticketChanges?.commits || []).find(function (c) { return text.indexOf(c.sha) === 0; });
@@ -3492,6 +3536,14 @@ function kontora() {
       if (kind === 'branch') {
         var base = this.ticketChanges?.base;
         return base ? 'Branched from ' + base : 'This ticket\u2019s branch';
+      }
+      if (kind === 'file') {
+        // Summaries name a file by its basename as often as by its path, so
+        // match either against the changed-file list.
+        var f = (this.ticketChanges?.files || []).find(function (c) {
+          return c.path === text || c.path.endsWith('/' + text);
+        });
+        return f ? '+' + f.added + '/-' + f.deleted + ' on this branch' : '';
       }
       return '';
     },

@@ -726,6 +726,36 @@ created: 2026-01-01T00:00:00Z
 	require.NoError(t, <-errCh)
 }
 
+func TestNormalizeRemoteURL(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{"scp syntax", "git@github.com:owner/repo.git", "https://github.com/owner/repo"},
+		{"https with suffix", "https://github.com/owner/repo.git", "https://github.com/owner/repo"},
+		{"https without suffix", "https://github.com/owner/repo", "https://github.com/owner/repo"},
+		{"trailing slash", "https://github.com/owner/repo/", "https://github.com/owner/repo"},
+		{"ssh scheme", "ssh://git@github.com/owner/repo.git", "https://github.com/owner/repo"},
+		{"ssh port dropped", "ssh://git@git.example.com:2222/owner/repo.git", "https://git.example.com/owner/repo"},
+		{"git scheme", "git://github.com/owner/repo.git", "https://github.com/owner/repo"},
+		{"newline from git output", "git@github.com:owner/repo.git\n", "https://github.com/owner/repo"},
+		{"nested group", "https://gitlab.com/group/sub/repo.git", "https://gitlab.com/group/sub/repo"},
+		// The token belongs to the machine, not to everyone looking at the page.
+		{"credentials stripped", "https://user:token@github.com/owner/repo.git", "https://github.com/owner/repo"},
+		{"local path", "/Users/a/projects/repo", ""},
+		{"file url", "file:///Users/a/projects/repo", ""},
+		{"windows path", "C:/projects/repo", ""},
+		{"javascript url", "javascript:alert(1)//host/repo", ""},
+		{"host only", "https://github.com", ""},
+		{"empty", "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, normalizeRemoteURL(tc.raw))
+		})
+	}
+}
+
 func TestDaemon_GetChanges(t *testing.T) {
 	h := newHarness(t)
 	d := h.newDaemon(h.cfg)
@@ -751,6 +781,7 @@ path: %s
 	h.writeTicket("tst-gone.md", ticketMD("tst-gone", "branch: deleted-branch\n"))
 
 	for _, args := range [][]string{
+		{"remote", "add", "origin", "git@github.com:owner/repo.git"},
 		{"checkout", "-b", "feat-x"},
 		{"commit", "--allow-empty", "-m", "add feature"},
 		{"checkout", "main"},
@@ -776,6 +807,7 @@ path: %s
 	assert.NotEmpty(t, changes.Commits[0].SHA)
 	require.Len(t, changes.Files, 1)
 	assert.Equal(t, web.FileChangeInfo{Path: "a.txt", Added: 2, Deleted: 0}, changes.Files[0])
+	assert.Equal(t, "https://github.com/owner/repo", changes.Remote)
 
 	// No branch field: empty payload, not an error.
 	changes, err = d.GetChanges("tst-nob")

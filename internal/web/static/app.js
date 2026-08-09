@@ -3400,7 +3400,8 @@ function kontora() {
       var shas = (this.ticketChanges?.commits || []).map(function (c) { return c.sha; }).join(',');
       var files = (this.ticketChanges?.files || []).length;
       var src = (md || '') + '\u0000' + (this.selectedTicket?.branch || '') + '\u0000' + shas
-        + '\u0000' + files + '\u0000' + (this.tickets || []).length;
+        + '\u0000' + files + '\u0000' + (this.tickets || []).length
+        + '\u0000' + (this.ticketChanges?.remote || '');
       if (el._proseSrc === src) return;
       el._proseSrc = src;
       el.innerHTML = this.renderMarkdown(md || '');
@@ -3461,6 +3462,9 @@ function kontora() {
       // shape: of 164 words of this shape across the ticket corpus, 87 were
       // ordinary hyphenated words such as test-lisp and no-push.
       parts.push('(?<ticket>\\b[a-z]{2,8}-[a-z0-9]{4}\\b)');
+      // A pull request or issue number. The link behind it needs the project's
+      // origin, so this one is declined on a repository that has none.
+      parts.push('(?<ref>(?<![\\w#])#\\d{1,7}\\b)');
       // One optional word between the number and the noun, for 239 node tests
       // and 22 modified files.
       parts.push('(?<count>\\b\\d+(?:,\\d{3})* (?:[a-z][\\w-]* )?(?:files?|insertions?|deletions?|tests?|cases?|checks?|assertions?|passed|failed|skipped)\\b)');
@@ -3496,6 +3500,7 @@ function kontora() {
       var g = m.groups;
       var text = m[0];
       if (g.diff) return this._diffChip(text);
+      if (g.ref) return this._refChip(text);
       // A word shaped like a ticket id that names no ticket on the board is
       // prose, and declining it here is what keeps test-lisp a plain word.
       var t = g.ticket ? this._ticketById(text) : null;
@@ -3532,6 +3537,26 @@ function kontora() {
 
     _ticketById(id) {
       return (this.tickets || []).find(function (t) { return t.id === id; }) || null;
+    },
+
+    // A pull request link, and the only chip that navigates. The path a number
+    // sits under is the host's own convention (/pull on GitHub, /-/merge_requests
+    // on GitLab), so anything but github.com is left as prose rather than
+    // pointed at a URL that may not exist. #12 cannot say whether it is a pull
+    // request or an issue; GitHub redirects /pull to the issue when it is one.
+    _refChip(text) {
+      var remote = this.ticketChanges?.remote || '';
+      if (remote.indexOf('https://github.com/') !== 0) return null;
+      var a = document.createElement('a');
+      a.textContent = text;
+      a.className = 'ent ent-ref';
+      a.setAttribute('href', remote + '/pull/' + text.slice(1));
+      a.setAttribute('target', '_blank');
+      a.setAttribute('rel', 'noopener noreferrer');
+      a.setAttribute('data-tip-e', text);
+      a.setAttribute('data-tip-e-body', remote.slice('https://github.com/'.length));
+      a.setAttribute('data-tip-e-hint', 'opens on GitHub');
+      return a;
     },
 
     // A ticket chip wears the referenced ticket's own status colour, the same

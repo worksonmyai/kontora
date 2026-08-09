@@ -187,6 +187,12 @@ type ChangesInfo struct {
 	Branch  string           `json:"branch"`
 	Commits []CommitInfo     `json:"commits"`
 	Files   []FileChangeInfo `json:"files"`
+	// Remote is the repository's origin as a browsable https URL, with no
+	// trailing slash or .git suffix: the web UI turns a "#511" in a summary
+	// into a link under it. Empty when the project has no origin, when the
+	// origin is not an https or ssh git URL, or when the ticket names no
+	// repository.
+	Remote string `json:"remote,omitempty"`
 }
 
 type CommitInfo struct {

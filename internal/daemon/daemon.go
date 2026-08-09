@@ -749,6 +749,14 @@ func ticketBranch(cfg *config.Config, t *ticket.Ticket) string {
 	return worktree.BranchName(cfg.BranchPrefixFor(t.Path), t.ID)
 }
 
+func generatedTicketBranch(cfg *config.Config, t *ticket.Ticket) (string, bool) {
+	slug := worktree.Slug(t.Title())
+	if slug == "" {
+		return "", false
+	}
+	return worktree.BranchName(cfg.BranchPrefixFor(t.Path), slug+"-"+t.ID), true
+}
+
 // ticketBase returns the branch a ticket's worktree is cut from. Empty means
 // the repository's default branch. Unlike ticketBranch it takes no config
 // snapshot, because no config value feeds it.
@@ -908,6 +916,8 @@ func (d *Daemon) runTicket(ctx context.Context, ticketID string) {
 	taskCtx, taskCancel := context.WithCancel(ctx)
 	d.running[ticketID] = taskCancel
 
+	d.persistGeneratedBranchLocked(cfg, log, t, filePath)
+
 	// Reserve the branch atomically so two tickets targeting the same
 	// repository and branch can't both pass this guard and reuse each
 	// other's worktree by surprise. Keyed by (repoPath, branch) because
@@ -1064,6 +1074,33 @@ func (d *Daemon) runTicket(ctx context.Context, ticketID string) {
 		repoPath:     repoPath,
 		wtPath:       wtPath,
 	})
+}
+
+// persistGeneratedBranchLocked writes a generated branch while d.mu excludes
+// watcher updates. If the write fails, worktree creation and cleanup both use
+// ticketBranch's derived fallback.
+func (d *Daemon) persistGeneratedBranchLocked(cfg *config.Config, log *slog.Logger, t *ticket.Ticket, filePath string) {
+	if cfg.BranchNamingFor(t.Path).Mode != config.BranchNamingModeSlug || strings.TrimSpace(t.Branch) != "" {
+		return
+	}
+
+	branch, ok := generatedTicketBranch(cfg, t)
+	if !ok {
+		return
+	}
+	oldBranch := t.Branch
+	if err := t.SetField("branch", branch); err != nil {
+		log.Error("set generated branch failed", "branch", branch, "err", err)
+		return
+	}
+	if err := d.writeTicketLocked(t, filePath); err != nil {
+		if resetErr := t.SetField("branch", oldBranch); resetErr != nil {
+			log.Error("reset generated branch failed", "branch", branch, "err", resetErr)
+		}
+		log.Error("persist generated branch failed", "branch", branch, "err", err)
+		return
+	}
+	log.Info("generated branch", "branch", branch)
 }
 
 func (d *Daemon) runSimpleTicket(ctx, taskCtx context.Context, cfg *config.Config, log *slog.Logger, ticketID string, t *ticket.Ticket, filePath string) {
@@ -1832,26 +1869,52 @@ func (d *Daemon) resolvePath(t *ticket.Ticket) (repoName, repoPath string, err e
 }
 
 func (d *Daemon) writeTicket(t *ticket.Ticket, path string) error {
-	data, err := t.Marshal()
+	modTime, err := d.writeTicketFile(t, path)
 	if err != nil {
-		return err
-	}
-	d.recordSelfWrite(path)
-	if err := os.WriteFile(path, data, 0o644); err != nil {
 		return err
 	}
 	// Refresh the cached modtime so UpdatedAt reflects this write. Paths that
 	// reuse the ticketState in place (pickup, spawn) rely on this; reconstruct
 	// paths reuse the refreshed modtime via setTicketState to avoid a second
 	// stat. Caller must not hold d.mu.
-	if st, err := os.Stat(path); err == nil {
-		d.mu.Lock()
-		if ts, ok := d.tickets[t.ID]; ok {
-			ts.modTime = st.ModTime()
-		}
-		d.mu.Unlock()
-	}
+	d.mu.Lock()
+	d.refreshTicketModTimeLocked(t.ID, modTime)
+	d.mu.Unlock()
 	return nil
+}
+
+// writeTicketLocked is writeTicket for callers that already hold d.mu.
+func (d *Daemon) writeTicketLocked(t *ticket.Ticket, path string) error {
+	modTime, err := d.writeTicketFile(t, path)
+	if err != nil {
+		return err
+	}
+	d.refreshTicketModTimeLocked(t.ID, modTime)
+	return nil
+}
+
+func (d *Daemon) writeTicketFile(t *ticket.Ticket, path string) (time.Time, error) {
+	data, err := t.Marshal()
+	if err != nil {
+		return time.Time{}, err
+	}
+	d.recordSelfWrite(path)
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		return time.Time{}, err
+	}
+	if st, err := os.Stat(path); err == nil {
+		return st.ModTime(), nil
+	}
+	return time.Time{}, nil
+}
+
+func (d *Daemon) refreshTicketModTimeLocked(ticketID string, modTime time.Time) {
+	if modTime.IsZero() {
+		return
+	}
+	if ts, ok := d.tickets[ticketID]; ok {
+		ts.modTime = modTime
+	}
 }
 
 // setTicketState replaces the cached state for id after a writeTicket call,

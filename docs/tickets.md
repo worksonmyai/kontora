@@ -66,7 +66,7 @@ These are set and updated by the daemon as the ticket progresses through its pip
 | `attempt` | Retry counter for the current stage. Reset to 0 on advance/back. |
 | `started_at` | When the current stage started. |
 | `completed_at` | When the ticket finished (status became `done`). |
-| `branch` | Git worktree branch name (`kontora/<ticket-id>`). |
+| `branch` | Git worktree branch. Set it before pickup to choose the name. If empty, the default is `<prefix>/<ticket-id>`; [`branch_naming`](configuration.md#branch-naming) mode `slug` uses `<prefix>/<title-slug>-<ticket-id>`. The daemon stores a slug name before worktree creation and stores the default name after worktree creation succeeds. |
 | `history` | List of completed stage records. |
 | `last_error` | Error message from the last failed stage run. |
 | `summary` | Summary of the stage run that ended most recently: the text the agent wrote with `kontora summary`, or its final session message as a fallback. Cleared when a new stage starts; each stage keeps its own copy on its `history` entry. |

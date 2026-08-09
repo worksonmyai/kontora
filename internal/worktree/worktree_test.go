@@ -37,6 +37,78 @@ func TestBranchName(t *testing.T) {
 	}
 }
 
+func TestSlug(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "strips leading tag and stopwords",
+			input: "[kontora] Move the LLM round-trips out of the agent-lock holds",
+			want:  "move-llm-round-trips-out-agent-lock-holds",
+		},
+		{
+			name:  "preserves hyphenated compounds",
+			input: "Add a built-in opt-out end-to-end toggle",
+			want:  "add-built-in-opt-out-end-to-end-toggle",
+		},
+		{
+			name:  "deletes apostrophes",
+			input: "Trace astra's work end to end",
+			want:  "trace-astras-work-end-end",
+		},
+		{
+			name:  "deletes curly apostrophes",
+			input: "Fix owner’s retries",
+			want:  "fix-owners-retries",
+		},
+		{
+			name:  "uses first non-empty line",
+			input: "\n  \nFix retry, NOW!\nIgnored",
+			want:  "fix-retry-now",
+		},
+		{
+			name:  "replaces unicode letters",
+			input: "Café déjà vu",
+			want:  "caf-d-j-vu",
+		},
+		{
+			name:  "caps at word boundary",
+			input: "one two three four five six seven eight nine ten eleven",
+			want:  "one-two-three-four-five-six-seven-eight-nine-ten",
+		},
+		{
+			name:  "hard cuts long word",
+			input: strings.Repeat("a", 60),
+			want:  strings.Repeat("a", 48),
+		},
+		{
+			name:  "keeps all-stopword title",
+			input: "The The",
+			want:  "the-the",
+		},
+		{
+			name:  "empty input",
+			input: "",
+			want:  "",
+		},
+		{
+			name:  "punctuation only",
+			input: "!!!",
+			want:  "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := Slug(tt.input)
+			assert.Equal(t, tt.want, got)
+			assert.LessOrEqual(t, len(got), 48)
+		})
+	}
+}
+
 func TestPath(t *testing.T) {
 	m := New("/tmp/wt")
 	got := m.Path("myrepo", "tkt-1")

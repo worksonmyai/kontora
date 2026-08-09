@@ -53,6 +53,7 @@ func TestLoadMinimalDefaults(t *testing.T) {
 
 	assert.Equal(t, "~/.kontora/worktrees", cfg.WorktreesDir)
 	assert.Equal(t, 3, cfg.MaxConcurrentAgents)
+	assert.Equal(t, BranchNaming{Mode: BranchNamingModeOff}, cfg.BranchNaming)
 	require.NotNil(t, cfg.AutoPickUp)
 	assert.True(t, *cfg.AutoPickUp, "auto_pick_up should default to true")
 }
@@ -477,6 +478,30 @@ func TestLoadMinimalDefaultsBranchPrefix(t *testing.T) {
 	cfg, err := Load("testdata/minimal.yaml")
 	require.NoError(t, err)
 	assert.Equal(t, "kontora", cfg.BranchPrefix)
+}
+
+func TestLoadBranchNaming(t *testing.T) {
+	cfg, err := Load("testdata/branch_naming.yaml")
+	require.NoError(t, err)
+	assert.Equal(t, BranchNaming{Mode: BranchNamingModeSlug}, cfg.BranchNaming)
+	assert.Equal(t, BranchNaming{Mode: BranchNamingModeOff}, cfg.Projects["legacy"].BranchNaming)
+
+	tests := []struct {
+		name    string
+		fixture string
+		mode    string
+	}{
+		{name: "llm mode", fixture: "branch_naming_llm.yaml", mode: "llm"},
+		{name: "unknown project mode", fixture: "project_branch_naming_unknown.yaml", mode: "automatic"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := Load(filepath.Join("testdata", tt.fixture))
+			require.Error(t, err)
+			assert.ErrorContains(t, err, "branch_naming.mode")
+			assert.ErrorContains(t, err, tt.mode)
+		})
+	}
 }
 
 func TestLoadMinimalDefaultsTmuxSession(t *testing.T) {
@@ -1014,6 +1039,38 @@ func TestProjectFor(t *testing.T) {
 			assert.Equal(t, "claude", p.Agent)
 		})
 	}
+}
+
+func TestBranchNamingFor(t *testing.T) {
+	home := t.TempDir()
+	cfg := &Config{
+		BranchNaming: BranchNaming{Mode: BranchNamingModeSlug},
+		Projects: map[string]Project{
+			"api":    {Path: "~/projects/api", BranchNaming: BranchNaming{Mode: BranchNamingModeOff}},
+			"worker": {Path: "~/projects/worker"},
+		},
+	}
+
+	tests := []struct {
+		name   string
+		lookup string
+		want   string
+	}{
+		{name: "project mode overrides global mode", lookup: "~/projects/api", want: BranchNamingModeOff},
+		{name: "project mode by absolute path", lookup: filepath.Join(home, "projects", "api"), want: BranchNamingModeOff},
+		{name: "project without mode uses global mode", lookup: "~/projects/worker", want: BranchNamingModeSlug},
+		{name: "unmatched project uses global mode", lookup: "~/projects/other", want: BranchNamingModeSlug},
+		{name: "empty path uses global mode", lookup: "", want: BranchNamingModeSlug},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("HOME", home)
+			assert.Equal(t, BranchNaming{Mode: tt.want}, cfg.BranchNamingFor(tt.lookup))
+		})
+	}
+
+	assert.Equal(t, BranchNaming{Mode: BranchNamingModeOff}, (&Config{}).BranchNamingFor("/repos/api"))
 }
 
 func TestBranchPrefixFor(t *testing.T) {

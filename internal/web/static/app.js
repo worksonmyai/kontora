@@ -281,9 +281,9 @@ function kontora() {
     editSubmitting: false,
     editSaved: false,
     _editDebounce: null,
-    // The pipeline, agent, and branch the edit form inherited from the project
-    // that owns its current path. onEditPathChange tells an inherited value from
-    // a user-chosen one by comparing against it.
+    // The pipeline and agent the edit form inherited from the project that owns
+    // its current path. onEditPathChange compares against these values to keep
+    // user-selected values.
     _editInherited: null,
     // The newline between the closing --- and the first line of the body, which
     // the file has and the source editor must not show as an empty first line.
@@ -824,13 +824,6 @@ function kontora() {
       return this.projectForPath(this.createForm.path);
     },
 
-    // The prefix the daemon names a branch for a ticket in this repository
-    // with: the project's own prefix outranks the global one.
-    branchPrefixFor(path) {
-      var project = this.projectForPath(path);
-      return (project && project.branch_prefix) || this.configCache?.branch_prefix || 'kontora';
-    },
-
     // Prefill the selects the user has not touched from the project that owns
     // the typed path. cli.New applies the same defaults on submit, so this is a
     // preview of what the server will do, not the mechanism.
@@ -1003,10 +996,9 @@ function kontora() {
       // The form shows what the ticket would run with, not a "project default"
       // placeholder: the fields the ticket leaves blank are filled from the
       // project that owns the path, the same values the daemon would resolve.
-      this._initInherited = this.projectDefaultsFor(this.initForm.path, ticket.id);
+      this._initInherited = this.projectDefaultsFor(this.initForm.path);
       var pipeline = ticket.pipeline || this._initInherited.pipeline;
       var agent = ticket.agent || this._initInherited.agent;
-      if (!this.initForm.branch) this.initForm.branch = this._initInherited.branch;
       // Defer select values until after x-for has created <option> elements.
       await this.$nextTick();
       this.initForm.pipeline = pipeline;
@@ -1018,17 +1010,14 @@ function kontora() {
     // previous path is replaced, so retargeting the ticket cannot start it with
     // another repository's pipeline.
     onInitPathChange() {
-      var prev = this._initInherited || { pipeline: '', agent: '', branch: '' };
-      var next = this.projectDefaultsFor(this.initForm.path, this.initForm.ticketId);
+      var prev = this._initInherited || { pipeline: '', agent: '' };
+      var next = this.projectDefaultsFor(this.initForm.path);
 
       if (!this.initForm.pipeline || this.initForm.pipeline === prev.pipeline) {
         this.initForm.pipeline = next.pipeline;
       }
       if (!this.initForm.agent || this.initForm.agent === prev.agent) {
         this.initForm.agent = next.agent;
-      }
-      if (!this.initForm.branch || this.initForm.branch === prev.branch) {
-        this.initForm.branch = next.branch;
       }
       this._initInherited = next;
     },
@@ -1573,27 +1562,20 @@ function kontora() {
       this.editForm.agent = agent;
     },
 
-    // What the project that owns path gives a ticket: its pipeline, its agent,
-    // and the branch name the daemon would generate there.
-    projectDefaultsFor(path, ticketId) {
+    // Pipeline and agent defaults for the project that owns path. The daemon
+    // names an empty branch at pickup.
+    projectDefaultsFor(path) {
       var project = this.projectForPath(path) || {};
       return {
         pipeline: project.pipeline || '',
         agent: project.agent || '',
-        branch: this.branchPrefixFor(path) + '/' + (ticketId || this.selectedTicket?.id || ''),
       };
     },
 
-    // Re-apply the project defaults after the path field changes, so a ticket
-    // pointed at a configured repository runs the way that project says without
-    // the user filling the same three fields by hand.
-    //
-    // A value the user chose is kept. A value that only got there by inheriting
-    // from the previous path is replaced, otherwise retargeting a ticket would
-    // leave it with another repository's pipeline. The branch is always named,
-    // since every ticket gets one anyway.
+    // Re-apply inherited pipeline and agent values after the path changes.
+    // Keep values the user selected and leave the branch unchanged.
     onEditPathChange() {
-      var prev = this._editInherited || { pipeline: '', agent: '', branch: '' };
+      var prev = this._editInherited || { pipeline: '', agent: '' };
       var next = this.projectDefaultsFor(this.editForm.path);
 
       if (!this.editForm.pipeline || this.editForm.pipeline === prev.pipeline) {
@@ -1601,9 +1583,6 @@ function kontora() {
       }
       if (!this.editForm.agent || this.editForm.agent === prev.agent) {
         this.editForm.agent = next.agent;
-      }
-      if (!this.editForm.branch || this.editForm.branch === prev.branch) {
-        this.editForm.branch = next.branch;
       }
       this._editInherited = next;
 

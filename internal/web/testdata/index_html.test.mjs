@@ -2451,17 +2451,17 @@ test("the editor hides the newline the frontmatter left on the body", async () =
 });
 
 // Two projects with different defaults, so a retarget has something to move
-// between, plus the global branch prefix a path outside both falls back to.
+// between.
 const EDIT_PROJECTS = [
-  { name: "kontora", path: "~/projects/kontora", resolved_path: "/home/u/projects/kontora", pipeline: "implement", agent: "claude", branch_prefix: "kontora" },
-  { name: "sigil", path: "~/projects/sigil", resolved_path: "/home/u/projects/sigil", pipeline: "commit-no-push", agent: "pi-opus", branch_prefix: "alexander" },
+  { name: "kontora", path: "~/projects/kontora", resolved_path: "/home/u/projects/kontora", pipeline: "implement", agent: "claude" },
+  { name: "sigil", path: "~/projects/sigil", resolved_path: "/home/u/projects/sigil", pipeline: "commit-no-push", agent: "pi-opus" },
 ];
 
 // The edit form as startEditing leaves it for a ticket at fromPath, with the
 // project defaults for that path recorded as what the fields inherited.
 function editPathState(fromPath, fields) {
   const state = loadKontoraState();
-  state.configCache = { projects: EDIT_PROJECTS, branch_prefix: "global", pipelines: [], agents: [] };
+  state.configCache = { projects: EDIT_PROJECTS, pipelines: [], agents: [] };
   state.selectedTicket = { id: "kon-1", status: "open", path: fromPath, ...fields };
   state.editing = true;
   state.editForm = { body: "", path: fromPath, pipeline: "", agent: "", branch: "", ...fields };
@@ -2470,24 +2470,24 @@ function editPathState(fromPath, fields) {
   return state;
 }
 
-test("the edit form takes its pipeline, agent, and branch from the project the path names", () => {
+test("the edit form applies project defaults without changing the branch", () => {
   const cases = [
     {
       name: "blank fields inherit from the project",
       from: "", fields: {}, to: "~/projects/kontora",
-      want: { pipeline: "implement", agent: "claude", branch: "kontora/kon-1" },
+      want: { pipeline: "implement", agent: "claude", branch: "" },
     },
     {
       name: "an absolute path matches the same project",
       from: "", fields: {}, to: "/home/u/projects/kontora",
-      want: { pipeline: "implement", agent: "claude", branch: "kontora/kon-1" },
+      want: { pipeline: "implement", agent: "claude", branch: "" },
     },
     {
-      name: "values inherited from the previous project follow the retarget",
+      name: "inherited values follow the retarget",
       from: "~/projects/kontora",
-      fields: { pipeline: "implement", agent: "claude", branch: "kontora/kon-1" },
+      fields: { pipeline: "implement", agent: "claude", branch: "" },
       to: "~/projects/sigil",
-      want: { pipeline: "commit-no-push", agent: "pi-opus", branch: "alexander/kon-1" },
+      want: { pipeline: "commit-no-push", agent: "pi-opus", branch: "" },
     },
     {
       name: "values the user chose are kept",
@@ -2497,11 +2497,11 @@ test("the edit form takes its pipeline, agent, and branch from the project the p
       want: { pipeline: "review-only", agent: "codex", branch: "wip/experiment" },
     },
     {
-      name: "a path outside every project falls back to the global prefix",
+      name: "a path outside every project clears inherited defaults",
       from: "~/projects/kontora",
-      fields: { pipeline: "implement", agent: "claude", branch: "kontora/kon-1" },
+      fields: { pipeline: "implement", agent: "claude", branch: "old/branch" },
       to: "~/projects/other",
-      want: { pipeline: "", agent: "", branch: "global/kon-1" },
+      want: { pipeline: "", agent: "", branch: "old/branch" },
     },
   ];
 
@@ -2518,10 +2518,109 @@ test("the edit form takes its pipeline, agent, and branch from the project the p
   }
 });
 
-test("index.html applies the project defaults when the edit form's path changes", () => {
+test("the init form never fills or replaces the branch", async () => {
+  for (const branch of ["", "my/custom-branch"]) {
+    const state = loadKontoraState();
+    state.configCache = { projects: EDIT_PROJECTS, pipelines: [], agents: [] };
+    state.$nextTick = async () => {};
+
+    await state.openInitModal({ id: "kon-1", path: "~/projects/kontora", branch });
+    assert.equal(state.initForm.branch, branch);
+    assert.equal(state.initForm.pipeline, "implement");
+
+    state.initForm.path = "~/projects/sigil";
+    state.onInitPathChange();
+    assert.equal(state.initForm.branch, branch);
+    assert.equal(state.initForm.pipeline, "commit-no-push");
+  }
+});
+
+test("create and init requests omit empty branches and send custom branches", async () => {
+  for (const branch of ["", "my/custom-branch"]) {
+    const sent = [];
+    const state = loadKontoraState({
+      fetch: async (_url, options) => {
+        sent.push(JSON.parse(options.body));
+        return { ok: true, json: async () => ({}) };
+      },
+    });
+    state.closeCreateModal = () => {};
+    state.closeInitModal = () => {};
+    state.createForm = {
+      title: "Fix retry",
+      path: "/repos/api",
+      pipeline: "",
+      agent: "",
+      status: "todo",
+      body: "",
+      branch,
+      base_branch: "",
+    };
+    state.initForm = {
+      ticketId: "kon-1",
+      path: "/repos/api",
+      pipeline: "",
+      agent: "",
+      branch,
+    };
+
+    await state.submitCreateTicket();
+    await state.submitInitTicket();
+
+    assert.equal(sent.length, 2);
+    for (const body of sent) {
+      if (branch) {
+        assert.equal(body.branch, branch);
+      } else {
+        assert.equal(Object.hasOwn(body, "branch"), false);
+      }
+    }
+  }
+});
+
+test("edit requests omit an unchanged empty branch and send a custom branch", async () => {
+  const cases = [
+    { name: "empty branch", selected: "", edited: "", wantBranch: undefined },
+    { name: "custom branch", selected: "", edited: "my/custom-branch", wantBranch: "my/custom-branch" },
+  ];
+
+  for (const c of cases) {
+    let sent = null;
+    const state = loadKontoraState({
+      fetch: async (_url, options) => {
+        sent = JSON.parse(options.body);
+        return { ok: true, json: async () => ({ id: "kon-1", path: "/repos/new", branch: c.edited }) };
+      },
+    });
+    state.selectedTicket = { id: "kon-1", path: "/repos/old", branch: c.selected };
+    state.editing = true;
+    state.editForm = {
+      body: "",
+      pipeline: "",
+      path: "/repos/new",
+      agent: "",
+      branch: c.edited,
+      base_branch: "",
+    };
+    state.tickets = [];
+
+    await state.saveEdit();
+
+    assert.ok(sent, c.name);
+    if (c.wantBranch) {
+      assert.equal(sent.branch, c.wantBranch, c.name);
+    } else {
+      assert.equal(Object.hasOwn(sent, "branch"), false, c.name);
+    }
+  }
+});
+
+test("index.html applies project defaults and leaves branch naming to the daemon", () => {
   const html = fs.readFileSync(htmlPath, "utf8");
 
   assert.match(html, /<input type="text" x-model="editForm\.path" @change="onEditPathChange\(\)"/);
+  assert.equal((html.match(/placeholder="daemon assigns branch when run starts"/g) || []).length, 3);
+  assert.doesNotMatch(html, /auto-generate from ticket ID/);
 });
 
 test("closeDetail, the SSE editability guard, and switchTab flush before clearing the editor", () => {

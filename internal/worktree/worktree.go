@@ -24,6 +24,109 @@ func BranchName(prefix, taskID string) string {
 	return prefix + "/" + taskID
 }
 
+const slugMaxLength = 48
+
+var slugStopwords = map[string]struct{}{
+	"a": {}, "an": {}, "and": {}, "are": {}, "be": {}, "for": {}, "from": {},
+	"in": {}, "into": {}, "is": {}, "it": {}, "its": {}, "of": {}, "on": {},
+	"or": {}, "that": {}, "the": {}, "this": {}, "to": {}, "via": {}, "when": {},
+	"with": {},
+}
+
+// Slug converts a ticket title to a branch-safe segment.
+func Slug(s string) string {
+	line := firstNonEmptyLine(s)
+	if line == "" {
+		return ""
+	}
+
+	tokens := strings.Fields(stripLeadingTags(line))
+	parts := slugParts(tokens, true)
+	if len(parts) == 0 {
+		parts = slugParts(tokens, false)
+	}
+
+	slug := strings.Join(parts, "-")
+	if len(slug) <= slugMaxLength {
+		return slug
+	}
+	if slug[slugMaxLength] == '-' {
+		return slug[:slugMaxLength]
+	}
+	if cut := strings.LastIndexByte(slug[:slugMaxLength], '-'); cut >= 0 {
+		return slug[:cut]
+	}
+	return slug[:slugMaxLength]
+}
+
+func firstNonEmptyLine(s string) string {
+	for line := range strings.SplitSeq(s, "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			return line
+		}
+	}
+	return ""
+}
+
+func stripLeadingTags(s string) string {
+	for {
+		s = strings.TrimSpace(s)
+		if !strings.HasPrefix(s, "[") {
+			return s
+		}
+		end := strings.IndexByte(s, ']')
+		if end < 0 {
+			return s
+		}
+		s = s[end+1:]
+	}
+}
+
+func slugParts(tokens []string, filterStopwords bool) []string {
+	parts := make([]string, 0, len(tokens))
+	for _, token := range tokens {
+		if filterStopwords {
+			if _, ok := slugStopwords[slugTokenCore(token)]; ok {
+				continue
+			}
+		}
+		if part := normalizeSlugToken(token); part != "" {
+			parts = append(parts, part)
+		}
+	}
+	return parts
+}
+
+func slugTokenCore(s string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(s) {
+		if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+func normalizeSlugToken(s string) string {
+	var b strings.Builder
+	separator := false
+	for _, r := range strings.ToLower(s) {
+		switch {
+		case r >= 'a' && r <= 'z' || r >= '0' && r <= '9':
+			if separator && b.Len() > 0 {
+				b.WriteByte('-')
+			}
+			b.WriteRune(r)
+			separator = false
+		case r == '\'' || r == '’':
+			// Apostrophes join the text on either side.
+		default:
+			separator = b.Len() > 0
+		}
+	}
+	return b.String()
+}
+
 func (m *Manager) Path(repoName, taskID string) string {
 	return filepath.Join(m.worktreesDir, repoName, taskID)
 }

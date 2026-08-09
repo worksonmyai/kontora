@@ -115,7 +115,8 @@ pipelines:
 | Field | Required | Default | Description |
 |-------|----------|---------|-------------|
 | `tickets_dir` | no | `~/.kontora/tickets` | Directory containing ticket markdown files. |
-| `branch_prefix` | no | `kontora` | Git branch prefix. Branches are named `<prefix>/<ticket-id>`. A project can override it (see [projects](#projects)). |
+| `branch_prefix` | no | `kontora` | Git branch prefix. A project can override it (see [projects](#projects)). |
+| `branch_naming` | no | `mode: off` | How the daemon names a ticket with an empty `branch` field (see [branch naming](#branch-naming)). |
 | `worktrees_dir` | no | `~/.kontora/worktrees` | Where git worktrees are created. |
 | `logs_dir` | no | `~/.kontora/logs` | Where agent output logs are stored. |
 | `editor` | no | `$EDITOR` or `vi` | Editor for `kontora edit`. Falls back to `$EDITOR`, then `vi`. |
@@ -124,12 +125,53 @@ pipelines:
 | `instance_name` | no | `os.Hostname()` | Identifies this daemon when several run against one synced `tickets_dir`. Written to a ticket's `claimed_by` on pickup so daemons don't steal or kill each other's work (see [multi-machine tickets](tickets.md#running-on-multiple-machines)). Falls back to `default` if the hostname can't be read. Two machines that share a hostname must set this explicitly, or the protection can't tell them apart. |
 | `tmux_session` | no | `kontora` | The tmux session the daemon puts agent windows in. Allowed characters are `A-Z a-z 0-9 _ -`, 1 to 64 of them, and the name cannot start with `-`. Set a distinct value per daemon when you run more than one on a machine: startup cleanup, `kontora attach`, the TUI, and the web terminal are all scoped to this session, and two daemons sharing it can also signal each other's agents through the tmux `wait-for` channel when their ticket IDs collide. |
 | `statuses` | no | — | Extra parked statuses beyond the built-ins. Agents can park tickets here via `on_success`/`on_failure`. |
-| `projects` | no | — | Per-repository default pipeline, agent, and branch prefix (see [projects](#projects)). |
+| `projects` | no | — | Per-repository pipeline, agent, and branch naming defaults (see [projects](#projects)). |
 | `environment` | no | — | Map of environment variables to set for all agent processes. |
 | `resume_prompt` | no | (built-in) | Prompt sent to an agent whose stage a daemon restart interrupted, in place of the stage prompt (see [resuming after a restart](#resuming-after-a-restart)). Same template fields as a stage prompt. |
 | `web` | no | — | Web dashboard settings (see [web](#web)). Enabled by default. |
 
 All paths support `~` for the home directory. Tilde expansion happens at runtime, not at config load time.
+
+## branch naming
+
+`branch_naming` controls how the daemon names a ticket whose `branch` field is
+empty when the run starts:
+
+```yaml
+branch_naming:
+  mode: slug
+```
+
+| Mode | Generated branch |
+|------|------------------|
+| `off` | `<prefix>/<ticket-id>`, for example `kontora/kon-a3f2`. This is the default. |
+| `slug` | `<prefix>/<title-slug>-<ticket-id>`, for example `kontora/fix-retry-double-count-kon-a3f2`. |
+
+The slug comes from the ticket's first heading. The daemon removes a leading
+`[project]` tag and common filler words, converts the remaining text to
+lowercase ASCII words joined by hyphens, and limits the slug to 48 characters.
+If the heading has no ASCII letters or digits, the daemon uses
+`<prefix>/<ticket-id>`.
+
+In `slug` mode, the daemon stores the generated name before it creates the
+worktree. In `off` mode, it stores the default name after worktree creation
+succeeds. Later runs and cleanup use the stored name. A branch already set on
+the ticket is never replaced.
+
+A project can override the top-level mode:
+
+```yaml
+branch_naming:
+  mode: slug
+
+projects:
+  legacy:
+    path: ~/projects/legacy
+    branch_naming:
+      mode: off
+```
+
+`mode` must be `off` or `slug`. Any other value fails config validation.
 
 ## web
 
@@ -306,12 +348,12 @@ projects:
 | `pipeline` | no | Pipeline written into new tickets for this repository. |
 | `agent` | no | Agent written into new tickets for this repository. |
 | `branch_prefix` | no | Overrides the top-level `branch_prefix` for this repository. |
+| `branch_naming` | no | Overrides the top-level [`branch_naming`](#branch-naming) mode for this repository. |
 
-`branch_prefix` is resolved differently from the other two. `pipeline` and
-`agent` are stamped into the ticket when it is created; the branch prefix is
-read when the daemon generates the branch name, so a ticket whose `branch` field
-is empty picks up the current value. A ticket that already carries a `branch`
-keeps it.
+`pipeline` and `agent` are stamped into the ticket when it is created. The
+daemon reads `branch_prefix` and `branch_naming` when it names an empty branch,
+so the current config applies until pickup. A ticket that already carries a
+`branch` keeps it.
 
 The pipeline and agent defaults are applied when a ticket is created (`kontora new`, `POST /api/tickets`, the TUI and web create forms) or initialized (`kontora init`, `POST /api/tickets/{id}/init`), and are written into the ticket's frontmatter. The ticket file keeps saying exactly what will run, and an existing ticket is never rewritten.
 
@@ -346,14 +388,14 @@ change a prompt or an agent's arguments while agents are working.
 ### What reloads live
 
 `agents`, `stages`, `pipelines`, `projects`, `statuses`, `environment`,
-`auto_pick_up`, `default_agent`, `branch_prefix`, and the whole `plannotator`
-block.
+`auto_pick_up`, `default_agent`, `branch_prefix`, `branch_naming`, and the whole
+`plannotator` block.
 
 Editing `projects` reloads live, but the pipeline and agent defaults are stamped
 into a ticket when it is created or initialized. A reload changes what the next
 ticket gets, never what an existing one already carries. A project's
-`branch_prefix` is not stamped, so a reload also changes the branch of an
-existing ticket that has not been given one yet.
+`branch_prefix` and `branch_naming` are not stamped, so a reload changes how the
+daemon names an existing ticket whose branch is still empty.
 
 ### What needs a restart
 

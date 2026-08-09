@@ -1672,6 +1672,214 @@ func TestTicketBranch(t *testing.T) {
 	}
 }
 
+func TestGeneratedTicketBranch(t *testing.T) {
+	cfg := &config.Config{BranchPrefix: "kontora"}
+	tests := []struct {
+		name string
+		tkt  ticket.Ticket
+		want string
+		ok   bool
+	}{
+		{
+			name: "title slug and ticket ID",
+			tkt: ticket.Ticket{
+				ID:   "kon-a3f2",
+				Path: "/repos/kontora",
+				Body: "# [kontora] Fix the retry double count\n",
+			},
+			want: "kontora/fix-retry-double-count-kon-a3f2",
+			ok:   true,
+		},
+		{
+			name: "empty slug",
+			tkt: ticket.Ticket{
+				ID:   "kon-a3f2",
+				Path: "/repos/kontora",
+				Body: "# !!!\n",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := generatedTicketBranch(cfg, &tt.tkt)
+			assert.Equal(t, tt.ok, ok)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestBranchNamingAtPickup(t *testing.T) {
+	tests := []struct {
+		name               string
+		id                 string
+		mode               string
+		pipeline           string
+		title              string
+		presetBranch       string
+		wantBranch         string
+		wantNoGeneratedRef string
+	}{
+		{
+			name:               "preset branch is preserved",
+			id:                 "tst-custom",
+			mode:               config.BranchNamingModeSlug,
+			pipeline:           "one-stage",
+			title:              "[kontora] Fix the retry double count",
+			presetBranch:       "my/custom-branch",
+			wantBranch:         "my/custom-branch",
+			wantNoGeneratedRef: "kontora/fix-retry-double-count-tst-custom",
+		},
+		{
+			name:       "off mode uses ticket ID",
+			id:         "tst-off",
+			mode:       config.BranchNamingModeOff,
+			pipeline:   "one-stage",
+			title:      "[kontora] Fix the retry double count",
+			wantBranch: "kontora/tst-off",
+		},
+		{
+			name:       "empty slug uses ticket ID",
+			id:         "tst-empty",
+			mode:       config.BranchNamingModeSlug,
+			pipeline:   "one-stage",
+			title:      "!!!",
+			wantBranch: "kontora/tst-empty",
+		},
+		{
+			name:       "simple ticket gets generated branch",
+			id:         "tst-simple",
+			mode:       config.BranchNamingModeSlug,
+			title:      "[kontora] Fix the retry double count",
+			wantBranch: "kontora/fix-retry-double-count-tst-simple",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := newHarness(t)
+			h.cfg.BranchNaming.Mode = tt.mode
+			d := h.newDaemon(h.cfg)
+
+			pipelineLine := ""
+			if tt.pipeline != "" {
+				pipelineLine = "pipeline: " + tt.pipeline + "\n"
+			}
+			branchLine := ""
+			if tt.presetBranch != "" {
+				branchLine = "branch: " + tt.presetBranch + "\n"
+			}
+			h.writeTicket(tt.id+".md", fmt.Sprintf(`---
+id: %s
+kontora: true
+status: todo
+%s%sbase_branch: main
+path: %s
+created: 2026-01-01T00:00:00Z
+---
+# %s
+`, tt.id, pipelineLine, branchLine, h.repoDir, tt.title))
+
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			errCh := make(chan error, 1)
+			go func() { errCh <- d.Run(ctx) }()
+
+			result := h.waitForStatus(tt.id+".md", ticket.StatusDone, 10*time.Second)
+			assert.Equal(t, tt.wantBranch, result.Branch)
+			assert.Equal(t, "main", result.BaseBranch)
+			assert.True(t, gitBranchExists(h.repoDir, tt.wantBranch), "branch %q should exist", tt.wantBranch)
+			if tt.wantNoGeneratedRef != "" {
+				assert.False(t, gitBranchExists(h.repoDir, tt.wantNoGeneratedRef))
+			}
+			h.waitForWorktreeGone(tt.id, 5*time.Second)
+
+			cancel()
+			require.NoError(t, <-errCh)
+		})
+	}
+}
+
+func TestGeneratedBranchCleanupOnDone(t *testing.T) {
+	h := newHarness(t)
+	h.cfg.BranchNaming.Mode = config.BranchNamingModeSlug
+	h.cfg.Agents["agent1"] = config.Agent{Binary: "sh", Args: []string{"-c", "sleep 30", "--"}}
+	d := h.newDaemon(h.cfg)
+
+	const id = "tst-clean"
+	const wantBranch = "kontora/fix-retry-cleanup-tst-clean"
+	path := h.writeTicket(id+".md", fmt.Sprintf(`---
+id: %s
+kontora: true
+status: todo
+pipeline: one-stage
+base_branch: main
+path: %s
+created: 2026-01-01T00:00:00Z
+---
+# [kontora] Fix retry cleanup
+`, id, h.repoDir))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() { errCh <- d.Run(ctx) }()
+
+	h.waitForStatus(id+".md", ticket.StatusInProgress, 5*time.Second)
+	wtPath := filepath.Join(h.wtDir, h.repoName, id)
+	require.Eventually(t, func() bool {
+		cmd := exec.Command("git", "branch", "--show-current")
+		cmd.Dir = wtPath
+		out, err := cmd.Output()
+		return err == nil && strings.TrimSpace(string(out)) == wantBranch
+	}, 5*time.Second, 20*time.Millisecond)
+
+	running := h.readTask(id + ".md")
+	assert.Equal(t, wantBranch, running.Branch)
+	assert.Equal(t, "main", running.BaseBranch)
+	assert.True(t, gitBranchExists(h.repoDir, wantBranch))
+
+	require.NoError(t, running.SetField("status", string(ticket.StatusDone)))
+	data, err := running.Marshal()
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(path, data, 0o644))
+	d.handleFileChanged(path)
+
+	h.waitForWorktreeGone(id, 5*time.Second)
+	waitForAgentsDone(t, d, 5*time.Second)
+
+	cancel()
+	require.NoError(t, <-errCh)
+}
+
+func TestGeneratedBranchWriteFailureUsesFallback(t *testing.T) {
+	h := newHarness(t)
+	h.cfg.BranchNaming.Mode = config.BranchNamingModeSlug
+	d := h.newDaemon(h.cfg)
+
+	tkt, err := ticket.ParseBytes(fmt.Appendf(nil, `---
+id: tst-write
+kontora: true
+status: todo
+path: %s
+---
+# [kontora] Fix retry persistence
+`, h.repoDir))
+	require.NoError(t, err)
+
+	blocker := filepath.Join(h.tasksDir, "blocker")
+	require.NoError(t, os.WriteFile(blocker, nil, 0o644))
+	badPath := filepath.Join(blocker, "tst-write.md")
+
+	d.mu.Lock()
+	d.persistGeneratedBranchLocked(h.cfg, testLogger(t), tkt, badPath)
+	d.mu.Unlock()
+
+	assert.Empty(t, tkt.Branch)
+	assert.Equal(t, "kontora/tst-write", ticketBranch(h.cfg, tkt))
+	assert.False(t, gitBranchExists(h.repoDir, "kontora/fix-retry-persistence-tst-write"))
+}
+
 func TestWorktreeCleanupOnComplete(t *testing.T) {
 	h := newHarness(t)
 	d := h.newDaemon(h.cfg)

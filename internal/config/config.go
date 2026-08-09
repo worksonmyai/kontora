@@ -39,6 +39,7 @@ func (d Duration) MarshalYAML() (any, error) {
 type Config struct {
 	TicketsDir          string              `yaml:"tickets_dir"`
 	BranchPrefix        string              `yaml:"branch_prefix"`
+	BranchNaming        BranchNaming        `yaml:"branch_naming"`
 	WorktreesDir        string              `yaml:"worktrees_dir"`
 	LogsDir             string              `yaml:"logs_dir"`
 	Editor              string              `yaml:"editor"`
@@ -66,6 +67,15 @@ type Config struct {
 	// `stages.rework:` block, signalling the daemon to leave routing to the
 	// user's pipeline/on_success config.
 	ReworkIsBuiltin bool `yaml:"-"`
+}
+
+const (
+	BranchNamingModeOff  = "off"
+	BranchNamingModeSlug = "slug"
+)
+
+type BranchNaming struct {
+	Mode string `yaml:"mode"`
 }
 
 type Plannotator struct {
@@ -151,14 +161,14 @@ func ClearNone(value string) string {
 	return value
 }
 
-// Project names a repository and the pipeline, agent, and branch prefix
-// tickets created for it should default to. Every default is optional; an entry
-// may set any of them, or none.
+// Project names a repository and the defaults that apply to its tickets.
+// Every default is optional; an entry may set any of them, or none.
 type Project struct {
-	Path         string `yaml:"path"`
-	Pipeline     string `yaml:"pipeline"`
-	Agent        string `yaml:"agent"`
-	BranchPrefix string `yaml:"branch_prefix"`
+	Path         string       `yaml:"path"`
+	Pipeline     string       `yaml:"pipeline"`
+	Agent        string       `yaml:"agent"`
+	BranchPrefix string       `yaml:"branch_prefix"`
+	BranchNaming BranchNaming `yaml:"branch_naming"`
 }
 
 type Pipeline []PipelineStep
@@ -231,6 +241,9 @@ func (c *Config) applyDefaults() {
 	}
 	if c.BranchPrefix == "" {
 		c.BranchPrefix = "kontora"
+	}
+	if c.BranchNaming.Mode == "" {
+		c.BranchNaming.Mode = BranchNamingModeOff
 	}
 	if c.DefaultAgent == "" {
 		if _, ok := c.Agents["claude"]; ok {
@@ -361,6 +374,10 @@ func (c *Config) IsBoardStatus(s string) bool {
 }
 
 func (c *Config) Validate() error {
+	if err := validateBranchNamingMode(c.BranchNaming.Mode); err != nil {
+		return err
+	}
+
 	if _, ok := c.Agents[c.DefaultAgent]; !ok {
 		if c.DefaultAgent == "" {
 			return fmt.Errorf("default_agent: could not infer (set it explicitly or name an agent \"claude\")")
@@ -469,6 +486,9 @@ func (c *Config) validateProjects() error {
 				return fmt.Errorf("project %q: unknown agent %q", name, p.Agent)
 			}
 		}
+		if err := validateBranchNamingMode(p.BranchNaming.Mode); err != nil {
+			return fmt.Errorf("project %q: %w", name, err)
+		}
 		// ProjectFor matches on the normalized path, so two entries that expand
 		// to the same directory would make the lookup pick one at random.
 		norm := NormalizeRepoPath(p.Path)
@@ -533,6 +553,28 @@ func (c *Config) BranchPrefixFor(repoPath string) string {
 		return project.BranchPrefix
 	}
 	return c.BranchPrefix
+}
+
+// BranchNamingFor returns the branch naming mode for repoPath. A project mode
+// overrides the top-level mode. Empty in-memory configs use the default mode.
+func (c *Config) BranchNamingFor(repoPath string) BranchNaming {
+	mode := c.BranchNaming.Mode
+	if mode == "" {
+		mode = BranchNamingModeOff
+	}
+	if _, project, ok := c.ProjectFor(repoPath); ok && project.BranchNaming.Mode != "" {
+		mode = project.BranchNaming.Mode
+	}
+	return BranchNaming{Mode: mode}
+}
+
+func validateBranchNamingMode(mode string) error {
+	switch mode {
+	case "", BranchNamingModeOff, BranchNamingModeSlug:
+		return nil
+	default:
+		return fmt.Errorf("branch_naming.mode %q: must be %q or %q", mode, BranchNamingModeOff, BranchNamingModeSlug)
+	}
 }
 
 // NormalizeRepoPath is the form in which repository paths are compared: tilde

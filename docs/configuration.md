@@ -116,7 +116,7 @@ pipelines:
 |-------|----------|---------|-------------|
 | `tickets_dir` | no | `~/.kontora/tickets` | Directory containing ticket markdown files. |
 | `branch_prefix` | no | `kontora` | Git branch prefix. A project can override it (see [projects](#projects)). |
-| `branch_naming` | no | `mode: off` | How the daemon names a ticket with an empty `branch` field (see [branch naming](#branch-naming)). |
+| `branch_naming` | no | `mode: slug` | How the daemon names a ticket with an empty `branch` field (see [branch naming](#branch-naming)). |
 | `worktrees_dir` | no | `~/.kontora/worktrees` | Where git worktrees are created. |
 | `logs_dir` | no | `~/.kontora/logs` | Where agent output logs are stored. |
 | `editor` | no | `$EDITOR` or `vi` | Editor for `kontora edit`. Falls back to `$EDITOR`, then `vi`. |
@@ -139,13 +139,13 @@ empty when the run starts:
 
 ```yaml
 branch_naming:
-  mode: slug
+  mode: off
 ```
 
 | Mode | Generated branch |
 |------|------------------|
-| `off` | `<prefix>/<ticket-id>`, for example `kontora/kon-a3f2`. This is the default. |
-| `slug` | `<prefix>/<title-slug>-<ticket-id>`, for example `kontora/fix-retry-double-count-kon-a3f2`. |
+| `slug` | `<prefix>/<title-slug>-<ticket-id>`, for example `kontora/fix-retry-double-count-kon-a3f2`. This is the default. |
+| `off` | `<prefix>/<ticket-id>`, for example `kontora/kon-a3f2`. |
 
 The slug comes from the ticket's first heading. The daemon removes a leading
 `[project]` tag and common filler words, converts the remaining text to
@@ -154,7 +154,7 @@ If the heading has no ASCII letters or digits, the daemon uses
 `<prefix>/<ticket-id>`.
 
 In `slug` mode, the daemon stores the generated name before it creates the
-worktree. In `off` mode, it stores the default name after worktree creation
+worktree. In `off` mode, it stores the ID-derived name after worktree creation
 succeeds. Later runs and cleanup use the stored name. A branch already set on
 the ticket is never replaced.
 
@@ -165,9 +165,6 @@ to choose another.
 A project can override the top-level mode:
 
 ```yaml
-branch_naming:
-  mode: slug
-
 projects:
   legacy:
     path: ~/projects/legacy

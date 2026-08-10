@@ -72,6 +72,9 @@ type Config struct {
 const (
 	BranchNamingModeOff  = "off"
 	BranchNamingModeSlug = "slug"
+
+	// BranchNamingModeDefault is the mode an unset branch_naming.mode means.
+	BranchNamingModeDefault = BranchNamingModeSlug
 )
 
 type BranchNaming struct {
@@ -243,7 +246,7 @@ func (c *Config) applyDefaults() {
 		c.BranchPrefix = "kontora"
 	}
 	if c.BranchNaming.Mode == "" {
-		c.BranchNaming.Mode = BranchNamingModeOff
+		c.BranchNaming.Mode = BranchNamingModeDefault
 	}
 	if c.DefaultAgent == "" {
 		if _, ok := c.Agents["claude"]; ok {
@@ -560,7 +563,7 @@ func (c *Config) BranchPrefixFor(repoPath string) string {
 func (c *Config) BranchNamingFor(repoPath string) BranchNaming {
 	mode := c.BranchNaming.Mode
 	if mode == "" {
-		mode = BranchNamingModeOff
+		mode = BranchNamingModeDefault
 	}
 	if _, project, ok := c.ProjectFor(repoPath); ok && project.BranchNaming.Mode != "" {
 		mode = project.BranchNaming.Mode

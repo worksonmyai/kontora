@@ -53,7 +53,7 @@ func TestLoadMinimalDefaults(t *testing.T) {
 
 	assert.Equal(t, "~/.kontora/worktrees", cfg.WorktreesDir)
 	assert.Equal(t, 3, cfg.MaxConcurrentAgents)
-	assert.Equal(t, BranchNaming{Mode: BranchNamingModeOff}, cfg.BranchNaming)
+	assert.Equal(t, BranchNaming{Mode: BranchNamingModeSlug}, cfg.BranchNaming)
 	require.NotNil(t, cfg.AutoPickUp)
 	assert.True(t, *cfg.AutoPickUp, "auto_pick_up should default to true")
 }
@@ -1070,7 +1070,7 @@ func TestBranchNamingFor(t *testing.T) {
 		})
 	}
 
-	assert.Equal(t, BranchNaming{Mode: BranchNamingModeOff}, (&Config{}).BranchNamingFor("/repos/api"))
+	assert.Equal(t, BranchNaming{Mode: BranchNamingModeSlug}, (&Config{}).BranchNamingFor("/repos/api"))
 }
 
 func TestBranchPrefixFor(t *testing.T) {

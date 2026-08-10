@@ -296,7 +296,7 @@ created: 2026-01-01T00:00:00Z
 				assert.Equal(t, "", found, "base branch must not be checked out in a worktree")
 			}
 			for _, subject := range tc.wantCommits {
-				out, err := runGit(h.repoDir, "log", "--format=%s", "kontora/tst-base")
+				out, err := runGit(h.repoDir, "log", "--format=%s", result.Branch)
 				require.NoError(t, err)
 				assert.Contains(t, out, subject, "work branch should contain the base's commits")
 			}

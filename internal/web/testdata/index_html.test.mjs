@@ -5465,6 +5465,18 @@ test("every tab pane starts its first row on the rail's first label", () => {
   assert.match(html, /border-l-\[3px\] border-warn pl-3 text-xs/);
 });
 
+test("one rule closes the tab row across the pane and the rail", () => {
+  const html = fs.readFileSync(htmlPath, "utf8");
+
+  // The rule sits on the row, not inside either cell, so it runs edge to edge
+  // instead of breaking into a px-6 segment and a px-4 one.
+  assert.match(html, /<div class="shrink-0 flex items-stretch border-b border-surface-700\/70">/);
+  assert.match(html, /<div class="flex-1 min-w-0 px-6 pt-\[11px\]">\s*<div class="flex items-center gap-5">/);
+  // The rail's header cell is a bare spacer: painting it would start the frame
+  // colour a tab row above the pane's.
+  assert.match(html, /<div class="shrink-0 w-\[308px\] border-l border-surface-700\/50"><\/div>/);
+});
+
 test("the commit rail starts level with the first stage card", () => {
   const html = fs.readFileSync(htmlPath, "utf8");
   const tab = html.slice(html.indexOf(`x-show="activeTab === 'summary'"`), html.indexOf("<!-- Diff:"));

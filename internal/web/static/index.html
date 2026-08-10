@@ -544,13 +544,13 @@
        with the first stage card instead of with the header above it. */
     .summary-layout {
       display: grid; grid-template-columns: minmax(0, 1fr);
-      gap: 14px 28px; padding: 20px 24px 48px; max-width: 1240px;
+      gap: 14px 28px; padding: 1rem 1.5rem 3rem; max-width: 1240px;
     }
     .summary-layout:has(.summary-rail) { grid-template-columns: minmax(0, 1fr) 264px; }
     .summary-head, .summary-col { grid-column: 1; }
     .summary-col { min-width: 0; display: flex; flex-direction: column; gap: 14px; }
     .summary-rail {
-      grid-column: 2; grid-row: 2; align-self: start; position: sticky; top: 20px;
+      grid-column: 2; grid-row: 2; align-self: start; position: sticky; top: 1rem;
       display: flex; flex-direction: column; gap: 14px;
     }
     @container (max-width: 1000px) {
@@ -1605,7 +1605,7 @@
                  class="h-full flex flex-col bg-surface-frame">
               <div class="summary-scroll flex-1 min-h-0 overflow-y-auto">
                 <template x-if="selectedTicket?.last_error">
-                  <div class="mx-6 mt-5 border-l-[3px] border-err pl-3 py-1">
+                  <div class="mx-6 mt-4 border-l-[3px] border-err pl-3 text-xs">
                     <span class="text-err text-xs font-mono font-semibold">Error: </span>
                     <span class="text-err/80 text-xs font-mono break-words whitespace-pre-wrap" x-text="selectedTicket.last_error"></span>
                   </div>
@@ -1686,7 +1686,7 @@
             <div x-show="activeTab === 'diff'" x-transition.opacity.duration.150ms
                  class="h-full flex flex-col bg-surface-frame">
               <div class="flex-1 min-h-0 overflow-y-auto">
-                <div class="max-w-3xl mx-auto px-6 py-6 flex flex-col gap-5">
+                <div class="max-w-3xl mx-auto px-6 pt-4 pb-6 flex flex-col gap-5">
                   <template x-if="!ticketChanges">
                     <p class="font-mono text-[12px] text-surface-600">No branch changes to show.</p>
                   </template>
@@ -1726,15 +1726,15 @@
             <div x-show="activeTab === 'ticket'" x-transition.opacity.duration.150ms
                  class="h-full flex flex-col bg-surface-frame">
               <div class="flex-1 min-h-0 overflow-y-auto">
-                <div class="max-w-[960px] mx-auto px-6 py-6">
+                <div class="max-w-[960px] mx-auto px-6 pt-4 pb-6">
                   <template x-if="selectedTicket && !selectedTicket.kontora">
-                    <div class="mb-4 border-l-[3px] border-warn pl-3 py-1">
+                    <div class="mb-4 border-l-[3px] border-warn pl-3 text-xs">
                       <span class="text-warn text-xs font-mono font-semibold">not a kontora ticket</span>
                       <p class="text-surface-600 text-xs font-mono mt-1">Initialize this ticket from the card menu before queueing, resuming, or running an agent.</p>
                     </div>
                   </template>
                   <template x-if="selectedTicket?.last_error">
-                    <div class="mb-4 border-l-[3px] border-err pl-3 py-1">
+                    <div class="mb-4 border-l-[3px] border-err pl-3 text-xs">
                       <span class="text-err text-xs font-mono font-semibold">Error: </span>
                       <span class="text-err/80 text-xs font-mono break-words whitespace-pre-wrap" x-text="selectedTicket.last_error"></span>
                     </div>
@@ -1831,7 +1831,11 @@
           </div>
         </div>
 
-        <!-- Right rail -->
+        <!-- Right rail. Its p-4 is the top inset the tab panes match, so the
+             first row of whichever pane is open sits on the same line as the
+             rail's first label. The session and activity rows use a smaller
+             inset instead: items-center in a row with taller controls already
+             pushes their text down. -->
         <div class="shrink-0 w-[308px] border-l border-surface-700/50 bg-surface-frame flex flex-col min-h-0">
           <div class="flex-1 min-h-0 overflow-y-auto p-4 pb-[22px] flex flex-col gap-4">
 

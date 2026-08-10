@@ -5425,7 +5425,7 @@ test("the summary tab renders one card per run and a commit rail", () => {
 
   // The error banner keeps its shape and sits above the outcome rule.
   assert.ok(tab.indexOf('x-text="selectedTicket.last_error"') < tab.indexOf(">outcome<"));
-  assert.match(tab, /border-l-\[3px\] border-err pl-3 py-1/);
+  assert.match(tab, /border-l-\[3px\] border-err pl-3 text-xs/);
 
   // The rail is dropped, not hidden, when the branch has no commit, and every
   // fact on it comes out of the one changes payload.
@@ -5449,6 +5449,20 @@ test("the summary rail wraps on a container query, not a viewport one", () => {
   assert.match(html, /@container \(max-width: 1000px\) \{\s*\.summary-layout:has\(\.summary-rail\) \{ grid-template-columns: minmax\(0, 1fr\); \}\s*\.summary-rail \{ grid-column: 1; grid-row: auto; position: static; \}\s*\}/);
   assert.match(html, /\.summary-rail \{[^}]*position: sticky/);
   assert.match(html, /\.summary-layout:has\(\.summary-rail\) \{ grid-template-columns: minmax\(0, 1fr\) 264px; \}/);
+});
+
+test("every tab pane starts its first row on the rail's first label", () => {
+  const html = fs.readFileSync(htmlPath, "utf8");
+
+  // The rail's p-4 is the reference inset; the ticket, diff and summary panes
+  // match it, so the pane's first row and the rail's first label share a line.
+  assert.match(html, /overflow-y-auto p-4 pb-\[22px\]/);
+  assert.match(html, /max-w-\[960px\] mx-auto px-6 pt-4 pb-6/);
+  assert.match(html, /max-w-3xl mx-auto px-6 pt-4 pb-6/);
+  assert.match(html, /\.summary-layout \{[^}]*padding: 1rem 1\.5rem 3rem/);
+  // text-xs on the banner wrapper: the inherited strut is taller than the 12px
+  // line it holds and would push the first line below the rail's label.
+  assert.match(html, /border-l-\[3px\] border-warn pl-3 text-xs/);
 });
 
 test("the commit rail starts level with the first stage card", () => {

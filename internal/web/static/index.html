@@ -540,17 +540,22 @@
        308px rail, so the pane is ~300px narrower than the window and a
        viewport breakpoint would fire far too late. */
     .summary-scroll { container-type: inline-size; }
+    /* The outcome header is its own grid row, so the rail card starts level
+       with the first stage card instead of with the header above it. */
     .summary-layout {
-      display: flex; flex-wrap: wrap; align-items: flex-start;
-      gap: 28px; padding: 20px 24px 48px; max-width: 1240px;
+      display: grid; grid-template-columns: minmax(0, 1fr);
+      gap: 14px 28px; padding: 20px 24px 48px; max-width: 1240px;
     }
-    .summary-col { flex: 1 1 480px; min-width: 0; display: flex; flex-direction: column; gap: 14px; }
+    .summary-layout:has(.summary-rail) { grid-template-columns: minmax(0, 1fr) 264px; }
+    .summary-head, .summary-col { grid-column: 1; }
+    .summary-col { min-width: 0; display: flex; flex-direction: column; gap: 14px; }
     .summary-rail {
-      width: 264px; flex-shrink: 0; position: sticky; top: 20px;
+      grid-column: 2; grid-row: 2; align-self: start; position: sticky; top: 20px;
       display: flex; flex-direction: column; gap: 14px;
     }
     @container (max-width: 1000px) {
-      .summary-rail { width: 100%; position: static; }
+      .summary-layout:has(.summary-rail) { grid-template-columns: minmax(0, 1fr); }
+      .summary-rail { grid-column: 1; grid-row: auto; position: static; }
     }
 
     /* --stage-h is set per card from stageHue(), the same shape the board
@@ -586,9 +591,11 @@
     .stage-card-body.is-latest { font-size: 15px; color: rgba(var(--tx), 1); }
     .stage-card-body.is-earlier { font-size: 14.5px; color: rgba(var(--tx-2), 1); }
 
+    /* padding-top puts the card label on the same line as the stage card's
+       name, whose head row centres 11px text in 36px. */
     .rail-card {
       border: 1px solid rgba(var(--surface-700), .8); border-radius: 12px;
-      background: rgba(var(--surface-900), .6); padding: 13px 15px 14px;
+      background: rgba(var(--surface-900), .6); padding: 11px 15px 14px;
     }
     .rail-label { font-family: 'JetBrains Mono', monospace; font-size: 10px; color: rgba(var(--tx-faint), 1); width: 52px; flex-shrink: 0; }
 
@@ -1605,13 +1612,13 @@
                 </template>
                 <div class="summary-layout">
 
-                  <div class="summary-col">
-                    <div class="flex items-center gap-2.5">
-                      <span class="side-label">outcome</span>
-                      <span class="flex-1 h-px bg-surface-700/80"></span>
-                      <span class="num font-mono text-[10.5px] text-surface-600" x-text="summaryHeadline()"></span>
-                    </div>
+                  <div class="summary-head flex items-center gap-2.5">
+                    <span class="side-label">outcome</span>
+                    <span class="flex-1 h-px bg-surface-700/80"></span>
+                    <span class="num font-mono text-[10.5px] text-surface-600" x-text="summaryHeadline()"></span>
+                  </div>
 
+                  <div class="summary-col">
                     <template x-for="(card, ci) in summaryCards()" :key="card.key">
                       <div>
                         <!-- x-if, not x-show: one collapse-all button in the

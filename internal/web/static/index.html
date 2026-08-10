@@ -1423,14 +1423,17 @@
       </div>
 
       <!-- Body: content column + fixed-width rail. The tab bar and the rail's
-           top rule share one stretched row, so both rules land on the same
-           baseline whatever the tab bar's height turns out to be. -->
+           header cell share one stretched row that carries the rule itself, so
+           the line runs edge to edge and crosses the rail's border instead of
+           breaking into two segments with different insets. The rail cell
+           paints no background either: the frame colour then starts on this
+           rule on both sides, so the rail begins level with the pane. -->
       <div class="flex-1 min-h-0 flex flex-col">
 
-        <div class="shrink-0 flex items-stretch">
+        <div class="shrink-0 flex items-stretch border-b border-surface-700/70">
           <!-- Tab bar -->
           <div class="flex-1 min-w-0 px-6 pt-[11px]">
-            <div class="flex items-center gap-5 border-b border-surface-700/70">
+            <div class="flex items-center gap-5">
               <button x-show="selectedTicket?.status === 'in_progress'" @click="switchTab('session')"
                       class="flex items-center gap-[7px] font-mono text-[12px] pb-[9px] border-b-2 transition-colors"
                       :class="activeTab === 'session' ? 'text-tx-hi font-bold border-accent' : 'text-surface-600 border-transparent hover:text-tx-3'">
@@ -1462,9 +1465,7 @@
                       class="font-mono text-[11px] pb-[9px] text-accent hover:underline">← back to live</button>
             </div>
           </div>
-          <div class="shrink-0 w-[308px] border-l border-surface-700/50 bg-surface-frame px-4 pt-[11px]">
-            <div class="h-full border-b border-surface-700/70"></div>
-          </div>
+          <div class="shrink-0 w-[308px] border-l border-surface-700/50"></div>
         </div>
 
         <div class="flex-1 min-h-0 flex">

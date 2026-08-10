@@ -1969,6 +1969,47 @@ test("renderColumn clears a card dropped onto a collapsed rail", () => {
   assert.deepEqual(board.ids("cancelled"), []);
 });
 
+test("a drag that only opens the init modal puts the card back", async () => {
+  const cases = [
+    {
+      name: "target column has cards",
+      others: [{ id: "kon-a", title: "A", status: "todo", kontora: true, created_at: "2026-05-19T08:00:00Z" }],
+      target: ["kon-a"],
+    },
+    { name: "target column is empty", others: [], target: [] },
+  ];
+
+  for (const c of cases) {
+    let opts = null;
+    const { board, state } = renderedBoard(
+      [{ id: "ext-1", title: "External", status: "open", kontora: false }, ...c.others],
+      { Sortable: class { constructor(el, o) { opts = o; } option() {} } },
+    );
+    state.$nextTick = () => Promise.resolve();
+    state.initSortable(board.els["col-open"]);
+    assert.ok(opts && opts.onEnd, `${c.name}: Sortable took no handlers`);
+
+    // Sortable has already moved the card node into the target column when
+    // onEnd runs. ext-1 is not a kontora ticket, so moveTask opens the init
+    // modal and leaves the status alone instead of posting the move: nothing
+    // in the board data changed, and only the dropped render cache makes the
+    // card go back where it came from.
+    const card = board.els["col-open"].children[0];
+    board.els["col-in_progress"].insertBefore(card, null);
+    opts.onEnd({
+      item: card,
+      from: { dataset: { dropStatus: "open" } },
+      to: { dataset: { dropStatus: "todo" } },
+    });
+    await flushMicrotasks();
+
+    assert.equal(state.initModal, true, `${c.name}: init modal`);
+    assert.equal(state.tickets[0].status, "open", `${c.name}: ticket status`);
+    assert.deepEqual(board.ids("open"), ["ext-1"], `${c.name}: source column`);
+    assert.deepEqual(board.ids("in_progress"), c.target, `${c.name}: target column`);
+  }
+});
+
 test("formatElapsed renders history durations", () => {
   const state = loadKontoraState();
 

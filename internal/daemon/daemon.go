@@ -749,6 +749,20 @@ func ticketBranch(cfg *config.Config, t *ticket.Ticket) string {
 	return worktree.BranchName(cfg.BranchPrefixFor(t.Path), t.ID)
 }
 
+// autoTicketBranch returns the branch a ticket that carries none would run on:
+// the slug-derived name when its project has branch naming on and the title
+// yields a slug, the ID-derived name otherwise. Pickup produces the same two
+// names, one through persistGeneratedBranchLocked and one through ticketBranch,
+// so the web UI can show this before a run starts.
+func autoTicketBranch(cfg *config.Config, t *ticket.Ticket) string {
+	if cfg.BranchNamingFor(t.Path).Mode == config.BranchNamingModeSlug {
+		if branch, ok := generatedTicketBranch(cfg, t); ok {
+			return branch
+		}
+	}
+	return worktree.BranchName(cfg.BranchPrefixFor(t.Path), t.ID)
+}
+
 func generatedTicketBranch(cfg *config.Config, t *ticket.Ticket) (string, bool) {
 	slug := worktree.Slug(t.Title())
 	if slug == "" {

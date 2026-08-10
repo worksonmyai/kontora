@@ -158,6 +158,10 @@ worktree. In `off` mode, it stores the default name after worktree creation
 succeeds. Later runs and cleanup use the stored name. A branch already set on
 the ticket is never replaced.
 
+The web UI shows the name a ticket would get in the empty branch field of the
+start and edit forms, so you can read it before the run starts and type over it
+to choose another.
+
 A project can override the top-level mode:
 
 ```yaml

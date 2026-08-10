@@ -173,6 +173,7 @@ type TicketInfo struct {
 	UpdatedAt     *time.Time    `json:"updated_at,omitempty"`
 	Branch        string        `json:"branch,omitempty"`
 	BaseBranch    string        `json:"base_branch,omitempty"`
+	AutoBranch    string        `json:"auto_branch,omitempty"` // what the daemon would name the branch, set only while Branch is empty
 	ClaimedBy     string        `json:"claimed_by,omitempty"`
 	Stages        []string      `json:"stages,omitempty"`
 	History       []HistoryInfo `json:"history,omitempty"`

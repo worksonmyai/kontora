@@ -1709,6 +1709,62 @@ func TestGeneratedTicketBranch(t *testing.T) {
 	}
 }
 
+// The branch the web UI shows in an empty branch field has to be the one pickup
+// would produce, for both naming modes and for a title that yields no slug.
+func TestAutoTicketBranch(t *testing.T) {
+	cfg := &config.Config{
+		BranchPrefix: "kontora",
+		BranchNaming: config.BranchNaming{Mode: config.BranchNamingModeSlug},
+		Projects: map[string]config.Project{
+			"api":    {Path: "/repos/api", BranchPrefix: "feature"},
+			"legacy": {Path: "/repos/legacy", BranchNaming: config.BranchNaming{Mode: config.BranchNamingModeOff}},
+		},
+	}
+
+	tests := []struct {
+		name string
+		tkt  ticket.Ticket
+		want string
+		// wantInfo is the auto branch the ticket's web projection carries, empty
+		// when the ticket names a branch itself.
+		wantInfo string
+	}{
+		{
+			name:     "slug mode names the branch after the title",
+			tkt:      ticket.Ticket{ID: "api-a3f2", Path: "/repos/api", Body: "# [kontora] Fix the retry double count\n"},
+			want:     "feature/fix-retry-double-count-api-a3f2",
+			wantInfo: "feature/fix-retry-double-count-api-a3f2",
+		},
+		{
+			name:     "a project with naming off falls back to the ID",
+			tkt:      ticket.Ticket{ID: "leg-1", Path: "/repos/legacy", Body: "# Fix the retry double count\n"},
+			want:     "kontora/leg-1",
+			wantInfo: "kontora/leg-1",
+		},
+		{
+			name:     "a title with no slug falls back to the ID",
+			tkt:      ticket.Ticket{ID: "api-2", Path: "/repos/api", Body: "# !!!\n"},
+			want:     "feature/api-2",
+			wantInfo: "feature/api-2",
+		},
+		{
+			name: "a ticket that names its own branch reports no auto branch",
+			tkt:  ticket.Ticket{ID: "api-3", Path: "/repos/api", Branch: "mine/api-3", Body: "# Fix the retry double count\n"},
+			want: "feature/fix-retry-double-count-api-3",
+		},
+	}
+
+	d := New(cfg)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, autoTicketBranch(cfg, &tt.tkt))
+
+			info := d.buildTicketInfo(cfg, &ticketState{ticket: &tt.tkt}, false)
+			assert.Equal(t, tt.wantInfo, info.AutoBranch)
+		})
+	}
+}
+
 func TestBranchNamingAtPickup(t *testing.T) {
 	tests := []struct {
 		name               string

@@ -15,6 +15,10 @@ const PALETTE_FOCUS_FRAMES = 10;
 // reader starts at the bottom, so the rest of the tape can wait for a click.
 const TAPE_WINDOW_SIZE = 200;
 
+// What a branch field says when no name can be shown: the ticket carries no
+// branch and the daemon names one at pickup.
+const BRANCH_PLACEHOLDER = 'daemon assigns branch when run starts';
+
 // How often the activity tab re-reads a running stage's transcript. Fast enough
 // that a tool call and its result land while the reader is still on the row,
 // slow enough that a poll costs one stat on the daemon when nothing changed.
@@ -205,7 +209,7 @@ function kontora() {
     createTouched: { pipeline: false, agent: false },
     initModal: false,
     initSubmitting: false,
-    initForm: { ticketId: '', title: '', pipeline: '', agent: '', path: '', branch: '' },
+    initForm: { ticketId: '', title: '', pipeline: '', agent: '', path: '', branch: '', autoBranch: '', ticketPath: '' },
     actionLoading: null,
     deleteModal: false,
     detailMenuOpen: false,
@@ -983,6 +987,8 @@ function kontora() {
         agent: '',
         path: ticket.path || '',
         branch: ticket.branch || '',
+        autoBranch: ticket.auto_branch || '',
+        ticketPath: ticket.path || '',
       };
       this.initModal = true;
       if (!this.configCache) {
@@ -1025,6 +1031,22 @@ function kontora() {
     closeInitModal() {
       this.initModal = false;
       this.initSubmitting = false;
+    },
+
+    // What an empty branch field shows: the name the daemon would assign, as
+    // the server computed it, or a line saying it assigns one.
+    branchPlaceholder(auto) {
+      return auto || BRANCH_PLACEHOLDER;
+    },
+
+    // The init form's own placeholder. The server computed the name for the path
+    // the ticket names, and a path the user retyped can resolve to a project
+    // with another branch prefix or another naming mode. Rather than show a name
+    // that would then be wrong, a diverged path falls back to the generic line.
+    initBranchPlaceholder() {
+      var trim = function(p) { return (p || '').trim().replace(/\/+$/, ''); };
+      if (trim(this.initForm.path) !== trim(this.initForm.ticketPath)) return BRANCH_PLACEHOLDER;
+      return this.branchPlaceholder(this.initForm.autoBranch);
     },
 
     async submitInitTicket() {

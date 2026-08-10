@@ -5446,9 +5446,23 @@ test("the summary rail wraps on a container query, not a viewport one", () => {
   // The ticket page keeps a fixed 308px rail, so the pane is ~300px narrower
   // than the window and a viewport breakpoint would fire far too late.
   assert.match(html, /\.summary-scroll \{ container-type: inline-size; \}/);
-  assert.match(html, /@container \(max-width: 1000px\) \{\s*\.summary-rail \{ width: 100%; position: static; \}\s*\}/);
+  assert.match(html, /@container \(max-width: 1000px\) \{\s*\.summary-layout:has\(\.summary-rail\) \{ grid-template-columns: minmax\(0, 1fr\); \}\s*\.summary-rail \{ grid-column: 1; grid-row: auto; position: static; \}\s*\}/);
   assert.match(html, /\.summary-rail \{[^}]*position: sticky/);
-  assert.match(html, /\.summary-rail \{[^}]*width: 264px/);
+  assert.match(html, /\.summary-layout:has\(\.summary-rail\) \{ grid-template-columns: minmax\(0, 1fr\) 264px; \}/);
+});
+
+test("the commit rail starts level with the first stage card", () => {
+  const html = fs.readFileSync(htmlPath, "utf8");
+  const tab = html.slice(html.indexOf(`x-show="activeTab === 'summary'"`), html.indexOf("<!-- Diff:"));
+
+  // The outcome header is a sibling of the card column, not its first child, so
+  // grid row 2 starts at the first stage card in both columns.
+  assert.ok(tab.indexOf('class="summary-head') < tab.indexOf('class="summary-col"'));
+  assert.match(tab, /<div class="summary-col">\s*<template x-for="\(card, ci\) in summaryCards\(\)"/);
+  assert.match(html, /\.summary-rail \{[^}]*grid-row: 2/);
+  // The rail card's own top padding lines its label up with the stage name,
+  // which the stage head centres in 36px.
+  assert.match(html, /\.rail-card \{[^}]*padding: 11px 15px 14px/);
 });
 
 test("app.js no longer defines earlierSummaries", () => {

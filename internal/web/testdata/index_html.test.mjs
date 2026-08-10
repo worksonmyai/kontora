@@ -2619,8 +2619,55 @@ test("index.html applies project defaults and leaves branch naming to the daemon
   const html = fs.readFileSync(htmlPath, "utf8");
 
   assert.match(html, /<input type="text" x-model="editForm\.path" @change="onEditPathChange\(\)"/);
-  assert.equal((html.match(/placeholder="daemon assigns branch when run starts"/g) || []).length, 3);
+  // The create form has no ticket ID yet, so it is the only branch field that
+  // states the rule instead of naming the branch.
+  assert.equal((html.match(/placeholder="daemon assigns branch when run starts"/g) || []).length, 1);
+  assert.match(html, /:placeholder="initBranchPlaceholder\(\)"/);
+  assert.match(html, /:placeholder="branchPlaceholder\(selectedTicket\?\.auto_branch\)"/);
   assert.doesNotMatch(html, /auto-generate from ticket ID/);
+});
+
+test("an empty branch field shows the name the daemon would assign", async () => {
+  const generic = "daemon assigns branch when run starts";
+  const cases = [
+    {
+      name: "the ticket's own path",
+      ticket: { id: "kon-1", path: "~/projects/kontora", auto_branch: "kontora/fix-retry-kon-1" },
+      want: "kontora/fix-retry-kon-1",
+    },
+    {
+      name: "a retargeted path drops the name",
+      ticket: { id: "kon-1", path: "~/projects/kontora", auto_branch: "kontora/fix-retry-kon-1" },
+      retarget: "~/projects/sigil",
+      want: generic,
+    },
+    {
+      name: "a trailing slash is the same path",
+      ticket: { id: "kon-1", path: "~/projects/kontora", auto_branch: "kontora/fix-retry-kon-1" },
+      retarget: "~/projects/kontora/",
+      want: "kontora/fix-retry-kon-1",
+    },
+    {
+      name: "no name from the server",
+      ticket: { id: "kon-1", path: "~/projects/kontora" },
+      want: generic,
+    },
+  ];
+
+  for (const c of cases) {
+    const state = loadKontoraState();
+    state.configCache = { projects: EDIT_PROJECTS, pipelines: [], agents: [] };
+    state.$nextTick = async () => {};
+
+    await state.openInitModal(c.ticket);
+    if (c.retarget) {
+      state.initForm.path = c.retarget;
+      state.onInitPathChange();
+    }
+
+    assert.equal(state.initBranchPlaceholder(), c.want, c.name);
+    assert.equal(state.branchPlaceholder(c.ticket.auto_branch), c.ticket.auto_branch || generic, `${c.name}: edit form`);
+  }
 });
 
 test("closeDetail, the SSE editability guard, and switchTab flush before clearing the editor", () => {

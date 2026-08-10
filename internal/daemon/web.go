@@ -1052,6 +1052,9 @@ func (d *Daemon) broadcastTerminalReady(id string) {
 func (d *Daemon) buildTicketInfo(cfg *config.Config, ts *ticketState, includeBody bool) web.TicketInfo {
 	v := app.BuildView(cfg, ts.ticket, includeBody)
 	info := web.TicketInfoFromView(v)
+	if strings.TrimSpace(info.Branch) == "" {
+		info.AutoBranch = autoTicketBranch(cfg, ts.ticket)
+	}
 	mt := ts.modTime
 	if mt.IsZero() && ts.filePath != "" {
 		if st, err := os.Stat(ts.filePath); err == nil {

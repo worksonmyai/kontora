@@ -1518,7 +1518,8 @@ function kontora() {
       if (ticket && !ticket.kontora && ['todo', 'in_progress'].includes(newStatus)) {
         // A drag here has already moved the DOM node into the target column;
         // rebuild from canonical data so the card snaps back if the user
-        // dismisses the init modal.
+        // dismisses the init modal. The drag dropped the render cache for both
+        // columns, so this render patches them even though no status changed.
         this.recomputeBoard();
         this.openInitModal(ticket);
         return;
@@ -2137,6 +2138,15 @@ function kontora() {
       return '<div class="card-menu absolute right-0 top-7 min-w-[10rem] overflow-hidden rounded-lg border border-surface-700/60 bg-surface-900/95 shadow-lg shadow-black/30 z-20" role="menu">' + items + '</div>';
     },
 
+    // Forget the cached render state for the column that holds a status, so the
+    // next renderColumn rebuilds it from board data instead of skipping it as
+    // unchanged. Needed whenever a card node moved without going through the
+    // reconcile: the cache then describes a DOM that no longer exists.
+    invalidateColumnFor(status) {
+      var col = this.columns.find((c) => c.statuses.includes(status));
+      if (col) delete this._rendered[col.key];
+    },
+
     // Reconcile a single column's cards against the cached ids and signatures,
     // so an update touches only the cards that changed. Untouched columns keep
     // their scroll position, their open menu, and their DOM nodes.
@@ -2465,6 +2475,14 @@ function kontora() {
           var fromDrop = evt.from.dataset.dropStatus;
           var toDrop = evt.to.dataset.dropStatus;
           if (fromDrop === toDrop || !ticketId) return;
+          // Sortable moved the card node behind the reconcile's back, so the
+          // render cache for both columns is stale. Without dropping it, a
+          // render that finds the same cards with the same signatures returns
+          // early, and a moveTask that ends without a status change (an
+          // uninitialized ticket opens the init modal instead) would leave the
+          // card sitting in the column it was dropped on.
+          self.invalidateColumnFor(fromDrop);
+          self.invalidateColumnFor(toDrop);
           // No manual DOM restore: moveTask sets the status optimistically and
           // recomputeBoard → renderBoard rebuilds both columns from canonical
           // data, replacing the node Sortable moved (and reverting on failure).

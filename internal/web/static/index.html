@@ -1025,10 +1025,16 @@
         <line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/>
       </svg>
     </button>
-    <div class="flex items-baseline gap-2.5 shrink-0">
-      <h1 class="font-mono font-bold text-[16px] text-tx-hi m-0 leading-none">kontora</h1>
-      <span class="text-[10px] font-medium text-tx-faint uppercase tracking-[.2em] hidden sm:inline">agent orchestration</span>
-    </div>
+    <!-- The wordmark is the second way back to the board, next to the "board"
+         crumb. On the board itself there is nowhere to go, so it stays inert. -->
+    <h1 class="m-0 leading-none shrink-0">
+      <button type="button" @click="closeDetail()" :disabled="!selectedTicket"
+              class="group flex items-baseline gap-2.5 text-left">
+        <span class="font-mono font-bold text-[16px] text-tx-hi leading-none transition-colors"
+              :class="selectedTicket ? 'group-hover:text-accent' : ''">kontora</span>
+        <span class="text-[10px] font-medium text-tx-faint uppercase tracking-[.2em] hidden sm:inline">agent orchestration</span>
+      </button>
+    </h1>
 
     <!-- Board filter. Jumping somewhere is the command palette's job (⌘K); this
          input only narrows the board. A ticket page has nothing to filter, so

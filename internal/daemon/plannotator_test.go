@@ -291,7 +291,7 @@ func TestPlannotator_ReworkExitForeignClaimGuard(t *testing.T) {
 		if tk, err := ticket.ParseFile(ticketPath); err == nil {
 			_ = tk.SetField("claimed_by", "other-host")
 			if data, mErr := tk.Marshal(); mErr == nil {
-				d.recordSelfWrite(ticketPath)
+				d.recordSelfWrite(ticketPath, data)
 				_ = os.WriteFile(ticketPath, data, 0o644)
 			}
 		}

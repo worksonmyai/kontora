@@ -166,6 +166,7 @@ pipelines:
 | `projects` | no | — | Per-repository pipeline, agent, and branch naming defaults (see [projects](#projects)). |
 | `environment` | no | — | Map of environment variables to set for all agent processes. |
 | `resume_prompt` | no | (built-in) | Prompt sent to an agent whose stage a daemon restart interrupted, in place of the stage prompt (see [resuming after a restart](#resuming-after-a-restart)). Same template fields as a stage prompt. |
+| `annotation_prompt` | no | (built-in) | Prompt sent to the run that rewrites a ticket from submitted Plannotator annotations (see [plannotator](#plannotator)). Same template fields as a stage prompt. |
 | `web` | no | — | Web dashboard settings (see [web](#web)). Enabled by default. |
 
 All paths support `~` for the home directory. Tilde expansion happens at runtime, not at config load time.
@@ -314,6 +315,8 @@ Prompts are Go [text/template](https://pkg.go.dev/text/template) strings with th
 | `{{ .Ticket.Description }}` | Full ticket body (markdown after frontmatter). |
 | `{{ .Ticket.FilePath }}` | Absolute path to the ticket's markdown file. |
 | `{{ file "PLAN.md" }}` | Contents of a file relative to the ticket's worktree. |
+| `{{ plannotatorReview }}` | Feedback from the last Plannotator code review. Reading it deletes the file, so only the built-in `rework` stage uses it. |
+| `{{ plannotatorAnnotations }}` | Pending Plannotator annotations on the ticket. Reading it leaves the file in place (see [plannotator](#plannotator)). |
 
 The `file` function is how stages communicate — an earlier stage writes a file (e.g., `PLAN.md`) and a later stage reads it via the template.
 
@@ -419,6 +422,108 @@ Only those commands read the sentinel. `pipeline: none` written by hand into a t
 - Two projects may not have paths that expand and clean to the same directory, which would make the lookup pick one at random.
 - No pipeline and no agent may be named `none`.
 
+## plannotator
+
+[Plannotator](https://plannotator.ai) is the UI the daemon spawns for the two
+passes a human drives: reviewing the branch diff, and annotating the ticket.
+Start either from the ticket detail pane or over the [API](api.md).
+
+```yaml
+plannotator:
+  binary: plannotator
+  timeout: 30m
+  reviews_dir: ~/.kontora/plannotator-reviews
+```
+
+| Field | Required | Default | Description |
+|-------|----------|---------|-------------|
+| `binary` | no | `plannotator` | The binary to spawn. Resolved on the daemon's `PATH`, or used as-is when absolute. |
+| `timeout` | no | `30m` | How long a session may stay open before it is cancelled. |
+| `reviews_dir` | no | `~/.kontora/plannotator-reviews` | Where captured feedback waits for the agent that consumes it. |
+
+Only one Plannotator process runs per ticket, so a review and an annotation
+cannot overlap. While a session is open the scheduler leaves the ticket alone,
+and picks it up again when the session closes: a stage run would edit the file
+under the reviewer.
+
+### Reviewing the code
+
+A ticket in `human_review` opens its branch diff. The daemon builds a throwaway
+detached worktree at the merge base and applies the branch's diff on top, so the
+default "unstaged" view shows everything the agent committed.
+
+Submitted feedback is written to `<reviews_dir>/<id>.md` and the ticket moves to
+the built-in `rework` stage, whose prompt reads it through
+`{{ plannotatorReview }}`. That read deletes the file.
+
+### Annotating the ticket
+
+Any initialized ticket in a status that allows an edit (`open`, `todo`, `paused`,
+`human_review`, or a custom status) opens its own markdown file. There is no
+worktree, no merge base, and no diff: the target is the file in `tickets_dir`. A
+ticket that is already parked for an annotation run is refused, so a second set
+of notes cannot overwrite the pending one.
+
+Approving or dismissing leaves the ticket untouched. Submitting annotations:
+
+1. writes them to `<reviews_dir>/<id>.annotations.md`, a different file from code
+   review feedback so the two can never overwrite each other,
+2. records the ticket's current status in `annotation_return_status` and sends
+   the ticket back to `todo` with `attempt: 0`, leaving `stage` alone,
+3. schedules one run with `annotation_prompt`, which reads the annotations
+   through `{{ plannotatorAnnotations }}`.
+
+That run rewrites the ticket and nothing else. It evaluates no pipeline action,
+so it cannot advance the ticket or repeat the stage's work, and it does not
+regenerate the ticket-level summary. On success the ticket returns to the status
+in `annotation_return_status`, the field is cleared, and the annotations file is
+deleted. On a nonzero exit the ticket pauses with `last_error`, and both the
+field and the annotations file stay, so `kontora retry` runs again against the
+same feedback. Each run adds one history entry with `kind: annotation`.
+
+A custom `annotation_prompt` must include `{{ plannotatorAnnotations }}`. The
+daemon checks that the rendered prompt carries the annotations and pauses the
+ticket if it does not, because an agent that never received the notes would
+still report success, and that success is what deletes them.
+
+If the annotations file is gone by the time the run starts, nothing runs and the
+ticket returns to its status. To call off a pending run, move the ticket to
+another status (`kontora pause <id>`, the board menu, or any other status move):
+that clears `annotation_return_status`, and the status you chose is where the
+ticket stays.
+
+The restriction to the ticket file is stated in the prompt and only there. A
+stage carries no tool policy, so an agent that ignores the instruction is not
+stopped by anything. Set the ticket's `agent` to a profile with narrower
+permissions if that matters to you.
+
+The run works in the ticket's existing worktree when a previous run created one,
+and in the repository itself otherwise. It never creates a worktree or a branch:
+a ticket annotated before its first stage has no work to put on a branch.
+
+Where it can, the run continues the conversation the ticket's current stage
+ended in, so the agent already knows what it built and why. The daemon records
+that session in `<logs_dir>/<ticket-id>/<stage>.completed-session` when the
+agent returns. Reuse needs every one of these, the same conditions as [resume
+after a restart](#resuming-after-a-restart) plus one:
+
+- the agent is `claude` or `pi`, with `resume` not `false`,
+- the record names this stage, this agent, this `instance_name`, and this working
+  directory,
+- the session file it names still exists,
+- no tmux window for the ticket is live,
+- the stage has no interrupted run of its own waiting to recover. That run must
+  continue its own conversation, and appending to the recorded one would make it
+  the newest session in the stage's directory, which is how the interrupted run
+  is identified.
+
+Any other case starts a new conversation, logs why, and does not pause the
+ticket. The history entry's `session_reused` field reports which happened.
+
+This record is deliberately separate from the crash-recovery record a stage
+writes while it runs. Only the annotation run reads it, so an ordinary
+`kontora retry` of a stage that finished still starts fresh.
+
 ## Reloading the config
 
 The running daemon applies most config edits without a restart, so you can
@@ -427,8 +532,11 @@ change a prompt or an agent's arguments while agents are working.
 ### What reloads live
 
 `agents`, `stages`, `pipelines`, `projects`, `statuses`, `environment`,
-`auto_pick_up`, `default_agent`, `branch_prefix`, `branch_naming`, and the whole
-`plannotator` block.
+`auto_pick_up`, `default_agent`, `branch_prefix`, `branch_naming`,
+`resume_prompt`, `annotation_prompt`, and the whole `plannotator` block.
+
+A run reads the prompts and the `plannotator` block when it starts, so a reload
+changes the next run, never one already going.
 
 Editing `projects` reloads live, but the pipeline and agent defaults are stamped
 into a ticket when it is created or initialized. A reload changes what the next

@@ -44,13 +44,15 @@ type View struct {
 
 // HistoryView is a single history entry in a View.
 type HistoryView struct {
-	Stage       string
-	Agent       string
-	ExitCode    int
-	Run         int
-	StartedAt   *time.Time
-	CompletedAt *time.Time
-	Summary     string
+	Stage         string
+	Agent         string
+	ExitCode      int
+	Run           int
+	StartedAt     *time.Time
+	CompletedAt   *time.Time
+	Summary       string
+	Kind          string
+	SessionReused bool
 }
 
 // BuildView projects a ticket into a View using config for agent/stage resolution.
@@ -108,13 +110,15 @@ func BuildView(cfg *config.Config, t *ticket.Ticket, detail bool) View {
 			v.History = make([]HistoryView, len(t.History))
 			for i, h := range t.History {
 				v.History[i] = HistoryView{
-					Stage:       h.Stage,
-					Agent:       h.Agent,
-					ExitCode:    h.ExitCode,
-					Run:         h.Run,
-					StartedAt:   h.StartedAt,
-					CompletedAt: h.CompletedAt,
-					Summary:     h.Summary,
+					Stage:         h.Stage,
+					Agent:         h.Agent,
+					ExitCode:      h.ExitCode,
+					Run:           h.Run,
+					StartedAt:     h.StartedAt,
+					CompletedAt:   h.CompletedAt,
+					Summary:       h.Summary,
+					Kind:          h.Kind,
+					SessionReused: h.SessionReused,
 				}
 			}
 		}

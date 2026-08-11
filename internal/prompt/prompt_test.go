@@ -159,3 +159,97 @@ end`
 		assert.Empty(t, out)
 	})
 }
+
+// TestPlannotatorAnnotations covers the annotation helper. The difference that
+// matters is the one this table pins first: it must not unlink the file, so a
+// failed refine run can be retried against the same feedback.
+func TestPlannotatorAnnotations(t *testing.T) {
+	cases := []struct {
+		name string
+		// id is the ticket ID the prompt renders with.
+		id string
+		// files are written under the reviews dir before rendering.
+		files map[string]string
+		// noReviewsDir renders without a reviews directory configured.
+		noReviewsDir bool
+		want         string
+	}{
+		{
+			name:  "reads the annotations file",
+			id:    "kon-001",
+			files: map[string]string{"kon-001.annotations.md": "note one\n\nnote two\n"},
+			want:  "[note one\n\nnote two\n]",
+		},
+		{
+			name:  "code review feedback is a different file",
+			id:    "kon-001",
+			files: map[string]string{"kon-001.md": "review feedback"},
+			want:  "[]",
+		},
+		{
+			name:  "missing file renders empty",
+			id:    "kon-001",
+			want:  "[]",
+			files: nil,
+		},
+		{
+			name:         "no reviews dir renders empty",
+			id:           "kon-001",
+			noReviewsDir: true,
+			want:         "[]",
+		},
+		{
+			name:  "empty ticket id renders empty",
+			id:    "",
+			files: map[string]string{".annotations.md": "leak"},
+			want:  "[]",
+		},
+		{
+			name:  "traversal in the ticket id is refused",
+			id:    "../escape",
+			files: map[string]string{"escape.annotations.md": "leak"},
+			want:  "[]",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			reviewsDir := t.TempDir()
+			for name, content := range tc.files {
+				require.NoError(t, os.WriteFile(filepath.Join(reviewsDir, name), []byte(content), 0o644))
+			}
+			opts := Options{ReviewsDir: reviewsDir, Logger: discardLogger()}
+			if tc.noReviewsDir {
+				opts.ReviewsDir = ""
+			}
+			data := Data{Ticket: TicketData{ID: tc.id}}
+
+			// Rendering twice proves the read leaves the file in place.
+			for range 2 {
+				out, err := RenderWithOptions(`[{{ plannotatorAnnotations }}]`, data, "", opts)
+				require.NoError(t, err)
+				assert.Equal(t, tc.want, out)
+			}
+		})
+	}
+}
+
+// TestPlannotatorFeedbackFilesAreIndependent proves an annotation and a pending
+// code review can wait for the same ticket at once: each helper reads only its
+// own file, and consuming the review leaves the annotations alone.
+func TestPlannotatorFeedbackFilesAreIndependent(t *testing.T) {
+	reviewsDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(reviewsDir, "kon-001.md"), []byte("review"), 0o644))
+	annotations := filepath.Join(reviewsDir, "kon-001"+AnnotationsSuffix)
+	require.NoError(t, os.WriteFile(annotations, []byte("annotations"), 0o644))
+
+	data := Data{Ticket: TicketData{ID: "kon-001"}}
+	opts := Options{ReviewsDir: reviewsDir, Logger: discardLogger()}
+
+	out, err := RenderWithOptions(`{{ plannotatorReview }}|{{ plannotatorAnnotations }}`, data, "", opts)
+	require.NoError(t, err)
+	assert.Equal(t, "review|annotations", out)
+
+	assert.NoFileExists(t, filepath.Join(reviewsDir, "kon-001.md"), "the review is consumed")
+	assert.FileExists(t, annotations, "the annotations survive")
+}

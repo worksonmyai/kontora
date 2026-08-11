@@ -19,7 +19,7 @@ var (
 	ErrDeleteRejected      = errors.New("delete rejected")
 	ErrInvalidConfig       = errors.New("invalid config")
 	ErrConfigPathNotSet    = errors.New("config path not configured")
-	ErrPlannotatorInFlight = errors.New("plannotator review already in progress")
+	ErrPlannotatorInFlight = errors.New("plannotator is already open for this ticket")
 	ErrPlannotatorBinary   = errors.New("plannotator not installed: https://plannotator.ai")
 )
 
@@ -51,15 +51,19 @@ type TicketService interface {
 	Subscribe() (ch <-chan TicketEvent, unsubscribe func())
 	HasTerminalSession(id string) bool
 	StartPlannotatorReview(id string) error
+	StartPlannotatorAnnotate(id string) error
 }
 
-// PlannotatorOutcome enumerates the results of a plannotator review run.
+// PlannotatorOutcome enumerates the results of a plannotator run.
 // The UI uses this to render the finished-state toast.
 const (
 	PlannotatorOutcomeApproved  = "approved"
 	PlannotatorOutcomeRework    = "rework"
 	PlannotatorOutcomeCancelled = "cancelled"
 	PlannotatorOutcomeError     = "error"
+	// PlannotatorOutcomeAnnotated reports submitted ticket annotations: the
+	// ticket is parked for a run that rewrites it.
+	PlannotatorOutcomeAnnotated = "annotated"
 )
 
 type CreateTicketRequest struct {
@@ -158,29 +162,35 @@ type ConfigInfo struct {
 }
 
 type TicketInfo struct {
-	ID            string        `json:"id"`
-	Title         string        `json:"title"`
-	Status        string        `json:"status"`
-	Kontora       bool          `json:"kontora"`
-	Stage         string        `json:"stage"`
-	Pipeline      string        `json:"pipeline"`
-	Path          string        `json:"path"`
-	Agent         string        `json:"agent"`
-	AgentOverride bool          `json:"agent_override,omitempty"`
-	Attempt       int           `json:"attempt"`
-	CreatedAt     *time.Time    `json:"created_at,omitempty"`
-	StartedAt     *time.Time    `json:"started_at,omitempty"`
-	UpdatedAt     *time.Time    `json:"updated_at,omitempty"`
-	Branch        string        `json:"branch,omitempty"`
-	BaseBranch    string        `json:"base_branch,omitempty"`
-	AutoBranch    string        `json:"auto_branch,omitempty"` // what the daemon would name the branch, set only while Branch is empty
-	ClaimedBy     string        `json:"claimed_by,omitempty"`
-	Stages        []string      `json:"stages,omitempty"`
-	History       []HistoryInfo `json:"history,omitempty"`
-	Body          string        `json:"body,omitempty"`
-	LastError     string        `json:"last_error,omitempty"`
-	LastLog       string        `json:"last_log,omitempty"`
-	Summary       string        `json:"summary,omitempty"`
+	ID            string     `json:"id"`
+	Title         string     `json:"title"`
+	Status        string     `json:"status"`
+	Kontora       bool       `json:"kontora"`
+	Stage         string     `json:"stage"`
+	Pipeline      string     `json:"pipeline"`
+	Path          string     `json:"path"`
+	Agent         string     `json:"agent"`
+	AgentOverride bool       `json:"agent_override,omitempty"`
+	Attempt       int        `json:"attempt"`
+	CreatedAt     *time.Time `json:"created_at,omitempty"`
+	StartedAt     *time.Time `json:"started_at,omitempty"`
+	UpdatedAt     *time.Time `json:"updated_at,omitempty"`
+	Branch        string     `json:"branch,omitempty"`
+	BaseBranch    string     `json:"base_branch,omitempty"`
+	AutoBranch    string     `json:"auto_branch,omitempty"` // what the daemon would name the branch, set only while Branch is empty
+	ClaimedBy     string     `json:"claimed_by,omitempty"`
+	// CanAnnotate reports whether the ticket can be opened in Plannotator's
+	// annotation UI right now: it is initialized, its status allows an edit, and
+	// no annotation run is already pending. Like AutoBranch it is a read-only
+	// projection, computed here so the dashboard does not keep its own copy of
+	// rules only the daemon can enforce.
+	CanAnnotate bool          `json:"can_annotate,omitempty"`
+	Stages      []string      `json:"stages,omitempty"`
+	History     []HistoryInfo `json:"history,omitempty"`
+	Body        string        `json:"body,omitempty"`
+	LastError   string        `json:"last_error,omitempty"`
+	LastLog     string        `json:"last_log,omitempty"`
+	Summary     string        `json:"summary,omitempty"`
 	// FinalSummary is the ticket-level outcome. Like the other detail fields it
 	// is absent from board list payloads, which never render it.
 	FinalSummary string     `json:"final_summary,omitempty"`
@@ -223,6 +233,11 @@ type HistoryInfo struct {
 	StartedAt   *time.Time `json:"started_at,omitempty"`
 	CompletedAt *time.Time `json:"completed_at,omitempty"`
 	Summary     string     `json:"summary,omitempty"`
+	// Kind is empty for a stage run and "annotation" for an annotation run.
+	Kind string `json:"kind,omitempty"`
+	// SessionReused is set only on an annotation run: true when it continued the
+	// session the stage's last run left behind.
+	SessionReused bool `json:"session_reused,omitempty"`
 }
 
 // ChangesInfo lists the commits and changed files on a ticket's branch
@@ -358,13 +373,15 @@ func TicketInfoFromView(v app.View) TicketInfo {
 		info.History = make([]HistoryInfo, len(v.History))
 		for i, h := range v.History {
 			info.History[i] = HistoryInfo{
-				Stage:       h.Stage,
-				Agent:       h.Agent,
-				ExitCode:    h.ExitCode,
-				Run:         h.Run,
-				StartedAt:   h.StartedAt,
-				CompletedAt: h.CompletedAt,
-				Summary:     h.Summary,
+				Stage:         h.Stage,
+				Agent:         h.Agent,
+				ExitCode:      h.ExitCode,
+				Run:           h.Run,
+				StartedAt:     h.StartedAt,
+				CompletedAt:   h.CompletedAt,
+				Summary:       h.Summary,
+				Kind:          h.Kind,
+				SessionReused: h.SessionReused,
 			}
 		}
 	}

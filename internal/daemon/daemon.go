@@ -38,6 +38,22 @@ import (
 
 const defaultPromptTemplate = "Work on this ticket: {{ .Ticket.ID }} — {{ .Ticket.Title }}\n\n{{ .Ticket.Description }}"
 
+// defaultAnnotationPrompt is sent to the run a submitted set of Plannotator
+// annotations schedules. A stage carries no tool policy, so the restriction to
+// the ticket file can only be stated here.
+const defaultAnnotationPrompt = `A reviewer annotated ticket {{ .Ticket.ID }} — {{ .Ticket.Title }} and submitted these notes:
+
+{{ plannotatorAnnotations }}
+
+Change the ticket at {{ .Ticket.FilePath }} so that it satisfies every note. Do not add replies to the notes in the ticket text. Leave the parts the reviewer did not comment on as they are.
+
+Rules for this run:
+
+- Edit only {{ .Ticket.FilePath }}.
+- Change the markdown body only. Leave the YAML frontmatter between the --- lines exactly as it is; the daemon owns those fields.
+- Do not write code, do not run tests, and do not commit or push anything.
+- Do not do the work the ticket describes. This run changes what the ticket asks for, nothing else.`
+
 // defaultResumePrompt is sent instead of the stage prompt when a restart
 // interrupted a stage and the daemon reattaches the agent to its own session.
 // The stage prompt would tell the agent to begin the stage, which is the one
@@ -204,7 +220,11 @@ type PlannotatorSpawner func(ctx context.Context, params PlannotatorParams) (std
 
 // PlannotatorParams carries inputs for a single plannotator invocation.
 type PlannotatorParams struct {
-	Binary  string
+	Binary string
+	// Args is the full argument list, starting with the plannotator subcommand.
+	// Code review passes "review"; a ticket annotation passes "annotate" and the
+	// ticket file.
+	Args    []string
 	Dir     string
 	Env     map[string]string
 	Timeout time.Duration
@@ -291,6 +311,10 @@ type Daemon struct {
 	runningBranches map[string]string  // repoPath\x00branch → ticketID holding the branch
 	sem             chan struct{}
 	plannotator     map[string]context.CancelFunc // in-flight plannotator subprocesses
+	// plannotatorDeferred holds the tickets whose pickup runTicket dropped
+	// because a Plannotator session was open. releasePlannotator offers each of
+	// them again when the session closes.
+	plannotatorDeferred map[string]struct{}
 
 	// selfWrites remembers, per ticket path, the bytes the daemon last wrote
 	// there; a watcher event whose file content matches is the daemon's own.
@@ -376,7 +400,9 @@ func New(cfg *config.Config, opts ...Option) *Daemon {
 		runningBranches: make(map[string]string),
 		sem:             make(chan struct{}, cfg.MaxConcurrentAgents),
 		plannotator:     make(map[string]context.CancelFunc),
-		selfWrites:      make(map[string]selfWrite),
+
+		plannotatorDeferred: make(map[string]struct{}),
+		selfWrites:          make(map[string]selfWrite),
 	}
 	d.cfg.Store(cfg)
 	for _, opt := range opts {
@@ -949,12 +975,29 @@ func (d *Daemon) runTicket(ctx context.Context, ticketID string) {
 		return
 	}
 
+	// A Plannotator session open on this ticket owns it. A stage run would edit
+	// the file under the reviewer, and the annotations they then submit would be
+	// refused because the ticket is running, leaving the notes unapplied.
+	// releasePlannotator offers the ticket again once the session closes.
+	if _, annotating := d.plannotator[ticketID]; annotating {
+		d.plannotatorDeferred[ticketID] = struct{}{}
+		d.mu.Unlock()
+		log.Info("pickup deferred: a plannotator session is open for this ticket")
+		return
+	}
+	delete(d.plannotatorDeferred, ticketID)
+
 	// Register cancel func before mutating status so concurrent ops
 	// can properly cancel the ticket while it's setting up worktrees.
 	taskCtx, taskCancel := context.WithCancel(ctx)
 	d.running[ticketID] = taskCancel
 
-	d.persistGeneratedBranchLocked(cfg, log, t, filePath)
+	// A pending annotation must not stamp a branch. The run edits the ticket file,
+	// and a ticket annotated before its first stage has no work to put on a branch
+	// yet.
+	if t.AnnotationReturnStatus == "" {
+		d.persistGeneratedBranchLocked(cfg, log, t, filePath)
+	}
 
 	// Reserve the branch atomically so two tickets targeting the same
 	// repository and branch can't both pass this guard and reuse each
@@ -980,6 +1023,15 @@ func (d *Daemon) runTicket(ctx context.Context, ticketID string) {
 		}
 		d.mu.Unlock()
 	}()
+
+	// A pending annotation owns the pickup, whether or not the ticket has a
+	// pipeline: the run rewrites the ticket and hands the status back, so no stage
+	// runs and no pipeline action is evaluated.
+	if t.AnnotationReturnStatus != "" {
+		d.mu.Unlock()
+		d.runAnnotationRun(ctx, taskCtx, cfg, log, ticketID, t, filePath)
+		return
+	}
 
 	if t.Pipeline == "" {
 		d.mu.Unlock()
@@ -1143,6 +1195,11 @@ func (d *Daemon) persistGeneratedBranchLocked(cfg *config.Config, log *slog.Logg
 	log.Info("generated branch", "branch", branch)
 }
 
+// simpleStageName keys the log, the session and the history rows of a ticket
+// that runs without a pipeline. It is not a configured stage, so nothing reads
+// a prompt or a timeout under this name.
+const simpleStageName = "default"
+
 func (d *Daemon) runSimpleTicket(ctx, taskCtx context.Context, cfg *config.Config, log *slog.Logger, ticketID string, t *ticket.Ticket, filePath string) {
 	agentName := cfg.DefaultAgent
 	if t.Agent != "" {
@@ -1172,7 +1229,7 @@ func (d *Daemon) runSimpleTicket(ctx, taskCtx context.Context, cfg *config.Confi
 		return
 	}
 
-	repoPath, wtPath, prepOK := d.prepareWorktreeForAgent(log, t, filePath, ticketID, "default", ticketBranch(cfg, t), false)
+	repoPath, wtPath, prepOK := d.prepareWorktreeForAgent(log, t, filePath, ticketID, simpleStageName, ticketBranch(cfg, t), false)
 	if !prepOK {
 		return
 	}
@@ -1195,8 +1252,8 @@ func (d *Daemon) runSimpleTicket(ctx, taskCtx context.Context, cfg *config.Confi
 		log:        log,
 		ticketID:   ticketID,
 		filePath:   filePath,
-		stageName:  "default",
-		run:        stageRunIndex(t, "default"),
+		stageName:  simpleStageName,
+		run:        stageRunIndex(t, simpleStageName),
 		wtPath:     wtPath,
 		rendered:   rendered,
 		agentCfg:   agentCfg,
@@ -1557,6 +1614,27 @@ type spawnAgentParams struct {
 	agentCfg   config.Agent
 	stageCfg   config.Stage
 	isPipeline bool
+	// annotation marks the run a submitted set of Plannotator annotations
+	// schedules. Such a run continues the session the stage's last run left behind
+	// rather than a crash-recovery record.
+	annotation bool
+}
+
+// sessionStage keys the agent session storage this run uses. An annotation run
+// that opens a new conversation stores it apart from the stage's, so that a stage
+// recovering from a daemon death cannot resolve to the ticket-rewriting session:
+// a pi session file is picked by mtime within the directory. One that continues
+// the stage's session appends to the stage's own file, so it reads its log from
+// where that file is.
+// It takes the record rather than a bool because both wrong answers fail
+// silently: a fresh run pointed at the stage's directory is the collision this
+// split exists to prevent, and a resumed run pointed at its own leaves the live
+// activity view empty.
+func (p spawnAgentParams) sessionStage(rec *resumeRecord) string {
+	if p.annotation && rec == nil {
+		return p.stageName + "-annotation"
+	}
+	return p.stageName
 }
 
 // agentRun is the outcome of one agent invocation: the process result and the
@@ -1565,6 +1643,9 @@ type spawnAgentParams struct {
 type agentRun struct {
 	Result       process.Result
 	FinalMessage string
+	// Resumed reports that the invocation continued a recorded session instead
+	// of opening a new conversation.
+	Resumed bool
 }
 
 // agentAttempt is the outcome of one runAgentOnce call.
@@ -1581,12 +1662,12 @@ type agentAttempt struct {
 	pauseReason string
 }
 
-// spawnAgentRun runs the stage's agent and returns its outcome. When a resume
-// record survives from a run the daemon interrupted, the stage continues in that
-// session; if that invocation dies before the agent does anything, the stage
-// runs once more from its own prompt in a new session rather than pausing the
-// ticket. On a spawn or runner failure the ticket is paused and ok=false is
-// returned so the caller can return immediately.
+// spawnAgentRun runs the stage's agent and returns its outcome. When a record
+// names a session the run may continue, it continues in that session; if that
+// invocation dies before the agent does anything, the run happens once more in a
+// new session rather than pausing the ticket. On a spawn or runner failure the
+// ticket is paused and ok=false is returned so the caller can return
+// immediately.
 func (d *Daemon) spawnAgentRun(taskCtx context.Context, t *ticket.Ticket, p spawnAgentParams) (agentRun, bool) {
 	binaryPath, err := d.agentLookup(p.agentCfg.Binary)
 	if err != nil {
@@ -1603,8 +1684,12 @@ func (d *Daemon) spawnAgentRun(taskCtx context.Context, t *ticket.Ticket, p spaw
 		// An agent that already finished its work can exit inside the tmux
 		// startup guard, which reads as a refused invocation. Give the stage its
 		// normal run rather than pausing on that.
-		p.log.Warn("resumed agent did no work; running the stage fresh", "stage", p.stageName)
-		d.removeResumeRecord(p.cfg, p.ticketID, p.stageName)
+		p.log.Warn("resumed agent did no work; running fresh", "stage", p.stageName)
+		// An annotation run borrows the stage's record and must not retire it: the
+		// stage may still need it to recover from a daemon death.
+		if !p.annotation {
+			d.removeResumeRecord(p.cfg, p.ticketID, p.stageName)
+		}
 	}
 
 	return d.finishAttempt(t, p, d.runAgentOnce(taskCtx, t, p, binaryPath, nil))
@@ -1618,18 +1703,22 @@ func (d *Daemon) finishAttempt(t *ticket.Ticket, p spawnAgentParams, attempt age
 }
 
 // runAgentOnce builds agent args, invokes the runner, materializes session logs,
-// and logs exit info. A non-nil rec continues that record's session with the
-// resume prompt in place of the stage prompt.
+// and logs exit info. A non-nil rec continues that record's session. The resume
+// prompt replaces the stage prompt, except for an annotation run, whose
+// annotations are the only instruction it has.
 func (d *Daemon) runAgentOnce(taskCtx context.Context, t *ticket.Ticket, p spawnAgentParams, binaryPath string, rec *resumeRecord) agentAttempt {
 	rendered := p.rendered
 	if rec != nil {
-		resumePrompt, err := d.buildResumePrompt(t, p)
-		if err != nil {
-			p.log.Error("render resume prompt failed", "stage", p.stageName, "err", err)
-			return agentAttempt{}
+		if !p.annotation {
+			resumePrompt, err := d.buildResumePrompt(t, p)
+			if err != nil {
+				p.log.Error("render resume prompt failed", "stage", p.stageName, "err", err)
+				return agentAttempt{}
+			}
+			rendered = resumePrompt
 		}
-		rendered = resumePrompt
-		p.log.Info("resuming interrupted agent session", "stage", p.stageName, "agent", rec.Agent, "session_id", rec.SessionID)
+		p.log.Info("resuming agent session", "stage", p.stageName, "agent", rec.Agent,
+			"session_id", rec.SessionID, "annotation", p.annotation)
 	}
 
 	args, settingsFile, sessionID, err := buildAgentArgs(p.agentCfg, rendered, tmux.ChannelName(d.tmuxSession, p.ticketID), rec)
@@ -1641,11 +1730,15 @@ func (d *Daemon) runAgentOnce(taskCtx context.Context, t *ticket.Ticket, p spawn
 		defer os.Remove(settingsFile)
 	}
 
-	if kind := resumeAgentKind(p.agentCfg); kind != "" {
+	// An annotation run runs under the stage's name, so a record of its own here
+	// would take the stage's path: it would retire a record that still marks an
+	// interrupted stage, or leave one behind that a later stage run would resume
+	// into a conversation about rewriting the ticket.
+	if kind := resumeAgentKind(p.agentCfg); kind != "" && !p.annotation {
 		d.writeResumeRecord(p, kind, sessionID)
 	}
 
-	params := d.buildRunnerParams(p.cfg, p.agentCfg, p.stageCfg, binaryPath, args, p.wtPath, p.ticketID, p.stageName, sessionID)
+	params := d.buildRunnerParams(p.cfg, p.agentCfg, p.stageCfg, binaryPath, args, p.wtPath, p.ticketID, p.stageName, p.sessionStage(rec), sessionID)
 	// The clear is deferred so that every way this function can end, including a
 	// runner error or a cancelled ticket, leaves no entry claiming the run is
 	// still going.
@@ -1662,8 +1755,10 @@ func (d *Daemon) runAgentOnce(taskCtx context.Context, t *ticket.Ticket, p spawn
 	// own — clean exit, failure, pause, or user cancellation — and starting it
 	// over later must start it fresh. Only a shutdown, or a kill that runs no
 	// code at all, leaves the record behind.
-	if p.ctx.Err() == nil {
-		d.removeResumeRecord(p.cfg, p.ticketID, p.stageName)
+	if p.ctx.Err() == nil && !p.annotation {
+		// Promoted on any exit code: a stage that failed still holds the
+		// conversation about this ticket.
+		d.promoteResumeRecord(p)
 	}
 	if runnerErr != nil && taskCtx.Err() == nil {
 		d.materializeAgentLogs(p.log, params, eventsFile)
@@ -1674,7 +1769,7 @@ func (d *Daemon) runAgentOnce(taskCtx context.Context, t *ticket.Ticket, p spawn
 		p.log.Error("runner failed", errAttrs...)
 		d.killTaskWindow(p.ticketID)
 		return agentAttempt{
-			run:         agentRun{Result: result},
+			run:         agentRun{Result: result, Resumed: rec != nil},
 			started:     agentDidWork(result),
 			pauseReason: fmt.Sprintf("runner failed: %s", runnerErr.Error()),
 		}
@@ -1682,7 +1777,7 @@ func (d *Daemon) runAgentOnce(taskCtx context.Context, t *ticket.Ticket, p spawn
 
 	d.materializeAgentLogs(p.log, params, eventsFile)
 
-	run := agentRun{Result: result, FinalMessage: finalAssistantMessage(p.log, params)}
+	run := agentRun{Result: result, FinalMessage: finalAssistantMessage(p.log, params), Resumed: rec != nil}
 
 	dur := result.ExitedAt.Sub(result.StartedAt).Truncate(time.Second)
 	attrs := []any{"stage", p.stageName, "exit_code", result.ExitCode, "duration", dur}
@@ -1759,14 +1854,20 @@ const summaryMaxLen = 4000
 // truncateSummary caps s at summaryMaxLen bytes, cutting on a rune boundary
 // and marking the cut.
 func truncateSummary(s string) string {
-	if len(s) <= summaryMaxLen {
+	return truncate(s, summaryMaxLen, "\n[truncated]")
+}
+
+// truncate caps s at limit bytes, cutting on a rune boundary so the result stays
+// valid UTF-8, and appends marker when it cut.
+func truncate(s string, limit int, marker string) string {
+	if len(s) <= limit {
 		return s
 	}
-	cut := summaryMaxLen
+	cut := limit
 	for cut > 0 && !utf8.RuneStart(s[cut]) {
 		cut--
 	}
-	return s[:cut] + "\n[truncated]"
+	return s[:cut] + marker
 }
 
 // buildOperationalAppendix returns a context block appended to every rendered prompt.
@@ -1885,10 +1986,12 @@ export default function (pi: ExtensionAPI) {
 	return f.Name(), nil
 }
 
-func (d *Daemon) buildRunnerParams(cfg *config.Config, agentCfg config.Agent, stageCfg config.Stage, binaryPath string, args []string, dir, ticketID, stageName, sessionID string) RunnerParams {
+// sessionStage keys the agent's own session storage, which is the stage name for
+// every run but a fresh annotation one (see spawnAgentParams.sessionStage).
+func (d *Daemon) buildRunnerParams(cfg *config.Config, agentCfg config.Agent, stageCfg config.Stage, binaryPath string, args []string, dir, ticketID, stageName, sessionStage, sessionID string) RunnerParams {
 	var sessionDir string
 	if agentCfg.IsPi() {
-		sessionDir = piSessionDir(cfg, ticketID, stageName)
+		sessionDir = piSessionDir(cfg, ticketID, sessionStage)
 		args = append(args, "--session-dir", sessionDir)
 	}
 
@@ -2272,7 +2375,7 @@ func sessionFile(params RunnerParams) (path string, isPi bool) {
 // session directory per stage, so until pi creates this attempt's file the
 // newest one there belongs to the previous attempt. An agent with neither
 // locator, such as one driven by DirectRunner, has no session file at all.
-func liveSessionFile(cfg *config.Config, ticketID string, lr liveRun) (path string, isPi bool) {
+func liveSessionFile(lr liveRun) (path string, isPi bool) {
 	switch {
 	case lr.params.SessionID != "":
 		if matches, _, err := claudeSessionFiles(lr.params.Env, lr.params.SessionID); err == nil && len(matches) > 0 {
@@ -2280,7 +2383,9 @@ func liveSessionFile(cfg *config.Config, ticketID string, lr liveRun) (path stri
 		}
 		return "", false
 	case lr.params.SessionDir != "":
-		return piResumeSessionFile(cfg, ticketID, lr.stage, lr.startedAt), true
+		// The directory the run was given, not the one its stage name implies: an
+		// annotation run that opened a new session writes outside the stage's.
+		return newestSessionFileSince(lr.params.SessionDir, lr.startedAt), true
 	}
 	return "", false
 }

@@ -1112,6 +1112,35 @@ test("agent running counts come from the recompute pass and skip non-running tic
   assert.equal(state.agentRunningCount(undefined), 0);
 });
 
+test("canAnnotateTicket takes the daemon's answer, not its own status list", () => {
+  const state = loadKontoraState();
+
+  assert.equal(state.canAnnotateTicket({ status: "todo", can_annotate: true }), true);
+  // A parked ticket is editable but already has an annotation run pending, and
+  // only the daemon knows that, so the status alone must not enable the button.
+  assert.equal(state.canAnnotateTicket({ status: "todo" }), false);
+  assert.equal(state.canAnnotateTicket(null), false);
+});
+
+test("historyLabel marks an annotation run and how it got its session", () => {
+  const state = loadKontoraState();
+
+  assert.equal(state.historyLabel({ stage: "code" }), "code");
+  assert.equal(
+    state.historyLabel({ stage: "code", kind: "annotation", session_reused: true }),
+    "code \u00b7 annotation (resumed)",
+  );
+  assert.equal(
+    state.historyLabel({ stage: "code", kind: "annotation", session_reused: false }),
+    "code \u00b7 annotation (fresh)",
+  );
+  // An entry written before session_reused existed reads as a fresh run.
+  assert.equal(
+    state.historyLabel({ stage: "code", kind: "annotation" }),
+    "code \u00b7 annotation (fresh)",
+  );
+});
+
 test("columns and agents named after Object.prototype members stay data", () => {
   // Column keys come from config custom_statuses and agent names from ticket
   // data, so both key maps have to carry no prototype.

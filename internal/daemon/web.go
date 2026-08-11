@@ -516,15 +516,8 @@ func (d *Daemon) UpdateTicket(id string, req web.UpdateTicketRequest) error {
 	filePath := ts.filePath
 	d.mu.Unlock()
 
-	switch status {
-	case ticket.StatusOpen, ticket.StatusTodo, ticket.StatusPaused, ticket.StatusHumanReview:
-		// allowed
-	case ticket.StatusInProgress, ticket.StatusDone, ticket.StatusCancelled, ticket.StatusArchived:
+	if !d.config().StatusAllowsEdit(string(status)) {
 		return web.ErrInvalidState
-	default:
-		if !d.config().IsCustomStatus(string(status)) {
-			return web.ErrInvalidState
-		}
 	}
 
 	t2, err := ticket.ParseFile(filePath)
@@ -650,7 +643,7 @@ func (d *Daemon) GetActivity(q web.ActivityQuery) (web.ActivityInfo, error) {
 
 	cfg := d.config()
 	if liveMatch {
-		if info, ok := d.liveActivity(cfg, q, lr); ok {
+		if info, ok := d.liveActivity(q, lr); ok {
 			return info, nil
 		}
 	}
@@ -687,11 +680,11 @@ func (d *Daemon) GetActivity(q web.ActivityQuery) (web.ActivityInfo, error) {
 // liveActivity reads the tape of a registered in-flight run from the session
 // JSONL the agent is appending to. It reports false when this run has no
 // session file to read, so the caller can fall back to the plaintext log.
-func (d *Daemon) liveActivity(cfg *config.Config, q web.ActivityQuery, lr liveRun) (web.ActivityInfo, bool) {
+func (d *Daemon) liveActivity(q web.ActivityQuery, lr liveRun) (web.ActivityInfo, bool) {
 	if lr.params.SessionID == "" && lr.params.SessionDir == "" {
 		return web.ActivityInfo{}, false
 	}
-	path, isPi := liveSessionFile(cfg, q.ID, lr)
+	path, isPi := liveSessionFile(lr)
 
 	info := web.ActivityInfo{Source: "events", Stage: q.Stage, Run: q.Run, Live: true}
 	if path == "" {
@@ -1061,6 +1054,7 @@ func (d *Daemon) buildTicketInfo(cfg *config.Config, ts *ticketState, includeBod
 	if strings.TrimSpace(info.Branch) == "" {
 		info.AutoBranch = autoTicketBranch(cfg, ts.ticket)
 	}
+	info.CanAnnotate = annotateRefusal(cfg, ts.ticket) == nil
 	mt := ts.modTime
 	if mt.IsZero() && ts.filePath != "" {
 		if st, err := os.Stat(ts.filePath); err == nil {

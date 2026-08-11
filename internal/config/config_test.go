@@ -232,11 +232,12 @@ pipelines:
       on_failure: pause
 `
 	tests := []struct {
-		name       string
-		topYAML    string
-		agentYAML  string
-		wantResume *bool
-		wantPrompt string
+		name           string
+		topYAML        string
+		agentYAML      string
+		wantResume     *bool
+		wantPrompt     string
+		wantAnnotation string
 	}{
 		{name: "both unset"},
 		{
@@ -254,6 +255,11 @@ pipelines:
 			topYAML:    "resume_prompt: Continue the interrupted work",
 			wantPrompt: "Continue the interrupted work",
 		},
+		{
+			name:           "custom annotation prompt",
+			topYAML:        "annotation_prompt: Rewrite the ticket",
+			wantAnnotation: "Rewrite the ticket",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -261,6 +267,7 @@ pipelines:
 			require.NoError(t, err)
 			assert.Equal(t, tt.wantResume, cfg.Agents["claude"].Resume)
 			assert.Equal(t, tt.wantPrompt, cfg.ResumePrompt)
+			assert.Equal(t, tt.wantAnnotation, cfg.AnnotationPrompt)
 		})
 	}
 }

@@ -182,7 +182,7 @@ func printTaskHistory(tasksDir, taskID string, w io.Writer) error {
 			completed = h.CompletedAt.Format("2006-01-02 15:04:05")
 		}
 		exitCode := fmt.Sprintf("%d", h.ExitCode)
-		tbl.Row(h.Stage, h.Agent, exitCode, started, completed)
+		tbl.Row(historyStage(h), h.Agent, exitCode, started, completed)
 	}
 
 	fmt.Fprintln(w, tbl.Render())

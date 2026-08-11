@@ -115,6 +115,12 @@ func (s *Service) SetStatus(id string, status ticket.Status) (Result, error) {
 	if err := st.Ticket.SetField("last_error", ""); err != nil {
 		return Result{}, fmt.Errorf("clearing last_error: %w", err)
 	}
+	// A user who moves the ticket somewhere else decides where it belongs. Leaving
+	// the marker set would let a later pickup run the pending annotations and then
+	// restore the status the ticket had before the park, overriding this move.
+	if err := st.Ticket.SetField("annotation_return_status", ""); err != nil {
+		return Result{}, fmt.Errorf("clearing annotation_return_status: %w", err)
+	}
 
 	if status == ticket.StatusDone {
 		now := time.Now().UTC()

@@ -515,23 +515,26 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handlePlannotatorReview(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	if err := s.svc.StartPlannotatorReview(id); err != nil {
-		switch {
-		case errors.Is(err, ErrTicketNotFound):
-			writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
-		case errors.Is(err, ErrInvalidState):
-			writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
-		case errors.Is(err, ErrPlannotatorInFlight):
-			writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
-		case errors.Is(err, ErrPlannotatorBinary):
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		default:
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		}
+	writePlannotatorResult(w, s.svc.StartPlannotatorReview(r.PathValue("id")))
+}
+
+func (s *Server) handlePlannotatorAnnotate(w http.ResponseWriter, r *http.Request) {
+	writePlannotatorResult(w, s.svc.StartPlannotatorAnnotate(r.PathValue("id")))
+}
+
+func writePlannotatorResult(w http.ResponseWriter, err error) {
+	if err == nil {
+		w.WriteHeader(http.StatusAccepted)
 		return
 	}
-	w.WriteHeader(http.StatusAccepted)
+	status := http.StatusInternalServerError
+	switch {
+	case errors.Is(err, ErrTicketNotFound):
+		status = http.StatusNotFound
+	case errors.Is(err, ErrInvalidState), errors.Is(err, ErrPlannotatorInFlight):
+		status = http.StatusConflict
+	}
+	writeJSON(w, status, map[string]string{"error": err.Error()})
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

@@ -48,7 +48,7 @@ const SETTINGS_SECTIONS = [
   { key: 'pipelines', label: 'pipelines', blurb: 'Stages wired to agents, with a routing rule per step.' },
   { key: 'projects', label: 'projects', blurb: 'Defaults a new ticket picks up from the repo it points at.' },
   { key: 'web', label: 'web', blurb: 'This dashboard and the HTTP API the CLI talks to.' },
-  { key: 'plannotator', label: 'plannotator', blurb: 'Human review pass. Rework feeds its notes back into the built-in rework stage.' },
+  { key: 'plannotator', label: 'plannotator', blurb: 'Human review of the diff, and annotation of the ticket. Review notes feed the rework stage; ticket notes rewrite the ticket.' },
   { key: 'statuses', label: 'statuses', blurb: 'Extra board columns a pipeline step can route to.' },
   { key: 'display', label: 'display', blurb: 'Browser-local. Never written to config.yaml.' },
 ];
@@ -80,6 +80,7 @@ const SETTINGS_TOKENS = [
   { token: '{{ .Ticket.Description }}', help: 'Full markdown body of the ticket' },
   { token: '{{ file "PLAN.md" }}', help: 'Reads a file from the shared worktree — how one stage hands work to the next' },
   { token: '{{ plannotatorReview }}', help: 'Reviewer feedback from the last plannotator run' },
+  { token: '{{ plannotatorAnnotations }}', help: 'Pending ticket annotations, read by the run that rewrites the ticket' },
 ];
 
 // config.validStatusNameRe (internal/config/config.go).

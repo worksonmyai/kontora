@@ -38,7 +38,8 @@ type mockService struct {
 	logsFn         func(id, stage string) (string, error)
 	activityFn     func(q ActivityQuery) (ActivityInfo, error)
 	changesFn      func(id string) (ChangesInfo, error)
-	plannotatorFn  func(id string) error
+	reviewFn       func(id string) error
+	annotateFn     func(id string) error
 	rawConfig      string
 	rawConfigErr   error
 	putRawConfigFn func(content string) error
@@ -144,11 +145,20 @@ func (m *mockService) PutRawConfig(content string) error {
 }
 func (m *mockService) Subscribe() (<-chan TicketEvent, func()) { return nil, func() {} }
 func (m *mockService) HasTerminalSession(_ string) bool        { return false }
+
+// The two plannotator passes have separate hooks, and an unwired one fails
+// rather than passing: a route pointing at the wrong pass has to be visible.
 func (m *mockService) StartPlannotatorReview(id string) error {
-	if m.plannotatorFn != nil {
-		return m.plannotatorFn(id)
+	if m.reviewFn != nil {
+		return m.reviewFn(id)
 	}
-	return nil
+	return fmt.Errorf("unexpected code review of %s", id)
+}
+func (m *mockService) StartPlannotatorAnnotate(id string) error {
+	if m.annotateFn != nil {
+		return m.annotateFn(id)
+	}
+	return fmt.Errorf("unexpected annotation of %s", id)
 }
 
 // --- GET /api/tickets ---
@@ -1591,9 +1601,9 @@ func TestHandleSSE_Disconnect(t *testing.T) {
 	broker.Broadcast(TicketEvent{Type: "ticket_updated", Ticket: TicketInfo{ID: "t-001"}})
 }
 
-// --- POST /api/tickets/{id}/plannotator-review ---
+// --- POST /api/tickets/{id}/plannotator-review and -annotate ---
 
-func TestHandlePlannotatorReview(t *testing.T) {
+func TestHandlePlannotator(t *testing.T) {
 	tests := []struct {
 		name         string
 		err          error
@@ -1602,27 +1612,34 @@ func TestHandlePlannotatorReview(t *testing.T) {
 	}{
 		{name: "accepted", err: nil, wantStatus: http.StatusAccepted},
 		{name: "not found", err: ErrTicketNotFound, wantStatus: http.StatusNotFound, wantContains: "ticket not found"},
-		{name: "in flight", err: ErrPlannotatorInFlight, wantStatus: http.StatusConflict, wantContains: "already in progress"},
+		{name: "in flight", err: ErrPlannotatorInFlight, wantStatus: http.StatusConflict, wantContains: "already open for this ticket"},
+		{name: "invalid state", err: ErrInvalidState, wantStatus: http.StatusConflict, wantContains: "invalid state"},
 		{name: "binary missing", err: ErrPlannotatorBinary, wantStatus: http.StatusInternalServerError, wantContains: "plannotator not installed"},
 		{name: "other error", err: fmt.Errorf("disk on fire"), wantStatus: http.StatusInternalServerError, wantContains: "disk on fire"},
 	}
 
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			svc := &mockService{
-				plannotatorFn: func(id string) error {
+	for _, endpoint := range []string{"plannotator-review", "plannotator-annotate"} {
+		for _, tc := range tests {
+			t.Run(endpoint+"/"+tc.name, func(t *testing.T) {
+				pass := func(id string) error {
 					assert.Equal(t, "t-001", id)
 					return tc.err
-				},
-			}
-			srv := startHandlerTestServer(t, svc)
+				}
+				svc := &mockService{}
+				if endpoint == "plannotator-review" {
+					svc.reviewFn = pass
+				} else {
+					svc.annotateFn = pass
+				}
+				srv := startHandlerTestServer(t, svc)
 
-			res := post(t, srv, "/api/tickets/t-001/plannotator-review", "")
-			assert.Equal(t, tc.wantStatus, res.statusCode)
-			if tc.wantContains != "" {
-				assert.Contains(t, res.body, tc.wantContains)
-			}
-		})
+				res := post(t, srv, "/api/tickets/t-001/"+endpoint, "")
+				assert.Equal(t, tc.wantStatus, res.statusCode)
+				if tc.wantContains != "" {
+					assert.Contains(t, res.body, tc.wantContains)
+				}
+			})
+		}
 	}
 }
 

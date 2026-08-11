@@ -85,8 +85,8 @@ resume support still works behind those two wrappers.
 Top-level keys: `tickets_dir`, `logs_dir`, `worktrees_dir`, `branch_prefix`,
 `branch_naming`, `editor`, `default_agent`, `max_concurrent_agents`,
 `auto_pick_up`, `instance_name`, `tmux_session`, `statuses`, `environment`,
-`resume_prompt`, `web`, `agents`, `stages`, `pipelines`, `projects`,
-`plannotator`.
+`resume_prompt`, `annotation_prompt`, `web`, `agents`, `stages`, `pipelines`,
+`projects`, `plannotator`.
 
 ```yaml
 tickets_dir: ~/.kontora/tickets
@@ -238,7 +238,7 @@ found when that stage starts, not before. Read every prompt you write.
 A running daemon reloads these without a restart: `agents`, `stages`,
 `pipelines`, `projects`, `statuses`, `environment`, `auto_pick_up`,
 `default_agent`, `branch_prefix`, `branch_naming`, `editor`, `resume_prompt`,
-and `plannotator`.
+`annotation_prompt`, and `plannotator`.
 
 These need a daemon restart: `tickets_dir`, `worktrees_dir`, `logs_dir`,
 `instance_name`, `tmux_session`, `max_concurrent_agents`, and the whole `web`

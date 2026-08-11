@@ -12,6 +12,15 @@ import (
 	"github.com/worksonmyai/kontora/internal/ticket/app"
 )
 
+// historyStage labels a history row with its stage, marking a run that rewrote
+// the ticket from Plannotator annotations rather than doing the stage's work.
+func historyStage(h ticket.HistoryEntry) string {
+	if h.Kind == ticket.KindAnnotation {
+		return h.Stage + " · annotation"
+	}
+	return h.Stage
+}
+
 // View prints ticket details to the given writer.
 func View(cfg *config.Config, taskID string, w io.Writer) error {
 	tasksDir := config.ExpandTilde(cfg.TicketsDir)
@@ -77,7 +86,7 @@ func View(cfg *config.Config, taskID string, w io.Writer) error {
 			if h.ExitCode != 0 {
 				exit = fmt.Sprintf("✗ exit %d", h.ExitCode)
 			}
-			fmt.Fprintf(w, "  %s (%s) %s\n", h.Stage, h.Agent, exit)
+			fmt.Fprintf(w, "  %s (%s) %s\n", historyStage(h), h.Agent, exit)
 		}
 	}
 

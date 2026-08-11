@@ -18,9 +18,9 @@ const (
 )
 
 // resumeRecord names the agent session a stage is running. The daemon writes it
-// before the agent starts and deletes it as soon as the agent returns, so a
-// record left on disk means the daemon itself died mid-stage and the session can
-// be continued.
+// before the stage's agent starts and retires it as soon as that agent returns,
+// so a record left on disk means the daemon itself died mid-stage and the session
+// can be continued.
 //
 // It stays in logs_dir rather than in ticket frontmatter because everything it
 // points at is machine-local: Claude keys its session files by working
@@ -63,6 +63,17 @@ func resumeRecordPath(cfg *config.Config, ticketID, stageName string) string {
 	return filepath.Join(expandTilde(cfg.LogsDir), ticketID, stageName+".session")
 }
 
+// completedRecordPath names the session a stage left behind when its agent
+// returned. It is a different file from resumeRecordPath on purpose: a
+// surviving crash-recovery record means the daemon died mid-stage and the stage
+// must continue that conversation, while this record exists only so an
+// annotation run can keep talking to the agent that did the work. Sharing one
+// file would make every ordinary retry resume, which the crash-recovery contract
+// forbids.
+func completedRecordPath(cfg *config.Config, ticketID, stageName string) string {
+	return filepath.Join(expandTilde(cfg.LogsDir), ticketID, stageName+".completed-session")
+}
+
 // piSessionDir is the per-stage session storage pi writes into. Every stage of a
 // ticket materializes its log from this directory, so a shared one would give
 // each stage the same session.
@@ -70,6 +81,9 @@ func piSessionDir(cfg *config.Config, ticketID, stageName string) string {
 	return filepath.Join(expandTilde(cfg.LogsDir), ticketID, "pi-sessions", stageName)
 }
 
+// writeResumeRecord plants the crash-recovery record for a run about to start. A
+// failure is logged and otherwise ignored: a run with no record simply cannot be
+// continued.
 func (d *Daemon) writeResumeRecord(p spawnAgentParams, kind, sessionID string) {
 	rec := resumeRecord{
 		SessionID: sessionID,
@@ -94,11 +108,34 @@ func (d *Daemon) writeResumeRecord(p spawnAgentParams, kind, sessionID string) {
 	}
 }
 
-// readResumeRecord returns the stage's record, or nil when there is none to act
-// on. A missing, unreadable, or malformed file is not an error: it only means
-// the stage runs fresh.
-func (d *Daemon) readResumeRecord(p spawnAgentParams) *resumeRecord {
-	path := resumeRecordPath(p.cfg, p.ticketID, p.stageName)
+// promoteResumeRecord renames the crash-recovery record of a run that returned
+// to the completed-session record. Renaming rather than rewriting keeps the two
+// exclusive: a record is either an unseen death or a finished conversation, never
+// both. It also carries over the start time, which is how a pi session file is
+// identified and which the moment of exit is too late to find.
+func (d *Daemon) promoteResumeRecord(p spawnAgentParams) {
+	from := resumeRecordPath(p.cfg, p.ticketID, p.stageName)
+	err := os.Rename(from, completedRecordPath(p.cfg, p.ticketID, p.stageName))
+	if err == nil || os.IsNotExist(err) {
+		// A missing record is the normal case for an agent Kontora cannot resume.
+		return
+	}
+	// Only the annotation run reads the completed-session record, so losing it
+	// costs a session reuse and nothing else.
+	p.log.Warn("completed session not recorded", "stage", p.stageName, "err", err)
+	if rmErr := os.Remove(from); rmErr != nil && !os.IsNotExist(rmErr) {
+		// This one does matter: a crash-recovery record that outlives a run the
+		// daemon saw end makes the next ordinary retry resume, and a resumed run is
+		// told to finish work that is already finished.
+		p.log.Error("resume record left behind, the next retry of this stage will resume it",
+			"stage", p.stageName, "path", from, "err", rmErr)
+	}
+}
+
+// readRecordAt returns the record at path, or nil when there is none to act on.
+// A missing, unreadable, or malformed file is not an error: it only means the run
+// starts fresh.
+func (d *Daemon) readRecordAt(p spawnAgentParams, path string) *resumeRecord {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if !os.IsNotExist(err) {
@@ -118,16 +155,41 @@ func (d *Daemon) removeResumeRecord(cfg *config.Config, ticketID, stageName stri
 	_ = os.Remove(resumeRecordPath(cfg, ticketID, stageName))
 }
 
-// resumableRecord returns the record this stage may continue in, or nil to run
-// it fresh. Every rejection is logged with its reason and never pauses the
-// ticket: resume must not make a stage worse off than it was without it.
+// resumableRecord returns the record this run may continue in, or nil to run it
+// fresh. Every rejection is logged with its reason and never pauses the ticket:
+// resume must not make a run worse off than it was without it.
+//
+// An annotation run reads the completed-session record instead, so that it
+// continues the conversation the stage's last run ended in. Every guard below
+// applies to both records.
 func (d *Daemon) resumableRecord(p spawnAgentParams) *resumeRecord {
 	kind := resumeAgentKind(p.agentCfg)
 	if kind == "" {
 		return nil
 	}
-	rec := d.readResumeRecord(p)
+	path := resumeRecordPath(p.cfg, p.ticketID, p.stageName)
+	if p.annotation {
+		// A stage run the daemon never saw end still has to recover into its own
+		// conversation. Continuing the completed session here would append to its pi
+		// session file, making that file the newest in the stage's session
+		// directory, which is how piResumeSessionFile tells the interrupted run's
+		// file from the rest; the stage would then recover into the wrong
+		// conversation.
+		if _, err := os.Stat(path); err == nil {
+			p.log.Info("resume skipped: the stage has an interrupted run to recover",
+				"stage", p.stageName, "path", path)
+			return nil
+		}
+		path = completedRecordPath(p.cfg, p.ticketID, p.stageName)
+	}
+	rec := d.readRecordAt(p, path)
 	if rec == nil {
+		if p.annotation {
+			// A stage run is missing this record on every first run, so it is not
+			// logged. For an annotation run it is why the run did not continue the
+			// stage's conversation.
+			p.log.Info("resume skipped: no completed session recorded", "stage", p.stageName, "path", path)
+		}
 		return nil
 	}
 
@@ -188,7 +250,11 @@ func (d *Daemon) resumableRecord(p spawnAgentParams) *resumeRecord {
 // Retries of the same stage leave their own files there, and the start time is
 // what tells the interrupted run's file apart from theirs.
 func piResumeSessionFile(cfg *config.Config, ticketID, stageName string, startedAt time.Time) string {
-	matches, err := filepath.Glob(filepath.Join(piSessionDir(cfg, ticketID, stageName), "*.jsonl"))
+	return newestSessionFileSince(piSessionDir(cfg, ticketID, stageName), startedAt)
+}
+
+func newestSessionFileSince(sessionDir string, startedAt time.Time) string {
+	matches, err := filepath.Glob(filepath.Join(sessionDir, "*.jsonl"))
 	if err != nil {
 		return ""
 	}

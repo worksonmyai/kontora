@@ -82,13 +82,16 @@ type finalSummaryRun struct {
 // The run number is counted from the rows before it, the way the daemon keys a
 // run, rather than read off the row: entries written before that field existed
 // carry a zero.
+//
+// An annotation run is left out. The ticket-level summary describes the work the
+// ticket did, and that run only rewrote what the ticket asks for.
 func eligibleFinalSummaryRuns(t *ticket.Ticket) []finalSummaryRun {
 	seen := make(map[string]int, len(t.History))
 	var runs []finalSummaryRun
 	for _, h := range t.History {
 		run := seen[h.Stage]
 		seen[h.Stage] = run + 1
-		if h.Summary == "" {
+		if h.Summary == "" || h.Kind == ticket.KindAnnotation {
 			continue
 		}
 		runs = append(runs, finalSummaryRun{

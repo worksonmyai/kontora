@@ -289,6 +289,86 @@ func TestRelationsDecode(t *testing.T) {
 	}
 }
 
+// TestAnnotationReturnStatusRoundTrip pins the field the daemon reads to route a
+// pickup to a refine run: it decodes, it survives a rewrite of other fields, and
+// setting it on a ticket that never had it does not disturb custom fields or
+// field order.
+func TestAnnotationReturnStatusRoundTrip(t *testing.T) {
+	cases := []struct {
+		name string
+		src  string
+		want Status
+	}{
+		{
+			name: "legacy ticket without the field",
+			src:  "---\nid: ann-001\nkontora: true\nstatus: todo\nmy_field: keep me\n---\n# body\n",
+			want: "",
+		},
+		{
+			name: "parked ticket carrying the field",
+			src:  "---\nid: ann-002\nkontora: true\nstatus: todo\nannotation_return_status: human_review\nmy_field: keep me\n---\n# body\n",
+			want: "human_review",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tkt, err := ParseBytes([]byte(tc.src))
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, tkt.AnnotationReturnStatus)
+
+			require.NoError(t, tkt.SetField("annotation_return_status", "paused"))
+			assert.Equal(t, StatusPaused, tkt.AnnotationReturnStatus)
+
+			out, err := tkt.Marshal()
+			require.NoError(t, err)
+			assert.Contains(t, string(out), "my_field: keep me", "custom fields survive")
+			assert.Less(t, strings.Index(string(out), "id: ann-"), strings.Index(string(out), "status:"),
+				"field order is preserved")
+
+			reparsed, err := ParseBytes(out)
+			require.NoError(t, err)
+			assert.Equal(t, StatusPaused, reparsed.AnnotationReturnStatus)
+
+			// Clearing the marker is how a finished refine run releases the ticket.
+			require.NoError(t, reparsed.SetField("annotation_return_status", ""))
+			assert.Empty(t, reparsed.AnnotationReturnStatus)
+		})
+	}
+}
+
+// TestHistoryEntryKindRoundTrip pins the two fields a refine run adds to a
+// history entry. Both are omitted for a stage run, so an existing ticket's
+// history does not grow keys it has no use for.
+func TestHistoryEntryKindRoundTrip(t *testing.T) {
+	src := "---\nid: hk-001\nkontora: true\nstatus: todo\nhistory:\n  - stage: code\n    agent: claude\n    exit_code: 0\n---\n# body\n"
+	tkt, err := ParseBytes([]byte(src))
+	require.NoError(t, err)
+	require.Len(t, tkt.History, 1)
+	assert.Empty(t, tkt.History[0].Kind)
+	assert.False(t, tkt.History[0].SessionReused, "a stage run says nothing about session reuse")
+
+	require.NoError(t, tkt.SetField("history", append(tkt.History, HistoryEntry{
+		Stage:         "code",
+		Agent:         "claude",
+		Kind:          KindAnnotation,
+		SessionReused: true,
+	})))
+
+	out, err := tkt.Marshal()
+	require.NoError(t, err)
+	assert.Equal(t, 1, strings.Count(string(out), "kind: annotation"))
+	assert.Equal(t, 1, strings.Count(string(out), "session_reused: true"))
+
+	reparsed, err := ParseBytes(out)
+	require.NoError(t, err)
+	require.Len(t, reparsed.History, 2)
+	assert.Empty(t, reparsed.History[0].Kind)
+	assert.False(t, reparsed.History[0].SessionReused)
+	assert.Equal(t, KindAnnotation, reparsed.History[1].Kind)
+	assert.True(t, reparsed.History[1].SessionReused)
+}
+
 func TestSetFieldExisting(t *testing.T) {
 	tkt, err := ParseFile("testdata/basic.md")
 	require.NoError(t, err)

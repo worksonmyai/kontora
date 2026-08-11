@@ -1757,6 +1757,31 @@ stage: step1
 		assert.Equal(t, "second attempt", got.Tape.Events[0].Text)
 	})
 
+	t.Run("a session directory outside the stage's is read from where the run got it", func(t *testing.T) {
+		// An annotation run that opens a new pi session keeps it out of the stage's
+		// directory, so the stage name does not name the directory to read.
+		h := newHarness(t)
+		d := liveTicket(t, h, "tst-lv5")
+
+		dir := piSessionDir(h.cfg, "tst-lv5", "step1-annotation")
+		require.NoError(t, os.MkdirAll(dir, 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "annotation.jsonl"),
+			[]byte(`{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"rewriting the ticket"}]}}`+"\n"), 0o644))
+
+		d.setLiveRun("tst-lv5", liveRun{
+			stage:     "step1",
+			run:       0,
+			params:    RunnerParams{SessionDir: dir},
+			startedAt: time.Now(),
+		})
+
+		got, err := d.GetActivity(web.ActivityQuery{ID: "tst-lv5", Stage: "step1", Run: 0})
+		require.NoError(t, err)
+		require.NotNil(t, got.Tape)
+		require.Len(t, got.Tape.Events, 1)
+		assert.Equal(t, "rewriting the ticket", got.Tape.Events[0].Text)
+	})
+
 	t.Run("a run with no session file yet is an empty live tape", func(t *testing.T) {
 		h := newHarness(t)
 		d := liveTicket(t, h, "tst-lv3")

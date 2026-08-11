@@ -185,6 +185,26 @@ type TicketInfo struct {
 	// is absent from board list payloads, which never render it.
 	FinalSummary string     `json:"final_summary,omitempty"`
 	Notes        []NoteInfo `json:"notes,omitempty"`
+
+	// Relations from the frontmatter: Deps are the tickets this one waits on,
+	// Links the symmetric related set, Parent the epic above it. Blocks is the
+	// reverse of Deps and is stored nowhere, so it is derived and only present
+	// in the detail projection.
+	Deps   []TicketRef `json:"deps,omitempty"`
+	Links  []TicketRef `json:"links,omitempty"`
+	Parent *TicketRef  `json:"parent,omitempty"`
+	Blocks []TicketRef `json:"blocks,omitempty"`
+}
+
+// TicketRef is one end of a relation. Title and Status are filled in when the
+// daemon finds the referenced ticket in its store, which includes tickets the
+// board list hides (archived, or a status with no column). A ref with neither
+// names a ticket that is not in the tickets dir, or comes from a board list
+// payload, which carries ids alone.
+type TicketRef struct {
+	ID     string `json:"id"`
+	Title  string `json:"title,omitempty"`
+	Status string `json:"status,omitempty"`
 }
 
 // NoteInfo is one entry from the ticket body's "## Notes" section. At is the
@@ -287,6 +307,22 @@ func ParseNotes(body string) []NoteInfo {
 	return notes
 }
 
+// ticketRefs wraps relation ids as unresolved refs. Titles and statuses are
+// added by whoever holds the store; a View sees one ticket.
+func ticketRefs(ids []string) []TicketRef {
+	if len(ids) == 0 {
+		return nil
+	}
+	refs := make([]TicketRef, 0, len(ids))
+	for _, id := range ids {
+		if id == "" {
+			continue
+		}
+		refs = append(refs, TicketRef{ID: id})
+	}
+	return refs
+}
+
 // TicketInfoFromView converts an app.View to a TicketInfo.
 func TicketInfoFromView(v app.View) TicketInfo {
 	info := TicketInfo{
@@ -312,6 +348,11 @@ func TicketInfoFromView(v app.View) TicketInfo {
 		Summary:       v.Summary,
 		FinalSummary:  v.FinalSummary,
 		Notes:         ParseNotes(v.Body),
+		Deps:          ticketRefs(v.Deps),
+		Links:         ticketRefs(v.Links),
+	}
+	if v.Parent != "" {
+		info.Parent = &TicketRef{ID: v.Parent}
 	}
 	if len(v.History) > 0 {
 		info.History = make([]HistoryInfo, len(v.History))

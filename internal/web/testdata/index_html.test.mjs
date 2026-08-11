@@ -350,6 +350,12 @@ function kontoraContext(overrides = {}) {
       hasFocus() {
         return true;
       },
+      // Prose writes mark ticket ids, which walks the text nodes. The stub
+      // elements here are not a tree, so the walk finds nothing; fakeProseDom
+      // is the harness that exercises the marking itself.
+      createTreeWalker() {
+        return { nextNode: () => null };
+      },
       documentElement: {
         style: {},
       },
@@ -1391,6 +1397,27 @@ test("_cardHTML renders an in-progress card with selection, glyph, bars, and a l
   assert.match(html, /retry 2/);
   assert.match(html, /data-ticket-id="sta-2"/);
   assert.match(html, /data-pipe-color="[a-z]+"/);
+});
+
+test("a card's id carries a hover card only when the frontmatter names a relation", () => {
+  const state = loadKontoraState();
+  const card = (extra) => state._cardHTML(
+    { id: "sta-rel", title: "Run it", status: "todo", kontora: true, pipeline: "kontora", ...extra },
+    { key: "todo" },
+  );
+
+  // The title is already on the card and the status is the column, so a card
+  // that only repeats them is noise.
+  assert.equal(/data-tip-e/.test(card({})), false);
+  assert.equal(/data-tip-e/.test(card({ deps: [], links: [] })), false);
+
+  const html = card({
+    parent: { id: "sta-epic" },
+    deps: [{ id: "sta-blk" }, { id: "sta-blk2" }],
+    links: [{ id: "sta-rel2" }],
+  });
+  assert.match(html, /data-tip-e="sta-rel"/);
+  assert.match(html, /data-tip-e-body="under sta-epic · waits on sta-blk, sta-blk2 · related to sta-rel2"/);
 });
 
 test("_cardHTML shows the finish time on review cards", () => {
@@ -2951,6 +2978,10 @@ test("index.html renders every prose block through the idempotent write", () => 
   // any combined total the same.
   assert.equal(html.match(/x-effect="setProse\(\$el, /g).length, 5);
   assert.equal(html.match(/x-effect="setSummaryProse\(\$el, /g).length, 2);
+  // A note is plain text through the same memo, so a repeated effect run does
+  // not rewrite it either.
+  assert.equal(html.match(/x-effect="setNoteText\(\$el, /g).length, 1);
+  assert.equal(html.includes('x-text="n.text"'), false);
 });
 
 // ---------------------------------------------------------------------------
@@ -5259,6 +5290,129 @@ test("files with equal churn are ordered by path", () => {
   assert.deepEqual(state.churn().top.map((f) => f.path), first, "repeated renders agree");
 });
 
+// The relation refs the daemon resolves for the rail: an epic above, two
+// blockers of which one is gone from the tickets dir, one dependent, and more
+// links than the rail shows at once.
+const RELATION_TICKET = {
+  id: "kon-r1",
+  status: "todo",
+  parent: { id: "kon-epic", title: "The epic", status: "open" },
+  deps: [
+    { id: "kon-blk1", title: "Archived blocker", status: "archived" },
+    { id: "kon-gone" },
+  ],
+  blocks: [{ id: "kon-wait", title: "Waiting on this", status: "open" }],
+  links: Array.from({ length: 10 }, (_, i) => ({ id: `kon-l${i}`, title: `Related ${i}`, status: "done" })),
+};
+
+test("the rail lists the frontmatter relations and drops the rows with nothing in them", () => {
+  const cases = [
+    {
+      name: "every relation set",
+      ticket: RELATION_TICKET,
+      want: ["parent", "deps", "blocks", "links"],
+    },
+    {
+      name: "one row only",
+      ticket: { id: "kon-r2", deps: [], links: [{ id: "kon-l0", status: "done" }] },
+      want: ["links"],
+    },
+    { name: "no relations", ticket: { id: "kon-r3" }, want: [] },
+    { name: "no ticket open", ticket: null, want: [] },
+  ];
+
+  for (const c of cases) {
+    const state = pageState(c.ticket);
+    // Spread, because the component builds the row list inside the VM realm and
+    // the strict assert compares prototypes.
+    assert.deepEqual([...state.relationRows().map((r) => r.key)], c.want, c.name);
+  }
+});
+
+test("a relation row shows the first eight refs until it is expanded", () => {
+  const state = pageState(RELATION_TICKET);
+  const links = state.relationRows().find((r) => r.key === "links");
+
+  assert.equal(state.relationRefs(links).length, 8);
+  assert.equal(state.relationHidden(links), 2);
+
+  state.relExpanded[links.key] = true;
+  assert.equal(state.relationRefs(links).length, 10);
+  assert.equal(state.relationHidden(links), 0);
+
+  // A row inside the cap never offers the reveal.
+  const deps = state.relationRows().find((r) => r.key === "deps");
+  assert.equal(state.relationHidden(deps), 0);
+});
+
+test("a relation chip wears the status of the ticket it names, and says when there is none", () => {
+  const state = pageState(RELATION_TICKET);
+  const [blocker, gone] = state.relationRows().find((r) => r.key === "deps").refs;
+
+  assert.equal(state.relationChipClass(blocker), "ent ent-ticket text-surface-600");
+  assert.deepEqual({ ...state.ticketTip(blocker) }, {
+    title: "Archived blocker",
+    body: "archived",
+    hint: "click to open",
+  });
+
+  // The frontmatter still points at kon-gone, so it stays on screen. The daemon
+  // found no ticket for it, so it is not a link.
+  assert.equal(state.relationChipClass(gone), "ent ent-ticket text-surface-600 ent-ticket-gone");
+  assert.deepEqual({ ...state.ticketTip(gone) }, {
+    title: "kon-gone",
+    body: "not in the tickets dir",
+    hint: "",
+  });
+
+  // A running dependent carries the colour the board column uses.
+  const running = { id: "kon-run", title: "Running", status: "in_progress" };
+  assert.equal(state.relationChipClass(running), "ent ent-ticket text-st-progress");
+  assert.equal(state.ticketTip(running).body, "running");
+});
+
+test("a relation opens through the board entry when the board has one", async () => {
+  const state = pageState(RELATION_TICKET);
+  const boardEntry = { id: "kon-wait", title: "Waiting on this", status: "open", pipeline: "default" };
+  state.tickets = [boardEntry];
+  let opened;
+  state._paletteOpenTicket = (t) => { opened = t; };
+
+  // The board entry is the object the card list holds, so the panel and the
+  // selected card agree.
+  await state.openTicketRef({ id: "kon-wait", title: "Waiting on this", status: "open" });
+  assert.equal(opened, boardEntry);
+
+  // A ticket the board hides is opened from the ref, and the detail fetch fills
+  // the rest in.
+  await state.openTicketRef({ id: "kon-blk1", title: "Archived blocker", status: "archived" });
+  assert.deepEqual({ ...opened }, { id: "kon-blk1", title: "Archived blocker", status: "archived" });
+
+  // Nothing to open behind an unresolved ref.
+  opened = null;
+  await state.openTicketRef({ id: "kon-gone" });
+  assert.equal(opened, null);
+});
+
+test("index.html renders the relation rows inside the frontmatter grid", () => {
+  const html = fs.readFileSync(htmlPath, "utf8");
+
+  // One row per relation, spanning both grid columns so the label stays on the
+  // rail's 58px column.
+  assert.match(html, /x-for="row in relationRows\(\)" :key="row\.key"/);
+  assert.match(html, /class="col-span-2 grid grid-cols-\[58px_1fr\]/);
+  // The chip carries the same hover card the summary chips use, and a click
+  // opens the ticket it names.
+  assert.match(html, /:class="relationChipClass\(ref\)"/);
+  assert.match(html, /:data-tip-e="ticketTip\(ref\)\.title"/);
+  assert.match(html, /@click="openTicketRef\(ref\)"/);
+  assert.match(html, /@click="relExpanded\[row\.key\] = true"/);
+  // Notes are written through the marking pass, so an id in a note is a chip.
+  assert.match(html, /x-effect="setNoteText\(\$el, n\.text\)"/);
+  // A gone relation is dashed and not clickable.
+  assert.match(html, /\.ent-ticket-gone \{ border-style: dashed;/);
+});
+
 test("index.html renders the ribbon, transcript and rail the page needs", () => {
   const html = fs.readFileSync(htmlPath, "utf8");
 
@@ -6057,20 +6211,71 @@ test("a file the branch changed carries its diff stat", () => {
   assert.equal(untouched.getAttribute("data-tip-e"), null);
 });
 
-test("only summary prose gets chips", () => {
+test("authored prose gets ticket chips only, summary prose gets the rest too", () => {
   const dom = fakeProseDom();
   const state = entityState(dom);
   const body = dom.doc.createElement("div");
+  const note = dom.doc.createElement("div");
   const summary = dom.doc.createElement("div");
+  const text = "Reverted kon-9xz1 in abc1234.";
 
-  // The ticket body is authored text: a chip there would rewrite what the
-  // reporter typed.
-  state.setProse(body, "Reverted in abc1234.");
+  // A body and a note are authored text: a chip over the sha would rewrite what
+  // the reporter typed, while an id names a record the reader can open.
+  state.setProse(body, text);
+  assert.deepEqual(dom.chips(body).map((c) => c.textContent), ["kon-9xz1"]);
+  assert.equal(body.textContent, text);
+
+  state.setNoteText(note, text);
+  assert.deepEqual(dom.chips(note).map((c) => c.textContent), ["kon-9xz1"]);
+  assert.equal(note.textContent, text);
+
+  state.setSummaryProse(summary, text);
+  assert.deepEqual(dom.chips(summary).map((c) => c.textContent), ["kon-9xz1", "abc1234"]);
+});
+
+test("an authored-prose write re-runs when the board lands and skips a repeat", () => {
+  const dom = fakeProseDom();
+  const state = entityState(dom, { tickets: [] });
+  const body = dom.doc.createElement("div");
+  const note = dom.doc.createElement("div");
+
+  // fetchTasks resolves after the first paint, so a memo keyed on the text
+  // alone would leave the id as prose for good.
+  state.setProse(body, "Reverted kon-9xz1.");
+  state.setNoteText(note, "Reverted kon-9xz1.");
   assert.deepEqual(dom.chips(body), []);
-  assert.equal(body.textContent, "Reverted in abc1234.");
+  assert.deepEqual(dom.chips(note), []);
 
-  state.setSummaryProse(summary, "Reverted in abc1234.");
-  assert.deepEqual(dom.chips(summary).map((c) => c.textContent), ["abc1234"]);
+  state.tickets = ENTITY_TICKETS;
+  state.setProse(body, "Reverted kon-9xz1.");
+  state.setNoteText(note, "Reverted kon-9xz1.");
+  assert.deepEqual(dom.chips(body).map((c) => c.textContent), ["kon-9xz1"]);
+  assert.deepEqual(dom.chips(note).map((c) => c.textContent), ["kon-9xz1"]);
+
+  // The second write with everything unchanged marks nothing again.
+  const marked = dom.chips(note)[0];
+  state.setNoteText(note, "Reverted kon-9xz1.");
+  assert.equal(dom.chips(note)[0], marked);
+});
+
+test("a prose id resolves against the open ticket's relations, not the board alone", () => {
+  const dom = fakeProseDom();
+  const state = entityState(dom);
+  // An archived dep is not on the board, and the daemon resolved it for the
+  // rail, so the body can point at it as well.
+  state.selectedTicket = {
+    ...state.selectedTicket,
+    deps: [{ id: "kon-arc1", title: "Archived blocker", status: "archived" }],
+  };
+  const body = dom.doc.createElement("div");
+
+  state.setProse(body, "Waiting on kon-arc1, and on no-push.");
+  const chip = dom.chips(body)[0];
+
+  assert.equal(chip.textContent, "kon-arc1");
+  assert.equal(chip.getAttribute("data-tip-e"), "Archived blocker");
+  // A word of the same shape that names no ticket stays prose.
+  assert.deepEqual(dom.chips(body).length, 1);
 });
 
 test("the summary prose write re-runs when the commit list lands", () => {

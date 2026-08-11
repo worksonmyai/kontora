@@ -41,6 +41,13 @@ var ENTITY_MAX = 40;
 // from it falls through to the dotted-attribute pattern, which is how
 // index_html.test.mjs used to render as an attribute path.
 var ENTITY_EXT = 'go|ts|tsx|js|jsx|mjs|cjs|json|md|ya?ml|toml|lock|css|html?|lisp|asd|exs?|py|rb|rs|sh|sql|csv|log|txt|tmpl|proto';
+// The shape of a ticket id, shared by the summary pass and the ticket-id-only
+// pass authored prose gets. A match is checked against known tickets, never
+// trusted from its shape alone.
+var TICKET_ID_RE = '\\b[a-z]{2,8}-[a-z0-9]{4}\\b';
+// Relation chips one rail row shows before it has to be expanded. A ticket in
+// the corpus carries up to 33 links, and the rail is 308px wide.
+var RELATION_CAP = 8;
 // NodeFilter constants, spelled out rather than read off the global.
 var SHOW_TEXT = 4;
 var FILTER_ACCEPT = 1;
@@ -302,6 +309,9 @@ function kontora() {
     _blockOffsetsSrc: null,
     _blockOffsetsFor: null,
     setStageOpen: false,
+    // Relation rows the user expanded past the first RELATION_CAP chips, keyed
+    // by row. Cleared with the ticket, so opening another one starts collapsed.
+    relExpanded: {},
     deleteSubmitting: false,
     uploadDragging: false,
     lightTheme: getStoredTheme() === 'light',
@@ -1105,6 +1115,7 @@ function kontora() {
       this.setStageOpen = false;
       this.ticketChanges = null;
       this.collapsedStages = {};
+      this.relExpanded = {};
       this.selectedTicket = ticket;
       this._pushRecentTicket(ticket.id);
       this.detailLoading = true;
@@ -1978,6 +1989,19 @@ function kontora() {
         .replace(/'/g, '&#39;');
     },
 
+    // The relations behind a board card, as one line of ids. Board list payloads
+    // carry the ids without titles, and an id is what fits on a card anyway.
+    _cardRelationSummary(ticket) {
+      var parts = [];
+      var add = function (label, refs) {
+        if (refs && refs.length) parts.push(label + ' ' + refs.map(function (r) { return r.id; }).join(', '));
+      };
+      add('under', ticket.parent ? [ticket.parent] : []);
+      add('waits on', ticket.deps);
+      add('related to', ticket.links);
+      return parts.join(' \u00b7 ');
+    },
+
     // Markup for a column with no matching tickets. Keeps the .empty-state class
     // so Sortable's filter still excludes it from dragging.
     _emptyStateHTML(col) {
@@ -2080,6 +2104,14 @@ function kontora() {
         : '';
       var titleCls = 'text-[13px] text-tx leading-[1.45]' + (ticket.status === 'cancelled' ? ' line-through decoration-surface-600/60' : '');
 
+      // The card's id carries a hover card only when the frontmatter names a
+      // relation: the title and the status are already on the card and in the
+      // column, so a card repeating them would be noise.
+      var rel = this._cardRelationSummary(ticket);
+      var idTip = rel
+        ? ' data-tip-e="' + esc(ticket.id) + '" data-tip-e-body="' + esc(rel) + '"'
+        : '';
+
       return '<div class="' + cls.join(' ') + '"'
         + ' data-ticket-id="' + esc(ticket.id) + '"'
         + ' data-pipe-color="' + esc(this.ticketPipeColor(ticket)) + '"'
@@ -2091,7 +2123,7 @@ function kontora() {
         + progress
         + '<div class="flex items-center gap-2 text-[11px] font-mono text-surface-600 justify-between">'
         +   '<div class="flex items-center gap-1.5 min-w-0">'
-        +     '<span class="group-hover:text-tx-3 transition-colors truncate">' + esc(ticket.id) + '</span>'
+        +     '<span class="group-hover:text-tx-3 transition-colors truncate"' + idTip + '>' + esc(ticket.id) + '</span>'
         +     agent
         +   '</div>'
         +   '<div class="flex items-center gap-2 shrink-0">' + retry + timeSpan + '</div>'
@@ -2107,12 +2139,15 @@ function kontora() {
     // guards each field.
     _cardSig(ticket, col) {
       // ticket.history and ticket.updated_at reach the card only through
-      // reviewFinishedAt, so its result stands in for both here.
+      // reviewFinishedAt, so its result stands in for both here. ticket.parent,
+      // ticket.deps and ticket.links reach it only through the relation line,
+      // so that string stands in for the three of them.
       return [col.key, ticket.id, ticket.title, ticket.status, ticket.stage,
               ticket.pipeline, ticket.path, ticket.agent, ticket.attempt,
               ticket.kontora ? 1 : 0, ticket.started_at, ticket.created_at,
               this.reviewFinishedAt(ticket),
               (ticket.stages || []).join('>'),
+              this._cardRelationSummary(ticket),
               this.showPipelineBadges ? 1 : 0, this.showAgentMeta ? 1 : 0].join('\u0001');
     },
 
@@ -3436,15 +3471,30 @@ function kontora() {
     // only when the source changed. Plain innerHTML is enough here because
     // sanitized markdown carries no Alpine directives.
     setProse(el, md) {
-      var src = md || '';
+      // The board size is in the key because a ticket id only chips once the
+      // board holding that ticket has loaded, which is after the first paint.
+      var src = (md || '') + '\u0000' + (this.tickets || []).length;
       if (el._proseSrc === src) return;
       el._proseSrc = src;
-      el.innerHTML = this.renderMarkdown(src);
+      el.innerHTML = this.renderMarkdown(md || '');
+      this._markTicketIds(el);
     },
 
-    // The same write for stage summaries, with entity chips on top. A separate
-    // method rather than a flag on setProse: the ticket body is text a person
-    // wrote, and chipping a sha inside it would rewrite what they typed.
+    // A note is plain text, not markdown: shown as the daemon or the agent
+    // typed it. Ticket ids still become chips, so a note that answers "blocked
+    // on kon-1234" points at that ticket.
+    setNoteText(el, text) {
+      var src = (text || '') + '\u0000' + (this.tickets || []).length;
+      if (el._noteSrc === src) return;
+      el._noteSrc = src;
+      el.textContent = text || '';
+      this._markTicketIds(el);
+    },
+
+    // The same write for stage summaries, with the full entity set on top. A
+    // separate method rather than a flag on setProse: authored prose gets
+    // ticket-id chips only, and chipping a sha or a filename inside a body
+    // would rewrite what the reporter typed.
     //
     // The memo key adds the branch, the commit shas, the changed-file count and
     // the size of the board, all of which the chips read and none of which is
@@ -3463,10 +3513,18 @@ function kontora() {
       this._markEntities(el);
     },
 
+    // Chip the ticket ids in already-sanitised prose and leave every other
+    // pattern alone. This is the pass authored text gets: an id names a record
+    // the reader can open, so it earns a chip, while a sha or a filename in a
+    // body is only the words someone typed.
+    _markTicketIds(root) {
+      this._markEntities(root, this._ticketRe());
+    },
+
     // Chip the entities in already-sanitised prose. One combined alternation,
     // so two patterns cannot claim overlapping text, and one pass.
-    _markEntities(root) {
-      var re = this._entityRe();
+    _markEntities(root, re) {
+      re = re || this._entityRe();
       var walker = document.createTreeWalker(root, SHOW_TEXT, {
         acceptNode: function (node) {
           // Code and links own their text: a fence has to render character for
@@ -3481,6 +3539,12 @@ function kontora() {
       for (var n = walker.nextNode(); n; n = walker.nextNode()) targets.push(n);
       var budget = ENTITY_MAX;
       for (var i = 0; i < targets.length && budget > 0; i++) budget = this._wrapEntities(targets[i], re, budget);
+    },
+
+    // The ticket-id half of _entityRe on its own, for authored prose. Kept
+    // beside the pattern it copies so the two shapes stay one shape.
+    _ticketRe() {
+      return new RegExp('(?<ticket>' + TICKET_ID_RE + ')', 'g');
     },
 
     _entityRe() {
@@ -3516,7 +3580,7 @@ function kontora() {
       // A ticket id is checked against the loaded board, not trusted from its
       // shape: of 164 words of this shape across the ticket corpus, 87 were
       // ordinary hyphenated words such as test-lisp and no-push.
-      parts.push('(?<ticket>\\b[a-z]{2,8}-[a-z0-9]{4}\\b)');
+      parts.push('(?<ticket>' + TICKET_ID_RE + ')');
       // A pull request or issue number. The link behind it needs the project's
       // origin, so this one is declined on a repository that has none.
       parts.push('(?<ref>(?<![\\w#])#\\d{1,7}\\b)');
@@ -3590,8 +3654,80 @@ function kontora() {
       return span;
     },
 
+    // A chip needs a record behind the id. The board is the first place to
+    // look; the open ticket's relations are the second, because the daemon
+    // resolves those from every file on disk and so covers the tickets the
+    // board hides (archived, or a status with no column).
     _ticketById(id) {
-      return (this.tickets || []).find(function (t) { return t.id === id; }) || null;
+      var hit = (this.tickets || []).find(function (t) { return t.id === id; });
+      return hit || this._relationRefById(id);
+    },
+
+    _relationRefById(id) {
+      var rows = this.relationRows();
+      for (var i = 0; i < rows.length; i++) {
+        var hit = rows[i].refs.find(function (r) { return r.id === id && !!r.status; });
+        if (hit) return hit;
+      }
+      return null;
+    },
+
+    // The frontmatter relations, in the order the rail lists them: the ticket
+    // above this one, what it waits on, what waits on it, then the symmetric
+    // set. Rows with nothing in them are dropped rather than shown empty.
+    relationRows() {
+      var t = this.selectedTicket;
+      if (!t) return [];
+      return [
+        { key: 'parent', label: 'parent', refs: t.parent ? [t.parent] : [] },
+        { key: 'deps', label: 'deps', refs: t.deps || [] },
+        { key: 'blocks', label: 'blocks', refs: t.blocks || [] },
+        { key: 'links', label: 'links', refs: t.links || [] },
+      ].filter(function (r) { return r.refs.length > 0; });
+    },
+
+    // What one row shows: the first RELATION_CAP refs until the row is
+    // expanded. A ticket can carry 30-odd links, and the rail is 308px wide.
+    relationRefs(row) {
+      if (this.relExpanded[row.key]) return row.refs;
+      return row.refs.slice(0, RELATION_CAP);
+    },
+
+    relationHidden(row) {
+      return this.relExpanded[row.key] ? 0 : Math.max(0, row.refs.length - RELATION_CAP);
+    },
+
+    // A ref the daemon could not resolve names a ticket that is no longer in
+    // the tickets dir. It stays on screen, because the frontmatter still points
+    // at it, but it is not a link.
+    relationKnown(ref) {
+      return !!(ref && ref.status);
+    },
+
+    relationChipClass(ref) {
+      var mark = this._paletteStatusMarks[ref && ref.status];
+      return 'ent ent-ticket ' + (mark ? mark.cls : 'text-surface-600')
+        + (this.relationKnown(ref) ? '' : ' ent-ticket-gone');
+    },
+
+    // The hover card behind a ticket id: the title, which the id does not say,
+    // the status word, and what a click does.
+    ticketTip(ref) {
+      var known = this.relationKnown(ref);
+      return {
+        title: (ref && (ref.title || ref.id)) || '',
+        body: known ? this.paletteStatusLabel(ref.status) : 'not in the tickets dir',
+        hint: known ? 'click to open' : '',
+      };
+    },
+
+    // Open a ticket named by a relation. The board entry is preferred when there
+    // is one, so the card behind the panel shows as selected; a ticket the board
+    // hides is opened from the ref itself and the detail fetch fills it in.
+    async openTicketRef(ref) {
+      if (!this.relationKnown(ref)) return;
+      var t = (this.tickets || []).find(function (x) { return x.id === ref.id; });
+      await this._paletteOpenTicket(t || { id: ref.id, title: ref.title, status: ref.status });
     },
 
     // A pull request link, and the only chip that navigates. The path a number
@@ -3620,13 +3756,13 @@ function kontora() {
     // opens that ticket rather than copying its id, and the card leads with the
     // title, which is the part the id does not say.
     _ticketChip(span, t) {
-      var mark = this._paletteStatusMarks[t.status];
-      span.className = 'ent ent-ticket ' + (mark ? mark.cls : 'text-surface-600');
-      span.setAttribute('data-tip-e', t.title || t.id);
-      span.setAttribute('data-tip-e-body', this.paletteStatusLabel(t.status));
-      span.setAttribute('data-tip-e-hint', 'click to open');
+      var tip = this.ticketTip(t);
+      span.className = this.relationChipClass(t);
+      span.setAttribute('data-tip-e', tip.title);
+      span.setAttribute('data-tip-e-body', tip.body);
+      span.setAttribute('data-tip-e-hint', tip.hint);
       var self = this;
-      span.addEventListener('click', function () { self._paletteOpenTicket(t); });
+      span.addEventListener('click', function () { self.openTicketRef(t); });
       return span;
     },
 

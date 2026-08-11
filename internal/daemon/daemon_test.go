@@ -2094,6 +2094,68 @@ func TestDaemon_ListTickets_HidesNonBoardStatuses(t *testing.T) {
 	}
 }
 
+func TestDaemon_Relations(t *testing.T) {
+	h := newHarness(t)
+	d := h.newDaemon(h.cfg)
+
+	add := func(id, status, fm, title string) {
+		md := fmt.Sprintf("---\nid: %s\nkontora: true\nstatus: %s\n%s---\n# %s\n", id, status, fm, title)
+		tk, err := ticket.ParseBytes([]byte(md))
+		require.NoError(t, err)
+		d.tickets[id] = &ticketState{ticket: tk, filePath: filepath.Join(h.tasksDir, id+".md")}
+	}
+
+	// rel-main waits on one archived and one absent ticket, is related to one,
+	// sits under an epic, and holds up two others.
+	add("rel-main", "todo", "deps: [rel-old, rel-gone]\nlinks: [rel-side]\nparent: rel-epic\n", "Main ticket")
+	add("rel-old", "archived", "", "Archived blocker")
+	add("rel-side", "done", "", "Related work")
+	add("rel-epic", "open", "", "The epic")
+	add("rel-waiter", "open", "deps: [rel-main]\n", "Waiting on main")
+	add("rel-early", "open", "deps: [rel-main, rel-side]\n", "Also waiting")
+
+	detail, err := d.GetTicket("rel-main")
+	require.NoError(t, err)
+
+	// A dep the board hides still resolves: the store holds every file on disk.
+	require.Len(t, detail.Deps, 2)
+	assert.Equal(t, web.TicketRef{ID: "rel-old", Title: "Archived blocker", Status: "archived"}, detail.Deps[0])
+	// An id with no ticket left keeps its bare form rather than disappearing.
+	assert.Equal(t, web.TicketRef{ID: "rel-gone"}, detail.Deps[1])
+	assert.Equal(t, []web.TicketRef{{ID: "rel-side", Title: "Related work", Status: "done"}}, detail.Links)
+	require.NotNil(t, detail.Parent)
+	assert.Equal(t, web.TicketRef{ID: "rel-epic", Title: "The epic", Status: "open"}, *detail.Parent)
+	// blocks is the reverse of deps, which is stored nowhere: sorted by id, and
+	// rel-side's own dependent is not confused for rel-main's.
+	assert.Equal(t, []web.TicketRef{
+		{ID: "rel-early", Title: "Also waiting", Status: "open"},
+		{ID: "rel-waiter", Title: "Waiting on main", Status: "open"},
+	}, detail.Blocks)
+
+	// The board cards render ids, so the list payload carries no titles and no
+	// derived reverse edges.
+	var list web.TicketInfo
+	for _, ti := range d.ListTickets() {
+		if ti.ID == "rel-main" {
+			list = ti
+		}
+	}
+	require.Equal(t, "rel-main", list.ID)
+	assert.Equal(t, []web.TicketRef{{ID: "rel-old"}, {ID: "rel-gone"}}, list.Deps)
+	assert.Equal(t, []web.TicketRef{{ID: "rel-side"}}, list.Links)
+	require.NotNil(t, list.Parent)
+	assert.Equal(t, web.TicketRef{ID: "rel-epic"}, *list.Parent)
+	assert.Empty(t, list.Blocks)
+
+	// A ticket with no relations gets no rows at all.
+	plain, err := d.GetTicket("rel-epic")
+	require.NoError(t, err)
+	assert.Empty(t, plain.Deps)
+	assert.Empty(t, plain.Links)
+	assert.Nil(t, plain.Parent)
+	assert.Empty(t, plain.Blocks)
+}
+
 func TestDaemon_ListTickets_OmitsDetailFields(t *testing.T) {
 	h := newHarness(t)
 	d := h.newDaemon(h.cfg)

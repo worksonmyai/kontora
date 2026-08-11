@@ -652,6 +652,10 @@
        chip itself only draws the box. */
     .ent-ticket { background: rgba(var(--surface-700), .5); border-color: rgba(var(--surface-700), 1); padding: 1px 5px; cursor: pointer; }
     .ent-ticket:hover { background: rgba(var(--surface-700), .9); }
+    /* A relation whose ticket is no longer in the tickets dir. The frontmatter
+       still points at it, so it stays on screen, but there is nothing to open. */
+    .ent-ticket-gone { border-style: dashed; opacity: .65; cursor: default; }
+    .ent-ticket-gone:hover { background: rgba(var(--surface-700), .5); }
     .ent-count { border-bottom: 1px dotted rgba(var(--edge-hover), 1); cursor: default; }
     /* The two halves of a diff stat, and the exit code that decided whether the
        stage advanced: green for what was added or passed, red for the rest. */
@@ -1974,6 +1978,29 @@
                 <button type="button" class="copyable text-tx-2 hover:text-tx text-left break-all justify-self-start"
                         @click.stop="copyTicketId(selectedTicket?.id)"
                         x-text="copiedId ? '✓ copied' : selectedTicket?.id"></button>
+                <!-- Relations from the frontmatter, labelled with the field they
+                     come from. blocks is the only derived one: deps is stored on
+                     the blocked ticket, so what a ticket holds up is read off
+                     the others. -->
+                <template x-for="row in relationRows()" :key="row.key">
+                  <div class="col-span-2 grid grid-cols-[58px_1fr] gap-x-[10px] items-start">
+                    <span class="text-surface-600" x-text="row.label"></span>
+                    <div class="flex flex-wrap gap-[5px] items-center">
+                      <template x-for="ref in relationRefs(row)" :key="ref.id">
+                        <span :class="relationChipClass(ref)"
+                              :data-tip-e="ticketTip(ref).title"
+                              :data-tip-e-body="ticketTip(ref).body"
+                              :data-tip-e-hint="ticketTip(ref).hint"
+                              @click="openTicketRef(ref)"
+                              x-text="ref.id"></span>
+                      </template>
+                      <button type="button" x-show="relationHidden(row) > 0"
+                              class="text-[10.5px] text-accent hover:underline"
+                              @click="relExpanded[row.key] = true"
+                              x-text="'+' + relationHidden(row) + ' more'"></button>
+                    </div>
+                  </div>
+                </template>
                 <template x-if="selectedTicket?.agent"><span class="text-surface-600">agent</span></template>
                 <template x-if="selectedTicket?.agent"><span class="text-tx-2 break-all" x-text="selectedTicket?.agent"></span></template>
                 <template x-if="selectedTicket?.stage && selectedTicket?.stages?.length > 1"><span class="text-surface-600">stage</span></template>
@@ -2027,7 +2054,7 @@
               <template x-for="(n, ni) in (selectedTicket?.notes || [])" :key="ni">
                 <div class="border-l-2 border-surface-700 pl-[11px]">
                   <div x-show="n.at" class="font-mono text-[10.5px] text-surface-600 mb-[3px]" x-text="n.at"></div>
-                  <div class="text-[13px] leading-[1.55] text-tx-2 whitespace-pre-wrap break-words" x-text="n.text"></div>
+                  <div class="text-[13px] leading-[1.55] text-tx-2 whitespace-pre-wrap break-words" x-effect="setNoteText($el, n.text)"></div>
                 </div>
               </template>
               <p x-show="!(selectedTicket?.notes || []).length" class="font-mono text-[11px] leading-[1.6] text-surface-600">

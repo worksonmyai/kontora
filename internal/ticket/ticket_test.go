@@ -231,6 +231,64 @@ func TestFinalSummaryDecodeAndRoundTrip(t *testing.T) {
 	}
 }
 
+func TestRelationsDecode(t *testing.T) {
+	cases := []struct {
+		name       string
+		fm         string
+		wantDeps   []string
+		wantLinks  []string
+		wantParent string
+	}{
+		{
+			name: "kontora ticket without the fields",
+			fm:   "id: rel-001\nstatus: todo\n",
+		},
+		{
+			// What the ticket CLI writes for a ticket with no relations, and it
+			// is not the same value as the absent field above.
+			name:      "empty lists",
+			fm:        "id: rel-002\nstatus: todo\ndeps: []\nlinks: []\n",
+			wantDeps:  []string{},
+			wantLinks: []string{},
+		},
+		{
+			name:       "flow lists and a parent",
+			fm:         "id: rel-003\nstatus: open\ndeps: [kon-aaaa, kon-bbbb]\nlinks: [kon-cccc]\nparent: kon-epic\n",
+			wantDeps:   []string{"kon-aaaa", "kon-bbbb"},
+			wantLinks:  []string{"kon-cccc"},
+			wantParent: "kon-epic",
+		},
+		{
+			// The external ticket CLI writes both shapes.
+			name:      "block sequences",
+			fm:        "id: rel-004\nstatus: open\ndeps:\n  - kon-aaaa\nlinks:\n  - kon-cccc\n  - kon-dddd\n",
+			wantDeps:  []string{"kon-aaaa"},
+			wantLinks: []string{"kon-cccc", "kon-dddd"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tkt, err := ParseBytes([]byte("---\n" + tc.fm + "---\n# body\n"))
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantDeps, tkt.Deps)
+			assert.Equal(t, tc.wantLinks, tkt.Links)
+			assert.Equal(t, tc.wantParent, tkt.Parent)
+
+			// Relations belong to the external tool: a daemon write to an
+			// unrelated field must leave them exactly as they were.
+			require.NoError(t, tkt.SetField("status", "in_progress"))
+			out, err := tkt.Marshal()
+			require.NoError(t, err)
+			reparsed, err := ParseBytes(out)
+			require.NoError(t, err)
+			assert.Equal(t, tkt.Deps, reparsed.Deps)
+			assert.Equal(t, tkt.Links, reparsed.Links)
+			assert.Equal(t, tkt.Parent, reparsed.Parent)
+		})
+	}
+}
+
 func TestSetFieldExisting(t *testing.T) {
 	tkt, err := ParseFile("testdata/basic.md")
 	require.NoError(t, err)

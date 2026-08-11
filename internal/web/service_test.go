@@ -49,6 +49,33 @@ func TestTicketInfoFromView_FinalSummary(t *testing.T) {
 	assert.NotContains(t, string(list), "final_summary")
 }
 
+// TestTicketInfoFromView_Relations: a View sees one ticket, so it hands over
+// relation ids and nothing else. Titles and statuses are added by the daemon,
+// which holds the store.
+func TestTicketInfoFromView_Relations(t *testing.T) {
+	info := TicketInfoFromView(app.View{
+		ID:     "t1",
+		Deps:   []string{"t2", "", "t3"},
+		Links:  []string{"t4"},
+		Parent: "t5",
+	})
+	// The empty id is dropped: a "deps: [t2, ]" line must not render a chip with
+	// no ticket behind it.
+	assert.Equal(t, []TicketRef{{ID: "t2"}, {ID: "t3"}}, info.Deps)
+	assert.Equal(t, []TicketRef{{ID: "t4"}}, info.Links)
+	require.NotNil(t, info.Parent)
+	assert.Equal(t, TicketRef{ID: "t5"}, *info.Parent)
+	// Blocks is derived from the whole store, so it is never set here.
+	assert.Nil(t, info.Blocks)
+
+	// A ticket with no relations carries none of the keys.
+	encoded, err := json.Marshal(TicketInfoFromView(app.View{ID: "t6"}))
+	require.NoError(t, err)
+	for _, key := range []string{"deps", "links", "parent", "blocks"} {
+		assert.NotContains(t, string(encoded), `"`+key+`"`)
+	}
+}
+
 func TestParseNotes(t *testing.T) {
 	cases := []struct {
 		name string

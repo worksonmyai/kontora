@@ -36,6 +36,23 @@ These are set when creating a ticket (manually or via `kontora new`):
 | `path` | yes | — | Path to the repository (supports `~`, e.g., `~/projects/kontora`). |
 | `base_branch` | no | — | Branch the ticket's work branch starts from. Empty means the repository's default branch. See [Base branch](#base-branch). |
 | `created` | no | — | RFC 3339 timestamp. Set automatically by `kontora new`. |
+| `deps` | no | — | Ids of the tickets this one waits on. Read only; see [Relations](#relations). |
+| `links` | no | — | Ids of related tickets. Read only; see [Relations](#relations). |
+| `parent` | no | — | Id of the epic or parent ticket. Read only; see [Relations](#relations). |
+
+#### Relations
+
+`deps`, `links` and `parent` name other tickets. Kontora reads them and shows them in the ticket's details rail, where each id is a link to that ticket and a hover card gives its title and status. Nothing else in Kontora acts on them: the scheduler does not hold a ticket back because a dep is unfinished, and no command writes these fields. They come from whatever created the ticket, such as [wedow/ticket](https://github.com/wedow/ticket) (`ticket dep`, `ticket link`, `ticket create --parent`).
+
+```yaml
+deps: [kon-a1b2]
+links: [kon-c3d4, kon-e5f6]
+parent: kon-9zzz
+```
+
+Both the flow form above and a block sequence are read. An id with no ticket file behind it stays on screen as plain text: the frontmatter still points at it, and there is nothing to open.
+
+The rail also has a `blocks` row, which is the reverse of `deps`: the tickets whose `deps` name this one. It is derived on read, not stored, because a dependency is written on the blocked ticket alone.
 
 #### Base branch
 
@@ -82,8 +99,9 @@ Any field not listed above is preserved through round-trips. The daemon will not
 id: poi-q88f
 status: todo
 pipeline: default
-deps: []
 type: ticket
+priority: 2
+tags: [ui, backend]
 ---
 ```
 

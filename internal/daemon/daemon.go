@@ -110,10 +110,6 @@ func DirectRunner(ctx context.Context, p RunnerParams) (process.Result, error) {
 			}
 		}
 	}
-	env := make([]string, 0, len(p.Env))
-	for k, v := range p.Env {
-		env = append(env, k+"="+v)
-	}
 	return process.Run(ctx, process.RunParams{
 		Binary:  p.Binary,
 		Args:    p.Args,
@@ -121,8 +117,18 @@ func DirectRunner(ctx context.Context, p RunnerParams) (process.Result, error) {
 		Timeout: p.Timeout,
 		Stdout:  logFile,
 		Stderr:  logFile,
-		Env:     env,
+		Env:     envPairs(p.Env),
 	})
+}
+
+// envPairs renders an environment map as the KEY=VALUE slice a subprocess
+// takes.
+func envPairs(env map[string]string) []string {
+	pairs := make([]string, 0, len(env))
+	for k, v := range env {
+		pairs = append(pairs, k+"="+v)
+	}
+	return pairs
 }
 
 // tmuxRunner wraps tmux.Run for use as a RunnerFunc.
@@ -250,16 +256,17 @@ type windowOps struct {
 var defaultWindowOps = windowOps{list: tmux.ListWindows, kill: tmux.KillWindow}
 
 type Daemon struct {
-	cfg                atomic.Pointer[config.Config]
-	worktrees          *worktree.Manager
-	runner             RunnerFunc
-	plannotatorSpawner PlannotatorSpawner
-	plannotatorLookup  PlannotatorLookup
-	agentLookup        AgentLookup
-	skipOrphanCleanup  bool
-	windows            windowOps
-	broker             *web.SSEBroker
-	svc                *app.Service
+	cfg                 atomic.Pointer[config.Config]
+	worktrees           *worktree.Manager
+	runner              RunnerFunc
+	plannotatorSpawner  PlannotatorSpawner
+	plannotatorLookup   PlannotatorLookup
+	finalSummarySpawner FinalSummarySpawner
+	agentLookup         AgentLookup
+	skipOrphanCleanup   bool
+	windows             windowOps
+	broker              *web.SSEBroker
+	svc                 *app.Service
 
 	debounce     time.Duration
 	lockPath     string
@@ -291,6 +298,10 @@ type Daemon struct {
 	// matching is by content.
 	selfWrites   map[string]selfWrite
 	selfWritesMu sync.Mutex
+
+	// background tracks post-processing that outlives the ticket run that
+	// started it, so Run does not return while it is still writing tickets.
+	background sync.WaitGroup
 
 	queue     priorityQueue
 	queueCond *sync.Cond
@@ -343,17 +354,18 @@ func newTicketState(t *ticket.Ticket, filePath string) *ticketState {
 
 func New(cfg *config.Config, opts ...Option) *Daemon {
 	d := &Daemon{
-		worktrees:          worktree.New(expandTilde(cfg.WorktreesDir)),
-		runner:             tmuxRunner,
-		plannotatorSpawner: defaultPlannotatorSpawner,
-		plannotatorLookup:  defaultPlannotatorLookup,
-		agentLookup:        defaultAgentLookup,
-		windows:            defaultWindowOps,
-		broker:             web.NewSSEBroker(),
-		debounce:           time.Second,
-		lockPath:           defaultLockPath(),
-		instanceName:       cfg.InstanceName,
-		tmuxSession:        cfg.TmuxSessionName(),
+		worktrees:           worktree.New(expandTilde(cfg.WorktreesDir)),
+		runner:              tmuxRunner,
+		plannotatorSpawner:  defaultPlannotatorSpawner,
+		plannotatorLookup:   defaultPlannotatorLookup,
+		finalSummarySpawner: defaultFinalSummarySpawner,
+		agentLookup:         defaultAgentLookup,
+		windows:             defaultWindowOps,
+		broker:              web.NewSSEBroker(),
+		debounce:            time.Second,
+		lockPath:            defaultLockPath(),
+		instanceName:        cfg.InstanceName,
+		tmuxSession:         cfg.TmuxSessionName(),
 		log: slog.New(charmlog.NewWithOptions(os.Stderr, charmlog.Options{
 			ReportTimestamp: true,
 		})),
@@ -492,6 +504,10 @@ func (d *Daemon) Run(ctx context.Context) error {
 			d.log.Info("web server started", "addr", srv.Addr())
 		}
 	}
+
+	// Registered before the cancel below so it runs after it: background work
+	// stops on a cancelled context, and waiting first would hang.
+	defer d.background.Wait()
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -1048,7 +1064,7 @@ func (d *Daemon) runTicket(ctx context.Context, ticketID string) {
 	}
 	stageCfg := cfg.Stages[stageName]
 
-	repoPath, wtPath, prepOK := d.prepareWorktreeForAgent(log, t, filePath, ticketID, stageName, branch)
+	repoPath, wtPath, prepOK := d.prepareWorktreeForAgent(log, t, filePath, ticketID, stageName, branch, true)
 	if !prepOK {
 		return
 	}
@@ -1085,6 +1101,8 @@ func (d *Daemon) runTicket(ctx context.Context, ticketID string) {
 	}
 
 	d.handleAgentExit(ctx, taskCtx, handleExitParams{
+		cfg:          cfg,
+		agentName:    agentName,
 		log:          log,
 		ticketID:     ticketID,
 		filePath:     filePath,
@@ -1154,7 +1172,7 @@ func (d *Daemon) runSimpleTicket(ctx, taskCtx context.Context, cfg *config.Confi
 		return
 	}
 
-	repoPath, wtPath, prepOK := d.prepareWorktreeForAgent(log, t, filePath, ticketID, "default", ticketBranch(cfg, t))
+	repoPath, wtPath, prepOK := d.prepareWorktreeForAgent(log, t, filePath, ticketID, "default", ticketBranch(cfg, t), false)
 	if !prepOK {
 		return
 	}
@@ -1271,6 +1289,10 @@ func (d *Daemon) runSimpleTicket(ctx, taskCtx context.Context, cfg *config.Confi
 }
 
 type handleExitParams struct {
+	// cfg is the caller's config snapshot and agentName the agent it resolved
+	// from it, both handed on to the final summary pass.
+	cfg          *config.Config
+	agentName    string
 	log          *slog.Logger
 	ticketID     string
 	filePath     string
@@ -1425,6 +1447,36 @@ func (d *Daemon) handleAgentExit(ctx, taskCtx context.Context, p handleExitParam
 	}
 	d.broadcastTicketUpdate(p.ticketID)
 	d.mu.Unlock()
+
+	d.startFinalSummary(ctx, t2, p, exitAction.Kind)
+}
+
+// startFinalSummary generates the ticket's final summary when the exit ended
+// the pipeline with the stage's work accepted. A pipeline can finish either
+// way: on_success: done completes the ticket, and any other on_success value
+// parks it in that status.
+//
+// The pass runs on the daemon's context and off the ticket's goroutine,
+// because the ticket is finished: it must hold neither a concurrency slot nor
+// its running entry while an agent writes prose about it. Only daemon shutdown
+// stops it.
+func (d *Daemon) startFinalSummary(ctx context.Context, t *ticket.Ticket, p handleExitParams, kind pipeline.ActionKind) {
+	terminalSuccess := kind == pipeline.ActionComplete ||
+		(kind == pipeline.ActionPark && p.result.ExitCode == 0)
+	if !terminalSuccess {
+		return
+	}
+	params := finalSummaryParams{
+		log:       p.log,
+		cfg:       p.cfg,
+		ticketID:  p.ticketID,
+		filePath:  p.filePath,
+		agentName: p.agentName,
+		dir:       p.repoPath,
+		runs:      eligibleFinalSummaryRuns(t),
+		status:    t.Status,
+	}
+	d.background.Go(func() { d.runFinalSummary(ctx, params) })
 }
 
 // prepareWorktreeForAgent resolves the ticket's repo path, creates (or reuses)
@@ -1435,7 +1487,7 @@ func (d *Daemon) handleAgentExit(ctx, taskCtx context.Context, p handleExitParam
 // The branch is passed in rather than recomputed: runTicket already reserved it
 // in runningBranches, and branch_prefix reloads live, so a second
 // ticketBranch call could return a different name from the one under guard.
-func (d *Daemon) prepareWorktreeForAgent(log *slog.Logger, t *ticket.Ticket, filePath, ticketID, stageName, branch string) (repoPath, wtPath string, ok bool) {
+func (d *Daemon) prepareWorktreeForAgent(log *slog.Logger, t *ticket.Ticket, filePath, ticketID, stageName, branch string, isPipeline bool) (repoPath, wtPath string, ok bool) {
 	repoName, repoPath, err := d.resolvePath(t)
 	if err != nil {
 		log.Error("resolve path failed", "err", err)
@@ -1468,6 +1520,14 @@ func (d *Daemon) prepareWorktreeForAgent(log *slog.Logger, t *ticket.Ticket, fil
 	// that ended most recently.
 	if err := t.SetField("summary", ""); err != nil {
 		log.Error("set field failed", "field", "summary", "err", err)
+	}
+	// The ticket-level summary covers the runs recorded so far, which this run
+	// is about to add to, so it is stale from here until the run ends. Only a
+	// pipeline ticket can have one: nothing generates it for the simple path.
+	if isPipeline {
+		if err := t.SetField("final_summary", ""); err != nil {
+			log.Error("set field failed", "field", "final_summary", "err", err)
+		}
 	}
 	if err := d.writeTicket(t, filePath); err != nil {
 		log.Error("write failed", "phase", "spawn_fields", "err", err)

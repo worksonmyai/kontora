@@ -32,6 +32,8 @@ type View struct {
 	LastError     string
 	LastLog       string
 	Summary       string
+	// FinalSummary is the ticket-level outcome, not the latest run's summary.
+	FinalSummary string
 }
 
 // HistoryView is a single history entry in a View.
@@ -110,6 +112,7 @@ func BuildView(cfg *config.Config, t *ticket.Ticket, detail bool) View {
 		v.LastError = t.LastError
 		v.LastLog = t.LastLog
 		v.Summary = t.Summary
+		v.FinalSummary = t.FinalSummary
 		v.Body = t.Body
 	}
 

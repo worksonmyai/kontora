@@ -406,6 +406,21 @@ func TestList_OpenNonKontoraIncluded(t *testing.T) {
 	assert.False(t, views[0].Kontora)
 }
 
+// TestBuildView_Summaries: the per-run and ticket-level summaries are detail
+// fields. The board list projection carries neither.
+func TestBuildView_Summaries(t *testing.T) {
+	tkt, err := ticket.ParseBytes([]byte("---\nid: tst-001\nstatus: done\nkontora: true\nsummary: the last run\nfinal_summary: the whole ticket\n---\n# Test\n"))
+	require.NoError(t, err)
+
+	detail := BuildView(testCfg(), tkt, true)
+	assert.Equal(t, "the last run", detail.Summary)
+	assert.Equal(t, "the whole ticket", detail.FinalSummary)
+
+	list := BuildView(testCfg(), tkt, false)
+	assert.Empty(t, list.Summary)
+	assert.Empty(t, list.FinalSummary)
+}
+
 func TestBuildView_AgentResolution(t *testing.T) {
 	cases := []struct {
 		name         string

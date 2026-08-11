@@ -51,17 +51,13 @@ func defaultPlannotatorLookup(binary string) (string, error) {
 // the annotation blob remains intact.
 func defaultPlannotatorSpawner(ctx context.Context, params PlannotatorParams) (string, error) {
 	var stdout bytes.Buffer
-	env := make([]string, 0, len(params.Env))
-	for k, v := range params.Env {
-		env = append(env, k+"="+v)
-	}
 	if _, err := process.Run(ctx, process.RunParams{
 		Binary:  params.Binary,
 		Args:    []string{"review"},
 		Dir:     params.Dir,
 		Timeout: params.Timeout,
 		Stdout:  &stdout,
-		Env:     env,
+		Env:     envPairs(params.Env),
 	}); err != nil {
 		return "", err
 	}
@@ -339,6 +335,11 @@ func (d *Daemon) runReworkStage(ctx, taskCtx context.Context, cfg *config.Config
 		return
 	}
 	_ = t.SetField("branch", branch)
+	// Rework runs like any other stage from here on: the per-run summary
+	// belongs to this run only, and the ticket-level one is stale until this
+	// run has been folded into it.
+	_ = t.SetField("summary", "")
+	_ = t.SetField("final_summary", "")
 	if err := d.writeTicket(t, filePath); err != nil {
 		log.Error("rework: write branch failed", "err", err)
 		return
@@ -406,6 +407,7 @@ func (d *Daemon) runReworkStage(ctx, taskCtx context.Context, cfg *config.Config
 		return
 	}
 
+	summary := runSummary(t2.Summary, finalAssistantMessage(log, params))
 	history := t2.History
 	history = append(history, ticket.HistoryEntry{
 		Stage:       config.ReworkStageName,
@@ -414,8 +416,10 @@ func (d *Daemon) runReworkStage(ctx, taskCtx context.Context, cfg *config.Config
 		Run:         runIndex,
 		StartedAt:   t2.StartedAt,
 		CompletedAt: &result.ExitedAt,
+		Summary:     summary,
 	})
 	_ = t2.SetField("history", history)
+	_ = t2.SetField("summary", summary)
 
 	if result.ExitCode == 0 {
 		_ = t2.SetField("status", string(ticket.StatusHumanReview))
@@ -437,6 +441,24 @@ func (d *Daemon) runReworkStage(ctx, taskCtx context.Context, cfg *config.Config
 	d.setTicketState(ticketID, t2, filePath)
 	d.broadcastTicketUpdate(ticketID)
 	d.mu.Unlock()
+
+	// Rework is the successful end of a review round, so the ticket-level
+	// summary is regenerated from the history this run just extended. It runs
+	// on the daemon's context, off this goroutine, for the reasons in
+	// startFinalSummary.
+	if result.ExitCode == 0 {
+		params := finalSummaryParams{
+			log:       log,
+			cfg:       cfg,
+			ticketID:  ticketID,
+			filePath:  filePath,
+			agentName: agentName,
+			dir:       repoPath,
+			runs:      eligibleFinalSummaryRuns(t2),
+			status:    t2.Status,
+		}
+		d.background.Go(func() { d.runFinalSummary(ctx, params) })
+	}
 }
 
 // reworkAgent picks the agent to use for the rework stage. Priority:

@@ -108,6 +108,14 @@ func (h *plannotatorHarness) newDaemonWithSpawner() *Daemon {
 // is derived independently by setupPlannotatorWorktree.
 func (h *plannotatorHarness) seedReviewTicket(id string) string {
 	h.t.Helper()
+	h.seedReviewWorktree(id)
+	return h.writeTicket(id+".md", h.reviewTaskMD(id, "human_review", "kontora/"+id))
+}
+
+// seedReviewWorktree creates the branch, worktree, and agent commit half of
+// seedReviewTicket, for tests that write their own ticket file.
+func (h *plannotatorHarness) seedReviewWorktree(id string) {
+	h.t.Helper()
 	wtPath := filepath.Join(h.wtDir, h.repoName, id)
 	require.NoError(h.t, os.MkdirAll(filepath.Dir(wtPath), 0o755))
 
@@ -131,10 +139,6 @@ func (h *plannotatorHarness) seedReviewTicket(id string) string {
 		out, err := cmd.CombinedOutput()
 		require.NoError(h.t, err, "git %v: %s", args, out)
 	}
-
-	md := h.reviewTaskMD(id, "human_review", branch)
-	path := h.writeTicket(id+".md", md)
-	return path
 }
 
 func (h *plannotatorHarness) reviewTaskMD(id, status, branch string) string {
@@ -435,6 +439,83 @@ func TestPlannotator_ReworkCompletion(t *testing.T) {
 	// Review file consumed by the rework agent's prompt render.
 	_, statErr := os.Stat(filepath.Join(h.reviewsDir, "tst-prc01.md"))
 	assert.True(t, os.IsNotExist(statErr), "review file should be removed after rework consumes it")
+
+	cancel()
+	require.NoError(t, <-errCh)
+}
+
+// TestPlannotator_ReworkFinalSummary covers the ticket-level summary across a
+// review round: the stale text is dropped before the rework agent starts, the
+// rework run records its own summary, and the ticket-level one is regenerated
+// from the history the round produced.
+func TestPlannotator_ReworkFinalSummary(t *testing.T) {
+	h := newPlannotatorHarness(t)
+	h.cfg.Agents["agent2"] = config.Agent{Binary: "claude"}
+	filePath := filepath.Join(h.tasksDir, "tst-prf01.md")
+
+	duringRework := make(chan string, 2)
+	runner := func(_ context.Context, _ RunnerParams) (process.Result, error) {
+		tk, err := ticket.ParseFile(filePath)
+		require.NoError(t, err)
+		duringRework <- tk.FinalSummary
+		require.NoError(t, tk.SetField("summary", "reworked the review comments"))
+		data, mErr := tk.Marshal()
+		require.NoError(t, mErr)
+		require.NoError(t, os.WriteFile(filePath, data, 0o644))
+		return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now()}, nil
+	}
+
+	var prompt string
+	d := New(h.cfg,
+		WithLogger(testLogger(t)),
+		WithDebounce(50*time.Millisecond),
+		WithLockPath(h.lockPath),
+		WithRunner(runner),
+		WithAgentLookup(passthroughAgentLookup),
+		WithSkipOrphanCleanup(),
+		WithPlannotatorSpawner(h.spawner()),
+		WithPlannotatorLookup(h.lookup()),
+		WithFinalSummarySpawner(func(_ context.Context, p FinalSummaryParams) (string, error) {
+			prompt = p.Args[len(p.Args)-1]
+			return "the whole ticket after rework", nil
+		}),
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() { errCh <- d.Run(ctx) }()
+	time.Sleep(200 * time.Millisecond)
+
+	// A reviewed ticket whose earlier stages already recorded summaries, and a
+	// ticket-level summary written for the state before this review round.
+	md := strings.Replace(h.reviewTaskMD("tst-prf01", "human_review", "kontora/tst-prf01"),
+		"    exit_code: 0\n  - stage: step2", "    exit_code: 0\n    summary: planned it\n  - stage: step2", 1)
+	md = strings.Replace(md, "---\n# Test ticket", "    summary: coded it\nfinal_summary: stale ticket-level text\n---\n# Test ticket", 1)
+	h.seedReviewWorktree("tst-prf01")
+	h.writeTicket("tst-prf01.md", md)
+
+	require.Eventually(t, func() bool {
+		_, err := d.GetTicket("tst-prf01")
+		return err == nil
+	}, 2*time.Second, 20*time.Millisecond)
+
+	require.NoError(t, d.StartPlannotatorReview("tst-prf01"))
+	require.Eventually(t, func() bool { return h.callCount.Load() == 1 },
+		2*time.Second, 20*time.Millisecond, "spawner should be invoked")
+	h.stdoutCh <- "please tweak"
+
+	assert.Empty(t, <-duringRework, "the stale ticket-level summary must be gone before rework starts")
+
+	result := h.waitForFinalSummary("tst-prf01.md", "the whole ticket after rework", 10*time.Second)
+	assert.Equal(t, ticket.StatusHumanReview, result.Status)
+	assert.Equal(t, "reworked the review comments", result.Summary)
+	require.Len(t, result.History, 3)
+	assert.Equal(t, "planned it", result.History[0].Summary)
+	assert.Equal(t, "coded it", result.History[1].Summary)
+	assert.Equal(t, config.ReworkStageName, result.History[2].Stage)
+	assert.Equal(t, "reworked the review comments", result.History[2].Summary)
+	assert.Contains(t, prompt, "reworked the review comments", "the rework run must be in the input")
 
 	cancel()
 	require.NoError(t, <-errCh)

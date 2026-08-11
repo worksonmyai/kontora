@@ -169,6 +169,27 @@ func (h *testHarness) waitForStatus(filename string, status ticket.Status, timeo
 	return nil
 }
 
+// waitForFinalSummary waits until the ticket's final_summary equals want, which
+// must not be empty: the summary pass writes it after the terminal status, so
+// waiting on the status alone would race it.
+func (h *testHarness) waitForFinalSummary(filename, want string, timeout time.Duration) *ticket.Ticket {
+	h.t.Helper()
+	require.NotEmpty(h.t, want, "waitForFinalSummary needs the text to wait for")
+	path := filepath.Join(h.tasksDir, filename)
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		t, err := ticket.ParseFile(path)
+		if err == nil && t.FinalSummary == want {
+			return t
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t, err := ticket.ParseFile(path)
+	require.NoError(h.t, err, "waitForFinalSummary: cannot parse %s", filename)
+	h.t.Fatalf("waitForFinalSummary: %s has final_summary=%q, want %q (timeout %v)", filename, t.FinalSummary, want, timeout)
+	return nil
+}
+
 func initRepo(t *testing.T) string {
 	t.Helper()
 	return testutil.InitRepo(t)

@@ -181,7 +181,10 @@ type TicketInfo struct {
 	LastError     string        `json:"last_error,omitempty"`
 	LastLog       string        `json:"last_log,omitempty"`
 	Summary       string        `json:"summary,omitempty"`
-	Notes         []NoteInfo    `json:"notes,omitempty"`
+	// FinalSummary is the ticket-level outcome. Like the other detail fields it
+	// is absent from board list payloads, which never render it.
+	FinalSummary string     `json:"final_summary,omitempty"`
+	Notes        []NoteInfo `json:"notes,omitempty"`
 }
 
 // NoteInfo is one entry from the ticket body's "## Notes" section. At is the
@@ -307,6 +310,7 @@ func TicketInfoFromView(v app.View) TicketInfo {
 		LastError:     v.LastError,
 		LastLog:       v.LastLog,
 		Summary:       v.Summary,
+		FinalSummary:  v.FinalSummary,
 		Notes:         ParseNotes(v.Body),
 	}
 	if len(v.History) > 0 {

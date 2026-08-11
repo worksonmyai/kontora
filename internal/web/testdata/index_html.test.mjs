@@ -2853,8 +2853,8 @@ test("index.html renders every prose block through the idempotent write", () => 
   // Two writers share the pattern, counted apart: entity chips belong to the
   // stage summary, and a ticket body swapped onto setSummaryProse would keep
   // any combined total the same.
-  assert.equal(html.match(/x-effect="setProse\(\$el, /g).length, 4);
-  assert.equal(html.match(/x-effect="setSummaryProse\(\$el, /g).length, 1);
+  assert.equal(html.match(/x-effect="setProse\(\$el, /g).length, 5);
+  assert.equal(html.match(/x-effect="setSummaryProse\(\$el, /g).length, 2);
 });
 
 // ---------------------------------------------------------------------------
@@ -5440,6 +5440,104 @@ test("the summary tab renders one card per run and a commit rail", () => {
   assert.equal(/earlierSummaries|max-w-3xl mx-auto px-6 py-6[\s\S]{0,80}last_error/.test(tab), false);
 });
 
+// The same finished run, with the ticket-level summary the daemon synthesizes
+// once a terminal stage succeeds.
+const FINAL_SUMMARY_TICKET = { ...SUMMARY_TICKET, id: "kon-s6", final_summary: "Redesigned the summary tab end to end." };
+
+test("the final summary is a ticket-level field, not a stage card", () => {
+  const cases = [
+    {
+      name: "final summary next to the stage cards",
+      ticket: FINAL_SUMMARY_TICKET,
+      final: "Redesigned the summary tab end to end.",
+      keys: ["commit#0", "fix-review#0", "review#0", "implement#0"],
+      headline: "4 stages",
+      tab: true,
+    },
+    {
+      name: "latest run only, as before",
+      ticket: SUMMARY_TICKET,
+      final: "",
+      keys: ["commit#0", "fix-review#0", "review#0", "implement#0"],
+      headline: "4 stages",
+      tab: true,
+    },
+    {
+      name: "history only, with the field cleared for a running stage",
+      ticket: { ...RETRY_TICKET, status: "in_progress", summary: "" },
+      final: "",
+      keys: ["review#1", "review#0", "implement#0"],
+      headline: "2 stages",
+      tab: true,
+    },
+    {
+      name: "a legacy ticket carrying no summary at all",
+      ticket: { id: "kon-s7", status: "done", summary: "", stages: [], history: [] },
+      final: "",
+      keys: [],
+      headline: "0 stages",
+      tab: false,
+    },
+    {
+      name: "a final summary with no run summary behind it",
+      ticket: { id: "kon-s8", status: "done", summary: "", stages: [], history: [], final_summary: "Everything is done." },
+      final: "Everything is done.",
+      keys: [],
+      headline: "0 stages",
+      tab: true,
+    },
+  ];
+
+  for (const c of cases) {
+    const state = pageState(c.ticket);
+    assert.equal(state.finalSummary(), c.final, c.name);
+    // The ticket-level text is no card, so it changes neither the stage cards,
+    // the stage count, nor which card is treated as the latest.
+    assert.deepEqual(vmValue(state.summaryCards()).map((k) => k.key), c.keys, c.name);
+    assert.equal(state.summaryHeadline(), c.headline, c.name);
+    assert.equal(state.showSummaryTab(), c.tab, c.name);
+  }
+});
+
+test("the final summary stays out of the collapse controls", () => {
+  const state = pageState(FINAL_SUMMARY_TICKET);
+
+  state.toggleAllStages();
+  assert.deepEqual(vmValue(state.collapsedStages), {
+    "fix-review#0": true, "review#0": true, "implement#0": true,
+  }, "collapse-all still skips only the newest stage card");
+  assert.equal(state.earlierAllCollapsed(), true);
+});
+
+test("a final summary arriving over SSE reaches the open summary tab", () => {
+  const { state } = routerState("#/");
+  state.tickets = [SUMMARY_TICKET];
+  state.selectedTicket = SUMMARY_TICKET;
+  state.activeTab = "summary";
+
+  assert.equal(state.finalSummary(), "");
+  // The daemon writes the ticket-level summary after the terminal update, so
+  // the tab sees it arrive on its own event.
+  state.applyTicketUpdate({ ...SUMMARY_TICKET, final_summary: FINAL_SUMMARY_TICKET.final_summary });
+
+  assert.equal(state.finalSummary(), "Redesigned the summary tab end to end.");
+  assert.equal(state.activeTab, "summary", "the open tab stays open");
+});
+
+test("both summary views put the ticket-level outcome above the stage summaries", () => {
+  const html = fs.readFileSync(htmlPath, "utf8");
+  const tab = html.slice(html.indexOf(`x-show="activeTab === 'summary'"`), html.indexOf("<!-- Diff:"));
+
+  // Desktop: its own block above the cards, with no collapse control of its own.
+  assert.ok(tab.indexOf('x-if="finalSummary()"') < tab.indexOf('x-for="(card, ci) in summaryCards()"'));
+  assert.equal(/final-card[\s\S]{0,400}toggleStageCard/.test(tab), false);
+
+  // Mobile: the outcome above the last run's summary, which keeps its stage.
+  const mobile = html.slice(html.indexOf(`x-show="detailTab==='ticket'"`));
+  assert.ok(mobile.indexOf('x-if="finalSummary()"') < mobile.indexOf('x-if="selectedTicket?.summary"'));
+  assert.match(mobile, /x-text="'\u00b7 ' \+ summaryStage\(\)"/);
+});
+
 test("the summary rail wraps on a container query, not a viewport one", () => {
   const html = fs.readFileSync(htmlPath, "utf8");
 
@@ -5477,14 +5575,16 @@ test("one rule closes the tab row across the pane and the rail", () => {
   assert.match(html, /<div class="shrink-0 w-\[308px\] border-l border-surface-700\/50"><\/div>/);
 });
 
-test("the commit rail starts level with the first stage card", () => {
+test("the commit rail starts level with the top of the card column", () => {
   const html = fs.readFileSync(htmlPath, "utf8");
   const tab = html.slice(html.indexOf(`x-show="activeTab === 'summary'"`), html.indexOf("<!-- Diff:"));
 
   // The outcome header is a sibling of the card column, not its first child, so
-  // grid row 2 starts at the first stage card in both columns.
+  // grid row 2 starts at the top of the column in both columns: the final
+  // outcome block when the ticket has one, the first stage card otherwise.
   assert.ok(tab.indexOf('class="summary-head') < tab.indexOf('class="summary-col"'));
-  assert.match(tab, /<div class="summary-col">\s*<template x-for="\(card, ci\) in summaryCards\(\)"/);
+  assert.match(tab, /<div class="summary-col">\s*<template x-if="finalSummary\(\)">/);
+  assert.match(tab, /<\/template>\s*<template x-for="\(card, ci\) in summaryCards\(\)"/);
   assert.match(html, /\.summary-rail \{[^}]*grid-row: 2/);
   // The rail card's own top padding lines its label up with the stage name,
   // which the stage head centres in 36px.

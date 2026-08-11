@@ -616,7 +616,7 @@ function kontora() {
     showSummaryTab() {
       var t = this.selectedTicket;
       if (!t) return false;
-      return !!t.summary || (t.history || []).some(function (e) { return !!e.summary; });
+      return !!t.final_summary || !!t.summary || (t.history || []).some(function (e) { return !!e.summary; });
     },
 
     // Board cards render neither the body nor the notes parsed out of it, and
@@ -1146,6 +1146,13 @@ function kontora() {
     // ticket finished and a stage run recorded a summary.
     summaryFirst(t) {
       return !!t && ['human_review', 'done'].includes(t.status) && !!t.summary;
+    },
+
+    // The ticket-level outcome the daemon synthesized from every run summary.
+    // It is rendered above the stage cards, but no stage produced it: it is
+    // not counted as one and it cannot be collapsed.
+    finalSummary() {
+      return this.selectedTicket?.final_summary || '';
     },
 
     // The stage of the last history entry. It usually wrote the top-level

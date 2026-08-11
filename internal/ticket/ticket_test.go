@@ -186,6 +186,51 @@ func TestClaimedByDecodeAndRoundTrip(t *testing.T) {
 	assert.Contains(t, string(out2), "claimed_by: beta")
 }
 
+func TestFinalSummaryDecodeAndRoundTrip(t *testing.T) {
+	cases := []struct {
+		name string
+		src  string
+		want string
+	}{
+		{
+			name: "legacy ticket without the field",
+			src:  "---\nid: fin-001\nkontora: true\nstatus: done\nsummary: last run\n---\n# body\n",
+			want: "",
+		},
+		{
+			name: "empty value",
+			src:  "---\nid: fin-002\nkontora: true\nstatus: done\nfinal_summary: \"\"\n---\n# body\n",
+			want: "",
+		},
+		{
+			name: "multi-line value",
+			src:  "---\nid: fin-003\nkontora: true\nstatus: done\nfinal_summary: |-\n  first line\n  second line\n---\n# body\n",
+			want: "first line\nsecond line",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tkt, err := ParseBytes([]byte(tc.src))
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, tkt.FinalSummary)
+
+			// The per-run summary contract is untouched by the new field.
+			summary := tkt.Summary
+			require.NoError(t, tkt.SetField("final_summary", "the whole ticket"))
+			assert.Equal(t, "the whole ticket", tkt.FinalSummary)
+			assert.Equal(t, summary, tkt.Summary)
+
+			out, err := tkt.Marshal()
+			require.NoError(t, err)
+			reparsed, err := ParseBytes(out)
+			require.NoError(t, err)
+			assert.Equal(t, "the whole ticket", reparsed.FinalSummary)
+			assert.Equal(t, summary, reparsed.Summary)
+		})
+	}
+}
+
 func TestSetFieldExisting(t *testing.T) {
 	tkt, err := ParseFile("testdata/basic.md")
 	require.NoError(t, err)

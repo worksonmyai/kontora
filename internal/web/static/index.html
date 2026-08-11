@@ -591,6 +591,30 @@
     .stage-card-body.is-latest { font-size: 15px; color: rgba(var(--tx), 1); }
     .stage-card-body.is-earlier { font-size: 14.5px; color: rgba(var(--tx-2), 1); }
 
+    /* The ticket-level outcome, above the stage cards. No run produced it, so
+       it is never counted as a stage, never marked latest, and never folded
+       shut — hence the accent hue rather than a --stage-h and no head button. */
+    .final-card {
+      border: 1px solid rgba(var(--accent), .3); border-radius: 12px;
+      overflow: hidden; background: rgba(var(--surface-900), .5);
+    }
+    .final-card-head {
+      display: flex; align-items: center; gap: 10px; padding: 9px 16px; min-height: 36px;
+      background: rgba(var(--accent), .1);
+      border-bottom: 1px solid rgba(var(--accent), .2);
+    }
+    .final-card-dot { width: 6px; height: 6px; border-radius: 9999px; background: rgba(var(--accent), 1); flex-shrink: 0; }
+    .final-card-name {
+      font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 700;
+      letter-spacing: .12em; text-transform: uppercase; color: rgba(var(--accent-bright), 1);
+    }
+    .final-card-body {
+      padding: 14px 18px 16px; font-size: 15px; line-height: 1.72;
+      color: rgba(var(--tx), 1); text-wrap: pretty;
+    }
+    .final-card-body p { margin: 0 0 10px; }
+    .final-card-body p:last-child { margin: 0; }
+
     /* padding-top puts the card label on the same line as the stage card's
        name, whose head row centres 11px text in 36px. */
     .rail-card {
@@ -1620,6 +1644,15 @@
                   </div>
 
                   <div class="summary-col">
+                    <template x-if="finalSummary()">
+                      <div class="final-card">
+                        <div class="final-card-head">
+                          <span class="final-card-dot"></span>
+                          <span class="final-card-name">final outcome</span>
+                        </div>
+                        <div class="ticket-prose final-card-body" x-effect="setSummaryProse($el, finalSummary())"></div>
+                      </div>
+                    </template>
                     <template x-for="(card, ci) in summaryCards()" :key="card.key">
                       <div>
                         <!-- x-if, not x-show: one collapse-all button in the
@@ -2736,6 +2769,14 @@
         <!-- ticket (body) -->
         <div x-show="detailTab==='ticket'" class="overflow-y-auto" style="flex:1;min-height:0;padding:18px 16px 24px;">
           <h1 style="font-family:'JetBrains Mono',monospace;font-size:19px;font-weight:700;line-height:1.35;color:rgba(var(--tx),1);margin:0 0 18px;" x-text="selectedTicket?.title"></h1>
+          <!-- Outcome card: the whole ticket, not the run that ended last. The
+               stage summaries stay below in their own card. -->
+          <template x-if="finalSummary()">
+            <div style="border:1px solid rgba(var(--accent),.3);border-radius:12px;background:rgba(var(--surface-900),1);padding:12px 14px;margin-bottom:20px;">
+              <div style="margin-bottom:8px;font-family:'JetBrains Mono',monospace;font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:rgba(var(--accent-bright),1);">Final outcome</div>
+              <div class="ticket-prose text-sm" x-effect="setProse($el, finalSummary())"></div>
+            </div>
+          </template>
           <!-- Summary card: what the last stage run did, plus the branch's commits. -->
           <template x-if="selectedTicket?.summary">
             <div style="border:1px solid rgba(var(--surface-700),.4);border-radius:12px;background:rgba(var(--surface-900),1);padding:12px 14px;margin-bottom:20px;">

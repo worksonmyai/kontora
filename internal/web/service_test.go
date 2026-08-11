@@ -1,6 +1,7 @@
 package web
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -28,6 +29,24 @@ func TestTicketInfoFromView_ClaimedBy(t *testing.T) {
 
 	// An empty claim stays empty (and is omitted from JSON via omitempty).
 	assert.Empty(t, TicketInfoFromView(app.View{ID: "t2"}).ClaimedBy)
+}
+
+// TestTicketInfoFromView_FinalSummary: the ticket-level summary rides the
+// detailed payload the detail endpoint and SSE ticket updates share, and is
+// omitted from JSON when a view carries none.
+func TestTicketInfoFromView_FinalSummary(t *testing.T) {
+	info := TicketInfoFromView(app.View{ID: "t1", Summary: "the last run", FinalSummary: "the whole ticket"})
+	assert.Equal(t, "the whole ticket", info.FinalSummary)
+	assert.Equal(t, "the last run", info.Summary)
+
+	encoded, err := json.Marshal(info)
+	require.NoError(t, err)
+	assert.Contains(t, string(encoded), `"final_summary":"the whole ticket"`)
+
+	// A board list view carries no detail fields, so the key is absent.
+	list, err := json.Marshal(TicketInfoFromView(app.View{ID: "t2"}))
+	require.NoError(t, err)
+	assert.NotContains(t, string(list), "final_summary")
 }
 
 func TestParseNotes(t *testing.T) {

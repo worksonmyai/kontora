@@ -755,16 +755,19 @@ function kontora() {
       es.addEventListener('plannotator_started', (e) => {
         const payload = JSON.parse(e.data);
         if (payload.ticket_id) {
-          this.plannotatorInFlight[payload.ticket_id] = true;
+          // The entry a local start already made names which pass it is; the
+          // event does not say, so it must not overwrite that.
+          this.plannotatorInFlight[payload.ticket_id] ??= 'Plannotator';
         }
       });
       es.addEventListener('plannotator_finished', (e) => {
         const payload = JSON.parse(e.data);
+        const label = (payload.ticket_id && this.plannotatorInFlight[payload.ticket_id]) || 'Plannotator';
         if (payload.ticket_id) {
           delete this.plannotatorInFlight[payload.ticket_id];
         }
         if (payload.outcome === 'error') {
-          this.error = 'Plannotator review failed' + (payload.message ? ': ' + payload.message : '');
+          this.error = label + ' failed' + (payload.message ? ': ' + payload.message : '');
         }
       });
       es.onerror = () => {
@@ -777,30 +780,52 @@ function kontora() {
       };
     },
 
-    async startPlannotatorReview(ticket) {
+    startPlannotatorReview(ticket) {
+      return this.startPlannotator(ticket, 'plannotator-review', 'Plannotator review');
+    },
+
+    startPlannotatorAnnotate(ticket) {
+      return this.startPlannotator(ticket, 'plannotator-annotate', 'Ticket annotation');
+    },
+
+    async startPlannotator(ticket, endpoint, label) {
       if (!ticket) return;
       const id = ticket.id;
       if (this.plannotatorInFlight[id]) return;
-      // Optimistically reflect in-flight state; the SSE event confirms it.
-      this.plannotatorInFlight[id] = true;
+      // Optimistically reflect in-flight state; the SSE event confirms it. The
+      // label is kept so a failure names the pass that failed.
+      this.plannotatorInFlight[id] = label;
       this.error = null;
       try {
-        const res = await fetch('/api/tickets/' + id + '/plannotator-review', { method: 'POST' });
+        const res = await fetch('/api/tickets/' + id + '/' + endpoint, { method: 'POST' });
         if (!res.ok) {
           delete this.plannotatorInFlight[id];
           const data = await res.json().catch(() => ({}));
           if (res.status === 409) {
-            this.error = data.error || 'Plannotator review already in progress';
+            this.error = data.error || (label + ' cannot start in this state');
           } else if (res.status === 500) {
-            this.error = data.error || 'Failed to start plannotator review';
+            this.error = data.error || ('Failed to start ' + label.toLowerCase());
           } else {
-            this.error = data.error || ('Plannotator review failed (' + res.status + ')');
+            this.error = data.error || (label + ' failed (' + res.status + ')');
           }
         }
       } catch (e) {
         delete this.plannotatorInFlight[id];
-        this.error = 'Plannotator review failed: ' + e.message;
+        this.error = label + ' failed: ' + e.message;
       }
+    },
+
+    // canAnnotateTicket reads the daemon's own answer. The rules (an initialized
+    // ticket, an editable status, no annotation run already pending) live in the
+    // daemon, so a button here can never offer a pass it refuses.
+    canAnnotateTicket(ticket) {
+      return !!ticket?.can_annotate;
+    },
+
+    historyLabel(h) {
+      if (!h) return '';
+      if (h.kind !== 'annotation') return h.stage;
+      return h.stage + ' · annotation (' + (h.session_reused ? 'resumed' : 'fresh') + ')';
     },
 
     async openCreateModal() {

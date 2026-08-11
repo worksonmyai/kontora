@@ -67,7 +67,18 @@ type HistoryEntry struct {
 	StartedAt   *time.Time `yaml:"started_at"`
 	CompletedAt *time.Time `yaml:"completed_at"`
 	Summary     string     `yaml:"summary,omitempty"`
+	// Kind names a run that is not an ordinary stage run. Empty means a stage
+	// run; KindAnnotation is a run started from Plannotator annotations.
+	Kind string `yaml:"kind,omitempty"`
+	// SessionReused reports whether an annotation run continued the session the
+	// stage's last run left behind. Only an annotation run sets it; on a stage run
+	// it is absent even when the run resumed from a crash record.
+	SessionReused bool `yaml:"session_reused,omitempty"`
 }
+
+// KindAnnotation labels a history entry whose run was asked to rewrite the
+// ticket from reviewer annotations, not to do stage work.
+const KindAnnotation = "annotation"
 
 type Ticket struct {
 	ID          string     `yaml:"id"`
@@ -105,6 +116,13 @@ type Ticket struct {
 	// is consulted only while Status is in_progress, to keep daemons on a shared
 	// tickets_dir from stealing or killing each other's work.
 	ClaimedBy string `yaml:"claimed_by"`
+	// AnnotationReturnStatus parks a ticket for an annotation run. It holds the
+	// status the ticket had when the annotations were submitted, and its presence
+	// is what routes the next pickup to that run instead of the pipeline. The run
+	// restores the status and clears this field. It is a Status rather than a
+	// string so that it cannot be swapped with an error message on the way back
+	// into the status field.
+	AnnotationReturnStatus Status `yaml:"annotation_return_status"`
 
 	Body     string `yaml:"-"`
 	FilePath string `yaml:"-"`

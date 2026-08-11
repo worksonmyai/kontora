@@ -62,6 +62,11 @@ type Config struct {
 	// `{{ .Ticket.* }}` fields.
 	ResumePrompt string `yaml:"resume_prompt"`
 
+	// AnnotationPrompt replaces the built-in prompt sent to the run a submitted
+	// set of Plannotator annotations schedules. It is a stage prompt template. See
+	// defaultAnnotationPrompt for the restrictions the built-in one states.
+	AnnotationPrompt string `yaml:"annotation_prompt"`
+
 	// ReworkIsBuiltin is true when the rework stage was injected by
 	// applyDefaults. It flips to false when the user defines their own
 	// `stages.rework:` block, signalling the daemon to leave routing to the
@@ -374,6 +379,21 @@ var boardStatuses = map[string]bool{
 // status (e.g. foreign "closed"/"tombstone") are hidden from the board list.
 func (c *Config) IsBoardStatus(s string) bool {
 	return boardStatuses[s] || c.IsCustomStatus(s)
+}
+
+// editableStatuses are the built-in statuses in which a ticket may be edited.
+// in_progress is excluded because an agent owns the file, and the terminal
+// statuses because the work is over.
+var editableStatuses = map[string]bool{
+	"open": true, "todo": true, "paused": true, "human_review": true,
+}
+
+// StatusAllowsEdit reports whether a ticket in status s may have its body and
+// frontmatter edited: by `kontora update`, by the web API, or by an annotation
+// pass, which ends in a ticket-body edit. One set, so the CLI, the daemon and
+// the dashboard cannot disagree about when a ticket is editable.
+func (c *Config) StatusAllowsEdit(s string) bool {
+	return editableStatuses[s] || c.IsCustomStatus(s)
 }
 
 func (c *Config) Validate() error {

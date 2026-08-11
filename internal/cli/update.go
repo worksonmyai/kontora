@@ -4,7 +4,6 @@ import (
 	"fmt"
 
 	"github.com/worksonmyai/kontora/internal/config"
-	"github.com/worksonmyai/kontora/internal/ticket"
 	"github.com/worksonmyai/kontora/internal/ticket/app"
 	"github.com/worksonmyai/kontora/internal/ticket/store"
 	"github.com/worksonmyai/kontora/internal/web"
@@ -27,15 +26,8 @@ func Update(cfg *config.Config, id string, req web.UpdateTicketRequest) error {
 	}
 	t := st.Ticket
 
-	switch t.Status {
-	case ticket.StatusOpen, ticket.StatusTodo, ticket.StatusPaused, ticket.StatusHumanReview:
-		// editable
-	case ticket.StatusInProgress, ticket.StatusDone, ticket.StatusCancelled, ticket.StatusArchived:
+	if !cfg.StatusAllowsEdit(string(t.Status)) {
 		return fmt.Errorf("%w: cannot update ticket in status %s", app.ErrInvalidState, t.Status)
-	default:
-		if !cfg.IsCustomStatus(string(t.Status)) {
-			return fmt.Errorf("%w: cannot update ticket in status %s", app.ErrInvalidState, t.Status)
-		}
 	}
 
 	if req.Pipeline != nil {

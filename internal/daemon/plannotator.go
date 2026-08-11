@@ -46,14 +46,14 @@ func defaultPlannotatorLookup(binary string) (string, error) {
 	return process.LookupBinary(binary)
 }
 
-// defaultPlannotatorSpawner runs `plannotator review` as a subprocess and
-// returns stdout. The process does not share stdout with the daemon so that
-// the annotation blob remains intact.
+// defaultPlannotatorSpawner runs plannotator as a subprocess and returns
+// stdout. The process does not share stdout with the daemon so that the
+// annotation blob remains intact.
 func defaultPlannotatorSpawner(ctx context.Context, params PlannotatorParams) (string, error) {
 	var stdout bytes.Buffer
 	if _, err := process.Run(ctx, process.RunParams{
 		Binary:  params.Binary,
-		Args:    []string{"review"},
+		Args:    params.Args,
 		Dir:     params.Dir,
 		Timeout: params.Timeout,
 		Stdout:  &stdout,
@@ -134,15 +134,35 @@ func (d *Daemon) StartPlannotatorReview(id string) error {
 	return nil
 }
 
+// releasePlannotator ends a ticket's Plannotator session and replaces the pickup
+// the open session cost it. runTicket drops such a pickup rather than queueing
+// behind a session that may stay open for as long as its timeout allows, so
+// without this the ticket would sit in todo until something else moved it.
+//
+// A ticket that is running needs no offer, and its run owns the cached ticket
+// this would otherwise read.
+func (d *Daemon) releasePlannotator(id string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if cancel, ok := d.plannotator[id]; ok {
+		cancel()
+		delete(d.plannotator, id)
+	}
+	_, deferred := d.plannotatorDeferred[id]
+	delete(d.plannotatorDeferred, id)
+	if !deferred {
+		return
+	}
+	if _, running := d.running[id]; running {
+		return
+	}
+	if ts, ok := d.tickets[id]; ok && ts.ticket.Status == ticket.StatusTodo {
+		d.enqueue(ts.ticket)
+	}
+}
+
 func (d *Daemon) runPlannotator(ctx context.Context, log *slog.Logger, pcfg config.Plannotator, id, binaryPath, repoPath, branch, base, reviewPath string) {
-	defer func() {
-		d.mu.Lock()
-		if cancel, ok := d.plannotator[id]; ok {
-			cancel()
-			delete(d.plannotator, id)
-		}
-		d.mu.Unlock()
-	}()
+	defer d.releasePlannotator(id)
 
 	reviewWt, cleanup, err := setupPlannotatorWorktree(log, repoPath, branch, base, reviewPath)
 	if err != nil {
@@ -159,6 +179,7 @@ func (d *Daemon) runPlannotator(ctx context.Context, log *slog.Logger, pcfg conf
 
 	params := PlannotatorParams{
 		Binary:  binaryPath,
+		Args:    []string{"review"},
 		Dir:     reviewWt,
 		Env:     map[string]string{"PLANNOTATOR_REMOTE": "0"},
 		Timeout: pcfg.Timeout.Duration,
@@ -366,7 +387,8 @@ func (d *Daemon) runReworkStage(ctx, taskCtx context.Context, cfg *config.Config
 		defer os.Remove(settingsFile)
 	}
 
-	params := d.buildRunnerParams(cfg, agentCfg, stageCfg, binaryPath, args, wtPath, ticketID, config.ReworkStageName, sessionID)
+	params := d.buildRunnerParams(cfg, agentCfg, stageCfg, binaryPath, args, wtPath, ticketID,
+		config.ReworkStageName, config.ReworkStageName, sessionID)
 	runIndex := stageRunIndex(t, config.ReworkStageName)
 	d.setLiveRun(ticketID, liveRun{stage: config.ReworkStageName, run: runIndex, params: params, startedAt: time.Now()})
 	result, runnerErr := d.runner(taskCtx, params)

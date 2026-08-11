@@ -96,6 +96,11 @@ func newResumeFixture(t *testing.T, agentBinary string) *resumeFixture {
 	}
 }
 
+// readRecord returns the crash-recovery record for the fixture's stage.
+func (f *resumeFixture) readRecord() *resumeRecord {
+	return f.d.readRecordAt(f.p, resumeRecordPath(f.p.cfg, f.p.ticketID, f.p.stageName))
+}
+
 // validRecord passes every guard once its session file exists.
 func (f *resumeFixture) validRecord(kind string) resumeRecord {
 	rec := resumeRecord{
@@ -114,11 +119,11 @@ func (f *resumeFixture) validRecord(kind string) resumeRecord {
 func TestResumeRecordReadWriteRemove(t *testing.T) {
 	f := newResumeFixture(t, "claude")
 
-	assert.Nil(t, f.d.readResumeRecord(f.p), "no record yet")
+	assert.Nil(t, f.readRecord(), "no record yet")
 
 	f.d.writeResumeRecord(f.p, agentKindClaude, resumeTestSessionID)
 
-	got := f.d.readResumeRecord(f.p)
+	got := f.readRecord()
 	require.NotNil(t, got)
 	assert.Equal(t, resumeTestSessionID, got.SessionID)
 	assert.Equal(t, "code", got.Stage)
@@ -132,7 +137,7 @@ func TestResumeRecordReadWriteRemove(t *testing.T) {
 		resumeRecordPath(f.p.cfg, resumeTicketID, "code"))
 
 	f.d.removeResumeRecord(f.p.cfg, resumeTicketID, "code")
-	assert.Nil(t, f.d.readResumeRecord(f.p), "record removed")
+	assert.Nil(t, f.readRecord(), "record removed")
 
 	// Removing a record that is already gone is not an error.
 	f.d.removeResumeRecord(f.p.cfg, resumeTicketID, "code")
@@ -144,7 +149,7 @@ func TestResumeRecordMalformedReadsAsAbsent(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
 	require.NoError(t, os.WriteFile(path, []byte("{not json"), 0o644))
 
-	assert.Nil(t, f.d.readResumeRecord(f.p), "malformed record reads as absent")
+	assert.Nil(t, f.readRecord(), "malformed record reads as absent")
 	assert.Nil(t, f.d.resumableRecord(f.p), "malformed record does not resume")
 }
 
@@ -575,6 +580,38 @@ func TestResumeRecordLifecycle(t *testing.T) {
 	assert.False(t, rec.StartedAt.IsZero())
 
 	assert.NoFileExists(t, recordPath, "a run the daemon saw end leaves no record")
+
+	// The completed-session record is written by the same return that retires the
+	// crash-recovery one. Only the annotation refine run reads it, so it must not
+	// make an ordinary retry resume.
+	assert.FileExists(t, completedRecordPath(rd.cfg, resumeTicketID, resumeStage))
+
+	spawns := rd.invocations(t)
+	require.Len(t, spawns, 1)
+	assert.NotContains(t, spawns[0].Args, "--resume")
+}
+
+// A stage that ran to a clean finish leaves a completed-session record behind.
+// An ordinary retry of that stage must still start a new conversation: the
+// crash-recovery contract is that only a record of an unseen death resumes.
+func TestRetryAfterCleanCompletionStartsFresh(t *testing.T) {
+	rd := newResumeDaemon(t, "claude", func(_ context.Context, n int, _ RunnerParams) (process.Result, error) {
+		// Fail the first run so the pipeline's retry policy runs the stage again.
+		exit := 0
+		if n == 1 {
+			exit = 1
+		}
+		return process.Result{ExitCode: exit, StartedAt: time.Now(), ExitedAt: time.Now()}, nil
+	})
+
+	rd.runWith(t, rd.h.taskMD(resumeTicketID, "todo", "retry-stage"), ticket.StatusDone)
+
+	spawns := rd.invocations(t)
+	require.Len(t, spawns, 2, "the stage runs twice")
+	for i, p := range spawns {
+		assert.NotContains(t, p.Args, "--resume", "run %d must open a new session", i)
+		assert.Contains(t, renderedPrompt(p), resumeStagePrompt, "run %d gets the stage prompt", i)
+	}
 }
 
 // Only a daemon that goes away mid-stage leaves a record behind: that is the

@@ -60,6 +60,7 @@ func New(svc TicketService, broker *SSEBroker, host string, port int, token, tmu
 	mux.HandleFunc("GET /api/tickets/{id}/activity", s.handleGetActivity)
 	mux.HandleFunc("GET /api/tickets/{id}/changes", s.handleGetChanges)
 	mux.HandleFunc("POST /api/tickets/{id}/plannotator-review", s.handlePlannotatorReview)
+	mux.HandleFunc("POST /api/tickets/{id}/plannotator-annotate", s.handlePlannotatorAnnotate)
 	mux.HandleFunc("GET /api/events", s.handleSSE)
 	mux.HandleFunc("GET /ws/terminal/{id}", s.handleTerminalWS)
 	mux.Handle("GET /", s.staticHandler(http.HandlerFunc(s.serveAsset)))

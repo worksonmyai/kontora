@@ -205,6 +205,9 @@ func (m *mockTerminalService) HasTerminalSession(_ string) bool { return m.hasSe
 func (m *mockTerminalService) StartPlannotatorReview(_ string) error {
 	return nil
 }
+func (m *mockTerminalService) StartPlannotatorAnnotate(_ string) error {
+	return nil
+}
 
 // uniqueSession names a tmux session no other test binary or running daemon
 // can share, so these tests never attach to or tear down real agent windows.

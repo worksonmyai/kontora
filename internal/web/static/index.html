@@ -1144,6 +1144,15 @@
               <span x-text="plannotatorInFlight[selectedTicket?.id] ? 'reviewing…' : 'plannotator review'"></span>
             </button>
           </template>
+          <template x-if="canAnnotateTicket(selectedTicket)">
+            <button type="button" :disabled="!!plannotatorInFlight[selectedTicket?.id]"
+                    @click="startPlannotatorAnnotate(selectedTicket)"
+                    class="h-7 px-3 rounded-[7px] font-mono text-[11.5px] bg-surface-900 border border-edge-input text-tx-2 hover:text-accent hover:border-accent/40 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5"
+                    data-tip-t="Open Plannotator on the ticket file; submitting notes queues an agent run that rewrites the ticket and puts it back in this status.">
+              <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4Z"/></svg>
+              <span x-text="plannotatorInFlight[selectedTicket?.id] ? 'annotating…' : 'annotate ticket'"></span>
+            </button>
+          </template>
           <!-- Status transitions from validMoves, the same source as the card menu. -->
           <template x-for="mv in detailMoves(selectedTicket)" :key="mv.label">
             <button type="button"
@@ -1958,7 +1967,7 @@
                     <button type="button" @click="openActivity(h.stage, h.run || 0)"
                             class="flex items-center gap-2 min-w-0 text-left hover:text-tx-2 transition-colors">
                       <span :class="h.exit_code === 0 ? 'text-ok' : 'text-st-cancel'" x-text="h.exit_code === 0 ? '✓' : '✕'"></span>
-                      <span class="text-tx-3 truncate" x-text="h.stage"></span>
+                      <span class="text-tx-3 truncate" x-text="historyLabel(h)"></span>
                       <span class="flex-1"></span>
                       <span class="text-surface-600 shrink-0"
                             x-text="'exit ' + h.exit_code + (formatElapsed(h.started_at, h.completed_at) ? ' · ' + formatElapsed(h.started_at, h.completed_at) : '')"></span>

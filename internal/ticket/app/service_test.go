@@ -135,6 +135,18 @@ func TestSetStatus_CancelsRunningAgent(t *testing.T) {
 	}
 }
 
+// A pending annotation run restores the status the ticket had before it was
+// parked, so a user who moves the ticket somewhere else has to cancel it.
+func TestSetStatus_ClearsPendingAnnotation(t *testing.T) {
+	repo := newMemRepo()
+	repo.add("tst-001", "---\nid: tst-001\nstatus: todo\nkontora: true\npipeline: default\nannotation_return_status: human_review\n---\n# Test\n")
+	svc := New(Static(testCfg()), repo, &spyRuntime{})
+
+	_, err := svc.SetStatus("tst-001", ticket.StatusPaused)
+	require.NoError(t, err)
+	assert.Empty(t, repo.tickets["tst-001"].Ticket.AnnotationReturnStatus)
+}
+
 func TestSetStatus_AlreadySame(t *testing.T) {
 	repo := newMemRepo()
 	repo.add("tst-001", "---\nid: tst-001\nstatus: todo\nkontora: true\n---\n# Test\n")

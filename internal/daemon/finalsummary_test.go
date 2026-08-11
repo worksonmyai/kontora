@@ -144,6 +144,20 @@ func TestEligibleFinalSummaryRuns(t *testing.T) {
 				{Stage: "code", Run: 2, ExitCode: 0, Summary: "third try"},
 			},
 		},
+		{
+			// An annotation run rewrote what the ticket asks for, so its summary
+			// does not belong in a description of the work the ticket did.
+			name: "an annotation run is left out but still counts as a run",
+			history: []ticket.HistoryEntry{
+				{Stage: "code", ExitCode: 0, Summary: "coded"},
+				{Stage: "code", ExitCode: 0, Summary: "rewrote the ticket", Kind: ticket.KindAnnotation},
+				{Stage: "code", ExitCode: 0, Summary: "coded the new spec"},
+			},
+			want: []finalSummaryRun{
+				{Stage: "code", Run: 0, ExitCode: 0, Summary: "coded"},
+				{Stage: "code", Run: 2, ExitCode: 0, Summary: "coded the new spec"},
+			},
+		},
 	}
 
 	for _, tc := range cases {

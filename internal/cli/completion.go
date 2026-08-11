@@ -43,6 +43,7 @@ complete -c kontora -n __fish_use_subcommand -a archive -d 'Archive old done/can
 complete -c kontora -n __fish_use_subcommand -a logs -d 'Show agent logs'
 complete -c kontora -n __fish_use_subcommand -a attach -d 'Attach to running ticket'
 complete -c kontora -n __fish_use_subcommand -a start -d 'Start the daemon'
+complete -c kontora -n __fish_use_subcommand -a setup -d 'Create the configuration file'
 complete -c kontora -n __fish_use_subcommand -a doctor -d 'Validate setup'
 complete -c kontora -n __fish_use_subcommand -a config -d 'Show effective config'
 complete -c kontora -n __fish_use_subcommand -a fmt -d 'Format stream-json from stdin'
@@ -53,7 +54,7 @@ complete -c kontora -n __fish_use_subcommand -a completion -d 'Generate shell co
 complete -c kontora -n '__fish_seen_subcommand_from completion' -a fish -d 'Fish shell'
 
 # Flags: -config (commands that accept it)
-set -l __kontora_config_cmds start doctor ls new view edit init run done note summary pause retry skip set-stage cancel archive logs attach config
+set -l __kontora_config_cmds start setup doctor ls new view edit init run done note summary pause retry skip set-stage cancel archive logs attach config
 for cmd in $__kontora_config_cmds
     complete -c kontora -n "__fish_seen_subcommand_from $cmd" -o config -d 'Config file path' -r -F
 end
@@ -62,6 +63,10 @@ end
 complete -c kontora -n '__fish_seen_subcommand_from new' -o path -d 'Repository path' -r -F
 complete -c kontora -n '__fish_seen_subcommand_from new' -o pipeline -d 'Pipeline name' -r
 complete -c kontora -n '__fish_seen_subcommand_from new' -o agent -d 'Agent name' -r
+
+# Flags: setup
+# --agent is a boolean here, unlike the agent-name flag other commands take.
+complete -c kontora -n '__fish_seen_subcommand_from setup' -l agent -d 'Print setup instructions for a coding agent'
 
 # Flags: ls
 complete -c kontora -n '__fish_seen_subcommand_from ls' -l closed -d 'Show done/cancelled tickets'

@@ -1257,7 +1257,41 @@
     <div x-show="!loading && currentView === 'board'" class="relative flex flex-1 min-w-0 min-h-0">
 
     <!-- Board area (kanban) -->
-    <div :inert="!!selectedTicket" class="flex flex-col flex-1 min-w-0 min-h-0 bg-surface-frame">
+    <div :inert="!!selectedTicket" class="relative flex flex-col flex-1 min-w-0 min-h-0 bg-surface-frame">
+
+    <!-- Empty-board panel. Gated on the raw ticket list, so a search that
+         matches nothing keeps showing the per-column empty state instead. The
+         parent adds !loading, so the panel waits for the first fetch. It covers
+         the board rather than replacing it: #board-cols stays mounted, so the
+         Sortable bindings and the imperative card renderer survive the first
+         ticket arriving. -->
+    <div id="board-empty-desktop" x-show="tickets.length === 0" x-cloak
+         class="absolute inset-0 z-20 flex items-center justify-center p-6 bg-surface-frame">
+      <div class="w-full max-w-[460px] rounded-xl border border-edge-card bg-surface-900 p-6 flex flex-col gap-4">
+        <div>
+          <h2 class="text-base font-semibold text-tx-hi m-0 mb-1.5">The board is empty</h2>
+          <p class="text-[12.5px] leading-[1.6] text-tx-3 m-0">A ticket is one piece of work. Kontora gives it a git worktree and runs the pipeline stages on it.</p>
+        </div>
+        <div>
+          <button @click="gotoView('new')"
+                  class="text-[13px] font-sans font-semibold h-[34px] px-[14px] rounded-[7px] bg-accent text-accent-fg hover:bg-accent-bright transition-colors flex items-center gap-1.5">
+            <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
+            New ticket
+          </button>
+        </div>
+        <div class="flex flex-col gap-2 pt-3 border-t border-surface-700">
+          <p class="text-[11.5px] leading-[1.6] text-tx-3 m-0">Agents, stages, and pipelines live in the config file on the daemon host. To create or change them, give a coding agent running there this request:</p>
+          <!-- The request is on screen, not only on the clipboard: the copy path
+               needs a secure context, which plain HTTP over a tailnet is not. -->
+          <div class="flex items-start gap-2">
+            <code class="flex-1 font-mono text-[11.5px] leading-[1.55] text-tx-2 bg-surface-850 border border-edge-input rounded-[7px] px-2.5 py-2 break-words" x-text="agentSetupRequest"></code>
+            <button @click="copyCmd(agentSetupRequest)"
+                    class="shrink-0 text-[11.5px] font-mono h-[30px] px-2.5 rounded-[7px] bg-surface-850 border border-edge-input text-tx-3 hover:text-tx-2 hover:border-edge-hover transition-colors"
+                    x-text="copiedCmd === agentSetupRequest ? '\u2713 copied' : 'copy'"></button>
+          </div>
+        </div>
+      </div>
+    </div>
 
     <!-- Kanban board -->
     <div x-data="{ hasOverflowRight: false }"
@@ -2172,7 +2206,7 @@
             <div x-show="!settingsLoading && settingsState === 'unavailable'" x-cloak
                  class="border border-edge-card rounded-lg bg-surface-900 p-5">
               <div class="font-mono text-[13px] font-bold text-tx-hi mb-1.5">No config file</div>
-              <p class="text-[12px] leading-[1.6] text-tx-3 m-0">This daemon is running without a config file, so there is nothing to edit here. Start it with <span class="font-mono text-tx-2">--config</span>, or run <span class="font-mono text-tx-2">kontora init</span> to create one, then reload this page.</p>
+              <p class="text-[12px] leading-[1.6] text-tx-3 m-0">This daemon is running without a config file, so there is nothing to edit here. On the daemon host, run <span class="font-mono text-tx-2">kontora setup</span> to create one, or <span class="font-mono text-tx-2">kontora setup --agent</span> to have a coding agent do it. Then restart the daemon and reload this page.</p>
             </div>
 
             <div x-show="!settingsLoading && settingsState === 'parse-error'" x-cloak
@@ -2644,7 +2678,22 @@
     <div class="flex-1 min-h-0 overflow-y-auto"
          style="padding:14px 12px 48px;display:flex;flex-direction:column;gap:9px;"
          @touchstart.passive="onBoardTouchStart($event)" @touchend="onBoardTouchEnd($event)">
-      <template x-if="boardTickets(mobileColumn().key).length === 0">
+      <!-- Empty-board panel, same gate as the desktop one plus !loading: the
+           mobile layer has no loading guard above it, and init() holds loading
+           true across two fetches with tickets still empty. -->
+      <template x-if="!loading && tickets.length === 0">
+        <div id="board-empty-mobile" style="border:1px solid rgba(var(--surface-700),.6);border-radius:12px;background:rgba(var(--surface-900),1);padding:18px 16px;margin-top:6px;display:flex;flex-direction:column;gap:12px;">
+          <div style="font-size:15px;font-weight:600;color:rgba(var(--tx),1);">The board is empty</div>
+          <p style="font-size:12.5px;line-height:1.6;color:rgba(var(--tx-3),1);margin:0;">A ticket is one piece of work. Kontora gives it a git worktree and runs the pipeline stages on it.</p>
+          <button @click="openNewSheet()" style="height:42px;border-radius:10px;border:1px solid rgba(var(--accent),1);background:rgba(var(--accent),1);color:rgba(var(--accent-fg),1);font-family:'JetBrains Mono',monospace;font-size:13px;font-weight:700;">New ticket</button>
+          <p style="font-size:11.5px;line-height:1.6;color:rgba(var(--tx-3),1);margin:0;">Agents, stages, and pipelines live in the config file on the daemon host. To create or change them, give a coding agent running there this request:</p>
+          <!-- Shown, not only copied: the clipboard needs a secure context, and
+               a phone on a tailnet over plain HTTP does not have one. -->
+          <div style="font-family:'JetBrains Mono',monospace;font-size:11.5px;line-height:1.55;color:rgba(var(--tx-2),1);background:rgba(var(--surface-850),1);border:1px solid rgba(var(--surface-700),.7);border-radius:8px;padding:10px;word-break:break-word;" x-text="agentSetupRequest"></div>
+          <button @click="copyCmd(agentSetupRequest)" style="height:38px;border-radius:10px;border:1px solid rgba(var(--surface-700),.7);background:rgba(var(--surface-850),1);color:rgba(var(--tx-3),1);font-family:'JetBrains Mono',monospace;font-size:12.5px;font-weight:600;" x-text="copiedCmd === agentSetupRequest ? '\u2713 copied' : 'copy request'"></button>
+        </div>
+      </template>
+      <template x-if="tickets.length > 0 && boardTickets(mobileColumn().key).length === 0">
         <div style="font-family:'JetBrains Mono',monospace;text-align:center;font-size:12px;color:rgba(var(--surface-600),1);border:1px dashed rgba(var(--surface-700),.6);border-radius:10px;padding:34px 16px;margin-top:6px;" x-text="'∅ ' + mobileColumn().emptyText.toLowerCase()"></div>
       </template>
       <template x-for="ticket in boardTickets(mobileColumn().key)" :key="ticket.id">

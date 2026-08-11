@@ -63,6 +63,7 @@ func renderUsage() string {
 		{"logs", "Show agent logs for a ticket"},
 		{"attach", "Attach to a running ticket"},
 		{"start", "Start the daemon"},
+		{"setup", "Create the configuration file"},
 		{"doctor", "Validate prerequisites and configuration"},
 		{"config", "Show effective configuration"},
 		{"fmt", "Format stream-json from stdin"},
@@ -126,6 +127,8 @@ func main() {
 		cmdAttach()
 	case "start":
 		cmdStart()
+	case "setup":
+		cmdSetup()
 	case "doctor":
 		cmdDoctor()
 	case "config":
@@ -198,6 +201,62 @@ func runDaemon(cfg *config.Config, configPath string, override func(*config.Conf
 		daemon.WithConfigOverride(override),
 	)
 	return d.Run(ctx)
+}
+
+// cmdSetup creates the config file. Plain `setup` runs the interactive wizard;
+// `setup --agent` prints instructions for a coding agent instead and writes
+// nothing. Both are local-only: the config they talk about is the one on this
+// machine, not the remote daemon's.
+func cmdSetup() {
+	rejectInRemoteMode("setup")
+
+	fs := flag.NewFlagSet("setup", flag.ExitOnError)
+	configPath := fs.String("config", defaultConfigPath(), "path to config file")
+	// Unlike every other command's --agent, this one is a boolean: setup has no
+	// ticket to assign an agent to.
+	agentMode := fs.Bool("agent", false, "print setup instructions for a coding agent instead of running the wizard")
+	if err := fs.Parse(os.Args[2:]); err != nil {
+		log.Fatalf("parsing flags: %v", err)
+	}
+	if fs.NArg() > 0 {
+		log.Fatalf("unexpected argument %q: setup takes no positional arguments (--agent is a flag, not an agent name)", fs.Arg(0))
+	}
+
+	if *agentMode {
+		if err := cli.WriteAgentSetupPrompt(*configPath, os.Stdout); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
+
+	// The wizard reads keys and paints over its output stream, so without a
+	// terminal on both ends it does neither usefully. An existing config is
+	// reported without the wizard, so the guard only applies when there is
+	// nothing on disk yet. A stat error that is not "no such file" says the path
+	// itself is unusable; report it instead of walking into the wizard.
+	switch _, err := os.Stat(*configPath); {
+	case err == nil:
+		// RunSetup reports the existing file and returns.
+	case errors.Is(err, os.ErrNotExist):
+		if !interactiveTerminal() {
+			log.Fatalf("kontora setup needs an interactive terminal.\nRun \"kontora setup --agent\" to print setup instructions for a coding agent instead.")
+		}
+	default:
+		log.Fatalf("setup: %v", err)
+	}
+
+	if err := cli.InitConfig(*configPath, os.Stdout); err != nil {
+		if errors.Is(err, cli.ErrCancelled) {
+			return
+		}
+		log.Fatalf("setup: %v", err)
+	}
+}
+
+// interactiveTerminal reports whether both ends of the wizard's I/O are a
+// terminal.
+func interactiveTerminal() bool {
+	return isatty.IsTerminal(os.Stdin.Fd()) && isatty.IsTerminal(os.Stdout.Fd())
 }
 
 func cmdInit() {
@@ -1041,9 +1100,10 @@ func mustLoadConfig(configPath string) *config.Config {
 		return cfg
 	}
 	if errors.Is(err, config.ErrNotFound) {
-		fmt.Fprintf(os.Stderr, "\n  %s\n\n  Get started by running:\n\n    %s\n\n",
-			helpFaint.Render("No configuration found."),
-			helpCyan.Render("kontora start"),
+		fmt.Fprintf(os.Stderr, "\n  %s\n\n  Create one interactively:\n\n    %s\n\n  Or print instructions for a coding agent:\n\n    %s\n\n",
+			helpFaint.Render("No configuration found at "+configPath),
+			helpCyan.Render("kontora setup"),
+			helpCyan.Render("kontora setup --agent"),
 		)
 		os.Exit(1)
 	}
@@ -1059,9 +1119,8 @@ func loadConfigOrSetup(configPath string) *config.Config {
 	if !errors.Is(err, config.ErrNotFound) {
 		log.Fatalf("loading config: %v", err)
 	}
-	fi, statErr := os.Stdin.Stat()
-	if statErr != nil || fi.Mode()&os.ModeCharDevice == 0 {
-		log.Fatalf("config not found: %s\nRun \"kontora start\" to create one.", configPath)
+	if !interactiveTerminal() {
+		log.Fatalf("config not found: %s\nRun \"kontora setup\" on a terminal, or \"kontora setup --agent\" to print setup instructions for a coding agent.", configPath)
 	}
 	fmt.Fprintf(os.Stderr, "No config found. Running setup...\n\n")
 	if setupErr := cli.InitConfig(configPath, os.Stdout); setupErr != nil {

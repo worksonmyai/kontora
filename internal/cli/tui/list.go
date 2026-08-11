@@ -65,7 +65,11 @@ type listModel struct {
 	filter    string
 
 	connected bool
-	err       error
+	// loaded turns true on the first ticket refresh. Bubble Tea renders once
+	// before Init's fetch resolves, and an empty list before that means "not
+	// fetched yet", not "no tickets".
+	loaded bool
+	err    error
 }
 
 func newListModel() listModel {
@@ -73,6 +77,7 @@ func newListModel() listModel {
 }
 
 func (m *listModel) setTickets(tickets []web.TicketInfo, running int) {
+	m.loaded = true
 	m.tickets = make([]web.TicketInfo, 0, len(tickets))
 	for _, t := range tickets {
 		// Archived tickets are hidden from the board.
@@ -375,7 +380,23 @@ func (m listModel) View() string {
 
 	if len(m.columns) == 0 {
 		b.WriteString("  no tickets\n")
-		for range m.height - 6 {
+		lines := 1
+		// A filter that matches nothing also empties every column, so the
+		// guidance keys off the unfiltered list instead. It waits for the first
+		// refresh: an empty list before that only means the fetch is in flight.
+		if m.loaded && len(m.tickets) == 0 {
+			b.WriteByte('\n')
+			if m.connected {
+				b.WriteString("  " + styleFaint.Render("press") + " " + styleCyan.Render("n") + " " + styleFaint.Render("to create a ticket") + "\n")
+			} else {
+				// Creating a ticket needs the daemon, so pointing at n here
+				// would only produce an error line.
+				b.WriteString("  " + styleFaint.Render("run") + " " + styleCyan.Render("kontora start") + " " + styleFaint.Render("to start the daemon") + "\n")
+			}
+			b.WriteString("  " + styleFaint.Render("run") + " " + styleCyan.Render("kontora setup --agent") + " " + styleFaint.Render("to print setup instructions for a coding agent") + "\n")
+			lines += 3
+		}
+		for range m.height - 5 - lines {
 			b.WriteByte('\n')
 		}
 	} else {

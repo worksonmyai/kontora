@@ -411,17 +411,70 @@ func TestListModel_EmptyColumnsHidden(t *testing.T) {
 	assert.Equal(t, "in_progress", string(m.columns[0].status))
 }
 
-func TestListModel_NoTasks(t *testing.T) {
-	m := newListModel()
-	m.width = 100
-	m.height = 30
-	m.setTickets(nil, 0)
+// Every case here leaves the board without a single column. The guidance
+// separates an empty board from a list that has not arrived yet and from a
+// filter that matches nothing, and it only offers "n" when the daemon is there
+// to answer it.
+func TestListModel_EmptyBoardGuidance(t *testing.T) {
+	cases := []struct {
+		name      string
+		skipFetch bool
+		tickets   []web.TicketInfo
+		connected bool
+		filter    string
+		want      []string
+		notWant   []string
+	}{
+		{
+			name:      "first render before the fetch resolves",
+			skipFetch: true,
+			notWant:   []string{"to create a ticket", "to start the daemon", "kontora setup --agent"},
+		},
+		{
+			name:      "empty board with the daemon running",
+			connected: true,
+			want:      []string{"to create a ticket", "kontora setup --agent"},
+			notWant:   []string{"to start the daemon"},
+		},
+		{
+			name:    "empty board without a daemon",
+			want:    []string{"to start the daemon", "kontora setup --agent"},
+			notWant: []string{"to create a ticket"},
+		},
+		{
+			name:      "filter hides every ticket",
+			tickets:   []web.TicketInfo{{ID: "a", Title: "alpha", Status: "todo", Kontora: true}},
+			connected: true,
+			filter:    "zzz",
+			notWant:   []string{"to create a ticket", "to start the daemon", "kontora setup --agent"},
+		},
+	}
 
-	assert.Nil(t, m.selected())
-	assert.Len(t, m.columns, 0)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newListModel()
+			m.width = 100
+			m.height = 30
+			m.connected = tc.connected
+			if !tc.skipFetch {
+				m.setTickets(tc.tickets, 0)
+			}
+			m.filter = tc.filter
+			m.applyFilter()
 
-	view := m.View()
-	assert.Contains(t, view, "no tickets")
+			require.Len(t, m.columns, 0)
+			assert.Nil(t, m.selected())
+
+			view := m.View()
+			assert.Contains(t, view, "no tickets")
+			for _, want := range tc.want {
+				assert.Contains(t, view, want)
+			}
+			for _, notWant := range tc.notWant {
+				assert.NotContains(t, view, notWant)
+			}
+		})
+	}
 }
 
 func TestListModel_FilterEmptiesColumn(t *testing.T) {

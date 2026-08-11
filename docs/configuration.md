@@ -2,6 +2,44 @@
 
 Kontora reads configuration from a YAML file. It checks these paths in order: `.kontora/config.yaml` in the current directory, then `$XDG_CONFIG_HOME/kontora/config.yaml` (or `~/.config/kontora/config.yaml` if unset). Override with `--config`. Unknown fields are rejected. See also: [Ticket Format](tickets.md).
 
+## Creating the config
+
+```bash
+kontora setup           # interactive wizard
+kontora setup --agent   # print instructions for a coding agent
+```
+
+`kontora setup` writes a starter config with two pipelines when the resolved
+path holds no file. An existing config is never overwritten: the command prints
+its path and the two ways to change it.
+
+`kontora setup --agent` writes nothing. It prints a plain-text brief for a
+coding agent: the resolved config path, whether the file is missing, valid, or
+invalid, the validation error when there is one, and the symlink target when the
+path is a link. The brief is embedded in the binary, so it describes the schema
+that version accepts. It never prints the config file itself, so no token or
+environment value can leak into the output; a validation error can still quote
+the names, paths, and patterns it rejected. Use it to create the first config or
+to add agents, stages, pipelines, and projects later.
+
+Both forms are local-only and take no positional arguments. `--agent` here is a
+boolean, unlike the agent-name `--agent` on `kontora new` and `kontora init`.
+The wizard needs a terminal on stdin and stdout; without one it exits non-zero
+and points at `kontora setup --agent`.
+
+After setup:
+
+```bash
+kontora doctor   # validate config, tools, agent binaries, port
+kontora start    # start the daemon; runs until Ctrl-C
+```
+
+Then, in another terminal:
+
+```bash
+kontora new --path ~/projects/myrepo "Add a health check endpoint"
+```
+
 ## Minimal example
 
 ```yaml

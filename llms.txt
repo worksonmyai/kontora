@@ -42,12 +42,17 @@ Verify: `kontora version`
 
 ## Step 2: Configure
 
-Config lives at `~/.config/kontora/config.yaml`.
+Run this and follow what it prints:
 
-Ask the user: do you want me to create the config, or would you prefer to run the interactive setup wizard yourself?
+```bash
+kontora setup --agent
+```
 
-- **If the agent creates it:** Ask which agent(s) they use, then write `~/.config/kontora/config.yaml` following the [configuration reference](https://github.com/worksonmyai/kontora/blob/main/docs/configuration.md) (includes minimal and full examples).
-- **If the user does it themselves:** Tell them to run `kontora start` — the setup wizard will walk them through it. When they're done, read `~/.config/kontora/config.yaml` and offer to review or tweak it.
+The installed binary prints a setup brief for you: the config path and its current state, the questions to ask the user, the validation rules, and how to write the file without losing the user's settings. The brief ships inside the binary, so it matches the schema this version accepts. Follow it instead of a schema you remember, and instead of the configuration reference on the web.
+
+`kontora setup --agent` only prints. It never writes the config.
+
+If the user would rather do it themselves, tell them to run `kontora setup` for the interactive wizard. When they are done, read `~/.config/kontora/config.yaml` and offer to review it.
 
 ## Step 3: Verify and start
 
@@ -106,7 +111,7 @@ kontora logs <id>
 kontora attach <id>   # live terminal over WebSocket
 ```
 
-Remote mode supports `ls`, `view`, `new`, `run`, `pause`, `retry`, `cancel`, `done`, `skip`, `set-stage`, `note`, `logs`, `config`, `attach`. Local-only verbs (`edit`, `archive`, `init`, `fmt`, `doctor`, `start`, `completion`) are rejected. Paths for `kontora new --path` are on the daemon host, not the caller.
+Remote mode supports `ls`, `view`, `new`, `init`, `update`, `delete`, `run`, `pause`, `retry`, `cancel`, `done`, `skip`, `set-stage`, `note`, `summary`, `logs`, `config`, `attach`. Local-only verbs (`edit`, `archive`, `fmt`, `doctor`, `start`, `setup`, `completion`) are rejected. Run setup on the daemon host. Paths for `kontora new --path` are on the daemon host, not the caller.
 
 Security: the token is the only access control, and agents run with `--dangerously-skip-permissions`. A tailnet encrypts the transport, so plain HTTP is fine there. On any untrusted network, terminate TLS in front of the daemon — the bearer token is otherwise sent in clear.
 

@@ -361,10 +361,10 @@ func writeFakeEditor(t *testing.T, content string) string {
 }
 
 func TestRemoteDispatch_LocalOnlyVerbsRejected(t *testing.T) {
-	for _, verb := range []string{"edit", "archive", "doctor", "fmt", "completion", "start"} {
+	for _, verb := range []string{"edit", "archive", "doctor", "fmt", "completion", "start", "setup"} {
 		t.Run(verb, func(t *testing.T) {
 			args := []string{verb}
-			if verb != "fmt" && verb != "completion" && verb != "start" {
+			if verb != "fmt" && verb != "completion" && verb != "start" && verb != "setup" {
 				args = append(args, "abc")
 			}
 			out, err := runCLI(t, []string{"KONTORA_URL=http://127.0.0.1:1"}, args...)

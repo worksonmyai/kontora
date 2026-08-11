@@ -2127,6 +2127,102 @@ test("index.html column x-init drops the render state Alpine just invalidated", 
   assert.equal(app.includes("_renderedHTML"), false);
 });
 
+// These tests need containment, not "both strings are somewhere in the file",
+// and there is no DOM parser here. Strip comments first so a <div> mentioned in
+// prose cannot shift the depth count, then walk <div>/</div> depth.
+function htmlNoComments() {
+  return fs.readFileSync(htmlPath, "utf8").replace(/<!--[\s\S]*?-->/g, "");
+}
+
+// elementAt returns the whole element that starts at or before idx, from its
+// opening <div to its matching </div>.
+function elementAt(html, idx) {
+  const start = html.lastIndexOf("<div", idx);
+  assert.ok(start >= 0, "no enclosing <div");
+  const re = /<div\b|<\/div>/g;
+  re.lastIndex = start;
+  let depth = 0;
+  let m;
+  while ((m = re.exec(html)) !== null) {
+    depth += m[0] === "</div>" ? -1 : 1;
+    if (depth === 0) return html.slice(start, re.lastIndex);
+  }
+  throw new Error("unbalanced <div> from index " + start);
+}
+
+function elementWithId(html, id) {
+  const idx = html.indexOf(`id="${id}"`);
+  assert.ok(idx > 0, `${id} not found`);
+  return elementAt(html, idx);
+}
+
+// The empty-board panels key off the raw list. _boardTotal and the column lists
+// both go to zero when a search matches nothing, which would replace the
+// filtered-empty message for someone who already has tickets.
+test("index.html gates the empty-board panel on the raw ticket list", () => {
+  const html = htmlNoComments();
+
+  const desktop = elementWithId(html, "board-empty-desktop");
+  assert.match(desktop, /x-show="tickets\.length === 0"/);
+  // The panel covers the board instead of replacing it: it is a sibling of
+  // #board-cols inside the same board area, so Alpine keeps the column DOM and
+  // its Sortable bindings mounted while the panel shows.
+  assert.equal(desktop.includes('id="board-cols"'), false);
+  const panelStart = html.lastIndexOf("<div", html.indexOf('id="board-empty-desktop"'));
+  const boardArea = elementAt(html, panelStart - 1);
+  assert.ok(boardArea.includes('id="board-cols"'), "panel and columns share the board area");
+
+  // Desktop inherits !loading from the board view; mobile has no such wrapper,
+  // so its own gate carries it. Without that, every phone load paints the
+  // panel while the first fetch is still in flight.
+  const boardView = elementAt(html, html.indexOf(`x-show="!loading && currentView === 'board'"`));
+  assert.ok(boardView.includes('id="board-empty-desktop"'), "desktop panel sits under the !loading board view");
+  const mobileGate = '<template x-if="!loading && tickets.length === 0">';
+  const mobileIdx = html.indexOf(mobileGate);
+  assert.ok(mobileIdx > 0, "mobile panel needs its own !loading gate");
+  assert.match(html.slice(mobileIdx + mobileGate.length, mobileIdx + mobileGate.length + 40), /^\s*<div id="board-empty-mobile"/);
+
+  // Mobile's per-column empty state stands down while the panel shows, so the
+  // two never stack.
+  assert.match(html, /x-if="tickets\.length > 0 && boardTickets\(mobileColumn\(\)\.key\)\.length === 0"/);
+});
+
+// The copy path needs a secure context, which plain HTTP over a tailnet is not,
+// so the request has to be readable on screen and not only on the clipboard.
+test("index.html shows the coding-agent request in both empty-board panels", () => {
+  const html = htmlNoComments();
+
+  for (const id of ["board-empty-desktop", "board-empty-mobile"]) {
+    const panel = elementWithId(html, id);
+    assert.equal([...panel.matchAll(/x-text="agentSetupRequest"/g)].length, 1, `${id} must display the request`);
+    assert.equal([...panel.matchAll(/@click="copyCmd\(agentSetupRequest\)"/g)].length, 1, `${id} must offer one copy action`);
+  }
+
+  assert.equal([...elementWithId(html, "board-empty-desktop").matchAll(/@click="gotoView\('new'\)"/g)].length, 1);
+  assert.equal([...elementWithId(html, "board-empty-mobile").matchAll(/@click="openNewSheet\(\)"/g)].length, 1);
+});
+
+test("the coding-agent setup request names the command that prints the brief", () => {
+  const state = loadKontoraState();
+
+  assert.equal(
+    state.agentSetupRequest,
+    "Run `kontora setup --agent` on the Kontora daemon host and follow its instructions.",
+  );
+});
+
+test("the empty-board copy action goes through copyCmd", () => {
+  let copied = null;
+  const state = loadKontoraState({
+    navigator: { clipboard: { writeText(v) { copied = v; } } },
+  });
+
+  state.copyCmd(state.agentSetupRequest);
+
+  assert.equal(copied, state.agentSetupRequest);
+  assert.equal(state.copiedCmd, state.agentSetupRequest);
+});
+
 test("setProse renders once and skips an identical second write", () => {
   const state = loadKontoraState();
   let renders = 0;

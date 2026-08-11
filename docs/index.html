@@ -361,6 +361,7 @@
     .quickstart-cmds .prompt { color: var(--muted); }
     .quickstart-cmds .cmd { color: var(--primary); }
     .quickstart-cmds .arg { color: var(--secondary); }
+    .quickstart-cmds .note { color: var(--muted); }
     .docs-link {
       display: inline-block;
       margin-top: 24px;
@@ -595,9 +596,10 @@
       <div class="quickstart">
         <h2>Quick start</h2>
         <div class="quickstart-cmds">
-          <div><span class="line-num">1</span><span class="prompt">$ </span><span class="cmd">kontora start</span></div>
-          <div><span class="line-num">2</span><span class="prompt">$ </span><span class="cmd">kontora new</span> <span class="arg">'Add a health check endpoint'</span></div>
-          <div><span class="line-num">3</span><span class="prompt">$ </span><span class="cmd">kontora attach</span></div>
+          <div><span class="line-num">1</span><span class="prompt">$ </span><span class="cmd">kontora setup</span></div>
+          <div><span class="line-num">2</span><span class="prompt">$ </span><span class="cmd">kontora start</span> <span class="note"># runs until Ctrl-C</span></div>
+          <div><span class="line-num">3</span><span class="prompt">$ </span><span class="cmd">kontora new</span> <span class="arg">'Add a health check endpoint'</span> <span class="note"># another terminal, inside your repo</span></div>
+          <div><span class="line-num">4</span><span class="prompt">$ </span><span class="cmd">kontora attach</span></div>
         </div>
       </div>
     </div>

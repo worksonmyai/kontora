@@ -207,6 +207,11 @@ function kontora() {
     createSubmitting: false,
     createForm: { title: '', path: '', pipeline: '', agent: '', status: 'todo', body: '', branch: '', base_branch: '' },
     createTouched: { pipeline: false, agent: false },
+    // Paste-ready request the empty-board panel shows and copies. The brief
+    // itself is printed by the daemon host's binary, so the UI hands over a
+    // request rather than instructions of its own, which would drift from the
+    // installed version.
+    agentSetupRequest: 'Run `kontora setup --agent` on the Kontora daemon host and follow its instructions.',
     initModal: false,
     initSubmitting: false,
     initForm: { ticketId: '', title: '', pipeline: '', agent: '', path: '', branch: '', autoBranch: '', ticketPath: '' },

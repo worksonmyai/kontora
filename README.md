@@ -47,11 +47,21 @@ make install
 
 ## Quick start
 
+Create the config:
+
+```bash
+kontora setup
+```
+
+The wizard walks you through agent selection, directories, and settings, then writes `~/.config/kontora/config.yaml`.
+
+To have a coding agent write the config instead, run `kontora setup --agent`. It prints a brief for the agent to follow and writes nothing itself. The brief is embedded in the binary, so it describes the schema the installed version accepts. Use the same command later to add agents, stages, pipelines, or projects.
+
+Start the daemon:
+
 ```bash
 kontora start
 ```
-
-If no config exists, a setup wizard walks you through agent selection, directories, and settings, then writes `~/.config/kontora/config.yaml`.
 
 Create a ticket:
 
@@ -170,7 +180,7 @@ kontora logs <id>
 kontora attach <id>   # live terminal over WebSocket
 ```
 
-Remote mode needs no local config file. It supports `ls`, `view`, `new`, `run`, `pause`, `retry`, `cancel`, `done`, `skip`, `set-stage`, `note`, `summary`, `logs`, `config`, and `attach`. Verbs that act on local files (`edit`, `archive`, `init`, `fmt`, `doctor`, `start`, `completion`) are rejected in remote mode. Paths passed to `kontora new --path` refer to the daemon host's filesystem, not the caller's.
+Remote mode needs no local config file. It supports `ls`, `view`, `new`, `init`, `update`, `delete`, `run`, `pause`, `retry`, `cancel`, `done`, `skip`, `set-stage`, `note`, `summary`, `logs`, `config`, and `attach`. Verbs that act on local files (`edit`, `archive`, `fmt`, `doctor`, `start`, `setup`, `completion`) are rejected in remote mode. Configure the daemon host by running `kontora setup` there. Paths passed to `kontora new --path` refer to the daemon host's filesystem, not the caller's.
 
 > [!WARNING]
 > The token is the only thing gating remote access, and the default config runs agents with `--dangerously-skip-permissions` (effectively remote code execution). On a tailnet the transport is already encrypted, so plain HTTP is acceptable. On any untrusted network, put the daemon behind TLS (e.g. a reverse proxy) — the token alone is sent in clear over plain HTTP.

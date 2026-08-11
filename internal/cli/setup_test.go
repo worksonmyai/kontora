@@ -83,6 +83,29 @@ func TestBuildConfigYAML(t *testing.T) {
 				"binary: claude",
 				"binary: opencode",
 				"tickets_dir: /tmp/tickets",
+				"default_agent: claude",
+			},
+		},
+		{
+			// Nothing here is named "claude" and there is more than one agent, so
+			// the config cannot infer default_agent. Setup has to write it.
+			name: "multiple agents without claude",
+			ans: &SetupAnswers{
+				Agents: map[string]agentArgs{
+					"pi":       {Binary: "pi", Args: "-p --no-session"},
+					"opencode": {Binary: "opencode"},
+				},
+				TicketsDir:          "/tmp/tickets",
+				LogsDir:             "/tmp/logs",
+				WorktreesDir:        "/tmp/worktrees",
+				MaxConcurrentAgents: 2,
+				WebEnabled:          true,
+				WebPort:             8080,
+			},
+			wantKeys: []string{
+				"binary: pi",
+				"binary: opencode",
+				"default_agent: opencode",
 			},
 		},
 	}
@@ -99,6 +122,7 @@ func TestBuildConfigYAML(t *testing.T) {
 			require.NoError(t, err, "generated YAML:\n%s", yaml)
 			assert.NotEmpty(t, cfg.Agents)
 			assert.NotEmpty(t, cfg.Pipelines)
+			assert.Contains(t, cfg.Agents, cfg.DefaultAgent)
 		})
 	}
 }
@@ -140,34 +164,69 @@ func TestWriteSetupConfig(t *testing.T) {
 	assert.Contains(t, buf.String(), "Config written to")
 }
 
+// Every rejected setup must also leave the disk untouched: a config directory
+// or a runtime directory left behind means the next run finds half a setup.
 func TestWriteSetupConfig_Validation(t *testing.T) {
+	// The answer directories are built per case, under that case's temp dir.
+	answers := func(dir string, agents map[string]agentArgs, concurrency int) *SetupAnswers {
+		return &SetupAnswers{
+			Agents:              agents,
+			TicketsDir:          filepath.Join(dir, "tickets"),
+			LogsDir:             filepath.Join(dir, "logs"),
+			WorktreesDir:        filepath.Join(dir, "worktrees"),
+			MaxConcurrentAgents: concurrency,
+			WebEnabled:          true,
+			WebPort:             8080,
+		}
+	}
+
 	cases := []struct {
 		name    string
-		ans     *SetupAnswers
+		ans     func(dir string) *SetupAnswers
 		wantErr string
 	}{
 		{
-			name: "no agents",
-			ans: &SetupAnswers{
-				MaxConcurrentAgents: 3,
-			},
+			name:    "no agents",
+			ans:     func(dir string) *SetupAnswers { return answers(dir, nil, 3) },
 			wantErr: "at least one agent",
 		},
 		{
 			name: "zero concurrency",
-			ans: &SetupAnswers{
-				Agents:              map[string]agentArgs{"a": {Binary: "a"}},
-				MaxConcurrentAgents: 0,
+			ans: func(dir string) *SetupAnswers {
+				return answers(dir, map[string]agentArgs{"a": {Binary: "a"}}, 0)
 			},
 			wantErr: "must be positive",
+		},
+		{
+			// "none" is the project-default opt-out sentinel, so an agent by that
+			// name builds YAML that does not load.
+			name: "generated config does not load",
+			ans: func(dir string) *SetupAnswers {
+				return answers(dir, map[string]agentArgs{config.NoneSentinel: {Binary: "none"}}, 3)
+			},
+			wantErr: "generated config is invalid",
 		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			configPath := filepath.Join(dir, "sub", "config.yaml")
+			ans := tc.ans(dir)
+
 			var buf bytes.Buffer
-			err := writeSetupConfig(filepath.Join(t.TempDir(), "config.yaml"), tc.ans, &buf)
-			require.ErrorContains(t, err, tc.wantErr)
+			require.ErrorContains(t, writeSetupConfig(configPath, ans, &buf), tc.wantErr)
+
+			for _, path := range []string{
+				configPath,
+				filepath.Dir(configPath),
+				ans.TicketsDir,
+				ans.LogsDir,
+				ans.WorktreesDir,
+			} {
+				_, err := os.Stat(path)
+				assert.ErrorIs(t, err, os.ErrNotExist, "%s must not be created", path)
+			}
 		})
 	}
 }
@@ -181,7 +240,11 @@ func TestRunSetup_Idempotent(t *testing.T) {
 	var buf bytes.Buffer
 	require.NoError(t, RunSetup(configPath, &buf))
 
-	assert.Contains(t, buf.String(), "already exists")
+	out := buf.String()
+	assert.Contains(t, out, "already exists")
+	assert.Contains(t, out, configPath)
+	assert.Contains(t, out, "kontora setup --agent")
+	assert.Contains(t, out, "kontora config edit")
 
 	data, err := os.ReadFile(configPath)
 	require.NoError(t, err)

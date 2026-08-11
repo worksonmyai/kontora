@@ -633,6 +633,11 @@ func buildConfigYAML(ans *SetupAnswers) string {
 	}
 
 	// Write YAML manually to keep it readable
+	if defaultAgent != "" {
+		// Config.applyDefaults only infers this for a lone agent or one named
+		// "claude", so a setup with pi and opencode has to state it.
+		fmt.Fprintf(&b, "default_agent: %s\n", defaultAgent)
+	}
 	fmt.Fprintf(&b, "tickets_dir: %s\n", yamlQuote(ans.TicketsDir))
 	fmt.Fprintf(&b, "logs_dir: %s\n", yamlQuote(ans.LogsDir))
 	fmt.Fprintf(&b, "worktrees_dir: %s\n", yamlQuote(ans.WorktreesDir))
@@ -750,6 +755,13 @@ func writeSetupConfig(configPath string, ans *SetupAnswers, w io.Writer) error {
 		return fmt.Errorf("at least one agent is required")
 	}
 
+	// Validate before anything touches the filesystem, so a generated config
+	// that cannot load leaves no directories behind.
+	content := buildConfigYAML(ans)
+	if _, err := config.LoadReader(strings.NewReader(content)); err != nil {
+		return fmt.Errorf("generated config is invalid (bug): %w", err)
+	}
+
 	configDir := filepath.Dir(configPath)
 	if err := os.MkdirAll(configDir, 0o755); err != nil {
 		return fmt.Errorf("creating config dir: %w", err)
@@ -763,12 +775,6 @@ func writeSetupConfig(configPath string, ans *SetupAnswers, w io.Writer) error {
 		}
 	}
 
-	content := buildConfigYAML(ans)
-
-	if _, err := config.LoadReader(strings.NewReader(content)); err != nil {
-		return fmt.Errorf("generated config is invalid (bug): %w", err)
-	}
-
 	if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
 		return fmt.Errorf("writing config: %w", err)
 	}
@@ -779,8 +785,15 @@ func writeSetupConfig(configPath string, ans *SetupAnswers, w io.Writer) error {
 
 // RunSetup runs the interactive setup wizard.
 func RunSetup(configPath string, w io.Writer) error {
+	// Never overwrite: the file on disk is the user's, and setup has no way to
+	// know which of its settings were deliberate.
 	if _, err := os.Stat(configPath); err == nil {
-		fmt.Fprintf(w, "Config already exists: %s\n", styleFaint.Render(configPath))
+		fmt.Fprintf(w, "Config already exists: %s\n\n", styleFaint.Render(configPath))
+		fmt.Fprintln(w, "To change it:")
+		// Pad before styling: the ANSI codes make the rendered string longer
+		// than it looks, so a %-Ns on the styled value aligns nothing.
+		fmt.Fprintf(w, "  %s  %s\n", styleCyan.Render(fmt.Sprintf("%-21s", "kontora setup --agent")), styleFaint.Render("Print instructions for a coding agent"))
+		fmt.Fprintf(w, "  %s  %s\n", styleCyan.Render(fmt.Sprintf("%-21s", "kontora config edit")), styleFaint.Render("Edit it yourself"))
 		return nil
 	}
 
@@ -809,8 +822,9 @@ func RunSetup(configPath string, w io.Writer) error {
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, styleBold.Render("Next steps:"))
 	fmt.Fprintf(w, "  %s  %s\n", styleCyan.Render("kontora doctor"), styleFaint.Render("Verify setup"))
-	fmt.Fprintf(w, "  %s  %s\n", styleCyan.Render("kontora new --path ~/projects/myrepo --pipeline default \"My first ticket\""), "")
 	fmt.Fprintf(w, "  %s  %s\n", styleCyan.Render("kontora start"), styleFaint.Render("Start the daemon"))
+	fmt.Fprintf(w, "  %s  %s\n", styleCyan.Render("kontora new --path ~/projects/myrepo --pipeline default \"My first ticket\""), styleFaint.Render("Create a ticket"))
+	fmt.Fprintf(w, "  %s  %s\n", styleCyan.Render("kontora setup --agent"), styleFaint.Render("Refine the config with a coding agent"))
 
 	return nil
 }

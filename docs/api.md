@@ -29,6 +29,8 @@ On `POST /api/tickets` and `POST /api/tickets/{id}/init`, a blank `pipeline` or 
 
 On `POST /api/tickets/{id}/init`, a blank `pipeline` or `agent` first falls back to what the ticket file already declares, so the project default fills an empty field instead of replacing the ticket's own value.
 
+Relations ride both ticket payloads as arrays of `{id, title, status}`. `GET /api/tickets` carries the id alone; `GET /api/tickets/{id}` and the SSE ticket updates also carry the title and status of every ticket the daemon still has on disk, and add `blocks`, the tickets whose `deps` name this one. A ref with no title and no status names a ticket that is not in `tickets_dir`. See [Relations](tickets.md#relations).
+
 A ticket whose `branch` is empty carries `auto_branch` in `GET /api/tickets` and `GET /api/tickets/{id}`: the branch the daemon would assign at pickup, resolved for the path the ticket names and the current [branch naming](configuration.md#branch-naming) mode. It is a read-only projection, not a stored field, and it is absent once `branch` is set.
 
 ## Base branch validation

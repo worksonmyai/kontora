@@ -1070,7 +1070,56 @@ func (d *Daemon) buildTicketInfo(cfg *config.Config, ts *ticketState, includeBod
 	if !mt.IsZero() {
 		info.UpdatedAt = &mt
 	}
+	// Relations are resolved for the detail projection only. A board card shows
+	// the ids it already has; the rail is what names the other ticket.
+	if includeBody {
+		for i := range info.Deps {
+			d.resolveRefLocked(&info.Deps[i])
+		}
+		for i := range info.Links {
+			d.resolveRefLocked(&info.Links[i])
+		}
+		d.resolveRefLocked(info.Parent)
+		info.Blocks = d.dependentsLocked(ts.ticket.ID)
+	}
 	return info
+}
+
+// resolveRefLocked fills a relation ref's title and status from the store,
+// which holds every ticket file on disk and not only the ones the board shows.
+// An id with no ticket left keeps its bare form, and the UI renders that as
+// text rather than a link.
+// Must be called with d.mu held.
+func (d *Daemon) resolveRefLocked(ref *web.TicketRef) {
+	if ref == nil {
+		return
+	}
+	ts, ok := d.tickets[ref.ID]
+	if !ok {
+		return
+	}
+	ref.Title = ts.ticket.Title()
+	ref.Status = string(ts.ticket.Status)
+}
+
+// dependentsLocked lists the tickets whose deps name id: what this ticket holds
+// up. The edge is stored on the blocked ticket alone, so the reverse direction
+// has to be read off every other ticket. Sorted by id, because a map is not.
+// Must be called with d.mu held.
+func (d *Daemon) dependentsLocked(id string) []web.TicketRef {
+	var refs []web.TicketRef
+	for otherID, ts := range d.tickets {
+		if otherID == id || !slices.Contains(ts.ticket.Deps, id) {
+			continue
+		}
+		refs = append(refs, web.TicketRef{
+			ID:     otherID,
+			Title:  ts.ticket.Title(),
+			Status: string(ts.ticket.Status),
+		})
+	}
+	slices.SortFunc(refs, func(a, b web.TicketRef) int { return strings.Compare(a.ID, b.ID) })
+	return refs
 }
 
 // mapAppError translates app-level sentinel errors to web-level sentinel errors

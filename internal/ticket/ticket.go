@@ -85,10 +85,17 @@ type Ticket struct {
 	// repository's default branch.
 	BaseBranch string         `yaml:"base_branch"`
 	History    []HistoryEntry `yaml:"history"`
-	Created    *time.Time     `yaml:"created"`
-	LastError  string         `yaml:"last_error"`
-	LastLog    string         `yaml:"last_log"`
-	Summary    string         `yaml:"summary"`
+	// Deps, Links and Parent are relations the external ticket CLI writes and
+	// kontora only reads: deps lists the tickets this one is blocked by, links
+	// is a symmetric "related" list, and parent names the epic or parent task.
+	// The reverse of deps is not stored; it is derived by scanning the store.
+	Deps      []string   `yaml:"deps"`
+	Links     []string   `yaml:"links"`
+	Parent    string     `yaml:"parent"`
+	Created   *time.Time `yaml:"created"`
+	LastError string     `yaml:"last_error"`
+	LastLog   string     `yaml:"last_log"`
+	Summary   string     `yaml:"summary"`
 	// FinalSummary is the ticket-level result: one text synthesized from every
 	// run summary the ticket recorded. It is written after a terminal stage
 	// succeeds and cleared when a new run starts, so unlike Summary it never

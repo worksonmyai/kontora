@@ -34,6 +34,12 @@ type View struct {
 	Summary       string
 	// FinalSummary is the ticket-level outcome, not the latest run's summary.
 	FinalSummary string
+	// Deps, Links and Parent are the relation ids as written in the frontmatter.
+	// They are ids only: resolving one to a title needs the whole store, which
+	// this projection does not see.
+	Deps   []string
+	Links  []string
+	Parent string
 }
 
 // HistoryView is a single history entry in a View.
@@ -67,6 +73,9 @@ func BuildView(cfg *config.Config, t *ticket.Ticket, detail bool) View {
 		Branch:      t.Branch,
 		BaseBranch:  t.BaseBranch,
 		ClaimedBy:   t.ClaimedBy,
+		Deps:        t.Deps,
+		Links:       t.Links,
+		Parent:      t.Parent,
 	}
 
 	if t.Agent != "" {

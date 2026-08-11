@@ -4,6 +4,7 @@ import (
 	"container/heap"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -284,7 +285,11 @@ type Daemon struct {
 	sem             chan struct{}
 	plannotator     map[string]context.CancelFunc // in-flight plannotator subprocesses
 
-	selfWrites   map[string]int
+	// selfWrites remembers, per ticket path, the bytes the daemon last wrote
+	// there; a watcher event whose file content matches is the daemon's own.
+	// One run can write a ticket twice inside one debounce interval, so
+	// matching is by content.
+	selfWrites   map[string]selfWrite
 	selfWritesMu sync.Mutex
 
 	queue     priorityQueue
@@ -359,7 +364,7 @@ func New(cfg *config.Config, opts ...Option) *Daemon {
 		runningBranches: make(map[string]string),
 		sem:             make(chan struct{}, cfg.MaxConcurrentAgents),
 		plannotator:     make(map[string]context.CancelFunc),
-		selfWrites:      make(map[string]int),
+		selfWrites:      make(map[string]selfWrite),
 	}
 	d.cfg.Store(cfg)
 	for _, opt := range opts {
@@ -588,7 +593,7 @@ func (d *Daemon) initialScan(dir string) error {
 				_ = t.SetField("status", string(ticket.StatusTodo))
 				data, merr := t.Marshal()
 				if merr == nil {
-					d.recordSelfWrite(path)
+					d.recordSelfWrite(path, data)
 					_ = os.WriteFile(path, data, 0o644)
 				}
 			} else {
@@ -607,12 +612,14 @@ func (d *Daemon) initialScan(dir string) error {
 }
 
 func (d *Daemon) handleEvent(ev watcher.Event) {
-	if d.isSelfWrite(ev.Path) {
-		return
-	}
-
 	switch ev.Op {
 	case watcher.OpChanged:
+		// A removal is never the daemon's own write, so the suppression check
+		// belongs here rather than above the switch: consulting it for a
+		// removed file would drop the ticket's own deletion.
+		if d.isSelfWrite(ev.Path) {
+			return
+		}
 		d.handleFileChanged(ev.Path)
 	case watcher.OpRemoved:
 		d.handleFileRemoved(ev.Path)
@@ -686,7 +693,7 @@ func (d *Daemon) handleFileChanged(path string) {
 			log.Info("recovering stale self-claim", "claimed_by", t.ClaimedBy)
 			_ = t.SetField("status", string(ticket.StatusTodo))
 			if data, merr := t.Marshal(); merr == nil {
-				d.recordSelfWrite(path)
+				d.recordSelfWrite(path, data)
 				if werr := os.WriteFile(path, data, 0o644); werr != nil {
 					log.Error("recover stale self-claim: write failed", "err", werr)
 					return
@@ -724,6 +731,7 @@ func (d *Daemon) handleFileRemoved(path string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
+	d.forgetSelfWrite(path)
 	for id, ts := range d.tickets {
 		if ts.filePath == path {
 			if cancel, ok := d.running[id]; ok {
@@ -1912,7 +1920,7 @@ func (d *Daemon) writeTicketFile(t *ticket.Ticket, path string) (time.Time, erro
 	if err != nil {
 		return time.Time{}, err
 	}
-	d.recordSelfWrite(path)
+	d.recordSelfWrite(path, data)
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		return time.Time{}, err
 	}
@@ -1993,25 +2001,82 @@ func (d *Daemon) pauseTicket(t *ticket.Ticket, path, reason string) {
 	d.mu.Unlock()
 }
 
-func (d *Daemon) recordSelfWrite(path string) {
-	d.selfWritesMu.Lock()
-	defer d.selfWritesMu.Unlock()
-	d.selfWrites[path]++
+// selfWrite is what the daemon knows about its own last write to a ticket
+// file. sum identifies the bytes it wrote; blind marks a write whose content
+// was not known when it was announced.
+type selfWrite struct {
+	sum   [sha256.Size]byte
+	blind bool
 }
 
-func (d *Daemon) isSelfWrite(path string) bool {
+// recordSelfWrite remembers the exact bytes the daemon is writing to path.
+// Watcher events whose content matches them are its own and are ignored.
+func (d *Daemon) recordSelfWrite(path string, data []byte) {
 	d.selfWritesMu.Lock()
 	defer d.selfWritesMu.Unlock()
-	n, ok := d.selfWrites[path]
+	d.selfWrites[path] = selfWrite{sum: sha256.Sum256(data)}
+}
+
+// recordSelfWriteBlind suppresses the next event for path whatever it holds.
+// It is for the one write whose content the daemon cannot know in advance:
+// ticket creation, which happens inside the CLI package.
+func (d *Daemon) recordSelfWriteBlind(path string) {
+	d.selfWritesMu.Lock()
+	defer d.selfWritesMu.Unlock()
+	d.selfWrites[path] = selfWrite{blind: true}
+}
+
+func (d *Daemon) forgetSelfWrite(path string) {
+	d.selfWritesMu.Lock()
+	defer d.selfWritesMu.Unlock()
+	delete(d.selfWrites, path)
+}
+
+// isSelfWrite reports whether the file at path still holds the bytes the
+// daemon wrote. The record survives a match, because one debounced event can
+// stand for several daemon writes; the first event whose content differs
+// drops it and is handled as the external edit it is.
+//
+// An external edit that restores the daemon's own bytes is read as a self
+// write. Ignoring it changes nothing: the file already says what the daemon
+// believes it says.
+func (d *Daemon) isSelfWrite(path string) bool {
+	d.selfWritesMu.Lock()
+	rec, ok := d.selfWrites[path]
+	if ok && rec.blind {
+		// A blind record answers for one event and is spent by it; keeping it
+		// would leave a hash no file can match.
+		delete(d.selfWrites, path)
+	}
+	d.selfWritesMu.Unlock()
 	if !ok {
 		return false
 	}
-	if n <= 1 {
-		delete(d.selfWrites, path)
-	} else {
-		d.selfWrites[path] = n - 1
+	if rec.blind {
+		return true
 	}
-	return true
+
+	// Read outside the lock. This runs on the watcher goroutine, and every
+	// daemon write takes the same mutex, so a slow read holding it would stall
+	// the scheduler and the web API behind a disk.
+	data, err := os.ReadFile(path)
+	if err != nil {
+		// Unreadable now says nothing about who wrote it, so the record stays
+		// for the next event to match.
+		return false
+	}
+	if sha256.Sum256(data) == rec.sum {
+		return true
+	}
+
+	d.selfWritesMu.Lock()
+	// Drop the record only when it is still the one just checked: a daemon
+	// write since then has bytes of its own waiting to be matched.
+	if cur, ok := d.selfWrites[path]; ok && cur == rec {
+		delete(d.selfWrites, path)
+	}
+	d.selfWritesMu.Unlock()
+	return false
 }
 
 func (d *Daemon) killAll() {

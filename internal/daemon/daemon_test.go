@@ -1537,7 +1537,7 @@ func TestSimpleTicketExitForeignClaimGuard(t *testing.T) {
 		if tk, err := ticket.ParseFile(ticketPath); err == nil {
 			_ = tk.SetField("claimed_by", "other-host")
 			if data, mErr := tk.Marshal(); mErr == nil {
-				d.recordSelfWrite(ticketPath)
+				d.recordSelfWrite(ticketPath, data)
 				_ = os.WriteFile(ticketPath, data, 0o644)
 			}
 		}
@@ -3378,6 +3378,126 @@ created: 2026-01-01T00:00:00Z
 
 	cancel()
 	<-errCh
+}
+
+// TestSelfWriteSuppression covers how the daemon tells its own ticket writes
+// from everyone else's. One run can write a ticket twice inside one debounce
+// interval, so the record must survive a match, and the first differing
+// content must still read as an external edit.
+func TestSelfWriteSuppression(t *testing.T) {
+	cases := []struct {
+		name string
+		// run performs the writes under test and reports what isSelfWrite
+		// answered for each watcher event it stood in for.
+		run  func(t *testing.T, d *Daemon, path string) []bool
+		want []bool
+	}{
+		{
+			name: "a path the daemon never wrote",
+			run: func(t *testing.T, d *Daemon, path string) []bool {
+				writeFile(t, path, "external")
+				return []bool{d.isSelfWrite(path)}
+			},
+			want: []bool{false},
+		},
+		{
+			name: "one write, one event",
+			run: func(t *testing.T, d *Daemon, path string) []bool {
+				d.recordSelfWrite(path, []byte("daemon"))
+				writeFile(t, path, "daemon")
+				return []bool{d.isSelfWrite(path)}
+			},
+			want: []bool{true},
+		},
+		{
+			name: "two writes reported as one event and as two",
+			run: func(t *testing.T, d *Daemon, path string) []bool {
+				d.recordSelfWrite(path, []byte("first"))
+				writeFile(t, path, "first")
+				d.recordSelfWrite(path, []byte("second"))
+				writeFile(t, path, "second")
+				return []bool{d.isSelfWrite(path), d.isSelfWrite(path)}
+			},
+			want: []bool{true, true},
+		},
+		{
+			name: "an external edit after two daemon writes",
+			run: func(t *testing.T, d *Daemon, path string) []bool {
+				d.recordSelfWrite(path, []byte("first"))
+				writeFile(t, path, "first")
+				d.recordSelfWrite(path, []byte("second"))
+				writeFile(t, path, "second")
+				first := d.isSelfWrite(path)
+				writeFile(t, path, "external")
+				return []bool{first, d.isSelfWrite(path), d.isSelfWrite(path)}
+			},
+			want: []bool{true, false, false},
+		},
+		{
+			name: "a creation whose content the daemon does not know",
+			run: func(t *testing.T, d *Daemon, path string) []bool {
+				d.recordSelfWriteBlind(path)
+				writeFile(t, path, "written by the cli")
+				first := d.isSelfWrite(path)
+				writeFile(t, path, "external")
+				return []bool{first, d.isSelfWrite(path)}
+			},
+			want: []bool{true, false},
+		},
+		{
+			name: "a removed file is forgotten",
+			run: func(t *testing.T, d *Daemon, path string) []bool {
+				d.recordSelfWrite(path, []byte("daemon"))
+				writeFile(t, path, "daemon")
+				d.forgetSelfWrite(path)
+				return []bool{d.isSelfWrite(path)}
+			},
+			want: []bool{false},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			d := h.newDaemon(h.cfg)
+			assert.Equal(t, tc.want, tc.run(t, d, filepath.Join(h.tasksDir, "tst-sw.md")))
+		})
+	}
+}
+
+// TestRemovalIsNeverSuppressed: deleting a ticket the daemon has just written
+// must still unregister it. The daemon's record of its own write answers for
+// changes to the file, never for its disappearance.
+func TestRemovalIsNeverSuppressed(t *testing.T) {
+	h := newHarness(t)
+	d := h.newDaemon(h.cfg)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() { errCh <- d.Run(ctx) }()
+	time.Sleep(200 * time.Millisecond)
+
+	// status=open keeps the ticket out of the queue, so the only writes to the
+	// file are the creation the daemon made itself.
+	info, err := d.CreateTicket(web.CreateTicketRequest{Title: "Doomed", Path: h.repoDir, Status: "open"})
+	require.NoError(t, err)
+	require.NoError(t, os.Remove(filepath.Join(h.tasksDir, info.ID+".md")))
+
+	require.Eventually(t, func() bool {
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		_, known := d.tickets[info.ID]
+		return !known
+	}, 5*time.Second, 20*time.Millisecond, "the deleted ticket must leave the registry")
+
+	cancel()
+	require.NoError(t, <-errCh)
+}
+
+func writeFile(t *testing.T, path, content string) {
+	t.Helper()
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
 }
 
 // TestStageSummaryCapture covers summary capture at stage exit: a summary the

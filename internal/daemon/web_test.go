@@ -1123,6 +1123,28 @@ func TestDaemon_CreateTicket_WithBody(t *testing.T) {
 	require.NoError(t, <-errCh)
 }
 
+// TestDaemon_CreateTicket_FailureClearsReservation: creation reserves the
+// ticket path before the CLI writes it. When the write never happens, the
+// reservation must go too: the id is handed out again, and the next ticket's
+// creation event has to be acted on.
+func TestDaemon_CreateTicket_FailureClearsReservation(t *testing.T) {
+	h := newHarness(t)
+	d := h.newDaemon(h.cfg)
+
+	// A path that is not a git repository fails inside the CLI, after the
+	// daemon has reserved the file.
+	_, err := d.CreateTicket(web.CreateTicketRequest{
+		Title:  "Not a repo",
+		Path:   t.TempDir(),
+		Status: "todo",
+	})
+	require.Error(t, err)
+
+	d.selfWritesMu.Lock()
+	defer d.selfWritesMu.Unlock()
+	assert.Empty(t, d.selfWrites, "a failed creation must leave no suppression behind")
+}
+
 func TestDaemon_CreateTicket_UnknownAgent(t *testing.T) {
 	h := newHarness(t)
 	d := h.newDaemon(h.cfg)

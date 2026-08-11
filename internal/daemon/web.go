@@ -88,7 +88,10 @@ func (d *Daemon) CreateTicket(req web.CreateTicketRequest) (web.TicketInfo, erro
 		}
 	}
 
-	d.recordSelfWrite(filePath)
+	// cli.New writes the file itself, so the content is not available to record
+	// up front. Suppressing the creation event loses nothing: the parse below
+	// registers the ticket that the event would have registered.
+	d.recordSelfWriteBlind(filePath)
 
 	_, err = cli.New(cfg, cli.NewOpts{
 		ID:         id,
@@ -103,6 +106,9 @@ func (d *Daemon) CreateTicket(req web.CreateTicketRequest) (web.TicketInfo, erro
 		NoEdit:     true,
 	})
 	if err != nil {
+		// Nothing was created, so the reservation must go: the next ticket gets
+		// this id back, and its creation event has to be acted on.
+		d.forgetSelfWrite(filePath)
 		return web.TicketInfo{}, fmt.Errorf("creating ticket: %w", err)
 	}
 

@@ -260,6 +260,7 @@ func TestBuildFinalSummaryArgs(t *testing.T) {
 	cases := []struct {
 		name    string
 		agent   config.Agent
+		model   string
 		want    []string
 		wantErr bool
 	}{
@@ -295,6 +296,24 @@ func TestBuildFinalSummaryArgs(t *testing.T) {
 			want:  []string{"run", "--", "pi", "--no-tools", "--no-session", "--print", "PROMPT"},
 		},
 		{
+			name:  "the summary model replaces the configured one",
+			agent: config.Agent{Binary: "claude", Args: []string{"--dangerously-skip-permissions", "--model", "opus"}},
+			model: "haiku",
+			want: []string{
+				"--dangerously-skip-permissions", "--model", "haiku",
+				"--tools", "", "--no-session-persistence", "--print", "PROMPT",
+			},
+		},
+		{
+			name:  "the summary model lands after a wrapper's separator",
+			agent: config.Agent{Binary: "nono", Args: []string{"run", "--profile", "agent", "--", "pi", "--model", "anthropic/claude-opus-5"}},
+			model: "anthropic/claude-haiku-4-5",
+			want: []string{
+				"run", "--profile", "agent", "--", "pi", "--model", "anthropic/claude-haiku-4-5",
+				"--no-tools", "--no-session", "--print", "PROMPT",
+			},
+		},
+		{
 			name:    "unsupported agent",
 			agent:   config.Agent{Binary: "codex", Args: []string{"exec"}},
 			wantErr: true,
@@ -304,7 +323,7 @@ func TestBuildFinalSummaryArgs(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			configured := slices.Clone(tc.agent.Args)
-			args, err := buildFinalSummaryArgs(tc.agent, "PROMPT")
+			args, err := buildFinalSummaryArgs(tc.agent, "PROMPT", tc.model)
 			if tc.wantErr {
 				require.ErrorIs(t, err, errFinalSummaryAgent)
 				assert.Nil(t, args)
@@ -864,6 +883,55 @@ func TestFinalSummaryUsesStageSnapshot(t *testing.T) {
 	call := spawns.only(t)
 	assert.Equal(t, "claude", call.Binary)
 	assert.Equal(t, []string{"--model", "opus"}, call.Args[:2], "the reloaded model must not reach the pass")
+
+	stop()
+}
+
+// TestFinalSummaryModel: summary_model reaches the pass, resolved against the
+// agent that ran the last stage, and comes from the config the run started with
+// rather than the one in force when the pass runs.
+func TestFinalSummaryModel(t *testing.T) {
+	h := newHarness(t)
+	h.cfg.Agents["agent1"] = config.Agent{Binary: "claude", Args: []string{"--model", "opus"}}
+	h.cfg.SummaryModel = config.Model{ByAgent: map[string]string{"claude": "haiku"}}
+	h.cfg.Pipelines["under-test"] = config.Pipeline{
+		{Stage: "step1", Agent: "agent1", OnSuccess: "next", OnFailure: "pause"},
+		{Stage: "step2", Agent: "agent1", OnSuccess: "done", OnFailure: "pause"},
+	}
+	ticketPath := filepath.Join(h.tasksDir, "tst-fsm.md")
+
+	var d *Daemon
+	base := stageSummaryRunner(t, ticketPath)
+	runner := func(ctx context.Context, p RunnerParams) (process.Result, error) {
+		res, err := base(ctx, p)
+		if strings.Contains(p.LogFile, "step2") {
+			next := *d.config()
+			next.SummaryModel = config.Model{ByAgent: map[string]string{"claude": "sonnet"}}
+			d.cfg.Store(&next)
+		}
+		return res, err
+	}
+
+	var spawns summarySpawns
+	d = New(h.cfg,
+		WithLogger(testLogger(t)),
+		WithDebounce(50*time.Millisecond),
+		WithLockPath(h.lockPath),
+		WithRunner(runner),
+		WithAgentLookup(passthroughAgentLookup),
+		WithSkipOrphanCleanup(),
+		WithFinalSummarySpawner(spawns.spawner("the whole ticket")),
+	)
+	stop := runDaemon(t, d)
+
+	h.writeTicket("tst-fsm.md", h.taskMD("tst-fsm", "todo", "under-test"))
+	h.waitForStatus("tst-fsm.md", ticket.StatusDone, 15*time.Second)
+	h.waitForFinalSummary("tst-fsm.md", "the whole ticket", 5*time.Second)
+
+	call := spawns.only(t)
+	assert.Equal(t, []string{"--model", "haiku"}, call.Args[:2])
+	assert.Equal(t, 1, modelFlagCount(call.Args), "the agent's own model must be replaced, not repeated: %v", call.Args)
+	assert.NotContains(t, call.Args, "sonnet", "the reloaded summary model must not reach the pass")
 
 	stop()
 }

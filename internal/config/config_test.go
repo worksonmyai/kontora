@@ -1,10 +1,12 @@
 package config
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -353,41 +355,244 @@ func TestAgentKindDetection(t *testing.T) {
 		agent      Agent
 		wantPi     bool
 		wantClaude bool
+		wantKind   string
 	}{
-		{name: "bare pi", agent: Agent{Binary: "pi"}, wantPi: true},
-		{name: "bare claude", agent: Agent{Binary: "claude"}, wantClaude: true},
-		{name: "absolute path pi", agent: Agent{Binary: "/opt/homebrew/bin/pi"}, wantPi: true},
-		{name: "absolute path claude", agent: Agent{Binary: "/opt/homebrew/bin/claude"}, wantClaude: true},
+		{name: "bare pi", agent: Agent{Binary: "pi"}, wantPi: true, wantKind: AgentKindPi},
+		{name: "bare claude", agent: Agent{Binary: "claude"}, wantClaude: true, wantKind: AgentKindClaude},
+		{name: "absolute path pi", agent: Agent{Binary: "/opt/homebrew/bin/pi"}, wantPi: true, wantKind: AgentKindPi},
+		{name: "absolute path claude", agent: Agent{Binary: "/opt/homebrew/bin/claude"}, wantClaude: true, wantKind: AgentKindClaude},
 		{name: "other binary", agent: Agent{Binary: "programmator", Args: []string{"start"}}},
 		{
-			name:   "nono wrapped pi",
-			agent:  Agent{Binary: "nono", Args: []string{"run", "-s", "--profile", "pi", "--", "pi", "--model", "grafana-retention/claude-fable-5"}},
-			wantPi: true,
+			name:     "nono wrapped pi",
+			agent:    Agent{Binary: "nono", Args: []string{"run", "-s", "--profile", "pi", "--", "pi", "--model", "grafana-retention/claude-fable-5"}},
+			wantPi:   true,
+			wantKind: AgentKindPi,
 		},
 		{
 			name:       "nono wrapped claude",
 			agent:      Agent{Binary: "nono", Args: []string{"run", "--profile", "claude", "--", "claude", "--dangerously-skip-permissions"}},
 			wantClaude: true,
+			wantKind:   AgentKindClaude,
 		},
 		{
-			name:   "op wrapped pi",
-			agent:  Agent{Binary: "op", Args: []string{"run", "--", "pi"}},
-			wantPi: true,
+			name:     "op wrapped pi",
+			agent:    Agent{Binary: "op", Args: []string{"run", "--", "pi"}},
+			wantPi:   true,
+			wantKind: AgentKindPi,
 		},
 		{
-			name:   "nono wrapped pi with path",
-			agent:  Agent{Binary: "nono", Args: []string{"run", "--", "/opt/homebrew/bin/pi"}},
-			wantPi: true,
+			name:     "nono wrapped pi with path",
+			agent:    Agent{Binary: "nono", Args: []string{"run", "--", "/opt/homebrew/bin/pi"}},
+			wantPi:   true,
+			wantKind: AgentKindPi,
 		},
 		{name: "nono without separator", agent: Agent{Binary: "nono", Args: []string{"run", "pi"}}},
 		{name: "nono with trailing separator", agent: Agent{Binary: "nono", Args: []string{"run", "--"}}},
-		{name: "pi flag value is not the wrapped binary", agent: Agent{Binary: "nono", Args: []string{"run", "--profile", "pi", "--", "claude"}}, wantClaude: true},
+		{name: "pi flag value is not the wrapped binary", agent: Agent{Binary: "nono", Args: []string{"run", "--profile", "pi", "--", "claude"}}, wantClaude: true, wantKind: AgentKindClaude},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			assert.Equal(t, tt.wantPi, tt.agent.IsPi())
 			assert.Equal(t, tt.wantClaude, tt.agent.IsClaude())
+			assert.Equal(t, tt.wantKind, tt.agent.Kind())
+		})
+	}
+}
+
+func TestModelUnmarshalYAML(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		want    Model
+		wantErr string
+	}{
+		{name: "scalar", input: "haiku", want: Model{Any: "haiku"}},
+		{name: "empty", input: "", want: Model{}},
+		{
+			name:  "mapping",
+			input: "{claude: haiku, pi: anthropic/claude-haiku-4-5}",
+			want:  Model{ByAgent: map[string]string{"claude": "haiku", "pi": "anthropic/claude-haiku-4-5"}},
+		},
+		{name: "sequence", input: "[haiku, sonnet]", wantErr: "invalid model"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var out struct {
+				Model Model `yaml:"model"`
+			}
+			err := yaml.Unmarshal([]byte("model: "+tt.input+"\n"), &out)
+			if tt.wantErr != "" {
+				require.ErrorContains(t, err, tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, out.Model)
+		})
+	}
+}
+
+// TestModelRoundTrip covers the `kontora config` output: it is re-encoded from
+// the loaded config and must load again through the strict decoder.
+func TestModelRoundTrip(t *testing.T) {
+	const src = `tickets_dir: ~/org/tickets
+summary_model:
+  claude: haiku
+agents:
+  claude:
+    binary: claude
+stages:
+  commit:
+    prompt: Commit.
+    model: haiku
+  review:
+    prompt: Review.
+    model:
+      claude: sonnet
+  implement:
+    prompt: Implement.
+pipelines:
+  default:
+    - stage: commit
+      agent: claude
+      on_success: done
+      on_failure: pause
+`
+	cfg, err := LoadReader(strings.NewReader(src))
+	require.NoError(t, err)
+
+	out, err := yaml.Marshal(cfg)
+	require.NoError(t, err)
+
+	again, err := LoadReader(bytes.NewReader(out))
+	require.NoError(t, err)
+
+	assert.Equal(t, Model{Any: "haiku"}, again.Stages["commit"].Model)
+	assert.Equal(t, Model{ByAgent: map[string]string{"claude": "sonnet"}}, again.Stages["review"].Model)
+	assert.Equal(t, Model{ByAgent: map[string]string{"claude": "haiku"}}, again.SummaryModel)
+	// A stage with no model prints `model: null`, which the strict decoder has
+	// to read back as no model at all: every stage in a real config has one.
+	assert.Equal(t, Model{}, again.Stages["implement"].Model)
+}
+
+func TestModelFor(t *testing.T) {
+	claudeAgent := Agent{Binary: "claude"}
+	piAgent := Agent{Binary: "nono", Args: []string{"run", "--", "pi"}}
+	otherAgent := Agent{Binary: "programmator"}
+
+	tests := []struct {
+		name      string
+		model     Model
+		agentName string
+		agent     Agent
+		want      string
+	}{
+		{name: "unset", agentName: "claude", agent: claudeAgent},
+		{name: "scalar applies to every agent", model: Model{Any: "haiku"}, agentName: "pi-grafana-opus-5", agent: piAgent, want: "haiku"},
+		{
+			name:      "agent name",
+			model:     Model{ByAgent: map[string]string{"pi-grafana-opus-5": "anthropic/claude-haiku-4-5"}},
+			agentName: "pi-grafana-opus-5", agent: piAgent, want: "anthropic/claude-haiku-4-5",
+		},
+		{
+			name:      "agent kind",
+			model:     Model{ByAgent: map[string]string{"pi": "anthropic/claude-haiku-4-5"}},
+			agentName: "pi-grafana-opus-5", agent: piAgent, want: "anthropic/claude-haiku-4-5",
+		},
+		{
+			name:      "agent name beats the kind it collides with",
+			model:     Model{ByAgent: map[string]string{"claude": "haiku", "pi": "anthropic/claude-haiku-4-5"}},
+			agentName: "claude", agent: piAgent, want: "haiku",
+		},
+		{
+			name:      "map without a matching key falls back to nothing",
+			model:     Model{ByAgent: map[string]string{"claude": "haiku"}},
+			agentName: "pi-grafana-opus-5", agent: piAgent,
+		},
+		{
+			name:      "map and scalar together",
+			model:     Model{Any: "haiku", ByAgent: map[string]string{"pi": "anthropic/claude-haiku-4-5"}},
+			agentName: "claude", agent: claudeAgent, want: "haiku",
+		},
+		{
+			name:      "an agent with no kind takes only its name or the scalar",
+			model:     Model{ByAgent: map[string]string{"": "haiku"}},
+			agentName: "programmator", agent: otherAgent,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, tt.model.For(tt.agentName, tt.agent))
+		})
+	}
+}
+
+func TestAgentArgsWithModel(t *testing.T) {
+	tests := []struct {
+		name  string
+		agent Agent
+		model string
+		want  []string
+	}{
+		{
+			name:  "no model leaves the arguments alone",
+			agent: Agent{Binary: "pi", Args: []string{"--model", "anthropic/claude-opus-5"}},
+			want:  []string{"--model", "anthropic/claude-opus-5"},
+		},
+		{
+			name:  "plain binary without a configured model",
+			agent: Agent{Binary: "claude", Args: []string{"--dangerously-skip-permissions"}},
+			model: "haiku",
+			want:  []string{"--dangerously-skip-permissions", "--model", "haiku"},
+		},
+		{
+			name:  "replaces the configured model",
+			agent: Agent{Binary: "pi", Args: []string{"--model", "anthropic/claude-opus-5", "--yolo"}},
+			model: "anthropic/claude-haiku-4-5",
+			want:  []string{"--yolo", "--model", "anthropic/claude-haiku-4-5"},
+		},
+		{
+			name:  "replaces the joined form",
+			agent: Agent{Binary: "claude", Args: []string{"--model=opus", "--verbose"}},
+			model: "haiku",
+			want:  []string{"--verbose", "--model", "haiku"},
+		},
+		{
+			name:  "wrapper keeps its own arguments",
+			agent: Agent{Binary: "nono", Args: []string{"run", "--profile", "agent", "--", "pi", "--model", "anthropic/claude-opus-5"}},
+			model: "anthropic/claude-haiku-4-5",
+			want:  []string{"run", "--profile", "agent", "--", "pi", "--model", "anthropic/claude-haiku-4-5"},
+		},
+		{
+			name:  "a cycling list is left alone",
+			agent: Agent{Binary: "pi", Args: []string{"--models", "sonnet,haiku"}},
+			model: "haiku",
+			want:  []string{"--models", "sonnet,haiku", "--model", "haiku"},
+		},
+		{
+			name:  "no arguments at all",
+			agent: Agent{Binary: "claude"},
+			model: "haiku",
+			want:  []string{"--model", "haiku"},
+		},
+		{
+			name:  "a trailing model flag takes no value with it",
+			agent: Agent{Binary: "claude", Args: []string{"--verbose", "--model"}},
+			model: "haiku",
+			want:  []string{"--verbose", "--model", "haiku"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			configured := slices.Clone(tt.agent.Args)
+			got := tt.agent.ArgsWithModel(tt.model)
+			assert.Equal(t, tt.want, got)
+			// A shared backing array would let one stage's override rewrite the
+			// arguments every later run of that agent is spawned with.
+			assert.Equal(t, configured, tt.agent.Args, "configured args must not be mutated")
 		})
 	}
 }
@@ -1164,6 +1369,26 @@ func TestLoadProjectsRejected(t *testing.T) {
 			name:    "reserved agent name",
 			fixture: "reserved_agent_name.yaml",
 			wantErr: []string{`agent "none"`, "reserved"},
+		},
+		{
+			name:    "stage model is a sequence",
+			fixture: "stage_model_sequence.yaml",
+			wantErr: []string{"invalid model", "a pattern or a map of agent name or agent kind to a pattern"},
+		},
+		{
+			name:    "stage model names an unknown agent",
+			fixture: "stage_model_unknown_agent.yaml",
+			wantErr: []string{`stage "commit"`, `model "unknown-agent"`, "neither a configured agent nor an agent kind"},
+		},
+		{
+			name:    "summary model names an unknown agent",
+			fixture: "summary_model_unknown_agent.yaml",
+			wantErr: []string{"summary_model", `model "unknown-agent"`, "neither a configured agent nor an agent kind"},
+		},
+		{
+			name:    "stage model on an agent that takes no model flag",
+			fixture: "stage_model_unsupported_agent.yaml",
+			wantErr: []string{`stage "commit"`, `model "haiku"`, `agent "programmator"`},
 		},
 	}
 

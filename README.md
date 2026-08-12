@@ -94,10 +94,12 @@ agents:
     args: ["--dangerously-skip-permissions", "--model", "sonnet"]
 ```
 
+The `args` set the model this agent runs on by default. A stage can override it.
+
 > [!WARNING]
 > The default config runs Claude Code with `--dangerously-skip-permissions`.
 
-**Stages** are prompt templates. They tell the agent what to do:
+**Stages** are prompt templates. They tell the agent what to do, and on which model:
 
 ```yaml
 stages:
@@ -105,6 +107,10 @@ stages:
     prompt: |
       {{ .Ticket.Description }}
     timeout: 30m
+  commit:
+    prompt: Stage, commit, and push.
+    timeout: 5m
+    model: haiku
 ```
 
 Templates use Go syntax. `{{ .Ticket.Title }}`, `{{ .Ticket.Description }}`, `{{ file "PLAN.md" }}` (reads a file from the worktree).

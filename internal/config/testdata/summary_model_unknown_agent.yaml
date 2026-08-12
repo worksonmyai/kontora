@@ -1,0 +1,19 @@
+tickets_dir: ~/org/tickets
+
+summary_model:
+  unknown-agent: haiku
+
+agents:
+  claude:
+    binary: claude
+
+stages:
+  commit:
+    prompt: Commit the work.
+
+pipelines:
+  default:
+    - stage: commit
+      agent: claude
+      on_success: done
+      on_failure: pause

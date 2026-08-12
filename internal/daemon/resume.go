@@ -12,9 +12,11 @@ import (
 
 // Agent kinds Kontora knows how to resume. Any other agent always starts a new
 // conversation, because its resume flags are unknown.
+// The values are the config package's kind names because they are persisted in
+// resume records: reusing them keeps an old record readable.
 const (
-	agentKindClaude = "claude"
-	agentKindPi     = "pi"
+	agentKindClaude = config.AgentKindClaude
+	agentKindPi     = config.AgentKindPi
 )
 
 // resumeRecord names the agent session a stage is running. The daemon writes it
@@ -47,13 +49,7 @@ func resumeAgentKind(agentCfg config.Agent) string {
 	if agentCfg.Resume != nil && !*agentCfg.Resume {
 		return ""
 	}
-	switch {
-	case agentCfg.IsClaude():
-		return agentKindClaude
-	case agentCfg.IsPi():
-		return agentKindPi
-	}
-	return ""
+	return agentCfg.Kind()
 }
 
 // resumeRecordPath mirrors stageLogPath so a stage's record sits next to its

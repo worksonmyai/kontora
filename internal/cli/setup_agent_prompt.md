@@ -85,8 +85,8 @@ resume support still works behind those two wrappers.
 Top-level keys: `tickets_dir`, `logs_dir`, `worktrees_dir`, `branch_prefix`,
 `branch_naming`, `editor`, `default_agent`, `max_concurrent_agents`,
 `auto_pick_up`, `instance_name`, `tmux_session`, `statuses`, `environment`,
-`resume_prompt`, `annotation_prompt`, `web`, `agents`, `stages`, `pipelines`,
-`projects`, `plannotator`.
+`resume_prompt`, `annotation_prompt`, `summary_model`, `web`, `agents`,
+`stages`, `pipelines`, `projects`, `plannotator`.
 
 ```yaml
 tickets_dir: ~/.kontora/tickets
@@ -113,6 +113,10 @@ stages:
 
       Do NOT commit or push. Only implement the code and run tests.
     timeout: 60m
+    # Optional `model:`. Kontora passes it to the agent as `--model`, replacing
+    # any `--model` in the agent's args. It is one pattern for every agent
+    # (model: haiku), or a map from agent name or agent kind to a pattern
+    # (model: {claude: haiku, pi: anthropic/claude-haiku-4-5}).
 
 pipelines:
   default:
@@ -186,6 +190,12 @@ The config fails to load when any of these does not hold:
   `slug`.
 - Every `timeout` carries a unit: `60m`, `2h`, `90s`. A bare number does not
   parse.
+- A `model`, on a stage or in `summary_model`, is one pattern or a map. Every
+  map key is a configured agent name or an agent kind (`claude`, `pi`). A list
+  does not parse.
+- No pipeline step runs a stage that resolves a model on an agent that is
+  neither `claude` nor `pi`. Those two are the only CLIs Kontora passes
+  `--model` to.
 
 Unknown YAML keys are rejected. A typo fails the whole load, so a field you
 invent will not be ignored. Keep the settings the user already has, and do not
@@ -238,15 +248,15 @@ found when that stage starts, not before. Read every prompt you write.
 A running daemon reloads these without a restart: `agents`, `stages`,
 `pipelines`, `projects`, `statuses`, `environment`, `auto_pick_up`,
 `default_agent`, `branch_prefix`, `branch_naming`, `editor`, `resume_prompt`,
-`annotation_prompt`, and `plannotator`.
+`annotation_prompt`, `summary_model`, and `plannotator`.
 
 These need a daemon restart: `tickets_dir`, `worktrees_dir`, `logs_dir`,
 `instance_name`, `tmux_session`, `max_concurrent_agents`, and the whole `web`
 block. The daemon keeps the running value and logs one warning per field that
 differs on disk.
 
-A running agent keeps the prompt, arguments, timeout, and binary it started
-with. An edit takes effect on the next stage that spawns.
+A running agent keeps the prompt, arguments, model, timeout, and binary it
+started with. An edit takes effect on the next stage that spawns.
 
 A reload is all-or-nothing: an invalid file is logged and the daemon keeps
 running on the previous config.

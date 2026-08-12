@@ -36,6 +36,53 @@ func (d Duration) MarshalYAML() (any, error) {
 	return d.String(), nil
 }
 
+// Model selects the model an agent runs with. It reads either a bare pattern
+// that applies to every agent, or a map from agent name or agent kind to a
+// pattern, because a model name is not portable: claude takes "haiku" where pi
+// takes "anthropic/claude-haiku-4-5".
+type Model struct {
+	Any     string
+	ByAgent map[string]string
+}
+
+func (m *Model) UnmarshalYAML(value *yaml.Node) error {
+	if value.Kind == yaml.ScalarNode {
+		return value.Decode(&m.Any)
+	}
+	if value.Kind == yaml.MappingNode {
+		return value.Decode(&m.ByAgent)
+	}
+	return fmt.Errorf("invalid model on line %d: want a pattern or a map of agent name or agent kind to a pattern", value.Line)
+}
+
+// MarshalYAML keeps `kontora config` output loadable: the printed config is
+// decoded with KnownFields(true), so a shape this type cannot read back would
+// make the output a broken paste target.
+func (m Model) MarshalYAML() (any, error) {
+	if len(m.ByAgent) > 0 {
+		return m.ByAgent, nil
+	}
+	if m.Any != "" {
+		return m.Any, nil
+	}
+	return nil, nil
+}
+
+// For returns the pattern configured for one agent, or "" when none applies.
+// An exact agent name wins over the agent's kind, so a map can name one agent
+// among several of the same kind.
+func (m Model) For(agentName string, a Agent) string {
+	if v, ok := m.ByAgent[agentName]; ok {
+		return v
+	}
+	if kind := a.Kind(); kind != "" {
+		if v, ok := m.ByAgent[kind]; ok {
+			return v
+		}
+	}
+	return m.Any
+}
+
 type Config struct {
 	TicketsDir          string              `yaml:"tickets_dir"`
 	BranchPrefix        string              `yaml:"branch_prefix"`
@@ -57,6 +104,12 @@ type Config struct {
 	Environment         map[string]string   `yaml:"environment"`
 	Plannotator         Plannotator         `yaml:"plannotator"`
 	Metrics             Metrics             `yaml:"metrics"`
+
+	// SummaryModel selects the model the final summary pass runs with, resolved
+	// against the agent that ran the last stage. It is one top-level field rather
+	// than a per-stage one because the final summary is the only pass that spawns
+	// an agent of its own: a run summary is written in-band by the stage agent.
+	SummaryModel Model `yaml:"summary_model"`
 
 	// ResumePrompt replaces the built-in prompt sent to an agent whose stage a
 	// daemon restart interrupted. It is a stage prompt template with the same
@@ -192,9 +245,65 @@ func (a Agent) IsPi() bool {
 	return filepath.Base(a.effectiveBinary()) == "pi"
 }
 
+// The agent CLIs Kontora knows the flags of. Any other agent has no kind.
+const (
+	AgentKindClaude = "claude"
+	AgentKindPi     = "pi"
+)
+
+// Kind reports which CLI an agent runs, or "" when it is one Kontora does not
+// know how to pass flags to.
+func (a Agent) Kind() string {
+	switch {
+	case a.IsClaude():
+		return AgentKindClaude
+	case a.IsPi():
+		return AgentKindPi
+	}
+	return ""
+}
+
+// ArgsWithModel returns the agent's arguments with model selected. It replaces
+// the configured `--model <v>` and `--model=<v>` rather than appending a second
+// pair, so the result does not depend on how each CLI resolves a repeated flag.
+// Only the segment after a wrapper's "--" is rewritten: the arguments before it
+// belong to nono or op. The match is exact, so pi's `--models` cycling list is
+// left alone.
+func (a Agent) ArgsWithModel(model string) []string {
+	if model == "" {
+		return slices.Clone(a.Args)
+	}
+
+	agentOwned := 0
+	if wrapperBinaries[filepath.Base(a.Binary)] {
+		for i, arg := range a.Args {
+			if arg == "--" {
+				agentOwned = i + 1
+				break
+			}
+		}
+	}
+
+	out := make([]string, 0, len(a.Args)+2)
+	out = append(out, a.Args[:agentOwned]...)
+	for i := agentOwned; i < len(a.Args); i++ {
+		switch arg := a.Args[i]; {
+		case arg == "--model":
+			i++ // its value goes with it
+		case strings.HasPrefix(arg, "--model="):
+		default:
+			out = append(out, arg)
+		}
+	}
+	return append(out, "--model", model)
+}
+
 type Stage struct {
 	Prompt  string   `yaml:"prompt"`
 	Timeout Duration `yaml:"timeout"`
+	// Model overrides the model the stage's agent runs with, so a cheap stage
+	// need not duplicate an agent entry to change model.
+	Model Model `yaml:"model"`
 }
 
 // NoneSentinel is the literal pipeline or agent value that opts a ticket out of
@@ -480,6 +589,10 @@ func (c *Config) Validate() error {
 		return err
 	}
 
+	if err := c.validateModels(); err != nil {
+		return err
+	}
+
 	// Validate custom statuses.
 	seen := make(map[string]bool, len(c.Statuses))
 	for _, s := range c.Statuses {
@@ -498,6 +611,14 @@ func (c *Config) Validate() error {
 		seen[s] = true
 	}
 
+	if err := c.validatePipelines(); err != nil {
+		return err
+	}
+
+	return c.validateProjects()
+}
+
+func (c *Config) validatePipelines() error {
 	// Build valid on_success/on_failure sets dynamically.
 	validOnSuccess := map[string]bool{"next": true, "done": true, "human_review": true}
 	validOnFailure := map[string]bool{"retry": true, "back": true, "pause": true, "human_review": true}
@@ -525,6 +646,14 @@ func (c *Config) Validate() error {
 			if _, ok := c.Agents[step.Agent]; !ok {
 				return fmt.Errorf("pipeline %q stage %d: unknown agent %q", name, i, step.Agent)
 			}
+			// A step names both the stage and the agent, so the pair can be
+			// rejected here. The same pair reached through a ticket's own agent
+			// field is only visible at spawn time, and pauses the ticket.
+			stepAgent := c.Agents[step.Agent]
+			if model := c.Stages[step.Stage].Model.For(step.Agent, stepAgent); model != "" && stepAgent.Kind() == "" {
+				return fmt.Errorf("pipeline %q stage %d: stage %q sets model %q, which agent %q (%s) takes no flag for",
+					name, i, step.Stage, model, step.Agent, stepAgent.Binary)
+			}
 			if !validOnSuccess[step.OnSuccess] {
 				return fmt.Errorf("pipeline %q stage %d: invalid on_success %q (must be next, done, or a custom status)", name, i, step.OnSuccess)
 			}
@@ -540,8 +669,36 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("pipeline %q: last stage must not have on_success=next, got %q", name, last.OnSuccess)
 		}
 	}
+	return nil
+}
 
-	return c.validateProjects()
+// validateModels checks every model map for keys that name nothing. Stages are
+// checked in name order so the error always names the same stage, whatever
+// order the YAML map decoded in.
+func (c *Config) validateModels() error {
+	for _, name := range slices.Sorted(maps.Keys(c.Stages)) {
+		if err := c.validateModelKeys(c.Stages[name].Model); err != nil {
+			return fmt.Errorf("stage %q: %w", name, err)
+		}
+	}
+	if err := c.validateModelKeys(c.SummaryModel); err != nil {
+		return fmt.Errorf("summary_model: %w", err)
+	}
+	return nil
+}
+
+func (c *Config) validateModelKeys(m Model) error {
+	for _, key := range slices.Sorted(maps.Keys(m.ByAgent)) {
+		if _, ok := c.Agents[key]; ok {
+			continue
+		}
+		if key == AgentKindClaude || key == AgentKindPi {
+			continue
+		}
+		return fmt.Errorf("model %q: neither a configured agent nor an agent kind (%s, %s)",
+			key, AgentKindClaude, AgentKindPi)
+	}
+	return nil
 }
 
 // validateMetrics checks the export settings that only matter once export is

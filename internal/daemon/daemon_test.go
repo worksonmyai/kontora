@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -3096,6 +3097,156 @@ created: 2026-01-01T00:00:00Z
 
 	cancel()
 	require.NoError(t, <-errCh)
+}
+
+// modelFlagCount counts the exact model flags in an argv. An override replaces
+// the agent's own flag, so a second one would mean the winner depends on how
+// the CLI resolves a repeated flag.
+func modelFlagCount(args []string) int {
+	n := 0
+	for _, arg := range args {
+		if arg == "--model" || strings.HasPrefix(arg, "--model=") {
+			n++
+		}
+	}
+	return n
+}
+
+// modelArg returns the value of the single model flag in an argv.
+func modelArg(t *testing.T, args []string) string {
+	t.Helper()
+	require.Equal(t, 1, modelFlagCount(args), "want exactly one --model in %v", args)
+	i := slices.Index(args, "--model")
+	require.GreaterOrEqual(t, i, 0, "--model in the joined form: %v", args)
+	require.Less(t, i+1, len(args), "--model has no value: %v", args)
+	return args[i+1]
+}
+
+// TestStageModel runs one pipeline stage per case and reads the model out of
+// the argv the agent was spawned with.
+func TestStageModel(t *testing.T) {
+	cases := []struct {
+		name      string
+		agentName string
+		agent     config.Agent
+		model     config.Model
+		want      string
+	}{
+		{
+			name:      "map keyed by agent kind",
+			agentName: "pi-grafana-opus-5",
+			agent:     config.Agent{Binary: "pi"},
+			model:     config.Model{ByAgent: map[string]string{"pi": "anthropic/claude-haiku-4-5"}},
+			want:      "anthropic/claude-haiku-4-5",
+		},
+		{
+			name:      "map keyed by agent name",
+			agentName: "pi-grafana-opus-5",
+			agent:     config.Agent{Binary: "pi"},
+			model:     config.Model{ByAgent: map[string]string{"pi-grafana-opus-5": "anthropic/claude-haiku-4-5"}},
+			want:      "anthropic/claude-haiku-4-5",
+		},
+		{
+			name:  "scalar",
+			agent: config.Agent{Binary: "claude"},
+			model: config.Model{Any: "haiku"},
+			want:  "haiku",
+		},
+		{
+			name:  "replaces the agent's own model",
+			agent: config.Agent{Binary: "claude", Args: []string{"--dangerously-skip-permissions", "--model", "opus"}},
+			model: config.Model{Any: "haiku"},
+			want:  "haiku",
+		},
+		{
+			name:  "replaces the model behind a wrapper",
+			agent: config.Agent{Binary: "nono", Args: []string{"run", "--profile", "agent", "--", "pi", "--model", "anthropic/claude-opus-5"}},
+			model: config.Model{ByAgent: map[string]string{"pi": "anthropic/claude-haiku-4-5"}},
+			want:  "anthropic/claude-haiku-4-5",
+		},
+		{
+			name:  "no model keeps the agent's own",
+			agent: config.Agent{Binary: "claude", Args: []string{"--model", "opus"}},
+			want:  "opus",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			agentName := cmp.Or(tc.agentName, "agent1")
+			h.cfg.Agents[agentName] = tc.agent
+			h.cfg.Stages["step1"] = config.Stage{Prompt: "do step1 for {{ .Ticket.ID }}", Model: tc.model}
+			h.cfg.Pipelines["one-stage"] = config.Pipeline{
+				{Stage: "step1", Agent: agentName, OnSuccess: "done", OnFailure: "pause"},
+			}
+
+			var captured RunnerParams
+			d := New(h.cfg,
+				WithLogger(testLogger(t)),
+				WithDebounce(50*time.Millisecond),
+				WithLockPath(h.lockPath),
+				WithRunner(func(_ context.Context, p RunnerParams) (process.Result, error) {
+					captured = p
+					return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now()}, nil
+				}),
+				WithAgentLookup(passthroughAgentLookup),
+				WithSkipOrphanCleanup(),
+			)
+			stop := runDaemon(t, d)
+
+			h.writeTicket("tst-sm.md", h.taskMD("tst-sm", "todo", "one-stage"))
+			h.waitForStatus("tst-sm.md", ticket.StatusDone, 10*time.Second)
+			stop()
+
+			assert.Equal(t, tc.want, modelArg(t, captured.Args))
+			assert.Less(t, slices.Index(captured.Args, "--model"),
+				slices.Index(captured.Args, renderedPrompt(captured)),
+				"--model must come before the prompt: %v", captured.Args)
+		})
+	}
+}
+
+// TestStageModelUnsupportedAgentPauses: a ticket-level agent that takes no
+// --model reaches a stage that names one. Config validation cannot see this
+// pair, because the ticket's agent replaces the step's at spawn time.
+func TestStageModelUnsupportedAgentPauses(t *testing.T) {
+	h := newHarness(t)
+	h.cfg.Agents["programmator"] = config.Agent{Binary: "programmator"}
+	h.cfg.Stages["step1"] = config.Stage{Prompt: "do step1", Model: config.Model{Any: "haiku"}}
+
+	spawned := 0
+	d := New(h.cfg,
+		WithLogger(testLogger(t)),
+		WithDebounce(50*time.Millisecond),
+		WithLockPath(h.lockPath),
+		WithRunner(func(_ context.Context, _ RunnerParams) (process.Result, error) {
+			spawned++
+			return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now()}, nil
+		}),
+		WithAgentLookup(passthroughAgentLookup),
+		WithSkipOrphanCleanup(),
+	)
+	stop := runDaemon(t, d)
+
+	h.writeTicket("tst-smu.md", fmt.Sprintf(`---
+id: tst-smu
+kontora: true
+status: todo
+pipeline: one-stage
+agent: programmator
+path: %s
+created: 2026-01-01T00:00:00Z
+---
+# Stage model on an agent that takes no model flag
+`, h.repoDir))
+
+	result := h.waitForStatus("tst-smu.md", ticket.StatusPaused, 10*time.Second)
+	stop()
+
+	assert.Contains(t, result.Body, `model "haiku"`)
+	assert.Contains(t, result.Body, "takes no --model")
+	assert.Zero(t, spawned, "the stage must not run")
 }
 
 func TestBuildTicketInfo_AgentOverride(t *testing.T) {

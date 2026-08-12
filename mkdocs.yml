@@ -20,7 +20,7 @@ theme:
         icon: material/brightness-4
         name: Switch to dark mode
   font:
-    text: Inter
+    text: DM Sans
     code: JetBrains Mono
   features:
     - navigation.instant
@@ -31,6 +31,7 @@ theme:
 nav:
   - Configuration: configuration.md
   - Tickets: tickets.md
+  - API: api.md
 
 extra_css:
   - stylesheets/extra.css

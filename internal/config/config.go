@@ -102,6 +102,7 @@ type Config struct {
 	Projects            map[string]Project  `yaml:"projects"`
 	Statuses            []string            `yaml:"statuses"`
 	Environment         map[string]string   `yaml:"environment"`
+	Hooks               Hooks               `yaml:"hooks"`
 	Plannotator         Plannotator         `yaml:"plannotator"`
 	Metrics             Metrics             `yaml:"metrics"`
 
@@ -329,6 +330,82 @@ type Project struct {
 	Agent        string       `yaml:"agent"`
 	BranchPrefix string       `yaml:"branch_prefix"`
 	BranchNaming BranchNaming `yaml:"branch_naming"`
+	Hooks        Hooks        `yaml:"hooks"`
+}
+
+// Lifecycle events a hook can be attached to. The set is closed: an event name
+// is a map key, so only validateHookSet can reject an unknown one.
+const (
+	HookWorktreeCreated = "worktree_created"
+	HookStageStart      = "stage_start"
+	HookStageEnd        = "stage_end"
+)
+
+// What a hook's failure does to the ticket.
+const (
+	HookOnFailurePause = "pause"
+	HookOnFailureWarn  = "warn"
+)
+
+const defaultHookTimeout = 5 * time.Minute
+
+// hookOnFailureDefaults resolve an unset on_failure. A hook that prepares a run
+// pauses the ticket when it fails, because the run would otherwise start
+// without what it asked for; one that follows a run only warns, because the
+// stage is already over and its outcome belongs to the pipeline.
+var hookOnFailureDefaults = map[string]string{
+	HookWorktreeCreated: HookOnFailurePause,
+	HookStageStart:      HookOnFailurePause,
+	HookStageEnd:        HookOnFailureWarn,
+}
+
+// Hooks maps a lifecycle event to the commands that run at it, in order.
+type Hooks map[string][]Hook
+
+// Hook is one shell command run at a lifecycle event. It is run by /bin/sh in
+// the ticket's worktree, so it holds a command line rather than a binary and
+// arguments.
+type Hook struct {
+	// Name labels the hook in logs and in the error a failure records. A hook
+	// without one is labelled "<event>[<index>]".
+	Name      string   `yaml:"name"`
+	Run       string   `yaml:"run"`
+	Timeout   Duration `yaml:"timeout"`
+	OnFailure string   `yaml:"on_failure"`
+}
+
+// Fatal reports whether a failure of this hook at event pauses the ticket.
+// It falls back to the event default rather than reading an unset on_failure as
+// "warn", because a config built in memory never runs applyDefaults.
+func (h Hook) Fatal(event string) bool {
+	return h.onFailureOrDefault(event) == HookOnFailurePause
+}
+
+// onFailureOrDefault is the single place an unset on_failure is resolved, so
+// applyDefaults and Fatal cannot drift apart.
+func (h Hook) onFailureOrDefault(event string) string {
+	if h.OnFailure == "" {
+		return hookOnFailureDefaults[event]
+	}
+	return h.OnFailure
+}
+
+// TimeoutOrDefault returns the timeout this hook runs under, falling back for
+// the same reason Fatal does.
+func (h Hook) TimeoutOrDefault() time.Duration {
+	if h.Timeout.Duration == 0 {
+		return defaultHookTimeout
+	}
+	return h.Timeout.Duration
+}
+
+func (h Hooks) applyDefaults() {
+	for event, hooks := range h {
+		for i := range hooks {
+			hooks[i].Timeout.Duration = hooks[i].TimeoutOrDefault()
+			hooks[i].OnFailure = hooks[i].onFailureOrDefault(event)
+		}
+	}
 }
 
 type Pipeline []PipelineStep
@@ -470,6 +547,13 @@ func (c *Config) applyDefaults() {
 			agent.FailurePatterns = DefaultFailurePatterns
 			c.Agents[name] = agent
 		}
+	}
+
+	// project is a copy of the entry, but Hooks is a map, so the defaults land
+	// on the entries the config keeps.
+	c.Hooks.applyDefaults()
+	for _, project := range c.Projects {
+		project.Hooks.applyDefaults()
 	}
 
 	if _, ok := c.Stages[ReworkStageName]; !ok {
@@ -615,7 +699,49 @@ func (c *Config) Validate() error {
 		return err
 	}
 
+	if err := c.validateHooks(); err != nil {
+		return err
+	}
+
 	return c.validateProjects()
+}
+
+// validateHooks checks both scopes, projects in name order so the error always
+// names the same project whatever order the YAML map decoded in.
+func (c *Config) validateHooks() error {
+	if err := validateHookSet("hooks", c.Hooks); err != nil {
+		return err
+	}
+	for _, name := range slices.Sorted(maps.Keys(c.Projects)) {
+		if err := validateHookSet(fmt.Sprintf("project %q hooks", name), c.Projects[name].Hooks); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// hookEvents lists the events in the order they occur, for the error message.
+var hookEvents = []string{HookWorktreeCreated, HookStageStart, HookStageEnd}
+
+func validateHookSet(scope string, hooks Hooks) error {
+	for _, event := range slices.Sorted(maps.Keys(hooks)) {
+		if !slices.Contains(hookEvents, event) {
+			return fmt.Errorf("%s: unknown event %q (must be one of %s)", scope, event, strings.Join(hookEvents, ", "))
+		}
+		for i, h := range hooks[event] {
+			if strings.TrimSpace(h.Run) == "" {
+				return fmt.Errorf("%s %s[%d]: run is required", scope, event, i)
+			}
+			if h.OnFailure != HookOnFailurePause && h.OnFailure != HookOnFailureWarn {
+				return fmt.Errorf("%s %s[%d]: invalid on_failure %q (must be %s or %s)",
+					scope, event, i, h.OnFailure, HookOnFailurePause, HookOnFailureWarn)
+			}
+			if h.Timeout.Duration < 0 {
+				return fmt.Errorf("%s %s[%d]: timeout %s must not be negative", scope, event, i, h.Timeout)
+			}
+		}
+	}
+	return nil
 }
 
 func (c *Config) validatePipelines() error {
@@ -799,6 +925,17 @@ func (c *Config) ApplyProjectDefaults(repoPath, pipeline, agent string) (resolve
 		agent = project.Agent
 	}
 	return pipeline, agent
+}
+
+// HooksFor returns the hooks that run for event on a ticket in repoPath: the
+// top-level ones first, then those of the project that owns the path. A path
+// that matches no project runs the top-level hooks alone.
+func (c *Config) HooksFor(repoPath, event string) []Hook {
+	hooks := slices.Clone(c.Hooks[event])
+	if _, project, ok := c.ProjectFor(repoPath); ok {
+		hooks = append(hooks, project.Hooks[event]...)
+	}
+	return hooks
 }
 
 // BranchPrefixFor returns the branch prefix branches for repoPath are named

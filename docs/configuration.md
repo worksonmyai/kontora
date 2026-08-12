@@ -165,6 +165,7 @@ pipelines:
 | `statuses` | no | — | Extra parked statuses beyond the built-ins. Agents can park tickets here via `on_success`/`on_failure`. |
 | `projects` | no | — | Per-repository pipeline, agent, and branch naming defaults (see [projects](#projects)). |
 | `environment` | no | — | Map of environment variables to set for all agent processes. |
+| `hooks` | no | — | Commands run at a ticket's lifecycle events (see [hooks](#hooks)). |
 | `resume_prompt` | no | (built-in) | Prompt sent to an agent whose stage a daemon restart interrupted, in place of the stage prompt (see [resuming after a restart](#resuming-after-a-restart)). Same template fields as a stage prompt. |
 | `annotation_prompt` | no | (built-in) | Prompt sent to the run that rewrites a ticket from submitted Plannotator annotations (see [plannotator](#plannotator)). Same template fields as a stage prompt. |
 | `summary_model` | no | — | Model the ticket-level summary pass runs on, resolved against the agent that ran the last stage. Same two forms as a stage's `model` (see [stages](#stages)). |
@@ -405,6 +406,7 @@ projects:
 | `agent` | no | Agent written into new tickets for this repository. |
 | `branch_prefix` | no | Overrides the top-level `branch_prefix` for this repository. |
 | `branch_naming` | no | Overrides the top-level [`branch_naming`](#branch-naming) mode for this repository. |
+| `hooks` | no | Commands run at this repository's lifecycle events, after the top-level ones (see [hooks](#hooks)). |
 
 `pipeline` and `agent` are stamped into the ticket when it is created. The
 daemon reads `branch_prefix` and `branch_naming` when it names an empty branch,
@@ -435,6 +437,137 @@ Only those commands read the sentinel. `pipeline: none` written by hand into a t
 - `pipeline` and `agent`, when set, must exist in `pipelines:` and `agents:`.
 - Two projects may not have paths that expand and clean to the same directory, which would make the lookup pick one at random.
 - No pipeline and no agent may be named `none`.
+
+## hooks
+
+Hooks run your own shell commands at points in a ticket's life. The case they
+exist for: a fresh worktree does not carry the gitignored files a repository
+needs, so an agent that expects a `.env` fails on a missing file after burning a
+run. A hook copies it in before the agent starts.
+
+```yaml
+hooks:
+  worktree_created:
+    - name: copy claude settings
+      run: cp "$KONTORA_REPO_PATH/.claude/settings.local.json" .claude/ 2>/dev/null || true
+
+projects:
+  kontora:
+    path: ~/projects/kontora
+    hooks:
+      worktree_created:
+        - name: copy env file
+          run: cp "$KONTORA_REPO_PATH/.env" .env
+          timeout: 30s
+      stage_start:
+        - run: make deps
+          on_failure: warn
+```
+
+### Events
+
+| Event | When it runs |
+|-------|--------------|
+| `worktree_created` | After the daemon creates a worktree, before the stage's agent starts. It does not run when a stage reuses a worktree that is already there, unless an earlier run left that worktree half-prepared (see [failure](#failure)). |
+| `stage_start` | Before each stage agent starts. |
+| `stage_end` | After each stage agent exits, before the pipeline decides what happens next. |
+
+An [annotation run](#plannotator), which rewrites the ticket rather than doing
+the stage's work, fires no stage hooks.
+
+`stage_start` also runs when a stage resumes after the daemon died mid-run, so a
+hook that must not run twice for one stage has to be written to tolerate it.
+
+A `stage_start` that completes is followed by a `stage_end`, including for a run
+that ends before the pipeline evaluates it — a runner failure, or an agent that
+hides an error behind a clean exit. Two things break the pair. A `stage_start`
+hook that fails under `pause` stops the stage before it starts, so no
+`stage_end` runs; and neither runs when the exit is not the daemon's to act on,
+which is when the ticket was cancelled, its status was changed by hand while the
+agent ran, or another instance claimed it.
+
+### Fields
+
+| Field | Required | Default | Description |
+|-------|----------|---------|-------------|
+| `run` | yes | — | The command line, run as `/bin/sh -c`. |
+| `name` | no | — | Labels the hook in the logs and in the error a failure records. Without one the hook is `<event>[<index>]`. |
+| `timeout` | no | `5m` | How long the command may run before it is terminated. |
+| `on_failure` | no | per event | `pause` or `warn`. Defaults to `pause` for `worktree_created` and `stage_start`, `warn` for `stage_end`. |
+
+### Scope and order
+
+Hooks are defined at the top level and under a project entry. For a ticket whose
+repository path matches a project, both sets run for the same event, top-level
+first. A repository that matches no project runs the top-level hooks alone.
+Hooks within one set run in the order they are written, and the daemon waits for
+each before starting the next.
+
+### Environment
+
+Every hook runs with its working directory set to the ticket's worktree, and
+receives the daemon's own environment plus:
+
+| Variable | Value |
+|----------|-------|
+| `KONTORA_EVENT` | The event that fired. |
+| `KONTORA_TICKET_ID` | The ticket's ID. |
+| `KONTORA_TICKET_FILE` | Path to the ticket's markdown file. |
+| `KONTORA_WORKTREE` | The worktree the hook runs in. |
+| `KONTORA_REPO_PATH` | The repository the worktree was cut from. |
+| `KONTORA_BRANCH` | The ticket's branch. |
+| `KONTORA_STAGE` | The stage this run belongs to. |
+| `KONTORA_AGENT` | The configured name of the agent the stage runs. |
+| `KONTORA_PROJECT` | The `projects:` entry that matched, empty when none did. |
+| `KONTORA_EXIT_CODE` | The agent's exit code. Set for `stage_end` only. |
+
+The top-level `environment:` map is deliberately not merged in: it configures
+agent processes, not hooks. There is no templating in `run` — write
+`"$KONTORA_REPO_PATH"`, and the quoting rules are the shell's own.
+
+### Failure
+
+A hook that exits non-zero or exceeds its timeout pauses the ticket when its
+resolved `on_failure` is `pause`, and is logged and skipped past when it is
+`warn`. A pause records the failure in `last_error` and as a ticket note, and
+stops the hooks after it in the same event.
+
+A `worktree_created` failure under `pause` removes the worktree the daemon
+created in that pickup before pausing, so retrying the ticket creates it again
+and runs the hook again rather than reusing a half-prepared one. A worktree the
+hook left with uncommitted changes is kept, the same as anywhere else: the
+pause reason then names it, and the next pickup runs the `worktree_created`
+hooks again on the worktree that is still there rather than treating it as
+ready. The same applies when the daemon is stopped while these hooks run.
+
+A `stage_end` failure does not change what the pipeline decided: the stage's
+history, its next stage, and its `last_error` are recorded as they would have
+been, and only the status is forced to `paused` on top. The hook's message goes
+into `last_error` only when the pipeline recorded none. A ticket the pipeline
+had completed loses its `completed_at` with the pause, because the run is not
+over.
+
+Copying a gitignored file does not make a worktree dirty, so cleanup on
+completion still works. A hook that writes a tracked file does block removal.
+
+### Logging
+
+The combined output of every hook is appended to
+`<logs_dir>/<ticket-id>/hooks/hooks.log`, each run behind a
+`=== <time> <event> <hook> ===` line. It sits in a directory of its own rather
+than beside the stage logs, which the daemon scans for the agent's
+[failure patterns](#agents): hook output in a stage log would pause tickets
+whose agent did nothing wrong.
+
+### Validation rules
+
+- The event name must be `worktree_created`, `stage_start`, or `stage_end`.
+- `run` is required and must not be blank.
+- `on_failure`, when set, must be `pause` or `warn`.
+- `timeout` must not be negative.
+
+A hook runs arbitrary shell at the same trust level as `agents.<name>.binary`.
+Anything that can write your config can run commands as you.
 
 ## plannotator
 

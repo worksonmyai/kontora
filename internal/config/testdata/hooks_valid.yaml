@@ -1,0 +1,23 @@
+tickets_dir: ~/org/tickets
+
+agents:
+  claude:
+    binary: claude
+
+hooks:
+  worktree_created:
+    - name: copy claude settings
+      run: cp "$KONTORA_REPO_PATH/.claude/settings.local.json" .claude/
+
+projects:
+  kontora:
+    path: ~/projects/kontora
+    hooks:
+      worktree_created:
+        - name: copy env file
+          run: cp "$KONTORA_REPO_PATH/.env" .env
+          timeout: 30s
+      stage_end:
+        - run: make lint
+  widget-api:
+    path: ~/projects/widget-api

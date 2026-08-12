@@ -83,7 +83,7 @@ kontora attach # attach to the agent's tmux session
 
 ## Configuration
 
-Config is stored in `~/.config/kontora/config.yaml` and defines four things: agents, stages, pipelines, and projects.
+Config is stored in `~/.config/kontora/config.yaml` and defines five things: agents, stages, pipelines, projects, and hooks.
 
 **Agents** are binaries kontora spawns — Claude Code, Aider, or anything with a CLI:
 
@@ -156,6 +156,20 @@ projects:
 ```
 
 `kontora new --path ~/projects/kontora "..."` then writes both fields into the ticket. Pass `--pipeline none` for a standalone ticket instead.
+
+**Hooks** run your own shell commands at lifecycle boundaries. A fresh worktree carries no gitignored files, so this is where the `.env` an agent needs comes from:
+
+```yaml
+projects:
+  kontora:
+    path: ~/projects/kontora
+    hooks:
+      worktree_created:
+        - name: copy env file
+          run: cp "$KONTORA_REPO_PATH/.env" .env
+```
+
+Hooks run in the worktree, get the ticket's context as `KONTORA_*` variables, and by default pause the ticket when one fails.
 
 Full reference: [docs/configuration.md](docs/configuration.md)
 

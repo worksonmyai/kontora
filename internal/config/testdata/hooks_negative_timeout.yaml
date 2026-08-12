@@ -1,0 +1,10 @@
+tickets_dir: ~/org/tickets
+
+agents:
+  claude:
+    binary: claude
+
+hooks:
+  worktree_created:
+    - run: echo hello
+      timeout: -1s

@@ -25,6 +25,7 @@ import (
 	"github.com/worksonmyai/kontora/internal/logfmt"
 	"github.com/worksonmyai/kontora/internal/metrics"
 	"github.com/worksonmyai/kontora/internal/process"
+	"github.com/worksonmyai/kontora/internal/stats"
 	"github.com/worksonmyai/kontora/internal/ticket"
 )
 
@@ -303,9 +304,10 @@ func TestMetricsGaugeCallbacksDoNotTakeDaemonLock(t *testing.T) {
 	}
 }
 
-// TestMaterializeAgentLogsUsage covers the token source: a Claude tape reports
-// complete usage, and a pi tape declares its usage partial so the caller
-// records nothing rather than a run that looks like it spent zero tokens.
+// TestMaterializeAgentLogsUsage covers the token source: a tape that filled
+// every usage key reports complete usage, and one whose session records carry
+// no usage keys declares it partial so the caller records nothing rather than a
+// run that looks like it spent zero tokens.
 func TestMaterializeAgentLogsUsage(t *testing.T) {
 	claudeLine := `{"type":"assistant","message":{"model":"m1","usage":{"input_tokens":100,"output_tokens":20,` +
 		`"cache_creation_input_tokens":5,"cache_read_input_tokens":30},"content":[{"type":"text","text":"hi"}]}}`
@@ -325,10 +327,19 @@ func TestMaterializeAgentLogsUsage(t *testing.T) {
 			wantComplete: true,
 		},
 		{
-			name:         "a pi tape declares its usage partial",
+			name:         "a pi session with no usage keys declares its usage partial",
 			line:         piLine,
 			pi:           true,
 			wantComplete: false,
+		},
+		{
+			// pi names the two cache categories cacheWrite and cacheRead; the
+			// daemon must see them under Claude's CacheCreate and CacheRead.
+			name:         "a pi tape maps both cache categories",
+			line:         piAssistantLine(100, 20, 5, 30),
+			pi:           true,
+			wantUsage:    logfmt.Usage{Input: 100, Output: 20, CacheCreate: 5, CacheRead: 30},
+			wantComplete: true,
 		},
 	}
 
@@ -351,7 +362,7 @@ func TestMaterializeAgentLogsUsage(t *testing.T) {
 				require.NoError(t, os.WriteFile(filepath.Join(projects, "sess-1.jsonl"), []byte(tt.line), 0o644))
 			}
 
-			usage, complete := d.materializeAgentLogs(testLogger(t), params, filepath.Join(dir, "events.json"))
+			usage, complete := d.materializeAgentLogs(testLogger(t), params, filepath.Join(dir, "events.json"), runScope{})
 			assert.Equal(t, tt.wantComplete, complete)
 			if tt.wantComplete {
 				assert.Equal(t, tt.wantUsage, usage)
@@ -360,12 +371,55 @@ func TestMaterializeAgentLogsUsage(t *testing.T) {
 	}
 }
 
+// TestMaterializeAgentLogsSkipsAPreviousAttemptsSession covers the retry that
+// dies before pi writes anything: pi creates its session file only once the
+// model has replied, so the stage's session directory still holds the previous
+// attempt's file alone. Reading it would report that attempt's tokens a second
+// time.
+func TestMaterializeAgentLogsSkipsAPreviousAttemptsSession(t *testing.T) {
+	h := newHarness(t)
+	d := h.newDaemon(h.cfg)
+	dir := t.TempDir()
+
+	params := RunnerParams{LogFile: filepath.Join(dir, "stage.log"), SessionDir: filepath.Join(dir, "sessions")}
+	require.NoError(t, os.MkdirAll(params.SessionDir, 0o755))
+	stale := filepath.Join(params.SessionDir, "attempt-1.jsonl")
+	require.NoError(t, os.WriteFile(stale, []byte(piAssistantLine(100, 20, 5, 30)), 0o644))
+	staleTime := time.Now().Add(-10 * time.Minute)
+	require.NoError(t, os.Chtimes(stale, staleTime, staleTime))
+
+	usage, complete := d.materializeAgentLogs(testLogger(t), params, filepath.Join(dir, "events.json"),
+		runScope{startedAt: time.Now()})
+	assert.False(t, complete, "no file of this run's own means nothing to report")
+	assert.Equal(t, logfmt.Usage{}, usage)
+
+	// The same directory once this attempt has written its own file.
+	own := filepath.Join(params.SessionDir, "attempt-2.jsonl")
+	require.NoError(t, os.WriteFile(own, []byte(piAssistantLine(40, 7, 2, 3)), 0o644))
+
+	usage, complete = d.materializeAgentLogs(testLogger(t), params, filepath.Join(dir, "events.json"),
+		runScope{startedAt: time.Now().Add(-time.Second)})
+	assert.True(t, complete)
+	assert.Equal(t, logfmt.Usage{Input: 40, Output: 7, CacheCreate: 2, CacheRead: 3}, usage)
+}
+
 // claudeAssistantLine is one assistant record of a Claude session JSONL,
 // carrying the usage the tape totals sum.
-func claudeAssistantLine(input, output int) string {
+func claudeAssistantLine(input, output, cacheCreate, cacheRead int) string {
 	return fmt.Sprintf(`{"type":"assistant","message":{"model":"m1","usage":{"input_tokens":%d,`+
-		`"output_tokens":%d,"cache_creation_input_tokens":0,"cache_read_input_tokens":0},`+
-		`"content":[{"type":"text","text":"hi"}]}}`+"\n", input, output)
+		`"output_tokens":%d,"cache_creation_input_tokens":%d,"cache_read_input_tokens":%d},`+
+		`"content":[{"type":"text","text":"hi"}]}}`+"\n", input, output, cacheCreate, cacheRead)
+}
+
+// piAssistantLine is one assistant record of a pi session JSONL, carrying the
+// usage the tape totals sum. cacheWrite1h and reasoning are subsets of
+// cacheWrite and output and are written at their full value, so a decoder that
+// summed them instead of ignoring them would report more than totalTokens.
+func piAssistantLine(input, output, cacheWrite, cacheRead int) string {
+	return fmt.Sprintf(`{"type":"message","timestamp":"2026-08-11T02:07:44.744Z","message":{"role":"assistant",`+
+		`"usage":{"input":%d,"output":%d,"cacheWrite":%d,"cacheRead":%d,"totalTokens":%d,"cacheWrite1h":%d,"reasoning":%d},`+
+		`"content":[{"type":"text","text":"hi"}]}}`+"\n",
+		input, output, cacheWrite, cacheRead, input+output+cacheWrite+cacheRead, cacheWrite, output)
 }
 
 func appendFile(t *testing.T, path, content string) {
@@ -403,7 +457,7 @@ func TestMetricsAnnotationRun(t *testing.T) {
 	sessionPath := filepath.Join(claudeDir, "projects",
 		strings.ReplaceAll(strings.ReplaceAll(wtPath, "/", "-"), ".", "-"), sessionID+".jsonl")
 	// What the stage spent and already reported.
-	appendFile(t, sessionPath, claudeAssistantLine(100, 20))
+	appendFile(t, sessionPath, claudeAssistantLine(100, 20, 0, 0))
 
 	rec := resumeRecord{
 		SessionID: sessionID,
@@ -423,7 +477,7 @@ func TestMetricsAnnotationRun(t *testing.T) {
 	// The resumed agent appends to the same file, which is what makes the tape
 	// totals cover both runs.
 	runner := func(_ context.Context, _ RunnerParams) (process.Result, error) {
-		appendFile(t, sessionPath, claudeAssistantLine(40, 7))
+		appendFile(t, sessionPath, claudeAssistantLine(40, 7, 0, 0))
 		return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now()}, nil
 	}
 	d := h.newAnnotationDaemon(runner, WithMeterProvider(mp))
@@ -457,6 +511,67 @@ func TestMetricsAnnotationRun(t *testing.T) {
 		"the stage itself never ran")
 }
 
+// TestMetricsPiAnnotationRun is the pi half of the same rule. pi resumes with
+// --session <path> and appends to the stage's own file, so the subtraction runs
+// on a pi tape, over all four categories rather than the two a Claude fixture
+// exercises.
+func TestMetricsPiAnnotationRun(t *testing.T) {
+	const id = "tst-anm2"
+	h := newPlannotatorHarness(t)
+	h.cfg.Agents["agent1"] = config.Agent{Binary: "pi"}
+
+	h.seedReviewWorktree(id)
+	stageDir := piSessionDir(h.cfg, id, "step2")
+	sessionPath := filepath.Join(stageDir, "session.jsonl")
+	// What the stage spent and already reported.
+	appendFile(t, sessionPath, piAssistantLine(100, 20, 5, 30))
+
+	rec, err := json.Marshal(resumeRecord{
+		Stage:     "step2",
+		Agent:     agentKindPi,
+		Worktree:  filepath.Join(h.wtDir, h.repoName, id),
+		Instance:  "test-instance",
+		StartedAt: time.Now().Add(-time.Minute),
+	})
+	require.NoError(t, err)
+	recPath := completedRecordPath(h.cfg, id, "step2")
+	require.NoError(t, os.MkdirAll(filepath.Dir(recPath), 0o755))
+	require.NoError(t, os.WriteFile(recPath, rec, 0o644))
+
+	mp, collect := h.manualMetrics()
+	runner := func(_ context.Context, _ RunnerParams) (process.Result, error) {
+		appendFile(t, sessionPath, piAssistantLine(40, 7, 2, 3))
+		return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now()}, nil
+	}
+	d := h.newAnnotationDaemon(runner, WithMeterProvider(mp))
+
+	_, stop := startAnnotationDaemon(t, h, d, id,
+		h.annotationTicketMD(id, "open", "branch: kontora/"+id+"\n"))
+
+	require.NoError(t, d.StartPlannotatorAnnotate(id))
+	require.Eventually(t, func() bool { return h.callCount.Load() == 1 },
+		3*time.Second, 20*time.Millisecond)
+	h.stdoutCh <- annotateJSON(annotateAnnotated, "sharpen the goal")
+
+	got := h.waitForAnnotationRuns(id, 1, ticket.StatusOpen)
+	require.Len(t, got.History, 1)
+	require.True(t, got.History[0].SessionReused, "the run must have resumed the stage's session")
+	stop()
+
+	tokens, ok := collect()["kontora.agent.tokens"]
+	require.True(t, ok, "kontora.agent.tokens must be exported")
+	assert.Equal(t, map[string]int64{"input": 40, "output": 7, "cache_create": 2, "cache_read": 3},
+		sumByAttr(t, tokens, "kind"),
+		"only what this invocation added to the session, not the session's totals")
+
+	// The sidecar Stats sums is keyed per invocation, so it carries the same
+	// figure: the stage run that spent the first record has a sidecar of its own.
+	_, usage, err := stats.SidecarTotals(stageEventsPath(h.cfg, id, "step2", got.History[0].Run))
+	require.NoError(t, err)
+	require.NotNil(t, usage)
+	assert.Equal(t, &stats.Usage{In: 45, Out: 7, CacheCreate: 2, CacheRead: 3}, usage)
+}
+
 // TestMetricsCrashRecoveryResumeReportsTheWholeSession is the other half of the
 // resume rule. An annotation run subtracts what the session already held, but
 // the invocation a crash-recovery record points at died before anything could
@@ -467,7 +582,7 @@ func TestMetricsCrashRecoveryResumeReportsTheWholeSession(t *testing.T) {
 	var claudeDir string
 	runner := func(_ context.Context, p RunnerParams) (process.Result, error) {
 		appendFile(t, filepath.Join(claudeDir, "projects", "-worktree-"+resumeTicketID,
-			p.SessionID+".jsonl"), claudeAssistantLine(40, 7))
+			p.SessionID+".jsonl"), claudeAssistantLine(40, 7, 0, 0))
 		return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now()}, nil
 	}
 	rd := newResumeDaemon(t, "claude",
@@ -479,7 +594,7 @@ func TestMetricsCrashRecoveryResumeReportsTheWholeSession(t *testing.T) {
 	// What the interrupted invocation spent before the daemon died.
 	sessionPath := filepath.Join(claudeDir, "projects", "-worktree-"+resumeTicketID,
 		resumeTestSessionID+".jsonl")
-	require.NoError(t, os.WriteFile(sessionPath, []byte(claudeAssistantLine(100, 20)), 0o644))
+	require.NoError(t, os.WriteFile(sessionPath, []byte(claudeAssistantLine(100, 20, 0, 0)), 0o644))
 
 	rd.run(t, ticket.StatusDone)
 

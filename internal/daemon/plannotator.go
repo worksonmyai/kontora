@@ -398,7 +398,10 @@ func (d *Daemon) runReworkStage(ctx, taskCtx context.Context, cfg *config.Config
 	params := d.buildRunnerParams(cfg, agentCfg, stageCfg, binaryPath, args, wtPath, ticketID,
 		config.ReworkStageName, config.ReworkStageName, sessionID)
 	runIndex := stageRunIndex(t, config.ReworkStageName)
-	d.setLiveRun(ticketID, liveRun{stage: config.ReworkStageName, agent: agentName, run: runIndex, params: params, startedAt: time.Now()})
+	// Rework always opens a session of its own, so nothing in it belongs to an
+	// earlier run and the scope carries no prior usage.
+	scope := runScope{startedAt: time.Now()}
+	d.setLiveRun(ticketID, liveRun{stage: config.ReworkStageName, agent: agentName, run: runIndex, params: params, startedAt: scope.startedAt})
 	// The built-in rework stage calls the runner directly and never reaches
 	// spawnAgentRun, so it records its own stage run. Without this every
 	// built-in rework run would be invisible.
@@ -413,7 +416,7 @@ func (d *Daemon) runReworkStage(ctx, taskCtx context.Context, cfg *config.Config
 		return
 	}
 
-	usage, usageComplete := d.materializeAgentLogs(log, params, stageEventsPath(cfg, ticketID, config.ReworkStageName, runIndex))
+	usage, usageComplete := d.materializeAgentLogs(log, params, stageEventsPath(cfg, ticketID, config.ReworkStageName, runIndex), scope)
 	d.recordTokens(taskCtx, config.ReworkStageName, agentName, usage, usageComplete)
 
 	if taskCtx.Err() != nil {
@@ -443,7 +446,7 @@ func (d *Daemon) runReworkStage(ctx, taskCtx context.Context, cfg *config.Config
 		return
 	}
 
-	summary := runSummary(t2.Summary, finalAssistantMessage(log, params))
+	summary := runSummary(t2.Summary, finalAssistantMessage(log, params, scope.startedAt))
 	history := t2.History
 	history = append(history, ticket.HistoryEntry{
 		Stage:       config.ReworkStageName,

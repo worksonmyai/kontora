@@ -4196,8 +4196,8 @@ function kontora() {
       this.fetchActivity(stage, run);
     },
 
-    // Whether the agent's session format leaves this dimension unverified. The
-    // view hides the affordance rather than showing a zero or the wrong colour.
+    // Whether this run's session file left the dimension unfilled. The view
+    // hides the affordance rather than showing a zero or the wrong colour.
     tapePartial(dim) {
       var p = this.activity && this.activity.tape && this.activity.tape.partial;
       return !!p && p.indexOf(dim) >= 0;

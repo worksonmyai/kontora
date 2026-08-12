@@ -620,8 +620,9 @@ action the exit produced: `advance`, `complete`, `retry`, `back`, `pause`, or
 `park`. On `kontora.agent.errors`, `kind` is `session_api_error` for a failure
 found in Claude's session record and `failure_pattern` for one matched against
 the agent's output log. On `kontora.agent.tokens` it is `input`, `output`,
-`cache_create`, or `cache_read`; an agent whose session format does not report
-token counts (pi) contributes nothing rather than zeroes.
+`cache_create`, or `cache_read`. A run is dropped whole if any one of its
+session records left its usage key unfilled; the counter never reports a
+partial figure.
 
 A ticket that runs without a pipeline reports `pipeline=""` and `stage=default`,
 which is the same key its log and its history rows already use.

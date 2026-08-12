@@ -689,8 +689,8 @@ func (d *Daemon) liveActivity(q web.ActivityQuery, lr liveRun) (web.ActivityInfo
 	info := web.ActivityInfo{Source: "events", Stage: q.Stage, Run: q.Run, Live: true}
 	if path == "" {
 		// The agent has started but written nothing yet. The tape comes from the
-		// parser rather than a bare literal, so it carries the version, agent and
-		// partial fields the client reads from the first poll on.
+		// parser rather than a bare literal, so it carries the version and agent
+		// fields the client reads from the first poll on.
 		tape := emptyTape(isPi)
 		info.Tape = &tape
 		return info, true

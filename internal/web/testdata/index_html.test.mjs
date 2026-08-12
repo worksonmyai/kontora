@@ -6422,14 +6422,15 @@ function statsPayload(over = {}) {
       { date: "2026-08-11", runs: 0 },
       { date: "2026-08-12", runs: 9 },
     ],
-    weeks: [{ week: "2026-08-09", done: 3, cancelled: 1, tokens_in: 1000, tokens_out: 200 }],
+    weeks: [{ week: "2026-08-09", done: 3, cancelled: 1, tokens_in: 1300, tokens_out: 200, tokens_cache_create: 50, tokens_cache_read: 250 }],
     stages: [{ name: "implement", p50_ms: 132000, p90_ms: 600000, share: 100, runs: 4, failed: 1, retry_pct: 25 }],
     agents: [{ name: "claude", model: "sonnet-4.6", runs: 4, first_pass_pct: 82, median_ms: 132000, tokens_per_run: 14200, retries_per_ticket: 0.4 }],
     projects: [{ name: "kontora", done: 3, median_cycle_ms: 13200000 }],
     live: { running: 1, slots: 3, queued: 2, oldest_wait_ms: 360000, in_review: 5, busy: ["claude"] },
     totals: {
       shipped: 3, shipped_this_week: 3, runs: 13, median_cycle_ms: 15120000,
-      median_cycle_delta_ms: -2280000, first_pass_pct: 78, tokens_in: 1000, tokens_out: 200,
+      median_cycle_delta_ms: -2280000, first_pass_pct: 78, tokens_in: 1300, tokens_out: 200,
+      tokens_cache_create: 50, tokens_cache_read: 250,
       tokens_delta_pct: 12, busiest_day: "2026-08-12", busiest_day_runs: 9,
     },
     window: { days: 98, weeks: 14, from: "2026-05-07", to: "2026-08-12" },
@@ -6557,6 +6558,44 @@ test("the derived view model survives an empty window", () => {
   })(vmValue(derived), "derived");
   assert.deepEqual(bad, [], "no chart may divide by a zero maximum");
   assert.equal(state.statsCards().length, 6, "the KPI strip keeps its six cards before the first payload");
+});
+
+test("both token tooltips break the same window into four categories", () => {
+  const { ctx, state } = statsState();
+  const payload = statsPayload();
+
+  const derived = ctx.statsDerive(payload);
+  state.statsDerived = derived;
+  const card = state.statsCards().find((c) => c.label === "tokens");
+
+  // tokens_in already holds both cache figures, so fresh input is 1000 and the
+  // total stays in + out.
+  const want = "1k fresh in \u00b7 50 cache write \u00b7 250 cache read \u00b7 200 out";
+  assert.ok(derived.tokens[0].tip.includes(want), derived.tokens[0].tip);
+  assert.ok(derived.tokens[0].tip.startsWith("1.5k tokens"), derived.tokens[0].tip);
+  assert.ok(card.tip.includes(want), card.tip);
+  assert.ok(card.tip.startsWith("1.5k tokens"), card.tip);
+  assert.equal(card.value, "1.5k", "the card face still reports in + out");
+  // The bar keeps its two segments: cache read would render as three slivers.
+  assert.ok(derived.tokens[0].inH > 0 && derived.tokens[0].outH > 0);
+  assert.equal(Object.keys(vmValue(derived.tokens[0])).sort().join(","), "inH,latest,outH,tip,week");
+  // Only the tokens card has a tip, so the other five bind no attribute at all.
+  assert.equal(state.statsCards().filter((c) => c.tip).length, 1);
+  // And the markup is what renders it: nothing else in the KPI strip reads k.tip.
+  assert.match(fs.readFileSync(htmlPath, "utf8"),
+    /<div class="stats-card stats-kpi flex-col gap-1\.5" :data-tip-t="k\.tip">/);
+});
+
+test("a week with no tokens breaks down without a NaN", () => {
+  const { ctx } = statsState();
+  const payload = statsPayload();
+  payload.weeks = [{ week: "2026-08-09", done: 0, cancelled: 0, tokens_in: 0, tokens_out: 0, tokens_cache_create: 0, tokens_cache_read: 0 }];
+
+  const derived = ctx.statsDerive(payload);
+
+  assert.ok(!derived.tokens[0].tip.includes("NaN"), derived.tokens[0].tip);
+  assert.equal(derived.tokens[0].inH, 0);
+  assert.equal(derived.tokens[0].outH, 0);
 });
 
 test("an agent with no usable token counts shows an em dash, not a zero", () => {

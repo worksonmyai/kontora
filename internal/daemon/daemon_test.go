@@ -4066,7 +4066,7 @@ func TestMaterializeSessionEvents(t *testing.T) {
 		require.NoError(t, os.WriteFile(session, []byte(sessionLine), 0o644))
 
 		out := filepath.Join(dir, "logs", "step1.0.events.json")
-		returned, err := materializeSessionEvents(session, false, out)
+		returned, err := materializeSessionEvents(session, false, out, logfmt.Usage{})
 		require.NoError(t, err)
 		assert.Equal(t, "m1", returned.Model, "the parsed tape is returned for the token metrics")
 
@@ -4092,8 +4092,30 @@ func TestMaterializeSessionEvents(t *testing.T) {
 		require.NoError(t, os.WriteFile(blocker, nil, 0o644))
 
 		require.NoError(t, materializeSessionLog(session, false, logFile))
-		_, err := materializeSessionEvents(session, false, filepath.Join(blocker, "step1.0.events.json"))
+		_, err := materializeSessionEvents(session, false, filepath.Join(blocker, "step1.0.events.json"), logfmt.Usage{})
 		require.Error(t, err)
 		assert.FileExists(t, logFile)
+	})
+
+	t.Run("a resumed session's sidecar counts only what this run added", func(t *testing.T) {
+		dir := t.TempDir()
+		session := filepath.Join(dir, "session.jsonl")
+		require.NoError(t, os.WriteFile(session, []byte(
+			claudeAssistantLine(1000, 200, 50, 250)+claudeAssistantLine(300, 30, 5, 10)), 0o644))
+
+		out := filepath.Join(dir, "logs", "step1.1.events.json")
+		prior := logfmt.Usage{Input: 1000, Output: 200, CacheCreate: 50, CacheRead: 250}
+		returned, err := materializeSessionEvents(session, false, out, prior)
+		require.NoError(t, err)
+
+		want := logfmt.Usage{Input: 300, Output: 30, CacheCreate: 5, CacheRead: 10}
+		assert.Equal(t, want, returned.Totals)
+
+		data, err := os.ReadFile(out)
+		require.NoError(t, err)
+		var tape logfmt.Tape
+		require.NoError(t, json.Unmarshal(data, &tape))
+		assert.Equal(t, want, tape.Totals, "stats sums one sidecar per run, so the earlier run must not be in this one")
+		assert.Len(t, tape.Events, 3, "the transcript stays whole: a model banner and both turns")
 	})
 }

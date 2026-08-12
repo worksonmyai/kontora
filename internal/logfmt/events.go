@@ -30,8 +30,9 @@ const (
 )
 
 // UsageComplete reports whether a tape's partial list leaves its token counts
-// trustworthy. A tape that could not fill usage still writes zeroes, which a
-// reader must not present as a run that cost nothing.
+// trustworthy. A tape that could not fill usage still writes a total, but one
+// missing whatever the unreadable records spent, so a reader must not present
+// it as what the run cost.
 func UsageComplete(partial []string) bool {
 	return !slices.Contains(partial, PartialUsage)
 }
@@ -78,8 +79,8 @@ type Tape struct {
 	Agent   string `json:"agent"`
 	Model   string `json:"model,omitempty"`
 	Totals  Usage  `json:"totals"`
-	// Partial names the dimensions this agent's session format does not
-	// provide. An empty list means every dimension is trustworthy.
+	// Partial names the dimensions this run's session file left unfilled. An
+	// empty list means every dimension is trustworthy.
 	Partial   []string `json:"partial,omitempty"`
 	Truncated bool     `json:"truncated,omitempty"`
 	Events    []Event  `json:"events"`
@@ -185,19 +186,22 @@ func Events(r io.Reader) (Tape, error) {
 	return tape, scanner.Err()
 }
 
-// EventsPi reads pi session JSONL from r and returns it as a Tape. Pi's
-// session format carries no timestamps, no token usage, and no error flag on
-// tool results, so every pi tape declares those three dimensions partial. The
-// keys are not guessed: adding tags for fields that may not exist would fail
-// silently, reporting every timestamp null and every token count zero.
+// EventsPi reads pi session JSONL from r and returns it as a Tape. Timestamps,
+// token usage and the tool error flag are read off the assistant, toolResult
+// and summarising records. The file was written by some version of pi, not by
+// this one: a key this decoder reads by name that the file does not carry, or
+// carries in another shape, marks its dimension partial for the whole tape
+// rather than presenting a null timestamp, a short token count, or a failed
+// tool as a success.
+//
+// Nested LLM work reported under a tool result's own usage (a subagent, or an
+// extension tool that calls a model) is not read and not flagged, so a tape
+// holding one under-reports its totals while still declaring them complete.
 func EventsPi(r io.Reader) (Tape, error) {
-	tape := Tape{
-		Version: TapeVersion,
-		Agent:   "pi",
-		Partial: []string{PartialTime, PartialUsage, PartialIsError},
-		Events:  []Event{},
-	}
+	tape := Tape{Version: TapeVersion, Agent: "pi", Events: []Event{}}
 	b := tapeBuilder{tape: &tape}
+	var noUsage, noIsError bool
+	var lines, decoded int
 
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, maxScanBuf), maxScanBuf)
@@ -207,37 +211,86 @@ func EventsPi(r io.Reader) (Tape, error) {
 		if len(line) == 0 {
 			continue
 		}
+		lines++
 
 		var ev piEntry
 		if err := json.Unmarshal(line, &ev); err != nil {
 			continue
 		}
+		decoded++
+		ts := piTime(ev.Timestamp)
 
 		switch ev.Type {
 		case "model_change":
-			b.model(ev.ModelID, nil)
+			b.model(ev.ModelID, ts)
+		case "compaction", "branch_summary":
+			// Summarising is a real API call whose tokens live outside any
+			// message record. It produces no transcript row.
+			usage := piUsageOf(ev.Usage)
+			if usage == nil {
+				noUsage = true
+			}
+			tape.Totals.add(usage.total())
 		case "message":
 			switch ev.Message.Role {
 			case "assistant":
+				// A record with no readable usage leaves pending nil rather than
+				// a zero count, so the event carries no figure at all.
+				var pending *Usage
+				if u := piUsageOf(ev.Message.Usage); u == nil {
+					noUsage = true
+				} else {
+					usage := u.total()
+					tape.Totals.add(usage)
+					pending = &usage
+				}
+
 				for _, block := range ev.Message.Content {
 					switch block.Type {
 					case "text":
-						if block.Text != "" {
-							b.append(Event{Kind: "text", Text: block.Text})
+						if block.Text == "" {
+							continue
 						}
+						b.append(Event{Kind: "text", Time: ts, Text: block.Text, Usage: takeUsage(&pending)})
 					case "toolCall":
 						b.append(Event{
-							Kind: "tool",
-							Tool: block.Name,
-							Arg:  formatToolArg(block.Name, block.Arguments),
+							Kind:  "tool",
+							Time:  ts,
+							Tool:  block.Name,
+							Arg:   formatToolArg(block.Name, block.Arguments),
+							Usage: takeUsage(&pending),
 						})
 					}
 				}
 			case "toolResult":
-				b.result(b.lastUnanswered(), ev.Message.ToolName, piTextBlocks(ev.Message.Content), false)
+				isError := piBool(ev.Message.IsError)
+				if isError == nil {
+					noIsError = true
+				}
+				b.result(b.lastUnanswered(), ev.Message.ToolName, piTextBlocks(ev.Message.Content), isError != nil && *isError)
 			}
 		}
 	}
+
+	// The time dimension is just "no event in this tape lacks a time", so it is
+	// read off the events rather than tracked as they are appended.
+	noTime := slices.ContainsFunc(tape.Events, func(e Event) bool { return e.Time == nil })
+	if lines > 0 && decoded == 0 {
+		// A file whose every line failed to decode is not a run that spent
+		// nothing: it is a file this decoder cannot read at all.
+		noTime, noUsage, noIsError = true, true, true
+	}
+	var partial []string
+	if noTime {
+		partial = append(partial, PartialTime)
+	}
+	if noUsage {
+		partial = append(partial, PartialUsage)
+	}
+	if noIsError {
+		partial = append(partial, PartialIsError)
+	}
+	tape.Partial = partial
 	return tape, scanner.Err()
 }
 

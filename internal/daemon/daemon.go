@@ -1935,23 +1935,23 @@ func (d *Daemon) runAgentOnce(taskCtx context.Context, t *ticket.Ticket, p spawn
 
 	params := d.buildRunnerParams(p.cfg, p.agentCfg, p.stageCfg, binaryPath, args, p.wtPath, p.ticketID, p.stageName, p.sessionStage(rec), sessionID)
 	// An annotation run continues the session the stage already finished, and
-	// --resume appends to that same JSONL, so the totals read once it returns
-	// carry the tokens the stage already reported. Take what is in the file now
-	// and report only what this run adds. It is read here, rather than
-	// remembered from the last run, because the run that reported them can have
-	// been a previous daemon's.
+	// Claude's --resume and pi's --session <path> both append to that same
+	// JSONL, so the totals read once it returns carry the tokens the stage
+	// already reported. Take what is in the file now and report only what this
+	// run adds. It is read here, rather than remembered from the last run,
+	// because the run that reported them can have been a previous daemon's.
 	//
 	// A crash-recovery resume is the opposite case: the invocation that spent
 	// those tokens died before anything could report them, so continuing it
 	// reports the file's totals whole.
-	var priorUsage logfmt.Usage
+	scope := runScope{startedAt: time.Now()}
 	if rec != nil && p.annotation {
-		priorUsage = sessionUsageTotals(params)
+		scope.prior = sessionUsageTotals(params)
 	}
 	// The clear is deferred so that every way this function can end, including a
 	// runner error or a cancelled ticket, leaves no entry claiming the run is
 	// still going.
-	d.setLiveRun(p.ticketID, liveRun{stage: p.stageName, agent: p.agentName, run: p.run, params: params, startedAt: time.Now()})
+	d.setLiveRun(p.ticketID, liveRun{stage: p.stageName, agent: p.agentName, run: p.run, params: params, startedAt: scope.startedAt})
 	defer d.clearLiveRun(p.ticketID)
 	// Stage logs are appended across retries (pipe-pane, DirectRunner), so record
 	// where this run's output starts. Failure-pattern detection only scans from
@@ -1970,8 +1970,8 @@ func (d *Daemon) runAgentOnce(taskCtx context.Context, t *ticket.Ticket, p spawn
 		d.promoteResumeRecord(p)
 	}
 	if runnerErr != nil && taskCtx.Err() == nil {
-		usage, complete := d.materializeAgentLogs(p.log, params, eventsFile)
-		d.recordTokens(taskCtx, p.stageName, p.agentName, usageSince(priorUsage, usage), complete)
+		usage, complete := d.materializeAgentLogs(p.log, params, eventsFile, scope)
+		d.recordTokens(taskCtx, p.stageName, p.agentName, usage, complete)
 		errAttrs := []any{"stage", p.stageName, "err", runnerErr}
 		if tail := tailFile(params.LogFile); tail != "" {
 			errAttrs = append(errAttrs, "output", tail)
@@ -1985,10 +1985,10 @@ func (d *Daemon) runAgentOnce(taskCtx context.Context, t *ticket.Ticket, p spawn
 		}
 	}
 
-	usage, usageComplete := d.materializeAgentLogs(p.log, params, eventsFile)
-	d.recordTokens(taskCtx, p.stageName, p.agentName, usageSince(priorUsage, usage), usageComplete)
+	usage, usageComplete := d.materializeAgentLogs(p.log, params, eventsFile, scope)
+	d.recordTokens(taskCtx, p.stageName, p.agentName, usage, usageComplete)
 
-	run := agentRun{Result: result, FinalMessage: finalAssistantMessage(p.log, params), Resumed: rec != nil}
+	run := agentRun{Result: result, FinalMessage: finalAssistantMessage(p.log, params, scope.startedAt), Resumed: rec != nil}
 
 	dur := result.ExitedAt.Sub(result.StartedAt).Truncate(time.Second)
 	attrs := []any{"stage", p.stageName, "exit_code", result.ExitCode, "duration", dur}
@@ -2008,7 +2008,7 @@ func (d *Daemon) runAgentOnce(taskCtx context.Context, t *ticket.Ticket, p spawn
 	// instead. Non-zero exits already flow through the pipeline's on_failure
 	// handling, so leave those alone. Skip when the run was cancelled.
 	if result.ExitCode == 0 && taskCtx.Err() == nil {
-		if reason, kind, detected := d.detectAgentError(p.agentCfg, params, logStart); detected {
+		if reason, kind, detected := d.detectAgentError(p.agentCfg, params, logStart, scope.startedAt); detected {
 			p.log.Warn("agent error detected despite clean exit", "stage", p.stageName, "reason", reason, "kind", kind)
 			d.metrics.AgentError(taskCtx, p.stageName, p.agentName, kind)
 			d.killTaskWindow(p.ticketID)
@@ -2572,10 +2572,14 @@ func claudeSessionFiles(env map[string]string, sessionID string) (matches []stri
 
 // sessionFile locates the session JSONL of a run: the Claude session file
 // matching params.SessionID, or the newest file in the pi params.SessionDir
-// (a retried stage reuses its session directory, so the newest file is the
-// run that just finished). Returns "" when the run has no session or no file
-// was written.
-func sessionFile(params RunnerParams) (path string, isPi bool) {
+// that pi touched at or after since. A retried stage reuses its session
+// directory, and pi only creates a file once the model has replied, so a run
+// that died before its first reply leaves the directory holding the previous
+// attempt's file alone. Without the floor that file would be read as this
+// run's: its transcript, its final message and its tokens, all reported twice.
+// Pass the zero time to ask what the directory held before the run started.
+// Returns "" when the run has no session or no file was written.
+func sessionFile(params RunnerParams, since time.Time) (path string, isPi bool) {
 	switch {
 	case params.SessionID != "":
 		if matches, _, err := claudeSessionFiles(params.Env, params.SessionID); err == nil && len(matches) > 0 {
@@ -2583,11 +2587,7 @@ func sessionFile(params RunnerParams) (path string, isPi bool) {
 		}
 		return "", false
 	case params.SessionDir != "":
-		matches, err := filepath.Glob(filepath.Join(params.SessionDir, "*.jsonl"))
-		if err != nil || len(matches) == 0 {
-			return "", true
-		}
-		return newestFile(matches), true
+		return newestSessionFileSince(params.SessionDir, since), true
 	}
 	return "", false
 }
@@ -2632,22 +2632,31 @@ func sessionTape(path string, isPi bool) (logfmt.Tape, error) {
 	return tape, nil
 }
 
+// runScope separates one agent invocation from the session file it can share
+// with earlier ones. startedAt discards a file written before this run, and
+// prior is what the file already held when it started, which a run resuming
+// that session must not report as its own spend.
+type runScope struct {
+	startedAt time.Time
+	prior     logfmt.Usage
+}
+
 // materializeAgentLogs materializes session logs for agents that write
 // structured JSONL (Claude via SessionID, pi via SessionDir). It also writes
 // the structured activity sidecar for the same session file to eventsFile.
 //
-// It returns the run's token totals, and whether they can be trusted. A tape
-// that declares its usage partial reports zeroes, which is not the same as a
-// run that spent nothing, so the caller must record nothing for it.
+// It returns the invocation's token totals, and whether they can be trusted. A
+// tape that declares its usage partial counts only the records it could read,
+// which is not what the run spent, so the caller must record nothing for it.
 //
 // A sidecar failure only warns: the plaintext log is the contract every
 // existing reader depends on and must never be lost because the sidecar
 // could not be written.
-func (d *Daemon) materializeAgentLogs(log *slog.Logger, params RunnerParams, eventsFile string) (logfmt.Usage, bool) {
+func (d *Daemon) materializeAgentLogs(log *slog.Logger, params RunnerParams, eventsFile string, scope runScope) (logfmt.Usage, bool) {
 	if params.SessionID == "" && params.SessionDir == "" {
 		return logfmt.Usage{}, false
 	}
-	path, isPi := sessionFile(params)
+	path, isPi := sessionFile(params, scope.startedAt)
 	if path == "" {
 		log.Warn("session JSONL not found", "session_id", params.SessionID, "session_dir", params.SessionDir)
 		return logfmt.Usage{}, false
@@ -2661,21 +2670,30 @@ func (d *Daemon) materializeAgentLogs(log *slog.Logger, params RunnerParams, eve
 	if eventsFile == "" {
 		return logfmt.Usage{}, false
 	}
-	tape, err := materializeSessionEvents(path, isPi, eventsFile)
+	tape, err := materializeSessionEvents(path, isPi, eventsFile, scope.prior)
 	if err != nil {
 		log.Warn("session events materialization failed", "session_file", path, "events_file", eventsFile, "err", err)
 		return logfmt.Usage{}, false
 	}
 	log.Info("session events materialized", "session_file", path, "events_file", eventsFile)
 
-	return tape.Totals, !slices.Contains(tape.Partial, logfmt.PartialUsage)
+	if slices.Contains(tape.Partial, logfmt.PartialUsage) {
+		// One unreadable record is enough, so the hole in the dashboard belongs
+		// to a run that was mostly counted. Say so here rather than leave the
+		// figure to be explained from the Stats page.
+		log.Warn("session usage incomplete, tokens not recorded", "session_file", path, "partial", tape.Partial)
+		return tape.Totals, false
+	}
+	return tape.Totals, true
 }
 
 // sessionUsageTotals returns the token totals already in the session file a run
-// is about to continue. An unreadable or missing session gives zero, which is
-// the same answer a fresh session gives.
+// is about to continue. It reads the directory as it stands now, with no time
+// floor, because the file it is asking about is by definition the earlier run's.
+// An unreadable or missing session gives zero, which is the same answer a fresh
+// session gives.
 func sessionUsageTotals(params RunnerParams) logfmt.Usage {
-	path, isPi := sessionFile(params)
+	path, isPi := sessionFile(params, time.Time{})
 	if path == "" {
 		return logfmt.Usage{}
 	}
@@ -2708,8 +2726,9 @@ func usageSince(prior, total logfmt.Usage) logfmt.Usage {
 // recordTokens reports one agent invocation's token spend. Per invocation, not
 // per stage run: every invocation is a real spend of its own. Callers that
 // resume a session must pass what that invocation added rather than the file's
-// totals. Claude's --resume appends to the recorded session's JSONL, so those
-// totals carry every earlier run in the same file.
+// totals. Claude's --resume and pi's --session <path> both append to the
+// recorded session's JSONL, so those totals carry every earlier run in the
+// same file.
 func (d *Daemon) recordTokens(ctx context.Context, stage, agent string, usage logfmt.Usage, complete bool) {
 	if !complete {
 		return
@@ -2755,11 +2774,19 @@ func materializeSessionLog(path string, isPi bool, logFile string) error {
 // materializeSessionEvents parses the session JSONL at path into a structured
 // tape, writes it to eventsFile, and returns it. The write is atomic (temp file
 // plus rename) so a concurrent reader never sees half a document.
-func materializeSessionEvents(path string, isPi bool, eventsFile string) (logfmt.Tape, error) {
+//
+// The tape's totals are cut down to what this invocation added, because a
+// sidecar is keyed per invocation while the session file it comes from holds
+// every invocation that ever appended to it. Stats sums one sidecar per history
+// row, so a resumed session written whole would count the earlier run twice.
+// The events stay whole: the transcript is the conversation, and half of one
+// would read as a run that started mid-sentence.
+func materializeSessionEvents(path string, isPi bool, eventsFile string, prior logfmt.Usage) (logfmt.Tape, error) {
 	tape, err := sessionTape(path, isPi)
 	if err != nil {
 		return logfmt.Tape{}, err
 	}
+	tape.Totals = usageSince(prior, tape.Totals)
 
 	data, err := json.Marshal(tape)
 	if err != nil {
@@ -2793,8 +2820,8 @@ func materializeSessionEvents(path string, isPi bool, eventsFile string) (logfmt
 
 // finalAssistantMessage returns the last assistant text from the run's session
 // JSONL, or "" when no session file exists.
-func finalAssistantMessage(log *slog.Logger, params RunnerParams) string {
-	path, isPi := sessionFile(params)
+func finalAssistantMessage(log *slog.Logger, params RunnerParams, startedAt time.Time) string {
+	path, isPi := sessionFile(params, startedAt)
 	if path == "" {
 		return ""
 	}
@@ -2823,9 +2850,9 @@ func finalAssistantMessage(log *slog.Logger, params RunnerParams) string {
 // reason, the layer that matched (metrics.ErrorKindSessionAPI or
 // metrics.ErrorKindFailurePattern), and true when a failure is detected. Call
 // after materializeAgentLogs so the log file reflects the final session.
-func (d *Daemon) detectAgentError(agentCfg config.Agent, params RunnerParams, logStart int64) (reason, kind string, detected bool) {
+func (d *Daemon) detectAgentError(agentCfg config.Agent, params RunnerParams, logStart int64, startedAt time.Time) (reason, kind string, detected bool) {
 	if agentCfg.IsClaude() && params.SessionID != "" {
-		if path, _ := sessionFile(params); path != "" {
+		if path, _ := sessionFile(params, startedAt); path != "" {
 			if reason, ok := scanClaudeSessionError(path); ok {
 				return reason, metrics.ErrorKindSessionAPI, true
 			}

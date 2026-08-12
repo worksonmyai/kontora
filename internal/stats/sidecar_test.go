@@ -42,10 +42,12 @@ func TestSidecarTotals(t *testing.T) {
 			name:      "large events array is not decoded",
 			content:   bigTape(),
 			wantModel: "sonnet-4.6",
-			wantUsage: &Usage{In: 527, Out: 30},
+			// In folds all three inbound categories; the two cache figures
+			// name two of them again rather than adding to it.
+			wantUsage: &Usage{In: 527, Out: 30, CacheCreate: 7, CacheRead: 400},
 		},
 		{
-			name: "pi tape declares usage partial",
+			name: "a tape whose session had no usage keys declares it partial",
 			content: `{"version":1,"agent":"pi","model":"opus-5",` +
 				`"totals":{"input":0,"output":0,"cache_create":0,"cache_read":0},` +
 				`"partial":["time","usage","is_error"],"events":[]}`,

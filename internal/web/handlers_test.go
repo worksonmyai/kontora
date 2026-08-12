@@ -1308,6 +1308,24 @@ func TestHandleGetStats(t *testing.T) {
 				require.NoError(t, json.Unmarshal([]byte(body), &got))
 				assert.Equal(t, 12, got.Totals.Shipped)
 				assert.Equal(t, 2, got.Live.Running)
+
+				// Decoded as a map rather than back into the same struct, so the
+				// wire names the page reads are pinned by something other than the
+				// tags that wrote them.
+				var raw map[string]any
+				require.NoError(t, json.Unmarshal([]byte(body), &raw))
+				totals, _ := raw["totals"].(map[string]any)
+				assert.Equal(t, float64(1300), totals["tokens_in"])
+				assert.Equal(t, float64(200), totals["tokens_out"])
+				assert.Equal(t, float64(50), totals["tokens_cache_create"])
+				assert.Equal(t, float64(250), totals["tokens_cache_read"])
+				weeks, _ := raw["weeks"].([]any)
+				require.Len(t, weeks, 1)
+				week, _ := weeks[0].(map[string]any)
+				assert.Equal(t, float64(1300), week["tokens_in"])
+				assert.Equal(t, float64(200), week["tokens_out"])
+				assert.Equal(t, float64(50), week["tokens_cache_create"])
+				assert.Equal(t, float64(250), week["tokens_cache_read"])
 			},
 		},
 		{
@@ -1341,8 +1359,12 @@ func TestHandleGetStats(t *testing.T) {
 			var seen *StatsQuery
 			svc := &mockService{statsFn: func(q StatsQuery) (StatsInfo, error) {
 				seen = &q
+				counts := stats.TokenCounts{
+					TokensIn: 1300, TokensOut: 200, TokensCacheCreate: 50, TokensCacheRead: 250,
+				}
 				return StatsInfo{
-					Totals: stats.Totals{Shipped: 12},
+					Weeks:  []stats.Week{{Week: "2026-08-09", Done: 3, TokenCounts: counts}},
+					Totals: stats.Totals{Shipped: 12, TokenCounts: counts},
 					Live:   stats.Live{Running: 2, Slots: 3},
 				}, nil
 			}}

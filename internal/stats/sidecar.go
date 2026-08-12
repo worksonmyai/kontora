@@ -15,10 +15,11 @@ import (
 // bytes whatever the file's size, and anything malformed after the events key
 // is never parsed.
 //
-// The returned usage is nil when the tape declares usage partial: pi's session
-// format carries no counts, and its zeroes are not a run that cost nothing.
-// In folds the three inbound categories together, so it is every token the
-// model was fed.
+// The returned usage is nil when the tape declares usage partial: such a tape
+// still writes a total, but one missing whatever its unreadable records spent,
+// so it is not what the run cost. In folds the three inbound categories
+// together, so it is every token the model was fed; CacheCreate and CacheRead
+// name two of them again.
 func SidecarTotals(path string) (string, *Usage, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -74,7 +75,9 @@ func SidecarTotals(path string) (string, *Usage, error) {
 		return model, nil, nil
 	}
 	return model, &Usage{
-		In:  totals.Input + totals.CacheCreate + totals.CacheRead,
-		Out: totals.Output,
+		In:          totals.Input + totals.CacheCreate + totals.CacheRead,
+		Out:         totals.Output,
+		CacheCreate: totals.CacheCreate,
+		CacheRead:   totals.CacheRead,
 	}, nil
 }

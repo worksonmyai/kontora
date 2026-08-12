@@ -378,6 +378,8 @@
       font-weight: 600;
       color: hsl(var(--pipe-h, 240 10% 55%));
     }
+    /* The same tag one size up, for the init modal's header band. */
+    .title-tag.init-title-tag { font-size: 13px; }
 
     /* Slim single-track stage progress bar on running cards. */
     .card-progress { height: 3px; background: rgba(var(--surface-700), 1); border-radius: 9999px; overflow: hidden; }
@@ -922,62 +924,100 @@
 
   <!-- Init ticket modal -->
   <div x-show="initModal" x-transition.opacity class="fixed inset-0 z-50 flex items-center justify-center bg-black/60" @click.self="closeInitModal()">
-    <div role="dialog" aria-modal="true" aria-labelledby="init-modal-title" class="bg-surface-900 border border-surface-700/50 rounded-xl p-5 w-full max-w-md mx-4 slide-up" @click.stop>
-      <div class="flex items-center justify-between mb-4">
-        <span id="init-modal-title" class="text-sm font-semibold text-tx-2">Start ticket</span>
-        <button @click="closeInitModal()" class="text-surface-600 hover:text-tx-3" aria-label="Close">
-          <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
-        </button>
+    <div role="dialog" aria-modal="true" aria-labelledby="init-modal-title" class="bg-surface-900 border border-surface-700 rounded-xl shadow-[0_28px_70px_-20px_rgba(0,0,0,.75)] w-[min(560px,100%_-_34px)] overflow-hidden slide-up" @click.stop>
+      <div class="p-[16px_20px_15px] bg-surface-rail border-b border-surface-700 flex flex-col gap-[9px]">
+        <div class="flex items-center gap-[9px]">
+          <!-- The modal also opens for a ticket already in todo, where a source
+               chip would read "todo → todo · queued". A ticket with no status
+               would draw an empty pill and a dangling arrow. -->
+          <template x-if="initForm.status && initForm.status !== 'todo'">
+            <span class="contents">
+              <span class="status-chip status-chip-sm" :data-status="initForm.status" x-text="statusLabel(initForm.status)"></span>
+              <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-surface-600 shrink-0"><path d="M5 12h14"/><path d="m13 6 6 6-6 6"/></svg>
+            </span>
+          </template>
+          <span class="status-chip status-chip-sm" data-status="in_progress">todo · queued</span>
+          <span class="ml-auto font-mono text-[11px] text-surface-600" x-text="initForm.ticketId"></span>
+          <button @click="closeInitModal()" class="ml-[2px] flex text-surface-600 hover:text-tx-3" aria-label="Close">
+            <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+          </button>
+        </div>
+        <h2 id="init-modal-title" class="m-0 text-[15px] font-semibold leading-[1.4] text-tx-hi [text-wrap:pretty]"><span x-show="initForm.tag" class="title-tag init-title-tag" :data-pipe-color="pipelineColorByName(initForm.tag)" x-text="'[' + initForm.tag + ']'"></span> <span x-text="initForm.titleRest"></span></h2>
       </div>
-      <p class="text-[13px] font-mono text-surface-600 mb-1" x-text="initForm.ticketId"></p>
-      <p x-show="initForm.title" class="text-[13px] text-tx-2 mb-1" x-text="initForm.title"></p>
-      <p class="text-[13px] text-surface-600 mb-3">Prepares this ticket for execution: assigns a pipeline starting from the first stage and queues it to run.</p>
       <form @submit.prevent="submitInitTicket()">
-        <div class="space-y-3">
-          <div>
-            <label for="init-pipeline" class="text-[13px] font-mono text-tx-3 mb-1 flex items-center gap-1.5"><svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="opacity-50"><polyline points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="3"/><polyline points="21 16 21 21 16 21"/><line x1="15" y1="15" x2="21" y2="21"/><line x1="4" y1="4" x2="9" y2="9"/></svg>Pipeline</label>
+        <div class="p-[18px_20px] flex flex-col gap-[16px]">
+          <div class="flex flex-col gap-[7px]">
+            <div class="flex items-center gap-2">
+              <label for="init-pipeline" class="font-mono text-[11px] tracking-[.06em] uppercase text-tx-faint">pipeline</label>
+              <span x-show="initPipelineProject()" class="ml-auto font-mono text-[10px] px-[6px] py-px rounded-[4px] text-tx-3 bg-surface-800 border border-surface-700">from project <span x-text="initPipelineProject()?.name"></span></span>
+            </div>
             <select id="init-pipeline" x-model="initForm.pipeline"
-                    class="w-full bg-surface-800 border border-surface-700/50 rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40">
+                    class="w-full box-border bg-surface-800 border border-edge-input rounded-[7px] px-[12px] py-[9px] font-mono text-[13px] text-tx focus:outline-none focus:border-accent">
               <option value="">none (single run, no stages)</option>
               <template x-for="p in configCache?.pipelines || []" :key="p">
-                <option :value="p" x-text="pipelineLabel(p)"></option>
+                <option :value="p" x-text="p"></option>
               </template>
             </select>
-          </div>
-          <div>
-            <label for="init-agent" class="text-[13px] font-mono text-tx-3 mb-1 flex items-center gap-1.5"><svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="opacity-50"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/></svg>Agent</label>
-            <select id="init-agent" x-model="initForm.agent"
-                    class="w-full bg-surface-800 border border-surface-700/50 rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40">
-              <option value="">default (each stage picks its own)</option>
-              <template x-for="a in configCache?.agents || []" :key="a">
-                <option :value="a" x-text="a"></option>
+            <div class="pt-[2px] flex flex-wrap items-center gap-[6px]">
+              <template x-for="(s, i) in initStages()" :key="s">
+                <span class="contents">
+                  <span x-show="i > 0" class="text-[10px] text-edge-faint">→</span>
+                  <span class="font-mono text-[10.5px] px-[7px] py-[2px] rounded-[4px] border"
+                        :class="i === 0 ? 'text-accent-bright bg-accent/[.14] border-accent/[.42]' : 'text-tx-3 bg-surface-800 border-surface-700'"
+                        x-text="s"></span>
+                </span>
               </template>
-            </select>
+              <span class="ml-[2px] font-mono text-[10.5px] text-surface-600"
+                    x-text="initStages().length ? 'starts at ' + initStages()[0] : 'single run, no stages'"></span>
+            </div>
           </div>
-          <div>
-            <label for="init-path" class="text-[13px] font-mono text-tx-3 mb-1 flex items-center gap-1.5"><svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="opacity-50"><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"/></svg>Path *</label>
-            <input id="init-path" x-model="initForm.path" @input="onInitPathChange()" type="text" required
-                   class="w-full bg-surface-800 border border-surface-700/50 rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40"
-                   placeholder="~/projects/myrepo">
+          <div class="grid grid-cols-2 max-[420px]:grid-cols-1 gap-[14px]">
+            <div class="flex flex-col gap-[7px]">
+              <label for="init-agent" class="font-mono text-[11px] tracking-[.06em] uppercase text-tx-faint">agent</label>
+              <select id="init-agent" x-model="initForm.agent"
+                      class="w-full box-border bg-surface-800 border border-edge-input rounded-[7px] px-[12px] py-[9px] font-mono text-[13px] text-tx focus:outline-none focus:border-accent">
+                <!-- Half-width cell: the create form's longer wording is cut off
+                     here. The footer's run line spells the same rule out. -->
+                <option value="">default (per stage)</option>
+                <template x-for="a in configCache?.agents || []" :key="a">
+                  <option :value="a" x-text="a"></option>
+                </template>
+              </select>
+            </div>
+            <div class="flex flex-col gap-[7px] min-w-0">
+              <label for="init-path" class="font-mono text-[11px] tracking-[.06em] uppercase text-tx-faint">path <span class="text-accent">*</span></label>
+              <input id="init-path" x-model="initForm.path" @input="onInitPathChange()" type="text" required
+                     class="w-full box-border bg-surface-800 border border-edge-input rounded-[7px] px-[12px] py-[9px] font-mono text-[13px] text-tx focus:outline-none focus:border-accent"
+                     placeholder="~/projects/myrepo">
+            </div>
           </div>
-          <div>
-            <label for="init-branch" class="text-[13px] font-mono text-tx-3 mb-1 flex items-center gap-1.5"><svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="opacity-50"><line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>Branch</label>
+          <div class="flex flex-col gap-[7px]">
+            <label for="init-branch" class="font-mono text-[11px] tracking-[.06em] uppercase text-tx-faint">branch</label>
             <input id="init-branch" x-model="initForm.branch" type="text"
-                   class="w-full bg-surface-800 border border-surface-700/50 rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40"
-                   :placeholder="initBranchPlaceholder()">
-            <p class="text-[11px] text-surface-600 mt-0.5">Enter a branch only to override automatic naming.</p>
+                   class="w-full box-border bg-surface-800 border border-edge-input rounded-[7px] px-[12px] py-[9px] font-mono text-[13px] text-tx focus:outline-none focus:border-accent"
+                   placeholder="override the automatic name">
+            <div x-show="initBranchResolved()" class="flex items-center gap-[7px] min-w-0">
+              <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-surface-600 shrink-0"><line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>
+              <span class="font-mono text-[11.5px] text-tx-2 truncate" x-text="initBranchPlaceholder()"></span>
+              <span class="font-mono text-[10px] text-surface-600 shrink-0">auto</span>
+            </div>
+            <p x-show="!initBranchResolved()" class="text-[11px] text-surface-600">Enter a branch only to override automatic naming.</p>
           </div>
-          <p x-show="projectForPath(initForm.path)" class="text-[11px] text-surface-600">Defaults from project <span class="text-tx-3" x-text="projectForPath(initForm.path)?.name"></span>.</p>
+          <p x-show="initError" class="text-[11px] text-err" x-text="initError"></p>
         </div>
-        <div class="flex justify-end gap-2 mt-5">
-          <button type="button" @click="closeInitModal()"
-                  class="text-[13px] font-mono px-4 py-1.5 rounded bg-surface-800 border border-surface-700/50 text-tx-3 hover:text-tx-2 transition-colors">
-            cancel
-          </button>
-          <button type="submit" :disabled="initSubmitting"
-                  class="text-[13px] font-mono px-4 py-1.5 rounded bg-accent/20 border border-accent/30 text-accent hover:bg-accent/30 transition-colors disabled:opacity-50">
-            <span x-text="initSubmitting ? 'starting...' : 'start'"></span>
-          </button>
+        <div class="p-[14px_20px] border-t border-surface-700 bg-surface-rail/60 flex items-center gap-[12px]">
+          <p class="m-0 font-mono text-[11px] leading-[1.5] text-surface-600">creates a worktree, then runs <span class="text-tx-3" x-text="initStages().length ? initStages().length + (initStages().length === 1 ? ' stage' : ' stages') : 'a single pass'"></span> on <span x-text="initForm.agent || 'the agent each stage picks'"></span></p>
+          <div class="ml-auto flex items-center gap-[9px] shrink-0">
+            <button type="button" @click="closeInitModal()"
+                    class="font-mono text-[13px] h-[31px] px-[14px] rounded-[7px] bg-transparent border border-edge-input text-tx-3 hover:text-tx-2 hover:border-edge-hover transition-colors">
+              cancel
+            </button>
+            <button type="submit" :disabled="initSubmitting"
+                    class="text-[13px] font-sans font-semibold h-[31px] px-[16px] rounded-[7px] bg-accent text-accent-fg hover:bg-accent-bright transition-colors flex items-center gap-[7px] disabled:opacity-50 disabled:cursor-not-allowed">
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor"><polygon points="6 4 20 12 6 20"/></svg>
+              <span x-text="initSubmitting ? 'starting...' : 'start ticket'"></span>
+            </button>
+          </div>
         </div>
       </form>
     </div>

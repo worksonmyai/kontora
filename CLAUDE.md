@@ -15,6 +15,7 @@ make build          # Build binary to ./kontora
 make install        # go install ./cmd/kontora
 make test           # go test -timeout 5m ./...
 make test-race      # go test -race -timeout 5m ./...
+make test-scripts   # shell tests for the hack/ changelog scripts
 make lint           # golangci-lint + go mod tidy -diff + govulncheck + deadcode
 make fmt            # golangci-lint fmt (gofmt + goimports)
 make css            # Rebuild static/app.css after changing Tailwind classes

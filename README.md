@@ -45,6 +45,8 @@ cd kontora
 make install
 ```
 
+What changed in each release is in [CHANGELOG.md](CHANGELOG.md).
+
 ## Quick start
 
 Create the config:

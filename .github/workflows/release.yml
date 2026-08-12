@@ -65,22 +65,16 @@ jobs:
           persist-credentials: false
 
       - name: Generate changelog
-        id: changelog
+        shell: bash
         env:
           REF_NAME: ${{ github.ref_name }}
         run: |
-          PREV_TAG=$(git tag --sort=-v:refname | head -2 | tail -1)
-          if [ -z "$PREV_TAG" ] || [ "$PREV_TAG" = "$REF_NAME" ]; then
-            RANGE="HEAD"
-          else
-            RANGE="${PREV_TAG}..${REF_NAME}"
-          fi
-          {
-            echo 'CHANGELOG<<EOF'
-            git log --pretty=format:"- %s (%h)" --no-merges "$RANGE"
-            echo ''
-            echo 'EOF'
-          } >> "$GITHUB_OUTPUT"
+          # Generated once, from the tag, and handed to update-formula as an
+          # artifact, so the release notes and CHANGELOG.md cannot disagree.
+          ./hack/changelog-for-release.sh "${REF_NAME#v}" "" "$REF_NAME" > changelog-section.md
+          # The release title already carries the version, so the notes drop the
+          # heading. They keep the short hashes that the changelog file omits.
+          ./hack/changelog-for-release.sh --no-heading --hashes "${REF_NAME#v}" "" "$REF_NAME" > release-notes.md
 
       - name: Download all artifacts
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
@@ -92,8 +86,14 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           REF_NAME: ${{ github.ref_name }}
-          CHANGELOG: ${{ steps.changelog.outputs.CHANGELOG }}
-        run: gh release create "$REF_NAME" artifacts/*.tar.gz --title "$REF_NAME" --notes "$CHANGELOG"
+        run: gh release create "$REF_NAME" artifacts/*.tar.gz --title "$REF_NAME" --notes-file release-notes.md
+
+      # Uploaded after the download step so it stays out of artifacts/.
+      - name: Upload changelog section
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: changelog-section
+          path: changelog-section.md
 
   update-formula:
     needs: release
@@ -107,13 +107,24 @@ jobs:
           ref: main
           persist-credentials: false
 
-      - name: Update Homebrew formula
+      - name: Download changelog section
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: changelog-section
+          path: ${{ runner.temp }}/changelog
+
+      - name: Update Homebrew formula and changelog
+        shell: bash
         env:
           TAG: ${{ github.ref_name }}
           REVISION: ${{ github.sha }}
         run: |
           sed -i "s/tag: \"v[^\"]*\"/tag: \"${TAG}\"/" Formula/kontora.rb
           sed -i "s/revision: \"[^\"]*\"/revision: \"${REVISION}\"/" Formula/kontora.rb
+          # The section the release job generated from the tag. Inserting a
+          # version the file already has is a no-op, so a re-run of this job
+          # cannot duplicate it.
+          ./hack/insert-changelog-section.sh CHANGELOG.md < "${RUNNER_TEMP}/changelog/changelog-section.md"
 
       - name: Create PR
         env:
@@ -123,13 +134,13 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
-          git add Formula/kontora.rb
+          git add Formula/kontora.rb CHANGELOG.md
           git diff --cached --quiet && exit 0
           BRANCH="update-formula-${TAG}"
           git push origin --delete "$BRANCH" 2>/dev/null || true
           git checkout -b "$BRANCH"
-          git commit -m "Update Homebrew formula to ${TAG}"
+          git commit -m "Release ${TAG}: formula and changelog"
           git push -u origin "$BRANCH"
           if ! gh pr view "$BRANCH" &>/dev/null; then
-            gh pr create --title "Update Homebrew formula to ${TAG}" --body "Automated formula update for release ${TAG}." --base main
+            gh pr create --title "Release ${TAG}: formula and changelog" --body "Automated formula bump and changelog entry for release ${TAG}." --base main
           fi

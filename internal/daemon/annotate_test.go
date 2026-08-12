@@ -244,7 +244,7 @@ func TestAnnotate_DecisionsThatChangeNothing(t *testing.T) {
 			d := h.newDaemonWithSpawner()
 
 			_, stop := startAnnotationDaemon(t, h, d, "tst-an01",
-				h.annotationTicketMD("tst-an01", "human_review", "attempt: 2\n"))
+				h.annotationTicketMD("tst-an01", "open", "attempt: 2\n"))
 			defer stop()
 
 			events, unsub := d.Subscribe()
@@ -258,7 +258,7 @@ func TestAnnotate_DecisionsThatChangeNothing(t *testing.T) {
 			waitForPlannotatorDone(t, d, "tst-an01")
 
 			got := h.readTask("tst-an01.md")
-			assert.Equal(t, ticket.StatusHumanReview, got.Status)
+			assert.Equal(t, ticket.StatusOpen, got.Status)
 			assert.Equal(t, "step2", got.Stage)
 			assert.Equal(t, 2, got.Attempt)
 			assert.Empty(t, got.AnnotationReturnStatus)
@@ -306,7 +306,7 @@ func TestAnnotate_SubmittedFeedbackParksTicket(t *testing.T) {
 	)
 
 	_, stop := startAnnotationDaemon(t, h, d, "tst-an02",
-		h.annotationTicketMD("tst-an02", "human_review", "attempt: 2\n"))
+		h.annotationTicketMD("tst-an02", "open", "attempt: 2\n"))
 	defer func() {
 		close(release)
 		stop()
@@ -338,7 +338,7 @@ func TestAnnotate_SubmittedFeedbackParksTicket(t *testing.T) {
 	}
 
 	got := h.readTask("tst-an02.md")
-	assert.Equal(t, ticket.StatusHumanReview, got.AnnotationReturnStatus)
+	assert.Equal(t, ticket.StatusOpen, got.AnnotationReturnStatus)
 	assert.Equal(t, "step2", got.Stage, "the stage must not move")
 	assert.Equal(t, 0, got.Attempt)
 	assert.Contains(t, []ticket.Status{ticket.StatusTodo, ticket.StatusInProgress}, got.Status)
@@ -353,9 +353,9 @@ func TestAnnotate_SubmittedFeedbackParksTicket(t *testing.T) {
 	assert.Equal(t, web.PlannotatorOutcomeAnnotated, ev.Outcome)
 }
 
-// TestAnnotate_StatusRules covers which statuses may be annotated. The set is
-// the one cli.Update and UpdateTicket enforce, because the annotation run ends in a
-// ticket-body edit.
+// TestAnnotate_StatusRules covers which statuses may be annotated. Only open
+// qualifies: past that point a stage has run against the ticket text, so a
+// rewrite would contradict work that already happened.
 func TestAnnotate_StatusRules(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -367,10 +367,10 @@ func TestAnnotate_StatusRules(t *testing.T) {
 		wantErr error
 	}{
 		{name: "open", status: "open"},
-		{name: "todo", status: "todo"},
-		{name: "paused", status: "paused"},
-		{name: "human_review", status: "human_review"},
-		{name: "custom status", status: "blocked"},
+		{name: "todo", status: "todo", wantErr: web.ErrInvalidState},
+		{name: "paused", status: "paused", wantErr: web.ErrInvalidState},
+		{name: "human_review", status: "human_review", wantErr: web.ErrInvalidState},
+		{name: "custom status", status: "blocked", wantErr: web.ErrInvalidState},
 		{name: "in_progress", status: "in_progress", wantErr: web.ErrInvalidState},
 		{name: "done", status: "done", wantErr: web.ErrInvalidState},
 		{name: "cancelled", status: "cancelled", wantErr: web.ErrInvalidState},
@@ -384,11 +384,11 @@ func TestAnnotate_StatusRules(t *testing.T) {
 			wantErr:   web.ErrInvalidState,
 		},
 		{
-			// A second pass would overwrite the pending annotations and record todo
-			// as the status to return to.
+			// A second pass would overwrite the pending annotations and record the
+			// parked status as the one to return to.
 			name:    "already parked for an annotation run",
-			status:  "todo",
-			extra:   "annotation_return_status: human_review\n",
+			status:  "open",
+			extra:   "annotation_return_status: open\n",
 			wantErr: web.ErrInvalidState,
 		},
 	}
@@ -437,6 +437,12 @@ func TestAnnotate_InFlightGuard(t *testing.T) {
 		name   string
 		first  func(d *Daemon, id string) error
 		second func(d *Daemon, id string) error
+		// status is what the ticket starts in, because annotate wants open and
+		// review wants human_review. moveTo, when set, is the status the ticket is
+		// moved to before the second call: the two passes are never offered in the
+		// same status, so only a move mid-session can make them contend.
+		status string
+		moveTo string
 		// firstOutput closes the session the first call opened without asking for
 		// any work: the two passes read their stdout differently.
 		firstOutput string
@@ -445,18 +451,23 @@ func TestAnnotate_InFlightGuard(t *testing.T) {
 			name:        "annotate blocks annotate",
 			first:       (*Daemon).StartPlannotatorAnnotate,
 			second:      (*Daemon).StartPlannotatorAnnotate,
+			status:      "open",
 			firstOutput: annotateJSON(annotateDismissed, ""),
 		},
 		{
 			name:        "annotate blocks review",
 			first:       (*Daemon).StartPlannotatorAnnotate,
 			second:      (*Daemon).StartPlannotatorReview,
+			status:      "open",
+			moveTo:      "human_review",
 			firstOutput: annotateJSON(annotateDismissed, ""),
 		},
 		{
 			name:        "review blocks annotate",
 			first:       (*Daemon).StartPlannotatorReview,
 			second:      (*Daemon).StartPlannotatorAnnotate,
+			status:      "human_review",
+			moveTo:      "open",
 			firstOutput: plannotatorCancelledMarker,
 		},
 	}
@@ -475,13 +486,23 @@ func TestAnnotate_InFlightGuard(t *testing.T) {
 				require.NoError(t, <-errCh)
 			}()
 
-			h.seedReviewTicket("tst-an04")
+			h.seedReviewWorktree("tst-an04")
+			h.writeTicket("tst-an04.md", h.reviewTaskMD("tst-an04", tc.status, "kontora/tst-an04"))
 			require.Eventually(t, func() bool {
 				_, err := d.GetTicket("tst-an04")
 				return err == nil
 			}, 3*time.Second, 20*time.Millisecond)
 
 			require.NoError(t, tc.first(d, "tst-an04"))
+
+			if tc.moveTo != "" {
+				h.writeTicket("tst-an04.md", h.reviewTaskMD("tst-an04", tc.moveTo, "kontora/tst-an04"))
+				require.Eventually(t, func() bool {
+					info, err := d.GetTicket("tst-an04")
+					return err == nil && info.Status == tc.moveTo
+				}, 3*time.Second, 20*time.Millisecond, "daemon should see the moved status")
+			}
+
 			assert.ErrorIs(t, tc.second(d, "tst-an04"), web.ErrPlannotatorInFlight)
 
 			require.Eventually(t, func() bool { return h.callCount.Load() == 1 },
@@ -513,7 +534,7 @@ func TestAnnotate_UnknownTicketAndMissingBinary(t *testing.T) {
 			d := h.newDaemonWithSpawner()
 
 			_, stop := startAnnotationDaemon(t, h, d, "tst-an05",
-				h.annotationTicketMD("tst-an05", "human_review", ""))
+				h.annotationTicketMD("tst-an05", "open", ""))
 			defer stop()
 
 			assert.ErrorIs(t, d.StartPlannotatorAnnotate(tc.id), tc.wantErr)
@@ -573,7 +594,7 @@ func TestAnnotate_RewritesTicketAndRestoresStatus(t *testing.T) {
 
 	h.seedReviewWorktree("tst-an06")
 	_, stop := startAnnotationDaemon(t, h, d, "tst-an06",
-		h.annotationTicketMD("tst-an06", "human_review",
+		h.annotationTicketMD("tst-an06", "open",
 			"branch: kontora/tst-an06\nsummary: coded it\nfinal_summary: the whole ticket\n"+
 				"history:\n  - stage: step2\n    agent: agent2\n    exit_code: 0\n"))
 	defer stop()
@@ -583,7 +604,7 @@ func TestAnnotate_RewritesTicketAndRestoresStatus(t *testing.T) {
 		3*time.Second, 20*time.Millisecond)
 	h.stdoutCh <- annotateJSON(annotateAnnotated, "sharpen the goal")
 
-	got := h.waitForAnnotationRuns("tst-an06", 1, ticket.StatusHumanReview)
+	got := h.waitForAnnotationRuns("tst-an06", 1, ticket.StatusOpen)
 	assert.Empty(t, got.AnnotationReturnStatus, "the marker is cleared on success")
 	assert.Equal(t, "step2", got.Stage, "the pipeline must not advance")
 	assert.Empty(t, got.LastError)
@@ -637,7 +658,7 @@ func TestAnnotate_InheritsStageModel(t *testing.T) {
 
 	h.seedReviewWorktree(id)
 	_, stop := startAnnotationDaemon(t, h, d, id,
-		h.annotationTicketMD(id, "human_review", "branch: kontora/"+id+"\n"+
+		h.annotationTicketMD(id, "open", "branch: kontora/"+id+"\n"+
 			"history:\n  - stage: step2\n    agent: agent2\n    exit_code: 0\n"))
 	defer stop()
 
@@ -646,7 +667,7 @@ func TestAnnotate_InheritsStageModel(t *testing.T) {
 		3*time.Second, 20*time.Millisecond)
 	h.stdoutCh <- annotateJSON(annotateAnnotated, "sharpen the goal")
 
-	h.waitForAnnotationRuns(id, 1, ticket.StatusHumanReview)
+	h.waitForAnnotationRuns(id, 1, ticket.StatusOpen)
 
 	spawns := runs.all()
 	require.Len(t, spawns, 1)
@@ -672,7 +693,7 @@ func TestAnnotate_FailedRunKeepsFeedback(t *testing.T) {
 
 	h.seedReviewWorktree("tst-an07")
 	_, stop := startAnnotationDaemon(t, h, d, "tst-an07",
-		h.annotationTicketMD("tst-an07", "human_review", "branch: kontora/tst-an07\n"))
+		h.annotationTicketMD("tst-an07", "open", "branch: kontora/tst-an07\n"))
 	defer stop()
 
 	require.NoError(t, d.StartPlannotatorAnnotate("tst-an07"))
@@ -681,7 +702,7 @@ func TestAnnotate_FailedRunKeepsFeedback(t *testing.T) {
 	h.stdoutCh <- annotateJSON(annotateAnnotated, "sharpen the goal")
 
 	got := h.waitForAnnotationRuns("tst-an07", 1, ticket.StatusPaused)
-	assert.Equal(t, ticket.StatusHumanReview, got.AnnotationReturnStatus, "the marker survives a failure")
+	assert.Equal(t, ticket.StatusOpen, got.AnnotationReturnStatus, "the marker survives a failure")
 	assert.Contains(t, got.LastError, "annotation agent exited with code 1")
 	assert.FileExists(t, annotationsPath(h.reviewsDir, "tst-an07"), "the feedback survives a failure")
 	require.Len(t, got.History, 1)
@@ -692,7 +713,7 @@ func TestAnnotate_FailedRunKeepsFeedback(t *testing.T) {
 	_, err := d.svc.Retry("tst-an07")
 	require.NoError(t, err)
 
-	got = h.waitForAnnotationRuns("tst-an07", 2, ticket.StatusHumanReview)
+	got = h.waitForAnnotationRuns("tst-an07", 2, ticket.StatusOpen)
 	assert.Empty(t, got.AnnotationReturnStatus)
 	assert.NoFileExists(t, annotationsPath(h.reviewsDir, "tst-an07"))
 	require.Len(t, got.History, 2, "one annotation entry per annotation run")
@@ -719,7 +740,7 @@ func TestAnnotate_WorkDir(t *testing.T) {
 		{
 			name:     "existing worktree is reused",
 			worktree: true,
-			status:   "human_review",
+			status:   "open",
 			extra:    "branch: kontora/tst-an08\n",
 		},
 		{
@@ -843,10 +864,10 @@ func TestAnnotate_SessionReuse(t *testing.T) {
 
 			frontmatter := "branch: kontora/" + id + "\n"
 			stageKey := "step2"
-			md := h.annotationTicketMD(id, "human_review", frontmatter)
+			md := h.annotationTicketMD(id, "open", frontmatter)
 			if tc.simple {
 				stageKey = simpleStageName
-				md = h.simpleTicketMD(id, "human_review", frontmatter)
+				md = h.simpleTicketMD(id, "open", frontmatter)
 			}
 
 			if tc.plant {
@@ -883,7 +904,7 @@ func TestAnnotate_SessionReuse(t *testing.T) {
 				3*time.Second, 20*time.Millisecond)
 			h.stdoutCh <- annotateJSON(annotateAnnotated, "sharpen the goal")
 
-			got := h.waitForAnnotationRuns(id, 1, ticket.StatusHumanReview)
+			got := h.waitForAnnotationRuns(id, 1, ticket.StatusOpen)
 			require.Len(t, got.History, 1)
 			assert.Equal(t, stageKey, got.History[0].Stage)
 			assert.Equal(t, tc.want, got.History[0].SessionReused)
@@ -913,7 +934,7 @@ func TestAnnotate_ParkRefusedAfterTicketMoves(t *testing.T) {
 	d := h.newDaemonWithSpawner()
 
 	filePath, stop := startAnnotationDaemon(t, h, d, "tst-an10",
-		h.annotationTicketMD("tst-an10", "human_review", ""))
+		h.annotationTicketMD("tst-an10", "open", ""))
 	defer stop()
 
 	events, unsub := d.Subscribe()
@@ -984,7 +1005,7 @@ func TestAnnotate_ConfiguredPrompt(t *testing.T) {
 
 			h.seedReviewWorktree(id)
 			_, stop := startAnnotationDaemon(t, h, d, id,
-				h.annotationTicketMD(id, "human_review", "branch: kontora/"+id+"\n"))
+				h.annotationTicketMD(id, "open", "branch: kontora/"+id+"\n"))
 			defer stop()
 
 			require.NoError(t, d.StartPlannotatorAnnotate(id))
@@ -995,7 +1016,7 @@ func TestAnnotate_ConfiguredPrompt(t *testing.T) {
 			if !tc.wantOK {
 				got := h.waitForStatus(id+".md", ticket.StatusPaused, 10*time.Second)
 				assert.Contains(t, got.LastError, "does not carry the annotations")
-				assert.Equal(t, ticket.StatusHumanReview, got.AnnotationReturnStatus,
+				assert.Equal(t, ticket.StatusOpen, got.AnnotationReturnStatus,
 					"the marker stays, so a fixed prompt can be retried")
 				assert.FileExists(t, annotationsPath(h.reviewsDir, id))
 				assert.Empty(t, runs.all(), "no agent may run without the annotations")
@@ -1003,7 +1024,7 @@ func TestAnnotate_ConfiguredPrompt(t *testing.T) {
 				return
 			}
 
-			h.waitForAnnotationRuns(id, 1, ticket.StatusHumanReview)
+			h.waitForAnnotationRuns(id, 1, ticket.StatusOpen)
 
 			spawns := runs.all()
 			require.Len(t, spawns, 1)
@@ -1066,7 +1087,7 @@ func TestAnnotate_LeavesStageSessionRecordsAlone(t *testing.T) {
 	plantedDone := plant(completedRecord, doneSession)
 
 	_, stop := startAnnotationDaemon(t, h, d, id,
-		h.annotationTicketMD(id, "human_review", "branch: kontora/"+id+"\n"))
+		h.annotationTicketMD(id, "open", "branch: kontora/"+id+"\n"))
 	defer stop()
 
 	require.NoError(t, d.StartPlannotatorAnnotate(id))
@@ -1074,7 +1095,7 @@ func TestAnnotate_LeavesStageSessionRecordsAlone(t *testing.T) {
 		3*time.Second, 20*time.Millisecond)
 	h.stdoutCh <- annotateJSON(annotateAnnotated, "sharpen the goal")
 
-	got := h.waitForAnnotationRuns(id, 1, ticket.StatusHumanReview)
+	got := h.waitForAnnotationRuns(id, 1, ticket.StatusOpen)
 	spawns := runs.all()
 	require.Len(t, spawns, 1)
 	assert.False(t, got.History[0].SessionReused,
@@ -1245,7 +1266,7 @@ func TestAnnotate_PiSessionDir(t *testing.T) {
 			}
 
 			_, stop := startAnnotationDaemon(t, h, d, id,
-				h.annotationTicketMD(id, "human_review", "branch: kontora/"+id+"\n"))
+				h.annotationTicketMD(id, "open", "branch: kontora/"+id+"\n"))
 			defer stop()
 
 			require.NoError(t, d.StartPlannotatorAnnotate(id))
@@ -1253,7 +1274,7 @@ func TestAnnotate_PiSessionDir(t *testing.T) {
 				3*time.Second, 20*time.Millisecond)
 			h.stdoutCh <- annotateJSON(annotateAnnotated, "sharpen the goal")
 
-			got := h.waitForAnnotationRuns(id, 1, ticket.StatusHumanReview)
+			got := h.waitForAnnotationRuns(id, 1, ticket.StatusOpen)
 			spawns := runs.all()
 			require.Len(t, spawns, 1)
 			assert.Equal(t, tc.resume, got.History[0].SessionReused)

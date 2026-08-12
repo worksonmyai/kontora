@@ -472,11 +472,12 @@ the built-in `rework` stage, whose prompt reads it through
 
 ### Annotating the ticket
 
-Any initialized ticket in a status that allows an edit (`open`, `todo`, `paused`,
-`human_review`, or a custom status) opens its own markdown file. There is no
-worktree, no merge base, and no diff: the target is the file in `tickets_dir`. A
-ticket that is already parked for an annotation run is refused, so a second set
-of notes cannot overwrite the pending one.
+An initialized ticket in `open` opens its own markdown file. Later statuses are
+refused: a stage has run against the ticket text by then, and a rewrite would
+contradict the work it produced. There is no worktree, no merge base, and no
+diff: the target is the file in `tickets_dir`. A ticket that is already parked
+for an annotation run is refused, so a second set of notes cannot overwrite the
+pending one.
 
 Approving or dismissing leaves the ticket untouched. Submitting annotations:
 

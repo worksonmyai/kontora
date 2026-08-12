@@ -92,7 +92,7 @@ func (d *Daemon) StartPlannotatorAnnotate(id string) error {
 		d.mu.Unlock()
 		return web.ErrTicketNotFound
 	}
-	refusal := annotateRefusal(cfg, ts.ticket)
+	refusal := annotateRefusal(ts.ticket)
 	d.mu.Unlock()
 	if refusal != nil {
 		return refusal
@@ -104,7 +104,7 @@ func (d *Daemon) StartPlannotatorAnnotate(id string) error {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	filePath, err := d.claimAnnotateSession(id, cfg, cancel)
+	filePath, err := d.claimAnnotateSession(id, cancel)
 	if err != nil {
 		cancel()
 		return err
@@ -127,7 +127,7 @@ func (d *Daemon) StartPlannotatorAnnotate(id string) error {
 // that registers it: the scheduler claims a ticket under the same lock, and a
 // pickup that started a moment earlier would edit the file the reviewer is
 // reading. From here runTicket leaves the ticket alone until the session closes.
-func (d *Daemon) claimAnnotateSession(id string, cfg *config.Config, cancel context.CancelFunc) (string, error) {
+func (d *Daemon) claimAnnotateSession(id string, cancel context.CancelFunc) (string, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
@@ -135,7 +135,7 @@ func (d *Daemon) claimAnnotateSession(id string, cfg *config.Config, cancel cont
 	if !ok {
 		return "", web.ErrTicketNotFound
 	}
-	if err := annotateRefusal(cfg, ts.ticket); err != nil {
+	if err := annotateRefusal(ts.ticket); err != nil {
 		return "", err
 	}
 	if _, running := d.running[id]; running {
@@ -148,19 +148,24 @@ func (d *Daemon) claimAnnotateSession(id string, cfg *config.Config, cancel cont
 	return ts.filePath, nil
 }
 
+// annotateStatus is the only status a ticket may be annotated in. Later
+// statuses mean a stage has already run against the ticket text, and rewriting
+// it then contradicts the work that stage produced.
+const annotateStatus = ticket.StatusOpen
+
 // annotateRefusal reports why a ticket cannot be opened in Plannotator's
 // annotation UI, or nil when it can. buildTicketInfo asks the same question to
 // decide whether the dashboard offers the button, so the UI cannot offer a pass
 // the daemon refuses. Must be called with d.mu held, or on a ticket the caller
 // owns.
-func annotateRefusal(cfg *config.Config, t *ticket.Ticket) error {
+func annotateRefusal(t *ticket.Ticket) error {
 	switch {
 	case !t.Kontora:
 		// The scheduler only picks up a kontora ticket, so annotating anything else
 		// would park it with feedback nothing ever reads.
 		return fmt.Errorf("%w: ticket is not initialized", web.ErrInvalidState)
-	case !cfg.StatusAllowsEdit(string(t.Status)):
-		return fmt.Errorf("%w: a ticket in %s cannot be edited", web.ErrInvalidState, t.Status)
+	case t.Status != annotateStatus:
+		return fmt.Errorf("%w: a ticket in %s cannot be annotated", web.ErrInvalidState, t.Status)
 	case t.AnnotationReturnStatus != "":
 		// A second pass would overwrite the pending annotations and record the
 		// parked status as the one to return to.
@@ -282,7 +287,7 @@ func (d *Daemon) parkForAnnotation(id string) error {
 	// A Plannotator session can stay open for as long as its timeout allows, and
 	// the ticket can be moved or finished in the meantime. Parking then would
 	// record a status the annotation run must not restore.
-	if !d.config().StatusAllowsEdit(string(t2.Status)) {
+	if t2.Status != annotateStatus {
 		return fmt.Errorf("%w: ticket moved to %s while the annotation session was open", web.ErrInvalidState, t2.Status)
 	}
 	if t2.AnnotationReturnStatus != "" {

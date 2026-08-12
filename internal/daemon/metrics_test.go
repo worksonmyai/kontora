@@ -429,14 +429,14 @@ func TestMetricsAnnotationRun(t *testing.T) {
 	d := h.newAnnotationDaemon(runner, WithMeterProvider(mp))
 
 	_, stop := startAnnotationDaemon(t, h, d, id,
-		h.annotationTicketMD(id, "human_review", "branch: kontora/"+id+"\n"))
+		h.annotationTicketMD(id, "open", "branch: kontora/"+id+"\n"))
 
 	require.NoError(t, d.StartPlannotatorAnnotate(id))
 	require.Eventually(t, func() bool { return h.callCount.Load() == 1 },
 		3*time.Second, 20*time.Millisecond)
 	h.stdoutCh <- annotateJSON(annotateAnnotated, "sharpen the goal")
 
-	got := h.waitForAnnotationRuns(id, 1, ticket.StatusHumanReview)
+	got := h.waitForAnnotationRuns(id, 1, ticket.StatusOpen)
 	require.Len(t, got.History, 1)
 	require.True(t, got.History[0].SessionReused, "the run must have resumed the stage's session")
 	stop()

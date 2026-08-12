@@ -69,9 +69,8 @@ func truncateForMessage(s string) string {
 //
 // Synchronous errors:
 //   - web.ErrTicketNotFound: unknown ticket
-//   - web.ErrInvalidState: the ticket is not initialized, its status does not
-//     allow editing, or an annotation run is already pending. The message names
-//     which of the three it was.
+//   - web.ErrInvalidState: the ticket is not open, or an annotation run is
+//     already pending. The message names which of the two it was.
 //   - web.ErrPlannotatorInFlight: a review or annotation is already running
 //   - web.ErrPlannotatorBinary: the plannotator binary is not on PATH
 //
@@ -85,7 +84,7 @@ func (d *Daemon) StartPlannotatorAnnotate(id string) error {
 
 	cfg := d.config()
 	// Checked here as well as in claimAnnotateSession, so that an unknown ticket or
-	// a status that forbids an edit is reported instead of a missing binary.
+	// a status that forbids annotation is reported instead of a missing binary.
 	d.mu.Lock()
 	ts, ok := d.tickets[id]
 	if !ok {
@@ -158,12 +157,11 @@ const annotateStatus = ticket.StatusOpen
 // decide whether the dashboard offers the button, so the UI cannot offer a pass
 // the daemon refuses. Must be called with d.mu held, or on a ticket the caller
 // owns.
+//
+// An uninitialized ticket is not refused: parkForAnnotation adopts it, the same
+// way a move on the board does.
 func annotateRefusal(t *ticket.Ticket) error {
 	switch {
-	case !t.Kontora:
-		// The scheduler only picks up a kontora ticket, so annotating anything else
-		// would park it with feedback nothing ever reads.
-		return fmt.Errorf("%w: ticket is not initialized", web.ErrInvalidState)
 	case t.Status != annotateStatus:
 		return fmt.Errorf("%w: a ticket in %s cannot be annotated", web.ErrInvalidState, t.Status)
 	case t.AnnotationReturnStatus != "":
@@ -294,6 +292,12 @@ func (d *Daemon) parkForAnnotation(id string) error {
 		return fmt.Errorf("%w: the ticket is already parked for an annotation run", web.ErrInvalidState)
 	}
 
+	// The scheduler only picks up a kontora ticket, so an uninitialized one is
+	// adopted here or its annotations are never read. It keeps its own pipeline
+	// and agent fields, which stay empty when it has none: the run needs neither.
+	if err := t2.SetField("kontora", true); err != nil {
+		return fmt.Errorf("set kontora: %w", err)
+	}
 	if err := t2.SetField("annotation_return_status", string(t2.Status)); err != nil {
 		return fmt.Errorf("set annotation_return_status: %w", err)
 	}
@@ -365,7 +369,7 @@ func (d *Daemon) runAnnotationRun(ctx, taskCtx context.Context, cfg *config.Conf
 		stageName = simpleStageName
 	}
 
-	wtPath, err := d.annotationWorkDir(t, ticketID)
+	wtPath, err := d.annotationWorkDir(t, ticketID, filePath)
 	if err != nil {
 		log.Error("annotation: resolve work dir failed", "err", err)
 		d.pauseTicket(t, filePath, "annotation: resolve work dir failed: "+err.Error())
@@ -625,7 +629,14 @@ func (d *Daemon) restoredStatus(returnStatus ticket.Status) (status ticket.Statu
 // when a previous run made one, and the repository itself otherwise. It creates
 // neither a worktree nor a branch, because the run edits one file in tickets_dir
 // and a ticket annotated before its first stage has no work to put on a branch.
-func (d *Daemon) annotationWorkDir(t *ticket.Ticket, ticketID string) (string, error) {
+//
+// A ticket that names no repository falls back to the directory its own file is
+// in. The agent then answers the annotations without the code in front of it,
+// which is worse than a repository but is the only cwd such a ticket has.
+func (d *Daemon) annotationWorkDir(t *ticket.Ticket, ticketID, filePath string) (string, error) {
+	if t.Path == "" {
+		return filepath.Dir(filePath), nil
+	}
 	repoName, repoPath, err := d.resolvePath(t)
 	if err != nil {
 		return "", err

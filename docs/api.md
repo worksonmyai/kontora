@@ -22,7 +22,7 @@ When the web server is enabled, the following endpoints are exposed:
 | `PUT /api/tickets/{id}` | Update an open ticket's body or frontmatter fields (`body`, `pipeline`, `path`, `agent`, `branch`, `base_branch`). |
 | `POST /api/tickets/upload` | Import tickets from raw `.md` file content (multipart form). |
 | `POST /api/tickets/{id}/plannotator-review` | Open the ticket's branch diff in Plannotator. Only in `human_review`. Submitted feedback routes the ticket to the built-in rework stage. See [plannotator](configuration.md#plannotator). |
-| `POST /api/tickets/{id}/plannotator-annotate` | Open the ticket's own markdown in Plannotator. Needs an initialized ticket in `open`. Submitted annotations schedule a run that rewrites the ticket. |
+| `POST /api/tickets/{id}/plannotator-annotate` | Open the ticket's own markdown in Plannotator. Only in `open`. Submitted annotations set `kontora: true` and schedule a run that rewrites the ticket. |
 | `GET /api/events` | Server-Sent Events stream of ticket updates. |
 | `GET /ws/terminal/{id}` | Read-only WebSocket relay of a running agent's tmux session. |
 | `GET /health` | Health check (returns 200). |

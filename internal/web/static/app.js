@@ -820,9 +820,9 @@ function kontora() {
       }
     },
 
-    // canAnnotateTicket reads the daemon's own answer. The rules (an initialized
-    // open ticket, no annotation run already pending) live in the daemon, so a
-    // button here can never offer a pass it refuses.
+    // canAnnotateTicket reads the daemon's own answer. The rules (an open ticket,
+    // no annotation run already pending) live in the daemon, so a button here can
+    // never offer a pass it refuses.
     canAnnotateTicket(ticket) {
       return !!ticket?.can_annotate;
     },

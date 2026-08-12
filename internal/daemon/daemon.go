@@ -1139,22 +1139,29 @@ func (d *Daemon) runTicket(ctx context.Context, ticketID string) {
 	// repository and branch can't both pass this guard and reuse each
 	// other's worktree by surprise. Keyed by (repoPath, branch) because
 	// identical branch names in different repos don't collide.
+	//
+	// An annotation run reserves nothing: it builds no worktree and stamps no
+	// branch, and two tickets that name neither a repository nor a branch would
+	// share one key and pause each other.
 	branch := ticketBranch(cfg, t)
-	branchKey := expandTilde(t.Path) + "\x00" + branch
-	if holder, ok := d.runningBranches[branchKey]; ok && holder != ticketID {
-		taskCancel()
-		delete(d.running, ticketID)
-		d.mu.Unlock()
-		d.pauseTicket(t, filePath, fmt.Sprintf("branch %s in use by ticket %s", branch, holder))
-		return
+	var branchKey string
+	if t.AnnotationReturnStatus == "" {
+		branchKey = expandTilde(t.Path) + "\x00" + branch
+		if holder, ok := d.runningBranches[branchKey]; ok && holder != ticketID {
+			taskCancel()
+			delete(d.running, ticketID)
+			d.mu.Unlock()
+			d.pauseTicket(t, filePath, fmt.Sprintf("branch %s in use by ticket %s", branch, holder))
+			return
+		}
+		d.runningBranches[branchKey] = ticketID
 	}
-	d.runningBranches[branchKey] = ticketID
 
 	defer func() {
 		taskCancel()
 		d.mu.Lock()
 		delete(d.running, ticketID)
-		if d.runningBranches[branchKey] == ticketID {
+		if branchKey != "" && d.runningBranches[branchKey] == ticketID {
 			delete(d.runningBranches, branchKey)
 		}
 		d.mu.Unlock()

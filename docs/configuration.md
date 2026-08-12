@@ -472,12 +472,16 @@ the built-in `rework` stage, whose prompt reads it through
 
 ### Annotating the ticket
 
-An initialized ticket in `open` opens its own markdown file. Later statuses are
-refused: a stage has run against the ticket text by then, and a rewrite would
-contradict the work it produced. There is no worktree, no merge base, and no
-diff: the target is the file in `tickets_dir`. A ticket that is already parked
-for an annotation run is refused, so a second set of notes cannot overwrite the
-pending one.
+A ticket in `open` opens its own markdown file. Later statuses are refused: a
+stage has run against the ticket text by then, and a rewrite would contradict the
+work it produced. There is no worktree, no merge base, and no diff: the target is
+the file in `tickets_dir`. A ticket that is already parked for an annotation run
+is refused, so a second set of notes cannot overwrite the pending one.
+
+The ticket does not have to be initialized. Submitting annotations sets
+`kontora: true`, because the scheduler only picks up a kontora ticket and the
+notes would otherwise never be read. It is the same adoption a status change on
+the board performs, and it adds no pipeline or agent.
 
 Approving or dismissing leaves the ticket untouched. Submitting annotations:
 
@@ -513,8 +517,11 @@ stopped by anything. Set the ticket's `agent` to a profile with narrower
 permissions if that matters to you.
 
 The run works in the ticket's existing worktree when a previous run created one,
-and in the repository itself otherwise. It never creates a worktree or a branch:
-a ticket annotated before its first stage has no work to put on a branch.
+and in the repository itself otherwise. A ticket with no `path` runs in
+`tickets_dir`, which is the only directory such a ticket has; the agent then
+answers the notes without the code in front of it. It never creates a worktree or
+a branch: a ticket annotated before its first stage has no work to put on a
+branch.
 
 Where it can, the run continues the conversation the ticket's current stage
 ended in, so the agent already knows what it built and why. The daemon records

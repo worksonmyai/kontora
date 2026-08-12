@@ -376,12 +376,10 @@ func TestAnnotate_StatusRules(t *testing.T) {
 		{name: "cancelled", status: "cancelled", wantErr: web.ErrInvalidState},
 		{name: "archived", status: "archived", wantErr: web.ErrInvalidState},
 		{
-			// The scheduler never picks this ticket up, so a park would strand the
-			// feedback.
+			// Allowed: the park adopts the ticket, so the scheduler picks it up.
 			name:      "uninitialized ticket",
 			status:    "open",
 			unmanaged: true,
-			wantErr:   web.ErrInvalidState,
 		},
 		{
 			// A second pass would overwrite the pending annotations and record the
@@ -728,14 +726,16 @@ func TestAnnotate_FailedRunKeepsFeedback(t *testing.T) {
 
 // TestAnnotate_WorkDir covers where a annotation run works. A ticket with a worktree
 // reuses it; a ticket annotated before its first stage runs in the repository and
-// is given no branch.
+// is given no branch; a ticket that names no repository runs in tickets_dir.
 func TestAnnotate_WorkDir(t *testing.T) {
 	cases := []struct {
 		name string
 		// worktree creates the ticket's worktree and branch before the run.
 		worktree bool
-		extra    string
-		status   string
+		// noPath drops the `path` field, leaving the run no repository to work in.
+		noPath bool
+		extra  string
+		status string
 	}{
 		{
 			name:     "existing worktree is reused",
@@ -746,6 +746,11 @@ func TestAnnotate_WorkDir(t *testing.T) {
 		{
 			name:   "no prior run works in the repository",
 			status: "open",
+		},
+		{
+			name:   "no path works in tickets_dir",
+			status: "open",
+			noPath: true,
 		},
 	}
 
@@ -765,8 +770,11 @@ func TestAnnotate_WorkDir(t *testing.T) {
 			if tc.worktree {
 				h.seedReviewWorktree("tst-an08")
 			}
-			_, stop := startAnnotationDaemon(t, h, d, "tst-an08",
-				h.annotationTicketMD("tst-an08", tc.status, tc.extra))
+			md := h.annotationTicketMD("tst-an08", tc.status, tc.extra)
+			if tc.noPath {
+				md = strings.Replace(md, "path: "+h.repoDir+"\n", "", 1)
+			}
+			_, stop := startAnnotationDaemon(t, h, d, "tst-an08", md)
 			defer stop()
 
 			require.NoError(t, d.StartPlannotatorAnnotate("tst-an08"))
@@ -779,10 +787,14 @@ func TestAnnotate_WorkDir(t *testing.T) {
 			require.Len(t, spawns, 1)
 
 			wtPath := filepath.Join(h.wtDir, h.repoName, "tst-an08")
-			if tc.worktree {
+			switch {
+			case tc.worktree:
 				assert.Equal(t, wtPath, spawns[0].Dir)
 				assert.Equal(t, "kontora/tst-an08", got.Branch)
-			} else {
+			case tc.noPath:
+				assert.Equal(t, h.tasksDir, spawns[0].Dir, "no repository means the ticket's own directory")
+				assert.Empty(t, got.Branch)
+			default:
 				assert.Equal(t, h.repoDir, spawns[0].Dir, "no worktree means the repository itself")
 				assert.Empty(t, got.Branch, "a annotation run must not stamp a branch")
 				assert.NoDirExists(t, wtPath)
@@ -792,6 +804,47 @@ func TestAnnotate_WorkDir(t *testing.T) {
 			assert.False(t, got.History[0].SessionReused)
 		})
 	}
+}
+
+// TestAnnotate_AdoptsUninitializedTicket pins the park's side effect: a ticket
+// written by something other than kontora carries no `kontora: true`, and the
+// scheduler would never pick it up, so the park sets the field. The ticket keeps
+// its empty pipeline and runs under the simple stage key.
+func TestAnnotate_AdoptsUninitializedTicket(t *testing.T) {
+	h := newPlannotatorHarness(t)
+	filePath := filepath.Join(h.tasksDir, "tst-an14.md")
+
+	var runs annotationRun
+	runner := func(_ context.Context, p RunnerParams) (process.Result, error) {
+		runs.record(p)
+		return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now()}, nil
+	}
+	d := h.newAnnotationDaemon(runner)
+
+	md := strings.Replace(h.simpleTicketMD("tst-an14", "open", ""), "kontora: true\n", "", 1)
+	_, stop := startAnnotationDaemon(t, h, d, "tst-an14", md)
+	defer stop()
+
+	before, err := ticket.ParseFile(filePath)
+	require.NoError(t, err)
+	require.False(t, before.Kontora, "the ticket starts unmanaged")
+
+	require.NoError(t, d.StartPlannotatorAnnotate("tst-an14"))
+	require.Eventually(t, func() bool { return h.callCount.Load() == 1 },
+		3*time.Second, 20*time.Millisecond)
+	h.stdoutCh <- annotateJSON(annotateAnnotated, "sharpen the goal")
+
+	got := h.waitForAnnotationRuns("tst-an14", 1, ticket.StatusOpen)
+	assert.True(t, got.Kontora, "the park adopts the ticket")
+	assert.Empty(t, got.Pipeline, "adoption must not invent a pipeline")
+	assert.Empty(t, got.AnnotationReturnStatus)
+	assert.Empty(t, got.Branch, "a annotation run must not stamp a branch")
+	require.Len(t, got.History, 1)
+	assert.Equal(t, simpleStageName, got.History[0].Stage)
+
+	spawns := runs.all()
+	require.Len(t, spawns, 1)
+	assert.Contains(t, renderedPrompt(spawns[0]), "sharpen the goal")
 }
 
 // TestAnnotate_SessionReuse covers the completed-session record: a annotation run

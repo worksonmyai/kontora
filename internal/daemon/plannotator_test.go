@@ -13,6 +13,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 
 	"github.com/worksonmyai/kontora/internal/config"
 	"github.com/worksonmyai/kontora/internal/process"
@@ -89,8 +91,9 @@ func (h *plannotatorHarness) lookup() PlannotatorLookup {
 	}
 }
 
-func (h *plannotatorHarness) newDaemonWithSpawner() *Daemon {
-	return New(h.cfg,
+func (h *plannotatorHarness) newDaemonWithSpawner(opts ...Option) *Daemon {
+	base := make([]Option, 0, 7+len(opts))
+	base = append(base,
 		WithLogger(testLogger(h.t)),
 		WithDebounce(50*time.Millisecond),
 		WithLockPath(h.lockPath),
@@ -99,6 +102,7 @@ func (h *plannotatorHarness) newDaemonWithSpawner() *Daemon {
 		WithPlannotatorSpawner(h.spawner()),
 		WithPlannotatorLookup(h.lookup()),
 	)
+	return New(h.cfg, append(base, opts...)...)
 }
 
 // seedReviewTicket writes a ticket already parked in the human_review column
@@ -326,8 +330,12 @@ func TestPlannotator_ReworkExitForeignClaimGuard(t *testing.T) {
 	require.NoError(t, d.StartPlannotatorReview("tst-rg01"))
 	h.stdoutCh <- "please fix this"
 
+	// Parse directly rather than through h.readTask: the runner writes this
+	// file with os.WriteFile, which truncates in place, so a poll can catch it
+	// half-written. That is a retry, not a failure.
 	require.Eventually(t, func() bool {
-		return h.readTask("tst-rg01.md").ClaimedBy == "other-host"
+		tk, err := ticket.ParseFile(ticketPath)
+		return err == nil && tk.ClaimedBy == "other-host"
 	}, 5*time.Second, 20*time.Millisecond, "rework runner should claim for other-host")
 	waitForAgentsDone(t, d, 5*time.Second)
 
@@ -400,7 +408,8 @@ func TestPlannotator_ReworkPath(t *testing.T) {
 func TestPlannotator_ReworkCompletion(t *testing.T) {
 	h := newPlannotatorHarness(t)
 	// Use the default agent2=true so rework exits 0 immediately.
-	d := h.newDaemonWithSpawner()
+	reader := sdkmetric.NewManualReader()
+	d := h.newDaemonWithSpawner(WithMeterProvider(sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -442,6 +451,28 @@ func TestPlannotator_ReworkCompletion(t *testing.T) {
 
 	cancel()
 	require.NoError(t, <-errCh)
+
+	// The rework stage calls the runner directly, bypassing spawnAgentRun, so
+	// it needs its own record. Collected after the daemon stopped.
+	var rm metricdata.ResourceMetrics
+	require.NoError(t, reader.Collect(context.Background(), &rm))
+	byName := map[string]metricdata.Metrics{}
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			byName[m.Name] = m
+		}
+	}
+
+	runs, ok := byName["kontora.stage.runs"]
+	require.True(t, ok, "the rework run must be counted")
+	assert.Equal(t, map[string]int64{config.ReworkStageName: 1}, sumByAttr(t, runs, "stage"))
+	assert.Equal(t, map[string]int64{"success": 1}, sumByAttr(t, runs, "outcome"))
+
+	dur, ok := byName["kontora.stage.duration"]
+	require.True(t, ok, "the rework run must record a duration")
+	hist := dur.Data.(metricdata.Histogram[float64])
+	require.Len(t, hist.DataPoints, 1)
+	assert.Equal(t, uint64(1), hist.DataPoints[0].Count, "exactly one sample for the same run")
 }
 
 // TestPlannotator_ReworkFinalSummary covers the ticket-level summary across a

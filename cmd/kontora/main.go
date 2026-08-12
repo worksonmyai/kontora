@@ -199,6 +199,7 @@ func runDaemon(cfg *config.Config, configPath string, override func(*config.Conf
 		daemon.WithLockPath(lockPath),
 		daemon.WithConfigPath(configPath),
 		daemon.WithConfigOverride(override),
+		daemon.WithVersion(version),
 	)
 	return d.Run(ctx)
 }

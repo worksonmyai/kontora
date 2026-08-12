@@ -524,6 +524,121 @@ This record is deliberately separate from the crash-recovery record a stage
 writes while it runs. Only the annotation run reads it, so an ordinary
 `kontora retry` of a stage that finished still starts fresh.
 
+## metrics
+
+Optional OTLP export of what the daemon measures: stage runs and their
+durations, pipeline transitions, agent failures, token spend, and scheduler
+state. It is off by default and pushes over OTLP/HTTP to a collector you
+supply. There is no `/metrics` route and no scrape target; the daemon's HTTP
+surface does not change.
+
+```yaml
+metrics:
+  enabled: true
+  endpoint: localhost:4318
+  insecure: true
+  interval: 60s
+  headers:
+    authorization: Bearer <token>
+```
+
+| Field | Required | Default | Description |
+|-------|----------|---------|-------------|
+| `enabled` | no | `false` | Export metrics. When false the daemon builds no exporter and opens no connection. |
+| `endpoint` | no | `""` | Collector address, as a bare `host:port` or a full URL. Empty leaves the address to `OTEL_EXPORTER_OTLP_ENDPOINT` / `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT`. |
+| `insecure` | no | `false` | Send over plain HTTP. Ignored when `endpoint` states its own scheme, and when `endpoint` is empty. |
+| `interval` | no | `60s` | How often the collected measurements are pushed. |
+| `headers` | no | `{}` | Headers added to each export request, for a collector that needs auth. |
+
+An `endpoint` that states a scheme decides the transport, whatever `insecure`
+says: `http://collector:4318` is always plain and `https://collector:4318`
+always TLS. A bare `host:port` leaves the choice to `insecure`. Combining
+`https://` with `insecure: true` contradicts itself, so the daemon keeps the
+scheme and logs a warning. Only `http` and `https` are accepted; the config
+fails to load on any other scheme.
+
+`insecure` describes the configured `endpoint` and nothing else. With no
+`endpoint`, the transport comes from `OTEL_EXPORTER_OTLP_ENDPOINT` along with
+the address, so `insecure: true` on its own cannot downgrade an `https://`
+endpoint set in the environment.
+
+The request path is `/v1/metrics` unless the endpoint names one. Both
+`collector:4318` and `http://collector:4318` post to
+`http://collector:4318/v1/metrics`; write the path out
+(`https://collector.example/otlp/v1/metrics`) only when the collector serves it
+somewhere else.
+
+The SDK's own `OTEL_EXPORTER_OTLP_*` variables are read for the address and
+headers the config leaves unset, and `OTEL_RESOURCE_ATTRIBUTES` is merged into
+the resource. `OTEL_METRIC_EXPORT_INTERVAL` is not: `interval` always has a
+value, its own or the 60s default, and it is passed to the reader on every
+start. `metrics.enabled` is the only kill switch: `OTEL_SDK_DISABLED` is not
+implemented by the Go SDK and does nothing here.
+
+Exporting never blocks ticket work. A collector that is down, or an exporter
+that cannot be built at all, produces a warning and the daemon runs on with
+metrics off.
+
+### What is exported
+
+| Name | Kind | Unit | Attributes |
+|------|------|------|------------|
+| `kontora.stage.runs` | counter | `{run}` | `stage`, `agent`, `pipeline`, `outcome`, `annotation`, `exit_code` |
+| `kontora.stage.duration` | histogram | `s` | `stage`, `agent`, `pipeline`, `outcome`, `annotation` |
+| `kontora.stage.transitions` | counter | `{transition}` | `stage`, `action` |
+| `kontora.agent.errors` | counter | `{error}` | `stage`, `agent`, `kind` |
+| `kontora.agent.tokens` | counter | `{token}` | `stage`, `agent`, `kind` |
+| `kontora.queue.wait` | histogram | `s` | none |
+| `kontora.scheduler.active` | gauge | `{agent}` | none |
+| `kontora.scheduler.capacity` | gauge | `{agent}` | none |
+| `kontora.queue.depth` | gauge | `{ticket}` | none |
+
+`outcome` is `success`, `failure`, or `cancelled`. `action` is the pipeline
+action the exit produced: `advance`, `complete`, `retry`, `back`, `pause`, or
+`park`. On `kontora.agent.errors`, `kind` is `session_api_error` for a failure
+found in Claude's session record and `failure_pattern` for one matched against
+the agent's output log. On `kontora.agent.tokens` it is `input`, `output`,
+`cache_create`, or `cache_read`; an agent whose session format does not report
+token counts (pi) contributes nothing rather than zeroes.
+
+A ticket that runs without a pipeline reports `pipeline=""` and `stage=default`,
+which is the same key its log and its history rows already use.
+
+`annotation` is `true` for a run that answers review annotations instead of
+doing the stage's work. Such a run borrows the stage's name, so a query about a
+stage's own runs and durations has to ask for `annotation="false"`. Its token
+spend has no such attribute: it is attributed to the stage whose conversation it
+continues.
+
+A stage run is counted once however many agent invocations it took, so a stage
+that resumes an interrupted session and then falls back to a fresh one is one
+run, not two. Token spend is counted per invocation, because each invocation is
+a separate real spend. An annotation run continues the session its stage
+finished, and records only the tokens it adds to it rather than the session's
+running totals. A run that recovers a session the daemon died in reports that
+session's totals whole, because the invocation that spent them never got to
+report anything.
+
+`kontora.queue.wait` measures a ticket from the moment it is enqueued to the
+moment its run starts, so it includes the wait for a free concurrency slot.
+
+Some work is not measured at all. The final-summary agent runs with session
+persistence off, so it writes no session file to read token counts from; it
+appears in neither `kontora.stage.runs` nor `kontora.agent.tokens`. The
+`plannotator` subprocess is not instrumented either. Total wall time per ticket
+therefore does not add up from the stage durations alone.
+
+The built-in `rework` stage produces `kontora.stage.runs` and
+`kontora.stage.duration` but no `kontora.stage.transitions`, because it routes
+the ticket itself rather than through the pipeline.
+
+No ticket ID appears in any attribute. A store holding thousands of tickets
+would make that unbounded.
+
+The resource carries `service.name` (`kontora`), `service.version`, and
+`service.instance.id`, which is the daemon's `instance_name`. Two daemons
+sharing one collector are told apart by that last one.
+
 ## Reloading the config
 
 The running daemon applies most config edits without a restart, so you can
@@ -547,12 +662,14 @@ daemon names an existing ticket whose branch is still empty.
 ### What needs a restart
 
 `tickets_dir`, `worktrees_dir`, `logs_dir`, `instance_name`, `tmux_session`,
-`max_concurrent_agents`, and the whole `web` block. The daemon reads these once
-at startup: the watched directory, the worktree root, the claim name, the tmux
-session, the semaphore size, and the HTTP listener are all fixed by then. A
+`max_concurrent_agents`, and the whole `web` and `metrics` blocks
+(`metrics.enabled`, `metrics.endpoint`, `metrics.insecure`, `metrics.interval`,
+`metrics.headers`). The daemon reads these once at startup: the watched
+directory, the worktree root, the claim name, the tmux session, the semaphore
+size, the HTTP listener, and the metric exporter are all fixed by then. A
 reload keeps the running value and logs one warning per field that differs on
 disk, naming the field, the running value, and the value it ignored. The
-`web.token` value is never logged.
+`web.token` and `metrics.headers` values are never logged.
 
 To rename `tmux_session`, stop the daemon, run `tmux kill-session -t =<old-name>`,
 then start it with the new name. The old session is not renamed for you, and it

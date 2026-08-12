@@ -319,7 +319,7 @@ const resumeStage = "step1"
 
 // newResumeDaemon wires a daemon whose runner calls run with the 1-based
 // invocation count. A nil run exits cleanly.
-func newResumeDaemon(t *testing.T, agentBinary string, run func(ctx context.Context, n int, p RunnerParams) (process.Result, error)) *resumeDaemon {
+func newResumeDaemon(t *testing.T, agentBinary string, run func(ctx context.Context, n int, p RunnerParams) (process.Result, error), opts ...Option) *resumeDaemon {
 	t.Helper()
 	h := newHarness(t)
 	claudeDir := t.TempDir()
@@ -338,14 +338,14 @@ func newResumeDaemon(t *testing.T, agentBinary string, run func(ctx context.Cont
 		return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now()}, nil
 	}
 
-	rd.d = New(cfg,
+	rd.d = New(cfg, append([]Option{
 		WithLogger(testLogger(t)),
-		WithDebounce(50*time.Millisecond),
+		WithDebounce(50 * time.Millisecond),
 		WithLockPath(h.lockPath),
 		WithRunner(runner),
 		WithAgentLookup(passthroughAgentLookup),
 		WithSkipOrphanCleanup(),
-	)
+	}, opts...)...)
 	rd.d.windows = windowOps{
 		list: func(string) ([]string, error) { return nil, nil },
 		kill: func(string, string) error { return nil },

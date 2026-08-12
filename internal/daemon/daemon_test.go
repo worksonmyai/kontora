@@ -18,6 +18,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 
 	"github.com/worksonmyai/kontora/internal/config"
 	"github.com/worksonmyai/kontora/internal/logfmt"
@@ -120,8 +122,9 @@ func (h *testHarness) defaultConfig(agent1Binary, agent2Binary string) *config.C
 	}
 }
 
-func (h *testHarness) newDaemon(cfg *config.Config) *Daemon {
-	return New(cfg,
+func (h *testHarness) newDaemon(cfg *config.Config, opts ...Option) *Daemon {
+	base := make([]Option, 0, 6+len(opts))
+	base = append(base,
 		WithLogger(testLogger(h.t)),
 		WithDebounce(50*time.Millisecond),
 		WithLockPath(h.lockPath),
@@ -129,6 +132,58 @@ func (h *testHarness) newDaemon(cfg *config.Config) *Daemon {
 		WithAgentLookup(passthroughAgentLookup),
 		WithSkipOrphanCleanup(),
 	)
+	return New(cfg, append(base, opts...)...)
+}
+
+// newMetricsDaemon returns a daemon recording into a ManualReader, plus a
+// collect function keyed by metric name.
+//
+// Collect only after the daemon has stopped (cancel(); <-errCh). Reading while
+// it runs races the goroutines still recording, which -race reports.
+func (h *testHarness) newMetricsDaemon(cfg *config.Config, opts ...Option) (*Daemon, func() map[string]metricdata.Metrics) {
+	h.t.Helper()
+	mp, collect := h.manualMetrics()
+	return h.newDaemon(cfg, append(opts, WithMeterProvider(mp))...), collect
+}
+
+// manualMetrics returns a provider backed by a ManualReader and a collect
+// function keyed by metric name, for a daemon a test builds itself. Same
+// warning as newMetricsDaemon: collect only after the daemon has stopped.
+func (h *testHarness) manualMetrics() (*sdkmetric.MeterProvider, func() map[string]metricdata.Metrics) {
+	h.t.Helper()
+	reader := sdkmetric.NewManualReader()
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	return mp, func() map[string]metricdata.Metrics { return collectMetrics(h.t, reader) }
+}
+
+// collectMetrics returns the reader's current export keyed by metric name.
+func collectMetrics(t *testing.T, reader *sdkmetric.ManualReader) map[string]metricdata.Metrics {
+	t.Helper()
+	var rm metricdata.ResourceMetrics
+	require.NoError(t, reader.Collect(context.Background(), &rm))
+	out := map[string]metricdata.Metrics{}
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			out[m.Name] = m
+		}
+	}
+	return out
+}
+
+// sumByAttr totals an int64 counter's data points, keyed by one attribute.
+func sumByAttr(t *testing.T, m metricdata.Metrics, key string) map[string]int64 {
+	t.Helper()
+	sum, ok := m.Data.(metricdata.Sum[int64])
+	require.True(t, ok, "%s must be a counter, got %T", m.Name, m.Data)
+	out := map[string]int64{}
+	for _, dp := range sum.DataPoints {
+		for _, kv := range dp.Attributes.ToSlice() {
+			if string(kv.Key) == key {
+				out[kv.Value.String()] += dp.Value
+			}
+		}
+	}
+	return out
 }
 
 // passthroughAgentLookup returns the binary unchanged. Tests use stand-in
@@ -3860,7 +3915,9 @@ func TestMaterializeSessionEvents(t *testing.T) {
 		require.NoError(t, os.WriteFile(session, []byte(sessionLine), 0o644))
 
 		out := filepath.Join(dir, "logs", "step1.0.events.json")
-		require.NoError(t, materializeSessionEvents(session, false, out))
+		returned, err := materializeSessionEvents(session, false, out)
+		require.NoError(t, err)
+		assert.Equal(t, "m1", returned.Model, "the parsed tape is returned for the token metrics")
 
 		data, err := os.ReadFile(out)
 		require.NoError(t, err)
@@ -3884,7 +3941,8 @@ func TestMaterializeSessionEvents(t *testing.T) {
 		require.NoError(t, os.WriteFile(blocker, nil, 0o644))
 
 		require.NoError(t, materializeSessionLog(session, false, logFile))
-		require.Error(t, materializeSessionEvents(session, false, filepath.Join(blocker, "step1.0.events.json")))
+		_, err := materializeSessionEvents(session, false, filepath.Join(blocker, "step1.0.events.json"))
+		require.Error(t, err)
 		assert.FileExists(t, logFile)
 	})
 }

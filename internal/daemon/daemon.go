@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -21,9 +22,12 @@ import (
 	"unicode/utf8"
 
 	charmlog "github.com/charmbracelet/log"
+	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/metric/noop"
 
 	"github.com/worksonmyai/kontora/internal/config"
 	"github.com/worksonmyai/kontora/internal/logfmt"
+	"github.com/worksonmyai/kontora/internal/metrics"
 	"github.com/worksonmyai/kontora/internal/pipeline"
 	"github.com/worksonmyai/kontora/internal/process"
 	"github.com/worksonmyai/kontora/internal/prompt"
@@ -212,6 +216,17 @@ func WithSkipOrphanCleanup() Option {
 	return func(d *Daemon) { d.skipOrphanCleanup = true }
 }
 
+// WithMeterProvider records metrics through mp instead of building an exporter
+// from the config. Tests pass a provider over an sdkmetric.ManualReader.
+func WithMeterProvider(mp metric.MeterProvider) Option {
+	return func(d *Daemon) { d.meterProvider = mp }
+}
+
+// WithVersion sets the build version reported as service.version.
+func WithVersion(v string) Option {
+	return func(d *Daemon) { d.version = v }
+}
+
 // PlannotatorSpawner runs the `plannotator review` subprocess and returns its
 // captured stdout. Kept as a separate seam from the generic RunnerFunc because
 // the rest of the codebase conflates "runner for an agent" with tmux lifecycle
@@ -293,7 +308,20 @@ type Daemon struct {
 	configPath   string
 	instanceName string
 	tmuxSession  string
+	version      string
 	log          *slog.Logger
+
+	// metrics is never nil: New installs a no-op-backed recorder so no call
+	// site needs an enabled check. Run replaces it when the config turns
+	// export on. meterProvider, when set by WithMeterProvider, takes
+	// precedence over the config and keeps Run from building an exporter.
+	metrics       *metrics.Recorder
+	meterProvider metric.MeterProvider
+
+	// queueDepth mirrors len(d.queue). It exists so the queue-depth gauge can
+	// be read from the exporter's collect path, which must never take d.mu:
+	// that lock is held across tmux fork/exec and ticket file writes.
+	queueDepth atomic.Int64
 
 	// configOverride re-applies the caller's command-line overrides to every
 	// config a reload loads. Set once at construction, read without a lock.
@@ -415,6 +443,21 @@ func New(cfg *config.Config, opts ...Option) *Daemon {
 		d.configOverride(cfg)
 	}
 	d.queueCond = sync.NewCond(&d.mu)
+	// An injected provider wins over the config: a test that passes one must
+	// see its own reader, not an exporter Run would build. Everything else
+	// starts on the no-op provider, so recording is free and safe before Run
+	// decides whether to export.
+	mp := metric.MeterProvider(noop.NewMeterProvider())
+	if d.meterProvider != nil {
+		mp = d.meterProvider
+	}
+	rec, err := metrics.NewWithProvider(mp)
+	if err != nil {
+		// Recorder methods tolerate a nil receiver, so the daemon runs on
+		// without metrics rather than failing construction over them.
+		d.log.Warn("building metric instruments failed, continuing without metrics", "err", err)
+	}
+	d.metrics = rec
 	d.svc = d.buildService()
 	return d
 }
@@ -531,6 +574,12 @@ func (d *Daemon) Run(ctx context.Context) error {
 		}
 	}
 
+	// Registered before d.background.Wait() below, so LIFO runs it last: the
+	// final flush then carries the measurements of work that outlived the
+	// event loop.
+	stopMetrics := d.startMetrics(ctx, cfg)
+	defer stopMetrics()
+
 	// Registered before the cancel below so it runs after it: background work
 	// stops on a cancelled context, and waiting first would hang.
 	defer d.background.Wait()
@@ -574,6 +623,62 @@ func (d *Daemon) Run(ctx context.Context) error {
 			return nil
 		}
 	}
+}
+
+// startMetrics builds the configured exporter, registers the scheduler gauges,
+// and returns the function that flushes and stops export.
+//
+// Failing to export must never keep tickets from running, so every error here
+// warns and leaves the no-op recorder in place. An injected provider skips
+// exporter construction entirely.
+func (d *Daemon) startMetrics(ctx context.Context, cfg *config.Config) func() {
+	stop := func() {}
+
+	if d.meterProvider == nil && cfg.Metrics.Enabled != nil && *cfg.Metrics.Enabled {
+		insecure, conflict := cfg.Metrics.ResolveInsecure()
+		if conflict {
+			d.log.Warn("metrics.endpoint states its own scheme, which overrides metrics.insecure",
+				"endpoint", cfg.Metrics.Endpoint, "insecure", cfg.Metrics.Insecure)
+		}
+		rec, shutdown, err := metrics.New(ctx, metrics.Options{
+			Enabled:     true,
+			Endpoint:    cfg.Metrics.Endpoint,
+			Headers:     cfg.Metrics.Headers,
+			Interval:    cfg.Metrics.Interval.Duration,
+			Insecure:    insecure,
+			ServiceName: metrics.DefaultServiceName,
+			Version:     d.version,
+			Instance:    d.instanceName,
+		})
+		if err != nil {
+			d.log.Warn("metrics exporter failed to start, continuing without it", "err", err)
+		} else {
+			d.metrics = rec
+			stop = func() {
+				shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				if err := shutdown(shutdownCtx); err != nil {
+					d.log.Warn("metrics shutdown failed", "err", err)
+				}
+			}
+			d.log.Info("metrics export started",
+				"endpoint", cfg.Metrics.Endpoint, "interval", cfg.Metrics.Interval, "insecure", insecure)
+		}
+	}
+
+	// Registered against whichever recorder is in place; on the no-op one this
+	// costs nothing. The callbacks run on the collect path and so read only
+	// lock-free state: taking d.mu here would stall every export behind a
+	// wedged tmux call or a ticket write.
+	if err := d.metrics.ObserveScheduler(
+		func() int64 { return int64(len(d.sem)) },
+		func() int64 { return int64(cap(d.sem)) },
+		func() int64 { return d.queueDepth.Load() },
+	); err != nil {
+		d.log.Warn("registering scheduler gauges failed", "err", err)
+	}
+
+	return stop
 }
 
 func (d *Daemon) acquireLock() (*os.File, error) {
@@ -898,10 +1003,20 @@ func (d *Daemon) enqueue(t *ticket.Ticket) {
 	}
 	d.queued[t.ID] = true
 	heap.Push(&d.queue, &queueItem{
-		ticketID: t.ID,
-		created:  derefTime(t.Created),
+		ticketID:   t.ID,
+		created:    derefTime(t.Created),
+		enqueuedAt: time.Now(),
 	})
+	d.syncQueueDepthLocked()
 	d.queueCond.Signal()
+}
+
+// syncQueueDepthLocked republishes the queue length for the depth gauge. Must
+// be called with d.mu held, at every point that changes the heap. Storing the
+// length rather than stepping a counter keeps the two from drifting when a
+// removal finds nothing to remove.
+func (d *Daemon) syncQueueDepthLocked() {
+	d.queueDepth.Store(int64(d.queue.Len()))
 }
 
 func (d *Daemon) scheduler(ctx context.Context, wg *sync.WaitGroup) {
@@ -924,6 +1039,7 @@ func (d *Daemon) scheduler(ctx context.Context, wg *sync.WaitGroup) {
 
 		item := heap.Pop(&d.queue).(*queueItem)
 		delete(d.queued, item.ticketID)
+		d.syncQueueDepthLocked()
 		d.mu.Unlock()
 
 		if ctx.Err() != nil {
@@ -935,6 +1051,13 @@ func (d *Daemon) scheduler(ctx context.Context, wg *sync.WaitGroup) {
 		case <-ctx.Done():
 			return
 		}
+
+		// Recorded here rather than at the pop: this loop parks on the semaphore
+		// with the ticket already out of the heap, so a sample taken above would
+		// leave every ticket's own wait for a slot out and charge it to whatever
+		// is popped next. Also after the unlock, because the exporter's collect
+		// path must never end up waiting behind d.mu.
+		d.metrics.QueueWait(ctx, time.Since(item.enqueuedAt))
 
 		wg.Add(1)
 		go func(ticketID string) {
@@ -1135,18 +1258,20 @@ func (d *Daemon) runTicket(ctx context.Context, ticketID string) {
 
 	runIndex := stageRunIndex(t, stageName)
 	run, spawnOK := d.spawnAgentRun(taskCtx, t, spawnAgentParams{
-		cfg:        cfg,
-		ctx:        ctx,
-		log:        log,
-		ticketID:   ticketID,
-		filePath:   filePath,
-		stageName:  stageName,
-		run:        runIndex,
-		wtPath:     wtPath,
-		rendered:   rendered,
-		agentCfg:   agentCfg,
-		stageCfg:   stageCfg,
-		isPipeline: true,
+		cfg:          cfg,
+		ctx:          ctx,
+		log:          log,
+		ticketID:     ticketID,
+		filePath:     filePath,
+		agentName:    agentName,
+		pipelineName: t.Pipeline,
+		stageName:    stageName,
+		run:          runIndex,
+		wtPath:       wtPath,
+		rendered:     rendered,
+		agentCfg:     agentCfg,
+		stageCfg:     stageCfg,
+		isPipeline:   true,
 	})
 	if !spawnOK {
 		return
@@ -1252,6 +1377,7 @@ func (d *Daemon) runSimpleTicket(ctx, taskCtx context.Context, cfg *config.Confi
 		log:        log,
 		ticketID:   ticketID,
 		filePath:   filePath,
+		agentName:  agentName,
 		stageName:  simpleStageName,
 		run:        stageRunIndex(t, simpleStageName),
 		wtPath:     wtPath,
@@ -1460,6 +1586,10 @@ func (d *Daemon) handleAgentExit(ctx, taskCtx context.Context, p handleExitParam
 		p.log.Warn("unexpected spawn action after exit", "stage", p.stageName)
 	}
 
+	// Recorded after the switch, not per case, so a kind added later cannot be
+	// forgotten here.
+	d.metrics.Transition(ctx, p.stageName, exitAction.Kind.String())
+
 	if err := d.applyAction(t2, exitAction); err != nil {
 		p.log.Error("apply action failed", "phase", "exit", "err", err)
 		d.pauseTicket(t2, p.filePath, "apply action failed: "+err.Error())
@@ -1601,11 +1731,16 @@ type spawnAgentParams struct {
 	// ctx is the daemon's context, not the ticket's. A live ctx when the runner
 	// returns means the daemon is still up, so the run ended for a reason of its
 	// own and its resume record must go.
-	ctx       context.Context
-	log       *slog.Logger
-	ticketID  string
-	filePath  string
-	stageName string
+	ctx      context.Context
+	log      *slog.Logger
+	ticketID string
+	filePath string
+	// agentName and pipelineName label this run's metrics. The agent config
+	// alone does not carry either: the resolved agent name lives at the call
+	// site, and the pipeline on the ticket.
+	agentName    string
+	pipelineName string
+	stageName    string
 	// run keys this run's structured activity sidecar. It must match the Run
 	// stamped on the history entry the same run produces.
 	run        int
@@ -1669,15 +1804,23 @@ type agentAttempt struct {
 // ticket is paused and ok=false is returned so the caller can return
 // immediately.
 func (d *Daemon) spawnAgentRun(taskCtx context.Context, t *ticket.Ticket, p spawnAgentParams) (agentRun, bool) {
+	// One measurement per stage run, taken here rather than inside
+	// runAgentOnce: a resumed run that did no work calls runAgentOnce a second
+	// time, and a hook there would report two runs for one.
+	started := time.Now()
+	var attempt agentAttempt
+	defer func() { d.recordStageRun(taskCtx, p, attempt, time.Since(started)) }()
+
 	binaryPath, err := d.agentLookup(p.agentCfg.Binary)
 	if err != nil {
 		p.log.Error("agent binary lookup failed", "binary", p.agentCfg.Binary, "err", err)
-		d.pauseTicket(t, p.filePath, fmt.Sprintf("agent binary unavailable: %s", err))
+		attempt.pauseReason = fmt.Sprintf("agent binary unavailable: %s", err)
+		d.pauseTicket(t, p.filePath, attempt.pauseReason)
 		return agentRun{}, false
 	}
 
 	if rec := d.resumableRecord(p); rec != nil {
-		attempt := d.runAgentOnce(taskCtx, t, p, binaryPath, rec)
+		attempt = d.runAgentOnce(taskCtx, t, p, binaryPath, rec)
 		if attempt.started {
 			return d.finishAttempt(t, p, attempt)
 		}
@@ -1692,7 +1835,36 @@ func (d *Daemon) spawnAgentRun(taskCtx context.Context, t *ticket.Ticket, p spaw
 		}
 	}
 
-	return d.finishAttempt(t, p, d.runAgentOnce(taskCtx, t, p, binaryPath, nil))
+	attempt = d.runAgentOnce(taskCtx, t, p, binaryPath, nil)
+	return d.finishAttempt(t, p, attempt)
+}
+
+// recordStageRun reports one finished stage run. A run that ends while the
+// ticket's context is cancelled is neither a success nor a failure of the
+// stage, so it is reported as cancelled; anything that pauses the ticket or
+// exits non-zero is a failure, including a runner that never produced an exit
+// code.
+//
+// An annotation run comes through here under the stage's own name, so it is
+// marked as one: the pipeline never evaluated that stage and it did none of the
+// stage's work, and counting it as a run would mix a ticket rewrite into the
+// stage's counts and durations.
+func (d *Daemon) recordStageRun(taskCtx context.Context, p spawnAgentParams, attempt agentAttempt, elapsed time.Duration) {
+	outcome := metrics.OutcomeFailure
+	switch {
+	case taskCtx.Err() != nil:
+		outcome = metrics.OutcomeCancelled
+	case attempt.ok && attempt.pauseReason == "" && attempt.run.Result.ExitCode == 0:
+		outcome = metrics.OutcomeSuccess
+	}
+	d.metrics.StageRun(taskCtx, metrics.StageAttrs{
+		Stage:      p.stageName,
+		Agent:      p.agentName,
+		Pipeline:   p.pipelineName,
+		Outcome:    outcome,
+		ExitCode:   attempt.run.Result.ExitCode,
+		Annotation: p.annotation,
+	}, elapsed)
 }
 
 func (d *Daemon) finishAttempt(t *ticket.Ticket, p spawnAgentParams, attempt agentAttempt) (agentRun, bool) {
@@ -1739,6 +1911,20 @@ func (d *Daemon) runAgentOnce(taskCtx context.Context, t *ticket.Ticket, p spawn
 	}
 
 	params := d.buildRunnerParams(p.cfg, p.agentCfg, p.stageCfg, binaryPath, args, p.wtPath, p.ticketID, p.stageName, p.sessionStage(rec), sessionID)
+	// An annotation run continues the session the stage already finished, and
+	// --resume appends to that same JSONL, so the totals read once it returns
+	// carry the tokens the stage already reported. Take what is in the file now
+	// and report only what this run adds. It is read here, rather than
+	// remembered from the last run, because the run that reported them can have
+	// been a previous daemon's.
+	//
+	// A crash-recovery resume is the opposite case: the invocation that spent
+	// those tokens died before anything could report them, so continuing it
+	// reports the file's totals whole.
+	var priorUsage logfmt.Usage
+	if rec != nil && p.annotation {
+		priorUsage = sessionUsageTotals(params)
+	}
 	// The clear is deferred so that every way this function can end, including a
 	// runner error or a cancelled ticket, leaves no entry claiming the run is
 	// still going.
@@ -1761,7 +1947,8 @@ func (d *Daemon) runAgentOnce(taskCtx context.Context, t *ticket.Ticket, p spawn
 		d.promoteResumeRecord(p)
 	}
 	if runnerErr != nil && taskCtx.Err() == nil {
-		d.materializeAgentLogs(p.log, params, eventsFile)
+		usage, complete := d.materializeAgentLogs(p.log, params, eventsFile)
+		d.recordTokens(taskCtx, p.stageName, p.agentName, usageSince(priorUsage, usage), complete)
 		errAttrs := []any{"stage", p.stageName, "err", runnerErr}
 		if tail := tailFile(params.LogFile); tail != "" {
 			errAttrs = append(errAttrs, "output", tail)
@@ -1775,7 +1962,8 @@ func (d *Daemon) runAgentOnce(taskCtx context.Context, t *ticket.Ticket, p spawn
 		}
 	}
 
-	d.materializeAgentLogs(p.log, params, eventsFile)
+	usage, usageComplete := d.materializeAgentLogs(p.log, params, eventsFile)
+	d.recordTokens(taskCtx, p.stageName, p.agentName, usageSince(priorUsage, usage), usageComplete)
 
 	run := agentRun{Result: result, FinalMessage: finalAssistantMessage(p.log, params), Resumed: rec != nil}
 
@@ -1797,8 +1985,9 @@ func (d *Daemon) runAgentOnce(taskCtx context.Context, t *ticket.Ticket, p spawn
 	// instead. Non-zero exits already flow through the pipeline's on_failure
 	// handling, so leave those alone. Skip when the run was cancelled.
 	if result.ExitCode == 0 && taskCtx.Err() == nil {
-		if reason, detected := d.detectAgentError(p.agentCfg, params, logStart); detected {
-			p.log.Warn("agent error detected despite clean exit", "stage", p.stageName, "reason", reason)
+		if reason, kind, detected := d.detectAgentError(p.agentCfg, params, logStart); detected {
+			p.log.Warn("agent error detected despite clean exit", "stage", p.stageName, "reason", reason, "kind", kind)
+			d.metrics.AgentError(taskCtx, p.stageName, p.agentName, kind)
 			d.killTaskWindow(p.ticketID)
 			return agentAttempt{run: run, started: true, pauseReason: "agent error: " + reason}
 		}
@@ -2310,6 +2499,9 @@ func (d *Daemon) cleanOrphanedWindows() {
 type queueItem struct {
 	ticketID string
 	created  time.Time
+	// enqueuedAt is when the item joined the queue, for the queue-wait
+	// histogram. created orders the heap and comes from the ticket file.
+	enqueuedAt time.Time
 }
 
 type priorityQueue []*queueItem
@@ -2414,32 +2606,90 @@ func sessionTape(path string, isPi bool) (logfmt.Tape, error) {
 // structured JSONL (Claude via SessionID, pi via SessionDir). It also writes
 // the structured activity sidecar for the same session file to eventsFile.
 //
+// It returns the run's token totals, and whether they can be trusted. A tape
+// that declares its usage partial reports zeroes, which is not the same as a
+// run that spent nothing, so the caller must record nothing for it.
+//
 // A sidecar failure only warns: the plaintext log is the contract every
 // existing reader depends on and must never be lost because the sidecar
 // could not be written.
-func (d *Daemon) materializeAgentLogs(log *slog.Logger, params RunnerParams, eventsFile string) {
+func (d *Daemon) materializeAgentLogs(log *slog.Logger, params RunnerParams, eventsFile string) (logfmt.Usage, bool) {
 	if params.SessionID == "" && params.SessionDir == "" {
-		return
+		return logfmt.Usage{}, false
 	}
 	path, isPi := sessionFile(params)
 	if path == "" {
 		log.Warn("session JSONL not found", "session_id", params.SessionID, "session_dir", params.SessionDir)
-		return
+		return logfmt.Usage{}, false
 	}
 	if err := materializeSessionLog(path, isPi, params.LogFile); err != nil {
 		log.Warn("session log materialization failed", "session_file", path, "err", err)
-		return
+		return logfmt.Usage{}, false
 	}
 	log.Info("session log materialized", "session_file", path, "log_file", params.LogFile)
 
 	if eventsFile == "" {
-		return
+		return logfmt.Usage{}, false
 	}
-	if err := materializeSessionEvents(path, isPi, eventsFile); err != nil {
+	tape, err := materializeSessionEvents(path, isPi, eventsFile)
+	if err != nil {
 		log.Warn("session events materialization failed", "session_file", path, "events_file", eventsFile, "err", err)
-		return
+		return logfmt.Usage{}, false
 	}
 	log.Info("session events materialized", "session_file", path, "events_file", eventsFile)
+
+	return tape.Totals, !slices.Contains(tape.Partial, logfmt.PartialUsage)
+}
+
+// sessionUsageTotals returns the token totals already in the session file a run
+// is about to continue. An unreadable or missing session gives zero, which is
+// the same answer a fresh session gives.
+func sessionUsageTotals(params RunnerParams) logfmt.Usage {
+	path, isPi := sessionFile(params)
+	if path == "" {
+		return logfmt.Usage{}
+	}
+	tape, err := sessionTape(path, isPi)
+	if err != nil {
+		return logfmt.Usage{}
+	}
+	return tape.Totals
+}
+
+// usageSince subtracts what a resumed session already held from the totals read
+// after the run, leaving what this invocation spent. Clamped at zero: the
+// counter it feeds is monotonic, and a session file replaced rather than
+// appended to would otherwise report a negative spend.
+func usageSince(prior, total logfmt.Usage) logfmt.Usage {
+	sub := func(a, b int) int {
+		if a <= b {
+			return 0
+		}
+		return a - b
+	}
+	return logfmt.Usage{
+		Input:       sub(total.Input, prior.Input),
+		Output:      sub(total.Output, prior.Output),
+		CacheCreate: sub(total.CacheCreate, prior.CacheCreate),
+		CacheRead:   sub(total.CacheRead, prior.CacheRead),
+	}
+}
+
+// recordTokens reports one agent invocation's token spend. Per invocation, not
+// per stage run: every invocation is a real spend of its own. Callers that
+// resume a session must pass what that invocation added rather than the file's
+// totals. Claude's --resume appends to the recorded session's JSONL, so those
+// totals carry every earlier run in the same file.
+func (d *Daemon) recordTokens(ctx context.Context, stage, agent string, usage logfmt.Usage, complete bool) {
+	if !complete {
+		return
+	}
+	d.metrics.Tokens(ctx, stage, agent, metrics.TokenUsage{
+		Input:       int64(usage.Input),
+		Output:      int64(usage.Output),
+		CacheCreate: int64(usage.CacheCreate),
+		CacheRead:   int64(usage.CacheRead),
+	})
 }
 
 // materializeSessionLog formats the session JSONL at path with logfmt and
@@ -2473,42 +2723,42 @@ func materializeSessionLog(path string, isPi bool, logFile string) error {
 }
 
 // materializeSessionEvents parses the session JSONL at path into a structured
-// tape and writes it to eventsFile. The write is atomic (temp file plus
-// rename) so a concurrent reader never sees half a document.
-func materializeSessionEvents(path string, isPi bool, eventsFile string) error {
+// tape, writes it to eventsFile, and returns it. The write is atomic (temp file
+// plus rename) so a concurrent reader never sees half a document.
+func materializeSessionEvents(path string, isPi bool, eventsFile string) (logfmt.Tape, error) {
 	tape, err := sessionTape(path, isPi)
 	if err != nil {
-		return err
+		return logfmt.Tape{}, err
 	}
 
 	data, err := json.Marshal(tape)
 	if err != nil {
-		return fmt.Errorf("encode tape: %w", err)
+		return logfmt.Tape{}, fmt.Errorf("encode tape: %w", err)
 	}
 
 	dir := filepath.Dir(eventsFile)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("create log directory: %w", err)
+		return logfmt.Tape{}, fmt.Errorf("create log directory: %w", err)
 	}
 	tmp, err := os.CreateTemp(dir, filepath.Base(eventsFile)+".*")
 	if err != nil {
-		return fmt.Errorf("create temp file: %w", err)
+		return logfmt.Tape{}, fmt.Errorf("create temp file: %w", err)
 	}
 	tmpName := tmp.Name()
 	if _, err := tmp.Write(data); err != nil {
 		tmp.Close()
 		os.Remove(tmpName)
-		return fmt.Errorf("write tape: %w", err)
+		return logfmt.Tape{}, fmt.Errorf("write tape: %w", err)
 	}
 	if err := tmp.Close(); err != nil {
 		os.Remove(tmpName)
-		return fmt.Errorf("close temp file: %w", err)
+		return logfmt.Tape{}, fmt.Errorf("close temp file: %w", err)
 	}
 	if err := os.Rename(tmpName, eventsFile); err != nil {
 		os.Remove(tmpName)
-		return fmt.Errorf("rename tape: %w", err)
+		return logfmt.Tape{}, fmt.Errorf("rename tape: %w", err)
 	}
-	return nil
+	return tape, nil
 }
 
 // finalAssistantMessage returns the last assistant text from the run's session
@@ -2540,13 +2790,14 @@ func finalAssistantMessage(log *slog.Logger, params RunnerParams) string {
 // clean exit code: quota/usage limits and API errors. Claude runs are checked
 // structurally from the session JSONL; any agent's output log is matched
 // against the agent's configured failure_patterns. Returns a human-readable
-// reason and true when a failure is detected. Call after materializeAgentLogs
-// so the log file reflects the final session.
-func (d *Daemon) detectAgentError(agentCfg config.Agent, params RunnerParams, logStart int64) (string, bool) {
+// reason, the layer that matched (metrics.ErrorKindSessionAPI or
+// metrics.ErrorKindFailurePattern), and true when a failure is detected. Call
+// after materializeAgentLogs so the log file reflects the final session.
+func (d *Daemon) detectAgentError(agentCfg config.Agent, params RunnerParams, logStart int64) (reason, kind string, detected bool) {
 	if agentCfg.IsClaude() && params.SessionID != "" {
 		if path, _ := sessionFile(params); path != "" {
 			if reason, ok := scanClaudeSessionError(path); ok {
-				return reason, true
+				return reason, metrics.ErrorKindSessionAPI, true
 			}
 		}
 	}
@@ -2557,11 +2808,11 @@ func (d *Daemon) detectAgentError(agentCfg config.Agent, params RunnerParams, lo
 		materialized := params.SessionID != "" || params.SessionDir != ""
 		if content, err := currentRunLog(params.LogFile, materialized, logStart); err == nil && content != "" {
 			if reason, ok := matchFailurePatterns(content, agentCfg.FailurePatterns); ok {
-				return reason, true
+				return reason, metrics.ErrorKindFailurePattern, true
 			}
 		}
 	}
-	return "", false
+	return "", "", false
 }
 
 // currentRunLog returns the portion of an agent log written by the most recent

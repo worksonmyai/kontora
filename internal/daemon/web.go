@@ -1153,4 +1153,5 @@ func (d *Daemon) removeQueuedLocked(id string) {
 	}
 	d.queue = filtered
 	heap.Init(&d.queue)
+	d.syncQueueDepthLocked()
 }

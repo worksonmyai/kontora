@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -61,7 +62,7 @@ func (d *Daemon) reloadConfig() error {
 // differs. These are the values the daemon freezes at construction or in Run:
 // the worktree manager root, the instance name used for ticket claims, the tmux
 // session holding every running agent's window, the semaphore capacity, the web
-// listener, and the directories the watcher and
+// listener, the metric exporter, and the directories the watcher and
 // the initial scan were pointed at. The log directory is pinned too, for a
 // different reason: nothing freezes it, but `kontora logs` reads it live, so a
 // change would strand every existing log file. Applying half of one of these
@@ -116,6 +117,26 @@ func pinRestartOnly(cur, next *config.Config, log *slog.Logger) {
 		warnRedacted("web.token")
 	}
 	next.Web = cur.Web
+
+	// The meter provider and its exporter are built once in Run, so every
+	// metrics field is frozen with them. Header values can carry an API token,
+	// so only the fact that the map changed is logged.
+	if !reflect.DeepEqual(next.Metrics.Enabled, cur.Metrics.Enabled) {
+		warn("metrics.enabled", derefBool(cur.Metrics.Enabled), derefBool(next.Metrics.Enabled))
+	}
+	if next.Metrics.Endpoint != cur.Metrics.Endpoint {
+		warn("metrics.endpoint", cur.Metrics.Endpoint, next.Metrics.Endpoint)
+	}
+	if !maps.Equal(next.Metrics.Headers, cur.Metrics.Headers) {
+		warnRedacted("metrics.headers")
+	}
+	if next.Metrics.Interval != cur.Metrics.Interval {
+		warn("metrics.interval", cur.Metrics.Interval, next.Metrics.Interval)
+	}
+	if next.Metrics.Insecure != cur.Metrics.Insecure {
+		warn("metrics.insecure", cur.Metrics.Insecure, next.Metrics.Insecure)
+	}
+	next.Metrics = cur.Metrics
 }
 
 func derefBool(b *bool) any {

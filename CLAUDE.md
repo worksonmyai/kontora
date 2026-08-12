@@ -75,7 +75,8 @@ When working on ticket workflows, follow the sequence: plan → create ticket �
 ### Tests
 - Use table test cases pattern as much as possible.
 - Prefer high-level tests that cover behaviour over testing implementation details.
-- Daemon tests use `testHarness` (`newHarness(t)` → `h.startDaemon(...)`) with `DirectRunner` to avoid tmux dependency.
+- Daemon tests use `testHarness`: `newHarness(t)` → `h.newDaemon(cfg, opts...)` → `go func() { errCh <- d.Run(ctx) }()`, with `DirectRunner` to avoid a tmux dependency. End with `cancel(); require.NoError(t, <-errCh)`.
+- To assert on metrics, use `h.newMetricsDaemon(cfg)`, which injects a `ManualReader`. Collect only after the daemon has stopped; reading while it runs races the goroutines still recording.
 
 ### Code
 - Leaf packages (`process`, `worktree`, `prompt`) accept primitives, not config types — the daemon wires them.

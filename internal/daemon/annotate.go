@@ -411,16 +411,18 @@ func (d *Daemon) runAnnotationRun(ctx, taskCtx context.Context, cfg *config.Conf
 	runIndex := stageRunIndex(t, stageName)
 	priorSummary := t.Summary
 	run, spawnOK := d.spawnAgentRun(taskCtx, t, spawnAgentParams{
-		cfg:       cfg,
-		ctx:       ctx,
-		log:       log,
-		ticketID:  ticketID,
-		filePath:  filePath,
-		stageName: stageName,
-		run:       runIndex,
-		wtPath:    wtPath,
-		rendered:  rendered,
-		agentCfg:  agentCfg,
+		cfg:          cfg,
+		ctx:          ctx,
+		log:          log,
+		ticketID:     ticketID,
+		filePath:     filePath,
+		agentName:    agentName,
+		pipelineName: t.Pipeline,
+		stageName:    stageName,
+		run:          runIndex,
+		wtPath:       wtPath,
+		rendered:     rendered,
+		agentCfg:     agentCfg,
 		// Only the timeout is borrowed from the stage. Its prompt describes stage
 		// work, which is the one thing this run must not do.
 		stageCfg:   config.Stage{Timeout: cfg.Stages[stageName].Timeout},

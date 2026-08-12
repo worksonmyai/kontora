@@ -192,11 +192,27 @@ func TestReload_NoConfigPath(t *testing.T) {
 
 func TestReload_PinsRestartOnlyFields(t *testing.T) {
 	h := newReloadHarness(t)
-	d := h.newDaemonWithConfig(t, h.yaml(configOpts{}))
+	metricsBefore := `metrics:
+  enabled: true
+  endpoint: localhost:4318
+  insecure: true
+  interval: 30s
+  headers:
+    authorization: metrics-secret
+`
+	metricsAfter := `metrics:
+  enabled: false
+  endpoint: collector.example:4318
+  insecure: false
+  interval: 5s
+  headers:
+    authorization: rotated-secret
+`
+	d := h.newDaemonWithConfig(t, h.yaml(configOpts{extra: metricsBefore}))
 	before := d.config()
 
 	otherDir := t.TempDir()
-	changed := h.yaml(configOpts{}) + "\n"
+	changed := h.yaml(configOpts{extra: metricsAfter}) + "\n"
 	changed = strings.Replace(changed, "tickets_dir: "+h.tasksDir, "tickets_dir: "+otherDir, 1)
 	changed = strings.Replace(changed, "worktrees_dir: "+h.wtDir, "worktrees_dir: "+otherDir, 1)
 	changed = strings.Replace(changed, "logs_dir: "+h.logsDir, "logs_dir: "+otherDir, 1)
@@ -217,15 +233,18 @@ func TestReload_PinsRestartOnlyFields(t *testing.T) {
 	assert.Equal(t, "kontora-test", got.TmuxSession)
 	assert.Equal(t, 4, got.MaxConcurrentAgents)
 	assert.Equal(t, before.Web, got.Web, "the web block is pinned whole")
+	assert.Equal(t, before.Metrics, got.Metrics, "the metrics block is pinned whole")
+	assert.Equal(t, "localhost:4318", got.Metrics.Endpoint, "the running exporter's endpoint survives the reload")
 
 	logs := h.logBuf.String()
 	for _, field := range []string{
 		"tickets_dir", "worktrees_dir", "logs_dir", "instance_name", "tmux_session",
 		"max_concurrent_agents", "web.host", "web.port", "web.token",
+		"metrics.enabled", "metrics.endpoint", "metrics.headers", "metrics.interval", "metrics.insecure",
 	} {
 		assert.Contains(t, logs, "field="+field, "expected a restart-only warning for %s", field)
 	}
-	assert.NotContains(t, logs, "secret", "the web token value must never be logged")
+	assert.NotContains(t, logs, "secret", "the web token and metrics header values must never be logged")
 }
 
 // TestReload_ReappliesConfigOverride covers `kontora start --address/--port`.

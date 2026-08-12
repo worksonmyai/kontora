@@ -604,6 +604,180 @@ func TestLoadWebConfigDefaults(t *testing.T) {
 	assert.Equal(t, 8080, cfg.Web.Port)
 }
 
+func TestLoadMetrics(t *testing.T) {
+	base := `
+tickets_dir: /tmp/tasks
+default_agent: a
+agents:
+  a:
+    binary: agent-bin
+stages:
+  s:
+    prompt: do stuff
+pipelines:
+  p:
+    - stage: s
+      agent: a
+      on_success: done
+      on_failure: pause
+`
+	tests := []struct {
+		name    string
+		metrics string
+		wantErr string
+		check   func(t *testing.T, m Metrics)
+	}{
+		{
+			name: "absent section defaults to off with a 60s interval",
+			check: func(t *testing.T, m Metrics) {
+				require.NotNil(t, m.Enabled)
+				assert.False(t, *m.Enabled)
+				assert.Equal(t, 60*time.Second, m.Interval.Duration)
+				assert.Empty(t, m.Endpoint)
+			},
+		},
+		{
+			name: "enabled without an endpoint is valid",
+			metrics: `
+metrics:
+  enabled: true
+`,
+			check: func(t *testing.T, m Metrics) {
+				require.NotNil(t, m.Enabled)
+				assert.True(t, *m.Enabled)
+				assert.Empty(t, m.Endpoint, "an empty endpoint leaves the address to OTEL_EXPORTER_OTLP_*")
+				assert.Equal(t, 60*time.Second, m.Interval.Duration)
+			},
+		},
+		{
+			name: "full section round-trips",
+			metrics: `
+metrics:
+  enabled: true
+  endpoint: localhost:4318
+  insecure: true
+  interval: 10s
+  headers:
+    authorization: Bearer tok
+`,
+			check: func(t *testing.T, m Metrics) {
+				assert.Equal(t, "localhost:4318", m.Endpoint)
+				assert.Equal(t, 10*time.Second, m.Interval.Duration)
+				assert.Equal(t, map[string]string{"authorization": "Bearer tok"}, m.Headers)
+				insecure, conflict := m.ResolveInsecure()
+				assert.True(t, insecure)
+				assert.False(t, conflict)
+			},
+		},
+		{
+			name: "an http endpoint overrides insecure",
+			metrics: `
+metrics:
+  enabled: true
+  endpoint: http://collector:4318
+`,
+			check: func(t *testing.T, m Metrics) {
+				assert.Equal(t, "http", m.EndpointScheme())
+				insecure, conflict := m.ResolveInsecure()
+				assert.True(t, insecure, "the scheme decides, not the unset insecure field")
+				assert.False(t, conflict)
+			},
+		},
+		{
+			name: "an https endpoint with insecure true conflicts",
+			metrics: `
+metrics:
+  enabled: true
+  endpoint: https://collector:4318
+  insecure: true
+`,
+			check: func(t *testing.T, m Metrics) {
+				insecure, conflict := m.ResolveInsecure()
+				assert.False(t, insecure, "the scheme wins")
+				assert.True(t, conflict)
+			},
+		},
+		{
+			name: "a zero interval reads as unset and takes the default",
+			metrics: `
+metrics:
+  enabled: true
+  interval: 0s
+`,
+			check: func(t *testing.T, m Metrics) {
+				assert.Equal(t, 60*time.Second, m.Interval.Duration)
+			},
+		},
+		{
+			name: "a negative interval is rejected when enabled",
+			metrics: `
+metrics:
+  enabled: true
+  interval: -5s
+`,
+			wantErr: "metrics.interval",
+		},
+		{
+			name: "a non-positive interval is ignored while disabled",
+			metrics: `
+metrics:
+  enabled: false
+  interval: -5s
+`,
+			check: func(t *testing.T, m Metrics) {
+				assert.Equal(t, -5*time.Second, m.Interval.Duration)
+			},
+		},
+		{
+			name: "an unsupported endpoint scheme is rejected",
+			metrics: `
+metrics:
+  enabled: true
+  endpoint: grpc://collector:4317
+`,
+			wantErr: `scheme "grpc" is not supported`,
+		},
+		{
+			name: "an unknown metrics field is rejected",
+			metrics: `
+metrics:
+  enabled: true
+  compression: gzip
+`,
+			wantErr: "field compression not found",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg, err := LoadReader(strings.NewReader(base + tt.metrics))
+			if tt.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			tt.check(t, cfg.Metrics)
+		})
+	}
+}
+
+// TestValidateMetricsInterval covers the zero interval a YAML load can never
+// produce, because applyDefaults fills it in. A config assembled in memory
+// (the daemon's own tests, the TUI) skips defaults and reaches Validate raw.
+func TestValidateMetricsInterval(t *testing.T) {
+	cfg := &Config{
+		DefaultAgent: "a",
+		TmuxSession:  "kontora",
+		BranchNaming: BranchNaming{Mode: BranchNamingModeSlug},
+		Agents:       map[string]Agent{"a": {Binary: "agent-bin"}},
+		Metrics:      Metrics{Enabled: new(true)},
+	}
+	err := cfg.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "metrics.interval")
+}
+
 func TestAgentEnvironment(t *testing.T) {
 	input := `
 agents:

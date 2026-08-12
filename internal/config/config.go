@@ -56,6 +56,7 @@ type Config struct {
 	Statuses            []string            `yaml:"statuses"`
 	Environment         map[string]string   `yaml:"environment"`
 	Plannotator         Plannotator         `yaml:"plannotator"`
+	Metrics             Metrics             `yaml:"metrics"`
 
 	// ResumePrompt replaces the built-in prompt sent to an agent whose stage a
 	// daemon restart interrupted. It is a stage prompt template with the same
@@ -90,6 +91,48 @@ type Plannotator struct {
 	Binary     string   `yaml:"binary"`
 	Timeout    Duration `yaml:"timeout"`
 	ReviewsDir string   `yaml:"reviews_dir"`
+}
+
+// Metrics configures OTLP metric export. Disabled by default: the daemon
+// builds a no-op meter provider and records nothing.
+type Metrics struct {
+	Enabled *bool `yaml:"enabled"`
+	// Endpoint is a bare host:port or a full URL. Empty leaves the address to
+	// the SDK's own OTEL_EXPORTER_OTLP_* handling.
+	Endpoint string            `yaml:"endpoint"`
+	Headers  map[string]string `yaml:"headers"`
+	Interval Duration          `yaml:"interval"`
+	// Insecure sends over plain HTTP. An explicit scheme on Endpoint decides
+	// instead; see ResolveInsecure.
+	Insecure bool `yaml:"insecure"`
+}
+
+// EndpointScheme returns the URL scheme Endpoint states explicitly, lowercased,
+// or "" for an empty endpoint or a bare host:port. url.Parse cannot tell those
+// apart: it reads "localhost:4318" as scheme "localhost".
+func (m Metrics) EndpointScheme() string {
+	scheme, _, ok := strings.Cut(m.Endpoint, "://")
+	if !ok {
+		return ""
+	}
+	return strings.ToLower(scheme)
+}
+
+// ResolveInsecure reports whether the exporter talks plain HTTP, and whether
+// the endpoint contradicts the insecure field. An explicit scheme wins, the
+// same way the scheme of OTEL_EXPORTER_OTLP_ENDPOINT wins inside the exporter.
+// Only `https://` together with `insecure: true` counts as a contradiction:
+// insecure's zero value is false, so a plain `http://` endpoint under an unset
+// insecure is the ordinary case, not a disagreement.
+func (m Metrics) ResolveInsecure() (insecure, conflict bool) {
+	switch m.EndpointScheme() {
+	case "http":
+		return true, false
+	case "https":
+		return false, m.Insecure
+	default:
+		return m.Insecure, false
+	}
 }
 
 type Web struct {
@@ -304,6 +347,13 @@ func (c *Config) applyDefaults() {
 		c.Plannotator.ReviewsDir = "~/.kontora/plannotator-reviews"
 	}
 
+	if c.Metrics.Enabled == nil {
+		c.Metrics.Enabled = new(false)
+	}
+	if c.Metrics.Interval.Duration == 0 {
+		c.Metrics.Interval.Duration = 60 * time.Second
+	}
+
 	// Agents with no explicit failure_patterns get the built-in defaults. A nil
 	// slice means the key was absent; an explicit [] (non-nil, empty) opts out.
 	for name, agent := range c.Agents {
@@ -426,6 +476,10 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	if err := c.validateMetrics(); err != nil {
+		return err
+	}
+
 	// Validate custom statuses.
 	seen := make(map[string]bool, len(c.Statuses))
 	for _, s := range c.Statuses {
@@ -488,6 +542,28 @@ func (c *Config) Validate() error {
 	}
 
 	return c.validateProjects()
+}
+
+// validateMetrics checks the export settings that only matter once export is
+// on. A disabled section is left alone: nothing reads it, and rejecting a
+// half-written one would keep the daemon from starting over a subsystem the
+// user has switched off.
+func (c *Config) validateMetrics() error {
+	if c.Metrics.Enabled == nil || !*c.Metrics.Enabled {
+		return nil
+	}
+	if c.Metrics.Interval.Duration <= 0 {
+		return fmt.Errorf("metrics.interval %s: must be positive", c.Metrics.Interval)
+	}
+	// An empty endpoint hands the address to the SDK's OTEL_EXPORTER_OTLP_*
+	// handling, and a bare host:port is resolved against metrics.insecure. Only
+	// a stated scheme can be wrong.
+	switch scheme := c.Metrics.EndpointScheme(); scheme {
+	case "", "http", "https":
+		return nil
+	default:
+		return fmt.Errorf("metrics.endpoint %q: scheme %q is not supported (use http or https, or a bare host:port)", c.Metrics.Endpoint, scheme)
+	}
 }
 
 // validateProjects checks entries in name order so the duplicate-path error

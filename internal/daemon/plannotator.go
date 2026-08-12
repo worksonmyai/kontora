@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/worksonmyai/kontora/internal/config"
+	"github.com/worksonmyai/kontora/internal/metrics"
 	"github.com/worksonmyai/kontora/internal/process"
 	"github.com/worksonmyai/kontora/internal/ticket"
 	"github.com/worksonmyai/kontora/internal/tmux"
@@ -317,6 +318,10 @@ func (d *Daemon) runReworkStage(ctx, taskCtx context.Context, cfg *config.Config
 	binaryPath, err := d.agentLookup(agentCfg.Binary)
 	if err != nil {
 		log.Error("rework: agent binary lookup failed", "binary", agentCfg.Binary, "err", err)
+		// spawnAgentRun records a failed run for the same case, so this path does
+		// too: a rework stage broken at the config level must not be invisible in
+		// kontora.stage.runs.
+		d.recordReworkRun(taskCtx, agentName, t.Pipeline, process.Result{}, err, 0)
 		d.pauseTicket(t, filePath, fmt.Sprintf("rework: agent binary unavailable: %s", err))
 		return
 	}
@@ -391,8 +396,13 @@ func (d *Daemon) runReworkStage(ctx, taskCtx context.Context, cfg *config.Config
 		config.ReworkStageName, config.ReworkStageName, sessionID)
 	runIndex := stageRunIndex(t, config.ReworkStageName)
 	d.setLiveRun(ticketID, liveRun{stage: config.ReworkStageName, run: runIndex, params: params, startedAt: time.Now()})
+	// The built-in rework stage calls the runner directly and never reaches
+	// spawnAgentRun, so it records its own stage run. Without this every
+	// built-in rework run would be invisible.
+	started := time.Now()
 	result, runnerErr := d.runner(taskCtx, params)
 	d.clearLiveRun(ticketID)
+	d.recordReworkRun(taskCtx, agentName, t.Pipeline, result, runnerErr, time.Since(started))
 	if runnerErr != nil && taskCtx.Err() == nil {
 		log.Error("rework: runner failed", "err", runnerErr)
 		d.killTaskWindow(ticketID)
@@ -400,7 +410,8 @@ func (d *Daemon) runReworkStage(ctx, taskCtx context.Context, cfg *config.Config
 		return
 	}
 
-	d.materializeAgentLogs(log, params, stageEventsPath(cfg, ticketID, config.ReworkStageName, runIndex))
+	usage, usageComplete := d.materializeAgentLogs(log, params, stageEventsPath(cfg, ticketID, config.ReworkStageName, runIndex))
+	d.recordTokens(taskCtx, config.ReworkStageName, agentName, usage, usageComplete)
 
 	if taskCtx.Err() != nil {
 		if ctx.Err() != nil {
@@ -481,6 +492,31 @@ func (d *Daemon) runReworkStage(ctx, taskCtx context.Context, cfg *config.Config
 		}
 		d.background.Go(func() { d.runFinalSummary(ctx, params) })
 	}
+}
+
+// recordReworkRun reports the built-in rework stage's run, matching what
+// recordStageRun reports for every stage that goes through spawnAgentRun. It
+// defaults the same way too: only a run that reached the agent and came back
+// clean is a success, so a path that ends before the runner is a failure rather
+// than a silent success.
+//
+// The rework stage does not go through handleAgentExit, so it produces no
+// kontora.stage.transitions; its outcome is the whole record of what it did.
+func (d *Daemon) recordReworkRun(taskCtx context.Context, agentName, pipelineName string, result process.Result, runnerErr error, elapsed time.Duration) {
+	outcome := metrics.OutcomeFailure
+	switch {
+	case taskCtx.Err() != nil:
+		outcome = metrics.OutcomeCancelled
+	case runnerErr == nil && result.ExitCode == 0:
+		outcome = metrics.OutcomeSuccess
+	}
+	d.metrics.StageRun(taskCtx, metrics.StageAttrs{
+		Stage:    config.ReworkStageName,
+		Agent:    agentName,
+		Pipeline: pipelineName,
+		Outcome:  outcome,
+		ExitCode: result.ExitCode,
+	}, elapsed)
 }
 
 // reworkAgent picks the agent to use for the rework stage. Priority:

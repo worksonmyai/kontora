@@ -1115,10 +1115,10 @@ test("agent running counts come from the recompute pass and skip non-running tic
 test("canAnnotateTicket takes the daemon's answer, not its own status list", () => {
   const state = loadKontoraState();
 
-  assert.equal(state.canAnnotateTicket({ status: "todo", can_annotate: true }), true);
-  // A parked ticket is editable but already has an annotation run pending, and
-  // only the daemon knows that, so the status alone must not enable the button.
-  assert.equal(state.canAnnotateTicket({ status: "todo" }), false);
+  assert.equal(state.canAnnotateTicket({ status: "open", can_annotate: true }), true);
+  // An open ticket parked for an annotation run is refused, and only the daemon
+  // knows that, so the status alone must not enable the button.
+  assert.equal(state.canAnnotateTicket({ status: "open" }), false);
   assert.equal(state.canAnnotateTicket(null), false);
 });
 

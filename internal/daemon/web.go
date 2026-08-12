@@ -1054,7 +1054,7 @@ func (d *Daemon) buildTicketInfo(cfg *config.Config, ts *ticketState, includeBod
 	if strings.TrimSpace(info.Branch) == "" {
 		info.AutoBranch = autoTicketBranch(cfg, ts.ticket)
 	}
-	info.CanAnnotate = annotateRefusal(cfg, ts.ticket) == nil
+	info.CanAnnotate = annotateRefusal(ts.ticket) == nil
 	mt := ts.modTime
 	if mt.IsZero() && ts.filePath != "" {
 		if st, err := os.Stat(ts.filePath); err == nil {

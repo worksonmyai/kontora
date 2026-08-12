@@ -116,15 +116,26 @@ type Week struct {
 }
 
 // Stage is one pipeline stage's quality. Share is the stage's percentage of all
-// measured stage time, so the shares of a window sum to 100.
+// measured stage time, so the shares of a window sum to 100, and TokenShare is
+// the same figure over tokens.
+//
+// TokenRuns is zero when none of the stage's runs recorded usable token counts.
+// That is not a stage that cost nothing: an agent whose session format carries
+// no counts leaves every run of the stage unmeasured. Annotation runs are left
+// out of every token field here, exactly as they are out of the time figures,
+// so a window's stage tokens sum to at most its total.
 type Stage struct {
-	Name     string  `json:"name"`
-	P50MS    int64   `json:"p50_ms"`
-	P90MS    int64   `json:"p90_ms"`
-	Share    float64 `json:"share"`
-	Runs     int     `json:"runs"`
-	Failed   int     `json:"failed"`
-	RetryPct float64 `json:"retry_pct"`
+	Name       string  `json:"name"`
+	P50MS      int64   `json:"p50_ms"`
+	P90MS      int64   `json:"p90_ms"`
+	Share      float64 `json:"share"`
+	Runs       int     `json:"runs"`
+	Failed     int     `json:"failed"`
+	RetryPct   float64 `json:"retry_pct"`
+	Tokens     int64   `json:"tokens"`
+	TokensP90  int64   `json:"tokens_p90"`
+	TokenShare float64 `json:"token_share"`
+	TokenRuns  int     `json:"token_runs"`
 }
 
 // Agent is one agent's quality. Every figure counts stage runs alone, token
@@ -431,6 +442,12 @@ func aggregate(tickets []Ticket, start, end time.Time, loc *time.Location) windo
 				s.durations = append(s.durations, duration)
 				s.totalMS += duration
 			}
+			if r.Usage != nil {
+				n := int64(r.Usage.In) + int64(r.Usage.Out)
+				s.tokens += n
+				s.tokenPerRun = append(s.tokenPerRun, n)
+				s.tokenRuns++
+			}
 			key := t.ID + "\x00" + r.Stage
 			firstPassPairs[key] = max(firstPassPairs[key], r.Run)
 		}
@@ -465,11 +482,14 @@ func aggregate(tickets []Ticket, start, end time.Time, loc *time.Location) windo
 }
 
 type stageAcc struct {
-	durations []int64
-	totalMS   int64
-	runs      int
-	failed    int
-	retries   int
+	durations   []int64
+	totalMS     int64
+	tokens      int64
+	tokenPerRun []int64
+	tokenRuns   int
+	runs        int
+	failed      int
+	retries     int
 }
 
 type agentAcc struct {
@@ -553,23 +573,33 @@ func weekSeries(m map[string]*Week, start, end time.Time, loc *time.Location) []
 	return out
 }
 
+// stageSeries orders the stages by time share alone. The page sorts its own
+// rows when it draws the token figures, so this single order is what pins each
+// stage to a colour in either mode.
 func stageSeries(m map[string]*stageAcc) []Stage {
-	var total int64
+	var total, totalTokens int64
 	for _, a := range m {
 		total += a.totalMS
+		totalTokens += a.tokens
 	}
 	out := make([]Stage, 0, len(m))
 	for name, a := range m {
 		s := Stage{
-			Name:     name,
-			P50MS:    percentile(a.durations, 50),
-			P90MS:    percentile(a.durations, 90),
-			Runs:     a.runs,
-			Failed:   a.failed,
-			RetryPct: pct(a.retries, a.runs),
+			Name:      name,
+			P50MS:     percentile(a.durations, 50),
+			P90MS:     percentile(a.durations, 90),
+			Runs:      a.runs,
+			Failed:    a.failed,
+			RetryPct:  pct(a.retries, a.runs),
+			Tokens:    a.tokens,
+			TokensP90: percentile(a.tokenPerRun, 90),
+			TokenRuns: a.tokenRuns,
 		}
 		if total > 0 {
 			s.Share = float64(a.totalMS) / float64(total) * 100
+		}
+		if totalTokens > 0 {
+			s.TokenShare = float64(a.tokens) / float64(totalTokens) * 100
 		}
 		out = append(out, s)
 	}

@@ -6,6 +6,7 @@
 // exception is bar geometry, which is a pixel height, not a measurement.
 
 const STATS_RANGES = ['30d', '90d', 'all'];
+const STATS_STAGE_MODES = ['time', 'tokens'];
 const STATS_POLL_MS = 30000;
 
 // Heat map geometry, mirrored by the cell classes in index.html: a 13px cell
@@ -265,21 +266,56 @@ function statsDerive(payload) {
     };
   });
 
+  // Both modes of the stage panel are built here, so its header toggle is a
+  // template switch over one payload rather than a second derivation. The
+  // colour is taken from the server's time-share order before anything sorts
+  // by tokens, so a stage keeps it in either mode.
   const stages = stagesRaw.map(function(s, i) {
+    const runs = s.runs || 0;
+    const tokenRuns = s.token_runs || 0;
+    const measured = tokenRuns > 0;
+    const failed = (s.failed || 0) + ' failed';
     return {
       name: s.name,
       color: STATS_STAGE_COLORS[i % STATS_STAGE_COLORS.length],
-      share: s.share || 0,
-      p50: statsDuration(s.p50_ms),
-      p90: statsDuration(s.p90_ms),
-      meta: (s.runs || 0) + ' runs · ' + (s.failed || 0) + ' failed',
       retry: statsPctLabel(s.retry_pct) + ' retried',
       // A stage where a fifth of the runs are retries is the one to look at.
       hot: (s.retry_pct || 0) >= 15,
-      tip: s.name + ' · ' + Math.round(s.share || 0) + '% of measured time · p50 ' +
-        statsDuration(s.p50_ms) + ' · p90 ' + statsDuration(s.p90_ms),
+      time: {
+        share: s.share || 0,
+        value: statsDuration(s.p50_ms),
+        sub: 'p90 ' + statsDuration(s.p90_ms),
+        meta: runs + ' runs · ' + failed,
+        tip: s.name + ' · ' + Math.round(s.share || 0) + '% of measured time · p50 ' +
+          statsDuration(s.p50_ms) + ' · p90 ' + statsDuration(s.p90_ms),
+      },
+      // A stage none of whose runs recorded counts reads as unmeasured, not as
+      // free: it takes no share of the bar and neither figure is a number.
+      tokens: {
+        share: measured ? (s.token_share || 0) : 0,
+        value: measured ? statsCompact(s.tokens) : '—',
+        // The bold figure is the stage total and this one is per run, so it
+        // says which it is rather than letting the two read as one unit.
+        sub: measured ? 'p90/run ' + statsCompact(s.tokens_p90) : 'no counts',
+        // The total covers the runs that recorded counts. When that is fewer
+        // than the stage ran, the row counts those instead of implying the
+        // total spans them all.
+        meta: (measured && tokenRuns < runs ? tokenRuns + ' of ' + runs + ' runs measured' : runs + ' runs') + ' · ' + failed,
+        tip: measured
+          ? s.name + ' · ' + Math.round(s.token_share || 0) + '% of stage tokens · ' +
+            statsCompact(s.tokens) + ' over ' + tokenRuns + ' measured runs'
+          : s.name + ' · no token counts recorded',
+      },
     };
   });
+  const stageTokens = stagesRaw.reduce(function(n, s) { return n + (Number(s.tokens) || 0); }, 0);
+  // With no counts anywhere in the window there is no order to rank by and no
+  // bar to fill, so tokens mode drops to the card's empty state rather than
+  // drawing zero-width segments over rows sorted by name.
+  const stagesByTokens = stageTokens > 0 ? stages.slice().sort(function(a, b) {
+    if (b.tokens.share !== a.tokens.share) return b.tokens.share - a.tokens.share;
+    return a.name < b.name ? -1 : a.name > b.name ? 1 : 0;
+  }) : [];
 
   const busy = live.busy || [];
   const agents = agentsRaw.map(function(a) {
@@ -327,6 +363,10 @@ function statsDerive(payload) {
     tokens: tokens,
     tokenCaption: statsCompact(statsTokenTotal(totals)) + ' tokens',
     stages: stages,
+    stagesByTokens: stagesByTokens,
+    // "in stages" is what keeps this honest beside the KPI token card, which
+    // also counts the annotation runs the stage figures leave out.
+    stageTokens: statsCompact(stageTokens) + ' tokens in stages',
     agents: agents,
     projects: projects,
     slots: slots,
@@ -351,9 +391,16 @@ function kontoraStats() {
         return STATS_RANGES.indexOf(saved) >= 0 ? saved : '90d';
       } catch (e) { return '90d'; }
     })(),
+    statsStageMode: (function() {
+      try {
+        const saved = localStorage.getItem('kontora-stats-mode');
+        return STATS_STAGE_MODES.indexOf(saved) >= 0 ? saved : 'time';
+      } catch (e) { return 'time'; }
+    })(),
     statsProject: 'all',
     statsPipeline: 'all',
     statsRanges: STATS_RANGES,
+    statsStageModes: STATS_STAGE_MODES,
     stats: null,
     statsDerived: null,
     statsLoading: false,
@@ -437,6 +484,36 @@ function kontoraStats() {
       this.statsRange = range;
       try { localStorage.setItem('kontora-stats-range', range); } catch (e) { /* private mode */ }
       this.fetchStats();
+    },
+
+    // Both orders are already in the payload the page holds, so switching mode
+    // redraws the card and asks the daemon for nothing.
+    setStatsStageMode(mode) {
+      if (this.statsStageMode === mode) return;
+      this.statsStageMode = mode;
+      try { localStorage.setItem('kontora-stats-mode', mode); } catch (e) { /* private mode */ }
+    },
+
+    statsStageRows() {
+      if (!this.statsDerived) return [];
+      return this.statsStageMode === 'tokens' ? this.statsDerived.stagesByTokens : this.statsDerived.stages;
+    },
+
+    // Tokens mode has rows to show only where something recorded counts, so an
+    // empty card there means the window went unmeasured, not that it was idle.
+    statsStageEmpty() {
+      if (this.statsStageMode === 'tokens' && this.statsDerived && this.statsDerived.stages.length) {
+        return 'no token counts in this window';
+      }
+      return 'no data in this window';
+    },
+
+    // The median cycle is a ticket figure rather than a stage one, so it stands
+    // even when no stage ran; a stage-token total with no stages does not.
+    statsStageCaption() {
+      if (!this.statsDerived) return '';
+      if (this.statsStageMode !== 'tokens') return 'median cycle ' + this.statsDerived.medianCycle;
+      return this.statsDerived.stagesByTokens.length ? this.statsDerived.stageTokens : '';
     },
 
     setStatsProject(name) {

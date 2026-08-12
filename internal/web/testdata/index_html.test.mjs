@@ -6423,7 +6423,12 @@ function statsPayload(over = {}) {
       { date: "2026-08-12", runs: 9 },
     ],
     weeks: [{ week: "2026-08-09", done: 3, cancelled: 1, tokens_in: 1300, tokens_out: 200, tokens_cache_create: 50, tokens_cache_read: 250 }],
-    stages: [{ name: "implement", p50_ms: 132000, p90_ms: 600000, share: 100, runs: 4, failed: 1, retry_pct: 25 }],
+    // Two stages that rank one way by time and the other way by tokens, so the
+    // stage panel's two modes cannot pass by agreeing with each other.
+    stages: [
+      { name: "plan", p50_ms: 120000, p90_ms: 300000, share: 60, runs: 2, failed: 0, retry_pct: 0, tokens: 300, tokens_p90: 150, token_share: 37.5, token_runs: 2 },
+      { name: "implement", p50_ms: 132000, p90_ms: 600000, share: 40, runs: 4, failed: 1, retry_pct: 25, tokens: 500, tokens_p90: 500, token_share: 62.5, token_runs: 1 },
+    ],
     agents: [{ name: "claude", model: "sonnet-4.6", runs: 4, first_pass_pct: 82, median_ms: 132000, tokens_per_run: 14200, retries_per_ticket: 0.4 }],
     projects: [{ name: "kontora", done: 3, median_cycle_ms: 13200000 }],
     live: { running: 1, slots: 3, queued: 2, oldest_wait_ms: 360000, in_review: 5, busy: ["claude"] },
@@ -6470,6 +6475,20 @@ function statsState(payload = statsPayload()) {
   state.openSettings = async () => { state.currentView = "settings"; };
   state.openCreateModal = async () => { state.currentView = "new"; };
   return { ctx, state, timers, fetched, store, location };
+}
+
+// statsModeState builds the component over a storage the caller controls, so a
+// test can seed the stage mode read at construction, corrupt it, or make the
+// read throw the way a browser in private mode does.
+function statsModeState(storage) {
+  const { state } = loadKontoraContext({
+    location: { protocol: "http:", host: "localhost:8080", hash: "" },
+    localStorage: storage,
+    setInterval() { return 1; },
+    clearInterval() {},
+    fetch: async () => ({ ok: true, json: async () => statsPayload() }),
+  });
+  return state;
 }
 
 test("statsCompact shortens a count the way a 26px KPI needs", () => {
@@ -6610,6 +6629,161 @@ test("an agent with no usable token counts shows an em dash, not a zero", () => 
 
   assert.equal(derived.agents[0].perRun, "—");
   assert.equal(derived.agents[1].perRun, "0", "a measured zero is not the same as no measurement");
+});
+
+test("every stage row carries both a time and a token figure", () => {
+  const { ctx } = statsState();
+
+  const derived = ctx.statsDerive(statsPayload());
+
+  assert.deepEqual(vmValue(derived.stages[0].time), {
+    share: 60,
+    value: "2m",
+    sub: "p90 5m",
+    meta: "2 runs · 0 failed",
+    tip: "plan · 60% of measured time · p50 2m · p90 5m",
+  });
+  assert.deepEqual(vmValue(derived.stages[0].tokens), {
+    share: 37.5,
+    value: "300",
+    // Labelled per run: the bold figure beside it is the stage total.
+    sub: "p90/run 150",
+    meta: "2 runs · 0 failed",
+    tip: "plan · 38% of stage tokens · 300 over 2 measured runs",
+  });
+  assert.equal(derived.stages[1].tokens.value, "500");
+  assert.equal(derived.stages[1].tokens.sub, "p90/run 500");
+  // "in stages" against the KPI card's total, which also counts annotation runs.
+  assert.equal(derived.stageTokens, "800 tokens in stages");
+});
+
+test("a stage only some of whose runs recorded counts says how many", () => {
+  const { ctx } = statsState();
+
+  const derived = ctx.statsDerive(statsPayload());
+
+  // implement ran 4 times and one run wrote counts, so its 500 is a total over
+  // that one run, not over the four the time mode counts.
+  assert.equal(derived.stages[1].time.meta, "4 runs · 1 failed");
+  assert.equal(derived.stages[1].tokens.meta, "1 of 4 runs measured · 1 failed");
+});
+
+test("the token order reranks the stage rows without recolouring them", () => {
+  const { ctx } = statsState();
+
+  const derived = ctx.statsDerive(statsPayload());
+
+  assert.deepEqual(derived.stages.map((s) => s.name), ["plan", "implement"]);
+  assert.deepEqual(derived.stagesByTokens.map((s) => s.name), ["implement", "plan"]);
+  // The colour comes from the server's time order, so a row keeps it wherever
+  // the token order puts it.
+  const color = {};
+  derived.stages.forEach((s) => { color[s.name] = s.color; });
+  derived.stagesByTokens.forEach((s) => { assert.equal(s.color, color[s.name], s.name); });
+  assert.notEqual(color.plan, color.implement);
+});
+
+test("a stage that recorded no counts reads as unmeasured, not as free", () => {
+  const { ctx } = statsState();
+  const payload = statsPayload();
+  payload.stages[0] = { ...payload.stages[0], name: "pi", tokens: 0, tokens_p90: 0, token_share: 0, token_runs: 0 };
+
+  const derived = ctx.statsDerive(payload);
+
+  assert.equal(derived.stages[0].tokens.value, "—");
+  assert.equal(derived.stages[0].tokens.sub, "no counts");
+  assert.equal(derived.stages[0].tokens.share, 0, "it takes no width in the tokens bar");
+  assert.equal(derived.stages[0].tokens.tip, "pi · no token counts recorded");
+  assert.equal(derived.stages[0].time.value, "2m", "its time figures are untouched");
+  // The measured stage still leads the token order.
+  assert.equal(derived.stagesByTokens[0].name, "implement");
+});
+
+test("a window where nothing recorded counts empties the card instead of the bar", async () => {
+  const payload = statsPayload();
+  payload.stages = payload.stages.map((s) => ({ ...s, tokens: 0, tokens_p90: 0, token_share: 0, token_runs: 0 }));
+  const { state } = statsState(payload);
+  await state.gotoView("stats");
+  await flushMicrotasks();
+
+  assert.equal(state.statsStageRows().length, 2);
+  assert.equal(state.statsStageCaption(), "median cycle 4h 12m");
+
+  state.setStatsStageMode("tokens");
+
+  // Every row would take a zero-width segment, so the card says so rather than
+  // drawing an empty strip under "0 tokens in stages".
+  assert.deepEqual(vmValue(state.statsStageRows()), []);
+  assert.equal(state.statsStageEmpty(), "no token counts in this window");
+  assert.equal(state.statsStageCaption(), "");
+});
+
+test("a window with no stages at all keeps the median cycle under the empty card", async () => {
+  const { state } = statsState(statsPayload({ stages: [] }));
+  await state.gotoView("stats");
+  await flushMicrotasks();
+
+  assert.equal(state.statsStageEmpty(), "no data in this window");
+  assert.equal(state.statsStageCaption(), "median cycle 4h 12m", "a ticket figure outlives the stage rows");
+
+  state.setStatsStageMode("tokens");
+
+  assert.equal(state.statsStageEmpty(), "no data in this window");
+  assert.equal(state.statsStageCaption(), "");
+});
+
+test("the stage mode persists and switches without another request", async () => {
+  const { state, fetched, store } = statsState();
+  await state.gotoView("stats");
+  await flushMicrotasks();
+
+  assert.equal(state.statsStageMode, "time");
+  assert.deepEqual(state.statsStageRows().map((s) => s.name), ["plan", "implement"]);
+
+  state.setStatsStageMode("tokens");
+  await flushMicrotasks();
+
+  assert.equal(store["kontora-stats-mode"], "tokens");
+  assert.equal(fetched.length, 1, "both orders come out of the payload already held");
+  assert.deepEqual(state.statsStageRows().map((s) => s.name), ["implement", "plan"]);
+
+  state.setStatsStageMode("time");
+  assert.deepEqual(state.statsStageRows().map((s) => s.name), ["plan", "implement"]);
+  assert.equal(fetched.length, 1);
+
+  assert.deepEqual(statsModeState({ getItem: () => "tokens", setItem() {} }).statsStageMode, "tokens",
+    "reopening Stats comes back in the mode that was left");
+});
+
+test("a stage mode the storage cannot supply falls back to time", () => {
+  const cases = [
+    { name: "no key yet", storage: { getItem: () => null, setItem() {} } },
+    { name: "a value the panel has no mode for", storage: { getItem: () => "minutes", setItem() {} } },
+    { name: "storage that throws on read", storage: { getItem() { throw new Error("denied"); }, setItem() {} } },
+  ];
+
+  for (const c of cases) {
+    assert.equal(statsModeState(c.storage).statsStageMode, "time", c.name);
+  }
+});
+
+test("the stage panel's header carries the mode toggle and the rows follow it", () => {
+  const html = fs.readFileSync(htmlPath, "utf8");
+
+  assert.match(html, /x-text="statsStageMode === 'tokens' \? 'where the tokens go' : 'where the time goes'"/);
+  assert.match(html, /<template x-for="m in statsStageModes" :key="m">/);
+  assert.match(html, /@click="setStatsStageMode\(m\)"/);
+  // The caption sits under the stacked bar: the title and the pill fill the header.
+  assert.match(html, /<span class="stats-cap num" x-show="statsStageCaption\(\)" x-text="statsStageCaption\(\)">/);
+  // It outlives the bar, which the empty window drops along with its segments.
+  assert.match(html, /<span class="stats-cap" x-show="statsDerived && !statsStageRows\(\)\.length" x-text="statsStageEmpty\(\)">/);
+  assert.match(html, /<div class="flex h-\[9px\] gap-0\.5" x-show="statsStageRows\(\)\.length">/);
+  // Bar and rows read the same mode object, so neither can drift from the other.
+  assert.match(html, /:style="'flex:' \+ s\[statsStageMode\]\.share \+ ';background:' \+ s\.color"/);
+  assert.match(html, /x-text="s\[statsStageMode\]\.value"/);
+  assert.match(html, /x-text="s\[statsStageMode\]\.sub"/);
+  assert.match(html, /x-text="s\[statsStageMode\]\.meta"/);
+  assert.equal(html.match(/x-for="s in statsStageRows\(\)"/g).length, 2);
 });
 
 test("the Stats poll runs only while Stats is the current view", async () => {

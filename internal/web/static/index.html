@@ -2389,33 +2389,45 @@
       <div class="flex-1 min-h-[340px] grid grid-cols-[1.05fr_1.25fr_1fr] gap-2.5">
 
         <div class="stats-card flex-col gap-[11px] min-h-0">
-          <div class="flex items-baseline justify-between">
-            <span class="stats-title">where the time goes</span>
-            <span class="stats-cap num pl-2.5" x-text="statsDerived ? 'median cycle ' + statsDerived.medianCycle : ''"></span>
+          <!-- The toggle redraws this card alone. Both modes come out of the
+               payload the page already holds, so it never refetches. -->
+          <div class="flex items-center justify-between gap-2.5">
+            <span class="stats-title" x-text="statsStageMode === 'tokens' ? 'where the tokens go' : 'where the time goes'"></span>
+            <div class="flex gap-1 bg-surface-900 border border-edge-card rounded-[7px] p-[3px]">
+              <template x-for="m in statsStageModes" :key="m">
+                <button @click="setStatsStageMode(m)"
+                        class="font-mono text-[11px] px-[11px] py-[3px] rounded-[5px] transition-colors"
+                        :class="statsStageMode === m ? 'bg-surface-850 text-tx-hi font-bold' : 'text-tx-3 hover:text-tx-2'"
+                        x-text="m"></button>
+              </template>
+            </div>
           </div>
-          <span class="stats-cap" x-show="statsDerived && !statsDerived.stages.length">no data in this window</span>
-          <div class="flex h-[9px] gap-0.5" x-show="statsDerived && statsDerived.stages.length">
-            <template x-for="s in (statsDerived ? statsDerived.stages : [])" :key="s.name">
-              <div class="rounded-[2px]" :style="'flex:' + s.share + ';background:' + s.color" :data-tip-t="s.tip"></div>
-            </template>
+          <span class="stats-cap" x-show="statsDerived && !statsStageRows().length" x-text="statsStageEmpty()"></span>
+          <div class="flex flex-col gap-1.5" x-show="statsDerived">
+            <div class="flex h-[9px] gap-0.5" x-show="statsStageRows().length">
+              <template x-for="s in statsStageRows()" :key="s.name">
+                <div class="rounded-[2px]" :style="'flex:' + s[statsStageMode].share + ';background:' + s.color" :data-tip-t="s[statsStageMode].tip"></div>
+              </template>
+            </div>
+            <span class="stats-cap num" x-show="statsStageCaption()" x-text="statsStageCaption()"></span>
           </div>
           <!-- Top-aligned with a fixed gap rather than space-between: pipelines run
                from one stage to six, and two rows spread over the panel height
                would sit 600px apart. -->
           <div class="flex flex-col gap-4 flex-1 min-h-0 overflow-y-auto">
-            <template x-for="s in (statsDerived ? statsDerived.stages : [])" :key="s.name">
+            <template x-for="s in statsStageRows()" :key="s.name">
               <div class="flex flex-col gap-[5px]">
                 <div class="flex items-baseline gap-[7px]">
                   <span class="w-[7px] h-[7px] rounded-[2px] shrink-0" :style="'background:' + s.color"></span>
                   <span class="font-mono text-[12px] text-tx flex-1 min-w-0 truncate" x-text="s.name"></span>
-                  <span class="num font-mono text-[12px] font-bold text-tx-hi whitespace-nowrap" x-text="s.p50"></span>
-                  <span class="num font-mono text-[10px] text-tx-4 w-[76px] shrink-0 text-right whitespace-nowrap" x-text="'p90 ' + s.p90"></span>
+                  <span class="num font-mono text-[12px] font-bold text-tx-hi whitespace-nowrap" x-text="s[statsStageMode].value"></span>
+                  <span class="num font-mono text-[10px] text-tx-4 w-[88px] shrink-0 text-right whitespace-nowrap" x-text="s[statsStageMode].sub"></span>
                 </div>
                 <div class="h-1 rounded-full bg-surface-700 overflow-hidden">
-                  <div class="h-full rounded-full" :style="'width:' + s.share + '%;background:' + s.color"></div>
+                  <div class="h-full rounded-full" :style="'width:' + s[statsStageMode].share + '%;background:' + s.color"></div>
                 </div>
                 <div class="flex items-baseline gap-2 pl-3.5">
-                  <span class="num font-mono text-[10px] text-tx-4 flex-1 truncate" x-text="s.meta"></span>
+                  <span class="num font-mono text-[10px] text-tx-4 flex-1 truncate" x-text="s[statsStageMode].meta"></span>
                   <span class="num font-mono text-[10px] whitespace-nowrap" :class="s.hot ? 'text-warn' : 'text-tx-4'" x-text="s.retry"></span>
                 </div>
               </div>

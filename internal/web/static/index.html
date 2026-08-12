@@ -675,6 +675,11 @@
       transition: opacity .12s ease, transform .12s ease;
     }
     #global-tip-e .tip-e-title { font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 700; color: rgba(var(--tx-hi), 1); }
+    /* The title's [tag] prefix, in the project hue the board card paints it.
+       --pipe-h comes from a data-pipe-color the fill mirrors onto the card: the
+       card sits at body level, so it inherits from no tagged ancestor. nowrap
+       for the reason .pipe-tag has it, since a tag can hold a hyphen. */
+    #global-tip-e .tip-e-tag { color: hsl(var(--pipe-h, 240 10% 55%)); white-space: nowrap; }
     #global-tip-e .tip-e-body { font-size: 12px; line-height: 1.55; color: rgba(var(--tx-3), 1); }
     #global-tip-e .tip-e-hint { font-family: 'JetBrains Mono', monospace; font-size: 10px; color: rgba(var(--tx-faint), 1); }
     /* Here rather than in the reduced-motion block near the top of the file:
@@ -693,8 +698,12 @@
   <!-- Global tooltips (teleported outside overflow containers) -->
   <div id="global-tip"></div>
   <div id="global-tip-t"></div>
+  <!-- The space between the tag and the name is a text node, not a margin: it
+       is the only wrap opportunity between them, and the card has a max-width
+       and no overflow-wrap. A hidden tag leaves it starting the line, where CSS
+       drops it. -->
   <div id="global-tip-e">
-    <span class="tip-e-title"></span>
+    <span class="tip-e-title"><span class="tip-e-tag"></span> <span class="tip-e-name"></span></span>
     <span class="tip-e-body"></span>
     <span class="tip-e-hint"></span>
   </div>
@@ -758,7 +767,15 @@
         el.style.top = top + 'px';
       }, function(el, trig) {
         var hint = trig.getAttribute('data-tip-e-hint') || '';
-        el.children[0].textContent = trig.getAttribute('data-tip-e');
+        var tag = trig.getAttribute('data-tip-e-tag') || '';
+        var title = el.children[0];
+        title.children[0].textContent = tag;
+        title.children[0].style.display = tag ? '' : 'none';
+        title.children[1].textContent = trig.getAttribute('data-tip-e');
+        // One card serves every chip, and no chip is an ancestor of it, so the
+        // hue is mirrored here on every hover. A write left out on one branch
+        // leaks the last chip's tag or colour into the next card.
+        el.setAttribute('data-pipe-color', trig.getAttribute('data-tip-e-tag-color') || 'none');
         el.children[1].textContent = trig.getAttribute('data-tip-e-body') || '';
         el.children[2].textContent = hint;
         el.children[2].style.display = hint ? '' : 'none';
@@ -1998,6 +2015,8 @@
                       <template x-for="ref in relationRefs(row)" :key="ref.id">
                         <span :class="relationChipClass(ref)"
                               :data-tip-e="ticketTip(ref).title"
+                              :data-tip-e-tag="ticketTip(ref).tag"
+                              :data-tip-e-tag-color="ticketTip(ref).tagColor"
                               :data-tip-e-body="ticketTip(ref).body"
                               :data-tip-e-hint="ticketTip(ref).hint"
                               @click="openTicketRef(ref)"

@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.30.0](https://github.com/worksonmyai/kontora/compare/v0.29.0...v0.30.0) - 2026-08-13
+
+- Rebuild start ticket modal on structured design
+- Stop the watcher debounce test from splitting a write burst
+- Give the config reload test one deadline for its six tickets
+- Regenerate landing page screenshots
+- Add lifecycle hooks: run user scripts at worktree and stage boundaries
+- Show a ticket's sub-tickets and relations on the ticket page
+- Rewrite landing page copy in plain terms
+- Add time/tokens toggle to Stats stage breakdown panel
+- Rebuild landing page on dashboard palette and rewrite copy
+- Split Stats tokens by category and record pi usage
+- Annotate a ticket kontora has not adopted
+
 ## [0.28.0](https://github.com/worksonmyai/kontora/compare/v0.27.0...v0.28.0) - 2026-08-10
 
 - Add readable ticket branch names

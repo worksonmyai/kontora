@@ -684,34 +684,63 @@ func TestMetricsReworkOutcomes(t *testing.T) {
 	}
 }
 
-// TestMetricsReworkBinaryLookupFailure covers the rework stage broken at the
-// config level: spawnAgentRun records a failure for the same case, so the
-// built-in stage must not stay silent about it.
-func TestMetricsReworkBinaryLookupFailure(t *testing.T) {
-	const id = "tst-rwm1"
-	h := newPlannotatorHarness(t)
-	mp, collect := h.manualMetrics()
-	d := h.newAnnotationDaemon(DirectRunner, WithMeterProvider(mp),
-		WithAgentLookup(func(string) (string, error) {
-			return "", errors.New("executable file not found in $PATH")
-		}))
+// TestMetricsReworkStopsBeforeItsAgent covers the rework stage broken before
+// its agent runs: spawnAgentRun records a failure for the same cases, so the
+// built-in stage must not stay silent about them.
+func TestMetricsReworkStopsBeforeItsAgent(t *testing.T) {
+	tests := []struct {
+		name string
+		// id keys the ticket, and breakRun stops the run before the agent, either
+		// through a daemon option or through the config the stage reads.
+		id       string
+		breakRun func(h *plannotatorHarness) []Option
+	}{
+		{
+			name: "agent binary unavailable",
+			id:   "tst-rwm1",
+			breakRun: func(*plannotatorHarness) []Option {
+				return []Option{WithAgentLookup(func(string) (string, error) {
+					return "", errors.New("executable file not found in $PATH")
+				})}
+			},
+		},
+		{
+			name: "stage_start hook fails",
+			id:   "tst-rwm2",
+			breakRun: func(h *plannotatorHarness) []Option {
+				h.cfg.Hooks = config.Hooks{config.HookStageStart: {
+					config.Hook{Name: "bootstrap", Run: "exit 1"},
+				}}
+				return nil
+			},
+		},
+	}
 
-	filePath := h.writeTicket(id+".md", h.reviewTaskMD(id, "human_review", "kontora/"+id))
-	tk, err := ticket.ParseFile(filePath)
-	require.NoError(t, err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := newPlannotatorHarness(t)
+			opts := tt.breakRun(h)
+			mp, collect := h.manualMetrics()
+			d := h.newAnnotationDaemon(DirectRunner, append(opts, WithMeterProvider(mp))...)
 
-	ctx := context.Background()
-	d.runReworkStage(ctx, ctx, h.cfg, testLogger(t), id, tk, filePath)
+			filePath := h.writeTicket(tt.id+".md", h.reviewTaskMD(tt.id, "human_review", "kontora/"+tt.id))
+			tk, err := ticket.ParseFile(filePath)
+			require.NoError(t, err)
 
-	paused, err := ticket.ParseFile(filePath)
-	require.NoError(t, err)
-	assert.Equal(t, ticket.StatusPaused, paused.Status)
+			ctx := context.Background()
+			d.runReworkStage(ctx, ctx, h.cfg, testLogger(t), tt.id, tk, filePath)
 
-	got := collect()
-	runs, ok := got["kontora.stage.runs"]
-	require.True(t, ok, "a rework stage that never reached its agent must still be counted")
-	assert.Equal(t, map[string]int64{config.ReworkStageName: 1}, sumByAttr(t, runs, "stage"))
-	assert.Equal(t, map[string]int64{"failure": 1}, sumByAttr(t, runs, "outcome"))
+			paused, err := ticket.ParseFile(filePath)
+			require.NoError(t, err)
+			assert.Equal(t, ticket.StatusPaused, paused.Status)
+
+			got := collect()
+			runs, ok := got["kontora.stage.runs"]
+			require.True(t, ok, "a rework stage that never reached its agent must still be counted")
+			assert.Equal(t, map[string]int64{config.ReworkStageName: 1}, sumByAttr(t, runs, "stage"))
+			assert.Equal(t, map[string]int64{"failure": 1}, sumByAttr(t, runs, "outcome"))
+		})
+	}
 }
 
 // TestUsageSince covers the arithmetic behind the resumed-session delta,

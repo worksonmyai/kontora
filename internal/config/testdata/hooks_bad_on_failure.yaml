@@ -1,0 +1,13 @@
+tickets_dir: ~/org/tickets
+
+agents:
+  claude:
+    binary: claude
+
+projects:
+  kontora:
+    path: ~/projects/kontora
+    hooks:
+      stage_end:
+        - run: make lint
+          on_failure: ignore

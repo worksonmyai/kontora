@@ -1,0 +1,12 @@
+tickets_dir: ~/org/tickets
+
+agents:
+  claude:
+    binary: claude
+
+hooks:
+  stage_start:
+    - name: build
+      run: make build
+    - name: no command
+      run: "   "

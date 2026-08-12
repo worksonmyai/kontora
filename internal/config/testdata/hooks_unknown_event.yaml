@@ -1,0 +1,9 @@
+tickets_dir: ~/org/tickets
+
+agents:
+  claude:
+    binary: claude
+
+hooks:
+  worktree_destroyed:
+    - run: echo gone

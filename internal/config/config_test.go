@@ -1509,3 +1509,127 @@ func TestBranchPrefixFor(t *testing.T) {
 		})
 	}
 }
+
+func TestLoadHooks(t *testing.T) {
+	cfg, err := Load("testdata/hooks_valid.yaml")
+	require.NoError(t, err)
+
+	global := cfg.Hooks[HookWorktreeCreated]
+	require.Len(t, global, 1)
+	assert.Equal(t, "copy claude settings", global[0].Name)
+	assert.Equal(t, 5*time.Minute, global[0].Timeout.Duration)
+	assert.Equal(t, HookOnFailurePause, global[0].OnFailure)
+
+	project := cfg.Projects["kontora"].Hooks
+	require.Len(t, project[HookWorktreeCreated], 1)
+	assert.Equal(t, 30*time.Second, project[HookWorktreeCreated][0].Timeout.Duration)
+	assert.Equal(t, HookOnFailurePause, project[HookWorktreeCreated][0].OnFailure)
+
+	require.Len(t, project[HookStageEnd], 1)
+	assert.Equal(t, 5*time.Minute, project[HookStageEnd][0].Timeout.Duration)
+	assert.Equal(t, HookOnFailureWarn, project[HookStageEnd][0].OnFailure)
+}
+
+func TestLoadInvalidHooks(t *testing.T) {
+	tests := []struct {
+		name    string
+		fixture string
+		wantErr []string
+	}{
+		{
+			name:    "unknown event",
+			fixture: "hooks_unknown_event.yaml",
+			wantErr: []string{`hooks: unknown event "worktree_destroyed"`, "stage_start"},
+		},
+		{
+			name:    "blank run",
+			fixture: "hooks_missing_run.yaml",
+			wantErr: []string{"hooks stage_start[1]", "run is required"},
+		},
+		{
+			name:    "unsupported on_failure",
+			fixture: "hooks_bad_on_failure.yaml",
+			wantErr: []string{`project "kontora" hooks stage_end[0]`, `on_failure "ignore"`},
+		},
+		{
+			name:    "negative timeout",
+			fixture: "hooks_negative_timeout.yaml",
+			wantErr: []string{"hooks worktree_created[0]", "must not be negative"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := Load(filepath.Join("testdata", tt.fixture))
+			require.Error(t, err)
+			for _, want := range tt.wantErr {
+				assert.ErrorContains(t, err, want)
+			}
+		})
+	}
+}
+
+func TestHooksFor(t *testing.T) {
+	home := t.TempDir()
+	cfg := &Config{
+		Hooks: Hooks{
+			HookWorktreeCreated: {{Name: "global", Run: "echo global"}},
+			HookStageEnd:        {{Name: "global end", Run: "echo end"}},
+		},
+		Projects: map[string]Project{
+			"kontora": {Path: "~/projects/kontora", Hooks: Hooks{
+				HookWorktreeCreated: {{Name: "project", Run: "echo project"}},
+			}},
+			"sigil": {Path: "~/projects/sigil"},
+		},
+	}
+
+	tests := []struct {
+		name     string
+		repoPath string
+		event    string
+		want     []string
+	}{
+		{
+			name:     "global runs before project",
+			repoPath: "~/projects/kontora",
+			event:    HookWorktreeCreated,
+			want:     []string{"global", "project"},
+		},
+		{
+			name:     "project without hooks for the event runs global only",
+			repoPath: "~/projects/kontora",
+			event:    HookStageEnd,
+			want:     []string{"global end"},
+		},
+		{
+			name:     "unmatched repository runs global only",
+			repoPath: "~/projects/other",
+			event:    HookWorktreeCreated,
+			want:     []string{"global"},
+		},
+		{
+			name:     "project without hooks runs global only",
+			repoPath: "~/projects/sigil",
+			event:    HookWorktreeCreated,
+			want:     []string{"global"},
+		},
+		{
+			name:     "event with no hooks resolves to nothing",
+			repoPath: "~/projects/kontora",
+			event:    HookStageStart,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("HOME", home)
+
+			var names []string
+			for _, h := range cfg.HooksFor(tt.repoPath, tt.event) {
+				names = append(names, h.Name)
+			}
+			assert.Equal(t, tt.want, names)
+		})
+	}
+}

@@ -85,8 +85,8 @@ resume support still works behind those two wrappers.
 Top-level keys: `tickets_dir`, `logs_dir`, `worktrees_dir`, `branch_prefix`,
 `branch_naming`, `editor`, `default_agent`, `max_concurrent_agents`,
 `auto_pick_up`, `instance_name`, `tmux_session`, `statuses`, `environment`,
-`resume_prompt`, `annotation_prompt`, `summary_model`, `web`, `agents`,
-`stages`, `pipelines`, `projects`, `plannotator`.
+`hooks`, `resume_prompt`, `annotation_prompt`, `summary_model`, `web`,
+`agents`, `stages`, `pipelines`, `projects`, `plannotator`.
 
 ```yaml
 tickets_dir: ~/.kontora/tickets
@@ -196,6 +196,10 @@ The config fails to load when any of these does not hold:
 - No pipeline step runs a stage that resolves a model on an agent that is
   neither `claude` nor `pi`. Those two are the only CLIs Kontora passes
   `--model` to.
+- Every `hooks` key, at the top level and inside a project, is one of
+  `worktree_created`, `stage_start`, `stage_end`. Every hook has a non-blank
+  `run`; its `on_failure`, when set, is `pause` or `warn`; its `timeout` is not
+  negative.
 
 Unknown YAML keys are rejected. A typo fails the whole load, so a field you
 invent will not be ignored. Keep the settings the user already has, and do not

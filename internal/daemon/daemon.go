@@ -26,6 +26,7 @@ import (
 	"go.opentelemetry.io/otel/metric/noop"
 
 	"github.com/worksonmyai/kontora/internal/config"
+	"github.com/worksonmyai/kontora/internal/hook"
 	"github.com/worksonmyai/kontora/internal/logfmt"
 	"github.com/worksonmyai/kontora/internal/metrics"
 	"github.com/worksonmyai/kontora/internal/pipeline"
@@ -1259,7 +1260,17 @@ func (d *Daemon) runTicket(ctx context.Context, ticketID string) {
 	}
 	stageCfg := cfg.Stages[stageName]
 
-	repoPath, wtPath, prepOK := d.prepareWorktreeForAgent(log, t, filePath, ticketID, stageName, branch, true)
+	repoPath, wtPath, prepOK := d.prepareWorktreeForAgent(taskCtx, prepareWorktreeParams{
+		cfg:        cfg,
+		log:        log,
+		t:          t,
+		filePath:   filePath,
+		ticketID:   ticketID,
+		stageName:  stageName,
+		agentName:  agentName,
+		branch:     branch,
+		isPipeline: true,
+	})
 	if !prepOK {
 		return
 	}
@@ -1288,6 +1299,8 @@ func (d *Daemon) runTicket(ctx context.Context, ticketID string) {
 		stageName:    stageName,
 		run:          runIndex,
 		wtPath:       wtPath,
+		repoPath:     repoPath,
+		branch:       branch,
 		rendered:     rendered,
 		agentCfg:     agentCfg,
 		stageCfg:     stageCfg,
@@ -1310,6 +1323,7 @@ func (d *Daemon) runTicket(ctx context.Context, ticketID string) {
 		pipelineCfg:  pipelineCfg,
 		repoPath:     repoPath,
 		wtPath:       wtPath,
+		branch:       branch,
 	})
 }
 
@@ -1374,7 +1388,17 @@ func (d *Daemon) runSimpleTicket(ctx, taskCtx context.Context, cfg *config.Confi
 		return
 	}
 
-	repoPath, wtPath, prepOK := d.prepareWorktreeForAgent(log, t, filePath, ticketID, simpleStageName, ticketBranch(cfg, t), false)
+	branch := ticketBranch(cfg, t)
+	repoPath, wtPath, prepOK := d.prepareWorktreeForAgent(taskCtx, prepareWorktreeParams{
+		cfg:       cfg,
+		log:       log,
+		t:         t,
+		filePath:  filePath,
+		ticketID:  ticketID,
+		stageName: simpleStageName,
+		agentName: agentName,
+		branch:    branch,
+	})
 	if !prepOK {
 		return
 	}
@@ -1401,6 +1425,8 @@ func (d *Daemon) runSimpleTicket(ctx, taskCtx context.Context, cfg *config.Confi
 		stageName:  simpleStageName,
 		run:        stageRunIndex(t, simpleStageName),
 		wtPath:     wtPath,
+		repoPath:   repoPath,
+		branch:     branch,
 		rendered:   rendered,
 		agentCfg:   agentCfg,
 		stageCfg:   config.Stage{},
@@ -1427,39 +1453,54 @@ func (d *Daemon) runSimpleTicket(ctx, taskCtx context.Context, cfg *config.Confi
 		return
 	}
 
-	// Re-read ticket from disk (user may have edited during execution).
-	t2, err := ticket.ParseFile(filePath)
-	if err != nil {
-		log.Error("re-read failed after agent exit", "err", err)
+	// Checked before the hooks for what it rules out, not for the ticket it
+	// returns: hooks that write the worktree must not run for an exit this
+	// instance may not act on.
+	guard := exitGuardParams{log: log, ticketID: ticketID, filePath: filePath, repoPath: repoPath, wtPath: wtPath}
+	if _, ok := d.readTicketForExit(guard); !ok {
 		return
 	}
 
-	// If user changed status while running, respect that.
-	if d.isUserOverride(t2.Status) {
-		log.Info("user override during execution", "status", t2.Status)
-		if isTerminalOverride(t2.Status) {
-			d.removeWorktreeAt(log, repoPath, wtPath)
-			d.killTaskWindow(ticketID)
-		}
-		d.mu.Lock()
-		d.tickets[ticketID] = newTicketState(t2, filePath)
-		d.mu.Unlock()
+	// A ticket without a pipeline runs one stage under simpleStageName, so it
+	// fires the post-run event too. spawnAgentRun already fired the pre-run one.
+	hookErr := d.runHooks(taskCtx, cfg, log, hook.Context{
+		Event:      config.HookStageEnd,
+		TicketID:   ticketID,
+		TicketFile: filePath,
+		Worktree:   wtPath,
+		RepoPath:   repoPath,
+		Branch:     branch,
+		Stage:      simpleStageName,
+		Agent:      agentName,
+		ExitCode:   &result.ExitCode,
+	})
+	if taskCtx.Err() != nil {
+		log.Info("interrupted during stage_end hooks")
 		return
 	}
 
-	// If another instance claimed the ticket while we ran, discard the result:
-	// write nothing and keep the worktree.
-	if d.claimedElsewhere(t2) {
-		log.Info("discarding exit result: claimed by another instance", "claimed_by", t2.ClaimedBy)
-		d.killTaskWindow(ticketID)
-		d.mu.Lock()
-		d.tickets[ticketID] = newTicketState(t2, filePath)
-		d.mu.Unlock()
+	// The hooks can take as long as their timeout allows, and one of them can
+	// write the ticket itself through KONTORA_TICKET_FILE, so the read the write
+	// below builds on is taken after them.
+	t2, guardOK := d.readTicketForExit(guard)
+	if !guardOK {
 		return
 	}
 
 	// Simple exit handling: 0 → done, non-0 → paused.
-	if result.ExitCode == 0 {
+	switch {
+	case result.ExitCode != 0:
+		_ = t2.SetField("status", string(ticket.StatusPaused))
+		_ = t2.SetField("last_error", fmt.Sprintf("agent exited with code %d", result.ExitCode))
+		log.Warn("paused", "exit_code", result.ExitCode)
+	case hookErr != nil:
+		// The agent succeeded, so the hook decides the outcome alone. Its run is
+		// still recorded: a paused ticket with no summary hides what the agent did.
+		_ = t2.SetField("status", string(ticket.StatusPaused))
+		_ = t2.SetField("last_error", hookErr.Error())
+		_ = t2.SetField("summary", runSummary(t2.Summary, run.FinalMessage))
+		t2.AppendNote(hookErr.Error(), time.Now())
+	default:
 		_ = t2.SetField("status", string(ticket.StatusDone))
 		_ = t2.SetField("last_error", "")
 		_ = t2.SetField("summary", runSummary(t2.Summary, run.FinalMessage))
@@ -1470,10 +1511,6 @@ func (d *Daemon) runSimpleTicket(ctx, taskCtx context.Context, cfg *config.Confi
 		_ = t2.SetField("completed_at", completedAt.Format(time.RFC3339))
 		log.Info("completed", "branch", t2.Branch)
 		d.killTaskWindow(ticketID)
-	} else {
-		_ = t2.SetField("status", string(ticket.StatusPaused))
-		_ = t2.SetField("last_error", fmt.Sprintf("agent exited with code %d", result.ExitCode))
-		log.Warn("paused", "exit_code", result.ExitCode)
 	}
 
 	if err := d.writeTicket(t2, filePath); err != nil {
@@ -1481,7 +1518,7 @@ func (d *Daemon) runSimpleTicket(ctx, taskCtx context.Context, cfg *config.Confi
 		return
 	}
 
-	if result.ExitCode == 0 {
+	if result.ExitCode == 0 && hookErr == nil {
 		d.removeWorktreeAt(log, repoPath, wtPath)
 	}
 
@@ -1489,6 +1526,55 @@ func (d *Daemon) runSimpleTicket(ctx, taskCtx context.Context, cfg *config.Confi
 	d.setTicketState(ticketID, t2, filePath)
 	d.broadcastTicketUpdate(ticketID)
 	d.mu.Unlock()
+}
+
+// exitGuardParams is what readTicketForExit needs to decide an exit is still
+// the daemon's to act on, and to clean up when it is not.
+type exitGuardParams struct {
+	log      *slog.Logger
+	ticketID string
+	filePath string
+	repoPath string
+	wtPath   string
+}
+
+// readTicketForExit re-reads the ticket after an agent has exited and reports
+// whether this instance may still act on that exit. It is called again after
+// the stage_end hooks, because those run for as long as their timeout allows:
+// a user or another instance can move in that window, and a hook holding
+// KONTORA_TICKET_FILE can rewrite the file the daemon is about to write back.
+func (d *Daemon) readTicketForExit(p exitGuardParams) (*ticket.Ticket, bool) {
+	t2, err := ticket.ParseFile(p.filePath)
+	if err != nil {
+		p.log.Error("re-read failed after agent exit", "err", err)
+		return nil, false
+	}
+
+	// If user changed status while running, respect that.
+	if d.isUserOverride(t2.Status) {
+		p.log.Info("user override during execution", "status", t2.Status)
+		if isTerminalOverride(t2.Status) {
+			d.removeWorktreeAt(p.log, p.repoPath, p.wtPath)
+			d.killTaskWindow(p.ticketID)
+		}
+		d.mu.Lock()
+		d.tickets[p.ticketID] = newTicketState(t2, p.filePath)
+		d.mu.Unlock()
+		return nil, false
+	}
+
+	// If another instance claimed the ticket while we ran (its claim arrived
+	// through sync), discard our result: write nothing and keep the worktree,
+	// which may hold unpushed commits.
+	if d.claimedElsewhere(t2) {
+		p.log.Info("discarding exit result: claimed by another instance", "claimed_by", t2.ClaimedBy)
+		d.killTaskWindow(p.ticketID)
+		d.mu.Lock()
+		d.tickets[p.ticketID] = newTicketState(t2, p.filePath)
+		d.mu.Unlock()
+		return nil, false
+	}
+	return t2, true
 }
 
 type handleExitParams struct {
@@ -1506,6 +1592,7 @@ type handleExitParams struct {
 	pipelineCfg  config.Pipeline
 	repoPath     string
 	wtPath       string
+	branch       string
 }
 
 func (d *Daemon) handleAgentExit(ctx, taskCtx context.Context, p handleExitParams) {
@@ -1527,35 +1614,41 @@ func (d *Daemon) handleAgentExit(ctx, taskCtx context.Context, p handleExitParam
 		return
 	}
 
-	// Re-read ticket from disk (user may have edited during execution).
-	t2, err := ticket.ParseFile(p.filePath)
-	if err != nil {
-		p.log.Error("re-read failed after agent exit", "err", err)
+	// Checked before the hooks for what it rules out, not for the ticket it
+	// returns: an exit the guards discard is not this stage's outcome to act on,
+	// and hooks that write the worktree must not run for it.
+	guard := exitGuardParams{
+		log: p.log, ticketID: p.ticketID, filePath: p.filePath, repoPath: p.repoPath, wtPath: p.wtPath,
+	}
+	if _, ok := d.readTicketForExit(guard); !ok {
 		return
 	}
 
-	// If user changed status while running, respect that.
-	if d.isUserOverride(t2.Status) {
-		p.log.Info("user override during execution", "status", t2.Status)
-		if isTerminalOverride(t2.Status) {
-			d.removeWorktreeAt(p.log, p.repoPath, p.wtPath)
-			d.killTaskWindow(p.ticketID)
-		}
-		d.mu.Lock()
-		d.tickets[p.ticketID] = newTicketState(t2, p.filePath)
-		d.mu.Unlock()
+	// stage_end runs before the exit is evaluated, so a hook still sees the
+	// worktree as the agent left it. It runs after the guards above, because an
+	// exit those discard is not this stage's outcome to act on. Its failure
+	// cannot change what the pipeline decides; it is applied after the action.
+	hookErr := d.runHooks(taskCtx, p.cfg, p.log, hook.Context{
+		Event:      config.HookStageEnd,
+		TicketID:   p.ticketID,
+		TicketFile: p.filePath,
+		Worktree:   p.wtPath,
+		RepoPath:   p.repoPath,
+		Branch:     p.branch,
+		Stage:      p.stageName,
+		Agent:      p.agentName,
+		ExitCode:   &p.result.ExitCode,
+	})
+	if taskCtx.Err() != nil {
+		p.log.Info("interrupted during stage_end hooks", "stage", p.stageName)
 		return
 	}
 
-	// If another instance claimed the ticket while we ran (its claim arrived
-	// through sync), discard our result: write nothing and keep the worktree,
-	// which may hold unpushed commits.
-	if d.claimedElsewhere(t2) {
-		p.log.Info("discarding exit result: claimed by another instance", "claimed_by", t2.ClaimedBy)
-		d.killTaskWindow(p.ticketID)
-		d.mu.Lock()
-		d.tickets[p.ticketID] = newTicketState(t2, p.filePath)
-		d.mu.Unlock()
+	// The hooks can take as long as their timeout allows, and one of them can
+	// write the ticket itself through KONTORA_TICKET_FILE, so the read the
+	// pipeline evaluates is taken after them.
+	t2, guardOK := d.readTicketForExit(guard)
+	if !guardOK {
 		return
 	}
 
@@ -1626,36 +1719,74 @@ func (d *Daemon) handleAgentExit(ctx, taskCtx context.Context, p handleExitParam
 	}
 	_ = t2.SetField("summary", summary)
 
+	hookPaused := hookErr != nil
+	if hookPaused {
+		recordStageEndHookFailure(t2, hookErr)
+	}
+
 	if err := d.writeTicket(t2, p.filePath); err != nil {
 		p.log.Error("write failed", "phase", "exit", "err", err)
 		return
 	}
 
+	d.finishAgentExit(ctx, t2, p, exitAction.Kind, hookPaused)
+}
+
+// recordStageEndHookFailure stops a ticket whose stage_end hook failed under a
+// pause policy. What the pipeline decided is left alone: the action's fields
+// are already applied, and last_error keeps the pipeline's own reason, taking
+// the hook's message only when the pipeline recorded none.
+//
+// completed_at is the exception. A completing action stamps it, and a paused
+// ticket carrying the time it finished is a state no other path can produce —
+// the run is not over, and no final summary was written for it either.
+func recordStageEndHookFailure(t *ticket.Ticket, hookErr error) {
+	_ = t.SetField("status", string(ticket.StatusPaused))
+	if t.CompletedAt != nil {
+		_ = t.SetField("completed_at", nil)
+	}
+	t.AppendNote(hookErr.Error(), time.Now())
+	if t.LastError == "" {
+		_ = t.SetField("last_error", hookErr.Error())
+	}
+}
+
+// finishAgentExit runs everything that follows the exit write: worktree
+// cleanup, the tmux window, the cached state, re-queueing, and the final
+// summary pass. hookPaused suppresses the steps that would carry onwards a
+// ticket a stage_end hook stopped — a re-enqueued advance would undo the pause
+// on the next tick.
+func (d *Daemon) finishAgentExit(ctx context.Context, t *ticket.Ticket, p handleExitParams, kind pipeline.ActionKind, hookPaused bool) {
 	// Clean up worktree on terminal states.
-	if exitAction.Kind == pipeline.ActionComplete {
+	if kind == pipeline.ActionComplete && !hookPaused {
 		d.removeWorktreeAt(p.log, p.repoPath, p.wtPath)
 	}
 
 	// Kill tmux window unless paused or parked-with-failure — keep it alive
 	// so the user can attach and inspect/fix the failure in the worktree.
-	keepWindow := exitAction.Kind == pipeline.ActionPause ||
-		(exitAction.Kind == pipeline.ActionPark && p.result.ExitCode != 0)
+	keepWindow := hookPaused ||
+		kind == pipeline.ActionPause ||
+		(kind == pipeline.ActionPark && p.result.ExitCode != 0)
 	if !keepWindow {
 		d.killTaskWindow(p.ticketID)
 	}
 
 	d.mu.Lock()
-	d.setTicketState(p.ticketID, t2, p.filePath)
+	d.setTicketState(p.ticketID, t, p.filePath)
 
 	// Re-enqueue if advance/retry/back.
-	switch exitAction.Kind { //nolint:exhaustive
-	case pipeline.ActionAdvance, pipeline.ActionRetry, pipeline.ActionBack:
-		d.enqueue(t2)
+	if !hookPaused {
+		switch kind { //nolint:exhaustive
+		case pipeline.ActionAdvance, pipeline.ActionRetry, pipeline.ActionBack:
+			d.enqueue(t)
+		}
 	}
 	d.broadcastTicketUpdate(p.ticketID)
 	d.mu.Unlock()
 
-	d.startFinalSummary(ctx, t2, p, exitAction.Kind)
+	if !hookPaused {
+		d.startFinalSummary(ctx, t, p, kind)
+	}
 }
 
 // startFinalSummary generates the ticket's final summary when the exit ended
@@ -1686,58 +1817,84 @@ func (d *Daemon) startFinalSummary(ctx context.Context, t *ticket.Ticket, p hand
 	d.background.Go(func() { d.runFinalSummary(ctx, params) })
 }
 
+type prepareWorktreeParams struct {
+	// cfg is the caller's config snapshot, so the worktree_created hooks a
+	// pickup runs come from the same config version as its stage and agent.
+	cfg       *config.Config
+	log       *slog.Logger
+	t         *ticket.Ticket
+	filePath  string
+	ticketID  string
+	stageName string
+	// agentName is the agent the caller resolved for this stage. It only
+	// reaches the hook environment; the worktree itself does not depend on it.
+	agentName string
+	// branch is passed in rather than recomputed: runTicket already reserved it
+	// in runningBranches, and branch_prefix reloads live, so a second
+	// ticketBranch call could return a different name from the one under guard.
+	branch     string
+	isPipeline bool
+}
+
 // prepareWorktreeForAgent resolves the ticket's repo path, creates (or reuses)
-// a worktree for the given branch, and writes the branch/last_log fields.
-// On failure the ticket is paused and ok=false is returned so the caller can
-// return immediately.
-//
-// The branch is passed in rather than recomputed: runTicket already reserved it
-// in runningBranches, and branch_prefix reloads live, so a second
-// ticketBranch call could return a different name from the one under guard.
-func (d *Daemon) prepareWorktreeForAgent(log *slog.Logger, t *ticket.Ticket, filePath, ticketID, stageName, branch string, isPipeline bool) (repoPath, wtPath string, ok bool) {
-	repoName, repoPath, err := d.resolvePath(t)
+// a worktree for the given branch, runs the worktree_created hooks when it
+// created one, and writes the branch/last_log fields. On failure the ticket is
+// paused and ok=false is returned so the caller can return immediately.
+func (d *Daemon) prepareWorktreeForAgent(taskCtx context.Context, p prepareWorktreeParams) (repoPath, wtPath string, ok bool) {
+	repoName, repoPath, err := d.resolvePath(p.t)
 	if err != nil {
-		log.Error("resolve path failed", "err", err)
-		d.pauseTicket(t, filePath, "resolve path failed: "+err.Error())
+		p.log.Error("resolve path failed", "err", err)
+		d.pauseTicket(p.t, p.filePath, "resolve path failed: "+err.Error())
 		return "", "", false
 	}
 
 	wtPath, created, err := d.worktrees.Create(worktree.CreateOpts{
-		RepoPath: repoPath, RepoName: repoName, TaskID: ticketID,
-		Branch: branch, Base: ticketBase(t),
+		RepoPath: repoPath, RepoName: repoName, TaskID: p.ticketID,
+		Branch: p.branch, Base: ticketBase(p.t),
 	})
 	if err != nil {
-		log.Error("create worktree failed", "path", repoPath, "err", err)
-		d.pauseTicket(t, filePath, "create worktree failed: "+err.Error())
+		p.log.Error("create worktree failed", "path", repoPath, "err", err)
+		d.pauseTicket(p.t, p.filePath, "create worktree failed: "+err.Error())
 		return "", "", false
 	}
-	if created {
-		log.Info("worktree created", "path", wtPath, "branch", branch)
+	if !created {
+		p.log.Info("reusing existing worktree for branch", "path", wtPath, "branch", p.branch)
 	} else {
-		log.Info("reusing existing worktree for branch", "path", wtPath, "branch", branch)
+		p.log.Info("worktree created", "path", wtPath, "branch", p.branch)
+	}
+	if !d.runWorktreeCreatedHooks(taskCtx, p.cfg, p.log, p.t, p.filePath, hook.Context{
+		TicketID:   p.ticketID,
+		TicketFile: p.filePath,
+		Worktree:   wtPath,
+		RepoPath:   repoPath,
+		Branch:     p.branch,
+		Stage:      p.stageName,
+		Agent:      p.agentName,
+	}, created) {
+		return "", "", false
 	}
 
-	if err := t.SetField("branch", branch); err != nil {
-		log.Error("set field failed", "field", "branch", "err", err)
+	if err := p.t.SetField("branch", p.branch); err != nil {
+		p.log.Error("set field failed", "field", "branch", "err", err)
 	}
-	if err := t.SetField("last_log", d.stageLogPath(ticketID, stageName)); err != nil {
-		log.Error("set field failed", "field", "last_log", "err", err)
+	if err := p.t.SetField("last_log", d.stageLogPath(p.ticketID, p.stageName)); err != nil {
+		p.log.Error("set field failed", "field", "last_log", "err", err)
 	}
 	// Clear the previous run's summary so the field always describes the run
 	// that ended most recently.
-	if err := t.SetField("summary", ""); err != nil {
-		log.Error("set field failed", "field", "summary", "err", err)
+	if err := p.t.SetField("summary", ""); err != nil {
+		p.log.Error("set field failed", "field", "summary", "err", err)
 	}
 	// The ticket-level summary covers the runs recorded so far, which this run
 	// is about to add to, so it is stale from here until the run ends. Only a
 	// pipeline ticket can have one: nothing generates it for the simple path.
-	if isPipeline {
-		if err := t.SetField("final_summary", ""); err != nil {
-			log.Error("set field failed", "field", "final_summary", "err", err)
+	if p.isPipeline {
+		if err := p.t.SetField("final_summary", ""); err != nil {
+			p.log.Error("set field failed", "field", "final_summary", "err", err)
 		}
 	}
-	if err := d.writeTicket(t, filePath); err != nil {
-		log.Error("write failed", "phase", "spawn_fields", "err", err)
+	if err := d.writeTicket(p.t, p.filePath); err != nil {
+		p.log.Error("write failed", "phase", "spawn_fields", "err", err)
 		return "", "", false
 	}
 	return repoPath, wtPath, true
@@ -1765,8 +1922,13 @@ type spawnAgentParams struct {
 	stageName    string
 	// run keys this run's structured activity sidecar. It must match the Run
 	// stamped on the history entry the same run produces.
-	run        int
-	wtPath     string
+	run    int
+	wtPath string
+	// repoPath and branch describe the worktree wtPath was cut for. They reach
+	// the stage hooks only, and an annotation run, which runs no stage hooks,
+	// leaves them empty.
+	repoPath   string
+	branch     string
 	rendered   string
 	agentCfg   config.Agent
 	stageCfg   config.Stage
@@ -1841,10 +2003,32 @@ func (d *Daemon) spawnAgentRun(taskCtx context.Context, t *ticket.Ticket, p spaw
 		return agentRun{}, false
 	}
 
+	// An annotation run goes through here but is not a stage: it rewrites the
+	// ticket and does none of the stage's work.
+	if !p.annotation {
+		hookErr := d.runHooks(taskCtx, p.cfg, p.log, hook.Context{
+			Event:      config.HookStageStart,
+			TicketID:   p.ticketID,
+			TicketFile: p.filePath,
+			Worktree:   p.wtPath,
+			RepoPath:   p.repoPath,
+			Branch:     p.branch,
+			Stage:      p.stageName,
+			Agent:      p.agentName,
+		})
+		if hookErr != nil {
+			if taskCtx.Err() == nil {
+				attempt.pauseReason = hookErr.Error()
+				d.pauseTicket(t, p.filePath, attempt.pauseReason)
+			}
+			return agentRun{}, false
+		}
+	}
+
 	if rec := d.resumableRecord(p); rec != nil {
 		attempt = d.runAgentOnce(taskCtx, t, p, binaryPath, rec)
 		if attempt.started {
-			return d.finishAttempt(t, p, attempt)
+			return d.finishAttempt(taskCtx, t, p, attempt)
 		}
 		// An agent that already finished its work can exit inside the tmux
 		// startup guard, which reads as a refused invocation. Give the stage its
@@ -1858,7 +2042,7 @@ func (d *Daemon) spawnAgentRun(taskCtx context.Context, t *ticket.Ticket, p spaw
 	}
 
 	attempt = d.runAgentOnce(taskCtx, t, p, binaryPath, nil)
-	return d.finishAttempt(t, p, attempt)
+	return d.finishAttempt(taskCtx, t, p, attempt)
 }
 
 // recordStageRun reports one finished stage run. A run that ends while the
@@ -1889,7 +2073,14 @@ func (d *Daemon) recordStageRun(taskCtx context.Context, p spawnAgentParams, att
 	}, elapsed)
 }
 
-func (d *Daemon) finishAttempt(t *ticket.Ticket, p spawnAgentParams, attempt agentAttempt) (agentRun, bool) {
+// finishAttempt applies what an attempt decided. An attempt the caller cannot
+// act on ends the stage here rather than at handleAgentExit, so it fires the
+// stage_end hooks itself: the stage_start hooks have already run, and a pair
+// left unmatched is exactly the case a teardown hook exists for.
+func (d *Daemon) finishAttempt(taskCtx context.Context, t *ticket.Ticket, p spawnAgentParams, attempt agentAttempt) (agentRun, bool) {
+	if !attempt.ok {
+		d.runStageEndHooksAfterFailure(taskCtx, p, attempt)
+	}
 	if attempt.pauseReason != "" {
 		d.pauseTicket(t, p.filePath, attempt.pauseReason)
 	}

@@ -2553,7 +2553,7 @@ func stageRunIndex(t *ticket.Ticket, stageName string) int {
 
 func (d *Daemon) pauseTicket(t *ticket.Ticket, path, reason string) {
 	log := d.ticketLog(t.ID)
-	log.Warn("pausing")
+	log.Warn("pausing", "reason", reason)
 	if reason != "" {
 		t.AppendNote(reason, time.Now())
 	}

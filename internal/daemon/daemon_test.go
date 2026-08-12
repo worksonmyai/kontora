@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -221,7 +222,11 @@ func (h *testHarness) waitForStatus(filename string, status ticket.Status, timeo
 	// Final attempt for error message.
 	t, err := ticket.ParseFile(path)
 	require.NoError(h.t, err, "waitForStatus: cannot parse %s", filename)
-	h.t.Fatalf("waitForStatus: %s has status=%s, want %s (timeout %v)", filename, t.Status, status, timeout)
+	buf := make([]byte, 1<<20)
+	buf = buf[:runtime.Stack(buf, true)]
+	h.t.Logf("goroutines at timeout:\n%s", buf)
+	h.t.Fatalf("waitForStatus: %s has status=%s, want %s (timeout %v, last_error=%q)",
+		filename, t.Status, status, timeout, t.LastError)
 	return nil
 }
 

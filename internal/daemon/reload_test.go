@@ -27,17 +27,45 @@ import (
 type reloadHarness struct {
 	*testHarness
 	configPath string
-	logBuf     *bytes.Buffer
+	logBuf     *syncBuffer
+}
+
+// syncBuffer is a bytes.Buffer safe to read while the daemon is still logging
+// into it. A failing test dumps the log from the test goroutine while the
+// daemon's goroutines are still running, which a bare bytes.Buffer would race.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }
 
 func newReloadHarness(t *testing.T) *reloadHarness {
 	t.Helper()
 	h := newHarness(t)
-	return &reloadHarness{
+	rh := &reloadHarness{
 		testHarness: h,
 		configPath:  filepath.Join(t.TempDir(), "config.yaml"),
-		logBuf:      &bytes.Buffer{},
+		logBuf:      &syncBuffer{},
 	}
+	// These tests drive a live daemon, so the reason for a failure is almost
+	// always in its log and nowhere else.
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("daemon log:\n%s", rh.logBuf.String())
+		}
+	})
+	return rh
 }
 
 // configOpts overrides parts of the config file h.yaml renders. Anything left
@@ -127,7 +155,14 @@ func (h *reloadHarness) writeConfig(t *testing.T, content string) {
 // obscure what the concurrency tests are checking.
 func (h *reloadHarness) writeConfigAtomic(t *testing.T, content string) {
 	t.Helper()
-	require.NoError(t, atomicWriteFile(h.configPath, []byte(content), 0o644))
+	require.NoError(t, h.writeConfigAtomicErr(content))
+}
+
+// writeConfigAtomicErr is writeConfigAtomic for a goroutine other than the
+// test's own, which must not call require: FailNow off the test goroutine is
+// undefined.
+func (h *reloadHarness) writeConfigAtomicErr(content string) error {
+	return atomicWriteFile(h.configPath, []byte(content), 0o644)
 }
 
 // newDaemonWithConfig writes content to the config file, loads it the way the
@@ -434,13 +469,18 @@ func TestReload_UsesConsistentSnapshot(t *testing.T) {
 
 	d := h.newDaemonWithConfig(t, fixture("fixtureA"), WithRunner(capturing))
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	// Outlives the wait below, so a slow machine fails on the ticket that did
+	// not finish rather than on the daemon that was stopped under it.
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	errCh := make(chan error, 1)
 	go func() { errCh <- d.Run(ctx) }()
 	time.Sleep(200 * time.Millisecond)
 
-	// Flip the pair while tickets are being picked up.
+	// Flip the pair while tickets are being picked up. The loop is joined in a
+	// cleanup rather than only at the end of the test: a wait below can fail the
+	// test first, and a goroutine still writing files and logging after the test
+	// returns panics the binary, taking every later test in the package with it.
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -449,7 +489,10 @@ func TestReload_UsesConsistentSnapshot(t *testing.T) {
 			if i%2 == 1 {
 				tag = "fixtureB"
 			}
-			h.writeConfigAtomic(t, fixture(tag))
+			if err := h.writeConfigAtomicErr(fixture(tag)); err != nil {
+				t.Errorf("reload %d: writing the config failed: %v", i, err)
+				return
+			}
 			if err := d.reloadConfig(); err != nil {
 				t.Errorf("reload %d failed: %v", i, err)
 				return
@@ -457,13 +500,19 @@ func TestReload_UsesConsistentSnapshot(t *testing.T) {
 			time.Sleep(10 * time.Millisecond)
 		}
 	}()
+	t.Cleanup(func() { <-done })
 
 	for i := range 6 {
 		id := fmt.Sprintf("tst-snap%d", i)
 		h.writeTicket(id+".md", h.taskMD(id, "todo", "one-stage"))
 	}
+	// The six tickets run four at a time, so they finish as a group rather than
+	// in the order waited on here. One deadline for the whole set: a budget per
+	// ticket would give the last one to finish whatever is left of the first
+	// one's, which on a loaded machine is nothing.
+	deadline := time.Now().Add(60 * time.Second)
 	for i := range 6 {
-		h.waitForStatus(fmt.Sprintf("tst-snap%d.md", i), ticket.StatusDone, 20*time.Second)
+		h.waitForStatus(fmt.Sprintf("tst-snap%d.md", i), ticket.StatusDone, time.Until(deadline))
 	}
 	<-done
 

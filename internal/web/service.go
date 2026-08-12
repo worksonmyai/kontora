@@ -220,6 +220,11 @@ type TicketInfo struct {
 	Links  []TicketRef `json:"links,omitempty"`
 	Parent *TicketRef  `json:"parent,omitempty"`
 	Blocks []TicketRef `json:"blocks,omitempty"`
+	// Children is the reverse of Parent: the tickets whose parent names this
+	// one. Like Blocks it is stored nowhere and derived by scanning the store,
+	// so it is detail-only. It carries more than a TicketRef because the tree
+	// renders each child's stage and elapsed as well as its status.
+	Children []TicketChild `json:"children,omitempty"`
 }
 
 // TicketRef is one end of a relation. Title and Status are filled in when the
@@ -231,6 +236,25 @@ type TicketRef struct {
 	ID     string `json:"id"`
 	Title  string `json:"title,omitempty"`
 	Status string `json:"status,omitempty"`
+}
+
+// TicketChild is one sub-ticket in the tree at the top of the ticket tab: a
+// TicketRef plus what the tree draws beside the title. StartedAt and CompletedAt
+// bound the child's whole run, first pickup to last exit, the way the ticket
+// page's own wall time is measured. Ticket.StartedAt alone is rewritten at every
+// stage spawn and would report only the last stage. CompletedAt is absent while
+// the child runs, which is what tells the page to clock it live instead of
+// printing a fixed duration. StageIndex is 1-based, and 0 when the child's stage
+// is not in its pipeline.
+type TicketChild struct {
+	ID          string     `json:"id"`
+	Title       string     `json:"title,omitempty"`
+	Status      string     `json:"status,omitempty"`
+	Stage       string     `json:"stage,omitempty"`
+	StageIndex  int        `json:"stage_index,omitempty"`
+	StageCount  int        `json:"stage_count,omitempty"`
+	StartedAt   *time.Time `json:"started_at,omitempty"`
+	CompletedAt *time.Time `json:"completed_at,omitempty"`
 }
 
 // NoteInfo is one entry from the ticket body's "## Notes" section. At is the

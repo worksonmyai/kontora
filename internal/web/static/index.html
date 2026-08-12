@@ -1117,6 +1117,25 @@
         <button type="button" @click="closeDetail()"
                 class="font-mono text-[12px] text-tx-3 hover:text-tx-2 transition-colors">board</button>
         <span class="text-edge-faint">/</span>
+        <!-- parent is navigation, not payload, so it is a crumb rather than a
+             row in the body. All five data-tip-e* attributes are needed: the
+             shared card mirrors them on every hover, and an omitted one leaks
+             the previous chip's tag or hue. -->
+        <template x-if="selectedTicket?.parent">
+          <span class="flex items-center gap-3 min-w-0">
+            <button type="button" @click="openTicketRef(selectedTicket.parent)"
+                    class="inline-flex items-center gap-1.5 font-mono text-[12px] text-tx-3 hover:text-tx-2 transition-colors min-w-0"
+                    :data-tip-e="ticketTip(selectedTicket.parent).title"
+                    :data-tip-e-tag="ticketTip(selectedTicket.parent).tag"
+                    :data-tip-e-tag-color="ticketTip(selectedTicket.parent).tagColor"
+                    :data-tip-e-body="ticketTip(selectedTicket.parent).body"
+                    :data-tip-e-hint="ticketTip(selectedTicket.parent).hint">
+              <span class="w-[5px] h-[5px] rounded-full shrink-0" :class="relationDotClass(selectedTicket.parent)"></span>
+              <span class="truncate" x-text="selectedTicket.parent.id"></span>
+            </button>
+            <span class="text-edge-faint">/</span>
+          </span>
+        </template>
         <span class="font-mono text-[12px] text-tx-2 truncate" x-text="selectedTicket?.id"></span>
         <span x-show="detailLoading" class="font-mono text-[11px] text-surface-600">loading...</span>
       </div>
@@ -1879,9 +1898,111 @@
                       <span class="text-err/80 text-xs font-mono break-words whitespace-pre-wrap" x-text="selectedTicket.last_error"></span>
                     </div>
                   </template>
+                  <!-- Relations strip: deps, blocks and links on one line above
+                       the sub-tickets. parent is in the breadcrumb, so it is not
+                       here. The whole strip is dropped when there is nothing in
+                       it rather than left as an empty row.
+                       It wraps rather than holding one line at any cost: a
+                       ticket in the corpus carries 30-odd links, and eight chips
+                       per group is already wider than the 960px column. Nothing
+                       here may shrink below its text — a shrunk label overprints
+                       the chip beside it. -->
+                  <template x-if="bandRows().length > 0">
+                    <div class="flex flex-wrap items-center gap-x-3.5 gap-y-1.5 min-h-[26px] mb-3.5 font-mono text-[11.5px]">
+                      <template x-for="(row, i) in bandRows()" :key="row.key">
+                        <div class="flex flex-wrap items-center gap-[7px] min-w-0">
+                          <span x-show="i > 0" class="w-px h-[14px] bg-surface-700 mr-1.5 shrink-0"></span>
+                          <span class="text-tx-faint tracking-[.06em] shrink-0 whitespace-nowrap" x-text="row.label"></span>
+                          <template x-for="ref in relationRefs(row)" :key="ref.id">
+                            <span :class="relationChipClass(ref)"
+                                  class="inline-flex items-center gap-1.5 shrink-0"
+                                  :data-tip-e="ticketTip(ref).title"
+                                  :data-tip-e-tag="ticketTip(ref).tag"
+                                  :data-tip-e-tag-color="ticketTip(ref).tagColor"
+                                  :data-tip-e-body="ticketTip(ref).body"
+                                  :data-tip-e-hint="ticketTip(ref).hint"
+                                  @click="openTicketRef(ref)">
+                              <span class="w-[5px] h-[5px] rounded-full shrink-0" :class="relationDotClass(ref)"></span>
+                              <span x-text="ref.id"></span>
+                            </span>
+                          </template>
+                          <button type="button" x-show="relationHidden(row) > 0"
+                                  class="text-[10.5px] text-accent hover:underline shrink-0"
+                                  @click="relExpanded[row.key] = true"
+                                  x-text="'+' + relationHidden(row) + ' more'"></button>
+                        </div>
+                      </template>
+                    </div>
+                  </template>
+                  <!-- Sub-tickets: the reverse of parent, which is stored on
+                       the child alone and derived by the daemon. A ticket with
+                       none draws nothing, so the body does not shift. -->
+                  <template x-if="(selectedTicket?.children || []).length > 0">
+                    <div class="flex flex-col gap-2">
+
+                      <div class="flex items-center gap-2.5">
+                        <span class="side-label shrink-0">sub-tickets</span>
+                        <span class="flex items-center gap-1.5 font-mono text-[10.5px] text-surface-600 shrink-0">
+                          <span class="inline-block w-[72px] h-[5px] rounded-[3px] bg-surface-700 overflow-hidden relative">
+                            <span class="absolute inset-y-0 left-0 bg-st-done/85"
+                                  :style="'width:' + childRollup().pct + '%'"></span>
+                          </span>
+                          <span class="num" x-text="childRollup().done + ' of ' + childRollup().total"></span>
+                        </span>
+                        <span class="flex-1 h-px bg-surface-700/80"></span>
+                        <button type="button" @click="childrenCollapsed = !childrenCollapsed"
+                                class="font-mono text-[10px] text-surface-600 border border-edge-input rounded-md px-2 py-[3px] hover:border-edge-hover hover:text-tx-2 transition-colors shrink-0"
+                                x-text="childrenCollapsed ? 'expand' : 'collapse'"></button>
+                      </div>
+
+                      <div class="flex flex-col pl-[5px]" x-show="!childrenCollapsed">
+                        <template x-for="c in childRows()" :key="c.id">
+                          <div class="flex items-stretch cursor-pointer hover:bg-surface-850/40 transition-colors"
+                               @click="openTicketRef(c)"
+                               :data-tip-e="ticketTip(c).title"
+                               :data-tip-e-tag="ticketTip(c).tag"
+                               :data-tip-e-tag-color="ticketTip(c).tagColor"
+                               :data-tip-e-body="ticketTip(c).body"
+                               :data-tip-e-hint="ticketTip(c).hint">
+                            <!-- Connector gutter: stem, elbow, status dot. The
+                                 stem stops at the elbow on the last drawn row. -->
+                            <div class="w-[26px] shrink-0 relative">
+                              <span class="absolute left-0 top-0 w-px bg-surface-700"
+                                    :class="c.last ? 'h-[20px]' : 'bottom-0'"></span>
+                              <span class="absolute left-0 top-[19px] w-[13px] h-px bg-surface-700"></span>
+                              <span class="absolute left-[11px] top-4 w-1.5 h-1.5 rounded-full"
+                                    :class="relationDotClass(c)"></span>
+                            </div>
+                            <div class="flex-1 min-w-0 grid grid-cols-[1fr_108px_96px_54px] items-center gap-3
+                                        pl-1 pr-2.5 py-[9px] border-b border-edge-card/55">
+                              <span class="min-w-0 text-[13.5px] text-tx truncate">
+                                <span x-show="splitTitleTag(c.title).tag" class="pal-tag"
+                                      :data-pipe-color="pipelineColorByName(splitTitleTag(c.title).tag)"
+                                      x-text="'[' + splitTitleTag(c.title).tag + ']'"></span>
+                                <span x-text="splitTitleTag(c.title).rest || c.id"></span>
+                              </span>
+                              <span class="font-mono text-[11px] text-surface-600" x-text="c.id"></span>
+                              <span class="font-mono text-[10.5px]"
+                                    :class="c.status === 'in_progress' ? 'text-st-progress' : 'text-surface-600'"
+                                    x-text="childStageLine(c)"></span>
+                              <span class="font-mono text-[10.5px] text-surface-600 text-right num"
+                                    x-text="childElapsed(c)"></span>
+                            </div>
+                          </div>
+                        </template>
+                        <button type="button" x-show="childrenHidden() > 0"
+                                class="self-start ml-[26px] mt-1.5 text-[10.5px] text-accent hover:underline"
+                                @click="childrenExpanded = true"
+                                x-text="'+' + childrenHidden() + ' more'"></button>
+                      </div>
+                    </div>
+                  </template>
                   <!-- Editable form for editable tickets (open/todo/paused) -->
                   <template x-if="editing && ['open', 'todo', 'paused'].includes(selectedTicket?.status)">
-                    <div>
+                    <!-- The top padding is the gap under the sub-ticket tree, so
+                         it is bound rather than fixed: a ticket that draws no
+                         tree has nothing to clear. -->
+                    <div :class="(selectedTicket?.children || []).length > 0 ? 'pt-5' : ''">
                       <div class="grid grid-cols-3 gap-3 mb-3">
                         <div>
                           <label class="text-xs font-mono text-surface-600 mb-1 flex items-center gap-1.5"><svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="opacity-50"><polyline points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="3"/><polyline points="21 16 21 21 16 21"/><line x1="15" y1="15" x2="21" y2="21"/><line x1="4" y1="4" x2="9" y2="9"/></svg>Pipeline</label>
@@ -1957,7 +2078,8 @@
                     <!-- No box to click, but the same inset as the editable
                          body, so a running ticket reads at the same measure and
                          the same left edge as an idle one. -->
-                    <div class="border border-transparent px-[14px] py-3">
+                    <div class="border border-transparent px-[14px] py-3"
+                         :class="(selectedTicket?.children || []).length > 0 ? 'pt-5' : ''">
                       <div class="ticket-prose ticket-read" x-effect="setProse($el, selectedTicket?.body || '')"></div>
                       <div x-show="!selectedTicket?.body" class="text-sm font-mono text-surface-600">
                         <p>No ticket description.</p>

@@ -65,13 +65,14 @@ func TestTicketInfoFromView_Relations(t *testing.T) {
 	assert.Equal(t, []TicketRef{{ID: "t4"}}, info.Links)
 	require.NotNil(t, info.Parent)
 	assert.Equal(t, TicketRef{ID: "t5"}, *info.Parent)
-	// Blocks is derived from the whole store, so it is never set here.
+	// Both reverse edges are derived from the whole store, so neither is set here.
 	assert.Nil(t, info.Blocks)
+	assert.Nil(t, info.Children)
 
 	// A ticket with no relations carries none of the keys.
 	encoded, err := json.Marshal(TicketInfoFromView(app.View{ID: "t6"}))
 	require.NoError(t, err)
-	for _, key := range []string{"deps", "links", "parent", "blocks"} {
+	for _, key := range []string{"deps", "links", "parent", "blocks", "children"} {
 		assert.NotContains(t, string(encoded), `"`+key+`"`)
 	}
 }

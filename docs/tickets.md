@@ -42,7 +42,7 @@ These are set when creating a ticket (manually or via `kontora new`):
 
 #### Relations
 
-`deps`, `links` and `parent` name other tickets. Kontora reads them and shows them in the ticket's details rail, where each id is a link to that ticket and a hover card gives its title and status. Nothing else in Kontora acts on them: the scheduler does not hold a ticket back because a dep is unfinished, and no command writes these fields. They come from whatever created the ticket, such as [wedow/ticket](https://github.com/wedow/ticket) (`ticket dep`, `ticket link`, `ticket create --parent`).
+`deps`, `links` and `parent` name other tickets. Kontora reads them and shows each id as a link to that ticket, with a hover card giving its title and status. The details rail lists every relation as its own row. The ones you navigate by are also on the ticket tab itself: `deps`, `links` and the derived `blocks` on a strip at the top, one line unless a ticket carries too many ids to fit, and `parent` as a crumb in the app header, between `board` and the open ticket's id. Nothing else in Kontora acts on them: the scheduler does not hold a ticket back because a dep is unfinished, and no command writes these fields. They come from whatever created the ticket, such as [wedow/ticket](https://github.com/wedow/ticket) (`ticket dep`, `ticket link`, `ticket create --parent`).
 
 ```yaml
 deps: [kon-a1b2]
@@ -52,7 +52,9 @@ parent: kon-9zzz
 
 Both the flow form above and a block sequence are read. An id with no ticket file behind it stays on screen as plain text: the frontmatter still points at it, and there is nothing to open.
 
-The rail also has a `blocks` row, which is the reverse of `deps`: the tickets whose `deps` name this one. It is derived on read, not stored, because a dependency is written on the blocked ticket alone.
+Two more relations are derived on read rather than stored, because each edge is written on the other ticket alone. `blocks` is the reverse of `deps`: the tickets whose `deps` name this one. `children` is the reverse of `parent`: the tickets whose `parent` names this one. They are read by scanning every ticket file, so both cover tickets the board hides.
+
+`children` renders as a sub-ticket tree at the top of the ticket tab, one row per child with its title, id, stage and elapsed time, and a `3 of 5` rollup counting the children that are `done`. The tree draws 12 rows before it offers a reveal for the rest, and a click on a row opens that child. A ticket with no children draws no tree.
 
 #### Base branch
 

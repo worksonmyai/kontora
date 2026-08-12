@@ -2169,6 +2169,10 @@ func TestDaemon_Relations(t *testing.T) {
 	add("rel-epic", "open", "", "The epic")
 	add("rel-waiter", "open", "deps: [rel-main]\n", "Waiting on main")
 	add("rel-early", "open", "deps: [rel-main, rel-side]\n", "Also waiting")
+	// Two more sub-tickets of the epic, added out of id order: one running at
+	// the pipeline's second stage, one parked at a stage the pipeline dropped.
+	add("rel-kid-z", "paused", "parent: rel-epic\npipeline: two-stage\nstage: gone\n", "Stage off the pipeline")
+	add("rel-kid-a", "in_progress", "parent: rel-epic\npipeline: two-stage\nstage: step2\n", "Running sub-ticket")
 
 	detail, err := d.GetTicket("rel-main")
 	require.NoError(t, err)
@@ -2187,13 +2191,18 @@ func TestDaemon_Relations(t *testing.T) {
 		{ID: "rel-early", Title: "Also waiting", Status: "open"},
 		{ID: "rel-waiter", Title: "Waiting on main", Status: "open"},
 	}, detail.Blocks)
+	// Nothing names rel-main as its parent, so it has no sub-tickets.
+	assert.Nil(t, detail.Children)
 
 	// The board cards render ids, so the list payload carries no titles and no
 	// derived reverse edges.
-	var list web.TicketInfo
+	var list, listEpic web.TicketInfo
 	for _, ti := range d.ListTickets() {
-		if ti.ID == "rel-main" {
+		switch ti.ID {
+		case "rel-main":
 			list = ti
+		case "rel-epic":
+			listEpic = ti
 		}
 	}
 	require.Equal(t, "rel-main", list.ID)
@@ -2202,14 +2211,26 @@ func TestDaemon_Relations(t *testing.T) {
 	require.NotNil(t, list.Parent)
 	assert.Equal(t, web.TicketRef{ID: "rel-epic"}, *list.Parent)
 	assert.Empty(t, list.Blocks)
+	require.Equal(t, "rel-epic", listEpic.ID)
+	assert.Empty(t, listEpic.Children)
 
-	// A ticket with no relations gets no rows at all.
-	plain, err := d.GetTicket("rel-epic")
+	// children is the reverse of parent, read off the store the same way blocks
+	// is: sorted by id, and the stage position resolved from each child's own
+	// pipeline. A stage the pipeline does not list leaves the index at zero
+	// rather than guessing a position.
+	epic, err := d.GetTicket("rel-epic")
 	require.NoError(t, err)
-	assert.Empty(t, plain.Deps)
-	assert.Empty(t, plain.Links)
-	assert.Nil(t, plain.Parent)
-	assert.Empty(t, plain.Blocks)
+	assert.Equal(t, []web.TicketChild{
+		{ID: "rel-kid-a", Title: "Running sub-ticket", Status: "in_progress", Stage: "step2", StageIndex: 2, StageCount: 2},
+		{ID: "rel-kid-z", Title: "Stage off the pipeline", Status: "paused", Stage: "gone", StageCount: 2},
+		{ID: "rel-main", Title: "Main ticket", Status: "todo"},
+	}, epic.Children)
+
+	// A ticket with no relations of its own gets no rows at all.
+	assert.Empty(t, epic.Deps)
+	assert.Empty(t, epic.Links)
+	assert.Nil(t, epic.Parent)
+	assert.Empty(t, epic.Blocks)
 }
 
 func TestDaemon_ListTickets_OmitsDetailFields(t *testing.T) {

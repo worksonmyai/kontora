@@ -1651,6 +1651,14 @@ test("parseTitleTag extracts a [tag] title prefix and falls back to the project 
     { tag: "proj", rest: "No prefix here" });
   assert.deepEqual({ ...state.parseTitleTag({ title: "No prefix" }) },
     { tag: null, rest: "No prefix" });
+
+  // The half without the fallback, which the hover card calls: a ref has no
+  // path, so a basename would make one id read two ways.
+  assert.deepEqual({ ...state.splitTitleTag("[api] Add retry backoff") },
+    { tag: "api", rest: "Add retry backoff" });
+  assert.deepEqual({ ...state.splitTitleTag("No prefix here") },
+    { tag: null, rest: "No prefix here" });
+  assert.deepEqual({ ...state.splitTitleTag(undefined) }, { tag: null, rest: "" });
 });
 
 test("cancelled column starts collapsed and toggling persists the set", () => {
@@ -5380,6 +5388,8 @@ test("a relation chip wears the status of the ticket it names, and says when the
 
   assert.equal(state.relationChipClass(blocker), "ent ent-ticket text-surface-600");
   assert.deepEqual({ ...state.ticketTip(blocker) }, {
+    tag: "",
+    tagColor: "none",
     title: "Archived blocker",
     body: "archived",
     hint: "click to open",
@@ -5389,6 +5399,8 @@ test("a relation chip wears the status of the ticket it names, and says when the
   // found no ticket for it, so it is not a link.
   assert.equal(state.relationChipClass(gone), "ent ent-ticket text-surface-600 ent-ticket-gone");
   assert.deepEqual({ ...state.ticketTip(gone) }, {
+    tag: "",
+    tagColor: "none",
     title: "kon-gone",
     body: "not in the tickets dir",
     hint: "",
@@ -5399,6 +5411,32 @@ test("a relation chip wears the status of the ticket it names, and says when the
   assert.equal(state.relationChipClass(running), "ent ent-ticket text-st-progress");
   assert.equal(state.ticketTip(running).body, "running");
 });
+
+test("the hover card peels the [tag] off the title and hands over its hue", () => {
+  const state = pageState(RELATION_TICKET);
+
+  // The hue is hashed off the bare tag, the string the board card and the
+  // palette row hash, so one ticket wears one colour everywhere.
+  const tagged = state.ticketTip({ id: "kon-t1", title: "[acta] Swift port", status: "open" });
+  assert.equal(tagged.tag, "[acta]");
+  assert.equal(tagged.title, "Swift port");
+  assert.equal(tagged.tagColor, state.pipelineColorByName("acta"));
+  assert.notEqual(tagged.tagColor, state.pipelineColorByName("[acta]"));
+
+  // No prefix, no tag. A ref carries no path, so there is no basename to stand
+  // in the way parseTitleTag lets one stand in for a card.
+  const bare = state.ticketTip({ id: "kon-t2", title: "Swift port", status: "open" });
+  assert.equal(bare.tag, "");
+  assert.equal(bare.title, "Swift port");
+  assert.equal(bare.tagColor, "none");
+
+  // A title that is a tag and nothing else leaves no title, and setupTip drops
+  // the whole card on an empty one, status word and click hint included.
+  const only = state.ticketTip({ id: "kon-t3", title: "[acta]", status: "open" });
+  assert.equal(only.tag, "[acta]");
+  assert.equal(only.title, "kon-t3");
+});
+
 
 test("a relation opens through the board entry when the board has one", async () => {
   const state = pageState(RELATION_TICKET);
@@ -5434,6 +5472,8 @@ test("index.html renders the relation rows inside the frontmatter grid", () => {
   // opens the ticket it names.
   assert.match(html, /:class="relationChipClass\(ref\)"/);
   assert.match(html, /:data-tip-e="ticketTip\(ref\)\.title"/);
+  assert.match(html, /:data-tip-e-tag="ticketTip\(ref\)\.tag"/);
+  assert.match(html, /:data-tip-e-tag-color="ticketTip\(ref\)\.tagColor"/);
   assert.match(html, /@click="openTicketRef\(ref\)"/);
   assert.match(html, /@click="relExpanded\[row\.key\] = true"/);
   // Notes are written through the marking pass, so an id in a note is a chip.
@@ -6214,6 +6254,10 @@ test("a ticket chip opens the ticket it names and keeps the prose around it", ()
   assert.equal(chip.getAttribute("data-tip-e"), "Drop the stale rail");
   assert.equal(chip.getAttribute("data-tip-e-body"), "cancelled");
   assert.equal(chip.getAttribute("data-tip-e-hint"), "click to open");
+  // No [tag] in that title, so the card paints none and asks for the neutral
+  // hue rather than leaving the last chip's colour on the shared node.
+  assert.equal(chip.getAttribute("data-tip-e-tag"), "");
+  assert.equal(chip.getAttribute("data-tip-e-tag-color"), "none");
 
   chip.events.click[0]();
   assert.equal(opened.id, "kon-9xz1");
@@ -6339,4 +6383,21 @@ test("the entity hover card is a third tip instance that stops under reduced mot
   assert.match(html.slice(0, reduced), /@media \(prefers-reduced-motion: reduce\) \{\s*$/);
   // em, so a chip tracks the prose it interrupts.
   assert.match(html, /\.ent \{[^}]*font-size: \.86em/);
+});
+
+test("the hover card's title splits into a coloured tag and the name", () => {
+  const html = fs.readFileSync(htmlPath, "utf8");
+
+  // A real space between the two spans, the only place the title can wrap
+  // between them: the card has a max-width and no overflow-wrap.
+  assert.match(html, /<span class="tip-e-title"><span class="tip-e-tag"><\/span> <span class="tip-e-name"><\/span><\/span>/);
+  // The tag goes in the first child of the title span, the name in the second,
+  // so children[1] and children[2] still address the body and the hint.
+  assert.match(html, /title\.children\[0\]\.textContent = tag;/);
+  assert.match(html, /title\.children\[0\]\.style\.display = tag \? '' : 'none';/);
+  assert.match(html, /title\.children\[1\]\.textContent = trig\.getAttribute\('data-tip-e'\);/);
+  // The card is a body-level node with no tagged ancestor, so the hue is
+  // mirrored onto it, unconditionally, or it leaks into the next hover.
+  assert.match(html, /el\.setAttribute\('data-pipe-color', trig\.getAttribute\('data-tip-e-tag-color'\) \|\| 'none'\);/);
+  assert.match(html, /#global-tip-e \.tip-e-tag \{ color: hsl\(var\(--pipe-h, 240 10% 55%\)\); white-space: nowrap; \}/);
 });

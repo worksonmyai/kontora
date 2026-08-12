@@ -2884,11 +2884,19 @@ function kontora() {
       return this.pipelineColorByName(ticket.pipeline || this.pathBasename(ticket.path));
     },
 
+    // The [tag] prefix a title writes itself, bare and without the brackets.
+    splitTitleTag(title) {
+      var m = /^\[([^\]]+)\]\s*(.*)$/.exec(title || '');
+      return m ? { tag: m[1], rest: m[2] } : { tag: null, rest: title || '' };
+    },
+
     // Colored mono [tag] prefix for titles: a literal "[tag] ..." title prefix
     // wins; otherwise the project basename stands in (title left untouched).
+    // Both ticket reads stay here: the _cardSig scan derives the card's field
+    // set from this body and does not follow splitTitleTag.
     parseTitleTag(ticket) {
-      var m = /^\[([^\]]+)\]\s*(.*)$/.exec(ticket.title || '');
-      if (m) return { tag: m[1], rest: m[2] };
+      var pt = this.splitTitleTag(ticket.title);
+      if (pt.tag) return pt;
       var b = this.pathBasename(ticket.path);
       return { tag: b || null, rest: ticket.title || '' };
     },
@@ -3736,11 +3744,21 @@ function kontora() {
     },
 
     // The hover card behind a ticket id: the title, which the id does not say,
-    // the status word, and what a click does.
+    // the status word, and what a click does. The [tag] prefix comes out of the
+    // title so the card can paint it in the project's hue, as the board card
+    // and the palette row do. Only a prefix the title wrote itself: a ref
+    // carries no path, so there is no basename to stand in, and the same id
+    // would otherwise read one way in the rail and another in prose.
     ticketTip(ref) {
       var known = this.relationKnown(ref);
+      var pt = this.splitTitleTag(ref && ref.title);
       return {
-        title: (ref && (ref.title || ref.id)) || '',
+        tag: pt.tag ? '[' + pt.tag + ']' : '',
+        // The bare tag, the string every other site hashes.
+        tagColor: this.pipelineColorByName(pt.tag),
+        // A title that is a tag and nothing else leaves no title. The card is
+        // suppressed on an empty one, taking the status and the hint with it.
+        title: pt.rest || (ref && ref.id) || '',
         body: known ? this.paletteStatusLabel(ref.status) : 'not in the tickets dir',
         hint: known ? 'click to open' : '',
       };
@@ -3784,6 +3802,8 @@ function kontora() {
       var tip = this.ticketTip(t);
       span.className = this.relationChipClass(t);
       span.setAttribute('data-tip-e', tip.title);
+      span.setAttribute('data-tip-e-tag', tip.tag);
+      span.setAttribute('data-tip-e-tag-color', tip.tagColor);
       span.setAttribute('data-tip-e-body', tip.body);
       span.setAttribute('data-tip-e-hint', tip.hint);
       var self = this;

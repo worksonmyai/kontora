@@ -43,15 +43,24 @@ func TestWatcher(t *testing.T) {
 	})
 
 	t.Run("debounce collapses rapid writes", func(t *testing.T) {
-		path := filepath.Join(dir, "rapid.md")
+		// Own watcher with a window far longer than the 50ms one above. The burst
+		// only collapses while the watcher goroutine handles every write before
+		// the timer set by the previous one fires. A loaded machine can leave that
+		// goroutine off the CPU for tens of milliseconds in the middle of the
+		// burst, which splits the burst into two events under a 50ms window.
+		burstDir := t.TempDir()
+		bw, err := New(burstDir, time.Second, MarkdownFilter)
+		require.NoError(t, err)
+		defer bw.Close()
+
+		path := filepath.Join(burstDir, "rapid.md")
 		for i := range 5 {
 			require.NoError(t, os.WriteFile(path, []byte{byte(i)}, 0o644))
-			time.Sleep(10 * time.Millisecond)
 		}
-		ev := waitEvent(t, w, 2*time.Second)
+		ev := waitEvent(t, bw, 5*time.Second)
 		require.Equal(t, OpChanged, ev.Op)
 		// Should not get additional events for the debounced writes.
-		assertNoEvent(t, w, 200*time.Millisecond)
+		assertNoEvent(t, bw, 500*time.Millisecond)
 	})
 }
 

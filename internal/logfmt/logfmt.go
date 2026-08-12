@@ -298,14 +298,103 @@ func LastAssistantTextPi(r io.Reader) (string, error) {
 	return last, scanner.Err()
 }
 
+// piEntry is one line of a pi session file. The measurement fields are held as
+// raw JSON and parsed one at a time, because json.Unmarshal fails a record as a
+// unit: a pi version that re-types a timestamp or a token count would otherwise
+// void the whole entry, and with it the plaintext log FmtPi writes, the final
+// message LastAssistantTextPi reads, and the transcript EventsPi builds. Parsed
+// by hand, a value in an unexpected shape degrades its own dimension and leaves
+// the rest of the record readable.
 type piEntry struct {
-	Type    string `json:"type"`
-	ModelID string `json:"modelId,omitempty"`
+	Type      string          `json:"type"`
+	ModelID   string          `json:"modelId,omitempty"`
+	Timestamp json.RawMessage `json:"timestamp,omitempty"`
+	// Usage on the entry itself, which is where a compaction or a branch
+	// summary reports what its summarising call spent. A message reports its
+	// own under message.usage.
+	Usage   json.RawMessage `json:"usage,omitempty"`
 	Message struct {
 		Role     string           `json:"role"`
 		ToolName string           `json:"toolName,omitempty"` // toolResult messages
+		IsError  json.RawMessage  `json:"isError,omitempty"`
+		Usage    json.RawMessage  `json:"usage,omitempty"`
 		Content  []piContentBlock `json:"content"`
 	} `json:"message"`
+}
+
+// piTime parses an entry's timestamp. An absent, null or non-string value gives
+// nil, which the caller reports as the time dimension being partial.
+func piTime(raw json.RawMessage) *time.Time {
+	if len(raw) == 0 {
+		return nil
+	}
+	var t *time.Time
+	if err := json.Unmarshal(raw, &t); err != nil {
+		return nil
+	}
+	return t
+}
+
+// piBool parses a pi flag. It returns nil for an absent, null or non-boolean
+// value, so a file written before pi carried the key is told apart from a flag
+// that is really false.
+func piBool(raw json.RawMessage) *bool {
+	if len(raw) == 0 {
+		return nil
+	}
+	var b *bool
+	if err := json.Unmarshal(raw, &b); err != nil {
+		return nil
+	}
+	return b
+}
+
+// piUsage is pi's per-call token accounting. cacheWrite1h is a subset of
+// cacheWrite and reasoning a subset of output, so neither is read: adding them
+// would count the same tokens twice. The cost object is not read either,
+// because Usage carries no monetary figure.
+type piUsage struct {
+	Input      int `json:"input"`
+	Output     int `json:"output"`
+	CacheWrite int `json:"cacheWrite"`
+	CacheRead  int `json:"cacheRead"`
+	// TotalTokens is pi's own sum of the four categories above, and is read as
+	// a checksum on the four key names rather than as a figure of its own.
+	TotalTokens int `json:"totalTokens"`
+}
+
+// piUsageOf parses an entry's usage object. It returns nil when the key is
+// absent, when the value is in an unexpected shape, and when pi's own
+// totalTokens disagrees with the four categories summed. That last case is what
+// catches a renamed inner key: the four names are read one by one, so a rename
+// would otherwise decode as a silent zero and still report a measured count.
+func piUsageOf(raw json.RawMessage) *piUsage {
+	if len(raw) == 0 {
+		return nil
+	}
+	var u *piUsage
+	if err := json.Unmarshal(raw, &u); err != nil || u == nil {
+		return nil
+	}
+	if u.TotalTokens != 0 && u.TotalTokens != u.Input+u.Output+u.CacheWrite+u.CacheRead {
+		return nil
+	}
+	return u
+}
+
+// total maps pi's four categories onto Usage. A nil receiver returns the zero
+// value, so a caller that has already flagged the missing usage does not have
+// to guard the call.
+func (u *piUsage) total() Usage {
+	if u == nil {
+		return Usage{}
+	}
+	return Usage{
+		Input:       u.Input,
+		Output:      u.Output,
+		CacheCreate: u.CacheWrite,
+		CacheRead:   u.CacheRead,
+	}
 }
 
 type piContentBlock struct {

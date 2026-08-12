@@ -44,8 +44,8 @@ type Ticket struct {
 }
 
 // Run is one history entry, carrying the token counts of its sidecar. Usage is
-// nil when the run has no sidecar or the agent's session format records no
-// counts, which is not the same as a run that really cost nothing.
+// nil when the run has no sidecar, or when its session file left a record's
+// counts unfilled, which is not the same as a run that really cost nothing.
 type Run struct {
 	Stage    string
 	Agent    string
@@ -64,9 +64,10 @@ type Run struct {
 	Usage *Usage
 }
 
-// Usage is one run's token count, already folded into the two figures the page
-// draws.
-type Usage struct{ In, Out int }
+// Usage is one run's token count. In is every token the model was fed, so
+// CacheCreate and CacheRead are subsets of it rather than additions to it:
+// In + Out is the run's total.
+type Usage struct{ In, Out, CacheCreate, CacheRead int }
 
 // Options bounds one query. Now carries the zone every day and week boundary is
 // cut on, so Compute needs no clock of its own.
@@ -82,14 +83,36 @@ type Day struct {
 	Runs int    `json:"runs"`
 }
 
+// TokenCounts is the four-category token figure a window or a week reports,
+// embedded in both so the field names, the wire names and the accumulation are
+// declared once.
+//
+// TokensIn is every token fed to the model, so the two cache figures are
+// subsets of it. Summing all four double-counts: the total is
+// TokensIn + TokensOut.
+type TokenCounts struct {
+	TokensIn          int64 `json:"tokens_in"`
+	TokensOut         int64 `json:"tokens_out"`
+	TokensCacheCreate int64 `json:"tokens_cache_create"`
+	TokensCacheRead   int64 `json:"tokens_cache_read"`
+}
+
+// add folds one run's usage in. It is the only place Usage's field names are
+// mapped onto the wire's.
+func (c *TokenCounts) add(u Usage) {
+	c.TokensIn += int64(u.In)
+	c.TokensOut += int64(u.Out)
+	c.TokensCacheCreate += int64(u.CacheCreate)
+	c.TokensCacheRead += int64(u.CacheRead)
+}
+
 // Week is one Sunday-started bucket. Done and Cancelled count tickets by their
 // completion date; the token counts come from the runs started that week.
 type Week struct {
 	Week      string `json:"week"`
 	Done      int    `json:"done"`
 	Cancelled int    `json:"cancelled"`
-	TokensIn  int64  `json:"tokens_in"`
-	TokensOut int64  `json:"tokens_out"`
+	TokenCounts
 }
 
 // Stage is one pipeline stage's quality. Share is the stage's percentage of all
@@ -107,8 +130,8 @@ type Stage struct {
 // Agent is one agent's quality. Every figure counts stage runs alone, token
 // counts included, so the tooltip's runs and tokens-per-run multiply out.
 // TokensPerRun is null when none of the agent's runs recorded usable token
-// counts, so an agent whose session format carries no counts is not reported as
-// free.
+// counts, so an agent whose sessions all left a count unfilled is not reported
+// as free.
 type Agent struct {
 	Name             string  `json:"name"`
 	Model            string  `json:"model,omitempty"`
@@ -140,17 +163,16 @@ type Live struct {
 // Totals holds the headline figures. The two delta fields are null when the
 // preceding window has nothing to compare against.
 type Totals struct {
-	Shipped            int      `json:"shipped"`
-	ShippedThisWeek    int      `json:"shipped_this_week"`
-	Runs               int      `json:"runs"`
-	MedianCycleMS      int64    `json:"median_cycle_ms"`
-	MedianCycleDeltaMS *int64   `json:"median_cycle_delta_ms"`
-	FirstPassPct       float64  `json:"first_pass_pct"`
-	TokensIn           int64    `json:"tokens_in"`
-	TokensOut          int64    `json:"tokens_out"`
-	TokensDeltaPct     *float64 `json:"tokens_delta_pct"`
-	BusiestDay         string   `json:"busiest_day,omitempty"`
-	BusiestDayRuns     int      `json:"busiest_day_runs"`
+	Shipped            int     `json:"shipped"`
+	ShippedThisWeek    int     `json:"shipped_this_week"`
+	Runs               int     `json:"runs"`
+	MedianCycleMS      int64   `json:"median_cycle_ms"`
+	MedianCycleDeltaMS *int64  `json:"median_cycle_delta_ms"`
+	FirstPassPct       float64 `json:"first_pass_pct"`
+	TokenCounts
+	TokensDeltaPct *float64 `json:"tokens_delta_pct"`
+	BusiestDay     string   `json:"busiest_day,omitempty"`
+	BusiestDayRuns int      `json:"busiest_day_runs"`
 }
 
 // Window reports the slice the figures were taken over. Weeks counts the
@@ -359,11 +381,8 @@ func aggregate(tickets []Ticket, start, end time.Time, loc *time.Location) windo
 			// run is real spend even though it is not a stage, and a page that
 			// hid it would report less than the machine cost.
 			if r.Usage != nil {
-				week := weekBucket(weeks, *r.StartedAt, loc)
-				week.TokensIn += int64(r.Usage.In)
-				week.TokensOut += int64(r.Usage.Out)
-				agg.totals.TokensIn += int64(r.Usage.In)
-				agg.totals.TokensOut += int64(r.Usage.Out)
+				weekBucket(weeks, *r.StartedAt, loc).add(*r.Usage)
+				agg.totals.add(*r.Usage)
 			}
 
 			// Everything below counts stage runs alone: the heat map, the KPI

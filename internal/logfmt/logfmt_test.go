@@ -103,7 +103,7 @@ func TestFmtPi(t *testing.T) {
 		},
 		{
 			name:  "thinking block is skipped",
-			input: `{"type":"message","message":{"role":"assistant","content":[{"type":"thinking","text":"let me think..."},{"type":"text","text":"Done."}]}}`,
+			input: `{"type":"message","message":{"role":"assistant","content":[{"type":"thinking","thinking":"let me think..."},{"type":"text","text":"Done."}]}}`,
 			want:  "Done.\n",
 		},
 		{
@@ -127,6 +127,30 @@ func TestFmtPi(t *testing.T) {
 			name:  "unparseable lines skipped",
 			input: "not json at all",
 			want:  "",
+		},
+		{
+			// The plaintext is what user-authored failure_patterns match, so a
+			// record carrying every key pi 0.84.1 writes must still format to
+			// the same bytes as the trimmed fixtures above.
+			name: "a full-shaped record formats to the same bytes",
+			input: strings.Join([]string{
+				`{"type":"model_change","id":"985792bc","parentId":null,"timestamp":"2026-08-11T02:00:08.933Z","provider":"anthropic","modelId":"claude-opus-5"}`,
+				`{"type":"message","id":"e32702ee","parentId":"827052df","timestamp":"2026-08-11T02:07:44.744Z","message":{"role":"assistant","content":[{"type":"thinking","thinking":"Run them.","thinkingSignature":"ErUB"},{"type":"text","text":"I'll run the test suite."},{"type":"toolCall","id":"toolu_01Ak","name":"bash","arguments":{"command":"go test ./..."}}],"model":"claude-opus-5","provider":"anthropic","api":"anthropic-messages","stopReason":"toolUse","usage":{"input":2,"output":217,"cacheRead":37496,"cacheWrite":89,"totalTokens":37804,"cacheWrite1h":0,"reasoning":0}}}`,
+				`{"type":"message","id":"a2676a2c","parentId":"e32702ee","timestamp":"2026-08-11T02:07:51.201Z","message":{"role":"toolResult","toolCallId":"toolu_01Ak","toolName":"bash","content":[{"type":"text","text":"PASS\n"}],"isError":false}}`,
+			}, "\n"),
+			want: "[claude-opus-5]\nI'll run the test suite.\n> bash go test ./...\n  ⎿  PASS\n",
+		},
+		{
+			// The measurement keys are decoded raw, so a pi version that writes
+			// one of them in another shape costs that dimension in the tape and
+			// nothing here. Decoded strictly they would fail the whole record and
+			// blank the bytes failure_patterns match.
+			name: "a re-typed measurement key leaves the plaintext alone",
+			input: strings.Join([]string{
+				`{"type":"message","timestamp":1754870864744,"message":{"role":"assistant","usage":{"input":"2"},"content":[{"type":"text","text":"Rate limit reached."}]}}`,
+				`{"type":"message","message":{"role":"toolResult","toolName":"bash","isError":"yes","content":[{"type":"text","text":"PASS\n"}]}}`,
+			}, "\n"),
+			want: "Rate limit reached.\n  ⎿  PASS\n",
 		},
 	}
 
@@ -220,7 +244,7 @@ func TestLastAssistantTextPi(t *testing.T) {
 		},
 		{
 			name:  "thinking-only message is skipped",
-			input: `{"type":"message","message":{"role":"assistant","content":[{"type":"thinking","text":"hmm"}]}}`,
+			input: `{"type":"message","message":{"role":"assistant","content":[{"type":"thinking","thinking":"hmm"}]}}`,
 			want:  "",
 		},
 		{
@@ -235,6 +259,13 @@ func TestLastAssistantTextPi(t *testing.T) {
 				`not json at all`,
 			}, "\n"),
 			want: "Kept.",
+		},
+		{
+			// The final message becomes the stage's summary, so a re-typed
+			// measurement key must not cost the run its last words.
+			name:  "a re-typed measurement key leaves the final message alone",
+			input: `{"type":"message","timestamp":1754870864744,"message":{"role":"assistant","usage":{"input":"2"},"content":[{"type":"text","text":"Kept."}]}}`,
+			want:  "Kept.",
 		},
 	}
 

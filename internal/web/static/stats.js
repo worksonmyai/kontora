@@ -47,6 +47,28 @@ function statsCompact(n) {
   return (unit === 0 ? String(Math.round(v)) : statsCompactPart(v)) + STATS_UNITS[unit];
 }
 
+// statsTokenTotal is the one figure behind a token count. tokens_in already
+// contains both cache figures, so the total is in + out: summing all four
+// would count the cached tokens twice.
+function statsTokenTotal(rec) {
+  return (Number(rec && rec.tokens_in) || 0) + (Number(rec && rec.tokens_out) || 0);
+}
+
+// statsTokenBreakdown names the four categories behind one token figure. Fresh
+// input is what is left of tokens_in after subtracting both cache figures. The
+// clamp guards the one case that subtraction cannot survive: a payload whose
+// cache figures exceed the total they are supposed to be subsets of, which the
+// page can detect no other way.
+function statsTokenBreakdown(rec) {
+  const tin = Number(rec && rec.tokens_in) || 0;
+  const tout = Number(rec && rec.tokens_out) || 0;
+  const create = Number(rec && rec.tokens_cache_create) || 0;
+  const read = Number(rec && rec.tokens_cache_read) || 0;
+  return statsCompact(Math.max(tin - create - read, 0)) + ' fresh in · ' +
+    statsCompact(create) + ' cache write · ' + statsCompact(read) + ' cache read · ' +
+    statsCompact(tout) + ' out';
+}
+
 // statsDuration renders a span the way the design writes it: 22m, 1h 05m,
 // 4h 12m, 3d 04h. Zero means "not measured" and renders as an em dash; a span
 // too short to round to a minute is written as such, so a fast stage is not
@@ -190,8 +212,9 @@ function statsKpis(payload) {
           tone: statsFirstPassColor(t.first_pass_pct) === 'ok' ? 'ok' : 'warn',
         },
     {
-      label: 'tokens', value: statsCompact((t.tokens_in || 0) + (t.tokens_out || 0)), unit: 'in / out',
+      label: 'tokens', value: statsCompact(statsTokenTotal(t)), unit: 'in / out',
       delta: tokenDelta.text, tone: tokenDelta.tone,
+      tip: statsCompact(statsTokenTotal(t)) + ' tokens · ' + statsTokenBreakdown(t),
     },
     {
       label: 'busiest day',
@@ -229,7 +252,7 @@ function statsDerive(payload) {
   });
 
   let tokenMax = 0;
-  weeksRaw.forEach(function(w) { tokenMax = Math.max(tokenMax, (w.tokens_in || 0) + (w.tokens_out || 0)); });
+  weeksRaw.forEach(function(w) { tokenMax = Math.max(tokenMax, statsTokenTotal(w)); });
   const tokens = weeksRaw.map(function(w, i) {
     const tin = w.tokens_in || 0, tout = w.tokens_out || 0;
     return {
@@ -237,8 +260,8 @@ function statsDerive(payload) {
       latest: i === weeksRaw.length - 1,
       inH: tokenMax ? (tin / tokenMax) * STATS_TOKEN_H : 0,
       outH: tokenMax ? (tout / tokenMax) * STATS_TOKEN_H : 0,
-      tip: statsCompact(tin + tout) + ' tokens · week of ' + statsDayLabel(w.week) +
-        ' · ' + statsCompact(tin) + ' in / ' + statsCompact(tout) + ' out',
+      tip: statsCompact(statsTokenTotal(w)) + ' tokens · week of ' + statsDayLabel(w.week) +
+        ' · ' + statsTokenBreakdown(w),
     };
   });
 
@@ -302,7 +325,7 @@ function statsDerive(payload) {
     heatCaption: statsCompact(totals.runs || 0) + ' runs · ' + (payload.days || []).length + ' days',
     weekly: weekly,
     tokens: tokens,
-    tokenCaption: statsCompact((totals.tokens_in || 0) + (totals.tokens_out || 0)) + ' tokens',
+    tokenCaption: statsCompact(statsTokenTotal(totals)) + ' tokens',
     stages: stages,
     agents: agents,
     projects: projects,

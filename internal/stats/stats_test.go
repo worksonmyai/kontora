@@ -173,13 +173,13 @@ func TestCompute(t *testing.T) {
 			tickets: []Ticket{{ID: "a", Status: "done", History: []Run{
 				func() Run {
 					r := mkRun("impl", "claude", 0, ago(5, 9), time.Minute)
-					r.Usage = &Usage{In: 100, Out: 10}
+					r.Usage = &Usage{In: 100, Out: 10, CacheCreate: 5, CacheRead: 60}
 					return r
 				}(),
 				func() Run {
 					r := mkRun("rework", "claude", 0, ago(4, 9), 2*time.Minute)
 					r.Kind = "annotation"
-					r.Usage = &Usage{In: 300, Out: 30}
+					r.Usage = &Usage{In: 300, Out: 30, CacheCreate: 15, CacheRead: 200}
 					return r
 				}(),
 			}}},
@@ -191,6 +191,8 @@ func TestCompute(t *testing.T) {
 				require.Equal(t, 1, r.Agents[0].Runs)
 				require.Equal(t, int64(400), r.Totals.TokensIn)
 				require.Equal(t, int64(40), r.Totals.TokensOut)
+				require.Equal(t, int64(20), r.Totals.TokensCacheCreate)
+				require.Equal(t, int64(260), r.Totals.TokensCacheRead)
 				require.Equal(t, int64(110), *r.Agents[0].TokensPerRun, "averaged over the agent's stage runs, the ones its row counts")
 			},
 		},
@@ -217,7 +219,7 @@ func TestCompute(t *testing.T) {
 					func() Run {
 						r := mkRun("impl", "claude", 0, ago(5, 9), time.Minute)
 						r.Model = "sonnet-4.6"
-						r.Usage = &Usage{In: 1000, Out: 200}
+						r.Usage = &Usage{In: 1000, Out: 200, CacheCreate: 50, CacheRead: 250}
 						return r
 					}(),
 					func() Run {
@@ -242,6 +244,8 @@ func TestCompute(t *testing.T) {
 				require.Nil(t, byName["pi"].TokensPerRun)
 				require.Equal(t, int64(1000), r.Totals.TokensIn)
 				require.Equal(t, int64(200), r.Totals.TokensOut)
+				require.Equal(t, int64(50), r.Totals.TokensCacheCreate)
+				require.Equal(t, int64(250), r.Totals.TokensCacheRead)
 			},
 		},
 		{
@@ -301,14 +305,14 @@ func TestCompute(t *testing.T) {
 				{ID: "a", Status: "done", StartedAt: ago(3, 9), CompletedAt: ago(3, 11), History: []Run{
 					func() Run {
 						r := mkRun("impl", "claude", 0, ago(3, 9), 2*time.Hour)
-						r.Usage = &Usage{In: 800, Out: 200}
+						r.Usage = &Usage{In: 1300, Out: 200, CacheCreate: 50, CacheRead: 250}
 						return r
 					}(),
 				}},
 				{ID: "b", Status: "done", StartedAt: ago(10, 9), CompletedAt: ago(10, 12), History: []Run{
 					func() Run {
 						r := mkRun("impl", "claude", 0, ago(10, 9), 3*time.Hour)
-						r.Usage = &Usage{In: 400, Out: 100}
+						r.Usage = &Usage{In: 1000, Out: 200, CacheCreate: 40, CacheRead: 700}
 						return r
 					}(),
 				}},
@@ -319,8 +323,21 @@ func TestCompute(t *testing.T) {
 				require.Equal(t, (2 * time.Hour).Milliseconds(), r.Totals.MedianCycleMS)
 				require.NotNil(t, r.Totals.MedianCycleDeltaMS)
 				require.Equal(t, -(1 * time.Hour).Milliseconds(), *r.Totals.MedianCycleDeltaMS)
+				// Splitting the cache figures out of tokens_in must leave every
+				// figure derived from it where it was.
+				require.Equal(t, int64(1300), r.Totals.TokensIn)
+				require.Equal(t, int64(200), r.Totals.TokensOut)
+				require.Equal(t, int64(50), r.Totals.TokensCacheCreate)
+				require.Equal(t, int64(250), r.Totals.TokensCacheRead)
 				require.NotNil(t, r.Totals.TokensDeltaPct)
-				require.InDelta(t, 100.0, *r.Totals.TokensDeltaPct, 0.01)
+				require.InDelta(t, 25.0, *r.Totals.TokensDeltaPct, 0.01)
+				require.Equal(t, int64(1500), *r.Agents[0].TokensPerRun)
+				// The week the run started carries the same four figures: the
+				// weekly bar tooltip breaks its own bucket down, not the window's.
+				week := weekOf(t, r, "2026-08-09")
+				require.Equal(t, TokenCounts{
+					TokensIn: 1300, TokensOut: 200, TokensCacheCreate: 50, TokensCacheRead: 250,
+				}, week.TokenCounts)
 			},
 		},
 		{
@@ -340,7 +357,7 @@ func TestCompute(t *testing.T) {
 				func() Run {
 					r := mkRun("impl", "annotator", 0, ago(5, 9), time.Minute)
 					r.Kind = "annotation"
-					r.Usage = &Usage{In: 900, Out: 100}
+					r.Usage = &Usage{In: 900, Out: 100, CacheCreate: 45, CacheRead: 800}
 					return r
 				}(),
 			}}},
@@ -349,6 +366,8 @@ func TestCompute(t *testing.T) {
 				require.Empty(t, r.Agents, "no stage run means no quality to report")
 				require.Equal(t, 0, r.Totals.Runs)
 				require.Equal(t, int64(900), r.Totals.TokensIn, "the spend is real and still counted")
+				require.Equal(t, int64(45), r.Totals.TokensCacheCreate)
+				require.Equal(t, int64(800), r.Totals.TokensCacheRead)
 			},
 		},
 		{

@@ -2034,7 +2034,8 @@ created: 2026-01-01T00:00:00Z
 `)
 
 	// agent1's first run has a complete Claude tape; its retry has no sidecar
-	// at all. agent2's run has a pi tape, which records no token counts.
+	// at all. agent2's run has a tape whose session records carried no usage
+	// keys, so it declares its counts partial.
 	writeSidecar(t, h.logsDir, "kon-s1", "step1", 0, logfmt.Tape{
 		Version: logfmt.TapeVersion, Agent: "claude", Model: "sonnet-4.6",
 		Totals: logfmt.Usage{Input: 1000, Output: 200, CacheCreate: 50, CacheRead: 250},
@@ -2059,6 +2060,8 @@ created: 2026-01-01T00:00:00Z
 		assert.Equal(t, 3, res.Totals.Runs)
 		assert.Equal(t, int64(1300), res.Totals.TokensIn, "input plus both cache categories")
 		assert.Equal(t, int64(200), res.Totals.TokensOut)
+		assert.Equal(t, int64(50), res.Totals.TokensCacheCreate, "a subset of tokens_in, not an addition")
+		assert.Equal(t, int64(250), res.Totals.TokensCacheRead)
 
 		require.Len(t, res.Stages, 1)
 		assert.Equal(t, "step1", res.Stages[0].Name)
@@ -2072,7 +2075,7 @@ created: 2026-01-01T00:00:00Z
 		assert.Equal(t, "sonnet-4.6", agents["agent1"].Model)
 		require.NotNil(t, agents["agent1"].TokensPerRun)
 		assert.Equal(t, int64(1500), *agents["agent1"].TokensPerRun, "averaged over the one run with usable counts")
-		assert.Nil(t, agents["agent2"].TokensPerRun, "a pi tape records no counts, which is not zero")
+		assert.Nil(t, agents["agent2"].TokensPerRun, "a partial tape records no counts, which is not zero")
 
 		assert.Equal(t, 1, res.Live.Running)
 		assert.Equal(t, []string{"agent2"}, res.Live.Busy)
@@ -2164,14 +2167,16 @@ func TestDaemon_GetStatsRunIndex(t *testing.T) {
 		statsAnnotationYAML("step1", "annotator", 6, time.Minute)+
 			statsRunYAML("step1", "agent1", 1, 5, 5*time.Minute)))
 
-	// The annotation took sidecar key 0, so the stage run's tape is key 1.
+	// The annotation took sidecar key 0, so the stage run's tape is key 1. The
+	// two totals are disjoint because that is what the writer produces: a
+	// sidecar carries what its own invocation added, not the session's totals.
 	writeSidecar(t, h.logsDir, "kon-r2", "step1", 0, logfmt.Tape{
 		Version: logfmt.TapeVersion, Agent: "claude", Model: "sonnet-4.6",
-		Totals: logfmt.Usage{Input: 300, Output: 60},
+		Totals: logfmt.Usage{Input: 200, Output: 60, CacheCreate: 10, CacheRead: 90},
 	})
 	writeSidecar(t, h.logsDir, "kon-r2", "step1", 1, logfmt.Tape{
 		Version: logfmt.TapeVersion, Agent: "claude", Model: "sonnet-4.6",
-		Totals: logfmt.Usage{Input: 1000, Output: 100},
+		Totals: logfmt.Usage{Input: 800, Output: 100, CacheCreate: 20, CacheRead: 180},
 	})
 
 	require.NoError(t, d.initialScan(h.tasksDir))
@@ -2195,6 +2200,8 @@ func TestDaemon_GetStatsRunIndex(t *testing.T) {
 	assert.Equal(t, int64(1100), *agents["agent1"].TokensPerRun,
 		"the stage run's own tape, keyed past the annotation that came before it")
 	assert.Equal(t, int64(1300), res.Totals.TokensIn, "the annotation's spend is real and still counted")
+	assert.Equal(t, int64(30), res.Totals.TokensCacheCreate)
+	assert.Equal(t, int64(270), res.Totals.TokensCacheRead)
 }
 
 // TestDaemon_GetStatsNoPipeline covers a ticket that ran without a pipeline.
@@ -2221,7 +2228,7 @@ completed_at: %s
 		now.AddDate(0, 0, -2).Add(20*time.Minute).Format(time.RFC3339)))
 	writeSidecar(t, h.logsDir, "kon-p1", simpleStageName, 0, logfmt.Tape{
 		Version: logfmt.TapeVersion, Agent: "claude", Model: "sonnet-4.6",
-		Totals: logfmt.Usage{Input: 700, Output: 90},
+		Totals: logfmt.Usage{Input: 500, Output: 90, CacheCreate: 25, CacheRead: 175},
 	})
 
 	require.NoError(t, d.initialScan(h.tasksDir))
@@ -2235,6 +2242,8 @@ completed_at: %s
 	assert.Equal(t, simpleStageName, res.Stages[0].Name)
 	assert.Equal(t, (20 * time.Minute).Milliseconds(), res.Stages[0].P50MS)
 	assert.Equal(t, int64(700), res.Totals.TokensIn, "the sidecar is on disk; nothing was asking for it")
+	assert.Equal(t, int64(25), res.Totals.TokensCacheCreate)
+	assert.Equal(t, int64(175), res.Totals.TokensCacheRead)
 	require.Len(t, res.Agents, 1)
 	assert.Equal(t, "agent1", res.Agents[0].Name, "the ticket names no agent, so the configured default ran")
 	assert.Equal(t, (24*time.Hour + 20*time.Minute).Milliseconds(), res.Totals.MedianCycleMS,

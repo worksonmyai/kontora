@@ -437,6 +437,43 @@ func (s *Server) handleGetActivity(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, activity)
 }
 
+// statsRanges maps a range chip to its window length in days. The client alone
+// picks these values, so an unrecognised one is a bug and is rejected rather
+// than defaulted. Project and pipeline are not matched against the config: the
+// chips come from one the client fetched earlier, and a reload can retire a
+// project between the fetch and the query. Their length is bounded though —
+// each distinct pair keys a cached payload, and a name that long is not one.
+var statsRanges = map[string]int{"30d": 35, "90d": 98, "all": 182}
+
+const statsFilterMax = 128
+
+func (s *Server) handleGetStats(w http.ResponseWriter, r *http.Request) {
+	rng := r.URL.Query().Get("range")
+	if rng == "" {
+		rng = "90d"
+	}
+	days, ok := statsRanges[rng]
+	if !ok {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "range must be one of 30d, 90d, all"})
+		return
+	}
+	project, pipeline := r.URL.Query().Get("project"), r.URL.Query().Get("pipeline")
+	if len(project) > statsFilterMax || len(pipeline) > statsFilterMax {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "project and pipeline must be at most 128 characters"})
+		return
+	}
+	info, err := s.svc.GetStats(StatsQuery{
+		Days:     days,
+		Project:  project,
+		Pipeline: pipeline,
+	})
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, info)
+}
+
 func (s *Server) handleGetChanges(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	changes, err := s.svc.GetChanges(id)

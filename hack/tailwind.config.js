@@ -8,6 +8,7 @@ module.exports = {
     './internal/web/static/index.html',
     './internal/web/static/app.js',
     './internal/web/static/settings.js',
+    './internal/web/static/stats.js',
   ],
   theme: {
     extend: {

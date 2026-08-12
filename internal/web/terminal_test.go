@@ -196,8 +196,9 @@ func (m *mockTerminalService) GetLogs(_ string, _ string) (string, error) {
 func (m *mockTerminalService) GetActivity(ActivityQuery) (ActivityInfo, error) {
 	return ActivityInfo{}, nil
 }
-func (m *mockTerminalService) GetRawConfig() (string, error) { return "", nil }
-func (m *mockTerminalService) PutRawConfig(_ string) error   { return nil }
+func (m *mockTerminalService) GetStats(StatsQuery) (StatsInfo, error) { return StatsInfo{}, nil }
+func (m *mockTerminalService) GetRawConfig() (string, error)          { return "", nil }
+func (m *mockTerminalService) PutRawConfig(_ string) error            { return nil }
 func (m *mockTerminalService) Subscribe() (<-chan TicketEvent, func()) {
 	return nil, func() {}
 }

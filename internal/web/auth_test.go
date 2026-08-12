@@ -96,6 +96,26 @@ func TestAuth_NoTokenConfiguredAllowsOpenAccess(t *testing.T) {
 	assert.Contains(t, res.body, "tickets")
 }
 
+// The stats endpoint answers 401 before it validates the range, so a bad
+// request without credentials never reaches the aggregator.
+func TestAuth_StatsRejectedBeforeRangeValidation(t *testing.T) {
+	computed := false
+	svc := &mockService{statsFn: func(StatsQuery) (StatsInfo, error) {
+		computed = true
+		return StatsInfo{}, nil
+	}}
+	srv := startAuthTestServer(t, svc, "secret")
+
+	res := doAuthRequest(t, srv, "/api/stats?range=bogus", nil)
+	assert.Equal(t, http.StatusUnauthorized, res.statusCode)
+
+	authed := doAuthRequest(t, srv, "/api/stats?range=bogus", func(r *http.Request) {
+		r.Header.Set("Authorization", "Bearer secret")
+	})
+	assert.Equal(t, http.StatusBadRequest, authed.statusCode)
+	assert.False(t, computed, "no payload should be computed for either request")
+}
+
 func TestAuth_HealthAndStaticPublic(t *testing.T) {
 	srv := startAuthTestServer(t, &mockService{}, "secret")
 

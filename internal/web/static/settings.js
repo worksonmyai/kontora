@@ -269,7 +269,7 @@ function kontoraSettings() {
         if (res.status === 204) {
           this._settingsRawText = content;
           this.settingsBaseline = settingsClone(this.settingsConfig);
-          this.settingsSavedAt = settingsClock(new Date());
+          this.settingsSavedAt = clockHM(new Date());
           this.settingsSavedRestart = changed.some(p => this.settingsIsRestartOnly(p));
           this.settingsDiffOpen = false;
           await this._settingsRefreshConfigCache();
@@ -500,6 +500,10 @@ function kontoraSettings() {
         this.settingsGuard = true;
         return;
       }
+      // currentView changes nowhere else, and applyRoute routes even a ticket
+      // hash through here, so this one call covers every path out of Stats.
+      if (this.currentView === 'stats' && view !== 'stats') this.closeStats();
+      if (view === 'stats') { this.currentView = 'stats'; this.openStats(); this.writeHash(); return; }
       if (view === 'settings') { await this.openSettings(); this.writeHash(); return; }
       if (view === 'new') { await this.openCreateModal(); this.writeHash(); return; }
       this.currentView = 'board';
@@ -764,8 +768,4 @@ function settingsNodeFor(path, cfg) {
   }
   const v = cfg.projects[name][field].trim();
   return { keys: ['projects', name, field], value: v === '' ? null : v };
-}
-
-function settingsClock(date) {
-  return String(date.getHours()).padStart(2, '0') + ':' + String(date.getMinutes()).padStart(2, '0');
 }

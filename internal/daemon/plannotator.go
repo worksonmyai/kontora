@@ -398,7 +398,7 @@ func (d *Daemon) runReworkStage(ctx, taskCtx context.Context, cfg *config.Config
 	params := d.buildRunnerParams(cfg, agentCfg, stageCfg, binaryPath, args, wtPath, ticketID,
 		config.ReworkStageName, config.ReworkStageName, sessionID)
 	runIndex := stageRunIndex(t, config.ReworkStageName)
-	d.setLiveRun(ticketID, liveRun{stage: config.ReworkStageName, run: runIndex, params: params, startedAt: time.Now()})
+	d.setLiveRun(ticketID, liveRun{stage: config.ReworkStageName, agent: agentName, run: runIndex, params: params, startedAt: time.Now()})
 	// The built-in rework stage calls the runner directly and never reaches
 	// spawnAgentRun, so it records its own stage run. Without this every
 	// built-in rework run would be invisible.

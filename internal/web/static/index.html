@@ -499,6 +499,36 @@
       font-weight: 700;
     }
 
+    /* ─── Stats view ─── */
+    /* The panel shell every Stats card wears, plus its two label styles. Rules
+       rather than repeated utility strings: eight cards carry the same eight
+       classes, and the titles appear on every panel and sub-panel. */
+    /* No flex-direction here: this rule follows app.css, so setting one would
+       beat the flex-col / flex-row utility each card carries. */
+    .stats-card {
+      display: flex;
+      background: rgba(var(--surface-900), 1);
+      border: 1px solid rgba(var(--edge-card), 1);
+      border-radius: 11px;
+      padding: 12px 14px;
+    }
+    .stats-kpi { padding: 11px 13px; }
+    .stats-title {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: rgba(var(--tx-3), 1);
+      white-space: nowrap;
+    }
+    .stats-cap {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 10px;
+      color: rgba(var(--tx-4), 1);
+      white-space: nowrap;
+    }
+
     /* Stage-log pane line colors (renderLogHTML). */
     .log-marker { color: rgba(var(--accent), 1); }
     .log-tool   { color: rgba(var(--tx-2), 1); }
@@ -1228,6 +1258,12 @@
                 :class="currentView === 'board' ? 'bg-surface-850 text-tx' : 'text-tx-3 hover:bg-surface-900 hover:text-tx-2'">
           <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 14 14" fill="none" class="opacity-80"><rect x="2" y="2" width="3" height="10" rx="0.8" stroke="currentColor" stroke-width="1.1"/><rect x="6" y="2" width="3" height="6" rx="0.8" stroke="currentColor" stroke-width="1.1"/><rect x="10" y="2" width="2" height="8" rx="0.8" stroke="currentColor" stroke-width="1.1"/></svg>
           <span>Dashboard</span>
+        </button>
+        <button @click="gotoView('stats')"
+                class="flex items-center gap-2.5 h-7 px-2.5 rounded text-[13px] transition-colors"
+                :class="currentView === 'stats' ? 'bg-surface-850 text-tx' : 'text-tx-3 hover:bg-surface-900 hover:text-tx-2'">
+          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.1" class="opacity-85"><path d="M2 11.5V8M5.3 11.5V4.5M8.7 11.5V6.5M12 11.5V2.5" stroke-linecap="round"/></svg>
+          <span>Stats</span>
         </button>
         <button @click="gotoView('new')"
                 class="flex items-center gap-2.5 h-7 px-2.5 rounded text-[13px] transition-colors"
@@ -2224,6 +2260,280 @@
       </div>
     </div>
 
+    <!-- The layout is cut to fit 1080px, and the panels below keep their fixed
+         heights. A shorter viewport, or a pipeline with more stages than the
+         design drew, scrolls the page rather than hiding the lower rows. -->
+    <!-- Stats -->
+    <div x-show="!loading && currentView === 'stats'" x-cloak
+         class="flex flex-col flex-1 min-w-0 min-h-0 bg-surface-frame gap-2.5 px-4 py-3.5 overflow-y-auto">
+
+      <!-- Filter bar -->
+      <div class="flex items-center gap-2.5 shrink-0 h-7">
+        <span class="stats-title text-[11px]">stats</span>
+        <span class="w-px h-4 bg-surface-700"></span>
+        <div class="flex gap-1 bg-surface-900 border border-edge-card rounded-[7px] p-[3px]">
+          <template x-for="r in statsRanges" :key="r">
+            <button @click="setStatsRange(r)"
+                    class="font-mono text-[11px] px-[11px] py-[3px] rounded-[5px] transition-colors"
+                    :class="statsRange === r ? 'bg-surface-850 text-tx-hi font-bold' : 'text-tx-3 hover:text-tx-2'"
+                    x-text="statsRangeLabel(r)"></button>
+          </template>
+        </div>
+        <label class="relative flex items-center gap-[7px] h-7 px-2.5 rounded-[7px] bg-surface-900 border border-edge-card text-[12px] text-tx-2">
+          <span class="font-mono text-[10px] uppercase tracking-[.1em] text-tx-4">project</span>
+          <span x-text="statsProject === 'all' ? 'All' : statsProject"></span>
+          <svg xmlns="http://www.w3.org/2000/svg" width="9" height="9" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6" class="text-tx-4"><path d="M3 4.5 6 8l3-3.5"/></svg>
+          <select class="absolute inset-0 w-full h-full opacity-0 cursor-pointer" @change="setStatsProject($event.target.value)">
+            <template x-for="p in statsProjectOptions()" :key="p">
+              <option :value="p" :selected="p === statsProject" x-text="p === 'all' ? 'All projects' : p"></option>
+            </template>
+          </select>
+        </label>
+        <label class="relative flex items-center gap-[7px] h-7 px-2.5 rounded-[7px] bg-surface-900 border border-edge-card text-[12px] text-tx-2">
+          <span class="font-mono text-[10px] uppercase tracking-[.1em] text-tx-4">pipeline</span>
+          <span x-text="statsPipeline === 'all' ? 'All' : statsPipeline"></span>
+          <svg xmlns="http://www.w3.org/2000/svg" width="9" height="9" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6" class="text-tx-4"><path d="M3 4.5 6 8l3-3.5"/></svg>
+          <select class="absolute inset-0 w-full h-full opacity-0 cursor-pointer" @change="setStatsPipeline($event.target.value)">
+            <template x-for="p in statsPipelineOptions()" :key="p">
+              <option :value="p" :selected="p === statsPipeline" x-text="p === 'all' ? 'All pipelines' : p"></option>
+            </template>
+          </select>
+        </label>
+        <div class="flex-1"></div>
+        <span class="font-mono text-[11px] text-err" x-show="statsError" x-text="statsError"></span>
+        <span class="font-mono text-[11px] text-tx-4" x-text="statsLoading && !statsDerived ? 'loading…' : statsWindowLabel()"></span>
+      </div>
+
+      <!-- KPI strip -->
+      <div class="grid grid-cols-6 gap-2.5 shrink-0">
+        <template x-for="k in statsCards()" :key="k.label">
+          <div class="stats-card stats-kpi flex-col gap-1.5">
+            <span class="font-mono text-[10px] font-semibold tracking-[.12em] uppercase text-tx-4" x-text="k.label"></span>
+            <div class="flex items-baseline gap-1.5">
+              <span class="num font-mono text-[26px] font-bold text-tx-hi leading-none" x-text="k.value"></span>
+              <span class="text-[12px] text-tx-4" x-text="k.unit"></span>
+            </div>
+            <span class="num font-mono text-[11px]"
+                  :class="k.tone === 'ok' ? 'text-ok' : k.tone === 'warn' ? 'text-warn' : 'text-tx-4'"
+                  x-text="k.delta"></span>
+          </div>
+        </template>
+      </div>
+
+      <!-- Activity: heat map | weekly bars -->
+      <div class="stats-card flex-row gap-[22px] shrink-0">
+        <div class="flex flex-col gap-[9px] min-w-0">
+          <div class="flex items-center gap-[9px]">
+            <span class="stats-title">stage runs per day</span>
+            <span class="stats-cap num" x-text="statsDerived ? statsDerived.heatCaption : ''"></span>
+          </div>
+          <div class="flex gap-1.5">
+            <div class="flex flex-col gap-[3px] pt-[15px] shrink-0">
+              <span class="h-[13px]"></span>
+              <span class="h-[13px] font-mono text-[9px] text-tx-4 leading-[13px]">Mon</span>
+              <span class="h-[13px]"></span>
+              <span class="h-[13px] font-mono text-[9px] text-tx-4 leading-[13px]">Wed</span>
+              <span class="h-[13px]"></span>
+              <span class="h-[13px] font-mono text-[9px] text-tx-4 leading-[13px]">Fri</span>
+              <span class="h-[13px]"></span>
+            </div>
+            <div class="flex flex-col gap-0.5 min-w-0 overflow-hidden">
+              <div class="h-[13px] relative">
+                <template x-for="m in (statsDerived ? statsDerived.heat.months : [])" :key="m.left">
+                  <span class="absolute font-mono text-[9px] text-tx-4" :style="'left:' + m.left + 'px'" x-text="m.label"></span>
+                </template>
+              </div>
+              <div class="flex gap-[3px]">
+                <template x-for="w in (statsDerived ? statsDerived.heat.weeks : [])" :key="w.index">
+                  <div class="flex flex-col gap-[3px]">
+                    <template x-for="(d, i) in w.days" :key="i">
+                      <div class="w-[13px] h-[13px] rounded-[3px]"
+                           :style="d ? 'background:' + statsHeatColor(d.level) : 'background:transparent'"
+                           :data-tip-t="d ? d.tip : null"></div>
+                    </template>
+                  </div>
+                </template>
+              </div>
+            </div>
+          </div>
+          <div class="flex items-center gap-1.5 pl-8">
+            <span class="font-mono text-[9px] text-tx-4">less</span>
+            <template x-for="l in [0, 1, 2, 3, 4]" :key="l">
+              <div class="w-[11px] h-[11px] rounded-[3px]" :style="'background:' + statsHeatColor(l)"></div>
+            </template>
+            <span class="font-mono text-[9px] text-tx-4">more</span>
+          </div>
+        </div>
+
+        <div class="w-px bg-surface-700 shrink-0"></div>
+
+        <div class="flex-1 min-w-0 flex flex-col gap-[9px]">
+          <span class="stats-title">tickets shipped per week</span>
+          <span class="stats-cap" x-show="statsDerived && !statsDerived.weekly.length">no data in this window</span>
+          <div class="flex items-end gap-[5px] h-[86px]">
+            <template x-for="w in (statsDerived ? statsDerived.weekly : [])" :key="w.week">
+              <div class="flex-1 max-w-[44px] h-full flex flex-col justify-end gap-0.5 min-w-0" :data-tip-t="w.tip">
+                <div class="rounded-[2px]" :style="'height:' + w.cancelH + 'px;background:rgba(var(--err),.55)'"></div>
+                <div class="rounded-[2px]" :style="'height:' + w.doneH + 'px;background:rgba(var(--ok),' + (w.latest ? 1 : 0.75) + ')'"></div>
+              </div>
+            </template>
+          </div>
+          <div class="flex items-center gap-3.5">
+            <span class="flex items-center gap-[5px] font-mono text-[9px] text-tx-4"><span class="w-2 h-2 rounded-[2px] bg-ok"></span>done</span>
+            <span class="flex items-center gap-[5px] font-mono text-[9px] text-tx-4"><span class="w-2 h-2 rounded-[2px]" style="background:rgba(var(--err),.55)"></span>cancelled</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Bottom row: stages | agents | projects over right now -->
+      <div class="flex-1 min-h-[340px] grid grid-cols-[1.05fr_1.25fr_1fr] gap-2.5">
+
+        <div class="stats-card flex-col gap-[11px] min-h-0">
+          <div class="flex items-baseline justify-between">
+            <span class="stats-title">where the time goes</span>
+            <span class="stats-cap num pl-2.5" x-text="statsDerived ? 'median cycle ' + statsDerived.medianCycle : ''"></span>
+          </div>
+          <span class="stats-cap" x-show="statsDerived && !statsDerived.stages.length">no data in this window</span>
+          <div class="flex h-[9px] gap-0.5" x-show="statsDerived && statsDerived.stages.length">
+            <template x-for="s in (statsDerived ? statsDerived.stages : [])" :key="s.name">
+              <div class="rounded-[2px]" :style="'flex:' + s.share + ';background:' + s.color" :data-tip-t="s.tip"></div>
+            </template>
+          </div>
+          <!-- Top-aligned with a fixed gap rather than space-between: pipelines run
+               from one stage to six, and two rows spread over the panel height
+               would sit 600px apart. -->
+          <div class="flex flex-col gap-4 flex-1 min-h-0 overflow-y-auto">
+            <template x-for="s in (statsDerived ? statsDerived.stages : [])" :key="s.name">
+              <div class="flex flex-col gap-[5px]">
+                <div class="flex items-baseline gap-[7px]">
+                  <span class="w-[7px] h-[7px] rounded-[2px] shrink-0" :style="'background:' + s.color"></span>
+                  <span class="font-mono text-[12px] text-tx flex-1 min-w-0 truncate" x-text="s.name"></span>
+                  <span class="num font-mono text-[12px] font-bold text-tx-hi whitespace-nowrap" x-text="s.p50"></span>
+                  <span class="num font-mono text-[10px] text-tx-4 w-[76px] shrink-0 text-right whitespace-nowrap" x-text="'p90 ' + s.p90"></span>
+                </div>
+                <div class="h-1 rounded-full bg-surface-700 overflow-hidden">
+                  <div class="h-full rounded-full" :style="'width:' + s.share + '%;background:' + s.color"></div>
+                </div>
+                <div class="flex items-baseline gap-2 pl-3.5">
+                  <span class="num font-mono text-[10px] text-tx-4 flex-1 truncate" x-text="s.meta"></span>
+                  <span class="num font-mono text-[10px] whitespace-nowrap" :class="s.hot ? 'text-warn' : 'text-tx-4'" x-text="s.retry"></span>
+                </div>
+              </div>
+            </template>
+          </div>
+        </div>
+
+        <div class="stats-card flex-col gap-2.5 min-h-0">
+          <div class="flex items-baseline justify-between">
+            <span class="stats-title">agents &amp; models</span>
+            <span class="stats-cap">first-pass = no retry</span>
+          </div>
+          <div class="grid grid-cols-[1.3fr_48px_104px_50px_56px] gap-2.5 font-mono text-[9px] tracking-[.02em] uppercase text-tx-4 pb-1.5 border-b border-surface-700 whitespace-nowrap">
+            <span>agent</span><span class="text-right">runs</span><span>first-pass</span><span class="text-right">median</span><span class="text-right">tok/run</span>
+          </div>
+          <span class="stats-cap" x-show="statsDerived && !statsDerived.agents.length">no data in this window</span>
+          <div class="flex flex-col gap-0.5 flex-1 min-h-0 overflow-y-auto">
+            <template x-for="a in (statsDerived ? statsDerived.agents : [])" :key="a.name">
+              <div class="grid grid-cols-[1.3fr_48px_104px_50px_56px] gap-2.5 items-center px-1 py-[9px] rounded-md whitespace-nowrap hover:bg-surface-850" :data-tip-t="a.tip">
+                <div class="flex items-center gap-[7px] min-w-0">
+                  <span class="w-1.5 h-1.5 rounded-full shrink-0"
+                        :style="a.running ? 'background:rgba(var(--warn),1);box-shadow:0 0 0 2px rgba(var(--warn),.2)' : 'background:rgba(var(--surface-600),1)'"></span>
+                  <div class="flex flex-col gap-[3px] min-w-0">
+                    <span class="font-mono text-[12px] text-tx truncate" x-text="a.name"></span>
+                    <span class="num font-mono text-[10px] text-tx-4 truncate" x-text="a.sub"></span>
+                  </div>
+                </div>
+                <span class="num font-mono text-[12px] text-tx-2 text-right" x-text="a.runs"></span>
+                <div class="flex items-center gap-[7px]">
+                  <div class="flex-1 h-[5px] rounded-full bg-surface-700 overflow-hidden">
+                    <div class="h-full rounded-full"
+                         :class="a.tone === 'ok' ? 'bg-ok' : a.tone === 'warn' ? 'bg-warn' : 'bg-err'"
+                         :style="'width:' + a.pctWidth + '%'"></div>
+                  </div>
+                  <span class="num font-mono text-[11px] w-[30px] text-right"
+                        :class="a.tone === 'ok' ? 'text-ok' : a.tone === 'warn' ? 'text-warn' : 'text-err'"
+                        x-text="a.pct"></span>
+                </div>
+                <span class="num font-mono text-[12px] text-tx-2 text-right" x-text="a.median"></span>
+                <span class="num font-mono text-[12px] text-tx-3 text-right" x-text="a.perRun"></span>
+              </div>
+            </template>
+          </div>
+          <div class="flex flex-col gap-[7px] pt-[11px] border-t border-surface-700 shrink-0">
+            <div class="flex items-baseline justify-between">
+              <span class="font-mono text-[10px] tracking-[.12em] uppercase text-tx-4">tokens per week</span>
+              <span class="num font-mono text-[10px] text-tx-2" x-text="statsDerived ? statsDerived.tokenCaption : ''"></span>
+            </div>
+            <div class="flex items-end gap-[3px] h-11">
+              <template x-for="t in (statsDerived ? statsDerived.tokens : [])" :key="t.week">
+                <div class="flex-1 h-full flex flex-col justify-end gap-px min-w-0" :data-tip-t="t.tip">
+                  <div class="rounded-[2px]" :style="'height:' + t.outH + 'px;background:rgba(var(--accent),.4)'"></div>
+                  <div class="rounded-[2px]" :style="'height:' + t.inH + 'px;background:' + (t.latest ? 'rgba(var(--accent-bright),1)' : 'rgba(var(--accent),1)')"></div>
+                </div>
+              </template>
+            </div>
+            <div class="flex gap-3.5">
+              <span class="flex items-center gap-[5px] font-mono text-[9px] text-tx-4"><span class="w-2 h-2 rounded-[2px] bg-accent"></span>input</span>
+              <span class="flex items-center gap-[5px] font-mono text-[9px] text-tx-4"><span class="w-2 h-2 rounded-[2px]" style="background:rgba(var(--accent),.4)"></span>output</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="flex flex-col gap-2.5 min-h-0">
+          <div class="stats-card flex-col gap-1.5 flex-1 min-h-0 overflow-y-auto">
+            <div class="flex items-baseline justify-between">
+              <span class="stats-title">projects</span>
+              <span class="stats-cap">shipped · median cycle</span>
+            </div>
+            <span class="stats-cap" x-show="statsDerived && !statsDerived.projects.length">no data in this window</span>
+            <template x-for="p in (statsDerived ? statsDerived.projects : [])" :key="p.name">
+              <div class="flex items-center gap-[9px] px-1 py-[3px] rounded-md hover:bg-surface-850"
+                   :data-pipe-color="pipelineColorByName(p.name)" :data-tip-t="p.tip">
+                <span class="w-[7px] h-[7px] rounded-[2px] shrink-0" style="background:hsl(var(--pipe-h))"></span>
+                <span class="font-mono text-[12px] text-tx w-[84px] truncate" x-text="p.name"></span>
+                <div class="flex-1 h-1.5 rounded-full bg-surface-700 overflow-hidden min-w-0">
+                  <div class="h-full rounded-full" :style="'width:' + p.width + '%;background:hsl(var(--pipe-h))'"></div>
+                </div>
+                <span class="num font-mono text-[12px] text-tx-hi w-[26px] text-right" x-text="p.done"></span>
+                <span class="num font-mono text-[11px] text-tx-4 w-[56px] text-right whitespace-nowrap" x-text="p.cycle"></span>
+              </div>
+            </template>
+          </div>
+
+          <div class="stats-card flex-col gap-2.5 shrink-0">
+            <div class="flex items-baseline justify-between">
+              <span class="stats-title">right now</span>
+              <span class="num font-mono text-[10px] whitespace-nowrap"
+                    :class="statsDerived && statsDerived.live.running >= statsDerived.live.slots ? 'text-warn' : 'text-tx-4'"
+                    x-text="statsDerived ? statsDerived.live.running + ' of ' + statsDerived.live.slots + ' slots busy' : ''"></span>
+            </div>
+            <div class="flex gap-1">
+              <template x-for="(s, i) in (statsDerived ? statsDerived.slots : [])" :key="i">
+                <div class="flex-1 h-6 rounded-[5px] border bg-surface-800 border-surface-700"
+                     :style="s.busy ? 'background:rgba(var(--warn),.18);border-color:rgba(var(--warn),.45)' : ''"
+                     :data-tip-t="s.tip"></div>
+              </template>
+            </div>
+            <div class="grid grid-cols-3 gap-2.5">
+              <div class="flex flex-col gap-[3px]">
+                <span class="font-mono text-[9px] tracking-[.1em] uppercase text-tx-4">queued</span>
+                <span class="num font-mono text-[19px] font-bold text-tx-hi leading-none" x-text="statsDerived ? statsDerived.live.queued : '—'"></span>
+              </div>
+              <div class="flex flex-col gap-[3px]">
+                <span class="font-mono text-[9px] tracking-[.08em] uppercase text-tx-4 whitespace-nowrap">oldest wait</span>
+                <span class="num font-mono text-[19px] font-bold text-warn leading-none" x-text="statsDerived ? statsDerived.live.oldest : '—'"></span>
+              </div>
+              <div class="flex flex-col gap-[3px]">
+                <span class="font-mono text-[9px] tracking-[.1em] uppercase text-tx-4">in review</span>
+                <span class="num font-mono text-[19px] font-bold text-review leading-none" x-text="statsDerived ? statsDerived.live.inReview : '—'"></span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
     <!-- Settings -->
     <div x-show="!loading && currentView === 'settings'" x-cloak class="flex flex-1 min-w-0 min-h-0">
 
@@ -3040,6 +3350,7 @@
   </template>
 
   <script src="/settings.js"></script>
+  <script src="/stats.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

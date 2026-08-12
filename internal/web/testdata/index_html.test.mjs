@@ -9,6 +9,7 @@ const dirname = path.dirname(fileURLToPath(import.meta.url));
 const htmlPath = path.join(dirname, "../static/index.html");
 const appPath = path.join(dirname, "../static/app.js");
 const settingsPath = path.join(dirname, "../static/settings.js");
+const statsPath = path.join(dirname, "../static/stats.js");
 
 // recomputeBoard builds its column buckets with array literals created inside
 // the VM realm, so their prototype differs from this file's Array and
@@ -177,7 +178,11 @@ function loadKontoraState(overrides = {}) {
 function loadKontoraContext(overrides = {}) {
   const context = kontoraContext(overrides);
   vm.createContext(context);
-  const src = [fs.readFileSync(settingsPath, "utf8"), fs.readFileSync(appPath, "utf8")].join("\n");
+  const src = [
+    fs.readFileSync(settingsPath, "utf8"),
+    fs.readFileSync(statsPath, "utf8"),
+    fs.readFileSync(appPath, "utf8"),
+  ].join("\n");
   vm.runInContext(`${src}\nthis.kontora = kontora;`, context);
   return { ctx: context, state: context.kontora() };
 }
@@ -324,6 +329,10 @@ function kontoraContext(overrides = {}) {
       },
       setItem() {},
     },
+    setInterval() {
+      return 1;
+    },
+    clearInterval() {},
     // _cssVar and _getTerminalTheme call the bare global, not window's.
     getComputedStyle() {
       return { getPropertyValue: () => "" };
@@ -3825,7 +3834,7 @@ test("an empty palette query lists the recent tickets then the navigation comman
   assert.deepEqual(groupLabels(state), ["Recent", "Go to"]);
   assert.deepEqual(rowIds(groupIn(state, "Recent").items), ["ticket:kon-2", "ticket:gol-3"]);
   assert.deepEqual(rowTitles(groupIn(state, "Go to").items),
-    ["Go to board", "New ticket", "Settings", "Toggle sidebar", "Toggle theme"]);
+    ["Go to board", "Stats", "New ticket", "Settings", "Toggle sidebar", "Toggle theme"]);
 });
 
 test("the open ticket leads the root list with its actions and its live logs", () => {
@@ -3937,7 +3946,7 @@ test("the palette offers no Delete anywhere", () => {
 test("the highlight wraps across group boundaries", () => {
   const state = paletteState(PALETTE_TICKETS, { recents: ["kon-1"] });
   const ids = rowIds(state._paletteRows);
-  assert.equal(ids.length, 6);
+  assert.equal(ids.length, 7);
   assert.equal(state._paletteSelId, ids[0]);
 
   state.paletteMove(-1);
@@ -4060,6 +4069,7 @@ test("a tab the ticket cannot show falls back to the ticket body", async () => {
 test("navigation rows dispatch through the existing view and toggle methods", async () => {
   const cases = [
     { id: "nav-board", expect: "goto:board" },
+    { id: "nav-stats", expect: "goto:stats" },
     { id: "nav-new", expect: "goto:new" },
     { id: "nav-settings", expect: "goto:settings" },
     { id: "nav-sidebar", expect: "sidebar" },
@@ -4305,7 +4315,7 @@ test("editing the query moves the highlight back to the top of the new list", ()
   const state = paletteState(PALETTE_TICKETS, { recents: ["kon-2"] });
   state.paletteMove(1);
   state.paletteMove(1);
-  assert.equal(state._paletteSelId, "nav-new");
+  assert.equal(state._paletteSelId, "nav-stats");
 
   // recomputePalette follows the highlighted row across a rebuild, which is
   // right for an SSE re-rank and wrong here: "New ticket" survives the query
@@ -4523,6 +4533,7 @@ test("the hash router maps each route to a view", async () => {
     { hash: "#/", view: "board", ticket: null },
     { hash: "", view: "board", ticket: null },
     { hash: "#/new", view: "new", ticket: null },
+    { hash: "#/stats", view: "stats", ticket: null },
     { hash: "#/settings", view: "settings", ticket: null },
     { hash: "#/t/kon-vd0j", view: "board", ticket: "kon-vd0j" },
     { hash: "#/nonsense", view: "board", ticket: null },
@@ -6400,4 +6411,360 @@ test("the hover card's title splits into a coloured tag and the name", () => {
   // mirrored onto it, unconditionally, or it leaks into the next hover.
   assert.match(html, /el\.setAttribute\('data-pipe-color', trig\.getAttribute\('data-tip-e-tag-color'\) \|\| 'none'\);/);
   assert.match(html, /#global-tip-e \.tip-e-tag \{ color: hsl\(var\(--pipe-h, 240 10% 55%\)\); white-space: nowrap; \}/);
+});
+
+// --- Stats view ---
+
+function statsPayload(over = {}) {
+  return {
+    days: [
+      { date: "2026-08-10", runs: 4 },
+      { date: "2026-08-11", runs: 0 },
+      { date: "2026-08-12", runs: 9 },
+    ],
+    weeks: [{ week: "2026-08-09", done: 3, cancelled: 1, tokens_in: 1000, tokens_out: 200 }],
+    stages: [{ name: "implement", p50_ms: 132000, p90_ms: 600000, share: 100, runs: 4, failed: 1, retry_pct: 25 }],
+    agents: [{ name: "claude", model: "sonnet-4.6", runs: 4, first_pass_pct: 82, median_ms: 132000, tokens_per_run: 14200, retries_per_ticket: 0.4 }],
+    projects: [{ name: "kontora", done: 3, median_cycle_ms: 13200000 }],
+    live: { running: 1, slots: 3, queued: 2, oldest_wait_ms: 360000, in_review: 5, busy: ["claude"] },
+    totals: {
+      shipped: 3, shipped_this_week: 3, runs: 13, median_cycle_ms: 15120000,
+      median_cycle_delta_ms: -2280000, first_pass_pct: 78, tokens_in: 1000, tokens_out: 200,
+      tokens_delta_pct: 12, busiest_day: "2026-08-12", busiest_day_runs: 9,
+    },
+    window: { days: 98, weeks: 14, from: "2026-05-07", to: "2026-08-12" },
+    ...over,
+  };
+}
+
+// statsState wires the fake clock, storage and fetch the Stats poll needs, and
+// records what each of them saw.
+function statsState(payload = statsPayload()) {
+  const timers = { made: 0, cleared: [], fn: null };
+  const fetched = [];
+  const store = {};
+  const location = { protocol: "http:", host: "localhost:8080", hash: "" };
+  const { ctx, state } = loadKontoraContext({
+    location,
+    localStorage: {
+      getItem: (k) => (k in store ? store[k] : null),
+      setItem: (k, v) => { store[k] = v; },
+    },
+    setInterval(fn) { timers.made++; timers.fn = fn; return timers.made; },
+    clearInterval(id) { timers.cleared.push(id); },
+    fetch: async (url) => {
+      fetched.push(url);
+      if (url.startsWith("/api/tickets/")) {
+        const id = url.slice("/api/tickets/".length);
+        return { ok: true, json: async () => ({ id: id, status: "todo" }) };
+      }
+      return { ok: true, json: async () => payload };
+    },
+  });
+  state.$nextTick = (cb) => { if (cb) cb(); return Promise.resolve(); };
+  state.recomputeBoard = () => {};
+  state.closeTerminal = () => {};
+  state.startEditing = () => {};
+  state.flushEditSave = () => {};
+  state.openSettings = async () => { state.currentView = "settings"; };
+  state.openCreateModal = async () => { state.currentView = "new"; };
+  return { ctx, state, timers, fetched, store, location };
+}
+
+test("statsCompact shortens a count the way a 26px KPI needs", () => {
+  const { state } = statsState();
+  const cases = [
+    [0, "0"], [7, "7"], [999, "999"], [1000, "1k"], [2345, "2.3k"],
+    [14200, "14.2k"], [1000000, "1M"], [24000000, "24M"], [3200000000, "3.2B"],
+    // Rounding must not carry a value past the unit it was scaled to: '1000k'
+    // is one character wider than the KPI value slot holds.
+    [999999, "1M"], [999950, "1M"], [999999999, "1B"],
+  ];
+  for (const [input, want] of cases) assert.equal(state.statsCompact(input), want, String(input));
+});
+
+test("statsDuration writes a span the way the panels read it", () => {
+  const { state } = statsState();
+  const cases = [
+    // An em dash means "not measured", so a real span too short to round to a
+    // minute must not borrow it.
+    [0, "—"], [null, "—"], [20000, "<1m"], [1000, "<1m"], [60000, "1m"], [1320000, "22m"],
+    [3900000, "1h 05m"], [15120000, "4h 12m"], [180000000, "2d 02h"],
+  ];
+  for (const [input, want] of cases) assert.equal(state.statsDuration(input), want, String(input));
+});
+
+test("statsFirstPassColor turns on the design's 78 and 70 boundaries", () => {
+  const { state } = statsState();
+  const cases = [[100, "ok"], [78, "ok"], [77.9, "warn"], [70, "warn"], [69.9, "err"], [0, "err"]];
+  for (const [input, want] of cases) assert.equal(state.statsFirstPassColor(input), want, String(input));
+});
+
+test("the heat map pads a window that does not open on a Sunday", () => {
+  const { state } = statsState();
+  // 2026-08-05 is a Wednesday, so the first column needs three blanks.
+  const days = [];
+  for (let i = 0; i < 10; i++) days.push({ date: "2026-08-" + String(5 + i).padStart(2, "0"), runs: i });
+
+  const heat = state.statsHeatWeeks(days);
+
+  assert.equal(heat.weeks.length, 2);
+  assert.deepEqual(vmValue(heat.weeks[0].days.slice(0, 3)), [null, null, null]);
+  assert.equal(heat.weeks[0].days[3].date, "2026-08-05");
+  assert.equal(heat.weeks[1].days[0].date, "2026-08-09");
+  // Every column holds seven rows, so the weekday gutter lines up.
+  for (const w of heat.weeks) assert.equal(w.days.length, 7);
+  assert.equal(heat.weeks[1].days[6], null);
+  assert.equal(heat.max, 9);
+  assert.equal(heat.weeks[0].days[3].level, 0, "a day with no runs is level 0");
+  assert.equal(heat.weeks[1].days[5].level, 4, "the busiest day is level 4");
+  assert.deepEqual(vmValue(heat.months), [{ label: "Aug", left: 0 }]);
+});
+
+test("a month tick sits on the column its month starts in", () => {
+  const { state } = statsState();
+  const days = [];
+  const start = Date.UTC(2026, 6, 27); // Monday 2026-07-27
+  for (let i = 0; i < 20; i++) {
+    days.push({ date: new Date(start + i * 86400000).toISOString().slice(0, 10), runs: 1 });
+  }
+
+  const heat = state.statsHeatWeeks(days);
+
+  // 16px is the cell pitch: a 13px cell plus the 3px gap.
+  assert.deepEqual(vmValue(heat.months), [{ label: "Jul", left: 0 }, { label: "Aug", left: 16 }]);
+});
+
+test("the derived view model survives an empty window", () => {
+  const { ctx, state } = statsState();
+  const derived = ctx.statsDerive({
+    days: [], weeks: [], stages: [], agents: [], projects: [],
+    live: { slots: 3 }, totals: {}, window: { days: 98, weeks: 14 },
+  });
+
+  assert.deepEqual(vmValue(derived.heat.weeks), []);
+  assert.deepEqual(vmValue(derived.weekly), []);
+  assert.deepEqual(vmValue(derived.stages), []);
+  assert.equal(derived.slots.length, 3, "the slot strip is drawn from the daemon's capacity, not its history");
+  assert.equal(derived.live.oldest, "—");
+  assert.equal(derived.kpis.length, 6);
+  assert.equal(derived.medianCycle, "—");
+
+  const bad = [];
+  (function scan(v, path) {
+    if (typeof v === "number") { if (!Number.isFinite(v)) bad.push(path); return; }
+    if (v && typeof v === "object") Object.keys(v).forEach((k) => scan(v[k], path + "." + k));
+  })(vmValue(derived), "derived");
+  assert.deepEqual(bad, [], "no chart may divide by a zero maximum");
+  assert.equal(state.statsCards().length, 6, "the KPI strip keeps its six cards before the first payload");
+});
+
+test("an agent with no usable token counts shows an em dash, not a zero", () => {
+  const { ctx } = statsState();
+  const payload = statsPayload();
+  payload.agents = [
+    { name: "pi", runs: 3, first_pass_pct: 66, median_ms: 60000, tokens_per_run: null, retries_per_ticket: 1.2 },
+    { name: "claude", runs: 3, first_pass_pct: 90, median_ms: 60000, tokens_per_run: 0, retries_per_ticket: 0 },
+  ];
+
+  const derived = ctx.statsDerive(payload);
+
+  assert.equal(derived.agents[0].perRun, "—");
+  assert.equal(derived.agents[1].perRun, "0", "a measured zero is not the same as no measurement");
+});
+
+test("the Stats poll runs only while Stats is the current view", async () => {
+  const { state, timers, fetched } = statsState();
+
+  await state.gotoView("stats");
+  await flushMicrotasks();
+  assert.equal(state.currentView, "stats");
+  assert.equal(fetched.length, 1);
+  assert.ok(fetched[0].startsWith("/api/stats?range="), fetched[0]);
+  assert.equal(timers.made, 1);
+  assert.equal(state.statsDerived.live.queued, 2);
+
+  await state.gotoView("board");
+  assert.deepEqual(timers.cleared, [1]);
+
+  // Even if the cleared interval still fired, the fetch is guarded by the view.
+  timers.fn();
+  await flushMicrotasks();
+  assert.equal(fetched.length, 1);
+});
+
+test("a dirty Settings form blocks the Stats sidebar item", async () => {
+  const { state, fetched } = statsState();
+  state.currentView = "settings";
+  state.settingsDirty = () => true;
+
+  await state.gotoView("stats");
+
+  assert.equal(state.currentView, "settings");
+  assert.equal(state.settingsGuard, true);
+  assert.equal(state.settingsGuardTarget, "stats");
+  assert.equal(fetched.length, 0);
+});
+
+test("the range persists and every filter change refetches", async () => {
+  const { state, fetched, store } = statsState();
+  await state.gotoView("stats");
+  await flushMicrotasks();
+  assert.ok(fetched[0].includes("range=90d"), fetched[0]);
+  assert.ok(!fetched[0].includes("project="), "an unfiltered request omits the parameter");
+
+  state.setStatsRange("30d");
+  await flushMicrotasks();
+  assert.equal(store["kontora-stats-range"], "30d");
+  assert.ok(fetched[1].includes("range=30d"), fetched[1]);
+
+  state.setStatsProject("kontora");
+  state.setStatsPipeline("default");
+  await flushMicrotasks();
+  assert.ok(fetched[3].includes("project=kontora"), fetched[3]);
+  assert.ok(fetched[3].includes("pipeline=default"), fetched[3]);
+
+  // Setting the same value again is not a reason to hit the daemon.
+  state.setStatsRange("30d");
+  await flushMicrotasks();
+  assert.equal(fetched.length, 4);
+});
+
+test("a KPI without the data behind it says so rather than reading zero", () => {
+  const { ctx } = statsState();
+
+  const empty = ctx.statsDerive({
+    days: [], weeks: [], stages: [], agents: [], projects: [],
+    live: {}, totals: {}, window: { days: 98, weeks: 14 },
+  });
+  const firstPass = empty.kpis.find((k) => k.label === "first-pass");
+  assert.equal(firstPass.value, "—", "no stage run means the rate is unmeasured, not catastrophic");
+  assert.equal(firstPass.delta, "no stage runs");
+  assert.equal(firstPass.tone, "neutral");
+
+  // Zero is a value the server emits whenever both windows shipped something.
+  const flat = statsPayload();
+  flat.totals.median_cycle_delta_ms = 0;
+  const cycle = ctx.statsDerive(flat).kpis.find((k) => k.label === "median cycle");
+  assert.equal(cycle.delta, "no change vs prev");
+});
+
+test("the range chips are labelled with the window the server cuts", async () => {
+  const { state } = statsState();
+
+  assert.deepEqual([...state.statsRanges].map((r) => state.statsRangeLabel(r)), ["5w", "14w", "26w"]);
+
+  await state.gotoView("stats");
+  await flushMicrotasks();
+  assert.equal(state.statsWindowLabel().startsWith("last 98 days"), true, state.statsWindowLabel());
+
+  // A window that opens mid-week spans one more Sunday bucket than its length,
+  // so the caption may not be written in weeks.
+  state.stats.window = { days: 182, weeks: 27 };
+  assert.equal(state.statsWindowLabel().startsWith("last 182 days"), true, state.statsWindowLabel());
+});
+
+test("a 401 while Stats is open asks for the token instead of polling on", async () => {
+  const timers = { made: 0, cleared: [], fn: null };
+  const store = {};
+  const { state } = loadKontoraContext({
+    location: { protocol: "http:", host: "localhost:8080", hash: "" },
+    localStorage: {
+      getItem: (k) => (k in store ? store[k] : null),
+      setItem: (k, v) => { store[k] = v; },
+    },
+    setInterval(fn) { timers.made++; timers.fn = fn; return timers.made; },
+    clearInterval(id) { timers.cleared.push(id); },
+    fetch: async () => ({ ok: false, status: 401, json: async () => ({}) }),
+  });
+  state.$nextTick = (cb) => { if (cb) cb(); return Promise.resolve(); };
+  state.recomputeBoard = () => {};
+
+  await state.gotoView("stats");
+  await flushMicrotasks();
+
+  assert.equal(state.needsAuth, true, "the login modal opens, the way every other fetch treats a 401");
+  assert.equal(state.statsError, null, "not a red error string in the filter bar");
+  assert.deepEqual(timers.cleared, [1], "the poll stops rather than hitting a dead session every 30s");
+});
+
+test("opening a ticket from Stats leaves the view and stops the poll", async () => {
+  const { state, timers, fetched, location } = statsState();
+  const statsCalls = () => fetched.filter((u) => u.startsWith("/api/stats")).length;
+  state.tickets = [{ id: "kon-1", status: "todo" }];
+  state.fetchChanges = () => {};
+  state.fetchStageLogs = () => {};
+  state.openTerminal = () => {};
+
+  await state.gotoView("stats");
+  await flushMicrotasks();
+  assert.equal(statsCalls(), 1);
+
+  // Browser Back to a ticket hash, or a pasted link. selectTicket does not
+  // touch currentView, so applyRoute has to.
+  location.hash = "#/t/kon-1";
+  await state.applyRoute();
+
+  assert.equal(state.selectedTicket.id, "kon-1");
+  assert.equal(state.currentView, "board", "the rail covers Stats; closing it must reveal the board");
+  assert.deepEqual(timers.cleared, [1]);
+  timers.fn();
+  await flushMicrotasks();
+  assert.equal(statsCalls(), 1, "no further request after leaving Stats");
+});
+
+test("index.html adds the Stats nav item and loads stats.js before app.js", () => {
+  const html = fs.readFileSync(htmlPath, "utf8");
+
+  assert.ok(html.includes("gotoView('stats')"), "the sidebar navigates through the guarded gotoView");
+  const stats = html.indexOf('<script src="/stats.js"></script>');
+  const app = html.indexOf('<script src="/app.js"></script>');
+  assert.ok(stats > 0, "stats.js is loaded");
+  assert.ok(stats < app, "kontora() reads kontoraStats() at call time, so its script must run first");
+});
+
+test("the Stats view paints from theme tokens, never a literal hex", () => {
+  const html = fs.readFileSync(htmlPath, "utf8");
+  const view = html.slice(html.indexOf("<!-- Stats -->"), html.indexOf("<!-- Settings -->"));
+  assert.ok(view.length > 1000, "the Stats view markup was found");
+
+  const hex = /#[0-9a-fA-F]{6}\b/g;
+  assert.deepEqual(view.match(hex) || [], [], "a literal hex in the markup is a light-theme bug");
+  assert.deepEqual(fs.readFileSync(statsPath, "utf8").match(hex) || [], []);
+});
+
+test("a slow earlier request cannot overwrite the newest answer", async () => {
+  const pending = [];
+  const store = {};
+  const { state } = loadKontoraContext({
+    location: { protocol: "http:", host: "localhost:8080", hash: "" },
+    localStorage: {
+      getItem: (k) => (k in store ? store[k] : null),
+      setItem: (k, v) => { store[k] = v; },
+    },
+    setInterval: () => 1,
+    clearInterval() {},
+    fetch: (url) => new Promise((resolve) => pending.push({ url, resolve })),
+  });
+  state.currentView = "stats";
+
+  const stale = statsPayload();
+  stale.totals.shipped = 111;
+  const fresh = statsPayload();
+  fresh.totals.shipped = 222;
+
+  state.fetchStats();
+  state.fetchStats();
+  await flushMicrotasks();
+  assert.equal(pending.length, 2);
+
+  // The newer request answers first; the older one arrives after it.
+  pending[1].resolve({ ok: true, json: async () => fresh });
+  await flushMicrotasks();
+  pending[0].resolve({ ok: true, json: async () => stale });
+  await flushMicrotasks();
+
+  assert.equal(state.stats.totals.shipped, 222);
+  assert.equal(state.statsLoading, false);
+  assert.equal(state.statsError, null);
 });

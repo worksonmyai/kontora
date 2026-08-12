@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/worksonmyai/kontora/internal/logfmt"
+	"github.com/worksonmyai/kontora/internal/stats"
 	"github.com/worksonmyai/kontora/internal/ticket/app"
 )
 
@@ -45,6 +46,7 @@ type TicketService interface {
 	UploadTicket(content []byte) (TicketInfo, error)
 	GetLogs(id string, stage string) (string, error)
 	GetActivity(q ActivityQuery) (ActivityInfo, error)
+	GetStats(q StatsQuery) (StatsInfo, error)
 	GetChanges(id string) (ChangesInfo, error)
 	GetRawConfig() (string, error)
 	PutRawConfig(content string) error
@@ -137,6 +139,20 @@ type ActivityInfo struct {
 	ETag        string `json:"-"`
 	NotModified bool   `json:"-"`
 }
+
+// StatsQuery bounds one Stats page request. Days is already resolved from the
+// range chip the client sent; an empty Project or Pipeline means no filter, and
+// a name no ticket carries simply matches nothing.
+type StatsQuery struct {
+	Days     int
+	Project  string
+	Pipeline string
+}
+
+// StatsInfo is the pre-aggregated Stats payload. It is the aggregator's result
+// unchanged: the client does no math over it, so there is nothing for the web
+// layer to reshape.
+type StatsInfo = stats.Result
 
 // ProjectInfo describes one configured project. Path is the value as written in
 // the config file; ResolvedPath is the same path tilde-expanded and cleaned, so

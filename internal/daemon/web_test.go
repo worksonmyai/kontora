@@ -20,6 +20,7 @@ import (
 	"github.com/worksonmyai/kontora/internal/cli/remote"
 	"github.com/worksonmyai/kontora/internal/config"
 	"github.com/worksonmyai/kontora/internal/logfmt"
+	"github.com/worksonmyai/kontora/internal/stats"
 	"github.com/worksonmyai/kontora/internal/ticket"
 	"github.com/worksonmyai/kontora/internal/web"
 )
@@ -1942,4 +1943,300 @@ func eventKinds(tape *logfmt.Tape) []string {
 		out[i] = e.Kind
 	}
 	return out
+}
+
+// --- GetStats ---
+
+// statsTicketMD writes a ticket with completion timestamps and a history,
+// which taskMD does not model.
+func statsTicketMD(id, status, pipeline, path, agent string, completedDaysAgo int, history string) string {
+	now := time.Now()
+	created := now.AddDate(0, 0, -(completedDaysAgo + 2)).Format(time.RFC3339)
+	started := now.AddDate(0, 0, -(completedDaysAgo + 1)).Format(time.RFC3339)
+	completed := now.AddDate(0, 0, -completedDaysAgo).Format(time.RFC3339)
+	return fmt.Sprintf(`---
+id: %s
+kontora: true
+status: %s
+pipeline: %s
+path: %s
+agent: %s
+created: %s
+started_at: %s
+completed_at: %s
+history:
+%s---
+# Test ticket %s
+`, id, status, pipeline, path, agent, created, started, completed, history, id)
+}
+
+func statsRunYAML(stage, agent string, run int, startedDaysAgo int, dur time.Duration) string {
+	started := time.Now().AddDate(0, 0, -startedDaysAgo)
+	return fmt.Sprintf("  - stage: %s\n    agent: %s\n    exit_code: 0\n    run: %d\n    started_at: %s\n    completed_at: %s\n",
+		stage, agent, run, started.Format(time.RFC3339), started.Add(dur).Format(time.RFC3339))
+}
+
+// statsRunLegacyYAML is a history row as written before the run index existed:
+// no `run:` key, so every one of them decodes as run 0.
+func statsRunLegacyYAML(stage, agent string, startedDaysAgo int, dur time.Duration) string {
+	started := time.Now().AddDate(0, 0, -startedDaysAgo)
+	return fmt.Sprintf("  - stage: %s\n    agent: %s\n    exit_code: 0\n    started_at: %s\n    completed_at: %s\n",
+		stage, agent, started.Format(time.RFC3339), started.Add(dur).Format(time.RFC3339))
+}
+
+func statsAnnotationYAML(stage, agent string, startedDaysAgo int, dur time.Duration) string {
+	started := time.Now().AddDate(0, 0, -startedDaysAgo)
+	return fmt.Sprintf("  - stage: %s\n    agent: %s\n    exit_code: 0\n    run: 0\n    kind: annotation\n    started_at: %s\n    completed_at: %s\n",
+		stage, agent, started.Format(time.RFC3339), started.Add(dur).Format(time.RFC3339))
+}
+
+func writeSidecar(t *testing.T, logsDir, ticketID, stage string, run int, tape logfmt.Tape) {
+	t.Helper()
+	dir := filepath.Join(logsDir, ticketID)
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+	data, err := json.Marshal(tape)
+	require.NoError(t, err)
+	name := fmt.Sprintf("%s.%d.events.json", stage, run)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, name), data, 0o644))
+}
+
+func TestDaemon_GetStats(t *testing.T) {
+	h := newHarness(t)
+	otherRepo := filepath.Join(t.TempDir(), "acme-web")
+	require.NoError(t, os.MkdirAll(otherRepo, 0o755))
+	h.cfg.Projects = map[string]config.Project{"kontora": {Path: h.repoDir}}
+	d := h.newDaemon(h.cfg)
+
+	// Two runs of the same stage, so the second is a retry.
+	shippedHistory := statsRunYAML("step1", "agent1", 0, 4, 6*time.Minute) +
+		statsRunYAML("step1", "agent1", 1, 4, 12*time.Minute)
+	h.writeTicket("kon-s1.md", statsTicketMD("kon-s1", "done", "one-stage", h.repoDir, "agent1", 3, shippedHistory))
+	h.writeTicket("kon-s2.md", statsTicketMD("kon-s2", "archived", "one-stage", h.repoDir, "agent2", 5,
+		statsRunYAML("step1", "agent2", 0, 6, 9*time.Minute)))
+	h.writeTicket("kon-s3.md", statsTicketMD("kon-s3", "done", "one-stage", otherRepo, "agent1", 4,
+		statsRunYAML("step1", "agent1", 0, 5, 3*time.Minute)))
+	h.writeTicket("kon-s4.md", h.taskMD("kon-s4", "todo", "one-stage"))
+	h.writeTicket("kon-s5.md", h.taskMD("kon-s5", "todo", "one-stage"))
+	h.writeTicket("kon-s6.md", h.taskMD("kon-s6", "human_review", "one-stage"))
+	// Claimed elsewhere, so the scan leaves it in_progress instead of
+	// recovering it into the queue.
+	h.writeTicket("kon-s7.md", `---
+id: kon-s7
+kontora: true
+status: in_progress
+pipeline: one-stage
+path: `+h.repoDir+`
+agent: agent2
+claimed_by: another-instance
+created: 2026-01-01T00:00:00Z
+---
+# Test ticket kon-s7
+`)
+
+	// agent1's first run has a complete Claude tape; its retry has no sidecar
+	// at all. agent2's run has a pi tape, which records no token counts.
+	writeSidecar(t, h.logsDir, "kon-s1", "step1", 0, logfmt.Tape{
+		Version: logfmt.TapeVersion, Agent: "claude", Model: "sonnet-4.6",
+		Totals: logfmt.Usage{Input: 1000, Output: 200, CacheCreate: 50, CacheRead: 250},
+	})
+	writeSidecar(t, h.logsDir, "kon-s2", "step1", 0, logfmt.Tape{
+		Version: logfmt.TapeVersion, Agent: "pi", Model: "opus-5",
+		Partial: []string{logfmt.PartialTime, logfmt.PartialUsage, logfmt.PartialIsError},
+	})
+
+	require.NoError(t, d.initialScan(h.tasksDir))
+	// One agent in flight. Starting a real one would need a live pipeline run;
+	// the scheduler map is what GetStats reads.
+	d.mu.Lock()
+	d.running["kon-s7"] = func() {}
+	d.mu.Unlock()
+
+	t.Run("filters, archived tickets and live capacity", func(t *testing.T) {
+		res, err := d.GetStats(web.StatsQuery{Days: 98, Project: "kontora", Pipeline: "one-stage"})
+		require.NoError(t, err)
+
+		assert.Equal(t, 2, res.Totals.Shipped, "done plus archived, and not the other project's ticket")
+		assert.Equal(t, 3, res.Totals.Runs)
+		assert.Equal(t, int64(1300), res.Totals.TokensIn, "input plus both cache categories")
+		assert.Equal(t, int64(200), res.Totals.TokensOut)
+
+		require.Len(t, res.Stages, 1)
+		assert.Equal(t, "step1", res.Stages[0].Name)
+		assert.Equal(t, (9 * time.Minute).Milliseconds(), res.Stages[0].P50MS)
+
+		agents := map[string]stats.Agent{}
+		for _, a := range res.Agents {
+			agents[a.Name] = a
+		}
+		require.Len(t, agents, 2)
+		assert.Equal(t, "sonnet-4.6", agents["agent1"].Model)
+		require.NotNil(t, agents["agent1"].TokensPerRun)
+		assert.Equal(t, int64(1500), *agents["agent1"].TokensPerRun, "averaged over the one run with usable counts")
+		assert.Nil(t, agents["agent2"].TokensPerRun, "a pi tape records no counts, which is not zero")
+
+		assert.Equal(t, 1, res.Live.Running)
+		assert.Equal(t, []string{"agent2"}, res.Live.Busy)
+		assert.Equal(t, 4, res.Live.Slots)
+		assert.Equal(t, 2, res.Live.Queued)
+		assert.Equal(t, 1, res.Live.InReview)
+		// The queue was filled by the scan a moment ago. These tickets were
+		// created in January, so a wait read off `created` would be months.
+		assert.GreaterOrEqual(t, res.Live.OldestWaitMS, int64(0))
+		assert.Less(t, res.Live.OldestWaitMS, time.Minute.Milliseconds(),
+			"the wait is measured from the enqueue, not from the ticket's created date")
+
+		listed := d.ListTickets()
+		for _, ti := range listed {
+			assert.NotEqual(t, "kon-s2", ti.ID, "the board list hides the archived ticket the stats include")
+		}
+	})
+
+	t.Run("an unconfigured project falls back to its path basename", func(t *testing.T) {
+		res, err := d.GetStats(web.StatsQuery{Days: 98})
+		require.NoError(t, err)
+
+		names := map[string]int{}
+		for _, p := range res.Projects {
+			names[p.Name] = p.Done
+		}
+		assert.Equal(t, 2, names["kontora"])
+		assert.Equal(t, 1, names["acme-web"])
+	})
+
+	t.Run("a repeated query inside the TTL is served from the cache", func(t *testing.T) {
+		before, err := d.GetStats(web.StatsQuery{Days: 35})
+		require.NoError(t, err)
+		require.Equal(t, 1, before.Live.Running)
+
+		d.mu.Lock()
+		d.running["kon-s1"] = func() {}
+		d.mu.Unlock()
+		t.Cleanup(func() {
+			d.mu.Lock()
+			delete(d.running, "kon-s1")
+			d.mu.Unlock()
+		})
+
+		same, err := d.GetStats(web.StatsQuery{Days: 35})
+		require.NoError(t, err)
+		assert.Equal(t, 1, same.Live.Running, "the whole payload is cached, live capacity included")
+
+		fresh, err := d.GetStats(web.StatsQuery{Days: 35, Project: "kontora"})
+		require.NoError(t, err)
+		assert.Equal(t, 2, fresh.Live.Running, "a query the cache has not seen is computed now")
+	})
+
+	t.Run("an unknown project filters everything out", func(t *testing.T) {
+		res, err := d.GetStats(web.StatsQuery{Days: 98, Project: "gone"})
+		require.NoError(t, err)
+		assert.Equal(t, 0, res.Totals.Shipped)
+		assert.Empty(t, res.Projects)
+		assert.Equal(t, 1, res.Live.Running, "live capacity is not window-filtered")
+	})
+
+	t.Run("the live dot follows the agent of the run in flight", func(t *testing.T) {
+		// kon-s7 carries `agent: agent2`, but the stage it is running was given
+		// to agent1. The row that lights up must be the one doing the work.
+		d.setLiveRun("kon-s7", liveRun{stage: "step1", agent: "agent1", startedAt: time.Now()})
+		t.Cleanup(func() { d.clearLiveRun("kon-s7") })
+
+		res, err := d.GetStats(web.StatsQuery{Days: 182})
+		require.NoError(t, err)
+		assert.Equal(t, []string{"agent1"}, res.Live.Busy)
+	})
+}
+
+// TestDaemon_GetStatsRunIndex covers the history shapes the run index cannot be
+// read off: rows written before the field existed, and an annotation row that
+// takes the sidecar key its stage's next run would otherwise have had.
+func TestDaemon_GetStatsRunIndex(t *testing.T) {
+	h := newHarness(t)
+	d := h.newDaemon(h.cfg)
+
+	// Written before the run index landed (a209f5b, 2026-08-08): two runs of
+	// one stage, neither carrying a `run:` key, so both decode as run 0.
+	h.writeTicket("kon-r1.md", statsTicketMD("kon-r1", "done", "one-stage", h.repoDir, "agent1", 3,
+		statsRunLegacyYAML("step1", "agent1", 5, 4*time.Minute)+
+			statsRunLegacyYAML("step1", "agent1", 5, 8*time.Minute)))
+	// An annotation ran against step1 before step1 itself ever did. The stage
+	// run that follows is the stage's first attempt, not a retry of it.
+	h.writeTicket("kon-r2.md", statsTicketMD("kon-r2", "done", "one-stage", h.repoDir, "agent1", 3,
+		statsAnnotationYAML("step1", "annotator", 6, time.Minute)+
+			statsRunYAML("step1", "agent1", 1, 5, 5*time.Minute)))
+
+	// The annotation took sidecar key 0, so the stage run's tape is key 1.
+	writeSidecar(t, h.logsDir, "kon-r2", "step1", 0, logfmt.Tape{
+		Version: logfmt.TapeVersion, Agent: "claude", Model: "sonnet-4.6",
+		Totals: logfmt.Usage{Input: 300, Output: 60},
+	})
+	writeSidecar(t, h.logsDir, "kon-r2", "step1", 1, logfmt.Tape{
+		Version: logfmt.TapeVersion, Agent: "claude", Model: "sonnet-4.6",
+		Totals: logfmt.Usage{Input: 1000, Output: 100},
+	})
+
+	require.NoError(t, d.initialScan(h.tasksDir))
+
+	res, err := d.GetStats(web.StatsQuery{Days: 98})
+	require.NoError(t, err)
+
+	require.Len(t, res.Stages, 1)
+	assert.Equal(t, 3, res.Stages[0].Runs)
+	assert.InDelta(t, 100.0/3, res.Stages[0].RetryPct, 0.01,
+		"one of the three stage runs is a second attempt, counted positionally")
+	assert.InDelta(t, 50.0, res.Totals.FirstPassPct, 0.01,
+		"kon-r1's step1 was retried, kon-r2's was not")
+
+	agents := map[string]stats.Agent{}
+	for _, a := range res.Agents {
+		agents[a.Name] = a
+	}
+	require.Len(t, agents, 1, "the annotator ran no stage, so it has no quality row")
+	require.NotNil(t, agents["agent1"].TokensPerRun)
+	assert.Equal(t, int64(1100), *agents["agent1"].TokensPerRun,
+		"the stage run's own tape, keyed past the annotation that came before it")
+	assert.Equal(t, int64(1300), res.Totals.TokensIn, "the annotation's spend is real and still counted")
+}
+
+// TestDaemon_GetStatsNoPipeline covers a ticket that ran without a pipeline.
+// That path writes no history row, so the ticket's own fields have to stand in
+// for the run, tokens included.
+func TestDaemon_GetStatsNoPipeline(t *testing.T) {
+	h := newHarness(t)
+	d := h.newDaemon(h.cfg)
+
+	now := time.Now()
+	h.writeTicket("kon-p1.md", fmt.Sprintf(`---
+id: kon-p1
+kontora: true
+status: done
+path: %s
+created: %s
+started_at: %s
+completed_at: %s
+---
+# Test ticket kon-p1
+`, h.repoDir,
+		now.AddDate(0, 0, -3).Format(time.RFC3339),
+		now.AddDate(0, 0, -2).Format(time.RFC3339),
+		now.AddDate(0, 0, -2).Add(20*time.Minute).Format(time.RFC3339)))
+	writeSidecar(t, h.logsDir, "kon-p1", simpleStageName, 0, logfmt.Tape{
+		Version: logfmt.TapeVersion, Agent: "claude", Model: "sonnet-4.6",
+		Totals: logfmt.Usage{Input: 700, Output: 90},
+	})
+
+	require.NoError(t, d.initialScan(h.tasksDir))
+
+	res, err := d.GetStats(web.StatsQuery{Days: 98})
+	require.NoError(t, err)
+
+	assert.Equal(t, 1, res.Totals.Shipped)
+	assert.Equal(t, 1, res.Totals.Runs, "the run happened even though nothing wrote a history row")
+	require.Len(t, res.Stages, 1)
+	assert.Equal(t, simpleStageName, res.Stages[0].Name)
+	assert.Equal(t, (20 * time.Minute).Milliseconds(), res.Stages[0].P50MS)
+	assert.Equal(t, int64(700), res.Totals.TokensIn, "the sidecar is on disk; nothing was asking for it")
+	require.Len(t, res.Agents, 1)
+	assert.Equal(t, "agent1", res.Agents[0].Name, "the ticket names no agent, so the configured default ran")
+	assert.Equal(t, (24*time.Hour + 20*time.Minute).Milliseconds(), res.Totals.MedianCycleMS,
+		"created to completed, not the run's own 20 minutes")
 }

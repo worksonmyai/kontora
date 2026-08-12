@@ -167,6 +167,7 @@ func TestStaticAssets_CacheControl(t *testing.T) {
 		{"/", cacheRevalidate},
 		{"/app.js", cacheRevalidate},
 		{"/settings.js", cacheRevalidate},
+		{"/stats.js", cacheRevalidate},
 		{"/vendor/fonts/fonts.css", cacheRevalidate},
 		{"/vendor/fonts/dm-sans-latin.woff2", cacheRevalidate},
 	}

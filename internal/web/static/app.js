@@ -57,6 +57,11 @@ function reEscape(s) {
   return String(s).replace(/[\\^$.*+?()[\]{}|]/g, '\\$&');
 }
 
+// Local hh:mm, for the "updated 09:41" stamps Settings and Stats both print.
+function clockHM(date) {
+  return String(date.getHours()).padStart(2, '0') + ':' + String(date.getMinutes()).padStart(2, '0');
+}
+
 // Wall-clock seconds one history entry ran. Queue time sits between entries,
 // so it never counts toward a stage.
 function runSeconds(h) {
@@ -1397,6 +1402,7 @@ function kontora() {
         return { view: 'board', ticketId: id };
       }
       if (h === '/new') return { view: 'new', ticketId: null };
+      if (h === '/stats') return { view: 'stats', ticketId: null };
       if (h === '/settings') return { view: 'settings', ticketId: null };
       return { view: 'board', ticketId: null };
     },
@@ -1405,6 +1411,7 @@ function kontora() {
     routeHash() {
       if (this.selectedTicket) return '#/t/' + encodeURIComponent(this.selectedTicket.id);
       if (this.currentView === 'new') return '#/new';
+      if (this.currentView === 'stats') return '#/stats';
       if (this.currentView === 'settings') return '#/settings';
       return '#/';
     },
@@ -1426,10 +1433,16 @@ function kontora() {
         if (r.ticketId) {
           if (this.selectedTicket && this.selectedTicket.id === r.ticketId) return;
           var t = this.tickets.find(function(x) { return x.id === r.ticketId; });
-          if (t) { await this.selectTicket(t); return; }
-          // The hash names a ticket this board does not have. Fall back to the
-          // board rather than rendering an empty shell.
-          if (this.selectedTicket) this.closeDetail();
+          // The detail rail covers whatever view is underneath, and selectTicket
+          // does not touch currentView, so the switch below still has to run:
+          // opening a ticket from Stats would otherwise leave its poll armed and
+          // put the user back on Stats when the rail closes.
+          if (!t && this.selectedTicket) {
+            // The hash names a ticket this board does not have. Fall back to the
+            // board rather than rendering an empty shell.
+            this.closeDetail();
+          }
+          if (t) await this.selectTicket(t);
         } else if (this.selectedTicket) {
           this.closeDetail();
         }
@@ -2999,6 +3012,7 @@ function kontora() {
 
     _paletteNav: [
       { id: 'nav-board',    view: 'board',    label: 'Go to board',    glyph: '▤' },
+      { id: 'nav-stats',    view: 'stats',    label: 'Stats',          glyph: '▦' },
       { id: 'nav-new',      view: 'new',      label: 'New ticket',     glyph: '+' },
       { id: 'nav-settings', view: 'settings', label: 'Settings',       glyph: '⚙' },
       { id: 'nav-sidebar',  act: 'sidebar',   label: 'Toggle sidebar', glyph: '⌸' },
@@ -4260,9 +4274,9 @@ function kontora() {
       var t = tape.totals || {};
       var n = (t.input || 0) + (t.output || 0) + (t.cache_create || 0) + (t.cache_read || 0);
       if (!n) return '';
-      if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
-      if (n >= 1000) return Math.round(n / 1000) + 'k';
-      return String(n);
+      // The same shortening Stats uses, so one run's tokens read the same in
+      // both places.
+      return statsCompact(n);
     },
 
     // ---- stage ribbon ------------------------------------------------------
@@ -4665,5 +4679,5 @@ function kontora() {
       if (kind === 'primary') return 'rgba(var(--accent),1)';
       return 'rgba(var(--surface-600),1)';
     },
-  }, kontoraSettings());
+  }, kontoraSettings(), kontoraStats());
 }

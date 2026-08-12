@@ -29,6 +29,13 @@ const (
 	PartialIsError = "is_error"
 )
 
+// UsageComplete reports whether a tape's partial list leaves its token counts
+// trustworthy. A tape that could not fill usage still writes zeroes, which a
+// reader must not present as a run that cost nothing.
+func UsageComplete(partial []string) bool {
+	return !slices.Contains(partial, PartialUsage)
+}
+
 // Usage is the token count of a run, summed over the four categories a Claude
 // session record reports. There is no monetary figure: the session record
 // carries no pricing.

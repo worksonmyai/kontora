@@ -1,0 +1,458 @@
+// Stats view. Merged into the kontora() component by app.js, so `this` here is
+// the same Alpine object the board and Settings run on.
+//
+// Every figure arrives pre-aggregated from GET /api/stats. This file lays out
+// and formats; it computes no rate, median or delta of its own. The one
+// exception is bar geometry, which is a pixel height, not a measurement.
+
+const STATS_RANGES = ['30d', '90d', 'all'];
+const STATS_POLL_MS = 30000;
+
+// Heat map geometry, mirrored by the cell classes in index.html: a 13px cell
+// plus a 3px gap. Month ticks are positioned at weekIndex * this.
+const STATS_CELL_PITCH = 16;
+const STATS_WEEKLY_H = 86;
+const STATS_TOKEN_H = 44;
+
+const STATS_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+// Heat levels 1-4 as accent alpha; level 0 is the empty-cell surface. Both come
+// from theme tokens, so the light theme needs no rules of its own.
+const STATS_HEAT_ALPHA = [0, 0.28, 0.5, 0.72, 1];
+
+// Stage rows cycle this palette by position. Stage names are user-defined, so
+// there is no fixed name-to-colour map to honour.
+const STATS_STAGE_COLORS = [
+  'hsl(var(--st-open))',
+  'hsl(var(--st-progress))',
+  'hsl(var(--st-done))',
+  'hsl(var(--st-review))',
+  'rgba(var(--surface-600),1)',
+];
+
+const STATS_UNITS = ['', 'k', 'M', 'B'];
+
+function statsCompactPart(v) {
+  return v.toFixed(1).replace(/\.0$/, '');
+}
+
+// statsCompact shortens a count for a 26px KPI value: 2.3k, 24M.
+function statsCompact(n) {
+  let v = Number(n) || 0;
+  let unit = 0;
+  while (Math.abs(v) >= 1000 && unit < STATS_UNITS.length - 1) { v /= 1000; unit++; }
+  // Rounding to one decimal can carry the value into the next unit: 999999 is
+  // 1M, not the '1000k' that overflows the value slot.
+  if (Math.abs(Number(v.toFixed(1))) >= 1000 && unit < STATS_UNITS.length - 1) { v /= 1000; unit++; }
+  return (unit === 0 ? String(Math.round(v)) : statsCompactPart(v)) + STATS_UNITS[unit];
+}
+
+// statsDuration renders a span the way the design writes it: 22m, 1h 05m,
+// 4h 12m, 3d 04h. Zero means "not measured" and renders as an em dash; a span
+// too short to round to a minute is written as such, so a fast stage is not
+// mistaken for one that recorded nothing.
+function statsDuration(ms) {
+  const raw = Number(ms) || 0;
+  if (raw <= 0) return '—';
+  const total = Math.round(raw / 60000);
+  if (total <= 0) return '<1m';
+  const days = Math.floor(total / 1440);
+  const hours = Math.floor((total % 1440) / 60);
+  const mins = total % 60;
+  if (days > 0) return days + 'd ' + String(hours).padStart(2, '0') + 'h';
+  if (hours > 0) return hours + 'h ' + String(mins).padStart(2, '0') + 'm';
+  return total + 'm';
+}
+
+// statsWeekday is the day of week of a "YYYY-MM-DD" string. It goes through
+// Date.UTC rather than parsing the string, because `new Date('2026-08-12')`
+// reads UTC midnight and would shift the day for anyone west of Greenwich —
+// exactly the users the server-side local-zone bucketing exists for.
+function statsWeekday(iso) {
+  const p = String(iso).split('-');
+  return new Date(Date.UTC(Number(p[0]), Number(p[1]) - 1, Number(p[2]))).getUTCDay();
+}
+
+function statsDayLabel(iso) {
+  const p = String(iso).split('-');
+  return STATS_MONTHS[Number(p[1]) - 1] + ' ' + Number(p[2]);
+}
+
+function statsHeatColor(level) {
+  if (!level) return 'rgba(var(--surface-800),1)';
+  return 'rgba(var(--accent),' + STATS_HEAT_ALPHA[level] + ')';
+}
+
+// statsHeatWeeks turns the day series into Sunday-started columns, padding the
+// first one with blanks so the weekday rows line up, and places one month tick
+// per month change.
+function statsHeatWeeks(days) {
+  const list = Array.isArray(days) ? days : [];
+  let max = 0;
+  list.forEach(function(d) { max = Math.max(max, Number(d.runs) || 0); });
+
+  const cells = list.map(function(d) {
+    const n = Number(d.runs) || 0;
+    // max + 0.001 keeps the busiest day inside level 4 without a divide by
+    // zero on an empty window.
+    const level = n === 0 ? 0 : Math.min(4, 1 + Math.floor((n / (max + 0.001)) * 3.999));
+    return { date: d.date, runs: n, level: level, tip: n + (n === 1 ? ' run · ' : ' runs · ') + statsDayLabel(d.date) };
+  });
+  if (!cells.length) return { weeks: [], months: [], max: 0 };
+
+  const padded = new Array(statsWeekday(cells[0].date)).fill(null).concat(cells);
+  while (padded.length % 7 !== 0) padded.push(null);
+
+  const weeks = [];
+  for (let i = 0; i < padded.length; i += 7) {
+    weeks.push({ index: weeks.length, days: padded.slice(i, i + 7) });
+  }
+
+  const months = [];
+  let lastMonth = -1;
+  weeks.forEach(function(w) {
+    const first = w.days.find(function(c) { return c; });
+    if (!first) return;
+    const m = Number(String(first.date).split('-')[1]) - 1;
+    if (m === lastMonth) return;
+    lastMonth = m;
+    months.push({ label: STATS_MONTHS[m], left: w.index * STATS_CELL_PITCH });
+  });
+
+  return { weeks: weeks, months: months, max: max };
+}
+
+// statsFirstPassColor names the token class a first-pass rate is drawn in. The
+// boundaries are the design's: 78 and 70.
+function statsFirstPassColor(pct) {
+  const n = Number(pct) || 0;
+  if (n >= 78) return 'ok';
+  if (n >= 70) return 'warn';
+  return 'err';
+}
+
+function statsPctLabel(pct) {
+  const n = Number(pct) || 0;
+  return Math.round(n) + '%';
+}
+
+function statsSigned(n) {
+  return (n >= 0 ? '+' : '−') + Math.abs(n);
+}
+
+// statsKpis builds the six headline cards. Tone is 'ok', 'warn' or 'neutral',
+// and a comparison the payload cannot make reads "no earlier window" rather
+// than a zero.
+function statsKpis(payload) {
+  const t = payload.totals || {};
+  const win = payload.window || {};
+  const days = win.days || 1;
+
+  const cycleDelta = t.median_cycle_delta_ms == null
+    ? { text: 'no earlier window', tone: 'neutral' }
+    : t.median_cycle_delta_ms === 0
+      // statsDuration writes an em dash for a zero span, which here would read
+      // as "not measured" rather than as the two windows agreeing.
+      ? { text: 'no change vs prev', tone: 'neutral' }
+      : {
+          text: (t.median_cycle_delta_ms < 0 ? '−' : '+') + statsDuration(Math.abs(t.median_cycle_delta_ms)) + ' vs prev',
+          tone: t.median_cycle_delta_ms < 0 ? 'ok' : 'warn',
+        };
+  const tokenDelta = t.tokens_delta_pct == null
+    ? { text: 'no earlier window', tone: 'neutral' }
+    : {
+        text: statsSigned(Math.round(t.tokens_delta_pct)) + '% vs prev',
+        tone: t.tokens_delta_pct <= 0 ? 'ok' : 'warn',
+      };
+
+  return [
+    {
+      label: 'shipped', value: String(t.shipped || 0), unit: 'tickets',
+      delta: statsSigned(t.shipped_this_week || 0) + ' this week',
+      tone: (t.shipped_this_week || 0) > 0 ? 'ok' : 'neutral',
+    },
+    {
+      label: 'stage runs', value: statsCompact(t.runs || 0), unit: 'runs',
+      delta: Math.round((t.runs || 0) / days) + '/day avg', tone: 'neutral',
+    },
+    {
+      label: 'median cycle', value: statsDuration(t.median_cycle_ms), unit: 'open → done',
+      delta: cycleDelta.text, tone: cycleDelta.tone,
+    },
+    // Every stage run keys a first-pass pair, so no runs means the rate is
+    // unmeasured. Reporting the zero as a percentage would assert that nothing
+    // passed first time, which is the opposite of what an empty window says.
+    (t.runs || 0) === 0
+      ? { label: 'first-pass', value: '—', unit: '', delta: 'no stage runs', tone: 'neutral' }
+      : {
+          label: 'first-pass', value: String(Math.round(t.first_pass_pct || 0)), unit: '%',
+          delta: Math.round(100 - (t.first_pass_pct || 0)) + '% needed a retry',
+          tone: statsFirstPassColor(t.first_pass_pct) === 'ok' ? 'ok' : 'warn',
+        },
+    {
+      label: 'tokens', value: statsCompact((t.tokens_in || 0) + (t.tokens_out || 0)), unit: 'in / out',
+      delta: tokenDelta.text, tone: tokenDelta.tone,
+    },
+    {
+      label: 'busiest day',
+      value: t.busiest_day ? String(Number(String(t.busiest_day).split('-')[2])) : '—',
+      unit: t.busiest_day ? STATS_MONTHS[Number(String(t.busiest_day).split('-')[1]) - 1] : '',
+      delta: (t.busiest_day_runs || 0) + ' runs in a day', tone: 'neutral',
+    },
+  ];
+}
+
+// statsDerive turns one payload into everything the markup draws. It runs once
+// per fetch rather than inside the template, so a re-render never re-buckets
+// 182 days. Every division guards its denominator: an empty window must render,
+// not produce NaN.
+function statsDerive(payload) {
+  if (!payload) return null;
+  const weeksRaw = payload.weeks || [];
+  const stagesRaw = payload.stages || [];
+  const agentsRaw = payload.agents || [];
+  const projectsRaw = payload.projects || [];
+  const live = payload.live || {};
+  const totals = payload.totals || {};
+
+  let weeklyMax = 0;
+  weeksRaw.forEach(function(w) { weeklyMax = Math.max(weeklyMax, (w.done || 0) + (w.cancelled || 0)); });
+  const weekly = weeksRaw.map(function(w, i) {
+    const done = w.done || 0, cancelled = w.cancelled || 0;
+    return {
+      week: w.week,
+      latest: i === weeksRaw.length - 1,
+      doneH: weeklyMax ? (done / weeklyMax) * STATS_WEEKLY_H : 0,
+      cancelH: weeklyMax ? (cancelled / weeklyMax) * STATS_WEEKLY_H : 0,
+      tip: done + ' shipped · week of ' + statsDayLabel(w.week) + (cancelled ? ' · ' + cancelled + ' cancelled' : ''),
+    };
+  });
+
+  let tokenMax = 0;
+  weeksRaw.forEach(function(w) { tokenMax = Math.max(tokenMax, (w.tokens_in || 0) + (w.tokens_out || 0)); });
+  const tokens = weeksRaw.map(function(w, i) {
+    const tin = w.tokens_in || 0, tout = w.tokens_out || 0;
+    return {
+      week: w.week,
+      latest: i === weeksRaw.length - 1,
+      inH: tokenMax ? (tin / tokenMax) * STATS_TOKEN_H : 0,
+      outH: tokenMax ? (tout / tokenMax) * STATS_TOKEN_H : 0,
+      tip: statsCompact(tin + tout) + ' tokens · week of ' + statsDayLabel(w.week) +
+        ' · ' + statsCompact(tin) + ' in / ' + statsCompact(tout) + ' out',
+    };
+  });
+
+  const stages = stagesRaw.map(function(s, i) {
+    return {
+      name: s.name,
+      color: STATS_STAGE_COLORS[i % STATS_STAGE_COLORS.length],
+      share: s.share || 0,
+      p50: statsDuration(s.p50_ms),
+      p90: statsDuration(s.p90_ms),
+      meta: (s.runs || 0) + ' runs · ' + (s.failed || 0) + ' failed',
+      retry: statsPctLabel(s.retry_pct) + ' retried',
+      // A stage where a fifth of the runs are retries is the one to look at.
+      hot: (s.retry_pct || 0) >= 15,
+      tip: s.name + ' · ' + Math.round(s.share || 0) + '% of measured time · p50 ' +
+        statsDuration(s.p50_ms) + ' · p90 ' + statsDuration(s.p90_ms),
+    };
+  });
+
+  const busy = live.busy || [];
+  const agents = agentsRaw.map(function(a) {
+    const perRun = a.tokens_per_run == null ? '—' : statsCompact(a.tokens_per_run);
+    const sub = [a.model, (a.retries_per_ticket || 0).toFixed(1) + ' retries/ticket'].filter(Boolean).join(' · ');
+    return {
+      name: a.name,
+      sub: sub,
+      running: busy.indexOf(a.name) >= 0,
+      runs: statsCompact(a.runs || 0),
+      pct: statsPctLabel(a.first_pass_pct),
+      pctWidth: Math.max(0, Math.min(100, a.first_pass_pct || 0)),
+      tone: statsFirstPassColor(a.first_pass_pct),
+      median: statsDuration(a.median_ms),
+      perRun: perRun,
+      tip: a.name + ' · ' + (a.runs || 0) + ' runs · ' + statsPctLabel(a.first_pass_pct) + ' first-pass · ' +
+        (a.tokens_per_run == null ? 'no token counts recorded' : perRun + ' tokens per run'),
+    };
+  });
+
+  const projectMax = projectsRaw.reduce(function(m, p) { return Math.max(m, p.done || 0); }, 0);
+  const projects = projectsRaw.map(function(p) {
+    return {
+      name: p.name,
+      done: p.done || 0,
+      width: projectMax ? ((p.done || 0) / projectMax) * 100 : 0,
+      cycle: statsDuration(p.median_cycle_ms),
+      tip: p.name + ' · ' + (p.done || 0) + ' shipped · median cycle ' + statsDuration(p.median_cycle_ms),
+    };
+  });
+
+  const slots = [];
+  for (let i = 0; i < (live.slots || 0); i++) {
+    const isBusy = i < (live.running || 0);
+    slots.push({
+      busy: isBusy,
+      tip: 'slot ' + (i + 1) + ' · ' + (isBusy ? (busy[i] || 'busy') : 'free'),
+    });
+  }
+
+  return {
+    heat: statsHeatWeeks(payload.days),
+    heatCaption: statsCompact(totals.runs || 0) + ' runs · ' + (payload.days || []).length + ' days',
+    weekly: weekly,
+    tokens: tokens,
+    tokenCaption: statsCompact((totals.tokens_in || 0) + (totals.tokens_out || 0)) + ' tokens',
+    stages: stages,
+    agents: agents,
+    projects: projects,
+    slots: slots,
+    live: {
+      running: live.running || 0,
+      slots: live.slots || 0,
+      queued: live.queued || 0,
+      oldest: live.queued ? statsDuration(live.oldest_wait_ms) : '—',
+      inReview: live.in_review || 0,
+    },
+    kpis: statsKpis(payload),
+    medianCycle: statsDuration(totals.median_cycle_ms),
+    legend: [0, 1, 2, 3, 4],
+  };
+}
+
+function kontoraStats() {
+  return {
+    statsRange: (function() {
+      try {
+        const saved = localStorage.getItem('kontora-stats-range');
+        return STATS_RANGES.indexOf(saved) >= 0 ? saved : '90d';
+      } catch (e) { return '90d'; }
+    })(),
+    statsProject: 'all',
+    statsPipeline: 'all',
+    statsRanges: STATS_RANGES,
+    stats: null,
+    statsDerived: null,
+    statsLoading: false,
+    statsError: null,
+    statsUpdated: '',
+    _statsTimer: null,
+    _statsSeq: 0,
+
+    statsCompact: statsCompact,
+    statsDuration: statsDuration,
+    statsHeatWeeks: statsHeatWeeks,
+    statsFirstPassColor: statsFirstPassColor,
+    statsHeatColor: statsHeatColor,
+
+    // statsCards keeps the KPI strip six cards wide before the first payload
+    // arrives, so the first paint is the real layout, not a blank frame.
+    statsCards() {
+      return this.statsDerived ? this.statsDerived.kpis : statsKpis({});
+    },
+
+    // openStats is called by gotoView, the one place currentView changes.
+    openStats() {
+      this.closeStats();
+      this.fetchStats();
+      this._statsTimer = setInterval(() => {
+        // gotoView clears the timer on the way out. This is the backstop for
+        // a timer that somehow outlives the view.
+        if (this.currentView !== 'stats') { this.closeStats(); return; }
+        this.fetchStats();
+      }, STATS_POLL_MS);
+    },
+
+    closeStats() {
+      if (this._statsTimer === null) return;
+      clearInterval(this._statsTimer);
+      this._statsTimer = null;
+    },
+
+    statsQuery() {
+      let q = 'range=' + encodeURIComponent(this.statsRange);
+      if (this.statsProject !== 'all') q += '&project=' + encodeURIComponent(this.statsProject);
+      if (this.statsPipeline !== 'all') q += '&pipeline=' + encodeURIComponent(this.statsPipeline);
+      return q;
+    },
+
+    async fetchStats() {
+      if (this.currentView !== 'stats') return;
+      if (!this.stats) this.statsLoading = true;
+      // Two filter changes in a row leave two requests in flight, and the
+      // first can answer last. Only the newest one is allowed to land.
+      const seq = ++this._statsSeq;
+      try {
+        const res = await fetch('/api/stats?' + this.statsQuery());
+        // A session that expires while Stats is open shows the login prompt,
+        // the way every other fetch in the app treats a 401. Polling a dead
+        // session behind a red error string would never recover.
+        if (res.status === 401) {
+          if (seq !== this._statsSeq) return;
+          this.closeStats();
+          this.needsAuth = true;
+          this.statsError = null;
+          return;
+        }
+        if (!res.ok) throw new Error('stats request failed (' + res.status + ')');
+        const payload = await res.json();
+        if (seq !== this._statsSeq) return;
+        this.stats = payload;
+        this.statsDerived = statsDerive(payload);
+        this.statsUpdated = clockHM(new Date());
+        this.statsError = null;
+      } catch (e) {
+        if (seq !== this._statsSeq) return;
+        this.statsError = String((e && e.message) || e);
+      } finally {
+        if (seq === this._statsSeq) this.statsLoading = false;
+      }
+    },
+
+    setStatsRange(range) {
+      if (this.statsRange === range) return;
+      this.statsRange = range;
+      try { localStorage.setItem('kontora-stats-range', range); } catch (e) { /* private mode */ }
+      this.fetchStats();
+    },
+
+    setStatsProject(name) {
+      if (this.statsProject === name) return;
+      this.statsProject = name;
+      this.fetchStats();
+    },
+
+    setStatsPipeline(name) {
+      if (this.statsPipeline === name) return;
+      this.statsPipeline = name;
+      this.fetchStats();
+    },
+
+    // The chips are labelled with the window the server actually cuts, which is
+    // a whole number of weeks: 35, 98 and 182 days. A chip reading "30d" beside
+    // a caption reading "last 35 days" contradicts itself, and "all" would claim
+    // a lifetime total the 182-day cap does not deliver.
+    statsRangeLabel(range) {
+      if (range === '30d') return '5w';
+      if (range === '90d') return '14w';
+      return '26w';
+    },
+
+    statsWindowLabel() {
+      const win = (this.stats && this.stats.window) || null;
+      if (!win) return '';
+      // Days, not weeks: the window spans one more Sunday bucket than its length
+      // whenever it opens mid-week, and the chip beside this would disagree.
+      const span = 'last ' + (win.days || 0) + ' days';
+      return this.statsUpdated ? span + ' · updated ' + this.statsUpdated : span;
+    },
+
+    statsProjectOptions() {
+      return ['all'].concat(((this.configCache && this.configCache.projects) || []).map(function(p) { return p.name; }));
+    },
+
+    statsPipelineOptions() {
+      return ['all'].concat((this.configCache && this.configCache.pipelines) || []);
+    },
+  };
+}

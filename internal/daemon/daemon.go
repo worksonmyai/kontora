@@ -357,6 +357,10 @@ type Daemon struct {
 
 	queue     priorityQueue
 	queueCond *sync.Cond
+
+	// stats caches the Stats page payload and the sidecars it reads. It keeps
+	// its own lock so aggregation never holds d.mu across file I/O.
+	stats *statsCache
 }
 
 type ticketState struct {
@@ -371,10 +375,14 @@ type ticketState struct {
 // startedAt tells a pi retry's session file apart from the previous attempt's
 // in the directory they share.
 //
+// agent is the agent actually running, which on a pipeline ticket is the stage's
+// and not the ticket's.
+//
 // It is deliberately not a ticketState field: an agent rewrites its own ticket
 // mid-run, and every write replaces that struct.
 type liveRun struct {
 	stage     string
+	agent     string
 	run       int
 	params    RunnerParams
 	startedAt time.Time
@@ -431,6 +439,7 @@ func New(cfg *config.Config, opts ...Option) *Daemon {
 
 		plannotatorDeferred: make(map[string]struct{}),
 		selfWrites:          make(map[string]selfWrite),
+		stats:               newStatsCache(),
 	}
 	d.cfg.Store(cfg)
 	for _, opt := range opts {
@@ -1028,10 +1037,21 @@ func (d *Daemon) scheduler(ctx context.Context, wg *sync.WaitGroup) {
 	}()
 
 	for {
+		// The slot is taken before the queue head, not after. Popping first would
+		// hide the ticket from the queue for as long as the daemon stays busy:
+		// it would not be counted as queued, and a ticket enqueued in the
+		// meantime could not overtake it however much older it is.
+		select {
+		case d.sem <- struct{}{}:
+		case <-ctx.Done():
+			return
+		}
+
 		d.mu.Lock()
 		for d.queue.Len() == 0 {
 			if ctx.Err() != nil {
 				d.mu.Unlock()
+				<-d.sem
 				return
 			}
 			d.queueCond.Wait()
@@ -1043,20 +1063,13 @@ func (d *Daemon) scheduler(ctx context.Context, wg *sync.WaitGroup) {
 		d.mu.Unlock()
 
 		if ctx.Err() != nil {
+			<-d.sem
 			return
 		}
 
-		select {
-		case d.sem <- struct{}{}:
-		case <-ctx.Done():
-			return
-		}
-
-		// Recorded here rather than at the pop: this loop parks on the semaphore
-		// with the ticket already out of the heap, so a sample taken above would
-		// leave every ticket's own wait for a slot out and charge it to whatever
-		// is popped next. Also after the unlock, because the exporter's collect
-		// path must never end up waiting behind d.mu.
+		// The slot is already held by the time an item is popped, so the wait ends
+		// here. Recorded after the unlock, because the exporter's collect path
+		// must never end up waiting behind d.mu.
 		d.metrics.QueueWait(ctx, time.Since(item.enqueuedAt))
 
 		wg.Add(1)
@@ -1931,7 +1944,7 @@ func (d *Daemon) runAgentOnce(taskCtx context.Context, t *ticket.Ticket, p spawn
 	// The clear is deferred so that every way this function can end, including a
 	// runner error or a cancelled ticket, leaves no entry claiming the run is
 	// still going.
-	d.setLiveRun(p.ticketID, liveRun{stage: p.stageName, run: p.run, params: params, startedAt: time.Now()})
+	d.setLiveRun(p.ticketID, liveRun{stage: p.stageName, agent: p.agentName, run: p.run, params: params, startedAt: time.Now()})
 	defer d.clearLiveRun(p.ticketID)
 	// Stage logs are appended across retries (pipe-pane, DirectRunner), so record
 	// where this run's output starts. Failure-pattern detection only scans from
@@ -2506,9 +2519,11 @@ func (d *Daemon) cleanOrphanedWindows() {
 
 type queueItem struct {
 	ticketID string
-	created  time.Time
-	// enqueuedAt is when the item joined the queue, for the queue-wait
-	// histogram. created orders the heap and comes from the ticket file.
+	// created orders the queue: the oldest ticket runs first. It is the ticket's
+	// own creation date, so it says nothing about how long this item has waited.
+	created time.Time
+	// enqueuedAt is when the item joined the queue: the wait the queue-wait
+	// histogram and the Stats page report.
 	enqueuedAt time.Time
 }
 

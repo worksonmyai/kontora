@@ -18,6 +18,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/worksonmyai/kontora/internal/logfmt"
+	"github.com/worksonmyai/kontora/internal/stats"
 	"github.com/worksonmyai/kontora/internal/tmux"
 )
 
@@ -37,6 +38,7 @@ type mockService struct {
 	summaryFn      func(id, text string) error
 	logsFn         func(id, stage string) (string, error)
 	activityFn     func(q ActivityQuery) (ActivityInfo, error)
+	statsFn        func(q StatsQuery) (StatsInfo, error)
 	changesFn      func(id string) (ChangesInfo, error)
 	reviewFn       func(id string) error
 	annotateFn     func(id string) error
@@ -127,6 +129,12 @@ func (m *mockService) GetActivity(q ActivityQuery) (ActivityInfo, error) {
 		return m.activityFn(q)
 	}
 	return ActivityInfo{}, nil
+}
+func (m *mockService) GetStats(q StatsQuery) (StatsInfo, error) {
+	if m.statsFn != nil {
+		return m.statsFn(q)
+	}
+	return StatsInfo{}, nil
 }
 func (m *mockService) GetChanges(id string) (ChangesInfo, error) {
 	if m.changesFn != nil {
@@ -1273,6 +1281,75 @@ func TestHandleGetActivity(t *testing.T) {
 			res := getWithHeaders(t, srv, "/api/tickets/t-001/activity"+tc.query, tc.headers)
 			assert.Equal(t, tc.wantStatus, res.statusCode)
 			assert.Equal(t, tc.wantETag, res.etag)
+			if tc.assert != nil {
+				tc.assert(t, res.body)
+			}
+		})
+	}
+}
+
+// --- GET /api/stats ---
+
+func TestHandleGetStats(t *testing.T) {
+	cases := []struct {
+		name       string
+		query      string
+		wantStatus int
+		wantQuery  *StatsQuery
+		assert     func(t *testing.T, body string)
+	}{
+		{
+			name:       "default range",
+			query:      "",
+			wantStatus: http.StatusOK,
+			wantQuery:  &StatsQuery{Days: 98},
+			assert: func(t *testing.T, body string) {
+				var got StatsInfo
+				require.NoError(t, json.Unmarshal([]byte(body), &got))
+				assert.Equal(t, 12, got.Totals.Shipped)
+				assert.Equal(t, 2, got.Live.Running)
+			},
+		},
+		{
+			name:       "range and filters reach the service",
+			query:      "?range=30d&project=kontora&pipeline=default",
+			wantStatus: http.StatusOK,
+			wantQuery:  &StatsQuery{Days: 35, Project: "kontora", Pipeline: "default"},
+		},
+		{
+			name:       "all range",
+			query:      "?range=all",
+			wantStatus: http.StatusOK,
+			wantQuery:  &StatsQuery{Days: 182},
+		},
+		{
+			name:       "unknown range is rejected before aggregating",
+			query:      "?range=bogus",
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			// Each distinct pair keys a cached payload, so an unbounded name is
+			// a way to mint entries, not a project anyone configured.
+			name:       "an over-long filter is rejected before aggregating",
+			query:      "?range=30d&project=" + strings.Repeat("A", 129),
+			wantStatus: http.StatusBadRequest,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var seen *StatsQuery
+			svc := &mockService{statsFn: func(q StatsQuery) (StatsInfo, error) {
+				seen = &q
+				return StatsInfo{
+					Totals: stats.Totals{Shipped: 12},
+					Live:   stats.Live{Running: 2, Slots: 3},
+				}, nil
+			}}
+			srv := startHandlerTestServer(t, svc)
+			res := get(t, srv, "/api/stats"+tc.query)
+			assert.Equal(t, tc.wantStatus, res.statusCode)
+			assert.Equal(t, tc.wantQuery, seen)
 			if tc.assert != nil {
 				tc.assert(t, res.body)
 			}

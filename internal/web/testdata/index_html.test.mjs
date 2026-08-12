@@ -5449,6 +5449,187 @@ test("the hover card peels the [tag] off the title and hands over its hue", () =
 });
 
 
+test("the relations strip carries deps, blocks and links, and leaves parent to the breadcrumb", () => {
+  const state = pageState(RELATION_TICKET);
+
+  assert.deepEqual(vmValue(state.bandRows()).map((r) => [r.key, r.label]), [
+    ["deps", "⇠ waits on"],
+    ["blocks", "blocks ⇢"],
+    ["links", "related"],
+  ]);
+  // The refs are the same objects relationRows hands over, so the +N more
+  // reveal keeps working off relationRefs / relationHidden unchanged.
+  assert.equal(state.relationHidden(state.bandRows().find((r) => r.key === "links")), 2);
+
+  // A ticket whose only relation is its parent draws no strip at all.
+  const parentOnly = pageState({ id: "kon-r4", parent: { id: "kon-epic", status: "open" } });
+  assert.deepEqual(vmValue(parentOnly.bandRows()), []);
+});
+
+test("a relation dot fills with the status hue the chip's text uses", () => {
+  const state = pageState(RELATION_TICKET);
+
+  assert.equal(state.relationDotClass({ id: "kon-run", status: "in_progress" }), "text-st-progress bg-current");
+  assert.equal(state.relationDotClass({ id: "kon-fin", status: "done" }), "text-st-done bg-current");
+  // A status the palette does not mark, and a ref with none at all, both fall
+  // back to the dim mono colour the gone chip already wears.
+  assert.equal(state.relationDotClass({ id: "kon-odd", status: "needs_qa" }), "text-surface-600 bg-current");
+  assert.equal(state.relationDotClass(null), "text-surface-600 bg-current");
+});
+
+// An epic with more sub-tickets than the tree draws at once: three finished,
+// one running mid-pipeline, one never picked up.
+const CHILDREN_TICKET = {
+  id: "kon-epic",
+  status: "open",
+  children: [
+    { id: "kon-child-1", title: "[kontora] First", status: "done", stage: "commit", stage_index: 4, stage_count: 4,
+      started_at: "2026-08-12T09:00:00Z", completed_at: "2026-08-12T09:41:00Z" },
+    { id: "kon-child-2", title: "Second", status: "done", stage: "commit",
+      started_at: "2026-08-12T09:00:00Z", completed_at: "2026-08-12T10:12:00Z" },
+    { id: "kon-child-3", title: "Third", status: "done", stage: "commit" },
+    { id: "kon-child-4", title: "Fourth", status: "in_progress", stage: "implement", stage_index: 2, stage_count: 4,
+      started_at: "2026-08-12T09:30:00Z" },
+    { id: "kon-child-5", title: "Fifth", status: "todo" },
+  ],
+};
+
+test("the sub-ticket tree caps its rows and marks the last one it draws", () => {
+  const many = Array.from({ length: 15 }, (_, i) => ({ id: `kon-c${i}`, title: `Child ${i}`, status: "todo" }));
+  const state = pageState({ id: "kon-epic", children: many });
+
+  var rows = vmValue(state.childRows());
+  assert.equal(rows.length, 12);
+  assert.equal(state.childrenHidden(), 3);
+  // `last` is the last row drawn, not the last child, so a hidden tail does not
+  // leave the connector stem running into nothing.
+  assert.equal(rows[11].id, "kon-c11");
+  assert.deepEqual(rows.filter((c) => c.last).map((c) => c.id), ["kon-c11"]);
+
+  state.childrenExpanded = true;
+  rows = vmValue(state.childRows());
+  assert.equal(rows.length, 15);
+  assert.equal(state.childrenHidden(), 0);
+  assert.deepEqual(rows.filter((c) => c.last).map((c) => c.id), ["kon-c14"]);
+
+  // No children, no rows, and nothing to reveal.
+  const empty = pageState({ id: "kon-r3" });
+  assert.deepEqual(vmValue(empty.childRows()), []);
+  assert.equal(empty.childrenHidden(), 0);
+});
+
+test("the rollup counts every child, not only the ones on screen", () => {
+  const state = pageState(CHILDREN_TICKET);
+  assert.deepEqual(vmValue(state.childRollup()), { done: 3, total: 5, pct: 60 });
+
+  // The cap hides rows, never children: the count is the same either way.
+  const many = Array.from({ length: 15 }, (_, i) => ({ id: `kon-c${i}`, status: i < 5 ? "done" : "todo" }));
+  assert.deepEqual(vmValue(pageState({ id: "kon-e2", children: many }).childRollup()), { done: 5, total: 15, pct: 33 });
+
+  assert.deepEqual(vmValue(pageState({ id: "kon-e3" }).childRollup()), { done: 0, total: 0, pct: 0 });
+});
+
+test("a child reports its stage position while it runs, and the stage word otherwise", () => {
+  const state = pageState(CHILDREN_TICKET);
+  const [first, , , running, queued] = CHILDREN_TICKET.children;
+
+  assert.equal(state.childStageLine(running), "implement 2/4");
+  // Finished: the position would read as progress it no longer makes.
+  assert.equal(state.childStageLine(first), "commit");
+  // Nothing has run it yet, so there is no stage to name.
+  assert.equal(state.childStageLine(queued), "—");
+  // A single-stage pipeline has no position worth printing.
+  assert.equal(state.childStageLine({ id: "kon-c", status: "in_progress", stage: "implement", stage_index: 1, stage_count: 1 }), "implement");
+});
+
+test("a finished child prints the wall the daemon bounded, a running one is clocked live", () => {
+  const state = pageState(CHILDREN_TICKET);
+  const [first, second, noStamps, running, queued] = CHILDREN_TICKET.children;
+
+  assert.equal(state.childElapsed(first), "41m");
+  assert.equal(state.childElapsed(second), "1h 12m");
+  // Still running: the column reads off the reactive `now`, which the 30s tick
+  // advances, so a running child's elapsed climbs without a refetch.
+  state.now = new Date("2026-08-12T10:11:00Z");
+  assert.equal(state.childElapsed(running), "41m");
+  state.now = new Date("2026-08-12T10:41:00Z");
+  assert.equal(state.childElapsed(running), "1h 11m");
+
+  assert.equal(state.childElapsed(noStamps), "—");
+  assert.equal(state.childElapsed(queued), "—");
+
+  // A child that is not running gets no live clock, whatever it is missing: it
+  // has no run left to make, so a climbing number would be a lie.
+  assert.equal(state.childElapsed({ id: "kon-c", status: "done", started_at: "2026-08-12T09:00:00Z" }), "—");
+});
+
+test("a child finishing patches its row in the open epic without a refetch", () => {
+  const state = pageState(CHILDREN_TICKET);
+  state.tickets = [];
+  let refetched = 0;
+  state.selectTicket = () => { refetched++; };
+
+  // The event the daemon broadcasts for the child itself: its pipeline, its
+  // history, and the parent that names the open epic.
+  state.applyTicketUpdate({
+    id: "kon-child-4", title: "Fourth", status: "done", stage: "commit",
+    stages: ["plan", "implement", "review", "commit"],
+    started_at: "2026-08-12T10:00:00Z",
+    history: [
+      { stage: "plan", started_at: "2026-08-12T09:30:00Z", completed_at: "2026-08-12T09:50:00Z" },
+      { stage: "commit", started_at: "2026-08-12T10:00:00Z", completed_at: "2026-08-12T10:05:00Z" },
+    ],
+    parent: { id: "kon-epic", title: "The epic", status: "open" },
+  });
+
+  const patched = vmValue(state.selectedTicket.children).find((c) => c.id === "kon-child-4");
+  assert.equal(patched.status, "done");
+  assert.equal(patched.stage, "commit");
+  // The position moves with the stage, so the row cannot read "commit 2/4".
+  assert.equal(state.childStageLine(patched), "commit");
+  assert.equal(patched.stage_index, 4);
+  assert.equal(patched.stage_count, 4);
+  // The wall is rebounded off the history: first pickup to last exit, not the
+  // frontmatter's started_at, and no longer a live clock that climbs forever.
+  assert.equal(patched.started_at, "2026-08-12T09:30:00Z");
+  assert.equal(patched.completed_at, "2026-08-12T10:05:00Z");
+  assert.equal(state.childElapsed(patched), "35m");
+  assert.deepEqual(vmValue(state.childRollup()), { done: 4, total: 5, pct: 80 });
+  assert.equal(refetched, 0);
+
+  // A child picked up rather than finished: it keeps its live clock, and the
+  // position follows the stage it is on now.
+  state.applyTicketUpdate({
+    id: "kon-child-5", title: "Fifth", status: "in_progress", stage: "implement",
+    stages: ["plan", "implement", "review", "commit"],
+    started_at: "2026-08-12T10:00:00Z",
+    parent: { id: "kon-epic", status: "open" },
+  });
+  const running = vmValue(state.selectedTicket.children).find((c) => c.id === "kon-child-5");
+  assert.equal(state.childStageLine(running), "implement 2/4");
+  assert.equal(running.completed_at, null);
+  state.now = new Date("2026-08-12T10:41:00Z");
+  assert.equal(state.childElapsed(running), "41m");
+
+  // Marked done by hand, so there is no history row to end on: the event has no
+  // completed_at of its own and the file's mtime stands in.
+  state.applyTicketUpdate({
+    id: "kon-child-5", title: "Fifth", status: "done", stage: "implement",
+    stages: ["plan", "implement", "review", "commit"],
+    started_at: "2026-08-12T10:00:00Z", updated_at: "2026-08-12T10:20:00Z",
+    parent: { id: "kon-epic", status: "open" },
+  });
+  const byHand = vmValue(state.selectedTicket.children).find((c) => c.id === "kon-child-5");
+  assert.equal(state.childElapsed(byHand), "20m");
+
+  // An update for a ticket under some other epic leaves this tree alone.
+  state.applyTicketUpdate({
+    id: "kon-child-3", status: "cancelled", stage: "commit",
+    parent: { id: "kon-other", status: "open" },
+  });
+  assert.deepEqual(vmValue(state.childRollup()), { done: 5, total: 5, pct: 100 });
+});
+
 test("a relation opens through the board entry when the board has one", async () => {
   const state = pageState(RELATION_TICKET);
   const boardEntry = { id: "kon-wait", title: "Waiting on this", status: "open", pipeline: "default" };
@@ -5491,6 +5672,43 @@ test("index.html renders the relation rows inside the frontmatter grid", () => {
   assert.match(html, /x-effect="setNoteText\(\$el, n\.text\)"/);
   // A gone relation is dashed and not clickable.
   assert.match(html, /\.ent-ticket-gone \{ border-style: dashed;/);
+});
+
+test("index.html renders the parent crumb, the relations strip and the sub-ticket tree", () => {
+  const html = fs.readFileSync(htmlPath, "utf8");
+
+  // The crumb sits between board and the open id, and only when there is a
+  // parent to sit there.
+  assert.match(html, /<template x-if="selectedTicket\?\.parent">/);
+  assert.match(html, /@click="openTicketRef\(selectedTicket\.parent\)"/);
+  assert.match(html, /:class="relationDotClass\(selectedTicket\.parent\)"/);
+  // All five, because setupTip mirrors them on every hover and an omitted one
+  // leaks the previous chip's tag or hue.
+  for (const attr of ["", "-tag", "-tag-color", "-body", "-hint"]) {
+    assert.match(html, new RegExp(`:data-tip-e${attr}="ticketTip\\(selectedTicket\\.parent\\)\\.`));
+    assert.match(html, new RegExp(`:data-tip-e${attr}="ticketTip\\(c\\)\\.`));
+  }
+
+  // The strip is dropped whole rather than left as an empty row, and the
+  // divider is drawn between groups, never before the first.
+  assert.match(html, /<template x-if="bandRows\(\)\.length > 0">/);
+  assert.match(html, /x-for="\(row, i\) in bandRows\(\)" :key="row\.key"/);
+  assert.match(html, /x-show="i > 0" class="w-px h-\[14px\] bg-surface-700/);
+  // The strip wraps and nothing in it shrinks below its own text. Eight chips
+  // per group is wider than the column, and a shrunk label overprints the chip
+  // beside it rather than clipping.
+  assert.match(html, /class="flex flex-wrap items-center gap-x-3\.5 gap-y-1\.5 min-h-\[26px\]/);
+  assert.match(html, /class="text-tx-faint tracking-\[\.06em\] shrink-0 whitespace-nowrap"/);
+
+  // The tree: no children, no block, so the body does not shift.
+  assert.match(html, /<template x-if="\(selectedTicket\?\.children \|\| \[\]\)\.length > 0">/);
+  assert.match(html, /x-for="c in childRows\(\)" :key="c\.id"/);
+  assert.match(html, /@click="openTicketRef\(c\)"/);
+  assert.match(html, /x-text="childRollup\(\)\.done \+ ' of ' \+ childRollup\(\)\.total"/);
+  assert.match(html, /@click="childrenCollapsed = !childrenCollapsed"/);
+  assert.match(html, /@click="childrenExpanded = true"/);
+  // The stem stops at the elbow on the last drawn row.
+  assert.match(html, /:class="c\.last \? 'h-\[20px\]' : 'bottom-0'"/);
 });
 
 test("index.html renders the ribbon, transcript and rail the page needs", () => {

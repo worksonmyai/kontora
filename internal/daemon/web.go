@@ -1074,7 +1074,7 @@ func (d *Daemon) buildTicketInfo(cfg *config.Config, ts *ticketState, includeBod
 			d.resolveRefLocked(&info.Links[i])
 		}
 		d.resolveRefLocked(info.Parent)
-		info.Blocks = d.dependentsLocked(ts.ticket.ID)
+		info.Blocks, info.Children = d.relatedLocked(cfg, ts.ticket.ID)
 	}
 	return info
 }
@@ -1096,24 +1096,66 @@ func (d *Daemon) resolveRefLocked(ref *web.TicketRef) {
 	ref.Status = string(ts.ticket.Status)
 }
 
-// dependentsLocked lists the tickets whose deps name id: what this ticket holds
-// up. The edge is stored on the blocked ticket alone, so the reverse direction
-// has to be read off every other ticket. Sorted by id, because a map is not.
+// relatedLocked reads the two reverse edges off the store in one pass: the
+// tickets whose deps name id (what this one holds up) and the tickets whose
+// parent names it (its sub-tickets). Neither edge is stored on this ticket, so
+// both have to be read off every other one, and this runs on every detail build
+// and every SSE broadcast — hence one loop rather than two. Both are sorted by
+// id, because a map is not.
 // Must be called with d.mu held.
-func (d *Daemon) dependentsLocked(id string) []web.TicketRef {
-	var refs []web.TicketRef
+func (d *Daemon) relatedLocked(cfg *config.Config, id string) (blocks []web.TicketRef, children []web.TicketChild) {
 	for otherID, ts := range d.tickets {
-		if otherID == id || !slices.Contains(ts.ticket.Deps, id) {
+		if otherID == id {
 			continue
 		}
-		refs = append(refs, web.TicketRef{
-			ID:     otherID,
-			Title:  ts.ticket.Title(),
-			Status: string(ts.ticket.Status),
-		})
+		if slices.Contains(ts.ticket.Deps, id) {
+			blocks = append(blocks, web.TicketRef{
+				ID:     otherID,
+				Title:  ts.ticket.Title(),
+				Status: string(ts.ticket.Status),
+			})
+		}
+		if ts.ticket.Parent == id {
+			children = append(children, childInfo(cfg, ts.ticket))
+		}
 	}
-	slices.SortFunc(refs, func(a, b web.TicketRef) int { return strings.Compare(a.ID, b.ID) })
-	return refs
+	slices.SortFunc(blocks, func(a, b web.TicketRef) int { return strings.Compare(a.ID, b.ID) })
+	slices.SortFunc(children, func(a, b web.TicketChild) int { return strings.Compare(a.ID, b.ID) })
+	return blocks, children
+}
+
+// childInfo projects one sub-ticket for the tree. The wall bounds come from the
+// history when there is one: the frontmatter's started_at holds the current
+// stage's pickup, so a child that ran four stages would otherwise report only
+// the fourth. A running child gets no CompletedAt, and the page clocks it live.
+func childInfo(cfg *config.Config, t *ticket.Ticket) web.TicketChild {
+	c := web.TicketChild{
+		ID:     t.ID,
+		Title:  t.Title(),
+		Status: string(t.Status),
+		Stage:  t.Stage,
+	}
+	if steps, ok := cfg.Pipelines[t.Pipeline]; ok {
+		c.StageCount = len(steps)
+		for i, step := range steps {
+			if step.Stage == t.Stage {
+				c.StageIndex = i + 1
+				break
+			}
+		}
+	}
+	c.StartedAt = t.StartedAt
+	if len(t.History) > 0 {
+		if h := t.History[0]; h.StartedAt != nil {
+			c.StartedAt = h.StartedAt
+		}
+		if t.Status != ticket.StatusInProgress {
+			c.CompletedAt = t.History[len(t.History)-1].CompletedAt
+		}
+	} else if t.Status != ticket.StatusInProgress {
+		c.CompletedAt = t.CompletedAt
+	}
+	return c
 }
 
 // mapAppError translates app-level sentinel errors to web-level sentinel errors

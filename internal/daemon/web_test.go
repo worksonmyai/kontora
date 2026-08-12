@@ -2249,3 +2249,88 @@ completed_at: %s
 	assert.Equal(t, (24*time.Hour + 20*time.Minute).Milliseconds(), res.Totals.MedianCycleMS,
 		"created to completed, not the run's own 20 minutes")
 }
+
+// A child's wall time bounds its whole run, not its current stage: the
+// frontmatter's started_at is rewritten at every spawn, so a ticket that ran
+// four stages would otherwise report only the fourth.
+func TestChildInfo_WallBounds(t *testing.T) {
+	cfg := &config.Config{Pipelines: map[string]config.Pipeline{
+		"two-stage": {{Stage: "step1"}, {Stage: "step2"}},
+	}}
+	at := func(mins int) *time.Time {
+		v := time.Date(2026, 8, 12, 9, 0, 0, 0, time.UTC).Add(time.Duration(mins) * time.Minute)
+		return &v
+	}
+	fourStages := []ticket.HistoryEntry{
+		{Stage: "step1", StartedAt: at(0), CompletedAt: at(10)},
+		{Stage: "step2", StartedAt: at(10), CompletedAt: at(25)},
+		{Stage: "step1", StartedAt: at(25), CompletedAt: at(40)},
+		{Stage: "step2", StartedAt: at(40), CompletedAt: at(70)},
+	}
+
+	cases := []struct {
+		name string
+		tk   ticket.Ticket
+		want web.TicketChild
+	}{
+		{
+			name: "history bounds a finished run",
+			tk: ticket.Ticket{
+				ID: "kid-a", Status: ticket.StatusDone, Pipeline: "two-stage", Stage: "step2",
+				StartedAt: at(40), CompletedAt: at(70), History: fourStages,
+			},
+			want: web.TicketChild{
+				ID: "kid-a", Status: "done", Stage: "step2", StageIndex: 2, StageCount: 2,
+				StartedAt: at(0), CompletedAt: at(70),
+			},
+		},
+		{
+			name: "a running child has no completion",
+			tk: ticket.Ticket{
+				ID: "kid-b", Status: ticket.StatusInProgress, Pipeline: "two-stage", Stage: "step2",
+				StartedAt: at(40), CompletedAt: at(70), History: fourStages,
+			},
+			want: web.TicketChild{
+				ID: "kid-b", Status: "in_progress", Stage: "step2", StageIndex: 2, StageCount: 2,
+				StartedAt: at(0),
+			},
+		},
+		{
+			name: "no history falls back to the ticket's own stamps",
+			tk: ticket.Ticket{
+				ID: "kid-c", Status: ticket.StatusDone, Pipeline: "two-stage", Stage: "step1",
+				StartedAt: at(5), CompletedAt: at(30),
+			},
+			want: web.TicketChild{
+				ID: "kid-c", Status: "done", Stage: "step1", StageIndex: 1, StageCount: 2,
+				StartedAt: at(5), CompletedAt: at(30),
+			},
+		},
+		{
+			name: "a history row with no pickup leaves the frontmatter stamp",
+			tk: ticket.Ticket{
+				ID: "kid-d", Status: ticket.StatusDone, Pipeline: "two-stage", Stage: "step1",
+				StartedAt: at(5),
+				History:   []ticket.HistoryEntry{{Stage: "step1", CompletedAt: at(30)}},
+			},
+			want: web.TicketChild{
+				ID: "kid-d", Status: "done", Stage: "step1", StageIndex: 1, StageCount: 2,
+				StartedAt: at(5), CompletedAt: at(30),
+			},
+		},
+		{
+			name: "a pipeline nothing configures leaves no stage position",
+			tk: ticket.Ticket{
+				ID: "kid-e", Status: ticket.StatusTodo, Pipeline: "gone", Stage: "step1",
+			},
+			want: web.TicketChild{ID: "kid-e", Status: "todo", Stage: "step1"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tk := tc.tk
+			assert.Equal(t, tc.want, childInfo(cfg, &tk))
+		})
+	}
+}

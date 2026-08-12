@@ -48,6 +48,9 @@ var TICKET_ID_RE = '\\b[a-z]{2,8}-[a-z0-9]{4}\\b';
 // Relation chips one rail row shows before it has to be expanded. A ticket in
 // the corpus carries up to 33 links, and the rail is 308px wide.
 var RELATION_CAP = 8;
+// Sub-tickets the tree shows before it has to be expanded. Higher than
+// RELATION_CAP because the tree has the full 960px column, not a 308px rail.
+var CHILDREN_CAP = 12;
 // NodeFilter constants, spelled out rather than read off the global.
 var SHOW_TEXT = 4;
 var FILTER_ACCEPT = 1;
@@ -317,6 +320,10 @@ function kontora() {
     // Relation rows the user expanded past the first RELATION_CAP chips, keyed
     // by row. Cleared with the ticket, so opening another one starts collapsed.
     relExpanded: {},
+    // Sub-ticket tree folded shut, and the tree expanded past CHILDREN_CAP.
+    // Both are cleared with the ticket, like relExpanded.
+    childrenCollapsed: false,
+    childrenExpanded: false,
     deleteSubmitting: false,
     uploadDragging: false,
     lightTheme: getStoredTheme() === 'light',
@@ -662,6 +669,17 @@ function kontora() {
           this.tickets[idx] = this.boardEntry(ticket);
         } else {
           this.tickets.push(this.boardEntry(ticket));
+        }
+        // A child finishing broadcasts the child, not the epic above it, so an
+        // open tree would sit on what the detail fetch left behind. Patch the
+        // one row rather than re-fetch the parent on every sub-ticket update.
+        // The event carries every field the daemon built the row from, so the
+        // stage position and the wall bounds are recomputed rather than left
+        // stale beside a stage name that has moved on.
+        var kids = this.selectedTicket?.children;
+        if (kids && ticket.parent?.id === this.selectedTicket.id) {
+          var ci = kids.findIndex(function (c) { return c.id === ticket.id; });
+          if (ci >= 0) Object.assign(kids[ci], this.childRowFromEvent(ticket));
         }
         if (this.selectedTicket?.id === ticket.id) {
           var prevSummary = this.selectedTicket.summary;
@@ -1146,6 +1164,8 @@ function kontora() {
       this.ticketChanges = null;
       this.collapsedStages = {};
       this.relExpanded = {};
+      this.childrenCollapsed = false;
+      this.childrenExpanded = false;
       this.selectedTicket = ticket;
       this._pushRecentTicket(ticket.id);
       this.detailLoading = true;
@@ -1382,6 +1402,9 @@ function kontora() {
       this._resetActivity();
       this.ticketChanges = null;
       this.collapsedStages = {};
+      this.relExpanded = {};
+      this.childrenCollapsed = false;
+      this.childrenExpanded = false;
       this.noteDraft = '';
       this.writeHash();
     },
@@ -3742,6 +3765,94 @@ function kontora() {
 
     relationHidden(row) {
       return this.relExpanded[row.key] ? 0 : Math.max(0, row.refs.length - RELATION_CAP);
+    },
+
+    // The relations strip: deps, blocks and links, in that order and under the
+    // strip's own wording. parent is in the breadcrumb, so relationRows' first
+    // row is dropped here rather than reworded.
+    _bandLabels: { deps: '⇠ waits on', blocks: 'blocks ⇢', links: 'related' },
+    bandRows() {
+      var self = this;
+      return this.relationRows()
+        .filter(function (r) { return r.key !== 'parent'; })
+        .map(function (r) { return { key: r.key, label: self._bandLabels[r.key], refs: r.refs }; });
+    },
+
+    // The status hue as a background, for the 5px dots the strip, the crumb and
+    // the tree draw. relationChipClass paints text; a dot has no text of its
+    // own, so it takes the same class and fills from currentColor.
+    relationDotClass(ref) {
+      var mark = this._paletteStatusMarks[ref && ref.status];
+      return (mark ? mark.cls : 'text-surface-600') + ' bg-current';
+    },
+
+    // Sub-tickets, capped like a relation row. `last` drives the connector: the
+    // stem stops at the elbow on the final row, and "final" means the last row
+    // drawn, so a collapsed tail does not leave the stem running into nothing.
+    childRows() {
+      var all = this.selectedTicket?.children || [];
+      var shown = this.childrenExpanded ? all : all.slice(0, CHILDREN_CAP);
+      return shown.map(function (c, i) {
+        return Object.assign({}, c, { last: i === shown.length - 1 });
+      });
+    },
+
+    childrenHidden() {
+      var n = (this.selectedTicket?.children || []).length;
+      return this.childrenExpanded ? 0 : Math.max(0, n - CHILDREN_CAP);
+    },
+
+    // Derived, never stored: the rollup counts every child, not only the ones
+    // the tree is currently showing.
+    childRollup() {
+      var all = this.selectedTicket?.children || [];
+      var done = all.filter(function (c) { return c.status === 'done'; }).length;
+      return { done: done, total: all.length, pct: all.length ? Math.round((done / all.length) * 100) : 0 };
+    },
+
+    // "implement 2/4" for a running child on a multi-stage pipeline, the stage
+    // word alone otherwise. The position, not a percentage: the stage index is
+    // the only progress signal a ticket carries, and the board card's tooltip
+    // already says it this way.
+    childStageLine(c) {
+      if (!c || !c.stage) return '—';
+      if (c.status === 'in_progress' && c.stage_index && c.stage_count > 1) {
+        return c.stage + ' ' + c.stage_index + '/' + c.stage_count;
+      }
+      return c.stage;
+    },
+
+    // A finished child reports the wall the daemon bounded; a running one is
+    // clocked off the reactive `now`, so the column ticks with the 30s timer.
+    // Only a running one: a child with no run left to make has no time to count
+    // up to, and a live clock on it would climb forever.
+    childElapsed(c) {
+      if (!c || !c.started_at) return '—';
+      if (c.status === 'in_progress') return this.formatDuration({ started_at: c.started_at }) || '—';
+      return this.formatElapsed(c.started_at, c.completed_at) || '—';
+    },
+
+    // One sub-ticket row off a ticket_updated event, derived the way the
+    // daemon's childInfo derives it: the stage position from the ticket's own
+    // pipeline, and the wall bounds from the first pickup to the last exit,
+    // because started_at is rewritten at every stage spawn. A running child
+    // gets no completion, which is what makes the page clock it live. The event
+    // carries no completed_at of its own, so a child that finished without a
+    // history row ends at its file's mtime, which is what ticketWall does with
+    // the same gap.
+    childRowFromEvent(t) {
+      var h = t.history || [];
+      var stages = t.stages || [];
+      var i = stages.indexOf(t.stage);
+      return {
+        title: t.title,
+        status: t.status,
+        stage: t.stage,
+        stage_index: i < 0 ? 0 : i + 1,
+        stage_count: stages.length,
+        started_at: (h.length && h[0].started_at) || t.started_at,
+        completed_at: t.status === 'in_progress' ? null : (h.length ? h[h.length - 1].completed_at : t.updated_at),
+      };
     },
 
     // A ref the daemon could not resolve names a ticket that is no longer in

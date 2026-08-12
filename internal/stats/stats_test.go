@@ -26,6 +26,13 @@ func mkRun(stage, agent string, idx int, start *time.Time, dur time.Duration) Ru
 	return Run{Stage: stage, Agent: agent, Run: idx, StartedAt: start, CompletedAt: &end}
 }
 
+// spent attaches the input and output counts a run's sidecar reported. A run
+// mkRun built alone has none, which is the "not measured" case.
+func spent(r Run, in, out int) Run {
+	r.Usage = &Usage{In: in, Out: out}
+	return r
+}
+
 func TestCompute(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -194,6 +201,9 @@ func TestCompute(t *testing.T) {
 				require.Equal(t, int64(20), r.Totals.TokensCacheCreate)
 				require.Equal(t, int64(260), r.Totals.TokensCacheRead)
 				require.Equal(t, int64(110), *r.Agents[0].TokensPerRun, "averaged over the agent's stage runs, the ones its row counts")
+				require.Equal(t, int64(110), r.Stages[0].Tokens, "the annotation's 330 tokens are window spend, not stage spend")
+				require.Equal(t, 1, r.Stages[0].TokenRuns)
+				require.InDelta(t, 100.0, r.Stages[0].TokenShare, 0.01)
 			},
 		},
 		{
@@ -210,6 +220,46 @@ func TestCompute(t *testing.T) {
 			check: func(t *testing.T, r Result) {
 				require.Equal(t, 1, r.Stages[0].Failed)
 				require.InDelta(t, 50.0, r.Stages[0].RetryPct, 0.01)
+			},
+		},
+		{
+			name: "stage tokens are totalled, ranked and shared",
+			tickets: []Ticket{{ID: "a", Status: "done", History: []Run{
+				spent(mkRun("plan", "claude", 0, ago(5, 9), time.Minute), 100, 50),
+				spent(mkRun("plan", "claude", 0, ago(4, 9), time.Minute), 100, 50),
+				spent(mkRun("implement", "claude", 0, ago(3, 9), time.Minute), 400, 100),
+			}}},
+			opts: Options{Now: testNow, Days: 35},
+			check: func(t *testing.T, r Result) {
+				plan, impl := stageOf(t, r, "plan"), stageOf(t, r, "implement")
+				require.Equal(t, int64(300), plan.Tokens)
+				require.Equal(t, int64(150), plan.TokensP90)
+				require.Equal(t, 2, plan.TokenRuns)
+				require.InDelta(t, 37.5, plan.TokenShare, 0.01)
+				require.Equal(t, int64(500), impl.Tokens)
+				require.Equal(t, int64(500), impl.TokensP90)
+				require.Equal(t, 1, impl.TokenRuns)
+				require.InDelta(t, 62.5, impl.TokenShare, 0.01)
+				require.InDelta(t, 100.0, plan.TokenShare+impl.TokenShare, 0.01)
+			},
+		},
+		{
+			name: "a stage whose runs recorded no counts is not reported as free",
+			tickets: []Ticket{{ID: "a", Status: "done", History: []Run{
+				mkRun("pi", "pi", 0, ago(5, 9), 2*time.Second),
+				spent(mkRun("implement", "claude", 0, ago(4, 9), time.Minute), 400, 100),
+			}}},
+			opts: Options{Now: testNow, Days: 35},
+			check: func(t *testing.T, r Result) {
+				s := stageOf(t, r, "pi")
+				require.Equal(t, 0, s.TokenRuns)
+				require.Equal(t, int64(0), s.Tokens)
+				require.Zero(t, s.TokenShare)
+				require.Equal(t, int64(2000), s.P50MS, "an unmeasured stage keeps its time figures")
+				require.Equal(t, int64(2000), s.P90MS)
+				require.Equal(t, 1, s.Runs)
+				require.InDelta(t, 100.0, stageOf(t, r, "implement").TokenShare, 0.01,
+					"the measured stage carries the whole share")
 			},
 		},
 		{
@@ -439,6 +489,17 @@ func TestPercentile(t *testing.T) {
 			require.Equal(t, tc.want, percentile(tc.values, tc.p))
 		})
 	}
+}
+
+func stageOf(t *testing.T, r Result, name string) Stage {
+	t.Helper()
+	for _, s := range r.Stages {
+		if s.Name == name {
+			return s
+		}
+	}
+	t.Fatalf("no stage %s in %v", name, r.Stages)
+	return Stage{}
 }
 
 func weekOf(t *testing.T, r Result, week string) Week {

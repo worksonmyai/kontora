@@ -14,6 +14,27 @@
 - Split Stats tokens by category and record pi usage
 - Annotate a ticket kontora has not adopted
 
+## [0.29.0](https://github.com/worksonmyai/kontora/compare/v0.28.0...v0.29.0) - 2026-08-12
+
+- Add a Stats view for throughput, agent quality and live capacity
+- Allow ticket annotation only in open
+- Give a stage its own model, injected as --model
+- Export daemon and pipeline metrics over OTLP
+- Generate CHANGELOG.md and update it with each release
+- Colour the [tag] prefix in a ticket's hover card
+- Annotate a ticket in Plannotator and have an agent rewrite it
+- Show a ticket's deps, links and parent in the details rail
+- Make the wordmark a second way back to the board
+- Add a setup command that can brief a coding agent
+- Synthesize one ticket-level summary from the recorded run summaries
+- Match a self-write by content instead of counting writes
+- fix sidebar
+- Start every tab pane on the rail's first label
+- Start the commit rail at the first stage card
+- Default branch naming to slug mode
+- Put a dragged card back when the Start ticket form is dismissed
+- Show the branch a ticket will run on before the run starts
+
 ## [0.28.0](https://github.com/worksonmyai/kontora/compare/v0.27.0...v0.28.0) - 2026-08-10
 
 - Add readable ticket branch names

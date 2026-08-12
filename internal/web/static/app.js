@@ -229,7 +229,17 @@ function kontora() {
     agentSetupRequest: 'Run `kontora setup --agent` on the Kontora daemon host and follow its instructions.',
     initModal: false,
     initSubmitting: false,
-    initForm: { ticketId: '', title: '', pipeline: '', agent: '', path: '', branch: '', autoBranch: '', ticketPath: '' },
+    // The init modal's own error line. Separate from `error`, which drives the
+    // global toast: the modal stays open across a failure, so it must not show
+    // an unrelated earlier failure and must not lose its own to the toast's
+    // 10s timer.
+    initError: null,
+    initForm: { ticketId: '', status: '', tag: '', titleRest: '', pipeline: '', agent: '', path: '', branch: '', autoBranch: '', ticketPath: '' },
+    // Pipeline and agent the path's project supplies, tracked so a value that
+    // only got there by inheritance can be told from one the user chose.
+    // Declared here rather than assigned on first use because the modal reads
+    // it while rendering, so it has to be reactive from the start.
+    _initInherited: { pipeline: '', agent: '' },
     actionLoading: null,
     deleteModal: false,
     detailMenuOpen: false,
@@ -1043,9 +1053,12 @@ function kontora() {
     },
 
     async openInitModal(ticket) {
+      var pt = this.parseTitleTag(ticket);
       this.initForm = {
         ticketId: ticket.id,
-        title: ticket.title || '',
+        status: ticket.status || '',
+        tag: pt.tag || '',
+        titleRest: pt.rest || '',
         pipeline: '',
         agent: '',
         path: ticket.path || '',
@@ -1053,13 +1066,14 @@ function kontora() {
         autoBranch: ticket.auto_branch || '',
         ticketPath: ticket.path || '',
       };
+      this.initError = null;
       this.initModal = true;
       if (!this.configCache) {
         try {
           const res = await fetch('/api/config');
           if (res.ok) this.configCache = await res.json();
         } catch (e) {
-          this.error = 'Failed to load config';
+          this.initError = 'Failed to load config';
         }
       }
       // The form shows what the ticket would run with, not a "project default"
@@ -1072,6 +1086,7 @@ function kontora() {
       await this.$nextTick();
       this.initForm.pipeline = pipeline;
       this.initForm.agent = agent;
+      document.getElementById('init-pipeline')?.focus();
     },
 
     // Re-apply the project defaults after the path field changes. A value the
@@ -1096,6 +1111,15 @@ function kontora() {
       this.initSubmitting = false;
     },
 
+    // The project the pipeline value came from, or null. The badge sits on the
+    // pipeline label row and claims that provenance, so it tests the value: the
+    // ticket's own field and the select both override the inherited one, and
+    // the path resolving to a project says nothing about either.
+    initPipelineProject() {
+      if (!this.initForm.pipeline || this.initForm.pipeline !== this._initInherited.pipeline) return null;
+      return this.projectForPath(this.initForm.path);
+    },
+
     // What an empty branch field shows: the name the daemon would assign, as
     // the server computed it, or a line saying it assigns one.
     branchPlaceholder(auto) {
@@ -1112,10 +1136,26 @@ function kontora() {
       return this.branchPlaceholder(this.initForm.autoBranch);
     },
 
+    // Whether initBranchPlaceholder() named a branch the modal can preview: the
+    // field has to be empty for the automatic name to apply at all, and the
+    // generic line is not a name.
+    initBranchResolved() {
+      return !(this.initForm.branch || '').trim() &&
+        this.initBranchPlaceholder() !== BRANCH_PLACEHOLDER;
+    },
+
+    // Ordered stages of the pipeline the init form names. Empty for "none",
+    // which runs the ticket once with no stage machine behind it.
+    initStages() {
+      var infos = this.configCache?.pipeline_infos || [];
+      var info = infos.find(i => i.name === this.initForm.pipeline);
+      return (info && info.stages) || [];
+    },
+
     async submitInitTicket() {
       if (!this.initForm.path) return;
       this.initSubmitting = true;
-      this.error = null;
+      this.initError = null;
       try {
         const res = await fetch('/api/tickets/' + this.initForm.ticketId + '/init', {
           method: 'POST',
@@ -1132,13 +1172,13 @@ function kontora() {
         });
         if (!res.ok) {
           const data = await res.json().catch(() => ({}));
-          this.error = data.error || 'Failed to start ticket';
+          this.initError = data.error || 'Failed to start ticket';
           this.initSubmitting = false;
           return;
         }
         this.closeInitModal();
       } catch (e) {
-        this.error = 'Failed to start ticket: ' + e.message;
+        this.initError = 'Failed to start ticket: ' + e.message;
         this.initSubmitting = false;
       }
     },

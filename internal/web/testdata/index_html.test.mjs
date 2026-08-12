@@ -2832,9 +2832,283 @@ test("index.html applies project defaults and leaves branch naming to the daemon
   // The create form has no ticket ID yet, so it is the only branch field that
   // states the rule instead of naming the branch.
   assert.equal((html.match(/placeholder="daemon assigns branch when run starts"/g) || []).length, 1);
-  assert.match(html, /:placeholder="initBranchPlaceholder\(\)"/);
+  // The init modal states the rule in its placeholder and shows the resolved
+  // name in a preview row of its own instead.
+  assert.match(html, /placeholder="override the automatic name"/);
+  assert.match(html, /x-text="initBranchPlaceholder\(\)"/);
   assert.match(html, /:placeholder="branchPlaceholder\(selectedTicket\?\.auto_branch\)"/);
   assert.doesNotMatch(html, /auto-generate from ticket ID/);
+});
+
+test("the init modal's header band names the transition the ticket is about to make", () => {
+  const html = fs.readFileSync(htmlPath, "utf8");
+
+  // A ticket already in todo would read "todo → todo · queued", and a ticket
+  // with no status would draw an empty pill, so the source chip and the arrow
+  // between them drop out together in both cases.
+  assert.match(html, /<template x-if="initForm\.status && initForm\.status !== 'todo'">/);
+  assert.match(html, /x-text="statusLabel\(initForm\.status\)"/);
+  assert.match(html, /data-status="in_progress">todo · queued</);
+  // The pulsing dot belongs to a run in flight, not to a queued ticket, and
+  // .status-chip-sm is the pair that cancels it.
+  assert.equal((html.match(/class="status-chip status-chip-sm" (:data-status="initForm\.status"|data-status="in_progress")/g) || []).length, 2);
+  assert.match(html, /<h2 id="init-modal-title"/);
+  // The modal's tag differs from a card's in size alone, so it adds a class to
+  // .title-tag instead of restating the family, weight and colour.
+  assert.match(html, /class="title-tag init-title-tag" :data-pipe-color="pipelineColorByName\(initForm\.tag\)"/);
+  assert.match(html, /\.title-tag\.init-title-tag \{ font-size: 13px; \}/);
+});
+
+test("the init modal states what starting the ticket does", () => {
+  const html = fs.readFileSync(htmlPath, "utf8");
+
+  // Both the strip's trailing note and the footer's run line have to name the
+  // "none" pipeline as a single pass rather than as zero stages.
+  assert.ok(html.includes(`x-text="initStages().length ? 'starts at ' + initStages()[0] : 'single run, no stages'"`));
+  assert.ok(html.includes(`initStages().length + (initStages().length === 1 ? ' stage' : ' stages') : 'a single pass'`));
+  assert.ok(html.includes(`x-text="initForm.agent || 'the agent each stage picks'"`));
+  // The stages moved out of the select's option labels and into the strip.
+  const select = html.slice(html.indexOf('id="init-pipeline"'));
+  const options = select.slice(0, select.indexOf("</select>"));
+  assert.ok(options.includes(`<option value="">none (single run, no stages)</option>`));
+  assert.ok(options.includes(`<option :value="p" x-text="p">`));
+  assert.equal(options.includes("pipelineLabel"), false);
+  // Agent shares a row with Path, and the create form's wording does not fit
+  // the half-width select.
+  const agent = html.slice(html.indexOf('id="init-agent"'));
+  assert.ok(agent.slice(0, agent.indexOf("</select>")).includes(`<option value="">default (per stage)</option>`));
+});
+
+test("the init modal's error line is its own, not the app-wide one", () => {
+  const html = fs.readFileSync(htmlPath, "utf8");
+
+  // The toast at the bottom right renders `error` and clears it after 10s. The
+  // modal outlives a failed start, so it binds a field of its own.
+  assert.match(html, /x-show="initError" class="text-\[11px\] text-err" x-text="initError"/);
+  const modal = html.slice(html.indexOf('x-show="initModal"'));
+  assert.equal(modal.slice(0, modal.indexOf("</form>")).includes(`x-text="error"`), false);
+});
+
+test("the init modal's error line reports the start it is showing and nothing else", async () => {
+  const ticket = { id: "kon-1", status: "open", path: "~/projects/kontora" };
+  const cases = [
+    {
+      name: "an unrelated failure still inside the toast's window",
+      error: "Delete failed",
+      wantInitError: null,
+      wantError: "Delete failed",
+      wantModal: true,
+    },
+    {
+      name: "the server's reason, with the modal left open to fix it",
+      submit: true,
+      fetch: async () => ({ ok: false, json: async () => ({ error: "path is not a git repository" }) }),
+      wantInitError: "path is not a git repository",
+      wantModal: true,
+    },
+    {
+      name: "a rejection that names no reason",
+      submit: true,
+      fetch: async () => ({ ok: false, json: async () => ({}) }),
+      wantInitError: "Failed to start ticket",
+      wantModal: true,
+    },
+    {
+      name: "a request that never reached the daemon",
+      submit: true,
+      fetch: async () => { throw new Error("offline"); },
+      wantInitError: "Failed to start ticket: offline",
+      wantModal: true,
+    },
+    {
+      name: "a start that works closes the modal",
+      submit: true,
+      fetch: async () => ({ ok: true, json: async () => ({}) }),
+      wantInitError: null,
+      wantModal: false,
+    },
+    {
+      name: "reopening drops the previous failure",
+      submit: true,
+      fetch: async () => ({ ok: false, json: async () => ({ error: "path is not a git repository" }) }),
+      reopen: true,
+      wantInitError: null,
+      wantModal: true,
+    },
+  ];
+
+  for (const c of cases) {
+    const state = loadKontoraState(c.fetch ? { fetch: c.fetch } : {});
+    state.configCache = { projects: EDIT_PROJECTS, pipelines: [], agents: [] };
+    state.$nextTick = async () => {};
+    if (c.error) state.error = c.error;
+
+    await state.openInitModal(ticket);
+    if (c.submit) await state.submitInitTicket();
+    if (c.reopen) await state.openInitModal(ticket);
+
+    assert.equal(state.initError, c.wantInitError, c.name);
+    assert.equal(state.error, c.error || null, c.name);
+    assert.equal(state.initModal, c.wantModal, c.name);
+    assert.equal(state.initSubmitting, false, c.name);
+  }
+});
+
+test("the pipeline badge names a project only when the pipeline came from it", async () => {
+  const cases = [
+    {
+      name: "a value inherited from the path's project",
+      ticket: { id: "kon-1", status: "open", path: "~/projects/kontora" },
+      want: "kontora",
+    },
+    {
+      name: "a value the ticket carries itself",
+      ticket: { id: "kon-1", status: "open", path: "~/projects/kontora", pipeline: "commit-no-push" },
+      want: null,
+    },
+    {
+      name: "a value the user picked in the select",
+      ticket: { id: "kon-1", status: "open", path: "~/projects/kontora" },
+      pipeline: "commit-no-push",
+      want: null,
+    },
+    {
+      name: "the none pipeline",
+      ticket: { id: "kon-1", status: "open", path: "~/projects/kontora" },
+      pipeline: "",
+      want: null,
+    },
+    {
+      name: "a path no project owns",
+      ticket: { id: "kon-1", status: "open", path: "~/scratch", pipeline: "implement" },
+      want: null,
+    },
+    {
+      name: "a retargeted path re-inherits, and the badge follows",
+      ticket: { id: "kon-1", status: "open", path: "~/projects/kontora" },
+      retarget: "~/projects/sigil",
+      want: "sigil",
+    },
+  ];
+
+  for (const c of cases) {
+    const state = loadKontoraState();
+    state.configCache = { projects: EDIT_PROJECTS, pipelines: ["implement", "commit-no-push"], agents: [] };
+    state.$nextTick = async () => {};
+
+    await state.openInitModal(c.ticket);
+    if (c.retarget) {
+      state.initForm.path = c.retarget;
+      state.onInitPathChange();
+    }
+    if (c.pipeline !== undefined) state.initForm.pipeline = c.pipeline;
+
+    assert.equal(state.initPipelineProject()?.name ?? null, c.want, c.name);
+  }
+});
+
+test("the init form's derived values follow the pipeline, the path and the branch field", async () => {
+  const infos = [
+    { name: "implement", stages: ["implement", "review", "fix-review", "commit"] },
+    { name: "commit-no-push", stages: ["implement", "commit"] },
+  ];
+  const cases = [
+    {
+      name: "a pipeline with stages",
+      ticket: { id: "kon-1", status: "open", path: "~/projects/kontora", auto_branch: "kontora/fix-retry-kon-1" },
+      wantStages: ["implement", "review", "fix-review", "commit"],
+      wantBranchResolved: true,
+    },
+    {
+      name: "no pipeline selected",
+      ticket: { id: "kon-1", status: "open", path: "~/projects/kontora", auto_branch: "kontora/fix-retry-kon-1" },
+      pipeline: "",
+      wantStages: [],
+      wantBranchResolved: true,
+    },
+    {
+      name: "a pipeline the config does not know",
+      ticket: { id: "kon-1", status: "open", path: "~/projects/kontora", auto_branch: "kontora/fix-retry-kon-1" },
+      pipeline: "gone",
+      wantStages: [],
+      wantBranchResolved: true,
+    },
+    {
+      name: "a branch typed by hand overrides the automatic name",
+      ticket: { id: "kon-1", status: "open", path: "~/projects/kontora", auto_branch: "kontora/fix-retry-kon-1" },
+      branch: "  my-branch  ",
+      wantStages: ["implement", "review", "fix-review", "commit"],
+      wantBranchResolved: false,
+    },
+    {
+      name: "a retargeted path re-resolves the pipeline and drops the preview",
+      ticket: { id: "kon-1", status: "open", path: "~/projects/kontora", auto_branch: "kontora/fix-retry-kon-1" },
+      retarget: "~/projects/sigil",
+      wantStages: ["implement", "commit"],
+      wantBranchResolved: false,
+    },
+    {
+      name: "the server named no branch",
+      ticket: { id: "kon-1", status: "open", path: "~/projects/kontora" },
+      wantStages: ["implement", "review", "fix-review", "commit"],
+      wantBranchResolved: false,
+    },
+  ];
+
+  for (const c of cases) {
+    const state = loadKontoraState();
+    state.configCache = { projects: EDIT_PROJECTS, pipelines: ["implement", "commit-no-push"], agents: [], pipeline_infos: infos };
+    state.$nextTick = async () => {};
+
+    await state.openInitModal(c.ticket);
+    if (c.retarget) {
+      state.initForm.path = c.retarget;
+      state.onInitPathChange();
+    }
+    if (c.pipeline !== undefined) state.initForm.pipeline = c.pipeline;
+    if (c.branch !== undefined) state.initForm.branch = c.branch;
+
+    assert.deepEqual(vmValue(state.initStages()), c.wantStages, c.name);
+    assert.equal(state.initBranchResolved(), c.wantBranchResolved, c.name);
+  }
+});
+
+test("openInitModal carries the ticket's status and parsed title into the header band", async () => {
+  const cases = [
+    {
+      name: "a literal [tag] prefix",
+      ticket: { id: "kon-1", status: "open", title: "[sigil] Bound the eval worker", path: "~/projects/kontora" },
+      wantStatus: "open",
+      wantTag: "sigil",
+      wantRest: "Bound the eval worker",
+    },
+    {
+      name: "no prefix falls back to the path basename",
+      ticket: { id: "kon-1", status: "todo", title: "Bound the eval worker", path: "~/projects/kontora" },
+      wantStatus: "todo",
+      wantTag: "kontora",
+      wantRest: "Bound the eval worker",
+    },
+    {
+      name: "no title and no path",
+      ticket: { id: "kon-1" },
+      wantStatus: "",
+      wantTag: "",
+      wantRest: "",
+    },
+  ];
+
+  for (const c of cases) {
+    const state = loadKontoraState();
+    state.configCache = { projects: EDIT_PROJECTS, pipelines: [], agents: [] };
+    state.$nextTick = async () => {};
+
+    await state.openInitModal(c.ticket);
+
+    assert.equal(state.initForm.status, c.wantStatus, c.name);
+    assert.equal(state.initForm.tag, c.wantTag, c.name);
+    assert.equal(state.initForm.titleRest, c.wantRest, c.name);
+  }
 });
 
 test("an empty branch field shows the name the daemon would assign", async () => {

@@ -12,9 +12,9 @@ Kontora is an agent orchestration tool. You write tickets as markdown files, it 
 </picture>
 
 <details>
-<summary>tmux session view</summary>
+<summary>ticket terminal view</summary>
 <br>
-<img alt="Kontora tmux session" src="docs/dark-tmux.png">
+<img alt="The Kontora dashboard with a ticket open on its terminal tab, showing live agent output" src="docs/dark-tmux.png">
 </details>
 
 ## Features

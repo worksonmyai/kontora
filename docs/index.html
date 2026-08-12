@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Kontora: agent orchestration daemon</title>
-  <meta name="description" content="Kontora watches a folder of markdown tickets and runs a coding agent on each one in its own git worktree, branch, and tmux session.">
+  <meta name="description" content="Kontora runs coding agents on markdown tickets. Each ticket runs through a pipeline of stages, in its own git worktree, branch, and tmux session.">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
@@ -172,9 +172,6 @@
       border-radius: 6px;
     }
     .nav-link:hover { color: var(--k-text-hi); }
-    /* Stands in for the three text links once they collapse, so the docs stay
-       one tap away on a phone. */
-    .nav-link-narrow { display: none; }
     .gh-btn {
       display: flex;
       align-items: center;
@@ -611,8 +608,6 @@
     @media (max-width: 899.98px) {
       :root { --h1: 34px; --h2: 28px; --h2-cta: 26px; }
       .site-header { gap: 12px; }
-      .nav-link { display: none; }
-      .nav-link-narrow { display: block; }
       .tagline, .brand-rule { display: none; }
 
       .hero {
@@ -652,10 +647,7 @@
       <span class="tagline">agent orchestration daemon</span>
     </div>
     <nav class="site-nav">
-      <a class="nav-link" href="configuration/">Configuration</a>
-      <a class="nav-link" href="tickets/">Tickets</a>
-      <a class="nav-link" href="api/">API</a>
-      <a class="nav-link nav-link-narrow" href="configuration/">Docs</a>
+      <a class="nav-link" href="configuration/">Docs</a>
       <a class="gh-btn" href="https://github.com/worksonmyai/kontora">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .5C5.73.5.5 5.73.5 12c0 5.09 3.29 9.4 7.86 10.93.58.1.79-.25.79-.55v-1.94c-3.2.7-3.88-1.54-3.88-1.54-.52-1.34-1.28-1.7-1.28-1.7-1.05-.72.08-.7.08-.7 1.16.08 1.77 1.19 1.77 1.19 1.03 1.77 2.7 1.26 3.36.96.1-.75.4-1.26.73-1.55-2.55-.29-5.24-1.28-5.24-5.7 0-1.26.45-2.29 1.19-3.1-.12-.29-.52-1.46.11-3.05 0 0 .96-.31 3.15 1.18a10.9 10.9 0 0 1 5.74 0c2.18-1.49 3.14-1.18 3.14-1.18.63 1.59.23 2.76.12 3.05.74.81 1.19 1.84 1.19 3.1 0 4.43-2.7 5.4-5.26 5.69.42.36.79 1.07.79 2.16v3.2c0 .31.2.66.8.55A11.5 11.5 0 0 0 23.5 12C23.5 5.73 18.27.5 12 .5Z"></path></svg>
         GitHub
@@ -666,8 +658,8 @@
   <!-- Hero -->
   <section class="hero">
     <div class="hero-copy">
-      <h1>Markdown tickets in. Git branches out.</h1>
-      <p class="hero-sub">Kontora watches a folder of markdown tickets. Each one gets its own git worktree, branch, and agent.</p>
+      <h1>Kontora runs coding agents on markdown tickets.</h1>
+      <p class="hero-sub">Each ticket runs through a pipeline of stages, in its own git worktree, branch, and tmux session.</p>
 
       <div class="install">
         <div class="install-row">
@@ -709,7 +701,7 @@
     <span class="legend-item"><span class="dot dot-review"></span>human review</span>
     <span class="legend-item"><span class="dot dot-done"></span>done</span>
     <span class="legend-item"><span class="dot dot-cancel"></span>cancelled</span>
-    <span class="legend-note">human review waits for you, and so does a paused stage</span>
+    <span class="legend-note">a ticket in human review, or with a paused stage, waits for you</span>
   </div>
 
   <!-- Ticket and pipeline -->
@@ -717,8 +709,8 @@
     <div class="explainer">
       <div>
         <div class="kicker">the ticket</div>
-        <h2>A ticket is a file in your repo.</h2>
-        <p>Markdown with YAML frontmatter: id, status, pipeline, path. Write it by hand or run <code>kontora new</code>. The watcher picks up any ticket with <code>status: todo</code>, but nothing runs until <code>kontora: true</code> is set.</p>
+        <h2>Tickets are markdown files.</h2>
+        <p>The YAML frontmatter holds the id, the status, the pipeline, and the path to the repository to work in. Write the file by hand or run <code>kontora new</code>. Kontora picks up any ticket with <code>status: todo</code>, but runs nothing until <code>kontora: true</code> is set.</p>
         <div class="code-card">
           <div class="code-card-bar">~/.kontora/tickets/kon-q88f.md</div>
           <pre><span class="yaml-rule">---</span>
@@ -735,8 +727,8 @@
 
       <div>
         <div class="kicker">the pipeline</div>
-        <h2>Every stage has a policy.</h2>
-        <p class="pipeline-body">A stage is a prompt template with a timeout and a model. A pipeline runs stages in order, with a policy for success and for failure. Stages share one worktree, so one writes <code>PLAN.md</code> and the next reads it.</p>
+        <h2>A pipeline is a list of stages.</h2>
+        <p class="pipeline-body">A stage is a prompt template with a timeout and a model. The pipeline runs its stages in order, and each stage says what to do on success and on failure. Stages share one worktree, so one stage writes <code>PLAN.md</code> and the next one reads it.</p>
 
         <div class="timeline">
           <div class="stage">
@@ -751,7 +743,7 @@
                 <span class="chip">on_success: next</span>
                 <span class="chip chip-progress">on_failure: pause</span>
               </div>
-              <p>Fresh worktree, the ticket description as the prompt, the agent in its own tmux session.</p>
+              <p>Kontora creates the worktree, sends the ticket description as the prompt, and starts the agent in a tmux session.</p>
             </div>
           </div>
           <div class="stage">
@@ -765,7 +757,7 @@
                 <span class="chip">max_retries: 1</span>
                 <span class="chip chip-review">on_failure: retry</span>
               </div>
-              <p>A second pass over the same worktree, usually on a different model. It reads what the previous stage left behind.</p>
+              <p>A second agent runs over the same worktree, usually on a different model. It sees the files the first stage wrote.</p>
             </div>
           </div>
           <div class="stage">
@@ -778,7 +770,7 @@
                 <span class="chip">agent: claude</span>
                 <span class="chip chip-done">on_success: human_review</span>
               </div>
-              <p>Stage, commit, and push. The ticket moves to human review with every stage's log attached.</p>
+              <p>The agent stages, commits, and pushes. The ticket then moves to human review, with the log of every stage attached.</p>
             </div>
           </div>
         </div>
@@ -786,7 +778,7 @@
     </div>
   </section>
 
-  <!-- Log and tmux -->
+  <!-- Daemon log and the dashboard terminal tab -->
   <section class="section">
     <div class="demo">
       <div class="panel">
@@ -798,10 +790,10 @@
       </div>
       <div class="panel">
         <div class="panel-bar">
-          <span>kontora attach</span>
-          <span class="aside">tmux</span>
+          <span>ticket terminal</span>
+          <span class="aside">dashboard</span>
         </div>
-        <img class="tmux-img" src="dark-tmux.png" width="3584" height="2078" loading="lazy" alt="A tmux session with the coding agent running inside it">
+        <img class="tmux-img" src="dark-tmux.png" width="3584" height="2078" loading="lazy" alt="The Kontora dashboard with a ticket open on its terminal tab, showing live agent output">
       </div>
     </div>
   </section>
@@ -812,17 +804,17 @@
       <div class="feature">
         <div class="feature-num">01</div>
         <h3>One worktree per ticket</h3>
-        <p>Every ticket gets its own git worktree and branch. Run five agents at once and your working tree never moves.</p>
+        <p>Every ticket gets its own git worktree and branch, so agents never touch each other's files or your checkout. Three run at a time by default.</p>
       </div>
       <div class="feature">
         <div class="feature-num">02</div>
         <h3>Any agent with a CLI</h3>
-        <p>Claude Code, Pi, OpenCode, or anything that takes a prompt. Declare the binary and its arguments once. A stage can override the model.</p>
+        <p>Claude Code, Pi, OpenCode, or any binary that takes a prompt. You declare the binary and its arguments once in the config. A stage can override the model.</p>
       </div>
       <div class="feature">
         <div class="feature-num">03</div>
         <h3>Board in the browser or the terminal</h3>
-        <p>The same kanban runs as a web dashboard and as a TUI. From either one you can attach to a running agent's tmux session.</p>
+        <p>The same board runs as a web dashboard and as a terminal UI. From either one you can attach to a running agent's tmux session.</p>
       </div>
       <div class="feature">
         <div class="feature-num">04</div>
@@ -836,8 +828,8 @@
   <section class="section">
     <div class="cta">
       <div>
-        <h2>Four commands to a running board.</h2>
-        <p>Needs git, tmux, and one agent CLI. <code>kontora doctor</code> tells you what's missing before you start.</p>
+        <h2>Getting started</h2>
+        <p>Kontora needs git, tmux, and one agent CLI. Run <code>kontora doctor</code> to see what is missing.</p>
         <div class="cta-buttons">
           <button class="copy-btn btn-primary" type="button" onclick="copyInstall()">
             <span class="swap"><span class="on-idle">Copy install command</span><span class="on-copied">Copied to clipboard</span></span>

@@ -475,6 +475,54 @@ func TestPlannotator_ReworkCompletion(t *testing.T) {
 	assert.Equal(t, uint64(1), hist.DataPoints[0].Count, "exactly one sample for the same run")
 }
 
+// TestPlannotator_ReworkStageModel: the rework stage spawns its agent itself
+// instead of going through runAgentOnce, so the stage model has to be resolved
+// on that path too.
+func TestPlannotator_ReworkStageModel(t *testing.T) {
+	const id = "tst-prm01"
+	h := newPlannotatorHarness(t)
+	h.cfg.Agents["agent2"] = config.Agent{Binary: "claude", Args: []string{"--model", "opus"}}
+	h.cfg.Stages[config.ReworkStageName] = config.Stage{
+		Prompt:  "rework prompt with {{ plannotatorReview }}",
+		Timeout: config.Duration{Duration: time.Minute},
+		Model:   config.Model{ByAgent: map[string]string{"claude": "haiku"}},
+	}
+
+	var runs annotationRun
+	d := h.newAnnotationDaemon(func(_ context.Context, p RunnerParams) (process.Result, error) {
+		runs.record(p)
+		return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now()}, nil
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() { errCh <- d.Run(ctx) }()
+	time.Sleep(200 * time.Millisecond)
+
+	filePath := h.seedReviewTicket(id)
+	require.Eventually(t, func() bool {
+		_, err := d.GetTicket(id)
+		return err == nil
+	}, 3*time.Second, 20*time.Millisecond)
+
+	require.NoError(t, d.StartPlannotatorReview(id))
+	require.Eventually(t, func() bool { return h.callCount.Load() == 1 },
+		3*time.Second, 20*time.Millisecond)
+	h.stdoutCh <- "please tweak"
+
+	require.Eventually(t, func() bool {
+		tk, err := ticket.ParseFile(filePath)
+		return err == nil && tk.Status == "human_review" && len(runs.all()) == 1
+	}, 10*time.Second, 50*time.Millisecond, "the rework run should finish")
+
+	args := runs.all()[0].Args
+	assert.Equal(t, "haiku", modelArg(t, args))
+
+	cancel()
+	require.NoError(t, <-errCh)
+}
+
 // TestPlannotator_ReworkFinalSummary covers the ticket-level summary across a
 // review round: the stale text is dropped before the rework agent starts, the
 // rework run records its own summary, and the ticket-level one is regenerated

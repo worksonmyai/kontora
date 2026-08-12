@@ -616,6 +616,44 @@ func TestAnnotate_RewritesTicketAndRestoresStatus(t *testing.T) {
 	assert.Equal(t, int32(0), finalSummaries.Load())
 }
 
+// TestAnnotate_InheritsStageModel: an annotation run borrows the model of the
+// stage it runs under, so a stage set to run cheaply stays cheap when it
+// answers notes. The stage prompt is still left behind: that one describes the
+// work this run must not do.
+func TestAnnotate_InheritsStageModel(t *testing.T) {
+	const id = "tst-an14"
+	h := newPlannotatorHarness(t)
+	h.cfg.Agents["agent2"] = config.Agent{Binary: "claude", Args: []string{"--model", "opus"}}
+	h.cfg.Stages["step2"] = config.Stage{
+		Prompt: "do step2 for {{ .Ticket.ID }}",
+		Model:  config.Model{ByAgent: map[string]string{"claude": "haiku"}},
+	}
+
+	var runs annotationRun
+	d := h.newAnnotationDaemon(func(_ context.Context, p RunnerParams) (process.Result, error) {
+		runs.record(p)
+		return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now()}, nil
+	})
+
+	h.seedReviewWorktree(id)
+	_, stop := startAnnotationDaemon(t, h, d, id,
+		h.annotationTicketMD(id, "human_review", "branch: kontora/"+id+"\n"+
+			"history:\n  - stage: step2\n    agent: agent2\n    exit_code: 0\n"))
+	defer stop()
+
+	require.NoError(t, d.StartPlannotatorAnnotate(id))
+	require.Eventually(t, func() bool { return h.callCount.Load() == 1 },
+		3*time.Second, 20*time.Millisecond)
+	h.stdoutCh <- annotateJSON(annotateAnnotated, "sharpen the goal")
+
+	h.waitForAnnotationRuns(id, 1, ticket.StatusHumanReview)
+
+	spawns := runs.all()
+	require.Len(t, spawns, 1)
+	assert.Equal(t, "haiku", modelArg(t, spawns[0].Args))
+	assert.NotContains(t, renderedPrompt(spawns[0]), "do step2 for")
+}
+
 // TestAnnotate_FailedRunKeepsFeedback covers the retry path: a nonzero
 // exit pauses the ticket but keeps both the marker and the annotations, and the
 // retry runs against the same feedback.

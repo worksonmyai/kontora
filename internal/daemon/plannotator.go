@@ -382,7 +382,10 @@ func (d *Daemon) runReworkStage(ctx, taskCtx context.Context, cfg *config.Config
 		rendered += buildOperationalAppendix(t.ID, filePath, wtPath, true)
 	}
 
-	args, settingsFile, sessionID, err := buildAgentArgs(agentCfg, rendered, tmux.ChannelName(d.tmuxSession, ticketID), nil)
+	// Rework spawns its agent here rather than through runAgentOnce, so the
+	// stage model is resolved on this path too.
+	model := stageCfg.Model.For(agentName, agentCfg)
+	args, settingsFile, sessionID, err := buildAgentArgs(agentCfg, rendered, tmux.ChannelName(d.tmuxSession, ticketID), model, nil)
 	if err != nil {
 		log.Error("rework: build agent args failed", "err", err)
 		d.pauseTicket(t, filePath, "rework: build agent args failed: "+err.Error())

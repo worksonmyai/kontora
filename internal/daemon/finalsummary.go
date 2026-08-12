@@ -155,10 +155,10 @@ func buildFinalSummaryPrompt(runs []finalSummaryRun, nonce string) (string, erro
 
 // buildFinalSummaryArgs appends the flags for one non-interactive, tool-less,
 // unsaved run to the agent's configured arguments. The configured arguments
-// come first so a wrapper binary's "--" separator and the model selection are
-// preserved.
-func buildFinalSummaryArgs(agentCfg config.Agent, prompt string) ([]string, error) {
-	args := slices.Clone(agentCfg.Args)
+// come first so a wrapper binary's "--" separator is preserved. A non-empty
+// model replaces the one the agent's arguments select; an empty one keeps it.
+func buildFinalSummaryArgs(agentCfg config.Agent, prompt, model string) ([]string, error) {
+	args := agentCfg.ArgsWithModel(model)
 	switch {
 	case agentCfg.IsClaude():
 		// --tools takes the available toolset ("" is none), where
@@ -270,7 +270,7 @@ func (d *Daemon) generateFinalSummary(ctx context.Context, p finalSummaryParams)
 	if !ok {
 		return "", fmt.Errorf("unknown agent %q", p.agentName)
 	}
-	args, err := buildFinalSummaryArgs(agentCfg, prompt)
+	args, err := buildFinalSummaryArgs(agentCfg, prompt, p.cfg.SummaryModel.For(p.agentName, agentCfg))
 	if err != nil {
 		return "", err
 	}

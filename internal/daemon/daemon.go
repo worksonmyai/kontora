@@ -1735,9 +1735,11 @@ type spawnAgentParams struct {
 	log      *slog.Logger
 	ticketID string
 	filePath string
-	// agentName and pipelineName label this run's metrics. The agent config
-	// alone does not carry either: the resolved agent name lives at the call
-	// site, and the pipeline on the ticket.
+	// agentName is the configured name of agentCfg, and pipelineName the one on
+	// the ticket. The agent config alone does not carry either: the resolved
+	// agent name lives at the call site. Together they label this run's metrics,
+	// and the stage's model is keyed by the agent name, so a map can name one
+	// agent among several of the same kind.
 	agentName    string
 	pipelineName string
 	stageName    string
@@ -1893,7 +1895,8 @@ func (d *Daemon) runAgentOnce(taskCtx context.Context, t *ticket.Ticket, p spawn
 			"session_id", rec.SessionID, "annotation", p.annotation)
 	}
 
-	args, settingsFile, sessionID, err := buildAgentArgs(p.agentCfg, rendered, tmux.ChannelName(d.tmuxSession, p.ticketID), rec)
+	model := p.stageCfg.Model.For(p.agentName, p.agentCfg)
+	args, settingsFile, sessionID, err := buildAgentArgs(p.agentCfg, rendered, tmux.ChannelName(d.tmuxSession, p.ticketID), model, rec)
 	if err != nil {
 		p.log.Error("build agent args failed", "err", err)
 		return agentAttempt{pauseReason: "build agent args failed: " + err.Error()}
@@ -2086,11 +2089,12 @@ func buildOperationalAppendix(taskID, filePath, wtPath string, isPipeline bool) 
 // calls ctx.shutdown() on agent_end so pi exits cleanly after ticket completion.
 // A non-nil rec attaches the run to the session that record names instead of
 // opening a new one.
+// A non-empty model replaces the model in the agent's own arguments, which
+// keeps it ahead of the prompt this function appends last.
 // Returns the args, the path to the temporary settings/extension file (empty
 // for other agents), the session ID (empty for non-Claude agents), and any error.
-func buildAgentArgs(agentCfg config.Agent, rendered, channelName string, rec *resumeRecord) ([]string, string, string, error) {
-	args := make([]string, len(agentCfg.Args))
-	copy(args, agentCfg.Args)
+func buildAgentArgs(agentCfg config.Agent, rendered, channelName, model string, rec *resumeRecord) ([]string, string, string, error) {
+	args := agentCfg.ArgsWithModel(model)
 	var settingsFile string
 	var sessionID string
 	switch {
@@ -2119,6 +2123,10 @@ func buildAgentArgs(agentCfg config.Agent, rendered, channelName string, rec *re
 		args = append(args, "-e", settingsFile)
 		if rec != nil {
 			args = append(args, "--session", rec.sessionPath)
+		}
+	default:
+		if model != "" {
+			return nil, "", "", fmt.Errorf("model %q: agent %s takes no --model", model, agentCfg.Binary)
 		}
 	}
 	if rendered != "" {

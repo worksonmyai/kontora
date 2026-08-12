@@ -1,0 +1,17 @@
+tickets_dir: ~/org/tickets
+
+agents:
+  claude:
+    binary: claude
+
+stages:
+  commit:
+    prompt: Commit the work.
+    model: [haiku, sonnet]
+
+pipelines:
+  default:
+    - stage: commit
+      agent: claude
+      on_success: done
+      on_failure: pause

@@ -167,6 +167,7 @@ pipelines:
 | `environment` | no | — | Map of environment variables to set for all agent processes. |
 | `resume_prompt` | no | (built-in) | Prompt sent to an agent whose stage a daemon restart interrupted, in place of the stage prompt (see [resuming after a restart](#resuming-after-a-restart)). Same template fields as a stage prompt. |
 | `annotation_prompt` | no | (built-in) | Prompt sent to the run that rewrites a ticket from submitted Plannotator annotations (see [plannotator](#plannotator)). Same template fields as a stage prompt. |
+| `summary_model` | no | — | Model the ticket-level summary pass runs on, resolved against the agent that ran the last stage. Same two forms as a stage's `model` (see [stages](#stages)). |
 | `web` | no | — | Web dashboard settings (see [web](#web)). Enabled by default. |
 
 All paths support `~` for the home directory. Tilde expansion happens at runtime, not at config load time.
@@ -289,7 +290,7 @@ An agent that had in fact finished its work can exit within a second of resuming
 
 ## stages
 
-Map of stage name to its prompt template and timeout. A stage defines *what* an agent should do at a pipeline step.
+Map of stage name to its prompt template, timeout, and model. A stage defines *what* an agent should do at a pipeline step.
 
 ```yaml
 stages:
@@ -297,12 +298,25 @@ stages:
     prompt: |
       {{ .Ticket.Description }}
     timeout: 30m
+  commit:
+    prompt: Stage, commit, and push.
+    timeout: 5m
+    # One pattern for every agent that runs this stage:
+    model: haiku
+  push-pr:
+    prompt: Open a pull request.
+    # Or one per agent, because a model name is not portable between CLIs.
+    # A key is an agent name or an agent kind (claude, pi); the agent name wins.
+    model:
+      claude: haiku
+      pi: anthropic/claude-haiku-4-5
 ```
 
 | Field | Required | Description |
 |-------|----------|-------------|
 | `prompt` | yes | Go template rendered before passing to the agent. |
 | `timeout` | no | Maximum duration for the agent (e.g., `10m`, `1h30m`). |
+| `model` | no | Model this stage runs on, passed to the agent as `--model`. Either one pattern, or a map from agent name or agent kind (`claude`, `pi`) to a pattern. It replaces any `--model` in the agent's own `args`. Only `claude` and `pi` take the flag: a stage that resolves a model for any other agent fails to load, or pauses the ticket when the ticket's own `agent` field picks that agent. |
 
 ### Prompt templates
 
@@ -648,7 +662,8 @@ change a prompt or an agent's arguments while agents are working.
 
 `agents`, `stages`, `pipelines`, `projects`, `statuses`, `environment`,
 `auto_pick_up`, `default_agent`, `branch_prefix`, `branch_naming`,
-`resume_prompt`, `annotation_prompt`, and the whole `plannotator` block.
+`resume_prompt`, `annotation_prompt`, `summary_model`, and the whole
+`plannotator` block.
 
 A run reads the prompts and the `plannotator` block when it starts, so a reload
 changes the next run, never one already going.
@@ -706,9 +721,9 @@ running on the old config. Saving a half-written file mid-edit is harmless, and
 the next complete save reloads.
 
 **A running agent keeps the settings it started with.** The prompt, arguments,
-timeout, and binary are fixed when the stage spawns. Editing a prompt while a
-ticket is mid-stage does nothing visible until the next stage starts. That is
-expected, not a failed reload.
+model, timeout, and binary are fixed when the stage spawns. Editing a prompt
+while a ticket is mid-stage does nothing visible until the next stage starts.
+That is expected, not a failed reload.
 
 If a reload removes the pipeline or the stage a `todo` ticket sits on, the
 daemon pauses that ticket and writes the reason to `last_error` rather than

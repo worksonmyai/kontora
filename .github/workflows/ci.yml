@@ -66,3 +66,14 @@ jobs:
 
       - name: Build
         run: go build ./cmd/kontora
+
+  scripts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+
+      # The test builds its own fixture repository, so it needs no history here.
+      - name: Test changelog scripts
+        run: ./hack/changelog-for-release.test.sh

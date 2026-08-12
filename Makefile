@@ -1,4 +1,4 @@
-.PHONY: all build test test-race lint fmt install clean assets css
+.PHONY: all build test test-race test-scripts lint fmt install clean assets css
 
 all: build
 
@@ -21,6 +21,9 @@ test:
 
 test-race:
 	go test -race -timeout 5m ./...
+
+test-scripts:
+	./hack/changelog-for-release.test.sh
 
 lint:
 	golangci-lint run

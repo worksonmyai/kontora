@@ -951,8 +951,13 @@
               <label for="init-pipeline" class="font-mono text-[11px] tracking-[.06em] uppercase text-tx-faint">pipeline</label>
               <span x-show="initPipelineProject()" class="ml-auto font-mono text-[10px] px-[6px] py-px rounded-[4px] text-tx-3 bg-surface-800 border border-surface-700">from project <span x-text="initPipelineProject()?.name"></span></span>
             </div>
+            <!-- Height is explicit on every control in this form. A native
+                 select does not size from padding the way an input does:
+                 WebKit clamps a menulist to its own metrics and drops the
+                 vertical padding, so a padded select ends up shorter than the
+                 input beside it. -->
             <select id="init-pipeline" x-model="initForm.pipeline"
-                    class="w-full box-border bg-surface-800 border border-edge-input rounded-[7px] px-[12px] py-[9px] font-mono text-[13px] text-tx focus:outline-none focus:border-accent">
+                    class="w-full box-border h-[39px] bg-surface-800 border border-edge-input rounded-[7px] px-[12px] font-mono text-[13px] text-tx focus:outline-none focus:border-accent">
               <option value="">none (single run, no stages)</option>
               <template x-for="p in configCache?.pipelines || []" :key="p">
                 <option :value="p" x-text="p"></option>
@@ -975,7 +980,7 @@
             <div class="flex flex-col gap-[7px]">
               <label for="init-agent" class="font-mono text-[11px] tracking-[.06em] uppercase text-tx-faint">agent</label>
               <select id="init-agent" x-model="initForm.agent"
-                      class="w-full box-border bg-surface-800 border border-edge-input rounded-[7px] px-[12px] py-[9px] font-mono text-[13px] text-tx focus:outline-none focus:border-accent">
+                      class="w-full box-border h-[39px] bg-surface-800 border border-edge-input rounded-[7px] px-[12px] font-mono text-[13px] text-tx focus:outline-none focus:border-accent">
                 <!-- Half-width cell: the create form's longer wording is cut off
                      here. The footer's run line spells the same rule out. -->
                 <option value="">default (per stage)</option>
@@ -987,14 +992,14 @@
             <div class="flex flex-col gap-[7px] min-w-0">
               <label for="init-path" class="font-mono text-[11px] tracking-[.06em] uppercase text-tx-faint">path <span class="text-accent">*</span></label>
               <input id="init-path" x-model="initForm.path" @input="onInitPathChange()" type="text" required
-                     class="w-full box-border bg-surface-800 border border-edge-input rounded-[7px] px-[12px] py-[9px] font-mono text-[13px] text-tx focus:outline-none focus:border-accent"
+                     class="w-full box-border h-[39px] bg-surface-800 border border-edge-input rounded-[7px] px-[12px] font-mono text-[13px] text-tx focus:outline-none focus:border-accent"
                      placeholder="~/projects/myrepo">
             </div>
           </div>
           <div class="flex flex-col gap-[7px]">
             <label for="init-branch" class="font-mono text-[11px] tracking-[.06em] uppercase text-tx-faint">branch</label>
             <input id="init-branch" x-model="initForm.branch" type="text"
-                   class="w-full box-border bg-surface-800 border border-edge-input rounded-[7px] px-[12px] py-[9px] font-mono text-[13px] text-tx focus:outline-none focus:border-accent"
+                   class="w-full box-border h-[39px] bg-surface-800 border border-edge-input rounded-[7px] px-[12px] font-mono text-[13px] text-tx focus:outline-none focus:border-accent"
                    placeholder="override the automatic name">
             <div x-show="initBranchResolved()" class="flex items-center gap-[7px] min-w-0">
               <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-surface-600 shrink-0"><line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>
@@ -2349,11 +2354,13 @@
               <p class="text-[11px] text-surface-600 mt-0.5">Repository the agent will work in. Supports ~.</p>
             </div>
 
+            <!-- Explicit height, matching the padded inputs above: a native
+                 select drops the vertical padding in WebKit. -->
             <div class="grid grid-cols-3 gap-3">
               <div>
                 <label for="new-pipeline" class="text-[13px] font-mono text-tx-3 mb-1 flex items-center gap-1.5"><svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="opacity-50"><polyline points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="3"/><polyline points="21 16 21 21 16 21"/><line x1="15" y1="15" x2="21" y2="21"/><line x1="4" y1="4" x2="9" y2="9"/></svg>Pipeline</label>
                 <select id="new-pipeline" x-model="createForm.pipeline" @change="onPipelineChange()"
-                        class="w-full bg-surface-800 border border-surface-700/50 rounded px-2 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40">
+                        class="w-full h-[36px] bg-surface-800 border border-surface-700/50 rounded px-2 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40">
                   <option value="">none (single run, no stages)</option>
                   <template x-for="p in configCache?.pipelines || []" :key="p">
                     <option :value="p" x-text="p"></option>
@@ -2363,7 +2370,7 @@
               <div>
                 <label for="new-agent" class="text-[13px] font-mono text-tx-3 mb-1 flex items-center gap-1.5"><svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="opacity-50"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/></svg>Agent</label>
                 <select id="new-agent" x-model="createForm.agent" @change="createTouched.agent = true"
-                        class="w-full bg-surface-800 border border-surface-700/50 rounded px-2 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40">
+                        class="w-full h-[36px] bg-surface-800 border border-surface-700/50 rounded px-2 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40">
                   <option value="">default (each stage picks its own)</option>
                   <template x-for="a in configCache?.agents || []" :key="a">
                     <option :value="a" x-text="a"></option>
@@ -2373,7 +2380,7 @@
               <div>
                 <label for="new-status" class="text-[13px] font-mono text-tx-3 mb-1 flex items-center gap-1.5"><svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="opacity-50"><circle cx="12" cy="12" r="10"/></svg>Status</label>
                 <select id="new-status" x-model="createForm.status"
-                        class="w-full bg-surface-800 border border-surface-700/50 rounded px-2 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40">
+                        class="w-full h-[36px] bg-surface-800 border border-surface-700/50 rounded px-2 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40">
                   <option value="todo">todo</option>
                   <option value="open">open</option>
                 </select>

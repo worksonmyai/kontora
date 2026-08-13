@@ -3,6 +3,7 @@ package web
 import (
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -47,6 +48,24 @@ func TestTicketInfoFromView_FinalSummary(t *testing.T) {
 	list, err := json.Marshal(TicketInfoFromView(app.View{ID: "t2"}))
 	require.NoError(t, err)
 	assert.NotContains(t, string(list), "final_summary")
+}
+
+// TestTicketInfoFromView_FinishedAt: the finish time crosses into the payload
+// the board reads, and a ticket that never finished sends no key at all rather
+// than a null the sort would have to handle.
+func TestTicketInfoFromView_FinishedAt(t *testing.T) {
+	finished := time.Date(2026, 4, 20, 11, 30, 0, 0, time.UTC)
+	info := TicketInfoFromView(app.View{ID: "t1", FinishedAt: &finished})
+	require.NotNil(t, info.FinishedAt)
+	assert.Equal(t, finished, *info.FinishedAt)
+
+	encoded, err := json.Marshal(info)
+	require.NoError(t, err)
+	assert.Contains(t, string(encoded), `"finished_at":"2026-04-20T11:30:00Z"`)
+
+	never, err := json.Marshal(TicketInfoFromView(app.View{ID: "t2"}))
+	require.NoError(t, err)
+	assert.NotContains(t, string(never), "finished_at")
 }
 
 // TestTicketInfoFromView_Relations: a View sees one ticket, so it hands over

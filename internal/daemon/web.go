@@ -1149,11 +1149,9 @@ func childInfo(cfg *config.Config, t *ticket.Ticket) web.TicketChild {
 		if h := t.History[0]; h.StartedAt != nil {
 			c.StartedAt = h.StartedAt
 		}
-		if t.Status != ticket.StatusInProgress {
-			c.CompletedAt = t.History[len(t.History)-1].CompletedAt
-		}
-	} else if t.Status != ticket.StatusInProgress {
-		c.CompletedAt = t.CompletedAt
+	}
+	if t.Status != ticket.StatusInProgress {
+		c.CompletedAt = app.FinishedAt(t)
 	}
 	return c
 }

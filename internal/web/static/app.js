@@ -572,20 +572,15 @@ function kontora() {
       if (icon) icon.href = "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><circle cx='8' cy='8' r='7' fill='" + encodeURIComponent(color) + "'/></svg>";
     },
 
-    // Finish time of a ticket that waits in HUMAN REVIEW: the completed_at of
-    // the last stage that ran. The stage that parks the ticket writes it, so it
-    // stays put when the file is edited later. A manual "send to review" adds no
-    // history entry, so fall back to the file mtime and then to creation.
+    // Finish time of a ticket that waits in HUMAN REVIEW: finished_at, when the
+    // last stage run completed. The daemon derives it in every projection, so a
+    // board card and an SSE update agree, and it stays put when the file is
+    // edited later. A manual "send to review" runs no stage and has none, so
+    // fall back to the file mtime and then to creation.
     // Returns '' for any other status.
     reviewFinishedAt(ticket) {
       if (!ticket || ticket.status !== 'human_review') return '';
-      var h = ticket.history;
-      if (Array.isArray(h)) {
-        for (var i = h.length - 1; i >= 0; i--) {
-          if (h[i] && h[i].completed_at) return h[i].completed_at;
-        }
-      }
-      return ticket.updated_at || ticket.created_at || '';
+      return ticket.finished_at || ticket.updated_at || ticket.created_at || '';
     },
 
     // Sort a column's ticket list in place. `statuses` is the column's status
@@ -2239,7 +2234,7 @@ function kontora() {
     // with _cardHTML — the "card signature covers every rendered field" test
     // guards each field.
     _cardSig(ticket, col) {
-      // ticket.history and ticket.updated_at reach the card only through
+      // ticket.finished_at and ticket.updated_at reach the card only through
       // reviewFinishedAt, so its result stands in for both here. ticket.parent,
       // ticket.deps and ticket.links reach it only through the relation line,
       // so that string stands in for the three of them.

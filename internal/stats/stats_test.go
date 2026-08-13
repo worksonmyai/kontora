@@ -130,20 +130,66 @@ func TestCompute(t *testing.T) {
 			opts: Options{Now: testNow, Days: 35},
 			check: func(t *testing.T, r Result) {
 				require.Equal(t, 2, r.Totals.Shipped)
-				week := weekOf(t, r, "2026-08-09")
+				week := bucketOf(t, r, "2026-08-09")
 				require.Equal(t, 2, week.Done)
 				require.Equal(t, 1, week.Cancelled)
 			},
 		},
 		{
-			name: "weeks cover the window even where nothing happened",
+			name: "weekly buckets cover the window even where nothing happened",
 			opts: Options{Now: testNow, Days: 35},
 			check: func(t *testing.T, r Result) {
 				// 2026-07-09 through 2026-08-12: Sundays Jul 5 … Aug 9.
-				require.Len(t, r.Weeks, 6)
-				require.Equal(t, "2026-07-05", r.Weeks[0].Week)
-				require.Equal(t, "2026-08-09", r.Weeks[5].Week)
-				require.Equal(t, 6, r.Window.Weeks)
+				require.Equal(t, UnitWeek, r.Window.Unit)
+				require.Len(t, r.Buckets, 6)
+				require.Equal(t, "2026-07-05", r.Buckets[0].Start)
+				require.Equal(t, "2026-08-09", r.Buckets[5].Start)
+				require.Equal(t, 6, r.Window.Buckets)
+			},
+		},
+		{
+			name: "a seven day window buckets by day",
+			tickets: []Ticket{
+				{ID: "a", Status: "done", StartedAt: ago(3, 9), CompletedAt: ago(2, 9)},
+				{ID: "b", Status: "cancelled", StartedAt: ago(3, 9), CompletedAt: ago(2, 14)},
+				{ID: "c", Status: "done", History: []Run{
+					spent(mkRun("impl", "claude", 0, ago(1, 9), time.Minute), 300, 40),
+				}},
+			},
+			opts: Options{Now: testNow, Days: 7},
+			check: func(t *testing.T, r Result) {
+				require.Equal(t, UnitDay, r.Window.Unit)
+				require.Len(t, r.Buckets, 7)
+				require.Equal(t, "2026-08-06", r.Buckets[0].Start)
+				require.Equal(t, "2026-08-12", r.Buckets[6].Start)
+
+				day := bucketOf(t, r, "2026-08-10")
+				require.Equal(t, 1, day.Done)
+				require.Equal(t, 1, day.Cancelled)
+				require.Equal(t, int64(300), bucketOf(t, r, "2026-08-11").TokensIn)
+			},
+		},
+		{
+			name: "a one day window buckets by hour and stops at the hour in progress",
+			tickets: []Ticket{
+				{ID: "a", Status: "done", StartedAt: ago(1, 9), CompletedAt: ago(0, 9)},
+				{ID: "b", Status: "cancelled", StartedAt: ago(1, 9), CompletedAt: ago(0, 9)},
+				{ID: "c", Status: "done", History: []Run{
+					spent(mkRun("impl", "claude", 0, ago(0, 14), time.Minute), 500, 60),
+				}},
+			},
+			opts: Options{Now: testNow, Days: 1},
+			check: func(t *testing.T, r Result) {
+				require.Equal(t, UnitHour, r.Window.Unit)
+				// testNow is 18:30, so the series runs 00:00 through 18:00.
+				require.Len(t, r.Buckets, 19)
+				require.Equal(t, "2026-08-12T00:00", r.Buckets[0].Start)
+				require.Equal(t, "2026-08-12T18:00", r.Buckets[18].Start)
+
+				hour := bucketOf(t, r, "2026-08-12T09:00")
+				require.Equal(t, 1, hour.Done)
+				require.Equal(t, 1, hour.Cancelled)
+				require.Equal(t, int64(500), bucketOf(t, r, "2026-08-12T14:00").TokensIn)
 			},
 		},
 		{
@@ -382,9 +428,9 @@ func TestCompute(t *testing.T) {
 				require.NotNil(t, r.Totals.TokensDeltaPct)
 				require.InDelta(t, 25.0, *r.Totals.TokensDeltaPct, 0.01)
 				require.Equal(t, int64(1500), *r.Agents[0].TokensPerRun)
-				// The week the run started carries the same four figures: the
-				// weekly bar tooltip breaks its own bucket down, not the window's.
-				week := weekOf(t, r, "2026-08-09")
+				// The bucket the run started in carries the same four figures:
+				// the bar tooltip breaks its own bucket down, not the window's.
+				week := bucketOf(t, r, "2026-08-09")
 				require.Equal(t, TokenCounts{
 					TokensIn: 1300, TokensOut: 200, TokensCacheCreate: 50, TokensCacheRead: 250,
 				}, week.TokenCounts)
@@ -453,7 +499,7 @@ func TestCompute(t *testing.T) {
 			opts: Options{Now: testNow, Days: 98},
 			check: func(t *testing.T, r Result) {
 				require.Len(t, r.Days, 98)
-				require.NotEmpty(t, r.Weeks)
+				require.NotEmpty(t, r.Buckets)
 				require.Empty(t, r.Stages)
 				require.Empty(t, r.Agents)
 				require.Empty(t, r.Projects)
@@ -502,15 +548,15 @@ func stageOf(t *testing.T, r Result, name string) Stage {
 	return Stage{}
 }
 
-func weekOf(t *testing.T, r Result, week string) Week {
+func bucketOf(t *testing.T, r Result, start string) Bucket {
 	t.Helper()
-	for _, w := range r.Weeks {
-		if w.Week == week {
-			return w
+	for _, b := range r.Buckets {
+		if b.Start == start {
+			return b
 		}
 	}
-	t.Fatalf("no week %s in %v", week, r.Weeks)
-	return Week{}
+	t.Fatalf("no bucket %s in %v", start, r.Buckets)
+	return Bucket{}
 }
 
 // TestComputeMidnightDST pins the buckets in a zone that moves its clock at
@@ -545,11 +591,7 @@ func TestComputeMidnightDST(t *testing.T) {
 		seen[d.Date] = true
 	}
 
-	byWeek := map[string]Week{}
-	for _, w := range r.Weeks {
-		byWeek[w.Week] = w
-	}
-	require.Equal(t, 2, byWeek["2024-09-15"].Done, "the completions land in a week the series emits")
+	require.Equal(t, 2, bucketOf(t, r, "2024-09-15").Done, "the completions land in a week the series emits")
 	require.Equal(t, "2024-09-20", r.Totals.BusiestDay, "today is reachable")
 	require.Equal(t, 1, r.Totals.BusiestDayRuns)
 }

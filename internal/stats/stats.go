@@ -23,7 +23,10 @@ const (
 	statusCancelled = "cancelled"
 )
 
-const dayFormat = "2006-01-02"
+const (
+	dayFormat  = "2006-01-02"
+	hourFormat = "2006-01-02T15:04"
+)
 
 // Ticket is one ticket as the aggregator needs it. Project is the name the
 // daemon resolved from the config; an empty one falls back to the basename of
@@ -106,10 +109,36 @@ func (c *TokenCounts) add(u Usage) {
 	c.TokensCacheRead += int64(u.CacheRead)
 }
 
-// Week is one Sunday-started bucket. Done and Cancelled count tickets by their
-// completion date; the token counts come from the runs started that week.
-type Week struct {
-	Week      string `json:"week"`
+// Throughput bucket units. The series granularity follows the window length, so
+// a one-day window is drawn as a day of hours rather than as a single bar.
+const (
+	UnitHour = "hour"
+	UnitDay  = "day"
+	UnitWeek = "week"
+)
+
+// bucketUnit is the granularity a window of the given length is bucketed at.
+func bucketUnit(days int) string {
+	switch {
+	case days <= 1:
+		return UnitHour
+	case days <= 7:
+		return UnitDay
+	default:
+		return UnitWeek
+	}
+}
+
+// Bucket is one bucket of the throughput series, at the granularity Window.Unit
+// names. Done and Cancelled count tickets by their completion time; the token
+// counts come from the runs started in the bucket.
+//
+// Start is the bucket's local start — "2006-01-02" for a day or a week,
+// "2006-01-02T15:04" for an hour — and is a label rather than an identity: on a
+// fall-back DST day two hour buckets carry the same local time. A reader that
+// has to tell two buckets apart uses their position in the series.
+type Bucket struct {
+	Start     string `json:"start"`
 	Done      int    `json:"done"`
 	Cancelled int    `json:"cancelled"`
 	TokenCounts
@@ -186,19 +215,20 @@ type Totals struct {
 	BusiestDayRuns int      `json:"busiest_day_runs"`
 }
 
-// Window reports the slice the figures were taken over. Weeks counts the
-// Sunday buckets it spans, which is one more than Days/7 whenever the window
-// opens mid-week.
+// Window reports the slice the figures were taken over. Unit names the
+// granularity of the throughput series and Buckets counts it, so a page can
+// label the series without re-deriving the rule from Days.
 type Window struct {
-	Days  int    `json:"days"`
-	Weeks int    `json:"weeks"`
-	From  string `json:"from"`
-	To    string `json:"to"`
+	Days    int    `json:"days"`
+	Unit    string `json:"unit"`
+	Buckets int    `json:"buckets"`
+	From    string `json:"from"`
+	To      string `json:"to"`
 }
 
 type Result struct {
 	Days     []Day     `json:"days"`
-	Weeks    []Week    `json:"weeks"`
+	Buckets  []Bucket  `json:"buckets"`
 	Stages   []Stage   `json:"stages"`
 	Agents   []Agent   `json:"agents"`
 	Projects []Project `json:"projects"`
@@ -215,7 +245,7 @@ func Compute(tickets []Ticket, opts Options) Result {
 	w := windowOf(opts)
 
 	selected := selectTickets(tickets, opts)
-	cur := aggregate(selected, w.start, w.end, loc)
+	cur := aggregate(selected, w, bucketUnit(max(opts.Days, 1)), loc)
 	prevMedian, prevHasCycle, prevTokens := compare(selected, w.prevStart, w.prevEndExcl)
 
 	// Clamped to the window so the figure stays a subset of Shipped when the
@@ -242,16 +272,17 @@ func Compute(tickets []Ticket, opts Options) Result {
 
 	return Result{
 		Days:     cur.days,
-		Weeks:    cur.weeks,
+		Buckets:  cur.buckets,
 		Stages:   cur.stages,
 		Agents:   cur.agents,
 		Projects: cur.projects,
 		Totals:   cur.totals,
 		Window: Window{
-			Days:  max(opts.Days, 1),
-			Weeks: len(cur.weeks),
-			From:  w.start.Format(dayFormat),
-			To:    w.end.Format(dayFormat),
+			Days:    max(opts.Days, 1),
+			Unit:    cur.unit,
+			Buckets: len(cur.buckets),
+			From:    w.start.Format(dayFormat),
+			To:      w.end.Format(dayFormat),
 		},
 	}
 }
@@ -265,6 +296,9 @@ type window struct {
 	// prevEndExcl is the start of the requested window: the comparison window
 	// ends the day before it.
 	prevStart, prevEndExcl time.Time
+	// now is carried because the hourly series stops at the current hour rather
+	// than drawing the rest of the day as empty.
+	now time.Time
 }
 
 func windowOf(opts Options) window {
@@ -272,6 +306,7 @@ func windowOf(opts Options) window {
 	days := max(opts.Days, 1)
 
 	var w window
+	w.now = opts.Now
 	w.end = startOfDay(opts.Now, loc)
 	w.endExcl = addDays(w.end, 1, loc)
 	w.start = addDays(w.end, -(days - 1), loc)
@@ -326,7 +361,8 @@ func projectName(t Ticket) string {
 // median is zero" from "nothing shipped", which the delta needs.
 type windowAgg struct {
 	days     []Day
-	weeks    []Week
+	buckets  []Bucket
+	unit     string
 	stages   []Stage
 	agents   []Agent
 	projects []Project
@@ -355,12 +391,12 @@ func compare(tickets []Ticket, start, endExcl time.Time) (medianCycleMS int64, h
 	return percentile(cycles, 50), true, tokens
 }
 
-func aggregate(tickets []Ticket, start, end time.Time, loc *time.Location) windowAgg {
-	var agg windowAgg
-	endExcl := addDays(end, 1, loc)
+func aggregate(tickets []Ticket, w window, unit string, loc *time.Location) windowAgg {
+	agg := windowAgg{unit: unit}
+	start, end, endExcl := w.start, w.end, w.endExcl
 
 	dayRuns := map[string]int{}
-	weeks := map[string]*Week{}
+	buckets := newBucketAcc(w, unit, loc)
 	stages := map[string]*stageAcc{}
 	agents := map[string]*agentAcc{}
 	projects := map[string]*projectAcc{}
@@ -369,10 +405,9 @@ func aggregate(tickets []Ticket, start, end time.Time, loc *time.Location) windo
 
 	for _, t := range tickets {
 		if inRange(t.CompletedAt, start, endExcl) {
-			week := weekBucket(weeks, *t.CompletedAt, loc)
 			switch {
 			case isShipped(t.Status):
-				week.Done++
+				buckets.done(*t.CompletedAt)
 				agg.totals.Shipped++
 				cycle := cycleOf(t)
 				cycles = append(cycles, cycle)
@@ -380,7 +415,7 @@ func aggregate(tickets []Ticket, start, end time.Time, loc *time.Location) windo
 				proj.done++
 				proj.cycles = append(proj.cycles, cycle)
 			case t.Status == statusCancelled:
-				week.Cancelled++
+				buckets.cancelled(*t.CompletedAt)
 			}
 		}
 
@@ -388,11 +423,11 @@ func aggregate(tickets []Ticket, start, end time.Time, loc *time.Location) windo
 			if !inRange(r.StartedAt, start, endExcl) {
 				continue
 			}
-			// The window and week token totals count every run. An annotation
+			// The window and bucket token totals count every run. An annotation
 			// run is real spend even though it is not a stage, and a page that
 			// hid it would report less than the machine cost.
 			if r.Usage != nil {
-				weekBucket(weeks, *r.StartedAt, loc).add(*r.Usage)
+				buckets.tokens(*r.StartedAt, *r.Usage)
 				agg.totals.add(*r.Usage)
 			}
 
@@ -454,7 +489,7 @@ func aggregate(tickets []Ticket, start, end time.Time, loc *time.Location) windo
 	}
 
 	agg.days = daySeries(dayRuns, start, end, loc)
-	agg.weeks = weekSeries(weeks, start, end, loc)
+	agg.buckets = buckets.list
 	agg.stages = stageSeries(stages)
 	agg.agents = agentSeries(agents)
 	agg.projects = projectSeries(projects)
@@ -539,14 +574,96 @@ func projectAccFor(m map[string]*projectAcc, name string) *projectAcc {
 	return a
 }
 
-func weekBucket(m map[string]*Week, at time.Time, loc *time.Location) *Week {
-	key := startOfWeek(at, loc).Format(dayFormat)
-	if w, ok := m[key]; ok {
-		return w
+// bucketAcc lays the throughput series out up front and hands out the bucket a
+// time falls in, so a bucket nothing landed in still draws its empty column.
+//
+// A bucket is addressed by its offset from the series origin rather than by a
+// formatted key. On a day that moves the clock back, two hours of the day share
+// a local time, and a key made of that label would fold them into one.
+type bucketAcc struct {
+	unit   string
+	origin time.Time
+	loc    *time.Location
+	list   []Bucket
+}
+
+func newBucketAcc(w window, unit string, loc *time.Location) *bucketAcc {
+	b := &bucketAcc{unit: unit, loc: loc, origin: w.start}
+	// The hourly series stops at the hour in progress rather than drawing the
+	// rest of the day as empty. The weekly one opens on the Sunday before the
+	// window, so a window starting mid-week keeps a whole first column.
+	var last int
+	switch unit {
+	case UnitHour:
+		last = b.index(w.now)
+	case UnitWeek:
+		b.origin = startOfWeek(w.start, loc)
+		last = b.index(w.end)
+	default:
+		last = b.index(w.end)
 	}
-	w := &Week{Week: key}
-	m[key] = w
-	return w
+	b.list = make([]Bucket, last+1)
+	for i := range b.list {
+		b.list[i].Start = b.startOf(i)
+	}
+	return b
+}
+
+// index is the position of the bucket holding t. It is negative before the
+// origin and past the end of the series after it, which is what bounds the
+// three accessors below.
+func (b *bucketAcc) index(t time.Time) int {
+	switch b.unit {
+	case UnitHour:
+		// Elapsed hours, not the local hour of day: a DST change makes those
+		// two different counts, and only this one advances once per bucket.
+		return int(t.Sub(b.origin) / time.Hour)
+	case UnitDay:
+		return dayNumber(t, b.loc) - dayNumber(b.origin, b.loc)
+	default:
+		return (dayNumber(t, b.loc) - dayNumber(b.origin, b.loc)) / 7
+	}
+}
+
+// startOf writes the local start of bucket i the way its unit reads.
+func (b *bucketAcc) startOf(i int) string {
+	switch b.unit {
+	case UnitHour:
+		return b.origin.Add(time.Duration(i) * time.Hour).In(b.loc).Format(hourFormat)
+	case UnitDay:
+		return addDays(b.origin, i, b.loc).Format(dayFormat)
+	default:
+		return addDays(b.origin, i*7, b.loc).Format(dayFormat)
+	}
+}
+
+// at is the bucket t falls in, or nil for a time outside the series. Only a
+// timestamp from the future can miss: the window bounds every caller, and the
+// hourly series stops at the hour in progress.
+func (b *bucketAcc) at(t time.Time) *Bucket {
+	i := b.index(t)
+	if i < 0 || i >= len(b.list) {
+		return nil
+	}
+	return &b.list[i]
+}
+
+func (b *bucketAcc) done(at time.Time) {
+	if x := b.at(at); x != nil {
+		x.Done++
+	}
+}
+
+func (b *bucketAcc) cancelled(at time.Time) {
+	if x := b.at(at); x != nil {
+		x.Cancelled++
+	}
+}
+
+func (b *bucketAcc) tokens(at time.Time, u Usage) {
+	if x := b.at(at); x != nil {
+		x.add(u)
+	}
 }
 
 func daySeries(runs map[string]int, start, end time.Time, loc *time.Location) []Day {
@@ -554,21 +671,6 @@ func daySeries(runs map[string]int, start, end time.Time, loc *time.Location) []
 	for d := start; !d.After(end); d = addDays(d, 1, loc) {
 		key := d.In(loc).Format(dayFormat)
 		out = append(out, Day{Date: key, Runs: runs[key]})
-	}
-	return out
-}
-
-// weekSeries emits every Sunday bucket the window touches, so a week with no
-// activity still draws its (empty) column.
-func weekSeries(m map[string]*Week, start, end time.Time, loc *time.Location) []Week {
-	out := []Week{}
-	for w := startOfWeek(start, loc); !w.After(end); w = addDays(w, 7, loc) {
-		key := w.Format(dayFormat)
-		if got, ok := m[key]; ok {
-			out = append(out, *got)
-			continue
-		}
-		out = append(out, Week{Week: key})
 	}
 	return out
 }
@@ -767,6 +869,14 @@ func addDays(t time.Time, n int, loc *time.Location) time.Time {
 	t = t.In(loc)
 	y, m, d := t.Date()
 	return startOfDay(time.Date(y, m, d+n, 12, 0, 0, 0, loc), loc)
+}
+
+// dayNumber counts local days from the epoch. The date is carried through UTC,
+// where every day is 24 hours, so the difference between two of these is an
+// exact number of days in a zone where subtracting the instants is not.
+func dayNumber(t time.Time, loc *time.Location) int {
+	y, m, d := t.In(loc).Date()
+	return int(time.Date(y, m, d, 12, 0, 0, 0, time.UTC).Unix() / 86400)
 }
 
 // startOfWeek is the Sunday on or before t, matching the heat map's columns.

@@ -2537,10 +2537,12 @@
         <div class="w-px bg-surface-700 shrink-0"></div>
 
         <div class="flex-1 min-w-0 flex flex-col gap-[9px]">
-          <span class="stats-title">tickets shipped per week</span>
-          <span class="stats-cap" x-show="statsDerived && !statsDerived.weekly.length">no data in this window</span>
+          <span class="stats-title" x-text="'tickets shipped per ' + statsBucketUnit()"></span>
+          <span class="stats-cap" x-show="statsDerived && !statsDerived.throughput.length">no data in this window</span>
           <div class="flex items-end gap-[5px] h-[86px]">
-            <template x-for="w in (statsDerived ? statsDerived.weekly : [])" :key="w.week">
+            <!-- Keyed by position, not by start: two hour buckets of a
+                 fall-back DST day carry the same local time. -->
+            <template x-for="(w, i) in (statsDerived ? statsDerived.throughput : [])" :key="i">
               <div class="flex-1 max-w-[44px] h-full flex flex-col justify-end gap-0.5 min-w-0" :data-tip-t="w.tip">
                 <div class="rounded-[2px]" :style="'height:' + w.cancelH + 'px;background:rgba(var(--err),.55)'"></div>
                 <div class="rounded-[2px]" :style="'height:' + w.doneH + 'px;background:rgba(var(--ok),' + (w.latest ? 1 : 0.75) + ')'"></div>
@@ -2642,11 +2644,11 @@
           </div>
           <div class="flex flex-col gap-[7px] pt-[11px] border-t border-surface-700 shrink-0">
             <div class="flex items-baseline justify-between">
-              <span class="font-mono text-[10px] tracking-[.12em] uppercase text-tx-4">tokens per week</span>
+              <span class="font-mono text-[10px] tracking-[.12em] uppercase text-tx-4" x-text="'tokens per ' + statsBucketUnit()"></span>
               <span class="num font-mono text-[10px] text-tx-2" x-text="statsDerived ? statsDerived.tokenCaption : ''"></span>
             </div>
             <div class="flex items-end gap-[3px] h-11">
-              <template x-for="t in (statsDerived ? statsDerived.tokens : [])" :key="t.week">
+              <template x-for="(t, i) in (statsDerived ? statsDerived.tokens : [])" :key="i">
                 <div class="flex-1 h-full flex flex-col justify-end gap-px min-w-0" :data-tip-t="t.tip">
                   <div class="rounded-[2px]" :style="'height:' + t.outH + 'px;background:rgba(var(--accent),.4)'"></div>
                   <div class="rounded-[2px]" :style="'height:' + t.inH + 'px;background:' + (t.latest ? 'rgba(var(--accent-bright),1)' : 'rgba(var(--accent),1)')"></div>

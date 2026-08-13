@@ -6925,7 +6925,7 @@ function statsPayload(over = {}) {
       { date: "2026-08-11", runs: 0 },
       { date: "2026-08-12", runs: 9 },
     ],
-    weeks: [{ week: "2026-08-09", done: 3, cancelled: 1, tokens_in: 1300, tokens_out: 200, tokens_cache_create: 50, tokens_cache_read: 250 }],
+    buckets: [{ start: "2026-08-09", done: 3, cancelled: 1, tokens_in: 1300, tokens_out: 200, tokens_cache_create: 50, tokens_cache_read: 250 }],
     // Two stages that rank one way by time and the other way by tokens, so the
     // stage panel's two modes cannot pass by agreeing with each other.
     stages: [
@@ -6941,7 +6941,7 @@ function statsPayload(over = {}) {
       tokens_cache_create: 50, tokens_cache_read: 250,
       tokens_delta_pct: 12, busiest_day: "2026-08-12", busiest_day_runs: 9,
     },
-    window: { days: 98, weeks: 14, from: "2026-05-07", to: "2026-08-12" },
+    window: { days: 98, unit: "week", buckets: 14, from: "2026-05-07", to: "2026-08-12" },
     ...over,
   };
 }
@@ -7061,12 +7061,12 @@ test("a month tick sits on the column its month starts in", () => {
 test("the derived view model survives an empty window", () => {
   const { ctx, state } = statsState();
   const derived = ctx.statsDerive({
-    days: [], weeks: [], stages: [], agents: [], projects: [],
-    live: { slots: 3 }, totals: {}, window: { days: 98, weeks: 14 },
+    days: [], buckets: [], stages: [], agents: [], projects: [],
+    live: { slots: 3 }, totals: {}, window: { days: 98, unit: "week", buckets: 14 },
   });
 
   assert.deepEqual(vmValue(derived.heat.weeks), []);
-  assert.deepEqual(vmValue(derived.weekly), []);
+  assert.deepEqual(vmValue(derived.throughput), []);
   assert.deepEqual(vmValue(derived.stages), []);
   assert.equal(derived.slots.length, 3, "the slot strip is drawn from the daemon's capacity, not its history");
   assert.equal(derived.live.oldest, "—");
@@ -7080,6 +7080,50 @@ test("the derived view model survives an empty window", () => {
   })(vmValue(derived), "derived");
   assert.deepEqual(bad, [], "no chart may divide by a zero maximum");
   assert.equal(state.statsCards().length, 6, "the KPI strip keeps its six cards before the first payload");
+});
+
+test("the throughput charts follow the bucket the server cut", () => {
+  const { ctx, state } = statsState();
+  const cases = [
+    {
+      unit: "hour",
+      buckets: [{ start: "2026-08-12T09:00", done: 1, cancelled: 1, tokens_in: 300, tokens_out: 40 }],
+      shipped: "1 shipped · 09:00 · 1 cancelled",
+      tokens: "340 tokens · 09:00 · ",
+    },
+    {
+      unit: "day",
+      buckets: [{ start: "2026-08-12", done: 2, cancelled: 0, tokens_in: 300, tokens_out: 40 }],
+      shipped: "2 shipped · Aug 12",
+      tokens: "340 tokens · Aug 12 · ",
+    },
+    {
+      unit: "week",
+      buckets: [{ start: "2026-08-09", done: 3, cancelled: 0, tokens_in: 300, tokens_out: 40 }],
+      shipped: "3 shipped · week of Aug 9",
+      tokens: "340 tokens · week of Aug 9 · ",
+    },
+  ];
+
+  for (const tc of cases) {
+    const payload = statsPayload({ buckets: tc.buckets, window: { days: 1, unit: tc.unit, buckets: 1 } });
+    const derived = ctx.statsDerive(payload);
+    assert.equal(derived.throughput[0].tip, tc.shipped, tc.unit);
+    assert.ok(derived.tokens[0].tip.startsWith(tc.tokens), derived.tokens[0].tip);
+
+    state.statsDerived = derived;
+    assert.equal(state.statsBucketUnit(), tc.unit);
+  }
+
+  // Before the first payload both titles still name a unit rather than reading
+  // "tickets shipped per undefined".
+  state.statsDerived = null;
+  assert.equal(state.statsBucketUnit(), "week");
+
+  // And the markup is what titles them: neither heading writes "week" itself.
+  const html = fs.readFileSync(htmlPath, "utf8");
+  assert.match(html, /x-text="'tickets shipped per ' \+ statsBucketUnit\(\)"/);
+  assert.match(html, /x-text="'tokens per ' \+ statsBucketUnit\(\)"/);
 });
 
 test("both token tooltips break the same window into four categories", () => {
@@ -7100,7 +7144,7 @@ test("both token tooltips break the same window into four categories", () => {
   assert.equal(card.value, "1.5k", "the card face still reports in + out");
   // The bar keeps its two segments: cache read would render as three slivers.
   assert.ok(derived.tokens[0].inH > 0 && derived.tokens[0].outH > 0);
-  assert.equal(Object.keys(vmValue(derived.tokens[0])).sort().join(","), "inH,latest,outH,tip,week");
+  assert.equal(Object.keys(vmValue(derived.tokens[0])).sort().join(","), "inH,latest,outH,start,tip");
   // Only the tokens card has a tip, so the other five bind no attribute at all.
   assert.equal(state.statsCards().filter((c) => c.tip).length, 1);
   // And the markup is what renders it: nothing else in the KPI strip reads k.tip.
@@ -7108,10 +7152,10 @@ test("both token tooltips break the same window into four categories", () => {
     /<div class="stats-card stats-kpi flex-col gap-1\.5" :data-tip-t="k\.tip">/);
 });
 
-test("a week with no tokens breaks down without a NaN", () => {
+test("a bucket with no tokens breaks down without a NaN", () => {
   const { ctx } = statsState();
   const payload = statsPayload();
-  payload.weeks = [{ week: "2026-08-09", done: 0, cancelled: 0, tokens_in: 0, tokens_out: 0, tokens_cache_create: 0, tokens_cache_read: 0 }];
+  payload.buckets = [{ start: "2026-08-09", done: 0, cancelled: 0, tokens_in: 0, tokens_out: 0, tokens_cache_create: 0, tokens_cache_read: 0 }];
 
   const derived = ctx.statsDerive(payload);
 
@@ -7350,8 +7394,8 @@ test("a KPI without the data behind it says so rather than reading zero", () => 
   const { ctx } = statsState();
 
   const empty = ctx.statsDerive({
-    days: [], weeks: [], stages: [], agents: [], projects: [],
-    live: {}, totals: {}, window: { days: 98, weeks: 14 },
+    days: [], buckets: [], stages: [], agents: [], projects: [],
+    live: {}, totals: {}, window: { days: 98, unit: "week", buckets: 14 },
   });
   const firstPass = empty.kpis.find((k) => k.label === "first-pass");
   assert.equal(firstPass.value, "—", "no stage run means the rate is unmeasured, not catastrophic");
@@ -7366,7 +7410,7 @@ test("a KPI without the data behind it says so rather than reading zero", () => 
 
   // The server clamps the shipped count to the window, so on the one-day window
   // it is today's, not the week's.
-  const day = statsPayload({ window: { days: 1, weeks: 1, from: "2026-08-12", to: "2026-08-12" } });
+  const day = statsPayload({ window: { days: 1, unit: "hour", buckets: 19, from: "2026-08-12", to: "2026-08-12" } });
   const shipped = ctx.statsDerive(day).kpis.find((k) => k.label === "shipped");
   assert.equal(shipped.delta, "+3 today");
 });
@@ -7383,10 +7427,10 @@ test("the range chips are labelled with the window the server cuts", async () =>
 
   // A window that opens mid-week spans one more Sunday bucket than its length,
   // so the caption may not be written in weeks.
-  state.stats.window = { days: 182, weeks: 27 };
+  state.stats.window = { days: 182, unit: "week", buckets: 27 };
   assert.equal(state.statsWindowLabel().startsWith("last 182 days"), true, state.statsWindowLabel());
 
-  state.stats.window = { days: 1, weeks: 1 };
+  state.stats.window = { days: 1, unit: "hour", buckets: 19 };
   assert.equal(state.statsWindowLabel().startsWith("last 1 day ·"), true, state.statsWindowLabel());
 });
 

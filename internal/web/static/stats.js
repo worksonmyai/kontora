@@ -19,7 +19,7 @@ const STATS_POLL_MS = 30000;
 // Heat map geometry, mirrored by the cell classes in index.html: a 13px cell
 // plus a 3px gap. Month ticks are positioned at weekIndex * this.
 const STATS_CELL_PITCH = 16;
-const STATS_WEEKLY_H = 86;
+const STATS_THROUGHPUT_H = 86;
 const STATS_TOKEN_H = 44;
 
 const STATS_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -106,6 +106,17 @@ function statsWeekday(iso) {
 function statsDayLabel(iso) {
   const p = String(iso).split('-');
   return STATS_MONTHS[Number(p[1]) - 1] + ' ' + Number(p[2]);
+}
+
+// statsBucketLabel writes a throughput bucket's start the way its unit reads:
+// an hour as a clock time, a day as a date, a week as the date it opens on.
+// The server sends the unit with the payload, so the page never re-derives it
+// from the window length.
+function statsBucketLabel(start, unit) {
+  const s = String(start);
+  if (unit === 'hour') return s.slice(11);
+  if (unit === 'day') return statsDayLabel(s);
+  return 'week of ' + statsDayLabel(s);
 }
 
 function statsHeatColor(level) {
@@ -241,37 +252,38 @@ function statsKpis(payload) {
 // not produce NaN.
 function statsDerive(payload) {
   if (!payload) return null;
-  const weeksRaw = payload.weeks || [];
+  const bucketsRaw = payload.buckets || [];
+  const unit = (payload.window && payload.window.unit) || 'week';
   const stagesRaw = payload.stages || [];
   const agentsRaw = payload.agents || [];
   const projectsRaw = payload.projects || [];
   const live = payload.live || {};
   const totals = payload.totals || {};
 
-  let weeklyMax = 0;
-  weeksRaw.forEach(function(w) { weeklyMax = Math.max(weeklyMax, (w.done || 0) + (w.cancelled || 0)); });
-  const weekly = weeksRaw.map(function(w, i) {
-    const done = w.done || 0, cancelled = w.cancelled || 0;
+  let throughputMax = 0;
+  bucketsRaw.forEach(function(b) { throughputMax = Math.max(throughputMax, (b.done || 0) + (b.cancelled || 0)); });
+  const throughput = bucketsRaw.map(function(b, i) {
+    const done = b.done || 0, cancelled = b.cancelled || 0;
     return {
-      week: w.week,
-      latest: i === weeksRaw.length - 1,
-      doneH: weeklyMax ? (done / weeklyMax) * STATS_WEEKLY_H : 0,
-      cancelH: weeklyMax ? (cancelled / weeklyMax) * STATS_WEEKLY_H : 0,
-      tip: done + ' shipped · week of ' + statsDayLabel(w.week) + (cancelled ? ' · ' + cancelled + ' cancelled' : ''),
+      start: b.start,
+      latest: i === bucketsRaw.length - 1,
+      doneH: throughputMax ? (done / throughputMax) * STATS_THROUGHPUT_H : 0,
+      cancelH: throughputMax ? (cancelled / throughputMax) * STATS_THROUGHPUT_H : 0,
+      tip: done + ' shipped · ' + statsBucketLabel(b.start, unit) + (cancelled ? ' · ' + cancelled + ' cancelled' : ''),
     };
   });
 
   let tokenMax = 0;
-  weeksRaw.forEach(function(w) { tokenMax = Math.max(tokenMax, statsTokenTotal(w)); });
-  const tokens = weeksRaw.map(function(w, i) {
-    const tin = w.tokens_in || 0, tout = w.tokens_out || 0;
+  bucketsRaw.forEach(function(b) { tokenMax = Math.max(tokenMax, statsTokenTotal(b)); });
+  const tokens = bucketsRaw.map(function(b, i) {
+    const tin = b.tokens_in || 0, tout = b.tokens_out || 0;
     return {
-      week: w.week,
-      latest: i === weeksRaw.length - 1,
+      start: b.start,
+      latest: i === bucketsRaw.length - 1,
       inH: tokenMax ? (tin / tokenMax) * STATS_TOKEN_H : 0,
       outH: tokenMax ? (tout / tokenMax) * STATS_TOKEN_H : 0,
-      tip: statsCompact(statsTokenTotal(w)) + ' tokens · week of ' + statsDayLabel(w.week) +
-        ' · ' + statsTokenBreakdown(w),
+      tip: statsCompact(statsTokenTotal(b)) + ' tokens · ' + statsBucketLabel(b.start, unit) +
+        ' · ' + statsTokenBreakdown(b),
     };
   });
 
@@ -368,7 +380,8 @@ function statsDerive(payload) {
   return {
     heat: statsHeatWeeks(payload.days),
     heatCaption: statsCompact(totals.runs || 0) + ' runs · ' + (payload.days || []).length + ' days',
-    weekly: weekly,
+    unit: unit,
+    throughput: throughput,
     tokens: tokens,
     tokenCaption: statsCompact(statsTokenTotal(totals)) + ' tokens',
     stages: stages,
@@ -539,6 +552,13 @@ function kontoraStats() {
 
     statsRangeLabel(range) {
       return STATS_RANGE_LABELS[range] || range;
+    },
+
+    // The two throughput charts are titled by the bucket the server cut, so a
+    // one-day window reads "per hour" rather than claiming a week it does not
+    // cover. Before the first payload the default matches the default range.
+    statsBucketUnit() {
+      return (this.statsDerived && this.statsDerived.unit) || 'week';
     },
 
     statsWindowLabel() {

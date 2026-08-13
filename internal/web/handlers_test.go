@@ -1319,13 +1319,14 @@ func TestHandleGetStats(t *testing.T) {
 				assert.Equal(t, float64(200), totals["tokens_out"])
 				assert.Equal(t, float64(50), totals["tokens_cache_create"])
 				assert.Equal(t, float64(250), totals["tokens_cache_read"])
-				weeks, _ := raw["weeks"].([]any)
-				require.Len(t, weeks, 1)
-				week, _ := weeks[0].(map[string]any)
-				assert.Equal(t, float64(1300), week["tokens_in"])
-				assert.Equal(t, float64(200), week["tokens_out"])
-				assert.Equal(t, float64(50), week["tokens_cache_create"])
-				assert.Equal(t, float64(250), week["tokens_cache_read"])
+				buckets, _ := raw["buckets"].([]any)
+				require.Len(t, buckets, 1)
+				bucket, _ := buckets[0].(map[string]any)
+				assert.Equal(t, "2026-08-09", bucket["start"])
+				assert.Equal(t, float64(1300), bucket["tokens_in"])
+				assert.Equal(t, float64(200), bucket["tokens_out"])
+				assert.Equal(t, float64(50), bucket["tokens_cache_create"])
+				assert.Equal(t, float64(250), bucket["tokens_cache_read"])
 			},
 		},
 		{
@@ -1377,9 +1378,9 @@ func TestHandleGetStats(t *testing.T) {
 					TokensIn: 1300, TokensOut: 200, TokensCacheCreate: 50, TokensCacheRead: 250,
 				}
 				return StatsInfo{
-					Weeks:  []stats.Week{{Week: "2026-08-09", Done: 3, TokenCounts: counts}},
-					Totals: stats.Totals{Shipped: 12, TokenCounts: counts},
-					Live:   stats.Live{Running: 2, Slots: 3},
+					Buckets: []stats.Bucket{{Start: "2026-08-09", Done: 3, TokenCounts: counts}},
+					Totals:  stats.Totals{Shipped: 12, TokenCounts: counts},
+					Live:    stats.Live{Running: 2, Slots: 3},
 				}, nil
 			}}
 			srv := startHandlerTestServer(t, svc)

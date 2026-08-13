@@ -7363,12 +7363,19 @@ test("a KPI without the data behind it says so rather than reading zero", () => 
   flat.totals.median_cycle_delta_ms = 0;
   const cycle = ctx.statsDerive(flat).kpis.find((k) => k.label === "median cycle");
   assert.equal(cycle.delta, "no change vs prev");
+
+  // The server clamps the shipped count to the window, so on the one-day window
+  // it is today's, not the week's.
+  const day = statsPayload({ window: { days: 1, weeks: 1, from: "2026-08-12", to: "2026-08-12" } });
+  const shipped = ctx.statsDerive(day).kpis.find((k) => k.label === "shipped");
+  assert.equal(shipped.delta, "+3 today");
 });
 
 test("the range chips are labelled with the window the server cuts", async () => {
   const { state } = statsState();
 
-  assert.deepEqual([...state.statsRanges].map((r) => state.statsRangeLabel(r)), ["5w", "14w", "26w"]);
+  // The two short windows are cut to the day, so they keep their own names.
+  assert.deepEqual([...state.statsRanges].map((r) => state.statsRangeLabel(r)), ["1d", "1w", "5w", "14w", "26w"]);
 
   await state.gotoView("stats");
   await flushMicrotasks();
@@ -7378,6 +7385,9 @@ test("the range chips are labelled with the window the server cuts", async () =>
   // so the caption may not be written in weeks.
   state.stats.window = { days: 182, weeks: 27 };
   assert.equal(state.statsWindowLabel().startsWith("last 182 days"), true, state.statsWindowLabel());
+
+  state.stats.window = { days: 1, weeks: 1 };
+  assert.equal(state.statsWindowLabel().startsWith("last 1 day ·"), true, state.statsWindowLabel());
 });
 
 test("a 401 while Stats is open asks for the token instead of polling on", async () => {

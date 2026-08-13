@@ -443,7 +443,7 @@ func (s *Server) handleGetActivity(w http.ResponseWriter, r *http.Request) {
 // chips come from one the client fetched earlier, and a reload can retire a
 // project between the fetch and the query. Their length is bounded though —
 // each distinct pair keys a cached payload, and a name that long is not one.
-var statsRanges = map[string]int{"30d": 35, "90d": 98, "all": 182}
+var statsRanges = map[string]int{"1d": 1, "1w": 7, "30d": 35, "90d": 98, "all": 182}
 
 const statsFilterMax = 128
 
@@ -454,7 +454,7 @@ func (s *Server) handleGetStats(w http.ResponseWriter, r *http.Request) {
 	}
 	days, ok := statsRanges[rng]
 	if !ok {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "range must be one of 30d, 90d, all"})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "range must be one of 1d, 1w, 30d, 90d, all"})
 		return
 	}
 	project, pipeline := r.URL.Query().Get("project"), r.URL.Query().Get("pipeline")

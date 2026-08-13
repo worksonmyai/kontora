@@ -5,7 +5,14 @@
 // and formats; it computes no rate, median or delta of its own. The one
 // exception is bar geometry, which is a pixel height, not a measurement.
 
-const STATS_RANGES = ['30d', '90d', 'all'];
+const STATS_RANGES = ['1d', '1w', '30d', '90d', 'all'];
+
+// Chip labels. The long windows are cut to a whole number of weeks by the
+// server — 35, 98 and 182 days — so a chip reading "30d" beside a caption
+// reading "last 35 days" would contradict itself, and "all" would claim a
+// lifetime total the 182-day cap does not deliver. The two short windows are
+// cut to the day, so they are labelled as asked for.
+const STATS_RANGE_LABELS = { '1d': '1d', '1w': '1w', '30d': '5w', '90d': '14w', all: '26w' };
 const STATS_STAGE_MODES = ['time', 'tokens'];
 const STATS_POLL_MS = 30000;
 
@@ -191,7 +198,9 @@ function statsKpis(payload) {
   return [
     {
       label: 'shipped', value: String(t.shipped || 0), unit: 'tickets',
-      delta: statsSigned(t.shipped_this_week || 0) + ' this week',
+      // The server clamps this count to the window, so on the one-day window it
+      // covers today rather than the week it is named after.
+      delta: statsSigned(t.shipped_this_week || 0) + (days === 1 ? ' today' : ' this week'),
       tone: (t.shipped_this_week || 0) > 0 ? 'ok' : 'neutral',
     },
     {
@@ -528,14 +537,8 @@ function kontoraStats() {
       this.fetchStats();
     },
 
-    // The chips are labelled with the window the server actually cuts, which is
-    // a whole number of weeks: 35, 98 and 182 days. A chip reading "30d" beside
-    // a caption reading "last 35 days" contradicts itself, and "all" would claim
-    // a lifetime total the 182-day cap does not deliver.
     statsRangeLabel(range) {
-      if (range === '30d') return '5w';
-      if (range === '90d') return '14w';
-      return '26w';
+      return STATS_RANGE_LABELS[range] || range;
     },
 
     statsWindowLabel() {
@@ -543,7 +546,8 @@ function kontoraStats() {
       if (!win) return '';
       // Days, not weeks: the window spans one more Sunday bucket than its length
       // whenever it opens mid-week, and the chip beside this would disagree.
-      const span = 'last ' + (win.days || 0) + ' days';
+      const days = win.days || 0;
+      const span = 'last ' + days + (days === 1 ? ' day' : ' days');
       return this.statsUpdated ? span + ' · updated ' + this.statsUpdated : span;
     },
 

@@ -1341,6 +1341,20 @@ func TestHandleGetStats(t *testing.T) {
 			wantQuery:  &StatsQuery{Days: 182},
 		},
 		{
+			// The short windows are cut to the day, not rounded up to whole weeks
+			// the way the longer ones are.
+			name:       "one day range",
+			query:      "?range=1d",
+			wantStatus: http.StatusOK,
+			wantQuery:  &StatsQuery{Days: 1},
+		},
+		{
+			name:       "one week range",
+			query:      "?range=1w",
+			wantStatus: http.StatusOK,
+			wantQuery:  &StatsQuery{Days: 7},
+		},
+		{
 			name:       "unknown range is rejected before aggregating",
 			query:      "?range=bogus",
 			wantStatus: http.StatusBadRequest,

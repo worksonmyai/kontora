@@ -190,11 +190,15 @@ type TicketInfo struct {
 	Attempt       int        `json:"attempt"`
 	CreatedAt     *time.Time `json:"created_at,omitempty"`
 	StartedAt     *time.Time `json:"started_at,omitempty"`
-	UpdatedAt     *time.Time `json:"updated_at,omitempty"`
-	Branch        string     `json:"branch,omitempty"`
-	BaseBranch    string     `json:"base_branch,omitempty"`
-	AutoBranch    string     `json:"auto_branch,omitempty"` // what the daemon would name the branch, set only while Branch is empty
-	ClaimedBy     string     `json:"claimed_by,omitempty"`
+	// FinishedAt is when the last stage run completed. It is in the board
+	// payload as well as the detail one, because the review column orders by
+	// it. UpdatedAt is the file mtime and moves on every write to the markdown.
+	FinishedAt *time.Time `json:"finished_at,omitempty"`
+	UpdatedAt  *time.Time `json:"updated_at,omitempty"`
+	Branch     string     `json:"branch,omitempty"`
+	BaseBranch string     `json:"base_branch,omitempty"`
+	AutoBranch string     `json:"auto_branch,omitempty"` // what the daemon would name the branch, set only while Branch is empty
+	ClaimedBy  string     `json:"claimed_by,omitempty"`
 	// CanAnnotate reports whether the ticket can be opened in Plannotator's
 	// annotation UI right now: it is initialized, its status allows an edit, and
 	// no annotation run is already pending. Like AutoBranch it is a read-only
@@ -393,6 +397,7 @@ func TicketInfoFromView(v app.View) TicketInfo {
 		Attempt:       v.Attempt,
 		CreatedAt:     v.CreatedAt,
 		StartedAt:     v.StartedAt,
+		FinishedAt:    v.FinishedAt,
 		Branch:        v.Branch,
 		BaseBranch:    v.BaseBranch,
 		ClaimedBy:     v.ClaimedBy,

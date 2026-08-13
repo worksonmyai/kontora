@@ -76,6 +76,89 @@ func TestDaemon_ListTickets(t *testing.T) {
 	require.NoError(t, <-errCh)
 }
 
+// The HUMAN REVIEW column orders by the last stage run. That clock lives in the
+// history, which only the detail projection ships, so the board reads the
+// finished_at the daemon derives for both projections. It has to hold still when
+// the file is rewritten: a note or a `ticket link` moves only the mtime.
+func TestDaemon_FinishedAt(t *testing.T) {
+	h := newHarness(t)
+	d := h.newDaemon(h.cfg)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	reviewMD := fmt.Sprintf(`---
+id: tst-fin
+kontora: true
+status: human_review
+pipeline: two-stage
+path: %s
+created: 2026-01-01T00:00:00Z
+history:
+  - stage: step1
+    completed_at: 2026-04-20T10:00:00Z
+  - stage: step2
+    completed_at: 2026-04-20T11:30:00Z
+  - stage: step2
+    started_at: 2026-04-20T12:00:00Z
+---
+# Test ticket tst-fin
+`, h.repoDir)
+	path := h.writeTicket("tst-fin.md", reviewMD)
+	// A ticket parked by hand: no run, so no finish time in either projection.
+	h.writeTicket("tst-nofin.md", fmt.Sprintf(`---
+id: tst-nofin
+kontora: true
+status: human_review
+pipeline: two-stage
+path: %s
+created: 2026-01-01T00:00:00Z
+---
+# Test ticket tst-nofin
+`, h.repoDir))
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- d.Run(ctx) }()
+
+	listed := func(id string) web.TicketInfo {
+		t.Helper()
+		for _, ti := range d.ListTickets() {
+			if ti.ID == id {
+				return ti
+			}
+		}
+		return web.TicketInfo{}
+	}
+	require.Eventually(t, func() bool { return listed("tst-fin").ID != "" && listed("tst-nofin").ID != "" },
+		5*time.Second, 20*time.Millisecond, "both tickets should be tracked")
+
+	lastRun := time.Date(2026, 4, 20, 11, 30, 0, 0, time.UTC)
+	board := listed("tst-fin")
+	require.NotNil(t, board.FinishedAt, "the board card needs the finish time to sort by")
+	assert.Equal(t, lastRun, board.FinishedAt.UTC(), "the newest run that finished, not the open one")
+
+	detail, err := d.GetTicket("tst-fin")
+	require.NoError(t, err)
+	require.NotNil(t, detail.FinishedAt)
+	assert.Equal(t, lastRun, detail.FinishedAt.UTC(), "both projections report the same finish time")
+
+	assert.Nil(t, listed("tst-nofin").FinishedAt, "nothing ran, so there is no finish time")
+	noRunDetail, err := d.GetTicket("tst-nofin")
+	require.NoError(t, err)
+	assert.Nil(t, noRunDetail.FinishedAt)
+
+	// Rewriting the file is what the mtime reports and the finish time ignores.
+	require.NoError(t, os.WriteFile(path, []byte(reviewMD+"\nA note nobody ran.\n"), 0o644))
+	require.Eventually(t, func() bool {
+		got := listed("tst-fin")
+		return got.UpdatedAt != nil && got.UpdatedAt.After(*board.UpdatedAt)
+	}, 5*time.Second, 20*time.Millisecond, "the mtime should move after the rewrite")
+	assert.Equal(t, lastRun, listed("tst-fin").FinishedAt.UTC(), "the rewrite is not a run")
+
+	cancel()
+	require.NoError(t, <-errCh)
+}
+
 func TestDaemon_GetTicket(t *testing.T) {
 	h := newHarness(t)
 	d := h.newDaemon(h.cfg)

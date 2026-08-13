@@ -1,6 +1,7 @@
 package app
 
 import (
+	"slices"
 	"time"
 
 	"github.com/worksonmyai/kontora/internal/config"
@@ -23,15 +24,19 @@ type View struct {
 	CreatedAt     *time.Time
 	StartedAt     *time.Time
 	CompletedAt   *time.Time
-	Branch        string
-	BaseBranch    string
-	ClaimedBy     string
-	Stages        []string
-	History       []HistoryView
-	Body          string
-	LastError     string
-	LastLog       string
-	Summary       string
+	// FinishedAt is when the ticket last stopped running, derived from the
+	// history. Unlike the file mtime it does not move when the markdown is
+	// edited. See FinishedAt for the precedence rule.
+	FinishedAt *time.Time
+	Branch     string
+	BaseBranch string
+	ClaimedBy  string
+	Stages     []string
+	History    []HistoryView
+	Body       string
+	LastError  string
+	LastLog    string
+	Summary    string
 	// FinalSummary is the ticket-level outcome, not the latest run's summary.
 	FinalSummary string
 	// Deps, Links and Parent are the relation ids as written in the frontmatter.
@@ -40,6 +45,22 @@ type View struct {
 	Deps   []string
 	Links  []string
 	Parent string
+}
+
+// FinishedAt is when a ticket last stopped running: the completed_at of the
+// newest history entry that carries one, and the frontmatter completed_at when
+// no run recorded a finish. It is nil for a ticket that never ran.
+//
+// The board orders HUMAN REVIEW by it. The file mtime cannot do that job: a
+// note, a status change or a `ticket link` bumps the mtime, and the card would
+// jump to the top of the column without anything having run.
+func FinishedAt(t *ticket.Ticket) *time.Time {
+	for _, h := range slices.Backward(t.History) {
+		if h.CompletedAt != nil {
+			return h.CompletedAt
+		}
+	}
+	return t.CompletedAt
 }
 
 // HistoryView is a single history entry in a View.
@@ -72,6 +93,7 @@ func BuildView(cfg *config.Config, t *ticket.Ticket, detail bool) View {
 		CreatedAt:   t.Created,
 		StartedAt:   t.StartedAt,
 		CompletedAt: t.CompletedAt,
+		FinishedAt:  FinishedAt(t),
 		Branch:      t.Branch,
 		BaseBranch:  t.BaseBranch,
 		ClaimedBy:   t.ClaimedBy,

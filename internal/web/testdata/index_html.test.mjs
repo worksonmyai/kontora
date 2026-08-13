@@ -914,12 +914,9 @@ test("human_review column sorts by the last stage's finish, newest first", () =>
       status: "human_review",
       kontora: true,
       created_at: "2026-05-19T07:00:00Z",
-      // Edited after review started: a later mtime must not win.
+      finished_at: "2026-05-19T09:00:00Z",
+      // Edited long after the run: a later mtime must not win.
       updated_at: "2026-05-19T20:00:00Z",
-      history: [
-        { stage: "plan", completed_at: "2026-05-19T08:00:00Z" },
-        { stage: "code", completed_at: "2026-05-19T09:00:00Z" },
-      ],
     },
     {
       id: "rev-new",
@@ -927,8 +924,8 @@ test("human_review column sorts by the last stage's finish, newest first", () =>
       status: "human_review",
       kontora: true,
       created_at: "2026-05-19T06:00:00Z",
+      finished_at: "2026-05-19T11:00:00Z",
       updated_at: "2026-05-19T12:00:00Z",
-      history: [{ stage: "code", completed_at: "2026-05-19T11:00:00Z" }],
     },
   ];
 
@@ -956,27 +953,41 @@ test("human_review column falls back to updated_at, then created_at, without a f
       created_at: "2026-05-19T12:00:00Z",
     },
     {
-      id: "rev-running-stage",
-      title: "Stage still open",
+      id: "rev-never-ran",
+      title: "Never ran",
       status: "human_review",
       kontora: true,
       created_at: "2026-05-19T09:00:00Z",
       updated_at: "2026-05-19T09:30:00Z",
-      history: [{ stage: "code" }],
     },
   ];
 
   const ids = state.ticketsByStatuses("human_review").map(t => t.id);
 
-  assert.deepEqual(ids, ["rev-no-update", "rev-moved", "rev-running-stage"]);
+  assert.deepEqual(ids, ["rev-no-update", "rev-moved", "rev-never-ran"]);
 });
 
-test("reviewFinishedAt only reports a finish time for tickets waiting on review", () => {
+test("reviewFinishedAt reads finished_at and falls back to the mtime, then creation", () => {
   const state = loadKontoraState();
-  const history = [{ stage: "code", completed_at: "2026-05-19T09:00:00Z" }];
+  const review = (t) => state.reviewFinishedAt({ status: "human_review", ...t });
 
-  assert.equal(state.reviewFinishedAt({ status: "human_review", history }), "2026-05-19T09:00:00Z");
-  assert.equal(state.reviewFinishedAt({ status: "done", history }), "");
+  assert.equal(review({ finished_at: "2026-05-19T09:00:00Z" }), "2026-05-19T09:00:00Z");
+  assert.equal(review({ updated_at: "2026-05-19T10:00:00Z" }), "2026-05-19T10:00:00Z");
+  assert.equal(review({ created_at: "2026-05-19T08:00:00Z" }), "2026-05-19T08:00:00Z");
+  assert.equal(review({}), "");
+
+  // The card whose file was touched after its last run: the run still wins.
+  assert.equal(
+    review({
+      finished_at: "2026-04-20T09:00:00Z",
+      updated_at: "2026-08-07T18:00:00Z",
+      created_at: "2026-04-01T08:00:00Z",
+    }),
+    "2026-04-20T09:00:00Z",
+  );
+
+  // Any other column has no finish time to show.
+  assert.equal(state.reviewFinishedAt({ status: "done", finished_at: "2026-05-19T09:00:00Z" }), "");
   assert.equal(state.reviewFinishedAt({ status: "todo", created_at: "2026-05-19T08:00:00Z" }), "");
 });
 
@@ -1465,7 +1476,7 @@ test("_cardHTML shows the finish time on review cards", () => {
     {
       id: "sta-rev", title: "Check it", status: "human_review", kontora: true, pipeline: "kontora",
       created_at: "2026-05-19T06:00:00Z", updated_at: "2026-05-19T10:30:00Z",
-      history: [{ stage: "code", completed_at: "2026-05-19T09:00:00Z" }],
+      finished_at: "2026-05-19T09:00:00Z",
     },
     { key: "human_review" },
   );
@@ -1762,12 +1773,12 @@ test("_cardSig follows the review finish time", () => {
   const base = {
     id: "sig-rev", title: "Review", status: "human_review", kontora: true,
     created_at: "2026-05-19T08:00:00Z", updated_at: "2026-05-19T10:00:00Z",
-    history: [{ stage: "code", completed_at: "2026-05-19T09:00:00Z" }],
+    finished_at: "2026-05-19T09:00:00Z",
   };
   const col = { key: "human_review" };
   const sig = state._cardSig(base, col);
 
-  const relanded = { ...base, history: [...base.history, { stage: "code", completed_at: "2026-05-19T12:00:00Z" }] };
+  const relanded = { ...base, finished_at: "2026-05-19T12:00:00Z" };
   assert.notEqual(state._cardSig(relanded, col), sig);
 
   // A plain edit to the markdown bumps the mtime but no card text, so the
@@ -1905,7 +1916,7 @@ test("a clock tick alone patches nothing", () => {
 test("a reordered card is moved, not rebuilt", () => {
   const rev = (id, finish) => ({
     id, title: id.toUpperCase(), status: "human_review", kontora: true,
-    created_at: "2026-05-19T06:00:00Z", history: [{ stage: "code", completed_at: finish }],
+    created_at: "2026-05-19T06:00:00Z", finished_at: finish,
   });
   const { board, state, built } = renderedBoard([
     rev("rev-a", "2026-05-19T09:00:00Z"),
@@ -1917,7 +1928,7 @@ test("a reordered card is moved, not rebuilt", () => {
 
   // A corrected finish on rev-a drops it to the bottom. Only rev-a's own card
   // text changed, so rev-b and rev-c are moved with their nodes intact.
-  state.tickets[0].history = [{ stage: "code", completed_at: "2026-05-19T06:30:00Z" }];
+  state.tickets[0].finished_at = "2026-05-19T06:30:00Z";
   state.recomputeBoard();
 
   assert.deepEqual(built, ["rev-a"]);

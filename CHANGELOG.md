@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.31.0](https://github.com/worksonmyai/kontora/compare/v0.30.0...v0.31.0) - 2026-08-15
+
+- Go 1.26.6
+- Add design-sync inputs for the Claude Design project
+- Bucket the stats throughput charts by the window length
+- Add 1d and 1w ranges to the stats page
+- Fix ordering in human review tab
+- Give the modal form fields an explicit height
+
+### Dependencies
+
+- Bump github.com/fsnotify/fsnotify from 1.9.0 to 1.10.1 (#33)
+
 ## [0.30.0](https://github.com/worksonmyai/kontora/compare/v0.29.0...v0.30.0) - 2026-08-13
 
 - Rebuild start ticket modal on structured design

@@ -1,6 +1,6 @@
 module github.com/worksonmyai/kontora
 
-go 1.26.5
+go 1.26.6
 
 tool (
 	golang.org/x/tools/cmd/deadcode

@@ -1,0 +1,64 @@
+<!-- @dsCard group="Patterns" -->
+<!doctype html>
+<html><head><meta charset="utf-8">
+  <link rel="stylesheet" href="../../../styles.css">
+  <style>
+    body { margin: 0; padding: 24px; background: rgba(var(--surface-950), 1); }
+    .stack > * + * { margin-top: 12px; }
+    .label { font: 600 11px 'DM Sans', sans-serif; letter-spacing: .06em; text-transform: uppercase; color: rgba(var(--tx-4), 1); margin: 18px 0 8px; }
+    .label:first-child { margin-top: 0; }
+  </style>
+</head><body>
+  <div class="stack">
+    <div class="label">Ticket cards, dark</div>
+
+    <div class="bg-surface-900 border border-edge-card rounded-lg p-4 flex items-center justify-between">
+      <div>
+        <div class="text-tx-hi text-sm font-medium">Rewrite the scheduler</div>
+        <div class="text-tx-3 text-xs font-mono">ticket-142 &middot; feat/scheduler</div>
+      </div>
+      <span class="text-st-done text-xs bg-st-done/10 rounded-md px-2 py-1">done</span>
+    </div>
+
+    <div class="bg-surface-850 border border-edge-input rounded-lg p-4 flex items-center justify-between">
+      <div>
+        <div class="text-tx-hi text-sm font-medium">Bucket the throughput charts</div>
+        <div class="text-tx-3 text-xs font-mono">ticket-143 &middot; main</div>
+      </div>
+      <span class="text-st-progress text-xs bg-st-progress/50 rounded-md px-2 py-1">running</span>
+    </div>
+
+    <div class="bg-surface-900 border border-edge-card rounded-lg p-4 flex items-center justify-between" data-pipe-color="cyan" style="border-left:3px solid hsl(var(--pipe-h) / 1)">
+      <div>
+        <div class="text-tx-hi text-sm font-medium">Give the modal form fields a height</div>
+        <div class="text-tx-3 text-xs font-mono">ticket-144 &middot; fix/modal</div>
+      </div>
+      <!-- bg-st-review/10 has no compiled rule, so tint from the token directly -->
+      <span class="text-st-review text-xs rounded-md px-2 py-1" style="background:hsl(var(--st-review) / 0.12)">review</span>
+    </div>
+
+    <div class="label">Log output</div>
+    <div class="bg-surface-deep border border-surface-700 rounded-lg p-3">
+      <div class="text-tx-log text-xs font-mono">2026-08-14 02:31 stage=plan exit=0</div>
+      <div class="text-tx-faint text-xs font-mono">2026-08-14 02:33 stage=code exit=0</div>
+    </div>
+
+    <div class="label">The same cards, light</div>
+    <div data-theme="light" class="stack" style="background:rgba(var(--surface-950),1);border-radius:10px;padding:12px">
+      <div class="bg-surface-900 border border-edge-card rounded-lg p-4 flex items-center justify-between">
+        <div>
+          <div class="text-tx-hi text-sm font-medium">Rewrite the scheduler</div>
+          <div class="text-tx-3 text-xs font-mono">ticket-142 &middot; feat/scheduler</div>
+        </div>
+        <span class="text-st-done text-xs bg-st-done/10 rounded-md px-2 py-1">done</span>
+      </div>
+      <div class="bg-surface-850 border border-edge-input rounded-lg p-4 flex items-center justify-between">
+        <div>
+          <div class="text-tx-hi text-sm font-medium">Bucket the throughput charts</div>
+          <div class="text-tx-3 text-xs font-mono">ticket-143 &middot; main</div>
+        </div>
+        <span class="text-st-progress text-xs bg-st-progress/50 rounded-md px-2 py-1">running</span>
+      </div>
+    </div>
+  </div>
+</body></html>

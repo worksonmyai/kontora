@@ -1,0 +1,58 @@
+<!-- @dsCard group="Foundations" -->
+<!doctype html>
+<html><head><meta charset="utf-8">
+  <link rel="stylesheet" href="../../../styles.css">
+  <style>
+    body { margin: 0; padding: 24px; background: rgba(var(--surface-950), 1); }
+    .cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 20px; align-items: start; }
+    .pane { background: rgba(var(--surface-900), 1); border: 1px solid rgba(var(--edge-card), 1); border-radius: 10px; padding: 16px; }
+    .pane h3 { margin: 0 0 12px; font: 600 12px 'DM Sans', sans-serif; letter-spacing: .06em; text-transform: uppercase; color: rgba(var(--tx-3), 1); }
+    .grp { margin-bottom: 14px; }
+    .grp h4 { margin: 0 0 6px; font: 600 11px 'DM Sans', sans-serif; color: rgba(var(--tx-4), 1); }
+    .row { display: flex; align-items: center; gap: 10px; padding: 3px 0; }
+    .chip { width: 34px; height: 20px; border-radius: 4px; border: 1px solid rgba(var(--edge-faint), 1); flex: none; }
+    .name { font: 400 12px 'JetBrains Mono', monospace; color: rgba(var(--tx-2), 1); flex: 1; }
+    .val { font: 400 11px 'JetBrains Mono', monospace; color: rgba(var(--tx-4), 1); }
+  </style>
+</head><body>
+  <div class="cols">
+    <div class="pane" data-theme="dark" id="dark"><h3>Dark (default)</h3></div>
+    <div class="pane" data-theme="light" id="light"><h3>Light</h3></div>
+  </div>
+  <script>
+    var GROUPS = [
+      ['Surfaces', ['surface-deep','surface-950','surface-frame','surface-rail','surface-900','surface-850','surface-800','surface-700','surface-600']],
+      ['Edges', ['edge-card','edge-input','edge-hover','edge-faint']],
+      ['Accent', ['accent','accent-dim','accent-bright','accent-fg']],
+      ['Semantic', ['ok','warn','err','review']],
+      ['Text', ['tx','tx-hi','tx-2','tx-3','tx-4','tx-log','tx-faint']]
+    ];
+    ['dark','light'].forEach(function (theme) {
+      var pane = document.getElementById(theme);
+      GROUPS.forEach(function (g) {
+        var box = document.createElement('div');
+        box.className = 'grp';
+        var h = document.createElement('h4');
+        h.textContent = g[0];
+        box.appendChild(h);
+        g[1].forEach(function (token) {
+          var value = getComputedStyle(pane).getPropertyValue('--' + token).trim();
+          var row = document.createElement('div');
+          row.className = 'row';
+          var chip = document.createElement('div');
+          chip.className = 'chip';
+          chip.style.background = 'rgba(' + value + ', 1)';
+          var name = document.createElement('div');
+          name.className = 'name';
+          name.textContent = '--' + token;
+          var val = document.createElement('div');
+          val.className = 'val';
+          val.textContent = value;
+          row.appendChild(chip); row.appendChild(name); row.appendChild(val);
+          box.appendChild(row);
+        });
+        pane.appendChild(box);
+      });
+    });
+  </script>
+</body></html>

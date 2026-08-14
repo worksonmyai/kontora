@@ -37,3 +37,7 @@ go.work.sum
 
 # Downloaded Tailwind standalone CLI (see hack/get-tailwind.sh)
 /bin/
+
+# design-sync build output (regenerated; see .design-sync/NOTES.md)
+/ds-bundle/
+/.design-sync/.cache/

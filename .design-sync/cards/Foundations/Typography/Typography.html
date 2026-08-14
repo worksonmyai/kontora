@@ -1,0 +1,63 @@
+<!-- @dsCard group="Foundations" -->
+<!doctype html>
+<html><head><meta charset="utf-8">
+  <link rel="stylesheet" href="../../../styles.css">
+  <style>
+    body { margin: 0; padding: 24px; background: rgba(var(--surface-950), 1); }
+    .pane { background: rgba(var(--surface-900), 1); border: 1px solid rgba(var(--edge-card), 1); border-radius: 10px; padding: 18px; margin-bottom: 16px; }
+    .pane h3 { margin: 0 0 4px; font: 600 12px 'DM Sans', sans-serif; letter-spacing: .06em; text-transform: uppercase; color: rgba(var(--tx-3), 1); }
+    .pane p.meta { margin: 0 0 14px; font: 400 12px 'JetBrains Mono', monospace; color: rgba(var(--tx-4), 1); }
+    .spec { display: flex; align-items: baseline; gap: 14px; padding: 5px 0; }
+    .lbl { font: 400 11px 'JetBrains Mono', monospace; color: rgba(var(--tx-4), 1); width: 108px; flex: none; }
+    .sans { font-family: 'DM Sans', sans-serif; color: rgba(var(--tx), 1); }
+    .mono { font-family: 'JetBrains Mono', monospace; color: rgba(var(--tx), 1); }
+    .ramp { display: flex; flex-wrap: wrap; gap: 12px; }
+    .ramp div { font: 400 14px 'DM Sans', sans-serif; }
+  </style>
+</head><body>
+  <div class="pane">
+    <h3>DM Sans</h3>
+    <p class="meta">font-sans &middot; weights 400 to 600 &middot; body copy, labels, headings</p>
+    <div class="spec"><span class="lbl">text-xs 400</span><span class="sans" style="font-size:12px">Rewrite the scheduler</span></div>
+    <div class="spec"><span class="lbl">text-sm 400</span><span class="sans" style="font-size:14px">Rewrite the scheduler</span></div>
+    <div class="spec"><span class="lbl">text-sm 500</span><span class="sans" style="font-size:14px;font-weight:500">Rewrite the scheduler</span></div>
+    <div class="spec"><span class="lbl">text-base 600</span><span class="sans" style="font-size:17px;font-weight:600">Rewrite the scheduler</span></div>
+  </div>
+
+  <div class="pane">
+    <h3>JetBrains Mono</h3>
+    <p class="meta">font-mono &middot; weights 400 to 700 &middot; ticket IDs, branches, paths, logs, terminal</p>
+    <div class="spec"><span class="lbl">text-xs 400</span><span class="mono" style="font-size:12px">ticket-142 &middot; feat/scheduler</span></div>
+    <div class="spec"><span class="lbl">text-sm 400</span><span class="mono" style="font-size:14px">2026-08-14 02:31 stage=plan exit=0</span></div>
+    <div class="spec"><span class="lbl">text-sm 700</span><span class="mono" style="font-size:14px;font-weight:700">internal/pipeline/evaluate.go</span></div>
+    <div class="spec"><span class="lbl">figures</span><span class="mono" style="font-size:14px">0123456789 O0 l1I {}[]()&lt;&gt; =&gt; !=</span></div>
+  </div>
+
+  <div class="pane">
+    <h3>Text tiers</h3>
+    <p class="meta">strongest to weakest, all DM Sans at 14px</p>
+    <div class="ramp">
+      <div style="color:rgba(var(--tx-hi),1)">tx-hi</div>
+      <div style="color:rgba(var(--tx),1)">tx</div>
+      <div style="color:rgba(var(--tx-2),1)">tx-2</div>
+      <div style="color:rgba(var(--tx-3),1)">tx-3</div>
+      <div style="color:rgba(var(--tx-4),1)">tx-4</div>
+      <div style="color:rgba(var(--tx-log),1)">tx-log</div>
+      <div style="color:rgba(var(--tx-faint),1)">tx-faint</div>
+    </div>
+  </div>
+
+  <div class="pane" data-theme="light">
+    <h3>Light theme</h3>
+    <p class="meta">the same tiers under [data-theme='light']</p>
+    <div class="ramp">
+      <div style="color:rgba(var(--tx-hi),1)">tx-hi</div>
+      <div style="color:rgba(var(--tx),1)">tx</div>
+      <div style="color:rgba(var(--tx-2),1)">tx-2</div>
+      <div style="color:rgba(var(--tx-3),1)">tx-3</div>
+      <div style="color:rgba(var(--tx-4),1)">tx-4</div>
+      <div style="color:rgba(var(--tx-log),1)">tx-log</div>
+      <div style="color:rgba(var(--tx-faint),1)">tx-faint</div>
+    </div>
+  </div>
+</body></html>

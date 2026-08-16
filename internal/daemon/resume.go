@@ -216,7 +216,7 @@ func (d *Daemon) resumableRecord(p spawnAgentParams) *resumeRecord {
 		if rec.SessionID == "" {
 			return reject("record carries no session ID")
 		}
-		matches, pattern, err := claudeSessionFiles(agentEnv(p.cfg, p.agentCfg), rec.SessionID)
+		matches, pattern, err := claudeSessionFiles(agentEnv(p.cfg, p.agentCfg, d.configPath), rec.SessionID)
 		if err != nil || len(matches) == 0 {
 			return reject("session file not found", "pattern", pattern, "err", err)
 		}

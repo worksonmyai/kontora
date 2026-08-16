@@ -292,7 +292,7 @@ func (d *Daemon) generateFinalSummary(ctx context.Context, p finalSummaryParams)
 		Binary:  binaryPath,
 		Args:    args,
 		Dir:     p.dir,
-		Env:     agentEnv(p.cfg, agentCfg),
+		Env:     agentEnv(p.cfg, agentCfg, d.configPath),
 		Timeout: finalSummaryTimeout,
 	})
 	if err != nil {

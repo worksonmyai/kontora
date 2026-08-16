@@ -62,3 +62,18 @@ func mustHomeDir(t *testing.T) string {
 	require.NoError(t, err)
 	return home
 }
+
+func TestDefaultConfigPath_HonoursEnvVar(t *testing.T) {
+	// The daemon exports this to its agents, so a `kontora note` run inside a
+	// worktree must prefer it over anything under the working directory.
+	dir := t.TempDir()
+	local := filepath.Join(dir, ".kontora", "config.yaml")
+	require.NoError(t, os.MkdirAll(filepath.Dir(local), 0o755))
+	require.NoError(t, os.WriteFile(local, []byte("# local"), 0o644))
+
+	named := filepath.Join(t.TempDir(), "elsewhere.yaml")
+	t.Setenv(PathEnvVar, named)
+	t.Chdir(dir)
+
+	assert.Equal(t, named, DefaultConfigPath())
+}

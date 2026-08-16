@@ -25,9 +25,19 @@ func ResolveConfigPath(workDir string, configDirs []string) string {
 	return local
 }
 
-// DefaultConfigPath returns the default config file path, checking the
-// current working directory and standard config directories.
+// PathEnvVar names the config file for every kontora command in a process
+// tree. The daemon exports it to the agents it spawns, so `kontora note` inside
+// a worktree writes to the same config the daemon was started with, rather than
+// re-deriving one from the agent's working directory and $HOME.
+const PathEnvVar = "KONTORA_CONFIG"
+
+// DefaultConfigPath returns the default config file path: the one KONTORA_CONFIG
+// names, else the first hit when checking the current working directory and the
+// standard config directories.
 func DefaultConfigPath() string {
+	if p := os.Getenv(PathEnvVar); p != "" {
+		return ExpandTilde(p)
+	}
 	wd, err := os.Getwd()
 	if err != nil {
 		return filepath.Join(".kontora", "config.yaml")

@@ -1216,6 +1216,7 @@ func TestAgentEnvironmentOverride(t *testing.T) {
 		WithLockPath(h.lockPath),
 		WithRunner(capturingRunner),
 		WithSkipOrphanCleanup(),
+		WithConfigPath("/etc/kontora/config.yaml"),
 	)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -1234,6 +1235,9 @@ func TestAgentEnvironmentOverride(t *testing.T) {
 	assert.Equal(t, "from-agent", captured.Env["SHARED_VAR"], "agent env should override global env")
 	_, unsetPresent := captured.Env["UNSET_ME"]
 	assert.False(t, unsetPresent, "empty string in agent env should unset global key")
+	// The prompt tells the agent to run bare `kontora note`, which only reaches
+	// the daemon's own config through this variable.
+	assert.Equal(t, "/etc/kontora/config.yaml", captured.Env[config.PathEnvVar])
 
 	cancel()
 	require.NoError(t, <-errCh)

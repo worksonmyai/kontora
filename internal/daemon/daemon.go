@@ -2423,7 +2423,7 @@ func (d *Daemon) buildRunnerParams(cfg *config.Config, agentCfg config.Agent, st
 		Interactive: agentCfg.IsClaude(),
 		SessionID:   sessionID,
 		SessionDir:  sessionDir,
-		Env:         agentEnv(cfg, agentCfg),
+		Env:         agentEnv(cfg, agentCfg, d.configPath),
 		OnReady: func() {
 			d.broadcastTerminalReady(ticketID)
 		},
@@ -2432,8 +2432,17 @@ func (d *Daemon) buildRunnerParams(cfg *config.Config, agentCfg config.Agent, st
 
 // agentEnv merges the agent's environment over the top-level one. An agent entry
 // with an empty value unsets the variable rather than setting it to "".
-func agentEnv(cfg *config.Config, agentCfg config.Agent) map[string]string {
-	env := make(map[string]string, len(cfg.Environment)+len(agentCfg.Environment))
+//
+// configPath is exported as KONTORA_CONFIG first, so the `kontora note` and
+// `kontora summary` calls the prompt asks for reach the same config the daemon
+// runs on. Without it they re-derive a path from the worktree and $HOME, which
+// is the wrong file whenever the daemon was started with --config. A user who
+// sets the variable in their own environment config still wins.
+func agentEnv(cfg *config.Config, agentCfg config.Agent, configPath string) map[string]string {
+	env := make(map[string]string, len(cfg.Environment)+len(agentCfg.Environment)+1)
+	if configPath != "" {
+		env[config.PathEnvVar] = configPath
+	}
 	maps.Copy(env, cfg.Environment)
 	for k, v := range agentCfg.Environment {
 		if v == "" {

@@ -95,7 +95,7 @@ func (d *Daemon) StartPlannotatorReview(id string) error {
 	d.mu.Unlock()
 
 	if t.Status != ticket.StatusHumanReview {
-		return web.ErrInvalidState
+		return fmt.Errorf("%w: ticket %s is in status %s, review needs %s", web.ErrInvalidState, id, t.Status, ticket.StatusHumanReview)
 	}
 
 	repoName, repoPath, err := d.resolvePath(t)

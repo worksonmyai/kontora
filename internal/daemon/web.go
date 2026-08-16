@@ -299,8 +299,9 @@ func (d *Daemon) PauseTicket(id string) error {
 		return web.ErrTicketNotFound
 	}
 	if ts.ticket.Status != ticket.StatusInProgress {
+		status := ts.ticket.Status
 		d.mu.Unlock()
-		return web.ErrInvalidState
+		return fmt.Errorf("%w: cannot pause ticket %s in status %s (only a running ticket can be paused)", web.ErrInvalidState, id, status)
 	}
 
 	filePath := ts.filePath
@@ -370,19 +371,19 @@ func (d *Daemon) SetStage(id string, stage string) error {
 	pipelineCfg, ok := d.config().Pipelines[pipelineName]
 	if !ok {
 		d.mu.Unlock()
-		return web.ErrInvalidState
+		if pipelineName == "" {
+			return fmt.Errorf("%w: ticket %s has no pipeline, so it has no stages", web.ErrInvalidState, id)
+		}
+		return fmt.Errorf("%w: unknown pipeline %q for ticket %s", web.ErrInvalidState, pipelineName, id)
 	}
 
-	found := false
-	for _, s := range pipelineCfg {
-		if s.Stage == stage {
-			found = true
-			break
-		}
+	stageNames := make([]string, len(pipelineCfg))
+	for i, s := range pipelineCfg {
+		stageNames[i] = s.Stage
 	}
-	if !found {
+	if !slices.Contains(stageNames, stage) {
 		d.mu.Unlock()
-		return web.ErrInvalidState
+		return fmt.Errorf("%w: stage %q not found in pipeline %q (has %s)", web.ErrInvalidState, stage, pipelineName, strings.Join(stageNames, ", "))
 	}
 
 	d.mu.Unlock()
@@ -425,7 +426,7 @@ func (d *Daemon) MoveTicket(id string, newStatus string) error {
 			// valid
 		default:
 			if !d.config().IsCustomStatus(newStatus) {
-				return web.ErrInvalidState
+				return fmt.Errorf("%w: unknown status %q", web.ErrInvalidState, newStatus)
 			}
 		}
 		_, err := d.svc.SetStatus(id, ticket.Status(newStatus))
@@ -517,7 +518,7 @@ func (d *Daemon) UpdateTicket(id string, req web.UpdateTicketRequest) error {
 	d.mu.Unlock()
 
 	if !d.config().StatusAllowsEdit(string(status)) {
-		return web.ErrInvalidState
+		return fmt.Errorf("%w: cannot edit ticket %s in status %s", web.ErrInvalidState, id, status)
 	}
 
 	t2, err := ticket.ParseFile(filePath)
@@ -1156,21 +1157,36 @@ func childInfo(cfg *config.Config, t *ticket.Ticket) web.TicketChild {
 	return c
 }
 
+// mappedError reports a web sentinel to errors.Is while printing the app
+// layer's message. Replacing the error outright would drop the only part a user
+// can act on: "invalid state transition" alone does not say which ticket, or
+// which status it is already in.
+type mappedError struct {
+	sentinel error
+	cause    error
+}
+
+func (e *mappedError) Error() string { return e.cause.Error() }
+func (e *mappedError) Unwrap() error { return e.cause }
+func (e *mappedError) Is(target error) bool {
+	return target == e.sentinel
+}
+
 // mapAppError translates app-level sentinel errors to web-level sentinel errors
-// so that HTTP handlers and tests that check for web.ErrInvalidState etc. continue
-// to work correctly.
+// so that HTTP handlers and tests that check for web.ErrInvalidState etc.
+// continue to work, while the message the app layer wrote reaches the client.
 func mapAppError(err error) error {
 	if err == nil {
 		return nil
 	}
-	if errors.Is(err, app.ErrNotFound) {
-		return web.ErrTicketNotFound
-	}
-	if errors.Is(err, app.ErrInvalidState) {
-		return web.ErrInvalidState
-	}
-	if errors.Is(err, app.ErrUnknownAgent) {
-		return web.ErrUnknownAgent
+	for _, m := range []struct{ from, to error }{
+		{app.ErrNotFound, web.ErrTicketNotFound},
+		{app.ErrInvalidState, web.ErrInvalidState},
+		{app.ErrUnknownAgent, web.ErrUnknownAgent},
+	} {
+		if errors.Is(err, m.from) {
+			return &mappedError{sentinel: m.to, cause: err}
+		}
 	}
 	return err
 }

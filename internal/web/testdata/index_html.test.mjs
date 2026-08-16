@@ -1267,6 +1267,191 @@ test("recomputeBoard applies the search query to the cached board", () => {
   assert.equal(state.filteredTicketCount(), 1);
 });
 
+// A typed value narrows by substring; the `=` form a sidebar click writes
+// matches the whole field.
+const tok = (value, exact = false) => ({ value, exact });
+
+test("parseFilterQuery splits the box into tokens and free text", () => {
+  const state = loadKontoraState();
+  const cases = [
+    { name: "a project token", q: "project:kontora", want: { text: "", project: [tok("kontora")], agent: [] } },
+    { name: "an agent token", q: "agent:Claude", want: { text: "", project: [], agent: [tok("claude")] } },
+    { name: "an exact token", q: "project:=kontora", want: { text: "", project: [tok("kontora", true)], agent: [] } },
+    // A name with a space in it only survives the term split quoted, which is
+    // how the sidebar writes it.
+    { name: "a quoted value", q: 'project:="my notes"', want: { text: "", project: [tok("my notes", true)], agent: [] } },
+    { name: "quoted free text", q: '"two words"', want: { text: "two words", project: [], agent: [] } },
+    { name: "a token plus free text", q: "project:Kontora Fonts", want: { text: "fonts", project: [tok("kontora")], agent: [] } },
+    { name: "two tokens", q: "project:kontora agent:claude", want: { text: "", project: [tok("kontora")], agent: [tok("claude")] } },
+    { name: "a repeated key", q: "project:kontora project:widget-api", want: { text: "", project: [tok("kontora"), tok("widget-api")], agent: [] } },
+    // Between the colon and the first typed character the key constrains
+    // nothing, rather than emptying the board.
+    { name: "a bare prefix", q: "project:", want: { text: "", project: [], agent: [] } },
+    { name: "a bare exact prefix", q: "project:=", want: { text: "", project: [], agent: [] } },
+    { name: "a bare prefix and free text", q: "project: fonts", want: { text: "fonts", project: [], agent: [] } },
+    { name: "an unknown prefix", q: "foo:bar", want: { text: "foo:bar", project: [], agent: [] } },
+    { name: "an empty box", q: "  ", want: { text: "", project: [], agent: [] } },
+  ];
+
+  for (const c of cases) {
+    assert.deepEqual(vmValue(state.parseFilterQuery(c.q)), c.want, c.name);
+  }
+
+  // An unknown prefix is matched as the literal it looks like.
+  assert.equal(state.ticketMatchesQuery({ title: "see foo:bar" }, "foo:bar"), true);
+  assert.equal(state.ticketMatchesQuery({ title: "see bar" }, "foo:bar"), false);
+});
+
+// Configured projects whose names overlap, one whose name has a space in it,
+// and one repository that is not configured at all, so a project name has to
+// come from the config in one case and from the path in the other.
+const FILTER_PROJECTS = [
+  { name: "kontora", path: "~/projects/kontora", resolved_path: "/home/u/projects/kontora" },
+  { name: "kontora-web", path: "~/projects/kontora-web", resolved_path: "/home/u/projects/kontora-web" },
+  { name: "agento11y", path: "~/projects/widget-api", resolved_path: "/home/u/projects/widget-api" },
+  { name: "my notes", path: "~/projects/notes", resolved_path: "/home/u/projects/notes" },
+];
+
+test("ticketProjectName names the configured project, or the repository", () => {
+  const state = loadKontoraState();
+  state.configCache = { projects: FILTER_PROJECTS, pipelines: [], agents: [] };
+  const cases = [
+    { name: "the configured path", path: "~/projects/kontora", want: "kontora" },
+    { name: "the resolved path", path: "/home/u/projects/widget-api", want: "agento11y" },
+    { name: "a trailing slash", path: "~/projects/kontora/", want: "kontora" },
+    { name: "no configured project", path: "/home/u/projects/scratch", want: "scratch" },
+    { name: "no path at all", path: "", want: "" },
+  ];
+
+  for (const c of cases) {
+    assert.equal(state.ticketProjectName({ path: c.path }), c.want, c.name);
+  }
+});
+
+// One ticket per project, each with its own agent, so a token that names one of
+// them has the others to exclude. The kontora and kontora-web pair, and the
+// claude and claude-opus pair, are what a substring token over-matches.
+const FILTER_TICKETS = [
+  { id: "kon-1", title: "Vendor the fonts", status: "todo", kontora: true, agent: "claude", path: "~/projects/kontora" },
+  { id: "kon-2", title: "Fonts on the stats page", status: "todo", kontora: true, agent: "codex", path: "/home/u/projects/widget-api" },
+  { id: "kon-3", title: "Scratch work", status: "todo", kontora: true, agent: "pi-opus", path: "/home/u/projects/scratch" },
+  { id: "kon-4", title: "Dashboard sidebar", status: "todo", kontora: true, agent: "claude-opus", path: "~/projects/kontora-web" },
+  { id: "kon-5", title: "Sort the inbox", status: "todo", kontora: true, agent: "codex", path: "/home/u/projects/notes" },
+];
+const FILTER_ALL = ["kon-1", "kon-2", "kon-3", "kon-4", "kon-5"];
+
+test("recomputeBoard narrows the board by the project and agent tokens", () => {
+  const cases = [
+    { name: "a configured project by its path", q: "project:=kontora", want: ["kon-1"] },
+    { name: "a configured project by its resolved path", q: "project:=agento11y", want: ["kon-2"] },
+    { name: "a repository with no configured project", q: "project:=scratch", want: ["kon-3"] },
+    { name: "a project name with a space", q: 'project:="my notes"', want: ["kon-5"] },
+    // A typed value narrows by substring, so a name that contains another name
+    // keeps both. Only the `=` form the sidebar writes selects one project.
+    { name: "a partly typed value", q: "project:kon", want: ["kon-1", "kon-4"] },
+    { name: "a name that contains another name", q: "project:kontora", want: ["kon-1", "kon-4"] },
+    { name: "an agent, exactly", q: "agent:=claude", want: ["kon-1"] },
+    { name: "an agent, as a substring", q: "agent:claude", want: ["kon-1", "kon-4"] },
+    { name: "both keys at once", q: "project:kontora agent:codex", want: [] },
+    { name: "a token and free text", q: "project:kontora fonts", want: ["kon-1"] },
+    { name: "free text alone", q: "fonts", want: ["kon-1", "kon-2"] },
+    // A bare word must not reach the agent field: that split is what keeps the
+    // command palette a wider search than the board filter.
+    { name: "an agent name as free text", q: "pi-opus", want: [] },
+    { name: "a bare prefix", q: "project:", want: FILTER_ALL },
+    { name: "an unknown prefix", q: "foo:bar", want: [] },
+    { name: "an empty box", q: "", want: FILTER_ALL },
+  ];
+
+  for (const c of cases) {
+    const state = loadKontoraState();
+    state.configCache = { projects: FILTER_PROJECTS, pipelines: [], agents: [] };
+    state.tickets = FILTER_TICKETS;
+    state.searchQuery = c.q;
+
+    state.recomputeBoard();
+
+    assert.deepEqual(bt(state, "in_progress").map(t => t.id).sort(), c.want, c.name);
+    assert.equal(state.filteredTicketCount(), c.want.length, c.name);
+  }
+});
+
+test("a sidebar row writes its token into the filter box and takes it back out", () => {
+  const state = loadKontoraState();
+  state.configCache = { projects: FILTER_PROJECTS, pipelines: [], agents: [] };
+  state.tickets = FILTER_TICKETS;
+
+  state.toggleFilterToken("project", "agento11y");
+  assert.equal(state.searchQuery, "project:=agento11y");
+  assert.equal(state.filterTokenActive("project", "agento11y"), true);
+  assert.equal(state.filterTokenActive("project", "kontora"), false);
+  assert.equal(state.filterTokenActive("agent", "agento11y"), false);
+
+  // Clicking the active row again clears the box, so the board comes back whole.
+  state.toggleFilterToken("project", "agento11y");
+  assert.equal(state.searchQuery, "");
+  assert.equal(state.filterTokenActive("project", "agento11y"), false);
+  state.recomputeBoard();
+  assert.equal(state.filteredTicketCount(), FILTER_ALL.length);
+
+  // Clicking another row replaces the query rather than adding to it.
+  state.toggleFilterToken("project", "kontora");
+  state.toggleFilterToken("agent", "claude");
+  assert.equal(state.searchQuery, "agent:=claude");
+
+  // The row selects the name it shows, not every name that contains it.
+  state.recomputeBoard();
+  assert.deepEqual(bt(state, "in_progress").map(t => t.id), ["kon-1"]);
+
+  // A name with a space in it is quoted, so the row it wrote is still the whole
+  // query and a second click empties the box.
+  state.toggleFilterToken("project", "my notes");
+  assert.equal(state.searchQuery, 'project:="my notes"');
+  assert.equal(state.filterTokenActive("project", "my notes"), true);
+  state.recomputeBoard();
+  assert.deepEqual(bt(state, "in_progress").map(t => t.id), ["kon-5"]);
+  state.toggleFilterToken("project", "my notes");
+  assert.equal(state.searchQuery, "");
+});
+
+test("no sidebar row is active once the query says more than the row does", () => {
+  const state = loadKontoraState();
+  const cases = [
+    { name: "the token alone", q: "project:=agento11y", want: true },
+    { name: "the token with free text", q: "project:=agento11y fonts", want: false },
+    { name: "the token with another key", q: "project:=agento11y agent:=claude", want: false },
+    { name: "the token repeated", q: "project:=agento11y project:=kontora", want: false },
+    { name: "a different value", q: "project:=kontora", want: false },
+    // A typed value narrows by substring, so it is not what the row writes.
+    { name: "the value typed without the = form", q: "project:agento11y", want: false },
+    { name: "an empty box", q: "", want: false },
+  ];
+
+  for (const c of cases) {
+    state.searchQuery = c.q;
+    assert.equal(state.filterTokenActive("project", "agento11y"), c.want, c.name);
+  }
+});
+
+test("the sidebar project and agent rows are buttons wired to the filter tokens", () => {
+  const html = fs.readFileSync(htmlPath, "utf8");
+
+  // A row is a button, so it takes focus and a keypress, not only a click.
+  assert.match(html, /<button[^>]*@click="toggleFilterToken\('project', p\.name\)"/, "the project row is a button");
+  assert.match(html, /<button[^>]*@click="toggleFilterToken\('agent', a\)"/, "the agent row is a button");
+
+  assert.ok(html.includes(`x-show="(configCache?.projects || []).length > 0"`), "no projects, no section");
+  for (const wired of [
+    `:class="filterTokenActive('project', p.name)`,
+    `:aria-pressed="filterTokenActive('project', p.name)"`,
+    `:class="filterTokenActive('agent', a)`,
+    `:aria-pressed="filterTokenActive('agent', a)"`,
+    "agentRunningCount(a)",
+  ]) {
+    assert.ok(html.includes(wired), wired);
+  }
+});
+
 test("queueTicketUpdate coalesces a burst into a single recompute", () => {
   const state = loadKontoraState();
   state.updateFavicon = () => {};
@@ -4173,6 +4358,27 @@ test("the palette matches on stage and agent, which the board filter ignores", (
     state.paletteQuery = q;
     state.recomputePalette();
     assert.deepEqual(rowIds(groupIn(state, "Tickets").items), ["ticket:kon-2"], q);
+  }
+});
+
+test("the palette reads the same project and agent tokens as the board", () => {
+  const cases = [
+    // The two kontora tickets, by the repository their path names.
+    { name: "a project token", q: "project:=kontora", want: ["ticket:kon-1", "ticket:kon-2"] },
+    { name: "an agent token", q: "agent:=codex", want: ["ticket:kon-2"] },
+    // The token narrows, and the free text next to it still reaches the two
+    // fields only the palette searches.
+    { name: "a token and a stage as free text", q: "project:=kontora plan", want: ["ticket:kon-2"] },
+    { name: "a token no ticket has", q: "project:=nothing", want: [] },
+  ];
+
+  for (const c of cases) {
+    const state = paletteState();
+    state.paletteQuery = c.q;
+    state.recomputePalette();
+
+    const tickets = groupIn(state, "Tickets");
+    assert.deepEqual(tickets ? rowIds(tickets.items).sort() : [], c.want, c.name);
   }
 });
 

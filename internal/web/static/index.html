@@ -1143,7 +1143,8 @@
         </svg>
         <input type="text" x-model="searchQuery" @keydown.escape="$el.blur()"
                placeholder="Filter tickets…" aria-label="Filter tickets"
-               class="w-full pl-8 pr-11 py-[7px] text-[12px] font-mono rounded-[7px] bg-surface-900 border border-edge-input text-tx placeholder-surface-600 focus:outline-none focus:border-accent transition-colors">
+               class="w-full pl-8 pr-11 py-[7px] text-[12px] font-mono rounded-[7px] bg-surface-900 border border-edge-input text-tx placeholder-surface-600 focus:outline-none focus:border-accent transition-colors"
+               title="Filter by title, id, repository or pipeline. project:name and agent:name narrow to one of those.">
         <button x-show="searchQuery" @click="clearSearch()" aria-label="Clear filter" class="absolute right-2 text-surface-600 hover:text-tx-3">
           <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
@@ -1344,17 +1345,44 @@
         </button>
       </nav>
 
-      <!-- Agents -->
+      <!-- Projects. Clicking a row puts a project:=<name> token in the filter
+           box, which selects that name and not every name containing it;
+           clicking the row that is already the whole query empties the box.
+           The dot takes the same hue as the card left border, which is the
+           pipeline where one is configured and the repository name otherwise. -->
+      <div class="p-2.5 pt-2" x-show="(configCache?.projects || []).length > 0">
+        <div class="font-mono text-[10px] font-semibold text-surface-600 uppercase tracking-widest px-2 pb-1.5">projects</div>
+        <div class="flex flex-col">
+          <template x-for="p in (configCache?.projects || [])" :key="p.name">
+            <button @click="toggleFilterToken('project', p.name)"
+                    class="flex items-center gap-2 h-6 px-2 w-full text-left text-[11px] rounded min-w-0 transition-colors"
+                    :class="filterTokenActive('project', p.name) ? 'bg-surface-850 text-tx' : 'text-tx-2 hover:bg-surface-900'"
+                    :aria-pressed="filterTokenActive('project', p.name)"
+                    :title="p.name">
+              <span class="w-[5px] h-[5px] rounded-full shrink-0"
+                    :data-pipe-color="pipelineColorByName(p.pipeline || pathBasename(p.path))"
+                    style="background: hsl(var(--pipe-h, 240 10% 55%))"></span>
+              <span class="font-mono truncate flex-1" x-text="p.name"></span>
+            </button>
+          </template>
+        </div>
+      </div>
+
+      <!-- Agents. The same rows, writing an agent: token. -->
       <div class="p-2.5 pt-2" x-show="(configCache?.agents || []).length > 0">
         <div class="font-mono text-[10px] font-semibold text-surface-600 uppercase tracking-widest px-2 pb-1.5">agents</div>
         <div class="flex flex-col">
           <template x-for="a in (configCache?.agents || [])" :key="a">
-            <div class="flex items-center gap-2 h-6 px-2 text-[11px] text-tx-2 min-w-0" :title="a">
+            <button @click="toggleFilterToken('agent', a)"
+                    class="flex items-center gap-2 h-6 px-2 w-full text-left text-[11px] rounded min-w-0 transition-colors"
+                    :class="filterTokenActive('agent', a) ? 'bg-surface-850 text-tx' : 'text-tx-2 hover:bg-surface-900'"
+                    :aria-pressed="filterTokenActive('agent', a)"
+                    :title="a">
               <span class="w-[5px] h-[5px] rounded-full shrink-0"
                     :style="agentRunningCount(a) > 0 ? 'background: hsl(var(--st-progress)); box-shadow: 0 0 0 2px hsl(var(--st-progress) / 0.2)' : 'background: rgba(var(--surface-600), 1)'"></span>
               <span class="font-mono truncate flex-1" x-text="a"></span>
               <span class="font-mono num text-[10px] text-surface-600 shrink-0" x-text="agentRunningCount(a)"></span>
-            </div>
+            </button>
           </template>
         </div>
       </div>
@@ -3213,7 +3241,7 @@
       <div style="padding:0 16px 10px;">
         <div style="position:relative;display:flex;align-items:center;">
           <svg style="position:absolute;left:11px;width:14px;height:14px;color:rgba(var(--surface-600),1);" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
-          <input x-model="searchQuery" placeholder="Filter tickets…" aria-label="Filter tickets" style="width:100%;height:38px;padding:0 12px 0 34px;font-family:'JetBrains Mono',monospace;font-size:13px;border-radius:9px;background:rgba(var(--surface-900),1);border:1px solid rgba(var(--surface-700),.5);color:rgba(var(--tx),1);outline:none;"/>
+          <input x-model="searchQuery" placeholder="Filter, or project:name" aria-label="Filter tickets" style="width:100%;height:38px;padding:0 12px 0 34px;font-family:'JetBrains Mono',monospace;font-size:13px;border-radius:9px;background:rgba(var(--surface-900),1);border:1px solid rgba(var(--surface-700),.5);color:rgba(var(--tx),1);outline:none;"/>
         </div>
       </div>
       <div style="display:flex;gap:4px;overflow-x:auto;padding:0 12px;">

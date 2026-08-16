@@ -374,6 +374,12 @@ function kontora() {
     _boardInit: false,
     // agent name -> running kontora ticket count, filled by recomputeBoard.
     _agentRunning: Object.create(null),
+    // Memo behind _projectIndex(), with the projects array it was built from.
+    _projectByPath: null,
+    _projectIndexSrc: null,
+    // Memo behind parseFilterQuery(), with the string it was parsed from.
+    _parsedQuery: null,
+    _parsedQuerySrc: null,
 
     _builtinColumns: [
       { key: 'open', statuses: ['open'], dropStatus: 'open', label: 'Open', color: 'bg-accent', tint: 'var(--st-open)', tip: 'Draft ticket, not running yet. Drag to In Progress or click Initialize to start.', emptyText: 'Create a ticket to get started',
@@ -878,17 +884,39 @@ function kontora() {
       this.writeHash();
     },
 
-    // The project configured for a repository path. Both the configured form
-    // (which may start with ~) and the resolved absolute form are compared,
-    // since the browser cannot expand ~ itself.
+    // Repository path -> project, under both the configured form (which may
+    // start with ~) and the resolved absolute form, since the browser cannot
+    // expand ~ itself. Keyed on the projects array it was built from: a config
+    // reload replaces the array, and a miss only costs the linear scan over
+    // the same list that this replaces.
+    _projectIndex() {
+      var projects = this.configCache?.projects || [];
+      if (this._projectIndexSrc === projects) return this._projectByPath;
+      var index = Object.create(null);
+      projects.forEach(p => {
+        [p.path, p.resolved_path].forEach(raw => {
+          var norm = (raw || '').trim().replace(/\/+$/, '');
+          // First project wins, matching the find() this replaces.
+          if (norm && index[norm] === undefined) index[norm] = p;
+        });
+      });
+      this._projectIndexSrc = projects;
+      this._projectByPath = index;
+      return index;
+    },
+
+    // The project configured for a repository path.
     projectForPath(path) {
       var typed = (path || '').trim().replace(/\/+$/, '');
       if (!typed) return null;
-      var projects = this.configCache?.projects || [];
-      return projects.find(p =>
-        typed === (p.path || '').replace(/\/+$/, '') ||
-        typed === (p.resolved_path || '').replace(/\/+$/, '')
-      ) || null;
+      return this._projectIndex()[typed] || null;
+    },
+
+    // What `project:` filters against. A repository outside the configured
+    // projects still gets a name, so the token narrows those tickets too.
+    ticketProjectName(ticket) {
+      var project = this.projectForPath(ticket.path);
+      return (project && project.name) || this.pathBasename(ticket.path);
     },
 
     // The project whose path matches what the create form's path field says.
@@ -2972,11 +3000,106 @@ function kontora() {
       return { tag: b || null, rest: ticket.title || '' };
     },
 
-    ticketMatchesQuery(ticket, q) {
-      var normalized = (q || '').trim().toLowerCase();
-      if (!normalized) return true;
+    // Filter-box terms that address one field instead of the free-text fields.
+    _filterTokenKeys: ['project', 'agent'],
+
+    // The filter box split into terms. A double-quoted run counts as one term,
+    // which is how a project or agent name that has a space in it survives the
+    // split. An unclosed quote runs to the end of the box, so the term is whole
+    // while the closing quote is still being typed.
+    _filterTerms(q) {
+      return (q || '').toLowerCase().match(/(?:[^\s"]+|"[^"]*"?)+/g) || [];
+    },
+
+    // Split the filter box into its `<key>:<value>` tokens and the free text
+    // left over, all lowercased. A term with an unknown key stays free text. A
+    // known key with nothing after the colon constrains nothing, so the board
+    // does not empty out between the colon and the first typed character.
+    // `<key>:=<value>` asks for the whole field instead of a substring; that is
+    // the form a sidebar click writes.
+    //
+    // Memoized on the raw string: the board parses once per pass, then every
+    // sidebar row parses the same string again for its highlight. Callers read
+    // the result and never write to it.
+    parseFilterQuery(q) {
+      var raw = q || '';
+      if (this._parsedQuery && this._parsedQuerySrc === raw) return this._parsedQuery;
+      var parsed = { text: '' };
+      this._filterTokenKeys.forEach(k => { parsed[k] = []; });
+      var free = [];
+      this._filterTerms(raw).forEach(term => {
+        var m = /^([a-z]+):(=?)(.*)$/.exec(term);
+        if (!m || !this._filterTokenKeys.includes(m[1])) {
+          free.push(this._unquote(term));
+          return;
+        }
+        var value = this._unquote(m[3]);
+        if (value) parsed[m[1]].push({ value: value, exact: m[2] === '=' });
+      });
+      // Free text on both sides of a token is rejoined, so `fonts project:x bar`
+      // looks for the one substring "fonts bar" — the same single-substring
+      // match a query with no token in it has always been.
+      parsed.text = free.join(' ');
+      this._parsedQuerySrc = raw;
+      this._parsedQuery = parsed;
+      return parsed;
+    },
+
+    _unquote(s) {
+      return String(s || '').replace(/"/g, '');
+    },
+
+    // A value with a space in it has to be quoted to survive _filterTerms.
+    _quoteFilterValue(value) {
+      var v = this._unquote(value);
+      return /\s/.test(v) ? '"' + v + '"' : v;
+    },
+
+    filterQueryEmpty(parsed) {
+      return !parsed.text && this._filterTokenKeys.every(k => parsed[k].length === 0);
+    },
+
+    // Tokens of different keys narrow together; repeats of one key widen it. A
+    // typed value matches as a substring, so a half-typed name still narrows;
+    // the `=` form matches the whole field, so clicking `widget-api` in the sidebar
+    // does not also pull in `widget-api-sdk`.
+    _tokenMatches(values, field) {
+      var f = (field || '').toLowerCase();
+      return values.some(v => (v.exact ? f === v.value : f.includes(v.value)));
+    },
+
+    // Takes the raw filter string or an already parsed query, so a caller that
+    // tests many tickets can parse once. extraTextFields names ticket fields to
+    // search alongside the four the board searches; the palette passes its two.
+    ticketMatchesQuery(ticket, q, extraTextFields) {
+      var parsed = typeof q === 'object' && q !== null ? q : this.parseFilterQuery(q);
+      if (parsed.project.length && !this._tokenMatches(parsed.project, this.ticketProjectName(ticket))) return false;
+      if (parsed.agent.length && !this._tokenMatches(parsed.agent, ticket.agent)) return false;
+      if (!parsed.text) return true;
       var fields = [ticket.title, ticket.id, this.pathBasename(ticket.path), ticket.pipeline];
-      return fields.some(f => f && f.toLowerCase().includes(normalized));
+      (extraTextFields || []).forEach(k => fields.push(ticket[k]));
+      return fields.some(f => f && f.toLowerCase().includes(parsed.text));
+    },
+
+    // Put a single token in the filter box, or empty the box when that token is
+    // already the whole query. Drives the sidebar project and agent rows. The
+    // token is written in the `=` form: a row selects the name it shows, not
+    // every name that contains it.
+    toggleFilterToken(key, value) {
+      this.searchQuery = this.filterTokenActive(key, value) ? '' : key + ':=' + this._quoteFilterValue(value);
+    },
+
+    // True only when the query is the token that row's click writes, so a row
+    // stops looking active as soon as the query says more than the row does.
+    filterTokenActive(key, value) {
+      var parsed = this.parseFilterQuery(this.searchQuery);
+      if (parsed.text) return false;
+      var want = this._unquote(value).toLowerCase();
+      return this._filterTokenKeys.every(k =>
+        k === key
+          ? parsed[k].length === 1 && parsed[k][0].exact && parsed[k][0].value === want
+          : parsed[k].length === 0
+      );
     },
 
     // Recompute every column's filtered+sorted list in one pass and cache it by
@@ -2985,7 +3108,9 @@ function kontora() {
     // logical change rather than on every reactive template read.
     recomputeBoard() {
       var cols = this.columns;
-      var q = (this.searchQuery || '').trim().toLowerCase();
+      // Parsed once for the whole pass rather than per ticket.
+      var query = this.parseFilterQuery(this.searchQuery);
+      var filtering = !this.filterQueryEmpty(query);
       // status -> column key. Each status maps to exactly one column.
       var colOf = {};
       var board = {};
@@ -3007,7 +3132,7 @@ function kontora() {
         }
         var key = colOf[t.status];
         if (key === undefined) continue;            // no column -> not rendered
-        if (q && !this.ticketMatchesQuery(t, q)) continue;
+        if (filtering && !this.ticketMatchesQuery(t, query)) continue;
         board[key].push(t);
       }
       var total = 0;
@@ -3114,11 +3239,12 @@ function kontora() {
       return moves;
     },
 
-    // The board filter's fields plus stage and agent, which only the palette
-    // searches. Extending ticketMatchesQuery would change the board filter too.
+    // The board filter, token grammar included, plus stage and agent as free
+    // text, which only the palette searches. Keeping the grammar shared is what
+    // makes `project:` and `agent:` work in the palette as well.
+    _paletteTextFields: ['stage', 'agent'],
     _paletteMatches(t, q) {
-      if (this.ticketMatchesQuery(t, q)) return true;
-      return [t.stage, t.agent].some(f => f && f.toLowerCase().includes(q));
+      return this.ticketMatchesQuery(t, q, this._paletteTextFields);
     },
 
     // Order the matches the way a multi-status board column is ordered:

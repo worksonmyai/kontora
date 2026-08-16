@@ -1744,3 +1744,40 @@ func TestInit_ProjectDefaults(t *testing.T) {
 		})
 	}
 }
+
+func TestShowConfig_RedactsWebToken(t *testing.T) {
+	cases := []struct {
+		name        string
+		token       string
+		want        string
+		wantMissing string
+	}{
+		{
+			name:        "a set token never reaches the output",
+			token:       "s3cret-value",
+			want:        RedactedToken,
+			wantMissing: "s3cret-value",
+		},
+		{
+			name:  "an unset token is left alone",
+			token: "",
+			want:  `token: ""`,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := testConfig(t.TempDir())
+			cfg.Web.Token = tc.token
+
+			var buf bytes.Buffer
+			require.NoError(t, ShowConfig(cfg, &buf))
+			assert.Contains(t, buf.String(), tc.want)
+			if tc.wantMissing != "" {
+				assert.NotContains(t, buf.String(), tc.wantMissing)
+			}
+			// Redaction must not mutate the caller's config.
+			assert.Equal(t, tc.token, cfg.Web.Token)
+		})
+	}
+}

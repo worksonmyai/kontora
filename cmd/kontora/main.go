@@ -869,7 +869,7 @@ func cmdArchive() {
 
 	fs := flag.NewFlagSet("archive", flag.ExitOnError)
 	configPath := fs.String("config", defaultConfigPath(), "path to config file")
-	days := fs.Int("days", 0, "archive done/cancelled tickets not modified in the last N days")
+	days := fs.Int("days", 0, "required: archive done/cancelled tickets not modified in the last N days")
 	dryRun := fs.Bool("dry-run", false, "list tickets that would be archived without writing")
 	repoPath := fs.String("path", "", "only archive tickets for this repository path")
 	project := fs.String("project", "", "only archive tickets for this configured project")
@@ -1108,7 +1108,9 @@ func remoteConfigEdit(rc *remote.Client) error {
 		return err
 	}
 
-	fmt.Println("Config saved and reloaded. Settings that need a restart are listed in docs/configuration.md.")
+	// A relative docs path is no use to a caller on another machine, so name the
+	// published page instead.
+	fmt.Println("Config saved and reloaded. Settings that need a restart are listed at https://worksonmyai.github.io/kontora/configuration/")
 	return nil
 }
 

@@ -48,7 +48,7 @@ var Commands = []Command{
 	{Name: "set-stage", Desc: "Move ticket to a specific pipeline stage", Config: true, Remote: true, TicketID: true, Args: "STAGE"},
 	{Name: "cancel", Desc: "Cancel a ticket", Config: true, Remote: true, TicketID: true},
 	{Name: "archive", Desc: "Archive old done/cancelled tickets", Config: true, Flags: []Flag{
-		{Name: "days", Desc: "Age threshold in days (required)", Value: "text"},
+		{Name: "days", Desc: "Required: age threshold in days", Value: "text"},
 		{Name: "dry-run", Desc: "List what would be archived, write nothing"},
 		{Name: "path", Desc: "Only archive tickets for this repository path", Value: "path"},
 		{Name: "project", Desc: "Only archive tickets for this configured project", Value: "project"},

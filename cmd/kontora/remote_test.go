@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -16,6 +17,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/worksonmyai/kontora/internal/testutil"
+	"github.com/worksonmyai/kontora/internal/web"
 )
 
 var (
@@ -464,6 +466,77 @@ projects:
 			}
 			for _, unwanted := range tc.absent {
 				assert.NotContains(t, content, unwanted)
+			}
+		})
+	}
+}
+
+func TestPrintRemoteTickets(t *testing.T) {
+	tickets := []web.TicketInfo{
+		{ID: "a-done", Status: "done", Kontora: true},
+		{ID: "b-run", Status: "in_progress", Kontora: true},
+		{ID: "c-arch", Status: "archived", Kontora: true},
+		{ID: "d-foreign", Status: "todo"},
+	}
+
+	cases := []struct {
+		name        string
+		tickets     []web.TicketInfo
+		showClosed  bool
+		wantIDs     []string
+		wantMissing []string
+		wantText    string
+	}{
+		{
+			name:        "closed and archived are hidden by default",
+			tickets:     tickets,
+			wantIDs:     []string{"b-run", "d-foreign"},
+			wantMissing: []string{"a-done", "c-arch"},
+			wantText:    "not a kontora ticket",
+		},
+		{
+			name:        "closed shows done but never archived",
+			tickets:     tickets,
+			showClosed:  true,
+			wantIDs:     []string{"a-done", "b-run", "d-foreign"},
+			wantMissing: []string{"c-arch"},
+		},
+		{
+			name:     "hidden closed tickets say so",
+			tickets:  []web.TicketInfo{{ID: "a-done", Status: "done", Kontora: true}},
+			wantText: "Use --closed",
+		},
+		{
+			name:     "no tickets at all",
+			tickets:  nil,
+			wantText: "No tickets.",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			printRemoteTickets(&buf, tc.tickets, 0, tc.showClosed)
+			out := buf.String()
+
+			for _, id := range tc.wantIDs {
+				assert.Contains(t, out, id)
+			}
+			for _, id := range tc.wantMissing {
+				assert.NotContains(t, out, id)
+			}
+			if tc.wantText != "" {
+				assert.Contains(t, out, tc.wantText)
+			}
+			// in_progress outranks todo, which outranks done.
+			if len(tc.wantIDs) > 1 {
+				prev := -1
+				for _, id := range []string{"b-run", "d-foreign", "a-done"} {
+					if idx := strings.Index(out, id); idx >= 0 {
+						assert.Greater(t, idx, prev, "%s is out of order", id)
+						prev = idx
+					}
+				}
 			}
 		})
 	}

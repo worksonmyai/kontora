@@ -325,7 +325,7 @@ func cmdLs() {
 		if err != nil {
 			log.Fatal(err)
 		}
-		printRemoteTickets(os.Stdout, tickets, running)
+		printRemoteTickets(os.Stdout, tickets, running, *closed)
 		return
 	}
 

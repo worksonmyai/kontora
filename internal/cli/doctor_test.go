@@ -174,3 +174,84 @@ pipelines:
 	assert.Contains(t, out, "Web port")
 	assert.Contains(t, out, "not available")
 }
+
+func TestDoctor_ProjectPaths(t *testing.T) {
+	repo := initTestRepo(t)
+	notARepo := t.TempDir()
+
+	cases := []struct {
+		name     string
+		path     string
+		wantFail bool
+		want     string
+	}{
+		{name: "a git repository passes", path: repo, want: repo},
+		{name: "a directory that is not a repository fails", path: notARepo, wantFail: true, want: "not a git repository"},
+		{name: "a missing path fails", path: filepath.Join(notARepo, "gone"), wantFail: true, want: "does not exist"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			configPath := filepath.Join(dir, "config.yaml")
+			content := fmt.Sprintf(`agents:
+  true:
+    binary: "true"
+
+stages:
+  s:
+    prompt: do stuff
+
+pipelines:
+  p:
+    - stage: s
+      agent: "true"
+      on_success: done
+      on_failure: pause
+
+projects:
+  demo:
+    path: %s
+`, tc.path)
+			require.NoError(t, os.WriteFile(configPath, []byte(content), 0o644))
+
+			var buf bytes.Buffer
+			err := Doctor(configPath, &buf)
+			if tc.wantFail {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+			}
+			assert.Contains(t, buf.String(), tc.want)
+		})
+	}
+}
+
+func TestDoctor_WarningsAreCounted(t *testing.T) {
+	// A missing directory is a warning, so the closing line must not claim a
+	// clean bill of health.
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.yaml")
+	content := fmt.Sprintf(`tickets_dir: %s/nonexistent/tickets
+
+agents:
+  true:
+    binary: "true"
+
+stages:
+  s:
+    prompt: do stuff
+
+pipelines:
+  p:
+    - stage: s
+      agent: "true"
+      on_success: done
+      on_failure: pause
+`, dir)
+	require.NoError(t, os.WriteFile(configPath, []byte(content), 0o644))
+
+	var buf bytes.Buffer
+	require.NoError(t, Doctor(configPath, &buf))
+	assert.Regexp(t, `All checks passed, with \d+ warning`, buf.String())
+}

@@ -363,15 +363,33 @@ func writeFakeEditor(t *testing.T, content string) string {
 }
 
 func TestRemoteDispatch_LocalOnlyVerbsRejected(t *testing.T) {
-	for _, verb := range []string{"edit", "archive", "doctor", "fmt", "completion", "start", "setup"} {
-		t.Run(verb, func(t *testing.T) {
-			args := []string{verb}
-			if verb != "fmt" && verb != "completion" && verb != "start" && verb != "setup" {
-				args = append(args, "abc")
+	cases := []struct {
+		verb string
+		args []string
+		// want is a fragment of the expected output. An empty want means the
+		// verb has to succeed despite remote mode being on.
+		want string
+	}{
+		{verb: "edit", args: []string{"edit", "abc"}, want: "not available in remote mode"},
+		{verb: "archive", args: []string{"archive"}, want: "not available in remote mode"},
+		{verb: "doctor", args: []string{"doctor"}, want: "not available in remote mode"},
+		{verb: "start", args: []string{"start"}, want: "not available in remote mode"},
+		{verb: "setup", args: []string{"setup"}, want: "not available in remote mode"},
+		// fmt and completion touch neither the daemon nor a config file, so an
+		// exported KONTORA_URL must leave them working.
+		{verb: "completion", args: []string{"completion", "fish"}},
+		{verb: "fmt", args: []string{"fmt"}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.verb, func(t *testing.T) {
+			out, err := runCLI(t, []string{"KONTORA_URL=http://127.0.0.1:1"}, tc.args...)
+			if tc.want == "" {
+				require.NoError(t, err, out)
+				return
 			}
-			out, err := runCLI(t, []string{"KONTORA_URL=http://127.0.0.1:1"}, args...)
 			require.Error(t, err, out)
-			assert.Contains(t, out, "not available in remote mode")
+			assert.Contains(t, out, tc.want)
 		})
 	}
 }

@@ -137,7 +137,9 @@ func main() {
 	case "config":
 		cmdConfig()
 	case "fmt":
-		rejectInRemoteMode("fmt")
+		// fmt and completion read stdin and print text. They touch neither the
+		// daemon nor a config file, so an exported KONTORA_URL must not stop a
+		// shell rc from running "kontora completion fish | source".
 		if err := cli.Fmt(os.Stdin, os.Stdout); err != nil {
 			log.Fatal(err)
 		}
@@ -1020,8 +1022,6 @@ func remoteConfigEdit(rc *remote.Client) error {
 }
 
 func cmdCompletion() {
-	rejectInRemoteMode("completion")
-
 	if len(os.Args) < 3 {
 		fmt.Fprintf(os.Stderr, "%s kontora completion <shell>\n\n%s fish\n", helpBold.Render("Usage:"), helpFaint.Render("Supported shells:"))
 		os.Exit(1)

@@ -52,6 +52,7 @@ func renderUsage() string {
 		{"init", "Set up a ticket for daemon processing"},
 		{"run", "Enqueue a ticket for processing"},
 		{"done", "Mark a ticket as done"},
+		{"move", "Move a ticket to any status, including custom ones"},
 		{"note", "Append a note to a ticket"},
 		{"summary", "Set a ticket's summary"},
 		{"pause", "Pause a running or queued ticket"},
@@ -104,7 +105,9 @@ func main() {
 	case "run":
 		cmdRun()
 	case "done":
-		cmdDone()
+		cmdAction("done")
+	case "move":
+		cmdMove()
 	case "note":
 		cmdNote()
 	case "summary":
@@ -590,33 +593,6 @@ func cmdRun() {
 	}
 }
 
-func cmdDone() {
-	fs := flag.NewFlagSet("done", flag.ExitOnError)
-	configPath := fs.String("config", defaultConfigPath(), "path to config file")
-	urlFlag, tokenFlag := addRemoteFlags(fs)
-	if err := fs.Parse(os.Args[2:]); err != nil {
-		log.Fatalf("parsing flags: %v", err)
-	}
-
-	if fs.NArg() < 1 {
-		log.Fatal("ticket ID is required: kontora done TICKET_ID")
-	}
-	taskID := fs.Arg(0)
-
-	if rc := remoteClient(*urlFlag, *tokenFlag); rc != nil {
-		if err := rc.Done(mustResolveRemote(rc, taskID)); err != nil {
-			log.Fatal(err)
-		}
-		return
-	}
-
-	cfg := mustLoadConfig(*configPath)
-
-	if err := cli.SetStatus(cfg.TicketsDir, taskID, "done"); err != nil {
-		log.Fatal(err)
-	}
-}
-
 func cmdNote() {
 	fs := flag.NewFlagSet("note", flag.ExitOnError)
 	configPath := fs.String("config", defaultConfigPath(), "path to config file")
@@ -738,6 +714,8 @@ func cmdAction(action string) {
 			err = rc.Retry(id)
 		case "cancel":
 			err = rc.Cancel(id)
+		case "done":
+			err = rc.Done(id)
 		}
 		if err != nil {
 			log.Fatal(err)
@@ -750,13 +728,45 @@ func cmdAction(action string) {
 	var err error
 	switch action {
 	case "pause":
-		err = cli.Pause(cfg.TicketsDir, taskID)
+		err = cli.Pause(cfg, taskID)
 	case "retry":
 		err = cli.Retry(cfg.TicketsDir, taskID)
 	case "cancel":
-		err = cli.Cancel(cfg.TicketsDir, taskID)
+		err = cli.Cancel(cfg, taskID)
+	case "done":
+		err = cli.Done(cfg, taskID)
 	}
 	if err != nil {
+		log.Fatal(err)
+	}
+}
+
+// cmdMove is the general form of pause/cancel/done: it moves a ticket to any
+// status the config allows, which is the only way to reach human_review or a
+// custom status from the CLI.
+func cmdMove() {
+	fs := flag.NewFlagSet("move", flag.ExitOnError)
+	configPath := fs.String("config", defaultConfigPath(), "path to config file")
+	urlFlag, tokenFlag := addRemoteFlags(fs)
+	if err := fs.Parse(os.Args[2:]); err != nil {
+		log.Fatalf("parsing flags: %v", err)
+	}
+
+	if fs.NArg() < 2 {
+		log.Fatal("usage: kontora move TICKET_ID STATUS")
+	}
+	taskID, status := fs.Arg(0), fs.Arg(1)
+
+	if rc := remoteClient(*urlFlag, *tokenFlag); rc != nil {
+		if err := rc.Move(mustResolveRemote(rc, taskID), status); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
+
+	cfg := mustLoadConfig(*configPath)
+
+	if err := cli.Move(cfg, taskID, status); err != nil {
 		log.Fatal(err)
 	}
 }

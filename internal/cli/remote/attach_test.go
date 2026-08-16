@@ -14,6 +14,8 @@ import (
 	"github.com/coder/websocket"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/worksonmyai/kontora/internal/web"
 )
 
 func TestWSURL(t *testing.T) {
@@ -137,16 +139,58 @@ func TestRunBridge_AbnormalCloseSurfaced(t *testing.T) {
 	require.Error(t, err)
 }
 
-func TestAttach_AuthFailureReported(t *testing.T) {
-	// A server that rejects the handshake (no websocket upgrade) stands in for
-	// an auth rejection; Attach must surface the connection error.
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusUnauthorized)
-	}))
-	defer srv.Close()
+func TestAttach_HandshakeFailuresReported(t *testing.T) {
+	cases := []struct {
+		name string
+		// ticketStatus is what GET /api/tickets/{id} answers; empty means the
+		// ticket lookup itself fails with the handshake status.
+		ticketStatus string
+		handshake    int
+		want         string
+	}{
+		{
+			name:         "auth rejection names the token",
+			ticketStatus: "in_progress",
+			handshake:    http.StatusUnauthorized,
+			want:         "rejected the token",
+		},
+		{
+			name:         "no live session says so",
+			ticketStatus: "in_progress",
+			handshake:    http.StatusNotFound,
+			want:         "no live terminal session",
+		},
+		{
+			name:         "a ticket that is not running never dials",
+			ticketStatus: "paused",
+			handshake:    http.StatusOK,
+			want:         `has status "paused", must be in_progress to attach`,
+		},
+		{
+			name:      "an unknown ticket is named",
+			handshake: http.StatusNotFound,
+			want:      "not found on the daemon",
+		},
+	}
 
-	c := New(srv.URL, "wrong")
-	err := Attach(context.Background(), c, "tst-001", false)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "connecting to remote terminal")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if strings.HasPrefix(r.URL.Path, "/api/tickets/") {
+					if tc.ticketStatus == "" {
+						w.WriteHeader(http.StatusNotFound)
+						return
+					}
+					_ = json.NewEncoder(w).Encode(web.TicketInfo{ID: "tst-001", Status: tc.ticketStatus})
+					return
+				}
+				w.WriteHeader(tc.handshake)
+			}))
+			defer srv.Close()
+
+			err := Attach(context.Background(), New(srv.URL, "wrong"), "tst-001", false)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.want)
+		})
+	}
 }

@@ -14,6 +14,8 @@ import (
 
 	"github.com/coder/websocket"
 	"golang.org/x/term"
+
+	"github.com/worksonmyai/kontora/internal/ticket"
 )
 
 // termMsg is the JSON frame the daemon's terminal endpoint expects for input
@@ -34,6 +36,10 @@ type termMsg struct {
 // and stdin is not forwarded, so Ctrl-C still interrupts the local process. It
 // returns when the connection closes.
 func Attach(ctx context.Context, c *Client, id string, rw bool) error {
+	if err := checkAttachable(c, id); err != nil {
+		return err
+	}
+
 	fd := int(os.Stdin.Fd())
 	isTTY := term.IsTerminal(fd)
 
@@ -55,10 +61,22 @@ func Attach(ctx context.Context, c *Client, id string, rw bool) error {
 	}
 
 	conn, resp, err := websocket.Dial(ctx, endpoint, opts)
-	if resp != nil && resp.Body != nil {
-		_ = resp.Body.Close()
+	status := 0
+	if resp != nil {
+		status = resp.StatusCode
+		if resp.Body != nil {
+			_ = resp.Body.Close()
+		}
 	}
 	if err != nil {
+		// The handshake fails with a bare protocol error, so translate the two
+		// statuses a user can act on into the reason behind them.
+		switch status {
+		case http.StatusNotFound:
+			return fmt.Errorf("no live terminal session for ticket %s on the daemon", id)
+		case http.StatusUnauthorized, http.StatusForbidden:
+			return fmt.Errorf("the daemon rejected the token for ticket %s", id)
+		}
 		return fmt.Errorf("connecting to remote terminal: %w", err)
 	}
 	defer conn.Close(websocket.StatusNormalClosure, "")
@@ -85,6 +103,24 @@ func Attach(ctx context.Context, c *Client, id string, rw bool) error {
 	}
 
 	return runBridge(ctx, conn, os.Stdin, os.Stdout, &writeMu, rw)
+}
+
+// checkAttachable reports why a ticket cannot be attached to, before the
+// WebSocket handshake turns the reason into a bare "status code 101 but got
+// 404". A daemon that cannot answer the query at all is left to the dial, which
+// reports the transport problem better than a second copy of it here would.
+func checkAttachable(c *Client, id string) error {
+	info, err := c.GetTicket(id)
+	if err != nil {
+		if isHTTPStatus(err, http.StatusNotFound) {
+			return fmt.Errorf("ticket %s not found on the daemon", id)
+		}
+		return nil
+	}
+	if info.Status != string(ticket.StatusInProgress) {
+		return fmt.Errorf("ticket %s has status %q, must be %s to attach", id, info.Status, ticket.StatusInProgress)
+	}
+	return nil
 }
 
 // runBridge writes binary output frames to out and, when rw is true, copies

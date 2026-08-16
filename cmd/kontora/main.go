@@ -42,36 +42,8 @@ func renderUsage() string {
 	var b strings.Builder
 	b.WriteString(helpBold.Render("Usage:") + " kontora <command>\n\n")
 	b.WriteString(helpBold.Render("Commands:") + "\n")
-	for _, cmd := range []struct{ name, desc string }{
-		{"ls", "List tickets (TUI on TTY, static table otherwise)"},
-		{"new", "Create a ticket"},
-		{"view", "Print ticket details"},
-		{"edit", "Open a ticket in $EDITOR"},
-		{"update", "Update ticket body/frontmatter fields"},
-		{"delete", "Delete a ticket file"},
-		{"init", "Set up a ticket for daemon processing"},
-		{"run", "Enqueue a ticket for processing"},
-		{"done", "Mark a ticket as done"},
-		{"move", "Move a ticket to any status, including custom ones"},
-		{"note", "Append a note to a ticket"},
-		{"summary", "Set a ticket's summary"},
-		{"pause", "Pause a running or queued ticket"},
-		{"retry", "Re-queue a paused ticket"},
-		{"skip", "Skip to the next pipeline stage"},
-		{"set-stage", "Move ticket to a specific pipeline stage"},
-		{"cancel", "Cancel a ticket"},
-		{"archive", "Archive old done/cancelled tickets"},
-		{"logs", "Show agent logs for a ticket"},
-		{"attach", "Attach to a running ticket"},
-		{"start", "Start the daemon"},
-		{"setup", "Create the configuration file"},
-		{"doctor", "Validate prerequisites and configuration"},
-		{"config", "Show effective configuration"},
-		{"fmt", "Format stream-json from stdin"},
-		{"version", "Print version"},
-		{"completion", "Generate shell completions"},
-	} {
-		fmt.Fprintf(&b, "  %-14s %s\n", helpCyan.Render(cmd.name), helpFaint.Render(cmd.desc))
+	for _, cmd := range cli.Commands {
+		fmt.Fprintf(&b, "  %-14s %s\n", helpCyan.Render(cmd.Name), helpFaint.Render(cmd.Desc))
 	}
 	return b.String()
 }

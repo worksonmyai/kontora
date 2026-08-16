@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/worksonmyai/kontora/internal/cli"
 	"github.com/worksonmyai/kontora/internal/config"
 )
 
@@ -71,6 +72,22 @@ func TestResolveConfigPath(t *testing.T) {
 			}
 
 			assert.Equal(t, expected, got)
+		})
+	}
+}
+
+// TestDispatchCoversCommandTable checks that every verb in cli.Commands reaches
+// a handler. An unknown verb prints usage and exits 1, so a command listed in
+// the table but missing from the switch shows up as that exact output.
+func TestDispatchCoversCommandTable(t *testing.T) {
+	for _, cmd := range cli.Commands {
+		t.Run(cmd.Name, func(t *testing.T) {
+			// No config, no daemon, no arguments: every verb fails, but a
+			// dispatched one fails with its own message rather than the usage
+			// text the default branch prints.
+			out, _ := runCLI(t, nil, cmd.Name)
+			assert.NotContains(t, out, "Usage: kontora <command>",
+				"%q is in cli.Commands but falls through to the usage default", cmd.Name)
 		})
 	}
 }

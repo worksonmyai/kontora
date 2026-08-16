@@ -3,21 +3,27 @@ package cli
 import (
 	"fmt"
 	"io"
+	"strings"
 )
 
+// SupportedShells lists the shells Completion can generate a script for.
+var SupportedShells = []string{"fish"}
+
 // Completion writes a shell completion script to w.
-// Currently only "fish" is supported.
 func Completion(shell string, w io.Writer) error {
-	switch shell {
-	case "fish":
-		_, err := fmt.Fprint(w, fishCompletion)
-		return err
-	default:
-		return fmt.Errorf("unsupported shell: %s (supported: fish)", shell)
+	if shell != "fish" {
+		return fmt.Errorf("unsupported shell: %s (supported: %s)", shell, strings.Join(SupportedShells, ", "))
 	}
+	_, err := io.WriteString(w, fishCompletion())
+	return err
 }
 
-const fishCompletion = `# kontora fish completions
+// fishCompletion renders the fish script from the Commands table, so a command
+// or flag added there is offered without a second edit here.
+func fishCompletion() string {
+	var b strings.Builder
+
+	b.WriteString(`# kontora fish completions
 # Install: kontora completion fish | source
 # Persist: kontora completion fish > ~/.config/fish/completions/kontora.fish
 
@@ -25,73 +31,85 @@ const fishCompletion = `# kontora fish completions
 complete -c kontora -f
 
 # Top-level commands
-complete -c kontora -n __fish_use_subcommand -a ls -d 'List tickets'
-complete -c kontora -n __fish_use_subcommand -a new -d 'Create a ticket'
-complete -c kontora -n __fish_use_subcommand -a view -d 'Print ticket details'
-complete -c kontora -n __fish_use_subcommand -a edit -d 'Open a ticket in $EDITOR'
-complete -c kontora -n __fish_use_subcommand -a init -d 'Set up ticket for processing'
-complete -c kontora -n __fish_use_subcommand -a done -d 'Close a ticket'
-complete -c kontora -n __fish_use_subcommand -a note -d 'Append note to ticket'
-complete -c kontora -n __fish_use_subcommand -a summary -d 'Set ticket summary'
-complete -c kontora -n __fish_use_subcommand -a pause -d 'Pause a ticket'
-complete -c kontora -n __fish_use_subcommand -a run -d 'Enqueue a ticket for processing'
-complete -c kontora -n __fish_use_subcommand -a retry -d 'Re-queue a ticket'
-complete -c kontora -n __fish_use_subcommand -a skip -d 'Skip to next pipeline stage'
-complete -c kontora -n __fish_use_subcommand -a set-stage -d 'Move ticket to a specific pipeline stage'
-complete -c kontora -n __fish_use_subcommand -a cancel -d 'Cancel a ticket'
-complete -c kontora -n __fish_use_subcommand -a archive -d 'Archive old done/cancelled tickets'
-complete -c kontora -n __fish_use_subcommand -a logs -d 'Show agent logs'
-complete -c kontora -n __fish_use_subcommand -a attach -d 'Attach to running ticket'
-complete -c kontora -n __fish_use_subcommand -a start -d 'Start the daemon'
-complete -c kontora -n __fish_use_subcommand -a setup -d 'Create the configuration file'
-complete -c kontora -n __fish_use_subcommand -a doctor -d 'Validate setup'
-complete -c kontora -n __fish_use_subcommand -a config -d 'Show effective config'
-complete -c kontora -n __fish_use_subcommand -a fmt -d 'Format stream-json from stdin'
-complete -c kontora -n __fish_use_subcommand -a version -d 'Print version'
-complete -c kontora -n __fish_use_subcommand -a completion -d 'Generate shell completions'
+`)
+	for _, cmd := range Commands {
+		fmt.Fprintf(&b, "complete -c kontora -n __fish_use_subcommand -a %s -d '%s'\n", cmd.Name, fishQuote(cmd.Desc))
+	}
+	fmt.Fprintf(&b, "complete -c kontora -n __fish_use_subcommand -a help -d '%s'\n", "Show usage")
 
-# completion subcommand
-complete -c kontora -n '__fish_seen_subcommand_from completion' -a fish -d 'Fish shell'
+	b.WriteString("\n# Subcommands\n")
+	for _, cmd := range Commands {
+		for _, sub := range cmd.Subcommands {
+			fmt.Fprintf(&b, "complete -c kontora -n '__fish_seen_subcommand_from %s' -a %s\n", cmd.Name, sub)
+		}
+	}
 
-# Flags: -config (commands that accept it)
-set -l __kontora_config_cmds start setup doctor ls new view edit init run done note summary pause retry skip set-stage cancel archive logs attach config
-for cmd in $__kontora_config_cmds
-    complete -c kontora -n "__fish_seen_subcommand_from $cmd" -o config -d 'Config file path' -r -F
-end
+	b.WriteString("\n# Per-command flags\n")
+	for _, cmd := range Commands {
+		flags := cmd.Flags
+		if cmd.Config {
+			flags = append(flags, Flag{Name: "config", Desc: "Config file path", Value: "path"})
+		}
+		if cmd.Remote {
+			flags = append(flags,
+				Flag{Name: "url", Desc: "Remote daemon URL (enables remote mode)", Value: "text"},
+				Flag{Name: "token", Desc: "Bearer token for the remote daemon", Value: "text"},
+			)
+		}
+		for _, f := range flags {
+			b.WriteString(fishFlag(cmd.Name, f) + "\n")
+		}
+	}
 
-# Flags: new
-complete -c kontora -n '__fish_seen_subcommand_from new' -o path -d 'Repository path' -r -F
-complete -c kontora -n '__fish_seen_subcommand_from new' -o pipeline -d 'Pipeline name' -r
-complete -c kontora -n '__fish_seen_subcommand_from new' -o agent -d 'Agent name' -r
-
-# Flags: setup
-# --agent is a boolean here, unlike the agent-name flag other commands take.
-complete -c kontora -n '__fish_seen_subcommand_from setup' -l agent -d 'Print setup instructions for a coding agent'
-
-# Flags: ls
-complete -c kontora -n '__fish_seen_subcommand_from ls' -l closed -d 'Show done/cancelled tickets'
-complete -c kontora -n '__fish_seen_subcommand_from ls' -l static -d 'Static table output'
-
-# Flags: archive
-complete -c kontora -n '__fish_seen_subcommand_from archive' -o days -d 'Age threshold in days' -r
-complete -c kontora -n '__fish_seen_subcommand_from archive' -l dry-run -d 'List without writing'
-complete -c kontora -n '__fish_seen_subcommand_from archive' -o path -d 'Repository path' -r -F
-complete -c kontora -n '__fish_seen_subcommand_from archive' -o project -d 'Configured project name' -r
-complete -c kontora -n '__fish_seen_subcommand_from archive' -o status -d 'Closed status' -x -a 'done cancelled'
-complete -c kontora -n '__fish_seen_subcommand_from archive' -s y -l yes -d 'Skip the confirmation prompt'
-
-# Flags: logs
-complete -c kontora -n '__fish_seen_subcommand_from logs' -o stage -d 'Stage name' -r
-
-# Flags: attach
-complete -c kontora -n '__fish_seen_subcommand_from attach' -o rw -d 'Read-write mode'
-
-# Dynamic ticket ID completion
+	b.WriteString(`
+# Dynamic ticket ID completion. -e/--entire is required: without it string match
+# prints only the part the regex matched, which is the leading space.
 function __kontora_ticket_ids
-    kontora ls --closed --static 2>/dev/null | string match -r '^\s' | awk '{print $1}'
+    kontora ls --closed --static 2>/dev/null | string match -re '^\s+\S' | awk '$1 != "ID" {print $1}'
 end
-set -l __kontora_id_cmds view edit init run done note summary pause retry skip set-stage cancel logs attach
-for cmd in $__kontora_id_cmds
+`)
+	var idCmds []string
+	for _, cmd := range Commands {
+		if cmd.TicketID {
+			idCmds = append(idCmds, cmd.Name)
+		}
+	}
+	fmt.Fprintf(&b, "set -l __kontora_id_cmds %s\n", strings.Join(idCmds, " "))
+	b.WriteString(`for cmd in $__kontora_id_cmds
     complete -c kontora -n "__fish_seen_subcommand_from $cmd" -a '(__kontora_ticket_ids)'
 end
-`
+`)
+
+	return b.String()
+}
+
+// fishFlag renders one `complete` line. Long names use -l, single characters use
+// -s, matching how fish distinguishes --flag from -f.
+func fishFlag(cmd string, f Flag) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "complete -c kontora -n '__fish_seen_subcommand_from %s'", cmd)
+	if len(f.Name) == 1 {
+		fmt.Fprintf(&b, " -s %s", f.Name)
+	} else {
+		fmt.Fprintf(&b, " -l %s", f.Name)
+	}
+	if f.Short != "" {
+		fmt.Fprintf(&b, " -s %s", f.Short)
+	}
+	fmt.Fprintf(&b, " -d '%s'", fishQuote(f.Desc))
+
+	switch {
+	case len(f.Choices) > 0:
+		fmt.Fprintf(&b, " -x -a '%s'", strings.Join(f.Choices, " "))
+	case f.Value == "path":
+		b.WriteString(" -r -F")
+	case f.TakesValue():
+		b.WriteString(" -r")
+	}
+	return b.String()
+}
+
+// fishQuote escapes a description for a single-quoted fish string.
+func fishQuote(s string) string {
+	return strings.NewReplacer(`\`, `\\`, `'`, `\'`).Replace(s)
+}

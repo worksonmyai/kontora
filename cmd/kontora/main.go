@@ -48,6 +48,44 @@ func renderUsage() string {
 	return b.String()
 }
 
+// handlers maps each verb to what runs it. Every key must be a name in
+// cli.Commands, which is what generates the usage text and the completions;
+// TestDispatchCoversCommandTable holds the two together.
+var handlers = map[string]func(){
+	"ls":         cmdLs,
+	"new":        cmdNew,
+	"view":       cmdView,
+	"edit":       cmdEdit,
+	"update":     cmdUpdate,
+	"delete":     cmdDelete,
+	"init":       cmdInit,
+	"run":        cmdRun,
+	"done":       func() { cmdAction("done") },
+	"move":       cmdMove,
+	"note":       cmdNote,
+	"summary":    cmdSummary,
+	"pause":      func() { cmdAction("pause") },
+	"retry":      func() { cmdAction("retry") },
+	"skip":       cmdSkip,
+	"set-stage":  cmdSetStage,
+	"cancel":     func() { cmdAction("cancel") },
+	"archive":    cmdArchive,
+	"logs":       cmdLogs,
+	"activity":   cmdActivity,
+	"changes":    cmdChanges,
+	"stats":      cmdStats,
+	"review":     func() { cmdPlannotator("review") },
+	"annotate":   func() { cmdPlannotator("annotate") },
+	"attach":     cmdAttach,
+	"start":      cmdStart,
+	"setup":      cmdSetup,
+	"doctor":     cmdDoctor,
+	"config":     cmdConfig,
+	"fmt":        cmdFmt,
+	"version":    cmdVersion,
+	"completion": cmdCompletion,
+}
+
 func main() {
 	if len(os.Args) < 2 {
 		if isatty.IsTerminal(os.Stdout.Fd()) {
@@ -64,80 +102,28 @@ func main() {
 		// An explicit request for help is not an error: it goes to stdout so it
 		// can be piped, and exits 0 so a script does not read it as a failure.
 		fmt.Print(renderUsage())
-	case "ls":
-		cmdLs()
-	case "new":
-		cmdNew()
-	case "view":
-		cmdView()
-	case "edit":
-		cmdEdit()
-	case "update":
-		cmdUpdate()
-	case "delete":
-		cmdDelete()
-	case "init":
-		cmdInit()
-	case "run":
-		cmdRun()
-	case "done":
-		cmdAction("done")
-	case "move":
-		cmdMove()
-	case "note":
-		cmdNote()
-	case "summary":
-		cmdSummary()
-	case "pause":
-		cmdAction("pause")
-	case "retry":
-		cmdAction("retry")
-	case "skip":
-		cmdSkip()
-	case "set-stage":
-		cmdSetStage()
-	case "cancel":
-		cmdAction("cancel")
-	case "archive":
-		cmdArchive()
-	case "logs":
-		cmdLogs()
-	case "activity":
-		cmdActivity()
-	case "changes":
-		cmdChanges()
-	case "stats":
-		cmdStats()
-	case "review":
-		cmdPlannotator("review")
-	case "annotate":
-		cmdPlannotator("annotate")
-	case "attach":
-		cmdAttach()
-	case "start":
-		cmdStart()
-	case "setup":
-		cmdSetup()
-	case "doctor":
-		cmdDoctor()
-	case "config":
-		cmdConfig()
-	case "fmt":
-		// fmt and completion read stdin and print text. They touch neither the
-		// daemon nor a config file, so an exported KONTORA_URL must not stop a
-		// shell rc from running "kontora completion fish | source".
-		if err := cli.Fmt(os.Stdin, os.Stdout); err != nil {
-			log.Fatal(err)
-		}
-	case "version":
-		fmt.Printf("%s %s\n", helpBold.Render("kontora"), version)
-	case "completion":
-		cmdCompletion()
+		return
+	}
 
-	default:
+	run, ok := handlers[os.Args[1]]
+	if !ok {
 		fmt.Fprint(os.Stderr, renderUsage())
 		os.Exit(1)
 	}
+	run()
+}
+
+// cmdFmt and cmdCompletion read stdin and print text. They touch neither the
+// daemon nor a config file, so an exported KONTORA_URL must not stop a shell rc
+// from running "kontora completion fish | source".
+func cmdFmt() {
+	if err := cli.Fmt(os.Stdin, os.Stdout); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func cmdVersion() {
+	fmt.Printf("%s %s\n", helpBold.Render("kontora"), version)
 }
 
 func cmdStart() {

@@ -27,13 +27,17 @@ func SetStatus(cfg *config.Config, taskID string, status string) error {
 // then the config's custom ones, so the error text and the shell completions
 // list the same set.
 func MoveStatuses(cfg *config.Config) []string {
-	statuses := []string{
-		string(ticket.StatusOpen),
-		string(ticket.StatusTodo),
-		string(ticket.StatusPaused),
-		string(ticket.StatusHumanReview),
-		string(ticket.StatusDone),
-		string(ticket.StatusCancelled),
+	builtin := []ticket.Status{
+		ticket.StatusOpen,
+		ticket.StatusTodo,
+		ticket.StatusPaused,
+		ticket.StatusHumanReview,
+		ticket.StatusDone,
+		ticket.StatusCancelled,
+	}
+	statuses := make([]string, 0, len(builtin)+len(cfg.Statuses))
+	for _, s := range builtin {
+		statuses = append(statuses, string(s))
 	}
 	custom := slices.Clone(cfg.Statuses)
 	slices.Sort(custom)

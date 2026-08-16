@@ -82,13 +82,19 @@ func TestResolveConfigPath(t *testing.T) {
 func TestDispatchCoversCommandTable(t *testing.T) {
 	for _, cmd := range cli.Commands {
 		t.Run(cmd.Name, func(t *testing.T) {
-			// No config, no daemon, no arguments: every verb fails, but a
-			// dispatched one fails with its own message rather than the usage
-			// text the default branch prints.
-			out, _ := runCLI(t, nil, cmd.Name)
-			assert.NotContains(t, out, "Usage: kontora <command>",
-				"%q is in cli.Commands but falls through to the usage default", cmd.Name)
+			assert.Contains(t, handlers, cmd.Name,
+				"%q is in cli.Commands but nothing dispatches it", cmd.Name)
 		})
+	}
+
+	// And the reverse: a handler with no table entry is invisible in the usage
+	// text and in the completions.
+	names := make(map[string]bool, len(cli.Commands))
+	for _, cmd := range cli.Commands {
+		names[cmd.Name] = true
+	}
+	for verb := range handlers {
+		assert.True(t, names[verb], "%q is dispatched but missing from cli.Commands", verb)
 	}
 }
 

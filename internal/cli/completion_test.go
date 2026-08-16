@@ -82,7 +82,7 @@ func TestCompletionCoversEveryCommand(t *testing.T) {
 	script := buf.String()
 
 	idLine := ""
-	for _, line := range strings.Split(script, "\n") {
+	for line := range strings.SplitSeq(script, "\n") {
 		if strings.HasPrefix(line, "set -l __kontora_id_cmds ") {
 			idLine = line
 		}

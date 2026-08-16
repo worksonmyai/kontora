@@ -49,12 +49,6 @@ func (e *transportError) Error() string {
 }
 func (e *transportError) Unwrap() error { return e.err }
 
-// IsTransportError reports whether err happened before the daemon returned a response.
-func IsTransportError(err error) bool {
-	var target *transportError
-	return errors.As(err, &target)
-}
-
 type httpError struct {
 	status  int
 	message string

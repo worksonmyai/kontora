@@ -404,8 +404,8 @@ projects:
     path: ~/projects/kontora
     pipeline: implement-review-commit
     agent: claude
-  search:
-    path: ~/projects/search
+  widget-api:
+    path: ~/projects/widget-api
     pipeline: default
 ```
 

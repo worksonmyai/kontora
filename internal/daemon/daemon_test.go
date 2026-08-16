@@ -1719,8 +1719,8 @@ func TestTicketBranch(t *testing.T) {
 	cfg := &config.Config{
 		BranchPrefix: "kontora",
 		Projects: map[string]config.Project{
-			"kontora": {Path: "/repos/kontora", BranchPrefix: "feature"},
-			"search":  {Path: "/repos/search"},
+			"kontora":    {Path: "/repos/kontora", BranchPrefix: "feature"},
+			"widget-api": {Path: "/repos/widget-api"},
 		},
 	}
 
@@ -1736,7 +1736,7 @@ func TestTicketBranch(t *testing.T) {
 		},
 		{
 			name: "project without a prefix falls back",
-			tkt:  ticket.Ticket{ID: "tst-2", Path: "/repos/search"},
+			tkt:  ticket.Ticket{ID: "tst-2", Path: "/repos/widget-api"},
 			want: "kontora/tst-2",
 		},
 		{
@@ -3174,16 +3174,16 @@ func TestStageOverrides(t *testing.T) {
 	}{
 		{
 			name:      "map keyed by agent kind",
-			agentName: "pi-acme-opus-5",
+			agentName: "pi-grafana-opus-5",
 			agent:     config.Agent{Binary: "pi"},
 			model:     config.PerAgent{ByAgent: map[string]string{"pi": "anthropic/claude-haiku-4-5"}},
 			wantModel: "anthropic/claude-haiku-4-5",
 		},
 		{
 			name:      "map keyed by agent name",
-			agentName: "pi-acme-opus-5",
+			agentName: "pi-grafana-opus-5",
 			agent:     config.Agent{Binary: "pi"},
-			model:     config.PerAgent{ByAgent: map[string]string{"pi-acme-opus-5": "anthropic/claude-haiku-4-5"}},
+			model:     config.PerAgent{ByAgent: map[string]string{"pi-grafana-opus-5": "anthropic/claude-haiku-4-5"}},
 			wantModel: "anthropic/claude-haiku-4-5",
 		},
 		{
@@ -3216,7 +3216,7 @@ func TestStageOverrides(t *testing.T) {
 		},
 		{
 			name:       "pi takes its own effort flag",
-			agentName:  "pi-acme-opus-5",
+			agentName:  "pi-grafana-opus-5",
 			agent:      config.Agent{Binary: "pi", Effort: "high"},
 			wantEffort: "--thinking high",
 		},
@@ -3228,9 +3228,9 @@ func TestStageOverrides(t *testing.T) {
 		},
 		{
 			name:       "an exact agent name beats the kind it collides with",
-			agentName:  "pi-acme-opus-5",
+			agentName:  "pi-grafana-opus-5",
 			agent:      config.Agent{Binary: "pi"},
-			effort:     config.PerAgent{ByAgent: map[string]string{"pi": "xhigh", "pi-acme-opus-5": "high"}},
+			effort:     config.PerAgent{ByAgent: map[string]string{"pi": "xhigh", "pi-grafana-opus-5": "high"}},
 			wantEffort: "--thinking high",
 		},
 		{

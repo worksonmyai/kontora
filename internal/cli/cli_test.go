@@ -62,7 +62,7 @@ func TestGenerateID_Uniqueness(t *testing.T) {
 func TestGenerateID_FallbackPrefix(t *testing.T) {
 	dir := t.TempDir()
 
-	id, err := GenerateID(dir, "~/projects/graphics")
+	id, err := GenerateID(dir, "~/projects/grafana")
 	require.NoError(t, err)
 
 	assert.Regexp(t, `^gra-[a-z0-9]{4}$`, id)

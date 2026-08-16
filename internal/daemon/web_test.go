@@ -1531,8 +1531,8 @@ func TestDaemon_InitTicket_NotFound(t *testing.T) {
 func TestDaemon_GetConfig_ReturnsProjectsSortedByName(t *testing.T) {
 	h := newHarness(t)
 	h.cfg.Projects = map[string]config.Project{
-		"search":  {Path: "~/projects/search", Pipeline: "one-stage"},
-		"kontora": {Path: h.repoDir, Pipeline: "two-stage", Agent: "agent2"},
+		"widget-api": {Path: "~/projects/widget-api", Pipeline: "one-stage"},
+		"kontora":    {Path: h.repoDir, Pipeline: "two-stage", Agent: "agent2"},
 	}
 	d := h.newDaemon(h.cfg)
 
@@ -1546,9 +1546,9 @@ func TestDaemon_GetConfig_ReturnsProjectsSortedByName(t *testing.T) {
 		Agent:        "agent2",
 	}, got[0])
 	assert.Equal(t, web.ProjectInfo{
-		Name:         "search",
-		Path:         "~/projects/search",
-		ResolvedPath: config.NormalizeRepoPath("~/projects/search"),
+		Name:         "widget-api",
+		Path:         "~/projects/widget-api",
+		ResolvedPath: config.NormalizeRepoPath("~/projects/widget-api"),
 		Pipeline:     "one-stage",
 	}, got[1])
 }
@@ -2085,7 +2085,7 @@ func writeSidecar(t *testing.T, logsDir, ticketID, stage string, run int, tape l
 
 func TestDaemon_GetStats(t *testing.T) {
 	h := newHarness(t)
-	otherRepo := filepath.Join(t.TempDir(), "analytics")
+	otherRepo := filepath.Join(t.TempDir(), "acme-web")
 	require.NoError(t, os.MkdirAll(otherRepo, 0o755))
 	h.cfg.Projects = map[string]config.Project{"kontora": {Path: h.repoDir}}
 	d := h.newDaemon(h.cfg)
@@ -2186,7 +2186,7 @@ created: 2026-01-01T00:00:00Z
 			names[p.Name] = p.Done
 		}
 		assert.Equal(t, 2, names["kontora"])
-		assert.Equal(t, 1, names["analytics"])
+		assert.Equal(t, 1, names["acme-web"])
 	})
 
 	t.Run("a repeated query inside the TTL is served from the cache", func(t *testing.T) {

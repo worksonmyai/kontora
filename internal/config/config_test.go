@@ -497,16 +497,16 @@ func TestPerAgentFor(t *testing.T) {
 		want      string
 	}{
 		{name: "unset", agentName: "claude", agent: claudeAgent},
-		{name: "scalar applies to every agent", model: PerAgent{Any: "haiku"}, agentName: "pi-acme-opus-5", agent: piAgent, want: "haiku"},
+		{name: "scalar applies to every agent", model: PerAgent{Any: "haiku"}, agentName: "pi-grafana-opus-5", agent: piAgent, want: "haiku"},
 		{
 			name:      "agent name",
-			model:     PerAgent{ByAgent: map[string]string{"pi-acme-opus-5": "anthropic/claude-haiku-4-5"}},
-			agentName: "pi-acme-opus-5", agent: piAgent, want: "anthropic/claude-haiku-4-5",
+			model:     PerAgent{ByAgent: map[string]string{"pi-grafana-opus-5": "anthropic/claude-haiku-4-5"}},
+			agentName: "pi-grafana-opus-5", agent: piAgent, want: "anthropic/claude-haiku-4-5",
 		},
 		{
 			name:      "agent kind",
 			model:     PerAgent{ByAgent: map[string]string{"pi": "anthropic/claude-haiku-4-5"}},
-			agentName: "pi-acme-opus-5", agent: piAgent, want: "anthropic/claude-haiku-4-5",
+			agentName: "pi-grafana-opus-5", agent: piAgent, want: "anthropic/claude-haiku-4-5",
 		},
 		{
 			name:      "agent name beats the kind it collides with",
@@ -516,7 +516,7 @@ func TestPerAgentFor(t *testing.T) {
 		{
 			name:      "map without a matching key falls back to nothing",
 			model:     PerAgent{ByAgent: map[string]string{"claude": "haiku"}},
-			agentName: "pi-acme-opus-5", agent: piAgent,
+			agentName: "pi-grafana-opus-5", agent: piAgent,
 		},
 		{
 			name:      "map and scalar together",
@@ -1468,7 +1468,7 @@ func TestLoadProjects(t *testing.T) {
 	require.NoError(t, err)
 
 	require.Len(t, cfg.Projects, 2)
-	assert.Equal(t, Project{Path: "~/projects/search"}, cfg.Projects["search"])
+	assert.Equal(t, Project{Path: "~/projects/widget-api"}, cfg.Projects["widget-api"])
 
 	name, p, ok := cfg.ProjectFor(filepath.Join(home, "projects", "kontora"))
 	require.True(t, ok)
@@ -1641,8 +1641,8 @@ func TestBranchPrefixFor(t *testing.T) {
 	cfg := &Config{
 		BranchPrefix: "kontora",
 		Projects: map[string]Project{
-			"kontora": {Path: "~/projects/kontora", BranchPrefix: "feature"},
-			"search":  {Path: "~/projects/search"},
+			"kontora":    {Path: "~/projects/kontora", BranchPrefix: "feature"},
+			"widget-api": {Path: "~/projects/widget-api"},
 		},
 	}
 
@@ -1653,7 +1653,7 @@ func TestBranchPrefixFor(t *testing.T) {
 	}{
 		{name: "project prefix", lookup: "~/projects/kontora", want: "feature"},
 		{name: "project prefix by absolute path", lookup: filepath.Join(home, "projects", "kontora"), want: "feature"},
-		{name: "project without a prefix falls back", lookup: "~/projects/search", want: "kontora"},
+		{name: "project without a prefix falls back", lookup: "~/projects/widget-api", want: "kontora"},
 		{name: "unconfigured path falls back", lookup: "~/projects/other", want: "kontora"},
 		{name: "no path falls back", lookup: "", want: "kontora"},
 	}
@@ -1737,7 +1737,7 @@ func TestHooksFor(t *testing.T) {
 			"kontora": {Path: "~/projects/kontora", Hooks: Hooks{
 				HookWorktreeCreated: {{Name: "project", Run: "echo project"}},
 			}},
-			"search": {Path: "~/projects/search"},
+			"widget-api": {Path: "~/projects/widget-api"},
 		},
 	}
 
@@ -1767,7 +1767,7 @@ func TestHooksFor(t *testing.T) {
 		},
 		{
 			name:     "project without hooks runs global only",
-			repoPath: "~/projects/search",
+			repoPath: "~/projects/widget-api",
 			event:    HookWorktreeCreated,
 			want:     []string{"global"},
 		},

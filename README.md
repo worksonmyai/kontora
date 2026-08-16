@@ -81,6 +81,8 @@ kontora        # kanban board TUI
 kontora attach # attach to the agent's tmux session
 ```
 
+Every command, flag, and environment variable is listed in [docs/cli.md](docs/cli.md).
+
 ## Configuration
 
 Config is stored in `~/.config/kontora/config.yaml` and defines five things: agents, stages, pipelines, projects, and hooks.

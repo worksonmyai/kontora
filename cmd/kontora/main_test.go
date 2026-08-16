@@ -91,3 +91,19 @@ func TestDispatchCoversCommandTable(t *testing.T) {
 		})
 	}
 }
+
+// TestCLIDocsCoverEveryCommand keeps docs/cli.md honest: a command added to the
+// table without a docs entry is the drift that left view, delete, skip,
+// set-stage and fmt undocumented for as long as they existed.
+func TestCLIDocsCoverEveryCommand(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "docs", "cli.md"))
+	require.NoError(t, err)
+	docs := string(data)
+
+	for _, cmd := range cli.Commands {
+		t.Run(cmd.Name, func(t *testing.T) {
+			assert.Contains(t, docs, "`kontora "+cmd.Name,
+				"%q has no heading in docs/cli.md", cmd.Name)
+		})
+	}
+}

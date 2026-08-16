@@ -29,6 +29,7 @@ theme:
     - toc.follow
 
 nav:
+  - CLI: cli.md
   - Configuration: configuration.md
   - Tickets: tickets.md
   - API: api.md

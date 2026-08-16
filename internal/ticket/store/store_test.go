@@ -20,32 +20,62 @@ func writeTestTicket(t *testing.T, dir, id, content string) string {
 	return path
 }
 
-func TestDiskRepo_Resolve_ExactMatch(t *testing.T) {
-	dir := t.TempDir()
-	writeTestTicket(t, dir, "tst-001", "---\nid: tst-001\nstatus: todo\n---\n# Test\n")
+func TestDiskRepo_Resolve(t *testing.T) {
+	cases := []struct {
+		name    string
+		ids     []string
+		input   string
+		want    string
+		wantErr string
+	}{
+		{
+			name:  "exact match",
+			ids:   []string{"tst-001"},
+			input: "tst-001",
+			want:  "tst-001",
+		},
+		{
+			name:  "single prefix match",
+			ids:   []string{"tst-001"},
+			input: "tst",
+			want:  "tst-001",
+		},
+		{
+			name:  "exact match wins over a longer prefix match",
+			ids:   []string{"tst", "tst-001"},
+			input: "tst",
+			want:  "tst",
+		},
+		{
+			name:    "ambiguous prefix names every match",
+			ids:     []string{"tst-001", "tst-002"},
+			input:   "tst",
+			wantErr: "ambiguous: matches tst-001, tst-002",
+		},
+		{
+			name:    "not found",
+			ids:     nil,
+			input:   "nonexistent",
+			wantErr: "not found",
+		},
+	}
 
-	repo := NewDiskRepo(dir)
-	id, err := repo.Resolve("tst-001")
-	require.NoError(t, err)
-	assert.Equal(t, "tst-001", id)
-}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			for _, id := range tc.ids {
+				writeTestTicket(t, dir, id, fmt.Sprintf("---\nid: %s\nstatus: todo\n---\n# Test\n", id))
+			}
 
-func TestDiskRepo_Resolve_PrefixMatch(t *testing.T) {
-	dir := t.TempDir()
-	writeTestTicket(t, dir, "tst-001", "---\nid: tst-001\nstatus: todo\n---\n# Test\n")
-
-	repo := NewDiskRepo(dir)
-	id, err := repo.Resolve("tst")
-	require.NoError(t, err)
-	assert.Equal(t, "tst-001", id)
-}
-
-func TestDiskRepo_Resolve_NotFound(t *testing.T) {
-	dir := t.TempDir()
-	repo := NewDiskRepo(dir)
-
-	_, err := repo.Resolve("nonexistent")
-	require.Error(t, err)
+			id, err := NewDiskRepo(dir).Resolve(tc.input)
+			if tc.wantErr != "" {
+				require.ErrorContains(t, err, tc.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, id)
+		})
+	}
 }
 
 func TestDiskRepo_Get(t *testing.T) {

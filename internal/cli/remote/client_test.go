@@ -198,10 +198,10 @@ func TestClient_ResolveID(t *testing.T) {
 		assert.Equal(t, "xyz999", id)
 	})
 
-	t.Run("prefix match is deterministic", func(t *testing.T) {
-		id, err := c.ResolveID("pre-")
-		require.NoError(t, err)
-		assert.Equal(t, "pre-a", id)
+	t.Run("ambiguous prefix errors and names every match", func(t *testing.T) {
+		_, err := c.ResolveID("pre-")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "pre-a, pre-b")
 	})
 
 	t.Run("exact hidden ticket wins over visible prefix", func(t *testing.T) {

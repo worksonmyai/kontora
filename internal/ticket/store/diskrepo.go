@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/worksonmyai/kontora/internal/config"
@@ -28,7 +29,7 @@ func (r *DiskRepo) Resolve(idOrPrefix string) (string, error) {
 		return "", fmt.Errorf("reading tickets dir: %w", err)
 	}
 
-	var prefixMatch string
+	var prefixMatches []string
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".md") {
 			continue
@@ -37,15 +38,29 @@ func (r *DiskRepo) Resolve(idOrPrefix string) (string, error) {
 		if name == idOrPrefix {
 			return idOrPrefix, nil
 		}
-		if prefixMatch == "" && strings.HasPrefix(name, idOrPrefix) {
-			prefixMatch = name
+		if strings.HasPrefix(name, idOrPrefix) {
+			prefixMatches = append(prefixMatches, name)
 		}
 	}
 
-	if prefixMatch != "" {
-		return prefixMatch, nil
+	return PickPrefixMatch(idOrPrefix, prefixMatches)
+}
+
+// PickPrefixMatch returns the single ticket a prefix names. Several matches are
+// an error rather than a silent pick of the first one, because the same
+// resolution backs `delete` and `cancel`: a prefix that grew ambiguous as
+// tickets were added must not quietly act on a different ticket than last time.
+func PickPrefixMatch(idOrPrefix string, matches []string) (string, error) {
+	switch len(matches) {
+	case 0:
+		return "", fmt.Errorf("ticket %q not found", idOrPrefix)
+	case 1:
+		return matches[0], nil
+	default:
+		sorted := slices.Clone(matches)
+		slices.Sort(sorted)
+		return "", fmt.Errorf("ticket %q is ambiguous: matches %s", idOrPrefix, strings.Join(sorted, ", "))
 	}
-	return "", fmt.Errorf("ticket %q not found", idOrPrefix)
 }
 
 func (r *DiskRepo) Get(id string) (*app.StoredTicket, error) {

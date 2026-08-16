@@ -19,6 +19,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/worksonmyai/kontora/internal/ticket/store"
 	"github.com/worksonmyai/kontora/internal/web"
 )
 
@@ -321,8 +322,8 @@ func (c *Client) Summary(id, text string) error {
 }
 
 // ResolveID expands a ticket ID prefix to a full ID by listing tickets and
-// matching client-side, mirroring DiskRepo.Resolve: an exact match wins,
-// otherwise the first prefix match is returned.
+// matching client-side, mirroring DiskRepo.Resolve: an exact match wins, a
+// single prefix match is taken, and several matches are an error.
 func (c *Client) ResolveID(input string) (string, error) {
 	tickets, _, err := c.ListTickets()
 	if err != nil {
@@ -330,24 +331,23 @@ func (c *Client) ResolveID(input string) (string, error) {
 	}
 	sort.Slice(tickets, func(i, j int) bool { return tickets[i].ID < tickets[j].ID })
 
-	var prefix string
+	var prefixMatches []string
 	for _, t := range tickets {
 		if t.ID == input {
 			return input, nil
 		}
-		if prefix == "" && strings.HasPrefix(t.ID, input) {
-			prefix = t.ID
+		if strings.HasPrefix(t.ID, input) {
+			prefixMatches = append(prefixMatches, t.ID)
 		}
 	}
+	// A ticket the board hides (archived) is still addressable by its exact ID,
+	// so ask for it directly before deciding the prefix set is all there is.
 	if _, err := c.GetTicket(input); err == nil {
 		return input, nil
 	} else if !isHTTPStatus(err, http.StatusNotFound) {
 		return "", err
 	}
-	if prefix != "" {
-		return prefix, nil
-	}
-	return "", fmt.Errorf("ticket %q not found", input)
+	return store.PickPrefixMatch(input, prefixMatches)
 }
 
 // Subscribe streams ticket events over SSE until ctx is cancelled.

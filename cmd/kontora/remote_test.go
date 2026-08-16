@@ -559,3 +559,13 @@ func TestPrintRemoteTickets(t *testing.T) {
 		})
 	}
 }
+
+func TestHelpGoesToStdoutAndExitsZero(t *testing.T) {
+	for _, arg := range []string{"help", "--help", "-h"} {
+		t.Run(arg, func(t *testing.T) {
+			out, err := runCLI(t, nil, arg)
+			require.NoError(t, err, out)
+			assert.Contains(t, out, "Usage: kontora")
+		})
+	}
+}

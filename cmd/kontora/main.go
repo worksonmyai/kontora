@@ -88,6 +88,10 @@ func main() {
 	}
 
 	switch os.Args[1] {
+	case "help", "-h", "--help":
+		// An explicit request for help is not an error: it goes to stdout so it
+		// can be piped, and exits 0 so a script does not read it as a failure.
+		fmt.Print(renderUsage())
 	case "ls":
 		cmdLs()
 	case "new":

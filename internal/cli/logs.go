@@ -16,6 +16,7 @@ import (
 	"github.com/worksonmyai/kontora/internal/config"
 	"github.com/worksonmyai/kontora/internal/logfmt"
 	"github.com/worksonmyai/kontora/internal/ticket"
+	"github.com/worksonmyai/kontora/internal/ticket/store"
 )
 
 // Logs prints the agent log for a ticket. If stage is empty, it shows the most
@@ -110,30 +111,15 @@ func StageActivity(tasksDir, logsDir, taskID, stage string, run int) (tape *logf
 	return nil, string(data), nil
 }
 
+// ResolveTicketID expands a ticket ID prefix against the tickets directory.
+// It is the same resolution the daemon and the remote client do, including the
+// refusal to guess when a prefix matches more than one ticket.
+func ResolveTicketID(ticketsDir, input string) (string, error) {
+	return store.NewDiskRepo(ticketsDir).Resolve(input)
+}
+
 func resolveTaskID(tasksDir, input string) (string, error) {
-	entries, err := os.ReadDir(tasksDir)
-	if err != nil {
-		return "", fmt.Errorf("reading tickets dir: %w", err)
-	}
-
-	var prefixMatch string
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".md") {
-			continue
-		}
-		name := strings.TrimSuffix(entry.Name(), ".md")
-		if name == input {
-			return input, nil
-		}
-		if prefixMatch == "" && strings.HasPrefix(name, input) {
-			prefixMatch = name
-		}
-	}
-
-	if prefixMatch != "" {
-		return prefixMatch, nil
-	}
-	return "", fmt.Errorf("ticket %q not found", input)
+	return ResolveTicketID(tasksDir, input)
 }
 
 func printFile(path string, w io.Writer) error {

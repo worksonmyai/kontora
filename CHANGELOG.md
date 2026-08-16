@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.33.0](https://github.com/worksonmyai/kontora/compare/v0.32.0...v0.33.0) - 2026-08-16
+
+- fix linter
+
 ## [0.30.0](https://github.com/worksonmyai/kontora/compare/v0.29.0...v0.30.0) - 2026-08-13
 
 - Rebuild start ticket modal on structured design

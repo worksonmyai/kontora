@@ -102,6 +102,16 @@ func main() {
 		cmdArchive()
 	case "logs":
 		cmdLogs()
+	case "activity":
+		cmdActivity()
+	case "changes":
+		cmdChanges()
+	case "stats":
+		cmdStats()
+	case "review":
+		cmdPlannotator("review")
+	case "annotate":
+		cmdPlannotator("annotate")
 	case "attach":
 		cmdAttach()
 	case "start":
@@ -717,6 +727,111 @@ func cmdAction(action string) {
 	if err != nil {
 		log.Fatal(err)
 	}
+}
+
+// daemonClient returns the client for whichever daemon the command targets: the
+// remote one when a URL is set, else the local one this config describes. It is
+// used by the verbs that only the daemon can answer — it owns the queue, the
+// worktrees, and the run records.
+func daemonClient(configPath, urlFlag, tokenFlag string) *remote.Client {
+	if rc := remoteClient(urlFlag, tokenFlag); rc != nil {
+		return rc
+	}
+	return cli.LocalClient(mustLoadConfig(configPath))
+}
+
+func cmdStats() {
+	fs := flag.NewFlagSet("stats", flag.ExitOnError)
+	configPath := fs.String("config", defaultConfigPath(), "path to config file")
+	rng := fs.String("range", "90d", "window to report on: 1d, 1w, 30d, 90d or all")
+	project := fs.String("project", "", "only count tickets for this configured project")
+	pipeline := fs.String("pipeline", "", "only count tickets for this pipeline")
+	urlFlag, tokenFlag := addRemoteFlags(fs)
+	if err := fs.Parse(os.Args[2:]); err != nil {
+		log.Fatalf("parsing flags: %v", err)
+	}
+
+	info, err := daemonClient(*configPath, *urlFlag, *tokenFlag).Stats(*rng, *project, *pipeline)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if err := cli.PrintStats(info, os.Stdout); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func cmdChanges() {
+	fs := flag.NewFlagSet("changes", flag.ExitOnError)
+	configPath := fs.String("config", defaultConfigPath(), "path to config file")
+	urlFlag, tokenFlag := addRemoteFlags(fs)
+	if err := fs.Parse(os.Args[2:]); err != nil {
+		log.Fatalf("parsing flags: %v", err)
+	}
+	if fs.NArg() < 1 {
+		log.Fatal("ticket ID is required: kontora changes TICKET_ID")
+	}
+
+	rc := daemonClient(*configPath, *urlFlag, *tokenFlag)
+	info, err := rc.Changes(mustResolveRemote(rc, fs.Arg(0)))
+	if err != nil {
+		log.Fatal(err)
+	}
+	if err := cli.PrintChanges(info, os.Stdout); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func cmdActivity() {
+	fs := flag.NewFlagSet("activity", flag.ExitOnError)
+	configPath := fs.String("config", defaultConfigPath(), "path to config file")
+	stage := fs.String("stage", "", "stage to show (defaults to the most recent)")
+	run := fs.Int("run", 0, "run number within the stage (defaults to the latest)")
+	urlFlag, tokenFlag := addRemoteFlags(fs)
+	if err := fs.Parse(os.Args[2:]); err != nil {
+		log.Fatalf("parsing flags: %v", err)
+	}
+	if fs.NArg() < 1 {
+		log.Fatal("ticket ID is required: kontora activity TICKET_ID")
+	}
+
+	rc := daemonClient(*configPath, *urlFlag, *tokenFlag)
+	info, err := rc.Activity(mustResolveRemote(rc, fs.Arg(0)), *stage, *run)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if err := cli.PrintActivity(info, os.Stdout); err != nil {
+		log.Fatal(err)
+	}
+}
+
+// cmdPlannotator opens a ticket in Plannotator on the daemon host. The daemon
+// spawns the binary, so a remote call opens it over there, not on the caller's
+// screen.
+func cmdPlannotator(action string) {
+	fs := flag.NewFlagSet(action, flag.ExitOnError)
+	configPath := fs.String("config", defaultConfigPath(), "path to config file")
+	urlFlag, tokenFlag := addRemoteFlags(fs)
+	if err := fs.Parse(os.Args[2:]); err != nil {
+		log.Fatalf("parsing flags: %v", err)
+	}
+	if fs.NArg() < 1 {
+		log.Fatalf("ticket ID is required: kontora %s TICKET_ID", action)
+	}
+
+	rc := daemonClient(*configPath, *urlFlag, *tokenFlag)
+	id := mustResolveRemote(rc, fs.Arg(0))
+
+	var err error
+	switch action {
+	case "review":
+		err = rc.PlannotatorReview(id)
+	case "annotate":
+		err = rc.PlannotatorAnnotate(id)
+	}
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Printf("%s %s\n", helpCyan.Render(id), helpFaint.Render("opened in plannotator on the daemon host"))
 }
 
 // cmdMove is the general form of pause/cancel/done: it moves a ticket to any

@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -214,6 +215,70 @@ func (c *Client) Logs(id, stage string) (string, error) {
 		return "", err
 	}
 	return r.Content, nil
+}
+
+// Stats returns the aggregated throughput figures for a range chip
+// (1d, 1w, 30d, 90d, all), optionally narrowed to one project or pipeline.
+func (c *Client) Stats(rng, project, pipeline string) (web.StatsInfo, error) {
+	q := url.Values{}
+	if rng != "" {
+		q.Set("range", rng)
+	}
+	if project != "" {
+		q.Set("project", project)
+	}
+	if pipeline != "" {
+		q.Set("pipeline", pipeline)
+	}
+	path := "/api/stats"
+	if len(q) > 0 {
+		path += "?" + q.Encode()
+	}
+	var info web.StatsInfo
+	if err := c.doJSON(http.MethodGet, path, nil, &info); err != nil {
+		return web.StatsInfo{}, err
+	}
+	return info, nil
+}
+
+// Changes returns the commits and per-file line counts on a ticket's branch.
+func (c *Client) Changes(id string) (web.ChangesInfo, error) {
+	var info web.ChangesInfo
+	if err := c.doJSON(http.MethodGet, "/api/tickets/"+id+"/changes", nil, &info); err != nil {
+		return web.ChangesInfo{}, err
+	}
+	return info, nil
+}
+
+// Activity returns one stage run's transcript. An empty stage and a zero run
+// select the most recent run.
+func (c *Client) Activity(id, stage string, run int) (web.ActivityInfo, error) {
+	q := url.Values{}
+	if stage != "" {
+		q.Set("stage", stage)
+	}
+	if run > 0 {
+		q.Set("run", strconv.Itoa(run))
+	}
+	path := "/api/tickets/" + id + "/activity"
+	if len(q) > 0 {
+		path += "?" + q.Encode()
+	}
+	var info web.ActivityInfo
+	if err := c.doJSON(http.MethodGet, path, nil, &info); err != nil {
+		return web.ActivityInfo{}, err
+	}
+	return info, nil
+}
+
+// PlannotatorReview opens the ticket's diff in Plannotator on the daemon host.
+func (c *Client) PlannotatorReview(id string) error {
+	return c.postAction("/api/tickets/" + id + "/plannotator-review")
+}
+
+// PlannotatorAnnotate opens the ticket's markdown in Plannotator on the daemon host.
+func (c *Client) PlannotatorAnnotate(id string) error {
+	return c.postAction("/api/tickets/" + id + "/plannotator-annotate")
 }
 
 // Config returns the daemon's pipelines, agents, and related metadata.

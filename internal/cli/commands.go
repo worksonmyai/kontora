@@ -58,6 +58,18 @@ var Commands = []Command{
 	{Name: "logs", Desc: "Show agent logs for a ticket", Config: true, Remote: true, TicketID: true, Flags: []Flag{
 		{Name: "stage", Desc: "Stage name", Value: "stage"},
 	}},
+	{Name: "activity", Desc: "Show a stage run's transcript", Config: true, Remote: true, TicketID: true, Flags: []Flag{
+		{Name: "stage", Desc: "Stage name", Value: "stage"},
+		{Name: "run", Desc: "Run number within the stage", Value: "text"},
+	}},
+	{Name: "changes", Desc: "Show a ticket's commits and changed files", Config: true, Remote: true, TicketID: true},
+	{Name: "stats", Desc: "Show throughput and cycle-time figures", Config: true, Remote: true, Flags: []Flag{
+		{Name: "range", Desc: "Window to report on", Value: "text", Choices: []string{"1d", "1w", "30d", "90d", "all"}},
+		{Name: "project", Desc: "Only count tickets for this configured project", Value: "project"},
+		{Name: "pipeline", Desc: "Only count tickets for this pipeline", Value: "pipeline"},
+	}},
+	{Name: "review", Desc: "Open a ticket's diff in Plannotator on the daemon host", Config: true, Remote: true, TicketID: true},
+	{Name: "annotate", Desc: "Open a ticket's markdown in Plannotator on the daemon host", Config: true, Remote: true, TicketID: true},
 	{Name: "attach", Desc: "Attach to a running ticket", Config: true, Remote: true, TicketID: true, Flags: []Flag{
 		{Name: "rw", Desc: "Attach in read-write mode"},
 	}},

@@ -1283,7 +1283,7 @@ test("parseFilterQuery splits the box into tokens and free text", () => {
     { name: "quoted free text", q: '"two words"', want: { text: "two words", project: [], agent: [] } },
     { name: "a token plus free text", q: "project:Kontora Fonts", want: { text: "fonts", project: [tok("kontora")], agent: [] } },
     { name: "two tokens", q: "project:kontora agent:claude", want: { text: "", project: [tok("kontora")], agent: [tok("claude")] } },
-    { name: "a repeated key", q: "project:kontora project:widget-api", want: { text: "", project: [tok("kontora"), tok("widget-api")], agent: [] } },
+    { name: "a repeated key", q: "project:kontora project:search", want: { text: "", project: [tok("kontora"), tok("search")], agent: [] } },
     // Between the colon and the first typed character the key constrains
     // nothing, rather than emptying the board.
     { name: "a bare prefix", q: "project:", want: { text: "", project: [], agent: [] } },
@@ -1308,7 +1308,7 @@ test("parseFilterQuery splits the box into tokens and free text", () => {
 const FILTER_PROJECTS = [
   { name: "kontora", path: "~/projects/kontora", resolved_path: "/home/u/projects/kontora" },
   { name: "kontora-web", path: "~/projects/kontora-web", resolved_path: "/home/u/projects/kontora-web" },
-  { name: "agento11y", path: "~/projects/widget-api", resolved_path: "/home/u/projects/widget-api" },
+  { name: "analytics", path: "~/projects/search", resolved_path: "/home/u/projects/search" },
   { name: "my notes", path: "~/projects/notes", resolved_path: "/home/u/projects/notes" },
 ];
 
@@ -1317,7 +1317,7 @@ test("ticketProjectName names the configured project, or the repository", () => 
   state.configCache = { projects: FILTER_PROJECTS, pipelines: [], agents: [] };
   const cases = [
     { name: "the configured path", path: "~/projects/kontora", want: "kontora" },
-    { name: "the resolved path", path: "/home/u/projects/widget-api", want: "agento11y" },
+    { name: "the resolved path", path: "/home/u/projects/search", want: "analytics" },
     { name: "a trailing slash", path: "~/projects/kontora/", want: "kontora" },
     { name: "no configured project", path: "/home/u/projects/scratch", want: "scratch" },
     { name: "no path at all", path: "", want: "" },
@@ -1333,7 +1333,7 @@ test("ticketProjectName names the configured project, or the repository", () => 
 // claude and claude-opus pair, are what a substring token over-matches.
 const FILTER_TICKETS = [
   { id: "kon-1", title: "Vendor the fonts", status: "todo", kontora: true, agent: "claude", path: "~/projects/kontora" },
-  { id: "kon-2", title: "Fonts on the stats page", status: "todo", kontora: true, agent: "codex", path: "/home/u/projects/widget-api" },
+  { id: "kon-2", title: "Fonts on the stats page", status: "todo", kontora: true, agent: "codex", path: "/home/u/projects/search" },
   { id: "kon-3", title: "Scratch work", status: "todo", kontora: true, agent: "pi-opus", path: "/home/u/projects/scratch" },
   { id: "kon-4", title: "Dashboard sidebar", status: "todo", kontora: true, agent: "claude-opus", path: "~/projects/kontora-web" },
   { id: "kon-5", title: "Sort the inbox", status: "todo", kontora: true, agent: "codex", path: "/home/u/projects/notes" },
@@ -1343,7 +1343,7 @@ const FILTER_ALL = ["kon-1", "kon-2", "kon-3", "kon-4", "kon-5"];
 test("recomputeBoard narrows the board by the project and agent tokens", () => {
   const cases = [
     { name: "a configured project by its path", q: "project:=kontora", want: ["kon-1"] },
-    { name: "a configured project by its resolved path", q: "project:=agento11y", want: ["kon-2"] },
+    { name: "a configured project by its resolved path", q: "project:=analytics", want: ["kon-2"] },
     { name: "a repository with no configured project", q: "project:=scratch", want: ["kon-3"] },
     { name: "a project name with a space", q: 'project:="my notes"', want: ["kon-5"] },
     // A typed value narrows by substring, so a name that contains another name
@@ -1381,16 +1381,16 @@ test("a sidebar row writes its token into the filter box and takes it back out",
   state.configCache = { projects: FILTER_PROJECTS, pipelines: [], agents: [] };
   state.tickets = FILTER_TICKETS;
 
-  state.toggleFilterToken("project", "agento11y");
-  assert.equal(state.searchQuery, "project:=agento11y");
-  assert.equal(state.filterTokenActive("project", "agento11y"), true);
+  state.toggleFilterToken("project", "analytics");
+  assert.equal(state.searchQuery, "project:=analytics");
+  assert.equal(state.filterTokenActive("project", "analytics"), true);
   assert.equal(state.filterTokenActive("project", "kontora"), false);
-  assert.equal(state.filterTokenActive("agent", "agento11y"), false);
+  assert.equal(state.filterTokenActive("agent", "analytics"), false);
 
   // Clicking the active row again clears the box, so the board comes back whole.
-  state.toggleFilterToken("project", "agento11y");
+  state.toggleFilterToken("project", "analytics");
   assert.equal(state.searchQuery, "");
-  assert.equal(state.filterTokenActive("project", "agento11y"), false);
+  assert.equal(state.filterTokenActive("project", "analytics"), false);
   state.recomputeBoard();
   assert.equal(state.filteredTicketCount(), FILTER_ALL.length);
 
@@ -1417,19 +1417,19 @@ test("a sidebar row writes its token into the filter box and takes it back out",
 test("no sidebar row is active once the query says more than the row does", () => {
   const state = loadKontoraState();
   const cases = [
-    { name: "the token alone", q: "project:=agento11y", want: true },
-    { name: "the token with free text", q: "project:=agento11y fonts", want: false },
-    { name: "the token with another key", q: "project:=agento11y agent:=claude", want: false },
-    { name: "the token repeated", q: "project:=agento11y project:=kontora", want: false },
+    { name: "the token alone", q: "project:=analytics", want: true },
+    { name: "the token with free text", q: "project:=analytics fonts", want: false },
+    { name: "the token with another key", q: "project:=analytics agent:=claude", want: false },
+    { name: "the token repeated", q: "project:=analytics project:=kontora", want: false },
     { name: "a different value", q: "project:=kontora", want: false },
     // A typed value narrows by substring, so it is not what the row writes.
-    { name: "the value typed without the = form", q: "project:agento11y", want: false },
+    { name: "the value typed without the = form", q: "project:analytics", want: false },
     { name: "an empty box", q: "", want: false },
   ];
 
   for (const c of cases) {
     state.searchQuery = c.q;
-    assert.equal(state.filterTokenActive("project", "agento11y"), c.want, c.name);
+    assert.equal(state.filterTokenActive("project", "analytics"), c.want, c.name);
   }
 });
 
@@ -2860,7 +2860,7 @@ test("the editor hides the newline the frontmatter left on the body", async () =
 // between.
 const EDIT_PROJECTS = [
   { name: "kontora", path: "~/projects/kontora", resolved_path: "/home/u/projects/kontora", pipeline: "implement", agent: "claude" },
-  { name: "widget-api", path: "~/projects/widget-api", resolved_path: "/home/u/projects/widget-api", pipeline: "commit-no-push", agent: "pi-opus" },
+  { name: "search", path: "~/projects/search", resolved_path: "/home/u/projects/search", pipeline: "commit-no-push", agent: "pi-opus" },
 ];
 
 // The edit form as startEditing leaves it for a ticket at fromPath, with the
@@ -2892,14 +2892,14 @@ test("the edit form applies project defaults without changing the branch", () =>
       name: "inherited values follow the retarget",
       from: "~/projects/kontora",
       fields: { pipeline: "implement", agent: "claude", branch: "" },
-      to: "~/projects/widget-api",
+      to: "~/projects/search",
       want: { pipeline: "commit-no-push", agent: "pi-opus", branch: "" },
     },
     {
       name: "values the user chose are kept",
       from: "~/projects/kontora",
       fields: { pipeline: "review-only", agent: "codex", branch: "wip/experiment" },
-      to: "~/projects/widget-api",
+      to: "~/projects/search",
       want: { pipeline: "review-only", agent: "codex", branch: "wip/experiment" },
     },
     {
@@ -2934,7 +2934,7 @@ test("the init form never fills or replaces the branch", async () => {
     assert.equal(state.initForm.branch, branch);
     assert.equal(state.initForm.pipeline, "implement");
 
-    state.initForm.path = "~/projects/widget-api";
+    state.initForm.path = "~/projects/search";
     state.onInitPathChange();
     assert.equal(state.initForm.branch, branch);
     assert.equal(state.initForm.pipeline, "commit-no-push");
@@ -3182,8 +3182,8 @@ test("the pipeline badge names a project only when the pipeline came from it", a
     {
       name: "a retargeted path re-inherits, and the badge follows",
       ticket: { id: "kon-1", status: "open", path: "~/projects/kontora" },
-      retarget: "~/projects/widget-api",
-      want: "widget-api",
+      retarget: "~/projects/search",
+      want: "search",
     },
   ];
 
@@ -3239,7 +3239,7 @@ test("the init form's derived values follow the pipeline, the path and the branc
     {
       name: "a retargeted path re-resolves the pipeline and drops the preview",
       ticket: { id: "kon-1", status: "open", path: "~/projects/kontora", auto_branch: "kontora/fix-retry-kon-1" },
-      retarget: "~/projects/widget-api",
+      retarget: "~/projects/search",
       wantStages: ["implement", "commit"],
       wantBranchResolved: false,
     },
@@ -3273,9 +3273,9 @@ test("openInitModal carries the ticket's status and parsed title into the header
   const cases = [
     {
       name: "a literal [tag] prefix",
-      ticket: { id: "kon-1", status: "open", title: "[widget-api] Bound the eval worker", path: "~/projects/kontora" },
+      ticket: { id: "kon-1", status: "open", title: "[search] Bound the eval worker", path: "~/projects/kontora" },
       wantStatus: "open",
-      wantTag: "widget-api",
+      wantTag: "search",
       wantRest: "Bound the eval worker",
     },
     {
@@ -3318,7 +3318,7 @@ test("an empty branch field shows the name the daemon would assign", async () =>
     {
       name: "a retargeted path drops the name",
       ticket: { id: "kon-1", path: "~/projects/kontora", auto_branch: "kontora/fix-retry-kon-1" },
-      retarget: "~/projects/widget-api",
+      retarget: "~/projects/search",
       want: generic,
     },
     {

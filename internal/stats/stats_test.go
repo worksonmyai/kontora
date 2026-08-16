@@ -348,13 +348,13 @@ func TestCompute(t *testing.T) {
 			name: "project falls back to the path basename",
 			tickets: []Ticket{
 				{ID: "a", Status: "done", Project: "kontora", Path: "/repos/kontora", StartedAt: ago(4, 9), CompletedAt: ago(3, 9)},
-				{ID: "b", Status: "done", Path: "/elsewhere/acme-web", StartedAt: ago(4, 9), CompletedAt: ago(3, 9)},
-				{ID: "c", Status: "done", Path: "/elsewhere/acme-web", StartedAt: ago(4, 9), CompletedAt: ago(3, 9)},
+				{ID: "b", Status: "done", Path: "/elsewhere/analytics", StartedAt: ago(4, 9), CompletedAt: ago(3, 9)},
+				{ID: "c", Status: "done", Path: "/elsewhere/analytics", StartedAt: ago(4, 9), CompletedAt: ago(3, 9)},
 			},
 			opts: Options{Now: testNow, Days: 35},
 			check: func(t *testing.T, r Result) {
 				require.Len(t, r.Projects, 2)
-				require.Equal(t, "acme-web", r.Projects[0].Name)
+				require.Equal(t, "analytics", r.Projects[0].Name)
 				require.Equal(t, 2, r.Projects[0].Done)
 				require.Equal(t, "kontora", r.Projects[1].Name)
 				require.Equal(t, (24 * time.Hour).Milliseconds(), r.Projects[1].MedianCycleMS)
@@ -364,13 +364,13 @@ func TestCompute(t *testing.T) {
 			name: "project filter matches the resolved name",
 			tickets: []Ticket{
 				{ID: "a", Status: "done", Project: "kontora", StartedAt: ago(4, 9), CompletedAt: ago(3, 9)},
-				{ID: "b", Status: "done", Path: "/elsewhere/acme-web", StartedAt: ago(4, 9), CompletedAt: ago(3, 9)},
+				{ID: "b", Status: "done", Path: "/elsewhere/analytics", StartedAt: ago(4, 9), CompletedAt: ago(3, 9)},
 			},
-			opts: Options{Now: testNow, Days: 35, Project: "acme-web"},
+			opts: Options{Now: testNow, Days: 35, Project: "analytics"},
 			check: func(t *testing.T, r Result) {
 				require.Equal(t, 1, r.Totals.Shipped)
 				require.Len(t, r.Projects, 1)
-				require.Equal(t, "acme-web", r.Projects[0].Name)
+				require.Equal(t, "analytics", r.Projects[0].Name)
 			},
 		},
 		{

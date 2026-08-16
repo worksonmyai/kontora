@@ -2960,21 +2960,13 @@ function kontora() {
     // Returns one of: indigo|cyan|amber|green|rose|mauve|none. Used as the
     // [data-pipe-color] attribute that drives the card left-border tint and
     // the pipeline tag chip color via --pipe-h.
-    _knownPipeColors: {
-      'widget-api':                 'indigo',
-      'widget-api-sdk':             'cyan',
-      'kontora':               'green',
-      'acme-deploy':      'amber',
-      'acme-assistant': 'rose',
-      'acme-backend':    'amber',
-      'acme-web':               'rose',
-      'acm-0001':              'green',
-    },
+    //
+    // The name is hashed rather than looked up, so every install gets stable
+    // colors for its own projects without this file naming any of them.
     _pipeColorPalette: ['indigo', 'cyan', 'amber', 'green', 'rose', 'mauve'],
     pipelineColorByName(name) {
       var n = (name || '').toLowerCase();
       if (!n) return 'none';
-      if (this._knownPipeColors[n]) return this._knownPipeColors[n];
       var h = 0;
       for (var i = 0; i < n.length; i++) h = (h * 31 + n.charCodeAt(i)) | 0;
       return this._pipeColorPalette[Math.abs(h) % this._pipeColorPalette.length];
@@ -3061,8 +3053,8 @@ function kontora() {
 
     // Tokens of different keys narrow together; repeats of one key widen it. A
     // typed value matches as a substring, so a half-typed name still narrows;
-    // the `=` form matches the whole field, so clicking `widget-api` in the sidebar
-    // does not also pull in `widget-api-sdk`.
+    // the `=` form matches the whole field, so clicking `api` in the sidebar
+    // does not also pull in `api-sdk`.
     _tokenMatches(values, field) {
       var f = (field || '').toLowerCase();
       return values.some(v => (v.exact ? f === v.value : f.includes(v.value)));

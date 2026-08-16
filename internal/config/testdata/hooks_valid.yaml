@@ -19,5 +19,5 @@ projects:
           timeout: 30s
       stage_end:
         - run: make lint
-  widget-api:
-    path: ~/projects/widget-api
+  search:
+    path: ~/projects/search

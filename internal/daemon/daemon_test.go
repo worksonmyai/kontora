@@ -3125,75 +3125,122 @@ created: 2026-01-01T00:00:00Z
 	require.NoError(t, <-errCh)
 }
 
-// modelFlagCount counts the exact model flags in an argv. An override replaces
-// the agent's own flag, so a second one would mean the winner depends on how
-// the CLI resolves a repeated flag.
-func modelFlagCount(args []string) int {
+// flagCount counts the exact occurrences of a flag in an argv. An override
+// replaces the agent's own flag, so a second one would mean the winner depends
+// on how the CLI resolves a repeated flag.
+func flagCount(args []string, flag string) int {
 	n := 0
 	for _, arg := range args {
-		if arg == "--model" || strings.HasPrefix(arg, "--model=") {
+		if arg == flag || strings.HasPrefix(arg, flag+"=") {
 			n++
 		}
 	}
 	return n
 }
 
-// modelArg returns the value of the single model flag in an argv.
-func modelArg(t *testing.T, args []string) string {
+// flagArg returns the value of the single occurrence of flag in an argv.
+func flagArg(t *testing.T, args []string, flag string) string {
 	t.Helper()
-	require.Equal(t, 1, modelFlagCount(args), "want exactly one --model in %v", args)
-	i := slices.Index(args, "--model")
-	require.GreaterOrEqual(t, i, 0, "--model in the joined form: %v", args)
-	require.Less(t, i+1, len(args), "--model has no value: %v", args)
+	require.Equal(t, 1, flagCount(args, flag), "want exactly one %s in %v", flag, args)
+	i := slices.Index(args, flag)
+	require.GreaterOrEqual(t, i, 0, "%s in the joined form: %v", flag, args)
+	require.Less(t, i+1, len(args), "%s has no value: %v", flag, args)
 	return args[i+1]
 }
 
-// TestStageModel runs one pipeline stage per case and reads the model out of
-// the argv the agent was spawned with.
-func TestStageModel(t *testing.T) {
+// modelArg returns the value of the single model flag in an argv.
+func modelArg(t *testing.T, args []string) string {
+	t.Helper()
+	return flagArg(t, args, "--model")
+}
+
+// TestStageOverrides runs one pipeline stage per case and reads the model and
+// the reasoning effort out of the argv the agent was spawned with.
+func TestStageOverrides(t *testing.T) {
 	cases := []struct {
 		name      string
 		agentName string
 		agent     config.Agent
-		model     config.Model
-		want      string
+		model     config.PerAgent
+		effort    config.PerAgent
+		wantModel string
+		// wantEffort is the flag and the value expected in the argv, e.g.
+		// "--effort xhigh". Empty means no effort flag at all.
+		wantEffort string
 	}{
 		{
 			name:      "map keyed by agent kind",
 			agentName: "pi-grafana-opus-5",
 			agent:     config.Agent{Binary: "pi"},
-			model:     config.Model{ByAgent: map[string]string{"pi": "anthropic/claude-haiku-4-5"}},
-			want:      "anthropic/claude-haiku-4-5",
+			model:     config.PerAgent{ByAgent: map[string]string{"pi": "anthropic/claude-haiku-4-5"}},
+			wantModel: "anthropic/claude-haiku-4-5",
 		},
 		{
 			name:      "map keyed by agent name",
 			agentName: "pi-grafana-opus-5",
 			agent:     config.Agent{Binary: "pi"},
-			model:     config.Model{ByAgent: map[string]string{"pi-grafana-opus-5": "anthropic/claude-haiku-4-5"}},
-			want:      "anthropic/claude-haiku-4-5",
+			model:     config.PerAgent{ByAgent: map[string]string{"pi-grafana-opus-5": "anthropic/claude-haiku-4-5"}},
+			wantModel: "anthropic/claude-haiku-4-5",
 		},
 		{
-			name:  "scalar",
-			agent: config.Agent{Binary: "claude"},
-			model: config.Model{Any: "haiku"},
-			want:  "haiku",
+			name:      "scalar",
+			agent:     config.Agent{Binary: "claude"},
+			model:     config.PerAgent{Any: "haiku"},
+			wantModel: "haiku",
 		},
 		{
-			name:  "replaces the agent's own model",
-			agent: config.Agent{Binary: "claude", Args: []string{"--dangerously-skip-permissions", "--model", "opus"}},
-			model: config.Model{Any: "haiku"},
-			want:  "haiku",
+			name:      "replaces the agent's own model",
+			agent:     config.Agent{Binary: "claude", Args: []string{"--dangerously-skip-permissions", "--model", "opus"}},
+			model:     config.PerAgent{Any: "haiku"},
+			wantModel: "haiku",
 		},
 		{
-			name:  "replaces the model behind a wrapper",
-			agent: config.Agent{Binary: "nono", Args: []string{"run", "--profile", "agent", "--", "pi", "--model", "anthropic/claude-opus-5"}},
-			model: config.Model{ByAgent: map[string]string{"pi": "anthropic/claude-haiku-4-5"}},
-			want:  "anthropic/claude-haiku-4-5",
+			name:      "replaces the model behind a wrapper",
+			agent:     config.Agent{Binary: "nono", Args: []string{"run", "--profile", "agent", "--", "pi", "--model", "anthropic/claude-opus-5"}},
+			model:     config.PerAgent{ByAgent: map[string]string{"pi": "anthropic/claude-haiku-4-5"}},
+			wantModel: "anthropic/claude-haiku-4-5",
 		},
 		{
-			name:  "no model keeps the agent's own",
-			agent: config.Agent{Binary: "claude", Args: []string{"--model", "opus"}},
-			want:  "opus",
+			name:      "no model keeps the agent's own",
+			agent:     config.Agent{Binary: "claude", Args: []string{"--model", "opus"}},
+			wantModel: "opus",
+		},
+		{
+			name:       "the agent's effort with no stage override",
+			agent:      config.Agent{Binary: "claude", Effort: "high"},
+			wantEffort: "--effort high",
+		},
+		{
+			name:       "pi takes its own effort flag",
+			agentName:  "pi-grafana-opus-5",
+			agent:      config.Agent{Binary: "pi", Effort: "high"},
+			wantEffort: "--thinking high",
+		},
+		{
+			name:       "a stage effort scalar beats the agent's own",
+			agent:      config.Agent{Binary: "claude", Effort: "high"},
+			effort:     config.PerAgent{Any: "xhigh"},
+			wantEffort: "--effort xhigh",
+		},
+		{
+			name:       "an exact agent name beats the kind it collides with",
+			agentName:  "pi-grafana-opus-5",
+			agent:      config.Agent{Binary: "pi"},
+			effort:     config.PerAgent{ByAgent: map[string]string{"pi": "xhigh", "pi-grafana-opus-5": "high"}},
+			wantEffort: "--thinking high",
+		},
+		{
+			name:       "replaces the effort in the agent's own arguments",
+			agent:      config.Agent{Binary: "claude", Args: []string{"--effort", "low"}, Effort: "high"},
+			wantEffort: "--effort high",
+		},
+		{
+			name:       "model and effort together",
+			agent:      config.Agent{Binary: "claude"},
+			model:      config.PerAgent{Any: "haiku"},
+			effort:     config.PerAgent{Any: "xhigh"},
+			wantModel:  "haiku",
+			wantEffort: "--effort xhigh",
 		},
 	}
 
@@ -3202,7 +3249,7 @@ func TestStageModel(t *testing.T) {
 			h := newHarness(t)
 			agentName := cmp.Or(tc.agentName, "agent1")
 			h.cfg.Agents[agentName] = tc.agent
-			h.cfg.Stages["step1"] = config.Stage{Prompt: "do step1 for {{ .Ticket.ID }}", Model: tc.model}
+			h.cfg.Stages["step1"] = config.Stage{Prompt: "do step1 for {{ .Ticket.ID }}", Model: tc.model, Effort: tc.effort}
 			h.cfg.Pipelines["one-stage"] = config.Pipeline{
 				{Stage: "step1", Agent: agentName, OnSuccess: "done", OnFailure: "pause"},
 			}
@@ -3225,54 +3272,108 @@ func TestStageModel(t *testing.T) {
 			h.waitForStatus("tst-sm.md", ticket.StatusDone, 10*time.Second)
 			stop()
 
-			assert.Equal(t, tc.want, modelArg(t, captured.Args))
-			assert.Less(t, slices.Index(captured.Args, "--model"),
-				slices.Index(captured.Args, renderedPrompt(captured)),
-				"--model must come before the prompt: %v", captured.Args)
+			if tc.wantModel != "" {
+				assert.Equal(t, tc.wantModel, modelArg(t, captured.Args))
+				assertBeforePrompt(t, captured, "--model")
+			} else {
+				assert.Zero(t, flagCount(captured.Args, "--model"), "no model was configured: %v", captured.Args)
+			}
+
+			if tc.wantEffort == "" {
+				assert.Zero(t, flagCount(captured.Args, "--effort")+flagCount(captured.Args, "--thinking"),
+					"no effort was configured: %v", captured.Args)
+				return
+			}
+			flag, value, _ := strings.Cut(tc.wantEffort, " ")
+			assert.Equal(t, value, flagArg(t, captured.Args, flag))
+			assertBeforePrompt(t, captured, flag)
 		})
 	}
 }
 
-// TestStageModelUnsupportedAgentPauses: a ticket-level agent that takes no
-// --model reaches a stage that names one. Config validation cannot see this
-// pair, because the ticket's agent replaces the step's at spawn time.
-func TestStageModelUnsupportedAgentPauses(t *testing.T) {
-	h := newHarness(t)
-	h.cfg.Agents["programmator"] = config.Agent{Binary: "programmator"}
-	h.cfg.Stages["step1"] = config.Stage{Prompt: "do step1", Model: config.Model{Any: "haiku"}}
+// assertBeforePrompt checks a flag reaches the agent ahead of the prompt, which
+// is appended last.
+func assertBeforePrompt(t *testing.T, p RunnerParams, flag string) {
+	t.Helper()
+	assert.Less(t, slices.Index(p.Args, flag), slices.Index(p.Args, renderedPrompt(p)),
+		"%s must come before the prompt: %v", flag, p.Args)
+}
 
-	spawned := 0
-	d := New(h.cfg,
-		WithLogger(testLogger(t)),
-		WithDebounce(50*time.Millisecond),
-		WithLockPath(h.lockPath),
-		WithRunner(func(_ context.Context, _ RunnerParams) (process.Result, error) {
-			spawned++
-			return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now()}, nil
-		}),
-		WithAgentLookup(passthroughAgentLookup),
-		WithSkipOrphanCleanup(),
-	)
-	stop := runDaemon(t, d)
+// TestStageOverrideUnsupportedAgentPauses: a ticket-level agent that cannot run
+// what the stage sets. Config validation cannot see these pairs, because the
+// ticket's agent replaces the step's at spawn time.
+func TestStageOverrideUnsupportedAgentPauses(t *testing.T) {
+	cases := []struct {
+		name      string
+		agentName string
+		agent     config.Agent
+		stage     config.Stage
+		wantErr   []string
+	}{
+		{
+			name:      "model",
+			agentName: "programmator",
+			agent:     config.Agent{Binary: "programmator"},
+			stage:     config.Stage{Prompt: "do step1", Model: config.PerAgent{Any: "haiku"}},
+			wantErr:   []string{`model "haiku"`, "takes no --model"},
+		},
+		{
+			name:      "effort",
+			agentName: "programmator",
+			agent:     config.Agent{Binary: "programmator"},
+			stage:     config.Stage{Prompt: "do step1", Effort: config.PerAgent{Any: "xhigh"}},
+			wantErr:   []string{`effort "xhigh"`, "takes no reasoning effort flag"},
+		},
+		{
+			name:      "a pi effort against the thinking suffix in the agent's own arguments",
+			agentName: "pi",
+			agent:     config.Agent{Binary: "pi", Args: []string{"--model", "anthropic/claude-opus-5:high"}},
+			stage:     config.Stage{Prompt: "do step1", Effort: config.PerAgent{Any: "xhigh"}},
+			wantErr:   []string{`effort "xhigh"`, `model "anthropic/claude-opus-5:high"`, `both set pi's thinking level`},
+		},
+	}
 
-	h.writeTicket("tst-smu.md", fmt.Sprintf(`---
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			h.cfg.Agents[tc.agentName] = tc.agent
+			h.cfg.Stages["step1"] = tc.stage
+
+			spawned := 0
+			d := New(h.cfg,
+				WithLogger(testLogger(t)),
+				WithDebounce(50*time.Millisecond),
+				WithLockPath(h.lockPath),
+				WithRunner(func(_ context.Context, _ RunnerParams) (process.Result, error) {
+					spawned++
+					return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now()}, nil
+				}),
+				WithAgentLookup(passthroughAgentLookup),
+				WithSkipOrphanCleanup(),
+			)
+			stop := runDaemon(t, d)
+
+			h.writeTicket("tst-smu.md", fmt.Sprintf(`---
 id: tst-smu
 kontora: true
 status: todo
 pipeline: one-stage
-agent: programmator
+agent: %s
 path: %s
 created: 2026-01-01T00:00:00Z
 ---
-# Stage model on an agent that takes no model flag
-`, h.repoDir))
+# Stage override the ticket's own agent cannot run
+`, tc.agentName, h.repoDir))
 
-	result := h.waitForStatus("tst-smu.md", ticket.StatusPaused, 10*time.Second)
-	stop()
+			result := h.waitForStatus("tst-smu.md", ticket.StatusPaused, 10*time.Second)
+			stop()
 
-	assert.Contains(t, result.Body, `model "haiku"`)
-	assert.Contains(t, result.Body, "takes no --model")
-	assert.Zero(t, spawned, "the stage must not run")
+			for _, want := range tc.wantErr {
+				assert.Contains(t, result.Body, want)
+			}
+			assert.Zero(t, spawned, "the stage must not run")
+		})
+	}
 }
 
 func TestBuildTicketInfo_AgentOverride(t *testing.T) {

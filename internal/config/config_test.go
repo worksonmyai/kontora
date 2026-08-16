@@ -400,27 +400,27 @@ func TestAgentKindDetection(t *testing.T) {
 	}
 }
 
-func TestModelUnmarshalYAML(t *testing.T) {
+func TestPerAgentUnmarshalYAML(t *testing.T) {
 	tests := []struct {
 		name    string
 		input   string
-		want    Model
+		want    PerAgent
 		wantErr string
 	}{
-		{name: "scalar", input: "haiku", want: Model{Any: "haiku"}},
-		{name: "empty", input: "", want: Model{}},
+		{name: "scalar", input: "haiku", want: PerAgent{Any: "haiku"}},
+		{name: "empty", input: "", want: PerAgent{}},
 		{
 			name:  "mapping",
 			input: "{claude: haiku, pi: anthropic/claude-haiku-4-5}",
-			want:  Model{ByAgent: map[string]string{"claude": "haiku", "pi": "anthropic/claude-haiku-4-5"}},
+			want:  PerAgent{ByAgent: map[string]string{"claude": "haiku", "pi": "anthropic/claude-haiku-4-5"}},
 		},
-		{name: "sequence", input: "[haiku, sonnet]", wantErr: "invalid model"},
+		{name: "sequence", input: "[haiku, sonnet]", wantErr: "invalid value"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var out struct {
-				Model Model `yaml:"model"`
+				Value PerAgent `yaml:"model"`
 			}
 			err := yaml.Unmarshal([]byte("model: "+tt.input+"\n"), &out)
 			if tt.wantErr != "" {
@@ -428,20 +428,22 @@ func TestModelUnmarshalYAML(t *testing.T) {
 				return
 			}
 			require.NoError(t, err)
-			assert.Equal(t, tt.want, out.Model)
+			assert.Equal(t, tt.want, out.Value)
 		})
 	}
 }
 
-// TestModelRoundTrip covers the `kontora config` output: it is re-encoded from
-// the loaded config and must load again through the strict decoder.
-func TestModelRoundTrip(t *testing.T) {
+// TestPerAgentRoundTrip covers the `kontora config` output: it is re-encoded
+// from the loaded config and must load again through the strict decoder.
+func TestPerAgentRoundTrip(t *testing.T) {
 	const src = `tickets_dir: ~/org/tickets
 summary_model:
   claude: haiku
+summary_effort: low
 agents:
   claude:
     binary: claude
+    effort: high
 stages:
   commit:
     prompt: Commit.
@@ -450,6 +452,8 @@ stages:
     prompt: Review.
     model:
       claude: sonnet
+    effort:
+      claude: xhigh
   implement:
     prompt: Implement.
 pipelines:
@@ -468,56 +472,60 @@ pipelines:
 	again, err := LoadReader(bytes.NewReader(out))
 	require.NoError(t, err)
 
-	assert.Equal(t, Model{Any: "haiku"}, again.Stages["commit"].Model)
-	assert.Equal(t, Model{ByAgent: map[string]string{"claude": "sonnet"}}, again.Stages["review"].Model)
-	assert.Equal(t, Model{ByAgent: map[string]string{"claude": "haiku"}}, again.SummaryModel)
+	assert.Equal(t, PerAgent{Any: "haiku"}, again.Stages["commit"].Model)
+	assert.Equal(t, PerAgent{ByAgent: map[string]string{"claude": "sonnet"}}, again.Stages["review"].Model)
+	assert.Equal(t, PerAgent{ByAgent: map[string]string{"claude": "haiku"}}, again.SummaryModel)
+	assert.Equal(t, PerAgent{ByAgent: map[string]string{"claude": "xhigh"}}, again.Stages["review"].Effort)
+	assert.Equal(t, PerAgent{Any: "low"}, again.SummaryEffort)
+	assert.Equal(t, "high", again.Agents["claude"].Effort)
 	// A stage with no model prints `model: null`, which the strict decoder has
 	// to read back as no model at all: every stage in a real config has one.
-	assert.Equal(t, Model{}, again.Stages["implement"].Model)
+	assert.Equal(t, PerAgent{}, again.Stages["implement"].Model)
+	assert.Equal(t, PerAgent{}, again.Stages["implement"].Effort)
 }
 
-func TestModelFor(t *testing.T) {
+func TestPerAgentFor(t *testing.T) {
 	claudeAgent := Agent{Binary: "claude"}
 	piAgent := Agent{Binary: "nono", Args: []string{"run", "--", "pi"}}
 	otherAgent := Agent{Binary: "programmator"}
 
 	tests := []struct {
 		name      string
-		model     Model
+		model     PerAgent
 		agentName string
 		agent     Agent
 		want      string
 	}{
 		{name: "unset", agentName: "claude", agent: claudeAgent},
-		{name: "scalar applies to every agent", model: Model{Any: "haiku"}, agentName: "pi-grafana-opus-5", agent: piAgent, want: "haiku"},
+		{name: "scalar applies to every agent", model: PerAgent{Any: "haiku"}, agentName: "pi-grafana-opus-5", agent: piAgent, want: "haiku"},
 		{
 			name:      "agent name",
-			model:     Model{ByAgent: map[string]string{"pi-grafana-opus-5": "anthropic/claude-haiku-4-5"}},
+			model:     PerAgent{ByAgent: map[string]string{"pi-grafana-opus-5": "anthropic/claude-haiku-4-5"}},
 			agentName: "pi-grafana-opus-5", agent: piAgent, want: "anthropic/claude-haiku-4-5",
 		},
 		{
 			name:      "agent kind",
-			model:     Model{ByAgent: map[string]string{"pi": "anthropic/claude-haiku-4-5"}},
+			model:     PerAgent{ByAgent: map[string]string{"pi": "anthropic/claude-haiku-4-5"}},
 			agentName: "pi-grafana-opus-5", agent: piAgent, want: "anthropic/claude-haiku-4-5",
 		},
 		{
 			name:      "agent name beats the kind it collides with",
-			model:     Model{ByAgent: map[string]string{"claude": "haiku", "pi": "anthropic/claude-haiku-4-5"}},
+			model:     PerAgent{ByAgent: map[string]string{"claude": "haiku", "pi": "anthropic/claude-haiku-4-5"}},
 			agentName: "claude", agent: piAgent, want: "haiku",
 		},
 		{
 			name:      "map without a matching key falls back to nothing",
-			model:     Model{ByAgent: map[string]string{"claude": "haiku"}},
+			model:     PerAgent{ByAgent: map[string]string{"claude": "haiku"}},
 			agentName: "pi-grafana-opus-5", agent: piAgent,
 		},
 		{
 			name:      "map and scalar together",
-			model:     Model{Any: "haiku", ByAgent: map[string]string{"pi": "anthropic/claude-haiku-4-5"}},
+			model:     PerAgent{Any: "haiku", ByAgent: map[string]string{"pi": "anthropic/claude-haiku-4-5"}},
 			agentName: "claude", agent: claudeAgent, want: "haiku",
 		},
 		{
 			name:      "an agent with no kind takes only its name or the scalar",
-			model:     Model{ByAgent: map[string]string{"": "haiku"}},
+			model:     PerAgent{ByAgent: map[string]string{"": "haiku"}},
 			agentName: "programmator", agent: otherAgent,
 		},
 	}
@@ -529,15 +537,104 @@ func TestModelFor(t *testing.T) {
 	}
 }
 
-func TestAgentArgsWithModel(t *testing.T) {
-	tests := []struct {
-		name  string
-		agent Agent
-		model string
-		want  []string
+// TestPiThinkingLevel covers the two ways a pi run picks up a thinking level:
+// the effort flag, and the `:<level>` suffix of a model pattern. Both at once
+// is a config error; either one alone loads.
+func TestPiThinkingLevel(t *testing.T) {
+	const src = `tickets_dir: ~/org/tickets
+default_agent: pi
+agents:
+  pi:
+    binary: pi
+    args: [%s]
+    effort: %s
+stages:
+  commit:
+    prompt: Commit.
+    model: %s
+    effort: %s
+pipelines:
+  default:
+    - stage: commit
+      agent: pi
+      on_success: done
+      on_failure: pause
+`
+	cases := []struct {
+		name        string
+		args        string
+		agentEffort string
+		stageModel  string
+		stageEffort string
+		wantErr     []string
 	}{
 		{
-			name:  "no model leaves the arguments alone",
+			name: "a model suffix alone loads",
+			args: `"--model", "anthropic/claude-opus-5:high"`,
+		},
+		{
+			name:        "an effort alone loads",
+			args:        `"--model", "anthropic/claude-opus-5"`,
+			agentEffort: "high",
+		},
+		{
+			name:        "a stage effort against a stage model suffix",
+			stageModel:  "anthropic/claude-opus-5:high",
+			stageEffort: "xhigh",
+			wantErr:     []string{`effort "xhigh"`, `model "anthropic/claude-opus-5:high"`, `both set pi's thinking level ("high")`},
+		},
+		{
+			name:        "an agent effort against the suffix in the agent's own arguments",
+			args:        `"--model", "anthropic/claude-opus-5:high"`,
+			agentEffort: "high",
+			wantErr:     []string{`pipeline "default" stage 0`, `effort "high"`, `model "anthropic/claude-opus-5:high"`},
+		},
+		{
+			name:        "a stage model without a suffix replaces the one that has it",
+			args:        `"--model", "anthropic/claude-opus-5:high"`,
+			stageModel:  "anthropic/claude-haiku-4-5",
+			stageEffort: "xhigh",
+		},
+		{
+			name:        "a stage model replaces the suffix an agent effort would clash with",
+			args:        `"--model", "anthropic/claude-opus-5:high"`,
+			agentEffort: "low",
+			stageModel:  "anthropic/claude-haiku-4-5",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+
+			in := fmt.Sprintf(src, tc.args, tc.agentEffort, tc.stageModel, tc.stageEffort)
+			cfg, err := LoadReader(strings.NewReader(in))
+			if len(tc.wantErr) > 0 {
+				require.Error(t, err)
+				for _, want := range tc.wantErr {
+					assert.ErrorContains(t, err, want)
+				}
+				return
+			}
+			require.NoError(t, err)
+
+			agent := cfg.Agents["pi"]
+			args := agent.ArgsWith(cfg.Stages["commit"].Model.For("pi", agent), cfg.Stages["commit"].Effort.For("pi", agent))
+			assert.Equal(t, 1, strings.Count(strings.Join(args, " "), "--model"), "one model flag: %v", args)
+		})
+	}
+}
+
+func TestAgentArgsWith(t *testing.T) {
+	tests := []struct {
+		name   string
+		agent  Agent
+		model  string
+		effort string
+		want   []string
+	}{
+		{
+			name:  "nothing to select leaves the arguments alone",
 			agent: Agent{Binary: "pi", Args: []string{"--model", "anthropic/claude-opus-5"}},
 			want:  []string{"--model", "anthropic/claude-opus-5"},
 		},
@@ -583,12 +680,57 @@ func TestAgentArgsWithModel(t *testing.T) {
 			model: "haiku",
 			want:  []string{"--verbose", "--model", "haiku"},
 		},
+		{
+			name:  "the agent's own effort applies with nothing else set",
+			agent: Agent{Binary: "claude", Args: []string{"--verbose"}, Effort: "high"},
+			want:  []string{"--verbose", "--effort", "high"},
+		},
+		{
+			name:  "pi takes its own flag",
+			agent: Agent{Binary: "pi", Effort: "high"},
+			want:  []string{"--thinking", "high"},
+		},
+		{
+			name:   "the stage effort beats the agent's own",
+			agent:  Agent{Binary: "claude", Effort: "high"},
+			effort: "xhigh",
+			want:   []string{"--effort", "xhigh"},
+		},
+		{
+			name:   "replaces a configured effort rather than repeating it",
+			agent:  Agent{Binary: "claude", Args: []string{"--effort", "low", "--verbose"}},
+			effort: "high",
+			want:   []string{"--verbose", "--effort", "high"},
+		},
+		{
+			name:  "replaces the joined form of the effort flag",
+			agent: Agent{Binary: "pi", Args: []string{"--thinking=off", "--yolo"}, Effort: "high"},
+			want:  []string{"--yolo", "--thinking", "high"},
+		},
+		{
+			name:   "a wrapper keeps its own arguments around the effort",
+			agent:  Agent{Binary: "nono", Args: []string{"run", "--profile", "agent", "--", "pi", "--thinking", "off"}},
+			effort: "high",
+			want:   []string{"run", "--profile", "agent", "--", "pi", "--thinking", "high"},
+		},
+		{
+			name:   "model and effort together",
+			agent:  Agent{Binary: "claude", Args: []string{"--model", "opus", "--effort", "low"}},
+			model:  "haiku",
+			effort: "high",
+			want:   []string{"--model", "haiku", "--effort", "high"},
+		},
+		{
+			name:  "an agent with no effort flag drops it, having been rejected by Validate",
+			agent: Agent{Binary: "programmator", Args: []string{"--go"}, Effort: "high"},
+			want:  []string{"--go"},
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			configured := slices.Clone(tt.agent.Args)
-			got := tt.agent.ArgsWithModel(tt.model)
+			got := tt.agent.ArgsWith(tt.model, tt.effort)
 			assert.Equal(t, tt.want, got)
 			// A shared backing array would let one stage's override rewrite the
 			// arguments every later run of that agent is spawned with.
@@ -1373,7 +1515,7 @@ func TestLoadProjectsRejected(t *testing.T) {
 		{
 			name:    "stage model is a sequence",
 			fixture: "stage_model_sequence.yaml",
-			wantErr: []string{"invalid model", "a pattern or a map of agent name or agent kind to a pattern"},
+			wantErr: []string{"invalid value", "one value or a map of agent name or agent kind to a value"},
 		},
 		{
 			name:    "stage model names an unknown agent",
@@ -1389,6 +1531,21 @@ func TestLoadProjectsRejected(t *testing.T) {
 			name:    "stage model on an agent that takes no model flag",
 			fixture: "stage_model_unsupported_agent.yaml",
 			wantErr: []string{`stage "commit"`, `model "haiku"`, `agent "programmator"`},
+		},
+		{
+			name:    "agent effort on an agent that takes no effort flag",
+			fixture: "agent_effort_unsupported.yaml",
+			wantErr: []string{`agent "programmator"`, `effort "high"`, "programmator takes no flag for"},
+		},
+		{
+			name:    "stage effort names an unknown agent",
+			fixture: "stage_effort_unknown_agent.yaml",
+			wantErr: []string{`stage "commit"`, `effort "unknown-agent"`, "neither a configured agent nor an agent kind"},
+		},
+		{
+			name:    "stage effort on an agent that takes no effort flag",
+			fixture: "stage_effort_unsupported_agent.yaml",
+			wantErr: []string{`pipeline "default" stage 0`, `stage "commit"`, `effort "high"`, `agent "programmator"`},
 		},
 	}
 

@@ -2107,7 +2107,8 @@ func (d *Daemon) runAgentOnce(taskCtx context.Context, t *ticket.Ticket, p spawn
 	}
 
 	model := p.stageCfg.Model.For(p.agentName, p.agentCfg)
-	args, settingsFile, sessionID, err := buildAgentArgs(p.agentCfg, rendered, tmux.ChannelName(d.tmuxSession, p.ticketID), model, rec)
+	effort := p.stageCfg.Effort.For(p.agentName, p.agentCfg)
+	args, settingsFile, sessionID, err := buildAgentArgs(p.agentCfg, rendered, tmux.ChannelName(d.tmuxSession, p.ticketID), model, effort, rec)
 	if err != nil {
 		p.log.Error("build agent args failed", "err", err)
 		return agentAttempt{pauseReason: "build agent args failed: " + err.Error()}
@@ -2300,12 +2301,17 @@ func buildOperationalAppendix(taskID, filePath, wtPath string, isPipeline bool) 
 // calls ctx.shutdown() on agent_end so pi exits cleanly after ticket completion.
 // A non-nil rec attaches the run to the session that record names instead of
 // opening a new one.
-// A non-empty model replaces the model in the agent's own arguments, which
-// keeps it ahead of the prompt this function appends last.
+// A non-empty model or effort replaces the one in the agent's own arguments,
+// which keeps it ahead of the prompt this function appends last. A pair the
+// agent cannot run is rejected here as well as in config validation, because a
+// ticket's own agent field is only known at spawn time.
 // Returns the args, the path to the temporary settings/extension file (empty
 // for other agents), the session ID (empty for non-Claude agents), and any error.
-func buildAgentArgs(agentCfg config.Agent, rendered, channelName, model string, rec *resumeRecord) ([]string, string, string, error) {
-	args := agentCfg.ArgsWithModel(model)
+func buildAgentArgs(agentCfg config.Agent, rendered, channelName, model, effort string, rec *resumeRecord) ([]string, string, string, error) {
+	if err := agentCfg.CheckEffort(model, effort); err != nil {
+		return nil, "", "", err
+	}
+	args := agentCfg.ArgsWith(model, effort)
 	var settingsFile string
 	var sessionID string
 	switch {
@@ -2338,6 +2344,9 @@ func buildAgentArgs(agentCfg config.Agent, rendered, channelName, model string, 
 	default:
 		if model != "" {
 			return nil, "", "", fmt.Errorf("model %q: agent %s takes no --model", model, agentCfg.Binary)
+		}
+		if effort != "" {
+			return nil, "", "", fmt.Errorf("effort %q: agent %s takes no reasoning effort flag", effort, agentCfg.Binary)
 		}
 	}
 	if rendered != "" {

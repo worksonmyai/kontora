@@ -1,0 +1,18 @@
+tickets_dir: ~/org/tickets
+
+agents:
+  claude:
+    binary: claude
+
+stages:
+  commit:
+    prompt: Commit the work.
+    effort:
+      unknown-agent: high
+
+pipelines:
+  default:
+    - stage: commit
+      agent: claude
+      on_success: done
+      on_failure: pause

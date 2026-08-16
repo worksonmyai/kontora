@@ -432,11 +432,15 @@ func (d *Daemon) runAnnotationRun(ctx, taskCtx context.Context, cfg *config.Conf
 		wtPath:       wtPath,
 		rendered:     rendered,
 		agentCfg:     agentCfg,
-		// Only the timeout and the model are borrowed from the stage. Its prompt
-		// describes stage work, which is the one thing this run must not do. A
-		// model is not an instruction, so a stage set to run cheaply answers
-		// annotations cheaply too.
-		stageCfg:   config.Stage{Timeout: cfg.Stages[stageName].Timeout, Model: cfg.Stages[stageName].Model},
+		// Only the timeout, the model and the effort are borrowed from the stage.
+		// Its prompt describes stage work, which is the one thing this run must
+		// not do. Neither a model nor a reasoning effort is an instruction, so a
+		// stage set to run cheaply answers annotations cheaply too.
+		stageCfg: config.Stage{
+			Timeout: cfg.Stages[stageName].Timeout,
+			Model:   cfg.Stages[stageName].Model,
+			Effort:  cfg.Stages[stageName].Effort,
+		},
 		isPipeline: false,
 		annotation: true,
 	})

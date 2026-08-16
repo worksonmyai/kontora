@@ -1,6 +1,7 @@
 package config
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"io"
@@ -36,29 +37,29 @@ func (d Duration) MarshalYAML() (any, error) {
 	return d.String(), nil
 }
 
-// Model selects the model an agent runs with. It reads either a bare pattern
-// that applies to every agent, or a map from agent name or agent kind to a
-// pattern, because a model name is not portable: claude takes "haiku" where pi
-// takes "anthropic/claude-haiku-4-5".
-type Model struct {
+// PerAgent is a setting that may differ between agents. It reads either a bare
+// value that applies to every agent, or a map from agent name or agent kind to
+// a value, because a setting is not always portable: a model name that claude
+// takes as "haiku" is "anthropic/claude-haiku-4-5" to pi.
+type PerAgent struct {
 	Any     string
 	ByAgent map[string]string
 }
 
-func (m *Model) UnmarshalYAML(value *yaml.Node) error {
+func (m *PerAgent) UnmarshalYAML(value *yaml.Node) error {
 	if value.Kind == yaml.ScalarNode {
 		return value.Decode(&m.Any)
 	}
 	if value.Kind == yaml.MappingNode {
 		return value.Decode(&m.ByAgent)
 	}
-	return fmt.Errorf("invalid model on line %d: want a pattern or a map of agent name or agent kind to a pattern", value.Line)
+	return fmt.Errorf("invalid value on line %d: want one value or a map of agent name or agent kind to a value", value.Line)
 }
 
 // MarshalYAML keeps `kontora config` output loadable: the printed config is
 // decoded with KnownFields(true), so a shape this type cannot read back would
 // make the output a broken paste target.
-func (m Model) MarshalYAML() (any, error) {
+func (m PerAgent) MarshalYAML() (any, error) {
 	if len(m.ByAgent) > 0 {
 		return m.ByAgent, nil
 	}
@@ -68,10 +69,10 @@ func (m Model) MarshalYAML() (any, error) {
 	return nil, nil
 }
 
-// For returns the pattern configured for one agent, or "" when none applies.
+// For returns the value configured for one agent, or "" when none applies.
 // An exact agent name wins over the agent's kind, so a map can name one agent
 // among several of the same kind.
-func (m Model) For(agentName string, a Agent) string {
+func (m PerAgent) For(agentName string, a Agent) string {
 	if v, ok := m.ByAgent[agentName]; ok {
 		return v
 	}
@@ -110,7 +111,11 @@ type Config struct {
 	// against the agent that ran the last stage. It is one top-level field rather
 	// than a per-stage one because the final summary is the only pass that spawns
 	// an agent of its own: a run summary is written in-band by the stage agent.
-	SummaryModel Model `yaml:"summary_model"`
+	SummaryModel PerAgent `yaml:"summary_model"`
+
+	// SummaryEffort selects the reasoning effort of that same pass, resolved the
+	// same way. It overrides the agent's own effort.
+	SummaryEffort PerAgent `yaml:"summary_effort"`
 
 	// ResumePrompt replaces the built-in prompt sent to an agent whose stage a
 	// daemon restart interrupted. It is a stage prompt template with the same
@@ -212,6 +217,10 @@ type Agent struct {
 	// explicit list to override them, or [] to disable detection for this agent.
 	// Claude also gets structural detection from its session JSONL regardless.
 	FailurePatterns []string `yaml:"failure_patterns"`
+	// Effort is the reasoning effort every stage this agent runs starts from,
+	// unless the stage overrides it. Only claude and pi take a flag for it; any
+	// other agent rejects the field at load.
+	Effort string `yaml:"effort"`
 	// Resume, when false, makes every stage this agent runs start a new
 	// conversation even after a daemon restart interrupted one. Unset means
 	// resume is on for Claude and pi, the two CLIs whose resume flags Kontora
@@ -264,39 +273,116 @@ func (a Agent) Kind() string {
 	return ""
 }
 
-// ArgsWithModel returns the agent's arguments with model selected. It replaces
-// the configured `--model <v>` and `--model=<v>` rather than appending a second
-// pair, so the result does not depend on how each CLI resolves a repeated flag.
-// Only the segment after a wrapper's "--" is rewritten: the arguments before it
-// belong to nono or op. The match is exact, so pi's `--models` cycling list is
-// left alone.
-func (a Agent) ArgsWithModel(model string) []string {
-	if model == "" {
+// effortFlag returns the flag this agent's CLI takes a reasoning effort on, or
+// "" for an agent Kontora does not know the flags of.
+func (a Agent) effortFlag() string {
+	switch a.Kind() {
+	case AgentKindClaude:
+		return "--effort"
+	case AgentKindPi:
+		return "--thinking"
+	}
+	return ""
+}
+
+// agentArgsStart returns the index in Args where the arguments of the agent
+// binary itself begin: everything after a wrapper's "--" separator, because the
+// ones before it belong to nono or op. A wrapper without a separator owns
+// nothing, which leaves the whole list to the agent.
+func (a Agent) agentArgsStart() int {
+	if !wrapperBinaries[filepath.Base(a.Binary)] {
+		return 0
+	}
+	for i, arg := range a.Args {
+		if arg == "--" {
+			return i + 1
+		}
+	}
+	return 0
+}
+
+// argsModel returns the model the agent's own arguments select, or "" when they
+// select none.
+func (a Agent) argsModel() string {
+	args := a.Args[a.agentArgsStart():]
+	for i, arg := range args {
+		if arg == "--model" && i+1 < len(args) {
+			return args[i+1]
+		}
+		if v, ok := strings.CutPrefix(arg, "--model="); ok {
+			return v
+		}
+	}
+	return ""
+}
+
+// ArgsWith returns the agent's arguments with the model and the reasoning
+// effort selected. It replaces the configured `--model <v>`/`--model=<v>` and
+// the same two forms of the effort flag rather than appending a second pair, so
+// the result does not depend on how each CLI resolves a repeated flag. Only the
+// segment after a wrapper's "--" is rewritten. The match is exact, so pi's
+// `--models` cycling list is left alone.
+//
+// An empty effort falls back to the agent's own, so an agent default reaches
+// every path that builds arguments. An effort for an agent that takes no flag
+// for it is dropped here: Validate rejects the agent's own, and the caller,
+// which knows the agent, rejects one a stage resolved.
+func (a Agent) ArgsWith(model, effort string) []string {
+	effort = cmp.Or(effort, a.Effort)
+	effortFlag := a.effortFlag()
+	if effortFlag == "" {
+		effort = ""
+	}
+	if model == "" && effort == "" {
 		return slices.Clone(a.Args)
 	}
 
-	agentOwned := 0
-	if wrapperBinaries[filepath.Base(a.Binary)] {
-		for i, arg := range a.Args {
-			if arg == "--" {
-				agentOwned = i + 1
-				break
-			}
-		}
-	}
-
-	out := make([]string, 0, len(a.Args)+2)
+	agentOwned := a.agentArgsStart()
+	out := make([]string, 0, len(a.Args)+4)
 	out = append(out, a.Args[:agentOwned]...)
 	for i := agentOwned; i < len(a.Args); i++ {
 		switch arg := a.Args[i]; {
-		case arg == "--model":
+		case model != "" && arg == "--model":
 			i++ // its value goes with it
-		case strings.HasPrefix(arg, "--model="):
+		case model != "" && strings.HasPrefix(arg, "--model="):
+		case effort != "" && arg == effortFlag:
+			i++
+		case effort != "" && strings.HasPrefix(arg, effortFlag+"="):
 		default:
 			out = append(out, arg)
 		}
 	}
-	return append(out, "--model", model)
+	if model != "" {
+		out = append(out, "--model", model)
+	}
+	if effort != "" {
+		out = append(out, effortFlag, effort)
+	}
+	return out
+}
+
+// CheckEffort reports whether the agent can run the given model and reasoning
+// effort together. It resolves the pair the way ArgsWith does, so an empty
+// effort falls back to the agent's own and an empty model to the one the
+// agent's arguments select.
+//
+// The one pair Kontora rejects is a pi effort against a model pattern that
+// already carries a `:<level>` suffix. Both set pi's thinking level, and one
+// config saying it twice is more likely a mistake than an order the user wants
+// pi to resolve on its own.
+func (a Agent) CheckEffort(model, effort string) error {
+	effort = cmp.Or(effort, a.Effort)
+	if effort == "" || !a.IsPi() {
+		return nil
+	}
+	model = cmp.Or(model, a.argsModel())
+	// pi reads a pattern as `[provider/]id[:<thinking>]`, so only a colon after
+	// the last path separator is a thinking level.
+	id := model[strings.LastIndex(model, "/")+1:]
+	if _, level, ok := strings.Cut(id, ":"); ok {
+		return fmt.Errorf("effort %q and model %q both set pi's thinking level (%q): drop one", effort, model, level)
+	}
+	return nil
 }
 
 type Stage struct {
@@ -304,7 +390,9 @@ type Stage struct {
 	Timeout Duration `yaml:"timeout"`
 	// Model overrides the model the stage's agent runs with, so a cheap stage
 	// need not duplicate an agent entry to change model.
-	Model Model `yaml:"model"`
+	Model PerAgent `yaml:"model"`
+	// Effort overrides the agent's own reasoning effort for the same reason.
+	Effort PerAgent `yaml:"effort"`
 }
 
 // NoneSentinel is the literal pipeline or agent value that opts a ticket out of
@@ -655,7 +743,9 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("tmux_session %q: must be 1-64 characters from [A-Za-z0-9_-] and must not start with %q", c.TmuxSession, "-")
 	}
 
-	for name, agent := range c.Agents {
+	// Agents in name order so two invalid ones always produce the same error.
+	for _, name := range slices.Sorted(maps.Keys(c.Agents)) {
+		agent := c.Agents[name]
 		if name == NoneSentinel {
 			return fmt.Errorf("agent %q: name is reserved for the project-default opt-out", name)
 		}
@@ -667,13 +757,16 @@ func (c *Config) Validate() error {
 				return fmt.Errorf("agent %q: invalid failure_pattern %q: %w", name, p, err)
 			}
 		}
+		if agent.Effort != "" && agent.Kind() == "" {
+			return fmt.Errorf("agent %q: sets effort %q, which %s takes no flag for", name, agent.Effort, agent.Binary)
+		}
 	}
 
 	if err := c.validateMetrics(); err != nil {
 		return err
 	}
 
-	if err := c.validateModels(); err != nil {
+	if err := c.validateAgentKeyedFields(); err != nil {
 		return err
 	}
 
@@ -776,9 +869,20 @@ func (c *Config) validatePipelines() error {
 			// rejected here. The same pair reached through a ticket's own agent
 			// field is only visible at spawn time, and pauses the ticket.
 			stepAgent := c.Agents[step.Agent]
-			if model := c.Stages[step.Stage].Model.For(step.Agent, stepAgent); model != "" && stepAgent.Kind() == "" {
-				return fmt.Errorf("pipeline %q stage %d: stage %q sets model %q, which agent %q (%s) takes no flag for",
-					name, i, step.Stage, model, step.Agent, stepAgent.Binary)
+			stageModel := c.Stages[step.Stage].Model.For(step.Agent, stepAgent)
+			stageEffort := c.Stages[step.Stage].Effort.For(step.Agent, stepAgent)
+			if stepAgent.Kind() == "" {
+				if stageModel != "" {
+					return fmt.Errorf("pipeline %q stage %d: stage %q sets model %q, which agent %q (%s) takes no flag for",
+						name, i, step.Stage, stageModel, step.Agent, stepAgent.Binary)
+				}
+				if stageEffort != "" {
+					return fmt.Errorf("pipeline %q stage %d: stage %q sets effort %q, which agent %q (%s) takes no flag for",
+						name, i, step.Stage, stageEffort, step.Agent, stepAgent.Binary)
+				}
+			}
+			if err := stepAgent.CheckEffort(stageModel, stageEffort); err != nil {
+				return fmt.Errorf("pipeline %q stage %d: stage %q: %w", name, i, step.Stage, err)
 			}
 			if !validOnSuccess[step.OnSuccess] {
 				return fmt.Errorf("pipeline %q stage %d: invalid on_success %q (must be next, done, or a custom status)", name, i, step.OnSuccess)
@@ -798,22 +902,29 @@ func (c *Config) validatePipelines() error {
 	return nil
 }
 
-// validateModels checks every model map for keys that name nothing. Stages are
-// checked in name order so the error always names the same stage, whatever
-// order the YAML map decoded in.
-func (c *Config) validateModels() error {
+// validateAgentKeyedFields checks every agent-keyed map for keys that name
+// nothing. Stages are checked in name order so the error always names the same
+// stage, whatever order the YAML map decoded in.
+func (c *Config) validateAgentKeyedFields() error {
 	for _, name := range slices.Sorted(maps.Keys(c.Stages)) {
-		if err := c.validateModelKeys(c.Stages[name].Model); err != nil {
+		stage := c.Stages[name]
+		if err := c.validateAgentKeys("model", stage.Model); err != nil {
+			return fmt.Errorf("stage %q: %w", name, err)
+		}
+		if err := c.validateAgentKeys("effort", stage.Effort); err != nil {
 			return fmt.Errorf("stage %q: %w", name, err)
 		}
 	}
-	if err := c.validateModelKeys(c.SummaryModel); err != nil {
+	if err := c.validateAgentKeys("model", c.SummaryModel); err != nil {
 		return fmt.Errorf("summary_model: %w", err)
+	}
+	if err := c.validateAgentKeys("effort", c.SummaryEffort); err != nil {
+		return fmt.Errorf("summary_effort: %w", err)
 	}
 	return nil
 }
 
-func (c *Config) validateModelKeys(m Model) error {
+func (c *Config) validateAgentKeys(field string, m PerAgent) error {
 	for _, key := range slices.Sorted(maps.Keys(m.ByAgent)) {
 		if _, ok := c.Agents[key]; ok {
 			continue
@@ -821,8 +932,8 @@ func (c *Config) validateModelKeys(m Model) error {
 		if key == AgentKindClaude || key == AgentKindPi {
 			continue
 		}
-		return fmt.Errorf("model %q: neither a configured agent nor an agent kind (%s, %s)",
-			key, AgentKindClaude, AgentKindPi)
+		return fmt.Errorf("%s %q: neither a configured agent nor an agent kind (%s, %s)",
+			field, key, AgentKindClaude, AgentKindPi)
 	}
 	return nil
 }

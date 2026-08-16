@@ -635,17 +635,18 @@ func TestAnnotate_RewritesTicketAndRestoresStatus(t *testing.T) {
 	assert.Equal(t, int32(0), finalSummaries.Load())
 }
 
-// TestAnnotate_InheritsStageModel: an annotation run borrows the model of the
-// stage it runs under, so a stage set to run cheaply stays cheap when it
-// answers notes. The stage prompt is still left behind: that one describes the
-// work this run must not do.
+// TestAnnotate_InheritsStageModel: an annotation run borrows the model and the
+// reasoning effort of the stage it runs under, so a stage set to run cheaply
+// stays cheap when it answers notes. The stage prompt is still left behind:
+// that one describes the work this run must not do.
 func TestAnnotate_InheritsStageModel(t *testing.T) {
 	const id = "tst-an14"
 	h := newPlannotatorHarness(t)
 	h.cfg.Agents["agent2"] = config.Agent{Binary: "claude", Args: []string{"--model", "opus"}}
 	h.cfg.Stages["step2"] = config.Stage{
 		Prompt: "do step2 for {{ .Ticket.ID }}",
-		Model:  config.Model{ByAgent: map[string]string{"claude": "haiku"}},
+		Model:  config.PerAgent{ByAgent: map[string]string{"claude": "haiku"}},
+		Effort: config.PerAgent{Any: "low"},
 	}
 
 	var runs annotationRun
@@ -670,6 +671,7 @@ func TestAnnotate_InheritsStageModel(t *testing.T) {
 	spawns := runs.all()
 	require.Len(t, spawns, 1)
 	assert.Equal(t, "haiku", modelArg(t, spawns[0].Args))
+	assert.Equal(t, "low", flagArg(t, spawns[0].Args, "--effort"))
 	assert.NotContains(t, renderedPrompt(spawns[0]), "do step2 for")
 }
 

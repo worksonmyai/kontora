@@ -258,11 +258,15 @@ func TestBuildFinalSummaryPromptInputLimit(t *testing.T) {
 
 func TestBuildFinalSummaryArgs(t *testing.T) {
 	cases := []struct {
-		name    string
-		agent   config.Agent
-		model   string
-		want    []string
-		wantErr bool
+		name   string
+		agent  config.Agent
+		model  string
+		effort string
+		want   []string
+		// wantErr is the sentinel the failure must wrap, wantErrMsg the
+		// substrings of its message. Either one marks the case as failing.
+		wantErr    error
+		wantErrMsg []string
 	}{
 		{
 			name:  "claude",
@@ -314,18 +318,55 @@ func TestBuildFinalSummaryArgs(t *testing.T) {
 			},
 		},
 		{
+			name:  "the agent's own effort applies with no summary effort set",
+			agent: config.Agent{Binary: "claude", Effort: "high"},
+			want: []string{
+				"--effort", "high",
+				"--tools", "", "--no-session-persistence", "--print", "PROMPT",
+			},
+		},
+		{
+			name:   "the summary effort replaces the agent's own",
+			agent:  config.Agent{Binary: "claude", Effort: "high"},
+			effort: "low",
+			want: []string{
+				"--effort", "low",
+				"--tools", "", "--no-session-persistence", "--print", "PROMPT",
+			},
+		},
+		{
+			name:   "pi takes the summary effort on its own flag",
+			agent:  config.Agent{Binary: "op", Args: []string{"run", "--", "pi"}},
+			effort: "low",
+			want:   []string{"run", "--", "pi", "--thinking", "low", "--no-tools", "--no-session", "--print", "PROMPT"},
+		},
+		{
 			name:    "unsupported agent",
 			agent:   config.Agent{Binary: "codex", Args: []string{"exec"}},
-			wantErr: true,
+			wantErr: errFinalSummaryAgent,
+		},
+		{
+			// summary_effort is only paired with the ticket's agent at spawn
+			// time, so config validation never sees this pair.
+			name:       "the summary effort clashes with pi's thinking suffix",
+			agent:      config.Agent{Binary: "pi", Args: []string{"--model", "anthropic/claude-opus-5:high"}},
+			effort:     "low",
+			wantErrMsg: []string{`effort "low"`, `model "anthropic/claude-opus-5:high"`, `both set pi's thinking level`},
 		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			configured := slices.Clone(tc.agent.Args)
-			args, err := buildFinalSummaryArgs(tc.agent, "PROMPT", tc.model)
-			if tc.wantErr {
-				require.ErrorIs(t, err, errFinalSummaryAgent)
+			args, err := buildFinalSummaryArgs(tc.agent, "PROMPT", tc.model, tc.effort)
+			if tc.wantErr != nil || len(tc.wantErrMsg) > 0 {
+				require.Error(t, err)
+				if tc.wantErr != nil {
+					require.ErrorIs(t, err, tc.wantErr)
+				}
+				for _, want := range tc.wantErrMsg {
+					assert.ErrorContains(t, err, want)
+				}
 				assert.Nil(t, args)
 				return
 			}
@@ -887,13 +928,14 @@ func TestFinalSummaryUsesStageSnapshot(t *testing.T) {
 	stop()
 }
 
-// TestFinalSummaryModel: summary_model reaches the pass, resolved against the
-// agent that ran the last stage, and comes from the config the run started with
-// rather than the one in force when the pass runs.
+// TestFinalSummaryModel: summary_model and summary_effort reach the pass,
+// resolved against the agent that ran the last stage, and come from the config
+// the run started with rather than the one in force when the pass runs.
 func TestFinalSummaryModel(t *testing.T) {
 	h := newHarness(t)
-	h.cfg.Agents["agent1"] = config.Agent{Binary: "claude", Args: []string{"--model", "opus"}}
-	h.cfg.SummaryModel = config.Model{ByAgent: map[string]string{"claude": "haiku"}}
+	h.cfg.Agents["agent1"] = config.Agent{Binary: "claude", Args: []string{"--model", "opus"}, Effort: "high"}
+	h.cfg.SummaryModel = config.PerAgent{ByAgent: map[string]string{"claude": "haiku"}}
+	h.cfg.SummaryEffort = config.PerAgent{Any: "low"}
 	h.cfg.Pipelines["under-test"] = config.Pipeline{
 		{Stage: "step1", Agent: "agent1", OnSuccess: "next", OnFailure: "pause"},
 		{Stage: "step2", Agent: "agent1", OnSuccess: "done", OnFailure: "pause"},
@@ -906,7 +948,7 @@ func TestFinalSummaryModel(t *testing.T) {
 		res, err := base(ctx, p)
 		if strings.Contains(p.LogFile, "step2") {
 			next := *d.config()
-			next.SummaryModel = config.Model{ByAgent: map[string]string{"claude": "sonnet"}}
+			next.SummaryModel = config.PerAgent{ByAgent: map[string]string{"claude": "sonnet"}}
 			d.cfg.Store(&next)
 		}
 		return res, err
@@ -929,8 +971,9 @@ func TestFinalSummaryModel(t *testing.T) {
 	h.waitForFinalSummary("tst-fsm.md", "the whole ticket", 5*time.Second)
 
 	call := spawns.only(t)
-	assert.Equal(t, []string{"--model", "haiku"}, call.Args[:2])
-	assert.Equal(t, 1, modelFlagCount(call.Args), "the agent's own model must be replaced, not repeated: %v", call.Args)
+	assert.Equal(t, []string{"--model", "haiku", "--effort", "low"}, call.Args[:4])
+	assert.Equal(t, 1, flagCount(call.Args, "--model"), "the agent's own model must be replaced, not repeated: %v", call.Args)
+	assert.Equal(t, 1, flagCount(call.Args, "--effort"), "the agent's own effort must be replaced, not repeated: %v", call.Args)
 	assert.NotContains(t, call.Args, "sonnet", "the reloaded summary model must not reach the pass")
 
 	stop()

@@ -502,14 +502,15 @@ func TestResumeRejectedRecordRunsStageFresh(t *testing.T) {
 }
 
 // A resumed run is the same stage continuing, so it runs on the same model.
-func TestResumeKeepsTheStageModel(t *testing.T) {
+func TestResumeKeepsTheStageOverrides(t *testing.T) {
 	rd := newResumeDaemon(t, "claude", nil)
 	agentCfg := rd.cfg.Agents["agent1"]
 	agentCfg.Args = []string{"--model", "opus"}
 	rd.cfg.Agents["agent1"] = agentCfg
 	rd.cfg.Stages[resumeStage] = config.Stage{
 		Prompt: resumeStagePrompt,
-		Model:  config.Model{ByAgent: map[string]string{"claude": "haiku"}},
+		Model:  config.PerAgent{ByAgent: map[string]string{"claude": "haiku"}},
+		Effort: config.PerAgent{Any: "low"},
 	}
 	rd.plantRecord(t, agentKindClaude, nil)
 
@@ -519,6 +520,7 @@ func TestResumeKeepsTheStageModel(t *testing.T) {
 	require.Len(t, spawns, 1)
 	assert.Contains(t, spawns[0].Args, "--resume", "the run must be the resumed one")
 	assert.Equal(t, "haiku", modelArg(t, spawns[0].Args))
+	assert.Equal(t, "low", flagArg(t, spawns[0].Args, "--effort"))
 }
 
 func TestResumeDisabledForAgentRunsStageFresh(t *testing.T) {

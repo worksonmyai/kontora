@@ -169,6 +169,7 @@ pipelines:
 | `resume_prompt` | no | (built-in) | Prompt sent to an agent whose stage a daemon restart interrupted, in place of the stage prompt (see [resuming after a restart](#resuming-after-a-restart)). Same template fields as a stage prompt. |
 | `annotation_prompt` | no | (built-in) | Prompt sent to the run that rewrites a ticket from submitted Plannotator annotations (see [plannotator](#plannotator)). Same template fields as a stage prompt. |
 | `summary_model` | no | — | Model the ticket-level summary pass runs on, resolved against the agent that ran the last stage. Same two forms as a stage's `model` (see [stages](#stages)). |
+| `summary_effort` | no | — | Reasoning effort that same pass runs on, resolved the same way. It overrides the agent's own `effort` (see [agents](#agents)). |
 | `web` | no | — | Web dashboard settings (see [web](#web)). Enabled by default. |
 
 All paths support `~` for the home directory. Tilde expansion happens at runtime, not at config load time.
@@ -256,6 +257,7 @@ agents:
 | `environment` | no | Map of environment variables to set for this agent's processes (merged with top-level `environment`). |
 | `failure_patterns` | no | Regexes matched against the agent's output log after it exits. A match pauses the ticket even on a clean exit — catching agents that report failures (quota, API errors) without a non-zero exit code. Unset uses the built-in defaults (below); set an explicit list to override, or `[]` to disable. Claude also gets structural detection from its session log regardless. |
 | `resume` | no | Set `false` to make every stage this agent runs start a new conversation, even after a daemon restart interrupted one (see [resuming after a restart](#resuming-after-a-restart)). Unset means resume is on for `claude` and `pi`; any other agent always starts fresh. |
+| `effort` | no | Reasoning effort every invocation of this agent starts from, passed as `--effort` to `claude` and `--thinking` to `pi`. It replaces the same flag in this agent's own `args`, and a stage's `effort` overrides it (see [stages](#stages)). Only those two CLIs take a flag for it: an `effort` on any other agent fails to load. The level names are passed through unchecked, so a new one works without a Kontora release, and a typo shows up as an agent that fails to start. |
 
 When `failure_patterns` is omitted, an agent inherits these defaults, tuned to match agent/provider error output rather than source code or prose (so implementing a rate limiter won't self-pause):
 
@@ -291,7 +293,7 @@ An agent that had in fact finished its work can exit within a second of resuming
 
 ## stages
 
-Map of stage name to its prompt template, timeout, and model. A stage defines *what* an agent should do at a pipeline step.
+Map of stage name to its prompt template, timeout, model, and reasoning effort. A stage defines *what* an agent should do at a pipeline step.
 
 ```yaml
 stages:
@@ -302,8 +304,9 @@ stages:
   commit:
     prompt: Stage, commit, and push.
     timeout: 5m
-    # One pattern for every agent that runs this stage:
+    # One value for every agent that runs this stage:
     model: haiku
+    effort: low
   push-pr:
     prompt: Open a pull request.
     # Or one per agent, because a model name is not portable between CLIs.
@@ -311,6 +314,10 @@ stages:
     model:
       claude: haiku
       pi: anthropic/claude-haiku-4-5
+    # The agent name wins over the kind, so one agent can differ from the rest.
+    effort:
+      claude: high
+      claude-opus: xhigh
 ```
 
 | Field | Required | Description |
@@ -318,6 +325,9 @@ stages:
 | `prompt` | yes | Go template rendered before passing to the agent. |
 | `timeout` | no | Maximum duration for the agent (e.g., `10m`, `1h30m`). |
 | `model` | no | Model this stage runs on, passed to the agent as `--model`. Either one pattern, or a map from agent name or agent kind (`claude`, `pi`) to a pattern. It replaces any `--model` in the agent's own `args`. Only `claude` and `pi` take the flag: a stage that resolves a model for any other agent fails to load, or pauses the ticket when the ticket's own `agent` field picks that agent. |
+| `effort` | no | Reasoning effort this stage runs on, passed as `--effort` to `claude` and `--thinking` to `pi`. Same two forms and the same agent-name-over-kind rule as `model`, and the same failure for an agent that takes no flag for it. It overrides the agent's own `effort`. |
+
+For `pi`, `--thinking` and the `:<level>` suffix of a model pattern (`anthropic/claude-opus-5:high`) set the same thing. Either alone works; both together fail with an error naming the two values. A pipeline step whose stage and agent pair them fails to load. A pair reached any other way — through the ticket's own `agent` field, or through `summary_effort` — is caught when the stage spawns, which pauses the ticket. Only the model the run actually uses counts, so a stage `model` with no suffix clears the conflict with a suffixed one in the agent's `args`.
 
 ### Prompt templates
 
@@ -804,8 +814,8 @@ change a prompt or an agent's arguments while agents are working.
 
 `agents`, `stages`, `pipelines`, `projects`, `statuses`, `environment`,
 `auto_pick_up`, `default_agent`, `branch_prefix`, `branch_naming`,
-`resume_prompt`, `annotation_prompt`, `summary_model`, and the whole
-`plannotator` block.
+`resume_prompt`, `annotation_prompt`, `summary_model`, `summary_effort`, and the
+whole `plannotator` block.
 
 A run reads the prompts and the `plannotator` block when it starts, so a reload
 changes the next run, never one already going.
@@ -863,7 +873,7 @@ running on the old config. Saving a half-written file mid-edit is harmless, and
 the next complete save reloads.
 
 **A running agent keeps the settings it started with.** The prompt, arguments,
-model, timeout, and binary are fixed when the stage spawns. Editing a prompt
+model, effort, timeout, and binary are fixed when the stage spawns. Editing a prompt
 while a ticket is mid-stage does nothing visible until the next stage starts.
 That is expected, not a failed reload.
 

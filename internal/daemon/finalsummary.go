@@ -156,9 +156,15 @@ func buildFinalSummaryPrompt(runs []finalSummaryRun, nonce string) (string, erro
 // buildFinalSummaryArgs appends the flags for one non-interactive, tool-less,
 // unsaved run to the agent's configured arguments. The configured arguments
 // come first so a wrapper binary's "--" separator is preserved. A non-empty
-// model replaces the one the agent's arguments select; an empty one keeps it.
-func buildFinalSummaryArgs(agentCfg config.Agent, prompt, model string) ([]string, error) {
-	args := agentCfg.ArgsWithModel(model)
+// model or effort replaces the one the agent's arguments select; an empty one
+// keeps it, which for the effort means the agent's own default. The pair is
+// checked here because the summary runs on the ticket's agent, which config
+// validation never sees paired with summary_model and summary_effort.
+func buildFinalSummaryArgs(agentCfg config.Agent, prompt, model, effort string) ([]string, error) {
+	if err := agentCfg.CheckEffort(model, effort); err != nil {
+		return nil, err
+	}
+	args := agentCfg.ArgsWith(model, effort)
 	switch {
 	case agentCfg.IsClaude():
 		// --tools takes the available toolset ("" is none), where
@@ -270,7 +276,9 @@ func (d *Daemon) generateFinalSummary(ctx context.Context, p finalSummaryParams)
 	if !ok {
 		return "", fmt.Errorf("unknown agent %q", p.agentName)
 	}
-	args, err := buildFinalSummaryArgs(agentCfg, prompt, p.cfg.SummaryModel.For(p.agentName, agentCfg))
+	args, err := buildFinalSummaryArgs(agentCfg, prompt,
+		p.cfg.SummaryModel.For(p.agentName, agentCfg),
+		p.cfg.SummaryEffort.For(p.agentName, agentCfg))
 	if err != nil {
 		return "", err
 	}

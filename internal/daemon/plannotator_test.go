@@ -476,8 +476,8 @@ func TestPlannotator_ReworkCompletion(t *testing.T) {
 }
 
 // TestPlannotator_ReworkStageModel: the rework stage spawns its agent itself
-// instead of going through runAgentOnce, so the stage model has to be resolved
-// on that path too.
+// instead of going through runAgentOnce, so the stage model and effort have to
+// be resolved on that path too.
 func TestPlannotator_ReworkStageModel(t *testing.T) {
 	const id = "tst-prm01"
 	h := newPlannotatorHarness(t)
@@ -485,7 +485,8 @@ func TestPlannotator_ReworkStageModel(t *testing.T) {
 	h.cfg.Stages[config.ReworkStageName] = config.Stage{
 		Prompt:  "rework prompt with {{ plannotatorReview }}",
 		Timeout: config.Duration{Duration: time.Minute},
-		Model:   config.Model{ByAgent: map[string]string{"claude": "haiku"}},
+		Model:   config.PerAgent{ByAgent: map[string]string{"claude": "haiku"}},
+		Effort:  config.PerAgent{ByAgent: map[string]string{"claude": "xhigh"}},
 	}
 
 	var runs annotationRun
@@ -518,6 +519,7 @@ func TestPlannotator_ReworkStageModel(t *testing.T) {
 
 	args := runs.all()[0].Args
 	assert.Equal(t, "haiku", modelArg(t, args))
+	assert.Equal(t, "xhigh", flagArg(t, args, "--effort"))
 
 	cancel()
 	require.NoError(t, <-errCh)

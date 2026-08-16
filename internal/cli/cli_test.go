@@ -872,7 +872,7 @@ path: /tmp/testrepo
 # Ticket one
 `)
 
-	require.NoError(t, SetStatus(dir, "tst-001", "done"))
+	require.NoError(t, SetStatus(testConfig(dir), "tst-001", "done"))
 
 	data, err := os.ReadFile(filepath.Join(dir, "tst-001.md"))
 	require.NoError(t, err)
@@ -893,7 +893,7 @@ path: /tmp/testrepo
 # Ticket
 `)
 
-	require.NoError(t, SetStatus(dir, "tst", "done"))
+	require.NoError(t, SetStatus(testConfig(dir), "tst", "done"))
 
 	data, err := os.ReadFile(filepath.Join(dir, "tst-001.md"))
 	require.NoError(t, err)
@@ -911,7 +911,7 @@ path: /tmp/testrepo
 # Ticket
 `)
 
-	require.ErrorContains(t, SetStatus(dir, "tst-001", "done"), "already done")
+	require.ErrorContains(t, SetStatus(testConfig(dir), "tst-001", "done"), "already done")
 }
 
 func TestDone_PreservesFrontmatter(t *testing.T) {
@@ -926,7 +926,7 @@ custom_field: keep me
 # Ticket
 `)
 
-	require.NoError(t, SetStatus(dir, "tst-001", "done"))
+	require.NoError(t, SetStatus(testConfig(dir), "tst-001", "done"))
 
 	data, err := os.ReadFile(filepath.Join(dir, "tst-001.md"))
 	require.NoError(t, err)
@@ -938,7 +938,7 @@ custom_field: keep me
 
 func TestDone_TaskNotFound(t *testing.T) {
 	dir := t.TempDir()
-	require.Error(t, SetStatus(dir, "nonexistent", "done"))
+	require.Error(t, SetStatus(testConfig(dir), "nonexistent", "done"))
 }
 
 func TestSetStatus_ValidTransition(t *testing.T) {
@@ -952,7 +952,7 @@ path: /tmp/testrepo
 # Ticket
 `)
 
-	require.NoError(t, SetStatus(dir, "tst-001", "paused"))
+	require.NoError(t, SetStatus(testConfig(dir), "tst-001", "paused"))
 
 	data, err := os.ReadFile(filepath.Join(dir, "tst-001.md"))
 	require.NoError(t, err)
@@ -970,7 +970,7 @@ path: /tmp/testrepo
 # Ticket
 `)
 
-	require.ErrorContains(t, SetStatus(dir, "tst-001", "bogus"), "invalid status")
+	require.ErrorContains(t, SetStatus(testConfig(dir), "tst-001", "bogus"), "invalid status")
 }
 
 func TestSetStatus_SameStatus(t *testing.T) {
@@ -984,7 +984,7 @@ path: /tmp/testrepo
 # Ticket
 `)
 
-	require.ErrorContains(t, SetStatus(dir, "tst-001", "todo"), "already todo")
+	require.ErrorContains(t, SetStatus(testConfig(dir), "tst-001", "todo"), "already todo")
 }
 
 func TestSetStatus_DoneSetsCompletedAt(t *testing.T) {
@@ -998,7 +998,7 @@ path: /tmp/testrepo
 # Ticket
 `)
 
-	require.NoError(t, SetStatus(dir, "tst-001", "done"))
+	require.NoError(t, SetStatus(testConfig(dir), "tst-001", "done"))
 
 	data, err := os.ReadFile(filepath.Join(dir, "tst-001.md"))
 	require.NoError(t, err)
@@ -1016,7 +1016,7 @@ path: /tmp/testrepo
 # Ticket
 `)
 
-	require.ErrorContains(t, SetStatus(dir, "tst-001", "running"), "invalid status")
+	require.ErrorContains(t, SetStatus(testConfig(dir), "tst-001", "running"), "invalid status")
 }
 
 func TestShowConfig_OutputsYAML(t *testing.T) {

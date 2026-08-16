@@ -27,6 +27,13 @@ var builtinSetStatuses = map[ticket.Status]bool{
 	ticket.StatusCancelled:   true,
 }
 
+// closedStatuses are the statuses a ticket reaches when its work is over.
+var closedStatuses = map[ticket.Status]bool{
+	ticket.StatusDone:      true,
+	ticket.StatusCancelled: true,
+	ticket.StatusArchived:  true,
+}
+
 // ConfigFunc returns the config to use for the current call. The daemon passes
 // its own accessor so the service follows a config reload; callers with a fixed
 // config pass Static.
@@ -104,6 +111,19 @@ func (s *Service) SetStatus(id string, status ticket.Status) (Result, error) {
 
 	if st.Ticket.Status == status {
 		return Result{}, fmt.Errorf("%w: ticket %s is already %s", ErrInvalidState, resolved, status)
+	}
+
+	// Archived is terminal: the archive sweep and a direct file edit are the only
+	// ways in, and there is no way back out through a move.
+	if st.Ticket.Status == ticket.StatusArchived {
+		return Result{}, fmt.Errorf("%w: ticket %s is archived", ErrInvalidState, resolved)
+	}
+
+	// Paused means "a run was stopped and parked". A ticket that already closed
+	// has no run to stop, so the move would write a status the daemon never
+	// produces; retry is the way back from done or cancelled.
+	if status == ticket.StatusPaused && closedStatuses[st.Ticket.Status] {
+		return Result{}, fmt.Errorf("%w: cannot pause ticket %s in status %s (use retry to reopen it)", ErrInvalidState, resolved, st.Ticket.Status)
 	}
 
 	if err := st.Ticket.SetField("kontora", true); err != nil {

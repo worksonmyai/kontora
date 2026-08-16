@@ -15,8 +15,8 @@ import (
 )
 
 // Pause sets a ticket's status to paused.
-func Pause(tasksDir, taskID string) error {
-	return SetStatus(tasksDir, taskID, "paused")
+func Pause(cfg *config.Config, taskID string) error {
+	return SetStatus(cfg, taskID, string(ticket.StatusPaused))
 }
 
 // Retry resets a ticket to todo with attempt=0 for re-processing.
@@ -28,8 +28,13 @@ func Retry(tasksDir, taskID string) error {
 }
 
 // Cancel sets a ticket's status to cancelled.
-func Cancel(tasksDir, taskID string) error {
-	return SetStatus(tasksDir, taskID, "cancelled")
+func Cancel(cfg *config.Config, taskID string) error {
+	return SetStatus(cfg, taskID, string(ticket.StatusCancelled))
+}
+
+// Done sets a ticket's status to done.
+func Done(cfg *config.Config, taskID string) error {
+	return SetStatus(cfg, taskID, string(ticket.StatusDone))
 }
 
 // SetStage moves a ticket to a specific pipeline stage by name.

@@ -3239,6 +3239,14 @@ func TestStageOverrides(t *testing.T) {
 			wantEffort: "--effort high",
 		},
 		{
+			// Nothing overrides it, so the argv keeps the flag the agent
+			// already carries — and that is the effort the run is recorded
+			// with, not an absent one, which reads as "no flag was passed".
+			name:       "records the effort only the agent's own arguments set",
+			agent:      config.Agent{Binary: "claude", Args: []string{"--effort", "low"}},
+			wantEffort: "--effort low",
+		},
+		{
 			name:       "model and effort together",
 			agent:      config.Agent{Binary: "claude"},
 			model:      config.PerAgent{Any: "haiku"},
@@ -3273,8 +3281,15 @@ func TestStageOverrides(t *testing.T) {
 			stop := runDaemon(t, d)
 
 			h.writeTicket("tst-sm.md", h.taskMD("tst-sm", "todo", "one-stage"))
-			h.waitForStatus("tst-sm.md", ticket.StatusDone, 10*time.Second)
+			done := h.waitForStatus("tst-sm.md", ticket.StatusDone, 10*time.Second)
 			stop()
+
+			// What the run recorded must be what it passed, so the history row
+			// can be read as the settings the run had.
+			_, wantEffortValue, _ := strings.Cut(tc.wantEffort, " ")
+			require.Len(t, done.History, 1)
+			assert.Equal(t, tc.wantModel, done.History[0].Model, "recorded model")
+			assert.Equal(t, wantEffortValue, done.History[0].Effort, "recorded effort")
 
 			if tc.wantModel != "" {
 				assert.Equal(t, tc.wantModel, modelArg(t, captured.Args))
@@ -3293,6 +3308,35 @@ func TestStageOverrides(t *testing.T) {
 			assertBeforePrompt(t, captured, flag)
 		})
 	}
+}
+
+// TestStageRunRecordsTheAgentThatRan: a stage_end hook holds the ticket file in
+// the window before the exit is written, and can rewrite its agent field there.
+// The row must go on naming the agent that ran, because the model and the
+// effort beside it were resolved for that agent.
+func TestStageRunRecordsTheAgentThatRan(t *testing.T) {
+	h := newHarness(t)
+	h.cfg.Agents["agent1"] = config.Agent{Binary: "claude", Effort: "high"}
+	h.cfg.Agents["other"] = config.Agent{Binary: "pi", Effort: "low"}
+	h.cfg.Hooks = config.Hooks{config.HookStageEnd: {config.Hook{
+		Name: "rename",
+		Run: `edited=$(awk '/^kontora: true$/ { print; print "agent: other"; next } { print }' "$KONTORA_TICKET_FILE")` +
+			`; printf '%s\n' "$edited" > "$KONTORA_TICKET_FILE"`,
+	}}}
+
+	d := h.newDaemon(h.cfg, WithRunner(func(_ context.Context, _ RunnerParams) (process.Result, error) {
+		return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now()}, nil
+	}))
+	stop := runDaemon(t, d)
+
+	h.writeTicket("tst-ha.md", h.taskMD("tst-ha", "todo", "one-stage"))
+	done := h.waitForStatus("tst-ha.md", ticket.StatusDone, 10*time.Second)
+	stop()
+
+	assert.Equal(t, "other", done.Agent, "the hook's edit survives the exit write")
+	require.Len(t, done.History, 1)
+	assert.Equal(t, "agent1", done.History[0].Agent)
+	assert.Equal(t, "high", done.History[0].Effort, "the effort resolved for the agent that ran")
 }
 
 // assertBeforePrompt checks a flag reaches the agent ahead of the prompt, which

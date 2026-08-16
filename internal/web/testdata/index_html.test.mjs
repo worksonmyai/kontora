@@ -1161,6 +1161,18 @@ test("historyLabel marks an annotation run and how it got its session", () => {
   );
 });
 
+test("a history row chips what Kontora passed the agent", () => {
+  const state = loadKontoraState();
+
+  assert.equal(state.historySettings({ stage: "code", model: "haiku", effort: "low" }), "haiku · low");
+  // Either half alone still says something; neither means Kontora passed no
+  // flag at all, so the row shows no chip.
+  assert.equal(state.historySettings({ stage: "code", model: "haiku" }), "haiku");
+  assert.equal(state.historySettings({ stage: "code", effort: "low" }), "low");
+  assert.equal(state.historySettings({ stage: "code" }), "");
+  assert.equal(state.historySettings(null), "");
+});
+
 test("columns and agents named after Object.prototype members stay data", () => {
   // Column keys come from config custom_statuses and agent names from ticket
   // data, so both key maps have to carry no prototype.
@@ -3524,6 +3536,7 @@ agents:
     binary: pi
     args: []
     failure_patterns: []
+    effort: high
 
 stages:
   # the planning pass
@@ -3533,9 +3546,13 @@ stages:
       Draft a plan.
       Write it to PLAN.md.
     timeout: 45m
+    effort: low
   implement:
     prompt: Implement PLAN.md
     timeout: 2h
+    model:
+      claude: opus
+      pi: anthropic/claude-opus-5
 
 pipelines:
   full:
@@ -3560,6 +3577,8 @@ environment:
 web:
   host: 127.0.0.1
   port: 8080
+
+summary_effort: low
 `;
 
 // Every collection key present with an empty value, which is how a key parses
@@ -3836,23 +3855,333 @@ test("failure_patterns keeps its three states apart", async () => {
   assert.deepEqual(vmValue(state.settingsFailurePatterns("pi")), { mode: "override", patterns: ["quota exceeded"] });
 });
 
-test("saving one prompt leaves comments, unmodelled keys, and block style intact", async () => {
+test("a model and an effort round-trip in both of their shapes", async () => {
   const state = await settingsState();
 
-  state.settingsConfig.stages.plan.prompt = "Read the ticket.\nDraft a better plan.\nWrite it to PLAN.md.\n";
-  await state._settingsWrite();
-  const out = String(state._settingsDoc);
+  // A scalar in the file is one value for every agent; a map is per agent.
+  assert.deepEqual(vmValue(state.settingsConfig.stages.plan.effort), { mode: "any", any: "low", by: {} });
+  assert.deepEqual(vmValue(state.settingsConfig.stages.implement.model),
+    { mode: "per_agent", any: "", by: { claude: "opus", pi: "anthropic/claude-opus-5" } });
+  assert.equal(state.settingsConfig.agents.pi.effort, "high");
+  assert.deepEqual(vmValue(state.settingsConfig.summary_effort), { mode: "any", any: "low", by: {} });
+  // A field the file leaves out is unset, not per-agent.
+  assert.deepEqual(vmValue(state.settingsConfig.stages.plan.model), { mode: "any", any: "", by: {} });
 
-  assert.match(out, /^# kontora configuration$/m);
-  assert.match(out, /editor: nvim # not modelled by the form/);
-  assert.match(out, /ANTHROPIC_LOG: debug/);
-  assert.match(out, /# the planning pass\n {2}plan:/);
-  assert.match(out, /prompt: \|/);
-  assert.match(out, /Draft a better plan\./);
+  // A collapsed stage card labels both fields, so a stage carrying only a model
+  // is not indistinguishable from one with no overrides at all.
+  assert.equal(state.settingsPerAgentLabel("stages.plan.effort"), "low");
+  assert.equal(state.settingsPerAgentLabel("stages.plan.model"), "");
+  assert.equal(state.settingsPerAgentLabel("stages.implement.model"), "claude: opus, pi: anthropic/claude-opus-5");
+  const card = fs.readFileSync(htmlPath, "utf8").split("settingsToggleStage(name)")[1].split("</button>")[0];
+  assert.match(card, /x-for="field in \['model', 'effort'\]"/);
 
-  // Everything except the edited line is byte-for-byte what came in.
-  const changed = out.split("\n").filter((l, i) => l !== SETTINGS_FIXTURE.split("\n")[i]);
-  assert.deepEqual(changed, ["      Draft a better plan."]);
+  // Nothing was edited, so nothing is written.
+  assert.deepEqual(vmValue(state.settingsChangedPaths()), []);
+  const out = await state._settingsWrite();
+  assert.equal(out, SETTINGS_FIXTURE);
+});
+
+test("switching a field to per-agent replaces the bare value with a map", async () => {
+  const state = await settingsState();
+
+  state.settingsSetPerAgentMode("stages.plan.effort", "per_agent");
+  state.settingsNewPerAgentKey["stages.plan.effort"] = "claude";
+  state.settingsAddPerAgent("stages.plan.effort");
+  state.settingsPerAgent("stages.plan.effort").by.claude = "xhigh";
+
+  const out = await state._settingsWrite();
+  assert.match(out, /effort:\n {6}claude: xhigh/);
+  assert.equal(/effort: low\n/.test(out.split("implement:")[0]), false, "the bare value is gone");
+
+  // And back the other way: the value typed before the flip is still there.
+  state.settingsSetPerAgentMode("stages.plan.effort", "any");
+  assert.match(await state._settingsWrite(), /^ {4}effort: low$/m);
+});
+
+test("clearing a per-agent field removes the key rather than writing an empty value", async () => {
+  const state = await settingsState();
+
+  state.settingsConfig.stages.plan.effort.any = "";
+  state.settingsConfig.agents.pi.effort = "";
+  state.settingsConfig.summary_effort.any = "  ";
+  const out = await state._settingsWrite();
+
+  assert.equal(/effort:/.test(out), false, "no effort key survives anywhere");
+  assert.match(out, /timeout: 45m/, "the neighbouring key is untouched");
+});
+
+test("a per-agent row can be added and removed", async () => {
+  const state = await settingsState();
+  const path = "stages.implement.model";
+
+  state.settingsNewPerAgentOpen[path] = true;
+  state.settingsNewPerAgentKey[path] = "pi-fast";
+  state.settingsAddPerAgent(path);
+  assert.deepEqual(vmValue(state.settingsPerAgentKeys(path)), ["claude", "pi", "pi-fast"]);
+  assert.equal(state.settingsNewPerAgentOpen[path], false, "adding closes the draft row");
+
+  // An empty value writes no entry, so a half-filled row is not an edit yet.
+  assert.match(await state._settingsWrite(), /model:\n {6}claude: opus\n {6}pi: anthropic\/claude-opus-5/);
+
+  state.settingsPerAgent(path).by["pi-fast"] = "anthropic/claude-haiku-4-5";
+  assert.match(await state._settingsWrite(), /pi-fast: anthropic\/claude-haiku-4-5/);
+
+  state.settingsRemovePerAgent(path, "pi-fast");
+  state.settingsRemovePerAgent(path, "pi");
+  const out = await state._settingsWrite();
+  assert.equal(/pi-fast/.test(out), false);
+  assert.match(out, /model:\n {6}claude: opus/);
+
+  // Removing the last one deletes the key.
+  state.settingsRemovePerAgent(path, "claude");
+  assert.equal(/model:/.test(await state._settingsWrite()), false);
+});
+
+test("an effort on a stage the file does not declare writes the stage whole", async () => {
+  const state = await settingsState();
+
+  // rework is injected, not declared. Writing only its effort would leave a
+  // declared stage with no prompt and no timeout, which runs unbounded.
+  state.settingsConfig.stages.rework.effort.any = "xhigh";
+  const out = await state._settingsWrite();
+
+  assert.match(out, /^ {2}rework:$/m);
+  assert.match(out, /^ {4}effort: xhigh$/m);
+  assert.match(out, /^ {4}timeout: 30m$/m);
+  assert.match(out, /The reviewer requested changes\./);
+});
+
+test("a per-agent key is marked when it names neither an agent nor a kind", async () => {
+  const state = await settingsState();
+
+  assert.equal(state.settingsAgentKeyValid("claude"), true, "an agent kind");
+  assert.equal(state.settingsAgentKeyValid("pi"), true);
+  assert.equal(state.settingsAgentKeyValid("nope"), false);
+  // An empty draft is not wrong yet, only incomplete.
+  assert.equal(state.settingsAgentKeyValid(""), true);
+  // An agent named after an Object.prototype member is not configured.
+  assert.equal(state.settingsAgentKeyValid("constructor"), false);
+
+  state.settingsConfig.agents["pi-fast"] = { binary: "pi", effort: "", args: "", failure_patterns: null };
+  assert.equal(state.settingsAgentKeyValid("pi-fast"), true, "a configured agent name");
+});
+
+test("a per-agent map is written entry by entry", async () => {
+  // Replacing the mapping node would drop the comment inside it, sort its keys,
+  // and — where another key aliases its anchor — strand the alias, so stringify
+  // throws and no save can succeed again.
+  const fixture = `stages:
+  plan:
+    model: &models
+      pi: anthropic/claude-opus-5   # the expensive one
+      claude: opus
+    timeout: 45m
+  implement:
+    model: *models
+`;
+  const state = await settingsState(fixture);
+
+  state.settingsPerAgent("stages.plan.model").by.claude = "sonnet";
+  const out = await state._settingsWrite();
+
+  assert.match(out, /pi: anthropic\/claude-opus-5 # the expensive one/, "the comment survives");
+  assert.match(out, /model: &models\n {6}pi: /, "the anchor and the key order survive");
+  assert.match(out, /claude: sonnet/);
+  assert.match(out, /implement:\n {4}model: \*models/, "the alias still resolves");
+  assert.match(out, /timeout: 45m/);
+
+  // A key removed in the form is removed from the map, and the rest stay put.
+  state.settingsRemovePerAgent("stages.plan.model", "pi");
+  const pruned = await state._settingsWrite();
+  assert.equal(/pi: anthropic/.test(pruned), false);
+  assert.match(pruned, /claude: sonnet/);
+});
+
+test("switching to per agent without filling a row keeps the value", async () => {
+  const state = await settingsState();
+
+  state.settingsSetPerAgentMode("stages.plan.effort", "per_agent");
+
+  // Nothing is filled in yet, so nothing changed and the bare value still
+  // applies. Writing the field would delete it and the stage would silently
+  // fall back to the agent's own effort.
+  assert.deepEqual([...state.settingsChangedPaths()], []);
+  assert.equal(await state._settingsWrite(), SETTINGS_FIXTURE);
+
+  // And with the rows still empty, the single value is still what is written,
+  // rather than the key being deleted as an empty map would delete it.
+  state.settingsPerAgent("stages.plan.effort").any = "high";
+  const plan = (await state._settingsWrite()).split("  plan:")[1].split("  implement:")[0];
+  assert.match(plan, /^ {4}effort: high$/m);
+});
+
+test("a one-key map is not confused with a bare value that reads like one", async () => {
+  // Change detection compares the flattened strings, and a one-key map renders
+  // as `claude: low` — the same text the user can type into the single box. A
+  // flat string with nothing to tell the two shapes apart reports no change, so
+  // the save button never lights up and the edit is lost at the next reload.
+  const state = await settingsState("summary_effort:\n  claude: low\n");
+
+  state.settingsSetPerAgentMode("summary_effort", "any");
+  state.settingsPerAgent("summary_effort").any = "claude: low";
+
+  assert.deepEqual([...state.settingsChangedPaths()], ["summary_effort"]);
+  assert.match(await state._settingsWrite(), /^summary_effort: ["']claude: low["']$/m);
+});
+
+test("a per-agent key naming nothing blocks the save with the daemon's wording", async () => {
+  // Kept apart from the wording test above, whose config has no binary on
+  // claude: config.Validate stops at the first error, so the checks that read
+  // an agent's binary are skipped while one is missing.
+  const state = await settingsState();
+
+  state.settingsPerAgent("stages.implement.model").by.codex = "gpt-5";
+  state.settingsPerAgent("summary_effort").mode = "per_agent";
+  state.settingsPerAgent("summary_effort").by.codex = "high";
+  state.settingsConfig.agents.claude.binary = "codex";
+  state.settingsConfig.agents.claude.effort = "high";
+
+  assert.deepEqual(vmValue(state.settingsClientErrors()), [
+    'agent "claude": sets effort "high", which codex takes no flag for',
+    'stage "implement": model "codex": neither a configured agent nor an agent kind (claude, pi)',
+    'summary_effort: effort "codex": neither a configured agent nor an agent kind (claude, pi)',
+    'pipeline "full" stage 0: stage "plan" sets effort "low", which agent "claude" (codex) takes no flag for',
+    'pipeline "full" stage 1: stage "implement" sets model "opus", which agent "claude" (codex) takes no flag for',
+  ]);
+
+  // A row left blank writes no key, so it is not an error yet.
+  state.settingsPerAgent("stages.implement.model").by.codex = "";
+  assert.equal(vmValue(state.settingsClientErrors()).some(e => e.startsWith('stage "implement"')), false);
+
+  // The kind behind the agent's own effort field, marked in the form the same
+  // way. A wrapper runs the binary after its separator.
+  assert.equal(state.settingsAgentKindOf("claude"), "", "binary codex takes no flag");
+  assert.equal(state.settingsAgentKindOf("pi"), "pi");
+  state.settingsConfig.agents.claude.binary = "/opt/homebrew/bin/nono";
+  state.settingsConfig.agents.claude.args = "run\n--profile\nagent\n--\nclaude\n--verbose";
+  assert.equal(state.settingsAgentKindOf("claude"), "claude");
+});
+
+test("an agent named after an Object.prototype member takes a per-agent value", async () => {
+  const state = await settingsState();
+  const path = "stages.implement.model";
+
+  state.settingsConfig.agents.constructor = { binary: "claude", effort: "", args: "", failure_patterns: null };
+  state.settingsNewPerAgentKey[path] = "constructor";
+  state.settingsAddPerAgent(path);
+
+  assert.equal(state.settingsPerAgentHasKey(path, "constructor"), true);
+  assert.deepEqual(vmValue(state.settingsPerAgentKeys(path)), ["claude", "constructor", "pi"]);
+
+  // A key that reaches Object.prototype's setter on a plain object stays data.
+  state.settingsPerAgent(path).by.__proto__ = "haiku";
+  state.settingsPerAgent(path).by.constructor = "haiku";
+  assert.match(await state._settingsWrite(), /__proto__: haiku/);
+  assert.match(String(state._settingsDoc), /constructor: haiku/);
+});
+
+test("reverting a stage drops the per-agent row left half-typed on it", async () => {
+  const state = await settingsState();
+
+  state.settingsSetPerAgentMode("stages.plan.effort", "per_agent");
+  state.settingsNewPerAgentOpen["stages.plan.effort"] = true;
+  state.settingsNewPerAgentKey["stages.plan.effort"] = "claude";
+  state.settingsNewPerAgentOpen.summary_effort = true;
+
+  state.revertSettingsStage("plan");
+  assert.equal(state.settingsNewPerAgentOpen["stages.plan.effort"], undefined);
+  assert.equal(state.settingsNewPerAgentKey["stages.plan.effort"], undefined);
+  assert.equal(state.settingsNewPerAgentOpen.summary_effort, true, "another field's draft is left alone");
+
+  state.discardSettings();
+  assert.deepEqual(vmValue(state.settingsNewPerAgentOpen), {});
+});
+
+test("after a save the form shows what was written", async () => {
+  const state = await settingsState(SETTINGS_FIXTURE, { fetch: settingsFetch().fetch });
+
+  // An empty value writes no entry, so this row does not reach the file.
+  state.settingsPerAgent("stages.implement.model").by.pi = "";
+  assert.equal(await state.saveSettings(), true);
+
+  assert.deepEqual(vmValue(state.settingsPerAgentKeys("stages.implement.model")), ["claude"]);
+  assert.equal(state.settingsDirty(), false);
+});
+
+test("a sequence where a per-agent field is expected reads as unset", async () => {
+  // PerAgent takes a scalar or a mapping, so the daemon can never have loaded
+  // such a file. Rendering it as rows keyed 0 and 1 would let a save rewrite
+  // the sequence as a mapping the daemon then rejects.
+  const state = await settingsState("stages:\n  plan:\n    model:\n      - opus\n      - haiku\n");
+
+  assert.deepEqual(vmValue(state.settingsConfig.stages.plan.model), { mode: "any", any: "", by: {} });
+  assert.deepEqual([...state.settingsChangedPaths()], []);
+});
+
+test("a stage added here starts with a timeout", async () => {
+  const state = await settingsState(SETTINGS_BARE_FIXTURE);
+
+  state.settingsNewStage = "audit";
+  state.settingsAddStage();
+  // Editing only the model writes the stage whole. Without a timeout of its
+  // own the stage would run until the agent exits: internal/process starts the
+  // timer only above zero.
+  state.settingsConfig.stages.audit.model.any = "haiku";
+
+  const out = await state._settingsWrite();
+  assert.match(out, /audit:\n {4}model: haiku\n {4}timeout: 30m/);
+});
+
+test("the per-agent control is one block, rendered wherever it is needed", async () => {
+  const html = fs.readFileSync(htmlPath, "utf8");
+  const state = await settingsState();
+
+  // Two call sites, no second copy of the markup: the copies had already
+  // drifted, and every fix to the control had to be made twice.
+  assert.equal(html.match(/x-html="settingsPerAgentControl"/g).length, 2);
+  assert.equal(html.includes("settingsAddPerAgent"), false);
+
+  // Every method the control calls is on the component, so a rename cannot
+  // leave the markup calling something that no longer exists.
+  for (const name of new Set(state.settingsPerAgentControl.match(/settings[A-Za-z]+(?=\()/g))) {
+    assert.equal(typeof state[name], "function", name);
+  }
+  // And every scope name it reads is supplied at both call sites.
+  for (const scope of ["p", "label", "labelClass", "inputId", "hint"]) {
+    assert.equal(html.match(new RegExp(`${scope}:`, "g")).length >= 2, true, scope);
+  }
+});
+
+test("saving one field leaves comments, unmodelled keys, and block style intact", async () => {
+  const cases = [
+    {
+      name: "a prompt",
+      edit: cfg => { cfg.stages.plan.prompt = "Read the ticket.\nDraft a better plan.\nWrite it to PLAN.md.\n"; },
+      changed: ["      Draft a better plan."],
+    },
+    {
+      name: "an effort",
+      edit: cfg => { cfg.stages.plan.effort.any = "high"; },
+      changed: ["    effort: high"],
+    },
+  ];
+
+  for (const tc of cases) {
+    const state = await settingsState();
+    tc.edit(state.settingsConfig);
+    await state._settingsWrite();
+    const out = String(state._settingsDoc);
+
+    assert.match(out, /^# kontora configuration$/m, tc.name);
+    assert.match(out, /editor: nvim # not modelled by the form/, tc.name);
+    assert.match(out, /ANTHROPIC_LOG: debug/, tc.name);
+    assert.match(out, /# the planning pass\n {2}plan:/, tc.name);
+    assert.match(out, /prompt: \|/, tc.name);
+
+    // Everything except the edited line is byte-for-byte what came in.
+    const changed = out.split("\n").filter((l, i) => l !== SETTINGS_FIXTURE.split("\n")[i]);
+    assert.deepEqual(vmValue(changed), tc.changed, tc.name);
+  }
 });
 
 test("a general key absent from the file is appended without reformatting", async () => {
@@ -5459,6 +5788,46 @@ test("the activity tab opens the run in flight", async () => {
 
   assert.equal(state.activeTab, "activity");
   assert.deepEqual(asked, [["commit", 0]], "commit has no history rows, so it is running its first run");
+});
+
+test("the activity header reports the effort of the run it shows", () => {
+  const state = pageState({
+    ...TAPE_TICKET,
+    history: TAPE_TICKET.history.map((h) =>
+      h.stage === "review" && h.run === 1 ? { ...h, model: "opus", effort: "high" } : h),
+  });
+  state.activityStage = "review";
+  state.activityRun = 1;
+  // The tape reports the model the agent itself ran as, which need not be the
+  // alias Kontora passed. Only the effort is chipped, so the two never disagree
+  // on screen.
+  state.activity = { tape: { model: "claude-opus-4-6" } };
+
+  assert.equal(state.activityEffort(), "high");
+  assert.equal(vmValue(state.activityHistoryEntry()).model, "opus");
+
+  // One model chip, and it is the tape's. A config-derived second one would
+  // disagree with it whenever the alias and the reported id differ.
+  const header = fs.readFileSync(htmlPath, "utf8").split("<!-- Activity:")[1].split("</div>")[0];
+  assert.equal(header.match(/x-text="activity\?\.tape\?\.model"/g).length, 1);
+  assert.equal(/activityHistoryEntry\(\)/.test(header), false);
+  assert.match(header, /x-text="activityEffort\(\)"/);
+
+  // A stale payload is the newest run of the stage, not the one that was asked
+  // for, so the effort of the asked-for run would label another run's output.
+  state.activity = { stale: true };
+  assert.equal(state.activityEffort(), "");
+
+  // The other run of the same stage recorded nothing, so no chip.
+  state.activity = { tape: { model: "claude-opus-4-6" } };
+  state.activityRun = 0;
+  assert.equal(state.activityEffort(), "");
+  assert.equal(vmValue(state.activityHistoryEntry()).effort, undefined);
+
+  // A run in flight has no history entry yet.
+  state.activityStage = "commit";
+  assert.equal(state.activityHistoryEntry(), null);
+  assert.equal(state.activityEffort(), "");
 });
 
 test("the run in flight is numbered by the stage's finished runs", () => {

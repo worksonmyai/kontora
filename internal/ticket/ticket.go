@@ -57,8 +57,14 @@ const (
 )
 
 type HistoryEntry struct {
-	Stage    string `yaml:"stage"`
-	Agent    string `yaml:"agent"`
+	Stage string `yaml:"stage"`
+	Agent string `yaml:"agent"`
+	// Model and Effort are what Kontora passed the agent, resolved from the
+	// stage override and the agent's own default, not what the agent reported
+	// running as. Empty means Kontora passed no flag and the agent used its own
+	// default.
+	Model    string `yaml:"model,omitempty"`
+	Effort   string `yaml:"effort,omitempty"`
 	ExitCode int    `yaml:"exit_code"`
 	// Run is the zero-based index of this run among the runs of the same stage.
 	// It keys the structured activity sidecar, which is written per run while

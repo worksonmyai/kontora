@@ -521,6 +521,15 @@ func TestPlannotator_ReworkStageModel(t *testing.T) {
 	assert.Equal(t, "haiku", modelArg(t, args))
 	assert.Equal(t, "xhigh", flagArg(t, args, "--effort"))
 
+	// Rework resolves the pair on its own path, so it records its own.
+	tk, err := ticket.ParseFile(filePath)
+	require.NoError(t, err)
+	require.NotEmpty(t, tk.History)
+	rework := tk.History[len(tk.History)-1]
+	assert.Equal(t, config.ReworkStageName, rework.Stage)
+	assert.Equal(t, "haiku", rework.Model)
+	assert.Equal(t, "xhigh", rework.Effort)
+
 	cancel()
 	require.NoError(t, <-errCh)
 }

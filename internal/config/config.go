@@ -316,6 +316,54 @@ func (a Agent) argsModel() string {
 	return ""
 }
 
+// argsEffort returns the reasoning effort the agent's own arguments select, or
+// "" when they select none. The counterpart of argsModel for the flag this
+// agent's CLI takes the level on.
+func (a Agent) argsEffort() string {
+	flag := a.effortFlag()
+	if flag == "" {
+		return ""
+	}
+	args := a.Args[a.agentArgsStart():]
+	for i, arg := range args {
+		if arg == flag && i+1 < len(args) {
+			return args[i+1]
+		}
+		if v, ok := strings.CutPrefix(arg, flag+"="); ok {
+			return v
+		}
+	}
+	return ""
+}
+
+// effortFor applies the fallbacks ArgsWith applies to a reasoning effort: the
+// agent's own when the caller resolved none, and none at all for an agent whose
+// CLI takes no flag for it.
+func (a Agent) effortFor(effort string) string {
+	if a.effortFlag() == "" {
+		return ""
+	}
+	return cmp.Or(effort, a.Effort)
+}
+
+// Effective reports the model and the reasoning effort an invocation with these
+// overrides actually runs with. An empty override falls back to the agent's own
+// key, then to what its arguments already select; an agent whose CLI takes no
+// effort flag runs with none. Both are empty only when nothing selects one,
+// which is the agent CLI's own default rather than a value Kontora passes.
+//
+// The argument fallbacks live here rather than in ArgsWith, which returns the
+// arguments untouched when it has nothing to select. Resolving them there would
+// make it strip a flag the user already ordered and append it again, changing
+// argument order for no change in what the CLI receives.
+func (a Agent) Effective(model, effort string) (effModel, effEffort string) {
+	effModel = cmp.Or(model, a.argsModel())
+	if a.effortFlag() == "" {
+		return effModel, ""
+	}
+	return effModel, cmp.Or(effort, a.Effort, a.argsEffort())
+}
+
 // ArgsWith returns the agent's arguments with the model and the reasoning
 // effort selected. It replaces the configured `--model <v>`/`--model=<v>` and
 // the same two forms of the effort flag rather than appending a second pair, so
@@ -328,11 +376,8 @@ func (a Agent) argsModel() string {
 // for it is dropped here: Validate rejects the agent's own, and the caller,
 // which knows the agent, rejects one a stage resolved.
 func (a Agent) ArgsWith(model, effort string) []string {
-	effort = cmp.Or(effort, a.Effort)
+	effort = a.effortFor(effort)
 	effortFlag := a.effortFlag()
-	if effortFlag == "" {
-		effort = ""
-	}
 	if model == "" && effort == "" {
 		return slices.Clone(a.Args)
 	}
@@ -371,11 +416,10 @@ func (a Agent) ArgsWith(model, effort string) []string {
 // config saying it twice is more likely a mistake than an order the user wants
 // pi to resolve on its own.
 func (a Agent) CheckEffort(model, effort string) error {
-	effort = cmp.Or(effort, a.Effort)
+	model, effort = a.Effective(model, effort)
 	if effort == "" || !a.IsPi() {
 		return nil
 	}
-	model = cmp.Or(model, a.argsModel())
 	// pi reads a pattern as `[provider/]id[:<thinking>]`, so only a colon after
 	// the last path separator is a thinking level.
 	id := model[strings.LastIndex(model, "/")+1:]

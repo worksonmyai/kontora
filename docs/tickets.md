@@ -174,6 +174,8 @@ The daemon appends a record to `history` after each stage completes:
 history:
   - stage: plan
     agent: claude-opus
+    model: haiku
+    effort: low
     exit_code: 0
     started_at: 2026-03-01T10:01:00Z
     completed_at: 2026-03-01T10:05:00Z
@@ -183,6 +185,12 @@ history:
     started_at: 2026-03-01T10:06:00Z
     completed_at: 2026-03-01T10:15:00Z
 ```
+
+`model` and `effort` are what the agent ran with for that run, resolved from the
+stage override, then the agent's own key, then the flags in the agent's `args`.
+An absent key means nothing selected one and the agent used its CLI's own
+default. They are not what the agent reported running as: an agent given
+`model: opus` can report `claude-opus-4-6`.
 
 ## Notes
 

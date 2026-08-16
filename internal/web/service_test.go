@@ -16,12 +16,21 @@ func TestTicketInfoFromView_HistoryRun(t *testing.T) {
 		ID: "t1",
 		History: []app.HistoryView{
 			{Stage: "review", Run: 0},
-			{Stage: "review", Run: 1},
+			{Stage: "review", Run: 1, Model: "haiku", Effort: "low"},
 		},
 	})
 	require.Len(t, info.History, 2)
 	assert.Equal(t, 0, info.History[0].Run)
 	assert.Equal(t, 1, info.History[1].Run)
+	assert.Equal(t, "haiku", info.History[1].Model)
+	assert.Equal(t, "low", info.History[1].Effort)
+
+	// A run that passed no flag sends no key, so the browser can tell "none
+	// passed" from "passed an empty value".
+	encoded, err := json.Marshal(info.History[0])
+	require.NoError(t, err)
+	assert.NotContains(t, string(encoded), "model")
+	assert.NotContains(t, string(encoded), "effort")
 }
 
 func TestTicketInfoFromView_ClaimedBy(t *testing.T) {

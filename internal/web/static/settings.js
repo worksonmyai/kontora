@@ -40,6 +40,68 @@ Apply the changes and continue the work.`;
 
 const SETTINGS_REWORK_TIMEOUT = '30m';
 
+// What a stage added here starts with. The daemon has no default: a stage with
+// no timeout runs until the agent exits.
+const SETTINGS_NEW_STAGE_TIMEOUT = '30m';
+
+// The per-agent control: one value for every agent, or a map keyed by agent
+// name or agent kind. It appears once per stage field and once per summary_*
+// field, so it is held here as markup and rendered through x-html rather than
+// pasted into index.html at each site, where the copies drifted. The scope it
+// renders in supplies p (the flat path), label, labelClass, inputId and hint.
+const SETTINGS_PER_AGENT_CONTROL = `
+<div class="flex items-end gap-3 flex-wrap">
+  <div>
+    <label class="font-mono text-tx-3 mb-1 block" :class="labelClass" :for="inputId" x-text="label"></label>
+    <input :id="inputId" type="text"
+           x-model="settingsPerAgent(p).any" :disabled="settingsPerAgent(p).mode === 'per_agent'"
+           class="w-56 bg-surface-800 border border-surface-700/50 rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40 disabled:opacity-40"
+           :placeholder="settingsPerAgent(p).mode === 'per_agent' ? 'set per agent below' : hint">
+  </div>
+  <div class="flex items-center gap-1 font-mono text-[11px]">
+    <button type="button" @click="settingsSetPerAgentMode(p, 'any')"
+            class="h-8 px-2.5 rounded border transition-colors"
+            :class="settingsPerAgent(p).mode === 'any' ? 'border-accent/45 bg-surface-850 text-tx-2' : 'border-surface-700/60 text-surface-600 hover:text-tx-3'">one value</button>
+    <button type="button" @click="settingsSetPerAgentMode(p, 'per_agent')"
+            class="h-8 px-2.5 rounded border transition-colors"
+            :class="settingsPerAgent(p).mode === 'per_agent' ? 'border-accent/45 bg-surface-850 text-tx-2' : 'border-surface-700/60 text-surface-600 hover:text-tx-3'">per agent</button>
+  </div>
+</div>
+
+<div x-show="settingsPerAgent(p).mode === 'per_agent'" x-cloak class="flex flex-col gap-1.5 pl-3 mt-1.5">
+  <template x-for="key in settingsPerAgentKeys(p)" :key="key">
+    <div class="flex items-center gap-2">
+      <input type="text" :value="key" readonly :aria-label="label + ' agent'"
+             class="w-40 flex-none bg-surface-800 border rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none"
+             :class="settingsAgentKeyValid(key) ? 'border-surface-700/50' : 'border-err'">
+      <span class="text-surface-600 font-mono">=</span>
+      <input type="text" x-model="settingsPerAgent(p).by[key]" :aria-label="key + ' ' + label"
+             class="w-56 bg-surface-800 border border-surface-700/50 rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40">
+      <button type="button" @click="settingsRemovePerAgent(p, key)" :aria-label="'Remove ' + key"
+              class="w-7 h-7 shrink-0 flex items-center justify-center border border-surface-700/50 rounded text-surface-600 hover:text-err hover:border-err/30 transition-colors">
+        <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+      </button>
+    </div>
+  </template>
+  <button type="button" x-show="!settingsNewPerAgentOpen[p]" @click="settingsNewPerAgentOpen[p] = true"
+          class="w-64 flex items-center justify-center gap-1.5 p-1.5 px-3 border border-dashed border-surface-700 rounded-lg text-surface-600 font-mono text-[12px] hover:text-tx-3 hover:border-edge-hover transition-colors">
+    <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M6 2v8M2 6h8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+    add agent
+  </button>
+  <div x-show="settingsNewPerAgentOpen[p]" x-cloak class="flex items-center gap-2">
+    <input type="text" x-model="settingsNewPerAgentKey[p]" placeholder="agent name or claude / pi"
+           @keydown.enter.prevent="settingsAddPerAgent(p)" @keydown.escape="settingsNewPerAgentOpen[p] = false; settingsNewPerAgentKey[p] = ''"
+           class="w-40 flex-none bg-surface-800 border rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40"
+           :class="settingsAgentKeyValid(settingsNewPerAgentKey[p]) ? 'border-surface-700/50' : 'border-err'">
+    <button type="button" @click="settingsAddPerAgent(p)"
+            :disabled="!(settingsNewPerAgentKey[p] || '').trim() || settingsPerAgentHasKey(p, settingsNewPerAgentKey[p]) || !settingsAgentKeyValid(settingsNewPerAgentKey[p])"
+            class="font-mono text-[12px] h-8 px-4 rounded bg-accent border border-accent text-accent-fg hover:bg-accent-bright transition-colors disabled:opacity-50">add</button>
+    <button type="button" @click="settingsNewPerAgentOpen[p] = false; settingsNewPerAgentKey[p] = ''"
+            class="font-mono text-[12px] h-8 px-4 rounded bg-surface-900 border border-surface-700/60 text-tx-3">cancel</button>
+  </div>
+  <p class="text-[11px] text-surface-600">An agent name wins over the kind it runs (claude, pi). A key naming neither blocks the save.</p>
+</div>`;
+
 const SETTINGS_SECTIONS = [
   { key: 'general', label: 'general', blurb: 'Where kontora keeps things, and how many agents it runs at once.' },
   { key: 'environment', label: 'environment', blurb: 'Injected into every agent process. Per-agent entries override these.' },
@@ -118,6 +180,11 @@ function kontoraSettings() {
     settingsNewEnvKey: '',
     settingsNewStatus: '',
     settingsNewStatusOpen: false,
+    // The per-agent control appears once per stage and twice in general, so its
+    // open state and its draft key are keyed by field path rather than being one
+    // boolean per control the way the three add/remove pairs above are.
+    settingsNewPerAgentOpen: {},
+    settingsNewPerAgentKey: {},
     settingsShowToken: false,
 
     // The parsed Document, the text it came from, and the yaml module. Never
@@ -126,6 +193,7 @@ function kontoraSettings() {
     _settingsRawText: '',
     _settingsYAML: null,
 
+    settingsPerAgentControl: SETTINGS_PER_AGENT_CONTROL,
     settingsSections: SETTINGS_SECTIONS,
     settingsGeneralFields: SETTINGS_GENERAL_FIELDS,
     settingsPlannotatorFields: SETTINGS_PLANNOTATOR_FIELDS,
@@ -169,6 +237,7 @@ function kontoraSettings() {
       this.settingsSavedAt = '';
       this.settingsOpenStage = null;
       this.settingsOpenAgent = null;
+      this.settingsClearPerAgentDrafts('');
     },
 
     async _settingsLoadYAML() {
@@ -223,6 +292,48 @@ function kontoraSettings() {
       for (const s of cfg.statuses) {
         if (!SETTINGS_STATUS_RE.test(s)) errs.push(`custom status "${s}": must match [a-z][a-z0-9_]*`);
       }
+      // config.Validate: an effort on an agent whose CLI takes no flag for it.
+      // An agent with no binary at all is already reported above, and so is one
+      // the daemon would stop at first.
+      for (const name of Object.keys(cfg.agents).sort()) {
+        const agent = cfg.agents[name];
+        if (agent.binary.trim() && agent.effort.trim() && !settingsAgentKind(agent)) {
+          errs.push(`agent "${name}": sets effort "${agent.effort.trim()}", which ${agent.binary.trim()} takes no flag for`);
+        }
+      }
+      // config.validateAgentKeyedFields: a map key naming neither a configured
+      // agent nor a kind. Only the keys a save would write are checked; a row
+      // left blank writes nothing.
+      const keyErr = (field, key) => `${field} "${key}": neither a configured agent nor an agent kind (claude, pi)`;
+      for (const name of Object.keys(cfg.stages).sort()) {
+        for (const field of ['model', 'effort']) {
+          for (const key of Object.keys(settingsPerAgentEntries(cfg.stages[name][field]))) {
+            if (!this.settingsAgentKeyValid(key)) errs.push(`stage "${name}": ${keyErr(field, key)}`);
+          }
+        }
+      }
+      for (const path of ['summary_model', 'summary_effort']) {
+        for (const key of Object.keys(settingsPerAgentEntries(cfg[path]))) {
+          if (!this.settingsAgentKeyValid(key)) errs.push(`${path}: ${keyErr(path.replace('summary_', ''), key)}`);
+        }
+      }
+      // config.Validate: a step pairing a stage override with an agent whose CLI
+      // takes no flag for it. The pair is only visible where both are named.
+      for (const name of Object.keys(cfg.pipelines).sort()) {
+        cfg.pipelines[name].forEach((step, i) => {
+          const agent = cfg.agents[step.agent];
+          if (!agent || !agent.binary.trim() || settingsAgentKind(agent)) return;
+          const stage = cfg.stages[step.stage];
+          if (!stage) return;
+          for (const field of ['model', 'effort']) {
+            const v = settingsPerAgentFor(stage[field], step.agent, '');
+            if (v) {
+              errs.push(`pipeline "${name}" stage ${i}: stage "${step.stage}" sets ${field} "${v}", ` +
+                `which agent "${step.agent}" (${agent.binary.trim()}) takes no flag for`);
+            }
+          }
+        });
+      }
       return errs;
     },
 
@@ -235,6 +346,22 @@ function kontoraSettings() {
     settingsIntValid(value) {
       const v = (value || '').trim();
       return v === '' || /^\d+$/.test(v);
+    },
+
+    // A per-agent map key: a configured agent name, or an agent kind. Mirrors
+    // config.validateAgentKeys.
+    settingsAgentKeyValid(key) {
+      const k = (key || '').trim();
+      if (k === '' || k === 'claude' || k === 'pi') return true;
+      // hasOwn, not a lookup: an agent named after an Object.prototype member
+      // would otherwise read as configured.
+      return !!this.settingsConfig && Object.hasOwn(this.settingsConfig.agents, k);
+    },
+
+    // Which CLI a configured agent runs, or '' for one that takes no model or
+    // effort flag. config.Validate rejects an effort on that agent.
+    settingsAgentKindOf(name) {
+      return settingsAgentKind(this.settingsConfig?.agents?.[name]);
     },
 
     settingsIsRestartOnly(path) {
@@ -267,8 +394,7 @@ function kontoraSettings() {
         });
         if (res.status === 401) { this.needsAuth = true; return false; }
         if (res.status === 204) {
-          this._settingsRawText = content;
-          this.settingsBaseline = settingsClone(this.settingsConfig);
+          await this._settingsRebase(content);
           this.settingsSavedAt = clockHM(new Date());
           this.settingsSavedRestart = changed.some(p => this.settingsIsRestartOnly(p));
           this.settingsDiffOpen = false;
@@ -322,7 +448,27 @@ function kontoraSettings() {
       const yaml = await this._settingsLoadYAML();
       this._settingsDoc = yaml.parseDocument(this._settingsRawText);
       settingsApply(yaml, this._settingsDoc, this.settingsConfig, this.settingsBaseline);
-      return String(this._settingsDoc);
+      try {
+        return String(this._settingsDoc);
+      } catch (e) {
+        // A structure the writer cannot express — an anchor whose alias it
+        // would strand — leaves the library's own message, which names nothing
+        // the user can act on.
+        throw new Error(`this edit cannot be written back into config.yaml (${e.message || e}). Edit the file directly and reload this page.`);
+      }
+    },
+
+    // Take the text that was just written as the new starting point. The model
+    // is rebuilt from it rather than kept, because a save drops what it does not
+    // write — a per-agent row whose value was cleared — and the form would
+    // otherwise go on showing a row config.yaml no longer has, and report clean.
+    async _settingsRebase(content) {
+      const yaml = await this._settingsLoadYAML();
+      const doc = yaml.parseDocument(content);
+      this._settingsRawText = content;
+      this._settingsDoc = doc;
+      this.settingsConfig = settingsModel(doc.toJS({ maxAliasCount: -1 }) || {});
+      this.settingsBaseline = settingsClone(this.settingsConfig);
     },
 
     discardSettings() {
@@ -330,6 +476,7 @@ function kontoraSettings() {
       this.settingsErrors = [];
       this.settingsDiffOpen = false;
       this.settingsSavedAt = '';
+      this.settingsClearPerAgentDrafts('');
     },
 
     // Restore one stage to what is on disk. A stage the baseline never had
@@ -342,6 +489,7 @@ function kontoraSettings() {
         delete this.settingsConfig.stages[name];
         if (this.settingsOpenStage === name) this.settingsOpenStage = null;
       }
+      this.settingsClearPerAgentDrafts(`stages.${name}`);
       this.settingsSavedAt = '';
     },
 
@@ -385,7 +533,15 @@ function kontoraSettings() {
     settingsAddStage() {
       const name = (this.settingsNewStage || '').trim();
       if (!name || this.settingsConfig.stages[name]) return;
-      this.settingsConfig.stages[name] = { prompt: '', timeout: '', builtin: false };
+      this.settingsConfig.stages[name] = {
+        // A timeout up front rather than a blank one: a stage with none runs
+        // until the agent exits, and a stage created here can now be written
+        // from a model or an effort alone, without the prompt field ever being
+        // visited. Clearing it is still a choice the form explains.
+        prompt: '', timeout: SETTINGS_NEW_STAGE_TIMEOUT, builtin: false,
+        model: settingsPerAgentModel(undefined),
+        effort: settingsPerAgentModel(undefined),
+      };
       this.settingsOpenStage = name;
       this.settingsNewStage = '';
       this.settingsNewStageOpen = false;
@@ -394,7 +550,9 @@ function kontoraSettings() {
 
     settingsAddEnv() {
       const key = (this.settingsNewEnvKey || '').trim();
-      if (!key || key in this.settingsConfig.environment) return;
+      // hasOwn, not `in`: `'constructor' in {}` is true, and the row could then
+      // never be added, with nothing on screen explaining why.
+      if (!key || Object.hasOwn(this.settingsConfig.environment, key)) return;
       this.settingsConfig.environment[key] = '';
       this.settingsNewEnvKey = '';
       this.settingsNewEnvOpen = false;
@@ -402,6 +560,69 @@ function kontoraSettings() {
 
     settingsRemoveEnv(key) {
       delete this.settingsConfig.environment[key];
+    },
+
+    // ---- the per-agent control ---------------------------------------------
+
+    // The PerAgent sub-model behind a flat path, so one markup block serves the
+    // stage fields and the two summary_* ones.
+    // Either a root key (summary_model, summary_effort) or stages.<name>.<field>,
+    // whose name can itself carry dots.
+    settingsPerAgent(path) {
+      const parts = path.split('.');
+      if (parts.length === 1) return this.settingsConfig[path];
+      return this.settingsConfig.stages[parts.slice(1, -1).join('.')][parts[parts.length - 1]];
+    },
+
+    settingsPerAgentKeys(path) {
+      return Object.keys(this.settingsPerAgent(path).by).sort();
+    },
+
+    // One line for a collapsed card, so a value is visible without expanding.
+    // Empty means the field is unset and the agent's own applies.
+    settingsPerAgentLabel(path) {
+      const field = this.settingsPerAgent(path);
+      const by = settingsPerAgentEntries(field);
+      const keys = Object.keys(by);
+      if (!keys.length) return field.any.trim();
+      return keys.map(k => `${k}: ${by[k]}`).join(', ');
+    },
+
+    settingsSetPerAgentMode(path, mode) {
+      this.settingsPerAgent(path).mode = mode;
+    },
+
+    // A draft key already on the field, whatever it is named, cannot be added
+    // twice. hasOwn rather than `in`, which is true for every Object.prototype
+    // member and would leave the add button disabled with no explanation.
+    settingsPerAgentHasKey(path, key) {
+      return Object.hasOwn(this.settingsPerAgent(path).by, (key || '').trim());
+    },
+
+    settingsAddPerAgent(path) {
+      const key = (this.settingsNewPerAgentKey[path] || '').trim();
+      const field = this.settingsPerAgent(path);
+      if (!key || Object.hasOwn(field.by, key)) return;
+      field.by[key] = '';
+      this.settingsNewPerAgentKey[path] = '';
+      this.settingsNewPerAgentOpen[path] = false;
+    },
+
+    settingsRemovePerAgent(path, key) {
+      delete this.settingsPerAgent(path).by[key];
+    },
+
+    // Drop the open state and the half-typed key of every per-agent control
+    // under a path prefix. The model behind them is gone once the form is
+    // reloaded, reverted or discarded, and a draft row left over would reappear
+    // on a field that no longer has it.
+    settingsClearPerAgentDrafts(prefix) {
+      for (const key of Object.keys(this.settingsNewPerAgentOpen)) {
+        if (!prefix || key === prefix || key.startsWith(prefix + '.')) delete this.settingsNewPerAgentOpen[key];
+      }
+      for (const key of Object.keys(this.settingsNewPerAgentKey)) {
+        if (!prefix || key === prefix || key.startsWith(prefix + '.')) delete this.settingsNewPerAgentKey[key];
+      }
     },
 
     settingsAddStatus() {
@@ -535,11 +756,89 @@ function kontoraSettings() {
 function settingsClone(value) {
   if (Array.isArray(value)) return value.map(settingsClone);
   if (value !== null && typeof value === 'object') {
-    const out = {};
+    // A map keyed by user-supplied names carries no prototype, and copying it
+    // onto a plain object would drop a key named after one of its members.
+    const out = Object.getPrototypeOf(value) === null ? Object.create(null) : {};
     for (const [k, v] of Object.entries(value)) out[k] = settingsClone(v);
     return out;
   }
   return value;
+}
+
+// Which CLI an agent runs, or '' for one kontora knows no flags of. Mirrors
+// config.Agent.Kind: a wrapper (nono, op) runs the binary after its "--".
+function settingsAgentKind(agent) {
+  const base = p => String(p).trim().split('/').pop();
+  let binary = base(agent?.binary || '');
+  if (binary === 'nono' || binary === 'op') {
+    const args = (agent?.args || '').split('\n').filter(a => a !== '');
+    const sep = args.indexOf('--');
+    if (sep >= 0 && sep + 1 < args.length) binary = base(args[sep + 1]);
+  }
+  return binary === 'claude' || binary === 'pi' ? binary : '';
+}
+
+// A config.PerAgent field — a stage model or effort, or one of the summary_*
+// pair — as the form holds it: either one value for every agent, or a map from
+// an agent name or an agent kind to a value. Both halves are kept, so flipping
+// the toggle and back does not lose what was typed.
+function settingsPerAgentModel(raw) {
+  const str = v => (v === undefined || v === null ? '' : String(v));
+  // A sequence is neither shape PerAgent reads, so it is left as unset rather
+  // than rendered as rows keyed 0 and 1, which a save would then write back as
+  // a mapping the daemon rejects.
+  if (raw !== null && typeof raw === 'object' && !Array.isArray(raw)) {
+    // Object.create(null): an agent named after an Object.prototype member is a
+    // key like any other here, and `by.__proto__ = 'haiku'` on a plain object
+    // reaches the prototype setter and drops the entry.
+    const by = Object.create(null);
+    for (const [k, v] of Object.entries(raw)) by[k] = str(v);
+    return { mode: 'per_agent', any: '', by };
+  }
+  return { mode: 'any', any: Array.isArray(raw) ? '' : str(raw), by: Object.create(null) };
+}
+
+// The entries a save would write: trimmed, empty ones dropped. Per-agent mode
+// with no filled row is not a map yet — the bare value still applies — so
+// flipping the toggle before filling a row is not an edit and deletes nothing.
+function settingsPerAgentEntries(v) {
+  const out = Object.create(null);
+  if (!v || v.mode !== 'per_agent') return out;
+  for (const k of Object.keys(v.by).sort()) {
+    const value = String(v.by[k]).trim();
+    if (value !== '') out[k] = value;
+  }
+  return out;
+}
+
+// The value one agent resolves to. Mirrors config.PerAgent.For: an exact agent
+// name wins over the agent's kind, and a bare value applies to every agent.
+function settingsPerAgentFor(v, agentName, kind) {
+  const by = settingsPerAgentEntries(v);
+  if (Object.hasOwn(by, agentName)) return by[agentName];
+  if (kind && Object.hasOwn(by, kind)) return by[kind];
+  return Object.keys(by).length ? '' : (v ? v.any.trim() : '');
+}
+
+// The string the flat path holds. Change detection compares these strings, so
+// the map form carries a header line: a one-key map and a bare value that reads
+// like one would otherwise compare equal, and the edit would be reported as no
+// change. The single-value input is one line by construction, so a two-line
+// string can only come from the map form.
+function settingsPerAgentFlat(v) {
+  if (!v) return '';
+  const by = settingsPerAgentEntries(v);
+  const keys = Object.keys(by);
+  if (!keys.length) return v.any.trim();
+  return ['per agent'].concat(keys.map(k => `  ${k}: ${by[k]}`)).join('\n');
+}
+
+// What settingsNodeFor writes: a bare string, a map, or null to delete the key.
+function settingsPerAgentValue(v) {
+  if (!v) return null;
+  const by = settingsPerAgentEntries(v);
+  if (Object.keys(by).length) return by;
+  return v.any.trim() === '' ? null : v.any.trim();
 }
 
 // Build the form model from the parsed document's plain-JS view. Values are
@@ -562,12 +861,15 @@ function settingsModel(raw) {
       reviews_dir: str(raw.plannotator?.reviews_dir),
     },
     auto_pick_up: raw.auto_pick_up === undefined || raw.auto_pick_up === null ? true : !!raw.auto_pick_up,
+    summary_model: settingsPerAgentModel(raw.summary_model),
+    summary_effort: settingsPerAgentModel(raw.summary_effort),
   };
   for (const f of SETTINGS_GENERAL_FIELDS) model.general[f.key] = str(raw[f.key]);
   for (const [k, v] of Object.entries(raw.environment || {})) model.environment[k] = str(v);
   for (const [name, agent] of Object.entries(raw.agents || {})) {
     model.agents[name] = {
       binary: str(agent?.binary),
+      effort: str(agent?.effort),
       args: (agent?.args || []).map(String).join('\n'),
       failure_patterns: agent?.failure_patterns === undefined || agent?.failure_patterns === null
         ? null
@@ -575,12 +877,24 @@ function settingsModel(raw) {
     };
   }
   for (const [name, stage] of Object.entries(raw.stages || {})) {
-    model.stages[name] = { prompt: str(stage?.prompt), timeout: str(stage?.timeout), builtin: false };
+    model.stages[name] = {
+      prompt: str(stage?.prompt),
+      timeout: str(stage?.timeout),
+      model: settingsPerAgentModel(stage?.model),
+      effort: settingsPerAgentModel(stage?.effort),
+      builtin: false,
+    };
   }
   // applyDefaults injects rework when the file declares no stages.rework, and
   // the daemon runs it. Show it, marked, rather than hiding a live stage.
   if (!model.stages.rework) {
-    model.stages.rework = { prompt: SETTINGS_REWORK_PROMPT, timeout: SETTINGS_REWORK_TIMEOUT, builtin: true };
+    model.stages.rework = {
+      prompt: SETTINGS_REWORK_PROMPT,
+      timeout: SETTINGS_REWORK_TIMEOUT,
+      model: settingsPerAgentModel(undefined),
+      effort: settingsPerAgentModel(undefined),
+      builtin: true,
+    };
   }
   for (const [name, steps] of Object.entries(raw.pipelines || {})) {
     model.pipelines[name] = (steps || []).map(s => ({
@@ -609,14 +923,19 @@ function settingsFlatten(cfg) {
   if (!cfg) return out;
   for (const f of SETTINGS_GENERAL_FIELDS) out[f.key] = cfg.general[f.key];
   out.auto_pick_up = cfg.auto_pick_up ? 'true' : 'false';
+  out.summary_model = settingsPerAgentFlat(cfg.summary_model);
+  out.summary_effort = settingsPerAgentFlat(cfg.summary_effort);
   for (const [k, v] of Object.entries(cfg.environment)) out[`environment.${k}`] = v;
   for (const [name, agent] of Object.entries(cfg.agents)) {
     out[`agents.${name}.binary`] = agent.binary;
+    out[`agents.${name}.effort`] = agent.effort;
     out[`agents.${name}.args`] = agent.args;
   }
   for (const [name, stage] of Object.entries(cfg.stages)) {
     out[`stages.${name}.prompt`] = stage.prompt;
     out[`stages.${name}.timeout`] = stage.timeout;
+    out[`stages.${name}.model`] = settingsPerAgentFlat(stage.model);
+    out[`stages.${name}.effort`] = settingsPerAgentFlat(stage.effort);
   }
   for (const [name, project] of Object.entries(cfg.projects)) {
     out[`projects.${name}.path`] = project.path;
@@ -680,6 +999,10 @@ function settingsApply(yaml, doc, cfg, baseline) {
     // of a new stage whose timeout is left blank under a bare `stages:` key.
     if (value === null) { if (doc.hasIn(keys)) doc.deleteIn(keys); continue; }
     settingsOpenPath(yaml, doc, keys);
+    if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
+      settingsApplyMap(yaml, doc, keys, value);
+      continue;
+    }
     const node = doc.getIn(keys, true);
     // A list (statuses, args) cannot be assigned into a Scalar: the node's tag
     // never resolves and stringify throws instead of writing the file. A key
@@ -689,15 +1012,36 @@ function settingsApply(yaml, doc, cfg, baseline) {
   }
 }
 
+// Write a map (a per-agent model or effort) entry by entry rather than through
+// setIn, which would replace the whole mapping node: that drops the comments
+// inside it, reorders its keys alphabetically, and — when the map carries an
+// anchor another key aliases — leaves the alias dangling, so stringify throws
+// and no save can succeed until the file is fixed by hand.
+function settingsApplyMap(yaml, doc, keys, value) {
+  const node = doc.getIn(keys, true);
+  if (!node || !yaml.isMap(node)) { doc.setIn(keys, value); return; }
+  for (const item of [...node.items]) {
+    const key = yaml.isScalar(item.key) ? String(item.key.value) : String(item.key);
+    if (!Object.hasOwn(value, key)) doc.deleteIn([...keys, key]);
+  }
+  for (const [key, v] of Object.entries(value)) {
+    const cur = doc.getIn([...keys, key], true);
+    if (cur && yaml.isScalar(cur)) cur.value = v;
+    else doc.setIn([...keys, key], v);
+  }
+}
+
 // The paths one save writes. A stage the file does not declare — the built-in
 // rework, or one added here — is written whole. Writing only the edited field
 // would create `rework:` with a prompt and no timeout, and a stage with no
 // timeout runs unbounded: internal/process starts the timer only above zero.
+// Editing only its model or effort is the same case, which is why those two
+// trigger it as well.
 function settingsWritePaths(doc, cfg, baseline) {
   const paths = settingsChangedPaths(cfg, baseline);
   const extra = new Set();
   for (const path of paths) {
-    const stage = /^stages\.(.+)\.(?:prompt|timeout)$/.exec(path);
+    const stage = /^stages\.(.+)\.(?:prompt|timeout|model|effort)$/.exec(path);
     if (!stage || doc.hasIn(['stages', stage[1]])) continue;
     extra.add(`stages.${stage[1]}.prompt`);
     extra.add(`stages.${stage[1]}.timeout`);
@@ -734,6 +1078,11 @@ function settingsNodeFor(path, cfg) {
     // rather than the client silently dropping the edit.
     return { keys: ['max_concurrent_agents'], value: raw === '' ? null : (/^\d+$/.test(raw) ? Number(raw) : raw) };
   }
+  // Before the general fallthrough below, which reads cfg.general[path]: these
+  // two live on the model's top level, not in general.
+  if (path === 'summary_model' || path === 'summary_effort') {
+    return { keys: [path], value: settingsPerAgentValue(cfg[path]) };
+  }
   if (parts.length === 1) {
     const v = cfg.general[path].trim();
     return { keys: [path], value: v === '' ? null : v };
@@ -760,9 +1109,16 @@ function settingsNodeFor(path, cfg) {
       const args = cfg.agents[name].args.split('\n').filter(l => l !== '');
       return { keys: ['agents', name, 'args'], value: args.length ? args : null };
     }
+    if (field === 'effort') {
+      const v = cfg.agents[name].effort.trim();
+      return { keys: ['agents', name, 'effort'], value: v === '' ? null : v };
+    }
     return { keys: ['agents', name, 'binary'], value: cfg.agents[name].binary.trim() };
   }
   if (group === 'stages') {
+    if (field === 'model' || field === 'effort') {
+      return { keys: ['stages', name, field], value: settingsPerAgentValue(cfg.stages[name][field]) };
+    }
     const v = field === 'timeout' ? cfg.stages[name].timeout.trim() : cfg.stages[name].prompt;
     return { keys: ['stages', name, field], value: v === '' ? null : v };
   }

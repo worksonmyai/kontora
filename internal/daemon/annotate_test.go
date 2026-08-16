@@ -666,13 +666,20 @@ func TestAnnotate_InheritsStageModel(t *testing.T) {
 		3*time.Second, 20*time.Millisecond)
 	h.stdoutCh <- annotateJSON(annotateAnnotated, "sharpen the goal")
 
-	h.waitForAnnotationRuns(id, 1, ticket.StatusOpen)
+	got := h.waitForAnnotationRuns(id, 1, ticket.StatusOpen)
 
 	spawns := runs.all()
 	require.Len(t, spawns, 1)
 	assert.Equal(t, "haiku", modelArg(t, spawns[0].Args))
 	assert.Equal(t, "low", flagArg(t, spawns[0].Args, "--effort"))
 	assert.NotContains(t, renderedPrompt(spawns[0]), "do step2 for")
+
+	// The borrowed pair is recorded on the annotation run, not on the stage run
+	// it inherited it from.
+	require.Len(t, got.History, 2)
+	assert.Empty(t, got.History[0].Model, "the seeded stage entry is left alone")
+	assert.Equal(t, "haiku", got.History[1].Model)
+	assert.Equal(t, "low", got.History[1].Effort)
 }
 
 // TestAnnotate_FailedRunKeepsFeedback covers the retry path: a nonzero

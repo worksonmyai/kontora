@@ -270,8 +270,12 @@ type NoteInfo struct {
 }
 
 type HistoryInfo struct {
-	Stage       string     `json:"stage"`
-	Agent       string     `json:"agent,omitempty"`
+	Stage string `json:"stage"`
+	Agent string `json:"agent,omitempty"`
+	// Model and Effort are what Kontora passed the agent, not what the agent
+	// reported running as. Absent means Kontora passed no flag.
+	Model       string     `json:"model,omitempty"`
+	Effort      string     `json:"effort,omitempty"`
 	ExitCode    int        `json:"exit_code"`
 	Run         int        `json:"run"`
 	StartedAt   *time.Time `json:"started_at,omitempty"`
@@ -420,6 +424,8 @@ func TicketInfoFromView(v app.View) TicketInfo {
 			info.History[i] = HistoryInfo{
 				Stage:         h.Stage,
 				Agent:         h.Agent,
+				Model:         h.Model,
+				Effort:        h.Effort,
 				ExitCode:      h.ExitCode,
 				Run:           h.Run,
 				StartedAt:     h.StartedAt,

@@ -1732,6 +1732,10 @@
                 <span x-show="activityRun > 0" class="font-mono text-[10.5px] text-surface-600" x-text="'attempt ' + (activityRun + 1)"></span>
                 <span x-show="activity?.live" class="font-mono text-[10.5px] px-2 py-[2px] rounded-full border border-st-progress/40 text-st-progress">live</span>
                 <span x-show="activity?.tape?.model" class="font-mono text-[10.5px] px-2 py-[2px] rounded-full border border-surface-700 text-tx-faint" x-text="activity?.tape?.model"></span>
+                <!-- The effort Kontora passed. No model chip beside it: the one
+                     above is the model the agent itself reported, and a second
+                     one that disagrees would read as a bug. -->
+                <span x-show="activityEffort()" class="font-mono text-[10.5px] px-2 py-[2px] rounded-full border border-surface-700 text-tx-faint" x-text="activityEffort()"></span>
                 <span x-show="tapeTokens(activity?.tape)" class="font-mono text-[10.5px] text-surface-600" x-text="tapeTokens(activity?.tape) + ' tokens'"></span>
               </div>
               <div x-show="activity?.stale && !activity?.live" class="shrink-0 px-6 pt-2 font-mono text-[11px] text-warn">
@@ -2216,6 +2220,7 @@
                             class="flex items-center gap-2 min-w-0 text-left hover:text-tx-2 transition-colors">
                       <span :class="h.exit_code === 0 ? 'text-ok' : 'text-st-cancel'" x-text="h.exit_code === 0 ? '✓' : '✕'"></span>
                       <span class="text-tx-3 truncate" x-text="historyLabel(h)"></span>
+                      <span x-show="historySettings(h)" class="shrink-0 px-1 rounded border border-surface-700 text-tx-faint" x-text="historySettings(h)"></span>
                       <span class="flex-1"></span>
                       <span class="text-surface-600 shrink-0"
                             x-text="'exit ' + h.exit_code + (formatElapsed(h.started_at, h.completed_at) ? ' · ' + formatElapsed(h.started_at, h.completed_at) : '')"></span>
@@ -2828,6 +2833,11 @@
                           </span>
                         </template>
                         <span class="font-mono text-[11px] text-surface-600 w-12 text-right shrink-0 ml-auto" x-text="settingsConfig.stages[name].timeout"></span>
+                        <template x-for="field in ['model', 'effort']" :key="field">
+                          <span x-show="settingsPerAgentLabel('stages.' + name + '.' + field)"
+                                class="font-mono text-[10px] text-tx-faint border border-surface-700/60 rounded px-[5px] py-px shrink-0"
+                                x-text="field + ' ' + settingsPerAgentLabel('stages.' + name + '.' + field)"></span>
+                        </template>
                       </button>
 
                       <div x-show="settingsOpenStage === name" x-cloak class="border-t border-surface-700/40 p-3 flex flex-col gap-2.5">
@@ -2866,6 +2876,15 @@
                           <button type="button" x-show="settingsPathDirty('stages.' + name)" @click="revertSettingsStage(name)"
                                   class="font-mono text-[11px] h-7 px-3 rounded bg-surface-900 border border-surface-700/60 text-tx-3 hover:text-tx-2 transition-colors">revert</button>
                         </div>
+
+                        <!-- model and effort: one value for every agent, or a map
+                             keyed by agent name or agent kind. The control is one
+                             block in settings.js, rendered here and in general. -->
+                        <template x-for="field in ['model', 'effort']" :key="field">
+                          <div class="flex flex-col"
+                               x-data="{ p: 'stages.' + name + '.' + field, label: field, labelClass: 'text-[11px]', inputId: 'stage-' + field + '-' + name, hint: &quot;the agent's own&quot; }"
+                               x-html="settingsPerAgentControl"></div>
+                        </template>
                       </div>
                     </div>
                   </template>
@@ -2915,6 +2934,16 @@
                     </button>
                     <p class="text-[11px] text-surface-600 mt-0.5">Off leaves todo tickets queued until you start them by hand.</p>
                   </div>
+
+                  <!-- The final-summary pass. Both take the same two shapes as a
+                       stage model and effort, so they use the same control. -->
+                  <template x-for="path in ['summary_model', 'summary_effort']" :key="path">
+                    <div class="flex flex-col">
+                      <div x-data="{ p: path, label: path, labelClass: 'text-[13px]', inputId: 'gen-' + path, hint: &quot;the stage agent's own&quot; }"
+                           x-html="settingsPerAgentControl"></div>
+                      <p class="text-[11px] text-surface-600 mt-1" x-text="path === 'summary_model' ? 'Model for the final-summary pass that writes final_summary. Left empty, the pass uses the model the stage agent already selects. The pass writes no history entry, so this pair is not shown on a run.' : 'Reasoning effort for that same pass, and likewise not shown on a run.'"></p>
+                    </div>
+                  </template>
                 </div>
 
                 <!-- ===== environment ===== -->
@@ -2973,6 +3002,15 @@
                                  :class="settingsConfig.agents[name].binary.trim() ? 'border-surface-700/50' : 'border-err'">
                           <p class="text-[11px] mt-0.5" :class="settingsConfig.agents[name].binary.trim() ? 'text-surface-600' : 'text-err'"
                              x-text="settingsConfig.agents[name].binary.trim() ? 'Resolved on PATH. nono and op are treated as wrappers — the binary after -- is the real agent.' : 'agent &quot;' + name + '&quot;: binary is required'"></p>
+                        </div>
+
+                        <div>
+                          <label :for="'agent-effort-' + name" class="font-mono text-[13px] text-tx-3 mb-1 block">effort</label>
+                          <input :id="'agent-effort-' + name" type="text" x-model="settingsConfig.agents[name].effort"
+                                 class="w-56 bg-surface-800 border rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40"
+                                 :class="settingsConfig.agents[name].effort.trim() && !settingsAgentKindOf(name) ? 'border-err' : 'border-surface-700/50'"
+                                 placeholder="the CLI's own default">
+                          <p class="text-[11px] text-surface-600 mt-0.5">Reasoning effort for every stage this agent runs, unless the stage overrides it. Only claude and pi take a flag for it: an effort on any other binary is rejected when the config is saved.</p>
                         </div>
 
                         <div>

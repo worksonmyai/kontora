@@ -337,9 +337,10 @@ func TestAnnotationReturnStatusRoundTrip(t *testing.T) {
 	}
 }
 
-// TestHistoryEntryKindRoundTrip pins the two fields a refine run adds to a
-// history entry. Both are omitted for a stage run, so an existing ticket's
-// history does not grow keys it has no use for.
+// TestHistoryEntryKindRoundTrip pins the optional fields a run adds to a history
+// entry: model, effort, kind and session_reused all carry omitempty, so a write
+// leaves an entry that has none of them alone. started_at and completed_at do
+// not, and every write adds them as nulls to an entry that never carried them.
 func TestHistoryEntryKindRoundTrip(t *testing.T) {
 	src := "---\nid: hk-001\nkontora: true\nstatus: todo\nhistory:\n  - stage: code\n    agent: claude\n    exit_code: 0\n---\n# body\n"
 	tkt, err := ParseBytes([]byte(src))
@@ -347,10 +348,14 @@ func TestHistoryEntryKindRoundTrip(t *testing.T) {
 	require.Len(t, tkt.History, 1)
 	assert.Empty(t, tkt.History[0].Kind)
 	assert.False(t, tkt.History[0].SessionReused, "a stage run says nothing about session reuse")
+	assert.Empty(t, tkt.History[0].Model, "an entry written before the field existed has no model")
+	assert.Empty(t, tkt.History[0].Effort)
 
 	require.NoError(t, tkt.SetField("history", append(tkt.History, HistoryEntry{
 		Stage:         "code",
 		Agent:         "claude",
+		Model:         "haiku",
+		Effort:        "low",
 		Kind:          KindAnnotation,
 		SessionReused: true,
 	})))
@@ -359,14 +364,27 @@ func TestHistoryEntryKindRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 1, strings.Count(string(out), "kind: annotation"))
 	assert.Equal(t, 1, strings.Count(string(out), "session_reused: true"))
+	assert.Equal(t, 1, strings.Count(string(out), "model: haiku"))
+	assert.Equal(t, 1, strings.Count(string(out), "effort: low"))
+
+	// The entry that came in keeps the three keys it had, plus the two the type
+	// writes unconditionally. An optional field that lost its omitempty would
+	// show up here as a fourth key on an entry that never set it.
+	first, _, ok := strings.Cut(strings.SplitN(string(out), "history:\n", 2)[1], "  - stage: code\n    agent: claude\n    model")
+	require.True(t, ok, "the appended entry follows the one that came in")
+	assert.Equal(t, "  - stage: code\n    agent: claude\n    exit_code: 0\n    started_at: null\n    completed_at: null\n", first)
 
 	reparsed, err := ParseBytes(out)
 	require.NoError(t, err)
 	require.Len(t, reparsed.History, 2)
 	assert.Empty(t, reparsed.History[0].Kind)
 	assert.False(t, reparsed.History[0].SessionReused)
+	assert.Empty(t, reparsed.History[0].Model)
+	assert.Empty(t, reparsed.History[0].Effort)
 	assert.Equal(t, KindAnnotation, reparsed.History[1].Kind)
 	assert.True(t, reparsed.History[1].SessionReused)
+	assert.Equal(t, "haiku", reparsed.History[1].Model)
+	assert.Equal(t, "low", reparsed.History[1].Effort)
 }
 
 func TestSetFieldExisting(t *testing.T) {

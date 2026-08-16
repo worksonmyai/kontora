@@ -862,6 +862,35 @@ function kontora() {
       return h.stage + ' · annotation (' + (h.session_reused ? 'resumed' : 'fresh') + ')';
     },
 
+    // What Kontora passed the agent for a run, as one chip. Either half can be
+    // absent, which means no flag was passed and the agent used its own default.
+    historySettings(h) {
+      if (!h) return '';
+      return [h.model, h.effort].filter(Boolean).join(' · ');
+    },
+
+    // The history entry the activity tab is showing, or null when the run has
+    // not finished and so has no entry yet.
+    activityHistoryEntry() {
+      var h = (this.selectedTicket && this.selectedTicket.history) || [];
+      var stage = this.activityStage;
+      var run = this.activityRun || 0;
+      for (var i = h.length - 1; i >= 0; i--) {
+        if (h[i].stage === stage && (h[i].run || 0) === run) return h[i];
+      }
+      return null;
+    },
+
+    // The effort chip in the activity header. Nothing on a stale payload: the
+    // daemon found no sidecar for the run that was asked for and sent the
+    // stage's shared log instead, so the transcript on screen is another run's
+    // and this run's effort would label it wrongly.
+    activityEffort() {
+      if (this.activity && this.activity.stale) return '';
+      var entry = this.activityHistoryEntry();
+      return (entry && entry.effort) || '';
+    },
+
     async openCreateModal() {
       this.createForm = { title: '', path: '', pipeline: '', agent: '', status: 'todo', body: '', branch: '', base_branch: '' };
       this.createTouched = { pipeline: false, agent: false };

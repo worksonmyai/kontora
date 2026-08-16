@@ -1320,6 +1320,8 @@ func (d *Daemon) runTicket(ctx context.Context, ticketID string) {
 		run:          runIndex,
 		result:       run.Result,
 		finalMessage: run.FinalMessage,
+		model:        run.Model,
+		effort:       run.Effort,
 		pipelineCfg:  pipelineCfg,
 		repoPath:     repoPath,
 		wtPath:       wtPath,
@@ -1589,10 +1591,14 @@ type handleExitParams struct {
 	run          int
 	result       process.Result
 	finalMessage string
-	pipelineCfg  config.Pipeline
-	repoPath     string
-	wtPath       string
-	branch       string
+	// model and effort are what the run passed the agent, recorded on its
+	// history entry.
+	model       string
+	effort      string
+	pipelineCfg config.Pipeline
+	repoPath    string
+	wtPath      string
+	branch      string
 }
 
 func (d *Daemon) handleAgentExit(ctx, taskCtx context.Context, p handleExitParams) {
@@ -1668,15 +1674,20 @@ func (d *Daemon) handleAgentExit(ctx, taskCtx context.Context, p handleExitParam
 		return
 	}
 
-	// Override history agent to record the actual agent used.
-	if t2.Agent != "" && exitAction.History != nil {
-		exitAction.History.Agent = t2.Agent
-	}
-
 	summary := runSummary(t2.Summary, p.finalMessage)
 	if exitAction.History != nil {
+		// The agent that actually ran, together with the settings resolved for
+		// it. The engine names the pipeline step's agent, which the ticket's own
+		// agent field overrides at spawn. Reading the name back off the ticket
+		// here instead would let a stage_end hook that rewrites that field leave
+		// a row naming one agent beside another's model and effort.
+		if p.agentName != "" {
+			exitAction.History.Agent = p.agentName
+		}
 		exitAction.History.Summary = summary
 		exitAction.History.Run = p.run
+		exitAction.History.Model = p.model
+		exitAction.History.Effort = p.effort
 	}
 
 	nextStage := fieldValue(exitAction.Fields, "stage")
@@ -1965,6 +1976,10 @@ type agentRun struct {
 	// Resumed reports that the invocation continued a recorded session instead
 	// of opening a new conversation.
 	Resumed bool
+	// Model and Effort are what the invocation passed the agent, after the
+	// agent's own defaults. Empty means no flag was passed.
+	Model  string
+	Effort string
 }
 
 // agentAttempt is the outcome of one runAgentOnce call.
@@ -2108,6 +2123,10 @@ func (d *Daemon) runAgentOnce(taskCtx context.Context, t *ticket.Ticket, p spawn
 
 	model := p.stageCfg.Model.For(p.agentName, p.agentCfg)
 	effort := p.stageCfg.Effort.For(p.agentName, p.agentCfg)
+	// What the run is recorded as having used. The stage-resolved pair is what
+	// buildAgentArgs takes; the effective pair is what actually reaches the CLI
+	// once the agent's own defaults apply.
+	effModel, effEffort := p.agentCfg.Effective(model, effort)
 	args, settingsFile, sessionID, err := buildAgentArgs(p.agentCfg, rendered, tmux.ChannelName(d.tmuxSession, p.ticketID), model, effort, rec)
 	if err != nil {
 		p.log.Error("build agent args failed", "err", err)
@@ -2171,7 +2190,7 @@ func (d *Daemon) runAgentOnce(taskCtx context.Context, t *ticket.Ticket, p spawn
 		p.log.Error("runner failed", errAttrs...)
 		d.killTaskWindow(p.ticketID)
 		return agentAttempt{
-			run:         agentRun{Result: result, Resumed: rec != nil},
+			run:         agentRun{Result: result, Resumed: rec != nil, Model: effModel, Effort: effEffort},
 			started:     agentDidWork(result),
 			pauseReason: fmt.Sprintf("runner failed: %s", runnerErr.Error()),
 		}
@@ -2180,7 +2199,13 @@ func (d *Daemon) runAgentOnce(taskCtx context.Context, t *ticket.Ticket, p spawn
 	usage, usageComplete := d.materializeAgentLogs(p.log, params, eventsFile, scope)
 	d.recordTokens(taskCtx, p.stageName, p.agentName, usage, usageComplete)
 
-	run := agentRun{Result: result, FinalMessage: finalAssistantMessage(p.log, params, scope.startedAt), Resumed: rec != nil}
+	run := agentRun{
+		Result:       result,
+		FinalMessage: finalAssistantMessage(p.log, params, scope.startedAt),
+		Resumed:      rec != nil,
+		Model:        effModel,
+		Effort:       effEffort,
+	}
 
 	dur := result.ExitedAt.Sub(result.StartedAt).Truncate(time.Second)
 	attrs := []any{"stage", p.stageName, "exit_code", result.ExitCode, "duration", dur}

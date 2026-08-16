@@ -562,6 +562,8 @@ func (d *Daemon) finishAnnotationRun(log *slog.Logger, p annotationExit) {
 	history = append(history, ticket.HistoryEntry{
 		Stage:         p.stageName,
 		Agent:         p.agentName,
+		Model:         p.run.Model,
+		Effort:        p.run.Effort,
 		ExitCode:      result.ExitCode,
 		Run:           p.runIndex,
 		StartedAt:     t2.StartedAt,

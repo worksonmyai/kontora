@@ -401,6 +401,7 @@ func (d *Daemon) runReworkStage(ctx, taskCtx context.Context, cfg *config.Config
 	// stage model and effort are resolved on this path too.
 	model := stageCfg.Model.For(agentName, agentCfg)
 	effort := stageCfg.Effort.For(agentName, agentCfg)
+	effModel, effEffort := agentCfg.Effective(model, effort)
 	args, settingsFile, sessionID, err := buildAgentArgs(agentCfg, rendered, tmux.ChannelName(d.tmuxSession, ticketID), model, effort, nil)
 	if err != nil {
 		log.Error("rework: build agent args failed", "err", err)
@@ -496,6 +497,8 @@ func (d *Daemon) runReworkStage(ctx, taskCtx context.Context, cfg *config.Config
 	history = append(history, ticket.HistoryEntry{
 		Stage:       config.ReworkStageName,
 		Agent:       agentName,
+		Model:       effModel,
+		Effort:      effEffort,
 		ExitCode:    result.ExitCode,
 		Run:         runIndex,
 		StartedAt:   t2.StartedAt,

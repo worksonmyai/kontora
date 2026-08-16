@@ -627,103 +627,149 @@ pipelines:
 
 func TestAgentArgsWith(t *testing.T) {
 	tests := []struct {
-		name   string
-		agent  Agent
-		model  string
-		effort string
-		want   []string
+		name          string
+		agent         Agent
+		model         string
+		effort        string
+		want          []string
+		wantEffModel  string
+		wantEffEffort string
 	}{
 		{
-			name:  "nothing to select leaves the arguments alone",
-			agent: Agent{Binary: "pi", Args: []string{"--model", "anthropic/claude-opus-5"}},
-			want:  []string{"--model", "anthropic/claude-opus-5"},
+			name:         "nothing to select leaves the arguments alone",
+			agent:        Agent{Binary: "pi", Args: []string{"--model", "anthropic/claude-opus-5"}},
+			want:         []string{"--model", "anthropic/claude-opus-5"},
+			wantEffModel: "anthropic/claude-opus-5",
 		},
 		{
-			name:  "plain binary without a configured model",
-			agent: Agent{Binary: "claude", Args: []string{"--dangerously-skip-permissions"}},
-			model: "haiku",
-			want:  []string{"--dangerously-skip-permissions", "--model", "haiku"},
+			name:         "plain binary without a configured model",
+			agent:        Agent{Binary: "claude", Args: []string{"--dangerously-skip-permissions"}},
+			model:        "haiku",
+			want:         []string{"--dangerously-skip-permissions", "--model", "haiku"},
+			wantEffModel: "haiku",
 		},
 		{
-			name:  "replaces the configured model",
-			agent: Agent{Binary: "pi", Args: []string{"--model", "anthropic/claude-opus-5", "--yolo"}},
-			model: "anthropic/claude-haiku-4-5",
-			want:  []string{"--yolo", "--model", "anthropic/claude-haiku-4-5"},
+			name:         "replaces the configured model",
+			agent:        Agent{Binary: "pi", Args: []string{"--model", "anthropic/claude-opus-5", "--yolo"}},
+			model:        "anthropic/claude-haiku-4-5",
+			want:         []string{"--yolo", "--model", "anthropic/claude-haiku-4-5"},
+			wantEffModel: "anthropic/claude-haiku-4-5",
 		},
 		{
-			name:  "replaces the joined form",
-			agent: Agent{Binary: "claude", Args: []string{"--model=opus", "--verbose"}},
-			model: "haiku",
-			want:  []string{"--verbose", "--model", "haiku"},
+			name:         "replaces the joined form",
+			agent:        Agent{Binary: "claude", Args: []string{"--model=opus", "--verbose"}},
+			model:        "haiku",
+			want:         []string{"--verbose", "--model", "haiku"},
+			wantEffModel: "haiku",
 		},
 		{
-			name:  "wrapper keeps its own arguments",
-			agent: Agent{Binary: "nono", Args: []string{"run", "--profile", "agent", "--", "pi", "--model", "anthropic/claude-opus-5"}},
-			model: "anthropic/claude-haiku-4-5",
-			want:  []string{"run", "--profile", "agent", "--", "pi", "--model", "anthropic/claude-haiku-4-5"},
+			name:         "wrapper keeps its own arguments",
+			agent:        Agent{Binary: "nono", Args: []string{"run", "--profile", "agent", "--", "pi", "--model", "anthropic/claude-opus-5"}},
+			model:        "anthropic/claude-haiku-4-5",
+			want:         []string{"run", "--profile", "agent", "--", "pi", "--model", "anthropic/claude-haiku-4-5"},
+			wantEffModel: "anthropic/claude-haiku-4-5",
 		},
 		{
-			name:  "a cycling list is left alone",
-			agent: Agent{Binary: "pi", Args: []string{"--models", "sonnet,haiku"}},
-			model: "haiku",
-			want:  []string{"--models", "sonnet,haiku", "--model", "haiku"},
+			name:         "a wrapper resolves the model from the arguments after the separator",
+			agent:        Agent{Binary: "nono", Args: []string{"run", "--profile", "agent", "--", "pi", "--model", "anthropic/claude-opus-5"}},
+			want:         []string{"run", "--profile", "agent", "--", "pi", "--model", "anthropic/claude-opus-5"},
+			wantEffModel: "anthropic/claude-opus-5",
 		},
 		{
-			name:  "no arguments at all",
-			agent: Agent{Binary: "claude"},
-			model: "haiku",
-			want:  []string{"--model", "haiku"},
+			name:         "a cycling list is left alone",
+			agent:        Agent{Binary: "pi", Args: []string{"--models", "sonnet,haiku"}},
+			model:        "haiku",
+			want:         []string{"--models", "sonnet,haiku", "--model", "haiku"},
+			wantEffModel: "haiku",
 		},
 		{
-			name:  "a trailing model flag takes no value with it",
-			agent: Agent{Binary: "claude", Args: []string{"--verbose", "--model"}},
-			model: "haiku",
-			want:  []string{"--verbose", "--model", "haiku"},
+			name:         "no arguments at all",
+			agent:        Agent{Binary: "claude"},
+			model:        "haiku",
+			want:         []string{"--model", "haiku"},
+			wantEffModel: "haiku",
 		},
 		{
-			name:  "the agent's own effort applies with nothing else set",
-			agent: Agent{Binary: "claude", Args: []string{"--verbose"}, Effort: "high"},
-			want:  []string{"--verbose", "--effort", "high"},
+			name:         "a trailing model flag takes no value with it",
+			agent:        Agent{Binary: "claude", Args: []string{"--verbose", "--model"}},
+			model:        "haiku",
+			want:         []string{"--verbose", "--model", "haiku"},
+			wantEffModel: "haiku",
 		},
 		{
-			name:  "pi takes its own flag",
-			agent: Agent{Binary: "pi", Effort: "high"},
-			want:  []string{"--thinking", "high"},
+			name:          "the agent's own effort applies with nothing else set",
+			agent:         Agent{Binary: "claude", Args: []string{"--verbose"}, Effort: "high"},
+			want:          []string{"--verbose", "--effort", "high"},
+			wantEffEffort: "high",
 		},
 		{
-			name:   "the stage effort beats the agent's own",
-			agent:  Agent{Binary: "claude", Effort: "high"},
-			effort: "xhigh",
-			want:   []string{"--effort", "xhigh"},
+			name:          "pi takes its own flag",
+			agent:         Agent{Binary: "pi", Effort: "high"},
+			want:          []string{"--thinking", "high"},
+			wantEffEffort: "high",
 		},
 		{
-			name:   "replaces a configured effort rather than repeating it",
-			agent:  Agent{Binary: "claude", Args: []string{"--effort", "low", "--verbose"}},
-			effort: "high",
-			want:   []string{"--verbose", "--effort", "high"},
+			name:          "the stage effort beats the agent's own",
+			agent:         Agent{Binary: "claude", Effort: "high"},
+			effort:        "xhigh",
+			want:          []string{"--effort", "xhigh"},
+			wantEffEffort: "xhigh",
 		},
 		{
-			name:  "replaces the joined form of the effort flag",
-			agent: Agent{Binary: "pi", Args: []string{"--thinking=off", "--yolo"}, Effort: "high"},
-			want:  []string{"--yolo", "--thinking", "high"},
+			name:          "replaces a configured effort rather than repeating it",
+			agent:         Agent{Binary: "claude", Args: []string{"--effort", "low", "--verbose"}},
+			effort:        "high",
+			want:          []string{"--verbose", "--effort", "high"},
+			wantEffEffort: "high",
 		},
 		{
-			name:   "a wrapper keeps its own arguments around the effort",
-			agent:  Agent{Binary: "nono", Args: []string{"run", "--profile", "agent", "--", "pi", "--thinking", "off"}},
-			effort: "high",
-			want:   []string{"run", "--profile", "agent", "--", "pi", "--thinking", "high"},
+			name:          "replaces the joined form of the effort flag",
+			agent:         Agent{Binary: "pi", Args: []string{"--thinking=off", "--yolo"}, Effort: "high"},
+			want:          []string{"--yolo", "--thinking", "high"},
+			wantEffEffort: "high",
 		},
 		{
-			name:   "model and effort together",
-			agent:  Agent{Binary: "claude", Args: []string{"--model", "opus", "--effort", "low"}},
-			model:  "haiku",
-			effort: "high",
-			want:   []string{"--model", "haiku", "--effort", "high"},
+			name:          "a wrapper keeps its own arguments around the effort",
+			agent:         Agent{Binary: "nono", Args: []string{"run", "--profile", "agent", "--", "pi", "--thinking", "off"}},
+			effort:        "high",
+			want:          []string{"run", "--profile", "agent", "--", "pi", "--thinking", "high"},
+			wantEffEffort: "high",
+		},
+		{
+			name:          "model and effort together",
+			agent:         Agent{Binary: "claude", Args: []string{"--model", "opus", "--effort", "low"}},
+			model:         "haiku",
+			effort:        "high",
+			want:          []string{"--model", "haiku", "--effort", "high"},
+			wantEffModel:  "haiku",
+			wantEffEffort: "high",
 		},
 		{
 			name:  "an agent with no effort flag drops it, having been rejected by Validate",
 			agent: Agent{Binary: "programmator", Args: []string{"--go"}, Effort: "high"},
 			want:  []string{"--go"},
+		},
+		{
+			// The effort the CLI receives is the one in the arguments, so that
+			// is what the run is recorded as having used. The arguments keep
+			// their order: nothing is selected, so nothing is rewritten.
+			name:          "resolves the effort from the arguments when nothing overrides it",
+			agent:         Agent{Binary: "claude", Args: []string{"--model", "opus", "--effort", "low"}},
+			want:          []string{"--model", "opus", "--effort", "low"},
+			wantEffModel:  "opus",
+			wantEffEffort: "low",
+		},
+		{
+			name:          "a wrapper resolves the joined effort form after the separator",
+			agent:         Agent{Binary: "nono", Args: []string{"run", "--", "pi", "--thinking=high"}},
+			want:          []string{"run", "--", "pi", "--thinking=high"},
+			wantEffEffort: "high",
+		},
+		{
+			name:          "the agent's own effort beats the one in its arguments",
+			agent:         Agent{Binary: "claude", Args: []string{"--effort", "low"}, Effort: "high"},
+			want:          []string{"--effort", "high"},
+			wantEffEffort: "high",
 		},
 	}
 
@@ -732,6 +778,10 @@ func TestAgentArgsWith(t *testing.T) {
 			configured := slices.Clone(tt.agent.Args)
 			got := tt.agent.ArgsWith(tt.model, tt.effort)
 			assert.Equal(t, tt.want, got)
+
+			effModel, effEffort := tt.agent.Effective(tt.model, tt.effort)
+			assert.Equal(t, tt.wantEffModel, effModel, "effective model")
+			assert.Equal(t, tt.wantEffEffort, effEffort, "effective effort")
 			// A shared backing array would let one stage's override rewrite the
 			// arguments every later run of that agent is spawned with.
 			assert.Equal(t, configured, tt.agent.Args, "configured args must not be mutated")

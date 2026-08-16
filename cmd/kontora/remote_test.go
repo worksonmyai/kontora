@@ -569,3 +569,48 @@ func TestHelpGoesToStdoutAndExitsZero(t *testing.T) {
 		})
 	}
 }
+
+func TestRemoteDispatch_FlagsAfterPositionals(t *testing.T) {
+	var hits []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/tickets" && r.Method == http.MethodGet {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"tickets":        []map[string]string{{"id": "abc123"}},
+				"running_agents": 0,
+			})
+			return
+		}
+		// Only the full ID exists, so ResolveID has to reach it through the
+		// prefix rather than the direct lookup.
+		if r.URL.Path == "/api/tickets/abc" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		hits = append(hits, r.URL.Path)
+		_ = json.NewEncoder(w).Encode(map[string]string{"id": "abc123"})
+	}))
+	defer srv.Close()
+
+	// A flag written after the positionals has to be parsed, not swallowed. The
+	// token is the flag under test: the request only carries it when --token was
+	// read from the tail of the command line.
+	cases := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "pause", args: []string{"pause", "abc", "--token", "tail"}, want: "/api/tickets/abc123/pause"},
+		{name: "move", args: []string{"move", "abc", "done", "--token", "tail"}, want: "/api/tickets/abc123/move"},
+		{name: "set-stage", args: []string{"set-stage", "abc", "code", "--token", "tail"}, want: "/api/tickets/abc123/set-stage"},
+		{name: "run", args: []string{"run", "abc", "--token", "tail"}, want: "/api/tickets/abc123/run"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			hits = nil
+			out, err := runCLI(t, []string{"KONTORA_URL=" + srv.URL}, tc.args...)
+			require.NoError(t, err, out)
+			assert.Contains(t, hits, tc.want)
+		})
+	}
+}

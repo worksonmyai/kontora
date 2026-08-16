@@ -400,14 +400,10 @@ func cmdView() {
 	fs := flag.NewFlagSet("view", flag.ExitOnError)
 	configPath := fs.String("config", defaultConfigPath(), "path to config file")
 	urlFlag, tokenFlag := addRemoteFlags(fs)
-	if err := fs.Parse(os.Args[2:]); err != nil {
-		log.Fatalf("parsing flags: %v", err)
-	}
-
-	if fs.NArg() < 1 {
+	taskID := parseTicketFlags(fs, os.Args[2:])
+	if taskID == "" {
 		log.Fatal("ticket ID is required: kontora view TICKET_ID")
 	}
-	taskID := fs.Arg(0)
 
 	if rc := remoteClient(*urlFlag, *tokenFlag); rc != nil {
 		info, err := rc.GetTicket(mustResolveRemote(rc, taskID))
@@ -496,17 +492,21 @@ func cmdUpdate() {
 	}
 
 	if rc := remoteClient(*urlFlag, *tokenFlag); rc != nil {
-		if err := rc.UpdateTicket(mustResolveRemote(rc, taskID), req); err != nil {
+		id := mustResolveRemote(rc, taskID)
+		if err := rc.UpdateTicket(id, req); err != nil {
 			log.Fatal(err)
 		}
+		confirm(id, "updated")
 		return
 	}
 
 	cfg := mustLoadConfig(*configPath)
+	id := mustResolveLocal(cfg, taskID)
 
-	if err := cli.Update(cfg, taskID, req); err != nil {
+	if err := cli.Update(cfg, id, req); err != nil {
 		log.Fatal(err)
 	}
+	confirm(id, "updated")
 }
 
 func readBodyFile(path string) (string, error) {
@@ -541,44 +541,48 @@ func cmdDelete() {
 	}
 
 	if rc := remoteClient(*urlFlag, *tokenFlag); rc != nil {
-		if err := rc.DeleteTicket(mustResolveRemote(rc, taskID)); err != nil {
+		id := mustResolveRemote(rc, taskID)
+		if err := rc.DeleteTicket(id); err != nil {
 			log.Fatal(err)
 		}
+		confirm(id, "deleted")
 		return
 	}
 
 	cfg := mustLoadConfig(*configPath)
+	id := mustResolveLocal(cfg, taskID)
 
-	if err := cli.Delete(cfg.TicketsDir, taskID); err != nil {
+	if err := cli.Delete(cfg.TicketsDir, id); err != nil {
 		log.Fatal(err)
 	}
+	confirm(id, "deleted")
 }
 
 func cmdRun() {
 	fs := flag.NewFlagSet("run", flag.ExitOnError)
 	configPath := fs.String("config", defaultConfigPath(), "path to config file")
 	urlFlag, tokenFlag := addRemoteFlags(fs)
-	if err := fs.Parse(os.Args[2:]); err != nil {
-		log.Fatalf("parsing flags: %v", err)
-	}
-
-	if fs.NArg() < 1 {
+	taskID := parseTicketFlags(fs, os.Args[2:])
+	if taskID == "" {
 		log.Fatal("ticket ID is required: kontora run TICKET_ID")
 	}
-	taskID := fs.Arg(0)
 
 	if rc := remoteClient(*urlFlag, *tokenFlag); rc != nil {
-		if err := rc.Run(mustResolveRemote(rc, taskID)); err != nil {
+		id := mustResolveRemote(rc, taskID)
+		if err := rc.Run(id); err != nil {
 			log.Fatal(err)
 		}
+		confirm(id, "queued")
 		return
 	}
 
 	cfg := mustLoadConfig(*configPath)
+	id := mustResolveLocal(cfg, taskID)
 
-	if err := cli.Run(cfg, taskID); err != nil {
+	if err := cli.Run(cfg, id); err != nil {
 		log.Fatal(err)
 	}
+	confirm(id, "queued")
 }
 
 func cmdNote() {
@@ -617,17 +621,21 @@ func cmdNote() {
 	}
 
 	if rc := remoteClient(*urlFlag, *tokenFlag); rc != nil {
-		if err := rc.Note(mustResolveRemote(rc, taskID), text); err != nil {
+		id := mustResolveRemote(rc, taskID)
+		if err := rc.Note(id, text); err != nil {
 			log.Fatal(err)
 		}
+		confirm(id, "note added")
 		return
 	}
 
 	cfg := mustLoadConfig(*configPath)
+	id := mustResolveLocal(cfg, taskID)
 
-	if err := cli.Note(cfg.TicketsDir, taskID, text); err != nil {
+	if err := cli.Note(cfg.TicketsDir, id, text); err != nil {
 		log.Fatal(err)
 	}
+	confirm(id, "note added")
 }
 
 func cmdSummary() {
@@ -666,31 +674,31 @@ func cmdSummary() {
 	}
 
 	if rc := remoteClient(*urlFlag, *tokenFlag); rc != nil {
-		if err := rc.Summary(mustResolveRemote(rc, taskID), text); err != nil {
+		id := mustResolveRemote(rc, taskID)
+		if err := rc.Summary(id, text); err != nil {
 			log.Fatal(err)
 		}
+		confirm(id, "summary set")
 		return
 	}
 
 	cfg := mustLoadConfig(*configPath)
+	id := mustResolveLocal(cfg, taskID)
 
-	if err := cli.Summary(cfg.TicketsDir, taskID, text); err != nil {
+	if err := cli.Summary(cfg.TicketsDir, id, text); err != nil {
 		log.Fatal(err)
 	}
+	confirm(id, "summary set")
 }
 
 func cmdAction(action string) {
 	fs := flag.NewFlagSet(action, flag.ExitOnError)
 	configPath := fs.String("config", defaultConfigPath(), "path to config file")
 	urlFlag, tokenFlag := addRemoteFlags(fs)
-	if err := fs.Parse(os.Args[2:]); err != nil {
-		log.Fatalf("parsing flags: %v", err)
-	}
-
-	if fs.NArg() < 1 {
+	taskID := parseTicketFlags(fs, os.Args[2:])
+	if taskID == "" {
 		log.Fatalf("ticket ID is required: kontora %s TICKET_ID", action)
 	}
-	taskID := fs.Arg(0)
 
 	if rc := remoteClient(*urlFlag, *tokenFlag); rc != nil {
 		id := mustResolveRemote(rc, taskID)
@@ -708,25 +716,36 @@ func cmdAction(action string) {
 		if err != nil {
 			log.Fatal(err)
 		}
+		confirm(id, actionPastTense[action])
 		return
 	}
 
 	cfg := mustLoadConfig(*configPath)
+	id := mustResolveLocal(cfg, taskID)
 
 	var err error
 	switch action {
 	case "pause":
-		err = cli.Pause(cfg, taskID)
+		err = cli.Pause(cfg, id)
 	case "retry":
-		err = cli.Retry(cfg.TicketsDir, taskID)
+		err = cli.Retry(cfg.TicketsDir, id)
 	case "cancel":
-		err = cli.Cancel(cfg, taskID)
+		err = cli.Cancel(cfg, id)
 	case "done":
-		err = cli.Done(cfg, taskID)
+		err = cli.Done(cfg, id)
 	}
 	if err != nil {
 		log.Fatal(err)
 	}
+	confirm(id, actionPastTense[action])
+}
+
+// actionPastTense names what each verb did, for the confirmation line.
+var actionPastTense = map[string]string{
+	"pause":  "paused",
+	"retry":  "re-queued",
+	"cancel": "cancelled",
+	"done":   "done",
 }
 
 // daemonClient returns the client for whichever daemon the command targets: the
@@ -764,15 +783,13 @@ func cmdChanges() {
 	fs := flag.NewFlagSet("changes", flag.ExitOnError)
 	configPath := fs.String("config", defaultConfigPath(), "path to config file")
 	urlFlag, tokenFlag := addRemoteFlags(fs)
-	if err := fs.Parse(os.Args[2:]); err != nil {
-		log.Fatalf("parsing flags: %v", err)
-	}
-	if fs.NArg() < 1 {
+	taskID := parseTicketFlags(fs, os.Args[2:])
+	if taskID == "" {
 		log.Fatal("ticket ID is required: kontora changes TICKET_ID")
 	}
 
 	rc := daemonClient(*configPath, *urlFlag, *tokenFlag)
-	info, err := rc.Changes(mustResolveRemote(rc, fs.Arg(0)))
+	info, err := rc.Changes(mustResolveRemote(rc, taskID))
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -787,15 +804,13 @@ func cmdActivity() {
 	stage := fs.String("stage", "", "stage to show (defaults to the most recent)")
 	run := fs.Int("run", 0, "run number within the stage (defaults to the latest)")
 	urlFlag, tokenFlag := addRemoteFlags(fs)
-	if err := fs.Parse(os.Args[2:]); err != nil {
-		log.Fatalf("parsing flags: %v", err)
-	}
-	if fs.NArg() < 1 {
+	taskID := parseTicketFlags(fs, os.Args[2:])
+	if taskID == "" {
 		log.Fatal("ticket ID is required: kontora activity TICKET_ID")
 	}
 
 	rc := daemonClient(*configPath, *urlFlag, *tokenFlag)
-	info, err := rc.Activity(mustResolveRemote(rc, fs.Arg(0)), *stage, *run)
+	info, err := rc.Activity(mustResolveRemote(rc, taskID), *stage, *run)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -811,15 +826,13 @@ func cmdPlannotator(action string) {
 	fs := flag.NewFlagSet(action, flag.ExitOnError)
 	configPath := fs.String("config", defaultConfigPath(), "path to config file")
 	urlFlag, tokenFlag := addRemoteFlags(fs)
-	if err := fs.Parse(os.Args[2:]); err != nil {
-		log.Fatalf("parsing flags: %v", err)
-	}
-	if fs.NArg() < 1 {
+	taskID := parseTicketFlags(fs, os.Args[2:])
+	if taskID == "" {
 		log.Fatalf("ticket ID is required: kontora %s TICKET_ID", action)
 	}
 
 	rc := daemonClient(*configPath, *urlFlag, *tokenFlag)
-	id := mustResolveRemote(rc, fs.Arg(0))
+	id := mustResolveRemote(rc, taskID)
 
 	var err error
 	switch action {
@@ -841,27 +854,28 @@ func cmdMove() {
 	fs := flag.NewFlagSet("move", flag.ExitOnError)
 	configPath := fs.String("config", defaultConfigPath(), "path to config file")
 	urlFlag, tokenFlag := addRemoteFlags(fs)
-	if err := fs.Parse(os.Args[2:]); err != nil {
-		log.Fatalf("parsing flags: %v", err)
-	}
-
-	if fs.NArg() < 2 {
+	args := parseArgs(fs, os.Args[2:], 2)
+	if len(args) < 2 {
 		log.Fatal("usage: kontora move TICKET_ID STATUS")
 	}
-	taskID, status := fs.Arg(0), fs.Arg(1)
+	taskID, status := args[0], args[1]
 
 	if rc := remoteClient(*urlFlag, *tokenFlag); rc != nil {
-		if err := rc.Move(mustResolveRemote(rc, taskID), status); err != nil {
+		id := mustResolveRemote(rc, taskID)
+		if err := rc.Move(id, status); err != nil {
 			log.Fatal(err)
 		}
+		confirm(id, "moved to "+status)
 		return
 	}
 
 	cfg := mustLoadConfig(*configPath)
+	id := mustResolveLocal(cfg, taskID)
 
-	if err := cli.Move(cfg, taskID, status); err != nil {
+	if err := cli.Move(cfg, id, status); err != nil {
 		log.Fatal(err)
 	}
+	confirm(id, "moved to "+status)
 }
 
 func cmdArchive() {
@@ -899,55 +913,55 @@ func cmdSkip() {
 	fs := flag.NewFlagSet("skip", flag.ExitOnError)
 	configPath := fs.String("config", defaultConfigPath(), "path to config file")
 	urlFlag, tokenFlag := addRemoteFlags(fs)
-	if err := fs.Parse(os.Args[2:]); err != nil {
-		log.Fatalf("parsing flags: %v", err)
-	}
-
-	if fs.NArg() < 1 {
+	taskID := parseTicketFlags(fs, os.Args[2:])
+	if taskID == "" {
 		log.Fatal("ticket ID is required: kontora skip TICKET_ID")
 	}
-	taskID := fs.Arg(0)
 
 	if rc := remoteClient(*urlFlag, *tokenFlag); rc != nil {
-		if err := rc.Skip(mustResolveRemote(rc, taskID)); err != nil {
+		id := mustResolveRemote(rc, taskID)
+		if err := rc.Skip(id); err != nil {
 			log.Fatal(err)
 		}
+		confirm(id, "skipped to the next stage")
 		return
 	}
 
 	cfg := mustLoadConfig(*configPath)
+	id := mustResolveLocal(cfg, taskID)
 
-	if err := cli.Skip(cfg, taskID); err != nil {
+	if err := cli.Skip(cfg, id); err != nil {
 		log.Fatal(err)
 	}
+	confirm(id, "skipped to the next stage")
 }
 
 func cmdSetStage() {
 	fs := flag.NewFlagSet("set-stage", flag.ExitOnError)
 	configPath := fs.String("config", defaultConfigPath(), "path to config file")
 	urlFlag, tokenFlag := addRemoteFlags(fs)
-	if err := fs.Parse(os.Args[2:]); err != nil {
-		log.Fatalf("parsing flags: %v", err)
-	}
-
-	if fs.NArg() < 2 {
+	args := parseArgs(fs, os.Args[2:], 2)
+	if len(args) < 2 {
 		log.Fatal("usage: kontora set-stage TICKET_ID STAGE")
 	}
-	taskID := fs.Arg(0)
-	stage := fs.Arg(1)
+	taskID, stage := args[0], args[1]
 
 	if rc := remoteClient(*urlFlag, *tokenFlag); rc != nil {
-		if err := rc.SetStage(mustResolveRemote(rc, taskID), stage); err != nil {
+		id := mustResolveRemote(rc, taskID)
+		if err := rc.SetStage(id, stage); err != nil {
 			log.Fatal(err)
 		}
+		confirm(id, "stage set to "+stage)
 		return
 	}
 
 	cfg := mustLoadConfig(*configPath)
+	id := mustResolveLocal(cfg, taskID)
 
-	if err := cli.SetStage(cfg, taskID, stage); err != nil {
+	if err := cli.SetStage(cfg, id, stage); err != nil {
 		log.Fatal(err)
 	}
+	confirm(id, "stage set to "+stage)
 }
 
 func cmdLogs() {
@@ -955,14 +969,10 @@ func cmdLogs() {
 	configPath := fs.String("config", defaultConfigPath(), "path to config file")
 	stage := fs.String("stage", "", "specific stage to show")
 	urlFlag, tokenFlag := addRemoteFlags(fs)
-	if err := fs.Parse(os.Args[2:]); err != nil {
-		log.Fatalf("parsing flags: %v", err)
-	}
-
-	if fs.NArg() < 1 {
+	taskID := parseTicketFlags(fs, os.Args[2:])
+	if taskID == "" {
 		log.Fatal("ticket ID is required: kontora logs [flags] TICKET_ID")
 	}
-	taskID := fs.Arg(0)
 
 	if rc := remoteClient(*urlFlag, *tokenFlag); rc != nil {
 		content, err := rc.Logs(mustResolveRemote(rc, taskID), *stage)
@@ -985,11 +995,7 @@ func cmdAttach() {
 	configPath := fs.String("config", defaultConfigPath(), "path to config file")
 	rw := fs.Bool("rw", false, "attach in read-write mode")
 	urlFlag, tokenFlag := addRemoteFlags(fs)
-	if err := fs.Parse(os.Args[2:]); err != nil {
-		log.Fatalf("parsing flags: %v", err)
-	}
-
-	taskID := fs.Arg(0)
+	taskID := parseTicketFlags(fs, os.Args[2:])
 
 	if rc := remoteClient(*urlFlag, *tokenFlag); rc != nil {
 		if taskID == "" {
@@ -1137,28 +1143,39 @@ func cmdDoctor() {
 	}
 }
 
-// parseTicketFlags parses a command whose single positional is the ticket ID,
-// allowing flags to appear before and/or after the ID. Go's flag parser stops
-// at the first positional, so we keep re-parsing the remaining args to pick up
-// any flags written after the ID (e.g. `delete abc -f`). A second positional is
-// rejected with a clear error instead of silently swallowing trailing flags.
-// Returns the ID, or "" when none was given.
-func parseTicketFlags(fs *flag.FlagSet, args []string) string {
-	var id string
+// parseArgs parses a command's flags and up to max positionals, allowing flags
+// to appear before, between, and after the positionals. Go's flag parser stops
+// at the first positional, so we keep re-parsing the remainder to pick up any
+// flag written after one (e.g. `delete abc -f`). A positional past max is
+// rejected with a clear error instead of silently swallowing a trailing flag.
+//
+// Commands whose last positional is free-form text (note, summary, new) do not
+// use this: a flag-looking word inside the text belongs to the text.
+func parseArgs(fs *flag.FlagSet, args []string, maxPositional int) []string {
+	var positional []string
 	for {
 		if err := fs.Parse(args); err != nil {
 			log.Fatalf("parsing flags: %v", err)
 		}
 		rest := fs.Args()
 		if len(rest) == 0 {
-			return id
+			return positional
 		}
-		if id != "" {
+		if len(positional) >= maxPositional {
 			log.Fatalf("unexpected argument %q", rest[0])
 		}
-		id = rest[0]
+		positional = append(positional, rest[0])
 		args = rest[1:]
 	}
+}
+
+// parseTicketFlags is parseArgs for the common case of one ticket ID. It
+// returns "" when none was given.
+func parseTicketFlags(fs *flag.FlagSet, args []string) string {
+	if got := parseArgs(fs, args, 1); len(got) > 0 {
+		return got[0]
+	}
+	return ""
 }
 
 // addRemoteFlags registers --url and --token on a command's flag set, with
@@ -1199,6 +1216,22 @@ func mustResolveRemote(rc *remote.Client, taskID string) string {
 		log.Fatal(err)
 	}
 	return id
+}
+
+// mustResolveLocal expands a ticket ID prefix against the local tickets dir.
+func mustResolveLocal(cfg *config.Config, taskID string) string {
+	id, err := cli.ResolveTicketID(config.ExpandTilde(cfg.TicketsDir), taskID)
+	if err != nil {
+		log.Fatal(err)
+	}
+	return id
+}
+
+// confirm prints the acknowledgement a mutating verb ends with. Every one of
+// them prints the resolved ID, so a run that passed a prefix can be read back
+// to the ticket it actually changed.
+func confirm(id, what string) {
+	fmt.Printf("%s %s\n", helpCyan.Render(id), helpFaint.Render(what))
 }
 
 func mustLoadConfig(configPath string) *config.Config {

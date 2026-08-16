@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -12,6 +13,7 @@ import (
 
 	"github.com/worksonmyai/kontora/internal/config"
 	"github.com/worksonmyai/kontora/internal/ticket"
+	"github.com/worksonmyai/kontora/internal/ticket/app"
 )
 
 // pickOneFn is the function used to prompt the user for a single choice.
@@ -21,9 +23,22 @@ var pickOneFn = pickOne
 // pickOneDescsFn is like pickOneFn but supports optional descriptions.
 var pickOneDescsFn = pickOneDescs
 
-// Enable validates a ticket file and interactively fills in missing required fields,
-// then sets kontora: true to opt it in for daemon processing.
-func Enable(cfg *config.Config, taskID string, w io.Writer) error {
+// EnableOpts carries the fields `kontora init` can supply up front. A set field
+// is written to the ticket before the pickers run, so a caller that names every
+// one of them never needs a terminal. "none" opts a field out of the project
+// default, the same as it does on `kontora new`.
+type EnableOpts struct {
+	Pipeline string
+	Path     string
+	Agent    string
+	Stage    string
+	Status   string
+}
+
+// Enable validates a ticket file, fills in required fields from opts and
+// interactive pickers, then sets kontora: true to opt it in for daemon
+// processing.
+func Enable(cfg *config.Config, taskID string, opts EnableOpts, w io.Writer) error {
 	tasksDir := config.ExpandTilde(cfg.TicketsDir)
 	resolved, err := resolveTaskID(tasksDir, taskID)
 	if err != nil {
@@ -41,8 +56,12 @@ func Enable(cfg *config.Config, taskID string, w io.Writer) error {
 		return nil
 	}
 
+	if err := applyEnableOpts(cfg, t, opts); err != nil {
+		return err
+	}
+
 	if t.Path == "" {
-		return fmt.Errorf("ticket %s has no path set — add 'path: ~/projects/...' to frontmatter", resolved)
+		return fmt.Errorf("ticket %s has no path set — pass --path, or add 'path: ~/projects/...' to frontmatter", resolved)
 	}
 
 	// A ticket that already says "none" asked for standalone mode; the picker
@@ -65,24 +84,25 @@ func Enable(cfg *config.Config, taskID string, w io.Writer) error {
 	}
 
 	if t.Stage == "" {
-		if pipeline, ok := cfg.Pipelines[t.Pipeline]; ok && len(pipeline) > 1 {
-			stages := make([]string, len(pipeline))
-			for i, s := range pipeline {
-				stages[i] = s.Stage
-			}
-			val, err := pickOneFn("starting stage", stages)
-			if err != nil {
-				return err
-			}
-			if err := t.SetField("stage", val); err != nil {
+		stage, err := startingStage(cfg, t.Pipeline, opts)
+		if err != nil {
+			return err
+		}
+		if stage != "" {
+			if err := t.SetField("stage", stage); err != nil {
 				return fmt.Errorf("setting stage: %w", err)
 			}
 		}
 	}
 
-	val, err := pickOneFn("status", []string{string(ticket.StatusOpen), string(ticket.StatusTodo)})
-	if err != nil {
-		return err
+	val := opts.Status
+	if val == "" {
+		val, err = pickOneFn("status", []string{string(ticket.StatusOpen), string(ticket.StatusTodo)})
+		if err != nil {
+			return err
+		}
+	} else if val != string(ticket.StatusOpen) && val != string(ticket.StatusTodo) {
+		return fmt.Errorf("init status must be %q or %q, got %q", ticket.StatusOpen, ticket.StatusTodo, val)
 	}
 	if val == string(ticket.StatusTodo) {
 		// Empty base: init is not a creation surface, so an unresolvable
@@ -108,6 +128,73 @@ func Enable(cfg *config.Config, taskID string, w io.Writer) error {
 	}
 
 	fmt.Fprintf(w, "%s %s\n", styleFaint.Render(resolved), styleOK.Render("initialized"))
+	return nil
+}
+
+// startingStage decides which pipeline stage a freshly initialized ticket
+// starts on, or "" when it has no pipeline to run. A caller that pinned the
+// pipeline on the command line is scripting init, so it gets the first stage
+// rather than a picker it has no terminal to answer.
+func startingStage(cfg *config.Config, pipelineName string, opts EnableOpts) (string, error) {
+	steps, ok := cfg.Pipelines[pipelineName]
+	if !ok || len(steps) == 0 {
+		if opts.Stage != "" {
+			return "", fmt.Errorf("ticket has no pipeline, so it has no stage to start on")
+		}
+		return "", nil
+	}
+
+	names := make([]string, len(steps))
+	for i, s := range steps {
+		names[i] = s.Stage
+	}
+
+	switch {
+	case opts.Stage != "":
+		if !slices.Contains(names, opts.Stage) {
+			return "", fmt.Errorf("stage %q not found in pipeline %q", opts.Stage, pipelineName)
+		}
+		return opts.Stage, nil
+	case opts.Pipeline != "":
+		return names[0], nil
+	case len(names) > 1:
+		return pickOneFn("starting stage", names)
+	default:
+		return "", nil
+	}
+}
+
+// applyEnableOpts writes the fields the caller named onto the ticket. The
+// sentinel is written through rather than cleared here, because the standalone
+// check and applyProjectDefaults both still have to see it. A name the config
+// does not know is rejected now instead of sitting in the frontmatter until the
+// daemon picks the ticket up and pauses it.
+func applyEnableOpts(cfg *config.Config, t *ticket.Ticket, opts EnableOpts) error {
+	if opts.Path != "" {
+		if err := t.SetField("path", opts.Path); err != nil {
+			return fmt.Errorf("setting path: %w", err)
+		}
+	}
+	if opts.Pipeline != "" {
+		if name := config.ClearNone(opts.Pipeline); name != "" {
+			if _, ok := cfg.Pipelines[name]; !ok {
+				return fmt.Errorf("unknown pipeline %q", name)
+			}
+		}
+		if err := t.SetField("pipeline", opts.Pipeline); err != nil {
+			return fmt.Errorf("setting pipeline: %w", err)
+		}
+	}
+	if opts.Agent != "" {
+		if name := config.ClearNone(opts.Agent); name != "" {
+			if _, ok := cfg.Agents[name]; !ok {
+				return fmt.Errorf("%w %q", app.ErrUnknownAgent, name)
+			}
+		}
+		if err := t.SetField("agent", opts.Agent); err != nil {
+			return fmt.Errorf("setting agent: %w", err)
+		}
+	}
 	return nil
 }
 

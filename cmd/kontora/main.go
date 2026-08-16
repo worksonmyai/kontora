@@ -263,9 +263,11 @@ func interactiveTerminal() bool {
 func cmdInit() {
 	fs := flag.NewFlagSet("init", flag.ExitOnError)
 	configPath := fs.String("config", defaultConfigPath(), "path to config file")
-	pipeline := fs.String("pipeline", "", "pipeline name (required in remote mode)")
-	repoPath := fs.String("path", "", "repository path on the daemon host (required in remote mode)")
-	agent := fs.String("agent", "", "agent override (optional)")
+	pipeline := fs.String("pipeline", "", "pipeline name, or \"none\" for a standalone ticket (required in remote mode)")
+	repoPath := fs.String("path", "", "repository path, on the daemon host in remote mode (required in remote mode)")
+	agent := fs.String("agent", "", "agent name, or \"none\" to skip the project default")
+	stage := fs.String("stage", "", "starting pipeline stage (defaults to the pipeline's first stage)")
+	status := fs.String("status", "", "initial status, open or todo (defaults to asking)")
 	urlFlag, tokenFlag := addRemoteFlags(fs)
 	taskID := parseTicketFlags(fs, os.Args[2:])
 
@@ -291,7 +293,8 @@ func cmdInit() {
 
 	cfg := mustLoadConfig(*configPath)
 
-	if err := cli.Enable(cfg, taskID, os.Stdout); err != nil {
+	opts := cli.EnableOpts{Pipeline: *pipeline, Path: *repoPath, Agent: *agent, Stage: *stage, Status: *status}
+	if err := cli.Enable(cfg, taskID, opts, os.Stdout); err != nil {
 		if errors.Is(err, cli.ErrCancelled) {
 			return
 		}

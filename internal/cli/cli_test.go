@@ -1199,7 +1199,7 @@ path: %s
 			}
 
 			var buf bytes.Buffer
-			require.NoError(t, Enable(cfg, "tst-001", &buf))
+			require.NoError(t, Enable(cfg, "tst-001", EnableOpts{}, &buf))
 			assert.Contains(t, buf.String(), tc.wantOutput)
 
 			if tc.wantKontora {
@@ -1210,6 +1210,95 @@ path: %s
 				if tc.wantStatus != "" {
 					assert.Contains(t, content, tc.wantStatus)
 				}
+			}
+		})
+	}
+}
+
+func TestInit_Opts(t *testing.T) {
+	repoDir := initTestRepo(t)
+
+	bare := `---
+id: tst-001
+status: open
+---
+# Needs everything
+`
+
+	cases := []struct {
+		name        string
+		ticket      string
+		opts        EnableOpts
+		wantErr     string
+		wantContent []string
+	}{
+		{
+			name:        "flags fill every required field without a picker",
+			ticket:      bare,
+			opts:        EnableOpts{Path: repoDir, Pipeline: "default", Agent: "claude-sonnet"},
+			wantContent: []string{"kontora: true", "pipeline: default", "agent: claude-sonnet", "path: " + repoDir},
+		},
+		{
+			name:        "pipeline none initializes a standalone ticket",
+			ticket:      bare,
+			opts:        EnableOpts{Path: repoDir, Pipeline: "none"},
+			wantContent: []string{"kontora: true", "pipeline: \"\""},
+		},
+		{
+			name:    "unknown pipeline is rejected",
+			ticket:  bare,
+			opts:    EnableOpts{Path: repoDir, Pipeline: "nope"},
+			wantErr: `unknown pipeline "nope"`,
+		},
+		{
+			name:    "unknown agent is rejected",
+			ticket:  bare,
+			opts:    EnableOpts{Path: repoDir, Pipeline: "default", Agent: "nope"},
+			wantErr: `unknown agent "nope"`,
+		},
+		{
+			name: "path flag overrides the frontmatter path",
+			ticket: `---
+id: tst-001
+status: open
+pipeline: none
+path: /nonexistent/elsewhere
+---
+# Has a stale path
+`,
+			opts:        EnableOpts{Path: repoDir},
+			wantContent: []string{"path: " + repoDir},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			cfg := testConfig(dir)
+			writeTicket(t, dir, "tst-001.md", tc.ticket)
+
+			// Only the status picker should ever run: every other field comes
+			// from opts. A picker call for anything else means a flag was dropped.
+			pickOneFn = func(field string, _ []string) (string, error) {
+				if field != "status" {
+					return "", fmt.Errorf("unexpected picker for %q", field)
+				}
+				return "todo", nil
+			}
+			t.Cleanup(func() { pickOneFn = pickOne })
+
+			var buf bytes.Buffer
+			err := Enable(cfg, "tst-001", tc.opts, &buf)
+			if tc.wantErr != "" {
+				require.ErrorContains(t, err, tc.wantErr)
+				return
+			}
+			require.NoError(t, err)
+
+			data, err := os.ReadFile(filepath.Join(dir, "tst-001.md"))
+			require.NoError(t, err)
+			for _, want := range tc.wantContent {
+				assert.Contains(t, string(data), want)
 			}
 		})
 	}
@@ -1234,7 +1323,7 @@ pipeline: default
 	t.Cleanup(func() { pickOneFn = pickOne })
 
 	var buf bytes.Buffer
-	err := Enable(cfg, "tst-001", &buf)
+	err := Enable(cfg, "tst-001", EnableOpts{}, &buf)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "has no path set")
 	assert.False(t, pickerCalled, "pipeline picker should not run before path validation")
@@ -1305,7 +1394,7 @@ stage: code
 			t.Cleanup(func() { pickOneFn = pickOne })
 
 			var buf bytes.Buffer
-			require.NoError(t, Enable(cfg, "tst-001", &buf))
+			require.NoError(t, Enable(cfg, "tst-001", EnableOpts{}, &buf))
 
 			data, err := os.ReadFile(filepath.Join(dir, "tst-001.md"))
 			require.NoError(t, err)
@@ -1636,7 +1725,7 @@ func TestInit_ProjectDefaults(t *testing.T) {
 			t.Cleanup(func() { pickOneDescsFn = pickOneDescs })
 
 			var buf bytes.Buffer
-			require.NoError(t, Enable(cfg, "tst-001", &buf))
+			require.NoError(t, Enable(cfg, "tst-001", EnableOpts{}, &buf))
 			assert.Equal(t, tc.pipelinePick != "", pipelinePicked, "pipeline picker")
 			if tc.wantOutput != "" {
 				assert.Contains(t, buf.String(), tc.wantOutput)

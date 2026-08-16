@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -571,7 +572,12 @@ func TestHelpGoesToStdoutAndExitsZero(t *testing.T) {
 }
 
 func TestRemoteDispatch_FlagsAfterPositionals(t *testing.T) {
-	var hits []string
+	// The handler runs on the server's goroutine, so hits needs a lock: each
+	// subtest resets it from the test goroutine.
+	var (
+		mu   sync.Mutex
+		hits []string
+	)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/tickets" && r.Method == http.MethodGet {
 			_ = json.NewEncoder(w).Encode(map[string]any{
@@ -586,7 +592,9 @@ func TestRemoteDispatch_FlagsAfterPositionals(t *testing.T) {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
+		mu.Lock()
 		hits = append(hits, r.URL.Path)
+		mu.Unlock()
 		_ = json.NewEncoder(w).Encode(map[string]string{"id": "abc123"})
 	}))
 	defer srv.Close()
@@ -607,10 +615,17 @@ func TestRemoteDispatch_FlagsAfterPositionals(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			mu.Lock()
 			hits = nil
+			mu.Unlock()
+
 			out, err := runCLI(t, []string{"KONTORA_URL=" + srv.URL}, tc.args...)
 			require.NoError(t, err, out)
-			assert.Contains(t, hits, tc.want)
+
+			mu.Lock()
+			got := slices.Clone(hits)
+			mu.Unlock()
+			assert.Contains(t, got, tc.want)
 		})
 	}
 }

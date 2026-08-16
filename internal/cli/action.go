@@ -88,13 +88,7 @@ func Run(cfg *config.Config, taskID string) error {
 	}
 
 	base := "http://" + net.JoinHostPort(cfg.Web.Host, strconv.Itoa(cfg.Web.Port))
-	if err := remote.New(base, cfg.Web.Token).Run(resolvedID); err != nil {
-		if remote.IsTransportError(err) {
-			return fmt.Errorf("daemon not reachable: %w", err)
-		}
-		return err
-	}
-	return nil
+	return remote.New(base, cfg.Web.Token).Run(resolvedID)
 }
 
 // Skip advances a ticket to the next pipeline stage, or marks it done

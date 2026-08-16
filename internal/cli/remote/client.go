@@ -35,11 +35,17 @@ var (
 	sseReconnectDelay   = 2 * time.Second
 )
 
+// transportError wraps a failure that happened before the daemon answered. It
+// names the address it tried, because the bare dial error reads as a bug in the
+// command the user ran rather than as "nothing is listening over there".
 type transportError struct {
-	err error
+	base string
+	err  error
 }
 
-func (e *transportError) Error() string { return e.err.Error() }
+func (e *transportError) Error() string {
+	return fmt.Sprintf("daemon not reachable at %s: %v", e.base, e.err)
+}
 func (e *transportError) Unwrap() error { return e.err }
 
 // IsTransportError reports whether err happened before the daemon returned a response.
@@ -134,7 +140,7 @@ func (c *Client) doJSON(method, path string, reqBody, out any) error {
 	}
 	resp, err := c.hc.Do(req)
 	if err != nil {
-		return &transportError{err: err}
+		return &transportError{base: c.base, err: err}
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
@@ -246,7 +252,7 @@ func (c *Client) DeleteTicket(id string) error {
 	req.Header.Set("X-Kontora-Confirm", "delete-ticket-file")
 	resp, err := c.hc.Do(req)
 	if err != nil {
-		return &transportError{err: err}
+		return &transportError{base: c.base, err: err}
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {

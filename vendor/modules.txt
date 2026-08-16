@@ -20,8 +20,8 @@ github.com/charmbracelet/bubbles/viewport
 # github.com/charmbracelet/bubbletea v1.3.10
 ## explicit; go 1.24.0
 github.com/charmbracelet/bubbletea
-# github.com/charmbracelet/colorprofile v0.4.1
-## explicit; go 1.24.2
+# github.com/charmbracelet/colorprofile v0.4.3
+## explicit; go 1.25.0
 github.com/charmbracelet/colorprofile
 # github.com/charmbracelet/lipgloss v1.1.0
 ## explicit; go 1.18
@@ -30,7 +30,7 @@ github.com/charmbracelet/lipgloss/table
 # github.com/charmbracelet/log v1.0.0
 ## explicit; go 1.21
 github.com/charmbracelet/log
-# github.com/charmbracelet/x/ansi v0.11.6
+# github.com/charmbracelet/x/ansi v0.11.8
 ## explicit; go 1.24.2
 github.com/charmbracelet/x/ansi
 github.com/charmbracelet/x/ansi/parser
@@ -40,13 +40,12 @@ github.com/charmbracelet/x/cellbuf
 # github.com/charmbracelet/x/term v0.2.2
 ## explicit; go 1.24.0
 github.com/charmbracelet/x/term
-# github.com/clipperhouse/displaywidth v0.9.0
+# github.com/clipperhouse/displaywidth v0.11.0
 ## explicit; go 1.18
 github.com/clipperhouse/displaywidth
 # github.com/clipperhouse/stringish v0.1.1
 ## explicit; go 1.18
-github.com/clipperhouse/stringish
-# github.com/clipperhouse/uax29/v2 v2.5.0
+# github.com/clipperhouse/uax29/v2 v2.7.0
 ## explicit; go 1.18
 github.com/clipperhouse/uax29/v2/graphemes
 # github.com/coder/websocket v1.8.15
@@ -82,12 +81,12 @@ github.com/go-logr/stdr
 # github.com/google/uuid v1.6.0
 ## explicit
 github.com/google/uuid
-# github.com/grpc-ecosystem/grpc-gateway/v2 v2.29.0
+# github.com/grpc-ecosystem/grpc-gateway/v2 v2.30.0
 ## explicit; go 1.25.0
 github.com/grpc-ecosystem/grpc-gateway/v2/internal/httprule
 github.com/grpc-ecosystem/grpc-gateway/v2/runtime
 github.com/grpc-ecosystem/grpc-gateway/v2/utilities
-# github.com/lucasb-eyer/go-colorful v1.3.0
+# github.com/lucasb-eyer/go-colorful v1.4.1
 ## explicit; go 1.12
 github.com/lucasb-eyer/go-colorful
 # github.com/mattn/go-isatty v0.0.24
@@ -96,8 +95,8 @@ github.com/mattn/go-isatty
 # github.com/mattn/go-localereader v0.0.1
 ## explicit
 github.com/mattn/go-localereader
-# github.com/mattn/go-runewidth v0.0.19
-## explicit; go 1.20
+# github.com/mattn/go-runewidth v0.0.27
+## explicit; go 1.23
 github.com/mattn/go-runewidth
 # github.com/muesli/ansi v0.0.0-20230316100256-276c6243b2f6
 ## explicit; go 1.17
@@ -120,7 +119,7 @@ github.com/rivo/uniseg
 github.com/stretchr/testify/assert
 github.com/stretchr/testify/assert/yaml
 github.com/stretchr/testify/require
-# github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e
+# github.com/xo/terminfo v1.0.0
 ## explicit; go 1.19
 github.com/xo/terminfo
 # go.opentelemetry.io/auto/sdk v1.2.1
@@ -189,17 +188,16 @@ go.opentelemetry.io/proto/otlp/collector/metrics/v1
 go.opentelemetry.io/proto/otlp/common/v1
 go.opentelemetry.io/proto/otlp/metrics/v1
 go.opentelemetry.io/proto/otlp/resource/v1
-# golang.org/x/exp v0.0.0-20231006140011-7918f672742d
-## explicit; go 1.20
-golang.org/x/exp/constraints
+# golang.org/x/exp v0.0.0-20260813180055-c1d0aacb2297
+## explicit; go 1.25.0
 golang.org/x/exp/slices
 golang.org/x/exp/slog
 golang.org/x/exp/slog/internal
 golang.org/x/exp/slog/internal/buffer
-# golang.org/x/mod v0.37.0
+# golang.org/x/mod v0.39.0
 ## explicit; go 1.25.0
 golang.org/x/mod/semver
-# golang.org/x/net v0.57.0
+# golang.org/x/net v0.58.0
 ## explicit; go 1.25.0
 golang.org/x/net/http/httpguts
 golang.org/x/net/http2
@@ -218,7 +216,7 @@ golang.org/x/sys/plan9
 golang.org/x/sys/unix
 golang.org/x/sys/windows
 golang.org/x/sys/windows/registry
-# golang.org/x/telemetry v0.0.0-20260625142307-59b4966ccb57
+# golang.org/x/telemetry v0.0.0-20260811182544-a038080d80e5
 ## explicit; go 1.25.0
 golang.org/x/telemetry
 golang.org/x/telemetry/counter
@@ -232,13 +230,13 @@ golang.org/x/telemetry/internal/upload
 # golang.org/x/term v0.45.0
 ## explicit; go 1.25.0
 golang.org/x/term
-# golang.org/x/text v0.40.0
+# golang.org/x/text v0.41.0
 ## explicit; go 1.25.0
 golang.org/x/text/secure/bidirule
 golang.org/x/text/transform
 golang.org/x/text/unicode/bidi
 golang.org/x/text/unicode/norm
-# golang.org/x/tools v0.47.0
+# golang.org/x/tools v0.49.0
 ## explicit; go 1.25.0
 golang.org/x/tools/cmd/deadcode
 golang.org/x/tools/go/ast/astutil
@@ -266,6 +264,7 @@ golang.org/x/tools/internal/event/keys
 golang.org/x/tools/internal/event/label
 golang.org/x/tools/internal/gcimporter
 golang.org/x/tools/internal/gocommand
+golang.org/x/tools/internal/moremaps
 golang.org/x/tools/internal/packagesinternal
 golang.org/x/tools/internal/pkgbits
 golang.org/x/tools/internal/stdlib
@@ -293,10 +292,10 @@ golang.org/x/vuln/internal/traces
 golang.org/x/vuln/internal/vulncheck
 golang.org/x/vuln/internal/web
 golang.org/x/vuln/scan
-# google.golang.org/genproto/googleapis/api v0.0.0-20260803160001-6ac0973c030d
+# google.golang.org/genproto/googleapis/api v0.0.0-20260810153831-ec0a7760b754
 ## explicit; go 1.25.0
 google.golang.org/genproto/googleapis/api/httpbody
-# google.golang.org/genproto/googleapis/rpc v0.0.0-20260803160001-6ac0973c030d
+# google.golang.org/genproto/googleapis/rpc v0.0.0-20260810153831-ec0a7760b754
 ## explicit; go 1.25.0
 google.golang.org/genproto/googleapis/rpc/status
 # google.golang.org/grpc v1.83.0
@@ -367,7 +366,7 @@ google.golang.org/grpc/serviceconfig
 google.golang.org/grpc/stats
 google.golang.org/grpc/status
 google.golang.org/grpc/tap
-# google.golang.org/protobuf v1.36.11
+# google.golang.org/protobuf v1.36.12
 ## explicit; go 1.23
 google.golang.org/protobuf/encoding/protojson
 google.golang.org/protobuf/encoding/prototext

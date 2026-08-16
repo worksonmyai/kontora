@@ -20,7 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- NewDecoderSize by [@acmejophus]
+- NewDecoderSize by [@alexanderjophus]
 
 ## [0.5.1] - 2021-08-18
 
@@ -88,5 +88,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [@bboreham]: https://github.com/bboreham
 [@judwhite]: https://github.com/judwhite
 [@nussjustin]: https://github.com/nussjustin
-[@acmejophus]: https://github.com/acmejophus
+[@alexanderjophus]: https://github.com/alexanderjophus
 [@spaceone]: https://github.com/spaceone

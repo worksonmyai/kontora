@@ -1,0 +1,18 @@
+tickets_dir: ~/org/tickets
+default_agent: claude
+
+agents:
+  claude:
+    binary: claude
+    checkpoint_compaction_tokens: 10000
+
+stages:
+  code:
+    prompt: Write code.
+
+pipelines:
+  default:
+    - stage: code
+      agent: claude
+      on_success: done
+      on_failure: pause

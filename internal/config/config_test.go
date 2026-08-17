@@ -218,6 +218,96 @@ pipelines:
 	}
 }
 
+func TestCheckpointCompactionTokens(t *testing.T) {
+	base := `
+agents:
+  pi:
+    binary: pi%s
+stages:
+  s:
+    prompt: do stuff
+pipelines:
+  p:
+    - stage: s
+      agent: pi
+      on_success: done
+      on_failure: pause
+`
+	tests := []struct {
+		name      string
+		agentYAML string
+		want      int
+	}{
+		{
+			name:      "unset is disabled",
+			agentYAML: "",
+			want:      0,
+		},
+		{
+			name:      "zero is disabled",
+			agentYAML: "\n    checkpoint_compaction_tokens: 0",
+			want:      0,
+		},
+		{
+			name:      "positive value",
+			agentYAML: "\n    checkpoint_compaction_tokens: 50000",
+			want:      50000,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg, err := LoadReader(strings.NewReader(fmt.Sprintf(base, tt.agentYAML)))
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, cfg.Agents["pi"].CheckpointCompactionTokens)
+		})
+	}
+}
+
+func TestCheckpointCompactionTokensWrappedPi(t *testing.T) {
+	input := `
+agents:
+  my-pi:
+    binary: nono
+    args: ["run", "--", "pi"]
+    checkpoint_compaction_tokens: 25000
+stages:
+  s:
+    prompt: do stuff
+pipelines:
+  p:
+    - stage: s
+      agent: my-pi
+      on_success: done
+      on_failure: pause
+`
+	cfg, err := LoadReader(strings.NewReader(input))
+	require.NoError(t, err)
+	assert.Equal(t, 25000, cfg.Agents["my-pi"].CheckpointCompactionTokens)
+}
+
+func TestCheckpointCompactionTokensNonPiOtherBinary(t *testing.T) {
+	input := `
+agents:
+  programmator:
+    binary: programmator
+    checkpoint_compaction_tokens: 10000
+stages:
+  s:
+    prompt: do stuff
+pipelines:
+  p:
+    - stage: s
+      agent: programmator
+      on_success: done
+      on_failure: pause
+`
+	_, err := LoadReader(strings.NewReader(input))
+	require.Error(t, err)
+	assert.ErrorContains(t, err, `agent "programmator"`)
+	assert.ErrorContains(t, err, "checkpoint_compaction_tokens")
+	assert.ErrorContains(t, err, "only pi")
+}
+
 func TestLoadResumeSettings(t *testing.T) {
 	base := `%s
 agents:
@@ -482,6 +572,34 @@ pipelines:
 	// to read back as no model at all: every stage in a real config has one.
 	assert.Equal(t, PerAgent{}, again.Stages["implement"].Model)
 	assert.Equal(t, PerAgent{}, again.Stages["implement"].Effort)
+}
+
+func TestCheckpointCompactionTokensRoundTrip(t *testing.T) {
+	const src = `tickets_dir: ~/org/tickets
+agents:
+  pi:
+    binary: pi
+    checkpoint_compaction_tokens: 40000
+stages:
+  code:
+    prompt: Write code.
+pipelines:
+  default:
+    - stage: code
+      agent: pi
+      on_success: done
+      on_failure: pause
+`
+	cfg, err := LoadReader(strings.NewReader(src))
+	require.NoError(t, err)
+	assert.Equal(t, 40000, cfg.Agents["pi"].CheckpointCompactionTokens)
+
+	out, err := yaml.Marshal(cfg)
+	require.NoError(t, err)
+
+	again, err := LoadReader(bytes.NewReader(out))
+	require.NoError(t, err)
+	assert.Equal(t, 40000, again.Agents["pi"].CheckpointCompactionTokens)
 }
 
 func TestPerAgentFor(t *testing.T) {
@@ -1596,6 +1714,16 @@ func TestLoadProjectsRejected(t *testing.T) {
 			name:    "stage effort on an agent that takes no effort flag",
 			fixture: "stage_effort_unsupported_agent.yaml",
 			wantErr: []string{`pipeline "default" stage 0`, `stage "commit"`, `effort "high"`, `agent "programmator"`},
+		},
+		{
+			name:    "checkpoint compaction tokens negative",
+			fixture: "checkpoint_compaction_negative.yaml",
+			wantErr: []string{`agent "pi"`, "checkpoint_compaction_tokens", "must not be negative"},
+		},
+		{
+			name:    "checkpoint compaction tokens on a non-pi agent",
+			fixture: "checkpoint_compaction_non_pi.yaml",
+			wantErr: []string{`agent "claude"`, "checkpoint_compaction_tokens", "only pi"},
 		},
 	}
 

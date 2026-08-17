@@ -68,6 +68,12 @@ var Commands = []Command{
 		{Name: "project", Desc: "Only count tickets for this configured project", Value: "project"},
 		{Name: "pipeline", Desc: "Only count tickets for this pipeline", Value: "pipeline"},
 	}},
+	{Name: "estimate-compaction", Desc: "Estimate token savings from checkpoint compaction", Config: true, Flags: []Flag{
+		{Name: "logs-dir", Desc: "Path to logs directory (overrides config logs_dir)", Value: "path"},
+		{Name: "stage", Desc: "Pipeline stage to analyze", Value: "stage"},
+		{Name: "thresholds", Desc: "Comma-separated token thresholds", Value: "text"},
+		{Name: "top", Desc: "Number of top sessions to show", Value: "text"},
+	}},
 	{Name: "review", Desc: "Open a ticket's diff in Plannotator on the daemon host", Config: true, Remote: true, TicketID: true},
 	{Name: "annotate", Desc: "Open a ticket's markdown in Plannotator on the daemon host", Config: true, Remote: true, TicketID: true},
 	{Name: "attach", Desc: "Attach to a running ticket", Config: true, Remote: true, TicketID: true, Flags: []Flag{

@@ -91,8 +91,10 @@ func startAnnotationDaemon(t *testing.T, h *plannotatorHarness, d *Daemon, id, m
 
 	filePath = h.writeTicket(id+".md", md)
 	require.Eventually(t, func() bool {
-		_, err := d.GetTicket(id)
-		return err == nil
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		_, ok := d.tickets[id]
+		return ok
 	}, 3*time.Second, 20*time.Millisecond, "daemon should index the ticket")
 
 	return filePath, func() {
@@ -1300,11 +1302,20 @@ func TestAnnotate_PiSessionDir(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			const id = "tst-an14"
 			h := newPlannotatorHarness(t)
-			h.cfg.Agents["agent1"] = config.Agent{Binary: "pi"}
+			h.cfg.Agents["agent1"] = config.Agent{
+				Binary:                     "pi",
+				CheckpointCompactionTokens: 150000,
+			}
 
 			var runs annotationRun
+			var extensionContent string
 			d := h.newAnnotationDaemon(func(_ context.Context, p RunnerParams) (process.Result, error) {
 				runs.record(p)
+				if i := slices.Index(p.Args, "-e"); i >= 0 {
+					data, err := os.ReadFile(p.Args[i+1])
+					require.NoError(t, err)
+					extensionContent = string(data)
+				}
 				return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now()}, nil
 			})
 
@@ -1348,6 +1359,9 @@ func TestAnnotate_PiSessionDir(t *testing.T) {
 				assert.Equal(t, piSessionDir(h.cfg, id, "step2-annotation"), spawns[0].SessionDir)
 				assert.NotEqual(t, stageDir, spawns[0].SessionDir)
 			}
+			assert.Contains(t, extensionContent, "const ENABLED = false;")
+			assert.Contains(t, extensionContent, "agent_settled")
+			assert.NotContains(t, renderedPrompt(spawns[0]), "## Phase checkpoints")
 		})
 	}
 }

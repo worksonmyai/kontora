@@ -1,0 +1,4 @@
+{"type":"session","version":3,"id":"sess-partial","timestamp":"2026-08-01T10:00:00.000Z","cwd":"/work"}
+{"type":"model_change","id":"mc-1","parentId":null,"timestamp":"2026-08-01T10:00:00.100Z","provider":"anthropic","modelId":"claude-opus-5"}
+{"type":"message","id":"u-1","parentId":"mc-1","timestamp":"2026-08-01T10:00:01.000Z","message":{"role":"user","content":[{"type":"text","text":"start"}]}}
+{"type":"message","id":"a-1","parentId":"u-1","timestamp":"2026-08-01T10:00:10.000Z","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"stopReason":"end_turn"}}

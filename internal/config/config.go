@@ -226,6 +226,9 @@ type Agent struct {
 	// resume is on for Claude and pi, the two CLIs whose resume flags Kontora
 	// knows. Any other agent ignores this field and always starts fresh.
 	Resume *bool `yaml:"resume"`
+	// CheckpointCompactionTokens enables phase-boundary compaction for pi when
+	// positive. Zero disables it.
+	CheckpointCompactionTokens int `yaml:"checkpoint_compaction_tokens,omitempty"`
 }
 
 // wrapperBinaries are launcher commands that run the real agent binary after
@@ -803,6 +806,12 @@ func (c *Config) Validate() error {
 		}
 		if agent.Effort != "" && agent.Kind() == "" {
 			return fmt.Errorf("agent %q: sets effort %q, which %s takes no flag for", name, agent.Effort, agent.Binary)
+		}
+		if agent.CheckpointCompactionTokens < 0 {
+			return fmt.Errorf("agent %q: checkpoint_compaction_tokens %d must not be negative", name, agent.CheckpointCompactionTokens)
+		}
+		if agent.CheckpointCompactionTokens > 0 && !agent.IsPi() {
+			return fmt.Errorf("agent %q: sets checkpoint_compaction_tokens, which only pi accepts", name)
 		}
 	}
 

@@ -168,6 +168,36 @@ Attaches to the running ticket's terminal: the tmux window locally, a WebSocket 
 
 Open the ticket's diff, or its markdown, in [Plannotator](https://plannotator.ai). The daemon spawns the binary, so in remote mode the window opens on the daemon host, not on the caller's screen. `review` needs the ticket to be in `human_review`.
 
+## Analysis
+
+### `kontora estimate-compaction [flags]`
+
+Projects token savings from checkpoint compaction by replaying completed Pi session traces. Read-only: it scans JSONL files and writes nothing. Local only.
+
+| Flag | Description |
+|------|-------------|
+| `--logs-dir PATH` | Path to the logs directory. Defaults to the config's `logs_dir`. When provided, the config file is not required. |
+| `--stage NAME` | Pipeline stage to analyze. Defaults to `implement`. |
+| `--thresholds LIST` | Comma-separated token thresholds to evaluate, e.g. `100000,150000,200000`. Defaults to `100000,125000,150000,200000,250000`. |
+| `--top N` | Number of top sessions to include in the report. Defaults to `20`. |
+
+The report includes:
+
+- Coverage includes scanned and eligible sessions. It also counts `branch_summary`, `no_usage`, `unreadable`, `broken_chain`, `has_compaction`, and `live_resume` exclusions. A session is treated as live when a resume marker identifies it or its latest recorded activity is less than 15 minutes old. This check uses timestamps inside the JSONL, so copying old sessions does not mark them as live.
+- Calibration shows the summary ratio, summary output tokens, and post-compaction context. Each statistic includes its sample count and low, median, and high values. Without a usable post-compaction sample, the report prints no token-reduction figures.
+- Scenarios show projected compaction counts and raw-token reductions for `CAL P25`, `CAL P50`, and `CAL P75`. These labels are calibration percentiles, not reduction bounds. `CAL P25` uses smaller summaries and post-compaction contexts and usually projects the largest reduction; `CAL P75` uses larger values and usually projects the smallest. The scenarios replay the recorded call sequence. They do not predict changed agent behavior.
+- Top sessions rank session files by projected median raw-token reduction at the lowest requested threshold. Each row includes the ticket, stage, and session filename so retries remain distinguishable.
+- Limits state why the report does not estimate implementation quality or cost. They cover changed tool calls, cache identity, and pricing.
+
+Example:
+
+```text
+kontora estimate-compaction \
+  --stage implement \
+  --thresholds 100000,125000,150000,200000,250000 \
+  --top 20
+```
+
 ## Daemon and configuration
 
 ### `kontora start [flags]`
@@ -213,7 +243,7 @@ Setting `--url` or `KONTORA_URL` points every client command at a daemon over HT
 
 Supported: `ls`, `view`, `new`, `init`, `update`, `delete`, `run`, `pause`, `retry`, `cancel`, `done`, `move`, `skip`, `set-stage`, `note`, `summary`, `logs`, `activity`, `changes`, `stats`, `review`, `annotate`, `config`, `attach`.
 
-Rejected, because they act on local files: `edit`, `archive`, `doctor`, `start`, `setup`.
+Rejected, because they act on local files: `edit`, `archive`, `estimate-compaction`, `doctor`, `start`, `setup`.
 
 Unaffected, because they touch neither the daemon nor a config file: `fmt`, `completion`, `version`, `help`.
 

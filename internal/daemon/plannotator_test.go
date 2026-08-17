@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -529,6 +530,55 @@ func TestPlannotator_ReworkStageModel(t *testing.T) {
 	assert.Equal(t, config.ReworkStageName, rework.Stage)
 	assert.Equal(t, "haiku", rework.Model)
 	assert.Equal(t, "xhigh", rework.Effort)
+
+	cancel()
+	require.NoError(t, <-errCh)
+}
+
+func TestPlannotatorReworkDisablesCheckpointCompaction(t *testing.T) {
+	const id = "tst-prc02"
+	h := newPlannotatorHarness(t)
+	h.cfg.Agents["agent2"] = config.Agent{
+		Binary:                     "pi",
+		CheckpointCompactionTokens: 150000,
+	}
+
+	var runs annotationRun
+	var extensionContent string
+	d := h.newAnnotationDaemon(func(_ context.Context, p RunnerParams) (process.Result, error) {
+		runs.record(p)
+		i := slices.Index(p.Args, "-e")
+		require.GreaterOrEqual(t, i, 0)
+		data, err := os.ReadFile(p.Args[i+1])
+		require.NoError(t, err)
+		extensionContent = string(data)
+		return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now()}, nil
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() { errCh <- d.Run(ctx) }()
+	time.Sleep(200 * time.Millisecond)
+
+	filePath := h.seedReviewTicket(id)
+	require.Eventually(t, func() bool {
+		_, err := d.GetTicket(id)
+		return err == nil
+	}, 3*time.Second, 20*time.Millisecond)
+
+	require.NoError(t, d.StartPlannotatorReview(id))
+	require.Eventually(t, func() bool { return h.callCount.Load() == 1 }, 3*time.Second, 20*time.Millisecond)
+	h.stdoutCh <- "please tweak"
+	require.Eventually(t, func() bool {
+		tk, err := ticket.ParseFile(filePath)
+		return err == nil && tk.Status == "human_review" && len(runs.all()) == 1
+	}, 10*time.Second, 50*time.Millisecond)
+
+	assert.Contains(t, extensionContent, "const THRESHOLD = 150000;")
+	assert.Contains(t, extensionContent, "const ENABLED = false;")
+	assert.Contains(t, extensionContent, "agent_settled")
+	assert.NotContains(t, renderedPrompt(runs.all()[0]), "## Phase checkpoints")
 
 	cancel()
 	require.NoError(t, <-errCh)

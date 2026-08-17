@@ -52,38 +52,39 @@ func renderUsage() string {
 // cli.Commands, which is what generates the usage text and the completions;
 // TestDispatchCoversCommandTable holds the two together.
 var handlers = map[string]func(){
-	"ls":         cmdLs,
-	"new":        cmdNew,
-	"view":       cmdView,
-	"edit":       cmdEdit,
-	"update":     cmdUpdate,
-	"delete":     cmdDelete,
-	"init":       cmdInit,
-	"run":        cmdRun,
-	"done":       func() { cmdAction("done") },
-	"move":       cmdMove,
-	"note":       cmdNote,
-	"summary":    cmdSummary,
-	"pause":      func() { cmdAction("pause") },
-	"retry":      func() { cmdAction("retry") },
-	"skip":       cmdSkip,
-	"set-stage":  cmdSetStage,
-	"cancel":     func() { cmdAction("cancel") },
-	"archive":    cmdArchive,
-	"logs":       cmdLogs,
-	"activity":   cmdActivity,
-	"changes":    cmdChanges,
-	"stats":      cmdStats,
-	"review":     func() { cmdPlannotator("review") },
-	"annotate":   func() { cmdPlannotator("annotate") },
-	"attach":     cmdAttach,
-	"start":      cmdStart,
-	"setup":      cmdSetup,
-	"doctor":     cmdDoctor,
-	"config":     cmdConfig,
-	"fmt":        cmdFmt,
-	"version":    cmdVersion,
-	"completion": cmdCompletion,
+	"ls":                  cmdLs,
+	"new":                 cmdNew,
+	"view":                cmdView,
+	"edit":                cmdEdit,
+	"update":              cmdUpdate,
+	"delete":              cmdDelete,
+	"init":                cmdInit,
+	"run":                 cmdRun,
+	"done":                func() { cmdAction("done") },
+	"move":                cmdMove,
+	"note":                cmdNote,
+	"summary":             cmdSummary,
+	"pause":               func() { cmdAction("pause") },
+	"retry":               func() { cmdAction("retry") },
+	"skip":                cmdSkip,
+	"set-stage":           cmdSetStage,
+	"cancel":              func() { cmdAction("cancel") },
+	"archive":             cmdArchive,
+	"logs":                cmdLogs,
+	"activity":            cmdActivity,
+	"changes":             cmdChanges,
+	"stats":               cmdStats,
+	"estimate-compaction": cmdEstimateCompaction,
+	"review":              func() { cmdPlannotator("review") },
+	"annotate":            func() { cmdPlannotator("annotate") },
+	"attach":              cmdAttach,
+	"start":               cmdStart,
+	"setup":               cmdSetup,
+	"doctor":              cmdDoctor,
+	"config":              cmdConfig,
+	"fmt":                 cmdFmt,
+	"version":             cmdVersion,
+	"completion":          cmdCompletion,
 }
 
 func main() {
@@ -761,6 +762,40 @@ func cmdStats() {
 		log.Fatal(err)
 	}
 	if err := cli.PrintStats(info, os.Stdout); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func cmdEstimateCompaction() {
+	rejectInRemoteMode("estimate-compaction")
+
+	fs := flag.NewFlagSet("estimate-compaction", flag.ExitOnError)
+	configPath := fs.String("config", defaultConfigPath(), "path to config file")
+	logsDirFlag := fs.String("logs-dir", "", "path to logs directory (overrides config logs_dir)")
+	stage := fs.String("stage", "implement", "pipeline stage to analyze")
+	thresholdsStr := fs.String("thresholds", "100000,125000,150000,200000,250000", "comma-separated token thresholds")
+	top := fs.Int("top", 20, "number of top sessions to show")
+	if err := fs.Parse(os.Args[2:]); err != nil {
+		log.Fatalf("parsing flags: %v", err)
+	}
+
+	thresholds, err := cli.ParseThresholds(*thresholdsStr)
+	if err != nil {
+		log.Fatalf("invalid --thresholds: %v", err)
+	}
+
+	logsDir := *logsDirFlag
+	if logsDir == "" {
+		cfg := mustLoadConfig(*configPath)
+		logsDir = config.ExpandTilde(cfg.LogsDir)
+	}
+
+	report, err := cli.EstimateCompaction(logsDir, *stage, thresholds, *top)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	if err := cli.PrintCompactionEstimate(report, os.Stdout); err != nil {
 		log.Fatal(err)
 	}
 }

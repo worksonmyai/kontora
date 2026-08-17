@@ -456,7 +456,18 @@ func TestResumeClaudeContinuesRecordedSession(t *testing.T) {
 }
 
 func TestResumePiContinuesStageSessionFile(t *testing.T) {
-	rd := newResumeDaemon(t, "pi", nil)
+	var extensionContent string
+	rd := newResumeDaemon(t, "pi", func(_ context.Context, _ int, p RunnerParams) (process.Result, error) {
+		i := slices.Index(p.Args, "-e")
+		require.GreaterOrEqual(t, i, 0)
+		data, err := os.ReadFile(p.Args[i+1])
+		require.NoError(t, err)
+		extensionContent = string(data)
+		return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now()}, nil
+	})
+	agentCfg := rd.cfg.Agents["agent1"]
+	agentCfg.CheckpointCompactionTokens = 150000
+	rd.cfg.Agents["agent1"] = agentCfg
 	rd.plantRecord(t, agentKindPi, nil)
 
 	rd.run(t, ticket.StatusDone)
@@ -468,7 +479,11 @@ func TestResumePiContinuesStageSessionFile(t *testing.T) {
 	assert.Equal(t,
 		filepath.Join(rd.h.logsDir, resumeTicketID, "pi-sessions", resumeStage, "interrupted.jsonl"),
 		spawns[0].Args[i+1])
-	assert.Contains(t, renderedPrompt(spawns[0]), "was interrupted when the daemon restarted")
+	prompt := renderedPrompt(spawns[0])
+	assert.Contains(t, prompt, "was interrupted when the daemon restarted")
+	assert.Contains(t, prompt, "## Phase checkpoints")
+	assert.Contains(t, extensionContent, "const THRESHOLD = 150000;")
+	assert.Contains(t, extensionContent, "const ENABLED = true;")
 }
 
 // A record that does not name this exact stage and agent must be ignored: a
@@ -639,51 +654,66 @@ func TestRetryAfterCleanCompletionStartsFresh(t *testing.T) {
 // Only a daemon that goes away mid-stage leaves a record behind: that is the
 // one case where the next process can pick the conversation back up.
 func TestResumeRecordSurvivesDaemonShutdown(t *testing.T) {
-	h := newHarness(t)
-	claudeDir := t.TempDir()
-	cfg := h.defaultConfig("claude", "claude")
-	cfg.Environment = map[string]string{"CLAUDE_CONFIG_DIR": claudeDir}
+	for _, tc := range []struct {
+		name      string
+		binary    string
+		threshold int
+	}{
+		{name: "claude", binary: "claude"},
+		{name: "pi with checkpoint compaction", binary: "pi", threshold: 150000},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			cfg := h.defaultConfig(tc.binary, tc.binary)
+			agentCfg := cfg.Agents["agent1"]
+			agentCfg.CheckpointCompactionTokens = tc.threshold
+			cfg.Agents["agent1"] = agentCfg
+			if tc.binary == "claude" {
+				cfg.Environment = map[string]string{"CLAUDE_CONFIG_DIR": t.TempDir()}
+			}
 
-	running := make(chan struct{})
-	var once sync.Once
-	runner := func(ctx context.Context, _ RunnerParams) (process.Result, error) {
-		once.Do(func() { close(running) })
-		<-ctx.Done()
-		return process.Result{ExitCode: -1, StartedAt: time.Now(), ExitedAt: time.Now()}, ctx.Err()
+			running := make(chan struct{})
+			var once sync.Once
+			runner := func(ctx context.Context, _ RunnerParams) (process.Result, error) {
+				once.Do(func() { close(running) })
+				<-ctx.Done()
+				return process.Result{ExitCode: -1, StartedAt: time.Now(), ExitedAt: time.Now()}, ctx.Err()
+			}
+
+			d := New(cfg,
+				WithLogger(testLogger(t)),
+				WithDebounce(50*time.Millisecond),
+				WithLockPath(h.lockPath),
+				WithRunner(runner),
+				WithAgentLookup(passthroughAgentLookup),
+				WithSkipOrphanCleanup(),
+			)
+			d.windows = windowOps{
+				list: func(string) ([]string, error) { return nil, nil },
+				kill: func(string, string) error { return nil },
+			}
+
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+			errCh := make(chan error, 1)
+			go func() { errCh <- d.Run(ctx) }()
+
+			time.Sleep(200 * time.Millisecond)
+			h.writeTicket(resumeTicketID+".md", h.taskMD(resumeTicketID, "todo", "one-stage"))
+
+			select {
+			case <-running:
+			case <-time.After(15 * time.Second):
+				t.Fatal("agent never started")
+			}
+
+			cancel()
+			require.NoError(t, <-errCh)
+
+			assert.FileExists(t, resumeRecordPath(cfg, resumeTicketID, resumeStage),
+				"a stage the daemon shut down on stays resumable")
+		})
 	}
-
-	d := New(cfg,
-		WithLogger(testLogger(t)),
-		WithDebounce(50*time.Millisecond),
-		WithLockPath(h.lockPath),
-		WithRunner(runner),
-		WithAgentLookup(passthroughAgentLookup),
-		WithSkipOrphanCleanup(),
-	)
-	d.windows = windowOps{
-		list: func(string) ([]string, error) { return nil, nil },
-		kill: func(string, string) error { return nil },
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	errCh := make(chan error, 1)
-	go func() { errCh <- d.Run(ctx) }()
-
-	time.Sleep(200 * time.Millisecond)
-	h.writeTicket(resumeTicketID+".md", h.taskMD(resumeTicketID, "todo", "one-stage"))
-
-	select {
-	case <-running:
-	case <-time.After(15 * time.Second):
-		t.Fatal("agent never started")
-	}
-
-	cancel()
-	require.NoError(t, <-errCh)
-
-	assert.FileExists(t, resumeRecordPath(cfg, resumeTicketID, resumeStage),
-		"a stage the daemon shut down on stays resumable")
 }
 
 // A resumed agent whose work is already finished can exit inside the tmux

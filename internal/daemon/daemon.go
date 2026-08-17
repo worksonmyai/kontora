@@ -1282,7 +1282,7 @@ func (d *Daemon) runTicket(ctx context.Context, ticketID string) {
 		return
 	}
 	if rendered != "" {
-		rendered += buildOperationalAppendix(t.ID, filePath, wtPath, true)
+		rendered += buildOperationalAppendix(t.ID, filePath, wtPath, true, piCheckpointEnabled(agentCfg))
 	}
 
 	log.Info("spawning agent", "agent", agentName, "stage", stageName, "binary", agentCfg.Binary)
@@ -1412,7 +1412,7 @@ func (d *Daemon) runSimpleTicket(ctx, taskCtx context.Context, cfg *config.Confi
 		return
 	}
 	if rendered != "" {
-		rendered += buildOperationalAppendix(t.ID, filePath, wtPath, false)
+		rendered += buildOperationalAppendix(t.ID, filePath, wtPath, false, piCheckpointEnabled(agentCfg))
 	}
 
 	log.Info("spawning agent", "agent", agentName, "binary", agentCfg.Binary)
@@ -2127,7 +2127,7 @@ func (d *Daemon) runAgentOnce(taskCtx context.Context, t *ticket.Ticket, p spawn
 	// buildAgentArgs takes; the effective pair is what actually reaches the CLI
 	// once the agent's own defaults apply.
 	effModel, effEffort := p.agentCfg.Effective(model, effort)
-	args, settingsFile, sessionID, err := buildAgentArgs(p.agentCfg, rendered, tmux.ChannelName(d.tmuxSession, p.ticketID), model, effort, rec)
+	args, settingsFile, sessionID, err := buildAgentArgs(p.agentCfg, rendered, tmux.ChannelName(d.tmuxSession, p.ticketID), model, effort, rec, !p.annotation)
 	if err != nil {
 		p.log.Error("build agent args failed", "err", err)
 		return agentAttempt{pauseReason: "build agent args failed: " + err.Error()}
@@ -2261,7 +2261,7 @@ func (d *Daemon) buildResumePrompt(t *ticket.Ticket, p spawnAgentParams) (string
 		return "", err
 	}
 	if rendered != "" {
-		rendered += buildOperationalAppendix(t.ID, p.filePath, p.wtPath, p.isPipeline)
+		rendered += buildOperationalAppendix(t.ID, p.filePath, p.wtPath, p.isPipeline, !p.annotation && piCheckpointEnabled(p.agentCfg))
 	}
 	return rendered, nil
 }
@@ -2302,7 +2302,7 @@ func truncate(s string, limit int, marker string) string {
 // buildOperationalAppendix returns a context block appended to every rendered prompt.
 // It gives agents the ticket ID, file paths, and CLI commands they need so they
 // don't have to search $HOME for context.
-func buildOperationalAppendix(taskID, filePath, wtPath string, isPipeline bool) string {
+func buildOperationalAppendix(taskID, filePath, wtPath string, isPipeline, checkpointEnabled bool) string {
 	var b strings.Builder
 	b.WriteString("\n\n## Operational Context\n")
 	fmt.Fprintf(&b, "- Ticket ID: %s\n", taskID)
@@ -2315,6 +2315,15 @@ func buildOperationalAppendix(taskID, filePath, wtPath string, isPipeline bool) 
 	if isPipeline {
 		fmt.Fprintf(&b, "\nIMPORTANT: When you finish your work, write your results as a note on the ticket. Include all relevant details — the next stage of the pipeline will read this note to continue the work. Use:\n  kontora note %s \"your results here\"", taskID)
 	}
+	if checkpointEnabled {
+		b.WriteString("\n\n## Phase checkpoints\n")
+		b.WriteString("At each boundary between top-level ticket phases:\n")
+		b.WriteString("1. Run the tests for the completed phase.\n")
+		fmt.Fprintf(&b, "2. Write a `phase-N:` note with `kontora note %s \"...\"`.\n", taskID)
+		b.WriteString("3. In the note, list changed files, decisions, test results, unresolved issues, and the next phase.\n")
+		b.WriteString("4. Call `kontora_phase_complete` with `completed_phase` and `next_phase`.\n")
+		b.WriteString("Do not call the tool after the final phase.\n")
+	}
 	return b.String()
 }
 
@@ -2322,8 +2331,10 @@ func buildOperationalAppendix(taskID, filePath, wtPath string, isPipeline bool) 
 // For Claude agents it injects --settings with a Notification hook that
 // signals tmux wait-for on idle_prompt, and --session-id for session JSONL
 // logging.
-// For pi agents it injects -e with a temporary TypeScript extension that
-// calls ctx.shutdown() on agent_end so pi exits cleanly after ticket completion.
+// For pi agents it injects -e with the Kontora extension that handles clean
+// shutdown on agent_settled and, when checkpointEnabled is true and the agent
+// carries a positive CheckpointCompactionTokens, registers the
+// kontora_phase_complete tool for phase-boundary compaction.
 // A non-nil rec attaches the run to the session that record names instead of
 // opening a new one.
 // A non-empty model or effort replaces the one in the agent's own arguments,
@@ -2332,7 +2343,7 @@ func buildOperationalAppendix(taskID, filePath, wtPath string, isPipeline bool) 
 // ticket's own agent field is only known at spawn time.
 // Returns the args, the path to the temporary settings/extension file (empty
 // for other agents), the session ID (empty for non-Claude agents), and any error.
-func buildAgentArgs(agentCfg config.Agent, rendered, channelName, model, effort string, rec *resumeRecord) ([]string, string, string, error) {
+func buildAgentArgs(agentCfg config.Agent, rendered, channelName, model, effort string, rec *resumeRecord, checkpointEnabled bool) ([]string, string, string, error) {
 	if err := agentCfg.CheckEffort(model, effort); err != nil {
 		return nil, "", "", err
 	}
@@ -2357,10 +2368,11 @@ func buildAgentArgs(agentCfg config.Agent, rendered, channelName, model, effort 
 			args = append(args, "--session-id", sessionID)
 		}
 	case agentCfg.IsPi():
+		threshold := agentCfg.CheckpointCompactionTokens
 		var err error
-		settingsFile, err = writePiExitExtension()
+		settingsFile, err = writePiExtension(threshold, checkpointEnabled && threshold > 0)
 		if err != nil {
-			return nil, "", "", fmt.Errorf("writing pi exit extension: %w", err)
+			return nil, "", "", fmt.Errorf("writing pi extension: %w", err)
 		}
 		args = append(args, "-e", settingsFile)
 		if rec != nil {
@@ -2403,29 +2415,11 @@ func writeHooksSettings(channelName string) (string, error) {
 	return f.Name(), nil
 }
 
-// writePiExitExtension creates a temporary TypeScript extension file that
-// makes pi exit cleanly after completing work. The extension listens for
-// agent_end and calls ctx.shutdown().
-func writePiExitExtension() (string, error) {
-	const ext = `import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-export default function (pi: ExtensionAPI) {
-    pi.on("agent_end", async (_event, ctx) => { ctx.shutdown(); });
-}
-`
-	f, err := os.CreateTemp("", "kontora-pi-ext-*.ts")
-	if err != nil {
-		return "", err
-	}
-	if _, err := f.WriteString(ext); err != nil {
-		f.Close()
-		os.Remove(f.Name())
-		return "", err
-	}
-	if err := f.Close(); err != nil {
-		os.Remove(f.Name())
-		return "", err
-	}
-	return f.Name(), nil
+// piCheckpointEnabled reports whether the agent's checkpoint compaction
+// threshold is positive. Only pi agents carry this setting; IsPi is checked
+// so the predicate is self-contained and the caller needs no guard.
+func piCheckpointEnabled(agentCfg config.Agent) bool {
+	return agentCfg.IsPi() && agentCfg.CheckpointCompactionTokens > 0
 }
 
 // sessionStage keys the agent's own session storage, which is the stage name for

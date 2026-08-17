@@ -395,6 +395,19 @@ func TestReload_AppliesLiveFields(t *testing.T) {
 	}
 }
 
+func TestReloadAppliesCheckpointCompactionThreshold(t *testing.T) {
+	h := newReloadHarness(t)
+	d := h.newDaemonWithConfig(t, h.yaml(configOpts{}))
+
+	h.writeConfig(t, h.yaml(configOpts{
+		agent1Binary: "pi",
+		agent1Args:   "    checkpoint_compaction_tokens: 150000\n",
+	}))
+	require.NoError(t, d.reloadConfig())
+
+	assert.Equal(t, 150000, d.config().Agents["agent1"].CheckpointCompactionTokens)
+}
+
 // TestReload_AppliesStageAndAgent runs a ticket after a reload and asserts the
 // agent it spawns uses both the new prompt and the new agent definition.
 func TestReload_AppliesStageAndAgent(t *testing.T) {

@@ -4184,6 +4184,31 @@ test("saving one field leaves comments, unmodelled keys, and block style intact"
   }
 });
 
+test("checkpoint_compaction_tokens is preserved when another agent field is edited", async () => {
+  const fixture = `agents:
+  pi:
+    binary: pi
+    args:
+      - --dangerously-skip-permissions
+    effort: high
+    checkpoint_compaction_tokens: 800000
+
+stages:
+  plan:
+    prompt: Draft a plan.
+    timeout: 45m
+`;
+  const state = await settingsState(fixture);
+
+  // The form models effort but not checkpoint_compaction_tokens. Editing the
+  // modelled field must not drop the unmodelled one.
+  state.settingsConfig.agents.pi.effort = "low";
+  const out = await state._settingsWrite();
+
+  assert.match(out, /checkpoint_compaction_tokens: 800000/);
+  assert.match(out, /effort: low/);
+});
+
 test("a general key absent from the file is appended without reformatting", async () => {
   const state = await settingsState();
 

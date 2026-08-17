@@ -849,13 +849,14 @@ func TestNoteInstructionAppended(t *testing.T) {
 
 func TestBuildOperationalAppendix(t *testing.T) {
 	cases := []struct {
-		name       string
-		taskID     string
-		filePath   string
-		wtPath     string
-		isPipeline bool
-		wantAll    []string
-		wantNone   []string
+		name              string
+		taskID            string
+		filePath          string
+		wtPath            string
+		isPipeline        bool
+		checkpointEnabled bool
+		wantAll           []string
+		wantNone          []string
 	}{
 		{
 			name:       "simple task includes context but not pipeline instruction",
@@ -874,6 +875,7 @@ func TestBuildOperationalAppendix(t *testing.T) {
 			},
 			wantNone: []string{
 				"IMPORTANT: When you finish your work",
+				"## Phase checkpoints",
 			},
 		},
 		{
@@ -893,13 +895,48 @@ func TestBuildOperationalAppendix(t *testing.T) {
 				"IMPORTANT: When you finish your work",
 				"kontora note pip-abcd \"your results here\"",
 			},
-			wantNone: nil,
+			wantNone: []string{
+				"## Phase checkpoints",
+			},
+		},
+		{
+			name:              "checkpoint enabled adds phase guidance",
+			taskID:            "chk-1234",
+			filePath:          "/tasks/chk-1234.md",
+			wtPath:            "/worktrees/chk-1234",
+			isPipeline:        true,
+			checkpointEnabled: true,
+			wantAll: []string{
+				"## Phase checkpoints",
+				"Run the tests for the completed phase",
+				"kontora note chk-1234",
+				"changed files, decisions, test results, unresolved issues, and the next phase",
+				"`kontora_phase_complete`",
+				"completed_phase",
+				"next_phase",
+				"Do not call the tool after the final phase",
+			},
+		},
+		{
+			name:              "simple task with checkpoint",
+			taskID:            "chk-5678",
+			filePath:          "/tasks/chk-5678.md",
+			wtPath:            "/worktrees/chk-5678",
+			isPipeline:        false,
+			checkpointEnabled: true,
+			wantAll: []string{
+				"## Phase checkpoints",
+				"`kontora_phase_complete`",
+			},
+			wantNone: []string{
+				"IMPORTANT: When you finish your work",
+			},
 		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := buildOperationalAppendix(tc.taskID, tc.filePath, tc.wtPath, tc.isPipeline)
+			got := buildOperationalAppendix(tc.taskID, tc.filePath, tc.wtPath, tc.isPipeline, tc.checkpointEnabled)
 			for _, want := range tc.wantAll {
 				assert.Contains(t, got, want)
 			}
@@ -1036,7 +1073,7 @@ func TestAgentInteractiveMode(t *testing.T) {
 			}
 			if tc.wantExtension {
 				assert.True(t, slices.Contains(params.Args, "-e"), "args missing -e: %v", params.Args)
-				assert.Contains(t, extensionContent, "agent_end")
+				assert.Contains(t, extensionContent, "agent_settled")
 				assert.Contains(t, extensionContent, "ctx.shutdown()")
 			}
 
@@ -1046,19 +1083,99 @@ func TestAgentInteractiveMode(t *testing.T) {
 	}
 }
 
-func TestWritePiExitExtension(t *testing.T) {
-	path, err := writePiExitExtension()
-	require.NoError(t, err)
-	defer os.Remove(path)
+// TestPiCheckpointExtension verifies that a pi agent with a positive
+// checkpoint_compaction_tokens gets an extension with checkpoint enabled, while
+// one without the setting gets checkpoint disabled. Both must still have the
+// exit hook.
+func TestPiCheckpointExtension(t *testing.T) {
+	cases := []struct {
+		name           string
+		threshold      int
+		wantEnabled    bool
+		wantThreshold  string
+		wantCheckpoint bool
+	}{
+		{
+			name:          "no threshold",
+			wantThreshold: "THRESHOLD = 0;",
+		},
+		{
+			name:          "zero threshold",
+			threshold:     0,
+			wantThreshold: "THRESHOLD = 0;",
+		},
+		{
+			name:           "positive threshold",
+			threshold:      150000,
+			wantEnabled:    true,
+			wantThreshold:  "THRESHOLD = 150000;",
+			wantCheckpoint: true,
+		},
+	}
 
-	assert.True(t, strings.HasSuffix(path, ".ts"), "extension file should have .ts suffix: %s", path)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			cfg := h.defaultConfig("pi", "true")
+			agentCfg := cfg.Agents["agent1"]
+			agentCfg.CheckpointCompactionTokens = tc.threshold
+			cfg.Agents["agent1"] = agentCfg
 
-	data, err := os.ReadFile(path)
-	require.NoError(t, err)
+			var capturedParams RunnerParams
+			var extensionContent string
+			var promptContent string
+			capturingRunner := func(_ context.Context, p RunnerParams) (process.Result, error) {
+				capturedParams = p
+				if idx := slices.Index(p.Args, "-e"); idx >= 0 && idx+1 < len(p.Args) {
+					data, err := os.ReadFile(p.Args[idx+1])
+					if err == nil {
+						extensionContent = string(data)
+					}
+				}
+				promptContent = renderedPrompt(p)
+				return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now()}, nil
+			}
 
-	content := string(data)
-	assert.Contains(t, content, "agent_end")
-	assert.Contains(t, content, "ctx.shutdown()")
+			d := New(cfg,
+				WithLogger(testLogger(t)),
+				WithDebounce(50*time.Millisecond),
+				WithLockPath(h.lockPath),
+				WithRunner(capturingRunner),
+				WithAgentLookup(passthroughAgentLookup),
+				WithSkipOrphanCleanup(),
+			)
+
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+
+			errCh := make(chan error, 1)
+			go func() { errCh <- d.Run(ctx) }()
+			time.Sleep(200 * time.Millisecond)
+
+			h.writeTicket("tst-chk.md", h.taskMD("tst-chk", "todo", "one-stage"))
+			h.waitForStatus("tst-chk.md", ticket.StatusDone, 10*time.Second)
+
+			assert.Contains(t, extensionContent, "agent_settled", "exit hook always present")
+			assert.Contains(t, extensionContent, "ctx.shutdown()", "shutdown always present")
+			assert.Contains(t, extensionContent, tc.wantThreshold)
+			if tc.wantEnabled {
+				assert.Contains(t, extensionContent, "ENABLED = true;")
+			} else {
+				assert.Contains(t, extensionContent, "ENABLED = false;")
+			}
+			if tc.wantCheckpoint {
+				assert.Contains(t, promptContent, "## Phase checkpoints")
+				assert.Contains(t, promptContent, "kontora_phase_complete")
+			} else {
+				assert.NotContains(t, promptContent, "## Phase checkpoints")
+			}
+
+			assert.Equal(t, 1, flagCount(capturedParams.Args, "-e"))
+
+			cancel()
+			require.NoError(t, <-errCh)
+		})
+	}
 }
 
 func TestPiSessionLogMaterialization(t *testing.T) {

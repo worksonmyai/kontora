@@ -98,6 +98,27 @@ func TestDispatchCoversCommandTable(t *testing.T) {
 	}
 }
 
+func TestEstimateCompactionCommand(t *testing.T) {
+	for _, cmd := range cli.Commands {
+		if cmd.Name == "estimate-compaction" {
+			assert.False(t, cmd.Remote, "estimate-compaction must be local-only")
+			assert.True(t, cmd.Config, "estimate-compaction reads the config for logs_dir")
+			assert.False(t, cmd.TicketID, "estimate-compaction does not take a ticket ID")
+
+			flags := make(map[string]bool)
+			for _, f := range cmd.Flags {
+				flags[f.Name] = true
+			}
+			assert.True(t, flags["logs-dir"], "must have --logs-dir flag")
+			assert.True(t, flags["stage"], "must have --stage flag")
+			assert.True(t, flags["thresholds"], "must have --thresholds flag")
+			assert.True(t, flags["top"], "must have --top flag")
+			return
+		}
+	}
+	t.Fatal("estimate-compaction not found in cli.Commands")
+}
+
 // TestCLIDocsCoverEveryCommand keeps docs/cli.md honest: a command added to the
 // table without a docs entry is the drift that left view, delete, skip,
 // set-stage and fmt undocumented for as long as they existed.

@@ -1,0 +1,6 @@
+{"type":"session","version":3,"id":"sess-cpsnake","timestamp":"2026-08-01T10:00:00.000Z","cwd":"/work"}
+{"type":"model_change","id":"mc-1","parentId":null,"timestamp":"2026-08-01T10:00:00.100Z","provider":"anthropic","modelId":"claude-opus-5"}
+{"type":"message","id":"u-1","parentId":"mc-1","timestamp":"2026-08-01T10:00:01.000Z","message":{"role":"user","content":[{"type":"text","text":"implement"}]}}
+{"type":"message","id":"a-1","parentId":"u-1","timestamp":"2026-08-01T10:00:10.000Z","message":{"role":"assistant","content":[{"type":"text","text":"done phase 1"}],"usage":{"input":2,"output":100,"cacheRead":5000,"cacheWrite":20000,"totalTokens":25102},"stopReason":"end_turn"}}
+{"type":"custom","customType":"kontora-phase-checkpoint","data":{"completed_phase":"Phase 1: setup","next_phase":"Phase 2: impl","outcome":"skipped"},"id":"cp-1","parentId":"a-1","timestamp":"2026-08-01T10:00:11.000Z"}
+{"type":"message","id":"a-2","parentId":"cp-1","timestamp":"2026-08-01T10:00:20.000Z","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"usage":{"input":2,"output":200,"cacheRead":25000,"cacheWrite":3000,"totalTokens":28202},"stopReason":"end_turn"}}

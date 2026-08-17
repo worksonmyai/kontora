@@ -45,6 +45,7 @@ func TestWriteAgentSetupPrompt(t *testing.T) {
 				"## Validation rules",
 				"## Apply procedure",
 				"kontora doctor --config",
+				"checkpoint_compaction_tokens",
 			},
 			notWant: []string{"State: valid", "State: invalid", "Symlink target:"},
 		},

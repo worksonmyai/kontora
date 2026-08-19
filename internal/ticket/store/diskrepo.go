@@ -1,7 +1,9 @@
 package store
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -74,20 +76,16 @@ func (r *DiskRepo) Get(id string) (*app.StoredTicket, error) {
 }
 
 func (r *DiskRepo) List() ([]*app.StoredTicket, error) {
-	entries, err := os.ReadDir(r.dir)
+	paths, err := ticket.ListFiles(r.dir)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, fs.ErrNotExist) {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("reading tickets dir: %w", err)
+		return nil, err
 	}
 
 	var result []*app.StoredTicket
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".md") {
-			continue
-		}
-		path := filepath.Join(r.dir, entry.Name())
+	for _, path := range paths {
 		t, err := ticket.ParseFile(path)
 		if err != nil {
 			continue

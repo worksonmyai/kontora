@@ -54,6 +54,37 @@ The static table has ID, status, title, project, stage, agent, and the ids block
 
 Remote mode asks the daemon for every ticket, including the hidden statuses, and applies the same filters locally, so a flag means the same thing on both sides.
 
+### `kontora search [flags] QUERY`
+
+Matches QUERY against every ticket file in `tickets_dir`, frontmatter block and body alike, and prints the matching lines grouped by ticket. Every status is searched, archived included, so this is the only command that can find a closed ticket by what is written in it. Local only: it reads the files directly and needs no daemon.
+
+QUERY is a [Go regular expression](https://pkg.go.dev/regexp/syntax). Case follows ripgrep's smart-case rule: an all-lowercase query matches case-insensitively, and a query holding an uppercase letter matches case-sensitively. A query that starts with `-` needs `--` in front of it, as in `kontora search -- -race`.
+
+Because the match runs over the raw markdown, frontmatter keys kontora does not own are searchable too: `kontora search 'priority: 2'` finds them. The one thing not in the file is the project name, which comes from the config; a query matching a configured project name reports that project's tickets with a synthetic `project` line.
+
+| Flag | Description |
+|------|-------------|
+| `-i` | Case-insensitive match, overriding smart-case. |
+| `-s` | Case-sensitive match, overriding smart-case. |
+| `-F` | Treat the query as a literal string, not a regex. |
+| `-l` | Print matching ticket IDs only, one per line, for piping into `xargs`. |
+| `-m N` | Show at most N matching lines per ticket. Defaults to 5; `0` shows all. |
+| `--body` | Search the markdown body only, skipping the frontmatter. Project names are not matched either: a project name is in neither. |
+| `--json` | Print a JSON array of results instead of the grouped listing. |
+| `--status STATUS` | Only search tickets with this status. A status that is neither built in nor configured is a warning on stderr, since a ticket written by another tool may carry any status. |
+| `--project NAME` | Only search tickets for this configured project. An unknown name is an error. |
+| `--path PATH` | The same, by repository path. |
+| `--pipeline NAME` | Only search tickets for this pipeline. An unknown name is an error. |
+| `--agent NAME` | Only search tickets carrying this agent override. An unknown name is an error. |
+
+Each `--json` object holds `id`, `title`, `status`, `stage`, `pipeline`, `agent`, `path`, `project`, `file`, `total` and a `matches` array of `{line, field, text, start, end}`. `line` is the 1-based file line, `0` for the synthetic project match; `start` and `end` are byte offsets of the match inside `text`; `total` counts every match found, the project match included, so it exceeds `len(matches)` when `-m` cut them. `-m` never cuts the project match, which is the reason the ticket is in the results at all.
+
+`-l` and `--json`, and `-i` and `-s`, cannot be combined. The exit status is 0 whether or not anything matched, unlike grep: a script that needs the difference reads the output, for example `test -n "$(kontora search -l worktree)"`.
+
+A ticket whose frontmatter cannot be parsed is reported on stderr with the count and the parse error, rather than dropped, so a malformed ticket does not silently disappear from a search that should have found it. Only files the query matches are parsed, so a malformed ticket the query is nowhere in stays quiet.
+
+`^` and `$` are line anchors, so `kontora search '^status: done'` matches the frontmatter line rather than the whole file. Note that a query matching a configured project name also matches the `kontora: true` marker line in every ticket kontora manages, so it returns most of the store.
+
 ### `kontora new [flags] TITLE`
 
 Creates a ticket and prints its ID. Without `--path` it uses the current git root; in remote mode `--path` is required and names a path on the daemon host.
@@ -346,7 +377,7 @@ Setting `--url` or `KONTORA_URL` points every client command at a daemon over HT
 
 Supported: `ls`, `view`, `new`, `init`, `update`, `delete`, `run`, `pause`, `retry`, `cancel`, `done`, `move`, `skip`, `set-stage`, `note`, `summary`, `logs`, `activity`, `changes`, `stats`, `review`, `annotate`, `config`, `attach`.
 
-Rejected, because they act on local files: `edit`, `archive`, `estimate-compaction`, `sessions`, `doctor`, `start`, `setup`.
+Rejected, because they act on local files: `edit`, `search`, `archive`, `estimate-compaction`, `sessions`, `doctor`, `start`, `setup`.
 
 Unaffected, because they touch neither the daemon nor a config file: `fmt`, `completion`, `version`, `help`.
 

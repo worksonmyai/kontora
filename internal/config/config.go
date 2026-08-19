@@ -745,6 +745,13 @@ func (c *Config) IsCustomStatus(s string) bool {
 	return slices.Contains(c.Statuses, s)
 }
 
+// IsKnownStatus reports whether s is a built-in status or a configured custom
+// one. A ticket may still carry any other string: tickets written by other
+// tools are read as they are, not rejected.
+func (c *Config) IsKnownStatus(s string) bool {
+	return builtinStatuses[s] || c.IsCustomStatus(s)
+}
+
 // boardStatuses are the built-in statuses that map to a board column.
 // archived is intentionally excluded: archived tickets are hidden from the board.
 var boardStatuses = map[string]bool{
@@ -1044,6 +1051,24 @@ func (c *Config) validateProjects() error {
 		pathOwner[norm] = name
 	}
 	return nil
+}
+
+// ResolveFilterPath resolves the repository path a command filters on: the one
+// given directly, or the path of the named project. An unknown project name is
+// an error rather than a run that matches nothing, since a typo would otherwise
+// look like "nothing is there". Callers prefix the error with their own verb.
+func (c *Config) ResolveFilterPath(path, project string) (string, error) {
+	if project == "" {
+		return path, nil
+	}
+	if path != "" {
+		return "", errors.New("path and project cannot be combined")
+	}
+	p, ok := c.Projects[project]
+	if !ok {
+		return "", fmt.Errorf("unknown project %q", project)
+	}
+	return p.Path, nil
 }
 
 // ProjectFor returns the project configured for repoPath. Both sides are

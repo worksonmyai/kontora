@@ -33,6 +33,11 @@ func defaultConfigPath() string {
 
 var version = "dev"
 
+// searchDefaultMaxPerFile caps the matching lines one ticket contributes.
+// Tickets carry long run summaries, so a broad query against an uncapped search
+// buries the ticket list under one ticket's body. 0 lifts the cap.
+const searchDefaultMaxPerFile = 5
+
 var (
 	helpBold  = lipgloss.NewStyle().Bold(true)
 	helpFaint = lipgloss.NewStyle().Faint(true)
@@ -54,6 +59,7 @@ func renderUsage() string {
 // TestDispatchCoversCommandTable holds the two together.
 var handlers = map[string]func(){
 	"ls":                  cmdLs,
+	"search":              cmdSearch,
 	"new":                 cmdNew,
 	"view":                cmdView,
 	"edit":                cmdEdit,
@@ -1115,6 +1121,56 @@ func cmdArchive() {
 
 	opts := cli.ArchiveOpts{Days: *days, DryRun: *dryRun, Path: *repoPath, Project: *project, Status: *status, Yes: *yes || *yesShort, In: in}
 	if err := cli.Archive(cfg, os.Stdout, opts); err != nil {
+		log.Fatal(err)
+	}
+}
+
+// cmdSearch matches a query against every ticket file on disk. It is local
+// only: there is no daemon endpoint behind it.
+func cmdSearch() {
+	rejectInRemoteMode("search")
+
+	fs := flag.NewFlagSet("search", flag.ExitOnError)
+	configPath := fs.String("config", defaultConfigPath(), "path to config file")
+	ignoreCase := fs.Bool("i", false, "case-insensitive match (default is smart-case)")
+	matchCase := fs.Bool("s", false, "case-sensitive match")
+	literal := fs.Bool("F", false, "treat the query as a literal string, not a regex")
+	idsOnly := fs.Bool("l", false, "print matching ticket IDs only")
+	maxPerFile := fs.Int("m", searchDefaultMaxPerFile, "max matching lines per ticket, 0 for all")
+	bodyOnly := fs.Bool("body", false, "search the markdown body only, not the frontmatter")
+	asJSON := fs.Bool("json", false, "print results as JSON")
+	status := fs.String("status", "", "only search tickets with this status")
+	project := fs.String("project", "", "only search tickets for this configured project")
+	repoPath := fs.String("path", "", "only search tickets for this repository path")
+	pipeline := fs.String("pipeline", "", "only search tickets for this pipeline")
+	agent := fs.String("agent", "", "only search tickets for this agent")
+	// parseArgs, not a bare fs.Parse: the query reads better at the end
+	// (`kontora search worktree --status done`), and only parseArgs accepts
+	// flags after a positional. The cost is that a query starting with "-" is
+	// read as a flag and needs `--` in front of it, which docs/cli.md documents.
+	args := parseArgs(fs, os.Args[2:], 1)
+	if len(args) == 0 {
+		log.Fatal("usage: kontora search QUERY")
+	}
+
+	cfg := mustLoadConfig(*configPath)
+	opts := cli.SearchOpts{
+		Query:      args[0],
+		Literal:    *literal,
+		IgnoreCase: *ignoreCase,
+		MatchCase:  *matchCase,
+		BodyOnly:   *bodyOnly,
+		IDsOnly:    *idsOnly,
+		JSON:       *asJSON,
+		MaxPerFile: *maxPerFile,
+		Status:     *status,
+		Project:    *project,
+		Path:       *repoPath,
+		Pipeline:   *pipeline,
+		Agent:      *agent,
+		Warn:       os.Stderr,
+	}
+	if err := cli.Search(cfg, os.Stdout, opts); err != nil {
 		log.Fatal(err)
 	}
 }

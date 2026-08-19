@@ -30,6 +30,25 @@ func IsSafeID(id string) bool {
 	return true
 }
 
+// ListFiles returns the candidate ticket files in dir, in directory order.
+// Subdirectories are not descended into and entries that are not ".md" files
+// are skipped; whether a file holds a real ticket is only known once it is
+// parsed, which is left to the caller.
+func ListFiles(dir string) ([]string, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, fmt.Errorf("reading tickets dir: %w", err)
+	}
+	paths := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".md") {
+			continue
+		}
+		paths = append(paths, filepath.Join(dir, entry.Name()))
+	}
+	return paths, nil
+}
+
 // IsCanonicalPath reports whether path is the canonical file for ticket id,
 // i.e. its basename is exactly "<id>.md". Sync tools (iCloud, Syncthing)
 // leave stale conflict copies like "<id> 2.md" or "<id>.sync-conflict-*.md"

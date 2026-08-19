@@ -80,22 +80,15 @@ func (s *Service) Archive(opts ArchiveOptions) (ArchiveResult, error) {
 	return s.archive(opts, time.Now(), os.Stat)
 }
 
-// archivePath resolves the repository path an archive run filters on: the one
-// given directly, or the path of the named project. An unknown project name is
-// an error rather than a run that matches nothing, since a typo would otherwise
-// look like "no tickets are old enough".
+// archivePath resolves the repository path an archive run filters on. An
+// unknown project name is an error rather than a run that matches nothing,
+// since a typo would otherwise look like "no tickets are old enough".
 func (s *Service) archivePath(opts ArchiveOptions) (string, error) {
-	if opts.Project == "" {
-		return opts.Path, nil
+	path, err := s.cfg().ResolveFilterPath(opts.Path, opts.Project)
+	if err != nil {
+		return "", fmt.Errorf("archive: %w", err)
 	}
-	if opts.Path != "" {
-		return "", fmt.Errorf("archive: path and project cannot be combined")
-	}
-	project, ok := s.cfg().Projects[opts.Project]
-	if !ok {
-		return "", fmt.Errorf("archive: unknown project %q", opts.Project)
-	}
-	return project.Path, nil
+	return path, nil
 }
 
 // archive is the testable core of Archive. now sets the reference point for the

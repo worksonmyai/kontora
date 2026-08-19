@@ -1822,6 +1822,7 @@ func (d *Daemon) startFinalSummary(ctx context.Context, t *ticket.Ticket, p hand
 		filePath:  p.filePath,
 		agentName: p.agentName,
 		dir:       p.repoPath,
+		tkt:       finalSummaryTicket{Title: t.Title(), Body: t.Body},
 		runs:      eligibleFinalSummaryRuns(t),
 		status:    t.Status,
 	}

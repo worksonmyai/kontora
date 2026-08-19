@@ -547,6 +547,7 @@ func (d *Daemon) runReworkStage(ctx, taskCtx context.Context, cfg *config.Config
 			filePath:  filePath,
 			agentName: agentName,
 			dir:       repoPath,
+			tkt:       finalSummaryTicket{Title: t2.Title(), Body: t2.Body},
 			runs:      eligibleFinalSummaryRuns(t2),
 			status:    t2.Status,
 		}

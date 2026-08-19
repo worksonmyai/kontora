@@ -113,10 +113,11 @@ type Ticket struct {
 	LastError string     `yaml:"last_error"`
 	LastLog   string     `yaml:"last_log"`
 	Summary   string     `yaml:"summary"`
-	// FinalSummary is the ticket-level result: one text synthesized from every
-	// run summary the ticket recorded. It is written after a terminal stage
-	// succeeds and cleared when a new run starts, so unlike Summary it never
-	// describes a single run.
+	// FinalSummary is the ticket-level result: one text synthesized from the
+	// ticket itself and every run summary the ticket recorded. It opens with
+	// what the ticket set out to do, then what the runs did. It is written
+	// after a terminal stage succeeds and cleared when a new run starts, so
+	// unlike Summary it never describes a single run.
 	FinalSummary string `yaml:"final_summary"`
 	// ClaimedBy records the daemon instance that last picked the ticket up. It
 	// is consulted only while Status is in_progress, to keep daemons on a shared

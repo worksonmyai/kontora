@@ -632,6 +632,9 @@ func TestPlannotator_ReworkFinalSummary(t *testing.T) {
 	md := strings.Replace(h.reviewTaskMD("tst-prf01", "human_review", "kontora/tst-prf01"),
 		"    exit_code: 0\n  - stage: step2", "    exit_code: 0\n    summary: planned it\n  - stage: step2", 1)
 	md = strings.Replace(md, "---\n# Test ticket", "    summary: coded it\nfinal_summary: stale ticket-level text\n---\n# Test ticket", 1)
+	// A body, not just a title: the pass drops the ticket block for a ticket
+	// that has nothing to state a goal from.
+	md += "\nRework the review comments.\n"
 	h.seedReviewWorktree("tst-prf01")
 	h.writeTicket("tst-prf01.md", md)
 
@@ -656,6 +659,8 @@ func TestPlannotator_ReworkFinalSummary(t *testing.T) {
 	assert.Equal(t, config.ReworkStageName, result.History[2].Stage)
 	assert.Equal(t, "reworked the review comments", result.History[2].Summary)
 	assert.Contains(t, prompt, "reworked the review comments", "the rework run must be in the input")
+	assert.Contains(t, prompt, "Test ticket tst-prf01", "the ticket text must reach the pass on the rework path too")
+	assert.Contains(t, prompt, "Rework the review comments.")
 
 	cancel()
 	require.NoError(t, <-errCh)

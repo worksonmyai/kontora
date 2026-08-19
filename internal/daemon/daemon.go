@@ -32,6 +32,7 @@ import (
 	"github.com/worksonmyai/kontora/internal/pipeline"
 	"github.com/worksonmyai/kontora/internal/process"
 	"github.com/worksonmyai/kontora/internal/prompt"
+	"github.com/worksonmyai/kontora/internal/session"
 	"github.com/worksonmyai/kontora/internal/ticket"
 	"github.com/worksonmyai/kontora/internal/ticket/app"
 	"github.com/worksonmyai/kontora/internal/ticket/store"
@@ -1322,6 +1323,8 @@ func (d *Daemon) runTicket(ctx context.Context, ticketID string) {
 		finalMessage: run.FinalMessage,
 		model:        run.Model,
 		effort:       run.Effort,
+		sessionKind:  run.SessionKind,
+		sessionRef:   run.SessionRef,
 		pipelineCfg:  pipelineCfg,
 		repoPath:     repoPath,
 		wtPath:       wtPath,
@@ -1591,10 +1594,13 @@ type handleExitParams struct {
 	run          int
 	result       process.Result
 	finalMessage string
-	// model and effort are what the run passed the agent, recorded on its
-	// history entry.
+	// model and effort are what the run passed the agent, and sessionKind and
+	// sessionRef locate the session JSONL it wrote. All four are recorded on
+	// its history entry.
 	model       string
 	effort      string
+	sessionKind string
+	sessionRef  string
 	pipelineCfg config.Pipeline
 	repoPath    string
 	wtPath      string
@@ -1688,6 +1694,8 @@ func (d *Daemon) handleAgentExit(ctx, taskCtx context.Context, p handleExitParam
 		exitAction.History.Run = p.run
 		exitAction.History.Model = p.model
 		exitAction.History.Effort = p.effort
+		exitAction.History.SessionKind = p.sessionKind
+		exitAction.History.SessionRef = p.sessionRef
 	}
 
 	nextStage := fieldValue(exitAction.Fields, "stage")
@@ -1981,6 +1989,11 @@ type agentRun struct {
 	// agent's own defaults. Empty means no flag was passed.
 	Model  string
 	Effort string
+	// SessionKind and SessionRef locate the session JSONL this invocation
+	// wrote, in the form ticket history stores. Both are empty for an agent
+	// that writes no session Kontora can point at.
+	SessionKind string
+	SessionRef  string
 }
 
 // agentAttempt is the outcome of one runAgentOnce call.
@@ -2190,8 +2203,14 @@ func (d *Daemon) runAgentOnce(taskCtx context.Context, t *ticket.Ticket, p spawn
 		}
 		p.log.Error("runner failed", errAttrs...)
 		d.killTaskWindow(p.ticketID)
+		// A runner can fail after a complete turn, and that turn wrote a
+		// session, so the reference is recorded on this path too.
+		failKind, failRef := runSessionRef(p.cfg, p.ticketID, params, scope.startedAt)
 		return agentAttempt{
-			run:         agentRun{Result: result, Resumed: rec != nil, Model: effModel, Effort: effEffort},
+			run: agentRun{
+				Result: result, Resumed: rec != nil, Model: effModel, Effort: effEffort,
+				SessionKind: failKind, SessionRef: failRef,
+			},
 			started:     agentDidWork(result),
 			pauseReason: fmt.Sprintf("runner failed: %s", runnerErr.Error()),
 		}
@@ -2200,12 +2219,15 @@ func (d *Daemon) runAgentOnce(taskCtx context.Context, t *ticket.Ticket, p spawn
 	usage, usageComplete := d.materializeAgentLogs(p.log, params, eventsFile, scope)
 	d.recordTokens(taskCtx, p.stageName, p.agentName, usage, usageComplete)
 
+	sessionKind, sessionRef := runSessionRef(p.cfg, p.ticketID, params, scope.startedAt)
 	run := agentRun{
 		Result:       result,
 		FinalMessage: finalAssistantMessage(p.log, params, scope.startedAt),
 		Resumed:      rec != nil,
 		Model:        effModel,
 		Effort:       effEffort,
+		SessionKind:  sessionKind,
+		SessionRef:   sessionRef,
 	}
 
 	dur := result.ExitedAt.Sub(result.StartedAt).Truncate(time.Second)
@@ -2377,7 +2399,7 @@ func buildAgentArgs(agentCfg config.Agent, rendered, channelName, model, effort 
 		}
 		args = append(args, "-e", settingsFile)
 		if rec != nil {
-			args = append(args, "--session", rec.sessionPath)
+			args = append(args, "--session", rec.SessionPath)
 		}
 	default:
 		if model != "" {
@@ -2565,15 +2587,14 @@ func (d *Daemon) stageLogPath(ticketID, stageName string) string {
 }
 
 func stageLogPath(cfg *config.Config, ticketID, stageName string) string {
-	return filepath.Join(expandTilde(cfg.LogsDir), ticketID, stageName+".log")
+	return session.LogPath(expandTilde(cfg.LogsDir), ticketID, stageName)
 }
 
 // stageEventsPath is the structured activity sidecar for one run of a stage.
 // It sits beside <stage>.log; the .json suffix keeps it out of every existing
 // log-directory scanner, all of which filter on .log.
 func stageEventsPath(cfg *config.Config, ticketID, stageName string, run int) string {
-	name := fmt.Sprintf("%s.%d.events.json", stageName, run)
-	return filepath.Join(expandTilde(cfg.LogsDir), ticketID, name)
+	return session.EventsPath(expandTilde(cfg.LogsDir), ticketID, stageName, run)
 }
 
 // stageRunIndex returns the zero-based key for the next run of stageName,
@@ -2789,14 +2810,7 @@ func (pq *priorityQueue) Pop() any {
 // claudeSessionFiles globs the Claude config dir for the JSONL files of the
 // given session.
 func claudeSessionFiles(env map[string]string, sessionID string) (matches []string, pattern string, err error) {
-	configDir := "~/.claude"
-	if v, ok := env["CLAUDE_CONFIG_DIR"]; ok && v != "" {
-		configDir = v
-	}
-	configDir = expandTilde(configDir)
-	pattern = filepath.Join(configDir, "projects", "*", sessionID+".jsonl")
-	matches, err = filepath.Glob(pattern)
-	return matches, pattern, err
+	return session.ClaudeFiles(expandTilde(session.ClaudeConfigDir(env)), sessionID)
 }
 
 // sessionFile locates the session JSONL of a run: the Claude session file

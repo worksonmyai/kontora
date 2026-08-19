@@ -62,6 +62,13 @@ var Commands = []Command{
 		{Name: "stage", Desc: "Stage name", Value: "stage"},
 		{Name: "run", Desc: "Run number within the stage", Value: "text"},
 	}},
+	{Name: "sessions", Desc: "Print the file paths behind a ticket's runs", Config: true, TicketID: true, Flags: []Flag{
+		{Name: "stage", Desc: "Only this stage", Value: "stage"},
+		{Name: "run", Desc: "Only this run number within the stage", Value: "text"},
+		{Name: "logs", Desc: "Print the stage log paths instead of the session files"},
+		{Name: "events", Desc: "Print the activity sidecar paths instead of the session files"},
+		{Name: "all", Desc: "Print every file of every run"},
+	}},
 	{Name: "changes", Desc: "Show a ticket's commits and changed files", Config: true, Remote: true, TicketID: true},
 	{Name: "stats", Desc: "Show throughput and cycle-time figures", Config: true, Remote: true, Flags: []Flag{
 		{Name: "range", Desc: "Window to report on", Value: "text", Choices: []string{"1d", "1w", "30d", "90d", "all"}},

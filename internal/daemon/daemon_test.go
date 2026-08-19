@@ -4411,3 +4411,85 @@ func TestMaterializeSessionEvents(t *testing.T) {
 		assert.Len(t, tape.Events, 3, "the transcript stays whole: a model banner and both turns")
 	})
 }
+
+// TestHistoryRecordsTheSession covers what a stage run leaves in history for
+// each agent kind, and that an agent Kontora cannot locate a session for adds
+// no keys to the file at all.
+func TestHistoryRecordsTheSession(t *testing.T) {
+	tests := []struct {
+		name    string
+		binary  string
+		run     func(t *testing.T, p RunnerParams)
+		wantKey string
+		// wantRef is the reference the row must carry. It takes the params the
+		// run finished with, because a Claude reference is the ID Kontora
+		// minted for that run and a pi one is the file the runner wrote.
+		wantRef func(p RunnerParams) string
+	}{
+		{
+			name:    "claude records the session id",
+			binary:  "claude",
+			wantKey: "claude",
+			wantRef: func(p RunnerParams) string { return p.SessionID },
+		},
+		{
+			name:   "pi records the file it wrote",
+			binary: "pi",
+			run: func(t *testing.T, p RunnerParams) {
+				require.NoError(t, os.MkdirAll(p.SessionDir, 0o755))
+				require.NoError(t, os.WriteFile(filepath.Join(p.SessionDir, "01JC9.jsonl"), []byte("{}\n"), 0o644))
+			},
+			wantKey: "pi",
+			wantRef: func(RunnerParams) string { return "pi-sessions/step1/01JC9.jsonl" },
+		},
+		{
+			name:   "an agent with no kind records neither key",
+			binary: "true",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := newHarness(t)
+			h.cfg.Agents["agent1"] = config.Agent{Binary: tt.binary}
+
+			var lastParams RunnerParams
+			runner := func(_ context.Context, p RunnerParams) (process.Result, error) {
+				lastParams = p
+				if tt.run != nil {
+					tt.run(t, p)
+				}
+				now := time.Now()
+				return process.Result{ExitCode: 0, StartedAt: now, ExitedAt: now}, nil
+			}
+			d := h.newDaemon(h.cfg, WithRunner(runner))
+
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			errCh := make(chan error, 1)
+			go func() { errCh <- d.Run(ctx) }()
+			time.Sleep(200 * time.Millisecond)
+
+			const id = "tst-sess"
+			path := h.writeTicket(id+".md", h.taskMD(id, "todo", "one-stage"))
+			got := h.waitForStatus(id+".md", ticket.StatusDone, 10*time.Second)
+			require.Len(t, got.History, 1)
+
+			assert.Equal(t, tt.wantKey, got.History[0].SessionKind)
+			if tt.wantRef == nil {
+				assert.Empty(t, got.History[0].SessionRef)
+				data, err := os.ReadFile(path)
+				require.NoError(t, err)
+				assert.NotContains(t, string(data), "session_kind:")
+				assert.NotContains(t, string(data), "session_ref:")
+			} else {
+				want := tt.wantRef(lastParams)
+				require.NotEmpty(t, want)
+				assert.Equal(t, want, got.History[0].SessionRef)
+			}
+
+			cancel()
+			require.NoError(t, <-errCh)
+		})
+	}
+}

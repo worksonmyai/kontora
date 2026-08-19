@@ -3,13 +3,12 @@ package daemon
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"slices"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/worksonmyai/kontora/internal/config"
+	"github.com/worksonmyai/kontora/internal/session"
 	"github.com/worksonmyai/kontora/internal/stats"
 	"github.com/worksonmyai/kontora/internal/ticket"
 	"github.com/worksonmyai/kontora/internal/web"
@@ -242,16 +241,14 @@ func simpleTicketRun(cfg *config.Config, logsDir string, t *ticket.Ticket) (stat
 	}, statsSidecarPath(logsDir, t.ID, simpleStageName, 0), true
 }
 
-// statsSidecarPath is stageEventsPath over an already expanded logs dir, and
-// refuses a stage name that cannot key a file. History is ticket frontmatter,
-// which anyone can edit, and filepath.Join would clean a planted "../" into a
-// path outside the ticket's log directory, whose model string the response
-// would then echo back.
+// statsSidecarPath is stageEventsPath over an already expanded logs dir. It
+// refuses a stage name a hand-edited history could use to reach outside the
+// ticket's log directory, whose model string the response would then echo back.
 func statsSidecarPath(logsDir, ticketID, stage string, run int) string {
-	if stage == "" || stage == "." || stage == ".." || stage != filepath.Base(stage) || strings.ContainsAny(stage, `/\`) {
+	if !session.SafeStage(stage) {
 		return ""
 	}
-	return filepath.Join(logsDir, ticketID, fmt.Sprintf("%s.%d.events.json", stage, run))
+	return session.EventsPath(logsDir, ticketID, stage, run)
 }
 
 // fillUsage attaches each run's model and token counts from its sidecar. A

@@ -15,6 +15,7 @@ import (
 
 	"github.com/worksonmyai/kontora/internal/config"
 	"github.com/worksonmyai/kontora/internal/logfmt"
+	"github.com/worksonmyai/kontora/internal/session"
 	"github.com/worksonmyai/kontora/internal/ticket"
 	"github.com/worksonmyai/kontora/internal/ticket/store"
 )
@@ -82,7 +83,7 @@ func StageActivity(tasksDir, logsDir, taskID, stage string, run int) (tape *logf
 	if err != nil {
 		return nil, "", err
 	}
-	logDir := filepath.Join(config.ExpandTilde(logsDir), resolvedID)
+	expandedLogsDir := config.ExpandTilde(logsDir)
 
 	if stage == "" {
 		var buf bytes.Buffer
@@ -92,7 +93,7 @@ func StageActivity(tasksDir, logsDir, taskID, stage string, run int) (tape *logf
 		return nil, buf.String(), nil
 	}
 
-	sidecar := filepath.Join(logDir, fmt.Sprintf("%s.%d.events.json", stage, run))
+	sidecar := session.EventsPath(expandedLogsDir, resolvedID, stage, run)
 	switch data, readErr := os.ReadFile(sidecar); {
 	case readErr == nil:
 		var t logfmt.Tape
@@ -104,7 +105,7 @@ func StageActivity(tasksDir, logsDir, taskID, stage string, run int) (tape *logf
 		return nil, "", readErr
 	}
 
-	data, err := os.ReadFile(filepath.Join(logDir, stage+".log"))
+	data, err := os.ReadFile(session.LogPath(expandedLogsDir, resolvedID, stage))
 	if err != nil {
 		return nil, "", err
 	}

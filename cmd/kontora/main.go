@@ -72,6 +72,7 @@ var handlers = map[string]func(){
 	"archive":             cmdArchive,
 	"logs":                cmdLogs,
 	"activity":            cmdActivity,
+	"sessions":            cmdSessions,
 	"changes":             cmdChanges,
 	"stats":               cmdStats,
 	"estimate-compaction": cmdEstimateCompaction,
@@ -836,6 +837,37 @@ func cmdActivity() {
 		log.Fatal(err)
 	}
 	if err := cli.PrintActivity(info, os.Stdout); err != nil {
+		log.Fatal(err)
+	}
+}
+
+// cmdSessions prints the files behind a ticket's runs. It is local-only: every
+// path it prints names a file on the machine that runs it, and in remote mode
+// the daemon's path either does not exist here or, if the caller runs kontora
+// too, holds another ticket's bytes.
+func cmdSessions() {
+	rejectInRemoteMode("sessions")
+
+	fs := flag.NewFlagSet("sessions", flag.ExitOnError)
+	configPath := fs.String("config", defaultConfigPath(), "path to config file")
+	stage := fs.String("stage", "", "only this stage")
+	run := fs.Int("run", -1, "only this run number within the stage")
+	logs := fs.Bool("logs", false, "print the stage log paths instead of the session files")
+	events := fs.Bool("events", false, "print the activity sidecar paths instead of the session files")
+	all := fs.Bool("all", false, "print every file of every run")
+	taskID := parseTicketFlags(fs, os.Args[2:])
+	if taskID == "" {
+		log.Fatal("ticket ID is required: kontora sessions [flags] TICKET_ID")
+	}
+
+	cfg := mustLoadConfig(*configPath)
+	opts := cli.SessionsOptions{Stage: *stage, Logs: *logs, Events: *events, All: *all}
+	// 0 is a real run number, so the flag's own default is the sentinel rather
+	// than a value the filter could mistake for a request.
+	if *run >= 0 {
+		opts.Run = run
+	}
+	if err := cli.Sessions(cfg, taskID, opts, os.Stdout); err != nil {
 		log.Fatal(err)
 	}
 }

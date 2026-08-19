@@ -80,6 +80,17 @@ type HistoryEntry struct {
 	// stage's last run left behind. Only an annotation run sets it; on a stage run
 	// it is absent even when the run resumed from a crash record.
 	SessionReused bool `yaml:"session_reused,omitempty"`
+	// SessionKind names the agent runtime that owns SessionRef: "claude" or
+	// "pi". It is recorded rather than derived from Agent because Agent is a
+	// config name, and the config that gave it a kind can change or be gone by
+	// the time the row is read.
+	SessionKind string `yaml:"session_kind,omitempty"`
+	// SessionRef locates the run's session JSONL without naming a path only one
+	// machine has. For claude it is the session UUID Kontora minted, resolved
+	// against $CLAUDE_CONFIG_DIR/projects/*/<uuid>.jsonl; for pi it is the
+	// file's path relative to <logs_dir>/<ticket-id>, because pi names its own
+	// file. Empty means the run wrote no session Kontora can point at.
+	SessionRef string `yaml:"session_ref,omitempty"`
 }
 
 // KindAnnotation labels a history entry whose run was asked to rewrite the

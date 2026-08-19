@@ -285,6 +285,8 @@ When the daemon stops while an agent is mid-stage, the ticket goes back to `todo
 
 The daemon writes `<logs_dir>/<ticket-id>/<stage>.session` while a stage's agent runs and deletes it as soon as the agent returns. A record left on disk therefore means the daemon itself went away. It is not part of the ticket file: everything it points at, including the Claude session files under `~/.claude/projects/`, is local to one machine.
 
+The record is keyed by stage and holds one session, so the next run of the same stage overwrites it. Which session each individual run wrote is kept in the ticket's history instead, as [`session_kind` and `session_ref`](tickets.md#history), which are identifiers rather than paths for the same machine-local reason.
+
 A stage resumes only when every one of these holds. Any other case runs the stage fresh and logs why; nothing here pauses a ticket.
 
 - The agent is `claude` or `pi` and its `resume` is not `false`.
@@ -688,7 +690,9 @@ after a restart](#resuming-after-a-restart) plus one:
   is identified.
 
 Any other case starts a new conversation, logs why, and does not pause the
-ticket. The history entry's `session_reused` field reports which happened.
+ticket. The history entry's `session_reused` field reports which happened, and
+its [`session_kind` and `session_ref`](tickets.md#history) name the session the
+run ended up writing, whether it continued one or opened its own.
 
 This record is deliberately separate from the crash-recovery record a stage
 writes while it runs. Only the annotation run reads it, so an ordinary

@@ -146,6 +146,58 @@ Prints the agent's log. Without `--stage` it shows the most recent one, falling 
 
 Prints one stage run's structured transcript: the agent's messages and tool calls, one per line. Falls back to the plaintext log for agents that write no session record. Needs a running daemon.
 
+### `kontora sessions [flags] TICKET_ID`
+
+Prints the files behind the ticket's runs: by default the agent's own session
+JSONL, which is the transcript another tool would read. One row per history
+row, in history order, then the files no row claims.
+
+| Flag | Description |
+|------|-------------|
+| `--stage NAME` | Only this stage, and the annotation runs that borrowed its name. |
+| `--run N` | Only this run number within the stage. Drops the stage log and the unattributed files, neither of which has a run number. |
+| `--logs` | Print the stage log paths in place of the session files. Combines with `--events`. |
+| `--events` | Print the activity sidecar paths in place of the session files. Combines with `--logs`. |
+| `--all` | Print all three for every run. |
+
+The columns are stage, run, artifact, path, and, when there is something to say
+about the row, a reason or a note. The path column holds `-` when nothing on
+this machine matches, so a fourth-field filter in `awk` gives the files that
+exist. In the run column, `-` marks the stage log, which is per stage, and `?`
+marks a file no run claims, including the session of the stage running now.
+
+```text
+plan       0  session  /Users/a/.claude/projects/-Users-a-projects-kontora/2f1e0c7a-….jsonl
+implement  0  session  /Users/a/.kontora/logs/kon-q88f/pi-sessions/implement/01JC9….jsonl
+implement  1  session  /Users/a/.kontora/logs/kon-q88f/pi-sessions/implement/01JC9….jsonl  resumed: same file as run 0
+implement  2  session  -  no session recorded (run predates session_ref)
+review     0  session  -  session file missing: no /Users/a/.claude/projects/*/9a2c….jsonl
+ship       0  session  -  agent "shell-runner" writes no session
+```
+
+Three things worth knowing about the rows:
+
+- **A resumed run shares its file with the run it continued.** Claude's
+  `--resume` and pi's `--session` both append to the existing JSONL, so one
+  file can back several runs. The second row above says so rather than
+  pretending the run has a file of its own.
+- **A run that predates the `session_ref` field cannot be resolved back.** For
+  those tickets the command falls back to what is still on disk: a Claude
+  stage's last run is recovered from its session record, and a pi stage's
+  transcripts are listed with `?` in the run column, because nothing says which
+  file belongs to which run. The rest of such a ticket is gone for good: Claude
+  runs other than the last of each stage, the run each pi file belongs to, and
+  any run by an agent that is neither Claude nor pi.
+- **A run is never dropped.** A row with no path prints the reason instead,
+  because a missing row reads as "this stage never ran".
+
+`--logs` prints one row per stage, not per run: every run of a stage overwrites
+`<stage>.log`, so it only ever holds the newest one. `--events` is per run.
+
+Local only. Every path names a file on the machine that runs the command. In
+remote mode the daemon's path either does not exist here or, if the caller runs
+kontora too, holds another ticket's bytes.
+
 ### `kontora changes TICKET_ID`
 
 Prints the commits on the ticket's branch and the per-file line counts against its base. Needs a running daemon.
@@ -243,7 +295,7 @@ Setting `--url` or `KONTORA_URL` points every client command at a daemon over HT
 
 Supported: `ls`, `view`, `new`, `init`, `update`, `delete`, `run`, `pause`, `retry`, `cancel`, `done`, `move`, `skip`, `set-stage`, `note`, `summary`, `logs`, `activity`, `changes`, `stats`, `review`, `annotate`, `config`, `attach`.
 
-Rejected, because they act on local files: `edit`, `archive`, `estimate-compaction`, `doctor`, `start`, `setup`.
+Rejected, because they act on local files: `edit`, `archive`, `estimate-compaction`, `sessions`, `doctor`, `start`, `setup`.
 
 Unaffected, because they touch neither the daemon nor a config file: `fmt`, `completion`, `version`, `help`.
 

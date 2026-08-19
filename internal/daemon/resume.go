@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/worksonmyai/kontora/internal/config"
+	"github.com/worksonmyai/kontora/internal/session"
 )
 
 // Agent kinds Kontora knows how to resume. Any other agent always starts a new
@@ -26,22 +27,9 @@ const (
 //
 // It stays in logs_dir rather than in ticket frontmatter because everything it
 // points at is machine-local: Claude keys its session files by working
-// directory, and the pi session directory lives under logs_dir too.
-type resumeRecord struct {
-	// SessionID is the Claude session UUID. Pi leaves it empty: pi names its
-	// session file itself, so the file does not exist yet at write time and is
-	// resolved from the stage session directory at resume time instead.
-	SessionID string    `json:"session_id"`
-	Stage     string    `json:"stage"`
-	Agent     string    `json:"agent"`
-	Worktree  string    `json:"worktree"`
-	Instance  string    `json:"instance"`
-	StartedAt time.Time `json:"started_at"`
-
-	// sessionPath is the pi session file resumableRecord picked. It is resolved
-	// per resume attempt and never stored.
-	sessionPath string
-}
+// directory, and the pi session directory lives under logs_dir too. The CLI
+// reads the same file, so the shape lives in internal/session.
+type resumeRecord = session.Record
 
 // resumeAgentKind reports which resume flags apply to an agent, or "" when
 // Kontora cannot resume it. An agent with `resume: false` is never resumable.
@@ -56,7 +44,7 @@ func resumeAgentKind(agentCfg config.Agent) string {
 // log. Keying by (ticket, stage) is what keeps a stage from ever attaching to
 // another stage's conversation.
 func resumeRecordPath(cfg *config.Config, ticketID, stageName string) string {
-	return filepath.Join(expandTilde(cfg.LogsDir), ticketID, stageName+".session")
+	return session.RecordPath(expandTilde(cfg.LogsDir), ticketID, stageName)
 }
 
 // completedRecordPath names the session a stage left behind when its agent
@@ -67,14 +55,49 @@ func resumeRecordPath(cfg *config.Config, ticketID, stageName string) string {
 // file would make every ordinary retry resume, which the crash-recovery contract
 // forbids.
 func completedRecordPath(cfg *config.Config, ticketID, stageName string) string {
-	return filepath.Join(expandTilde(cfg.LogsDir), ticketID, stageName+".completed-session")
+	return session.CompletedRecordPath(expandTilde(cfg.LogsDir), ticketID, stageName)
 }
 
 // piSessionDir is the per-stage session storage pi writes into. Every stage of a
 // ticket materializes its log from this directory, so a shared one would give
 // each stage the same session.
 func piSessionDir(cfg *config.Config, ticketID, stageName string) string {
-	return filepath.Join(expandTilde(cfg.LogsDir), ticketID, "pi-sessions", stageName)
+	return session.PiDir(expandTilde(cfg.LogsDir), ticketID, stageName)
+}
+
+// runSessionRef names the session JSONL a finished run wrote, in the
+// machine-independent form ticket history stores: the Claude session UUID
+// Kontora minted, or the pi session file's path relative to the ticket's log
+// directory. It returns two empty strings for an agent that writes neither.
+//
+// A Claude run records its ID whether or not the glob finds the file. A run
+// that lost its session file still says which session it was, and a reader that
+// cannot find it reports a missing file rather than an unrecorded run.
+func runSessionRef(cfg *config.Config, ticketID string, params RunnerParams, since time.Time) (kind, ref string) {
+	switch {
+	case params.SessionID != "":
+		return agentKindClaude, params.SessionID
+	case params.SessionDir != "":
+		path := newestSessionFileSince(params.SessionDir, since)
+		if path == "" {
+			return "", ""
+		}
+		// An annotation run is given a session directory of its own, but it is
+		// still under the ticket, so one base covers both. A directory that is
+		// not, which only a hand-edited logs_dir can produce, records nothing:
+		// history must not carry a reference the reader would resolve against
+		// the wrong ticket.
+		rel, err := filepath.Rel(session.TicketDir(expandTilde(cfg.LogsDir), ticketID), path)
+		if err != nil {
+			return "", ""
+		}
+		rel = filepath.ToSlash(rel)
+		if !session.SafeRef(agentKindPi, rel) {
+			return "", ""
+		}
+		return agentKindPi, rel
+	}
+	return "", ""
 }
 
 // writeResumeRecord plants the crash-recovery record for a run about to start. A
@@ -225,7 +248,7 @@ func (d *Daemon) resumableRecord(p spawnAgentParams) *resumeRecord {
 		if path == "" {
 			return reject("session file not found", "session_dir", piSessionDir(p.cfg, p.ticketID, p.stageName))
 		}
-		rec.sessionPath = path
+		rec.SessionPath = path
 	}
 
 	// A live window means a process may still own the session. Attaching a

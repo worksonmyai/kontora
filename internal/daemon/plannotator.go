@@ -458,6 +458,7 @@ func (d *Daemon) runReworkStage(ctx, taskCtx context.Context, cfg *config.Config
 
 	usage, usageComplete := d.materializeAgentLogs(log, params, stageEventsPath(cfg, ticketID, config.ReworkStageName, runIndex), scope)
 	d.recordTokens(taskCtx, config.ReworkStageName, agentName, usage, usageComplete)
+	sessionKind, sessionRef := runSessionRef(cfg, ticketID, params, scope.startedAt)
 
 	if taskCtx.Err() != nil {
 		if ctx.Err() != nil {
@@ -504,6 +505,8 @@ func (d *Daemon) runReworkStage(ctx, taskCtx context.Context, cfg *config.Config
 		StartedAt:   t2.StartedAt,
 		CompletedAt: &result.ExitedAt,
 		Summary:     summary,
+		SessionKind: sessionKind,
+		SessionRef:  sessionRef,
 	})
 	_ = t2.SetField("history", history)
 	_ = t2.SetField("summary", summary)

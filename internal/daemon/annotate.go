@@ -571,6 +571,8 @@ func (d *Daemon) finishAnnotationRun(log *slog.Logger, p annotationExit) {
 		Summary:       runSummary(written, p.run.FinalMessage),
 		Kind:          ticket.KindAnnotation,
 		SessionReused: p.run.Resumed,
+		SessionKind:   p.run.SessionKind,
+		SessionRef:    p.run.SessionRef,
 	})
 	_ = t2.SetField("history", history)
 

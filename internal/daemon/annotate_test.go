@@ -1316,6 +1316,14 @@ func TestAnnotate_PiSessionDir(t *testing.T) {
 					require.NoError(t, err)
 					extensionContent = string(data)
 				}
+				// A real pi run appends to its session file, and that file is
+				// what the history row's reference has to name.
+				sessionFile := filepath.Join(p.SessionDir, "session.jsonl")
+				if i := slices.Index(p.Args, "--session"); i >= 0 {
+					sessionFile = p.Args[i+1]
+				}
+				require.NoError(t, os.MkdirAll(filepath.Dir(sessionFile), 0o755))
+				appendFile(t, sessionFile, "{}\n")
 				return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now()}, nil
 			})
 
@@ -1352,12 +1360,17 @@ func TestAnnotate_PiSessionDir(t *testing.T) {
 			require.Len(t, spawns, 1)
 			assert.Equal(t, tc.resume, got.History[0].SessionReused)
 
+			assert.Equal(t, agentKindPi, got.History[0].SessionKind)
 			if tc.resume {
 				assert.Equal(t, stageDir, spawns[0].SessionDir)
 				assert.Contains(t, spawns[0].Args, filepath.Join(stageDir, "session.jsonl"))
+				assert.Equal(t, "pi-sessions/step2/session.jsonl", got.History[0].SessionRef,
+					"a reusing run records the stage's own file")
 			} else {
 				assert.Equal(t, piSessionDir(h.cfg, id, "step2-annotation"), spawns[0].SessionDir)
 				assert.NotEqual(t, stageDir, spawns[0].SessionDir)
+				assert.Equal(t, "pi-sessions/step2-annotation/session.jsonl", got.History[0].SessionRef,
+					"a fresh annotation run records the file in its own directory")
 			}
 			assert.Contains(t, extensionContent, "const ENABLED = false;")
 			assert.Contains(t, extensionContent, "agent_settled")

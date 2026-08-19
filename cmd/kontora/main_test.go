@@ -119,6 +119,30 @@ func TestEstimateCompactionCommand(t *testing.T) {
 	t.Fatal("estimate-compaction not found in cli.Commands")
 }
 
+// TestSessionsCommand pins the local-only decision. Every path the verb prints
+// names a file on the machine that runs it, so a --url that made it answer for
+// another host would print paths the caller cannot open.
+func TestSessionsCommand(t *testing.T) {
+	for _, cmd := range cli.Commands {
+		if cmd.Name != "sessions" {
+			continue
+		}
+		assert.False(t, cmd.Remote, "sessions must be local-only")
+		assert.True(t, cmd.Config, "sessions reads the config for logs_dir and tickets_dir")
+		assert.True(t, cmd.TicketID, "sessions takes a ticket ID")
+
+		flags := make(map[string]bool)
+		for _, f := range cmd.Flags {
+			flags[f.Name] = true
+		}
+		for _, name := range []string{"stage", "run", "logs", "events", "all"} {
+			assert.True(t, flags[name], "must have --%s flag", name)
+		}
+		return
+	}
+	t.Fatal("sessions not found in cli.Commands")
+}
+
 // TestCLIDocsCoverEveryCommand keeps docs/cli.md honest: a command added to the
 // table without a docs entry is the drift that left view, delete, skip,
 // set-stage and fmt undocumented for as long as they existed.

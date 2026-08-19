@@ -179,11 +179,15 @@ history:
     exit_code: 0
     started_at: 2026-03-01T10:01:00Z
     completed_at: 2026-03-01T10:05:00Z
+    session_kind: claude
+    session_ref: 2f1e0c7a-9b3e-4d21-8f77-0c1a5e6b2d44
   - stage: code
     agent: claude-sonnet
     exit_code: 1
     started_at: 2026-03-01T10:06:00Z
     completed_at: 2026-03-01T10:15:00Z
+    session_kind: pi
+    session_ref: pi-sessions/code/01JC9F3K7Q.jsonl
 ```
 
 `model` and `effort` are what the agent ran with for that run, resolved from the
@@ -191,6 +195,25 @@ stage override, then the agent's own key, then the flags in the agent's `args`.
 An absent key means nothing selected one and the agent used its CLI's own
 default. They are not what the agent reported running as: an agent given
 `model: opus` can report `claude-opus-4-6`.
+
+`session_kind` and `session_ref` name the agent's own session JSONL for that
+run. `kontora sessions` turns them back into paths; see
+[the CLI reference](cli.md#kontora-sessions-flags-ticket_id). Both are absent
+when the run wrote no session Kontora can point at, which is every run by an
+agent that is neither Claude nor pi, and every run recorded before the two
+fields existed.
+
+The reference is an identifier rather than a path, because a path would name a
+file on one machine and ticket files travel between them. For `claude` it is the
+session UUID Kontora minted, resolved against
+`$CLAUDE_CONFIG_DIR/projects/*/<uuid>.jsonl`; for `pi` it is the file's path
+relative to `<logs_dir>/<ticket-id>`, because pi names its own file. Read on the
+wrong machine, an identifier visibly resolves to nothing, while an absolute path
+often points at a real file holding another run's bytes.
+
+`session_kind` is recorded rather than derived from `agent`, because `agent` is a
+config name and the config that gave it a kind can be edited or gone by the time
+the row is read.
 
 ## Notes
 

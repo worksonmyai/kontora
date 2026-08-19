@@ -338,8 +338,8 @@ func TestAnnotationReturnStatusRoundTrip(t *testing.T) {
 }
 
 // TestHistoryEntryKindRoundTrip pins the optional fields a run adds to a history
-// entry: model, effort, kind and session_reused all carry omitempty, so a write
-// leaves an entry that has none of them alone. started_at and completed_at do
+// entry: model, effort, kind, session_reused, session_kind and session_ref all
+// carry omitempty, so a write leaves an entry that has none of them alone. started_at and completed_at do
 // not, and every write adds them as nulls to an entry that never carried them.
 func TestHistoryEntryKindRoundTrip(t *testing.T) {
 	src := "---\nid: hk-001\nkontora: true\nstatus: todo\nhistory:\n  - stage: code\n    agent: claude\n    exit_code: 0\n---\n# body\n"
@@ -350,6 +350,8 @@ func TestHistoryEntryKindRoundTrip(t *testing.T) {
 	assert.False(t, tkt.History[0].SessionReused, "a stage run says nothing about session reuse")
 	assert.Empty(t, tkt.History[0].Model, "an entry written before the field existed has no model")
 	assert.Empty(t, tkt.History[0].Effort)
+	assert.Empty(t, tkt.History[0].SessionKind, "an entry written before the field existed names no runtime")
+	assert.Empty(t, tkt.History[0].SessionRef)
 
 	require.NoError(t, tkt.SetField("history", append(tkt.History, HistoryEntry{
 		Stage:         "code",
@@ -358,6 +360,8 @@ func TestHistoryEntryKindRoundTrip(t *testing.T) {
 		Effort:        "low",
 		Kind:          KindAnnotation,
 		SessionReused: true,
+		SessionKind:   "pi",
+		SessionRef:    "pi-sessions/code/01JC9.jsonl",
 	})))
 
 	out, err := tkt.Marshal()
@@ -366,6 +370,8 @@ func TestHistoryEntryKindRoundTrip(t *testing.T) {
 	assert.Equal(t, 1, strings.Count(string(out), "session_reused: true"))
 	assert.Equal(t, 1, strings.Count(string(out), "model: haiku"))
 	assert.Equal(t, 1, strings.Count(string(out), "effort: low"))
+	assert.Equal(t, 1, strings.Count(string(out), "session_kind: pi"))
+	assert.Equal(t, 1, strings.Count(string(out), "session_ref: pi-sessions/code/01JC9.jsonl"))
 
 	// The entry that came in keeps the three keys it had, plus the two the type
 	// writes unconditionally. An optional field that lost its omitempty would
@@ -381,10 +387,14 @@ func TestHistoryEntryKindRoundTrip(t *testing.T) {
 	assert.False(t, reparsed.History[0].SessionReused)
 	assert.Empty(t, reparsed.History[0].Model)
 	assert.Empty(t, reparsed.History[0].Effort)
+	assert.Empty(t, reparsed.History[0].SessionKind)
+	assert.Empty(t, reparsed.History[0].SessionRef)
 	assert.Equal(t, KindAnnotation, reparsed.History[1].Kind)
 	assert.True(t, reparsed.History[1].SessionReused)
 	assert.Equal(t, "haiku", reparsed.History[1].Model)
 	assert.Equal(t, "low", reparsed.History[1].Effort)
+	assert.Equal(t, "pi", reparsed.History[1].SessionKind)
+	assert.Equal(t, "pi-sessions/code/01JC9.jsonl", reparsed.History[1].SessionRef)
 }
 
 func TestSetFieldExisting(t *testing.T) {

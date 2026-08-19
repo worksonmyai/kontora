@@ -262,7 +262,7 @@ func TestResumableRecordGuards(t *testing.T) {
 			if tc.binary == "pi" {
 				assert.Equal(t,
 					filepath.Join(f.h.logsDir, resumeTicketID, "pi-sessions", "code", "session-code.jsonl"),
-					got.sessionPath)
+					got.SessionPath)
 			} else {
 				assert.Equal(t, resumeTestSessionID, got.SessionID)
 			}
@@ -295,7 +295,7 @@ func TestPiResumeSessionFileIgnoresEarlierAttempts(t *testing.T) {
 	plantPiSession(t, f.p.cfg, f.p.ticketID, f.p.stageName, "interrupted.jsonl", started.Add(time.Minute))
 	got := f.d.resumableRecord(f.p)
 	require.NotNil(t, got)
-	assert.Equal(t, "interrupted.jsonl", filepath.Base(got.sessionPath))
+	assert.Equal(t, "interrupted.jsonl", filepath.Base(got.SessionPath))
 }
 
 // resumeDaemon runs a real daemon over the one-stage pipeline and records every
@@ -810,4 +810,82 @@ func TestResumeFallbackFailurePausesWithoutRetrying(t *testing.T) {
 	assert.Len(t, rd.invocations(t), 2, "a failed fallback is not retried again")
 	tk := rd.h.readTask(resumeTicketID + ".md")
 	assert.Contains(t, tk.LastError, "runner failed")
+}
+
+// TestRunSessionRef covers what a finished run records in history. The Claude
+// case deliberately plants no session file: the reference is the ID Kontora
+// minted, and finding the file is the reader's job.
+func TestRunSessionRef(t *testing.T) {
+	since := time.Now()
+
+	tests := []struct {
+		name string
+		// plant returns the params the run finished with. Anything it writes
+		// goes under cfg's logs dir.
+		plant    func(t *testing.T, cfg *config.Config) RunnerParams
+		wantKind string
+		wantRef  string
+	}{
+		{
+			name: "claude records the session id",
+			plant: func(*testing.T, *config.Config) RunnerParams {
+				return RunnerParams{SessionID: resumeTestSessionID}
+			},
+			wantKind: agentKindClaude,
+			wantRef:  resumeTestSessionID,
+		},
+		{
+			name: "pi records the file written after the run started",
+			plant: func(t *testing.T, cfg *config.Config) RunnerParams {
+				plantPiSession(t, cfg, resumeTicketID, "code", "01JC9.jsonl", since.Add(time.Second))
+				return RunnerParams{SessionDir: piSessionDir(cfg, resumeTicketID, "code")}
+			},
+			wantKind: agentKindPi,
+			wantRef:  "pi-sessions/code/01JC9.jsonl",
+		},
+		{
+			name: "pi annotation run records its own directory",
+			plant: func(t *testing.T, cfg *config.Config) RunnerParams {
+				plantPiSession(t, cfg, resumeTicketID, "code-annotation", "01JCA.jsonl", since.Add(time.Second))
+				return RunnerParams{SessionDir: piSessionDir(cfg, resumeTicketID, "code-annotation")}
+			},
+			wantKind: agentKindPi,
+			wantRef:  "pi-sessions/code-annotation/01JCA.jsonl",
+		},
+		{
+			name: "pi records nothing when only an older file is there",
+			plant: func(t *testing.T, cfg *config.Config) RunnerParams {
+				plantPiSession(t, cfg, resumeTicketID, "code", "old.jsonl", since.Add(-time.Hour))
+				return RunnerParams{SessionDir: piSessionDir(cfg, resumeTicketID, "code")}
+			},
+		},
+		{
+			name: "pi records nothing when the file lands outside the ticket",
+			plant: func(t *testing.T, _ *config.Config) RunnerParams {
+				dir := t.TempDir()
+				path := filepath.Join(dir, "elsewhere.jsonl")
+				require.NoError(t, os.WriteFile(path, []byte("{}\n"), 0o644))
+				require.NoError(t, os.Chtimes(path, since.Add(time.Second), since.Add(time.Second)))
+				return RunnerParams{SessionDir: dir}
+			},
+		},
+		{
+			name: "an agent with neither locator records nothing",
+			plant: func(*testing.T, *config.Config) RunnerParams {
+				return RunnerParams{}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := newHarness(t)
+			cfg := h.defaultConfig("true", "true")
+			params := tt.plant(t, cfg)
+
+			kind, ref := runSessionRef(cfg, resumeTicketID, params, since)
+			assert.Equal(t, tt.wantKind, kind)
+			assert.Equal(t, tt.wantRef, ref)
+		})
+	}
 }

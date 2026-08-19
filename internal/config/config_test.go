@@ -263,26 +263,50 @@ pipelines:
 	}
 }
 
-func TestCheckpointCompactionTokensWrappedPi(t *testing.T) {
-	input := `
+func TestCheckpointCompactionTokensSupportedAgents(t *testing.T) {
+	const base = `
 agents:
-  my-pi:
-    binary: nono
-    args: ["run", "--", "pi"]
-    checkpoint_compaction_tokens: 25000
+  agent:
+%s
+    checkpoint_compaction_tokens: %d
 stages:
   s:
     prompt: do stuff
 pipelines:
   p:
     - stage: s
-      agent: my-pi
+      agent: agent
       on_success: done
       on_failure: pause
 `
-	cfg, err := LoadReader(strings.NewReader(input))
-	require.NoError(t, err)
-	assert.Equal(t, 25000, cfg.Agents["my-pi"].CheckpointCompactionTokens)
+	tests := []struct {
+		name      string
+		agentYAML string
+		tokens    int
+	}{
+		{
+			name:      "wrapped pi",
+			agentYAML: "    binary: nono\n    args: [\"run\", \"--\", \"pi\"]",
+			tokens:    25000,
+		},
+		{
+			name:      "claude",
+			agentYAML: "    binary: claude",
+			tokens:    120000,
+		},
+		{
+			name:      "wrapped claude",
+			agentYAML: "    binary: nono\n    args: [\"run\", \"--\", \"claude\"]",
+			tokens:    120000,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg, err := LoadReader(strings.NewReader(fmt.Sprintf(base, tt.agentYAML, tt.tokens)))
+			require.NoError(t, err)
+			assert.Equal(t, tt.tokens, cfg.Agents["agent"].CheckpointCompactionTokens)
+		})
+	}
 }
 
 func TestCheckpointCompactionTokensNonPiOtherBinary(t *testing.T) {
@@ -305,7 +329,7 @@ pipelines:
 	require.Error(t, err)
 	assert.ErrorContains(t, err, `agent "programmator"`)
 	assert.ErrorContains(t, err, "checkpoint_compaction_tokens")
-	assert.ErrorContains(t, err, "only pi")
+	assert.ErrorContains(t, err, "only pi and claude")
 }
 
 func TestLoadResumeSettings(t *testing.T) {
@@ -1721,9 +1745,9 @@ func TestLoadProjectsRejected(t *testing.T) {
 			wantErr: []string{`agent "pi"`, "checkpoint_compaction_tokens", "must not be negative"},
 		},
 		{
-			name:    "checkpoint compaction tokens on a non-pi agent",
-			fixture: "checkpoint_compaction_non_pi.yaml",
-			wantErr: []string{`agent "claude"`, "checkpoint_compaction_tokens", "only pi"},
+			name:    "checkpoint compaction tokens on an unsupported agent",
+			fixture: "checkpoint_compaction_unsupported_agent.yaml",
+			wantErr: []string{`agent "codex"`, "checkpoint_compaction_tokens", "only pi and claude"},
 		},
 	}
 

@@ -1,9 +1,9 @@
 tickets_dir: ~/org/tickets
-default_agent: claude
+default_agent: codex
 
 agents:
-  claude:
-    binary: claude
+  codex:
+    binary: codex
     checkpoint_compaction_tokens: 10000
 
 stages:
@@ -13,6 +13,6 @@ stages:
 pipelines:
   default:
     - stage: code
-      agent: claude
+      agent: codex
       on_success: done
       on_failure: pause

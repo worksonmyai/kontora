@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"regexp"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -23,11 +25,13 @@ import (
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 
+	"github.com/worksonmyai/kontora/internal/cli"
 	"github.com/worksonmyai/kontora/internal/config"
 	"github.com/worksonmyai/kontora/internal/logfmt"
 	"github.com/worksonmyai/kontora/internal/process"
 	"github.com/worksonmyai/kontora/internal/testutil"
 	"github.com/worksonmyai/kontora/internal/ticket"
+	"github.com/worksonmyai/kontora/internal/tmux"
 	"github.com/worksonmyai/kontora/internal/web"
 	"github.com/worksonmyai/kontora/internal/worktree"
 )
@@ -849,14 +853,14 @@ func TestNoteInstructionAppended(t *testing.T) {
 
 func TestBuildOperationalAppendix(t *testing.T) {
 	cases := []struct {
-		name              string
-		taskID            string
-		filePath          string
-		wtPath            string
-		isPipeline        bool
-		checkpointEnabled bool
-		wantAll           []string
-		wantNone          []string
+		name           string
+		taskID         string
+		filePath       string
+		wtPath         string
+		isPipeline     bool
+		checkpointKind string
+		wantAll        []string
+		wantNone       []string
 	}{
 		{
 			name:       "simple task includes context but not pipeline instruction",
@@ -900,12 +904,12 @@ func TestBuildOperationalAppendix(t *testing.T) {
 			},
 		},
 		{
-			name:              "checkpoint enabled adds phase guidance",
-			taskID:            "chk-1234",
-			filePath:          "/tasks/chk-1234.md",
-			wtPath:            "/worktrees/chk-1234",
-			isPipeline:        true,
-			checkpointEnabled: true,
+			name:           "pi checkpoint adds phase guidance",
+			taskID:         "chk-1234",
+			filePath:       "/tasks/chk-1234.md",
+			wtPath:         "/worktrees/chk-1234",
+			isPipeline:     true,
+			checkpointKind: config.AgentKindPi,
 			wantAll: []string{
 				"## Phase checkpoints",
 				"Run the tests for the completed phase",
@@ -916,14 +920,36 @@ func TestBuildOperationalAppendix(t *testing.T) {
 				"next_phase",
 				"Do not call the tool after the final phase",
 			},
+			wantNone: []string{
+				"kontora phase-complete",
+			},
 		},
 		{
-			name:              "simple task with checkpoint",
-			taskID:            "chk-5678",
-			filePath:          "/tasks/chk-5678.md",
-			wtPath:            "/worktrees/chk-5678",
-			isPipeline:        false,
-			checkpointEnabled: true,
+			name:           "claude checkpoint names the command",
+			taskID:         "chk-9012",
+			filePath:       "/tasks/chk-9012.md",
+			wtPath:         "/worktrees/chk-9012",
+			isPipeline:     true,
+			checkpointKind: config.AgentKindClaude,
+			wantAll: []string{
+				"## Phase checkpoints",
+				"Run the tests for the completed phase",
+				"kontora phase-complete chk-9012 --completed",
+				"--next",
+				"end your turn",
+				"Do not run the command after the final phase",
+			},
+			wantNone: []string{
+				"`kontora_phase_complete`",
+			},
+		},
+		{
+			name:           "simple task with checkpoint",
+			taskID:         "chk-5678",
+			filePath:       "/tasks/chk-5678.md",
+			wtPath:         "/worktrees/chk-5678",
+			isPipeline:     false,
+			checkpointKind: config.AgentKindPi,
 			wantAll: []string{
 				"## Phase checkpoints",
 				"`kontora_phase_complete`",
@@ -936,7 +962,7 @@ func TestBuildOperationalAppendix(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := buildOperationalAppendix(tc.taskID, tc.filePath, tc.wtPath, tc.isPipeline, tc.checkpointEnabled)
+			got := buildOperationalAppendix(tc.taskID, tc.filePath, tc.wtPath, tc.isPipeline, tc.checkpointKind)
 			for _, want := range tc.wantAll {
 				assert.Contains(t, got, want)
 			}
@@ -4492,4 +4518,167 @@ func TestHistoryRecordsTheSession(t *testing.T) {
 			require.NoError(t, <-errCh)
 		})
 	}
+}
+
+// TestClaudeCheckpointWiring covers what a threshold on a Claude agent turns on:
+// the PostCompact hook, the sidecar in the environment, the idle callback and
+// the prompt block. A run without one must be byte-for-byte what it was.
+func TestClaudeCheckpointWiring(t *testing.T) {
+	cases := []struct {
+		name      string
+		threshold int
+		want      bool
+	}{
+		{name: "no threshold"},
+		{name: "zero threshold", threshold: 0},
+		{name: "positive threshold", threshold: 120000, want: true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			cfg := h.defaultConfig("claude", "true")
+			agentCfg := cfg.Agents["agent1"]
+			agentCfg.CheckpointCompactionTokens = tc.threshold
+			cfg.Agents["agent1"] = agentCfg
+
+			var (
+				capturedParams RunnerParams
+				settings       string
+				prompt         string
+			)
+			capturingRunner := func(_ context.Context, p RunnerParams) (process.Result, error) {
+				capturedParams = p
+				if idx := slices.Index(p.Args, "--settings"); idx >= 0 && idx+1 < len(p.Args) {
+					if data, err := os.ReadFile(p.Args[idx+1]); err == nil {
+						settings = string(data)
+					}
+				}
+				prompt = renderedPrompt(p)
+				return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now()}, nil
+			}
+
+			d := h.newDaemon(cfg, WithRunner(capturingRunner))
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+
+			errCh := make(chan error, 1)
+			go func() { errCh <- d.Run(ctx) }()
+			time.Sleep(200 * time.Millisecond)
+
+			h.writeTicket("tst-ccw.md", h.taskMD("tst-ccw", "todo", "one-stage"))
+			h.waitForStatus("tst-ccw.md", ticket.StatusDone, 10*time.Second)
+
+			assert.Contains(t, settings, `"Stop"`, "the exit hook is always there")
+			if tc.want {
+				assert.Contains(t, settings, `"PostCompact"`)
+				assert.Contains(t, settings, h.tmuxSession+"-tst-ccw-compact-step1-0",
+					"the compact channel is scoped to this run")
+				assert.Equal(t, h.tmuxSession+"-tst-ccw-compact-step1-0", capturedParams.CompactChannel)
+				assert.Equal(t, filepath.Join(h.logsDir, "tst-ccw", "step1.0.checkpoints.jsonl"),
+					capturedParams.Env[cli.CheckpointFileEnvVar])
+				assert.NotNil(t, capturedParams.OnIdle)
+				assert.Contains(t, prompt, "## Phase checkpoints")
+				assert.Contains(t, prompt, "kontora phase-complete tst-ccw --completed")
+			} else {
+				assert.NotContains(t, settings, "PostCompact")
+				assert.NotContains(t, capturedParams.Env, cli.CheckpointFileEnvVar)
+				assert.Nil(t, capturedParams.OnIdle)
+				assert.NotContains(t, prompt, "## Phase checkpoints")
+			}
+
+			cancel()
+			require.NoError(t, <-errCh)
+		})
+	}
+}
+
+// TestClaudeCheckpointTwoPhaseRun drives a run through two phase boundaries the
+// way the tmux runner does: the agent writes a checkpoint record, the runner
+// asks for a decision, and the transcript grows in between.
+func TestClaudeCheckpointTwoPhaseRun(t *testing.T) {
+	h := newHarness(t)
+	cfg := h.defaultConfig("claude", "true")
+	agentCfg := cfg.Agents["agent1"]
+	agentCfg.CheckpointCompactionTokens = 100000
+	cfg.Agents["agent1"] = agentCfg
+
+	claudeDir := t.TempDir()
+	cfg.Environment = map[string]string{"CLAUDE_CONFIG_DIR": claudeDir}
+
+	var decisions []tmux.IdleDecision
+	var sidecar string
+
+	runner := func(runCtx context.Context, p RunnerParams) (process.Result, error) {
+		require.NotNil(t, p.OnIdle)
+		sidecar = p.Env[cli.CheckpointFileEnvVar]
+
+		transcript := filepath.Join(claudeDir, "projects", "proj", p.SessionID+".jsonl")
+		require.NoError(t, os.MkdirAll(filepath.Dir(transcript), 0o755))
+		appendLine := func(line string) {
+			f, err := os.OpenFile(transcript, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+			require.NoError(t, err)
+			_, err = f.WriteString(line + "\n")
+			require.NoError(t, err)
+			require.NoError(t, f.Close())
+		}
+		assistant := func(tokens int) string {
+			return `{"type":"assistant","isSidechain":false,"message":{"usage":{"input_tokens":0,` +
+				`"cache_read_input_tokens":` + strconv.Itoa(tokens) + `,"cache_creation_input_tokens":0}}}`
+		}
+
+		// Phase 1 ends with a context well over the threshold.
+		appendLine(assistant(150000))
+		require.NoError(t, cli.PhaseComplete(sidecar, "Phase 1: a", "Phase 2: b", time.Now(), io.Discard))
+		decisions = append(decisions, p.OnIdle(runCtx, tmux.IdleEvent{}))
+
+		// The compaction lands and phase 2 runs inside the smaller context.
+		appendLine(`{"type":"system","subtype":"compact_boundary","compactMetadata":{"trigger":"manual","preTokens":150000}}`)
+		appendLine(assistant(9000))
+		require.NoError(t, cli.PhaseComplete(sidecar, "Phase 2: b", "Phase 3: c", time.Now(), io.Discard))
+		decisions = append(decisions, p.OnIdle(runCtx, tmux.IdleEvent{}))
+
+		return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now()}, nil
+	}
+
+	d := h.newDaemon(cfg, WithRunner(runner))
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- d.Run(ctx) }()
+	time.Sleep(200 * time.Millisecond)
+
+	h.writeTicket("tst-cc2.md", h.taskMD("tst-cc2", "todo", "one-stage"))
+	h.waitForStatus("tst-cc2.md", ticket.StatusDone, 20*time.Second)
+
+	require.Len(t, decisions, 2)
+	assert.Equal(t, tmux.IdleCompact, decisions[0].Action)
+	assert.Contains(t, decisions[0].CompactInstructions, "Phase 2: b")
+	assert.Contains(t, decisions[0].Continuation, "Continue with Phase 2: b.")
+	assert.Equal(t, tmux.IdlePrompt, decisions[1].Action)
+	assert.Contains(t, decisions[1].Continuation, "Continue with Phase 3: c.")
+
+	data, err := os.ReadFile(sidecar)
+	require.NoError(t, err)
+	var phases, outcomes []cli.CheckpointRecord
+	for line := range strings.SplitSeq(strings.TrimSpace(string(data)), "\n") {
+		var rec cli.CheckpointRecord
+		require.NoError(t, json.Unmarshal([]byte(line), &rec))
+		switch rec.Kind {
+		case cli.CheckpointKindPhaseComplete:
+			phases = append(phases, rec)
+		case cli.CheckpointKindOutcome:
+			outcomes = append(outcomes, rec)
+		}
+	}
+	assert.Len(t, phases, 2)
+	require.Len(t, outcomes, 2)
+	assert.Equal(t, cli.CheckpointOutcomeCompacted, outcomes[0].Outcome)
+	assert.Equal(t, 150000, outcomes[0].PreTokens)
+	assert.Equal(t, cli.CheckpointOutcomeSkipped, outcomes[1].Outcome)
+	assert.Equal(t, 9000, outcomes[1].ContextTokens)
+
+	cancel()
+	require.NoError(t, <-errCh)
 }

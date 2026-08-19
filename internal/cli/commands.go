@@ -112,6 +112,10 @@ var Commands = []Command{
 		{Name: "thresholds", Desc: "Comma-separated token thresholds", Value: "text"},
 		{Name: "top", Desc: "Number of top sessions to show", Value: "text"},
 	}},
+	{Name: "phase-complete", Desc: "Signal a phase boundary from inside a checkpointing run", TicketID: true, Flags: []Flag{
+		{Name: "completed", Desc: "The phase that just finished", Value: "text"},
+		{Name: "next", Desc: "The phase to begin next", Value: "text"},
+	}},
 	{Name: "review", Desc: "Open a ticket's diff in Plannotator on the daemon host", Config: true, Remote: true, TicketID: true},
 	{Name: "annotate", Desc: "Open a ticket's markdown in Plannotator on the daemon host", Config: true, Remote: true, TicketID: true},
 	{Name: "attach", Desc: "Attach to a running ticket", Config: true, Remote: true, TicketID: true, Flags: []Flag{

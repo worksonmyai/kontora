@@ -181,6 +181,17 @@ Moves the ticket to a named stage of its pipeline without running anything.
 
 Append a timestamped note, or set the ticket's one-line summary. Both read the text from stdin when it is not given as an argument, so `git log --oneline | kontora note kon-q88f` works.
 
+### `kontora phase-complete TICKET_ID --completed TEXT --next TEXT`
+
+Signals a boundary between two top-level ticket phases. Agents call it, not people. It appends one record to the sidecar named by `KONTORA_CHECKPOINT_FILE` and prints what the agent should do next; it reads no config and talks to no daemon.
+
+| Flag | Description |
+|------|-------------|
+| `--completed TEXT` | The phase that just finished, e.g. `Phase 2: Expose the estimator`. Required. |
+| `--next TEXT` | The phase to begin next. Required. |
+
+The daemon sets `KONTORA_CHECKPOINT_FILE` only for runs whose agent has a positive `checkpoint_compaction_tokens`. Without it the command records nothing, prints that checkpoint compaction is off for the run, and exits 0, so an agent that calls it in an unrelated run is not derailed.
+
 ## Relations
 
 A ticket carries two relation lists in its frontmatter. `deps` names the tickets it waits on, and the daemon will not run it until every one of them is `done`, `cancelled`, `archived`, or legacy `closed`. See [dependency-aware scheduling](tickets.md#dependency-aware-scheduling). `links` is a symmetric "related" list that means nothing to the scheduler.
@@ -379,6 +390,6 @@ Supported: `ls`, `view`, `new`, `init`, `update`, `delete`, `run`, `pause`, `ret
 
 Rejected, because they act on local files: `edit`, `search`, `archive`, `estimate-compaction`, `sessions`, `doctor`, `start`, `setup`.
 
-Unaffected, because they touch neither the daemon nor a config file: `fmt`, `completion`, `version`, `help`.
+Unaffected, because they touch neither the daemon nor a config file: `fmt`, `completion`, `version`, `help`, `phase-complete`.
 
 Paths passed to `--path` name locations on the daemon host, not on the caller's machine.

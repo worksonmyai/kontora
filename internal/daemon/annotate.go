@@ -414,7 +414,7 @@ func (d *Daemon) runAnnotationRun(ctx, taskCtx context.Context, cfg *config.Conf
 		return
 	}
 	if rendered != "" {
-		rendered += buildOperationalAppendix(t.ID, filePath, wtPath, false, false)
+		rendered += buildOperationalAppendix(t.ID, filePath, wtPath, false, "")
 	}
 
 	runIndex := stageRunIndex(t, stageName)

@@ -172,7 +172,8 @@ The config fails to load when any of these does not hold:
   is named `claude` or when exactly one agent is defined. Two or more agents
   with none named `claude` need it set explicitly.
 - `checkpoint_compaction_tokens` is non-negative. A positive value is valid only
-  on a `pi` agent, including a wrapped agent such as `nono run -- pi`.
+  on a `pi` or `claude` agent, including a wrapped one such as `nono run -- pi`
+  or `nono run -- claude`.
 - No agent and no pipeline is named `none`. That word is the opt-out sentinel.
 - Every pipeline has at least one step.
 - Every pipeline step names a stage and an agent that exist.

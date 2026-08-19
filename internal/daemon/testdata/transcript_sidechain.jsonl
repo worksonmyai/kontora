@@ -1,0 +1,2 @@
+{"type":"assistant","isSidechain":false,"message":{"usage":{"input_tokens":5,"cache_read_input_tokens":1000,"cache_creation_input_tokens":200,"output_tokens":40}}}
+{"type":"assistant","isSidechain":true,"message":{"usage":{"input_tokens":9,"cache_read_input_tokens":90000,"cache_creation_input_tokens":1,"output_tokens":10}}}

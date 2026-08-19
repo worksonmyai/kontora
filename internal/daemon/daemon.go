@@ -25,6 +25,7 @@ import (
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/metric/noop"
 
+	"github.com/worksonmyai/kontora/internal/cli"
 	"github.com/worksonmyai/kontora/internal/config"
 	"github.com/worksonmyai/kontora/internal/hook"
 	"github.com/worksonmyai/kontora/internal/logfmt"
@@ -118,6 +119,14 @@ type RunnerParams struct {
 	SessionDir  string            // pi session directory; used for session JSONL materialization after agent exit
 	Env         map[string]string // environment variables to set for the agent process
 	OnReady     func()            // called after the agent process is running (e.g. tmux window created)
+	// OnIdle is asked what to do each time an interactive agent signals it is
+	// idle. Nil, which is every run but a checkpointing Claude one, finishes the
+	// run on the first signal. DirectRunner ignores it: without a terminal there
+	// is nothing to type into.
+	OnIdle func(context.Context, tmux.IdleEvent) tmux.IdleDecision
+	// CompactChannel is the tmux wait-for channel this run's PostCompact hook
+	// signals. Empty for every run that does not checkpoint.
+	CompactChannel string
 }
 
 // DirectRunner wraps process.Run for use without tmux (useful in tests).
@@ -156,17 +165,19 @@ func envPairs(env map[string]string) []string {
 // tmuxRunner wraps tmux.Run for use as a RunnerFunc.
 func tmuxRunner(ctx context.Context, p RunnerParams) (process.Result, error) {
 	return tmux.Run(ctx, tmux.RunParams{
-		Binary:      p.Binary,
-		Args:        p.Args,
-		Dir:         p.Dir,
-		Timeout:     p.Timeout,
-		TicketID:    p.TicketID,
-		SessionName: p.SessionName,
-		LogFile:     p.LogFile,
-		Interactive: p.Interactive,
-		SessionID:   p.SessionID,
-		Env:         p.Env,
-		OnReady:     p.OnReady,
+		Binary:         p.Binary,
+		Args:           p.Args,
+		Dir:            p.Dir,
+		Timeout:        p.Timeout,
+		TicketID:       p.TicketID,
+		SessionName:    p.SessionName,
+		LogFile:        p.LogFile,
+		Interactive:    p.Interactive,
+		SessionID:      p.SessionID,
+		Env:            p.Env,
+		OnReady:        p.OnReady,
+		OnIdle:         p.OnIdle,
+		CompactChannel: p.CompactChannel,
 	})
 }
 
@@ -1391,7 +1402,7 @@ func (d *Daemon) runTicket(ctx context.Context, ticketID string) {
 		return
 	}
 	if rendered != "" {
-		rendered += buildOperationalAppendix(t.ID, filePath, wtPath, true, piCheckpointEnabled(agentCfg))
+		rendered += buildOperationalAppendix(t.ID, filePath, wtPath, true, checkpointKind(agentCfg))
 	}
 
 	log.Info("spawning agent", "agent", agentName, "stage", stageName, "binary", agentCfg.Binary)
@@ -1523,7 +1534,7 @@ func (d *Daemon) runSimpleTicket(ctx, taskCtx context.Context, cfg *config.Confi
 		return
 	}
 	if rendered != "" {
-		rendered += buildOperationalAppendix(t.ID, filePath, wtPath, false, piCheckpointEnabled(agentCfg))
+		rendered += buildOperationalAppendix(t.ID, filePath, wtPath, false, checkpointKind(agentCfg))
 	}
 
 	log.Info("spawning agent", "agent", agentName, "binary", agentCfg.Binary)
@@ -2249,7 +2260,24 @@ func (d *Daemon) runAgentOnce(taskCtx context.Context, t *ticket.Ticket, p spawn
 	// buildAgentArgs takes; the effective pair is what actually reaches the CLI
 	// once the agent's own defaults apply.
 	effModel, effEffort := p.agentCfg.Effective(model, effort)
-	args, settingsFile, sessionID, err := buildAgentArgs(p.agentCfg, rendered, tmux.ChannelName(d.tmuxSession, p.ticketID), model, effort, rec, !p.annotation)
+	// Only a Claude stage run is driven through phase boundaries: pi does its own
+	// compaction from the extension, and an annotation run rewrites the ticket
+	// rather than working through its phases.
+	var ckpt checkpointSetup
+	if !p.annotation && checkpointKind(p.agentCfg) == config.AgentKindClaude {
+		ckpt = checkpointSetup{
+			sidecar:   checkpointsPath(p.cfg, p.ticketID, p.stageName, p.run),
+			threshold: p.agentCfg.CheckpointCompactionTokens,
+			log:       p.log,
+		}
+		if ckpt.enabled() {
+			// The stage and the run index scope the channel to this run, so a
+			// compaction a previous one left latched is not read as this one's.
+			ckpt.compactChannel = tmux.CompactChannelName(d.tmuxSession, p.ticketID,
+				fmt.Sprintf("%s-%d", p.stageName, p.run))
+		}
+	}
+	args, settingsFile, sessionID, err := buildAgentArgs(p.agentCfg, rendered, tmux.ChannelName(d.tmuxSession, p.ticketID), ckpt.compactChannel, model, effort, rec, !p.annotation)
 	if err != nil {
 		p.log.Error("build agent args failed", "err", err)
 		return agentAttempt{pauseReason: "build agent args failed: " + err.Error()}
@@ -2266,7 +2294,7 @@ func (d *Daemon) runAgentOnce(taskCtx context.Context, t *ticket.Ticket, p spawn
 		d.writeResumeRecord(p, kind, sessionID)
 	}
 
-	params := d.buildRunnerParams(p.cfg, p.agentCfg, p.stageCfg, binaryPath, args, p.wtPath, p.ticketID, p.stageName, p.sessionStage(rec), sessionID)
+	params := d.buildRunnerParams(p.cfg, p.agentCfg, p.stageCfg, binaryPath, args, p.wtPath, p.ticketID, p.stageName, p.sessionStage(rec), sessionID, ckpt)
 	// An annotation run continues the session the stage already finished, and
 	// Claude's --resume and pi's --session <path> both append to that same
 	// JSONL, so the totals read once it returns carry the tokens the stage
@@ -2392,7 +2420,7 @@ func (d *Daemon) buildResumePrompt(t *ticket.Ticket, p spawnAgentParams) (string
 		return "", err
 	}
 	if rendered != "" {
-		rendered += buildOperationalAppendix(t.ID, p.filePath, p.wtPath, p.isPipeline, !p.annotation && piCheckpointEnabled(p.agentCfg))
+		rendered += buildOperationalAppendix(t.ID, p.filePath, p.wtPath, p.isPipeline, resumeCheckpointKind(p))
 	}
 	return rendered, nil
 }
@@ -2433,7 +2461,7 @@ func truncate(s string, limit int, marker string) string {
 // buildOperationalAppendix returns a context block appended to every rendered prompt.
 // It gives agents the ticket ID, file paths, and CLI commands they need so they
 // don't have to search $HOME for context.
-func buildOperationalAppendix(taskID, filePath, wtPath string, isPipeline, checkpointEnabled bool) string {
+func buildOperationalAppendix(taskID, filePath, wtPath string, isPipeline bool, checkpointKind string) string {
 	var b strings.Builder
 	b.WriteString("\n\n## Operational Context\n")
 	fmt.Fprintf(&b, "- Ticket ID: %s\n", taskID)
@@ -2446,14 +2474,19 @@ func buildOperationalAppendix(taskID, filePath, wtPath string, isPipeline, check
 	if isPipeline {
 		fmt.Fprintf(&b, "\nIMPORTANT: When you finish your work, write your results as a note on the ticket. Include all relevant details — the next stage of the pipeline will read this note to continue the work. Use:\n  kontora note %s \"your results here\"", taskID)
 	}
-	if checkpointEnabled {
+	if checkpointKind != "" {
 		b.WriteString("\n\n## Phase checkpoints\n")
 		b.WriteString("At each boundary between top-level ticket phases:\n")
 		b.WriteString("1. Run the tests for the completed phase.\n")
 		fmt.Fprintf(&b, "2. Write a `phase-N:` note with `kontora note %s \"...\"`.\n", taskID)
 		b.WriteString("3. In the note, list changed files, decisions, test results, unresolved issues, and the next phase.\n")
-		b.WriteString("4. Call `kontora_phase_complete` with `completed_phase` and `next_phase`.\n")
-		b.WriteString("Do not call the tool after the final phase.\n")
+		if checkpointKind == config.AgentKindClaude {
+			fmt.Fprintf(&b, "4. Run `kontora phase-complete %s --completed \"<the phase that just finished>\" --next \"<the phase to begin next>\"`, then end your turn. Do not start the next phase yourself: kontora compacts the context if it needs to and then prompts you to continue.\n", taskID)
+			b.WriteString("Do not run the command after the final phase.\n")
+		} else {
+			b.WriteString("4. Call `kontora_phase_complete` with `completed_phase` and `next_phase`.\n")
+			b.WriteString("Do not call the tool after the final phase.\n")
+		}
 	}
 	return b.String()
 }
@@ -2461,9 +2494,10 @@ func buildOperationalAppendix(taskID, filePath, wtPath string, isPipeline, check
 // buildAgentArgs constructs the argument list for an agent invocation.
 // For Claude agents it injects --settings with a Notification hook that
 // signals tmux wait-for on idle_prompt, and --session-id for session JSONL
-// logging.
+// logging. A non-empty compactChannel adds the PostCompact hook a checkpointing
+// run needs.
 // For pi agents it injects -e with the Kontora extension that handles clean
-// shutdown on agent_settled and, when checkpointEnabled is true and the agent
+// shutdown on agent_settled and, when checkpointEligible is true and the agent
 // carries a positive CheckpointCompactionTokens, registers the
 // kontora_phase_complete tool for phase-boundary compaction.
 // A non-nil rec attaches the run to the session that record names instead of
@@ -2474,7 +2508,7 @@ func buildOperationalAppendix(taskID, filePath, wtPath string, isPipeline, check
 // ticket's own agent field is only known at spawn time.
 // Returns the args, the path to the temporary settings/extension file (empty
 // for other agents), the session ID (empty for non-Claude agents), and any error.
-func buildAgentArgs(agentCfg config.Agent, rendered, channelName, model, effort string, rec *resumeRecord, checkpointEnabled bool) ([]string, string, string, error) {
+func buildAgentArgs(agentCfg config.Agent, rendered, channelName, compactChannel, model, effort string, rec *resumeRecord, checkpointEligible bool) ([]string, string, string, error) {
 	if err := agentCfg.CheckEffort(model, effort); err != nil {
 		return nil, "", "", err
 	}
@@ -2484,7 +2518,7 @@ func buildAgentArgs(agentCfg config.Agent, rendered, channelName, model, effort 
 	switch {
 	case agentCfg.IsClaude():
 		var err error
-		settingsFile, err = writeHooksSettings(channelName)
+		settingsFile, err = writeHooksSettings(channelName, compactChannel)
 		if err != nil {
 			return nil, "", "", fmt.Errorf("writing hooks settings: %w", err)
 		}
@@ -2501,7 +2535,7 @@ func buildAgentArgs(agentCfg config.Agent, rendered, channelName, model, effort 
 	case agentCfg.IsPi():
 		threshold := agentCfg.CheckpointCompactionTokens
 		var err error
-		settingsFile, err = writePiExtension(threshold, checkpointEnabled && threshold > 0)
+		settingsFile, err = writePiExtension(threshold, checkpointEligible && threshold > 0)
 		if err != nil {
 			return nil, "", "", fmt.Errorf("writing pi extension: %w", err)
 		}
@@ -2527,9 +2561,17 @@ func buildAgentArgs(agentCfg config.Agent, rendered, channelName, model, effort 
 // signal the given tmux wait-for channel when Claude finishes. Stop fires
 // immediately when Claude finishes responding; Notification+idle_prompt is
 // a fallback for when Claude goes idle without a clean Stop.
-func writeHooksSettings(channelName string) (string, error) {
+//
+// A non-empty compactChannel adds a PostCompact hook on its own channel, which
+// is how the runner learns that a /compact it typed has landed. It is set only
+// for a checkpointing run, so every other run's settings file is unchanged.
+func writeHooksSettings(channelName, compactChannel string) (string, error) {
 	waitCmd := fmt.Sprintf("tmux wait-for -S %s", channelName)
-	settings := fmt.Sprintf(`{"hooks":{"Stop":[{"matcher":"","hooks":[{"type":"command","command":"%s"}]}],"Notification":[{"matcher":"idle_prompt","hooks":[{"type":"command","command":"%s"}]}]}}`, waitCmd, waitCmd)
+	hooks := fmt.Sprintf(`"Stop":[{"matcher":"","hooks":[{"type":"command","command":"%s"}]}],"Notification":[{"matcher":"idle_prompt","hooks":[{"type":"command","command":"%s"}]}]`, waitCmd, waitCmd)
+	if compactChannel != "" {
+		hooks += fmt.Sprintf(`,"PostCompact":[{"matcher":"","hooks":[{"type":"command","command":"tmux wait-for -S %s"}]}]`, compactChannel)
+	}
+	settings := `{"hooks":{` + hooks + `}}`
 	f, err := os.CreateTemp("", "kontora-settings-*.json")
 	if err != nil {
 		return "", err
@@ -2546,34 +2588,57 @@ func writeHooksSettings(channelName string) (string, error) {
 	return f.Name(), nil
 }
 
-// piCheckpointEnabled reports whether the agent's checkpoint compaction
-// threshold is positive. Only pi agents carry this setting; IsPi is checked
-// so the predicate is self-contained and the caller needs no guard.
-func piCheckpointEnabled(agentCfg config.Agent) bool {
-	return agentCfg.IsPi() && agentCfg.CheckpointCompactionTokens > 0
+// resumeCheckpointKind is checkpointKind for a resumed run: an annotation run
+// rewrites the ticket rather than working through its phases, so it gets no
+// checkpoint protocol even when its agent carries a threshold.
+func resumeCheckpointKind(p spawnAgentParams) string {
+	if p.annotation {
+		return ""
+	}
+	return checkpointKind(p.agentCfg)
+}
+
+// checkpointKind reports which agent's phase-checkpoint protocol a run follows:
+// pi drives it from an extension, claude from the `kontora phase-complete`
+// command and the daemon's idle decision point. It returns "" when the agent
+// has no positive threshold, or is one that carries no protocol at all.
+func checkpointKind(agentCfg config.Agent) string {
+	if agentCfg.CheckpointCompactionTokens <= 0 {
+		return ""
+	}
+	return agentCfg.Kind()
 }
 
 // sessionStage keys the agent's own session storage, which is the stage name for
 // every run but a fresh annotation one (see spawnAgentParams.sessionStage).
-func (d *Daemon) buildRunnerParams(cfg *config.Config, agentCfg config.Agent, stageCfg config.Stage, binaryPath string, args []string, dir, ticketID, stageName, sessionStage, sessionID string) RunnerParams {
+func (d *Daemon) buildRunnerParams(cfg *config.Config, agentCfg config.Agent, stageCfg config.Stage, binaryPath string, args []string, dir, ticketID, stageName, sessionStage, sessionID string, ckpt checkpointSetup) RunnerParams {
 	var sessionDir string
 	if agentCfg.IsPi() {
 		sessionDir = piSessionDir(cfg, ticketID, sessionStage)
 		args = append(args, "--session-dir", sessionDir)
 	}
 
+	env := agentEnv(cfg, agentCfg, d.configPath)
+	var onIdle func(context.Context, tmux.IdleEvent) tmux.IdleDecision
+	if ckpt.enabled() {
+		env[cli.CheckpointFileEnvVar] = ckpt.sidecar
+		onIdle = newCheckpointController(ckpt, env, sessionID).onIdle
+	}
+
 	return RunnerParams{
-		Binary:      binaryPath,
-		Args:        args,
-		Dir:         dir,
-		Timeout:     stageCfg.Timeout.Duration,
-		TicketID:    ticketID,
-		SessionName: d.tmuxSession,
-		LogFile:     stageLogPath(cfg, ticketID, stageName),
-		Interactive: agentCfg.IsClaude(),
-		SessionID:   sessionID,
-		SessionDir:  sessionDir,
-		Env:         agentEnv(cfg, agentCfg, d.configPath),
+		Binary:         binaryPath,
+		Args:           args,
+		Dir:            dir,
+		Timeout:        stageCfg.Timeout.Duration,
+		TicketID:       ticketID,
+		SessionName:    d.tmuxSession,
+		LogFile:        stageLogPath(cfg, ticketID, stageName),
+		Interactive:    agentCfg.IsClaude(),
+		SessionID:      sessionID,
+		SessionDir:     sessionDir,
+		Env:            env,
+		OnIdle:         onIdle,
+		CompactChannel: ckpt.compactChannel,
 		OnReady: func() {
 			d.broadcastTerminalReady(ticketID)
 		},

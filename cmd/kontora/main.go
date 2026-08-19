@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/charmbracelet/lipgloss"
 	charmlog "github.com/charmbracelet/log"
@@ -87,6 +88,7 @@ var handlers = map[string]func(){
 	"changes":             cmdChanges,
 	"stats":               cmdStats,
 	"estimate-compaction": cmdEstimateCompaction,
+	"phase-complete":      cmdPhaseComplete,
 	"review":              func() { cmdPlannotator("review") },
 	"annotate":            func() { cmdPlannotator("annotate") },
 	"attach":              cmdAttach,
@@ -960,6 +962,22 @@ func cmdEstimateCompaction() {
 	}
 
 	if err := cli.PrintCompactionEstimate(report, os.Stdout); err != nil {
+		log.Fatal(err)
+	}
+}
+
+// cmdPhaseComplete is what a checkpointing agent calls at a phase boundary. It
+// writes to the sidecar named by KONTORA_CHECKPOINT_FILE and nothing else, so
+// it reads no config and talks to no daemon.
+func cmdPhaseComplete() {
+	fs := flag.NewFlagSet("phase-complete", flag.ExitOnError)
+	completed := fs.String("completed", "", "the phase that just finished")
+	next := fs.String("next", "", "the phase to begin next")
+	if taskID := parseTicketFlags(fs, os.Args[2:]); taskID == "" {
+		log.Fatal("ticket ID is required: kontora phase-complete TICKET_ID --completed TEXT --next TEXT")
+	}
+
+	if err := cli.PhaseComplete(os.Getenv(cli.CheckpointFileEnvVar), *completed, *next, time.Now(), os.Stdout); err != nil {
 		log.Fatal(err)
 	}
 }

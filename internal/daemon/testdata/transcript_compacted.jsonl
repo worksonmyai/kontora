@@ -1,0 +1,4 @@
+{"type":"assistant","isSidechain":false,"message":{"usage":{"input_tokens":5,"cache_read_input_tokens":160000,"cache_creation_input_tokens":1000,"output_tokens":40}}}
+{"type":"system","subtype":"compact_boundary","content":"Conversation compacted","compactMetadata":{"trigger":"auto","preTokens":167002}}
+{"type":"system","subtype":"compact_boundary","content":"Conversation compacted","compactMetadata":{"trigger":"manual","preTokens":121500}}
+{"type":"assistant","isSidechain":false,"message":{"usage":{"input_tokens":3,"cache_read_input_tokens":8000,"cache_creation_input_tokens":500,"output_tokens":20}}}

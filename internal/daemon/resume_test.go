@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/worksonmyai/kontora/internal/cli"
 	"github.com/worksonmyai/kontora/internal/config"
 	"github.com/worksonmyai/kontora/internal/process"
 	"github.com/worksonmyai/kontora/internal/ticket"
@@ -484,6 +485,36 @@ func TestResumePiContinuesStageSessionFile(t *testing.T) {
 	assert.Contains(t, prompt, "## Phase checkpoints")
 	assert.Contains(t, extensionContent, "const THRESHOLD = 150000;")
 	assert.Contains(t, extensionContent, "const ENABLED = true;")
+}
+
+// TestResumeClaudeKeepsCheckpointing covers a stage the daemon picks back up
+// after a restart: the resumed run is still driven through phase boundaries.
+func TestResumeClaudeKeepsCheckpointing(t *testing.T) {
+	var settings string
+	rd := newResumeDaemon(t, "claude", func(_ context.Context, _ int, p RunnerParams) (process.Result, error) {
+		i := slices.Index(p.Args, "--settings")
+		require.GreaterOrEqual(t, i, 0)
+		data, err := os.ReadFile(p.Args[i+1])
+		require.NoError(t, err)
+		settings = string(data)
+		return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now()}, nil
+	})
+	agentCfg := rd.cfg.Agents["agent1"]
+	agentCfg.CheckpointCompactionTokens = 150000
+	rd.cfg.Agents["agent1"] = agentCfg
+	rd.plantRecord(t, agentKindClaude, nil)
+
+	rd.run(t, ticket.StatusDone)
+
+	spawns := rd.invocations(t)
+	require.Len(t, spawns, 1)
+	prompt := renderedPrompt(spawns[0])
+	assert.Contains(t, prompt, "was interrupted when the daemon restarted")
+	assert.Contains(t, prompt, "## Phase checkpoints")
+	assert.Contains(t, prompt, "kontora phase-complete "+resumeTicketID)
+	assert.NotNil(t, spawns[0].OnIdle)
+	assert.NotEmpty(t, spawns[0].Env[cli.CheckpointFileEnvVar])
+	assert.Contains(t, settings, "PostCompact")
 }
 
 // A record that does not name this exact stage and agent must be ignored: a

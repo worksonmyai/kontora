@@ -100,6 +100,37 @@ func TestSendKeys(t *testing.T) {
 	t.Fatal("timed out waiting for SendKeys output file")
 }
 
+func TestCompactChannelName(t *testing.T) {
+	assert.Equal(t, "kontora-tst-001-compact", CompactChannelName(DefaultSessionName, "tst-001", ""))
+	assert.Equal(t, "kontora-tst-001-compact-code-2", CompactChannelName(DefaultSessionName, "tst-001", "code-2"))
+}
+
+func TestSendKeysLiteral(t *testing.T) {
+	skipIfNoTmux(t)
+
+	ticketID := "test-skl-" + randomSuffix()
+	dir := t.TempDir()
+	outFile := filepath.Join(dir, "out.txt")
+
+	startTestWindow(t, ticketID, dir, "sh")
+	t.Cleanup(func() { _ = KillWindow(testSession, ticketID) })
+	waitForWindow(t, ticketID, true, 5*time.Second)
+	time.Sleep(300 * time.Millisecond)
+
+	// "Enter" in the text proves the literal form: SendKeys would read it as
+	// the key and submit an incomplete command.
+	require.NoError(t, SendKeysLiteral(testSession, ticketID, "echo 'Enter C-c' > "+outFile))
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if data, err := os.ReadFile(outFile); err == nil && strings.Contains(string(data), "Enter C-c") {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Fatal("timed out waiting for SendKeysLiteral output file")
+}
+
 func TestKillWindow(t *testing.T) {
 	skipIfNoTmux(t)
 

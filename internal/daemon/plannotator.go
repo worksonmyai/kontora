@@ -394,7 +394,7 @@ func (d *Daemon) runReworkStage(ctx, taskCtx context.Context, cfg *config.Config
 		return
 	}
 	if rendered != "" {
-		rendered += buildOperationalAppendix(t.ID, filePath, wtPath, true, false)
+		rendered += buildOperationalAppendix(t.ID, filePath, wtPath, true, "")
 	}
 
 	// Rework spawns its agent here rather than through runAgentOnce, so the
@@ -402,7 +402,7 @@ func (d *Daemon) runReworkStage(ctx, taskCtx context.Context, cfg *config.Config
 	model := stageCfg.Model.For(agentName, agentCfg)
 	effort := stageCfg.Effort.For(agentName, agentCfg)
 	effModel, effEffort := agentCfg.Effective(model, effort)
-	args, settingsFile, sessionID, err := buildAgentArgs(agentCfg, rendered, tmux.ChannelName(d.tmuxSession, ticketID), model, effort, nil, false)
+	args, settingsFile, sessionID, err := buildAgentArgs(agentCfg, rendered, tmux.ChannelName(d.tmuxSession, ticketID), "", model, effort, nil, false)
 	if err != nil {
 		log.Error("rework: build agent args failed", "err", err)
 		d.pauseTicket(t, filePath, "rework: build agent args failed: "+err.Error())
@@ -426,7 +426,7 @@ func (d *Daemon) runReworkStage(ctx, taskCtx context.Context, cfg *config.Config
 	}
 
 	params := d.buildRunnerParams(cfg, agentCfg, stageCfg, binaryPath, args, wtPath, ticketID,
-		config.ReworkStageName, config.ReworkStageName, sessionID)
+		config.ReworkStageName, config.ReworkStageName, sessionID, checkpointSetup{})
 	runIndex := stageRunIndex(t, config.ReworkStageName)
 	// Rework always opens a session of its own, so nothing in it belongs to an
 	// earlier run and the scope carries no prior usage.

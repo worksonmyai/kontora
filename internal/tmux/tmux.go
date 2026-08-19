@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 )
 
 // DefaultSessionName is the default tmux session name used by the daemon.
@@ -18,6 +19,21 @@ const DefaultSessionName = "kontora"
 // without it, two daemons running the same ticket ID would signal each other.
 func ChannelName(sessionName, ticketID string) string {
 	return sessionName + "-" + ticketID
+}
+
+// CompactChannelName returns the tmux wait-for channel a Claude PostCompact
+// hook signals. It is separate from ChannelName so a compaction landing does
+// not look like the end of a turn.
+//
+// scope names the run the channel belongs to. tmux holds a signal sent while
+// nobody waits and hands it to the next waiter, so without it a compaction that
+// landed after a previous run gave up on it would be read as this run's.
+func CompactChannelName(sessionName, ticketID, scope string) string {
+	name := ChannelName(sessionName, ticketID) + "-compact"
+	if scope != "" {
+		name += "-" + scope
+	}
+	return name
 }
 
 // WindowTarget returns the tmux target for a ticket's window (=session:window).
@@ -31,6 +47,29 @@ func SendKeys(sessionName, ticketID, keys string) error {
 	out, err := exec.Command("tmux", "send-keys", "-t", WindowTarget(sessionName, ticketID), keys, "Enter").CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("tmux send-keys: %s: %w", strings.TrimSpace(string(out)), err)
+	}
+	return nil
+}
+
+// sendKeysEnterDelay separates a literal send from its Enter. Without a gap the
+// agent's TUI can read the text and the newline as one burst and take it as a
+// pasted line instead of a submitted one.
+const sendKeysEnterDelay = 150 * time.Millisecond
+
+// SendKeysLiteral types text into a ticket's tmux window as text rather than as
+// key names, then submits it. SendKeys is the wrong call for anything but a
+// fixed keystroke: tmux reads words like "Enter" or "C-c" in its argument as
+// the keys they name, so prompt text would arrive mangled.
+func SendKeysLiteral(sessionName, ticketID, text string) error {
+	target := WindowTarget(sessionName, ticketID)
+	out, err := exec.Command("tmux", "send-keys", "-t", target, "-l", "--", text).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("tmux send-keys -l: %s: %w", strings.TrimSpace(string(out)), err)
+	}
+	time.Sleep(sendKeysEnterDelay)
+	out, err = exec.Command("tmux", "send-keys", "-t", target, "Enter").CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("tmux send-keys Enter: %s: %w", strings.TrimSpace(string(out)), err)
 	}
 	return nil
 }

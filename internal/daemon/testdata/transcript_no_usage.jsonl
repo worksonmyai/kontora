@@ -1,0 +1,3 @@
+{"type":"user","message":{"role":"user","content":"go"}}
+{"type":"assistant","isSidechain":false,"error":"authentication_failed","message":{"usage":{"input_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"output_tokens":0}}}
+{"type":"assistant","isSidechain":false,"message":{"content":[{"type":"text","text":"hi"}]}}

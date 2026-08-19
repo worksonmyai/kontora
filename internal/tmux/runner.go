@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"strconv"
 	"strings"
 	"time"
@@ -34,6 +33,33 @@ type RunParams struct {
 	Env         map[string]string // environment variables to export in the wrapper script
 	OnReady     func()            // called after the tmux window is created
 	MinDuration time.Duration     // interactive only: treat exits faster than this as crashes; 0 = use default (2s), -1 = disable
+	// OnIdle is asked what to do each time an interactive agent signals it is
+	// idle. Nil finishes the run on the first signal. It is called with the
+	// run's context, and must return once that context is cancelled: the loop
+	// is inside the call and cannot act on a shutdown until it does.
+	OnIdle func(context.Context, IdleEvent) IdleDecision
+	// CompactTimeout bounds the wait for a compaction OnIdle asked for.
+	// 0 = DefaultCompactTimeout.
+	CompactTimeout time.Duration
+	// CompactChannel is the tmux wait-for channel the agent's PostCompact hook
+	// signals. The caller sets the same name it wrote into the hook, and scopes
+	// it to this run so a signal latched by an earlier one is not read as this
+	// compaction landing. Empty = the ticket's default channel.
+	CompactChannel string
+}
+
+func (p RunParams) compactTimeout() time.Duration {
+	if p.CompactTimeout > 0 {
+		return p.CompactTimeout
+	}
+	return DefaultCompactTimeout
+}
+
+func (p RunParams) compactChannel() string {
+	if p.CompactChannel != "" {
+		return p.CompactChannel
+	}
+	return CompactChannelName(p.session(), p.TicketID, "")
 }
 
 func (p RunParams) session() string {
@@ -54,13 +80,13 @@ func Run(ctx context.Context, p RunParams) (process.Result, error) {
 	return runStandard(ctx, p)
 }
 
-// runInteractive executes an interactive agent (e.g. Claude) that signals
-// completion via a tmux wait-for channel. After the signal, /exit is sent
-// to close the window.
+// runInteractive executes an interactive agent (e.g. Claude) that signals it is
+// idle over a tmux wait-for channel. Once the window is up, idleLoop decides
+// what each signal means: without an OnIdle callback the first one ends the run
+// with /exit.
 func runInteractive(ctx context.Context, p RunParams) (process.Result, error) {
 	cmd := append([]string{p.Binary}, p.Args...)
 	sess := p.session()
-	channel := ChannelName(sess, p.TicketID)
 
 	usePipePaneLogging := p.LogFile != ""
 
@@ -114,106 +140,12 @@ func runInteractive(ctx context.Context, p RunParams) (process.Result, error) {
 		defer cancel()
 	}
 
-	// Block until either (a) the Notification hook fires tmux wait-for -S,
-	// or (b) the tmux window disappears (user manually exited the agent).
-	hookFired := make(chan error, 1)
-	go func() {
-		waitCmd := exec.CommandContext(ctx, "tmux", "wait-for", channel)
-		hookFired <- waitCmd.Run()
-	}()
-
-	windowGone := make(chan struct{}, 1)
-	go func() {
-		ticker := time.NewTicker(pollInterval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ticker.C:
-				if !HasWindow(sess, p.TicketID) {
-					windowGone <- struct{}{}
-					return
-				}
-			case <-ctx.Done():
-				return
-			}
-		}
-	}()
-
-	select {
-	case err := <-hookFired:
-		if err != nil {
-			if ctx.Err() != nil {
-				_ = KillWindow(sess, p.TicketID)
-				return process.Result{
-					ExitCode:  -1,
-					StartedAt: startedAt,
-					ExitedAt:  time.Now(),
-				}, ctx.Err()
-			}
-			return process.Result{
-				ExitCode:  -1,
-				StartedAt: startedAt,
-				ExitedAt:  time.Now(),
-			}, fmt.Errorf("tmux wait-for: %w", err)
-		}
-
-		// If the hook fired almost immediately, the agent likely crashed on
-		// startup before doing any real work.
-		minDur := p.MinDuration
-		if minDur == 0 {
-			minDur = MinInteractiveDuration
-		}
-		if minDur > 0 {
-			if dur := time.Since(startedAt); dur < minDur {
-				_ = KillWindow(sess, p.TicketID)
-				return process.Result{
-					ExitCode:  1,
-					StartedAt: startedAt,
-					ExitedAt:  time.Now(),
-				}, fmt.Errorf("interactive agent exited too quickly (%s < %s)", dur.Truncate(time.Millisecond), minDur)
-			}
-		}
-
-		// Hook fired — tell Claude to exit and wait for the window to close.
-		// If the window is already gone (agent exited on its own), skip /exit.
-		if HasWindow(sess, p.TicketID) {
-			if err := SendKeys(sess, p.TicketID, "/exit"); err != nil {
-				return process.Result{
-					ExitCode:  -1,
-					StartedAt: startedAt,
-					ExitedAt:  time.Now(),
-				}, fmt.Errorf("sending /exit after hook: %w", err)
-			}
-			waitForWindowExit(sess, p.TicketID, 5*time.Second)
-		}
-
-		return process.Result{
-			ExitCode:  0,
-			StartedAt: startedAt,
-			ExitedAt:  time.Now(),
-		}, nil
-
-	case <-windowGone:
-		// User manually exited the agent — the tmux window is gone but
-		// wait-for was never signaled. Signal the channel ourselves to
-		// unblock the wait-for goroutine, then treat as exit code 1.
-		_ = exec.Command("tmux", "wait-for", "-S", channel).Run()
-		return process.Result{
-			ExitCode:  1,
-			StartedAt: startedAt,
-			ExitedAt:  time.Now(),
-		}, nil
-
-	case <-ctx.Done():
-		_ = KillWindow(sess, p.TicketID)
-		// Unblock the wait-for goroutine.
-		_ = exec.Command("tmux", "wait-for", "-S", channel).Run()
-		return process.Result{
-			ExitCode:  -1,
-			StartedAt: startedAt,
-			ExitedAt:  time.Now(),
-		}, ctx.Err()
-	}
+	code, err := idleLoop(ctx, windowTmux{session: sess, ticketID: p.TicketID}, p, startedAt)
+	return process.Result{
+		ExitCode:  code,
+		StartedAt: startedAt,
+		ExitedAt:  time.Now(),
+	}, err
 }
 
 // runStandard executes a non-interactive command in tmux, polling an exit

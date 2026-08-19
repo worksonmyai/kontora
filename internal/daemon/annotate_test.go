@@ -16,6 +16,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/worksonmyai/kontora/internal/cli"
 	"github.com/worksonmyai/kontora/internal/config"
 	"github.com/worksonmyai/kontora/internal/process"
 	"github.com/worksonmyai/kontora/internal/ticket"
@@ -1377,4 +1378,46 @@ func TestAnnotate_PiSessionDir(t *testing.T) {
 			assert.NotContains(t, renderedPrompt(spawns[0]), "## Phase checkpoints")
 		})
 	}
+}
+
+// TestAnnotate_ClaudeCheckpointDisabled covers an annotation run on a Claude
+// agent that carries a threshold. Annotation rewrites the ticket rather than
+// working through its phases, so it gets none of the checkpoint machinery.
+func TestAnnotate_ClaudeCheckpointDisabled(t *testing.T) {
+	const id = "tst-an16"
+	h := newPlannotatorHarness(t)
+	h.cfg.Agents["agent1"] = config.Agent{
+		Binary:                     "claude",
+		CheckpointCompactionTokens: 150000,
+	}
+
+	var runs annotationRun
+	var settings string
+	d := h.newAnnotationDaemon(func(_ context.Context, p RunnerParams) (process.Result, error) {
+		runs.record(p)
+		if i := slices.Index(p.Args, "--settings"); i >= 0 {
+			data, err := os.ReadFile(p.Args[i+1])
+			require.NoError(t, err)
+			settings = string(data)
+		}
+		return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now()}, nil
+	})
+
+	_, stop := startAnnotationDaemon(t, h, d, id,
+		h.annotationTicketMD(id, "open", "branch: kontora/"+id+"\n"))
+	defer stop()
+
+	require.NoError(t, d.StartPlannotatorAnnotate(id))
+	require.Eventually(t, func() bool { return h.callCount.Load() == 1 },
+		3*time.Second, 20*time.Millisecond)
+	h.stdoutCh <- annotateJSON(annotateAnnotated, "sharpen the goal")
+
+	h.waitForAnnotationRuns(id, 1, ticket.StatusOpen)
+	spawns := runs.all()
+	require.Len(t, spawns, 1)
+
+	assert.NotContains(t, renderedPrompt(spawns[0]), "## Phase checkpoints")
+	assert.Nil(t, spawns[0].OnIdle)
+	assert.NotContains(t, spawns[0].Env, cli.CheckpointFileEnvVar)
+	assert.NotContains(t, settings, "PostCompact")
 }

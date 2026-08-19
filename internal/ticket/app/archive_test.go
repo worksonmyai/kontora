@@ -69,6 +69,24 @@ func TestArchive(t *testing.T) {
 			wantArchived: []string{"tst-cancelled", "tst-done"},
 		},
 		{
+			name: "legacy closed tickets are archived too",
+			tickets: []fixture{
+				{id: "tst-legacy", status: "closed", ageDays: 40},
+			},
+			days:         30,
+			wantArchived: []string{"tst-legacy"},
+		},
+		{
+			name: "the status filter selects legacy closed alone",
+			tickets: []fixture{
+				{id: "tst-done", status: "done", ageDays: 40},
+				{id: "tst-legacy", status: "closed", ageDays: 40},
+			},
+			days:         30,
+			status:       ticket.StatusLegacyClosed,
+			wantArchived: []string{"tst-legacy"},
+		},
+		{
 			name: "too-new closed tickets are left unchanged",
 			tickets: []fixture{
 				{id: "tst-recent", status: "done", ageDays: 5},

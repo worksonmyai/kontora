@@ -160,6 +160,9 @@ func (s *Service) SetStatus(id string, status ticket.Status) (Result, error) {
 	// when nothing is running.
 	s.runtime.Cancel(resolved)
 
+	// A ticket that just reached a terminal status releases whatever waited on
+	// it; one that left a terminal status blocks its dependents again.
+	s.runtime.ReconcileDependencies(resolved)
 	s.runtime.BroadcastUpdated(resolved)
 	return Result{ID: resolved, Status: string(status)}, nil
 }
@@ -198,6 +201,7 @@ func (s *Service) Retry(id string) (Result, error) {
 	}
 
 	s.runtime.Enqueue(st.Ticket)
+	s.runtime.ReconcileDependencies(resolved)
 	s.runtime.BroadcastUpdated(resolved)
 	return Result{ID: resolved, Status: string(ticket.StatusTodo)}, nil
 }
@@ -268,6 +272,7 @@ func (s *Service) Skip(id string) (Result, error) {
 	if newStatus == string(ticket.StatusTodo) {
 		s.runtime.Enqueue(t)
 	}
+	s.runtime.ReconcileDependencies(resolved)
 	s.runtime.BroadcastUpdated(resolved)
 	return Result{ID: resolved, Status: newStatus}, nil
 }
@@ -435,8 +440,25 @@ func (s *Service) Run(id string) (Result, error) {
 	}
 
 	s.runtime.Enqueue(t)
+	s.runtime.ReconcileDependencies(resolved)
 	s.runtime.BroadcastUpdated(resolved)
-	return Result{ID: resolved, Status: string(ticket.StatusTodo)}, nil
+	// The ticket is todo either way; whether it will actually run is a property
+	// of the graph, so the caller is told rather than left to say "queued".
+	return Result{ID: resolved, Status: string(ticket.StatusTodo), Blockers: s.blockers(t)}, nil
+}
+
+// blockers returns the unresolved dependency ids of a ticket. A store it cannot
+// read reports none: the queue guard is the authority, and this is only what the
+// command line says.
+func (s *Service) blockers(t *ticket.Ticket) []string {
+	if len(t.Deps) == 0 {
+		return nil
+	}
+	index, err := s.index()
+	if err != nil {
+		return nil
+	}
+	return ticket.Classify(t, index).Blockers
 }
 
 // AgentForStage returns the agent configured for a pipeline stage.

@@ -179,8 +179,19 @@ func (c *Client) Ping(ctx context.Context) error {
 
 // ListTickets returns all board tickets and the running-agent count.
 func (c *Client) ListTickets() ([]web.TicketInfo, int, error) {
+	return c.list("/api/tickets")
+}
+
+// ListAllTickets is ListTickets plus the tickets whose status has no board
+// column: archived, legacy closed, and any foreign status. A CLI listing that
+// filters, or that resolves an id prefix, needs the complete set.
+func (c *Client) ListAllTickets() ([]web.TicketInfo, int, error) {
+	return c.list("/api/tickets?all=true")
+}
+
+func (c *Client) list(path string) ([]web.TicketInfo, int, error) {
 	var r listResponse
-	if err := c.doJSON(http.MethodGet, "/api/tickets", nil, &r); err != nil {
+	if err := c.doJSON(http.MethodGet, path, nil, &r); err != nil {
 		return nil, 0, err
 	}
 	return r.Tickets, r.RunningAgents, nil
@@ -355,7 +366,15 @@ func (c *Client) Pause(id string) error { return c.postAction("/api/tickets/" + 
 func (c *Client) Retry(id string) error { return c.postAction("/api/tickets/" + id + "/retry") }
 
 // Run enqueues an open or todo ticket for processing.
-func (c *Client) Run(id string) error { return c.postAction("/api/tickets/" + id + "/run") }
+// Run enqueues a ticket and returns it as the daemon left it, so the caller can
+// see whether a dependency holds it back instead of asking again.
+func (c *Client) Run(id string) (web.TicketInfo, error) {
+	var info web.TicketInfo
+	if err := c.doJSON(http.MethodPost, "/api/tickets/"+id+"/run", nil, &info); err != nil {
+		return web.TicketInfo{}, err
+	}
+	return info, nil
+}
 
 // Skip advances a ticket to the next pipeline stage.
 func (c *Client) Skip(id string) error { return c.postAction("/api/tickets/" + id + "/skip") }
@@ -386,11 +405,36 @@ func (c *Client) Summary(id, text string) error {
 	return c.doJSON(http.MethodPost, "/api/tickets/"+id+"/summary", map[string]string{"text": text}, nil)
 }
 
+// Dep records that a ticket waits on another one. Both IDs must already be
+// resolved: the daemon matches them exactly.
+func (c *Client) Dep(id, dependencyID string) error {
+	return c.relation(id, "dep", []string{dependencyID})
+}
+
+// Undep drops a dependency edge.
+func (c *Client) Undep(id, dependencyID string) error {
+	return c.relation(id, "undep", []string{dependencyID})
+}
+
+// Link relates a ticket to each of relatedIDs, on both sides.
+func (c *Client) Link(id string, relatedIDs []string) error {
+	return c.relation(id, "link", relatedIDs)
+}
+
+// Unlink removes the relation between a ticket and each of relatedIDs.
+func (c *Client) Unlink(id string, relatedIDs []string) error {
+	return c.relation(id, "unlink", relatedIDs)
+}
+
+func (c *Client) relation(id, verb string, related []string) error {
+	return c.doJSON(http.MethodPost, "/api/tickets/"+id+"/"+verb, web.RelationRequest{Related: related}, nil)
+}
+
 // ResolveID expands a ticket ID prefix to a full ID by listing tickets and
 // matching client-side, mirroring DiskRepo.Resolve: an exact match wins, a
 // single prefix match is taken, and several matches are an error.
 func (c *Client) ResolveID(input string) (string, error) {
-	tickets, _, err := c.ListTickets()
+	tickets, _, err := c.ListAllTickets()
 	if err != nil {
 		return "", err
 	}

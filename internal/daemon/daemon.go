@@ -714,12 +714,17 @@ func (d *Daemon) releaseLock(f *os.File) {
 	os.Remove(expandTilde(d.lockPath))
 }
 
+// initialScan registers every canonical ticket in the directory and queues the
+// ones that are ready to run. It is two passes: readiness is decided against the
+// whole store, which a single pass would still be building when it reached the
+// first todo ticket.
 func (d *Daemon) initialScan(dir string) error {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return err
 	}
 	cfg := d.config()
+	var scanned []*ticket.Ticket
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".md") {
 			continue
@@ -760,11 +765,26 @@ func (d *Daemon) initialScan(dir string) error {
 		}
 
 		d.tickets[t.ID] = newTicketState(t, path)
-		if t.Kontora && t.Status == ticket.StatusTodo && *cfg.AutoPickUp {
-			d.ticketLog(t.ID).Info("enqueuing", "pipeline", t.Pipeline, "stage", t.Stage)
-			d.enqueue(t)
-		}
 		d.mu.Unlock()
+		scanned = append(scanned, t)
+	}
+
+	if !*cfg.AutoPickUp {
+		return nil
+	}
+
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	for _, t := range scanned {
+		if !t.Kontora || t.Status != ticket.StatusTodo {
+			continue
+		}
+		if len(d.blockersLocked(t)) == 0 {
+			d.ticketLog(t.ID).Info("enqueuing", "pipeline", t.Pipeline, "stage", t.Stage)
+		}
+		// enqueue applies the readiness guard and logs the dependencies that
+		// hold the ticket back.
+		d.enqueue(t)
 	}
 	return nil
 }
@@ -807,6 +827,11 @@ func (d *Daemon) handleFileChanged(path string) {
 	prev, known := d.tickets[t.ID]
 	d.tickets[t.ID] = newTicketState(t, path)
 	d.broadcastTicketUpdate(t.ID)
+
+	// An external edit can change this ticket's own deps or a status that
+	// releases the tickets waiting on it, so the queue is reconciled whether or
+	// not the status switch below has anything to do.
+	defer d.reconcileDependenciesLocked(t.ID)
 
 	if !t.Kontora {
 		return
@@ -899,6 +924,9 @@ func (d *Daemon) handleFileRemoved(path string) {
 			d.removeQueuedLocked(id)
 			d.broadcastTicketDeleted(ts)
 			delete(d.tickets, id)
+			// Whoever depended on this ticket now names an id nothing answers,
+			// which blocks them.
+			d.reconcileDependenciesLocked(id)
 			return
 		}
 	}
@@ -1003,13 +1031,75 @@ func (d *Daemon) cleanupWorktree(log *slog.Logger, t *ticket.Ticket) {
 	d.removeWorktreeByBranch(log, repoPath, ticketBranch(d.config(), t))
 }
 
+// blockersLocked returns the dependency ids that hold a ticket back: the ones
+// naming a ticket that is not closed, and the ones naming no ticket at all.
+// Must be called with d.mu held.
+func (d *Daemon) blockersLocked(t *ticket.Ticket) []string {
+	var blockers []string
+	for _, dep := range t.Deps {
+		if dep == "" {
+			continue
+		}
+		if ts, ok := d.tickets[dep]; ok && ticket.IsDependencyResolved(ts.ticket.Status) {
+			continue
+		}
+		blockers = append(blockers, dep)
+	}
+	return blockers
+}
+
+// dependentsLocked returns the ids of the tracked tickets whose deps name id.
+// Must be called with d.mu held.
+func (d *Daemon) dependentsLocked(id string) []string {
+	var ids []string
+	for other, ts := range d.tickets {
+		if slices.Contains(ts.ticket.Deps, id) {
+			ids = append(ids, other)
+		}
+	}
+	return ids
+}
+
+// reconcileDependenciesLocked re-checks a ticket and every ticket that depends
+// on it against the dependency graph: one that became ready is queued, one that
+// became blocked is dropped from the queue. A running ticket is left alone, so
+// an edge added mid-run does not interrupt it. Must be called with d.mu held.
+func (d *Daemon) reconcileDependenciesLocked(id string) {
+	autoPickUp := *d.config().AutoPickUp
+
+	for _, candidate := range append([]string{id}, d.dependentsLocked(id)...) {
+		ts, ok := d.tickets[candidate]
+		if !ok {
+			continue
+		}
+		t := ts.ticket
+		if !t.Kontora || t.Status != ticket.StatusTodo {
+			continue
+		}
+		if _, running := d.running[candidate]; running {
+			continue
+		}
+		if len(d.blockersLocked(t)) == 0 {
+			if autoPickUp {
+				d.enqueue(t)
+			}
+			continue
+		}
+		d.removeQueuedLocked(candidate)
+	}
+}
+
 // enqueue adds a ticket to the queue. Must be called with d.mu held.
-// Skips enqueue if the ticket is already queued.
+// Skips enqueue if the ticket is already queued or blocked by a dependency.
 func (d *Daemon) enqueue(t *ticket.Ticket) {
 	if t == nil || !t.Kontora {
 		return
 	}
 	if d.queued[t.ID] {
+		return
+	}
+	if blockers := d.blockersLocked(t); len(blockers) > 0 {
+		d.ticketLog(t.ID).Info("not queued: blocked by dependencies", "blockers", strings.Join(blockers, ", "))
 		return
 	}
 	d.queued[t.ID] = true
@@ -1083,6 +1173,42 @@ func (d *Daemon) scheduler(ctx context.Context, wg *sync.WaitGroup) {
 	}
 }
 
+// claimableLocked reports whether a popped ticket may still be started, and
+// returns its state when it may. Everything here can have changed between the
+// enqueue and this claim. Must be called with d.mu held.
+func (d *Daemon) claimableLocked(ticketID string, log *slog.Logger) (*ticketState, bool) {
+	ts, ok := d.tickets[ticketID]
+	if !ok {
+		return nil, false
+	}
+
+	// The ticket must still be managed by Kontora and in a state to process.
+	if !ts.ticket.Kontora || ts.ticket.Status != ticket.StatusTodo {
+		return nil, false
+	}
+
+	// A dependency can be added, or a resolved one reopened, after the enqueue.
+	// The queue guard cannot see that, so readiness is checked again here, where
+	// the agent is about to be spawned.
+	if blockers := d.blockersLocked(ts.ticket); len(blockers) > 0 {
+		log.Info("pickup skipped: blocked by dependencies", "blockers", strings.Join(blockers, ", "))
+		return nil, false
+	}
+
+	// A Plannotator session open on this ticket owns it. A stage run would edit
+	// the file under the reviewer, and the annotations they then submit would be
+	// refused because the ticket is running, leaving the notes unapplied.
+	// releasePlannotator offers the ticket again once the session closes.
+	if _, annotating := d.plannotator[ticketID]; annotating {
+		d.plannotatorDeferred[ticketID] = struct{}{}
+		log.Info("pickup deferred: a plannotator session is open for this ticket")
+		return nil, false
+	}
+	delete(d.plannotatorDeferred, ticketID)
+
+	return ts, true
+}
+
 func (d *Daemon) runTicket(ctx context.Context, ticketID string) {
 	log := d.ticketLog(ticketID)
 	cfg := d.config()
@@ -1099,31 +1225,13 @@ func (d *Daemon) runTicket(ctx context.Context, ticketID string) {
 		return
 	}
 
-	ts, ok := d.tickets[ticketID]
+	ts, ok := d.claimableLocked(ticketID, log)
 	if !ok {
 		d.mu.Unlock()
 		return
 	}
 	t := ts.ticket
 	filePath := ts.filePath
-
-	// Check ticket is still managed by Kontora and in a state we should process.
-	if !t.Kontora || t.Status != ticket.StatusTodo {
-		d.mu.Unlock()
-		return
-	}
-
-	// A Plannotator session open on this ticket owns it. A stage run would edit
-	// the file under the reviewer, and the annotations they then submit would be
-	// refused because the ticket is running, leaving the notes unapplied.
-	// releasePlannotator offers the ticket again once the session closes.
-	if _, annotating := d.plannotator[ticketID]; annotating {
-		d.plannotatorDeferred[ticketID] = struct{}{}
-		d.mu.Unlock()
-		log.Info("pickup deferred: a plannotator session is open for this ticket")
-		return
-	}
-	delete(d.plannotatorDeferred, ticketID)
 
 	// Register cancel func before mutating status so concurrent ops
 	// can properly cancel the ticket while it's setting up worktrees.
@@ -2572,14 +2680,19 @@ func (d *Daemon) refreshTicketModTimeLocked(ticketID string, modTime time.Time) 
 
 // setTicketState replaces the cached state for id after a writeTicket call,
 // carrying over the modtime writeTicket just refreshed so the swap doesn't
-// stat the file a second time. Must be called with d.mu held, on a path that
-// just wrote the file (so the cached modtime is current).
+// stat the file a second time, and reconciles the queue against the new state.
+// Every write that can close a ticket, or change what it waits on, goes through
+// here, so putting the reconciliation in one place is what keeps the paths that
+// close a ticket without the pipeline exit handler from stranding its
+// dependents. Must be called with d.mu held, on a path that just wrote the file
+// (so the cached modtime is current).
 func (d *Daemon) setTicketState(id string, t *ticket.Ticket, path string) {
 	var modTime time.Time
 	if ts, ok := d.tickets[id]; ok {
 		modTime = ts.modTime
 	}
 	d.tickets[id] = &ticketState{ticket: t, filePath: path, modTime: modTime}
+	d.reconcileDependenciesLocked(id)
 }
 
 func (d *Daemon) stageLogPath(ticketID, stageName string) string {
@@ -2788,8 +2901,13 @@ type priorityQueue []*queueItem
 
 func (pq priorityQueue) Len() int { return len(pq) }
 
+// Less orders by creation time, oldest first. Ticket ID breaks a tie, so two
+// tickets created in the same second always run in the same order.
 func (pq priorityQueue) Less(i, j int) bool {
-	return pq[i].created.Before(pq[j].created)
+	if !pq[i].created.Equal(pq[j].created) {
+		return pq[i].created.Before(pq[j].created)
+	}
+	return pq[i].ticketID < pq[j].ticketID
 }
 
 func (pq priorityQueue) Swap(i, j int) { pq[i], pq[j] = pq[j], pq[i] }

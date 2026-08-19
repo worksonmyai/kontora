@@ -15,6 +15,10 @@ import (
 type memRepo struct {
 	tickets map[string]*StoredTicket
 	saveErr error // when set, Save returns it without mutating state
+	// saveErrFor fails the save of one ticket only, which is how a symmetric
+	// link write is made to fail half-way.
+	saveErrFor map[string]error
+	saved      []string
 }
 
 func newMemRepo() *memRepo {
@@ -41,12 +45,22 @@ func (r *memRepo) Resolve(idOrPrefix string) (string, error) {
 	return "", fmt.Errorf("ticket %q not found", idOrPrefix)
 }
 
+// Get returns a fresh copy, the way DiskRepo re-reads the file. A caller that
+// mutates the ticket and then fails to save must not have changed the store.
 func (r *memRepo) Get(id string) (*StoredTicket, error) {
 	st, ok := r.tickets[id]
 	if !ok {
 		return nil, fmt.Errorf("ticket %q not found", id)
 	}
-	return st, nil
+	out, err := st.Ticket.Marshal()
+	if err != nil {
+		return nil, err
+	}
+	t, err := ticket.ParseBytes(out)
+	if err != nil {
+		return nil, err
+	}
+	return &StoredTicket{Ticket: t, FilePath: st.FilePath}, nil
 }
 
 func (r *memRepo) List() ([]*StoredTicket, error) {
@@ -61,22 +75,30 @@ func (r *memRepo) Save(st *StoredTicket) error {
 	if r.saveErr != nil {
 		return r.saveErr
 	}
+	if err := r.saveErrFor[st.Ticket.ID]; err != nil {
+		return err
+	}
 	r.tickets[st.Ticket.ID] = st
+	r.saved = append(r.saved, st.Ticket.ID)
 	return nil
 }
 
 // spyRuntime records calls to RuntimeHooks methods.
 type spyRuntime struct {
-	enqueued  []string
-	cancelled []string
-	updated   []string
-	deleted   []string
+	enqueued   []string
+	cancelled  []string
+	updated    []string
+	deleted    []string
+	reconciled []string
 }
 
 func (s *spyRuntime) Enqueue(t *ticket.Ticket)   { s.enqueued = append(s.enqueued, t.ID) }
 func (s *spyRuntime) Cancel(id string)           { s.cancelled = append(s.cancelled, id) }
 func (s *spyRuntime) BroadcastUpdated(id string) { s.updated = append(s.updated, id) }
 func (s *spyRuntime) BroadcastDeleted(id string) { s.deleted = append(s.deleted, id) }
+func (s *spyRuntime) ReconcileDependencies(id string) {
+	s.reconciled = append(s.reconciled, id)
+}
 
 func testCfg() *config.Config {
 	return &config.Config{

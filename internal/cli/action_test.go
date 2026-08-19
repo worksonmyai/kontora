@@ -19,7 +19,8 @@ import (
 
 func TestRunSurfacesDaemonErrorWithoutReachabilityPrefix(t *testing.T) {
 	ticketsDir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(ticketsDir, "abc123.md"), []byte("# Test\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(ticketsDir, "abc123.md"),
+		[]byte("---\nid: abc123\nstatus: todo\nkontora: true\n---\n# Test\n"), 0o644))
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "/api/tickets/abc123/run", r.URL.Path)
@@ -35,7 +36,7 @@ func TestRunSurfacesDaemonErrorWithoutReachabilityPrefix(t *testing.T) {
 	port, err := strconv.Atoi(portText)
 	require.NoError(t, err)
 
-	err = Run(&config.Config{
+	_, err = Run(&config.Config{
 		TicketsDir: ticketsDir,
 		Web: config.Web{
 			Host: host,

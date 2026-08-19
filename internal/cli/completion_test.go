@@ -31,7 +31,7 @@ func TestCompletion(t *testing.T) {
 			shell: "fish",
 			want: []string{
 				"'__fish_seen_subcommand_from logs' -l stage -d 'Stage name' -r",
-				"'__fish_seen_subcommand_from archive' -l status -d 'Only archive tickets with this status' -x -a 'done cancelled'",
+				"'__fish_seen_subcommand_from archive' -l status -d 'Only archive tickets with this status' -x -a 'done cancelled closed'",
 				"'__fish_seen_subcommand_from delete' -s f",
 			},
 		},

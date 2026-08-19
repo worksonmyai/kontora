@@ -36,13 +36,15 @@ These are set when creating a ticket (manually or via `kontora new`):
 | `path` | yes | — | Path to the repository (supports `~`, e.g., `~/projects/kontora`). |
 | `base_branch` | no | — | Branch the ticket's work branch starts from. Empty means the repository's default branch. See [Base branch](#base-branch). |
 | `created` | no | — | RFC 3339 timestamp. Set automatically by `kontora new`. |
-| `deps` | no | — | Ids of the tickets this one waits on. Read only; see [Relations](#relations). |
-| `links` | no | — | Ids of related tickets. Read only; see [Relations](#relations). |
+| `deps` | no | — | Ids of the tickets this one waits on. The scheduler holds the ticket back until every one of them is closed; see [Relations](#relations). |
+| `links` | no | — | Ids of related tickets. See [Relations](#relations). |
 | `parent` | no | — | Id of the epic or parent ticket. Read only; see [Relations](#relations). |
 
 #### Relations
 
-`deps`, `links` and `parent` name other tickets. Kontora reads them and shows each id as a link to that ticket, with a hover card giving its title and status. The details rail lists every relation as its own row. The ones you navigate by are also on the ticket tab itself: `deps`, `links` and the derived `blocks` on a strip at the top, one line unless a ticket carries too many ids to fit, and `parent` as a crumb in the app header, between `board` and the open ticket's id. Nothing else in Kontora acts on them: the scheduler does not hold a ticket back because a dep is unfinished, and no command writes these fields. They come from whatever created the ticket, such as [wedow/ticket](https://github.com/wedow/ticket) (`ticket dep`, `ticket link`, `ticket create --parent`).
+`deps`, `links` and `parent` name other tickets. Kontora reads them and shows each id as a link to that ticket, with a hover card giving its title and status. The details rail lists every relation as its own row. The ones you navigate by are also on the ticket tab itself: `deps`, `links` and the derived `blocks` on a strip at the top, one line unless a ticket carries too many ids to fit, and `parent` as a crumb in the app header, between `board` and the open ticket's id.
+
+`deps` and `links` are written by [`kontora dep`, `kontora undep`, `kontora link` and `kontora unlink`](cli.md#relations). `parent` is not written by any command; it comes from whatever created the ticket. Only `deps` reaches the scheduler, through [dependency-aware scheduling](#dependency-aware-scheduling); `links` and `parent` are for navigation.
 
 ```yaml
 deps: [kon-a1b2]
@@ -124,14 +126,32 @@ open → todo → in_progress → done ──────→ archived
 | Status | Meaning |
 |--------|---------|
 | `open` | Drafted but not ready for the daemon to pick up. |
-| `todo` | Ready for the daemon. The scheduler will pick it up in creation order. |
+| `todo` | Ready for the daemon. The scheduler picks it up in creation order, once its `deps` are closed. |
 | `in_progress` | An agent is currently working on it. |
 | `paused` | Stopped by a failure policy or by the user. Set `status: todo` to resume. |
 | `done` | All pipeline stages completed successfully. |
 | `cancelled` | Manually cancelled by the user. |
 | `archived` | An old closed ticket, hidden from the main views. Terminal; still on disk. |
+| `closed` | Read-only compatibility. Tickets written by the external ticket CLI carry it. Kontora reads it as closed: it releases dependents, `kontora ls --closed` shows it, and the archive sweep accepts it. No command writes it. |
 
 The daemon only picks up tickets that have both `kontora: true` and `status: todo`. A non-Kontora ticket can still appear in any status column, but Kontora will not start or resume work on it until you initialize it. To pause a running Kontora ticket, use `kontora pause <id>` or set `status: paused` in the file — the daemon will detect the change and stop the agent.
+
+## Dependency-aware scheduling
+
+The daemon starts an agent for a `kontora: true` ticket in `todo` only when every id in its `deps` names a ticket that is closed: `done`, `cancelled`, `archived`, or the legacy `closed` that tickets from the external ticket CLI carry. Every other status blocks, including a custom one. So does an id with no ticket file, because nothing on disk says whether that work is finished.
+
+Readiness is derived on every read. It is not a status and is not written to any file: there is no `blocked` status, and a ticket waiting on a dependency stays `todo`.
+
+The queue reacts to the whole store, not just to edits of the waiting ticket:
+
+- Closing a dependency queues every ready ticket that waited on it, with no further edit to their files.
+- Adding a dependency to a queued ticket drops it from the queue again. A ticket that is already running is left alone: an edge added mid-run does not interrupt it.
+- Deleting a resolved dependency blocks its dependents again, because the id now names nothing.
+- Readiness is checked twice, once when the ticket joins the queue and once when the agent is about to be spawned, which closes the gap between the two.
+
+A cycle never starts an agent. Every ticket on it waits on another ticket that is not closed, so none of them is ever ready. `kontora dep` refuses to create a new cycle, but one that arrived through hand-edited files or file sync resolves this way rather than by an error.
+
+Ready tickets run oldest `created` first. Two tickets created at the same time run in id order, so the queue is deterministic.
 
 ## Running on multiple machines
 
@@ -156,7 +176,7 @@ kontora archive --days 30 --project kontora          # the same, by configured p
 kontora archive --days 7 --status cancelled          # sweep cancelled tickets sooner than done ones
 ```
 
-`kontora archive --days N` marks every `done` or `cancelled` ticket whose markdown file was last modified at or before `now - N days` as `archived`. The cutoff uses the file's modification time (the same value the WebUI shows as "updated"), because cancelled tickets have no `completed_at`. `--days` is required and must be a positive number.
+`kontora archive --days N` marks every `done`, `cancelled` or legacy `closed` ticket whose markdown file was last modified at or before `now - N days` as `archived`. The cutoff uses the file's modification time (the same value the WebUI shows as "updated"), because cancelled tickets have no `completed_at`. `--days` is required and must be a positive number.
 
 Every run first prints a table of the matching tickets, with the ID, the closed status, the title taken from the ticket's first markdown heading, and the repository path. `--dry-run` stops there and changes nothing. Otherwise the command asks `Archive N tickets? [y/N]` and archives only on `y` or `yes`; any other answer leaves every file alone. `-y`/`--yes` archives without asking. When stdin is not a terminal, the prompt cannot be answered, so a run that would write files fails and asks for `--yes` instead.
 
@@ -164,7 +184,7 @@ Every run first prints a table of the matching tickets, with the ID, the closed 
 
 `--project NAME` selects the same tickets through the `path` of a project in the config `projects` map, so the path does not have to be typed. A name that is not configured is an error, because a typo would otherwise look like a run where nothing was old enough. `--path` and `--project` cannot be combined.
 
-`--status` narrows the run to one of the two closed statuses, `done` or `cancelled`. Any other value is rejected. Without it both are archived.
+`--status` narrows the run to one closed status: `done`, `cancelled`, or the legacy `closed` that tickets from the external ticket CLI carry. Any other value is rejected. Without it all three are archived. The sweep only ever writes `archived`; no command writes `closed`.
 
 ## History
 

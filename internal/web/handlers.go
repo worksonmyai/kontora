@@ -8,12 +8,15 @@ import (
 	"net/http"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 )
 
-func (s *Server) handleListTickets(w http.ResponseWriter, _ *http.Request) {
-	tickets := s.svc.ListTickets()
+func (s *Server) handleListTickets(w http.ResponseWriter, r *http.Request) {
+	tickets := s.svc.ListTickets(ListTicketsOptions{
+		IncludeHidden: r.URL.Query().Get("all") == "true",
+	})
 	if tickets == nil {
 		tickets = []TicketInfo{}
 	}
@@ -159,6 +162,62 @@ func (s *Server) handleMove(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.svc.MoveTicket(id, body.Status); err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	tkt, err := s.svc.GetTicket(id)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, tkt)
+}
+
+func (s *Server) handleAddDependency(w http.ResponseWriter, r *http.Request) {
+	s.handleRelation(w, r, true, func(id string, related []string) error {
+		return s.svc.AddDependency(id, related[0])
+	})
+}
+
+func (s *Server) handleRemoveDependency(w http.ResponseWriter, r *http.Request) {
+	s.handleRelation(w, r, true, func(id string, related []string) error {
+		return s.svc.RemoveDependency(id, related[0])
+	})
+}
+
+func (s *Server) handleLink(w http.ResponseWriter, r *http.Request) {
+	s.handleRelation(w, r, false, s.svc.LinkTickets)
+}
+
+func (s *Server) handleUnlink(w http.ResponseWriter, r *http.Request) {
+	s.handleRelation(w, r, false, s.svc.UnlinkTickets)
+}
+
+// handleRelation decodes a relation request and answers with the changed
+// ticket. single is true for the dependency verbs, which relate exactly two
+// tickets.
+func (s *Server) handleRelation(w http.ResponseWriter, r *http.Request, single bool, mutate func(id string, related []string) error) {
+	id := r.PathValue("id")
+
+	var body RelationRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON body"})
+		return
+	}
+	if len(body.Related) == 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "related is required"})
+		return
+	}
+	if slices.Contains(body.Related, "") {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "related ids must not be empty"})
+		return
+	}
+	if single && len(body.Related) != 1 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "a dependency relates exactly one ticket"})
+		return
+	}
+
+	if err := mutate(id, body.Related); err != nil {
 		writeServiceError(w, err)
 		return
 	}

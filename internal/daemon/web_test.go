@@ -48,7 +48,7 @@ func TestDaemon_ListTickets(t *testing.T) {
 		return err == nil && info.Status == "done"
 	}, 5*time.Second, 50*time.Millisecond, "tst-l01 should be done in d.tickets")
 
-	tickets := d.ListTickets()
+	tickets := d.ListTickets(web.ListTicketsOptions{})
 	require.Len(t, tickets, 2)
 
 	ids := map[string]web.TicketInfo{}
@@ -122,7 +122,7 @@ created: 2026-01-01T00:00:00Z
 
 	listed := func(id string) web.TicketInfo {
 		t.Helper()
-		for _, ti := range d.ListTickets() {
+		for _, ti := range d.ListTickets(web.ListTicketsOptions{}) {
 			if ti.ID == id {
 				return ti
 			}
@@ -2171,7 +2171,7 @@ created: 2026-01-01T00:00:00Z
 		assert.Less(t, res.Live.OldestWaitMS, time.Minute.Milliseconds(),
 			"the wait is measured from the enqueue, not from the ticket's created date")
 
-		listed := d.ListTickets()
+		listed := d.ListTickets(web.ListTicketsOptions{})
 		for _, ti := range listed {
 			assert.NotEqual(t, "kon-s2", ti.ID, "the board list hides the archived ticket the stats include")
 		}

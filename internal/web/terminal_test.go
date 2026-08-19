@@ -168,8 +168,8 @@ type mockTerminalService struct {
 	hasSession bool
 }
 
-func (m *mockTerminalService) ListTickets() []TicketInfo { return nil }
-func (m *mockTerminalService) RunningAgents() int        { return 0 }
+func (m *mockTerminalService) ListTickets(ListTicketsOptions) []TicketInfo { return nil }
+func (m *mockTerminalService) RunningAgents() int                          { return 0 }
 func (m *mockTerminalService) GetTicket(_ string) (TicketInfo, error) {
 	return TicketInfo{}, ErrTicketNotFound
 }
@@ -188,6 +188,10 @@ func (m *mockTerminalService) AddNote(_ string, _ string) error                 
 func (m *mockTerminalService) SetSummary(_ string, _ string) error                { return nil }
 func (m *mockTerminalService) GetChanges(_ string) (ChangesInfo, error)           { return ChangesInfo{}, nil }
 func (m *mockTerminalService) InitTicket(_ string, _ InitTicketRequest) error     { return nil }
+func (m *mockTerminalService) AddDependency(_ string, _ string) error             { return nil }
+func (m *mockTerminalService) RemoveDependency(_ string, _ string) error          { return nil }
+func (m *mockTerminalService) LinkTickets(_ string, _ []string) error             { return nil }
+func (m *mockTerminalService) UnlinkTickets(_ string, _ []string) error           { return nil }
 func (m *mockTerminalService) UpdateTicket(_ string, _ UpdateTicketRequest) error { return nil }
 func (m *mockTerminalService) UploadTicket(_ []byte) (TicketInfo, error)          { return TicketInfo{}, nil }
 func (m *mockTerminalService) GetLogs(_ string, _ string) (string, error) {

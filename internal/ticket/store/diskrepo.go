@@ -23,23 +23,24 @@ func NewDiskRepo(ticketsDir string) *DiskRepo {
 	return &DiskRepo{dir: config.ExpandTilde(ticketsDir)}
 }
 
+// Resolve maps an ID or unique prefix to a ticket ID. It matches against the
+// IDs of the parsed canonical files rather than against filenames, so a sync
+// conflict copy ("<id> 2.md") never answers for the ticket it duplicates and a
+// file whose name disagrees with its frontmatter id resolves to neither.
 func (r *DiskRepo) Resolve(idOrPrefix string) (string, error) {
-	entries, err := os.ReadDir(r.dir)
+	stored, err := r.List()
 	if err != nil {
-		return "", fmt.Errorf("reading tickets dir: %w", err)
+		return "", err
 	}
 
 	var prefixMatches []string
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".md") {
-			continue
+	for _, st := range stored {
+		id := st.Ticket.ID
+		if id == idOrPrefix {
+			return id, nil
 		}
-		name := strings.TrimSuffix(entry.Name(), ".md")
-		if name == idOrPrefix {
-			return idOrPrefix, nil
-		}
-		if strings.HasPrefix(name, idOrPrefix) {
-			prefixMatches = append(prefixMatches, name)
+		if strings.HasPrefix(id, idOrPrefix) {
+			prefixMatches = append(prefixMatches, id)
 		}
 	}
 

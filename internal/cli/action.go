@@ -79,16 +79,22 @@ func SetStage(cfg *config.Config, taskID, targetStage string) error {
 }
 
 // Run enqueues a ticket for processing via the local daemon API.
-func Run(cfg *config.Config, taskID string) error {
+// It returns the dependency ids that hold the ticket back, so the caller can
+// say "blocked" rather than "queued" for a ticket the daemon will not pick up.
+func Run(cfg *config.Config, taskID string) ([]string, error) {
 	// Resolve ticket ID prefix against local files for the API call.
 	tasksDir := config.ExpandTilde(cfg.TicketsDir)
 	resolvedID, err := resolveTaskID(tasksDir, taskID)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	base := "http://" + net.JoinHostPort(cfg.Web.Host, strconv.Itoa(cfg.Web.Port))
-	return remote.New(base, cfg.Web.Token).Run(resolvedID)
+	info, err := remote.New(base, cfg.Web.Token).Run(resolvedID)
+	if err != nil {
+		return nil, err
+	}
+	return info.Blockers, nil
 }
 
 // Skip advances a ticket to the next pipeline stage, or marks it done

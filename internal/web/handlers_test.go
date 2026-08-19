@@ -42,14 +42,20 @@ type mockService struct {
 	changesFn      func(id string) (ChangesInfo, error)
 	reviewFn       func(id string) error
 	annotateFn     func(id string) error
+	relationFn     func(verb, id string, related []string) error
+	relationCalls  []string
+	listOpts       []ListTicketsOptions
 	rawConfig      string
 	rawConfigErr   error
 	putRawConfigFn func(content string) error
 	configInfo     ConfigInfo
 }
 
-func (m *mockService) ListTickets() []TicketInfo { return m.tickets }
-func (m *mockService) RunningAgents() int        { return 0 }
+func (m *mockService) ListTickets(opts ListTicketsOptions) []TicketInfo {
+	m.listOpts = append(m.listOpts, opts)
+	return m.tickets
+}
+func (m *mockService) RunningAgents() int { return 0 }
 func (m *mockService) GetTicket(id string) (TicketInfo, error) {
 	if m.getErr != nil {
 		return TicketInfo{}, m.getErr
@@ -106,6 +112,33 @@ func (m *mockService) SetSummary(id string, text string) error {
 	}
 	return nil
 }
+
+// relation records the call and delegates to relationFn, so one field covers
+// all four verbs.
+func (m *mockService) relation(verb, id string, related []string) error {
+	m.relationCalls = append(m.relationCalls, verb+" "+id+" "+strings.Join(related, ","))
+	if m.relationFn != nil {
+		return m.relationFn(verb, id, related)
+	}
+	return nil
+}
+
+func (m *mockService) AddDependency(id string, dependencyID string) error {
+	return m.relation("dep", id, []string{dependencyID})
+}
+
+func (m *mockService) RemoveDependency(id string, dependencyID string) error {
+	return m.relation("undep", id, []string{dependencyID})
+}
+
+func (m *mockService) LinkTickets(id string, relatedIDs []string) error {
+	return m.relation("link", id, relatedIDs)
+}
+
+func (m *mockService) UnlinkTickets(id string, relatedIDs []string) error {
+	return m.relation("unlink", id, relatedIDs)
+}
+
 func (m *mockService) InitTicket(id string, req InitTicketRequest) error {
 	if m.initFn != nil {
 		return m.initFn(id, req)
@@ -1878,4 +1911,104 @@ func delNoConfirm(t *testing.T, srv *Server, path string) httpResult {
 	body, err := io.ReadAll(resp.Body)
 	require.NoError(t, err)
 	return httpResult{statusCode: resp.StatusCode, contentType: resp.Header.Get("Content-Type"), body: string(body)}
+}
+
+// --- relation endpoints ---
+
+func TestHandleRelations(t *testing.T) {
+	cases := []struct {
+		name       string
+		path       string
+		body       string
+		relationFn func(verb, id string, related []string) error
+		wantStatus int
+		wantCall   string
+	}{
+		{
+			name:       "dep passes the single id through",
+			path:       "/api/tickets/t-001/dep",
+			body:       `{"related":["t-002"]}`,
+			wantStatus: http.StatusOK,
+			wantCall:   "dep t-001 t-002",
+		},
+		{
+			name:       "undep passes the single id through",
+			path:       "/api/tickets/t-001/undep",
+			body:       `{"related":["t-002"]}`,
+			wantStatus: http.StatusOK,
+			wantCall:   "undep t-001 t-002",
+		},
+		{
+			name:       "link passes every id through",
+			path:       "/api/tickets/t-001/link",
+			body:       `{"related":["t-002","t-003"]}`,
+			wantStatus: http.StatusOK,
+			wantCall:   "link t-001 t-002,t-003",
+		},
+		{
+			name:       "unlink passes every id through",
+			path:       "/api/tickets/t-001/unlink",
+			body:       `{"related":["t-002"]}`,
+			wantStatus: http.StatusOK,
+			wantCall:   "unlink t-001 t-002",
+		},
+		{
+			name:       "an empty related list is refused",
+			path:       "/api/tickets/t-001/link",
+			body:       `{"related":[]}`,
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "an empty id is refused",
+			path:       "/api/tickets/t-001/link",
+			body:       `{"related":[""]}`,
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "a dependency relates exactly two tickets",
+			path:       "/api/tickets/t-001/dep",
+			body:       `{"related":["t-002","t-003"]}`,
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "invalid JSON is refused",
+			path:       "/api/tickets/t-001/dep",
+			body:       `{bad json}`,
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "an unknown ticket is a 404",
+			path:       "/api/tickets/t-001/dep",
+			body:       `{"related":["ghost"]}`,
+			relationFn: func(string, string, []string) error { return ErrTicketNotFound },
+			wantStatus: http.StatusNotFound,
+			wantCall:   "dep t-001 ghost",
+		},
+		{
+			name:       "a refused cycle is a 409",
+			path:       "/api/tickets/t-001/dep",
+			body:       `{"related":["t-002"]}`,
+			relationFn: func(string, string, []string) error { return ErrInvalidState },
+			wantStatus: http.StatusConflict,
+			wantCall:   "dep t-001 t-002",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := &mockService{
+				tickets:    []TicketInfo{{ID: "t-001", Status: "todo"}},
+				relationFn: tc.relationFn,
+			}
+			srv := startHandlerTestServer(t, svc)
+
+			res := post(t, srv, tc.path, tc.body)
+			assert.Equal(t, tc.wantStatus, res.statusCode)
+			if tc.wantCall == "" {
+				assert.Empty(t, svc.relationCalls, "a rejected request must not reach the service")
+				return
+			}
+			assert.Equal(t, []string{tc.wantCall}, svc.relationCalls)
+		})
+	}
 }

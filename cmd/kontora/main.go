@@ -23,6 +23,7 @@ import (
 	"github.com/worksonmyai/kontora/internal/cli/tui"
 	"github.com/worksonmyai/kontora/internal/config"
 	"github.com/worksonmyai/kontora/internal/daemon"
+	"github.com/worksonmyai/kontora/internal/ticket/app"
 	"github.com/worksonmyai/kontora/internal/web"
 )
 
@@ -69,6 +70,10 @@ var handlers = map[string]func(){
 	"skip":                cmdSkip,
 	"set-stage":           cmdSetStage,
 	"cancel":              func() { cmdAction("cancel") },
+	"dep":                 func() { cmdRelation("dep") },
+	"undep":               func() { cmdRelation("undep") },
+	"link":                func() { cmdRelation("link") },
+	"unlink":              func() { cmdRelation("unlink") },
 	"archive":             cmdArchive,
 	"logs":                cmdLogs,
 	"activity":            cmdActivity,
@@ -290,31 +295,53 @@ func cmdLs() {
 	fs := flag.NewFlagSet("ls", flag.ExitOnError)
 	configPath := fs.String("config", defaultConfigPath(), "path to config file")
 	closed := fs.Bool("closed", false, "show done/cancelled tickets")
+	archived := fs.Bool("archived", false, "show archived tickets")
 	static := fs.Bool("static", false, "print static table instead of interactive TUI")
+	status := fs.String("status", "", "only show tickets in this status")
+	project := fs.String("project", "", "only show tickets for this configured project")
+	repoPath := fs.String("path", "", "only show tickets for this repository path")
+	ready := fs.Bool("ready", false, "only show todo tickets whose dependencies are all closed")
+	blocked := fs.Bool("blocked", false, "only show todo tickets waiting on a dependency")
+	limit := fs.Int("limit", 0, "print at most N tickets")
+	asJSON := fs.Bool("json", false, "print JSON instead of a table")
 	urlFlag, tokenFlag := addRemoteFlags(fs)
 	if err := fs.Parse(args); err != nil {
 		log.Fatalf("parsing flags: %v", err)
 	}
 
+	opts := cli.ListOpts{
+		Status:       *status,
+		Project:      *project,
+		Path:         *repoPath,
+		Ready:        *ready,
+		Blocked:      *blocked,
+		ShowClosed:   *closed,
+		ShowArchived: *archived,
+		Limit:        *limit,
+		JSON:         *asJSON,
+	}
+	if err := opts.Validate(); err != nil {
+		log.Fatal(err)
+	}
+
 	if rc := remoteClient(*urlFlag, *tokenFlag); rc != nil {
-		tickets, running, err := rc.ListTickets()
-		if err != nil {
+		if err := printRemoteList(os.Stdout, rc, opts); err != nil {
 			log.Fatal(err)
 		}
-		printRemoteTickets(os.Stdout, tickets, running, *closed)
 		return
 	}
 
 	cfg := mustLoadConfig(*configPath)
 
-	if !*static && !*closed && isatty.IsTerminal(os.Stdout.Fd()) {
+	// Any filter or JSON makes this a query, not the board.
+	if !*static && !*closed && !*archived && !opts.Filtering() && isatty.IsTerminal(os.Stdout.Fd()) {
 		if err := tui.Run(cfg); err != nil {
 			log.Fatal(err)
 		}
 		return
 	}
 
-	if err := cli.Status(cfg, os.Stdout, cli.StatusOpts{ShowClosed: *closed}); err != nil {
+	if err := cli.List(cfg, os.Stdout, opts); err != nil {
 		log.Fatal(err)
 	}
 }
@@ -327,6 +354,9 @@ func cmdNew() {
 	agent := fs.String("agent", "", "agent name, or \"none\" to skip the project default")
 	branch := fs.String("branch", "", "work branch name (defaults to <branch_prefix>/<id>)")
 	baseBranch := fs.String("base-branch", "", "branch the work branch starts from (defaults to the repo default branch)")
+	status := fs.String("status", "", "initial status, open or todo (defaults to todo)")
+	descriptionFile := fs.String("description-file", "", "read the ticket description from a file ('-' for stdin)")
+	quiet := fs.Bool("quiet", false, "print only the new ticket ID")
 	urlFlag, tokenFlag := addRemoteFlags(fs)
 	if err := fs.Parse(os.Args[2:]); err != nil {
 		log.Fatalf("parsing flags: %v", err)
@@ -335,6 +365,15 @@ func cmdNew() {
 	title := strings.Join(fs.Args(), " ")
 	if title == "" {
 		log.Fatal("title is required: kontora new [flags] TITLE")
+	}
+
+	var body string
+	if *descriptionFile != "" {
+		var err error
+		body, err = cli.ReadDescription(*descriptionFile, os.Stdin)
+		if err != nil {
+			log.Fatal(err)
+		}
 	}
 
 	if rc := remoteClient(*urlFlag, *tokenFlag); rc != nil {
@@ -348,13 +387,15 @@ func cmdNew() {
 			Path:       *repoPath,
 			Pipeline:   *pipeline,
 			Agent:      *agent,
+			Status:     *status,
+			Body:       body,
 			Branch:     *branch,
 			BaseBranch: *baseBranch,
 		})
 		if err != nil {
 			log.Fatal(err)
 		}
-		fmt.Printf("%s %s\n", helpCyan.Render(info.ID), helpFaint.Render("created"))
+		printNewTicket(info.ID, *quiet)
 		return
 	}
 
@@ -370,16 +411,32 @@ func cmdNew() {
 
 	cfg := mustLoadConfig(*configPath)
 
-	id, err := cli.Quick(cfg, cli.QuickOpts{
+	// cli.New writes the whole ticket in one file write, so a ticket created
+	// with --status open is never visible as todo for a watching daemon to
+	// claim.
+	id, err := cli.New(cfg, cli.NewOpts{
 		Path:       path,
 		Pipeline:   *pipeline,
 		Agent:      *agent,
+		Status:     *status,
 		Title:      title,
+		Body:       body,
 		Branch:     *branch,
 		BaseBranch: *baseBranch,
+		NoEdit:     true,
 	})
 	if err != nil {
 		log.Fatal(err)
+	}
+	printNewTicket(id, *quiet)
+}
+
+// printNewTicket acknowledges a creation. --quiet prints the bare id, which is
+// what a script reads back to address the ticket it just made.
+func printNewTicket(id string, quiet bool) {
+	if quiet {
+		fmt.Println(id)
+		return
 	}
 	fmt.Printf("%s %s\n", helpCyan.Render(id), helpFaint.Render("created"))
 }
@@ -387,6 +444,7 @@ func cmdNew() {
 func cmdView() {
 	fs := flag.NewFlagSet("view", flag.ExitOnError)
 	configPath := fs.String("config", defaultConfigPath(), "path to config file")
+	bodyOnly := fs.Bool("body", false, "print only the ticket body")
 	urlFlag, tokenFlag := addRemoteFlags(fs)
 	taskID := parseTicketFlags(fs, os.Args[2:])
 	if taskID == "" {
@@ -398,12 +456,22 @@ func cmdView() {
 		if err != nil {
 			log.Fatal(err)
 		}
+		if *bodyOnly {
+			fmt.Print(info.Body)
+			return
+		}
 		printRemoteTicket(os.Stdout, info)
 		return
 	}
 
 	cfg := mustLoadConfig(*configPath)
 
+	if *bodyOnly {
+		if err := cli.ViewBody(cfg, taskID, os.Stdout); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 	if err := cli.View(cfg, taskID, os.Stdout); err != nil {
 		log.Fatal(err)
 	}
@@ -557,20 +625,32 @@ func cmdRun() {
 
 	if rc := remoteClient(*urlFlag, *tokenFlag); rc != nil {
 		id := mustResolveRemote(rc, taskID)
-		if err := rc.Run(id); err != nil {
+		info, err := rc.Run(id)
+		if err != nil {
 			log.Fatal(err)
 		}
-		confirm(id, "queued")
+		confirm(id, runOutcome(info.Blockers))
 		return
 	}
 
 	cfg := mustLoadConfig(*configPath)
 	id := mustResolveLocal(cfg, taskID)
 
-	if err := cli.Run(cfg, id); err != nil {
+	blockers, err := cli.Run(cfg, id)
+	if err != nil {
 		log.Fatal(err)
 	}
-	confirm(id, "queued")
+	confirm(id, runOutcome(blockers))
+}
+
+// runOutcome says what actually happened to a ticket `run` moved to todo. It is
+// only queued when nothing holds it back; otherwise the daemon will not pick it
+// up until its dependencies close.
+func runOutcome(blockers []string) string {
+	if len(blockers) == 0 {
+		return "queued"
+	}
+	return "blocked by " + strings.Join(blockers, ", ")
 }
 
 func cmdNote() {
@@ -734,6 +814,83 @@ var actionPastTense = map[string]string{
 	"retry":  "re-queued",
 	"cancel": "cancelled",
 	"done":   "done",
+}
+
+// relationPastTense names what each relation verb did, for the confirmation
+// line. The line names the tickets on the other side of the edge as well, since
+// the whole point of the verb is the pair.
+var relationPastTense = map[string]string{
+	"dep":    "now waits on",
+	"undep":  "no longer waits on",
+	"link":   "linked to",
+	"unlink": "unlinked from",
+}
+
+// cmdRelation runs the four relation verbs. Both ends of the relation are
+// resolved before the request goes out, so a prefix means the same thing in
+// local and remote mode.
+func cmdRelation(verb string) {
+	fs := flag.NewFlagSet(verb, flag.ExitOnError)
+	configPath := fs.String("config", defaultConfigPath(), "path to config file")
+	urlFlag, tokenFlag := addRemoteFlags(fs)
+	args := parseArgs(fs, os.Args[2:], -1)
+
+	single := verb == "dep" || verb == "undep"
+	switch {
+	case len(args) < 2:
+		if single {
+			log.Fatalf("two ticket IDs are required: kontora %s TICKET_ID DEPENDENCY_ID", verb)
+		}
+		log.Fatalf("two ticket IDs are required: kontora %s TICKET_ID TICKET_ID...", verb)
+	case single && len(args) > 2:
+		log.Fatalf("kontora %s relates exactly two tickets, got %d", verb, len(args))
+	}
+	taskID, related := args[0], args[1:]
+
+	if rc := remoteClient(*urlFlag, *tokenFlag); rc != nil {
+		id := mustResolveRemote(rc, taskID)
+		resolved := make([]string, len(related))
+		for i, r := range related {
+			resolved[i] = mustResolveRemote(rc, r)
+		}
+		var err error
+		switch verb {
+		case "dep":
+			err = rc.Dep(id, resolved[0])
+		case "undep":
+			err = rc.Undep(id, resolved[0])
+		case "link":
+			err = rc.Link(id, resolved)
+		case "unlink":
+			err = rc.Unlink(id, resolved)
+		}
+		if err != nil {
+			log.Fatal(err)
+		}
+		confirm(id, relationPastTense[verb]+" "+strings.Join(resolved, ", "))
+		return
+	}
+
+	cfg := mustLoadConfig(*configPath)
+
+	var (
+		result app.RelationResult
+		err    error
+	)
+	switch verb {
+	case "dep":
+		result, err = cli.Dep(cfg, taskID, related[0])
+	case "undep":
+		result, err = cli.Undep(cfg, taskID, related[0])
+	case "link":
+		result, err = cli.Link(cfg, taskID, related)
+	case "unlink":
+		result, err = cli.Unlink(cfg, taskID, related)
+	}
+	if err != nil {
+		log.Fatal(err)
+	}
+	confirm(result.ID, relationPastTense[verb]+" "+strings.Join(result.Related, ", "))
 }
 
 // daemonClient returns the client for whichever daemon the command targets: the
@@ -1214,7 +1371,9 @@ func parseArgs(fs *flag.FlagSet, args []string, maxPositional int) []string {
 		if len(rest) == 0 {
 			return positional
 		}
-		if len(positional) >= maxPositional {
+		// A negative maxPositional means "as many as given", which is what the
+		// relation verbs take.
+		if maxPositional >= 0 && len(positional) >= maxPositional {
 			log.Fatalf("unexpected argument %q", rest[0])
 		}
 		positional = append(positional, rest[0])

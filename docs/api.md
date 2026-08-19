@@ -5,7 +5,7 @@ When the web server is enabled, the following endpoints are exposed:
 | Endpoint | Description |
 |----------|-------------|
 | `GET /` | Static dashboard UI. |
-| `GET /api/tickets` | List all tickets (JSON). |
+| `GET /api/tickets` | List all board tickets (JSON). `?all=true` adds the ones whose status has no board column: archived, legacy `closed`, and any foreign status. |
 | `POST /api/tickets` | Create a new ticket (JSON body: `title`, `path`, optional `pipeline`, `agent`, `status`, `body`, `branch`, `base_branch`). |
 | `GET /api/tickets/{id}` | Get ticket details (JSON). |
 | `DELETE /api/tickets/{id}` | Delete the ticket markdown file without worktree cleanup. Requires `X-Kontora-Confirm: delete-ticket-file`. Only deletes files inside `tickets_dir`. |
@@ -19,6 +19,10 @@ When the web server is enabled, the following endpoints are exposed:
 | `POST /api/tickets/{id}/summary` | Set the ticket's `summary` field (`{"text": "..."}` body). |
 | `GET /api/tickets/{id}/changes` | Commits and changed files on the ticket's branch relative to its `base_branch`, or the repo's default branch when unset. Empty payload when the ticket has no branch or the branch was deleted. |
 | `POST /api/tickets/{id}/init` | Initialize a non-kontora ticket (`pipeline`, `path`, optional `agent`). |
+| `POST /api/tickets/{id}/dep` | Make the ticket wait on another one (`{"related": ["<id>"]}` body, exactly one id). |
+| `POST /api/tickets/{id}/undep` | Drop a dependency edge (`{"related": ["<id>"]}` body, exactly one id). |
+| `POST /api/tickets/{id}/link` | Relate the ticket to each id in `{"related": [...]}`, on both sides. |
+| `POST /api/tickets/{id}/unlink` | Remove the relation between the ticket and each id in `{"related": [...]}`. |
 | `PUT /api/tickets/{id}` | Update an open ticket's body or frontmatter fields (`body`, `pipeline`, `path`, `agent`, `branch`, `base_branch`). |
 | `POST /api/tickets/upload` | Import tickets from raw `.md` file content (multipart form). |
 | `POST /api/tickets/{id}/plannotator-review` | Open the ticket's branch diff in Plannotator. Only in `human_review`. Submitted feedback routes the ticket to the built-in rework stage. See [plannotator](configuration.md#plannotator). |
@@ -36,6 +40,12 @@ Both Plannotator endpoints return 202 once the session is accepted, and report i
 Relations ride both ticket payloads as arrays of `{id, title, status}`. `GET /api/tickets` carries the id alone; `GET /api/tickets/{id}` and the SSE ticket updates also carry the title and status of every ticket the daemon still has on disk, and add the two derived reverse edges: `blocks`, the tickets whose `deps` name this one, and `children`, the tickets whose `parent` names it. Both are sorted by id and absent from the list payload. A ref with no title and no status names a ticket that is not in `tickets_dir`. See [Relations](tickets.md#relations).
 
 A `children` entry carries more than the other relation arrays, so a sub-ticket row renders without another request: `stage`, `stage_index` and `stage_count` for the child's position in its own pipeline, and `started_at` and `completed_at` for its wall time. `stage_index` is 1-based and absent when the child's stage is not in its pipeline. The timestamps bound the child's whole run, first pickup to last exit, rather than the current stage. `completed_at` is absent while the child is `in_progress`.
+
+Both ticket payloads carry `project`, the configured project whose path is the ticket's, and the derived readiness: `ready` when no dependency holds the ticket back, and `blockers` naming the dependency ids that do when one does. Neither is stored; see [dependency-aware scheduling](tickets.md#dependency-aware-scheduling). `POST /api/tickets/{id}/run` answers with the ticket, so a caller can see from `blockers` whether the ticket it just moved to `todo` will actually be picked up.
+
+The four relation endpoints take the same body, `{"related": [...]}`, and answer with the changed ticket. They return 400 for an empty list, an empty id, or more than one id on the two dependency verbs; 404 for an id no ticket answers; and 409 when the ticket is related to itself or when a dependency would close a cycle, with the cycle named in the error. A rejected call writes no file. Repeating a call that has nothing left to do returns 200 and writes nothing.
+
+A link is written to both tickets, one file at a time, because two markdown files cannot be written together. When the second write fails the error names both tickets and which one was already changed, and repeating the request repairs the missing side.
 
 A ticket whose `branch` is empty carries `auto_branch` in `GET /api/tickets` and `GET /api/tickets/{id}`: the branch the daemon would assign at pickup, resolved for the path the ticket names and the current [branch naming](configuration.md#branch-naming) mode. It is a read-only projection, not a stored field, and it is absent once `branch` is set.
 

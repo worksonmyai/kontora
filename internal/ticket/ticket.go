@@ -54,6 +54,11 @@ const (
 	// StatusArchived is a terminal status for old closed tickets. Archived
 	// tickets stay on disk but are hidden from the CLI, TUI, and WebUI lists.
 	StatusArchived Status = "archived"
+	// StatusLegacyClosed is the terminal status tickets written by the external
+	// ticket CLI carry. Kontora reads it as closed: a dependency on such a
+	// ticket counts as finished, and the archive sweep accepts one as input. No
+	// command writes it.
+	StatusLegacyClosed Status = "closed"
 )
 
 type HistoryEntry struct {
@@ -113,10 +118,11 @@ type Ticket struct {
 	// repository's default branch.
 	BaseBranch string         `yaml:"base_branch"`
 	History    []HistoryEntry `yaml:"history"`
-	// Deps, Links and Parent are relations the external ticket CLI writes and
-	// kontora only reads: deps lists the tickets this one is blocked by, links
-	// is a symmetric "related" list, and parent names the epic or parent task.
-	// The reverse of deps is not stored; it is derived by scanning the store.
+	// Deps, Links and Parent are the ticket's relations: deps lists the tickets
+	// this one is blocked by, links is a symmetric "related" list, and parent
+	// names the epic or parent task. Deps and links are written by the relation
+	// commands; parent is not written by kontora. The reverse of deps is not
+	// stored; it is derived by scanning the store.
 	Deps      []string   `yaml:"deps"`
 	Links     []string   `yaml:"links"`
 	Parent    string     `yaml:"parent"`

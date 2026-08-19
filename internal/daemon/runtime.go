@@ -27,6 +27,12 @@ func (r *daemonRuntime) Cancel(ticketID string) {
 	}
 }
 
+func (r *daemonRuntime) ReconcileDependencies(ticketID string) {
+	r.d.mu.Lock()
+	defer r.d.mu.Unlock()
+	r.d.reconcileDependenciesLocked(ticketID)
+}
+
 func (r *daemonRuntime) BroadcastUpdated(ticketID string) {
 	r.d.broadcastTicketUpdateLocking(ticketID)
 }

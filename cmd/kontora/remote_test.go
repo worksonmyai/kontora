@@ -17,6 +17,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/worksonmyai/kontora/internal/cli"
 	"github.com/worksonmyai/kontora/internal/testutil"
 	"github.com/worksonmyai/kontora/internal/web"
 )
@@ -535,7 +536,8 @@ func TestPrintRemoteTickets(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			var buf bytes.Buffer
-			printRemoteTickets(&buf, tc.tickets, 0, tc.showClosed)
+			opts := cli.ListOpts{ShowClosed: tc.showClosed}
+			require.NoError(t, cli.RenderList(remoteListing(tc.tickets, opts), &buf, opts))
 			out := buf.String()
 
 			for _, id := range tc.wantIDs {

@@ -6,8 +6,16 @@ package cli
 // from the other.
 var Commands = []Command{
 	{Name: "ls", Desc: "List tickets (TUI on TTY, static table otherwise)", Config: true, Remote: true, Flags: []Flag{
-		{Name: "closed", Desc: "Show done/cancelled tickets"},
+		{Name: "closed", Desc: "Show done/cancelled/closed tickets"},
+		{Name: "archived", Desc: "Show archived tickets"},
 		{Name: "static", Desc: "Print static table instead of interactive TUI"},
+		{Name: "status", Desc: "Only show tickets in this status", Value: "text"},
+		{Name: "project", Desc: "Only show tickets for this configured project", Value: "project"},
+		{Name: "path", Desc: "Only show tickets for this repository path", Value: "path"},
+		{Name: "ready", Desc: "Only show todo tickets whose dependencies are all closed"},
+		{Name: "blocked", Desc: "Only show todo tickets waiting on a dependency"},
+		{Name: "limit", Desc: "Print at most N tickets", Value: "text"},
+		{Name: "json", Desc: "Print JSON instead of a table"},
 	}},
 	{Name: "new", Desc: "Create a ticket", Config: true, Remote: true, Args: "TITLE", Flags: []Flag{
 		{Name: "path", Desc: "Repository path", Value: "path"},
@@ -15,8 +23,13 @@ var Commands = []Command{
 		{Name: "agent", Desc: "Agent name, or \"none\"", Value: "agent"},
 		{Name: "branch", Desc: "Work branch name", Value: "text"},
 		{Name: "base-branch", Desc: "Branch the work branch starts from", Value: "text"},
+		{Name: "status", Desc: "Initial status", Value: "text", Choices: []string{"open", "todo"}},
+		{Name: "description-file", Desc: "Read the description from a file ('-' for stdin)", Value: "path"},
+		{Name: "quiet", Desc: "Print only the new ticket ID"},
 	}},
-	{Name: "view", Desc: "Print ticket details", Config: true, Remote: true, TicketID: true},
+	{Name: "view", Desc: "Print ticket details", Config: true, Remote: true, TicketID: true, Flags: []Flag{
+		{Name: "body", Desc: "Print only the ticket body"},
+	}},
 	{Name: "edit", Desc: "Open a ticket in $EDITOR", Config: true, TicketID: true},
 	{Name: "update", Desc: "Update ticket body/frontmatter fields", Config: true, Remote: true, TicketID: true, Flags: []Flag{
 		{Name: "body-file", Desc: "Read ticket body from a file ('-' for stdin)", Value: "path"},
@@ -47,12 +60,16 @@ var Commands = []Command{
 	{Name: "skip", Desc: "Skip to the next pipeline stage", Config: true, Remote: true, TicketID: true},
 	{Name: "set-stage", Desc: "Move ticket to a specific pipeline stage", Config: true, Remote: true, TicketID: true, Args: "STAGE"},
 	{Name: "cancel", Desc: "Cancel a ticket", Config: true, Remote: true, TicketID: true},
+	{Name: "dep", Desc: "Make a ticket wait on another one", Config: true, Remote: true, TicketID: true, Args: "DEPENDENCY_ID"},
+	{Name: "undep", Desc: "Drop a dependency from a ticket", Config: true, Remote: true, TicketID: true, Args: "DEPENDENCY_ID"},
+	{Name: "link", Desc: "Relate a ticket to one or more others", Config: true, Remote: true, TicketID: true, Args: "TICKET_ID..."},
+	{Name: "unlink", Desc: "Remove a relation between tickets", Config: true, Remote: true, TicketID: true, Args: "TICKET_ID..."},
 	{Name: "archive", Desc: "Archive old done/cancelled tickets", Config: true, Flags: []Flag{
 		{Name: "days", Desc: "Required: age threshold in days", Value: "text"},
 		{Name: "dry-run", Desc: "List what would be archived, write nothing"},
 		{Name: "path", Desc: "Only archive tickets for this repository path", Value: "path"},
 		{Name: "project", Desc: "Only archive tickets for this configured project", Value: "project"},
-		{Name: "status", Desc: "Only archive tickets with this status", Value: "text", Choices: []string{"done", "cancelled"}},
+		{Name: "status", Desc: "Only archive tickets with this status", Value: "text", Choices: []string{"done", "cancelled", "closed"}},
 		{Name: "yes", Short: "y", Desc: "Skip the confirmation prompt"},
 	}},
 	{Name: "logs", Desc: "Show agent logs for a ticket", Config: true, Remote: true, TicketID: true, Flags: []Flag{

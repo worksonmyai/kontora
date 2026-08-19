@@ -3,10 +3,14 @@ package cli
 import (
 	"bytes"
 	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/worksonmyai/kontora/internal/config"
 )
 
 func TestViewRendersBranchFields(t *testing.T) {
@@ -62,4 +66,17 @@ path: /repo
 			}
 		})
 	}
+}
+
+func TestViewBody(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &config.Config{TicketsDir: dir}
+	body := "# A title\n\nSome text.\n\n## Notes\n\n- one\n"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "tst-001.md"),
+		[]byte("---\nid: tst-001\nstatus: todo\nkontora: true\n---\n"+body), 0o644))
+
+	var buf bytes.Buffer
+	require.NoError(t, ViewBody(cfg, "tst", &buf))
+
+	assert.Equal(t, body, buf.String(), "the output must equal the file after the closing delimiter")
 }

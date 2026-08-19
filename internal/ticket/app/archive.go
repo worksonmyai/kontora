@@ -11,6 +11,13 @@ import (
 	"github.com/worksonmyai/kontora/internal/ticket"
 )
 
+// archivableStatuses are the closed statuses the sweep accepts as input.
+var archivableStatuses = map[ticket.Status]bool{
+	ticket.StatusDone:         true,
+	ticket.StatusCancelled:    true,
+	ticket.StatusLegacyClosed: true,
+}
+
 // ArchiveOptions controls the archive use-case.
 type ArchiveOptions struct {
 	// Days is the age threshold. A ticket is eligible only when its file mtime
@@ -25,8 +32,8 @@ type ArchiveOptions struct {
 	// Project names a configured project whose path to filter on. It selects
 	// the same tickets as Path and may not be combined with it.
 	Project string
-	// Status, when set, narrows the run to one closed status: done or
-	// cancelled. Empty means both.
+	// Status, when set, narrows the run to one closed status: done, cancelled,
+	// or the legacy closed. Empty means all three.
 	Status ticket.Status
 }
 
@@ -38,8 +45,8 @@ type ArchiveEntry struct {
 	// Path is the ticket's repository path, empty when the ticket has no path
 	// field.
 	Path string
-	// Status is the closed status the ticket had before the run, done or
-	// cancelled.
+	// Status is the closed status the ticket had before the run: done,
+	// cancelled, or legacy closed.
 	Status ticket.Status
 }
 
@@ -64,10 +71,11 @@ func (r ArchiveResult) IDs() []string {
 	return ids
 }
 
-// Archive marks old done/cancelled tickets as archived. A ticket is eligible
-// only when its status is done or cancelled and its markdown file mtime is at
-// or before the cutoff computed from opts.Days, and when it passes the optional
-// repository and status filters.
+// Archive marks old closed tickets as archived. A ticket is eligible only when
+// its status is done, cancelled, or the legacy closed that tickets from the
+// external ticket CLI carry, and its markdown file mtime is at or before the
+// cutoff computed from opts.Days, and when it passes the optional repository and
+// status filters. The sweep only ever writes archived; nothing writes closed.
 func (s *Service) Archive(opts ArchiveOptions) (ArchiveResult, error) {
 	return s.archive(opts, time.Now(), os.Stat)
 }
@@ -97,8 +105,9 @@ func (s *Service) archive(opts ArchiveOptions, now time.Time, stat func(string) 
 	if opts.Days < 1 {
 		return ArchiveResult{}, fmt.Errorf("archive: days must be a positive number, got %d", opts.Days)
 	}
-	if opts.Status != "" && opts.Status != ticket.StatusDone && opts.Status != ticket.StatusCancelled {
-		return ArchiveResult{}, fmt.Errorf("archive: status must be %s or %s, got %q", ticket.StatusDone, ticket.StatusCancelled, opts.Status)
+	if opts.Status != "" && !archivableStatuses[opts.Status] {
+		return ArchiveResult{}, fmt.Errorf("archive: status must be %s, %s or %s, got %q",
+			ticket.StatusDone, ticket.StatusCancelled, ticket.StatusLegacyClosed, opts.Status)
 	}
 	filterPath, err := s.archivePath(opts)
 	if err != nil {
@@ -119,7 +128,7 @@ func (s *Service) archive(opts ArchiveOptions, now time.Time, stat func(string) 
 		if t.ID == "" {
 			continue
 		}
-		if t.Status != ticket.StatusDone && t.Status != ticket.StatusCancelled {
+		if !archivableStatuses[t.Status] {
 			continue
 		}
 		if opts.Status != "" && t.Status != opts.Status {

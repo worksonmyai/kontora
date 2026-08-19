@@ -60,7 +60,8 @@ func TestClient_BearerOnPostAction(t *testing.T) {
 	defer srv.Close()
 
 	c := New(srv.URL, "secret")
-	require.NoError(t, c.Run("tst-001"))
+	_, err := c.Run("tst-001")
+	require.NoError(t, err)
 	assert.Equal(t, "Bearer secret", gotAuth)
 	assert.Equal(t, "/api/tickets/tst-001/run", gotPath)
 }
@@ -283,7 +284,7 @@ func TestClient_ServerErrorSurfaced(t *testing.T) {
 	defer srv.Close()
 
 	c := New(srv.URL, "")
-	err := c.Run("tst-001")
+	_, err := c.Run("tst-001")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unknown pipeline")
 }
@@ -355,4 +356,66 @@ func TestClient_SSEStreamEOFBacksOff(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("sseLoop did not stop after context cancellation")
 	}
+}
+
+func TestClient_RelationVerbs(t *testing.T) {
+	cases := []struct {
+		name        string
+		call        func(c *Client) error
+		wantPath    string
+		wantRelated []string
+	}{
+		{
+			name:        "dep",
+			call:        func(c *Client) error { return c.Dep("tst-001", "tst-002") },
+			wantPath:    "/api/tickets/tst-001/dep",
+			wantRelated: []string{"tst-002"},
+		},
+		{
+			name:        "undep",
+			call:        func(c *Client) error { return c.Undep("tst-001", "tst-002") },
+			wantPath:    "/api/tickets/tst-001/undep",
+			wantRelated: []string{"tst-002"},
+		},
+		{
+			name:        "link carries every related id",
+			call:        func(c *Client) error { return c.Link("tst-001", []string{"tst-002", "tst-003"}) },
+			wantPath:    "/api/tickets/tst-001/link",
+			wantRelated: []string{"tst-002", "tst-003"},
+		},
+		{
+			name:        "unlink",
+			call:        func(c *Client) error { return c.Unlink("tst-001", []string{"tst-002"}) },
+			wantPath:    "/api/tickets/tst-001/unlink",
+			wantRelated: []string{"tst-002"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var gotPath string
+			var gotBody web.RelationRequest
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotPath = r.URL.Path
+				_ = json.NewDecoder(r.Body).Decode(&gotBody)
+				_ = json.NewEncoder(w).Encode(web.TicketInfo{ID: "tst-001"})
+			}))
+			defer srv.Close()
+
+			require.NoError(t, tc.call(New(srv.URL, "")))
+			assert.Equal(t, tc.wantPath, gotPath)
+			assert.Equal(t, tc.wantRelated, gotBody.Related)
+		})
+	}
+}
+
+func TestClient_RelationErrorSurfaced(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "dependency cycle: a would close a -> b -> a"})
+	}))
+	defer srv.Close()
+
+	err := New(srv.URL, "").Dep("a", "b")
+	require.ErrorContains(t, err, "dependency cycle")
 }

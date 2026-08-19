@@ -2263,7 +2263,7 @@ func TestDaemon_ListTickets_HidesNonBoardStatuses(t *testing.T) {
 	d.tickets["t-tomb"] = parse("t-tomb", "tombstone")
 
 	ids := make([]string, 0, 3)
-	for _, ti := range d.ListTickets() {
+	for _, ti := range d.ListTickets(web.ListTicketsOptions{}) {
 		ids = append(ids, ti.ID)
 	}
 	assert.ElementsMatch(t, []string{"t-todo", "t-done", "t-cancelled"}, ids)
@@ -2323,7 +2323,7 @@ func TestDaemon_Relations(t *testing.T) {
 	// The board cards render ids, so the list payload carries no titles and no
 	// derived reverse edges.
 	var list, listEpic web.TicketInfo
-	for _, ti := range d.ListTickets() {
+	for _, ti := range d.ListTickets(web.ListTicketsOptions{}) {
 		switch ti.ID {
 		case "rel-main":
 			list = ti
@@ -2378,7 +2378,7 @@ func TestDaemon_ListTickets_OmitsDetailFields(t *testing.T) {
 	require.NoError(t, err)
 	d.tickets["t-detail"] = &ticketState{ticket: tk, filePath: filepath.Join(h.tasksDir, "t-detail.md")}
 
-	list := d.ListTickets()
+	list := d.ListTickets(web.ListTicketsOptions{})
 	require.Len(t, list, 1)
 	li := list[0]
 	assert.Empty(t, li.History, "list must omit history")

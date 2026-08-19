@@ -23,15 +23,9 @@ func historyStage(h ticket.HistoryEntry) string {
 
 // View prints ticket details to the given writer.
 func View(cfg *config.Config, taskID string, w io.Writer) error {
-	tasksDir := config.ExpandTilde(cfg.TicketsDir)
-	resolvedID, err := resolveTaskID(tasksDir, taskID)
+	t, err := readTicketByID(cfg, taskID)
 	if err != nil {
 		return err
-	}
-
-	t, err := ticket.ParseFile(filepath.Join(tasksDir, resolvedID+".md"))
-	if err != nil {
-		return fmt.Errorf("reading ticket: %w", err)
 	}
 
 	fmt.Fprintf(w, "%s  %s\n", t.ID, string(t.Status))
@@ -96,4 +90,30 @@ func View(cfg *config.Config, taskID string, w io.Writer) error {
 
 	fmt.Fprintf(w, "\n%s", t.Body)
 	return nil
+}
+
+// ViewBody prints the ticket's stored markdown body and nothing else: no
+// metadata, no styling, and no relation sections. It is the counterpart of
+// `kontora update --body-file`, so a caller can read a body out, edit it, and
+// write it back without the round trip changing anything.
+func ViewBody(cfg *config.Config, taskID string, w io.Writer) error {
+	t, err := readTicketByID(cfg, taskID)
+	if err != nil {
+		return err
+	}
+	_, err = io.WriteString(w, t.Body)
+	return err
+}
+
+func readTicketByID(cfg *config.Config, taskID string) (*ticket.Ticket, error) {
+	tasksDir := config.ExpandTilde(cfg.TicketsDir)
+	resolvedID, err := resolveTaskID(tasksDir, taskID)
+	if err != nil {
+		return nil, err
+	}
+	t, err := ticket.ParseFile(filepath.Join(tasksDir, resolvedID+".md"))
+	if err != nil {
+		return nil, fmt.Errorf("reading ticket: %w", err)
+	}
+	return t, nil
 }

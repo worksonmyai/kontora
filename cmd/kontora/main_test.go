@@ -1,8 +1,10 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -10,6 +12,8 @@ import (
 
 	"github.com/worksonmyai/kontora/internal/cli"
 	"github.com/worksonmyai/kontora/internal/config"
+	"github.com/worksonmyai/kontora/internal/frontmatter"
+	"github.com/worksonmyai/kontora/internal/testutil"
 )
 
 func TestResolveConfigPath(t *testing.T) {
@@ -157,4 +161,56 @@ func TestCLIDocsCoverEveryCommand(t *testing.T) {
 				"%q has no heading in docs/cli.md", cmd.Name)
 		})
 	}
+}
+
+// TestCreateViewListEndToEnd drives the built binary against a scratch config,
+// which is the only way to cover the flag parsing, the file that is written,
+// and the JSON a script reads back, in one pass.
+func TestCreateViewListEndToEnd(t *testing.T) {
+	scratch := t.TempDir()
+	ticketsDir := filepath.Join(scratch, "tickets")
+	repo := testutil.InitRepo(t)
+	configPath := filepath.Join(scratch, "config.yaml")
+	require.NoError(t, os.WriteFile(configPath, []byte(
+		"tickets_dir: "+ticketsDir+"\n"+
+			"worktrees_dir: "+filepath.Join(scratch, "wt")+"\n"+
+			"logs_dir: "+filepath.Join(scratch, "logs")+"\n"+
+			"default_agent: claude\n"+
+			"agents:\n  claude:\n    binary: true\n"), 0o644))
+
+	bodyPath := filepath.Join(scratch, "body.md")
+	require.NoError(t, os.WriteFile(bodyPath, []byte("## Goal\n\nSmoke test.\n"), 0o644))
+
+	out, err := runCLI(t, nil, "new", "--config", configPath, "--status", "open", "--quiet",
+		"--description-file", bodyPath, "--path", repo, "Replacement smoke test")
+	require.NoError(t, err, out)
+	id := strings.TrimSpace(out)
+	assert.Equal(t, id+"\n", out, "--quiet prints the id and nothing else")
+
+	// The first persisted status is open, so a daemon with auto_pick_up cannot
+	// claim the ticket between creation and an edit.
+	written, err := os.ReadFile(filepath.Join(ticketsDir, id+".md"))
+	require.NoError(t, err)
+	assert.Contains(t, string(written), "status: open")
+
+	out, err = runCLI(t, nil, "view", "--config", configPath, "--body", id)
+	require.NoError(t, err, out)
+	_, body, err := frontmatter.Split(string(written))
+	require.NoError(t, err)
+	assert.Equal(t, body, out, "view --body prints the file after the closing delimiter")
+	assert.Contains(t, out, "# Replacement smoke test")
+	assert.Contains(t, out, "Smoke test.")
+
+	out, err = runCLI(t, nil, "ls", "--config", configPath, "--json")
+	require.NoError(t, err, out)
+	var items []map[string]any
+	require.NoError(t, json.Unmarshal([]byte(out), &items))
+	require.Len(t, items, 1)
+	assert.Equal(t, id, items[0]["id"])
+	assert.Equal(t, "open", items[0]["status"])
+	assert.NotContains(t, items[0], "body")
+
+	out, err = runCLI(t, nil, "ls", "--config", configPath, "--ready", "--blocked")
+	require.Error(t, err, out)
+	assert.Contains(t, out, "--ready and --blocked")
 }

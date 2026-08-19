@@ -27,7 +27,7 @@ var (
 // TicketService defines the contract between the web layer and the daemon.
 // The daemon implements this interface; the web package tests use mocks.
 type TicketService interface {
-	ListTickets() []TicketInfo
+	ListTickets(opts ListTicketsOptions) []TicketInfo
 	RunningAgents() int
 	GetTicket(id string) (TicketInfo, error)
 	CreateTicket(req CreateTicketRequest) (TicketInfo, error)
@@ -42,6 +42,10 @@ type TicketService interface {
 	AddNote(id string, text string) error
 	SetSummary(id string, text string) error
 	InitTicket(id string, req InitTicketRequest) error
+	AddDependency(id string, dependencyID string) error
+	RemoveDependency(id string, dependencyID string) error
+	LinkTickets(id string, relatedIDs []string) error
+	UnlinkTickets(id string, relatedIDs []string) error
 	UpdateTicket(id string, req UpdateTicketRequest) error
 	UploadTicket(content []byte) (TicketInfo, error)
 	GetLogs(id string, stage string) (string, error)
@@ -86,6 +90,20 @@ type InitTicketRequest struct {
 	Path     string `json:"path"`
 	Agent    string `json:"agent,omitempty"`
 	Branch   string `json:"branch,omitempty"`
+}
+
+// ListTicketsOptions narrows or widens a list response. IncludeHidden adds the
+// tickets whose status has no board column: archived, legacy closed, and any
+// foreign status. The board never asks for them; a CLI listing that filters or
+// resolves an id needs the complete set.
+type ListTicketsOptions struct {
+	IncludeHidden bool
+}
+
+// RelationRequest is the body of the relation endpoints. A dependency call
+// names exactly one related ticket; a link call may name several.
+type RelationRequest struct {
+	Related []string `json:"related"`
 }
 
 type UpdateTicketRequest struct {
@@ -178,13 +196,16 @@ type ConfigInfo struct {
 }
 
 type TicketInfo struct {
-	ID            string     `json:"id"`
-	Title         string     `json:"title"`
-	Status        string     `json:"status"`
-	Kontora       bool       `json:"kontora"`
-	Stage         string     `json:"stage"`
-	Pipeline      string     `json:"pipeline"`
-	Path          string     `json:"path"`
+	ID       string `json:"id"`
+	Title    string `json:"title"`
+	Status   string `json:"status"`
+	Kontora  bool   `json:"kontora"`
+	Stage    string `json:"stage"`
+	Pipeline string `json:"pipeline"`
+	Path     string `json:"path"`
+	// Project is the configured project whose path is the ticket's, empty when
+	// no project matches. It is derived from the config, not stored.
+	Project       string     `json:"project,omitempty"`
 	Agent         string     `json:"agent"`
 	AgentOverride bool       `json:"agent_override,omitempty"`
 	Attempt       int        `json:"attempt"`
@@ -215,6 +236,12 @@ type TicketInfo struct {
 	// is absent from board list payloads, which never render it.
 	FinalSummary string     `json:"final_summary,omitempty"`
 	Notes        []NoteInfo `json:"notes,omitempty"`
+
+	// Ready reports that no dependency holds the ticket back, and Blockers names
+	// the ones that do. Both are derived on read, not stored, and only mean
+	// something for a kontora ticket in todo.
+	Ready    bool     `json:"ready,omitempty"`
+	Blockers []string `json:"blockers,omitempty"`
 
 	// Relations from the frontmatter: Deps are the tickets this one waits on,
 	// Links the symmetric related set, Parent the epic above it. Blocks is the

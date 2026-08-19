@@ -33,7 +33,7 @@ func (d *Daemon) RunningAgents() int {
 }
 
 // ListTickets returns info for all tracked tickets.
-func (d *Daemon) ListTickets() []web.TicketInfo {
+func (d *Daemon) ListTickets(opts web.ListTicketsOptions) []web.TicketInfo {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
@@ -43,8 +43,9 @@ func (d *Daemon) ListTickets() []web.TicketInfo {
 		// Only tickets whose status maps to a board column appear in the list.
 		// This hides archived, plus foreign statuses (closed, tombstone, ...)
 		// that have no column. All of them stay on disk and remain reachable
-		// by ID via GetTicket.
-		if !cfg.IsBoardStatus(string(ts.ticket.Status)) {
+		// by ID via GetTicket, and a caller that asks for the complete set
+		// gets them here too.
+		if !opts.IncludeHidden && !cfg.IsBoardStatus(string(ts.ticket.Status)) {
 			continue
 		}
 		tickets = append(tickets, d.buildTicketInfo(cfg, ts, false))
@@ -501,6 +502,32 @@ func (d *Daemon) InitTicket(id string, req web.InitTicketRequest) error {
 		Agent:    req.Agent,
 		Branch:   req.Branch,
 	})
+	return mapAppError(err)
+}
+
+// AddDependency records that a ticket waits on another one. Like every relation
+// mutation it goes through the application service, so the daemon and the CLI
+// reject the same calls and the queue is reconciled the same way.
+func (d *Daemon) AddDependency(id string, dependencyID string) error {
+	_, err := d.svc.AddDependency(id, dependencyID)
+	return mapAppError(err)
+}
+
+// RemoveDependency drops a dependency edge.
+func (d *Daemon) RemoveDependency(id string, dependencyID string) error {
+	_, err := d.svc.RemoveDependency(id, dependencyID)
+	return mapAppError(err)
+}
+
+// LinkTickets relates a ticket to each of relatedIDs, on both sides.
+func (d *Daemon) LinkTickets(id string, relatedIDs []string) error {
+	_, err := d.svc.Link(id, relatedIDs...)
+	return mapAppError(err)
+}
+
+// UnlinkTickets removes the relation between a ticket and each of relatedIDs.
+func (d *Daemon) UnlinkTickets(id string, relatedIDs []string) error {
+	_, err := d.svc.Unlink(id, relatedIDs...)
 	return mapAppError(err)
 }
 
@@ -1056,6 +1083,9 @@ func (d *Daemon) buildTicketInfo(cfg *config.Config, ts *ticketState, includeBod
 		info.AutoBranch = autoTicketBranch(cfg, ts.ticket)
 	}
 	info.CanAnnotate = annotateRefusal(ts.ticket) == nil
+	info.Project, _, _ = cfg.ProjectFor(ts.ticket.Path)
+	info.Blockers = d.blockersLocked(ts.ticket)
+	info.Ready = len(info.Blockers) == 0
 	mt := ts.modTime
 	if mt.IsZero() && ts.filePath != "" {
 		if st, err := os.Stat(ts.filePath); err == nil {
@@ -1183,6 +1213,11 @@ func mapAppError(err error) error {
 		{app.ErrNotFound, web.ErrTicketNotFound},
 		{app.ErrInvalidState, web.ErrInvalidState},
 		{app.ErrUnknownAgent, web.ErrUnknownAgent},
+		// A refused relation is a conflict with the graph the store already
+		// holds, not a malformed request, so it maps to the same 409 as every
+		// other "the store will not allow this" rejection.
+		{app.ErrRelationCycle, web.ErrInvalidState},
+		{app.ErrSelfRelation, web.ErrInvalidState},
 	} {
 		if errors.Is(err, m.from) {
 			return &mappedError{sentinel: m.to, cause: err}

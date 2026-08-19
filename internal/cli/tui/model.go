@@ -287,7 +287,8 @@ func (m model) handleDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		switch st {
 		case ticket.StatusOpen, ticket.StatusTodo, ticket.StatusPaused, ticket.StatusHumanReview:
 			// allowed
-		case ticket.StatusInProgress, ticket.StatusDone, ticket.StatusCancelled, ticket.StatusArchived:
+		case ticket.StatusInProgress, ticket.StatusDone, ticket.StatusCancelled,
+			ticket.StatusArchived, ticket.StatusLegacyClosed:
 			return m, nil
 		}
 		if !m.source.Connected() {

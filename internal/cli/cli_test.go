@@ -163,7 +163,7 @@ stage: review
 `)
 
 	var buf bytes.Buffer
-	require.NoError(t, Status(cfg, &buf, StatusOpts{}))
+	require.NoError(t, List(cfg, &buf, ListOpts{}))
 
 	out := buf.String()
 	assert.Contains(t, out, "tst-001")
@@ -197,7 +197,7 @@ path: /tmp/testrepo
 `)
 
 	var buf bytes.Buffer
-	require.NoError(t, Status(cfg, &buf, StatusOpts{}))
+	require.NoError(t, List(cfg, &buf, ListOpts{}))
 
 	out := buf.String()
 	assert.Contains(t, out, "tst-001")
@@ -209,7 +209,7 @@ func TestStatus_EmptyDir(t *testing.T) {
 	cfg := testConfig(dir)
 
 	var buf bytes.Buffer
-	require.NoError(t, Status(cfg, &buf, StatusOpts{}))
+	require.NoError(t, List(cfg, &buf, ListOpts{}))
 
 	assert.Equal(t, "No tickets.\n", buf.String())
 }
@@ -230,7 +230,7 @@ stage: code
 `)
 
 	var buf bytes.Buffer
-	require.NoError(t, Status(cfg, &buf, StatusOpts{}))
+	require.NoError(t, List(cfg, &buf, ListOpts{}))
 
 	assert.Contains(t, buf.String(), "claude-sonnet")
 }
@@ -239,7 +239,7 @@ func TestStatus_ClosedFiltering(t *testing.T) {
 	cases := []struct {
 		name        string
 		tickets     map[string]string // filename -> content
-		opts        StatusOpts
+		opts        ListOpts
 		wantIDs     []string
 		wantMissing []string
 		wantExact   string // if set, assert exact output
@@ -286,7 +286,7 @@ stage: code
 # Paused ticket
 `,
 			},
-			opts:        StatusOpts{},
+			opts:        ListOpts{},
 			wantIDs:     []string{"tst-001", "tst-004"},
 			wantMissing: []string{"tst-002", "tst-003"},
 		},
@@ -322,7 +322,7 @@ path: /tmp/testrepo
 # Cancelled ticket
 `,
 			},
-			opts:    StatusOpts{ShowClosed: true},
+			opts:    ListOpts{ShowClosed: true},
 			wantIDs: []string{"tst-001", "tst-002", "tst-003"},
 		},
 		{
@@ -357,7 +357,7 @@ path: /tmp/testrepo
 # Archived ticket
 `,
 			},
-			opts:        StatusOpts{ShowClosed: true},
+			opts:        ListOpts{ShowClosed: true},
 			wantIDs:     []string{"tst-001", "tst-002"},
 			wantMissing: []string{"tst-arch"},
 		},
@@ -383,7 +383,7 @@ path: /tmp/testrepo
 # Cancelled ticket
 `,
 			},
-			opts:      StatusOpts{},
+			opts:      ListOpts{},
 			wantExact: "No active tickets. Use --closed to show done/cancelled.\n",
 		},
 	}
@@ -397,7 +397,7 @@ path: /tmp/testrepo
 			}
 
 			var buf bytes.Buffer
-			require.NoError(t, Status(cfg, &buf, tc.opts))
+			require.NoError(t, List(cfg, &buf, tc.opts))
 			out := buf.String()
 
 			if tc.wantExact != "" {
@@ -435,7 +435,7 @@ status: todo
 `)
 
 	var buf bytes.Buffer
-	require.NoError(t, Status(cfg, &buf, StatusOpts{}))
+	require.NoError(t, List(cfg, &buf, ListOpts{}))
 	out := buf.String()
 	assert.Contains(t, out, "tst-001")
 	assert.Contains(t, out, "other-001")
@@ -618,14 +618,15 @@ func TestNew_AllowsOpenStatusWithoutGitRepo(t *testing.T) {
 	assert.NotEmpty(t, id)
 }
 
-func TestQuick_CreatesTodoTask(t *testing.T) {
+func TestNew_DefaultsToTodo(t *testing.T) {
 	dir := t.TempDir()
 	cfg := testConfig(dir)
 	repoDir := initTestRepo(t)
 
-	id, err := Quick(cfg, QuickOpts{
-		Path:  repoDir,
-		Title: "Quick ticket",
+	id, err := New(cfg, NewOpts{
+		Path:   repoDir,
+		Title:  "Quick ticket",
+		NoEdit: true,
 	})
 	require.NoError(t, err)
 
@@ -1780,4 +1781,78 @@ func TestShowConfig_RedactsWebToken(t *testing.T) {
 			assert.Equal(t, tc.token, cfg.Web.Token)
 		})
 	}
+}
+
+func TestNew_StatusAndDescription(t *testing.T) {
+	cases := []struct {
+		name        string
+		status      string
+		body        string
+		wantErr     string
+		wantStatus  string
+		wantContent []string
+	}{
+		{
+			name:        "open creation writes open from the first state",
+			status:      "open",
+			body:        "## Goal\n\nShip it.",
+			wantStatus:  "status: open",
+			wantContent: []string{"# Draft ticket", "## Goal", "Ship it."},
+		},
+		{
+			name:       "the default is todo",
+			wantStatus: "status: todo",
+		},
+		{
+			name:    "an unknown status is refused",
+			status:  "in_progress",
+			wantErr: "status must be",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			cfg := testConfig(dir)
+			repoDir := initTestRepo(t)
+
+			id, err := New(cfg, NewOpts{
+				Path:   repoDir,
+				Title:  "Draft ticket",
+				Status: tc.status,
+				Body:   tc.body,
+				NoEdit: true,
+			})
+			if tc.wantErr != "" {
+				require.ErrorContains(t, err, tc.wantErr)
+				return
+			}
+			require.NoError(t, err)
+
+			data, err := os.ReadFile(filepath.Join(dir, id+".md"))
+			require.NoError(t, err)
+			content := string(data)
+			assert.Contains(t, content, tc.wantStatus)
+			for _, want := range tc.wantContent {
+				assert.Contains(t, content, want)
+			}
+		})
+	}
+}
+
+func TestReadDescription(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "body.md")
+	require.NoError(t, os.WriteFile(path, []byte("## Goal\n\nShip it.\n\n\n"), 0o644))
+
+	fromFile, err := ReadDescription(path, nil)
+	require.NoError(t, err)
+	assert.Equal(t, "## Goal\n\nShip it.", fromFile, "trailing newlines are trimmed")
+
+	fromStdin, err := ReadDescription("-", strings.NewReader("piped body\n"))
+	require.NoError(t, err)
+	assert.Equal(t, "piped body", fromStdin)
+
+	_, err = ReadDescription(filepath.Join(dir, "missing.md"), nil)
+	require.ErrorContains(t, err, "reading description")
 }

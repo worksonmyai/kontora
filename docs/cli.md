@@ -31,12 +31,28 @@ Every command that takes a `TICKET_ID` accepts a unique prefix of one: `kontora 
 
 ### `kontora ls`
 
-Lists tickets. On a terminal it opens the kanban TUI; otherwise it prints a static table. Done and cancelled tickets are hidden unless `--closed` is given, and archived tickets are always hidden.
+Lists tickets. On a terminal with no flags it opens the kanban TUI; any filter, `--json`, `--static`, `--closed` or `--archived` makes it print instead. Done, cancelled and legacy `closed` tickets are hidden unless `--closed` is given; archived ones need `--archived`.
 
 | Flag | Description |
 |------|-------------|
-| `--closed` | Include done and cancelled tickets. |
+| `--closed` | Include done, cancelled and legacy `closed` tickets. |
+| `--archived` | Include archived tickets. |
+| `--status STATUS` | Only tickets in this status. Naming a hidden status shows it, so `--status done` needs no `--closed` and `--status archived` no `--archived`. |
+| `--project NAME` | Only tickets for this configured project. |
+| `--path PATH` | Only tickets for this repository path. |
+| `--ready` | Only `todo` kontora tickets whose dependencies are all closed. |
+| `--blocked` | Only `todo` kontora tickets waiting on a dependency. |
+| `--limit N` | Print at most N tickets. |
+| `--json` | Print JSON instead of a table. |
 | `--static` | Print the static table even on a terminal. |
+
+`--ready` and `--blocked` select opposite sets and cannot be combined; passing both exits non-zero. Both follow scheduler order, oldest `created` first. Every other listing keeps the board's order: by status, then most recently touched.
+
+The static table has ID, status, title, project, stage, agent, and the ids blocking the ticket.
+
+`--json` prints an array of objects with `id`, `title`, `status`, `kontora`, `path`, `project`, `pipeline`, `stage`, `agent`, `created_at`, `started_at`, `completed_at`, `deps`, `links`, `parent`, `ready` and `blockers`. It never carries the ticket body; `kontora view --body` is what prints that. `deps`, `links` and `blockers` are always arrays, and an empty result is `[]`, so a script can iterate without a nil check.
+
+Remote mode asks the daemon for every ticket, including the hidden statuses, and applies the same filters locally, so a flag means the same thing on both sides.
 
 ### `kontora new [flags] TITLE`
 
@@ -49,10 +65,21 @@ Creates a ticket and prints its ID. Without `--path` it uses the current git roo
 | `--agent NAME` | Agent to use, or `none` to skip the project default. |
 | `--branch NAME` | Work branch name. Defaults to `<branch_prefix>/<id>`. |
 | `--base-branch NAME` | Branch the work branch starts from. Defaults to the repository's default branch. |
+| `--status STATUS` | `open` or `todo`. Defaults to `todo`. |
+| `--description-file PATH` | Read the markdown that follows the generated `# <title>` heading from a file, or `-` for stdin. |
+| `--quiet` | Print only the new ticket ID. |
+
+The ticket file is written once, complete. A ticket created with `--status open` is therefore never visible as `todo`, so a daemon with `auto_pick_up: true` watching the directory cannot claim it before you finish editing it. `--status open` also skips the repository check creation normally runs, because an open ticket is not ready to run.
 
 ### `kontora view TICKET_ID`
 
 Prints the ticket's status, pipeline position, and body.
+
+| Flag | Description |
+|------|-------------|
+| `--body` | Print only the stored markdown body: no metadata, no styling, no synthesized relation sections. |
+
+`--body` prints exactly what the file holds after the closing frontmatter delimiter, which is what `kontora update --body-file` writes back. Reading a body out, editing it, and writing it back changes nothing else in the ticket.
 
 ### `kontora edit TICKET_ID`
 
@@ -93,7 +120,7 @@ In remote mode `--pipeline` and `--path` are both required, because the pickers 
 
 ### `kontora run TICKET_ID`
 
-Enqueues an `open` or `todo` ticket. Needs a running daemon.
+Enqueues an `open` or `todo` ticket. Needs a running daemon. When the ticket's dependencies are not all closed it reports it as blocked, naming them, rather than saying it was queued: the daemon will not pick it up until they close. See [dependency-aware scheduling](tickets.md#dependency-aware-scheduling).
 
 ### `kontora pause TICKET_ID`
 
@@ -123,6 +150,30 @@ Moves the ticket to a named stage of its pipeline without running anything.
 
 Append a timestamped note, or set the ticket's one-line summary. Both read the text from stdin when it is not given as an argument, so `git log --oneline | kontora note kon-q88f` works.
 
+## Relations
+
+A ticket carries two relation lists in its frontmatter. `deps` names the tickets it waits on, and the daemon will not run it until every one of them is `done`, `cancelled`, `archived`, or legacy `closed`. See [dependency-aware scheduling](tickets.md#dependency-aware-scheduling). `links` is a symmetric "related" list that means nothing to the scheduler.
+
+All four verbs reject a missing ID and a ticket related to itself, and leave every file unchanged when they do. Repeating a call that has nothing left to do succeeds and writes nothing.
+
+### `kontora dep TICKET_ID DEPENDENCY_ID`
+
+Makes `TICKET_ID` wait on `DEPENDENCY_ID`. Only the dependent ticket is written; the reverse edge is derived when it is read. A dependency that would close a cycle is rejected, and the error names the cycle.
+
+### `kontora undep TICKET_ID DEPENDENCY_ID`
+
+Drops the dependency edge.
+
+### `kontora link TICKET_ID TICKET_ID...`
+
+Relates the first ticket to each of the others. It does not relate the others to each other.
+
+Both sides of a link are written, and two markdown files cannot be written together. If the second write fails, the error names both tickets and says which one was already changed; running the same command again repairs the missing side.
+
+### `kontora unlink TICKET_ID TICKET_ID...`
+
+Removes the relation between the first ticket and each of the others, on both sides.
+
 ### `kontora archive --days N`
 
 Marks every `done` or `cancelled` ticket whose file has not been modified for at least N days as `archived`, which hides it everywhere while keeping the file. `--days` is required and must be positive. Local only.
@@ -133,7 +184,7 @@ Marks every `done` or `cancelled` ticket whose file has not been modified for at
 | `--dry-run` | List what would be archived and write nothing. |
 | `--path PATH` | Only archive tickets for this repository path. |
 | `--project NAME` | The same, by configured project name. |
-| `--status STATUS` | Only archive `done` or only `cancelled`. |
+| `--status STATUS` | Only archive one of `done`, `cancelled` or `closed`. |
 | `-y`, `--yes` | Skip the confirmation prompt. Required when stdin is not a terminal. |
 
 ## Inspecting a run

@@ -21,6 +21,7 @@ Kontora is an agent orchestration tool. You write tickets as markdown files, it 
 
 - **Multi-stage pipelines** with per-stage retry and failure policies (implement, review, fix, commit)
 - **Git worktree isolation** per ticket, so agents never conflict
+- **Dependency-aware scheduling**: a ticket waits until every ticket it depends on is closed
 - **Any agent** that has a CLI (Claude Code, Pi, etc.)
 - **Web dashboard and TUI** kanban board
 

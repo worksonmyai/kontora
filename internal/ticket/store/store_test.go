@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -58,13 +59,31 @@ func TestDiskRepo_Resolve(t *testing.T) {
 			input:   "nonexistent",
 			wantErr: "not found",
 		},
+		{
+			// A conflict copy carries the same id in its frontmatter, so
+			// resolving by filename would report the prefix as ambiguous.
+			name:  "sync conflict copy never resolves an id",
+			ids:   []string{"tst-001", "tst-001 2", "tst-001.sync-conflict-20260610-070128-IDDACTZ"},
+			input: "tst",
+			want:  "tst-001",
+		},
+		{
+			name:    "a file whose name disagrees with its id resolves to neither",
+			ids:     []string{"tst-001 2"},
+			input:   "tst",
+			wantErr: "not found",
+		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
 			for _, id := range tc.ids {
-				writeTestTicket(t, dir, id, fmt.Sprintf("---\nid: %s\nstatus: todo\n---\n# Test\n", id))
+				// A conflict copy's frontmatter still names the ticket it was
+				// copied from, so the id is the filename up to the first suffix.
+				fmID, _, _ := strings.Cut(id, " ")
+				fmID, _, _ = strings.Cut(fmID, ".sync-conflict")
+				writeTestTicket(t, dir, id, fmt.Sprintf("---\nid: %s\nstatus: todo\n---\n# Test\n", fmID))
 			}
 
 			id, err := NewDiskRepo(dir).Resolve(tc.input)

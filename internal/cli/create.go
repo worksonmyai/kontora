@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -50,6 +51,9 @@ func New(cfg *config.Config, opts NewOpts) (string, error) {
 	}
 	if opts.Status == "" {
 		opts.Status = "todo"
+	}
+	if opts.Status != "open" && opts.Status != "todo" {
+		return "", fmt.Errorf("status must be \"open\" or \"todo\", got %q", opts.Status)
 	}
 
 	// Every creation path reaches New, so this is the one place where a
@@ -126,25 +130,21 @@ func New(cfg *config.Config, opts NewOpts) (string, error) {
 	return id, nil
 }
 
-type QuickOpts struct {
-	Path       string
-	Pipeline   string
-	Agent      string
-	Title      string
-	Branch     string
-	BaseBranch string
-}
-
-// Quick creates a ticket file without opening an editor. Status defaults to todo.
-func Quick(cfg *config.Config, opts QuickOpts) (string, error) {
-	return New(cfg, NewOpts{
-		Path:       opts.Path,
-		Pipeline:   opts.Pipeline,
-		Agent:      opts.Agent,
-		Status:     "todo",
-		Title:      opts.Title,
-		Branch:     opts.Branch,
-		BaseBranch: opts.BaseBranch,
-		NoEdit:     true,
-	})
+// ReadDescription reads the markdown a ticket body starts with. The path "-"
+// reads stdin, which is how a caller pipes a rendered description in. Trailing
+// newlines are trimmed because New adds its own.
+func ReadDescription(path string, stdin io.Reader) (string, error) {
+	var (
+		data []byte
+		err  error
+	)
+	if path == "-" {
+		data, err = io.ReadAll(stdin)
+	} else {
+		data, err = os.ReadFile(path)
+	}
+	if err != nil {
+		return "", fmt.Errorf("reading description: %w", err)
+	}
+	return strings.TrimRight(string(data), "\n"), nil
 }

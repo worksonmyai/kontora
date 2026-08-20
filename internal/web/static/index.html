@@ -1239,12 +1239,14 @@
               <span x-text="actionLoading === 'skip' ? 'skipping...' : 'skip stage'"></span>
             </button>
           </template>
-          <template x-if="selectedTicket?.status === 'paused'">
+          <!-- Retry is a kontora-only endpoint: app.Service.Retry rejects a ticket
+               the daemon does not own, so a foreign one gets no button. -->
+          <template x-if="['paused', 'done', 'cancelled'].includes(selectedTicket?.status) && selectedTicket?.kontora">
             <button @click="action('retry')" :disabled="!!actionLoading"
                     class="h-7 px-3 rounded-[7px] font-mono text-[11.5px] bg-surface-900 border border-edge-input text-tx-2 hover:text-ok hover:border-ok/30 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5"
-                    data-tip-t="Re-runs the current stage in the same worktree.">
+                    data-tip-t="Queues the ticket again from its current stage.">
               <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M3 21v-5h5"/></svg>
-              <span x-text="actionLoading === 'retry' ? 'retrying...' : 'retry'"></span>
+              <span x-text="retryLabel()"></span>
             </button>
           </template>
           <template x-if="selectedTicket?.status === 'human_review' && selectedTicket?.kontora">
@@ -2267,24 +2269,32 @@
                 </template>
                 <template x-if="selectedTicket?.agent"><span class="text-surface-600">agent</span></template>
                 <template x-if="selectedTicket?.agent"><span class="text-tx-2 break-all" x-text="selectedTicket?.agent"></span></template>
-                <template x-if="selectedTicket?.stage && selectedTicket?.stages?.length > 1"><span class="text-surface-600">stage</span></template>
-                <template x-if="selectedTicket?.stage && selectedTicket?.stages?.length > 1">
+                <template x-if="selectedTicket?.stages?.length > 1"><span class="text-surface-600">stage</span></template>
+                <template x-if="selectedTicket?.stages?.length > 1">
                   <span>
-                    <template x-if="['paused', 'open'].includes(selectedTicket?.status) && setStageOpen">
+                    <template x-if="canSetStage() && setStageOpen">
                       <select class="text-[11px] font-mono bg-surface-800 text-tx-3 border border-edge-input rounded px-1 py-0.5 outline-none focus:border-accent/40"
                               @change="setStage($event.target.value); setStageOpen = false"
                               @blur="setStageOpen = false"
                               x-init="$nextTick(() => $el.focus())">
+                        <!-- With no stage set, the displayed fallback must not be the
+                             selected option: picking it would match the selection and
+                             fire no change event, so the file would never get written.
+                             This placeholder holds the selection instead, and setStage
+                             ignores its empty value. -->
+                        <template x-if="!selectedTicket?.stage">
+                          <option value="" selected>set stage…</option>
+                        </template>
                         <template x-for="s in selectedTicket?.stages || []" :key="s">
                           <option :value="s" x-text="s" :selected="s === selectedTicket?.stage"></option>
                         </template>
                       </select>
                     </template>
-                    <template x-if="!(['paused', 'open'].includes(selectedTicket?.status) && setStageOpen)">
+                    <template x-if="!(canSetStage() && setStageOpen)">
                       <span class="text-tx-2"
-                            :class="['paused', 'open'].includes(selectedTicket?.status) ? 'cursor-pointer hover:text-accent border-b border-dashed border-surface-600 hover:border-accent/40' : ''"
-                            @click="if (['paused', 'open'].includes(selectedTicket?.status)) setStageOpen = true"
-                            x-text="selectedTicket?.stage"></span>
+                            :class="canSetStage() ? 'cursor-pointer hover:text-accent border-b border-dashed border-surface-600 hover:border-accent/40' : ''"
+                            @click="if (canSetStage()) setStageOpen = true"
+                            x-text="displayStage()"></span>
                     </template>
                   </span>
                 </template>

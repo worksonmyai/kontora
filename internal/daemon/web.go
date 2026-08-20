@@ -357,13 +357,27 @@ func (d *Daemon) SkipStage(id string) error {
 }
 
 // SetStage moves a ticket to a specific pipeline stage by name.
+//
+// The whole read-modify-write holds d.mu, because a scheduler pickup takes the
+// same lock to claim a ticket. Without that, a pickup could claim the ticket
+// between the read and the write, and this write would then put back a ticket
+// parsed before the claim, dropping status, started_at and claimed_by.
 func (d *Daemon) SetStage(id string, stage string) error {
 	d.mu.Lock()
+	defer d.mu.Unlock()
 
 	ts, ok := d.tickets[id]
 	if !ok {
-		d.mu.Unlock()
 		return web.ErrTicketNotFound
+	}
+
+	// A running agent owns the ticket file. A stage written under it is lost
+	// when the run writes the file back at the end of the stage. d.running is
+	// registered when the scheduler claims the ticket, before the file says
+	// in_progress, so it catches a pickup the cached status has not seen yet.
+	_, running := d.running[id]
+	if running || ts.ticket.Status == ticket.StatusInProgress {
+		return fmt.Errorf("%w: cannot change the stage of ticket %s while it is running", web.ErrInvalidState, id)
 	}
 
 	pipelineName := ts.ticket.Pipeline
@@ -371,7 +385,6 @@ func (d *Daemon) SetStage(id string, stage string) error {
 
 	pipelineCfg, ok := d.config().Pipelines[pipelineName]
 	if !ok {
-		d.mu.Unlock()
 		if pipelineName == "" {
 			return fmt.Errorf("%w: ticket %s has no pipeline, so it has no stages", web.ErrInvalidState, id)
 		}
@@ -383,12 +396,11 @@ func (d *Daemon) SetStage(id string, stage string) error {
 		stageNames[i] = s.Stage
 	}
 	if !slices.Contains(stageNames, stage) {
-		d.mu.Unlock()
 		return fmt.Errorf("%w: stage %q not found in pipeline %q (has %s)", web.ErrInvalidState, stage, pipelineName, strings.Join(stageNames, ", "))
 	}
 
-	d.mu.Unlock()
-
+	// Read from disk rather than from the cache: the file is the state a pickup
+	// would act on.
 	t2, err := ticket.ParseFile(filePath)
 	if err != nil {
 		return err
@@ -398,14 +410,12 @@ func (d *Daemon) SetStage(id string, stage string) error {
 		return fmt.Errorf("failed to set ticket stage to %q: %w", stage, err)
 	}
 
-	if err := d.writeTicket(t2, filePath); err != nil {
+	if err := d.writeTicketLocked(t2, filePath); err != nil {
 		return err
 	}
 
-	d.mu.Lock()
 	d.setTicketState(id, t2, filePath)
 	d.broadcastTicketUpdate(id)
-	d.mu.Unlock()
 	return nil
 }
 

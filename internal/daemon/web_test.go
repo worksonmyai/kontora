@@ -292,57 +292,104 @@ func TestDaemon_SkipStage(t *testing.T) {
 }
 
 func TestDaemon_SetStage(t *testing.T) {
-	h := newHarness(t)
-	cfg := h.defaultConfig("sleep", "true")
-	cfg.Agents["agent1"] = config.Agent{Binary: "sleep", Args: []string{"30"}}
-	cfg.Stages["step1"] = config.Stage{Prompt: ""}
-	cfg.Stages["step2"] = config.Stage{Prompt: ""}
-	d := h.newDaemon(cfg)
+	cases := []struct {
+		name string
+		// running writes the ticket as todo and waits for the daemon to pick it
+		// up. A file written with status: in_progress is reset to todo by crash
+		// recovery at startup, so it is the only way to get a live agent.
+		running bool
+		// claimed registers the ticket in d.running without touching the file,
+		// which is the window between a scheduler claim and the in_progress
+		// write: the cached status still says the ticket is parked. The fixture
+		// stays paused so the scheduler does not pick it up for real.
+		claimed    bool
+		status     string
+		target     string // ticket id passed to SetStage, empty means the fixture
+		stage      string
+		wantErr    error
+		wantStage  string
+		wantStatus ticket.Status
+	}{
+		{name: "paused ticket moves stage", status: "paused", stage: "step1", wantStage: "step1", wantStatus: ticket.StatusPaused},
+		{name: "done ticket moves stage", status: "done", stage: "step1", wantStage: "step1", wantStatus: ticket.StatusDone},
+		{name: "unknown stage", status: "paused", stage: "nonexistent", wantErr: web.ErrInvalidState, wantStage: "step2", wantStatus: ticket.StatusPaused},
+		{name: "unknown ticket", status: "paused", target: "nonexistent", stage: "step1", wantErr: web.ErrTicketNotFound, wantStage: "step2", wantStatus: ticket.StatusPaused},
+		{name: "running ticket", running: true, stage: "step2", wantErr: web.ErrInvalidState, wantStage: "step1", wantStatus: ticket.StatusInProgress},
+		{name: "ticket claimed but not yet marked running", claimed: true, status: "paused", stage: "step1", wantErr: web.ErrInvalidState, wantStage: "step2", wantStatus: ticket.StatusPaused},
+	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			cfg := h.defaultConfig("sleep", "true")
+			cfg.Agents["agent1"] = config.Agent{Binary: "sleep", Args: []string{"30"}}
+			cfg.Stages["step1"] = config.Stage{Prompt: ""}
+			cfg.Stages["step2"] = config.Stage{Prompt: ""}
+			d := h.newDaemon(cfg)
 
-	errCh := make(chan error, 1)
-	go func() { errCh <- d.Run(ctx) }()
-	time.Sleep(200 * time.Millisecond)
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
 
-	// Start ticket at step2 by writing it with stage=step2.
-	h.writeTicket("tst-ss1.md", fmt.Sprintf(`---
+			errCh := make(chan error, 1)
+			go func() { errCh <- d.Run(ctx) }()
+			time.Sleep(200 * time.Millisecond)
+
+			if tc.running {
+				h.writeTicket("tst-ss1.md", h.taskMD("tst-ss1", "todo", "two-stage"))
+				h.waitForStatus("tst-ss1.md", ticket.StatusInProgress, 5*time.Second)
+			} else {
+				// Start the ticket at step2 so a move to step1 is visible.
+				h.writeTicket("tst-ss1.md", fmt.Sprintf(`---
 id: tst-ss1
 kontora: true
-status: paused
+status: %s
 pipeline: two-stage
 stage: step2
 path: %s
 created: 2026-01-01T00:00:00Z
 ---
 # Test set-stage
-`, h.repoDir))
+`, tc.status, h.repoDir))
+				require.Eventually(t, func() bool {
+					_, err := d.GetTicket("tst-ss1")
+					return err == nil
+				}, 5*time.Second, 50*time.Millisecond)
+			}
 
-	// Wait for daemon to discover the ticket.
-	require.Eventually(t, func() bool {
-		_, err := d.GetTicket("tst-ss1")
-		return err == nil
-	}, 5*time.Second, 50*time.Millisecond)
+			target := tc.target
+			if target == "" {
+				target = "tst-ss1"
+			}
 
-	// Set stage back to step1.
-	require.NoError(t, d.SetStage("tst-ss1", "step1"))
+			if tc.claimed {
+				d.mu.Lock()
+				d.running["tst-ss1"] = func() {}
+				d.mu.Unlock()
+			}
 
-	// Verify only the stage changed — status and attempt stay untouched.
-	result := h.readTask("tst-ss1.md")
-	assert.Equal(t, "step1", result.Stage)
-	assert.Equal(t, ticket.StatusPaused, result.Status)
+			err := d.SetStage(target, tc.stage)
 
-	// Invalid stage should return error.
-	err := d.SetStage("tst-ss1", "nonexistent")
-	assert.ErrorIs(t, err, web.ErrInvalidState)
+			if tc.claimed {
+				d.mu.Lock()
+				delete(d.running, "tst-ss1")
+				d.mu.Unlock()
+			}
+			if tc.wantErr != nil {
+				assert.ErrorIs(t, err, tc.wantErr)
+			} else {
+				require.NoError(t, err)
+			}
 
-	// Not found ticket should return error.
-	err = d.SetStage("nonexistent", "step1")
-	assert.ErrorIs(t, err, web.ErrTicketNotFound)
+			// Only the stage may change — status and attempt stay untouched.
+			result := h.readTask("tst-ss1.md")
+			assert.Equal(t, tc.wantStage, result.Stage)
+			assert.Equal(t, tc.wantStatus, result.Status)
+			assert.Equal(t, 0, result.Attempt)
 
-	cancel()
-	require.NoError(t, <-errCh)
+			cancel()
+			require.NoError(t, <-errCh)
+		})
+	}
 }
 
 func TestDaemon_MoveTicket(t *testing.T) {

@@ -421,9 +421,14 @@ function kontora() {
     },
 
     // Endpoints already covered by the bespoke tooltip-bearing buttons in the
-    // detail panel (Pause for in_progress, Resume/retry for paused), so the
-    // validMoves list rendered there doesn't duplicate them.
-    _detailCoveredMoves: { in_progress: ['pause'], paused: ['retry'] },
+    // detail panel (Pause for in_progress, retry/restart for the parked
+    // statuses), so the validMoves list rendered there doesn't duplicate them.
+    _detailCoveredMoves: {
+      in_progress: ['pause'],
+      paused: ['retry'],
+      done: ['retry'],
+      cancelled: ['retry'],
+    },
 
     // validMoves entries shown as action buttons in the detail panel sidebar.
     detailMoves(ticket) {
@@ -1589,6 +1594,15 @@ function kontora() {
       setTimeout(() => { this.copiedCmd = null; }, 1200);
     },
 
+    // One button, one endpoint. Only the word changes: retry reads right for a
+    // ticket that stopped mid-pipeline, restart for one that already finished.
+    // Both queue the stage the ticket currently sits on; neither rewinds it.
+    retryLabel() {
+      const restart = ['done', 'cancelled'].includes(this.selectedTicket?.status);
+      if (this.actionLoading === 'retry') return restart ? 'restarting...' : 'retrying...';
+      return restart ? 'restart' : 'retry';
+    },
+
     async action(type) {
       if (!this.selectedTicket || this.actionLoading) return;
       this.actionLoading = type;
@@ -1982,8 +1996,29 @@ function kontora() {
       this.fetchStageLogs(this.selectedTicket.id, stage);
     },
 
+    // Changing the stage is a bookkeeping edit on the ticket file, so it is
+    // open on any parked ticket. in_progress is the exception: an agent owns
+    // the worktree and the file. archived tickets never reach the board, and
+    // legacy closed ones come from the foreign ticket CLI, so neither gets an
+    // affordance.
+    canSetStage() {
+      const status = this.selectedTicket?.status;
+      if (!status) return false;
+      return ['open', 'todo', 'paused', 'human_review', 'done', 'cancelled']
+        .concat(this.configCache?.custom_statuses || [])
+        .includes(status);
+    },
+
+    // A ticket that gained a pipeline through the detail form has no stage yet.
+    // The first stage is where a run would start, so show that, but leave the
+    // file alone until the user picks a value.
+    displayStage() {
+      return this.selectedTicket?.stage || this.selectedTicket?.stages?.[0] || '';
+    },
+
     async setStage(stage) {
-      if (!this.selectedTicket) return;
+      // The empty value is the picker's placeholder, not a stage.
+      if (!this.selectedTicket || !stage) return;
       this.error = null;
       try {
         const res = await fetch('/api/tickets/' + this.selectedTicket.id + '/set-stage', {

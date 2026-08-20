@@ -8138,3 +8138,110 @@ test("a slow earlier request cannot overwrite the newest answer", async () => {
   assert.equal(state.statsLoading, false);
   assert.equal(state.statsError, null);
 });
+
+test("the stage picker opens on every status but a running one", () => {
+  const cases = [
+    { status: "open", want: true },
+    { status: "todo", want: true },
+    { status: "paused", want: true },
+    { status: "human_review", want: true },
+    { status: "done", want: true },
+    { status: "cancelled", want: true },
+    { status: "in_progress", want: false },
+    { status: "archived", want: false },
+    { status: "closed", want: false },
+    { status: "waiting", custom: ["waiting"], want: true },
+    { status: "waiting", want: false },
+  ];
+
+  for (const c of cases) {
+    const state = loadKontoraState();
+    state.configCache = c.custom ? { custom_statuses: c.custom } : null;
+    state.selectedTicket = { id: "kon-a", status: c.status, stage: "plan", stages: ["plan", "code"] };
+    assert.equal(state.canSetStage(), c.want, `${c.status} custom=${c.custom || "none"}`);
+  }
+
+  // Nothing selected, nothing to move.
+  assert.equal(loadKontoraState().canSetStage(), false);
+});
+
+test("the stage row is gated on the predicate and on the pipeline, not on the stage", () => {
+  const html = fs.readFileSync(htmlPath, "utf8");
+
+  assert.equal(html.includes("['paused', 'open'].includes"), false, "the hardcoded status list is gone");
+  // The row now hangs off the pipeline alone, so a ticket that gained one
+  // through the detail form still gets somewhere to set its stage.
+  assert.ok(html.includes(`<template x-if="selectedTicket?.stages?.length > 1"><span class="text-surface-600">stage</span></template>`));
+  assert.ok(html.includes(`<template x-if="canSetStage() && setStageOpen">`));
+  assert.ok(html.includes(`@click="if (canSetStage()) setStageOpen = true"`));
+  assert.ok(html.includes(`x-text="displayStage()"`));
+  // The pre-selected option is the stage on the file, never the display fallback:
+  // a pick that matches the selection fires no change event.
+  assert.ok(html.includes(`:selected="s === selectedTicket?.stage"`));
+  assert.equal(html.includes(`:selected="s === displayStage()"`), false);
+  assert.ok(html.includes(`<template x-if="!selectedTicket?.stage">`));
+  assert.ok(html.includes(`<option value="" selected>set stage…</option>`));
+});
+
+test("an empty stage shows the pipeline's first stage without writing it", async () => {
+  const calls = [];
+  const { state } = loadKontoraContext({
+    fetch: (url) => {
+      calls.push(url);
+      return Promise.resolve({ ok: true, json: async () => ({ id: "kon-a", status: "done", stage: "code" }) });
+    },
+  });
+  state.selectedTicket = { id: "kon-a", status: "done", stage: "", stages: ["plan", "code"] };
+
+  assert.equal(state.displayStage(), "plan");
+  assert.deepEqual(calls, [], "reading the row must not write the ticket");
+
+  // The picker's placeholder carries the selection, so its empty value must not
+  // reach the endpoint.
+  await state.setStage("");
+  assert.deepEqual(calls, [], "the placeholder is not a stage");
+
+  // Only the user's pick reaches the file.
+  await state.setStage("code");
+  assert.deepEqual(calls, ["/api/tickets/kon-a/set-stage"]);
+  assert.equal(state.displayStage(), "code");
+});
+
+test("the detail panel's re-run button says restart on a finished ticket", () => {
+  const state = loadKontoraState();
+  const cases = [
+    { status: "paused", idle: "retry", busy: "retrying..." },
+    { status: "done", idle: "restart", busy: "restarting..." },
+    { status: "cancelled", idle: "restart", busy: "restarting..." },
+  ];
+
+  for (const c of cases) {
+    state.selectedTicket = { id: "kon-a", status: c.status };
+    state.actionLoading = null;
+    assert.equal(state.retryLabel(), c.idle, c.status);
+    state.actionLoading = "retry";
+    assert.equal(state.retryLabel(), c.busy, c.status);
+  }
+
+  const html = fs.readFileSync(htmlPath, "utf8");
+  // One button, one endpoint, three statuses, and only on a ticket the daemon owns:
+  // Service.Retry rejects a foreign one before it looks at the status.
+  assert.ok(html.includes(`<template x-if="['paused', 'done', 'cancelled'].includes(selectedTicket?.status) && selectedTicket?.kontora">`));
+  assert.ok(html.includes(`<button @click="action('retry')" :disabled="!!actionLoading"`));
+  assert.ok(html.includes(`<span x-text="retryLabel()"></span>`));
+});
+
+test("the detail header renders one retry button, not the bespoke one plus Reopen", () => {
+  const state = loadKontoraState();
+
+  // The bespoke restart button covers the endpoint for every parked status, so
+  // the validMoves list must not put a second /retry button next to it.
+  for (const status of ["paused", "done", "cancelled"]) {
+    const moves = state.detailMoves({ status: status, kontora: true });
+    assert.equal(moves.some(mv => mv.endpoint === "retry"), false, status);
+  }
+
+  // Everything else on those statuses stays.
+  assert.deepEqual([...state.detailMoves({ status: "done", kontora: true }).map(mv => mv.label)], ["Send to review"]);
+  assert.deepEqual([...state.detailMoves({ status: "cancelled", kontora: true }).map(mv => mv.label)], []);
+});

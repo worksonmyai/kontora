@@ -50,6 +50,9 @@ complete -c kontora -f
 		if cmd.Config {
 			flags = append(flags, Flag{Name: "config", Desc: "Config file path", Value: "path"})
 		}
+		if cmd.Store {
+			flags = append(flags, Flag{Name: "tickets-dir", Desc: "Tickets directory (overrides config and environment)", Value: "path"})
+		}
 		if cmd.Remote {
 			flags = append(flags,
 				Flag{Name: "url", Desc: "Remote daemon URL (enables remote mode)", Value: "text"},

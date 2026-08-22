@@ -9,6 +9,7 @@ Run `kontora help` for the same list of commands this page documents.
 | Flag | Applies to | Description |
 |------|-----------|-------------|
 | `--config PATH` | every command that reads the config | Path to the config file. Defaults to `$KONTORA_CONFIG`, then `./.kontora/config.yaml`, then `$XDG_CONFIG_HOME/kontora/config.yaml`, then `~/.config/kontora/config.yaml`. |
+| `--tickets-dir PATH` | every command that reads the local ticket store | Overrides `tickets_dir`. The highest precedence there is: above `$KONTORA_TICKETS_DIR`, `$TICKETS_DIR` and the config file. Ignored in remote mode, where the daemon owns the store. |
 | `--url URL` | every command that can drive a daemon | Remote daemon URL. A non-empty value switches the command into [remote mode](#remote-mode). Defaults to `$KONTORA_URL`. |
 | `--token TOKEN` | the same commands | Bearer token for the remote daemon. Defaults to `$KONTORA_TOKEN`. |
 
@@ -26,6 +27,15 @@ Every command that takes a `TICKET_ID` accepts a unique prefix of one: `kontora 
 | `KONTORA_URL` | client commands | Remote daemon URL; setting it turns on remote mode. |
 | `KONTORA_TOKEN` | client commands | Bearer token sent to the remote daemon. |
 | `KONTORA_WEB_TOKEN` | `kontora start` only | Overrides `web.token` on the daemon side, so a deployment can inject the secret instead of writing it into the config file. |
+| `KONTORA_TICKETS_DIR` | every command that reads the local ticket store | Overrides `tickets_dir` from the config file. The daemon exports its resolved value to the agents it spawns. |
+| `TICKETS_DIR` | the same commands | Compatibility alias for the standalone `ticket` CLI. Read only when `KONTORA_TICKETS_DIR` is unset or blank. |
+| `KONTORA_PAGER` | `view`, `logs`, `activity` | Pager command, split on whitespace the way `$EDITOR` is. Used only when stdout is a terminal, so a redirect or a pipe is never paged. Set but blank turns paging off. |
+| `TICKET_PAGER` | the same commands | Read when `KONTORA_PAGER` is unset, so a `ticket` user's setting carries over. |
+| `PAGER` | the same commands | The last fallback before the config's `pager`. |
+
+The tickets dir is resolved `--tickets-dir` → `$KONTORA_TICKETS_DIR` → `$TICKETS_DIR` → `tickets_dir:` → `~/.kontora/tickets`, and the pager `$KONTORA_PAGER` → `$TICKET_PAGER` → `$PAGER` → `pager:` → none.
+
+Note that unlike every other setting, the environment beats the config file for the tickets dir. A stray export therefore changes which store every command reads, and a daemon that cannot see the variable — one started by launchd or systemd, which pass a minimal environment — keeps reading the file. `kontora doctor` names the source that won and warns when the two disagree.
 
 ## Tickets
 
@@ -111,6 +121,8 @@ Prints the ticket's status, pipeline position, and body.
 | `--body` | Print only the stored markdown body: no metadata, no styling, no synthesized relation sections. |
 
 `--body` prints exactly what the file holds after the closing frontmatter delimiter, which is what `kontora update --body-file` writes back. Reading a body out, editing it, and writing it back changes nothing else in the ticket.
+
+The default output goes through the [pager](#environment-variables) when one is set and stdout is a terminal. `--body` never does, so the round trip stays byte-stable.
 
 ### `kontora edit TICKET_ID`
 
@@ -233,11 +245,11 @@ Marks every `done` or `cancelled` ticket whose file has not been modified for at
 
 ### `kontora logs [--stage NAME] TICKET_ID`
 
-Prints the agent's log. Without `--stage` it shows the most recent one, falling back to the ticket's run history when there are no log files.
+Prints the agent's log. Without `--stage` it shows the most recent one, falling back to the ticket's run history when there are no log files. Goes through the [pager](#environment-variables) when one is set and stdout is a terminal.
 
 ### `kontora activity [--stage NAME] [--run N] TICKET_ID`
 
-Prints one stage run's structured transcript: the agent's messages and tool calls, one per line. Falls back to the plaintext log for agents that write no session record. Needs a running daemon.
+Prints one stage run's structured transcript: the agent's messages and tool calls, one per line. Falls back to the plaintext log for agents that write no session record. Needs a running daemon. Goes through the [pager](#environment-variables) when one is set and stdout is a terminal.
 
 ### `kontora sessions [flags] TICKET_ID`
 

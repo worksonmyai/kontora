@@ -5,7 +5,7 @@ package cli
 // are generated from it, so a new command cannot appear in one and be missing
 // from the other.
 var Commands = []Command{
-	{Name: "ls", Desc: "List tickets (TUI on TTY, static table otherwise)", Config: true, Remote: true, Flags: []Flag{
+	{Name: "ls", Desc: "List tickets (TUI on TTY, static table otherwise)", Config: true, Store: true, Remote: true, Flags: []Flag{
 		{Name: "closed", Desc: "Show done/cancelled/closed tickets"},
 		{Name: "archived", Desc: "Show archived tickets"},
 		{Name: "static", Desc: "Print static table instead of interactive TUI"},
@@ -17,7 +17,7 @@ var Commands = []Command{
 		{Name: "limit", Desc: "Print at most N tickets", Value: "text"},
 		{Name: "json", Desc: "Print JSON instead of a table"},
 	}},
-	{Name: "search", Desc: "Search tickets by regex across frontmatter and body", Config: true, Args: "QUERY", Flags: []Flag{
+	{Name: "search", Desc: "Search tickets by regex across frontmatter and body", Config: true, Store: true, Args: "QUERY", Flags: []Flag{
 		{Name: "i", Desc: "Case-insensitive match (default is smart-case)"},
 		{Name: "s", Desc: "Case-sensitive match"},
 		{Name: "F", Desc: "Treat the query as a literal string, not a regex"},
@@ -31,7 +31,7 @@ var Commands = []Command{
 		{Name: "pipeline", Desc: "Only search tickets for this pipeline", Value: "pipeline"},
 		{Name: "agent", Desc: "Only search tickets for this agent", Value: "agent"},
 	}},
-	{Name: "new", Desc: "Create a ticket", Config: true, Remote: true, Args: "TITLE", Flags: []Flag{
+	{Name: "new", Desc: "Create a ticket", Config: true, Store: true, Remote: true, Args: "TITLE", Flags: []Flag{
 		{Name: "path", Desc: "Repository path", Value: "path"},
 		{Name: "pipeline", Desc: "Pipeline name, or \"none\"", Value: "pipeline"},
 		{Name: "agent", Desc: "Agent name, or \"none\"", Value: "agent"},
@@ -41,11 +41,11 @@ var Commands = []Command{
 		{Name: "description-file", Desc: "Read the description from a file ('-' for stdin)", Value: "path"},
 		{Name: "quiet", Desc: "Print only the new ticket ID"},
 	}},
-	{Name: "view", Desc: "Print ticket details", Config: true, Remote: true, TicketID: true, Flags: []Flag{
+	{Name: "view", Desc: "Print ticket details", Config: true, Store: true, Remote: true, TicketID: true, Flags: []Flag{
 		{Name: "body", Desc: "Print only the ticket body"},
 	}},
-	{Name: "edit", Desc: "Open a ticket in $EDITOR", Config: true, TicketID: true},
-	{Name: "update", Desc: "Update ticket body/frontmatter fields", Config: true, Remote: true, TicketID: true, Flags: []Flag{
+	{Name: "edit", Desc: "Open a ticket in $EDITOR", Config: true, Store: true, TicketID: true},
+	{Name: "update", Desc: "Update ticket body/frontmatter fields", Config: true, Store: true, Remote: true, TicketID: true, Flags: []Flag{
 		{Name: "body-file", Desc: "Read ticket body from a file ('-' for stdin)", Value: "path"},
 		{Name: "pipeline", Desc: "Set pipeline (\"\" or \"none\" clears it)", Value: "pipeline"},
 		{Name: "path", Desc: "Set repository path", Value: "path"},
@@ -53,32 +53,32 @@ var Commands = []Command{
 		{Name: "branch", Desc: "Set branch (\"\" clears it)", Value: "text"},
 		{Name: "base-branch", Desc: "Set base branch (\"\" clears it)", Value: "text"},
 	}},
-	{Name: "delete", Desc: "Delete a ticket file", Config: true, Remote: true, TicketID: true, Flags: []Flag{
+	{Name: "delete", Desc: "Delete a ticket file", Config: true, Store: true, Remote: true, TicketID: true, Flags: []Flag{
 		{Name: "f", Desc: "Confirm deletion (required)"},
 		{Name: "yes", Desc: "Confirm deletion (required)"},
 	}},
-	{Name: "init", Desc: "Set up a ticket for daemon processing", Config: true, Remote: true, TicketID: true, Flags: []Flag{
+	{Name: "init", Desc: "Set up a ticket for daemon processing", Config: true, Store: true, Remote: true, TicketID: true, Flags: []Flag{
 		{Name: "pipeline", Desc: "Pipeline name, or \"none\" (required in remote mode)", Value: "pipeline"},
 		{Name: "path", Desc: "Repository path (required in remote mode)", Value: "path"},
 		{Name: "agent", Desc: "Agent name, or \"none\"", Value: "agent"},
 		{Name: "stage", Desc: "Starting pipeline stage", Value: "stage"},
 		{Name: "status", Desc: "Initial status", Value: "text", Choices: []string{"open", "todo"}},
 	}},
-	{Name: "run", Desc: "Enqueue a ticket for processing", Config: true, Remote: true, TicketID: true},
-	{Name: "done", Desc: "Mark a ticket as done", Config: true, Remote: true, TicketID: true},
-	{Name: "move", Desc: "Move a ticket to any status, including custom ones", Config: true, Remote: true, TicketID: true, Args: "STATUS"},
-	{Name: "note", Desc: "Append a note to a ticket", Config: true, Remote: true, TicketID: true, Args: "[TEXT]"},
-	{Name: "summary", Desc: "Set a ticket's summary", Config: true, Remote: true, TicketID: true, Args: "[TEXT]"},
-	{Name: "pause", Desc: "Pause a running ticket", Config: true, Remote: true, TicketID: true},
-	{Name: "retry", Desc: "Re-queue a paused ticket", Config: true, Remote: true, TicketID: true},
-	{Name: "skip", Desc: "Skip to the next pipeline stage", Config: true, Remote: true, TicketID: true},
-	{Name: "set-stage", Desc: "Move ticket to a specific pipeline stage", Config: true, Remote: true, TicketID: true, Args: "STAGE"},
-	{Name: "cancel", Desc: "Cancel a ticket", Config: true, Remote: true, TicketID: true},
-	{Name: "dep", Desc: "Make a ticket wait on another one", Config: true, Remote: true, TicketID: true, Args: "DEPENDENCY_ID"},
-	{Name: "undep", Desc: "Drop a dependency from a ticket", Config: true, Remote: true, TicketID: true, Args: "DEPENDENCY_ID"},
-	{Name: "link", Desc: "Relate a ticket to one or more others", Config: true, Remote: true, TicketID: true, Args: "TICKET_ID..."},
-	{Name: "unlink", Desc: "Remove a relation between tickets", Config: true, Remote: true, TicketID: true, Args: "TICKET_ID..."},
-	{Name: "archive", Desc: "Archive old done/cancelled tickets", Config: true, Flags: []Flag{
+	{Name: "run", Desc: "Enqueue a ticket for processing", Config: true, Store: true, Remote: true, TicketID: true},
+	{Name: "done", Desc: "Mark a ticket as done", Config: true, Store: true, Remote: true, TicketID: true},
+	{Name: "move", Desc: "Move a ticket to any status, including custom ones", Config: true, Store: true, Remote: true, TicketID: true, Args: "STATUS"},
+	{Name: "note", Desc: "Append a note to a ticket", Config: true, Store: true, Remote: true, TicketID: true, Args: "[TEXT]"},
+	{Name: "summary", Desc: "Set a ticket's summary", Config: true, Store: true, Remote: true, TicketID: true, Args: "[TEXT]"},
+	{Name: "pause", Desc: "Pause a running ticket", Config: true, Store: true, Remote: true, TicketID: true},
+	{Name: "retry", Desc: "Re-queue a paused ticket", Config: true, Store: true, Remote: true, TicketID: true},
+	{Name: "skip", Desc: "Skip to the next pipeline stage", Config: true, Store: true, Remote: true, TicketID: true},
+	{Name: "set-stage", Desc: "Move ticket to a specific pipeline stage", Config: true, Store: true, Remote: true, TicketID: true, Args: "STAGE"},
+	{Name: "cancel", Desc: "Cancel a ticket", Config: true, Store: true, Remote: true, TicketID: true},
+	{Name: "dep", Desc: "Make a ticket wait on another one", Config: true, Store: true, Remote: true, TicketID: true, Args: "DEPENDENCY_ID"},
+	{Name: "undep", Desc: "Drop a dependency from a ticket", Config: true, Store: true, Remote: true, TicketID: true, Args: "DEPENDENCY_ID"},
+	{Name: "link", Desc: "Relate a ticket to one or more others", Config: true, Store: true, Remote: true, TicketID: true, Args: "TICKET_ID..."},
+	{Name: "unlink", Desc: "Remove a relation between tickets", Config: true, Store: true, Remote: true, TicketID: true, Args: "TICKET_ID..."},
+	{Name: "archive", Desc: "Archive old done/cancelled tickets", Config: true, Store: true, Flags: []Flag{
 		{Name: "days", Desc: "Required: age threshold in days", Value: "text"},
 		{Name: "dry-run", Desc: "List what would be archived, write nothing"},
 		{Name: "path", Desc: "Only archive tickets for this repository path", Value: "path"},
@@ -86,14 +86,14 @@ var Commands = []Command{
 		{Name: "status", Desc: "Only archive tickets with this status", Value: "text", Choices: []string{"done", "cancelled", "closed"}},
 		{Name: "yes", Short: "y", Desc: "Skip the confirmation prompt"},
 	}},
-	{Name: "logs", Desc: "Show agent logs for a ticket", Config: true, Remote: true, TicketID: true, Flags: []Flag{
+	{Name: "logs", Desc: "Show agent logs for a ticket", Config: true, Store: true, Remote: true, TicketID: true, Flags: []Flag{
 		{Name: "stage", Desc: "Stage name", Value: "stage"},
 	}},
 	{Name: "activity", Desc: "Show a stage run's transcript", Config: true, Remote: true, TicketID: true, Flags: []Flag{
 		{Name: "stage", Desc: "Stage name", Value: "stage"},
 		{Name: "run", Desc: "Run number within the stage", Value: "text"},
 	}},
-	{Name: "sessions", Desc: "Print the file paths behind a ticket's runs", Config: true, TicketID: true, Flags: []Flag{
+	{Name: "sessions", Desc: "Print the file paths behind a ticket's runs", Config: true, Store: true, TicketID: true, Flags: []Flag{
 		{Name: "stage", Desc: "Only this stage", Value: "stage"},
 		{Name: "run", Desc: "Only this run number within the stage", Value: "text"},
 		{Name: "logs", Desc: "Print the stage log paths instead of the session files"},
@@ -118,10 +118,10 @@ var Commands = []Command{
 	}},
 	{Name: "review", Desc: "Open a ticket's diff in Plannotator on the daemon host", Config: true, Remote: true, TicketID: true},
 	{Name: "annotate", Desc: "Open a ticket's markdown in Plannotator on the daemon host", Config: true, Remote: true, TicketID: true},
-	{Name: "attach", Desc: "Attach to a running ticket", Config: true, Remote: true, TicketID: true, Flags: []Flag{
+	{Name: "attach", Desc: "Attach to a running ticket", Config: true, Store: true, Remote: true, TicketID: true, Flags: []Flag{
 		{Name: "rw", Desc: "Attach in read-write mode"},
 	}},
-	{Name: "start", Desc: "Start the daemon", Config: true, Flags: []Flag{
+	{Name: "start", Desc: "Start the daemon", Config: true, Store: true, Flags: []Flag{
 		{Name: "address", Desc: "Web server listen address", Value: "text"},
 		{Name: "port", Desc: "Web server port", Value: "text"},
 	}},
@@ -147,6 +147,10 @@ type Command struct {
 	// Config is true when the verb reads the local config file, and so takes
 	// --config.
 	Config bool
+	// Store is true when the verb reads or writes the local ticket store, and so
+	// takes --tickets-dir. A verb that only drives the daemon does not: the
+	// daemon owns the store, so pointing the client elsewhere would be a lie.
+	Store bool
 	// Remote is true when the verb can drive a remote daemon, and so takes
 	// --url and --token.
 	Remote bool

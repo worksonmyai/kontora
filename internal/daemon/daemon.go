@@ -2674,10 +2674,18 @@ func (d *Daemon) buildRunnerParams(cfg *config.Config, agentCfg config.Agent, st
 // runs on. Without it they re-derive a path from the worktree and $HOME, which
 // is the wrong file whenever the daemon was started with --config. A user who
 // sets the variable in their own environment config still wins.
+//
+// The resolved tickets dir is exported for the same reason one step further on:
+// the config file alone does not say which store the daemon settled on once
+// KONTORA_TICKETS_DIR or --tickets-dir has had its say, so an agent that only
+// read the file would write into the wrong one.
 func agentEnv(cfg *config.Config, agentCfg config.Agent, configPath string) map[string]string {
-	env := make(map[string]string, len(cfg.Environment)+len(agentCfg.Environment)+1)
+	env := make(map[string]string, len(cfg.Environment)+len(agentCfg.Environment)+2)
 	if configPath != "" {
 		env[config.PathEnvVar] = configPath
+	}
+	if cfg.TicketsDir != "" {
+		env[config.TicketsDirEnvVar] = config.ExpandTilde(cfg.TicketsDir)
 	}
 	maps.Copy(env, cfg.Environment)
 	for k, v := range agentCfg.Environment {

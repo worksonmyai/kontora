@@ -1381,6 +1381,10 @@ func TestAgentEnvironmentOverride(t *testing.T) {
 	// The prompt tells the agent to run bare `kontora note`, which only reaches
 	// the daemon's own config through this variable.
 	assert.Equal(t, "/etc/kontora/config.yaml", captured.Env[config.PathEnvVar])
+	// The config file alone does not say which store the daemon settled on once
+	// the environment or --tickets-dir has had its say, so the resolved dir is
+	// exported too.
+	assert.Equal(t, config.ExpandTilde(h.cfg.TicketsDir), captured.Env[config.TicketsDirEnvVar])
 
 	cancel()
 	require.NoError(t, <-errCh)

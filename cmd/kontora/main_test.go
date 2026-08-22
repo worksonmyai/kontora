@@ -214,3 +214,121 @@ func TestCreateViewListEndToEnd(t *testing.T) {
 	require.Error(t, err, out)
 	assert.Contains(t, out, "--ready and --blocked")
 }
+
+// TestTicketsDirPrecedence runs the built binary once per rung of the ladder:
+// --tickets-dir, then KONTORA_TICKETS_DIR, then TICKETS_DIR, then the file. Each
+// store holds one ticket named after it, so the store that answered is the one
+// the ID names.
+func TestTicketsDirPrecedence(t *testing.T) {
+	scratch := t.TempDir()
+	repo := testutil.InitRepo(t)
+
+	stores := map[string]string{}
+	for _, name := range []string{"file", "kontora", "legacy", "flag"} {
+		dir := filepath.Join(scratch, name)
+		require.NoError(t, os.MkdirAll(dir, 0o755))
+		stores[name] = dir
+	}
+
+	configPath := filepath.Join(scratch, "config.yaml")
+	require.NoError(t, os.WriteFile(configPath, []byte(
+		"tickets_dir: "+stores["file"]+"\n"+
+			"worktrees_dir: "+filepath.Join(scratch, "wt")+"\n"+
+			"logs_dir: "+filepath.Join(scratch, "logs")+"\n"+
+			"default_agent: claude\n"+
+			"agents:\n  claude:\n    binary: true\n"), 0o644))
+
+	// One ticket per store, titled with the store's name.
+	for name, dir := range stores {
+		out, err := runCLI(t, []string{config.TicketsDirEnvVar + "=" + dir},
+			"new", "--config", configPath, "--status", "open", "--quiet",
+			"--path", repo, "ticket in "+name)
+		require.NoError(t, err, out)
+	}
+
+	cases := []struct {
+		name string
+		env  []string
+		args []string
+		want string
+	}{
+		{name: "config only", want: "file"},
+		{
+			name: "legacy var beats the file",
+			env:  []string{config.LegacyTicketsDirEnvVar + "=" + stores["legacy"]},
+			want: "legacy",
+		},
+		{
+			name: "kontora var beats the legacy var",
+			env: []string{
+				config.LegacyTicketsDirEnvVar + "=" + stores["legacy"],
+				config.TicketsDirEnvVar + "=" + stores["kontora"],
+			},
+			want: "kontora",
+		},
+		{
+			name: "flag beats both vars",
+			env: []string{
+				config.LegacyTicketsDirEnvVar + "=" + stores["legacy"],
+				config.TicketsDirEnvVar + "=" + stores["kontora"],
+			},
+			args: []string{"--tickets-dir", stores["flag"]},
+			want: "flag",
+		},
+		{
+			name: "a blank var falls back to the file",
+			env:  []string{config.TicketsDirEnvVar + "=   "},
+			want: "file",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			args := append([]string{"ls", "--config", configPath, "--json"}, tc.args...)
+			out, err := runCLI(t, tc.env, args...)
+			require.NoError(t, err, out)
+
+			var items []map[string]any
+			require.NoError(t, json.Unmarshal([]byte(out), &items))
+			require.Len(t, items, 1)
+			assert.Equal(t, "ticket in "+tc.want, items[0]["title"])
+		})
+	}
+}
+
+// A pager must never engage when stdout is not a terminal. runCLI pipes stdout,
+// so /bin/false as the pager would swallow the output if it ever ran.
+func TestViewIsNotPagedWhenPiped(t *testing.T) {
+	scratch := t.TempDir()
+	ticketsDir := filepath.Join(scratch, "tickets")
+	repo := testutil.InitRepo(t)
+	configPath := filepath.Join(scratch, "config.yaml")
+	require.NoError(t, os.WriteFile(configPath, []byte(
+		"tickets_dir: "+ticketsDir+"\n"+
+			"worktrees_dir: "+filepath.Join(scratch, "wt")+"\n"+
+			"logs_dir: "+filepath.Join(scratch, "logs")+"\n"+
+			"default_agent: claude\n"+
+			"agents:\n  claude:\n    binary: true\n"), 0o644))
+
+	out, err := runCLI(t, nil, "new", "--config", configPath, "--status", "open", "--quiet",
+		"--path", repo, "Pager smoke test")
+	require.NoError(t, err, out)
+	id := strings.TrimSpace(out)
+
+	pagerEnv := []string{cli.PagerEnvVar + "=/bin/false"}
+
+	paged, err := runCLI(t, pagerEnv, "view", "--config", configPath, id)
+	require.NoError(t, err, paged)
+	plain, err := runCLI(t, nil, "view", "--config", configPath, id)
+	require.NoError(t, err, plain)
+	assert.Equal(t, plain, paged, "a piped view is identical with and without a pager set")
+	assert.Contains(t, paged, "Pager smoke test")
+
+	written, err := os.ReadFile(filepath.Join(ticketsDir, id+".md"))
+	require.NoError(t, err)
+	_, body, err := frontmatter.Split(string(written))
+	require.NoError(t, err)
+	bodyOut, err := runCLI(t, pagerEnv, "view", "--config", configPath, "--body", id)
+	require.NoError(t, err, bodyOut)
+	assert.Equal(t, body, bodyOut, "--body stays byte-stable with a pager set")
+}

@@ -18,6 +18,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/worksonmyai/kontora/internal/cli"
+	"github.com/worksonmyai/kontora/internal/config"
 	"github.com/worksonmyai/kontora/internal/testutil"
 	"github.com/worksonmyai/kontora/internal/web"
 )
@@ -53,8 +54,15 @@ func runCLI(t *testing.T, env []string, args ...string) (string, error) {
 	t.Helper()
 	bin := buildKontora(t)
 	cmd := exec.Command(bin, args...)
-	// A fresh HOME guarantees there is no local config file to fall back on.
-	cmd.Env = append(os.Environ(), append([]string{"HOME=" + t.TempDir()}, env...)...)
+	// A fresh HOME guarantees there is no local config file to fall back on, and
+	// blanking the tickets-dir vars keeps a developer's own exports out of the
+	// child. They come first so a caller's env still wins.
+	base := []string{
+		"HOME=" + t.TempDir(),
+		config.TicketsDirEnvVar + "=",
+		config.LegacyTicketsDirEnvVar + "=",
+	}
+	cmd.Env = append(os.Environ(), append(base, env...)...)
 	out, err := cmd.CombinedOutput()
 	return string(out), err
 }

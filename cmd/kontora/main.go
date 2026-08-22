@@ -145,7 +145,7 @@ func cmdStart() {
 	rejectInRemoteMode("start")
 
 	fs := flag.NewFlagSet("start", flag.ExitOnError)
-	configPath := fs.String("config", defaultConfigPath(), "path to config file")
+	configPath, ticketsDir := addStoreFlags(fs)
 	address := fs.String("address", "", "web server listen address (overrides config)")
 	port := fs.Int("port", 0, "web server port (overrides config)")
 	if err := fs.Parse(os.Args[2:]); err != nil {
@@ -159,6 +159,7 @@ func cmdStart() {
 	// flags never reach the config file, so a reload that only re-read the file
 	// would drop them.
 	override := func(c *config.Config) {
+		c.SetTicketsDir(*ticketsDir)
 		if *address != "" {
 			c.Web.Host = *address
 		}
@@ -254,7 +255,7 @@ func interactiveTerminal() bool {
 
 func cmdInit() {
 	fs := flag.NewFlagSet("init", flag.ExitOnError)
-	configPath := fs.String("config", defaultConfigPath(), "path to config file")
+	configPath, ticketsDir := addStoreFlags(fs)
 	pipeline := fs.String("pipeline", "", "pipeline name, or \"none\" for a standalone ticket (required in remote mode)")
 	repoPath := fs.String("path", "", "repository path, on the daemon host in remote mode (required in remote mode)")
 	agent := fs.String("agent", "", "agent name, or \"none\" to skip the project default")
@@ -283,7 +284,7 @@ func cmdInit() {
 		return
 	}
 
-	cfg := mustLoadConfig(*configPath)
+	cfg := mustLoadStoreConfig(*configPath, *ticketsDir)
 
 	opts := cli.EnableOpts{Pipeline: *pipeline, Path: *repoPath, Agent: *agent, Stage: *stage, Status: *status}
 	if err := cli.Enable(cfg, taskID, opts, os.Stdout); err != nil {
@@ -301,7 +302,7 @@ func cmdLs() {
 	}
 
 	fs := flag.NewFlagSet("ls", flag.ExitOnError)
-	configPath := fs.String("config", defaultConfigPath(), "path to config file")
+	configPath, ticketsDir := addStoreFlags(fs)
 	closed := fs.Bool("closed", false, "show done/cancelled tickets")
 	archived := fs.Bool("archived", false, "show archived tickets")
 	static := fs.Bool("static", false, "print static table instead of interactive TUI")
@@ -339,7 +340,7 @@ func cmdLs() {
 		return
 	}
 
-	cfg := mustLoadConfig(*configPath)
+	cfg := mustLoadStoreConfig(*configPath, *ticketsDir)
 
 	// Any filter or JSON makes this a query, not the board.
 	if !*static && !*closed && !*archived && !opts.Filtering() && isatty.IsTerminal(os.Stdout.Fd()) {
@@ -356,7 +357,7 @@ func cmdLs() {
 
 func cmdNew() {
 	fs := flag.NewFlagSet("new", flag.ExitOnError)
-	configPath := fs.String("config", defaultConfigPath(), "path to config file")
+	configPath, ticketsDir := addStoreFlags(fs)
 	repoPath := fs.String("path", "", "repository path (defaults to current git root)")
 	pipeline := fs.String("pipeline", "", "pipeline name, or \"none\" to skip the project default")
 	agent := fs.String("agent", "", "agent name, or \"none\" to skip the project default")
@@ -417,7 +418,7 @@ func cmdNew() {
 		}
 	}
 
-	cfg := mustLoadConfig(*configPath)
+	cfg := mustLoadStoreConfig(*configPath, *ticketsDir)
 
 	// cli.New writes the whole ticket in one file write, so a ticket created
 	// with --status open is never visible as todo for a watching daemon to
@@ -451,7 +452,7 @@ func printNewTicket(id string, quiet bool) {
 
 func cmdView() {
 	fs := flag.NewFlagSet("view", flag.ExitOnError)
-	configPath := fs.String("config", defaultConfigPath(), "path to config file")
+	configPath, ticketsDir := addStoreFlags(fs)
 	bodyOnly := fs.Bool("body", false, "print only the ticket body")
 	urlFlag, tokenFlag := addRemoteFlags(fs)
 	taskID := parseTicketFlags(fs, os.Args[2:])
@@ -464,15 +465,23 @@ func cmdView() {
 		if err != nil {
 			log.Fatal(err)
 		}
+		// --body is never paged: it must stay byte-identical to what
+		// `update --body-file` writes back.
 		if *bodyOnly {
 			fmt.Print(info.Body)
 			return
 		}
-		printRemoteTicket(os.Stdout, info)
+		err = cli.Page(cli.PagerCommand(""), func(w io.Writer) error {
+			printRemoteTicket(w, info)
+			return nil
+		})
+		if err != nil {
+			log.Fatal(err)
+		}
 		return
 	}
 
-	cfg := mustLoadConfig(*configPath)
+	cfg := mustLoadStoreConfig(*configPath, *ticketsDir)
 
 	if *bodyOnly {
 		if err := cli.ViewBody(cfg, taskID, os.Stdout); err != nil {
@@ -480,7 +489,10 @@ func cmdView() {
 		}
 		return
 	}
-	if err := cli.View(cfg, taskID, os.Stdout); err != nil {
+	err := cli.Page(cli.PagerCommand(cfg.Pager), func(w io.Writer) error {
+		return cli.View(cfg, taskID, w)
+	})
+	if err != nil {
 		log.Fatal(err)
 	}
 }
@@ -489,7 +501,7 @@ func cmdEdit() {
 	rejectInRemoteMode("edit")
 
 	fs := flag.NewFlagSet("edit", flag.ExitOnError)
-	configPath := fs.String("config", defaultConfigPath(), "path to config file")
+	configPath, ticketsDir := addStoreFlags(fs)
 	if err := fs.Parse(os.Args[2:]); err != nil {
 		log.Fatalf("parsing flags: %v", err)
 	}
@@ -499,7 +511,7 @@ func cmdEdit() {
 	}
 	taskID := fs.Arg(0)
 
-	cfg := mustLoadConfig(*configPath)
+	cfg := mustLoadStoreConfig(*configPath, *ticketsDir)
 
 	if err := cli.Edit(cfg.TicketsDir, cfg.Editor, taskID); err != nil {
 		log.Fatal(err)
@@ -508,7 +520,7 @@ func cmdEdit() {
 
 func cmdUpdate() {
 	fs := flag.NewFlagSet("update", flag.ExitOnError)
-	configPath := fs.String("config", defaultConfigPath(), "path to config file")
+	configPath, ticketsDir := addStoreFlags(fs)
 	bodyFile := fs.String("body-file", "", "read ticket body from a file ('-' for stdin)")
 	pipeline := fs.String("pipeline", "", "set pipeline (pass \"\" or \"none\" to clear)")
 	repoPath := fs.String("path", "", "set repository path")
@@ -564,7 +576,7 @@ func cmdUpdate() {
 		return
 	}
 
-	cfg := mustLoadConfig(*configPath)
+	cfg := mustLoadStoreConfig(*configPath, *ticketsDir)
 	id := mustResolveLocal(cfg, taskID)
 
 	if err := cli.Update(cfg, id, req); err != nil {
@@ -590,7 +602,7 @@ func readBodyFile(path string) (string, error) {
 
 func cmdDelete() {
 	fs := flag.NewFlagSet("delete", flag.ExitOnError)
-	configPath := fs.String("config", defaultConfigPath(), "path to config file")
+	configPath, ticketsDir := addStoreFlags(fs)
 	force := fs.Bool("f", false, "confirm deletion (required)")
 	yes := fs.Bool("yes", false, "confirm deletion (required)")
 	urlFlag, tokenFlag := addRemoteFlags(fs)
@@ -613,7 +625,7 @@ func cmdDelete() {
 		return
 	}
 
-	cfg := mustLoadConfig(*configPath)
+	cfg := mustLoadStoreConfig(*configPath, *ticketsDir)
 	id := mustResolveLocal(cfg, taskID)
 
 	if err := cli.Delete(cfg.TicketsDir, id); err != nil {
@@ -624,7 +636,7 @@ func cmdDelete() {
 
 func cmdRun() {
 	fs := flag.NewFlagSet("run", flag.ExitOnError)
-	configPath := fs.String("config", defaultConfigPath(), "path to config file")
+	configPath, ticketsDir := addStoreFlags(fs)
 	urlFlag, tokenFlag := addRemoteFlags(fs)
 	taskID := parseTicketFlags(fs, os.Args[2:])
 	if taskID == "" {
@@ -641,7 +653,7 @@ func cmdRun() {
 		return
 	}
 
-	cfg := mustLoadConfig(*configPath)
+	cfg := mustLoadStoreConfig(*configPath, *ticketsDir)
 	id := mustResolveLocal(cfg, taskID)
 
 	blockers, err := cli.Run(cfg, id)
@@ -663,7 +675,7 @@ func runOutcome(blockers []string) string {
 
 func cmdNote() {
 	fs := flag.NewFlagSet("note", flag.ExitOnError)
-	configPath := fs.String("config", defaultConfigPath(), "path to config file")
+	configPath, ticketsDir := addStoreFlags(fs)
 	urlFlag, tokenFlag := addRemoteFlags(fs)
 	if err := fs.Parse(os.Args[2:]); err != nil {
 		log.Fatalf("parsing flags: %v", err)
@@ -705,7 +717,7 @@ func cmdNote() {
 		return
 	}
 
-	cfg := mustLoadConfig(*configPath)
+	cfg := mustLoadStoreConfig(*configPath, *ticketsDir)
 	id := mustResolveLocal(cfg, taskID)
 
 	if err := cli.Note(cfg.TicketsDir, id, text); err != nil {
@@ -716,7 +728,7 @@ func cmdNote() {
 
 func cmdSummary() {
 	fs := flag.NewFlagSet("summary", flag.ExitOnError)
-	configPath := fs.String("config", defaultConfigPath(), "path to config file")
+	configPath, ticketsDir := addStoreFlags(fs)
 	urlFlag, tokenFlag := addRemoteFlags(fs)
 	if err := fs.Parse(os.Args[2:]); err != nil {
 		log.Fatalf("parsing flags: %v", err)
@@ -758,7 +770,7 @@ func cmdSummary() {
 		return
 	}
 
-	cfg := mustLoadConfig(*configPath)
+	cfg := mustLoadStoreConfig(*configPath, *ticketsDir)
 	id := mustResolveLocal(cfg, taskID)
 
 	if err := cli.Summary(cfg.TicketsDir, id, text); err != nil {
@@ -769,7 +781,7 @@ func cmdSummary() {
 
 func cmdAction(action string) {
 	fs := flag.NewFlagSet(action, flag.ExitOnError)
-	configPath := fs.String("config", defaultConfigPath(), "path to config file")
+	configPath, ticketsDir := addStoreFlags(fs)
 	urlFlag, tokenFlag := addRemoteFlags(fs)
 	taskID := parseTicketFlags(fs, os.Args[2:])
 	if taskID == "" {
@@ -796,7 +808,7 @@ func cmdAction(action string) {
 		return
 	}
 
-	cfg := mustLoadConfig(*configPath)
+	cfg := mustLoadStoreConfig(*configPath, *ticketsDir)
 	id := mustResolveLocal(cfg, taskID)
 
 	var err error
@@ -839,7 +851,7 @@ var relationPastTense = map[string]string{
 // local and remote mode.
 func cmdRelation(verb string) {
 	fs := flag.NewFlagSet(verb, flag.ExitOnError)
-	configPath := fs.String("config", defaultConfigPath(), "path to config file")
+	configPath, ticketsDir := addStoreFlags(fs)
 	urlFlag, tokenFlag := addRemoteFlags(fs)
 	args := parseArgs(fs, os.Args[2:], -1)
 
@@ -879,7 +891,7 @@ func cmdRelation(verb string) {
 		return
 	}
 
-	cfg := mustLoadConfig(*configPath)
+	cfg := mustLoadStoreConfig(*configPath, *ticketsDir)
 
 	var (
 		result app.RelationResult
@@ -1017,7 +1029,10 @@ func cmdActivity() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	if err := cli.PrintActivity(info, os.Stdout); err != nil {
+	err = cli.Page(cli.PagerCommand(""), func(w io.Writer) error {
+		return cli.PrintActivity(info, w)
+	})
+	if err != nil {
 		log.Fatal(err)
 	}
 }
@@ -1030,7 +1045,7 @@ func cmdSessions() {
 	rejectInRemoteMode("sessions")
 
 	fs := flag.NewFlagSet("sessions", flag.ExitOnError)
-	configPath := fs.String("config", defaultConfigPath(), "path to config file")
+	configPath, ticketsDir := addStoreFlags(fs)
 	stage := fs.String("stage", "", "only this stage")
 	run := fs.Int("run", -1, "only this run number within the stage")
 	logs := fs.Bool("logs", false, "print the stage log paths instead of the session files")
@@ -1041,7 +1056,7 @@ func cmdSessions() {
 		log.Fatal("ticket ID is required: kontora sessions [flags] TICKET_ID")
 	}
 
-	cfg := mustLoadConfig(*configPath)
+	cfg := mustLoadStoreConfig(*configPath, *ticketsDir)
 	opts := cli.SessionsOptions{Stage: *stage, Logs: *logs, Events: *events, All: *all}
 	// 0 is a real run number, so the flag's own default is the sentinel rather
 	// than a value the filter could mistake for a request.
@@ -1086,7 +1101,7 @@ func cmdPlannotator(action string) {
 // custom status from the CLI.
 func cmdMove() {
 	fs := flag.NewFlagSet("move", flag.ExitOnError)
-	configPath := fs.String("config", defaultConfigPath(), "path to config file")
+	configPath, ticketsDir := addStoreFlags(fs)
 	urlFlag, tokenFlag := addRemoteFlags(fs)
 	args := parseArgs(fs, os.Args[2:], 2)
 	if len(args) < 2 {
@@ -1103,7 +1118,7 @@ func cmdMove() {
 		return
 	}
 
-	cfg := mustLoadConfig(*configPath)
+	cfg := mustLoadStoreConfig(*configPath, *ticketsDir)
 	id := mustResolveLocal(cfg, taskID)
 
 	if err := cli.Move(cfg, id, status); err != nil {
@@ -1116,7 +1131,7 @@ func cmdArchive() {
 	rejectInRemoteMode("archive")
 
 	fs := flag.NewFlagSet("archive", flag.ExitOnError)
-	configPath := fs.String("config", defaultConfigPath(), "path to config file")
+	configPath, ticketsDir := addStoreFlags(fs)
 	days := fs.Int("days", 0, "required: archive done/cancelled tickets not modified in the last N days")
 	dryRun := fs.Bool("dry-run", false, "list tickets that would be archived without writing")
 	repoPath := fs.String("path", "", "only archive tickets for this repository path")
@@ -1128,7 +1143,7 @@ func cmdArchive() {
 		log.Fatalf("parsing flags: %v", err)
 	}
 
-	cfg := mustLoadConfig(*configPath)
+	cfg := mustLoadStoreConfig(*configPath, *ticketsDir)
 
 	// Only offer the prompt when stdin is a terminal. Piped input would answer
 	// it by accident, so a non-interactive run has to pass --yes.
@@ -1149,7 +1164,7 @@ func cmdSearch() {
 	rejectInRemoteMode("search")
 
 	fs := flag.NewFlagSet("search", flag.ExitOnError)
-	configPath := fs.String("config", defaultConfigPath(), "path to config file")
+	configPath, ticketsDir := addStoreFlags(fs)
 	ignoreCase := fs.Bool("i", false, "case-insensitive match (default is smart-case)")
 	matchCase := fs.Bool("s", false, "case-sensitive match")
 	literal := fs.Bool("F", false, "treat the query as a literal string, not a regex")
@@ -1171,7 +1186,7 @@ func cmdSearch() {
 		log.Fatal("usage: kontora search QUERY")
 	}
 
-	cfg := mustLoadConfig(*configPath)
+	cfg := mustLoadStoreConfig(*configPath, *ticketsDir)
 	opts := cli.SearchOpts{
 		Query:      args[0],
 		Literal:    *literal,
@@ -1195,7 +1210,7 @@ func cmdSearch() {
 
 func cmdSkip() {
 	fs := flag.NewFlagSet("skip", flag.ExitOnError)
-	configPath := fs.String("config", defaultConfigPath(), "path to config file")
+	configPath, ticketsDir := addStoreFlags(fs)
 	urlFlag, tokenFlag := addRemoteFlags(fs)
 	taskID := parseTicketFlags(fs, os.Args[2:])
 	if taskID == "" {
@@ -1211,7 +1226,7 @@ func cmdSkip() {
 		return
 	}
 
-	cfg := mustLoadConfig(*configPath)
+	cfg := mustLoadStoreConfig(*configPath, *ticketsDir)
 	id := mustResolveLocal(cfg, taskID)
 
 	if err := cli.Skip(cfg, id); err != nil {
@@ -1222,7 +1237,7 @@ func cmdSkip() {
 
 func cmdSetStage() {
 	fs := flag.NewFlagSet("set-stage", flag.ExitOnError)
-	configPath := fs.String("config", defaultConfigPath(), "path to config file")
+	configPath, ticketsDir := addStoreFlags(fs)
 	urlFlag, tokenFlag := addRemoteFlags(fs)
 	args := parseArgs(fs, os.Args[2:], 2)
 	if len(args) < 2 {
@@ -1239,7 +1254,7 @@ func cmdSetStage() {
 		return
 	}
 
-	cfg := mustLoadConfig(*configPath)
+	cfg := mustLoadStoreConfig(*configPath, *ticketsDir)
 	id := mustResolveLocal(cfg, taskID)
 
 	if err := cli.SetStage(cfg, id, stage); err != nil {
@@ -1250,7 +1265,7 @@ func cmdSetStage() {
 
 func cmdLogs() {
 	fs := flag.NewFlagSet("logs", flag.ExitOnError)
-	configPath := fs.String("config", defaultConfigPath(), "path to config file")
+	configPath, ticketsDir := addStoreFlags(fs)
 	stage := fs.String("stage", "", "specific stage to show")
 	urlFlag, tokenFlag := addRemoteFlags(fs)
 	taskID := parseTicketFlags(fs, os.Args[2:])
@@ -1263,20 +1278,29 @@ func cmdLogs() {
 		if err != nil {
 			log.Fatal(err)
 		}
-		fmt.Fprint(os.Stdout, content)
+		err = cli.Page(cli.PagerCommand(""), func(w io.Writer) error {
+			_, writeErr := io.WriteString(w, content)
+			return writeErr
+		})
+		if err != nil {
+			log.Fatal(err)
+		}
 		return
 	}
 
-	cfg := mustLoadConfig(*configPath)
+	cfg := mustLoadStoreConfig(*configPath, *ticketsDir)
 
-	if err := cli.Logs(cfg.TicketsDir, cfg.LogsDir, taskID, *stage, os.Stdout); err != nil {
+	err := cli.Page(cli.PagerCommand(cfg.Pager), func(w io.Writer) error {
+		return cli.Logs(cfg.TicketsDir, cfg.LogsDir, taskID, *stage, w)
+	})
+	if err != nil {
 		log.Fatal(err)
 	}
 }
 
 func cmdAttach() {
 	fs := flag.NewFlagSet("attach", flag.ExitOnError)
-	configPath := fs.String("config", defaultConfigPath(), "path to config file")
+	configPath, ticketsDir := addStoreFlags(fs)
 	rw := fs.Bool("rw", false, "attach in read-write mode")
 	urlFlag, tokenFlag := addRemoteFlags(fs)
 	taskID := parseTicketFlags(fs, os.Args[2:])
@@ -1291,7 +1315,7 @@ func cmdAttach() {
 		return
 	}
 
-	cfg := mustLoadConfig(*configPath)
+	cfg := mustLoadStoreConfig(*configPath, *ticketsDir)
 
 	if err := cli.Attach(cfg, taskID, *rw); err != nil {
 		if errors.Is(err, cli.ErrCancelled) {
@@ -1473,6 +1497,25 @@ func addRemoteFlags(fs *flag.FlagSet) (url, token *string) {
 	return url, token
 }
 
+// addStoreFlags registers --config and --tickets-dir on a verb that reads the
+// local ticket store. --tickets-dir is the escape hatch above both
+// KONTORA_TICKETS_DIR and the config file, which is the only way a one-off run
+// can beat a globally exported variable. It is ignored in remote mode, where the
+// daemon owns the store.
+func addStoreFlags(fs *flag.FlagSet) (configPath, ticketsDir *string) {
+	configPath = fs.String("config", defaultConfigPath(), "path to config file")
+	ticketsDir = fs.String("tickets-dir", "", "path to tickets directory (overrides config and environment)")
+	return configPath, ticketsDir
+}
+
+// mustLoadStoreConfig is mustLoadConfig plus the --tickets-dir last word. The
+// environment overlay already ran inside mustLoadConfig.
+func mustLoadStoreConfig(configPath, ticketsDir string) *config.Config {
+	cfg := mustLoadConfig(configPath)
+	cfg.SetTicketsDir(ticketsDir)
+	return cfg
+}
+
 // remoteClient returns a remote.Client when a URL is configured, else nil
 // (local mode).
 func remoteClient(url, token string) *remote.Client {
@@ -1523,6 +1566,7 @@ func confirm(id, what string) {
 func mustLoadConfig(configPath string) *config.Config {
 	cfg, err := config.Load(configPath)
 	if err == nil {
+		cfg.ApplyEnvOverrides()
 		return cfg
 	}
 	if errors.Is(err, config.ErrNotFound) {
@@ -1540,6 +1584,7 @@ func mustLoadConfig(configPath string) *config.Config {
 func loadConfigOrSetup(configPath string) *config.Config {
 	cfg, err := config.Load(configPath)
 	if err == nil {
+		cfg.ApplyEnvOverrides()
 		return cfg
 	}
 	if !errors.Is(err, config.ErrNotFound) {
@@ -1559,5 +1604,6 @@ func loadConfigOrSetup(configPath string) *config.Config {
 	if err != nil {
 		log.Fatalf("loading config after setup: %v", err)
 	}
+	cfg.ApplyEnvOverrides()
 	return cfg
 }

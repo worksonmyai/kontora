@@ -16,6 +16,7 @@ func TestCompletion(t *testing.T) {
 		shell   string
 		wantErr string
 		want    []string
+		notWant []string
 	}{
 		{
 			name:  "setup and its boolean --agent flag",
@@ -44,6 +45,18 @@ func TestCompletion(t *testing.T) {
 			},
 		},
 		{
+			name:  "--tickets-dir reaches store commands and no others",
+			shell: "fish",
+			want: []string{
+				"'__fish_seen_subcommand_from move' -l tickets-dir",
+				"'__fish_seen_subcommand_from ls' -l tickets-dir",
+			},
+			notWant: []string{
+				"'__fish_seen_subcommand_from stats' -l tickets-dir",
+				"'__fish_seen_subcommand_from changes' -l tickets-dir",
+			},
+		},
+		{
 			name:  "ticket IDs are extracted from whole lines, not the matched space",
 			shell: "fish",
 			// Without -e/--entire, string match prints only the matched
@@ -68,6 +81,9 @@ func TestCompletion(t *testing.T) {
 			require.NoError(t, err)
 			for _, want := range tc.want {
 				assert.Contains(t, buf.String(), want)
+			}
+			for _, notWant := range tc.notWant {
+				assert.NotContains(t, buf.String(), notWant)
 			}
 		})
 	}

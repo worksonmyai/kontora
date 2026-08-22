@@ -53,6 +53,10 @@ func (b *syncBuffer) String() string {
 func newReloadHarness(t *testing.T) *reloadHarness {
 	t.Helper()
 	h := newHarness(t)
+	// The reload path folds the environment over the file, so a developer's
+	// exported TICKETS_DIR would otherwise replace the harness's own store.
+	t.Setenv(config.TicketsDirEnvVar, "")
+	t.Setenv(config.LegacyTicketsDirEnvVar, "")
 	rh := &reloadHarness{
 		testHarness: h,
 		configPath:  filepath.Join(t.TempDir(), "config.yaml"),
@@ -172,6 +176,7 @@ func (h *reloadHarness) newDaemonWithConfig(t *testing.T, content string, opts .
 	h.writeConfig(t, content)
 	cfg, err := config.Load(h.configPath)
 	require.NoError(t, err, "initial config must load")
+	cfg.ApplyEnvOverrides()
 	cfg.ApplyServerEnvOverrides()
 
 	base := make([]Option, 0, 7+len(opts))
@@ -809,4 +814,26 @@ func waitForConfig(t *testing.T, d *Daemon, timeout time.Duration, pred func(*co
 		time.Sleep(25 * time.Millisecond)
 	}
 	t.Fatalf("timed out waiting for the config to reload (branch_prefix=%q)", d.config().BranchPrefix)
+}
+
+// TestReload_TicketsDirEnvBeatsFileEdit locks in the order: the environment is
+// folded over the file before the restart-only pin, so both sides of the pin see
+// the same value and editing tickets_dir on disk changes nothing and warns about
+// nothing.
+func TestReload_TicketsDirEnvBeatsFileEdit(t *testing.T) {
+	h := newReloadHarness(t)
+	envDir := t.TempDir()
+	t.Setenv(config.TicketsDirEnvVar, envDir)
+
+	d := h.newDaemonWithConfig(t, h.yaml(configOpts{}))
+	require.Equal(t, envDir, d.config().TicketsDir, "the environment must win at startup")
+
+	otherDir := t.TempDir()
+	changed := strings.Replace(h.yaml(configOpts{}), "tickets_dir: "+h.tasksDir, "tickets_dir: "+otherDir, 1)
+	h.writeConfig(t, changed)
+	require.NoError(t, d.reloadConfig())
+
+	assert.Equal(t, envDir, d.config().TicketsDir)
+	assert.NotContains(t, h.logBuf.String(), "tickets_dir",
+		"both sides of the pin see the environment's value, so there is nothing to warn about")
 }

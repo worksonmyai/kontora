@@ -41,7 +41,9 @@ func (d *Daemon) reloadConfig() error {
 		return err
 	}
 	// Same order as startup: the file, then the environment, then the
-	// command-line overrides.
+	// command-line overrides. The environment runs before the restart-only pin
+	// below, so the pin still compares like with like.
+	next.ApplyEnvOverrides()
 	next.ApplyServerEnvOverrides()
 	if d.configOverride != nil {
 		d.configOverride(next)

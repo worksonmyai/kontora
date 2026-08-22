@@ -78,6 +78,65 @@ func TestApplyServerEnvOverridesBlankKeepsConfigToken(t *testing.T) {
 	assert.Equal(t, "from-file", cfg.Web.Token)
 }
 
+func TestApplyEnvOverridesTicketsDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	cases := []struct {
+		name       string
+		kontoraEnv string
+		legacyEnv  string
+		cfgDir     string
+		wantDir    string
+		wantSource string
+	}{
+		{"both blank keeps the file", "", "", "/from/file", "/from/file", ""},
+		{"kontora var alone", "/from/kontora", "", "/from/file", "/from/kontora", TicketsDirEnvVar},
+		{"legacy var alone", "", "/from/legacy", "/from/file", "/from/legacy", LegacyTicketsDirEnvVar},
+		{"kontora beats legacy", "/from/kontora", "/from/legacy", "/from/file", "/from/kontora", TicketsDirEnvVar},
+		{"blank kontora falls through", "   ", "/from/legacy", "/from/file", "/from/legacy", LegacyTicketsDirEnvVar},
+		{"tilde is expanded", "~/store", "", "/from/file", filepath.Join(home, "store"), TicketsDirEnvVar},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Both are always set, so an exported value cannot leak in.
+			t.Setenv(TicketsDirEnvVar, tc.kontoraEnv)
+			t.Setenv(LegacyTicketsDirEnvVar, tc.legacyEnv)
+
+			cfg := &Config{TicketsDir: tc.cfgDir}
+			got := cfg.ApplyEnvOverrides()
+
+			assert.Equal(t, tc.wantSource, got)
+			assert.Equal(t, tc.wantDir, cfg.TicketsDir)
+		})
+	}
+}
+
+func TestSetTicketsDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	cases := []struct {
+		name string
+		dir  string
+		want string
+	}{
+		{"empty leaves the config alone", "", "/from/file"},
+		{"whitespace leaves the config alone", "  ", "/from/file"},
+		{"a path wins", "/from/flag", "/from/flag"},
+		{"tilde is expanded", "~/store", filepath.Join(home, "store")},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &Config{TicketsDir: "/from/file"}
+			cfg.SetTicketsDir(tc.dir)
+			assert.Equal(t, tc.want, cfg.TicketsDir)
+		})
+	}
+}
+
 func TestAutoPickUpExplicitFalse(t *testing.T) {
 	input := `
 auto_pick_up: false
@@ -162,6 +221,9 @@ func TestLoadInvalidOnFailure(t *testing.T) {
 	require.ErrorContains(t, err, "invalid on_failure")
 }
 
+// Load applies the default and nothing else. That it passes with TICKETS_DIR
+// exported is the point: the environment overlay is an explicit ApplyEnvOverrides
+// call at the entry points, never a side effect of loading.
 func TestLoadMissingTicketsDir(t *testing.T) {
 	cfg, err := Load("testdata/missing_tickets_dir.yaml")
 	require.NoError(t, err)

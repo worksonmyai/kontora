@@ -91,6 +91,7 @@ type Config struct {
 	WorktreesDir        string              `yaml:"worktrees_dir"`
 	LogsDir             string              `yaml:"logs_dir"`
 	Editor              string              `yaml:"editor"`
+	Pager               string              `yaml:"pager"`
 	DefaultAgent        string              `yaml:"default_agent"`
 	MaxConcurrentAgents int                 `yaml:"max_concurrent_agents"`
 	AutoPickUp          *bool               `yaml:"auto_pick_up"`
@@ -604,6 +605,41 @@ const ServerTokenEnvVar = "KONTORA_WEB_TOKEN"
 func (c *Config) ApplyServerEnvOverrides() {
 	if v := strings.TrimSpace(os.Getenv(ServerTokenEnvVar)); v != "" {
 		c.Web.Token = v
+	}
+}
+
+// TicketsDirEnvVar overrides tickets_dir for every kontora process, not just the
+// daemon: a shell that exports it must get the same store from `kontora ls` and
+// from the `kontora note` an agent runs inside a worktree.
+const TicketsDirEnvVar = "KONTORA_TICKETS_DIR"
+
+// LegacyTicketsDirEnvVar is the unprefixed name the standalone `ticket` CLI
+// used. Honoured second, so a shell that still exports it keeps working during a
+// migration and KONTORA_TICKETS_DIR wins when both are set.
+const LegacyTicketsDirEnvVar = "TICKETS_DIR"
+
+// ApplyEnvOverrides folds the process-wide environment over a loaded config and
+// returns the variable that set tickets_dir, or "" when the file's value stands.
+//
+// It is deliberately not called from LoadReader. LoadReader also parses config
+// text that is only being validated, and this package's own tests would start
+// reading whatever the developer exported.
+func (c *Config) ApplyEnvOverrides() string {
+	for _, name := range []string{TicketsDirEnvVar, LegacyTicketsDirEnvVar} {
+		if v := strings.TrimSpace(os.Getenv(name)); v != "" {
+			c.TicketsDir = ExpandTilde(v)
+			return name
+		}
+	}
+	return ""
+}
+
+// SetTicketsDir applies a command-line tickets dir, which outranks both the
+// environment and the file. A blank value leaves the config alone, so callers
+// can pass an unset flag straight through.
+func (c *Config) SetTicketsDir(dir string) {
+	if v := strings.TrimSpace(dir); v != "" {
+		c.TicketsDir = ExpandTilde(v)
 	}
 }
 

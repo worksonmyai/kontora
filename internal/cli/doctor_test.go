@@ -10,7 +10,17 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/worksonmyai/kontora/internal/config"
 )
+
+// noTicketsDirEnv keeps a developer's exported TICKETS_DIR out of Doctor, which
+// folds the environment over the config the way every CLI verb does.
+func noTicketsDirEnv(t *testing.T) {
+	t.Helper()
+	t.Setenv(config.TicketsDirEnvVar, "")
+	t.Setenv(config.LegacyTicketsDirEnvVar, "")
+}
 
 func writeValidConfig(t *testing.T, dir string) string {
 	t.Helper()
@@ -35,6 +45,7 @@ pipelines:
 }
 
 func TestDoctor_ValidConfig(t *testing.T) {
+	noTicketsDirEnv(t)
 	dir := t.TempDir()
 	configPath := writeValidConfig(t, dir)
 
@@ -60,6 +71,7 @@ func TestDoctor_ConfigMissing(t *testing.T) {
 }
 
 func TestDoctor_ConfigInvalid(t *testing.T) {
+	noTicketsDirEnv(t)
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "config.yaml")
 	require.NoError(t, os.WriteFile(configPath, []byte("invalid: {{{"), 0o644))
@@ -74,6 +86,7 @@ func TestDoctor_ConfigInvalid(t *testing.T) {
 }
 
 func TestDoctor_DirMissing(t *testing.T) {
+	noTicketsDirEnv(t)
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "config.yaml")
 	content := fmt.Sprintf(`tickets_dir: %s/nonexistent/tickets
@@ -105,6 +118,7 @@ pipelines:
 }
 
 func TestDoctor_AgentBinaryMissing(t *testing.T) {
+	noTicketsDirEnv(t)
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "config.yaml")
 	content := `agents:
@@ -134,6 +148,7 @@ pipelines:
 }
 
 func TestDoctor_WebPortBound(t *testing.T) {
+	noTicketsDirEnv(t)
 	// Bind a port.
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
@@ -176,6 +191,7 @@ pipelines:
 }
 
 func TestDoctor_ProjectPaths(t *testing.T) {
+	noTicketsDirEnv(t)
 	repo := initTestRepo(t)
 	notARepo := t.TempDir()
 
@@ -228,6 +244,7 @@ projects:
 }
 
 func TestDoctor_WarningsAreCounted(t *testing.T) {
+	noTicketsDirEnv(t)
 	// A missing directory is a warning, so the closing line must not claim a
 	// clean bill of health.
 	dir := t.TempDir()
@@ -254,4 +271,39 @@ pipelines:
 	var buf bytes.Buffer
 	require.NoError(t, Doctor(configPath, &buf))
 	assert.Regexp(t, `All checks passed, with \d+ warning`, buf.String())
+}
+
+func TestDoctor_ReportsTicketsDirSource(t *testing.T) {
+	envDir := t.TempDir()
+
+	cases := []struct {
+		name       string
+		env        string
+		wantSource bool
+	}{
+		{name: "config value stands", env: ""},
+		{name: "environment overrides the config", env: envDir, wantSource: true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(config.TicketsDirEnvVar, tc.env)
+			t.Setenv(config.LegacyTicketsDirEnvVar, "")
+
+			configPath := writeValidConfig(t, t.TempDir())
+
+			var buf bytes.Buffer
+			require.NoError(t, Doctor(configPath, &buf))
+			out := buf.String()
+
+			if !tc.wantSource {
+				assert.NotContains(t, out, config.TicketsDirEnvVar)
+				return
+			}
+			assert.Contains(t, out, envDir)
+			assert.Contains(t, out, config.TicketsDirEnvVar)
+			assert.Contains(t, out, "Tickets dir conflict")
+			assert.Regexp(t, `All checks passed, with \d+ warning`, out)
+		})
+	}
 }

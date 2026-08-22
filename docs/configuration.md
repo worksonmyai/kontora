@@ -152,12 +152,13 @@ pipelines:
 
 | Field | Required | Default | Description |
 |-------|----------|---------|-------------|
-| `tickets_dir` | no | `~/.kontora/tickets` | Directory containing ticket markdown files. |
+| `tickets_dir` | no | `~/.kontora/tickets` | Directory containing ticket markdown files. Overridden by `$TICKETS_DIR`, then `$KONTORA_TICKETS_DIR`, then `--tickets-dir`: for this one field the environment beats the file (see [environment variables](cli.md#environment-variables)). |
 | `branch_prefix` | no | `kontora` | Git branch prefix. A project can override it (see [projects](#projects)). |
 | `branch_naming` | no | `mode: slug` | How the daemon names a ticket with an empty `branch` field (see [branch naming](#branch-naming)). |
 | `worktrees_dir` | no | `~/.kontora/worktrees` | Where git worktrees are created. |
 | `logs_dir` | no | `~/.kontora/logs` | Where agent output logs are stored. |
 | `editor` | no | `$EDITOR` or `vi` | Editor for `kontora edit`. Falls back to `$EDITOR`, then `vi`. |
+| `pager` | no | none | Pager for `kontora view`, `logs` and `activity`, split on whitespace. Used only when stdout is a terminal. `$KONTORA_PAGER`, `$TICKET_PAGER` and `$PAGER` all outrank it, and it has no effect in remote mode, which reads no config. |
 | `default_agent` | no | (inferred) | Agent used for tickets without a pipeline. Defaults to `claude` if an agent with that name exists, otherwise inferred when there is exactly one agent. Must be set explicitly when multiple agents are defined and none is named `claude`. |
 | `max_concurrent_agents` | no | `3` | Maximum number of agents running simultaneously. |
 | `instance_name` | no | `os.Hostname()` | Identifies this daemon when several run against one synced `tickets_dir`. Written to a ticket's `claimed_by` on pickup so daemons don't steal or kill each other's work (see [multi-machine tickets](tickets.md#running-on-multiple-machines)). Falls back to `default` if the hostname can't be read. Two machines that share a hostname must set this explicitly, or the protection can't tell them apart. |
@@ -900,6 +901,12 @@ size, the HTTP listener, and the metric exporter are all fixed by then. A
 reload keeps the running value and logs one warning per field that differs on
 disk, naming the field, the running value, and the value it ignored. The
 `web.token` and `metrics.headers` values are never logged.
+
+A reload resolves `tickets_dir` from the environment before that check, the same
+way startup does. So a daemon started with `$KONTORA_TICKETS_DIR` or
+`$TICKETS_DIR` set keeps that store across reloads, and editing `tickets_dir` in
+the file changes nothing and warns about nothing: the environment already
+outranked the file on both sides of the comparison.
 
 To rename `tmux_session`, stop the daemon, run `tmux kill-session -t =<old-name>`,
 then start it with the new name. The old session is not renamed for you, and it

@@ -36,28 +36,44 @@ func Doctor(configPath string, w io.Writer) error {
 
 	// 1. Config file exists and parses.
 	cfg, err := config.Load(configPath)
+	var ticketsDirEnv, ticketsDirFile string
 	if err != nil {
 		check("FAIL", "Config", err.Error())
 		cfg = nil
 	} else {
 		check("OK", "Config", configPath)
+		// The environment outranks the file for tickets_dir, so record what the
+		// file said before folding it in: this is the one setting that can move
+		// under the user without the config showing it.
+		ticketsDirFile = config.ExpandTilde(cfg.TicketsDir)
+		ticketsDirEnv = cfg.ApplyEnvOverrides()
 	}
 
 	// 2. Directories (warn only — auto-created on use).
 	if cfg != nil {
+		ticketsDetail := ""
+		if ticketsDirEnv != "" {
+			ticketsDetail = fmt.Sprintf(" (from $%s, overriding config)", ticketsDirEnv)
+		}
 		for _, dir := range []struct {
-			name string
-			path string
+			name   string
+			path   string
+			detail string
 		}{
-			{"Tickets dir", config.ExpandTilde(cfg.TicketsDir)},
-			{"Logs dir", config.ExpandTilde(cfg.LogsDir)},
-			{"Worktrees dir", config.ExpandTilde(cfg.WorktreesDir)},
+			{"Tickets dir", config.ExpandTilde(cfg.TicketsDir), ticketsDetail},
+			{"Logs dir", config.ExpandTilde(cfg.LogsDir), ""},
+			{"Worktrees dir", config.ExpandTilde(cfg.WorktreesDir), ""},
 		} {
 			if info, err := os.Stat(dir.path); err == nil && info.IsDir() {
-				check("OK", dir.name, dir.path)
+				check("OK", dir.name, dir.path+dir.detail)
 			} else {
-				check("WARN", dir.name, fmt.Sprintf("%s (will be auto-created)", dir.path))
+				check("WARN", dir.name, fmt.Sprintf("%s%s (will be auto-created)", dir.path, dir.detail))
 			}
+		}
+		if ticketsDirEnv != "" && ticketsDirFile != config.ExpandTilde(cfg.TicketsDir) {
+			check("WARN", "Tickets dir conflict", fmt.Sprintf(
+				"$%s points at %s, but the config says %s. Every command reads the first; a daemon that cannot see the variable reads the second.",
+				ticketsDirEnv, config.ExpandTilde(cfg.TicketsDir), ticketsDirFile))
 		}
 	}
 

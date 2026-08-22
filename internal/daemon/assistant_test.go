@@ -38,6 +38,10 @@ type spawnedTurn struct {
 type stubTurns struct {
 	turns   chan spawnedTurn
 	session string
+	// claudeDir stands in for CLAUDE_CONFIG_DIR. When it is set the spawner
+	// writes the session file claude would have written, so the next turn finds
+	// something to resume.
+	claudeDir string
 	// before runs inside the spawner, so a test can drive the gate while the
 	// turn is still in flight.
 	before func(ctx context.Context, p TurnParams)
@@ -52,6 +56,15 @@ func (s *stubTurns) spawn(ctx context.Context, p TurnParams) (string, error) {
 			return "", err
 		}
 		if err := os.WriteFile(filepath.Join(dir, "s.jsonl"), []byte(s.session), 0o644); err != nil {
+			return "", err
+		}
+	}
+	if id := flagValue(p.Args, "--session-id"); id != "" && s.claudeDir != "" {
+		dir := filepath.Join(s.claudeDir, "projects", "p")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return "", err
+		}
+		if err := os.WriteFile(filepath.Join(dir, id+".jsonl"), []byte("{}\n"), 0o644); err != nil {
 			return "", err
 		}
 	}
@@ -170,30 +183,62 @@ func TestAssistantTurnTapeAndResume(t *testing.T) {
 }
 
 func TestAssistantClaudeTurnResumes(t *testing.T) {
-	h := newHarness(t)
-	stub := &stubTurns{turns: make(chan spawnedTurn, 4)}
-	d := h.newDaemon(h.assistantConfig("claude"), WithTurnSpawner(stub.spawn))
+	cases := []struct {
+		name string
+		// wroteSession is whether the first turn got as far as creating the
+		// session file.
+		wroteSession bool
+	}{
+		{name: "the second turn resumes what the first opened", wroteSession: true},
+		// A first turn that dies before claude runs, as it did when the daemon
+		// could not resolve the binary, writes no session. Resuming that id
+		// fails with "No conversation found" and would go on failing for every
+		// later message, so the thread opens the session instead.
+		{name: "a session the first turn never wrote is opened, not resumed", wroteSession: false},
+	}
 
-	thread, err := d.CreateAssistantThread(web.CreateAssistantThreadRequest{})
-	require.NoError(t, err)
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			h := newHarness(t)
+			claudeDir := filepath.Join(t.TempDir(), "claude")
+			stub := &stubTurns{turns: make(chan spawnedTurn, 4)}
+			if c.wroteSession {
+				stub.claudeDir = claudeDir
+			}
+			cfg := h.assistantConfig("claude")
+			cfg.Environment = map[string]string{"CLAUDE_CONFIG_DIR": claudeDir}
+			d := h.newDaemon(cfg, WithTurnSpawner(stub.spawn))
 
-	require.NoError(t, d.PostAssistantMessage(thread.ID, web.AssistantMessageRequest{Text: "one"}))
-	first := stub.next(t)
-	waitIdle(t, d, thread.ID)
+			thread, err := d.CreateAssistantThread(web.CreateAssistantThreadRequest{})
+			require.NoError(t, err)
 
-	sessionID := flagValue(first.args, "--session-id")
-	require.NotEmpty(t, sessionID)
-	assert.NotContains(t, first.args, "-r")
-	assert.Contains(t, first.args, "--settings")
-	joined := strings.Join(first.args, " ")
-	assert.Contains(t, joined, "--print --output-format stream-json --verbose")
-	assert.Contains(t, first.args, h.logsDir, "the run logs have to be readable from the tickets dir")
+			require.NoError(t, d.PostAssistantMessage(thread.ID, web.AssistantMessageRequest{Text: "one"}))
+			first := stub.next(t)
+			waitIdle(t, d, thread.ID)
 
-	require.NoError(t, d.PostAssistantMessage(thread.ID, web.AssistantMessageRequest{Text: "two"}))
-	second := stub.next(t)
-	waitIdle(t, d, thread.ID)
-	assert.Equal(t, sessionID, flagValue(second.args, "-r"))
-	assert.NotContains(t, second.args, "--session-id")
+			sessionID := flagValue(first.args, "--session-id")
+			require.NotEmpty(t, sessionID)
+			assert.NotContains(t, first.args, "-r")
+			assert.Contains(t, first.args, "--settings")
+			joined := strings.Join(first.args, " ")
+			assert.Contains(t, joined, "--print --output-format stream-json --verbose")
+			assert.Contains(t, first.args, h.logsDir, "the run logs have to be readable from the tickets dir")
+
+			require.NoError(t, d.PostAssistantMessage(thread.ID, web.AssistantMessageRequest{Text: "two"}))
+			second := stub.next(t)
+			waitIdle(t, d, thread.ID)
+
+			if c.wroteSession {
+				assert.Equal(t, sessionID, flagValue(second.args, "-r"))
+				assert.NotContains(t, second.args, "--session-id")
+				return
+			}
+			// The same id, so the thread keeps its identity and recovers on the
+			// next message rather than staying broken.
+			assert.Equal(t, sessionID, flagValue(second.args, "--session-id"))
+			assert.NotContains(t, second.args, "-r")
+		})
+	}
 }
 
 // gateHarness stands in for the agent's tool boundary: the stub spawner asks

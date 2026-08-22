@@ -503,7 +503,11 @@ func (d *Daemon) PostAssistantMessage(id string, req web.AssistantMessageRequest
 	if thread.SessionID == "" {
 		thread.SessionID = newSessionID()
 	}
-	resume := thread.Turns > 0
+	// The session file on disk decides, not the turn counter. A turn that dies
+	// before the agent writes one leaves nothing to resume, and claude answers
+	// -r on a session it never created with "No conversation found", which
+	// would fail every later message in the thread.
+	resume := thread.Turns > 0 && d.assistantSessionPath(cfg, thread) != ""
 	thread.Turns++
 	if thread.Turns == 1 {
 		thread.Title = assistant.Title(text)

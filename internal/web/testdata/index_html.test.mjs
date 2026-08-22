@@ -10,6 +10,7 @@ const htmlPath = path.join(dirname, "../static/index.html");
 const appPath = path.join(dirname, "../static/app.js");
 const settingsPath = path.join(dirname, "../static/settings.js");
 const statsPath = path.join(dirname, "../static/stats.js");
+const tipsPath = path.join(dirname, "../static/tips.js");
 
 // recomputeBoard builds its column buckets with array literals created inside
 // the VM realm, so their prototype differs from this file's Array and
@@ -537,6 +538,12 @@ test("head scripts are deferred, with Alpine after the libraries it uses", () =>
   const sortable = order.findIndex((s) => s.includes("sortablejs"));
   assert.ok(sortable >= 0 && alpine >= 0, "expected both Alpine and Sortable");
   assert.ok(sortable < alpine, "Sortable must load before Alpine starts");
+
+  // theme.js is the exception: deferring it would let the page paint in the
+  // wrong palette before data-theme is set.
+  const theme = tags.find((m) => m[2] === "/theme.js");
+  assert.ok(theme, "expected /theme.js in <head>");
+  assert.ok(!theme[1].includes("defer"), "/theme.js must run before first paint");
 });
 
 // xterm is the one vendored library the board never needs. Its stylesheet is
@@ -7482,14 +7489,15 @@ test("the summary prose write re-runs when the commit list lands", () => {
 
 test("the entity hover card is a third tip instance that stops under reduced motion", () => {
   const html = fs.readFileSync(htmlPath, "utf8");
+  const tips = fs.readFileSync(tipsPath, "utf8");
 
   assert.match(html, /<div id="global-tip-e">/);
-  assert.match(html, /setupTip\('global-tip-e', '\[data-tip-e\]', 'data-tip-e'/);
+  assert.match(tips, /setupTip\('global-tip-e', '\[data-tip-e\]', 'data-tip-e'/);
   // Left-aligned to the entity, 12px off either window edge, flipped below
   // when it does not fit above.
-  assert.match(html, /if \(left < 12\) left = 12;/);
-  assert.match(html, /if \(left \+ tw > window\.innerWidth - 12\)/);
-  assert.match(html, /if \(top < 8\) top = r\.bottom \+ 10;/);
+  assert.match(tips, /if \(left < 12\) left = 12;/);
+  assert.match(tips, /if \(left \+ tw > window\.innerWidth - 12\)/);
+  assert.match(tips, /if \(top < 8\) top = r\.bottom \+ 10;/);
   // After the rule it overrides, not in the reduced-motion block near the top:
   // one id selector loses to a later id selector whatever the media query says.
   const reduced = html.indexOf("#global-tip-e { transition: none; transform: none; }");
@@ -7501,18 +7509,19 @@ test("the entity hover card is a third tip instance that stops under reduced mot
 
 test("the hover card's title splits into a coloured tag and the name", () => {
   const html = fs.readFileSync(htmlPath, "utf8");
+  const tips = fs.readFileSync(tipsPath, "utf8");
 
   // A real space between the two spans, the only place the title can wrap
   // between them: the card has a max-width and no overflow-wrap.
   assert.match(html, /<span class="tip-e-title"><span class="tip-e-tag"><\/span> <span class="tip-e-name"><\/span><\/span>/);
   // The tag goes in the first child of the title span, the name in the second,
   // so children[1] and children[2] still address the body and the hint.
-  assert.match(html, /title\.children\[0\]\.textContent = tag;/);
-  assert.match(html, /title\.children\[0\]\.style\.display = tag \? '' : 'none';/);
-  assert.match(html, /title\.children\[1\]\.textContent = trig\.getAttribute\('data-tip-e'\);/);
+  assert.match(tips, /title\.children\[0\]\.textContent = tag;/);
+  assert.match(tips, /title\.children\[0\]\.style\.display = tag \? '' : 'none';/);
+  assert.match(tips, /title\.children\[1\]\.textContent = trig\.getAttribute\('data-tip-e'\);/);
   // The card is a body-level node with no tagged ancestor, so the hue is
   // mirrored onto it, unconditionally, or it leaks into the next hover.
-  assert.match(html, /el\.setAttribute\('data-pipe-color', trig\.getAttribute\('data-tip-e-tag-color'\) \|\| 'none'\);/);
+  assert.match(tips, /el\.setAttribute\('data-pipe-color', trig\.getAttribute\('data-tip-e-tag-color'\) \|\| 'none'\);/);
   assert.match(html, /#global-tip-e \.tip-e-tag \{ color: hsl\(var\(--pipe-h, 240 10% 55%\)\); white-space: nowrap; \}/);
 });
 

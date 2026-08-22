@@ -254,7 +254,7 @@ func TestReload_PinsRestartOnlyFields(t *testing.T) {
 	changed = strings.Replace(changed, "max_concurrent_agents: 4", "max_concurrent_agents: 8", 1)
 	changed = strings.Replace(changed, "instance_name: test-instance", "instance_name: other-instance", 1)
 	changed = strings.Replace(changed, "tmux_session: kontora-test", "tmux_session: kontora-other", 1)
-	changed = strings.Replace(changed, "  enabled: false", "  enabled: false\n  host: 0.0.0.0\n  port: 9090\n  token: secret", 1)
+	changed = strings.Replace(changed, "  enabled: false", "  enabled: false\n  host: 0.0.0.0\n  port: 9090\n  token: secret\n  allowed_hosts: [kontora.example]", 1)
 
 	h.writeConfig(t, changed)
 	require.NoError(t, d.reloadConfig())
@@ -274,7 +274,7 @@ func TestReload_PinsRestartOnlyFields(t *testing.T) {
 	logs := h.logBuf.String()
 	for _, field := range []string{
 		"tickets_dir", "worktrees_dir", "logs_dir", "instance_name", "tmux_session",
-		"max_concurrent_agents", "web.host", "web.port", "web.token",
+		"max_concurrent_agents", "web.host", "web.port", "web.token", "web.allowed_hosts",
 		"metrics.enabled", "metrics.endpoint", "metrics.headers", "metrics.interval", "metrics.insecure",
 	} {
 		assert.Contains(t, logs, "field="+field, "expected a restart-only warning for %s", field)

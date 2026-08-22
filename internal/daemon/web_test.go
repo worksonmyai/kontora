@@ -701,7 +701,7 @@ func TestDaemon_WebServerAPI(t *testing.T) {
 	time.Sleep(300 * time.Millisecond)
 
 	// Create our own web server pointing at the daemon.
-	srv := web.New(d, d.broker, "127.0.0.1", 0, "", d.tmuxSession, testLogger(t))
+	srv := web.New(d, d.broker, "127.0.0.1", 0, "", nil, d.tmuxSession, testLogger(t))
 	require.NoError(t, srv.Start())
 	defer func() { _ = srv.Shutdown(context.Background()) }()
 
@@ -1124,7 +1124,7 @@ created: 2026-01-01T00:00:00Z
 	require.NoError(t, err)
 	d.tickets["tst-rinit"] = newTicketState(tk, path)
 
-	srv := web.New(d, d.broker, "127.0.0.1", 0, "", d.tmuxSession, testLogger(t))
+	srv := web.New(d, d.broker, "127.0.0.1", 0, "", nil, d.tmuxSession, testLogger(t))
 	require.NoError(t, srv.Start())
 	defer func() { _ = srv.Shutdown(context.Background()) }()
 

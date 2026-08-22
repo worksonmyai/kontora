@@ -22,6 +22,8 @@ func TestServer_VendoredAssets(t *testing.T) {
 		wantType string
 	}{
 		{"/app.css", "text/css"},
+		{"/theme.js", "javascript"},
+		{"/tips.js", "javascript"},
 		{"/settings.js", "javascript"},
 		{"/stats.js", "javascript"},
 		{"/vendor/yaml@2.8.1/yaml.mjs", "javascript"},
@@ -64,5 +66,28 @@ func TestServer_NoExternalAssets(t *testing.T) {
 
 	for _, host := range []string{"cdn.tailwindcss.com", "cdn.jsdelivr.net", "fonts.googleapis.com", "fonts.gstatic.com"} {
 		assert.False(t, strings.Contains(html, host), "index.html still references external host %q", host)
+	}
+}
+
+// TestServer_NoInlineScript keeps the document servable under script-src 'self'.
+// Every script the page needs has to be its own file: the CSP carries no nonce,
+// because the assets are compressed once at startup and rewriting the document
+// per request would give up the ETag.
+func TestServer_NoInlineScript(t *testing.T) {
+	srv := newTestServer(t)
+
+	resp, err := http.Get("http://" + srv.Addr() + "/")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+
+	// "</script>" does not contain the separator, so every piece but the first
+	// starts at the attributes of an opening tag.
+	pieces := strings.Split(string(body), "<script")
+	require.Greater(t, len(pieces), 1, "index.html loads no scripts at all")
+	for _, piece := range pieces[1:] {
+		attrs, _, _ := strings.Cut(piece, ">")
+		assert.Contains(t, attrs, "src=", "index.html carries an inline script element")
 	}
 }

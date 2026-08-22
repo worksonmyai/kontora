@@ -24,7 +24,7 @@ When the web server is enabled, the following endpoints are exposed:
 | `POST /api/tickets/{id}/link` | Relate the ticket to each id in `{"related": [...]}`, on both sides. |
 | `POST /api/tickets/{id}/unlink` | Remove the relation between the ticket and each id in `{"related": [...]}`. |
 | `PUT /api/tickets/{id}` | Update an open ticket's body or frontmatter fields (`body`, `pipeline`, `path`, `agent`, `branch`, `base_branch`). |
-| `POST /api/tickets/upload` | Import tickets from raw `.md` file content (multipart form). |
+| `POST /api/tickets/upload` | Import tickets from raw `.md` file content (multipart form). Requires `X-Kontora-Confirm: upload-tickets`. |
 | `POST /api/tickets/{id}/plannotator-review` | Open the ticket's branch diff in Plannotator. Only in `human_review`. Submitted feedback routes the ticket to the built-in rework stage. See [plannotator](configuration.md#plannotator). |
 | `POST /api/tickets/{id}/plannotator-annotate` | Open the ticket's own markdown in Plannotator. Only in `open`. Submitted annotations set `kontora: true` and schedule a run that rewrites the ticket. |
 | `GET /api/events` | Server-Sent Events stream of ticket updates. |

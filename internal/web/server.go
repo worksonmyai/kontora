@@ -22,9 +22,14 @@ type Server struct {
 	token       string
 	tmuxSession string
 	assets      map[string]*staticAsset
+
+	// wsPatterns is the resolved Host allowlist spelled the way
+	// coder/websocket matches origins.
+	wsPatterns []string
 }
 
-func New(svc TicketService, broker *SSEBroker, host string, port int, token, tmuxSession string, log *slog.Logger) *Server {
+func New(svc TicketService, broker *SSEBroker, host string, port int, token string, allowedHosts []string, tmuxSession string, log *slog.Logger) *Server {
+	resolved := resolveAllowedHosts(host, allowedHosts)
 	s := &Server{
 		svc:         svc,
 		broker:      broker,
@@ -32,6 +37,7 @@ func New(svc TicketService, broker *SSEBroker, host string, port int, token, tmu
 		token:       token,
 		tmuxSession: tmuxSession,
 		assets:      loadAssets(),
+		wsPatterns:  wsOriginPatterns(resolved),
 	}
 
 	mux := http.NewServeMux()
@@ -72,7 +78,7 @@ func New(svc TicketService, broker *SSEBroker, host string, port int, token, tmu
 
 	s.httpSrv = &http.Server{
 		Addr:              fmt.Sprintf("%s:%d", host, port),
-		Handler:           authMiddleware(s.token, gzipMiddleware(mux)),
+		Handler:           securityMiddleware(resolved, authMiddleware(s.token, gzipMiddleware(mux))),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	return s

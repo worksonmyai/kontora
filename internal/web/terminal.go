@@ -52,7 +52,7 @@ func (s *Server) handleTerminalWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	conn, err := websocket.Accept(w, r, nil)
+	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{OriginPatterns: s.wsPatterns})
 	if err != nil {
 		s.log.Error("websocket accept failed", "err", err)
 		return

@@ -583,7 +583,21 @@ func (d *Daemon) Run(ctx context.Context) error {
 	d.log.Info("daemon started", "dir", tasksDir, "tasks", len(d.tickets), "queued", d.queue.Len(), "tmux_session", d.tmuxSession)
 
 	if cfg.Web.Enabled != nil && *cfg.Web.Enabled {
-		srv := web.New(d, d.broker, cfg.Web.Host, cfg.Web.Port, cfg.Web.Token, d.tmuxSession, d.log)
+		if cfg.Web.Token == "" && !web.LoopbackHost(cfg.Web.Host) {
+			// The origin checks stop a browser on another site and a rebound
+			// hostname. They do not stop a direct client on the network, and
+			// agents run with --dangerously-skip-permissions.
+			d.log.Warn("web server is reachable off this machine with no token; anyone who can reach it can start agents",
+				"host", cfg.Web.Host, "port", cfg.Web.Port)
+		}
+		if web.UnspecifiedHost(cfg.Web.Host) && len(cfg.Web.AllowedHosts) == 0 {
+			// A wildcard bind is not a name a client can send in Host, so it
+			// is not an allowed host. Every address this daemon is then
+			// reached at, other than loopback and its own hostname, gets a 403.
+			d.log.Warn("web server binds every interface but answers only to loopback and this machine's hostname; list any other name or address you reach it by in web.allowed_hosts",
+				"host", cfg.Web.Host)
+		}
+		srv := web.New(d, d.broker, cfg.Web.Host, cfg.Web.Port, cfg.Web.Token, cfg.Web.AllowedHosts, d.tmuxSession, d.log)
 		if err := srv.Start(); err != nil {
 			d.log.Warn("web server failed to start, continuing without it", "err", err)
 		} else {

@@ -204,6 +204,11 @@ type Web struct {
 	// CLI's own KONTORA_TOKEN is deliberately not folded in here to avoid a
 	// stray env var silently locking down a local daemon.
 	Token string `yaml:"token"`
+	// AllowedHosts extends the set of Host header values the server answers.
+	// Loopback, the configured bind address and the machine hostname are always
+	// accepted; anything else (a tailnet name, a reverse proxy's hostname) has
+	// to be listed here or the request is refused as a DNS rebinding attempt.
+	AllowedHosts []string `yaml:"allowed_hosts"`
 }
 
 type Agent struct {

@@ -1,3 +1,68 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* Theme palettes. They live here rather than in an inline <style> the theme
+   script rewrites, because app.css is render-blocking, so the right palette is
+   in place at first paint and no inline style is needed under the CSP. */
+:root[data-theme="dark"] {
+  --surface-deep:18,20,29;
+  --surface-950:16,18,26;
+  --surface-frame:20,22,31;
+  --surface-rail:24,27,38;
+  --surface-900:28,31,45;
+  --surface-850:35,39,57;
+  --surface-800:30,33,47;
+  --surface-700:42,46,66;
+  --surface-600:109,115,137;
+  --edge-card:44,48,70;
+  --edge-input:46,50,72;
+  --edge-hover:74,80,116;
+  --edge-faint:69,74,97;
+  --accent:139,124,246;
+  --accent-dim:111,99,201;
+  --accent-bright:160,148,255;
+  --accent-fg:20,22,31;
+  --ok:158,206,106;
+  --warn:224,175,104;
+  --err:247,118,142;
+  --review:187,154,247;
+  --tx:221,225,238;
+  --tx-hi:238,240,248;
+  --tx-2:201,206,222;
+  --tx-3:162,168,188;
+  --tx-4:109,115,137;
+  --tx-log:141,147,168;
+  --tx-faint:102,108,131;
+}
+
+:root[data-theme="light"] {
+  --surface-deep:243,244,250;
+  --surface-950:232,234,241;
+  --surface-frame:238,240,246;
+  --surface-rail:244,245,250;
+  --surface-900:255,255,255;
+  --surface-850:240,241,248;
+  --surface-800:246,247,251;
+  --surface-700:212,216,229;
+  --surface-600:138,144,164;
+  --edge-card:220,223,235;
+  --edge-input:205,210,226;
+  --edge-hover:154,162,192;
+  --edge-faint:182,188,207;
+  --accent:107,91,214;
+  --accent-dim:141,128,224;
+  --accent-bright:90,73,200;
+  --accent-fg:255,255,255;
+  --ok:78,127,31;
+  --warn:160,106,20;
+  --err:199,58,85;
+  --review:122,82,209;
+  --tx:46,50,66;
+  --tx-hi:31,35,48;
+  --tx-2:69,74,94;
+  --tx-3:97,103,126;
+  --tx-4:138,144,164;
+  --tx-log:109,115,137;
+  --tx-faint:138,144,164;
+}

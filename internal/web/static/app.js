@@ -1097,7 +1097,11 @@ function kontora() {
       const form = new FormData();
       mdFiles.forEach(f => form.append('files', f));
       try {
-        const res = await fetch('/api/tickets/upload', { method: 'POST', body: form });
+        const res = await fetch('/api/tickets/upload', {
+          method: 'POST',
+          headers: { 'X-Kontora-Confirm': 'upload-tickets' },
+          body: form,
+        });
         const data = await res.json().catch(() => ({}));
         if (!res.ok && data.error) {
           this.error = data.error;

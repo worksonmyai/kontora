@@ -373,6 +373,14 @@ func (s *Server) handleUpdateTicket(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleUploadTickets(w http.ResponseWriter, r *http.Request) {
+	// multipart/form-data is a CORS-simple content type, so unlike the JSON
+	// routes this one is forgeable from another site without a preflight. The
+	// header is not, which is the same reason the delete route asks for one.
+	if r.Header.Get("X-Kontora-Confirm") != "upload-tickets" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing upload confirmation"})
+		return
+	}
+
 	const maxRequestSize = 10 << 20 // 10 MB
 	r.Body = http.MaxBytesReader(w, r.Body, maxRequestSize)
 
@@ -637,6 +645,13 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+// writeJSONError sends an error in the {"error": ...} shape every client
+// parses: the CLI's decodeError and the UI both read that field and otherwise
+// show a bare status code.
+func writeJSONError(w http.ResponseWriter, status int, msg string) {
+	writeJSON(w, status, map[string]string{"error": msg})
 }
 
 func containsNewline(s string) bool {

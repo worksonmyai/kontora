@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"sync"
 
 	"github.com/worksonmyai/kontora/internal/config"
@@ -115,6 +116,9 @@ func pinRestartOnly(cur, next *config.Config, log *slog.Logger) {
 	}
 	if next.Web.Token != cur.Web.Token {
 		warnRedacted("web.token")
+	}
+	if !slices.Equal(next.Web.AllowedHosts, cur.Web.AllowedHosts) {
+		warn("web.allowed_hosts", cur.Web.AllowedHosts, next.Web.AllowedHosts)
 	}
 	next.Web = cur.Web
 

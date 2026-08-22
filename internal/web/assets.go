@@ -156,6 +156,11 @@ func (s *Server) serveAsset(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h := w.Header()
+	if name == "index.html" {
+		// The one response that is a document, so the only one that needs to
+		// load anything. Everything else keeps the baseline policy.
+		h.Set("Content-Security-Policy", documentCSP)
+	}
 	h.Set("Cache-Control", a.cacheControl)
 	body, etag := a.body, a.etag
 	sendGzip := false

@@ -22,25 +22,9 @@
   <script defer src="/vendor/dompurify@3.3.2/purify.min.js"></script>
   <script defer src="/vendor/alpinejs@3.14.8/cdn.min.js"></script>
   <link rel="stylesheet" href="/vendor/fonts/fonts.css">
-  <style id="kontora-theme"></style>
-  <script>
-    function getStoredTheme() {
-      try { return localStorage.getItem('kontora-theme'); } catch (e) { return null; }
-    }
-    function setStoredTheme(t) {
-      try { localStorage.setItem('kontora-theme', t); } catch (e) {}
-    }
-    var kontoraThemeCSS = {
-      dark: ':root{--surface-deep:18,20,29;--surface-950:16,18,26;--surface-frame:20,22,31;--surface-rail:24,27,38;--surface-900:28,31,45;--surface-850:35,39,57;--surface-800:30,33,47;--surface-700:42,46,66;--surface-600:109,115,137;--edge-card:44,48,70;--edge-input:46,50,72;--edge-hover:74,80,116;--edge-faint:69,74,97;--accent:139,124,246;--accent-dim:111,99,201;--accent-bright:160,148,255;--accent-fg:20,22,31;--ok:158,206,106;--warn:224,175,104;--err:247,118,142;--review:187,154,247;--tx:221,225,238;--tx-hi:238,240,248;--tx-2:201,206,222;--tx-3:162,168,188;--tx-4:109,115,137;--tx-log:141,147,168;--tx-faint:102,108,131}',
-      light: ':root{--surface-deep:243,244,250;--surface-950:232,234,241;--surface-frame:238,240,246;--surface-rail:244,245,250;--surface-900:255,255,255;--surface-850:240,241,248;--surface-800:246,247,251;--surface-700:212,216,229;--surface-600:138,144,164;--edge-card:220,223,235;--edge-input:205,210,226;--edge-hover:154,162,192;--edge-faint:182,188,207;--accent:107,91,214;--accent-dim:141,128,224;--accent-bright:90,73,200;--accent-fg:255,255,255;--ok:78,127,31;--warn:160,106,20;--err:199,58,85;--review:122,82,209;--tx:46,50,66;--tx-hi:31,35,48;--tx-2:69,74,94;--tx-3:97,103,126;--tx-4:138,144,164;--tx-log:109,115,137;--tx-faint:138,144,164}'
-    };
-    function applyTheme(t) {
-      document.documentElement.dataset.theme = t;
-      document.documentElement.style.colorScheme = t;
-      document.getElementById('kontora-theme').textContent = kontoraThemeCSS[t];
-    }
-    applyTheme(getStoredTheme() === 'light' ? 'light' : 'dark');
-  </script>
+  <!-- Not deferred: it must set data-theme before first paint, and the
+       palettes it selects between live in app.css. -->
+  <script src="/theme.js"></script>
   <style>
     html { font-size: 17px; }
     html, body { background: rgba(var(--surface-950), 1); color: rgba(var(--tx), 1); }
@@ -739,81 +723,7 @@
     <span class="tip-e-body"></span>
     <span class="tip-e-hint"></span>
   </div>
-  <script>
-    (function() {
-      // fillFn replaces the default single-line text for a tip that has
-      // structure. Clearing the inline transform on hide lets the CSS resting
-      // transform apply again, so the next hover animates in.
-      function setupTip(id, selector, attr, positionFn, fillFn) {
-        var el = document.getElementById(id);
-        var timer;
-        document.addEventListener('mouseenter', function(e) {
-          var trig = e.target.closest(selector);
-          if (!trig) return;
-          var text = trig.getAttribute(attr);
-          if (!text) return;
-          clearTimeout(timer);
-          if (fillFn) fillFn(el, trig); else el.textContent = text;
-          el.style.opacity = '1';
-          el.style.transform = 'none';
-          el.style.left = '0'; el.style.top = '0';
-          positionFn(el, trig.getBoundingClientRect());
-        }, true);
-        document.addEventListener('mouseleave', function(e) {
-          if (!e.target.closest || !e.target.closest(selector)) return;
-          timer = setTimeout(function() { el.style.opacity = '0'; el.style.transform = ''; }, 80);
-        }, true);
-      }
-
-      setupTip('global-tip', '.tip[data-tip]', 'data-tip', function(el, r) {
-        var tw = el.offsetWidth, th = el.offsetHeight;
-        var left = r.left + r.width / 2 - tw / 2;
-        var top = r.top - th - 6;
-        if (left < 4) left = 4;
-        if (left + tw > window.innerWidth - 4) left = window.innerWidth - 4 - tw;
-        if (top < 4) top = r.bottom + 6;
-        el.style.left = left + 'px';
-        el.style.top = top + 'px';
-      });
-
-      setupTip('global-tip-t', '[data-tip-t]', 'data-tip-t', function(el, r) {
-        var tw = el.offsetWidth, th = el.offsetHeight;
-        var left = r.right - tw;
-        var top = r.top - th - 4;
-        if (left < 4) left = 4;
-        if (top < 4) top = r.bottom + 4;
-        el.style.left = left + 'px';
-        el.style.top = top + 'px';
-      });
-
-      // Entity chips in summary prose. Left-aligned to the chip rather than
-      // centred, because the card is wider than the word it describes.
-      setupTip('global-tip-e', '[data-tip-e]', 'data-tip-e', function(el, r) {
-        var tw = el.offsetWidth, th = el.offsetHeight;
-        var left = r.left;
-        var top = r.top - th - 10;
-        if (left < 12) left = 12;
-        if (left + tw > window.innerWidth - 12) left = window.innerWidth - 12 - tw;
-        if (top < 8) top = r.bottom + 10;
-        el.style.left = left + 'px';
-        el.style.top = top + 'px';
-      }, function(el, trig) {
-        var hint = trig.getAttribute('data-tip-e-hint') || '';
-        var tag = trig.getAttribute('data-tip-e-tag') || '';
-        var title = el.children[0];
-        title.children[0].textContent = tag;
-        title.children[0].style.display = tag ? '' : 'none';
-        title.children[1].textContent = trig.getAttribute('data-tip-e');
-        // One card serves every chip, and no chip is an ancestor of it, so the
-        // hue is mirrored here on every hover. A write left out on one branch
-        // leaks the last chip's tag or colour into the next card.
-        el.setAttribute('data-pipe-color', trig.getAttribute('data-tip-e-tag-color') || 'none');
-        el.children[1].textContent = trig.getAttribute('data-tip-e-body') || '';
-        el.children[2].textContent = hint;
-        el.children[2].style.display = hint ? '' : 'none';
-      });
-    })();
-  </script>
+  <script src="/tips.js"></script>
 
   <!-- Error toast -->
   <div x-show="error"

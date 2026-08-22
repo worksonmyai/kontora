@@ -226,6 +226,8 @@ web:
   host: 0.0.0.0
   port: 9090
   token: ""
+  allowed_hosts:
+    - kontora.tailnet.ts.net
 ```
 
 | Field | Required | Default | Description |
@@ -233,7 +235,46 @@ web:
 | `enabled` | no | `true` | Start the web server when the daemon runs. |
 | `host` | no | `127.0.0.1` | Bind address. Set to a tailnet IP to allow remote access. |
 | `port` | no | `8080` | Listen port. |
+| `allowed_hosts` | no | `[]` | Extra `Host` header values the server answers. |
 | `token` | no | `""` | Shared bearer token. When set, `/api/*` and `/ws/*` require it (via `Authorization: Bearer`, a `kontora_token` cookie, or a `token` query param); empty leaves the API open. `GET /health` and the static UI stay public. |
+
+### Host and origin checks
+
+Every request must carry a `Host` header naming this machine: loopback, the
+configured `host`, or the machine's hostname. Anything else is refused with
+`403`, which is what stops a page on another site from reaching the daemon
+after its own DNS re-resolves to `127.0.0.1`. Reaching the UI under any other
+name, a tailnet name or a reverse proxy's hostname, needs that name in
+`allowed_hosts`.
+
+A wildcard bind address (`0.0.0.0` or `::`) is not itself an allowed host: it
+is not a name a client can send. Binding it and then reaching the daemon at
+`http://192.168.1.5:8080` or a tailnet address needs that address in
+`allowed_hosts`. The daemon logs a warning at startup when the bind address is
+a wildcard and `allowed_hosts` is empty.
+
+The daemon also refuses a request whose `Origin` names another site and one
+whose `Sec-Fetch-Site` is cross-site, except a top-level navigation, so a link
+to the UI still opens. A client that sends neither header, the CLI or `curl`,
+is unaffected. Writes that carry a body must be `application/json`; the upload
+route takes `multipart/form-data` and an `X-Kontora-Confirm` header.
+
+Behind a TLS-terminating reverse proxy, forward `X-Forwarded-Proto`. Without it
+the daemon cannot tell which port an `Origin` that omits its own port means, so
+it accepts only the default port of the origin's own scheme. The header also
+decides whether the auth cookie gets its `Secure` flag.
+
+`allowed_hosts` is read at startup only. Changing it needs a daemon restart,
+like the rest of the `web` block.
+
+### Content Security Policy
+
+The UI document is served with a policy that keeps every resource same-origin:
+`script-src 'self'`, `connect-src 'self'`, `img-src 'self' data:`. Third-party
+libraries and fonts are vendored into the binary, so nothing the UI needs is
+external. One user-visible consequence: an `<img>` in a ticket body or note
+pointing at a remote URL does not load. Inline it as a `data:` URI or serve it
+from the daemon.
 
 When a token is set, the CLI can drive the daemon remotely with `KONTORA_URL` and `KONTORA_TOKEN` (see the Remote mode section of the README). The token is the only access control and agents run with `--dangerously-skip-permissions`; a tailnet encrypts the transport, but on untrusted networks put the daemon behind TLS.
 

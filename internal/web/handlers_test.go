@@ -1024,6 +1024,28 @@ func TestHandleUploadTickets_MultipleWithPartialFailure(t *testing.T) {
 	assert.Len(t, result.Errors, 1)
 }
 
+func TestHandleUploadTickets_RequiresConfirmHeader(t *testing.T) {
+	svc := &mockService{}
+	srv := startHandlerTestServer(t, svc)
+
+	var buf bytes.Buffer
+	w := multipart.NewWriter(&buf)
+	part, err := w.CreateFormFile("files", "ticket.md")
+	require.NoError(t, err)
+	_, err = part.Write([]byte("---\nid: upl-001\n---\n# Uploaded\n"))
+	require.NoError(t, err)
+	require.NoError(t, w.Close())
+
+	resp, err := http.Post(fmt.Sprintf("http://%s/api/tickets/upload", srv.Addr()), w.FormDataContentType(), &buf)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	assert.Contains(t, string(body), "missing upload confirmation")
+}
+
 func TestHandleUploadTickets_NoFiles(t *testing.T) {
 	svc := &mockService{}
 	srv := startHandlerTestServer(t, svc)
@@ -1806,7 +1828,7 @@ func startHandlerTestServer(t *testing.T, svc TicketService) *Server {
 
 func startHandlerTestServerWithBroker(t *testing.T, svc TicketService, broker *SSEBroker) *Server {
 	t.Helper()
-	srv := New(svc, broker, "127.0.0.1", 0, "", tmux.DefaultSessionName, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	srv := New(svc, broker, "127.0.0.1", 0, "", nil, tmux.DefaultSessionName, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	require.NoError(t, srv.Start())
 	t.Cleanup(func() { _ = srv.Shutdown(context.Background()) })
 	return srv
@@ -1866,7 +1888,11 @@ func postMultipart(t *testing.T, srv *Server, path string, files map[string][]by
 	}
 	require.NoError(t, w.Close())
 
-	resp, err := http.Post(fmt.Sprintf("http://%s%s", srv.Addr(), path), w.FormDataContentType(), &buf)
+	req, err := http.NewRequest(http.MethodPost, fmt.Sprintf("http://%s%s", srv.Addr(), path), &buf)
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", w.FormDataContentType())
+	req.Header.Set("X-Kontora-Confirm", "upload-tickets")
+	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
 	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body)

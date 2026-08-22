@@ -27,7 +27,7 @@ func authMiddleware(token string, next http.Handler) http.Handler {
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if requiresAuth(r.URL.Path) && !tokenMatches(token, extractToken(r)) {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			writeJSONError(w, http.StatusUnauthorized, "unauthorized: set KONTORA_TOKEN, or open the UI once with ?token=...")
 			return
 		}
 		next.ServeHTTP(w, r)

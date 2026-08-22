@@ -316,7 +316,9 @@ func resolveInitFields(cfg *config.Config, t *ticket.Ticket, req InitRequest) (p
 }
 
 // Init initializes a ticket for daemon processing: sets pipeline, path,
-// kontora=true, status, and stage.
+// kontora=true, status, and stage. A ticket that is already initialized may
+// pass through it again while it sits in open, which rewrites those fields but
+// keeps its stage and attempt count.
 func (s *Service) Init(id string, req InitRequest) (Result, error) {
 	resolved, err := s.repo.Resolve(id)
 	if err != nil {
@@ -328,9 +330,15 @@ func (s *Service) Init(id string, req InitRequest) (Result, error) {
 	}
 
 	t := st.Ticket
-	if t.Kontora {
+	// An initialized ticket may go through init again while it waits in open:
+	// the dashboard queues it through the same form, so the fields the form
+	// shows are the fields the run gets. A later status means a run already
+	// owns them.
+	reinit := t.Kontora
+	if reinit && t.Status != ticket.StatusOpen {
 		return Result{}, fmt.Errorf("%w: ticket already initialized", ErrInvalidState)
 	}
+	prevPipeline, prevStage := t.Pipeline, t.Stage
 
 	cfg := s.cfg()
 
@@ -381,14 +389,22 @@ func (s *Service) Init(id string, req InitRequest) (Result, error) {
 		stageName := req.Stage
 		if stageName == "" {
 			stageName = cfg.Pipelines[pipeline][0].Stage
+			// A re-init keeps the stage the ticket reached. Only a pipeline
+			// change restarts it, because the old stage is not in the new one.
+			if reinit && prevStage != "" && pipeline == prevPipeline {
+				stageName = prevStage
+			}
 		}
 		if err := t.SetField("stage", stageName); err != nil {
 			return Result{}, fmt.Errorf("setting stage: %w", err)
 		}
 	}
 
-	if err := t.SetField("attempt", 0); err != nil {
-		return Result{}, fmt.Errorf("setting attempt: %w", err)
+	// A re-init leaves the retry count of the stage the ticket is still on.
+	if !reinit {
+		if err := t.SetField("attempt", 0); err != nil {
+			return Result{}, fmt.Errorf("setting attempt: %w", err)
+		}
 	}
 	if err := t.SetField("last_error", ""); err != nil {
 		return Result{}, fmt.Errorf("clearing last_error: %w", err)
@@ -401,6 +417,7 @@ func (s *Service) Init(id string, req InitRequest) (Result, error) {
 	if status == string(ticket.StatusTodo) {
 		s.runtime.Enqueue(t)
 	}
+	s.runtime.ReconcileDependencies(resolved)
 	s.runtime.BroadcastUpdated(resolved)
 	return Result{ID: resolved, Status: status}, nil
 }

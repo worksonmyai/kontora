@@ -222,6 +222,14 @@ export function kontoraCreate() {
       }
     },
 
+    // Whether a start action goes through the init modal instead of posting
+    // right away. An unmanaged ticket has nothing to run with yet; a managed one
+    // still gets the form on its way out of open, so queueing it is a deliberate
+    // step with the pipeline, path and branch of the run in front of the user.
+    needsInitModal(ticket) {
+      return !ticket.kontora || ticket.status === 'open';
+    },
+
     async openInitModal(ticket) {
       var pt = this.parseTitleTag(ticket);
       this.initForm = {

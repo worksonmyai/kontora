@@ -438,9 +438,10 @@ export function kontoraDetail() {
     async moveTicketVia(ticketId, endpoint, body) {
       this.error = null;
       var ticket = this.tickets.find(t => t.id === ticketId);
-      // Starting or resuming a visible but unmanaged ticket needs the init modal,
-      // not /run, /retry, or /move, because only kontora=true tickets may execute.
-      if (ticket && !ticket.kontora && this.ticketActionWouldStart(endpoint, body)) {
+      // Starting a ticket goes through the init modal, not /run, /retry, or
+      // /move: an unmanaged one cannot execute at all, and a managed one in open
+      // gets the form so the run's fields are confirmed before it is queued.
+      if (ticket && this.needsInitModal(ticket) && this.ticketActionWouldStart(endpoint, body)) {
         this.openInitModal(ticket);
         return;
       }
@@ -471,7 +472,7 @@ export function kontoraDetail() {
     async moveTask(ticketId, newStatus) {
       this.error = null;
       const ticket = this.tickets.find(t => t.id === ticketId);
-      if (ticket && !ticket.kontora && ['todo', 'in_progress'].includes(newStatus)) {
+      if (ticket && this.needsInitModal(ticket) && ['todo', 'in_progress'].includes(newStatus)) {
         // A drag here has already moved the DOM node into the target column;
         // rebuild from canonical data so the card snaps back if the user
         // dismisses the init modal. The drag dropped the render cache for both

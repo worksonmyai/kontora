@@ -336,12 +336,70 @@ func TestInit_SetsAllFields(t *testing.T) {
 }
 
 func TestInit_AlreadyInitialized(t *testing.T) {
-	repo := newMemRepo()
-	repo.add("tst-001", "---\nid: tst-001\nstatus: todo\nkontora: true\npipeline: default\n---\n# Test\n")
-	svc := New(Static(testCfg()), repo, &spyRuntime{})
+	cases := []struct {
+		name        string
+		frontmatter string
+		req         InitRequest
+		wantErr     bool
+		wantStage   string
+		wantAttempt int
+	}{
+		{
+			name:        "todo is rejected",
+			frontmatter: "status: todo\nkontora: true\npipeline: default\nstage: review\n",
+			req:         InitRequest{Pipeline: "default"},
+			wantErr:     true,
+		},
+		{
+			name:        "in_progress is rejected",
+			frontmatter: "status: in_progress\nkontora: true\npipeline: default\nstage: code\n",
+			req:         InitRequest{Pipeline: "default"},
+			wantErr:     true,
+		},
+		{
+			name:        "open keeps the stage and the attempt count",
+			frontmatter: "status: open\nkontora: true\npipeline: default\nstage: review\nattempt: 2\n",
+			req:         InitRequest{Pipeline: "default", Path: "~/projects/test"},
+			wantStage:   "review",
+			wantAttempt: 2,
+		},
+		{
+			name:        "a new pipeline restarts at its first stage",
+			frontmatter: "status: open\nkontora: true\npipeline: default\nstage: review\nattempt: 2\n",
+			req:         InitRequest{Pipeline: "alt", Path: "~/projects/test"},
+			wantStage:   "review-only",
+			wantAttempt: 2,
+		},
+	}
 
-	_, err := svc.Init("tst-001", InitRequest{Pipeline: "default"})
-	require.ErrorIs(t, err, ErrInvalidState)
+	cfg := testCfg()
+	cfg.Stages["review-only"] = config.Stage{Prompt: "review"}
+	cfg.Pipelines["alt"] = config.Pipeline{
+		{Stage: "review-only", Agent: "claude-sonnet", OnSuccess: "done", OnFailure: "pause"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := newMemRepo()
+			repo.add("tst-001", "---\nid: tst-001\n"+tc.frontmatter+"path: ~/projects/test\n---\n# Test\n")
+			rt := &spyRuntime{}
+			svc := New(Static(cfg), repo, rt)
+
+			_, err := svc.Init("tst-001", tc.req)
+			if tc.wantErr {
+				require.ErrorIs(t, err, ErrInvalidState)
+				assert.Empty(t, rt.enqueued)
+				return
+			}
+			require.NoError(t, err)
+
+			tkt := repo.tickets["tst-001"].Ticket
+			assert.Equal(t, ticket.StatusTodo, tkt.Status)
+			assert.Equal(t, tc.wantStage, tkt.Stage)
+			assert.Equal(t, tc.wantAttempt, tkt.Attempt)
+			assert.Equal(t, []string{"tst-001"}, rt.enqueued)
+		})
+	}
 }
 
 func TestInit_UnknownAgent(t *testing.T) {

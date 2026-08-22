@@ -902,20 +902,32 @@ test("board columns include non-Kontora tickets in their status columns", () => 
   assert.deepEqual(ids.sort(), ["ext-001", "kon-001"]);
 });
 
-test("non-Kontora start and resume actions open initialization instead of posting", async () => {
-  const state = loadKontoraState();
+test("start actions open initialization instead of posting", async () => {
+  const posted = [];
+  const state = loadKontoraState({
+    fetch: async (url) => { posted.push(url); return { ok: true, json: async () => ({}) }; },
+  });
   const opened = [];
   state.tickets = [
     { id: "ext-run", title: "Run", status: "open", kontora: false },
     { id: "ext-retry", title: "Retry", status: "paused", kontora: false },
+    // Managed, so it could run as it stands; queueing it still confirms the
+    // fields first.
+    { id: "kon-open", title: "Queue", status: "open", kontora: true },
+    // Managed and past open: resuming it posts.
+    { id: "kon-paused", title: "Resume", status: "paused", kontora: true },
   ];
   state.openInitModal = (ticket) => { opened.push(ticket.id); };
 
   await state.moveTicketVia("ext-run", "run", null);
   await state.moveTicketVia("ext-retry", "retry", null);
   await state.moveTask("ext-retry", "todo");
+  await state.moveTicketVia("kon-open", "run", null);
+  await state.moveTask("kon-open", "todo");
+  await state.moveTicketVia("kon-paused", "retry", null);
 
-  assert.deepEqual(opened, ["ext-run", "ext-retry", "ext-retry"]);
+  assert.deepEqual(opened, ["ext-run", "ext-retry", "ext-retry", "kon-open", "kon-open"]);
+  assert.deepEqual(posted, ["/api/tickets/kon-paused/retry"]);
 });
 
 test("human_review column sorts by the last stage's finish, newest first", () => {

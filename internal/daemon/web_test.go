@@ -1084,6 +1084,8 @@ created: 2026-01-01T00:00:00Z
 	require.NoError(t, <-errCh)
 }
 
+// A managed ticket may be initialized again while it waits in open, which is
+// how the dashboard queues one. Any later status belongs to a run.
 func TestDaemon_InitTicket_AlreadyKontora(t *testing.T) {
 	h := newHarness(t)
 	d := h.newDaemon(h.cfg)
@@ -1091,7 +1093,7 @@ func TestDaemon_InitTicket_AlreadyKontora(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	h.writeTicket("tst-iak.md", h.taskMD("tst-iak", "open", "one-stage"))
+	h.writeTicket("tst-iak.md", h.taskMD("tst-iak", "human_review", "one-stage"))
 
 	errCh := make(chan error, 1)
 	go func() { errCh <- d.Run(ctx) }()

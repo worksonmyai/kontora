@@ -435,9 +435,9 @@ export function kontoraPalette() {
       }
       var t = this.tickets.find(x => x.id === row.ticketId);
       var body = row.move.status ? { status: row.move.status } : null;
-      // Starting an unmanaged ticket opens the init modal and posts nothing, so
-      // there is no completed action to confirm.
-      var opensInit = !t.kontora && this.ticketActionWouldStart(row.move.endpoint, body);
+      // A start that opens the init modal posts nothing, so there is no
+      // completed action to confirm.
+      var opensInit = this.needsInitModal(t) && this.ticketActionWouldStart(row.move.endpoint, body);
       this.closePalette();
       await this.moveTicketVia(t.id, row.move.endpoint, body);
       if (opensInit || this.error) return;

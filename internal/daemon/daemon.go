@@ -191,6 +191,12 @@ func WithDebounce(dur time.Duration) Option {
 	return func(d *Daemon) { d.debounce = dur }
 }
 
+// WithWaitPollInterval overrides how often a run's poller stats its waiting
+// marker. Tests shorten it so a marker's appearance is observed in milliseconds.
+func WithWaitPollInterval(dur time.Duration) Option {
+	return func(d *Daemon) { d.waitPoll = dur }
+}
+
 func WithLockPath(path string) Option {
 	return func(d *Daemon) { d.lockPath = path }
 }
@@ -317,6 +323,7 @@ type Daemon struct {
 	svc                 *app.Service
 
 	debounce     time.Duration
+	waitPoll     time.Duration // how often a run's marker poller stats its file
 	lockPath     string
 	configPath   string
 	instanceName string
@@ -351,7 +358,10 @@ type Daemon struct {
 	queued          map[string]bool    // dedupe: prevents same ticket being enqueued twice
 	runningBranches map[string]string  // repoPath\x00branch → ticketID holding the branch
 	sem             chan struct{}
-	plannotator     map[string]context.CancelFunc // in-flight plannotator subprocesses
+	// waiting holds, per ticket, the question its running agent is blocked on,
+	// as the run's marker poller last read it. Only a live run has an entry.
+	waiting     map[string]waitingState
+	plannotator map[string]context.CancelFunc // in-flight plannotator subprocesses
 	// plannotatorDeferred holds the tickets whose pickup runTicket dropped
 	// because a Plannotator session was open. releasePlannotator offers each of
 	// them again when the session closes.
@@ -436,6 +446,7 @@ func New(cfg *config.Config, opts ...Option) *Daemon {
 		windows:             defaultWindowOps,
 		broker:              web.NewSSEBroker(),
 		debounce:            time.Second,
+		waitPoll:            defaultWaitPollInterval,
 		lockPath:            defaultLockPath(),
 		instanceName:        cfg.InstanceName,
 		tmuxSession:         cfg.TmuxSessionName(),
@@ -448,6 +459,7 @@ func New(cfg *config.Config, opts ...Option) *Daemon {
 		queued:          make(map[string]bool),
 		runningBranches: make(map[string]string),
 		sem:             make(chan struct{}, cfg.MaxConcurrentAgents),
+		waiting:         make(map[string]waitingState),
 		plannotator:     make(map[string]context.CancelFunc),
 
 		plannotatorDeferred: make(map[string]struct{}),
@@ -2298,13 +2310,34 @@ func (d *Daemon) runAgentOnce(taskCtx context.Context, t *ticket.Ticket, p spawn
 				fmt.Sprintf("%s-%d", p.stageName, p.run))
 		}
 	}
-	args, settingsFile, sessionID, err := buildAgentArgs(p.agentCfg, rendered, tmux.ChannelName(d.tmuxSession, p.ticketID), ckpt.compactChannel, model, effort, rec, !p.annotation)
+	// Only a pi run publishes the marker, and only into the path this run's
+	// poller watches. Every other agent passes an empty one and behaves as before.
+	var waitFile string
+	if p.agentCfg.IsPi() {
+		waitFile = stageWaitPath(p.cfg, p.ticketID, p.stageName)
+	}
+	args, settingsFile, sessionID, err := buildAgentArgs(p.agentCfg, rendered, tmux.ChannelName(d.tmuxSession, p.ticketID), ckpt.compactChannel, model, effort, waitFile, rec, !p.annotation)
 	if err != nil {
 		p.log.Error("build agent args failed", "err", err)
 		return agentAttempt{pauseReason: "build agent args failed: " + err.Error()}
 	}
 	if settingsFile != "" {
 		defer os.Remove(settingsFile)
+	}
+
+	if waitFile != "" {
+		// A run killed mid-question leaves its marker behind, and the poller
+		// would read it as this run's first question.
+		os.Remove(waitFile)
+		stopWatching := d.startWaitWatcher(p.ticketID, waitFile)
+		// Deferred so that every way out of this function — a clean exit, a
+		// runner error, a cancelled ticket — leaves neither an entry claiming
+		// the agent is still waiting nor a marker for the next run to find.
+		defer func() {
+			stopWatching()
+			d.clearWaiting(p.ticketID)
+			os.Remove(waitFile)
+		}()
 	}
 
 	// An annotation run runs under the stage's name, so a record of its own here
@@ -2341,6 +2374,10 @@ func (d *Daemon) runAgentOnce(taskCtx context.Context, t *ticket.Ticket, p spawn
 	logStart := fileSize(params.LogFile)
 	eventsFile := stageEventsPath(p.cfg, p.ticketID, p.stageName, p.run)
 	result, runnerErr := d.runner(taskCtx, params)
+	// Read here, not where the pause reason is built: the agent's session
+	// shutdown removes the marker on its way out, and the poller then clears the
+	// state, while log materialization and the tmux kill below can take seconds.
+	openQuestion, hadOpenQuestion := d.pendingWait(p.ticketID)
 	// The record exists to mark a run the daemon never saw end. Once the runner
 	// returns with the daemon still up, the run has ended for a reason of its
 	// own — clean exit, failure, pause, or user cancellation — and starting it
@@ -2368,8 +2405,10 @@ func (d *Daemon) runAgentOnce(taskCtx context.Context, t *ticket.Ticket, p spawn
 				Result: result, Resumed: rec != nil, Model: effModel, Effort: effEffort,
 				SessionKind: failKind, SessionRef: failRef,
 			},
-			started:     agentDidWork(result),
-			pauseReason: fmt.Sprintf("runner failed: %s", runnerErr.Error()),
+			started: agentDidWork(result),
+			// Built here rather than by the caller, which runs after the
+			// deferred cleanup has dropped the question.
+			pauseReason: runnerFailureReason(runnerErr, openQuestion, hadOpenQuestion),
 		}
 	}
 
@@ -2520,7 +2559,9 @@ func buildOperationalAppendix(taskID, filePath, wtPath string, isPipeline bool, 
 // For pi agents it injects -e with the Kontora extension that handles clean
 // shutdown on agent_settled and, when checkpointEligible is true and the agent
 // carries a positive CheckpointCompactionTokens, registers the
-// kontora_phase_complete tool for phase-boundary compaction.
+// kontora_phase_complete tool for phase-boundary compaction. A non-empty
+// waitFile also has it publish the marker the daemon polls while the agent is
+// blocked on a question tool.
 // A non-nil rec attaches the run to the session that record names instead of
 // opening a new one.
 // A non-empty model or effort replaces the one in the agent's own arguments,
@@ -2529,7 +2570,7 @@ func buildOperationalAppendix(taskID, filePath, wtPath string, isPipeline bool, 
 // ticket's own agent field is only known at spawn time.
 // Returns the args, the path to the temporary settings/extension file (empty
 // for other agents), the session ID (empty for non-Claude agents), and any error.
-func buildAgentArgs(agentCfg config.Agent, rendered, channelName, compactChannel, model, effort string, rec *resumeRecord, checkpointEligible bool) ([]string, string, string, error) {
+func buildAgentArgs(agentCfg config.Agent, rendered, channelName, compactChannel, model, effort, waitFile string, rec *resumeRecord, checkpointEligible bool) ([]string, string, string, error) {
 	if err := agentCfg.CheckEffort(model, effort); err != nil {
 		return nil, "", "", err
 	}
@@ -2556,7 +2597,7 @@ func buildAgentArgs(agentCfg config.Agent, rendered, channelName, compactChannel
 	case agentCfg.IsPi():
 		threshold := agentCfg.CheckpointCompactionTokens
 		var err error
-		settingsFile, err = writePiExtension(threshold, checkpointEligible && threshold > 0)
+		settingsFile, err = writePiExtension(threshold, checkpointEligible && threshold > 0, waitFile)
 		if err != nil {
 			return nil, "", "", fmt.Errorf("writing pi extension: %w", err)
 		}
@@ -2802,6 +2843,16 @@ func stageLogPath(cfg *config.Config, ticketID, stageName string) string {
 // log-directory scanner, all of which filter on .log.
 func stageEventsPath(cfg *config.Config, ticketID, stageName string, run int) string {
 	return session.EventsPath(expandTilde(cfg.LogsDir), ticketID, stageName, run)
+}
+
+// stageWaitPath is the marker the injected pi extension writes while the agent
+// is blocked on a question tool. Like the events sidecar it sits beside
+// <stage>.log and must not end in .log, because every log-directory scanner
+// filters on that suffix and would take it for stage output. It carries no run
+// index: one run of a ticket is in flight at a time, and the daemon deletes a
+// stale marker before it starts the next one.
+func stageWaitPath(cfg *config.Config, ticketID, stageName string) string {
+	return session.WaitPath(expandTilde(cfg.LogsDir), ticketID, stageName)
 }
 
 // stageRunIndex returns the zero-based key for the next run of stageName,

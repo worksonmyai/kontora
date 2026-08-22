@@ -8,7 +8,8 @@
 // Run with:  node --test internal/daemon/testdata/pi_extension.test.mjs
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -117,19 +118,20 @@ function loadExtension(source) {
 
 const ENABLED_THRESHOLD = 150000;
 
-function renderLocally(threshold, enabled) {
+function renderLocally(threshold, enabled, waitFile) {
   const here = path.dirname(fileURLToPath(import.meta.url));
   const raw = readFileSync(path.join(here, "..", "pi_extension.js"), "utf8");
   return raw
     .replaceAll("__CHECKPOINT_THRESHOLD__", String(threshold))
-    .replaceAll("__CHECKPOINT_ENABLED__", String(enabled));
+    .replaceAll("__CHECKPOINT_ENABLED__", String(enabled))
+    .replaceAll("__WAIT_MARKER_PATH__", JSON.stringify(waitFile || ""));
 }
 
 function checkRendered(name, source, threshold, enabled) {
   if (typeof source !== "string" || source.trim() === "") {
     throw new Error(`${name}: extension source is empty`);
   }
-  if (source.includes("__CHECKPOINT_")) {
+  if (source.includes("__CHECKPOINT_") || source.includes("__WAIT_MARKER_")) {
     throw new Error(`${name}: extension source still contains a placeholder`);
   }
   if (!source.includes(`const THRESHOLD = ${threshold};`)) {
@@ -606,4 +608,200 @@ test("null tokens in context usage skips compaction", async () => {
     "null tokens should be treated as unknown"
   );
   assert.equal(api.entries[0].data.outcome, "skipped");
+});
+
+// ─── Tests: waiting marker ──────────────────────────────────────────────────
+//
+// These render their own source against a real temp path and assert on the file
+// the extension writes, which is what the daemon's poller reads.
+
+function withMarker(t, body) {
+  const dir = mkdtempSync(path.join(tmpdir(), "kontora-wait-"));
+  const marker = path.join(dir, "implement.waiting.json");
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const api = loadExtension(renderLocally(0, false, marker));
+  return body(api, marker);
+}
+
+function readMarker(marker) {
+  return JSON.parse(readFileSync(marker, "utf8"));
+}
+
+function start(toolName, toolCallId, args) {
+  return { toolName, toolCallId, args };
+}
+
+function end(toolName, toolCallId) {
+  return { toolName, toolCallId };
+}
+
+test("no marker path leaves the question handlers unregistered", () => {
+  const api = loadExtension(DISABLED_SOURCE);
+  assert.equal(api.handlers["tool_execution_start"], undefined);
+  assert.equal(api.handlers["tool_execution_end"], undefined);
+});
+
+test("ask_user_question writes a marker describing the call", async (t) => {
+  await withMarker(t, async (api, marker) => {
+    await api.fire(
+      "tool_execution_start",
+      start("ask_user_question", "call-1", {
+        questions: [{ question: "Which database?", header: "DB" }],
+      })
+    );
+
+    const m = readMarker(marker);
+    assert.equal(m.tool, "ask_user_question");
+    assert.equal(m.tool_call_id, "call-1");
+    assert.equal(m.question, "Which database?");
+    assert.match(m.started_at, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
+  });
+});
+
+test("the example question tool writes a marker too", async (t) => {
+  await withMarker(t, async (api, marker) => {
+    await api.fire(
+      "tool_execution_start",
+      start("question", "call-q", { question: "Ship it?", options: [] })
+    );
+
+    const m = readMarker(marker);
+    assert.equal(m.tool, "question");
+    assert.equal(m.tool_call_id, "call-q");
+    assert.equal(m.question, "Ship it?");
+  });
+});
+
+test("an unrelated tool writes no marker", async (t) => {
+  await withMarker(t, async (api, marker) => {
+    await api.fire("tool_execution_start", start("bash", "call-b", { cmd: "ls" }));
+    assert.equal(existsSync(marker), false);
+  });
+});
+
+test("an unrelated tool leaves an open question's marker alone", async (t) => {
+  await withMarker(t, async (api, marker) => {
+    await api.fire(
+      "tool_execution_start",
+      start("ask_user_question", "call-1", { questions: [{ question: "Q1" }] })
+    );
+    await api.fire("tool_execution_start", start("bash", "call-b", {}));
+    await api.fire("tool_execution_end", end("bash", "call-b"));
+
+    assert.equal(readMarker(marker).tool_call_id, "call-1");
+  });
+});
+
+test("the marker is gone once the question returns", async (t) => {
+  await withMarker(t, async (api, marker) => {
+    await api.fire(
+      "tool_execution_start",
+      start("ask_user_question", "call-1", { questions: [{ question: "Q1" }] })
+    );
+    assert.equal(existsSync(marker), true);
+
+    await api.fire("tool_execution_end", end("ask_user_question", "call-1"));
+    assert.equal(existsSync(marker), false);
+  });
+});
+
+test("overlapping questions: the marker follows the newest, then the one left open", async (t) => {
+  await withMarker(t, async (api, marker) => {
+    await api.fire(
+      "tool_execution_start",
+      start("ask_user_question", "call-1", { questions: [{ question: "Q1" }] })
+    );
+    await api.fire(
+      "tool_execution_start",
+      start("ask_user_question", "call-2", { questions: [{ question: "Q2" }] })
+    );
+    assert.equal(readMarker(marker).tool_call_id, "call-2");
+    assert.equal(readMarker(marker).question, "Q2");
+
+    await api.fire("tool_execution_end", end("ask_user_question", "call-2"));
+    assert.equal(existsSync(marker), true, "one call is still open");
+    assert.equal(
+      readMarker(marker).tool_call_id,
+      "call-1",
+      "the marker must describe the question still blocking, not the answered one"
+    );
+    assert.equal(readMarker(marker).question, "Q1");
+
+    await api.fire("tool_execution_end", end("ask_user_question", "call-1"));
+    assert.equal(existsSync(marker), false);
+  });
+});
+
+test("answering the oldest question first leaves the newest on the marker", async (t) => {
+  await withMarker(t, async (api, marker) => {
+    await api.fire(
+      "tool_execution_start",
+      start("ask_user_question", "call-1", { questions: [{ question: "Q1" }] })
+    );
+    await api.fire(
+      "tool_execution_start",
+      start("ask_user_question", "call-2", { questions: [{ question: "Q2" }] })
+    );
+    await api.fire("tool_execution_end", end("ask_user_question", "call-1"));
+
+    assert.equal(readMarker(marker).tool_call_id, "call-2");
+    assert.equal(readMarker(marker).question, "Q2");
+  });
+});
+
+test("session_shutdown clears a marker left by an open question", async (t) => {
+  await withMarker(t, async (api, marker) => {
+    await api.fire(
+      "tool_execution_start",
+      start("ask_user_question", "call-1", { questions: [{ question: "Q1" }] })
+    );
+    await api.fire("session_shutdown", {});
+    assert.equal(existsSync(marker), false);
+  });
+});
+
+test("question text is collapsed to one line and cut to 200 bytes", async (t) => {
+  await withMarker(t, async (api, marker) => {
+    await api.fire(
+      "tool_execution_start",
+      start("ask_user_question", "call-1", {
+        questions: [{ question: "  first line\n\n  second   line  " }],
+      })
+    );
+    assert.equal(readMarker(marker).question, "first line second line");
+
+    // A 4-byte character straddling the limit must not be split: 198 ASCII
+    // bytes then an emoji leaves the cut mid-character.
+    await api.fire(
+      "tool_execution_start",
+      start("ask_user_question", "call-2", {
+        questions: [{ question: "a".repeat(198) + "\u{1F600}" + "tail" }],
+      })
+    );
+    const q = readMarker(marker).question;
+    assert.equal(Buffer.byteLength(q, "utf8"), 198);
+    assert.equal(q, "a".repeat(198));
+  });
+});
+
+test("an unreadable question shape falls back to the tool name alone", async (t) => {
+  await withMarker(t, async (api, marker) => {
+    await api.fire(
+      "tool_execution_start",
+      start("ask_user_question", "call-1", { unexpected: true })
+    );
+    const m = readMarker(marker);
+    assert.equal(m.tool, "ask_user_question");
+    assert.equal(m.question, "");
+  });
+});
+
+test("the rename leaves no temp file behind", async (t) => {
+  await withMarker(t, async (api, marker) => {
+    await api.fire(
+      "tool_execution_start",
+      start("ask_user_question", "call-1", { questions: [{ question: "Q1" }] })
+    );
+    assert.deepEqual(readdirSync(path.dirname(marker)), [path.basename(marker)]);
+  });
 });

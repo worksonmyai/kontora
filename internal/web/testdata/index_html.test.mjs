@@ -8268,3 +8268,147 @@ test("the detail header renders one retry button, not the bespoke one plus Reope
   assert.deepEqual([...state.detailMoves({ status: "done", kontora: true }).map(mv => mv.label)], ["Send to review"]);
   assert.deepEqual([...state.detailMoves({ status: "cancelled", kontora: true }).map(mv => mv.label)], []);
 });
+
+// ─── Waiting for input ──────────────────────────────────────────────────────
+
+const waitingTicket = (extra) => ({
+  id: "kon-wait", title: "Blocked", status: "in_progress", stage: "implement",
+  pipeline: "kontora", path: "/x/proj", agent: "pi", attempt: 0, kontora: true,
+  started_at: "2026-05-19T10:00:00Z",
+  waiting_for_input: true,
+  waiting_since: "2026-05-19T10:40:00Z",
+  waiting_tool: "ask_user_question",
+  waiting_question: "Which database should I use?",
+  ...extra,
+});
+
+test("_cardHTML badges a waiting ticket with the tool, the question and the elapsed time", () => {
+  const state = loadKontoraState();
+  state.now = new Date("2026-05-19T11:05:00Z").getTime();
+
+  const html = state._cardHTML(waitingTicket(), { key: "in_progress" });
+
+  assert.match(html, /class="waiting-chip"/);
+  assert.match(html, /needs input/);
+  // The wrapping, width-capped tip, not the nowrap one built for timestamps: a
+  // 200-byte question on one line runs off the side of the viewport.
+  assert.match(html, /class="waiting-chip" data-tip="/);
+  // The clock text is patched by _updateCardTimers through data-since, so the
+  // attribute has to be the marker's own start, not the run's.
+  assert.match(html, /data-since="2026-05-19T10:40:00Z"/);
+  assert.match(html, />25m</);
+  assert.match(html, /ask_user_question/);
+  assert.match(html, /Which database should I use\?/);
+});
+
+test("_cardHTML leaves a card with no pending question unbadged", () => {
+  const state = loadKontoraState();
+  const html = state._cardHTML(waitingTicket({
+    waiting_for_input: false, waiting_since: undefined,
+    waiting_tool: undefined, waiting_question: undefined,
+  }), { key: "in_progress" });
+
+  assert.equal(/waiting-chip/.test(html), false);
+  assert.equal(/needs input/.test(html), false);
+});
+
+test("_cardSig changes for every waiting field", () => {
+  const state = loadKontoraState();
+  const col = { key: "in_progress" };
+  const sig = state._cardSig(waitingTicket(), col);
+
+  const cases = [
+    { name: "waiting_for_input", ticket: { waiting_for_input: false } },
+    { name: "waiting_since", ticket: { waiting_since: "2026-05-19T10:50:00Z" } },
+    { name: "waiting_tool", ticket: { waiting_tool: "question" } },
+    { name: "waiting_question", ticket: { waiting_question: "Something else?" } },
+  ];
+  for (const c of cases) {
+    assert.notEqual(state._cardSig(waitingTicket(c.ticket), col), sig,
+      `${c.name} must change the card signature`);
+  }
+});
+
+test("the waiting badge's elapsed text advances on the clock tick alone", () => {
+  const { board, state, built } = renderedBoard([waitingTicket()]);
+  state.now = new Date("2026-05-19T11:05:00Z").getTime();
+
+  // A tick rebuilds no card: the duration is patched in place.
+  state.recomputeBoard();
+  assert.deepEqual(built, []);
+  assert.deepEqual(board.ops, []);
+
+  assert.equal(state.waitingFor(waitingTicket()), "25m");
+  state.now = new Date("2026-05-19T12:40:00Z").getTime();
+  assert.equal(state.waitingFor(waitingTicket()), "2h 0m");
+});
+
+test("waitingLabel names the tool, and falls back to it when there is no question", () => {
+  const state = loadKontoraState();
+
+  assert.equal(state.waitingLabel(waitingTicket()),
+    "ask_user_question: Which database should I use?");
+  assert.equal(state.waitingLabel(waitingTicket({ waiting_question: "" })), "ask_user_question");
+  assert.equal(state.waitingLabel(waitingTicket({ waiting_tool: "" })), "a question: Which database should I use?");
+  assert.equal(state.waitingLabel({ id: "x" }), "");
+  assert.equal(state.waitingFor({ id: "x" }), "");
+});
+
+test("recomputeBoard tallies waiting tickets and the favicon ranks them over running ones", () => {
+  const { ctx, state } = loadKontoraContext();
+  state.tickets = [
+    waitingTicket(),
+    { id: "kon-run", title: "Running", status: "in_progress", kontora: true },
+    // Not a kontora ticket: outside the tally, like every other status count.
+    waitingTicket({ id: "kon-foreign", kontora: false }),
+  ];
+  state.recomputeBoard();
+
+  assert.equal(state._statusCounts.needsInput, 1);
+  assert.equal(state._statusCounts.in_progress, 2);
+
+  state.updateFavicon();
+  assert.equal(ctx.document.title, "(1 needs input) kontora");
+
+  // "waiting" is a legal custom status. It must not be read as a pending
+  // question, which is why the tally key is camelCase.
+  state.tickets = [{ id: "kon-st", title: "Custom status", status: "waiting", kontora: true }];
+  state.recomputeBoard();
+  assert.equal(state._statusCounts.needsInput, 0);
+  state.updateFavicon();
+  assert.equal(ctx.document.title, "kontora");
+
+  // With nothing waiting, the running count takes the title back.
+  state.tickets = [{ id: "kon-run", title: "Running", status: "in_progress", kontora: true }];
+  state.recomputeBoard();
+  state.updateFavicon();
+  assert.equal(ctx.document.title, "(1 running) kontora");
+});
+
+test("index.html badges a waiting ticket in the detail header and both mobile layers", () => {
+  const html = fs.readFileSync(htmlPath, "utf8");
+
+  // Desktop detail header: beside the status chip in the identity block.
+  assert.match(html, /x-show="selectedTicket\?\.waiting_for_input" class="waiting-chip"/);
+  // Mobile board card and mobile detail header.
+  assert.match(html, /x-if="ticket\.waiting_for_input"/);
+  assert.match(html, /x-if="selectedTicket\?\.waiting_for_input"/);
+  // Three badges, and each shows its own elapsed time.
+  assert.equal(html.match(/class="waiting-chip"/g).length, 3);
+  assert.equal(html.match(/waitingFor\((selectedTicket|ticket)\)/g).length, 3);
+  // The chip reuses the review hue and the shared pulse animation.
+  assert.match(html, /\.waiting-chip \{[^}]*--st-review/s);
+  assert.match(html, /class="waiting-dot pulse-dot"/);
+});
+
+test("the board badge's question uses the wrapping tip, not the nowrap one", () => {
+  const html = fs.readFileSync(htmlPath, "utf8");
+  const tips = fs.readFileSync(tipsPath, "utf8");
+
+  // Any [data-tip], not only the round .tip button, so the badge can use it.
+  assert.match(tips, /setupTip\('global-tip', '\[data-tip\]', 'data-tip'/);
+  assert.match(html, /#global-tip \{[^}]*white-space: normal;[^}]*max-width: 260px/);
+  // The timestamp variant is one unbounded line, which a 200-byte question
+  // would run off the side of the viewport.
+  assert.match(html, /#global-tip-t \{[^}]*white-space: nowrap/);
+});

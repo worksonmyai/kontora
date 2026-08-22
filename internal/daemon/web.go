@@ -1105,6 +1105,13 @@ func (d *Daemon) buildTicketInfo(cfg *config.Config, ts *ticketState, includeBod
 	if !mt.IsZero() {
 		info.UpdatedAt = &mt
 	}
+	if w, ok := d.waiting[ts.ticket.ID]; ok {
+		since := w.Since
+		info.WaitingForInput = true
+		info.WaitingSince = &since
+		info.WaitingTool = w.Tool
+		info.WaitingQuestion = w.Question
+	}
 	// Relations are resolved for the detail projection only. A board card shows
 	// the ids it already has; the rail is what names the other ticket.
 	if includeBody {

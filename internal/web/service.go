@@ -225,13 +225,23 @@ type TicketInfo struct {
 	// no annotation run is already pending. Like AutoBranch it is a read-only
 	// projection, computed here so the dashboard does not keep its own copy of
 	// rules only the daemon can enforce.
-	CanAnnotate bool          `json:"can_annotate,omitempty"`
-	Stages      []string      `json:"stages,omitempty"`
-	History     []HistoryInfo `json:"history,omitempty"`
-	Body        string        `json:"body,omitempty"`
-	LastError   string        `json:"last_error,omitempty"`
-	LastLog     string        `json:"last_log,omitempty"`
-	Summary     string        `json:"summary,omitempty"`
+	CanAnnotate bool `json:"can_annotate,omitempty"`
+
+	// The running agent is blocked on an interactive question and the stage
+	// will sit there until a human answers through the read-write terminal or
+	// the stage times out. Like CanAnnotate these are daemon state, not ticket
+	// fields: they exist only while the agent process does.
+	WaitingForInput bool       `json:"waiting_for_input,omitempty"`
+	WaitingSince    *time.Time `json:"waiting_since,omitempty"`
+	WaitingTool     string     `json:"waiting_tool,omitempty"`
+	WaitingQuestion string     `json:"waiting_question,omitempty"`
+
+	Stages    []string      `json:"stages,omitempty"`
+	History   []HistoryInfo `json:"history,omitempty"`
+	Body      string        `json:"body,omitempty"`
+	LastError string        `json:"last_error,omitempty"`
+	LastLog   string        `json:"last_log,omitempty"`
+	Summary   string        `json:"summary,omitempty"`
 	// FinalSummary is the ticket-level outcome. Like the other detail fields it
 	// is absent from board list payloads, which never render it.
 	FinalSummary string     `json:"final_summary,omitempty"`

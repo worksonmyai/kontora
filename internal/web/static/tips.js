@@ -25,7 +25,9 @@
     }, true);
   }
 
-  setupTip('global-tip', '.tip[data-tip]', 'data-tip', function(el, r) {
+  // Any [data-tip], not just the round .tip button: this is the wrapping,
+  // width-capped card, which is what a full sentence needs.
+  setupTip('global-tip', '[data-tip]', 'data-tip', function(el, r) {
     var tw = el.offsetWidth, th = el.offsetHeight;
     var left = r.left + r.width / 2 - tw / 2;
     var top = r.top - th - 6;

@@ -52,6 +52,13 @@ func EventsPath(logsDir, ticketID, stage string, run int) string {
 	return filepath.Join(logsDir, ticketID, fmt.Sprintf("%s.%d.events.json", stage, run))
 }
 
+// WaitPath names the marker the pi extension writes while its agent is blocked
+// on a question tool. Like EventsPath it sits beside the stage log and avoids
+// the .log suffix that every log-directory scanner filters on.
+func WaitPath(logsDir, ticketID, stage string) string {
+	return filepath.Join(logsDir, ticketID, stage+".waiting.json")
+}
+
 // PiDir is the per-stage session storage pi writes into. Every stage of a
 // ticket materializes its log from its own directory, so a shared one would
 // give each stage the same session.

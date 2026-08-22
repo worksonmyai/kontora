@@ -1,10 +1,22 @@
 // This source stays import-free so Node can run its state-machine tests without
-// pi's loader aliases. Go replaces the two placeholders before writing it.
+// pi's loader aliases. Go replaces the three placeholders before writing it.
+// Node builtins are reached through process.getBuiltinModule for the same
+// reason: it needs no import and works under the tests' Function wrapper.
 
 export default function (pi) {
   const THRESHOLD = __CHECKPOINT_THRESHOLD__;
   const ENABLED = __CHECKPOINT_ENABLED__;
+  // Where to publish the "blocked on a question" marker the daemon polls.
+  // Empty for a run the daemon does not watch.
+  const WAIT_MARKER = __WAIT_MARKER_PATH__;
+  // The question only has to fit a board badge and one line of last_error.
+  // Bytes, not characters, so Go and this file cut identically.
+  const QUESTION_BYTES = 200;
 
+  // Tool call id -> the marker entry for that question, for the calls still in
+  // flight. A null prototype so a tool call id of "constructor" cannot read a
+  // function where an entry is meant.
+  let openQuestions = Object.create(null);
   let shutdownRequested = false;
   let checkpointPending = false;
   let compactionInFlight = false;
@@ -12,6 +24,87 @@ export default function (pi) {
   let generation = 0;
   let consumedCheckpoints = {};
   let pendingCheckpoint = null;
+
+  // A call to one of these does not return until the human answers, and no pi
+  // event says "a question is open", so the tool call is the only signal.
+  function isQuestionTool(name) {
+    return name === "ask_user_question" || name === "question";
+  }
+
+  function nodeModule(name) {
+    try {
+      return process.getBuiltinModule(name);
+    } catch (e) {
+      return null;
+    }
+  }
+
+  // Cut to at most limit bytes without splitting a UTF-8 character: step back
+  // off any continuation byte the cut landed on.
+  function truncateBytes(s, limit) {
+    var buf = Buffer.from(s, "utf8");
+    if (buf.length <= limit) return s;
+    var end = limit;
+    while (end > 0 && (buf[end] & 0xc0) === 0x80) end--;
+    return buf.toString("utf8", 0, end);
+  }
+
+  // ask_user_question takes {questions: [{question, ...}]}, pi's example
+  // question tool takes {question, options}. An unknown shape leaves the badge
+  // with the tool name alone.
+  function questionText(args) {
+    if (!args || typeof args !== "object") return "";
+    var raw = "";
+    if (Array.isArray(args.questions) && args.questions.length > 0) {
+      var first = args.questions[0];
+      if (first && typeof first.question === "string") raw = first.question;
+      else if (typeof first === "string") raw = first;
+    } else if (typeof args.question === "string") {
+      raw = args.question;
+    }
+    return truncateBytes(raw.replace(/\s+/g, " ").trim(), QUESTION_BYTES);
+  }
+
+  // The daemon polls the marker path with no coordination, so the write goes to
+  // a temp file in the same directory and is renamed in: a rename is atomic
+  // within one directory, a partial write is not.
+  function writeMarker(entry) {
+    var fs = nodeModule("node:fs");
+    if (!fs || !WAIT_MARKER) return;
+    var tmp = WAIT_MARKER + ".tmp." + process.pid;
+    try {
+      fs.mkdirSync(WAIT_MARKER.replace(/[/\\][^/\\]*$/, ""), { recursive: true });
+      fs.writeFileSync(tmp, JSON.stringify(entry));
+      fs.renameSync(tmp, WAIT_MARKER);
+    } catch (e) {
+      try {
+        fs.rmSync(tmp, { force: true });
+      } catch (e2) {
+        /* the temp file is the daemon's to ignore either way */
+      }
+    }
+  }
+
+  function removeMarker() {
+    var fs = nodeModule("node:fs");
+    if (!fs || !WAIT_MARKER) return;
+    try {
+      fs.rmSync(WAIT_MARKER, { force: true });
+    } catch (e) {
+      /* a marker left behind is cleared by the daemon when the run ends */
+    }
+  }
+
+  // The oldest open question is the one that has blocked the longest, so it is
+  // what the marker falls back to. ISO-8601 UTC strings sort chronologically.
+  function oldestOpenQuestion() {
+    var oldest = null;
+    for (var id in openQuestions) {
+      var e = openQuestions[id];
+      if (!oldest || e.started_at < oldest.started_at) oldest = e;
+    }
+    return oldest;
+  }
 
   function tryShutdown(ctx) {
     if (!shutdownRequested) return;
@@ -27,6 +120,32 @@ export default function (pi) {
   pi.on("agent_start", function (_event, _ctx) {
     continuationPending = false;
   });
+
+  if (WAIT_MARKER) {
+    pi.on("tool_execution_start", function (event, _ctx) {
+      if (!event || !isQuestionTool(event.toolName)) return;
+      var entry = {
+        tool: event.toolName,
+        tool_call_id: event.toolCallId,
+        started_at: new Date().toISOString(),
+        question: questionText(event.args),
+      };
+      openQuestions[event.toolCallId] = entry;
+      // Rewritten on every question that opens, so the marker describes the
+      // most recent one rather than one the human may already have answered.
+      writeMarker(entry);
+    });
+
+    pi.on("tool_execution_end", function (event, _ctx) {
+      if (!event || !isQuestionTool(event.toolName)) return;
+      delete openQuestions[event.toolCallId];
+      // Questions can be answered out of order, so the marker falls back to the
+      // one still blocking rather than keeping the answered call's text.
+      var next = oldestOpenQuestion();
+      if (next) writeMarker(next);
+      else removeMarker();
+    });
+  }
 
   pi.on("session_start", function (_event, ctx) {
     // Rebuild consumed checkpoints from the branch so we reject duplicates
@@ -49,6 +168,9 @@ export default function (pi) {
   pi.on("session_shutdown", function (_event, _ctx) {
     // A callback from the previous generation must not enqueue a message.
     generation++;
+    // A clean /exit while a question is open must not leave the marker behind.
+    openQuestions = Object.create(null);
+    removeMarker();
   });
 
   if (ENABLED && THRESHOLD > 0) {

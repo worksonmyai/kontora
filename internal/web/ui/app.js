@@ -18,7 +18,9 @@ export function kontoraApp() {
     // Global kontora status counts from the last recomputeBoard pass, used by
     // updateFavicon. Tallied ignoring searchQuery (the favicon reflects all
     // tickets, not the filtered view).
-    _statusCounts: { in_progress: 0, paused: 0, todo: 0, done: 0 },
+    // needsInput is camelCase because a status is [a-z][a-z0-9_]* and so
+    // cannot collide with it.
+    _statusCounts: { in_progress: 0, paused: 0, todo: 0, done: 0, needsInput: 0 },
     // Buffer of ticket_updated payloads flushed once per animation frame, so a
     // burst of agent updates triggers a single recompute and repaint.
     _pendingTicketUpdates: [],
@@ -280,6 +282,21 @@ export function kontoraApp() {
       if (mins < 1) return '<1m';
       if (mins < 60) return mins + 'm';
       return Math.floor(mins / 60) + 'h ' + (mins % 60) + 'm';
+    },
+
+    // How long a ticket's agent has been blocked on a question. Same shape as
+    // formatDuration so the 30s tick patches it in place through data-since.
+    waitingFor(ticket) {
+      if (!ticket || !ticket.waiting_for_input) return '';
+      return this.formatDuration({ started_at: ticket.waiting_since });
+    },
+
+    // The badge's hover text: the tool that blocked and the question it asked.
+    // A tool whose arguments the extension could not read leaves the name alone.
+    waitingLabel(ticket) {
+      if (!ticket || !ticket.waiting_for_input) return '';
+      var tool = ticket.waiting_tool || 'a question';
+      return ticket.waiting_question ? tool + ': ' + ticket.waiting_question : tool;
     },
 
     formatAbsDate(dateStr) {

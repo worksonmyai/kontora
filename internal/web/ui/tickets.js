@@ -127,7 +127,12 @@ export function kontoraTickets() {
       var v = (name) => this._cssVar(name, styles);
       var h = (name) => this._cssHsl(name, styles);
       let color, label;
-      if (counts.in_progress > 0) {
+      // A waiting agent outranks a running one: it is the only state that
+      // needs the person at the keyboard, and an unfocused tab is where they
+      // will see it.
+      if (counts.needsInput > 0) {
+        color = h('--st-review'); label = counts.needsInput + ' needs input';
+      } else if (counts.in_progress > 0) {
         color = h('--st-progress'); label = counts.in_progress + ' running';
       } else if (counts.paused > 0) {
         color = h('--st-paused'); label = counts.paused + ' paused';

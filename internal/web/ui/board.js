@@ -63,6 +63,15 @@ export function kontoraBoard() {
           + (ticket.stage ? '<span>' + esc(ticket.stage) + '</span>' : '') + '</span>';
       }
 
+      // Nothing moves until a human answers in the terminal, so the badge
+      // carries the wait. The nested data-since is what _updateCardTimers
+      // patches on the tick, like the card's own clock.
+      var waiting = ticket.waiting_for_input
+        ? '<span class="waiting-chip" data-tip="' + esc('Waiting for input — ' + this.waitingLabel(ticket)) + '">'
+          + '<span class="waiting-dot pulse-dot"></span>needs input '
+          + '<span data-since="' + esc(ticket.waiting_since || '') + '">' + esc(this.waitingFor(ticket)) + '</span></span>'
+        : '';
+
       var notKontoraBadge = (!ticket.kontora && ticket.status !== 'open')
         ? '<span class="px-1.5 py-px rounded-full border border-warn/20 bg-warn/10 text-warn text-[10px] font-mono shrink-0">not a kontora ticket</span>'
         : '';
@@ -108,7 +117,7 @@ export function kontoraBoard() {
       var badgeRow = '';
       var badgeParts = (this.showPipelineBadges
         ? '<span class="pipe-tag truncate">' + esc(this.ticketTagLabel(ticket)) + '</span>'
-        : '') + notKontoraBadge + glyph;
+        : '') + notKontoraBadge + glyph + waiting;
       if (badgeParts) {
         badgeRow = '<div class="flex items-center gap-2 min-w-0 pr-5">' + badgeParts + '</div>';
       }
@@ -171,6 +180,8 @@ export function kontoraBoard() {
       return [col.key, ticket.id, ticket.title, ticket.status, ticket.stage,
               ticket.pipeline, ticket.path, ticket.agent, ticket.attempt,
               ticket.kontora ? 1 : 0, ticket.started_at, ticket.created_at,
+              ticket.waiting_for_input ? 1 : 0, ticket.waiting_since,
+              ticket.waiting_tool, ticket.waiting_question,
               this.reviewFinishedAt(ticket),
               (ticket.stages || []).join('>'),
               this._cardRelationSummary(ticket),
@@ -582,13 +593,16 @@ export function kontoraBoard() {
       });
       // Global kontora tallies for the favicon/running pill, computed ignoring
       // the search filter so they reflect all tickets.
-      var counts = { in_progress: 0, paused: 0, todo: 0, done: 0 };
+      // needsInput is camelCase on purpose: the loop below writes any key a
+      // ticket's status names, and "waiting" is a legal status.
+      var counts = { in_progress: 0, paused: 0, todo: 0, done: 0, needsInput: 0 };
       // Per-agent running tally for the sidebar, filled in this same pass so
       // agentRunningCount doesn't filter the whole ticket array per agent row.
       var running = Object.create(null);
       for (var i = 0; i < this.tickets.length; i++) {
         var t = this.tickets[i];
         if (t.kontora && counts[t.status] !== undefined) counts[t.status]++;
+        if (t.kontora && t.waiting_for_input) counts.needsInput++;
         if (t.kontora && t.status === 'in_progress' && t.agent) {
           running[t.agent] = (running[t.agent] || 0) + 1;
         }

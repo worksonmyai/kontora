@@ -449,6 +449,28 @@
     .status-chip-sm { font-size: 9.5px; padding: 2px 7px; gap: 0; }
     .status-chip-sm[data-status="in_progress"]::before { content: none; }
 
+    /* Blocked on a question. It reuses the review hue because it means the
+       same thing as HUMAN REVIEW: nothing moves until a person acts. */
+    .waiting-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 10px;
+      line-height: 1.5;
+      padding: 1px 7px;
+      border-radius: 9999px;
+      flex: none;
+      color: hsl(var(--st-review));
+      background: hsl(var(--st-review) / 0.12);
+      border: 1px solid hsl(var(--st-review) / 0.28);
+      white-space: nowrap;
+    }
+    .waiting-dot {
+      width: 5px; height: 5px; border-radius: 9999px; flex-shrink: 0;
+      background: hsl(var(--st-review));
+    }
+
     /* "live" indicator in the terminal headers — running, so st-progress. */
     .live-indicator { color: hsl(var(--st-progress)); }
     .live-indicator-dot { background: hsl(var(--st-progress)); }
@@ -1494,6 +1516,11 @@
       <div class="shrink-0 px-6 pt-[15px] pb-[11px] flex flex-col gap-2 min-w-0">
         <div class="flex items-center gap-2.5 flex-wrap min-w-0">
           <span class="status-chip shrink-0" :data-status="selectedTicket?.status" x-text="statusLabel(selectedTicket?.status)"></span>
+          <span x-show="selectedTicket?.waiting_for_input" class="waiting-chip"
+                :title="'Waiting for input — ' + waitingLabel(selectedTicket)">
+            <span class="waiting-dot pulse-dot"></span>needs input
+            <span x-text="waitingFor(selectedTicket)"></span>
+          </span>
           <span class="pipe-tag shrink-0"
                 :data-pipe-color="selectedTicket ? ticketPipeColor(selectedTicket) : 'none'"
                 x-text="selectedTicket ? ticketTagLabel(selectedTicket) : ''"></span>
@@ -3248,6 +3275,12 @@
                   <span class="pulse-dot">●</span><span x-text="ticket.stage"></span>
                 </span>
               </template>
+              <template x-if="ticket.waiting_for_input">
+                <span class="waiting-chip">
+                  <span class="waiting-dot pulse-dot"></span>needs input
+                  <span x-text="waitingFor(ticket)"></span>
+                </span>
+              </template>
             </div>
             <template x-if="!ticket.kontora">
               <span style="padding:1px 7px;border-radius:9999px;border:1px solid hsl(var(--st-paused) / .25);background:hsl(var(--st-paused) / .12);color:hsl(var(--st-paused));font-family:'JetBrains Mono',monospace;font-size:9px;white-space:nowrap;flex:none;">not init'd</span>
@@ -3287,6 +3320,12 @@
         <div style="display:flex;align-items:center;gap:8px;padding:0 16px 10px;flex-wrap:wrap;">
           <span class="pipe-tag" :data-pipe-color="selectedTicket ? ticketPipeColor(selectedTicket) : 'none'" x-text="selectedTicket ? ticketTagLabel(selectedTicket) : ''"></span>
           <span class="status-chip" :data-status="selectedTicket?.status" x-text="selectedTicket?.status"></span>
+          <template x-if="selectedTicket?.waiting_for_input">
+            <span class="waiting-chip" :title="'Waiting for input — ' + waitingLabel(selectedTicket)">
+              <span class="waiting-dot pulse-dot"></span>needs input
+              <span x-text="waitingFor(selectedTicket)"></span>
+            </span>
+          </template>
           <template x-if="selectedTicket && !selectedTicket.kontora">
             <span style="padding:2px 8px;border-radius:9999px;border:1px solid hsl(var(--st-paused) / .25);background:hsl(var(--st-paused) / .12);color:hsl(var(--st-paused));font-family:'JetBrains Mono',monospace;font-size:11px;">not a kontora ticket</span>
           </template>

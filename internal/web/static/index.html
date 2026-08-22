@@ -1606,7 +1606,7 @@
               <button x-show="showSummaryTab()" @click="switchTab('summary')"
                       class="font-mono text-[12px] pb-[9px] border-b-2 transition-colors"
                       :class="activeTab === 'summary' ? 'text-tx-hi font-bold border-accent' : 'text-surface-600 border-transparent hover:text-tx-3'">summary</button>
-              <button @click="switchTab('diff')"
+              <button x-show="showDiffTab()" @click="switchTab('diff')"
                       class="font-mono text-[12px] pb-[9px] border-b-2 transition-colors"
                       :class="activeTab === 'diff' ? 'text-tx-hi font-bold border-accent' : 'text-surface-600 border-transparent hover:text-tx-3'">
                 diff <span class="text-tx-faint" x-text="churn().count || ''"></span></button>
@@ -1862,8 +1862,8 @@
                  class="h-full flex flex-col bg-surface-frame">
               <div class="flex-1 min-h-0 overflow-y-auto">
                 <div class="max-w-3xl mx-auto px-6 pt-4 pb-6 flex flex-col gap-5">
-                  <template x-if="!ticketChanges">
-                    <p class="font-mono text-[12px] text-surface-600">No branch changes to show.</p>
+                  <template x-if="diffEmpty()">
+                    <p class="font-mono text-[12px] text-surface-600" x-text="diffEmptyText()"></p>
                   </template>
                   <template x-if="ticketChanges?.commits?.length">
                     <div class="flex flex-col gap-2">

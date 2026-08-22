@@ -384,6 +384,25 @@ export function kontoraActivity() {
 
     // ---- changed files -----------------------------------------------------
 
+    // The changes endpoint always answers with a payload, and its commit and
+    // file lists stay empty until the branch exists and carries a commit. The
+    // diff pane needs the distinction: an empty payload is a state to name, not
+    // a pane to leave blank.
+    diffEmpty() {
+      var c = this.ticketChanges;
+      return !c || (!(c.commits || []).length && !(c.files || []).length);
+    },
+
+    diffEmptyText() {
+      var t = this.selectedTicket;
+      if (!t || !t.branch) return 'This ticket has no branch yet.';
+      if (!this.ticketChanges) return 'Reading the branch…';
+      if (t.status === 'in_progress') {
+        return 'Nothing committed on ' + t.branch + ' yet. The running stage can still hold uncommitted work in the worktree.';
+      }
+      return 'No commits on ' + t.branch + ' compared to ' + (this.ticketChanges.base || 'base') + '.';
+    },
+
     // Bounded churn summary for the rail: the totals, the stacked bar's split,
     // and the three files with the most change. Equal churn breaks on path so
     // repeated renders agree on the same three.

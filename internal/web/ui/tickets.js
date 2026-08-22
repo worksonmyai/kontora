@@ -228,6 +228,12 @@ export function kontoraTickets() {
       return !!t.final_summary || !!t.summary || (t.history || []).some(function (e) { return !!e.summary; });
     },
 
+    // The diff tab needs a branch to compare against the base. A ticket that
+    // has not started one has nothing the changes endpoint could answer with.
+    showDiffTab() {
+      return !!this.selectedTicket?.branch;
+    },
+
     // Board cards render neither the body nor the notes parsed out of it, and
     // an entry holding them pins that ticket's full text for the life of the
     // tab. Every ticket stored in this.tickets goes through here; the detail

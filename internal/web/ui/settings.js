@@ -112,6 +112,7 @@ const SETTINGS_SECTIONS = [
   { key: 'pipelines', label: 'pipelines', blurb: 'Stages wired to agents, with a routing rule per step.' },
   { key: 'projects', label: 'projects', blurb: 'Defaults a new ticket picks up from the repo it points at.' },
   { key: 'web', label: 'web', blurb: 'This dashboard and the HTTP API the CLI talks to.' },
+  { key: 'assistant', label: 'assistant', blurb: 'The chat docked beside the board. An empty agent disables it.' },
   { key: 'plannotator', label: 'plannotator', blurb: 'Human review of the diff, and annotation of the ticket. Review notes feed the rework stage; ticket notes rewrite the ticket.' },
   { key: 'statuses', label: 'statuses', blurb: 'Extra board columns a pipeline step can route to.' },
   { key: 'display', label: 'display', blurb: 'Browser-local. Never written to config.yaml.' },
@@ -133,6 +134,17 @@ const SETTINGS_PLANNOTATOR_FIELDS = [
   { key: 'binary', placeholder: 'plannotator', help: 'Reviewer binary spawned for a human review pass.' },
   { key: 'timeout', placeholder: '30m', help: 'How long a review may stay open before it is cancelled.' },
   { key: 'reviews_dir', placeholder: '~/.kontora/plannotator-reviews', help: 'Where review transcripts are stored.' },
+];
+
+// config.Assistant, in file order.
+const SETTINGS_ASSISTANT_KEYS = ['agent', 'model', 'effort', 'workdir', 'timeout', 'autonomy', 'prompt'];
+
+// The assistant fields that are a plain text input with a daemon default
+// behind them. The other five carry their own markup: agent and autonomy are
+// selects, prompt is a textarea, and model and effort have no default to show.
+const SETTINGS_ASSISTANT_FIELDS = [
+  { key: 'workdir', placeholder: 'tickets_dir', help: 'Every turn of every thread runs here. A thread cannot resume if its cwd moves.' },
+  { key: 'timeout', placeholder: '10m', help: 'Bounds one turn.' },
 ];
 
 // config.builtinStatuses minus archived, which never reaches the board.
@@ -199,6 +211,7 @@ export function kontoraSettings() {
     settingsSections: SETTINGS_SECTIONS,
     settingsGeneralFields: SETTINGS_GENERAL_FIELDS,
     settingsPlannotatorFields: SETTINGS_PLANNOTATOR_FIELDS,
+    settingsAssistantFields: SETTINGS_ASSISTANT_FIELDS,
     settingsBuiltinStatuses: SETTINGS_BUILTIN_STATUSES,
     settingsTokens: SETTINGS_TOKENS,
 
@@ -301,6 +314,7 @@ export function kontoraSettings() {
           errs.push(`agent "${name}": sets effort "${agent.effort.trim()}", which ${agent.binary.trim()} takes no flag for`);
         }
       }
+      errs.push(...this._settingsAssistantErrors());
       // config.validateAgentKeyedFields: a map key naming neither a configured
       // agent nor a kind. Only the keys a save would write are checked; a row
       // left blank writes nothing.
@@ -333,6 +347,36 @@ export function kontoraSettings() {
             }
           }
         });
+      }
+      return errs;
+    },
+
+    // config.validateAssistant. An empty agent disables the pane, and the
+    // daemon then checks nothing else in the block, so neither does this.
+    // Empty autonomy and timeout are left alone too: applyDefaults fills them.
+    // Its effort check is not mirrored: effortFlag() is empty for exactly the
+    // kinds the agent check rejects, so the daemon stops at that one first.
+    _settingsAssistantErrors() {
+      const a = this.settingsConfig.assistant;
+      const name = a.agent.trim();
+      if (!name) return [];
+      // hasOwn, not a truth test: agents is a plain object, so an agent named
+      // after an Object.prototype member would otherwise look configured and
+      // the read of its binary below would throw.
+      if (!Object.hasOwn(this.settingsConfig.agents, name)) {
+        return [`assistant.agent "${name}": not found in agents`];
+      }
+      const agent = this.settingsConfig.agents[name];
+      const binary = agent.binary.trim();
+      const kind = settingsAgentKind(agent);
+      const errs = [];
+      if (binary && !kind) {
+        errs.push(`assistant.agent "${name}": runs ${binary}, and the assistant only supports claude and pi ` +
+          '(they are the CLIs that take a session id, which one chat needs)');
+      }
+      const autonomy = a.autonomy.trim();
+      if (autonomy && !['read', 'ask', 'auto'].includes(autonomy)) {
+        errs.push(`assistant.autonomy "${autonomy}": must be one of read, ask, auto`);
       }
       return errs;
     },
@@ -430,7 +474,8 @@ export function kontoraSettings() {
 
     // The daemon reloaded, so the resolved config the rest of the UI reads is
     // stale: a new custom status is a new board column, a new project is a new
-    // option in the new-ticket form. Nothing broadcasts a config reload.
+    // option in the new-ticket form. Called after a save here, and from the
+    // config_reloaded listener for a reload this page did not cause.
     async _settingsRefreshConfigCache() {
       try {
         const res = await fetch('/api/config');
@@ -860,6 +905,15 @@ function settingsModel(raw) {
       timeout: str(raw.plannotator?.timeout),
       reviews_dir: str(raw.plannotator?.reviews_dir),
     },
+    assistant: {
+      agent: str(raw.assistant?.agent),
+      model: str(raw.assistant?.model),
+      effort: str(raw.assistant?.effort),
+      workdir: str(raw.assistant?.workdir),
+      timeout: str(raw.assistant?.timeout),
+      autonomy: str(raw.assistant?.autonomy),
+      prompt: str(raw.assistant?.prompt),
+    },
     auto_pick_up: raw.auto_pick_up === undefined || raw.auto_pick_up === null ? true : !!raw.auto_pick_up,
     summary_model: settingsPerAgentModel(raw.summary_model),
     summary_effort: settingsPerAgentModel(raw.summary_effort),
@@ -949,6 +1003,7 @@ function settingsFlatten(cfg) {
   out['plannotator.binary'] = cfg.plannotator.binary;
   out['plannotator.timeout'] = cfg.plannotator.timeout;
   out['plannotator.reviews_dir'] = cfg.plannotator.reviews_dir;
+  for (const f of SETTINGS_ASSISTANT_KEYS) out[`assistant.${f}`] = cfg.assistant[f];
   out.statuses = cfg.statuses.join('\n');
   return out;
 }
@@ -1101,6 +1156,13 @@ function settingsNodeFor(path, cfg) {
   if (group === 'plannotator') {
     const v = cfg.plannotator[rest[0]].trim();
     return { keys: ['plannotator', rest[0]], value: v === '' ? null : v };
+  }
+  if (group === 'assistant') {
+    const field = rest[0];
+    // The prompt is the one field whose whitespace can be deliberate, the same
+    // rule stage prompts follow.
+    const v = field === 'prompt' ? cfg.assistant.prompt : cfg.assistant[field].trim();
+    return { keys: ['assistant', field], value: v === '' ? null : v };
   }
   const name = rest.slice(0, rest.length - 1).join('.');
   const field = rest[rest.length - 1];

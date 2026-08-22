@@ -3770,6 +3770,109 @@ test("client validation uses the daemon's exact wording", async () => {
   ]);
 });
 
+// The assistant block with a comment inside it and a value on every field, so
+// a write can be checked for what it left alone as well as what it changed.
+const SETTINGS_ASSISTANT_FIXTURE = `tickets_dir: ~/org/tickets
+editor: nvim # not modelled by the form
+
+agents:
+  claude:
+    binary: claude
+  codex:
+    binary: codex
+
+assistant:
+  # the chat beside the board
+  agent: claude
+  model: opus
+  workdir: ~/org
+  timeout: 10m
+  autonomy: ask
+  prompt: |
+    Answer from the board.
+`;
+
+test("the assistant block writes only the field that changed", async () => {
+  const state = await settingsState(SETTINGS_ASSISTANT_FIXTURE);
+
+  assert.deepEqual(vmValue(state.settingsConfig.assistant), {
+    agent: "claude", model: "opus", effort: "", workdir: "~/org",
+    timeout: "10m", autonomy: "ask", prompt: "Answer from the board.\n",
+  });
+  assert.deepEqual([...state.settingsChangedPaths()], []);
+
+  state.settingsConfig.assistant.autonomy = "auto";
+  assert.deepEqual([...state.settingsChangedPaths()], ["assistant.autonomy"]);
+
+  const out = await state._settingsWrite();
+  assert.match(out, /autonomy: auto/);
+  assert.match(out, /# the chat beside the board/);
+  assert.match(out, /editor: nvim # not modelled by the form/);
+  assert.match(out, /agent: claude/);
+  assert.match(out, /model: opus/);
+});
+
+test("clearing an assistant field deletes its key rather than writing an empty string", async () => {
+  const state = await settingsState(SETTINGS_ASSISTANT_FIXTURE);
+
+  state.settingsConfig.assistant.workdir = "";
+  const out = await state._settingsWrite();
+
+  assert.equal(/workdir:/.test(out), false);
+  assert.match(out, /agent: claude/);
+});
+
+test("an assistant prompt keeps its whitespace, and the scalars are trimmed", async () => {
+  const state = await settingsState(SETTINGS_ASSISTANT_FIXTURE);
+
+  state.settingsConfig.assistant.prompt = "Answer from the board.\n  Indented line.\n";
+  state.settingsConfig.assistant.model = "  sonnet  ";
+  const out = await state._settingsWrite();
+
+  assert.match(out, /\n {6}Indented line\./);
+  assert.match(out, /model: sonnet\n/);
+});
+
+test("assistant validation mirrors the daemon and stands down when no agent is named", async () => {
+  const state = await settingsState(SETTINGS_ASSISTANT_FIXTURE);
+
+  state.settingsConfig.assistant.agent = "gemini";
+  assert.deepEqual(vmValue(state.settingsClientErrors()), [
+    'assistant.agent "gemini": not found in agents',
+  ]);
+
+  // codex takes no session id, which is what one chat resumes on.
+  state.settingsConfig.assistant.agent = "codex";
+  assert.deepEqual(vmValue(state.settingsClientErrors()), [
+    'assistant.agent "codex": runs codex, and the assistant only supports claude and pi ' +
+      "(they are the CLIs that take a session id, which one chat needs)",
+  ]);
+
+  state.settingsConfig.assistant.agent = "claude";
+  state.settingsConfig.assistant.autonomy = "yolo";
+  assert.deepEqual(vmValue(state.settingsClientErrors()), [
+    'assistant.autonomy "yolo": must be one of read, ask, auto',
+  ]);
+
+  // An empty agent disables the pane, so nothing else in the block is checked.
+  state.settingsConfig.assistant.agent = "";
+  state.settingsConfig.assistant.effort = "nonsense";
+  assert.deepEqual(vmValue(state.settingsClientErrors()), []);
+
+  // Both are filled by applyDefaults when absent, so blank is not an error.
+  state.settingsConfig.assistant.agent = "claude";
+  state.settingsConfig.assistant.autonomy = "";
+  state.settingsConfig.assistant.timeout = "";
+  assert.deepEqual(vmValue(state.settingsClientErrors()), []);
+
+  // The agents map is a plain object, so a name it shares with an
+  // Object.prototype member has to read as absent, not as a configured agent.
+  state.settingsConfig.assistant.agent = "constructor";
+  assert.deepEqual(vmValue(state.settingsClientErrors()), [
+    'assistant.agent "constructor": not found in agents',
+  ]);
+});
+
 test("durations the daemon accepts are not marked invalid", async () => {
   const state = await settingsState();
 
@@ -4581,7 +4684,7 @@ test("index.html renders every settings section the rail lists", () => {
   const rail = [...app.matchAll(/\{ key: '([a-z]+)', label:/g)].map((m) => m[1]);
   assert.deepEqual(rail, [
     "general", "environment", "agents", "stages", "pipelines",
-    "projects", "web", "plannotator", "statuses", "display",
+    "projects", "web", "assistant", "plannotator", "statuses", "display",
   ]);
   for (const key of rail) {
     assert.match(html, new RegExp(`x-show="settingsSection === '${key}'"`), key);
@@ -4601,6 +4704,15 @@ test("index.html renders every settings section the rail lists", () => {
   // The daemon token is the credential for every /api and /ws call, so it is
   // masked until asked for.
   assert.match(html, /id="web-token" :type="settingsShowToken \? 'text' : 'password'"/);
+
+  // The assistant section mounts with the model already loaded, so x-model
+  // applies its value before the x-for below has added an option and the select
+  // falls back to the first one. Both selects re-apply on the next tick.
+  for (const f of ["agent", "autonomy"]) {
+    assert.match(html, new RegExp(
+      `<select id="as-${f}" x-model="settingsConfig\\.assistant\\.${f}"\\s+` +
+      `x-init="\\$nextTick\\(\\(\\) => \\$el\\.value = settingsConfig\\.assistant\\.${f}\\)"`), f);
+  }
 });
 
 // ── Command palette ──────────────────────────────────────────────────────
@@ -9015,6 +9127,118 @@ test("skipping a parked write sends the refusal", async () => {
   const sent = requests.find((r) => r.url === "/api/assistant/gate/g9");
   assert.deepEqual(JSON.parse(sent.init.body), { decision: "skip" });
   assert.equal(state.assistantGate, null);
+});
+
+test("a config reload re-reads the assistant payload without touching the open chat", async () => {
+  let payload = { enabled: true, agent: "cl", kind: "claude", autonomy: "ask" };
+  const { state, requests } = assistantState();
+  // assistantState freezes its routes at build time, so the second payload —
+  // the one the reload must pick up — is served from here instead.
+  const seen = [];
+  state._assistantFetch = async (url) => {
+    seen.push(url);
+    return { ok: true, status: 200, json: async () => payload };
+  };
+  await state.initAssistant();
+  assert.equal(state.assistantEnabled(), true);
+
+  state.assistantThread = { id: "t1" };
+  state._assistantCursor = 12;
+  state.assistantEvents = [{ kind: "text" }];
+
+  payload = { enabled: false, hint: "Set assistant.agent in config.yaml." };
+  await state._assistantRefreshConfig();
+
+  assert.equal(state.assistantEnabled(), false);
+  assert.equal(state.assistantAgent.hint, "Set assistant.agent in config.yaml.");
+  assert.deepEqual(vmValue(state.assistantThread), { id: "t1" }, "the open chat survives a reload");
+  assert.equal(state._assistantCursor, 12);
+  assert.equal(state.assistantEvents.length, 1);
+  assert.deepEqual(seen, ["/api/assistant", "/api/assistant"]);
+  assert.equal(requests.length, 0);
+});
+
+test("a changed assistant.autonomy beats the stored picker, an unchanged one does not", async () => {
+  // First run: nothing seeded, so the config value is adopted and recorded.
+  const first = assistantState({ store: { "kontora-assistant-autonomy": "read" } });
+  await first.state.initAssistant();
+  assert.equal(first.state.assistantAutonomy, "ask");
+  assert.equal(first.store["kontora-assistant-autonomy-seed"], "ask");
+
+  // The user picks a mode by hand. The seed does not move with it, so the same
+  // config value on the next refresh leaves the pick alone.
+  first.state.setAssistantAutonomy("read");
+  assert.equal(first.store["kontora-assistant-autonomy-seed"], "ask");
+  await first.state._assistantRefreshConfig();
+  assert.equal(first.state.assistantAutonomy, "read");
+
+  // The file changes: the config wins over the manual pick.
+  const changed = assistantState({
+    store: { "kontora-assistant-autonomy": "read", "kontora-assistant-autonomy-seed": "ask" },
+    routes: { "/api/assistant": { enabled: true, agent: "cl", kind: "claude", autonomy: "auto" } },
+  });
+  await changed.state.initAssistant();
+  assert.equal(changed.state.assistantAutonomy, "auto");
+  assert.equal(changed.store["kontora-assistant-autonomy"], "auto");
+  assert.equal(changed.store["kontora-assistant-autonomy-seed"], "auto");
+
+  // A thread carries its own mode, which the seed has no say over.
+  changed.state._assistantAdopt({ id: "t1", autonomy: "ask" }, []);
+  assert.equal(changed.state.assistantAutonomy, "ask");
+
+  // Nor when the file changes under an open chat: the switch is that chat's,
+  // and the next message would otherwise go out at a mode nobody picked. The
+  // seed moves anyway, so the next new chat starts on the file's value.
+  const busy = assistantState({
+    store: { "kontora-assistant-autonomy": "ask", "kontora-assistant-autonomy-seed": "ask" },
+    routes: { "/api/assistant": { enabled: true, agent: "cl", kind: "claude", autonomy: "auto" } },
+  });
+  busy.state.assistantThread = { id: "t1", autonomy: "ask" };
+  await busy.state._assistantRefreshConfig();
+  assert.equal(busy.state.assistantAutonomy, "ask");
+  assert.equal(busy.store["kontora-assistant-autonomy-seed"], "auto");
+});
+
+test("a refresh that cannot reach the daemon leaves a working pane alone", async () => {
+  const { state } = assistantState();
+  await state.initAssistant();
+  assert.equal(state.assistantEnabled(), true);
+
+  state._assistantFetch = async () => { throw new Error("network"); };
+  await state._assistantRefreshConfig();
+  assert.equal(state.assistantEnabled(), true, "a blip must not swap the composer for the hint");
+
+  // The first fetch has nothing to keep, so that one does become the hint.
+  const cold = assistantState();
+  cold.state._assistantFetch = async () => { throw new Error("network"); };
+  await cold.state.initAssistant();
+  assert.equal(cold.state.assistantEnabled(), false);
+  assert.equal(cold.state.assistantAgent.hint, "The daemon did not answer.");
+});
+
+test("config_reloaded refreshes the assistant payload and the board's config cache", async () => {
+  const listeners = {};
+  const urls = [];
+  const state = loadKontoraState({
+    EventSource: class {
+      addEventListener(name, fn) { listeners[name] = fn; }
+      close() {}
+    },
+    fetch: async (url) => {
+      urls.push(url);
+      return { ok: true, status: 200, json: async () => ({ enabled: true, agent: "cl", autonomy: "auto" }) };
+    },
+  });
+  state.connectSSE();
+
+  listeners.config_reloaded({ data: "{}" });
+  await flushMicrotasks();
+
+  // The real handlers, not stubs: the two mixins that own them are merged into
+  // the same object connectSSE runs on, and a rename would break this.
+  assert.deepEqual(urls, ["/api/assistant", "/api/config"]);
+  assert.equal(state.assistantAgent.agent, "cl");
+  assert.equal(state.assistantAutonomy, "auto");
 });
 
 test("the autonomy switch persists and names itself", () => {

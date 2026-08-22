@@ -393,6 +393,13 @@ export function kontoraTickets() {
           this.reconnectTerminal();
         }
       });
+      es.addEventListener('config_reloaded', () => {
+        // Both are plain re-fetches, so the second event a settings save
+        // produces — the endpoint reloads, then the watcher sees the write —
+        // costs two requests and changes nothing.
+        this._assistantRefreshConfig();
+        this._settingsRefreshConfigCache();
+      });
       es.addEventListener('plannotator_started', (e) => {
         const payload = JSON.parse(e.data);
         if (payload.ticket_id) {

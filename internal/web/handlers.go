@@ -611,7 +611,11 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			var data []byte
-			if strings.HasPrefix(ev.Type, "plannotator_") {
+			if ev.Type == "config_reloaded" {
+				// Carries no ticket. Without this the zero TicketInfo would go
+				// out and read as an event about a ticket with an empty id.
+				data = []byte("{}")
+			} else if strings.HasPrefix(ev.Type, "plannotator_") {
 				data, _ = json.Marshal(map[string]string{
 					"ticket_id": ev.Ticket.ID,
 					"outcome":   ev.Outcome,

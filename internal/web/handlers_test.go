@@ -1832,50 +1832,66 @@ func TestHandleSSE_StreamsEvents(t *testing.T) {
 	assert.Equal(t, "in_progress", tkt.Status)
 }
 
-func TestHandleSSE_PlannotatorEventFormat(t *testing.T) {
-	broker := NewSSEBroker()
-	srv := startHandlerTestServerWithBroker(t, &mockService{}, broker)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+srv.Addr()+"/api/events", nil)
-	require.NoError(t, err)
-	resp, err := http.DefaultClient.Do(req)
-	require.NoError(t, err)
-	defer resp.Body.Close()
-
-	require.Eventually(t, func() bool {
-		broker.mu.Lock()
-		defer broker.mu.Unlock()
-		return len(broker.clients) > 0
-	}, time.Second, 5*time.Millisecond)
-
-	broker.Broadcast(TicketEvent{
-		Type:    "plannotator_finished",
-		Ticket:  TicketInfo{ID: "t-001"},
-		Outcome: PlannotatorOutcomeRework,
-	})
-
-	scanner := bufio.NewScanner(resp.Body)
-	var lines []string
-	for scanner.Scan() {
-		line := scanner.Text()
-		lines = append(lines, line)
-		if line == "" {
-			break
-		}
+// The event types handleSSE does not serialise as a bare TicketInfo.
+func TestHandleSSE_EventPayloads(t *testing.T) {
+	tests := []struct {
+		name  string
+		event TicketEvent
+		want  string
+	}{
+		{
+			name: "a plannotator event names its ticket and outcome",
+			event: TicketEvent{
+				Type:    "plannotator_finished",
+				Ticket:  TicketInfo{ID: "t-001"},
+				Outcome: PlannotatorOutcomeRework,
+			},
+			want: `{"ticket_id":"t-001","outcome":"rework","message":""}`,
+		},
+		{
+			// A zero TicketInfo would read as an event about a ticket with an
+			// empty id. The reload is about the config, not a ticket.
+			name:  "a config reload carries no ticket",
+			event: TicketEvent{Type: "config_reloaded"},
+			want:  `{}`,
+		},
 	}
-	require.Len(t, lines, 3)
-	assert.Equal(t, "event: plannotator_finished", lines[0])
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			broker := NewSSEBroker()
+			srv := startHandlerTestServerWithBroker(t, &mockService{}, broker)
 
-	var payload struct {
-		TicketID string `json:"ticket_id"`
-		Outcome  string `json:"outcome"`
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+srv.Addr()+"/api/events", nil)
+			require.NoError(t, err)
+			resp, err := http.DefaultClient.Do(req)
+			require.NoError(t, err)
+			defer resp.Body.Close()
+
+			require.Eventually(t, func() bool {
+				broker.mu.Lock()
+				defer broker.mu.Unlock()
+				return len(broker.clients) > 0
+			}, time.Second, 5*time.Millisecond)
+
+			broker.Broadcast(tc.event)
+
+			scanner := bufio.NewScanner(resp.Body)
+			var lines []string
+			for scanner.Scan() {
+				line := scanner.Text()
+				lines = append(lines, line)
+				if line == "" {
+					break
+				}
+			}
+			require.Len(t, lines, 3)
+			assert.Equal(t, "event: "+tc.event.Type, lines[0])
+			assert.JSONEq(t, tc.want, strings.TrimPrefix(lines[1], "data: "))
+		})
 	}
-	require.NoError(t, json.Unmarshal([]byte(strings.TrimPrefix(lines[1], "data: ")), &payload))
-	assert.Equal(t, "t-001", payload.TicketID)
-	assert.Equal(t, "rework", payload.Outcome)
 }
 
 func TestHandleSSE_Disconnect(t *testing.T) {

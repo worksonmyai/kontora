@@ -3233,6 +3233,79 @@
                   </div>
                 </div>
 
+                <!-- ===== assistant ===== -->
+                <div x-show="settingsSection === 'assistant'" class="flex flex-col gap-3.5">
+                  <div class="flex items-start gap-2 bg-surface-850 border border-surface-700/50 rounded-md p-2.5 px-3">
+                    <span class="text-tx-faint font-mono text-[12px] leading-[1.5]">i</span>
+                    <span class="text-[12px] leading-[1.5] text-tx-3">A chat freezes its agent, model, effort and working directory when it is created, so a change here reaches new chats only. Repointing <span class="font-mono text-tx-2">agent</span> makes every existing chat refuse to continue.</span>
+                  </div>
+
+                  <div>
+                    <label for="as-agent" class="font-mono text-[13px] text-tx-3 mb-1 block">agent</label>
+                    <!-- The section mounts with the model already loaded, so x-model applies
+                         its value before the x-for below has added any option and the select
+                         falls back to the first one. Re-apply once the options exist. -->
+                    <select id="as-agent" x-model="settingsConfig.assistant.agent"
+                            x-init="$nextTick(() => $el.value = settingsConfig.assistant.agent)"
+                            class="w-full max-w-[32rem] h-[34px] bg-surface-800 border border-surface-700/50 rounded px-2 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40">
+                      <option value="">none — the pane is disabled</option>
+                      <template x-for="name in Object.keys(settingsConfig.agents).sort()" :key="name">
+                        <option :value="name" x-text="name"></option>
+                      </template>
+                    </select>
+                    <p class="text-[11px] text-surface-600 mt-0.5">Only an agent running claude or pi works: a chat is one agent session, and those are the CLIs that take a session id.</p>
+                  </div>
+
+                  <div>
+                    <label for="as-model" class="font-mono text-[13px] text-tx-3 mb-1 block">model</label>
+                    <input id="as-model" type="text" x-model="settingsConfig.assistant.model" placeholder="the agent's own model"
+                           class="w-full max-w-[32rem] bg-surface-800 border border-surface-700/50 rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40">
+                  </div>
+
+                  <div>
+                    <label for="as-effort" class="font-mono text-[13px] text-tx-3 mb-1 block">effort</label>
+                    <input id="as-effort" type="text" x-model="settingsConfig.assistant.effort" placeholder="the agent's own effort"
+                           class="w-full max-w-[32rem] bg-surface-800 border border-surface-700/50 rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40">
+                  </div>
+
+                  <template x-for="f in settingsAssistantFields" :key="f.key">
+                    <div>
+                      <label :for="'as-' + f.key" class="font-mono text-[13px] text-tx-3 mb-1 flex items-center gap-2">
+                        <span x-text="f.key"></span>
+                        <span x-show="!settingsConfig.assistant[f.key]" class="font-mono text-[9.5px] uppercase tracking-[.08em] text-tx-faint border border-surface-700/60 rounded px-[5px] py-px">default</span>
+                      </label>
+                      <input :id="'as-' + f.key" type="text" x-model="settingsConfig.assistant[f.key]" :placeholder="f.placeholder"
+                             class="w-full max-w-[32rem] bg-surface-800 border rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40"
+                             :class="f.key === 'timeout' && !settingsDurationValid(settingsConfig.assistant[f.key]) ? 'border-err' : 'border-surface-700/50'">
+                      <p class="text-[11px] text-surface-600 mt-0.5" x-text="f.help + (settingsConfig.assistant[f.key] ? '' : ' Default: ' + f.placeholder)"></p>
+                    </div>
+                  </template>
+
+                  <div>
+                    <label for="as-autonomy" class="font-mono text-[13px] text-tx-3 mb-1 flex items-center gap-2">
+                      <span>autonomy</span>
+                      <span x-show="!settingsConfig.assistant.autonomy" class="font-mono text-[9.5px] uppercase tracking-[.08em] text-tx-faint border border-surface-700/60 rounded px-[5px] py-px">default</span>
+                    </label>
+                    <select id="as-autonomy" x-model="settingsConfig.assistant.autonomy"
+                            x-init="$nextTick(() => $el.value = settingsConfig.assistant.autonomy)"
+                            class="w-full max-w-[32rem] h-[34px] bg-surface-800 border border-surface-700/50 rounded px-2 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40">
+                      <option value="">ask first (default)</option>
+                      <template x-for="a in assistantAutonomies()" :key="a.key">
+                        <option :value="a.key" x-text="a.key + ' — ' + a.hint"></option>
+                      </template>
+                    </select>
+                    <p class="text-[11px] text-surface-600 mt-0.5">The mode a new chat starts in. Changing it moves the pane's own switch; a running chat keeps the mode it was given.</p>
+                  </div>
+
+                  <div>
+                    <label for="as-prompt" class="font-mono text-[13px] text-tx-3 mb-1 block">prompt</label>
+                    <textarea id="as-prompt" x-model="settingsConfig.assistant.prompt" spellcheck="false"
+                              placeholder="empty — the built-in brief is used"
+                              class="w-full max-w-[32rem] min-h-[160px] resize-y bg-surface-deep border border-surface-700 rounded-md px-4 py-3 font-mono text-[12px] leading-[1.7] text-tx focus:outline-none focus:border-accent/40"></textarea>
+                    <p class="text-[11px] text-surface-600 mt-0.5">Replaces the built-in system brief rather than adding to it, so a prompt here has to describe the board and the verbs itself.</p>
+                  </div>
+                </div>
+
                 <!-- ===== plannotator ===== -->
                 <div x-show="settingsSection === 'plannotator'" class="flex flex-col gap-3.5">
                   <template x-for="f in settingsPlannotatorFields" :key="f.key">

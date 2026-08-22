@@ -173,21 +173,48 @@ export function kontoraAssistant() {
     // Fetch the assistant config and, when the pane was left open, the thread
     // it was left on. Called from the component's init.
     async initAssistant() {
-      try {
-        const res = await this._assistantFetch('/api/assistant');
-        this.assistantAgent = await res.json();
-      } catch (e) {
-        this.assistantAgent = { enabled: false, hint: 'The daemon did not answer.' };
-      }
-      if (this.assistantAgent && this.assistantAgent.autonomy) {
-        if (assistantStored('kontora-assistant-autonomy', null) === null) {
-          this.assistantAutonomy = this.assistantAgent.autonomy;
-        }
-      }
+      await this._assistantRefreshConfig();
       if (!this.assistantEnabled()) return;
       const last = assistantStored('kontora-assistant-thread', '');
       if (last) await this.assistantSelectThread(last, { quiet: true });
       if (this.assistantOpen) this.assistantLoadThreads();
+    },
+
+    // Re-read GET /api/assistant. Called from init and again on every
+    // config_reloaded, so a change to the assistant block reaches the pane
+    // without a page reload. It touches nothing about the open thread — not
+    // the cursor, not the poll — because a reload does not end a chat.
+    async _assistantRefreshConfig() {
+      try {
+        const res = await this._assistantFetch('/api/assistant');
+        this.assistantAgent = await res.json();
+      } catch (e) {
+        // Only the first fetch turns into the hint. A later one failing is a
+        // blip in a pane that is already working, and replacing the composer
+        // with the configure hint over it loses the draft in it.
+        if (!this.assistantAgent) {
+          this.assistantAgent = { enabled: false, hint: 'The daemon did not answer.' };
+        }
+      }
+      this._assistantSeedAutonomy();
+    },
+
+    // The picker is sticky per browser, but a change to assistant.autonomy in
+    // the file has to win, or the settings field would do nothing for anyone
+    // who has already touched the switch. The seed is the config value this
+    // browser last took: while it matches the file, the user's pick stands.
+    _assistantSeedAutonomy() {
+      const mode = this.assistantAgent && this.assistantAgent.autonomy;
+      if (!mode) return;
+      if (assistantStored('kontora-assistant-autonomy-seed', null) === mode) return;
+      assistantStore('kontora-assistant-autonomy-seed', mode);
+      assistantStore('kontora-assistant-autonomy', mode);
+      // An open chat owns the switch: the daemon holds a mode for that chat,
+      // and moving the switch under it would send the next message at an
+      // autonomy nobody chose. The seed still moves, so the next new chat
+      // starts on the file's value.
+      if (this.assistantThread) return;
+      this.assistantAutonomy = mode;
     },
 
     assistantEnabled() {

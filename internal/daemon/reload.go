@@ -13,6 +13,7 @@ import (
 
 	"github.com/worksonmyai/kontora/internal/config"
 	"github.com/worksonmyai/kontora/internal/watcher"
+	"github.com/worksonmyai/kontora/internal/web"
 )
 
 // errNoConfigPath is returned when a reload is requested but the daemon was
@@ -57,6 +58,13 @@ func (d *Daemon) reloadConfig() error {
 		"agents", len(next.Agents),
 		"stages", len(next.Stages),
 		"pipelines", len(next.Pipelines))
+
+	// The open dashboard holds its own copies of the resolved config — the
+	// board's /api/config cache and the assistant pane's /api/assistant payload
+	// — and nothing else would tell it either one went stale.
+	if d.broker != nil {
+		d.broker.Broadcast(web.TicketEvent{Type: "config_reloaded"})
+	}
 	return nil
 }
 

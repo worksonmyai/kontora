@@ -837,3 +837,40 @@ func TestReload_TicketsDirEnvBeatsFileEdit(t *testing.T) {
 	assert.NotContains(t, h.logBuf.String(), "tickets_dir",
 		"both sides of the pin see the environment's value, so there is nothing to warn about")
 }
+
+func TestReload_BroadcastsConfigReloaded(t *testing.T) {
+	h := newReloadHarness(t)
+	d := h.newDaemonWithConfig(t, h.yaml(configOpts{}))
+
+	ch, unsub := d.Subscribe()
+	defer unsub()
+
+	tests := []struct {
+		name    string
+		content string
+		wantErr bool
+	}{
+		{"a successful reload emits", h.yaml(configOpts{branchPrefix: "changed"}), false},
+		{"a rejected one does not", h.yaml(configOpts{extra: "unknown_field: x\n"}), true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			h.writeConfig(t, tc.content)
+			err := d.reloadConfig()
+			if tc.wantErr {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+			}
+
+			select {
+			case ev := <-ch:
+				require.False(t, tc.wantErr, "a rejected reload must not broadcast")
+				assert.Equal(t, "config_reloaded", ev.Type)
+				assert.Empty(t, ev.Ticket.ID)
+			case <-time.After(500 * time.Millisecond):
+				require.True(t, tc.wantErr, "timed out waiting for config_reloaded")
+			}
+		})
+	}
+}

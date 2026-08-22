@@ -386,9 +386,17 @@ Checks the config, the required tools (`git`, `tmux`), each agent binary, each c
 
 Reads Claude Code stream-json on stdin and prints it as readable text. Takes no flags and talks to nothing, so it works with `KONTORA_URL` set.
 
-### `kontora completion fish`
+### `kontora completion <shell>`
 
-Prints a fish completion script. Install it for the session with `kontora completion fish | source`, or persist it to `~/.config/fish/completions/kontora.fish`. fish is the only shell supported today.
+Prints a completion script for `bash`, `fish` or `zsh`. Each one completes the verbs, their flags, and, for the verbs that take one, a ticket ID. The ID list comes from `kontora ls --closed`, so closed tickets are offered too.
+
+```bash
+kontora completion fish > ~/.config/fish/completions/kontora.fish
+kontora completion zsh  > ~/.zsh/completions/_kontora   # dir must be in $fpath before compinit
+kontora completion bash > ~/.local/share/bash-completion/completions/kontora
+```
+
+See [Shell completions](configuration.md#shell-completions) for the per-shell install steps.
 
 ### `kontora version`
 

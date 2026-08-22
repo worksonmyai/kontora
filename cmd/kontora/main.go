@@ -1430,7 +1430,7 @@ func remoteConfigEdit(rc *remote.Client) error {
 
 func cmdCompletion() {
 	if len(os.Args) < 3 {
-		fmt.Fprintf(os.Stderr, "%s kontora completion <shell>\n\n%s fish\n", helpBold.Render("Usage:"), helpFaint.Render("Supported shells:"))
+		fmt.Fprintf(os.Stderr, "%s kontora completion <shell>\n\n%s %s\n", helpBold.Render("Usage:"), helpFaint.Render("Supported shells:"), strings.Join(cli.SupportedShells, ", "))
 		os.Exit(1)
 	}
 	if err := cli.Completion(os.Args[2], os.Stdout); err != nil {

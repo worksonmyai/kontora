@@ -953,6 +953,10 @@ leaving it stuck with no explanation.
 
 ## Shell completions
 
+`kontora completion <shell>` prints a script for bash, fish or zsh. All three
+complete the verbs, their flags and, where the verb takes one, a ticket ID. The
+ID list comes from `kontora ls --closed`, so it includes closed tickets.
+
 ```bash
 # Fish - activate in current session
 kontora completion fish | source
@@ -960,3 +964,28 @@ kontora completion fish | source
 # Fish - persist across sessions
 kontora completion fish > ~/.config/fish/completions/kontora.fish
 ```
+
+```bash
+# Zsh - activate in current session
+source <(kontora completion zsh)
+
+# Zsh - persist across sessions. The directory has to be in $fpath before
+# compinit runs, and the file has to be named _kontora.
+mkdir -p ~/.zsh/completions
+kontora completion zsh > ~/.zsh/completions/_kontora
+# then in ~/.zshrc, above `compinit`:
+#   fpath=(~/.zsh/completions $fpath)
+```
+
+```bash
+# Bash - activate in current session
+source <(kontora completion bash)
+
+# Bash - persist across sessions (Linux, and macOS with Homebrew bash-completion@2)
+mkdir -p ~/.local/share/bash-completion/completions
+kontora completion bash > ~/.local/share/bash-completion/completions/kontora
+```
+
+The script itself runs on bash 3.2, so macOS's system bash is enough. The
+directory above is where bash-completion 2.x looks; without bash-completion,
+source the file from `~/.bashrc` instead.

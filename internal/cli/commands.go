@@ -132,7 +132,7 @@ var Commands = []Command{
 	{Name: "config", Desc: "Show effective configuration", Config: true, Remote: true, Subcommands: []string{"edit"}},
 	{Name: "fmt", Desc: "Format stream-json from stdin"},
 	{Name: "version", Desc: "Print version"},
-	{Name: "completion", Desc: "Generate shell completions", Subcommands: []string{"fish"}},
+	{Name: "completion", Desc: "Generate shell completions", Subcommands: []string{"bash", "fish", "zsh"}},
 }
 
 // Command is one top-level verb.

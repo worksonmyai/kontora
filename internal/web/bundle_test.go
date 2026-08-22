@@ -33,7 +33,7 @@ func TestUIBundle(t *testing.T) {
 	for _, global := range []string{"globalThis.kontora =", "globalThis.termState =", "globalThis.statsDerive ="} {
 		assert.Contains(t, js, global)
 	}
-	for _, line := range strings.Split(js, "\n") {
+	for line := range strings.SplitSeq(js, "\n") {
 		assert.False(t, strings.HasPrefix(line, "import ") || strings.HasPrefix(line, "export "),
 			"the bundle must be an IIFE, not an ES module: %q", line)
 	}

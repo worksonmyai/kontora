@@ -93,7 +93,7 @@ func buildUIBundle(sources fs.FS) ([]byte, error) {
 // buildMessages formats everything esbuild complained about, or returns "" when
 // it complained about nothing.
 func buildMessages(result api.BuildResult) string {
-	var out []string
+	out := make([]string, 0, len(result.Errors)+len(result.Warnings))
 	out = append(out, api.FormatMessages(result.Errors, api.FormatMessagesOptions{Kind: api.ErrorMessage})...)
 	out = append(out, api.FormatMessages(result.Warnings, api.FormatMessagesOptions{Kind: api.WarningMessage})...)
 	return strings.TrimSpace(strings.Join(out, ""))

@@ -56,8 +56,6 @@ github.com/coder/websocket/internal/wsjs
 # github.com/creack/pty/v2 v2.0.1
 ## explicit; go 1.13
 github.com/creack/pty/v2
-# github.com/davecgh/go-spew v1.1.1
-## explicit
 # github.com/erikgeiser/coninput v0.0.0-20211004153227-1c3628e74d0f
 ## explicit; go 1.16
 github.com/erikgeiser/coninput
@@ -132,8 +130,6 @@ github.com/muesli/cancelreader
 # github.com/muesli/termenv v0.16.0
 ## explicit; go 1.17
 github.com/muesli/termenv
-# github.com/pmezard/go-difflib v1.0.0
-## explicit
 # github.com/rivo/uniseg v0.4.7
 ## explicit; go 1.18
 github.com/rivo/uniseg

@@ -421,11 +421,16 @@ export function kontoraBoard() {
       // command line in the terminal tab.
       window.addEventListener('keydown', function (e) {
         if (!(self.isMac ? e.metaKey : e.ctrlKey)) return;
-        if ((e.key || '').toLowerCase() !== 'k') return;
+        var key = (e.key || '').toLowerCase();
+        // ⌘J opens the assistant pane on the same terms as ⌘K opens the
+        // palette, and from this one listener rather than a second: both have
+        // to be swallowed before xterm forwards them.
+        if (key !== 'k' && key !== 'j') return;
         if (self.isMobile) return;
         e.preventDefault();
         e.stopPropagation();
-        self.togglePalette();
+        if (key === 'k') self.togglePalette();
+        else self.toggleAssistant();
       }, true);
       document.addEventListener('click', function (e) {
         if (!self._openMenuId) return;

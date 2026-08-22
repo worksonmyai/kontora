@@ -49,6 +49,92 @@ type mockService struct {
 	rawConfigErr   error
 	putRawConfigFn func(content string) error
 	configInfo     ConfigInfo
+
+	assistantConfig    AssistantConfigInfo
+	assistantThreads   []AssistantThreadInfo
+	assistantThreadErr error
+	assistantCreateFn  func(req CreateAssistantThreadRequest) (AssistantThreadInfo, error)
+	assistantDeleteFn  func(id string) error
+	assistantActFn     func(q AssistantActivityQuery) (AssistantActivityInfo, error)
+	assistantMsgFn     func(id string, req AssistantMessageRequest) error
+	assistantStopFn    func(id string) error
+	assistantGateFn    func(gateID string, approve bool) error
+	assistantAskFn     func(req AssistantGateAskRequest) (AssistantGateAskResponse, error)
+	assistantCalls     []string
+}
+
+func (m *mockService) AssistantConfig() AssistantConfigInfo { return m.assistantConfig }
+
+func (m *mockService) ListAssistantThreads() ([]AssistantThreadInfo, error) {
+	if m.assistantThreadErr != nil {
+		return nil, m.assistantThreadErr
+	}
+	return m.assistantThreads, nil
+}
+
+func (m *mockService) CreateAssistantThread(req CreateAssistantThreadRequest) (AssistantThreadInfo, error) {
+	if m.assistantCreateFn != nil {
+		return m.assistantCreateFn(req)
+	}
+	return AssistantThreadInfo{ID: "t1", Autonomy: req.Autonomy}, nil
+}
+
+func (m *mockService) GetAssistantThread(id string) (AssistantThreadInfo, error) {
+	if m.assistantThreadErr != nil {
+		return AssistantThreadInfo{}, m.assistantThreadErr
+	}
+	for _, t := range m.assistantThreads {
+		if t.ID == id {
+			return t, nil
+		}
+	}
+	return AssistantThreadInfo{}, ErrAssistantNotFound
+}
+
+func (m *mockService) DeleteAssistantThread(id string) error {
+	m.assistantCalls = append(m.assistantCalls, "delete "+id)
+	if m.assistantDeleteFn != nil {
+		return m.assistantDeleteFn(id)
+	}
+	return nil
+}
+
+func (m *mockService) AssistantActivity(q AssistantActivityQuery) (AssistantActivityInfo, error) {
+	if m.assistantActFn != nil {
+		return m.assistantActFn(q)
+	}
+	return AssistantActivityInfo{}, nil
+}
+
+func (m *mockService) PostAssistantMessage(id string, req AssistantMessageRequest) error {
+	m.assistantCalls = append(m.assistantCalls, "message "+id+" "+req.Text)
+	if m.assistantMsgFn != nil {
+		return m.assistantMsgFn(id, req)
+	}
+	return nil
+}
+
+func (m *mockService) StopAssistantTurn(id string) error {
+	m.assistantCalls = append(m.assistantCalls, "stop "+id)
+	if m.assistantStopFn != nil {
+		return m.assistantStopFn(id)
+	}
+	return nil
+}
+
+func (m *mockService) ResolveAssistantGate(gateID string, approve bool) error {
+	m.assistantCalls = append(m.assistantCalls, fmt.Sprintf("gate %s %t", gateID, approve))
+	if m.assistantGateFn != nil {
+		return m.assistantGateFn(gateID, approve)
+	}
+	return nil
+}
+
+func (m *mockService) AskAssistantGate(req AssistantGateAskRequest) (AssistantGateAskResponse, error) {
+	if m.assistantAskFn != nil {
+		return m.assistantAskFn(req)
+	}
+	return AssistantGateAskResponse{Allow: true}, nil
 }
 
 func (m *mockService) ListTickets(opts ListTicketsOptions) []TicketInfo {

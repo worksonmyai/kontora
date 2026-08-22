@@ -118,6 +118,13 @@ func main() {
 		// can be piped, and exits 0 so a script does not read it as a failure.
 		fmt.Print(renderUsage())
 		return
+	case "assistant-gate":
+		// Dispatched here rather than from the handlers table: the table is
+		// what renderUsage and the shell completions are generated from, and a
+		// verb only the assistant's own agent ever runs does not belong in
+		// either. It is spawned by a claude PreToolUse hook, never typed.
+		cmdAssistantGate()
+		return
 	}
 
 	run, ok := handlers[os.Args[1]]
@@ -992,6 +999,39 @@ func cmdPhaseComplete() {
 	if err := cli.PhaseComplete(os.Getenv(cli.CheckpointFileEnvVar), *completed, *next, time.Now(), os.Stdout); err != nil {
 		log.Fatal(err)
 	}
+}
+
+// cmdAssistantGate answers one PreToolUse hook for an assistant turn. It is
+// hidden: the daemon writes the settings file that spawns it, and its address,
+// token, thread and per-turn nonce all come from the environment that turn was
+// given.
+func cmdAssistantGate() {
+	base := os.Getenv(cli.AssistantURLEnv)
+	client := remote.New(base, os.Getenv(cli.AssistantTokenEnv))
+	if err := cli.AssistantGate(os.Stdin, os.Stdout, assistantGateClient{client: client, base: base}); err != nil {
+		log.Fatal(err)
+	}
+}
+
+// assistantGateClient adapts the remote client to the asker the gate command
+// takes. An empty base is reported as an error rather than dialed, so the hook
+// denies instead of failing with a bare URL parse error.
+type assistantGateClient struct {
+	client *remote.Client
+	base   string
+}
+
+func (a assistantGateClient) Ask(thread, nonce, tool string, input map[string]any) (bool, string, error) {
+	if a.base == "" {
+		return false, "", fmt.Errorf("%s is not set", cli.AssistantURLEnv)
+	}
+	resp, err := a.client.AssistantGateAsk(web.AssistantGateAskRequest{
+		Thread: thread, Nonce: nonce, Tool: tool, Input: input,
+	})
+	if err != nil {
+		return false, "", err
+	}
+	return resp.Allow, resp.Reason, nil
 }
 
 func cmdChanges() {

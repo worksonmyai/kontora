@@ -3528,8 +3528,10 @@ test("index.html renders every prose block through the idempotent write", () => 
   assert.equal(html.includes('x-html="renderMarkdown'), false);
   // Two writers share the pattern, counted apart: entity chips belong to the
   // stage summary, and a ticket body swapped onto setSummaryProse would keep
-  // any combined total the same.
-  assert.equal(html.match(/x-effect="setProse\(\$el, /g).length, 5);
+  // any combined total the same. Seven, because the assistant's own prose runs
+  // through the same write in both layers, and a streaming pane is exactly the
+  // case a rebuild-per-effect would ruin.
+  assert.equal(html.match(/x-effect="setProse\(\$el, /g).length, 7);
   assert.equal(html.match(/x-effect="setSummaryProse\(\$el, /g).length, 2);
   // A note is plain text through the same memo, so a repeated effect run does
   // not rewrite it either.
@@ -8676,4 +8678,526 @@ test("the board badge's question uses the wrapping tip, not the nowrap one", () 
   // The timestamp variant is one unbounded line, which a 200-byte question
   // would run off the side of the viewport.
   assert.match(html, /#global-tip-t \{[^}]*white-space: nowrap/);
+});
+
+// ---------------------------------------------------------------------------
+// Assistant pane
+// ---------------------------------------------------------------------------
+
+// assistantState builds the component over a storage and a fetch the caller
+// controls, so a test can seed the persisted width, drive the poll, and read
+// back what the pane sent.
+function assistantState(opts = {}) {
+  const store = Object.assign({}, opts.store);
+  const requests = [];
+  const listeners = [];
+  const routes = Object.assign(
+    {
+      "/api/assistant": { enabled: true, agent: "cl", kind: "claude", autonomy: "ask" },
+      "/api/assistant/threads": { threads: [] },
+    },
+    opts.routes,
+  );
+  const { state } = loadKontoraContext({
+    location: { protocol: "http:", host: "localhost:8080", hash: "" },
+    localStorage: {
+      getItem: (k) => (k in store ? store[k] : null),
+      setItem: (k, v) => { store[k] = v; },
+    },
+    window: {
+      innerWidth: 1200,
+      addEventListener(type, handler, capture) { listeners.push({ type, handler, capture }); },
+      removeEventListener(type, handler) {
+        const i = listeners.findIndex((l) => l.type === type && l.handler === handler);
+        if (i >= 0) listeners.splice(i, 1);
+      },
+    },
+    fetch: async (url, init) => {
+      requests.push({ url, init });
+      const key = Object.keys(routes).find((k) => url === k || url.startsWith(k + "?"));
+      const body = key ? routes[key] : (opts.fallback || {});
+      if (body && body.__status) return { ok: false, status: body.__status, json: async () => body };
+      return { ok: true, status: 200, headers: { get: () => (opts.etag || "") }, json: async () => body };
+    },
+  });
+  state.$nextTick = (cb) => { if (cb) cb(); return Promise.resolve(); };
+  return { state, store, requests, listeners };
+}
+
+test("the pane opens and closes, and remembers that it was open", async () => {
+  const { state, store } = assistantState();
+  await state.initAssistant();
+
+  assert.equal(state.assistantOpen, false);
+  state.toggleAssistant();
+  assert.equal(state.assistantOpen, true);
+  assert.equal(store["kontora-assistant-open"], "1");
+
+  state.toggleAssistant();
+  assert.equal(state.assistantOpen, false);
+  assert.equal(store["kontora-assistant-open"], "0");
+
+  // A second component over the same storage comes back open.
+  const reopened = assistantState({ store: { "kontora-assistant-open": "1" } });
+  assert.equal(reopened.state.assistantOpen, true);
+});
+
+test("the rail keeps the pane mounted at icon width", () => {
+  const { state, store } = assistantState();
+  state.toggleAssistant();
+  state.toggleAssistantRail();
+
+  assert.equal(state.assistantRail, true);
+  assert.equal(state.assistantOpen, true, "the rail is collapsed, not closed");
+  assert.equal(store["kontora-assistant-rail"], "1");
+
+  // Toggling from the rail expands rather than closing, so ⌘J never hides a
+  // running turn behind one keystroke the user did not mean.
+  state.toggleAssistant();
+  assert.equal(state.assistantRail, false);
+  assert.equal(state.assistantOpen, true);
+});
+
+test("the pane width is clamped into 340-640 and persisted", () => {
+  const { state, store } = assistantState();
+
+  assert.equal(state.setAssistantWidth(200), 340);
+  assert.equal(state.setAssistantWidth(9000), 640);
+  assert.equal(state.setAssistantWidth(500), 500);
+  assert.equal(store["kontora-assistant-width"], "500");
+  // Junk in storage falls back rather than laying the pane out at NaN pixels.
+  assert.equal(state.setAssistantWidth("nonsense"), 420);
+
+  const restored = assistantState({ store: { "kontora-assistant-width": "9000" } });
+  assert.equal(restored.state.assistantWidth, 640, "a stored width past the bound is clamped on read");
+});
+
+test("dragging the left edge widens the pane and persists once", () => {
+  const { state, store, listeners } = assistantState();
+  state.assistantWidth = 400;
+
+  state.startAssistantResize({ clientX: 800 });
+  const move = listeners.find((l) => l.type === "mousemove");
+  const up = listeners.find((l) => l.type === "mouseup");
+
+  // The pane is on the right, so dragging left widens it.
+  move.handler({ clientX: 700 });
+  assert.equal(state.assistantWidth, 500);
+  assert.equal(store["kontora-assistant-width"], undefined, "a drag does not hammer storage");
+
+  move.handler({ clientX: 100 });
+  assert.equal(state.assistantWidth, 640, "the drag is clamped too");
+
+  up.handler();
+  assert.equal(store["kontora-assistant-width"], "640");
+  assert.equal(listeners.filter((l) => l.type === "mousemove").length, 0, "the drag listeners are removed");
+});
+
+test("⌘J toggles the pane from the same capture-phase listener as ⌘K", () => {
+  const listeners = [];
+  const state = loadKontoraState({
+    navigator: { platform: "MacIntel", clipboard: { writeText() {} } },
+    window: { innerWidth: 1200, addEventListener(type, handler, capture) { listeners.push({ type, handler, capture }); } },
+    document: { getElementById: () => null, querySelector: () => null, documentElement: { style: {} }, addEventListener() {} },
+  });
+  state.$nextTick = (cb) => { if (cb) cb(); return Promise.resolve(); };
+  state.$refs = {};
+  state._bindGlobalEvents();
+
+  const captured = listeners.filter((l) => l.type === "keydown" && l.capture === true);
+  assert.equal(captured.length, 1, "one listener carries both chords");
+
+  let prevented = 0;
+  let stopped = 0;
+  const press = (init) => captured[0].handler({
+    preventDefault() { prevented += 1; },
+    stopPropagation() { stopped += 1; },
+    ...init,
+  });
+
+  press({ key: "j", metaKey: true });
+  assert.equal(state.assistantOpen, true);
+  // The "j" must not reach the agent's stdin.
+  assert.equal(prevented, 1);
+  assert.equal(stopped, 1);
+
+  press({ key: "j", metaKey: true });
+  assert.equal(state.assistantOpen, false);
+
+  // Ctrl+J on macOS is not ours, and neither chord fires on the phone layer.
+  press({ key: "j", ctrlKey: true });
+  assert.equal(state.assistantOpen, false);
+  state.isMobile = true;
+  press({ key: "j", metaKey: true });
+  assert.equal(state.assistantOpen, false);
+});
+
+test("escape closes the pane only once nothing inside it is open", () => {
+  const { state } = assistantState();
+  state.toggleAssistant();
+
+  state.assistantMenu = { kind: "slash", rows: [{ id: "a", insert: "x" }], index: 0, from: 0 };
+  assert.equal(state.assistantEscape(), true);
+  assert.equal(state.assistantMenu, null);
+  assert.equal(state.assistantOpen, true, "the menu closed, not the pane");
+
+  state.assistantAutonomyOpen = true;
+  assert.equal(state.assistantEscape(), true);
+  assert.equal(state.assistantAutonomyOpen, false);
+  assert.equal(state.assistantOpen, true);
+
+  state.assistantView = "history";
+  assert.equal(state.assistantEscape(), true);
+  assert.equal(state.assistantView, "thread");
+  assert.equal(state.assistantOpen, true);
+
+  assert.equal(state.assistantEscape(), true);
+  assert.equal(state.assistantOpen, false);
+  // A closed pane consumes nothing, so the body chain falls through to the
+  // ticket detail behind it.
+  assert.equal(state.assistantEscape(), false);
+});
+
+test("the body escape chain reaches the pane after the sheets and before the terminal", () => {
+  const html = fs.readFileSync(htmlPath, "utf8");
+  const chain = html.match(/@keydown\.escape\.window="([^"]+)"/)[1];
+
+  assert.ok(chain.indexOf("closeSheet()") < chain.indexOf("assistantEscape()"));
+  assert.ok(chain.indexOf("assistantEscape()") < chain.indexOf("terminalRW"));
+  // The palette is first, so ⎋ with both open closes the palette and leaves the
+  // pane where it was.
+  assert.ok(chain.indexOf("palettePop()") < chain.indexOf("assistantEscape()"));
+});
+
+test("the docked pane is desktop only and the phone gets the sheet instead", () => {
+  const html = fs.readFileSync(htmlPath, "utf8");
+
+  assert.match(html, /x-if="!isMobile && assistantOpen && !assistantRail"/);
+  assert.match(html, /x-if="!isMobile && assistantOpen && assistantRail"/);
+  assert.match(html, /x-if="sheet\.type==='assistant'"/);
+  // A flex sibling of the views rather than an overlay, so the board narrows
+  // and stays visible.
+  assert.match(html, /id="assistant-pane"[\s\S]{0,200}?shrink-0/);
+  assert.equal(/id="assistant-pane"[\s\S]{0,300}?(fixed|absolute) inset-0/.test(html), false);
+});
+
+test("a tool row expands by the agent's own call id", () => {
+  const { state } = assistantState();
+  const rows = [
+    { kind: "tool", id: "call_1", tool: "Bash", result: "one" },
+    { kind: "tool", id: "call_2", tool: "Read", result: "two" },
+  ];
+
+  assert.equal(state.assistantToolExpanded(rows[0], 0), false);
+  state.toggleAssistantTool(rows[0], 0);
+  assert.equal(state.assistantToolExpanded(rows[0], 0), true);
+  assert.equal(state.assistantToolExpanded(rows[1], 1), false, "one row opening does not open the next");
+
+  // A row that moved index stays open: the key is the call id, not the slot.
+  assert.equal(state.assistantToolExpanded(rows[0], 5), true);
+
+  state.toggleAssistantTool(rows[0], 0);
+  assert.equal(state.assistantToolExpanded(rows[0], 0), false);
+
+  // A tape carrying no ids falls back to the index rather than collapsing every
+  // row onto one key.
+  const bare = { kind: "tool", tool: "Bash" };
+  state.toggleAssistantTool(bare, 3);
+  assert.equal(state.assistantToolExpanded(bare, 3), true);
+  assert.equal(state.assistantToolExpanded(bare, 4), false);
+});
+
+test("a failed tool row reads as failed", () => {
+  const { state } = assistantState();
+  assert.equal(state.assistantToolFailed({ is_error: true }), true);
+  assert.equal(state.assistantToolFailed({ is_error: false }), false);
+  assert.equal(state.assistantToolFailed(null), false);
+});
+
+test("approving a parked write answers the gate and clears the card", async () => {
+  const { state, requests } = assistantState();
+  await state.initAssistant();
+  state.assistantThread = { id: "t1" };
+  state.assistantGate = { id: "g1", tool: "Bash", arg: "kontora run kon-7d21", kind: "write" };
+
+  await state.resolveAssistantGate(true);
+
+  const sent = requests.find((r) => r.url === "/api/assistant/gate/g1");
+  assert.equal(sent.init.method, "POST");
+  assert.deepEqual(JSON.parse(sent.init.body), { decision: "approve" });
+  // Cleared before the request lands, so a second click cannot answer twice.
+  assert.equal(state.assistantGate, null);
+});
+
+test("skipping a parked write sends the refusal", async () => {
+  const { state, requests } = assistantState();
+  await state.initAssistant();
+  state.assistantThread = { id: "t1" };
+  state.assistantGate = { id: "g9", tool: "Bash", arg: "kontora delete kon-7d21", kind: "delete" };
+
+  await state.resolveAssistantGate(false);
+
+  const sent = requests.find((r) => r.url === "/api/assistant/gate/g9");
+  assert.deepEqual(JSON.parse(sent.init.body), { decision: "skip" });
+  assert.equal(state.assistantGate, null);
+});
+
+test("the autonomy switch persists and names itself", () => {
+  const { state, store } = assistantState();
+
+  assert.deepEqual(vmValue(state.assistantAutonomies().map((a) => a.key)), ["read", "ask", "auto"]);
+
+  state.setAssistantAutonomy("read");
+  assert.equal(state.assistantAutonomy, "read");
+  assert.equal(state.assistantAutonomyLabel(), "read only");
+  assert.equal(store["kontora-assistant-autonomy"], "read");
+  assert.equal(state.assistantAutonomyOpen, false, "choosing a mode closes the popover");
+
+  const restored = assistantState({ store: { "kontora-assistant-autonomy": "auto" } });
+  assert.equal(restored.state.assistantAutonomy, "auto");
+});
+
+test("the mode goes out with the message, so the switch takes effect next turn", async () => {
+  const { state, requests } = assistantState();
+  await state.initAssistant();
+  state.assistantThread = { id: "t1" };
+  state.setAssistantAutonomy("auto");
+  state.assistantDraft = "move kon-7d21 to done";
+
+  await state.sendAssistantMessage();
+
+  const sent = requests.find((r) => r.url === "/api/assistant/threads/t1/messages");
+  assert.deepEqual(JSON.parse(sent.init.body), { text: "move kon-7d21 to done", autonomy: "auto" });
+  assert.equal(state.assistantDraft, "", "the composer is cleared");
+  // The message is on screen before the daemon answers, so it does not vanish
+  // while the turn is starting.
+  assert.equal(state.assistantMessages.at(-1).text, "move kon-7d21 to done");
+  assert.equal(state.assistantStreaming, true);
+});
+
+test("an empty draft sends nothing", async () => {
+  const { state, requests } = assistantState();
+  await state.initAssistant();
+  state.assistantThread = { id: "t1" };
+  state.assistantDraft = "   ";
+
+  await state.sendAssistantMessage();
+  assert.equal(requests.some((r) => r.url.includes("/messages")), false);
+});
+
+test("the poll splices the new suffix onto the events already held", () => {
+  const { state } = assistantState();
+  state.assistantThread = { id: "t1" };
+  state.assistantEvents = [{ kind: "text", text: "a" }, { kind: "tool", tool: "Bash" }];
+
+  // The daemon walked its cursor back over the tool row whose result arrived
+  // late, so that row is rewritten rather than duplicated.
+  state._mergeAssistantActivity({
+    running: true,
+    offset: 1,
+    tape: { events: [{ kind: "tool", tool: "Bash", result: "done" }, { kind: "text", text: "b" }] },
+  });
+
+  assert.deepEqual(vmValue(state.assistantEvents.map((e) => e.kind)), ["text", "tool", "text"]);
+  assert.equal(state.assistantEvents[1].result, "done");
+  assert.equal(state._assistantCursor, 3);
+  assert.equal(state.assistantStreaming, true);
+});
+
+// Alpine's string form of :style replaces the whole style attribute, so a
+// static style beside it survives only while the binding evaluates to "". The
+// sheet's send button spends most of its life in the enabled state, which is
+// the branch that would come out unstyled.
+test("the assistant send buttons do not mix a static style with a bound one", () => {
+  const html = fs.readFileSync(htmlPath, "utf8");
+
+  const tags = [...html.matchAll(/<button[^>]*sendAssistantMessage\(\)[^>]*>/g)].map((m) => m[0]);
+  assert.equal(tags.length, 2, "expected the docked pane's send button and the sheet's");
+  for (const tag of tags) {
+    if (!tag.includes(":style=")) continue;
+    assert.ok(!/(^|\s)style="/.test(tag), "a bound :style would blank this static style");
+    assert.match(tag, /background:rgba\(var\(--accent\),1\)/, "the enabled state keeps the accent fill");
+  }
+});
+
+test("the message just sent stays on screen until the daemon records it", () => {
+  const { state } = assistantState();
+  state.assistantThread = { id: "t1" };
+  state.assistantMessages = [{ n: 1, text: "first" }, { n: 2, text: "second" }];
+
+  // A turn is only written to turns.jsonl once the agent exits, so mid-turn the
+  // daemon's list is one message short. Dropping the message the user just
+  // typed for the length of the turn is the bug this guards.
+  state._mergeAssistantActivity({ running: true, tape: { events: [] }, messages: [{ n: 1, text: "first" }] });
+  assert.deepEqual(vmValue(state.assistantMessages.map((m) => m.text)), ["first", "second"]);
+
+  // The recorded list catches up and replaces it.
+  state._mergeAssistantActivity({
+    running: false,
+    tape: { events: [] },
+    messages: [{ n: 1, text: "first" }, { n: 2, text: "second", error: "boom" }],
+  });
+  assert.equal(state.assistantMessages.length, 2);
+  assert.equal(state.assistantMessages[1].error, "boom");
+});
+
+test("the poll carries the parked write alongside the tape", () => {
+  const { state } = assistantState();
+  state.assistantThread = { id: "t1" };
+
+  state._mergeAssistantActivity({ running: true, gate: { id: "g1", tool: "Bash" }, tape: { events: [] } });
+  assert.equal(state.assistantGate.id, "g1");
+
+  state._mergeAssistantActivity({ running: false, tape: { events: [] } });
+  assert.equal(state.assistantGate, null);
+  assert.equal(state.assistantStreaming, false);
+});
+
+test("the poll re-arms only while something can still change", () => {
+  const { state } = assistantState();
+  state.assistantOpen = true;
+  state.assistantThread = { id: "t1" };
+
+  state.assistantStreaming = true;
+  state._armAssistantPoll();
+  assert.notEqual(state._assistantPoll, null);
+  state._stopAssistantPoll();
+
+  // A finished turn with a write still waiting keeps polling: the answer is
+  // what un-blocks the agent.
+  state.assistantStreaming = false;
+  state.assistantGate = { id: "g1" };
+  state._armAssistantPoll();
+  assert.notEqual(state._assistantPoll, null);
+  state._stopAssistantPoll();
+
+  state.assistantGate = null;
+  state._armAssistantPoll();
+  assert.equal(state._assistantPoll, null);
+
+  // Closing the pane stops it whatever the turn is doing.
+  state.assistantStreaming = true;
+  state.closeAssistant();
+  assert.equal(state._assistantPoll, null);
+});
+
+test("the slash menu opens on a leading slash and inserts the phrasing", () => {
+  const { state } = assistantState();
+
+  state.assistantDraft = "/st";
+  state.assistantDraftChanged();
+  assert.equal(state.assistantMenu.kind, "slash");
+  assert.deepEqual(vmValue(state.assistantMenu.rows.map((r) => r.label)), ["/status", "/stuck"]);
+
+  state.moveAssistantMenu(1);
+  assert.equal(state.assistantMenu.index, 1);
+  state.acceptAssistantMenu();
+  assert.match(state.assistantDraft, /paused, failed/);
+  assert.equal(state.assistantMenu, null);
+
+  // A slash that matches nothing shows no menu rather than an empty one.
+  state.assistantDraft = "/zzz";
+  state.assistantDraftChanged();
+  assert.equal(state.assistantMenu, null);
+});
+
+test("the mention menu ranks tickets and inserts the id", () => {
+  const { state } = assistantState();
+  state.tickets = [
+    { id: "kon-7d21", title: "Assistant pane", status: "todo" },
+    { id: "kon-9a02", title: "Bump deps", status: "done" },
+  ];
+
+  state.assistantDraft = "look at @bump";
+  state.assistantDraftChanged();
+  assert.equal(state.assistantMenu.kind, "mention");
+  assert.deepEqual(vmValue(state.assistantMenu.rows.map((r) => r.label)), ["kon-9a02"]);
+
+  state.acceptAssistantMenu();
+  assert.equal(state.assistantDraft, "look at @kon-9a02 ");
+
+  // A space after the @ closes it: the user moved on.
+  state.assistantDraft = "look at @ something";
+  state.assistantDraftChanged();
+  assert.equal(state.assistantMenu, null);
+});
+
+test("enter sends unless a menu is open, and shift+enter is a newline", () => {
+  const { state } = assistantState();
+  let sent = 0;
+  state.sendAssistantMessage = () => { sent += 1; };
+  const press = (init) => {
+    let prevented = 0;
+    state.assistantComposerKey({ preventDefault() { prevented += 1; }, ...init });
+    return prevented;
+  };
+
+  assert.equal(press({ key: "Enter" }), 1);
+  assert.equal(sent, 1);
+
+  assert.equal(press({ key: "Enter", shiftKey: true }), 0);
+  assert.equal(sent, 1, "shift+enter types a newline");
+
+  state.assistantDraft = "/st";
+  state.assistantDraftChanged();
+  assert.equal(press({ key: "Enter" }), 1);
+  assert.equal(sent, 1, "enter picked the highlighted row instead of sending");
+  assert.equal(state.assistantMenu, null);
+});
+
+test("the context strip says what a bare 'it' would mean", () => {
+  const { state } = assistantState();
+  state.selectedTicket = { id: "kon-7d21" };
+  state.searchQuery = "project:kontora";
+
+  assert.deepEqual(vmValue(state.assistantRecomputeContext().map((c) => c.label)), ["kon-7d21", "project:kontora"]);
+
+  state.selectedTicket = null;
+  assert.deepEqual(vmValue(state.assistantRecomputeContext().map((c) => c.label)), ["project:kontora"]);
+
+  state.searchQuery = "  ";
+  assert.deepEqual(vmValue(state.assistantRecomputeContext()), []);
+});
+
+test("no assistant agent replaces the composer with the configure hint", async () => {
+  const { state } = assistantState({
+    routes: { "/api/assistant": { enabled: false, hint: "Set assistant.agent to one of your claude or pi agents." } },
+  });
+  await state.initAssistant();
+
+  assert.equal(state.assistantEnabled(), false);
+  assert.equal(state.assistantAgent.hint, "Set assistant.agent to one of your claude or pi agents.");
+
+  // Nothing can be sent, and opening the pane asks the daemon for no threads.
+  state.assistantDraft = "hello";
+  await state.sendAssistantMessage();
+  assert.equal(state.assistantMessages.length, 0);
+
+  // The two are complementary templates, so the composer is not merely hidden:
+  // it is not built, and neither is the input the pane would otherwise focus.
+  const html = fs.readFileSync(htmlPath, "utf8");
+  assert.match(html, /x-if="!assistantEnabled\(\)"[\s\S]{0,200}?id="assistant-configure"/);
+  const composer = html.slice(html.indexOf('<!-- Composer -->'));
+  assert.match(composer.slice(0, 200), /x-if="assistantEnabled\(\)"/);
+  assert.ok(composer.includes('id="assistant-input"'));
+});
+
+test("a daemon that never answers leaves the pane in the configure state", async () => {
+  const { state } = assistantState({ routes: { "/api/assistant": { __status: 500 } } });
+  await state.initAssistant();
+
+  assert.equal(state.assistantEnabled(), false);
+  assert.ok(state.assistantAgent.hint);
+});
+
+test("a remembered thread the daemon has dropped opens empty and quietly", async () => {
+  const { state, store } = assistantState({
+    store: { "kontora-assistant-thread": "gone" },
+    fallback: { __status: 404 },
+  });
+  await state.initAssistant();
+
+  assert.equal(state.assistantThread, null);
+  assert.equal(state.assistantError, null, "a thread the user cannot see gone is not an error to show");
+  assert.equal(store["kontora-assistant-thread"], "");
 });

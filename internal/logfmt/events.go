@@ -103,6 +103,16 @@ func (t Tape) StableCount() int {
 	return len(t.Events)
 }
 
+// SliceAt drops the leading events a reader already holds and returns the index
+// of the first one kept. A cursor past StableCount() is pulled back to it, so
+// the caller never skips over a tool row whose result has still to be written
+// onto it.
+func (t *Tape) SliceAt(after int) int {
+	off := max(0, min(after, t.StableCount()))
+	t.Events = t.Events[off:]
+	return off
+}
+
 // Events reads Claude stream-json or session JSONL from r and returns it as a
 // Tape. It walks the same shapes as Fmt and reuses formatToolArg and
 // formatToolResultSummary, so Arg and Summary match the plaintext byte for

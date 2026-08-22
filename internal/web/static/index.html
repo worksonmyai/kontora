@@ -729,7 +729,7 @@
 </head>
 
 <body class="h-full bg-surface-950 text-tx font-sans overflow-hidden" x-data="kontora()" x-cloak
-      @keydown.escape.window="if (paletteOpen) palettePop(); else if (deleteModal) closeDeleteModal(); else if (initModal) closeInitModal(); else if (settingsGuard) settingsGuard = false; else if (currentView === 'new') closeCreateModal(); else if (detailMenuOpen) detailMenuOpen = false; else if (colMenuOpen) colMenuOpen = null; else if (sheet) closeSheet(); else if (terminalRW && terminalWanted()) toggleTerminalRW(); else if (selectedTicket) closeDetail();"
+      @keydown.escape.window="if (paletteOpen) palettePop(); else if (deleteModal) closeDeleteModal(); else if (initModal) closeInitModal(); else if (settingsGuard) settingsGuard = false; else if (currentView === 'new') closeCreateModal(); else if (detailMenuOpen) detailMenuOpen = false; else if (colMenuOpen) colMenuOpen = null; else if (sheet) closeSheet(); else if (assistantEscape()) {} else if (terminalRW && terminalWanted()) toggleTerminalRW(); else if (selectedTicket) closeDetail();"
       @dragenter.prevent="if ($event.dataTransfer && $event.dataTransfer.types.includes('Files')) uploadDragging = true"
       @dragover.prevent>
 
@@ -1130,6 +1130,13 @@
         <span class="text-tx-2 num" x-text="runningAgents"></span>
         <span class="text-surface-600">running</span>
       </span>
+      <button id="assistant-trigger" @click="toggleAssistant()" data-pipe-color="mauve"
+              class="w-7 h-7 rounded-[7px] border border-edge-input transition-colors flex items-center justify-center hover:border-edge-hover"
+              :class="assistantOpen ? '' : 'text-surface-600 hover:text-tx-3'"
+              :style="assistantOpen ? 'color: hsl(var(--pipe-h))' : ''"
+              aria-label="Assistant" title="Assistant (\u2318J)">
+        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z"/></svg>
+      </button>
       <button @click="toggleTheme()"
               class="w-7 h-7 rounded-[7px] border border-edge-input text-surface-600 hover:text-tx-3 hover:border-edge-hover transition-colors flex items-center justify-center"
               aria-label="Toggle theme" title="Toggle theme (press c then t)">
@@ -3346,6 +3353,240 @@
         </div>
       </div>
     </div>
+
+    <!-- ============================================================= -->
+    <!-- Assistant pane. A flex sibling of the views, not an overlay:  -->
+    <!-- the board narrows and stays visible while a chat is open.     -->
+    <!-- Never built below the phone breakpoint; that layer has a       -->
+    <!-- bottom sheet of its own.                                      -->
+    <!-- ============================================================= -->
+    <template x-if="!isMobile && assistantOpen && !assistantRail">
+    <aside id="assistant-pane" class="relative shrink-0 flex flex-col min-h-0 border-l border-surface-700 bg-surface-rail"
+           :style="'width:' + assistantWidth + 'px'"
+           data-pipe-color="mauve" aria-label="Assistant">
+
+      <!-- Drag the left edge to resize. The width is clamped and persisted. -->
+      <div id="assistant-resize" @mousedown.prevent="startAssistantResize($event)"
+           class="absolute left-0 top-0 bottom-0 w-1 cursor-col-resize hover:bg-[hsl(var(--pipe-h))] transition-colors"
+           role="separator" aria-orientation="vertical" aria-label="Resize the assistant"></div>
+
+      <!-- Header -->
+      <div class="flex items-center gap-2 h-[38px] px-3 shrink-0 border-b border-surface-700">
+        <span class="w-4 h-4 flex items-center justify-center" style="color: hsl(var(--pipe-h))" aria-hidden="true">
+          <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z"/></svg>
+        </span>
+        <span class="font-mono text-[12px] font-semibold text-tx-2 truncate flex-1 min-w-0"
+              x-text="assistantView === 'history' ? 'chats' : (assistantThread ? assistantThread.title : 'assistant')"></span>
+        <span x-show="assistantStreaming" class="w-1.5 h-1.5 rounded-full pulse-dot shrink-0" style="background: hsl(var(--pipe-h))" aria-label="working"></span>
+        <button id="assistant-new" @click="assistantNewThread()" x-show="assistantEnabled()"
+                class="w-6 h-6 rounded text-surface-600 hover:text-tx-2 transition-colors flex items-center justify-center shrink-0"
+                aria-label="New chat" title="New chat">
+          <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
+        </button>
+        <button id="assistant-history" @click="assistantView = assistantView === 'history' ? 'thread' : 'history'; if (assistantView === 'history') assistantLoadThreads()"
+                class="w-6 h-6 rounded transition-colors flex items-center justify-center shrink-0"
+                :class="assistantView === 'history' ? 'text-tx-2' : 'text-surface-600 hover:text-tx-2'"
+                aria-label="Chat history" title="Chat history">
+          <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/></svg>
+        </button>
+        <button id="assistant-collapse" @click="toggleAssistantRail()"
+                class="w-6 h-6 rounded text-surface-600 hover:text-tx-2 transition-colors flex items-center justify-center shrink-0"
+                aria-label="Collapse the assistant to a rail" title="Collapse to a rail">
+          <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>
+        </button>
+        <button id="assistant-close" @click="closeAssistant()"
+                class="w-6 h-6 rounded text-surface-600 hover:text-tx-2 transition-colors flex items-center justify-center shrink-0"
+                aria-label="Close the assistant" title="Close (⌘J)">
+          <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+        </button>
+      </div>
+
+      <!-- Context strip: what a bare "it" would mean in this chat. -->
+      <div x-show="assistantView === 'thread' && assistantContext.length" x-cloak
+           class="flex items-center gap-1.5 px-3 py-1.5 shrink-0 border-b border-surface-700 overflow-x-auto">
+        <span class="font-mono text-[10px] uppercase tracking-[.1em] text-surface-600 shrink-0">context</span>
+        <template x-for="chip in assistantContext" :key="chip.key">
+          <span class="font-mono text-[10.5px] px-1.5 py-0.5 rounded bg-surface-850 border border-edge-input text-tx-3 whitespace-nowrap" x-text="chip.label"></span>
+        </template>
+      </div>
+
+      <!-- Chat history -->
+      <div x-show="assistantView === 'history'" x-cloak class="flex-1 min-h-0 overflow-y-auto p-2">
+        <template x-if="!assistantThreads.length">
+          <p class="font-mono text-[11.5px] text-surface-600 p-3 m-0">No chats yet.</p>
+        </template>
+        <template x-for="t in assistantThreads" :key="t.id">
+          <div class="group flex items-center gap-2 px-2.5 py-2 rounded hover:bg-surface-900 transition-colors">
+            <button @click="assistantSelectThread(t.id)" class="flex-1 min-w-0 text-left">
+              <span class="block text-[12.5px] text-tx-2 truncate" x-text="t.title"></span>
+              <span class="block font-mono text-[10.5px] text-surface-600 truncate"
+                    x-text="t.turns + (t.turns === 1 ? ' turn' : ' turns') + (t.writes ? '  ·  ' + t.writes + ' changes' : '')"></span>
+            </button>
+            <button @click="assistantDeleteThread(t.id)"
+                    class="shrink-0 w-6 h-6 rounded text-surface-600 hover:text-err opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center"
+                    :aria-label="'Delete ' + t.title">
+              <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+            </button>
+          </div>
+        </template>
+      </div>
+
+      <!-- Thread -->
+      <div id="assistant-thread" x-show="assistantView === 'thread'" class="flex-1 min-h-0 overflow-y-auto px-3 py-3 flex flex-col gap-3">
+
+        <!-- Empty state. Shown before the first message of the first chat. -->
+        <template x-if="!assistantMessages.length && !assistantEvents.length">
+          <div class="m-auto max-w-[300px] text-center flex flex-col gap-2">
+            <p class="text-[13px] text-tx-2 m-0">Ask about the board.</p>
+            <p class="text-[11.5px] leading-[1.6] text-surface-600 m-0">
+              What is running, why a ticket is stuck, what the last run changed. It drives Kontora
+              with the same verbs the CLI uses, and writes go through the same API.
+            </p>
+          </div>
+        </template>
+
+        <template x-for="(m, mi) in assistantMessages" :key="'m' + m.n + '-' + mi">
+          <div class="self-end max-w-[85%] rounded-[10px] px-2.5 py-1.5 bg-surface-850 border border-edge-input">
+            <span class="block text-[12.5px] leading-[1.5] text-tx whitespace-pre-wrap" x-text="m.text"></span>
+            <span x-show="m.error" class="block font-mono text-[10.5px] text-err mt-1" x-text="m.error"></span>
+          </div>
+        </template>
+
+        <!-- The transcript, as the same tape a ticket run's activity tab reads. -->
+        <template x-for="(e, ei) in assistantEvents" :key="'e' + ei">
+          <div class="min-w-0">
+            <template x-if="e.kind === 'text'">
+              <div class="prose-assistant text-[12.5px] leading-[1.6] text-tx-2" x-effect="setProse($el, e.text)"></div>
+            </template>
+            <template x-if="e.kind === 'model'">
+              <div class="font-mono text-[10.5px] text-surface-600" x-text="e.model"></div>
+            </template>
+            <template x-if="e.kind === 'tool'">
+              <div class="assistant-tool-row rounded-[7px] border border-edge-input bg-surface-900">
+                <button @click="toggleAssistantTool(e, ei)"
+                        class="w-full flex items-center gap-2 px-2 py-1 text-left min-w-0"
+                        :aria-expanded="assistantToolExpanded(e, ei) ? 'true' : 'false'">
+                  <span class="font-mono text-[10.5px] shrink-0" :class="assistantToolFailed(e) ? 'text-err' : 'text-ok'"
+                        x-text="assistantToolFailed(e) ? '✗' : '▸'"></span>
+                  <span class="font-mono text-[11px] text-tx-3 shrink-0" x-text="e.tool"></span>
+                  <span class="font-mono text-[11px] text-surface-600 truncate min-w-0" x-text="e.arg"></span>
+                  <span class="font-mono text-[10px] text-tx-faint shrink-0 ml-auto" x-text="assistantEventTime(e)"></span>
+                </button>
+                <div x-show="assistantToolExpanded(e, ei)" x-cloak class="px-2 pb-1.5">
+                  <pre class="font-mono text-[10.5px] leading-[1.5] text-tx-3 whitespace-pre-wrap m-0 max-h-[240px] overflow-y-auto" x-text="e.result || e.summary"></pre>
+                </div>
+              </div>
+            </template>
+          </div>
+        </template>
+
+        <!-- The parked write. It rides the same poll as the tool rows. -->
+        <template x-if="assistantGate">
+          <div id="assistant-proposal" class="rounded-[9px] border border-warn/60 bg-surface-900 p-2.5 flex flex-col gap-2">
+            <div class="flex items-baseline gap-2 min-w-0">
+              <span class="font-mono text-[10px] uppercase tracking-[.1em] text-warn shrink-0"
+                    x-text="assistantGate.kind === 'delete' ? 'delete' : 'change'"></span>
+              <span class="font-mono text-[11px] text-tx-3 shrink-0" x-text="assistantGate.tool"></span>
+            </div>
+            <code class="font-mono text-[11px] leading-[1.5] text-tx-2 bg-surface-850 border border-edge-input rounded px-2 py-1.5 break-words" x-text="assistantGate.arg"></code>
+            <div class="flex items-center gap-2">
+              <button id="assistant-approve" @click="resolveAssistantGate(true)"
+                      class="font-mono text-[11.5px] h-[26px] px-3 rounded-[6px] bg-accent text-accent-fg hover:bg-accent-bright transition-colors">approve</button>
+              <button id="assistant-skip" @click="resolveAssistantGate(false)"
+                      class="font-mono text-[11.5px] h-[26px] px-3 rounded-[6px] bg-surface-850 border border-edge-input text-tx-3 hover:text-tx-2 transition-colors">skip</button>
+            </div>
+          </div>
+        </template>
+      </div>
+
+      <!-- Configure hint. Replaces the composer when no assistant agent is set. -->
+      <template x-if="!assistantEnabled()">
+        <div id="assistant-configure" class="shrink-0 border-t border-surface-700 p-3 flex flex-col gap-2">
+          <p class="text-[12px] leading-[1.55] text-tx-3 m-0" x-text="assistantAgent ? assistantAgent.hint : 'Loading…'"></p>
+          <p class="text-[11.5px] leading-[1.55] text-surface-600 m-0">
+            The assistant runs one of your configured agents, one agent session per chat. It must be a claude or pi agent.
+          </p>
+          <code class="font-mono text-[11px] leading-[1.55] text-tx-2 bg-surface-850 border border-edge-input rounded-[7px] px-2.5 py-2 whitespace-pre">assistant:
+  agent: claude
+  autonomy: ask</code>
+          <button @click="gotoView('settings')"
+                  class="self-start font-mono text-[11.5px] h-[26px] px-3 rounded-[6px] bg-surface-850 border border-edge-input text-tx-3 hover:text-tx-2 hover:border-edge-hover transition-colors">open settings</button>
+        </div>
+      </template>
+
+      <!-- Composer -->
+      <template x-if="assistantEnabled()">
+      <div class="shrink-0 border-t border-surface-700 p-2 relative">
+
+        <!-- The slash and mention menus, over the composer. -->
+        <div x-show="assistantMenu" x-cloak id="assistant-menu"
+             class="absolute left-2 right-2 bottom-full mb-1 max-h-[220px] overflow-y-auto rounded-[9px] border border-surface-700 bg-surface-850 shadow-[0_10px_30px_-12px_rgba(0,0,0,.6)] py-1"
+             role="listbox">
+          <template x-for="(row, ri) in (assistantMenu ? assistantMenu.rows : [])" :key="row.id">
+            <button @click="acceptAssistantMenu(row)" role="option" :aria-selected="assistantMenu && ri === assistantMenu.index ? 'true' : 'false'"
+                    class="w-full flex items-baseline gap-2 px-2.5 py-1 text-left min-w-0"
+                    :class="assistantMenu && ri === assistantMenu.index ? 'bg-surface-800' : ''">
+              <span class="font-mono text-[11.5px] text-tx-2 shrink-0" x-text="row.label"></span>
+              <span class="text-[11px] text-surface-600 truncate min-w-0" x-text="row.sub"></span>
+            </button>
+          </template>
+        </div>
+
+        <textarea id="assistant-input" x-model="assistantDraft" @input="assistantDraftChanged()"
+                  @keydown="assistantComposerKey($event)"
+                  rows="2" placeholder="Ask about the board.  /  for commands, @ for a ticket"
+                  aria-label="Message the assistant"
+                  class="w-full resize-none rounded-[8px] bg-surface-900 border border-edge-input px-2.5 py-2 text-[12.5px] leading-[1.5] text-tx placeholder:text-surface-600 outline-none focus:border-edge-hover transition-colors"></textarea>
+
+        <div class="flex items-center gap-2 mt-1.5">
+          <!-- Autonomy. The mode the next message runs in. -->
+          <div class="relative">
+            <button id="assistant-autonomy" @click="assistantAutonomyOpen = !assistantAutonomyOpen"
+                    class="font-mono text-[11px] h-[24px] px-2 rounded-[6px] bg-surface-900 border border-edge-input text-tx-3 hover:text-tx-2 hover:border-edge-hover transition-colors flex items-center gap-1.5"
+                    :aria-expanded="assistantAutonomyOpen ? 'true' : 'false'">
+              <span class="w-1.5 h-1.5 rounded-full shrink-0"
+                    :class="assistantAutonomy === 'read' ? 'bg-surface-600' : (assistantAutonomy === 'auto' ? 'bg-warn' : 'bg-ok')"></span>
+              <span x-text="assistantAutonomyLabel()"></span>
+            </button>
+            <div x-show="assistantAutonomyOpen" x-cloak @click.outside="assistantAutonomyOpen = false"
+                 class="absolute left-0 bottom-full mb-1 w-[220px] rounded-[9px] border border-surface-700 bg-surface-850 shadow-[0_10px_30px_-12px_rgba(0,0,0,.6)] py-1 z-10">
+              <template x-for="mode in assistantAutonomies()" :key="mode.key">
+                <button @click="setAssistantAutonomy(mode.key)"
+                        class="w-full text-left px-2.5 py-1.5 hover:bg-surface-800 transition-colors"
+                        :class="assistantAutonomy === mode.key ? 'bg-surface-800' : ''">
+                  <span class="block font-mono text-[11.5px] text-tx-2" x-text="mode.label"></span>
+                  <span class="block text-[10.5px] leading-[1.4] text-surface-600" x-text="mode.hint"></span>
+                </button>
+              </template>
+            </div>
+          </div>
+
+          <span class="font-mono text-[10px] text-tx-faint truncate min-w-0" x-text="assistantAgent ? assistantAgent.agent : ''"></span>
+
+          <button x-show="assistantStreaming" @click="stopAssistantTurn()"
+                  class="ml-auto font-mono text-[11px] h-[24px] px-2.5 rounded-[6px] bg-surface-900 border border-edge-input text-tx-3 hover:text-err transition-colors">stop</button>
+          <button id="assistant-send" x-show="!assistantStreaming" @click="sendAssistantMessage()" :disabled="!assistantDraft.trim()"
+                  class="ml-auto font-mono text-[11.5px] h-[24px] px-3 rounded-[6px] bg-accent text-accent-fg hover:bg-accent-bright transition-colors disabled:opacity-40">send</button>
+        </div>
+
+        <p x-show="assistantError" x-cloak class="font-mono text-[10.5px] text-err mt-1.5 m-0" x-text="assistantError"></p>
+      </div>
+      </template>
+    </aside>
+    </template>
+
+    <!-- Collapsed rail. Keeps a running turn visible without squeezing the board. -->
+    <template x-if="!isMobile && assistantOpen && assistantRail">
+    <aside id="assistant-rail" class="w-9 shrink-0 flex flex-col items-center gap-2 py-3 border-l border-surface-700 bg-surface-rail"
+           data-pipe-color="mauve" aria-label="Assistant, collapsed">
+      <button @click="toggleAssistantRail()" class="w-6 h-6 rounded flex items-center justify-center transition-colors"
+              style="color: hsl(var(--pipe-h))" aria-label="Expand the assistant" title="Expand the assistant">
+        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z"/></svg>
+      </button>
+      <span x-show="assistantStreaming" class="w-1.5 h-1.5 rounded-full pulse-dot" style="background: hsl(var(--pipe-h))" aria-label="working"></span>
+      <span x-show="assistantGate" x-cloak class="w-1.5 h-1.5 rounded-full bg-warn" aria-label="waiting for your approval"></span>
+    </aside>
+    </template>
   </main>
   </template>
 
@@ -3372,6 +3613,9 @@
           <span style="color:rgba(var(--tx),1);" x-text="runningAgents"></span>
           <span style="color:rgba(var(--surface-600),1);">running</span>
         </span>
+        <button id="assistant-mobile-trigger" @click="openAssistantSheet()" data-pipe-color="mauve" style="width:34px;height:34px;border:1px solid rgba(var(--surface-700),.6);background:rgba(var(--surface-900),1);color:hsl(var(--pipe-h));border-radius:8px;display:flex;align-items:center;justify-content:center;flex:none;" aria-label="Assistant">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z"/></svg>
+        </button>
         <button @click="toggleTheme()" style="width:34px;height:34px;border:1px solid rgba(var(--surface-700),.6);background:rgba(var(--surface-900),1);color:rgba(var(--surface-600),1);border-radius:8px;display:flex;align-items:center;justify-content:center;flex:none;" aria-label="Toggle theme">
           <svg x-show="!lightTheme" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
           <svg x-show="lightTheme" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
@@ -3661,6 +3905,81 @@
                   </button>
                 </template>
               </div>
+            </div>
+          </template>
+
+          <!-- assistant sheet. The phone equivalent of the docked pane. -->
+          <template x-if="sheet.type==='assistant'">
+            <div id="assistant-sheet" style="display:flex;flex-direction:column;min-height:0;flex:1;">
+              <div style="display:flex;align-items:center;gap:8px;padding:0 18px 12px;border-bottom:1px solid rgba(var(--surface-700),.4);">
+                <span data-pipe-color="mauve" style="color:hsl(var(--pipe-h));display:flex;flex:none;" aria-hidden="true">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z"/></svg>
+                </span>
+                <span style="flex:1;min-width:0;font-size:15px;font-weight:600;color:rgba(var(--tx),1);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"
+                      x-text="assistantThread ? assistantThread.title : 'assistant'"></span>
+                <span x-show="assistantStreaming" class="pulse-dot" data-pipe-color="mauve" style="width:6px;height:6px;border-radius:9999px;background:hsl(var(--pipe-h));flex:none;" aria-label="working"></span>
+                <button @click="assistantNewThread()" x-show="assistantEnabled()" style="width:28px;height:28px;border:none;background:transparent;color:rgba(var(--surface-600),1);flex:none;" aria-label="New chat">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
+                </button>
+              </div>
+
+              <div style="flex:1;min-height:0;overflow-y:auto;padding:14px 18px;display:flex;flex-direction:column;gap:12px;">
+                <template x-if="!assistantMessages.length && !assistantEvents.length">
+                  <p style="margin:auto 0;font-size:13px;line-height:1.6;color:rgba(var(--surface-600),1);text-align:center;">Ask about the board. It drives Kontora with the same verbs the CLI uses.</p>
+                </template>
+                <template x-for="(m, mi) in assistantMessages" :key="'sm' + m.n + '-' + mi">
+                  <div style="align-self:flex-end;max-width:85%;border-radius:12px;padding:8px 11px;background:rgba(var(--surface-850),1);border:1px solid rgba(var(--surface-700),.6);">
+                    <span style="font-size:13.5px;line-height:1.5;color:rgba(var(--tx),1);white-space:pre-wrap;" x-text="m.text"></span>
+                  </div>
+                </template>
+                <template x-for="(e, ei) in assistantEvents" :key="'se' + ei">
+                  <div style="min-width:0;">
+                    <template x-if="e.kind === 'text'">
+                      <div style="font-size:13.5px;line-height:1.6;color:rgba(var(--tx-2),1);" x-effect="setProse($el, e.text)"></div>
+                    </template>
+                    <template x-if="e.kind === 'tool'">
+                      <button @click="toggleAssistantTool(e, ei)" style="display:flex;align-items:center;gap:8px;width:100%;text-align:left;min-width:0;border:1px solid rgba(var(--surface-700),.6);background:rgba(var(--surface-900),1);border-radius:8px;padding:7px 10px;">
+                        <span :style="'font-family:\'JetBrains Mono\',monospace;font-size:11px;flex:none;color:' + (assistantToolFailed(e) ? 'rgba(var(--err),1)' : 'rgba(var(--ok),1)') + ';'" x-text="assistantToolFailed(e) ? '\u2717' : '\u25b8'"></span>
+                        <span style="font-family:'JetBrains Mono',monospace;font-size:12px;color:rgba(var(--tx-3),1);flex:none;" x-text="e.tool"></span>
+                        <span style="font-family:'JetBrains Mono',monospace;font-size:12px;color:rgba(var(--surface-600),1);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;" x-text="e.arg"></span>
+                      </button>
+                    </template>
+                  </div>
+                </template>
+                <template x-if="assistantGate">
+                  <div style="border:1px solid rgba(var(--warn),.6);background:rgba(var(--surface-900),1);border-radius:11px;padding:11px;display:flex;flex-direction:column;gap:9px;">
+                    <span style="font-family:'JetBrains Mono',monospace;font-size:11px;text-transform:uppercase;letter-spacing:.1em;color:rgba(var(--warn),1);" x-text="assistantGate.kind === 'delete' ? 'delete' : 'change'"></span>
+                    <code style="font-family:'JetBrains Mono',monospace;font-size:12px;line-height:1.5;color:rgba(var(--tx-2),1);word-break:break-word;" x-text="assistantGate.arg"></code>
+                    <div style="display:flex;gap:9px;">
+                      <button @click="resolveAssistantGate(true)" style="flex:1;height:38px;border-radius:9px;border:1px solid rgba(var(--accent),1);background:rgba(var(--accent),1);color:rgba(var(--accent-fg),1);font-family:'JetBrains Mono',monospace;font-size:13px;font-weight:600;">approve</button>
+                      <button @click="resolveAssistantGate(false)" style="flex:1;height:38px;border-radius:9px;border:1px solid rgba(var(--surface-700),.7);background:rgba(var(--surface-950),1);color:rgba(var(--tx-3),1);font-family:'JetBrains Mono',monospace;font-size:13px;">skip</button>
+                    </div>
+                  </div>
+                </template>
+              </div>
+
+              <template x-if="!assistantEnabled()">
+                <div style="padding:14px 18px;border-top:1px solid rgba(var(--surface-700),.4);">
+                  <p style="margin:0;font-size:13px;line-height:1.55;color:rgba(var(--tx-3),1);" x-text="assistantAgent ? assistantAgent.hint : 'Loading\u2026'"></p>
+                </div>
+              </template>
+
+              <template x-if="assistantEnabled()">
+                <div style="padding:12px 18px 4px;border-top:1px solid rgba(var(--surface-700),.4);display:flex;flex-direction:column;gap:9px;">
+                  <textarea x-model="assistantDraft" rows="2" placeholder="Ask about the board\u2026" aria-label="Message the assistant"
+                            style="width:100%;padding:10px 12px;font-size:13.5px;line-height:1.5;border-radius:10px;background:rgba(var(--surface-950),1);border:1px solid rgba(var(--surface-700),.6);color:rgba(var(--tx),1);outline:none;resize:none;font-family:'DM Sans',sans-serif;"></textarea>
+                  <div style="display:flex;align-items:center;gap:9px;">
+                    <template x-for="mode in assistantAutonomies()" :key="'sa' + mode.key">
+                      <button @click="setAssistantAutonomy(mode.key)"
+                              :style="'height:30px;padding:0 10px;border-radius:8px;font-family:\'JetBrains Mono\',monospace;font-size:12px;border:1px solid rgba(var(--surface-700),.6);background:' + (assistantAutonomy === mode.key ? 'rgba(var(--surface-800),1)' : 'transparent') + ';color:' + (assistantAutonomy === mode.key ? 'rgba(var(--tx),1)' : 'rgba(var(--surface-600),1)') + ';'"
+                              x-text="mode.key"></button>
+                    </template>
+                    <button @click="sendAssistantMessage()" :disabled="!assistantDraft.trim()"
+                            :style="'margin-left:auto;height:34px;padding:0 16px;border-radius:9px;font-family:\'JetBrains Mono\',monospace;font-size:13px;' + (!assistantDraft.trim() ? 'border:1px solid rgba(var(--surface-700),.7);background:rgba(var(--surface-950),1);color:rgba(var(--surface-600),1);' : 'border:1px solid rgba(var(--accent),1);background:rgba(var(--accent),1);color:rgba(var(--accent-fg),1);font-weight:600;')"
+                            x-text="assistantStreaming ? 'working\u2026' : 'send'"></button>
+                  </div>
+                </div>
+              </template>
             </div>
           </template>
 

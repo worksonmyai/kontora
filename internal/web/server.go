@@ -84,6 +84,19 @@ func New(svc TicketService, broker *SSEBroker, host string, port int, token stri
 	mux.HandleFunc("GET /api/tickets/{id}/chain", s.handleGetChain)
 	mux.HandleFunc("POST /api/tickets/{id}/plannotator-review", s.handlePlannotatorReview)
 	mux.HandleFunc("POST /api/tickets/{id}/plannotator-annotate", s.handlePlannotatorAnnotate)
+	mux.HandleFunc("GET /api/assistant", s.handleAssistantConfig)
+	mux.HandleFunc("GET /api/assistant/threads", s.handleListAssistantThreads)
+	mux.HandleFunc("POST /api/assistant/threads", s.handleCreateAssistantThread)
+	mux.HandleFunc("GET /api/assistant/threads/{id}", s.handleGetAssistantThread)
+	mux.HandleFunc("DELETE /api/assistant/threads/{id}", s.handleDeleteAssistantThread)
+	mux.HandleFunc("GET /api/assistant/threads/{id}/activity", s.handleAssistantActivity)
+	mux.HandleFunc("POST /api/assistant/threads/{id}/messages", s.handleAssistantMessage)
+	mux.HandleFunc("POST /api/assistant/threads/{id}/stop", s.handleAssistantStop)
+	// The person's answer and the agent's question are separate routes: the
+	// first is a browser call on a session cookie, the second is the agent's
+	// own, authenticated by the per-turn nonce in its environment.
+	mux.HandleFunc("POST /api/assistant/gate/ask", s.handleAssistantGateAsk)
+	mux.HandleFunc("POST /api/assistant/gate/{gid}", s.handleAssistantGate)
 	mux.HandleFunc("GET /api/events", s.handleSSE)
 	mux.HandleFunc("GET /ws/terminal/{id}", s.handleTerminalWS)
 	mux.Handle("GET /", s.staticHandler(http.HandlerFunc(s.serveAsset)))

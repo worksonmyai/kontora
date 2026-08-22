@@ -214,6 +214,28 @@ func (m *mockTerminalService) StartPlannotatorReview(_ string) error {
 func (m *mockTerminalService) StartPlannotatorAnnotate(_ string) error {
 	return nil
 }
+func (m *mockTerminalService) AssistantConfig() AssistantConfigInfo { return AssistantConfigInfo{} }
+func (m *mockTerminalService) ListAssistantThreads() ([]AssistantThreadInfo, error) {
+	return nil, nil
+}
+func (m *mockTerminalService) CreateAssistantThread(_ CreateAssistantThreadRequest) (AssistantThreadInfo, error) {
+	return AssistantThreadInfo{}, ErrAssistantDisabled
+}
+func (m *mockTerminalService) GetAssistantThread(_ string) (AssistantThreadInfo, error) {
+	return AssistantThreadInfo{}, ErrAssistantNotFound
+}
+func (m *mockTerminalService) DeleteAssistantThread(_ string) error { return nil }
+func (m *mockTerminalService) AssistantActivity(_ AssistantActivityQuery) (AssistantActivityInfo, error) {
+	return AssistantActivityInfo{}, nil
+}
+func (m *mockTerminalService) PostAssistantMessage(_ string, _ AssistantMessageRequest) error {
+	return nil
+}
+func (m *mockTerminalService) StopAssistantTurn(_ string) error            { return nil }
+func (m *mockTerminalService) ResolveAssistantGate(_ string, _ bool) error { return nil }
+func (m *mockTerminalService) AskAssistantGate(_ AssistantGateAskRequest) (AssistantGateAskResponse, error) {
+	return AssistantGateAskResponse{}, nil
+}
 
 // uniqueSession names a tmux session no other test binary or running daemon
 // can share, so these tests never attach to or tear down real agent windows.

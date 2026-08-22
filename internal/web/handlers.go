@@ -691,6 +691,20 @@ func writeServiceError(w http.ResponseWriter, err error) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 	case errors.Is(err, ErrConfigPathNotSet):
 		writeJSON(w, http.StatusNotImplemented, map[string]string{"error": err.Error()})
+	case errors.Is(err, ErrAssistantDisabled):
+		writeJSON(w, http.StatusNotImplemented, map[string]string{"error": err.Error()})
+	case errors.Is(err, ErrAssistantNotFound):
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+	case errors.Is(err, ErrAssistantGateNotFound):
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+	case errors.Is(err, ErrAssistantBusy):
+		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+	case errors.Is(err, ErrAssistantAtCapacity):
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
+	case errors.Is(err, ErrAssistantStale):
+		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+	case errors.Is(err, ErrAssistantGateDenied):
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": err.Error()})
 	default:
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}

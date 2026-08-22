@@ -2116,3 +2116,146 @@ func TestHooksFor(t *testing.T) {
 		})
 	}
 }
+
+func TestLoadAssistant(t *testing.T) {
+	base := `
+tickets_dir: /tmp/tasks
+default_agent: cl
+agents:
+  cl:
+    binary: claude
+  p:
+    binary: pi
+  other:
+    binary: aider
+stages:
+  s:
+    prompt: do stuff
+pipelines:
+  p:
+    - stage: s
+      agent: cl
+      on_success: done
+      on_failure: pause
+`
+	tests := []struct {
+		name      string
+		assistant string
+		wantErr   string
+		check     func(t *testing.T, a Assistant)
+	}{
+		{
+			name: "absent section is disabled and still defaulted",
+			check: func(t *testing.T, a Assistant) {
+				assert.False(t, a.Enabled())
+				assert.Equal(t, "/tmp/tasks", a.Workdir)
+				assert.Equal(t, AutonomyAsk, a.Autonomy)
+				assert.Equal(t, 10*time.Minute, a.Timeout.Duration)
+			},
+		},
+		{
+			name: "a claude agent enables it",
+			assistant: `
+assistant:
+  agent: cl
+  model: sonnet
+  effort: medium
+`,
+			check: func(t *testing.T, a Assistant) {
+				assert.True(t, a.Enabled())
+				assert.Equal(t, "cl", a.Agent)
+				assert.Equal(t, "sonnet", a.Model)
+			},
+		},
+		{
+			name: "an explicit workdir, timeout and autonomy survive the defaults",
+			assistant: `
+assistant:
+  agent: p
+  workdir: ~/code
+  timeout: 3m
+  autonomy: read
+`,
+			check: func(t *testing.T, a Assistant) {
+				assert.Equal(t, "~/code", a.Workdir, "the tilde stays literal")
+				assert.Equal(t, 3*time.Minute, a.Timeout.Duration)
+				assert.Equal(t, AutonomyRead, a.Autonomy)
+			},
+		},
+		{
+			name: "an agent absent from agents is rejected",
+			assistant: `
+assistant:
+  agent: nope
+`,
+			wantErr: `assistant.agent "nope": not found in agents`,
+		},
+		{
+			name: "an agent with no known kind is rejected by name",
+			assistant: `
+assistant:
+  agent: other
+`,
+			wantErr: "only supports claude and pi",
+		},
+		{
+			name: "an autonomy outside the three is rejected",
+			assistant: `
+assistant:
+  agent: cl
+  autonomy: yolo
+`,
+			wantErr: `assistant.autonomy "yolo"`,
+		},
+		{
+			name: "an effort the agent takes no flag for is rejected",
+			assistant: `
+assistant:
+  agent: other
+  effort: high
+`,
+			wantErr: "only supports claude and pi",
+		},
+		{
+			name: "a pi effort against a model that already sets thinking is rejected",
+			assistant: `
+assistant:
+  agent: p
+  model: anthropic/sonnet:high
+  effort: low
+`,
+			wantErr: "both set pi's thinking level",
+		},
+		{
+			name: "a non-positive timeout is rejected",
+			assistant: `
+assistant:
+  agent: cl
+  timeout: -1s
+`,
+			wantErr: "assistant.timeout",
+		},
+		{
+			name: "an unknown assistant field is rejected",
+			assistant: `
+assistant:
+  agent: cl
+  temperature: 0.2
+`,
+			wantErr: "field temperature not found",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg, err := LoadReader(strings.NewReader(base + tt.assistant))
+			if tt.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			tt.check(t, cfg.Assistant)
+		})
+	}
+}

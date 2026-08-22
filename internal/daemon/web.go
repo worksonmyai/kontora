@@ -743,12 +743,8 @@ func (d *Daemon) liveActivity(q web.ActivityQuery, lr liveRun) (web.ActivityInfo
 	if err != nil {
 		return web.ActivityInfo{}, false
 	}
-	// Everything from the earliest tool still awaiting its result onward may
-	// still be rewritten, so a cursor past that point is pulled back to it.
-	off := max(0, min(q.After, tape.StableCount()))
-	tape.Events = tape.Events[off:]
 	info.Tape = &tape
-	info.Offset = off
+	info.Offset = tape.SliceAt(q.After)
 	return info, true
 }
 

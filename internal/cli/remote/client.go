@@ -542,3 +542,116 @@ func waitSSEReconnect(ctx context.Context) bool {
 		return true
 	}
 }
+
+// assistantGateTimeout bounds the agent-side gate call. It is not the unary
+// timeout: a parked write waits on a person, and the daemon's own gate deadline
+// is what ends that wait.
+const assistantGateTimeout = 10 * time.Minute
+
+// AssistantConfig reports whether the daemon has an assistant agent configured.
+func (c *Client) AssistantConfig() (web.AssistantConfigInfo, error) {
+	var info web.AssistantConfigInfo
+	if err := c.doJSON(http.MethodGet, "/api/assistant", nil, &info); err != nil {
+		return web.AssistantConfigInfo{}, err
+	}
+	return info, nil
+}
+
+// AssistantThreads lists the chat history.
+func (c *Client) AssistantThreads() ([]web.AssistantThreadInfo, error) {
+	var out struct {
+		Threads []web.AssistantThreadInfo `json:"threads"`
+	}
+	if err := c.doJSON(http.MethodGet, "/api/assistant/threads", nil, &out); err != nil {
+		return nil, err
+	}
+	return out.Threads, nil
+}
+
+// CreateAssistantThread opens a chat.
+func (c *Client) CreateAssistantThread(req web.CreateAssistantThreadRequest) (web.AssistantThreadInfo, error) {
+	var thread web.AssistantThreadInfo
+	if err := c.doJSON(http.MethodPost, "/api/assistant/threads", req, &thread); err != nil {
+		return web.AssistantThreadInfo{}, err
+	}
+	return thread, nil
+}
+
+// AssistantThread returns one chat and the messages posted to it.
+func (c *Client) AssistantThread(id string) (web.AssistantThreadInfo, error) {
+	var thread web.AssistantThreadInfo
+	if err := c.doJSON(http.MethodGet, "/api/assistant/threads/"+id, nil, &thread); err != nil {
+		return web.AssistantThreadInfo{}, err
+	}
+	return thread, nil
+}
+
+// DeleteAssistantThread drops a chat and its transcript.
+func (c *Client) DeleteAssistantThread(id string) error {
+	return c.doJSON(http.MethodDelete, "/api/assistant/threads/"+id, nil, nil)
+}
+
+// AssistantActivity returns one poll of a thread's transcript.
+func (c *Client) AssistantActivity(id string, after int) (web.AssistantActivityInfo, error) {
+	path := "/api/assistant/threads/" + id + "/activity"
+	if after > 0 {
+		path += "?after=" + strconv.Itoa(after)
+	}
+	var info web.AssistantActivityInfo
+	if err := c.doJSON(http.MethodGet, path, nil, &info); err != nil {
+		return web.AssistantActivityInfo{}, err
+	}
+	return info, nil
+}
+
+// PostAssistantMessage starts a turn. It returns once the turn is under way;
+// the reply arrives through AssistantActivity.
+func (c *Client) PostAssistantMessage(id string, req web.AssistantMessageRequest) error {
+	return c.doJSON(http.MethodPost, "/api/assistant/threads/"+id+"/messages", req, nil)
+}
+
+// StopAssistantTurn cancels the turn a thread is running.
+func (c *Client) StopAssistantTurn(id string) error {
+	return c.postAction("/api/assistant/threads/" + id + "/stop")
+}
+
+// ResolveAssistantGate answers a parked write.
+func (c *Client) ResolveAssistantGate(gateID string, approve bool) error {
+	decision := "skip"
+	if approve {
+		decision = "approve"
+	}
+	return c.doJSON(http.MethodPost, "/api/assistant/gate/"+gateID, web.AssistantGateRequest{Decision: decision}, nil)
+}
+
+// AssistantGateAsk is the agent side of the gate. It blocks while a write waits
+// for the person at the pane, so it runs on its own long timeout rather than
+// the unary one every other call uses.
+func (c *Client) AssistantGateAsk(req web.AssistantGateAskRequest) (web.AssistantGateAskResponse, error) {
+	body, err := json.Marshal(req)
+	if err != nil {
+		return web.AssistantGateAskResponse{}, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), assistantGateTimeout)
+	defer cancel()
+	httpReq, err := c.newRequest(ctx, http.MethodPost, "/api/assistant/gate/ask", bytes.NewReader(body))
+	if err != nil {
+		return web.AssistantGateAskResponse{}, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	// Not c.hc: its transport caps the wait for response headers at ten
+	// seconds, and the daemon writes none until the person has answered.
+	resp, err := (&http.Client{}).Do(httpReq)
+	if err != nil {
+		return web.AssistantGateAskResponse{}, &transportError{base: c.base, err: err}
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return web.AssistantGateAskResponse{}, decodeError(resp)
+	}
+	var out web.AssistantGateAskResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return web.AssistantGateAskResponse{}, err
+	}
+	return out, nil
+}

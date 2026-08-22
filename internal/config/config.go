@@ -106,6 +106,7 @@ type Config struct {
 	Environment         map[string]string   `yaml:"environment"`
 	Hooks               Hooks               `yaml:"hooks"`
 	Plannotator         Plannotator         `yaml:"plannotator"`
+	Assistant           Assistant           `yaml:"assistant"`
 	Metrics             Metrics             `yaml:"metrics"`
 
 	// SummaryModel selects the model the final summary pass runs with, resolved
@@ -152,6 +153,47 @@ type Plannotator struct {
 	Timeout    Duration `yaml:"timeout"`
 	ReviewsDir string   `yaml:"reviews_dir"`
 }
+
+// The autonomy modes an assistant thread can run in. They gate write-classified
+// tool calls at the agent's tool boundary, not by prompt convention.
+const (
+	// AutonomyRead denies every write.
+	AutonomyRead = "read"
+	// AutonomyAsk holds a write until the user approves or skips it.
+	AutonomyAsk = "ask"
+	// AutonomyAuto allows a write without asking. Deleting a ticket is still
+	// held: it is the one write with no cheap undo.
+	AutonomyAuto = "auto"
+)
+
+// Autonomies lists the modes in escalating order, which is the order the UI
+// offers them in.
+var Autonomies = []string{AutonomyRead, AutonomyAsk, AutonomyAuto}
+
+// Assistant configures the dashboard's assistant pane. An empty Agent disables
+// it: the pane then shows a configure hint instead of a composer.
+//
+// The agent must be one whose Kind() is known, because a thread is one agent
+// session — the first turn mints a session id and every later turn resumes it,
+// and only claude and pi take flags for that.
+type Assistant struct {
+	Agent  string `yaml:"agent"`
+	Model  string `yaml:"model"`
+	Effort string `yaml:"effort"`
+	// Workdir is the working directory every turn of every thread runs in.
+	// Claude keys its session files by working directory, so a thread whose cwd
+	// moved between turns could not resume. Defaults to TicketsDir.
+	Workdir string `yaml:"workdir"`
+	// Timeout bounds one turn.
+	Timeout Duration `yaml:"timeout"`
+	// Autonomy is the mode a new thread starts in.
+	Autonomy string `yaml:"autonomy"`
+	// Prompt replaces the built-in system brief.
+	Prompt string `yaml:"prompt"`
+}
+
+// Enabled reports whether an assistant agent was chosen.
+func (a Assistant) Enabled() bool { return a.Agent != "" }
 
 // Metrics configures OTLP metric export. Disabled by default: the daemon
 // builds a no-op meter provider and records nothing.
@@ -710,6 +752,16 @@ func (c *Config) applyDefaults() {
 		c.Plannotator.ReviewsDir = "~/.kontora/plannotator-reviews"
 	}
 
+	if c.Assistant.Workdir == "" {
+		c.Assistant.Workdir = c.TicketsDir
+	}
+	if c.Assistant.Autonomy == "" {
+		c.Assistant.Autonomy = AutonomyAsk
+	}
+	if c.Assistant.Timeout.Duration == 0 {
+		c.Assistant.Timeout.Duration = 10 * time.Minute
+	}
+
 	if c.Metrics.Enabled == nil {
 		c.Metrics.Enabled = new(false)
 	}
@@ -865,6 +917,10 @@ func (c *Config) Validate() error {
 	}
 
 	if err := c.validateMetrics(); err != nil {
+		return err
+	}
+
+	if err := c.validateAssistant(); err != nil {
 		return err
 	}
 
@@ -1060,6 +1116,36 @@ func (c *Config) validateMetrics() error {
 	default:
 		return fmt.Errorf("metrics.endpoint %q: scheme %q is not supported (use http or https, or a bare host:port)", c.Metrics.Endpoint, scheme)
 	}
+}
+
+// validateAssistant checks the assistant section. An empty agent is valid and
+// means the pane is disabled, so every other field is only checked once one is
+// named.
+func (c *Config) validateAssistant() error {
+	a := c.Assistant
+	if a.Agent == "" {
+		return nil
+	}
+	agent, ok := c.Agents[a.Agent]
+	if !ok {
+		return fmt.Errorf("assistant.agent %q: not found in agents", a.Agent)
+	}
+	if agent.Kind() == "" {
+		return fmt.Errorf("assistant.agent %q: runs %s, and the assistant only supports claude and pi (they are the CLIs that take a session id, which one chat needs)", a.Agent, agent.Binary)
+	}
+	if !slices.Contains(Autonomies, a.Autonomy) {
+		return fmt.Errorf("assistant.autonomy %q: must be one of %s", a.Autonomy, strings.Join(Autonomies, ", "))
+	}
+	if a.Timeout.Duration <= 0 {
+		return fmt.Errorf("assistant.timeout %s: must be positive", a.Timeout)
+	}
+	if a.Effort != "" && agent.effortFlag() == "" {
+		return fmt.Errorf("assistant.effort %q: agent %q runs %s, which takes no flag for it", a.Effort, a.Agent, agent.Binary)
+	}
+	if err := agent.CheckEffort(a.Model, a.Effort); err != nil {
+		return fmt.Errorf("assistant: %w", err)
+	}
+	return nil
 }
 
 // validateProjects checks entries in name order so the duplicate-path error

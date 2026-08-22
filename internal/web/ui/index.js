@@ -8,6 +8,7 @@
 // same key; merge() throws if they do.
 import { kontoraActivity } from './activity.js';
 import { kontoraApp } from './app.js';
+import { kontoraAssistant } from './assistant.js';
 import { kontoraBoard } from './board.js';
 import { kontoraCreate } from './create.js';
 import { kontoraDetail } from './detail.js';
@@ -57,6 +58,7 @@ function kontora() {
     kontoraMobile(),
     kontoraSettings(),
     kontoraStats(),
+    kontoraAssistant(),
   );
 }
 

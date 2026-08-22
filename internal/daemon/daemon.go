@@ -316,6 +316,7 @@ type Daemon struct {
 	plannotatorSpawner  PlannotatorSpawner
 	plannotatorLookup   PlannotatorLookup
 	finalSummarySpawner FinalSummarySpawner
+	turnSpawner         TurnSpawner
 	agentLookup         AgentLookup
 	skipOrphanCleanup   bool
 	windows             windowOps
@@ -381,6 +382,17 @@ type Daemon struct {
 	queue     priorityQueue
 	queueCond *sync.Cond
 
+	// assistant holds the dashboard assistant's in-flight turns and the tool
+	// calls parked on a person. It keeps its own lock: a parked write blocks
+	// the agent's tool boundary for as long as the person takes, and d.mu is
+	// held across ticket writes.
+	assistant *assistantState
+
+	// webAddr is the address the web server listens on, so an assistant turn
+	// can tell its agent where to send its own kontora calls. Empty until the
+	// server starts, and empty for a daemon running without one.
+	webAddr atomic.Pointer[string]
+
 	// stats caches the Stats page payload and the sidecars it reads. It keeps
 	// its own lock so aggregation never holds d.mu across file I/O.
 	stats *statsCache
@@ -442,6 +454,7 @@ func New(cfg *config.Config, opts ...Option) *Daemon {
 		plannotatorSpawner:  defaultPlannotatorSpawner,
 		plannotatorLookup:   defaultPlannotatorLookup,
 		finalSummarySpawner: defaultFinalSummarySpawner,
+		turnSpawner:         defaultTurnSpawner,
 		agentLookup:         defaultAgentLookup,
 		windows:             defaultWindowOps,
 		broker:              web.NewSSEBroker(),
@@ -464,6 +477,7 @@ func New(cfg *config.Config, opts ...Option) *Daemon {
 
 		plannotatorDeferred: make(map[string]struct{}),
 		selfWrites:          make(map[string]selfWrite),
+		assistant:           newAssistantState(),
 		stats:               newStatsCache(),
 	}
 	d.cfg.Store(cfg)
@@ -625,7 +639,9 @@ func (d *Daemon) Run(ctx context.Context) error {
 				defer shutdownCancel()
 				_ = srv.Shutdown(shutdownCtx)
 			}()
-			d.log.Info("web server started", "addr", srv.Addr())
+			addr := srv.Addr()
+			d.webAddr.Store(&addr)
+			d.log.Info("web server started", "addr", addr)
 		}
 	}
 
@@ -638,6 +654,11 @@ func (d *Daemon) Run(ctx context.Context) error {
 	// Registered before the cancel below so it runs after it: background work
 	// stops on a cancelled context, and waiting first would hang.
 	defer d.background.Wait()
+
+	// Between the two: an assistant turn runs on a context of its own, so
+	// cancelling the daemon's does not reach it and the wait above would sit
+	// out the whole assistant timeout.
+	defer d.assistant.stopAll()
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()

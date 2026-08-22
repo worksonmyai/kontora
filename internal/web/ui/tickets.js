@@ -76,6 +76,9 @@ export function kontoraTickets() {
         return;
       }
       this.connectSSE();
+      // After the auth check, so a pane on a tokenless session does not fire a
+      // second 401 of its own.
+      this.initAssistant();
       // Open whatever the URL addresses. Tickets are loaded by now, so a
       // #/t/<id> link can resolve against the board.
       await this.applyRoute();

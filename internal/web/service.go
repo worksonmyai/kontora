@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/worksonmyai/kontora/internal/assistant"
 	"github.com/worksonmyai/kontora/internal/logfmt"
 	"github.com/worksonmyai/kontora/internal/stats"
 	"github.com/worksonmyai/kontora/internal/ticket/app"
@@ -22,6 +23,23 @@ var (
 	ErrConfigPathNotSet    = errors.New("config path not configured")
 	ErrPlannotatorInFlight = errors.New("plannotator is already open for this ticket")
 	ErrPlannotatorBinary   = errors.New("plannotator not installed: https://plannotator.ai")
+
+	// ErrAssistantDisabled means no assistant agent is configured. It is the
+	// state behind the pane's configure hint, so it answers 501 rather than an
+	// error the UI would show as a failure.
+	ErrAssistantDisabled = errors.New("assistant is not configured")
+	ErrAssistantNotFound = errors.New("assistant thread not found")
+	ErrAssistantBusy     = errors.New("this thread is already running a turn")
+	// ErrAssistantAtCapacity is the global turn cap, which is not the same
+	// refusal as a thread that is already busy: this chat can run, just not yet.
+	ErrAssistantAtCapacity = errors.New("too many assistant turns are running; try again in a moment")
+	// ErrAssistantStale is a thread whose agent has been repointed or removed
+	// under it. Its session cannot resume on another CLI, so it needs a new chat.
+	ErrAssistantStale        = errors.New("this chat's agent has changed")
+	ErrAssistantGateNotFound = errors.New("no tool call is waiting on that id")
+	// ErrAssistantGateDenied is a gate call whose nonce does not match the one
+	// the thread's current turn was started with.
+	ErrAssistantGateDenied = errors.New("assistant gate: not this turn's agent")
 )
 
 // TicketService defines the contract between the web layer and the daemon.
@@ -59,6 +77,113 @@ type TicketService interface {
 	HasTerminalSession(id string) bool
 	StartPlannotatorReview(id string) error
 	StartPlannotatorAnnotate(id string) error
+	AssistantConfig() AssistantConfigInfo
+	ListAssistantThreads() ([]AssistantThreadInfo, error)
+	CreateAssistantThread(req CreateAssistantThreadRequest) (AssistantThreadInfo, error)
+	GetAssistantThread(id string) (AssistantThreadInfo, error)
+	DeleteAssistantThread(id string) error
+	AssistantActivity(q AssistantActivityQuery) (AssistantActivityInfo, error)
+	PostAssistantMessage(id string, req AssistantMessageRequest) error
+	StopAssistantTurn(id string) error
+	ResolveAssistantGate(gateID string, approve bool) error
+	AskAssistantGate(req AssistantGateAskRequest) (AssistantGateAskResponse, error)
+}
+
+// AssistantConfigInfo tells the pane whether it can be used. Enabled false plus
+// Hint is what the configure state renders instead of a composer.
+type AssistantConfigInfo struct {
+	Enabled  bool   `json:"enabled"`
+	Agent    string `json:"agent,omitempty"`
+	Kind     string `json:"kind,omitempty"`
+	Model    string `json:"model,omitempty"`
+	Autonomy string `json:"autonomy,omitempty"`
+	Workdir  string `json:"workdir,omitempty"`
+	Hint     string `json:"hint,omitempty"`
+}
+
+// AssistantThreadInfo is one chat as the history list and the pane header read
+// it. Messages is filled only by the single-thread reads.
+type AssistantThreadInfo struct {
+	ID        string             `json:"id"`
+	Title     string             `json:"title"`
+	CreatedAt time.Time          `json:"created_at"`
+	UpdatedAt time.Time          `json:"updated_at"`
+	Agent     string             `json:"agent,omitempty"`
+	Kind      string             `json:"kind,omitempty"`
+	Model     string             `json:"model,omitempty"`
+	Autonomy  string             `json:"autonomy"`
+	Turns     int                `json:"turns"`
+	Writes    int                `json:"writes"`
+	Running   bool               `json:"running"`
+	Messages  []AssistantMessage `json:"messages,omitempty"`
+}
+
+// AssistantMessage is one user turn. The agent's side of the conversation comes
+// from the tape, not from here.
+type AssistantMessage struct {
+	N     int       `json:"n"`
+	Text  string    `json:"text"`
+	At    time.Time `json:"at"`
+	Error string    `json:"error,omitempty"`
+}
+
+type CreateAssistantThreadRequest struct {
+	Autonomy string `json:"autonomy,omitempty"`
+}
+
+// AssistantMessageRequest posts one message. A non-empty Autonomy switches the
+// thread's mode before the turn runs, which is how the pane's mode selector
+// takes effect on the very next message.
+type AssistantMessageRequest struct {
+	Text     string `json:"text"`
+	Autonomy string `json:"autonomy,omitempty"`
+}
+
+// AssistantActivityQuery is one poll of a thread. After is the number of events
+// the caller already holds.
+type AssistantActivityQuery struct {
+	ID          string
+	After       int
+	IfNoneMatch string
+}
+
+// AssistantActivityInfo is one poll's answer: the transcript slice, the user
+// messages, and any write waiting on the person. They ride together so one
+// request drives the tool rows, the prose and the proposal card.
+type AssistantActivityInfo struct {
+	Running  bool               `json:"running"`
+	Autonomy string             `json:"autonomy,omitempty"`
+	Offset   int                `json:"offset,omitempty"`
+	Tape     *logfmt.Tape       `json:"tape,omitempty"`
+	Gate     *assistant.Pending `json:"gate,omitempty"`
+	Messages []AssistantMessage `json:"messages,omitempty"`
+
+	// ETag and NotModified drive HTTP revalidation and are not part of the
+	// payload the client parses.
+	ETag        string `json:"-"`
+	NotModified bool   `json:"-"`
+}
+
+// AssistantGateAskRequest is the agent side of the gate: the claude PreToolUse
+// hook and the pi tool_call handler both send it. Nonce is the secret the
+// thread's current turn was started with.
+type AssistantGateAskRequest struct {
+	Thread string         `json:"thread"`
+	Nonce  string         `json:"nonce"`
+	Tool   string         `json:"tool"`
+	Input  map[string]any `json:"input"`
+}
+
+// AssistantGateAskResponse is what the agent is told. Reason is stated on a
+// refusal so the agent reports it rather than retrying the call.
+type AssistantGateAskResponse struct {
+	Allow  bool   `json:"allow"`
+	Reason string `json:"reason,omitempty"`
+}
+
+// AssistantGateRequest is the person's answer at the pane.
+type AssistantGateRequest struct {
+	Decision string `json:"decision"`
 }
 
 // PlannotatorOutcome enumerates the results of a plannotator run.

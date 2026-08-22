@@ -753,6 +753,88 @@ This record is deliberately separate from the crash-recovery record a stage
 writes while it runs. Only the annotation run reads it, so an ordinary
 `kontora retry` of a stage that finished still starts fresh.
 
+## assistant
+
+The dashboard's assistant pane. It answers questions about the board and drives
+Kontora through the same verbs the CLI uses, running one of the agents already
+listed under `agents:`.
+
+```yaml
+assistant:
+  agent: claude          # required to enable; no agent means no assistant
+  model: sonnet          # optional
+  effort: medium         # optional
+  workdir: ~/.kontora/tickets   # optional, defaults to tickets_dir
+  timeout: 10m           # optional, per turn
+  autonomy: ask          # optional: read | ask | auto
+  prompt: ""             # optional, replaces the built-in system brief
+```
+
+| Field | Required | Default | Description |
+|-------|----------|---------|-------------|
+| `agent` | no | none | Which `agents:` entry the assistant runs. Empty disables the pane, which then shows a configure hint instead of a composer. |
+| `model` | no | the agent's own | Applied the way a stage's `model` is. |
+| `effort` | no | the agent's own | Reasoning effort. Rejected for an agent whose CLI takes no flag for it. |
+| `workdir` | no | `tickets_dir` | The working directory every turn runs in. |
+| `timeout` | no | `10m` | Bounds one turn. |
+| `autonomy` | no | `ask` | The mode a new chat starts in. |
+| `prompt` | no | built-in | Replaces the whole system brief, mode paragraph included. |
+
+### Only claude and pi
+
+`assistant.agent` must name an agent whose binary is `claude` or `pi`. Config
+validation rejects any other, naming the two.
+
+One chat is one agent session: the first message mints a session id and every
+later message resumes it, so the chat remembers what was already said. Only
+those two CLIs take a flag for that alongside a headless print mode. An agent
+without one would start from nothing on every message, which is not the feature.
+
+For the same reason the working directory is fixed when the chat opens rather
+than following the board. Claude keys its session files by working directory, so
+a chat whose directory moved could not resume.
+
+The agent, the model and the effort are fixed at the same point. Repointing
+`assistant.agent` after a chat has run applies to new chats; the old ones refuse
+a further message and say so, rather than resuming a claude session with pi and
+silently starting from nothing.
+
+### Autonomy
+
+The mode is enforced at the agent's tool boundary, not by asking the agent to
+behave: claude runs a `PreToolUse` hook, pi a `tool_call` handler, and both ask
+the daemon before the tool runs. A tool call the daemon has no rule for counts
+as a change, so a mode can only ever be stricter than expected, never looser.
+
+| Mode | Reads | Changes | Deleting a ticket |
+|------|-------|---------|-------------------|
+| `read` | run | refused, with a reason the agent reports | refused |
+| `ask` | run | held until you approve or skip it in the pane | held |
+| `auto` | run | run | held |
+
+A change left waiting is refused after five minutes, so a chat you walked away
+from does not leave an agent process blocked.
+
+The mode is per chat and the pane's selector sets it for the next message, so a
+chat can start read-only and be opened up once you have seen what it proposes.
+
+### Turns and the scheduler
+
+An assistant turn is a headless agent process, not a tmux window and not a
+pipeline stage. It does not take a `max_concurrent_agents` slot: someone waiting
+at the pane should not queue behind the board, and should not push a ticket run
+out of the way either. At most two turns run at once across every chat, and one
+per chat, because a chat's own session cannot take two.
+
+The agent is given `KONTORA_URL` and `KONTORA_TOKEN`, so its `kontora` calls go
+through the running daemon and the board updates as it works, and a per-turn
+secret the tool gate authenticates its calls with. `KONTORA_URL` names loopback
+even when `web.host` is a wildcard: the daemon refuses a request whose `Host` is
+`0.0.0.0`, so the agent has to reach it by an address it answers to.
+
+Chats are stored under `<logs_dir>/assistant/<chat-id>/`. Deleting one from the
+history removes its transcript with it.
+
 ## metrics
 
 Optional OTLP export of what the daemon measures: stage runs and their

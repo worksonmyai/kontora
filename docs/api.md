@@ -28,6 +28,16 @@ When the web server is enabled, the following endpoints are exposed:
 | `POST /api/tickets/upload` | Import tickets from raw `.md` file content (multipart form). Requires `X-Kontora-Confirm: upload-tickets`. |
 | `POST /api/tickets/{id}/plannotator-review` | Open the ticket's branch diff in Plannotator. Only in `human_review`. Submitted feedback routes the ticket to the built-in rework stage. See [plannotator](configuration.md#plannotator). |
 | `POST /api/tickets/{id}/plannotator-annotate` | Open the ticket's own markdown in Plannotator. Only in `open`. Submitted annotations set `kontora: true` and schedule a run that rewrites the ticket. |
+| `GET /api/assistant` | Whether the [assistant](configuration.md#assistant) is configured: `enabled`, and when it is, `agent`, `kind`, `model`, `autonomy` and `workdir`. `enabled: false` carries a `hint` naming what to set, which is what the pane shows in place of its composer. |
+| `GET /api/assistant/threads` | The chat history, most recently used first. |
+| `POST /api/assistant/threads` | Open a chat (optional `{"autonomy": "read"\|"ask"\|"auto"}`; the configured default otherwise). Answers 201 with the chat. |
+| `GET /api/assistant/threads/{id}` | One chat and the messages posted to it. |
+| `DELETE /api/assistant/threads/{id}` | Drop a chat and its transcript. |
+| `GET /api/assistant/threads/{id}/activity` | One poll of a chat: the transcript as a `logfmt` tape sliced at `?after=N`, the messages, whether a turn is running, and any change waiting on the user. Carries an `ETag` and answers `If-None-Match` with 304. |
+| `POST /api/assistant/threads/{id}/messages` | Post a message (`{"text": "...", "autonomy": "..."}`). Answers 202: the reply arrives through the activity poll. |
+| `POST /api/assistant/threads/{id}/stop` | Cancel the turn the chat is running. |
+| `POST /api/assistant/gate/{gid}` | Answer a change the assistant is waiting on (`{"decision": "approve"\|"skip"}`). |
+| `POST /api/assistant/gate/ask` | The agent side of the tool gate, called by the claude `PreToolUse` hook and the pi `tool_call` handler. Authenticated by the per-turn secret in the agent's environment, not by the web token alone. Blocks while a change waits on the user. |
 | `GET /api/events` | Server-Sent Events stream of ticket updates. |
 | `GET /ws/terminal/{id}` | Read-only WebSocket relay of a running agent's tmux session. |
 | `GET /health` | Health check (returns 200). |
@@ -53,6 +63,8 @@ The four relation endpoints take the same body, `{"related": [...]}`, and answer
 A link is written to both tickets, one file at a time, because two markdown files cannot be written together. When the second write fails the error names both tickets and which one was already changed, and repeating the request repairs the missing side.
 
 A ticket whose `branch` is empty carries `auto_branch` in `GET /api/tickets` and `GET /api/tickets/{id}`: the branch the daemon would assign at pickup, resolved for the path the ticket names and the current [branch naming](configuration.md#branch-naming) mode. It is a read-only projection, not a stored field, and it is absent once `branch` is set.
+
+The assistant endpoints answer 501 when no `assistant.agent` is configured, 404 for an unknown chat, and 409 for a second message on a chat whose turn is still running. A chat keeps the agent it was created with, so a message to one whose agent has been repointed or removed also answers 409: its agent session cannot resume on another CLI, and the chat has to be started again. 503 is the separate refusal for the daemon's global turn cap, which is not about this chat at all. `POST /api/assistant/gate/{gid}` answers 404 once the change has already been answered or the turn that raised it has ended, so a stale card cannot resolve twice. `POST /api/assistant/gate/ask` answers 403 when the secret does not match the chat's current turn, which is what stops an unrelated local process approving its own writes against a tokenless loopback daemon.
 
 ## Base branch validation
 

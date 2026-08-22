@@ -3480,6 +3480,16 @@
           </div>
         </template>
 
+        <!-- The turn is live. It rides under the tape rather than in the header,
+             because the agent writes nothing for the first seconds and the
+             thread is where the reader is looking. -->
+        <template x-if="assistantStreaming && !assistantGate">
+          <div class="flex items-center gap-2 font-mono text-[11px] text-surface-600" aria-live="polite">
+            <span class="w-1.5 h-1.5 rounded-full pulse-dot shrink-0" style="background: hsl(var(--pipe-h))"></span>
+            <span x-text="assistantWorkingLabel()"></span>
+          </div>
+        </template>
+
         <!-- The parked write. It rides the same poll as the tool rows. -->
         <template x-if="assistantGate">
           <div id="assistant-proposal" class="rounded-[9px] border border-warn/60 bg-surface-900 p-2.5 flex flex-col gap-2">
@@ -3923,7 +3933,7 @@
                 </button>
               </div>
 
-              <div style="flex:1;min-height:0;overflow-y:auto;padding:14px 18px;display:flex;flex-direction:column;gap:12px;">
+              <div id="assistant-sheet-thread" style="flex:1;min-height:0;overflow-y:auto;padding:14px 18px;display:flex;flex-direction:column;gap:12px;">
                 <template x-if="!assistantMessages.length && !assistantEvents.length">
                   <p style="margin:auto 0;font-size:13px;line-height:1.6;color:rgba(var(--surface-600),1);text-align:center;">Ask about the board. It drives Kontora with the same verbs the CLI uses.</p>
                 </template>
@@ -3946,6 +3956,15 @@
                     </template>
                   </div>
                 </template>
+                <template x-if="assistantStreaming && !assistantGate">
+                  <div data-pipe-color="mauve" aria-live="polite"
+                       style="display:flex;align-items:center;gap:8px;font-family:'JetBrains Mono',monospace;font-size:12px;color:rgba(var(--surface-600),1);">
+                    <span class="pulse-dot" style="width:6px;height:6px;border-radius:9999px;background:hsl(var(--pipe-h));flex:none;"></span>
+                    <span x-text="assistantWorkingLabel()"></span>
+                    <button @click="stopAssistantTurn()" style="margin-left:auto;border:none;background:transparent;color:rgba(var(--surface-600),1);font-family:'JetBrains Mono',monospace;font-size:12px;">stop</button>
+                  </div>
+                </template>
+
                 <template x-if="assistantGate">
                   <div style="border:1px solid rgba(var(--warn),.6);background:rgba(var(--surface-900),1);border-radius:11px;padding:11px;display:flex;flex-direction:column;gap:9px;">
                     <span style="font-family:'JetBrains Mono',monospace;font-size:11px;text-transform:uppercase;letter-spacing:.1em;color:rgba(var(--warn),1);" x-text="assistantGate.kind === 'delete' ? 'delete' : 'change'"></span>

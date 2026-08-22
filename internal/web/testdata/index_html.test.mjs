@@ -8760,6 +8760,9 @@ function assistantState(opts = {}) {
   const store = Object.assign({}, opts.store);
   const requests = [];
   const listeners = [];
+  // The default document holds no elements, so a test that cares about the
+  // autoscroll hands one in and reads its scrollTop back.
+  const scroller = opts.scroller;
   const routes = Object.assign(
     {
       "/api/assistant": { enabled: true, agent: "cl", kind: "claude", autonomy: "ask" },
@@ -8769,6 +8772,9 @@ function assistantState(opts = {}) {
   );
   const { state } = loadKontoraContext({
     location: { protocol: "http:", host: "localhost:8080", hash: "" },
+    ...(scroller
+      ? { document: { getElementById: (id) => (id.startsWith("assistant") ? scroller : null), querySelector: () => null, hasFocus: () => true, documentElement: { style: {} } } }
+      : {}),
     localStorage: {
       getItem: (k) => (k in store ? store[k] : null),
       setItem: (k, v) => { store[k] = v; },
@@ -8790,7 +8796,7 @@ function assistantState(opts = {}) {
     },
   });
   state.$nextTick = (cb) => { if (cb) cb(); return Promise.resolve(); };
-  return { state, store, requests, listeners };
+  return { state, store, requests, listeners, scroller };
 }
 
 test("the pane opens and closes, and remembers that it was open", async () => {
@@ -9120,6 +9126,76 @@ test("the poll carries the parked write alongside the tape", () => {
   state._mergeAssistantActivity({ running: false, tape: { events: [] } });
   assert.equal(state.assistantGate, null);
   assert.equal(state.assistantStreaming, false);
+});
+
+test("the pane says it is working from the moment the message goes out", async () => {
+  const { state } = assistantState();
+  await state.initAssistant();
+  state.assistantThread = { id: "t1" };
+  state.assistantDraft = "what is running?";
+
+  // The agent writes nothing for the first seconds of a turn, so without this
+  // the thread is silent and the pane reads as dead.
+  await state.sendAssistantMessage();
+  assert.equal(state.assistantStreaming, true);
+  assert.equal(state.assistantWorkingLabel(), "working… 0s");
+
+  state.assistantElapsed = 75;
+  assert.equal(state.assistantWorkingLabel(), "working… 1m 15s");
+
+  state._mergeAssistantActivity({ running: false, tape: { events: [] } });
+  assert.equal(state.assistantStreaming, false);
+  assert.equal(state._assistantTurnStart, null, "the clock stops with the turn");
+});
+
+test("a turn the pane did not start is working with no count", () => {
+  const { state } = assistantState();
+
+  // Reopening onto a running turn: the pane has no start it can honestly count
+  // from, so it says it is working and leaves the number off.
+  state._assistantAdopt({ id: "t1", running: true }, []);
+  assert.equal(state.assistantStreaming, true);
+  assert.equal(state.assistantWorkingLabel(), "working…");
+});
+
+test("the thread follows the tape unless the reader has scrolled up", () => {
+  const scroller = { scrollTop: 940, scrollHeight: 1000, clientHeight: 60 };
+  const { state } = assistantState({ scroller });
+  state.assistantThread = { id: "t1" };
+
+  // At the bottom: the new events carry the reader along.
+  state._mergeAssistantActivity({ running: true, tape: { events: [{ kind: "text", text: "a" }] } });
+  assert.equal(scroller.scrollTop, 1000);
+
+  // Scrolled up to read a tool row: the poll leaves the place alone.
+  scroller.scrollTop = 100;
+  scroller.scrollHeight = 1400;
+  state._mergeAssistantActivity({ running: true, offset: 1, tape: { events: [{ kind: "text", text: "b" }] } });
+  assert.equal(scroller.scrollTop, 100);
+});
+
+test("sending scrolls to the bottom whatever the reader was reading", async () => {
+  const scroller = { scrollTop: 0, scrollHeight: 1000, clientHeight: 60 };
+  const { state } = assistantState({ scroller });
+  await state.initAssistant();
+  state.assistantThread = { id: "t1" };
+  state.assistantDraft = "hello";
+
+  await state.sendAssistantMessage();
+  assert.equal(scroller.scrollTop, 1000, "the message just typed is on screen");
+});
+
+test("the working row is in both the docked pane and the sheet", () => {
+  const html = fs.readFileSync(htmlPath, "utf8");
+
+  // A parked write is its own card with its own buttons. Two live states at
+  // once would read as the agent still working on what it has already stopped
+  // for, so the row is off while the gate is up.
+  // x-if, not x-show: Alpine's x-show strips the display property when it
+  // shows an element again, and the sheet's row carries its display inline.
+  assert.equal([...html.matchAll(/x-if="assistantStreaming && !assistantGate"/g)].length, 2);
+  assert.equal([...html.matchAll(/assistantWorkingLabel\(\)/g)].length, 2);
+  assert.match(html, /id="assistant-sheet-thread"/, "the sheet's thread is named so the autoscroll finds it");
 });
 
 test("the poll re-arms only while something can still change", () => {

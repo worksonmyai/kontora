@@ -55,6 +55,9 @@ export function kontoraAssistant() {
     assistantAgent: null,
     assistantDraft: '',
     assistantStreaming: false,
+    // Seconds the running turn has been going. 0 while the pane cannot tell,
+    // which is a turn it did not start itself.
+    assistantElapsed: 0,
     assistantThread: null,
     assistantThreads: [],
     assistantMessages: [],
@@ -75,6 +78,9 @@ export function kontoraAssistant() {
     _assistantETag: '',
     _assistantLoadSeq: 0,
     _assistantResize: null,
+    _assistantTurnStart: null,
+    _assistantTick: null,
+    _assistantStick: true,
 
     // A fetch that throws on a status the pane cannot use, so every caller can
     // catch one thing. 304 passes through: it is the poll's "nothing new",
@@ -88,6 +94,78 @@ export function kontoraAssistant() {
       if (res.status === 304 || res.ok) return res;
       const data = await res.json().catch(() => ({}));
       throw new Error(data.error || ('the daemon answered ' + res.status));
+    },
+
+    // --- the working state -----------------------------------------------
+
+    // Every write of assistantStreaming goes through here, so the elapsed clock
+    // and the poll cannot disagree about whether a turn is live. startedAt is
+    // passed only by the pane that sent the message: a turn adopted from the
+    // daemon has no start the pane can honestly count from, so it shows the
+    // label with no number.
+    _assistantSetStreaming(running, startedAt) {
+      if (running && !this.assistantStreaming) {
+        this._assistantTurnStart = startedAt || null;
+        this.assistantElapsed = 0;
+        this._startAssistantTick();
+      }
+      if (!running) {
+        this._assistantTurnStart = null;
+        this.assistantElapsed = 0;
+        this._stopAssistantTick();
+      }
+      this.assistantStreaming = running;
+    },
+
+    _startAssistantTick() {
+      this._stopAssistantTick();
+      if (!this._assistantTurnStart) return;
+      const self = this;
+      this._assistantTick = setInterval(function () {
+        if (!self._assistantTurnStart) { self._stopAssistantTick(); return; }
+        self.assistantElapsed = Math.floor((Date.now() - self._assistantTurnStart) / 1000);
+      }, 1000);
+    },
+
+    _stopAssistantTick() {
+      if (this._assistantTick !== null) {
+        clearInterval(this._assistantTick);
+        this._assistantTick = null;
+      }
+    },
+
+    // What the working row reads. The agent can take a while before it writes
+    // anything, so the row carries the count rather than a bare spinner.
+    assistantWorkingLabel() {
+      if (!this._assistantTurnStart) return 'working…';
+      const s = Math.max(0, this.assistantElapsed);
+      if (s < 60) return 'working… ' + s + 's';
+      const m = Math.floor(s / 60);
+      return 'working… ' + m + 'm ' + String(s % 60).padStart(2, '0') + 's';
+    },
+
+    // --- scrolling -------------------------------------------------------
+
+    _assistantScrollEl() {
+      const sheet = this.sheet && this.sheet.type === 'assistant';
+      return document.getElementById(sheet ? 'assistant-sheet-thread' : 'assistant-thread');
+    },
+
+    // Read before the tape is spliced: a reader who has scrolled up to a tool
+    // row keeps their place, and everyone else is carried along.
+    _assistantNoteScroll() {
+      const el = this._assistantScrollEl();
+      this._assistantStick = !el || (el.scrollHeight - el.scrollTop - el.clientHeight) < 60;
+      return this._assistantStick;
+    },
+
+    _assistantScrollToEnd(force) {
+      if (!force && !this._assistantStick) return;
+      const self = this;
+      this.$nextTick(function () {
+        const el = self._assistantScrollEl();
+        if (el) el.scrollTop = el.scrollHeight;
+      });
     },
 
     // --- lifecycle -------------------------------------------------------
@@ -141,6 +219,7 @@ export function kontoraAssistant() {
       this.assistantAutonomyOpen = false;
       assistantStore('kontora-assistant-open', '0');
       this._stopAssistantPoll();
+      this._stopAssistantTick();
     },
 
     // The phone has no room for a docked pane, so the same chat opens in the
@@ -238,6 +317,7 @@ export function kontoraAssistant() {
         this._assistantETag = '';
         this.assistantView = 'thread';
         await this._loadAssistantActivity();
+        this._assistantScrollToEnd(true);
         return true;
       } catch (e) {
         // A thread the browser remembered but the daemon has dropped is not an
@@ -268,7 +348,7 @@ export function kontoraAssistant() {
     _assistantAdopt(thread, messages) {
       this.assistantThread = thread;
       this.assistantMessages = messages || [];
-      this.assistantStreaming = !!(thread && thread.running);
+      this._assistantSetStreaming(!!(thread && thread.running));
       if (thread && thread.autonomy) this.assistantAutonomy = thread.autonomy;
       if (thread && thread.id) assistantStore('kontora-assistant-thread', thread.id);
     },
@@ -289,7 +369,8 @@ export function kontoraAssistant() {
       // Shown before the daemon answers, so the message does not vanish while
       // the turn is starting. The next poll replaces it with the recorded one.
       this.assistantMessages = this.assistantMessages.concat([{ n: this.assistantMessages.length + 1, text: text, at: new Date().toISOString() }]);
-      this.assistantStreaming = true;
+      this._assistantSetStreaming(true, Date.now());
+      this._assistantScrollToEnd(true);
       try {
         await this._assistantFetch('/api/assistant/threads/' + encodeURIComponent(thread.id) + '/messages', {
           method: 'POST',
@@ -297,7 +378,7 @@ export function kontoraAssistant() {
           body: JSON.stringify({ text: text, autonomy: this.assistantAutonomy }),
         });
       } catch (e) {
-        this.assistantStreaming = false;
+        this._assistantSetStreaming(false);
         this.assistantError = String(e.message || e);
         return;
       }
@@ -386,15 +467,17 @@ export function kontoraAssistant() {
     // Splice the new suffix onto the events already held. The daemon sends its
     // own cursor, which walks back over tool rows whose results arrived late.
     _mergeAssistantActivity(data) {
+      this._assistantNoteScroll();
       const events = (data.tape && data.tape.events) || [];
       const offset = data.offset || 0;
       this.assistantEvents = this.assistantEvents.slice(0, offset).concat(events);
       this._assistantCursor = offset + events.length;
-      this.assistantStreaming = !!data.running;
+      this._assistantSetStreaming(!!data.running);
       this.assistantGate = data.gate || null;
       if (data.messages) this.assistantMessages = this._assistantMergeMessages(data.messages);
       if (data.autonomy) this.assistantAutonomy = data.autonomy;
       if (this.assistantThread) this.assistantThread.running = !!data.running;
+      this._assistantScrollToEnd();
     },
 
     // The daemon only records a turn once the agent has exited, so from turn 2

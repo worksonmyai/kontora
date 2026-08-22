@@ -482,6 +482,9 @@ func dropOutcomes(t *testing.T, path string) {
 // working agent.
 func TestCheckpointControllerWaitsOutAWorkingAgent(t *testing.T) {
 	h := newCheckpointHarness(t, 100000)
+	// The give-up path is TestCheckpointControllerStopsWaitingOnAStuckAgent's;
+	// here stuckQuiet only has to outlast the sleep below on a loaded machine.
+	h.ctl.stuckQuiet = 30 * time.Second
 	h.appendTranscript(1000)
 	h.phaseComplete("Phase 1: a", "Phase 2: b")
 	require.Equal(t, tmux.IdlePrompt, h.idle(tmux.IdleEvent{}).Action)

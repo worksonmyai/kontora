@@ -1,4 +1,6 @@
-// Stats view. Merged into the kontora() component by app.js, so `this` here is
+import { clockHM } from './format.js';
+
+// Stats view. Merged into the kontora() component by index.js, so `this` here is
 // the same Alpine object the board and Settings run on.
 //
 // Every figure arrives pre-aggregated from GET /api/stats. This file lays out
@@ -45,7 +47,7 @@ function statsCompactPart(v) {
 }
 
 // statsCompact shortens a count for a 26px KPI value: 2.3k, 24M.
-function statsCompact(n) {
+export function statsCompact(n) {
   let v = Number(n) || 0;
   let unit = 0;
   while (Math.abs(v) >= 1000 && unit < STATS_UNITS.length - 1) { v /= 1000; unit++; }
@@ -250,7 +252,7 @@ function statsKpis(payload) {
 // per fetch rather than inside the template, so a re-render never re-buckets
 // 182 days. Every division guards its denominator: an empty window must render,
 // not produce NaN.
-function statsDerive(payload) {
+export function statsDerive(payload) {
   if (!payload) return null;
   const bucketsRaw = payload.buckets || [];
   const unit = (payload.window && payload.window.unit) || 'week';
@@ -405,7 +407,7 @@ function statsDerive(payload) {
   };
 }
 
-function kontoraStats() {
+export function kontoraStats() {
   return {
     statsRange: (function() {
       try {

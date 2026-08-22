@@ -7,9 +7,10 @@ project, no React, and no Storybook anywhere in the repo. Neither converter
 shape applies, so `package-build.mjs` is never run here. `ds-bundle/` is
 assembled by hand from the repo's own committed artifacts.
 
-The UI is `internal/web/static/`: one 3.5k-line Alpine `index.html` plus
-`app.js`, `settings.js`, `stats.js`, styled by a precompiled Tailwind
-`app.css`. There are no exported, independently renderable components, so the
+The UI is one 3.5k-line Alpine `internal/web/static/index.html` plus the ES
+modules under `internal/web/ui/`, which esbuild bundles into the served
+`/app.js`, styled by a precompiled Tailwind `internal/web/static/app.css`.
+There are no exported, independently renderable components, so the
 project carries **zero components** and `window.Kontora` is an empty namespace.
 This is the documented "tokens-only DS" case in the package sub-skill.
 

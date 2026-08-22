@@ -223,10 +223,7 @@ func uniqueSession(t *testing.T) string {
 
 func startTerminalTestServer(t *testing.T, svc TicketService, tmuxSession string) *Server {
 	t.Helper()
-	srv := New(svc, NewSSEBroker(), "127.0.0.1", 0, "", nil, tmuxSession, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	require.NoError(t, srv.Start())
-	t.Cleanup(func() { _ = srv.Shutdown(context.Background()) })
-	return srv
+	return startTestServer(t, svc, NewSSEBroker(), "", tmuxSession)
 }
 
 func requireTmux(t *testing.T) {

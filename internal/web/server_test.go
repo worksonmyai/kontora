@@ -49,12 +49,19 @@ func TestServer_StartShutdown(t *testing.T) {
 	assert.Error(t, err)
 }
 
-func newTestServer(t *testing.T) *Server {
+// startTestServer builds a server, starts it on a loopback port and shuts it
+// down with the test. The named helpers around the package each vary one
+// argument of it.
+func startTestServer(t *testing.T, svc TicketService, broker *SSEBroker, token, tmuxSession string) *Server {
 	t.Helper()
-	svc := &mockService{}
-	broker := NewSSEBroker()
-	srv := New(svc, broker, "127.0.0.1", 0, "", nil, tmux.DefaultSessionName, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	srv, err := New(svc, broker, "127.0.0.1", 0, token, nil, tmuxSession, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	require.NoError(t, err)
 	require.NoError(t, srv.Start())
 	t.Cleanup(func() { _ = srv.Shutdown(context.Background()) })
 	return srv
+}
+
+func newTestServer(t *testing.T) *Server {
+	t.Helper()
+	return startTestServer(t, &mockService{}, NewSSEBroker(), "", tmux.DefaultSessionName)
 }

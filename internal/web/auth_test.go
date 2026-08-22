@@ -1,10 +1,8 @@
 package web
 
 import (
-	"context"
 	"crypto/tls"
 	"io"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -17,10 +15,7 @@ import (
 
 func startAuthTestServer(t *testing.T, svc TicketService, token string) *Server {
 	t.Helper()
-	srv := New(svc, NewSSEBroker(), "127.0.0.1", 0, token, nil, tmux.DefaultSessionName, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	require.NoError(t, srv.Start())
-	t.Cleanup(func() { _ = srv.Shutdown(context.Background()) })
-	return srv
+	return startTestServer(t, svc, NewSSEBroker(), token, tmux.DefaultSessionName)
 }
 
 type authResult struct {

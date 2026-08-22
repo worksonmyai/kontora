@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log/slog"
 	"mime/multipart"
 	"net/http"
 	"strings"
@@ -1828,10 +1827,7 @@ func startHandlerTestServer(t *testing.T, svc TicketService) *Server {
 
 func startHandlerTestServerWithBroker(t *testing.T, svc TicketService, broker *SSEBroker) *Server {
 	t.Helper()
-	srv := New(svc, broker, "127.0.0.1", 0, "", nil, tmux.DefaultSessionName, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	require.NoError(t, srv.Start())
-	t.Cleanup(func() { _ = srv.Shutdown(context.Background()) })
-	return srv
+	return startTestServer(t, svc, broker, "", tmux.DefaultSessionName)
 }
 
 func get(t *testing.T, srv *Server, path string) httpResult {

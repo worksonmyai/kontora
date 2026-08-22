@@ -8,6 +8,7 @@ import (
 	"maps"
 	"net/http"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -145,6 +146,7 @@ func TestStaticAssets_GzipETagDiffers(t *testing.T) {
 	require.NotEmpty(t, gz)
 	require.NotEmpty(t, plain)
 	assert.NotEqual(t, gz, plain)
+	assert.True(t, strings.HasSuffix(gz, `-gz"`), gz)
 
 	h := identityHeader()
 	h.Set("If-None-Match", gz)
@@ -166,8 +168,6 @@ func TestStaticAssets_CacheControl(t *testing.T) {
 		{"/vendor/xterm@5.5.0/xterm.css", cacheImmutable},
 		{"/", cacheRevalidate},
 		{"/app.js", cacheRevalidate},
-		{"/settings.js", cacheRevalidate},
-		{"/stats.js", cacheRevalidate},
 		{"/vendor/fonts/fonts.css", cacheRevalidate},
 		{"/vendor/fonts/dm-sans-latin.woff2", cacheRevalidate},
 	}

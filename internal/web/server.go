@@ -13,6 +13,13 @@ import (
 //go:embed static
 var staticFS embed.FS
 
+// The UI module sources, compiled to /app.js at startup. They live outside
+// static/ because buildAssets serves every file it finds there, and the
+// sources are not what the browser should get.
+//
+//go:embed ui
+var uiFS embed.FS
+
 type Server struct {
 	svc         TicketService
 	broker      *SSEBroker
@@ -28,7 +35,11 @@ type Server struct {
 	wsPatterns []string
 }
 
-func New(svc TicketService, broker *SSEBroker, host string, port int, token string, allowedHosts []string, tmuxSession string, log *slog.Logger) *Server {
+func New(svc TicketService, broker *SSEBroker, host string, port int, token string, allowedHosts []string, tmuxSession string, log *slog.Logger) (*Server, error) {
+	assets, err := loadAssets()
+	if err != nil {
+		return nil, err
+	}
 	resolved := resolveAllowedHosts(host, allowedHosts)
 	s := &Server{
 		svc:         svc,
@@ -36,7 +47,7 @@ func New(svc TicketService, broker *SSEBroker, host string, port int, token stri
 		log:         log,
 		token:       token,
 		tmuxSession: tmuxSession,
-		assets:      loadAssets(),
+		assets:      assets,
 		wsPatterns:  wsOriginPatterns(resolved),
 	}
 
@@ -81,7 +92,7 @@ func New(svc TicketService, broker *SSEBroker, host string, port int, token stri
 		Handler:           securityMiddleware(resolved, authMiddleware(s.token, gzipMiddleware(mux))),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
-	return s
+	return s, nil
 }
 
 // staticHandler serves the embedded UI. When a token is configured and the

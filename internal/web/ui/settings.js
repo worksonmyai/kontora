@@ -1,4 +1,6 @@
-// Settings view. Merged into the kontora() component by app.js, so `this` here
+import { clockHM } from './format.js';
+
+// Settings view. Merged into the kontora() component by index.js, so `this` here
 // is the same Alpine object the board and the new-ticket form run on.
 //
 // The load-bearing constraint is that PUT /api/config/raw replaces the whole
@@ -153,7 +155,7 @@ const SETTINGS_STATUS_RE = /^[a-z][a-z0-9_]*$/;
 // and 1.5h, both of which the daemon takes.
 const SETTINGS_DURATION_RE = /^[-+]?(\d+(\.\d*)?|\.\d+)(ns|us|µs|μs|ms|s|m|h)([-+]?(\d+(\.\d*)?|\.\d+)(ns|us|µs|μs|ms|s|m|h))*$/;
 
-function kontoraSettings() {
+export function kontoraSettings() {
   return {
     settingsSection: 'stages',
     // The editable form model, and a deep clone of what was parsed from disk.
@@ -247,8 +249,6 @@ function kontoraSettings() {
 
     // ---- dirty state and diff ---------------------------------------------
 
-    // Methods, not getters: kontora() merges this object with Object.assign,
-    // which would call a getter once and copy the value it happened to return.
     settingsChangedPaths() {
       if (!this.settingsConfig || !this.settingsBaseline) return [];
       return settingsChangedPaths(this.settingsConfig, this.settingsBaseline);

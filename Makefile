@@ -12,7 +12,7 @@ assets:
 	./hack/vendor-assets.sh
 
 # Rebuild only internal/web/static/app.css. Run after changing Tailwind classes
-# in static/index.html or static/app.js.
+# in static/index.html or any module under internal/web/ui/.
 css:
 	./hack/build-css.sh
 

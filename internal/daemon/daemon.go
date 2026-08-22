@@ -597,9 +597,16 @@ func (d *Daemon) Run(ctx context.Context) error {
 			d.log.Warn("web server binds every interface but answers only to loopback and this machine's hostname; list any other name or address you reach it by in web.allowed_hosts",
 				"host", cfg.Web.Host)
 		}
-		srv := web.New(d, d.broker, cfg.Web.Host, cfg.Web.Port, cfg.Web.Token, cfg.Web.AllowedHosts, d.tmuxSession, d.log)
+		srv, err := web.New(d, d.broker, cfg.Web.Host, cfg.Web.Port, cfg.Web.Token, cfg.Web.AllowedHosts, d.tmuxSession, d.log)
+		if err != nil {
+			// Not transient: the UI baked into this binary does not compile,
+			// and nothing about running on will change that. Carrying on would
+			// leave the web port refusing connections for the whole run while
+			// `kontora doctor` reports the free port as healthy.
+			return fmt.Errorf("building the web UI: %w", err)
+		}
 		if err := srv.Start(); err != nil {
-			d.log.Warn("web server failed to start, continuing without it", "err", err)
+			d.log.Warn("web server failed to listen, continuing without it", "err", err)
 		} else {
 			defer func() {
 				shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 3*time.Second)

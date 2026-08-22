@@ -1473,7 +1473,7 @@
                      :id="'col-' + col.key"
                      :data-drop-status="col.dropStatus"
                      x-init="initSortable($el); $nextTick(() => { delete _rendered[col.key]; renderColumn(col.key); })">
-                  <!-- Cards are injected imperatively by renderColumn() (app.js); see
+                  <!-- Cards are injected imperatively by renderColumn() (ui/board.js); see
                        _cardHTML for the markup this reproduces. -->
                   </div>
                 </div>
@@ -2799,7 +2799,7 @@
 
                         <!-- model and effort: one value for every agent, or a map
                              keyed by agent name or agent kind. The control is one
-                             block in settings.js, rendered here and in general. -->
+                             block in ui/settings.js, rendered here and in general. -->
                         <template x-for="field in ['model', 'effort']" :key="field">
                           <div class="flex flex-col"
                                x-data="{ p: 'stages.' + name + '.' + field, label: field, labelClass: 'text-[11px]', inputId: 'stage-' + field + '-' + name, hint: &quot;the agent's own&quot; }"
@@ -3518,8 +3518,6 @@
   </div>
   </template>
 
-  <script src="/settings.js"></script>
-  <script src="/stats.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

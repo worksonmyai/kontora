@@ -5,8 +5,9 @@
 # `go build` / `go install` stays offline and reproducible.
 #
 # To bump a library: change its version here, run `make assets`, then update the
-# matching /vendor/<name>@<version>/ paths in static/index.html (and app.js for
-# xterm). The versioned directory makes the old/new swap obvious in the diff.
+# matching /vendor/<name>@<version>/ paths in static/index.html, ui/terminal.js
+# (xterm and its addons) and ui/settings.js (yaml). The versioned directory
+# makes the old/new swap obvious in the diff.
 set -euo pipefail
 
 # --- pinned versions ---------------------------------------------------------

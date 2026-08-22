@@ -7,10 +7,22 @@ import { fileURLToPath } from "node:url";
 
 const dirname = path.dirname(fileURLToPath(import.meta.url));
 const htmlPath = path.join(dirname, "../static/index.html");
-const appPath = path.join(dirname, "../static/app.js");
-const settingsPath = path.join(dirname, "../static/settings.js");
-const statsPath = path.join(dirname, "../static/stats.js");
 const tipsPath = path.join(dirname, "../static/tips.js");
+const uiDir = path.join(dirname, "../ui");
+const statsPath = path.join(uiDir, "stats.js");
+const settingsPath = path.join(uiDir, "settings.js");
+// The UI modules as one string. The assertions that read source rather than
+// drive the component are about what the code says, not which module says it.
+const uiSource = fs
+  .readdirSync(uiDir, { recursive: true })
+  .filter((f) => f.endsWith(".js"))
+  .sort()
+  .map((f) => fs.readFileSync(path.join(uiDir, f), "utf8"))
+  .join("\n");
+// The compiled bundle, written by staticjs_test.go. Testing what the daemon
+// serves means the source split cannot drift from what the browser runs.
+const bundlePath = process.env.KONTORA_BUNDLE;
+if (!bundlePath) throw new Error("KONTORA_BUNDLE is unset; run this through go test");
 
 // recomputeBoard builds its column buckets with array literals created inside
 // the VM realm, so their prototype differs from this file's Array and
@@ -171,20 +183,14 @@ function loadKontoraState(overrides = {}) {
   return loadKontoraContext(overrides).state;
 }
 
-// The terminal handles live on a module-scope `termState` in app.js rather than
-// on the component, so a lifecycle test needs the VM context to reach them. A
-// top-level `var` lands on the context object, so `ctx.termState` is the holder.
-// settings.js runs first because kontora() merges kontoraSettings() into the
-// object it returns, the same order index.html loads the two script tags in.
+// The bundle is an IIFE, so the only things it leaves behind are the three it
+// assigns to globalThis: `kontora`, and the module-scope `termState` and
+// `statsDerive` the tests below drive directly. Running it in a VM context
+// makes globalThis that context, so `ctx.termState` is the terminal handles.
 function loadKontoraContext(overrides = {}) {
   const context = kontoraContext(overrides);
   vm.createContext(context);
-  const src = [
-    fs.readFileSync(settingsPath, "utf8"),
-    fs.readFileSync(statsPath, "utf8"),
-    fs.readFileSync(appPath, "utf8"),
-  ].join("\n");
-  vm.runInContext(`${src}\nthis.kontora = kontora;`, context);
+  vm.runInContext(fs.readFileSync(bundlePath, "utf8"), context);
   return { ctx: context, state: context.kontora() };
 }
 
@@ -552,7 +558,7 @@ test("xterm is kept out of the initial page", () => {
   const html = fs.readFileSync(htmlPath, "utf8");
 
   assert.ok(!html.includes("xterm"), "index.html must not reference xterm");
-  assert.match(fs.readFileSync(appPath, "utf8"), /_loadTerminalCSS/);
+  assert.match(uiSource, /_loadTerminalCSS/);
 });
 
 test("openTerminal cancels stale startup after teardown", async () => {
@@ -2019,7 +2025,7 @@ function methodBody(source, name) {
 // Returns ticket fields and plain state reads (this.foo, not this.foo(...) —
 // those are followed instead).
 function cardRenderReads() {
-  const source = fs.readFileSync(appPath, "utf8");
+  const source = uiSource;
   const fields = new Set();
   const stateReads = new Set();
   const seen = new Set();
@@ -2402,7 +2408,7 @@ test("index.html board renders cards imperatively, not via an Alpine x-for", () 
 
 test("index.html column x-init drops the render state Alpine just invalidated", () => {
   const html = fs.readFileSync(htmlPath, "utf8");
-  const app = fs.readFileSync(appPath, "utf8");
+  const app = uiSource;
 
   // Alpine builds the column element empty, so the x-init must drop that
   // column's cached signatures or renderColumn would skip filling it. The name
@@ -4542,9 +4548,6 @@ test("index.html wires the settings shell to the guard and the section rail", ()
   assert.match(html, /flex-1 min-w-\[120px\] max-w-\[300px\] relative/);
   assert.equal(html.includes('class="w-[300px] relative"'), false);
 
-  // settings.js must load before app.js, which merges it into kontora().
-  assert.ok(html.indexOf('src="/settings.js"') < html.indexOf('src="/app.js"'));
-
   // The 501 state offers no way to edit or save: it renders before the
   // settingsState === 'ok' template, and every editable control is inside it.
   const empty = html.slice(
@@ -5302,12 +5305,10 @@ test("⌫ and ← pop a ticket scope and leave the root palette open", () => {
 });
 
 test("init wires the palette query watcher to the query handler", () => {
-  const app = fs.readFileSync(appPath, "utf8");
-
   // Every palette test below drives recomputePalette by hand, because the VM
   // harness has no Alpine $watch. Without this assertion, dropping the watcher
   // leaves the suite green and the palette deaf to typing.
-  assert.match(app, /this\.\$watch\('paletteQuery', \(\) => this\.onPaletteQueryChanged\(\)\)/);
+  assert.match(uiSource, /this\.\$watch\('paletteQuery', \(\) => this\.onPaletteQueryChanged\(\)\)/);
 });
 
 test("the palette leads the Escape stack and the highlight follows the mouse, not the pointer entering", () => {
@@ -5340,10 +5341,8 @@ test("the palette animations are dropped under reduced motion", () => {
   assert.notEqual(reduced, null);
 });
 
-test("app.js keeps no autocomplete leftovers", () => {
-  const app = fs.readFileSync(appPath, "utf8");
-
-  assert.equal(/searchOpen|suggestions|selectedIndex/.test(app), false);
+test("the UI sources keep no autocomplete leftovers", () => {
+  assert.equal(/searchOpen|suggestions|selectedIndex/.test(uiSource), false);
 });
 
 test("every color utility the page writes exists in the built app.css", () => {
@@ -5351,7 +5350,7 @@ test("every color utility the page writes exists in the built app.css", () => {
   // nothing and the element renders with no fill. Arbitrary values (/[0.14])
   // always emit. Nothing else catches this: the class is valid-looking text.
   const css = fs.readFileSync(path.join(dirname, "../static/app.css"), "utf8");
-  const sources = [htmlPath, appPath, settingsPath].map((p) => fs.readFileSync(p, "utf8")).join("\n");
+  const sources = fs.readFileSync(htmlPath, "utf8") + "\n" + uiSource;
 
   // Match the class anywhere, not just after a dot: hover:bg-accent/30 is
   // emitted as .hover\:bg-accent\/30:hover.
@@ -7031,12 +7030,11 @@ test("the commit rail starts level with the top of the card column", () => {
   assert.match(html, /\.rail-card \{[^}]*padding: 11px 15px 14px/);
 });
 
-test("app.js no longer defines earlierSummaries", () => {
-  const app = fs.readFileSync(appPath, "utf8");
+test("the UI sources no longer define earlierSummaries", () => {
   const html = fs.readFileSync(htmlPath, "utf8");
 
   // earlierSummaries fed the <details> disclosure the cards replaced.
-  assert.equal(/earlierSummaries/.test(app + html), false);
+  assert.equal(/earlierSummaries/.test(uiSource + html), false);
 });
 
 // A DOM double deep enough for the entity pass: an element/text tree, the
@@ -7142,7 +7140,7 @@ function fakeProseDom() {
 const ENTITY_CHANGES = {
   base: "main",
   commits: [{ sha: "abc1234", subject: "Fix summary rail" }],
-  files: [{ path: "internal/web/static/app.js", added: 2, deleted: 1 }],
+  files: [{ path: "internal/web/ui/app.js", added: 2, deleted: 1 }],
   remote: "https://github.com/owner/repo",
 };
 
@@ -8092,14 +8090,18 @@ test("opening a ticket from Stats leaves the view and stops the poll", async () 
   assert.equal(statsCalls(), 1, "no further request after leaving Stats");
 });
 
-test("index.html adds the Stats nav item and loads stats.js before app.js", () => {
+test("index.html adds the Stats nav item and loads the bundle as a classic script", () => {
   const html = fs.readFileSync(htmlPath, "utf8");
 
   assert.ok(html.includes("gotoView('stats')"), "the sidebar navigates through the guarded gotoView");
-  const stats = html.indexOf('<script src="/stats.js"></script>');
-  const app = html.indexOf('<script src="/app.js"></script>');
-  assert.ok(stats > 0, "stats.js is loaded");
-  assert.ok(stats < app, "kontora() reads kontoraStats() at call time, so its script must run first");
+
+  // Alpine is deferred, so it starts after this tag runs and kontora() is
+  // there when it walks x-init. defer, async or type="module" on the tag all
+  // reverse that and leave x-data unresolved; async only sometimes, which is
+  // worse.
+  const tags = [...html.matchAll(/<script([^>]*)src="\/app\.js"([^>]*)>/g)].map((m) => m[1] + m[2]);
+  assert.equal(tags.length, 1, "one tag loads the bundle");
+  assert.equal(/defer|async|type=/.test(tags[0]), false, tags[0]);
 });
 
 test("the Stats view paints from theme tokens, never a literal hex", () => {

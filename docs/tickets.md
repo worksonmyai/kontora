@@ -251,7 +251,18 @@ Use the existing search index, don't create a new one.
 
 IDs are `<prefix>-<4 random alphanumeric chars>` (e.g., `poi-q88f`).
 
-The prefix is derived from the first 3 lowercase alphanumeric characters of the directory name (from the ticket's `path` field).
+The prefix comes from the directory name (the ticket's `path` field): the first alphanumeric character of each `-` or `_` separated segment, lowercased and joined, with no length limit. A name that yields fewer than two of them uses its own first 3 alphanumerics instead, so a single-word repository still gets a readable prefix.
+
+| Directory | Prefix |
+|-----------|--------|
+| `astra-l` | `al` |
+| `grafana-assistant-app` | `gaa` |
+| `deployment_tools` | `dt` |
+| `hackathon-17-haimdall-sigil-sdk` | `h1hss` |
+| `kontora` | `kon` |
+| `sigil` | `sig` |
+
+A project can pin a prefix instead of deriving one, with [`prefix`](configuration.md#projects) in its config entry.
 
 CLI commands accept prefix matches: `kontora done kon` resolves to the ticket with ID `kon-q88f` if it's the only match.
 

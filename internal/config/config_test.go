@@ -1869,6 +1869,68 @@ func TestBranchPrefixFor(t *testing.T) {
 	}
 }
 
+func TestTicketPrefixFor(t *testing.T) {
+	home := t.TempDir()
+	cfg := &Config{
+		Projects: map[string]Project{
+			"sigil-sdk": {Path: "~/projects/sigil-sdk", Prefix: "ss"},
+			"kontora":   {Path: "~/projects/kontora"},
+		},
+	}
+
+	cases := []struct {
+		name   string
+		lookup string
+		want   string
+	}{
+		{name: "pinned prefix", lookup: "~/projects/sigil-sdk", want: "ss"},
+		{name: "pinned prefix by absolute path", lookup: filepath.Join(home, "projects", "sigil-sdk"), want: "ss"},
+		{name: "project pinning none", lookup: "~/projects/kontora", want: ""},
+		{name: "unconfigured path", lookup: "~/projects/other", want: ""},
+		{name: "no path", lookup: "", want: ""},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("HOME", home)
+
+			assert.Equal(t, tc.want, cfg.TicketPrefixFor(tc.lookup))
+		})
+	}
+}
+
+func TestValidateTicketPrefix(t *testing.T) {
+	cases := []struct {
+		name    string
+		prefix  string
+		wantErr bool
+	}{
+		{name: "unset", prefix: ""},
+		{name: "letters", prefix: "ss"},
+		{name: "letters and digits", prefix: "h1hss"},
+		{name: "uppercase", prefix: "Sig", wantErr: true},
+		{name: "hyphen", prefix: "sig-sdk", wantErr: true},
+		{name: "path separator", prefix: "a/b", wantErr: true},
+		{name: "dot", prefix: "..", wantErr: true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &Config{Projects: map[string]Project{
+				"proj": {Path: "~/projects/proj", Prefix: tc.prefix},
+			}}
+
+			err := cfg.validateProjects()
+			if tc.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), `project "proj"`)
+				return
+			}
+			require.NoError(t, err)
+		})
+	}
+}
+
 func TestLoadHooks(t *testing.T) {
 	cfg, err := Load("testdata/hooks_valid.yaml")
 	require.NoError(t, err)

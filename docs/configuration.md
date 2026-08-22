@@ -469,14 +469,20 @@ projects:
 | `path` | yes | Repository the entry applies to. |
 | `pipeline` | no | Pipeline written into new tickets for this repository. |
 | `agent` | no | Agent written into new tickets for this repository. |
+| `prefix` | no | Ticket-ID prefix for this repository, instead of one derived from the directory name. Lowercase letters and digits only. |
 | `branch_prefix` | no | Overrides the top-level `branch_prefix` for this repository. |
 | `branch_naming` | no | Overrides the top-level [`branch_naming`](#branch-naming) mode for this repository. |
 | `hooks` | no | Commands run at this repository's lifecycle events, after the top-level ones (see [hooks](#hooks)). |
 
-`pipeline` and `agent` are stamped into the ticket when it is created. The
+`pipeline`, `agent` and `prefix` are read when the ticket is created. The
 daemon reads `branch_prefix` and `branch_naming` when it names an empty branch,
 so the current config applies until pickup. A ticket that already carries a
 `branch` keeps it.
+
+Set `prefix` when the derived one is not what you want, or when two
+repositories would otherwise share it. Without it the prefix comes from the
+directory name; see [ticket ID format](tickets.md#ticket-id-format) for the
+rule. Changing it renames nothing: existing IDs stay as they are.
 
 The pipeline and agent defaults are applied when a ticket is created (`kontora new`, `POST /api/tickets`, the TUI and web create forms) or initialized (`kontora init`, `POST /api/tickets/{id}/init`), and are written into the ticket's frontmatter. The ticket file keeps saying exactly what will run, and an existing ticket is never rewritten.
 

@@ -468,6 +468,7 @@ type Project struct {
 	Path         string       `yaml:"path"`
 	Pipeline     string       `yaml:"pipeline"`
 	Agent        string       `yaml:"agent"`
+	Prefix       string       `yaml:"prefix"`
 	BranchPrefix string       `yaml:"branch_prefix"`
 	BranchNaming BranchNaming `yaml:"branch_naming"`
 	Hooks        Hooks        `yaml:"hooks"`
@@ -1044,6 +1045,9 @@ func (c *Config) validateProjects() error {
 				return fmt.Errorf("project %q: unknown agent %q", name, p.Agent)
 			}
 		}
+		if err := validateTicketPrefix(p.Prefix); err != nil {
+			return fmt.Errorf("project %q: %w", name, err)
+		}
 		if err := validateBranchNamingMode(p.BranchNaming.Mode); err != nil {
 			return fmt.Errorf("project %q: %w", name, err)
 		}
@@ -1140,6 +1144,35 @@ func (c *Config) BranchPrefixFor(repoPath string) string {
 		return project.BranchPrefix
 	}
 	return c.BranchPrefix
+}
+
+// TicketPrefixFor returns the ticket-ID prefix new tickets for repoPath are
+// named with: the prefix pinned by the project that owns the path, or "" when
+// the path belongs to no project or the project pins none. An empty result
+// leaves the caller to derive a prefix from the directory name.
+func (c *Config) TicketPrefixFor(repoPath string) string {
+	if _, project, ok := c.ProjectFor(repoPath); ok {
+		return project.Prefix
+	}
+	return ""
+}
+
+// validateTicketPrefix rejects a pinned prefix that could not be part of a
+// ticket ID. The prefix opens a filename, so anything outside [a-z0-9] is
+// refused rather than sanitized: a silently rewritten prefix would not be the
+// one the config asked for.
+func validateTicketPrefix(prefix string) error {
+	if prefix == "" {
+		return nil
+	}
+	for i := range len(prefix) {
+		c := prefix[i]
+		if (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') {
+			continue
+		}
+		return fmt.Errorf("prefix %q must be lowercase letters and digits only", prefix)
+	}
+	return nil
 }
 
 // BranchNamingFor returns the branch naming mode for repoPath. A project mode

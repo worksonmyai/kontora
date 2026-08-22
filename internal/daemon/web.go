@@ -68,7 +68,7 @@ func (d *Daemon) GetTicket(id string) (web.TicketInfo, error) {
 // CreateTicket creates a new ticket file and registers it in the daemon.
 func (d *Daemon) CreateTicket(req web.CreateTicketRequest) (web.TicketInfo, error) {
 	cfg := d.config()
-	id, err := cli.GenerateID(cfg.TicketsDir, req.Path)
+	id, err := cli.GenerateID(cfg, req.Path)
 	if err != nil {
 		return web.TicketInfo{}, fmt.Errorf("generating ticket id: %w", err)
 	}
@@ -147,11 +147,11 @@ func (d *Daemon) UploadTicket(content []byte) (web.TicketInfo, error) {
 	// internal identifier with no semantic meaning worth preserving, and
 	// accepting user-controlled IDs would allow path traversal via crafted
 	// values like "../../etc/cron.d/evil".
-	prefix := t.Path
-	if prefix == "" {
-		prefix = "upload"
+	repoPath := t.Path
+	if repoPath == "" {
+		repoPath = "upload"
 	}
-	id, err := cli.GenerateID(cfg.TicketsDir, prefix)
+	id, err := cli.GenerateID(cfg, repoPath)
 	if err != nil {
 		return web.TicketInfo{}, fmt.Errorf("generating ticket id: %w", err)
 	}

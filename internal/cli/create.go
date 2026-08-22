@@ -82,7 +82,7 @@ func New(cfg *config.Config, opts NewOpts) (string, error) {
 	id := opts.ID
 	if id == "" {
 		var err error
-		id, err = GenerateID(cfg.TicketsDir, opts.Path)
+		id, err = GenerateID(cfg, opts.Path)
 		if err != nil {
 			return "", fmt.Errorf("generating id: %w", err)
 		}

@@ -130,7 +130,13 @@ projects:
     path: ~/projects/myrepo
     pipeline: default
     agent: claude
+    prefix: mr # optional; ticket IDs are <prefix>-<4 random alphanumerics>
 ```
+
+Without `prefix`, a ticket ID takes the first alphanumeric of each `-` or `_`
+separated segment of the directory name (`grafana-assistant-app` gives `gaa`),
+falling back to the name's first 3 alphanumerics when that gives fewer than two
+(`kontora` gives `kon`). Set `prefix` only to override that.
 
 A stage prompt is a Go `text/template` string. Available expressions:
 `{{ .Ticket.ID }}`, `{{ .Ticket.Title }}`, `{{ .Ticket.Description }}`,

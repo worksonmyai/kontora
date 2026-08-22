@@ -38,53 +38,83 @@ func TestYamlQuote(t *testing.T) {
 	}
 }
 
-func TestGenerateID_Format(t *testing.T) {
-	dir := t.TempDir()
+func TestGenerateID_Prefix(t *testing.T) {
+	tests := []struct {
+		name string
+		path string
+		want string
+	}{
+		// The scheme the tickets in the store were minted under: the first
+		// alphanumeric of each "-" or "_" separated segment.
+		{"two segments", "~/projects/astra-l", "al"},
+		{"three segments", "~/projects/grafana-assistant-app", "gaa"},
+		{"underscore separator", "~/projects/deployment_tools", "dt"},
+		{"digit segment", "~/projects/hackathon-17-haimdall-sigil-sdk", "h1hss"},
+		// One initial is fewer than two, so the whole name is used instead.
+		{"single segment falls back", "~/projects/kontora", "kon"},
+		{"single short segment", "~/projects/i", "i"},
+		{"upload sentinel", "upload", "upl"},
+		// Divergences from the bash the scheme comes from: the prefix opens a
+		// filename, so it is lowercased, restricted to [a-z0-9], and counted
+		// in alphanumerics rather than raw characters.
+		{"uppercase is lowered", "~/projects/My-Repo", "mr"},
+		{"empty segments contribute nothing", "~/projects/foo--bar", "fb"},
+		{"segment leading punctuation", "~/projects/foo-.bar", "fb"},
+		{"fallback skips punctuation", "~/projects/_foo", "foo"},
+		{"trailing slash", "~/projects/astra-l/", "al"},
+	}
 
-	id, err := GenerateID(dir, "~/projects/kontora")
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &config.Config{TicketsDir: t.TempDir()}
+
+			id, err := GenerateID(cfg, tc.path)
+			require.NoError(t, err)
+
+			assert.Regexp(t, `^`+tc.want+`-[a-z0-9]{4}$`, id)
+		})
+	}
+}
+
+func TestGenerateID_ProjectPrefixWins(t *testing.T) {
+	cfg := &config.Config{
+		TicketsDir: t.TempDir(),
+		Projects: map[string]config.Project{
+			"astra": {Path: "~/projects/astra-l", Prefix: "zz"},
+		},
+	}
+
+	id, err := GenerateID(cfg, "~/projects/astra-l")
 	require.NoError(t, err)
+	assert.Regexp(t, `^zz-[a-z0-9]{4}$`, id)
 
-	assert.Regexp(t, `^kon-[a-z0-9]{4}$`, id)
+	// A path no project owns still derives its own prefix.
+	other, err := GenerateID(cfg, "~/projects/astra-m5stack")
+	require.NoError(t, err)
+	assert.Regexp(t, `^am-[a-z0-9]{4}$`, other)
 }
 
 func TestGenerateID_Uniqueness(t *testing.T) {
-	dir := t.TempDir()
+	cfg := &config.Config{TicketsDir: t.TempDir()}
 
 	seen := make(map[string]bool)
 	for range 20 {
-		id, err := GenerateID(dir, "~/projects/kontora")
+		id, err := GenerateID(cfg, "~/projects/kontora")
 		require.NoError(t, err)
 		assert.False(t, seen[id], "duplicate id: %s", id)
 		seen[id] = true
 	}
 }
 
-func TestGenerateID_FallbackPrefix(t *testing.T) {
-	dir := t.TempDir()
-
-	id, err := GenerateID(dir, "~/projects/grafana")
-	require.NoError(t, err)
-
-	assert.Regexp(t, `^gra-[a-z0-9]{4}$`, id)
-}
-
-func TestGenerateID_FallbackPrefixSpecialChars(t *testing.T) {
-	dir := t.TempDir()
-
-	id, err := GenerateID(dir, "~/projects/My-Repo")
-	require.NoError(t, err)
-
-	assert.Regexp(t, `^myr-[a-z0-9]{4}$`, id)
-}
-
 func TestGenerateID_CollisionRetry(t *testing.T) {
 	dir := t.TempDir()
+	cfg := &config.Config{TicketsDir: dir}
 
 	// Create a file that could collide — but since IDs are random,
 	// just verify the function works when files exist.
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "kon-aaaa.md"), []byte("test"), 0o644))
 
-	id, err := GenerateID(dir, "~/projects/kontora")
+	id, err := GenerateID(cfg, "~/projects/kontora")
 	require.NoError(t, err)
 	if id == "kon-aaaa" {
 		// Extremely unlikely but technically possible to still collide on retry
@@ -93,9 +123,9 @@ func TestGenerateID_CollisionRetry(t *testing.T) {
 }
 
 func TestGenerateID_EmptyPath(t *testing.T) {
-	dir := t.TempDir()
+	cfg := &config.Config{TicketsDir: t.TempDir()}
 
-	_, err := GenerateID(dir, "")
+	_, err := GenerateID(cfg, "")
 	require.Error(t, err)
 }
 

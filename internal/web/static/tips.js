@@ -6,22 +6,53 @@
   // transform apply again, so the next hover animates in.
   function setupTip(id, selector, attr, positionFn, fillFn) {
     var el = document.getElementById(id);
-    var timer;
-    document.addEventListener('mouseenter', function(e) {
-      var trig = e.target.closest(selector);
-      if (!trig) return;
+    var timer, open = null, rearm = false;
+
+    function show(trig) {
       var text = trig.getAttribute(attr);
       if (!text) return;
       clearTimeout(timer);
+      open = trig;
       if (fillFn) fillFn(el, trig); else el.textContent = text;
       el.style.opacity = '1';
       el.style.transform = 'none';
       el.style.left = '0'; el.style.top = '0';
       positionFn(el, trig.getBoundingClientRect());
+    }
+
+    function hide() {
+      open = null;
+      el.style.opacity = '0';
+      el.style.transform = '';
+    }
+
+    document.addEventListener('mouseenter', function(e) {
+      var trig = e.target.closest && e.target.closest(selector);
+      if (trig) show(trig);
     }, true);
+
     document.addEventListener('mouseleave', function(e) {
       if (!e.target.closest || !e.target.closest(selector)) return;
-      timer = setTimeout(function() { el.style.opacity = '0'; el.style.transform = ''; }, 80);
+      timer = setTimeout(hide, 80);
+    }, true);
+
+    // A chip that opens a ticket is off the page by the time the pointer
+    // leaves it, and a node taken out of the DOM fires no mouseleave, so the
+    // card would hang there until the page is reloaded. Drop it on the click
+    // and let the next pointer move decide whether it comes back, which is
+    // what shows the card of whatever the click drew under the cursor.
+    document.addEventListener('click', function() {
+      if (!open) return;
+      clearTimeout(timer);
+      hide();
+      rearm = true;
+    }, true);
+
+    document.addEventListener('mousemove', function(e) {
+      if (!rearm) return;
+      rearm = false;
+      var trig = e.target.closest && e.target.closest(selector);
+      if (trig) show(trig);
     }, true);
   }
 

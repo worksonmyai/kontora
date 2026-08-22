@@ -7784,6 +7784,75 @@ test("the entity hover card is a third tip instance that stops under reduced mot
   assert.match(html, /\.ent \{[^}]*font-size: \.86em/);
 });
 
+// tips.js hangs its three cards off document-level listeners, so the harness
+// only has to answer getElementById and hand the handlers an event.
+function fakeTips() {
+  const handlers = {};
+  const span = () => ({ textContent: "", style: {} });
+  const card = () => {
+    const title = { textContent: "", style: {}, children: [span(), span()] };
+    return {
+      textContent: "",
+      style: {},
+      attrs: {},
+      offsetWidth: 200,
+      offsetHeight: 60,
+      children: [title, span(), span()],
+      setAttribute(k, v) { this.attrs[k] = v; },
+    };
+  };
+  const cards = { "global-tip": card(), "global-tip-t": card(), "global-tip-e": card() };
+  const ctx = {
+    document: {
+      getElementById: (id) => cards[id],
+      addEventListener(type, fn) { (handlers[type] = handlers[type] || []).push(fn); },
+    },
+    window: { innerWidth: 1400 },
+    setTimeout,
+    clearTimeout,
+  };
+  vm.createContext(ctx);
+  vm.runInContext(fs.readFileSync(tipsPath, "utf8"), ctx);
+
+  const chip = (attrs) => {
+    const el = {
+      attrs,
+      getAttribute: (k) => (k in attrs ? attrs[k] : null),
+      getBoundingClientRect: () => ({ left: 300, right: 400, top: 200, bottom: 220, width: 100, height: 20 }),
+      closest: (sel) => (sel.slice(1, -1) in attrs ? el : null),
+    };
+    return el;
+  };
+  const fire = (type, target) => (handlers[type] || []).forEach((fn) => fn({ target }));
+  return { cards, chip, fire };
+}
+
+test("a hover card drops on the click that opens the ticket, and returns on the next move", () => {
+  const tips = fakeTips();
+  const card = tips.cards["global-tip-e"];
+
+  tips.fire("mouseenter", tips.chip({ "data-tip-e": "gra-1", "data-tip-e-body": "done" }));
+  assert.equal(card.style.opacity, "1");
+
+  // Opening the ticket takes the chip off the page, and a node the DOM no
+  // longer holds fires no mouseleave: without the click the card would stay.
+  tips.fire("click");
+  assert.equal(card.style.opacity, "0");
+
+  // A move with nothing under it leaves the card down, and a move over the row
+  // the click drew there brings it back with that row's text.
+  tips.fire("mousemove", tips.chip({}));
+  assert.equal(card.style.opacity, "0");
+  tips.fire("mousemove", tips.chip({ "data-tip-e": "gra-2", "data-tip-e-body": "todo" }));
+  assert.equal(card.style.opacity, "0");
+
+  tips.fire("mouseenter", tips.chip({ "data-tip-e": "gra-2", "data-tip-e-body": "todo" }));
+  tips.fire("click");
+  tips.fire("mousemove", tips.chip({ "data-tip-e": "gra-3", "data-tip-e-body": "todo" }));
+  assert.equal(card.style.opacity, "1");
+  assert.equal(card.children[0].children[1].textContent, "gra-3");
+});
+
 test("the hover card's title splits into a coloured tag and the name", () => {
   const html = fs.readFileSync(htmlPath, "utf8");
   const tips = fs.readFileSync(tipsPath, "utf8");

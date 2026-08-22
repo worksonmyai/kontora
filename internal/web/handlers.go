@@ -551,6 +551,16 @@ func (s *Server) handleGetChanges(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, changes)
 }
 
+func (s *Server) handleGetChain(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	chain, err := s.svc.GetChain(id)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, chain)
+}
+
 func (s *Server) handleConfig(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, s.svc.GetConfig())
 }

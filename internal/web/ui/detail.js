@@ -27,6 +27,9 @@ export function kontoraDetail() {
       this.ticketChanges = null;
       this.collapsedStages = {};
       this.relExpanded = {};
+      this.chain = null;
+      this.chainCollapsed = false;
+      this.chainError = null;
       this.childrenCollapsed = false;
       this.childrenExpanded = false;
       this.selectedTicket = ticket;
@@ -53,6 +56,11 @@ export function kontoraDetail() {
       // every ticket that has one rather than only for summarised runs.
       if (this.selectedTicket?.branch) {
         this.fetchChanges(this.selectedTicket.id);
+      }
+      // The ladder is derived from every ticket file on disk, so it cannot be
+      // read off the board and has to be fetched for each ticket opened.
+      if (this.selectedTicket?.id) {
+        this.fetchChain(this.selectedTicket.id, true);
       }
       if (this.selectedTicket?.status !== 'in_progress' && this.selectedTicket?.status !== 'todo' && this.selectedTicket?.status !== 'open'
           && this.selectedTicket?.history?.length > 0) {
@@ -207,6 +215,34 @@ export function kontoraDetail() {
       } catch (e) { /* the card simply shows no commit list */ }
     },
 
+    // The chain behind the ladder. Guarded on the selected ticket the way
+    // fetchChanges is, and on a sequence number as well: the SSE path refetches
+    // the same ticket, so the id alone cannot tell two in-flight requests apart
+    // and an older response could land last.
+    //
+    // `seed` sets the collapsed default, and only the first fetch for a ticket
+    // passes it: a refetch must not undo the user's expand or collapse.
+    async fetchChain(id, seed) {
+      var seq = ++this._chainSeq;
+      var mine = () => this.selectedTicket?.id === id && seq === this._chainSeq;
+      this.chainError = null;
+      try {
+        var res = await fetch('/api/tickets/' + id + '/chain');
+        if (!mine()) return;
+        if (!res.ok) {
+          this.chainError = 'Failed to load the chain';
+          return;
+        }
+        var chain = await res.json();
+        if (!mine()) return;
+        this.chain = chain;
+        // A cleared chain and a two-node one have a single line to say.
+        if (seed) this.chainCollapsed = chain.verdict === 'ready' || chain.total <= 2;
+      } catch (e) {
+        if (mine()) this.chainError = 'Failed to load the chain';
+      }
+    },
+
     switchTab(tab) {
       // The tab content uses x-show, so leaving it would otherwise keep a
       // focused textarea mounted and bring it back with stale geometry.
@@ -266,6 +302,9 @@ export function kontoraDetail() {
       this.ticketChanges = null;
       this.collapsedStages = {};
       this.relExpanded = {};
+      this.chain = null;
+      this.chainCollapsed = false;
+      this.chainError = null;
       this.childrenCollapsed = false;
       this.childrenExpanded = false;
       this.noteDraft = '';

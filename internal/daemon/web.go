@@ -776,6 +776,58 @@ func fileETag(path string, run int) string {
 	return web.ContentETag(fmt.Appendf(nil, "%d-%d-%d", st.Size(), st.ModTime().UnixNano(), run), "")
 }
 
+// chainNodeCap bounds the ladder the ticket page draws. The critical path is
+// kept whatever the cap, so a chain too wide to render still names what is
+// holding it up.
+const chainNodeCap = 200
+
+// GetChain walks the dependency closure around a ticket. The index is built
+// from the whole store, not from the board list, so archived tickets and
+// statuses with no column stay in the graph.
+func (d *Daemon) GetChain(id string) (web.ChainInfo, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if _, ok := d.tickets[id]; !ok {
+		return web.ChainInfo{}, web.ErrTicketNotFound
+	}
+	index := make(map[string]*ticket.Ticket, len(d.tickets))
+	for tid, ts := range d.tickets {
+		index[tid] = ts.ticket
+	}
+
+	res := ticket.Chain(index, id, chainNodeCap)
+	info := web.ChainInfo{
+		ID:         res.ID,
+		Verdict:    res.Verdict,
+		Position:   res.Position,
+		PathLength: res.PathLength,
+		Goal:       res.Goal,
+		Total:      res.Total,
+		Done:       res.Done,
+		Cycle:      res.Cycle,
+		Nodes:      make([]web.ChainNode, 0, len(res.Nodes)),
+	}
+	for _, n := range res.Nodes {
+		node := web.ChainNode{
+			ID:             n.ID,
+			Depth:          n.Depth,
+			Direction:      n.Direction,
+			OnCriticalPath: n.OnCriticalPath,
+			Resolved:       n.Resolved,
+			HoldsChain:     n.HoldsChain,
+			WaitsOn:        web.ChainWaits{Open: n.WaitsOpen, Total: n.WaitsTotal},
+			Missing:        n.Missing,
+		}
+		if ts, ok := d.tickets[n.ID]; ok {
+			node.Title = ts.ticket.Title()
+			node.Status = string(ts.ticket.Status)
+		}
+		info.Nodes = append(info.Nodes, node)
+	}
+	return info, nil
+}
+
 // GetChanges reports the commits and changed files on a ticket's branch
 // relative to the ticket's base branch, or the repository's default branch
 // when the ticket sets none, computed at request time so the data stays

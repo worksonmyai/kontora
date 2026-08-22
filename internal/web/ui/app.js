@@ -159,6 +159,13 @@ export function kontoraApp() {
     // Relation rows the user expanded past the first RELATION_CAP chips, keyed
     // by row. Cleared with the ticket, so opening another one starts collapsed.
     relExpanded: {},
+    // The dependency chain behind the ladder, fetched per ticket and cleared
+    // with it.
+    chain: null,
+    chainCollapsed: false,
+    chainError: null,
+    // Bumped per chain fetch, so a response from an older one is dropped.
+    _chainSeq: 0,
     // Sub-ticket tree folded shut, and the tree expanded past CHILDREN_CAP.
     // Both are cleared with the ticket, like relExpanded.
     childrenCollapsed: false,

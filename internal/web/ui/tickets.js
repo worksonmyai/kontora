@@ -333,11 +333,34 @@ export function kontoraTickets() {
       var pending = this._pendingTicketUpdates;
       this._pendingTicketUpdates = [];
       pending.forEach(t => this.applyTicketUpdate(t));
+      if (this._chainTouchedBy(pending)) this.fetchChain(this.selectedTicket.id);
       // recomputeBoard rebuilds the board and refreshes runningAgents +
       // _statusCounts, which updateFavicon then reads.
       this.recomputeBoard();
       this.updateFavicon();
       if (this.paletteOpen) this.recomputePalette();
+    },
+
+    // Whether a batch of ticket updates changes the ladder. A refetch rather
+    // than a patch: one dep going done moves holds_chain, every waits_on behind
+    // it and the verdict at once, which is the whole graph re-derived, and the
+    // event carries nothing like enough to do that here.
+    //
+    // The second clause is what catches a new dependent: a ticket that adds a
+    // dep on the open one becomes a downstream row, and its id is not in the
+    // chain yet. The event is built with the body, so its deps are resolved refs.
+    _chainTouchedBy(pending) {
+      if (!this.chain || !this.selectedTicket) return false;
+      var ids = new Set((this.chain.nodes || []).map(function (n) { return n.id; }));
+      return pending.some(function (t) {
+        if (ids.has(t.id)) return true;
+        return (t.deps || []).some(function (d) { return ids.has(d.id || d); });
+      });
+    },
+
+    _chainHasNode(id) {
+      if (!this.chain || !this.selectedTicket) return false;
+      return (this.chain.nodes || []).some(function (n) { return n.id === id; });
     },
 
     connectSSE() {
@@ -352,6 +375,10 @@ export function kontoraTickets() {
         this.tickets = this.tickets.filter(t => t.id !== ticket.id);
         if (this.selectedTicket?.id === ticket.id) {
           this.closeDetail();
+        } else if (this._chainHasNode(ticket.id)) {
+          // A dep or a dependent of the open ticket is gone: the ladder would
+          // keep drawing it, holder and resume pill included.
+          this.fetchChain(this.selectedTicket.id);
         }
         this.recomputeBoard();
         this.updateFavicon();

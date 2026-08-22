@@ -39,6 +39,7 @@ type mockService struct {
 	activityFn     func(q ActivityQuery) (ActivityInfo, error)
 	statsFn        func(q StatsQuery) (StatsInfo, error)
 	changesFn      func(id string) (ChangesInfo, error)
+	chainFn        func(id string) (ChainInfo, error)
 	reviewFn       func(id string) error
 	annotateFn     func(id string) error
 	relationFn     func(verb, id string, related []string) error
@@ -173,6 +174,12 @@ func (m *mockService) GetChanges(id string) (ChangesInfo, error) {
 		return m.changesFn(id)
 	}
 	return ChangesInfo{}, nil
+}
+func (m *mockService) GetChain(id string) (ChainInfo, error) {
+	if m.chainFn != nil {
+		return m.chainFn(id)
+	}
+	return ChainInfo{}, nil
 }
 func (m *mockService) GetRawConfig() (string, error) {
 	return m.rawConfig, m.rawConfigErr
@@ -538,6 +545,55 @@ func TestHandleGetChanges_NotFound(t *testing.T) {
 	srv := startHandlerTestServer(t, svc)
 
 	res := get(t, srv, "/api/tickets/t-404/changes")
+	assert.Equal(t, http.StatusNotFound, res.statusCode)
+}
+
+// --- GET /api/tickets/{id}/chain ---
+
+func TestHandleGetChain_Success(t *testing.T) {
+	svc := &mockService{chainFn: func(id string) (ChainInfo, error) {
+		return ChainInfo{
+			ID:         id,
+			Verdict:    "blocked",
+			Position:   3,
+			PathLength: 4,
+			Goal:       "pca-uvby",
+			Total:      6,
+			Done:       2,
+			Cycle:      []string{},
+			Nodes: []ChainNode{
+				{ID: "pca-qv0y", Title: "protocol", Status: "paused", Direction: "upstream", OnCriticalPath: true, HoldsChain: true},
+				{ID: id, Title: "self", Status: "todo", Depth: 2, Direction: "self", OnCriticalPath: true, WaitsOn: ChainWaits{Open: 1, Total: 3}},
+			},
+		}, nil
+	}}
+	srv := startHandlerTestServer(t, svc)
+
+	res := get(t, srv, "/api/tickets/pca-d3q9/chain")
+	require.Equal(t, http.StatusOK, res.statusCode)
+
+	var chain ChainInfo
+	require.NoError(t, json.Unmarshal([]byte(res.body), &chain))
+	assert.Equal(t, "pca-d3q9", chain.ID)
+	assert.Equal(t, "blocked", chain.Verdict)
+	assert.Equal(t, 3, chain.Position)
+	assert.Equal(t, 4, chain.PathLength)
+	assert.Equal(t, "pca-uvby", chain.Goal)
+	assert.Equal(t, 6, chain.Total)
+	assert.Equal(t, 2, chain.Done)
+	require.Len(t, chain.Nodes, 2)
+	assert.True(t, chain.Nodes[0].HoldsChain)
+	assert.Equal(t, "upstream", chain.Nodes[0].Direction)
+	assert.Equal(t, ChainWaits{Open: 1, Total: 3}, chain.Nodes[1].WaitsOn)
+}
+
+func TestHandleGetChain_NotFound(t *testing.T) {
+	svc := &mockService{chainFn: func(_ string) (ChainInfo, error) {
+		return ChainInfo{}, ErrTicketNotFound
+	}}
+	srv := startHandlerTestServer(t, svc)
+
+	res := get(t, srv, "/api/tickets/t-404/chain")
 	assert.Equal(t, http.StatusNotFound, res.statusCode)
 }
 

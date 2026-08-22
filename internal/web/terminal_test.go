@@ -187,6 +187,7 @@ func (m *mockTerminalService) MoveTicket(_ string, _ string) error              
 func (m *mockTerminalService) AddNote(_ string, _ string) error                   { return nil }
 func (m *mockTerminalService) SetSummary(_ string, _ string) error                { return nil }
 func (m *mockTerminalService) GetChanges(_ string) (ChangesInfo, error)           { return ChangesInfo{}, nil }
+func (m *mockTerminalService) GetChain(_ string) (ChainInfo, error)               { return ChainInfo{}, nil }
 func (m *mockTerminalService) InitTicket(_ string, _ InitTicketRequest) error     { return nil }
 func (m *mockTerminalService) AddDependency(_ string, _ string) error             { return nil }
 func (m *mockTerminalService) RemoveDependency(_ string, _ string) error          { return nil }

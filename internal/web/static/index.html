@@ -1914,38 +1914,152 @@
                       <span class="text-err/80 text-xs font-mono break-words whitespace-pre-wrap" x-text="selectedTicket.last_error"></span>
                     </div>
                   </template>
-                  <!-- Relations strip: deps, blocks and links on one line above
-                       the sub-tickets. parent is in the breadcrumb, so it is not
-                       here. The whole strip is dropped when there is nothing in
-                       it rather than left as an empty row.
-                       It wraps rather than holding one line at any cost: a
-                       ticket in the corpus carries 30-odd links, and eight chips
-                       per group is already wider than the 960px column. Nothing
-                       here may shrink below its text — a shrunk label overprints
-                       the chip beside it. -->
-                  <template x-if="bandRows().length > 0">
-                    <div class="flex flex-wrap items-center gap-x-3.5 gap-y-1.5 min-h-[26px] mb-3.5 font-mono text-[11.5px]">
-                      <template x-for="(row, i) in bandRows()" :key="row.key">
-                        <div class="flex flex-wrap items-center gap-[7px] min-w-0">
-                          <span x-show="i > 0" class="w-px h-[14px] bg-surface-700 mr-1.5 shrink-0"></span>
-                          <span class="text-tx-faint tracking-[.06em] shrink-0 whitespace-nowrap" x-text="row.label"></span>
-                          <template x-for="ref in relationRefs(row)" :key="ref.id">
-                            <span :class="relationChipClass(ref)"
-                                  class="inline-flex items-center gap-1.5 shrink-0"
-                                  :data-tip-e="ticketTip(ref).title"
-                                  :data-tip-e-tag="ticketTip(ref).tag"
-                                  :data-tip-e-tag-color="ticketTip(ref).tagColor"
-                                  :data-tip-e-body="ticketTip(ref).body"
-                                  :data-tip-e-hint="ticketTip(ref).hint"
-                                  @click="openTicketRef(ref)">
-                              <span class="w-[5px] h-[5px] rounded-full shrink-0" :class="relationDotClass(ref)"></span>
-                              <span x-text="ref.id"></span>
-                            </span>
+                  <!-- The fetch failed and there is no ladder to draw: the
+                       relations block would otherwise vanish without a word. -->
+                  <template x-if="!chain && chainError">
+                    <div class="flex items-center gap-2.5 mb-3.5">
+                      <span class="side-label shrink-0">chain</span>
+                      <span class="font-mono text-[10.5px] text-warn shrink-0" x-text="chainError"></span>
+                      <span class="flex-1 h-px bg-surface-700/80"></span>
+                    </div>
+                  </template>
+                  <!-- Chain ladder: the derived view of the dependency graph.
+                       Everything the ticket transitively waits on, the ticket,
+                       and everything transitively waiting on it, roots to goal.
+                       The rail's relation rows are the frontmatter view of the
+                       same edges; this one is walked by the daemon, so it also
+                       carries the tickets the board hides.
+                       A ticket with no relations draws nothing at all. -->
+                  <template x-if="chain && (chainVerdict() === 'cycle' || chainSummary().total > 1)">
+                    <div class="flex flex-col gap-2 mb-3.5">
+
+                      <div class="flex items-center gap-2.5">
+                        <span class="side-label shrink-0">chain</span>
+                        <span x-show="chainVerdict() !== 'cycle'"
+                              class="flex items-center gap-[3px] shrink-0">
+                          <template x-for="seg in chainMeter()" :key="seg.id">
+                            <span class="w-[18px] h-[5px] rounded-[2px]" :class="seg.cls"></span>
                           </template>
-                          <button type="button" x-show="relationHidden(row) > 0"
-                                  class="text-[10.5px] text-accent hover:underline shrink-0"
-                                  @click="relExpanded[row.key] = true"
-                                  x-text="'+' + relationHidden(row) + ' more'"></button>
+                        </span>
+                        <span x-show="chainVerdict() !== 'cycle'"
+                              class="font-mono text-[10.5px] text-surface-600 num shrink-0"
+                              x-text="chainSummary().text + (chainSummary().place ? ' · ' + chainSummary().place : '')"></span>
+                        <!-- A refetch that failed leaves the chain on screen,
+                             so the header says it is no longer current. -->
+                        <span x-show="chainError" class="font-mono text-[10.5px] text-warn shrink-0"
+                              x-text="chainError"></span>
+                        <span class="flex-1 h-px bg-surface-700/80"></span>
+                        <button type="button" x-show="chainVerdict() !== 'cycle'"
+                                @click="chainCollapsed = !chainCollapsed"
+                                class="font-mono text-[10px] text-surface-600 border border-edge-input rounded-md px-2 py-[3px] hover:border-edge-hover hover:text-tx-2 transition-colors shrink-0"
+                                x-text="chainCollapsed ? 'expand' : 'collapse'"></button>
+                      </div>
+
+                      <!-- A cycle has no order to draw, so the banner replaces
+                           the ladder rather than sitting above an empty one. -->
+                      <template x-if="chainVerdict() === 'cycle'">
+                        <div class="min-h-[26px] flex items-center gap-2 font-mono text-[11px] border border-err/40 rounded-md px-2.5 py-[7px]">
+                          <span class="text-err shrink-0">dependency cycle</span>
+                          <span class="text-surface-600 break-all"
+                                x-text="(chain.cycle || []).join(' → ')"></span>
+                        </div>
+                      </template>
+
+                      <!-- Collapsed and cleared chains both have one line to
+                           say, so they share the slot the ladder would fill. -->
+                      <template x-if="chainVerdict() !== 'cycle' && chainCollapsed">
+                        <div class="min-h-[26px] flex flex-wrap items-center gap-x-2.5 gap-y-1 font-mono text-[11.5px] pl-[5px]">
+                          <span class="text-tx-2" x-text="chainSummary().state"></span>
+                          <span x-show="chainSummary().releases" class="text-surface-600"
+                                x-text="'· ' + chainSummary().releases"></span>
+                        </div>
+                      </template>
+
+                      <div class="flex flex-col pl-[5px]" x-show="chainVerdict() !== 'cycle' && !chainCollapsed">
+                        <template x-for="row in chainRows()" :key="row.id">
+                          <div class="flex items-stretch transition-colors"
+                               :class="chainRowClass(row)"
+                               @click="openTicketRef(row)"
+                               :data-tip-e="ticketTip(row).title"
+                               :data-tip-e-tag="ticketTip(row).tag"
+                               :data-tip-e-tag-color="ticketTip(row).tagColor"
+                               :data-tip-e-body="ticketTip(row).body"
+                               :data-tip-e-hint="ticketTip(row).hint">
+                            <!-- Depth spacer: the staircase. One step per layer,
+                                 so the gutter of each depth sits under its own. -->
+                            <span class="shrink-0" :style="'width:' + row.indent + 'px'"></span>
+                            <!-- Connector gutter, the sub-ticket tree's: stem,
+                                 elbow, status dot. chainRows sets `last`. -->
+                            <div class="w-[26px] shrink-0 relative">
+                              <span class="absolute left-0 top-0 w-px bg-surface-700"
+                                    :class="row.last ? 'h-[20px]' : 'bottom-0'"></span>
+                              <span class="absolute left-0 top-[19px] w-[13px] h-px bg-surface-700"></span>
+                              <span class="absolute left-[11px] top-4 w-1.5 h-1.5 rounded-full"
+                                    :class="relationDotClass(row) + (row.is_self ? ' ring-[3px] ring-accent/[.22]' : '') + (row.holds_chain ? ' pulse-dot' : '')"></span>
+                            </div>
+                            <!-- The meta cell is fixed and must not shrink: it
+                                 holds the longest meta plus the resume pill. -->
+                            <div class="flex-1 min-w-0 grid grid-cols-[1fr_178px_94px_96px] items-center gap-3
+                                        pl-1 pr-2.5 py-[9px] border-b border-edge-card/55">
+                              <span class="min-w-0 text-[13.5px] truncate"
+                                    :class="row.is_self ? 'text-tx' : 'text-tx-2'">
+                                <span x-show="splitTitleTag(row.title).tag" class="pal-tag"
+                                      :data-pipe-color="pipelineColorByName(splitTitleTag(row.title).tag)"
+                                      x-text="'[' + splitTitleTag(row.title).tag + ']'"></span>
+                                <span x-text="splitTitleTag(row.title).rest || row.id"></span>
+                              </span>
+                              <span class="flex items-center gap-2 min-w-0">
+                                <span class="font-mono text-[10.5px] truncate"
+                                      :class="row.holds_chain ? 'text-st-paused' : 'text-surface-600'"
+                                      x-text="row.holds_chain ? 'holds the chain' : row.meta"></span>
+                                <button type="button" x-show="row.holds_chain && chainResumeMove()"
+                                        @click.stop="resumeChainHolder()"
+                                        class="shrink-0 font-mono text-[10px] text-accent bg-accent/[.09] border border-accent/30 rounded-md px-2 py-[2px] hover:bg-accent/15 transition-colors"
+                                        x-text="chainResumeMove()?.label"></button>
+                              </span>
+                              <span class="font-mono text-[11px] text-surface-600 truncate" x-text="row.id"></span>
+                              <span class="font-mono text-[10.5px] text-surface-600 text-right truncate"
+                                    x-text="row.missing ? 'gone' : paletteStatusLabel(row.status)"></span>
+                            </div>
+                          </div>
+                        </template>
+                        <div class="min-h-[26px] flex flex-wrap items-center gap-x-2.5 gap-y-1 mt-1.5 ml-[26px] font-mono text-[11.5px]">
+                          <span class="text-surface-600" x-text="chainSummary().state"></span>
+                          <span x-show="chainSummary().releases" class="text-surface-600"
+                                x-text="'· ' + chainSummary().releases"></span>
+                          <span x-show="chainSummary().total > (chain.nodes || []).length" class="text-tx-faint"
+                                x-text="'· ' + (chainSummary().total - (chain.nodes || []).length) + ' more not shown'"></span>
+                        </div>
+                      </div>
+
+                      <!-- The edges the ladder does not carry: related is
+                           symmetric and has no direction to draw, and parent is
+                           the tree's edge, not the graph's. -->
+                      <template x-if="(selectedTicket?.links || []).length > 0 || selectedTicket?.parent">
+                        <div class="flex flex-wrap items-center gap-x-3.5 gap-y-1.5 pl-[5px] font-mono text-[11px] opacity-[.72]">
+                          <template x-for="row in relationRows().filter(r => r.key === 'parent' || r.key === 'links')" :key="row.key">
+                            <div class="flex flex-wrap items-center gap-[7px] min-w-0">
+                              <span class="text-tx-faint tracking-[.06em] shrink-0 whitespace-nowrap"
+                                    x-text="row.key === 'links' ? 'related' : 'parent'"></span>
+                              <template x-for="ref in relationRefs(row)" :key="ref.id">
+                                <span :class="relationChipClass(ref)"
+                                      class="inline-flex items-center gap-1.5 shrink-0"
+                                      :data-tip-e="ticketTip(ref).title"
+                                      :data-tip-e-tag="ticketTip(ref).tag"
+                                      :data-tip-e-tag-color="ticketTip(ref).tagColor"
+                                      :data-tip-e-body="ticketTip(ref).body"
+                                      :data-tip-e-hint="ticketTip(ref).hint"
+                                      @click="openTicketRef(ref)">
+                                  <span class="w-[5px] h-[5px] rounded-full shrink-0" :class="relationDotClass(ref)"></span>
+                                  <span x-text="ref.id"></span>
+                                </span>
+                              </template>
+                              <button type="button" x-show="relationHidden(row) > 0"
+                                      class="text-[10.5px] text-accent hover:underline shrink-0"
+                                      @click="relExpanded[row.key] = true"
+                                      x-text="'+' + relationHidden(row) + ' more'"></button>
+                            </div>
+                          </template>
                         </div>
                       </template>
                     </div>
@@ -2179,6 +2293,49 @@
                 <button type="button" class="copyable text-tx-2 hover:text-tx text-left break-all justify-self-start"
                         @click.stop="copyTicketId(selectedTicket?.id)"
                         x-text="copiedId ? '✓ copied' : selectedTicket?.id"></button>
+                <!-- The chain, in three lines: where the ticket sits, what is
+                     holding it up, and what it releases. `unblocks` is the
+                     direct dependents, which overlaps `blocks` below; the two
+                     read apart because blocks draws chips and this draws bare
+                     ids in the status hue. -->
+                <template x-if="chainSummary().total > 1 && chainSummary().place">
+                  <div class="col-span-2 grid grid-cols-[58px_1fr] gap-x-[10px] items-start">
+                    <span class="text-surface-600">chain</span>
+                    <span class="text-tx-2" x-text="chainSummary().place + ' · ' + chainVerdict()"></span>
+                  </div>
+                </template>
+                <template x-if="chainHolder() && chainHolder().direction === 'upstream'">
+                  <div class="col-span-2 grid grid-cols-[58px_1fr] gap-x-[10px] items-start">
+                    <span class="text-surface-600">blocked by</span>
+                    <button type="button" class="text-left break-all justify-self-start"
+                            :class="relationChipClass(chainHolder())"
+                            :data-tip-e="ticketTip(chainHolder()).title"
+                            :data-tip-e-tag="ticketTip(chainHolder()).tag"
+                            :data-tip-e-tag-color="ticketTip(chainHolder()).tagColor"
+                            :data-tip-e-body="ticketTip(chainHolder()).body"
+                            :data-tip-e-hint="ticketTip(chainHolder()).hint"
+                            @click="openTicketRef(chainHolder())"
+                            x-text="chainHolder().id"></button>
+                  </div>
+                </template>
+                <template x-if="chainUnblocks().length > 0">
+                  <div class="col-span-2 grid grid-cols-[58px_1fr] gap-x-[10px] items-start">
+                    <span class="text-surface-600">unblocks</span>
+                    <div class="flex flex-wrap gap-[5px] items-center">
+                      <template x-for="n in chainUnblocks()" :key="n.id">
+                        <button type="button" class="break-all"
+                                :class="relationHueClass(n)"
+                                :data-tip-e="ticketTip(n).title"
+                                :data-tip-e-tag="ticketTip(n).tag"
+                                :data-tip-e-tag-color="ticketTip(n).tagColor"
+                                :data-tip-e-body="ticketTip(n).body"
+                                :data-tip-e-hint="ticketTip(n).hint"
+                                @click="openTicketRef(n)"
+                                x-text="n.id"></button>
+                      </template>
+                    </div>
+                  </div>
+                </template>
                 <!-- Relations from the frontmatter, labelled with the field they
                      come from. blocks is the only derived one: deps is stored on
                      the blocked ticket, so what a ticket holds up is read off

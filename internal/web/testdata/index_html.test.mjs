@@ -6352,21 +6352,255 @@ test("the hover card peels the [tag] off the title and hands over its hue", () =
 });
 
 
-test("the relations strip carries deps, blocks and links, and leaves parent to the breadcrumb", () => {
-  const state = pageState(RELATION_TICKET);
+// The design's graph, as the endpoint hands it over: roots to goal, depth
+// never going backwards, one node holding the chain.
+const CHAIN_PAYLOAD = {
+  id: "pca-d3q9",
+  verdict: "blocked",
+  position: 3,
+  path_length: 4,
+  goal: "pca-uvby",
+  total: 6,
+  done: 2,
+  cycle: [],
+  nodes: [
+    { id: "pca-itf5", title: "Runtime", status: "done", depth: 0, direction: "upstream", on_critical_path: false, resolved: true, holds_chain: false, waits_on: { open: 0, total: 0 }, missing: false },
+    { id: "pca-csyi", title: "Schema", status: "done", depth: 0, direction: "upstream", on_critical_path: false, resolved: true, holds_chain: false, waits_on: { open: 0, total: 0 }, missing: false },
+    { id: "pca-qv0y", title: "[pca] Permissions", status: "paused", depth: 0, direction: "upstream", on_critical_path: true, resolved: false, holds_chain: true, waits_on: { open: 0, total: 0 }, missing: false },
+    { id: "pca-u8ax", title: "Protocol", status: "open", depth: 1, direction: "upstream", on_critical_path: true, resolved: false, holds_chain: false, waits_on: { open: 1, total: 3 }, missing: false },
+    { id: "pca-d3q9", title: "The open ticket", status: "todo", depth: 2, direction: "self", on_critical_path: true, resolved: false, holds_chain: false, waits_on: { open: 1, total: 1 }, missing: false },
+    { id: "pca-uvby", title: "The goal", status: "open", depth: 3, direction: "downstream", on_critical_path: true, resolved: false, holds_chain: false, waits_on: { open: 1, total: 1 }, missing: false },
+  ],
+};
 
-  assert.deepEqual(vmValue(state.bandRows()).map((r) => [r.key, r.label]), [
-    ["deps", "⇠ waits on"],
-    ["blocks", "blocks ⇢"],
-    ["links", "related"],
+const chainState = (chain, ticket = { id: "pca-d3q9", status: "todo" }) => pageState(ticket, { chain });
+
+test("the ladder rows step by depth and close each run at the elbow", () => {
+  const rows = vmValue(chainState(CHAIN_PAYLOAD).chainRows());
+
+  assert.deepEqual(rows.map((r) => r.id), ["pca-itf5", "pca-csyi", "pca-qv0y", "pca-u8ax", "pca-d3q9", "pca-uvby"]);
+  // One 16px step per depth layer, which is what draws the staircase.
+  assert.deepEqual(rows.map((r) => r.indent), [0, 0, 0, 16, 32, 48]);
+  // The run is the block sharing a depth: only its final row stops the stem,
+  // because the next depth's gutter is a step to the right.
+  assert.deepEqual(rows.map((r) => r.last), [false, false, true, true, true, true]);
+  assert.deepEqual(rows.map((r) => r.is_self), [false, false, false, false, true, false]);
+  // The meta cell names what the row itself is waiting for, counting deps the
+  // chain does not carry. A node with no deps says nothing at all.
+  assert.deepEqual(rows.map((r) => r.meta), ["", "", "", "waits on 1 of 3", "waits on 1 of 1", "waits on 1 of 1"]);
+});
+
+test("a ladder row for a ticket that is gone is not painted as a link", () => {
+  const state = chainState(CHAIN_PAYLOAD);
+  const cases = [
+    { name: "the open ticket", row: { is_self: true }, want: "bg-accent/[.09]" },
+    { name: "a ticket the click opens", row: { missing: false }, want: "cursor-pointer hover:bg-surface-850/40" },
+    { name: "an id with no ticket file", row: { missing: true }, want: "ent-ticket-gone" },
+  ];
+  for (const c of cases) assert.equal(state.chainRowClass(c.row), c.want, c.name);
+});
+
+test("the ladder meta cell reads the node's own deps", () => {
+  const cases = [
+    { name: "no deps at all", node: { waits_on: { open: 0, total: 0 } }, want: "" },
+    { name: "some deps open", node: { waits_on: { open: 2, total: 5 } }, want: "waits on 2 of 5" },
+    { name: "every dep closed", node: { waits_on: { open: 0, total: 3 } }, want: "deps clear" },
+    { name: "no ticket file", node: { missing: true, waits_on: { open: 0, total: 0 } }, want: "not in the tickets dir" },
+  ];
+  const state = chainState(CHAIN_PAYLOAD);
+  for (const c of cases) assert.equal(state._chainMeta(c.node), c.want, c.name);
+});
+
+test("the chain summary says the size, the place and the state in one voice", () => {
+  const cases = [
+    {
+      name: "blocked mid-chain",
+      chain: CHAIN_PAYLOAD,
+      ticket: { id: "pca-d3q9", status: "todo" },
+      want: { text: "6 tickets · 2 done", place: "3rd of 4", state: "waiting on pca-qv0y", releases: "finishing this unblocks pca-uvby" },
+    },
+    {
+      name: "nothing blocking, and something downstream to release",
+      chain: {
+        ...CHAIN_PAYLOAD, verdict: "ready", position: 1, path_length: 2, goal: "pca-uvby", total: 2, done: 0,
+        nodes: [
+          { id: "pca-d3q9", title: "Self", status: "todo", depth: 0, direction: "self", on_critical_path: true, resolved: false, holds_chain: true, waits_on: { open: 0, total: 0 } },
+          { id: "pca-uvby", title: "Goal", status: "open", depth: 1, direction: "downstream", on_critical_path: true, resolved: false, holds_chain: false, waits_on: { open: 1, total: 1 } },
+        ],
+      },
+      ticket: { id: "pca-d3q9", status: "todo" },
+      want: { text: "2 tickets · 0 done", place: "1st of 2", state: "nothing blocking", releases: "finishing this unblocks pca-uvby" },
+    },
+    {
+      name: "the ticket is done, so the copy is retrospective",
+      chain: {
+        ...CHAIN_PAYLOAD, verdict: "ready", position: 1, path_length: 2, goal: "pca-uvby", total: 2, done: 2,
+        nodes: [
+          { id: "pca-d3q9", title: "Self", status: "done", depth: 0, direction: "self", on_critical_path: true, resolved: true, holds_chain: false, waits_on: { open: 0, total: 0 } },
+          { id: "pca-uvby", title: "Goal", status: "cancelled", depth: 1, direction: "downstream", on_critical_path: true, resolved: true, holds_chain: false, waits_on: { open: 0, total: 1 } },
+        ],
+      },
+      ticket: { id: "pca-d3q9", status: "done" },
+      want: { text: "2 tickets · 2 done", place: "1st of 2", state: "chain cleared", releases: "finishing this unblocked pca-uvby" },
+    },
+    {
+      name: "a downstream holder is not blocking the ticket, it is waiting on it",
+      chain: {
+        ...CHAIN_PAYLOAD, verdict: "ready", position: 1, path_length: 2, goal: "pca-uvby", total: 2, done: 1,
+        nodes: [
+          { id: "pca-d3q9", title: "Self", status: "done", depth: 0, direction: "self", on_critical_path: true, resolved: true, holds_chain: false, waits_on: { open: 0, total: 0 } },
+          { id: "pca-uvby", title: "Goal", status: "open", depth: 1, direction: "downstream", on_critical_path: true, resolved: false, holds_chain: true, waits_on: { open: 0, total: 1 } },
+        ],
+      },
+      ticket: { id: "pca-d3q9", status: "done" },
+      want: { text: "2 tickets · 1 done", place: "1st of 2", state: "nothing blocking", releases: "finishing this unblocked pca-uvby" },
+    },
+    {
+      name: "a cycle has no place and no ladder",
+      chain: { id: "pca-d3q9", verdict: "cycle", position: 0, path_length: 0, goal: "", total: 0, done: 0, cycle: ["pca-d3q9", "pca-u8ax", "pca-d3q9"], nodes: [] },
+      ticket: { id: "pca-d3q9", status: "todo" },
+      want: { text: "0 tickets · 0 done", place: "", state: "dependency cycle", releases: "" },
+    },
+    {
+      name: "a lone ticket counts in the singular",
+      chain: { id: "solo", verdict: "ready", position: 1, path_length: 1, goal: "solo", total: 1, done: 0, cycle: [], nodes: [{ id: "solo", title: "Solo", status: "todo", depth: 0, direction: "self", on_critical_path: true, resolved: false, holds_chain: true, waits_on: { open: 0, total: 0 } }] },
+      ticket: { id: "solo", status: "todo" },
+      want: { text: "1 ticket · 0 done", place: "1st of 1", state: "nothing blocking", releases: "" },
+    },
+  ];
+
+  for (const c of cases) {
+    const got = chainState(c.chain, c.ticket).chainSummary();
+    assert.deepEqual({ text: got.text, place: got.place, state: got.state, releases: got.releases }, c.want, c.name);
+  }
+});
+
+test("the chain lookups find the holder, the goal and the direct dependents", () => {
+  const state = chainState(CHAIN_PAYLOAD, { id: "pca-d3q9", status: "todo", blocks: [{ id: "pca-uvby", status: "open" }] });
+
+  assert.equal(state.chainVerdict(), "blocked");
+  assert.equal(state.chainHolder().id, "pca-qv0y");
+  assert.equal(state.chainGoal().id, "pca-uvby");
+  // unblocks is the frontmatter edge, read off the chain for its status.
+  assert.deepEqual(vmValue(state.chainUnblocks()).map((n) => n.id), ["pca-uvby"]);
+  // One segment per node, in the ladder's own order and hue.
+  assert.deepEqual(vmValue(state.chainMeter()).map((s) => s.cls), [
+    "text-st-done bg-current", "text-st-done bg-current", "text-st-paused bg-current",
+    "text-st-open bg-current", "text-surface-600 bg-current", "text-st-open bg-current",
   ]);
-  // The refs are the same objects relationRows hands over, so the +N more
-  // reveal keeps working off relationRefs / relationHidden unchanged.
-  assert.equal(state.relationHidden(state.bandRows().find((r) => r.key === "links")), 2);
+});
 
-  // A ticket whose only relation is its parent draws no strip at all.
-  const parentOnly = pageState({ id: "kon-r4", parent: { id: "kon-epic", status: "open" } });
-  assert.deepEqual(vmValue(parentOnly.bandRows()), []);
+test("the resume pill only offers a move the daemon would take", () => {
+  const cases = [
+    { name: "paused holder resumes", status: "paused", want: { id: "pca-qv0y", endpoint: "retry", label: "resume" } },
+    { name: "open holder queues", status: "open", want: { id: "pca-qv0y", endpoint: "run", label: "queue" } },
+    { name: "a running holder needs no push", status: "in_progress", want: null },
+    { name: "a queued holder needs no push", status: "todo", want: null },
+    { name: "a holder in review is not the pill's business", status: "human_review", want: null },
+  ];
+
+  for (const c of cases) {
+    const chain = { ...CHAIN_PAYLOAD, nodes: CHAIN_PAYLOAD.nodes.map((n) => (n.holds_chain ? { ...n, status: c.status } : n)) };
+    assert.deepEqual(vmValue(chainState(chain).chainResumeMove()), c.want, c.name);
+  }
+
+  // No holder, and a holder with no ticket file, both offer nothing.
+  assert.equal(chainState({ ...CHAIN_PAYLOAD, nodes: CHAIN_PAYLOAD.nodes.map((n) => ({ ...n, holds_chain: false })) }).chainResumeMove(), null);
+  const gone = { ...CHAIN_PAYLOAD, nodes: CHAIN_PAYLOAD.nodes.map((n) => (n.holds_chain ? { ...n, status: "", missing: true } : n)) };
+  assert.equal(chainState(gone).chainResumeMove(), null);
+});
+
+test("an SSE batch refetches the chain when it names a node or waits on one", () => {
+  const cases = [
+    { name: "a node moved", pending: [{ id: "pca-qv0y", status: "done" }], want: true },
+    { name: "the open ticket itself moved", pending: [{ id: "pca-d3q9", status: "in_progress" }], want: true },
+    { name: "a new dependent named a node", pending: [{ id: "pca-new", status: "open", deps: [{ id: "pca-d3q9", status: "todo" }] }], want: true },
+    { name: "an unrelated ticket moved", pending: [{ id: "kon-other", status: "done", deps: [{ id: "kon-x" }] }], want: false },
+  ];
+
+  for (const c of cases) {
+    assert.equal(chainState(CHAIN_PAYLOAD)._chainTouchedBy(c.pending), c.want, c.name);
+  }
+  // With no chain loaded there is nothing to re-derive.
+  assert.equal(pageState({ id: "pca-d3q9" })._chainTouchedBy([{ id: "pca-d3q9" }]), false);
+});
+
+test("deleting a node of the open chain refetches the ladder", async () => {
+  const listeners = {};
+  let fetched = 0;
+  const state = loadKontoraState({
+    EventSource: class {
+      addEventListener(name, fn) { listeners[name] = fn; }
+      close() {}
+    },
+    fetch: async () => { fetched++; return { ok: true, json: async () => CHAIN_PAYLOAD }; },
+  });
+  state.selectedTicket = { id: "pca-d3q9", status: "todo" };
+  state.chain = CHAIN_PAYLOAD;
+  state.connectSSE();
+
+  listeners.ticket_deleted({ data: JSON.stringify({ id: "kon-other" }) });
+  await flushMicrotasks();
+  assert.equal(fetched, 0, "a ticket outside the chain leaves the ladder alone");
+
+  // The ladder would otherwise keep drawing the gone node, holder and resume
+  // pill included.
+  listeners.ticket_deleted({ data: JSON.stringify({ id: "pca-uvby" }) });
+  await flushMicrotasks();
+  assert.equal(fetched, 1);
+});
+
+test("the chain fetch seeds the ladder collapsed only when it has one line to say", async () => {
+  const cases = [
+    { name: "a blocked six-node chain opens on the ladder", chain: CHAIN_PAYLOAD, want: false },
+    { name: "a ready chain opens shut", chain: { ...CHAIN_PAYLOAD, verdict: "ready" }, want: true },
+    { name: "a two-node chain opens shut", chain: { ...CHAIN_PAYLOAD, total: 2 }, want: true },
+  ];
+
+  for (const c of cases) {
+    const state = loadKontoraState({ fetch: async () => ({ ok: true, json: async () => c.chain }) });
+    state.selectedTicket = { id: "pca-d3q9", status: "todo" };
+    await state.fetchChain("pca-d3q9", true);
+    assert.equal(state.chainCollapsed, c.want, c.name);
+    assert.equal(state.chainError, null, c.name);
+  }
+
+  // Only the first fetch for a ticket seeds it: an SSE refetch must not undo
+  // the user's own expand or collapse.
+  const kept = loadKontoraState({ fetch: async () => ({ ok: true, json: async () => ({ ...CHAIN_PAYLOAD, verdict: "ready" }) }) });
+  kept.selectedTicket = { id: "pca-d3q9", status: "todo" };
+  await kept.fetchChain("pca-d3q9", true);
+  assert.equal(kept.chainCollapsed, true);
+  kept.chainCollapsed = false;
+  await kept.fetchChain("pca-d3q9");
+  assert.equal(kept.chainCollapsed, false, "a refetch leaves the ladder as the user left it");
+
+  // A response for a ticket the user has already navigated away from is dropped.
+  const stale = loadKontoraState({ fetch: async () => ({ ok: true, json: async () => CHAIN_PAYLOAD }) });
+  stale.selectedTicket = { id: "pca-other", status: "todo" };
+  await stale.fetchChain("pca-d3q9");
+  assert.equal(stale.chain, null);
+
+  // Two fetches for the same ticket in flight: the older answer is dropped
+  // whatever order they resolve in, so the ladder ends on the newer graph.
+  const raced = loadKontoraState({
+    fetch: async (url) => {
+      const nth = raced._nth = (raced._nth || 0) + 1;
+      if (nth === 1) await new Promise((r) => setTimeout(r, 10));
+      return { ok: true, json: async () => ({ ...CHAIN_PAYLOAD, total: nth }) };
+    },
+  });
+  raced.selectedTicket = { id: "pca-d3q9", status: "todo" };
+  const first = raced.fetchChain("pca-d3q9");
+  const second = raced.fetchChain("pca-d3q9");
+  await Promise.all([first, second]);
+  assert.equal(raced.chain.total, 2, "the newer fetch wins");
+
+  const failed = loadKontoraState({ fetch: async () => ({ ok: false, json: async () => ({}) }) });
+  failed.selectedTicket = { id: "pca-d3q9", status: "todo" };
+  await failed.fetchChain("pca-d3q9");
+  assert.equal(failed.chain, null);
+  assert.equal(failed.chainError, "Failed to load the chain");
 });
 
 test("a relation dot fills with the status hue the chip's text uses", () => {
@@ -6592,16 +6826,47 @@ test("index.html renders the parent crumb, the relations strip and the sub-ticke
     assert.match(html, new RegExp(`:data-tip-e${attr}="ticketTip\\(c\\)\\.`));
   }
 
-  // The strip is dropped whole rather than left as an empty row, and the
-  // divider is drawn between groups, never before the first.
-  assert.match(html, /<template x-if="bandRows\(\)\.length > 0">/);
-  assert.match(html, /x-for="\(row, i\) in bandRows\(\)" :key="row\.key"/);
-  assert.match(html, /x-show="i > 0" class="w-px h-\[14px\] bg-surface-700/);
-  // The strip wraps and nothing in it shrinks below its own text. Eight chips
-  // per group is wider than the column, and a shrunk label overprints the chip
-  // beside it rather than clipping.
-  assert.match(html, /class="flex flex-wrap items-center gap-x-3\.5 gap-y-1\.5 min-h-\[26px\]/);
-  assert.match(html, /class="text-tx-faint tracking-\[\.06em\] shrink-0 whitespace-nowrap"/);
+
+  // The ladder replaces the strip: it is drawn for a chain with something to
+  // say and for a cycle, and not at all for a lone ticket.
+  assert.match(html, /<template x-if="chain && \(chainVerdict\(\) === 'cycle' \|\| chainSummary\(\)\.total > 1\)">/);
+  assert.match(html, /x-for="row in chainRows\(\)" :key="row\.id"/);
+  assert.match(html, /@click="openTicketRef\(row\)"/);
+  assert.match(html, /@click="chainCollapsed = !chainCollapsed"/);
+  // The staircase, the borrowed 26px gutter, and the stem stopping at the
+  // elbow on the last row of a run.
+  assert.match(html, /:style="'width:' \+ row\.indent \+ 'px'"/);
+  assert.match(html, /<div class="w-\[26px\] shrink-0 relative">/);
+  assert.match(html, /:class="row\.last \? 'h-\[20px\]' : 'bottom-0'"/);
+  // The meta cell is fixed at 178px and must not shrink: it holds the longest
+  // meta plus the resume pill.
+  assert.match(html, /grid-cols-\[1fr_178px_94px_96px\]/);
+  // The pill is re-derived at click time rather than read off the rendered row.
+  assert.match(html, /x-show="row\.holds_chain && chainResumeMove\(\)"/);
+  assert.match(html, /@click\.stop="resumeChainHolder\(\)"/);
+  // The row class is derived, so a row for a gone ticket is not painted as a
+  // link it cannot be.
+  assert.match(html, /:class="chainRowClass\(row\)"/);
+  // A chain that failed to load says so, in the header when the old one is
+  // still on screen and on its own when there is nothing to draw.
+  assert.match(html, /<template x-if="!chain && chainError">/);
+  assert.match(html, /x-show="chainError" class="font-mono text-\[10\.5px\] text-warn shrink-0"/);
+  // A cycle draws the banner instead of the ladder.
+  assert.match(html, /<template x-if="chainVerdict\(\) === 'cycle'">/);
+  // Every row carries all five, or the hover card leaks the previous one's hue.
+  for (const attr of ["", "-tag", "-tag-color", "-body", "-hint"]) {
+    assert.match(html, new RegExp(`:data-tip-e${attr}="ticketTip\\(row\\)\\.`));
+  }
+  // The rail's three derived rows sit under id, and its relation rows are left
+  // as they were.
+  assert.match(html, /<template x-if="chainSummary\(\)\.total > 1 && chainSummary\(\)\.place">/);
+  assert.match(html, /<span class="text-surface-600">chain<\/span>/);
+  // Only an upstream holder is blocking: a downstream one is waiting on this
+  // ticket, and naming it "blocked by" would point the row the wrong way.
+  assert.match(html, /<template x-if="chainHolder\(\) && chainHolder\(\)\.direction === 'upstream'">/);
+  assert.match(html, /<span class="text-surface-600">blocked by<\/span>/);
+  assert.match(html, /<span class="text-surface-600">unblocks<\/span>/);
+  assert.match(html, /x-for="row in relationRows\(\)" :key="row\.key"/);
 
   // The tree: no children, no block, so the body does not shift.
   assert.match(html, /<template x-if="\(selectedTicket\?\.children \|\| \[\]\)\.length > 0">/);

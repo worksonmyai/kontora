@@ -52,6 +52,7 @@ type TicketService interface {
 	GetActivity(q ActivityQuery) (ActivityInfo, error)
 	GetStats(q StatsQuery) (StatsInfo, error)
 	GetChanges(id string) (ChangesInfo, error)
+	GetChain(id string) (ChainInfo, error)
 	GetRawConfig() (string, error)
 	PutRawConfig(content string) error
 	Subscribe() (ch <-chan TicketEvent, unsubscribe func())
@@ -349,6 +350,63 @@ type FileChangeInfo struct {
 	Path    string `json:"path"`
 	Added   int    `json:"added"`
 	Deleted int    `json:"deleted"`
+}
+
+// ChainInfo is the dependency chain through one ticket: everything it waits on
+// transitively, everything that waits on it, and where it sits on the longest
+// path through itself. Derived on every read, stored nowhere.
+type ChainInfo struct {
+	// ID echoes the ticket the chain was built for, so a response that arrives
+	// after the user opened another ticket can be dropped.
+	ID string `json:"id"`
+	// Verdict is blocked, ready or cycle. It reports the deps alone, never the
+	// ticket's own status: a done ticket with closed deps reads ready.
+	Verdict string `json:"verdict"`
+	// Position is the ticket's 1-based place on the critical path and Goal is
+	// that path's last node. Both are zero on a cycle.
+	Position   int    `json:"position"`
+	PathLength int    `json:"path_length"`
+	Goal       string `json:"goal"`
+	// Total is the true node count and Done counts the nodes that no longer
+	// block. Nodes is capped, so Total > len(Nodes) means the payload was
+	// trimmed.
+	Total int `json:"total"`
+	Done  int `json:"done"`
+	// Cycle names the ids on the cycle when Verdict is cycle, and Nodes is then
+	// empty: a graph with a cycle has no order to draw.
+	Cycle []string    `json:"cycle"`
+	Nodes []ChainNode `json:"nodes"`
+}
+
+// ChainNode is one ticket in the chain, sorted roots to goal with Depth
+// monotonic non-decreasing.
+type ChainNode struct {
+	ID     string `json:"id"`
+	Title  string `json:"title"`
+	Status string `json:"status"`
+	Depth  int    `json:"depth"`
+	// Direction is upstream, self or downstream.
+	Direction      string `json:"direction"`
+	OnCriticalPath bool   `json:"on_critical_path"`
+	// Resolved is true when the node no longer blocks what depends on it. It is
+	// the same rule the daemon schedules on, so the page never has to keep its
+	// own list of closed statuses.
+	Resolved bool `json:"resolved"`
+	// HoldsChain marks the one node the chain is waiting on: an unresolved dep
+	// work can start on while something blocks the ticket, and the first
+	// unresolved node from the ticket onward while nothing does. A chain whose
+	// nodes are all resolved marks none.
+	HoldsChain bool       `json:"holds_chain"`
+	WaitsOn    ChainWaits `json:"waits_on"`
+	// Missing is set for an id no ticket file answers. Title and Status are
+	// then empty.
+	Missing bool `json:"missing"`
+}
+
+// ChainWaits counts a node's own deps, including the ones outside the chain.
+type ChainWaits struct {
+	Open  int `json:"open"`
+	Total int `json:"total"`
 }
 
 type TicketEvent struct {

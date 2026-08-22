@@ -965,6 +965,73 @@ path: %s
 	require.NoError(t, <-errCh)
 }
 
+func TestDaemon_GetChain(t *testing.T) {
+	h := newHarness(t)
+	d := h.newDaemon(h.cfg)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// The design's graph: three deps feed tst-u8ax, which feeds the open
+	// ticket, which feeds the goal. tst-arch is archived, so it never shows on
+	// the board and must still land in the chain.
+	chainMD := func(id, status, deps string) string {
+		return fmt.Sprintf(`---
+id: %s
+status: %s
+pipeline: one-stage
+path: %s
+%screated: 2026-01-01T00:00:00Z
+---
+# Chain node %s
+`, id, status, h.repoDir, deps, id)
+	}
+	h.writeTicket("tst-itf5.md", chainMD("tst-itf5", "done", ""))
+	h.writeTicket("tst-arch.md", chainMD("tst-arch", "archived", ""))
+	h.writeTicket("tst-qv0y.md", chainMD("tst-qv0y", "paused", ""))
+	h.writeTicket("tst-u8ax.md", chainMD("tst-u8ax", "open", "deps: [tst-itf5, tst-arch, tst-qv0y]\n"))
+	h.writeTicket("tst-d3q9.md", chainMD("tst-d3q9", "open", "deps: [tst-u8ax]\n"))
+	h.writeTicket("tst-uvby.md", chainMD("tst-uvby", "open", "deps: [tst-d3q9, tst-gone]\n"))
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- d.Run(ctx) }()
+	time.Sleep(200 * time.Millisecond)
+
+	chain, err := d.GetChain("tst-d3q9")
+	require.NoError(t, err)
+	assert.Equal(t, "tst-d3q9", chain.ID)
+	assert.Equal(t, ticket.ChainVerdictBlocked, chain.Verdict)
+	assert.Equal(t, 3, chain.Position)
+	assert.Equal(t, 4, chain.PathLength)
+	assert.Equal(t, "tst-uvby", chain.Goal)
+	assert.Equal(t, 6, chain.Total)
+	assert.Equal(t, 2, chain.Done)
+
+	ids := make([]string, len(chain.Nodes))
+	byID := map[string]web.ChainNode{}
+	for i, n := range chain.Nodes {
+		ids[i] = n.ID
+		byID[n.ID] = n
+	}
+	assert.Equal(t, []string{"tst-itf5", "tst-arch", "tst-qv0y", "tst-u8ax", "tst-d3q9", "tst-uvby"}, ids)
+
+	// Titles and statuses come off the store, so an archived ticket resolves
+	// like any other and a dep with no file does not.
+	assert.Equal(t, "Chain node tst-arch", byID["tst-arch"].Title)
+	assert.Equal(t, "archived", byID["tst-arch"].Status)
+	assert.True(t, byID["tst-qv0y"].HoldsChain)
+	assert.Equal(t, web.ChainWaits{Open: 1, Total: 3}, byID["tst-u8ax"].WaitsOn)
+	assert.Equal(t, web.ChainNode{ID: "tst-uvby", Depth: 3, Direction: ticket.ChainDownstream,
+		OnCriticalPath: true, Status: "open", Title: "Chain node tst-uvby",
+		WaitsOn: web.ChainWaits{Open: 2, Total: 2}}, byID["tst-uvby"])
+
+	_, err = d.GetChain("does-not-exist")
+	assert.ErrorIs(t, err, web.ErrTicketNotFound)
+
+	cancel()
+	require.NoError(t, <-errCh)
+}
+
 // writeFileOnBranch commits a file on the given branch and returns to main.
 func writeFileOnBranch(t *testing.T, repoDir, branch, name, content string) {
 	t.Helper()

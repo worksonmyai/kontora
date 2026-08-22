@@ -57,6 +57,35 @@ func TestLookupBinary(t *testing.T) {
 	}
 }
 
+func TestPathWith(t *testing.T) {
+	sep := string(filepath.ListSeparator)
+
+	cases := []struct {
+		name    string
+		current string
+		dirs    []string
+		want    string
+	}{
+		{name: "no dirs", current: "/usr/bin", want: "/usr/bin"},
+		{name: "empty path", dirs: []string{"/opt/bin"}, want: "/opt/bin"},
+		{name: "appends, never prepends", current: "/usr/bin", dirs: []string{"/opt/bin"}, want: "/usr/bin" + sep + "/opt/bin"},
+		{name: "skips a dir already on the path", current: "/usr/bin" + sep + "/opt/bin", dirs: []string{"/opt/bin"}, want: "/usr/bin" + sep + "/opt/bin"},
+		{name: "skips a repeat within dirs", current: "/usr/bin", dirs: []string{"/opt/bin", "/opt/bin"}, want: "/usr/bin" + sep + "/opt/bin"},
+		{name: "skips an empty dir", current: "/usr/bin", dirs: []string{"", "/opt/bin"}, want: "/usr/bin" + sep + "/opt/bin"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, PathWith(tc.current, tc.dirs...))
+		})
+	}
+}
+
+func TestCommonBinDirs_IncludesLocalBin(t *testing.T) {
+	t.Setenv("HOME", "/home/u")
+	assert.Contains(t, CommonBinDirs(), filepath.Join("/home/u", ".local", "bin"))
+	assert.Contains(t, CommonBinDirs(), "/opt/homebrew/bin")
+}
+
 func TestLookupBinary_ErrorMentionsSearchedDirs(t *testing.T) {
 	_, err := LookupBinary("definitely-not-a-real-binary-xyz")
 	require.Error(t, err)

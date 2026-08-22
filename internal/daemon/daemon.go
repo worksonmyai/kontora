@@ -148,8 +148,25 @@ func DirectRunner(ctx context.Context, p RunnerParams) (process.Result, error) {
 		Timeout: p.Timeout,
 		Stdout:  logFile,
 		Stderr:  logFile,
-		Env:     envPairs(p.Env),
+		Env:     envPairs(withCommonPath(p.Env)),
 	})
+}
+
+// withCommonPath returns env with PATH extended by the directories
+// LookupBinary searches. A direct spawn inherits the daemon's own PATH, which
+// under launchd omits ~/.local/bin, so a wrapper binary such as `nono` cannot
+// find the agent named after its `--`. The tmux runner does not use this: its
+// wrapper script appends the same directories to whatever the login shell
+// built, rather than replacing it.
+func withCommonPath(env map[string]string) map[string]string {
+	out := make(map[string]string, len(env)+1)
+	maps.Copy(out, env)
+	current := out["PATH"]
+	if current == "" {
+		current = os.Getenv("PATH")
+	}
+	out["PATH"] = process.PathWith(current, process.CommonBinDirs()...)
+	return out
 }
 
 // envPairs renders an environment map as the KEY=VALUE slice a subprocess
@@ -175,6 +192,7 @@ func tmuxRunner(ctx context.Context, p RunnerParams) (process.Result, error) {
 		Interactive:    p.Interactive,
 		SessionID:      p.SessionID,
 		Env:            p.Env,
+		PathDirs:       process.CommonBinDirs(),
 		OnReady:        p.OnReady,
 		OnIdle:         p.OnIdle,
 		CompactChannel: p.CompactChannel,

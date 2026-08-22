@@ -59,7 +59,7 @@ func defaultPlannotatorSpawner(ctx context.Context, params PlannotatorParams) (s
 		Dir:     params.Dir,
 		Timeout: params.Timeout,
 		Stdout:  &stdout,
-		Env:     envPairs(params.Env),
+		Env:     envPairs(withCommonPath(params.Env)),
 	}); err != nil {
 		return "", err
 	}

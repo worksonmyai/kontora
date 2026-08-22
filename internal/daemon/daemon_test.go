@@ -1330,6 +1330,42 @@ func TestPiSessionLogMaterializationMissing(t *testing.T) {
 	require.NoError(t, <-errCh)
 }
 
+// A directly spawned agent inherits the daemon's PATH, which under launchd
+// omits ~/.local/bin. withCommonPath widens it without dropping what is there.
+func TestWithCommonPath(t *testing.T) {
+	cases := []struct {
+		name     string
+		envPath  string // the daemon's own PATH
+		env      map[string]string
+		wantHead string
+	}{
+		{name: "extends the daemon PATH", envPath: "/usr/bin", wantHead: "/usr/bin"},
+		{name: "extends a PATH the config set", envPath: "/usr/bin", env: map[string]string{"PATH": "/from/config"}, wantHead: "/from/config"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("HOME", "/home/u")
+			t.Setenv("PATH", tc.envPath)
+
+			got := withCommonPath(tc.env)
+
+			dirs := filepath.SplitList(got["PATH"])
+			assert.Equal(t, tc.wantHead, dirs[0], "what was already on PATH keeps its precedence")
+			assert.Contains(t, dirs, "/home/u/.local/bin")
+		})
+	}
+}
+
+func TestWithCommonPath_KeepsOtherKeysAndLeavesInputAlone(t *testing.T) {
+	t.Setenv("PATH", "/usr/bin")
+	in := map[string]string{"FOO": "bar"}
+
+	got := withCommonPath(in)
+
+	assert.Equal(t, "bar", got["FOO"])
+	assert.NotContains(t, in, "PATH")
+}
+
 func TestAgentEnvironmentOverride(t *testing.T) {
 	h := newHarness(t)
 

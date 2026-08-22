@@ -648,7 +648,9 @@ func (d *Daemon) assistantEnv(cfg *config.Config, agentCfg config.Agent, threadI
 	d.assistant.mu.Lock()
 	env[assistantNonceEnv] = d.assistant.nonces[threadID]
 	d.assistant.mu.Unlock()
-	return env
+	// A turn is exec'd directly, with no login shell to rebuild PATH the way
+	// the tmux wrapper of a ticket run gets one.
+	return withCommonPath(env)
 }
 
 // assistantLoopbackAddr rewrites a wildcard bind to loopback. The agent reaches

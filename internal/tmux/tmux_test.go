@@ -198,8 +198,10 @@ func TestWriteInteractiveWrapper(t *testing.T) {
 		cmd      []string
 		gateFile string
 		env      map[string]string
+		pathDirs []string
 		wantExec bool
 		wantGate bool
+		wantPath string
 	}{
 		{
 			name:     "with gate",
@@ -221,11 +223,18 @@ func TestWriteInteractiveWrapper(t *testing.T) {
 			env:      map[string]string{"FOO": "bar", "BAZ": "qux"},
 			wantExec: true,
 		},
+		{
+			name:     "path dirs are appended, not substituted",
+			cmd:      []string{"claude", "prompt"},
+			pathDirs: []string{"/home/u/.local/bin", "/opt/homebrew/bin"},
+			wantExec: true,
+			wantPath: `export PATH="$PATH":'/home/u/.local/bin':'/opt/homebrew/bin'`,
+		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			path, err := writeInteractiveWrapper(tc.cmd, tc.gateFile, tc.env)
+			path, err := writeInteractiveWrapper(tc.cmd, tc.gateFile, tc.env, tc.pathDirs)
 			require.NoError(t, err)
 			defer os.Remove(path)
 
@@ -243,22 +252,48 @@ func TestWriteInteractiveWrapper(t *testing.T) {
 			for k, v := range tc.env {
 				assert.Contains(t, script, fmt.Sprintf("export %s='%s'", k, v))
 			}
+			if tc.wantPath != "" {
+				assert.Contains(t, script, tc.wantPath)
+			} else {
+				assert.NotContains(t, script, "export PATH")
+			}
 		})
 	}
 }
 
+// A PATH the config set must survive the append: the script adds to it rather
+// than writing its own list over it.
+func TestWriteInteractiveWrapper_PathAppendFollowsEnvExport(t *testing.T) {
+	path, err := writeInteractiveWrapper([]string{"claude"}, "", map[string]string{"PATH": "/from/config"}, []string{"/home/u/.local/bin"})
+	require.NoError(t, err)
+	defer os.Remove(path)
+
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	script := string(data)
+
+	assert.Less(t, strings.Index(script, "export PATH='/from/config'"), strings.Index(script, `export PATH="$PATH"`))
+}
+
 func TestWriteStandardWrapper(t *testing.T) {
 	cases := []struct {
-		name string
-		env  map[string]string
+		name     string
+		env      map[string]string
+		pathDirs []string
+		wantPath string
 	}{
 		{name: "no env"},
 		{name: "with env", env: map[string]string{"KEY": "value"}},
+		{
+			name:     "with path dirs",
+			pathDirs: []string{"/home/u/.local/bin"},
+			wantPath: `export PATH="$PATH":'/home/u/.local/bin'`,
+		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			path, err := writeStandardWrapper([]string{"echo", "hello"}, "/tmp/exit", "", tc.env)
+			path, err := writeStandardWrapper([]string{"echo", "hello"}, "/tmp/exit", "", tc.env, tc.pathDirs)
 			require.NoError(t, err)
 			defer os.Remove(path)
 
@@ -272,6 +307,11 @@ func TestWriteStandardWrapper(t *testing.T) {
 			assert.Contains(t, script, `exec "${SHELL:-/bin/sh}"`)
 			for k, v := range tc.env {
 				assert.Contains(t, script, fmt.Sprintf("export %s='%s'", k, v))
+			}
+			if tc.wantPath != "" {
+				assert.Contains(t, script, tc.wantPath)
+			} else {
+				assert.NotContains(t, script, "export PATH")
 			}
 		})
 	}

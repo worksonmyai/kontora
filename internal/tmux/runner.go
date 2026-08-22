@@ -31,8 +31,12 @@ type RunParams struct {
 	Interactive bool              // when true, use tmux wait-for + /exit flow for hook-based completion
 	SessionID   string            // Claude session ID; daemon uses this for session JSONL materialization
 	Env         map[string]string // environment variables to export in the wrapper script
-	OnReady     func()            // called after the tmux window is created
-	MinDuration time.Duration     // interactive only: treat exits faster than this as crashes; 0 = use default (2s), -1 = disable
+	// PathDirs are appended to $PATH in the wrapper script. tmux starts the
+	// wrapper through default-shell, so the script runs after that shell built
+	// its own PATH: these are added to it, never substituted for it.
+	PathDirs    []string
+	OnReady     func()        // called after the tmux window is created
+	MinDuration time.Duration // interactive only: treat exits faster than this as crashes; 0 = use default (2s), -1 = disable
 	// OnIdle is asked what to do each time an interactive agent signals it is
 	// idle. Nil finishes the run on the first signal. It is called with the
 	// run's context, and must return once that context is cancelled: the loop
@@ -101,7 +105,7 @@ func runInteractive(ctx context.Context, p RunParams) (process.Result, error) {
 		os.Remove(gateFile) // Script waits for this file to appear.
 	}
 
-	scriptPath, err := writeInteractiveWrapper(cmd, gateFile, p.Env)
+	scriptPath, err := writeInteractiveWrapper(cmd, gateFile, p.Env, p.PathDirs)
 	if err != nil {
 		return process.Result{}, fmt.Errorf("writing wrapper: %w", err)
 	}
@@ -173,7 +177,7 @@ func runStandard(ctx context.Context, p RunParams) (process.Result, error) {
 		os.Remove(gateFile) // Script waits for this file to appear.
 	}
 
-	scriptPath, err := writeStandardWrapper(cmd, exitPath, gateFile, p.Env)
+	scriptPath, err := writeStandardWrapper(cmd, exitPath, gateFile, p.Env, p.PathDirs)
 	if err != nil {
 		return process.Result{}, fmt.Errorf("writing wrapper: %w", err)
 	}

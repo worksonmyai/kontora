@@ -171,7 +171,7 @@ func isSessionMissing(output string) bool {
 // on a file (when gateFile is non-empty) then exec's cmd, replacing the
 // shell process. Used for interactive agents (e.g. Claude) where completion
 // is signaled via hooks rather than exit code capture.
-func writeInteractiveWrapper(cmd []string, gateFile string, env map[string]string) (string, error) {
+func writeInteractiveWrapper(cmd []string, gateFile string, env map[string]string, pathDirs []string) (string, error) {
 	f, err := os.CreateTemp("", "kontora-wrapper-*.sh")
 	if err != nil {
 		return "", err
@@ -181,6 +181,7 @@ func writeInteractiveWrapper(cmd []string, gateFile string, env map[string]strin
 	b.WriteString("#!/bin/sh\n")
 	b.WriteString("unset CLAUDECODE\n")
 	writeEnvExports(&b, env)
+	writePathAppend(&b, pathDirs)
 	if gateFile != "" {
 		fmt.Fprintf(&b, "while [ ! -f %s ]; do sleep 0.05; done\n", shellQuote(gateFile))
 		fmt.Fprintf(&b, "rm -f %s\n", shellQuote(gateFile))
@@ -211,7 +212,7 @@ func writeInteractiveWrapper(cmd []string, gateFile string, env map[string]strin
 // writeStandardWrapper creates a temporary executable script that runs cmd,
 // writes $? to exitFile, and self-deletes. Used for non-interactive agents
 // where completion is detected by polling the exit file.
-func writeStandardWrapper(cmd []string, exitFile, gateFile string, env map[string]string) (string, error) {
+func writeStandardWrapper(cmd []string, exitFile, gateFile string, env map[string]string, pathDirs []string) (string, error) {
 	f, err := os.CreateTemp("", "kontora-wrapper-*.sh")
 	if err != nil {
 		return "", err
@@ -221,6 +222,7 @@ func writeStandardWrapper(cmd []string, exitFile, gateFile string, env map[strin
 	b.WriteString("#!/bin/sh\n")
 	b.WriteString("unset CLAUDECODE\n")
 	writeEnvExports(&b, env)
+	writePathAppend(&b, pathDirs)
 	if gateFile != "" {
 		fmt.Fprintf(&b, "while [ ! -f %s ]; do sleep 0.05; done\n", shellQuote(gateFile))
 		fmt.Fprintf(&b, "rm -f %s\n", shellQuote(gateFile))
@@ -268,6 +270,23 @@ func writeEnvExports(b *strings.Builder, env map[string]string) {
 		}
 		fmt.Fprintf(b, "export %s=%s\n", k, shellQuote(env[k]))
 	}
+}
+
+// writePathAppend appends dirs to $PATH. The expansion is left to the script so
+// the shell tmux started the wrapper with keeps whatever PATH its own config
+// built; these directories only cover what that PATH is missing.
+func writePathAppend(b *strings.Builder, dirs []string) {
+	if len(dirs) == 0 {
+		return
+	}
+	b.WriteString(`export PATH="$PATH"`)
+	for _, dir := range dirs {
+		if dir == "" {
+			continue
+		}
+		b.WriteString(":" + shellQuote(dir))
+	}
+	b.WriteByte('\n')
 }
 
 // shellQuote wraps s in single quotes, escaping embedded single quotes.

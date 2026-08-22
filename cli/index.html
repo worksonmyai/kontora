@@ -1,0 +1,2286 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Agent orchestration tool. Multi-stage pipelines, git worktree isolation, kanban board.">
+      
+      
+      
+        <link rel="canonical" href="https://worksonmyai.github.io/kontora/cli/">
+      
+      
+      
+        <link rel="next" href="../configuration/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>CLI - Kontora</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.ec1eaa64.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=DM+Sans:300,300i,400,400i,700,700i%7CJetBrains+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"DM Sans";--md-code-font:"JetBrains Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../stylesheets/extra.css">
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="slate" data-md-color-primary="custom" data-md-color-accent="custom">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#cli-reference" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="Kontora" class="md-header__button md-logo" aria-label="Kontora" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Kontora
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              CLI
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="slate" data-md-color-primary="custom" data-md-color-accent="custom"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="custom" data-md-color-accent="custom"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/worksonmyai/kontora" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    worksonmyai/kontora
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="Kontora" class="md-nav__button md-logo" aria-label="Kontora" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    Kontora
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/worksonmyai/kontora" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    worksonmyai/kontora
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CLI
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CLI
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#common-flags" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Common flags
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#ticket-ids" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Ticket IDs
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#environment-variables" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Environment variables
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#tickets" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Tickets
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Tickets">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#kontora-ls" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        kontora ls
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#kontora-search-flags-query" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        kontora search [flags] QUERY
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#kontora-new-flags-title" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        kontora new [flags] TITLE
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#kontora-view-ticket_id" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        kontora view TICKET_ID
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#kontora-edit-ticket_id" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        kontora edit TICKET_ID
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#kontora-update-ticket_id-flags" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        kontora update TICKET_ID [flags]
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#kontora-delete-ticket_id-f" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        kontora delete TICKET_ID -f
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#kontora-init-ticket_id-flags" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        kontora init TICKET_ID [flags]
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#lifecycle" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Lifecycle
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Lifecycle">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#kontora-run-ticket_id" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        kontora run TICKET_ID
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#kontora-pause-ticket_id" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        kontora pause TICKET_ID
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#kontora-retry-ticket_id" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        kontora retry TICKET_ID
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#kontora-cancel-ticket_id-kontora-done-ticket_id" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        kontora cancel TICKET_ID / kontora done TICKET_ID
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#kontora-move-ticket_id-status" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        kontora move TICKET_ID STATUS
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#kontora-skip-ticket_id" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        kontora skip TICKET_ID
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#kontora-set-stage-ticket_id-stage" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        kontora set-stage TICKET_ID STAGE
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#kontora-note-ticket_id-text-kontora-summary-ticket_id-text" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        kontora note TICKET_ID [TEXT] / kontora summary TICKET_ID [TEXT]
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#kontora-phase-complete-ticket_id-completed-text-next-text" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        kontora phase-complete TICKET_ID --completed TEXT --next TEXT
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#relations" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Relations
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Relations">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#kontora-dep-ticket_id-dependency_id" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        kontora dep TICKET_ID DEPENDENCY_ID
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#kontora-undep-ticket_id-dependency_id" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        kontora undep TICKET_ID DEPENDENCY_ID
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#kontora-link-ticket_id-ticket_id" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        kontora link TICKET_ID TICKET_ID...
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#kontora-unlink-ticket_id-ticket_id" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        kontora unlink TICKET_ID TICKET_ID...
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#kontora-archive-days-n" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        kontora archive --days N
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#inspecting-a-run" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Inspecting a run
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Inspecting a run">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#kontora-logs-stage-name-ticket_id" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        kontora logs [--stage NAME] TICKET_ID
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#kontora-activity-stage-name-run-n-ticket_id" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        kontora activity [--stage NAME] [--run N] TICKET_ID
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#kontora-sessions-flags-ticket_id" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        kontora sessions [flags] TICKET_ID
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#kontora-changes-ticket_id" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        kontora changes TICKET_ID
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#kontora-stats-flags" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        kontora stats [flags]
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#kontora-attach-rw-ticket_id" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        kontora attach [--rw] TICKET_ID
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#kontora-review-ticket_id-kontora-annotate-ticket_id" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        kontora review TICKET_ID / kontora annotate TICKET_ID
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#analysis" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Analysis
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Analysis">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#kontora-estimate-compaction-flags" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        kontora estimate-compaction [flags]
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#daemon-and-configuration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Daemon and configuration
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Daemon and configuration">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#kontora-start-flags" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        kontora start [flags]
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#kontora-setup-agent" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        kontora setup [--agent]
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#kontora-doctor" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        kontora doctor
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#kontora-config-kontora-config-edit" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        kontora config / kontora config edit
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#utilities" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Utilities
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Utilities">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#kontora-fmt" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        kontora fmt
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#kontora-completion-shell" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        kontora completion &lt;shell&gt;
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#kontora-version" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        kontora version
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#remote-mode" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Remote mode
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../configuration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tickets/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Tickets
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#common-flags" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Common flags
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#ticket-ids" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Ticket IDs
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#environment-variables" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Environment variables
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#tickets" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Tickets
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Tickets">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#kontora-ls" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        kontora ls
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#kontora-search-flags-query" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        kontora search [flags] QUERY
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#kontora-new-flags-title" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        kontora new [flags] TITLE
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#kontora-view-ticket_id" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        kontora view TICKET_ID
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#kontora-edit-ticket_id" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        kontora edit TICKET_ID
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#kontora-update-ticket_id-flags" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        kontora update TICKET_ID [flags]
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#kontora-delete-ticket_id-f" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        kontora delete TICKET_ID -f
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#kontora-init-ticket_id-flags" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        kontora init TICKET_ID [flags]
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#lifecycle" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Lifecycle
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Lifecycle">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#kontora-run-ticket_id" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        kontora run TICKET_ID
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#kontora-pause-ticket_id" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        kontora pause TICKET_ID
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#kontora-retry-ticket_id" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        kontora retry TICKET_ID
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#kontora-cancel-ticket_id-kontora-done-ticket_id" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        kontora cancel TICKET_ID / kontora done TICKET_ID
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#kontora-move-ticket_id-status" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        kontora move TICKET_ID STATUS
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#kontora-skip-ticket_id" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        kontora skip TICKET_ID
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#kontora-set-stage-ticket_id-stage" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        kontora set-stage TICKET_ID STAGE
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#kontora-note-ticket_id-text-kontora-summary-ticket_id-text" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        kontora note TICKET_ID [TEXT] / kontora summary TICKET_ID [TEXT]
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#kontora-phase-complete-ticket_id-completed-text-next-text" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        kontora phase-complete TICKET_ID --completed TEXT --next TEXT
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#relations" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Relations
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Relations">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#kontora-dep-ticket_id-dependency_id" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        kontora dep TICKET_ID DEPENDENCY_ID
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#kontora-undep-ticket_id-dependency_id" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        kontora undep TICKET_ID DEPENDENCY_ID
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#kontora-link-ticket_id-ticket_id" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        kontora link TICKET_ID TICKET_ID...
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#kontora-unlink-ticket_id-ticket_id" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        kontora unlink TICKET_ID TICKET_ID...
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#kontora-archive-days-n" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        kontora archive --days N
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#inspecting-a-run" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Inspecting a run
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Inspecting a run">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#kontora-logs-stage-name-ticket_id" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        kontora logs [--stage NAME] TICKET_ID
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#kontora-activity-stage-name-run-n-ticket_id" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        kontora activity [--stage NAME] [--run N] TICKET_ID
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#kontora-sessions-flags-ticket_id" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        kontora sessions [flags] TICKET_ID
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#kontora-changes-ticket_id" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        kontora changes TICKET_ID
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#kontora-stats-flags" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        kontora stats [flags]
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#kontora-attach-rw-ticket_id" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        kontora attach [--rw] TICKET_ID
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#kontora-review-ticket_id-kontora-annotate-ticket_id" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        kontora review TICKET_ID / kontora annotate TICKET_ID
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#analysis" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Analysis
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Analysis">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#kontora-estimate-compaction-flags" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        kontora estimate-compaction [flags]
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#daemon-and-configuration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Daemon and configuration
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Daemon and configuration">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#kontora-start-flags" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        kontora start [flags]
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#kontora-setup-agent" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        kontora setup [--agent]
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#kontora-doctor" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        kontora doctor
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#kontora-config-kontora-config-edit" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        kontora config / kontora config edit
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#utilities" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Utilities
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Utilities">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#kontora-fmt" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        kontora fmt
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#kontora-completion-shell" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        kontora completion &lt;shell&gt;
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#kontora-version" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        kontora version
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#remote-mode" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Remote mode
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="cli-reference">CLI Reference<a class="headerlink" href="#cli-reference" title="Permanent link">&para;</a></h1>
+<p><code>kontora &lt;command&gt; [flags] [arguments]</code>. There is no command framework: every verb is a flat top-level word, and flags use Go's <code>flag</code> package, so <code>-flag</code> and <code>--flag</code> both work.</p>
+<p>Run <code>kontora help</code> for the same list of commands this page documents.</p>
+<h2 id="common-flags">Common flags<a class="headerlink" href="#common-flags" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Applies to</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--config PATH</code></td>
+<td>every command that reads the config</td>
+<td>Path to the config file. Defaults to <code>$KONTORA_CONFIG</code>, then <code>./.kontora/config.yaml</code>, then <code>$XDG_CONFIG_HOME/kontora/config.yaml</code>, then <code>~/.config/kontora/config.yaml</code>.</td>
+</tr>
+<tr>
+<td><code>--tickets-dir PATH</code></td>
+<td>every command that reads the local ticket store</td>
+<td>Overrides <code>tickets_dir</code>. The highest precedence there is: above <code>$KONTORA_TICKETS_DIR</code>, <code>$TICKETS_DIR</code> and the config file. Ignored in remote mode, where the daemon owns the store.</td>
+</tr>
+<tr>
+<td><code>--url URL</code></td>
+<td>every command that can drive a daemon</td>
+<td>Remote daemon URL. A non-empty value switches the command into <a href="#remote-mode">remote mode</a>. Defaults to <code>$KONTORA_URL</code>.</td>
+</tr>
+<tr>
+<td><code>--token TOKEN</code></td>
+<td>the same commands</td>
+<td>Bearer token for the remote daemon. Defaults to <code>$KONTORA_TOKEN</code>.</td>
+</tr>
+</tbody>
+</table>
+<p>Flags may be written before, between, or after the positional arguments: <code>kontora pause abc --config ~/k.yaml</code> is the same as <code>kontora pause --config ~/k.yaml abc</code>. The exceptions are <code>new</code>, <code>note</code>, and <code>summary</code>, whose last argument is free-form text — a flag-looking word there is taken as part of the text, so pass flags before the text.</p>
+<h2 id="ticket-ids">Ticket IDs<a class="headerlink" href="#ticket-ids" title="Permanent link">&para;</a></h2>
+<p>Every command that takes a <code>TICKET_ID</code> accepts a unique prefix of one: <code>kontora view kon-q</code> finds <code>kon-q88f</code>. A prefix that matches more than one ticket is an error naming every match, rather than a guess.</p>
+<h2 id="environment-variables">Environment variables<a class="headerlink" href="#environment-variables" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Variable</th>
+<th>Read by</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>KONTORA_CONFIG</code></td>
+<td>every command</td>
+<td>Config file path. The daemon exports it to the agents it spawns, so <code>kontora note</code> inside a worktree writes to the daemon's own config.</td>
+</tr>
+<tr>
+<td><code>KONTORA_URL</code></td>
+<td>client commands</td>
+<td>Remote daemon URL; setting it turns on remote mode.</td>
+</tr>
+<tr>
+<td><code>KONTORA_TOKEN</code></td>
+<td>client commands</td>
+<td>Bearer token sent to the remote daemon.</td>
+</tr>
+<tr>
+<td><code>KONTORA_WEB_TOKEN</code></td>
+<td><code>kontora start</code> only</td>
+<td>Overrides <code>web.token</code> on the daemon side, so a deployment can inject the secret instead of writing it into the config file.</td>
+</tr>
+<tr>
+<td><code>KONTORA_TICKETS_DIR</code></td>
+<td>every command that reads the local ticket store</td>
+<td>Overrides <code>tickets_dir</code> from the config file. The daemon exports its resolved value to the agents it spawns.</td>
+</tr>
+<tr>
+<td><code>TICKETS_DIR</code></td>
+<td>the same commands</td>
+<td>Compatibility alias for the standalone <code>ticket</code> CLI. Read only when <code>KONTORA_TICKETS_DIR</code> is unset or blank.</td>
+</tr>
+<tr>
+<td><code>KONTORA_PAGER</code></td>
+<td><code>view</code>, <code>logs</code>, <code>activity</code></td>
+<td>Pager command, split on whitespace the way <code>$EDITOR</code> is. Used only when stdout is a terminal, so a redirect or a pipe is never paged. Set but blank turns paging off.</td>
+</tr>
+<tr>
+<td><code>TICKET_PAGER</code></td>
+<td>the same commands</td>
+<td>Read when <code>KONTORA_PAGER</code> is unset, so a <code>ticket</code> user's setting carries over.</td>
+</tr>
+<tr>
+<td><code>PAGER</code></td>
+<td>the same commands</td>
+<td>The last fallback before the config's <code>pager</code>.</td>
+</tr>
+</tbody>
+</table>
+<p>The tickets dir is resolved <code>--tickets-dir</code> → <code>$KONTORA_TICKETS_DIR</code> → <code>$TICKETS_DIR</code> → <code>tickets_dir:</code> → <code>~/.kontora/tickets</code>, and the pager <code>$KONTORA_PAGER</code> → <code>$TICKET_PAGER</code> → <code>$PAGER</code> → <code>pager:</code> → none.</p>
+<p>Note that unlike every other setting, the environment beats the config file for the tickets dir. A stray export therefore changes which store every command reads, and a daemon that cannot see the variable — one started by launchd or systemd, which pass a minimal environment — keeps reading the file. <code>kontora doctor</code> names the source that won and warns when the two disagree.</p>
+<h2 id="tickets">Tickets<a class="headerlink" href="#tickets" title="Permanent link">&para;</a></h2>
+<h3 id="kontora-ls"><code>kontora ls</code><a class="headerlink" href="#kontora-ls" title="Permanent link">&para;</a></h3>
+<p>Lists tickets. On a terminal with no flags it opens the kanban TUI; any filter, <code>--json</code>, <code>--static</code>, <code>--closed</code> or <code>--archived</code> makes it print instead. Done, cancelled and legacy <code>closed</code> tickets are hidden unless <code>--closed</code> is given; archived ones need <code>--archived</code>.</p>
+<table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--closed</code></td>
+<td>Include done, cancelled and legacy <code>closed</code> tickets.</td>
+</tr>
+<tr>
+<td><code>--archived</code></td>
+<td>Include archived tickets.</td>
+</tr>
+<tr>
+<td><code>--status STATUS</code></td>
+<td>Only tickets in this status. Naming a hidden status shows it, so <code>--status done</code> needs no <code>--closed</code> and <code>--status archived</code> no <code>--archived</code>.</td>
+</tr>
+<tr>
+<td><code>--project NAME</code></td>
+<td>Only tickets for this configured project.</td>
+</tr>
+<tr>
+<td><code>--path PATH</code></td>
+<td>Only tickets for this repository path.</td>
+</tr>
+<tr>
+<td><code>--ready</code></td>
+<td>Only <code>todo</code> kontora tickets whose dependencies are all closed.</td>
+</tr>
+<tr>
+<td><code>--blocked</code></td>
+<td>Only <code>todo</code> kontora tickets waiting on a dependency.</td>
+</tr>
+<tr>
+<td><code>--limit N</code></td>
+<td>Print at most N tickets.</td>
+</tr>
+<tr>
+<td><code>--json</code></td>
+<td>Print JSON instead of a table.</td>
+</tr>
+<tr>
+<td><code>--static</code></td>
+<td>Print the static table even on a terminal.</td>
+</tr>
+</tbody>
+</table>
+<p><code>--ready</code> and <code>--blocked</code> select opposite sets and cannot be combined; passing both exits non-zero. Both follow scheduler order, oldest <code>created</code> first. Every other listing keeps the board's order: by status, then most recently touched.</p>
+<p>The static table has ID, status, title, project, stage, agent, and the ids blocking the ticket.</p>
+<p><code>--json</code> prints an array of objects with <code>id</code>, <code>title</code>, <code>status</code>, <code>kontora</code>, <code>path</code>, <code>project</code>, <code>pipeline</code>, <code>stage</code>, <code>agent</code>, <code>created_at</code>, <code>started_at</code>, <code>completed_at</code>, <code>deps</code>, <code>links</code>, <code>parent</code>, <code>ready</code> and <code>blockers</code>. It never carries the ticket body; <code>kontora view --body</code> is what prints that. <code>deps</code>, <code>links</code> and <code>blockers</code> are always arrays, and an empty result is <code>[]</code>, so a script can iterate without a nil check.</p>
+<p>Remote mode asks the daemon for every ticket, including the hidden statuses, and applies the same filters locally, so a flag means the same thing on both sides.</p>
+<h3 id="kontora-search-flags-query"><code>kontora search [flags] QUERY</code><a class="headerlink" href="#kontora-search-flags-query" title="Permanent link">&para;</a></h3>
+<p>Matches QUERY against every ticket file in <code>tickets_dir</code>, frontmatter block and body alike, and prints the matching lines grouped by ticket. Every status is searched, archived included, so this is the only command that can find a closed ticket by what is written in it. Local only: it reads the files directly and needs no daemon.</p>
+<p>QUERY is a <a href="https://pkg.go.dev/regexp/syntax">Go regular expression</a>. Case follows ripgrep's smart-case rule: an all-lowercase query matches case-insensitively, and a query holding an uppercase letter matches case-sensitively. A query that starts with <code>-</code> needs <code>--</code> in front of it, as in <code>kontora search -- -race</code>.</p>
+<p>Because the match runs over the raw markdown, frontmatter keys kontora does not own are searchable too: <code>kontora search 'priority: 2'</code> finds them. The one thing not in the file is the project name, which comes from the config; a query matching a configured project name reports that project's tickets with a synthetic <code>project</code> line.</p>
+<table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>-i</code></td>
+<td>Case-insensitive match, overriding smart-case.</td>
+</tr>
+<tr>
+<td><code>-s</code></td>
+<td>Case-sensitive match, overriding smart-case.</td>
+</tr>
+<tr>
+<td><code>-F</code></td>
+<td>Treat the query as a literal string, not a regex.</td>
+</tr>
+<tr>
+<td><code>-l</code></td>
+<td>Print matching ticket IDs only, one per line, for piping into <code>xargs</code>.</td>
+</tr>
+<tr>
+<td><code>-m N</code></td>
+<td>Show at most N matching lines per ticket. Defaults to 5; <code>0</code> shows all.</td>
+</tr>
+<tr>
+<td><code>--body</code></td>
+<td>Search the markdown body only, skipping the frontmatter. Project names are not matched either: a project name is in neither.</td>
+</tr>
+<tr>
+<td><code>--json</code></td>
+<td>Print a JSON array of results instead of the grouped listing.</td>
+</tr>
+<tr>
+<td><code>--status STATUS</code></td>
+<td>Only search tickets with this status. A status that is neither built in nor configured is a warning on stderr, since a ticket written by another tool may carry any status.</td>
+</tr>
+<tr>
+<td><code>--project NAME</code></td>
+<td>Only search tickets for this configured project. An unknown name is an error.</td>
+</tr>
+<tr>
+<td><code>--path PATH</code></td>
+<td>The same, by repository path.</td>
+</tr>
+<tr>
+<td><code>--pipeline NAME</code></td>
+<td>Only search tickets for this pipeline. An unknown name is an error.</td>
+</tr>
+<tr>
+<td><code>--agent NAME</code></td>
+<td>Only search tickets carrying this agent override. An unknown name is an error.</td>
+</tr>
+</tbody>
+</table>
+<p>Each <code>--json</code> object holds <code>id</code>, <code>title</code>, <code>status</code>, <code>stage</code>, <code>pipeline</code>, <code>agent</code>, <code>path</code>, <code>project</code>, <code>file</code>, <code>total</code> and a <code>matches</code> array of <code>{line, field, text, start, end}</code>. <code>line</code> is the 1-based file line, <code>0</code> for the synthetic project match; <code>start</code> and <code>end</code> are byte offsets of the match inside <code>text</code>; <code>total</code> counts every match found, the project match included, so it exceeds <code>len(matches)</code> when <code>-m</code> cut them. <code>-m</code> never cuts the project match, which is the reason the ticket is in the results at all.</p>
+<p><code>-l</code> and <code>--json</code>, and <code>-i</code> and <code>-s</code>, cannot be combined. The exit status is 0 whether or not anything matched, unlike grep: a script that needs the difference reads the output, for example <code>test -n "$(kontora search -l worktree)"</code>.</p>
+<p>A ticket whose frontmatter cannot be parsed is reported on stderr with the count and the parse error, rather than dropped, so a malformed ticket does not silently disappear from a search that should have found it. Only files the query matches are parsed, so a malformed ticket the query is nowhere in stays quiet.</p>
+<p><code>^</code> and <code>$</code> are line anchors, so <code>kontora search '^status: done'</code> matches the frontmatter line rather than the whole file. Note that a query matching a configured project name also matches the <code>kontora: true</code> marker line in every ticket kontora manages, so it returns most of the store.</p>
+<h3 id="kontora-new-flags-title"><code>kontora new [flags] TITLE</code><a class="headerlink" href="#kontora-new-flags-title" title="Permanent link">&para;</a></h3>
+<p>Creates a ticket and prints its ID. Without <code>--path</code> it uses the current git root; in remote mode <code>--path</code> is required and names a path on the daemon host.</p>
+<table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--path PATH</code></td>
+<td>Repository the ticket works in.</td>
+</tr>
+<tr>
+<td><code>--pipeline NAME</code></td>
+<td>Pipeline to run, or <code>none</code> to skip the project default and run standalone.</td>
+</tr>
+<tr>
+<td><code>--agent NAME</code></td>
+<td>Agent to use, or <code>none</code> to skip the project default.</td>
+</tr>
+<tr>
+<td><code>--branch NAME</code></td>
+<td>Work branch name. Defaults to <code>&lt;branch_prefix&gt;/&lt;id&gt;</code>.</td>
+</tr>
+<tr>
+<td><code>--base-branch NAME</code></td>
+<td>Branch the work branch starts from. Defaults to the repository's default branch.</td>
+</tr>
+<tr>
+<td><code>--status STATUS</code></td>
+<td><code>open</code> or <code>todo</code>. Defaults to <code>todo</code>.</td>
+</tr>
+<tr>
+<td><code>--description-file PATH</code></td>
+<td>Read the markdown that follows the generated <code># &lt;title&gt;</code> heading from a file, or <code>-</code> for stdin.</td>
+</tr>
+<tr>
+<td><code>--quiet</code></td>
+<td>Print only the new ticket ID.</td>
+</tr>
+</tbody>
+</table>
+<p>The ticket file is written once, complete. A ticket created with <code>--status open</code> is therefore never visible as <code>todo</code>, so a daemon with <code>auto_pick_up: true</code> watching the directory cannot claim it before you finish editing it. <code>--status open</code> also skips the repository check creation normally runs, because an open ticket is not ready to run.</p>
+<h3 id="kontora-view-ticket_id"><code>kontora view TICKET_ID</code><a class="headerlink" href="#kontora-view-ticket_id" title="Permanent link">&para;</a></h3>
+<p>Prints the ticket's status, pipeline position, and body.</p>
+<table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--body</code></td>
+<td>Print only the stored markdown body: no metadata, no styling, no synthesized relation sections.</td>
+</tr>
+</tbody>
+</table>
+<p><code>--body</code> prints exactly what the file holds after the closing frontmatter delimiter, which is what <code>kontora update --body-file</code> writes back. Reading a body out, editing it, and writing it back changes nothing else in the ticket.</p>
+<p>The default output goes through the <a href="#environment-variables">pager</a> when one is set and stdout is a terminal. <code>--body</code> never does, so the round trip stays byte-stable.</p>
+<h3 id="kontora-edit-ticket_id"><code>kontora edit TICKET_ID</code><a class="headerlink" href="#kontora-edit-ticket_id" title="Permanent link">&para;</a></h3>
+<p>Opens the ticket file in <code>$EDITOR</code>. Local only.</p>
+<h3 id="kontora-update-ticket_id-flags"><code>kontora update TICKET_ID [flags]</code><a class="headerlink" href="#kontora-update-ticket_id-flags" title="Permanent link">&para;</a></h3>
+<p>Changes frontmatter fields or the body of an existing ticket. At least one flag is required. Passing an empty value, or <code>none</code> where noted, clears the field.</p>
+<table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--body-file PATH</code></td>
+<td>Replace the body from a file, or <code>-</code> for stdin.</td>
+</tr>
+<tr>
+<td><code>--pipeline NAME</code></td>
+<td>Set the pipeline (<code>""</code> or <code>none</code> clears it).</td>
+</tr>
+<tr>
+<td><code>--path PATH</code></td>
+<td>Set the repository path.</td>
+</tr>
+<tr>
+<td><code>--agent NAME</code></td>
+<td>Set the agent override (<code>""</code> or <code>none</code> clears it).</td>
+</tr>
+<tr>
+<td><code>--branch NAME</code></td>
+<td>Set the work branch (<code>""</code> clears it).</td>
+</tr>
+<tr>
+<td><code>--base-branch NAME</code></td>
+<td>Set the base branch (<code>""</code> clears it).</td>
+</tr>
+</tbody>
+</table>
+<h3 id="kontora-delete-ticket_id-f"><code>kontora delete TICKET_ID -f</code><a class="headerlink" href="#kontora-delete-ticket_id-f" title="Permanent link">&para;</a></h3>
+<p>Deletes the ticket's markdown file. <code>-f</code> or <code>--yes</code> is required. The worktree is not cleaned up; cancel the ticket first if you want the normal cleanup path.</p>
+<h3 id="kontora-init-ticket_id-flags"><code>kontora init TICKET_ID [flags]</code><a class="headerlink" href="#kontora-init-ticket_id-flags" title="Permanent link">&para;</a></h3>
+<p>Marks an existing ticket file <code>kontora: true</code> so the daemon will run it. Without flags it prompts for the missing fields; naming them makes the command non-interactive, which is what a script or a coding agent needs.</p>
+<table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--path PATH</code></td>
+<td>Repository path. Required when the frontmatter has none.</td>
+</tr>
+<tr>
+<td><code>--pipeline NAME</code></td>
+<td>Pipeline to run, or <code>none</code> for a standalone ticket.</td>
+</tr>
+<tr>
+<td><code>--agent NAME</code></td>
+<td>Agent to use, or <code>none</code> to skip the project default.</td>
+</tr>
+<tr>
+<td><code>--stage NAME</code></td>
+<td>Starting stage. Defaults to the pipeline's first stage when <code>--pipeline</code> is given.</td>
+</tr>
+<tr>
+<td><code>--status STATUS</code></td>
+<td><code>open</code> or <code>todo</code>. Defaults to asking.</td>
+</tr>
+</tbody>
+</table>
+<p>In remote mode <code>--pipeline</code> and <code>--path</code> are both required, because the pickers cannot run over HTTP.</p>
+<h2 id="lifecycle">Lifecycle<a class="headerlink" href="#lifecycle" title="Permanent link">&para;</a></h2>
+<h3 id="kontora-run-ticket_id"><code>kontora run TICKET_ID</code><a class="headerlink" href="#kontora-run-ticket_id" title="Permanent link">&para;</a></h3>
+<p>Enqueues an <code>open</code> or <code>todo</code> ticket. Needs a running daemon. When the ticket's dependencies are not all closed it reports it as blocked, naming them, rather than saying it was queued: the daemon will not pick it up until they close. See <a href="../tickets/#dependency-aware-scheduling">dependency-aware scheduling</a>.</p>
+<h3 id="kontora-pause-ticket_id"><code>kontora pause TICKET_ID</code><a class="headerlink" href="#kontora-pause-ticket_id" title="Permanent link">&para;</a></h3>
+<p>Stops a running ticket and parks it in <code>paused</code>. A ticket that already closed cannot be paused; use <code>retry</code> to reopen it.</p>
+<h3 id="kontora-retry-ticket_id"><code>kontora retry TICKET_ID</code><a class="headerlink" href="#kontora-retry-ticket_id" title="Permanent link">&para;</a></h3>
+<p>Resets a non-running ticket to <code>todo</code> with the attempt counter cleared, and re-enqueues it.</p>
+<h3 id="kontora-cancel-ticket_id-kontora-done-ticket_id"><code>kontora cancel TICKET_ID</code> / <code>kontora done TICKET_ID</code><a class="headerlink" href="#kontora-cancel-ticket_id-kontora-done-ticket_id" title="Permanent link">&para;</a></h3>
+<p>Move the ticket to <code>cancelled</code> or <code>done</code>, stopping any running agent and cleaning up its worktree.</p>
+<h3 id="kontora-move-ticket_id-status"><code>kontora move TICKET_ID STATUS</code><a class="headerlink" href="#kontora-move-ticket_id-status" title="Permanent link">&para;</a></h3>
+<p>The general form of the three above: moves a ticket to any status the config allows, which is the only way to reach <code>human_review</code> or a custom status from <code>statuses:</code> on the command line. Valid values are <code>open</code>, <code>todo</code>, <code>paused</code>, <code>human_review</code>, <code>done</code>, <code>cancelled</code>, plus any custom status. <code>archived</code> is deliberately excluded — see <a href="#kontora-archive-days-n"><code>kontora archive</code></a>.</p>
+<h3 id="kontora-skip-ticket_id"><code>kontora skip TICKET_ID</code><a class="headerlink" href="#kontora-skip-ticket_id" title="Permanent link">&para;</a></h3>
+<p>Advances the ticket to the next stage of its pipeline, or marks it done when it is already on the last one.</p>
+<h3 id="kontora-set-stage-ticket_id-stage"><code>kontora set-stage TICKET_ID STAGE</code><a class="headerlink" href="#kontora-set-stage-ticket_id-stage" title="Permanent link">&para;</a></h3>
+<p>Moves the ticket to a named stage of its pipeline without running anything.</p>
+<h3 id="kontora-note-ticket_id-text-kontora-summary-ticket_id-text"><code>kontora note TICKET_ID [TEXT]</code> / <code>kontora summary TICKET_ID [TEXT]</code><a class="headerlink" href="#kontora-note-ticket_id-text-kontora-summary-ticket_id-text" title="Permanent link">&para;</a></h3>
+<p>Append a timestamped note, or set the ticket's one-line summary. Both read the text from stdin when it is not given as an argument, so <code>git log --oneline | kontora note kon-q88f</code> works.</p>
+<h3 id="kontora-phase-complete-ticket_id-completed-text-next-text"><code>kontora phase-complete TICKET_ID --completed TEXT --next TEXT</code><a class="headerlink" href="#kontora-phase-complete-ticket_id-completed-text-next-text" title="Permanent link">&para;</a></h3>
+<p>Signals a boundary between two top-level ticket phases. Agents call it, not people. It appends one record to the sidecar named by <code>KONTORA_CHECKPOINT_FILE</code> and prints what the agent should do next; it reads no config and talks to no daemon.</p>
+<table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--completed TEXT</code></td>
+<td>The phase that just finished, e.g. <code>Phase 2: Expose the estimator</code>. Required.</td>
+</tr>
+<tr>
+<td><code>--next TEXT</code></td>
+<td>The phase to begin next. Required.</td>
+</tr>
+</tbody>
+</table>
+<p>The daemon sets <code>KONTORA_CHECKPOINT_FILE</code> only for runs whose agent has a positive <code>checkpoint_compaction_tokens</code>. Without it the command records nothing, prints that checkpoint compaction is off for the run, and exits 0, so an agent that calls it in an unrelated run is not derailed.</p>
+<h2 id="relations">Relations<a class="headerlink" href="#relations" title="Permanent link">&para;</a></h2>
+<p>A ticket carries two relation lists in its frontmatter. <code>deps</code> names the tickets it waits on, and the daemon will not run it until every one of them is <code>done</code>, <code>cancelled</code>, <code>archived</code>, or legacy <code>closed</code>. See <a href="../tickets/#dependency-aware-scheduling">dependency-aware scheduling</a>. <code>links</code> is a symmetric "related" list that means nothing to the scheduler.</p>
+<p>All four verbs reject a missing ID and a ticket related to itself, and leave every file unchanged when they do. Repeating a call that has nothing left to do succeeds and writes nothing.</p>
+<h3 id="kontora-dep-ticket_id-dependency_id"><code>kontora dep TICKET_ID DEPENDENCY_ID</code><a class="headerlink" href="#kontora-dep-ticket_id-dependency_id" title="Permanent link">&para;</a></h3>
+<p>Makes <code>TICKET_ID</code> wait on <code>DEPENDENCY_ID</code>. Only the dependent ticket is written; the reverse edge is derived when it is read. A dependency that would close a cycle is rejected, and the error names the cycle.</p>
+<h3 id="kontora-undep-ticket_id-dependency_id"><code>kontora undep TICKET_ID DEPENDENCY_ID</code><a class="headerlink" href="#kontora-undep-ticket_id-dependency_id" title="Permanent link">&para;</a></h3>
+<p>Drops the dependency edge.</p>
+<h3 id="kontora-link-ticket_id-ticket_id"><code>kontora link TICKET_ID TICKET_ID...</code><a class="headerlink" href="#kontora-link-ticket_id-ticket_id" title="Permanent link">&para;</a></h3>
+<p>Relates the first ticket to each of the others. It does not relate the others to each other.</p>
+<p>Both sides of a link are written, and two markdown files cannot be written together. If the second write fails, the error names both tickets and says which one was already changed; running the same command again repairs the missing side.</p>
+<h3 id="kontora-unlink-ticket_id-ticket_id"><code>kontora unlink TICKET_ID TICKET_ID...</code><a class="headerlink" href="#kontora-unlink-ticket_id-ticket_id" title="Permanent link">&para;</a></h3>
+<p>Removes the relation between the first ticket and each of the others, on both sides.</p>
+<h3 id="kontora-archive-days-n"><code>kontora archive --days N</code><a class="headerlink" href="#kontora-archive-days-n" title="Permanent link">&para;</a></h3>
+<p>Marks every <code>done</code> or <code>cancelled</code> ticket whose file has not been modified for at least N days as <code>archived</code>, which hides it everywhere while keeping the file. <code>--days</code> is required and must be positive. Local only.</p>
+<table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--days N</code></td>
+<td>Required. Age threshold in days, measured on the file's modification time.</td>
+</tr>
+<tr>
+<td><code>--dry-run</code></td>
+<td>List what would be archived and write nothing.</td>
+</tr>
+<tr>
+<td><code>--path PATH</code></td>
+<td>Only archive tickets for this repository path.</td>
+</tr>
+<tr>
+<td><code>--project NAME</code></td>
+<td>The same, by configured project name.</td>
+</tr>
+<tr>
+<td><code>--status STATUS</code></td>
+<td>Only archive one of <code>done</code>, <code>cancelled</code> or <code>closed</code>.</td>
+</tr>
+<tr>
+<td><code>-y</code>, <code>--yes</code></td>
+<td>Skip the confirmation prompt. Required when stdin is not a terminal.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="inspecting-a-run">Inspecting a run<a class="headerlink" href="#inspecting-a-run" title="Permanent link">&para;</a></h2>
+<h3 id="kontora-logs-stage-name-ticket_id"><code>kontora logs [--stage NAME] TICKET_ID</code><a class="headerlink" href="#kontora-logs-stage-name-ticket_id" title="Permanent link">&para;</a></h3>
+<p>Prints the agent's log. Without <code>--stage</code> it shows the most recent one, falling back to the ticket's run history when there are no log files. Goes through the <a href="#environment-variables">pager</a> when one is set and stdout is a terminal.</p>
+<h3 id="kontora-activity-stage-name-run-n-ticket_id"><code>kontora activity [--stage NAME] [--run N] TICKET_ID</code><a class="headerlink" href="#kontora-activity-stage-name-run-n-ticket_id" title="Permanent link">&para;</a></h3>
+<p>Prints one stage run's structured transcript: the agent's messages and tool calls, one per line. Falls back to the plaintext log for agents that write no session record. Needs a running daemon. Goes through the <a href="#environment-variables">pager</a> when one is set and stdout is a terminal.</p>
+<h3 id="kontora-sessions-flags-ticket_id"><code>kontora sessions [flags] TICKET_ID</code><a class="headerlink" href="#kontora-sessions-flags-ticket_id" title="Permanent link">&para;</a></h3>
+<p>Prints the files behind the ticket's runs: by default the agent's own session
+JSONL, which is the transcript another tool would read. One row per history
+row, in history order, then the files no row claims.</p>
+<table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--stage NAME</code></td>
+<td>Only this stage, and the annotation runs that borrowed its name.</td>
+</tr>
+<tr>
+<td><code>--run N</code></td>
+<td>Only this run number within the stage. Drops the stage log and the unattributed files, neither of which has a run number.</td>
+</tr>
+<tr>
+<td><code>--logs</code></td>
+<td>Print the stage log paths in place of the session files. Combines with <code>--events</code>.</td>
+</tr>
+<tr>
+<td><code>--events</code></td>
+<td>Print the activity sidecar paths in place of the session files. Combines with <code>--logs</code>.</td>
+</tr>
+<tr>
+<td><code>--all</code></td>
+<td>Print all three for every run.</td>
+</tr>
+</tbody>
+</table>
+<p>The columns are stage, run, artifact, path, and, when there is something to say
+about the row, a reason or a note. The path column holds <code>-</code> when nothing on
+this machine matches, so a fourth-field filter in <code>awk</code> gives the files that
+exist. In the run column, <code>-</code> marks the stage log, which is per stage, and <code>?</code>
+marks a file no run claims, including the session of the stage running now.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>plan       0  session  /Users/a/.claude/projects/-Users-a-projects-kontora/2f1e0c7a-….jsonl
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>implement  0  session  /Users/a/.kontora/logs/kon-q88f/pi-sessions/implement/01JC9….jsonl
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>implement  1  session  /Users/a/.kontora/logs/kon-q88f/pi-sessions/implement/01JC9….jsonl  resumed: same file as run 0
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>implement  2  session  -  no session recorded (run predates session_ref)
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>review     0  session  -  session file missing: no /Users/a/.claude/projects/*/9a2c….jsonl
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>ship       0  session  -  agent "shell-runner" writes no session
+</code></pre></div>
+<p>Three things worth knowing about the rows:</p>
+<ul>
+<li><strong>A resumed run shares its file with the run it continued.</strong> Claude's
+  <code>--resume</code> and pi's <code>--session</code> both append to the existing JSONL, so one
+  file can back several runs. The second row above says so rather than
+  pretending the run has a file of its own.</li>
+<li><strong>A run that predates the <code>session_ref</code> field cannot be resolved back.</strong> For
+  those tickets the command falls back to what is still on disk: a Claude
+  stage's last run is recovered from its session record, and a pi stage's
+  transcripts are listed with <code>?</code> in the run column, because nothing says which
+  file belongs to which run. The rest of such a ticket is gone for good: Claude
+  runs other than the last of each stage, the run each pi file belongs to, and
+  any run by an agent that is neither Claude nor pi.</li>
+<li><strong>A run is never dropped.</strong> A row with no path prints the reason instead,
+  because a missing row reads as "this stage never ran".</li>
+</ul>
+<p><code>--logs</code> prints one row per stage, not per run: every run of a stage overwrites
+<code>&lt;stage&gt;.log</code>, so it only ever holds the newest one. <code>--events</code> is per run.</p>
+<p>Local only. Every path names a file on the machine that runs the command. In
+remote mode the daemon's path either does not exist here or, if the caller runs
+kontora too, holds another ticket's bytes.</p>
+<h3 id="kontora-changes-ticket_id"><code>kontora changes TICKET_ID</code><a class="headerlink" href="#kontora-changes-ticket_id" title="Permanent link">&para;</a></h3>
+<p>Prints the commits on the ticket's branch and the per-file line counts against its base. Needs a running daemon.</p>
+<h3 id="kontora-stats-flags"><code>kontora stats [flags]</code><a class="headerlink" href="#kontora-stats-flags" title="Permanent link">&para;</a></h3>
+<p>Prints the figures the dashboard's Stats page shows: throughput, median cycle time, first-pass rate, and per-stage, per-agent and per-project breakdowns. Needs a running daemon.</p>
+<table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--range RANGE</code></td>
+<td><code>1d</code>, <code>1w</code>, <code>30d</code>, <code>90d</code> or <code>all</code>. Defaults to <code>90d</code>.</td>
+</tr>
+<tr>
+<td><code>--project NAME</code></td>
+<td>Only count tickets for this configured project.</td>
+</tr>
+<tr>
+<td><code>--pipeline NAME</code></td>
+<td>Only count tickets for this pipeline.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="kontora-attach-rw-ticket_id"><code>kontora attach [--rw] TICKET_ID</code><a class="headerlink" href="#kontora-attach-rw-ticket_id" title="Permanent link">&para;</a></h3>
+<p>Attaches to the running ticket's terminal: the tmux window locally, a WebSocket to the daemon in remote mode. Read-only unless <code>--rw</code> is given. Locally, omitting the ticket ID opens a picker of running sessions.</p>
+<h3 id="kontora-review-ticket_id-kontora-annotate-ticket_id"><code>kontora review TICKET_ID</code> / <code>kontora annotate TICKET_ID</code><a class="headerlink" href="#kontora-review-ticket_id-kontora-annotate-ticket_id" title="Permanent link">&para;</a></h3>
+<p>Open the ticket's diff, or its markdown, in <a href="https://plannotator.ai">Plannotator</a>. The daemon spawns the binary, so in remote mode the window opens on the daemon host, not on the caller's screen. <code>review</code> needs the ticket to be in <code>human_review</code>.</p>
+<h2 id="analysis">Analysis<a class="headerlink" href="#analysis" title="Permanent link">&para;</a></h2>
+<h3 id="kontora-estimate-compaction-flags"><code>kontora estimate-compaction [flags]</code><a class="headerlink" href="#kontora-estimate-compaction-flags" title="Permanent link">&para;</a></h3>
+<p>Projects token savings from checkpoint compaction by replaying completed Pi session traces. Read-only: it scans JSONL files and writes nothing. Local only.</p>
+<table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--logs-dir PATH</code></td>
+<td>Path to the logs directory. Defaults to the config's <code>logs_dir</code>. When provided, the config file is not required.</td>
+</tr>
+<tr>
+<td><code>--stage NAME</code></td>
+<td>Pipeline stage to analyze. Defaults to <code>implement</code>.</td>
+</tr>
+<tr>
+<td><code>--thresholds LIST</code></td>
+<td>Comma-separated token thresholds to evaluate, e.g. <code>100000,150000,200000</code>. Defaults to <code>100000,125000,150000,200000,250000</code>.</td>
+</tr>
+<tr>
+<td><code>--top N</code></td>
+<td>Number of top sessions to include in the report. Defaults to <code>20</code>.</td>
+</tr>
+</tbody>
+</table>
+<p>The report includes:</p>
+<ul>
+<li>Coverage includes scanned and eligible sessions. It also counts <code>branch_summary</code>, <code>no_usage</code>, <code>unreadable</code>, <code>broken_chain</code>, <code>has_compaction</code>, and <code>live_resume</code> exclusions. A session is treated as live when a resume marker identifies it or its latest recorded activity is less than 15 minutes old. This check uses timestamps inside the JSONL, so copying old sessions does not mark them as live.</li>
+<li>Calibration shows the summary ratio, summary output tokens, and post-compaction context. Each statistic includes its sample count and low, median, and high values. Without a usable post-compaction sample, the report prints no token-reduction figures.</li>
+<li>Scenarios show projected compaction counts and raw-token reductions for <code>CAL P25</code>, <code>CAL P50</code>, and <code>CAL P75</code>. These labels are calibration percentiles, not reduction bounds. <code>CAL P25</code> uses smaller summaries and post-compaction contexts and usually projects the largest reduction; <code>CAL P75</code> uses larger values and usually projects the smallest. The scenarios replay the recorded call sequence. They do not predict changed agent behavior.</li>
+<li>Top sessions rank session files by projected median raw-token reduction at the lowest requested threshold. Each row includes the ticket, stage, and session filename so retries remain distinguishable.</li>
+<li>Limits state why the report does not estimate implementation quality or cost. They cover changed tool calls, cache identity, and pricing.</li>
+</ul>
+<p>Example:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>kontora estimate-compaction \
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>  --stage implement \
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>  --thresholds 100000,125000,150000,200000,250000 \
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>  --top 20
+</code></pre></div>
+<h2 id="daemon-and-configuration">Daemon and configuration<a class="headerlink" href="#daemon-and-configuration" title="Permanent link">&para;</a></h2>
+<h3 id="kontora-start-flags"><code>kontora start [flags]</code><a class="headerlink" href="#kontora-start-flags" title="Permanent link">&para;</a></h3>
+<p>Runs the daemon in the foreground. Only one instance per config directory: a second one exits on the file lock. Local only.</p>
+<table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--address HOST</code></td>
+<td>Web server listen address, overriding <code>web.host</code>.</td>
+</tr>
+<tr>
+<td><code>--port PORT</code></td>
+<td>Web server port, overriding <code>web.port</code>.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="kontora-setup-agent"><code>kontora setup [--agent]</code><a class="headerlink" href="#kontora-setup-agent" title="Permanent link">&para;</a></h3>
+<p>Writes the config file. Plain <code>setup</code> runs an interactive wizard. <code>setup --agent</code> prints a brief for a coding agent to follow and writes nothing itself; the brief is embedded in the binary, so it describes the schema the installed version accepts. Local only.</p>
+<h3 id="kontora-doctor"><code>kontora doctor</code><a class="headerlink" href="#kontora-doctor" title="Permanent link">&para;</a></h3>
+<p>Checks the config, the required tools (<code>git</code>, <code>tmux</code>), each agent binary, each configured project's repository, Plannotator, and the web port. Exits non-zero when a hard prerequisite fails; missing directories and an occupied port are warnings. Local only.</p>
+<h3 id="kontora-config-kontora-config-edit"><code>kontora config</code> / <code>kontora config edit</code><a class="headerlink" href="#kontora-config-kontora-config-edit" title="Permanent link">&para;</a></h3>
+<p><code>config</code> prints the effective configuration with defaults applied, with <code>web.token</code> replaced by a placeholder. In remote mode it prints the daemon's pipelines, agents, and custom statuses instead.</p>
+<p><code>config edit</code> opens the config in <code>$EDITOR</code>. In remote mode it fetches the daemon's file, validates the result locally, and uploads it; the daemon reloads as part of the save.</p>
+<h2 id="utilities">Utilities<a class="headerlink" href="#utilities" title="Permanent link">&para;</a></h2>
+<h3 id="kontora-fmt"><code>kontora fmt</code><a class="headerlink" href="#kontora-fmt" title="Permanent link">&para;</a></h3>
+<p>Reads Claude Code stream-json on stdin and prints it as readable text. Takes no flags and talks to nothing, so it works with <code>KONTORA_URL</code> set.</p>
+<h3 id="kontora-completion-shell"><code>kontora completion &lt;shell&gt;</code><a class="headerlink" href="#kontora-completion-shell" title="Permanent link">&para;</a></h3>
+<p>Prints a completion script for <code>bash</code>, <code>fish</code> or <code>zsh</code>. Each one completes the verbs, their flags, and, for the verbs that take one, a ticket ID. The ID list comes from <code>kontora ls --closed</code>, so closed tickets are offered too.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>kontora<span class="w"> </span>completion<span class="w"> </span>fish<span class="w"> </span>&gt;<span class="w"> </span>~/.config/fish/completions/kontora.fish
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>kontora<span class="w"> </span>completion<span class="w"> </span>zsh<span class="w">  </span>&gt;<span class="w"> </span>~/.zsh/completions/_kontora<span class="w">   </span><span class="c1"># dir must be in $fpath before compinit</span>
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>kontora<span class="w"> </span>completion<span class="w"> </span>bash<span class="w"> </span>&gt;<span class="w"> </span>~/.local/share/bash-completion/completions/kontora
+</code></pre></div>
+<p>See <a href="../configuration/#shell-completions">Shell completions</a> for the per-shell install steps.</p>
+<h3 id="kontora-version"><code>kontora version</code><a class="headerlink" href="#kontora-version" title="Permanent link">&para;</a></h3>
+<p>Prints the version.</p>
+<h2 id="remote-mode">Remote mode<a class="headerlink" href="#remote-mode" title="Permanent link">&para;</a></h2>
+<p>Setting <code>--url</code> or <code>KONTORA_URL</code> points every client command at a daemon over HTTP instead of the local files. See <a href="https://github.com/worksonmyai/kontora#remote-mode">Remote mode</a> in the README for the daemon-side setup.</p>
+<p>Supported: <code>ls</code>, <code>view</code>, <code>new</code>, <code>init</code>, <code>update</code>, <code>delete</code>, <code>run</code>, <code>pause</code>, <code>retry</code>, <code>cancel</code>, <code>done</code>, <code>move</code>, <code>skip</code>, <code>set-stage</code>, <code>note</code>, <code>summary</code>, <code>logs</code>, <code>activity</code>, <code>changes</code>, <code>stats</code>, <code>review</code>, <code>annotate</code>, <code>config</code>, <code>attach</code>.</p>
+<p>Rejected, because they act on local files: <code>edit</code>, <code>search</code>, <code>archive</code>, <code>estimate-compaction</code>, <code>sessions</code>, <code>doctor</code>, <code>start</code>, <code>setup</code>.</p>
+<p>Unaffected, because they touch neither the daemon nor a config file: <code>fmt</code>, <code>completion</code>, <code>version</code>, <code>help</code>, <code>phase-complete</code>.</p>
+<p>Paths passed to <code>--path</code> name locations on the daemon host, not on the caller's machine.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.instant", "navigation.sections", "content.code.copy", "toc.follow"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+    
+  </body>
+</html>

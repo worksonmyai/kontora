@@ -1,0 +1,3013 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Agent orchestration tool. Multi-stage pipelines, git worktree isolation, kanban board.">
+      
+      
+      
+        <link rel="canonical" href="https://worksonmyai.github.io/kontora/configuration/">
+      
+      
+        <link rel="prev" href="../cli/">
+      
+      
+        <link rel="next" href="../tickets/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>Configuration - Kontora</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.ec1eaa64.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=DM+Sans:300,300i,400,400i,700,700i%7CJetBrains+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"DM Sans";--md-code-font:"JetBrains Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../stylesheets/extra.css">
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="slate" data-md-color-primary="custom" data-md-color-accent="custom">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#configuration-reference" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="Kontora" class="md-header__button md-logo" aria-label="Kontora" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Kontora
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Configuration
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="slate" data-md-color-primary="custom" data-md-color-accent="custom"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="custom" data-md-color-accent="custom"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/worksonmyai/kontora" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    worksonmyai/kontora
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="Kontora" class="md-nav__button md-logo" aria-label="Kontora" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    Kontora
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/worksonmyai/kontora" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    worksonmyai/kontora
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cli/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CLI
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#creating-the-config" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Creating the config
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#minimal-example" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Minimal example
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#full-example" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Full example
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#top-level-fields" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Top-level fields
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#branch-naming" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        branch naming
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#web" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        web
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="web">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#host-and-origin-checks" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Host and origin checks
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#content-security-policy" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Content Security Policy
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#agents" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        agents
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="agents">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#resuming-after-a-restart" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Resuming after a restart
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#stages" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        stages
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="stages">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#prompt-templates" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Prompt templates
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#pipelines" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        pipelines
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="pipelines">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#stage-fields" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Stage fields
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#policies" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Policies
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#validation-rules" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Validation rules
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#projects" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        projects
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="projects">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#opting-out-with-none" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Opting out with none
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#validation-rules_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Validation rules
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#hooks" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        hooks
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="hooks">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#events" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Events
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fields" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Fields
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#scope-and-order" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Scope and order
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#environment" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Environment
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#failure" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Failure
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#logging" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Logging
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#validation-rules_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Validation rules
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#plannotator" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        plannotator
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="plannotator">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#reviewing-the-code" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Reviewing the code
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#annotating-the-ticket" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Annotating the ticket
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#assistant" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        assistant
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="assistant">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#only-claude-and-pi" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Only claude and pi
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#autonomy" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Autonomy
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#turns-and-the-scheduler" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Turns and the scheduler
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#metrics" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        metrics
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="metrics">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#what-is-exported" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What is exported
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#reloading-the-config" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Reloading the config
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Reloading the config">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#what-reloads-live" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What reloads live
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#what-needs-a-restart" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What needs a restart
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#how-to-trigger-a-reload" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        How to trigger a reload
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#rules" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Rules
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#shell-completions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Shell completions
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tickets/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Tickets
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#creating-the-config" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Creating the config
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#minimal-example" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Minimal example
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#full-example" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Full example
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#top-level-fields" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Top-level fields
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#branch-naming" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        branch naming
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#web" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        web
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="web">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#host-and-origin-checks" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Host and origin checks
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#content-security-policy" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Content Security Policy
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#agents" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        agents
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="agents">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#resuming-after-a-restart" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Resuming after a restart
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#stages" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        stages
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="stages">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#prompt-templates" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Prompt templates
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#pipelines" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        pipelines
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="pipelines">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#stage-fields" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Stage fields
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#policies" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Policies
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#validation-rules" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Validation rules
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#projects" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        projects
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="projects">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#opting-out-with-none" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Opting out with none
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#validation-rules_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Validation rules
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#hooks" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        hooks
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="hooks">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#events" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Events
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fields" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Fields
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#scope-and-order" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Scope and order
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#environment" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Environment
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#failure" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Failure
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#logging" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Logging
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#validation-rules_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Validation rules
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#plannotator" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        plannotator
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="plannotator">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#reviewing-the-code" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Reviewing the code
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#annotating-the-ticket" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Annotating the ticket
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#assistant" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        assistant
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="assistant">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#only-claude-and-pi" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Only claude and pi
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#autonomy" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Autonomy
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#turns-and-the-scheduler" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Turns and the scheduler
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#metrics" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        metrics
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="metrics">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#what-is-exported" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What is exported
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#reloading-the-config" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Reloading the config
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Reloading the config">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#what-reloads-live" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What reloads live
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#what-needs-a-restart" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What needs a restart
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#how-to-trigger-a-reload" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        How to trigger a reload
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#rules" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Rules
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#shell-completions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Shell completions
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="configuration-reference">Configuration Reference<a class="headerlink" href="#configuration-reference" title="Permanent link">&para;</a></h1>
+<p>Kontora reads configuration from a YAML file. It checks these paths in order: <code>.kontora/config.yaml</code> in the current directory, then <code>$XDG_CONFIG_HOME/kontora/config.yaml</code> (or <code>~/.config/kontora/config.yaml</code> if unset). Override with <code>--config</code>. Unknown fields are rejected. See also: <a href="../tickets/">Ticket Format</a>.</p>
+<h2 id="creating-the-config">Creating the config<a class="headerlink" href="#creating-the-config" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>kontora<span class="w"> </span>setup<span class="w">           </span><span class="c1"># interactive wizard</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>kontora<span class="w"> </span>setup<span class="w"> </span>--agent<span class="w">   </span><span class="c1"># print instructions for a coding agent</span>
+</code></pre></div>
+<p><code>kontora setup</code> writes a starter config with two pipelines when the resolved
+path holds no file. An existing config is never overwritten: the command prints
+its path and the two ways to change it.</p>
+<p><code>kontora setup --agent</code> writes nothing. It prints a plain-text brief for a
+coding agent: the resolved config path, whether the file is missing, valid, or
+invalid, the validation error when there is one, and the symlink target when the
+path is a link. The brief is embedded in the binary, so it describes the schema
+that version accepts. It never prints the config file itself, so no token or
+environment value can leak into the output; a validation error can still quote
+the names, paths, and patterns it rejected. Use it to create the first config or
+to add agents, stages, pipelines, and projects later.</p>
+<p>Both forms are local-only and take no positional arguments. <code>--agent</code> here is a
+boolean, unlike the agent-name <code>--agent</code> on <code>kontora new</code> and <code>kontora init</code>.
+The wizard needs a terminal on stdin and stdout; without one it exits non-zero
+and points at <code>kontora setup --agent</code>.</p>
+<p>After setup:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>kontora<span class="w"> </span>doctor<span class="w">   </span><span class="c1"># validate config, tools, agent binaries, port</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>kontora<span class="w"> </span>start<span class="w">    </span><span class="c1"># start the daemon; runs until Ctrl-C</span>
+</code></pre></div>
+<p>Then, in another terminal:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>kontora<span class="w"> </span>new<span class="w"> </span>--path<span class="w"> </span>~/projects/myrepo<span class="w"> </span><span class="s2">"Add a health check endpoint"</span>
+</code></pre></div>
+<h2 id="minimal-example">Minimal example<a class="headerlink" href="#minimal-example" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="nt">tickets_dir</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">~/.kontora/tickets</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="nt">agents</span><span class="p">:</span>
+<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="w">  </span><span class="nt">claude</span><span class="p">:</span>
+<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="w">    </span><span class="nt">binary</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">claude</span>
+<a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a>
+<a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="nt">stages</span><span class="p">:</span>
+<a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a><span class="w">  </span><span class="nt">code</span><span class="p">:</span>
+<a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a><span class="w">    </span><span class="nt">prompt</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Write code.</span>
+<a id="__codelineno-3-10" name="__codelineno-3-10" href="#__codelineno-3-10"></a>
+<a id="__codelineno-3-11" name="__codelineno-3-11" href="#__codelineno-3-11"></a><span class="nt">pipelines</span><span class="p">:</span>
+<a id="__codelineno-3-12" name="__codelineno-3-12" href="#__codelineno-3-12"></a><span class="w">  </span><span class="nt">default</span><span class="p">:</span>
+<a id="__codelineno-3-13" name="__codelineno-3-13" href="#__codelineno-3-13"></a><span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">stage</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">code</span>
+<a id="__codelineno-3-14" name="__codelineno-3-14" href="#__codelineno-3-14"></a><span class="w">      </span><span class="nt">agent</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">claude</span>
+<a id="__codelineno-3-15" name="__codelineno-3-15" href="#__codelineno-3-15"></a><span class="w">      </span><span class="nt">on_success</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">human_review</span>
+<a id="__codelineno-3-16" name="__codelineno-3-16" href="#__codelineno-3-16"></a><span class="w">      </span><span class="nt">on_failure</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">pause</span>
+</code></pre></div>
+<h2 id="full-example">Full example<a class="headerlink" href="#full-example" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="nt">tickets_dir</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">~/.kontora/tickets</span>
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="nt">branch_prefix</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">kontora</span>
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="nt">worktrees_dir</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">~/.kontora/worktrees</span>
+<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="nt">logs_dir</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">~/.kontora/logs</span>
+<a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a><span class="nt">editor</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">nvim</span>
+<a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="nt">max_concurrent_agents</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">3</span>
+<a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a>
+<a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a><span class="nt">web</span><span class="p">:</span>
+<a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a><span class="w">  </span><span class="nt">enabled</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
+<a id="__codelineno-4-10" name="__codelineno-4-10" href="#__codelineno-4-10"></a><span class="w">  </span><span class="nt">host</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">127.0.0.1</span>
+<a id="__codelineno-4-11" name="__codelineno-4-11" href="#__codelineno-4-11"></a><span class="w">  </span><span class="nt">port</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">8080</span>
+<a id="__codelineno-4-12" name="__codelineno-4-12" href="#__codelineno-4-12"></a>
+<a id="__codelineno-4-13" name="__codelineno-4-13" href="#__codelineno-4-13"></a><span class="nt">agents</span><span class="p">:</span>
+<a id="__codelineno-4-14" name="__codelineno-4-14" href="#__codelineno-4-14"></a><span class="w">  </span><span class="nt">claude-sonnet</span><span class="p">:</span>
+<a id="__codelineno-4-15" name="__codelineno-4-15" href="#__codelineno-4-15"></a><span class="w">    </span><span class="nt">binary</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">claude</span>
+<a id="__codelineno-4-16" name="__codelineno-4-16" href="#__codelineno-4-16"></a><span class="w">    </span><span class="nt">args</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="s">"--dangerously-skip-permissions"</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="s">"--model"</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="s">"sonnet"</span><span class="p p-Indicator">]</span>
+<a id="__codelineno-4-17" name="__codelineno-4-17" href="#__codelineno-4-17"></a><span class="w">  </span><span class="nt">claude-opus</span><span class="p">:</span>
+<a id="__codelineno-4-18" name="__codelineno-4-18" href="#__codelineno-4-18"></a><span class="w">    </span><span class="nt">binary</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">claude</span>
+<a id="__codelineno-4-19" name="__codelineno-4-19" href="#__codelineno-4-19"></a><span class="w">    </span><span class="nt">args</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="s">"--dangerously-skip-permissions"</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="s">"--model"</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="s">"opus"</span><span class="p p-Indicator">]</span>
+<a id="__codelineno-4-20" name="__codelineno-4-20" href="#__codelineno-4-20"></a>
+<a id="__codelineno-4-21" name="__codelineno-4-21" href="#__codelineno-4-21"></a><span class="nt">stages</span><span class="p">:</span>
+<a id="__codelineno-4-22" name="__codelineno-4-22" href="#__codelineno-4-22"></a><span class="w">  </span><span class="nt">code</span><span class="p">:</span>
+<a id="__codelineno-4-23" name="__codelineno-4-23" href="#__codelineno-4-23"></a><span class="w">    </span><span class="nt">prompt</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">|</span>
+<a id="__codelineno-4-24" name="__codelineno-4-24" href="#__codelineno-4-24"></a><span class="w">      </span><span class="no">{{ .Ticket.Description }}</span>
+<a id="__codelineno-4-25" name="__codelineno-4-25" href="#__codelineno-4-25"></a><span class="w">    </span><span class="nt">timeout</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">30m</span>
+<a id="__codelineno-4-26" name="__codelineno-4-26" href="#__codelineno-4-26"></a><span class="w">  </span><span class="nt">implement</span><span class="p">:</span>
+<a id="__codelineno-4-27" name="__codelineno-4-27" href="#__codelineno-4-27"></a><span class="w">    </span><span class="nt">prompt</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">|</span>
+<a id="__codelineno-4-28" name="__codelineno-4-28" href="#__codelineno-4-28"></a><span class="w">      </span><span class="no">{{ .Ticket.Description }}</span>
+<a id="__codelineno-4-29" name="__codelineno-4-29" href="#__codelineno-4-29"></a>
+<a id="__codelineno-4-30" name="__codelineno-4-30" href="#__codelineno-4-30"></a><span class="w">      </span><span class="no">Do NOT commit or push. Only implement the code and run tests.</span>
+<a id="__codelineno-4-31" name="__codelineno-4-31" href="#__codelineno-4-31"></a><span class="w">    </span><span class="nt">timeout</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">60m</span>
+<a id="__codelineno-4-32" name="__codelineno-4-32" href="#__codelineno-4-32"></a><span class="w">  </span><span class="nt">review</span><span class="p">:</span>
+<a id="__codelineno-4-33" name="__codelineno-4-33" href="#__codelineno-4-33"></a><span class="w">    </span><span class="nt">prompt</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">|</span>
+<a id="__codelineno-4-34" name="__codelineno-4-34" href="#__codelineno-4-34"></a><span class="w">      </span><span class="no">Review the code changes for this ticket. Check for:</span>
+<a id="__codelineno-4-35" name="__codelineno-4-35" href="#__codelineno-4-35"></a><span class="w">      </span><span class="no">- Correctness and edge cases</span>
+<a id="__codelineno-4-36" name="__codelineno-4-36" href="#__codelineno-4-36"></a><span class="w">      </span><span class="no">- Code quality and maintainability</span>
+<a id="__codelineno-4-37" name="__codelineno-4-37" href="#__codelineno-4-37"></a><span class="w">      </span><span class="no">- Test coverage</span>
+<a id="__codelineno-4-38" name="__codelineno-4-38" href="#__codelineno-4-38"></a>
+<a id="__codelineno-4-39" name="__codelineno-4-39" href="#__codelineno-4-39"></a><span class="w">      </span><span class="no">Write all review results to the ticket {{ .Ticket.ID }}</span>
+<a id="__codelineno-4-40" name="__codelineno-4-40" href="#__codelineno-4-40"></a><span class="w">    </span><span class="nt">timeout</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">30m</span>
+<a id="__codelineno-4-41" name="__codelineno-4-41" href="#__codelineno-4-41"></a><span class="w">  </span><span class="nt">fix-review</span><span class="p">:</span>
+<a id="__codelineno-4-42" name="__codelineno-4-42" href="#__codelineno-4-42"></a><span class="w">    </span><span class="nt">prompt</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">|</span>
+<a id="__codelineno-4-43" name="__codelineno-4-43" href="#__codelineno-4-43"></a><span class="w">      </span><span class="no">Read the code review from the notes of {{ .Ticket.ID }}</span>
+<a id="__codelineno-4-44" name="__codelineno-4-44" href="#__codelineno-4-44"></a>
+<a id="__codelineno-4-45" name="__codelineno-4-45" href="#__codelineno-4-45"></a><span class="w">      </span><span class="no">If there are issues listed, fix all of them and run tests.</span>
+<a id="__codelineno-4-46" name="__codelineno-4-46" href="#__codelineno-4-46"></a><span class="w">    </span><span class="nt">timeout</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">30m</span>
+<a id="__codelineno-4-47" name="__codelineno-4-47" href="#__codelineno-4-47"></a><span class="w">  </span><span class="nt">commit</span><span class="p">:</span>
+<a id="__codelineno-4-48" name="__codelineno-4-48" href="#__codelineno-4-48"></a><span class="w">    </span><span class="nt">prompt</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">|</span>
+<a id="__codelineno-4-49" name="__codelineno-4-49" href="#__codelineno-4-49"></a><span class="w">      </span><span class="no">Commit uncommitted files. This is the ready and reviewed</span>
+<a id="__codelineno-4-50" name="__codelineno-4-50" href="#__codelineno-4-50"></a><span class="w">      </span><span class="no">implementation of the ticket {{ .Ticket.ID }}.</span>
+<a id="__codelineno-4-51" name="__codelineno-4-51" href="#__codelineno-4-51"></a>
+<a id="__codelineno-4-52" name="__codelineno-4-52" href="#__codelineno-4-52"></a><span class="w">      </span><span class="no">You have full authorization to commit.</span>
+<a id="__codelineno-4-53" name="__codelineno-4-53" href="#__codelineno-4-53"></a><span class="w">      </span><span class="no">Do not ask for confirmation — just do it.</span>
+<a id="__codelineno-4-54" name="__codelineno-4-54" href="#__codelineno-4-54"></a><span class="w">    </span><span class="nt">timeout</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">5m</span>
+<a id="__codelineno-4-55" name="__codelineno-4-55" href="#__codelineno-4-55"></a>
+<a id="__codelineno-4-56" name="__codelineno-4-56" href="#__codelineno-4-56"></a><span class="nt">pipelines</span><span class="p">:</span>
+<a id="__codelineno-4-57" name="__codelineno-4-57" href="#__codelineno-4-57"></a><span class="w">  </span><span class="nt">default</span><span class="p">:</span>
+<a id="__codelineno-4-58" name="__codelineno-4-58" href="#__codelineno-4-58"></a><span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">stage</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">code</span>
+<a id="__codelineno-4-59" name="__codelineno-4-59" href="#__codelineno-4-59"></a><span class="w">      </span><span class="nt">agent</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">claude-sonnet</span>
+<a id="__codelineno-4-60" name="__codelineno-4-60" href="#__codelineno-4-60"></a><span class="w">      </span><span class="nt">on_success</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">human_review</span>
+<a id="__codelineno-4-61" name="__codelineno-4-61" href="#__codelineno-4-61"></a><span class="w">      </span><span class="nt">on_failure</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">pause</span>
+<a id="__codelineno-4-62" name="__codelineno-4-62" href="#__codelineno-4-62"></a>
+<a id="__codelineno-4-63" name="__codelineno-4-63" href="#__codelineno-4-63"></a><span class="w">  </span><span class="nt">implement-review-commit</span><span class="p">:</span>
+<a id="__codelineno-4-64" name="__codelineno-4-64" href="#__codelineno-4-64"></a><span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">stage</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">implement</span>
+<a id="__codelineno-4-65" name="__codelineno-4-65" href="#__codelineno-4-65"></a><span class="w">      </span><span class="nt">agent</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">claude-sonnet</span>
+<a id="__codelineno-4-66" name="__codelineno-4-66" href="#__codelineno-4-66"></a><span class="w">      </span><span class="nt">on_success</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">next</span>
+<a id="__codelineno-4-67" name="__codelineno-4-67" href="#__codelineno-4-67"></a><span class="w">      </span><span class="nt">on_failure</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">pause</span>
+<a id="__codelineno-4-68" name="__codelineno-4-68" href="#__codelineno-4-68"></a><span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">stage</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">review</span>
+<a id="__codelineno-4-69" name="__codelineno-4-69" href="#__codelineno-4-69"></a><span class="w">      </span><span class="nt">agent</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">claude-sonnet</span>
+<a id="__codelineno-4-70" name="__codelineno-4-70" href="#__codelineno-4-70"></a><span class="w">      </span><span class="nt">on_success</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">next</span>
+<a id="__codelineno-4-71" name="__codelineno-4-71" href="#__codelineno-4-71"></a><span class="w">      </span><span class="nt">on_failure</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">retry</span>
+<a id="__codelineno-4-72" name="__codelineno-4-72" href="#__codelineno-4-72"></a><span class="w">      </span><span class="nt">max_retries</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1</span>
+<a id="__codelineno-4-73" name="__codelineno-4-73" href="#__codelineno-4-73"></a><span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">stage</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">fix-review</span>
+<a id="__codelineno-4-74" name="__codelineno-4-74" href="#__codelineno-4-74"></a><span class="w">      </span><span class="nt">agent</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">claude-sonnet</span>
+<a id="__codelineno-4-75" name="__codelineno-4-75" href="#__codelineno-4-75"></a><span class="w">      </span><span class="nt">on_success</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">next</span>
+<a id="__codelineno-4-76" name="__codelineno-4-76" href="#__codelineno-4-76"></a><span class="w">      </span><span class="nt">on_failure</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">retry</span>
+<a id="__codelineno-4-77" name="__codelineno-4-77" href="#__codelineno-4-77"></a><span class="w">      </span><span class="nt">max_retries</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1</span>
+<a id="__codelineno-4-78" name="__codelineno-4-78" href="#__codelineno-4-78"></a><span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">stage</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">commit</span>
+<a id="__codelineno-4-79" name="__codelineno-4-79" href="#__codelineno-4-79"></a><span class="w">      </span><span class="nt">agent</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">claude-sonnet</span>
+<a id="__codelineno-4-80" name="__codelineno-4-80" href="#__codelineno-4-80"></a><span class="w">      </span><span class="nt">on_success</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">human_review</span>
+<a id="__codelineno-4-81" name="__codelineno-4-81" href="#__codelineno-4-81"></a><span class="w">      </span><span class="nt">on_failure</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">retry</span>
+<a id="__codelineno-4-82" name="__codelineno-4-82" href="#__codelineno-4-82"></a><span class="w">      </span><span class="nt">max_retries</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1</span>
+</code></pre></div>
+<h2 id="top-level-fields">Top-level fields<a class="headerlink" href="#top-level-fields" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Required</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>tickets_dir</code></td>
+<td>no</td>
+<td><code>~/.kontora/tickets</code></td>
+<td>Directory containing ticket markdown files. Overridden by <code>$TICKETS_DIR</code>, then <code>$KONTORA_TICKETS_DIR</code>, then <code>--tickets-dir</code>: for this one field the environment beats the file (see <a href="../cli/#environment-variables">environment variables</a>).</td>
+</tr>
+<tr>
+<td><code>branch_prefix</code></td>
+<td>no</td>
+<td><code>kontora</code></td>
+<td>Git branch prefix. A project can override it (see <a href="#projects">projects</a>).</td>
+</tr>
+<tr>
+<td><code>branch_naming</code></td>
+<td>no</td>
+<td><code>mode: slug</code></td>
+<td>How the daemon names a ticket with an empty <code>branch</code> field (see <a href="#branch-naming">branch naming</a>).</td>
+</tr>
+<tr>
+<td><code>worktrees_dir</code></td>
+<td>no</td>
+<td><code>~/.kontora/worktrees</code></td>
+<td>Where git worktrees are created.</td>
+</tr>
+<tr>
+<td><code>logs_dir</code></td>
+<td>no</td>
+<td><code>~/.kontora/logs</code></td>
+<td>Where agent output logs are stored.</td>
+</tr>
+<tr>
+<td><code>editor</code></td>
+<td>no</td>
+<td><code>$EDITOR</code> or <code>vi</code></td>
+<td>Editor for <code>kontora edit</code>. Falls back to <code>$EDITOR</code>, then <code>vi</code>.</td>
+</tr>
+<tr>
+<td><code>pager</code></td>
+<td>no</td>
+<td>none</td>
+<td>Pager for <code>kontora view</code>, <code>logs</code> and <code>activity</code>, split on whitespace. Used only when stdout is a terminal. <code>$KONTORA_PAGER</code>, <code>$TICKET_PAGER</code> and <code>$PAGER</code> all outrank it, and it has no effect in remote mode, which reads no config.</td>
+</tr>
+<tr>
+<td><code>default_agent</code></td>
+<td>no</td>
+<td>(inferred)</td>
+<td>Agent used for tickets without a pipeline. Defaults to <code>claude</code> if an agent with that name exists, otherwise inferred when there is exactly one agent. Must be set explicitly when multiple agents are defined and none is named <code>claude</code>.</td>
+</tr>
+<tr>
+<td><code>max_concurrent_agents</code></td>
+<td>no</td>
+<td><code>3</code></td>
+<td>Maximum number of agents running simultaneously.</td>
+</tr>
+<tr>
+<td><code>instance_name</code></td>
+<td>no</td>
+<td><code>os.Hostname()</code></td>
+<td>Identifies this daemon when several run against one synced <code>tickets_dir</code>. Written to a ticket's <code>claimed_by</code> on pickup so daemons don't steal or kill each other's work (see <a href="../tickets/#running-on-multiple-machines">multi-machine tickets</a>). Falls back to <code>default</code> if the hostname can't be read. Two machines that share a hostname must set this explicitly, or the protection can't tell them apart.</td>
+</tr>
+<tr>
+<td><code>tmux_session</code></td>
+<td>no</td>
+<td><code>kontora</code></td>
+<td>The tmux session the daemon puts agent windows in. Allowed characters are <code>A-Z a-z 0-9 _ -</code>, 1 to 64 of them, and the name cannot start with <code>-</code>. Set a distinct value per daemon when you run more than one on a machine: startup cleanup, <code>kontora attach</code>, the TUI, and the web terminal are all scoped to this session, and two daemons sharing it can also signal each other's agents through the tmux <code>wait-for</code> channel when their ticket IDs collide.</td>
+</tr>
+<tr>
+<td><code>statuses</code></td>
+<td>no</td>
+<td>—</td>
+<td>Extra parked statuses beyond the built-ins. Agents can park tickets here via <code>on_success</code>/<code>on_failure</code>.</td>
+</tr>
+<tr>
+<td><code>projects</code></td>
+<td>no</td>
+<td>—</td>
+<td>Per-repository pipeline, agent, and branch naming defaults (see <a href="#projects">projects</a>).</td>
+</tr>
+<tr>
+<td><code>environment</code></td>
+<td>no</td>
+<td>—</td>
+<td>Map of environment variables to set for all agent processes.</td>
+</tr>
+<tr>
+<td><code>hooks</code></td>
+<td>no</td>
+<td>—</td>
+<td>Commands run at a ticket's lifecycle events (see <a href="#hooks">hooks</a>).</td>
+</tr>
+<tr>
+<td><code>resume_prompt</code></td>
+<td>no</td>
+<td>(built-in)</td>
+<td>Prompt sent to an agent whose stage a daemon restart interrupted, in place of the stage prompt (see <a href="#resuming-after-a-restart">resuming after a restart</a>). Same template fields as a stage prompt.</td>
+</tr>
+<tr>
+<td><code>annotation_prompt</code></td>
+<td>no</td>
+<td>(built-in)</td>
+<td>Prompt sent to the run that rewrites a ticket from submitted Plannotator annotations (see <a href="#plannotator">plannotator</a>). Same template fields as a stage prompt.</td>
+</tr>
+<tr>
+<td><code>summary_model</code></td>
+<td>no</td>
+<td>—</td>
+<td>Model the ticket-level summary pass runs on, resolved against the agent that ran the last stage. Same two forms as a stage's <code>model</code> (see <a href="#stages">stages</a>).</td>
+</tr>
+<tr>
+<td><code>summary_effort</code></td>
+<td>no</td>
+<td>—</td>
+<td>Reasoning effort that same pass runs on, resolved the same way. It overrides the agent's own <code>effort</code> (see <a href="#agents">agents</a>).</td>
+</tr>
+<tr>
+<td><code>web</code></td>
+<td>no</td>
+<td>—</td>
+<td>Web dashboard settings (see <a href="#web">web</a>). Enabled by default.</td>
+</tr>
+</tbody>
+</table>
+<p>All paths support <code>~</code> for the home directory. Tilde expansion happens at runtime, not at config load time.</p>
+<h2 id="branch-naming">branch naming<a class="headerlink" href="#branch-naming" title="Permanent link">&para;</a></h2>
+<p><code>branch_naming</code> controls how the daemon names a ticket whose <code>branch</code> field is
+empty when the run starts:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="nt">branch_naming</span><span class="p">:</span>
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="w">  </span><span class="nt">mode</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">off</span>
+</code></pre></div>
+<table>
+<thead>
+<tr>
+<th>Mode</th>
+<th>Generated branch</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>slug</code></td>
+<td><code>&lt;prefix&gt;/&lt;title-slug&gt;-&lt;ticket-id&gt;</code>, for example <code>kontora/fix-retry-double-count-kon-a3f2</code>. This is the default.</td>
+</tr>
+<tr>
+<td><code>off</code></td>
+<td><code>&lt;prefix&gt;/&lt;ticket-id&gt;</code>, for example <code>kontora/kon-a3f2</code>.</td>
+</tr>
+</tbody>
+</table>
+<p>The slug comes from the ticket's first heading. The daemon removes a leading
+<code>[project]</code> tag and common filler words, converts the remaining text to
+lowercase ASCII words joined by hyphens, and limits the slug to 48 characters.
+If the heading has no ASCII letters or digits, the daemon uses
+<code>&lt;prefix&gt;/&lt;ticket-id&gt;</code>.</p>
+<p>In <code>slug</code> mode, the daemon stores the generated name before it creates the
+worktree. In <code>off</code> mode, it stores the ID-derived name after worktree creation
+succeeds. Later runs and cleanup use the stored name. A branch already set on
+the ticket is never replaced.</p>
+<p>The web UI shows the name a ticket would get in the empty branch field of the
+start and edit forms, so you can read it before the run starts and type over it
+to choose another.</p>
+<p>A project can override the top-level mode:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="nt">projects</span><span class="p">:</span>
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="w">  </span><span class="nt">legacy</span><span class="p">:</span>
+<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="w">    </span><span class="nt">path</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">~/projects/legacy</span>
+<a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="w">    </span><span class="nt">branch_naming</span><span class="p">:</span>
+<a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a><span class="w">      </span><span class="nt">mode</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">off</span>
+</code></pre></div>
+<p><code>mode</code> must be <code>off</code> or <code>slug</code>. Any other value fails config validation.</p>
+<h2 id="web">web<a class="headerlink" href="#web" title="Permanent link">&para;</a></h2>
+<p>Optional HTTP server for monitoring and controlling tickets from a browser.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="nt">web</span><span class="p">:</span>
+<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="w">  </span><span class="nt">enabled</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
+<a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="w">  </span><span class="nt">host</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0.0.0.0</span>
+<a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="w">  </span><span class="nt">port</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">9090</span>
+<a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a><span class="w">  </span><span class="nt">token</span><span class="p">:</span><span class="w"> </span><span class="s">""</span>
+<a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a><span class="w">  </span><span class="nt">allowed_hosts</span><span class="p">:</span>
+<a id="__codelineno-7-7" name="__codelineno-7-7" href="#__codelineno-7-7"></a><span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">kontora.tailnet.ts.net</span>
+</code></pre></div>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Required</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>enabled</code></td>
+<td>no</td>
+<td><code>true</code></td>
+<td>Start the web server when the daemon runs.</td>
+</tr>
+<tr>
+<td><code>host</code></td>
+<td>no</td>
+<td><code>127.0.0.1</code></td>
+<td>Bind address. Set to a tailnet IP to allow remote access.</td>
+</tr>
+<tr>
+<td><code>port</code></td>
+<td>no</td>
+<td><code>8080</code></td>
+<td>Listen port.</td>
+</tr>
+<tr>
+<td><code>allowed_hosts</code></td>
+<td>no</td>
+<td><code>[]</code></td>
+<td>Extra <code>Host</code> header values the server answers.</td>
+</tr>
+<tr>
+<td><code>token</code></td>
+<td>no</td>
+<td><code>""</code></td>
+<td>Shared bearer token. When set, <code>/api/*</code> and <code>/ws/*</code> require it (via <code>Authorization: Bearer</code>, a <code>kontora_token</code> cookie, or a <code>token</code> query param); empty leaves the API open. <code>GET /health</code> and the static UI stay public.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="host-and-origin-checks">Host and origin checks<a class="headerlink" href="#host-and-origin-checks" title="Permanent link">&para;</a></h3>
+<p>Every request must carry a <code>Host</code> header naming this machine: loopback, the
+configured <code>host</code>, or the machine's hostname. Anything else is refused with
+<code>403</code>, which is what stops a page on another site from reaching the daemon
+after its own DNS re-resolves to <code>127.0.0.1</code>. Reaching the UI under any other
+name, a tailnet name or a reverse proxy's hostname, needs that name in
+<code>allowed_hosts</code>.</p>
+<p>A wildcard bind address (<code>0.0.0.0</code> or <code>::</code>) is not itself an allowed host: it
+is not a name a client can send. Binding it and then reaching the daemon at
+<code>http://192.168.1.5:8080</code> or a tailnet address needs that address in
+<code>allowed_hosts</code>. The daemon logs a warning at startup when the bind address is
+a wildcard and <code>allowed_hosts</code> is empty.</p>
+<p>The daemon also refuses a request whose <code>Origin</code> names another site and one
+whose <code>Sec-Fetch-Site</code> is cross-site, except a top-level navigation, so a link
+to the UI still opens. A client that sends neither header, the CLI or <code>curl</code>,
+is unaffected. Writes that carry a body must be <code>application/json</code>; the upload
+route takes <code>multipart/form-data</code> and an <code>X-Kontora-Confirm</code> header.</p>
+<p>Behind a TLS-terminating reverse proxy, forward <code>X-Forwarded-Proto</code>. Without it
+the daemon cannot tell which port an <code>Origin</code> that omits its own port means, so
+it accepts only the default port of the origin's own scheme. The header also
+decides whether the auth cookie gets its <code>Secure</code> flag.</p>
+<p><code>allowed_hosts</code> is read at startup only. Changing it needs a daemon restart,
+like the rest of the <code>web</code> block.</p>
+<h3 id="content-security-policy">Content Security Policy<a class="headerlink" href="#content-security-policy" title="Permanent link">&para;</a></h3>
+<p>The UI document is served with a policy that keeps every resource same-origin:
+<code>script-src 'self'</code>, <code>connect-src 'self'</code>, <code>img-src 'self' data:</code>. Third-party
+libraries and fonts are vendored into the binary, so nothing the UI needs is
+external. One user-visible consequence: an <code>&lt;img&gt;</code> in a ticket body or note
+pointing at a remote URL does not load. Inline it as a <code>data:</code> URI or serve it
+from the daemon.</p>
+<p>When a token is set, the CLI can drive the daemon remotely with <code>KONTORA_URL</code> and <code>KONTORA_TOKEN</code> (see the Remote mode section of the README). The token is the only access control and agents run with <code>--dangerously-skip-permissions</code>; a tailnet encrypts the transport, but on untrusted networks put the daemon behind TLS.</p>
+<p>See <a href="../api/">API Reference</a> for the full list of endpoints.</p>
+<h2 id="agents">agents<a class="headerlink" href="#agents" title="Permanent link">&para;</a></h2>
+<p>Map of agent name to its binary and arguments. Any CLI tool that accepts a prompt on stdin or as an argument can be an agent.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="nt">agents</span><span class="p">:</span>
+<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="w">  </span><span class="nt">claude-sonnet</span><span class="p">:</span>
+<a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="w">    </span><span class="nt">binary</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">claude</span>
+<a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a><span class="w">    </span><span class="nt">args</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="s">"--dangerously-skip-permissions"</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="s">"--model"</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="s">"sonnet"</span><span class="p p-Indicator">]</span>
+</code></pre></div>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Required</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>binary</code></td>
+<td>yes</td>
+<td>Executable name or path.</td>
+</tr>
+<tr>
+<td><code>args</code></td>
+<td>no</td>
+<td>Arguments passed to the binary. The rendered prompt is appended as the last argument.</td>
+</tr>
+<tr>
+<td><code>environment</code></td>
+<td>no</td>
+<td>Map of environment variables to set for this agent's processes (merged with top-level <code>environment</code>).</td>
+</tr>
+<tr>
+<td><code>failure_patterns</code></td>
+<td>no</td>
+<td>Regexes matched against the agent's output log after it exits. A match pauses the ticket even on a clean exit — catching agents that report failures (quota, API errors) without a non-zero exit code. Unset uses the built-in defaults (below); set an explicit list to override, or <code>[]</code> to disable. Claude also gets structural detection from its session log regardless.</td>
+</tr>
+<tr>
+<td><code>resume</code></td>
+<td>no</td>
+<td>Set <code>false</code> to make every stage this agent runs start a new conversation, even after a daemon restart interrupted one (see <a href="#resuming-after-a-restart">resuming after a restart</a>). Unset means resume is on for <code>claude</code> and <code>pi</code>; any other agent always starts fresh.</td>
+</tr>
+<tr>
+<td><code>effort</code></td>
+<td>no</td>
+<td>Reasoning effort every invocation of this agent starts from, passed as <code>--effort</code> to <code>claude</code> and <code>--thinking</code> to <code>pi</code>. It replaces the same flag in this agent's own <code>args</code>, and a stage's <code>effort</code> overrides it (see <a href="#stages">stages</a>). Only those two CLIs take a flag for it: an <code>effort</code> on any other agent fails to load. The level names are passed through unchecked, so a new one works without a Kontora release, and a typo shows up as an agent that fails to start.</td>
+</tr>
+<tr>
+<td><code>checkpoint_compaction_tokens</code></td>
+<td>no</td>
+<td>Enables phase-boundary compaction for <code>pi</code> and <code>claude</code> when positive. Compaction runs only when measured context tokens are greater than this value. Zero or unset disables it. Negative values, and any value on an agent that is neither <code>pi</code> nor <code>claude</code>, fail validation. Wrapped agents, such as <code>nono run -- pi</code> or <code>nono run -- claude</code>, are supported.</td>
+</tr>
+</tbody>
+</table>
+<p>When checkpoint compaction is enabled, the prompt requires a durable <code>phase-N:</code> ticket note before each phase-boundary signal. The note records changed files, decisions, test results, unresolved issues, and the next phase. A compaction failure never fails the stage: the agent continues the next phase from the uncompacted session.</p>
+<p>The two agents signal the boundary differently, because they expose different triggers:</p>
+<ul>
+<li>Pi calls the <code>kontora_phase_complete</code> tool, and the embedded extension compacts in process. Pi records skipped, requested, compacted, and failed checkpoints in the session.</li>
+<li>Claude runs <code>kontora phase-complete TICKET_ID --completed TEXT --next TEXT</code> (see <a href="../cli/">the CLI reference</a>) and ends its turn. The daemon then measures the context from the session JSONL, types <code>/compact</code> into the tmux window when it is over the threshold, and types the continuation prompt for the next phase. The sidecar <code>&lt;logs_dir&gt;/&lt;ticket&gt;/&lt;stage&gt;.&lt;run&gt;.checkpoints.jsonl</code>, beside the stage log, holds the whole exchange: the agent's <code>phase_complete</code> record, the <code>accepted</code> marker the daemon writes when it takes that boundary on, and the <code>outcome</code> record once it knows how the boundary went. A compaction that leaves no compact boundary in the session JSONL is recorded as <code>failed</code>, whether the wait timed out or returned quietly.</li>
+</ul>
+<p>Driving Claude this way needs a window the daemon can type into unattended. A Claude agent that stops on a permission prompt blocks before the boundary and never reaches it, so checkpointing has no effect there. Annotation runs and Plannotator rework runs never checkpoint, whatever the agent's threshold: they rewrite the ticket rather than working through its phases.</p>
+<p>A config reload applies a changed threshold to the next agent invocation. It does not change a running agent. The web Settings form preserves <code>checkpoint_compaction_tokens</code> when it edits another field, but does not expose a control for it.</p>
+<p>When <code>failure_patterns</code> is omitted, an agent inherits these defaults, tuned to match agent/provider error output rather than source code or prose (so implementing a rate limiter won't self-pause):</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a>(?im)^\s*API Error:               # Claude Code: 4xx/5xx, overloaded, timeouts, ECONNRESET
+<a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a>(?i)Please run /login             # auth lost: "Not logged in" / "Invalid API key"
+<a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a>(?i)usage limit reached           # "Claude AI usage limit reached"
+<a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a>(?i)You've hit your (usage )?limit # usage/session limit stop
+<a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a>(?i)Prompt is too long            # context window exceeded
+<a id="__codelineno-9-6" name="__codelineno-9-6" href="#__codelineno-9-6"></a>(?i)insufficient_quota            # OpenAI-backed agents: billing
+<a id="__codelineno-9-7" name="__codelineno-9-7" href="#__codelineno-9-7"></a>(?i)exceeded your current quota   # OpenAI-backed agents: billing
+<a id="__codelineno-9-8" name="__codelineno-9-8" href="#__codelineno-9-8"></a>(?i)Rate limit reached for        # OpenAI-backed agents: rate limit
+</code></pre></div>
+<p>To turn detection off for an agent, set <code>failure_patterns: []</code>.</p>
+<h3 id="resuming-after-a-restart">Resuming after a restart<a class="headerlink" href="#resuming-after-a-restart" title="Permanent link">&para;</a></h3>
+<p>When the daemon stops while an agent is mid-stage, the ticket goes back to <code>todo</code> and the stage is scheduled again. The worktree and branch survive, so without resume the agent starts a new conversation on top of its own half-finished work, with no memory of why it made those changes. Resume reattaches the stage to the conversation it was in, and sends <code>resume_prompt</code> instead of the stage prompt so the agent continues rather than starts over.</p>
+<p>The daemon writes <code>&lt;logs_dir&gt;/&lt;ticket-id&gt;/&lt;stage&gt;.session</code> while a stage's agent runs and deletes it as soon as the agent returns. A record left on disk therefore means the daemon itself went away. It is not part of the ticket file: everything it points at, including the Claude session files under <code>~/.claude/projects/</code>, is local to one machine.</p>
+<p>The record is keyed by stage and holds one session, so the next run of the same stage overwrites it. Which session each individual run wrote is kept in the ticket's history instead, as <a href="../tickets/#history"><code>session_kind</code> and <code>session_ref</code></a>, which are identifiers rather than paths for the same machine-local reason.</p>
+<p>A stage resumes only when every one of these holds. Any other case runs the stage fresh and logs why; nothing here pauses a ticket.</p>
+<ul>
+<li>The agent is <code>claude</code> or <code>pi</code> and its <code>resume</code> is not <code>false</code>.</li>
+<li>The record names this same stage, this same agent, this daemon's <code>instance_name</code>, and this worktree.</li>
+<li>The agent's session file still exists.</li>
+<li>No tmux window for the ticket is live, which would mean a process may still hold the session.</li>
+</ul>
+<p>Pausing a ticket and running <code>kontora retry</code> are deliberate restarts: the daemon is still up when the agent dies, so the record is already gone and the stage starts over.</p>
+<p>An agent that had in fact finished its work can exit within a second of resuming, which the tmux startup guard reads as a crash. Rather than pause the ticket, the daemon runs the stage once more from its normal prompt in a new session. That fallback happens at most once per scheduled stage and does not consume a pipeline retry. It only covers a resumed run that failed inside its first two seconds: a run that failed later did work that is now in the worktree, so the ticket pauses instead of repeating it.</p>
+<h2 id="stages">stages<a class="headerlink" href="#stages" title="Permanent link">&para;</a></h2>
+<p>Map of stage name to its prompt template, timeout, model, and reasoning effort. A stage defines <em>what</em> an agent should do at a pipeline step.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="nt">stages</span><span class="p">:</span>
+<a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a><span class="w">  </span><span class="nt">code</span><span class="p">:</span>
+<a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a><span class="w">    </span><span class="nt">prompt</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">|</span>
+<a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a><span class="w">      </span><span class="no">{{ .Ticket.Description }}</span>
+<a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a><span class="w">    </span><span class="nt">timeout</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">30m</span>
+<a id="__codelineno-10-6" name="__codelineno-10-6" href="#__codelineno-10-6"></a><span class="w">  </span><span class="nt">commit</span><span class="p">:</span>
+<a id="__codelineno-10-7" name="__codelineno-10-7" href="#__codelineno-10-7"></a><span class="w">    </span><span class="nt">prompt</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Stage, commit, and push.</span>
+<a id="__codelineno-10-8" name="__codelineno-10-8" href="#__codelineno-10-8"></a><span class="w">    </span><span class="nt">timeout</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">5m</span>
+<a id="__codelineno-10-9" name="__codelineno-10-9" href="#__codelineno-10-9"></a><span class="w">    </span><span class="c1"># One value for every agent that runs this stage:</span>
+<a id="__codelineno-10-10" name="__codelineno-10-10" href="#__codelineno-10-10"></a><span class="w">    </span><span class="nt">model</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">haiku</span>
+<a id="__codelineno-10-11" name="__codelineno-10-11" href="#__codelineno-10-11"></a><span class="w">    </span><span class="nt">effort</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">low</span>
+<a id="__codelineno-10-12" name="__codelineno-10-12" href="#__codelineno-10-12"></a><span class="w">  </span><span class="nt">push-pr</span><span class="p">:</span>
+<a id="__codelineno-10-13" name="__codelineno-10-13" href="#__codelineno-10-13"></a><span class="w">    </span><span class="nt">prompt</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Open a pull request.</span>
+<a id="__codelineno-10-14" name="__codelineno-10-14" href="#__codelineno-10-14"></a><span class="w">    </span><span class="c1"># Or one per agent, because a model name is not portable between CLIs.</span>
+<a id="__codelineno-10-15" name="__codelineno-10-15" href="#__codelineno-10-15"></a><span class="w">    </span><span class="c1"># A key is an agent name or an agent kind (claude, pi); the agent name wins.</span>
+<a id="__codelineno-10-16" name="__codelineno-10-16" href="#__codelineno-10-16"></a><span class="w">    </span><span class="nt">model</span><span class="p">:</span>
+<a id="__codelineno-10-17" name="__codelineno-10-17" href="#__codelineno-10-17"></a><span class="w">      </span><span class="nt">claude</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">haiku</span>
+<a id="__codelineno-10-18" name="__codelineno-10-18" href="#__codelineno-10-18"></a><span class="w">      </span><span class="nt">pi</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">anthropic/claude-haiku-4-5</span>
+<a id="__codelineno-10-19" name="__codelineno-10-19" href="#__codelineno-10-19"></a><span class="w">    </span><span class="c1"># The agent name wins over the kind, so one agent can differ from the rest.</span>
+<a id="__codelineno-10-20" name="__codelineno-10-20" href="#__codelineno-10-20"></a><span class="w">    </span><span class="nt">effort</span><span class="p">:</span>
+<a id="__codelineno-10-21" name="__codelineno-10-21" href="#__codelineno-10-21"></a><span class="w">      </span><span class="nt">claude</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">high</span>
+<a id="__codelineno-10-22" name="__codelineno-10-22" href="#__codelineno-10-22"></a><span class="w">      </span><span class="nt">claude-opus</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">xhigh</span>
+</code></pre></div>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Required</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>prompt</code></td>
+<td>yes</td>
+<td>Go template rendered before passing to the agent.</td>
+</tr>
+<tr>
+<td><code>timeout</code></td>
+<td>no</td>
+<td>Maximum duration for the agent (e.g., <code>10m</code>, <code>1h30m</code>).</td>
+</tr>
+<tr>
+<td><code>model</code></td>
+<td>no</td>
+<td>Model this stage runs on, passed to the agent as <code>--model</code>. Either one pattern, or a map from agent name or agent kind (<code>claude</code>, <code>pi</code>) to a pattern. It replaces any <code>--model</code> in the agent's own <code>args</code>. Only <code>claude</code> and <code>pi</code> take the flag: a stage that resolves a model for any other agent fails to load, or pauses the ticket when the ticket's own <code>agent</code> field picks that agent.</td>
+</tr>
+<tr>
+<td><code>effort</code></td>
+<td>no</td>
+<td>Reasoning effort this stage runs on, passed as <code>--effort</code> to <code>claude</code> and <code>--thinking</code> to <code>pi</code>. Same two forms and the same agent-name-over-kind rule as <code>model</code>, and the same failure for an agent that takes no flag for it. It overrides the agent's own <code>effort</code>.</td>
+</tr>
+</tbody>
+</table>
+<p>For <code>pi</code>, <code>--thinking</code> and the <code>:&lt;level&gt;</code> suffix of a model pattern (<code>anthropic/claude-opus-5:high</code>) set the same thing. Either alone works; both together fail with an error naming the two values. A pipeline step whose stage and agent pair them fails to load. A pair reached any other way — through the ticket's own <code>agent</code> field, or through <code>summary_effort</code> — is caught when the stage spawns, which pauses the ticket. Only the model and the effort the run actually uses count, so a stage <code>model</code> with no suffix clears the conflict with a suffixed one in the agent's <code>args</code>, and a <code>--thinking</code> in those <code>args</code> conflicts with a suffixed model exactly as a configured <code>effort</code> does.</p>
+<h3 id="prompt-templates">Prompt templates<a class="headerlink" href="#prompt-templates" title="Permanent link">&para;</a></h3>
+<p>Prompts are Go <a href="https://pkg.go.dev/text/template">text/template</a> strings with these variables and functions:</p>
+<table>
+<thead>
+<tr>
+<th>Expression</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>{{ .Ticket.ID }}</code></td>
+<td>Ticket ID (e.g., <code>poi-q88f</code>).</td>
+</tr>
+<tr>
+<td><code>{{ .Ticket.Title }}</code></td>
+<td>First <code># Heading</code> from the ticket body.</td>
+</tr>
+<tr>
+<td><code>{{ .Ticket.Description }}</code></td>
+<td>Full ticket body (markdown after frontmatter).</td>
+</tr>
+<tr>
+<td><code>{{ .Ticket.FilePath }}</code></td>
+<td>Absolute path to the ticket's markdown file.</td>
+</tr>
+<tr>
+<td><code>{{ file "PLAN.md" }}</code></td>
+<td>Contents of a file relative to the ticket's worktree.</td>
+</tr>
+<tr>
+<td><code>{{ plannotatorReview }}</code></td>
+<td>Feedback from the last Plannotator code review. Reading it deletes the file, so only the built-in <code>rework</code> stage uses it.</td>
+</tr>
+<tr>
+<td><code>{{ plannotatorAnnotations }}</code></td>
+<td>Pending Plannotator annotations on the ticket. Reading it leaves the file in place (see <a href="#plannotator">plannotator</a>).</td>
+</tr>
+</tbody>
+</table>
+<p>The <code>file</code> function is how stages communicate — an earlier stage writes a file (e.g., <code>PLAN.md</code>) and a later stage reads it via the template.</p>
+<h2 id="pipelines">pipelines<a class="headerlink" href="#pipelines" title="Permanent link">&para;</a></h2>
+<p>Map of pipeline name to an ordered list of stages. Each ticket references a pipeline by name in its <code>pipeline</code> frontmatter field.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="nt">pipelines</span><span class="p">:</span>
+<a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a><span class="w">  </span><span class="nt">default</span><span class="p">:</span>
+<a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a><span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">stage</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">code</span>
+<a id="__codelineno-11-4" name="__codelineno-11-4" href="#__codelineno-11-4"></a><span class="w">      </span><span class="nt">agent</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">claude</span>
+<a id="__codelineno-11-5" name="__codelineno-11-5" href="#__codelineno-11-5"></a><span class="w">      </span><span class="nt">on_success</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">human_review</span>
+<a id="__codelineno-11-6" name="__codelineno-11-6" href="#__codelineno-11-6"></a><span class="w">      </span><span class="nt">on_failure</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">pause</span>
+</code></pre></div>
+<h3 id="stage-fields">Stage fields<a class="headerlink" href="#stage-fields" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Required</th>
+<th>Values</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>stage</code></td>
+<td>yes</td>
+<td>—</td>
+<td>Stage to run at this pipeline step.</td>
+</tr>
+<tr>
+<td><code>agent</code></td>
+<td>yes</td>
+<td>—</td>
+<td>Agent to run the stage.</td>
+</tr>
+<tr>
+<td><code>on_success</code></td>
+<td>yes</td>
+<td><code>next</code>, <code>done</code>, <code>human_review</code>, or a custom status</td>
+<td>What to do when the agent exits 0.</td>
+</tr>
+<tr>
+<td><code>on_failure</code></td>
+<td>yes</td>
+<td><code>retry</code>, <code>back</code>, <code>pause</code>, <code>human_review</code>, or a custom status</td>
+<td>What to do when the agent exits non-zero.</td>
+</tr>
+<tr>
+<td><code>max_retries</code></td>
+<td>no</td>
+<td>integer (default <code>0</code>)</td>
+<td>Maximum retry attempts (only relevant when <code>on_failure=retry</code>).</td>
+</tr>
+</tbody>
+</table>
+<h3 id="policies">Policies<a class="headerlink" href="#policies" title="Permanent link">&para;</a></h3>
+<p><strong><code>on_success</code></strong>:
+- <code>next</code> — advance to the next stage (set status back to <code>todo</code> so the scheduler picks it up).
+- <code>done</code> — mark the ticket as complete.
+- <code>human_review</code> — park the ticket in <code>human_review</code> for a human to look at.
+- A custom status declared in top-level <code>statuses:</code> — park the ticket in that status.</p>
+<p><strong><code>on_failure</code></strong>:
+- <code>retry</code> — re-run the same stage (up to <code>max_retries</code>, then pause).
+- <code>back</code> — go back to the previous stage. Not allowed on the first stage.
+- <code>pause</code> — set the ticket to <code>paused</code>.
+- <code>human_review</code> — park the ticket in <code>human_review</code>.
+- A custom status declared in top-level <code>statuses:</code> — park the ticket in that status.</p>
+<h3 id="validation-rules">Validation rules<a class="headerlink" href="#validation-rules" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Every pipeline step must reference a stage and agent that exist in the config.</li>
+<li><code>on_success</code> must be <code>next</code>, <code>done</code>, <code>human_review</code>, or a custom status declared in top-level <code>statuses:</code>.</li>
+<li><code>on_failure</code> must be <code>retry</code>, <code>back</code>, <code>pause</code>, <code>human_review</code>, or a custom status declared in top-level <code>statuses:</code>.</li>
+<li><code>on_failure=back</code> is not allowed on the first stage.</li>
+<li>The last stage must not have <code>on_success=next</code> (it must terminate with <code>done</code>, <code>human_review</code>, or a custom status).</li>
+<li>A stage cannot appear more than once in the same pipeline.</li>
+</ul>
+<h2 id="projects">projects<a class="headerlink" href="#projects" title="Permanent link">&para;</a></h2>
+<p>Map of project name to a repository and the defaults tickets for it should get.
+Without a <code>projects:</code> block nothing changes: a ticket created for a repository
+with no entry still gets no pipeline and no agent.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a><span class="nt">projects</span><span class="p">:</span>
+<a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a><span class="w">  </span><span class="nt">kontora</span><span class="p">:</span>
+<a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a><span class="w">    </span><span class="nt">path</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">~/projects/kontora</span>
+<a id="__codelineno-12-4" name="__codelineno-12-4" href="#__codelineno-12-4"></a><span class="w">    </span><span class="nt">pipeline</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">implement-review-commit</span>
+<a id="__codelineno-12-5" name="__codelineno-12-5" href="#__codelineno-12-5"></a><span class="w">    </span><span class="nt">agent</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">claude</span>
+<a id="__codelineno-12-6" name="__codelineno-12-6" href="#__codelineno-12-6"></a><span class="w">  </span><span class="nt">widget-api</span><span class="p">:</span>
+<a id="__codelineno-12-7" name="__codelineno-12-7" href="#__codelineno-12-7"></a><span class="w">    </span><span class="nt">path</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">~/projects/widget-api</span>
+<a id="__codelineno-12-8" name="__codelineno-12-8" href="#__codelineno-12-8"></a><span class="w">    </span><span class="nt">pipeline</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">default</span>
+</code></pre></div>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Required</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>path</code></td>
+<td>yes</td>
+<td>Repository the entry applies to.</td>
+</tr>
+<tr>
+<td><code>pipeline</code></td>
+<td>no</td>
+<td>Pipeline written into new tickets for this repository.</td>
+</tr>
+<tr>
+<td><code>agent</code></td>
+<td>no</td>
+<td>Agent written into new tickets for this repository.</td>
+</tr>
+<tr>
+<td><code>prefix</code></td>
+<td>no</td>
+<td>Ticket-ID prefix for this repository, instead of one derived from the directory name. Lowercase letters and digits only.</td>
+</tr>
+<tr>
+<td><code>branch_prefix</code></td>
+<td>no</td>
+<td>Overrides the top-level <code>branch_prefix</code> for this repository.</td>
+</tr>
+<tr>
+<td><code>branch_naming</code></td>
+<td>no</td>
+<td>Overrides the top-level <a href="#branch-naming"><code>branch_naming</code></a> mode for this repository.</td>
+</tr>
+<tr>
+<td><code>hooks</code></td>
+<td>no</td>
+<td>Commands run at this repository's lifecycle events, after the top-level ones (see <a href="#hooks">hooks</a>).</td>
+</tr>
+</tbody>
+</table>
+<p><code>pipeline</code>, <code>agent</code> and <code>prefix</code> are read when the ticket is created. The
+daemon reads <code>branch_prefix</code> and <code>branch_naming</code> when it names an empty branch,
+so the current config applies until pickup. A ticket that already carries a
+<code>branch</code> keeps it.</p>
+<p>Set <code>prefix</code> when the derived one is not what you want, or when two
+repositories would otherwise share it. Without it the prefix comes from the
+directory name; see <a href="../tickets/#ticket-id-format">ticket ID format</a> for the
+rule. Changing it renames nothing: existing IDs stay as they are.</p>
+<p>The pipeline and agent defaults are applied when a ticket is created (<code>kontora new</code>, <code>POST /api/tickets</code>, the TUI and web create forms) or initialized (<code>kontora init</code>, <code>POST /api/tickets/{id}/init</code>), and are written into the ticket's frontmatter. The ticket file keeps saying exactly what will run, and an existing ticket is never rewritten.</p>
+<p>A value you supply yourself wins over the project default. On <code>kontora init</code> a value the ticket file already declares wins too: the project fills a blank field, it never replaces a pipeline or an agent the ticket chose. The two fields are independent: naming a pipeline still lets the agent come from the project.</p>
+<p><code>path</code> is matched after <code>~</code> expansion and cleaning, so <code>~/projects/kontora</code>, <code>/home/you/projects/kontora</code>, and a trailing slash all reach the same entry. Only the complete path matches. A ticket pointing at <code>~/projects/kontora/internal</code> inherits nothing, and symlinks are not resolved. A relative path is not resolved either, because only the daemon host knows what it would be relative to: <code>kontora new --path . "..."</code> matches no project. Without <code>--path</code>, <code>kontora new</code> fills in the current git root, which is absolute and does match.</p>
+<h3 id="opting-out-with-none">Opting out with <code>none</code><a class="headerlink" href="#opting-out-with-none" title="Permanent link">&para;</a></h3>
+<p>Once a project sets a default pipeline, leaving <code>--pipeline</code> blank no longer produces a standalone ticket. Pass the literal <code>none</code> instead:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a>kontora<span class="w"> </span>new<span class="w"> </span>--path<span class="w"> </span>~/projects/kontora<span class="w"> </span>--pipeline<span class="w"> </span>none<span class="w"> </span><span class="s2">"one agent run, no stages"</span>
+</code></pre></div>
+<p><code>none</code> means "leave this field blank and skip the project default". It is accepted wherever a command takes a pipeline or agent name: the <code>kontora new</code>, <code>kontora update</code>, and remote <code>kontora init</code> flags, the <code>pipeline</code> and <code>agent</code> fields of <code>POST /api/tickets</code>, <code>POST /api/tickets/{id}/init</code>, and <code>PUT /api/tickets/{id}</code>, the TUI create form, and the web selects. The literal string never reaches the frontmatter. Because it is reserved, a pipeline or an agent named <code>none</code> fails config validation.</p>
+<p>Only those commands read the sentinel. <code>pipeline: none</code> written by hand into a ticket that is already initialized stays there, and the daemon pauses the ticket with <code>unknown pipeline "none"</code>. Leave the field out instead.</p>
+<h3 id="validation-rules_1">Validation rules<a class="headerlink" href="#validation-rules_1" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>path</code> is required.</li>
+<li><code>pipeline</code> and <code>agent</code>, when set, must exist in <code>pipelines:</code> and <code>agents:</code>.</li>
+<li>Two projects may not have paths that expand and clean to the same directory, which would make the lookup pick one at random.</li>
+<li>No pipeline and no agent may be named <code>none</code>.</li>
+</ul>
+<h2 id="hooks">hooks<a class="headerlink" href="#hooks" title="Permanent link">&para;</a></h2>
+<p>Hooks run your own shell commands at points in a ticket's life. The case they
+exist for: a fresh worktree does not carry the gitignored files a repository
+needs, so an agent that expects a <code>.env</code> fails on a missing file after burning a
+run. A hook copies it in before the agent starts.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a><span class="nt">hooks</span><span class="p">:</span>
+<a id="__codelineno-14-2" name="__codelineno-14-2" href="#__codelineno-14-2"></a><span class="w">  </span><span class="nt">worktree_created</span><span class="p">:</span>
+<a id="__codelineno-14-3" name="__codelineno-14-3" href="#__codelineno-14-3"></a><span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">copy claude settings</span>
+<a id="__codelineno-14-4" name="__codelineno-14-4" href="#__codelineno-14-4"></a><span class="w">      </span><span class="nt">run</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">cp "$KONTORA_REPO_PATH/.claude/settings.local.json" .claude/ 2&gt;/dev/null || true</span>
+<a id="__codelineno-14-5" name="__codelineno-14-5" href="#__codelineno-14-5"></a>
+<a id="__codelineno-14-6" name="__codelineno-14-6" href="#__codelineno-14-6"></a><span class="nt">projects</span><span class="p">:</span>
+<a id="__codelineno-14-7" name="__codelineno-14-7" href="#__codelineno-14-7"></a><span class="w">  </span><span class="nt">kontora</span><span class="p">:</span>
+<a id="__codelineno-14-8" name="__codelineno-14-8" href="#__codelineno-14-8"></a><span class="w">    </span><span class="nt">path</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">~/projects/kontora</span>
+<a id="__codelineno-14-9" name="__codelineno-14-9" href="#__codelineno-14-9"></a><span class="w">    </span><span class="nt">hooks</span><span class="p">:</span>
+<a id="__codelineno-14-10" name="__codelineno-14-10" href="#__codelineno-14-10"></a><span class="w">      </span><span class="nt">worktree_created</span><span class="p">:</span>
+<a id="__codelineno-14-11" name="__codelineno-14-11" href="#__codelineno-14-11"></a><span class="w">        </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">copy env file</span>
+<a id="__codelineno-14-12" name="__codelineno-14-12" href="#__codelineno-14-12"></a><span class="w">          </span><span class="nt">run</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">cp "$KONTORA_REPO_PATH/.env" .env</span>
+<a id="__codelineno-14-13" name="__codelineno-14-13" href="#__codelineno-14-13"></a><span class="w">          </span><span class="nt">timeout</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">30s</span>
+<a id="__codelineno-14-14" name="__codelineno-14-14" href="#__codelineno-14-14"></a><span class="w">      </span><span class="nt">stage_start</span><span class="p">:</span>
+<a id="__codelineno-14-15" name="__codelineno-14-15" href="#__codelineno-14-15"></a><span class="w">        </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">run</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">make deps</span>
+<a id="__codelineno-14-16" name="__codelineno-14-16" href="#__codelineno-14-16"></a><span class="w">          </span><span class="nt">on_failure</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">warn</span>
+</code></pre></div>
+<h3 id="events">Events<a class="headerlink" href="#events" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Event</th>
+<th>When it runs</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>worktree_created</code></td>
+<td>After the daemon creates a worktree, before the stage's agent starts. It does not run when a stage reuses a worktree that is already there, unless an earlier run left that worktree half-prepared (see <a href="#failure">failure</a>).</td>
+</tr>
+<tr>
+<td><code>stage_start</code></td>
+<td>Before each stage agent starts.</td>
+</tr>
+<tr>
+<td><code>stage_end</code></td>
+<td>After each stage agent exits, before the pipeline decides what happens next.</td>
+</tr>
+</tbody>
+</table>
+<p>An <a href="#plannotator">annotation run</a>, which rewrites the ticket rather than doing
+the stage's work, fires no stage hooks.</p>
+<p><code>stage_start</code> also runs when a stage resumes after the daemon died mid-run, so a
+hook that must not run twice for one stage has to be written to tolerate it.</p>
+<p>A <code>stage_start</code> that completes is followed by a <code>stage_end</code>, including for a run
+that ends before the pipeline evaluates it — a runner failure, or an agent that
+hides an error behind a clean exit. Two things break the pair. A <code>stage_start</code>
+hook that fails under <code>pause</code> stops the stage before it starts, so no
+<code>stage_end</code> runs; and neither runs when the exit is not the daemon's to act on,
+which is when the ticket was cancelled, its status was changed by hand while the
+agent ran, or another instance claimed it.</p>
+<h3 id="fields">Fields<a class="headerlink" href="#fields" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Required</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>run</code></td>
+<td>yes</td>
+<td>—</td>
+<td>The command line, run as <code>/bin/sh -c</code>.</td>
+</tr>
+<tr>
+<td><code>name</code></td>
+<td>no</td>
+<td>—</td>
+<td>Labels the hook in the logs and in the error a failure records. Without one the hook is <code>&lt;event&gt;[&lt;index&gt;]</code>.</td>
+</tr>
+<tr>
+<td><code>timeout</code></td>
+<td>no</td>
+<td><code>5m</code></td>
+<td>How long the command may run before it is terminated.</td>
+</tr>
+<tr>
+<td><code>on_failure</code></td>
+<td>no</td>
+<td>per event</td>
+<td><code>pause</code> or <code>warn</code>. Defaults to <code>pause</code> for <code>worktree_created</code> and <code>stage_start</code>, <code>warn</code> for <code>stage_end</code>.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="scope-and-order">Scope and order<a class="headerlink" href="#scope-and-order" title="Permanent link">&para;</a></h3>
+<p>Hooks are defined at the top level and under a project entry. For a ticket whose
+repository path matches a project, both sets run for the same event, top-level
+first. A repository that matches no project runs the top-level hooks alone.
+Hooks within one set run in the order they are written, and the daemon waits for
+each before starting the next.</p>
+<h3 id="environment">Environment<a class="headerlink" href="#environment" title="Permanent link">&para;</a></h3>
+<p>Every hook runs with its working directory set to the ticket's worktree, and
+receives the daemon's own environment plus:</p>
+<table>
+<thead>
+<tr>
+<th>Variable</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>KONTORA_EVENT</code></td>
+<td>The event that fired.</td>
+</tr>
+<tr>
+<td><code>KONTORA_TICKET_ID</code></td>
+<td>The ticket's ID.</td>
+</tr>
+<tr>
+<td><code>KONTORA_TICKET_FILE</code></td>
+<td>Path to the ticket's markdown file.</td>
+</tr>
+<tr>
+<td><code>KONTORA_WORKTREE</code></td>
+<td>The worktree the hook runs in.</td>
+</tr>
+<tr>
+<td><code>KONTORA_REPO_PATH</code></td>
+<td>The repository the worktree was cut from.</td>
+</tr>
+<tr>
+<td><code>KONTORA_BRANCH</code></td>
+<td>The ticket's branch.</td>
+</tr>
+<tr>
+<td><code>KONTORA_STAGE</code></td>
+<td>The stage this run belongs to.</td>
+</tr>
+<tr>
+<td><code>KONTORA_AGENT</code></td>
+<td>The configured name of the agent the stage runs.</td>
+</tr>
+<tr>
+<td><code>KONTORA_PROJECT</code></td>
+<td>The <code>projects:</code> entry that matched, empty when none did.</td>
+</tr>
+<tr>
+<td><code>KONTORA_EXIT_CODE</code></td>
+<td>The agent's exit code. Set for <code>stage_end</code> only.</td>
+</tr>
+</tbody>
+</table>
+<p>The top-level <code>environment:</code> map is deliberately not merged in: it configures
+agent processes, not hooks. There is no templating in <code>run</code> — write
+<code>"$KONTORA_REPO_PATH"</code>, and the quoting rules are the shell's own.</p>
+<h3 id="failure">Failure<a class="headerlink" href="#failure" title="Permanent link">&para;</a></h3>
+<p>A hook that exits non-zero or exceeds its timeout pauses the ticket when its
+resolved <code>on_failure</code> is <code>pause</code>, and is logged and skipped past when it is
+<code>warn</code>. A pause records the failure in <code>last_error</code> and as a ticket note, and
+stops the hooks after it in the same event.</p>
+<p>A <code>worktree_created</code> failure under <code>pause</code> removes the worktree the daemon
+created in that pickup before pausing, so retrying the ticket creates it again
+and runs the hook again rather than reusing a half-prepared one. A worktree the
+hook left with uncommitted changes is kept, the same as anywhere else: the
+pause reason then names it, and the next pickup runs the <code>worktree_created</code>
+hooks again on the worktree that is still there rather than treating it as
+ready. The same applies when the daemon is stopped while these hooks run.</p>
+<p>A <code>stage_end</code> failure does not change what the pipeline decided: the stage's
+history, its next stage, and its <code>last_error</code> are recorded as they would have
+been, and only the status is forced to <code>paused</code> on top. The hook's message goes
+into <code>last_error</code> only when the pipeline recorded none. A ticket the pipeline
+had completed loses its <code>completed_at</code> with the pause, because the run is not
+over.</p>
+<p>Copying a gitignored file does not make a worktree dirty, so cleanup on
+completion still works. A hook that writes a tracked file does block removal.</p>
+<h3 id="logging">Logging<a class="headerlink" href="#logging" title="Permanent link">&para;</a></h3>
+<p>The combined output of every hook is appended to
+<code>&lt;logs_dir&gt;/&lt;ticket-id&gt;/hooks/hooks.log</code>, each run behind a
+<code>=== &lt;time&gt; &lt;event&gt; &lt;hook&gt; ===</code> line. It sits in a directory of its own rather
+than beside the stage logs, which the daemon scans for the agent's
+<a href="#agents">failure patterns</a>: hook output in a stage log would pause tickets
+whose agent did nothing wrong.</p>
+<h3 id="validation-rules_2">Validation rules<a class="headerlink" href="#validation-rules_2" title="Permanent link">&para;</a></h3>
+<ul>
+<li>The event name must be <code>worktree_created</code>, <code>stage_start</code>, or <code>stage_end</code>.</li>
+<li><code>run</code> is required and must not be blank.</li>
+<li><code>on_failure</code>, when set, must be <code>pause</code> or <code>warn</code>.</li>
+<li><code>timeout</code> must not be negative.</li>
+</ul>
+<p>A hook runs arbitrary shell at the same trust level as <code>agents.&lt;name&gt;.binary</code>.
+Anything that can write your config can run commands as you.</p>
+<h2 id="plannotator">plannotator<a class="headerlink" href="#plannotator" title="Permanent link">&para;</a></h2>
+<p><a href="https://plannotator.ai">Plannotator</a> is the UI the daemon spawns for the two
+passes a human drives: reviewing the branch diff, and annotating the ticket.
+Start either from the ticket detail pane or over the <a href="../api/">API</a>.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a><span class="nt">plannotator</span><span class="p">:</span>
+<a id="__codelineno-15-2" name="__codelineno-15-2" href="#__codelineno-15-2"></a><span class="w">  </span><span class="nt">binary</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">plannotator</span>
+<a id="__codelineno-15-3" name="__codelineno-15-3" href="#__codelineno-15-3"></a><span class="w">  </span><span class="nt">timeout</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">30m</span>
+<a id="__codelineno-15-4" name="__codelineno-15-4" href="#__codelineno-15-4"></a><span class="w">  </span><span class="nt">reviews_dir</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">~/.kontora/plannotator-reviews</span>
+</code></pre></div>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Required</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>binary</code></td>
+<td>no</td>
+<td><code>plannotator</code></td>
+<td>The binary to spawn. Resolved on the daemon's <code>PATH</code>, or used as-is when absolute.</td>
+</tr>
+<tr>
+<td><code>timeout</code></td>
+<td>no</td>
+<td><code>30m</code></td>
+<td>How long a session may stay open before it is cancelled.</td>
+</tr>
+<tr>
+<td><code>reviews_dir</code></td>
+<td>no</td>
+<td><code>~/.kontora/plannotator-reviews</code></td>
+<td>Where captured feedback waits for the agent that consumes it.</td>
+</tr>
+</tbody>
+</table>
+<p>Only one Plannotator process runs per ticket, so a review and an annotation
+cannot overlap. While a session is open the scheduler leaves the ticket alone,
+and picks it up again when the session closes: a stage run would edit the file
+under the reviewer.</p>
+<h3 id="reviewing-the-code">Reviewing the code<a class="headerlink" href="#reviewing-the-code" title="Permanent link">&para;</a></h3>
+<p>A ticket in <code>human_review</code> opens its branch diff. The daemon builds a throwaway
+detached worktree at the merge base and applies the branch's diff on top, so the
+default "unstaged" view shows everything the agent committed.</p>
+<p>Submitted feedback is written to <code>&lt;reviews_dir&gt;/&lt;id&gt;.md</code> and the ticket moves to
+the built-in <code>rework</code> stage, whose prompt reads it through
+<code>{{ plannotatorReview }}</code>. That read deletes the file.</p>
+<h3 id="annotating-the-ticket">Annotating the ticket<a class="headerlink" href="#annotating-the-ticket" title="Permanent link">&para;</a></h3>
+<p>A ticket in <code>open</code> opens its own markdown file. Later statuses are refused: a
+stage has run against the ticket text by then, and a rewrite would contradict the
+work it produced. There is no worktree, no merge base, and no diff: the target is
+the file in <code>tickets_dir</code>. A ticket that is already parked for an annotation run
+is refused, so a second set of notes cannot overwrite the pending one.</p>
+<p>The ticket does not have to be initialized. Submitting annotations sets
+<code>kontora: true</code>, because the scheduler only picks up a kontora ticket and the
+notes would otherwise never be read. It is the same adoption a status change on
+the board performs, and it adds no pipeline or agent.</p>
+<p>Approving or dismissing leaves the ticket untouched. Submitting annotations:</p>
+<ol>
+<li>writes them to <code>&lt;reviews_dir&gt;/&lt;id&gt;.annotations.md</code>, a different file from code
+   review feedback so the two can never overwrite each other,</li>
+<li>records the ticket's current status in <code>annotation_return_status</code> and sends
+   the ticket back to <code>todo</code> with <code>attempt: 0</code>, leaving <code>stage</code> alone,</li>
+<li>schedules one run with <code>annotation_prompt</code>, which reads the annotations
+   through <code>{{ plannotatorAnnotations }}</code>.</li>
+</ol>
+<p>That run rewrites the ticket and nothing else. It evaluates no pipeline action,
+so it cannot advance the ticket or repeat the stage's work, and it does not
+regenerate the ticket-level summary. On success the ticket returns to the status
+in <code>annotation_return_status</code>, the field is cleared, and the annotations file is
+deleted. On a nonzero exit the ticket pauses with <code>last_error</code>, and both the
+field and the annotations file stay, so <code>kontora retry</code> runs again against the
+same feedback. Each run adds one history entry with <code>kind: annotation</code>.</p>
+<p>A custom <code>annotation_prompt</code> must include <code>{{ plannotatorAnnotations }}</code>. The
+daemon checks that the rendered prompt carries the annotations and pauses the
+ticket if it does not, because an agent that never received the notes would
+still report success, and that success is what deletes them.</p>
+<p>If the annotations file is gone by the time the run starts, nothing runs and the
+ticket returns to its status. To call off a pending run, move the ticket to
+another status (<code>kontora pause &lt;id&gt;</code>, the board menu, or any other status move):
+that clears <code>annotation_return_status</code>, and the status you chose is where the
+ticket stays.</p>
+<p>The restriction to the ticket file is stated in the prompt and only there. A
+stage carries no tool policy, so an agent that ignores the instruction is not
+stopped by anything. Set the ticket's <code>agent</code> to a profile with narrower
+permissions if that matters to you.</p>
+<p>The run works in the ticket's existing worktree when a previous run created one,
+and in the repository itself otherwise. A ticket with no <code>path</code> runs in
+<code>tickets_dir</code>, which is the only directory such a ticket has; the agent then
+answers the notes without the code in front of it. It never creates a worktree or
+a branch: a ticket annotated before its first stage has no work to put on a
+branch.</p>
+<p>Where it can, the run continues the conversation the ticket's current stage
+ended in, so the agent already knows what it built and why. The daemon records
+that session in <code>&lt;logs_dir&gt;/&lt;ticket-id&gt;/&lt;stage&gt;.completed-session</code> when the
+agent returns. Reuse needs every one of these, the same conditions as <a href="#resuming-after-a-restart">resume
+after a restart</a> plus one:</p>
+<ul>
+<li>the agent is <code>claude</code> or <code>pi</code>, with <code>resume</code> not <code>false</code>,</li>
+<li>the record names this stage, this agent, this <code>instance_name</code>, and this working
+  directory,</li>
+<li>the session file it names still exists,</li>
+<li>no tmux window for the ticket is live,</li>
+<li>the stage has no interrupted run of its own waiting to recover. That run must
+  continue its own conversation, and appending to the recorded one would make it
+  the newest session in the stage's directory, which is how the interrupted run
+  is identified.</li>
+</ul>
+<p>Any other case starts a new conversation, logs why, and does not pause the
+ticket. The history entry's <code>session_reused</code> field reports which happened, and
+its <a href="../tickets/#history"><code>session_kind</code> and <code>session_ref</code></a> name the session the
+run ended up writing, whether it continued one or opened its own.</p>
+<p>This record is deliberately separate from the crash-recovery record a stage
+writes while it runs. Only the annotation run reads it, so an ordinary
+<code>kontora retry</code> of a stage that finished still starts fresh.</p>
+<h2 id="assistant">assistant<a class="headerlink" href="#assistant" title="Permanent link">&para;</a></h2>
+<p>The dashboard's assistant pane. It answers questions about the board and drives
+Kontora through the same verbs the CLI uses, running one of the agents already
+listed under <code>agents:</code>.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a><span class="nt">assistant</span><span class="p">:</span>
+<a id="__codelineno-16-2" name="__codelineno-16-2" href="#__codelineno-16-2"></a><span class="w">  </span><span class="nt">agent</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">claude</span><span class="w">          </span><span class="c1"># required to enable; no agent means no assistant</span>
+<a id="__codelineno-16-3" name="__codelineno-16-3" href="#__codelineno-16-3"></a><span class="w">  </span><span class="nt">model</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">sonnet</span><span class="w">          </span><span class="c1"># optional</span>
+<a id="__codelineno-16-4" name="__codelineno-16-4" href="#__codelineno-16-4"></a><span class="w">  </span><span class="nt">effort</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">medium</span><span class="w">         </span><span class="c1"># optional</span>
+<a id="__codelineno-16-5" name="__codelineno-16-5" href="#__codelineno-16-5"></a><span class="w">  </span><span class="nt">workdir</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">~/.kontora/tickets</span><span class="w">   </span><span class="c1"># optional, defaults to tickets_dir</span>
+<a id="__codelineno-16-6" name="__codelineno-16-6" href="#__codelineno-16-6"></a><span class="w">  </span><span class="nt">timeout</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">10m</span><span class="w">           </span><span class="c1"># optional, per turn</span>
+<a id="__codelineno-16-7" name="__codelineno-16-7" href="#__codelineno-16-7"></a><span class="w">  </span><span class="nt">autonomy</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ask</span><span class="w">          </span><span class="c1"># optional: read | ask | auto</span>
+<a id="__codelineno-16-8" name="__codelineno-16-8" href="#__codelineno-16-8"></a><span class="w">  </span><span class="nt">prompt</span><span class="p">:</span><span class="w"> </span><span class="s">""</span><span class="w">             </span><span class="c1"># optional, replaces the built-in system brief</span>
+</code></pre></div>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Required</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>agent</code></td>
+<td>no</td>
+<td>none</td>
+<td>Which <code>agents:</code> entry the assistant runs. Empty disables the pane, which then shows a configure hint instead of a composer.</td>
+</tr>
+<tr>
+<td><code>model</code></td>
+<td>no</td>
+<td>the agent's own</td>
+<td>Applied the way a stage's <code>model</code> is.</td>
+</tr>
+<tr>
+<td><code>effort</code></td>
+<td>no</td>
+<td>the agent's own</td>
+<td>Reasoning effort. Rejected for an agent whose CLI takes no flag for it.</td>
+</tr>
+<tr>
+<td><code>workdir</code></td>
+<td>no</td>
+<td><code>tickets_dir</code></td>
+<td>The working directory every turn runs in.</td>
+</tr>
+<tr>
+<td><code>timeout</code></td>
+<td>no</td>
+<td><code>10m</code></td>
+<td>Bounds one turn.</td>
+</tr>
+<tr>
+<td><code>autonomy</code></td>
+<td>no</td>
+<td><code>ask</code></td>
+<td>The mode a new chat starts in.</td>
+</tr>
+<tr>
+<td><code>prompt</code></td>
+<td>no</td>
+<td>built-in</td>
+<td>Replaces the whole system brief, mode paragraph included.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="only-claude-and-pi">Only claude and pi<a class="headerlink" href="#only-claude-and-pi" title="Permanent link">&para;</a></h3>
+<p><code>assistant.agent</code> must name an agent whose binary is <code>claude</code> or <code>pi</code>. Config
+validation rejects any other, naming the two.</p>
+<p>One chat is one agent session: the first message mints a session id and every
+later message resumes it, so the chat remembers what was already said. Only
+those two CLIs take a flag for that alongside a headless print mode. An agent
+without one would start from nothing on every message, which is not the feature.</p>
+<p>For the same reason the working directory is fixed when the chat opens rather
+than following the board. Claude keys its session files by working directory, so
+a chat whose directory moved could not resume.</p>
+<p>The agent, the model and the effort are fixed at the same point. Repointing
+<code>assistant.agent</code> after a chat has run applies to new chats; the old ones refuse
+a further message and say so, rather than resuming a claude session with pi and
+silently starting from nothing.</p>
+<h3 id="autonomy">Autonomy<a class="headerlink" href="#autonomy" title="Permanent link">&para;</a></h3>
+<p>The mode is enforced at the agent's tool boundary, not by asking the agent to
+behave: claude runs a <code>PreToolUse</code> hook, pi a <code>tool_call</code> handler, and both ask
+the daemon before the tool runs. A tool call the daemon has no rule for counts
+as a change, so a mode can only ever be stricter than expected, never looser.</p>
+<table>
+<thead>
+<tr>
+<th>Mode</th>
+<th>Reads</th>
+<th>Changes</th>
+<th>Deleting a ticket</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>read</code></td>
+<td>run</td>
+<td>refused, with a reason the agent reports</td>
+<td>refused</td>
+</tr>
+<tr>
+<td><code>ask</code></td>
+<td>run</td>
+<td>held until you approve or skip it in the pane</td>
+<td>held</td>
+</tr>
+<tr>
+<td><code>auto</code></td>
+<td>run</td>
+<td>run</td>
+<td>held</td>
+</tr>
+</tbody>
+</table>
+<p>A change left waiting is refused after five minutes, so a chat you walked away
+from does not leave an agent process blocked.</p>
+<p>The mode is per chat and the pane's selector sets it for the next message, so a
+chat can start read-only and be opened up once you have seen what it proposes.</p>
+<h3 id="turns-and-the-scheduler">Turns and the scheduler<a class="headerlink" href="#turns-and-the-scheduler" title="Permanent link">&para;</a></h3>
+<p>An assistant turn is a headless agent process, not a tmux window and not a
+pipeline stage. It does not take a <code>max_concurrent_agents</code> slot: someone waiting
+at the pane should not queue behind the board, and should not push a ticket run
+out of the way either. At most two turns run at once across every chat, and one
+per chat, because a chat's own session cannot take two.</p>
+<p>The agent is given <code>KONTORA_URL</code> and <code>KONTORA_TOKEN</code>, so its <code>kontora</code> calls go
+through the running daemon and the board updates as it works, and a per-turn
+secret the tool gate authenticates its calls with. <code>KONTORA_URL</code> names loopback
+even when <code>web.host</code> is a wildcard: the daemon refuses a request whose <code>Host</code> is
+<code>0.0.0.0</code>, so the agent has to reach it by an address it answers to.</p>
+<p>Chats are stored under <code>&lt;logs_dir&gt;/assistant/&lt;chat-id&gt;/</code>. Deleting one from the
+history removes its transcript with it.</p>
+<h2 id="metrics">metrics<a class="headerlink" href="#metrics" title="Permanent link">&para;</a></h2>
+<p>Optional OTLP export of what the daemon measures: stage runs and their
+durations, pipeline transitions, agent failures, token spend, and scheduler
+state. It is off by default and pushes over OTLP/HTTP to a collector you
+supply. There is no <code>/metrics</code> route and no scrape target; the daemon's HTTP
+surface does not change.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-17-1" name="__codelineno-17-1" href="#__codelineno-17-1"></a><span class="nt">metrics</span><span class="p">:</span>
+<a id="__codelineno-17-2" name="__codelineno-17-2" href="#__codelineno-17-2"></a><span class="w">  </span><span class="nt">enabled</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
+<a id="__codelineno-17-3" name="__codelineno-17-3" href="#__codelineno-17-3"></a><span class="w">  </span><span class="nt">endpoint</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">localhost:4318</span>
+<a id="__codelineno-17-4" name="__codelineno-17-4" href="#__codelineno-17-4"></a><span class="w">  </span><span class="nt">insecure</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
+<a id="__codelineno-17-5" name="__codelineno-17-5" href="#__codelineno-17-5"></a><span class="w">  </span><span class="nt">interval</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">60s</span>
+<a id="__codelineno-17-6" name="__codelineno-17-6" href="#__codelineno-17-6"></a><span class="w">  </span><span class="nt">headers</span><span class="p">:</span>
+<a id="__codelineno-17-7" name="__codelineno-17-7" href="#__codelineno-17-7"></a><span class="w">    </span><span class="nt">authorization</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Bearer &lt;token&gt;</span>
+</code></pre></div>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Required</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>enabled</code></td>
+<td>no</td>
+<td><code>false</code></td>
+<td>Export metrics. When false the daemon builds no exporter and opens no connection.</td>
+</tr>
+<tr>
+<td><code>endpoint</code></td>
+<td>no</td>
+<td><code>""</code></td>
+<td>Collector address, as a bare <code>host:port</code> or a full URL. Empty leaves the address to <code>OTEL_EXPORTER_OTLP_ENDPOINT</code> / <code>OTEL_EXPORTER_OTLP_METRICS_ENDPOINT</code>.</td>
+</tr>
+<tr>
+<td><code>insecure</code></td>
+<td>no</td>
+<td><code>false</code></td>
+<td>Send over plain HTTP. Ignored when <code>endpoint</code> states its own scheme, and when <code>endpoint</code> is empty.</td>
+</tr>
+<tr>
+<td><code>interval</code></td>
+<td>no</td>
+<td><code>60s</code></td>
+<td>How often the collected measurements are pushed.</td>
+</tr>
+<tr>
+<td><code>headers</code></td>
+<td>no</td>
+<td><code>{}</code></td>
+<td>Headers added to each export request, for a collector that needs auth.</td>
+</tr>
+</tbody>
+</table>
+<p>An <code>endpoint</code> that states a scheme decides the transport, whatever <code>insecure</code>
+says: <code>http://collector:4318</code> is always plain and <code>https://collector:4318</code>
+always TLS. A bare <code>host:port</code> leaves the choice to <code>insecure</code>. Combining
+<code>https://</code> with <code>insecure: true</code> contradicts itself, so the daemon keeps the
+scheme and logs a warning. Only <code>http</code> and <code>https</code> are accepted; the config
+fails to load on any other scheme.</p>
+<p><code>insecure</code> describes the configured <code>endpoint</code> and nothing else. With no
+<code>endpoint</code>, the transport comes from <code>OTEL_EXPORTER_OTLP_ENDPOINT</code> along with
+the address, so <code>insecure: true</code> on its own cannot downgrade an <code>https://</code>
+endpoint set in the environment.</p>
+<p>The request path is <code>/v1/metrics</code> unless the endpoint names one. Both
+<code>collector:4318</code> and <code>http://collector:4318</code> post to
+<code>http://collector:4318/v1/metrics</code>; write the path out
+(<code>https://collector.example/otlp/v1/metrics</code>) only when the collector serves it
+somewhere else.</p>
+<p>The SDK's own <code>OTEL_EXPORTER_OTLP_*</code> variables are read for the address and
+headers the config leaves unset, and <code>OTEL_RESOURCE_ATTRIBUTES</code> is merged into
+the resource. <code>OTEL_METRIC_EXPORT_INTERVAL</code> is not: <code>interval</code> always has a
+value, its own or the 60s default, and it is passed to the reader on every
+start. <code>metrics.enabled</code> is the only kill switch: <code>OTEL_SDK_DISABLED</code> is not
+implemented by the Go SDK and does nothing here.</p>
+<p>Exporting never blocks ticket work. A collector that is down, or an exporter
+that cannot be built at all, produces a warning and the daemon runs on with
+metrics off.</p>
+<h3 id="what-is-exported">What is exported<a class="headerlink" href="#what-is-exported" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Name</th>
+<th>Kind</th>
+<th>Unit</th>
+<th>Attributes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>kontora.stage.runs</code></td>
+<td>counter</td>
+<td><code>{run}</code></td>
+<td><code>stage</code>, <code>agent</code>, <code>pipeline</code>, <code>outcome</code>, <code>annotation</code>, <code>exit_code</code></td>
+</tr>
+<tr>
+<td><code>kontora.stage.duration</code></td>
+<td>histogram</td>
+<td><code>s</code></td>
+<td><code>stage</code>, <code>agent</code>, <code>pipeline</code>, <code>outcome</code>, <code>annotation</code></td>
+</tr>
+<tr>
+<td><code>kontora.stage.transitions</code></td>
+<td>counter</td>
+<td><code>{transition}</code></td>
+<td><code>stage</code>, <code>action</code></td>
+</tr>
+<tr>
+<td><code>kontora.agent.errors</code></td>
+<td>counter</td>
+<td><code>{error}</code></td>
+<td><code>stage</code>, <code>agent</code>, <code>kind</code></td>
+</tr>
+<tr>
+<td><code>kontora.agent.tokens</code></td>
+<td>counter</td>
+<td><code>{token}</code></td>
+<td><code>stage</code>, <code>agent</code>, <code>kind</code></td>
+</tr>
+<tr>
+<td><code>kontora.queue.wait</code></td>
+<td>histogram</td>
+<td><code>s</code></td>
+<td>none</td>
+</tr>
+<tr>
+<td><code>kontora.scheduler.active</code></td>
+<td>gauge</td>
+<td><code>{agent}</code></td>
+<td>none</td>
+</tr>
+<tr>
+<td><code>kontora.scheduler.capacity</code></td>
+<td>gauge</td>
+<td><code>{agent}</code></td>
+<td>none</td>
+</tr>
+<tr>
+<td><code>kontora.queue.depth</code></td>
+<td>gauge</td>
+<td><code>{ticket}</code></td>
+<td>none</td>
+</tr>
+</tbody>
+</table>
+<p><code>outcome</code> is <code>success</code>, <code>failure</code>, or <code>cancelled</code>. <code>action</code> is the pipeline
+action the exit produced: <code>advance</code>, <code>complete</code>, <code>retry</code>, <code>back</code>, <code>pause</code>, or
+<code>park</code>. On <code>kontora.agent.errors</code>, <code>kind</code> is <code>session_api_error</code> for a failure
+found in Claude's session record and <code>failure_pattern</code> for one matched against
+the agent's output log. On <code>kontora.agent.tokens</code> it is <code>input</code>, <code>output</code>,
+<code>cache_create</code>, or <code>cache_read</code>. A run is dropped whole if any one of its
+session records left its usage key unfilled; the counter never reports a
+partial figure.</p>
+<p>A ticket that runs without a pipeline reports <code>pipeline=""</code> and <code>stage=default</code>,
+which is the same key its log and its history rows already use.</p>
+<p><code>annotation</code> is <code>true</code> for a run that answers review annotations instead of
+doing the stage's work. Such a run borrows the stage's name, so a query about a
+stage's own runs and durations has to ask for <code>annotation="false"</code>. Its token
+spend has no such attribute: it is attributed to the stage whose conversation it
+continues.</p>
+<p>A stage run is counted once however many agent invocations it took, so a stage
+that resumes an interrupted session and then falls back to a fresh one is one
+run, not two. Token spend is counted per invocation, because each invocation is
+a separate real spend. An annotation run continues the session its stage
+finished, and records only the tokens it adds to it rather than the session's
+running totals. A run that recovers a session the daemon died in reports that
+session's totals whole, because the invocation that spent them never got to
+report anything.</p>
+<p><code>kontora.queue.wait</code> measures a ticket from the moment it is enqueued to the
+moment its run starts, so it includes the wait for a free concurrency slot.</p>
+<p>Some work is not measured at all. The final-summary agent runs with session
+persistence off, so it writes no session file to read token counts from; it
+appears in neither <code>kontora.stage.runs</code> nor <code>kontora.agent.tokens</code>. The
+<code>plannotator</code> subprocess is not instrumented either. Total wall time per ticket
+therefore does not add up from the stage durations alone.</p>
+<p>The built-in <code>rework</code> stage produces <code>kontora.stage.runs</code> and
+<code>kontora.stage.duration</code> but no <code>kontora.stage.transitions</code>, because it routes
+the ticket itself rather than through the pipeline.</p>
+<p>No ticket ID appears in any attribute. A store holding thousands of tickets
+would make that unbounded.</p>
+<p>The resource carries <code>service.name</code> (<code>kontora</code>), <code>service.version</code>, and
+<code>service.instance.id</code>, which is the daemon's <code>instance_name</code>. Two daemons
+sharing one collector are told apart by that last one.</p>
+<h2 id="reloading-the-config">Reloading the config<a class="headerlink" href="#reloading-the-config" title="Permanent link">&para;</a></h2>
+<p>The running daemon applies most config edits without a restart, so you can
+change a prompt or an agent's arguments while agents are working.</p>
+<h3 id="what-reloads-live">What reloads live<a class="headerlink" href="#what-reloads-live" title="Permanent link">&para;</a></h3>
+<p><code>agents</code>, <code>stages</code>, <code>pipelines</code>, <code>projects</code>, <code>statuses</code>, <code>environment</code>,
+<code>auto_pick_up</code>, <code>default_agent</code>, <code>branch_prefix</code>, <code>branch_naming</code>,
+<code>resume_prompt</code>, <code>annotation_prompt</code>, <code>summary_model</code>, <code>summary_effort</code>, and the
+whole <code>plannotator</code> block.</p>
+<p>A run reads the prompts and the <code>plannotator</code> block when it starts, so a reload
+changes the next run, never one already going.</p>
+<p>Editing <code>projects</code> reloads live, but the pipeline and agent defaults are stamped
+into a ticket when it is created or initialized. A reload changes what the next
+ticket gets, never what an existing one already carries. A project's
+<code>branch_prefix</code> and <code>branch_naming</code> are not stamped, so a reload changes how the
+daemon names an existing ticket whose branch is still empty.</p>
+<h3 id="what-needs-a-restart">What needs a restart<a class="headerlink" href="#what-needs-a-restart" title="Permanent link">&para;</a></h3>
+<p><code>tickets_dir</code>, <code>worktrees_dir</code>, <code>logs_dir</code>, <code>instance_name</code>, <code>tmux_session</code>,
+<code>max_concurrent_agents</code>, and the whole <code>web</code> and <code>metrics</code> blocks
+(<code>metrics.enabled</code>, <code>metrics.endpoint</code>, <code>metrics.insecure</code>, <code>metrics.interval</code>,
+<code>metrics.headers</code>). The daemon reads these once at startup: the watched
+directory, the worktree root, the claim name, the tmux session, the semaphore
+size, the HTTP listener, and the metric exporter are all fixed by then. A
+reload keeps the running value and logs one warning per field that differs on
+disk, naming the field, the running value, and the value it ignored. The
+<code>web.token</code> and <code>metrics.headers</code> values are never logged.</p>
+<p>A reload resolves <code>tickets_dir</code> from the environment before that check, the same
+way startup does. So a daemon started with <code>$KONTORA_TICKETS_DIR</code> or
+<code>$TICKETS_DIR</code> set keeps that store across reloads, and editing <code>tickets_dir</code> in
+the file changes nothing and warns about nothing: the environment already
+outranked the file on both sides of the comparison.</p>
+<p>To rename <code>tmux_session</code>, stop the daemon, run <code>tmux kill-session -t =&lt;old-name&gt;</code>,
+then start it with the new name. The old session is not renamed for you, and it
+must not be left running: its windows are invisible to the new daemon, so crash
+recovery re-queues a ticket whose first agent is still alive and starts a second
+agent on the same worktree and branch.</p>
+<p><code>editor</code> is read by the CLI, not the daemon, so it takes effect on the next
+command either way.</p>
+<p>If you started the daemon with <code>--address</code> or <code>--port</code>, those keep winning over
+the file after a reload, the same as at startup. Editing <code>web.host</code> or
+<code>web.port</code> on disk then changes nothing and logs no warning: the flag already
+overrides it, and a restart with the same flag would too.</p>
+<h3 id="how-to-trigger-a-reload">How to trigger a reload<a class="headerlink" href="#how-to-trigger-a-reload" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Send <code>SIGHUP</code>: <code>kill -HUP $(pgrep -f 'kontora start')</code>.</li>
+<li>Edit the config file. The daemon watches it and reloads after the debounce
+  interval, whether the editor writes in place or replaces the file with an
+  atomic rename. If the config path is a symlink, the daemon watches the
+  symlink's directory and the target's directory, so an edit through a dotfiles
+  symlink also reloads. Other files in the same directory (the daemon lock file,
+  the <code>.kontora-config-*.tmp</code> files an atomic save creates and renames away)
+  trigger nothing.</li>
+<li>Save through <code>kontora config edit --url ...</code>. The daemon writes the file and
+  reloads it before the request returns.</li>
+</ul>
+<h3 id="rules">Rules<a class="headerlink" href="#rules" title="Permanent link">&para;</a></h3>
+<p>A reload is all-or-nothing. The daemon parses and validates the whole file
+before applying any of it: if anything fails, it logs the error and keeps
+running on the old config. Saving a half-written file mid-edit is harmless, and
+the next complete save reloads.</p>
+<p><strong>A running agent keeps the settings it started with.</strong> The prompt, arguments,
+model, effort, timeout, and binary are fixed when the stage spawns. Editing a prompt
+while a ticket is mid-stage does nothing visible until the next stage starts.
+That is expected, not a failed reload.</p>
+<p>If a reload removes the pipeline or the stage a <code>todo</code> ticket sits on, the
+daemon pauses that ticket and writes the reason to <code>last_error</code> rather than
+leaving it stuck with no explanation.</p>
+<h2 id="shell-completions">Shell completions<a class="headerlink" href="#shell-completions" title="Permanent link">&para;</a></h2>
+<p><code>kontora completion &lt;shell&gt;</code> prints a script for bash, fish or zsh. All three
+complete the verbs, their flags and, where the verb takes one, a ticket ID. The
+ID list comes from <code>kontora ls --closed</code>, so it includes closed tickets.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-18-1" name="__codelineno-18-1" href="#__codelineno-18-1"></a><span class="c1"># Fish - activate in current session</span>
+<a id="__codelineno-18-2" name="__codelineno-18-2" href="#__codelineno-18-2"></a>kontora<span class="w"> </span>completion<span class="w"> </span>fish<span class="w"> </span><span class="p">|</span><span class="w"> </span><span class="nb">source</span>
+<a id="__codelineno-18-3" name="__codelineno-18-3" href="#__codelineno-18-3"></a>
+<a id="__codelineno-18-4" name="__codelineno-18-4" href="#__codelineno-18-4"></a><span class="c1"># Fish - persist across sessions</span>
+<a id="__codelineno-18-5" name="__codelineno-18-5" href="#__codelineno-18-5"></a>kontora<span class="w"> </span>completion<span class="w"> </span>fish<span class="w"> </span>&gt;<span class="w"> </span>~/.config/fish/completions/kontora.fish
+</code></pre></div>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-19-1" name="__codelineno-19-1" href="#__codelineno-19-1"></a><span class="c1"># Zsh - activate in current session</span>
+<a id="__codelineno-19-2" name="__codelineno-19-2" href="#__codelineno-19-2"></a><span class="nb">source</span><span class="w"> </span>&lt;<span class="o">(</span>kontora<span class="w"> </span>completion<span class="w"> </span>zsh<span class="o">)</span>
+<a id="__codelineno-19-3" name="__codelineno-19-3" href="#__codelineno-19-3"></a>
+<a id="__codelineno-19-4" name="__codelineno-19-4" href="#__codelineno-19-4"></a><span class="c1"># Zsh - persist across sessions. The directory has to be in $fpath before</span>
+<a id="__codelineno-19-5" name="__codelineno-19-5" href="#__codelineno-19-5"></a><span class="c1"># compinit runs, and the file has to be named _kontora.</span>
+<a id="__codelineno-19-6" name="__codelineno-19-6" href="#__codelineno-19-6"></a>mkdir<span class="w"> </span>-p<span class="w"> </span>~/.zsh/completions
+<a id="__codelineno-19-7" name="__codelineno-19-7" href="#__codelineno-19-7"></a>kontora<span class="w"> </span>completion<span class="w"> </span>zsh<span class="w"> </span>&gt;<span class="w"> </span>~/.zsh/completions/_kontora
+<a id="__codelineno-19-8" name="__codelineno-19-8" href="#__codelineno-19-8"></a><span class="c1"># then in ~/.zshrc, above `compinit`:</span>
+<a id="__codelineno-19-9" name="__codelineno-19-9" href="#__codelineno-19-9"></a><span class="c1">#   fpath=(~/.zsh/completions $fpath)</span>
+</code></pre></div>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-20-1" name="__codelineno-20-1" href="#__codelineno-20-1"></a><span class="c1"># Bash - activate in current session</span>
+<a id="__codelineno-20-2" name="__codelineno-20-2" href="#__codelineno-20-2"></a><span class="nb">source</span><span class="w"> </span>&lt;<span class="o">(</span>kontora<span class="w"> </span>completion<span class="w"> </span>bash<span class="o">)</span>
+<a id="__codelineno-20-3" name="__codelineno-20-3" href="#__codelineno-20-3"></a>
+<a id="__codelineno-20-4" name="__codelineno-20-4" href="#__codelineno-20-4"></a><span class="c1"># Bash - persist across sessions (Linux, and macOS with Homebrew bash-completion@2)</span>
+<a id="__codelineno-20-5" name="__codelineno-20-5" href="#__codelineno-20-5"></a>mkdir<span class="w"> </span>-p<span class="w"> </span>~/.local/share/bash-completion/completions
+<a id="__codelineno-20-6" name="__codelineno-20-6" href="#__codelineno-20-6"></a>kontora<span class="w"> </span>completion<span class="w"> </span>bash<span class="w"> </span>&gt;<span class="w"> </span>~/.local/share/bash-completion/completions/kontora
+</code></pre></div>
+<p>The script itself runs on bash 3.2, so macOS's system bash is enough. The
+directory above is where bash-completion 2.x looks; without bash-completion,
+source the file from <code>~/.bashrc</code> instead.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.instant", "navigation.sections", "content.code.copy", "toc.follow"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+    
+  </body>
+</html>

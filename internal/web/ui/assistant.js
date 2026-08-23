@@ -40,6 +40,15 @@ function assistantStore(key, value) {
   try { localStorage.setItem(key, value); } catch (e) { /* private mode */ }
 }
 
+// A recorded timestamp as milliseconds, or null when the field is missing or
+// unreadable. A pi session this build cannot read the clock off leaves it null
+// for the whole tape.
+function assistantMs(value) {
+  if (!value) return null;
+  const t = Date.parse(value);
+  return Number.isNaN(t) ? null : t;
+}
+
 function assistantClampWidth(px) {
   const n = Number(px);
   if (!Number.isFinite(n)) return ASSISTANT_WIDTH_DEFAULT;
@@ -573,6 +582,49 @@ export function kontoraAssistant() {
         clearTimeout(this._assistantPoll);
         this._assistantPoll = null;
       }
+    },
+
+    // --- the thread ------------------------------------------------------
+
+    // The thread is two ordered streams: the messages the daemon recorded, and
+    // the tape the agent wrote. They are interleaved on the clock, so a message
+    // sits above the events its own turn produced rather than every message
+    // stacking at the top of the pane. A turn's StartedAt precedes everything
+    // its agent then writes, which is what makes the comparison hold.
+    //
+    // A tape with no readable timestamps keeps the messages ahead of the
+    // events: nothing orders them, and dropping the first message to the bottom
+    // would be the worse guess.
+    assistantThreadRows() {
+      const events = this.assistantEvents || [];
+      const messages = this.assistantMessages || [];
+      const rows = [];
+      const message = (m, i) => ({ key: 'm' + m.n + '-' + i, msg: m });
+      const event = (e, i) => ({ key: 'e' + i, index: i, event: e });
+      let mi = 0;
+
+      if (!events.some((e) => assistantMs(e.time) !== null)) {
+        for (; mi < messages.length; mi++) rows.push(message(messages[mi], mi));
+        for (let i = 0; i < events.length; i++) rows.push(event(events[i], i));
+        return rows;
+      }
+
+      // An event carrying no time of its own is grouped with the one before it.
+      let at = null;
+      for (let i = 0; i < events.length; i++) {
+        const t = assistantMs(events[i].time);
+        if (t !== null) at = t;
+        while (at !== null && mi < messages.length) {
+          const started = assistantMs(messages[mi].at);
+          if (started === null || started > at) break;
+          rows.push(message(messages[mi], mi));
+          mi++;
+        }
+        rows.push(event(events[i], i));
+      }
+      // The message just sent, whose turn has written nothing yet.
+      for (; mi < messages.length; mi++) rows.push(message(messages[mi], mi));
+      return rows;
     },
 
     // --- tool rows -------------------------------------------------------

@@ -9392,6 +9392,68 @@ test("the message just sent stays on screen until the daemon records it", () => 
   assert.equal(state.assistantMessages[1].error, "boom");
 });
 
+// Two ordered streams, one thread. Before this the template rendered every
+// message and then every event, so turn 2's question sat above turn 1's answer.
+test("a message sits above the events its own turn produced", () => {
+  const { state } = assistantState();
+  state.assistantMessages = [
+    { n: 1, text: "hey", at: "2026-08-23T08:25:50Z" },
+    { n: 2, text: "what is in progress?", at: "2026-08-23T08:26:10Z" },
+  ];
+  state.assistantEvents = [
+    { kind: "model", model: "claude-sonnet-5", time: "2026-08-23T08:25:52Z" },
+    { kind: "text", text: "Hey.", time: "2026-08-23T08:25:53Z" },
+    // No time of its own: grouped with the event before it.
+    { kind: "tool", tool: "Bash", arg: "kontora ls" },
+    { kind: "text", text: "Four tickets.", time: "2026-08-23T08:26:14Z" },
+  ];
+
+  assert.deepEqual(
+    vmValue(state.assistantThreadRows()).map((r) => (r.msg ? "msg:" + r.msg.n : r.event.kind)),
+    ["msg:1", "model", "text", "tool", "msg:2", "text"],
+  );
+  // The tool row keeps its index into assistantEvents, which is what keys its
+  // expansion.
+  assert.equal(state.assistantThreadRows()[3].index, 2);
+});
+
+test("the message just sent rides at the end until its turn writes anything", () => {
+  const { state } = assistantState();
+  state.assistantEvents = [{ kind: "text", text: "Hey.", time: "2026-08-23T08:25:53Z" }];
+  state.assistantMessages = [
+    { n: 1, text: "hey", at: "2026-08-23T08:25:50Z" },
+    { n: 2, text: "thanks", at: "2026-08-23T08:26:40Z" },
+  ];
+
+  assert.deepEqual(
+    vmValue(state.assistantThreadRows()).map((r) => (r.msg ? "msg:" + r.msg.n : r.event.kind)),
+    ["msg:1", "text", "msg:2"],
+  );
+});
+
+// A pi session whose clock this build cannot read leaves every event untimed.
+// Nothing orders the two streams then, so the old layout stands rather than
+// dropping the first message under the answer to it.
+test("a tape with no timestamps keeps the messages ahead of the events", () => {
+  const { state } = assistantState();
+  state.assistantMessages = [{ n: 1, text: "hey", at: "2026-08-23T08:25:50Z" }];
+  state.assistantEvents = [{ kind: "text", text: "Hey." }, { kind: "tool", tool: "Bash" }];
+
+  assert.deepEqual(
+    vmValue(state.assistantThreadRows()).map((r) => (r.msg ? "msg:" + r.msg.n : r.event.kind)),
+    ["msg:1", "text", "tool"],
+  );
+});
+
+test("every row carries its own key, so the x-for diff never collides", () => {
+  const { state } = assistantState();
+  state.assistantMessages = [{ n: 1, text: "hey", at: "2026-08-23T08:25:50Z" }];
+  state.assistantEvents = [{ kind: "text", text: "Hey.", time: "2026-08-23T08:25:53Z" }];
+
+  const keys = state.assistantThreadRows().map((r) => r.key);
+  assert.equal(new Set(keys).size, keys.length);
+});
+
 test("the poll carries the parked write alongside the tape", () => {
   const { state } = assistantState();
   state.assistantThread = { id: "t1" };

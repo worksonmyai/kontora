@@ -3518,36 +3518,40 @@
           </div>
         </template>
 
-        <template x-for="(m, mi) in assistantMessages" :key="'m' + m.n + '-' + mi">
-          <div class="self-end max-w-[85%] rounded-[10px] px-2.5 py-1.5 bg-surface-850 border border-edge-input">
-            <span class="block text-[12.5px] leading-[1.5] text-tx whitespace-pre-wrap" x-text="m.text"></span>
-            <span x-show="m.error" class="block font-mono text-[10.5px] text-err mt-1" x-text="m.error"></span>
-          </div>
-        </template>
-
-        <!-- The transcript, as the same tape a ticket run's activity tab reads. -->
-        <template x-for="(e, ei) in assistantEvents" :key="'e' + ei">
-          <div class="min-w-0">
-            <template x-if="e.kind === 'text'">
-              <div class="prose-assistant text-[12.5px] leading-[1.6] text-tx-2" x-effect="setProse($el, e.text)"></div>
+        <!-- One thread: the messages and the tape a ticket run's activity tab
+             also reads, interleaved on the clock. -->
+        <template x-for="row in assistantThreadRows()" :key="row.key">
+          <div :class="row.msg ? 'self-end max-w-[85%] rounded-[10px] px-2.5 py-1.5 bg-surface-850 border border-edge-input' : 'min-w-0'">
+            <template x-if="row.msg">
+              <div>
+                <span class="block text-[12.5px] leading-[1.5] text-tx whitespace-pre-wrap" x-text="row.msg.text"></span>
+                <span x-show="row.msg.error" class="block font-mono text-[10.5px] text-err mt-1" x-text="row.msg.error"></span>
+              </div>
             </template>
-            <template x-if="e.kind === 'model'">
-              <div class="font-mono text-[10.5px] text-surface-600" x-text="e.model"></div>
-            </template>
-            <template x-if="e.kind === 'tool'">
-              <div class="assistant-tool-row rounded-[7px] border border-edge-input bg-surface-900">
-                <button @click="toggleAssistantTool(e, ei)"
-                        class="w-full flex items-center gap-2 px-2 py-1 text-left min-w-0"
-                        :aria-expanded="assistantToolExpanded(e, ei) ? 'true' : 'false'">
-                  <span class="font-mono text-[10.5px] shrink-0" :class="assistantToolFailed(e) ? 'text-err' : 'text-ok'"
-                        x-text="assistantToolFailed(e) ? '✗' : '▸'"></span>
-                  <span class="font-mono text-[11px] text-tx-3 shrink-0" x-text="e.tool"></span>
-                  <span class="font-mono text-[11px] text-surface-600 truncate min-w-0" x-text="e.arg"></span>
-                  <span class="font-mono text-[10px] text-tx-faint shrink-0 ml-auto" x-text="assistantEventTime(e)"></span>
-                </button>
-                <div x-show="assistantToolExpanded(e, ei)" x-cloak class="px-2 pb-1.5">
-                  <pre class="font-mono text-[10.5px] leading-[1.5] text-tx-3 whitespace-pre-wrap m-0 max-h-[240px] overflow-y-auto" x-text="e.result || e.summary"></pre>
-                </div>
+            <template x-if="row.event">
+              <div class="min-w-0">
+                <template x-if="row.event.kind === 'text'">
+                  <div class="prose-assistant text-[12.5px] leading-[1.6] text-tx-2" x-effect="setProse($el, row.event.text)"></div>
+                </template>
+                <template x-if="row.event.kind === 'model'">
+                  <div class="font-mono text-[10.5px] text-surface-600" x-text="row.event.model"></div>
+                </template>
+                <template x-if="row.event.kind === 'tool'">
+                  <div class="assistant-tool-row rounded-[7px] border border-edge-input bg-surface-900">
+                    <button @click="toggleAssistantTool(row.event, row.index)"
+                            class="w-full flex items-center gap-2 px-2 py-1 text-left min-w-0"
+                            :aria-expanded="assistantToolExpanded(row.event, row.index) ? 'true' : 'false'">
+                      <span class="font-mono text-[10.5px] shrink-0" :class="assistantToolFailed(row.event) ? 'text-err' : 'text-ok'"
+                            x-text="assistantToolFailed(row.event) ? '✗' : '▸'"></span>
+                      <span class="font-mono text-[11px] text-tx-3 shrink-0" x-text="row.event.tool"></span>
+                      <span class="font-mono text-[11px] text-surface-600 truncate min-w-0" x-text="row.event.arg"></span>
+                      <span class="font-mono text-[10px] text-tx-faint shrink-0 ml-auto" x-text="assistantEventTime(row.event)"></span>
+                    </button>
+                    <div x-show="assistantToolExpanded(row.event, row.index)" x-cloak class="px-2 pb-1.5">
+                      <pre class="font-mono text-[10.5px] leading-[1.5] text-tx-3 whitespace-pre-wrap m-0 max-h-[240px] overflow-y-auto" x-text="row.event.result || row.event.summary"></pre>
+                    </div>
+                  </div>
+                </template>
               </div>
             </template>
           </div>
@@ -4010,22 +4014,24 @@
                 <template x-if="!assistantMessages.length && !assistantEvents.length">
                   <p style="margin:auto 0;font-size:13px;line-height:1.6;color:rgba(var(--surface-600),1);text-align:center;">Ask about the board. It drives Kontora with the same verbs the CLI uses.</p>
                 </template>
-                <template x-for="(m, mi) in assistantMessages" :key="'sm' + m.n + '-' + mi">
-                  <div style="align-self:flex-end;max-width:85%;border-radius:12px;padding:8px 11px;background:rgba(var(--surface-850),1);border:1px solid rgba(var(--surface-700),.6);">
-                    <span style="font-size:13.5px;line-height:1.5;color:rgba(var(--tx),1);white-space:pre-wrap;" x-text="m.text"></span>
-                  </div>
-                </template>
-                <template x-for="(e, ei) in assistantEvents" :key="'se' + ei">
-                  <div style="min-width:0;">
-                    <template x-if="e.kind === 'text'">
-                      <div style="font-size:13.5px;line-height:1.6;color:rgba(var(--tx-2),1);" x-effect="setProse($el, e.text)"></div>
+                <template x-for="row in assistantThreadRows()" :key="'s' + row.key">
+                  <div :style="row.msg ? 'align-self:flex-end;max-width:85%;border-radius:12px;padding:8px 11px;background:rgba(var(--surface-850),1);border:1px solid rgba(var(--surface-700),.6);' : 'min-width:0;'">
+                    <template x-if="row.msg">
+                      <span style="font-size:13.5px;line-height:1.5;color:rgba(var(--tx),1);white-space:pre-wrap;" x-text="row.msg.text"></span>
                     </template>
-                    <template x-if="e.kind === 'tool'">
-                      <button @click="toggleAssistantTool(e, ei)" style="display:flex;align-items:center;gap:8px;width:100%;text-align:left;min-width:0;border:1px solid rgba(var(--surface-700),.6);background:rgba(var(--surface-900),1);border-radius:8px;padding:7px 10px;">
-                        <span :style="'font-family:\'JetBrains Mono\',monospace;font-size:11px;flex:none;color:' + (assistantToolFailed(e) ? 'rgba(var(--err),1)' : 'rgba(var(--ok),1)') + ';'" x-text="assistantToolFailed(e) ? '\u2717' : '\u25b8'"></span>
-                        <span style="font-family:'JetBrains Mono',monospace;font-size:12px;color:rgba(var(--tx-3),1);flex:none;" x-text="e.tool"></span>
-                        <span style="font-family:'JetBrains Mono',monospace;font-size:12px;color:rgba(var(--surface-600),1);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;" x-text="e.arg"></span>
-                      </button>
+                    <template x-if="row.event">
+                      <div style="min-width:0;">
+                        <template x-if="row.event.kind === 'text'">
+                          <div style="font-size:13.5px;line-height:1.6;color:rgba(var(--tx-2),1);" x-effect="setProse($el, row.event.text)"></div>
+                        </template>
+                        <template x-if="row.event.kind === 'tool'">
+                          <button @click="toggleAssistantTool(row.event, row.index)" style="display:flex;align-items:center;gap:8px;width:100%;text-align:left;min-width:0;border:1px solid rgba(var(--surface-700),.6);background:rgba(var(--surface-900),1);border-radius:8px;padding:7px 10px;">
+                            <span :style="'font-family:\'JetBrains Mono\',monospace;font-size:11px;flex:none;color:' + (assistantToolFailed(row.event) ? 'rgba(var(--err),1)' : 'rgba(var(--ok),1)') + ';'" x-text="assistantToolFailed(row.event) ? '\u2717' : '\u25b8'"></span>
+                            <span style="font-family:'JetBrains Mono',monospace;font-size:12px;color:rgba(var(--tx-3),1);flex:none;" x-text="row.event.tool"></span>
+                            <span style="font-family:'JetBrains Mono',monospace;font-size:12px;color:rgba(var(--surface-600),1);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;" x-text="row.event.arg"></span>
+                          </button>
+                        </template>
+                      </div>
                     </template>
                   </div>
                 </template>

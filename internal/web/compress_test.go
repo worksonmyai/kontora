@@ -305,3 +305,24 @@ func TestETagMatches(t *testing.T) {
 		})
 	}
 }
+
+func TestCompressiblePath(t *testing.T) {
+	tests := []struct {
+		name string
+		path string
+		want bool
+	}{
+		{name: "a JSON API response is worth compressing", path: "/api/tickets", want: true},
+		{name: "the ticket event stream is not", path: "/api/events"},
+		// A gzip window over a stream buffers, and for a reply the window is
+		// the whole reply: no token reaches the browser until the turn ends.
+		{name: "the assistant stream is not", path: "/api/assistant/threads/t1/stream"},
+		{name: "the activity poll beside it still is", path: "/api/assistant/threads/t1/activity", want: true},
+		{name: "the static UI answers from its own table", path: "/app.js"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, compressiblePath(tt.path))
+		})
+	}
+}

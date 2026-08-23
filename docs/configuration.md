@@ -768,6 +768,7 @@ assistant:
   timeout: 10m           # optional, per turn
   autonomy: ask          # optional: read | ask | auto
   prompt: ""             # optional, replaces the built-in system brief
+  stream: true           # optional, claude only; unset means on
 ```
 
 | Field | Required | Default | Description |
@@ -779,6 +780,24 @@ assistant:
 | `timeout` | no | `10m` | Bounds one turn. |
 | `autonomy` | no | `ask` | The mode a new chat starts in. |
 | `prompt` | no | built-in | Replaces the whole system brief, mode paragraph included. |
+| `stream` | no | `true` | Whether a claude turn asks for the message as it is written, so the pane renders prose before the message completes. |
+
+### Replies as they are written
+
+The pane renders an assistant message while the agent is still writing it. A
+claude turn runs with `--include-partial-messages`, and the daemon keeps the
+text those records carry in memory until the session file records the message.
+Nothing reaches the run transcript or the turn log that did not before: a
+partial record is a fragment of a message the log already carries whole.
+
+Set `stream: false` to turn it off. A claude build that does not know the flag
+rejects it at argument parsing, before it reads the prompt. The daemon sees the
+flag named in the error and runs the turn again without it, so the reply still
+arrives, whole rather than as it is written. The retry is logged as a warning
+naming the flag; `stream: false` stops the wasted first attempt.
+
+pi has no equivalent flag, so a pi chat behaves as it did before and the field
+does nothing.
 
 ### Only claude and pi
 

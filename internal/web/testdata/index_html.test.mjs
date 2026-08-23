@@ -316,6 +316,34 @@ async function openedTerminal(overrides = {}) {
   return { ctx, state };
 }
 
+// makeEventSourceFake returns an EventSource class that records every instance
+// on `opened`, so a test can fire a frame at one, assert what the pane did with
+// it, and tell an open connection from a closed one.
+function makeEventSourceFake(opened = []) {
+  return class FakeEventSource {
+    constructor(url) {
+      this.url = url;
+      this.closed = false;
+      this.listeners = {};
+      this.onerror = null;
+      opened.push(this);
+    }
+    addEventListener(type, handler) {
+      (this.listeners[type] || (this.listeners[type] = [])).push(handler);
+    }
+    close() {
+      this.closed = true;
+    }
+    // emit drives one server frame. data is the JSON the event carries.
+    emit(type, data) {
+      for (const h of this.listeners[type] || []) h({ data: JSON.stringify(data === undefined ? {} : data) });
+    }
+    fail() {
+      if (this.onerror) this.onerror({});
+    }
+  };
+}
+
 function kontoraContext(overrides = {}) {
   const context = {
     console,
@@ -327,6 +355,7 @@ function kontoraContext(overrides = {}) {
       callback();
       return 1;
     },
+    cancelAnimationFrame() {},
     ResizeObserver: class {
       observe() {}
       disconnect() {}
@@ -383,7 +412,9 @@ function kontoraContext(overrides = {}) {
       },
     },
     fetch: async () => ({ ok: false, json: async () => ({}) }),
-    EventSource: class {},
+    // A recording fake, not a bare class: the assistant pane registers
+    // listeners on the handle it opens, and reads back what it closed.
+    EventSource: makeEventSourceFake(),
     DOMPurify: {
       sanitize(value) {
         return value;
@@ -8873,6 +8904,14 @@ function assistantState(opts = {}) {
   const store = Object.assign({}, opts.store);
   const requests = [];
   const listeners = [];
+  // Every EventSource the pane opened, newest last.
+  const streams = [];
+  // The default frame runs its callback straight away, which leaves the tests
+  // that predate the stream alone. opts.manualFrames queues them instead, so a
+  // test can prove that three deltas paint once.
+  const frames = [];
+  // opts.manualTimers captures the reconnect backoff, so a test can drive it.
+  const timers = [];
   // The default document holds no elements, so a test that cares about the
   // autoscroll hands one in and reads its scrollTop back.
   const scroller = opts.scroller;
@@ -8885,6 +8924,19 @@ function assistantState(opts = {}) {
   );
   const { state } = loadKontoraContext({
     location: { protocol: "http:", host: "localhost:8080", hash: "" },
+    EventSource: makeEventSourceFake(streams),
+    ...(opts.manualTimers
+      ? {
+          setTimeout(fn) { timers.push(fn); return timers.length; },
+          clearTimeout(id) { if (id) timers[id - 1] = null; },
+        }
+      : {}),
+    ...(opts.manualFrames
+      ? {
+          requestAnimationFrame(cb) { frames.push(cb); return frames.length; },
+          cancelAnimationFrame(id) { if (id) frames[id - 1] = null; },
+        }
+      : {}),
     ...(scroller
       ? { document: { getElementById: (id) => (id.startsWith("assistant") ? scroller : null), querySelector: () => null, hasFocus: () => true, documentElement: { style: {} } } }
       : {}),
@@ -8909,7 +8961,13 @@ function assistantState(opts = {}) {
     },
   });
   state.$nextTick = (cb) => { if (cb) cb(); return Promise.resolve(); };
-  return { state, store, requests, listeners, scroller };
+  const runFrames = () => {
+    for (const cb of frames.splice(0, frames.length)) if (cb) cb();
+  };
+  const runTimers = () => {
+    for (const fn of timers.splice(0, timers.length)) if (fn) fn();
+  };
+  return { state, store, requests, listeners, scroller, streams, runFrames, runTimers };
 }
 
 test("the pane opens and closes, and remembers that it was open", async () => {
@@ -9452,6 +9510,361 @@ test("every row carries its own key, so the x-for diff never collides", () => {
 
   const keys = state.assistantThreadRows().map((r) => r.key);
   assert.equal(new Set(keys).size, keys.length);
+
+  // The text being typed is deliberately not a row. Alpine re-runs an x-for
+  // expression whenever a reactive dependency changes, so folding it in would
+  // re-run the O(n) interleave and re-diff n keyed rows on every token.
+  const before = state.assistantThreadRows().map((r) => r.key);
+  state.assistantPartial = "half a sen";
+  state.assistantPartialGen = 1;
+  assert.deepEqual(state.assistantThreadRows().map((r) => r.key), before);
+});
+
+test("the typed text goes and the settled row arrives in one update", () => {
+  const { state } = assistantState();
+  state.assistantThread = { id: "t1" };
+
+  state._mergeAssistantActivity({ running: true, partial: "Two tickets", partial_gen: 1, tape: { events: [] } });
+  assert.equal(state.assistantPartial, "Two tickets");
+  assert.equal(state.assistantPartialTyping, true);
+
+  // One synchronous call: no frame renders the words twice, and none renders
+  // neither of them.
+  state._mergeAssistantActivity({
+    running: true,
+    tape: { events: [{ kind: "text", text: "Two tickets are running." }] },
+  });
+  assert.equal(state.assistantPartial, "");
+  assert.equal(state.assistantEvents.length, 1);
+});
+
+test("a poll snapshot behind the stream does not rewind the text", () => {
+  const { state } = assistantState();
+  state.assistantThread = { id: "t1" };
+
+  state._assistantAdoptPartial({ partial: "the board has two runs", partial_gen: 3 });
+  // The poll read the daemon before the last deltas landed. Adopting it would
+  // rub out words the reader has already seen.
+  state._assistantAdoptPartial({ partial: "the board", partial_gen: 3 });
+  assert.equal(state.assistantPartial, "the board has two runs");
+
+  // A new block replaces wholesale, however short it is.
+  state._assistantAdoptPartial({ partial: "Now", partial_gen: 4 });
+  assert.equal(state.assistantPartial, "Now");
+  assert.equal(state.assistantPartialGen, 4);
+});
+
+test("a finished turn always ends with nothing typed", () => {
+  const { state } = assistantState();
+  state.assistantThread = { id: "t1" };
+  state._assistantAdoptPartial({ partial: "half a sen", partial_gen: 1 });
+
+  // The backstop: a payload that omits the field must not leave the caret
+  // blinking under a thread that has stopped.
+  state._mergeAssistantActivity({ running: false, tape: { events: [] } });
+  assert.equal(state.assistantPartial, "");
+  assert.equal(state.assistantPartialGen, 0);
+  assert.equal(state.assistantPartialTyping, false);
+});
+
+test("a turn that dies mid-reply keeps the words on screen", () => {
+  const { state } = assistantState();
+  state.assistantThread = { id: "t1" };
+  state._mergeAssistantActivity({ running: true, partial: "half a sen", partial_gen: 1, tape: { events: [] } });
+
+  // Stopped, or killed: the agent never wrote the message to its session file,
+  // so what the daemon buffered is the only record of it.
+  state._mergeAssistantActivity({ running: false, partial: "half a sen", partial_gen: 1, tape: { events: [] } });
+  assert.equal(state.assistantPartial, "half a sen");
+  assert.equal(state.assistantPartialTyping, false, "the caret stops");
+  assert.equal(state.assistantStreaming, false);
+
+  // The next turn opens a buffer of its own, and the daemon reports none.
+  state._mergeAssistantActivity({ running: true, tape: { events: [] } });
+  assert.equal(state.assistantPartial, "");
+});
+
+test("the poll alone types, with no stream anywhere", async () => {
+  const { state } = assistantState();
+  state.assistantThread = { id: "t1" };
+
+  // Successive polls of a growing message. The transcript, the messages and
+  // the gate are untouched by any of it.
+  state._mergeAssistantActivity({ running: true, partial: "the ", partial_gen: 1, tape: { events: [] } });
+  state._mergeAssistantActivity({ running: true, partial: "the board ", partial_gen: 1, tape: { events: [] } });
+  state._mergeAssistantActivity({ running: true, partial: "the board has two runs", partial_gen: 1, tape: { events: [] } });
+  assert.equal(state.assistantPartial, "the board has two runs");
+  assert.equal(state.assistantEvents.length, 0);
+  assert.equal(state.assistantGate, null);
+});
+
+test("the stream opens with the turn and closes with it", () => {
+  const { state, streams } = assistantState();
+  state.assistantOpen = true;
+  state.assistantThread = { id: "t1" };
+
+  state._assistantSetStreaming(true);
+  assert.equal(streams.length, 1);
+  assert.match(streams[0].url, /\/api\/assistant\/threads\/t1\/stream$/);
+
+  state._assistantSetStreaming(false);
+  assert.equal(streams[0].closed, true);
+  assert.equal(state.assistantPartial, "");
+});
+
+test("a hidden pane holds no stream", () => {
+  const { state, streams } = assistantState();
+  state.assistantThread = { id: "t1" };
+
+  // Closed, so nobody is reading the tokens and the connection is pure cost.
+  state._assistantSetStreaming(true);
+  assert.equal(streams.length, 0);
+
+  state.assistantOpen = true;
+  state.closeAssistant();
+  state._assistantSetStreaming(true);
+  assert.equal(streams.length, 0);
+});
+
+test("frames from a stream apply to the pane", () => {
+  const { state, streams } = assistantState();
+  state.assistantOpen = true;
+  state.assistantThread = { id: "t1" };
+  state._assistantSetStreaming(true);
+  const es = streams[0];
+
+  es.emit("reset", { gen: 2, text: "the ", tool: "" });
+  assert.equal(state.assistantPartial, "the ");
+  assert.equal(state.assistantPartialGen, 2);
+  assert.equal(state.assistantPartialTyping, true);
+
+  es.emit("delta", { gen: 2, text: "board" });
+  assert.equal(state.assistantPartial, "the board");
+
+  // A delta for a block the client does not hold is not this message's.
+  es.emit("delta", { gen: 9, text: " nonsense" });
+  assert.equal(state.assistantPartial, "the board");
+
+  es.emit("tool", { gen: 2, name: "Bash" });
+  assert.equal(state.assistantPartialTool, "Bash");
+
+  es.emit("end");
+  assert.equal(state.assistantPartialTyping, false, "the caret stops and the text stays");
+  assert.equal(state.assistantPartial, "the board");
+});
+
+test("three deltas paint once", () => {
+  const { state, streams, runFrames } = assistantState({ manualFrames: true });
+  state.assistantOpen = true;
+  state.assistantThread = { id: "t1" };
+  state._assistantSetStreaming(true);
+  const es = streams[0];
+
+  es.emit("reset", { gen: 1, text: "" });
+  es.emit("delta", { gen: 1, text: "a" });
+  es.emit("delta", { gen: 1, text: "b" });
+  es.emit("delta", { gen: 1, text: "c" });
+  // Nothing has reached the reactive property yet: the deltas are in a plain
+  // buffer, so a burst of tokens is one paint rather than one each.
+  assert.equal(state.assistantPartial, "");
+
+  runFrames();
+  assert.equal(state.assistantPartial, "abc");
+  runFrames();
+  assert.equal(state.assistantPartial, "abc", "the buffer is emptied by the frame that read it");
+});
+
+test("a poll landing between a delta and its frame does not double the tail", () => {
+  const { state, streams, runFrames } = assistantState({ manualFrames: true });
+  state.assistantOpen = true;
+  state.assistantThread = { id: "t1" };
+  state._assistantSetStreaming(true);
+  const es = streams[0];
+
+  es.emit("reset", { gen: 1, text: "hello" });
+  es.emit("delta", { gen: 1, text: " world" });
+  // The poll resolves before the frame runs, carrying the same words the
+  // buffer holds. Appending the buffer on top of it would read "worldworld".
+  state._mergeAssistantActivity({ running: true, partial: "hello world", partial_gen: 1, tape: { events: [] } });
+  runFrames();
+  assert.equal(state.assistantPartial, "hello world");
+
+  // Same window, but the message reached the session file: the buffered delta
+  // must not survive as a tail under the settled row.
+  es.emit("delta", { gen: 1, text: "!" });
+  state._mergeAssistantActivity({ running: true, tape: { events: [{ kind: "text", text: "hello world!" }] } });
+  runFrames();
+  assert.equal(state.assistantPartial, "");
+});
+
+test("a thread switch drops frames still in flight", async () => {
+  const { state, streams } = assistantState({ routes: { "/api/assistant/threads/t2": { id: "t2" } } });
+  state.assistantOpen = true;
+  state.assistantThread = { id: "t1" };
+  state._assistantSetStreaming(true);
+  const stale = streams[0];
+  stale.emit("reset", { gen: 1, text: "belongs to t1" });
+
+  await state.assistantSelectThread("t2");
+  assert.equal(stale.closed, true);
+
+  // The old connection can still be mid-callback when the switch lands.
+  stale.emit("delta", { gen: 1, text: " and must not appear" });
+  assert.equal(state.assistantPartial, "");
+});
+
+test("a clean end of turn does not reconnect", () => {
+  const { state, streams, runTimers } = assistantState({ manualTimers: true });
+  state.assistantOpen = true;
+  state.assistantThread = { id: "t1" };
+  state._assistantSetStreaming(true);
+  const es = streams[0];
+
+  es.emit("reset", { gen: 1, text: "all done" });
+  es.emit("done");
+  assert.equal(es.closed, true);
+
+  // The browser fires error on the server's EOF whether it was clean or not.
+  // The poll has not said the turn is over yet, so without the close above
+  // this would open a connection into a turn that has ended.
+  es.fail();
+  runTimers();
+  assert.equal(streams.length, 1);
+});
+
+test("the stream stops retrying after five failures", () => {
+  const { state, streams, runTimers } = assistantState({ manualTimers: true });
+  state.assistantOpen = true;
+  state.assistantThread = { id: "t1" };
+  state._assistantSetStreaming(true);
+  assert.equal(streams.length, 1);
+
+  for (let i = 0; i < 4; i++) {
+    const es = streams[streams.length - 1];
+    es.fail();
+    // A clean server EOF does not set readyState to CLOSED: the browser fires
+    // error and reconnects on its own, so onerror closes before it decides.
+    assert.equal(es.closed, true);
+    runTimers();
+  }
+  assert.equal(streams.length, 5, "the first connection and four retries");
+
+  // The fifth consecutive failure opens nothing more for this turn: the poll
+  // carries the text at its own granularity from here.
+  streams[4].fail();
+  runTimers();
+  assert.equal(streams.length, 5);
+});
+
+test("streaming text follows the reader but leaves a scrolled-up reader alone", () => {
+  const scroller = { scrollTop: 940, scrollHeight: 1000, clientHeight: 60 };
+  const { state, streams } = assistantState({ scroller });
+  state.assistantOpen = true;
+  state.assistantThread = { id: "t1" };
+  state._assistantSetStreaming(true);
+  const es = streams[0];
+
+  es.emit("reset", { gen: 1, text: "a" });
+  assert.equal(scroller.scrollTop, 1000);
+
+  // The reader scrolls up. The latch is the scroll event, not a geometry read
+  // on every frame: sampling per frame sees the grown scrollHeight against the
+  // un-updated scrollTop and silently un-sticks the transcript mid-reply.
+  scroller.scrollTop = 100;
+  scroller.scrollHeight = 1400;
+  state.assistantThreadScrolled();
+  es.emit("delta", { gen: 1, text: "bbbb" });
+  assert.equal(scroller.scrollTop, 100);
+
+  // Scrolling back to the bottom resumes the follow.
+  scroller.scrollTop = 1340;
+  state.assistantThreadScrolled();
+  es.emit("delta", { gen: 1, text: "cccc" });
+  assert.equal(scroller.scrollTop, 1400);
+});
+
+test("deleting the open chat stops the pane saying it is working", async () => {
+  const { state, streams } = assistantState();
+  state.assistantOpen = true;
+  state.assistantThread = { id: "t1" };
+  state._assistantSetStreaming(true);
+
+  await state.assistantDeleteThread("t1");
+  assert.equal(state.assistantStreaming, false);
+  assert.equal(streams[0].closed, true);
+});
+
+test("the tool being called is previewed in both copies and clears with the partial", () => {
+  const html = fs.readFileSync(htmlPath, "utf8");
+  assert.equal([...html.matchAll(/x-if="assistantPartialTool"/g)].length, 2);
+  assert.equal([...html.matchAll(/x-text="assistantPartialTool"/g)].length, 2);
+  assert.match(html, /id="assistant-partial-tool"/);
+  assert.match(html, /id="assistant-sheet-partial-tool"/);
+
+  const { state, streams } = assistantState();
+  state.assistantOpen = true;
+  state.assistantThread = { id: "t1" };
+  state._assistantSetStreaming(true);
+  const es = streams[0];
+
+  es.emit("reset", { gen: 1, text: "Running it." });
+  es.emit("tool", { gen: 1, name: "Bash" });
+  assert.equal(state.assistantPartialTool, "Bash");
+
+  // Only the most recent, when a message makes several calls.
+  es.emit("tool", { gen: 1, name: "Read" });
+  assert.equal(state.assistantPartialTool, "Read");
+
+  // A new block clears it, and so does the turn ending.
+  es.emit("reset", { gen: 2, text: "Next.", tool: "" });
+  assert.equal(state.assistantPartialTool, "");
+  es.emit("tool", { gen: 2, name: "Grep" });
+  state._assistantSetStreaming(false);
+  assert.equal(state.assistantPartialTool, "");
+});
+
+test("the pending tool row clears when the message lands in the tape", () => {
+  const { state } = assistantState();
+  state.assistantThread = { id: "t1" };
+
+  state._mergeAssistantActivity({ running: true, partial: "Running it.", partial_gen: 1, partial_tool: "Bash", tape: { events: [] } });
+  assert.equal(state.assistantPartialTool, "Bash");
+
+  state._mergeAssistantActivity({ running: true, tape: { events: [{ kind: "text", text: "Running it." }] } });
+  assert.equal(state.assistantPartial, "");
+  assert.equal(state.assistantPartialTool, "");
+});
+
+test("both transcripts latch the scroll on their own scroll event", () => {
+  const html = fs.readFileSync(htmlPath, "utf8");
+  assert.equal([...html.matchAll(/@scroll\.passive="assistantThreadScrolled\(\)"/g)].length, 2);
+});
+
+test("the text being typed is in both the docked pane and the sheet", () => {
+  const html = fs.readFileSync(htmlPath, "utf8");
+
+  const at = (needle) => [...html.matchAll(new RegExp(needle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g"))].map((m) => m.index);
+  const rows = at('x-for="row in assistantThreadRows()"');
+  const working = at('x-if="assistantStreaming && !assistantGate"');
+  const partial = at('x-if="assistantPartial"');
+  assert.equal(partial.length, 2);
+  assert.equal(rows.length, 2);
+  assert.equal(working.length, 2);
+  for (let i = 0; i < 2; i++) {
+    // Between the two, so the swap to the settled row does not move the text
+    // sideways: both land immediately above the working row.
+    assert.ok(rows[i] < partial[i] && partial[i] < working[i], "copy " + i + " has the partial out of order");
+  }
+  assert.match(html, /id="assistant-partial"/);
+  assert.match(html, /id="assistant-sheet-partial"/);
+  assert.equal([...html.matchAll(/x-text="assistantPartial"/g)].length, 2);
+  assert.equal([...html.matchAll(/x-show="assistantPartialTyping"/g)].length, 2);
+
+  // Plain text, not setProse: the markdown cache holds 16 entries keyed on
+  // their source, and mid-stream markdown renders an unterminated fence as a
+  // code block swallowing the rest of the reply.
+  const block = html.slice(partial[0], working[0]);
+  assert.ok(!block.includes("setProse"), "the typed text must not go through the markdown renderer");
 });
 
 test("the poll carries the parked write alongside the tape", () => {

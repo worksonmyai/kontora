@@ -2,8 +2,11 @@ package web
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
+	"time"
 )
 
 // assistantTextMax bounds one composer message. It is generous enough for a
@@ -172,4 +175,114 @@ func decodeOptionalJSON(r *http.Request, out any) error {
 		return err
 	}
 	return nil
+}
+
+// assistantStreamTick batches the deltas claude emits tens of times a second
+// into one frame. Server-side, because a client cannot un-send a frame.
+const assistantStreamTick = 100 * time.Millisecond
+
+// assistantStreamKeepalive bounds the silence: a proxy drops an idle
+// connection.
+const assistantStreamKeepalive = 20 * time.Second
+
+// handleAssistantStream pushes the message the agent is writing as it grows.
+// Not the SSEBroker: that drops on a full channel, which silently corrupts a
+// sentence. Each connection pulls a cumulative snapshot, which cannot drop.
+func (s *Server) handleAssistantStream(w http.ResponseWriter, r *http.Request) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming not supported", http.StatusInternalServerError)
+		return
+	}
+	id := r.PathValue("id")
+	first, err := s.svc.AssistantPartial(id)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	if !first.Running && first.Text == "" {
+		// EventSource does not retry a 204, so a stale pane stops asking.
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.WriteHeader(http.StatusOK)
+
+	send := func(event string, data any) {
+		body, _ := json.Marshal(data)
+		fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, body)
+		flusher.Flush()
+	}
+
+	gen, sent, tool := first.Gen, first.Text, first.Tool
+	sealed := first.Sealed
+	send("reset", map[string]any{"gen": gen, "text": sent, "tool": tool})
+	if sealed {
+		send("end", struct{}{})
+	}
+
+	ticker := time.NewTicker(assistantStreamTick)
+	defer ticker.Stop()
+	quiet := time.Now()
+
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-ticker.C:
+		}
+
+		p, err := s.svc.AssistantPartial(id)
+		if err != nil {
+			// The thread was deleted under the stream; its poll will say so.
+			return
+		}
+
+		switch {
+		case p.Text == "" && sent != "":
+			// The session file now carries it. Nothing is sent: the poll drops
+			// the text in the same response that adds the settled row, and
+			// blanking it here first would leave a frame showing neither.
+		case p.Gen != gen:
+			// A new block replaces rather than appends, so it goes whole.
+			gen, sent, tool = p.Gen, p.Text, p.Tool
+			send("reset", map[string]any{"gen": gen, "text": sent, "tool": tool})
+			quiet = time.Now()
+		case len(p.Text) > len(sent) && strings.HasPrefix(p.Text, sent):
+			suffix := p.Text[len(sent):]
+			sent = p.Text
+			send("delta", map[string]any{"gen": gen, "text": suffix})
+			quiet = time.Now()
+		case p.Text != sent:
+			// It moved in a way an append cannot describe. Resend, don't guess.
+			sent, tool = p.Text, p.Tool
+			send("reset", map[string]any{"gen": gen, "text": sent, "tool": tool})
+			quiet = time.Now()
+		}
+
+		// An empty name is not sent: the same poll response clears that row.
+		if p.Tool != tool && p.Tool != "" {
+			tool = p.Tool
+			send("tool", map[string]any{"gen": gen, "name": tool})
+			quiet = time.Now()
+		}
+		if p.Sealed && !sealed {
+			send("end", struct{}{})
+			quiet = time.Now()
+		}
+		sealed = p.Sealed
+
+		if !p.Running {
+			send("done", struct{}{})
+			return
+		}
+		if time.Since(quiet) >= assistantStreamKeepalive {
+			fmt.Fprint(w, ": keepalive\n\n")
+			flusher.Flush()
+			quiet = time.Now()
+		}
+	}
 }

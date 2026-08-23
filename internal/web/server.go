@@ -90,6 +90,7 @@ func New(svc TicketService, broker *SSEBroker, host string, port int, token stri
 	mux.HandleFunc("GET /api/assistant/threads/{id}", s.handleGetAssistantThread)
 	mux.HandleFunc("DELETE /api/assistant/threads/{id}", s.handleDeleteAssistantThread)
 	mux.HandleFunc("GET /api/assistant/threads/{id}/activity", s.handleAssistantActivity)
+	mux.HandleFunc("GET /api/assistant/threads/{id}/stream", s.handleAssistantStream)
 	mux.HandleFunc("POST /api/assistant/threads/{id}/messages", s.handleAssistantMessage)
 	mux.HandleFunc("POST /api/assistant/threads/{id}/stop", s.handleAssistantStop)
 	// The person's answer and the agent's question are separate routes: the

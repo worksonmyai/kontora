@@ -1,11 +1,14 @@
 package web
 
 import (
+	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -365,4 +368,168 @@ func request(t *testing.T, srv *Server, method, path, body string) httpResult {
 		etag:        resp.Header.Get("ETag"),
 		body:        string(raw),
 	}
+}
+
+// readSSE reads frames off an open stream until want of them have arrived or
+// the deadline passes, so a test asserts on a sequence rather than on one read.
+func readSSE(t *testing.T, body io.Reader, want int) []string {
+	t.Helper()
+	frames := make([]string, 0, want)
+	sc := bufio.NewScanner(body)
+	var cur []string
+	for sc.Scan() {
+		line := sc.Text()
+		if line == "" {
+			if len(cur) > 0 {
+				frames = append(frames, strings.Join(cur, "\n"))
+				cur = nil
+			}
+			if len(frames) >= want {
+				return frames
+			}
+			continue
+		}
+		cur = append(cur, line)
+	}
+	return frames
+}
+
+func TestHandleAssistantStream(t *testing.T) {
+	t.Run("nothing running and nothing typed answers 204", func(t *testing.T) {
+		// EventSource does not retry a 204, so a pane left open on a finished
+		// thread stops asking.
+		svc := &mockService{assistantPartFn: func(string) (AssistantPartialInfo, error) {
+			return AssistantPartialInfo{}, nil
+		}}
+		srv := startHandlerTestServer(t, svc)
+		resp, err := http.Get("http://" + srv.Addr() + "/api/assistant/threads/t1/stream")
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		assert.Equal(t, http.StatusNoContent, resp.StatusCode)
+	})
+
+	t.Run("a thread that does not exist is a 404", func(t *testing.T) {
+		svc := &mockService{assistantPartFn: func(string) (AssistantPartialInfo, error) {
+			return AssistantPartialInfo{}, ErrAssistantNotFound
+		}}
+		srv := startHandlerTestServer(t, svc)
+		resp, err := http.Get("http://" + srv.Addr() + "/api/assistant/threads/t1/stream")
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+	})
+
+	t.Run("the text so far, then each suffix, then the tool, the end and the done", func(t *testing.T) {
+		var mu sync.Mutex
+		state := AssistantPartialInfo{Running: true, Gen: 1, Text: "the "}
+		set := func(fn func(*AssistantPartialInfo)) {
+			mu.Lock()
+			defer mu.Unlock()
+			fn(&state)
+		}
+		svc := &mockService{assistantPartFn: func(string) (AssistantPartialInfo, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			return state, nil
+		}}
+		srv := startHandlerTestServer(t, svc)
+
+		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+		defer cancel()
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+srv.Addr()+"/api/assistant/threads/t1/stream", nil)
+		require.NoError(t, err)
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		assert.Equal(t, "text/event-stream", resp.Header.Get("Content-Type"))
+
+		go func() {
+			time.Sleep(assistantStreamTick)
+			set(func(p *AssistantPartialInfo) { p.Text = "the board has two runs" })
+			time.Sleep(3 * assistantStreamTick)
+			set(func(p *AssistantPartialInfo) { p.Tool = "Bash"; p.Sealed = true })
+			time.Sleep(3 * assistantStreamTick)
+			set(func(p *AssistantPartialInfo) { p.Running = false })
+		}()
+
+		frames := readSSE(t, resp.Body, 5)
+		require.GreaterOrEqual(t, len(frames), 5)
+		assert.Equal(t, "event: reset\ndata: {\"gen\":1,\"text\":\"the \",\"tool\":\"\"}", frames[0])
+		assert.Equal(t, "event: delta\ndata: {\"gen\":1,\"text\":\"board has two runs\"}", frames[1])
+		assert.Equal(t, "event: tool\ndata: {\"gen\":1,\"name\":\"Bash\"}", frames[2])
+		assert.Equal(t, "event: end\ndata: {}", frames[3])
+		assert.Equal(t, "event: done\ndata: {}", frames[4])
+	})
+
+	t.Run("text the daemon stopped reporting is not blanked over the stream", func(t *testing.T) {
+		var mu sync.Mutex
+		state := AssistantPartialInfo{Running: true, Gen: 1, Text: "Two tickets are running.", Sealed: true, Tool: "Bash"}
+		svc := &mockService{assistantPartFn: func(string) (AssistantPartialInfo, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			return state, nil
+		}}
+		srv := startHandlerTestServer(t, svc)
+
+		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+		defer cancel()
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+srv.Addr()+"/api/assistant/threads/t1/stream", nil)
+		require.NoError(t, err)
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+
+		go func() {
+			time.Sleep(assistantStreamTick)
+			// The session file now carries the message, so the daemon reports
+			// nothing. The activity poll removes the text in the same response
+			// that adds the settled row; a frame emptying it here first would
+			// show neither.
+			mu.Lock()
+			state.Text, state.Tool = "", ""
+			mu.Unlock()
+			time.Sleep(4 * assistantStreamTick)
+			mu.Lock()
+			state.Running = false
+			mu.Unlock()
+		}()
+
+		frames := readSSE(t, resp.Body, 3)
+		require.Len(t, frames, 3)
+		assert.Equal(t, "event: reset\ndata: {\"gen\":1,\"text\":\"Two tickets are running.\",\"tool\":\"Bash\"}", frames[0])
+		assert.Equal(t, "event: end\ndata: {}", frames[1])
+		assert.Equal(t, "event: done\ndata: {}", frames[2])
+	})
+
+	t.Run("a new block is sent whole rather than as a suffix", func(t *testing.T) {
+		var mu sync.Mutex
+		state := AssistantPartialInfo{Running: true, Gen: 1, Text: "first"}
+		svc := &mockService{assistantPartFn: func(string) (AssistantPartialInfo, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			return state, nil
+		}}
+		srv := startHandlerTestServer(t, svc)
+
+		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+		defer cancel()
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+srv.Addr()+"/api/assistant/threads/t1/stream", nil)
+		require.NoError(t, err)
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+
+		go func() {
+			time.Sleep(assistantStreamTick)
+			mu.Lock()
+			state.Gen, state.Text, state.Running = 2, "second", false
+			mu.Unlock()
+		}()
+
+		frames := readSSE(t, resp.Body, 3)
+		require.GreaterOrEqual(t, len(frames), 3)
+		assert.Equal(t, "event: reset\ndata: {\"gen\":1,\"text\":\"first\",\"tool\":\"\"}", frames[0])
+		assert.Equal(t, "event: reset\ndata: {\"gen\":2,\"text\":\"second\",\"tool\":\"\"}", frames[1])
+		assert.Equal(t, "event: done\ndata: {}", frames[2])
+	})
 }

@@ -56,6 +56,7 @@ type mockService struct {
 	assistantCreateFn  func(req CreateAssistantThreadRequest) (AssistantThreadInfo, error)
 	assistantDeleteFn  func(id string) error
 	assistantActFn     func(q AssistantActivityQuery) (AssistantActivityInfo, error)
+	assistantPartFn    func(id string) (AssistantPartialInfo, error)
 	assistantMsgFn     func(id string, req AssistantMessageRequest) error
 	assistantStopFn    func(id string) error
 	assistantGateFn    func(gateID string, approve bool) error
@@ -104,6 +105,13 @@ func (m *mockService) AssistantActivity(q AssistantActivityQuery) (AssistantActi
 		return m.assistantActFn(q)
 	}
 	return AssistantActivityInfo{}, nil
+}
+
+func (m *mockService) AssistantPartial(id string) (AssistantPartialInfo, error) {
+	if m.assistantPartFn != nil {
+		return m.assistantPartFn(id)
+	}
+	return AssistantPartialInfo{}, nil
 }
 
 func (m *mockService) PostAssistantMessage(id string, req AssistantMessageRequest) error {

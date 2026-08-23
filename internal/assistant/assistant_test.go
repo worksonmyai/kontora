@@ -119,6 +119,24 @@ func TestBuildArgs(t *testing.T) {
 			wantAbsent: []string{"-r"},
 		},
 		{
+			name:        "a claude turn asks for partial messages",
+			agent:       claude,
+			spec:        TurnSpec{Prompt: "long one", SessionID: "S", Stream: true},
+			wantContain: [][]string{{"--verbose", "--include-partial-messages"}},
+		},
+		{
+			name:       "a claude turn with streaming off does not",
+			agent:      claude,
+			spec:       TurnSpec{Prompt: "long one", SessionID: "S"},
+			wantAbsent: []string{"--include-partial-messages"},
+		},
+		{
+			name:       "pi has no flag for it",
+			agent:      pi,
+			spec:       TurnSpec{Prompt: "hi", SessionID: "S", SessionDir: "/d", Stream: true},
+			wantAbsent: []string{"--include-partial-messages"},
+		},
+		{
 			name:        "a later claude turn resumes it",
 			agent:       claude,
 			spec:        TurnSpec{Prompt: "and now", SessionID: "S", Resume: true},

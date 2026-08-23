@@ -26,9 +26,9 @@ var gzipWriterPool = sync.Pool{
 // static UI answers from its own table of pre-compressed bytes, and buffering
 // those a second time here would cost a copy of the whole file per request.
 //
-// The two streaming endpoints under /api/ are left alone. The event stream
-// sends a few hundred bytes at a time and needs each one to reach the browser
-// immediately, and the terminal WebSocket hijacks the connection, which a
+// The streaming endpoints under /api/ are left alone. They send a few hundred
+// bytes at a time and need each one to reach the browser immediately, which a
+// gzip window buffers; the terminal WebSocket hijacks the connection, which a
 // wrapper cannot survive.
 func gzipMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -43,7 +43,14 @@ func gzipMiddleware(next http.Handler) http.Handler {
 }
 
 func compressiblePath(p string) bool {
-	return strings.HasPrefix(p, "/api/") && p != "/api/events"
+	return strings.HasPrefix(p, "/api/") && !streamingPath(p)
+}
+
+// streamingPath reports whether a path answers with an open-ended stream. A
+// gzip window over one buffers, and for a reply the window is the whole reply.
+func streamingPath(p string) bool {
+	return p == "/api/events" ||
+		(strings.HasPrefix(p, "/api/assistant/threads/") && strings.HasSuffix(p, "/stream"))
 }
 
 // gzipResponseWriter defers the compress-or-not decision until it has seen the

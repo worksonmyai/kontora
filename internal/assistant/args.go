@@ -6,6 +6,11 @@ import (
 	"github.com/worksonmyai/kontora/internal/config"
 )
 
+// StreamFlag is what claude calls the partial-message stream. A build that
+// predates it fails the turn at argument parsing, so the daemon matches on the
+// name to retry without it.
+const StreamFlag = "--include-partial-messages"
+
 // TurnSpec describes one headless assistant turn. It is a sibling of the
 // daemon's buildAgentArgs rather than an overload of it: that one is
 // ticket-shaped, with a tmux wait channel, a compaction channel and a resume
@@ -28,6 +33,9 @@ type TurnSpec struct {
 	// AddDirs are the directories claude may reach outside its cwd. A thread
 	// runs in the tickets dir, so run logs and worktrees need naming.
 	AddDirs []string
+	// Stream asks for the message as it is written, so the pane renders prose
+	// before it completes. Only claude has a flag for it.
+	Stream bool
 }
 
 // BuildArgs returns the argument list for one turn. A model or effort the agent
@@ -54,6 +62,9 @@ func BuildArgs(agentCfg config.Agent, model, effort string, spec TurnSpec) ([]st
 			args = append(args, "--append-system-prompt", spec.SystemPrompt)
 		}
 		args = append(args, "--print", "--output-format", "stream-json", "--verbose")
+		if spec.Stream {
+			args = append(args, StreamFlag)
+		}
 		if spec.Resume {
 			args = append(args, "-r", spec.SessionID)
 		} else {

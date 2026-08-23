@@ -228,6 +228,9 @@ func (m *mockTerminalService) DeleteAssistantThread(_ string) error { return nil
 func (m *mockTerminalService) AssistantActivity(_ AssistantActivityQuery) (AssistantActivityInfo, error) {
 	return AssistantActivityInfo{}, nil
 }
+func (m *mockTerminalService) AssistantPartial(_ string) (AssistantPartialInfo, error) {
+	return AssistantPartialInfo{}, nil
+}
 func (m *mockTerminalService) PostAssistantMessage(_ string, _ AssistantMessageRequest) error {
 	return nil
 }

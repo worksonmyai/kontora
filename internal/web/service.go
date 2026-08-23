@@ -83,6 +83,7 @@ type TicketService interface {
 	GetAssistantThread(id string) (AssistantThreadInfo, error)
 	DeleteAssistantThread(id string) error
 	AssistantActivity(q AssistantActivityQuery) (AssistantActivityInfo, error)
+	AssistantPartial(id string) (AssistantPartialInfo, error)
 	PostAssistantMessage(id string, req AssistantMessageRequest) error
 	StopAssistantTurn(id string) error
 	ResolveAssistantGate(gateID string, approve bool) error
@@ -151,6 +152,17 @@ type AssistantActivityQuery struct {
 	IfNoneMatch string
 }
 
+// AssistantPartialInfo is the cheap read behind the stream. It costs no file:
+// the stream reads it ten times a second.
+type AssistantPartialInfo struct {
+	Running bool
+	Gen     int
+	Text    string
+	Tool    string
+	// Sealed stops the caret without ending the connection.
+	Sealed bool
+}
+
 // AssistantActivityInfo is one poll's answer: the transcript slice, the user
 // messages, and any write waiting on the person. They ride together so one
 // request drives the tool rows, the prose and the proposal card.
@@ -161,6 +173,13 @@ type AssistantActivityInfo struct {
 	Tape     *logfmt.Tape       `json:"tape,omitempty"`
 	Gate     *assistant.Pending `json:"gate,omitempty"`
 	Messages []AssistantMessage `json:"messages,omitempty"`
+
+	// Partial is the message being written, empty once the session file carries
+	// it. PartialGen is bumped by a new block, so a reader replaces rather than
+	// appends; PartialTool names the call whose arguments are still coming.
+	Partial     string `json:"partial,omitempty"`
+	PartialGen  int    `json:"partial_gen,omitempty"`
+	PartialTool string `json:"partial_tool,omitempty"`
 
 	// ETag and NotModified drive HTTP revalidation and are not part of the
 	// payload the client parses.

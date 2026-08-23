@@ -33,7 +33,8 @@ When the web server is enabled, the following endpoints are exposed:
 | `POST /api/assistant/threads` | Open a chat (optional `{"autonomy": "read"\|"ask"\|"auto"}`; the configured default otherwise). Answers 201 with the chat. |
 | `GET /api/assistant/threads/{id}` | One chat and the messages posted to it. |
 | `DELETE /api/assistant/threads/{id}` | Drop a chat and its transcript. |
-| `GET /api/assistant/threads/{id}/activity` | One poll of a chat: the transcript as a `logfmt` tape sliced at `?after=N`, the messages, whether a turn is running, and any change waiting on the user. Carries an `ETag` and answers `If-None-Match` with 304. |
+| `GET /api/assistant/threads/{id}/activity` | One poll of a chat: the transcript as a `logfmt` tape sliced at `?after=N`, the messages, whether a turn is running, the message being written right now, and any change waiting on the user. Carries an `ETag` and answers `If-None-Match` with 304. |
+| `GET /api/assistant/threads/{id}/stream` | Server-Sent Events stream of the message being written, pushed as it grows. Answers 204 when nothing is running and nothing was typed. |
 | `POST /api/assistant/threads/{id}/messages` | Post a message (`{"text": "...", "autonomy": "..."}`). Answers 202: the reply arrives through the activity poll. |
 | `POST /api/assistant/threads/{id}/stop` | Cancel the turn the chat is running. |
 | `POST /api/assistant/gate/{gid}` | Answer a change the assistant is waiting on (`{"decision": "approve"\|"skip"}`). |
@@ -41,6 +42,39 @@ When the web server is enabled, the following endpoints are exposed:
 | `GET /api/events` | Server-Sent Events stream of ticket updates. |
 | `GET /ws/terminal/{id}` | Read-only WebSocket relay of a running agent's tmux session. |
 | `GET /health` | Health check (returns 200). |
+
+### The message being written
+
+`GET /api/assistant/threads/{id}/activity` carries three fields for the message
+the agent is writing before its session file records it: `partial`, the text so
+far; `partial_gen`, bumped when a new block starts, so a reader replaces rather
+than appends; and `partial_tool`, the tool call whose arguments are still being
+generated. `partial` is empty once the tape carries the same words, and the
+response that empties it is the one that carries them, so nothing renders twice
+and nothing blanks between the two. A turn that ended without recording its
+message keeps its `partial` alongside `running: false`, since that copy is then
+the only one there is. The text is held in daemon memory only: it is never part
+of the `logfmt` tape, which is the parsed form of a file.
+
+`GET /api/assistant/threads/{id}/stream` pushes the same text at roughly ten
+frames a second, so a reader sees it as typing rather than in 1.5s steps. It is
+an enhancement over the poll: a client that cannot open it still renders growing
+`partial` text from successive polls.
+
+```
+event: reset   data: {"gen":3,"text":"<everything so far>","tool":""}
+event: delta   data: {"gen":3,"text":"<suffix since the last frame>"}
+event: tool    data: {"gen":3,"name":"Bash"}
+event: end     data: {}     # the block stopped growing; the text stays
+event: done    data: {}     # the turn is over and the server is closing
+: keepalive                 # after 20s of silence
+```
+
+A `reset` arrives on connect and again whenever `gen` changes; a client ignores
+a `delta` whose `gen` it does not hold. The connection answers 204, rather than
+opening, when nothing is running and nothing was typed: `EventSource` does not
+retry a 204, so a stale pane stops asking. Like `GET /api/events`, the response
+is never gzipped.
 
 On `POST /api/tickets` and `POST /api/tickets/{id}/init`, a blank `pipeline` or `agent` takes the default of the [project](configuration.md#projects) matching `path`. Send the literal `none` to leave that field blank and skip its project default. `PUT /api/tickets/{id}` reads `none` the same way, as "clear this field"; it has no project default to skip.
 

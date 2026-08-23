@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/worksonmyai/kontora/internal/assistant"
 	"github.com/worksonmyai/kontora/internal/config"
+	"github.com/worksonmyai/kontora/internal/logfmt"
 	"github.com/worksonmyai/kontora/internal/web"
 )
 
@@ -42,9 +44,16 @@ type stubTurns struct {
 	// writes the session file claude would have written, so the next turn finds
 	// something to resume.
 	claudeDir string
+	// claudeSession is what that file holds. Empty writes a record the tape
+	// reader finds no events in, which is what a test that only needs the file
+	// to exist wants.
+	claudeSession string
 	// before runs inside the spawner, so a test can drive the gate while the
 	// turn is still in flight.
 	before func(ctx context.Context, p TurnParams)
+	// fail is the error the turn comes back with, so a test can stand in for an
+	// agent that rejects one of its arguments.
+	fail func(p TurnParams) error
 }
 
 func (s *stubTurns) spawn(ctx context.Context, p TurnParams) (string, error) {
@@ -64,11 +73,18 @@ func (s *stubTurns) spawn(ctx context.Context, p TurnParams) (string, error) {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return "", err
 		}
-		if err := os.WriteFile(filepath.Join(dir, id+".jsonl"), []byte("{}\n"), 0o644); err != nil {
+		body := s.claudeSession
+		if body == "" {
+			body = "{}\n"
+		}
+		if err := os.WriteFile(filepath.Join(dir, id+".jsonl"), []byte(body), 0o644); err != nil {
 			return "", err
 		}
 	}
 	s.turns <- spawnedTurn{args: slices.Clone(p.Args), env: p.Env}
+	if s.fail != nil {
+		return "", s.fail(p)
+	}
 	return "", nil
 }
 
@@ -839,4 +855,341 @@ func TestAssistantTurnPromptCarriesBoardAndPage(t *testing.T) {
 
 	cancel()
 	require.NoError(t, <-errCh)
+}
+
+// claudeTextJSONL is a claude session file carrying one assistant message, so
+// a test can put the same words in the tape that the stream reported.
+func claudeTextJSONL(text string) string {
+	line := map[string]any{
+		"type":      "assistant",
+		"timestamp": "2026-08-22T10:00:01.000Z",
+		"message": map[string]any{
+			"id":      "msg_01",
+			"type":    "message",
+			"role":    "assistant",
+			"model":   "claude-opus-4-6",
+			"content": []any{map[string]any{"type": "text", "text": text}},
+			"usage":   map[string]any{"input_tokens": 1, "output_tokens": 2},
+		},
+	}
+	b, _ := json.Marshal(line)
+	return string(b) + "\n"
+}
+
+// claudeAssistantDaemon wires a claude-backed assistant whose turn spawner is
+// the stub, and returns the daemon and a thread to post to.
+func claudeAssistantDaemon(t *testing.T, stub *stubTurns) (*Daemon, web.AssistantThreadInfo) {
+	t.Helper()
+	h := newHarness(t)
+	claudeDir := filepath.Join(t.TempDir(), "claude")
+	stub.claudeDir = claudeDir
+	cfg := h.assistantConfig("claude")
+	cfg.Environment = map[string]string{"CLAUDE_CONFIG_DIR": claudeDir}
+	d := h.newDaemon(cfg, WithTurnSpawner(stub.spawn))
+	thread, err := d.CreateAssistantThread(web.CreateAssistantThreadRequest{})
+	require.NoError(t, err)
+	return d, thread
+}
+
+func TestAssistantPartialRidesThePoll(t *testing.T) {
+	seen := make(chan web.AssistantActivityInfo, 1)
+	stub := &stubTurns{turns: make(chan spawnedTurn, 2)}
+	var d *Daemon
+	stub.before = func(_ context.Context, p TurnParams) {
+		// The agent has typed half a sentence and written no session file yet,
+		// which is exactly when the pane has nothing else to show.
+		p.Stream.Block()
+		p.Stream.Text("the board ")
+		p.Stream.Text("has two runs")
+		info, err := d.AssistantActivity(web.AssistantActivityQuery{ID: p.ThreadID})
+		require.NoError(t, err)
+		seen <- info
+	}
+	var thread web.AssistantThreadInfo
+	d, thread = claudeAssistantDaemon(t, stub)
+
+	require.NoError(t, d.PostAssistantMessage(thread.ID, web.AssistantMessageRequest{Text: "what is running"}))
+	mid := <-seen
+	stub.next(t)
+	waitIdle(t, d, thread.ID)
+
+	assert.True(t, mid.Running)
+	assert.Equal(t, "the board has two runs", mid.Partial)
+	assert.Equal(t, 1, mid.PartialGen)
+
+	// The turn wrote a session file with nothing in it, so the words the agent
+	// typed are still the only record of them.
+	after, err := d.AssistantActivity(web.AssistantActivityQuery{ID: thread.ID})
+	require.NoError(t, err)
+	assert.False(t, after.Running)
+	assert.Equal(t, "the board has two runs", after.Partial)
+}
+
+func TestAssistantETagFollowsThePartial(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "s.jsonl")
+	require.NoError(t, os.WriteFile(path, []byte("{}\n"), 0o644))
+	etag := func(partial string, gen int) string {
+		return assistantETag(path, 1, web.AssistantActivityInfo{Partial: partial, PartialGen: gen})
+	}
+	// Without this the poll answers 304 for the whole length of a message that
+	// produces no tape rows.
+	none, short, long := etag("", 0), etag("hel", 1), etag("hello", 1)
+	require.NotEmpty(t, none)
+	assert.NotEqual(t, none, short)
+	assert.NotEqual(t, short, long)
+	assert.NotEqual(t, long, etag("hello", 2), "a new block is a new generation")
+}
+
+func TestAssistantPartialStopsWhenTheMessageLands(t *testing.T) {
+	const reply = "Two tickets are running."
+	stub := &stubTurns{turns: make(chan spawnedTurn, 2), claudeSession: claudeTextJSONL(reply)}
+	stub.before = func(_ context.Context, p TurnParams) {
+		p.Stream.Block()
+		p.Stream.Text(reply)
+		p.Stream.Seal()
+	}
+	d, thread := claudeAssistantDaemon(t, stub)
+
+	require.NoError(t, d.PostAssistantMessage(thread.ID, web.AssistantMessageRequest{Text: "what is running"}))
+	stub.next(t)
+	waitIdle(t, d, thread.ID)
+
+	// Removal and arrival ride the same response: the tape carries the words and
+	// the partial is empty, so nothing is rendered twice and no frame has neither.
+	info, err := d.AssistantActivity(web.AssistantActivityQuery{ID: thread.ID})
+	require.NoError(t, err)
+	require.NotNil(t, info.Tape)
+	assert.Contains(t, eventKinds(info.Tape), "text")
+	assert.Equal(t, reply, info.Tape.Events[len(info.Tape.Events)-1].Text)
+	assert.Empty(t, info.Partial)
+
+	// Suppression sticks, so the next poll answers 304 rather than sending the
+	// words back as a partial.
+	again, err := d.AssistantActivity(web.AssistantActivityQuery{ID: thread.ID, IfNoneMatch: info.ETag})
+	require.NoError(t, err)
+	assert.True(t, again.NotModified)
+}
+
+// A block claude records before it closes it is matched but not suppressed, so
+// the poll keeps blanking the same text. The validator has to describe the
+// response the caller gets, or that blanking re-sends the whole tape every 1.5s
+// for the rest of the message.
+func TestAssistantPartialThatLandedUnsealedStillRevalidates(t *testing.T) {
+	const reply = "Two tickets are running."
+	seen := make(chan [2]web.AssistantActivityInfo, 1)
+	stub := &stubTurns{turns: make(chan spawnedTurn, 2)}
+	var d *Daemon
+	stub.before = func(_ context.Context, p TurnParams) {
+		p.Stream.Block()
+		p.Stream.Text(reply)
+		// Written from here, so the session file carries the message while the
+		// block is still open.
+		dir := filepath.Join(stub.claudeDir, "projects", "p")
+		require.NoError(t, os.MkdirAll(dir, 0o755))
+		path := filepath.Join(dir, flagValue(p.Args, "--session-id")+".jsonl")
+		require.NoError(t, os.WriteFile(path, []byte(claudeTextJSONL(reply)), 0o644))
+
+		first, err := d.AssistantActivity(web.AssistantActivityQuery{ID: p.ThreadID})
+		require.NoError(t, err)
+		second, err := d.AssistantActivity(web.AssistantActivityQuery{ID: p.ThreadID, IfNoneMatch: first.ETag})
+		require.NoError(t, err)
+		seen <- [2]web.AssistantActivityInfo{first, second}
+	}
+	var thread web.AssistantThreadInfo
+	d, thread = claudeAssistantDaemon(t, stub)
+
+	require.NoError(t, d.PostAssistantMessage(thread.ID, web.AssistantMessageRequest{Text: "what is running"}))
+	polls := <-seen
+	stub.next(t)
+	waitIdle(t, d, thread.ID)
+
+	assert.Empty(t, polls[0].Partial, "the tape carries it, so the typed copy goes")
+	assert.NotEmpty(t, polls[0].ETag)
+	assert.True(t, polls[1].NotModified)
+}
+
+func TestAssistantPartialIsReplacedByANewTurn(t *testing.T) {
+	stub := &stubTurns{turns: make(chan spawnedTurn, 4)}
+	first := true
+	stub.before = func(_ context.Context, p TurnParams) {
+		if first {
+			p.Stream.Block()
+			p.Stream.Text("turn one")
+			first = false
+			return
+		}
+		p.Stream.Block()
+		p.Stream.Text("turn two")
+	}
+	d, thread := claudeAssistantDaemon(t, stub)
+
+	require.NoError(t, d.PostAssistantMessage(thread.ID, web.AssistantMessageRequest{Text: "one"}))
+	stub.next(t)
+	waitIdle(t, d, thread.ID)
+	one, err := d.AssistantActivity(web.AssistantActivityQuery{ID: thread.ID})
+	require.NoError(t, err)
+	assert.Equal(t, "turn one", one.Partial)
+
+	require.NoError(t, d.PostAssistantMessage(thread.ID, web.AssistantMessageRequest{Text: "two"}))
+	stub.next(t)
+	waitIdle(t, d, thread.ID)
+	two, err := d.AssistantActivity(web.AssistantActivityQuery{ID: thread.ID})
+	require.NoError(t, err)
+	assert.Equal(t, "turn two", two.Partial)
+	assert.Equal(t, 1, two.PartialGen, "each turn opens a buffer of its own")
+}
+
+func TestAssistantTurnRetriesWithoutTheStreamFlag(t *testing.T) {
+	tests := []struct {
+		name      string
+		err       error
+		wantTurns int
+	}{
+		{
+			// A claude older than the flag rejects it before it reads the
+			// prompt, so without the retry every turn fails until someone finds
+			// assistant.stream.
+			name:      "a claude that does not know the flag",
+			err:       errors.New("claude exited with code 1: error: unknown option '" + assistant.StreamFlag + "'"),
+			wantTurns: 2,
+		},
+		{
+			name:      "any other failure is the turn's answer",
+			err:       errors.New("claude exited with code 1: not logged in"),
+			wantTurns: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stub := &stubTurns{turns: make(chan spawnedTurn, 4)}
+			stub.fail = func(p TurnParams) error {
+				if slices.Contains(p.Args, assistant.StreamFlag) {
+					return tt.err
+				}
+				return nil
+			}
+			d, thread := claudeAssistantDaemon(t, stub)
+
+			require.NoError(t, d.PostAssistantMessage(thread.ID, web.AssistantMessageRequest{Text: "what is running"}))
+			waitIdle(t, d, thread.ID)
+
+			require.Len(t, stub.turns, tt.wantTurns)
+			assert.Contains(t, stub.next(t).args, assistant.StreamFlag)
+			if tt.wantTurns > 1 {
+				assert.NotContains(t, stub.next(t).args, assistant.StreamFlag)
+			}
+
+			info, err := d.AssistantActivity(web.AssistantActivityQuery{ID: thread.ID})
+			require.NoError(t, err)
+			require.NotEmpty(t, info.Messages)
+			last := info.Messages[len(info.Messages)-1]
+			if tt.wantTurns > 1 {
+				assert.Empty(t, last.Error, "the retry is what the turn is recorded as")
+			} else {
+				assert.Contains(t, last.Error, "not logged in")
+			}
+		})
+	}
+}
+
+func TestAssistantPartialLanded(t *testing.T) {
+	text := func(s string) logfmt.Event { return logfmt.Event{Kind: "text", Text: s} }
+	tape := func(events ...logfmt.Event) logfmt.Tape { return logfmt.Tape{Events: events} }
+
+	tests := []struct {
+		name      string
+		tape      logfmt.Tape
+		partial   string
+		sealed    bool
+		truncated bool
+		want      bool
+	}{
+		{
+			name:    "the newest text event is exactly what was typed",
+			tape:    tape(text("earlier"), text("Two tickets are running.")),
+			partial: "Two tickets are running.",
+			want:    true,
+		},
+		{
+			name:    "a message ending in a tool call is still recognised",
+			tape:    tape(text("Running it."), logfmt.Event{Kind: "tool", Tool: "Bash"}),
+			partial: "Running it.",
+			want:    true,
+		},
+		{
+			name:    "a model banner is stepped over",
+			tape:    tape(logfmt.Event{Kind: "model", Model: "opus"}, text("hello"), logfmt.Event{Kind: "model", Model: "opus"}),
+			partial: "hello",
+			want:    true,
+		},
+		{
+			name:    "a sealed block matches text the API padded",
+			tape:    tape(text("Done.\n")),
+			partial: "Done.",
+			sealed:  true,
+			want:    true,
+		},
+		{
+			name:    "a live block is matched exactly, so a repeated opening does not blank",
+			tape:    tape(text("Done.\n")),
+			partial: "Done.",
+			want:    false,
+		},
+		{
+			name:    "a sealed block is not the earlier message it opens like",
+			tape:    tape(text("Done. Anything else?")),
+			partial: "Done.",
+			sealed:  true,
+			want:    false,
+		},
+		{
+			name:      "a block cut off at PartialMax matches the whole message",
+			tape:      tape(text("Done. Anything else?")),
+			partial:   "Done.",
+			sealed:    true,
+			truncated: true,
+			want:      true,
+		},
+		{
+			name:    "an earlier message is not the one being written",
+			tape:    tape(text("Two tickets are running."), text("Something else.")),
+			partial: "Two tickets are running.",
+			sealed:  true,
+			want:    false,
+		},
+		{name: "an empty tape carries nothing", tape: tape(), partial: "hello", want: false},
+		{name: "an empty partial has not landed", tape: tape(text("hello")), partial: "", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, assistantPartialLanded(tt.tape, tt.partial, tt.sealed, tt.truncated))
+		})
+	}
+}
+
+func TestDefaultTurnSpawnerKeepsStreamEventsOutOfTheTurnLog(t *testing.T) {
+	binary, err := exec.LookPath("sh")
+	require.NoError(t, err)
+	const (
+		assistantLine = `{"type":"assistant","message":{"content":[{"type":"text","text":"hi"}]}}`
+		deltaLine     = `{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}}`
+		startLine     = `{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"text"}}}`
+	)
+	logFile := filepath.Join(t.TempDir(), "turn.1.log")
+
+	var got strings.Builder
+	_, err = defaultTurnSpawner(t.Context(), TurnParams{
+		Binary:  binary,
+		Args:    []string{"-c", "printf '%s\\n%s\\n%s\\n' '" + startLine + "' '" + deltaLine + "' '" + assistantLine + "'"},
+		LogFile: logFile,
+		Stream:  assistant.StreamHandler{Text: func(d string) { got.WriteString(d) }},
+	})
+	require.NoError(t, err)
+
+	body, err := os.ReadFile(logFile)
+	require.NoError(t, err)
+	assert.Equal(t, assistantLine+"\n", string(body))
+	assert.Equal(t, "hi", got.String())
 }

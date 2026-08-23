@@ -7,6 +7,9 @@
 // sharing state with the ticket detail view.
 
 const ASSISTANT_POLL_MS = 1500;
+// The wait before each reconnect, and the cap: four entries, so a turn gets
+// five connections and the fifth failure opens nothing more.
+const ASSISTANT_STREAM_BACKOFF = [800, 1600, 3200, 5000];
 const ASSISTANT_WIDTH_MIN = 340;
 const ASSISTANT_WIDTH_MAX = 640;
 const ASSISTANT_WIDTH_DEFAULT = 420;
@@ -26,6 +29,29 @@ const ASSISTANT_SLASH = [
   { name: 'note', hint: 'append a note', text: 'Add a note to ticket ' },
   { name: 'logs', hint: 'read a run transcript', text: 'Show me the last run of ticket ' },
 ];
+
+// Off the component, like termState: Alpine's deep proxy would wrap the
+// EventSource and fire on every token appended to the buffer. Module scope is
+// safe because only one kontora() component exists.
+export const assistantStream = {
+  es: null,
+  // The thread the open connection belongs to, so a second call for it is a
+  // no-op rather than a reconnect.
+  threadID: '',
+  // Monotonic, re-checked in every callback: a frame from a thread the user
+  // switched away from must not paint into the new one.
+  seq: 0,
+  // The generation the client holds. A delta naming another one is ignored.
+  gen: 0,
+  // Deltas since the last paint.
+  buf: '',
+  // Separate from raf because the callback can run before raf is assigned,
+  // which would leave a pending flag nothing clears.
+  queued: false,
+  raf: null,
+  tries: 0,
+  retry: null,
+};
 
 function assistantStored(key, fallback) {
   try {
@@ -68,6 +94,15 @@ export function kontoraAssistant() {
     assistantAgent: null,
     assistantDraft: '',
     assistantStreaming: false,
+    // The message being written. Plain text, not setProse: the 16-entry
+    // markdown cache would evict per token, and an unterminated fence
+    // mid-stream renders the rest of the reply as a code block.
+    assistantPartial: '',
+    // Bumped by a new block, so a reader replaces rather than appends.
+    assistantPartialGen: 0,
+    assistantPartialTool: '',
+    // False once the block is sealed, which stops the caret.
+    assistantPartialTyping: false,
     // Seconds the running turn has been going. 0 while the pane cannot tell,
     // which is a turn it did not start itself.
     assistantElapsed: 0,
@@ -121,11 +156,20 @@ export function kontoraAssistant() {
         this._assistantTurnStart = startedAt || null;
         this.assistantElapsed = 0;
         this._startAssistantTick();
+        this._assistantOpenStream();
       }
       if (!running) {
         this._assistantTurnStart = null;
         this.assistantElapsed = 0;
         this._stopAssistantTick();
+        this._assistantCloseStream();
+        // The text stays: a turn that died before writing its session file
+        // leaves it as the only record of what the agent said.
+        // _assistantAdoptPartial owns the removal, in the response that carries
+        // the settled row. The caret and the pending call go: neither outlives
+        // the turn, and LiveText.End drops the call for the same reason.
+        this.assistantPartialTyping = false;
+        this.assistantPartialTool = '';
       }
       this.assistantStreaming = running;
     },
@@ -170,6 +214,13 @@ export function kontoraAssistant() {
       const el = this._assistantScrollEl();
       this._assistantStick = !el || (el.scrollHeight - el.scrollTop - el.clientHeight) < 60;
       return this._assistantStick;
+    },
+
+    // The latch, on the scroll event rather than on every frame. A per-frame
+    // read sees the grown scrollHeight against a scrollTop $nextTick has not
+    // written yet, and silently un-sticks the transcript mid-reply.
+    assistantThreadScrolled() {
+      this._assistantNoteScroll();
     },
 
     _assistantScrollToEnd(force) {
@@ -250,6 +301,9 @@ export function kontoraAssistant() {
         // already running has nothing armed yet, and the payload is what says
         // it is running.
         this._loadAssistantActivity();
+        // Opening onto a running turn never crosses the transition the setter
+        // opens the stream on.
+        if (this.assistantStreaming) this._assistantOpenStream();
       }
     },
 
@@ -260,6 +314,7 @@ export function kontoraAssistant() {
       assistantStore('kontora-assistant-open', '0');
       this._stopAssistantPoll();
       this._stopAssistantTick();
+      this._assistantCloseStream();
     },
 
     // The phone has no room for a docked pane, so the same chat opens in the
@@ -272,6 +327,7 @@ export function kontoraAssistant() {
       if (this.assistantEnabled()) {
         this.assistantLoadThreads();
         this._loadAssistantActivity();
+        if (this.assistantStreaming) this._assistantOpenStream();
       }
     },
 
@@ -348,6 +404,10 @@ export function kontoraAssistant() {
 
     async assistantSelectThread(id, opts) {
       const quiet = !!(opts && opts.quiet);
+      // Before the fetch: a frame in flight for the old thread must not paint
+      // into the new one.
+      this._assistantCloseStream();
+      this._assistantClearPartial();
       try {
         const res = await this._assistantFetch('/api/assistant/threads/' + encodeURIComponent(id));
         const thread = await res.json();
@@ -357,6 +417,7 @@ export function kontoraAssistant() {
         this._assistantETag = '';
         this.assistantView = 'thread';
         await this._loadAssistantActivity();
+        if (this.assistantStreaming) this._assistantOpenStream();
         this._assistantScrollToEnd(true);
         return true;
       } catch (e) {
@@ -377,6 +438,10 @@ export function kontoraAssistant() {
         return;
       }
       if (this.assistantThread && this.assistantThread.id === id) {
+        // Through the setter, or the pane keeps counting for a chat that is
+        // gone.
+        this._assistantSetStreaming(false);
+        this._assistantClearPartial();
         this.assistantThread = null;
         this.assistantMessages = [];
         this.assistantEvents = [];
@@ -547,6 +612,9 @@ export function kontoraAssistant() {
       const offset = data.offset || 0;
       this.assistantEvents = this.assistantEvents.slice(0, offset).concat(events);
       this._assistantCursor = offset + events.length;
+      // After the splice, so the swap is one paint. Before the setter, which
+      // stops the caret once the turn is over.
+      this._assistantAdoptPartial(data);
       this._assistantSetStreaming(!!data.running);
       this.assistantGate = data.gate || null;
       if (data.messages) this.assistantMessages = this._assistantMergeMessages(data.messages);
@@ -562,6 +630,170 @@ export function kontoraAssistant() {
       const highest = recorded.length ? recorded[recorded.length - 1].n : 0;
       const pending = this.assistantMessages.filter((m) => m.n > highest);
       return recorded.concat(pending);
+    },
+
+    _assistantAdoptPartial(data) {
+      const text = (data && data.partial) || '';
+      if (!text) {
+        this._assistantClearPartial();
+        return;
+      }
+      // A poll snapshot is older than the stream's tail, so within a
+      // generation it may only add: rewinding rubs out text already read.
+      const gen = (data && data.partial_gen) || 0;
+      if (gen === this.assistantPartialGen && text.length < this.assistantPartial.length) return;
+      // The snapshot replaces what a queued frame would have appended, so the
+      // buffer goes with it: whether the daemon read its text before or after
+      // those deltas is not knowable here, and the next poll carries them
+      // anyway.
+      assistantStream.buf = '';
+      this.assistantPartialGen = gen;
+      this.assistantPartial = text;
+      this.assistantPartialTool = (data && data.partial_tool) || '';
+      this.assistantPartialTyping = true;
+    },
+
+    _assistantClearPartial() {
+      assistantStream.buf = '';
+      this.assistantPartial = '';
+      this.assistantPartialGen = 0;
+      this.assistantPartialTool = '';
+      this.assistantPartialTyping = false;
+    },
+
+    // --- the stream ------------------------------------------------------
+
+    // The same text the poll carries, at ten frames a second. The poll stays
+    // the source of truth: a stream that never opens costs only granularity.
+    _assistantOpenStream() {
+      if (typeof EventSource !== 'function') return;
+      const thread = this.assistantThread;
+      if (!thread || !this.assistantOpen) return;
+      if (assistantStream.es && assistantStream.threadID === thread.id) return;
+      this._assistantCloseStream({ keepTries: true });
+
+      const seq = ++assistantStream.seq;
+      const self = this;
+      let es;
+      try {
+        es = new EventSource('/api/assistant/threads/' + encodeURIComponent(thread.id) + '/stream');
+      } catch (e) {
+        return;
+      }
+      assistantStream.es = es;
+      assistantStream.threadID = thread.id;
+      assistantStream.gen = this.assistantPartialGen;
+
+      const guard = (fn) => (ev) => {
+        if (seq !== assistantStream.seq) return;
+        let data = {};
+        if (ev && ev.data) { try { data = JSON.parse(ev.data); } catch (e) { return; } }
+        fn(data);
+      };
+
+      es.addEventListener('reset', guard(function (d) {
+        assistantStream.tries = 0;
+        assistantStream.gen = d.gen || 0;
+        assistantStream.buf = '';
+        self.assistantPartialGen = assistantStream.gen;
+        self.assistantPartial = d.text || '';
+        self.assistantPartialTool = d.tool || '';
+        self.assistantPartialTyping = !!(d.text || d.tool);
+        self._assistantScrollToEnd();
+      }));
+
+      es.addEventListener('delta', guard(function (d) {
+        assistantStream.tries = 0;
+        if ((d.gen || 0) !== assistantStream.gen) return;
+        assistantStream.buf += d.text || '';
+        self._assistantQueueFrame(seq);
+      }));
+
+      es.addEventListener('tool', guard(function (d) {
+        if ((d.gen || 0) !== assistantStream.gen) return;
+        self.assistantPartialTool = d.name || '';
+      }));
+
+      es.addEventListener('end', guard(function () {
+        self._assistantFlushFrame(seq);
+        self.assistantPartialTyping = false;
+      }));
+
+      es.addEventListener('done', guard(function () {
+        self._assistantFlushFrame(seq);
+        self.assistantPartialTyping = false;
+        // Bumps the sequence, so the error the EOF fires finds a stale one and
+        // does not reconnect into a turn that is over.
+        self._assistantCloseStream();
+      }));
+
+      es.onerror = function () {
+        // Close first, unconditionally: a clean EOF also fires error, and the
+        // browser reconnects on its own while we are still deciding.
+        es.close();
+        if (assistantStream.es === es) assistantStream.es = null;
+        if (seq !== assistantStream.seq) return;
+        if (!self.assistantOpen || !self.assistantStreaming) return;
+        const wait = ASSISTANT_STREAM_BACKOFF[assistantStream.tries];
+        if (wait === undefined) return;
+        assistantStream.tries++;
+        assistantStream.retry = setTimeout(function () {
+          assistantStream.retry = null;
+          if (seq !== assistantStream.seq) return;
+          if (!self.assistantOpen || !self.assistantStreaming) return;
+          self._assistantOpenStream();
+        }, wait);
+      };
+    },
+
+    // One paint per burst of tokens, and no geometry read in it:
+    // _assistantScrollToEnd only consults the latch.
+    _assistantQueueFrame(seq) {
+      if (assistantStream.queued) return;
+      assistantStream.queued = true;
+      const self = this;
+      assistantStream.raf = requestAnimationFrame(function () {
+        assistantStream.queued = false;
+        self._assistantFlushFrame(seq);
+      });
+    },
+
+    // A no-op when nothing is buffered, so end and done can call it without
+    // cancelling the frame already queued.
+    _assistantFlushFrame(seq) {
+      if (seq !== undefined && seq !== assistantStream.seq) {
+        assistantStream.buf = '';
+        return;
+      }
+      if (!assistantStream.buf) return;
+      this.assistantPartial += assistantStream.buf;
+      assistantStream.buf = '';
+      this.assistantPartialTyping = true;
+      this._assistantScrollToEnd();
+    },
+
+    // opts.keepTries is for a reconnect, which must not reset its own counter.
+    _assistantCloseStream(opts) {
+      if (assistantStream.retry !== null) {
+        clearTimeout(assistantStream.retry);
+        assistantStream.retry = null;
+      }
+      if (assistantStream.queued) {
+        cancelAnimationFrame(assistantStream.raf);
+        assistantStream.queued = false;
+      }
+      assistantStream.raf = null;
+      assistantStream.buf = '';
+      if (assistantStream.es) {
+        assistantStream.es.close();
+        assistantStream.es = null;
+      }
+      assistantStream.threadID = '';
+      if (!(opts && opts.keepTries)) {
+        assistantStream.seq++;
+        assistantStream.tries = 0;
+        assistantStream.gen = 0;
+      }
     },
 
     // Re-arm while the turn is live or a write is waiting on the user. A chained

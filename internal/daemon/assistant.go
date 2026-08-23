@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"net"
 	"os"
@@ -20,6 +21,7 @@ import (
 
 	"github.com/worksonmyai/kontora/internal/assistant"
 	"github.com/worksonmyai/kontora/internal/config"
+	"github.com/worksonmyai/kontora/internal/logfmt"
 	"github.com/worksonmyai/kontora/internal/process"
 	"github.com/worksonmyai/kontora/internal/session"
 	"github.com/worksonmyai/kontora/internal/web"
@@ -78,6 +80,9 @@ type TurnParams struct {
 	// the reader will look for it.
 	ThreadID string
 	Kind     string
+	// Stream receives the message the agent is writing. A callback seam rather
+	// than an io.Writer, so a test spawner needs no stdout JSON of its own.
+	Stream assistant.StreamHandler
 }
 
 // WithTurnSpawner overrides the default assistant turn runner.
@@ -101,6 +106,8 @@ type assistantState struct {
 	// gateLog collects what the gate answered for the turn in flight, per
 	// thread, so the turn record carries the audit trail.
 	gateLog map[string][]assistant.GateRecord
+	// live holds the text each thread's agent is typing right now.
+	live *assistant.LiveText
 	// writeMu serializes the thread-file update that counts a change.
 	writeMu sync.Mutex
 }
@@ -113,6 +120,7 @@ func newAssistantState() *assistantState {
 		gate:    assistant.NewGate(assistantGateTimeout),
 		sem:     make(chan struct{}, assistantMaxConcurrent),
 		gateLog: make(map[string][]assistant.GateRecord),
+		live:    assistant.NewLiveText(),
 	}
 }
 
@@ -145,6 +153,7 @@ func (a *assistantState) claim(threadID, nonce string, cancel context.CancelFunc
 	a.nonces[threadID] = nonce
 	a.done[threadID] = make(chan struct{})
 	delete(a.gateLog, threadID)
+	a.live.Start(threadID)
 	return nil
 }
 
@@ -166,6 +175,7 @@ func (a *assistantState) release(threadID string) {
 		close(done)
 	}
 	a.gate.Clear(threadID)
+	a.live.End(threadID)
 }
 
 // recordGate appends what the gate answered for one tool call.
@@ -378,6 +388,7 @@ func (d *Daemon) GetAssistantThread(id string) (web.AssistantThreadInfo, error) 
 // DeleteAssistantThread drops a thread and its transcript.
 func (d *Daemon) DeleteAssistantThread(id string) error {
 	d.assistant.stopAndWait(id, assistantStopWait)
+	d.assistant.live.Clear(id)
 	return assistantErr(d.assistantStore(d.config()).Delete(id))
 }
 
@@ -410,6 +421,12 @@ func (d *Daemon) AssistantActivity(q web.AssistantActivityQuery) (web.AssistantA
 	if pending, ok := d.assistant.gate.Pending(q.ID); ok {
 		info.Gate = &pending
 	}
+	// Before the ETag, so the validator and what it validates describe the same
+	// text.
+	partial := d.assistant.live.Snapshot(q.ID)
+	info.Partial = partial.Text
+	info.PartialGen = partial.Gen
+	info.PartialTool = partial.Tool
 
 	path := d.assistantSessionPath(cfg, thread)
 	if path == "" {
@@ -438,7 +455,71 @@ func (d *Daemon) AssistantActivity(q web.AssistantActivityQuery) (web.AssistantA
 	}
 	info.Tape = &tape
 	info.Offset = tape.SliceAt(q.After)
+
+	if info.Partial != "" && assistantPartialLanded(tape, info.Partial, partial.Sealed, partial.Truncated) {
+		// Removal and arrival ride one response, so the pane swaps typed text
+		// for settled in a single update: no duplicate, no frame with neither.
+		if partial.Sealed {
+			d.assistant.live.Suppress(q.ID, partial.Gen)
+		}
+		info.Partial = ""
+		info.PartialTool = ""
+		info.ETag = assistantETag(path, thread.Turns, info)
+		// The validator compared above still had the partial folded in, so an
+		// unsealed block that keeps landing would re-send this body every poll.
+		if info.ETag != "" && info.ETag == q.IfNoneMatch {
+			return web.AssistantActivityInfo{NotModified: true, ETag: info.ETag}, nil
+		}
+	}
 	return info, nil
+}
+
+// assistantPartialLanded reads the tape, so it assumes nothing about the order
+// claude writes its stdout lines in. A sealed block also matches a tape entry
+// that merely starts with it, covering whitespace the API strips and a cut-off
+// at PartialMax; a live one is matched exactly, or a message repeating the last
+// one's opening characters would blank for its first frames.
+func assistantPartialLanded(tape logfmt.Tape, partial string, sealed, truncated bool) bool {
+	if partial == "" {
+		return false
+	}
+	for i := len(tape.Events) - 1; i >= 0; i-- {
+		if tape.Events[i].Kind != "text" {
+			continue
+		}
+		text := tape.Events[i].Text
+		if text == partial {
+			return true
+		}
+		if !sealed || !strings.HasPrefix(text, partial) {
+			return false
+		}
+		// The tail decides. Padding or a cut-off at PartialMax is the same
+		// message; anything else is an earlier one that happens to open the
+		// same way, and suppressing on it would lose the reply for good.
+		return truncated || strings.TrimSpace(text[len(partial):]) == ""
+	}
+	return false
+}
+
+// AssistantPartial answers from memory while the thread has anything to report:
+// the stream reads it ten times a second, and a thread.json read at that rate is
+// what the stream exists to avoid. Only a thread with no buffer is looked up on
+// disk, to tell one that has said nothing from one that does not exist.
+func (d *Daemon) AssistantPartial(id string) (web.AssistantPartialInfo, error) {
+	p := d.assistant.live.Snapshot(id)
+	if !p.Present {
+		if _, err := d.assistantStore(d.config()).Load(id); err != nil {
+			return web.AssistantPartialInfo{}, assistantErr(err)
+		}
+	}
+	return web.AssistantPartialInfo{
+		Running: d.assistant.isRunning(id),
+		Gen:     p.Gen,
+		Text:    p.Text,
+		Tool:    p.Tool,
+		Sealed:  p.Sealed,
+	}, nil
 }
 
 // assistantETag is the validator one poll answers with. fileETag alone would
@@ -458,6 +539,9 @@ func assistantETag(path string, turns int, info web.AssistantActivityInfo) strin
 	if info.Gate != nil {
 		b.WriteString("|" + info.Gate.ID)
 	}
+	// Length, not content: within a generation the text only grows. Without it
+	// the poll answers 304 for a whole message that produces no tape rows.
+	fmt.Fprintf(&b, "|partial=%d,%d,%s", info.PartialGen, len(info.Partial), info.PartialTool)
 	return web.ContentETag([]byte(b.String()), "")
 }
 
@@ -683,11 +767,23 @@ func (d *Daemon) runAssistantTurn(ctx context.Context, cfg *config.Config, agent
 			PageContext:  assistantPageLines(turn.Context),
 		}),
 	}
+	var stream assistant.StreamHandler
 	switch agentCfg.Kind() {
 	case config.AgentKindClaude:
 		// The thread runs in the tickets dir, so the run logs and the worktrees
 		// have to be named or claude refuses to read them.
 		spec.AddDirs = []string{expandTilde(cfg.LogsDir), expandTilde(cfg.WorktreesDir)}
+		if cfg.Assistant.StreamEnabled() {
+			spec.Stream = true
+			live, id := d.assistant.live, thread.ID
+			stream = assistant.StreamHandler{
+				Block: func() { live.Block(id) },
+				Text:  func(delta string) { live.Append(id, delta) },
+				Tool:  func(name string) { live.Tool(id, name) },
+				Seal:  func() { live.Seal(id) },
+			}
+			log.Debug("assistant turn asks for partial messages", "flag", assistant.StreamFlag)
+		}
 	case config.AgentKindPi:
 		dir, err := store.PiSessionDir(thread.ID)
 		if err != nil {
@@ -717,16 +813,34 @@ func (d *Daemon) runAssistantTurn(ctx context.Context, cfg *config.Config, agent
 		finish(err)
 		return
 	}
-	_, err = d.turnSpawner(ctx, TurnParams{
-		Binary:   binary,
-		Args:     args,
-		Dir:      thread.Cwd,
-		Env:      env,
-		Timeout:  cfg.Assistant.Timeout.Duration,
-		LogFile:  logFile,
-		ThreadID: thread.ID,
-		Kind:     agentCfg.Kind(),
-	})
+	run := func(args []string, stream assistant.StreamHandler) error {
+		_, err := d.turnSpawner(ctx, TurnParams{
+			Binary:   binary,
+			Args:     args,
+			Dir:      thread.Cwd,
+			Env:      env,
+			Timeout:  cfg.Assistant.Timeout.Duration,
+			LogFile:  logFile,
+			ThreadID: thread.ID,
+			Kind:     agentCfg.Kind(),
+			Stream:   stream,
+		})
+		return err
+	}
+
+	err = run(args, stream)
+	// A claude that predates the flag rejects it before it reads the prompt, so
+	// every turn would fail until someone found assistant.stream. The turn is
+	// worth more than the streaming, so it is run again without it.
+	if err != nil && spec.Stream && ctx.Err() == nil && strings.Contains(err.Error(), assistant.StreamFlag) {
+		log.Warn("this claude does not know the partial-message flag; running the turn without it",
+			"flag", assistant.StreamFlag, "hint", "set assistant.stream: false to stop asking")
+		spec.Stream = false
+		retryArgs, buildErr := assistant.BuildArgs(agentCfg, thread.Model, thread.Effort, spec)
+		if buildErr == nil {
+			err = run(retryArgs, assistant.StreamHandler{})
+		}
+	}
 	finish(err)
 }
 
@@ -1003,14 +1117,26 @@ func defaultTurnSpawner(ctx context.Context, p TurnParams) (string, error) {
 		defer cancel()
 	}
 	var stdout, stderr bytes.Buffer
+	// The tee, not one arm of an io.MultiWriter: the same parse that finds the
+	// deltas decides which lines the turn log keeps.
+	var out io.Writer = &stdout
+	var sw *assistant.StreamWriter
+	if p.Stream.Live() {
+		sw = assistant.NewStreamWriter(&stdout, p.Stream)
+		out = sw
+	}
 	result, err := process.Run(ctx, process.RunParams{
 		Binary: p.Binary,
 		Args:   p.Args,
 		Dir:    p.Dir,
-		Stdout: &stdout,
+		Stdout: out,
 		Stderr: &stderr,
 		Env:    envPairs(p.Env),
 	})
+	if sw != nil {
+		// cmd.Wait joined the copy goroutine, so nothing is still writing.
+		_ = sw.Close()
+	}
 	// The thread directory was made when the thread was, so the log is only
 	// written when it is still there: a thread deleted mid-turn must not come
 	// back as a directory holding one log and no thread.json.

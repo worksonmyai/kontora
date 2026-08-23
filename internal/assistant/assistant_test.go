@@ -131,10 +131,17 @@ func TestBuildArgs(t *testing.T) {
 			wantAbsent: []string{"--include-partial-messages"},
 		},
 		{
-			name:       "pi has no flag for it",
+			name:        "a pi turn asks for them with its json mode",
+			agent:       pi,
+			spec:        TurnSpec{Prompt: "hi", SessionID: "S", SessionDir: "/d", Stream: true},
+			wantContain: [][]string{{"--mode", "json"}},
+			wantAbsent:  []string{"--include-partial-messages"},
+		},
+		{
+			name:       "a pi turn with streaming off stays in text mode",
 			agent:      pi,
-			spec:       TurnSpec{Prompt: "hi", SessionID: "S", SessionDir: "/d", Stream: true},
-			wantAbsent: []string{"--include-partial-messages"},
+			spec:       TurnSpec{Prompt: "hi", SessionID: "S", SessionDir: "/d"},
+			wantAbsent: []string{"--mode"},
 		},
 		{
 			name:        "a later claude turn resumes it",

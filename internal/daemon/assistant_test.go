@@ -157,6 +157,7 @@ func TestAssistantTurnTapeAndResume(t *testing.T) {
 	assert.Equal(t, "what is running", first.args[len(first.args)-1])
 	assert.Equal(t, thread.ID, first.env[assistantThreadEnv])
 	assert.NotEmpty(t, first.env[assistantNonceEnv])
+	assert.Contains(t, strings.Join(first.args, " "), "--mode json", "the pane renders the reply from pi's deltas")
 
 	// The transcript is the agent's own session file, read as the same tape a
 	// ticket run's activity tab shows.
@@ -1042,6 +1043,7 @@ func TestAssistantPartialIsReplacedByANewTurn(t *testing.T) {
 func TestAssistantTurnRetriesWithoutTheStreamFlag(t *testing.T) {
 	tests := []struct {
 		name      string
+		kind      string
 		err       error
 		wantTurns int
 	}{
@@ -1050,34 +1052,61 @@ func TestAssistantTurnRetriesWithoutTheStreamFlag(t *testing.T) {
 			// prompt, so without the retry every turn fails until someone finds
 			// assistant.stream.
 			name:      "a claude that does not know the flag",
+			kind:      config.AgentKindClaude,
 			err:       errors.New("claude exited with code 1: error: unknown option '" + assistant.StreamFlag + "'"),
 			wantTurns: 2,
 		},
 		{
 			name:      "any other failure is the turn's answer",
+			kind:      config.AgentKindClaude,
 			err:       errors.New("claude exited with code 1: not logged in"),
+			wantTurns: 1,
+		},
+		{
+			// A pi older than json mode does the same, with its own wording.
+			name:      "a pi that does not know the flag",
+			kind:      config.AgentKindPi,
+			err:       errors.New("pi exited with code 1: Error: Unknown option: --mode"),
+			wantTurns: 2,
+		},
+		{
+			name:      "any other failure is the turn's answer",
+			kind:      config.AgentKindPi,
+			err:       errors.New("pi exited with code 1: not logged in"),
 			wantTurns: 1,
 		},
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
+		t.Run(tt.kind+" "+tt.name, func(t *testing.T) {
+			flag := assistant.StreamFlagFor(tt.kind)
 			stub := &stubTurns{turns: make(chan spawnedTurn, 4)}
 			stub.fail = func(p TurnParams) error {
-				if slices.Contains(p.Args, assistant.StreamFlag) {
+				if slices.Contains(p.Args, flag) {
 					return tt.err
 				}
 				return nil
 			}
-			d, thread := claudeAssistantDaemon(t, stub)
+			var d *Daemon
+			var thread web.AssistantThreadInfo
+			if tt.kind == config.AgentKindPi {
+				stub.session = piSessionJSONL
+				h := newHarness(t)
+				d = h.newDaemon(h.assistantConfig("pi"), WithTurnSpawner(stub.spawn))
+				var err error
+				thread, err = d.CreateAssistantThread(web.CreateAssistantThreadRequest{})
+				require.NoError(t, err)
+			} else {
+				d, thread = claudeAssistantDaemon(t, stub)
+			}
 
 			require.NoError(t, d.PostAssistantMessage(thread.ID, web.AssistantMessageRequest{Text: "what is running"}))
 			waitIdle(t, d, thread.ID)
 
 			require.Len(t, stub.turns, tt.wantTurns)
-			assert.Contains(t, stub.next(t).args, assistant.StreamFlag)
+			assert.Contains(t, stub.next(t).args, flag)
 			if tt.wantTurns > 1 {
-				assert.NotContains(t, stub.next(t).args, assistant.StreamFlag)
+				assert.NotContains(t, stub.next(t).args, flag)
 			}
 
 			info, err := d.AssistantActivity(web.AssistantActivityQuery{ID: thread.ID})
@@ -1169,27 +1198,77 @@ func TestAssistantPartialLanded(t *testing.T) {
 	}
 }
 
-func TestDefaultTurnSpawnerKeepsStreamEventsOutOfTheTurnLog(t *testing.T) {
+func TestDefaultTurnSpawnerKeepsPartialRecordsOutOfTheTurnLog(t *testing.T) {
 	binary, err := exec.LookPath("sh")
 	require.NoError(t, err)
 	const (
 		assistantLine = `{"type":"assistant","message":{"content":[{"type":"text","text":"hi"}]}}`
 		deltaLine     = `{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}}`
 		startLine     = `{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"text"}}}`
+		piTurnEndLine = `{"type":"turn_end","message":{"role":"assistant"},"toolResults":[]}`
+		piDeltaLine   = `{"type":"message_update","usage":{},"assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"hi"}}`
+		piStartLine   = `{"type":"message_update","usage":{},"assistantMessageEvent":{"type":"text_start","contentIndex":0}}`
+		piAgentEndLn  = `{"type":"agent_end","messages":[{"role":"user"}],"willRetry":false}`
+		piErrEndLine  = `{"type":"message_end","message":{"role":"assistant","stopReason":"error","errorMessage":"429 rate limit"}}`
 	)
-	logFile := filepath.Join(t.TempDir(), "turn.1.log")
 
-	var got strings.Builder
-	_, err = defaultTurnSpawner(t.Context(), TurnParams{
-		Binary:  binary,
-		Args:    []string{"-c", "printf '%s\\n%s\\n%s\\n' '" + startLine + "' '" + deltaLine + "' '" + assistantLine + "'"},
-		LogFile: logFile,
-		Stream:  assistant.StreamHandler{Text: func(d string) { got.WriteString(d) }},
-	})
-	require.NoError(t, err)
+	tests := []struct {
+		name    string
+		kind    string
+		lines   []string
+		wantLog string
+		// wantErr is what the spawner reports for a turn the exit code called
+		// a success.
+		wantErr string
+	}{
+		{
+			name:    "claude",
+			kind:    config.AgentKindClaude,
+			lines:   []string{startLine, deltaLine, assistantLine},
+			wantLog: assistantLine + "\n",
+		},
+		{
+			name:    "pi",
+			kind:    config.AgentKindPi,
+			lines:   []string{piStartLine, piDeltaLine, piTurnEndLine},
+			wantLog: piTurnEndLine + "\n",
+		},
+		{
+			name:    "pi keeps the session out of its own turn log",
+			kind:    config.AgentKindPi,
+			lines:   []string{piStartLine, piDeltaLine, piAgentEndLn, piTurnEndLine},
+			wantLog: piTurnEndLine + "\n",
+		},
+		{
+			name:    "a pi turn the provider refused fails, exit code 0 or not",
+			kind:    config.AgentKindPi,
+			lines:   []string{piStartLine, piDeltaLine, piErrEndLine},
+			wantLog: piErrEndLine + "\n",
+			wantErr: "429 rate limit",
+		},
+	}
 
-	body, err := os.ReadFile(logFile)
-	require.NoError(t, err)
-	assert.Equal(t, assistantLine+"\n", string(body))
-	assert.Equal(t, "hi", got.String())
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			logFile := filepath.Join(t.TempDir(), "turn.1.log")
+			var got strings.Builder
+			_, err := defaultTurnSpawner(t.Context(), TurnParams{
+				Binary:  binary,
+				Args:    []string{"-c", "printf '%s\\n' '" + strings.Join(tt.lines, "' '") + "'"},
+				LogFile: logFile,
+				Kind:    tt.kind,
+				Stream:  assistant.StreamHandler{Text: func(d string) { got.WriteString(d) }},
+			})
+			if tt.wantErr == "" {
+				require.NoError(t, err)
+			} else {
+				require.ErrorContains(t, err, tt.wantErr)
+			}
+
+			body, err := os.ReadFile(logFile)
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantLog, string(body))
+			assert.Equal(t, "hi", got.String())
+		})
+	}
 }

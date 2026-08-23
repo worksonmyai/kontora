@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+
+	"github.com/worksonmyai/kontora/internal/config"
 )
 
 // streamLineMax bounds one line. A longer one is dropped whole rather than
@@ -30,7 +32,23 @@ func (h StreamHandler) Live() bool {
 	return h.Block != nil || h.Text != nil || h.Tool != nil || h.Seal != nil
 }
 
-// streamRecord is one line, decoded far enough to dispatch on.
+func (h StreamHandler) seal() {
+	if h.Seal != nil {
+		h.Seal()
+	}
+}
+
+// streamDecoder reads one agent's wire records. decode reports what a line
+// carried to the handler and returns whether the turn log keeps the line.
+// failure reports a turn the records said went wrong, for an agent whose exit
+// code does not.
+type streamDecoder interface {
+	decode(b []byte, h StreamHandler) bool
+	failure() error
+}
+
+// streamRecord is one line of claude's stream-json, decoded far enough to
+// dispatch on.
 type streamRecord struct {
 	Type  string `json:"type"`
 	Event struct {
@@ -56,16 +74,24 @@ type streamRecord struct {
 type StreamWriter struct {
 	sink io.Writer
 	h    StreamHandler
+	dec  streamDecoder
 	// buf is the line read so far, without its newline.
 	buf []byte
 	// skip drops the rest of a line that went past streamLineMax.
 	skip bool
-	// textIdx is the block index being written, or -1 outside one.
-	textIdx int
 }
 
-func NewStreamWriter(sink io.Writer, h StreamHandler) *StreamWriter {
-	return &StreamWriter{sink: sink, h: h, textIdx: -1}
+// NewStreamWriter picks the decoder for kind. An unknown one cannot reach it:
+// BuildArgs rejects the agent before the turn spawns.
+func NewStreamWriter(kind string, sink io.Writer, h StreamHandler) *StreamWriter {
+	w := &StreamWriter{sink: sink, h: h}
+	switch kind {
+	case config.AgentKindPi:
+		w.dec = &piDecoder{textIdx: -1}
+	default:
+		w.dec = &claudeDecoder{textIdx: -1}
+	}
+	return w
 }
 
 // Write never reports short: refusing a chunk would kill the turn over a line
@@ -100,6 +126,9 @@ func (w *StreamWriter) Close() error {
 	return nil
 }
 
+// Failure reports what the wire said went wrong, once the process has exited.
+func (w *StreamWriter) Failure() error { return w.dec.failure() }
+
 func (w *StreamWriter) grow(b []byte) {
 	if w.skip {
 		return
@@ -112,22 +141,10 @@ func (w *StreamWriter) grow(b []byte) {
 	w.buf = append(w.buf, b...)
 }
 
-// Malformed JSON reaches the sink too: a line this parser cannot use may still
-// be the one that explains a failure.
 func (w *StreamWriter) line(b []byte, eol bool) {
-	var head struct {
-		Type string `json:"type"`
-	}
-	if err := json.Unmarshal(b, &head); err != nil || head.Type != streamEventType {
+	if w.dec.decode(b, w.h) {
 		w.emit(b, eol)
-		return
 	}
-	var rec streamRecord
-	if err := json.Unmarshal(b, &rec); err != nil {
-		w.emit(b, eol)
-		return
-	}
-	w.dispatch(rec)
 }
 
 func (w *StreamWriter) emit(b []byte, eol bool) {
@@ -140,41 +157,62 @@ func (w *StreamWriter) emit(b []byte, eol bool) {
 	}
 }
 
+// claudeDecoder reads claude's stream-json. textIdx is the block index being
+// written, or -1 outside one.
+type claudeDecoder struct {
+	textIdx int
+}
+
+// claude reports a failed turn through its exit code, so nothing is read off
+// the wire.
+func (d *claudeDecoder) failure() error { return nil }
+
+// Malformed JSON reaches the sink too: a line this parser cannot use may still
+// be the one that explains a failure.
+func (d *claudeDecoder) decode(b []byte, h StreamHandler) bool {
+	var head struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(b, &head); err != nil || head.Type != streamEventType {
+		return true
+	}
+	var rec streamRecord
+	if err := json.Unmarshal(b, &rec); err != nil {
+		return true
+	}
+	d.dispatch(rec, h)
+	return false
+}
+
 // thinking_delta, input_json_delta, message_start and message_delta are
 // ignored: the tape has no rows for them, so the pane has nowhere to put them.
-func (w *StreamWriter) dispatch(rec streamRecord) {
+func (d *claudeDecoder) dispatch(rec streamRecord, h StreamHandler) {
 	ev := rec.Event
 	switch ev.Type {
 	case "content_block_start":
 		switch ev.ContentBlock.Type {
 		case "text":
-			w.textIdx = ev.Index
-			if w.h.Block != nil {
-				w.h.Block()
+			d.textIdx = ev.Index
+			if h.Block != nil {
+				h.Block()
 			}
 		case "tool_use":
-			if w.h.Tool != nil {
-				w.h.Tool(ev.ContentBlock.Name)
+			if h.Tool != nil {
+				h.Tool(ev.ContentBlock.Name)
 			}
 		}
 	case "content_block_delta":
-		if ev.Delta.Type == "text_delta" && w.textIdx >= 0 && ev.Index == w.textIdx && w.h.Text != nil {
-			w.h.Text(ev.Delta.Text)
+		if ev.Delta.Type == "text_delta" && d.textIdx >= 0 && ev.Index == d.textIdx && h.Text != nil {
+			h.Text(ev.Delta.Text)
 		}
 	case "content_block_stop":
-		if w.textIdx >= 0 && ev.Index == w.textIdx {
-			w.textIdx = -1
-			w.seal()
+		if d.textIdx >= 0 && ev.Index == d.textIdx {
+			d.textIdx = -1
+			h.seal()
 		}
 	case "message_stop":
 		// The backstop for a message that ends without a content_block_stop.
-		w.textIdx = -1
-		w.seal()
-	}
-}
-
-func (w *StreamWriter) seal() {
-	if w.h.Seal != nil {
-		w.h.Seal()
+		d.textIdx = -1
+		h.seal()
 	}
 }

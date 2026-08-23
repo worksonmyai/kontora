@@ -6,10 +6,25 @@ import (
 	"github.com/worksonmyai/kontora/internal/config"
 )
 
-// StreamFlag is what claude calls the partial-message stream. A build that
-// predates it fails the turn at argument parsing, so the daemon matches on the
-// name to retry without it.
-const StreamFlag = "--include-partial-messages"
+// StreamFlag is what claude calls the partial-message stream. pi has no flag of
+// its own: its json mode is what turns the deltas on.
+const (
+	StreamFlag   = "--include-partial-messages"
+	piStreamFlag = "--mode"
+)
+
+// StreamFlagFor names the flag that asks kind for the message as it is written.
+// A build that predates it fails the turn at argument parsing, so the daemon
+// matches on the name to retry without it.
+func StreamFlagFor(kind string) string {
+	switch kind {
+	case config.AgentKindClaude:
+		return StreamFlag
+	case config.AgentKindPi:
+		return piStreamFlag
+	}
+	return ""
+}
 
 // TurnSpec describes one headless assistant turn. It is a sibling of the
 // daemon's buildAgentArgs rather than an overload of it: that one is
@@ -34,7 +49,7 @@ type TurnSpec struct {
 	// runs in the tickets dir, so run logs and worktrees need naming.
 	AddDirs []string
 	// Stream asks for the message as it is written, so the pane renders prose
-	// before it completes. Only claude has a flag for it.
+	// before it completes.
 	Stream bool
 }
 
@@ -82,6 +97,9 @@ func BuildArgs(agentCfg config.Agent, model, effort string, spec TurnSpec) ([]st
 		// from stdout: --mode json emits wire events, which is a different
 		// shape from the session records logfmt.EventsPi parses.
 		args = append(args, "--print", "--session-id", spec.SessionID, "--session-dir", spec.SessionDir)
+		if spec.Stream {
+			args = append(args, piStreamFlag, "json")
+		}
 	default:
 		return nil, fmt.Errorf("agent %s: the assistant only supports claude and pi", agentCfg.Binary)
 	}

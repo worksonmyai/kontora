@@ -190,9 +190,10 @@ type Assistant struct {
 	Autonomy string `yaml:"autonomy"`
 	// Prompt replaces the built-in system brief.
 	Prompt string `yaml:"prompt"`
-	// Stream asks claude for the message as it writes it, so the pane renders
-	// prose before it completes. Unset means on: an opt-out, because a claude
-	// that does not know the flag fails every turn and needs an escape hatch.
+	// Stream asks the agent for the message as it writes it, so the pane
+	// renders prose before it completes. Unset means on: an opt-out, because a
+	// claude that does not know the flag fails every turn and needs an escape
+	// hatch.
 	Stream *bool `yaml:"stream"`
 }
 

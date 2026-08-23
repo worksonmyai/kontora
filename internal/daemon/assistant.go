@@ -77,7 +77,8 @@ type TurnParams struct {
 	// be looked at afterwards.
 	LogFile string
 	// ThreadID and Kind let a test spawner write a canned session file where
-	// the reader will look for it.
+	// the reader will look for it. Kind also names the wire format stdout
+	// carries.
 	ThreadID string
 	Kind     string
 	// Stream receives the message the agent is writing. A callback seam rather
@@ -767,23 +768,11 @@ func (d *Daemon) runAssistantTurn(ctx context.Context, cfg *config.Config, agent
 			PageContext:  assistantPageLines(turn.Context),
 		}),
 	}
-	var stream assistant.StreamHandler
 	switch agentCfg.Kind() {
 	case config.AgentKindClaude:
 		// The thread runs in the tickets dir, so the run logs and the worktrees
 		// have to be named or claude refuses to read them.
 		spec.AddDirs = []string{expandTilde(cfg.LogsDir), expandTilde(cfg.WorktreesDir)}
-		if cfg.Assistant.StreamEnabled() {
-			spec.Stream = true
-			live, id := d.assistant.live, thread.ID
-			stream = assistant.StreamHandler{
-				Block: func() { live.Block(id) },
-				Text:  func(delta string) { live.Append(id, delta) },
-				Tool:  func(name string) { live.Tool(id, name) },
-				Seal:  func() { live.Seal(id) },
-			}
-			log.Debug("assistant turn asks for partial messages", "flag", assistant.StreamFlag)
-		}
 	case config.AgentKindPi:
 		dir, err := store.PiSessionDir(thread.ID)
 		if err != nil {
@@ -795,6 +784,18 @@ func (d *Daemon) runAssistantTurn(ctx context.Context, cfg *config.Config, agent
 			return
 		}
 		spec.SessionDir = dir
+	}
+	var stream assistant.StreamHandler
+	if cfg.Assistant.StreamEnabled() {
+		spec.Stream = true
+		live, id := d.assistant.live, thread.ID
+		stream = assistant.StreamHandler{
+			Block: func() { live.Block(id) },
+			Text:  func(delta string) { live.Append(id, delta) },
+			Tool:  func(name string) { live.Tool(id, name) },
+			Seal:  func() { live.Seal(id) },
+		}
+		log.Debug("assistant turn asks for partial messages", "kind", agentCfg.Kind())
 	}
 
 	args, err := assistant.BuildArgs(agentCfg, thread.Model, thread.Effort, spec)
@@ -829,12 +830,13 @@ func (d *Daemon) runAssistantTurn(ctx context.Context, cfg *config.Config, agent
 	}
 
 	err = run(args, stream)
-	// A claude that predates the flag rejects it before it reads the prompt, so
+	// An agent that predates the flag rejects it before it reads the prompt, so
 	// every turn would fail until someone found assistant.stream. The turn is
 	// worth more than the streaming, so it is run again without it.
-	if err != nil && spec.Stream && ctx.Err() == nil && strings.Contains(err.Error(), assistant.StreamFlag) {
-		log.Warn("this claude does not know the partial-message flag; running the turn without it",
-			"flag", assistant.StreamFlag, "hint", "set assistant.stream: false to stop asking")
+	streamFlag := assistant.StreamFlagFor(agentCfg.Kind())
+	if err != nil && spec.Stream && ctx.Err() == nil && streamFlag != "" && strings.Contains(err.Error(), streamFlag) {
+		log.Warn("this agent does not know the partial-message flag; running the turn without it",
+			"kind", agentCfg.Kind(), "flag", streamFlag, "hint", "set assistant.stream: false to stop asking")
 		spec.Stream = false
 		retryArgs, buildErr := assistant.BuildArgs(agentCfg, thread.Model, thread.Effort, spec)
 		if buildErr == nil {
@@ -1122,7 +1124,7 @@ func defaultTurnSpawner(ctx context.Context, p TurnParams) (string, error) {
 	var out io.Writer = &stdout
 	var sw *assistant.StreamWriter
 	if p.Stream.Live() {
-		sw = assistant.NewStreamWriter(&stdout, p.Stream)
+		sw = assistant.NewStreamWriter(p.Kind, &stdout, p.Stream)
 		out = sw
 	}
 	result, err := process.Run(ctx, process.RunParams{
@@ -1154,6 +1156,13 @@ func defaultTurnSpawner(ctx context.Context, p TurnParams) (string, error) {
 	}
 	if result.ExitCode != 0 {
 		return stdout.String(), fmt.Errorf("%s exited with code %d: %s", agent, result.ExitCode, truncateSummary(strings.TrimSpace(stderr.String())))
+	}
+	// pi's json mode exits 0 on a turn its own text mode would have failed, so
+	// the only account of the failure is the one the decoder read off the wire.
+	if sw != nil {
+		if failure := sw.Failure(); failure != nil {
+			return stdout.String(), fmt.Errorf("%s: %s", agent, truncateSummary(failure.Error()))
+		}
 	}
 	return stdout.String(), nil
 }

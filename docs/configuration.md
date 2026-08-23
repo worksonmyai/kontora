@@ -768,7 +768,7 @@ assistant:
   timeout: 10m           # optional, per turn
   autonomy: ask          # optional: read | ask | auto
   prompt: ""             # optional, replaces the built-in system brief
-  stream: true           # optional, claude only; unset means on
+  stream: true           # optional; unset means on
 ```
 
 | Field | Required | Default | Description |
@@ -780,24 +780,40 @@ assistant:
 | `timeout` | no | `10m` | Bounds one turn. |
 | `autonomy` | no | `ask` | The mode a new chat starts in. |
 | `prompt` | no | built-in | Replaces the whole system brief, mode paragraph included. |
-| `stream` | no | `true` | Whether a claude turn asks for the message as it is written, so the pane renders prose before the message completes. |
+| `stream` | no | `true` | Whether a turn asks for the message as it is written, so the pane renders prose before the message completes. |
 
 ### Replies as they are written
 
 The pane renders an assistant message while the agent is still writing it. A
-claude turn runs with `--include-partial-messages`, and the daemon keeps the
-text those records carry in memory until the session file records the message.
-Nothing reaches the run transcript or the turn log that did not before: a
-partial record is a fragment of a message the log already carries whole.
+claude turn runs with `--include-partial-messages`; a pi turn runs with
+`--mode json`, which is what turns its deltas on. The daemon keeps the text
+those records carry in memory until the session file records the message.
+Nothing reaches the run transcript that did not before: the transcript is the
+agent's own session file, and `--mode json` does not change what pi writes
+there.
 
-Set `stream: false` to turn it off. A claude build that does not know the flag
-rejects it at argument parsing, before it reads the prompt. The daemon sees the
+The turn log is stdout, so a streaming pi turn writes JSON lines to it instead
+of the plain reply. The per-fragment records are dropped from the log, the way
+claude's are, and the records that describe the turn are kept. Three more are
+dropped: `agent_end` carries the whole session, so the log would grow with the
+thread rather than with the turn, and `entry_appended` and
+`tool_execution_update` repeat what the session file already holds.
+
+pi's json mode does not report a failed turn the way its text mode does: only
+`--mode text` reads the last message's stop reason and exits 1. The daemon reads
+that stop reason off the wire instead, so a turn the provider refused still
+shows as failed, with the provider's message.
+
+A pi thread names a pending tool one step later than a claude one: only pi's
+`toolcall_end` carries the tool's name, so the row appears when the arguments
+finish generating rather than when they start.
+
+Set `stream: false` to turn it off. A build that does not know the flag rejects
+it at argument parsing, before it reads the prompt: an older claude for
+`--include-partial-messages`, an older pi for `--mode`. The daemon sees the
 flag named in the error and runs the turn again without it, so the reply still
 arrives, whole rather than as it is written. The retry is logged as a warning
 naming the flag; `stream: false` stops the wasted first attempt.
-
-pi has no equivalent flag, so a pi chat behaves as it did before and the field
-does nothing.
 
 ### Only claude and pi
 

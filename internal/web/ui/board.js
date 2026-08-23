@@ -5,6 +5,22 @@ const KEY_SEQ_MS = 800;
 // changed, drag and drop, and the global key bindings.
 export function kontoraBoard() {
   return {
+    // What the assistant is told about the board: the view the user is on and
+    // the filter narrowing it, which is what "these tickets" refers to.
+    boardPageContext() {
+      const lines = ['View: ' + this.currentView];
+      const parsed = this.parseFilterQuery(this.searchQuery);
+      if (!this.filterQueryEmpty(parsed)) {
+        const parts = [];
+        if (parsed.text) parts.push('text "' + parsed.text + '"');
+        this._filterTokenKeys.forEach((key) => {
+          parsed[key].forEach((v) => parts.push(key + ' ' + v.value));
+        });
+        lines.push('Board filter: ' + parts.join(', '));
+      }
+      return lines;
+    },
+
     _escapeHtml(s) {
       if (s === null || s === undefined) return '';
       return String(s)

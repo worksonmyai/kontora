@@ -409,6 +409,17 @@ export function statsDerive(payload) {
 
 export function kontoraStats() {
   return {
+    // What the assistant is told about the Stats view. Null anywhere else, so a
+    // question asked from the board is not answered about a window it cannot
+    // see.
+    statsPageContext() {
+      if (this.currentView !== 'stats') return null;
+      const lines = ['Stats window: ' + this.statsRangeLabel(this.statsRange)];
+      if (this.statsProject !== 'all') lines.push('Stats project: ' + this.statsProject);
+      if (this.statsPipeline !== 'all') lines.push('Stats pipeline: ' + this.statsPipeline);
+      return lines;
+    },
+
     statsRange: (function() {
       try {
         const saved = localStorage.getItem('kontora-stats-range');

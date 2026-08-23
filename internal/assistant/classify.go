@@ -54,6 +54,7 @@ var kontoraReadVerbs = map[string]bool{
 	"ls": true, "view": true, "search": true, "logs": true, "activity": true,
 	"changes": true, "stats": true, "sessions": true, "config": true,
 	"help": true, "version": true, "fmt": true, "completion": true,
+	"skills": true,
 }
 
 // kontoraWriteVerbs are the CLI verbs that change a ticket.
@@ -133,6 +134,13 @@ func classifySegment(segment string) Decision {
 	switch verb := fields[1]; {
 	case verb == "delete":
 		return DecisionDelete
+	case len(fields) == 3 && (fields[2] == "-h" || fields[2] == "--help"):
+		// Exactly three fields, so the flag set sees the flag first and prints
+		// usage before any side effect. It has to be that narrow: `note`,
+		// `summary` and `new` parse flags once and take the rest as free-form
+		// text, so `kontora note ID -h` does not print help, it appends a note
+		// reading "-h".
+		return DecisionRead
 	case verb == "config" && slices.Contains(fields[2:], "edit"):
 		// `kontora config edit` writes the daemon config, and headless it also
 		// hangs on an editor that never returns.

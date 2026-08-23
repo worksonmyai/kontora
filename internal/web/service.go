@@ -133,10 +133,14 @@ type CreateAssistantThreadRequest struct {
 
 // AssistantMessageRequest posts one message. A non-empty Autonomy switches the
 // thread's mode before the turn runs, which is how the pane's mode selector
-// takes effect on the very next message.
+// takes effect on the very next message. Context is what the user is looking
+// at, one fact per line. It is rendered into that turn's system prompt rather
+// than prefixed to the message, so the pane's own bubble stays what the user
+// typed.
 type AssistantMessageRequest struct {
 	Text     string `json:"text"`
 	Autonomy string `json:"autonomy,omitempty"`
+	Context  string `json:"context,omitempty"`
 }
 
 // AssistantActivityQuery is one poll of a thread. After is the number of events

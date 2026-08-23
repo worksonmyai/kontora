@@ -43,8 +43,11 @@ type Thread struct {
 
 // Turn is one user message and what running it did.
 type Turn struct {
-	N         int          `json:"n"`
-	Text      string       `json:"text"`
+	N    int    `json:"n"`
+	Text string `json:"text"`
+	// Context is the page the user was on, as the brief was told it. Recorded
+	// so a turn says what the agent knew; the pane does not render it.
+	Context   string       `json:"context,omitempty"`
 	StartedAt time.Time    `json:"started_at"`
 	EndedAt   time.Time    `json:"ended_at,omitzero"`
 	ExitCode  int          `json:"exit_code"`

@@ -322,6 +322,7 @@ function kontoraContext(overrides = {}) {
     setTimeout,
     clearTimeout,
     structuredClone,
+    TextEncoder,
     requestAnimationFrame(callback) {
       callback();
       return 1;
@@ -9256,6 +9257,57 @@ test("the autonomy switch persists and names itself", () => {
   assert.equal(restored.state.assistantAutonomy, "auto");
 });
 
+test("the page the message was sent from goes out with it", async () => {
+  const { state, requests } = assistantState();
+  await state.initAssistant();
+  state.assistantThread = { id: "t1" };
+  state.selectedTicket = { id: "kon-7d21", status: "in_progress", stage: "review", title: "Fix the index", branch: "kontora/kon-7d21" };
+  state.searchQuery = "project:=kontora fonts";
+  state.assistantDraft = "what am I looking at";
+
+  await state.sendAssistantMessage();
+
+  const sent = requests.find((r) => r.url === "/api/assistant/threads/t1/messages");
+  assert.deepEqual(JSON.parse(sent.init.body).context.split("\n"), [
+    "Open ticket: kon-7d21 (in_progress, stage review)",
+    "Title: Fix the index",
+    "Branch: kontora/kon-7d21",
+    "View: board",
+    "Board filter: text \"fonts\", project kontora",
+  ]);
+});
+
+test("a view the user is not on contributes nothing", async () => {
+  const { state } = assistantState();
+  await state.initAssistant();
+
+  assert.equal(state.statsPageContext(), null, "the board is not the stats view");
+  assert.equal(state.settingsPageContext(), null);
+  assert.equal(state.detailPageContext(), null, "no ticket is open");
+  assert.equal(state._assistantPageContext(), "View: board");
+});
+
+test("a ticket left open behind another view is not described as on screen", async () => {
+  const { state } = assistantState();
+  await state.initAssistant();
+  state.selectedTicket = { id: "kon-7d21", status: "in_progress", stage: "review" };
+  state.currentView = "stats";
+
+  assert.equal(state.detailPageContext(), null);
+  assert.equal(state._assistantPageContext().includes("kon-7d21"), false);
+});
+
+test("the context is trimmed to the byte cap the API enforces", async () => {
+  const { state } = assistantState();
+  await state.initAssistant();
+  // Three bytes per character, so a filter that fits in 2048 UTF-16 units is
+  // still well past the byte cap the handler rejects on.
+  state.searchQuery = "мышь".repeat(400);
+
+  const context = state._assistantPageContext();
+  assert.ok(new TextEncoder().encode(context).length <= 2048);
+});
+
 test("the mode goes out with the message, so the switch takes effect next turn", async () => {
   const { state, requests } = assistantState();
   await state.initAssistant();
@@ -9266,7 +9318,7 @@ test("the mode goes out with the message, so the switch takes effect next turn",
   await state.sendAssistantMessage();
 
   const sent = requests.find((r) => r.url === "/api/assistant/threads/t1/messages");
-  assert.deepEqual(JSON.parse(sent.init.body), { text: "move kon-7d21 to done", autonomy: "auto" });
+  assert.deepEqual(JSON.parse(sent.init.body), { text: "move kon-7d21 to done", autonomy: "auto", context: "View: board" });
   assert.equal(state.assistantDraft, "", "the composer is cleared");
   // The message is on screen before the daemon answers, so it does not vanish
   // while the turn is starting.

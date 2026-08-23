@@ -52,6 +52,19 @@ test("no two mixins define the same key", async () => {
   assert.deepEqual(clashes, []);
 });
 
+// The pane collects page context by name, so a renamed or deleted hook goes
+// quiet rather than failing: the assistant just stops being told about that
+// view. Named here so the build catches it instead.
+test("every page-context hook the assistant names exists", async () => {
+  await import(entry);
+  const merged = globalThis.kontora();
+
+  assert.ok(Array.isArray(merged._assistantContextHooks));
+  assert.ok(merged._assistantContextHooks.length > 0);
+  const missing = merged._assistantContextHooks.filter((name) => typeof merged[name] !== "function");
+  assert.deepEqual(missing, []);
+});
+
 // A mixin left out of the merge is invisible: its half of the component simply
 // never exists, and the template silently renders nothing where it was used.
 // Checked against the component index.js actually builds, so a factory named

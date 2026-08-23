@@ -846,12 +846,23 @@ func (c *Config) IsKnownStatus(s string) bool {
 	return builtinStatuses[s] || c.IsCustomStatus(s)
 }
 
-// boardStatuses are the built-in statuses that map to a board column.
-// archived is intentionally excluded: archived tickets are hidden from the board.
-var boardStatuses = map[string]bool{
-	"open": true, "todo": true, "in_progress": true,
-	"paused": true, "human_review": true, "done": true, "cancelled": true,
+// BoardStatusOrder are the built-in statuses that map to a board column, in
+// column order. archived is intentionally excluded: archived tickets are hidden
+// from the board. It is ordered rather than a set so a caller counting tickets
+// per status reports them the way the board reads.
+var BoardStatusOrder = []string{
+	"open", "todo", "in_progress", "paused", "human_review", "done", "cancelled",
 }
+
+// boardStatuses is the lookup form of BoardStatusOrder, derived so the two
+// cannot disagree.
+var boardStatuses = func() map[string]bool {
+	m := make(map[string]bool, len(BoardStatusOrder))
+	for _, s := range BoardStatusOrder {
+		m[s] = true
+	}
+	return m
+}()
 
 // IsBoardStatus reports whether s maps to a board column (a non-archived
 // built-in status or a configured custom status). Tickets with any other

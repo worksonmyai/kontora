@@ -147,6 +147,28 @@ func TestAssistantRoutes(t *testing.T) {
 			wantCalls:  []string{"message t1 what is running"},
 		},
 		{
+			name: "page context reaches the service",
+			svc: &mockService{assistantMsgFn: func(_ string, req AssistantMessageRequest) error {
+				assert.Equal(t, "Open ticket: kon-12 (in_progress, stage review)", req.Context)
+				return nil
+			}},
+			method:     http.MethodPost,
+			path:       "/api/assistant/threads/t1/messages",
+			body:       `{"text":"what is this","context":"Open ticket: kon-12 (in_progress, stage review)"}`,
+			wantStatus: http.StatusAccepted,
+		},
+		{
+			name: "page context over the cap is rejected and no turn starts",
+			svc: &mockService{assistantMsgFn: func(string, AssistantMessageRequest) error {
+				assert.Fail(t, "the turn started despite the oversized context")
+				return nil
+			}},
+			method:     http.MethodPost,
+			path:       "/api/assistant/threads/t1/messages",
+			body:       `{"text":"what is this","context":"` + strings.Repeat("x", assistantContextMax+1) + `"}`,
+			wantStatus: http.StatusBadRequest,
+		},
+		{
 			name:       "an empty message is rejected",
 			svc:        &mockService{},
 			method:     http.MethodPost,

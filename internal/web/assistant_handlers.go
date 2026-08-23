@@ -11,6 +11,11 @@ import (
 // stays under the per-string limit.
 const assistantTextMax = 32 << 10
 
+// assistantContextMax bounds the page context a message carries. The pane sends
+// a handful of lines about the open view, so anything larger is a client that
+// went wrong rather than a page worth describing.
+const assistantContextMax = 2 << 10
+
 func (s *Server) handleAssistantConfig(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, s.svc.AssistantConfig())
 }
@@ -101,6 +106,10 @@ func (s *Server) handleAssistantMessage(w http.ResponseWriter, r *http.Request) 
 	}
 	if len(req.Text) > assistantTextMax {
 		writeJSONError(w, http.StatusBadRequest, "text is too long")
+		return
+	}
+	if len(req.Context) > assistantContextMax {
+		writeJSONError(w, http.StatusBadRequest, "context is too long")
 		return
 	}
 	if err := s.svc.PostAssistantMessage(r.PathValue("id"), req); err != nil {

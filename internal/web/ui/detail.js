@@ -6,6 +6,20 @@ import { termState } from './terminal.js';
 // and the actions the panel offers.
 export function kontoraDetail() {
   return {
+    // What the assistant is told about the open ticket. Null when none is open,
+    // so the pane leaves the line out rather than saying "no ticket". The panel
+    // only renders on the board and gotoView never clears selectedTicket, so a
+    // ticket left open on another view would otherwise be described as on screen.
+    detailPageContext() {
+      const t = this.selectedTicket;
+      if (!t || this.currentView !== 'board') return null;
+      return [
+        'Open ticket: ' + t.id + ' (' + t.status + (t.stage ? ', stage ' + t.stage : '') + ')',
+        t.title ? 'Title: ' + t.title : null,
+        t.branch ? 'Branch: ' + t.branch : null,
+      ];
+    },
+
     async selectTicket(ticket) {
       if (this.selectedTicket?.id === ticket.id) {
         this.closeDetail();

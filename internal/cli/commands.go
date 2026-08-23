@@ -131,6 +131,7 @@ var Commands = []Command{
 	{Name: "doctor", Desc: "Validate prerequisites and configuration", Config: true},
 	{Name: "config", Desc: "Show effective configuration", Config: true, Remote: true, Subcommands: []string{"edit"}},
 	{Name: "fmt", Desc: "Format stream-json from stdin"},
+	{Name: "skills", Desc: "Show the built-in reference docs", Subcommands: []string{"list", "show"}},
 	{Name: "version", Desc: "Print version"},
 	{Name: "completion", Desc: "Generate shell completions", Subcommands: []string{"bash", "fish", "zsh"}},
 }

@@ -782,3 +782,61 @@ func TestShellQuote(t *testing.T) {
 		assert.Equal(t, tt.want, shellQuote(tt.in))
 	}
 }
+
+// The brief is rendered per turn, so it has to carry the board as configured
+// now, the tickets on it now, and the page the message was sent from.
+func TestAssistantTurnPromptCarriesBoardAndPage(t *testing.T) {
+	h := newHarness(t)
+	cfg := h.assistantConfig("pi")
+	cfg.AutoPickUp = new(false)
+	cfg.Statuses = []string{"needs_qa"}
+	cfg.Projects = map[string]config.Project{"demo": {Path: "~/projects/demo"}}
+	h.writeTicket("kon-1.md", "---\nid: kon-1\nkontora: true\nstatus: human_review\npath: /tmp\n---\n# waiting on a person\n")
+
+	stub := &stubTurns{turns: make(chan spawnedTurn, 2)}
+	d := h.newDaemon(cfg, WithTurnSpawner(stub.spawn))
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() { errCh <- d.Run(ctx) }()
+
+	// The counts come from the tickets the daemon holds in memory, so the turn
+	// has to be posted after the initial scan has read the store.
+	require.Eventually(t, func() bool {
+		return len(d.assistantCounts(cfg)) > 0
+	}, 5*time.Second, 10*time.Millisecond)
+
+	thread, err := d.CreateAssistantThread(web.CreateAssistantThreadRequest{})
+	require.NoError(t, err)
+	pageContext := "Open ticket: kon-1 (human_review)\n\nBoard filter: project demo"
+	require.NoError(t, d.PostAssistantMessage(thread.ID, web.AssistantMessageRequest{
+		Text:    "what am I looking at",
+		Context: pageContext,
+	}))
+	turn := stub.next(t)
+	waitIdle(t, d, thread.ID)
+
+	prompt := flagValue(turn.args, "--append-system-prompt")
+	require.NotEmpty(t, prompt)
+	for _, want := range []string{
+		"Pipelines: one-stage (step1), retry-stage (step1), two-stage (step1 -> step2)",
+		"Agents: agent1 (default), agent2, assistant",
+		"Custom statuses: needs_qa",
+		"Projects: demo (~/projects/demo)",
+		"Now: 1 human_review",
+		"Open ticket: kon-1 (human_review)",
+		"Board filter: project demo",
+		"kontora skills list",
+	} {
+		assert.Contains(t, prompt, want)
+	}
+
+	// Recorded on the turn, so what the agent was told is not lost with the
+	// process that was told it.
+	turns, err := d.assistantStore(cfg).Turns(thread.ID)
+	require.NoError(t, err)
+	require.Len(t, turns, 1)
+	assert.Equal(t, pageContext, turns[0].Context)
+
+	cancel()
+	require.NoError(t, <-errCh)
+}

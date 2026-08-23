@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net"
 	"os"
 	"path/filepath"
@@ -533,17 +534,107 @@ func (d *Daemon) PostAssistantMessage(id string, req web.AssistantMessageRequest
 
 	d.background.Go(func() {
 		defer cancel()
-		d.runAssistantTurn(ctx, cfg, agentCfg, store, thread, text, resume)
+		d.runAssistantTurn(ctx, cfg, agentCfg, store, thread, text, req.Context, resume)
 	})
 	return nil
 }
 
+// assistantBoard describes the configured board as the lines the system brief
+// renders. A section with nothing to state is left out rather than rendered
+// empty: a board with no projects should not tell the agent it has none.
+func assistantBoard(cfg *config.Config) []string {
+	var lines []string
+
+	if len(cfg.Pipelines) > 0 {
+		names := slices.Sorted(maps.Keys(cfg.Pipelines))
+		parts := make([]string, 0, len(names))
+		for _, name := range names {
+			stages := make([]string, 0, len(cfg.Pipelines[name]))
+			for _, step := range cfg.Pipelines[name] {
+				stages = append(stages, step.Stage)
+			}
+			parts = append(parts, fmt.Sprintf("%s (%s)", name, strings.Join(stages, " -> ")))
+		}
+		lines = append(lines, "Pipelines: "+strings.Join(parts, ", "))
+	}
+
+	if len(cfg.Agents) > 0 {
+		names := slices.Sorted(maps.Keys(cfg.Agents))
+		parts := make([]string, 0, len(names))
+		for _, name := range names {
+			if name == cfg.DefaultAgent {
+				name += " (default)"
+			}
+			parts = append(parts, name)
+		}
+		lines = append(lines, "Agents: "+strings.Join(parts, ", "))
+	}
+
+	if len(cfg.Statuses) > 0 {
+		lines = append(lines, "Custom statuses: "+strings.Join(cfg.Statuses, ", "))
+	}
+
+	if len(cfg.Projects) > 0 {
+		names := slices.Sorted(maps.Keys(cfg.Projects))
+		parts := make([]string, 0, len(names))
+		for _, name := range names {
+			parts = append(parts, fmt.Sprintf("%s (%s)", name, cfg.Projects[name].Path))
+		}
+		lines = append(lines, "Projects: "+strings.Join(parts, ", "))
+	}
+
+	return lines
+}
+
+// assistantCounts counts the tickets the daemon holds in memory, per status, in
+// board order, then any other status a ticket carries. A status with no tickets
+// is left out, so the line says what is there rather than listing zeroes.
+func (d *Daemon) assistantCounts(cfg *config.Config) []string {
+	counts := map[string]int{}
+	d.mu.Lock()
+	for _, ts := range d.tickets {
+		counts[string(ts.ticket.Status)]++
+	}
+	d.mu.Unlock()
+
+	order := append(slices.Clone(config.BoardStatusOrder), cfg.Statuses...)
+	var extra []string
+	for status := range counts {
+		if !slices.Contains(order, status) {
+			extra = append(extra, status)
+		}
+	}
+	slices.Sort(extra)
+	order = append(order, extra...)
+
+	var lines []string
+	for _, status := range order {
+		if n := counts[status]; n > 0 {
+			lines = append(lines, fmt.Sprintf("%d %s", n, status))
+		}
+	}
+	return lines
+}
+
+// assistantPageLines splits the posted page context into the lines the brief
+// renders. Blank lines are dropped, so a client that pads its payload does not
+// pad the prompt.
+func assistantPageLines(raw string) []string {
+	var lines []string
+	for _, line := range strings.Split(raw, "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			lines = append(lines, line)
+		}
+	}
+	return lines
+}
+
 // runAssistantTurn spawns one headless agent process and records what it did.
-func (d *Daemon) runAssistantTurn(ctx context.Context, cfg *config.Config, agentCfg config.Agent, store *assistant.Store, thread assistant.Thread, text string, resume bool) {
+func (d *Daemon) runAssistantTurn(ctx context.Context, cfg *config.Config, agentCfg config.Agent, store *assistant.Store, thread assistant.Thread, text, pageContext string, resume bool) {
 	defer d.assistant.release(thread.ID)
 
 	log := d.log.With("assistant_thread", thread.ID, "turn", thread.Turns)
-	turn := assistant.Turn{N: thread.Turns, Text: text, StartedAt: time.Now().UTC()}
+	turn := assistant.Turn{N: thread.Turns, Text: text, Context: pageContext, StartedAt: time.Now().UTC()}
 
 	finish := func(err error) {
 		turn.EndedAt = time.Now().UTC()
@@ -587,6 +678,9 @@ func (d *Daemon) runAssistantTurn(ctx context.Context, cfg *config.Config, agent
 			TicketsDir:   expandTilde(cfg.TicketsDir),
 			LogsDir:      expandTilde(cfg.LogsDir),
 			WorktreesDir: expandTilde(cfg.WorktreesDir),
+			Board:        assistantBoard(cfg),
+			Counts:       d.assistantCounts(cfg),
+			PageContext:  assistantPageLines(turn.Context),
 		}),
 	}
 	switch agentCfg.Kind() {

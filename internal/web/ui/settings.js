@@ -169,6 +169,15 @@ const SETTINGS_DURATION_RE = /^[-+]?(\d+(\.\d*)?|\.\d+)(ns|us|µs|μs|ms|s|m|h)(
 
 export function kontoraSettings() {
   return {
+    // What the assistant is told about the Settings view. The section is what
+    // "this" means in a question asked from here.
+    settingsPageContext() {
+      if (this.currentView !== 'settings') return null;
+      const lines = ['Settings section: ' + this.settingsSection];
+      if (this.settingsDirty()) lines.push('Settings have unsaved edits');
+      return lines;
+    },
+
     settingsSection: 'stages',
     // The editable form model, and a deep clone of what was parsed from disk.
     // Dirty state and the diff compare the two.

@@ -22,13 +22,26 @@ type PromptData struct {
 	// is usually answered from.
 	LogsDir      string
 	WorktreesDir string
+	// Board describes what this board is configured with. Each line is already
+	// rendered, so the prompt states pipelines, agents, statuses and projects
+	// without knowing the config types.
+	Board []string
+	// Counts is the live ticket count per status, in board order, as
+	// "3 todo" strings. Statuses with no tickets are left out by the caller.
+	Counts []string
+	// PageContext is what the user is looking at right now, one line per fact,
+	// collected by the pane and posted with the message. It is re-rendered every
+	// turn, so nothing stale accumulates in the transcript.
+	PageContext []string
 }
 
 // systemPromptTmpl is the built-in brief. It states the one rule the tool gate
 // cannot express, that ticket state is changed through the CLI rather than by
 // editing markdown, and what the current mode allows, so a refusal the gate
 // issues is not a surprise the agent argues with.
-var systemPromptTmpl = template.Must(template.New("assistant").Parse(
+var systemPromptTmpl = template.Must(template.New("assistant").Funcs(template.FuncMap{
+	"join": func(items []string, sep string) string { return strings.Join(items, sep) },
+}).Parse(
 	`You are the Kontora assistant, answering questions about a Kontora board and
 driving it on the user's behalf. Kontora is an agent orchestration daemon: a
 ticket is a markdown file with YAML frontmatter, and a pipeline runs coding
@@ -45,7 +58,22 @@ Change with ` + "`kontora new`, `kontora init`, `kontora run`, `kontora move`, `
 KONTORA_URL and KONTORA_TOKEN are set, so those calls go through the running
 daemon and it sees every change immediately. Never edit a ticket markdown file
 directly: the daemon owns those files and a hand edit races it.
-
+Run ` + "`kontora skills list`" + ` for the reference topics and
+` + "`kontora skills show <topic>`" + ` for one. Read the topic rather than guessing
+a flag; ` + "`kontora <verb> -h`" + ` prints one verb's usage.
+{{ with .Board }}
+Board:
+{{- range . }}
+  {{ . }}
+{{- end }}
+{{ end }}{{ with .Counts }}
+Now: {{ join . ", " }}
+{{ end }}{{ with .PageContext }}
+Current page:
+{{- range . }}
+  {{ . }}
+{{- end }}
+{{ end }}
 {{ .ModeBrief }}
 
 Answer in plain prose. Say what you found and what you changed. Do not describe

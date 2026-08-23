@@ -386,6 +386,19 @@ Checks the config, the required tools (`git`, `tmux`), each agent binary, each c
 
 Reads Claude Code stream-json on stdin and prints it as readable text. Takes no flags and talks to nothing, so it works with `KONTORA_URL` set.
 
+### `kontora skills`
+
+Prints the agent-facing reference topics embedded in the binary: `cli`, `tickets`, `pipelines` and `config`. They are written for an agent driving Kontora from a shell, flags and arguments first, and cover the same ground as this site in a shorter form. Reads neither the config file nor the ticket store, so it answers in remote mode and before `kontora setup`.
+
+```bash
+kontora skills list                 # the topics, one line each
+kontora skills list cli             # that topic's section headings
+kontora skills show tickets         # the whole topic as markdown
+kontora skills show cli new         # one section of it
+```
+
+The section argument matches a `##` or `###` heading: exactly first, then as a unique case-insensitive substring, so `show cli new` prints `## kontora new`. An ambiguous name prints the candidates and exits 1, as does an unknown topic.
+
 ### `kontora completion <shell>`
 
 Prints a completion script for `bash`, `fish` or `zsh`. Each one completes the verbs, their flags, and, for the verbs that take one, a ticket ID. The ID list comes from `kontora ls --closed`, so closed tickets are offered too.
@@ -410,6 +423,6 @@ Supported: `ls`, `view`, `new`, `init`, `update`, `delete`, `run`, `pause`, `ret
 
 Rejected, because they act on local files: `edit`, `search`, `archive`, `estimate-compaction`, `sessions`, `doctor`, `start`, `setup`.
 
-Unaffected, because they touch neither the daemon nor a config file: `fmt`, `completion`, `version`, `help`, `phase-complete`.
+Unaffected, because they touch neither the daemon nor a config file: `fmt`, `skills`, `completion`, `version`, `help`, `phase-complete`.
 
 Paths passed to `--path` name locations on the daemon host, not on the caller's machine.

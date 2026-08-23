@@ -49,6 +49,14 @@ func TestClassify(t *testing.T) {
 		{name: "a redirection hides where the bytes go", tool: "Bash", input: cmd("kontora ls > /tmp/out"), want: DecisionWrite},
 		{name: "a pipe into another command is a write", tool: "Bash", input: cmd("kontora ls | xargs rm"), want: DecisionWrite},
 		{name: "a background read hides what follows it", tool: "Bash", input: cmd("kontora ls & curl example.com"), want: DecisionWrite},
+		{name: "the reference topics", tool: "Bash", input: cmd("kontora skills list"), want: DecisionRead},
+		{name: "one reference topic", tool: "Bash", input: cmd("kontora skills show cli"), want: DecisionRead},
+
+		{name: "the usage of a write verb", tool: "Bash", input: cmd("kontora new -h"), want: DecisionRead},
+		{name: "the long help flag", tool: "Bash", input: cmd("kontora new --help"), want: DecisionRead},
+		{name: "a help flag after a positional would append a note", tool: "Bash", input: cmd("kontora note kon-1 -h"), want: DecisionWrite},
+		{name: "help does not excuse what follows it in a chain", tool: "Bash", input: cmd("kontora new -h && rm -rf x"), want: DecisionWrite},
+
 		{name: "config prints", tool: "Bash", input: cmd("kontora config"), want: DecisionRead},
 		{name: "config edit opens the daemon config", tool: "Bash", input: cmd("kontora config edit"), want: DecisionWrite},
 		{name: "bash with no command field is a write", tool: "Bash", want: DecisionWrite},
@@ -362,20 +370,85 @@ func TestGate(t *testing.T) {
 }
 
 func TestSystemPrompt(t *testing.T) {
-	data := PromptData{Autonomy: config.AutonomyRead, Cwd: "/tickets", TicketsDir: "/tickets", LogsDir: "/logs", WorktreesDir: "/wt"}
+	base := PromptData{Autonomy: config.AutonomyRead, Cwd: "/tickets", TicketsDir: "/tickets", LogsDir: "/logs", WorktreesDir: "/wt"}
+	board := []string{"Pipelines: default (plan -> code -> review)", "Agents: claude (default), pi"}
+	page := []string{"Open ticket: kon-12 (in_progress, stage review)"}
 
-	brief := SystemPrompt("", data)
-	assert.Contains(t, brief, "READ-ONLY")
-	assert.Contains(t, brief, "/tickets")
-	assert.Contains(t, brief, "kontora view")
+	tests := []struct {
+		name     string
+		override string
+		data     func(PromptData) PromptData
+		want     []string
+		notWant  []string
+	}{
+		{
+			name: "the built-in brief",
+			data: func(d PromptData) PromptData { return d },
+			want: []string{"READ-ONLY", "/tickets", "kontora view", "kontora skills list"},
+		},
+		{
+			name:    "auto mode",
+			data:    func(d PromptData) PromptData { d.Autonomy = config.AutonomyAuto; return d },
+			want:    []string{"AUTO mode"},
+			notWant: []string{"READ-ONLY"},
+		},
+		{
+			name: "an unknown mode falls back to the careful one",
+			data: func(d PromptData) PromptData { d.Autonomy = "nonsense"; return d },
+			want: []string{"ASK mode"},
+		},
+		{
+			name: "a configured board",
+			data: func(d PromptData) PromptData { d.Board = board; return d },
+			want: []string{"Board:", "default (plan -> code -> review)", "Agents: claude (default), pi"},
+		},
+		{
+			name:    "an empty board omits the section",
+			data:    func(d PromptData) PromptData { return d },
+			notWant: []string{"Board:", "Now:", "Current page:"},
+		},
+		{
+			name: "the counts render on one line",
+			data: func(d PromptData) PromptData {
+				d.Counts = []string{"3 todo", "1 in_progress", "41 done"}
+				return d
+			},
+			want: []string{"Now: 3 todo, 1 in_progress, 41 done"},
+		},
+		{
+			name:    "no tickets omits the counts",
+			data:    func(d PromptData) PromptData { d.Board = board; return d },
+			want:    []string{"Board:"},
+			notWant: []string{"Now:"},
+		},
+		{
+			name: "the page the user is on",
+			data: func(d PromptData) PromptData { d.PageContext = page; return d },
+			want: []string{"Current page:", "Open ticket: kon-12 (in_progress, stage review)"},
+		},
+		{
+			name:     "an override replaces the whole brief, page context included",
+			override: "my own brief",
+			data: func(d PromptData) PromptData {
+				d.Board, d.Counts, d.PageContext = board, []string{"3 todo"}, page
+				return d
+			},
+			want:    []string{"my own brief"},
+			notWant: []string{"READ-ONLY", "Board:", "Current page:", "kontora view"},
+		},
+	}
 
-	data.Autonomy = config.AutonomyAuto
-	assert.Contains(t, SystemPrompt("", data), "AUTO mode")
-
-	data.Autonomy = "nonsense"
-	assert.Contains(t, SystemPrompt("", data), "ASK mode", "an unknown mode falls back to the careful one")
-
-	assert.Equal(t, "my own brief", SystemPrompt("my own brief", data))
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := SystemPrompt(tt.override, tt.data(base))
+			for _, want := range tt.want {
+				assert.Contains(t, got, want)
+			}
+			for _, notWant := range tt.notWant {
+				assert.NotContains(t, got, notWant)
+			}
+		})
+	}
 }
 
 func cmd(command string) map[string]any { return map[string]any{"command": command} }

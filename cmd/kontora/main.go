@@ -97,6 +97,7 @@ var handlers = map[string]func(){
 	"doctor":              cmdDoctor,
 	"config":              cmdConfig,
 	"fmt":                 cmdFmt,
+	"skills":              cmdSkills,
 	"version":             cmdVersion,
 	"completion":          cmdCompletion,
 }
@@ -141,6 +142,16 @@ func main() {
 func cmdFmt() {
 	if err := cli.Fmt(os.Stdin, os.Stdout); err != nil {
 		log.Fatal(err)
+	}
+}
+
+// cmdSkills prints the reference topics embedded in the binary. Like fmt, it
+// reads no config and talks to no daemon, so it answers in remote mode and
+// before `kontora setup`.
+func cmdSkills() {
+	if err := cli.Skills(os.Stdout, os.Args[2:]); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
 	}
 }
 

@@ -11,6 +11,10 @@ const ASSISTANT_WIDTH_MIN = 340;
 const ASSISTANT_WIDTH_MAX = 640;
 const ASSISTANT_WIDTH_DEFAULT = 420;
 
+// The page-context cap the API enforces (assistantContextMax). Trimmed here so
+// a message is never rejected for describing the page.
+const ASSISTANT_CONTEXT_MAX = 2 * 1024;
+
 // The slash commands the composer offers. They write a phrasing the agent can
 // act on rather than being executed by the browser: the pane types for the
 // user, it does not drive the daemon itself.
@@ -380,6 +384,41 @@ export function kontoraAssistant() {
       if (thread && thread.id) assistantStore('kontora-assistant-thread', thread.id);
     },
 
+    // --- page context ----------------------------------------------------
+
+    // The mixins that describe what the user is looking at, in the order their
+    // lines are sent. Each returns an array of lines or null; a name with no
+    // method behind it is skipped, and ui_mixins.test.mjs fails the build when
+    // one goes missing, because a renamed hook would otherwise go quiet.
+    _assistantContextHooks: ['detailPageContext', 'boardPageContext', 'statsPageContext', 'settingsPageContext'],
+
+    // Collected fresh for every message, so the agent is told the page as of
+    // that message rather than the one the chat opened on.
+    _assistantPageContext() {
+      const lines = [];
+      for (const name of this._assistantContextHooks) {
+        if (typeof this[name] !== 'function') continue;
+        // A hook that throws costs its own lines, not the message: the user
+        // pressed send, and a broken description of one view must not stop it.
+        let got = null;
+        try { got = this[name](); } catch (e) { continue; }
+        if (!got) continue;
+        for (const line of got) {
+          if (line) lines.push(String(line));
+        }
+      }
+      // The API rejects anything longer, and the tail is the least specific.
+      // Measured in bytes, because the handler caps len(req.Context): counting
+      // UTF-16 units would let non-ASCII text through and cost the message a 400.
+      const encoder = new TextEncoder();
+      let out = lines.join('\n');
+      while (encoder.encode(out).length > ASSISTANT_CONTEXT_MAX && lines.length) {
+        lines.pop();
+        out = lines.join('\n');
+      }
+      return out;
+    },
+
     // --- sending ---------------------------------------------------------
 
     async sendAssistantMessage() {
@@ -402,7 +441,7 @@ export function kontoraAssistant() {
         await this._assistantFetch('/api/assistant/threads/' + encodeURIComponent(thread.id) + '/messages', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ text: text, autonomy: this.assistantAutonomy }),
+          body: JSON.stringify({ text: text, autonomy: this.assistantAutonomy, context: this._assistantPageContext() }),
         });
       } catch (e) {
         this._assistantSetStreaming(false);

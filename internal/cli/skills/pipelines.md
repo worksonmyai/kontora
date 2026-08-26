@@ -36,7 +36,8 @@ Prompt templates are Go `text/template` with these expressions:
 `file` is how stages communicate. Every stage of a ticket shares one git
 worktree, so a plan stage writes `PLAN.md` and a code stage reads it with
 `{{ file "PLAN.md" }}`. There is no other channel between stages except the
-ticket body, which `kontora note` appends to.
+ticket body, which `kontora note` appends to — signed with the agent name the
+daemon exports as `$KONTORA_AGENT`, so the next stage can see who wrote what.
 
 ## Pipeline steps
 

@@ -196,12 +196,24 @@ pipeline without running anything.
 
 ## kontora note
 
-`kontora note TICKET_ID [TEXT]` — append a timestamped note under the body's
-`## Notes` section. Reads the text from stdin when it is not given as an
-argument, so `git log --oneline | kontora note kon-q88f` works.
+`kontora note TICKET_ID [TEXT]` — append a note under the body's `## Notes`
+section. Reads the text from stdin when it is not given as an argument, so
+`git log --oneline | kontora note kon-q88f` works.
 
 This is how you leave something for the next stage to read: a stage prompt
 containing `{{ .Ticket.Description }}` gets the whole body, notes included.
+
+Each note is written with a byline carrying its timestamp, its author and a
+4-character id: `**2026-03-06T12:00:00Z · claude · q88f**`. Running under the
+daemon, the author defaults to `$KONTORA_AGENT`, the name of the agent this run
+is, so you do not have to pass it.
+
+| Flag | Description |
+|------|-------------|
+| `--author NAME` | Override the author. |
+| `--reply-to NOTE_ID` | Reply to that note. One level only: replying to a reply is refused. |
+
+Both are flags, so write them before the free-form text.
 
 ## kontora summary
 

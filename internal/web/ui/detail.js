@@ -46,6 +46,8 @@ export function kontoraDetail() {
       this.chainError = null;
       this.childrenCollapsed = false;
       this.childrenExpanded = false;
+      this.noteDraft = '';
+      this.noteResetDrafts();
       this.selectedTicket = ticket;
       this._pushRecentTicket(ticket.id);
       this.detailLoading = true;
@@ -322,6 +324,7 @@ export function kontoraDetail() {
       this.childrenCollapsed = false;
       this.childrenExpanded = false;
       this.noteDraft = '';
+      this.noteResetDrafts();
       this.writeHash();
     },
 
@@ -1153,35 +1156,6 @@ export function kontoraDetail() {
         if (/^\[.*\]\s*$/.test(line)) return '<span class="log-banner">' + esc(line) + '</span>';
         return esc(line);
       }).join('\n');
-    },
-
-    // ---- activity tape -----------------------------------------------------
-
-    async submitNote() {
-      var text = (this.noteDraft || '').trim();
-      if (!text || !this.selectedTicket || this.noteSubmitting) return;
-      var id = this.selectedTicket.id;
-      this.noteSubmitting = true;
-      try {
-        var res = await fetch('/api/tickets/' + encodeURIComponent(id) + '/note', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ text: text }),
-        });
-        if (!res.ok) {
-          var err = await res.json().catch(function () { return {}; });
-          this.error = err.error || 'Failed to add note';
-        } else {
-          var full = await res.json();
-          this.noteDraft = '';
-          if (this.selectedTicket && this.selectedTicket.id === id) this.selectedTicket = full;
-          var idx = this.tickets.findIndex(function (x) { return x.id === id; });
-          if (idx >= 0) { this.tickets[idx] = this.boardEntry(full); this.recomputeBoard(); }
-        }
-      } catch (e) {
-        this.error = 'Failed to add note';
-      }
-      this.noteSubmitting = false;
     },
   };
 }

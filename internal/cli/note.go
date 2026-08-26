@@ -10,7 +10,18 @@ import (
 	"github.com/worksonmyai/kontora/internal/ticket"
 )
 
-func Note(tasksDir string, taskID string, text string) error {
+// NoteOptions carries the byline fields beside the note's text. An empty
+// Author writes a note with no name on it, which is what a legacy note has.
+type NoteOptions struct {
+	Author  string
+	ReplyTo string
+}
+
+// Note appends a note to a ticket file directly, without a daemon. The write is
+// read-modify-write with no lock, so a daemon running against the same store
+// can lose the note; `kontora note` routes through the daemon when one answers
+// and only falls back here when none does.
+func Note(tasksDir string, taskID string, text string, opts NoteOptions) error {
 	tasksDir = config.ExpandTilde(tasksDir)
 	resolved, err := resolveTaskID(tasksDir, taskID)
 	if err != nil {
@@ -23,7 +34,14 @@ func Note(tasksDir string, taskID string, text string) error {
 		return fmt.Errorf("parsing ticket: %w", err)
 	}
 
-	t.AppendNote(text, time.Now())
+	if _, err := t.AddNote(ticket.AddNoteOptions{
+		Text:     text,
+		Author:   opts.Author,
+		ParentID: opts.ReplyTo,
+		At:       time.Now(),
+	}); err != nil {
+		return err
+	}
 
 	out, err := t.Marshal()
 	if err != nil {

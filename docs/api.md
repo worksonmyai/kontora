@@ -111,6 +111,32 @@ A ticket whose `branch` is empty carries `auto_branch` in `GET /api/tickets` and
 
 The assistant endpoints answer 501 when no `assistant.agent` is configured, 404 for an unknown chat, and 409 for a second message on a chat whose turn is still running. A chat keeps the agent it was created with, so a message to one whose agent has been repointed or removed also answers 409: its agent session cannot resume on another CLI, and the chat has to be started again. 503 is the separate refusal for the daemon's global turn cap, which is not about this chat at all. `POST /api/assistant/gate/{gid}` answers 404 once the change has already been answered or the turn that raised it has ended, so a stale card cannot resolve twice. `POST /api/assistant/gate/ask` answers 403 when the secret does not match the chat's current turn, which is what stops an unrelated local process approving its own writes against a tokenless loopback daemon.
 
+## Notes
+
+A ticket's notes live in the `## Notes` section of its markdown body, so a stage prompt that interpolates the body carries them. See [Notes](tickets.md#notes) for the on-disk format.
+
+| Endpoint | Description |
+|----------|-------------|
+| `POST /api/tickets/{id}/note` | Append a note (`{"text": "...", "author": "...", "parent": "<note-id>"}`; `author` and `parent` optional). |
+| `PATCH /api/tickets/{id}/notes/{noteID}` | Replace one note's text (`{"text": "..."}`). The note's byline gains the `edited` flag. |
+| `DELETE /api/tickets/{id}/notes/{noteID}` | Delete one note and its replies. |
+| `POST /api/tickets/{id}/notes/{noteID}/reactions` | Add one actor's reaction (`{"emoji": "👍", "actor": "..."}`; `actor` optional). |
+| `DELETE /api/tickets/{id}/notes/{noteID}/reactions/{emoji}` | Drop it again. The emoji is percent-encoded in the path (`👍` is `%F0%9F%91%8D`); an optional `?actor=` names whose reaction to drop. |
+
+All five answer 200 with the whole ticket, so a caller replaces its copy rather than reconciling, and all five broadcast a `ticket_updated` event.
+
+Every note the daemon writes carries a 4-character `id`, unique within the ticket, which is what `{noteID}` names. A note written before the format carried one is addressed as `#<index>` — its position in `notes` — and acting on it mints a real id in the same write. An id no note carries answers 404.
+
+An empty `author` signs as the daemon's configured [`author`](configuration.md#author), and so does an empty reaction `actor`. An author containing `·`, a newline or `**` is rejected with 400: the separator is what holds the byline together.
+
+A `parent` makes the note a reply. One level only: a `parent` naming a note that is itself a reply answers 409 and writes nothing. Deleting a note deletes its replies with it.
+
+Notes ride `GET /api/tickets/{id}` and the SSE `ticket_updated` event as `notes`, and are absent from `GET /api/tickets`, which carries no body. Each entry is `{id, at, author, author_kind, parent_id, edited, text, reactions}`. `at` is the byline's first field: an RFC3339 timestamp for a note Kontora wrote, and whatever the author typed for a hand-written one. `author_kind` is derived from the config, not stored — `system` for `kontora`, `agent` for an author a configured agent is named after, `human` for anything else, and absent for a note with no author.
+
+Reactions are stored in `<tickets_dir>/<ticket-id>.notes.json`, never in the ticket body, so the body stays readable to the agent that receives it in a stage prompt. The sidecar is invisible to ticket listing and to the file watcher, a missing one reads as no reactions, and `DELETE /api/tickets/{id}` removes it with the ticket file. A ticket copied without its sidecar keeps its conversation and loses its reactions.
+
+Deleting a note needs no `X-Kontora-Confirm` header. That guard exists for the ticket file, whose deletion is unrecoverable across the whole store.
+
 ## Base branch validation
 
 `base_branch` names the branch a ticket's worktree is cut from. See [Base branch](tickets.md#base-branch) for what the field means.

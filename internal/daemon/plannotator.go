@@ -426,7 +426,7 @@ func (d *Daemon) runReworkStage(ctx, taskCtx context.Context, cfg *config.Config
 	}
 
 	params := d.buildRunnerParams(cfg, agentCfg, stageCfg, binaryPath, args, wtPath, ticketID,
-		config.ReworkStageName, config.ReworkStageName, sessionID, checkpointSetup{})
+		agentName, config.ReworkStageName, config.ReworkStageName, sessionID, checkpointSetup{})
 	runIndex := stageRunIndex(t, config.ReworkStageName)
 	// Rework always opens a session of its own, so nothing in it belongs to an
 	// earlier run and the scope carries no prior usage.
@@ -520,7 +520,7 @@ func (d *Daemon) runReworkStage(ctx, taskCtx context.Context, cfg *config.Config
 		// The rework itself succeeded, so the hook decides the outcome alone.
 		_ = t2.SetField("status", string(ticket.StatusPaused))
 		_ = t2.SetField("last_error", hookErr.Error())
-		t2.AppendNote(hookErr.Error(), time.Now())
+		appendSystemNote(t2, hookErr.Error())
 	default:
 		_ = t2.SetField("status", string(ticket.StatusHumanReview))
 		_ = t2.SetField("last_error", "")

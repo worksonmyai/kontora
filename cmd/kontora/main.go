@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"flag"
@@ -695,6 +696,8 @@ func cmdNote() {
 	fs := flag.NewFlagSet("note", flag.ExitOnError)
 	configPath, ticketsDir := addStoreFlags(fs)
 	urlFlag, tokenFlag := addRemoteFlags(fs)
+	authorFlag := fs.String("author", "", "name to sign the note with (default: $KONTORA_AGENT, else the config's author)")
+	replyTo := fs.String("reply-to", "", "id of the note this replies to")
 	if err := fs.Parse(os.Args[2:]); err != nil {
 		log.Fatalf("parsing flags: %v", err)
 	}
@@ -726,9 +729,13 @@ func cmdNote() {
 		log.Fatal("note text is required (as argument or via stdin)")
 	}
 
+	// A blank author reaching the daemon means "sign as the config says", which
+	// is the same fallback the local path takes below.
+	author := cmp.Or(*authorFlag, os.Getenv(config.AgentEnvVar))
+
 	if rc := remoteClient(*urlFlag, *tokenFlag); rc != nil {
 		id := mustResolveRemote(rc, taskID)
-		if err := rc.Note(id, text); err != nil {
+		if err := rc.Note(id, text, author, *replyTo); err != nil {
 			log.Fatal(err)
 		}
 		confirm(id, "note added")
@@ -738,7 +745,10 @@ func cmdNote() {
 	cfg := mustLoadStoreConfig(*configPath, *ticketsDir)
 	id := mustResolveLocal(cfg, taskID)
 
-	if err := cli.Note(cfg.TicketsDir, id, text); err != nil {
+	if err := cli.Note(cfg.TicketsDir, id, text, cli.NoteOptions{
+		Author:  cmp.Or(author, cfg.Author),
+		ReplyTo: *replyTo,
+	}); err != nil {
 		log.Fatal(err)
 	}
 	confirm(id, "note added")

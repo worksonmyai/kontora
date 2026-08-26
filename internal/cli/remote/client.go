@@ -395,9 +395,17 @@ func (c *Client) Cancel(id string) error { return c.Move(id, "cancelled") }
 // Done marks a ticket done.
 func (c *Client) Done(id string) error { return c.Move(id, "done") }
 
-// Note appends a timestamped note to a ticket.
-func (c *Client) Note(id, text string) error {
-	return c.doJSON(http.MethodPost, "/api/tickets/"+id+"/note", map[string]string{"text": text}, nil)
+// Note appends a note to a ticket. An empty author lets the daemon sign it with
+// its own configured one, and an empty parent makes a top-level note.
+func (c *Client) Note(id, text, author, parent string) error {
+	body := map[string]string{"text": text}
+	if author != "" {
+		body["author"] = author
+	}
+	if parent != "" {
+		body["parent"] = parent
+	}
+	return c.doJSON(http.MethodPost, "/api/tickets/"+id+"/note", body, nil)
 }
 
 // Summary sets a ticket's summary field.

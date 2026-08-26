@@ -250,15 +250,33 @@ the row is read.
 
 ## Notes
 
-Use `kontora note <ticket-id> "message"` to append timestamped notes under a `## Notes` section in the body. This is how you communicate with the agent between stages — the next stage's prompt can include `{{ .Ticket.Description }}` to read the full body including notes.
+Use `kontora note <ticket-id> "message"` to append a note under a `## Notes` section in the body. This is how you communicate with the agent between stages — the next stage's prompt can include `{{ .Ticket.Description }}` to read the full body including notes. The web UI has a `notes` tab on the ticket page for the same thing.
+
+A note is a bold byline followed by its text. The byline is a `·`-separated field list: timestamp, author, note id, then optional flags.
 
 ```
 ## Notes
 
-**2026-03-06T12:00:00Z**
+**2026-03-06T12:00:00Z · alexander · q88f**
 
 Use the existing search index, don't create a new one.
+
+**2026-03-06T12:04:10Z · claude · a1b2 · re:q88f**
+
+Done — reusing internal/search.
+
+**2026-03-06T12:30:00Z · kontora · n3x0 · edited**
+
+paused: stage-end hook failed
 ```
+
+The id is 4 lowercase alphanumerics, unique within the ticket, and it is what the [note endpoints](api.md#notes) address. `re:<id>` makes the note a reply to that id; one level only, so a reply cannot be replied to, and deleting a note deletes its replies with it. `edited` marks a note whose text was replaced.
+
+The author is a plain name and cannot contain `·`, a newline or `**`. Kontora signs its own notes `kontora`, an agent signs with its configured name from `$KONTORA_AGENT`, and a person signs with the [`author`](configuration.md#author) config field. A ticket that pauses gets a `kontora` note carrying the reason, which is why a pause shows up in the conversation rather than as a lifecycle row.
+
+A byline that does not match this grammar is left alone: `**2026-03-06T12:00:00Z**` written before this format, or anything hand-typed, still parses, with no author and no id. Such a note is addressed by position (`#0`, `#1`) until something acts on it, at which point it is minted a real id in the same write.
+
+Reactions are not in the body. They live in `<tickets_dir>/<ticket-id>.notes.json` beside the ticket file, so the body stays readable to the agent that receives it in a stage prompt. A ticket copied without that file keeps its conversation and loses its reactions.
 
 ## Ticket ID format
 

@@ -336,15 +336,6 @@ func (t *Ticket) SetBody(body string) {
 	t.rawBody = body
 }
 
-// AppendNote adds a timestamped note to the body under a ## Notes section.
-func (t *Ticket) AppendNote(text string, ts time.Time) {
-	if !strings.Contains(t.Body, "\n## Notes\n") && !strings.HasPrefix(t.Body, "## Notes\n") {
-		t.Body += "\n## Notes\n"
-	}
-	t.Body += fmt.Sprintf("\n**%s**\n\n%s\n", ts.UTC().Format(time.RFC3339), text)
-	t.rawBody = t.Body
-}
-
 // Title returns the first # heading from the body.
 func (t *Ticket) Title() string {
 	for line := range strings.SplitSeq(t.Body, "\n") {

@@ -187,7 +187,10 @@ func (m *mockTerminalService) MoveTicket(_ string, _ string) error              
 func (m *mockTerminalService) ListArchivedTickets() []ArchivedTicketInfo          { return nil }
 func (m *mockTerminalService) ArchiveTicket(_ string, _ string) error             { return nil }
 func (m *mockTerminalService) RestoreTicket(_ string) error                       { return nil }
-func (m *mockTerminalService) AddNote(_ string, _ string) error                   { return nil }
+func (m *mockTerminalService) AddNote(_ string, _ AddNoteRequest) error           { return nil }
+func (m *mockTerminalService) EditNote(_, _, _ string) error                      { return nil }
+func (m *mockTerminalService) DeleteNote(_, _ string) error                       { return nil }
+func (m *mockTerminalService) SetReaction(_, _, _, _ string, _ bool) error        { return nil }
 func (m *mockTerminalService) SetSummary(_ string, _ string) error                { return nil }
 func (m *mockTerminalService) GetChanges(_ string) (ChangesInfo, error)           { return ChangesInfo{}, nil }
 func (m *mockTerminalService) GetChain(_ string) (ChainInfo, error)               { return ChainInfo{}, nil }

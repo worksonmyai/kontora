@@ -117,27 +117,37 @@ func TestParseNotes(t *testing.T) {
 			want: nil,
 		},
 		{
-			name: "notes written through AddNote",
+			name: "a legacy byline carries only a timestamp",
 			body: "# Title\n\nDescription stays.\n\n## Notes\n\n**2026-08-08T10:00:00Z**\n\nInvestigate timeout\n\n**2026-08-08T10:05:00Z**\n\nRetry with debug logging\n",
 			want: []NoteInfo{
-				{At: "2026-08-08T10:00:00Z", Text: "Investigate timeout"},
-				{At: "2026-08-08T10:05:00Z", Text: "Retry with debug logging"},
+				{ID: "#0", At: "2026-08-08T10:00:00Z", Text: "Investigate timeout"},
+				{ID: "#1", At: "2026-08-08T10:05:00Z", Text: "Retry with debug logging"},
 			},
+		},
+		{
+			name: "an authored note carries its id and author",
+			body: "## Notes\n\n**2026-08-26T09:26:55Z · claude · q88f**\n\ndone\n",
+			want: []NoteInfo{{ID: "q88f", At: "2026-08-26T09:26:55Z", Author: "claude", Text: "done"}},
+		},
+		{
+			name: "a reply and an edit carry their flags",
+			body: "## Notes\n\n**2026-08-26T09:10:00Z · alexander · a1b2 · re:q88f · edited**\n\nack\n",
+			want: []NoteInfo{{ID: "a1b2", At: "2026-08-26T09:10:00Z", Author: "alexander", ParentID: "q88f", Edited: true, Text: "ack"}},
 		},
 		{
 			name: "a multiline note keeps its blank lines",
 			body: "## Notes\n\n**t1**\n\nfirst line\n\nsecond paragraph\n",
-			want: []NoteInfo{{At: "t1", Text: "first line\n\nsecond paragraph"}},
+			want: []NoteInfo{{ID: "#0", At: "t1", Text: "first line\n\nsecond paragraph"}},
 		},
 		{
 			name: "hand-written text before any byline is one note",
 			body: "## Notes\n\njust a loose line\n",
-			want: []NoteInfo{{Text: "just a loose line"}},
+			want: []NoteInfo{{ID: "#0", Text: "just a loose line"}},
 		},
 		{
 			name: "the section ends at the next heading",
 			body: "## Notes\n\n**t1**\n\nkept\n\n## Other\n\n**t2**\n\ndropped\n",
-			want: []NoteInfo{{At: "t1", Text: "kept"}},
+			want: []NoteInfo{{ID: "#0", At: "t1", Text: "kept"}},
 		},
 		{
 			name: "an empty section yields no notes",

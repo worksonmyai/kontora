@@ -196,6 +196,63 @@ func TestInstanceNameDefault(t *testing.T) {
 	}
 }
 
+func TestAuthorDefault(t *testing.T) {
+	orig := osUsername
+	t.Cleanup(func() { osUsername = orig })
+
+	tests := []struct {
+		name     string
+		explicit string
+		username func() (string, error)
+		want     string
+	}{
+		{
+			name:     "defaults to the OS user",
+			username: func() (string, error) { return "alexander", nil },
+			want:     "alexander",
+		},
+		{
+			name:     "explicit value preserved",
+			explicit: "kontora-bot",
+			username: func() (string, error) { return "alexander", nil },
+			want:     "kontora-bot",
+		},
+		{
+			name:     "lookup failure leaves it empty",
+			username: func() (string, error) { return "", errors.New("no user") },
+			want:     "",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			osUsername = tt.username
+			cfg := &Config{Author: tt.explicit}
+			cfg.applyDefaults()
+			assert.Equal(t, tt.want, cfg.Author)
+		})
+	}
+}
+
+// TestAuthorRoundTrip covers the `kontora config` output: it is re-encoded from
+// the loaded config and must load again through the strict decoder.
+func TestAuthorRoundTrip(t *testing.T) {
+	const src = `tickets_dir: ~/org/tickets
+author: alexander
+agents:
+  claude:
+    binary: claude
+`
+	cfg, err := LoadReader(strings.NewReader(src))
+	require.NoError(t, err)
+	assert.Equal(t, "alexander", cfg.Author)
+
+	out, err := yaml.Marshal(cfg)
+	require.NoError(t, err)
+	again, err := LoadReader(bytes.NewReader(out))
+	require.NoError(t, err)
+	assert.Equal(t, "alexander", again.Author)
+}
+
 func TestLoadUnknownStage(t *testing.T) {
 	_, err := Load("testdata/unknown_stage.yaml")
 	require.ErrorContains(t, err, "unknown stage")

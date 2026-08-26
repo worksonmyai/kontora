@@ -1695,7 +1695,7 @@ func (d *Daemon) runSimpleTicket(ctx, taskCtx context.Context, cfg *config.Confi
 		_ = t2.SetField("status", string(ticket.StatusPaused))
 		_ = t2.SetField("last_error", hookErr.Error())
 		_ = t2.SetField("summary", runSummary(t2.Summary, run.FinalMessage))
-		t2.AppendNote(hookErr.Error(), time.Now())
+		appendSystemNote(t2, hookErr.Error())
 	default:
 		_ = t2.SetField("status", string(ticket.StatusDone))
 		_ = t2.SetField("last_error", "")
@@ -1955,7 +1955,7 @@ func recordStageEndHookFailure(t *ticket.Ticket, hookErr error) {
 	if t.CompletedAt != nil {
 		_ = t.SetField("completed_at", nil)
 	}
-	t.AppendNote(hookErr.Error(), time.Now())
+	appendSystemNote(t, hookErr.Error())
 	if t.LastError == "" {
 		_ = t.SetField("last_error", hookErr.Error())
 	}
@@ -2387,7 +2387,7 @@ func (d *Daemon) runAgentOnce(taskCtx context.Context, t *ticket.Ticket, p spawn
 		d.writeResumeRecord(p, kind, sessionID)
 	}
 
-	params := d.buildRunnerParams(p.cfg, p.agentCfg, p.stageCfg, binaryPath, args, p.wtPath, p.ticketID, p.stageName, p.sessionStage(rec), sessionID, ckpt)
+	params := d.buildRunnerParams(p.cfg, p.agentCfg, p.stageCfg, binaryPath, args, p.wtPath, p.ticketID, p.agentName, p.stageName, p.sessionStage(rec), sessionID, ckpt)
 	// An annotation run continues the session the stage already finished, and
 	// Claude's --resume and pi's --session <path> both append to that same
 	// JSONL, so the totals read once it returns carry the tokens the stage
@@ -2712,14 +2712,14 @@ func checkpointKind(agentCfg config.Agent) string {
 
 // sessionStage keys the agent's own session storage, which is the stage name for
 // every run but a fresh annotation one (see spawnAgentParams.sessionStage).
-func (d *Daemon) buildRunnerParams(cfg *config.Config, agentCfg config.Agent, stageCfg config.Stage, binaryPath string, args []string, dir, ticketID, stageName, sessionStage, sessionID string, ckpt checkpointSetup) RunnerParams {
+func (d *Daemon) buildRunnerParams(cfg *config.Config, agentCfg config.Agent, stageCfg config.Stage, binaryPath string, args []string, dir, ticketID, agentName, stageName, sessionStage, sessionID string, ckpt checkpointSetup) RunnerParams {
 	var sessionDir string
 	if agentCfg.IsPi() {
 		sessionDir = piSessionDir(cfg, ticketID, sessionStage)
 		args = append(args, "--session-dir", sessionDir)
 	}
 
-	env := agentEnv(cfg, agentCfg, d.configPath)
+	env := agentEnv(cfg, agentCfg, d.configPath, agentName, stageName)
 	var onIdle func(context.Context, tmux.IdleEvent) tmux.IdleDecision
 	if ckpt.enabled() {
 		env[cli.CheckpointFileEnvVar] = ckpt.sidecar
@@ -2759,13 +2759,24 @@ func (d *Daemon) buildRunnerParams(cfg *config.Config, agentCfg config.Agent, st
 // the config file alone does not say which store the daemon settled on once
 // KONTORA_TICKETS_DIR or --tickets-dir has had its say, so an agent that only
 // read the file would write into the wrong one.
-func agentEnv(cfg *config.Config, agentCfg config.Agent, configPath string) map[string]string {
-	env := make(map[string]string, len(cfg.Environment)+len(agentCfg.Environment)+2)
+//
+// agentName and stageName are exported for the same reason again: an agent's
+// own `kontora note` has no other way to learn which name it is running as, and
+// a note it signs with that name is what tells a reader an agent wrote it. The
+// variables are the ones the hooks already receive.
+func agentEnv(cfg *config.Config, agentCfg config.Agent, configPath, agentName, stageName string) map[string]string {
+	env := make(map[string]string, len(cfg.Environment)+len(agentCfg.Environment)+4)
 	if configPath != "" {
 		env[config.PathEnvVar] = configPath
 	}
 	if cfg.TicketsDir != "" {
 		env[config.TicketsDirEnvVar] = config.ExpandTilde(cfg.TicketsDir)
+	}
+	if agentName != "" {
+		env[config.AgentEnvVar] = agentName
+	}
+	if stageName != "" {
+		env[config.StageEnvVar] = stageName
 	}
 	maps.Copy(env, cfg.Environment)
 	for k, v := range agentCfg.Environment {
@@ -2907,11 +2918,18 @@ func stageRunIndex(t *ticket.Ticket, stageName string) int {
 	return n
 }
 
+// appendSystemNote writes one of the daemon's own notes, signed kontora. A note
+// that cannot be written is dropped: it accompanies a status change that has
+// already been decided, and refusing that change over a note would be worse.
+func appendSystemNote(t *ticket.Ticket, text string) {
+	_, _ = t.AddNote(ticket.AddNoteOptions{Text: text, Author: ticket.SystemAuthor})
+}
+
 func (d *Daemon) pauseTicket(t *ticket.Ticket, path, reason string) {
 	log := d.ticketLog(t.ID)
 	log.Warn("pausing", "reason", reason)
 	if reason != "" {
-		t.AppendNote(reason, time.Now())
+		appendSystemNote(t, reason)
 	}
 	if err := t.SetField("last_error", reason); err != nil {
 		log.Error("pause: set last_error failed", "err", err)

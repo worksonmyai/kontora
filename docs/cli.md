@@ -29,6 +29,8 @@ Every command that takes a `TICKET_ID` accepts a unique prefix of one: `kontora 
 | `KONTORA_WEB_TOKEN` | `kontora start` only | Overrides `web.token` on the daemon side, so a deployment can inject the secret instead of writing it into the config file. |
 | `KONTORA_TICKETS_DIR` | every command that reads the local ticket store | Overrides `tickets_dir` from the config file. The daemon exports its resolved value to the agents it spawns. |
 | `TICKETS_DIR` | the same commands | Compatibility alias for the standalone `ticket` CLI. Read only when `KONTORA_TICKETS_DIR` is unset or blank. |
+| `KONTORA_AGENT` | `kontora note` | The configured name of the agent the run belongs to. The daemon exports it to the agents it spawns, so an agent's own note is signed with the name it runs as. `--author` outranks it. |
+| `KONTORA_STAGE` | — | The stage the run belongs to. Exported to spawned agents and to hooks; no command reads it. |
 | `KONTORA_PAGER` | `view`, `logs`, `activity` | Pager command, split on whitespace the way `$EDITOR` is. Used only when stdout is a terminal, so a redirect or a pipe is never paged. Set but blank turns paging off. |
 | `TICKET_PAGER` | the same commands | Read when `KONTORA_PAGER` is unset, so a `ticket` user's setting carries over. |
 | `PAGER` | the same commands | The last fallback before the config's `pager`. |
@@ -191,7 +193,14 @@ Moves the ticket to a named stage of its pipeline without running anything.
 
 ### `kontora note TICKET_ID [TEXT]` / `kontora summary TICKET_ID [TEXT]`
 
-Append a timestamped note, or set the ticket's one-line summary. Both read the text from stdin when it is not given as an argument, so `git log --oneline | kontora note kon-q88f` works.
+Append a note, or set the ticket's one-line summary. Both read the text from stdin when it is not given as an argument, so `git log --oneline | kontora note kon-q88f` works.
+
+| Flag | Description |
+|------|-------------|
+| `--author NAME` | Who the note is from. Defaults to `$KONTORA_AGENT`, which the daemon exports to every agent it spawns, and then to the config's [`author`](configuration.md#author). |
+| `--reply-to NOTE_ID` | The 4-character id of the note this replies to. One level only: replying to a reply is refused. |
+
+Both are flags, so they go before the free-form text, as the caveat under the global flags above describes.
 
 ### `kontora phase-complete TICKET_ID --completed TEXT --next TEXT`
 

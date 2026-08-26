@@ -782,29 +782,197 @@ created: 2026-01-01T00:00:00Z
 
 func TestDaemon_AddNote(t *testing.T) {
 	h := newHarness(t)
+	h.cfg.Author = "alexander"
 	d := h.newDaemon(h.cfg)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	h.writeTicket("tst-note.md", `---
-id: tst-note
-status: open
-pipeline: one-stage
-path: ~/some/path
-created: 2026-01-01T00:00:00Z
----
-# Note target
-`)
+	h.writeTicket("tst-note.md", noteTicket)
 
 	errCh := make(chan error, 1)
 	go func() { errCh <- d.Run(ctx) }()
 	time.Sleep(200 * time.Millisecond)
 
-	require.NoError(t, d.AddNote("tst-note", "blocked on review"))
+	require.NoError(t, d.AddNote("tst-note", web.AddNoteRequest{Text: "blocked on review"}))
 
-	result := h.readTask("tst-note.md")
-	assert.Contains(t, result.Body, "blocked on review")
+	notes := ticket.ParseNotes(h.readTask("tst-note.md").Body)
+	require.Len(t, notes, 1)
+	assert.Equal(t, "blocked on review", notes[0].Text)
+	assert.Equal(t, "alexander", notes[0].Author, "an empty author signs as the config's")
+	assert.Regexp(t, `^[a-z0-9]{4}$`, notes[0].ID)
+
+	info, err := d.GetTicket("tst-note")
+	require.NoError(t, err)
+	require.Len(t, info.Notes, 1)
+	assert.Equal(t, web.AuthorKindHuman, info.Notes[0].AuthorKind)
+
+	cancel()
+	require.NoError(t, <-errCh)
+}
+
+func TestDaemon_AddNote_AgentAuthorAndReply(t *testing.T) {
+	h := newHarness(t)
+	d := h.newDaemon(h.cfg)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	h.writeTicket("tst-note.md", noteTicket)
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- d.Run(ctx) }()
+	time.Sleep(200 * time.Millisecond)
+
+	require.NoError(t, d.AddNote("tst-note", web.AddNoteRequest{Text: "done", Author: "agent1"}))
+	info, err := d.GetTicket("tst-note")
+	require.NoError(t, err)
+	require.Len(t, info.Notes, 1)
+	assert.Equal(t, "agent1", info.Notes[0].Author)
+	assert.Equal(t, web.AuthorKindAgent, info.Notes[0].AuthorKind, "an author a config agent is named after is an agent")
+	parent := info.Notes[0].ID
+
+	require.NoError(t, d.AddNote("tst-note", web.AddNoteRequest{Text: "ack", Parent: parent}))
+	info, err = d.GetTicket("tst-note")
+	require.NoError(t, err)
+	require.Len(t, info.Notes, 2)
+	assert.Equal(t, parent, info.Notes[1].ParentID)
+
+	before := h.readTask("tst-note.md").Body
+	err = d.AddNote("tst-note", web.AddNoteRequest{Text: "deeper", Parent: info.Notes[1].ID})
+	assert.ErrorIs(t, err, web.ErrNoteNested)
+	assert.Equal(t, before, h.readTask("tst-note.md").Body, "a refused reply leaves the file alone")
+
+	cancel()
+	require.NoError(t, <-errCh)
+}
+
+func TestDaemon_EditAndDeleteNote(t *testing.T) {
+	h := newHarness(t)
+	d := h.newDaemon(h.cfg)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	h.writeTicket("tst-note.md", noteTicket)
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- d.Run(ctx) }()
+	time.Sleep(200 * time.Millisecond)
+
+	require.NoError(t, d.AddNote("tst-note", web.AddNoteRequest{Text: "keep", Author: "alexander"}))
+	require.NoError(t, d.AddNote("tst-note", web.AddNoteRequest{Text: "parent", Author: "alexander"}))
+	info, err := d.GetTicket("tst-note")
+	require.NoError(t, err)
+	keep, parent := info.Notes[0].ID, info.Notes[1].ID
+	require.NoError(t, d.AddNote("tst-note", web.AddNoteRequest{Text: "reply", Parent: parent}))
+
+	require.NoError(t, d.EditNote("tst-note", keep, "keep, revised"))
+	info, err = d.GetTicket("tst-note")
+	require.NoError(t, err)
+	assert.Equal(t, "keep, revised", info.Notes[0].Text)
+	assert.True(t, info.Notes[0].Edited)
+
+	assert.ErrorIs(t, d.EditNote("tst-note", "zzzz", "nope"), web.ErrNoteNotFound)
+
+	require.NoError(t, d.DeleteNote("tst-note", parent))
+	info, err = d.GetTicket("tst-note")
+	require.NoError(t, err)
+	require.Len(t, info.Notes, 1, "the parent takes its reply with it")
+	assert.Equal(t, keep, info.Notes[0].ID)
+
+	assert.ErrorIs(t, d.DeleteNote("tst-note", "zzzz"), web.ErrNoteNotFound)
+
+	cancel()
+	require.NoError(t, <-errCh)
+}
+
+func TestDaemon_SetReaction(t *testing.T) {
+	h := newHarness(t)
+	h.cfg.Author = "alexander"
+	d := h.newDaemon(h.cfg)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	h.writeTicket("tst-note.md", noteTicket)
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- d.Run(ctx) }()
+	time.Sleep(200 * time.Millisecond)
+
+	require.NoError(t, d.AddNote("tst-note", web.AddNoteRequest{Text: "hi", Author: "alexander"}))
+	info, err := d.GetTicket("tst-note")
+	require.NoError(t, err)
+	noteID := info.Notes[0].ID
+	body := h.readTask("tst-note.md").Body
+
+	events, unsubscribe := d.Subscribe()
+	defer unsubscribe()
+
+	require.NoError(t, d.SetReaction("tst-note", noteID, "\U0001F44D", "", true))
+	info, err = d.GetTicket("tst-note")
+	require.NoError(t, err)
+	require.Len(t, info.Notes[0].Reactions, 1)
+	assert.Equal(t, web.ReactionInfo{Emoji: "\U0001F44D", Actors: []string{"alexander"}}, info.Notes[0].Reactions[0])
+	assert.Equal(t, body, h.readTask("tst-note.md").Body, "a reaction never touches the body")
+
+	assert.Eventually(t, func() bool {
+		select {
+		case ev := <-events:
+			return ev.Type == "ticket_updated" && len(ev.Ticket.Notes) == 1 && len(ev.Ticket.Notes[0].Reactions) == 1
+		default:
+			return false
+		}
+	}, 2*time.Second, 20*time.Millisecond, "the reaction reaches every client over SSE")
+
+	sidecar := filepath.Join(h.tasksDir, "tst-note.notes.json")
+	require.FileExists(t, sidecar)
+
+	require.NoError(t, d.SetReaction("tst-note", noteID, "\U0001F44D", "alexander", false))
+	state, err := ticket.LoadNoteReactions(h.tasksDir, "tst-note")
+	require.NoError(t, err)
+	assert.Empty(t, state.For(noteID))
+	assert.Equal(t, body, h.readTask("tst-note.md").Body)
+
+	// The sidecar is invisible to the store, and its write is not a .md write,
+	// so neither the listing nor the watcher sees it.
+	require.NoError(t, d.DeleteTicket("tst-note"))
+	assert.NoFileExists(t, sidecar)
+
+	cancel()
+	require.NoError(t, <-errCh)
+}
+
+func TestDaemon_SetReaction_MintsLegacyNoteID(t *testing.T) {
+	h := newHarness(t)
+	h.cfg.Author = "alexander"
+	d := h.newDaemon(h.cfg)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	h.writeTicket("tst-note.md", noteTicket+"\n## Notes\n\n**2026-08-08T10:00:00Z**\n\nlegacy\n")
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- d.Run(ctx) }()
+	time.Sleep(200 * time.Millisecond)
+
+	info, err := d.GetTicket("tst-note")
+	require.NoError(t, err)
+	require.Len(t, info.Notes, 1)
+	require.Equal(t, "#0", info.Notes[0].ID, "a legacy note is addressed by position until it is acted on")
+	assert.Empty(t, info.Notes[0].Author)
+	assert.Empty(t, info.Notes[0].AuthorKind)
+
+	require.NoError(t, d.SetReaction("tst-note", "#0", "\U0001F44D", "", true))
+
+	info, err = d.GetTicket("tst-note")
+	require.NoError(t, err)
+	require.Len(t, info.Notes, 1)
+	assert.Regexp(t, `^[a-z0-9]{4}$`, info.Notes[0].ID)
+	assert.Equal(t, "legacy", info.Notes[0].Text)
+	require.Len(t, info.Notes[0].Reactions, 1)
 
 	cancel()
 	require.NoError(t, <-errCh)
@@ -821,12 +989,22 @@ func TestDaemon_AddNote_NotFound(t *testing.T) {
 	go func() { errCh <- d.Run(ctx) }()
 	time.Sleep(200 * time.Millisecond)
 
-	err := d.AddNote("does-not-exist", "x")
+	err := d.AddNote("does-not-exist", web.AddNoteRequest{Text: "x"})
 	assert.ErrorIs(t, err, web.ErrTicketNotFound)
 
 	cancel()
 	require.NoError(t, <-errCh)
 }
+
+const noteTicket = `---
+id: tst-note
+status: open
+pipeline: one-stage
+path: ~/some/path
+created: 2026-01-01T00:00:00Z
+---
+# Note target
+`
 
 func TestDaemon_SetSummary(t *testing.T) {
 	h := newHarness(t)

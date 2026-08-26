@@ -141,9 +141,10 @@ export function kontoraMarkdown() {
       this._markTicketIds(el);
     },
 
-    // A note is plain text, not markdown: shown as the daemon or the agent
-    // typed it. Ticket ids still become chips, so a note that answers "blocked
-    // on kon-1234" points at that ticket.
+    // Plain text, not markdown. The notes tab renders a note through setProse
+    // instead; this is what is left for anywhere a note has to read exactly as
+    // it was typed. Ticket ids still become chips, so a note that answers
+    // "blocked on kon-1234" points at that ticket.
     setNoteText(el, text) {
       var src = (text || '') + '\u0000' + (this.tickets || []).length;
       if (el._noteSrc === src) return;

@@ -555,7 +555,7 @@ func (d *Daemon) assistantSessionPath(cfg *config.Config, thread assistant.Threa
 	}
 	var claudeConfigDir string
 	if agentCfg, ok := cfg.Agents[thread.Agent]; ok {
-		claudeConfigDir = session.ClaudeConfigDir(agentEnv(cfg, agentCfg, d.configPath))
+		claudeConfigDir = session.ClaudeConfigDir(agentEnv(cfg, agentCfg, d.configPath, thread.Agent, ""))
 	} else {
 		claudeConfigDir = session.ClaudeConfigDir(nil)
 	}
@@ -851,7 +851,7 @@ func (d *Daemon) runAssistantTurn(ctx context.Context, cfg *config.Config, agent
 // API the pane is watching rather than editing ticket files behind it, and the
 // thread and nonce the gate authenticates a tool call with.
 func (d *Daemon) assistantEnv(cfg *config.Config, agentCfg config.Agent, threadID string) map[string]string {
-	env := agentEnv(cfg, agentCfg, d.configPath)
+	env := agentEnv(cfg, agentCfg, d.configPath, cfg.Assistant.Agent, "")
 	if addr := d.webAddr.Load(); addr != nil && *addr != "" {
 		env[assistantURLEnv] = "http://" + assistantLoopbackAddr(*addr)
 	}

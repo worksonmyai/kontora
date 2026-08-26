@@ -2,13 +2,12 @@ package web
 
 import (
 	"errors"
-	"regexp"
-	"strings"
 	"time"
 
 	"github.com/worksonmyai/kontora/internal/assistant"
 	"github.com/worksonmyai/kontora/internal/logfmt"
 	"github.com/worksonmyai/kontora/internal/stats"
+	"github.com/worksonmyai/kontora/internal/ticket"
 	"github.com/worksonmyai/kontora/internal/ticket/app"
 )
 
@@ -23,6 +22,11 @@ var (
 	ErrConfigPathNotSet    = errors.New("config path not configured")
 	ErrPlannotatorInFlight = errors.New("plannotator is already open for this ticket")
 	ErrPlannotatorBinary   = errors.New("plannotator not installed: https://plannotator.ai")
+
+	// ErrNoteNotFound and ErrNoteNested alias the ticket package's errors so a
+	// daemon method can return one unwrapped and still be mapped to a status.
+	ErrNoteNotFound = ticket.ErrNoteNotFound
+	ErrNoteNested   = ticket.ErrNoteNested
 
 	// ErrAssistantDisabled means no assistant agent is configured. It is the
 	// state behind the pane's configure hint, so it answers 501 rather than an
@@ -60,7 +64,10 @@ type TicketService interface {
 	ListArchivedTickets() []ArchivedTicketInfo
 	ArchiveTicket(id string, note string) error
 	RestoreTicket(id string) error
-	AddNote(id string, text string) error
+	AddNote(id string, req AddNoteRequest) error
+	EditNote(id, noteID, text string) error
+	DeleteNote(id, noteID string) error
+	SetReaction(id, noteID, emoji, actor string, on bool) error
 	SetSummary(id string, text string) error
 	InitTicket(id string, req InitTicketRequest) error
 	AddDependency(id string, dependencyID string) error
@@ -338,13 +345,16 @@ type ProjectInfo struct {
 }
 
 type ConfigInfo struct {
-	Pipelines      []string       `json:"pipelines"`
-	PipelineInfos  []PipelineInfo `json:"pipeline_infos"`
-	Agents         []string       `json:"agents"`
-	Projects       []ProjectInfo  `json:"projects,omitempty"`
-	DefaultAgent   string         `json:"default_agent,omitempty"`
-	BranchPrefix   string         `json:"branch_prefix"`
-	CustomStatuses []string       `json:"custom_statuses,omitempty"`
+	Pipelines     []string       `json:"pipelines"`
+	PipelineInfos []PipelineInfo `json:"pipeline_infos"`
+	Agents        []string       `json:"agents"`
+	Projects      []ProjectInfo  `json:"projects,omitempty"`
+	DefaultAgent  string         `json:"default_agent,omitempty"`
+	// Author is the name the web composer signs a note with. The page needs it
+	// to tell your own notes from everyone else's.
+	Author         string   `json:"author,omitempty"`
+	BranchPrefix   string   `json:"branch_prefix"`
+	CustomStatuses []string `json:"custom_statuses,omitempty"`
 }
 
 type TicketInfo struct {
@@ -459,12 +469,47 @@ type TicketChild struct {
 }
 
 // NoteInfo is one entry from the ticket body's "## Notes" section. At is the
-// bold line that opened the note: a UTC RFC3339 timestamp for notes written
-// through AddNote, and whatever the author typed for hand-written ones.
+// first field of the bold line that opened the note: a UTC RFC3339 timestamp
+// for notes written through AddNote, and whatever the author typed for
+// hand-written ones.
+//
+// ID is the note's minted 4-character id, or "#<index>" for a note written
+// before the format carried one. Both address the note on the mutating routes;
+// acting on a "#<index>" note mints it a real id in the same write.
 type NoteInfo struct {
-	At   string `json:"at,omitempty"`
-	Text string `json:"text"`
+	ID     string `json:"id,omitempty"`
+	At     string `json:"at,omitempty"`
+	Author string `json:"author,omitempty"`
+	// AuthorKind is human, agent or system. It is derived from the config, so
+	// only the daemon fills it in.
+	AuthorKind string         `json:"author_kind,omitempty"`
+	ParentID   string         `json:"parent_id,omitempty"`
+	Edited     bool           `json:"edited,omitempty"`
+	Text       string         `json:"text"`
+	Reactions  []ReactionInfo `json:"reactions,omitempty"`
 }
+
+// AddNoteRequest is the body of POST /api/tickets/{id}/note. An empty Author
+// signs as the configured one; an empty Parent makes a top-level note.
+type AddNoteRequest struct {
+	Text   string `json:"text"`
+	Author string `json:"author,omitempty"`
+	Parent string `json:"parent,omitempty"`
+}
+
+// ReactionInfo is one emoji chip on a note, read from the ticket's reactions
+// sidecar rather than its body.
+type ReactionInfo struct {
+	Emoji  string   `json:"emoji"`
+	Actors []string `json:"actors"`
+}
+
+// The kinds NoteInfo.AuthorKind takes.
+const (
+	AuthorKindHuman  = "human"
+	AuthorKindAgent  = "agent"
+	AuthorKindSystem = "system"
+)
 
 type HistoryInfo struct {
 	Stage string `json:"stage"`
@@ -578,50 +623,26 @@ type TicketEvent struct {
 	Message string `json:"message,omitempty"`
 }
 
-// noteByline matches the bold line AddNote writes above each note body.
-var noteByline = regexp.MustCompile(`^\*\*(.+)\*\*$`)
-
-// ParseNotes reads the "## Notes" section of a ticket body. AddNote writes
-// each entry as a bold timestamp line, a blank line, and the text, so a bold
-// line opens a note and everything up to the next one is its body. The section
-// ends at the next heading. Body content outside the section is not touched.
+// ParseNotes reads the "## Notes" section of a ticket body into the web shape.
+// The parsing lives in the ticket package, which owns the byline format; this
+// is the projection onto the payload.
 func ParseNotes(body string) []NoteInfo {
-	lines := strings.Split(body, "\n")
-	start := -1
-	for i, line := range lines {
-		if strings.TrimSpace(line) == "## Notes" {
-			start = i + 1
-			break
-		}
-	}
-	if start < 0 {
+	notes := ticket.ParseNotes(body)
+	if len(notes) == 0 {
 		return nil
 	}
-
-	var notes []NoteInfo
-	cur := NoteInfo{}
-	var buf []string
-	flush := func() {
-		if text := strings.TrimSpace(strings.Join(buf, "\n")); text != "" {
-			cur.Text = text
-			notes = append(notes, cur)
+	out := make([]NoteInfo, len(notes))
+	for i, n := range notes {
+		out[i] = NoteInfo{
+			ID:       n.ID,
+			At:       n.At,
+			Author:   n.Author,
+			ParentID: n.ParentID,
+			Edited:   n.Edited,
+			Text:     n.Text,
 		}
-		cur, buf = NoteInfo{}, nil
 	}
-
-	for _, line := range lines[start:] {
-		if strings.HasPrefix(line, "# ") || strings.HasPrefix(line, "## ") {
-			break
-		}
-		if m := noteByline.FindStringSubmatch(strings.TrimSpace(line)); m != nil {
-			flush()
-			cur.At = m[1]
-			continue
-		}
-		buf = append(buf, line)
-	}
-	flush()
-	return notes
+	return out
 }
 
 // ticketRefs wraps relation ids as unresolved refs. Titles and statuses are

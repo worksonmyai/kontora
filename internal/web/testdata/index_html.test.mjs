@@ -3563,15 +3563,16 @@ test("index.html renders every prose block through the idempotent write", () => 
   assert.equal(html.includes('x-html="renderMarkdown'), false);
   // Two writers share the pattern, counted apart: entity chips belong to the
   // stage summary, and a ticket body swapped onto setSummaryProse would keep
-  // any combined total the same. Eight, because the assistant's own prose runs
-  // through the same write in both layers — a streaming pane is exactly the
-  // case a rebuild-per-effect would ruin — and the archive's read-only ticket
-  // tab renders its body through it too.
-  assert.equal(html.match(/x-effect="setProse\(\$el, /g).length, 8);
+  // any combined total the same. Ten: the assistant's own prose runs through
+  // the same write in both layers, and a streaming pane is exactly the case a
+  // rebuild-per-effect would ruin; the archive's read-only ticket tab renders
+  // its body through it too; and the notes tab's own note and reply bodies
+  // are markdown like every other authored block.
+  assert.equal(html.match(/x-effect="setProse\(\$el, /g).length, 10);
   assert.equal(html.match(/x-effect="setSummaryProse\(\$el, /g).length, 2);
-  // A note is plain text through the same memo, so a repeated effect run does
-  // not rewrite it either.
-  assert.equal(html.match(/x-effect="setNoteText\(\$el, /g).length, 1);
+  // Nothing in the markup writes a note as plain text any more: the rail block
+  // that did is gone and the notes tab renders markdown.
+  assert.equal(html.match(/x-effect="setNoteText\(\$el, /g), null);
   assert.equal(html.includes('x-text="n.text"'), false);
 });
 
@@ -7257,8 +7258,8 @@ test("index.html renders the relation rows inside the frontmatter grid", () => {
   assert.match(html, /:data-tip-e-tag-color="ticketTip\(ref\)\.tagColor"/);
   assert.match(html, /@click="openTicketRef\(ref\)"/);
   assert.match(html, /@click="relExpanded\[row\.key\] = true"/);
-  // Notes are written through the marking pass, so an id in a note is a chip.
-  assert.match(html, /x-effect="setNoteText\(\$el, n\.text\)"/);
+  // Notes moved to their own tab: the rail carries relations and details only.
+  assert.equal(html.includes("Notes: read back from the body"), false);
   // A gone relation is dashed and not clickable.
   assert.match(html, /\.ent-ticket-gone \{ border-style: dashed;/);
 });
@@ -7346,6 +7347,144 @@ test("index.html renders the ribbon, transcript and rail the page needs", () => 
   // The sweep is declared next to the other loops and stops under reduced motion.
   assert.match(html, /@keyframes sweep \{/);
   assert.match(html, /@media \(prefers-reduced-motion: reduce\) \{[\s\S]{0,200}?\.sweep \{ animation: none; \}/);
+});
+
+// ---------------------------------------------------------------------------
+// Ticket page: notes tab
+// ---------------------------------------------------------------------------
+
+const NOTES_TICKET = {
+  id: "kon-1",
+  status: "human_review",
+  finished_at: "2026-08-08T11:30:00Z",
+  history: [
+    { stage: "plan", exit_code: 0, run: 0, started_at: "2026-08-08T11:00:00Z", completed_at: "2026-08-08T11:00:40Z" },
+    { stage: "review", exit_code: 1, run: 1, started_at: "2026-08-08T11:01:00Z", completed_at: "2026-08-08T11:01:20Z" },
+  ],
+  notes: [
+    { id: "q88f", at: "2026-08-08T11:02:00Z", author: "claude", author_kind: "agent", text: "done" },
+    { id: "a1b2", at: "2026-08-08T11:03:00Z", author: "alexander", author_kind: "human", parent_id: "q88f", text: "ack" },
+    { id: "n3x0", at: "2026-08-08T11:40:00Z", author: "kontora", author_kind: "system", text: "paused: hook failed", reactions: [{ emoji: "👍", actors: ["alexander"] }] },
+  ],
+};
+
+test("the notes feed interleaves lifecycle rows, sorts ascending and nests replies", () => {
+  const state = pageState(NOTES_TICKET, { configCache: { author: "alexander" } });
+  const feed = state.notesFeed();
+
+  assert.deepEqual(vmValue(feed.map((i) => i.key)), [
+    "e:0:start",
+    "e:0:end",
+    "e:1:start",
+    "e:1:end",
+    "n:q88f",
+    "e:review",
+    "n:n3x0",
+  ]);
+  // A reply is drawn under its parent, not as a row of its own.
+  assert.deepEqual(vmValue(feed.find((i) => i.key === "n:q88f").replies.map((r) => r.id)), ["a1b2"]);
+  assert.equal(state.noteCount(), 2, "replies are excluded from the header count");
+
+  const rows = feed.filter((i) => i.kind === "event");
+  assert.deepEqual(vmValue(rows.map((r) => [r.label, r.color])), [
+    ["picked up · stage plan", "indigo"],
+    ["plan done", "green"],
+    ["retried · stage review", "amber"],
+    ["review failed", "rose"],
+    ["moved to human review", "mauve"],
+  ]);
+  assert.equal(rows[1].meta, "exit 0 · 40s");
+});
+
+test("a ticket with no notes draws no lifecycle rows", () => {
+  const state = pageState({ ...NOTES_TICKET, notes: [] });
+  assert.deepEqual(vmValue(state.notesFeed()), []);
+  assert.equal(state.noteLastAgo(), "nothing yet");
+});
+
+test("author kind picks the avatar hue, and only your own notes are yours", () => {
+  const state = pageState(NOTES_TICKET, { configCache: { author: "alexander" } });
+  const [agent, human, system] = NOTES_TICKET.notes;
+
+  assert.equal(state.noteAuthorHue(agent), state.pipelineColorByName("claude"));
+  assert.equal(state.noteAuthorHue(human), "mauve");
+  assert.equal(state.noteAuthorHue(system), "none");
+  // A note written before notes carried an author reads neutral and unnamed.
+  assert.equal(state.noteAuthorHue({ id: "#0", text: "legacy" }), "none");
+  assert.equal(state.noteRole(system), "system");
+  assert.equal(state.noteRole(human), "", "a person carries no role label");
+
+  assert.equal(state.noteIsMine(human), true);
+  assert.equal(state.noteIsMine(agent), false);
+  // Your reactions read violet, everyone else's grey.
+  assert.equal(state.noteReactionHue({ emoji: "👍", actors: ["alexander"] }), "mauve");
+  assert.equal(state.noteReactionHue({ emoji: "👍", actors: ["claude"] }), "none");
+});
+
+test("opening a reply box closes the edit box, and both clear with the ticket", () => {
+  const state = pageState(NOTES_TICKET, { configCache: { author: "alexander" } });
+  const note = NOTES_TICKET.notes[0];
+
+  state.noteOpenEdit(note);
+  assert.equal(state.noteEditOn, "q88f");
+  assert.equal(state.noteEditDraft, "done");
+
+  state.noteOpenReply(note);
+  assert.equal(state.noteEditOn, null, "one box at a time");
+  assert.equal(state.noteReplyOn, "q88f");
+
+  state.noteReplyDraft = "half typed";
+  state.noteResetDrafts();
+  assert.deepEqual([state.noteReplyOn, state.noteReplyDraft, state.noteEditOn], [null, "", null]);
+});
+
+test("a note mutation replaces the ticket, and patches only the notes while editing", () => {
+  const state = pageState(NOTES_TICKET, { tickets: [{ id: "kon-1" }], recomputeBoard: () => {} });
+  const full = { ...NOTES_TICKET, title: "renamed", notes: [{ id: "z9z9", text: "new" }] };
+
+  state._noteApplyTicket("kon-1", full);
+  assert.equal(state.selectedTicket.title, "renamed");
+
+  state.editing = true;
+  state.selectedTicket = { ...NOTES_TICKET, title: "being typed" };
+  state._noteApplyTicket("kon-1", full);
+  assert.equal(state.selectedTicket.title, "being typed", "an edited field is not overwritten");
+  assert.deepEqual(vmValue(state.selectedTicket.notes.map((n) => n.id)), ["z9z9"]);
+});
+
+test("the notes tab is always present and its composer is never gated on status", () => {
+  const html = fs.readFileSync(htmlPath, "utf8");
+  const tabBar = html.slice(html.indexOf("<!-- Tab bar -->"), html.indexOf("<!-- Content column -->"));
+
+  // No x-show: an open ticket with no runs can still carry a note.
+  assert.match(tabBar, /<button @click="switchTab\('notes'\)"[\s\S]{0,240}>notes<\/button>/);
+
+  const pane = html.slice(html.indexOf("<!-- Notes: the ticket's conversation"), html.indexOf("<!-- Right rail."));
+  // Header, scrolling feed, pinned composer.
+  assert.match(pane, /class="h-full flex flex-col bg-surface-frame"/);
+  assert.equal((pane.match(/max-w-\[820px\] mx-auto/g) || []).length, 3);
+  assert.match(pane, /class="flex-1 min-h-0 overflow-y-auto px-6/);
+  // The feed pins to the newest comment the way the activity scroller does.
+  assert.match(pane, /\$el\.scrollTop = \$el\.scrollHeight/);
+  // Every textarea swallows Escape, or the global chain closes the ticket page.
+  assert.equal((pane.match(/<textarea/g) || []).length, 3);
+  assert.equal((pane.match(/@keydown\.escape\.stop/g) || []).length, 3);
+  // ⌘↵ submits; the composer never carries a status condition.
+  assert.equal((pane.match(/\$event\.metaKey \|\| \$event\.ctrlKey/g) || []).length, 3);
+  assert.equal(pane.includes("in_progress"), false);
+});
+
+test("deleting a note is confirmed in a modal that leads the ticket page on Escape", () => {
+  const html = fs.readFileSync(htmlPath, "utf8");
+
+  assert.match(html, /<div x-show="noteDeleteTarget"[\s\S]{0,400}@click\.self="noteCloseDelete\(\)"/);
+  assert.match(html, /aria-labelledby="delete-note-title"/);
+  assert.match(html, /:disabled="noteDeleteSubmitting"/);
+  // Ahead of closeDetail in the one global Escape chain and behind the
+  // file-delete modal, so Escape never closes the page out from under a dialog.
+  const chain = html.slice(html.indexOf("@keydown.escape.window="), html.indexOf("@dragenter"));
+  assert.ok(chain.indexOf("noteDeleteTarget") < chain.indexOf("closeDetail()"));
+  assert.ok(chain.indexOf("deleteModal") < chain.indexOf("noteDeleteTarget"));
 });
 
 // ---------------------------------------------------------------------------

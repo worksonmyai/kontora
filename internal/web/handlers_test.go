@@ -18,6 +18,7 @@ import (
 
 	"github.com/worksonmyai/kontora/internal/logfmt"
 	"github.com/worksonmyai/kontora/internal/stats"
+	"github.com/worksonmyai/kontora/internal/ticket"
 	"github.com/worksonmyai/kontora/internal/tmux"
 )
 
@@ -33,7 +34,10 @@ type mockService struct {
 	deleteFn       func(id string) error
 	initFn         func(id string, req InitTicketRequest) error
 	updateFn       func(id string, req UpdateTicketRequest) error
-	noteFn         func(id, text string) error
+	noteFn         func(id string, req AddNoteRequest) error
+	editNoteFn     func(id, noteID, text string) error
+	deleteNoteFn   func(id, noteID string) error
+	reactionFn     func(id, noteID, emoji, actor string, on bool) error
 	summaryFn      func(id, text string) error
 	logsFn         func(id, stage string) (string, error)
 	activityFn     func(q ActivityQuery) (ActivityInfo, error)
@@ -210,9 +214,27 @@ func (m *mockService) RestoreTicket(id string) error {
 	}
 	return nil
 }
-func (m *mockService) AddNote(id string, text string) error {
+func (m *mockService) AddNote(id string, req AddNoteRequest) error {
 	if m.noteFn != nil {
-		return m.noteFn(id, text)
+		return m.noteFn(id, req)
+	}
+	return nil
+}
+func (m *mockService) EditNote(id, noteID, text string) error {
+	if m.editNoteFn != nil {
+		return m.editNoteFn(id, noteID, text)
+	}
+	return nil
+}
+func (m *mockService) DeleteNote(id, noteID string) error {
+	if m.deleteNoteFn != nil {
+		return m.deleteNoteFn(id, noteID)
+	}
+	return nil
+}
+func (m *mockService) SetReaction(id, noteID, emoji, actor string, on bool) error {
+	if m.reactionFn != nil {
+		return m.reactionFn(id, noteID, emoji, actor, on)
 	}
 	return nil
 }
@@ -545,21 +567,22 @@ func TestHandleSetStage_MissingStage(t *testing.T) {
 // --- POST /api/tickets/{id}/note ---
 
 func TestHandleAddNote_Success(t *testing.T) {
-	var gotID, gotText string
+	var gotID string
+	var gotReq AddNoteRequest
 	tkt := TicketInfo{ID: "t-001", Status: "todo"}
 	svc := &mockService{
 		tickets: []TicketInfo{tkt},
-		noteFn: func(id, text string) error {
-			gotID, gotText = id, text
+		noteFn: func(id string, req AddNoteRequest) error {
+			gotID, gotReq = id, req
 			return nil
 		},
 	}
 	srv := startHandlerTestServer(t, svc)
 
-	res := post(t, srv, "/api/tickets/t-001/note", `{"text":"blocked on review"}`)
+	res := post(t, srv, "/api/tickets/t-001/note", `{"text":"ack","author":"claude","parent":"q88f"}`)
 	assert.Equal(t, http.StatusOK, res.statusCode)
 	assert.Equal(t, "t-001", gotID)
-	assert.Equal(t, "blocked on review", gotText)
+	assert.Equal(t, AddNoteRequest{Text: "ack", Author: "claude", Parent: "q88f"}, gotReq)
 }
 
 func TestHandleAddNote_MissingText(t *testing.T) {
@@ -578,12 +601,160 @@ func TestHandleAddNote_BadJSON(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, res.statusCode)
 }
 
-func TestHandleAddNote_NotFound(t *testing.T) {
-	svc := &mockService{noteFn: func(_, _ string) error { return ErrTicketNotFound }}
-	srv := startHandlerTestServer(t, svc)
+func TestHandleAddNote_ServiceErrors(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want int
+	}{
+		{name: "unknown ticket", err: ErrTicketNotFound, want: http.StatusNotFound},
+		{name: "unknown parent note", err: ErrNoteNotFound, want: http.StatusNotFound},
+		{name: "reply to a reply", err: ErrNoteNested, want: http.StatusConflict},
+		{name: "author breaks the byline", err: ticket.ErrNoteAuthor, want: http.StatusBadRequest},
+	}
 
-	res := post(t, srv, "/api/tickets/t-404/note", `{"text":"hi"}`)
-	assert.Equal(t, http.StatusNotFound, res.statusCode)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := &mockService{noteFn: func(string, AddNoteRequest) error { return tc.err }}
+			srv := startHandlerTestServer(t, svc)
+
+			res := post(t, srv, "/api/tickets/t-001/note", `{"text":"hi"}`)
+			assert.Equal(t, tc.want, res.statusCode)
+		})
+	}
+}
+
+// --- PATCH /api/tickets/{id}/notes/{noteID} ---
+
+func TestHandleEditNote(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
+		var gotID, gotNote, gotText string
+		svc := &mockService{
+			tickets: []TicketInfo{{ID: "t-001"}},
+			editNoteFn: func(id, noteID, text string) error {
+				gotID, gotNote, gotText = id, noteID, text
+				return nil
+			},
+		}
+		srv := startHandlerTestServer(t, svc)
+
+		res := patch(t, srv, "/api/tickets/t-001/notes/q88f", `{"text":"revised"}`)
+		assert.Equal(t, http.StatusOK, res.statusCode)
+		assert.Equal(t, []string{"t-001", "q88f", "revised"}, []string{gotID, gotNote, gotText})
+	})
+
+	t.Run("bad json", func(t *testing.T) {
+		srv := startHandlerTestServer(t, &mockService{})
+		res := patch(t, srv, "/api/tickets/t-001/notes/q88f", `{bad}`)
+		assert.Equal(t, http.StatusBadRequest, res.statusCode)
+	})
+
+	t.Run("missing text", func(t *testing.T) {
+		srv := startHandlerTestServer(t, &mockService{})
+		res := patch(t, srv, "/api/tickets/t-001/notes/q88f", `{}`)
+		assert.Equal(t, http.StatusBadRequest, res.statusCode)
+	})
+
+	t.Run("unknown note", func(t *testing.T) {
+		svc := &mockService{editNoteFn: func(string, string, string) error { return ErrNoteNotFound }}
+		srv := startHandlerTestServer(t, svc)
+		res := patch(t, srv, "/api/tickets/t-001/notes/zzzz", `{"text":"x"}`)
+		assert.Equal(t, http.StatusNotFound, res.statusCode)
+	})
+}
+
+// --- DELETE /api/tickets/{id}/notes/{noteID} ---
+
+func TestHandleDeleteNote(t *testing.T) {
+	t.Run("success without a confirm header", func(t *testing.T) {
+		var gotID, gotNote string
+		svc := &mockService{
+			tickets: []TicketInfo{{ID: "t-001"}},
+			deleteNoteFn: func(id, noteID string) error {
+				gotID, gotNote = id, noteID
+				return nil
+			},
+		}
+		srv := startHandlerTestServer(t, svc)
+
+		res := delNoConfirm(t, srv, "/api/tickets/t-001/notes/q88f")
+		assert.Equal(t, http.StatusOK, res.statusCode)
+		assert.Equal(t, []string{"t-001", "q88f"}, []string{gotID, gotNote})
+	})
+
+	t.Run("unknown note", func(t *testing.T) {
+		svc := &mockService{deleteNoteFn: func(string, string) error { return ErrNoteNotFound }}
+		srv := startHandlerTestServer(t, svc)
+		res := delNoConfirm(t, srv, "/api/tickets/t-001/notes/zzzz")
+		assert.Equal(t, http.StatusNotFound, res.statusCode)
+	})
+}
+
+// --- note reactions ---
+
+func TestHandleReactions(t *testing.T) {
+	type call struct {
+		id, noteID, emoji, actor string
+		on                       bool
+	}
+
+	t.Run("add", func(t *testing.T) {
+		var got call
+		svc := &mockService{
+			tickets: []TicketInfo{{ID: "t-001"}},
+			reactionFn: func(id, noteID, emoji, actor string, on bool) error {
+				got = call{id, noteID, emoji, actor, on}
+				return nil
+			},
+		}
+		srv := startHandlerTestServer(t, svc)
+
+		res := post(t, srv, "/api/tickets/t-001/notes/q88f/reactions", `{"emoji":"\ud83d\udc4d","actor":"alexander"}`)
+		assert.Equal(t, http.StatusOK, res.statusCode)
+		assert.Equal(t, call{"t-001", "q88f", "\U0001F44D", "alexander", true}, got)
+	})
+
+	t.Run("drop decodes the emoji from the path", func(t *testing.T) {
+		var got call
+		svc := &mockService{
+			tickets: []TicketInfo{{ID: "t-001"}},
+			reactionFn: func(id, noteID, emoji, actor string, on bool) error {
+				got = call{id, noteID, emoji, actor, on}
+				return nil
+			},
+		}
+		srv := startHandlerTestServer(t, svc)
+
+		res := delNoConfirm(t, srv, "/api/tickets/t-001/notes/q88f/reactions/%F0%9F%91%8D")
+		assert.Equal(t, http.StatusOK, res.statusCode)
+		assert.Equal(t, call{"t-001", "q88f", "\U0001F44D", "", false}, got)
+	})
+
+	t.Run("missing emoji", func(t *testing.T) {
+		srv := startHandlerTestServer(t, &mockService{})
+		res := post(t, srv, "/api/tickets/t-001/notes/q88f/reactions", `{}`)
+		assert.Equal(t, http.StatusBadRequest, res.statusCode)
+	})
+
+	t.Run("bad json", func(t *testing.T) {
+		srv := startHandlerTestServer(t, &mockService{})
+		res := post(t, srv, "/api/tickets/t-001/notes/q88f/reactions", `{bad}`)
+		assert.Equal(t, http.StatusBadRequest, res.statusCode)
+	})
+
+	t.Run("malformed emoji", func(t *testing.T) {
+		svc := &mockService{reactionFn: func(string, string, string, string, bool) error { return ticket.ErrNoteEmoji }}
+		srv := startHandlerTestServer(t, svc)
+		res := post(t, srv, "/api/tickets/t-001/notes/q88f/reactions", `{"emoji":"x y"}`)
+		assert.Equal(t, http.StatusBadRequest, res.statusCode)
+	})
+
+	t.Run("unknown note", func(t *testing.T) {
+		svc := &mockService{reactionFn: func(string, string, string, string, bool) error { return ErrNoteNotFound }}
+		srv := startHandlerTestServer(t, svc)
+		res := post(t, srv, "/api/tickets/t-001/notes/zzzz/reactions", `{"emoji":"\ud83d\udc4d"}`)
+		assert.Equal(t, http.StatusNotFound, res.statusCode)
+	})
 }
 
 // --- POST /api/tickets/{id}/summary ---
@@ -2217,6 +2388,23 @@ func put(t *testing.T, srv *Server, path string, jsonBody string) httpResult {
 		bodyReader = strings.NewReader(jsonBody)
 	}
 	req, err := http.NewRequest(http.MethodPut, fmt.Sprintf("http://%s%s", srv.Addr(), path), bodyReader)
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	return httpResult{statusCode: resp.StatusCode, contentType: resp.Header.Get("Content-Type"), body: string(body)}
+}
+
+func patch(t *testing.T, srv *Server, path string, jsonBody string) httpResult {
+	t.Helper()
+	var bodyReader io.Reader
+	if jsonBody != "" {
+		bodyReader = strings.NewReader(jsonBody)
+	}
+	req, err := http.NewRequest(http.MethodPatch, fmt.Sprintf("http://%s%s", srv.Addr(), path), bodyReader)
 	require.NoError(t, err)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)

@@ -239,22 +239,26 @@ func TestClient_CancelAndDoneMapToMove(t *testing.T) {
 }
 
 func TestClient_NoteSendsText(t *testing.T) {
-	var gotText, gotPath string
+	var gotText, gotPath, gotAuthor, gotParent string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
 		var body struct {
-			Text string `json:"text"`
+			Text   string `json:"text"`
+			Author string `json:"author"`
+			Parent string `json:"parent"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
-		gotText = body.Text
+		gotText, gotAuthor, gotParent = body.Text, body.Author, body.Parent
 		_ = json.NewEncoder(w).Encode(web.TicketInfo{ID: "tst-001"})
 	}))
 	defer srv.Close()
 
 	c := New(srv.URL, "")
-	require.NoError(t, c.Note("tst-001", "blocked on review"))
+	require.NoError(t, c.Note("tst-001", "blocked on review", "claude", "q88f"))
 	assert.Equal(t, "/api/tickets/tst-001/note", gotPath)
 	assert.Equal(t, "blocked on review", gotText)
+	assert.Equal(t, "claude", gotAuthor)
+	assert.Equal(t, "q88f", gotParent)
 }
 
 func TestClient_SummarySendsText(t *testing.T) {

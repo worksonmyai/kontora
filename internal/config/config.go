@@ -7,6 +7,7 @@ import (
 	"io"
 	"maps"
 	"os"
+	"os/user"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -96,6 +97,7 @@ type Config struct {
 	MaxConcurrentAgents int                 `yaml:"max_concurrent_agents"`
 	AutoPickUp          *bool               `yaml:"auto_pick_up"`
 	InstanceName        string              `yaml:"instance_name"`
+	Author              string              `yaml:"author"`
 	TmuxSession         string              `yaml:"tmux_session"`
 	Web                 Web                 `yaml:"web"`
 	Agents              map[string]Agent    `yaml:"agents"`
@@ -616,6 +618,16 @@ var ErrNotFound = errors.New("config not found")
 // when hostname lookup fails.
 var osHostname = os.Hostname
 
+// osUsername is indirected for the same reason as osHostname: the author
+// default reads the OS user, which a test cannot rely on.
+var osUsername = func() (string, error) {
+	u, err := user.Current()
+	if err != nil {
+		return "", err
+	}
+	return u.Username, nil
+}
+
 func Load(path string) (*Config, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -773,6 +785,14 @@ func (c *Config) applyCoreDefaults() {
 	}
 	if c.TmuxSession == "" {
 		c.TmuxSession = defaultTmuxSession
+	}
+	if c.Author == "" {
+		// The author signs notes written by a person: the web composer and a
+		// bare `kontora note`. An agent's own note is signed by KONTORA_AGENT
+		// instead, so this only has to name the human at the keyboard.
+		if name, err := osUsername(); err == nil {
+			c.Author = name
+		}
 	}
 	if c.Web.Enabled == nil {
 		enabled := true

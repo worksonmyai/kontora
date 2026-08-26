@@ -226,6 +226,7 @@ func (d *Daemon) GetConfig() web.ConfigInfo {
 		Agents:         agents,
 		Projects:       projects,
 		DefaultAgent:   cfg.DefaultAgent,
+		Author:         cfg.Author,
 		BranchPrefix:   cfg.BranchPrefix,
 		CustomStatuses: cfg.Statuses,
 	}
@@ -248,6 +249,11 @@ func (d *Daemon) DeleteTicket(id string) error {
 	}
 
 	if err := os.Remove(filePath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	// The reactions sidecar is invisible to the store, so nothing else would
+	// ever collect it.
+	if err := ticket.RemoveNoteSidecar(filepath.Dir(filePath), id); err != nil {
 		return err
 	}
 
@@ -520,9 +526,81 @@ func (d *Daemon) RestoreTicket(id string) error {
 	return mapAppError(err)
 }
 
-// AddNote appends a timestamped note to a ticket's body, using the same
-// AppendNote persistence as the local cli.Note path.
-func (d *Daemon) AddNote(id string, text string) error {
+// AddNote appends a note to a ticket's body, using the same persistence as the
+// local cli.Note path. An empty author signs as the configured one, so a note
+// from the web composer carries the name of the person running the daemon.
+func (d *Daemon) AddNote(id string, req web.AddNoteRequest) error {
+	author := req.Author
+	if author == "" {
+		author = d.config().Author
+	}
+	return d.mutateNotes(id, func(t *ticket.Ticket) error {
+		_, err := t.AddNote(ticket.AddNoteOptions{
+			Text:     req.Text,
+			Author:   author,
+			ParentID: req.Parent,
+			At:       time.Now(),
+		})
+		return err
+	})
+}
+
+// EditNote replaces one note's text and flags its byline as edited.
+func (d *Daemon) EditNote(id, noteID, text string) error {
+	return d.mutateNotes(id, func(t *ticket.Ticket) error {
+		_, err := t.EditNote(noteID, text)
+		return err
+	})
+}
+
+// DeleteNote removes one note and its replies.
+func (d *Daemon) DeleteNote(id, noteID string) error {
+	return d.mutateNotes(id, func(t *ticket.Ticket) error {
+		return t.DeleteNote(noteID)
+	})
+}
+
+// SetReaction toggles one actor's reaction on a note. The chip lives in the
+// ticket's sidecar rather than its body, but the write still broadcasts, so
+// every open page sees it move. A note that has no id yet is minted one first,
+// because the sidecar keys on that id.
+func (d *Daemon) SetReaction(id, noteID, emoji, actor string, on bool) error {
+	cfg := d.config()
+	if actor == "" {
+		actor = cfg.Author
+	}
+	dir := config.ExpandTilde(cfg.TicketsDir)
+
+	resolved := noteID
+	if err := d.mutateNotes(id, func(t *ticket.Ticket) error {
+		minted, changed, err := t.EnsureNoteID(noteID)
+		if err != nil {
+			return err
+		}
+		resolved = minted
+		if !changed {
+			return errNoteUnchanged
+		}
+		return nil
+	}); err != nil && !errors.Is(err, errNoteUnchanged) {
+		return err
+	}
+
+	if err := ticket.SetNoteReaction(dir, id, resolved, emoji, actor, on); err != nil {
+		return err
+	}
+	d.broadcastTicketUpdateLocking(id)
+	return nil
+}
+
+// errNoteUnchanged tells mutateNotes that the mutation found nothing to write.
+// It never leaves the daemon.
+var errNoteUnchanged = errors.New("note unchanged")
+
+// mutateNotes reads a ticket from disk, applies one note mutation, writes it
+// back and broadcasts. The ticket is re-read rather than taken from the cache
+// so a note never clobbers a field the daemon wrote since the last watch event.
+func (d *Daemon) mutateNotes(id string, mutate func(*ticket.Ticket) error) error {
 	d.mu.Lock()
 	ts, ok := d.tickets[id]
 	if !ok {
@@ -536,7 +614,9 @@ func (d *Daemon) AddNote(id string, text string) error {
 	if err != nil {
 		return err
 	}
-	t2.AppendNote(text, time.Now())
+	if err := mutate(t2); err != nil {
+		return err
+	}
 	if err := d.writeTicket(t2, filePath); err != nil {
 		return err
 	}
@@ -1217,6 +1297,7 @@ func (d *Daemon) buildTicketInfo(cfg *config.Config, ts *ticketState, includeBod
 	}
 	info.CanAnnotate = annotateRefusal(ts.ticket) == nil
 	info.Project, _, _ = cfg.ProjectFor(ts.ticket.Path)
+	d.decorateNotes(cfg, ts.ticket.ID, info.Notes)
 	info.Blockers = d.blockersLocked(ts.ticket)
 	info.Ready = len(info.Blockers) == 0
 	mt := ts.modTime
@@ -1248,6 +1329,43 @@ func (d *Daemon) buildTicketInfo(cfg *config.Config, ts *ticketState, includeBod
 		info.Blocks, info.Children = d.relatedLocked(cfg, ts.ticket.ID)
 	}
 	return info
+}
+
+// decorateNotes fills in what the body alone cannot say: the author's kind,
+// which only the config knows, and the reactions, which live in the sidecar.
+// Both are added here rather than in web.ParseNotes so the SSE event carries
+// them too — it builds its payload through this same function.
+func (d *Daemon) decorateNotes(cfg *config.Config, ticketID string, notes []web.NoteInfo) {
+	if len(notes) == 0 {
+		return
+	}
+	reactions, err := ticket.LoadNoteReactions(config.ExpandTilde(cfg.TicketsDir), ticketID)
+	if err != nil {
+		d.log.Warn("reading note reactions", "ticket", ticketID, "err", err)
+	}
+	for i := range notes {
+		notes[i].AuthorKind = authorKind(cfg, notes[i].Author)
+		for _, chip := range reactions.For(notes[i].ID) {
+			notes[i].Reactions = append(notes[i].Reactions, web.ReactionInfo{Emoji: chip.Emoji, Actors: chip.Actors})
+		}
+	}
+}
+
+// authorKind sorts a note's author into the three the UI draws differently. An
+// author no agent is named after is a person; an empty one is a note written
+// before notes carried an author at all, and stays unclassified.
+func authorKind(cfg *config.Config, author string) string {
+	switch author {
+	case "":
+		return ""
+	case ticket.SystemAuthor:
+		return web.AuthorKindSystem
+	default:
+		if _, ok := cfg.Agents[author]; ok {
+			return web.AuthorKindAgent
+		}
+		return web.AuthorKindHuman
+	}
 }
 
 // resolveRefLocked fills a relation ref's title and status from the store,

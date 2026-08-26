@@ -11,6 +11,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/worksonmyai/kontora/internal/ticket"
 )
 
 func (s *Server) handleListTickets(w http.ResponseWriter, r *http.Request) {
@@ -95,6 +97,26 @@ func (s *Server) handleSetStage(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleAddNote(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 
+	var body AddNoteRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON body"})
+		return
+	}
+	if body.Text == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "text is required"})
+		return
+	}
+
+	if err := s.svc.AddNote(id, body); err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	s.writeTicket(w, id)
+}
+
+func (s *Server) handleEditNote(w http.ResponseWriter, r *http.Request) {
+	id, noteID := r.PathValue("id"), r.PathValue("noteID")
+
 	var body struct {
 		Text string `json:"text"`
 	}
@@ -107,10 +129,63 @@ func (s *Server) handleAddNote(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.svc.AddNote(id, body.Text); err != nil {
+	if err := s.svc.EditNote(id, noteID, body.Text); err != nil {
 		writeServiceError(w, err)
 		return
 	}
+	s.writeTicket(w, id)
+}
+
+func (s *Server) handleDeleteNote(w http.ResponseWriter, r *http.Request) {
+	id, noteID := r.PathValue("id"), r.PathValue("noteID")
+	if err := s.svc.DeleteNote(id, noteID); err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	s.writeTicket(w, id)
+}
+
+func (s *Server) handleAddReaction(w http.ResponseWriter, r *http.Request) {
+	id, noteID := r.PathValue("id"), r.PathValue("noteID")
+
+	var body struct {
+		Emoji string `json:"emoji"`
+		Actor string `json:"actor"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON body"})
+		return
+	}
+	if body.Emoji == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "emoji is required"})
+		return
+	}
+
+	if err := s.svc.SetReaction(id, noteID, body.Emoji, body.Actor, true); err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	s.writeTicket(w, id)
+}
+
+// handleDropReaction takes the emoji from the path, where it arrives
+// percent-encoded and PathValue has already decoded it.
+func (s *Server) handleDropReaction(w http.ResponseWriter, r *http.Request) {
+	id, noteID, emoji := r.PathValue("id"), r.PathValue("noteID"), r.PathValue("emoji")
+	if emoji == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "emoji is required"})
+		return
+	}
+	if err := s.svc.SetReaction(id, noteID, emoji, r.URL.Query().Get("actor"), false); err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	s.writeTicket(w, id)
+}
+
+// writeTicket answers a mutation with the whole ticket, which is what lets the
+// page replace its copy wholesale.
+func (s *Server) writeTicket(w http.ResponseWriter, id string) {
 	tkt, err := s.svc.GetTicket(id)
 	if err != nil {
 		writeServiceError(w, err)
@@ -723,6 +798,13 @@ func writeServiceError(w http.ResponseWriter, err error) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
 	case errors.Is(err, ErrLogNotFound):
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+	case errors.Is(err, ErrNoteNotFound):
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+	case errors.Is(err, ErrNoteNested):
+		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+	case errors.Is(err, ticket.ErrNoteEmpty), errors.Is(err, ticket.ErrNoteAuthor),
+		errors.Is(err, ticket.ErrNoteEmoji), errors.Is(err, ticket.ErrNoteUnaddressable):
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 	case errors.Is(err, ErrInvalidState):
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 	case errors.Is(err, ErrUnknownAgent):

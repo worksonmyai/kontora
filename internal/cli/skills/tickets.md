@@ -129,9 +129,16 @@ Everything after the closing `---` is markdown. The first `# Heading` is the
 ticket title, available to a stage prompt as `{{ .Ticket.Title }}`; the whole
 body is `{{ .Ticket.Description }}`.
 
-`kontora note` appends a timestamped entry under a `## Notes` heading. That is
-how one stage leaves something for the next, because the next stage's prompt
-usually includes the whole body.
+`kontora note` appends an entry under a `## Notes` heading. That is how one
+stage leaves something for the next, because the next stage's prompt usually
+includes the whole body.
+
+Each note opens with a bold byline of timestamp, author and a 4-character id,
+`**2026-03-06T12:00:00Z · claude · q88f**`, with `· re:<id>` on a reply and
+`· edited` on one whose text was replaced. A byline that is a bare timestamp is
+a note written before the format carried an author; it still reads fine.
+Reactions are not in the body — they live in `<ticket-id>.notes.json` beside the
+ticket file, so what you receive in a prompt stays readable.
 
 ## Ticket ID format
 

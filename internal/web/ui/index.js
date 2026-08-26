@@ -16,6 +16,7 @@ import { kontoraDetail } from './detail.js';
 import { kontoraFilter } from './filter.js';
 import { kontoraMarkdown } from './markdown.js';
 import { kontoraMobile } from './mobile.js';
+import { kontoraNotes } from './notes.js';
 import { kontoraPalette } from './palette.js';
 import { kontoraRelations } from './relations.js';
 import { kontoraSettings } from './settings.js';
@@ -54,6 +55,7 @@ function kontora() {
     kontoraTerminal(),
     kontoraPalette(),
     kontoraMarkdown(),
+    kontoraNotes(),
     kontoraRelations(),
     kontoraActivity(),
     kontoraMobile(),

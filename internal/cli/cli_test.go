@@ -806,7 +806,7 @@ path: /tmp/testrepo
 # Ticket one
 `)
 
-	require.NoError(t, Note(dir, "tst-001", "hello from test"))
+	require.NoError(t, Note(dir, "tst-001", "hello from test", NoteOptions{Author: "alexander"}))
 
 	data, err := os.ReadFile(filepath.Join(dir, "tst-001.md"))
 	require.NoError(t, err)
@@ -814,6 +814,7 @@ path: /tmp/testrepo
 
 	assert.Contains(t, content, "## Notes")
 	assert.Contains(t, content, "hello from test")
+	assert.Regexp(t, `\*\*[^*]+ · alexander · [a-z0-9]{4}\*\*`, content)
 }
 
 func TestNote_PrefixMatch(t *testing.T) {
@@ -827,7 +828,7 @@ path: /tmp/testrepo
 # Ticket
 `)
 
-	require.NoError(t, Note(dir, "tst", "prefix note"))
+	require.NoError(t, Note(dir, "tst", "prefix note", NoteOptions{}))
 
 	data, err := os.ReadFile(filepath.Join(dir, "tst-001.md"))
 	require.NoError(t, err)
@@ -846,7 +847,7 @@ custom_field: keep me
 # Ticket
 `)
 
-	require.NoError(t, Note(dir, "tst-001", "preserve test"))
+	require.NoError(t, Note(dir, "tst-001", "preserve test", NoteOptions{}))
 
 	data, err := os.ReadFile(filepath.Join(dir, "tst-001.md"))
 	require.NoError(t, err)
@@ -859,7 +860,7 @@ custom_field: keep me
 
 func TestNote_TaskNotFound(t *testing.T) {
 	dir := t.TempDir()
-	require.Error(t, Note(dir, "nonexistent", "text"))
+	require.Error(t, Note(dir, "nonexistent", "text", NoteOptions{}))
 }
 
 func TestSummary_SetsFieldPreservingRest(t *testing.T) {

@@ -31,6 +31,14 @@ func ResolveConfigPath(workDir string, configDirs []string) string {
 // re-deriving one from the agent's working directory and $HOME.
 const PathEnvVar = "KONTORA_CONFIG"
 
+// AgentEnvVar and StageEnvVar name the agent and the stage a spawned process
+// belongs to. The hooks have always received them; the daemon exports them to
+// the agent itself so its own `kontora note` can sign with the name it runs as.
+const (
+	AgentEnvVar = "KONTORA_AGENT"
+	StageEnvVar = "KONTORA_STAGE"
+)
+
 // DefaultConfigPath returns the default config file path: the one KONTORA_CONFIG
 // names, else the first hit when checking the current working directory and the
 // standard config directories.

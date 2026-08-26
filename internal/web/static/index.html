@@ -553,6 +553,42 @@
       color: rgba(var(--tx-faint), 1);
     }
 
+    /* ─── Notes tab ─── */
+    /* The hue-driven pieces. Each element carries [data-pipe-color], which sets
+       --pipe-h, so one rule covers every author, every event and every chip. */
+    .note-avatar {
+      display: flex; align-items: center; justify-content: center; flex: none;
+      width: 22px; height: 22px; border-radius: 6px;
+      font-family: 'JetBrains Mono', monospace; font-size: 10px; font-weight: 700;
+      text-transform: uppercase;
+      color: hsl(var(--pipe-h));
+      background: hsl(var(--pipe-h) / 0.16);
+      border: 1px solid hsl(var(--pipe-h) / 0.35);
+    }
+    .note-avatar-sm { width: 18px; height: 18px; border-radius: 5px; font-size: 9px; }
+    .note-role { font-family: 'JetBrains Mono', monospace; font-size: 10px; color: hsl(var(--pipe-h) / 0.85); }
+    .note-dot { width: 5px; height: 5px; border-radius: 9999px; background: hsl(var(--pipe-h) / 0.8); flex: none; }
+    .note-chip {
+      display: inline-flex; align-items: center; gap: 5px;
+      height: 22px; padding: 0 7px; border-radius: 6px;
+      background: rgba(var(--surface-800), 1);
+      border: 1px solid hsl(var(--pipe-h) / 0.3);
+      color: hsl(var(--pipe-h));
+      font-family: 'JetBrains Mono', monospace; font-size: 10.5px; font-variant-numeric: tabular-nums;
+      transition: border-color .12s;
+    }
+    .note-chip:hover { border-color: hsl(var(--pipe-h) / 0.55); }
+    .note-chip-emoji { font-family: 'DM Sans', sans-serif; font-size: 11px; }
+    .note-send {
+      font-family: 'JetBrains Mono', monospace; font-size: 11px;
+      padding: 6px 13px; border-radius: 8px;
+      background: hsl(var(--pipe-h) / 0.16);
+      border: 1px solid hsl(var(--pipe-h) / 0.42);
+      color: hsl(var(--pipe-h));
+      transition: background-color .12s;
+    }
+    .note-send:hover:not(:disabled) { background: hsl(var(--pipe-h) / 0.26); }
+
     /* ─── Mobile (phone-width) layer ─── */
     /* Blinking terminal caret + entrance transitions for the detail overlay and
        bottom sheets. Resting states are the final keyframe, so nothing is left
@@ -729,7 +765,7 @@
 </head>
 
 <body class="h-full bg-surface-950 text-tx font-sans overflow-hidden" x-data="kontora()" x-cloak
-      @keydown.escape.window="if (paletteOpen) palettePop(); else if (deleteModal) closeDeleteModal(); else if (initModal) closeInitModal(); else if (settingsGuard) settingsGuard = false; else if (currentView === 'new') closeCreateModal(); else if (detailMenuOpen) detailMenuOpen = false; else if (colMenuOpen) colMenuOpen = null; else if (sheet) closeSheet(); else if (assistantEscape()) {} else if (archivePromptId) closeArchivePrompt(); else if (terminalRW && terminalWanted()) toggleTerminalRW(); else if (archiveDetailOpen()) archiveCloseDetail(); else if (selectedTicket) closeDetail();"
+      @keydown.escape.window="if (paletteOpen) palettePop(); else if (deleteModal) closeDeleteModal(); else if (noteDeleteTarget) noteCloseDelete(); else if (initModal) closeInitModal(); else if (settingsGuard) settingsGuard = false; else if (currentView === 'new') closeCreateModal(); else if (detailMenuOpen) detailMenuOpen = false; else if (colMenuOpen) colMenuOpen = null; else if (sheet) closeSheet(); else if (assistantEscape()) {} else if (archivePromptId) closeArchivePrompt(); else if (terminalRW && terminalWanted()) toggleTerminalRW(); else if (archiveDetailOpen()) archiveCloseDetail(); else if (selectedTicket) closeDetail();"
       @dragenter.prevent="if ($event.dataTransfer && $event.dataTransfer.types.includes('Files')) uploadDragging = true"
       @dragover.prevent>
 
@@ -988,6 +1024,36 @@
                 :disabled="deleteSubmitting"
                 class="text-[13px] font-mono px-4 py-1.5 rounded bg-err/15 border border-err/25 text-err hover:bg-err/25 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
           <span x-text="deleteSubmitting ? 'deleting...' : 'delete file'"></span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Delete note modal. Deleting a note is not a file delete, so it carries no
+       confirm header on the wire; the modal is what stops a misclick, and a
+       parent takes its replies with it. -->
+  <div x-show="noteDeleteTarget" x-transition.opacity x-cloak class="fixed inset-0 z-50 flex items-center justify-center bg-black/60" @click.self="noteCloseDelete()">
+    <div role="dialog" aria-modal="true" aria-labelledby="delete-note-title" class="bg-surface-900 border border-err/20 rounded-xl p-5 w-full max-w-md mx-4 slide-up" @click.stop>
+      <div class="flex items-center justify-between mb-4">
+        <span id="delete-note-title" class="text-sm font-semibold text-tx-2">Delete note</span>
+        <button @click="noteCloseDelete()" :disabled="noteDeleteSubmitting"
+                class="text-surface-600 hover:text-tx-3 disabled:opacity-50 disabled:cursor-not-allowed" aria-label="Close">
+          <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+        </button>
+      </div>
+      <p class="text-[13px] text-tx-2 mb-3 line-clamp-3 whitespace-pre-wrap break-words" x-text="noteDeleteTarget?.text"></p>
+      <div class="space-y-2 text-[13px] text-surface-600 leading-relaxed">
+        <p>This removes the note from the ticket body.</p>
+        <p x-show="(selectedTicket?.notes || []).some(n => n.parent_id === noteDeleteTarget?.id)" class="text-warn">Its replies go with it.</p>
+      </div>
+      <div class="flex justify-end gap-2 mt-5">
+        <button type="button" @click="noteCloseDelete()" :disabled="noteDeleteSubmitting"
+                class="text-[13px] font-mono px-4 py-1.5 rounded bg-surface-800 border border-surface-700/50 text-tx-3 hover:text-tx-2 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+          cancel
+        </button>
+        <button type="button" @click="confirmDeleteNote()" :disabled="noteDeleteSubmitting"
+                class="text-[13px] font-mono px-4 py-1.5 rounded bg-err/15 border border-err/25 text-err hover:bg-err/25 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+          <span x-text="noteDeleteSubmitting ? 'deleting...' : 'delete note'"></span>
         </button>
       </div>
     </div>
@@ -1637,6 +1703,11 @@
               <button @click="switchTab('ticket')"
                       class="font-mono text-[12px] pb-[9px] border-b-2 transition-colors"
                       :class="activeTab === 'ticket' ? 'text-tx-hi font-bold border-accent' : 'text-surface-600 border-transparent hover:text-tx-3'">ticket</button>
+              <!-- Notes has no precondition: an open ticket with no runs can
+                   still carry a note, so no x-show and no tab-repair guard. -->
+              <button @click="switchTab('notes')"
+                      class="font-mono text-[12px] pb-[9px] border-b-2 transition-colors"
+                      :class="activeTab === 'notes' ? 'text-tx-hi font-bold border-accent' : 'text-surface-600 border-transparent hover:text-tx-3'">notes</button>
               <div class="flex-1"></div>
               <button @click="toggleLogFollow()" x-show="logTabActive()"
                       class="font-mono text-[10px] px-2.5 py-1 mb-[6px] rounded-md border transition-colors"
@@ -2244,6 +2315,184 @@
               </div>
             </div>
 
+            <!-- Notes: the ticket's conversation, read back from the body's
+                 "## Notes" section with lifecycle rows interleaved. Always
+                 writable, in every status: replying to a running agent is the
+                 point of the tab. -->
+            <div x-show="activeTab === 'notes'" x-transition.opacity.duration.150ms
+                 class="h-full flex flex-col bg-surface-frame">
+
+              <div class="shrink-0 px-6 pt-[14px]">
+                <div class="max-w-[820px] mx-auto flex items-center gap-[10px]">
+                  <span class="side-label">notes</span>
+                  <span class="font-mono text-[11px] text-tx-3 tabular-nums" x-text="noteCount() || ''"></span>
+                  <div class="flex-1 h-px bg-surface-700/80"></div>
+                  <span class="font-mono text-[10.5px] text-surface-600" x-text="noteLastAgo()"></span>
+                </div>
+              </div>
+
+              <!-- Pinned to the newest comment, the same effect the activity
+                   scroller uses. -->
+              <div class="flex-1 min-h-0 overflow-y-auto px-6 pt-2 pb-[10px]"
+                   x-effect="selectedTicket?.notes; if (activeTab === 'notes') $nextTick(() => { $el.scrollTop = $el.scrollHeight; })">
+                <div class="max-w-[820px] mx-auto flex flex-col">
+
+                  <template x-if="!(selectedTicket?.notes || []).length">
+                    <div class="pt-[44px] pb-[34px] max-w-[560px] flex flex-col gap-3">
+                      <span class="side-label">no notes yet</span>
+                      <p class="font-mono text-[11px] leading-[1.6] text-surface-600">
+                        Reply to an agent between stages: notes live in the ticket body, so a stage prompt that
+                        includes the body carries them. Kontora writes a note when it pauses a ticket, and an agent
+                        adds its own with <span class="text-tx-3">kontora note</span>.
+                      </p>
+                    </div>
+                  </template>
+
+                  <template x-for="item in notesFeed()" :key="item.key">
+                    <div>
+                      <!-- Lifecycle row: bare, no container, so a comment card
+                           is the only thing that reads as authored. -->
+                      <template x-if="item.kind === 'event'">
+                        <div class="flex items-center gap-[10px] py-[6px] pl-[5px]" :data-pipe-color="item.color">
+                          <span class="note-dot"></span>
+                          <span class="font-mono text-[10.5px] tracking-[0.02em] text-tx-faint whitespace-nowrap" x-text="item.label"></span>
+                          <span x-show="item.meta" class="font-mono text-[10.5px] text-surface-600/85 tabular-nums" x-text="item.meta"></span>
+                          <div class="flex-1 h-px bg-surface-700/35"></div>
+                          <span class="font-mono text-[10.5px] text-surface-600/85" :title="formatAbsDate(item.at)" x-text="noteAgo(item.at)"></span>
+                        </div>
+                      </template>
+
+                      <template x-if="item.kind === 'note'">
+                        <div class="py-[7px]" @mouseenter="noteHover = item.note.id" @mouseleave="noteHover = null">
+                          <div class="flex gap-3 items-start bg-surface-900 border border-edge-card rounded-[10px] px-[14px] py-3">
+                            <span class="note-avatar" :data-pipe-color="noteAuthorHue(item.note)" x-text="noteInitial(item.note)"></span>
+                            <div class="flex-1 min-w-0">
+
+                              <div class="flex items-baseline gap-2 min-h-[22px]">
+                                <span x-show="item.note.author" class="text-[13px] font-semibold text-tx-hi" x-text="item.note.author"></span>
+                                <span x-show="noteRole(item.note)" class="note-role" :data-pipe-color="noteAuthorHue(item.note)" x-text="noteRole(item.note)"></span>
+                                <span class="font-mono text-[10.5px] text-surface-600" :title="item.note.at" x-text="noteAgo(item.note.at)"></span>
+                                <span x-show="item.note.edited" class="font-mono text-[10.5px] text-tx-faint">(edited)</span>
+                                <div class="flex-1"></div>
+                                <div class="flex items-center gap-[10px] transition-opacity duration-150"
+                                     :class="(noteHover === item.note.id || noteReplyOn === item.note.id || noteEditOn === item.note.id) ? 'opacity-100' : 'opacity-0'">
+                                  <button type="button" @click="noteOpenReply(item.note)"
+                                          class="font-mono text-[10.5px] text-surface-600 hover:text-tx-2 transition-colors">reply</button>
+                                  <button type="button" x-show="noteIsMine(item.note)" @click="noteOpenEdit(item.note)"
+                                          class="font-mono text-[10.5px] text-surface-600 hover:text-tx-2 transition-colors">edit</button>
+                                  <button type="button" x-show="noteIsMine(item.note)" @click="noteAskDelete(item.note)"
+                                          class="font-mono text-[10.5px] text-surface-600 hover:text-st-cancel transition-colors">delete</button>
+                                  <button type="button" @click="toggleReaction(item.note, noteNextEmoji(item.note))"
+                                          data-tip-t="React to this note"
+                                          class="w-6 h-[22px] rounded-md border border-edge-input text-surface-600 hover:text-tx-2 hover:border-edge-hover transition-colors flex items-center justify-center">
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
+                                  </button>
+                                </div>
+                              </div>
+
+                              <template x-if="noteEditOn !== item.note.id">
+                                <div class="ticket-prose ticket-read mt-[3px] text-[13.5px]" x-effect="setProse($el, item.note.text)"></div>
+                              </template>
+                              <template x-if="noteEditOn === item.note.id">
+                                <div class="mt-[3px] border border-accent/40 bg-surface-850 rounded-[10px] px-[11px] py-[9px]">
+                                  <textarea x-model="noteEditDraft" x-init="$nextTick(() => $el.focus())"
+                                            @keydown.enter="if ($event.metaKey || $event.ctrlKey) { $event.preventDefault(); saveNoteEdit(); }"
+                                            @keydown.escape.stop="noteCancelEdit()"
+                                            class="w-full min-h-[64px] resize-y bg-transparent border-0 p-0 text-[13.5px] leading-[1.6] text-tx focus:outline-none"></textarea>
+                                  <div class="flex items-center gap-3 mt-[6px]">
+                                    <div class="flex-1"></div>
+                                    <span class="font-mono text-[10.5px] text-surface-600">esc to cancel</span>
+                                    <button type="button" @click="saveNoteEdit()" :disabled="!noteEditDraft.trim() || noteEditSubmitting"
+                                            class="font-mono text-[11px] px-[11px] py-1 rounded-lg bg-accent text-accent-fg hover:bg-accent-bright transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                                            x-text="noteEditSubmitting ? 'saving…' : 'save'"></button>
+                                  </div>
+                                </div>
+                              </template>
+
+                              <div x-show="(item.note.reactions || []).length || noteHover === item.note.id"
+                                   class="flex items-center gap-[6px] flex-wrap mt-[9px]">
+                                <template x-for="chip in (item.note.reactions || [])" :key="chip.emoji">
+                                  <button type="button" class="note-chip" :data-pipe-color="noteReactionHue(chip)"
+                                          @click="toggleReaction(item.note, chip.emoji)"
+                                          :data-tip-t="(chip.actors || []).join(', ')">
+                                    <span class="note-chip-emoji" x-text="chip.emoji"></span>
+                                    <span x-text="(chip.actors || []).length"></span>
+                                  </button>
+                                </template>
+                              </div>
+
+                              <div x-show="item.replies.length || noteReplyOn === item.note.id"
+                                   class="mt-3 pt-3 border-t border-surface-700/60 flex flex-col gap-3">
+                                <template x-for="r in item.replies" :key="r.id">
+                                  <div class="flex gap-[10px] items-start">
+                                    <span class="note-avatar note-avatar-sm" :data-pipe-color="noteAuthorHue(r)" x-text="noteInitial(r)"></span>
+                                    <div class="flex-1 min-w-0">
+                                      <div class="flex items-baseline gap-2">
+                                        <span x-show="r.author" class="text-[12.5px] font-semibold text-tx-2" x-text="r.author"></span>
+                                        <span x-show="noteRole(r)" class="note-role" :data-pipe-color="noteAuthorHue(r)" x-text="noteRole(r)"></span>
+                                        <span class="font-mono text-[10.5px] text-surface-600" :title="r.at" x-text="noteAgo(r.at)"></span>
+                                        <span x-show="r.edited" class="font-mono text-[10.5px] text-tx-faint">(edited)</span>
+                                        <div class="flex-1"></div>
+                                        <button type="button" x-show="noteIsMine(r)" @click="noteAskDelete(r)"
+                                                class="font-mono text-[10.5px] text-surface-600 hover:text-st-cancel transition-opacity duration-150"
+                                                :class="noteHover === item.note.id ? 'opacity-100' : 'opacity-0'">delete</button>
+                                      </div>
+                                      <div class="ticket-prose ticket-read mt-[2px] text-[13px]" x-effect="setProse($el, r.text)"></div>
+                                    </div>
+                                  </div>
+                                </template>
+
+                                <div x-show="noteReplyOn === item.note.id" class="flex gap-[10px] items-start">
+                                  <span class="note-avatar note-avatar-sm" data-pipe-color="mauve" x-text="(noteMe() || '·').charAt(0)"></span>
+                                  <div class="flex-1 min-w-0 border border-edge-input bg-surface-850 rounded-[10px] px-[11px] py-[9px]">
+                                    <textarea x-model="noteReplyDraft" x-init="$nextTick(() => $el.focus())" placeholder="Reply…"
+                                              @keydown.enter="if ($event.metaKey || $event.ctrlKey) { $event.preventDefault(); submitReply(); }"
+                                              @keydown.escape.stop="noteCancelReply()"
+                                              class="w-full min-h-[40px] resize-y bg-transparent border-0 p-0 text-[13px] leading-[1.6] text-tx focus:outline-none"></textarea>
+                                    <div class="flex items-center gap-3 mt-[6px]">
+                                      <span class="font-mono text-[10.5px] text-surface-600">markdown supported</span>
+                                      <div class="flex-1"></div>
+                                      <span class="font-mono text-[10.5px] text-surface-600">⌘↵</span>
+                                      <button type="button" @click="submitReply()" :disabled="!noteReplyDraft.trim() || noteReplySubmitting"
+                                              class="font-mono text-[11px] px-[11px] py-1 rounded-lg bg-surface-850 border border-edge-input text-tx-2 hover:border-edge-hover transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                                              x-text="noteReplySubmitting ? 'replying…' : 'reply'"></button>
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+
+                            </div>
+                          </div>
+                        </div>
+                      </template>
+                    </div>
+                  </template>
+                </div>
+              </div>
+
+              <!-- Composer: pinned, and never disabled by status. -->
+              <div class="shrink-0 border-t border-surface-700/70 px-6 pt-[14px] pb-4">
+                <div class="max-w-[820px] mx-auto flex gap-3 items-start">
+                  <span class="note-avatar" data-pipe-color="mauve" x-text="(noteMe() || '·').charAt(0)"></span>
+                  <div class="flex-1 min-w-0 border border-edge-input bg-surface-900 rounded-[10px] px-3 py-[10px]">
+                    <textarea x-model="noteDraft" placeholder="Add a note…"
+                              @keydown.enter="if ($event.metaKey || $event.ctrlKey) { $event.preventDefault(); submitNote(); }"
+                              @keydown.escape.stop
+                              class="w-full min-h-[52px] resize-y bg-transparent border-0 p-0 text-[13.5px] leading-[1.6] text-tx focus:outline-none"></textarea>
+                    <div class="flex items-center gap-3 mt-2">
+                      <span class="font-mono text-[10.5px] text-surface-600">markdown supported</span>
+                      <div class="flex-1"></div>
+                      <span class="font-mono text-[10.5px] text-surface-600">⌘↵ to add</span>
+                      <button type="button" class="note-send disabled:opacity-50 disabled:cursor-not-allowed"
+                              :data-pipe-color="noteDraft.trim() ? 'mauve' : 'none'"
+                              @click="submitNote()" :disabled="!noteDraft.trim() || noteSubmitting"
+                              x-text="noteSubmitting ? 'adding…' : 'add note'"></button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
           </div>
         </div>
 
@@ -2439,29 +2688,6 @@
               </div>
             </div>
 
-            <!-- Notes: read back from the body's "## Notes" section -->
-            <div class="flex flex-col gap-[9px]">
-              <div class="h-px bg-surface-700"></div>
-              <span class="side-label">notes</span>
-              <template x-for="(n, ni) in (selectedTicket?.notes || [])" :key="ni">
-                <div class="border-l-2 border-surface-700 pl-[11px]">
-                  <div x-show="n.at" class="font-mono text-[10.5px] text-surface-600 mb-[3px]" x-text="n.at"></div>
-                  <div class="text-[13px] leading-[1.55] text-tx-2 whitespace-pre-wrap break-words" x-effect="setNoteText($el, n.text)"></div>
-                </div>
-              </template>
-              <p x-show="!(selectedTicket?.notes || []).length" class="font-mono text-[11px] leading-[1.6] text-surface-600">
-                Reply to an agent between stages: notes live in the ticket body, so a stage prompt that
-                includes the body carries them. Kontora writes a note when it pauses a ticket, and an agent
-                adds its own with <span class="text-tx-3">kontora note</span>.
-              </p>
-              <textarea x-model="noteDraft" rows="2" placeholder="Add a note…"
-                        @keydown.enter="if ($event.metaKey || $event.ctrlKey) { $event.preventDefault(); submitNote(); }"
-                        @keydown.escape.stop
-                        class="w-full resize-y border border-edge-input bg-surface-900 rounded-lg px-[10px] py-2 text-[13px] text-tx-2 focus:outline-none focus:border-accent/40"></textarea>
-              <button type="button" @click="submitNote()" :disabled="!noteDraft.trim() || noteSubmitting"
-                      class="self-start font-mono text-[11px] px-3 py-1.5 rounded-lg bg-surface-900 border border-edge-input text-tx-2 hover:border-edge-hover transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                      x-text="noteSubmitting ? 'adding…' : 'add note'"></button>
-            </div>
           </div>
 
           <!-- Terminal: pinned to the rail bottom for non-running tickets -->

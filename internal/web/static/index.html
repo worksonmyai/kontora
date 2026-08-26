@@ -1598,9 +1598,12 @@
     </div>
 
     <!-- Ticket page (desktop). Opaque, and above the card menus (z-20) the
-         board can leave open behind it. -->
-    <div x-show="selectedTicket" x-cloak
-         class="absolute inset-0 z-30 flex flex-col bg-surface-950">
+         board can leave open behind it. x-if for the reason the three views
+         are: closing a ticket gives its nodes and bindings back. closeDetail
+         disposes the terminal before it clears selectedTicket, so the session
+         is already gone by the time this subtree is. -->
+    <template x-if="selectedTicket">
+    <div class="absolute inset-0 z-30 flex flex-col bg-surface-950">
 
       <!-- Identity block. The breadcrumb and the actions live in the app header. -->
       <div class="shrink-0 px-6 pt-[15px] pb-[11px] flex flex-col gap-2 min-w-0">
@@ -2701,6 +2704,7 @@
         </div>
       </div>
     </div>
+    </template>
     </div>
 
     <!-- New ticket page -->

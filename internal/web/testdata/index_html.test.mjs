@@ -3699,16 +3699,37 @@ test("the count line reports the shown total beside the archived total", () => {
   assert.deepEqual(state.archiveView().rows.map(r => r.id), ["kon-001"]);
 });
 
-test("the three heavy views are built and torn down, not hidden in place", () => {
+test("the heavy views are built and torn down, not hidden in place", () => {
   const html = fs.readFileSync(htmlPath, "utf8");
   // x-show leaves every node and every binding the view ever drew on the page.
   for (const view of ["stats", "archive", "settings"]) {
     assert.match(html, new RegExp(`<template x-if="!loading && currentView === '${view}'">`), view);
     assert.equal(html.includes(`x-show="!loading && currentView === '${view}'"`), false, view + " is not x-show");
   }
+  // The desktop ticket page goes the same way. closeDetail calls closeTerminal
+  // before it clears selectedTicket, so the xterm session is disposed before
+  // this subtree is removed rather than left attached to a detached container.
+  assert.match(html, /<template x-if="selectedTicket">/);
+  assert.equal(html.includes('x-show="selectedTicket" x-cloak'), false, "the ticket page is not x-show");
+
   // The board is the one view worth keeping around: it is toggled constantly
   // and it is not the one that draws thousands of rows.
   assert.match(html, /x-show="!loading && currentView === 'board'"/);
+});
+
+// x-if removes the ticket page the moment selectedTicket goes, and the xterm
+// instance lives inside it. Disposing it after would leave the session attached
+// to a detached container.
+test("closing the ticket page disposes the terminal while the page is still there", () => {
+  const state = loadKontoraState();
+  state.selectedTicket = { id: "kon-001", title: "Some ticket" };
+  let selectedAtDisposal = "closeTerminal was never called";
+  state.closeTerminal = () => { selectedAtDisposal = state.selectedTicket; };
+
+  state.closeDetail();
+
+  assert.equal(selectedAtDisposal && selectedAtDisposal.id, "kon-001");
+  assert.equal(state.selectedTicket, null);
 });
 
 test("the archive list draws its window, and offers the rest behind show more", () => {

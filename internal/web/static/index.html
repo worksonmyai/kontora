@@ -2819,9 +2819,14 @@
     <!-- The layout is cut to fit 1080px, and the panels below keep their fixed
          heights. A shorter viewport, or a pipeline with more stages than the
          design drew, scrolls the page rather than hiding the lower rows. -->
+    <!-- Stats, Archive and Settings are x-if, not x-show: a hidden view keeps
+         every node and every Alpine binding it ever drew, and these three draw
+         by far the most. Their state lives on the component, so a rebuild
+         restores what the reader left behind. -->
+
     <!-- Stats -->
-    <div x-show="!loading && currentView === 'stats'" x-cloak
-         class="flex flex-col flex-1 min-w-0 min-h-0 bg-surface-frame gap-2.5 px-4 py-3.5 overflow-y-auto">
+    <template x-if="!loading && currentView === 'stats'">
+    <div class="flex flex-col flex-1 min-w-0 min-h-0 bg-surface-frame gap-2.5 px-4 py-3.5 overflow-y-auto">
 
       <!-- Filter bar -->
       <div class="flex items-center gap-2.5 shrink-0 h-7">
@@ -3103,11 +3108,12 @@
 
       </div>
     </div>
+    </template>
 
     <!-- Archive: the archived tickets, with the read-only ticket page stacked
          over the list the way the board stacks its own detail. -->
-    <div x-show="!loading && currentView === 'archive'" x-cloak
-         class="relative flex flex-col flex-1 min-w-0 min-h-0 bg-surface-frame">
+    <template x-if="!loading && currentView === 'archive'">
+    <div class="relative flex flex-col flex-1 min-w-0 min-h-0 bg-surface-frame">
 
       <!-- Toolbar -->
       <div :inert="archiveDetailOpen()" class="shrink-0 flex flex-col gap-[9px] px-4 pt-3 pb-2.5 border-b border-surface-700/[.55]">
@@ -3119,6 +3125,7 @@
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
             </svg>
             <input type="text" x-model="archiveQuery" aria-label="Filter archive"
+                   @input="archiveResetWindow()"
                    @keydown.escape.stop="archiveQuery ? archiveQuery = '' : $el.blur()"
                    placeholder="Filter archive, or project:web agent:codex"
                    class="w-full h-[30px] pl-8 pr-[62px] text-[12px] font-mono rounded-[7px] bg-surface-900 border border-edge-input text-tx placeholder-surface-600 focus:outline-none focus:border-accent transition-colors"
@@ -3168,7 +3175,7 @@
             <span x-text="archiveRangeLabel(archiveRange)"></span>
             <svg xmlns="http://www.w3.org/2000/svg" width="9" height="9" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6" class="text-tx-4"><path d="M3 4.5 6 8l3-3.5"/></svg>
             <select class="absolute inset-0 w-full h-full opacity-0 cursor-pointer" aria-label="Filter by archive date"
-                    @change="archiveRange = $event.target.value">
+                    @change="archiveSetRange($event.target.value)">
               <template x-for="r in archiveRanges" :key="r">
                 <option :value="r" :selected="r === archiveRange" x-text="archiveRangeLabel(r)"></option>
               </template>
@@ -3207,17 +3214,15 @@
             <span class="w-[84px] shrink-0 text-right">actions</span>
           </div>
 
-          <template x-for="row in archiveView().rows" :key="row.id">
-            <div @click="archiveOpenRow(row)"
+          <template x-for="row in archiveVisibleRows()" :key="row.id">
+            <div @click="archiveRowClick(row, $event)"
                  class="flex items-center h-8 px-4 border-b border-surface-700/[.32] cursor-pointer transition-colors"
                  :class="selectedTicket && selectedTicket.id === row.id ? 'bg-surface-850 shadow-[inset_2px_0_0_rgba(var(--accent),1)]' : 'hover:bg-surface-900'">
               <span class="w-24 shrink-0 font-mono text-[11.5px] text-tx-3 truncate pr-2" x-text="row.id"></span>
               <span class="flex-1 min-w-[220px] text-[12.5px] text-tx truncate pr-3" :title="row.title" x-text="row.title"></span>
               <span class="w-24 shrink-0 font-mono text-[11px] text-tx-3 truncate pr-2" x-text="row.project"></span>
               <span class="w-[88px] shrink-0 flex items-center gap-1.5 pr-2 min-w-0">
-                <span class="w-[5px] h-[5px] rounded-full shrink-0" x-show="row.pipeline"
-                      :data-pipe-color="pipelineColorByName(row.pipeline)"
-                      style="background: hsl(var(--pipe-h, 240 10% 55%))"></span>
+                <span class="w-[5px] h-[5px] rounded-full shrink-0" x-bind="archivePipeDot(row)"></span>
                 <span class="font-mono text-[11px] text-tx-4 truncate" x-text="row.pipeline"></span>
               </span>
               <span class="w-[104px] shrink-0 pr-2">
@@ -3227,22 +3232,33 @@
               <span class="w-[154px] shrink-0 font-mono text-[11px] text-tx-4 truncate pr-2" :title="row.branch" x-text="row.branch"></span>
               <span class="w-16 shrink-0 font-mono num text-[11px] text-tx-3 text-right" x-text="archiveWall(row)"></span>
               <span class="w-24 shrink-0 font-mono text-[11px] text-tx-3 text-right" :title="row.archived_at" x-text="archiveWhen(row)"></span>
+              <!-- The row's own @click reads data-act, so these three carry no
+                   binding of their own. Pointer events stay off the svg so the
+                   handler always sees the button. -->
               <span class="w-[84px] shrink-0 flex items-center justify-end gap-1">
-                <button type="button" @click.stop="archiveRestore(row.id)" aria-label="Restore to the board" title="restore"
+                <button type="button" data-act="restore" aria-label="Restore to the board" title="restore"
                         class="w-6 h-6 rounded-[5px] flex items-center justify-center text-tx-4 hover:text-st-done hover:bg-st-done/[.12] transition-colors">
-                  <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/></svg>
+                  <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" class="pointer-events-none"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/></svg>
                 </button>
-                <button type="button" @click.stop="archiveCopyRow(row)" aria-label="Copy id and branch" title="copy id · branch"
+                <button type="button" data-act="copy" aria-label="Copy id and branch" title="copy id · branch"
                         class="w-6 h-6 rounded-[5px] flex items-center justify-center text-tx-4 hover:text-accent-bright hover:bg-accent/[.12] transition-colors">
-                  <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>
+                  <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" class="pointer-events-none"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>
                 </button>
-                <button type="button" @click.stop="archiveOpenRow(row)" aria-label="Open the ticket" title="open"
+                <button type="button" data-act="open" aria-label="Open the ticket" title="open"
                         class="w-6 h-6 rounded-[5px] flex items-center justify-center text-tx-4 hover:text-tx hover:bg-surface-850 transition-colors">
-                  <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>
+                  <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="pointer-events-none"><path d="m9 18 6-6-6-6"/></svg>
                 </button>
               </span>
             </div>
           </template>
+
+          <!-- Rendering the whole archive is what made this page cost hundreds
+               of megabytes: Alpine holds every binding of every row it draws. -->
+          <div x-show="archiveHiddenCount() > 0" class="flex items-center justify-center gap-3 py-4">
+            <button type="button" @click="archiveShowMore()"
+                    class="font-mono text-[11.5px] h-[30px] px-3 rounded-[7px] bg-surface-850 border border-edge-input text-tx-2 hover:border-edge-hover transition-colors">show more</button>
+            <span class="font-mono text-[11px] text-tx-4" x-text="archiveHiddenCount() + ' older not drawn'"></span>
+          </div>
 
           <div x-show="!archiveLoading && archiveView().shown === 0" class="flex items-start justify-center p-6">
             <div class="w-full max-w-[420px] rounded-xl border border-edge-card bg-surface-900 p-6 flex flex-col gap-3">
@@ -3447,6 +3463,7 @@
         </div>
       </div>
     </div>
+    </template>
 
     <!-- Archive note prompt, opened from a board card menu or the ticket page's
          ⋯ menu. The note is optional. -->
@@ -3473,7 +3490,8 @@
     </div>
 
     <!-- Settings -->
-    <div x-show="!loading && currentView === 'settings'" x-cloak class="flex flex-1 min-w-0 min-h-0">
+    <template x-if="!loading && currentView === 'settings'">
+    <div class="flex flex-1 min-w-0 min-h-0">
 
       <!-- Section rail -->
       <nav class="w-[168px] shrink-0 bg-surface-frame border-r border-surface-700/50 flex flex-col p-2.5 overflow-y-auto">
@@ -4037,6 +4055,7 @@
         </div>
       </div>
     </div>
+    </template>
 
     <!-- ============================================================= -->
     <!-- Assistant pane. A flex sibling of the views, not an overlay:  -->

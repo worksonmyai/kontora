@@ -3699,6 +3699,122 @@ test("the count line reports the shown total beside the archived total", () => {
   assert.deepEqual(state.archiveView().rows.map(r => r.id), ["kon-001"]);
 });
 
+test("the three heavy views are built and torn down, not hidden in place", () => {
+  const html = fs.readFileSync(htmlPath, "utf8");
+  // x-show leaves every node and every binding the view ever drew on the page.
+  for (const view of ["stats", "archive", "settings"]) {
+    assert.match(html, new RegExp(`<template x-if="!loading && currentView === '${view}'">`), view);
+    assert.equal(html.includes(`x-show="!loading && currentView === '${view}'"`), false, view + " is not x-show");
+  }
+  // The board is the one view worth keeping around: it is toggled constantly
+  // and it is not the one that draws thousands of rows.
+  assert.match(html, /x-show="!loading && currentView === 'board'"/);
+});
+
+test("the archive list draws its window, and offers the rest behind show more", () => {
+  const html = fs.readFileSync(htmlPath, "utf8");
+  assert.match(html, /x-for="row in archiveVisibleRows\(\)"/);
+  assert.equal(html.includes('x-for="row in archiveView().rows"'), false, "the whole list is never drawn");
+  assert.match(html, /@click="archiveShowMore\(\)"/);
+  assert.match(html, /x-show="archiveHiddenCount\(\) > 0"/);
+
+  // One click binding for the row and its three buttons, not four.
+  const rowStart = html.indexOf('x-for="row in archiveVisibleRows()"');
+  const row = html.slice(rowStart, html.indexOf("</template>", rowStart));
+  assert.match(row, /@click="archiveRowClick\(row, \$event\)"/);
+  assert.equal((row.match(/@click="/g) || []).length, 1, "the action buttons carry data-act, not a binding");
+  assert.equal((row.match(/data-act="/g) || []).length, 3);
+});
+
+// Rendering the whole archive is what made the page cost hundreds of megabytes:
+// Alpine holds every binding of every row it draws, and the list is thousands of
+// rows long on a real tickets_dir.
+test("the list renders a window of the filtered rows and grows it a page at a time", () => {
+  const state = loadKontoraState();
+  state.archiveRows = Array.from({ length: 250 }, (_, i) =>
+    archiveRow({ id: "kon-" + String(i).padStart(3, "0") }));
+
+  assert.equal(state.archiveView().shown, 250, "every row is still filtered and counted");
+  assert.equal(state.archiveVisibleRows().length, 100, "only the window is drawn");
+  assert.equal(state.archiveHiddenCount(), 150);
+  assert.equal(state.archiveCountLine(), "250 archived · 250 shown · 100 drawn");
+
+  state.archiveShowMore();
+  assert.equal(state.archiveVisibleRows().length, 200);
+  assert.equal(state.archiveHiddenCount(), 50);
+
+  state.archiveShowMore();
+  assert.equal(state.archiveVisibleRows().length, 250, "the window never runs past the list");
+  assert.equal(state.archiveHiddenCount(), 0);
+  assert.equal(state.archiveCountLine(), "250 archived · 250 shown", "no drawn count once it all is");
+});
+
+test("every change that re-derives the archive puts the window back", () => {
+  const rows = Array.from({ length: 250 }, (_, i) =>
+    archiveRow({ id: "kon-" + String(i).padStart(3, "0"), project: "web", agent: "claude" }));
+
+  const cases = [
+    { name: "a pill", act: s => s.archiveSetFilter("status", "done") },
+    { name: "the date range", act: s => s.archiveSetRange("30d") },
+    { name: "a sidebar facet", act: s => s.archiveToggleFacet("project", "web") },
+    { name: "a sort column", act: s => s.archiveSort("title") },
+    { name: "the sort direction", act: s => s.archiveToggleSortDir() },
+    { name: "clear all", act: s => s.archiveClearFilters() },
+    { name: "cutting a chip", act: s => { s.archiveQuery = "agent:codex"; s.archiveRemoveToken("agent:codex"); } },
+  ];
+
+  for (const c of cases) {
+    const state = loadKontoraState();
+    state.archiveRows = rows;
+    state.archiveShowMore();
+    assert.equal(state.archiveVisibleRows().length, 200, c.name + ": grown first");
+    c.act(state);
+    assert.equal(state.archiveWindow, 100, c.name + " puts the window back");
+  }
+});
+
+test("leaving the archive drops the rows and the list derived from them", () => {
+  const state = loadKontoraState();
+  state.currentView = "archive";
+  state.archiveRows = [archiveRow({ id: "kon-001" }), archiveRow({ id: "kon-002" })];
+  state.archiveShowMore();
+  assert.equal(state.archiveView().shown, 2);
+
+  state.closeArchive();
+  assert.deepEqual([...state.archiveRows], []);
+  assert.equal(state.archiveWindow, 100);
+  // The memo is module scope, so a stale entry would outlive the rows it holds.
+  assert.equal(state.archiveView().shown, 0);
+  assert.equal(state.archiveView().total, 0);
+});
+
+test("one row click serves the row and its three action buttons", () => {
+  const state = loadKontoraState();
+  const calls = [];
+  state.archiveOpenRow = row => calls.push(["open", row.id]);
+  state.archiveRestore = id => calls.push(["restore", id]);
+  state.archiveCopyRow = row => calls.push(["copy", row.id]);
+  const row = archiveRow({ id: "kon-001" });
+
+  // The buttons carry a data-act rather than a click binding of their own.
+  const click = act => ({ target: { closest: sel => (sel === "[data-act]" && act ? { getAttribute: () => act } : null) } });
+  state.archiveRowClick(row, click(null));
+  state.archiveRowClick(row, click("restore"));
+  state.archiveRowClick(row, click("copy"));
+  state.archiveRowClick(row, click("open"));
+
+  assert.deepEqual(calls, [["open", "kon-001"], ["restore", "kon-001"], ["copy", "kon-001"], ["open", "kon-001"]]);
+});
+
+test("the pipeline dot binds its colour and its presence together, and hides with no pipeline", () => {
+  const state = loadKontoraState();
+  const dot = state.archivePipeDot(archiveRow({ pipeline: "review" }));
+  assert.equal(dot["data-pipe-color"], state.pipelineColorByName("review"));
+  assert.match(dot.style, /--pipe-h/);
+
+  assert.deepEqual({ ...state.archivePipeDot(archiveRow({ pipeline: "" })) }, { style: "display: none" });
+});
+
 test("archiveSort flips the direction on the active key and picks a sensible one on a new key", () => {
   const state = loadKontoraState();
   assert.equal(state.archiveSortKey, "archived");
@@ -4997,7 +5113,7 @@ test("index.html wires the settings shell to the guard and the section rail", ()
   // The guard closes before the create form and every other overlay below it.
   assert.match(html, /else if \(settingsGuard\) settingsGuard = false; else if \(currentView === 'new'\)/);
 
-  assert.match(html, /x-show="!loading && currentView === 'settings'" x-cloak/);
+  assert.match(html, /<template x-if="!loading && currentView === 'settings'">/);
   assert.match(html, /w-\[168px\][^"]*bg-surface-frame border-r border-surface-700\/50/);
 
   // The board's search box shrinks so the three-column settings layout fits.

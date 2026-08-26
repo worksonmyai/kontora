@@ -24,6 +24,12 @@ const ARCHIVE_SORT_KEYS = ['id', 'title', 'project', 'status', 'wall', 'archived
 // columns read the other way.
 const ARCHIVE_SORT_DESC_FIRST = { archived: true, wall: true };
 
+// How many rows the list renders before "show more". Alpine binds every row it
+// renders and holds those bindings for as long as the row is on the page, so an
+// archive of a few thousand tickets rendered whole costs hundreds of megabytes
+// in effects alone. activity.js windows its tape for the same reason.
+const ARCHIVE_WINDOW = 100;
+
 // A row whose ticket carries no archived_from — archived before that field
 // existed — still needs a value to chip, group and filter by.
 export function archiveRowStatus(row) {
@@ -141,6 +147,10 @@ export function kontoraArchive() {
     archiveRange: 'all',
     archiveSortKey: 'archived',
     archiveSortDir: 'desc',
+    // How many of the filtered rows are rendered. Every change that re-derives
+    // the list puts it back, so a new filter starts at the top of a short list
+    // rather than rendering a thousand rows of a list nobody scrolled yet.
+    archiveWindow: ARCHIVE_WINDOW,
     archiveTab: 'ticket',
     archiveDetailLoading: false,
     // The note prompt both entry points open. archivePromptId names the ticket
@@ -173,6 +183,14 @@ export function kontoraArchive() {
         this._archiveClearDetail();
       }
       this._archiveDetailId = null;
+      // The rows go with the view, along with the derived list the memo holds.
+      // openArchive re-reads them, and the SSE handlers that patch the list
+      // already run only while this view is open.
+      this.archiveRows = [];
+      this.archiveWindow = ARCHIVE_WINDOW;
+      archiveMemo.key = null;
+      archiveMemo.rows = null;
+      archiveMemo.value = null;
     },
 
     async archiveLoad() {
@@ -221,9 +239,30 @@ export function kontoraArchive() {
       return archiveMemo.value;
     },
 
+    // The rendered slice of the filtered list. The count line, the facet counts
+    // and the empty state all still read the full list, so windowing changes
+    // what is drawn and nothing else.
+    archiveVisibleRows() {
+      return this.archiveView().rows.slice(0, this.archiveWindow);
+    },
+
+    archiveHiddenCount() {
+      return Math.max(0, this.archiveView().shown - this.archiveWindow);
+    },
+
+    archiveShowMore() {
+      this.archiveWindow += ARCHIVE_WINDOW;
+    },
+
+    archiveResetWindow() {
+      this.archiveWindow = ARCHIVE_WINDOW;
+    },
+
     archiveCountLine() {
       const v = this.archiveView();
-      return v.total + ' archived · ' + v.shown + ' shown';
+      const line = v.total + ' archived · ' + v.shown + ' shown';
+      const hidden = this.archiveHiddenCount();
+      return hidden ? line + ' · ' + (v.shown - hidden) + ' drawn' : line;
     },
 
     // Pill options are the values actually present, so a configured custom
@@ -244,6 +283,12 @@ export function kontoraArchive() {
     archiveSetFilter(field, value) {
       const key = 'archive' + field.charAt(0).toUpperCase() + field.slice(1);
       this[key] = value;
+      this.archiveResetWindow();
+    },
+
+    archiveSetRange(value) {
+      this.archiveRange = value;
+      this.archiveResetWindow();
     },
 
     archiveFilterValue(field) {
@@ -262,15 +307,18 @@ export function kontoraArchive() {
       this.archivePipeline = 'all';
       this.archiveAgent = 'all';
       this.archiveRange = 'all';
+      this.archiveResetWindow();
     },
 
     // Cut one parsed token back out of the query, by the substring it was
     // written as.
     archiveRemoveToken(term) {
       this.archiveQuery = filterSplitTerms(this.archiveQuery).filter(t => t !== term).join(' ');
+      this.archiveResetWindow();
     },
 
     archiveSort(key) {
+      this.archiveResetWindow();
       if (this.archiveSortKey === key) {
         this.archiveSortDir = this.archiveSortDir === 'asc' ? 'desc' : 'asc';
         return;
@@ -286,6 +334,7 @@ export function kontoraArchive() {
 
     archiveToggleSortDir() {
       this.archiveSortDir = this.archiveSortDir === 'asc' ? 'desc' : 'asc';
+      this.archiveResetWindow();
     },
 
     // ---- sidebar facets ----------------------------------------------------
@@ -305,6 +354,29 @@ export function kontoraArchive() {
     },
 
     // ---- row rendering -----------------------------------------------------
+
+    // One click handler for the whole row. The three action buttons carry a
+    // data-act rather than a binding of their own, which is three Alpine
+    // bindings saved on every row the list draws.
+    archiveRowClick(row, event) {
+      const act = event.target.closest('[data-act]');
+      switch (act && act.getAttribute('data-act')) {
+        case 'restore': return this.archiveRestore(row.id);
+        case 'copy': return this.archiveCopyRow(row);
+        default: return this.archiveOpenRow(row);
+      }
+    },
+
+    // The pipeline dot's colour and its presence in one binding. A row without
+    // a pipeline has no dot, and neither value ever changes once the row is
+    // drawn, so this replaces an x-show and a :data-pipe-color.
+    archivePipeDot(row) {
+      if (!row.pipeline) return { style: 'display: none' };
+      return {
+        'data-pipe-color': this.pipelineColorByName(row.pipeline),
+        style: 'background: hsl(var(--pipe-h, 240 10% 55%))',
+      };
+    },
 
     archiveWall(row) {
       const secs = Number(row && row.wall_seconds) || 0;

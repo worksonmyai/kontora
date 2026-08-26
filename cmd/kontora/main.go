@@ -822,6 +822,7 @@ func cmdAction(action string) {
 	if taskID == "" {
 		log.Fatalf("ticket ID is required: kontora %s TICKET_ID", action)
 	}
+	rejectSelfMove(action, taskID)
 
 	if rc := remoteClient(*urlFlag, *tokenFlag); rc != nil {
 		id := mustResolveRemote(rc, taskID)
@@ -1176,6 +1177,7 @@ func cmdMove() {
 		log.Fatal("usage: kontora move TICKET_ID STATUS")
 	}
 	taskID, status := args[0], args[1]
+	rejectSelfMove("move", taskID)
 
 	if rc := remoteClient(*urlFlag, *tokenFlag); rc != nil {
 		id := mustResolveRemote(rc, taskID)
@@ -1197,6 +1199,7 @@ func cmdMove() {
 
 func cmdArchive() {
 	rejectInRemoteMode("archive")
+	rejectBulkFromStage("archive")
 
 	fs := flag.NewFlagSet("archive", flag.ExitOnError)
 	configPath, ticketsDir := addStoreFlags(fs)
@@ -1284,6 +1287,7 @@ func cmdSkip() {
 	if taskID == "" {
 		log.Fatal("ticket ID is required: kontora skip TICKET_ID")
 	}
+	rejectSelfMove("skip", taskID)
 
 	if rc := remoteClient(*urlFlag, *tokenFlag); rc != nil {
 		id := mustResolveRemote(rc, taskID)
@@ -1312,6 +1316,7 @@ func cmdSetStage() {
 		log.Fatal("usage: kontora set-stage TICKET_ID STAGE")
 	}
 	taskID, stage := args[0], args[1]
+	rejectSelfMove("set-stage", taskID)
 
 	if rc := remoteClient(*urlFlag, *tokenFlag); rc != nil {
 		id := mustResolveRemote(rc, taskID)
@@ -1597,6 +1602,55 @@ func remoteClient(url, token string) *remote.Client {
 // Used by local-only verbs that do not parse remote flags.
 func remoteModeRequested() bool {
 	return os.Getenv("KONTORA_URL") != ""
+}
+
+// rejectSelfMove aborts a lifecycle verb aimed at the ticket the calling process
+// is a stage of, which a set KONTORA_TICKET_ID identifies.
+//
+// A stage that moves its own ticket is not signalling an outcome, it is
+// overriding one: the daemon reads any such write as a human's (isUserOverride),
+// kills the run and discards the exit, so the step's on_success never applies
+// and neither a history entry nor a final summary is written. A stage says how
+// it went by exiting.
+//
+// Matching is by prefix, because ID resolution is, so `kontora done kon-q` is
+// refused too. note and summary are deliberately left alone: a stage is expected
+// to record what it did.
+func rejectSelfMove(verb, taskID string) {
+	if msg := selfMoveRefusal(verb, taskID, os.Getenv(config.TicketEnvVar), os.Getenv(config.StageEnvVar)); msg != "" {
+		log.Fatal(msg)
+	}
+}
+
+// selfMoveRefusal returns the refusal for one verb, or "" when the call is
+// allowed. running and stage are KONTORA_TICKET_ID and KONTORA_STAGE.
+func selfMoveRefusal(verb, taskID, running, stage string) string {
+	if running == "" || taskID == "" || !strings.HasPrefix(running, taskID) {
+		return ""
+	}
+	where := "a stage"
+	if stage != "" {
+		where = fmt.Sprintf("stage %q", stage)
+	}
+	return fmt.Sprintf("%s is running %s right now, and this process is that stage's agent, so %q is refused.\n"+
+		"The pipeline decides the status when the stage exits: exit 0 if the stage's work is done, non-zero if it is not.\n"+
+		"Record what you did with `kontora note %s`.", running, where, verb, running)
+}
+
+// rejectBulkFromStage aborts a verb that acts on many tickets at once when the
+// calling process is a stage agent. Same reasoning as rejectSelfMove, for the
+// verbs that take no ticket ID to match against.
+func rejectBulkFromStage(verb string) {
+	if msg := bulkRefusal(verb, os.Getenv(config.TicketEnvVar)); msg != "" {
+		log.Fatal(msg)
+	}
+}
+
+func bulkRefusal(verb, running string) string {
+	if running == "" {
+		return ""
+	}
+	return fmt.Sprintf("%q is refused: this process is the agent running ticket %s, and the verb acts on every ticket in the store.", verb, running)
 }
 
 // rejectInRemoteMode aborts a local-only verb when remote mode is requested.

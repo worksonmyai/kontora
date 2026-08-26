@@ -473,6 +473,7 @@ pipelines:
 		wantResume     *bool
 		wantPrompt     string
 		wantAnnotation string
+		wantSystem     string
 	}{
 		{name: "both unset"},
 		{
@@ -495,6 +496,11 @@ pipelines:
 			topYAML:        "annotation_prompt: Rewrite the ticket",
 			wantAnnotation: "Rewrite the ticket",
 		},
+		{
+			name:       "custom stage brief",
+			topYAML:    "system_prompt: The pipeline owns the status",
+			wantSystem: "The pipeline owns the status",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -503,6 +509,7 @@ pipelines:
 			assert.Equal(t, tt.wantResume, cfg.Agents["claude"].Resume)
 			assert.Equal(t, tt.wantPrompt, cfg.ResumePrompt)
 			assert.Equal(t, tt.wantAnnotation, cfg.AnnotationPrompt)
+			assert.Equal(t, tt.wantSystem, cfg.SystemPrompt)
 		})
 	}
 }

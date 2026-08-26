@@ -121,6 +121,11 @@ type Config struct {
 	// same way. It overrides the agent's own effort.
 	SummaryEffort PerAgent `yaml:"summary_effort"`
 
+	// SystemPrompt replaces the built-in brief appended to every stage agent's
+	// own system prompt. See defaultStageBrief for what the built-in one states.
+	// Agents that take no such flag are given nothing either way.
+	SystemPrompt string `yaml:"system_prompt"`
+
 	// ResumePrompt replaces the built-in prompt sent to an agent whose stage a
 	// daemon restart interrupted. It is a stage prompt template with the same
 	// `{{ .Ticket.* }}` fields.

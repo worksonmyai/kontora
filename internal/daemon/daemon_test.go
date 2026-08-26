@@ -1421,6 +1421,11 @@ func TestAgentEnvironmentOverride(t *testing.T) {
 	// the environment or --tickets-dir has had its say, so the resolved dir is
 	// exported too.
 	assert.Equal(t, config.ExpandTilde(h.cfg.TicketsDir), captured.Env[config.TicketsDirEnvVar])
+	// The agent and stage it signs a note with, and the ticket the CLI refuses a
+	// lifecycle command against.
+	assert.Equal(t, "agent1", captured.Env[config.AgentEnvVar])
+	assert.Equal(t, "step1", captured.Env[config.StageEnvVar])
+	assert.Equal(t, "tst-env", captured.Env[config.TicketEnvVar])
 
 	cancel()
 	require.NoError(t, <-errCh)

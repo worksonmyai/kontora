@@ -170,6 +170,7 @@ pipelines:
 | `hooks` | no | — | Commands run at a ticket's lifecycle events (see [hooks](#hooks)). |
 | `resume_prompt` | no | (built-in) | Prompt sent to an agent whose stage a daemon restart interrupted, in place of the stage prompt (see [resuming after a restart](#resuming-after-a-restart)). Same template fields as a stage prompt. |
 | `annotation_prompt` | no | (built-in) | Prompt sent to the run that rewrites a ticket from submitted Plannotator annotations (see [plannotator](#plannotator)). Same template fields as a stage prompt. |
+| `system_prompt` | no | (built-in) | Brief appended to every stage agent's own system prompt (see [the stage brief](#the-stage-brief)). Replaces the built-in whole and is used verbatim, not as a template. Only `claude` and `pi` agents take it; every other agent gets nothing either way. |
 | `summary_model` | no | — | Model the ticket-level summary pass runs on, resolved against the agent that ran the last stage. Same two forms as a stage's `model` (see [stages](#stages)). |
 | `summary_effort` | no | — | Reasoning effort that same pass runs on, resolved the same way. It overrides the agent's own `effort` (see [agents](#agents)). |
 | `web` | no | — | Web dashboard settings (see [web](#web)). Enabled by default. |
@@ -303,7 +304,7 @@ agents:
 | `effort` | no | Reasoning effort every invocation of this agent starts from, passed as `--effort` to `claude` and `--thinking` to `pi`. It replaces the same flag in this agent's own `args`, and a stage's `effort` overrides it (see [stages](#stages)). Only those two CLIs take a flag for it: an `effort` on any other agent fails to load. The level names are passed through unchecked, so a new one works without a Kontora release, and a typo shows up as an agent that fails to start. |
 | `checkpoint_compaction_tokens` | no | Enables phase-boundary compaction for `pi` and `claude` when positive. Compaction runs only when measured context tokens are greater than this value. Zero or unset disables it. Negative values, and any value on an agent that is neither `pi` nor `claude`, fail validation. Wrapped agents, such as `nono run -- pi` or `nono run -- claude`, are supported. |
 
-Beside those, the daemon exports four variables of its own to every agent it spawns. They describe the run, which the config file alone cannot: `KONTORA_CONFIG` and `KONTORA_TICKETS_DIR` name the config and the store the daemon actually settled on, and `KONTORA_AGENT` and `KONTORA_STAGE` name this run's agent and stage. Without the first two, a `kontora note` inside a worktree re-derives a config path from the working directory and writes to the wrong store; without `KONTORA_AGENT`, it has no way to sign the note with the name it runs as (see [notes](tickets.md#notes)). A value set in either `environment:` map wins over all four.
+Beside those, the daemon exports five variables of its own to every agent it spawns. They describe the run, which the config file alone cannot: `KONTORA_CONFIG` and `KONTORA_TICKETS_DIR` name the config and the store the daemon actually settled on, and `KONTORA_AGENT`, `KONTORA_STAGE` and `KONTORA_TICKET_ID` name this run's agent, stage and ticket. Without the first two, a `kontora note` inside a worktree re-derives a config path from the working directory and writes to the wrong store; without `KONTORA_AGENT`, it has no way to sign the note with the name it runs as (see [notes](tickets.md#notes)). `KONTORA_TICKET_ID` is what makes the CLI refuse a lifecycle command aimed at the ticket the calling process is a stage of (see [the stage brief](#the-stage-brief)). A value set in either `environment:` map wins over all five.
 
 When checkpoint compaction is enabled, the prompt requires a durable `phase-N:` ticket note before each phase-boundary signal. The note records changed files, decisions, test results, unresolved issues, and the next phase. A compaction failure never fails the stage: the agent continues the next phase from the uncompacted session.
 
@@ -403,6 +404,16 @@ Prompts are Go [text/template](https://pkg.go.dev/text/template) strings with th
 | `{{ plannotatorAnnotations }}` | Pending Plannotator annotations on the ticket. Reading it leaves the file in place (see [plannotator](#plannotator)). |
 
 The `file` function is how stages communicate — an earlier stage writes a file (e.g., `PLAN.md`) and a later stage reads it via the template.
+
+### The stage brief
+
+Every stage agent is also given a short brief, appended to its own system prompt with `--append-system-prompt`. The stage prompt says what to do; the brief says who is in charge of the ticket.
+
+Kontora decides the ticket's next status from the stage's exit code. An agent that sets the status itself is not signalling an outcome, it is overriding one: the daemon reads any such write as a human's, kills the run and discards the exit, so the step's `on_success` never applies, no history entry is recorded and no final summary is written. The built-in brief states that, points the agent at `kontora note` and `kontora summary` for recording its work, and names the verbs the CLI refuses.
+
+Those refusals are real, not advice. The daemon exports `KONTORA_TICKET_ID` to the agent, and `done`, `cancel`, `move`, `pause`, `retry`, `skip` and `set-stage` aimed at that ticket are rejected before anything is written, as is `archive`, which sweeps the whole store. A prefix counts: `kontora done kon-q` is refused while `kon-q88f` is running. Everything else, `note` and `summary` included, is untouched, and the same commands work normally against any other ticket and from any shell outside a run.
+
+Set `system_prompt:` to replace the built-in brief. It is used verbatim rather than as a template, so a replacement that wants the ticket ID has to state the rule without naming it. Only `claude` and `pi` agents take the flag; every other agent is given no brief either way.
 
 ## pipelines
 

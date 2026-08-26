@@ -18,6 +18,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"syscall"
+	"text/template"
 	"time"
 	"unicode/utf8"
 
@@ -69,6 +70,40 @@ const defaultResumePrompt = "Your previous run on ticket {{ .Ticket.ID }} — {{
 	"This is the same conversation, and the worktree still holds every change you made.\n\n" +
 	"Re-read the ticket and check the worktree to see how far you got, then finish the stage you were working on. " +
 	"Do not start it over and do not undo work that is already there."
+
+// defaultStageBrief is appended to a stage agent's own system prompt. It states
+// what the stage prompt cannot: the daemon decides the ticket's next status
+// from the exit code, so an agent that closes its own ticket is read as a human
+// override and the step's on_success is thrown away. The verbs it names are the
+// ones rejectSelfMove refuses, said here in the same terms so the refusal is not
+// a surprise the agent argues with.
+var defaultStageBrief = template.Must(template.New("stage-brief").Parse(
+	`You are running as stage "{{ .Stage }}" of Kontora ticket {{ .Ticket }}, in a
+git worktree Kontora created for it.
+
+Kontora decides the ticket's next status when you exit. Exit 0 when the stage's
+work is done and non-zero when it is not; the pipeline reads that and moves the
+ticket itself.
+
+Do not set the status yourself. The kontora verbs done, cancel, move, pause,
+retry, skip and set-stage are refused on {{ .Ticket }} while you are its stage,
+and editing the ticket file by hand races the daemon, which owns it.
+
+Record what you did with "kontora note {{ .Ticket }}" and
+"kontora summary {{ .Ticket }}". Run "kontora skills list" for the reference
+topics and "kontora skills show <topic>" for one.`))
+
+// stageBrief renders the brief one run is given. An override replaces it whole
+// and is used verbatim: a user who writes their own brief has said what they
+// want the agent told.
+func stageBrief(override, ticketID, stageName string) string {
+	if strings.TrimSpace(override) != "" {
+		return override
+	}
+	var b strings.Builder
+	_ = defaultStageBrief.Execute(&b, struct{ Ticket, Stage string }{ticketID, stageName})
+	return b.String()
+}
 
 func (d *Daemon) renderTicketPrompt(cfg *config.Config, tmpl string, t *ticket.Ticket, filePath, wtPath string) (string, error) {
 	opts := prompt.Options{
@@ -2355,7 +2390,7 @@ func (d *Daemon) runAgentOnce(taskCtx context.Context, t *ticket.Ticket, p spawn
 	if p.agentCfg.IsPi() {
 		waitFile = stageWaitPath(p.cfg, p.ticketID, p.stageName)
 	}
-	args, settingsFile, sessionID, err := buildAgentArgs(p.agentCfg, rendered, tmux.ChannelName(d.tmuxSession, p.ticketID), ckpt.compactChannel, model, effort, waitFile, rec, !p.annotation)
+	args, settingsFile, sessionID, err := buildAgentArgs(p.agentCfg, rendered, stageBrief(p.cfg.SystemPrompt, p.ticketID, p.stageName), tmux.ChannelName(d.tmuxSession, p.ticketID), ckpt.compactChannel, model, effort, waitFile, rec, !p.annotation)
 	if err != nil {
 		p.log.Error("build agent args failed", "err", err)
 		return agentAttempt{pauseReason: "build agent args failed: " + err.Error()}
@@ -2607,9 +2642,11 @@ func buildOperationalAppendix(taskID, filePath, wtPath string, isPipeline bool, 
 // which keeps it ahead of the prompt this function appends last. A pair the
 // agent cannot run is rejected here as well as in config validation, because a
 // ticket's own agent field is only known at spawn time.
+// A non-empty brief is appended to the agent's own system prompt. Only claude
+// and pi take a flag for it, so every other agent is given nothing.
 // Returns the args, the path to the temporary settings/extension file (empty
 // for other agents), the session ID (empty for non-Claude agents), and any error.
-func buildAgentArgs(agentCfg config.Agent, rendered, channelName, compactChannel, model, effort, waitFile string, rec *resumeRecord, checkpointEligible bool) ([]string, string, string, error) {
+func buildAgentArgs(agentCfg config.Agent, rendered, brief, channelName, compactChannel, model, effort, waitFile string, rec *resumeRecord, checkpointEligible bool) ([]string, string, string, error) {
 	if err := agentCfg.CheckEffort(model, effort); err != nil {
 		return nil, "", "", err
 	}
@@ -2633,6 +2670,9 @@ func buildAgentArgs(agentCfg config.Agent, rendered, channelName, compactChannel
 			sessionID = newSessionID()
 			args = append(args, "--session-id", sessionID)
 		}
+		if brief != "" {
+			args = append(args, "--append-system-prompt", brief)
+		}
 	case agentCfg.IsPi():
 		threshold := agentCfg.CheckpointCompactionTokens
 		var err error
@@ -2643,6 +2683,9 @@ func buildAgentArgs(agentCfg config.Agent, rendered, channelName, compactChannel
 		args = append(args, "-e", settingsFile)
 		if rec != nil {
 			args = append(args, "--session", rec.SessionPath)
+		}
+		if brief != "" {
+			args = append(args, "--append-system-prompt", brief)
 		}
 	default:
 		if model != "" {
@@ -2719,7 +2762,7 @@ func (d *Daemon) buildRunnerParams(cfg *config.Config, agentCfg config.Agent, st
 		args = append(args, "--session-dir", sessionDir)
 	}
 
-	env := agentEnv(cfg, agentCfg, d.configPath, agentName, stageName)
+	env := agentEnv(cfg, agentCfg, d.configPath, agentName, stageName, ticketID)
 	var onIdle func(context.Context, tmux.IdleEvent) tmux.IdleDecision
 	if ckpt.enabled() {
 		env[cli.CheckpointFileEnvVar] = ckpt.sidecar
@@ -2760,12 +2803,15 @@ func (d *Daemon) buildRunnerParams(cfg *config.Config, agentCfg config.Agent, st
 // KONTORA_TICKETS_DIR or --tickets-dir has had its say, so an agent that only
 // read the file would write into the wrong one.
 //
-// agentName and stageName are exported for the same reason again: an agent's
-// own `kontora note` has no other way to learn which name it is running as, and
-// a note it signs with that name is what tells a reader an agent wrote it. The
+// agentName, stageName and ticketID are exported for the same reason again: an
+// agent's own `kontora note` has no other way to learn which name it is running
+// as, and a note it signs with that name is what tells a reader an agent wrote
+// it. The ticket ID additionally lets the CLI refuse a lifecycle command aimed
+// at the ticket the calling process is a stage of, which the daemon would read
+// as a human override and act on by throwing the step's outcome away. The
 // variables are the ones the hooks already receive.
-func agentEnv(cfg *config.Config, agentCfg config.Agent, configPath, agentName, stageName string) map[string]string {
-	env := make(map[string]string, len(cfg.Environment)+len(agentCfg.Environment)+4)
+func agentEnv(cfg *config.Config, agentCfg config.Agent, configPath, agentName, stageName, ticketID string) map[string]string {
+	env := make(map[string]string, len(cfg.Environment)+len(agentCfg.Environment)+5)
 	if configPath != "" {
 		env[config.PathEnvVar] = configPath
 	}
@@ -2777,6 +2823,9 @@ func agentEnv(cfg *config.Config, agentCfg config.Agent, configPath, agentName, 
 	}
 	if stageName != "" {
 		env[config.StageEnvVar] = stageName
+	}
+	if ticketID != "" {
+		env[config.TicketEnvVar] = ticketID
 	}
 	maps.Copy(env, cfg.Environment)
 	for k, v := range agentCfg.Environment {

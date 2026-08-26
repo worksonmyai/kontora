@@ -279,7 +279,7 @@ func TestWaiting_TimeoutNamesTheQuestion(t *testing.T) {
 func TestWaiting_NoMarkerForOtherAgents(t *testing.T) {
 	t.Run("claude gets no marker path and unchanged settings", func(t *testing.T) {
 		claude := config.Agent{Binary: "claude"}
-		args, settingsFile, _, err := buildAgentArgs(claude, "prompt", "chan", "", "", "", "/logs/kon-1/step1.waiting.json", nil, true)
+		args, settingsFile, _, err := buildAgentArgs(claude, "prompt", "", "chan", "", "", "", "/logs/kon-1/step1.waiting.json", nil, true)
 		require.NoError(t, err)
 		t.Cleanup(func() { os.Remove(settingsFile) })
 
@@ -295,7 +295,7 @@ func TestWaiting_NoMarkerForOtherAgents(t *testing.T) {
 
 	t.Run("pi still gets -e with the extension", func(t *testing.T) {
 		pi := config.Agent{Binary: "pi"}
-		args, extFile, _, err := buildAgentArgs(pi, "prompt", "chan", "", "", "", "/logs/kon-1/step1.waiting.json", nil, true)
+		args, extFile, _, err := buildAgentArgs(pi, "prompt", "", "chan", "", "", "", "/logs/kon-1/step1.waiting.json", nil, true)
 		require.NoError(t, err)
 		t.Cleanup(func() { os.Remove(extFile) })
 

@@ -14,6 +14,17 @@ Matching is from the start of the id only.
 Exit codes: 0 on success, non-zero on failure with the reason on stderr. A
 search that matches nothing still exits 0.
 
+## If you are a stage agent
+
+When `KONTORA_TICKET_ID` is set, this process is the agent running that ticket's
+current stage. You cannot change that ticket's status: `done`, `cancel`, `move`,
+`pause`, `retry`, `skip` and `set-stage` aimed at it are refused, as is
+`archive`. Kontora decides the next status from your exit code, so exit 0 when
+the stage's work is done and non-zero when it is not.
+
+Record what you did with `note` and `summary`, which are never refused. Every
+verb works normally against any other ticket.
+
 ## Common flags
 
 - `--config PATH` — config file. Defaults to `$KONTORA_CONFIG`, then
@@ -159,22 +170,24 @@ them, rather than queued.
 ## kontora pause
 
 `kontora pause TICKET_ID` — stop a running ticket and park it in `paused`. A
-ticket that already closed cannot be paused.
+ticket that already closed cannot be paused. Refused on your own ticket.
 
 ## kontora retry
 
 `kontora retry TICKET_ID` — reset a non-running ticket to `todo` with the
-attempt counter cleared, and re-enqueue it.
+attempt counter cleared, and re-enqueue it. Refused on your own ticket.
 
 ## kontora done
 
 `kontora done TICKET_ID` — move the ticket to `done`, stopping any running
-agent and cleaning up its worktree.
+agent and cleaning up its worktree. Refused when the ticket is the one this
+process is a stage of; the pipeline sets the status on exit.
 
 ## kontora cancel
 
 `kontora cancel TICKET_ID` — move the ticket to `cancelled`, stopping any
-running agent and cleaning up its worktree.
+running agent and cleaning up its worktree. Refused on your own ticket, like
+`done`.
 
 ## kontora move
 
@@ -182,17 +195,20 @@ running agent and cleaning up its worktree.
 allows: `open`, `todo`, `paused`, `human_review`, `done`, `cancelled`, or a
 custom status from `statuses:`. This is the only way to reach `human_review` or
 a custom status from the command line. `archived` is not accepted; use
-`kontora archive`.
+`kontora archive`. Refused on your own ticket, whatever the target status: the
+run's history entry is lost with it.
 
 ## kontora skip
 
 `kontora skip TICKET_ID` — advance the ticket to the next stage of its
 pipeline, or mark it done when it is already on the last one. Runs nothing.
+Refused on your own ticket.
 
 ## kontora set-stage
 
 `kontora set-stage TICKET_ID STAGE` — move the ticket to a named stage of its
-pipeline without running anything.
+pipeline without running anything. Refused on your own ticket: it would make the
+daemon record your run against the wrong stage.
 
 ## kontora note
 

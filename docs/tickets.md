@@ -164,7 +164,19 @@ When a `tickets_dir` is synced across machines (iCloud, Syncthing, ...), two dae
 
 There is no automatic takeover of a claim by claim age or a heartbeat. If the owning machine goes offline mid-run, its tickets stay `in_progress` until that daemon restarts or someone manually sets `status: todo`. Two machines that share a hostname must set `instance_name` explicitly, or the protection cannot tell them apart.
 
-`archived` is a terminal built-in status for old `done`/`cancelled` tickets. Archived tickets are hidden from `kontora ls` (including `--closed`), the TUI, and the WebUI board, but their markdown files are kept on disk. The daemon never enqueues an archived ticket, and a live transition to `archived` stops any running agent and cleans up its worktree, just like `done`/`cancelled`. Create archived tickets with `kontora archive` (below) or by editing a file's `status` field directly; it cannot be set as a custom status or through the WebUI move actions.
+`archived` is a terminal built-in status for closed tickets. Archived tickets are hidden from `kontora ls` (including `--closed`), the TUI, and the WebUI board, but their markdown files are kept on disk. The daemon never enqueues an archived ticket, and a live transition to `archived` stops any running agent and cleans up its worktree, just like `done`/`cancelled`. It cannot be set as a custom status, and `move` still refuses it in both directions: archiving and restoring have their own verbs.
+
+A ticket reaches `archived` through the `kontora archive` sweep (below), through the WebUI's Archive item on a `done` or `cancelled` ticket's card and detail menus, or by editing a file's `status` field. The sweep and the WebUI write the same four fields, so a swept ticket and one archived from the UI are the same thing. A file edited by hand carries only what was typed into it, and the restore fallback below is what covers a ticket that arrived in `archived` without them:
+
+```yaml
+status: archived
+archived_from: done      # the closed status held before archiving
+archived_at: 2026-08-26T09:12:00Z
+archived_by: web         # "web" or "sweep"
+archive_note: superseded by kon-244
+```
+
+Restoring is the WebUI's Archive view, from a row or from the open ticket: it writes `archived_from` back into `status` and removes all four fields. A ticket archived before those fields existed, or one whose `archived_from` names a status that is no longer a board column, restores to `done` rather than staying stranded.
 
 ## Archiving old tickets
 
@@ -185,7 +197,7 @@ Every run first prints a table of the matching tickets, with the ID, the closed 
 
 `--project NAME` selects the same tickets through the `path` of a project in the config `projects` map, so the path does not have to be typed. A name that is not configured is an error, because a typo would otherwise look like a run where nothing was old enough. `--path` and `--project` cannot be combined.
 
-`--status` narrows the run to one closed status: `done`, `cancelled`, or the legacy `closed` that tickets from the external ticket CLI carry. Any other value is rejected. Without it all three are archived. The sweep only ever writes `archived`; no command writes `closed`.
+`--status` narrows the run to one closed status: `done`, `cancelled`, or the legacy `closed` that tickets from the external ticket CLI carry. Any other value is rejected. Without it all three are archived. The sweep only ever writes `archived`; no command writes `closed`, and every ticket it archives gets the four archive fields above, with `archived_by: sweep`.
 
 ## History
 

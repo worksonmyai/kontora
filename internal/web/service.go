@@ -57,6 +57,9 @@ type TicketService interface {
 	SkipStage(id string) error
 	SetStage(id string, stage string) error
 	MoveTicket(id string, newStatus string) error
+	ListArchivedTickets() []ArchivedTicketInfo
+	ArchiveTicket(id string, note string) error
+	RestoreTicket(id string) error
 	AddNote(id string, text string) error
 	SetSummary(id string, text string) error
 	InitTicket(id string, req InitTicketRequest) error
@@ -396,6 +399,14 @@ type TicketInfo struct {
 	FinalSummary string     `json:"final_summary,omitempty"`
 	Notes        []NoteInfo `json:"notes,omitempty"`
 
+	// The archive stamp, present only while Status is archived. ArchivedFrom is
+	// the closed status the ticket held before it was archived, and is where a
+	// restore puts it back.
+	ArchivedFrom string     `json:"archived_from,omitempty"`
+	ArchivedAt   *time.Time `json:"archived_at,omitempty"`
+	ArchivedBy   string     `json:"archived_by,omitempty"`
+	ArchiveNote  string     `json:"archive_note,omitempty"`
+
 	// Ready reports that no dependency holds the ticket back, and Blockers names
 	// the ones that do. Both are derived on read, not stored, and only mean
 	// something for a kontora ticket in todo.
@@ -629,6 +640,30 @@ func ticketRefs(ids []string) []TicketRef {
 	return refs
 }
 
+// ArchivedTicketInfo is one row of the Archive view. It is not a TicketInfo:
+// the list renders nine columns and needs none of the stage arrays, relations
+// or bodies the board payload carries.
+type ArchivedTicketInfo struct {
+	ID       string `json:"id"`
+	Title    string `json:"title"`
+	Project  string `json:"project,omitempty"`
+	Pipeline string `json:"pipeline,omitempty"`
+	Agent    string `json:"agent,omitempty"`
+	Branch   string `json:"branch,omitempty"`
+	Path     string `json:"path,omitempty"`
+	// Status is the ticket's archived_from, empty for one archived before that
+	// field existed. It is never "archived", which every row in this list
+	// already is.
+	Status string `json:"status"`
+	// WallSeconds is the interval from the first history entry's started_at to
+	// the last completed_at, so it spans every run rather than the newest one.
+	// It is derived here because history is detail-only and the wall column
+	// needs it on a list row.
+	WallSeconds int        `json:"wall_seconds"`
+	ArchivedAt  *time.Time `json:"archived_at,omitempty"`
+	ArchivedBy  string     `json:"archived_by,omitempty"`
+}
+
 // TicketInfoFromView converts an app.View to a TicketInfo.
 func TicketInfoFromView(v app.View) TicketInfo {
 	info := TicketInfo{
@@ -657,6 +692,10 @@ func TicketInfoFromView(v app.View) TicketInfo {
 		Notes:         ParseNotes(v.Body),
 		Deps:          ticketRefs(v.Deps),
 		Links:         ticketRefs(v.Links),
+		ArchivedFrom:  v.ArchivedFrom,
+		ArchivedAt:    v.ArchivedAt,
+		ArchivedBy:    v.ArchivedBy,
+		ArchiveNote:   v.ArchiveNote,
 	}
 	if v.Parent != "" {
 		info.Parent = &TicketRef{ID: v.Parent}

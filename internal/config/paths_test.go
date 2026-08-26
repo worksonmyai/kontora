@@ -42,6 +42,10 @@ func TestConfigDirs_XDGConfigHome(t *testing.T) {
 }
 
 func TestDefaultConfigPath_UsesXDGConfigHome(t *testing.T) {
+	// The daemon exports KONTORA_CONFIG to every agent it spawns, and
+	// DefaultConfigPath answers with it before it looks at XDG at all. Without
+	// this the test asserts nothing whenever the suite runs under an agent.
+	t.Setenv(PathEnvVar, "")
 	xdgDir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", xdgDir)
 

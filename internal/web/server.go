@@ -69,6 +69,12 @@ func New(svc TicketService, broker *SSEBroker, host string, port int, token stri
 	mux.HandleFunc("POST /api/tickets/{id}/skip", s.handleSkip)
 	mux.HandleFunc("POST /api/tickets/{id}/set-stage", s.handleSetStage)
 	mux.HandleFunc("POST /api/tickets/{id}/move", s.handleMove)
+	// This pattern is more specific than GET /api/tickets/{id}, so the mux
+	// prefers it: a ticket whose id is literally "archived" is unreachable by
+	// that path. Every other route reaches it.
+	mux.HandleFunc("GET /api/tickets/archived", s.handleListArchived)
+	mux.HandleFunc("POST /api/tickets/{id}/archive", s.handleArchive)
+	mux.HandleFunc("POST /api/tickets/{id}/restore", s.handleRestore)
 	mux.HandleFunc("POST /api/tickets/{id}/note", s.handleAddNote)
 	mux.HandleFunc("POST /api/tickets/{id}/summary", s.handleSetSummary)
 	mux.HandleFunc("POST /api/tickets/{id}/init", s.handleInit)

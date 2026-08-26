@@ -251,10 +251,25 @@ export function kontoraTickets() {
         // Archived tickets are hidden from the board: drop them from client
         // state and close the detail panel if the archived ticket was selected.
         this.tickets = this.tickets.filter(t => t.id !== ticket.id);
+        if (this.currentView === 'archive') this.archivePatchRow(ticket);
         if (this.selectedTicket?.id === ticket.id) {
-          this.closeDetail();
+          // The Archive view is where an archived ticket belongs, so its own
+          // overlay stays open and takes the update. Any other open page is the
+          // board's, which cannot hold a ticket the board no longer lists.
+          if (this.archiveDetailOpen()) {
+            // broadcastTicketUpdate strips the body from the event, so the copy
+            // the overlay fetched has to survive the swap.
+            var archivedBody = this.selectedTicket.body;
+            this.selectedTicket = ticket;
+            if (archivedBody) this.selectedTicket.body = archivedBody;
+          } else {
+            this.closeDetail();
+          }
         }
       } else {
+        // A ticket that left archived — restored here, or from another browser
+        // — has to leave the archive list too.
+        if (this.currentView === 'archive') this.archiveDropRow(ticket.id);
         const idx = this.tickets.findIndex(t => t.id === ticket.id);
         if (idx >= 0) {
           this.tickets[idx] = this.boardEntry(ticket);

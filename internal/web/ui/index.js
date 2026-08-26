@@ -8,6 +8,7 @@
 // same key; merge() throws if they do.
 import { kontoraActivity } from './activity.js';
 import { kontoraApp } from './app.js';
+import { kontoraArchive, archiveDerive } from './archive.js';
 import { kontoraAssistant, assistantStream } from './assistant.js';
 import { kontoraBoard } from './board.js';
 import { kontoraCreate } from './create.js';
@@ -58,6 +59,7 @@ function kontora() {
     kontoraMobile(),
     kontoraSettings(),
     kontoraStats(),
+    kontoraArchive(),
     kontoraAssistant(),
   );
 }
@@ -69,6 +71,7 @@ function kontora() {
 //   termState       the xterm handles, which the node suite drives directly
 //   assistantStream the assistant's EventSource handle, driven the same way
 //   statsDerive     the stats bucketing, which the node suite drives directly
+//   archiveDerive   the archive's filter and sort, driven the same way
 //
 // Going the other way, theme.js stays a separate pre-paint script, so
 // getStoredTheme, setStoredTheme and applyTheme are free variables here and
@@ -77,3 +80,4 @@ globalThis.kontora = kontora;
 globalThis.termState = termState;
 globalThis.assistantStream = assistantStream;
 globalThis.statsDerive = statsDerive;
+globalThis.archiveDerive = archiveDerive;

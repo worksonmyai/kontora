@@ -45,6 +45,12 @@ type View struct {
 	Deps   []string
 	Links  []string
 	Parent string
+	// The archive stamp, all empty unless Status is archived. ArchivedFrom is
+	// the closed status the ticket held before it was archived.
+	ArchivedFrom string
+	ArchivedAt   *time.Time
+	ArchivedBy   string
+	ArchiveNote  string
 }
 
 // FinishedAt is when a ticket last stopped running: the completed_at of the
@@ -102,6 +108,11 @@ func BuildView(cfg *config.Config, t *ticket.Ticket, detail bool) View {
 		Deps:        t.Deps,
 		Links:       t.Links,
 		Parent:      t.Parent,
+
+		ArchivedFrom: string(t.ArchivedFrom),
+		ArchivedAt:   t.ArchivedAt,
+		ArchivedBy:   t.ArchivedBy,
+		ArchiveNote:  t.ArchiveNote,
 	}
 
 	if t.Agent != "" {

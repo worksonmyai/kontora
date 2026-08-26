@@ -148,8 +148,8 @@ func (s *Service) archive(opts ArchiveOptions, now time.Time, stat func(string) 
 			continue
 		}
 
-		if err := t.SetField("status", string(ticket.StatusArchived)); err != nil {
-			return result, fmt.Errorf("setting status for %s: %w", t.ID, err)
+		if err := setArchiveFields(t, t.Status, now, ArchivedBySweep, ""); err != nil {
+			return result, fmt.Errorf("archiving %s: %w", t.ID, err)
 		}
 		if err := s.repo.Save(st); err != nil {
 			return result, fmt.Errorf("saving %s: %w", t.ID, err)
@@ -164,4 +164,113 @@ func (s *Service) archive(opts ArchiveOptions, now time.Time, stat func(string) 
 		return strings.Compare(a.ID, b.ID)
 	})
 	return result, nil
+}
+
+// The values archived_by carries, naming which surface archived the ticket.
+const (
+	ArchivedBySweep = "sweep"
+	ArchivedByWeb   = "web"
+)
+
+// setArchiveFields writes status: archived plus the four-field archive stamp.
+// from is the closed status the ticket is leaving, which a restore writes back.
+func setArchiveFields(t *ticket.Ticket, from ticket.Status, at time.Time, by, note string) error {
+	fields := []struct {
+		key   string
+		value any
+	}{
+		{"status", string(ticket.StatusArchived)},
+		{"archived_from", string(from)},
+		{"archived_at", at.UTC()},
+		{"archived_by", by},
+	}
+	for _, f := range fields {
+		if err := t.SetField(f.key, f.value); err != nil {
+			return fmt.Errorf("setting %s: %w", f.key, err)
+		}
+	}
+	// An absent note is no note, not an empty one: the rail renders the section
+	// only when the field is there.
+	if note == "" {
+		return t.DeleteField("archive_note")
+	}
+	return t.SetField("archive_note", note)
+}
+
+// ArchiveTicket archives one closed ticket on purpose, recording the status it
+// held, when, who asked (by) and an optional note. Unlike the sweep it ignores
+// the ticket's age. A ticket in any other status is refused rather than
+// archived, so the board cannot lose a ticket that is still being worked on.
+func (s *Service) ArchiveTicket(id, note, by string) (Result, error) {
+	return s.archiveTicket(id, note, by, time.Now())
+}
+
+func (s *Service) archiveTicket(id, note, by string, now time.Time) (Result, error) {
+	resolved, err := s.repo.Resolve(id)
+	if err != nil {
+		return Result{}, err
+	}
+	st, err := s.repo.Get(resolved)
+	if err != nil {
+		return Result{}, err
+	}
+
+	t := st.Ticket
+	if !archivableStatuses[t.Status] {
+		return Result{}, fmt.Errorf("%w: cannot archive ticket %s in status %s (only %s, %s or %s can be archived)",
+			ErrInvalidState, resolved, t.Status, ticket.StatusDone, ticket.StatusCancelled, ticket.StatusLegacyClosed)
+	}
+
+	if err := setArchiveFields(t, t.Status, now, by, note); err != nil {
+		return Result{}, err
+	}
+	if err := s.repo.Save(st); err != nil {
+		return Result{}, err
+	}
+
+	s.runtime.ReconcileDependencies(resolved)
+	s.runtime.BroadcastUpdated(resolved)
+	return Result{ID: resolved, Status: string(ticket.StatusArchived)}, nil
+}
+
+// RestoreTicket returns an archived ticket to the status it held before, and
+// removes the archive stamp. A ticket archived before the stamp existed, or one
+// whose archived_from names a status the config no longer maps to a board
+// column, restores to done: stranding it in archived with no way out would be
+// worse than putting it in the wrong column.
+func (s *Service) RestoreTicket(id string) (Result, error) {
+	resolved, err := s.repo.Resolve(id)
+	if err != nil {
+		return Result{}, err
+	}
+	st, err := s.repo.Get(resolved)
+	if err != nil {
+		return Result{}, err
+	}
+
+	t := st.Ticket
+	if t.Status != ticket.StatusArchived {
+		return Result{}, fmt.Errorf("%w: ticket %s is not archived (status %s)", ErrInvalidState, resolved, t.Status)
+	}
+
+	target := t.ArchivedFrom
+	if !s.cfg().IsBoardStatus(string(target)) {
+		target = ticket.StatusDone
+	}
+
+	if err := t.SetField("status", string(target)); err != nil {
+		return Result{}, fmt.Errorf("setting status: %w", err)
+	}
+	for _, key := range []string{"archived_from", "archived_at", "archived_by", "archive_note"} {
+		if err := t.DeleteField(key); err != nil {
+			return Result{}, fmt.Errorf("clearing %s: %w", key, err)
+		}
+	}
+	if err := s.repo.Save(st); err != nil {
+		return Result{}, err
+	}
+
+	s.runtime.ReconcileDependencies(resolved)
+	s.runtime.BroadcastUpdated(resolved)
+	return Result{ID: resolved, Status: string(target)}, nil
 }

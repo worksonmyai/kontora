@@ -445,6 +445,81 @@ func (d *Daemon) MoveTicket(id string, newStatus string) error {
 	}
 }
 
+// ListArchivedTickets returns the Archive view's rows: every ticket in the
+// store whose status is archived, in no particular order — the view sorts.
+func (d *Daemon) ListArchivedTickets() []web.ArchivedTicketInfo {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	cfg := d.config()
+	rows := make([]web.ArchivedTicketInfo, 0)
+	for _, ts := range d.tickets {
+		t := ts.ticket
+		if t.ID == "" || t.Status != ticket.StatusArchived {
+			continue
+		}
+		project, _, _ := cfg.ProjectFor(t.Path)
+		row := web.ArchivedTicketInfo{
+			ID:       t.ID,
+			Title:    t.Title(),
+			Project:  project,
+			Pipeline: t.Pipeline,
+			// The agent is resolved, not read: a ticket with no agent field
+			// takes its pipeline step's, or the configured default.
+			Agent:       app.BuildView(cfg, t, false).Agent,
+			Branch:      t.Branch,
+			Path:        t.Path,
+			Status:      string(t.ArchivedFrom),
+			WallSeconds: historyWallSeconds(t.History),
+			ArchivedAt:  t.ArchivedAt,
+			ArchivedBy:  t.ArchivedBy,
+		}
+		// A ticket archived before the stamp existed still needs a date to sort
+		// and render by; the file mtime is what the sweep's own cutoff uses.
+		if row.ArchivedAt == nil && !ts.modTime.IsZero() {
+			mt := ts.modTime
+			row.ArchivedAt = &mt
+		}
+		rows = append(rows, row)
+	}
+	return rows
+}
+
+// historyWallSeconds is the interval from the first run that started to the
+// last one that completed, so a ticket that ran three times reports the span of
+// all three rather than the newest. Zero when no run has both ends.
+func historyWallSeconds(history []ticket.HistoryEntry) int {
+	var first, last *time.Time
+	for i := range history {
+		if h := history[i].StartedAt; h != nil && first == nil {
+			first = h
+		}
+		if h := history[i].CompletedAt; h != nil {
+			last = h
+		}
+	}
+	if first == nil || last == nil {
+		return 0
+	}
+	secs := int(last.Sub(*first).Seconds())
+	if secs < 0 {
+		return 0
+	}
+	return secs
+}
+
+// ArchiveTicket archives one closed ticket from the web UI.
+func (d *Daemon) ArchiveTicket(id string, note string) error {
+	_, err := d.svc.ArchiveTicket(id, note, app.ArchivedByWeb)
+	return mapAppError(err)
+}
+
+// RestoreTicket returns an archived ticket to the status it was archived from.
+func (d *Daemon) RestoreTicket(id string) error {
+	_, err := d.svc.RestoreTicket(id)
+	return mapAppError(err)
+}
+
 // AddNote appends a timestamped note to a ticket's body, using the same
 // AppendNote persistence as the local cli.Note path.
 func (d *Daemon) AddNote(id string, text string) error {

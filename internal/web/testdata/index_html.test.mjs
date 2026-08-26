@@ -1505,17 +1505,20 @@ test("no sidebar row is active once the query says more than the row does", () =
 test("the sidebar project and agent rows are buttons wired to the filter tokens", () => {
   const html = fs.readFileSync(htmlPath, "utf8");
 
-  // A row is a button, so it takes focus and a keypress, not only a click.
-  assert.match(html, /<button[^>]*@click="toggleFilterToken\('project', p\.name\)"/, "the project row is a button");
-  assert.match(html, /<button[^>]*@click="toggleFilterToken\('agent', a\)"/, "the agent row is a button");
+  // A row is a button, so it takes focus and a keypress, not only a click. The
+  // same row drives the archive's own filters while that view is open, so each
+  // binding is a conditional rather than a bare call.
+  assert.match(html, /<button[^>]*@click="currentView === 'archive' \? archiveToggleFacet\('project', p\.name\) : toggleFilterToken\('project', p\.name\)"/, "the project row is a button");
+  assert.match(html, /<button[^>]*@click="currentView === 'archive' \? archiveToggleFacet\('agent', a\) : toggleFilterToken\('agent', a\)"/, "the agent row is a button");
 
   assert.ok(html.includes(`x-show="(configCache?.projects || []).length > 0"`), "no projects, no section");
   for (const wired of [
-    `:class="filterTokenActive('project', p.name)`,
-    `:aria-pressed="filterTokenActive('project', p.name)"`,
-    `:class="filterTokenActive('agent', a)`,
-    `:aria-pressed="filterTokenActive('agent', a)"`,
-    "agentRunningCount(a)",
+    `archiveFacetActive('project', p.name) : filterTokenActive('project', p.name)) ? 'bg-surface-850`,
+    `:aria-pressed="currentView === 'archive' ? archiveFacetActive('project', p.name) : filterTokenActive('project', p.name)"`,
+    `archiveFacetActive('agent', a) : filterTokenActive('agent', a)) ? 'bg-surface-850`,
+    `:aria-pressed="currentView === 'archive' ? archiveFacetActive('agent', a) : filterTokenActive('agent', a)"`,
+    `x-text="currentView === 'archive' ? archiveFacetCount('agent', a) : agentRunningCount(a)"`,
+    `x-text="archiveFacetCount('project', p.name)"`,
   ]) {
     assert.ok(html.includes(wired), wired);
   }
@@ -3560,15 +3563,318 @@ test("index.html renders every prose block through the idempotent write", () => 
   assert.equal(html.includes('x-html="renderMarkdown'), false);
   // Two writers share the pattern, counted apart: entity chips belong to the
   // stage summary, and a ticket body swapped onto setSummaryProse would keep
-  // any combined total the same. Seven, because the assistant's own prose runs
-  // through the same write in both layers, and a streaming pane is exactly the
-  // case a rebuild-per-effect would ruin.
-  assert.equal(html.match(/x-effect="setProse\(\$el, /g).length, 7);
+  // any combined total the same. Eight, because the assistant's own prose runs
+  // through the same write in both layers — a streaming pane is exactly the
+  // case a rebuild-per-effect would ruin — and the archive's read-only ticket
+  // tab renders its body through it too.
+  assert.equal(html.match(/x-effect="setProse\(\$el, /g).length, 8);
   assert.equal(html.match(/x-effect="setSummaryProse\(\$el, /g).length, 2);
   // A note is plain text through the same memo, so a repeated effect run does
   // not rewrite it either.
   assert.equal(html.match(/x-effect="setNoteText\(\$el, /g).length, 1);
   assert.equal(html.includes('x-text="n.text"'), false);
+});
+
+
+// ---------------------------------------------------------------------------
+// Archive view
+
+// One archived row, with the fields the list renders. Overrides win.
+function archiveRow(over = {}) {
+  return Object.assign({
+    id: "kon-001",
+    title: "Old work",
+    project: "web",
+    pipeline: "default",
+    agent: "claude",
+    branch: "kontora/kon-001",
+    status: "done",
+    wall_seconds: 600,
+    archived_at: "2026-08-20T09:00:00Z",
+    archived_by: "web",
+  }, over);
+}
+
+const ARCHIVE_DEFAULTS = {
+  query: "", status: "all", project: "all", pipeline: "all", agent: "all",
+  range: "all", sortKey: "archived", sortDir: "desc",
+};
+
+test("archiveDerive filters on the search box, the pills and the date range", () => {
+  const { ctx } = loadKontoraContext();
+  const rows = [
+    archiveRow({ id: "kon-001", project: "web", agent: "claude", status: "done", archived_at: "2026-08-20T09:00:00Z" }),
+    archiveRow({ id: "kon-002", project: "web-sdk", agent: "codex", status: "cancelled", archived_at: "2026-08-19T09:00:00Z", title: "Drop the shim" }),
+    archiveRow({ id: "kon-003", project: "api", agent: "claude", status: "done", archived_at: "2026-01-01T09:00:00Z", pipeline: "review", branch: "kontora/kon-003" }),
+  ];
+  // Two days after the newest row, so the 7-day window holds the first two.
+  const now = Date.parse("2026-08-22T09:00:00Z");
+
+  const cases = [
+    { name: "an empty box lists everything", state: {}, want: ["kon-001", "kon-002", "kon-003"] },
+    { name: "free text matches the id", state: { query: "kon-002" }, want: ["kon-002"] },
+    { name: "free text matches the title, case-insensitively", state: { query: "DROP THE" }, want: ["kon-002"] },
+    { name: "free text matches the branch", state: { query: "kontora/kon-003" }, want: ["kon-003"] },
+    { name: "a substring token widens to both projects", state: { query: "project:web" }, want: ["kon-001", "kon-002"] },
+    { name: "the = form takes the whole field", state: { query: "project:=web" }, want: ["kon-001"] },
+    { name: "tokens of different keys are ANDed", state: { query: "project:web agent:claude" }, want: ["kon-001"] },
+    { name: "repeats of one key widen it", state: { query: "agent:claude agent:codex" }, want: ["kon-001", "kon-002", "kon-003"] },
+    { name: "a status token reads archived_from", state: { query: "status:cancelled" }, want: ["kon-002"] },
+    { name: "a pipeline token narrows", state: { query: "pipeline:review" }, want: ["kon-003"] },
+    { name: "an unknown key falls through to free text", state: { query: "worktree:web" }, want: [] },
+    { name: "a key with nothing after the colon constrains nothing", state: { query: "project:" }, want: ["kon-001", "kon-002", "kon-003"] },
+    { name: "a pill is exact where a token is a substring", state: { project: "web" }, want: ["kon-001"] },
+    { name: "the status pill narrows", state: { status: "cancelled" }, want: ["kon-002"] },
+    { name: "the agent pill narrows", state: { agent: "codex" }, want: ["kon-002"] },
+    { name: "the date range drops what is older", state: { range: "7d" }, want: ["kon-001", "kon-002"] },
+    { name: "a pill and the box are ANDed", state: { agent: "claude", query: "project:web" }, want: ["kon-001"] },
+  ];
+
+  for (const c of cases) {
+    const out = ctx.archiveDerive(rows, Object.assign({}, ARCHIVE_DEFAULTS, c.state), now);
+    assert.deepEqual(out.rows.map(r => r.id).sort(), c.want.slice().sort(), c.name);
+    assert.equal(out.total, 3, c.name + " — the total counts every archived ticket");
+    assert.equal(out.shown, c.want.length, c.name + " — shown counts what is listed");
+  }
+});
+
+test("archiveDerive sorts by any of the six columns, newest archived first by default", () => {
+  const { ctx } = loadKontoraContext();
+  const rows = [
+    archiveRow({ id: "kon-002", title: "b", project: "web", status: "done", wall_seconds: 30, archived_at: "2026-08-19T09:00:00Z" }),
+    archiveRow({ id: "kon-001", title: "c", project: "api", status: "cancelled", wall_seconds: 900, archived_at: "2026-08-20T09:00:00Z" }),
+    archiveRow({ id: "kon-003", title: "a", project: "sdk", status: "done", wall_seconds: 60, archived_at: "2026-08-18T09:00:00Z" }),
+  ];
+
+  const cases = [
+    { sortKey: "archived", sortDir: "desc", want: ["kon-001", "kon-002", "kon-003"] },
+    { sortKey: "archived", sortDir: "asc", want: ["kon-003", "kon-002", "kon-001"] },
+    { sortKey: "id", sortDir: "asc", want: ["kon-001", "kon-002", "kon-003"] },
+    { sortKey: "title", sortDir: "asc", want: ["kon-003", "kon-002", "kon-001"] },
+    { sortKey: "project", sortDir: "asc", want: ["kon-001", "kon-003", "kon-002"] },
+    { sortKey: "status", sortDir: "asc", want: ["kon-001", "kon-002", "kon-003"] },
+    { sortKey: "wall", sortDir: "desc", want: ["kon-001", "kon-003", "kon-002"] },
+  ];
+
+  for (const c of cases) {
+    const out = ctx.archiveDerive(rows, Object.assign({}, ARCHIVE_DEFAULTS, c), 0);
+    assert.deepEqual(out.rows.map(r => r.id), c.want, c.sortKey + " " + c.sortDir);
+  }
+});
+
+test("archiveDerive gives a row with no archived_from a status to filter and sort by", () => {
+  const { ctx } = loadKontoraContext();
+  const rows = [archiveRow({ id: "kon-001", status: "" })];
+
+  const out = ctx.archiveDerive(rows, Object.assign({}, ARCHIVE_DEFAULTS, { status: "unknown" }), 0);
+  assert.deepEqual(out.rows.map(r => r.id), ["kon-001"]);
+});
+
+test("the archive's parsed tokens carry the term they were typed as, so a chip can cut it back out", () => {
+  const state = loadKontoraState();
+  state.archiveRows = [archiveRow()];
+  state.archiveQuery = 'fonts project:="web sdk" agent:codex';
+
+  const tokens = state.archiveView().tokens;
+  // Spread into a host array: the bundle runs in its own VM context, so an
+  // array it built has a different Array prototype and deepEqual rejects it.
+  assert.deepEqual([...tokens].map(t => [t.key, t.value, t.exact]), [["project", "web sdk", true], ["agent", "codex", false]]);
+
+  state.archiveRemoveToken(tokens[0].term);
+  assert.equal(state.archiveQuery, "fonts agent:codex");
+});
+
+test("the count line reports the shown total beside the archived total", () => {
+  const state = loadKontoraState();
+  state.archiveRows = [
+    archiveRow({ id: "kon-001", project: "web" }),
+    archiveRow({ id: "kon-002", project: "web-sdk" }),
+    archiveRow({ id: "kon-003", project: "api" }),
+  ];
+  assert.equal(state.archiveCountLine(), "3 archived · 3 shown");
+
+  state.archiveQuery = "project:=web";
+  assert.equal(state.archiveCountLine(), "3 archived · 1 shown");
+  assert.deepEqual(state.archiveView().rows.map(r => r.id), ["kon-001"]);
+});
+
+test("archiveSort flips the direction on the active key and picks a sensible one on a new key", () => {
+  const state = loadKontoraState();
+  assert.equal(state.archiveSortKey, "archived");
+  assert.equal(state.archiveSortDir, "desc");
+  assert.equal(state.archiveSortMark("archived"), "▼");
+  assert.equal(state.archiveSortMark("id"), "");
+
+  state.archiveSort("archived");
+  assert.equal(state.archiveSortDir, "asc");
+
+  // A string column reads best the other way round, so a new key does not
+  // inherit the direction the previous one was left in.
+  state.archiveSort("title");
+  assert.deepEqual([state.archiveSortKey, state.archiveSortDir], ["title", "asc"]);
+  state.archiveSort("wall");
+  assert.deepEqual([state.archiveSortKey, state.archiveSortDir], ["wall", "desc"]);
+});
+
+test("the archive's pill options are the values the rows actually carry", () => {
+  const state = loadKontoraState();
+  state.archiveRows = [
+    archiveRow({ id: "kon-001", project: "web", status: "done", agent: "claude" }),
+    archiveRow({ id: "kon-002", project: "api", status: "superseded", agent: "claude" }),
+    archiveRow({ id: "kon-003", project: "web", status: "", agent: "codex" }),
+  ];
+
+  assert.deepEqual([...state.archiveOptions("project")], ["all", "api", "web"]);
+  assert.deepEqual([...state.archiveOptions("agent")], ["all", "claude", "codex"]);
+  assert.deepEqual([...state.archiveOptions("status")], ["all", "done", "superseded", "unknown"]);
+});
+
+test("the sidebar facets toggle the archive's own filters and count per name", () => {
+  const state = loadKontoraState();
+  state.archiveRows = [
+    archiveRow({ id: "kon-001", project: "web", agent: "claude" }),
+    archiveRow({ id: "kon-002", project: "web", agent: "codex" }),
+    archiveRow({ id: "kon-003", project: "api", agent: "claude" }),
+  ];
+
+  assert.equal(state.archiveFacetCount("project", "web"), 2);
+  assert.equal(state.archiveFacetCount("agent", "codex"), 1);
+
+  state.archiveToggleFacet("project", "web");
+  assert.equal(state.archiveProject, "web");
+  assert.ok(state.archiveFacetActive("project", "web"));
+  assert.deepEqual(state.archiveView().rows.map(r => r.id), ["kon-001", "kon-002"]);
+
+  // Clicking the active row clears it rather than reselecting it.
+  state.archiveToggleFacet("project", "web");
+  assert.equal(state.archiveProject, "all");
+  assert.equal(state.archiveView().shown, 3);
+});
+
+test("clear all empties the box and every pill", () => {
+  const state = loadKontoraState();
+  state.archiveRows = [archiveRow()];
+  assert.equal(state.archiveFiltersActive(), false);
+
+  state.archiveQuery = "shim";
+  state.archiveStatus = "done";
+  state.archiveRange = "30d";
+  assert.ok(state.archiveFiltersActive());
+
+  state.archiveClearFilters();
+  assert.equal(state.archiveFiltersActive(), false);
+  assert.equal(state.archiveView().shown, 1);
+});
+
+test("the archive overlay opens only for the ticket the archive itself opened", () => {
+  const state = loadKontoraState();
+  state.currentView = "archive";
+  assert.equal(state.archiveDetailOpen(), false, "nothing open");
+
+  // Clicking Archive in the sidebar while a board ticket is on screen leaves
+  // that ticket in selectedTicket. Rendering it here would stamp a running
+  // ticket as archived.
+  state.selectedTicket = { id: "kon-009", title: "Running", status: "in_progress" };
+  assert.equal(state.archiveDetailOpen(), false, "a board ticket is not the archive's");
+
+  state._archiveDetailId = "kon-009";
+  assert.equal(state.archiveDetailOpen(), true);
+
+  state.currentView = "board";
+  assert.equal(state.archiveDetailOpen(), false, "the overlay belongs to the archive view");
+});
+
+test("applyTicketUpdate keeps the archive's open ticket instead of closing it", () => {
+  const state = loadKontoraState();
+  state.updateFavicon = () => {};
+  state.currentView = "archive";
+  state.tickets = [{ id: "kon-001", title: "Done", status: "done", kontora: true }];
+  state.archiveRows = [archiveRow({ id: "kon-001", title: "Old work", status: "", archived_at: null })];
+  state.selectedTicket = { id: "kon-001", title: "Old work", status: "archived" };
+  state._archiveDetailId = "kon-001";
+
+  state.selectedTicket.body = "# Old work\n\nthe fetched body";
+
+  // broadcastTicketUpdate strips the body from the event, so this is the shape
+  // the overlay actually receives.
+  const event = {
+    id: "kon-001", title: "Renamed", status: "archived", kontora: true,
+    archived_from: "done", archived_at: "2026-08-26T09:12:00Z", archived_by: "web",
+  };
+  state.applyTicketUpdate(event);
+
+  // The board still drops it; the archive's overlay and its row take the update.
+  assert.deepEqual(state.tickets, []);
+  assert.equal(state.selectedTicket.id, "kon-001");
+  assert.equal(state.selectedTicket.archived_from, "done");
+  assert.equal(state.selectedTicket.body, "# Old work\n\nthe fetched body");
+  assert.deepEqual(state.archiveRows.map(r => [r.title, r.status, r.archived_at, r.archived_by]),
+    [["Renamed", "done", "2026-08-26T09:12:00Z", "web"]]);
+});
+
+test("a board ticket archived elsewhere closes its page even while the archive is open", () => {
+  const state = loadKontoraState();
+  state.updateFavicon = () => {};
+  state.writeHash = () => {};
+  // Opening a board ticket and then the Archive view leaves that ticket in
+  // selectedTicket without the archive owning it, so an archive event for it
+  // must close the board's page rather than restamp it as archived.
+  state.currentView = "archive";
+  state.tickets = [{ id: "kon-009", title: "Live", status: "done", kontora: true }];
+  state.archiveRows = [archiveRow({ id: "kon-001" })];
+  state.selectedTicket = { id: "kon-009", title: "Live", status: "done" };
+  state._archiveDetailId = null;
+
+  state.applyTicketUpdate({ id: "kon-009", title: "Live", status: "archived", kontora: true, archived_from: "done" });
+
+  assert.deepEqual(state.tickets, []);
+  assert.equal(state.selectedTicket, null, "the board's page cannot outlive the board row");
+});
+
+test("applyTicketUpdate drops a restored ticket from the archive list and closes its overlay", () => {
+  const state = loadKontoraState();
+  state.updateFavicon = () => {};
+  state.currentView = "archive";
+  state.tickets = [];
+  state.archiveRows = [archiveRow({ id: "kon-001" }), archiveRow({ id: "kon-002" })];
+  state.selectedTicket = { id: "kon-001", title: "Old work", status: "archived" };
+  state._archiveDetailId = "kon-001";
+
+  // The restore could come from another browser, so the list has to follow the
+  // event rather than only the optimistic removal this session made.
+  state.applyTicketUpdate({ id: "kon-001", title: "Old work", status: "done", kontora: true });
+
+  assert.deepEqual([...state.archiveRows].map(r => r.id), ["kon-002"]);
+  assert.deepEqual(state.tickets.map(t => t.id), ["kon-001"]);
+  assert.equal(state.archiveDetailOpen(), false, "the read-only page cannot outlive the archive row");
+});
+
+test("the archive detail chip reads archived_from, not the archived status beside it", () => {
+  const state = loadKontoraState();
+
+  // A list row carries archived_from in its own status field; the detail
+  // payload answers status: archived with archived_from beside it.
+  assert.equal(state.archiveRowStatus(archiveRow({ status: "cancelled" })), "cancelled");
+  assert.equal(state.archiveRowStatus(archiveRow({ status: "" })), "unknown");
+
+  state.selectedTicket = { id: "kon-001", status: "archived", archived_from: "cancelled" };
+  assert.equal(state.archiveDetailStatus(), "cancelled");
+
+  state.selectedTicket = { id: "kon-001", status: "archived" };
+  assert.equal(state.archiveDetailStatus(), "unknown");
+});
+
+test("applyTicketUpdate still closes the board's detail panel from the archive view's row", () => {
+  const state = loadKontoraState();
+  state.updateFavicon = () => {};
+  // The board is the open view, so an archived update closes its panel as ever.
+  state.currentView = "board";
+  state.tickets = [{ id: "kon-001", title: "Done", status: "done", kontora: true }];
+  state.selectedTicket = { id: "kon-001", title: "Done", status: "done" };
+
+  state.applyTicketUpdate({ id: "kon-001", title: "Done", status: "archived", kontora: true });
+
+  assert.equal(state.selectedTicket, null);
 });
 
 // ---------------------------------------------------------------------------
@@ -4826,7 +5132,7 @@ test("an empty palette query lists the recent tickets then the navigation comman
   assert.deepEqual(groupLabels(state), ["Recent", "Go to"]);
   assert.deepEqual(rowIds(groupIn(state, "Recent").items), ["ticket:kon-2", "ticket:gol-3"]);
   assert.deepEqual(rowTitles(groupIn(state, "Go to").items),
-    ["Go to board", "Stats", "New ticket", "Settings", "Toggle sidebar", "Toggle theme"]);
+    ["Go to board", "Stats", "Archive", "New ticket", "Settings", "Toggle sidebar", "Toggle theme"]);
 });
 
 test("the open ticket leads the root list with its actions and its live logs", () => {
@@ -4959,7 +5265,7 @@ test("the palette offers no Delete anywhere", () => {
 test("the highlight wraps across group boundaries", () => {
   const state = paletteState(PALETTE_TICKETS, { recents: ["kon-1"] });
   const ids = rowIds(state._paletteRows);
-  assert.equal(ids.length, 7);
+  assert.equal(ids.length, 8);
   assert.equal(state._paletteSelId, ids[0]);
 
   state.paletteMove(-1);

@@ -1,15 +1,26 @@
 // The search-box filter grammar and the matcher the board runs it through.
+
+// Split a filter box into terms. A double-quoted run counts as one term, which
+// is how a project or agent name that has a space in it survives the split. An
+// unclosed quote runs to the end of the box, so the term is whole while the
+// closing quote is still being typed. Case is left alone: the archive box maps
+// a chip back onto the substring the user typed, so it needs the terms as
+// written.
+export function filterSplitTerms(q) {
+  return String(q == null ? '' : q).match(/(?:[^\s"]+|"[^"]*"?)+/g) || [];
+}
+
+export function filterUnquote(s) {
+  return String(s || '').replace(/"/g, '');
+}
+
 export function kontoraFilter() {
   return {
     // Filter-box terms that address one field instead of the free-text fields.
     _filterTokenKeys: ['project', 'agent'],
 
-    // The filter box split into terms. A double-quoted run counts as one term,
-    // which is how a project or agent name that has a space in it survives the
-    // split. An unclosed quote runs to the end of the box, so the term is whole
-    // while the closing quote is still being typed.
     _filterTerms(q) {
-      return (q || '').toLowerCase().match(/(?:[^\s"]+|"[^"]*"?)+/g) || [];
+      return filterSplitTerms((q || '').toLowerCase());
     },
 
     // Split the filter box into its `<key>:<value>` tokens and the free text
@@ -46,9 +57,7 @@ export function kontoraFilter() {
       return parsed;
     },
 
-    _unquote(s) {
-      return String(s || '').replace(/"/g, '');
-    },
+    _unquote: filterUnquote,
 
     // A value with a space in it has to be quoted to survive _filterTerms.
     _quoteFilterValue(value) {

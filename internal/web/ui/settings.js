@@ -778,7 +778,9 @@ export function kontoraSettings() {
       // currentView changes nowhere else, and applyRoute routes even a ticket
       // hash through here, so this one call covers every path out of Stats.
       if (this.currentView === 'stats' && view !== 'stats') this.closeStats();
+      if (this.currentView === 'archive' && view !== 'archive') this.closeArchive();
       if (view === 'stats') { this.currentView = 'stats'; this.openStats(); this.writeHash(); return; }
+      if (view === 'archive') { this.currentView = 'archive'; this.openArchive(); this.writeHash(); return; }
       if (view === 'settings') { await this.openSettings(); this.writeHash(); return; }
       if (view === 'new') { await this.openCreateModal(); this.writeHash(); return; }
       this.currentView = 'board';

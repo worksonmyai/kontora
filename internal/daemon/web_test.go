@@ -2535,3 +2535,60 @@ func TestChildInfo_WallBounds(t *testing.T) {
 		})
 	}
 }
+
+func TestDaemon_ArchiveListAndRoundTrip(t *testing.T) {
+	h := newHarness(t)
+	h.cfg.Projects = map[string]config.Project{"kontora": {Path: h.repoDir}}
+	d := h.newDaemon(h.cfg)
+
+	// Three runs of one stage: the wall column must span the first start to
+	// the last completion, not the newest run alone.
+	history := statsRunYAML("step1", "agent1", 0, 9, 10*time.Minute) +
+		statsRunYAML("step1", "agent1", 1, 8, 20*time.Minute) +
+		statsRunYAML("step1", "agent1", 2, 7, 30*time.Minute)
+	h.writeTicket("kon-a1.md", statsTicketMD("kon-a1", "done", "one-stage", h.repoDir, "agent1", 5, history))
+	h.writeTicket("kon-a2.md", h.taskMD("kon-a2", "todo", "one-stage"))
+	require.NoError(t, d.initialScan(h.tasksDir))
+
+	assert.Empty(t, d.ListArchivedTickets(), "nothing is archived yet")
+
+	require.NoError(t, d.ArchiveTicket("kon-a1", "superseded by kon-a2"))
+
+	rows := d.ListArchivedTickets()
+	require.Len(t, rows, 1)
+	row := rows[0]
+	assert.Equal(t, "kon-a1", row.ID)
+	assert.Equal(t, "Test ticket kon-a1", row.Title)
+	assert.Equal(t, "kontora", row.Project)
+	assert.Equal(t, "one-stage", row.Pipeline)
+	assert.Equal(t, "agent1", row.Agent)
+	assert.Equal(t, "done", row.Status, "the row's status is the ticket's archived_from")
+	assert.Equal(t, "web", row.ArchivedBy)
+	require.NotNil(t, row.ArchivedAt)
+	// First run started 9 days ago, last completed 7 days ago plus 30 minutes.
+	assert.Equal(t, int((2*24*time.Hour + 30*time.Minute).Seconds()), row.WallSeconds)
+
+	for _, ti := range d.ListTickets(web.ListTicketsOptions{}) {
+		assert.NotEqual(t, "kon-a1", ti.ID, "an archived ticket leaves the board list")
+	}
+
+	info, err := d.GetTicket("kon-a1")
+	require.NoError(t, err)
+	assert.Equal(t, "archived", info.Status)
+	assert.Equal(t, "done", info.ArchivedFrom)
+	assert.Equal(t, "superseded by kon-a2", info.ArchiveNote)
+
+	require.ErrorIs(t, d.ArchiveTicket("kon-a2", ""), web.ErrInvalidState, "a todo ticket cannot be archived")
+
+	require.NoError(t, d.RestoreTicket("kon-a1"))
+	assert.Empty(t, d.ListArchivedTickets())
+	info, err = d.GetTicket("kon-a1")
+	require.NoError(t, err)
+	assert.Equal(t, "done", info.Status)
+	assert.Empty(t, info.ArchivedFrom)
+	assert.Empty(t, info.ArchivedBy)
+	assert.Nil(t, info.ArchivedAt)
+	assert.Empty(t, info.ArchiveNote)
+
+	require.ErrorIs(t, d.RestoreTicket("kon-a1"), web.ErrInvalidState, "a done ticket cannot be restored")
+}

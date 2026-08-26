@@ -173,6 +173,46 @@ func (s *Server) handleMove(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, tkt)
 }
 
+func (s *Server) handleListArchived(w http.ResponseWriter, _ *http.Request) {
+	tickets := s.svc.ListArchivedTickets()
+	if tickets == nil {
+		tickets = []ArchivedTicketInfo{}
+	}
+	writeJSON(w, http.StatusOK, struct {
+		Tickets []ArchivedTicketInfo `json:"tickets"`
+	}{tickets})
+}
+
+func (s *Server) handleArchive(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+
+	var body struct {
+		Note string `json:"note"`
+	}
+	// The note is optional, so an empty request body archives without one. EOF
+	// rather than a ContentLength check: a chunked request declares no length,
+	// and its empty body is just as valid.
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON body"})
+		return
+	}
+
+	if err := s.svc.ArchiveTicket(id, body.Note); err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	tkt, err := s.svc.GetTicket(id)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, tkt)
+}
+
+func (s *Server) handleRestore(w http.ResponseWriter, r *http.Request) {
+	s.handleAction(w, r, func(id string) error { return s.svc.RestoreTicket(id) })
+}
+
 func (s *Server) handleAddDependency(w http.ResponseWriter, r *http.Request) {
 	s.handleRelation(w, r, true, func(id string, related []string) error {
 		return s.svc.AddDependency(id, related[0])

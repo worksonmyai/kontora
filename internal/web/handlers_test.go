@@ -43,6 +43,9 @@ type mockService struct {
 	reviewFn       func(id string) error
 	annotateFn     func(id string) error
 	relationFn     func(verb, id string, related []string) error
+	archivedList   []ArchivedTicketInfo
+	archiveFn      func(id, note string) error
+	restoreFn      func(id string) error
 	relationCalls  []string
 	listOpts       []ListTicketsOptions
 	rawConfig      string
@@ -193,7 +196,20 @@ func (m *mockService) SetStage(id string, stage string) error {
 	}
 	return m.actionFn(id)
 }
-func (m *mockService) MoveTicket(id string, _ string) error { return m.actionFn(id) }
+func (m *mockService) MoveTicket(id string, _ string) error      { return m.actionFn(id) }
+func (m *mockService) ListArchivedTickets() []ArchivedTicketInfo { return m.archivedList }
+func (m *mockService) ArchiveTicket(id string, note string) error {
+	if m.archiveFn != nil {
+		return m.archiveFn(id, note)
+	}
+	return nil
+}
+func (m *mockService) RestoreTicket(id string) error {
+	if m.restoreFn != nil {
+		return m.restoreFn(id)
+	}
+	return nil
+}
 func (m *mockService) AddNote(id string, text string) error {
 	if m.noteFn != nil {
 		return m.noteFn(id, text)
@@ -727,6 +743,179 @@ func TestHandleMove_MissingStatus(t *testing.T) {
 
 	res := post(t, srv, "/api/tickets/t-001/move", `{}`)
 	assert.Equal(t, http.StatusBadRequest, res.statusCode)
+}
+
+// --- Archive: list, archive, restore ---
+
+func TestHandleArchiveEndpoints(t *testing.T) {
+	archivedAt := time.Date(2026, 8, 20, 9, 12, 0, 0, time.UTC)
+	cases := []struct {
+		name       string
+		method     string
+		path       string
+		body       string
+		svc        *mockService
+		wantStatus int
+		// wantBody are substrings the response must carry.
+		wantBody []string
+		// wantNote is the note the handler must have passed on, checked only
+		// for the archive route.
+		wantNote string
+	}{
+		{
+			name:   "the list carries the row fields",
+			method: http.MethodGet,
+			path:   "/api/tickets/archived",
+			svc: &mockService{archivedList: []ArchivedTicketInfo{{
+				ID: "t-001", Title: "Old work", Project: "web", Pipeline: "default",
+				Agent: "claude", Branch: "kontora/t-001", Status: "done",
+				WallSeconds: 900, ArchivedAt: &archivedAt, ArchivedBy: "sweep",
+			}}},
+			wantStatus: http.StatusOK,
+			wantBody: []string{
+				`"id":"t-001"`, `"title":"Old work"`, `"project":"web"`,
+				`"pipeline":"default"`, `"agent":"claude"`, `"branch":"kontora/t-001"`,
+				`"status":"done"`, `"wall_seconds":900`,
+				`"archived_at":"2026-08-20T09:12:00Z"`, `"archived_by":"sweep"`,
+			},
+		},
+		{
+			name:       "an empty archive answers an empty array",
+			method:     http.MethodGet,
+			path:       "/api/tickets/archived",
+			svc:        &mockService{},
+			wantStatus: http.StatusOK,
+			wantBody:   []string{`{"tickets":[]}`},
+		},
+		{
+			name:   "archiving a done ticket answers the updated ticket",
+			method: http.MethodPost,
+			path:   "/api/tickets/t-001/archive",
+			body:   `{"note":"superseded by t-244"}`,
+			svc: &mockService{tickets: []TicketInfo{{
+				ID: "t-001", Status: "archived", ArchivedFrom: "done",
+				ArchivedAt: &archivedAt, ArchivedBy: "web", ArchiveNote: "superseded by t-244",
+			}}},
+			wantStatus: http.StatusOK,
+			wantBody:   []string{`"archived_from":"done"`, `"archive_note":"superseded by t-244"`},
+			wantNote:   "superseded by t-244",
+		},
+		{
+			name:       "an empty body archives without a note",
+			method:     http.MethodPost,
+			path:       "/api/tickets/t-001/archive",
+			svc:        &mockService{tickets: []TicketInfo{{ID: "t-001", Status: "archived"}}},
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:       "archiving a ticket that is not closed is a conflict",
+			method:     http.MethodPost,
+			path:       "/api/tickets/t-001/archive",
+			body:       `{}`,
+			svc:        &mockService{archiveFn: func(string, string) error { return ErrInvalidState }},
+			wantStatus: http.StatusConflict,
+		},
+		{
+			name:       "a malformed archive body is rejected",
+			method:     http.MethodPost,
+			path:       "/api/tickets/t-001/archive",
+			body:       `{bad json}`,
+			svc:        &mockService{},
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "restoring answers the updated ticket",
+			method:     http.MethodPost,
+			path:       "/api/tickets/t-001/restore",
+			svc:        &mockService{tickets: []TicketInfo{{ID: "t-001", Status: "cancelled"}}},
+			wantStatus: http.StatusOK,
+			wantBody:   []string{`"status":"cancelled"`},
+		},
+		{
+			name:       "restoring a ticket that is not archived is a conflict",
+			method:     http.MethodPost,
+			path:       "/api/tickets/t-001/restore",
+			svc:        &mockService{restoreFn: func(string) error { return ErrInvalidState }},
+			wantStatus: http.StatusConflict,
+		},
+		{
+			name:       "restoring an unknown ticket is a 404",
+			method:     http.MethodPost,
+			path:       "/api/tickets/t-404/restore",
+			svc:        &mockService{restoreFn: func(string) error { return ErrTicketNotFound }},
+			wantStatus: http.StatusNotFound,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var gotNote string
+			if tc.svc.archiveFn == nil {
+				tc.svc.archiveFn = func(_, note string) error {
+					gotNote = note
+					return nil
+				}
+			}
+			srv := startHandlerTestServer(t, tc.svc)
+
+			var res httpResult
+			if tc.method == http.MethodGet {
+				res = get(t, srv, tc.path)
+			} else {
+				res = post(t, srv, tc.path, tc.body)
+			}
+			assert.Equal(t, tc.wantStatus, res.statusCode)
+			for _, want := range tc.wantBody {
+				assert.Contains(t, res.body, want)
+			}
+			if tc.wantNote != "" {
+				assert.Equal(t, tc.wantNote, gotNote)
+			}
+		})
+	}
+}
+
+// A chunked request declares no Content-Length, so an optional body cannot be
+// recognised by the length alone.
+func TestHandleArchive_ChunkedEmptyBody(t *testing.T) {
+	var gotNote string
+	svc := &mockService{
+		tickets:   []TicketInfo{{ID: "t-001", Status: "archived"}},
+		archiveFn: func(_, note string) error { gotNote = note; return nil },
+	}
+	srv := startHandlerTestServer(t, svc)
+
+	// The wrapper hides *strings.Reader from NewRequest, so it cannot size the
+	// body; TransferEncoding then pins the request to chunked. The handler sees
+	// ContentLength -1 with nothing to read, which a length check reads as a
+	// body that failed to parse.
+	req, err := http.NewRequest(http.MethodPost,
+		fmt.Sprintf("http://%s/api/tickets/t-001/archive", srv.Addr()),
+		struct{ io.Reader }{strings.NewReader("")})
+	require.NoError(t, err)
+	req.TransferEncoding = []string{"chunked"}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Empty(t, gotNote)
+}
+
+// A ticket whose id is literally "archived" is shadowed by the archive list
+// route, which is the documented cost of that path. Every other route still
+// reaches it.
+func TestHandleArchived_ShadowsATicketNamedArchived(t *testing.T) {
+	svc := &mockService{
+		tickets:      []TicketInfo{{ID: "archived", Status: "done"}},
+		archivedList: []ArchivedTicketInfo{},
+	}
+	srv := startHandlerTestServer(t, svc)
+
+	res := get(t, srv, "/api/tickets/archived")
+	assert.Equal(t, http.StatusOK, res.statusCode)
+	assert.Equal(t, `{"tickets":[]}`, strings.TrimSpace(res.body))
 }
 
 // --- POST /api/tickets (create) ---

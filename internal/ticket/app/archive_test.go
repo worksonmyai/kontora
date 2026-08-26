@@ -282,11 +282,18 @@ func TestArchive(t *testing.T) {
 				archived[id] = true
 			}
 			for _, f := range tc.tickets {
-				gotStatus := repo.tickets[f.id].Ticket.Status
+				got := repo.tickets[f.id].Ticket
 				if archived[f.id] && !tc.dryRun {
-					assert.Equal(t, ticket.StatusArchived, gotStatus, "%s should be archived", f.id)
+					assert.Equal(t, ticket.StatusArchived, got.Status, "%s should be archived", f.id)
+					// The sweep leaves the same stamp the API does, so a swept
+					// ticket and a hand-archived one restore identically.
+					assert.Equal(t, ticket.Status(f.status), got.ArchivedFrom, "%s archived_from", f.id)
+					assert.Equal(t, ArchivedBySweep, got.ArchivedBy, "%s archived_by", f.id)
+					require.NotNil(t, got.ArchivedAt, "%s archived_at", f.id)
+					assert.Equal(t, archiveNow, got.ArchivedAt.UTC())
 				} else {
-					assert.Equal(t, ticket.Status(f.status), gotStatus, "%s should keep its status", f.id)
+					assert.Equal(t, ticket.Status(f.status), got.Status, "%s should keep its status", f.id)
+					assert.Empty(t, got.ArchivedFrom, "%s must carry no archive stamp", f.id)
 				}
 			}
 
@@ -334,4 +341,143 @@ func TestArchive_PreservesBodyAndUnknownFields(t *testing.T) {
 	assert.Contains(t, rendered, "status: archived")
 	assert.Contains(t, rendered, "priority: high")
 	assert.Contains(t, rendered, "Body paragraph.")
+}
+
+func TestArchiveTicketAndRestoreTicket(t *testing.T) {
+	cases := []struct {
+		name string
+		// frontmatter is everything after "id:" in the ticket's frontmatter.
+		frontmatter string
+		restore     bool
+		note        string
+		// customStatuses configures cfg.Statuses, so archived_from can name a
+		// status the config either still knows or no longer does.
+		customStatuses []string
+		wantErr        bool
+		wantStatus     ticket.Status
+		wantFrom       ticket.Status
+		wantBy         string
+		wantNote       string
+	}{
+		{
+			name:        "a done ticket is archived with a note",
+			frontmatter: "status: done\n",
+			note:        "superseded by tst-244",
+			wantStatus:  ticket.StatusArchived,
+			wantFrom:    ticket.StatusDone,
+			wantBy:      ArchivedByWeb,
+			wantNote:    "superseded by tst-244",
+		},
+		{
+			name:        "a cancelled ticket is archived without a note",
+			frontmatter: "status: cancelled\n",
+			wantStatus:  ticket.StatusArchived,
+			wantFrom:    ticket.StatusCancelled,
+			wantBy:      ArchivedByWeb,
+		},
+		{
+			name:        "a legacy closed ticket is archived",
+			frontmatter: "status: closed\n",
+			wantStatus:  ticket.StatusArchived,
+			wantFrom:    ticket.StatusLegacyClosed,
+			wantBy:      ArchivedByWeb,
+		},
+		{
+			name:        "an in_progress ticket cannot be archived",
+			frontmatter: "status: in_progress\n",
+			wantErr:     true,
+			wantStatus:  ticket.StatusInProgress,
+		},
+		{
+			name:        "an already archived ticket cannot be archived again",
+			frontmatter: "status: archived\narchived_from: done\n",
+			wantErr:     true,
+			wantStatus:  ticket.StatusArchived,
+		},
+		{
+			name:        "restore returns the ticket to its recorded status",
+			frontmatter: "status: archived\narchived_from: cancelled\narchived_at: 2026-05-01T00:00:00Z\narchived_by: web\narchive_note: superseded\n",
+			restore:     true,
+			wantStatus:  ticket.StatusCancelled,
+		},
+		{
+			name:        "restore falls back to done when archived_from is missing",
+			frontmatter: "status: archived\n",
+			restore:     true,
+			wantStatus:  ticket.StatusDone,
+		},
+		{
+			name:           "restore keeps a configured custom status",
+			frontmatter:    "status: archived\narchived_from: qa\n",
+			restore:        true,
+			customStatuses: []string{"qa"},
+			wantStatus:     "qa",
+		},
+		{
+			name:        "restore falls back to done when archived_from is no longer a board status",
+			frontmatter: "status: archived\narchived_from: qa\n",
+			restore:     true,
+			wantStatus:  ticket.StatusDone,
+		},
+		{
+			name:        "restoring a ticket that is not archived is refused",
+			frontmatter: "status: done\n",
+			restore:     true,
+			wantErr:     true,
+			wantStatus:  ticket.StatusDone,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := newMemRepo()
+			repo.add("tst-001", "---\nid: tst-001\nkontora: true\n"+tc.frontmatter+"---\n# Title\n\nBody paragraph.\n")
+			rt := &spyRuntime{}
+			cfg := testCfg()
+			cfg.Statuses = tc.customStatuses
+			svc := New(Static(cfg), repo, rt)
+
+			var res Result
+			var err error
+			if tc.restore {
+				res, err = svc.RestoreTicket("tst-001")
+			} else {
+				res, err = svc.archiveTicket("tst-001", tc.note, ArchivedByWeb, archiveNow)
+			}
+
+			got := repo.tickets["tst-001"].Ticket
+			if tc.wantErr {
+				require.ErrorIs(t, err, ErrInvalidState)
+				assert.Equal(t, tc.wantStatus, got.Status, "the ticket file must be unchanged")
+				assert.Empty(t, rt.updated)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, string(tc.wantStatus), res.Status)
+			assert.Equal(t, tc.wantStatus, got.Status)
+			assert.Equal(t, []string{"tst-001"}, rt.updated)
+			assert.Equal(t, []string{"tst-001"}, rt.reconciled)
+
+			rendered, err := got.Marshal()
+			require.NoError(t, err)
+			assert.Contains(t, string(rendered), "Body paragraph.")
+
+			if tc.restore {
+				// The four fields are removed, not blanked: a leftover
+				// archived_from: "" would show up as an empty status chip.
+				for _, key := range []string{"archived_from:", "archived_at:", "archived_by:", "archive_note:"} {
+					assert.NotContains(t, string(rendered), key)
+				}
+				return
+			}
+			assert.Equal(t, tc.wantFrom, got.ArchivedFrom)
+			assert.Equal(t, tc.wantBy, got.ArchivedBy)
+			assert.Equal(t, tc.wantNote, got.ArchiveNote)
+			require.NotNil(t, got.ArchivedAt)
+			assert.Equal(t, archiveNow, got.ArchivedAt.UTC())
+			if tc.wantNote == "" {
+				assert.NotContains(t, string(rendered), "archive_note:")
+			}
+		})
+	}
 }

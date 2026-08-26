@@ -23,6 +23,7 @@ export function kontoraPalette() {
     _paletteNav: [
       { id: 'nav-board',    view: 'board',    label: 'Go to board',    glyph: '▤' },
       { id: 'nav-stats',    view: 'stats',    label: 'Stats',          glyph: '▦' },
+      { id: 'nav-archive',  view: 'archive',  label: 'Archive',        glyph: '▥' },
       { id: 'nav-new',      view: 'new',      label: 'New ticket',     glyph: '+' },
       { id: 'nav-settings', view: 'settings', label: 'Settings',       glyph: '⚙' },
       { id: 'nav-sidebar',  act: 'sidebar',   label: 'Toggle sidebar', glyph: '⌸' },

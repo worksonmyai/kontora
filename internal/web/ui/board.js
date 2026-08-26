@@ -232,7 +232,11 @@ export function kontoraBoard() {
         items += '<button type="button" class="card-menu-item w-full px-3 py-2 text-left text-[12px] font-mono text-tx-3 hover:bg-surface-850 hover:text-tx-2 transition-colors" data-act="'
           + esc(mv.endpoint) + '"' + (mv.status ? ' data-status="' + esc(mv.status) + '"' : '') + '>' + esc(mv.label) + '</button>';
       });
-      if (!moves.length) {
+      // Archive is not a move: SetStatus refuses archived, so it has its own
+      // verb and its own item rather than a row in validMoves.
+      if (ticket.status === 'done' || ticket.status === 'cancelled') {
+        items += '<button type="button" class="card-menu-item w-full px-3 py-2 text-left text-[12px] font-mono text-tx-3 hover:bg-surface-850 hover:text-tx-2 transition-colors" data-act="archive">Archive…</button>';
+      } else if (!moves.length) {
         items += '<span class="block px-3 py-2 text-[12px] font-mono text-surface-600">No actions available</span>';
       }
       return '<div class="card-menu absolute right-0 top-7 min-w-[10rem] overflow-hidden rounded-lg border border-surface-700/60 bg-surface-900/95 shadow-lg shadow-black/30 z-20" role="menu">' + items + '</div>';
@@ -387,6 +391,8 @@ export function kontoraBoard() {
           if (act === 'init') {
             var it = self.tickets.find(function (t) { return t.id === mid; });
             if (it) self.openInitModal(it);
+          } else if (act === 'archive') {
+            self.openArchivePrompt(mid);
           } else {
             var status = item.dataset.status;
             self.moveTicketVia(mid, act, status ? { status: status } : null);

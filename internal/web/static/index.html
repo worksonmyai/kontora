@@ -729,7 +729,7 @@
 </head>
 
 <body class="h-full bg-surface-950 text-tx font-sans overflow-hidden" x-data="kontora()" x-cloak
-      @keydown.escape.window="if (paletteOpen) palettePop(); else if (deleteModal) closeDeleteModal(); else if (initModal) closeInitModal(); else if (settingsGuard) settingsGuard = false; else if (currentView === 'new') closeCreateModal(); else if (detailMenuOpen) detailMenuOpen = false; else if (colMenuOpen) colMenuOpen = null; else if (sheet) closeSheet(); else if (assistantEscape()) {} else if (terminalRW && terminalWanted()) toggleTerminalRW(); else if (selectedTicket) closeDetail();"
+      @keydown.escape.window="if (paletteOpen) palettePop(); else if (deleteModal) closeDeleteModal(); else if (initModal) closeInitModal(); else if (settingsGuard) settingsGuard = false; else if (currentView === 'new') closeCreateModal(); else if (detailMenuOpen) detailMenuOpen = false; else if (colMenuOpen) colMenuOpen = null; else if (sheet) closeSheet(); else if (assistantEscape()) {} else if (archivePromptId) closeArchivePrompt(); else if (terminalRW && terminalWanted()) toggleTerminalRW(); else if (archiveDetailOpen()) archiveCloseDetail(); else if (selectedTicket) closeDetail();"
       @dragenter.prevent="if ($event.dataTransfer && $event.dataTransfer.types.includes('Files')) uploadDragging = true"
       @dragover.prevent>
 
@@ -1067,7 +1067,7 @@
     <!-- Board filter. Jumping somewhere is the command palette's job (⌘K); this
          input only narrows the board. A ticket page has nothing to filter, so
          the slot carries its breadcrumb instead. -->
-    <template x-if="!selectedTicket">
+    <template x-if="!boardDetailOpen()">
     <div class="flex-1 min-w-[120px] max-w-[300px] relative">
       <div class="relative flex items-center">
         <svg class="absolute left-2.5 w-3.5 h-3.5 text-surface-600 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -1090,7 +1090,7 @@
     </div>
     </template>
 
-    <template x-if="selectedTicket">
+    <template x-if="boardDetailOpen()">
       <div class="flex items-center gap-3 min-w-0">
         <button type="button" @click="closeDetail()"
                 class="font-mono text-[12px] text-tx-3 hover:text-tx-2 transition-colors">board</button>
@@ -1143,7 +1143,7 @@
         <svg x-show="!lightTheme" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
         <svg x-show="lightTheme" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
       </button>
-      <template x-if="!selectedTicket">
+      <template x-if="!boardDetailOpen()">
         <div class="flex items-center gap-2">
           <button @click="gotoView('new')"
                   class="text-[13px] font-sans font-semibold h-[31px] px-[14px] rounded-[7px] bg-accent text-accent-fg hover:bg-accent-bright transition-colors flex items-center gap-1.5">
@@ -1160,7 +1160,7 @@
 
       <!-- Ticket actions. Same bar as the board's, because a ticket page fills
            the same frame and has no second header of its own. -->
-      <template x-if="selectedTicket">
+      <template x-if="boardDetailOpen()">
         <div class="flex items-center gap-2">
           <template x-if="selectedTicket?.status === 'in_progress'">
             <button @click="action('pause')" :disabled="!!actionLoading"
@@ -1227,6 +1227,12 @@
             </button>
             <div x-show="detailMenuOpen" x-cloak x-transition.origin.top.right @click.stop
                  class="absolute right-0 top-9 min-w-[186px] overflow-hidden rounded-[9px] border border-surface-700 bg-surface-900 shadow-[0_12px_30px_-10px_rgba(0,0,0,.7)] z-40" role="menu">
+              <button x-show="['done', 'cancelled'].includes(selectedTicket?.status)"
+                      @click="detailMenuOpen = false; openArchivePrompt(selectedTicket?.id)"
+                      class="w-full px-3 py-2 text-left font-mono text-[12px] text-tx-3 hover:bg-surface-850 hover:text-tx-2 transition-colors flex items-center gap-[7px]">
+                <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><rect x="1.5" y="2.5" width="11" height="3" rx=".8"/><path d="M2.5 5.5v5.2c0 .5.4.8.8.8h7.4c.4 0 .8-.3.8-.8V5.5"/><path d="M5.6 8h2.8"/></svg>
+                archive…
+              </button>
               <button @click="detailMenuOpen = false; openDeleteModal()"
                       class="w-full px-3 py-2 text-left font-mono text-[12px] text-err hover:bg-err/10 transition-colors flex items-center gap-[7px]">
                 <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>
@@ -1271,6 +1277,13 @@
           <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.1" class="opacity-85"><path d="M2 11.5V8M5.3 11.5V4.5M8.7 11.5V6.5M12 11.5V2.5" stroke-linecap="round"/></svg>
           <span>Stats</span>
         </button>
+        <button @click="gotoView('archive')"
+                class="flex items-center gap-2.5 h-7 px-2.5 rounded text-[13px] transition-colors"
+                :class="currentView === 'archive' ? 'bg-surface-850 text-tx' : 'text-tx-3 hover:bg-surface-900 hover:text-tx-2'">
+          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" stroke-linejoin="round" class="opacity-90"><rect x="1.5" y="2.5" width="11" height="3" rx=".8"/><path d="M2.5 5.5v5.2c0 .5.4.8.8.8h7.4c.4 0 .8-.3.8-.8V5.5"/><path d="M5.6 8h2.8"/></svg>
+          <span>Archive</span>
+          <span class="ml-auto font-mono num text-[10px] text-surface-600" x-show="archiveRows.length" x-text="archiveRows.length"></span>
+        </button>
         <button @click="gotoView('new')"
                 class="flex items-center gap-2.5 h-7 px-2.5 rounded text-[13px] transition-colors"
                 :class="currentView === 'new' ? 'bg-surface-850 text-tx' : 'text-tx-3 hover:bg-surface-900 hover:text-tx-2'">
@@ -1295,15 +1308,17 @@
         <div class="font-mono text-[10px] font-semibold text-surface-600 uppercase tracking-widest px-2 pb-1.5">projects</div>
         <div class="flex flex-col">
           <template x-for="p in (configCache?.projects || [])" :key="p.name">
-            <button @click="toggleFilterToken('project', p.name)"
+            <button @click="currentView === 'archive' ? archiveToggleFacet('project', p.name) : toggleFilterToken('project', p.name)"
                     class="flex items-center gap-2 h-6 px-2 w-full text-left text-[11px] rounded min-w-0 transition-colors"
-                    :class="filterTokenActive('project', p.name) ? 'bg-surface-850 text-tx' : 'text-tx-2 hover:bg-surface-900'"
-                    :aria-pressed="filterTokenActive('project', p.name)"
+                    :class="(currentView === 'archive' ? archiveFacetActive('project', p.name) : filterTokenActive('project', p.name)) ? 'bg-surface-850 text-tx' : 'text-tx-2 hover:bg-surface-900'"
+                    :aria-pressed="currentView === 'archive' ? archiveFacetActive('project', p.name) : filterTokenActive('project', p.name)"
                     :title="p.name">
               <span class="w-[5px] h-[5px] rounded-full shrink-0"
                     :data-pipe-color="pipelineColorByName(p.pipeline || pathBasename(p.path))"
                     style="background: hsl(var(--pipe-h, 240 10% 55%))"></span>
               <span class="font-mono truncate flex-1" x-text="p.name"></span>
+              <span x-show="currentView === 'archive'" class="font-mono num text-[10px] text-surface-600 shrink-0"
+                    x-text="archiveFacetCount('project', p.name)"></span>
             </button>
           </template>
         </div>
@@ -1314,15 +1329,16 @@
         <div class="font-mono text-[10px] font-semibold text-surface-600 uppercase tracking-widest px-2 pb-1.5">agents</div>
         <div class="flex flex-col">
           <template x-for="a in (configCache?.agents || [])" :key="a">
-            <button @click="toggleFilterToken('agent', a)"
+            <button @click="currentView === 'archive' ? archiveToggleFacet('agent', a) : toggleFilterToken('agent', a)"
                     class="flex items-center gap-2 h-6 px-2 w-full text-left text-[11px] rounded min-w-0 transition-colors"
-                    :class="filterTokenActive('agent', a) ? 'bg-surface-850 text-tx' : 'text-tx-2 hover:bg-surface-900'"
-                    :aria-pressed="filterTokenActive('agent', a)"
+                    :class="(currentView === 'archive' ? archiveFacetActive('agent', a) : filterTokenActive('agent', a)) ? 'bg-surface-850 text-tx' : 'text-tx-2 hover:bg-surface-900'"
+                    :aria-pressed="currentView === 'archive' ? archiveFacetActive('agent', a) : filterTokenActive('agent', a)"
                     :title="a">
               <span class="w-[5px] h-[5px] rounded-full shrink-0"
                     :style="agentRunningCount(a) > 0 ? 'background: hsl(var(--st-progress)); box-shadow: 0 0 0 2px hsl(var(--st-progress) / 0.2)' : 'background: rgba(var(--surface-600), 1)'"></span>
               <span class="font-mono truncate flex-1" x-text="a"></span>
-              <span class="font-mono num text-[10px] text-surface-600 shrink-0" x-text="agentRunningCount(a)"></span>
+              <span class="font-mono num text-[10px] text-surface-600 shrink-0"
+                    x-text="currentView === 'archive' ? archiveFacetCount('agent', a) : agentRunningCount(a)"></span>
             </button>
           </template>
         </div>
@@ -1345,6 +1361,7 @@
       <div class="p-2.5 border-t border-surface-700/30 font-mono text-[10px] text-tx-4 leading-relaxed">
         <div class="px-2">daemon · <span x-text="window.location.host"></span></div>
         <div class="px-2">go 1.26 · single-instance</div>
+        <div class="px-2">retention · keep forever</div>
       </div>
     </aside>
 
@@ -2858,6 +2875,374 @@
           </div>
         </div>
 
+      </div>
+    </div>
+
+    <!-- Archive: the archived tickets, with the read-only ticket page stacked
+         over the list the way the board stacks its own detail. -->
+    <div x-show="!loading && currentView === 'archive'" x-cloak
+         class="relative flex flex-col flex-1 min-w-0 min-h-0 bg-surface-frame">
+
+      <!-- Toolbar -->
+      <div :inert="archiveDetailOpen()" class="shrink-0 flex flex-col gap-[9px] px-4 pt-3 pb-2.5 border-b border-surface-700/[.55]">
+        <div class="flex items-center gap-2.5 h-[30px]">
+          <span class="stats-title text-[11px]">archive</span>
+          <span class="w-px h-4 bg-surface-700"></span>
+          <div class="relative flex items-center flex-1 max-w-[430px] min-w-[180px]">
+            <svg class="absolute left-2.5 w-3.5 h-3.5 text-surface-600 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+            </svg>
+            <input type="text" x-model="archiveQuery" aria-label="Filter archive"
+                   @keydown.escape.stop="archiveQuery ? archiveQuery = '' : $el.blur()"
+                   placeholder="Filter archive, or project:web agent:codex"
+                   class="w-full h-[30px] pl-8 pr-[62px] text-[12px] font-mono rounded-[7px] bg-surface-900 border border-edge-input text-tx placeholder-surface-600 focus:outline-none focus:border-accent transition-colors"
+                   title="Filter by id, title, branch, project or agent. project:, agent:, pipeline:, status: and branch: narrow to one field.">
+            <span x-show="archiveQuery" class="absolute right-2 font-mono text-[10px] text-tx-faint pointer-events-none">esc</span>
+            <!-- ⌘K opens the command palette everywhere in this app, so the
+                 slot carries the palette button rather than a hint that would
+                 promise to focus this box. -->
+            <button x-show="!archiveQuery" @click="openPalette()"
+                    aria-label="Open command palette" title="Command palette"
+                    class="absolute right-1.5 h-[19px] px-[5px] flex items-center border border-edge-input rounded bg-surface-800 text-tx-faint font-mono text-[10px] hover:text-accent hover:border-accent/[.38] focus-visible:text-accent transition-colors"
+                    x-text="isMac ? '⌘K' : 'Ctrl K'"></button>
+          </div>
+          <template x-for="tok in archiveView().tokens" :key="tok.term">
+            <button type="button" @click="archiveRemoveToken(tok.term)"
+                    class="shrink-0 h-6 px-2 flex items-center gap-1.5 rounded-[6px] bg-accent/[.14] border border-accent/[.34] font-mono text-[11px] text-accent-bright hover:bg-accent/[.22] transition-colors">
+              <span x-text="tok.key + ':' + (tok.exact ? '=' : '') + tok.value"></span>
+              <span aria-hidden="true">✕</span>
+            </button>
+          </template>
+          <div class="flex-1"></div>
+          <span class="font-mono text-[11px] text-err shrink-0" x-show="archiveError" x-text="archiveError"></span>
+          <span class="font-mono text-[11px] text-tx-4 shrink-0"
+                x-text="archiveLoading ? 'loading…' : archiveCountLine()"></span>
+        </div>
+
+        <!-- Filter pills. Same shape as the Stats bar: a label with a
+             transparent native select covering it. -->
+        <div class="flex items-center gap-2 flex-wrap">
+          <template x-for="f in ['status', 'project', 'pipeline', 'agent']" :key="f">
+            <label class="relative flex items-center gap-[7px] h-7 px-2.5 rounded-[7px] border text-[12px] transition-colors"
+                   :class="archiveFilterValue(f) === 'all' ? 'bg-surface-900 border-edge-card text-tx-2' : 'bg-accent/[.12] border-accent/[.38] text-accent-bright'">
+              <span class="font-mono text-[10px] uppercase tracking-[.1em] text-tx-4" x-text="f"></span>
+              <span x-text="archiveFilterValue(f) === 'all' ? 'Any' : archiveFilterValue(f)"></span>
+              <svg xmlns="http://www.w3.org/2000/svg" width="9" height="9" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6" class="text-tx-4"><path d="M3 4.5 6 8l3-3.5"/></svg>
+              <select class="absolute inset-0 w-full h-full opacity-0 cursor-pointer" :aria-label="'Filter by ' + f"
+                      @change="archiveSetFilter(f, $event.target.value)">
+                <template x-for="o in archiveOptions(f)" :key="o">
+                  <option :value="o" :selected="o === archiveFilterValue(f)" x-text="o === 'all' ? 'Any' : o"></option>
+                </template>
+              </select>
+            </label>
+          </template>
+          <label class="relative flex items-center gap-[7px] h-7 px-2.5 rounded-[7px] border text-[12px] transition-colors"
+                 :class="archiveRange === 'all' ? 'bg-surface-900 border-edge-card text-tx-2' : 'bg-accent/[.12] border-accent/[.38] text-accent-bright'">
+            <span class="font-mono text-[10px] uppercase tracking-[.1em] text-tx-4">archived</span>
+            <span x-text="archiveRangeLabel(archiveRange)"></span>
+            <svg xmlns="http://www.w3.org/2000/svg" width="9" height="9" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6" class="text-tx-4"><path d="M3 4.5 6 8l3-3.5"/></svg>
+            <select class="absolute inset-0 w-full h-full opacity-0 cursor-pointer" aria-label="Filter by archive date"
+                    @change="archiveRange = $event.target.value">
+              <template x-for="r in archiveRanges" :key="r">
+                <option :value="r" :selected="r === archiveRange" x-text="archiveRangeLabel(r)"></option>
+              </template>
+            </select>
+          </label>
+          <button type="button" @click="archiveToggleSortDir()"
+                  class="flex items-center gap-[7px] h-7 px-2.5 rounded-[7px] bg-surface-900 border border-edge-card text-[12px] text-tx-2 hover:border-edge-hover transition-colors">
+            <span class="font-mono text-[10px] uppercase tracking-[.1em] text-tx-4">order</span>
+            <span x-text="archiveSortKey + ' ' + (archiveSortDir === 'asc' ? '↑' : '↓')"></span>
+          </button>
+          <button type="button" x-show="archiveFiltersActive()" @click="archiveClearFilters()"
+                  class="font-mono text-[11px] text-tx-4 hover:text-err transition-colors">clear all</button>
+        </div>
+      </div>
+
+      <!-- Header strip and rows share one horizontal scroller, so the columns
+           stay aligned when the pane is narrower than the table. -->
+      <div :inert="archiveDetailOpen()" class="flex-1 min-h-0 overflow-auto">
+        <div class="min-w-[1120px]">
+          <div class="sticky top-0 z-10 flex items-center h-7 px-4 bg-surface-frame border-b border-surface-700/60 font-mono text-[10px] font-bold uppercase tracking-[.1em] text-tx-4">
+            <button type="button" @click="archiveSort('id')" class="w-24 shrink-0 text-left hover:text-tx-3 transition-colors">
+              id<span class="text-accent ml-1" x-text="archiveSortMark('id')"></span></button>
+            <button type="button" @click="archiveSort('title')" class="flex-1 min-w-[220px] text-left hover:text-tx-3 transition-colors">
+              title<span class="text-accent ml-1" x-text="archiveSortMark('title')"></span></button>
+            <button type="button" @click="archiveSort('project')" class="w-24 shrink-0 text-left hover:text-tx-3 transition-colors">
+              project<span class="text-accent ml-1" x-text="archiveSortMark('project')"></span></button>
+            <span class="w-[88px] shrink-0">pipeline</span>
+            <button type="button" @click="archiveSort('status')" class="w-[104px] shrink-0 text-left hover:text-tx-3 transition-colors">
+              status<span class="text-accent ml-1" x-text="archiveSortMark('status')"></span></button>
+            <span class="w-[78px] shrink-0">agent</span>
+            <span class="w-[154px] shrink-0">branch</span>
+            <button type="button" @click="archiveSort('wall')" class="w-16 shrink-0 text-right hover:text-tx-3 transition-colors">
+              wall<span class="text-accent ml-1" x-text="archiveSortMark('wall')"></span></button>
+            <button type="button" @click="archiveSort('archived')" class="w-24 shrink-0 text-right hover:text-tx-3 transition-colors">
+              archived<span class="text-accent ml-1" x-text="archiveSortMark('archived')"></span></button>
+            <span class="w-[84px] shrink-0 text-right">actions</span>
+          </div>
+
+          <template x-for="row in archiveView().rows" :key="row.id">
+            <div @click="archiveOpenRow(row)"
+                 class="flex items-center h-8 px-4 border-b border-surface-700/[.32] cursor-pointer transition-colors"
+                 :class="selectedTicket && selectedTicket.id === row.id ? 'bg-surface-850 shadow-[inset_2px_0_0_rgba(var(--accent),1)]' : 'hover:bg-surface-900'">
+              <span class="w-24 shrink-0 font-mono text-[11.5px] text-tx-3 truncate pr-2" x-text="row.id"></span>
+              <span class="flex-1 min-w-[220px] text-[12.5px] text-tx truncate pr-3" :title="row.title" x-text="row.title"></span>
+              <span class="w-24 shrink-0 font-mono text-[11px] text-tx-3 truncate pr-2" x-text="row.project"></span>
+              <span class="w-[88px] shrink-0 flex items-center gap-1.5 pr-2 min-w-0">
+                <span class="w-[5px] h-[5px] rounded-full shrink-0" x-show="row.pipeline"
+                      :data-pipe-color="pipelineColorByName(row.pipeline)"
+                      style="background: hsl(var(--pipe-h, 240 10% 55%))"></span>
+                <span class="font-mono text-[11px] text-tx-4 truncate" x-text="row.pipeline"></span>
+              </span>
+              <span class="w-[104px] shrink-0 pr-2">
+                <span class="status-chip status-chip-sm" :data-status="archiveRowStatus(row)" x-text="archiveRowStatus(row)"></span>
+              </span>
+              <span class="w-[78px] shrink-0 font-mono text-[11px] text-tx-3 truncate pr-2" x-text="row.agent"></span>
+              <span class="w-[154px] shrink-0 font-mono text-[11px] text-tx-4 truncate pr-2" :title="row.branch" x-text="row.branch"></span>
+              <span class="w-16 shrink-0 font-mono num text-[11px] text-tx-3 text-right" x-text="archiveWall(row)"></span>
+              <span class="w-24 shrink-0 font-mono text-[11px] text-tx-3 text-right" :title="row.archived_at" x-text="archiveWhen(row)"></span>
+              <span class="w-[84px] shrink-0 flex items-center justify-end gap-1">
+                <button type="button" @click.stop="archiveRestore(row.id)" aria-label="Restore to the board" title="restore"
+                        class="w-6 h-6 rounded-[5px] flex items-center justify-center text-tx-4 hover:text-st-done hover:bg-st-done/[.12] transition-colors">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/></svg>
+                </button>
+                <button type="button" @click.stop="archiveCopyRow(row)" aria-label="Copy id and branch" title="copy id · branch"
+                        class="w-6 h-6 rounded-[5px] flex items-center justify-center text-tx-4 hover:text-accent-bright hover:bg-accent/[.12] transition-colors">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>
+                </button>
+                <button type="button" @click.stop="archiveOpenRow(row)" aria-label="Open the ticket" title="open"
+                        class="w-6 h-6 rounded-[5px] flex items-center justify-center text-tx-4 hover:text-tx hover:bg-surface-850 transition-colors">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>
+                </button>
+              </span>
+            </div>
+          </template>
+
+          <div x-show="!archiveLoading && archiveView().shown === 0" class="flex items-start justify-center p-6">
+            <div class="w-full max-w-[420px] rounded-xl border border-edge-card bg-surface-900 p-6 flex flex-col gap-3">
+              <h2 class="m-0 text-[15px] font-semibold text-tx-hi"
+                  x-text="archiveRows.length ? 'Nothing archived matches' : 'Nothing is archived'"></h2>
+              <p class="m-0 text-[12.5px] leading-[1.6] text-tx-3">The archive holds the tickets someone archived on purpose, plus whatever <span class="font-mono">kontora archive</span> swept. Restoring one returns it to the column it left.</p>
+              <div>
+                <button type="button" x-show="archiveFiltersActive()" @click="archiveClearFilters()"
+                        class="font-mono text-[11.5px] h-[30px] px-2.5 rounded-[7px] bg-surface-850 border border-edge-input text-tx-2 hover:border-edge-hover transition-colors">reset filters</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Read-only ticket page. New markup, but it drives selectedTicket, so
+           stageRibbon(), churn(), ticketWall() and tapeTokens() all read the
+           ticket the board's own page would have handed them. -->
+      <div x-show="archiveDetailOpen()" x-cloak class="absolute inset-0 z-30 flex flex-col bg-surface-frame">
+
+        <!-- Header -->
+        <div class="shrink-0 flex items-center gap-[11px] px-5 py-[11px] border-b border-surface-700/70 overflow-x-auto">
+          <button type="button" @click="archiveCloseDetail()"
+                  class="shrink-0 whitespace-nowrap font-mono text-[12px] text-tx-3 hover:text-tx-2 transition-colors">archive</button>
+          <span class="shrink-0 text-edge-faint">/</span>
+          <span class="shrink-0 whitespace-nowrap font-mono text-[12px] text-tx-2" x-text="selectedTicket?.id"></span>
+          <span class="status-chip shrink-0" :data-status="archiveDetailStatus()"
+                x-text="archiveDetailStatus()"></span>
+          <span class="shrink-0 whitespace-nowrap h-[21px] px-2.5 inline-flex items-center rounded-full border border-surface-700 font-mono text-[10.5px] text-tx-faint"
+                x-text="archiveStamp()"></span>
+          <div class="flex-1"></div>
+          <button type="button" @click="archiveRestore(selectedTicket.id)"
+                  class="shrink-0 whitespace-nowrap h-7 px-2.5 rounded-[7px] bg-st-done/[.16] border border-st-done/[.42] text-st-done font-mono text-[11.5px] font-bold hover:bg-st-done/[.26] transition-colors">restore to board</button>
+          <button type="button" @click="copyTicketId(selectedTicket?.id)"
+                  class="shrink-0 whitespace-nowrap h-7 px-2.5 rounded-[7px] bg-surface-900 border border-edge-input text-tx-2 font-mono text-[11.5px] hover:border-edge-hover transition-colors"
+                  x-text="copiedId ? '✓ copied' : 'copy id'"></button>
+          <button type="button" x-show="selectedTicket?.branch" @click="copyBranch(selectedTicket?.branch)"
+                  class="shrink-0 whitespace-nowrap h-7 px-2.5 rounded-[7px] bg-surface-900 border border-edge-input text-tx-2 font-mono text-[11.5px] hover:border-edge-hover transition-colors"
+                  x-text="copiedBranch === selectedTicket?.branch ? '✓ copied' : 'copy branch'"></button>
+          <button type="button" @click="archiveCloseDetail()" aria-label="Close"
+                  class="shrink-0 w-7 h-7 rounded-[7px] bg-surface-900 border border-edge-input text-tx-3 hover:text-tx-2 hover:border-edge-hover transition-colors flex items-center justify-center">
+            <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 18 18 6M6 6l12 12"/></svg>
+          </button>
+        </div>
+
+        <!-- Title, stage ribbon and meters -->
+        <div class="shrink-0 px-5 pt-3.5 pb-[13px] flex items-end gap-5">
+          <div class="flex-1 min-w-0 flex flex-col gap-2.5">
+            <h2 class="m-0 text-[16px] font-semibold leading-[1.4] text-tx-hi [text-wrap:pretty]" x-text="selectedTicket?.title"></h2>
+            <div class="flex gap-[9px] items-stretch min-w-0" x-show="stageRibbon().length">
+              <template x-for="seg in stageRibbon()" :key="seg.name">
+                <div class="flex-1 min-w-0 flex flex-col gap-[7px]" :class="seg.state === 'done' ? '' : 'opacity-50'">
+                  <div class="flex items-baseline gap-1.5 min-w-0">
+                    <span class="font-mono text-[11.5px] text-tx-2 truncate"><span x-show="seg.state === 'done'" aria-hidden="true">✓ </span><span x-text="seg.name"></span></span>
+                    <span class="font-mono text-[10.5px] text-surface-600 truncate" x-text="seg.meta"></span>
+                  </div>
+                  <div class="h-[5px] rounded-[3px]" :class="seg.state === 'done' ? 'bg-st-done/50' : 'bg-surface-700'"></div>
+                </div>
+              </template>
+            </div>
+          </div>
+          <div class="shrink-0 flex items-end gap-[18px] pl-5 border-l border-surface-700/70" x-show="archiveMeters().length">
+            <template x-for="m in archiveMeters()" :key="m.k">
+              <div class="flex flex-col gap-[3px]">
+                <span class="font-mono text-[10px] uppercase tracking-[.12em] text-tx-faint" x-text="m.k"></span>
+                <span class="font-mono text-[14px] text-tx-hi num" x-text="m.v"></span>
+              </div>
+            </template>
+          </div>
+        </div>
+
+        <div class="flex-1 min-h-0 flex flex-col">
+          <!-- Tab bar. The rail cell closes the row so the rule crosses the
+               rail exactly as it does on the board. -->
+          <div class="shrink-0 flex items-stretch border-b border-surface-700/70">
+            <div class="flex-1 min-w-0 px-5 pt-[11px] flex items-center gap-5">
+              <button type="button" @click="archiveTab = 'ticket'"
+                      class="font-mono text-[12px] pb-[9px] border-b-2 transition-colors"
+                      :class="archiveTab === 'ticket' ? 'text-tx-hi font-bold border-accent' : 'text-surface-600 border-transparent hover:text-tx-3'">ticket</button>
+              <button type="button" @click="archiveTab = 'activity'"
+                      class="font-mono text-[12px] pb-[9px] border-b-2 transition-colors"
+                      :class="archiveTab === 'activity' ? 'text-tx-hi font-bold border-accent' : 'text-surface-600 border-transparent hover:text-tx-3'">activity</button>
+              <div class="flex-1"></div>
+              <span class="pb-[9px] font-mono text-[10px] uppercase tracking-[.1em] text-tx-faint">read-only · restore to edit</span>
+            </div>
+            <div class="w-[308px] shrink-0 border-l border-surface-700/50"></div>
+          </div>
+
+          <div class="flex-1 min-h-0 flex">
+            <!-- Content column -->
+            <div class="flex-1 min-w-0 overflow-y-auto px-5 pt-4 pb-7">
+              <div x-show="archiveTab === 'ticket'" class="max-w-[760px] flex flex-col gap-[11px]">
+                <span class="font-mono text-[10.5px] text-tx-4" x-text="selectedTicket?.id ? selectedTicket.id + '.md' : ''"></span>
+                <div x-show="archiveDetailLoading" class="font-mono text-[11.5px] text-surface-600">loading…</div>
+                <div class="ticket-prose ticket-read" x-effect="setProse($el, selectedTicket?.body || '')"></div>
+              </div>
+
+              <div x-show="archiveTab === 'activity'" class="flex flex-col gap-2.5">
+                <div class="flex items-center gap-2.5">
+                  <span class="side-label">activity</span>
+                  <span class="font-mono text-[11px] text-tx-3" x-text="activityStage"></span>
+                  <span class="h-[21px] px-2.5 inline-flex items-center rounded-full border border-surface-700 font-mono text-[10.5px] text-tx-faint">archived tail</span>
+                </div>
+                <div x-show="activityLoading" class="font-mono text-[11.5px] text-surface-600">loading…</div>
+                <div x-show="activityError" class="font-mono text-[11.5px] text-err" x-text="activityError"></div>
+                <template x-if="activity && activity.content">
+                  <pre class="m-0 px-[18px] py-3.5 rounded-[10px] bg-surface-deep border border-surface-700 font-mono text-[11.5px] leading-[1.7] text-tx-log whitespace-pre-wrap break-words overflow-x-auto"
+                       x-html="renderLogHTML(activity.content)"></pre>
+                </template>
+                <span x-show="!activityLoading && !activityError && !(activity && activity.content)"
+                      class="font-mono text-[11.5px] text-surface-600">No log was retained for this ticket's last run.</span>
+              </div>
+            </div>
+
+            <!-- Rail -->
+            <div class="w-[308px] shrink-0 border-l border-surface-700/50 overflow-y-auto p-4 pb-[22px] flex flex-col gap-4">
+              <!-- Churn -->
+              <div class="flex flex-col gap-[9px]">
+                <div class="flex items-baseline gap-2">
+                  <span class="side-label">churn</span>
+                  <div class="flex-1"></div>
+                  <span class="font-mono text-[10.5px] text-surface-600" x-show="ticketChanges?.base" x-text="'vs ' + ticketChanges?.base"></span>
+                </div>
+                <template x-if="churn().count > 0">
+                  <div class="flex flex-col gap-[9px]">
+                    <div class="flex items-baseline gap-2.5">
+                      <span class="font-mono text-[19px] text-tx-hi num" x-text="churn().count"></span>
+                      <span class="font-mono text-[11px] text-surface-600">files</span>
+                      <span class="font-mono text-[13px] text-ok num" x-text="'+' + churn().added"></span>
+                      <span class="font-mono text-[13px] text-err num" x-text="'−' + churn().deleted"></span>
+                    </div>
+                    <div class="h-[6px] rounded-[3px] overflow-hidden flex gap-px bg-surface-700">
+                      <span class="bg-ok/85" :style="'width:' + churn().addedPct + '%'"></span>
+                      <span class="bg-err/60" :style="'width:' + (100 - churn().addedPct) + '%'"></span>
+                    </div>
+                    <div class="flex flex-col gap-1">
+                      <template x-for="f in churn().top" :key="f.path">
+                        <div class="flex items-center gap-2 font-mono text-[11px]">
+                          <span class="flex-1 min-w-0 text-tx-3 truncate text-left [direction:rtl]" :title="f.path" x-text="f.path"></span>
+                          <span class="shrink-0 w-8 text-right text-ok num" x-text="f.added"></span>
+                          <span class="shrink-0 w-7 text-right text-err num" x-text="f.deleted"></span>
+                        </div>
+                      </template>
+                    </div>
+                  </div>
+                </template>
+                <span x-show="churn().count === 0" class="font-mono text-[11px] leading-[1.6] text-surface-600" x-text="archiveChurnEmptyText()"></span>
+              </div>
+
+              <template x-if="selectedTicket?.history?.length > 0">
+                <div class="flex flex-col gap-[9px]">
+                  <div class="h-px bg-surface-700"></div>
+                  <span class="side-label">history</span>
+                  <div class="flex flex-col gap-[7px] font-mono text-[10.5px]">
+                    <template x-for="(h, hi) in selectedTicket.history" :key="hi">
+                      <div class="flex items-center gap-2 min-w-0">
+                        <span :class="h.exit_code === 0 ? 'text-ok' : 'text-st-cancel'" x-text="h.exit_code === 0 ? '✓' : '✕'"></span>
+                        <span class="text-tx-3 truncate" x-text="historyLabel(h)"></span>
+                        <span class="flex-1"></span>
+                        <span class="text-surface-600 shrink-0"
+                              x-text="'exit ' + h.exit_code + (formatElapsed(h.started_at, h.completed_at) ? ' · ' + formatElapsed(h.started_at, h.completed_at) : '')"></span>
+                      </div>
+                    </template>
+                  </div>
+                </div>
+              </template>
+
+              <div class="flex flex-col gap-[9px]">
+                <div class="h-px bg-surface-700"></div>
+                <span class="side-label">details</span>
+                <div class="grid grid-cols-[62px_1fr] gap-x-[10px] gap-y-[6px] font-mono text-[11px] items-start">
+                  <span class="text-surface-600">id</span>
+                  <span class="text-tx-2 break-all" x-text="selectedTicket?.id"></span>
+                  <span class="text-surface-600">project</span>
+                  <span class="text-tx-2 break-all" x-text="selectedTicket ? ticketProjectName(selectedTicket) : ''"></span>
+                  <span class="text-surface-600">pipeline</span>
+                  <span class="text-tx-2 break-all" x-text="selectedTicket?.pipeline || '—'"></span>
+                  <span class="text-surface-600">agent</span>
+                  <span class="text-tx-2 break-all" x-text="selectedTicket?.agent || '—'"></span>
+                  <span class="text-surface-600">branch</span>
+                  <span class="text-tx-2 break-all" x-text="selectedTicket?.branch || '—'"></span>
+                  <span class="text-surface-600">worktree</span>
+                  <span class="text-tx-2 break-all" x-text="selectedTicket?.path || '—'"></span>
+                  <span class="text-surface-600">wall</span>
+                  <span class="text-tx-2" x-text="ticketWall() || '—'"></span>
+                  <span class="text-surface-600">stages</span>
+                  <span class="text-tx-2" x-text="(selectedTicket?.stages || []).join(' → ') || '—'"></span>
+                  <span class="text-surface-600">archived</span>
+                  <span class="text-tx-2" x-text="[timeAgo(selectedTicket?.archived_at), selectedTicket?.archived_by].filter(Boolean).join(' · ') || '—'"></span>
+                </div>
+              </div>
+
+              <template x-if="selectedTicket?.archive_note">
+                <div class="flex flex-col gap-[9px]">
+                  <div class="h-px bg-surface-700"></div>
+                  <span class="side-label">archive note</span>
+                  <p class="m-0 border-l-2 border-surface-700 pl-[11px] text-[12px] leading-[1.6] text-tx-2" x-text="selectedTicket.archive_note"></p>
+                </div>
+              </template>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Archive note prompt, opened from a board card menu or the ticket page's
+         ⋯ menu. The note is optional. -->
+    <div x-show="archivePromptId" x-cloak
+         class="fixed inset-0 z-[80] flex items-center justify-center bg-black/50 p-6"
+         @click.self="closeArchivePrompt()">
+      <div class="w-full max-w-[440px] rounded-xl border border-edge-card bg-surface-900 p-5 flex flex-col gap-3.5 shadow-[0_10px_30px_-12px_rgba(0,0,0,.6)]">
+        <div class="flex flex-col gap-1.5">
+          <h2 class="m-0 text-[15px] font-semibold text-tx-hi">Archive <span class="font-mono" x-text="archivePromptId"></span></h2>
+          <p class="m-0 text-[12.5px] leading-[1.6] text-tx-3">The ticket leaves the board and its file stays on disk. Restore it from the Archive view at any time.</p>
+        </div>
+        <textarea x-model="archiveNoteDraft" rows="3" placeholder="Why (optional) — e.g. superseded by kon-244"
+                  @keydown.escape.stop="closeArchivePrompt()"
+                  class="w-full resize-y font-mono text-[12px] leading-[1.6] rounded-[7px] bg-surface-850 border border-edge-input text-tx placeholder-surface-600 px-2.5 py-2 focus:outline-none focus:border-accent transition-colors"></textarea>
+        <span class="font-mono text-[11px] text-err" x-show="archivePromptError" x-text="archivePromptError"></span>
+        <div class="flex items-center justify-end gap-2">
+          <button type="button" @click="closeArchivePrompt()"
+                  class="font-mono text-[11.5px] h-[30px] px-2.5 rounded-[7px] bg-surface-850 border border-edge-input text-tx-2 hover:border-edge-hover transition-colors">cancel</button>
+          <button type="button" @click="submitArchive()" :disabled="archiveSubmitting"
+                  class="font-mono text-[11.5px] font-bold h-[30px] px-3 rounded-[7px] bg-accent text-accent-fg hover:bg-accent-bright disabled:opacity-60 transition-colors"
+                  x-text="archiveSubmitting ? 'archiving…' : 'archive'"></button>
+        </div>
       </div>
     </div>
 

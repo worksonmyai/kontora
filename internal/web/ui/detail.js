@@ -325,6 +325,13 @@ export function kontoraDetail() {
       this.writeHash();
     },
 
+    // Whether the board's own ticket page is what is open. The Archive view
+    // drives the same selectedTicket state but brings its own header, so the
+    // app header's breadcrumb and action bar must not follow it there.
+    boardDetailOpen() {
+      return !!this.selectedTicket && this.currentView !== 'archive';
+    },
+
     // ---- hash routing ------------------------------------------------------
 
     // Parse a URL hash into {view, ticketId}. Anything unrecognised is the
@@ -342,12 +349,17 @@ export function kontoraDetail() {
       }
       if (h === '/new') return { view: 'new', ticketId: null };
       if (h === '/stats') return { view: 'stats', ticketId: null };
+      if (h === '/archive') return { view: 'archive', ticketId: null };
       if (h === '/settings') return { view: 'settings', ticketId: null };
       return { view: 'board', ticketId: null };
     },
 
     // Serialize the current view back to a hash. Inverse of parseHash.
     routeHash() {
+      // The archive's own overlay is not addressable: it opens a ticket the
+      // board list does not hold, so a reloaded #/t/<id> would find nothing and
+      // fall back to the board.
+      if (this.currentView === 'archive') return '#/archive';
       if (this.selectedTicket) return '#/t/' + encodeURIComponent(this.selectedTicket.id);
       if (this.currentView === 'new') return '#/new';
       if (this.currentView === 'stats') return '#/stats';

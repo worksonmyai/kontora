@@ -241,6 +241,8 @@ Marks every `done` or `cancelled` ticket whose file has not been modified for at
 | `--status STATUS` | Only archive one of `done`, `cancelled` or `closed`. |
 | `-y`, `--yes` | Skip the confirmation prompt. Required when stdin is not a terminal. |
 
+Each ticket the sweep archives records `archived_from` (the closed status it held), `archived_at`, and `archived_by: sweep`. The web UI writes the same three when a ticket is archived by hand, so a swept ticket restores from its Archive view the same way.
+
 ## Inspecting a run
 
 ### `kontora logs [--stage NAME] TICKET_ID`

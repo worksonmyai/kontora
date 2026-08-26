@@ -14,6 +14,9 @@ When the web server is enabled, the following endpoints are exposed:
 | `POST /api/tickets/{id}/skip` | Skip the current pipeline stage. |
 | `POST /api/tickets/{id}/set-stage` | Move ticket to a specific pipeline stage (`{"stage": "..."}` body). |
 | `POST /api/tickets/{id}/move` | Set ticket status (`{"status": "..."}` body). |
+| `GET /api/tickets/archived` | The archived tickets, one row per ticket, for the Archive view. |
+| `POST /api/tickets/{id}/archive` | Archive a closed ticket (optional `{"note": "..."}` body). |
+| `POST /api/tickets/{id}/restore` | Return an archived ticket to the status it was archived from. |
 | `GET /api/config` | Available pipelines, agents, and projects (JSON). Projects are sorted by name and carry `name`, `path`, `resolved_path` (`~` expanded), `pipeline`, and `agent`. |
 | `GET /api/tickets/{id}/logs` | Get agent logs for a ticket (optional `?stage=` query param). |
 | `POST /api/tickets/{id}/summary` | Set the ticket's `summary` field (`{"text": "..."}` body). |
@@ -95,6 +98,14 @@ Both ticket payloads carry `project`, the configured project whose path is the t
 The four relation endpoints take the same body, `{"related": [...]}`, and answer with the changed ticket. They return 400 for an empty list, an empty id, or more than one id on the two dependency verbs; 404 for an id no ticket answers; and 409 when the ticket is related to itself or when a dependency would close a cycle, with the cycle named in the error. A rejected call writes no file. Repeating a call that has nothing left to do returns 200 and writes nothing.
 
 A link is written to both tickets, one file at a time, because two markdown files cannot be written together. When the second write fails the error names both tickets and which one was already changed, and repeating the request repairs the missing side.
+
+## Archive
+
+`POST /api/tickets/{id}/archive` sets `status: archived` and writes four frontmatter fields: `archived_from`, the closed status the ticket held; `archived_at`; `archived_by`, which is `web` here and `sweep` for [`kontora archive`](cli.md); and `archive_note` when the body carried one. It answers 409 unless the ticket is `done`, `cancelled` or the legacy `closed`, and writes no file when it refuses. An archived ticket keeps its file, its branch and its logs, and leaves `GET /api/tickets` — `?all=true` still lists it, and `GET /api/tickets/{id}` still answers it, with the four fields on the payload.
+
+`POST /api/tickets/{id}/restore` writes `archived_from` back into `status` and removes all four fields. A ticket archived before those fields existed, or one whose `archived_from` names a status that is no longer a board column, restores to `done` rather than staying stranded in `archived`. It answers 409 for a ticket that is not archived.
+
+`GET /api/tickets/archived` answers `{"tickets": [...]}`. Each row carries `id`, `title`, `project`, `pipeline`, `agent`, `branch`, `path`, `archived_at`, `archived_by`, a `status` holding the ticket's `archived_from`, and `wall_seconds`: the interval from the first history entry's `started_at` to the last `completed_at`, so it spans every run rather than the newest one. A ticket with no `archived_at` reports its file mtime instead, which is the date the sweep's own cutoff uses. The path is more specific than `GET /api/tickets/{id}`, so a ticket whose id is literally `archived` is unreachable by that one path; every other route still reaches it.
 
 A ticket whose `branch` is empty carries `auto_branch` in `GET /api/tickets` and `GET /api/tickets/{id}`: the branch the daemon would assign at pickup, resolved for the path the ticket names and the current [branch naming](configuration.md#branch-naming) mode. It is a read-only projection, not a stored field, and it is absent once `branch` is set.
 

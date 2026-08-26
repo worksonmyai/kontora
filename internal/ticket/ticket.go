@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -167,6 +168,18 @@ type Ticket struct {
 	// into the status field.
 	AnnotationReturnStatus Status `yaml:"annotation_return_status"`
 
+	// ArchivedFrom is the closed status the ticket held before it was archived,
+	// and is what a restore writes back into status. It is a Status rather than
+	// a string for the same reason AnnotationReturnStatus is: it must not be
+	// swappable with free text on the way back into the status field. The other
+	// three record when the archive happened, who did it ("web", "sweep") and
+	// the optional reason. All four are absent from a ticket that is not
+	// archived, and a restore removes them again.
+	ArchivedFrom Status     `yaml:"archived_from,omitempty"`
+	ArchivedAt   *time.Time `yaml:"archived_at,omitempty"`
+	ArchivedBy   string     `yaml:"archived_by,omitempty"`
+	ArchiveNote  string     `yaml:"archive_note,omitempty"`
+
 	Body     string `yaml:"-"`
 	FilePath string `yaml:"-"`
 
@@ -279,23 +292,42 @@ func (t *Ticket) SetField(key string, value any) error {
 	return t.syncFromNode()
 }
 
-// syncFromNode re-decodes the typed fields from the raw node.
+// DeleteField removes a field from the raw YAML node and syncs typed fields.
+// Unlike SetField with a zero value, which leaves the key behind holding an
+// empty value, this leaves no trace of the field in the frontmatter. Removing
+// a key that is not there is not an error.
+func (t *Ticket) DeleteField(key string) error {
+	if t.rawNode == nil || t.rawNode.Kind != yaml.MappingNode {
+		return fmt.Errorf("raw node is not a mapping")
+	}
+	content := t.rawNode.Content
+	for i := 0; i < len(content)-1; i += 2 {
+		if content[i].Value == key {
+			t.rawNode.Content = slices.Delete(content, i, i+2)
+			return t.syncFromNode()
+		}
+	}
+	return nil
+}
+
+// syncFromNode re-decodes the typed fields from the raw node. It decodes into a
+// fresh Ticket rather than over this one, because Decode leaves a field alone
+// when its key is absent: decoding in place would keep the Go-side value of a
+// key DeleteField just removed. The non-YAML fields are carried across.
 func (t *Ticket) syncFromNode() error {
 	if t.rawNode == nil {
 		return nil
 	}
-	// Preserve non-YAML fields
-	body := t.Body
-	filePath := t.FilePath
-	rawNode := t.rawNode
-	rawBody := t.rawBody
-
-	err := t.rawNode.Decode(t)
-	t.Body = body
-	t.FilePath = filePath
-	t.rawNode = rawNode
-	t.rawBody = rawBody
-	return err
+	var decoded Ticket
+	if err := t.rawNode.Decode(&decoded); err != nil {
+		return err
+	}
+	decoded.Body = t.Body
+	decoded.FilePath = t.FilePath
+	decoded.rawNode = t.rawNode
+	decoded.rawBody = t.rawBody
+	*t = decoded
+	return nil
 }
 
 // SetBody replaces the ticket body content.

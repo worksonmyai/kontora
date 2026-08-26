@@ -332,3 +332,54 @@ func TestViewIsNotPagedWhenPiped(t *testing.T) {
 	require.NoError(t, err, bodyOut)
 	assert.Equal(t, body, bodyOut, "--body stays byte-stable with a pager set")
 }
+
+// The daemon runs unattended against whatever store it resolved, so it says
+// when that came from the environment rather than the config file it was given.
+func TestTicketsDirEnvNote(t *testing.T) {
+	scratch := t.TempDir()
+	fromFile := filepath.Join(scratch, "file")
+	fromEnv := filepath.Join(scratch, "env")
+
+	configPath := filepath.Join(scratch, "config.yaml")
+	require.NoError(t, os.WriteFile(configPath, []byte(
+		"tickets_dir: "+fromFile+"\n"+
+			"default_agent: claude\n"+
+			"agents:\n  claude:\n    binary: true\n"), 0o644))
+
+	cases := []struct {
+		name string
+		env  map[string]string
+		want string
+	}{
+		{name: "no variable set", want: ""},
+		{
+			name: "the variable names the directory the file already names",
+			env:  map[string]string{config.TicketsDirEnvVar: fromFile},
+			want: "",
+		},
+		{
+			name: "the variable moves the store",
+			env:  map[string]string{config.TicketsDirEnvVar: fromEnv},
+			want: config.TicketsDirEnvVar + " sets tickets_dir to " + fromEnv + "; " + configPath + " resolves to " + fromFile,
+		},
+		{
+			name: "the legacy variable is named as itself",
+			env:  map[string]string{config.LegacyTicketsDirEnvVar: fromEnv},
+			want: config.LegacyTicketsDirEnvVar + " sets tickets_dir to " + fromEnv + "; " + configPath + " resolves to " + fromFile,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(config.TicketsDirEnvVar, "")
+			t.Setenv(config.LegacyTicketsDirEnvVar, "")
+			for k, v := range tc.env {
+				t.Setenv(k, v)
+			}
+			cfg, err := config.Load(configPath)
+			require.NoError(t, err)
+
+			assert.Equal(t, tc.want, foldEnvOverConfig(cfg, configPath))
+		})
+	}
+}

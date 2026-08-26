@@ -171,8 +171,15 @@ func cmdStart() {
 		log.Fatalf("parsing flags: %v", err)
 	}
 
-	cfg := loadConfigOrSetup(*configPath)
+	cfg, ticketsDirNote := loadConfigOrSetup(*configPath)
 	cfg.ApplyServerEnvOverrides()
+
+	// The daemon runs agents against whatever store it resolved, unattended and
+	// for as long as it is up, so a stale exported variable pointing somewhere
+	// else has to be visible at startup rather than found afterwards.
+	if ticketsDirNote != "" && *ticketsDir == "" {
+		fmt.Fprintf(os.Stderr, "%s\n", ticketsDirNote)
+	}
 
 	// The daemon applies this to the starting config and to every reload. The
 	// flags never reach the config file, so a reload that only re-read the file
@@ -1624,6 +1631,24 @@ func confirm(id, what string) {
 	fmt.Printf("%s %s\n", helpCyan.Render(id), helpFaint.Render(what))
 }
 
+// foldEnvOverConfig applies the environment overlay and reports a tickets_dir
+// the environment moved out from under the config file. It stays silent when the
+// two resolve to the same directory, which is the normal case for a shell that
+// exports the variable on purpose, so the note only appears when the file looks
+// like it is in charge and is not. Only --tickets-dir outranks the environment.
+//
+// The daemon is the only caller that prints it. A CLI command shows the store it
+// read straight away, and `kontora doctor` names the variable outright, while the
+// daemon keeps running against whatever it resolved.
+func foldEnvOverConfig(cfg *config.Config, configPath string) string {
+	fromFile := config.ExpandTilde(cfg.TicketsDir)
+	name := cfg.ApplyEnvOverrides()
+	if name == "" || cfg.TicketsDir == fromFile {
+		return ""
+	}
+	return fmt.Sprintf("%s sets tickets_dir to %s; %s resolves to %s", name, cfg.TicketsDir, configPath, fromFile)
+}
+
 func mustLoadConfig(configPath string) *config.Config {
 	cfg, err := config.Load(configPath)
 	if err == nil {
@@ -1642,11 +1667,12 @@ func mustLoadConfig(configPath string) *config.Config {
 	return nil
 }
 
-func loadConfigOrSetup(configPath string) *config.Config {
+// The second return is the note from foldEnvOverConfig, which the daemon prints
+// only when no --tickets-dir was given: that flag makes the environment moot.
+func loadConfigOrSetup(configPath string) (*config.Config, string) {
 	cfg, err := config.Load(configPath)
 	if err == nil {
-		cfg.ApplyEnvOverrides()
-		return cfg
+		return cfg, foldEnvOverConfig(cfg, configPath)
 	}
 	if !errors.Is(err, config.ErrNotFound) {
 		log.Fatalf("loading config: %v", err)
@@ -1665,6 +1691,5 @@ func loadConfigOrSetup(configPath string) *config.Config {
 	if err != nil {
 		log.Fatalf("loading config after setup: %v", err)
 	}
-	cfg.ApplyEnvOverrides()
-	return cfg
+	return cfg, foldEnvOverConfig(cfg, configPath)
 }

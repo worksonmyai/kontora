@@ -207,6 +207,13 @@ export function kontoraApp() {
     _keySeq: '',
     _keySeqAt: 0,
     _rendered: Object.create(null),
+    // Column keys a drag left out of sync with the board data, so the next
+    // render patches them instead of skipping them as unchanged.
+    _dirtyCols: Object.create(null),
+    // Set while Sortable owns the card nodes. _renderHeld records that a render
+    // was asked for during the drag, so onEnd can run it.
+    _dragging: false,
+    _renderHeld: false,
     _boardInit: false,
     // agent name -> running kontora ticket count, filled by recomputeBoard.
     _agentRunning: Object.create(null),

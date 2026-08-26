@@ -242,13 +242,15 @@ export function kontoraBoard() {
       return '<div class="card-menu absolute right-0 top-7 min-w-[10rem] overflow-hidden rounded-lg border border-surface-700/60 bg-surface-900/95 shadow-lg shadow-black/30 z-20" role="menu">' + items + '</div>';
     },
 
-    // Forget the cached render state for the column that holds a status, so the
-    // next renderColumn rebuilds it from board data instead of skipping it as
-    // unchanged. Needed whenever a card node moved without going through the
-    // reconcile: the cache then describes a DOM that no longer exists.
+    // Mark the column that holds a status as needing a patch on the next render.
+    // Needed whenever a card node moved without going through the reconcile: the
+    // cached ids and signatures then describe a DOM that no longer exists, and
+    // renderColumn would skip the column as unchanged. The cache itself stays,
+    // so _patchColumn still touches only the cards that moved or changed;
+    // dropping it would rebuild every card in the column instead.
     invalidateColumnFor(status) {
       var col = this.columns.find((c) => c.statuses.includes(status));
-      if (col) delete this._rendered[col.key];
+      if (col) this._dirtyCols[col.key] = true;
     },
 
     // Reconcile a single column's cards against the cached ids and signatures,
@@ -257,6 +259,10 @@ export function kontoraBoard() {
     renderColumn(key) {
       var el = document.getElementById('col-' + key);
       if (!el) return;
+      // A dirty column is one a drag left out of sync with the board data, so
+      // it is patched even when the data says nothing changed.
+      var dirty = this._dirtyCols[key];
+      delete this._dirtyCols[key];
       if (this.isCollapsed(key)) {
         // Collapsed rail: the container exists only as a drop target. Remove
         // any node Sortable dropped into it; moveTask re-buckets from data.
@@ -269,7 +275,7 @@ export function kontoraBoard() {
       var list = this._board[key] || [];
       var prev = this._rendered[key];
       if (!list.length) {
-        if (!prev || !prev.empty) el.innerHTML = this._emptyStateHTML(col);
+        if (dirty || !prev || !prev.empty) el.innerHTML = this._emptyStateHTML(col);
         this._rendered[key] = { empty: true, ids: [], sigs: {} };
         return;
       }
@@ -281,7 +287,7 @@ export function kontoraBoard() {
         ids.push(list[i].id);
         sigs[list[i].id] = this._cardSig(list[i], col);
       }
-      if (prev && !prev.empty && this._sameCards(prev, ids, sigs)) return;
+      if (!dirty && prev && !prev.empty && this._sameCards(prev, ids, sigs)) return;
       this._patchColumn(el, list, col, prev, sigs);
       this._rendered[key] = { empty: false, ids: ids, sigs: sigs };
     },
@@ -335,6 +341,8 @@ export function kontoraBoard() {
     // _boardInit, set in init's $nextTick).
     renderBoard() {
       if (!this._boardInit) return;
+      if (this._dragging) { this._renderHeld = true; return; }
+      this._renderHeld = false;
       this.columns.forEach((col) => this.renderColumn(col.key));
       this._dropStaleCardMenu();
     },
@@ -354,6 +362,8 @@ export function kontoraBoard() {
     // because the previous board (and its listeners) went with the old layer.
     _mountBoard() {
       this._rendered = Object.create(null);
+      this._dirtyCols = Object.create(null);
+      this._dragging = false;
       this._boardInit = true;
       this.renderBoard();
       this._bindBoardEvents(document.getElementById('board-cols'));
@@ -566,37 +576,72 @@ export function kontoraBoard() {
           c.classList.remove('is-drop-target');
         });
       }
-      // Disable the FLIP animation when the source column is large: animating
-      // every sibling on each drag move is the main drag stutter on big boards.
-      var ANIM_THRESHOLD = 60;
-      var sortable = new Sortable(el, {
+      // Turn the FLIP animation off for anything but a short column: Sortable
+      // measures and then transitions every card in a list it animates, on each
+      // drag move, which is the drag stutter on a big board. A list animates its
+      // own cards from its own instance option, so the column being dragged
+      // *into* decides this as much as the one dragged from — set it on every
+      // column at drag start rather than on the source alone.
+      //
+      // The cutoff is where the measurement put it. Dragging into a column on a
+      // CPU throttled 4x, p90 of one drag move: 29ms at 30 cards, 59ms at 60,
+      // 106ms at 90, 175ms at 150 — against a flat 14-16ms with the animation
+      // off, at every size. A shorter duration does not help; the cost is the
+      // per-card measuring, not the transition.
+      var ANIM_THRESHOLD = 25;
+      function tuneAnimations() {
+        document.querySelectorAll('#board-cols [data-drop-status]').forEach(function (list) {
+          var s = Sortable.get(list);
+          if (s) s.option('animation', list.children.length > ANIM_THRESHOLD ? 0 : 150);
+        });
+      }
+      new Sortable(el, {
         group: 'kanban',
         animation: 150,
         ghostClass: 'sortable-ghost',
         dragClass: 'sortable-drag',
         filter: '.empty-state',
         onStart: function(evt) {
-          sortable.option('animation', evt.from.children.length > ANIM_THRESHOLD ? 0 : 150);
+          tuneAnimations();
+          // Sortable owns the card nodes until the drop: a reconcile that runs
+          // in between can move or replace the node under the cursor. Updates
+          // that arrive during the drag land in _board, and the render they
+          // asked for is held until onEnd.
+          self._dragging = true;
           setDropTarget(evt.from);
         },
         onChange: function(evt) { setDropTarget(evt.to); },
         onEnd: function(evt) {
+          self._dragging = false;
           clearDropTarget();
+          // Everything the daemon reported while the drag held the board. Ahead
+          // of the move below, so the optimistic status lands on fresh data.
+          if (self._pendingTicketUpdates.length) self.flushTicketUpdates();
           var ticketId = evt.item.dataset.ticketId;
           var fromDrop = evt.from.dataset.dropStatus;
           var toDrop = evt.to.dataset.dropStatus;
-          if (fromDrop === toDrop || !ticketId) return;
-          // Sortable moved the card node behind the reconcile's back, so the
-          // render cache for both columns is stale. Without dropping it, a
-          // render that finds the same cards with the same signatures returns
-          // early, and a moveTask that ends without a status change (an
-          // uninitialized ticket opens the init modal instead) would leave the
-          // card sitting in the column it was dropped on.
+          if (fromDrop === toDrop || !ticketId) {
+            // No move to make, but a held render still has to land, and the
+            // column the card was dropped back into needs the patch that puts
+            // it back in sorted order.
+            if (self._renderHeld) {
+              self.invalidateColumnFor(fromDrop);
+              self.renderBoard();
+            }
+            return;
+          }
+          // Sortable moved the card node behind the reconcile's back, so what
+          // the render cache says about both columns no longer matches the DOM.
+          // Without marking them, a render that finds the same cards with the
+          // same signatures returns early, and a moveTask that ends without a
+          // status change (an uninitialized ticket opens the init modal
+          // instead) would leave the card sitting in the column it was dropped
+          // on.
           self.invalidateColumnFor(fromDrop);
           self.invalidateColumnFor(toDrop);
           // No manual DOM restore: moveTask sets the status optimistically and
-          // recomputeBoard → renderBoard rebuilds both columns from canonical
-          // data, replacing the node Sortable moved (and reverting on failure).
+          // recomputeBoard → renderBoard patches both columns from canonical
+          // data, moving the node Sortable moved (and reverting on failure).
           self.moveTask(ticketId, toDrop);
         }
       });

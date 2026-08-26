@@ -352,6 +352,12 @@ export function kontoraTickets() {
 
     flushTicketUpdates() {
       this._boardRaf = null;
+      // A drag owns the board until it ends: applying updates under it re-sorts
+      // the columns and patches the cards the cursor is over, which is both a
+      // stutter and a moved node. The buffer keeps filling and the drop flushes
+      // it. If a drag somehow ends without onEnd, the next update schedules a
+      // frame of its own and takes the backlog with it.
+      if (this._dragging) return;
       var pending = this._pendingTicketUpdates;
       this._pendingTicketUpdates = [];
       pending.forEach(t => this.applyTicketUpdate(t));

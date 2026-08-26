@@ -2351,6 +2351,101 @@ test("a drag that only opens the init modal puts the card back", async () => {
   }
 });
 
+test("a drop into a busy column rebuilds only the card that moved", async () => {
+  let opts = null;
+  const { board, state, built } = renderedBoard(
+    [
+      { id: "kon-move", title: "Move", status: "todo", kontora: true, created_at: "2026-05-19T09:00:00Z" },
+      { id: "kon-stay", title: "Stay", status: "todo", kontora: true, created_at: "2026-05-19T08:00:00Z" },
+      { id: "rev-1", title: "R1", status: "human_review", kontora: true, updated_at: "2026-05-19T12:00:00Z" },
+      { id: "rev-2", title: "R2", status: "human_review", kontora: true, updated_at: "2026-05-19T11:00:00Z" },
+      { id: "rev-3", title: "R3", status: "human_review", kontora: true, updated_at: "2026-05-19T10:00:00Z" },
+    ],
+    {
+      Sortable: class { constructor(el, o) { opts = o; } option() {} },
+      fetch: async () => ({ ok: true, json: async () => ({}) }),
+    },
+  );
+  state.$nextTick = () => Promise.resolve();
+  state.initSortable(board.els["col-in_progress"]);
+  const keptReview = board.uids("human_review");
+
+  // The drop Sortable has already made when onEnd runs: the card node sits in
+  // the middle of the target column, above where the sort will put it.
+  const card = board.els["col-in_progress"].children[0];
+  board.els["col-human_review"].insertBefore(card, board.els["col-human_review"].children[1]);
+  board.ops.length = 0;
+  opts.onEnd({
+    item: card,
+    from: { dataset: { dropStatus: "todo" } },
+    to: { dataset: { dropStatus: "human_review" } },
+  });
+  await flushMicrotasks();
+
+  // The moved card is the only one rebuilt: the cards already in the column are
+  // moved into sorted order node-for-node, not re-rendered from board data.
+  assert.deepEqual(built, ["kon-move"]);
+  assert.deepEqual(board.ops, ["insert:rev-2", "insert:rev-3", "replace:kon-move"]);
+  assert.deepEqual(board.ids("human_review"), ["rev-1", "rev-2", "rev-3", "kon-move"]);
+  assert.deepEqual(board.ids("in_progress"), ["kon-stay"]);
+  assert.deepEqual(board.uids("human_review").slice(0, 3), keptReview);
+});
+
+test("an update during a drag lands when the drag ends", async () => {
+  let opts = null;
+  const { board, state, built } = renderedBoard(
+    [
+      { id: "kon-a", title: "A", status: "todo", kontora: true, created_at: "2026-05-19T09:00:00Z" },
+      { id: "rev-1", title: "R1", status: "human_review", kontora: true, updated_at: "2026-05-19T12:00:00Z" },
+    ],
+    { Sortable: class { constructor(el, o) { opts = o; } option() {} } },
+  );
+  state.initSortable(board.els["col-in_progress"]);
+  const dragged = { dataset: { dropStatus: "todo" }, closest: () => null };
+  opts.onStart({ from: dragged });
+
+  // An SSE update mid-drag: the board data takes it, but the cards do not, or
+  // the reconcile could pull the node out from under the cursor.
+  state.tickets[1].title = "R1 renamed";
+  state.recomputeBoard();
+  assert.deepEqual(board.ops, []);
+  assert.deepEqual(built, []);
+
+  // Dropped back where it came from: no move to post, but the held render runs.
+  opts.onEnd({ item: { dataset: { ticketId: "kon-a" } }, from: dragged, to: dragged });
+  await flushMicrotasks();
+
+  assert.deepEqual(built, ["rev-1"]);
+  assert.deepEqual(board.ops, ["replace:rev-1"]);
+});
+
+test("ticket updates that arrive during a drag are applied at the drop", async () => {
+  let opts = null;
+  const { board, state, built } = renderedBoard(
+    [
+      { id: "kon-a", title: "A", status: "todo", kontora: true, created_at: "2026-05-19T09:00:00Z" },
+      { id: "rev-1", title: "R1", status: "human_review", kontora: true, updated_at: "2026-05-19T12:00:00Z" },
+    ],
+    { Sortable: class { constructor(el, o) { opts = o; } option() {} } },
+  );
+  state.initSortable(board.els["col-in_progress"]);
+  const dragged = { dataset: { dropStatus: "todo" }, closest: () => null };
+  opts.onStart({ from: dragged });
+
+  state.queueTicketUpdate({ id: "rev-1", title: "R1 renamed", status: "human_review", kontora: true, updated_at: "2026-05-19T12:00:00Z" });
+  assert.deepEqual(board.ops, [], "an update mid-drag must not touch the cards");
+  assert.equal(state.tickets[1].title, "R1", "and must not land in the board data yet");
+  assert.equal(state._pendingTicketUpdates.length, 1);
+
+  opts.onEnd({ item: { dataset: { ticketId: "kon-a" } }, from: dragged, to: dragged });
+  await flushMicrotasks();
+
+  assert.equal(state.tickets[1].title, "R1 renamed");
+  assert.deepEqual(built, ["rev-1"]);
+  assert.deepEqual(board.ops, ["replace:rev-1"]);
+  assert.equal(state._pendingTicketUpdates.length, 0);
+});
+
 test("formatElapsed renders history durations", () => {
   const state = loadKontoraState();
 

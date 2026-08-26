@@ -1563,7 +1563,15 @@
                        const check = () => {
                          overflowBottom = list.scrollHeight - list.scrollTop - list.clientHeight > 4;
                        };
-                       const schedule = () => requestAnimationFrame(check);
+                       // Sortable moves nodes on every drag step, so the
+                       // childList observer below fires in bursts; one frame
+                       // takes one layout read, not one per mutation batch.
+                       let queued = false;
+                       const schedule = () => {
+                         if (queued) return;
+                         queued = true;
+                         requestAnimationFrame(() => { queued = false; check(); });
+                       };
                        list.addEventListener('scroll', check, { passive: true });
                        window.addEventListener('resize', schedule);
                        const mo = new MutationObserver(schedule);

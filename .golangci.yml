@@ -71,7 +71,13 @@ linters:
       - linters:
           - dupword
         path: _test\.go
+      # completion.go is mostly shell script in raw string literals, where a
+      # repeated `end` or `fi` closes two nested blocks.
       - linters:
+          - dupword
+        path: internal/cli/completion\.go
+      - linters:
+          - prealloc
           - unparam
         path: _test\.go
 

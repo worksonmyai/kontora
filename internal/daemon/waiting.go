@@ -101,13 +101,12 @@ func (d *Daemon) applyWaitMarker(ticketID string, st *waitingState) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	prev, had := d.waiting[ticketID]
-	switch {
-	case st == nil:
+	if st == nil {
 		if !had {
 			return
 		}
 		delete(d.waiting, ticketID)
-	default:
+	} else {
 		// An unparseable started_at falls back to the poll's own time, which
 		// differs every tick. Carrying the first one forward keeps the badge's
 		// clock growing and the same wait from rebroadcasting every 2s.

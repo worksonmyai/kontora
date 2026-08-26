@@ -230,7 +230,7 @@ func TestCompletionCoversEveryCommand(t *testing.T) {
 	}{
 		{
 			shell:     "fish",
-			offered:   func(script string) []string { return fishOfferedCommands(script) },
+			offered:   fishOfferedCommands,
 			ticketIDs: func(script string) []string { return words(lineWithPrefix(script, "set -l __kontora_id_cmds ")) },
 			scope:     fishScope,
 			flag:      func(f Flag) string { return fmt.Sprintf(" -%s %s ", flagKind(f.Name), f.Name) },

@@ -40,7 +40,7 @@ type PromptData struct {
 // editing markdown, and what the current mode allows, so a refusal the gate
 // issues is not a surprise the agent argues with.
 var systemPromptTmpl = template.Must(template.New("assistant").Funcs(template.FuncMap{
-	"join": func(items []string, sep string) string { return strings.Join(items, sep) },
+	"join": strings.Join,
 }).Parse(
 	`You are the Kontora assistant, answering questions about a Kontora board and
 driving it on the user's behalf. Kontora is an agent orchestration daemon: a

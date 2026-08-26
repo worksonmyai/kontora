@@ -148,7 +148,7 @@ func skillSections(doc string) []skillSection {
 		}
 		body.Reset()
 	}
-	for _, line := range strings.Split(doc, "\n") {
+	for line := range strings.SplitSeq(doc, "\n") {
 		if strings.HasPrefix(strings.TrimSpace(line), "```") {
 			fenced = !fenced
 		}

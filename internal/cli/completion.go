@@ -428,8 +428,9 @@ _kontora() {
 
     if (( COMP_CWORD == 1 )); then
 `)
-	var names []string
-	for _, cmd := range completionCommands() {
+	cmds := completionCommands()
+	names := make([]string, 0, len(cmds))
+	for _, cmd := range cmds {
 		names = append(names, cmd.Name)
 	}
 	fmt.Fprintf(&b, "        COMPREPLY=( $(compgen -W %q -- \"$cur\") )\n", strings.Join(names, " "))

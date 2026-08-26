@@ -693,6 +693,42 @@ func (c *Config) SetTicketsDir(dir string) {
 }
 
 func (c *Config) applyDefaults() {
+	c.applyCoreDefaults()
+	c.applyServiceDefaults()
+
+	// Agents with no explicit failure_patterns get the built-in defaults. A nil
+	// slice means the key was absent; an explicit [] (non-nil, empty) opts out.
+	for name, agent := range c.Agents {
+		if agent.FailurePatterns == nil {
+			agent.FailurePatterns = DefaultFailurePatterns
+			c.Agents[name] = agent
+		}
+	}
+
+	// project is a copy of the entry, but Hooks is a map, so the defaults land
+	// on the entries the config keeps.
+	c.Hooks.applyDefaults()
+	for _, project := range c.Projects {
+		project.Hooks.applyDefaults()
+	}
+
+	if _, ok := c.Stages[ReworkStageName]; !ok {
+		if c.Stages == nil {
+			c.Stages = map[string]Stage{}
+		}
+		c.Stages[ReworkStageName] = defaultReworkStage()
+		c.ReworkIsBuiltin = true
+	}
+
+	// human_review used to be shipped as a custom status in the default config.
+	// Drop it from user-declared statuses so old configs keep loading after it
+	// became a built-in.
+	c.Statuses = slices.DeleteFunc(c.Statuses, func(s string) bool { return s == "human_review" })
+}
+
+// applyCoreDefaults fills the paths, the scheduler and the identity of this
+// daemon.
+func (c *Config) applyCoreDefaults() {
 	if c.TicketsDir == "" {
 		c.TicketsDir = "~/.kontora/tickets"
 	}
@@ -748,7 +784,11 @@ func (c *Config) applyDefaults() {
 	if c.Web.Port == 0 {
 		c.Web.Port = 8080
 	}
+}
 
+// applyServiceDefaults fills the settings of the parts the daemon runs
+// alongside the pipeline: plannotator, the assistant and metrics.
+func (c *Config) applyServiceDefaults() {
 	if c.Plannotator.Binary == "" {
 		c.Plannotator.Binary = "plannotator"
 	}
@@ -775,35 +815,6 @@ func (c *Config) applyDefaults() {
 	if c.Metrics.Interval.Duration == 0 {
 		c.Metrics.Interval.Duration = 60 * time.Second
 	}
-
-	// Agents with no explicit failure_patterns get the built-in defaults. A nil
-	// slice means the key was absent; an explicit [] (non-nil, empty) opts out.
-	for name, agent := range c.Agents {
-		if agent.FailurePatterns == nil {
-			agent.FailurePatterns = DefaultFailurePatterns
-			c.Agents[name] = agent
-		}
-	}
-
-	// project is a copy of the entry, but Hooks is a map, so the defaults land
-	// on the entries the config keeps.
-	c.Hooks.applyDefaults()
-	for _, project := range c.Projects {
-		project.Hooks.applyDefaults()
-	}
-
-	if _, ok := c.Stages[ReworkStageName]; !ok {
-		if c.Stages == nil {
-			c.Stages = map[string]Stage{}
-		}
-		c.Stages[ReworkStageName] = defaultReworkStage()
-		c.ReworkIsBuiltin = true
-	}
-
-	// human_review used to be shipped as a custom status in the default config.
-	// Drop it from user-declared statuses so old configs keep loading after it
-	// became a built-in.
-	c.Statuses = slices.DeleteFunc(c.Statuses, func(s string) bool { return s == "human_review" })
 }
 
 var validStatusNameRe = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)

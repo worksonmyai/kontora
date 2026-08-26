@@ -165,13 +165,13 @@ func TestLiveTextConcurrentAppendAndSnapshot(t *testing.T) {
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		for i := 0; i < 500; i++ {
+		for range 500 {
 			l.Append("t", "x")
 		}
 	}()
 	go func() {
 		defer wg.Done()
-		for i := 0; i < 500; i++ {
+		for range 500 {
 			l.Snapshot("t")
 		}
 	}()

@@ -452,7 +452,7 @@ func (d *Daemon) AssistantActivity(q web.AssistantActivityQuery) (web.AssistantA
 	if err != nil {
 		empty := emptyTape(thread.Kind == config.AgentKindPi)
 		info.Tape = &empty
-		return info, nil
+		return info, nil //nolint:nilerr // a session file that will not read is an empty tape, not a failed request.
 	}
 	info.Tape = &tape
 	info.Offset = tape.SliceAt(q.After)
@@ -484,11 +484,11 @@ func assistantPartialLanded(tape logfmt.Tape, partial string, sealed, truncated 
 	if partial == "" {
 		return false
 	}
-	for i := len(tape.Events) - 1; i >= 0; i-- {
-		if tape.Events[i].Kind != "text" {
+	for _, ev := range slices.Backward(tape.Events) {
+		if ev.Kind != "text" {
 			continue
 		}
-		text := tape.Events[i].Text
+		text := ev.Text
 		if text == partial {
 			return true
 		}
@@ -706,7 +706,7 @@ func (d *Daemon) assistantCounts(cfg *config.Config) []string {
 // pad the prompt.
 func assistantPageLines(raw string) []string {
 	var lines []string
-	for _, line := range strings.Split(raw, "\n") {
+	for line := range strings.SplitSeq(raw, "\n") {
 		if line = strings.TrimSpace(line); line != "" {
 			lines = append(lines, line)
 		}
@@ -1010,16 +1010,17 @@ func (d *Daemon) AskAssistantGate(req web.AssistantGateAskRequest) (web.Assistan
 	case assistant.VerdictDeny:
 		record(false)
 		return web.AssistantGateAskResponse{Allow: false, Reason: assistant.DenyReason(kind, thread.Autonomy)}, nil
+	case assistant.VerdictPark:
+		_, done := d.assistant.gate.Park(call)
+		approved := <-done
+		record(approved)
+		if approved {
+			d.recordAssistantWrite(req.Thread)
+			return web.AssistantGateAskResponse{Allow: true}, nil
+		}
+		return web.AssistantGateAskResponse{Allow: false, Reason: assistant.DenyReason(kind, thread.Autonomy)}, nil
 	}
-
-	_, done := d.assistant.gate.Park(call)
-	approved := <-done
-	record(approved)
-	if approved {
-		d.recordAssistantWrite(req.Thread)
-		return web.AssistantGateAskResponse{Allow: true}, nil
-	}
-	return web.AssistantGateAskResponse{Allow: false, Reason: assistant.DenyReason(kind, thread.Autonomy)}, nil
+	return web.AssistantGateAskResponse{}, fmt.Errorf("unknown gate verdict %q", verdict)
 }
 
 // ResolveAssistantGate is the person's answer to a parked write.

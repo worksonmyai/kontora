@@ -298,7 +298,7 @@ func TestAssistantRoutes(t *testing.T) {
 
 func TestAssistantActivityCursorAndETag(t *testing.T) {
 	tape := logfmt.Tape{Version: 1, Agent: "claude", Events: []logfmt.Event{{Kind: "text", Text: "hello"}}}
-	pending := assistant.Pending{ID: "g1", Call: assistant.Call{ThreadID: "t1", Tool: "Bash", Kind: assistant.DecisionWrite}}
+	pending := assistant.Pending{ID: "g1", ThreadID: "t1", Tool: "Bash", Kind: assistant.DecisionWrite}
 
 	svc := &mockService{assistantActFn: func(q AssistantActivityQuery) (AssistantActivityInfo, error) {
 		if q.IfNoneMatch == `"same"` {

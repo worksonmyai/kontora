@@ -112,6 +112,8 @@ func classifyBash(command string) Decision {
 			return DecisionDelete
 		case DecisionWrite:
 			worst = DecisionWrite
+		case DecisionRead:
+			// A read never raises the worst decision seen so far.
 		}
 	}
 	return worst
@@ -191,7 +193,7 @@ func DenyReason(d Decision, autonomy string) string {
 func splitAny(s string, seps []string) []string {
 	parts := []string{s}
 	for _, sep := range seps {
-		var next []string
+		next := make([]string, 0, len(parts))
 		for _, p := range parts {
 			next = append(next, strings.Split(p, sep)...)
 		}

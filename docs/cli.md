@@ -206,7 +206,7 @@ The daemon sets `KONTORA_CHECKPOINT_FILE` only for runs whose agent has a positi
 
 ## Relations
 
-A ticket carries two relation lists in its frontmatter. `deps` names the tickets it waits on, and the daemon will not run it until every one of them is `done`, `cancelled`, `archived`, or legacy `closed`. See [dependency-aware scheduling](tickets.md#dependency-aware-scheduling). `links` is a symmetric "related" list that means nothing to the scheduler.
+A ticket carries two relation lists in its frontmatter. `deps` names the tickets it waits on, and the daemon will not run it until every one of them is `human_review`, `done`, `cancelled`, `archived`, or legacy `closed`. See [dependency-aware scheduling](tickets.md#dependency-aware-scheduling). `links` is a symmetric "related" list that means nothing to the scheduler.
 
 All four verbs reject a missing ID and a ticket related to itself, and leave every file unchanged when they do. Repeating a call that has nothing left to do succeeds and writes nothing.
 

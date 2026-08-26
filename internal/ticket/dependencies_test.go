@@ -26,6 +26,12 @@ func TestClassify(t *testing.T) {
 			wantReady: true,
 		},
 		{
+			name:      "human_review dependency resolves",
+			tickets:   []*Ticket{dep("a", StatusTodo, "b"), dep("b", StatusHumanReview)},
+			id:        "a",
+			wantReady: true,
+		},
+		{
 			name:      "done dependency resolves",
 			tickets:   []*Ticket{dep("a", StatusTodo, "b"), dep("b", StatusDone)},
 			id:        "a",
@@ -70,12 +76,6 @@ func TestClassify(t *testing.T) {
 		{
 			name:         "paused dependency blocks",
 			tickets:      []*Ticket{dep("a", StatusTodo, "b"), dep("b", StatusPaused)},
-			id:           "a",
-			wantBlockers: []string{"b"},
-		},
-		{
-			name:         "human_review dependency blocks",
-			tickets:      []*Ticket{dep("a", StatusTodo, "b"), dep("b", StatusHumanReview)},
 			id:           "a",
 			wantBlockers: []string{"b"},
 		},

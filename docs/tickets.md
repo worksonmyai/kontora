@@ -36,7 +36,7 @@ These are set when creating a ticket (manually or via `kontora new`):
 | `path` | yes | — | Path to the repository (supports `~`, e.g., `~/projects/kontora`). |
 | `base_branch` | no | — | Branch the ticket's work branch starts from. Empty means the repository's default branch. See [Base branch](#base-branch). |
 | `created` | no | — | RFC 3339 timestamp. Set automatically by `kontora new`. |
-| `deps` | no | — | Ids of the tickets this one waits on. The scheduler holds the ticket back until every one of them is closed; see [Relations](#relations). |
+| `deps` | no | — | Ids of the tickets this one waits on. The scheduler holds the ticket back until every one of them is resolved; see [Relations](#relations). |
 | `links` | no | — | Ids of related tickets. See [Relations](#relations). |
 | `parent` | no | — | Id of the epic or parent ticket. Read only; see [Relations](#relations). |
 
@@ -126,9 +126,10 @@ open → todo → in_progress → done ──────→ archived
 | Status | Meaning |
 |--------|---------|
 | `open` | Drafted but not ready for the daemon to pick up. |
-| `todo` | Ready for the daemon. The scheduler picks it up in creation order, once its `deps` are closed. |
+| `todo` | Ready for the daemon. The scheduler picks it up in creation order, once its `deps` are resolved. |
 | `in_progress` | An agent is currently working on it. |
 | `paused` | Stopped by a failure policy or by the user. Set `status: todo` to resume. |
+| `human_review` | Parked for a person to look at, by a stage policy or `kontora move`. The agent's work is finished, so this releases the tickets that depend on it. |
 | `done` | All pipeline stages completed successfully. |
 | `cancelled` | Manually cancelled by the user. |
 | `archived` | An old closed ticket, hidden from the main views. Terminal; still on disk. |
@@ -138,7 +139,7 @@ The daemon only picks up tickets that have both `kontora: true` and `status: tod
 
 ## Dependency-aware scheduling
 
-The daemon starts an agent for a `kontora: true` ticket in `todo` only when every id in its `deps` names a ticket that is closed: `done`, `cancelled`, `archived`, or the legacy `closed` that tickets from the external ticket CLI carry. Every other status blocks, including a custom one. So does an id with no ticket file, because nothing on disk says whether that work is finished.
+The daemon starts an agent for a `kontora: true` ticket in `todo` only when every id in its `deps` names a ticket that no longer holds work: `human_review`, `done`, `cancelled`, `archived`, or the legacy `closed` that tickets from the external ticket CLI carry. `human_review` releases dependents because the agent has finished and only a person's verdict is left; the review can still send the ticket back, and a dependent that is already running then keeps going. Every other status blocks, including a custom one. So does an id with no ticket file, because nothing on disk says whether that work is finished.
 
 Readiness is derived on every read. It is not a status and is not written to any file: there is no `blocked` status, and a ticket waiting on a dependency stays `todo`.
 

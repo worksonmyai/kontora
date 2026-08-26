@@ -3,9 +3,13 @@ package ticket
 import "slices"
 
 // resolvedDependencyStatuses are the statuses that release the tickets which
-// depend on a ticket. Legacy closed is in the set for reading only; kontora
+// depend on a ticket. Human review is in the set because the work itself is
+// finished: whatever the reviewer decides, the dependents can be worked on
+// against what it produced, and holding them until someone signs off serialises
+// the chain on a person. Legacy closed is in the set for reading only; kontora
 // never writes it.
 var resolvedDependencyStatuses = map[Status]bool{
+	StatusHumanReview:  true,
 	StatusDone:         true,
 	StatusCancelled:    true,
 	StatusArchived:     true,

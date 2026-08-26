@@ -94,6 +94,16 @@ func TestDependencyGating(t *testing.T) {
 			wantQueued: []string{"dep-a"},
 		},
 		{
+			name: "a human_review dependency releases the dependent",
+			files: func(h *testHarness) map[string]string {
+				return map[string]string{
+					"dep-a.md": h.depTaskMD("dep-a", "todo", "2026-01-02T00:00:00Z", "dep-b"),
+					"dep-b.md": h.depTaskMD("dep-b", "human_review", "2026-01-01T00:00:00Z"),
+				}
+			},
+			wantQueued: []string{"dep-a"},
+		},
+		{
 			name: "a legacy closed dependency releases the dependent",
 			files: func(h *testHarness) map[string]string {
 				return map[string]string{
@@ -166,6 +176,20 @@ func TestDependencyReconciliation(t *testing.T) {
 				d.handleFileChanged(h.taskPath("dep-c.md"))
 			},
 			wantQueued: []string{"dep-a", "dep-b"},
+		},
+		{
+			name: "parking a dependency in human_review wakes its dependents",
+			files: func(h *testHarness) map[string]string {
+				return map[string]string{
+					"dep-a.md": h.depTaskMD("dep-a", "todo", "2026-01-02T00:00:00Z", "dep-c"),
+					"dep-c.md": h.depTaskMD("dep-c", "open", "2026-01-01T00:00:00Z"),
+				}
+			},
+			change: func(_ *testing.T, h *testHarness, d *Daemon) {
+				h.writeTicket("dep-c.md", h.depTaskMD("dep-c", "human_review", "2026-01-01T00:00:00Z"))
+				d.handleFileChanged(h.taskPath("dep-c.md"))
+			},
+			wantQueued: []string{"dep-a"},
 		},
 		{
 			name: "adding a dependency drops a queued ticket",

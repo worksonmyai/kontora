@@ -85,7 +85,7 @@ open -> todo -> in_progress -> done ------> archived
 | `todo` | Ready. The scheduler takes it in creation order once its deps are closed. |
 | `in_progress` | An agent is working on it now. |
 | `paused` | Stopped by a failure policy or by a person. `kontora retry` resumes it. |
-| `human_review` | Parked for a person to look at. Reached by a stage policy or `kontora move`. |
+| `human_review` | Parked for a person to look at. Reached by a stage policy or `kontora move`. Releases the tickets that depend on it. |
 | `done` | Every pipeline stage completed. |
 | `cancelled` | Cancelled by a person. |
 | `archived` | An old closed ticket, hidden everywhere, file kept. Terminal. |
@@ -101,9 +101,10 @@ The daemon only picks up a ticket that has both `kontora: true` and
 ## Relations
 
 `deps` names the tickets this one waits on. The scheduler holds the ticket in
-`todo` until every id in `deps` names a ticket that is `done`, `cancelled`,
-`archived` or legacy `closed`. Any other status blocks, and so does an id with
-no file behind it.
+`todo` until every id in `deps` names a ticket that is `human_review`, `done`,
+`cancelled`, `archived` or legacy `closed`. `human_review` releases dependents
+because the agent's work is done and only a person's verdict is left. Any other
+status blocks, and so does an id with no file behind it.
 
 `links` is a symmetric "related" list and means nothing to the scheduler.
 `parent` names an epic and is read-only.

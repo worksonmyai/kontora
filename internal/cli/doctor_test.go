@@ -452,3 +452,124 @@ func TestDoctor_ReportsTicketsDirSource(t *testing.T) {
 		})
 	}
 }
+
+func TestDoctor_NotificationChannels(t *testing.T) {
+	const secretValue = "s3cr3t-webhook-url"
+
+	tests := []struct {
+		name string
+		// setup writes the credential file and returns the channel YAML.
+		setup     func(t *testing.T, dir string) string
+		wantLevel string
+		wantIn    []string
+	}{
+		{
+			name: "a set environment variable",
+			setup: func(t *testing.T, _ string) string {
+				t.Setenv("KONTORA_DOCTOR_TOKEN", secretValue)
+				return "      type: telegram\n      secret_env: KONTORA_DOCTOR_TOKEN\n      chat_id: \"1\"\n"
+			},
+			wantLevel: "✓",
+			wantIn:    []string{`Notify "tg" (telegram)`, "$KONTORA_DOCTOR_TOKEN"},
+		},
+		{
+			name: "an unset environment variable",
+			setup: func(t *testing.T, _ string) string {
+				t.Setenv("KONTORA_DOCTOR_TOKEN", "")
+				return "      type: telegram\n      secret_env: KONTORA_DOCTOR_TOKEN\n      chat_id: \"1\"\n"
+			},
+			wantLevel: "!",
+			wantIn:    []string{"$KONTORA_DOCTOR_TOKEN", "empty or unset"},
+		},
+		{
+			name: "a readable owner-only file",
+			setup: func(t *testing.T, dir string) string {
+				path := filepath.Join(dir, "hook-url")
+				require.NoError(t, os.WriteFile(path, []byte(secretValue), 0o600))
+				return "      type: mattermost\n      secret_file: " + path + "\n"
+			},
+			wantLevel: "✓",
+			wantIn:    []string{`Notify "tg" (mattermost)`},
+		},
+		{
+			name: "a world-readable file",
+			setup: func(t *testing.T, dir string) string {
+				path := filepath.Join(dir, "hook-url")
+				require.NoError(t, os.WriteFile(path, []byte(secretValue), 0o644))
+				return "      type: mattermost\n      secret_file: " + path + "\n"
+			},
+			wantLevel: "!",
+			wantIn:    []string{"readable by group or other"},
+		},
+		{
+			name: "an empty file",
+			setup: func(t *testing.T, dir string) string {
+				path := filepath.Join(dir, "hook-url")
+				require.NoError(t, os.WriteFile(path, nil, 0o600))
+				return "      type: mattermost\n      secret_file: " + path + "\n"
+			},
+			wantLevel: "!",
+			wantIn:    []string{"is empty"},
+		},
+		{
+			name: "a missing file",
+			setup: func(_ *testing.T, dir string) string {
+				return "      type: mattermost\n      secret_file: " + filepath.Join(dir, "gone") + "\n"
+			},
+			wantLevel: "!",
+			wantIn:    []string{"reading", "gone"},
+		},
+		{
+			// The daemon trims what it reads, so a file holding only a newline
+			// resolves to nothing. Doctor used to stat it and call it fine.
+			name: "a file holding only whitespace",
+			setup: func(t *testing.T, dir string) string {
+				path := filepath.Join(dir, "hook-url")
+				require.NoError(t, os.WriteFile(path, []byte("\n  \n"), 0o600))
+				return "      type: mattermost\n      secret_file: " + path + "\n"
+			},
+			wantLevel: "!",
+			wantIn:    []string{"is empty"},
+		},
+		{
+			// The URL is the credential for an incoming webhook, so a row that
+			// printed it would put one in every pasted bug report.
+			name: "a webhook prints its secret source, not its url",
+			setup: func(t *testing.T, dir string) string {
+				path := filepath.Join(dir, "token")
+				require.NoError(t, os.WriteFile(path, []byte(secretValue), 0o600))
+				return "      type: webhook\n      url: https://example.test/hooks/" + secretValue + "\n      secret_file: " + path + "\n"
+			},
+			wantLevel: "✓",
+			wantIn:    []string{"token"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			noTicketsDirEnv(t)
+			dir := t.TempDir()
+			configPath := writeValidConfig(t, dir)
+
+			body, err := os.ReadFile(configPath)
+			require.NoError(t, err)
+			body = append(body, []byte("\nnotifications:\n  channels:\n    tg:\n"+tt.setup(t, dir))...)
+			require.NoError(t, os.WriteFile(configPath, body, 0o644))
+
+			var buf bytes.Buffer
+			require.NoError(t, Doctor(configPath, &buf))
+
+			out := buf.String()
+			for _, want := range tt.wantIn {
+				assert.Contains(t, out, want)
+			}
+			assert.NotContains(t, out, secretValue, "doctor must print the source, never the value")
+
+			for line := range strings.SplitSeq(out, "\n") {
+				if strings.Contains(line, "Notify ") {
+					assert.Contains(t, line, tt.wantLevel)
+				}
+			}
+		})
+	}
+}

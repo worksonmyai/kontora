@@ -61,6 +61,50 @@ func IsCanonicalPath(path, id string) bool {
 	return id != "" && filepath.Base(path) == id+".md"
 }
 
+// NotifyList reads either a single status or a sequence, so `notify: done` and
+// `notify: [human_review, done]` both work. It is a type rather than a plain
+// []string so a later per-channel mapping form can be added without changing
+// tickets already on disk. Modelled on config.PerAgent.
+//
+// A form this cannot read fails the whole ticket, not just the field: SetField
+// re-decodes the entire node, so every daemon write to such a ticket fails and
+// the startup scan skips it. That is what a malformed deps: does today, which
+// is why the error names the line.
+type NotifyList struct {
+	Statuses []string
+}
+
+func (n *NotifyList) UnmarshalYAML(value *yaml.Node) error {
+	if value.Kind == yaml.ScalarNode {
+		var one string
+		if err := value.Decode(&one); err != nil {
+			return err
+		}
+		// `notify:` with nothing after it decodes as an empty scalar, which is
+		// a ticket that named no status, not one that named "".
+		if one == "" {
+			n.Statuses = nil
+			return nil
+		}
+		n.Statuses = []string{one}
+		return nil
+	}
+	if value.Kind == yaml.SequenceNode {
+		return value.Decode(&n.Statuses)
+	}
+	return fmt.Errorf("invalid notify on line %d: want one status or a list of statuses", value.Line)
+}
+
+// MarshalYAML keeps the field round-trippable through the typed struct. The
+// ticket file itself is written from the raw node, so this only matters where a
+// ticket is re-encoded from its Go value.
+func (n NotifyList) MarshalYAML() (any, error) {
+	if len(n.Statuses) == 0 {
+		return nil, nil
+	}
+	return n.Statuses, nil
+}
+
 type Status string
 
 const (
@@ -179,6 +223,17 @@ type Ticket struct {
 	ArchivedAt   *time.Time `yaml:"archived_at,omitempty"`
 	ArchivedBy   string     `yaml:"archived_by,omitempty"`
 	ArchiveNote  string     `yaml:"archive_note,omitempty"`
+
+	// Notify lists the statuses whose arrival this ticket asks to be told
+	// about, plus the pseudo-status "waiting". A ticket without the field is
+	// silent. Only a transition the daemon decided on its own sends: a person
+	// moving the ticket by hand, through the CLI or the dashboard, sends
+	// nothing.
+	Notify NotifyList `yaml:"notify,omitempty"`
+	// NotifyChannels overrides the channels this ticket's notifications go to,
+	// above the project's and the global default. The sole entry "none"
+	// silences the ticket while leaving its notify: list readable.
+	NotifyChannels []string `yaml:"notify_channels,omitempty"`
 
 	Body     string `yaml:"-"`
 	FilePath string `yaml:"-"`

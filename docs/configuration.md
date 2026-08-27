@@ -77,6 +77,14 @@ web:
   host: 127.0.0.1
   port: 8080
 
+notifications:
+  channels:
+    tg:
+      type: telegram
+      secret_env: KONTORA_TELEGRAM_TOKEN
+      chat_id: "123456789"
+  default: [tg]
+
 agents:
   claude-sonnet:
     binary: claude
@@ -170,6 +178,7 @@ pipelines:
 | `projects` | no | — | Per-repository pipeline, agent, and branch naming defaults (see [projects](#projects)). |
 | `environment` | no | — | Map of environment variables to set for all agent processes. |
 | `hooks` | no | — | Commands run at a ticket's lifecycle events (see [hooks](#hooks)). |
+| `notifications` | no | — | Where a ticket's status notifications can be delivered (see [notifications](#notifications)). |
 | `resume_prompt` | no | (built-in) | Prompt sent to an agent whose stage a daemon restart interrupted, in place of the stage prompt (see [resuming after a restart](#resuming-after-a-restart)). Same template fields as a stage prompt. |
 | `annotation_prompt` | no | (built-in) | Prompt sent to the run that rewrites a ticket from submitted Plannotator annotations (see [plannotator](#plannotator)). Same template fields as a stage prompt. |
 | `system_prompt` | no | (built-in) | Brief appended to every stage agent's own system prompt (see [the stage brief](#the-stage-brief)). Replaces the built-in whole and is used verbatim, not as a template. Only `claude` and `pi` agents take it; every other agent gets nothing either way. |
@@ -490,6 +499,7 @@ projects:
 | `branch_prefix` | no | Overrides the top-level `branch_prefix` for this repository. |
 | `branch_naming` | no | Overrides the top-level [`branch_naming`](#branch-naming) mode for this repository. |
 | `hooks` | no | Commands run at this repository's lifecycle events, after the top-level ones (see [hooks](#hooks)). |
+| `notify_channels` | no | Overrides `notifications.default` for tickets in this repository. The sole entry `none` silences the project (see [notifications](#notifications)). |
 
 `pipeline`, `agent` and `prefix` are read when the ticket is created. The
 daemon reads `branch_prefix` and `branch_naming` when it names an empty branch,
@@ -886,6 +896,149 @@ even when `web.host` is a wildcard: the daemon refuses a request whose `Host` is
 Chats are stored under `<logs_dir>/assistant/<chat-id>/`. Deleting one from the
 history removes its transcript with it.
 
+## notifications
+
+Where a ticket's status notifications can go. Nothing is sent unless a ticket
+asks for it: this section only names the channels, and each ticket names the
+statuses it wants to hear about in its own
+[`notify:`](tickets.md#notifications) frontmatter. A ticket without that field
+is silent whatever is configured here.
+
+```yaml
+notifications:
+  channels:
+    tg:
+      type: telegram
+      secret_env: KONTORA_TELEGRAM_TOKEN
+      chat_id: "123456789"
+    mm:
+      type: mattermost
+      secret_file: ~/.config/kontora/mattermost-webhook
+    ops:
+      type: webhook
+      url: https://ops.example.com/kontora
+      headers:
+        X-Team: platform
+  default: [tg]
+```
+
+| Field | Required | Default | Description |
+|-------|----------|---------|-------------|
+| `enabled` | no | `true` | Set `false` to build no channels at all, whatever the tickets ask for. |
+| `channels` | no | `{}` | Map of channel name to a delivery target. The name is what a ticket or a project refers to. |
+| `default` | no | `[]` | Channels a notification goes to when neither the ticket nor its project names one. |
+| `timeout` | no | `10s` | Bound on one delivery attempt. |
+| `attempts` | no | `3` | How many attempts one notification gets. Between 1 and 10; `1` sends once and does not retry. `0` is refused. |
+| `backoff` | no | `1s` | Wait before the second attempt, doubled for each one after it. |
+
+### Channel fields
+
+| Field | Applies to | Description |
+|-------|-----------|-------------|
+| `type` | all | `telegram`, `mattermost` or `webhook`. |
+| `secret_env` | all | Environment variable holding the credential. |
+| `secret_file` | all | File holding the credential, read and trimmed. At most one of `secret_env` and `secret_file`. |
+| `chat_id` | telegram | Chat the bot posts to. Required. |
+| `channel` | mattermost | Overrides the channel the incoming webhook was created against. |
+| `url` | webhook | Endpoint the event is posted to. Required, `http` or `https`. |
+| `method` | webhook | HTTP method, default `POST`. One of `POST`, `PUT`, `PATCH`; case does not matter. |
+| `headers` | webhook | Headers added to the request. Two names that differ only in case are refused: HTTP treats them as one header. When `secret_env` or `secret_file` is set, its bearer token wins over an `Authorization` written here. |
+
+What the credential is depends on the type: for `telegram` it is the bot token,
+for `mattermost` the whole incoming-webhook URL, and for `webhook` an optional
+bearer token. Mattermost takes the URL here rather than in `url:` because for an
+incoming webhook the URL is the credential.
+
+A credential cannot be written into the config. `secret:` is rejected by name at
+load, and what `secret_env` or `secret_file` points at is read by the daemon at
+startup and never into the config it holds: `kontora config` prints the
+variable's name, not what is in it, and no log line carries a credential. A
+delivery error is logged without the request URL, because the URL holds the
+Telegram bot token and is itself the Mattermost credential.
+
+`kontora config` also hides two values that are written in the file, because
+either can be a credential: `headers` values, and the path of a webhook `url`
+(the scheme and the host stay). Use `kontora config edit` to see the file
+itself.
+
+`kontora doctor` resolves each channel's credential the way the daemon does, so
+a variable that is unset, a file that is missing, and a file holding only
+whitespace all report the same there as at startup. It warns when the file is
+readable by group or other, and when `enabled: false` leaves configured channels
+unbuilt. It prints the channel name, its type and the source, never the value
+and never a `url`.
+
+A channel whose credential will not resolve is dropped at startup with a warning
+and the rest keep working.
+
+### Which channels a notification goes to
+
+The first non-empty of three, in order:
+
+1. the ticket's own `notify_channels:`
+2. the `notify_channels:` of the [project](#projects) that owns the ticket's `path`
+3. `notifications.default`
+
+A list holding `none` resolves to no channels, so a ticket or a project can opt
+out of a default set above it. In the config `none` beside a channel name is
+refused at load; a ticket is not validated, so there the opt-out wins. A name no
+channel answers to is skipped with one warning, and the same name twice is one
+message, not two.
+
+A ticket that names statuses but resolves to no channel at all is warned about
+when the daemon reads it, at startup and on every later edit: a configured
+channel with no `default` and no project entry is the likeliest way to set this
+up and hear nothing.
+
+### Delivery
+
+Delivery is best effort and never touches the ticket. A transport error, a `429`
+or a `5xx` is retried up to `attempts` times with doubling backoff. Any other
+`4xx` is a configuration mistake, a wrong token or a deleted chat, and is not
+retried: it is logged with the status and the start of the response body, which
+is what says what to fix.
+
+Each channel is delivered by its own worker with its own 64-deep queue, so a
+host that accepts a connection and never answers holds up only itself. A
+notification that fails every attempt, that arrives when its channel's queue is
+full, or that is still queued when the daemon stops, is logged and dropped.
+Nothing is persisted and nothing is replayed, so this is not at-least-once
+delivery.
+
+`notifications` is read once at startup. A live reload keeps the running values
+and logs which field differs, because the channels and their credentials are
+built with the daemon. Restart it to pick up a change. `projects` does reload
+live, so a reload that adds a channel and points a project at it warns that the
+project has no channel this daemon can send to until it restarts.
+
+### The webhook payload
+
+A `webhook` channel posts JSON. `text` is the same message the chat channels
+send, so a receiver that only forwards has something to send; the rest are the
+fields it is rendered from. Every field but `ticket`, `to`, `at` and `text` is
+omitted when empty.
+
+```json
+{
+  "ticket": "kon-a1b2",
+  "from": "in_progress",
+  "to": "human_review",
+  "at": "2026-08-27T10:04:05.123456Z",
+  "title": "Notification channels for ticket status changes",
+  "stage": "code",
+  "branch": "kontora/notification-channels-kon-a1b2",
+  "repo_path": "/Users/me/projects/kontora",
+  "project": "kontora",
+  "summary": "the stage's summary, on the write that ends a run",
+  "last_error": "why the ticket paused",
+  "question": "waiting only: what the agent asked",
+  "text": "kon-a1b2: human_review (was in_progress)\n..."
+}
+```
+
+Deliveries are counted as
+[`kontora.notifications.sent`](#what-is-exported) when metrics are on.
+
 ## metrics
 
 Optional OTLP export of what the daemon measures: stage runs and their
@@ -951,6 +1104,7 @@ metrics off.
 | `kontora.agent.errors` | counter | `{error}` | `stage`, `agent`, `kind` |
 | `kontora.agent.tokens` | counter | `{token}` | `stage`, `agent`, `kind` |
 | `kontora.queue.wait` | histogram | `s` | none |
+| `kontora.notifications.sent` | counter | `{notification}` | `channel`, `result` |
 | `kontora.scheduler.active` | gauge | `{agent}` | none |
 | `kontora.scheduler.capacity` | gauge | `{agent}` | none |
 | `kontora.queue.depth` | gauge | `{ticket}` | none |
@@ -962,7 +1116,9 @@ found in Claude's session record and `failure_pattern` for one matched against
 the agent's output log. On `kontora.agent.tokens` it is `input`, `output`,
 `cache_create`, or `cache_read`. A run is dropped whole if any one of its
 session records left its usage key unfilled; the counter never reports a
-partial figure.
+partial figure. On `kontora.notifications.sent`, `result` is `ok` for a
+delivered notification, `failed` for one that ran out of attempts, and
+`dropped` for one the send queue had no room for.
 
 A ticket that runs without a pipeline reports `pipeline=""` and `stage=default`,
 which is the same key its log and its history rows already use.

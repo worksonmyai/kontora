@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/worksonmyai/kontora/internal/config"
+	"github.com/worksonmyai/kontora/internal/notify"
 	"github.com/worksonmyai/kontora/internal/prompt"
 	"github.com/worksonmyai/kontora/internal/ticket"
 	"github.com/worksonmyai/kontora/internal/web"
@@ -310,7 +311,8 @@ func (d *Daemon) parkForAnnotation(id string) error {
 	if err := t2.SetField("attempt", 0); err != nil {
 		return fmt.Errorf("reset attempt: %w", err)
 	}
-	if err := d.writeTicketLocked(t2, filePath); err != nil {
+	// A reviewer submitted these annotations, so this parking is a request.
+	if err := d.writeTicketLocked(t2, filePath, notify.OriginRequest); err != nil {
 		return fmt.Errorf("write ticket: %w", err)
 	}
 
@@ -376,7 +378,7 @@ func (d *Daemon) runAnnotationRun(ctx, taskCtx context.Context, cfg *config.Conf
 		return
 	}
 
-	if err := d.editTicket(t, filePath, func() error {
+	if err := d.editTicket(t, filePath, notify.OriginDaemon, func() error {
 		_ = t.SetField("status", string(ticket.StatusInProgress))
 		_ = t.SetField("started_at", time.Now().Format(time.RFC3339))
 		_ = t.SetField("claimed_by", d.instanceName)
@@ -497,7 +499,7 @@ func (d *Daemon) clearAnnotationMarker(log *slog.Logger, ticketID, filePath stri
 	if lastError != "" {
 		_ = t2.SetField("last_error", lastError)
 	}
-	if err := d.writeTicket(t2, filePath); err != nil {
+	if err := d.writeTicket(t2, filePath, notify.OriginDaemon); err != nil {
 		log.Error("annotation: write failed", "phase", "clear marker", "err", err)
 		return
 	}
@@ -596,7 +598,7 @@ func (d *Daemon) finishAnnotationRun(log *slog.Logger, p annotationExit) {
 		log.Warn("annotation paused", "exit_code", result.ExitCode)
 	}
 
-	if err := d.writeTicket(t2, p.filePath); err != nil {
+	if err := d.writeTicket(t2, p.filePath, notify.OriginDaemon); err != nil {
 		// The annotations stay on disk: they are the only copy of what the reviewer
 		// wrote, and the marker is still set, so the next pickup runs against them
 		// again.

@@ -1,0 +1,11 @@
+tickets_dir: ~/org/tickets
+
+agents:
+  claude:
+    binary: claude
+
+notifications:
+  channels:
+    tg:
+      type: signal
+      secret_env: TOKEN

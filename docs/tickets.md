@@ -25,7 +25,7 @@ Automate GitHub Releases with zig cc cross-compilation.
 
 ### User-defined fields
 
-These are set when creating a ticket (manually or via `kontora new`):
+These are set when creating a ticket (manually or via `kontora new`). `notify` and `notify_channels` are the exception: neither `kontora new` nor the API takes them, so they are written into the markdown by hand or with `kontora update`.
 
 | Field | Required | Default | Description |
 |-------|----------|---------|-------------|
@@ -39,6 +39,8 @@ These are set when creating a ticket (manually or via `kontora new`):
 | `deps` | no | — | Ids of the tickets this one waits on. The scheduler holds the ticket back until every one of them is resolved; see [Relations](#relations). |
 | `links` | no | — | Ids of related tickets. See [Relations](#relations). |
 | `parent` | no | — | Id of the epic or parent ticket. Read only; see [Relations](#relations). |
+| `notify` | no | — | Statuses whose arrival this ticket asks to be told about. Written by hand only. Without it the ticket is silent. See [Notifications](#notifications). |
+| `notify_channels` | no | — | Channels this ticket's notifications go to, above the project's and the global default. Written by hand only. See [Notifications](#notifications). |
 
 #### Relations
 
@@ -75,6 +77,27 @@ The base applies once, when the worktree is first created. Changing `base_branch
 `base_branch` must not name the ticket's own work branch. That combination fails worktree creation and pauses the ticket. Without the check, git would silently check the base branch out and the agent would commit onto it.
 
 When `base_branch` is set through `kontora new` or `POST /api/tickets`, Kontora checks that the branch exists before writing the ticket file. The check is skipped for a ticket created with `status: open`, which is not ready to run and never reaches the repository check. A hand-written ticket or a value set through `kontora update` is not checked up front either, because the repository at `path` can change afterwards. Such a value surfaces later: `git worktree add` fails, the daemon pauses the ticket, and the resolution error is written to `last_error`.
+
+#### Notifications
+
+`notify` lists the statuses this ticket asks to be told about. It is opt-in per ticket: without the field nothing is sent, however many channels the config names.
+
+```yaml
+notify: [human_review, done]
+notify_channels: [tg]
+```
+
+Both a single status (`notify: done`) and a list are read. Any status works, including a [custom one](configuration.md#top-level-fields), plus the pseudo-status `waiting`.
+
+Only a transition the daemon decided on its own sends. `kontora done <id>`, a drag in the dashboard, and any other change a person asked for update what the daemon remembers and send nothing: the point is to hear about work you were not watching, and you were watching when you made the change yourself. A ticket the daemon has not seen before is recorded without sending, so a restart over a ticket already in a listed status is silent.
+
+A `done` notification carries the ticket's per-run `summary`. It fires from the write that ends the run, and `final_summary` is written up to two minutes later by a separate pass, so it cannot be in the message.
+
+`waiting` fires when a running agent blocks on a question, once per question rather than once per poll. It works for `pi` agents only: the marker behind it is published by the pi extension Kontora injects, so `notify: [waiting]` on a claude ticket never fires. The marker is polled every two seconds, so a question answered faster than that is legitimately never seen.
+
+`notify_channels` names where this ticket's notifications go. It is resolved as the first non-empty of the ticket's list, its project's, and `notifications.default`; `none` in the list silences the ticket while leaving its `notify:` list readable, and the same channel twice is one message. See [notifications](configuration.md#notifications) for the channels themselves.
+
+Three things that would otherwise make a ticket quiet with no explanation are warned about when the daemon reads it, at startup and on every later edit, and then ignored: a status in `notify` that nothing reaches, a channel name nothing answers to, and a `notify:` list that resolves to no channel at all. A malformed `notify:` value makes the whole ticket unparseable, the same as a malformed `deps:`.
 
 ### Daemon-managed fields
 

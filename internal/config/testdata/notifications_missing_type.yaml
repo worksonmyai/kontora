@@ -1,0 +1,10 @@
+tickets_dir: ~/org/tickets
+
+agents:
+  claude:
+    binary: claude
+
+notifications:
+  channels:
+    hook:
+      url: https://example.com/ingest

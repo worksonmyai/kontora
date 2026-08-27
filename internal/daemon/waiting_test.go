@@ -403,7 +403,9 @@ func TestReadWaitMarker(t *testing.T) {
 // on every tick. Without the carry-forward the stored state changes twice a
 // second, so the badge's clock resets and every poll rebroadcasts the same wait.
 func TestApplyWaitMarkerCarriesForwardAnUnparseableStart(t *testing.T) {
-	d := &Daemon{waiting: map[string]waitingState{}}
+	// Built by hand rather than through New, so the seams New installs have to
+	// be named: applyWaitMarker reaches the notifier for a new question.
+	d := &Daemon{waiting: map[string]waitingState{}, notifier: noopNotifier{}}
 	path := filepath.Join(t.TempDir(), "step1.waiting.json")
 	require.NoError(t, os.WriteFile(path,
 		[]byte(`{"tool":"question","tool_call_id":"c1","started_at":"yesterday","question":"Q1"}`), 0o644))

@@ -1,0 +1,17 @@
+tickets_dir: ~/org/tickets
+
+agents:
+  claude:
+    binary: claude
+
+notifications:
+  channels:
+    tg:
+      type: telegram
+      secret_env: TOKEN
+      chat_id: "1"
+
+projects:
+  work-repo:
+    path: ~/projects/work-repo
+    notify_channels: [nope]

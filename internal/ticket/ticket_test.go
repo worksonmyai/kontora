@@ -587,3 +587,92 @@ func TestParseReader(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "reader-001", tkt.ID)
 }
+
+func TestNotifyDecode(t *testing.T) {
+	tests := []struct {
+		name           string
+		frontmatter    string
+		want           []string
+		wantChannels   []string
+		wantParseError string
+	}{
+		{
+			name:        "absent",
+			frontmatter: "id: n-1\nstatus: todo\n",
+		},
+		{
+			name:        "one status as a scalar",
+			frontmatter: "id: n-1\nstatus: todo\nnotify: done\n",
+			want:        []string{"done"},
+		},
+		{
+			name:        "a sequence",
+			frontmatter: "id: n-1\nstatus: todo\nnotify: [human_review, done]\n",
+			want:        []string{"human_review", "done"},
+		},
+		{
+			name:        "a block sequence",
+			frontmatter: "id: n-1\nstatus: todo\nnotify:\n  - waiting\n  - done\n",
+			want:        []string{"waiting", "done"},
+		},
+		{
+			name:        "an empty value names no status",
+			frontmatter: "id: n-1\nstatus: todo\nnotify:\n",
+		},
+		{
+			name:         "channels alongside",
+			frontmatter:  "id: n-1\nstatus: todo\nnotify: [done]\nnotify_channels: [mm]\n",
+			want:         []string{"done"},
+			wantChannels: []string{"mm"},
+		},
+		{
+			name:           "a mapping is rejected with its line",
+			frontmatter:    "id: n-1\nstatus: todo\nnotify:\n  mm: done\n",
+			wantParseError: "line 4",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tkt, err := ParseBytes([]byte("---\n" + tt.frontmatter + "---\n# body\n"))
+			if tt.wantParseError != "" {
+				require.Error(t, err)
+				assert.ErrorContains(t, err, "notify")
+				assert.ErrorContains(t, err, tt.wantParseError)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, tkt.Notify.Statuses)
+			assert.Equal(t, tt.wantChannels, tkt.NotifyChannels)
+		})
+	}
+}
+
+func TestNotifyRoundTrip(t *testing.T) {
+	src := "---\nid: n-2\nkontora: true\nstatus: todo\nnotify: [human_review, done]\nnotify_channels: [mm]\ncustom_key: kept\n---\n# body\n"
+
+	tkt, err := ParseBytes([]byte(src))
+	require.NoError(t, err)
+	require.NoError(t, tkt.SetField("status", "done"))
+
+	out, err := tkt.Marshal()
+	require.NoError(t, err)
+	assert.Contains(t, string(out), "notify: [human_review, done]")
+	assert.Contains(t, string(out), "notify_channels: [mm]")
+	assert.Contains(t, string(out), "custom_key: kept")
+
+	reparsed, err := ParseBytes(out)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"human_review", "done"}, reparsed.Notify.Statuses)
+	assert.Equal(t, []string{"mm"}, reparsed.NotifyChannels)
+}
+
+func TestNotifyIsNotAddedToATicketWithoutIt(t *testing.T) {
+	tkt, err := ParseBytes([]byte("---\nid: n-3\nkontora: true\nstatus: todo\n---\n# body\n"))
+	require.NoError(t, err)
+	require.NoError(t, tkt.SetField("status", "done"))
+
+	out, err := tkt.Marshal()
+	require.NoError(t, err)
+	assert.NotContains(t, string(out), "notify")
+}

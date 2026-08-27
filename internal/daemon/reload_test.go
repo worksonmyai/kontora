@@ -239,6 +239,16 @@ func TestReload_PinsRestartOnlyFields(t *testing.T) {
   interval: 30s
   headers:
     authorization: metrics-secret
+notifications:
+  attempts: 2
+  timeout: 5s
+  backoff: 2s
+  channels:
+    tg:
+      type: telegram
+      secret_env: KONTORA_TG_BEFORE
+      chat_id: "1"
+  default: [tg]
 `
 	metricsAfter := `metrics:
   enabled: false
@@ -247,6 +257,17 @@ func TestReload_PinsRestartOnlyFields(t *testing.T) {
   interval: 5s
   headers:
     authorization: rotated-secret
+notifications:
+  enabled: false
+  attempts: 5
+  timeout: 30s
+  backoff: 10s
+  channels:
+    tg:
+      type: telegram
+      secret_env: KONTORA_TG_ROTATED
+      chat_id: "2"
+  default: []
 `
 	d := h.newDaemonWithConfig(t, h.yaml(configOpts{extra: metricsBefore}))
 	before := d.config()
@@ -275,16 +296,22 @@ func TestReload_PinsRestartOnlyFields(t *testing.T) {
 	assert.Equal(t, before.Web, got.Web, "the web block is pinned whole")
 	assert.Equal(t, before.Metrics, got.Metrics, "the metrics block is pinned whole")
 	assert.Equal(t, "localhost:4318", got.Metrics.Endpoint, "the running exporter's endpoint survives the reload")
+	assert.Equal(t, before.Notifications, got.Notifications, "the notifications block is pinned whole")
+	assert.Equal(t, "KONTORA_TG_BEFORE", got.Notifications.Channels["tg"].SecretEnv,
+		"the running senders' credentials survive the reload")
 
 	logs := h.logBuf.String()
 	for _, field := range []string{
 		"tickets_dir", "worktrees_dir", "logs_dir", "instance_name", "tmux_session",
 		"max_concurrent_agents", "web.host", "web.port", "web.token", "web.allowed_hosts",
 		"metrics.enabled", "metrics.endpoint", "metrics.headers", "metrics.interval", "metrics.insecure",
+		"notifications.enabled", "notifications.channels", "notifications.default",
+		"notifications.timeout", "notifications.attempts", "notifications.backoff",
 	} {
 		assert.Contains(t, logs, "field="+field, "expected a restart-only warning for %s", field)
 	}
 	assert.NotContains(t, logs, "secret", "the web token and metrics header values must never be logged")
+	assert.NotContains(t, logs, "KONTORA_TG_", "a notification channel is redacted whole, names included")
 }
 
 // TestReload_ReappliesConfigOverride covers `kontora start --address/--port`.
@@ -873,4 +900,41 @@ func TestReload_BroadcastsConfigReloaded(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestReload_WarnsWhenAProjectNamesAnUnbuiltChannel covers the gap between the
+// two halves of a notification config: projects reload live while the channels
+// do not. Adding a channel and pointing a project at it passes validation, but
+// the running dispatcher has never heard of the channel, and the project's list
+// shadows the default that was working.
+func TestReload_WarnsWhenAProjectNamesAnUnbuiltChannel(t *testing.T) {
+	h := newReloadHarness(t)
+	before := `notifications:
+  channels:
+    tg:
+      type: telegram
+      secret_env: KONTORA_TG
+      chat_id: "1"
+  default: [tg]
+`
+	after := before + `projects:
+  api:
+    path: ` + h.repoDir + `
+    notify_channels: [ops]
+`
+	after = strings.Replace(after, `  default: [tg]`, `    ops:
+      type: webhook
+      url: https://ops.example.invalid/ingest
+  default: [tg]`, 1)
+
+	d := h.newDaemonWithConfig(t, h.yaml(configOpts{extra: before}))
+	h.writeConfig(t, h.yaml(configOpts{extra: after}))
+	require.NoError(t, d.reloadConfig())
+
+	assert.Equal(t, []string{"ops"}, d.config().Projects["api"].NotifyChannels,
+		"projects reload live")
+	logs := h.logBuf.String()
+	assert.Contains(t, logs, "project=api")
+	assert.Contains(t, logs, "channel=ops")
+	assert.Contains(t, logs, "silent until a restart")
 }

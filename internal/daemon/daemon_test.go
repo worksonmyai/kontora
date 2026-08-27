@@ -28,6 +28,7 @@ import (
 	"github.com/worksonmyai/kontora/internal/cli"
 	"github.com/worksonmyai/kontora/internal/config"
 	"github.com/worksonmyai/kontora/internal/logfmt"
+	"github.com/worksonmyai/kontora/internal/notify"
 	"github.com/worksonmyai/kontora/internal/process"
 	"github.com/worksonmyai/kontora/internal/testutil"
 	"github.com/worksonmyai/kontora/internal/ticket"
@@ -2485,7 +2486,7 @@ func TestDaemon_UpdatedAt_ReflectsFileModTime(t *testing.T) {
 	// A daemon write rewrites the file (new mtime); UpdatedAt must follow even
 	// though the ticketState is reused in place rather than reconstructed.
 	require.NoError(t, tk.SetField("status", "paused"))
-	require.NoError(t, d.writeTicket(tk, path))
+	require.NoError(t, d.writeTicket(tk, path, notify.OriginDaemon))
 
 	st2, err := os.Stat(path)
 	require.NoError(t, err)

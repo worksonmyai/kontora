@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"net/http"
+	"net/url"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -111,6 +113,7 @@ type Config struct {
 	Plannotator         Plannotator         `yaml:"plannotator"`
 	Assistant           Assistant           `yaml:"assistant"`
 	Metrics             Metrics             `yaml:"metrics"`
+	Notifications       Notifications       `yaml:"notifications"`
 
 	// SummaryModel selects the model the final summary pass runs with, resolved
 	// against the agent that ran the last stage. It is one top-level field rather
@@ -250,6 +253,56 @@ func (m Metrics) ResolveInsecure() (insecure, conflict bool) {
 	default:
 		return m.Insecure, false
 	}
+}
+
+// Notifications configures outbound notification of ticket status changes.
+// Which statuses a notification is sent for is per ticket, in its notify:
+// frontmatter; this section only says where those notifications can go.
+type Notifications struct {
+	Enabled *bool `yaml:"enabled"`
+	// Timeout bounds one delivery attempt, Attempts caps how many are made, and
+	// Backoff is the wait before the second one, doubled for each after it.
+	//
+	// Attempts is a pointer so an explicit 0 is refused rather than replaced by
+	// the default: somebody writing it means "do not retry", which is 1.
+	Timeout  Duration                 `yaml:"timeout"`
+	Attempts *int                     `yaml:"attempts"`
+	Backoff  Duration                 `yaml:"backoff"`
+	Channels map[string]NotifyChannel `yaml:"channels"`
+	// Default names the channels a notification goes to when neither the ticket
+	// nor its project names one.
+	Default []string `yaml:"default"`
+}
+
+// Channel types a notification can be delivered over.
+const (
+	NotifyTelegram   = "telegram"
+	NotifyMattermost = "mattermost"
+	NotifyWebhook    = "webhook"
+)
+
+// NotifyChannel is one delivery target. Its credential is named, never
+// written: the daemon resolves SecretEnv or SecretFile when it builds the
+// dispatcher, so no token ever enters this struct and none can reach
+// `kontora config` output.
+type NotifyChannel struct {
+	Type string `yaml:"type"`
+	// SecretEnv and SecretFile name where the credential comes from. What the
+	// credential is depends on the type: the bot token for telegram, the whole
+	// incoming-webhook URL for mattermost, an optional bearer token for
+	// webhook. At most one of the two.
+	SecretEnv  string            `yaml:"secret_env"`
+	SecretFile string            `yaml:"secret_file"`
+	URL        string            `yaml:"url"`     // webhook
+	Method     string            `yaml:"method"`  // webhook, default POST
+	Headers    map[string]string `yaml:"headers"` // webhook
+	ChatID     string            `yaml:"chat_id"` // telegram
+	Channel    string            `yaml:"channel"` // mattermost override
+	// Secret is declared only so Validate can reject it by name. Without the
+	// field, KnownFields(true) produces a parse error that does not say what to
+	// use instead. omitempty keeps it out of `kontora config` output, where a
+	// field that exists only to be refused would read as one to fill in.
+	Secret string `yaml:"secret,omitempty"`
 }
 
 type Web struct {
@@ -530,6 +583,10 @@ type Project struct {
 	BranchPrefix string       `yaml:"branch_prefix"`
 	BranchNaming BranchNaming `yaml:"branch_naming"`
 	Hooks        Hooks        `yaml:"hooks"`
+	// NotifyChannels overrides notifications.default for tickets in this
+	// repository. The sole entry "none" silences the project even when a global
+	// default is set.
+	NotifyChannels []string `yaml:"notify_channels"`
 }
 
 // Lifecycle events a hook can be attached to. The set is closed: an event name
@@ -841,6 +898,32 @@ func (c *Config) applyServiceDefaults() {
 	if c.Metrics.Interval.Duration == 0 {
 		c.Metrics.Interval.Duration = 60 * time.Second
 	}
+
+	// Unlike metrics this defaults to on: it costs nothing until a ticket names
+	// a status, and every other way of turning it off (no channels, no default,
+	// notify_channels: [none]) is already available.
+	if c.Notifications.Enabled == nil {
+		c.Notifications.Enabled = new(true)
+	}
+	if c.Notifications.Timeout.Duration == 0 {
+		c.Notifications.Timeout.Duration = 10 * time.Second
+	}
+	if c.Notifications.Attempts == nil {
+		c.Notifications.Attempts = new(3)
+	}
+	if c.Notifications.Backoff.Duration == 0 {
+		c.Notifications.Backoff.Duration = time.Second
+	}
+	for name, ch := range c.Notifications.Channels {
+		if ch.Type != NotifyWebhook {
+			continue
+		}
+		// Uppercased, not only defaulted: http.NewRequest accepts "post" and
+		// sends it literally, and a server that answers 501 to that looks like
+		// a 4xx nobody retries.
+		ch.Method = strings.ToUpper(cmp.Or(ch.Method, http.MethodPost))
+		c.Notifications.Channels[name] = ch
+	}
 }
 
 var validStatusNameRe = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
@@ -978,6 +1061,10 @@ func (c *Config) Validate() error {
 	}
 
 	if err := c.validateMetrics(); err != nil {
+		return err
+	}
+
+	if err := c.validateNotifications(); err != nil {
 		return err
 	}
 
@@ -1179,6 +1266,146 @@ func (c *Config) validateMetrics() error {
 	}
 }
 
+// validateNotifications checks the channels and the default list. Unlike
+// metrics it is checked whether or not it is enabled: a channel is only ever
+// reached because a ticket names it, so a half-written one would fail silently
+// at the moment somebody was relying on it.
+func (c *Config) validateNotifications() error {
+	if a := c.Notifications.Attempts; a != nil && (*a < 1 || *a > 10) {
+		return fmt.Errorf("notifications.attempts %d: must be between 1 and 10 (1 sends once and does not retry)", *a)
+	}
+	if c.Notifications.Timeout.Duration < 0 {
+		return fmt.Errorf("notifications.timeout %s: must be positive", c.Notifications.Timeout)
+	}
+	if c.Notifications.Backoff.Duration < 0 {
+		return fmt.Errorf("notifications.backoff %s: must be positive", c.Notifications.Backoff)
+	}
+
+	// Name order so two invalid channels always produce the same error.
+	for _, name := range slices.Sorted(maps.Keys(c.Notifications.Channels)) {
+		if err := validateNotifyChannel(name, c.Notifications.Channels[name]); err != nil {
+			return err
+		}
+	}
+
+	if err := c.checkNotifyChannelList("notifications.default", c.Notifications.Default); err != nil {
+		return err
+	}
+	for _, project := range slices.Sorted(maps.Keys(c.Projects)) {
+		scope := fmt.Sprintf("project %q notify_channels", project)
+		if err := c.checkNotifyChannelList(scope, c.Projects[project].NotifyChannels); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateNotifyChannel(name string, ch NotifyChannel) error {
+	if name == NoneSentinel {
+		return fmt.Errorf("notifications.channels %q: name is reserved for the opt-out", name)
+	}
+	if ch.Secret != "" {
+		return fmt.Errorf("notifications.channels %q: secret must not be written in the config; use secret_env or secret_file", name)
+	}
+	if ch.SecretEnv != "" && ch.SecretFile != "" {
+		return fmt.Errorf("notifications.channels %q: set secret_env or secret_file, not both", name)
+	}
+	hasSecret := ch.SecretEnv != "" || ch.SecretFile != ""
+
+	switch ch.Type {
+	case NotifyTelegram:
+		if !hasSecret {
+			return fmt.Errorf("notifications.channels %q: telegram needs the bot token in secret_env or secret_file", name)
+		}
+		if ch.ChatID == "" {
+			return fmt.Errorf("notifications.channels %q: telegram needs chat_id", name)
+		}
+	case NotifyMattermost:
+		if !hasSecret {
+			return fmt.Errorf("notifications.channels %q: mattermost needs the incoming-webhook URL in secret_env or secret_file", name)
+		}
+	case NotifyWebhook:
+		if ch.URL == "" {
+			return fmt.Errorf("notifications.channels %q: webhook needs url", name)
+		}
+		if err := validateNotifyURL(name, ch.URL); err != nil {
+			return err
+		}
+		if err := validateNotifyMethod(name, ch.Method); err != nil {
+			return err
+		}
+		if err := validateNotifyHeaders(name, ch.Headers); err != nil {
+			return err
+		}
+	case "":
+		return fmt.Errorf("notifications.channels %q: type is required (%s, %s or %s)", name, NotifyTelegram, NotifyMattermost, NotifyWebhook)
+	default:
+		return fmt.Errorf("notifications.channels %q: unknown type %q (use %s, %s or %s)", name, ch.Type, NotifyTelegram, NotifyMattermost, NotifyWebhook)
+	}
+	return nil
+}
+
+// validateNotifyURL rejects a scheme nothing can post to, the way
+// validateMetrics rejects one on the OTLP endpoint. Unlike that endpoint this
+// one is always a full URL, so a missing scheme is an error too.
+func validateNotifyURL(name, raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("notifications.channels %q: invalid url %q: %w", name, raw, err)
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "http", "https":
+		return nil
+	default:
+		return fmt.Errorf("notifications.channels %q: url %q: scheme %q is not supported (use http or https)", name, raw, u.Scheme)
+	}
+}
+
+// notifyMethods are the methods a webhook may be posted with. Anything else is
+// either a body-less method or something no receiver expects.
+var notifyMethods = []string{http.MethodPost, http.MethodPut, http.MethodPatch}
+
+func validateNotifyMethod(name, method string) error {
+	if method == "" || slices.Contains(notifyMethods, strings.ToUpper(method)) {
+		return nil
+	}
+	return fmt.Errorf("notifications.channels %q: method %q is not supported (use %s)",
+		name, method, strings.Join(notifyMethods, ", "))
+}
+
+// validateNotifyHeaders rejects two header names that differ only in case.
+// net/http canonicalizes a header name when it sets it, so the two would land
+// on one header and only one of the values would go out.
+func validateNotifyHeaders(name string, headers map[string]string) error {
+	seen := make(map[string]string, len(headers))
+	for _, k := range slices.Sorted(maps.Keys(headers)) {
+		canon := http.CanonicalHeaderKey(k)
+		if first, dup := seen[canon]; dup {
+			return fmt.Errorf("notifications.channels %q: headers %q and %q are the same header", name, first, k)
+		}
+		seen[canon] = k
+	}
+	return nil
+}
+
+// checkNotifyChannelList validates one place a channel list is written. "none"
+// is the opt-out and means nothing beside a channel name, so a list that has
+// both is a mistake either way it is read.
+func (c *Config) checkNotifyChannelList(scope string, names []string) error {
+	for _, name := range names {
+		if name == NoneSentinel {
+			if len(names) > 1 {
+				return fmt.Errorf("%s: %q silences the list and cannot be combined with a channel", scope, NoneSentinel)
+			}
+			continue
+		}
+		if _, ok := c.Notifications.Channels[name]; !ok {
+			return fmt.Errorf("%s: unknown channel %q", scope, name)
+		}
+	}
+	return nil
+}
+
 // validateAssistant checks the assistant section. An empty agent is valid and
 // means the pane is disabled, so every other field is only checked once one is
 // named.
@@ -1329,6 +1556,31 @@ func (c *Config) BranchPrefixFor(repoPath string) string {
 		return project.BranchPrefix
 	}
 	return c.BranchPrefix
+}
+
+// NotifyChannelsFor resolves which channels a ticket's notification goes to:
+// the ticket's own list, else its project's, else notifications.default. A list
+// holding "none" resolves to no channels, so a project or a ticket can opt out
+// of a default set above it. Validation refuses "none" beside a channel name in
+// the config; a ticket names its own channels and is never validated, so the
+// opt-out wins there rather than being ignored.
+func (c *Config) NotifyChannelsFor(repoPath string, ticketChannels []string) []string {
+	lists := [][]string{ticketChannels}
+	if _, project, ok := c.ProjectFor(repoPath); ok {
+		lists = append(lists, project.NotifyChannels)
+	}
+	lists = append(lists, c.Notifications.Default)
+
+	for _, list := range lists {
+		if len(list) == 0 {
+			continue
+		}
+		if slices.Contains(list, NoneSentinel) {
+			return nil
+		}
+		return slices.Clone(list)
+	}
+	return nil
 }
 
 // TicketPrefixFor returns the ticket-ID prefix new tickets for repoPath are

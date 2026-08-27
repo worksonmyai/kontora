@@ -1,0 +1,14 @@
+tickets_dir: ~/org/tickets
+
+agents:
+  claude:
+    binary: claude
+
+notifications:
+  channels:
+    hook:
+      type: webhook
+      url: https://example.com/ingest
+      headers:
+        Authorization: Bearer one
+        authorization: Bearer two

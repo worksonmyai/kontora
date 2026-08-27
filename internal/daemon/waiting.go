@@ -101,7 +101,17 @@ func (d *Daemon) applyWaitMarker(ticketID string, st *waitingState) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	prev, had := d.waiting[ticketID]
+	// Tracked per tool call for the whole run rather than against the previous
+	// marker: the pi extension rewrites the marker back to an older still-open
+	// question when a newer one is answered, and the previous marker alone
+	// reads that as a new question. Question text changing under one tool call
+	// is the same question reworded, and clearing the marker is never a new
+	// one.
+	newQuestion := st != nil && !d.waitAnnounced[ticketID][st.ToolCallID]
 	if st == nil {
+		// The run is no longer blocked. Its answered questions go with it: the
+		// next run's tool call IDs are its own.
+		delete(d.waitAnnounced, ticketID)
 		if !had {
 			return
 		}
@@ -118,7 +128,41 @@ func (d *Daemon) applyWaitMarker(ticketID string, st *waitingState) {
 		}
 		d.waiting[ticketID] = *st
 	}
+	if newQuestion {
+		if d.waitAnnounced == nil {
+			d.waitAnnounced = make(map[string]map[string]bool)
+		}
+		if d.waitAnnounced[ticketID] == nil {
+			d.waitAnnounced[ticketID] = make(map[string]bool)
+		}
+		d.waitAnnounced[ticketID][st.ToolCallID] = true
+		d.notifyWaitingLocked(ticketID, *st)
+	}
 	d.broadcastTicketUpdate(ticketID)
+}
+
+// notifyWaitingLocked sends the waiting pseudo-status for one new question.
+// It reads the ticket out of d.tickets under the lock applyWaitMarker already
+// holds, because the poller has only the ticket ID.
+//
+// waiting deliberately never enters the dispatcher's remembered-status map: it
+// is not a status the ticket ever held, and recording it would make the next
+// real status write diff against it.
+func (d *Daemon) notifyWaitingLocked(ticketID string, st waitingState) {
+	if !d.notifier.Live() {
+		return
+	}
+	ts, ok := d.tickets[ticketID]
+	if !ok {
+		return
+	}
+	target := d.notifyTarget(ts.ticket)
+	// A question is what the run is blocked on now; the summary and the error
+	// belong to the run before it.
+	f := target.fields
+	f.Summary, f.LastError = "", ""
+	f.Question = st.Question
+	d.notifier.Waiting(ticketID, target.want, target.channels, f)
 }
 
 // pendingWait is the waiting state of a ticket right now, for a caller that has

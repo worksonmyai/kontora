@@ -1,0 +1,32 @@
+tickets_dir: ~/org/tickets
+
+agents:
+  claude:
+    binary: claude
+
+notifications:
+  attempts: 2
+  channels:
+    tg:
+      type: telegram
+      secret_env: KONTORA_TELEGRAM_TOKEN
+      chat_id: "123456789"
+    mm:
+      type: mattermost
+      secret_file: ~/.config/kontora/mattermost-webhook
+      channel: town-square
+    hook:
+      type: webhook
+      url: https://example.com/ingest
+      headers:
+        X-Team: kontora
+    put:
+      type: webhook
+      url: https://example.com/ingest
+      method: put
+  default: [tg]
+
+projects:
+  work-repo:
+    path: ~/projects/work-repo
+    notify_channels: [mm]

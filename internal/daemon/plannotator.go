@@ -16,6 +16,7 @@ import (
 	"github.com/worksonmyai/kontora/internal/config"
 	"github.com/worksonmyai/kontora/internal/hook"
 	"github.com/worksonmyai/kontora/internal/metrics"
+	"github.com/worksonmyai/kontora/internal/notify"
 	"github.com/worksonmyai/kontora/internal/process"
 	"github.com/worksonmyai/kontora/internal/ticket"
 	"github.com/worksonmyai/kontora/internal/tmux"
@@ -292,7 +293,8 @@ func (d *Daemon) transitionToRework(id string) error {
 	if err := t2.SetField("last_error", ""); err != nil {
 		return fmt.Errorf("clear last_error: %w", err)
 	}
-	if err := d.writeTicket(t2, filePath); err != nil {
+	// A reviewer chose rework, so this transition is a request.
+	if err := d.writeTicket(t2, filePath, notify.OriginRequest); err != nil {
 		return fmt.Errorf("write ticket: %w", err)
 	}
 
@@ -329,7 +331,7 @@ func (d *Daemon) runReworkStage(ctx, taskCtx context.Context, cfg *config.Config
 
 	// Set status=in_progress, started_at, and claim for this instance.
 	now := time.Now()
-	if err := d.editTicket(t, filePath, func() error {
+	if err := d.editTicket(t, filePath, notify.OriginDaemon, func() error {
 		_ = t.SetField("status", string(ticket.StatusInProgress))
 		_ = t.SetField("started_at", now.Format(time.RFC3339))
 		_ = t.SetField("claimed_by", d.instanceName)
@@ -377,7 +379,7 @@ func (d *Daemon) runReworkStage(ctx, taskCtx context.Context, cfg *config.Config
 	if !d.runWorktreeCreatedHooks(taskCtx, cfg, log, t, filePath, reworkHookCtx, created) {
 		return
 	}
-	if err := d.editTicket(t, filePath, func() error {
+	if err := d.editTicket(t, filePath, notify.OriginDaemon, func() error {
 		_ = t.SetField("branch", branch)
 		// Rework runs like any other stage from here on: the per-run summary
 		// belongs to this run only, and the ticket-level one is stale until this
@@ -532,7 +534,7 @@ func (d *Daemon) runReworkStage(ctx, taskCtx context.Context, cfg *config.Config
 		d.killTaskWindow(ticketID)
 	}
 
-	if err := d.writeTicket(t2, filePath); err != nil {
+	if err := d.writeTicket(t2, filePath, notify.OriginDaemon); err != nil {
 		log.Error("rework: write failed", "phase", "exit", "err", err)
 		return
 	}

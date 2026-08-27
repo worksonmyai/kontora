@@ -1,0 +1,13 @@
+tickets_dir: ~/org/tickets
+
+agents:
+  claude:
+    binary: claude
+
+notifications:
+  channels:
+    tg:
+      type: telegram
+      secret_env: KONTORA_TELEGRAM_TOKEN
+      chat_id: "123456789"
+  default: [tg, none]

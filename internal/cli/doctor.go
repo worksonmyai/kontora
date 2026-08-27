@@ -61,6 +61,7 @@ func Doctor(configPath string, w io.Writer) error {
 	checkAgents(cfg, check)
 	checkProjects(cfg, check)
 	checkPlannotator(cfg, check)
+	checkNotifications(cfg, check)
 	checkWebPort(cfg, daemonRunning, check)
 
 	fmt.Fprintln(w)
@@ -240,6 +241,52 @@ func checkPlannotator(cfg *config.Config, check checkFunc) {
 	} else {
 		check("OK", label, resolved)
 	}
+}
+
+// checkNotifications reports whether each channel would build, by resolving
+// its credential exactly the way the daemon does. It is warn-only: a channel
+// that cannot be built is dropped at startup and the daemon runs on without it.
+//
+// It prints the channel name, its type and the source of the secret, never the
+// secret, and never a webhook URL: for a Slack-style incoming webhook that URL
+// is the credential. That is the whole point of the check: a token in `kontora
+// doctor` output would be a token in every pasted bug report.
+func checkNotifications(cfg *config.Config, check checkFunc) {
+	if cfg == nil {
+		return
+	}
+	// Enabled defaults to true, so only an explicit false disables it. Reported
+	// rather than skipped: a configured channel and no notifications is exactly
+	// what somebody runs doctor to explain.
+	if cfg.Notifications.Enabled != nil && !*cfg.Notifications.Enabled && len(cfg.Notifications.Channels) > 0 {
+		check("WARN", "Notifications", "disabled by notifications.enabled: false; no channel is built")
+		return
+	}
+	for _, name := range slices.Sorted(maps.Keys(cfg.Notifications.Channels)) {
+		ch := cfg.Notifications.Channels[name]
+		label := fmt.Sprintf("Notify %q (%s)", name, ch.Type)
+		if _, err := ch.ResolveSecret(); err != nil {
+			check("WARN", label, err.Error())
+			continue
+		}
+		if ch.SecretFile != "" {
+			if warning, ok := secretFileMode(config.ExpandTilde(ch.SecretFile)); ok {
+				check("WARN", label, warning)
+				continue
+			}
+		}
+		check("OK", label, ch.SecretSource())
+	}
+}
+
+// secretFileMode reports a credential file whose mode lets anyone but the owner
+// read it. Readability and emptiness are ResolveSecret's answer to give.
+func secretFileMode(path string) (string, bool) {
+	info, err := os.Stat(path)
+	if err != nil || info.Mode().Perm()&0o077 == 0 {
+		return "", false
+	}
+	return fmt.Sprintf("%s is readable by group or other (mode %04o)", path, info.Mode().Perm()), true
 }
 
 // checkWebPort is warn-only: a port the dashboard answers on is its own, not a

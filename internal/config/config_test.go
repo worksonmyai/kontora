@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"net/http"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -2451,4 +2452,231 @@ assistant:
 			tt.check(t, cfg.Assistant)
 		})
 	}
+}
+
+func TestNotifyChannelSecretSourceNamesTheSourceNotTheValue(t *testing.T) {
+	tests := []struct {
+		name    string
+		channel NotifyChannel
+		want    string
+	}{
+		{name: "environment", channel: NotifyChannel{SecretEnv: "TOK"}, want: "$TOK"},
+		{name: "file", channel: NotifyChannel{SecretFile: "~/.tok"}, want: "~/.tok"},
+		{name: "neither", want: "none"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, tt.channel.SecretSource())
+		})
+	}
+}
+
+func TestLoadNotificationsValid(t *testing.T) {
+	cfg, err := Load("testdata/notifications_valid.yaml")
+	require.NoError(t, err)
+
+	n := cfg.Notifications
+	require.NotNil(t, n.Enabled)
+	assert.True(t, *n.Enabled, "notifications are on unless switched off")
+	assert.Equal(t, []string{"tg"}, n.Default)
+	require.NotNil(t, n.Attempts)
+	assert.Equal(t, 2, *n.Attempts, "an explicit attempts survives the default")
+	assert.Equal(t, 10*time.Second, n.Timeout.Duration)
+	assert.Equal(t, time.Second, n.Backoff.Duration)
+
+	assert.Equal(t, NotifyChannel{
+		Type: NotifyTelegram, SecretEnv: "KONTORA_TELEGRAM_TOKEN", ChatID: "123456789",
+	}, n.Channels["tg"])
+	assert.Equal(t, NotifyChannel{
+		Type: NotifyMattermost, SecretFile: "~/.config/kontora/mattermost-webhook", Channel: "town-square",
+	}, n.Channels["mm"])
+	assert.Equal(t, http.MethodPost, n.Channels["hook"].Method, "a webhook without a method defaults to POST")
+	assert.Equal(t, http.MethodPut, n.Channels["put"].Method, "a method is uppercased, because http sends it as written")
+	assert.Equal(t, []string{"mm"}, cfg.Projects["work-repo"].NotifyChannels)
+}
+
+func TestLoadRejectsNotifications(t *testing.T) {
+	tests := []struct {
+		name    string
+		fixture string
+		wantErr []string
+	}{
+		{
+			name:    "a channel named none",
+			fixture: "notifications_reserved_name.yaml",
+			wantErr: []string{`notifications.channels "none"`, "reserved for the opt-out"},
+		},
+		{
+			name:    "unknown type",
+			fixture: "notifications_unknown_type.yaml",
+			wantErr: []string{`notifications.channels "tg"`, `unknown type "signal"`},
+		},
+		{
+			name:    "type missing",
+			fixture: "notifications_missing_type.yaml",
+			wantErr: []string{`notifications.channels "hook"`, "type is required"},
+		},
+		{
+			name:    "literal secret",
+			fixture: "notifications_literal_secret.yaml",
+			wantErr: []string{`notifications.channels "tg"`, "secret_env", "secret_file"},
+		},
+		{
+			name:    "both secret sources",
+			fixture: "notifications_both_secret_sources.yaml",
+			wantErr: []string{`notifications.channels "tg"`, "not both"},
+		},
+		{
+			name:    "telegram without a secret",
+			fixture: "notifications_telegram_no_secret.yaml",
+			wantErr: []string{`notifications.channels "tg"`, "bot token"},
+		},
+		{
+			name:    "telegram without chat_id",
+			fixture: "notifications_telegram_no_chat_id.yaml",
+			wantErr: []string{`notifications.channels "tg"`, "chat_id"},
+		},
+		{
+			name:    "mattermost without a secret",
+			fixture: "notifications_mattermost_no_secret.yaml",
+			wantErr: []string{`notifications.channels "mm"`, "incoming-webhook URL"},
+		},
+		{
+			name:    "webhook without a url",
+			fixture: "notifications_webhook_no_url.yaml",
+			wantErr: []string{`notifications.channels "hook"`, "needs url"},
+		},
+		{
+			name:    "webhook with an unsupported scheme",
+			fixture: "notifications_webhook_bad_scheme.yaml",
+			wantErr: []string{`notifications.channels "hook"`, `scheme "ftp"`},
+		},
+		{
+			name:    "attempts out of range",
+			fixture: "notifications_attempts_out_of_range.yaml",
+			wantErr: []string{"notifications.attempts 11", "between 1 and 10"},
+		},
+		{
+			name:    "negative timeout",
+			fixture: "notifications_negative_timeout.yaml",
+			wantErr: []string{"notifications.timeout", "must be positive"},
+		},
+		{
+			name:    "negative backoff",
+			fixture: "notifications_negative_backoff.yaml",
+			wantErr: []string{"notifications.backoff", "must be positive"},
+		},
+		{
+			name:    "default names an unknown channel",
+			fixture: "notifications_unknown_default.yaml",
+			wantErr: []string{"notifications.default", `unknown channel "nope"`},
+		},
+		{
+			name:    "project names an unknown channel",
+			fixture: "notifications_project_unknown_channel.yaml",
+			wantErr: []string{`project "work-repo" notify_channels`, `unknown channel "nope"`},
+		},
+		{
+			// It reads as "send to tg and to nowhere", which is neither.
+			name:    "the default combines none with a channel",
+			fixture: "notifications_none_in_a_list.yaml",
+			wantErr: []string{"notifications.default", `"none" silences the list`},
+		},
+		{
+			name:    "a project combines none with a channel",
+			fixture: "notifications_project_none_in_a_list.yaml",
+			wantErr: []string{`project "work-repo" notify_channels`, `"none" silences the list`},
+		},
+		{
+			// Somebody writing 0 means "do not retry", which is 1. It used to
+			// be indistinguishable from unset and became the default 3.
+			name:    "attempts of zero",
+			fixture: "notifications_zero_attempts.yaml",
+			wantErr: []string{"notifications.attempts 0", "1 sends once"},
+		},
+		{
+			name:    "a webhook method nothing carries a body with",
+			fixture: "notifications_webhook_bad_method.yaml",
+			wantErr: []string{`notifications.channels "hook"`, `method "DELETE" is not supported`},
+		},
+		{
+			name:    "two headers that differ only in case",
+			fixture: "notifications_webhook_header_case.yaml",
+			wantErr: []string{`notifications.channels "hook"`, "are the same header"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := Load(filepath.Join("testdata", tt.fixture))
+			require.Error(t, err)
+			for _, want := range tt.wantErr {
+				assert.ErrorContains(t, err, want)
+			}
+		})
+	}
+}
+
+func TestNotifyChannelsFor(t *testing.T) {
+	cfg := &Config{
+		Notifications: Notifications{
+			Channels: map[string]NotifyChannel{"tg": {}, "mm": {}},
+			Default:  []string{"tg"},
+		},
+		Projects: map[string]Project{
+			"work":   {Path: "/repos/work", NotifyChannels: []string{"mm"}},
+			"quiet":  {Path: "/repos/quiet", NotifyChannels: []string{NoneSentinel}},
+			"plain":  {Path: "/repos/plain"},
+			"nodefs": {Path: "/repos/nodefs", NotifyChannels: []string{"mm", "tg"}},
+		},
+	}
+
+	tests := []struct {
+		name           string
+		repoPath       string
+		ticketChannels []string
+		want           []string
+	}{
+		{name: "the global default", repoPath: "/repos/plain", want: []string{"tg"}},
+		{name: "an unmatched repo falls to the default", repoPath: "/repos/elsewhere", want: []string{"tg"}},
+		{name: "no repo path at all", want: []string{"tg"}},
+		{name: "a project overrides the default", repoPath: "/repos/work", want: []string{"mm"}},
+		{name: "a project may name several", repoPath: "/repos/nodefs", want: []string{"mm", "tg"}},
+		{
+			name:           "a ticket overrides its project",
+			repoPath:       "/repos/work",
+			ticketChannels: []string{"tg"},
+			want:           []string{"tg"},
+		},
+		{
+			name:           "none on the ticket silences it",
+			repoPath:       "/repos/work",
+			ticketChannels: []string{NoneSentinel},
+		},
+		{name: "none on the project silences it", repoPath: "/repos/quiet"},
+		{
+			// The config refuses this combination; a ticket is never validated,
+			// so the opt-out has to win here rather than be ignored.
+			name:           "none beside a channel on a ticket still silences it",
+			repoPath:       "/repos/work",
+			ticketChannels: []string{"tg", NoneSentinel},
+		},
+		{
+			name:           "a ticket overrides a silenced project",
+			repoPath:       "/repos/quiet",
+			ticketChannels: []string{"tg"},
+			want:           []string{"tg"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, cfg.NotifyChannelsFor(tt.repoPath, tt.ticketChannels))
+		})
+	}
+}
+
+func TestNotifyChannelsForWithoutADefault(t *testing.T) {
+	cfg := &Config{}
+	assert.Empty(t, cfg.NotifyChannelsFor("/repos/plain", nil))
 }

@@ -109,6 +109,7 @@ type Recorder struct {
 	agentErrors      metric.Int64Counter
 	agentTokens      metric.Int64Counter
 	queueWait        metric.Float64Histogram
+	notifications    metric.Int64Counter
 
 	schedulerActive   metric.Int64ObservableGauge
 	schedulerCapacity metric.Int64ObservableGauge
@@ -191,6 +192,11 @@ func NewWithProvider(mp metric.MeterProvider) (*Recorder, error) {
 	r.agentTokens, e = m.Int64Counter("kontora.agent.tokens",
 		metric.WithDescription("Tokens an agent invocation spent, by category"),
 		metric.WithUnit("{token}"))
+	join(e)
+
+	r.notifications, e = m.Int64Counter("kontora.notifications.sent",
+		metric.WithDescription("Ticket status notifications, by channel and outcome"),
+		metric.WithUnit("{notification}"))
 	join(e)
 
 	r.queueWait, e = m.Float64Histogram("kontora.queue.wait",
@@ -299,6 +305,18 @@ func (r *Recorder) QueueWait(ctx context.Context, d time.Duration) {
 		return
 	}
 	r.queueWait.Record(ctx, d.Seconds())
+}
+
+// Notification records one finished delivery attempt sequence. result names
+// what happened to it: "ok", "failed" or "dropped".
+func (r *Recorder) Notification(ctx context.Context, channel, result string) {
+	if r == nil {
+		return
+	}
+	r.notifications.Add(ctx, 1, metric.WithAttributes(
+		attribute.String("channel", channel),
+		attribute.String("result", result),
+	))
 }
 
 // ObserveScheduler registers the three scheduler gauges against one callback.

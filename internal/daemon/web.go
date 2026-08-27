@@ -18,6 +18,7 @@ import (
 	"github.com/worksonmyai/kontora/internal/cli"
 	"github.com/worksonmyai/kontora/internal/config"
 	"github.com/worksonmyai/kontora/internal/logfmt"
+	"github.com/worksonmyai/kontora/internal/notify"
 	"github.com/worksonmyai/kontora/internal/ticket"
 	"github.com/worksonmyai/kontora/internal/ticket/app"
 	"github.com/worksonmyai/kontora/internal/tmux"
@@ -121,6 +122,11 @@ func (d *Daemon) CreateTicket(req web.CreateTicketRequest) (web.TicketInfo, erro
 	d.mu.Lock()
 	ts := newTicketState(t, filePath)
 	d.tickets[id] = ts
+	// Seeded explicitly: recordSelfWriteBlind above ate the watcher event, and
+	// cli.New wrote the file with a raw os.WriteFile, so this path reaches
+	// neither handleFileChanged nor writeTicketFile.
+	d.observe(t, notify.OriginObserved)
+	d.warnUnmatchedNotifyLocked(cfg, t)
 	if t.Status == "todo" {
 		d.enqueue(t)
 	}
@@ -173,7 +179,7 @@ func (d *Daemon) UploadTicket(content []byte) (web.TicketInfo, error) {
 	}
 
 	filePath := filepath.Join(config.ExpandTilde(cfg.TicketsDir), t.ID+".md")
-	if err := d.writeTicket(t, filePath); err != nil {
+	if err := d.writeTicket(t, filePath, notify.OriginRequest); err != nil {
 		return web.TicketInfo{}, fmt.Errorf("writing ticket file: %w", err)
 	}
 
@@ -271,6 +277,10 @@ func (d *Daemon) DeleteTicket(id string) error {
 	d.removeQueuedLocked(id)
 	d.broadcastTicketDeleted(ts)
 	delete(d.tickets, id)
+	// The watcher's own removal event arrives a debounce later and finds no
+	// ticket at this path, so this is the only place the delete reaches the
+	// dispatcher's remembered status.
+	d.forgetNotifyLocked(id)
 	return nil
 }
 
@@ -326,7 +336,7 @@ func (d *Daemon) PauseTicket(id string) error {
 	if err := t2.SetField("last_error", ""); err != nil {
 		return fmt.Errorf("clearing last_error: %w", err)
 	}
-	if err := d.writeTicket(t2, filePath); err != nil {
+	if err := d.writeTicket(t2, filePath, notify.OriginRequest); err != nil {
 		return err
 	}
 
@@ -416,7 +426,7 @@ func (d *Daemon) SetStage(id string, stage string) error {
 		return fmt.Errorf("failed to set ticket stage to %q: %w", stage, err)
 	}
 
-	if err := d.writeTicketLocked(t2, filePath); err != nil {
+	if err := d.writeTicketLocked(t2, filePath, notify.OriginRequest); err != nil {
 		return err
 	}
 
@@ -617,7 +627,7 @@ func (d *Daemon) mutateNotes(id string, mutate func(*ticket.Ticket) error) error
 	if err := mutate(t2); err != nil {
 		return err
 	}
-	if err := d.writeTicket(t2, filePath); err != nil {
+	if err := d.writeTicket(t2, filePath, notify.OriginRequest); err != nil {
 		return err
 	}
 
@@ -647,7 +657,7 @@ func (d *Daemon) SetSummary(id string, text string) error {
 	if err := t2.SetField("summary", text); err != nil {
 		return fmt.Errorf("setting summary: %w", err)
 	}
-	if err := d.writeTicket(t2, filePath); err != nil {
+	if err := d.writeTicket(t2, filePath, notify.OriginRequest); err != nil {
 		return err
 	}
 
@@ -760,7 +770,7 @@ func (d *Daemon) UpdateTicket(id string, req web.UpdateTicketRequest) error {
 		t2.SetBody(*req.Body)
 	}
 
-	if err := d.writeTicket(t2, filePath); err != nil {
+	if err := d.writeTicket(t2, filePath, notify.OriginRequest); err != nil {
 		return err
 	}
 

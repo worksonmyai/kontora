@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/worksonmyai/kontora/internal/config"
+	"github.com/worksonmyai/kontora/internal/notify"
 	"github.com/worksonmyai/kontora/internal/process"
 	"github.com/worksonmyai/kontora/internal/ticket"
 )
@@ -430,7 +431,7 @@ func (d *Daemon) storeFinalSummary(p finalSummaryParams, text string) {
 		p.log.Error("set field failed", "field", "final_summary", "err", err)
 		return
 	}
-	if err := d.writeTicket(fresh, p.filePath); err != nil {
+	if err := d.writeTicket(fresh, p.filePath, notify.OriginDaemon); err != nil {
 		p.log.Error("write failed", "phase", "final_summary", "err", err)
 		return
 	}

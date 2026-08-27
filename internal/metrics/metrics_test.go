@@ -506,6 +506,7 @@ func TestExportReachesCollector(t *testing.T) {
 	rec.AgentError(ctx, "implement", "claude", ErrorKindSessionAPI)
 	rec.Tokens(ctx, "implement", "claude", TokenUsage{Input: 100, Output: 20})
 	rec.QueueWait(ctx, 5*time.Second)
+	rec.Notification(ctx, "tg", "ok")
 	require.NoError(t, rec.ObserveScheduler(
 		func() int64 { return 2 },
 		func() int64 { return 4 },
@@ -525,6 +526,7 @@ func TestExportReachesCollector(t *testing.T) {
 		for _, name := range []string{
 			"kontora.stage.runs", "kontora.stage.duration", "kontora.stage.transitions",
 			"kontora.agent.errors", "kontora.agent.tokens", "kontora.queue.wait",
+			"kontora.notifications.sent",
 			"kontora.scheduler.active", "kontora.scheduler.capacity", "kontora.queue.depth",
 		} {
 			assert.Contains(t, string(req.body), name, "%s must reach the collector", name)
@@ -534,4 +536,24 @@ func TestExportReachesCollector(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("the exporter sent nothing")
 	}
+}
+
+func TestNotification(t *testing.T) {
+	rec, collect := newTestRecorder(t)
+	ctx := context.Background()
+
+	rec.Notification(ctx, "tg", "ok")
+	rec.Notification(ctx, "tg", "ok")
+	rec.Notification(ctx, "mm", "failed")
+
+	m := collect()["kontora.notifications.sent"]
+	assert.Equal(t, "{notification}", m.Unit)
+
+	got := map[string]int64{}
+	for _, dp := range m.Data.(metricdata.Sum[int64]).DataPoints {
+		channel, _ := dp.Attributes.Value("channel")
+		result, _ := dp.Attributes.Value("result")
+		got[channel.AsString()+"/"+result.AsString()] = dp.Value
+	}
+	assert.Equal(t, map[string]int64{"tg/ok": 2, "mm/failed": 1}, got)
 }

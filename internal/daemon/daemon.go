@@ -31,6 +31,7 @@ import (
 	"github.com/worksonmyai/kontora/internal/hook"
 	"github.com/worksonmyai/kontora/internal/logfmt"
 	"github.com/worksonmyai/kontora/internal/metrics"
+	"github.com/worksonmyai/kontora/internal/notify"
 	"github.com/worksonmyai/kontora/internal/pipeline"
 	"github.com/worksonmyai/kontora/internal/process"
 	"github.com/worksonmyai/kontora/internal/prompt"
@@ -294,6 +295,12 @@ func WithMeterProvider(mp metric.MeterProvider) Option {
 	return func(d *Daemon) { d.meterProvider = mp }
 }
 
+// WithNotifier replaces the notification seam, so a test can record what the
+// daemon observed without standing up an HTTP endpoint.
+func WithNotifier(n Notifier) Option {
+	return func(d *Daemon) { d.notifier = n }
+}
+
 // WithVersion sets the build version reported as service.version.
 func WithVersion(v string) Option {
 	return func(d *Daemon) { d.version = v }
@@ -392,6 +399,16 @@ type Daemon struct {
 	metrics       *metrics.Recorder
 	meterProvider metric.MeterProvider
 
+	// notifier is never nil: New installs a no-op and Run replaces it when the
+	// config names a channel. writeTicketFile and applyWaitMarker call it on
+	// paths that hold d.mu, so it must never block or do I/O.
+	//
+	// notifierPinned marks one passed to WithNotifier, which outranks the
+	// config the same way an injected meter provider does: a test that hands in
+	// a recorder must see its own, not a dispatcher Run would build.
+	notifier       Notifier
+	notifierPinned bool
+
 	// queueDepth mirrors len(d.queue). It exists so the queue-depth gauge can
 	// be read from the exporter's collect path, which must never take d.mu:
 	// that lock is held across tmux fork/exec and ticket file writes.
@@ -414,8 +431,17 @@ type Daemon struct {
 	sem             chan struct{}
 	// waiting holds, per ticket, the question its running agent is blocked on,
 	// as the run's marker poller last read it. Only a live run has an entry.
-	waiting     map[string]waitingState
-	plannotator map[string]context.CancelFunc // in-flight plannotator subprocesses
+	waiting map[string]waitingState
+	// waitAnnounced remembers, per live run, the question tool calls a waiting
+	// notification already went out for. The pi extension rewrites the marker
+	// back to an older still-open question when a newer one is answered, so the
+	// previous marker alone cannot tell a new question from a returning one.
+	waitAnnounced map[string]map[string]bool
+	// notifyWarned remembers what each ticket was last warned about for its
+	// notify: and notify_channels: fields, so re-reading an unchanged ticket
+	// does not repeat the warning on every watcher event.
+	notifyWarned map[string]string
+	plannotator  map[string]context.CancelFunc // in-flight plannotator subprocesses
 	// plannotatorDeferred holds the tickets whose pickup runTicket dropped
 	// because a Plannotator session was open. releasePlannotator offers each of
 	// them again when the session closes.
@@ -526,6 +552,8 @@ func New(cfg *config.Config, opts ...Option) *Daemon {
 		runningBranches: make(map[string]string),
 		sem:             make(chan struct{}, cfg.MaxConcurrentAgents),
 		waiting:         make(map[string]waitingState),
+		waitAnnounced:   make(map[string]map[string]bool),
+		notifyWarned:    make(map[string]string),
 		plannotator:     make(map[string]context.CancelFunc),
 
 		plannotatorDeferred: make(map[string]struct{}),
@@ -559,6 +587,10 @@ func New(cfg *config.Config, opts ...Option) *Daemon {
 		d.log.Warn("building metric instruments failed, continuing without metrics", "err", err)
 	}
 	d.metrics = rec
+	d.notifierPinned = d.notifier != nil
+	if d.notifier == nil {
+		d.notifier = noopNotifier{}
+	}
 	d.svc = d.buildService()
 	return d
 }
@@ -581,7 +613,10 @@ func (d *Daemon) buildService() *app.Service {
 			return ts.filePath, nil
 		},
 		WriteTicket: func(t *ticket.Ticket, path string) error {
-			return d.writeTicket(t, path)
+			// Every caller of the service layer is a request: the HTTP API, or
+			// the CLI in --url mode. The local CLI writes the file itself and
+			// arrives as a watcher event instead.
+			return d.writeTicket(t, path, notify.OriginRequest)
 		},
 		AfterSave: func(id string, st *app.StoredTicket) {
 			d.mu.Lock()
@@ -634,6 +669,13 @@ func (d *Daemon) Run(ctx context.Context) error {
 	if err := os.MkdirAll(logsDir, 0o755); err != nil {
 		return fmt.Errorf("creating logs dir: %w", err)
 	}
+
+	// The dispatcher is installed before the scan and before the web server.
+	// The scan's seeds are what a later transition diffs against, so a
+	// dispatcher built after it would treat every ticket as newly seen and stay
+	// silent on the first transition after every restart; and the web server
+	// answers CreateTicket, which reads d.notifier from its own goroutine.
+	notifyWorker := d.startNotifications(cfg)
 
 	// Watch before scanning. A ticket written after the scan reads the
 	// directory but before the watch is in place produces no event and no scan
@@ -715,6 +757,12 @@ func (d *Daemon) Run(ctx context.Context) error {
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+
+	// On the cancellable context, so a cancelled daemon stops the worker before
+	// the background wait registered above it drains.
+	if notifyWorker != nil {
+		d.background.Go(func() { notifyWorker(ctx) })
+	}
 
 	var wg sync.WaitGroup
 
@@ -872,10 +920,12 @@ func (d *Daemon) initialScan(dir string) error {
 			if t.ClaimedBy == "" || t.ClaimedBy == d.instanceName {
 				d.ticketLog(t.ID).Warn("crash recovery: resetting to todo")
 				_ = t.SetField("status", string(ticket.StatusTodo))
-				data, merr := t.Marshal()
-				if merr == nil {
-					d.recordSelfWrite(path, data)
-					_ = os.WriteFile(path, data, 0o644)
+				// A ticket that cannot be written back is still enqueued as
+				// todo, the way this has always behaved: the in-memory status
+				// is what the scheduler reads, and refusing to run over a
+				// failed write would strand the ticket instead.
+				if err := d.writeTicketLocked(t, path, notify.OriginObserved); err != nil {
+					d.ticketLog(t.ID).Error("crash recovery: write failed", "err", err)
 				}
 			} else {
 				d.ticketLog(t.ID).Info("in_progress on another instance, leaving alone", "claimed_by", t.ClaimedBy)
@@ -883,6 +933,10 @@ func (d *Daemon) initialScan(dir string) error {
 		}
 
 		d.tickets[t.ID] = newTicketState(t, path)
+		// Seeded after crash recovery so the remembered status is todo rather
+		// than the stale in_progress the file still held on entry.
+		d.observe(t, notify.OriginObserved)
+		d.warnUnmatchedNotifyLocked(cfg, t)
 		d.mu.Unlock()
 		scanned = append(scanned, t)
 	}
@@ -944,6 +998,11 @@ func (d *Daemon) handleFileChanged(path string) {
 
 	prev, known := d.tickets[t.ID]
 	d.tickets[t.ID] = newTicketState(t, path)
+	// An external edit, the local CLI writing a ticket file itself for example,
+	// is recorded and never sent. The watcher debounces, so a burst arrives as
+	// one settling point rather than as every status it passed through.
+	d.observe(t, notify.OriginObserved)
+	d.warnUnmatchedNotifyLocked(cfg, t)
 	d.broadcastTicketUpdate(t.ID)
 
 	// An external edit can change this ticket's own deps or a status that
@@ -993,12 +1052,12 @@ func (d *Daemon) handleFileChanged(path string) {
 		if _, running := d.running[t.ID]; !running && t.ClaimedBy == d.instanceName {
 			log.Info("recovering stale self-claim", "claimed_by", t.ClaimedBy)
 			_ = t.SetField("status", string(ticket.StatusTodo))
-			if data, merr := t.Marshal(); merr == nil {
-				d.recordSelfWrite(path, data)
-				if werr := os.WriteFile(path, data, 0o644); werr != nil {
-					log.Error("recover stale self-claim: write failed", "err", werr)
-					return
-				}
+			// A ticket that cannot be written back is still enqueued as todo,
+			// the way crash recovery does it: the in-memory status is what the
+			// scheduler reads, and returning here would leave the ticket
+			// claimed by this instance and never picked up again.
+			if err := d.writeTicketLocked(t, path, notify.OriginObserved); err != nil {
+				log.Error("recover stale self-claim: write failed", "err", err)
 			}
 			d.tickets[t.ID] = newTicketState(t, path)
 			d.enqueue(t)
@@ -1042,6 +1101,7 @@ func (d *Daemon) handleFileRemoved(path string) {
 			d.removeQueuedLocked(id)
 			d.broadcastTicketDeleted(ts)
 			delete(d.tickets, id)
+			d.forgetNotifyLocked(id)
 			// Whoever depended on this ticket now names an id nothing answers,
 			// which blocks them.
 			d.reconcileDependenciesLocked(id)
@@ -1454,7 +1514,7 @@ func (d *Daemon) runTicket(ctx context.Context, ticketID string) {
 	// Apply fields (status=in_progress, started_at). The ticket is claimed for
 	// this instance in the same write that flips it to in_progress, so a daemon
 	// on another machine sharing the tickets_dir sees the owner before it acts.
-	if err := d.editTicket(t, filePath, func() error {
+	if err := d.editTicket(t, filePath, notify.OriginDaemon, func() error {
 		if err := d.applyAction(t, action); err != nil {
 			return fmt.Errorf("apply action: %w", err)
 		}
@@ -1575,7 +1635,7 @@ func (d *Daemon) persistGeneratedBranchLocked(cfg *config.Config, log *slog.Logg
 		log.Error("set generated branch failed", "branch", branch, "err", err)
 		return
 	}
-	if err := d.writeTicketLocked(t, filePath); err != nil {
+	if err := d.writeTicketLocked(t, filePath, notify.OriginDaemon); err != nil {
 		if resetErr := t.SetField("branch", oldBranch); resetErr != nil {
 			log.Error("reset generated branch failed", "branch", branch, "err", resetErr)
 		}
@@ -1604,7 +1664,7 @@ func (d *Daemon) runSimpleTicket(ctx, taskCtx context.Context, cfg *config.Confi
 
 	// Set status=in_progress, started_at, and claim for this instance.
 	now := time.Now()
-	if err := d.editTicket(t, filePath, func() error {
+	if err := d.editTicket(t, filePath, notify.OriginDaemon, func() error {
 		_ = t.SetField("status", string(ticket.StatusInProgress))
 		_ = t.SetField("started_at", now.Format(time.RFC3339))
 		_ = t.SetField("claimed_by", d.instanceName)
@@ -1746,7 +1806,7 @@ func (d *Daemon) runSimpleTicket(ctx, taskCtx context.Context, cfg *config.Confi
 		d.killTaskWindow(ticketID)
 	}
 
-	if err := d.writeTicket(t2, filePath); err != nil {
+	if err := d.writeTicket(t2, filePath, notify.OriginDaemon); err != nil {
 		log.Error("write failed", "phase", "exit", "err", err)
 		return
 	}
@@ -1971,7 +2031,7 @@ func (d *Daemon) handleAgentExit(ctx, taskCtx context.Context, p handleExitParam
 		recordStageEndHookFailure(t2, hookErr)
 	}
 
-	if err := d.writeTicket(t2, p.filePath); err != nil {
+	if err := d.writeTicket(t2, p.filePath, notify.OriginDaemon); err != nil {
 		p.log.Error("write failed", "phase", "exit", "err", err)
 		return
 	}
@@ -2122,7 +2182,15 @@ func (d *Daemon) prepareWorktreeForAgent(taskCtx context.Context, p prepareWorkt
 		return "", "", false
 	}
 
-	if err := d.editTicket(p.t, p.filePath, func() error {
+	// Creating the worktree and running its hooks take long enough for a pause
+	// or a cancel to land, and p.t is the node read at pickup: writing it back
+	// now would put in_progress over the status the user just set, and notify
+	// them of a transition nobody made.
+	if err := taskCtx.Err(); err != nil {
+		p.log.Info("cancelled before the spawn fields were written")
+		return "", "", false
+	}
+	if err := d.editTicket(p.t, p.filePath, notify.OriginDaemon, func() error {
 		if err := p.t.SetField("branch", p.branch); err != nil {
 			p.log.Error("set field failed", "field", "branch", "err", err)
 		}
@@ -2867,8 +2935,8 @@ func (d *Daemon) resolvePath(t *ticket.Ticket) (repoName, repoPath string, err e
 	return repoName, repoPath, nil
 }
 
-func (d *Daemon) writeTicket(t *ticket.Ticket, path string) error {
-	modTime, err := d.writeTicketFile(t, path)
+func (d *Daemon) writeTicket(t *ticket.Ticket, path string, origin notify.Origin) error {
+	modTime, err := d.writeTicketFile(t, path, origin)
 	if err != nil {
 		return err
 	}
@@ -2887,18 +2955,23 @@ func (d *Daemon) writeTicket(t *ticket.Ticket, path string) error {
 // lock, and SetField re-decodes the whole struct from the YAML node, so an
 // unlocked edit races every field a reader touches and not only the one it
 // sets. Callers must not hold d.mu.
-func (d *Daemon) editTicket(t *ticket.Ticket, path string, edits func() error) error {
+//
+// origin is always OriginDaemon today. It stays a parameter so a
+// human-initiated edit added here later cannot inherit it by default.
+//
+//nolint:unparam // the parameter is the contract, not a leftover
+func (d *Daemon) editTicket(t *ticket.Ticket, path string, origin notify.Origin, edits func() error) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if err := edits(); err != nil {
 		return err
 	}
-	return d.writeTicketLocked(t, path)
+	return d.writeTicketLocked(t, path, origin)
 }
 
 // writeTicketLocked is writeTicket for callers that already hold d.mu.
-func (d *Daemon) writeTicketLocked(t *ticket.Ticket, path string) error {
-	modTime, err := d.writeTicketFile(t, path)
+func (d *Daemon) writeTicketLocked(t *ticket.Ticket, path string, origin notify.Origin) error {
+	modTime, err := d.writeTicketFile(t, path, origin)
 	if err != nil {
 		return err
 	}
@@ -2906,7 +2979,7 @@ func (d *Daemon) writeTicketLocked(t *ticket.Ticket, path string) error {
 	return nil
 }
 
-func (d *Daemon) writeTicketFile(t *ticket.Ticket, path string) (time.Time, error) {
+func (d *Daemon) writeTicketFile(t *ticket.Ticket, path string, origin notify.Origin) (time.Time, error) {
 	data, err := t.Marshal()
 	if err != nil {
 		return time.Time{}, err
@@ -2915,6 +2988,10 @@ func (d *Daemon) writeTicketFile(t *ticket.Ticket, path string) (time.Time, erro
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		return time.Time{}, err
 	}
+	// Every daemon write funnels through here, which is what makes this the one
+	// place a status change can be seen. Observe does no I/O and never blocks,
+	// because several callers hold d.mu.
+	d.observe(t, origin)
 	if st, err := os.Stat(path); err == nil {
 		return st.ModTime(), nil
 	}
@@ -3005,7 +3082,7 @@ func (d *Daemon) pauseTicket(t *ticket.Ticket, path, reason string) {
 	if err := t.SetField("status", string(ticket.StatusPaused)); err != nil {
 		log.Error("pause: set status failed", "err", err)
 	}
-	if err := d.writeTicketLocked(t, path); err != nil {
+	if err := d.writeTicketLocked(t, path, notify.OriginDaemon); err != nil {
 		log.Error("pause: write failed", "err", err)
 	}
 	d.setTicketState(t.ID, t, path)

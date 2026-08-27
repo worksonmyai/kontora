@@ -1,0 +1,11 @@
+tickets_dir: ~/org/tickets
+
+agents:
+  claude:
+    binary: claude
+
+notifications:
+  channels:
+    hook:
+      type: webhook
+      url: ftp://example.com/ingest

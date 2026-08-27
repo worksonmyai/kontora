@@ -151,6 +151,48 @@ func pinRestartOnly(cur, next *config.Config, log *slog.Logger) {
 		warn("metrics.insecure", cur.Metrics.Insecure, next.Metrics.Insecure)
 	}
 	next.Metrics = cur.Metrics
+
+	// The channels and their resolved credentials are built once in Run, so a
+	// live reload would leave the running senders disagreeing with the config.
+	// The channel map is redacted whole rather than diffed: every entry can name
+	// a secret, and there is no field-by-field comparison that is certain not to
+	// put one in the log.
+	if !reflect.DeepEqual(next.Notifications.Enabled, cur.Notifications.Enabled) {
+		warn("notifications.enabled", derefBool(cur.Notifications.Enabled), derefBool(next.Notifications.Enabled))
+	}
+	if !reflect.DeepEqual(next.Notifications.Channels, cur.Notifications.Channels) {
+		warnRedacted("notifications.channels")
+	}
+	if !slices.Equal(next.Notifications.Default, cur.Notifications.Default) {
+		warn("notifications.default", cur.Notifications.Default, next.Notifications.Default)
+	}
+	if next.Notifications.Timeout != cur.Notifications.Timeout {
+		warn("notifications.timeout", cur.Notifications.Timeout, next.Notifications.Timeout)
+	}
+	if !reflect.DeepEqual(next.Notifications.Attempts, cur.Notifications.Attempts) {
+		warn("notifications.attempts", derefInt(cur.Notifications.Attempts), derefInt(next.Notifications.Attempts))
+	}
+	if next.Notifications.Backoff != cur.Notifications.Backoff {
+		warn("notifications.backoff", cur.Notifications.Backoff, next.Notifications.Backoff)
+	}
+	next.Notifications = cur.Notifications
+
+	// Projects reload live while the channels do not, so a reload that adds a
+	// channel and points a project at it leaves that project naming a channel
+	// the running dispatcher has never heard of. NotifyChannelsFor still
+	// returns it, which shadows the default that was working, and every ticket
+	// in the project goes quiet until a restart.
+	for _, name := range slices.Sorted(maps.Keys(next.Projects)) {
+		for _, ch := range next.Projects[name].NotifyChannels {
+			if ch == config.NoneSentinel {
+				continue
+			}
+			if _, ok := next.Notifications.Channels[ch]; !ok {
+				log.Warn("project notify_channels names a channel this daemon has not built; the project is silent until a restart",
+					"project", name, "channel", ch)
+			}
+		}
+	}
 }
 
 func derefBool(b *bool) any {
@@ -158,6 +200,13 @@ func derefBool(b *bool) any {
 		return nil
 	}
 	return *b
+}
+
+func derefInt(i *int) any {
+	if i == nil {
+		return nil
+	}
+	return *i
 }
 
 // configWatchDirs returns the directories to watch for changes to configPath.

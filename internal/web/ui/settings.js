@@ -118,6 +118,37 @@ const SETTINGS_SECTIONS = [
   { key: 'display', label: 'display', blurb: 'Browser-local. Never written to config.yaml.' },
 ];
 
+// The rail's four clusters. Every SETTINGS_SECTIONS key appears in exactly one
+// of them, in the order the rail shows them.
+const SETTINGS_NAV_GROUPS = [
+  { title: 'runtime', hue: 'indigo', keys: ['general', 'environment', 'web'] },
+  { title: 'orchestration', hue: 'cyan', keys: ['agents', 'stages', 'pipelines', 'projects'] },
+  { title: 'human in the loop', hue: 'mauve', keys: ['assistant', 'plannotator', 'statuses'] },
+  { title: 'this browser', hue: 'green', keys: ['display'] },
+];
+
+// What the concurrency stepper offers. A value outside the list keeps the
+// free-text input (settingsConcurrencyOther).
+const SETTINGS_CONCURRENCY_OPTIONS = [1, 2, 3, 4, 5, 6, 8];
+
+// Most pills the capacity meter draws. The cap is a free-text field, so the
+// meter has to survive a value nobody would run.
+const SETTINGS_SLOT_PILLS = 24;
+
+// Search terms for the keys no field table carries, because their control is
+// spelled out in the markup rather than driven by an x-for. The tables above
+// and the live names in settingsConfig supply the rest of the corpus.
+const SETTINGS_SEARCH_EXTRA = {
+  general: ['auto_pick_up start todo tickets automatically', 'summary_model final summary pass', 'summary_effort final summary pass'],
+  web: ['host bind address', 'port', 'token credential for /api and /ws'],
+  assistant: ['agent', 'model', 'effort', 'autonomy', 'prompt brief'],
+  agents: ['binary', 'effort', 'args', 'failure_patterns'],
+  stages: ['prompt', 'timeout', 'model', 'effort'],
+  pipelines: ['on_success', 'on_failure', 'max_retries'],
+  projects: ['pipeline', 'agent', 'branch_prefix'],
+  display: ['pipeline_badges', 'agent_meta', 'theme dark light'],
+};
+
 // Root scalar keys the general section edits, with the value applyDefaults
 // would supply when the key is absent (internal/config/config.go).
 const SETTINGS_GENERAL_FIELDS = [
@@ -130,6 +161,17 @@ const SETTINGS_GENERAL_FIELDS = [
   { key: 'instance_name', placeholder: "this machine's hostname", help: 'Identifies this daemon when several share one tickets_dir.' },
 ];
 
+// Which card of the general section draws each field row, and the rows that
+// card draws with a control of their own rather than a text input. Keyed
+// rather than sliced off the table, so a field added above lands in a card or
+// fails the test that holds every key to exactly one of them.
+const SETTINGS_GENERAL_GROUPS = {
+  locations: ['tickets_dir', 'worktrees_dir', 'logs_dir'],
+  execution: ['max_concurrent_agents', 'default_agent', 'branch_prefix', 'instance_name'],
+};
+
+const SETTINGS_GENERAL_CUSTOM = ['max_concurrent_agents', 'default_agent'];
+
 const SETTINGS_PLANNOTATOR_FIELDS = [
   { key: 'binary', placeholder: 'plannotator', help: 'Reviewer binary spawned for a human review pass.' },
   { key: 'timeout', placeholder: '30m', help: 'How long a review may stay open before it is cancelled.' },
@@ -141,7 +183,7 @@ const SETTINGS_ASSISTANT_KEYS = ['agent', 'model', 'effort', 'workdir', 'timeout
 
 // The assistant fields that are a plain text input with a daemon default
 // behind them. The other five carry their own markup: agent and autonomy are
-// selects, prompt is a textarea, and model and effort have no default to show.
+// choice cards, prompt is a textarea, and model and effort have no default to show.
 const SETTINGS_ASSISTANT_FIELDS = [
   { key: 'workdir', placeholder: 'tickets_dir', help: 'Every turn of every thread runs here. A thread cannot resume if its cwd moves.' },
   { key: 'timeout', placeholder: '10m', help: 'Bounds one turn.' },
@@ -184,7 +226,6 @@ export function kontoraSettings() {
     settingsConfig: null,
     settingsBaseline: null,
     settingsOpenStage: null,
-    settingsOpenAgent: null,
     settingsErrors: [],
     settingsLoading: false,
     settingsSaving: false,
@@ -209,6 +250,11 @@ export function kontoraSettings() {
     settingsNewPerAgentOpen: {},
     settingsNewPerAgentKey: {},
     settingsShowToken: false,
+    // The rail's search box. Browser-local, never written to YAML.
+    settingsQuery: '',
+    // Set by the stepper's "other" option, which is how a value the stepper
+    // does offer gets back to one it does not.
+    settingsConcurrencyCustom: false,
 
     // The parsed Document, the text it came from, and the yaml module. Never
     // rendered and never part of the form model, so no template reads them.
@@ -223,6 +269,8 @@ export function kontoraSettings() {
     settingsAssistantFields: SETTINGS_ASSISTANT_FIELDS,
     settingsBuiltinStatuses: SETTINGS_BUILTIN_STATUSES,
     settingsTokens: SETTINGS_TOKENS,
+    settingsNavGroups: SETTINGS_NAV_GROUPS,
+    settingsConcurrencyOptions: SETTINGS_CONCURRENCY_OPTIONS,
 
     // ---- loading -----------------------------------------------------------
 
@@ -260,7 +308,7 @@ export function kontoraSettings() {
       this.settingsErrors = [];
       this.settingsSavedAt = '';
       this.settingsOpenStage = null;
-      this.settingsOpenAgent = null;
+      this.settingsConcurrencyCustom = false;
       this.settingsClearPerAgentDrafts('');
     },
 
@@ -530,6 +578,7 @@ export function kontoraSettings() {
       this.settingsErrors = [];
       this.settingsDiffOpen = false;
       this.settingsSavedAt = '';
+      this.settingsConcurrencyCustom = false;
       this.settingsClearPerAgentDrafts('');
     },
 
@@ -578,10 +627,6 @@ export function kontoraSettings() {
 
     settingsToggleStage(name) {
       this.settingsOpenStage = this.settingsOpenStage === name ? null : name;
-    },
-
-    settingsToggleAgent(name) {
-      this.settingsOpenAgent = this.settingsOpenAgent === name ? null : name;
     },
 
     settingsAddStage() {
@@ -751,6 +796,246 @@ export function kontoraSettings() {
         return `Token set. Open http://${host}:${port}/?token=… once to store the cookie. Plain HTTP sends it in clear — put the daemon behind TLS on any untrusted network.`;
       }
       return `Bound to ${host} with a token. The token is the only thing gating remote access, and agents run with --dangerously-skip-permissions. Fine on a tailnet; use TLS anywhere else.`;
+    },
+
+    // ---- the rail, the header and the overview ----------------------------
+
+    // Counted labels, for the summaries, the tiles and the markup that counts
+    // steps and agents on a pipeline card.
+    settingsPlural: (n, one, many) => `${n} ${n === 1 ? one : many}`,
+
+    // The rail's second line. Every branch guards a null settingsConfig,
+    // because the rail renders in the loading, unavailable and parse-error
+    // states too.
+    settingsSectionSummary(key) {
+      const cfg = this.settingsConfig;
+      if (!cfg) return '';
+      const plural = this.settingsPlural;
+      if (key === 'general') return 'paths, concurrency';
+      if (key === 'environment') return plural(Object.keys(cfg.environment).length, 'variable', 'variables') + ' injected';
+      if (key === 'web') {
+        const host = cfg.web.host.trim() || '127.0.0.1';
+        const port = cfg.web.port.trim() || '8080';
+        return `${host}:${port} · ${cfg.web.token.trim() ? 'token set' : 'no token'}`;
+      }
+      if (key === 'agents') return this.settingsAgentNames().join(', ');
+      if (key === 'stages') return plural(this.settingsStageNames().length, 'prompt template', 'prompt templates');
+      if (key === 'pipelines') {
+        const names = this.settingsPipelineNames();
+        const steps = names.reduce((n, p) => n + cfg.pipelines[p].length, 0);
+        return `${names.length} · ${plural(steps, 'step', 'steps')}`;
+      }
+      if (key === 'projects') return this.settingsProjectNames().join(', ');
+      if (key === 'assistant') {
+        const agent = cfg.assistant.agent.trim();
+        if (!agent) return 'disabled';
+        const mode = cfg.assistant.autonomy.trim() || 'ask';
+        const row = this.assistantAutonomies().find(a => a.key === mode);
+        return `${agent} · ${row ? row.label : mode}`;
+      }
+      if (key === 'plannotator') return 'review + annotate';
+      if (key === 'statuses') return `${SETTINGS_BUILTIN_STATUSES.length} built-in · ${cfg.statuses.length} custom`;
+      if (key === 'display') {
+        return `${this.showPipelineBadges ? 'badges' : 'no badges'}, ${this.lightTheme ? 'light' : 'dark'} theme`;
+      }
+      return '';
+    },
+
+    // The overview tiles, which sit above the content of every section rather
+    // than on a page of their own.
+    settingsOverviewTiles() {
+      const cfg = this.settingsConfig;
+      if (!cfg) return [];
+      const agents = this.settingsAgentNames();
+      const stages = this.settingsStageNames();
+      const pipelines = this.settingsPipelineNames();
+      const projects = this.settingsProjectNames();
+      const builtin = stages.filter(s => cfg.stages[s].builtin);
+      const steps = pipelines.reduce((n, p) => n + cfg.pipelines[p].length, 0);
+      const plural = this.settingsPlural;
+      return [
+        { label: 'agents', hue: 'indigo', value: agents.length, unit: 'configured', foot: agents.join(' · ') },
+        {
+          label: 'stages', hue: 'cyan', value: stages.length, unit: 'templates',
+          foot: builtin.length ? `${builtin.length} built-in (${builtin.join(', ')})` : stages.join(' · '),
+        },
+        { label: 'pipelines', hue: 'amber', value: pipelines.length, unit: plural(steps, 'step', 'steps'), foot: pipelines.join(' · ') },
+        { label: 'projects', hue: 'green', value: projects.length, unit: 'repos', foot: projects.join(' · ') },
+      ];
+    },
+
+    // Unsaved edits the daemon's reload would not pick up. Drives the header's
+    // "restart to apply · N" pill, which is hidden at zero.
+    settingsRestartPending() {
+      return this.settingsChangedPaths().filter(p => this.settingsIsRestartOnly(p)).length;
+    },
+
+    // ---- search ------------------------------------------------------------
+
+    // What the search matches the section itself on, as against one of its
+    // rows. The split drives settingsRowVisible: a section reached through a
+    // word no row carries keeps every row.
+    _settingsSectionTerms(key) {
+      const section = SETTINGS_SECTIONS.find(s => s.key === key);
+      return [key, section ? section.blurb : '', this.settingsSectionSummary(key)];
+    },
+
+    // What the rail's search matches a row of a section on: the field keys and
+    // help of the tables that drive it, the literal keys whose control is
+    // spelled out in markup, and the live names config.yaml gives it.
+    _settingsRowTerms(key) {
+      const cfg = this.settingsConfig;
+      const out = [];
+      out.push(...(SETTINGS_SEARCH_EXTRA[key] || []));
+      const fields = table => { for (const f of table) out.push(f.key, f.help); };
+      if (key === 'general') fields(SETTINGS_GENERAL_FIELDS);
+      if (key === 'plannotator') fields(SETTINGS_PLANNOTATOR_FIELDS);
+      if (key === 'assistant') { fields(SETTINGS_ASSISTANT_FIELDS); out.push(...SETTINGS_ASSISTANT_KEYS); }
+      if (!cfg) return out;
+      if (key === 'environment') out.push(...Object.keys(cfg.environment));
+      if (key === 'agents') for (const n of this.settingsAgentNames()) out.push(n, cfg.agents[n].binary);
+      if (key === 'stages') out.push(...this.settingsStageNames());
+      if (key === 'pipelines') {
+        for (const p of this.settingsPipelineNames()) {
+          out.push(p);
+          for (const step of cfg.pipelines[p]) out.push(step.stage, step.agent, step.on_success, step.on_failure);
+        }
+      }
+      if (key === 'projects') for (const n of this.settingsProjectNames()) out.push(n, cfg.projects[n].path);
+      if (key === 'statuses') out.push(...SETTINGS_BUILTIN_STATUSES, ...cfg.statuses);
+      return out;
+    },
+
+    settingsSectionMatches(key) {
+      const q = this.settingsQuery.trim().toLowerCase();
+      if (!q) return true;
+      const corpus = [...this._settingsSectionTerms(key), ...this._settingsRowTerms(key)];
+      return corpus.join('\n').toLowerCase().includes(q);
+    },
+
+    // Per-row filter. Takes the row's key and help rather than a path, so a row
+    // written out in markup can call it too, and the section it belongs to.
+    settingsRowVisible(key, help, section) {
+      const q = this.settingsQuery.trim().toLowerCase();
+      if (!q) return true;
+      if (`${key}\n${help || ''}`.toLowerCase().includes(q)) return true;
+      // Narrowing a section is only useful when the query reached it through
+      // one of its rows. A section matched on its own label, blurb or summary
+      // — or not matched at all — keeps every row, rather than showing card
+      // shells with nothing in them.
+      return !this._settingsRowTerms(section).join('\n').toLowerCase().includes(q);
+    },
+
+    // ---- concurrency -------------------------------------------------------
+
+    settingsConcurrency() {
+      return this.settingsConfig ? this.settingsConfig.general.max_concurrent_agents : '';
+    },
+
+    settingsSetConcurrency(n) {
+      if (!this.settingsConfig) return;
+      this.settingsConfig.general.max_concurrent_agents = String(n);
+      this.settingsConcurrencyCustom = false;
+    },
+
+    // Compared as text, not as a number: "03" is not the option 3, and showing
+    // it as one hides a value the file still holds.
+    settingsConcurrencyIs(n) {
+      return this.settingsConcurrency().trim() === String(n);
+    },
+
+    // True when the free-text input has to stay: an empty value, one the list
+    // does not offer, or the "other" option, which is the only way back off a
+    // value the stepper does offer.
+    settingsConcurrencyOther() {
+      if (this.settingsConcurrencyCustom) return true;
+      return !SETTINGS_CONCURRENCY_OPTIONS.some(n => this.settingsConcurrencyIs(n));
+    },
+
+    // The capacity meter: one pill per slot, filled up to the running count.
+    // An unset cap resolves to the daemon's default of 3; text the daemon would
+    // reject has no slot count, and the meter is then not drawn. pills is what
+    // the meter draws — the cap is free text, and a template drawing 5000 spans
+    // stalls the tab on every keystroke.
+    settingsSlots() {
+      const raw = this.settingsConcurrency().trim();
+      const total = raw === '' ? 3 : (/^\d+$/.test(raw) ? Number(raw) : 0);
+      return { busy: this.runningAgents || 0, total, pills: Math.min(total, SETTINGS_SLOT_PILLS) };
+    },
+
+    // The line under the meter. A cap edited below what is already running
+    // reads as an overrun rather than as "3 of 1 slots busy right now".
+    settingsSlotsLabel() {
+      const { busy, total } = this.settingsSlots();
+      if (busy > total) return `${busy} running, over the cap of ${total}`;
+      return `${busy} of ${total} slots busy right now`;
+    },
+
+    // Cards for default_agent: an unset one, every configured agent, and the
+    // value on disk when agents: no longer declares it, so a stale name is
+    // visible and replaceable — settingsClientErrors blocks every save until
+    // it is.
+    settingsDefaultAgentChoices() {
+      const names = this.settingsAgentNames();
+      const current = this.settingsConfig ? this.settingsConfig.general.default_agent.trim() : '';
+      return current && !names.includes(current) ? [...names, current] : names;
+    },
+
+    settingsGeneralGroup(name) {
+      const keys = SETTINGS_GENERAL_GROUPS[name] || [];
+      return SETTINGS_GENERAL_FIELDS.filter(f => keys.includes(f.key));
+    },
+
+    // The rows of a card a plain text input can draw. The rest of the group has
+    // a control of its own, written out in the markup.
+    settingsGeneralTextRows(name) {
+      return this.settingsGeneralGroup(name).filter(f => !SETTINGS_GENERAL_CUSTOM.includes(f.key));
+    },
+
+    // ---- live facts from data the page already holds -----------------------
+
+    // Stages a pipeline step hands to this agent.
+    settingsAgentStages(name) {
+      const cfg = this.settingsConfig;
+      if (!cfg) return [];
+      const stages = new Set();
+      for (const steps of Object.values(cfg.pipelines)) {
+        for (const step of steps) if (step.agent === name && step.stage) stages.add(step.stage);
+      }
+      return [...stages].sort();
+    },
+
+    settingsStatusCount(status) {
+      return (this.tickets || []).filter(t => t.kontora && t.status === status).length;
+    },
+
+    settingsProjectTickets(name) {
+      const rows = (this.tickets || []).filter(t => t.project === name);
+      return { total: rows.length, running: rows.filter(t => t.status === 'in_progress').length };
+    },
+
+    // One node of a pipeline's flow diagram. The model and timeout come from
+    // the stage the step names, resolved for that step's agent the way
+    // config.PerAgent.For would.
+    settingsPipelineSteps(name) {
+      const cfg = this.settingsConfig;
+      if (!cfg) return [];
+      return (cfg.pipelines[name] || []).map((step, i) => {
+        const stage = cfg.stages[step.stage];
+        const kind = this.settingsAgentKindOf(step.agent);
+        return {
+          index: i,
+          stage: step.stage,
+          agent: step.agent,
+          kind,
+          model: stage ? settingsPerAgentFor(stage.model, step.agent, kind) : '',
+          timeout: stage ? stage.timeout : '',
+          on_success: step.on_success,
+          on_failure: step.on_failure,
+          max_retries: step.max_retries,
+          running: this.agentRunningCount(step.agent) > 0,
+        };
+      });
     },
 
     settingsSectionCount(key) {

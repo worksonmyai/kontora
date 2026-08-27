@@ -317,17 +317,6 @@
       font-variant-numeric: tabular-nums;
     }
 
-    /* Pipeline step row. The last track is auto, not 1fr: routing text must
-       claim its width first so the two ellipsizing cells give way instead. */
-    .settings-step {
-      display: grid;
-      grid-template-columns: 1.25rem minmax(0, 1fr) minmax(0, 1fr) auto;
-      gap: 0.5rem;
-      padding: 5px 0.5rem;
-      border-radius: 0.25rem;
-      background: rgba(var(--surface-850), .5);
-    }
-
     /* Pipeline tag badge: colored text over a 10% tint fill and 26% tint border. */
     .pipe-tag {
       font-family: 'JetBrains Mono', monospace;
@@ -3978,37 +3967,71 @@
     <div class="flex flex-1 min-w-0 min-h-0">
 
       <!-- Section rail -->
-      <nav class="w-[168px] shrink-0 bg-surface-frame border-r border-surface-700/50 flex flex-col p-2.5 overflow-y-auto">
-        <div class="font-mono text-[10px] font-semibold text-surface-600 uppercase tracking-widest px-2 pb-2">config.yaml</div>
-        <template x-for="s in settingsSections" :key="s.key">
-          <button @click="settingsSection = s.key"
-                  class="flex items-center justify-between gap-2 h-7 px-2 rounded font-mono text-[11.5px] transition-colors"
-                  :class="settingsSection === s.key ? 'bg-surface-850 text-tx' : 'text-tx-3 hover:bg-surface-900'">
-            <span x-text="s.label"></span>
-            <span class="text-[10px] text-surface-600" x-text="settingsSectionCount(s.key)"></span>
-          </button>
-        </template>
-        <div class="mt-auto pt-2.5 border-t border-surface-700/30 font-mono text-[10px] text-tx-4">
-          <div class="px-2">~/.config/kontora/</div>
-          <div class="px-2 text-tx-faint">config.yaml</div>
+      <nav class="w-[214px] shrink-0 bg-surface-frame border-r border-surface-700/50 flex flex-col min-h-0" aria-label="Settings sections">
+        <div class="p-3 pb-2.5 border-b border-surface-700/35">
+          <div class="relative flex items-center">
+            <svg class="absolute left-[9px] w-3 h-3 text-surface-600 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+            <input id="settings-search" type="text" aria-label="Search settings" placeholder="search settings"
+                   x-model="settingsQuery" @keydown.escape="if (settingsQuery) { $event.stopPropagation(); settingsQuery = '' }"
+                   class="w-full py-1.5 pl-7 pr-[30px] rounded-md bg-surface-900 border border-edge-input font-mono text-[11.5px] text-tx placeholder:text-surface-600 focus:outline-none focus:border-accent/40">
+            <span class="absolute right-1.5 font-mono text-[10px] text-tx-faint border border-edge-input rounded-[3px] px-1 pointer-events-none">/</span>
+          </div>
+        </div>
+
+        <div class="flex-1 min-h-0 overflow-y-auto p-2.5 pb-3.5 flex flex-col gap-3.5">
+          <template x-for="g in settingsNavGroups" :key="g.title">
+            <div class="flex flex-col gap-0.5">
+              <div class="flex items-center gap-1.5 px-2 pb-1.5" :data-pipe-color="g.hue">
+                <span class="w-[5px] h-[5px] rounded-full shrink-0" style="background: hsl(var(--pipe-h))"></span>
+                <span class="font-mono text-[9.5px] font-bold uppercase tracking-[.14em] text-tx-faint" x-text="g.title"></span>
+              </div>
+              <template x-for="key in g.keys" :key="key">
+                <button @click="settingsSection = key" :aria-current="settingsSection === key"
+                        class="relative flex items-center gap-2 min-h-[32px] py-[5px] pr-2 pl-2.5 rounded-md text-left transition-colors"
+                        :class="settingsSection === key ? 'bg-surface-850 text-tx' : (settingsSectionMatches(key) ? 'text-tx-3 hover:bg-surface-900' : 'text-tx-faint hover:bg-surface-900')">
+                  <span class="absolute left-0 top-[7px] bottom-[7px] w-0.5 rounded-[2px]" :class="settingsSection === key ? 'bg-accent' : 'bg-transparent'"></span>
+                  <span class="flex flex-col gap-px min-w-0 flex-1">
+                    <span class="font-mono text-[12px]" x-text="key"></span>
+                    <span class="text-[10.5px] text-tx-faint truncate" x-text="settingsSectionSummary(key)"></span>
+                  </span>
+                  <span class="font-mono text-[10px] text-surface-600 shrink-0" x-text="settingsSectionCount(key)"></span>
+                </button>
+              </template>
+            </div>
+          </template>
+        </div>
+
+        <div class="p-2.5 px-3 border-t border-surface-700/35 font-mono text-[10px]">
+          <div class="flex items-center gap-1.5 mb-[3px]" x-show="settingsDirty()" x-cloak>
+            <span class="w-[5px] h-[5px] rounded-full bg-accent shrink-0"></span>
+            <span class="text-accent"><span x-text="settingsChangedPaths().length"></span> unsaved <span x-text="settingsChangedPaths().length === 1 ? 'edit' : 'edits'"></span></span>
+          </div>
+          <div class="text-tx-4 mb-[3px]" x-show="!settingsDirty()">in sync with disk</div>
+          <div class="text-tx-4">~/.config/kontora/config.yaml</div>
         </div>
       </nav>
 
       <!-- Content pane -->
       <div class="flex-1 min-w-0 flex flex-col min-h-0">
         <div class="flex-1 min-h-0 overflow-y-auto">
-          <div class="max-w-[56rem] p-5 pb-10">
+          <div class="max-w-[62rem] p-6 px-7 pb-12 flex flex-col gap-6">
 
             <!-- Page header -->
-            <div class="flex items-center justify-between gap-3 mb-5">
-              <div class="flex items-baseline gap-3 min-w-0">
-                <h1 class="text-base font-semibold text-tx-2 m-0">Settings</h1>
-                <span class="font-mono text-[10px] text-surface-600 uppercase tracking-widest hidden sm:inline truncate">edits are written to ~/.config/kontora/config.yaml</span>
+            <div class="flex items-start justify-between gap-4">
+              <div class="flex flex-col gap-1 min-w-0">
+                <h1 class="text-[20px] font-semibold text-tx-hi tracking-[-.01em] capitalize m-0" x-text="settingsSection"></h1>
+                <p class="m-0 text-[12.5px] text-tx-3 max-w-[52ch]" x-text="settingsSections.find(s => s.key === settingsSection).blurb"></p>
               </div>
-              <span x-show="settingsState === 'ok'"
-                    class="font-mono text-[11px] px-2 py-px rounded border border-surface-700/50 shrink-0"
-                    :class="settingsDirty() ? 'text-accent' : 'text-surface-600'"
-                    x-text="settingsDirty() ? 'unsaved edits' : 'in sync with disk'"></span>
+              <div x-show="settingsState === 'ok'" x-cloak class="flex items-center gap-2 shrink-0">
+                <span class="inline-flex items-center gap-1.5 h-[26px] px-2.5 rounded-full border font-mono text-[11px]"
+                      :class="settingsClientErrors().length ? 'border-err/30 bg-err/10 text-err' : 'border-ok/[0.28] bg-ok/10 text-ok'">
+                  <span class="w-[5px] h-[5px] rounded-full" :class="settingsClientErrors().length ? 'bg-err' : 'bg-ok'"></span>
+                  <span x-text="settingsClientErrors().length ? settingsClientErrors().length + (settingsClientErrors().length === 1 ? ' problem' : ' problems') : 'config valid'"></span>
+                </span>
+                <span x-show="settingsRestartPending()" x-cloak
+                      class="inline-flex items-center h-[26px] px-2.5 rounded-full border border-warn/25 bg-warn/10 text-warn font-mono text-[11px]"
+                      x-text="'restart to apply · ' + settingsRestartPending()"></span>
+              </div>
             </div>
 
             <!-- Load states -->
@@ -4027,466 +4050,879 @@
             </div>
 
             <template x-if="settingsState === 'ok'">
-              <div>
-                <!-- Section header -->
-                <div class="flex items-baseline gap-3 pb-2 border-b border-surface-700/40 mb-4">
-                  <h2 class="font-mono text-[13px] font-bold text-tx-hi m-0" x-text="settingsSection"></h2>
-                  <span class="text-[11px] text-surface-600" x-text="settingsSections.find(s => s.key === settingsSection).blurb"></span>
+              <div class="flex flex-col gap-6">
+
+                <!-- Config overview, on every section -->
+                <div class="grid grid-cols-2 lg:grid-cols-4 gap-2.5">
+                  <template x-for="t in settingsOverviewTiles()" :key="t.label">
+                    <div class="relative overflow-hidden border border-edge-card rounded-[10px] bg-surface-900 p-3 px-3.5 flex flex-col gap-1.5" :data-pipe-color="t.hue">
+                      <span class="absolute left-0 top-0 bottom-0 w-0.5" style="background: hsl(var(--pipe-h) / .6)"></span>
+                      <span class="font-mono text-[9.5px] font-bold uppercase tracking-[.14em] text-tx-faint" x-text="t.label"></span>
+                      <span class="flex items-baseline gap-[7px]">
+                        <span class="font-mono text-[22px] font-bold leading-none tabular-nums" style="color: hsl(var(--pipe-h))" x-text="t.value"></span>
+                        <span class="text-[11px] text-tx-4" x-text="t.unit"></span>
+                      </span>
+                      <span class="text-[11px] text-tx-4 truncate" x-text="t.foot"></span>
+                    </div>
+                  </template>
                 </div>
 
                 <!-- ===== stages ===== -->
-                <div x-show="settingsSection === 'stages'" class="flex flex-col gap-1.5">
+                <div x-show="settingsSection === 'stages'" class="flex flex-col gap-2.5">
                   <template x-for="name in settingsStageNames()" :key="name">
-                    <div class="border rounded-lg transition-colors"
-                         :class="settingsOpenStage === name ? 'border-accent/45 bg-surface-850' : 'border-edge-card bg-surface-900'">
-                      <button @click="settingsToggleStage(name)" class="w-full flex items-center gap-2.5 p-2.5 px-3 text-left">
-                        <span class="w-[9px] font-mono text-[10px] text-surface-600 shrink-0" x-text="settingsOpenStage === name ? '▾' : '▸'"></span>
-                        <span class="font-mono text-[13px] font-semibold text-tx-2 shrink-0" x-text="name"></span>
-                        <span x-show="settingsConfig.stages[name].builtin"
-                              class="font-mono text-[9.5px] uppercase tracking-[.08em] text-tx-faint border border-surface-700/60 rounded px-[5px] py-px shrink-0">built-in</span>
-                        <span x-show="settingsPathDirty('stages.' + name)" class="w-[5px] h-[5px] rounded-full bg-accent shrink-0"></span>
-                        <template x-if="settingsOpenStage !== name">
-                          <span class="flex-1 min-w-0 truncate text-[12px] text-tx-4"
-                                x-text="(settingsConfig.stages[name].prompt || '').split('\n')[0].slice(0, 68)"></span>
-                        </template>
-                        <template x-if="settingsOpenStage !== name">
-                          <span class="flex items-center gap-1 shrink-0">
+                    <div>
+                      <!-- Open stage -->
+                      <template x-if="settingsOpenStage === name">
+                        <section class="border border-accent/40 rounded-xl bg-surface-900 overflow-hidden" style="box-shadow: 0 0 0 3px rgba(var(--accent), .08)">
+                          <button @click="settingsToggleStage(name)" class="w-full flex items-center gap-2.5 p-[13px] px-[18px] bg-surface-850/55 border-b border-surface-700/40 text-left">
+                            <span class="font-mono text-[13px] font-bold text-tx-hi shrink-0" x-text="name"></span>
+                            <span x-show="settingsConfig.stages[name].builtin"
+                                  class="font-mono text-[9.5px] uppercase tracking-[.08em] text-tx-faint border border-surface-700/70 rounded px-[5px] py-px shrink-0">built-in</span>
+                            <span x-show="settingsPathDirty('stages.' + name)" class="w-[5px] h-[5px] rounded-full bg-accent shrink-0"></span>
                             <template x-for="p in settingsStagePipelines(name)" :key="p">
-                              <span class="pipe-tag" :data-pipe-color="pipelineColorByName(p)" x-text="p"></span>
+                              <span class="pipe-tag shrink-0" :data-pipe-color="pipelineColorByName(p)" x-text="p"></span>
                             </template>
-                          </span>
-                        </template>
-                        <span class="font-mono text-[11px] text-surface-600 w-12 text-right shrink-0 ml-auto" x-text="settingsConfig.stages[name].timeout"></span>
-                        <template x-for="field in ['model', 'effort']" :key="field">
-                          <span x-show="settingsPerAgentLabel('stages.' + name + '.' + field)"
-                                class="font-mono text-[10px] text-tx-faint border border-surface-700/60 rounded px-[5px] py-px shrink-0"
-                                x-text="field + ' ' + settingsPerAgentLabel('stages.' + name + '.' + field)"></span>
-                        </template>
-                      </button>
+                            <span class="ml-auto shrink-0 font-mono text-[11px] text-tx-4"
+                                  x-text="(settingsPerAgentLabel('stages.' + name + '.model') || 'agent model') + ' · ' + (settingsConfig.stages[name].timeout.trim() || 'no limit')"></span>
+                          </button>
 
-                      <div x-show="settingsOpenStage === name" x-cloak class="border-t border-surface-700/40 p-3 flex flex-col gap-2.5">
-                        <!-- Once stages.rework exists in the file, ReworkIsBuiltin is false and
-                             the daemon stops routing a ticket parked there through runReworkStage. -->
-                        <div x-show="settingsConfig.stages[name].builtin" class="flex items-start gap-2 bg-warn/10 border border-warn/20 rounded-md p-2.5 px-3">
-                          <span class="text-warn font-mono text-[12px] leading-[1.5]">!</span>
-                          <span class="text-[12px] leading-[1.5] text-tx-3">kontora injects this stage and runs it out of band after a plannotator review. Saving an edit writes <span class="font-mono text-tx-2">stages.rework</span> into config.yaml, and it then becomes an ordinary stage: add a rework step to the pipeline, or a ticket sent back for rework pauses.</span>
-                        </div>
-                        <div class="flex flex-wrap items-center gap-1.5">
-                          <span class="font-mono text-[10px] font-bold tracking-[.12em] uppercase text-tx-faint mr-1">insert</span>
-                          <template x-for="t in settingsTokens" :key="t.token">
-                            <button type="button" :title="t.help"
-                                    @click="insertTemplateToken('stage-prompt-' + name, name, t.token)"
-                                    class="font-mono text-[11px] px-2 py-[3px] rounded border border-surface-700/60 bg-surface-800 text-accent-bright hover:border-accent/40 hover:bg-surface-850 transition-colors"
-                                    x-text="t.token"></button>
+                          <div class="p-4 px-[18px] flex flex-col gap-3">
+                            <!-- Once stages.rework exists in the file, ReworkIsBuiltin is false and
+                                 the daemon stops routing a ticket parked there through runReworkStage. -->
+                            <div x-show="settingsConfig.stages[name].builtin" class="flex gap-2.5 p-3 px-3.5 rounded-[9px] border border-warn/[0.22] bg-warn/[0.08]">
+                              <span class="font-mono text-[12px] text-warn">!</span>
+                              <span class="text-[12px] leading-[1.55] text-tx-3">kontora injects this stage and runs it out of band after a plannotator review. Saving an edit writes <span class="font-mono text-tx-2">stages.rework</span> into config.yaml, and it then becomes an ordinary stage: add a rework step to the pipeline, or a ticket sent back for rework pauses.</span>
+                            </div>
+
+                            <div class="flex flex-wrap items-center gap-1.5">
+                              <span class="font-mono text-[9.5px] font-bold tracking-[.14em] uppercase text-tx-faint mr-1">insert</span>
+                              <template x-for="t in settingsTokens" :key="t.token">
+                                <button type="button" :title="t.help"
+                                        @click="insertTemplateToken('stage-prompt-' + name, name, t.token)"
+                                        class="font-mono text-[11px] py-1 px-[9px] rounded-md border border-surface-700/60 bg-surface-800 text-accent-bright hover:border-accent/40 hover:bg-surface-850 transition-colors"
+                                        x-text="t.token"></button>
+                              </template>
+                            </div>
+
+                            <div class="flex flex-col gap-1.5">
+                              <textarea :id="'stage-prompt-' + name" x-model="settingsConfig.stages[name].prompt" spellcheck="false" :aria-label="name + ' prompt'"
+                                        class="w-full min-h-[210px] resize-y bg-surface-deep border border-surface-700 rounded-lg py-[14px] px-4 font-mono text-[12.5px] leading-[1.75] text-tx focus:outline-none focus:border-accent/40"></textarea>
+                              <span class="font-mono text-[10.5px] text-tx-faint">
+                                <span x-text="(settingsConfig.stages[name].prompt || '').split('\n').length"></span> lines · <span x-text="(settingsConfig.stages[name].prompt || '').length"></span> chars · Go text/template, rendered before the agent starts
+                              </span>
+                            </div>
+
+                            <div x-show="settingsRowVisible('timeout', 'There is no default. Left empty, the stage runs until the agent exits.', 'stages')"
+                                 class="grid grid-cols-1 lg:grid-cols-[232px_minmax(0,1fr)] gap-3 lg:gap-6 pt-3 border-t border-surface-700/30 items-start">
+                              <div class="flex flex-col gap-1 min-w-0">
+                                <label :for="'stage-timeout-' + name" class="font-mono text-[12.5px] text-tx-2">timeout</label>
+                                <span class="text-[11.5px] leading-[1.55] text-tx-4">There is no default. Left empty, the stage runs until the agent exits.</span>
+                              </div>
+                              <div class="flex items-center gap-3 flex-wrap min-w-0">
+                                <input :id="'stage-timeout-' + name" type="text" x-model="settingsConfig.stages[name].timeout" placeholder="no limit"
+                                       class="w-[110px] bg-surface-800 border rounded-[7px] py-2 px-3 font-mono text-[12.5px] text-tx-2 focus:outline-none focus:border-accent/40"
+                                       :class="settingsDurationValid(settingsConfig.stages[name].timeout) ? 'border-edge-input' : 'border-err'">
+                                <button type="button" x-show="settingsPathDirty('stages.' + name)" @click="revertSettingsStage(name)"
+                                        class="font-mono text-[11.5px] h-[34px] px-3 rounded-[7px] bg-surface-900 border border-surface-700/70 text-tx-3 hover:text-tx-2 transition-colors">revert</button>
+                              </div>
+                            </div>
+
+                            <!-- model and effort: one value for every agent, or a map
+                                 keyed by agent name or agent kind. The control is one
+                                 block in ui/settings.js, rendered here and in general. -->
+                            <div x-show="settingsRowVisible('model effort', 'One value for every agent, or a map keyed by agent name or kind.', 'stages')"
+                                 class="grid grid-cols-1 lg:grid-cols-[232px_minmax(0,1fr)] gap-3 lg:gap-6 pt-3 border-t border-surface-700/30 items-start">
+                              <div class="flex flex-col gap-1 min-w-0">
+                                <span class="font-mono text-[12.5px] text-tx-2">model &amp; effort</span>
+                                <span class="text-[11.5px] leading-[1.55] text-tx-4">One value for every agent, or a map keyed by agent name or kind.</span>
+                              </div>
+                              <div class="flex flex-col gap-3 min-w-0">
+                                <template x-for="field in ['model', 'effort']" :key="field">
+                                  <div class="flex flex-col"
+                                       x-data="{ p: 'stages.' + name + '.' + field, label: field, labelClass: 'text-[11px]', inputId: 'stage-' + field + '-' + name, hint: &quot;the agent's own&quot; }"
+                                       x-html="settingsPerAgentControl"></div>
+                                </template>
+                              </div>
+                            </div>
+                          </div>
+                        </section>
+                      </template>
+
+                      <!-- Closed stage -->
+                      <template x-if="settingsOpenStage !== name">
+                        <button @click="settingsToggleStage(name)"
+                                class="w-full flex items-center gap-3 p-[13px] px-[18px] border border-edge-card rounded-xl bg-surface-900 text-left hover:border-edge-hover transition-colors">
+                          <span class="font-mono text-[13px] font-semibold text-tx-2 w-[92px] shrink-0 truncate" x-text="name"></span>
+                          <span x-show="settingsConfig.stages[name].builtin"
+                                class="font-mono text-[9.5px] uppercase tracking-[.08em] text-tx-faint border border-surface-700/70 rounded px-[5px] py-px shrink-0">built-in</span>
+                          <span x-show="settingsPathDirty('stages.' + name)" class="w-[5px] h-[5px] rounded-full bg-accent shrink-0"></span>
+                          <span class="flex-1 min-w-0 truncate text-[12px] text-tx-4"
+                                x-text="(settingsConfig.stages[name].prompt || '').split('\n')[0]"></span>
+                          <template x-for="p in settingsStagePipelines(name)" :key="p">
+                            <span class="pipe-tag shrink-0" :data-pipe-color="pipelineColorByName(p)" x-text="p"></span>
                           </template>
-                        </div>
-
-                        <textarea :id="'stage-prompt-' + name" x-model="settingsConfig.stages[name].prompt" spellcheck="false"
-                                  class="w-full min-h-[230px] resize-y bg-surface-deep border border-surface-700 rounded-md px-4 py-3 font-mono text-[12px] leading-[1.7] text-tx focus:outline-none focus:border-accent/40"></textarea>
-
-                        <div class="flex items-end gap-4 flex-wrap">
-                          <div>
-                            <label class="font-mono text-[11px] text-tx-3 mb-1 block" :for="'stage-timeout-' + name">timeout</label>
-                            <input :id="'stage-timeout-' + name" type="text" x-model="settingsConfig.stages[name].timeout"
-                                   class="w-24 bg-surface-800 border rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40"
-                                   :class="settingsDurationValid(settingsConfig.stages[name].timeout) ? 'border-surface-700/50' : 'border-err'"
-                                   placeholder="no limit">
-                          </div>
-                          <div class="text-[11px] text-surface-600 flex-1 min-w-0">
-                            <div><span x-text="(settingsConfig.stages[name].prompt || '').split('\n').length"></span> lines · <span x-text="(settingsConfig.stages[name].prompt || '').length"></span> chars</div>
-                            <div>Go text/template. An unknown field fails the stage at render time, before the agent starts.</div>
-                            <div x-show="!settingsConfig.stages[name].timeout.trim()">There is no default timeout. Left empty, the stage runs until the agent exits.</div>
-                          </div>
-                          <button type="button" x-show="settingsPathDirty('stages.' + name)" @click="revertSettingsStage(name)"
-                                  class="font-mono text-[11px] h-7 px-3 rounded bg-surface-900 border border-surface-700/60 text-tx-3 hover:text-tx-2 transition-colors">revert</button>
-                        </div>
-
-                        <!-- model and effort: one value for every agent, or a map
-                             keyed by agent name or agent kind. The control is one
-                             block in ui/settings.js, rendered here and in general. -->
-                        <template x-for="field in ['model', 'effort']" :key="field">
-                          <div class="flex flex-col"
-                               x-data="{ p: 'stages.' + name + '.' + field, label: field, labelClass: 'text-[11px]', inputId: 'stage-' + field + '-' + name, hint: &quot;the agent's own&quot; }"
-                               x-html="settingsPerAgentControl"></div>
-                        </template>
-                      </div>
+                          <!-- Both overrides are labelled, so a stage carrying only a model
+                               is not indistinguishable from one with no overrides at all. -->
+                          <template x-for="field in ['model', 'effort']" :key="field">
+                            <span x-show="settingsPerAgentLabel('stages.' + name + '.' + field)"
+                                  class="font-mono text-[10px] text-tx-faint border border-surface-700/70 rounded px-[5px] py-px shrink-0"
+                                  x-text="field + ' ' + settingsPerAgentLabel('stages.' + name + '.' + field)"></span>
+                          </template>
+                          <span class="font-mono text-[11px] text-surface-600 w-11 text-right shrink-0" x-text="settingsConfig.stages[name].timeout"></span>
+                        </button>
+                      </template>
                     </div>
                   </template>
 
                   <div x-show="!settingsNewStageOpen">
                     <button type="button" @click="settingsNewStageOpen = true; $nextTick(() => $refs.newStage && $refs.newStage.focus())"
-                            class="w-full flex items-center justify-center gap-1.5 p-2.5 px-3 border border-dashed border-surface-700 rounded-lg text-surface-600 font-mono text-[12px] hover:text-tx-3 hover:border-edge-hover transition-colors">
+                            class="w-full flex items-center justify-center gap-1.5 p-3 border border-dashed border-surface-700 rounded-xl text-surface-600 font-mono text-[12px] hover:text-tx-3 hover:border-edge-hover transition-colors">
                       <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M6 2v8M2 6h8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
                       add stage
                     </button>
                   </div>
                   <div x-show="settingsNewStageOpen" x-cloak class="flex items-center gap-2">
-                    <input x-ref="newStage" type="text" x-model="settingsNewStage" placeholder="stage name"
+                    <input x-ref="newStage" type="text" x-model="settingsNewStage" placeholder="stage name" aria-label="New stage name"
                            @keydown.enter.prevent="settingsAddStage()" @keydown.escape="settingsNewStageOpen = false; settingsNewStage = ''"
-                           class="flex-1 min-w-0 bg-surface-800 border border-surface-700/50 rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40">
+                           class="flex-1 min-w-0 bg-surface-800 border border-edge-input rounded-[7px] py-2 px-3 font-mono text-[12.5px] text-tx-2 focus:outline-none focus:border-accent/40">
                     <button type="button" @click="settingsAddStage()" :disabled="!settingsNewStage.trim() || !!settingsConfig.stages[settingsNewStage.trim()]"
-                            class="font-mono text-[12px] h-8 px-4 rounded bg-accent border border-accent text-accent-fg hover:bg-accent-bright transition-colors disabled:opacity-50">add</button>
+                            class="font-mono text-[12px] h-8 px-4 rounded-md bg-accent border border-accent text-accent-fg hover:bg-accent-bright transition-colors disabled:opacity-50">add</button>
                     <button type="button" @click="settingsNewStageOpen = false; settingsNewStage = ''"
-                            class="font-mono text-[12px] h-8 px-4 rounded bg-surface-900 border border-surface-700/60 text-tx-3">cancel</button>
+                            class="font-mono text-[12px] h-8 px-4 rounded-md bg-surface-900 border border-surface-700/60 text-tx-3">cancel</button>
                   </div>
                 </div>
 
                 <!-- ===== general ===== -->
-                <div x-show="settingsSection === 'general'" class="flex flex-col gap-3.5">
-                  <template x-for="f in settingsGeneralFields" :key="f.key">
-                    <div>
-                      <label :for="'gen-' + f.key" class="font-mono text-[13px] text-tx-3 mb-1 flex items-center gap-2">
-                        <span x-text="f.key"></span>
-                        <span x-show="!settingsConfig.general[f.key]" class="font-mono text-[9.5px] uppercase tracking-[.08em] text-tx-faint border border-surface-700/60 rounded px-[5px] py-px">default</span>
-                        <span x-show="settingsIsRestartOnly(f.key)" class="font-mono text-[9.5px] uppercase tracking-[.08em] text-warn bg-warn/10 border border-warn/20 rounded px-[5px] py-px">restart</span>
-                      </label>
-                      <input :id="'gen-' + f.key" type="text" x-model="settingsConfig.general[f.key]" :placeholder="f.placeholder"
-                             class="w-full max-w-[32rem] bg-surface-800 border rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40"
-                             :class="f.key === 'max_concurrent_agents' && !settingsIntValid(settingsConfig.general[f.key]) ? 'border-err' : 'border-surface-700/50'">
-                      <p class="text-[11px] text-surface-600 mt-0.5" x-text="f.help"></p>
-                    </div>
-                  </template>
+                <div x-show="settingsSection === 'general'" class="flex flex-col gap-[18px]">
+                  <section class="border border-edge-card rounded-xl bg-surface-900 overflow-hidden">
+                    <header class="flex items-baseline gap-2.5 p-[13px] px-[18px] bg-surface-850/45 border-b border-surface-700/40" data-pipe-color="indigo">
+                      <span class="w-1.5 h-1.5 rounded-full self-center shrink-0" style="background: hsl(var(--pipe-h))"></span>
+                      <h2 class="m-0 font-mono text-[12.5px] font-bold text-tx-hi tracking-[.02em]">locations</h2>
+                      <span class="text-[11.5px] text-tx-4">Three directories on the daemon host.</span>
+                    </header>
+                    <template x-for="f in settingsGeneralGroup('locations')" :key="f.key">
+                      <div x-show="settingsRowVisible(f.key, f.help, 'general')" class="grid grid-cols-1 lg:grid-cols-[232px_minmax(0,1fr)] gap-3 lg:gap-6 p-4 px-[18px] border-t border-surface-700/[0.28] items-start">
+                        <div class="flex flex-col gap-1 min-w-0">
+                          <span class="flex items-center gap-[7px] flex-wrap">
+                            <label :for="'gen-' + f.key" class="font-mono text-[12.5px] text-tx-2" x-text="f.key"></label>
+                            <span x-show="settingsIsRestartOnly(f.key)" class="font-mono text-[9.5px] uppercase tracking-[.08em] text-warn bg-warn/10 border border-warn/[0.22] rounded px-[5px] py-px">restart</span>
+                            <span x-show="!settingsConfig.general[f.key]" class="font-mono text-[9.5px] uppercase tracking-[.08em] text-tx-faint border border-surface-700/70 rounded px-[5px] py-px">default</span>
+                          </span>
+                          <span class="text-[11.5px] leading-[1.55] text-tx-4" x-text="f.help"></span>
+                        </div>
+                        <div class="flex flex-col gap-1.5 min-w-0">
+                          <input :id="'gen-' + f.key" type="text" x-model="settingsConfig.general[f.key]" :placeholder="f.placeholder"
+                                 class="w-full max-w-[30rem] bg-surface-800 border border-edge-input rounded-[7px] py-2 px-3 font-mono text-[12.5px] text-tx-2 focus:outline-none focus:border-accent/40">
+                          <span class="font-mono text-[10.5px] text-tx-faint"
+                                x-text="settingsIsRestartOnly(f.key) && settingsPathDirty(f.key) ? 'changed — takes effect after a daemon restart' : (settingsConfig.general[f.key] ? '' : 'default · ' + f.placeholder)"></span>
+                        </div>
+                      </div>
+                    </template>
+                  </section>
 
-                  <div>
-                    <label class="font-mono text-[13px] text-tx-3 mb-1 block">auto_pick_up</label>
-                    <button type="button" @click="settingsConfig.auto_pick_up = !settingsConfig.auto_pick_up"
-                            class="flex items-center gap-2.5 bg-surface-800 border border-surface-700/50 rounded px-3 py-1.5 text-sm text-tx-2">
-                      <span class="relative w-8 h-4 rounded-full transition-colors" :class="settingsConfig.auto_pick_up ? 'bg-accent' : 'bg-surface-700'">
-                        <span class="absolute top-[2px] w-3 h-3 rounded-full bg-accent-fg transition-[left] duration-150" :style="settingsConfig.auto_pick_up ? 'left:18px' : 'left:2px'"></span>
-                      </span>
-                      <span class="font-mono text-[12px]" x-text="settingsConfig.auto_pick_up ? 'on — todo tickets start automatically' : 'off — start tickets by hand'"></span>
-                    </button>
-                    <p class="text-[11px] text-surface-600 mt-0.5">Off leaves todo tickets queued until you start them by hand.</p>
-                  </div>
+                  <section class="border border-edge-card rounded-xl bg-surface-900 overflow-hidden">
+                    <header class="flex items-baseline gap-2.5 p-[13px] px-[18px] bg-surface-850/45 border-b border-surface-700/40" data-pipe-color="amber">
+                      <span class="w-1.5 h-1.5 rounded-full self-center shrink-0" style="background: hsl(var(--pipe-h))"></span>
+                      <h2 class="m-0 font-mono text-[12.5px] font-bold text-tx-hi tracking-[.02em]">execution</h2>
+                      <span class="text-[11.5px] text-tx-4">What runs, how much of it, and under whose name.</span>
+                    </header>
+
+                    <div x-data="{ f: settingsGeneralFields.find(x => x.key === 'max_concurrent_agents') }"
+                         x-show="settingsRowVisible(f.key, f.help, 'general')"
+                         class="grid grid-cols-1 lg:grid-cols-[232px_minmax(0,1fr)] gap-3 lg:gap-6 p-4 px-[18px] border-t border-surface-700/[0.28] items-start">
+                      <div class="flex flex-col gap-1 min-w-0">
+                        <span class="flex items-center gap-[7px] flex-wrap">
+                          <label id="gen-max_concurrent_agents-label" for="gen-max_concurrent_agents" class="font-mono text-[12.5px] text-tx-2">max_concurrent_agents</label>
+                          <span class="font-mono text-[9.5px] uppercase tracking-[.08em] text-warn bg-warn/10 border border-warn/[0.22] rounded px-[5px] py-px">restart</span>
+                        </span>
+                        <span class="text-[11.5px] leading-[1.55] text-tx-4" x-text="f.help"></span>
+                      </div>
+                      <div class="flex flex-col gap-2.5 min-w-0">
+                        <div class="flex gap-1.5 flex-wrap" role="radiogroup" aria-labelledby="gen-max_concurrent_agents-label">
+                          <template x-for="n in settingsConcurrencyOptions" :key="n">
+                            <button type="button" role="radio" @click="settingsSetConcurrency(n)"
+                                    :aria-checked="settingsConcurrencyIs(n) && !settingsConcurrencyOther()"
+                                    class="h-[34px] min-w-[34px] px-2.5 rounded-[7px] border font-mono text-[12.5px] transition-colors"
+                                    :class="settingsConcurrencyIs(n) && !settingsConcurrencyOther() ? 'border-accent/50 bg-accent/[0.14] text-accent-bright' : 'border-surface-700/60 bg-surface-800 text-tx-3 hover:border-edge-hover'"
+                                    x-text="n"></button>
+                          </template>
+                          <!-- The way back to a value the stepper does not offer.
+                               Without it, picking one of the options above is a
+                               one-way door out of 7, 10, 12 and unset. -->
+                          <button type="button" role="radio" aria-label="another value"
+                                  @click="settingsConcurrencyCustom = true; $nextTick(() => $refs.concurrencyOther && $refs.concurrencyOther.focus())"
+                                  :aria-checked="settingsConcurrencyOther()"
+                                  class="h-[34px] px-2.5 rounded-[7px] border font-mono text-[12.5px] transition-colors"
+                                  :class="settingsConcurrencyOther() ? 'border-accent/50 bg-accent/[0.14] text-accent-bright' : 'border-surface-700/60 bg-surface-800 text-tx-3 hover:border-edge-hover'">other</button>
+                        </div>
+                        <input x-show="settingsConcurrencyOther()" x-cloak x-ref="concurrencyOther" id="gen-max_concurrent_agents" type="text"
+                               x-model="settingsConfig.general.max_concurrent_agents" :placeholder="f.placeholder"
+                               class="w-[110px] bg-surface-800 border rounded-[7px] py-2 px-3 font-mono text-[12.5px] text-tx-2 focus:outline-none focus:border-accent/40"
+                               :class="settingsIntValid(settingsConfig.general.max_concurrent_agents) ? 'border-edge-input' : 'border-err'">
+                        <div class="flex items-center gap-2 flex-wrap" x-show="settingsSlots().total">
+                          <span class="flex gap-[3px]">
+                            <template x-for="i in settingsSlots().pills" :key="i">
+                              <span class="w-[30px] h-[5px] rounded-full" :class="i <= settingsSlots().busy ? 'bg-st-progress' : 'bg-surface-700'"></span>
+                            </template>
+                            <span x-show="settingsSlots().pills < settingsSlots().total" class="font-mono text-[11px] leading-none text-tx-faint">…</span>
+                          </span>
+                          <span class="font-mono text-[11px] text-tx-4" x-text="settingsSlotsLabel()"></span>
+                        </div>
+                        <span class="font-mono text-[10.5px] text-tx-faint"
+                              x-text="settingsPathDirty('max_concurrent_agents') ? 'changed — takes effect after a daemon restart' : (settingsConcurrency().trim() ? '' : 'default · ' + f.placeholder)"></span>
+                      </div>
+                    </div>
+
+                    <div x-data="{ f: settingsGeneralFields.find(x => x.key === 'default_agent') }"
+                         x-show="settingsRowVisible(f.key, f.help, 'general')"
+                         class="grid grid-cols-1 lg:grid-cols-[232px_minmax(0,1fr)] gap-3 lg:gap-6 p-4 px-[18px] border-t border-surface-700/[0.28] items-start">
+                      <div class="flex flex-col gap-1 min-w-0">
+                        <span class="font-mono text-[12.5px] text-tx-2">default_agent</span>
+                        <span class="text-[11.5px] leading-[1.55] text-tx-4" x-text="f.help"></span>
+                      </div>
+                      <div class="flex flex-col gap-1.5 min-w-0">
+                        <div class="flex gap-2 flex-wrap" role="radiogroup" aria-label="default_agent">
+                          <!-- settingsDefaultAgentChoices keeps a card for a name
+                               agents: no longer declares, so a value that blocks
+                               every save is on screen instead of hidden. -->
+                          <template x-for="name in settingsDefaultAgentChoices()" :key="name">
+                            <button type="button" role="radio" @click="settingsConfig.general.default_agent = name"
+                                    :aria-checked="settingsConfig.general.default_agent === name"
+                                    class="flex flex-col gap-0.5 items-start min-w-[132px] py-[9px] px-[13px] rounded-[9px] border text-left transition-colors"
+                                    :class="settingsConfig.general.default_agent === name ? 'border-accent/50 bg-accent/[0.12] text-tx-hi' : 'border-surface-700/60 bg-surface-800 text-tx-3 hover:border-edge-hover'">
+                              <span class="font-mono text-[12.5px]" x-text="name"></span>
+                              <span class="text-[10.5px]" :class="settingsConfig.agents[name] ? 'text-tx-faint' : 'text-err'"
+                                    x-text="settingsConfig.agents[name] ? (settingsConfig.agents[name].effort.trim() || 'own effort') + ' · ' + (agentRunningCount(name) ? agentRunningCount(name) + ' running' : 'idle') : 'not in agents — the save is blocked'"></span>
+                            </button>
+                          </template>
+                          <button type="button" role="radio" @click="settingsConfig.general.default_agent = ''"
+                                  :aria-checked="!settingsConfig.general.default_agent"
+                                  class="flex flex-col gap-0.5 items-start min-w-[132px] py-[9px] px-[13px] rounded-[9px] border text-left transition-colors"
+                                  :class="!settingsConfig.general.default_agent ? 'border-accent/50 bg-accent/[0.12] text-tx-hi' : 'border-surface-700/60 bg-surface-800 text-tx-3 hover:border-edge-hover'">
+                            <span class="font-mono text-[12.5px]">unset</span>
+                            <span class="text-[10.5px] text-tx-faint" x-text="'default · ' + f.placeholder"></span>
+                          </button>
+                        </div>
+                        <span class="font-mono text-[10.5px] text-tx-faint" x-show="!settingsAgentNames().length">no agents configured yet</span>
+                      </div>
+                    </div>
+
+                    <div x-show="settingsRowVisible('auto_pick_up', 'Off leaves todo tickets queued until you start them by hand.', 'general')"
+                         class="grid grid-cols-1 lg:grid-cols-[232px_minmax(0,1fr)] gap-3 lg:gap-6 p-4 px-[18px] border-t border-surface-700/[0.28] items-start">
+                      <div class="flex flex-col gap-1 min-w-0">
+                        <span class="font-mono text-[12.5px] text-tx-2">auto_pick_up</span>
+                        <span class="text-[11.5px] leading-[1.55] text-tx-4">Off leaves todo tickets queued until you start them by hand.</span>
+                      </div>
+                      <div class="flex flex-col gap-1.5 min-w-0">
+                        <button type="button" role="switch" aria-label="auto_pick_up" :aria-checked="settingsConfig.auto_pick_up"
+                                @click="settingsConfig.auto_pick_up = !settingsConfig.auto_pick_up"
+                                class="flex items-center gap-3 self-start">
+                          <span class="relative w-10 h-[22px] rounded-full transition-colors shrink-0" :class="settingsConfig.auto_pick_up ? 'bg-accent' : 'bg-surface-700'">
+                            <span class="absolute top-[3px] w-4 h-4 rounded-full bg-accent-fg transition-[left] duration-150" :style="settingsConfig.auto_pick_up ? 'left:21px' : 'left:2px'"></span>
+                          </span>
+                          <span class="text-[12.5px] text-tx-2" x-text="settingsConfig.auto_pick_up ? 'On — todo tickets start automatically' : 'Off — start tickets by hand'"></span>
+                        </button>
+                      </div>
+                    </div>
+
+                    <template x-for="f in settingsGeneralTextRows('execution')" :key="f.key">
+                      <div x-show="settingsRowVisible(f.key, f.help, 'general')" class="grid grid-cols-1 lg:grid-cols-[232px_minmax(0,1fr)] gap-3 lg:gap-6 p-4 px-[18px] border-t border-surface-700/[0.28] items-start">
+                        <div class="flex flex-col gap-1 min-w-0">
+                          <span class="flex items-center gap-[7px] flex-wrap">
+                            <label :for="'gen-' + f.key" class="font-mono text-[12.5px] text-tx-2" x-text="f.key"></label>
+                            <span x-show="settingsIsRestartOnly(f.key)" class="font-mono text-[9.5px] uppercase tracking-[.08em] text-warn bg-warn/10 border border-warn/[0.22] rounded px-[5px] py-px">restart</span>
+                            <span x-show="!settingsConfig.general[f.key]" class="font-mono text-[9.5px] uppercase tracking-[.08em] text-tx-faint border border-surface-700/70 rounded px-[5px] py-px">default</span>
+                          </span>
+                          <span class="text-[11.5px] leading-[1.55] text-tx-4" x-text="f.help"></span>
+                        </div>
+                        <div class="flex flex-col gap-1.5 min-w-0">
+                          <input :id="'gen-' + f.key" type="text" x-model="settingsConfig.general[f.key]" :placeholder="f.placeholder"
+                                 class="w-full max-w-[30rem] bg-surface-800 border border-edge-input rounded-[7px] py-2 px-3 font-mono text-[12.5px] text-tx-2 focus:outline-none focus:border-accent/40">
+                          <span class="font-mono text-[10.5px] text-tx-faint"
+                                x-text="settingsIsRestartOnly(f.key) && settingsPathDirty(f.key) ? 'changed — takes effect after a daemon restart' : (settingsConfig.general[f.key] ? '' : 'default · ' + f.placeholder)"></span>
+                        </div>
+                      </div>
+                    </template>
+                  </section>
 
                   <!-- The final-summary pass. Both take the same two shapes as a
                        stage model and effort, so they use the same control. -->
-                  <template x-for="path in ['summary_model', 'summary_effort']" :key="path">
-                    <div class="flex flex-col">
-                      <div x-data="{ p: path, label: path, labelClass: 'text-[13px]', inputId: 'gen-' + path, hint: &quot;the stage agent's own&quot; }"
-                           x-html="settingsPerAgentControl"></div>
-                      <p class="text-[11px] text-surface-600 mt-1" x-text="path === 'summary_model' ? 'Model for the final-summary pass that writes final_summary. Left empty, the pass uses the model the stage agent already selects. The pass writes no history entry, so this pair is not shown on a run.' : 'Reasoning effort for that same pass, and likewise not shown on a run.'"></p>
-                    </div>
-                  </template>
+                  <section class="border border-edge-card rounded-xl bg-surface-900 overflow-hidden">
+                    <header class="flex items-baseline gap-2.5 p-[13px] px-[18px] bg-surface-850/45 border-b border-surface-700/40" data-pipe-color="mauve">
+                      <span class="w-1.5 h-1.5 rounded-full self-center shrink-0" style="background: hsl(var(--pipe-h))"></span>
+                      <h2 class="m-0 font-mono text-[12.5px] font-bold text-tx-hi tracking-[.02em]">final summary</h2>
+                      <span class="text-[11.5px] text-tx-4">The pass that writes final_summary after a run.</span>
+                    </header>
+                    <template x-for="path in ['summary_model', 'summary_effort']" :key="path">
+                      <div x-show="settingsRowVisible(path, 'final summary pass', 'general')" class="grid grid-cols-1 lg:grid-cols-[232px_minmax(0,1fr)] gap-3 lg:gap-6 p-4 px-[18px] border-t border-surface-700/[0.28] items-start">
+                        <div class="flex flex-col gap-1 min-w-0">
+                          <span class="font-mono text-[12.5px] text-tx-2" x-text="path"></span>
+                          <span class="text-[11.5px] leading-[1.55] text-tx-4"
+                                x-text="path === 'summary_model' ? 'Model for the final-summary pass that writes final_summary. Left empty, the pass uses the model the stage agent already selects. The pass writes no history entry, so this pair is not shown on a run.' : 'Reasoning effort for that same pass, and likewise not shown on a run.'"></span>
+                        </div>
+                        <div class="flex flex-col gap-1.5 min-w-0">
+                          <div x-data="{ p: path, label: path, labelClass: 'sr-only', inputId: 'gen-' + path, hint: &quot;the stage agent's own&quot; }"
+                               x-html="settingsPerAgentControl"></div>
+                          <span class="font-mono text-[10.5px] text-tx-faint" x-text="settingsPerAgentLabel(path) || 'unset — the stage agent decides'"></span>
+                        </div>
+                      </div>
+                    </template>
+                  </section>
                 </div>
 
                 <!-- ===== environment ===== -->
-                <div x-show="settingsSection === 'environment'" class="flex flex-col gap-2">
-                  <template x-for="key in settingsEnvKeys()" :key="key">
-                    <div class="flex items-center gap-2">
-                      <input type="text" :value="key" readonly aria-label="variable name"
-                             class="w-64 flex-none bg-surface-800 border border-surface-700/50 rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none">
-                      <span class="text-surface-600 font-mono">=</span>
-                      <input type="text" x-model="settingsConfig.environment[key]" :aria-label="key + ' value'"
-                             class="flex-1 min-w-0 bg-surface-800 border border-surface-700/50 rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40">
-                      <button type="button" @click="settingsRemoveEnv(key)" :aria-label="'Remove ' + key"
-                              class="w-7 h-7 shrink-0 flex items-center justify-center border border-surface-700/50 rounded text-surface-600 hover:text-err hover:border-err/30 transition-colors">
-                        <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
-                      </button>
-                    </div>
-                  </template>
+                <div x-show="settingsSection === 'environment'" class="flex flex-col gap-[18px]">
+                  <section class="border border-edge-card rounded-xl bg-surface-900 overflow-hidden">
+                    <header class="flex items-baseline gap-2.5 p-[13px] px-[18px] bg-surface-850/45 border-b border-surface-700/40" data-pipe-color="indigo">
+                      <span class="w-1.5 h-1.5 rounded-full self-center shrink-0" style="background: hsl(var(--pipe-h))"></span>
+                      <h2 class="m-0 font-mono text-[12.5px] font-bold text-tx-hi tracking-[.02em]">process environment</h2>
+                      <span class="text-[11.5px] text-tx-4">Exported into every agent process, before its own env.</span>
+                    </header>
+                    <div class="p-4 px-[18px] flex flex-col gap-2.5">
+                      <template x-for="key in settingsEnvKeys()" :key="key">
+                        <div x-show="settingsRowVisible(key, '', 'environment')" class="flex items-center gap-2.5">
+                          <input type="text" :value="key" readonly aria-label="variable name"
+                                 class="w-[232px] flex-none bg-surface-850 border border-surface-700/60 rounded-[7px] py-2 px-3 font-mono text-[12.5px] text-tx-2 focus:outline-none">
+                          <span class="font-mono text-surface-600">=</span>
+                          <input type="text" x-model="settingsConfig.environment[key]" :aria-label="key + ' value'"
+                                 class="flex-1 min-w-0 bg-surface-800 border border-edge-input rounded-[7px] py-2 px-3 font-mono text-[12.5px] text-tx-2 focus:outline-none focus:border-accent/40">
+                          <button type="button" @click="settingsRemoveEnv(key)" :aria-label="'Remove ' + key"
+                                  class="w-[30px] h-[30px] shrink-0 flex items-center justify-center border border-surface-700/60 rounded-[7px] text-surface-600 hover:text-err hover:border-err/30 transition-colors">
+                            <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+                          </button>
+                        </div>
+                      </template>
+                      <p x-show="!settingsEnvKeys().length" class="m-0 text-[11.5px] text-tx-faint">None. Agents inherit the daemon's own environment.</p>
 
-                  <button type="button" x-show="!settingsNewEnvOpen" @click="settingsNewEnvOpen = true; $nextTick(() => $refs.newEnv && $refs.newEnv.focus())"
-                          class="w-full flex items-center justify-center gap-1.5 p-2.5 px-3 border border-dashed border-surface-700 rounded-lg text-surface-600 font-mono text-[12px] hover:text-tx-3 hover:border-edge-hover transition-colors">
-                    <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M6 2v8M2 6h8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
-                    add variable
-                  </button>
-                  <div x-show="settingsNewEnvOpen" x-cloak class="flex items-center gap-2">
-                    <input x-ref="newEnv" type="text" x-model="settingsNewEnvKey" placeholder="VARIABLE_NAME"
-                           @keydown.enter.prevent="settingsAddEnv()" @keydown.escape="settingsNewEnvOpen = false; settingsNewEnvKey = ''"
-                           class="w-64 flex-none bg-surface-800 border border-surface-700/50 rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40">
-                    <button type="button" @click="settingsAddEnv()" :disabled="!settingsNewEnvKey.trim() || settingsNewEnvKey.trim() in settingsConfig.environment"
-                            class="font-mono text-[12px] h-8 px-4 rounded bg-accent border border-accent text-accent-fg hover:bg-accent-bright transition-colors disabled:opacity-50">add</button>
-                    <button type="button" @click="settingsNewEnvOpen = false; settingsNewEnvKey = ''"
-                            class="font-mono text-[12px] h-8 px-4 rounded bg-surface-900 border border-surface-700/60 text-tx-3">cancel</button>
-                  </div>
+                      <button type="button" x-show="!settingsNewEnvOpen" @click="settingsNewEnvOpen = true; $nextTick(() => $refs.newEnv && $refs.newEnv.focus())"
+                              class="w-full flex items-center justify-center gap-1.5 p-[11px] border border-dashed border-surface-700 rounded-[9px] text-surface-600 font-mono text-[12px] hover:text-tx-3 hover:border-edge-hover transition-colors">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M6 2v8M2 6h8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+                        add variable
+                      </button>
+                      <div x-show="settingsNewEnvOpen" x-cloak class="flex items-center gap-2.5">
+                        <input x-ref="newEnv" type="text" x-model="settingsNewEnvKey" placeholder="VARIABLE_NAME" aria-label="New variable name"
+                               @keydown.enter.prevent="settingsAddEnv()" @keydown.escape="settingsNewEnvOpen = false; settingsNewEnvKey = ''"
+                               class="w-[232px] flex-none bg-surface-800 border border-edge-input rounded-[7px] py-2 px-3 font-mono text-[12.5px] text-tx-2 focus:outline-none focus:border-accent/40">
+                        <button type="button" @click="settingsAddEnv()" :disabled="!settingsNewEnvKey.trim() || settingsNewEnvKey.trim() in settingsConfig.environment"
+                                class="font-mono text-[12px] h-8 px-4 rounded-md bg-accent border border-accent text-accent-fg hover:bg-accent-bright transition-colors disabled:opacity-50">add</button>
+                        <button type="button" @click="settingsNewEnvOpen = false; settingsNewEnvKey = ''"
+                                class="font-mono text-[12px] h-8 px-4 rounded-md bg-surface-900 border border-surface-700/60 text-tx-3">cancel</button>
+                      </div>
+                    </div>
+                    <div class="m-[0_18px_18px] flex gap-2.5 p-3 px-3.5 rounded-[9px] border border-surface-700/60 bg-surface-850/50">
+                      <span class="font-mono text-[12px] text-tx-faint">i</span>
+                      <span class="text-[12px] leading-[1.55] text-tx-3">An agent's own <span class="font-mono text-tx-2">environment</span> block in config.yaml overrides what is set here.</span>
+                    </div>
+                  </section>
                 </div>
 
                 <!-- ===== agents ===== -->
-                <div x-show="settingsSection === 'agents'" class="flex flex-col gap-1.5">
+                <div x-show="settingsSection === 'agents'" class="flex flex-col gap-3.5">
                   <template x-for="name in settingsAgentNames()" :key="name">
-                    <div class="border rounded-lg transition-colors"
-                         :class="settingsOpenAgent === name ? 'border-accent/45 bg-surface-850' : 'border-edge-card bg-surface-900'">
-                      <button @click="settingsToggleAgent(name)" class="w-full flex items-center gap-2.5 p-2.5 px-3 text-left">
-                        <span class="w-[9px] font-mono text-[10px] text-surface-600 shrink-0" x-text="settingsOpenAgent === name ? '▾' : '▸'"></span>
-                        <span class="font-mono text-[13px] font-semibold text-tx-2 shrink-0" x-text="name"></span>
+                    <section x-show="settingsRowVisible(name, settingsAgentCommand(name), 'agents')" class="border border-edge-card rounded-xl bg-surface-900 overflow-hidden">
+                      <header class="flex items-center gap-2.5 p-[13px] px-[18px] bg-surface-850/45 border-b border-surface-700/40">
+                        <span class="w-[7px] h-[7px] rounded-full shrink-0" :class="agentRunningCount(name) ? 'bg-st-progress' : 'bg-surface-600'"></span>
+                        <h2 class="m-0 font-mono text-[13px] font-bold text-tx-hi shrink-0" x-text="name"></h2>
                         <span x-show="configCache?.default_agent === name"
                               class="font-mono text-[9.5px] uppercase tracking-[.08em] text-accent border border-accent/30 bg-accent/[0.12] rounded px-[5px] py-px shrink-0">default</span>
                         <span x-show="settingsPathDirty('agents.' + name)" class="w-[5px] h-[5px] rounded-full bg-accent shrink-0"></span>
-                        <span class="flex-1 min-w-0 truncate font-mono text-[11.5px] text-tx-4" x-text="settingsAgentCommand(name)"></span>
-                        <span x-show="settingsAgentSkipsPermissions(name)"
-                              class="shrink-0 font-mono text-[10px] text-warn bg-warn/10 border border-warn/20 rounded px-1.5">skips permissions</span>
-                      </button>
-
-                      <div x-show="settingsOpenAgent === name" x-cloak class="border-t border-surface-700/40 p-3 flex flex-col gap-3">
-                        <div>
-                          <label :for="'agent-bin-' + name" class="font-mono text-[13px] text-tx-3 mb-1 block">binary</label>
+                        <span class="font-mono text-[11px] text-tx-4 min-w-0 truncate" x-text="settingsAgentCommand(name)"></span>
+                        <span class="ml-auto shrink-0 font-mono text-[10px] rounded-[5px] py-0.5 px-[7px] whitespace-nowrap"
+                              :class="settingsAgentSkipsPermissions(name) ? 'text-warn bg-warn/10 border border-warn/20' : 'text-tx-faint border border-surface-700/70'"
+                              x-text="settingsAgentSkipsPermissions(name) ? 'skips permissions' : (agentRunningCount(name) ? agentRunningCount(name) + ' running' : 'idle')"></span>
+                      </header>
+                      <div class="grid grid-cols-1 md:grid-cols-3 gap-4 p-4 px-[18px]">
+                        <div class="flex flex-col gap-1.5 min-w-0">
+                          <label :for="'agent-bin-' + name" class="font-mono text-[11.5px] text-tx-3">binary</label>
                           <input :id="'agent-bin-' + name" type="text" x-model="settingsConfig.agents[name].binary"
-                                 class="w-56 bg-surface-800 border rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40"
-                                 :class="settingsConfig.agents[name].binary.trim() ? 'border-surface-700/50' : 'border-err'">
-                          <p class="text-[11px] mt-0.5" :class="settingsConfig.agents[name].binary.trim() ? 'text-surface-600' : 'text-err'"
-                             x-text="settingsConfig.agents[name].binary.trim() ? 'Resolved on PATH. nono and op are treated as wrappers — the binary after -- is the real agent.' : 'agent &quot;' + name + '&quot;: binary is required'"></p>
+                                 class="w-full bg-surface-800 border rounded-[7px] py-2 px-3 font-mono text-[12.5px] text-tx-2 focus:outline-none focus:border-accent/40"
+                                 :class="settingsConfig.agents[name].binary.trim() ? 'border-edge-input' : 'border-err'">
+                          <span class="text-[11px]" :class="settingsConfig.agents[name].binary.trim() ? 'text-tx-faint' : 'text-err'"
+                                x-text="settingsConfig.agents[name].binary.trim() ? 'Resolved on PATH. nono and op are wrappers — the binary after -- is the real agent.' : 'agent &quot;' + name + '&quot;: binary is required'"></span>
                         </div>
 
-                        <div>
-                          <label :for="'agent-effort-' + name" class="font-mono text-[13px] text-tx-3 mb-1 block">effort</label>
-                          <input :id="'agent-effort-' + name" type="text" x-model="settingsConfig.agents[name].effort"
-                                 class="w-56 bg-surface-800 border rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40"
-                                 :class="settingsConfig.agents[name].effort.trim() && !settingsAgentKindOf(name) ? 'border-err' : 'border-surface-700/50'"
-                                 placeholder="the CLI's own default">
-                          <p class="text-[11px] text-surface-600 mt-0.5">Reasoning effort for every stage this agent runs, unless the stage overrides it. Only claude and pi take a flag for it: an effort on any other binary is rejected when the config is saved.</p>
+                        <div class="flex flex-col gap-1.5 min-w-0">
+                          <label :for="'agent-effort-' + name" class="font-mono text-[11.5px] text-tx-3">effort</label>
+                          <input :id="'agent-effort-' + name" type="text" x-model="settingsConfig.agents[name].effort" placeholder="the CLI's own default"
+                                 class="w-full bg-surface-800 border rounded-[7px] py-2 px-3 font-mono text-[12.5px] text-tx-2 focus:outline-none focus:border-accent/40"
+                                 :class="settingsConfig.agents[name].effort.trim() && !settingsAgentKindOf(name) ? 'border-err' : 'border-edge-input'">
+                          <span class="text-[11px] text-tx-faint">Only claude and pi take a flag for it. An effort on any other binary is rejected when the config is saved.</span>
                         </div>
 
-                        <div>
-                          <label :for="'agent-args-' + name" class="font-mono text-[13px] text-tx-3 mb-1 block">args</label>
+                        <div class="flex flex-col gap-1.5 min-w-0">
+                          <span class="font-mono text-[11.5px] text-tx-3">runs now</span>
+                          <div class="flex items-center gap-2 h-[34px] px-3 rounded-[7px] border border-surface-700/50 bg-surface-850/60">
+                            <span class="font-mono text-[12.5px] text-tx-2" x-text="agentRunningCount(name) + (agentRunningCount(name) === 1 ? ' session' : ' sessions')"></span>
+                            <span class="text-[11px] text-tx-faint truncate" x-show="!agentRunningCount(name)">idle</span>
+                          </div>
+                          <span class="text-[11px] text-tx-faint"
+                                x-text="settingsAgentStages(name).length ? 'runs ' + settingsAgentStages(name).length + ' of ' + settingsStageNames().length + ' stages (' + settingsAgentStages(name).join(', ') + ')' : 'no pipeline step names this agent'"></span>
+                        </div>
+
+                        <div class="md:col-span-2 flex flex-col gap-1.5 min-w-0">
+                          <label :for="'agent-args-' + name" class="font-mono text-[11.5px] text-tx-3">args</label>
                           <textarea :id="'agent-args-' + name" x-model="settingsConfig.agents[name].args" spellcheck="false"
-                                    class="w-full min-h-[5rem] resize-y bg-surface-deep border border-surface-700 rounded-md px-4 py-3 font-mono text-[12px] leading-[1.7] text-tx focus:outline-none focus:border-accent/40"></textarea>
-                          <p class="text-[11px] text-surface-600 mt-0.5">One argument per line. Everything after -- is the real agent when the binary is a wrapper.</p>
+                                    class="w-full min-h-[84px] resize-y bg-surface-deep border border-surface-700 rounded-lg py-[11px] px-[14px] font-mono text-[12px] leading-[1.7] text-tx focus:outline-none focus:border-accent/40"></textarea>
+                          <span class="text-[11px] text-tx-faint">One argument per line. Everything after -- is the real agent when the binary is a wrapper.</span>
                         </div>
 
-                        <div>
-                          <div class="font-mono text-[13px] text-tx-3 mb-1">failure_patterns</div>
+                        <div class="flex flex-col gap-1.5 min-w-0">
+                          <span class="font-mono text-[11.5px] text-tx-3">failure_patterns</span>
                           <div class="flex flex-wrap gap-1.5" x-show="settingsFailurePatterns(name).patterns.length">
                             <template x-for="p in settingsFailurePatterns(name).patterns" :key="p">
-                              <span class="font-mono text-[10.5px] text-tx-log bg-surface-800 border border-surface-700/60 rounded px-1.5" x-text="p"></span>
+                              <span class="font-mono text-[10.5px] text-tx-log bg-surface-800 border border-surface-700/60 rounded-[5px] py-0.5 px-1.5" x-text="p"></span>
                             </template>
                           </div>
-                          <p class="text-[11px] text-surface-600 mt-0.5"
-                             x-text="settingsFailurePatterns(name).mode === 'default' ? 'Using the 8 built-in defaults — API errors, usage limits, prompt-too-long, provider quota. Set an explicit list in config.yaml to override, or [] to disable.' : (settingsFailurePatterns(name).mode === 'disabled' ? 'Set to []. Failure detection is off for this agent; only a non-zero exit pauses the ticket.' : 'An explicit list in config.yaml, replacing the built-in defaults.')"></p>
+                          <span class="text-[11px] text-tx-faint"
+                                x-text="settingsFailurePatterns(name).mode === 'default' ? 'Using the 8 built-in defaults — API errors, usage limits, prompt-too-long, provider quota. Set an explicit list in config.yaml to override, or [] to disable.' : (settingsFailurePatterns(name).mode === 'disabled' ? 'Set to []. Failure detection is off for this agent; only a non-zero exit pauses the ticket.' : 'An explicit list in config.yaml, replacing the built-in defaults.')"></span>
                         </div>
                       </div>
-                    </div>
+                    </section>
                   </template>
                 </div>
 
                 <!-- ===== pipelines (read-only) ===== -->
-                <div x-show="settingsSection === 'pipelines'" class="flex flex-col gap-2">
+                <div x-show="settingsSection === 'pipelines'" class="flex flex-col gap-3.5">
                   <template x-for="name in settingsPipelineNames()" :key="name">
-                    <div class="border border-edge-card rounded-lg bg-surface-900 p-3" :data-pipe-color="pipelineColorByName(name)">
-                      <div class="flex items-baseline gap-2.5 mb-2 min-w-0">
+                    <!-- The filter and the header read the config directly. Only
+                         the flow diagram needs settingsPipelineSteps, which
+                         resolves a model per step for the agent that runs it. -->
+                    <section x-show="settingsRowVisible(name, settingsConfig.pipelines[name].map(s => s.stage + ' ' + s.agent).join(' '), 'pipelines')"
+                             class="border border-edge-card rounded-xl bg-surface-900 overflow-hidden" :data-pipe-color="pipelineColorByName(name)">
+                      <header class="flex items-center gap-2.5 p-[13px] px-[18px] border-b border-surface-700/40" style="background: hsl(var(--pipe-h) / .07)">
                         <span class="pipe-tag shrink-0" x-text="name"></span>
-                        <span class="font-mono text-[11px] text-surface-600 truncate">
-                          <span x-text="settingsConfig.pipelines[name].length"></span> stages<span x-show="settingsPipelineEnds(name)"> · ends <span x-text="settingsPipelineEnds(name)"></span></span>
+                        <span class="font-mono text-[11px] text-tx-4 truncate">
+                          <span x-text="settingsPlural(settingsConfig.pipelines[name].length, 'step', 'steps')"></span> · <span x-text="settingsPlural(new Set(settingsConfig.pipelines[name].map(s => s.agent)).size, 'agent', 'agents')"></span>
+                        </span>
+                      </header>
+                      <div class="p-[18px] flex items-stretch overflow-x-auto">
+                        <template x-for="s in settingsPipelineSteps(name)" :key="s.index">
+                          <span class="flex items-stretch">
+                            <span class="w-[196px] shrink-0 flex flex-col gap-2 p-3 rounded-[10px] border border-surface-700/55 bg-surface-850/55">
+                              <span class="flex items-center gap-[7px] min-w-0">
+                                <span class="font-mono text-[10px] text-surface-600" x-text="s.index"></span>
+                                <span class="font-mono text-[12.5px] font-semibold text-tx-hi truncate" x-text="s.stage"></span>
+                                <span class="ml-auto font-mono text-[10px] text-tx-4 shrink-0" x-text="s.timeout"></span>
+                              </span>
+                              <span class="flex items-center gap-1.5 min-w-0">
+                                <span class="w-[5px] h-[5px] rounded-full shrink-0" :class="s.running ? 'bg-st-progress' : 'bg-surface-600'"></span>
+                                <span class="font-mono text-[11px] text-tx-2 truncate" x-text="s.agent"></span>
+                                <span class="font-mono text-[10px] text-tx-faint truncate" x-text="s.model"></span>
+                              </span>
+                              <span class="flex flex-col gap-[3px] pt-2 border-t border-surface-700/45 font-mono text-[10.5px] min-w-0">
+                                <span class="text-ok truncate">✓ <span x-text="s.on_success"></span></span>
+                                <span class="text-err/85 truncate">✕ <span x-text="s.on_failure"></span><span x-show="s.max_retries > 0"> · max <span x-text="s.max_retries"></span></span></span>
+                              </span>
+                            </span>
+                            <span class="flex items-center justify-center w-[30px] shrink-0 text-surface-600">
+                              <svg width="30" height="12" viewBox="0 0 30 12" fill="none"><path d="M2 6h22" stroke="currentColor" stroke-width="1.2" stroke-dasharray="3 3"/><path d="M23 2.5 27.5 6 23 9.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                            </span>
+                          </span>
+                        </template>
+                        <span x-show="settingsPipelineEnds(name)" class="flex items-center shrink-0">
+                          <span class="flex flex-col gap-1 py-3 px-3.5 rounded-[10px] border border-dashed border-surface-700 bg-surface-850/40">
+                            <span class="font-mono text-[9.5px] uppercase tracking-[.12em] text-tx-faint">ends at</span>
+                            <!-- slice, not [length - 1]: x-show hides this box for a
+                                 pipeline with no steps but still evaluates the binding. -->
+                            <span class="status-chip" :data-status="(settingsConfig.pipelines[name].slice(-1)[0] || {}).on_success"
+                                  x-text="settingsPipelineEnds(name)"></span>
+                          </span>
                         </span>
                       </div>
-                      <div class="flex flex-col gap-0.5">
-                        <template x-for="(step, i) in settingsConfig.pipelines[name]" :key="i">
-                          <div class="settings-step font-mono text-[12px]">
-                            <span class="text-[10px] text-surface-600" x-text="i"></span>
-                            <span class="text-tx-2 min-w-0 truncate" x-text="step.stage"></span>
-                            <span class="text-tx-4 min-w-0 truncate" x-text="step.agent"></span>
-                            <span class="flex justify-end gap-2 whitespace-nowrap min-w-0">
-                              <span class="text-ok">✓ <span x-text="step.on_success"></span></span>
-                              <span class="text-edge-faint">·</span>
-                              <span class="text-err/80">✕ <span x-text="step.on_failure"></span></span>
-                              <span x-show="step.max_retries > 0" class="text-surface-600">max <span x-text="step.max_retries"></span></span>
-                            </span>
-                          </div>
-                        </template>
-                      </div>
-                    </div>
+                    </section>
                   </template>
+                  <p class="m-0 text-[11.5px] text-tx-faint">Pipelines are read-only here — they are edited in config.yaml. Stages share one git worktree; artifacts pass between them as files.</p>
                 </div>
 
                 <!-- ===== projects (read-only) ===== -->
-                <div x-show="settingsSection === 'projects'" class="flex flex-col gap-1.5">
+                <div x-show="settingsSection === 'projects'" class="flex flex-col gap-3">
                   <template x-for="name in settingsProjectNames()" :key="name">
-                    <div class="border border-edge-card rounded-lg bg-surface-900 p-2.5 px-3" :data-pipe-color="pipelineColorByName(name)">
-                      <div class="flex items-baseline gap-2.5 min-w-0">
-                        <span class="font-mono text-[13px] font-semibold shrink-0" style="color: hsl(var(--pipe-h))" x-text="name"></span>
+                    <section x-show="settingsRowVisible(name, settingsConfig.projects[name].path, 'projects')"
+                             class="border border-edge-card rounded-xl bg-surface-900 overflow-hidden" :data-pipe-color="pipelineColorByName(name)">
+                      <header class="flex items-baseline gap-2.5 p-[13px] px-[18px] border-b border-surface-700/40" style="background: hsl(var(--pipe-h) / .06)">
+                        <span class="font-mono text-[13px] font-bold shrink-0" style="color: hsl(var(--pipe-h))" x-text="name"></span>
                         <span class="font-mono text-[11.5px] text-tx-4 min-w-0 truncate" x-text="settingsConfig.projects[name].path"></span>
+                        <span class="ml-auto shrink-0 font-mono text-[10.5px] text-tx-faint"
+                              x-text="settingsProjectTickets(name).running ? settingsProjectTickets(name).running + ' running' : 'idle'"></span>
+                      </header>
+                      <div class="grid grid-cols-2 lg:grid-cols-4 gap-3.5 p-4 px-[18px]">
+                        <span class="flex flex-col gap-1 min-w-0">
+                          <span class="font-mono text-[9.5px] uppercase tracking-[.14em] text-tx-faint">pipeline</span>
+                          <span class="font-mono text-[12.5px] text-tx-2 truncate" x-text="settingsConfig.projects[name].pipeline || 'default'"></span>
+                        </span>
+                        <span class="flex flex-col gap-1 min-w-0">
+                          <span class="font-mono text-[9.5px] uppercase tracking-[.14em] text-tx-faint">agent</span>
+                          <span class="font-mono text-[12.5px] text-tx-2 truncate" x-text="settingsConfig.projects[name].agent || 'inherits default'"></span>
+                        </span>
+                        <span class="flex flex-col gap-1 min-w-0">
+                          <span class="font-mono text-[9.5px] uppercase tracking-[.14em] text-tx-faint">branch prefix</span>
+                          <span class="font-mono text-[12.5px] text-tx-2 truncate"
+                                x-text="(settingsConfig.projects[name].branch_prefix || settingsConfig.general.branch_prefix || 'kontora') + '/…'"></span>
+                        </span>
+                        <span class="flex flex-col gap-1 min-w-0">
+                          <span class="font-mono text-[9.5px] uppercase tracking-[.14em] text-tx-faint">tickets</span>
+                          <span class="font-mono text-[12.5px] text-tx-2 truncate" x-text="settingsProjectTickets(name).total + ' on the board'"></span>
+                        </span>
                       </div>
-                      <div class="flex flex-wrap items-center gap-x-2.5 gap-y-1.5 font-mono text-[11px] mt-1.5">
-                        <span x-show="settingsConfig.projects[name].pipeline" class="pipe-tag" :data-pipe-color="pipelineColorByName(settingsConfig.projects[name].pipeline)" x-text="settingsConfig.projects[name].pipeline"></span>
-                        <span x-show="settingsConfig.projects[name].agent"><span class="text-tx-faint">agent</span> <span class="text-tx-2" x-text="settingsConfig.projects[name].agent"></span></span>
-                        <span x-show="settingsConfig.projects[name].branch_prefix"><span class="text-tx-faint">branch</span> <span class="text-tx-2" x-text="settingsConfig.projects[name].branch_prefix + '/…'"></span></span>
-                      </div>
-                    </div>
+                    </section>
                   </template>
+                  <p class="m-0 text-[11.5px] text-tx-faint">Projects are read-only here — they are edited in config.yaml.</p>
                 </div>
 
                 <!-- ===== web ===== -->
-                <div x-show="settingsSection === 'web'" class="flex flex-col gap-3.5">
-                  <div class="flex gap-3 flex-wrap">
-                    <div class="flex-1 min-w-[12rem]">
-                      <label for="web-host" class="font-mono text-[13px] text-tx-3 mb-1 flex items-center gap-2">
-                        host
-                        <span class="font-mono text-[9.5px] uppercase tracking-[.08em] text-warn bg-warn/10 border border-warn/20 rounded px-[5px] py-px">restart</span>
-                      </label>
-                      <input id="web-host" type="text" x-model="settingsConfig.web.host" placeholder="127.0.0.1"
-                             class="w-full bg-surface-800 border border-surface-700/50 rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40">
+                <div x-show="settingsSection === 'web'" class="flex flex-col gap-[18px]">
+                  <section class="border border-edge-card rounded-xl bg-surface-900 overflow-hidden">
+                    <header class="flex items-baseline gap-2.5 p-[13px] px-[18px] bg-surface-850/45 border-b border-surface-700/40" data-pipe-color="indigo">
+                      <span class="w-1.5 h-1.5 rounded-full self-center shrink-0" style="background: hsl(var(--pipe-h))"></span>
+                      <h2 class="m-0 font-mono text-[12.5px] font-bold text-tx-hi tracking-[.02em]">listener</h2>
+                      <span class="text-[11.5px] text-tx-4">Where the daemon binds. Both need a restart.</span>
+                    </header>
+                    <div x-show="settingsRowVisible('host', 'Bind to a tailnet IP to reach this daemon from another machine.', 'web')"
+                         class="grid grid-cols-1 lg:grid-cols-[232px_minmax(0,1fr)] gap-3 lg:gap-6 p-4 px-[18px] border-t border-surface-700/[0.28] items-start">
+                      <div class="flex flex-col gap-1 min-w-0">
+                        <span class="flex items-center gap-[7px] flex-wrap">
+                          <label for="web-host" class="font-mono text-[12.5px] text-tx-2">host</label>
+                          <span class="font-mono text-[9.5px] uppercase tracking-[.08em] text-warn bg-warn/10 border border-warn/[0.22] rounded px-[5px] py-px">restart</span>
+                        </span>
+                        <span class="text-[11.5px] leading-[1.55] text-tx-4">Bind to a tailnet IP to reach this daemon from another machine.</span>
+                      </div>
+                      <div class="flex flex-col gap-1.5 min-w-0">
+                        <input id="web-host" type="text" x-model="settingsConfig.web.host" placeholder="127.0.0.1"
+                               class="w-full max-w-[30rem] bg-surface-800 border border-edge-input rounded-[7px] py-2 px-3 font-mono text-[12.5px] text-tx-2 focus:outline-none focus:border-accent/40">
+                        <span class="font-mono text-[10.5px] text-tx-faint"
+                              x-text="['', '127.0.0.1', 'localhost'].includes(settingsConfig.web.host.trim()) ? 'loopback only — nothing outside this machine can connect' : 'reachable from anything that can route to this address'"></span>
+                      </div>
                     </div>
-                    <div>
-                      <label for="web-port" class="font-mono text-[13px] text-tx-3 mb-1 flex items-center gap-2">
-                        port
-                        <span class="font-mono text-[9.5px] uppercase tracking-[.08em] text-warn bg-warn/10 border border-warn/20 rounded px-[5px] py-px">restart</span>
-                      </label>
-                      <input id="web-port" type="text" x-model="settingsConfig.web.port" placeholder="8080"
-                             class="w-28 bg-surface-800 border rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40"
-                             :class="settingsIntValid(settingsConfig.web.port) ? 'border-surface-700/50' : 'border-err'">
+                    <div x-show="settingsRowVisible('port', 'Port for the dashboard and the /api and /ws endpoints.', 'web')"
+                         class="grid grid-cols-1 lg:grid-cols-[232px_minmax(0,1fr)] gap-3 lg:gap-6 p-4 px-[18px] border-t border-surface-700/[0.28] items-start">
+                      <div class="flex flex-col gap-1 min-w-0">
+                        <span class="flex items-center gap-[7px] flex-wrap">
+                          <label for="web-port" class="font-mono text-[12.5px] text-tx-2">port</label>
+                          <span class="font-mono text-[9.5px] uppercase tracking-[.08em] text-warn bg-warn/10 border border-warn/[0.22] rounded px-[5px] py-px">restart</span>
+                        </span>
+                        <span class="text-[11.5px] leading-[1.55] text-tx-4">Port for the dashboard and the /api and /ws endpoints.</span>
+                      </div>
+                      <div class="flex flex-col gap-1.5 min-w-0">
+                        <input id="web-port" type="text" x-model="settingsConfig.web.port" placeholder="8080"
+                               class="w-[110px] bg-surface-800 border rounded-[7px] py-2 px-3 font-mono text-[12.5px] text-tx-2 focus:outline-none focus:border-accent/40"
+                               :class="settingsIntValid(settingsConfig.web.port) ? 'border-edge-input' : 'border-err'">
+                      </div>
                     </div>
-                  </div>
-                  <div>
-                    <label for="web-token" class="font-mono text-[13px] text-tx-3 mb-1 flex items-center gap-2">
-                      token
-                      <span class="font-mono text-[9.5px] uppercase tracking-[.08em] text-warn bg-warn/10 border border-warn/20 rounded px-[5px] py-px">restart</span>
-                    </label>
-                    <!-- Masked by default: this is the credential for every /api and /ws call. -->
-                    <div class="flex items-center gap-2">
-                      <input id="web-token" :type="settingsShowToken ? 'text' : 'password'" x-model="settingsConfig.web.token" placeholder="unset — no auth on /api and /ws"
-                             class="flex-1 min-w-0 bg-surface-800 border border-surface-700/50 rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40">
-                      <button type="button" @click="settingsShowToken = !settingsShowToken"
-                              class="shrink-0 font-mono text-[11px] h-8 px-3 rounded bg-surface-900 border border-surface-700/60 text-tx-3 hover:text-tx-2 transition-colors"
-                              x-text="settingsShowToken ? 'hide' : 'show'"></button>
+                  </section>
+
+                  <section class="border border-edge-card rounded-xl bg-surface-900 overflow-hidden">
+                    <header class="flex items-baseline gap-2.5 p-[13px] px-[18px] bg-surface-850/45 border-b border-surface-700/40" data-pipe-color="rose">
+                      <span class="w-1.5 h-1.5 rounded-full self-center shrink-0" style="background: hsl(var(--pipe-h))"></span>
+                      <h2 class="m-0 font-mono text-[12.5px] font-bold text-tx-hi tracking-[.02em]">access</h2>
+                      <span class="text-[11.5px] text-tx-4">The one credential gating /api and /ws.</span>
+                    </header>
+                    <div x-show="settingsRowVisible('token', 'Required on every /api and /ws request once set.', 'web')"
+                         class="grid grid-cols-1 lg:grid-cols-[232px_minmax(0,1fr)] gap-3 lg:gap-6 p-4 px-[18px] border-t border-surface-700/[0.28] items-start">
+                      <div class="flex flex-col gap-1 min-w-0">
+                        <span class="flex items-center gap-[7px] flex-wrap">
+                          <label for="web-token" class="font-mono text-[12.5px] text-tx-2">token</label>
+                          <span class="font-mono text-[9.5px] uppercase tracking-[.08em] text-warn bg-warn/10 border border-warn/[0.22] rounded px-[5px] py-px">restart</span>
+                        </span>
+                        <span class="text-[11.5px] leading-[1.55] text-tx-4">Required on every /api and /ws request once set. GET /health and the static UI stay public.</span>
+                      </div>
+                      <div class="flex flex-col gap-1.5 min-w-0">
+                        <!-- Masked by default: this is the credential for every /api and /ws call. -->
+                        <div class="flex items-center gap-2 max-w-[30rem]">
+                          <input id="web-token" :type="settingsShowToken ? 'text' : 'password'" x-model="settingsConfig.web.token" placeholder="unset — no auth on /api and /ws"
+                                 class="flex-1 min-w-0 bg-surface-800 border border-edge-input rounded-[7px] py-2 px-3 font-mono text-[12.5px] text-tx-2 focus:outline-none focus:border-accent/40">
+                          <button type="button" @click="settingsShowToken = !settingsShowToken"
+                                  class="shrink-0 font-mono text-[11.5px] h-[34px] px-3 rounded-[7px] bg-surface-900 border border-surface-700/70 text-tx-3 hover:text-tx-2 transition-colors"
+                                  x-text="settingsShowToken ? 'hide' : 'show'"></button>
+                        </div>
+                        <span class="font-mono text-[10.5px] text-tx-faint"
+                              x-text="settingsConfig.web.token.trim() ? 'set · ' + settingsConfig.web.token.trim().length + ' chars' : 'unset'"></span>
+                      </div>
                     </div>
-                  </div>
-                  <div class="flex items-start gap-2 bg-warn/10 border border-warn/20 rounded-md p-2.5 px-3">
-                    <span class="text-warn font-mono text-[12px] leading-[1.5]">!</span>
-                    <span class="text-[12px] leading-[1.5] text-tx-3" x-text="settingsWebAdvisory()"></span>
-                  </div>
+                    <div class="m-[0_18px_18px] flex gap-2.5 p-3 px-3.5 rounded-[9px] border border-warn/[0.22] bg-warn/[0.08]">
+                      <span class="font-mono text-[12px] text-warn">!</span>
+                      <span class="text-[12px] leading-[1.55] text-tx-3" x-text="settingsWebAdvisory()"></span>
+                    </div>
+                  </section>
                 </div>
 
                 <!-- ===== assistant ===== -->
-                <div x-show="settingsSection === 'assistant'" class="flex flex-col gap-3.5">
-                  <div class="flex items-start gap-2 bg-surface-850 border border-surface-700/50 rounded-md p-2.5 px-3">
-                    <span class="text-tx-faint font-mono text-[12px] leading-[1.5]">i</span>
-                    <span class="text-[12px] leading-[1.5] text-tx-3">A chat freezes its agent, model, effort and working directory when it is created, so a change here reaches new chats only. Repointing <span class="font-mono text-tx-2">agent</span> makes every existing chat refuse to continue.</span>
-                  </div>
-
-                  <div>
-                    <label for="as-agent" class="font-mono text-[13px] text-tx-3 mb-1 block">agent</label>
-                    <!-- The section mounts with the model already loaded, so x-model applies
-                         its value before the x-for below has added any option and the select
-                         falls back to the first one. Re-apply once the options exist. -->
-                    <select id="as-agent" x-model="settingsConfig.assistant.agent"
-                            x-init="$nextTick(() => $el.value = settingsConfig.assistant.agent)"
-                            class="w-full max-w-[32rem] h-[34px] bg-surface-800 border border-surface-700/50 rounded px-2 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40">
-                      <option value="">none — the pane is disabled</option>
-                      <template x-for="name in Object.keys(settingsConfig.agents).sort()" :key="name">
-                        <option :value="name" x-text="name"></option>
-                      </template>
-                    </select>
-                    <p class="text-[11px] text-surface-600 mt-0.5">Only an agent running claude or pi works: a chat is one agent session, and those are the CLIs that take a session id.</p>
-                  </div>
-
-                  <div>
-                    <label for="as-model" class="font-mono text-[13px] text-tx-3 mb-1 block">model</label>
-                    <input id="as-model" type="text" x-model="settingsConfig.assistant.model" placeholder="the agent's own model"
-                           class="w-full max-w-[32rem] bg-surface-800 border border-surface-700/50 rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40">
-                  </div>
-
-                  <div>
-                    <label for="as-effort" class="font-mono text-[13px] text-tx-3 mb-1 block">effort</label>
-                    <input id="as-effort" type="text" x-model="settingsConfig.assistant.effort" placeholder="the agent's own effort"
-                           class="w-full max-w-[32rem] bg-surface-800 border border-surface-700/50 rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40">
-                  </div>
-
-                  <template x-for="f in settingsAssistantFields" :key="f.key">
-                    <div>
-                      <label :for="'as-' + f.key" class="font-mono text-[13px] text-tx-3 mb-1 flex items-center gap-2">
-                        <span x-text="f.key"></span>
-                        <span x-show="!settingsConfig.assistant[f.key]" class="font-mono text-[9.5px] uppercase tracking-[.08em] text-tx-faint border border-surface-700/60 rounded px-[5px] py-px">default</span>
-                      </label>
-                      <input :id="'as-' + f.key" type="text" x-model="settingsConfig.assistant[f.key]" :placeholder="f.placeholder"
-                             class="w-full max-w-[32rem] bg-surface-800 border rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40"
-                             :class="f.key === 'timeout' && !settingsDurationValid(settingsConfig.assistant[f.key]) ? 'border-err' : 'border-surface-700/50'">
-                      <p class="text-[11px] text-surface-600 mt-0.5" x-text="f.help + (settingsConfig.assistant[f.key] ? '' : ' Default: ' + f.placeholder)"></p>
+                <div x-show="settingsSection === 'assistant'" class="flex flex-col gap-[18px]">
+                  <section class="border border-edge-card rounded-xl bg-surface-900 overflow-hidden">
+                    <header class="flex items-baseline gap-2.5 p-[13px] px-[18px] bg-surface-850/45 border-b border-surface-700/40" data-pipe-color="mauve">
+                      <span class="w-1.5 h-1.5 rounded-full self-center shrink-0" style="background: hsl(var(--pipe-h))"></span>
+                      <h2 class="m-0 font-mono text-[12.5px] font-bold text-tx-hi tracking-[.02em]">session</h2>
+                      <span class="text-[11.5px] text-tx-4">Frozen into a chat when it is created.</span>
+                    </header>
+                    <div x-show="settingsRowVisible('agent', 'Only an agent running claude or pi works: a chat is one agent session.', 'assistant')"
+                         class="grid grid-cols-1 lg:grid-cols-[232px_minmax(0,1fr)] gap-3 lg:gap-6 p-4 px-[18px] border-t border-surface-700/[0.28] items-start">
+                      <div class="flex flex-col gap-1 min-w-0">
+                        <span class="font-mono text-[12.5px] text-tx-2">agent</span>
+                        <span class="text-[11.5px] leading-[1.55] text-tx-4">Only an agent running claude or pi works: a chat is one agent session, and those are the CLIs that take a session id.</span>
+                      </div>
+                      <div class="flex flex-col gap-1.5 min-w-0">
+                        <div class="flex gap-2 flex-wrap" role="radiogroup" aria-label="assistant agent">
+                          <template x-for="name in settingsAgentNames()" :key="name">
+                            <button type="button" role="radio" @click="settingsConfig.assistant.agent = name"
+                                    :aria-checked="settingsConfig.assistant.agent === name"
+                                    class="flex flex-col gap-0.5 items-start min-w-[132px] py-[9px] px-[13px] rounded-[9px] border text-left transition-colors"
+                                    :class="settingsConfig.assistant.agent === name ? 'border-accent/50 bg-accent/[0.12] text-tx-hi' : 'border-surface-700/60 bg-surface-800 text-tx-3 hover:border-edge-hover'">
+                              <span class="font-mono text-[12.5px]" x-text="name"></span>
+                              <span class="text-[10.5px] text-tx-faint" x-text="settingsAgentKindOf(name) ? 'session id supported' : 'no session id — unsupported'"></span>
+                            </button>
+                          </template>
+                          <button type="button" role="radio" @click="settingsConfig.assistant.agent = ''"
+                                  :aria-checked="!settingsConfig.assistant.agent"
+                                  class="flex flex-col gap-0.5 items-start min-w-[132px] py-[9px] px-[13px] rounded-[9px] border text-left transition-colors"
+                                  :class="!settingsConfig.assistant.agent ? 'border-accent/50 bg-accent/[0.12] text-tx-hi' : 'border-surface-700/60 bg-surface-800 text-tx-3 hover:border-edge-hover'">
+                            <span class="font-mono text-[12.5px]">none</span>
+                            <span class="text-[10.5px] text-tx-faint">the pane is disabled</span>
+                          </button>
+                        </div>
+                      </div>
                     </div>
-                  </template>
+                    <template x-for="key in ['model', 'effort']" :key="key">
+                      <div x-show="settingsRowVisible(key, 'assistant ' + key, 'assistant')" class="grid grid-cols-1 lg:grid-cols-[232px_minmax(0,1fr)] gap-3 lg:gap-6 p-4 px-[18px] border-t border-surface-700/[0.28] items-start">
+                        <div class="flex flex-col gap-1 min-w-0">
+                          <label :for="'as-' + key" class="font-mono text-[12.5px] text-tx-2" x-text="key"></label>
+                          <span class="text-[11.5px] leading-[1.55] text-tx-4"
+                                x-text="key === 'model' ? 'Overrides the model the agent would pick for a chat turn.' : 'Reasoning effort for a chat turn.'"></span>
+                        </div>
+                        <div class="flex flex-col gap-1.5 min-w-0">
+                          <input :id="'as-' + key" type="text" x-model="settingsConfig.assistant[key]" :placeholder="&quot;the agent's own &quot; + key"
+                                 class="w-full max-w-[30rem] bg-surface-800 border border-edge-input rounded-[7px] py-2 px-3 font-mono text-[12.5px] text-tx-2 focus:outline-none focus:border-accent/40">
+                        </div>
+                      </div>
+                    </template>
+                    <div class="m-[0_18px_18px] flex gap-2.5 p-3 px-3.5 rounded-[9px] border border-surface-700/60 bg-surface-850/50">
+                      <span class="font-mono text-[12px] text-tx-faint">i</span>
+                      <span class="text-[12px] leading-[1.55] text-tx-3">A chat freezes its agent, model, effort and working directory when it is created, so a change here reaches new chats only. Repointing <span class="font-mono text-tx-2">agent</span> makes every existing chat refuse to continue.</span>
+                    </div>
+                  </section>
 
-                  <div>
-                    <label for="as-autonomy" class="font-mono text-[13px] text-tx-3 mb-1 flex items-center gap-2">
-                      <span>autonomy</span>
-                      <span x-show="!settingsConfig.assistant.autonomy" class="font-mono text-[9.5px] uppercase tracking-[.08em] text-tx-faint border border-surface-700/60 rounded px-[5px] py-px">default</span>
-                    </label>
-                    <select id="as-autonomy" x-model="settingsConfig.assistant.autonomy"
-                            x-init="$nextTick(() => $el.value = settingsConfig.assistant.autonomy)"
-                            class="w-full max-w-[32rem] h-[34px] bg-surface-800 border border-surface-700/50 rounded px-2 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40">
-                      <option value="">ask first (default)</option>
-                      <template x-for="a in assistantAutonomies()" :key="a.key">
-                        <option :value="a.key" x-text="a.key + ' — ' + a.hint"></option>
-                      </template>
-                    </select>
-                    <p class="text-[11px] text-surface-600 mt-0.5">The mode a new chat starts in. Changing it moves the pane's own switch; a running chat keeps the mode it was given.</p>
-                  </div>
+                  <section class="border border-edge-card rounded-xl bg-surface-900 overflow-hidden">
+                    <header class="flex items-baseline gap-2.5 p-[13px] px-[18px] bg-surface-850/45 border-b border-surface-700/40" data-pipe-color="amber">
+                      <span class="w-1.5 h-1.5 rounded-full self-center shrink-0" style="background: hsl(var(--pipe-h))"></span>
+                      <h2 class="m-0 font-mono text-[12.5px] font-bold text-tx-hi tracking-[.02em]">limits</h2>
+                      <span class="text-[11.5px] text-tx-4">Where a turn runs, and for how long.</span>
+                    </header>
+                    <template x-for="f in settingsAssistantFields" :key="f.key">
+                      <div x-show="settingsRowVisible(f.key, f.help, 'assistant')" class="grid grid-cols-1 lg:grid-cols-[232px_minmax(0,1fr)] gap-3 lg:gap-6 p-4 px-[18px] border-t border-surface-700/[0.28] items-start">
+                        <div class="flex flex-col gap-1 min-w-0">
+                          <span class="flex items-center gap-[7px] flex-wrap">
+                            <label :for="'as-' + f.key" class="font-mono text-[12.5px] text-tx-2" x-text="f.key"></label>
+                            <span x-show="!settingsConfig.assistant[f.key]" class="font-mono text-[9.5px] uppercase tracking-[.08em] text-tx-faint border border-surface-700/70 rounded px-[5px] py-px">default</span>
+                          </span>
+                          <span class="text-[11.5px] leading-[1.55] text-tx-4" x-text="f.help"></span>
+                        </div>
+                        <div class="flex flex-col gap-1.5 min-w-0">
+                          <input :id="'as-' + f.key" type="text" x-model="settingsConfig.assistant[f.key]" :placeholder="f.placeholder"
+                                 class="w-full max-w-[30rem] bg-surface-800 border rounded-[7px] py-2 px-3 font-mono text-[12.5px] text-tx-2 focus:outline-none focus:border-accent/40"
+                                 :class="f.key === 'timeout' && !settingsDurationValid(settingsConfig.assistant[f.key]) ? 'border-err' : 'border-edge-input'">
+                          <span class="font-mono text-[10.5px] text-tx-faint" x-text="settingsConfig.assistant[f.key] ? '' : 'default · ' + f.placeholder"></span>
+                        </div>
+                      </div>
+                    </template>
+                    <div x-show="settingsRowVisible('autonomy', 'The mode a new chat starts in.', 'assistant')"
+                         class="grid grid-cols-1 lg:grid-cols-[232px_minmax(0,1fr)] gap-3 lg:gap-6 p-4 px-[18px] border-t border-surface-700/[0.28] items-start">
+                      <div class="flex flex-col gap-1 min-w-0">
+                        <span class="flex items-center gap-[7px] flex-wrap">
+                          <span class="font-mono text-[12.5px] text-tx-2">autonomy</span>
+                          <span x-show="!settingsConfig.assistant.autonomy" class="font-mono text-[9.5px] uppercase tracking-[.08em] text-tx-faint border border-surface-700/70 rounded px-[5px] py-px">default</span>
+                        </span>
+                        <span class="text-[11.5px] leading-[1.55] text-tx-4">The mode a new chat starts in. Changing it moves the pane's own switch; a running chat keeps the mode it was given.</span>
+                      </div>
+                      <div class="flex flex-col gap-1.5 min-w-0">
+                        <div class="flex gap-2 flex-wrap" role="radiogroup" aria-label="assistant autonomy">
+                          <template x-for="a in assistantAutonomies()" :key="a.key">
+                            <button type="button" role="radio" @click="settingsConfig.assistant.autonomy = a.key"
+                                    :aria-checked="settingsConfig.assistant.autonomy === a.key"
+                                    class="flex flex-col gap-0.5 items-start min-w-[132px] py-[9px] px-[13px] rounded-[9px] border text-left transition-colors"
+                                    :class="settingsConfig.assistant.autonomy === a.key ? 'border-accent/50 bg-accent/[0.12] text-tx-hi' : 'border-surface-700/60 bg-surface-800 text-tx-3 hover:border-edge-hover'">
+                              <span class="font-mono text-[12.5px]" x-text="a.label"></span>
+                              <span class="text-[10.5px] text-tx-faint" x-text="a.hint"></span>
+                            </button>
+                          </template>
+                          <!-- The <select> this replaced carried an empty option.
+                               Without a card for it, the first click writes the
+                               key into config.yaml for good. -->
+                          <button type="button" role="radio" @click="settingsConfig.assistant.autonomy = ''"
+                                  :aria-checked="!settingsConfig.assistant.autonomy"
+                                  class="flex flex-col gap-0.5 items-start min-w-[132px] py-[9px] px-[13px] rounded-[9px] border text-left transition-colors"
+                                  :class="!settingsConfig.assistant.autonomy ? 'border-accent/50 bg-accent/[0.12] text-tx-hi' : 'border-surface-700/60 bg-surface-800 text-tx-3 hover:border-edge-hover'">
+                            <span class="font-mono text-[12.5px]">unset</span>
+                            <span class="text-[10.5px] text-tx-faint">the default, ask first</span>
+                          </button>
+                        </div>
+                        <span class="font-mono text-[10.5px] text-tx-faint" x-show="!settingsConfig.assistant.autonomy">unset — a new chat starts in ask first</span>
+                      </div>
+                    </div>
+                  </section>
 
-                  <div>
-                    <label for="as-prompt" class="font-mono text-[13px] text-tx-3 mb-1 block">prompt</label>
-                    <textarea id="as-prompt" x-model="settingsConfig.assistant.prompt" spellcheck="false"
-                              placeholder="empty — the built-in brief is used"
-                              class="w-full max-w-[32rem] min-h-[160px] resize-y bg-surface-deep border border-surface-700 rounded-md px-4 py-3 font-mono text-[12px] leading-[1.7] text-tx focus:outline-none focus:border-accent/40"></textarea>
-                    <p class="text-[11px] text-surface-600 mt-0.5">Replaces the built-in system brief rather than adding to it, so a prompt here has to describe the board and the verbs itself.</p>
-                  </div>
+                  <section class="border border-edge-card rounded-xl bg-surface-900 overflow-hidden">
+                    <header class="flex items-baseline gap-2.5 p-[13px] px-[18px] bg-surface-850/45 border-b border-surface-700/40" data-pipe-color="cyan">
+                      <span class="w-1.5 h-1.5 rounded-full self-center shrink-0" style="background: hsl(var(--pipe-h))"></span>
+                      <h2 class="m-0 font-mono text-[12.5px] font-bold text-tx-hi tracking-[.02em]">brief</h2>
+                      <span class="text-[11.5px] text-tx-4">Replaces the built-in system brief rather than adding to it.</span>
+                    </header>
+                    <div x-show="settingsRowVisible('prompt', 'A prompt here has to describe the board and the verbs itself.', 'assistant')"
+                         class="grid grid-cols-1 lg:grid-cols-[232px_minmax(0,1fr)] gap-3 lg:gap-6 p-4 px-[18px] border-t border-surface-700/[0.28] items-start">
+                      <div class="flex flex-col gap-1 min-w-0">
+                        <label for="as-prompt" class="font-mono text-[12.5px] text-tx-2">prompt</label>
+                        <span class="text-[11.5px] leading-[1.55] text-tx-4">A prompt here has to describe the board and the verbs itself.</span>
+                      </div>
+                      <div class="flex flex-col gap-1.5 min-w-0">
+                        <textarea id="as-prompt" x-model="settingsConfig.assistant.prompt" spellcheck="false"
+                                  placeholder="empty — the built-in brief is used"
+                                  class="w-full max-w-[34rem] min-h-[150px] resize-y bg-surface-deep border border-surface-700 rounded-lg py-3 px-3.5 font-mono text-[12px] leading-[1.7] text-tx focus:outline-none focus:border-accent/40"></textarea>
+                        <span class="font-mono text-[10.5px] text-tx-faint" x-show="!settingsConfig.assistant.prompt.trim()">using the built-in brief</span>
+                      </div>
+                    </div>
+                  </section>
                 </div>
 
                 <!-- ===== plannotator ===== -->
-                <div x-show="settingsSection === 'plannotator'" class="flex flex-col gap-3.5">
-                  <template x-for="f in settingsPlannotatorFields" :key="f.key">
-                    <div>
-                      <label :for="'pl-' + f.key" class="font-mono text-[13px] text-tx-3 mb-1 flex items-center gap-2">
-                        <span x-text="f.key"></span>
-                        <span x-show="!settingsConfig.plannotator[f.key]" class="font-mono text-[9.5px] uppercase tracking-[.08em] text-tx-faint border border-surface-700/60 rounded px-[5px] py-px">default</span>
-                      </label>
-                      <input :id="'pl-' + f.key" type="text" x-model="settingsConfig.plannotator[f.key]" :placeholder="f.placeholder"
-                             class="w-full max-w-[32rem] bg-surface-800 border rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40"
-                             :class="f.key === 'timeout' && !settingsDurationValid(settingsConfig.plannotator[f.key]) ? 'border-err' : 'border-surface-700/50'">
-                      <p class="text-[11px] text-surface-600 mt-0.5" x-text="f.help + (settingsConfig.plannotator[f.key] ? '' : ' Default: ' + f.placeholder)"></p>
+                <div x-show="settingsSection === 'plannotator'" class="flex flex-col gap-[18px]">
+                  <section class="border border-edge-card rounded-xl bg-surface-900 overflow-hidden">
+                    <header class="flex items-baseline gap-2.5 p-[13px] px-[18px] bg-surface-850/45 border-b border-surface-700/40" data-pipe-color="mauve">
+                      <span class="w-1.5 h-1.5 rounded-full self-center shrink-0" style="background: hsl(var(--pipe-h))"></span>
+                      <h2 class="m-0 font-mono text-[12.5px] font-bold text-tx-hi tracking-[.02em]">review</h2>
+                      <span class="text-[11.5px] text-tx-4">Human review of the diff, and annotation of the ticket.</span>
+                    </header>
+                    <template x-for="f in settingsPlannotatorFields" :key="f.key">
+                      <div x-show="settingsRowVisible(f.key, f.help, 'plannotator')" class="grid grid-cols-1 lg:grid-cols-[232px_minmax(0,1fr)] gap-3 lg:gap-6 p-4 px-[18px] border-t border-surface-700/[0.28] items-start">
+                        <div class="flex flex-col gap-1 min-w-0">
+                          <span class="flex items-center gap-[7px] flex-wrap">
+                            <label :for="'pl-' + f.key" class="font-mono text-[12.5px] text-tx-2" x-text="f.key"></label>
+                            <span x-show="!settingsConfig.plannotator[f.key]" class="font-mono text-[9.5px] uppercase tracking-[.08em] text-tx-faint border border-surface-700/70 rounded px-[5px] py-px">default</span>
+                          </span>
+                          <span class="text-[11.5px] leading-[1.55] text-tx-4" x-text="f.help"></span>
+                        </div>
+                        <div class="flex flex-col gap-1.5 min-w-0">
+                          <input :id="'pl-' + f.key" type="text" x-model="settingsConfig.plannotator[f.key]" :placeholder="f.placeholder"
+                                 class="w-full max-w-[30rem] bg-surface-800 border rounded-[7px] py-2 px-3 font-mono text-[12.5px] text-tx-2 focus:outline-none focus:border-accent/40"
+                                 :class="f.key === 'timeout' && !settingsDurationValid(settingsConfig.plannotator[f.key]) ? 'border-err' : 'border-edge-input'">
+                          <span class="font-mono text-[10.5px] text-tx-faint" x-text="settingsConfig.plannotator[f.key] ? '' : 'default · ' + f.placeholder"></span>
+                        </div>
+                      </div>
+                    </template>
+                    <div class="m-[0_18px_18px] flex gap-2.5 p-3 px-3.5 rounded-[9px] border border-surface-700/60 bg-surface-850/50">
+                      <span class="font-mono text-[12px] text-tx-faint">i</span>
+                      <span class="text-[12px] leading-[1.55] text-tx-3">Review notes feed the rework stage; ticket notes queue a run that rewrites the ticket.</span>
                     </div>
-                  </template>
+                  </section>
                 </div>
 
                 <!-- ===== statuses ===== -->
-                <div x-show="settingsSection === 'statuses'" class="flex flex-col gap-4">
-                  <div>
-                    <div class="font-mono text-[10px] font-bold tracking-[.12em] uppercase text-tx-faint mb-2">built-in</div>
-                    <div class="flex flex-wrap gap-1.5">
+                <div x-show="settingsSection === 'statuses'" class="flex flex-col gap-3.5">
+                  <section class="border border-edge-card rounded-xl bg-surface-900 overflow-hidden">
+                    <header class="flex items-baseline gap-2.5 p-[13px] px-[18px] bg-surface-850/45 border-b border-surface-700/40" data-pipe-color="mauve">
+                      <span class="w-1.5 h-1.5 rounded-full self-center shrink-0" style="background: hsl(var(--pipe-h))"></span>
+                      <h2 class="m-0 font-mono text-[12.5px] font-bold text-tx-hi tracking-[.02em]">built-in</h2>
+                      <span class="text-[11.5px] text-tx-4">The board columns kontora ships with, in lifecycle order.</span>
+                    </header>
+                    <div class="p-4 px-[18px] flex flex-wrap gap-2">
                       <template x-for="s in settingsBuiltinStatuses" :key="s">
-                        <span class="status-chip" :data-status="s" x-text="s"></span>
-                      </template>
-                    </div>
-                  </div>
-                  <div>
-                    <div class="font-mono text-[10px] font-bold tracking-[.12em] uppercase text-tx-faint mb-2">custom</div>
-                    <div class="flex flex-wrap items-center gap-1.5">
-                      <template x-for="s in settingsConfig.statuses" :key="s">
-                        <span class="status-chip" :class="s.match(/^[a-z][a-z0-9_]*$/) ? '' : 'border-err text-err'">
+                        <span x-show="settingsRowVisible(s, '', 'statuses')" class="status-chip" :data-status="s">
                           <span x-text="s"></span>
-                          <button type="button" @click="settingsRemoveStatus(s)" :aria-label="'Remove ' + s" class="text-surface-600 hover:text-err">✕</button>
+                          <span class="text-[10px] font-normal tracking-normal text-tx-faint" x-text="settingsStatusCount(s)"></span>
                         </span>
                       </template>
-                      <button type="button" x-show="!settingsNewStatusOpen" @click="settingsNewStatusOpen = true; $nextTick(() => $refs.newStatus && $refs.newStatus.focus())"
-                              class="font-mono text-[10px] uppercase tracking-[.08em] px-2.5 py-1 rounded-full border border-dashed border-surface-700 text-surface-600 hover:text-tx-3 hover:border-edge-hover transition-colors">add status</button>
                     </div>
-                    <p x-show="!settingsConfig.statuses.length && !settingsNewStatusOpen" class="text-[11px] text-surface-600 mt-1.5">None. A custom status must match [a-z][a-z0-9_]* and can be used as an on_success or on_failure target.</p>
-                    <div x-show="settingsNewStatusOpen" x-cloak class="flex items-center gap-2 mt-2">
-                      <input x-ref="newStatus" type="text" x-model="settingsNewStatus" placeholder="needs_review"
-                             @keydown.enter.prevent="settingsAddStatus()" @keydown.escape="settingsNewStatusOpen = false; settingsNewStatus = ''"
-                             class="w-64 bg-surface-800 border rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40"
-                             :class="!settingsNewStatus.trim() || settingsNewStatus.trim().match(/^[a-z][a-z0-9_]*$/) ? 'border-surface-700/50' : 'border-err'">
-                      <button type="button" @click="settingsAddStatus()" :disabled="!settingsNewStatus.trim() || settingsConfig.statuses.includes(settingsNewStatus.trim())"
-                              class="font-mono text-[12px] h-8 px-4 rounded bg-accent border border-accent text-accent-fg hover:bg-accent-bright transition-colors disabled:opacity-50">add</button>
-                      <button type="button" @click="settingsNewStatusOpen = false; settingsNewStatus = ''"
-                              class="font-mono text-[12px] h-8 px-4 rounded bg-surface-900 border border-surface-700/60 text-tx-3">cancel</button>
+                  </section>
+
+                  <section class="border border-edge-card rounded-xl bg-surface-900 overflow-hidden">
+                    <header class="flex items-baseline gap-2.5 p-[13px] px-[18px] bg-surface-850/45 border-b border-surface-700/40" data-pipe-color="green">
+                      <span class="w-1.5 h-1.5 rounded-full self-center shrink-0" style="background: hsl(var(--pipe-h))"></span>
+                      <h2 class="m-0 font-mono text-[12.5px] font-bold text-tx-hi tracking-[.02em]">custom</h2>
+                      <span class="text-[11.5px] text-tx-4">Extra columns a pipeline step can route to.</span>
+                    </header>
+                    <div class="p-4 px-[18px] flex flex-col gap-2.5">
+                      <div class="flex flex-wrap items-center gap-2">
+                        <template x-for="s in settingsConfig.statuses" :key="s">
+                          <span x-show="settingsRowVisible(s, '', 'statuses')" class="status-chip" :class="s.match(/^[a-z][a-z0-9_]*$/) ? '' : 'border-err text-err'">
+                            <span x-text="s"></span>
+                            <span class="text-[10px] font-normal tracking-normal text-tx-faint" x-text="settingsStatusCount(s)"></span>
+                            <button type="button" @click="settingsRemoveStatus(s)" :aria-label="'Remove ' + s" class="text-surface-600 hover:text-err">✕</button>
+                          </span>
+                        </template>
+                        <button type="button" x-show="!settingsNewStatusOpen" @click="settingsNewStatusOpen = true; $nextTick(() => $refs.newStatus && $refs.newStatus.focus())"
+                                class="font-mono text-[10px] uppercase tracking-[.08em] py-[5px] px-3 rounded-full border border-dashed border-surface-700 text-surface-600 hover:text-tx-3 hover:border-edge-hover transition-colors">add status</button>
+                      </div>
+                      <p x-show="!settingsConfig.statuses.length && !settingsNewStatusOpen" class="m-0 text-[11.5px] text-tx-faint">None. A custom status must match [a-z][a-z0-9_]* and can be used as an on_success or on_failure target.</p>
+                      <div x-show="settingsNewStatusOpen" x-cloak class="flex items-center gap-2">
+                        <input x-ref="newStatus" type="text" x-model="settingsNewStatus" placeholder="needs_review" aria-label="New status name"
+                               @keydown.enter.prevent="settingsAddStatus()" @keydown.escape="settingsNewStatusOpen = false; settingsNewStatus = ''"
+                               class="w-64 bg-surface-800 border rounded-[7px] py-2 px-3 font-mono text-[12.5px] text-tx-2 focus:outline-none focus:border-accent/40"
+                               :class="!settingsNewStatus.trim() || settingsNewStatus.trim().match(/^[a-z][a-z0-9_]*$/) ? 'border-edge-input' : 'border-err'">
+                        <button type="button" @click="settingsAddStatus()" :disabled="!settingsNewStatus.trim() || settingsConfig.statuses.includes(settingsNewStatus.trim())"
+                                class="font-mono text-[12px] h-8 px-4 rounded-md bg-accent border border-accent text-accent-fg hover:bg-accent-bright transition-colors disabled:opacity-50">add</button>
+                        <button type="button" @click="settingsNewStatusOpen = false; settingsNewStatus = ''"
+                                class="font-mono text-[12px] h-8 px-4 rounded-md bg-surface-900 border border-surface-700/60 text-tx-3">cancel</button>
+                      </div>
+                      <p x-show="settingsNewStatus.trim() && !settingsNewStatus.trim().match(/^[a-z][a-z0-9_]*$/)" x-cloak class="m-0 text-[11.5px] text-err"
+                         x-text="'custom status &quot;' + settingsNewStatus.trim() + '&quot;: must match [a-z][a-z0-9_]*'"></p>
                     </div>
-                    <p x-show="settingsNewStatus.trim() && !settingsNewStatus.trim().match(/^[a-z][a-z0-9_]*$/)" x-cloak class="text-[11px] text-err mt-1"
-                       x-text="'custom status &quot;' + settingsNewStatus.trim() + '&quot;: must match [a-z][a-z0-9_]*'"></p>
-                  </div>
+                  </section>
                 </div>
 
                 <!-- ===== display (localStorage, never written to YAML) ===== -->
-                <div x-show="settingsSection === 'display'" class="flex flex-col gap-1.5">
-                  <button type="button" @click="toggleShowBadges()"
-                          class="flex items-center justify-between border border-edge-card rounded-md bg-surface-900 p-2.5 px-3 text-[13px] text-tx-2 hover:border-edge-hover transition-colors">
-                    <span>Pipeline badges</span><span class="text-ok font-mono" x-show="showPipelineBadges">✓</span>
-                  </button>
-                  <button type="button" @click="toggleShowAgentMeta()"
-                          class="flex items-center justify-between border border-edge-card rounded-md bg-surface-900 p-2.5 px-3 text-[13px] text-tx-2 hover:border-edge-hover transition-colors">
-                    <span>Agent meta</span><span class="text-ok font-mono" x-show="showAgentMeta">✓</span>
-                  </button>
-                  <button type="button" @click="toggleTheme()"
-                          class="flex items-center justify-between border border-edge-card rounded-md bg-surface-900 p-2.5 px-3 text-[13px] text-tx-2 hover:border-edge-hover transition-colors">
-                    <span>Theme</span><span class="font-mono text-[11px] text-tx-4" x-text="lightTheme ? 'light' : 'dark'"></span>
-                  </button>
+                <div x-show="settingsSection === 'display'" class="flex flex-col gap-[18px]">
+                  <section class="border border-edge-card rounded-xl bg-surface-900 overflow-hidden">
+                    <header class="flex items-baseline gap-2.5 p-[13px] px-[18px] bg-surface-850/45 border-b border-surface-700/40" data-pipe-color="green">
+                      <span class="w-1.5 h-1.5 rounded-full self-center shrink-0" style="background: hsl(var(--pipe-h))"></span>
+                      <h2 class="m-0 font-mono text-[12.5px] font-bold text-tx-hi tracking-[.02em]">board</h2>
+                      <span class="text-[11.5px] text-tx-4">Stored in this browser, never written to config.yaml.</span>
+                    </header>
+
+                    <div x-show="settingsRowVisible('pipeline_badges', 'Show the pipeline tag on every card.', 'display')"
+                         class="grid grid-cols-1 lg:grid-cols-[232px_minmax(0,1fr)] gap-3 lg:gap-6 p-4 px-[18px] border-t border-surface-700/[0.28] items-start">
+                      <div class="flex flex-col gap-1 min-w-0">
+                        <span class="font-mono text-[12.5px] text-tx-2">pipeline_badges</span>
+                        <span class="text-[11.5px] leading-[1.55] text-tx-4">Show the pipeline tag on every card.</span>
+                      </div>
+                      <button type="button" role="switch" aria-label="pipeline_badges" :aria-checked="showPipelineBadges" @click="toggleShowBadges()"
+                              class="flex items-center gap-3 self-start">
+                        <span class="relative w-10 h-[22px] rounded-full transition-colors shrink-0" :class="showPipelineBadges ? 'bg-accent' : 'bg-surface-700'">
+                          <span class="absolute top-[3px] w-4 h-4 rounded-full bg-accent-fg transition-[left] duration-150" :style="showPipelineBadges ? 'left:21px' : 'left:2px'"></span>
+                        </span>
+                        <span class="text-[12.5px] text-tx-2" x-text="showPipelineBadges ? 'Shown on cards' : 'Hidden'"></span>
+                      </button>
+                    </div>
+
+                    <div x-show="settingsRowVisible('agent_meta', 'Show agent, model and effort under the card title.', 'display')"
+                         class="grid grid-cols-1 lg:grid-cols-[232px_minmax(0,1fr)] gap-3 lg:gap-6 p-4 px-[18px] border-t border-surface-700/[0.28] items-start">
+                      <div class="flex flex-col gap-1 min-w-0">
+                        <span class="font-mono text-[12.5px] text-tx-2">agent_meta</span>
+                        <span class="text-[11.5px] leading-[1.55] text-tx-4">Show agent, model and effort under the card title.</span>
+                      </div>
+                      <button type="button" role="switch" aria-label="agent_meta" :aria-checked="showAgentMeta" @click="toggleShowAgentMeta()"
+                              class="flex items-center gap-3 self-start">
+                        <span class="relative w-10 h-[22px] rounded-full transition-colors shrink-0" :class="showAgentMeta ? 'bg-accent' : 'bg-surface-700'">
+                          <span class="absolute top-[3px] w-4 h-4 rounded-full bg-accent-fg transition-[left] duration-150" :style="showAgentMeta ? 'left:21px' : 'left:2px'"></span>
+                        </span>
+                        <span class="text-[12.5px] text-tx-2" x-text="showAgentMeta ? 'Shown on cards' : 'Hidden'"></span>
+                      </button>
+                    </div>
+
+                    <div x-show="settingsRowVisible('theme', 'Also togglable with c then t.', 'display')"
+                         class="grid grid-cols-1 lg:grid-cols-[232px_minmax(0,1fr)] gap-3 lg:gap-6 p-4 px-[18px] border-t border-surface-700/[0.28] items-start">
+                      <div class="flex flex-col gap-1 min-w-0">
+                        <span class="font-mono text-[12.5px] text-tx-2">theme</span>
+                        <span class="text-[11.5px] leading-[1.55] text-tx-4">Also togglable with c then t.</span>
+                      </div>
+                      <div class="flex gap-2 flex-wrap" role="radiogroup" aria-label="theme">
+                        <template x-for="t in [{ key: 'dark', light: false }, { key: 'light', light: true }]" :key="t.key">
+                          <button type="button" role="radio" @click="lightTheme !== t.light && toggleTheme()"
+                                  :aria-checked="lightTheme === t.light"
+                                  class="flex flex-col gap-0.5 items-start min-w-[132px] py-[9px] px-[13px] rounded-[9px] border text-left transition-colors"
+                                  :class="lightTheme === t.light ? 'border-accent/50 bg-accent/[0.12] text-tx-hi' : 'border-surface-700/60 bg-surface-800 text-tx-3 hover:border-edge-hover'">
+                            <span class="font-mono text-[12.5px]" x-text="t.key"></span>
+                            <span class="text-[10.5px] text-tx-faint" x-text="lightTheme === t.light ? 'current' : ''"></span>
+                          </button>
+                        </template>
+                      </div>
+                    </div>
+                  </section>
                 </div>
               </div>
             </template>
@@ -4495,14 +4931,14 @@
 
         <!-- Post-save strip. Cleared by the next edit, which makes the review bar reappear. -->
         <div x-show="settingsSavedAt && !settingsDirty()" x-cloak
-             class="shrink-0 border-t border-ok/40 bg-ok/[0.14] p-2 px-5 font-mono text-[11px] text-ok">
+             class="shrink-0 border-t border-ok/40 bg-ok/[0.14] p-2 px-6 font-mono text-[11px] text-ok">
           saved <span x-text="settingsSavedAt"></span> · daemon reloaded<span x-show="settingsSavedRestart"> · restart to apply</span>
         </div>
 
         <!-- Review bar -->
         <div x-show="settingsDirty()" x-cloak class="shrink-0 border-t border-surface-700/60 bg-surface-deep slide-up">
           <div x-show="settingsDiffOpen" x-cloak class="max-h-64 overflow-auto py-2.5 border-b border-surface-700/40">
-            <div x-show="settingsErrors.length" class="bg-err/10 border-b border-err/25 p-2.5 px-5 mb-2">
+            <div x-show="settingsErrors.length" class="bg-err/10 border-b border-err/25 p-2.5 px-6 mb-2">
               <div class="font-mono text-[10px] font-bold tracking-[.1em] uppercase text-err mb-1">daemon rejected the config</div>
               <template x-for="e in settingsErrors" :key="e">
                 <div class="font-mono text-[11.5px] text-tx-2 whitespace-pre-wrap break-words" x-text="e"></div>
@@ -4510,9 +4946,9 @@
             </div>
             <template x-for="h in settingsDiffHunks()" :key="h.path">
               <div>
-                <div class="font-mono text-[11px] text-tx-faint pt-2 pb-1 px-5" x-text="'@@ ' + h.path + ' @@'"></div>
+                <div class="font-mono text-[11px] text-tx-faint pt-2 pb-1 px-6" x-text="'@@ ' + h.path + ' @@'"></div>
                 <template x-for="(l, i) in h.lines" :key="i">
-                  <div class="font-mono text-[11.5px] leading-[1.6] px-5 whitespace-pre-wrap break-words"
+                  <div class="font-mono text-[11.5px] leading-[1.6] px-6 whitespace-pre-wrap break-words"
                        :class="l.kind === 'del' ? 'text-err bg-err/[.08]' : (l.kind === 'add' ? 'text-ok bg-ok/10' : 'text-tx-4')"
                        x-text="(l.kind === 'del' ? '- ' : (l.kind === 'add' ? '+ ' : '  ')) + l.text"></div>
                 </template>
@@ -4520,21 +4956,21 @@
             </template>
           </div>
 
-          <div class="p-2.5 px-5 flex items-center gap-2.5">
+          <div class="p-3 px-6 flex items-center gap-3">
             <button type="button" @click="settingsDiffOpen = !settingsDiffOpen" class="flex-1 min-w-0 flex items-center gap-2 text-left">
               <span class="font-mono text-[11px] text-surface-600 shrink-0" x-text="settingsDiffOpen ? '▾' : '▸'"></span>
               <span class="font-mono text-[11px] text-accent shrink-0">
                 <span x-text="settingsChangedPaths().length"></span> <span x-text="settingsChangedPaths().length === 1 ? 'field' : 'fields'"></span> changed
               </span>
-              <span class="text-[11px] text-surface-600 min-w-0 truncate"
-                    x-text="settingsDiffOpen ? settingsChangedPaths().join('  ·  ') : 'review the yaml diff'"></span>
+              <span class="font-mono text-[11px] text-tx-4 min-w-0 truncate"
+                    x-text="settingsDiffOpen ? settingsChangedPaths().join(' · ') : 'review the yaml diff'"></span>
             </button>
             <span class="font-mono text-[11px] shrink-0" :class="settingsSaving ? 'text-tx-3' : 'text-surface-600'"
                   x-text="settingsSaving ? 'writing config.yaml' : 'not written yet'"></span>
             <button type="button" @click="discardSettings()"
-                    class="shrink-0 font-mono text-[12px] h-8 px-4 rounded bg-surface-900 border border-surface-700/60 text-tx-3 hover:text-tx-2 transition-colors">discard</button>
+                    class="shrink-0 font-mono text-[12px] h-8 px-4 rounded-md bg-surface-900 border border-surface-700/60 text-tx-3 hover:text-tx-2 transition-colors">discard</button>
             <button type="button" @click="saveSettings()" :disabled="settingsSaving"
-                    class="shrink-0 font-mono text-[12px] h-8 px-4 rounded bg-accent border border-accent text-accent-fg hover:bg-accent-bright transition-colors disabled:opacity-50">save &amp; reload</button>
+                    class="shrink-0 font-mono text-[12px] h-8 px-4 rounded-md bg-accent border border-accent text-accent-fg hover:bg-accent-bright transition-colors disabled:opacity-50">save &amp; reload</button>
           </div>
         </div>
       </div>

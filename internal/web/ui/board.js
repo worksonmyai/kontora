@@ -554,6 +554,15 @@ export function kontoraBoard() {
       }
       var key = (e.key || '').toLowerCase();
       var now = Date.now();
+      // "/" focuses the settings search. It lives here rather than in
+      // settings.js because this is the one document-level keydown that
+      // already respects _isTypingTarget, and merge() rejects a second owner
+      // for a key two mixins define.
+      if (key === '/' && this.currentView === 'settings') {
+        this._keySeq = '';
+        var search = document.getElementById('settings-search');
+        if (search) { e.preventDefault(); search.focus(); return; }
+      }
       if (this._keySeq && now - this._keySeqAt > KEY_SEQ_MS) this._keySeq = '';
       if (this._keySeq === 'c' && key === 't') {
         this._keySeq = '';

@@ -3231,8 +3231,15 @@
                  class="flex items-center h-8 px-4 border-b border-surface-700/[.32] cursor-pointer transition-colors"
                  :class="selectedTicket && selectedTicket.id === row.id ? 'bg-surface-850 shadow-[inset_2px_0_0_rgba(var(--accent),1)]' : 'hover:bg-surface-900'">
               <span class="w-24 shrink-0 font-mono text-[11.5px] text-tx-3 truncate pr-2" x-text="row.id"></span>
-              <span class="flex-1 min-w-[220px] text-[12.5px] text-tx truncate pr-3" :title="row.title" x-text="row.title"></span>
-              <span class="w-24 shrink-0 font-mono text-[11px] text-tx-3 truncate pr-2" x-text="row.project"></span>
+              <span class="flex-1 min-w-[220px] text-[12.5px] text-tx truncate pr-3" :title="row.title">
+                <span x-show="archiveTitleTag(row).tag" class="title-tag"
+                      :data-pipe-color="pipelineColorByName(archiveTitleTag(row).tag)"
+                      x-text="'[' + archiveTitleTag(row).tag + ']'"></span>
+                <span x-text="archiveTitleTag(row).rest"></span>
+              </span>
+              <span class="w-24 shrink-0 font-mono text-[11px] truncate pr-2"
+                    :data-pipe-color="archiveProjectColor(row)"
+                    style="color: hsl(var(--pipe-h, 240 10% 55%))" x-text="row.project"></span>
               <span class="w-[88px] shrink-0 flex items-center gap-1.5 pr-2 min-w-0">
                 <span class="w-[5px] h-[5px] rounded-full shrink-0" x-bind="archivePipeDot(row)"></span>
                 <span class="font-mono text-[11px] text-tx-4 truncate" x-text="row.pipeline"></span>
@@ -3319,7 +3326,12 @@
         <!-- Title, stage ribbon and meters -->
         <div class="shrink-0 px-5 pt-3.5 pb-[13px] flex items-end gap-5">
           <div class="flex-1 min-w-0 flex flex-col gap-2.5">
-            <h2 class="m-0 text-[16px] font-semibold leading-[1.4] text-tx-hi [text-wrap:pretty]" x-text="selectedTicket?.title"></h2>
+            <h2 class="m-0 text-[16px] font-semibold leading-[1.4] text-tx-hi [text-wrap:pretty]">
+              <span x-show="parseTitleTag(selectedTicket || {}).tag" class="title-tag"
+                    :data-pipe-color="pipelineColorByName(parseTitleTag(selectedTicket || {}).tag)"
+                    x-text="'[' + parseTitleTag(selectedTicket || {}).tag + ']'"></span>
+              <span x-text="parseTitleTag(selectedTicket || {}).rest"></span>
+            </h2>
             <div class="flex gap-[9px] items-stretch min-w-0" x-show="stageRibbon().length">
               <template x-for="seg in stageRibbon()" :key="seg.name">
                 <div class="flex-1 min-w-0 flex flex-col gap-[7px]" :class="seg.state === 'done' ? '' : 'opacity-50'">

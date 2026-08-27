@@ -416,6 +416,24 @@ export function kontoraArchive() {
       };
     },
 
+    // The colored [tag] prefix and the title after it, the split the board card
+    // paints. A row carries no ticket body, so a title with no tag of its own
+    // falls back to the row's project rather than to the path basename
+    // parseTitleTag reaches for.
+    archiveTitleTag(row) {
+      const pt = this.splitTitleTag(row.title);
+      const tag = pt.tag || row.project || this.pathBasename(row.path);
+      return { tag: tag || '', rest: pt.rest };
+    },
+
+    // The project column in the project's own hue, so a project reads the same
+    // here as it does on its board cards. Hashed off the project rather than
+    // off the row's title tag: two rows of one project can carry different
+    // tags, and a column that groups them must not paint them apart.
+    archiveProjectColor(row) {
+      return this.pipelineColorByName(row.project || this.pathBasename(row.path));
+    },
+
     archiveWall(row) {
       const secs = Number(row && row.wall_seconds) || 0;
       return secs > 0 ? this.formatSeconds(secs) : '—';
@@ -451,7 +469,9 @@ export function kontoraArchive() {
       this.ticketChanges = null;
       this._archiveDetailId = row.id;
       // The row's fields are enough to draw the header while the body loads.
-      this.selectedTicket = { id: row.id, title: row.title, status: 'archived', branch: row.branch };
+      // path rides along so the header's [tag] prefix has its fallback before
+      // the body lands.
+      this.selectedTicket = { id: row.id, title: row.title, status: 'archived', branch: row.branch, path: row.path };
       this.archiveDetailLoading = true;
       try {
         const res = await fetch('/api/tickets/' + encodeURIComponent(row.id));

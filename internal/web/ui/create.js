@@ -1,10 +1,10 @@
-import { localInputToISO } from './format.js';
+import { localScheduleText, parseScheduleInput, pickerToScheduleText, scheduleEchoParts, schedulePresets } from './format.js';
 
 // The empty create form. Three places reset it — the desktop modal, the phone
 // sheet and the component's initial state — and a field added in only two of
 // them is a field the third silently drops.
 export function newCreateForm() {
-  return { title: '', path: '', pipeline: '', agent: '', status: 'todo', body: '', branch: '', base_branch: '', scheduled_at: '' };
+  return { title: '', path: '', pipeline: '', agent: '', status: 'todo', body: '', branch: '', base_branch: '', scheduled_at: '', scheduleMode: 'now' };
 }
 
 // What a branch field says when no name can be shown: the ticket carries no
@@ -104,18 +104,91 @@ export function kontoraCreate() {
       this.syncCreateAgent();
     },
 
-    // The instant the create form's local date-time field means, or "" when the
-    // field holds no full local date and time. That instant is what is stored.
-    createScheduleISO() {
-      return localInputToISO(this.createForm.scheduled_at);
+    // What the Start-at field currently means: the instant, or the reason it
+    // means none. Read by the echo line, the preview, the submit guard and the
+    // request, so all four agree by construction.
+    //
+    // "now" is not the absence of a schedule with leftover text — it is the
+    // choice, so the text is ignored until the user switches back to "later".
+    createSchedule() {
+      if (this.createForm.scheduleMode !== 'later') return { iso: '', at: null, error: '' };
+      return parseScheduleInput(this.createForm.scheduled_at, new Date());
     },
 
-    // A schedule is what moves the ticket out of open, so picking one moves the
-    // status select there. The preview and the request both follow it. Clearing
-    // the field puts the select back: the phone sheet has neither a status
-    // control nor a preview, so a stuck "open" is invisible there.
+    createScheduleISO() {
+      return this.createSchedule().iso;
+    },
+
+    createScheduleError() {
+      return this.createSchedule().error;
+    },
+
+    // The echo line: weekday, zone, distance and the exact instant. Null while
+    // the field is empty or unreadable, when the error line takes its place.
+    createScheduleEcho() {
+      var iso = this.createScheduleISO();
+      return iso ? scheduleEchoParts(iso, new Date()) : null;
+    },
+
+    // The presets, rebuilt per read so "tonight 18:00" stops being offered once
+    // it is behind the clock.
+    createSchedulePresets() {
+      return schedulePresets(new Date());
+    },
+
+    // Whether a preset chip is the one currently in the field. Compared on the
+    // instant, not the text: a preset writes a plain time, so a time typed by
+    // hand that lands on the same minute lights the same chip.
+    createPresetSelected(preset) {
+      var iso = this.createScheduleISO();
+      return !!iso && iso === preset.iso;
+    },
+
+    // A preset writes the time itself, not its label: the field is the one
+    // input, and a value it cannot read back is a field the user cannot edit.
+    pickCreatePreset(preset) {
+      this.createForm.scheduled_at = localScheduleText(preset.at);
+      this.onCreateScheduleChange();
+    },
+
+    // now | later. Leaving "later" drops the schedule rather than remembering
+    // it: the status pin and the submit label both come off, and a ticket
+    // created "now" carrying a hidden instant is the surprise that causes.
+    setCreateScheduleMode(mode) {
+      this.createForm.scheduleMode = mode;
+      if (mode === 'now') this.createForm.scheduled_at = '';
+      this.onCreateScheduleChange();
+    },
+
+    // A schedule is what moves the ticket out of open, so picking one pins the
+    // status select there (the template disables it) rather than letting the
+    // user build the --status todo + --at conflict the CLI rejects. Clearing
+    // the field puts the select back.
     onCreateScheduleChange() {
-      this.createForm.status = this.createScheduleISO() ? 'open' : 'todo';
+      this.createForm.status = this.createSchedulePinned() ? 'open' : 'todo';
+    },
+
+    // Whether the Status select is pinned open by the Start-at field. It is the
+    // mode that pins it, not a parsed instant: leaving the select editable
+    // while the user is mid-way through typing a time would flip it twice.
+    createSchedulePinned() {
+      return this.createForm.scheduleMode === 'later';
+    },
+
+    // The native picker writes a datetime-local value; the field itself holds
+    // the grammar a person types, so the picked value is written back in the
+    // spelling the parser and the CLI both take.
+    onCreateSchedulePicked(value) {
+      var text = pickerToScheduleText(value);
+      if (!text) return;
+      this.createForm.scheduled_at = text;
+      this.onCreateScheduleChange();
+    },
+
+    // Submit is blocked while the field cannot be read: sending nothing would
+    // create an unscheduled ticket, which is not what the form says it will do.
+    createBlocked() {
+      return !!this.createScheduleError() || (this.createSchedulePinned() && !this.createScheduleISO());
     },
 
     toggleSidebar() {
@@ -171,12 +244,15 @@ export function kontoraCreate() {
       var scheduled = this.createScheduleISO();
       if (f.title)    lines.push('title: ' + JSON.stringify(f.title));
       lines.push('status: ' + (scheduled ? 'open' : (f.status || 'todo')));
+      // Directly under status, because it is the field that moves it, and in
+      // the spelling the daemon stores: UTC, quoted, second precision. The echo
+      // line above the field shows the same instant in the local zone.
+      if (scheduled)  lines.push('scheduled_at: ' + JSON.stringify(scheduled));
       if (f.pipeline) lines.push('pipeline: ' + f.pipeline);
       if (f.agent)    lines.push('agent: ' + f.agent);
       if (f.path)     lines.push('path: ' + f.path);
       if (f.branch)   lines.push('branch: ' + f.branch);
       if (f.base_branch) lines.push('base_branch: ' + f.base_branch);
-      if (scheduled)  lines.push('scheduled_at: ' + JSON.stringify(scheduled));
       lines.push('---');
       if (f.title) {
         lines.push('');
@@ -189,8 +265,17 @@ export function kontoraCreate() {
       return lines.join('\n');
     },
 
+    // The preview's lines, so the scheduled_at one can be painted in the open
+    // hue. createPreviewYaml stays the single source of the text.
+    get createPreviewLines() {
+      return this.createPreviewYaml.split('\n').map(function (text, i) {
+        return { key: i, text: text, hue: text.startsWith('scheduled_at:') };
+      });
+    },
+
     async submitCreateTicket() {
       if (!this.createForm.title || !this.createForm.path) return;
+      if (this.createBlocked()) return;
       this.createSubmitting = true;
       this.error = null;
       try {

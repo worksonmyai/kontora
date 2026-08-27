@@ -4,6 +4,7 @@
 // board's ticket data and operations — only the layout and a few view-state
 // fields (activeColumn, detailTab, sheet) are its own.
 import { newCreateForm } from './create.js';
+import { isoWithOffset, localScheduleText, parseScheduleInput, pickerToScheduleText, schedulePresets } from './format.js';
 
 export function kontoraMobile() {
   return {
@@ -166,12 +167,79 @@ export function kontoraMobile() {
     // detail overlay has no spare width for a date field and its buttons.
     openScheduleSheet(t) {
       this.openScheduleEditor(t);
+      // The draft is the text the one field holds, in the grammar the CLI and
+      // the desktop form take, not the datetime-local value openScheduleEditor
+      // wrote for the rail.
+      this.scheduleDraft = t && t.scheduled_at ? localScheduleText(new Date(t.scheduled_at)) : '';
       this.sheet = { type: 'schedule', ticket: t };
     },
 
+    // The three presets the sheet offers, the first three of the shared table.
+    mobileSchedulePresets() {
+      return schedulePresets(new Date()).slice(0, 3);
+    },
+
+    mobileSchedulePick(preset) {
+      this.scheduleDraft = localScheduleText(preset.at);
+      this.scheduleError = null;
+    },
+
+    // What the draft currently means, or why it means nothing. One read backs
+    // the selected row, the consequence line and the save button.
+    mobileScheduleParsed() {
+      return parseScheduleInput(this.scheduleDraft, new Date());
+    },
+
+    mobileSchedulePresetSelected(preset) {
+      return this.mobileScheduleParsed().iso === preset.iso;
+    },
+
+    // The sheet's one line of consequence: the exact instant being sent, then
+    // what still stands between the ticket and an agent.
+    mobileScheduleConsequence() {
+      var parsed = this.mobileScheduleParsed();
+      if (!parsed.iso) return '';
+      return 'Sent as ' + isoWithOffset(parsed.at) + '. Stays open until then; pickup still needs auto_pick_up and resolved dependencies.';
+    },
+
+    // The current schedule as the sheet header states it: "starts Fri 09:00 ·
+    // in 18h". Empty for a ticket with none, where the header has nothing to
+    // report yet.
+    mobileScheduleCurrent(t) {
+      var chip = this.scheduleChip(t);
+      if (!chip) return '';
+      return 'starts ' + chip.abs + (chip.rel ? ' · in ' + chip.rel : '');
+    },
+
+    onMobileSchedulePicked(value) {
+      var text = pickerToScheduleText(value);
+      if (!text) return;
+      this.scheduleDraft = text;
+      this.scheduleError = null;
+    },
+
     async submitScheduleMobile(t) {
-      await this.submitSchedule(t);
+      var parsed = this.mobileScheduleParsed();
+      if (!parsed.iso) {
+        this.scheduleError = parsed.error || 'Enter a time or a duration.';
+        return;
+      }
+      await this._postSchedule(t, { scheduled_at: parsed.iso });
       if (!this.scheduleError) this.closeSheet();
+    },
+
+    // Clearing from inside the sheet, where the error line is on screen and the
+    // toast fallback the actions sheet needs is not wanted.
+    async clearScheduleSheet(t) {
+      await this.clearTicketSchedule(t);
+      if (!this.scheduleError) this.closeSheet();
+    },
+
+    // "run now instead": the daemon drops the timestamp in the same save that
+    // queues the ticket, so this is the ordinary start action.
+    async runNowFromSheet(t) {
+      this.closeSheet();
+      await this.moveTicketVia(t.id, 'run', null);
     },
 
     // The actions sheet closes before the clear is posted, and scheduleError
@@ -193,7 +261,7 @@ export function kontoraMobile() {
       // On a scheduled ticket "Queue agent" is the run-now action: the daemon
       // drops the timestamp in the same save.
       if (this.canSchedule(t)) {
-        add(t.scheduled_at ? 'Reschedule' : 'Schedule for later', 'default', function() { self.openScheduleSheet(t); });
+        add(t.scheduled_at ? 'Reschedule…' : 'Schedule…', 'default', function() { self.openScheduleSheet(t); });
         if (t.scheduled_at) add('Clear schedule', 'default', function() { self.clearScheduleMobile(t); });
       }
       if (s === 'open') {

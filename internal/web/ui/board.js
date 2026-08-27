@@ -1,6 +1,10 @@
 // How long the first key of a two-key shortcut stays armed.
 const KEY_SEQ_MS = 800;
 
+// The chip's leading clock, inline because the card is built as a string. Same
+// lucide glyph the create form and the phone sheet draw at their own sizes.
+const SCHED_CLOCK_SVG = '<svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15.5 14"/></svg>';
+
 // The board: card markup, the keyed column reconcile that patches only what
 // changed, drag and drop, and the global key bindings.
 export function kontoraBoard() {
@@ -63,6 +67,7 @@ export function kontoraBoard() {
       if (selected) cls.push('is-selected');
       if (!ticket.kontora) cls.push('border-dashed');
       if (ticket.status === 'cancelled') cls.push('opacity-60');
+      else if (col.key === 'open' && ticket.scheduled_at) cls.push('kt-card-scheduled');
       if (ticket.status === 'in_progress') cls.push('card-state-running');
       if (ticket.status === 'paused') cls.push('card-state-paused');
 
@@ -90,10 +95,16 @@ export function kontoraBoard() {
 
       // Open is the only column a schedule means anything in: the promotion is
       // what takes the ticket out of it.
-      var schedLabel = col.key === 'open' ? this.scheduleLabel(ticket) : '';
-      var scheduled = schedLabel
-        ? '<span class="sched-chip" data-tip="' + esc('Starts ' + schedLabel) + '">'
-          + '<span aria-hidden="true">◷</span>' + esc(schedLabel) + '</span>'
+      //
+      // No pulse and no data-since: .pulse-dot and the 30s tick are for things
+      // that are happening, and a schedule is not one. The distance is written
+      // once per card build.
+      var chip = col.key === 'open' ? this.scheduleChip(ticket) : null;
+      var scheduled = chip
+        ? '<span class="sched-chip" data-tip="' + esc('Starts ' + this.scheduleLabel(ticket)) + '">'
+          + SCHED_CLOCK_SVG + esc(chip.abs)
+          + (chip.rel ? '<span class="sched-chip-rel">' + esc('· ' + chip.rel) + '</span>' : '')
+          + '</span>'
         : '';
 
       var notKontoraBadge = (!ticket.kontora && ticket.status !== 'open')
@@ -143,7 +154,9 @@ export function kontoraBoard() {
         ? '<span class="pipe-tag truncate">' + esc(this.ticketTagLabel(ticket)) + '</span>'
         : '') + notKontoraBadge + glyph + scheduled + waiting;
       if (badgeParts) {
-        badgeRow = '<div class="flex items-center gap-2 min-w-0 pr-5">' + badgeParts + '</div>';
+        // 34px, not the kebab's own width: it sits at right:6px and is 24px
+        // wide, so anything less lets a long .pipe-tag push the chip under it.
+        badgeRow = '<div class="flex items-center gap-2 min-w-0 pr-[34px]">' + badgeParts + '</div>';
       }
 
       // Only the kebab button ships with the card. The menu itself is built on

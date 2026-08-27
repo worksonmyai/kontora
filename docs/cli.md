@@ -109,8 +109,8 @@ Creates a ticket and prints its ID. Without `--path` it uses the current git roo
 | `--branch NAME` | Work branch name. Defaults to `<branch_prefix>/<id>`. |
 | `--base-branch NAME` | Branch the work branch starts from. Defaults to the repository's default branch. |
 | `--status STATUS` | `open` or `todo`. Defaults to `todo`. |
-| `--at TIME` | Schedule pickup for an RFC 3339 instant, e.g. `2026-09-01T09:00:00+02:00`. |
-| `--after DURATION` | Schedule pickup this long from now, e.g. `24h`. |
+| `--at TIME` | Schedule pickup for an instant: RFC 3339 (`2026-09-01T09:00:00+02:00`) or a local wall time (`"2026-09-01 09:00"`). |
+| `--after DURATION` | Schedule pickup this long from now, e.g. `90m`, `24h`, `3d`, `2w`. |
 | `--description-file PATH` | Read the markdown that follows the generated `# <title>` heading from a file, or `-` for stdin. |
 | `--quiet` | Print only the new ticket ID. |
 
@@ -177,8 +177,8 @@ Sets or clears the time the daemon moves an `open` ticket to `todo`. Needs a run
 
 | Flag | Description |
 |------|-------------|
-| `--at TIME` | An RFC 3339 instant, e.g. `2026-09-01T09:00:00+02:00`. Stored normalized to UTC. An instant already in the past is refused. |
-| `--after DURATION` | A Go duration from now, e.g. `90m` or `24h`. Resolved on the calling machine's clock. |
+| `--at TIME` | An instant: RFC 3339 (`2026-09-01T09:00:00+02:00`) or a local wall time (`"2026-09-01 09:00"`), read in the calling machine's zone. A date with no time is refused, because which midnight it means depends on the reader's zone. Stored normalized to UTC. An instant already in the past is refused. |
+| `--after DURATION` | A duration from now, e.g. `90m`, `24h`, `3d` or `2w`. Go's duration units plus `d` (24 hours) and `w` (168 hours); composite forms such as `1w2d3h` work. Resolved on the calling machine's clock. |
 | `--clear` | Remove the schedule. The ticket stays `open`. |
 
 Exactly one of the three is required. Scheduling a `todo` ticket returns it to `open` and drops it from the ready queue; the timestamp is what puts it back. Setting a schedule is refused on a running, closed or archived ticket, and while a Plannotator session or a pending annotation owns the ticket. `--clear` is refused only while the ticket is running, so a timestamp left behind anywhere can be removed without editing the file.

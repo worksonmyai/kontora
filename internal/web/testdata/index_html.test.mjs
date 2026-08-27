@@ -10852,13 +10852,20 @@ function scheduleState() {
   return { state, posted };
 }
 
-test("the create form sends the instant its local date-time means", async () => {
-  const { state, posted } = scheduleState();
+// Fills in the create form and switches Start at to "later", which is what
+// turns the text field into a schedule.
+async function createLater(state, text) {
   await state.openCreateModal();
   state.createForm.title = "Later";
   state.createForm.path = "/repo";
-  state.createForm.scheduled_at = SCHED_LOCAL;
+  state.setCreateScheduleMode("later");
+  state.createForm.scheduled_at = text;
   state.onCreateScheduleChange();
+}
+
+test("the create form sends the instant its start-at field means", async () => {
+  const { state, posted } = scheduleState();
+  await createLater(state, SCHED_LOCAL);
 
   await state.submitCreateTicket();
 
@@ -10869,33 +10876,92 @@ test("the create form sends the instant its local date-time means", async () => 
   assert.equal(state.createForm.status, "open");
 });
 
-test("a value that is not a full local date-and-time creates an ordinary ticket", async () => {
-  // A bare date is the trap: Date reads that form as UTC, so accepting it would
-  // schedule the ticket for midnight in some other zone.
-  for (const partial of ["", "2026-09", "2026-09-01", "not a date"]) {
+test("the start-at field takes both grammars kontora schedule takes", async () => {
+  const cases = [
+    { name: "a space between date and time", text: "2026-09-01 09:00", want: SCHED_ISO },
+    { name: "a T between date and time", text: SCHED_LOCAL, want: SCHED_ISO },
+    { name: "a delay in hours", text: "24h", want: null },
+    { name: "a delay in days", text: "3d", want: null },
+    { name: "a composite delay", text: "1w2d3h", want: null },
+  ];
+  for (const c of cases) {
     const { state, posted } = scheduleState();
-    await state.openCreateModal();
-    state.createForm.title = "Now";
-    state.createForm.path = "/repo";
-    state.createForm.scheduled_at = partial;
-
+    await createLater(state, c.text);
     await state.submitCreateTicket();
-
-    assert.equal(posted[0].body.scheduled_at, undefined, partial);
-    assert.equal(posted[0].body.status, "todo", partial);
+    if (c.want) {
+      assert.equal(posted[0].body.scheduled_at, c.want, c.name);
+    } else {
+      // A delay is measured from the clock, so only its shape is asserted.
+      assert.match(posted[0].body.scheduled_at, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/, c.name);
+    }
+    assert.equal(posted[0].body.status, "open", c.name);
   }
 });
 
-test("the frontmatter preview shows the schedule and the open it forces", async () => {
+test("start-at refuses what it cannot read rather than creating an unscheduled ticket", async () => {
+  // A bare date is the trap: Date reads that form as UTC, so accepting it would
+  // schedule the ticket for midnight in some other zone.
+  for (const bad of ["2026-09", "2026-09-01", "not a date", "3 days", "2020-01-01 09:00"]) {
+    const { state, posted } = scheduleState();
+    await createLater(state, bad);
+
+    assert.ok(state.createScheduleError(), bad);
+    assert.equal(state.createBlocked(), true, bad);
+    await state.submitCreateTicket();
+    assert.equal(posted.length, 0, bad);
+  }
+});
+
+test("start-at on now creates an ordinary ticket, whatever the field holds", async () => {
+  const { state, posted } = scheduleState();
+  await createLater(state, SCHED_LOCAL);
+  state.setCreateScheduleMode("now");
+
+  assert.equal(state.createForm.scheduled_at, "", "leaving later drops the time rather than hiding it");
+  await state.submitCreateTicket();
+
+  assert.equal(posted[0].body.scheduled_at, undefined);
+  assert.equal(posted[0].body.status, "todo");
+});
+
+test("the frontmatter preview shows the schedule under the open it forces", async () => {
   const { state } = scheduleState();
-  await state.openCreateModal();
-  state.createForm.title = "Later";
+  await createLater(state, SCHED_LOCAL);
   state.createForm.status = "todo";
-  state.createForm.scheduled_at = SCHED_LOCAL;
 
   const yaml = state.createPreviewYaml;
-  assert.ok(yaml.includes('scheduled_at: "' + SCHED_ISO + '"'), yaml);
-  assert.ok(yaml.includes("status: open"), yaml);
+  assert.ok(yaml.includes('status: open\nscheduled_at: "' + SCHED_ISO + '"'), yaml);
+  // The highlighted line is the one the preview paints in the open hue.
+  const hue = state.createPreviewLines.filter(l => l.hue).map(l => l.text).join("|");
+  assert.equal(hue, 'scheduled_at: "' + SCHED_ISO + '"');
+});
+
+test("the echo line names the instant in the reader's own zone", async () => {
+  const { state } = scheduleState();
+  await createLater(state, SCHED_LOCAL);
+
+  const echo = state.createScheduleEcho();
+  const local = new Date(2026, 8, 1, 9, 0, 0, 0);
+  assert.match(echo.long, /^Tue 1 Sep 2026, 09:00$/, echo.long);
+  assert.equal(new Date(echo.rfc).getTime(), local.getTime(), "the echoed instant is the one being sent");
+  assert.match(echo.distance, /^in /);
+});
+
+test("presets write a time the field itself can read back", async () => {
+  const { state, posted } = scheduleState();
+  await state.openCreateModal();
+  state.createForm.title = "Later";
+  state.createForm.path = "/repo";
+  state.setCreateScheduleMode("later");
+
+  const presets = state.createSchedulePresets();
+  assert.ok(presets.length >= 4, "tonight may have passed, the rest cannot");
+  state.pickCreatePreset(presets[0]);
+
+  assert.equal(state.createPresetSelected(presets[0]), true);
+  assert.equal(state.createScheduleError(), "", "a preset is always readable");
+  await state.submitCreateTicket();
+  assert.equal(posted[0].body.scheduled_at, presets[0].iso);
 });
 
 test("the schedule editor round-trips the stored instant through local time", () => {
@@ -10974,4 +11040,170 @@ test("a schedule change reaches the panel while the body is being edited", () =>
 
   assert.equal(state.selectedTicket.scheduled_at, SCHED_ISO);
   assert.equal(state.selectedTicket.body, "typing", "the edited body survives");
+});
+
+// A component holding one schedulable ticket, opened in the palette's schedule
+// scope. Records what each row posts.
+function scheduleScopeState(overrides) {
+  const ticket = Object.assign({ id: "kon-1", title: "Later", status: "open", kontora: true, scheduled_at: "" }, overrides || {});
+  const posted = [];
+  const state = loadKontoraState({
+    fetch: async (url, opts) => {
+      if (opts && opts.method === "POST") posted.push({ url, body: opts.body ? JSON.parse(opts.body) : null });
+      return { ok: true, json: async () => Object.assign({}, ticket, { scheduled_at: SCHED_ISO }) };
+    },
+  });
+  state._boardInit = false;
+  state.tickets = [ticket];
+  state.paletteOpen = true;
+  state.palettePush(ticket.id, "schedule");
+  return { state, posted, ticket };
+}
+
+const rowsOf = (state) => state.paletteGroups.flatMap(g => g.items.map(r => r.id));
+
+test("the schedule scope is offered only for a ticket that can carry a schedule", () => {
+  const cases = [
+    { name: "open", ticket: { status: "open" }, want: true },
+    { name: "todo", ticket: { status: "todo" }, want: true },
+    { name: "running", ticket: { status: "in_progress" }, want: false },
+    { name: "done", ticket: { status: "done" }, want: false },
+    { name: "not initialized", ticket: { status: "open", kontora: false }, want: false },
+  ];
+  for (const c of cases) {
+    const state = loadKontoraState({});
+    state._boardInit = false;
+    state.tickets = [Object.assign({ id: "kon-1", title: "T", kontora: true }, c.ticket)];
+    state.paletteOpen = true;
+    state.palettePush("kon-1", "actions");
+    const drill = rowsOf(state).includes("scheduledrill:kon-1");
+    assert.equal(drill, c.want, c.name);
+  }
+});
+
+test("the schedule scope offers the presets and pops back to the ticket", () => {
+  const { state } = scheduleScopeState();
+
+  assert.equal(state.paletteScopeKind, "schedule");
+  assert.equal(state.paletteScopeLabel(), "schedule kon-1");
+  assert.deepEqual(state.paletteGroups.map(g => g.label).join(), "when");
+  const rows = rowsOf(state);
+  assert.ok(rows.length >= 3, rows.join());
+  assert.ok(rows.includes("schedule:kon-1:type"), "the free-text hint row is offered");
+
+  // Back out one level at a time: the ticket first, then the root.
+  state.palettePop();
+  assert.equal(state.paletteScopeKind, "actions");
+  assert.equal(state.paletteScope, "kon-1");
+  state.palettePop();
+  assert.equal(state.paletteScope, null);
+});
+
+test("free text in the schedule scope is parsed live and leads the list", () => {
+  const { state } = scheduleScopeState();
+
+  state.paletteQuery = "3d";
+  state.onPaletteQueryChanged();
+  const top = state._paletteRows[0];
+  assert.equal(top.id, "schedule:kon-1:typed");
+  assert.match(top.scheduleISO, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);
+  assert.ok(!rowsOf(state).includes("schedule:kon-1:type"), "a query that parses replaces the hint row");
+
+  // Text that is not a time says so on the hint row rather than vanishing.
+  state.paletteQuery = "nonsense";
+  state.onPaletteQueryChanged();
+  const hint = state._paletteRows.find(r => r.id === "schedule:kon-1:type");
+  assert.equal(hint.title, "not a time or a duration");
+});
+
+test("running a schedule row posts the instant it carries", async () => {
+  const { state, posted } = scheduleScopeState();
+  const row = state._paletteRows.find(r => r.scheduleISO);
+
+  await state.paletteRun(row, false);
+
+  assert.deepEqual(posted, [{ url: "/api/tickets/kon-1/schedule", body: { scheduled_at: row.scheduleISO } }]);
+  assert.equal(state.paletteOpen, false, "the palette closes so its error line is not the surface");
+});
+
+test("enter on the hint row leaves the palette open rather than posting", async () => {
+  const { state, posted } = scheduleScopeState();
+  const hint = state._paletteRows.find(r => r.id === "schedule:kon-1:type");
+
+  await state.paletteRun(hint, false);
+
+  assert.equal(posted.length, 0);
+  assert.equal(state.paletteOpen, true);
+});
+
+test("clear and run-now are offered only once a schedule exists", async () => {
+  const bare = scheduleScopeState();
+  assert.ok(!rowsOf(bare.state).includes("schedclear:kon-1"), "nothing to clear yet");
+
+  const { state, posted } = scheduleScopeState({ scheduled_at: SCHED_ISO });
+  assert.deepEqual(state.paletteGroups.map(g => g.label).join(), "when,also");
+
+  await state.paletteRun(state._paletteRows.find(r => r.id === "schedclear:kon-1"), false);
+  assert.deepEqual(posted, [{ url: "/api/tickets/kon-1/schedule", body: { clear: true } }]);
+
+  // run-now is the ordinary start action — the daemon drops the timestamp in
+  // the same save — so it is asserted at that call, as the other action rows are.
+  const runner = scheduleScopeState({ scheduled_at: SCHED_ISO });
+  const calls = [];
+  runner.state.moveTicketVia = async (id, endpoint) => { calls.push([id, endpoint]); };
+  await runner.state.paletteRun(runner.state._paletteRows.find(r => r.id === "schedrun:kon-1"), false);
+  assert.deepEqual(calls.join(), "kon-1,run");
+});
+
+test("the schedule scope pops out when the ticket stops being schedulable", () => {
+  const { state, ticket } = scheduleScopeState();
+
+  // An SSE update starts the ticket while the scope is open.
+  ticket.status = "in_progress";
+  state.recomputePalette();
+
+  assert.equal(state.paletteScopeKind, "actions", "an empty schedule scope is not left on screen");
+});
+
+test("the phone sheet reads both grammars and sends the instant", async () => {
+  const { state, posted, ticket } = scheduleScopeState({ scheduled_at: SCHED_ISO });
+  state.closePalette();
+  state.openScheduleSheet(ticket);
+
+  assert.equal(state.sheet.type, "schedule");
+  assert.match(state.scheduleDraft, /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/, "the draft is the grammar the field takes");
+  assert.match(state.mobileScheduleCurrent(ticket), /^starts /);
+
+  state.scheduleDraft = "24h";
+  assert.ok(state.mobileScheduleConsequence().startsWith("Sent as "), state.mobileScheduleConsequence());
+  await state.submitScheduleMobile(ticket);
+
+  assert.equal(posted[0].url, "/api/tickets/kon-1/schedule");
+  assert.match(posted[0].body.scheduled_at, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);
+  assert.equal(state.sheet, null);
+});
+
+test("the phone sheet refuses what it cannot read rather than posting", async () => {
+  const { state, posted, ticket } = scheduleScopeState();
+  state.closePalette();
+  state.openScheduleSheet(ticket);
+  state.scheduleDraft = "2026-09-01";
+
+  await state.submitScheduleMobile(ticket);
+
+  assert.equal(posted.length, 0);
+  assert.match(state.scheduleError, /add a time/);
+  assert.equal(state.mobileScheduleConsequence(), "", "no instant, no consequence line");
+});
+
+test("a phone preset fills the field with a time the field can read back", () => {
+  const { state, ticket } = scheduleScopeState();
+  state.closePalette();
+  state.openScheduleSheet(ticket);
+
+  const preset = state.mobileSchedulePresets()[0];
+  state.mobileSchedulePick(preset);
+
+  assert.equal(state.mobileSchedulePresetSelected(preset), true);
+  assert.equal(state.mobileScheduleParsed().iso, preset.iso);
 });

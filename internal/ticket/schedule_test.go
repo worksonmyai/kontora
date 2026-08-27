@@ -102,3 +102,74 @@ func TestTicketSchedule(t *testing.T) {
 		assert.Empty(t, tk.ScheduledAt)
 	})
 }
+
+func TestParseScheduleFlex(t *testing.T) {
+	// The local spellings are read in the runner's own zone, so the
+	// expectations are built there too.
+	local := func(y int, mo time.Month, d, h, mi int) string {
+		return FormatSchedule(time.Date(y, mo, d, h, mi, 0, 0, time.Local))
+	}
+
+	tests := []struct {
+		name    string
+		in      string
+		want    string
+		wantErr bool
+	}{
+		{name: "rfc 3339 utc", in: "2026-09-01T09:00:00Z", want: "2026-09-01T09:00:00Z"},
+		{name: "rfc 3339 offset", in: "2026-09-01T09:00:00+02:00", want: "2026-09-01T07:00:00Z"},
+		{name: "local space", in: "2026-09-01 09:00", want: local(2026, 9, 1, 9, 0)},
+		{name: "local T", in: "2026-09-01T09:00", want: local(2026, 9, 1, 9, 0)},
+		{name: "local with seconds", in: "2026-09-01 09:00:00", want: local(2026, 9, 1, 9, 0)},
+		{name: "date only is refused", in: "2026-09-01", wantErr: true},
+		{name: "time only", in: "09:00", wantErr: true},
+		{name: "prose", in: "tomorrow at nine", wantErr: true},
+		{name: "empty", in: "", wantErr: true},
+		{name: "impossible day", in: "2026-02-30 09:00", wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := ParseScheduleFlex(tt.in)
+			if tt.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, FormatSchedule(got))
+		})
+	}
+}
+
+func TestParseScheduleDelay(t *testing.T) {
+	tests := []struct {
+		name    string
+		in      string
+		want    time.Duration
+		wantErr string
+	}{
+		{name: "hours", in: "24h", want: 24 * time.Hour},
+		{name: "minutes", in: "90m", want: 90 * time.Minute},
+		{name: "seconds", in: "45s", want: 45 * time.Second},
+		{name: "days", in: "3d", want: 72 * time.Hour},
+		{name: "weeks", in: "2w", want: 336 * time.Hour},
+		{name: "composite go units", in: "1h30m", want: 90 * time.Minute},
+		{name: "composite with days", in: "1w2d3h", want: 219 * time.Hour},
+		{name: "fractional days", in: "1.5d", want: 36 * time.Hour},
+		{name: "zero", in: "0s", wantErr: "positive duration"},
+		{name: "negative", in: "-1h", wantErr: "positive duration"},
+		{name: "prose", in: "24 hours", wantErr: "such as"},
+		{name: "months are not a unit", in: "2mo", wantErr: "such as"},
+		{name: "empty", in: "", wantErr: "such as"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := ParseScheduleDelay(tt.in)
+			if tt.wantErr != "" {
+				require.ErrorContains(t, err, tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}

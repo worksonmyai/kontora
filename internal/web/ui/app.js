@@ -125,6 +125,9 @@ export function kontoraApp() {
     paletteSel: 0,
     // Ticket id the palette has drilled into, or null at the root.
     paletteScope: null,
+    // Which level of that ticket is open: its actions, or the schedule scope
+    // one step further in. Popping walks back out one level at a time.
+    paletteScopeKind: 'actions',
     paletteGroups: [],
     _paletteRows: [],
     // Row id under the highlight. The selection follows the row rather than the

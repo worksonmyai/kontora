@@ -1,3 +1,5 @@
+import { localScheduleText, parseScheduleInput, schedulePresets, timeUntil } from './format.js';
+
 // Ticket rows the command palette renders for one query. The rest are reachable
 // by typing more, and the group hint says how many were left out.
 const PALETTE_MAX_TICKETS = 6;
@@ -158,6 +160,94 @@ export function kontoraPalette() {
       });
     },
 
+    // The row that drills from the ticket scope into the schedule one. Offered
+    // only for a ticket the daemon would accept: the browser cannot see an open
+    // Plannotator session or a pending annotation, so those refusals arrive
+    // from the daemon and land in the error line.
+    _paletteScheduleDrillRow(t) {
+      return this._paletteCmdRow({
+        id: 'scheduledrill:' + t.id, kind: 'scheduledrill', ticketId: t.id, glyph: '◷',
+        title: t.scheduled_at ? 'Reschedule…' : 'Schedule…',
+        meta: t.scheduled_at ? 'set' : '',
+      });
+    },
+
+    // One preset or one parsed free-text time. iso is what the row sends.
+    _paletteScheduleRow(t, o) {
+      var row = this._paletteCmdRow({
+        id: 'schedule:' + t.id + ':' + o.key, kind: 'schedule', ticketId: t.id,
+        glyph: o.glyph || '◷', title: o.title, meta: o.meta || '',
+      });
+      row.glyphClass = o.glyph === '⌨' ? 'text-surface-600' : 'text-st-open';
+      row.sub = o.sub || '';
+      row.scheduleISO = o.iso || '';
+      return row;
+    },
+
+    // The three presets, plus whatever the query parses to. A readable query
+    // leads: it is what the user is typing, and Enter runs the top row.
+    _paletteScheduleRows(t) {
+      var q = (this.paletteQuery || '').trim();
+      var now = new Date();
+      var rows = [];
+      var parsed = q ? parseScheduleInput(q, now) : null;
+      if (parsed && parsed.iso) {
+        rows.push(this._paletteScheduleRow(t, {
+          key: 'typed', title: localScheduleText(parsed.at),
+          sub: 'sets scheduled_at, keeps status open', meta: 'in ' + timeUntil(parsed.at, now),
+          iso: parsed.iso,
+        }));
+      }
+      var presets = schedulePresets(now).slice(0, 3)
+        .filter(p => !q || parsed && parsed.iso || p.label.toLowerCase().includes(q.toLowerCase()));
+      presets.forEach((p, i) => {
+        rows.push(this._paletteScheduleRow(t, {
+          key: p.key, title: p.label,
+          // Only the first row spells out what scheduling does; repeating it on
+          // every row would push the dates off the end of each line.
+          sub: i === 0 && !rows.length ? p.date + ' · sets scheduled_at, keeps status open' : p.date,
+          meta: p.rel, iso: p.iso,
+        }));
+      });
+      // The typing row is a hint, not a command, so it carries no instant and
+      // paletteRun refuses it. It drops out once the query parses.
+      if (!parsed || !parsed.iso) {
+        rows.push(this._paletteScheduleRow(t, {
+          key: 'type', glyph: '⌨', title: parsed && parsed.error ? parsed.error : 'type a time or a duration',
+          sub: '2026-09-01 09:00 · 24h · 3d · 2w',
+        }));
+      }
+      return rows;
+    },
+
+    // The ticket's current pickup time in the card chip's short wording.
+    _paletteScheduleCurrent(t) {
+      var chip = this.scheduleChip(t);
+      if (!chip) return this.scheduleLabel(t);
+      return chip.abs + (chip.rel ? ' · in ' + chip.rel : '');
+    },
+
+    // clear and run-now: the two ways a schedule ends. Only for a ticket that
+    // has one — there is nothing to clear otherwise.
+    _paletteScheduleAlsoRows(t) {
+      var clear = this._paletteCmdRow({
+        id: 'schedclear:' + t.id, kind: 'scheduleclear', ticketId: t.id, glyph: '✕',
+        title: 'clear the schedule',
+      });
+      clear.sub = 'removes scheduled_at · ticket stays open';
+      clear.glyphClass = 'text-surface-600';
+      var run = this._paletteCmdRow({
+        id: 'schedrun:' + t.id, kind: 'schedulerun', ticketId: t.id, glyph: '▸',
+        title: 'run now instead',
+      });
+      run.sub = 'clears scheduled_at and queues the ticket';
+      run.glyphClass = 'text-ok';
+      run.status = 'open';
+      run.statusText = 'open';
+      run.meta = '';
+      return [clear, run];
+    },
+
     _paletteDrillRow(t) {
       return this._paletteCmdRow({
         id: 'drill:' + t.id, kind: 'drill', ticketId: t.id, glyph: '▸',
@@ -182,26 +272,57 @@ export function kontoraPalette() {
       // The scoped ticket was deleted or archived while the palette was open.
       if (this.paletteScope && !scoped) this.paletteScope = null;
 
-      if (scoped) {
+      if (scoped && this.paletteScopeKind === 'schedule') {
+        // A ticket that stopped being schedulable while the scope was open —
+        // it started running, or another browser moved it — has no rows to
+        // offer, so the scope pops back to the ticket rather than sitting empty.
+        if (!this.canSchedule(scoped)) {
+          this.paletteScopeKind = 'actions';
+        } else {
+          groups.push({
+            label: 'when',
+            hint: 'open ticket · stays open until due',
+            items: this._paletteScheduleRows(scoped),
+          });
+          if (scoped.scheduled_at) {
+            groups.push({
+              label: 'also',
+              // The chip's own wording, so the hint and the card the user just
+              // came from name the time the same way.
+              hint: 'currently starts ' + this._paletteScheduleCurrent(scoped),
+              items: this._paletteScheduleAlsoRows(scoped),
+            });
+          }
+        }
+      }
+
+      if (scoped && this.paletteScopeKind !== 'schedule') {
         var legal = this.paletteMoves(scoped);
         var moves = legal.filter(m => !q || m.label.toLowerCase().includes(q));
+        var items = [];
         // A group with no surviving row is dropped, header and all: the root
         // branch below does the same, and a bare header above the no-match
         // message reads as a broken list.
         if (moves.length) {
+          items = moves.map(m => this._paletteActionRow(scoped, m));
+        }
+        if (this.canSchedule(scoped) && (!q || 'schedule'.includes(q) || 'reschedule'.includes(q))) {
+          items.unshift(this._paletteScheduleDrillRow(scoped));
+        }
+        if (items.length) {
           groups.push({
             label: 'Actions',
             // "legal" describes the ticket, so the count is of every legal move,
             // not of the ones the query left.
             hint: this.paletteStatusLabel(scoped.status) + ' · ' + legal.length + ' legal',
-            items: moves.map(m => this._paletteActionRow(scoped, m)),
+            items: items,
           });
         }
         var tabs = this._paletteTabs.filter(tb => !q || tb.label.toLowerCase().includes(q));
         if (tabs.length) {
           groups.push({ label: 'Open', hint: '', items: tabs.map(tb => this._paletteTabRow(scoped, tb)) });
         }
-      } else {
+      } else if (!scoped) {
         var open = this.selectedTicket ? this.tickets.find(t => t.id === this.selectedTicket.id) : null;
         if (open && !q) {
           var lead = [];
@@ -278,6 +399,7 @@ export function kontoraPalette() {
       this.paletteOpen = false;
       this.paletteQuery = '';
       this.paletteScope = null;
+      this.paletteScopeKind = 'actions';
       this.paletteGroups = [];
       this._paletteRows = [];
       this._paletteSelId = null;
@@ -291,17 +413,24 @@ export function kontoraPalette() {
       if (back && back.focus) back.focus();
     },
 
-    // Pop one level: the ticket scope first, then the palette itself. The body
-    // Escape stack calls this before its own chain. Backspace and ← reach it
-    // only inside a scope, since at the root they are ordinary editing keys.
+    // Pop one level: the schedule scope back to the ticket, the ticket scope
+    // back to the root, then the palette itself. The body Escape stack calls
+    // this before its own chain. Backspace and ← reach it only inside a scope,
+    // since at the root they are ordinary editing keys.
     palettePop() {
       if (!this.paletteScope) { this.closePalette(); return; }
+      if (this.paletteScopeKind === 'schedule') {
+        this.paletteScopeKind = 'actions';
+        this._paletteReset();
+        return;
+      }
       this.paletteScope = null;
       this._paletteReset();
     },
 
-    palettePush(id) {
+    palettePush(id, kind) {
       this.paletteScope = id;
+      this.paletteScopeKind = kind || 'actions';
       this._paletteReset();
       this._focusPaletteInput();
     },
@@ -377,6 +506,11 @@ export function kontoraPalette() {
         this.palettePush(row.ticketId);
         return;
       }
+      if (row.kind === 'scheduledrill') { this.palettePush(row.ticketId, 'schedule'); return; }
+      if (row.kind === 'schedule' || row.kind === 'scheduleclear' || row.kind === 'schedulerun') {
+        await this._paletteRunSchedule(row);
+        return;
+      }
       if (row.kind === 'action') { await this._paletteRunAction(row); return; }
       if (row.kind === 'nav') {
         var nav = row.nav;
@@ -428,6 +562,42 @@ export function kontoraPalette() {
       return this.paletteMoves(t).some(m => m.label === row.move.label);
     },
 
+    // The three schedule verbs. Each goes through the same calls the detail rail
+    // and the phone sheet use, so a refusal is reported the one way.
+    //
+    // The palette closes first and confirms with a toast: its own error line
+    // would go with it, and scheduleError only renders on surfaces that are not
+    // on screen here.
+    async _paletteRunSchedule(row) {
+      // The hint row carries no instant. Enter on it is a no-op rather than a
+      // silent close, so the palette stays open for the user to finish typing.
+      if (row.kind === 'schedule' && !row.scheduleISO) return;
+      var t = this.tickets.find(x => x.id === row.ticketId);
+      if (!t) return;
+      // The list may have re-derived over SSE since the row was built.
+      if (!this.canSchedule(t)) {
+        this.closePalette();
+        this.showToast(t.id + ' can no longer be scheduled');
+        return;
+      }
+      var label = this._paletteScheduleCurrent(t);
+      this.closePalette();
+      if (row.kind === 'schedulerun') {
+        await this.moveTicketVia(t.id, 'run', null);
+        if (!this.error) this.showToast(t.id + ' queued');
+        return;
+      }
+      if (row.kind === 'scheduleclear') {
+        await this.clearTicketSchedule(t);
+        if (this.scheduleError) { this.error = this.scheduleError; return; }
+        this.showToast(t.id + ' no longer starts ' + label);
+        return;
+      }
+      await this._postSchedule(t, { scheduled_at: row.scheduleISO });
+      if (this.scheduleError) { this.error = this.scheduleError; return; }
+      this.showToast(t.id + ' starts ' + this._paletteScheduleCurrent(this.tickets.find(x => x.id === t.id) || t));
+    },
+
     async _paletteRunAction(row) {
       if (!this._paletteMoveStillLegal(row)) {
         this.closePalette();
@@ -447,15 +617,27 @@ export function kontoraPalette() {
     },
 
     palettePlaceholder() {
-      return this.paletteScope ? 'Action for ' + this.paletteScope + '…' : 'Search tickets, or type a command…';
+      if (!this.paletteScope) return 'Search tickets, or type a command…';
+      if (this.paletteScopeKind === 'schedule') return 'A time or a duration: 2026-09-01 09:00, 24h, 3d…';
+      return 'Action for ' + this.paletteScope + '…';
+    },
+
+    // What the scope chip reads. The schedule scope names itself, because its
+    // rows are times rather than the ticket verbs the chip usually stands for.
+    paletteScopeLabel() {
+      if (!this.paletteScope) return '';
+      return this.paletteScopeKind === 'schedule' ? 'schedule ' + this.paletteScope : this.paletteScope;
     },
 
     _paletteLegendRoot: [{ key: '↑↓', label: 'move' }, { key: '↵', label: 'open' },
                          { key: '→', label: 'actions' }, { key: 'esc', label: 'close' }],
     _paletteLegendScoped: [{ key: '↑↓', label: 'move' }, { key: '↵', label: 'run' },
                            { key: '⌫', label: 'back to search' }, { key: 'esc', label: 'close' }],
+    _paletteLegendSchedule: [{ key: '↵', label: 'schedule' }, { key: '←', label: 'back to ticket' },
+                             { key: '↑↓', label: 'move' }, { key: 'esc', label: 'close' }],
     paletteLegend() {
-      return this.paletteScope ? this._paletteLegendScoped : this._paletteLegendRoot;
+      if (!this.paletteScope) return this._paletteLegendRoot;
+      return this.paletteScopeKind === 'schedule' ? this._paletteLegendSchedule : this._paletteLegendScoped;
     },
 
     paletteScopePipeColor() {

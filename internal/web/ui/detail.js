@@ -1,4 +1,4 @@
-import { isoToLocalInput, localInputToISO, runSeconds, scheduleMinLocal } from './format.js';
+import { isoToLocalInput, parseScheduleInput, runSeconds, scheduleChipLabel, scheduleMinLocal } from './format.js';
 import { highlightMarkdown } from './markdown.js';
 import { termState } from './terminal.js';
 
@@ -527,6 +527,13 @@ export function kontoraDetail() {
       return this.formatAbsDate(raw);
     },
 
+    // The card chip's two halves, or null when there is nothing to show. A
+    // value scheduleLabel could not read has no time to shorten either, so the
+    // chip is left off and the rail is where the raw text shows up.
+    scheduleChip(ticket) {
+      return scheduleChipLabel(ticket && ticket.scheduled_at, this.now ? new Date(this.now) : new Date());
+    },
+
     // The min the schedule inputs carry, recomputed whenever the editor opens so
     // it never sits behind the clock.
     scheduleMin() {
@@ -551,9 +558,12 @@ export function kontoraDetail() {
 
     async submitSchedule(ticket) {
       var t = ticket || this.selectedTicket;
-      var iso = localInputToISO(this.scheduleDraft);
+      // The same parser every schedule surface uses, so the native picker's
+      // value and a time typed by hand are read the one way.
+      var parsed = parseScheduleInput(this.scheduleDraft, new Date());
+      var iso = parsed.iso;
       if (!iso) {
-        this.scheduleError = 'Enter a date and a time.';
+        this.scheduleError = parsed.error || 'Enter a date and a time.';
         return;
       }
       // A zoneless input cannot spell the repeated hour of a DST fall-back, so

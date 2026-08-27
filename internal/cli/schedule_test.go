@@ -12,6 +12,16 @@ import (
 	"github.com/worksonmyai/kontora/internal/ticket"
 )
 
+// The zoneless --at spellings mean an instant in the runner's own zone, so the
+// input and the expectation are both built there.
+func localAt(y int, mo time.Month, d, h, mi int) string {
+	return time.Date(y, mo, d, h, mi, 0, 0, time.Local).Format("2006-01-02 15:04")
+}
+
+func localWant(y int, mo time.Month, d, h, mi int) string {
+	return ticket.FormatSchedule(time.Date(y, mo, d, h, mi, 0, 0, time.Local))
+}
+
 func TestResolveSchedule(t *testing.T) {
 	now := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
 
@@ -29,10 +39,14 @@ func TestResolveSchedule(t *testing.T) {
 		{name: "a duration is measured from now", after: "24h", want: "2026-09-02T12:00:00Z"},
 		{name: "sub-hour durations work", after: "90m", want: "2026-09-01T13:30:00Z"},
 		{name: "both flags contradict", at: "2026-09-01T09:00:00Z", after: "24h", wantErr: "give one of them"},
-		{name: "a malformed instant", at: "tomorrow", wantErr: "RFC 3339"},
-		{name: "a malformed duration", after: "24 hours", wantErr: "Go duration"},
+		{name: "a malformed instant", at: "tomorrow", wantErr: "RFC 3339 instant"},
+		{name: "a malformed duration", after: "24 hours", wantErr: "--after takes a duration"},
 		{name: "a zero duration", after: "0s", wantErr: "positive duration"},
 		{name: "a negative duration", after: "-1h", wantErr: "positive duration"},
+		{name: "days", after: "3d", want: "2026-09-04T12:00:00Z"},
+		{name: "weeks", after: "2w", want: "2026-09-15T12:00:00Z"},
+		{name: "a local wall time is read in the local zone", at: localAt(2026, 9, 2, 9, 0), want: localWant(2026, 9, 2, 9, 0)},
+		{name: "a date with no time is refused", at: "2026-09-02", wantErr: "local time"},
 	}
 
 	for _, tc := range cases {

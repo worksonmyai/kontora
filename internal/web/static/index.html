@@ -476,7 +476,7 @@
     .sched-chip {
       display: inline-flex;
       align-items: center;
-      gap: 4px;
+      gap: 5px;
       font-family: 'JetBrains Mono', monospace;
       font-size: 10px;
       line-height: 1.5;
@@ -488,6 +488,21 @@
       border: 1px solid hsl(var(--st-open) / 0.28);
       white-space: nowrap;
     }
+    /* The distance half ("· 18h"). Dimmer than the time itself: the instant is
+       the fact, the distance is a convenience, and it goes stale between card
+       rebuilds because nothing ticks it. */
+    .sched-chip-rel { opacity: .62; }
+    /* A scheduled draft is parked, so it steps back and leaves an unscheduled
+       one the loudest card in the column. Distinct from cancelled (.6). */
+    .kt-card-scheduled { opacity: .72; }
+    /* The chosen preset, and a field holding a schedule: both take the open
+       hue, so every control that sets a pickup time reads as one group. */
+    .sched-preset-on {
+      color: hsl(var(--st-open));
+      background: hsl(var(--st-open) / 0.14);
+      border-color: hsl(var(--st-open) / 0.4);
+    }
+    .sched-input-set { border-color: hsl(var(--st-open) / 0.5); }
 
     /* "live" indicator in the terminal headers — running, so st-progress. */
     .live-indicator { color: hsl(var(--st-progress)); }
@@ -828,7 +843,7 @@
           <span :data-pipe-color="paletteScopePipeColor()"
                 class="shrink-0 inline-flex items-center gap-1.5 h-[22px] px-2 rounded-md font-mono text-[11px]"
                 style="color: hsl(var(--pipe-h)); background: hsl(var(--pipe-h) / 0.12); border: 1px solid hsl(var(--pipe-h) / 0.3)">
-            <span x-text="paletteScope"></span><span class="opacity-55">▸</span>
+            <span x-text="paletteScopeLabel()"></span><span class="opacity-55">▸</span>
           </span>
         </template>
         <input x-ref="paletteInput" type="text" x-model="paletteQuery"
@@ -2833,20 +2848,80 @@
               </div>
               <div>
                 <label for="new-status" class="text-[13px] font-mono text-tx-3 mb-1 flex items-center gap-1.5"><svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="opacity-50"><circle cx="12" cy="12" r="10"/></svg>Status</label>
-                <select id="new-status" x-model="createForm.status"
-                        class="w-full h-[36px] bg-surface-800 border border-surface-700/50 rounded px-2 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40">
+                <!-- Pinned open while Start at is on later: a schedule is
+                     what moves the ticket to todo, and the two together are the
+                     conflict the CLI rejects. -->
+                <select id="new-status" x-model="createForm.status" :disabled="createSchedulePinned()"
+                        class="w-full h-[36px] bg-surface-800 border border-surface-700/50 rounded px-2 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40 disabled:opacity-70">
                   <option value="todo">todo</option>
                   <option value="open">open</option>
                 </select>
+                <p x-show="createSchedulePinned()" class="text-[11px] text-surface-600 mt-0.5">&middot; set by start-at</p>
               </div>
             </div>
             <p class="text-[11px] text-surface-600 -mt-2">Pipeline → stages the ticket runs through. Agent → defaults to pipeline's. Status → <span class="text-tx-3">todo</span> queues automatically; <span class="text-tx-3">open</span> stays a draft.</p>
 
-            <div>
-              <label for="new-scheduled-at" class="text-[13px] font-mono text-tx-3 mb-1 flex items-center gap-1.5"><svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="opacity-50"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>Start at</label>
-              <input id="new-scheduled-at" x-model="createForm.scheduled_at" @change="onCreateScheduleChange()" type="datetime-local" :min="scheduleMin()"
-                     class="w-full bg-surface-800 border border-surface-700/50 rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40">
-              <p class="text-[11px] text-surface-600 mt-0.5">Your local time. The ticket is created <span class="text-tx-3">open</span> and moves to <span class="text-tx-3">todo</span> then. Leave empty to skip scheduling.</p>
+            <!-- Start at: one field taking both grammars the CLI takes, plus
+                 the presets that cover the common cases. -->
+            <div class="flex flex-col gap-2.5">
+              <div class="flex items-center gap-2.5">
+                <span class="text-[13px] font-mono text-tx-3 flex items-center gap-1.5"><svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="opacity-50"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15.5 14"/></svg>Start at</span>
+                <div class="ml-auto flex gap-1 bg-surface-900 border border-edge-card rounded-[7px] p-[3px]">
+                  <template x-for="m in ['now', 'later']" :key="m">
+                    <button type="button" @click="setCreateScheduleMode(m)"
+                            class="font-mono text-[11px] px-[11px] py-[3px] rounded-[5px] transition-colors"
+                            :class="createForm.scheduleMode === m ? 'bg-surface-850 text-tx-hi font-bold' : 'text-tx-3 hover:text-tx-2'"
+                            x-text="m"></button>
+                  </template>
+                </div>
+              </div>
+
+              <template x-if="createForm.scheduleMode === 'later'">
+                <div class="flex flex-col gap-2.5">
+                  <div class="flex gap-1.5 flex-wrap">
+                    <template x-for="p in createSchedulePresets()" :key="p.key">
+                      <button type="button" @click="pickCreatePreset(p)"
+                              class="font-mono text-[11px] px-2.5 py-1 rounded-full border transition-colors"
+                              :class="createPresetSelected(p) ? 'sched-preset-on' : 'bg-surface-900 border-edge-input text-tx-3 hover:text-tx-2'"
+                              x-text="p.label"></button>
+                    </template>
+                  </div>
+
+                  <div class="flex items-center gap-2 h-9 px-2.5 bg-surface-800 rounded border"
+                       :class="createScheduleISO() ? 'sched-input-set' : (createScheduleError() ? 'border-err/50' : 'border-surface-700/50')">
+                    <input id="new-scheduled-at" x-model="createForm.scheduled_at" @input="onCreateScheduleChange()" type="text"
+                           class="flex-1 min-w-0 bg-transparent font-mono text-sm text-tx-2 focus:outline-none"
+                           placeholder="2026-09-01 09:00">
+                    <template x-if="!createForm.scheduled_at">
+                      <span class="flex items-center gap-2 shrink-0">
+                        <span class="w-px h-4 bg-surface-700"></span>
+                        <span class="text-[12px] text-surface-600">or a duration: 24h, 3d, 2w</span>
+                      </span>
+                    </template>
+                    <!-- The native picker writes into a hidden field; the text
+                         field keeps the spelling a person types. -->
+                    <button type="button" class="ml-auto shrink-0 text-tx-3 hover:text-tx-2 flex" aria-label="Pick a date"
+                            @click="$refs.createSchedulePicker.showPicker ? $refs.createSchedulePicker.showPicker() : $refs.createSchedulePicker.click()">
+                      <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="17" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="16" y1="2" x2="16" y2="6"/></svg>
+                    </button>
+                    <input x-ref="createSchedulePicker" type="datetime-local" :min="scheduleMin()" tabindex="-1" aria-hidden="true"
+                           class="sr-only" @change="onCreateSchedulePicked($event.target.value)">
+                  </div>
+
+                  <template x-if="createScheduleEcho()">
+                    <div class="flex items-baseline gap-2 font-mono text-[11.5px]">
+                      <span class="text-st-open">&rarr;</span>
+                      <span class="text-tx-2" x-text="createScheduleEcho().long"></span>
+                      <span class="text-surface-600" x-text="[createScheduleEcho().zone, createScheduleEcho().distance, createScheduleEcho().rfc].filter(Boolean).join(' · ')"></span>
+                    </div>
+                  </template>
+                  <template x-if="createScheduleError()">
+                    <div class="font-mono text-[11.5px] text-err" x-text="createScheduleError()"></div>
+                  </template>
+
+                  <p class="text-[11px] leading-relaxed text-surface-600">The ticket is written <span class="font-mono text-tx-3">open</span>. At that instant the daemon sets it to <span class="font-mono text-tx-3">todo</span> — pickup still waits on <span class="font-mono text-tx-3">auto_pick_up</span> and on any unresolved dependency.</p>
+                </div>
+              </template>
             </div>
             <p x-show="createProject()" class="text-[11px] text-surface-600 -mt-2">Defaults from project <span class="text-tx-3" x-text="createProject()?.name"></span>.</p>
 
@@ -2871,9 +2946,9 @@
                       class="text-[12px] font-mono h-8 px-4 rounded bg-surface-900 border border-surface-700/60 text-tx-3 hover:text-tx-2 hover:border-surface-600 transition-colors">
                 cancel
               </button>
-              <button type="submit" :disabled="createSubmitting || !createForm.title || !createForm.path"
+              <button type="submit" :disabled="createSubmitting || !createForm.title || !createForm.path || createBlocked()"
                       class="text-[12px] font-mono h-8 px-4 rounded bg-accent text-accent-fg border border-accent hover:bg-accent-bright hover:border-accent-bright transition-colors disabled:opacity-50 disabled:cursor-not-allowed font-medium">
-                <span x-text="createSubmitting ? 'creating...' : 'create ticket'"></span>
+                <span x-text="createSubmitting ? 'creating...' : (createSchedulePinned() ? 'schedule ticket' : 'create ticket')"></span>
               </button>
             </div>
           </form>
@@ -2886,7 +2961,7 @@
           <span class="font-mono text-[10px] font-semibold text-surface-600 uppercase tracking-widest">frontmatter preview</span>
           <span class="font-mono text-[10px] text-tx-4 ml-auto truncate" x-show="createForm.title" x-text="createForm.title.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'') + '.md'"></span>
         </div>
-        <pre class="flex-1 min-h-0 overflow-auto p-4 font-mono text-[12px] text-tx-3 leading-relaxed whitespace-pre-wrap" x-text="createPreviewYaml"></pre>
+        <pre class="flex-1 min-h-0 overflow-auto p-4 font-mono text-[12px] text-tx-3 leading-relaxed whitespace-pre-wrap"><template x-for="line in createPreviewLines" :key="line.key"><span :class="line.hue ? 'text-st-open' : ''" x-text="line.text + '\n'"></span></template></pre>
       </div>
     </div>
 
@@ -4485,7 +4560,7 @@
       <template x-for="ticket in boardTickets(mobileColumn().key)" :key="ticket.id">
         <button @click="openMobileTicket(ticket)"
                 :data-pipe-color="ticketPipeColor(ticket)"
-                :style="'display:flex;flex-direction:column;gap:9px;text-align:left;width:100%;padding:12px 13px;border-radius:11px;background:rgba(var(--surface-900),1);border:1px solid rgba(var(--surface-700),.5);border-left:2px solid ' + (ticket.status==='in_progress' ? 'hsl(var(--st-progress))' : (ticket.status==='paused' ? 'hsl(var(--st-paused) / .8)' : 'hsl(var(--pipe-h) / .55)')) + ';cursor:pointer;' + (ticket.status==='cancelled' ? 'opacity:.62;' : '') + (!ticket.kontora ? 'border-style:dashed;' : '')">
+                :style="'display:flex;flex-direction:column;gap:9px;text-align:left;width:100%;padding:12px 13px;border-radius:11px;background:rgba(var(--surface-900),1);border:1px solid rgba(var(--surface-700),.5);border-left:2px solid ' + (ticket.status==='in_progress' ? 'hsl(var(--st-progress))' : (ticket.status==='paused' ? 'hsl(var(--st-paused) / .8)' : 'hsl(var(--pipe-h) / .55)')) + ';cursor:pointer;' + (ticket.status==='cancelled' ? 'opacity:.62;' : (mobileColumn().key === 'open' && ticket.scheduled_at ? 'opacity:.72;' : '')) + (!ticket.kontora ? 'border-style:dashed;' : '')">
           <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
             <div style="display:flex;align-items:center;gap:8px;min-width:0;">
               <span class="pipe-tag" x-show="showPipelineBadges" style="overflow:hidden;text-overflow:ellipsis;max-width:100%;" x-text="ticketTagLabel(ticket)"></span>
@@ -4494,8 +4569,12 @@
                   <span class="pulse-dot">●</span><span x-text="ticket.stage"></span>
                 </span>
               </template>
-              <template x-if="mobileColumn().key === 'open' && scheduleLabel(ticket)">
-                <span class="sched-chip"><span aria-hidden="true">◷</span><span x-text="scheduleLabel(ticket)"></span></span>
+              <template x-if="mobileColumn().key === 'open' && scheduleChip(ticket)">
+                <span class="sched-chip">
+                  <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15.5 14"/></svg>
+                  <span x-text="scheduleChip(ticket).abs"></span>
+                  <span x-show="scheduleChip(ticket).rel" class="sched-chip-rel" x-text="'· ' + scheduleChip(ticket).rel"></span>
+                </span>
               </template>
               <template x-if="ticket.waiting_for_input">
                 <span class="waiting-chip">
@@ -4544,7 +4623,8 @@
           <span class="status-chip" :data-status="selectedTicket?.status" x-text="selectedTicket?.status"></span>
           <template x-if="scheduleLabel(selectedTicket)">
             <button @click="canSchedule(selectedTicket) && openScheduleSheet(selectedTicket)" class="sched-chip" :disabled="!canSchedule(selectedTicket)" :style="canSchedule(selectedTicket) ? 'cursor:pointer;' : 'cursor:default;'">
-              <span aria-hidden="true">◷</span><span x-text="'starts ' + scheduleLabel(selectedTicket)"></span>
+              <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15.5 14"/></svg>
+              <span x-text="'starts ' + scheduleLabel(selectedTicket)"></span>
             </button>
           </template>
           <template x-if="selectedTicket?.waiting_for_input">
@@ -4737,21 +4817,58 @@
           <!-- schedule sheet: set, move or clear a ticket's pickup time. -->
           <template x-if="sheet.type==='schedule'">
             <div style="display:flex;flex-direction:column;min-height:0;">
-              <div style="padding:0 18px 12px;border-bottom:1px solid rgba(var(--surface-700),.4);">
-                <div style="font-family:'JetBrains Mono',monospace;font-size:11px;color:rgba(var(--surface-600),1);" x-text="sheet.ticket.id"></div>
-                <div style="font-size:14px;color:rgba(var(--tx),1);line-height:1.4;margin-top:3px;" x-text="sheet.ticket.title"></div>
+              <div style="padding:0 18px 14px;border-bottom:1px solid rgba(var(--surface-700),.4);">
+                <div style="font-family:'JetBrains Mono',monospace;font-size:11px;color:rgba(var(--surface-600),1);" x-text="sheet.ticket.id + ' · ' + sheet.ticket.status"></div>
+                <div style="font-size:16px;font-weight:600;color:rgba(var(--tx),1);margin-top:3px;">Start later</div>
+                <template x-if="mobileScheduleCurrent(sheet.ticket)">
+                  <div style="display:flex;align-items:center;gap:7px;margin-top:8px;font-family:'JetBrains Mono',monospace;font-size:11.5px;color:hsl(var(--st-open));">
+                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15.5 14"/></svg>
+                    <span x-text="mobileScheduleCurrent(sheet.ticket)"></span>
+                  </div>
+                </template>
               </div>
-              <div style="overflow-y:auto;padding:16px 18px;display:flex;flex-direction:column;gap:14px;">
-                <div>
-                  <div style="font-family:'JetBrains Mono',monospace;font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:rgba(var(--surface-600),1);margin-bottom:6px;">Start at</div>
-                  <input x-model="scheduleDraft" type="datetime-local" :min="scheduleMin()" style="width:100%;height:42px;padding:0 12px;font-family:'JetBrains Mono',monospace;font-size:13px;border-radius:10px;background:rgba(var(--surface-950),1);border:1px solid rgba(var(--surface-700),.6);color:rgba(var(--tx),1);outline:none;"/>
-                  <div style="font-size:11px;color:rgba(var(--surface-600),1);margin-top:5px;">Your local time. The ticket waits in open and moves to todo then.</div>
+              <div style="overflow-y:auto;padding:14px 18px 0;display:flex;flex-direction:column;gap:10px;">
+                <div style="font-family:'JetBrains Mono',monospace;font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:rgba(var(--surface-600),1);">when</div>
+
+                <template x-for="p in mobileSchedulePresets()" :key="p.key">
+                  <button @click="mobileSchedulePick(p)"
+                          :style="'display:flex;align-items:center;gap:12px;height:52px;padding:0 14px;border-radius:11px;width:100%;text-align:left;' + (mobileSchedulePresetSelected(p) ? 'background:hsl(var(--st-open) / .12);border:1px solid hsl(var(--st-open) / .4);' : 'background:rgba(var(--surface-950),1);border:1px solid rgba(var(--surface-700),.6);')">
+                    <span style="font-family:'JetBrains Mono',monospace;font-size:13px;flex:none;" :style="mobileSchedulePresetSelected(p) ? 'color:hsl(var(--st-open));' : 'color:rgba(var(--surface-600),1);'" aria-hidden="true">◷</span>
+                    <span style="flex:1;min-width:0;font-size:14.5px;color:rgba(var(--tx),1);" x-text="p.label"></span>
+                    <span style="font-family:'JetBrains Mono',monospace;font-size:12px;flex:none;" :style="mobileSchedulePresetSelected(p) ? 'color:hsl(var(--st-open));' : 'color:rgba(var(--surface-600),1);'" x-text="p.rel"></span>
+                  </button>
+                </template>
+
+                <!-- The same one field the desktop form has: a time or a
+                     duration, with the native picker behind the icon. -->
+                <div style="display:flex;align-items:center;gap:12px;height:52px;padding:0 14px;border-radius:11px;background:rgba(var(--surface-950),1);border:1px solid rgba(var(--surface-700),.6);">
+                  <input x-model="scheduleDraft" @input="scheduleError = null" type="text" inputmode="text"
+                         placeholder="2026-09-01 09:00 · 24h · 3d"
+                         style="flex:1;min-width:0;background:transparent;border:0;outline:none;font-family:'JetBrains Mono',monospace;font-size:14px;color:rgba(var(--tx),1);"/>
+                  <button style="color:rgba(var(--tx-3),1);display:flex;flex:none;width:44px;height:44px;align-items:center;justify-content:flex-end;background:transparent;border:0;" aria-label="Pick a date"
+                          @click="$refs.mobileSchedulePicker.showPicker ? $refs.mobileSchedulePicker.showPicker() : $refs.mobileSchedulePicker.click()">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="17" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="16" y1="2" x2="16" y2="6"/></svg>
+                  </button>
+                  <input x-ref="mobileSchedulePicker" type="datetime-local" :min="scheduleMin()" tabindex="-1" aria-hidden="true"
+                         class="sr-only" @change="onMobileSchedulePicked($event.target.value)"/>
                 </div>
+
+                <p x-show="mobileScheduleConsequence()" style="margin:0;font-family:'JetBrains Mono',monospace;font-size:11px;line-height:1.6;color:rgba(var(--surface-600),1);" x-text="mobileScheduleConsequence()"></p>
                 <div x-show="scheduleError" style="font-size:12px;color:rgba(var(--err),1);" x-text="scheduleError"></div>
-                <div style="display:flex;gap:10px;margin-top:2px;">
-                  <button @click="closeSheet()" style="flex:1;height:46px;border-radius:11px;border:1px solid rgba(var(--surface-700),.7);background:rgba(var(--surface-950),1);color:rgba(var(--tx-3),1);font-family:'JetBrains Mono',monospace;font-size:14px;font-weight:600;">cancel</button>
-                  <button @click="submitScheduleMobile(sheet.ticket)" :disabled="scheduleSubmitting" style="flex:1.4;height:46px;border-radius:11px;border:1px solid rgba(var(--accent),1);background:rgba(var(--accent),1);color:rgba(var(--accent-fg),1);font-family:'JetBrains Mono',monospace;font-size:14px;font-weight:700;" :style="scheduleSubmitting ? 'opacity:.5;' : ''" x-text="scheduleSubmitting ? 'saving…' : 'save'"></button>
+
+                <div style="display:flex;gap:10px;margin-top:4px;">
+                  <button @click="sheet.ticket.scheduled_at ? clearScheduleSheet(sheet.ticket) : closeSheet()" :disabled="scheduleSubmitting"
+                          style="flex:1;height:46px;border-radius:11px;border:1px solid rgba(var(--surface-700),.7);background:rgba(var(--surface-950),1);color:rgba(var(--tx-3),1);font-family:'JetBrains Mono',monospace;font-size:14px;font-weight:600;"
+                          x-text="sheet.ticket.scheduled_at ? 'clear' : 'cancel'"></button>
+                  <!-- One :style, not a static style plus a bound one: Alpine
+                       drops the static attribute when the binding evaluates to
+                       an empty string, and the button loses its flex with it. -->
+                  <button @click="submitScheduleMobile(sheet.ticket)" :disabled="scheduleSubmitting"
+                          :style="'flex:1.4;height:46px;border-radius:11px;border:1px solid rgba(var(--accent),1);background:rgba(var(--accent),1);color:rgba(var(--accent-fg),1);font-family:\'JetBrains Mono\',monospace;font-size:14px;font-weight:700;' + (scheduleSubmitting ? 'opacity:.5;' : '')"
+                          x-text="scheduleSubmitting ? 'saving…' : 'schedule'"></button>
                 </div>
+                <button @click="runNowFromSheet(sheet.ticket)"
+                        style="align-self:center;font-family:'JetBrains Mono',monospace;font-size:12.5px;color:rgba(var(--tx-3),1);padding:11px 12px;background:transparent;border:0;min-height:44px;">run now instead</button>
               </div>
             </div>
           </template>

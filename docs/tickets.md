@@ -109,7 +109,9 @@ status: open
 scheduled_at: "2026-09-01T07:00:00Z"
 ```
 
-Write it with [`kontora schedule`](cli.md#kontora-schedule-ticket_id), with `kontora new --at`/`--after`, or from the ticket detail panel in the dashboard. All of them normalize the instant to UTC, second precision, so a schedule set from two time zones compares equal, and all of them refuse an instant already in the past: a mistyped year would otherwise start the agent at once.
+Write it with [`kontora schedule`](cli.md#kontora-schedule-ticket_id), with `kontora new --at`/`--after`, or from the dashboard — the ticket detail panel, the schedule scope in the command palette, the Start-at field on the new-ticket page, or the phone's schedule sheet. All of them normalize the instant to UTC, second precision, so a schedule set from two time zones compares equal, and all of them refuse an instant already in the past: a mistyped year would otherwise start the agent at once.
+
+The time itself is written the same way everywhere: an absolute instant (`2026-09-01T09:00:00+02:00`, or `"2026-09-01 09:00"` in your own zone) or a delay from now (`90m`, `24h`, `3d`, `2w`). A date with no time is refused, because which midnight it means depends on the zone reading it.
 
 The timestamp is a one-time trigger, not a status. A scheduled ticket sits in the Open column and stays out of the ready queue until its deadline, and its card shows the time it starts in your own zone.
 

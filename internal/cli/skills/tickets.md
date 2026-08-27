@@ -64,7 +64,9 @@ scheduled_at: "2026-09-01T07:00:00Z"
 ```
 
 Write it with `kontora schedule TICKET_ID --at TIME | --after DURATION`, or
-create it that way with `kontora new --after 24h`. Both normalize the instant to
+create it that way with `kontora new --after 24h`. `--at` takes RFC 3339 or a
+local wall time such as `"2026-09-01 09:00"`; `--after` takes Go's duration
+units plus `d` and `w`, so `3d` and `2w` work. Both normalize the instant to
 UTC and refuse one already in the past. `kontora schedule TICKET_ID --clear`
 removes it and leaves the ticket open.
 

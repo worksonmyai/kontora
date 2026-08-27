@@ -13,6 +13,10 @@ import (
 // stored. Exactly one of them may be given; neither returns "", which the
 // callers read as "no schedule was asked for".
 //
+// Both flags take the spellings a person types — an offset or a local wall
+// time for --at, days and weeks for --after — and hand back the one spelling
+// the field stores.
+//
 // --after is resolved here rather than on the daemon, so the instant is
 // measured from when the command was typed and does not drift with the round
 // trip.
@@ -21,7 +25,7 @@ func ResolveSchedule(at, after string, now time.Time) (string, error) {
 	case at != "" && after != "":
 		return "", fmt.Errorf("--at and --after name the same thing; give one of them")
 	case at != "":
-		parsed, err := ticket.ParseSchedule(at)
+		parsed, err := ticket.ParseScheduleFlex(at)
 		if err != nil {
 			return "", err
 		}
@@ -32,12 +36,9 @@ func ResolveSchedule(at, after string, now time.Time) (string, error) {
 		}
 		return ticket.FormatSchedule(parsed), nil
 	case after != "":
-		d, err := time.ParseDuration(after)
+		d, err := ticket.ParseScheduleDelay(after)
 		if err != nil {
-			return "", fmt.Errorf("--after takes a Go duration such as 90m or 24h, got %q", after)
-		}
-		if d <= 0 {
-			return "", fmt.Errorf("--after must be a positive duration, got %q", after)
+			return "", fmt.Errorf("--after %w", err)
 		}
 		return ticket.FormatSchedule(now.Add(d)), nil
 	default:

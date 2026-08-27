@@ -105,6 +105,97 @@ func TestCompactChannelName(t *testing.T) {
 	assert.Equal(t, "kontora-tst-001-compact-code-2", CompactChannelName(DefaultSessionName, "tst-001", "code-2"))
 }
 
+// TestSendKeysUnderReadOnlyClient covers the failure that paused live tickets:
+// tmux resolves a target client for send-keys and refuses the command when that
+// client attached with -r, whatever window the send targets. Runs on its own
+// tmux server, because a read-only client on the default one would break a
+// daemon running beside the test.
+func TestSendKeysUnderReadOnlyClient(t *testing.T) {
+	skipIfNoTmux(t)
+	// Not t.TempDir(): it embeds the test name, and the socket tmux puts under
+	// TMUX_TMPDIR then overruns the ~104-byte sun_path limit on macOS.
+	tmpdir, err := os.MkdirTemp("", "kt")
+	require.NoError(t, err)
+	t.Setenv("TMUX_TMPDIR", tmpdir)
+	t.Cleanup(func() {
+		_ = exec.Command("tmux", "kill-server").Run()
+		_ = os.RemoveAll(tmpdir)
+	})
+
+	session := "kontora-rotest-" + randomSuffix()
+	ticketID := "test-ro-" + randomSuffix()
+	dir := t.TempDir()
+
+	out, err := exec.Command("tmux", "new-session", "-d", "-s", session, "-n", ticketID, "-c", dir, "--", "sh").CombinedOutput()
+	require.NoError(t, err, "tmux new-session: %s", strings.TrimSpace(string(out)))
+	time.Sleep(300 * time.Millisecond)
+
+	// Control mode attaches without a pty, and -r is what marks the client
+	// read-only. Its stdin stays open so the client stays attached.
+	attach := exec.Command("tmux", "-C", "attach-session", "-t", WindowTarget(session, ticketID), "-r")
+	stdin, err := attach.StdinPipe()
+	require.NoError(t, err)
+	require.NoError(t, attach.Start())
+	t.Cleanup(func() {
+		_ = stdin.Close()
+		_ = attach.Process.Kill()
+		_ = attach.Wait()
+	})
+	requireReadOnlyClient(t)
+
+	cases := []struct {
+		name string
+		send func(marker, path string) error
+	}{
+		{
+			name: "SendKeys",
+			send: func(marker, path string) error {
+				return SendKeys(session, ticketID, "echo "+marker+" > "+path)
+			},
+		},
+		{
+			name: "SendKeysLiteral",
+			send: func(marker, path string) error {
+				return SendKeysLiteral(session, ticketID, "echo '"+marker+" Enter' > "+path)
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			outFile := filepath.Join(dir, tc.name+".txt")
+			require.NoError(t, tc.send(tc.name+"_OK", outFile))
+			requireFileContains(t, outFile, tc.name+"_OK", 5*time.Second)
+		})
+	}
+}
+
+// requireReadOnlyClient waits for an attaching client to show up as read-only,
+// so a send that runs before the attach lands cannot pass by accident.
+func requireReadOnlyClient(t *testing.T) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		out, err := exec.Command("tmux", "list-clients", "-F", "#{client_readonly}").Output()
+		if err == nil && strings.Contains(string(out), "1") {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatal("timed out waiting for a read-only tmux client")
+}
+
+func requireFileContains(t *testing.T, path, want string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if data, err := os.ReadFile(path); err == nil && strings.Contains(string(data), want) {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %q in %s", want, path)
+}
+
 func TestSendKeysLiteral(t *testing.T) {
 	skipIfNoTmux(t)
 

@@ -16,6 +16,8 @@ import (
 	"github.com/coder/websocket"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/worksonmyai/kontora/internal/tmux"
 )
 
 func TestHandleTerminalWS_NoSession(t *testing.T) {
@@ -55,9 +57,10 @@ func TestHandleTerminalWS_SessionExists_UpgradesWebSocket(t *testing.T) {
 	}
 	defer func() { _ = conn.CloseNow() }()
 
-	// Send some output to the tmux window.
-	err = exec.Command("tmux", "send-keys", "-t", "="+session+":"+taskID, "echo hello-from-tmux", "Enter").Run()
-	require.NoError(t, err)
+	// Send some output to the tmux window. Through tmux.SendKeys, not a raw
+	// send-keys: the viewer this test just dialled is a read-only client, and a
+	// bare send-keys is refused while one is attached.
+	require.NoError(t, tmux.SendKeys(session, taskID, "echo hello-from-tmux"))
 
 	// Read until we see the expected output or timeout.
 	var received strings.Builder

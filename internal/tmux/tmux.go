@@ -42,9 +42,20 @@ func WindowTarget(sessionName, ticketID string) string {
 	return "=" + sessionName + ":" + ticketID
 }
 
+// sendKeysCmd builds a send-keys invocation detached from any client. Without
+// -c, tmux resolves a target client for send-keys and refuses the whole command
+// with "client is read-only" when that client attached with -r. The daemon has
+// no client of its own, so tmux picks whichever one happens to be attached, and
+// the web terminal, `kontora attach` and the TUI all attach read-only: a viewer
+// open anywhere on the server would otherwise break every send into every
+// window. A -c naming no client is not an error for send-keys.
+func sendKeysCmd(args ...string) *exec.Cmd {
+	return exec.Command("tmux", append([]string{"send-keys", "-c", "/dev/null"}, args...)...)
+}
+
 // SendKeys sends keystrokes to a ticket's tmux window.
 func SendKeys(sessionName, ticketID, keys string) error {
-	out, err := exec.Command("tmux", "send-keys", "-t", WindowTarget(sessionName, ticketID), keys, "Enter").CombinedOutput()
+	out, err := sendKeysCmd("-t", WindowTarget(sessionName, ticketID), keys, "Enter").CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("tmux send-keys: %s: %w", strings.TrimSpace(string(out)), err)
 	}
@@ -62,12 +73,12 @@ const sendKeysEnterDelay = 150 * time.Millisecond
 // the keys they name, so prompt text would arrive mangled.
 func SendKeysLiteral(sessionName, ticketID, text string) error {
 	target := WindowTarget(sessionName, ticketID)
-	out, err := exec.Command("tmux", "send-keys", "-t", target, "-l", "--", text).CombinedOutput()
+	out, err := sendKeysCmd("-t", target, "-l", "--", text).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("tmux send-keys -l: %s: %w", strings.TrimSpace(string(out)), err)
 	}
 	time.Sleep(sendKeysEnterDelay)
-	out, err = exec.Command("tmux", "send-keys", "-t", target, "Enter").CombinedOutput()
+	out, err = sendKeysCmd("-t", target, "Enter").CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("tmux send-keys Enter: %s: %w", strings.TrimSpace(string(out)), err)
 	}

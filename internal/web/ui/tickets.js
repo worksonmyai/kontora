@@ -167,25 +167,31 @@ export function kontoraTickets() {
     // list; multi-status columns (IN PROGRESS) rank by status first, the
     // human_review column sorts by finish time, others by activity age.
     _sortColumn(list, statuses) {
-      var self = this;
-      return list.sort((a, b) => {
-        if (statuses.length > 1) {
-          var ra = self._inflightRank[a.status];
-          var rb = self._inflightRank[b.status];
-          if (ra === undefined) ra = 99;
-          if (rb === undefined) rb = 99;
-          if (ra !== rb) return ra - rb;
+      var ranked = statuses.length > 1;
+      var isReview = statuses.length === 1 && statuses[0] === 'human_review';
+      // Rank and timestamp per ticket rather than per comparison: a column of a
+      // few hundred cards runs thousands of comparisons, and every one of them
+      // was doing the status lookup and the reviewFinishedAt fallback again.
+      var keys = new Map();
+      for (var i = 0; i < list.length; i++) {
+        var t = list[i];
+        var rank = 0;
+        if (ranked) {
+          rank = this._inflightRank[t.status];
+          if (rank === undefined) rank = 99;
         }
-        const isReview = statuses.length === 1 && statuses[0] === 'human_review';
-        let ta, tb;
-        if (isReview) {
-          ta = self.reviewFinishedAt(a);
-          tb = self.reviewFinishedAt(b);
-        } else {
-          ta = a.status === 'in_progress' && a.started_at ? a.started_at : (a.created_at || '');
-          tb = b.status === 'in_progress' && b.started_at ? b.started_at : (b.created_at || '');
-        }
-        if (ta !== tb) return ta > tb ? -1 : 1;
+        keys.set(t, {
+          rank: rank,
+          time: isReview
+            ? this.reviewFinishedAt(t)
+            : (t.status === 'in_progress' && t.started_at ? t.started_at : (t.created_at || '')),
+        });
+      }
+      return list.sort(function (a, b) {
+        var ka = keys.get(a);
+        var kb = keys.get(b);
+        if (ka.rank !== kb.rank) return ka.rank - kb.rank;
+        if (ka.time !== kb.time) return ka.time > kb.time ? -1 : 1;
         if (a.title !== b.title) return a.title < b.title ? -1 : 1;
         if (a.id !== b.id) return a.id < b.id ? -1 : 1;
         return 0;

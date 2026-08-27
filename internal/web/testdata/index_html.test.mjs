@@ -2446,6 +2446,37 @@ test("ticket updates that arrive during a drag are applied at the drop", async (
   assert.equal(state._pendingTicketUpdates.length, 0);
 });
 
+test("opening a ticket recomputes the board only when the card would change", async () => {
+  const cases = [
+    { name: "same fields", patch: {}, recomputes: 0 },
+    { name: "stage moved on", patch: { stage: "review" }, recomputes: 1 },
+    { name: "status moved on", patch: { status: "done" }, recomputes: 1 },
+    { name: "agent reassigned", patch: { agent: "codex" }, recomputes: 1 },
+    { name: "waiting for input", patch: { waiting_for_input: true }, recomputes: 1 },
+  ];
+
+  for (const c of cases) {
+    const base = {
+      id: "kon-a", title: "A", status: "in_progress", stage: "code", kontora: true,
+      agent: "claude", pipeline: "kontora", created_at: "2026-05-19T08:00:00Z",
+      started_at: "2026-05-19T09:00:00Z",
+    };
+    const full = { ...base, ...c.patch, body: "# Body" };
+    const { state } = renderedBoard([{ ...base }], {
+      fetch: async () => ({ ok: true, status: 200, json: async () => full }),
+    });
+    let recomputes = 0;
+    const realRecompute = state.recomputeBoard.bind(state);
+    state.recomputeBoard = () => { recomputes += 1; realRecompute(); };
+
+    await state.selectTicket(state.tickets[0]);
+
+    assert.equal(recomputes, c.recomputes, `${c.name}: recomputeBoard calls`);
+    assert.equal(state.selectedTicket.id, "kon-a", `${c.name}: ticket opened`);
+    assert.equal(state.tickets[0].stage, full.stage, `${c.name}: board entry replaced`);
+  }
+});
+
 test("formatElapsed renders history durations", () => {
   const state = loadKontoraState();
 
@@ -3756,6 +3787,31 @@ test("archiveDerive sorts by any of the six columns, newest archived first by de
     const out = ctx.archiveDerive(rows, Object.assign({}, ARCHIVE_DEFAULTS, c), 0);
     assert.deepEqual(out.rows.map(r => r.id), c.want, c.sortKey + " " + c.sortDir);
   }
+});
+
+test("a patched archive row is filtered and sorted on its new values", () => {
+  // archiveDerive caches the lowercased text and the parsed timestamp per row
+  // object, so every path that changes a row has to replace it rather than
+  // write into it. archivePatchRow is the one that does, on the SSE event for a
+  // ticket archived while the view is open.
+  const state = loadKontoraState();
+  state.archiveRows = [
+    archiveRow({ id: "kon-001", title: "Old work", archived_at: "2026-08-20T09:00:00Z" }),
+    archiveRow({ id: "kon-002", title: "Other work", archived_at: "2026-08-19T09:00:00Z" }),
+  ];
+  state.archiveQuery = "renamed";
+  assert.deepEqual(state.archiveView().rows.map((r) => r.id), []);
+
+  state.archivePatchRow({
+    id: "kon-001", title: "Renamed work", archived_from: "cancelled",
+    archived_at: "2026-08-18T09:00:00Z", archived_by: "web",
+  });
+
+  assert.deepEqual(state.archiveView().rows.map((r) => r.id), ["kon-001"]);
+  state.archiveQuery = "";
+  // The new archived_at is older than kon-002's, so it sorts second now.
+  assert.deepEqual(state.archiveView().rows.map((r) => r.id), ["kon-002", "kon-001"]);
+  assert.equal(state.archiveView().rows[1].status, "cancelled");
 });
 
 test("archiveDerive gives a row with no archived_from a status to filter and sort by", () => {

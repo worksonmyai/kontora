@@ -64,11 +64,11 @@ export function archiveParseQuery(raw) {
 // Tokens of different keys narrow together; repeats of one key widen it. A
 // typed value matches as a substring; the `=` form matches the whole field.
 // Same rule as the board box, so the syntax carries over.
-function archiveTokenMatch(tokens, key, field) {
+// `text` is already lowercased: every caller reads it off archiveKeys.
+function archiveTokenMatch(tokens, key, text) {
   const want = tokens.filter(t => t.key === key);
   if (!want.length) return true;
-  const f = archiveText(field);
-  return want.some(t => (t.exact ? f === t.value : f.indexOf(t.value) >= 0));
+  return want.some(t => (t.exact ? text === t.value : text.indexOf(t.value) >= 0));
 }
 
 function archiveCutoff(range, nowMs) {
@@ -77,34 +77,70 @@ function archiveCutoff(range, nowMs) {
   return (Number(nowMs) || Date.now()) - days * 86400000;
 }
 
-function archiveRowMatches(row, parsed, state, cutoff) {
+// The lowercased text and the parsed numbers a filter and a sort read off one
+// row. Computed once per row instead of once per comparison: sorting a few
+// thousand rows runs tens of thousands of comparisons, and a `Date.parse` or a
+// `toLowerCase` inside the comparator is paid by every one of them.
+//
+// Keyed on the row object. archiveLoad replaces the whole array rather than
+// writing into it, so a stale row goes out of the map with the array that held
+// it, and a row that is still on the page keeps its entry across renders.
+const archiveKeyCache = new WeakMap();
+
+function archiveKeys(row) {
+  let k = archiveKeyCache.get(row);
+  if (k) return k;
   const status = archiveRowStatus(row);
-  if (state.status !== 'all' && status !== state.status) return false;
-  if (state.project !== 'all' && (row.project || '') !== state.project) return false;
-  if (state.pipeline !== 'all' && (row.pipeline || '') !== state.pipeline) return false;
-  if (state.agent !== 'all' && (row.agent || '') !== state.agent) return false;
-  if (cutoff) {
-    const at = Date.parse(row.archived_at || '');
-    if (isNaN(at) || at < cutoff) return false;
-  }
-  if (!archiveTokenMatch(parsed.tokens, 'project', row.project)) return false;
-  if (!archiveTokenMatch(parsed.tokens, 'agent', row.agent)) return false;
-  if (!archiveTokenMatch(parsed.tokens, 'pipeline', row.pipeline)) return false;
-  if (!archiveTokenMatch(parsed.tokens, 'branch', row.branch)) return false;
-  if (!archiveTokenMatch(parsed.tokens, 'status', status)) return false;
-  if (!parsed.text) return true;
-  return [row.id, row.title, row.branch, row.project, row.agent]
-    .some(f => f && archiveText(f).indexOf(parsed.text) >= 0);
+  const at = Date.parse(row.archived_at || '');
+  k = {
+    status: status,
+    statusText: archiveText(status),
+    project: row.project || '',
+    pipeline: row.pipeline || '',
+    agent: row.agent || '',
+    projectText: archiveText(row.project),
+    pipelineText: archiveText(row.pipeline),
+    agentText: archiveText(row.agent),
+    branchText: archiveText(row.branch),
+    idText: archiveText(row.id),
+    titleText: archiveText(row.title),
+    wall: Number(row.wall_seconds) || 0,
+    // Kept apart because a row with no readable archived_at is filtered out by
+    // a date range but still sorts, as the oldest.
+    archivedAt: at,
+    archivedSort: at || 0,
+    // NUL separates the fields so free text cannot match across two of them,
+    // which is what the per-field search it replaces could not do either.
+    text: [row.id, row.title, row.branch, row.project, row.agent]
+      .filter(Boolean).map(archiveText).join('\u0000'),
+  };
+  archiveKeyCache.set(row, k);
+  return k;
 }
 
-function archiveSortValue(row, key) {
+function archiveRowMatches(row, keys, parsed, state, cutoff) {
+  if (state.status !== 'all' && keys.status !== state.status) return false;
+  if (state.project !== 'all' && keys.project !== state.project) return false;
+  if (state.pipeline !== 'all' && keys.pipeline !== state.pipeline) return false;
+  if (state.agent !== 'all' && keys.agent !== state.agent) return false;
+  if (cutoff && (isNaN(keys.archivedAt) || keys.archivedAt < cutoff)) return false;
+  if (!archiveTokenMatch(parsed.tokens, 'project', keys.projectText)) return false;
+  if (!archiveTokenMatch(parsed.tokens, 'agent', keys.agentText)) return false;
+  if (!archiveTokenMatch(parsed.tokens, 'pipeline', keys.pipelineText)) return false;
+  if (!archiveTokenMatch(parsed.tokens, 'branch', keys.branchText)) return false;
+  if (!archiveTokenMatch(parsed.tokens, 'status', keys.statusText)) return false;
+  if (!parsed.text) return true;
+  return keys.text.indexOf(parsed.text) >= 0;
+}
+
+function archiveSortValue(keys, key) {
   switch (key) {
-    case 'wall': return Number(row.wall_seconds) || 0;
-    case 'archived': return Date.parse(row.archived_at || '') || 0;
-    case 'status': return archiveText(archiveRowStatus(row));
-    case 'title': return archiveText(row.title);
-    case 'project': return archiveText(row.project);
-    default: return archiveText(row.id);
+    case 'wall': return keys.wall;
+    case 'archived': return keys.archivedSort;
+    case 'status': return keys.statusText;
+    case 'title': return keys.titleText;
+    case 'project': return keys.projectText;
+    default: return keys.idText;
   }
 }
 
@@ -120,16 +156,18 @@ export function archiveDerive(rows, state, nowMs) {
   const all = Array.isArray(rows) ? rows : [];
   const parsed = archiveParseQuery(state.query);
   const cutoff = archiveCutoff(state.range, nowMs);
-  const out = all.filter(r => archiveRowMatches(r, parsed, state, cutoff));
+  const out = all.filter(r => archiveRowMatches(r, archiveKeys(r), parsed, state, cutoff));
   const key = ARCHIVE_SORT_KEYS.indexOf(state.sortKey) >= 0 ? state.sortKey : 'archived';
   const dir = state.sortDir === 'asc' ? 1 : -1;
   out.sort((a, b) => {
-    const va = archiveSortValue(a, key);
-    const vb = archiveSortValue(b, key);
+    const ka = archiveKeys(a);
+    const kb = archiveKeys(b);
+    const va = archiveSortValue(ka, key);
+    const vb = archiveSortValue(kb, key);
     if (va < vb) return -dir;
     if (va > vb) return dir;
     // Ties break on id so repeated renders agree on the same order.
-    return archiveText(a.id) < archiveText(b.id) ? -1 : (archiveText(a.id) > archiveText(b.id) ? 1 : 0);
+    return ka.idText < kb.idText ? -1 : (ka.idText > kb.idText ? 1 : 0);
   });
   return { rows: out, tokens: parsed.tokens, total: all.length, shown: out.length };
 }

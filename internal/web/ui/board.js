@@ -242,6 +242,23 @@ export function kontoraBoard() {
       return '<div class="card-menu absolute right-0 top-7 min-w-[10rem] overflow-hidden rounded-lg border border-surface-700/60 bg-surface-900/95 shadow-lg shadow-black/30 z-20" role="menu">' + items + '</div>';
     },
 
+    // The column a status is rendered in, or undefined for a status no column
+    // claims (archived, tombstone).
+    _columnForStatus(status) {
+      return this.columns.find((c) => c.statuses.includes(status));
+    },
+
+    // Whether replacing a ticket in this.tickets changes anything the board
+    // derives from it: which column it falls in, how it sorts, what the card
+    // draws, and the tallies recomputeBoard keeps. A status with no column of
+    // its own counts as changed, because the caller cannot show it either way.
+    boardEntryChanged(before, after) {
+      if (!before || !after || before.status !== after.status) return true;
+      var col = this._columnForStatus(after.status);
+      if (!col) return true;
+      return this._cardSig(before, col) !== this._cardSig(after, col);
+    },
+
     // Mark the column that holds a status as needing a patch on the next render.
     // Needed whenever a card node moved without going through the reconcile: the
     // cached ids and signatures then describe a DOM that no longer exists, and
@@ -249,7 +266,7 @@ export function kontoraBoard() {
     // so _patchColumn still touches only the cards that moved or changed;
     // dropping it would rebuild every card in the column instead.
     invalidateColumnFor(status) {
-      var col = this.columns.find((c) => c.statuses.includes(status));
+      var col = this._columnForStatus(status);
       if (col) this._dirtyCols[col.key] = true;
     },
 

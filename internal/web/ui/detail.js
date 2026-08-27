@@ -58,10 +58,15 @@ export function kontoraDetail() {
           this.selectedTicket = full;
           var idx = this.tickets.findIndex(function(t) { return t.id === full.id; });
           if (idx >= 0) {
-            this.tickets[idx] = this.boardEntry(full);
+            var before = this.tickets[idx];
+            var entry = this.boardEntry(full);
+            this.tickets[idx] = entry;
             // The replacement can change agent, status, or any rendered field,
-            // so refresh the cached board and the agent tally from it.
-            this.recomputeBoard();
+            // so refresh the cached board and the agent tally from it. Usually
+            // it changes none of them, and a recompute re-filters and re-sorts
+            // every column, so opening a ticket pays for that only when the
+            // board would draw something different.
+            if (this.boardEntryChanged(before, entry)) this.recomputeBoard();
           }
         }
       } catch (e) {

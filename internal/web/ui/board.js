@@ -61,7 +61,10 @@ export function kontoraBoard() {
       var inProgressCol = col.key === 'in_progress';
       var selected = this.selectedTicket && this.selectedTicket.id === ticket.id;
 
-      var cls = ['kt-card group relative rounded-[9px] px-3 py-2.5 cursor-pointer border overflow-hidden',
+      // shrink-0: the column list is a flex column, and overflow-hidden (which
+      // clips the epic spine to the rounded corners) drops the card's automatic
+      // minimum size to 0, so without it a full column squashes every card.
+      var cls = ['kt-card group relative rounded-[9px] px-3 py-2.5 cursor-pointer border overflow-hidden shrink-0',
                  'bg-surface-900 border-edge-card hover:border-edge-hover hover:bg-surface-850',
                  'flex flex-col gap-1.5'];
       // The epic a child belongs to, if any. It paints a spine down the card's

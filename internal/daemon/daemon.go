@@ -1451,16 +1451,16 @@ func (d *Daemon) runTicket(ctx context.Context, ticketID string) {
 		return
 	}
 
-	// Apply fields (status=in_progress, started_at).
-	if err := d.applyAction(t, action); err != nil {
-		log.Error("apply action failed", "phase", "pickup", "err", err)
-		return
-	}
-	// Claim the ticket for this instance in the same write that flips it to
-	// in_progress, so a daemon on another machine sharing the tickets_dir sees
-	// the owner before it acts.
-	_ = t.SetField("claimed_by", d.instanceName)
-	if err := d.writeTicket(t, filePath); err != nil {
+	// Apply fields (status=in_progress, started_at). The ticket is claimed for
+	// this instance in the same write that flips it to in_progress, so a daemon
+	// on another machine sharing the tickets_dir sees the owner before it acts.
+	if err := d.editTicket(t, filePath, func() error {
+		if err := d.applyAction(t, action); err != nil {
+			return fmt.Errorf("apply action: %w", err)
+		}
+		_ = t.SetField("claimed_by", d.instanceName)
+		return nil
+	}); err != nil {
 		log.Error("write failed", "phase", "pickup", "err", err)
 		return
 	}
@@ -1604,10 +1604,12 @@ func (d *Daemon) runSimpleTicket(ctx, taskCtx context.Context, cfg *config.Confi
 
 	// Set status=in_progress, started_at, and claim for this instance.
 	now := time.Now()
-	_ = t.SetField("status", string(ticket.StatusInProgress))
-	_ = t.SetField("started_at", now.Format(time.RFC3339))
-	_ = t.SetField("claimed_by", d.instanceName)
-	if err := d.writeTicket(t, filePath); err != nil {
+	if err := d.editTicket(t, filePath, func() error {
+		_ = t.SetField("status", string(ticket.StatusInProgress))
+		_ = t.SetField("started_at", now.Format(time.RFC3339))
+		_ = t.SetField("claimed_by", d.instanceName)
+		return nil
+	}); err != nil {
 		log.Error("write failed", "phase", "pickup", "err", err)
 		return
 	}
@@ -2120,26 +2122,28 @@ func (d *Daemon) prepareWorktreeForAgent(taskCtx context.Context, p prepareWorkt
 		return "", "", false
 	}
 
-	if err := p.t.SetField("branch", p.branch); err != nil {
-		p.log.Error("set field failed", "field", "branch", "err", err)
-	}
-	if err := p.t.SetField("last_log", d.stageLogPath(p.ticketID, p.stageName)); err != nil {
-		p.log.Error("set field failed", "field", "last_log", "err", err)
-	}
-	// Clear the previous run's summary so the field always describes the run
-	// that ended most recently.
-	if err := p.t.SetField("summary", ""); err != nil {
-		p.log.Error("set field failed", "field", "summary", "err", err)
-	}
-	// The ticket-level summary covers the runs recorded so far, which this run
-	// is about to add to, so it is stale from here until the run ends. Only a
-	// pipeline ticket can have one: nothing generates it for the simple path.
-	if p.isPipeline {
-		if err := p.t.SetField("final_summary", ""); err != nil {
-			p.log.Error("set field failed", "field", "final_summary", "err", err)
+	if err := d.editTicket(p.t, p.filePath, func() error {
+		if err := p.t.SetField("branch", p.branch); err != nil {
+			p.log.Error("set field failed", "field", "branch", "err", err)
 		}
-	}
-	if err := d.writeTicket(p.t, p.filePath); err != nil {
+		if err := p.t.SetField("last_log", d.stageLogPath(p.ticketID, p.stageName)); err != nil {
+			p.log.Error("set field failed", "field", "last_log", "err", err)
+		}
+		// Clear the previous run's summary so the field always describes the run
+		// that ended most recently.
+		if err := p.t.SetField("summary", ""); err != nil {
+			p.log.Error("set field failed", "field", "summary", "err", err)
+		}
+		// The ticket-level summary covers the runs recorded so far, which this run
+		// is about to add to, so it is stale from here until the run ends. Only a
+		// pipeline ticket can have one: nothing generates it for the simple path.
+		if p.isPipeline {
+			if err := p.t.SetField("final_summary", ""); err != nil {
+				p.log.Error("set field failed", "field", "final_summary", "err", err)
+			}
+		}
+		return nil
+	}); err != nil {
 		p.log.Error("write failed", "phase", "spawn_fields", "err", err)
 		return "", "", false
 	}
@@ -2878,6 +2882,20 @@ func (d *Daemon) writeTicket(t *ticket.Ticket, path string) error {
 	return nil
 }
 
+// editTicket applies edits to a ticket the store still hands out to readers,
+// then writes the file, both under d.mu. Every reader of d.tickets holds that
+// lock, and SetField re-decodes the whole struct from the YAML node, so an
+// unlocked edit races every field a reader touches and not only the one it
+// sets. Callers must not hold d.mu.
+func (d *Daemon) editTicket(t *ticket.Ticket, path string, edits func() error) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if err := edits(); err != nil {
+		return err
+	}
+	return d.writeTicketLocked(t, path)
+}
+
 // writeTicketLocked is writeTicket for callers that already hold d.mu.
 func (d *Daemon) writeTicketLocked(t *ticket.Ticket, path string) error {
 	modTime, err := d.writeTicketFile(t, path)
@@ -2977,6 +2995,7 @@ func appendSystemNote(t *ticket.Ticket, text string) {
 func (d *Daemon) pauseTicket(t *ticket.Ticket, path, reason string) {
 	log := d.ticketLog(t.ID)
 	log.Warn("pausing", "reason", reason)
+	d.mu.Lock()
 	if reason != "" {
 		appendSystemNote(t, reason)
 	}
@@ -2986,10 +3005,9 @@ func (d *Daemon) pauseTicket(t *ticket.Ticket, path, reason string) {
 	if err := t.SetField("status", string(ticket.StatusPaused)); err != nil {
 		log.Error("pause: set status failed", "err", err)
 	}
-	if err := d.writeTicket(t, path); err != nil {
+	if err := d.writeTicketLocked(t, path); err != nil {
 		log.Error("pause: write failed", "err", err)
 	}
-	d.mu.Lock()
 	d.setTicketState(t.ID, t, path)
 	d.broadcastTicketUpdate(t.ID)
 	d.mu.Unlock()

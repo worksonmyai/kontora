@@ -329,10 +329,12 @@ func (d *Daemon) runReworkStage(ctx, taskCtx context.Context, cfg *config.Config
 
 	// Set status=in_progress, started_at, and claim for this instance.
 	now := time.Now()
-	_ = t.SetField("status", string(ticket.StatusInProgress))
-	_ = t.SetField("started_at", now.Format(time.RFC3339))
-	_ = t.SetField("claimed_by", d.instanceName)
-	if err := d.writeTicket(t, filePath); err != nil {
+	if err := d.editTicket(t, filePath, func() error {
+		_ = t.SetField("status", string(ticket.StatusInProgress))
+		_ = t.SetField("started_at", now.Format(time.RFC3339))
+		_ = t.SetField("claimed_by", d.instanceName)
+		return nil
+	}); err != nil {
 		log.Error("rework: write failed", "phase", "pickup", "err", err)
 		return
 	}
@@ -375,13 +377,15 @@ func (d *Daemon) runReworkStage(ctx, taskCtx context.Context, cfg *config.Config
 	if !d.runWorktreeCreatedHooks(taskCtx, cfg, log, t, filePath, reworkHookCtx, created) {
 		return
 	}
-	_ = t.SetField("branch", branch)
-	// Rework runs like any other stage from here on: the per-run summary
-	// belongs to this run only, and the ticket-level one is stale until this
-	// run has been folded into it.
-	_ = t.SetField("summary", "")
-	_ = t.SetField("final_summary", "")
-	if err := d.writeTicket(t, filePath); err != nil {
+	if err := d.editTicket(t, filePath, func() error {
+		_ = t.SetField("branch", branch)
+		// Rework runs like any other stage from here on: the per-run summary
+		// belongs to this run only, and the ticket-level one is stale until this
+		// run has been folded into it.
+		_ = t.SetField("summary", "")
+		_ = t.SetField("final_summary", "")
+		return nil
+	}); err != nil {
 		log.Error("rework: write branch failed", "err", err)
 		return
 	}

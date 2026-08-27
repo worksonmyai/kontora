@@ -376,13 +376,15 @@ func (d *Daemon) runAnnotationRun(ctx, taskCtx context.Context, cfg *config.Conf
 		return
 	}
 
-	_ = t.SetField("status", string(ticket.StatusInProgress))
-	_ = t.SetField("started_at", time.Now().Format(time.RFC3339))
-	_ = t.SetField("claimed_by", d.instanceName)
-	// Only last_log moves: unlike a stage pickup this run must not clear summary
-	// or final_summary, which still describe the work the ticket has done.
-	_ = t.SetField("last_log", d.stageLogPath(ticketID, stageName))
-	if err := d.writeTicket(t, filePath); err != nil {
+	if err := d.editTicket(t, filePath, func() error {
+		_ = t.SetField("status", string(ticket.StatusInProgress))
+		_ = t.SetField("started_at", time.Now().Format(time.RFC3339))
+		_ = t.SetField("claimed_by", d.instanceName)
+		// Only last_log moves: unlike a stage pickup this run must not clear summary
+		// or final_summary, which still describe the work the ticket has done.
+		_ = t.SetField("last_log", d.stageLogPath(ticketID, stageName))
+		return nil
+	}); err != nil {
 		log.Error("annotation: write failed", "phase", "pickup", "err", err)
 		return
 	}

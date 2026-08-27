@@ -47,13 +47,28 @@ var (
 )
 
 func renderUsage() string {
+	width := 0
+	for _, cmd := range cli.Commands {
+		width = max(width, len(cmd.Name))
+	}
+
 	var b strings.Builder
 	b.WriteString(helpBold.Render("Usage:") + " kontora <command>\n\n")
-	b.WriteString(helpBold.Render("Commands:") + "\n")
-	for _, cmd := range cli.Commands {
-		fmt.Fprintf(&b, "  %-14s %s\n", helpCyan.Render(cmd.Name), helpFaint.Render(cmd.Desc))
+	for _, group := range cli.CommandGroups {
+		b.WriteString(helpBold.Render(group+":") + "\n")
+		for _, cmd := range cli.Commands {
+			if cmd.Group != group {
+				continue
+			}
+			// Pad before styling: the ANSI codes make the rendered string
+			// longer than it looks, so a %-Ns on the styled value aligns
+			// nothing.
+			name := helpCyan.Render(fmt.Sprintf("%-*s", width, cmd.Name))
+			fmt.Fprintf(&b, "  %s %s\n", name, helpFaint.Render(cmd.Desc))
+		}
+		b.WriteString("\n")
 	}
-	return b.String()
+	return strings.TrimRight(b.String(), "\n") + "\n"
 }
 
 // handlers maps each verb to what runs it. Every key must be a name in

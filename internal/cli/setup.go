@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/worksonmyai/kontora/internal/config"
@@ -47,6 +48,37 @@ type SetupAnswers struct {
 	MaxConcurrentAgents int
 	WebEnabled          bool
 	WebPort             int
+	DefaultPipeline     string // "" runs a new ticket as one agent pass
+}
+
+// setupPipelines are the pipelines the wizard writes, in the order the
+// pipelines step lists them, each with the lines shown under it. The empty
+// name is the "neither" choice.
+var setupPipelines = []struct {
+	name string
+	desc []string
+}{
+	{
+		name: "default",
+		desc: []string{
+			"Single-stage: sends the ticket description to the agent and runs",
+			"it to completion. Good for simple, self-contained tickets.",
+		},
+	},
+	{
+		name: "implement-review-commit",
+		desc: []string{
+			"Multi-stage pipeline: implement → review → fix-review → commit.",
+			"The agent implements the ticket, a second pass reviews the code,",
+			"a third pass fixes any issues found, then commits the result.",
+		},
+	},
+	{
+		desc: []string{
+			"New tickets run one agent on their description. Both pipelines",
+			"stay in the config, for --pipeline on a single ticket.",
+		},
+	},
 }
 
 type agentArgs struct {
@@ -78,11 +110,11 @@ type setupModel struct {
 	// Step 2: agent args
 	selectedAgents []string // ordered list of selected agents
 	argsIndex      int      // which agent we're editing
-	argsInputs     map[string]string
+	argsInputs     map[string]textinput.Model
 	argsEditing    bool
 
 	// Step 3: directories
-	dirFields   [3]string // tickets, logs, worktrees
+	dirFields   [3]textinput.Model // tickets, logs, worktrees
 	dirCursor   int
 	dirEditing  bool
 	dirLabels   [3]string
@@ -90,11 +122,14 @@ type setupModel struct {
 	dirDefaults [3]string
 
 	// Step 4: settings
-	maxConcurrent  string
+	maxConcurrent  textinput.Model
 	webEnabled     bool
-	webPort        string
+	webPort        textinput.Model
 	settingCursor  int
 	settingEditing bool
+
+	// Step 5: which pipeline new tickets run
+	pipelineCursor int
 
 	// Error message
 	err string
@@ -112,19 +147,32 @@ func initialSetupModel() setupModel {
 	}
 
 	return setupModel{
-		step:          stepAgents,
-		agentNames:    knownAgentOrder,
-		agentOnPath:   agentOnPath,
-		agentChecked:  agentChecked,
-		argsInputs:    make(map[string]string),
-		dirLabels:     [3]string{"tickets_dir", "logs_dir", "worktrees_dir"},
-		dirDescs:      [3]string{"where ticket markdown files are stored", "where agent stdout/stderr logs go", "base directory for git worktrees created per ticket"},
-		dirDefaults:   [3]string{"~/.kontora/tickets", "~/.kontora/logs", "~/.kontora/worktrees"},
-		dirFields:     [3]string{"~/.kontora/tickets", "~/.kontora/logs", "~/.kontora/worktrees"},
-		maxConcurrent: "3",
+		step:         stepAgents,
+		agentNames:   knownAgentOrder,
+		agentOnPath:  agentOnPath,
+		agentChecked: agentChecked,
+		argsInputs:   make(map[string]textinput.Model),
+		dirLabels:    [3]string{"tickets_dir", "logs_dir", "worktrees_dir"},
+		dirDescs:     [3]string{"where ticket markdown files are stored", "where agent stdout/stderr logs go", "base directory for git worktrees created per ticket"},
+		dirDefaults:  [3]string{"~/.kontora/tickets", "~/.kontora/logs", "~/.kontora/worktrees"},
+		dirFields: [3]textinput.Model{
+			newSetupInput("~/.kontora/tickets"),
+			newSetupInput("~/.kontora/logs"),
+			newSetupInput("~/.kontora/worktrees"),
+		},
+		maxConcurrent: newSetupInput("3"),
 		webEnabled:    true,
-		webPort:       "8080",
+		webPort:       newSetupInput("8080"),
 	}
+}
+
+// newSetupInput builds one wizard text field. The wizard draws its own labels,
+// so the input contributes only the value and the cursor.
+func newSetupInput(value string) textinput.Model {
+	ti := textinput.New()
+	ti.Prompt = ""
+	ti.SetValue(value)
+	return ti
 }
 
 func (m setupModel) Init() tea.Cmd { return nil }
@@ -132,7 +180,8 @@ func (m setupModel) Init() tea.Cmd { return nil }
 func (m setupModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	key, ok := msg.(tea.KeyMsg)
 	if !ok {
-		return m, nil
+		// The cursor blink arrives this way, so the focused field still needs it.
+		return m.forwardToInput(msg)
 	}
 
 	if key.String() == "ctrl+c" {
@@ -140,24 +189,116 @@ func (m setupModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	}
 
+	var next setupModel
+	var cmd tea.Cmd
 	switch m.step {
 	case stepAgents:
-		return m.updateAgents(key)
+		next, cmd = m.updateAgents(key)
 	case stepArgs:
-		return m.updateArgs(key)
+		next, cmd = m.updateArgs(key)
 	case stepDirs:
-		return m.updateDirs(key)
+		next, cmd = m.updateDirs(key)
 	case stepSettings:
-		return m.updateSettings(key)
+		next, cmd = m.updateSettings(key)
 	case stepPipelines:
-		return m.updatePipelines(key)
+		next, cmd = m.updatePipelines(key)
 	case stepConfirm:
-		return m.updateConfirm(key)
+		next, cmd = m.updateConfirm(key)
+	default:
+		return m, nil
 	}
-	return m, nil
+	// syncFocus mutates next, so it has to run before next is returned rather
+	// than as an argument alongside it.
+	focus := next.syncFocus()
+	return next, tea.Batch(cmd, focus)
 }
 
-func (m setupModel) updateAgents(key tea.KeyMsg) (tea.Model, tea.Cmd) {
+// editing returns the text field the wizard's current position edits, and
+// whether it has one.
+func (m *setupModel) editing() (*textinput.Model, bool) {
+	switch {
+	case m.step == stepArgs && m.argsEditing && m.argsIndex < len(m.selectedAgents):
+		// The map value is not addressable, so the caller writes it back.
+		ti := m.argsInputs[m.selectedAgents[m.argsIndex]]
+		return &ti, true
+	case m.step == stepDirs && m.dirEditing:
+		return &m.dirFields[m.dirCursor], true
+	case m.step == stepSettings && m.settingEditing && m.settingCursor == 0:
+		return &m.maxConcurrent, true
+	case m.step == stepSettings && m.settingEditing && m.settingCursor == 2:
+		return &m.webPort, true
+	}
+	return nil, false
+}
+
+// storeEditing completes an editing call that had to return a copy.
+func (m *setupModel) storeEditing(ti *textinput.Model) {
+	if m.step == stepArgs && m.argsEditing && m.argsIndex < len(m.selectedAgents) {
+		m.argsInputs[m.selectedAgents[m.argsIndex]] = *ti
+	}
+}
+
+// forwardToInput hands msg to the field being edited, and drops it when no
+// field is.
+func (m setupModel) forwardToInput(msg tea.Msg) (setupModel, tea.Cmd) {
+	ti, ok := m.editing()
+	if !ok {
+		return m, nil
+	}
+	before := ti.Value()
+	var cmd tea.Cmd
+	*ti, cmd = ti.Update(msg)
+	// Checking the resulting value rather than the keystroke: text reaches a
+	// field several characters at a time (a fast burst coalesced into one
+	// event, a bracketed paste, ctrl+v, a multi-byte rune), and answers()
+	// silently falls back to the default on a value it cannot parse, so a
+	// rejected keystroke is the only way the confirm screen and the written
+	// config stay the same number.
+	if m.numericEditing() && !isDigits(ti.Value()) {
+		ti.SetValue(before)
+	}
+	m.storeEditing(ti)
+	return m, cmd
+}
+
+// numericEditing reports whether the field being edited holds a number.
+func (m *setupModel) numericEditing() bool {
+	return m.step == stepSettings && m.settingEditing && (m.settingCursor == 0 || m.settingCursor == 2)
+}
+
+func isDigits(s string) bool {
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// syncFocus gives the keyboard cursor to the field the wizard is editing and
+// takes it from every other one, so a step handler only has to move the cursor
+// and set its editing flag.
+func (m *setupModel) syncFocus() tea.Cmd {
+	for name, ti := range m.argsInputs {
+		ti.Blur()
+		m.argsInputs[name] = ti
+	}
+	for i := range m.dirFields {
+		m.dirFields[i].Blur()
+	}
+	m.maxConcurrent.Blur()
+	m.webPort.Blur()
+
+	ti, ok := m.editing()
+	if !ok {
+		return nil
+	}
+	cmd := ti.Focus()
+	m.storeEditing(ti)
+	return cmd
+}
+
+func (m setupModel) updateAgents(key tea.KeyMsg) (setupModel, tea.Cmd) {
 	switch key.String() {
 	case "j", "down":
 		if m.agentCursor < len(m.agentNames)-1 {
@@ -185,7 +326,7 @@ func (m setupModel) updateAgents(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.selectedAgents = selected
 		for _, name := range selected {
 			if _, ok := m.argsInputs[name]; !ok {
-				m.argsInputs[name] = knownAgents[name].defaultArgs
+				m.argsInputs[name] = newSetupInput(knownAgents[name].defaultArgs)
 			}
 		}
 		m.argsIndex = 0
@@ -198,47 +339,58 @@ func (m setupModel) updateAgents(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m setupModel) updateArgs(key tea.KeyMsg) (tea.Model, tea.Cmd) {
-	name := m.selectedAgents[m.argsIndex]
-	if m.argsEditing {
+func (m setupModel) updateArgs(key tea.KeyMsg) (setupModel, tea.Cmd) {
+	if !m.argsEditing {
 		switch key.String() {
-		case "enter":
-			m.argsEditing = false
-			m.argsIndex++
-			if m.argsIndex >= len(m.selectedAgents) {
-				m.step = stepDirs
-				m.dirCursor = 0
-				m.dirEditing = true
-				return m, nil
+		case "j", "down":
+			if m.argsIndex < len(m.selectedAgents)-1 {
+				m.argsIndex++
 			}
-			m.argsEditing = true
+		case "k", "up":
+			if m.argsIndex > 0 {
+				m.argsIndex--
+			}
 		case "shift+tab":
 			if m.argsIndex > 0 {
 				m.argsIndex--
 			} else {
 				m.step = stepAgents
-				m.argsEditing = false
 			}
-		case "backspace":
-			v := m.argsInputs[name]
-			if len(v) > 0 {
-				m.argsInputs[name] = v[:len(v)-1]
-			}
-		case "esc":
-			m.cancelled = true
-			return m, tea.Quit
-		default:
-			if len(key.String()) == 1 {
-				m.argsInputs[name] += key.String()
-			} else if key.String() == "space" {
-				m.argsInputs[name] += " "
-			}
+		case "enter":
+			m.argsEditing = true
 		}
+		return m, nil
+	}
+
+	switch key.String() {
+	case "enter":
+		m.argsEditing = false
+		m.argsIndex++
+		if m.argsIndex >= len(m.selectedAgents) {
+			m.step = stepDirs
+			m.dirCursor = 0
+			m.dirEditing = true
+			return m, nil
+		}
+		m.argsEditing = true
+	case "shift+tab":
+		if m.argsIndex > 0 {
+			m.argsIndex--
+		} else {
+			m.step = stepAgents
+			m.argsEditing = false
+		}
+	case "esc":
+		// Leave the field, not the wizard: cancelling here would throw away
+		// every answer given so far. ctrl+c is still the way out.
+		m.argsEditing = false
+	default:
+		return m.forwardToInput(key)
 	}
 	return m, nil
 }
 
-func (m setupModel) updateDirs(key tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m setupModel) updateDirs(key tea.KeyMsg) (setupModel, tea.Cmd) {
 	if m.dirEditing {
 		switch key.String() {
 		case "enter", "tab":
@@ -259,20 +411,10 @@ func (m setupModel) updateDirs(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.argsIndex = len(m.selectedAgents) - 1
 				m.argsEditing = true
 			}
-		case "backspace":
-			v := m.dirFields[m.dirCursor]
-			if len(v) > 0 {
-				m.dirFields[m.dirCursor] = v[:len(v)-1]
-			}
 		case "esc":
-			m.cancelled = true
-			return m, tea.Quit
+			m.dirEditing = false
 		default:
-			if len(key.String()) == 1 {
-				m.dirFields[m.dirCursor] += key.String()
-			} else if key.String() == "space" {
-				m.dirFields[m.dirCursor] += " "
-			}
+			return m.forwardToInput(key)
 		}
 		return m, nil
 	}
@@ -286,22 +428,22 @@ func (m setupModel) updateDirs(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.dirCursor > 0 {
 			m.dirCursor--
 		}
+	case "shift+tab":
+		if m.dirCursor > 0 {
+			m.dirCursor--
+		} else {
+			m.step = stepArgs
+			m.argsIndex = len(m.selectedAgents) - 1
+		}
 	case "enter":
 		m.dirEditing = true
-	case "esc":
-		m.cancelled = true
-		return m, tea.Quit
 	}
 	return m, nil
 }
 
-func (m setupModel) updateSettings(key tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m setupModel) updateSettings(key tea.KeyMsg) (setupModel, tea.Cmd) {
 	// Settings: 0=max_concurrent, 1=web_enabled, 2=web_port
 	if m.settingEditing && m.settingCursor != 1 {
-		field := &m.maxConcurrent
-		if m.settingCursor == 2 {
-			field = &m.webPort
-		}
 		switch key.String() {
 		case "enter":
 			m.settingEditing = false
@@ -325,17 +467,17 @@ func (m setupModel) updateSettings(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.dirEditing = true
 				m.settingEditing = false
 			}
-		case "backspace":
-			if len(*field) > 0 {
-				*field = (*field)[:len(*field)-1]
-			}
 		case "esc":
-			m.cancelled = true
-			return m, tea.Quit
+			m.settingEditing = false
 		default:
-			if len(key.String()) == 1 && key.String() >= "0" && key.String() <= "9" {
-				*field += key.String()
+			// Drop a plain non-digit here rather than in forwardToInput, which
+			// would take the cursor to the end of the field to undo it.
+			// Editing keys are longer than one character, so they still reach
+			// the field.
+			if k := key.String(); len(k) == 1 && (k < "0" || k > "9") {
+				return m, nil
 			}
+			return m.forwardToInput(key)
 		}
 		return m, nil
 	}
@@ -374,15 +516,20 @@ func (m setupModel) updateSettings(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.settingCursor == 1 {
 			m.webEnabled = !m.webEnabled
 		}
-	case "esc":
-		m.cancelled = true
-		return m, tea.Quit
 	}
 	return m, nil
 }
 
-func (m setupModel) updatePipelines(key tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m setupModel) updatePipelines(key tea.KeyMsg) (setupModel, tea.Cmd) {
 	switch key.String() {
+	case "j", "down":
+		if m.pipelineCursor < len(setupPipelines)-1 {
+			m.pipelineCursor++
+		}
+	case "k", "up":
+		if m.pipelineCursor > 0 {
+			m.pipelineCursor--
+		}
 	case "enter":
 		m.step = stepConfirm
 	case "shift+tab":
@@ -396,7 +543,7 @@ func (m setupModel) updatePipelines(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m setupModel) updateConfirm(key tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m setupModel) updateConfirm(key tea.KeyMsg) (setupModel, tea.Cmd) {
 	switch key.String() {
 	case "enter", "y":
 		m.done = true
@@ -467,15 +614,15 @@ func (m setupModel) viewArgs(b *strings.Builder) {
 		}
 		val := m.argsInputs[name]
 		if i == m.argsIndex && m.argsEditing {
-			fmt.Fprintf(b, "%s%s args: %s▏\n", prefix, styleBold.Render(name), val)
+			fmt.Fprintf(b, "%s%s args: %s\n", prefix, styleBold.Render(name), val.View())
 		} else if i < m.argsIndex {
-			fmt.Fprintf(b, "%s%s args: %s\n", prefix, styleFaint.Render(name), styleFaint.Render(val))
+			fmt.Fprintf(b, "%s%s args: %s\n", prefix, styleFaint.Render(name), styleFaint.Render(val.Value()))
 		} else {
-			fmt.Fprintf(b, "%s%s args: %s\n", prefix, name, styleFaint.Render(val))
+			fmt.Fprintf(b, "%s%s args: %s\n", prefix, name, styleFaint.Render(val.Value()))
 		}
 	}
 	b.WriteString("\n")
-	b.WriteString(styleFaint.Render("  type to edit · enter next · shift+tab back · esc cancel") + "\n")
+	b.WriteString(styleFaint.Render("  type to edit · enter next · shift+tab back · esc leave the field") + "\n")
 }
 
 func (m setupModel) viewDirs(b *strings.Builder) {
@@ -487,14 +634,14 @@ func (m setupModel) viewDirs(b *strings.Builder) {
 			prefix = styleCyan.Render("▸ ")
 		}
 		if i == m.dirCursor && m.dirEditing {
-			fmt.Fprintf(b, "%s%s: %s▏\n", prefix, styleBold.Render(m.dirLabels[i]), m.dirFields[i])
+			fmt.Fprintf(b, "%s%s: %s\n", prefix, styleBold.Render(m.dirLabels[i]), m.dirFields[i].View())
 			fmt.Fprintf(b, "    %s\n", styleFaint.Render(m.dirDescs[i]))
 		} else {
-			fmt.Fprintf(b, "%s%s: %s\n", prefix, m.dirLabels[i], styleFaint.Render(m.dirFields[i]))
+			fmt.Fprintf(b, "%s%s: %s\n", prefix, m.dirLabels[i], styleFaint.Render(m.dirFields[i].Value()))
 		}
 	}
 	b.WriteString("\n")
-	b.WriteString(styleFaint.Render("  type to edit · enter/tab next · shift+tab back · esc cancel") + "\n")
+	b.WriteString(styleFaint.Render("  type to edit · enter/tab next · shift+tab back · esc leave the field") + "\n")
 }
 
 func (m setupModel) viewSettings(b *strings.Builder) {
@@ -509,10 +656,10 @@ func (m setupModel) viewSettings(b *strings.Builder) {
 		switch i {
 		case 0:
 			if i == m.settingCursor && m.settingEditing {
-				fmt.Fprintf(b, "%s%s: %s▏\n", prefix, styleBold.Render(labels[i]), m.maxConcurrent)
+				fmt.Fprintf(b, "%s%s: %s\n", prefix, styleBold.Render(labels[i]), m.maxConcurrent.View())
 				fmt.Fprintf(b, "    %s\n", styleFaint.Render(descs[i]))
 			} else {
-				fmt.Fprintf(b, "%s%s: %s\n", prefix, labels[i], styleFaint.Render(m.maxConcurrent))
+				fmt.Fprintf(b, "%s%s: %s\n", prefix, labels[i], styleFaint.Render(m.maxConcurrent.Value()))
 			}
 		case 1:
 			val := "yes"
@@ -527,41 +674,50 @@ func (m setupModel) viewSettings(b *strings.Builder) {
 			}
 		case 2:
 			if i == m.settingCursor && m.settingEditing {
-				fmt.Fprintf(b, "%s%s: %s▏\n", prefix, styleBold.Render(labels[i]), m.webPort)
+				fmt.Fprintf(b, "%s%s: %s\n", prefix, styleBold.Render(labels[i]), m.webPort.View())
 				fmt.Fprintf(b, "    %s\n", styleFaint.Render(descs[i]))
 			} else {
-				fmt.Fprintf(b, "%s%s: %s\n", prefix, labels[i], styleFaint.Render(m.webPort))
+				fmt.Fprintf(b, "%s%s: %s\n", prefix, labels[i], styleFaint.Render(m.webPort.Value()))
 			}
 		}
 	}
 	b.WriteString("\n")
-	b.WriteString(styleFaint.Render("  space toggle · enter next · shift+tab back · esc cancel") + "\n")
+	b.WriteString(styleFaint.Render("  space toggle · enter next · shift+tab back · esc leave the field") + "\n")
 }
 
 func (m setupModel) viewPipelines(b *strings.Builder) {
 	b.WriteString(styleBold.Render("Pipelines:") + "\n")
-	b.WriteString(styleFaint.Render("  Pipelines define multi-stage workflows for tickets. I'm going to") + "\n")
-	b.WriteString(styleFaint.Render("  create two starter pipelines — you can change them or add more") + "\n")
-	b.WriteString(styleFaint.Render("  in config.yaml.") + "\n\n")
+	b.WriteString(styleFaint.Render("  Pipelines define multi-stage workflows for tickets. Both starter") + "\n")
+	b.WriteString(styleFaint.Render("  pipelines go into config.yaml. Which one do new tickets run?") + "\n\n")
 
-	b.WriteString("  " + styleBold.Render("default") + "\n")
-	b.WriteString("      " + styleFaint.Render("Single-stage: sends the ticket description to the agent and runs") + "\n")
-	b.WriteString("      " + styleFaint.Render("it to completion. Good for simple, self-contained tickets.") + "\n\n")
+	for i, p := range setupPipelines {
+		cursor := "  "
+		if i == m.pipelineCursor {
+			cursor = styleCyan.Render("▸ ")
+		}
+		mark := "( )"
+		if i == m.pipelineCursor {
+			mark = styleOK.Render("(•)")
+		}
+		label := p.name
+		if label == "" {
+			label = "neither"
+		}
+		fmt.Fprintf(b, "%s%s %s\n", cursor, mark, styleBold.Render(label))
+		for _, line := range p.desc {
+			b.WriteString("      " + styleFaint.Render(line) + "\n")
+		}
+		b.WriteString("\n")
+	}
 
-	b.WriteString("  " + styleBold.Render("implement-review-commit") + "\n")
-	b.WriteString("      " + styleFaint.Render("Multi-stage pipeline: implement → review → fix-review → commit.") + "\n")
-	b.WriteString("      " + styleFaint.Render("The agent implements the ticket, a second pass reviews the code,") + "\n")
-	b.WriteString("      " + styleFaint.Render("a third pass fixes any issues found, then commits the result.") + "\n")
-
-	b.WriteString("\n")
-	b.WriteString(styleFaint.Render("  enter continue · shift+tab back · esc cancel") + "\n")
+	b.WriteString(styleFaint.Render("  j/k navigate · enter confirm · shift+tab back · esc cancel") + "\n")
 }
 
 func (m setupModel) viewConfirm(b *strings.Builder) {
 	b.WriteString(styleBold.Render("Summary:") + "\n\n")
 	b.WriteString("  Agents:\n")
 	for _, name := range m.selectedAgents {
-		args := m.argsInputs[name]
+		args := m.argsInputs[name].Value()
 		if args != "" {
 			fmt.Fprintf(b, "    %s (%s)\n", styleBold.Render(name), args)
 		} else {
@@ -570,17 +726,22 @@ func (m setupModel) viewConfirm(b *strings.Builder) {
 	}
 	b.WriteString("\n  Directories:\n")
 	for i := range 3 {
-		fmt.Fprintf(b, "    %s: %s\n", m.dirLabels[i], m.dirFields[i])
+		fmt.Fprintf(b, "    %s: %s\n", m.dirLabels[i], m.dirFields[i].Value())
 	}
 	b.WriteString("\n  Settings:\n")
-	fmt.Fprintf(b, "    max_concurrent_agents: %s\n", m.maxConcurrent)
+	fmt.Fprintf(b, "    max_concurrent_agents: %s\n", m.maxConcurrent.Value())
 	webStr := "yes"
 	if !m.webEnabled {
 		webStr = "no"
 	}
-	fmt.Fprintf(b, "    web: %s (port %s)\n", webStr, m.webPort)
+	fmt.Fprintf(b, "    web: %s (port %s)\n", webStr, m.webPort.Value())
 	b.WriteString("\n  Pipelines:\n")
 	fmt.Fprintf(b, "    %s, %s\n", "default", "implement-review-commit")
+	if p := setupPipelines[m.pipelineCursor].name; p != "" {
+		fmt.Fprintf(b, "    new tickets run: %s\n", p)
+	} else {
+		fmt.Fprintf(b, "    new tickets run: %s\n", "one agent pass, no pipeline")
+	}
 	b.WriteString("\n")
 	b.WriteString(styleFaint.Render("  enter/y write config · shift+tab back · q/n cancel") + "\n")
 }
@@ -590,27 +751,28 @@ func (m setupModel) answers() *SetupAnswers {
 	for _, name := range m.selectedAgents {
 		agents[name] = agentArgs{
 			Binary: knownAgents[name].binary,
-			Args:   m.argsInputs[name],
+			Args:   m.argsInputs[name].Value(),
 		}
 	}
 
-	maxC, _ := strconv.Atoi(m.maxConcurrent)
+	maxC, _ := strconv.Atoi(m.maxConcurrent.Value())
 	if maxC <= 0 {
 		maxC = 3
 	}
-	port, _ := strconv.Atoi(m.webPort)
+	port, _ := strconv.Atoi(m.webPort.Value())
 	if port <= 0 || port > 65535 {
 		port = 8080
 	}
 
 	return &SetupAnswers{
 		Agents:              agents,
-		TicketsDir:          m.dirFields[0],
-		LogsDir:             m.dirFields[1],
-		WorktreesDir:        m.dirFields[2],
+		TicketsDir:          m.dirFields[0].Value(),
+		LogsDir:             m.dirFields[1].Value(),
+		WorktreesDir:        m.dirFields[2].Value(),
 		MaxConcurrentAgents: maxC,
 		WebEnabled:          m.webEnabled,
 		WebPort:             port,
+		DefaultPipeline:     setupPipelines[m.pipelineCursor].name,
 	}
 }
 
@@ -637,6 +799,9 @@ func buildConfigYAML(ans *SetupAnswers) string {
 		// Config.applyDefaults only infers this for a lone agent or one named
 		// "claude", so a setup with pi and opencode has to state it.
 		fmt.Fprintf(&b, "default_agent: %s\n", defaultAgent)
+	}
+	if ans.DefaultPipeline != "" {
+		fmt.Fprintf(&b, "default_pipeline: %s\n", ans.DefaultPipeline)
 	}
 	fmt.Fprintf(&b, "tickets_dir: %s\n", yamlQuote(ans.TicketsDir))
 	fmt.Fprintf(&b, "logs_dir: %s\n", yamlQuote(ans.LogsDir))
@@ -823,7 +988,7 @@ func RunSetup(configPath string, w io.Writer) error {
 	fmt.Fprintln(w, styleBold.Render("Next steps:"))
 	fmt.Fprintf(w, "  %s  %s\n", styleCyan.Render("kontora doctor"), styleFaint.Render("Verify setup"))
 	fmt.Fprintf(w, "  %s  %s\n", styleCyan.Render("kontora start"), styleFaint.Render("Start the daemon"))
-	fmt.Fprintf(w, "  %s  %s\n", styleCyan.Render("kontora new --path ~/projects/myrepo --pipeline default \"My first ticket\""), styleFaint.Render("Create a ticket"))
+	fmt.Fprintf(w, "  %s  %s\n", styleCyan.Render("kontora new --path ~/projects/myrepo \"My first ticket\""), styleFaint.Render("Create a ticket"))
 	fmt.Fprintf(w, "  %s  %s\n", styleCyan.Render("kontora setup --agent"), styleFaint.Render("Refine the config with a coding agent"))
 
 	return nil

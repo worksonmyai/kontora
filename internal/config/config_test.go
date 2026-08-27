@@ -1932,6 +1932,135 @@ func TestProjectFor(t *testing.T) {
 	}
 }
 
+func TestResolveTicketDefaults(t *testing.T) {
+	home := t.TempDir()
+	inProject := filepath.Join(home, "projects", "kontora")
+	unlisted := filepath.Join(home, "projects", "elsewhere")
+
+	newCfg := func(defaultPipeline string) *Config {
+		return &Config{
+			DefaultPipeline: defaultPipeline,
+			Projects: map[string]Project{
+				"kontora": {Path: "~/projects/kontora", Pipeline: "implement", Agent: "claude"},
+			},
+		}
+	}
+
+	cases := []struct {
+		name            string
+		defaultPipeline string
+		repoPath        string
+		pipeline        string
+		agent           string
+		wantPipeline    string
+		wantAgent       string
+	}{
+		{
+			name:         "explicit value outranks the project",
+			repoPath:     inProject,
+			pipeline:     "review",
+			wantPipeline: "review",
+			wantAgent:    "claude",
+		},
+		{
+			name:            "the project outranks the default",
+			defaultPipeline: "fallback",
+			repoPath:        inProject,
+			wantPipeline:    "implement",
+			wantAgent:       "claude",
+		},
+		{
+			name:            "the default applies when no project matches",
+			defaultPipeline: "fallback",
+			repoPath:        unlisted,
+			wantPipeline:    "fallback",
+		},
+		{
+			name:            "an explicit value outranks the default with no project",
+			defaultPipeline: "fallback",
+			repoPath:        unlisted,
+			pipeline:        "review",
+			wantPipeline:    "review",
+		},
+		{
+			name:            "none opts out of the project and the default",
+			defaultPipeline: "fallback",
+			repoPath:        inProject,
+			pipeline:        NoneSentinel,
+			wantAgent:       "claude",
+		},
+		{
+			name:            "none opts out of the default with no project",
+			defaultPipeline: "fallback",
+			repoPath:        unlisted,
+			pipeline:        NoneSentinel,
+		},
+		{
+			name:         "an unset default leaves the pipeline blank",
+			repoPath:     unlisted,
+			wantPipeline: "",
+		},
+		{
+			name:            "an agent opt-out still takes the default pipeline",
+			defaultPipeline: "fallback",
+			repoPath:        inProject,
+			agent:           NoneSentinel,
+			wantPipeline:    "implement",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("HOME", home)
+
+			pipeline, agent := newCfg(tc.defaultPipeline).ResolveTicketDefaults(tc.repoPath, tc.pipeline, tc.agent)
+			assert.Equal(t, tc.wantPipeline, pipeline)
+			assert.Equal(t, tc.wantAgent, agent)
+		})
+	}
+}
+
+func TestLoadDefaultPipeline(t *testing.T) {
+	const base = `
+tickets_dir: /tmp/tasks
+agents:
+  a:
+    binary: agent-bin
+stages:
+  s:
+    prompt: do stuff
+pipelines:
+  p:
+    - stage: s
+      agent: a
+      on_success: done
+      on_failure: pause
+`
+
+	cases := []struct {
+		name    string
+		extra   string
+		want    string
+		wantErr string
+	}{
+		{name: "unset stays blank"},
+		{name: "a configured name is kept", extra: "default_pipeline: p\n", want: "p"},
+		{name: "an unknown name is rejected", extra: "default_pipeline: nope\n", wantErr: `default_pipeline "nope": unknown pipeline`},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := LoadReader(strings.NewReader(base + tc.extra))
+			if tc.wantErr != "" {
+				require.ErrorContains(t, err, tc.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, cfg.DefaultPipeline)
+		})
+	}
+}
+
 func TestBranchNamingFor(t *testing.T) {
 	home := t.TempDir()
 	cfg := &Config{

@@ -67,7 +67,7 @@ func Enable(cfg *config.Config, taskID string, opts EnableOpts, w io.Writer) err
 	// A ticket that already says "none" asked for standalone mode; the picker
 	// would put a pipeline back.
 	standalone := t.Pipeline == config.NoneSentinel
-	if err := applyProjectDefaults(cfg, t, w); err != nil {
+	if err := applyTicketDefaults(cfg, t, w); err != nil {
 		return err
 	}
 
@@ -166,7 +166,7 @@ func startingStage(cfg *config.Config, pipelineName string, opts EnableOpts) (st
 
 // applyEnableOpts writes the fields the caller named onto the ticket. The
 // sentinel is written through rather than cleared here, because the standalone
-// check and applyProjectDefaults both still have to see it. A name the config
+// check and applyTicketDefaults both still have to see it. A name the config
 // does not know is rejected now instead of sitting in the frontmatter until the
 // daemon picks the ticket up and pauses it.
 func applyEnableOpts(cfg *config.Config, t *ticket.Ticket, opts EnableOpts) error {
@@ -198,14 +198,16 @@ func applyEnableOpts(cfg *config.Config, t *ticket.Ticket, opts EnableOpts) erro
 	return nil
 }
 
-// applyProjectDefaults fills the ticket's blank pipeline and agent from the
-// project configured for its path and clears the "none" opt-out, so neither the
-// picker nor the frontmatter ever sees the sentinel.
-func applyProjectDefaults(cfg *config.Config, t *ticket.Ticket, w io.Writer) error {
-	pipeline, agent := cfg.ApplyProjectDefaults(t.Path, t.Pipeline, t.Agent)
+// applyTicketDefaults fills the ticket's blank pipeline and agent from the
+// project configured for its path, or from default_pipeline, and clears the
+// "none" opt-out, so neither the picker nor the frontmatter ever sees the
+// sentinel. Each value it fills is printed with where it came from.
+func applyTicketDefaults(cfg *config.Config, t *ticket.Ticket, w io.Writer) error {
+	pipeline, agent := cfg.ResolveTicketDefaults(t.Path, t.Pipeline, t.Agent)
 	if pipeline == t.Pipeline && agent == t.Agent {
 		return nil
 	}
+	name, project, inProject := cfg.ProjectFor(t.Path)
 
 	var taken []string
 	if pipeline != t.Pipeline {
@@ -213,7 +215,11 @@ func applyProjectDefaults(cfg *config.Config, t *ticket.Ticket, w io.Writer) err
 			return fmt.Errorf("setting pipeline: %w", err)
 		}
 		if pipeline != "" {
-			taken = append(taken, "pipeline "+pipeline)
+			source := "default_pipeline"
+			if inProject && project.Pipeline == pipeline {
+				source = "project " + name
+			}
+			taken = append(taken, fmt.Sprintf("pipeline %s from %s", pipeline, source))
 		}
 	}
 	if agent != t.Agent {
@@ -221,11 +227,11 @@ func applyProjectDefaults(cfg *config.Config, t *ticket.Ticket, w io.Writer) err
 			return fmt.Errorf("setting agent: %w", err)
 		}
 		if agent != "" {
-			taken = append(taken, "agent "+agent)
+			taken = append(taken, fmt.Sprintf("agent %s from project %s", agent, name))
 		}
 	}
-	if name, _, ok := cfg.ProjectFor(t.Path); ok && len(taken) > 0 {
-		fmt.Fprintf(w, "%s %s\n", styleFaint.Render("project "+name), strings.Join(taken, " · "))
+	if len(taken) > 0 {
+		fmt.Fprintln(w, styleFaint.Render(strings.Join(taken, " · ")))
 	}
 	return nil
 }

@@ -1,14 +1,19 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"maps"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"strconv"
+	"syscall"
+	"time"
 
 	"github.com/worksonmyai/kontora/internal/config"
 	"github.com/worksonmyai/kontora/internal/process"
@@ -49,12 +54,14 @@ func Doctor(configPath string, w io.Writer) error {
 		ticketsDirEnv = cfg.ApplyEnvOverrides()
 	}
 
+	daemonRunning := checkDaemon(configPath, check)
+
 	checkDirs(cfg, ticketsDirEnv, ticketsDirFile, check)
 	checkTools(check)
 	checkAgents(cfg, check)
 	checkProjects(cfg, check)
 	checkPlannotator(cfg, check)
-	checkWebPort(cfg, check)
+	checkWebPort(cfg, daemonRunning, check)
 
 	fmt.Fprintln(w)
 	switch {
@@ -73,6 +80,51 @@ func Doctor(configPath string, w io.Writer) error {
 
 // checkFunc records one check result under a level of "OK", "WARN" or "FAIL".
 type checkFunc func(level, name, detail string)
+
+// checkDaemon reports whether a daemon holds the lock beside the config, and
+// returns that answer for the checks that read it. A stopped daemon is the
+// usual reason a new ticket sits at todo and nothing happens, so it warns.
+func checkDaemon(configPath string, check checkFunc) bool {
+	running, err := daemonHoldsLock(filepath.Join(filepath.Dir(configPath), "lock"))
+	switch {
+	case err != nil:
+		check("WARN", "Daemon", fmt.Sprintf("could not read the lock file: %v", err))
+		return false
+	case running:
+		check("OK", "Daemon", "running")
+		return true
+	default:
+		check("WARN", "Daemon", "not running. Run `kontora start` to pick up tickets.")
+		return false
+	}
+}
+
+// daemonHoldsLock reports whether another process holds the daemon's flock on
+// lockPath. A daemon removes the file on exit, so a missing file means no
+// daemon; a file nothing locks is left over from a kill.
+//
+// It never removes the file, because it runs beside a live daemon. A daemon
+// that has created its lock file but not yet taken the flock reads as stale in
+// that instant.
+func daemonHoldsLock(lockPath string) (bool, error) {
+	f, err := os.OpenFile(lockPath, os.O_RDWR, 0o644)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	defer f.Close()
+
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_SH|syscall.LOCK_NB); err != nil {
+		if errors.Is(err, syscall.EWOULDBLOCK) {
+			return true, nil
+		}
+		return false, err
+	}
+	_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+	return false, nil
+}
 
 // checkDirs reports the three working directories. They are warn-only: the
 // daemon creates them on first use.
@@ -136,10 +188,14 @@ func checkAgents(cfg *config.Config, check checkFunc) {
 
 // checkProjects reports each project repository. A path that is not a git
 // worktree cannot have a branch cut from it, so every ticket for that project
-// pauses at pickup.
+// pauses at pickup. With nothing to select a pipeline from, a new ticket also
+// runs no pipeline at all.
 func checkProjects(cfg *config.Config, check checkFunc) {
 	if cfg == nil {
 		return
+	}
+	if noPipelineDefault(cfg) {
+		check("WARN", "Pipeline defaults", "no default_pipeline, and no project sets one, so a new ticket runs one agent on its description rather than a pipeline")
 	}
 	for _, name := range slices.Sorted(maps.Keys(cfg.Projects)) {
 		path := config.ExpandTilde(cfg.Projects[name].Path)
@@ -157,6 +213,21 @@ func checkProjects(cfg *config.Config, check checkFunc) {
 	}
 }
 
+// noPipelineDefault reports whether nothing in the config can give a new ticket
+// a pipeline. A project that sets one still leaves paths outside it bare, but
+// the user has said what they want, so it stays quiet.
+func noPipelineDefault(cfg *config.Config) bool {
+	if cfg.DefaultPipeline != "" {
+		return false
+	}
+	for _, project := range cfg.Projects {
+		if project.Pipeline != "" {
+			return false
+		}
+	}
+	return true
+}
+
 // checkPlannotator is warn-only: plannotator is needed for `review` and
 // `annotate`, not for running agents.
 func checkPlannotator(cfg *config.Config, check checkFunc) {
@@ -171,19 +242,43 @@ func checkPlannotator(cfg *config.Config, check checkFunc) {
 	}
 }
 
-// checkWebPort is warn-only: the port may be held by a daemon already running.
-func checkWebPort(cfg *config.Config, check checkFunc) {
+// checkWebPort is warn-only: a port the dashboard answers on is its own, not a
+// conflict. A running daemon is not proof of that on its own, because the
+// daemon carries on when its web server cannot listen, so the address is asked
+// directly.
+func checkWebPort(cfg *config.Config, daemonRunning bool, check checkFunc) {
 	if cfg == nil || cfg.Web.Enabled == nil || !*cfg.Web.Enabled {
 		return
 	}
 	addr := net.JoinHostPort(cfg.Web.Host, strconv.Itoa(cfg.Web.Port))
 	ln, err := net.Listen("tcp", addr)
-	if err != nil {
-		check("WARN", "Web port", fmt.Sprintf("%s is not available (%v)", addr, err))
+	if err == nil {
+		ln.Close()
+		check("OK", "Web port", fmt.Sprintf("%s is available", addr))
 		return
 	}
-	ln.Close()
-	check("OK", "Web port", fmt.Sprintf("%s is available", addr))
+	if servesDashboard(addr) {
+		check("OK", "Web port", fmt.Sprintf("%s is serving the kontora dashboard", addr))
+		return
+	}
+	detail := fmt.Sprintf("%s is taken by another process (%v)", addr, err)
+	if daemonRunning {
+		detail += ", so the running daemon has no dashboard"
+	}
+	check("WARN", "Web port", detail)
+}
+
+// servesDashboard reports whether whatever holds addr answers the dashboard's
+// /health with a 200. That endpoint takes no token, so the probe also works
+// against a daemon configured with one.
+func servesDashboard(addr string) bool {
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Get("http://" + addr + "/health")
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode == http.StatusOK
 }
 
 // isGitRepo reports whether path is inside a git working tree.

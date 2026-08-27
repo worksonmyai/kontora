@@ -94,6 +94,7 @@ type Config struct {
 	Editor              string              `yaml:"editor"`
 	Pager               string              `yaml:"pager"`
 	DefaultAgent        string              `yaml:"default_agent"`
+	DefaultPipeline     string              `yaml:"default_pipeline"`
 	MaxConcurrentAgents int                 `yaml:"max_concurrent_agents"`
 	AutoPickUp          *bool               `yaml:"auto_pick_up"`
 	InstanceName        string              `yaml:"instance_name"`
@@ -941,6 +942,12 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("default_agent %q: not found in agents", c.DefaultAgent)
 	}
 
+	if c.DefaultPipeline != "" {
+		if _, ok := c.Pipelines[c.DefaultPipeline]; !ok {
+			return fmt.Errorf("default_pipeline %q: unknown pipeline", c.DefaultPipeline)
+		}
+	}
+
 	if !validTmuxSessionRe.MatchString(c.TmuxSession) {
 		return fmt.Errorf("tmux_session %q: must be 1-64 characters from [A-Za-z0-9_-] and must not start with %q", c.TmuxSession, "-")
 	}
@@ -1277,26 +1284,28 @@ func (c *Config) ProjectFor(repoPath string) (string, Project, bool) {
 	return "", Project{}, false
 }
 
-// ApplyProjectDefaults resolves the pipeline and agent a ticket for repoPath
-// should carry. A blank field takes the matching project's default; the literal
-// "none" clears the field and skips that default, so a standalone ticket stays
+// ResolveTicketDefaults resolves the pipeline and agent a ticket for repoPath
+// should carry. A blank pipeline takes the matching project's, then
+// default_pipeline; a blank agent takes the matching project's. The literal
+// "none" clears the field and skips every default, so a standalone ticket stays
 // reachable inside a configured project. The two fields resolve independently:
 // opting the pipeline out still inherits the project agent.
-func (c *Config) ApplyProjectDefaults(repoPath, pipeline, agent string) (resolvedPipeline, resolvedAgent string) {
+func (c *Config) ResolveTicketDefaults(repoPath, pipeline, agent string) (resolvedPipeline, resolvedAgent string) {
 	pipelineOptOut := pipeline == NoneSentinel
 	pipeline = ClearNone(pipeline)
 	agentOptOut := agent == NoneSentinel
 	agent = ClearNone(agent)
 
-	_, project, ok := c.ProjectFor(repoPath)
-	if !ok {
-		return pipeline, agent
+	if _, project, ok := c.ProjectFor(repoPath); ok {
+		if pipeline == "" && !pipelineOptOut {
+			pipeline = project.Pipeline
+		}
+		if agent == "" && !agentOptOut {
+			agent = project.Agent
+		}
 	}
 	if pipeline == "" && !pipelineOptOut {
-		pipeline = project.Pipeline
-	}
-	if agent == "" && !agentOptOut {
-		agent = project.Agent
+		pipeline = c.DefaultPipeline
 	}
 	return pipeline, agent
 }

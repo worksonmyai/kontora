@@ -147,6 +147,14 @@ pipelines:
 
 Stages share a git worktree. Artifacts are passed as files — one stage writes `PLAN.md`, the next reads it via `{{ file "PLAN.md" }}`.
 
+`default_pipeline` names the pipeline a new ticket runs when neither `--pipeline` nor its project names one:
+
+```yaml
+default_pipeline: implement-review-commit
+```
+
+Leave it unset and such a ticket runs one agent on its description, with no stages.
+
 **Projects** are optional. Each one names a repository and the pipeline, agent, and branch prefix that new tickets for it should default to:
 
 ```yaml

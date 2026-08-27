@@ -1675,12 +1675,14 @@ func TestNew_ProjectDefaults(t *testing.T) {
 func TestInit_ProjectDefaults(t *testing.T) {
 	repoDir := initTestRepo(t)
 	unlistedRepo := initTestRepo(t)
+	agentOnlyRepo := initTestRepo(t)
 
 	cases := []struct {
 		name            string
 		path            string
 		ticketPipeline  string
 		ticketAgent     string
+		defaultPipeline string
 		pipelinePick    string // pipeline picker return; empty means it must not open
 		wantOutput      string
 		wantContains    []string
@@ -1689,8 +1691,23 @@ func TestInit_ProjectDefaults(t *testing.T) {
 		{
 			name:         "blank fields take project defaults",
 			path:         repoDir,
-			wantOutput:   "project repo pipeline default · agent claude-sonnet",
+			wantOutput:   "pipeline default from project repo · agent claude-sonnet from project repo",
 			wantContains: []string{"pipeline: default", "agent: claude-sonnet"},
+		},
+		{
+			name:            "a ticket outside every project takes the top-level default",
+			path:            unlistedRepo,
+			defaultPipeline: "release",
+			wantOutput:      "pipeline release from default_pipeline",
+			wantContains:    []string{"pipeline: release"},
+			wantNotContains: []string{"agent:"},
+		},
+		{
+			name:            "each filled field names the source it came from",
+			path:            agentOnlyRepo,
+			defaultPipeline: "release",
+			wantOutput:      "pipeline release from default_pipeline · agent codex from project plain",
+			wantContains:    []string{"pipeline: release", "agent: codex"},
 		},
 		{
 			name:           "explicit pipeline wins",
@@ -1726,8 +1743,10 @@ func TestInit_ProjectDefaults(t *testing.T) {
 			cfg.Pipelines["release"] = cfg.Pipelines["default"]
 			cfg.Agents["codex"] = config.Agent{Binary: "codex"}
 			cfg.Projects = map[string]config.Project{
-				"repo": {Path: repoDir, Pipeline: "default", Agent: "claude-sonnet"},
+				"repo":  {Path: repoDir, Pipeline: "default", Agent: "claude-sonnet"},
+				"plain": {Path: agentOnlyRepo, Agent: "codex"},
 			}
+			cfg.DefaultPipeline = tc.defaultPipeline
 
 			frontmatter := fmt.Sprintf("---\nid: tst-001\nstatus: open\npath: %s\n", tc.path)
 			if tc.ticketPipeline != "" {

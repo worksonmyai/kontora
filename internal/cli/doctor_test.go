@@ -4,9 +4,14 @@ import (
 	"bytes"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -44,6 +49,20 @@ pipelines:
 	return configPath
 }
 
+// holdDaemonLock takes the flock a running daemon holds beside configPath, for
+// the rest of the test. flock is per open file description, so a lock this
+// process takes on its own fd still blocks the probe's.
+func holdDaemonLock(t *testing.T, configPath string) {
+	t.Helper()
+	f, err := os.OpenFile(filepath.Join(filepath.Dir(configPath), "lock"), os.O_CREATE|os.O_RDWR, 0o644)
+	require.NoError(t, err)
+	require.NoError(t, syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB))
+	t.Cleanup(func() {
+		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+		f.Close()
+	})
+}
+
 func TestDoctor_ValidConfig(t *testing.T) {
 	noTicketsDirEnv(t)
 	dir := t.TempDir()
@@ -58,6 +77,90 @@ func TestDoctor_ValidConfig(t *testing.T) {
 	assert.Contains(t, out, "git")
 	assert.Contains(t, out, "tmux")
 	assert.Contains(t, out, "All checks passed")
+}
+
+func TestDoctor_Daemon(t *testing.T) {
+	cases := []struct {
+		name string
+		// lock is what sits beside the config: "" none, "stale" a file nothing
+		// locks, "held" a file another open description holds, "unreadable"
+		// something that is not a file at all.
+		lock string
+		want string
+	}{
+		{name: "no lock file means no daemon", want: "not running"},
+		{name: "a lock nothing holds is left over from a kill", lock: "stale", want: "not running"},
+		{name: "a held lock means a daemon is running", lock: "held", want: "running"},
+		{name: "a lock that cannot be opened is reported as read", lock: "unreadable", want: "could not read the lock file"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			noTicketsDirEnv(t)
+			dir := t.TempDir()
+			configPath := writeValidConfig(t, dir)
+			lockPath := filepath.Join(dir, "lock")
+
+			switch tc.lock {
+			case "stale":
+				require.NoError(t, os.WriteFile(lockPath, nil, 0o644))
+			case "held":
+				holdDaemonLock(t, configPath)
+			case "unreadable":
+				// Opening a directory O_RDWR fails, which is the branch that
+				// reports the error rather than an answer.
+				require.NoError(t, os.Mkdir(lockPath, 0o755))
+			}
+
+			var buf bytes.Buffer
+			require.NoError(t, Doctor(configPath, &buf))
+
+			assert.Regexp(t, `Daemon\s+`+tc.want, buf.String())
+			if tc.want == "not running" {
+				assert.Contains(t, buf.String(), "kontora start")
+			}
+			if tc.lock == "stale" || tc.lock == "held" {
+				assert.FileExists(t, lockPath, "the probe must not remove the lock file")
+			}
+		})
+	}
+}
+
+func TestDoctor_PipelineDefaults(t *testing.T) {
+	const warning = "runs one agent on its description rather than a pipeline"
+
+	cases := []struct {
+		name     string
+		extra    string
+		wantWarn bool
+	}{
+		{name: "no projects and no default_pipeline warns", wantWarn: true},
+		{name: "a default_pipeline silences it", extra: "default_pipeline: p\n"},
+		{name: "a project that sets a pipeline silences it", extra: "projects:\n  demo:\n    path: %REPO%\n    pipeline: p\n"},
+		{name: "a project without a pipeline still warns", extra: "projects:\n  demo:\n    path: %REPO%\n", wantWarn: true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			noTicketsDirEnv(t)
+			dir := t.TempDir()
+			configPath := writeValidConfig(t, dir)
+			extra := strings.ReplaceAll(tc.extra, "%REPO%", initTestRepo(t))
+
+			content, err := os.ReadFile(configPath)
+			require.NoError(t, err)
+			require.NoError(t, os.WriteFile(configPath, append(content, []byte(extra)...), 0o644))
+
+			var buf bytes.Buffer
+			require.NoError(t, Doctor(configPath, &buf))
+
+			if tc.wantWarn {
+				assert.Contains(t, buf.String(), warning)
+				return
+			}
+			assert.NotContains(t, buf.String(), warning)
+		})
+	}
 }
 
 func TestDoctor_ConfigMissing(t *testing.T) {
@@ -148,17 +251,56 @@ pipelines:
 }
 
 func TestDoctor_WebPortBound(t *testing.T) {
-	noTicketsDirEnv(t)
-	// Bind a port.
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
-	defer ln.Close()
+	cases := []struct {
+		name          string
+		daemonRunning bool
+		serveHealth   bool
+		wantSymbol    string
+		want          string
+	}{
+		{name: "a port nothing explains is a warning", wantSymbol: "!", want: "taken by another process"},
+		{
+			name:          "a daemon that lost the port still warns",
+			daemonRunning: true,
+			wantSymbol:    "!",
+			want:          "so the running daemon has no dashboard",
+		},
+		{
+			name:        "a port the dashboard answers on is fine",
+			serveHealth: true,
+			wantSymbol:  "✓",
+			want:        "serving the kontora dashboard",
+		},
+	}
 
-	port := ln.Addr().(*net.TCPAddr).Port
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			noTicketsDirEnv(t)
+			// Bind a port.
+			ln, err := net.Listen("tcp", "127.0.0.1:0")
+			require.NoError(t, err)
+			defer ln.Close()
 
-	dir := t.TempDir()
-	configPath := filepath.Join(dir, "config.yaml")
-	content := fmt.Sprintf(`web:
+			port := ln.Addr().(*net.TCPAddr).Port
+			if tc.serveHealth {
+				// The daemon's own /health: 200 and nothing else.
+				srv := &http.Server{
+					ReadHeaderTimeout: time.Second,
+					Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						if r.URL.Path != "/health" {
+							http.NotFound(w, r)
+							return
+						}
+						w.WriteHeader(http.StatusOK)
+					}),
+				}
+				go func() { _ = srv.Serve(ln) }()
+				t.Cleanup(func() { srv.Close() })
+			}
+
+			dir := t.TempDir()
+			configPath := filepath.Join(dir, "config.yaml")
+			content := fmt.Sprintf(`web:
   enabled: true
   host: 127.0.0.1
   port: %d
@@ -178,16 +320,19 @@ pipelines:
       on_success: done
       on_failure: pause
 `, port)
-	require.NoError(t, os.WriteFile(configPath, []byte(content), 0o644))
+			require.NoError(t, os.WriteFile(configPath, []byte(content), 0o644))
+			if tc.daemonRunning {
+				holdDaemonLock(t, configPath)
+			}
 
-	var buf bytes.Buffer
-	err = Doctor(configPath, &buf)
-	// Port bound is a warning, not a failure.
-	require.NoError(t, err)
+			var buf bytes.Buffer
+			// Port bound is a warning, not a failure.
+			require.NoError(t, Doctor(configPath, &buf))
 
-	out := buf.String()
-	assert.Contains(t, out, "Web port")
-	assert.Contains(t, out, "not available")
+			out := buf.String()
+			assert.Regexp(t, tc.wantSymbol+` Web port\s+.*`+regexp.QuoteMeta(tc.want), out)
+		})
+	}
 }
 
 func TestDoctor_ProjectPaths(t *testing.T) {

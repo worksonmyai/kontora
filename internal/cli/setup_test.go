@@ -2,11 +2,14 @@ package cli
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -108,6 +111,20 @@ func TestBuildConfigYAML(t *testing.T) {
 				"default_agent: opencode",
 			},
 		},
+		{
+			name: "a chosen pipeline becomes default_pipeline",
+			ans: &SetupAnswers{
+				Agents:              map[string]agentArgs{"claude": {Binary: "claude"}},
+				TicketsDir:          "/tmp/tickets",
+				LogsDir:             "/tmp/logs",
+				WorktreesDir:        "/tmp/worktrees",
+				MaxConcurrentAgents: 3,
+				WebEnabled:          true,
+				WebPort:             8080,
+				DefaultPipeline:     "implement-review-commit",
+			},
+			wantKeys: []string{"default_pipeline: implement-review-commit"},
+		},
 	}
 
 	for _, tc := range cases {
@@ -123,6 +140,7 @@ func TestBuildConfigYAML(t *testing.T) {
 			assert.NotEmpty(t, cfg.Agents)
 			assert.NotEmpty(t, cfg.Pipelines)
 			assert.Contains(t, cfg.Agents, cfg.DefaultAgent)
+			assert.Equal(t, tc.ans.DefaultPipeline, cfg.DefaultPipeline)
 		})
 	}
 }
@@ -251,6 +269,11 @@ func TestRunSetup_Idempotent(t *testing.T) {
 	assert.Equal(t, "# existing", string(data))
 }
 
+// newSetupInputs builds the three directory fields a test model needs.
+func newSetupInputs(a, b, c string) [3]textinput.Model {
+	return [3]textinput.Model{newSetupInput(a), newSetupInput(b), newSetupInput(c)}
+}
+
 func updateSetup(m setupModel, key string) setupModel {
 	var msg tea.KeyMsg
 	switch key {
@@ -260,12 +283,21 @@ func updateSetup(m setupModel, key string) setupModel {
 		msg = tea.KeyMsg{Type: tea.KeyBackspace}
 	case "tab":
 		msg = tea.KeyMsg{Type: tea.KeyTab}
+	case "shift+tab":
+		msg = tea.KeyMsg{Type: tea.KeyShiftTab}
 	case "esc":
 		msg = tea.KeyMsg{Type: tea.KeyEscape}
 	case "ctrl+c":
 		msg = tea.KeyMsg{Type: tea.KeyCtrlC}
 	case " ":
-		msg = tea.KeyMsg{Type: tea.KeySpace}
+		// A real space key carries its rune, which is what a text field inserts.
+		msg = tea.KeyMsg{Type: tea.KeySpace, Runes: []rune{' '}}
+	case "left":
+		msg = tea.KeyMsg{Type: tea.KeyLeft}
+	case "right":
+		msg = tea.KeyMsg{Type: tea.KeyRight}
+	case "ctrl+u":
+		msg = tea.KeyMsg{Type: tea.KeyCtrlU}
 	default:
 		msg = tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(key)}
 	}
@@ -318,15 +350,154 @@ func TestSetupModel_ArgsInput(t *testing.T) {
 	m = updateSetup(m, "-")
 	m = updateSetup(m, "-")
 	m = updateSetup(m, "x")
-	assert.Contains(t, m.argsInputs["claude"], "--x")
+	assert.Contains(t, m.argsInputs["claude"].Value(), "--x")
 
 	// Backspace
 	m = updateSetup(m, "backspace")
-	assert.True(t, strings.HasSuffix(m.argsInputs["claude"], "--"), "backspace should remove last char")
+	assert.True(t, strings.HasSuffix(m.argsInputs["claude"].Value(), "--"), "backspace should remove last char")
 
 	// Enter advances to dirs
 	m = updateSetup(m, "enter")
 	assert.Equal(t, stepDirs, m.step)
+}
+
+// TestSetupModel_TextFieldEditing covers what the hand-rolled fields could not
+// do: move the cursor, cut the line, and leave the field without losing the
+// wizard.
+func TestSetupModel_TextFieldEditing(t *testing.T) {
+	// Walk to the directories step with one agent selected.
+	atDirs := func(t *testing.T) setupModel {
+		t.Helper()
+		m := initialSetupModel()
+		for name := range m.agentChecked {
+			m.agentChecked[name] = false
+		}
+		m.agentChecked["claude"] = true
+		m = updateSetup(m, "enter") // -> args
+		m = updateSetup(m, "enter") // -> dirs
+		require.Equal(t, stepDirs, m.step)
+		return m
+	}
+
+	t.Run("a character goes in at the cursor, not at the end", func(t *testing.T) {
+		m := atDirs(t)
+		before := m.dirFields[0].Value()
+
+		m = updateSetup(m, "left")
+		m = updateSetup(m, "X")
+
+		want := before[:len(before)-1] + "X" + before[len(before)-1:]
+		assert.Equal(t, want, m.dirFields[0].Value())
+	})
+
+	t.Run("ctrl+u clears to the start of the line", func(t *testing.T) {
+		m := atDirs(t)
+
+		m = updateSetup(m, "ctrl+u")
+
+		assert.Empty(t, m.dirFields[0].Value())
+	})
+
+	t.Run("esc leaves the field and keeps every answer", func(t *testing.T) {
+		m := atDirs(t)
+		dirs := [3]string{m.dirFields[0].Value(), m.dirFields[1].Value(), m.dirFields[2].Value()}
+
+		m = updateSetup(m, "esc")
+
+		assert.False(t, m.cancelled, "esc must not cancel the wizard")
+		assert.Equal(t, stepDirs, m.step)
+		assert.False(t, m.dirEditing)
+		for i, want := range dirs {
+			assert.Equal(t, want, m.dirFields[i].Value())
+		}
+		assert.Equal(t, "--dangerously-skip-permissions", m.argsInputs["claude"].Value())
+
+		// And enter puts the cursor back in the field.
+		m = updateSetup(m, "enter")
+		assert.True(t, m.dirEditing)
+	})
+
+	t.Run("a letter cannot reach a numeric field", func(t *testing.T) {
+		m := atDirs(t)
+		m = updateSetup(m, "enter") // dir 0 -> 1
+		m = updateSetup(m, "enter") // dir 1 -> 2
+		m = updateSetup(m, "enter") // dir 2 -> settings
+		require.Equal(t, stepSettings, m.step)
+
+		m = updateSetup(m, "x")
+		assert.Equal(t, "3", m.maxConcurrent.Value())
+
+		m = updateSetup(m, "5")
+		assert.Equal(t, "35", m.maxConcurrent.Value())
+	})
+
+	t.Run("shift+tab still steps back from a field the user left", func(t *testing.T) {
+		m := atDirs(t)
+		m = updateSetup(m, "esc")
+		require.False(t, m.dirEditing)
+
+		m = updateSetup(m, "shift+tab")
+		assert.Equal(t, stepArgs, m.step, "the first directory steps back to the args")
+
+		m = updateSetup(m, "esc")
+		m = updateSetup(m, "shift+tab")
+		assert.Equal(t, stepAgents, m.step, "the first agent steps back to the agent list")
+	})
+
+	t.Run("text wider than one key cannot reach a numeric field", func(t *testing.T) {
+		atSettings := func(t *testing.T) setupModel {
+			t.Helper()
+			m := atDirs(t)
+			for range 3 {
+				m = updateSetup(m, "enter")
+			}
+			require.Equal(t, stepSettings, m.step)
+			return m
+		}
+
+		cases := []struct {
+			name string
+			key  tea.KeyMsg
+			want string
+		}{
+			{
+				// A fast burst arrives as one event, so the key is not one rune.
+				name: "a coalesced burst",
+				key:  tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("9x")},
+				want: "3",
+			},
+			{
+				name: "a bracketed paste",
+				key:  tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("abc"), Paste: true},
+				want: "3",
+			},
+			{
+				name: "a multi-byte rune",
+				key:  tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("é")},
+				want: "3",
+			},
+			{
+				name: "digits still go in",
+				key:  tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("42")},
+				want: "342",
+			},
+		}
+
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				m := atSettings(t)
+
+				result, _ := m.Update(tc.key)
+				m = result.(setupModel)
+
+				// The confirm screen prints this value and answers() writes it,
+				// so the two only agree while it stays a number.
+				assert.Equal(t, tc.want, m.maxConcurrent.Value())
+				assert.Equal(t, tc.want, strconv.Itoa(m.answers().MaxConcurrentAgents),
+					"the confirm screen shows the field, so the written config has to be the same number")
+			})
+		}
+	})
 }
 
 func TestSetupModel_DirsInput(t *testing.T) {
@@ -395,9 +566,9 @@ func TestSetupModel_SettingsNavigation(t *testing.T) {
 	m := setupModel{
 		step:          stepSettings,
 		settingCursor: 0,
-		maxConcurrent: "3",
+		maxConcurrent: newSetupInput("3"),
 		webEnabled:    true,
-		webPort:       "8080",
+		webPort:       newSetupInput("8080"),
 	}
 
 	// Navigate down to web_enabled (cursor 1), then to web_port (cursor 2)
@@ -417,8 +588,49 @@ func TestSetupModel_SettingsNavigation(t *testing.T) {
 	assert.Equal(t, 0, m.settingCursor)
 }
 
+func TestSetupModel_PipelineChoice(t *testing.T) {
+	cases := []struct {
+		name string
+		keys []string
+		want string
+	}{
+		{name: "the first choice needs no navigation", want: "default"},
+		{name: "j selects the multi-stage pipeline", keys: []string{"j"}, want: "implement-review-commit"},
+		{name: "the last choice runs no pipeline", keys: []string{"j", "j"}, want: ""},
+		{name: "the cursor stops at the last choice", keys: []string{"j", "j", "j"}, want: ""},
+		{name: "the cursor stops at the first choice", keys: []string{"k"}, want: "default"},
+		{name: "k walks back up", keys: []string{"j", "j", "k"}, want: "implement-review-commit"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := setupModel{step: stepPipelines, selectedAgents: []string{"claude"}, argsInputs: map[string]textinput.Model{"claude": newSetupInput("")}}
+			for _, k := range tc.keys {
+				m = updateSetup(m, k)
+			}
+
+			view := m.View()
+			assert.Contains(t, view, "Which one do new tickets run?")
+			// Every choice carries its own lines, so adding one to the table is
+			// all it takes to list it.
+			for _, p := range setupPipelines {
+				if p.name != "" {
+					assert.Contains(t, view, p.name)
+				}
+				for _, line := range p.desc {
+					assert.Contains(t, view, line)
+				}
+			}
+
+			m = updateSetup(m, "enter")
+			assert.Equal(t, stepConfirm, m.step)
+			assert.Equal(t, tc.want, m.answers().DefaultPipeline)
+		})
+	}
+}
+
 func TestSetupModel_Confirm(t *testing.T) {
-	m := setupModel{step: stepConfirm, selectedAgents: []string{"claude"}, argsInputs: map[string]string{"claude": ""}, dirFields: [3]string{"a", "b", "c"}, dirLabels: [3]string{"d", "e", "f"}, maxConcurrent: "3", webPort: "8080", webEnabled: true}
+	m := setupModel{step: stepConfirm, selectedAgents: []string{"claude"}, argsInputs: map[string]textinput.Model{"claude": newSetupInput("")}, dirFields: newSetupInputs("a", "b", "c"), dirLabels: [3]string{"d", "e", "f"}, maxConcurrent: newSetupInput("3"), webPort: newSetupInput("8080"), webEnabled: true}
 
 	// View should contain summary
 	view := m.View()
@@ -430,25 +642,41 @@ func TestSetupModel_Confirm(t *testing.T) {
 	assert.True(t, m.done)
 
 	// 'n' cancels
-	m2 := setupModel{step: stepConfirm, selectedAgents: []string{"claude"}, argsInputs: map[string]string{"claude": ""}, dirFields: [3]string{"a", "b", "c"}, dirLabels: [3]string{"d", "e", "f"}, maxConcurrent: "3", webPort: "8080"}
+	m2 := setupModel{step: stepConfirm, selectedAgents: []string{"claude"}, argsInputs: map[string]textinput.Model{"claude": newSetupInput("")}, dirFields: newSetupInputs("a", "b", "c"), dirLabels: [3]string{"d", "e", "f"}, maxConcurrent: newSetupInput("3"), webPort: newSetupInput("8080")}
 	m2 = updateSetup(m2, "n")
 	assert.True(t, m2.cancelled)
 }
 
 func TestSetupModel_CtrlCCancels(t *testing.T) {
-	m := initialSetupModel()
-	m = updateSetup(m, "ctrl+c")
-	assert.True(t, m.cancelled)
+	// A focused text field must not swallow it either.
+	steps := []int{stepAgents, stepArgs, stepDirs, stepSettings, stepPipelines, stepConfirm}
+
+	for _, step := range steps {
+		t.Run(fmt.Sprintf("step %d", step), func(t *testing.T) {
+			m := initialSetupModel()
+			m.step = step
+			m.selectedAgents = []string{"claude"}
+			m.argsInputs["claude"] = newSetupInput("")
+			m.argsEditing = step == stepArgs
+			m.dirEditing = step == stepDirs
+			m.settingEditing = step == stepSettings
+
+			m = updateSetup(m, "ctrl+c")
+
+			assert.True(t, m.cancelled)
+			assert.False(t, m.done, "a cancelled wizard writes no config")
+		})
+	}
 }
 
 func TestSetupModel_Answers(t *testing.T) {
 	m := setupModel{
 		selectedAgents: []string{"claude"},
-		argsInputs:     map[string]string{"claude": "--dangerously-skip-permissions"},
-		dirFields:      [3]string{"~/.kontora/tickets", "~/.kontora/logs", "~/.kontora/worktrees"},
-		maxConcurrent:  "5",
+		argsInputs:     map[string]textinput.Model{"claude": newSetupInput("--dangerously-skip-permissions")},
+		dirFields:      newSetupInputs("~/.kontora/tickets", "~/.kontora/logs", "~/.kontora/worktrees"),
+		maxConcurrent:  newSetupInput("5"),
 		webEnabled:     true,
-		webPort:        "9090",
+		webPort:        newSetupInput("9090"),
 	}
 
 	ans := m.answers()
@@ -476,9 +704,9 @@ func TestSetupModel_Answers_InvalidPort(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			m := setupModel{
 				selectedAgents: []string{"claude"},
-				argsInputs:     map[string]string{"claude": ""},
-				maxConcurrent:  "3",
-				webPort:        tc.port,
+				argsInputs:     map[string]textinput.Model{"claude": newSetupInput("")},
+				maxConcurrent:  newSetupInput("3"),
+				webPort:        newSetupInput(tc.port),
 			}
 			ans := m.answers()
 			assert.Equal(t, tc.wantPort, ans.WebPort)

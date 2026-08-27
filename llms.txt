@@ -77,6 +77,8 @@ With explicit path and pipeline:
 kontora new --path ~/projects/myrepo --pipeline implement-review-commit "Add a health check endpoint"
 ```
 
+Without `--pipeline`, the ticket takes the pipeline of the project that owns the repository, then the top-level `default_pipeline`. When neither names one, the ticket runs a single agent on its description rather than a pipeline. `--pipeline none` asks for that on purpose.
+
 Web dashboard: open http://127.0.0.1:8080 (kanban board with live agent terminal view).
 
 TUI: `kontora` or `kontora ls`.

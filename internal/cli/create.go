@@ -56,9 +56,9 @@ func New(cfg *config.Config, opts NewOpts) (string, error) {
 		return "", fmt.Errorf("status must be \"open\" or \"todo\", got %q", opts.Status)
 	}
 
-	// Every creation path reaches New, so this is the one place where a
-	// project's defaults are stamped into the ticket.
-	opts.Pipeline, opts.Agent = cfg.ApplyProjectDefaults(opts.Path, opts.Pipeline, opts.Agent)
+	// Every creation path reaches New, so this is the one place where the
+	// project and top-level defaults are stamped into the ticket.
+	opts.Pipeline, opts.Agent = cfg.ResolveTicketDefaults(opts.Path, opts.Pipeline, opts.Agent)
 
 	// A name the config does not know would otherwise sit in the frontmatter
 	// until the daemon picked the ticket up and paused it.

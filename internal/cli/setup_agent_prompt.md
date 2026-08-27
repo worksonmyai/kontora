@@ -61,6 +61,9 @@ it and the user does not want it changed.
 - Where should tickets, logs, and git worktrees live?
 - Which repositories will run tickets? Each one that needs its own defaults
   becomes a `projects:` entry.
+- Which pipeline should a new ticket run when nothing names one? That answer is
+  `default_pipeline`. Without it, such a ticket runs one agent on its
+  description instead of a pipeline.
 - What git branch prefix should Kontora use for work branches?
 - How many agents may run at once?
 - Where must automation stop and wait for a human?
@@ -83,7 +86,8 @@ resume support still works behind those two wrappers.
 ## Config shape
 
 Top-level keys: `tickets_dir`, `logs_dir`, `worktrees_dir`, `branch_prefix`,
-`branch_naming`, `editor`, `default_agent`, `max_concurrent_agents`,
+`branch_naming`, `editor`, `default_agent`, `default_pipeline`,
+`max_concurrent_agents`,
 `auto_pick_up`, `instance_name`, `tmux_session`, `statuses`, `environment`,
 `hooks`, `resume_prompt`, `annotation_prompt`, `summary_model`, `web`,
 `agents`, `stages`, `pipelines`, `projects`, `plannotator`.
@@ -95,6 +99,7 @@ worktrees_dir: ~/.kontora/worktrees
 branch_prefix: kontora
 max_concurrent_agents: 3
 default_agent: claude
+default_pipeline: implement-review-commit
 
 web:
   enabled: true
@@ -180,6 +185,7 @@ The config fails to load when any of these does not hold:
 - `checkpoint_compaction_tokens` is non-negative. A positive value is valid only
   on a `pi` or `claude` agent, including a wrapped one such as `nono run -- pi`
   or `nono run -- claude`.
+- `default_pipeline`, when set, names a pipeline that exists.
 - No agent and no pipeline is named `none`. That word is the opt-out sentinel.
 - Every pipeline has at least one step.
 - Every pipeline step names a stage and an agent that exist.

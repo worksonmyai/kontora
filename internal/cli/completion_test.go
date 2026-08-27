@@ -213,6 +213,16 @@ func TestCompletion(t *testing.T) {
 	}
 }
 
+// TestEveryCommandIsGrouped guards the usage text: a verb whose Group is blank
+// or misspelled is printed under no heading at all.
+func TestEveryCommandIsGrouped(t *testing.T) {
+	for _, cmd := range Commands {
+		t.Run(cmd.Name, func(t *testing.T) {
+			assert.Contains(t, CommandGroups, cmd.Group)
+		})
+	}
+}
+
 // TestCompletionCoversEveryCommand is the guard against the lists drifting
 // apart: in every shell, every verb in the table has to be offered, every
 // ticket-taking verb has to complete ticket IDs, and every flag has to appear.

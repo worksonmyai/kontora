@@ -44,6 +44,7 @@ kontora new --path ~/projects/myrepo "Add a health check endpoint"
 
 ```yaml
 tickets_dir: ~/.kontora/tickets
+default_pipeline: default
 
 agents:
   claude:
@@ -160,6 +161,7 @@ pipelines:
 | `editor` | no | `$EDITOR` or `vi` | Editor for `kontora edit`. Falls back to `$EDITOR`, then `vi`. |
 | `pager` | no | none | Pager for `kontora view`, `logs` and `activity`, split on whitespace. Used only when stdout is a terminal. `$KONTORA_PAGER`, `$TICKET_PAGER` and `$PAGER` all outrank it, and it has no effect in remote mode, which reads no config. |
 | `default_agent` | no | (inferred) | Agent used for tickets without a pipeline. Defaults to `claude` if an agent with that name exists, otherwise inferred when there is exactly one agent. Must be set explicitly when multiple agents are defined and none is named `claude`. |
+| `default_pipeline` | no | — | Pipeline a new ticket takes when neither the command line nor a matching project names one (see [projects](#projects)). Unset, such a ticket runs one agent on its description instead. Must name a configured pipeline. |
 | `max_concurrent_agents` | no | `3` | Maximum number of agents running simultaneously. |
 | `instance_name` | no | `os.Hostname()` | Identifies this daemon when several run against one synced `tickets_dir`. Written to a ticket's `claimed_by` on pickup so daemons don't steal or kill each other's work (see [multi-machine tickets](tickets.md#running-on-multiple-machines)). Falls back to `default` if the hostname can't be read. Two machines that share a hostname must set this explicitly, or the protection can't tell them apart. |
 | `author` | no | the OS user | The name a note written by a person is signed with: the web composer's, and a bare `kontora note`. An agent's own note is signed with `$KONTORA_AGENT` instead, and Kontora's own with `kontora` (see [notes](tickets.md#notes)). Cannot contain `·`, a newline or `**`. |

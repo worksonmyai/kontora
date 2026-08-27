@@ -102,6 +102,42 @@ func TestDispatchCoversCommandTable(t *testing.T) {
 	}
 }
 
+func TestRenderUsage(t *testing.T) {
+	usage := renderUsage()
+
+	_, groups, ok := strings.Cut(usage, "\n")
+	require.True(t, ok, "usage has no line after the Usage: line")
+
+	lines := strings.Split(groups, "\n")
+	group := ""
+	seen := map[string]string{}
+	descColumn := map[string]int{}
+	for _, line := range lines {
+		switch {
+		case line == "":
+		case !strings.HasPrefix(line, "  "):
+			group = strings.TrimSuffix(line, ":")
+			assert.Contains(t, cli.CommandGroups, group, "unknown heading %q", line)
+		default:
+			fields := strings.Fields(line)
+			require.NotEmpty(t, fields)
+			verb := fields[0]
+			assert.Empty(t, seen[verb], "%q is listed under %q and %q", verb, seen[verb], group)
+			seen[verb] = group
+			descColumn[verb] = strings.Index(line, fields[1])
+		}
+	}
+
+	for _, cmd := range cli.Commands {
+		assert.Equal(t, cmd.Group, seen[cmd.Name], "%q is not listed under its own group", cmd.Name)
+	}
+	assert.Len(t, seen, len(cli.Commands))
+
+	// estimate-compaction is the longest verb, and must not push its own
+	// description past where every other one starts.
+	assert.Equal(t, descColumn["ls"], descColumn["estimate-compaction"])
+}
+
 func TestEstimateCompactionCommand(t *testing.T) {
 	for _, cmd := range cli.Commands {
 		if cmd.Name == "estimate-compaction" {

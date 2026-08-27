@@ -297,7 +297,7 @@ func resolveInitFields(cfg *config.Config, t *ticket.Ticket, req InitRequest) (p
 	if agent == "" {
 		agent = t.Agent
 	}
-	pipeline, agent = cfg.ApplyProjectDefaults(repoPath, pipeline, agent)
+	pipeline, agent = cfg.ResolveTicketDefaults(repoPath, pipeline, agent)
 
 	if pipeline != "" {
 		if steps, ok := cfg.Pipelines[pipeline]; !ok || len(steps) == 0 {

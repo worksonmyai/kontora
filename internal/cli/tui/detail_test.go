@@ -2,6 +2,7 @@ package tui
 
 import (
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/stretchr/testify/assert"
@@ -23,6 +24,21 @@ func testDetailTicket() web.TicketInfo {
 		Stages:   []string{"plan", "implement", "review"},
 		Body:     "This is the ticket body.\nLine 2.\nLine 3.",
 	}
+}
+
+func TestDetailModel_Schedule(t *testing.T) {
+	at := time.Date(2026, 9, 1, 9, 0, 0, 0, time.UTC)
+	info := testDetailTicket()
+	info.Status = "open"
+
+	assert.NotContains(t, newDetailModel(info, 100, 30).View(), "starts")
+
+	info.ScheduledAt = at.Format(time.RFC3339)
+	assert.Contains(t, newDetailModel(info, 100, 30).View(), at.Local().Format("Jan 02 15:04"))
+
+	// A value the parser rejects is shown as it stands rather than as a wrong time.
+	info.ScheduledAt = "next tuesday"
+	assert.Contains(t, newDetailModel(info, 100, 30).View(), "next tuesday")
 }
 
 func TestDetailModel_TabSwitching(t *testing.T) {

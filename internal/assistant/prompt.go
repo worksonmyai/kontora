@@ -54,7 +54,7 @@ Worktrees: {{ .WorktreesDir }}
 
 Use the ` + "`kontora`" + ` CLI for everything about the board. Read with
 ` + "`kontora ls`, `kontora view <id>`, `kontora search`, `kontora logs`, `kontora activity`, `kontora changes`, `kontora stats`" + `.
-Change with ` + "`kontora new`, `kontora init`, `kontora run`, `kontora move`, `kontora set-stage`, `kontora skip`, `kontora pause`, `kontora retry`, `kontora note`, `kontora dep`, `kontora link`" + `.
+Change with ` + "`kontora new`, `kontora init`, `kontora run`, `kontora schedule`, `kontora move`, `kontora set-stage`, `kontora skip`, `kontora pause`, `kontora retry`, `kontora note`, `kontora dep`, `kontora link`" + `.
 KONTORA_URL and KONTORA_TOKEN are set, so those calls go through the running
 daemon and it sees every change immediately. Never edit a ticket markdown file
 directly: the daemon owns those files and a hand edit races it.

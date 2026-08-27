@@ -18,8 +18,8 @@ search that matches nothing still exits 0.
 
 When `KONTORA_TICKET_ID` is set, this process is the agent running that ticket's
 current stage. You cannot change that ticket's status: `done`, `cancel`, `move`,
-`pause`, `retry`, `skip` and `set-stage` aimed at it are refused, as is
-`archive`. Kontora decides the next status from your exit code, so exit 0 when
+`pause`, `retry`, `skip`, `set-stage` and `schedule` aimed at it are refused, as
+is `archive`. Kontora decides the next status from your exit code, so exit 0 when
 the stage's work is done and non-zero when it is not.
 
 Record what you did with `note` and `summary`, which are never refused. Every
@@ -42,10 +42,10 @@ verb works normally against any other ticket.
 instead of at local files. Paths in `--path` then name directories on the
 daemon host.
 
-Supported: `ls`, `view`, `new`, `init`, `update`, `delete`, `run`, `pause`,
-`retry`, `cancel`, `done`, `move`, `skip`, `set-stage`, `note`, `summary`,
-`logs`, `activity`, `changes`, `stats`, `review`, `annotate`, `config`,
-`attach`.
+Supported: `ls`, `view`, `new`, `init`, `update`, `delete`, `run`, `schedule`,
+`pause`, `retry`, `cancel`, `done`, `move`, `skip`, `set-stage`, `note`,
+`summary`, `logs`, `activity`, `changes`, `stats`, `review`, `annotate`,
+`config`, `attach`.
 
 Rejected, because they act on local files: `edit`, `search`, `archive`,
 `estimate-compaction`, `sessions`, `doctor`, `start`, `setup`.
@@ -106,6 +106,8 @@ Exits 0 whether or not anything matched.
 - `--branch NAME` — work branch name.
 - `--base-branch NAME` — branch the work branch starts from.
 - `--status STATUS` — `open` or `todo`. Defaults to `todo`.
+- `--at TIME` — schedule pickup for an RFC 3339 instant.
+- `--after DURATION` — schedule pickup this long from now, e.g. `24h`.
 - `--description-file PATH` — read the body from a file, `-` for stdin.
 - `--quiet` — print only the new ticket id.
 
@@ -114,6 +116,11 @@ after a generated `# <title>` heading.
 
 A ticket created with `--status open` is never visible as `todo`, so a daemon
 with `auto_pick_up: true` cannot claim it before you finish editing it.
+
+`--at` and `--after` write `status: open` and `scheduled_at` in the same single
+write. Neither combines with the other, or with `--status todo`, and neither
+accepts an instant already in the past. A scheduled ticket has its repository
+checked at creation the way a `todo` one does.
 
 ## kontora view
 
@@ -166,6 +173,23 @@ In remote mode `--pipeline` and `--path` are both required.
 `kontora run TICKET_ID` — enqueue an `open` or `todo` ticket. Needs a running
 daemon. A ticket whose deps are not all closed is reported as blocked, naming
 them, rather than queued.
+
+## kontora schedule
+
+`kontora schedule TICKET_ID --at TIME | --after DURATION | --clear` — set or
+clear the time the daemon moves an `open` ticket to `todo`. Needs a running
+daemon. Exactly one of the three flags is required.
+
+- `--at TIME` — an RFC 3339 instant, stored normalized to UTC. An instant
+  already in the past is refused.
+- `--after DURATION` — a Go duration from now, resolved on this machine's clock.
+- `--clear` — remove the schedule. The ticket stays `open`.
+
+Scheduling a `todo` ticket returns it to `open` and drops it from the queue.
+Setting a schedule is refused on a running, closed or archived ticket, and while
+a Plannotator session or a pending annotation owns it; `--clear` is refused only
+while the ticket is running. `kontora run` clears the schedule and queues the
+ticket now.
 
 ## kontora pause
 

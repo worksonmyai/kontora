@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/worksonmyai/kontora/internal/ticket"
 )
@@ -83,6 +84,37 @@ func (s *Server) handleSetStage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.svc.SetStage(id, body.Stage); err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	tkt, err := s.svc.GetTicket(id)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, tkt)
+}
+
+// handleSchedule sets or clears a ticket's pickup time. The daemon normalizes
+// the timestamp, so the response carries what was actually stored.
+func (s *Server) handleSchedule(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+
+	var body ScheduleTicketRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON body"})
+		return
+	}
+	switch {
+	case body.Clear && body.ScheduledAt != "":
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "clear and scheduled_at contradict each other"})
+		return
+	case !body.Clear && body.ScheduledAt == "":
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "scheduled_at is required (or clear: true)"})
+		return
+	}
+
+	if err := s.svc.ScheduleTicket(id, body); err != nil {
 		writeServiceError(w, err)
 		return
 	}
@@ -380,6 +412,19 @@ func (s *Server) handleCreateTicket(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "status must be 'todo' or 'open'"})
 		return
 	}
+	// Checked here rather than left to the creation call, which reports a bad
+	// body as a failure to create the ticket.
+	if req.ScheduledAt != "" {
+		at, err := ticket.ParseSchedule(req.ScheduledAt)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		if ticket.SchedulePast(at, time.Now()) {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": ticket.FieldScheduledAt + " is in the past: " + ticket.FormatSchedule(at)})
+			return
+		}
+	}
 	req.Branch = strings.TrimSpace(req.Branch)
 	if req.Branch != "" && !validBranchName(req.Branch) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid branch name"})
@@ -413,8 +458,12 @@ func (s *Server) handleInit(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "path is required"})
 		return
 	}
-	if containsNewline(req.Pipeline) || containsNewline(req.Path) || containsNewline(req.Agent) {
+	if containsNewline(req.Pipeline) || containsNewline(req.Path) || containsNewline(req.Agent) || containsNewline(req.Status) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "fields must not contain newlines"})
+		return
+	}
+	if req.Status != "" && req.Status != "todo" && req.Status != "open" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "status must be 'todo' or 'open'"})
 		return
 	}
 	req.Branch = strings.TrimSpace(req.Branch)
@@ -804,6 +853,8 @@ func writeServiceError(w http.ResponseWriter, err error) {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 	case errors.Is(err, ticket.ErrNoteEmpty), errors.Is(err, ticket.ErrNoteAuthor),
 		errors.Is(err, ticket.ErrNoteEmoji), errors.Is(err, ticket.ErrNoteUnaddressable):
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+	case errors.Is(err, ErrInvalidSchedule):
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 	case errors.Is(err, ErrInvalidState):
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})

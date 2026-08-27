@@ -31,12 +31,16 @@ type View struct {
 	Branch     string
 	BaseBranch string
 	ClaimedBy  string
-	Stages     []string
-	History    []HistoryView
-	Body       string
-	LastError  string
-	LastLog    string
-	Summary    string
+	// ScheduledAt is the raw scheduled_at frontmatter value, so a malformed
+	// hand edit is shown rather than hidden. It is a board field, not a
+	// detail-only one: an Open card renders it.
+	ScheduledAt string
+	Stages      []string
+	History     []HistoryView
+	Body        string
+	LastError   string
+	LastLog     string
+	Summary     string
 	// FinalSummary is the ticket-level outcome, not the latest run's summary.
 	FinalSummary string
 	// Deps, Links and Parent are the relation ids as written in the frontmatter.
@@ -105,6 +109,7 @@ func BuildView(cfg *config.Config, t *ticket.Ticket, detail bool) View {
 		Branch:      t.Branch,
 		BaseBranch:  t.BaseBranch,
 		ClaimedBy:   t.ClaimedBy,
+		ScheduledAt: t.ScheduledAt,
 		Deps:        t.Deps,
 		Links:       t.Links,
 		Parent:      t.Parent,

@@ -3,6 +3,8 @@
 // bottom sheets for actions and the new-ticket form. It reuses the desktop
 // board's ticket data and operations — only the layout and a few view-state
 // fields (activeColumn, detailTab, sheet) are its own.
+import { newCreateForm } from './create.js';
+
 export function kontoraMobile() {
   return {
     // The status column currently shown on the board, clamped to a valid index.
@@ -137,7 +139,7 @@ export function kontoraMobile() {
       this.sheet = { type: 'actions', ticket: t };
     },
     async openNewSheet() {
-      this.createForm = { title: '', path: '', pipeline: '', agent: '', status: 'todo', body: '', branch: '', base_branch: '' };
+      this.createForm = newCreateForm();
       this.createTouched = { pipeline: false, agent: false };
       this.error = null;
       this.sheet = { type: 'new' };
@@ -160,6 +162,26 @@ export function kontoraMobile() {
 
     // Action rows for the actions sheet, status by status. Each row closes the
     // sheet, then runs against a real endpoint (or opens the relevant modal).
+    // The phone's schedule editor. It is a sheet rather than an inline row: the
+    // detail overlay has no spare width for a date field and its buttons.
+    openScheduleSheet(t) {
+      this.openScheduleEditor(t);
+      this.sheet = { type: 'schedule', ticket: t };
+    },
+
+    async submitScheduleMobile(t) {
+      await this.submitSchedule(t);
+      if (!this.scheduleError) this.closeSheet();
+    },
+
+    // The actions sheet closes before the clear is posted, and scheduleError
+    // only renders in the detail rail and the schedule sheet, neither of which
+    // is on screen. The toast is the surface a phone has left.
+    async clearScheduleMobile(t) {
+      await this.clearTicketSchedule(t);
+      if (this.scheduleError) this.error = this.scheduleError;
+    },
+
     mobileSheetActions(t) {
       if (!t) return [];
       var self = this, rows = [];
@@ -168,6 +190,12 @@ export function kontoraMobile() {
       var move = function(st) { return function() { self.moveTicketVia(t.id, 'move', { status: st }); }; };
       var s = t.status;
       if ((s === 'open' || s === 'todo') && !t.kontora) add('Initialize ticket', 'warn', function() { self.openInitModal(t); });
+      // On a scheduled ticket "Queue agent" is the run-now action: the daemon
+      // drops the timestamp in the same save.
+      if (this.canSchedule(t)) {
+        add(t.scheduled_at ? 'Reschedule' : 'Schedule for later', 'default', function() { self.openScheduleSheet(t); });
+        if (t.scheduled_at) add('Clear schedule', 'default', function() { self.clearScheduleMobile(t); });
+      }
       if (s === 'open') {
         add('Queue agent', 'primary', run('run'));
         add('Move to Human Review', 'default', move('human_review'));

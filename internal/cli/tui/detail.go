@@ -173,6 +173,9 @@ func (m detailModel) View() string {
 		writeMeta(&b, "stage", strings.Join(stages, styleFaint.Render(" → ")))
 	}
 
+	if m.ticket.ScheduledAt != "" {
+		writeMeta(&b, "starts", cli.FormatSchedule(m.ticket.ScheduledAt))
+	}
 	dur := ticketDuration(m.ticket)
 	if dur != "—" {
 		writeMeta(&b, "in progress", dur)

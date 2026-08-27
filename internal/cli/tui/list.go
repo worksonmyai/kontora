@@ -489,11 +489,15 @@ func renderCardLine(t web.TicketInfo, colW int, selected bool, line int) string 
 			agent = "—"
 		}
 		content = "  " + truncateStr(stage+" · "+agent, colW-2)
-	case 3: // Non-Kontora marker or blank
-		if !t.Kontora {
+	case 3: // Non-kontora marker, scheduled pickup, or blank
+		// The marker comes first: a ticket that is both would otherwise lose the
+		// one of the two that says it will not run at all. A schedule only means
+		// anything in open, which is the status the promotion takes it out of.
+		switch {
+		case !t.Kontora:
 			content = "  " + truncateStr("not a kontora ticket", colW-2)
-		} else {
-			content = ""
+		case t.ScheduledAt != "" && ticket.Status(t.Status) == ticket.StatusOpen:
+			content = "  " + truncateStr("starts "+cli.FormatSchedule(t.ScheduledAt), colW-2)
 		}
 	}
 	content = padRight(content, colW)

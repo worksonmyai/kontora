@@ -88,6 +88,14 @@ export function kontoraBoard() {
           + '<span data-since="' + esc(ticket.waiting_since || '') + '">' + esc(this.waitingFor(ticket)) + '</span></span>'
         : '';
 
+      // Open is the only column a schedule means anything in: the promotion is
+      // what takes the ticket out of it.
+      var schedLabel = col.key === 'open' ? this.scheduleLabel(ticket) : '';
+      var scheduled = schedLabel
+        ? '<span class="sched-chip" data-tip="' + esc('Starts ' + schedLabel) + '">'
+          + '<span aria-hidden="true">◷</span>' + esc(schedLabel) + '</span>'
+        : '';
+
       var notKontoraBadge = (!ticket.kontora && ticket.status !== 'open')
         ? '<span class="px-1.5 py-px rounded-full border border-warn/20 bg-warn/10 text-warn text-[10px] font-mono shrink-0">not a kontora ticket</span>'
         : '';
@@ -133,7 +141,7 @@ export function kontoraBoard() {
       var badgeRow = '';
       var badgeParts = (this.showPipelineBadges
         ? '<span class="pipe-tag truncate">' + esc(this.ticketTagLabel(ticket)) + '</span>'
-        : '') + notKontoraBadge + glyph + waiting;
+        : '') + notKontoraBadge + glyph + scheduled + waiting;
       if (badgeParts) {
         badgeRow = '<div class="flex items-center gap-2 min-w-0 pr-5">' + badgeParts + '</div>';
       }
@@ -198,6 +206,7 @@ export function kontoraBoard() {
               ticket.kontora ? 1 : 0, ticket.started_at, ticket.created_at,
               ticket.waiting_for_input ? 1 : 0, ticket.waiting_since,
               ticket.waiting_tool, ticket.waiting_question,
+              ticket.scheduled_at,
               this.reviewFinishedAt(ticket),
               (ticket.stages || []).join('>'),
               this._cardRelationSummary(ticket),

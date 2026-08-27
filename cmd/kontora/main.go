@@ -84,6 +84,7 @@ var handlers = map[string]func(){
 	"delete":              cmdDelete,
 	"init":                cmdInit,
 	"run":                 cmdRun,
+	"schedule":            cmdSchedule,
 	"done":                func() { cmdAction("done") },
 	"move":                cmdMove,
 	"note":                cmdNote,
@@ -319,6 +320,7 @@ func cmdInit() {
 			Pipeline: *pipeline,
 			Path:     *repoPath,
 			Agent:    *agent,
+			Status:   *status,
 		}); err != nil {
 			log.Fatal(err)
 		}
@@ -405,6 +407,8 @@ func cmdNew() {
 	branch := fs.String("branch", "", "work branch name (defaults to <branch_prefix>/<id>)")
 	baseBranch := fs.String("base-branch", "", "branch the work branch starts from (defaults to the repo default branch)")
 	status := fs.String("status", "", "initial status, open or todo (defaults to todo)")
+	at := fs.String("at", "", "schedule pickup for an RFC 3339 instant, e.g. 2026-09-01T09:00:00+02:00")
+	after := fs.String("after", "", "schedule pickup this long from now, e.g. 24h")
 	descriptionFile := fs.String("description-file", "", "read the ticket description from a file ('-' for stdin)")
 	quiet := fs.Bool("quiet", false, "print only the new ticket ID")
 	urlFlag, tokenFlag := addRemoteFlags(fs)
@@ -417,9 +421,16 @@ func cmdNew() {
 		log.Fatal("title is required: kontora new [flags] TITLE")
 	}
 
+	scheduledAt, err := cli.ResolveSchedule(*at, *after, time.Now())
+	if err != nil {
+		log.Fatal(err)
+	}
+	if scheduledAt != "" && *status != "" && *status != "open" {
+		log.Fatalf("a scheduled ticket is created open, so --status %s contradicts --at/--after", *status)
+	}
+
 	var body string
 	if *descriptionFile != "" {
-		var err error
 		body, err = cli.ReadDescription(*descriptionFile, os.Stdin)
 		if err != nil {
 			log.Fatal(err)
@@ -433,14 +444,15 @@ func cmdNew() {
 			log.Fatal("remote new requires --path (a path on the daemon host)")
 		}
 		info, err := rc.CreateTicket(web.CreateTicketRequest{
-			Title:      title,
-			Path:       *repoPath,
-			Pipeline:   *pipeline,
-			Agent:      *agent,
-			Status:     *status,
-			Body:       body,
-			Branch:     *branch,
-			BaseBranch: *baseBranch,
+			Title:       title,
+			Path:        *repoPath,
+			Pipeline:    *pipeline,
+			Agent:       *agent,
+			Status:      *status,
+			Body:        body,
+			Branch:      *branch,
+			BaseBranch:  *baseBranch,
+			ScheduledAt: scheduledAt,
 		})
 		if err != nil {
 			log.Fatal(err)
@@ -452,7 +464,6 @@ func cmdNew() {
 	// Default to current git root if --path not specified.
 	path := *repoPath
 	if path == "" {
-		var err error
 		path, err = cli.GitRoot()
 		if err != nil {
 			log.Fatal(err)
@@ -465,15 +476,16 @@ func cmdNew() {
 	// with --status open is never visible as todo for a watching daemon to
 	// claim.
 	id, err := cli.New(cfg, cli.NewOpts{
-		Path:       path,
-		Pipeline:   *pipeline,
-		Agent:      *agent,
-		Status:     *status,
-		Title:      title,
-		Body:       body,
-		Branch:     *branch,
-		BaseBranch: *baseBranch,
-		NoEdit:     true,
+		Path:        path,
+		Pipeline:    *pipeline,
+		Agent:       *agent,
+		Status:      *status,
+		Title:       title,
+		Body:        body,
+		Branch:      *branch,
+		BaseBranch:  *baseBranch,
+		ScheduledAt: scheduledAt,
+		NoEdit:      true,
 	})
 	if err != nil {
 		log.Fatal(err)
@@ -712,6 +724,56 @@ func runOutcome(blockers []string) string {
 		return "queued"
 	}
 	return "blocked by " + strings.Join(blockers, ", ")
+}
+
+// cmdSchedule sets or clears a ticket's pickup time. --after is resolved to an
+// instant here, so the delay is measured from when the command was typed.
+func cmdSchedule() {
+	fs := flag.NewFlagSet("schedule", flag.ExitOnError)
+	configPath, ticketsDir := addStoreFlags(fs)
+	at := fs.String("at", "", "pickup time as an RFC 3339 instant, e.g. 2026-09-01T09:00:00+02:00")
+	after := fs.String("after", "", "pickup time this long from now, e.g. 24h")
+	clearFlag := fs.Bool("clear", false, "remove the schedule and leave the ticket open")
+	urlFlag, tokenFlag := addRemoteFlags(fs)
+	taskID := parseTicketFlags(fs, os.Args[2:])
+	if taskID == "" {
+		log.Fatal("ticket ID is required: kontora schedule TICKET_ID --at TIME | --after DURATION | --clear")
+	}
+	rejectSelfMove("schedule", taskID)
+
+	scheduledAt, err := cli.ResolveSchedule(*at, *after, time.Now())
+	if err != nil {
+		log.Fatal(err)
+	}
+	switch {
+	case *clearFlag && scheduledAt != "":
+		log.Fatal("--clear removes the schedule, so it cannot be combined with --at or --after")
+	case !*clearFlag && scheduledAt == "":
+		log.Fatal("one of --at, --after or --clear is required: kontora schedule TICKET_ID --after 24h")
+	}
+
+	req := web.ScheduleTicketRequest{ScheduledAt: scheduledAt, Clear: *clearFlag}
+	outcome := "scheduled for " + cli.FormatSchedule(scheduledAt)
+	if *clearFlag {
+		outcome = "schedule cleared"
+	}
+
+	if rc := remoteClient(*urlFlag, *tokenFlag); rc != nil {
+		id := mustResolveRemote(rc, taskID)
+		if err := rc.Schedule(id, req); err != nil {
+			log.Fatal(err)
+		}
+		confirm(id, outcome)
+		return
+	}
+
+	cfg := mustLoadStoreConfig(*configPath, *ticketsDir)
+	id := mustResolveLocal(cfg, taskID)
+
+	if err := cli.Schedule(cfg, id, req); err != nil {
+		log.Fatal(err)
+	}
+	confirm(id, outcome)
 }
 
 func cmdNote() {

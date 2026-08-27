@@ -304,6 +304,10 @@ export function kontoraTickets() {
             this.selectedTicket.status = ticket.status;
             this.selectedTicket.stage = ticket.stage;
             this.selectedTicket.attempt = ticket.attempt;
+            // A schedule set or cleared by the CLI, by another browser, or by
+            // the daemon's own promotion has to reach the panel's controls even
+            // while the body is being typed into. It is not an edited field.
+            this.selectedTicket.scheduled_at = ticket.scheduled_at;
             // The notes tab reads the same ticket, so a note arriving from
             // `kontora note` or a daemon pause has to land even while the body
             // is being typed into. Notes are not an edited field.

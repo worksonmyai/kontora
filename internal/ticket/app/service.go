@@ -141,6 +141,14 @@ func (s *Service) SetStatus(id string, status ticket.Status) (Result, error) {
 	if err := st.Ticket.SetField("annotation_return_status", ""); err != nil {
 		return Result{}, fmt.Errorf("clearing annotation_return_status: %w", err)
 	}
+	// A schedule only means "move this open ticket to todo later". A move
+	// anywhere else answers that already, so leaving the timestamp behind would
+	// have the daemon promote the ticket a second time.
+	if status != ticket.StatusOpen {
+		if err := st.Ticket.ClearSchedule(); err != nil {
+			return Result{}, fmt.Errorf("clearing %s: %w", ticket.FieldScheduledAt, err)
+		}
+	}
 
 	if status == ticket.StatusDone {
 		now := time.Now().UTC()
@@ -194,6 +202,9 @@ func (s *Service) Retry(id string) (Result, error) {
 	}
 	if err := st.Ticket.SetField("last_error", ""); err != nil {
 		return Result{}, fmt.Errorf("clearing last_error: %w", err)
+	}
+	if err := st.Ticket.ClearSchedule(); err != nil {
+		return Result{}, fmt.Errorf("clearing %s: %w", ticket.FieldScheduledAt, err)
 	}
 
 	if err := s.repo.Save(st); err != nil {
@@ -263,6 +274,9 @@ func (s *Service) Skip(id string) (Result, error) {
 
 	if err := t.SetField("last_error", ""); err != nil {
 		return Result{}, fmt.Errorf("clearing last_error: %w", err)
+	}
+	if err := t.ClearSchedule(); err != nil {
+		return Result{}, fmt.Errorf("clearing %s: %w", ticket.FieldScheduledAt, err)
 	}
 
 	if err := s.repo.Save(st); err != nil {
@@ -384,6 +398,14 @@ func (s *Service) Init(id string, req InitRequest) (Result, error) {
 	if err := t.SetField("status", status); err != nil {
 		return Result{}, fmt.Errorf("setting status: %w", err)
 	}
+	// Queueing a scheduled ticket through the init form is the person saying
+	// "start it now", so the timestamp goes with the move. An init that leaves
+	// the ticket open keeps it.
+	if status != string(ticket.StatusOpen) {
+		if err := t.ClearSchedule(); err != nil {
+			return Result{}, fmt.Errorf("clearing %s: %w", ticket.FieldScheduledAt, err)
+		}
+	}
 
 	if pipeline != "" {
 		stageName := req.Stage
@@ -420,62 +442,6 @@ func (s *Service) Init(id string, req InitRequest) (Result, error) {
 	s.runtime.ReconcileDependencies(resolved)
 	s.runtime.BroadcastUpdated(resolved)
 	return Result{ID: resolved, Status: status}, nil
-}
-
-// Run enqueues a ticket in open or todo status for processing.
-// For open tickets it transitions the status to todo first.
-func (s *Service) Run(id string) (Result, error) {
-	resolved, err := s.repo.Resolve(id)
-	if err != nil {
-		return Result{}, err
-	}
-	st, err := s.repo.Get(resolved)
-	if err != nil {
-		return Result{}, err
-	}
-
-	t := st.Ticket
-	if !t.Kontora {
-		return Result{}, fmt.Errorf("%w: ticket is not initialized", ErrInvalidState)
-	}
-
-	switch t.Status { //nolint:exhaustive
-	case ticket.StatusOpen:
-		if err := t.SetField("status", string(ticket.StatusTodo)); err != nil {
-			return Result{}, fmt.Errorf("setting status: %w", err)
-		}
-		if err := t.SetField("last_error", ""); err != nil {
-			return Result{}, fmt.Errorf("clearing last_error: %w", err)
-		}
-		if err := s.repo.Save(st); err != nil {
-			return Result{}, err
-		}
-	case ticket.StatusTodo:
-		// Already todo — just enqueue below.
-	default:
-		return Result{}, fmt.Errorf("%w: cannot run ticket in status %s (must be open or todo)", ErrInvalidState, t.Status)
-	}
-
-	s.runtime.Enqueue(t)
-	s.runtime.ReconcileDependencies(resolved)
-	s.runtime.BroadcastUpdated(resolved)
-	// The ticket is todo either way; whether it will actually run is a property
-	// of the graph, so the caller is told rather than left to say "queued".
-	return Result{ID: resolved, Status: string(ticket.StatusTodo), Blockers: s.blockers(t)}, nil
-}
-
-// blockers returns the unresolved dependency ids of a ticket. A store it cannot
-// read reports none: the queue guard is the authority, and this is only what the
-// command line says.
-func (s *Service) blockers(t *ticket.Ticket) []string {
-	if len(t.Deps) == 0 {
-		return nil
-	}
-	index, err := s.index()
-	if err != nil {
-		return nil
-	}
-	return ticket.Classify(t, index).Blockers
 }
 
 // AgentForStage returns the agent configured for a pipeline stage.

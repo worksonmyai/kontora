@@ -213,7 +213,7 @@ kontora logs <id>
 kontora attach <id>   # live terminal over WebSocket
 ```
 
-Remote mode needs no local config file. It supports `ls`, `view`, `new`, `init`, `update`, `delete`, `run`, `pause`, `retry`, `cancel`, `done`, `move`, `skip`, `set-stage`, `note`, `summary`, `logs`, `config`, and `attach`. Verbs that act on local files (`edit`, `search`, `archive`, `doctor`, `start`, `setup`) are rejected in remote mode. `fmt` and `completion` touch neither the daemon nor a config file, so they keep working. Configure the daemon host by running `kontora setup` there. Paths passed to `kontora new --path` refer to the daemon host's filesystem, not the caller's.
+Remote mode needs no local config file. It supports `ls`, `view`, `new`, `init`, `update`, `delete`, `run`, `schedule`, `pause`, `retry`, `cancel`, `done`, `move`, `skip`, `set-stage`, `note`, `summary`, `logs`, `config`, and `attach`. Verbs that act on local files (`edit`, `search`, `archive`, `doctor`, `start`, `setup`) are rejected in remote mode. `fmt` and `completion` touch neither the daemon nor a config file, so they keep working. Configure the daemon host by running `kontora setup` there. Paths passed to `kontora new --path` refer to the daemon host's filesystem, not the caller's.
 
 > [!WARNING]
 > The token is the only thing gating remote access, and the default config runs agents with `--dangerously-skip-permissions` (effectively remote code execution). On a tailnet the transport is already encrypted, so plain HTTP is acceptable. On any untrusted network, put the daemon behind TLS (e.g. a reverse proxy) — the token alone is sent in clear over plain HTTP.

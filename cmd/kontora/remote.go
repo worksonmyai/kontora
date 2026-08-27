@@ -53,6 +53,7 @@ func remoteListItem(t web.TicketInfo) cli.ListItem {
 		Deps:        refIDs(t.Deps),
 		Links:       refIDs(t.Links),
 		Parent:      refID(t.Parent),
+		ScheduledAt: t.ScheduledAt,
 	}
 }
 
@@ -93,6 +94,9 @@ func printRemoteTicket(w io.Writer, t web.TicketInfo) {
 	}
 	if t.Branch != "" {
 		fmt.Fprintf(w, "Branch:   %s\n", t.Branch)
+	}
+	if t.ScheduledAt != "" {
+		fmt.Fprintf(w, "Starts:   %s\n", cli.FormatSchedule(t.ScheduledAt))
 	}
 	if t.LastError != "" {
 		fmt.Fprintf(w, "Error:    %s\n", t.LastError)

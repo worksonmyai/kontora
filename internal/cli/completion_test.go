@@ -34,6 +34,8 @@ func TestCompletion(t *testing.T) {
 				"'__fish_seen_subcommand_from logs' -l stage -d 'Stage name' -r",
 				"'__fish_seen_subcommand_from archive' -l status -d 'Only archive tickets with this status' -x -a 'done cancelled closed'",
 				"'__fish_seen_subcommand_from delete' -s f",
+				"'__fish_seen_subcommand_from schedule' -l at -d 'Pickup time as an RFC 3339 instant' -r",
+				"'__fish_seen_subcommand_from schedule' -l clear",
 			},
 		},
 		{

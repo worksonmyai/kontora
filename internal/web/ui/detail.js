@@ -1,4 +1,4 @@
-import { runSeconds } from './format.js';
+import { isoToLocalInput, localInputToISO, runSeconds, scheduleMinLocal } from './format.js';
 import { highlightMarkdown } from './markdown.js';
 import { termState } from './terminal.js';
 
@@ -38,6 +38,8 @@ export function kontoraDetail() {
       this.logViewLoading = false;
       this._resetActivity();
       this.setStageOpen = false;
+      this.scheduleEditing = false;
+      this.scheduleError = null;
       this.ticketChanges = null;
       this.collapsedStages = {};
       this.relExpanded = {};
@@ -500,6 +502,111 @@ export function kontoraDetail() {
       } finally {
         this.deleteSubmitting = false;
       }
+    },
+
+    // Whether the panel offers schedule controls. An uninitialized ticket has
+    // no pickup to postpone, and a later status has already been picked up. The
+    // daemon holds the rest of the rules, an open annotation pass among them,
+    // and its refusal is what the editor shows.
+    canSchedule(ticket) {
+      return !!ticket && !!ticket.kontora && ['open', 'todo'].includes(ticket.status);
+    },
+
+    // A ticket's scheduled pickup as local wall time, or "" when it has none.
+    // A value the daemon could not parse is shown as it stands, so a bad hand
+    // edit is visible rather than silently dropped.
+    //
+    // The pattern is the daemon's RFC 3339, not what Date accepts: Date reads
+    // "2026-09-01" as a valid instant, and rendering a time for a value the
+    // daemon will never fire is worse than showing the text.
+    scheduleLabel(ticket) {
+      var raw = ticket && ticket.scheduled_at;
+      if (!raw) return '';
+      var rfc3339 = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/;
+      if (!rfc3339.test(raw) || isNaN(new Date(raw).getTime())) return raw;
+      return this.formatAbsDate(raw);
+    },
+
+    // The min the schedule inputs carry, recomputed whenever the editor opens so
+    // it never sits behind the clock.
+    scheduleMin() {
+      return scheduleMinLocal();
+    },
+
+    // ticket defaults to the open one; the phone's sheet passes the card it was
+    // opened from, which is not always what the detail overlay holds.
+    openScheduleEditor(ticket) {
+      var t = ticket || this.selectedTicket;
+      if (!this.canSchedule(t)) return;
+      this.scheduleDraft = isoToLocalInput(t.scheduled_at);
+      this.scheduleError = null;
+      this.scheduleEditing = true;
+    },
+
+    closeScheduleEditor() {
+      if (this.scheduleSubmitting) return;
+      this.scheduleEditing = false;
+      this.scheduleError = null;
+    },
+
+    async submitSchedule(ticket) {
+      var t = ticket || this.selectedTicket;
+      var iso = localInputToISO(this.scheduleDraft);
+      if (!iso) {
+        this.scheduleError = 'Enter a date and a time.';
+        return;
+      }
+      // A zoneless input cannot spell the repeated hour of a DST fall-back, so
+      // saving an untouched draft would move such a pickup an hour. An
+      // unchanged draft asks for nothing, so it sends nothing.
+      if (t && this.scheduleDraft === isoToLocalInput(t.scheduled_at)) {
+        this.scheduleEditing = false;
+        this.scheduleError = null;
+        return;
+      }
+      await this._postSchedule(ticket, { scheduled_at: iso });
+    },
+
+    async clearTicketSchedule(ticket) {
+      await this._postSchedule(ticket, { clear: true });
+    },
+
+    async _postSchedule(ticket, body) {
+      var t = ticket || this.selectedTicket;
+      if (!t || this.scheduleSubmitting) return;
+      this.scheduleSubmitting = true;
+      this.scheduleError = null;
+      try {
+        const res = await fetch('/api/tickets/' + t.id + '/schedule', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          this.scheduleError = data.error || 'Schedule failed';
+          return;
+        }
+        this._applyScheduled(data);
+        this.scheduleEditing = false;
+      } catch (e) {
+        this.scheduleError = 'Schedule failed: ' + e.message;
+      } finally {
+        this.scheduleSubmitting = false;
+      }
+    },
+
+    // Fold the daemon's answer back into the board and the open ticket. The
+    // response is the whole ticket, so it also carries the status change a
+    // schedule makes to a todo ticket.
+    _applyScheduled(updated) {
+      if (!updated || !updated.id) return;
+      var idx = this.tickets.findIndex(t => t.id === updated.id);
+      if (idx >= 0) this.tickets[idx] = this.boardEntry(updated);
+      // The schedule route answers with the detail projection, body included,
+      // so the open ticket can be replaced whole.
+      if (this.selectedTicket?.id === updated.id) this.selectedTicket = updated;
+      this.recomputeBoard();
     },
 
     ticketActionWouldStart(endpoint, body) {

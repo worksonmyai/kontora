@@ -47,9 +47,6 @@ func (NoopRuntime) ReconcileDependencies(string) {}
 type Result struct {
 	ID     string
 	Status string
-	// Blockers are the unresolved dependency ids of a ticket that reached todo
-	// but cannot run yet. Empty means nothing holds it back.
-	Blockers []string
 }
 
 // RelationResult reports what a relation mutation resolved to and which ticket

@@ -87,8 +87,8 @@ work is done and non-zero when it is not; the pipeline reads that and moves the
 ticket itself.
 
 Do not set the status yourself. The kontora verbs done, cancel, move, pause,
-retry, skip and set-stage are refused on {{ .Ticket }} while you are its stage,
-and editing the ticket file by hand races the daemon, which owns it.
+retry, skip, set-stage and schedule are refused on {{ .Ticket }} while you are
+its stage, and editing the ticket file by hand races the daemon, which owns it.
 
 Record what you did with "kontora note {{ .Ticket }}" and
 "kontora summary {{ .Ticket }}". Run "kontora skills list" for the reference
@@ -461,6 +461,15 @@ type Daemon struct {
 	queue     priorityQueue
 	queueCond *sync.Cond
 
+	// scheduleWake asks the schedule loop to recompute its next deadline. It is
+	// buffered so every path that can change a schedule can signal it without
+	// blocking and without caring whether the loop is awake.
+	scheduleWake chan struct{}
+
+	// scheduleRetry holds the backoff of a promotion that failed, keyed by
+	// ticket id. Guarded by mu.
+	scheduleRetry map[string]scheduleBackoff
+
 	// assistant holds the dashboard assistant's in-flight turns and the tool
 	// calls parked on a person. It keeps its own lock: a parked write blocks
 	// the agent's tool boundary for as long as the person takes, and d.mu is
@@ -556,6 +565,8 @@ func New(cfg *config.Config, opts ...Option) *Daemon {
 		notifyWarned:    make(map[string]string),
 		plannotator:     make(map[string]context.CancelFunc),
 
+		scheduleWake:        make(chan struct{}, 1),
+		scheduleRetry:       make(map[string]scheduleBackoff),
 		plannotatorDeferred: make(map[string]struct{}),
 		selfWrites:          make(map[string]selfWrite),
 		assistant:           newAssistantState(),
@@ -769,6 +780,13 @@ func (d *Daemon) Run(ctx context.Context) error {
 	// Scheduler goroutine.
 	wg.Go(func() {
 		d.scheduler(ctx, &wg)
+	})
+
+	// Started after the initial scan, so its first pass sees every ticket the
+	// scan registered and promotes the schedules that came due while the daemon
+	// was down.
+	wg.Go(func() {
+		d.scheduleLoop(ctx)
 	})
 
 	stopReloadTriggers := d.startReloadTriggers(ctx, &wg, hup)
@@ -1009,6 +1027,9 @@ func (d *Daemon) handleFileChanged(path string) {
 	// releases the tickets waiting on it, so the queue is reconciled whether or
 	// not the status switch below has anything to do.
 	defer d.reconcileDependenciesLocked(t.ID)
+	// The edit can also add, move or remove a schedule, so the timer's next
+	// deadline is recomputed whether or not this ticket is the nearest one.
+	defer d.signalSchedule()
 
 	if !t.Kontora {
 		return
@@ -1102,6 +1123,7 @@ func (d *Daemon) handleFileRemoved(path string) {
 			d.broadcastTicketDeleted(ts)
 			delete(d.tickets, id)
 			d.forgetNotifyLocked(id)
+			d.signalSchedule()
 			// Whoever depended on this ticket now names an id nothing answers,
 			// which blocks them.
 			d.reconcileDependenciesLocked(id)
@@ -1387,6 +1409,27 @@ func (d *Daemon) claimableLocked(ticketID string, log *slog.Logger) (*ticketStat
 	return ts, true
 }
 
+// requeueRunningDelay is how long a pop waits before offering back a ticket
+// whose previous run has not finished shutting down.
+const requeueRunningDelay = time.Second
+
+// requeueAfter puts a ticket back in the queue once delay has passed, unless the
+// daemon is stopping.
+func (d *Daemon) requeueAfter(ctx context.Context, ticketID string, delay time.Duration) {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return
+	case <-timer.C:
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if ts, ok := d.tickets[ticketID]; ok {
+		d.enqueue(ts.ticket)
+	}
+}
+
 func (d *Daemon) runTicket(ctx context.Context, ticketID string) {
 	log := d.ticketLog(ticketID)
 	cfg := d.config()
@@ -1396,10 +1439,12 @@ func (d *Daemon) runTicket(ctx context.Context, ticketID string) {
 		// Ticket is still running (e.g. shutting down after pause/skip).
 		// Re-enqueue it to be picked up later and release the semaphore slot
 		// immediately so other tickets can proceed.
-		if ts, ok := d.tickets[ticketID]; ok {
-			d.enqueue(ts.ticket)
-		}
+		//
+		// After a wait, not at once: the pop that lands here holds no slot by the
+		// time it returns, so an immediate re-enqueue is popped again straight
+		// away and the pair spins on one core for as long as the run lasts.
 		d.mu.Unlock()
+		go d.requeueAfter(ctx, ticketID, requeueRunningDelay)
 		return
 	}
 

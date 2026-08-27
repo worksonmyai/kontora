@@ -384,6 +384,11 @@ func (c *Client) SetStage(id, stage string) error {
 	return c.doJSON(http.MethodPost, "/api/tickets/"+id+"/set-stage", map[string]string{"stage": stage}, nil)
 }
 
+// Schedule sets or clears a ticket's pickup time.
+func (c *Client) Schedule(id string, req web.ScheduleTicketRequest) error {
+	return c.doJSON(http.MethodPost, "/api/tickets/"+id+"/schedule", req, nil)
+}
+
 // Move sets a ticket's status via the move endpoint.
 func (c *Client) Move(id, status string) error {
 	return c.doJSON(http.MethodPost, "/api/tickets/"+id+"/move", map[string]string{"status": status}, nil)

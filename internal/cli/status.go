@@ -71,6 +71,25 @@ func FormatTimestamp(t *time.Time) string {
 	}
 }
 
+// FormatSchedule renders a stored scheduled_at for a person: the instant in the
+// reader's own zone. A value the parser rejects is printed as it stands, so a
+// hand-edited typo is visible rather than shown as a wrong time.
+//
+// The year is printed whenever it is not the current one. A schedule is the one
+// field whose whole point is a long horizon, so hiding the year would hide the
+// mistyped year that is the easiest way to get one wrong.
+func FormatSchedule(scheduledAt string) string {
+	at, err := ticket.ParseSchedule(scheduledAt)
+	if err != nil {
+		return scheduledAt
+	}
+	local := at.Local()
+	if local.Year() != time.Now().Year() {
+		return local.Format("Jan 02 2006 15:04")
+	}
+	return local.Format("Jan 02 15:04")
+}
+
 func derefTime(t *time.Time) time.Time {
 	if t == nil {
 		return time.Time{}

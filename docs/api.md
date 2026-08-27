@@ -6,13 +6,14 @@ When the web server is enabled, the following endpoints are exposed:
 |----------|-------------|
 | `GET /` | Static dashboard UI. |
 | `GET /api/tickets` | List all board tickets (JSON). `?all=true` adds the ones whose status has no board column: archived, legacy `closed`, and any foreign status. |
-| `POST /api/tickets` | Create a new ticket (JSON body: `title`, `path`, optional `pipeline`, `agent`, `status`, `body`, `branch`, `base_branch`). |
+| `POST /api/tickets` | Create a new ticket (JSON body: `title`, `path`, optional `pipeline`, `agent`, `status`, `body`, `branch`, `base_branch`, `scheduled_at`). A `scheduled_at` creates the ticket `open` and cannot be combined with another status; one that is malformed or already past answers 400. |
 | `GET /api/tickets/{id}` | Get ticket details (JSON). |
 | `DELETE /api/tickets/{id}` | Delete the ticket markdown file without worktree cleanup. Requires `X-Kontora-Confirm: delete-ticket-file`. Only deletes files inside `tickets_dir`. |
 | `POST /api/tickets/{id}/pause` | Pause a running ticket. |
 | `POST /api/tickets/{id}/retry` | Retry a paused ticket. |
 | `POST /api/tickets/{id}/skip` | Skip the current pipeline stage. |
 | `POST /api/tickets/{id}/set-stage` | Move ticket to a specific pipeline stage (`{"stage": "..."}` body). |
+| `POST /api/tickets/{id}/schedule` | Set or clear the ticket's future pickup time (`{"scheduled_at": "<RFC 3339>"}` or `{"clear": true}` body). A `scheduled_at` that is malformed or already past answers 400. Clearing is refused only while the ticket is running. Answers the updated ticket. See [scheduled pickup](tickets.md#scheduled-pickup). |
 | `POST /api/tickets/{id}/move` | Set ticket status (`{"status": "..."}` body). |
 | `GET /api/tickets/archived` | The archived tickets, one row per ticket, for the Archive view. |
 | `POST /api/tickets/{id}/archive` | Archive a closed ticket (optional `{"note": "..."}` body). |
@@ -22,13 +23,13 @@ When the web server is enabled, the following endpoints are exposed:
 | `POST /api/tickets/{id}/summary` | Set the ticket's `summary` field (`{"text": "..."}` body). |
 | `GET /api/tickets/{id}/changes` | Commits and changed files on the ticket's branch relative to its `base_branch`, or the repo's default branch when unset. Empty payload when the ticket has no branch or the branch was deleted. |
 | `GET /api/tickets/{id}/chain` | The dependency chain through the ticket: everything it transitively waits on, itself, and everything that transitively waits on it. |
-| `POST /api/tickets/{id}/init` | Initialize a non-kontora ticket (`pipeline`, `path`, optional `agent`). |
+| `POST /api/tickets/{id}/init` | Initialize a non-kontora ticket (`pipeline`, `path`, optional `agent`, `branch`, `status`). `status` is `todo` by default; `open` leaves the ticket a draft and keeps any `scheduled_at` it carries. |
 | `POST /api/tickets/{id}/dep` | Make the ticket wait on another one (`{"related": ["<id>"]}` body, exactly one id). |
 | `POST /api/tickets/{id}/undep` | Drop a dependency edge (`{"related": ["<id>"]}` body, exactly one id). |
 | `POST /api/tickets/{id}/link` | Relate the ticket to each id in `{"related": [...]}`, on both sides. |
 | `POST /api/tickets/{id}/unlink` | Remove the relation between the ticket and each id in `{"related": [...]}`. |
 | `PUT /api/tickets/{id}` | Update an open ticket's body or frontmatter fields (`body`, `pipeline`, `path`, `agent`, `branch`, `base_branch`). |
-| `POST /api/tickets/upload` | Import tickets from raw `.md` file content (multipart form). Requires `X-Kontora-Confirm: upload-tickets`. |
+| `POST /api/tickets/upload` | Import tickets from raw `.md` file content (multipart form). Requires `X-Kontora-Confirm: upload-tickets`. Every uploaded ticket arrives as an `open` draft: the status is clamped and any `scheduled_at` is dropped. |
 | `POST /api/tickets/{id}/plannotator-review` | Open the ticket's branch diff in Plannotator. Only in `human_review`. Submitted feedback routes the ticket to the built-in rework stage. See [plannotator](configuration.md#plannotator). |
 | `POST /api/tickets/{id}/plannotator-annotate` | Open the ticket's own markdown in Plannotator. Only in `open`. Submitted annotations set `kontora: true` and schedule a run that rewrites the ticket. |
 | `GET /api/assistant` | Whether the [assistant](configuration.md#assistant) is configured: `enabled`, and when it is, `agent`, `kind`, `model`, `autonomy` and `workdir`. `enabled: false` carries a `hint` naming what to set, which is what the pane shows in place of its composer. |

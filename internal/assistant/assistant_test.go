@@ -37,6 +37,7 @@ func TestClassify(t *testing.T) {
 
 		{name: "a kontora write verb", tool: "Bash", input: cmd("kontora run kon-7d21"), want: DecisionWrite},
 		{name: "set-stage", tool: "Bash", input: cmd("kontora set-stage kon-7d21 implement"), want: DecisionWrite},
+		{name: "schedule", tool: "Bash", input: cmd("kontora schedule kon-7d21 --after 24h"), want: DecisionWrite},
 		{name: "one write in a chain taints the line", tool: "Bash", input: cmd("kontora ls && kontora move kon-7d21 done"), want: DecisionWrite},
 		{name: "delete is held apart from a write", tool: "Bash", input: cmd("kontora delete kon-7d21"), want: DecisionDelete},
 		{name: "a delete anywhere in a chain wins", tool: "Bash", input: cmd("kontora ls; kontora delete kon-7d21"), want: DecisionDelete},

@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/stretchr/testify/assert"
@@ -196,6 +197,23 @@ func TestListModel_UpdateTicket(t *testing.T) {
 
 	m.updateTicket(web.TicketInfo{ID: "tst-004", Title: "New task", Status: "todo", Kontora: true})
 	assert.Len(t, m.filtered, 4)
+}
+
+// The board's fourth card line carries either the schedule or the not-managed
+// marker; a scheduled ticket is always managed, so the two never compete.
+func TestListModel_ScheduledCardLine(t *testing.T) {
+	at := time.Date(2026, 9, 1, 9, 0, 0, 0, time.UTC)
+	m := newListModel()
+	m.width = 100
+	m.height = 30
+	m.setTickets([]web.TicketInfo{
+		{ID: "kon-001", Title: "Scheduled", Status: "open", Kontora: true, ScheduledAt: at.Format(time.RFC3339)},
+		{ID: "ext-001", Title: "External", Status: "open", Kontora: false},
+	}, 0)
+
+	view := m.View()
+	assert.Contains(t, view, "starts "+at.Local().Format("Jan 02 15:04"))
+	assert.Contains(t, view, "not a kontora ticket")
 }
 
 func TestListModel_NonKontoraVisibility(t *testing.T) {

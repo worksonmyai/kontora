@@ -400,6 +400,10 @@ func TestHooksWorktreeReuseAndAnnotation(t *testing.T) {
 		tk, err := d.GetTicket("tst-h06")
 		return err == nil && tk.Status == string(ticket.StatusOpen)
 	}, 5*time.Second, 25*time.Millisecond, "the daemon should index the reset ticket")
+	// Moving the ticket to open kills the stage agent, and the file says open
+	// before the kill has unregistered it. An annotate claim taken in that window
+	// is refused because the ticket is still running.
+	waitForAgentsDone(t, d, 5*time.Second)
 
 	require.NoError(t, d.StartPlannotatorAnnotate("tst-h06"))
 	select {

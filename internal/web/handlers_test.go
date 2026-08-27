@@ -25,6 +25,7 @@ import (
 // mockService implements TicketService for handler tests.
 type mockService struct {
 	setStageStage  *string
+	scheduleReq    *ScheduleTicketRequest
 	tickets        []TicketInfo
 	getTicket      *TicketInfo
 	getErr         error
@@ -194,6 +195,12 @@ func (m *mockService) PauseTicket(id string) error { return m.actionFn(id) }
 func (m *mockService) RetryTicket(id string) error { return m.actionFn(id) }
 func (m *mockService) RunTicket(id string) error   { return m.actionFn(id) }
 func (m *mockService) SkipStage(id string) error   { return m.actionFn(id) }
+func (m *mockService) ScheduleTicket(id string, req ScheduleTicketRequest) error {
+	if m.scheduleReq != nil {
+		*m.scheduleReq = req
+	}
+	return m.actionFn(id)
+}
 func (m *mockService) SetStage(id string, stage string) error {
 	if m.setStageStage != nil {
 		*m.setStageStage = stage
@@ -562,6 +569,81 @@ func TestHandleSetStage_MissingStage(t *testing.T) {
 
 	res := post(t, srv, "/api/tickets/t-001/set-stage", `{}`)
 	assert.Equal(t, http.StatusBadRequest, res.statusCode)
+}
+
+// --- POST /api/tickets/{id}/schedule ---
+
+func TestHandleSchedule(t *testing.T) {
+	cases := []struct {
+		name       string
+		body       string
+		actionErr  error
+		wantStatus int
+		wantReq    ScheduleTicketRequest
+	}{
+		{
+			name:       "an instant is passed through",
+			body:       `{"scheduled_at":"2026-09-01T09:00:00Z"}`,
+			wantStatus: http.StatusOK,
+			wantReq:    ScheduleTicketRequest{ScheduledAt: "2026-09-01T09:00:00Z"},
+		},
+		{
+			name:       "a clear is passed through",
+			body:       `{"clear":true}`,
+			wantStatus: http.StatusOK,
+			wantReq:    ScheduleTicketRequest{Clear: true},
+		},
+		{
+			name:       "an empty body names neither",
+			body:       `{}`,
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "clear and an instant contradict",
+			body:       `{"clear":true,"scheduled_at":"2026-09-01T09:00:00Z"}`,
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "malformed JSON",
+			body:       `{bad json}`,
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "an unknown ticket",
+			body:       `{"scheduled_at":"2026-09-01T09:00:00Z"}`,
+			actionErr:  ErrTicketNotFound,
+			wantStatus: http.StatusNotFound,
+		},
+		{
+			name:       "a refused state",
+			body:       `{"scheduled_at":"2026-09-01T09:00:00Z"}`,
+			actionErr:  ErrInvalidState,
+			wantStatus: http.StatusConflict,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var captured ScheduleTicketRequest
+			svc := &mockService{
+				tickets:     []TicketInfo{{ID: "t-001", Status: "open", ScheduledAt: "2026-09-01T09:00:00Z"}},
+				actionFn:    func(_ string) error { return tc.actionErr },
+				scheduleReq: &captured,
+			}
+			srv := startHandlerTestServer(t, svc)
+
+			res := post(t, srv, "/api/tickets/t-001/schedule", tc.body)
+			assert.Equal(t, tc.wantStatus, res.statusCode)
+			if tc.wantStatus != http.StatusOK {
+				return
+			}
+			assert.Equal(t, tc.wantReq, captured)
+
+			var result TicketInfo
+			require.NoError(t, json.Unmarshal([]byte(res.body), &result))
+			assert.Equal(t, "2026-09-01T09:00:00Z", result.ScheduledAt)
+		})
+	}
 }
 
 // --- POST /api/tickets/{id}/note ---

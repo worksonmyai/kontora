@@ -1,4 +1,5 @@
 import { TAPE_WINDOW_SIZE } from './activity.js';
+import { newCreateForm } from './create.js';
 import { termState } from './terminal.js';
 
 // Component core: the state every other mixin reads, the app-wide bits
@@ -49,7 +50,7 @@ export function kontoraApp() {
     detailTab: 'ticket',
     sheet: null,
     createSubmitting: false,
-    createForm: { title: '', path: '', pipeline: '', agent: '', status: 'todo', body: '', branch: '', base_branch: '' },
+    createForm: newCreateForm(),
     createTouched: { pipeline: false, agent: false },
     // Paste-ready request the empty-board panel shows and copies. The brief
     // itself is printed by the daemon host's binary, so the UI hands over a
@@ -70,6 +71,14 @@ export function kontoraApp() {
     // it while rendering, so it has to be reactive from the start.
     _initInherited: { pipeline: '', agent: '' },
     actionLoading: null,
+    // The detail panel's schedule editor. scheduleDraft is a local wall time,
+    // the value a datetime-local input holds; the API is sent the instant it
+    // means. scheduleError is the editor's own line, kept out of `error` so the
+    // global toast's timer cannot take it away mid-edit.
+    scheduleEditing: false,
+    scheduleDraft: '',
+    scheduleSubmitting: false,
+    scheduleError: null,
     deleteModal: false,
     detailMenuOpen: false,
     copiedId: false,

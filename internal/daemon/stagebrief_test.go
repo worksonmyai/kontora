@@ -22,7 +22,7 @@ func TestStageBrief(t *testing.T) {
 		assert.Contains(t, got, "kon-q88f")
 		assert.Contains(t, got, `stage "commit"`)
 		assert.Contains(t, got, "Exit 0")
-		for _, verb := range []string{"done", "cancel", "move", "pause", "retry", "skip", "set-stage"} {
+		for _, verb := range []string{"done", "cancel", "move", "pause", "retry", "skip", "set-stage", "schedule"} {
 			assert.Contains(t, got, verb, "the brief must name every verb rejectSelfMove refuses")
 		}
 		assert.Contains(t, got, "kontora note kon-q88f")

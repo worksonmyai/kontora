@@ -1,3 +1,12 @@
+import { localInputToISO } from './format.js';
+
+// The empty create form. Three places reset it — the desktop modal, the phone
+// sheet and the component's initial state — and a field added in only two of
+// them is a field the third silently drops.
+export function newCreateForm() {
+  return { title: '', path: '', pipeline: '', agent: '', status: 'todo', body: '', branch: '', base_branch: '', scheduled_at: '' };
+}
+
 // What a branch field says when no name can be shown: the ticket carries no
 // branch and the daemon names one at pickup.
 const BRANCH_PLACEHOLDER = 'daemon assigns branch when run starts';
@@ -6,7 +15,7 @@ const BRANCH_PLACEHOLDER = 'daemon assigns branch when run starts';
 export function kontoraCreate() {
   return {
     async openCreateModal() {
-      this.createForm = { title: '', path: '', pipeline: '', agent: '', status: 'todo', body: '', branch: '', base_branch: '' };
+      this.createForm = newCreateForm();
       this.createTouched = { pipeline: false, agent: false };
       this.currentView = 'new';
       this.writeHash();
@@ -95,6 +104,20 @@ export function kontoraCreate() {
       this.syncCreateAgent();
     },
 
+    // The instant the create form's local date-time field means, or "" when the
+    // field holds no full local date and time. That instant is what is stored.
+    createScheduleISO() {
+      return localInputToISO(this.createForm.scheduled_at);
+    },
+
+    // A schedule is what moves the ticket out of open, so picking one moves the
+    // status select there. The preview and the request both follow it. Clearing
+    // the field puts the select back: the phone sheet has neither a status
+    // control nor a preview, so a stuck "open" is invisible there.
+    onCreateScheduleChange() {
+      this.createForm.status = this.createScheduleISO() ? 'open' : 'todo';
+    },
+
     toggleSidebar() {
       this.sidebarHidden = !this.sidebarHidden;
       try { localStorage.setItem('kontora-sidebar-hidden', this.sidebarHidden ? '1' : '0'); } catch (e) {}
@@ -145,13 +168,15 @@ export function kontoraCreate() {
     get createPreviewYaml() {
       var f = this.createForm || {};
       var lines = ['---'];
+      var scheduled = this.createScheduleISO();
       if (f.title)    lines.push('title: ' + JSON.stringify(f.title));
-      lines.push('status: ' + (f.status || 'todo'));
+      lines.push('status: ' + (scheduled ? 'open' : (f.status || 'todo')));
       if (f.pipeline) lines.push('pipeline: ' + f.pipeline);
       if (f.agent)    lines.push('agent: ' + f.agent);
       if (f.path)     lines.push('path: ' + f.path);
       if (f.branch)   lines.push('branch: ' + f.branch);
       if (f.base_branch) lines.push('base_branch: ' + f.base_branch);
+      if (scheduled)  lines.push('scheduled_at: ' + JSON.stringify(scheduled));
       lines.push('---');
       if (f.title) {
         lines.push('');
@@ -175,7 +200,14 @@ export function kontoraCreate() {
         // daemon inherit the project default the user just cleared.
         body.pipeline = this.createForm.pipeline || 'none';
         body.agent = this.createForm.agent || 'none';
-        if (this.createForm.status) body.status = this.createForm.status;
+        var scheduled = this.createScheduleISO();
+        if (scheduled) {
+          // A scheduled ticket waits in open; the timestamp is what moves it.
+          body.scheduled_at = scheduled;
+          body.status = 'open';
+        } else if (this.createForm.status) {
+          body.status = this.createForm.status;
+        }
         if (this.createForm.body) body.body = this.createForm.body;
         if (this.createForm.branch) body.branch = this.createForm.branch;
         if (this.createForm.base_branch) body.base_branch = this.createForm.base_branch;

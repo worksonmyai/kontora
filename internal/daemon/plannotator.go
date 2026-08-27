@@ -150,6 +150,9 @@ func (d *Daemon) releasePlannotator(id string) {
 	if cancel, ok := d.plannotator[id]; ok {
 		cancel()
 		delete(d.plannotator, id)
+		// A schedule on this ticket was held back for as long as the session was
+		// open, and its deadline was left out of the timer's scan.
+		d.signalSchedule()
 	}
 	_, deferred := d.plannotatorDeferred[id]
 	delete(d.plannotatorDeferred, id)

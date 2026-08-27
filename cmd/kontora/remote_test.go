@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -277,11 +278,14 @@ func TestRemoteDispatch_InitWithFlags(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	out, err := runCLI(t, []string{"KONTORA_URL=" + srv.URL}, "init", "abc", "--pipeline", "two-stage", "--path", "/repo")
+	out, err := runCLI(t, []string{"KONTORA_URL=" + srv.URL}, "init", "abc", "--pipeline", "two-stage", "--path", "/repo", "--status", "open")
 	require.NoError(t, err, out)
 	assert.Equal(t, "/api/tickets/abc123/init", initPath)
 	assert.Equal(t, "two-stage", gotReq["pipeline"])
 	assert.Equal(t, "/repo", gotReq["path"])
+	// Dropping it would leave a remote init with no way to ask for open, which
+	// is the only status that keeps a scheduled ticket's timestamp.
+	assert.Equal(t, "open", gotReq["status"])
 }
 
 func TestRemoteDispatch_InitMissingFlagsFails(t *testing.T) {
@@ -424,6 +428,77 @@ func TestNewSendsAgentToDaemon(t *testing.T) {
 	assert.Equal(t, "codex", gotBody["agent"])
 	assert.Equal(t, "none", gotBody["pipeline"], "the sentinel is resolved by the daemon, not the CLI")
 	assert.Equal(t, "/repo", gotBody["path"])
+}
+
+// A remote schedule sends an absolute instant: --after is resolved on the
+// caller's clock, so the delay is measured from when the command was typed.
+func TestRemoteScheduleSendsAnInstant(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+		// want is checked against the decoded body.
+		want func(t *testing.T, body map[string]any)
+	}{
+		{
+			name: "--at is normalized to UTC",
+			args: []string{"schedule", "abc", "--at", "2026-09-01T11:00:00+02:00"},
+			want: func(t *testing.T, body map[string]any) {
+				assert.Equal(t, "2026-09-01T09:00:00Z", body["scheduled_at"])
+				assert.Nil(t, body["clear"])
+			},
+		},
+		{
+			name: "--after becomes an instant",
+			args: []string{"schedule", "abc", "--after", "24h"},
+			want: func(t *testing.T, body map[string]any) {
+				at, err := time.Parse(time.RFC3339, body["scheduled_at"].(string))
+				require.NoError(t, err)
+				assert.WithinDuration(t, time.Now().Add(24*time.Hour), at, time.Minute)
+			},
+		},
+		{
+			name: "--clear names no instant",
+			args: []string{"schedule", "abc", "--clear"},
+			want: func(t *testing.T, body map[string]any) {
+				assert.Equal(t, true, body["clear"])
+				assert.Nil(t, body["scheduled_at"])
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var gotBody map[string]any
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/api/tickets/abc/schedule" && r.Method == http.MethodPost {
+					_ = json.NewDecoder(r.Body).Decode(&gotBody)
+					_ = json.NewEncoder(w).Encode(map[string]string{"id": "abc"})
+					return
+				}
+				_ = json.NewEncoder(w).Encode(map[string]string{"id": "abc"})
+			}))
+			defer srv.Close()
+
+			out, err := runCLI(t, []string{"KONTORA_URL=" + srv.URL}, tc.args...)
+			require.NoError(t, err, out)
+			require.NotNil(t, gotBody)
+			tc.want(t, gotBody)
+		})
+	}
+}
+
+// A schedule and a status the schedule contradicts must not create anything.
+func TestRemoteNewRejectsScheduledTodo(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		t.Error("the CLI must reject the flags before it calls the daemon")
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	out, err := runCLI(t, []string{"KONTORA_URL=" + srv.URL},
+		"new", "--path", "/repo", "--status", "todo", "--after", "24h", "Scheduled ticket")
+	require.Error(t, err, out)
+	assert.Contains(t, out, "contradicts")
 }
 
 func TestNewWritesAgentAndProjectDefaults(t *testing.T) {
@@ -621,6 +696,7 @@ func TestRemoteDispatch_FlagsAfterPositionals(t *testing.T) {
 		{name: "move", args: []string{"move", "abc", "done", "--token", "tail"}, want: "/api/tickets/abc123/move"},
 		{name: "set-stage", args: []string{"set-stage", "abc", "code", "--token", "tail"}, want: "/api/tickets/abc123/set-stage"},
 		{name: "run", args: []string{"run", "abc", "--token", "tail"}, want: "/api/tickets/abc123/run"},
+		{name: "schedule", args: []string{"schedule", "abc", "--after", "24h", "--token", "tail"}, want: "/api/tickets/abc123/schedule"},
 	}
 
 	for _, tc := range cases {

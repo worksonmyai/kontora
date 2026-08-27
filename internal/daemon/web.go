@@ -96,16 +96,17 @@ func (d *Daemon) CreateTicket(req web.CreateTicketRequest) (web.TicketInfo, erro
 	d.recordSelfWriteBlind(filePath)
 
 	_, err = cli.New(cfg, cli.NewOpts{
-		ID:         id,
-		Path:       req.Path,
-		Pipeline:   req.Pipeline,
-		Agent:      req.Agent,
-		Status:     req.Status,
-		Title:      req.Title,
-		Body:       req.Body,
-		Branch:     req.Branch,
-		BaseBranch: req.BaseBranch,
-		NoEdit:     true,
+		ID:          id,
+		Path:        req.Path,
+		Pipeline:    req.Pipeline,
+		Agent:       req.Agent,
+		Status:      req.Status,
+		Title:       req.Title,
+		Body:        req.Body,
+		Branch:      req.Branch,
+		BaseBranch:  req.BaseBranch,
+		ScheduledAt: req.ScheduledAt,
+		NoEdit:      true,
 	})
 	if err != nil {
 		// Nothing was created, so the reservation must go: the next ticket gets
@@ -132,6 +133,7 @@ func (d *Daemon) CreateTicket(req web.CreateTicketRequest) (web.TicketInfo, erro
 	}
 	info := d.buildTicketInfo(cfg, ts, false)
 	d.broadcastTicketUpdate(id)
+	d.signalSchedule()
 	d.mu.Unlock()
 
 	return info, nil
@@ -165,9 +167,15 @@ func (d *Daemon) UploadTicket(content []byte) (web.TicketInfo, error) {
 		return web.TicketInfo{}, fmt.Errorf("setting ticket id: %w", err)
 	}
 
-	// Clamp status to open.
+	// Clamp status to open: an upload is a draft, not a run request. A schedule
+	// goes with it, or the file names its own pickup time and the clamp buys
+	// nothing — a past scheduled_at would have the daemon start the agent within
+	// the second, on a ticket nobody has looked at.
 	if err := t.SetField("status", string(ticket.StatusOpen)); err != nil {
 		return web.TicketInfo{}, fmt.Errorf("setting ticket status: %w", err)
+	}
+	if err := t.ClearSchedule(); err != nil {
+		return web.TicketInfo{}, fmt.Errorf("clearing %s: %w", ticket.FieldScheduledAt, err)
 	}
 
 	// Ensure created timestamp exists.
@@ -188,6 +196,7 @@ func (d *Daemon) UploadTicket(content []byte) (web.TicketInfo, error) {
 	d.tickets[t.ID] = ts
 	info := d.buildTicketInfo(cfg, ts, false)
 	d.broadcastTicketUpdate(t.ID)
+	d.signalSchedule()
 	d.mu.Unlock()
 
 	return info, nil
@@ -359,10 +368,67 @@ func (d *Daemon) RetryTicket(id string) error {
 	return mapAppError(err)
 }
 
-// RunTicket enqueues a ticket in open or todo status for processing.
+// RunTicket enqueues a ticket in open or todo status for processing, moving an
+// open one to todo first and dropping any schedule it was waiting on: an
+// explicit run is the answer to "now", so the timestamp has nothing left to do.
+//
+// The whole read-modify-write holds d.mu for the reason SetStage does, and the
+// enqueue is under the same lock: a run asked for by hand queues the ticket
+// whether or not auto_pick_up is on, so it does not go through the dependency
+// reconciliation that gates automatic pickup.
 func (d *Daemon) RunTicket(id string) error {
-	_, err := d.svc.Run(id)
-	return mapAppError(err)
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	ts, ok := d.tickets[id]
+	if !ok {
+		return web.ErrTicketNotFound
+	}
+	if !ts.ticket.Kontora {
+		return fmt.Errorf("%w: ticket is not initialized", web.ErrInvalidState)
+	}
+	// d.running is registered when the scheduler claims the ticket, before the
+	// file says in_progress. Without this the run is enqueued a second time
+	// while the first is still starting, and the scheduler pops it, finds it
+	// running and puts it straight back.
+	if _, running := d.running[id]; running {
+		return fmt.Errorf("%w: ticket %s is already running", web.ErrInvalidState, id)
+	}
+
+	// Read from disk rather than from the cache: the file is the state a pickup
+	// would act on, and the watcher is debounced, so the cache can lag an edit.
+	t2, err := ticket.ParseFile(ts.filePath)
+	if err != nil {
+		return err
+	}
+	switch t2.Status { //nolint:exhaustive // only open and todo can be run
+	case ticket.StatusOpen, ticket.StatusTodo:
+	default:
+		return fmt.Errorf("%w: cannot run ticket in status %s (must be open or todo)", web.ErrInvalidState, t2.Status)
+	}
+
+	// One save carries both edits, so no watcher ever sees the ticket todo with
+	// the schedule still on it.
+	if t2.Status == ticket.StatusOpen || t2.ScheduledAt != "" {
+		if err := t2.SetField("status", string(ticket.StatusTodo)); err != nil {
+			return fmt.Errorf("setting status: %w", err)
+		}
+		if err := t2.SetField("last_error", ""); err != nil {
+			return fmt.Errorf("clearing last_error: %w", err)
+		}
+		if err := t2.ClearSchedule(); err != nil {
+			return fmt.Errorf("clearing %s: %w", ticket.FieldScheduledAt, err)
+		}
+		if err := d.writeTicketLocked(t2, ts.filePath, notify.OriginRequest); err != nil {
+			return err
+		}
+		d.setTicketState(id, t2, ts.filePath)
+	}
+
+	d.enqueue(t2)
+	d.broadcastTicketUpdate(id)
+	d.signalSchedule()
+	return nil
 }
 
 // SkipStage advances a ticket to the next pipeline stage, or completes it
@@ -676,7 +742,11 @@ func (d *Daemon) InitTicket(id string, req web.InitTicketRequest) error {
 		Path:     req.Path,
 		Agent:    req.Agent,
 		Branch:   req.Branch,
+		Status:   req.Status,
 	})
+	if err == nil {
+		d.signalSchedule()
+	}
 	return mapAppError(err)
 }
 

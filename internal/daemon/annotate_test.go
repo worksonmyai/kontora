@@ -308,8 +308,10 @@ func TestAnnotate_SubmittedFeedbackParksTicket(t *testing.T) {
 		WithPlannotatorLookup(h.lookup()),
 	)
 
+	// The schedule is what the park answers: the ticket is being moved to todo
+	// now, so leaving the timestamp behind would run it again later.
 	_, stop := startAnnotationDaemon(t, h, d, "tst-an02",
-		h.annotationTicketMD("tst-an02", "open", "attempt: 2\n"))
+		h.annotationTicketMD("tst-an02", "open", "attempt: 2\nscheduled_at: \"2099-09-01T09:00:00Z\"\n"))
 	defer func() {
 		close(release)
 		stop()
@@ -342,6 +344,7 @@ func TestAnnotate_SubmittedFeedbackParksTicket(t *testing.T) {
 
 	got := h.readTask("tst-an02.md")
 	assert.Equal(t, ticket.StatusOpen, got.AnnotationReturnStatus)
+	assert.Empty(t, got.ScheduledAt, "parking answers the schedule")
 	assert.Equal(t, "step2", got.Stage, "the stage must not move")
 	assert.Equal(t, 0, got.Attempt)
 	assert.Contains(t, []ticket.Status{ticket.StatusTodo, ticket.StatusInProgress}, got.Status)

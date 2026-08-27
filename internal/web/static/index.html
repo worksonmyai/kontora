@@ -471,6 +471,24 @@
       background: hsl(var(--st-review));
     }
 
+    /* Scheduled pickup on an Open card. It takes the open hue: the ticket is
+       still open, and the chip only says when it stops being. */
+    .sched-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 10px;
+      line-height: 1.5;
+      padding: 1px 7px;
+      border-radius: 9999px;
+      flex: none;
+      color: hsl(var(--st-open));
+      background: hsl(var(--st-open) / 0.12);
+      border: 1px solid hsl(var(--st-open) / 0.28);
+      white-space: nowrap;
+    }
+
     /* "live" indicator in the terminal headers — running, so st-progress. */
     .live-indicator { color: hsl(var(--st-progress)); }
     .live-indicator-dot { background: hsl(var(--st-progress)); }
@@ -2696,6 +2714,43 @@
                 </template>
                 <template x-if="selectedTicket?.created_at"><span class="text-surface-600">created</span></template>
                 <template x-if="selectedTicket?.created_at"><span class="text-tx-2" x-text="formatAbsDate(selectedTicket.created_at)"></span></template>
+                <!-- Scheduled pickup. The row is offered whenever the ticket can
+                     carry a schedule, so setting the first one has a home; a
+                     ticket that cannot be scheduled shows the time and nothing
+                     more. -->
+                <template x-if="selectedTicket?.scheduled_at || canSchedule(selectedTicket)"><span class="text-surface-600">starts</span></template>
+                <template x-if="selectedTicket?.scheduled_at || canSchedule(selectedTicket)">
+                  <span>
+                    <template x-if="canSchedule(selectedTicket) && scheduleEditing">
+                      <span class="flex flex-wrap items-center gap-1.5">
+                        <input type="datetime-local" x-model="scheduleDraft" :min="scheduleMin()"
+                               class="text-[11px] font-mono bg-surface-800 text-tx-3 border border-edge-input rounded px-1 py-0.5 outline-none focus:border-accent/40"
+                               x-init="$nextTick(() => $el.focus())">
+                        <button type="button" class="text-[10.5px] text-accent hover:underline disabled:opacity-50"
+                                :disabled="scheduleSubmitting" @click="submitSchedule()">save</button>
+                        <button type="button" class="text-[10.5px] text-surface-600 hover:text-tx-3"
+                                @click="closeScheduleEditor()">cancel</button>
+                      </span>
+                    </template>
+                    <template x-if="!(canSchedule(selectedTicket) && scheduleEditing)">
+                      <span class="flex flex-wrap items-center gap-1.5">
+                        <span class="text-tx-2"
+                              :class="canSchedule(selectedTicket) ? 'cursor-pointer hover:text-accent border-b border-dashed border-surface-600 hover:border-accent/40' : ''"
+                              @click="openScheduleEditor()"
+                              x-text="scheduleLabel(selectedTicket) || 'not scheduled'"></span>
+                        <template x-if="selectedTicket?.scheduled_at && canSchedule(selectedTicket)">
+                          <button type="button" class="text-[10.5px] text-surface-600 hover:text-tx-3 disabled:opacity-50"
+                                  :disabled="scheduleSubmitting" @click="clearTicketSchedule()">clear</button>
+                        </template>
+                        <template x-if="selectedTicket?.scheduled_at && canSchedule(selectedTicket)">
+                          <button type="button" class="text-[10.5px] text-accent hover:underline"
+                                  @click="moveTicketVia(selectedTicket.id, 'run')">run now</button>
+                        </template>
+                      </span>
+                    </template>
+                    <span x-show="scheduleError" class="block text-[10.5px] text-err mt-0.5" x-text="scheduleError"></span>
+                  </span>
+                </template>
               </div>
             </div>
 
@@ -2786,6 +2841,13 @@
               </div>
             </div>
             <p class="text-[11px] text-surface-600 -mt-2">Pipeline → stages the ticket runs through. Agent → defaults to pipeline's. Status → <span class="text-tx-3">todo</span> queues automatically; <span class="text-tx-3">open</span> stays a draft.</p>
+
+            <div>
+              <label for="new-scheduled-at" class="text-[13px] font-mono text-tx-3 mb-1 flex items-center gap-1.5"><svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="opacity-50"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>Start at</label>
+              <input id="new-scheduled-at" x-model="createForm.scheduled_at" @change="onCreateScheduleChange()" type="datetime-local" :min="scheduleMin()"
+                     class="w-full bg-surface-800 border border-surface-700/50 rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40">
+              <p class="text-[11px] text-surface-600 mt-0.5">Your local time. The ticket is created <span class="text-tx-3">open</span> and moves to <span class="text-tx-3">todo</span> then. Leave empty to skip scheduling.</p>
+            </div>
             <p x-show="createProject()" class="text-[11px] text-surface-600 -mt-2">Defaults from project <span class="text-tx-3" x-text="createProject()?.name"></span>.</p>
 
             <div>
@@ -4432,6 +4494,9 @@
                   <span class="pulse-dot">●</span><span x-text="ticket.stage"></span>
                 </span>
               </template>
+              <template x-if="mobileColumn().key === 'open' && scheduleLabel(ticket)">
+                <span class="sched-chip"><span aria-hidden="true">◷</span><span x-text="scheduleLabel(ticket)"></span></span>
+              </template>
               <template x-if="ticket.waiting_for_input">
                 <span class="waiting-chip">
                   <span class="waiting-dot pulse-dot"></span>needs input
@@ -4477,6 +4542,11 @@
         <div style="display:flex;align-items:center;gap:8px;padding:0 16px 10px;flex-wrap:wrap;">
           <span class="pipe-tag" :data-pipe-color="selectedTicket ? ticketPipeColor(selectedTicket) : 'none'" x-text="selectedTicket ? ticketTagLabel(selectedTicket) : ''"></span>
           <span class="status-chip" :data-status="selectedTicket?.status" x-text="selectedTicket?.status"></span>
+          <template x-if="scheduleLabel(selectedTicket)">
+            <button @click="canSchedule(selectedTicket) && openScheduleSheet(selectedTicket)" class="sched-chip" :disabled="!canSchedule(selectedTicket)" :style="canSchedule(selectedTicket) ? 'cursor:pointer;' : 'cursor:default;'">
+              <span aria-hidden="true">◷</span><span x-text="'starts ' + scheduleLabel(selectedTicket)"></span>
+            </button>
+          </template>
           <template x-if="selectedTicket?.waiting_for_input">
             <span class="waiting-chip" :title="'Waiting for input — ' + waitingLabel(selectedTicket)">
               <span class="waiting-dot pulse-dot"></span>needs input
@@ -4664,6 +4734,28 @@
             </div>
           </template>
 
+          <!-- schedule sheet: set, move or clear a ticket's pickup time. -->
+          <template x-if="sheet.type==='schedule'">
+            <div style="display:flex;flex-direction:column;min-height:0;">
+              <div style="padding:0 18px 12px;border-bottom:1px solid rgba(var(--surface-700),.4);">
+                <div style="font-family:'JetBrains Mono',monospace;font-size:11px;color:rgba(var(--surface-600),1);" x-text="sheet.ticket.id"></div>
+                <div style="font-size:14px;color:rgba(var(--tx),1);line-height:1.4;margin-top:3px;" x-text="sheet.ticket.title"></div>
+              </div>
+              <div style="overflow-y:auto;padding:16px 18px;display:flex;flex-direction:column;gap:14px;">
+                <div>
+                  <div style="font-family:'JetBrains Mono',monospace;font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:rgba(var(--surface-600),1);margin-bottom:6px;">Start at</div>
+                  <input x-model="scheduleDraft" type="datetime-local" :min="scheduleMin()" style="width:100%;height:42px;padding:0 12px;font-family:'JetBrains Mono',monospace;font-size:13px;border-radius:10px;background:rgba(var(--surface-950),1);border:1px solid rgba(var(--surface-700),.6);color:rgba(var(--tx),1);outline:none;"/>
+                  <div style="font-size:11px;color:rgba(var(--surface-600),1);margin-top:5px;">Your local time. The ticket waits in open and moves to todo then.</div>
+                </div>
+                <div x-show="scheduleError" style="font-size:12px;color:rgba(var(--err),1);" x-text="scheduleError"></div>
+                <div style="display:flex;gap:10px;margin-top:2px;">
+                  <button @click="closeSheet()" style="flex:1;height:46px;border-radius:11px;border:1px solid rgba(var(--surface-700),.7);background:rgba(var(--surface-950),1);color:rgba(var(--tx-3),1);font-family:'JetBrains Mono',monospace;font-size:14px;font-weight:600;">cancel</button>
+                  <button @click="submitScheduleMobile(sheet.ticket)" :disabled="scheduleSubmitting" style="flex:1.4;height:46px;border-radius:11px;border:1px solid rgba(var(--accent),1);background:rgba(var(--accent),1);color:rgba(var(--accent-fg),1);font-family:'JetBrains Mono',monospace;font-size:14px;font-weight:700;" :style="scheduleSubmitting ? 'opacity:.5;' : ''" x-text="scheduleSubmitting ? 'saving…' : 'save'"></button>
+                </div>
+              </div>
+            </div>
+          </template>
+
           <!-- assistant sheet. The phone equivalent of the docked pane. -->
           <template x-if="sheet.type==='assistant'">
             <div id="assistant-sheet" style="display:flex;flex-direction:column;min-height:0;flex:1;">
@@ -4791,6 +4883,11 @@
                       <template x-for="a in (configCache?.agents || [])" :key="a"><option :value="a" x-text="a"></option></template>
                     </select>
                   </div>
+                </div>
+                <div>
+                  <div style="font-family:'JetBrains Mono',monospace;font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:rgba(var(--surface-600),1);margin-bottom:6px;">Start at</div>
+                  <input x-model="createForm.scheduled_at" @change="onCreateScheduleChange()" type="datetime-local" :min="scheduleMin()" style="width:100%;height:42px;padding:0 12px;font-family:'JetBrains Mono',monospace;font-size:13px;border-radius:10px;background:rgba(var(--surface-950),1);border:1px solid rgba(var(--surface-700),.6);color:rgba(var(--tx),1);outline:none;"/>
+                  <div style="font-size:11px;color:rgba(var(--surface-600),1);margin-top:5px;">Your local time. The ticket waits in open until then.</div>
                 </div>
                 <div>
                   <div style="font-family:'JetBrains Mono',monospace;font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:rgba(var(--surface-600),1);margin-bottom:6px;">Body</div>

@@ -20,6 +20,7 @@ func TestSelfMoveRefusal(t *testing.T) {
 		{name: "its own ticket", verb: "done", taskID: "kon-q88f", running: "kon-q88f", wantRefuse: true},
 		{name: "its own ticket by prefix", verb: "done", taskID: "kon-q", running: "kon-q88f", wantRefuse: true},
 		{name: "a bare prefix still matches", verb: "move", taskID: "k", running: "kon-q88f", wantRefuse: true},
+		{name: "a schedule on its own ticket", verb: "schedule", taskID: "kon-q88f", running: "kon-q88f", wantRefuse: true},
 		{name: "another ticket", verb: "done", taskID: "kon-4b2t", running: "kon-q88f", wantRefuse: false},
 		{name: "a longer id is not a prefix", verb: "done", taskID: "kon-q88fx", running: "kon-q88f", wantRefuse: false},
 		{name: "no ticket named", verb: "done", taskID: "", running: "kon-q88f", wantRefuse: false},

@@ -12,8 +12,12 @@ import (
 )
 
 var (
-	ErrTicketNotFound      = errors.New("ticket not found")
-	ErrInvalidState        = errors.New("invalid state transition")
+	ErrTicketNotFound = errors.New("ticket not found")
+	ErrInvalidState   = errors.New("invalid state transition")
+	// ErrInvalidSchedule is a scheduled_at the daemon will not store: one that
+	// is not RFC 3339, or one already in the past. It is a bad request rather
+	// than a state conflict, so it answers 400 like the other body errors.
+	ErrInvalidSchedule     = errors.New("invalid schedule")
 	ErrLogNotFound         = errors.New("log not found")
 	ErrUnknownAgent        = errors.New("unknown agent")
 	ErrUnknownPipeline     = errors.New("unknown pipeline")
@@ -60,6 +64,7 @@ type TicketService interface {
 	RunTicket(id string) error
 	SkipStage(id string) error
 	SetStage(id string, stage string) error
+	ScheduleTicket(id string, req ScheduleTicketRequest) error
 	MoveTicket(id string, newStatus string) error
 	ListArchivedTickets() []ArchivedTicketInfo
 	ArchiveTicket(id string, note string) error
@@ -242,6 +247,17 @@ type CreateTicketRequest struct {
 	// BaseBranch names the branch the work branch starts from. Empty means the
 	// repository's default branch.
 	BaseBranch string `json:"base_branch,omitempty"`
+	// ScheduledAt creates the ticket open with a pickup time. It cannot be
+	// combined with a Status other than "open".
+	ScheduledAt string `json:"scheduled_at,omitempty"`
+}
+
+// ScheduleTicketRequest sets or clears a ticket's pickup time. Clear is a
+// separate field rather than an empty ScheduledAt so a body that lost its
+// timestamp on the way cannot silently cancel a schedule.
+type ScheduleTicketRequest struct {
+	ScheduledAt string `json:"scheduled_at,omitempty"`
+	Clear       bool   `json:"clear,omitempty"`
 }
 
 type InitTicketRequest struct {
@@ -249,6 +265,10 @@ type InitTicketRequest struct {
 	Path     string `json:"path"`
 	Agent    string `json:"agent,omitempty"`
 	Branch   string `json:"branch,omitempty"`
+	// Status is "open" or "todo", and defaults to "todo": the web init modal
+	// opens as part of a start action, so an init with no status asked for the
+	// run. An init that says "open" leaves any schedule the ticket carries.
+	Status string `json:"status,omitempty"`
 }
 
 // ListTicketsOptions narrows or widens a list response. IncludeHidden adds the
@@ -382,6 +402,10 @@ type TicketInfo struct {
 	BaseBranch string     `json:"base_branch,omitempty"`
 	AutoBranch string     `json:"auto_branch,omitempty"` // what the daemon would name the branch, set only while Branch is empty
 	ClaimedBy  string     `json:"claimed_by,omitempty"`
+	// ScheduledAt is the RFC 3339 instant the daemon moves the ticket from open
+	// to todo at. It is in the board payload as well as the detail one, because
+	// an Open card shows the time it will start.
+	ScheduledAt string `json:"scheduled_at,omitempty"`
 	// CanAnnotate reports whether the ticket can be opened in Plannotator's
 	// annotation UI right now: it is initialized, its status allows an edit, and
 	// no annotation run is already pending. Like AutoBranch it is a read-only
@@ -704,6 +728,7 @@ func TicketInfoFromView(v app.View) TicketInfo {
 		Branch:        v.Branch,
 		BaseBranch:    v.BaseBranch,
 		ClaimedBy:     v.ClaimedBy,
+		ScheduledAt:   v.ScheduledAt,
 		Stages:        v.Stages,
 		Body:          v.Body,
 		LastError:     v.LastError,

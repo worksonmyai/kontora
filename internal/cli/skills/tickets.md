@@ -42,6 +42,7 @@ hand before the ticket runs.
 | `agent` | no | Agent override for this ticket. Replaces the pipeline's agent at every stage. |
 | `base_branch` | no | Branch the work branch starts from. Empty means the repository's default branch. |
 | `created` | no | RFC 3339 timestamp. Set by `kontora new`. |
+| `scheduled_at` | no | RFC 3339 instant at which the daemon moves an `open` ticket to `todo`. See the scheduled pickup section. |
 | `deps` | no | Ids this ticket waits on. |
 | `links` | no | Ids of related tickets. |
 | `parent` | no | Id of the epic or parent ticket. No command writes it. |
@@ -52,6 +53,34 @@ of a project default.
 
 Any field not listed here is preserved through a round trip. The daemon does
 not remove or overwrite fields it does not recognise.
+
+## Scheduled pickup
+
+`scheduled_at` is the instant an `open` ticket becomes `todo`:
+
+```yaml
+status: open
+scheduled_at: "2026-09-01T07:00:00Z"
+```
+
+Write it with `kontora schedule TICKET_ID --at TIME | --after DURATION`, or
+create it that way with `kontora new --after 24h`. Both normalize the instant to
+UTC and refuse one already in the past. `kontora schedule TICKET_ID --clear`
+removes it and leaves the ticket open.
+
+At the deadline the daemon writes `status: todo` and removes `scheduled_at` in
+one save. It does not bypass the usual rules: with `auto_pick_up: false` the
+ticket waits in `todo` for an explicit `kontora run`, and an unresolved
+dependency keeps it out of the queue until that dependency closes.
+
+Schedules are rebuilt from the ticket files at startup, so one whose deadline
+passed while the daemon was down is promoted when it comes back. A value the
+RFC 3339 parser rejects is left alone, so a typo leaves the ticket open.
+
+`kontora run` on a scheduled ticket clears the timestamp and queues it now. So
+does every other move off `open`: `retry`, `skip`, `move`, an `init` that queues
+the ticket, and parking it for an annotation run. An uploaded `.md` file loses
+any `scheduled_at` it carries.
 
 ## Daemon-managed fields
 
@@ -81,7 +110,7 @@ open -> todo -> in_progress -> done ------> archived
 
 | Status | Meaning |
 |--------|---------|
-| `open` | Drafted, not ready for the daemon to pick up. |
+| `open` | Drafted, not ready for the daemon to pick up. A `scheduled_at` stamp moves it to `todo` at a set time. |
 | `todo` | Ready. The scheduler takes it in creation order once its deps are closed. |
 | `in_progress` | An agent is working on it now. |
 | `paused` | Stopped by a failure policy or by a person. `kontora retry` resumes it. |

@@ -36,6 +36,9 @@ type ListItem struct {
 	Deps        []string   `json:"deps"`
 	Links       []string   `json:"links"`
 	Parent      string     `json:"parent,omitempty"`
+	// ScheduledAt is the raw scheduled_at frontmatter value, so a listing shows
+	// a malformed hand edit rather than hiding it.
+	ScheduledAt string `json:"scheduled_at,omitempty"`
 	// Ready and Blockers are derived from the whole set, not stored. Ready is
 	// meaningful only for a kontora ticket in todo; Blockers names the
 	// dependency ids that are not closed.
@@ -330,6 +333,7 @@ func listItem(cfg *config.Config, t *ticket.Ticket) ListItem {
 		Deps:        t.Deps,
 		Links:       t.Links,
 		Parent:      t.Parent,
+		ScheduledAt: t.ScheduledAt,
 	}
 }
 

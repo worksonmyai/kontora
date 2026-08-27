@@ -176,31 +176,32 @@ func (m *mockTerminalService) GetTicket(_ string) (TicketInfo, error) {
 func (m *mockTerminalService) CreateTicket(_ CreateTicketRequest) (TicketInfo, error) {
 	return TicketInfo{}, nil
 }
-func (m *mockTerminalService) GetConfig() ConfigInfo                              { return ConfigInfo{} }
-func (m *mockTerminalService) DeleteTicket(_ string) error                        { return nil }
-func (m *mockTerminalService) PauseTicket(_ string) error                         { return nil }
-func (m *mockTerminalService) RetryTicket(_ string) error                         { return nil }
-func (m *mockTerminalService) RunTicket(_ string) error                           { return nil }
-func (m *mockTerminalService) SkipStage(_ string) error                           { return nil }
-func (m *mockTerminalService) SetStage(_ string, _ string) error                  { return nil }
-func (m *mockTerminalService) MoveTicket(_ string, _ string) error                { return nil }
-func (m *mockTerminalService) ListArchivedTickets() []ArchivedTicketInfo          { return nil }
-func (m *mockTerminalService) ArchiveTicket(_ string, _ string) error             { return nil }
-func (m *mockTerminalService) RestoreTicket(_ string) error                       { return nil }
-func (m *mockTerminalService) AddNote(_ string, _ AddNoteRequest) error           { return nil }
-func (m *mockTerminalService) EditNote(_, _, _ string) error                      { return nil }
-func (m *mockTerminalService) DeleteNote(_, _ string) error                       { return nil }
-func (m *mockTerminalService) SetReaction(_, _, _, _ string, _ bool) error        { return nil }
-func (m *mockTerminalService) SetSummary(_ string, _ string) error                { return nil }
-func (m *mockTerminalService) GetChanges(_ string) (ChangesInfo, error)           { return ChangesInfo{}, nil }
-func (m *mockTerminalService) GetChain(_ string) (ChainInfo, error)               { return ChainInfo{}, nil }
-func (m *mockTerminalService) InitTicket(_ string, _ InitTicketRequest) error     { return nil }
-func (m *mockTerminalService) AddDependency(_ string, _ string) error             { return nil }
-func (m *mockTerminalService) RemoveDependency(_ string, _ string) error          { return nil }
-func (m *mockTerminalService) LinkTickets(_ string, _ []string) error             { return nil }
-func (m *mockTerminalService) UnlinkTickets(_ string, _ []string) error           { return nil }
-func (m *mockTerminalService) UpdateTicket(_ string, _ UpdateTicketRequest) error { return nil }
-func (m *mockTerminalService) UploadTicket(_ []byte) (TicketInfo, error)          { return TicketInfo{}, nil }
+func (m *mockTerminalService) GetConfig() ConfigInfo                                  { return ConfigInfo{} }
+func (m *mockTerminalService) DeleteTicket(_ string) error                            { return nil }
+func (m *mockTerminalService) PauseTicket(_ string) error                             { return nil }
+func (m *mockTerminalService) RetryTicket(_ string) error                             { return nil }
+func (m *mockTerminalService) RunTicket(_ string) error                               { return nil }
+func (m *mockTerminalService) SkipStage(_ string) error                               { return nil }
+func (m *mockTerminalService) SetStage(_ string, _ string) error                      { return nil }
+func (m *mockTerminalService) ScheduleTicket(_ string, _ ScheduleTicketRequest) error { return nil }
+func (m *mockTerminalService) MoveTicket(_ string, _ string) error                    { return nil }
+func (m *mockTerminalService) ListArchivedTickets() []ArchivedTicketInfo              { return nil }
+func (m *mockTerminalService) ArchiveTicket(_ string, _ string) error                 { return nil }
+func (m *mockTerminalService) RestoreTicket(_ string) error                           { return nil }
+func (m *mockTerminalService) AddNote(_ string, _ AddNoteRequest) error               { return nil }
+func (m *mockTerminalService) EditNote(_, _, _ string) error                          { return nil }
+func (m *mockTerminalService) DeleteNote(_, _ string) error                           { return nil }
+func (m *mockTerminalService) SetReaction(_, _, _, _ string, _ bool) error            { return nil }
+func (m *mockTerminalService) SetSummary(_ string, _ string) error                    { return nil }
+func (m *mockTerminalService) GetChanges(_ string) (ChangesInfo, error)               { return ChangesInfo{}, nil }
+func (m *mockTerminalService) GetChain(_ string) (ChainInfo, error)                   { return ChainInfo{}, nil }
+func (m *mockTerminalService) InitTicket(_ string, _ InitTicketRequest) error         { return nil }
+func (m *mockTerminalService) AddDependency(_ string, _ string) error                 { return nil }
+func (m *mockTerminalService) RemoveDependency(_ string, _ string) error              { return nil }
+func (m *mockTerminalService) LinkTickets(_ string, _ []string) error                 { return nil }
+func (m *mockTerminalService) UnlinkTickets(_ string, _ []string) error               { return nil }
+func (m *mockTerminalService) UpdateTicket(_ string, _ UpdateTicketRequest) error     { return nil }
+func (m *mockTerminalService) UploadTicket(_ []byte) (TicketInfo, error)              { return TicketInfo{}, nil }
 func (m *mockTerminalService) GetLogs(_ string, _ string) (string, error) {
 	return "", nil
 }

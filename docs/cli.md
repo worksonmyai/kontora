@@ -109,10 +109,14 @@ Creates a ticket and prints its ID. Without `--path` it uses the current git roo
 | `--branch NAME` | Work branch name. Defaults to `<branch_prefix>/<id>`. |
 | `--base-branch NAME` | Branch the work branch starts from. Defaults to the repository's default branch. |
 | `--status STATUS` | `open` or `todo`. Defaults to `todo`. |
+| `--at TIME` | Schedule pickup for an RFC 3339 instant, e.g. `2026-09-01T09:00:00+02:00`. |
+| `--after DURATION` | Schedule pickup this long from now, e.g. `24h`. |
 | `--description-file PATH` | Read the markdown that follows the generated `# <title>` heading from a file, or `-` for stdin. |
 | `--quiet` | Print only the new ticket ID. |
 
 The ticket file is written once, complete. A ticket created with `--status open` is therefore never visible as `todo`, so a daemon with `auto_pick_up: true` watching the directory cannot claim it before you finish editing it. `--status open` also skips the repository check creation normally runs, because an open ticket is not ready to run.
+
+`--at` and `--after` create the ticket `open` with a [`scheduled_at`](tickets.md#scheduled-pickup) stamp, in the same single write. They cannot be combined with each other, or with `--status todo`: the schedule is what moves the ticket to `todo`. An `--at` already in the past is refused, and a scheduled ticket has its repository checked at creation the way a `todo` one does, because nobody is watching when it starts.
 
 ### `kontora view TICKET_ID`
 
@@ -159,13 +163,27 @@ Marks an existing ticket file `kontora: true` so the daemon will run it. Without
 | `--stage NAME` | Starting stage. Defaults to the pipeline's first stage when `--pipeline` is given. |
 | `--status STATUS` | `open` or `todo`. Defaults to asking. |
 
-In remote mode `--pipeline` and `--path` are both required, because the pickers cannot run over HTTP.
+In remote mode `--pipeline` and `--path` are both required, because the pickers cannot run over HTTP. `--status` is sent; `--stage` is not, so the remote form starts at the pipeline's first stage. Initializing a [scheduled](tickets.md#scheduled-pickup) ticket with `--status todo` queues it now and drops the timestamp; `--status open` keeps it.
 
 ## Lifecycle
 
 ### `kontora run TICKET_ID`
 
 Enqueues an `open` or `todo` ticket. Needs a running daemon. When the ticket's dependencies are not all closed it reports it as blocked, naming them, rather than saying it was queued: the daemon will not pick it up until they close. See [dependency-aware scheduling](tickets.md#dependency-aware-scheduling).
+
+### `kontora schedule TICKET_ID`
+
+Sets or clears the time the daemon moves an `open` ticket to `todo`. Needs a running daemon. See [scheduled pickup](tickets.md#scheduled-pickup).
+
+| Flag | Description |
+|------|-------------|
+| `--at TIME` | An RFC 3339 instant, e.g. `2026-09-01T09:00:00+02:00`. Stored normalized to UTC. An instant already in the past is refused. |
+| `--after DURATION` | A Go duration from now, e.g. `90m` or `24h`. Resolved on the calling machine's clock. |
+| `--clear` | Remove the schedule. The ticket stays `open`. |
+
+Exactly one of the three is required. Scheduling a `todo` ticket returns it to `open` and drops it from the ready queue; the timestamp is what puts it back. Setting a schedule is refused on a running, closed or archived ticket, and while a Plannotator session or a pending annotation owns the ticket. `--clear` is refused only while the ticket is running, so a timestamp left behind anywhere can be removed without editing the file.
+
+`kontora run` on a scheduled ticket clears the timestamp and queues it now, in one write.
 
 ### `kontora pause TICKET_ID`
 
@@ -430,7 +448,7 @@ Prints the version.
 
 Setting `--url` or `KONTORA_URL` points every client command at a daemon over HTTP instead of the local files. See [Remote mode](https://github.com/worksonmyai/kontora#remote-mode) in the README for the daemon-side setup.
 
-Supported: `ls`, `view`, `new`, `init`, `update`, `delete`, `run`, `pause`, `retry`, `cancel`, `done`, `move`, `skip`, `set-stage`, `note`, `summary`, `logs`, `activity`, `changes`, `stats`, `review`, `annotate`, `config`, `attach`.
+Supported: `ls`, `view`, `new`, `init`, `update`, `delete`, `run`, `schedule`, `pause`, `retry`, `cancel`, `done`, `move`, `skip`, `set-stage`, `note`, `summary`, `logs`, `activity`, `changes`, `stats`, `review`, `annotate`, `config`, `attach`.
 
 Rejected, because they act on local files: `edit`, `search`, `archive`, `estimate-compaction`, `sessions`, `doctor`, `start`, `setup`.
 

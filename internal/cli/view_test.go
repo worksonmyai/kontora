@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -13,7 +14,11 @@ import (
 	"github.com/worksonmyai/kontora/internal/config"
 )
 
-func TestViewRendersBranchFields(t *testing.T) {
+// scheduledLocal is the schedule case's instant as the reader's zone renders
+// it, so the assertion holds wherever the suite runs.
+var scheduledLocal = time.Date(2026, 9, 1, 9, 0, 0, 0, time.UTC).Local().Format("Jan 02 15:04")
+
+func TestViewRendersFrontmatterFields(t *testing.T) {
 	cases := []struct {
 		name     string
 		fields   string
@@ -40,6 +45,17 @@ func TestViewRendersBranchFields(t *testing.T) {
 			name:   "base branch only",
 			fields: "base_branch: origin/develop\n",
 			want:   []string{"base:      origin/develop"},
+		},
+		{
+			name:   "a schedule prints in the reader's own zone",
+			fields: "scheduled_at: \"2026-09-01T09:00:00Z\"\n",
+			want:   []string{"starts:    " + scheduledLocal},
+		},
+		{
+			// A wrong time would hide the typo instead of pointing at it.
+			name:   "a schedule the parser rejects prints as it stands",
+			fields: "scheduled_at: \"next tuesday\"\n",
+			want:   []string{"starts:    next tuesday"},
 		},
 	}
 

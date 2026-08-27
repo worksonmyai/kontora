@@ -36,6 +36,7 @@ These are set when creating a ticket (manually or via `kontora new`). `notify` a
 | `path` | yes | — | Path to the repository (supports `~`, e.g., `~/projects/kontora`). |
 | `base_branch` | no | — | Branch the ticket's work branch starts from. Empty means the repository's default branch. See [Base branch](#base-branch). |
 | `created` | no | — | RFC 3339 timestamp. Set automatically by `kontora new`. |
+| `scheduled_at` | no | — | RFC 3339 instant at which the daemon moves an `open` ticket to `todo`. See [Scheduled pickup](#scheduled-pickup). |
 | `deps` | no | — | Ids of the tickets this one waits on. The scheduler holds the ticket back until every one of them is resolved; see [Relations](#relations). |
 | `links` | no | — | Ids of related tickets. See [Relations](#relations). |
 | `parent` | no | — | Id of the epic or parent ticket. Read only; see [Relations](#relations). |
@@ -99,6 +100,30 @@ A `done` notification carries the ticket's per-run `summary`. It fires from the 
 
 Three things that would otherwise make a ticket quiet with no explanation are warned about when the daemon reads it, at startup and on every later edit, and then ignored: a status in `notify` that nothing reaches, a channel name nothing answers to, and a `notify:` list that resolves to no channel at all. A malformed `notify:` value makes the whole ticket unparseable, the same as a malformed `deps:`.
 
+#### Scheduled pickup
+
+`scheduled_at` holds the instant an `open` ticket becomes `todo`:
+
+```yaml
+status: open
+scheduled_at: "2026-09-01T07:00:00Z"
+```
+
+Write it with [`kontora schedule`](cli.md#kontora-schedule-ticket_id), with `kontora new --at`/`--after`, or from the ticket detail panel in the dashboard. All of them normalize the instant to UTC, second precision, so a schedule set from two time zones compares equal, and all of them refuse an instant already in the past: a mistyped year would otherwise start the agent at once.
+
+The timestamp is a one-time trigger, not a status. A scheduled ticket sits in the Open column and stays out of the ready queue until its deadline, and its card shows the time it starts in your own zone.
+
+At or after that instant the daemon writes `status: todo` and removes `scheduled_at` in one save, then hands the ticket to the ordinary pickup rules. It does not bypass them:
+
+- With [`auto_pick_up: false`](configuration.md#auto_pick_up) the ticket becomes `todo` and waits there for an explicit `kontora run`.
+- An unresolved dependency keeps it out of the queue, and [dependency-aware scheduling](#dependency-aware-scheduling) queues it once the dependency closes.
+
+The daemon rebuilds its wake-ups from the ticket files at startup, so a schedule survives a restart. One whose deadline passed while the daemon was down is promoted on the first pass after the initial scan.
+
+A promotion is deferred, not lost, while a run or a Plannotator session owns the ticket; it happens once that ends. A value the RFC 3339 parser rejects is left alone and shown as it stands, so a hand-edited typo leaves the ticket open rather than starting it at an instant nobody asked for.
+
+`kontora run` on a scheduled ticket removes the timestamp and sets `status: todo` in the same save, and queues the ticket even with `auto_pick_up: false`. Every other lifecycle move off `open` drops the timestamp too: `retry`, `skip`, `move`, an `init` that queues the ticket, and parking the ticket for an [annotation run](configuration.md#plannotator). Each of them has already answered the question the schedule was asking. An uploaded `.md` file loses any `scheduled_at` it carries, for the same reason the upload is clamped to `open`: it arrives as a draft, not as a run request.
+
 ### Daemon-managed fields
 
 These are set and updated by the daemon as the ticket progresses through its pipeline. Do not edit them manually while the daemon is running.
@@ -148,7 +173,7 @@ open → todo → in_progress → done ──────→ archived
 
 | Status | Meaning |
 |--------|---------|
-| `open` | Drafted but not ready for the daemon to pick up. |
+| `open` | Drafted but not ready for the daemon to pick up. A [`scheduled_at`](#scheduled-pickup) stamp moves it to `todo` at a set time. |
 | `todo` | Ready for the daemon. The scheduler picks it up in creation order, once its `deps` are resolved. |
 | `in_progress` | An agent is currently working on it. |
 | `paused` | Stopped by a failure policy or by the user. Set `status: todo` to resume. |

@@ -2012,6 +2012,7 @@ test("_cardSig changes for every field _cardHTML renders", () => {
     { name: "stages", ticket: { stages: ["plan", "code", "commit"] } },
     { name: "started_at", ticket: { started_at: "2026-05-19T11:00:00Z" } },
     { name: "created_at", ticket: { created_at: "2026-05-19T09:00:00Z" } },
+    { name: "scheduled_at", ticket: { scheduled_at: "2026-05-20T09:00:00Z" } },
 
     { name: "showPipelineBadges", toggle: "showPipelineBadges" },
     { name: "showAgentMeta", toggle: "showAgentMeta" },
@@ -10829,4 +10830,148 @@ test("a remembered thread the daemon has dropped opens empty and quietly", async
   assert.equal(state.assistantThread, null);
   assert.equal(state.assistantError, null, "a thread the user cannot see gone is not an error to show");
   assert.equal(store["kontora-assistant-thread"], "");
+});
+
+// The local wall time the schedule fields hold, and the instant it means. Built
+// with the runner's own zone so the assertions hold wherever the suite runs.
+const SCHED_LOCAL = "2026-09-01T09:00";
+const SCHED_ISO = new Date(2026, 8, 1, 9, 0, 0, 0).toISOString().replace(/\.\d{3}Z$/, "Z");
+
+// A component whose fetch records what was posted where.
+function scheduleState() {
+  const posted = [];
+  const state = loadKontoraState({
+    // Only the writes are recorded: opening the create modal fetches the
+    // config, and that GET is not what these tests are asserting on.
+    fetch: async (url, opts) => {
+      if (opts && opts.method === "POST") posted.push({ url, body: JSON.parse(opts.body) });
+      return { ok: true, json: async () => ({ id: "kon-1", status: "open", kontora: true, scheduled_at: SCHED_ISO }) };
+    },
+  });
+  state._boardInit = false;
+  return { state, posted };
+}
+
+test("the create form sends the instant its local date-time means", async () => {
+  const { state, posted } = scheduleState();
+  await state.openCreateModal();
+  state.createForm.title = "Later";
+  state.createForm.path = "/repo";
+  state.createForm.scheduled_at = SCHED_LOCAL;
+  state.onCreateScheduleChange();
+
+  await state.submitCreateTicket();
+
+  assert.equal(posted.length, 1);
+  assert.equal(posted[0].url, "/api/tickets");
+  assert.equal(posted[0].body.scheduled_at, SCHED_ISO);
+  assert.equal(posted[0].body.status, "open", "a schedule is what moves the ticket, so it starts open");
+  assert.equal(state.createForm.status, "open");
+});
+
+test("a value that is not a full local date-and-time creates an ordinary ticket", async () => {
+  // A bare date is the trap: Date reads that form as UTC, so accepting it would
+  // schedule the ticket for midnight in some other zone.
+  for (const partial of ["", "2026-09", "2026-09-01", "not a date"]) {
+    const { state, posted } = scheduleState();
+    await state.openCreateModal();
+    state.createForm.title = "Now";
+    state.createForm.path = "/repo";
+    state.createForm.scheduled_at = partial;
+
+    await state.submitCreateTicket();
+
+    assert.equal(posted[0].body.scheduled_at, undefined, partial);
+    assert.equal(posted[0].body.status, "todo", partial);
+  }
+});
+
+test("the frontmatter preview shows the schedule and the open it forces", async () => {
+  const { state } = scheduleState();
+  await state.openCreateModal();
+  state.createForm.title = "Later";
+  state.createForm.status = "todo";
+  state.createForm.scheduled_at = SCHED_LOCAL;
+
+  const yaml = state.createPreviewYaml;
+  assert.ok(yaml.includes('scheduled_at: "' + SCHED_ISO + '"'), yaml);
+  assert.ok(yaml.includes("status: open"), yaml);
+});
+
+test("the schedule editor round-trips the stored instant through local time", () => {
+  const { state } = scheduleState();
+  state.selectedTicket = { id: "kon-1", status: "open", kontora: true, scheduled_at: SCHED_ISO };
+
+  state.openScheduleEditor();
+
+  assert.equal(state.scheduleEditing, true);
+  assert.equal(state.scheduleDraft, SCHED_LOCAL);
+});
+
+test("saving a schedule posts the instant and folds the answer back in", async () => {
+  const { state, posted } = scheduleState();
+  state.tickets = [{ id: "kon-1", title: "T", status: "todo", kontora: true }];
+  state.selectedTicket = { id: "kon-1", title: "T", status: "todo", kontora: true };
+  state.openScheduleEditor();
+  state.scheduleDraft = SCHED_LOCAL;
+
+  await state.submitSchedule();
+
+  assert.deepEqual(posted, [{ url: "/api/tickets/kon-1/schedule", body: { scheduled_at: SCHED_ISO } }]);
+  assert.equal(state.scheduleEditing, false);
+  assert.equal(state.selectedTicket.scheduled_at, SCHED_ISO);
+  assert.equal(state.selectedTicket.status, "open", "scheduling a queued ticket returns it to open");
+  assert.equal(state.tickets[0].scheduled_at, SCHED_ISO);
+});
+
+test("clearing a schedule says so rather than sending an empty instant", async () => {
+  const { state, posted } = scheduleState();
+  state.selectedTicket = { id: "kon-1", status: "open", kontora: true, scheduled_at: SCHED_ISO };
+
+  await state.clearTicketSchedule();
+
+  assert.deepEqual(posted, [{ url: "/api/tickets/kon-1/schedule", body: { clear: true } }]);
+});
+
+test("an empty draft is refused without a request", async () => {
+  const { state, posted } = scheduleState();
+  state.selectedTicket = { id: "kon-1", status: "open", kontora: true };
+  state.openScheduleEditor();
+  state.scheduleDraft = "";
+
+  await state.submitSchedule();
+
+  assert.equal(posted.length, 0);
+  assert.ok(state.scheduleError);
+});
+
+test("only a managed open or todo ticket offers the schedule controls", () => {
+  const { state } = scheduleState();
+  const can = (t) => state.canSchedule(t);
+
+  assert.equal(can({ status: "open", kontora: true }), true);
+  assert.equal(can({ status: "todo", kontora: true }), true);
+  assert.equal(can({ status: "open", kontora: false }), false);
+  assert.equal(can({ status: "in_progress", kontora: true }), false);
+  assert.equal(can({ status: "done", kontora: true }), false);
+  assert.equal(can(null), false);
+});
+
+test("a schedule the daemon could not parse is shown as it stands", () => {
+  const { state } = scheduleState();
+
+  assert.equal(state.scheduleLabel({ scheduled_at: "next tuesday" }), "next tuesday");
+  assert.equal(state.scheduleLabel({}), "");
+});
+
+test("a schedule change reaches the panel while the body is being edited", () => {
+  const { state } = scheduleState();
+  state.tickets = [{ id: "kon-1", title: "T", status: "open", kontora: true }];
+  state.selectedTicket = { id: "kon-1", title: "T", status: "open", kontora: true, body: "typing" };
+  state.editing = true;
+
+  state.applyTicketUpdate({ id: "kon-1", title: "T", status: "open", kontora: true, scheduled_at: SCHED_ISO });
+
+  assert.equal(state.selectedTicket.scheduled_at, SCHED_ISO);
+  assert.equal(state.selectedTicket.body, "typing", "the edited body survives");
 });

@@ -302,6 +302,12 @@ func (d *Daemon) parkForAnnotation(id string) error {
 	if err := t2.SetField("annotation_return_status", string(t2.Status)); err != nil {
 		return fmt.Errorf("set annotation_return_status: %w", err)
 	}
+	// The park is the pickup the schedule was waiting for. Left behind, the
+	// timestamp survives the annotation run and every move that follows it, and
+	// the daemon starts the agent again at an instant nobody is expecting.
+	if err := t2.ClearSchedule(); err != nil {
+		return fmt.Errorf("clear %s: %w", ticket.FieldScheduledAt, err)
+	}
 	if err := t2.SetField("status", string(ticket.StatusTodo)); err != nil {
 		return fmt.Errorf("set status: %w", err)
 	}
@@ -509,6 +515,10 @@ func (d *Daemon) clearAnnotationMarker(log *slog.Logger, ticketID, filePath stri
 		d.enqueue(t2)
 	}
 	d.broadcastTicketUpdate(ticketID)
+	// The marker refuses a promotion, and this write clears it. It is a
+	// self-write, so the watcher event is dropped and nothing else would tell
+	// the schedule loop the refusal is over.
+	d.signalSchedule()
 	d.mu.Unlock()
 }
 
@@ -622,6 +632,10 @@ func (d *Daemon) finishAnnotationRun(log *slog.Logger, p annotationExit) {
 		d.enqueue(t2)
 	}
 	d.broadcastTicketUpdate(p.ticketID)
+	// A completed run clears annotation_return_status through a self-write, so
+	// the watcher event is dropped: nothing else tells the schedule loop that
+	// the refusal a pending annotation makes is over.
+	d.signalSchedule()
 	d.mu.Unlock()
 }
 

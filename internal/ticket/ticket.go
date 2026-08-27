@@ -187,13 +187,19 @@ type Ticket struct {
 	// names the epic or parent task. Deps and links are written by the relation
 	// commands; parent is not written by kontora. The reverse of deps is not
 	// stored; it is derived by scanning the store.
-	Deps      []string   `yaml:"deps"`
-	Links     []string   `yaml:"links"`
-	Parent    string     `yaml:"parent"`
-	Created   *time.Time `yaml:"created"`
-	LastError string     `yaml:"last_error"`
-	LastLog   string     `yaml:"last_log"`
-	Summary   string     `yaml:"summary"`
+	Deps   []string `yaml:"deps"`
+	Links  []string `yaml:"links"`
+	Parent string   `yaml:"parent"`
+	// ScheduledAt is the instant an open ticket becomes todo, as an RFC 3339
+	// string. It is a string rather than a *time.Time so a hand-edited value the
+	// strict parser rejects stays visible instead of making the whole ticket
+	// unparsable. Absent from a ticket with no schedule, and removed by the
+	// promotion. Use Schedule to read it.
+	ScheduledAt string     `yaml:"scheduled_at,omitempty"`
+	Created     *time.Time `yaml:"created"`
+	LastError   string     `yaml:"last_error"`
+	LastLog     string     `yaml:"last_log"`
+	Summary     string     `yaml:"summary"`
 	// FinalSummary is the ticket-level result: one text synthesized from the
 	// ticket itself and every run summary the ticket recorded. It opens with
 	// what the ticket set out to do, then what the runs did. It is written

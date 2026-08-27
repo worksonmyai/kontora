@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/worksonmyai/kontora/internal/config"
+	"github.com/worksonmyai/kontora/internal/ticket"
 	"github.com/worksonmyai/kontora/internal/ticket/app"
 )
 
@@ -38,7 +39,11 @@ type NewOpts struct {
 	// BaseBranch names the branch the work branch starts from. Empty means the
 	// repository's default branch.
 	BaseBranch string
-	NoEdit     bool
+	// ScheduledAt is an RFC 3339 instant the daemon promotes the ticket at. A
+	// scheduled ticket is created open, and the whole file is written once, so a
+	// watching daemon never sees it as todo before the schedule is in place.
+	ScheduledAt string
+	NoEdit      bool
 }
 
 // New creates a ticket file and optionally opens it in $EDITOR.
@@ -48,6 +53,21 @@ func New(cfg *config.Config, opts NewOpts) (string, error) {
 	}
 	if opts.Title == "" {
 		return "", fmt.Errorf("title is required")
+	}
+	if opts.ScheduledAt != "" {
+		at, err := ticket.ParseSchedule(opts.ScheduledAt)
+		if err != nil {
+			return "", err
+		}
+		if ticket.SchedulePast(at, time.Now()) {
+			return "", fmt.Errorf("%s is in the past: %s", ticket.FieldScheduledAt, ticket.FormatSchedule(at))
+		}
+		opts.ScheduledAt = ticket.FormatSchedule(at)
+		if opts.Status == "" {
+			opts.Status = "open"
+		} else if opts.Status != "open" {
+			return "", fmt.Errorf("a scheduled ticket is created open, not %q: the schedule is what moves it to todo", opts.Status)
+		}
 	}
 	if opts.Status == "" {
 		opts.Status = "todo"
@@ -73,7 +93,10 @@ func New(cfg *config.Config, opts NewOpts) (string, error) {
 		}
 	}
 
-	if opts.Status != "open" {
+	// An open ticket is a draft, which is why it skips the check. A scheduled one
+	// is a commitment to run unattended, so the repository has to be right now
+	// rather than at a pickup nobody is watching.
+	if opts.Status != "open" || opts.ScheduledAt != "" {
 		if err := CheckRepo(opts.Path, opts.BaseBranch); err != nil {
 			return "", err
 		}
@@ -105,12 +128,16 @@ func New(cfg *config.Config, opts NewOpts) (string, error) {
 	if opts.BaseBranch != "" {
 		baseBranchLine = fmt.Sprintf("base_branch: %s\n", yamlQuote(opts.BaseBranch))
 	}
+	scheduledLine := ""
+	if opts.ScheduledAt != "" {
+		scheduledLine = fmt.Sprintf("scheduled_at: %q\n", opts.ScheduledAt)
+	}
 	body := "\n"
 	if opts.Body != "" {
 		body = "\n" + opts.Body + "\n"
 	}
-	content := fmt.Sprintf("---\nid: %s\nkontora: true\nstatus: %s\n%s%s%s%spath: %s\ncreated: %s\n---\n# %s\n%s",
-		id, yamlQuote(opts.Status), pipelineLine, agentLine, branchLine, baseBranchLine, yamlQuote(opts.Path), now, opts.Title, body)
+	content := fmt.Sprintf("---\nid: %s\nkontora: true\nstatus: %s\n%s%s%s%s%spath: %s\ncreated: %s\n---\n# %s\n%s",
+		id, yamlQuote(opts.Status), pipelineLine, agentLine, branchLine, baseBranchLine, scheduledLine, yamlQuote(opts.Path), now, opts.Title, body)
 
 	dir := config.ExpandTilde(cfg.TicketsDir)
 	if err := os.MkdirAll(dir, 0o755); err != nil {

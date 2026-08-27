@@ -59,7 +59,7 @@ var kontoraReadVerbs = map[string]bool{
 
 // kontoraWriteVerbs are the CLI verbs that change a ticket.
 var kontoraWriteVerbs = map[string]bool{
-	"new": true, "update": true, "init": true, "run": true, "pause": true,
+	"new": true, "update": true, "init": true, "run": true, "schedule": true, "pause": true,
 	"retry": true, "cancel": true, "done": true, "move": true, "skip": true,
 	"set-stage": true, "note": true, "summary": true, "dep": true, "undep": true,
 	"link": true, "unlink": true, "archive": true,

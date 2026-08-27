@@ -106,13 +106,15 @@ func (d *Daemon) CreateTicket(req web.CreateTicketRequest) (web.TicketInfo, erro
 		Branch:      req.Branch,
 		BaseBranch:  req.BaseBranch,
 		ScheduledAt: req.ScheduledAt,
+		Kind:        req.Kind,
+		Parent:      req.Parent,
 		NoEdit:      true,
 	})
 	if err != nil {
 		// Nothing was created, so the reservation must go: the next ticket gets
 		// this id back, and its creation event has to be acted on.
 		d.forgetSelfWrite(filePath)
-		return web.TicketInfo{}, fmt.Errorf("creating ticket: %w", err)
+		return web.TicketInfo{}, fmt.Errorf("creating ticket: %w", mapAppError(err))
 	}
 
 	t, err := ticket.ParseFile(filePath)
@@ -130,6 +132,13 @@ func (d *Daemon) CreateTicket(req web.CreateTicketRequest) (web.TicketInfo, erro
 	d.warnUnmatchedNotifyLocked(cfg, t)
 	if t.Status == "todo" {
 		d.enqueue(t)
+	}
+	// A new child moves its epic; a new epic settles against whatever children
+	// already name it.
+	if t.Kind == ticket.KindEpic {
+		d.rederiveEpicLocked(id, "")
+	} else {
+		d.rederiveParentEpicLocked(t)
 	}
 	info := d.buildTicketInfo(cfg, ts, false)
 	d.broadcastTicketUpdate(id)
@@ -263,6 +272,15 @@ func (d *Daemon) DeleteTicket(id string) error {
 		return err
 	}
 
+	// Deleting an epic keeps its work. The children are ordinary tickets that
+	// happen to be filed under it, so they are taken out of it rather than
+	// deleted with it.
+	if ts.ticket.Kind == ticket.KindEpic {
+		if err := d.orphanEpicChildren(id); err != nil {
+			return err
+		}
+	}
+
 	if err := os.Remove(filePath); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
@@ -283,6 +301,7 @@ func (d *Daemon) DeleteTicket(id string) error {
 	if !ok {
 		return nil
 	}
+	parent := ts.ticket.Parent
 	d.removeQueuedLocked(id)
 	d.broadcastTicketDeleted(ts)
 	delete(d.tickets, id)
@@ -290,6 +309,36 @@ func (d *Daemon) DeleteTicket(id string) error {
 	// ticket at this path, so this is the only place the delete reaches the
 	// dispatcher's remembered status.
 	d.forgetNotifyLocked(id)
+	// The epic above it has one child fewer, which can be what finishes it or
+	// what reopens it.
+	if parent != "" {
+		d.rederiveEpicLocked(parent, "")
+	}
+	return nil
+}
+
+// orphanEpicChildren clears parent on every child of an epic that is about to
+// be deleted. A child whose parent cannot be cleared stops the delete: leaving
+// it pointing at a ticket that no longer exists is worse than not deleting.
+// It runs before the file is removed, for the same reason: a remove that fails
+// afterwards leaves an epic with no members, which the next delete or a
+// re-parent fixes, where the other order can strand a child on a missing epic.
+func (d *Daemon) orphanEpicChildren(epicID string) error {
+	d.mu.Lock()
+	var childIDs []string
+	for otherID, ts := range d.tickets {
+		if ts.ticket.Parent == epicID {
+			childIDs = append(childIDs, otherID)
+		}
+	}
+	d.mu.Unlock()
+
+	slices.Sort(childIDs)
+	for _, childID := range childIDs {
+		if _, err := d.svc.ClearParent(childID); err != nil {
+			return fmt.Errorf("clearing parent on %s: %w", childID, mapAppError(err))
+		}
+	}
 	return nil
 }
 
@@ -323,6 +372,13 @@ func (d *Daemon) PauseTicket(id string) error {
 	if !ok {
 		d.mu.Unlock()
 		return web.ErrTicketNotFound
+	}
+	// An epic derives in_progress routinely and has no agent to cancel, so
+	// without this the pause writes a status the derivation did not produce and
+	// nothing puts it back.
+	if ts.ticket.Kind == ticket.KindEpic {
+		d.mu.Unlock()
+		return fmt.Errorf("%w: %s is an epic, its status is derived from its children", web.ErrInvalidState, id)
 	}
 	if ts.ticket.Status != ticket.StatusInProgress {
 		status := ts.ticket.Status
@@ -400,6 +456,9 @@ func (d *Daemon) RunTicket(id string) error {
 	t2, err := ticket.ParseFile(ts.filePath)
 	if err != nil {
 		return err
+	}
+	if t2.Kind == ticket.KindEpic {
+		return fmt.Errorf("%w: %s is an epic, which has no pipeline to run", web.ErrInvalidState, id)
 	}
 	switch t2.Status { //nolint:exhaustive // only open and todo can be run
 	case ticket.StatusOpen, ticket.StatusTodo:
@@ -503,6 +562,14 @@ func (d *Daemon) SetStage(id string, stage string) error {
 
 // MoveTicket sets a ticket's status to newStatus with transition validation.
 func (d *Daemon) MoveTicket(id string, newStatus string) error {
+	d.mu.Lock()
+	ts, known := d.tickets[id]
+	isEpic := known && ts.ticket.Kind == ticket.KindEpic
+	d.mu.Unlock()
+	if isEpic {
+		return fmt.Errorf("%w: %s is an epic, its status is derived from its children", web.ErrInvalidState, id)
+	}
+
 	switch newStatus {
 	case "paused":
 		return d.PauseTicket(id)
@@ -776,6 +843,24 @@ func (d *Daemon) UnlinkTickets(id string, relatedIDs []string) error {
 	return mapAppError(err)
 }
 
+// SetParent files a ticket under an epic.
+func (d *Daemon) SetParent(id string, parentID string) error {
+	_, err := d.svc.SetParent(id, parentID)
+	return mapAppError(err)
+}
+
+// ClearParent takes a ticket out of its epic.
+func (d *Daemon) ClearParent(id string) error {
+	_, err := d.svc.ClearParent(id)
+	return mapAppError(err)
+}
+
+// SetChildOrder writes an epic's manual child order.
+func (d *Daemon) SetChildOrder(id string, children []string) error {
+	_, err := d.svc.SetChildOrder(id, children)
+	return mapAppError(err)
+}
+
 // UpdateTicket updates body and frontmatter fields of a ticket.
 // Allowed in statuses: open, todo, paused.
 func (d *Daemon) UpdateTicket(id string, req web.UpdateTicketRequest) error {
@@ -786,10 +871,15 @@ func (d *Daemon) UpdateTicket(id string, req web.UpdateTicketRequest) error {
 		return web.ErrTicketNotFound
 	}
 	status := ts.ticket.Status
+	kind := ts.ticket.Kind
 	filePath := ts.filePath
 	d.mu.Unlock()
 
-	if !d.config().StatusAllowsEdit(string(status)) {
+	// An epic is editable in every status. The statuses the check excludes are
+	// the ones where an agent owns the file or the work is over, and an epic has
+	// neither: its status is a summary of its children, and the brief is the
+	// whole reason the ticket exists.
+	if kind != ticket.KindEpic && !d.config().StatusAllowsEdit(string(status)) {
 		return fmt.Errorf("%w: cannot edit ticket %s in status %s", web.ErrInvalidState, id, status)
 	}
 
@@ -1556,6 +1646,7 @@ func mapAppError(err error) error {
 		// other "the store will not allow this" rejection.
 		{app.ErrRelationCycle, web.ErrInvalidState},
 		{app.ErrSelfRelation, web.ErrInvalidState},
+		{app.ErrNotAnEpic, web.ErrInvalidState},
 	} {
 		if errors.Is(err, m.from) {
 			return &mappedError{sentinel: m.to, cause: err}

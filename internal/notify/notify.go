@@ -26,6 +26,11 @@ const (
 	OriginRequest
 	// OriginObserved is a ticket read off disk: the startup scan or a watcher event.
 	OriginObserved
+	// OriginDerived is a status the daemon computed from other tickets rather
+	// than decided, as it does for an epic. It seeds lastSeen so a later real
+	// change still diffs against the right status, and never sends: the change
+	// the person cares about is the child's, which sent on its own.
+	OriginDerived
 )
 
 // StatusWaiting is the pseudo-status a ticket names in notify: to be told when
@@ -208,7 +213,7 @@ func (d *Dispatcher) Observe(obs Observation) {
 	d.mu.Unlock()
 
 	switch obs.Origin {
-	case OriginDaemon, OriginRequest, OriginObserved:
+	case OriginDaemon, OriginRequest, OriginObserved, OriginDerived:
 	default:
 		d.log.Warn("notification skipped: write site states no origin",
 			"ticket", obs.ID, "status", obs.Status)

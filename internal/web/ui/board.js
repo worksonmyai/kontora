@@ -61,9 +61,17 @@ export function kontoraBoard() {
       var inProgressCol = col.key === 'in_progress';
       var selected = this.selectedTicket && this.selectedTicket.id === ticket.id;
 
-      var cls = ['kt-card group relative rounded-[9px] px-3 py-2.5 cursor-pointer border',
+      var cls = ['kt-card group relative rounded-[9px] px-3 py-2.5 cursor-pointer border overflow-hidden',
                  'bg-surface-900 border-edge-card hover:border-edge-hover hover:bg-surface-850',
                  'flex flex-col gap-1.5'];
+      // The epic a child belongs to, if any. It paints a spine down the card's
+      // left edge and a "3/6 epic" count in the footer, both in the epic's own
+      // hue. data-pipe-color goes on those two spans and not on the card root:
+      // the root's --pipe-h is the ticket's own pipeline, and reusing it would
+      // repaint the pipeline tag in the epic's colour.
+      var epic = this.epicCardInfo(ticket);
+      var epicHue = epic ? this.pipelineColorByName(epic.id) : '';
+      if (epic) cls.push('pl-[14px]');
       if (selected) cls.push('is-selected');
       if (!ticket.kontora) cls.push('border-dashed');
       if (ticket.status === 'cancelled') cls.push('opacity-60');
@@ -184,11 +192,23 @@ export function kontoraBoard() {
         ? ' data-tip-e="' + esc(ticket.id) + '" data-tip-e-body="' + esc(rel) + '"'
         : '';
 
+      var epicSpine = epic
+        ? '<span class="absolute left-0 top-0 bottom-0 w-[3px]" data-pipe-color="' + esc(epicHue) + '"'
+          + ' style="background: hsl(var(--pipe-h) / 0.75)" aria-hidden="true"></span>'
+        : '';
+      var epicCount = epic
+        ? '<span class="flex items-center gap-1.5 min-w-0"><span class="text-edge-faint">·</span>'
+          + '<span class="truncate" data-pipe-color="' + esc(epicHue) + '" style="color: hsl(var(--pipe-h) / 0.9)"'
+          + ' data-tip="' + esc(epic.title) + '">'
+          + esc(epic.done + '/' + epic.total + ' epic') + '</span></span>'
+        : '';
+
       return '<div class="' + cls.join(' ') + '"'
         + ' data-ticket-id="' + esc(ticket.id) + '"'
         + ' data-pipe-color="' + esc(this.ticketPipeColor(ticket)) + '"'
         + ' role="listitem" tabindex="0"'
         + ' aria-label="' + esc('Ticket ' + ticket.id + ': ' + (ticket.title || '')) + '">'
+        + epicSpine
         + menu
         + badgeRow
         + '<p class="' + titleCls + '">' + tagSpan + esc(pt.rest) + '</p>'
@@ -196,6 +216,7 @@ export function kontoraBoard() {
         + '<div class="flex items-center gap-2 text-[11px] font-mono text-surface-600 justify-between">'
         +   '<div class="flex items-center gap-1.5 min-w-0">'
         +     '<span class="group-hover:text-tx-3 transition-colors truncate"' + idTip + '>' + esc(ticket.id) + '</span>'
+        +     epicCount
         +     agent
         +   '</div>'
         +   '<div class="flex items-center gap-2 shrink-0">' + retry + timeSpan + '</div>'
@@ -212,8 +233,16 @@ export function kontoraBoard() {
     _cardSig(ticket, col) {
       // ticket.finished_at and ticket.updated_at reach the card only through
       // reviewFinishedAt, so its result stands in for both here. ticket.parent,
-      // ticket.deps and ticket.links reach it only through the relation line,
-      // so that string stands in for the three of them.
+      // ticket.deps and ticket.links reach it only through the relation line
+      // and, for parent, the epic spine, so those two strings stand in for
+      // them. ticket.kind is in the signature although an epic draws no card:
+      // a ticket that becomes one has to stop drawing the card it had.
+      //
+      // The spine and the "3/6 epic" footer are the one part of a card that is
+      // board state rather than ticket state: a sibling finishing has to
+      // repaint this card, and only _epicRollup knows that happened.
+      var epic = this._epicRollup[(ticket.parent && ticket.parent.id) || ''];
+      var epicSig = epic ? [epic.id, epic.title, epic.done, epic.total].join(':') : '';
       return [col.key, ticket.id, ticket.title, ticket.status, ticket.stage,
               ticket.pipeline, ticket.path, ticket.agent, ticket.attempt,
               ticket.kontora ? 1 : 0, ticket.started_at, ticket.created_at,
@@ -223,6 +252,7 @@ export function kontoraBoard() {
               this.reviewFinishedAt(ticket),
               (ticket.stages || []).join('>'),
               this._cardRelationSummary(ticket),
+              ticket.kind, epicSig,
               this.showPipelineBadges ? 1 : 0, this.showAgentMeta ? 1 : 0].join('\u0001');
     },
 
@@ -710,8 +740,16 @@ export function kontoraBoard() {
       // Per-agent running tally for the sidebar, filled in this same pass so
       // agentRunningCount doesn't filter the whole ticket array per agent row.
       var running = Object.create(null);
+      // Epics collected on the way past. An epic is not work: it takes no
+      // column, and its derived status must not reach the tallies behind the
+      // favicon and the running pill, which would double-count its children.
+      var epics = [];
       for (var i = 0; i < this.tickets.length; i++) {
         var t = this.tickets[i];
+        if (t.kind === 'epic') {
+          epics.push(t);
+          continue;
+        }
         if (t.kontora && counts[t.status] !== undefined) counts[t.status]++;
         if (t.kontora && t.waiting_for_input) counts.needsInput++;
         if (t.kontora && t.status === 'in_progress' && t.agent) {
@@ -732,6 +770,9 @@ export function kontoraBoard() {
       this._statusCounts = counts;
       this._agentRunning = running;
       this.runningAgents = counts.in_progress;
+      // Before renderBoard: _cardHTML reads the roll-up for a child's spine.
+      this._epicRecompute(epics);
+      this.epicRefreshSelected();
       // Repaint the imperatively rendered cards from the fresh board data. Guarded
       // until the first post-load render (init's $nextTick) so calls during the
       // initial fetch, before the column DOM exists, are no-ops.

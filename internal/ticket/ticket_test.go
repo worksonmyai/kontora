@@ -233,11 +233,13 @@ func TestFinalSummaryDecodeAndRoundTrip(t *testing.T) {
 
 func TestRelationsDecode(t *testing.T) {
 	cases := []struct {
-		name       string
-		fm         string
-		wantDeps   []string
-		wantLinks  []string
-		wantParent string
+		name         string
+		fm           string
+		wantDeps     []string
+		wantLinks    []string
+		wantParent   string
+		wantKind     Kind
+		wantChildren []string
 	}{
 		{
 			name: "kontora ticket without the fields",
@@ -265,6 +267,12 @@ func TestRelationsDecode(t *testing.T) {
 			wantDeps:  []string{"kon-aaaa"},
 			wantLinks: []string{"kon-cccc", "kon-dddd"},
 		},
+		{
+			name:         "an epic carries a kind and a child order",
+			fm:           "id: rel-005\nstatus: in_progress\nkind: epic\nchildren: [kon-b12e, kon-c04d]\n",
+			wantKind:     KindEpic,
+			wantChildren: []string{"kon-b12e", "kon-c04d"},
+		},
 	}
 
 	for _, tc := range cases {
@@ -274,6 +282,8 @@ func TestRelationsDecode(t *testing.T) {
 			assert.Equal(t, tc.wantDeps, tkt.Deps)
 			assert.Equal(t, tc.wantLinks, tkt.Links)
 			assert.Equal(t, tc.wantParent, tkt.Parent)
+			assert.Equal(t, tc.wantKind, tkt.Kind)
+			assert.Equal(t, tc.wantChildren, tkt.Children)
 
 			// Relations belong to the external tool: a daemon write to an
 			// unrelated field must leave them exactly as they were.
@@ -285,8 +295,31 @@ func TestRelationsDecode(t *testing.T) {
 			assert.Equal(t, tkt.Deps, reparsed.Deps)
 			assert.Equal(t, tkt.Links, reparsed.Links)
 			assert.Equal(t, tkt.Parent, reparsed.Parent)
+			assert.Equal(t, tkt.Kind, reparsed.Kind)
+			assert.Equal(t, tkt.Children, reparsed.Children)
 		})
 	}
+}
+
+// TestEpicFixtureRoundTrip reads the epic fixture off disk, because the shape a
+// hand-written epic file has is what the daemon rewrites the status of.
+func TestEpicFixtureRoundTrip(t *testing.T) {
+	tkt, err := ParseFile("testdata/epic.md")
+	require.NoError(t, err)
+	assert.Equal(t, KindEpic, tkt.Kind)
+	assert.Equal(t, StatusInProgress, tkt.Status)
+	assert.Equal(t, []string{"kon-b12e", "kon-c04d", "kon-9b31"}, tkt.Children)
+	assert.Empty(t, tkt.Pipeline)
+
+	require.NoError(t, tkt.SetField("status", "done"))
+	out, err := tkt.Marshal()
+	require.NoError(t, err)
+	reparsed, err := ParseBytes(out)
+	require.NoError(t, err)
+	assert.Equal(t, KindEpic, reparsed.Kind)
+	assert.Equal(t, StatusDone, reparsed.Status)
+	assert.Equal(t, tkt.Children, reparsed.Children)
+	assert.Contains(t, reparsed.Body, "The brief lives here.")
 }
 
 // TestAnnotationReturnStatusRoundTrip pins the field the daemon reads to route a

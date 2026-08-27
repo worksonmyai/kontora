@@ -1343,23 +1343,24 @@ const tok = (value, exact = false) => ({ value, exact });
 test("parseFilterQuery splits the box into tokens and free text", () => {
   const state = loadKontoraState();
   const cases = [
-    { name: "a project token", q: "project:kontora", want: { text: "", project: [tok("kontora")], agent: [] } },
-    { name: "an agent token", q: "agent:Claude", want: { text: "", project: [], agent: [tok("claude")] } },
-    { name: "an exact token", q: "project:=kontora", want: { text: "", project: [tok("kontora", true)], agent: [] } },
+    { name: "a project token", q: "project:kontora", want: { text: "", project: [tok("kontora")], agent: [], epic: [] } },
+    { name: "an agent token", q: "agent:Claude", want: { text: "", project: [], agent: [tok("claude")], epic: [] } },
+    { name: "an exact token", q: "project:=kontora", want: { text: "", project: [tok("kontora", true)], agent: [], epic: [] } },
     // A name with a space in it only survives the term split quoted, which is
     // how the sidebar writes it.
-    { name: "a quoted value", q: 'project:="my notes"', want: { text: "", project: [tok("my notes", true)], agent: [] } },
-    { name: "quoted free text", q: '"two words"', want: { text: "two words", project: [], agent: [] } },
-    { name: "a token plus free text", q: "project:Kontora Fonts", want: { text: "fonts", project: [tok("kontora")], agent: [] } },
-    { name: "two tokens", q: "project:kontora agent:claude", want: { text: "", project: [tok("kontora")], agent: [tok("claude")] } },
-    { name: "a repeated key", q: "project:kontora project:widget-api", want: { text: "", project: [tok("kontora"), tok("widget-api")], agent: [] } },
+    { name: "a quoted value", q: 'project:="my notes"', want: { text: "", project: [tok("my notes", true)], agent: [], epic: [] } },
+    { name: "quoted free text", q: '"two words"', want: { text: "two words", project: [], agent: [], epic: [] } },
+    { name: "a token plus free text", q: "project:Kontora Fonts", want: { text: "fonts", project: [tok("kontora")], agent: [], epic: [] } },
+    { name: "two tokens", q: "project:kontora agent:claude", want: { text: "", project: [tok("kontora")], agent: [tok("claude")], epic: [] } },
+    { name: "a repeated key", q: "project:kontora project:widget-api", want: { text: "", project: [tok("kontora"), tok("widget-api")], agent: [], epic: [] } },
     // Between the colon and the first typed character the key constrains
     // nothing, rather than emptying the board.
-    { name: "a bare prefix", q: "project:", want: { text: "", project: [], agent: [] } },
-    { name: "a bare exact prefix", q: "project:=", want: { text: "", project: [], agent: [] } },
-    { name: "a bare prefix and free text", q: "project: fonts", want: { text: "fonts", project: [], agent: [] } },
-    { name: "an unknown prefix", q: "foo:bar", want: { text: "foo:bar", project: [], agent: [] } },
-    { name: "an empty box", q: "  ", want: { text: "", project: [], agent: [] } },
+    { name: "a bare prefix", q: "project:", want: { text: "", project: [], agent: [], epic: [] } },
+    { name: "a bare exact prefix", q: "project:=", want: { text: "", project: [], agent: [], epic: [] } },
+    { name: "a bare prefix and free text", q: "project: fonts", want: { text: "fonts", project: [], agent: [], epic: [] } },
+    { name: "an unknown prefix", q: "foo:bar", want: { text: "foo:bar", project: [], agent: [], epic: [] } },
+    { name: "an epic token", q: "epic:kon-e7c1", want: { text: "", project: [], agent: [], epic: [tok("kon-e7c1")] } },
+    { name: "an empty box", q: "  ", want: { text: "", project: [], agent: [], epic: [] } },
   ];
 
   for (const c of cases) {
@@ -1369,6 +1370,13 @@ test("parseFilterQuery splits the box into tokens and free text", () => {
   // An unknown prefix is matched as the literal it looks like.
   assert.equal(state.ticketMatchesQuery({ title: "see foo:bar" }, "foo:bar"), true);
   assert.equal(state.ticketMatchesQuery({ title: "see bar" }, "foo:bar"), false);
+
+  // epic: reads the child's parent, so it narrows the board to one epic's work
+  // without the epic itself having to be on it.
+  const child = { title: "a child", parent: { id: "kon-e7c1" } };
+  assert.equal(state.ticketMatchesQuery(child, "epic:kon-e7c1"), true);
+  assert.equal(state.ticketMatchesQuery(child, "epic:kon-9999"), false);
+  assert.equal(state.ticketMatchesQuery({ title: "no parent" }, "epic:kon-e7c1"), false);
 });
 
 // Configured projects whose names overlap, one whose name has a space in it,
@@ -3694,8 +3702,9 @@ test("index.html renders every prose block through the idempotent write", () => 
   // the same write in both layers, and a streaming pane is exactly the case a
   // rebuild-per-effect would ruin; the archive's read-only ticket tab renders
   // its body through it too; and the notes tab's own note and reply bodies
-  // are markdown like every other authored block.
-  assert.equal(html.match(/x-effect="setProse\(\$el, /g).length, 10);
+  // are markdown like every other authored block; and the epic page renders
+  // both its brief and its own notes the same way.
+  assert.equal(html.match(/x-effect="setProse\(\$el, /g).length, 12);
   assert.equal(html.match(/x-effect="setSummaryProse\(\$el, /g).length, 2);
   // Nothing in the markup writes a note as plain text any more: the rail block
   // that did is gone and the notes tab renders markdown.
@@ -11206,4 +11215,394 @@ test("a phone preset fills the field with a time the field can read back", () =>
 
   assert.equal(state.mobileSchedulePresetSelected(preset), true);
   assert.equal(state.mobileScheduleParsed().iso, preset.iso);
+});
+
+
+// --- epics ------------------------------------------------------------------
+
+// One epic in in_progress and three children, the shape the spec names.
+const EPIC_TICKETS = [
+  { id: "kon-e7c1", title: "Epics", status: "in_progress", kontora: true, kind: "epic", path: "/r/kontora", child_order: ["kon-c04d", "kon-b12e"] },
+  { id: "kon-b12e", title: "Rollup counts", status: "in_progress", kontora: true, stage: "implement", agent: "claude", created_at: "2026-01-01T00:00:00Z", started_at: "2026-01-03T00:00:00Z", parent: { id: "kon-e7c1" } },
+  { id: "kon-c04d", title: "Rail section", status: "human_review", kontora: true, created_at: "2026-01-02T00:00:00Z", parent: { id: "kon-e7c1" } },
+  { id: "kon-9b31", title: "Epic page", status: "done", kontora: true, created_at: "2026-01-03T00:00:00Z", parent: { id: "kon-e7c1" } },
+];
+
+test("an epic takes no column and does not count toward the status tallies", () => {
+  const state = loadKontoraState();
+  state.tickets = EPIC_TICKETS;
+  state.recomputeBoard();
+
+  for (const col of state.columns) {
+    assert.equal(
+      state.boardTickets(col.key).some((t) => t.id === "kon-e7c1"), false,
+      `${col.key} must not hold the epic`);
+  }
+  // The epic's own derived in_progress must not double-count its running child.
+  assert.equal(state._statusCounts.in_progress, 1);
+  assert.deepEqual(vmValue(state.epics.map((e) => e.id)), ["kon-e7c1"]);
+});
+
+test("the roll-up derives the count, the order, the meter and what holds the epic", () => {
+  const state = loadKontoraState();
+  state.tickets = EPIC_TICKETS;
+  state.recomputeBoard();
+
+  const r = state.epicRollup("kon-e7c1");
+  assert.equal(r.done, 1);
+  assert.equal(r.total, 3);
+  assert.equal(r.pct, 33);
+  // child_order names two of the three; the third sorts after both, by created.
+  assert.deepEqual(vmValue(r.children.map((c) => c.id)), ["kon-c04d", "kon-b12e", "kon-9b31"]);
+  assert.deepEqual(vmValue(r.segs.map((s) => s.hue)), ["--st-review", "--st-progress", "--st-done"]);
+  // Running is what is moving; review is what stops the epic closing.
+  assert.equal(r.next.id, "kon-b12e");
+  assert.equal(r.holder.id, "kon-c04d");
+  assert.equal(state.epicNote("kon-e7c1"), "kon-c04d holds it");
+  assert.equal(state.epicNoteClass("kon-e7c1"), "text-st-review");
+  assert.equal(state.epicBreakdown("kon-e7c1"), "1 running · 1 review");
+});
+
+// The sub-ticket table reads stage position and wall bounds, which a board
+// ticket does not carry: the roll-up derives them the way the daemon's childInfo
+// does, so the stage and elapsed columns are not blank for every row.
+test("the roll-up gives each child the stage position and the wall the table reads", () => {
+  const state = loadKontoraState();
+  state.tickets = [
+    { id: "e", title: "E", status: "in_progress", kontora: true, kind: "epic" },
+    {
+      id: "run", title: "Running", status: "in_progress", kontora: true,
+      stage: "implement", stages: ["plan", "implement", "review"],
+      created_at: "2026-01-01T00:00:00Z", started_at: "2026-01-03T09:00:00Z",
+      parent: { id: "e" },
+    },
+    {
+      id: "fin", title: "Finished", status: "done", kontora: true,
+      stage: "review", stages: ["plan", "implement", "review"],
+      created_at: "2026-01-02T00:00:00Z", started_at: "2026-01-03T11:00:00Z",
+      history: [
+        { started_at: "2026-01-03T10:00:00Z", completed_at: "2026-01-03T10:30:00Z" },
+        { started_at: "2026-01-03T11:00:00Z", completed_at: "2026-01-03T11:15:00Z" },
+      ],
+      parent: { id: "e" },
+    },
+  ];
+  state.recomputeBoard();
+
+  const rows = state.epicRollup("e").children;
+  const run = rows.find((c) => c.id === "run");
+  const fin = rows.find((c) => c.id === "fin");
+  assert.equal(state.childStageLine(run), "implement 2/3");
+  // The wall spans every stage, so it starts at the first pickup in the
+  // history rather than at the frontmatter's current-stage started_at.
+  assert.equal(state.childElapsed(fin), state.formatElapsed("2026-01-03T10:00:00Z", "2026-01-03T11:15:00Z"));
+  assert.notEqual(state.childElapsed(fin), "\u2014");
+});
+
+test("an epic with nothing left to do reads as ready to close", () => {
+  const state = loadKontoraState();
+  state.tickets = [
+    { id: "e", title: "E", status: "done", kontora: true, kind: "epic" },
+    { id: "a", title: "A", status: "done", kontora: true, created_at: "2026-01-01T00:00:00Z", parent: { id: "e" } },
+    { id: "b", title: "B", status: "cancelled", kontora: true, created_at: "2026-01-02T00:00:00Z", parent: { id: "e" } },
+    // The daemon's derivation counts the legacy "closed" status as finished, so
+    // the meter has to agree or it reads 1/3 on an epic the daemon calls done.
+    { id: "c", title: "C", status: "closed", kontora: true, created_at: "2026-01-03T00:00:00Z", parent: { id: "e" } },
+  ];
+  state.recomputeBoard();
+
+  assert.equal(state.epicNote("e"), "ready to close");
+  assert.equal(state.epicNoteClass("e"), "text-st-done");
+  assert.equal(state.epicRollup("e").done, 2);
+  assert.equal(state.epicRollup("e").pct, 67, "a cancelled child is in the total, not in done");
+  assert.equal(state.epicRollup("e").holder, null);
+});
+
+test("an epic with no children says so rather than reading as finished", () => {
+  const state = loadKontoraState();
+  state.tickets = [{ id: "e", title: "E", status: "open", kontora: true, kind: "epic" }];
+  state.recomputeBoard();
+
+  assert.equal(state.epicNote("e"), "no sub-tickets");
+  assert.equal(state.epicRollup("e").pct, 0);
+  assert.equal(state.epicBreakdown("e"), "");
+});
+
+test("a child's card carries the epic spine and the epic count", () => {
+  const { state } = renderedBoard(EPIC_TICKETS);
+  const col = state.columns.find((c) => c.key === "in_progress");
+  const child = EPIC_TICKETS.find((t) => t.id === "kon-b12e");
+  const orphan = { id: "kon-solo", title: "Alone", status: "in_progress", kontora: true };
+
+  const html = state._cardHTML(child, col);
+  // A 3px spine in the epic's hue, on its own span so the card's own --pipe-h
+  // still paints the pipeline tag.
+  assert.match(html, /class="absolute left-0 top-0 bottom-0 w-\[3px\]" data-pipe-color="[a-z]+"/);
+  assert.match(html, /pl-\[14px\]/);
+  assert.match(html, />1\/3 epic</);
+  assert.equal(html.includes('data-pipe-color'), true);
+
+  // A ticket in no epic gets neither.
+  const plain = state._cardHTML(orphan, col);
+  assert.equal(/w-\[3px\]/.test(plain), false);
+  assert.equal(/epic</.test(plain), false);
+  assert.equal(/pl-\[14px\]/.test(plain), false);
+});
+
+test("a sibling finishing changes the card signature of every other child", () => {
+  const state = loadKontoraState();
+  state.tickets = EPIC_TICKETS.map((t) => ({ ...t }));
+  state.recomputeBoard();
+  const col = state.columns.find((c) => c.key === "in_progress");
+  const child = () => state.tickets.find((t) => t.id === "kon-b12e");
+
+  const before = state._cardSig(child(), col);
+  state.tickets.find((t) => t.id === "kon-c04d").status = "done";
+  state.recomputeBoard();
+
+  assert.notEqual(state._cardSig(child(), col), before,
+    "the epic count on this card moved, so its signature has to move with it");
+});
+
+test("the epics rail row opens the page and draws one block per child", () => {
+  const html = fs.readFileSync(htmlPath, "utf8");
+  const section = html.match(/<div class="p-2\.5 pt-2" x-show="epics\.length > 0">[\s\S]*?<\/div>\n      <\/div>/);
+  assert.ok(section, "the rail must carry an epics section");
+  const rail = section[0];
+
+  assert.match(rail, /epicRollup\(e\.id\)\.done \+ '\/' \+ epicRollup\(e\.id\)\.total/);
+  assert.match(rail, /x-for="\(seg, i\) in epicRollup\(e\.id\)\.segs"/);
+  assert.match(rail, /:class="epicNoteClass\(e\.id\)" x-text="epicNote\(e\.id\)"/);
+  assert.match(rail, /@click="openEpic\(e\.id\)"/);
+  assert.match(rail, /:data-pipe-color="pipelineColorByName\(e\.id\)"/);
+  // Above projects, which is where the design puts it.
+  assert.ok(html.indexOf(rail) < html.indexOf(">projects<"), "epics sit above projects");
+});
+
+test("the epic page routes, opens and closes as an overlay over the board", () => {
+  const state = loadKontoraState();
+  state.tickets = EPIC_TICKETS;
+  state.recomputeBoard();
+
+  assert.deepEqual(vmValue(state.parseHash("#/e/kon-e7c1")), { view: "board", ticketId: null, epicId: "kon-e7c1" });
+
+  state.openEpic("kon-e7c1");
+  assert.equal(state.epicPageOpen(), true);
+  assert.equal(state.selectedEpic.id, "kon-e7c1");
+  assert.equal(state.routeHash(), "#/e/kon-e7c1");
+
+  state.closeEpic();
+  assert.equal(state.epicPageOpen(), false);
+  assert.equal(state.routeHash(), "#/");
+
+  // An id that is not an epic opens nothing rather than an empty page.
+  state.openEpic("kon-b12e");
+  assert.equal(state.epicPageOpen(), false);
+});
+
+test("the epic page groups its sub-tickets by status and numbers them", () => {
+  const state = loadKontoraState();
+  state.tickets = EPIC_TICKETS;
+  state.recomputeBoard();
+  state.openEpic("kon-e7c1");
+
+  const groups = state.epicGroups();
+  assert.deepEqual(vmValue(groups.map((g) => g.key)), ["in_progress", "human_review", "open", "done"]);
+  assert.deepEqual(vmValue(groups.find((g) => g.key === "in_progress").rows.map((r) => r.id)), ["kon-b12e"]);
+  assert.deepEqual(vmValue(groups.find((g) => g.key === "done").rows.map((r) => r.id)), ["kon-9b31"]);
+  // The open group is always drawn: it is where the inline add row lives.
+  const open = groups.find((g) => g.key === "open");
+  assert.equal(open.count, 0);
+  assert.equal(open.addRow, true);
+  assert.deepEqual(vmValue(groups.map((g) => g.rows.map((r) => r.ord)).flat()), [1, 1, 1]);
+});
+
+test("a drop inside a group writes the epic's children and touches no child", async () => {
+  const posted = [];
+  const state = loadKontoraState({
+    fetch: async (url, opts) => { posted.push({ url, ...opts }); return { ok: true, json: async () => ({}) }; },
+  });
+  state.tickets = EPIC_TICKETS;
+  state.recomputeBoard();
+  await state.openEpic("kon-e7c1");
+  // openEpic fetches the brief; only the writes are of interest here.
+  posted.length = 0;
+
+  await state.epicSaveOrder(["kon-b12e", "kon-c04d", "kon-9b31"]);
+
+  assert.equal(posted.length, 1);
+  assert.equal(posted[0].url, "/api/tickets/kon-e7c1/children");
+  assert.equal(posted[0].method, "PUT");
+  assert.deepEqual(JSON.parse(posted[0].body), { children: ["kon-b12e", "kon-c04d", "kon-9b31"] });
+});
+
+test("pulling a ticket in and moving one out write the child's parent", async () => {
+  const posted = [];
+  const state = loadKontoraState({
+    fetch: async (url, opts) => { posted.push({ url, ...opts }); return { ok: true, json: async () => ({}) }; },
+  });
+  state.tickets = EPIC_TICKETS;
+  state.recomputeBoard();
+  await state.openEpic("kon-e7c1");
+  posted.length = 0;
+
+  await state.epicPullIn("kon-solo");
+  await state.epicMoveOut("kon-9b31");
+
+  assert.deepEqual(vmValue(posted.map((p) => p.url)), [
+    "/api/tickets/kon-solo/parent",
+    "/api/tickets/kon-9b31/unparent",
+  ]);
+  assert.deepEqual(JSON.parse(posted[0].body), { parent: "kon-e7c1" });
+  assert.equal(posted[1].body, undefined, "unparent takes no body");
+});
+
+test("the pull-in picker offers what could join the epic and nothing else", () => {
+  const state = loadKontoraState();
+  state.tickets = [
+    ...EPIC_TICKETS,
+    { id: "kon-solo", title: "Alone", status: "open", kontora: true },
+    { id: "kon-e999", title: "Another epic", status: "open", kontora: true, kind: "epic" },
+  ];
+  state.recomputeBoard();
+  state.openEpic("kon-e7c1");
+  state.openPaletteScope("epic-pull");
+
+  const rows = state.paletteGroups.flatMap((g) => g.items);
+  const offered = rows.map((r) => r.ticketId);
+  assert.ok(offered.includes("kon-solo"));
+  // An epic cannot be a child, the epic itself is not a candidate, and a ticket
+  // already in it has nothing to pull.
+  assert.equal(offered.includes("kon-e999"), false);
+  assert.equal(offered.includes("kon-e7c1"), false);
+  assert.equal(offered.includes("kon-b12e"), false);
+  assert.equal(rows.every((r) => r.kind === "epicpull"), true);
+});
+
+test("the inline add row posts one sub-ticket under the epic", async () => {
+  const posted = [];
+  const state = loadKontoraState({
+    fetch: async (url, opts) => { posted.push({ url, ...opts }); return { ok: true, json: async () => ({}) }; },
+  });
+  state.tickets = EPIC_TICKETS;
+  state.recomputeBoard();
+  await state.openEpic("kon-e7c1");
+  posted.length = 0;
+
+  // An empty draft posts nothing, so a stray Enter does not create a ticket.
+  await state.epicAddChild();
+  assert.equal(posted.length, 0);
+
+  state.epicAddDraft = "  A new sub-ticket  ";
+  await state.epicAddChild();
+
+  assert.equal(posted.length, 1);
+  assert.equal(posted[0].url, "/api/tickets");
+  assert.deepEqual(JSON.parse(posted[0].body), {
+    title: "A new sub-ticket",
+    path: "/r/kontora",
+    parent: "kon-e7c1",
+    status: "open",
+  });
+  assert.equal(state.epicAddDraft, "", "a landed post clears the draft");
+});
+
+test("the create preview drops the fields an epic does not have", () => {
+  const state = loadKontoraState();
+  // Everything the form may still hold from before the kind was switched.
+  state.createForm = {
+    ...state.createForm, title: "An epic", path: "/r/kontora", pipeline: "default",
+    agent: "claude", status: "todo", kind: "epic", scheduleMode: "later", scheduled_at: "2099-01-01 09:00",
+  };
+
+  const yaml = state.createPreviewYaml;
+  assert.match(yaml, /kind: epic/);
+  assert.match(yaml, /status: open/);
+  assert.equal(/pipeline:/.test(yaml), false);
+  assert.equal(/agent:/.test(yaml), false);
+  assert.equal(/scheduled_at:/.test(yaml), false);
+});
+
+test("creating an epic from the form posts the kind and none of the run fields", async () => {
+  const posted = [];
+  const state = loadKontoraState({
+    fetch: async (url, opts) => { posted.push({ url, ...opts }); return { ok: true, json: async () => ({ id: "kon-e7c1" }) }; },
+  });
+  state.createForm = {
+    ...state.createForm, title: "An epic", path: "/r/kontora", body: "## Description\n",
+    pipeline: "default", agent: "claude", status: "todo", kind: "epic",
+    scheduleMode: "later", scheduled_at: "2099-01-01 09:00",
+  };
+
+  await state.submitCreateTicket();
+
+  assert.equal(posted.length, 1);
+  assert.equal(posted[0].url, "/api/tickets");
+  assert.deepEqual(JSON.parse(posted[0].body), {
+    title: "An epic", path: "/r/kontora", kind: "epic", status: "open", body: "## Description\n",
+  });
+});
+
+// The brief is the epic's whole point, so it edits in place: one textarea over
+// the whole body, opened by a click on the rendered section, saved with one PUT.
+test("the brief seeds the editor and saves the whole body", async () => {
+  const seen = [];
+  const state = loadKontoraState({
+    fetch: async (url, opts) => {
+      seen.push({ url, ...opts });
+      if (!opts || !opts.method || opts.method === "GET") {
+        return { ok: true, json: async () => ({ id: "kon-e7c1", body: "\n# Epics\n\n## Description\n\nWhy.\n", notes: [] }) };
+      }
+      return { ok: true, json: async () => ({}) };
+    },
+  });
+  state.tickets = EPIC_TICKETS;
+  state.recomputeBoard();
+  await state.openEpic("kon-e7c1");
+
+  // The leading newline is held aside, so a round-trip through the editor does
+  // not move the first line.
+  assert.equal(state.editForm.body, "# Epics\n\n## Description\n\nWhy.\n");
+  assert.equal(state.epicEditingBrief, false);
+
+  seen.length = 0;
+  state.epicEditingBrief = true;
+  state.editForm.body = "# Epics\n\n## Description\n\nBecause.\n";
+  await state.epicSaveBrief();
+
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0].url, "/api/tickets/kon-e7c1");
+  assert.equal(seen[0].method, "PUT");
+  assert.deepEqual(JSON.parse(seen[0].body), { body: "\n# Epics\n\n## Description\n\nBecause.\n" });
+  assert.equal(state.selectedEpic.body, "\n# Epics\n\n## Description\n\nBecause.\n");
+  assert.equal(state.epicBriefSaved, true);
+
+  // A save with nothing changed writes nothing: the debounce fires on every
+  // keystroke burst, and an unchanged body is not an edit.
+  seen.length = 0;
+  await state.epicSaveBrief();
+  assert.equal(seen.length, 0);
+});
+
+test("opening a ticket replaces the epic page rather than stacking on it", async () => {
+  const state = loadKontoraState({
+    fetch: async (url) => ({
+      ok: true,
+      json: async () => (String(url).includes("kon-e7c1")
+        ? { id: "kon-e7c1", body: "", notes: [] }
+        : { id: "kon-b12e", status: "in_progress", body: "" }),
+    }),
+  });
+  state.tickets = EPIC_TICKETS;
+  state.recomputeBoard();
+  await state.openEpic("kon-e7c1");
+  assert.equal(state.epicPageOpen(), true);
+
+  await state.selectTicket({ id: "kon-b12e", status: "in_progress" });
+  await flushMicrotasks();
+
+  // Both pages carry a body editor, and only one of them can own the refs
+  // behind it.
+  assert.equal(state.epicPageOpen(), false);
+  assert.equal(state.selectedTicket.id, "kon-b12e");
 });

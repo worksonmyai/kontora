@@ -17,7 +17,7 @@ export function filterUnquote(s) {
 export function kontoraFilter() {
   return {
     // Filter-box terms that address one field instead of the free-text fields.
-    _filterTokenKeys: ['project', 'agent'],
+    _filterTokenKeys: ['project', 'agent', 'epic'],
 
     _filterTerms(q) {
       return filterSplitTerms((q || '').toLowerCase());
@@ -85,6 +85,9 @@ export function kontoraFilter() {
       var parsed = typeof q === 'object' && q !== null ? q : this.parseFilterQuery(q);
       if (parsed.project.length && !this._tokenMatches(parsed.project, this.ticketProjectName(ticket))) return false;
       if (parsed.agent.length && !this._tokenMatches(parsed.agent, ticket.agent)) return false;
+      // epic:<id> narrows the board to one epic's children. The epic itself
+      // draws no card, so it never has to match its own token.
+      if (parsed.epic.length && !this._tokenMatches(parsed.epic, ticket.parent && ticket.parent.id)) return false;
       if (!parsed.text) return true;
       var fields = [ticket.title, ticket.id, this.pathBasename(ticket.path), ticket.pipeline];
       (extraTextFields || []).forEach(k => fields.push(ticket[k]));

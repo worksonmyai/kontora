@@ -109,12 +109,16 @@ Creates a ticket and prints its ID. Without `--path` it uses the current git roo
 | `--branch NAME` | Work branch name. Defaults to `<branch_prefix>/<id>`. |
 | `--base-branch NAME` | Branch the work branch starts from. Defaults to the repository's default branch. |
 | `--status STATUS` | `open` or `todo`. Defaults to `todo`. |
+| `--kind KIND` | `epic` for a ticket that groups others. See [Epics](tickets.md#epics). |
+| `--parent TICKET_ID` | Epic to file the new ticket under. Takes an id or a unique prefix, and is refused when it names no ticket or a ticket that is not an epic. |
 | `--at TIME` | Schedule pickup for an instant: RFC 3339 (`2026-09-01T09:00:00+02:00`) or a local wall time (`"2026-09-01 09:00"`). |
 | `--after DURATION` | Schedule pickup this long from now, e.g. `90m`, `24h`, `3d`, `2w`. |
 | `--description-file PATH` | Read the markdown that follows the generated `# <title>` heading from a file, or `-` for stdin. |
 | `--quiet` | Print only the new ticket ID. |
 
 The ticket file is written once, complete. A ticket created with `--status open` is therefore never visible as `todo`, so a daemon with `auto_pick_up: true` watching the directory cannot claim it before you finish editing it. `--status open` also skips the repository check creation normally runs, because an open ticket is not ready to run.
+
+`--kind epic` creates the ticket `open` with no pipeline and no agent, and skips the repository check: an epic is never run. It cannot be combined with `--pipeline`, `--agent`, `--parent`, `--at` or `--after`, or with `--status todo`. From then on the daemon derives the status from the children.
 
 `--at` and `--after` create the ticket `open` with a [`scheduled_at`](tickets.md#scheduled-pickup) stamp, in the same single write. They cannot be combined with each other, or with `--status todo`: the schedule is what moves the ticket to `todo`. An `--at` already in the past is refused, and a scheduled ticket has its repository checked at creation the way a `todo` one does, because nobody is watching when it starts.
 

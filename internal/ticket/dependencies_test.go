@@ -2,6 +2,7 @@ package ticket
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -224,4 +225,134 @@ func TestDependents(t *testing.T) {
 	})
 	assert.Equal(t, []string{"a", "b"}, Dependents(index, "c"))
 	assert.Nil(t, Dependents(index, "d"))
+}
+
+// child builds a ticket parented to an epic, created at a fixed offset so the
+// created-order fallback in EpicChildren is deterministic.
+func child(id string, status Status, parent string, createdMin int) *Ticket {
+	at := time.Date(2026, 3, 1, 10, createdMin, 0, 0, time.UTC)
+	return &Ticket{ID: id, Status: status, Kontora: true, Parent: parent, Created: &at}
+}
+
+func epic(id string, order ...string) *Ticket {
+	return &Ticket{ID: id, Status: StatusOpen, Kontora: true, Kind: KindEpic, Children: order}
+}
+
+func TestDeriveEpicStatus(t *testing.T) {
+	cases := []struct {
+		name    string
+		tickets []*Ticket
+		want    Status
+	}{
+		{
+			name:    "no children",
+			tickets: []*Ticket{epic("e")},
+			want:    StatusOpen,
+		},
+		{
+			name:    "an open child holds the epic open",
+			tickets: []*Ticket{epic("e"), child("a", StatusOpen, "e", 1), child("b", StatusDone, "e", 2)},
+			want:    StatusOpen,
+		},
+		{
+			name:    "a running child",
+			tickets: []*Ticket{epic("e"), child("a", StatusOpen, "e", 1), child("b", StatusInProgress, "e", 2)},
+			want:    StatusInProgress,
+		},
+		{
+			name:    "a queued child",
+			tickets: []*Ticket{epic("e"), child("a", StatusTodo, "e", 1)},
+			want:    StatusInProgress,
+		},
+		{
+			name:    "a child waiting on review",
+			tickets: []*Ticket{epic("e"), child("a", StatusHumanReview, "e", 1)},
+			want:    StatusInProgress,
+		},
+		{
+			name:    "every child done",
+			tickets: []*Ticket{epic("e"), child("a", StatusDone, "e", 1), child("b", StatusDone, "e", 2)},
+			want:    StatusDone,
+		},
+		{
+			name:    "every child cancelled",
+			tickets: []*Ticket{epic("e"), child("a", StatusCancelled, "e", 1), child("b", StatusCancelled, "e", 2)},
+			want:    StatusCancelled,
+		},
+		{
+			name: "done and cancelled together close the epic",
+			tickets: []*Ticket{
+				epic("e"),
+				child("a", StatusDone, "e", 1), child("b", StatusDone, "e", 2),
+				child("c", StatusDone, "e", 3), child("d", StatusDone, "e", 4),
+				child("f", StatusCancelled, "e", 5),
+			},
+			want: StatusDone,
+		},
+		{
+			name:    "an archived child is out of the meter",
+			tickets: []*Ticket{epic("e"), child("a", StatusDone, "e", 1), child("b", StatusArchived, "e", 2)},
+			want:    StatusDone,
+		},
+		{
+			name:    "only archived children reads as no children",
+			tickets: []*Ticket{epic("e"), child("a", StatusArchived, "e", 1)},
+			want:    StatusOpen,
+		},
+		{
+			name:    "a ticket parented elsewhere is not a child",
+			tickets: []*Ticket{epic("e"), child("a", StatusInProgress, "other", 1)},
+			want:    StatusOpen,
+		},
+		{
+			name:    "an unknown epic",
+			tickets: []*Ticket{child("a", StatusDone, "e", 1)},
+			want:    StatusOpen,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, DeriveEpicStatus(Index(tc.tickets), "e"))
+		})
+	}
+}
+
+func TestEpicChildren(t *testing.T) {
+	cases := []struct {
+		name    string
+		tickets []*Ticket
+		want    []string
+	}{
+		{
+			name:    "the children list sets the order",
+			tickets: []*Ticket{epic("e", "c", "a", "b"), child("a", StatusOpen, "e", 1), child("b", StatusOpen, "e", 2), child("c", StatusOpen, "e", 3)},
+			want:    []string{"c", "a", "b"},
+		},
+		{
+			name:    "a child the list misses sorts last by created",
+			tickets: []*Ticket{epic("e", "c", "a"), child("a", StatusOpen, "e", 3), child("b", StatusOpen, "e", 2), child("c", StatusOpen, "e", 9), child("d", StatusOpen, "e", 1)},
+			want:    []string{"c", "a", "d", "b"},
+		},
+		{
+			name:    "no list at all is created order",
+			tickets: []*Ticket{epic("e"), child("a", StatusOpen, "e", 3), child("b", StatusOpen, "e", 1)},
+			want:    []string{"b", "a"},
+		},
+		{
+			name:    "an id in the list that names no child is ignored",
+			tickets: []*Ticket{epic("e", "ghost", "a"), child("a", StatusOpen, "e", 1)},
+			want:    []string{"a"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var got []string
+			for _, c := range EpicChildren(Index(tc.tickets), "e") {
+				got = append(got, c.ID)
+			}
+			assert.Equal(t, tc.want, got)
+		})
+	}
 }

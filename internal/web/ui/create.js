@@ -4,7 +4,7 @@ import { localScheduleText, parseScheduleInput, pickerToScheduleText, scheduleEc
 // sheet and the component's initial state — and a field added in only two of
 // them is a field the third silently drops.
 export function newCreateForm() {
-  return { title: '', path: '', pipeline: '', agent: '', status: 'todo', body: '', branch: '', base_branch: '', scheduled_at: '', scheduleMode: 'now' };
+  return { title: '', path: '', pipeline: '', agent: '', status: 'todo', body: '', branch: '', base_branch: '', scheduled_at: '', scheduleMode: 'now', kind: '', parent: '' };
 }
 
 // What a branch field says when no name can be shown: the ticket carries no
@@ -243,14 +243,18 @@ export function kontoraCreate() {
       var lines = ['---'];
       var scheduled = this.createScheduleISO();
       if (f.title)    lines.push('title: ' + JSON.stringify(f.title));
-      lines.push('status: ' + (scheduled ? 'open' : (f.status || 'todo')));
+      // An epic is created open with no pipeline and no agent, so the preview
+      // must not echo the form's defaults back at fields the daemon drops.
+      if (f.kind)     lines.push('kind: ' + f.kind);
+      lines.push('status: ' + (f.kind === 'epic' ? 'open' : (scheduled ? 'open' : (f.status || 'todo'))));
       // Directly under status, because it is the field that moves it, and in
       // the spelling the daemon stores: UTC, quoted, second precision. The echo
       // line above the field shows the same instant in the local zone.
-      if (scheduled)  lines.push('scheduled_at: ' + JSON.stringify(scheduled));
-      if (f.pipeline) lines.push('pipeline: ' + f.pipeline);
-      if (f.agent)    lines.push('agent: ' + f.agent);
+      if (f.kind !== 'epic' && scheduled) lines.push('scheduled_at: ' + JSON.stringify(scheduled));
+      if (f.kind !== 'epic' && f.pipeline) lines.push('pipeline: ' + f.pipeline);
+      if (f.kind !== 'epic' && f.agent)    lines.push('agent: ' + f.agent);
       if (f.path)     lines.push('path: ' + f.path);
+      if (f.parent)   lines.push('parent: ' + f.parent);
       if (f.branch)   lines.push('branch: ' + f.branch);
       if (f.base_branch) lines.push('base_branch: ' + f.base_branch);
       lines.push('---');
@@ -280,6 +284,15 @@ export function kontoraCreate() {
       this.error = null;
       try {
         const body = { title: this.createForm.title, path: this.createForm.path };
+        if (this.createForm.parent) body.parent = this.createForm.parent;
+        // An epic takes neither: it has no pipeline and no agent, and sending
+        // the opt-out sentinel would be refused rather than ignored.
+        if (this.createForm.kind === 'epic') {
+          body.kind = 'epic';
+          body.status = 'open';
+          if (this.createForm.body) body.body = this.createForm.body;
+          return await this._submitCreate(body);
+        }
         // The selects carry the resolved values, so an empty one is a
         // deliberate opt-out. "none" says so; a blank field would make the
         // daemon inherit the project default the user just cleared.
@@ -296,22 +309,29 @@ export function kontoraCreate() {
         if (this.createForm.body) body.body = this.createForm.body;
         if (this.createForm.branch) body.branch = this.createForm.branch;
         if (this.createForm.base_branch) body.base_branch = this.createForm.base_branch;
-        const res = await fetch('/api/tickets', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
-        });
-        if (!res.ok) {
-          const data = await res.json().catch(() => ({}));
-          this.error = data.error || 'Failed to create ticket';
-          this.createSubmitting = false;
-          return;
-        }
-        this.closeCreateModal();
+        await this._submitCreate(body);
       } catch (e) {
         this.error = 'Failed to create ticket: ' + e.message;
         this.createSubmitting = false;
       }
+    },
+
+    // The one POST both create paths land on. It leaves createSubmitting set on
+    // failure the way the form always has: the modal stays open with the
+    // daemon's message on it, and the next submit clears both.
+    async _submitCreate(body) {
+      const res = await fetch('/api/tickets', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        this.error = data.error || 'Failed to create ticket';
+        this.createSubmitting = false;
+        return;
+      }
+      this.closeCreateModal();
     },
 
     async handleUpload(fileList) {

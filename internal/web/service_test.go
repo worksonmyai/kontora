@@ -100,9 +100,16 @@ func TestTicketInfoFromView_Relations(t *testing.T) {
 	// A ticket with no relations carries none of the keys.
 	encoded, err := json.Marshal(TicketInfoFromView(app.View{ID: "t6"}))
 	require.NoError(t, err)
-	for _, key := range []string{"deps", "links", "parent", "blocks", "children"} {
+	for _, key := range []string{"deps", "links", "parent", "blocks", "children", "kind", "child_order"} {
 		assert.NotContains(t, string(encoded), `"`+key+`"`)
 	}
+
+	// An epic carries its kind and its own order list, which is a different
+	// thing from the derived children tree the daemon fills in.
+	epic := TicketInfoFromView(app.View{ID: "e1", Kind: "epic", Children: []string{"t2", "t3"}})
+	assert.Equal(t, "epic", epic.Kind)
+	assert.Equal(t, []string{"t2", "t3"}, epic.ChildOrder)
+	assert.Nil(t, epic.Children)
 }
 
 func TestParseNotes(t *testing.T) {

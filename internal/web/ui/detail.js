@@ -25,6 +25,11 @@ export function kontoraDetail() {
         this.closeDetail();
         return;
       }
+      // The epic page is the other overlay over this board. Opening a ticket
+      // from it, a sub-ticket row for instance, replaces it rather than
+      // stacking on it: both pages carry a body editor, and only one of them
+      // can own the refs behind it.
+      if (this.selectedEpic) this.closeEpic();
       // The editor holds the previous ticket's body. Saving it before the swap,
       // then dropping it, keeps a pending debounce or a later flush from writing
       // that body onto the ticket being opened. startEditing re-arms it below.
@@ -348,6 +353,14 @@ export function kontoraDetail() {
     // board, so a stale or hand-typed link never leaves the app blank.
     parseHash(hash) {
       var h = String(hash == null ? '' : hash).replace(/^#/, '');
+      // An epic page is an overlay over the board, like a ticket page, so it
+      // reports the board view and names the epic separately.
+      if (h.indexOf('/e/') === 0 && h.length > 3) {
+        var rawEpic = h.slice(3);
+        var epicID;
+        try { epicID = decodeURIComponent(rawEpic); } catch (e) { epicID = rawEpic; }
+        return { view: 'board', ticketId: null, epicId: epicID };
+      }
       if (h.indexOf('/t/') === 0 && h.length > 3) {
         var raw = h.slice(3);
         // A malformed escape ("#/t/%") makes decodeURIComponent throw. Left
@@ -371,6 +384,7 @@ export function kontoraDetail() {
       // fall back to the board.
       if (this.currentView === 'archive') return '#/archive';
       if (this.selectedTicket) return '#/t/' + encodeURIComponent(this.selectedTicket.id);
+      if (this.selectedEpic) return '#/e/' + encodeURIComponent(this.selectedEpic.id);
       if (this.currentView === 'new') return '#/new';
       if (this.currentView === 'stats') return '#/stats';
       if (this.currentView === 'settings') return '#/settings';
@@ -391,6 +405,14 @@ export function kontoraDetail() {
       var r = this.parseHash(location.hash);
       this._applyingRoute = true;
       try {
+        // The two overlays are exclusive, so the epic branch closes whichever
+        // one the hash does not name.
+        if (r.epicId) {
+          if (this.selectedTicket) this.closeDetail();
+          if (!this.selectedEpic || this.selectedEpic.id !== r.epicId) this.openEpic(r.epicId);
+        } else if (this.selectedEpic) {
+          this.closeEpic();
+        }
         if (r.ticketId) {
           if (this.selectedTicket && this.selectedTicket.id === r.ticketId) return;
           var t = this.tickets.find(function(x) { return x.id === r.ticketId; });

@@ -340,6 +340,36 @@ func (s *Server) handleUnlink(w http.ResponseWriter, r *http.Request) {
 	s.handleRelation(w, r, false, s.svc.UnlinkTickets)
 }
 
+func (s *Server) handleSetParent(w http.ResponseWriter, r *http.Request) {
+	var body ParentRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON body"})
+		return
+	}
+	if body.Parent == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "parent is required"})
+		return
+	}
+	s.handleAction(w, r, func(id string) error { return s.svc.SetParent(id, body.Parent) })
+}
+
+func (s *Server) handleClearParent(w http.ResponseWriter, r *http.Request) {
+	s.handleAction(w, r, s.svc.ClearParent)
+}
+
+func (s *Server) handleSetChildOrder(w http.ResponseWriter, r *http.Request) {
+	var body ChildOrderRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON body"})
+		return
+	}
+	if slices.Contains(body.Children, "") {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "child ids must not be empty"})
+		return
+	}
+	s.handleAction(w, r, func(id string) error { return s.svc.SetChildOrder(id, body.Children) })
+}
+
 // handleRelation decodes a relation request and answers with the changed
 // ticket. single is true for the dependency verbs, which relate exactly two
 // tickets.

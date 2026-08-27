@@ -230,3 +230,154 @@ func joinOrNone(ids []string) string {
 	}
 	return strings.Join(ids, ", ")
 }
+
+// ErrNotAnEpic is returned when a parent write names a ticket that is not an
+// epic, or would make an epic somebody's child.
+var ErrNotAnEpic = errors.New("not an epic")
+
+// SetParent files a ticket under an epic. It writes only the child: membership
+// is what parent says, and the epic's children list only orders it.
+func (s *Service) SetParent(ticketID, epicID string) (RelationResult, error) {
+	resolved, related, err := s.resolveRelation(ticketID, []string{epicID})
+	if err != nil {
+		return RelationResult{}, err
+	}
+	parentID := related[0]
+
+	st, err := s.repo.Get(resolved)
+	if err != nil {
+		return RelationResult{}, err
+	}
+	parent, err := s.repo.Get(parentID)
+	if err != nil {
+		return RelationResult{}, err
+	}
+	if parent.Ticket.Kind != ticket.KindEpic {
+		return RelationResult{}, fmt.Errorf("%w: %s is not an epic", ErrNotAnEpic, parentID)
+	}
+	// Epics do not nest. That keeps the derivation one level deep and removes
+	// the cycle class the check below only catches for ordinary tickets.
+	if st.Ticket.Kind == ticket.KindEpic {
+		return RelationResult{}, fmt.Errorf("%w: %s is an epic, and epics do not nest", ErrNotAnEpic, resolved)
+	}
+	if st.Ticket.Parent == parentID {
+		return RelationResult{ID: resolved, Related: related}, nil
+	}
+
+	index, err := s.index()
+	if err != nil {
+		return RelationResult{}, err
+	}
+	if path := parentPath(index, parentID, resolved); path != nil {
+		return RelationResult{}, fmt.Errorf("%w: %s would close %s", ErrRelationCycle, resolved, strings.Join(append([]string{resolved}, path...), " -> "))
+	}
+
+	if err := st.Ticket.SetField("parent", parentID); err != nil {
+		return RelationResult{}, fmt.Errorf("setting parent: %w", err)
+	}
+	if err := s.repo.Save(st); err != nil {
+		return RelationResult{}, err
+	}
+
+	s.runtime.ReconcileDependencies(resolved)
+	s.runtime.BroadcastUpdated(resolved)
+	s.runtime.BroadcastUpdated(parentID)
+	return RelationResult{ID: resolved, Related: related, Changed: []string{resolved}}, nil
+}
+
+// ClearParent takes a ticket out of its epic. Clearing a parent a ticket does
+// not have succeeds and writes nothing.
+func (s *Service) ClearParent(ticketID string) (RelationResult, error) {
+	resolved, err := s.repo.Resolve(ticketID)
+	if err != nil {
+		return RelationResult{}, err
+	}
+	st, err := s.repo.Get(resolved)
+	if err != nil {
+		return RelationResult{}, err
+	}
+	was := st.Ticket.Parent
+	if was == "" {
+		return RelationResult{ID: resolved}, nil
+	}
+
+	if err := st.Ticket.SetField("parent", ""); err != nil {
+		return RelationResult{}, fmt.Errorf("clearing parent: %w", err)
+	}
+	if err := s.repo.Save(st); err != nil {
+		return RelationResult{}, err
+	}
+
+	s.runtime.ReconcileDependencies(resolved)
+	s.runtime.BroadcastUpdated(resolved)
+	s.runtime.BroadcastUpdated(was)
+	return RelationResult{ID: resolved, Related: []string{was}, Changed: []string{resolved}}, nil
+}
+
+// SetChildOrder writes an epic's manual child order. It writes one file, the
+// epic's: the list orders, it does not decide membership, so an id it names
+// that is not a child is stored and ignored on read.
+func (s *Service) SetChildOrder(epicID string, ids []string) (RelationResult, error) {
+	resolved, err := s.repo.Resolve(epicID)
+	if err != nil {
+		return RelationResult{}, err
+	}
+	st, err := s.repo.Get(resolved)
+	if err != nil {
+		return RelationResult{}, err
+	}
+	if st.Ticket.Kind != ticket.KindEpic {
+		return RelationResult{}, fmt.Errorf("%w: %s is not an epic", ErrNotAnEpic, resolved)
+	}
+
+	order := make([]string, 0, len(ids))
+	for _, id := range ids {
+		other, err := s.repo.Resolve(id)
+		if err != nil {
+			return RelationResult{}, err
+		}
+		if other == resolved {
+			return RelationResult{}, fmt.Errorf("%w: ticket %s cannot be its own child", ErrSelfRelation, resolved)
+		}
+		if !slices.Contains(order, other) {
+			order = append(order, other)
+		}
+	}
+
+	if slices.Equal(order, st.Ticket.Children) {
+		return RelationResult{ID: resolved, Related: order}, nil
+	}
+	if err := st.Ticket.SetField("children", order); err != nil {
+		return RelationResult{}, fmt.Errorf("setting children: %w", err)
+	}
+	if err := s.repo.Save(st); err != nil {
+		return RelationResult{}, err
+	}
+
+	s.runtime.BroadcastUpdated(resolved)
+	return RelationResult{ID: resolved, Related: order, Changed: []string{resolved}}, nil
+}
+
+// parentPath returns the chain of ids from `from` up the parent edges to `to`,
+// or nil when `to` is not above it. It guards the parent write the way
+// ticket.DependencyPath guards a dependency write.
+func parentPath(index map[string]*ticket.Ticket, from, to string) []string {
+	seen := map[string]bool{}
+	var path []string
+	for id := from; id != ""; {
+		if seen[id] {
+			return nil
+		}
+		seen[id] = true
+		path = append(path, id)
+		if id == to {
+			return path
+		}
+		t, ok := index[id]
+		if !ok {
+			return nil
+		}
+		id = t.Parent
+	}
+	return nil
+}

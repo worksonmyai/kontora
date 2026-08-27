@@ -369,6 +369,30 @@
     .card-progress { height: 3px; background: rgba(var(--surface-700), 1); border-radius: 9999px; overflow: hidden; }
     .card-progress > div { height: 100%; background: hsl(var(--st-progress)); border-radius: 9999px; }
 
+    /* Epic page sub-ticket row. The seven columns are the design's, and a grid
+       template is one literal value rather than a Tailwind utility. */
+    .epic-row {
+      display: grid;
+      grid-template-columns: 18px 26px 1fr 160px 90px 80px 56px 18px;
+      align-items: center;
+      gap: 12px;
+      height: 38px;
+      padding: 0 8px;
+      border-radius: 7px;
+      border-bottom: 1px solid rgb(var(--edge-card) / 0.5);
+      cursor: pointer;
+    }
+    .epic-row:hover { background: rgb(var(--surface-850) / 0.5); }
+    .epic-row-handle {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12px;
+      color: rgb(var(--surface-600));
+      cursor: grab;
+      text-align: center;
+    }
+    .epic-row-add { cursor: default; }
+    .epic-row-add:hover { background: none; }
+
     .kt-card {
       transition: border-color .15s, background-color .15s;
       /* Cards are imperatively injected (no Alpine); off-screen cards skip layout
@@ -1046,6 +1070,9 @@
         <p>This removes only the markdown ticket file.</p>
         <p>Any existing git worktree is left alone.</p>
         <p x-show="selectedTicket?.status === 'in_progress'" class="text-warn">The running agent will be stopped.</p>
+        <p x-show="selectedTicket?.kind === 'epic'">
+          Its sub-tickets are kept. Each one loses its <span class="font-mono">parent</span> and goes back to being an ordinary ticket.
+        </p>
       </div>
       <div class="flex justify-end gap-2 mt-5">
         <button type="button" @click="closeDeleteModal()"
@@ -1166,7 +1193,7 @@
     <!-- Board filter. Jumping somewhere is the command palette's job (⌘K); this
          input only narrows the board. A ticket page has nothing to filter, so
          the slot carries its breadcrumb instead. -->
-    <template x-if="!boardDetailOpen()">
+    <template x-if="!boardDetailOpen() && !epicPageOpen()">
     <div class="flex-1 min-w-[120px] max-w-[300px] relative">
       <div class="relative flex items-center">
         <svg class="absolute left-2.5 w-3.5 h-3.5 text-surface-600 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -1218,6 +1245,20 @@
       </div>
     </template>
 
+    <!-- Epic breadcrumb: board / epics / <id>. "epics" is the rail section the
+         page was opened from, so it closes back to it rather than filtering. -->
+    <template x-if="epicPageOpen()">
+      <div class="flex items-center gap-3 min-w-0">
+        <button type="button" @click="closeEpic()"
+                class="font-mono text-[12px] text-tx-3 hover:text-tx-2 transition-colors">board</button>
+        <span class="text-edge-faint">/</span>
+        <button type="button" @click="closeEpic()"
+                class="font-mono text-[12px] text-tx-3 hover:text-tx-2 transition-colors">epics</button>
+        <span class="text-edge-faint">/</span>
+        <span class="font-mono text-[12px] text-tx-2 truncate" x-text="selectedEpic?.id"></span>
+      </div>
+    </template>
+
     <div class="flex items-center gap-2 text-xs font-mono shrink-0 ml-auto">
       <template x-if="!selectedTicket && searchQuery && searchQuery.trim()">
         <span class="text-[11px] text-surface-600 mx-1">
@@ -1242,7 +1283,7 @@
         <svg x-show="!lightTheme" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
         <svg x-show="lightTheme" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
       </button>
-      <template x-if="!boardDetailOpen()">
+      <template x-if="!boardDetailOpen() && !epicPageOpen()">
         <div class="flex items-center gap-2">
           <button @click="gotoView('new')"
                   class="text-[13px] font-sans font-semibold h-[31px] px-[14px] rounded-[7px] bg-accent text-accent-fg hover:bg-accent-bright transition-colors flex items-center gap-1.5">
@@ -1253,6 +1294,22 @@
                   class="text-[12px] font-mono h-[31px] px-3 rounded-[7px] bg-surface-900 border border-edge-input text-tx-3 hover:text-tx-2 hover:border-edge-hover transition-colors flex items-center gap-1.5">
             <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
             upload
+          </button>
+        </div>
+      </template>
+
+      <!-- Epic actions. No run, retry or pause: an epic is not work. "queue all
+           open" is the one verb it has, and it acts on the children. -->
+      <template x-if="epicPageOpen()">
+        <div class="flex items-center gap-2">
+          <button @click="epicQueueOpen()" :disabled="!epicRollup(selectedEpic?.id).counts.open"
+                  class="h-7 px-3 rounded-[7px] font-mono text-[11.5px] bg-surface-900 border border-edge-input text-tx-2 hover:text-accent hover:border-accent/35 transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1.5"
+                  data-tip-t="Queues every open sub-ticket. Each one starts the way the board's own move starts it.">
+            queue all open
+          </button>
+          <button @click="epicTab = 'children'; $nextTick(() => $refs.epicAddInput?.focus())"
+                  class="h-7 px-3 rounded-[7px] font-mono text-[11.5px] bg-surface-900 border border-edge-input text-tx-2 hover:text-accent hover:border-accent/35 transition-colors flex items-center gap-1.5">
+            + sub-ticket
           </button>
         </div>
       </template>
@@ -1398,6 +1455,44 @@
         </button>
       </nav>
 
+      <!-- Epics. One row per epic: a spine in the epic's hue, the name, the
+           done/total count, and under it one block per child in that child's
+           status hue plus a note saying what the epic is waiting on. The meter
+           is capped the way chainMeter() is; the count carries the true total.
+           Clicking a row opens the epic page. -->
+      <div class="p-2.5 pt-2" x-show="epics.length > 0">
+        <div class="font-mono text-[10px] font-semibold text-surface-600 uppercase tracking-widest px-2 pb-1.5">epics</div>
+        <div class="flex flex-col gap-0.5">
+          <template x-for="e in epics" :key="e.id">
+            <button @click="openEpic(e.id)"
+                    class="flex flex-col gap-1 px-2 py-1.5 w-full text-left rounded min-w-0 transition-colors hover:bg-surface-900"
+                    :class="selectedEpic?.id === e.id ? 'bg-surface-850' : ''"
+                    :title="e.title || e.id">
+              <span class="flex items-center gap-2 min-w-0">
+                <span class="w-[3px] h-3 rounded-sm shrink-0"
+                      :data-pipe-color="pipelineColorByName(e.id)"
+                      style="background: hsl(var(--pipe-h, 240 10% 55%))"></span>
+                <span class="flex-1 min-w-0 truncate text-[12px]"
+                      :class="selectedEpic?.id === e.id ? 'text-tx' : 'text-tx-2'"
+                      x-text="e.title || e.id"></span>
+                <span class="font-mono num text-[10px] text-surface-600 shrink-0"
+                      x-text="epicRollup(e.id).done + '/' + epicRollup(e.id).total"></span>
+              </span>
+              <span class="flex items-center gap-1.5 pl-[11px] min-w-0">
+                <span class="flex gap-0.5 shrink-0">
+                  <template x-for="(seg, i) in epicRollup(e.id).segs" :key="seg.id + i">
+                    <span class="w-[9px] h-1 rounded-[1px]"
+                          :style="seg.hue ? 'background: hsl(var(' + seg.hue + '))' : 'background: rgb(var(--surface-700))'"></span>
+                  </template>
+                </span>
+                <span class="font-mono text-[9.5px] truncate min-w-0"
+                      :class="epicNoteClass(e.id)" x-text="epicNote(e.id)"></span>
+              </span>
+            </button>
+          </template>
+        </div>
+      </div>
+
       <!-- Projects. Clicking a row puts a project:=<name> token in the filter
            box, which selects that name and not every name containing it;
            clicking the row that is already the whole query empties the box.
@@ -1478,7 +1573,7 @@
     <div x-show="!loading && currentView === 'board'" class="relative flex flex-1 min-w-0 min-h-0">
 
     <!-- Board area (kanban) -->
-    <div :inert="!!selectedTicket" class="relative flex flex-col flex-1 min-w-0 min-h-0 bg-surface-frame">
+    <div :inert="!!selectedTicket || !!selectedEpic" class="relative flex flex-col flex-1 min-w-0 min-h-0 bg-surface-frame">
 
     <!-- Empty-board panel. Gated on the raw ticket list, so a search that
          matches nothing keeps showing the per-column empty state instead. The
@@ -2783,6 +2878,218 @@
       </div>
     </div>
     </template>
+
+    <!-- Epic page. An overlay over the board like the ticket page, driven by
+         selectedEpic rather than a currentView, and wrapped in x-if for the
+         same reason: closing gives the nodes and bindings back. It is a
+         deliberate subtraction from the ticket page — no session, activity,
+         summary or diff, because an epic has no run. -->
+    <template x-if="selectedEpic">
+    <div class="absolute inset-0 z-30 flex flex-col bg-surface-950">
+
+      <!-- Identity block. The breadcrumb and the actions live in the app header. -->
+      <div class="shrink-0 px-6 pt-[15px] pb-[14px] flex flex-col gap-2.5 border-b border-surface-700/60 min-w-0">
+        <div class="flex items-center gap-2.5 flex-wrap min-w-0">
+          <span class="pipe-tag inline-flex items-center gap-1.5 shrink-0 !rounded-full !px-[9px] !py-[3px] font-bold tracking-[.08em]" data-pipe-color="mauve">
+            <svg width="9" height="9" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" aria-hidden="true"><path d="M2 3.5h10M4 7h8M6 10.5h6"/></svg>
+            epic
+          </span>
+          <span class="status-chip shrink-0" :data-status="selectedEpic?.status" x-text="statusLabel(selectedEpic?.status)"></span>
+          <span class="pipe-tag shrink-0"
+                :data-pipe-color="selectedEpic ? ticketPipeColor(selectedEpic) : 'none'"
+                x-text="selectedEpic ? ticketTagLabel(selectedEpic) : ''"></span>
+          <!-- Said rather than left blank: an epic has no pipeline and no
+               branch by design, and a page with the fields missing reads as a
+               page that failed to load them. -->
+          <span class="font-mono text-[11px] text-surface-600 truncate"
+                x-text="(selectedEpic?.path || '') + ' · no pipeline · no branch'"></span>
+        </div>
+        <h1 class="text-[21px] font-semibold leading-[1.3] text-tx-hi min-w-0">
+          <template x-if="parseTitleTag(selectedEpic).tag">
+            <span class="title-tag" :data-pipe-color="pipelineColorByName(parseTitleTag(selectedEpic).tag)"
+                  x-text="'[' + parseTitleTag(selectedEpic).tag + ']'"></span>
+          </template>
+          <span x-text="parseTitleTag(selectedEpic).rest"></span>
+        </h1>
+
+        <!-- Roll-up band: how far the epic is, what is moving, what holds it. -->
+        <div class="flex items-center gap-6 mt-1 flex-wrap min-w-0">
+          <div class="flex items-center gap-3 shrink-0">
+            <div class="w-11 h-11 rounded-full shrink-0 flex items-center justify-center" :style="epicDonutStyle(selectedEpic?.id)">
+              <div class="w-[34px] h-[34px] rounded-full bg-surface-950 flex items-center justify-center font-mono num text-[11px] font-bold text-tx-hi"
+                   x-text="epicRollup(selectedEpic?.id).pct + '%'"></div>
+            </div>
+            <div class="flex flex-col gap-[3px] min-w-0">
+              <span class="font-mono num text-[13px] text-tx-hi"
+                    x-text="epicRollup(selectedEpic?.id).done + ' of ' + epicRollup(selectedEpic?.id).total + ' done'"></span>
+              <span class="font-mono text-[10.5px] text-surface-600 truncate"
+                    x-text="epicBreakdown(selectedEpic?.id) || 'no sub-tickets yet'"></span>
+            </div>
+          </div>
+
+          <template x-if="epicRollup(selectedEpic?.id).next">
+            <div class="flex items-center gap-6 min-w-0">
+              <span class="w-px self-stretch bg-surface-700"></span>
+              <div class="flex flex-col gap-[5px] min-w-0">
+                <span class="font-mono text-[10px] font-bold tracking-[.12em] uppercase text-tx-faint">next up</span>
+                <button type="button" @click="openTicketRef(epicRollup(selectedEpic?.id).next)"
+                        class="flex items-center gap-[7px] text-[13px] text-tx-2 hover:text-tx transition-colors min-w-0">
+                  <span class="w-1.5 h-1.5 rounded-full shrink-0 pulse-dot" style="background: hsl(var(--st-progress))"></span>
+                  <span class="truncate" x-text="epicRollup(selectedEpic?.id).next.title"></span>
+                  <span class="font-mono text-[10.5px] text-surface-600 shrink-0"
+                        x-text="epicRollup(selectedEpic?.id).next.id + ' · ' + childStageLine(epicRollup(selectedEpic?.id).next) + ' · ' + childElapsed(epicRollup(selectedEpic?.id).next)"></span>
+                </button>
+              </div>
+            </div>
+          </template>
+
+          <template x-if="epicRollup(selectedEpic?.id).holder">
+            <div class="flex items-center gap-6 min-w-0">
+              <span class="w-px self-stretch bg-surface-700"></span>
+              <div class="flex flex-col gap-[5px] min-w-0">
+                <span class="font-mono text-[10px] font-bold tracking-[.12em] uppercase text-tx-faint">holding the epic</span>
+                <span class="flex items-center gap-[7px] text-[13px] text-tx-2 min-w-0">
+                  <span class="w-1.5 h-1.5 rounded-full shrink-0" style="background: hsl(var(--st-review))"></span>
+                  <button type="button" @click="openTicketRef(epicRollup(selectedEpic?.id).holder)"
+                          class="truncate hover:text-tx transition-colors"
+                          x-text="epicRollup(selectedEpic?.id).holder.id + ' ' + (epicRollup(selectedEpic?.id).holder.status === 'paused' ? 'is paused' : 'waits for review')"></button>
+                  <!-- Re-derived at click time, so the stream cannot leave the
+                       pill pointing at a child that has already moved. -->
+                  <button type="button" @click="epicApproveHolder()"
+                          x-show="epicRollup(selectedEpic?.id).holder.status === 'human_review'"
+                          class="shrink-0 font-mono text-[10px] px-2 py-0.5 rounded-md text-accent bg-accent/[.09] border border-accent/30 hover:bg-accent/[.16] transition-colors">approve</button>
+                </span>
+              </div>
+            </div>
+          </template>
+        </div>
+      </div>
+
+      <div class="flex-1 min-h-0 flex min-w-0">
+
+        <!-- Sub-tickets -->
+        <div class="flex-1 min-w-0 flex flex-col bg-surface-frame min-h-0">
+          <div class="shrink-0 px-6 pt-3 flex items-center gap-5 border-b border-surface-700/70">
+            <button type="button" @click="epicTab = 'children'"
+                    class="font-mono text-[12px] pb-[9px] border-b-2 transition-colors"
+                    :class="epicTab === 'children' ? 'border-accent text-tx-hi font-bold' : 'border-transparent text-surface-600 hover:text-tx-3'">
+              sub-tickets <span class="text-tx-faint" x-text="epicRollup(selectedEpic?.id).total"></span>
+            </button>
+            <button type="button" @click="epicTab = 'notes'"
+                    class="font-mono text-[12px] pb-[9px] border-b-2 transition-colors"
+                    :class="epicTab === 'notes' ? 'border-accent text-tx-hi font-bold' : 'border-transparent text-surface-600 hover:text-tx-3'">
+              notes <span class="text-tx-faint" x-text="(selectedEpic?.notes || []).length"></span>
+            </button>
+            <div class="flex-1"></div>
+            <span class="font-mono text-[10px] text-surface-600 border border-edge-input rounded-md px-2 py-[3px] mb-1.5">group: status</span>
+            <span class="font-mono text-[10px] text-surface-600 border border-edge-input rounded-md px-2 py-[3px] mb-1.5">⇅ manual order</span>
+          </div>
+
+          <div class="flex-1 min-h-0 overflow-y-auto px-6 pt-3.5 pb-4" x-show="epicTab === 'children'">
+            <template x-for="g in epicGroups()" :key="g.key">
+              <div class="flex flex-col mb-[18px]">
+                <button type="button" @click="epicToggleGroup(g.key)" class="flex items-center gap-2.5 pb-[7px] text-left">
+                  <span class="w-1.5 h-1.5 rounded-sm shrink-0" :style="'background: hsl(var(' + g.hue + '))'"></span>
+                  <span class="font-mono text-[10.5px] font-bold tracking-[.1em] uppercase"
+                        :style="'color: hsl(var(' + g.hue + '))'" x-text="g.label"></span>
+                  <span class="font-mono num text-[10.5px] text-surface-600" x-text="g.count"></span>
+                  <span class="flex-1 h-px bg-surface-700/[.55]"></span>
+                </button>
+                <div x-show="!epicGroupCollapsed[g.key]" class="flex flex-col"
+                     :data-epic-group="g.key" x-init="epicInitSortable($el)">
+                  <template x-for="r in g.rows" :key="r.id">
+                    <div class="epic-row group" :data-child-id="r.id" @click="openTicketRef(r)">
+                      <span class="epic-row-handle" aria-hidden="true">⠿</span>
+                      <span class="font-mono num text-[10.5px] text-tx-faint text-right" x-text="r.ord"></span>
+                      <span class="min-w-0 truncate text-[13.5px]" :class="r.titleColor" x-text="r.title || r.id"></span>
+                      <span class="font-mono text-[10.5px] text-surface-600 truncate" x-text="childStageLine(r)"></span>
+                      <span class="font-mono text-[11px] text-surface-600 truncate" x-text="r.id"></span>
+                      <span class="font-mono text-[10.5px] text-surface-600 truncate" x-text="r.agent || '—'"></span>
+                      <span class="font-mono num text-[10.5px] text-surface-600 text-right" x-text="childElapsed(r)"></span>
+                      <button type="button" @click.stop="epicMoveOut(r.id)"
+                              class="opacity-0 group-hover:opacity-100 focus:opacity-100 font-mono text-[10px] text-surface-600 hover:text-warn transition-opacity"
+                              title="Take this ticket out of the epic. The ticket itself is kept.">⤴</button>
+                    </div>
+                  </template>
+                  <!-- The add row sits at the foot of the open group, because a
+                       new sub-ticket is created open. -->
+                  <div x-show="g.addRow" class="epic-row epic-row-add">
+                    <span class="text-center text-surface-600 text-[13px]">+</span>
+                    <span></span>
+                    <input type="text" x-ref="epicAddInput" x-model="epicAddDraft"
+                           @keydown.enter.prevent="epicAddChild()"
+                           @keydown.escape="epicAddDraft = ''; $el.blur()"
+                           :disabled="epicAddBusy"
+                           placeholder="Add a sub-ticket — title, then ⏎"
+                           aria-label="New sub-ticket title"
+                           class="col-span-6 bg-transparent border-none outline-none text-[13.5px] text-tx placeholder-surface-600 min-w-0">
+                  </div>
+                </div>
+              </div>
+            </template>
+
+            <div class="flex items-center gap-3.5 px-2 pt-0.5">
+              <button type="button" @click="$refs.epicAddInput?.focus()"
+                      class="font-mono text-[11px] text-accent hover:text-accent-bright transition-colors">+ sub-ticket</button>
+              <button type="button" @click="openPaletteScope('epic-pull')"
+                      class="font-mono text-[11px] text-tx-3 hover:text-tx-2 transition-colors">⇱ pull in an existing ticket</button>
+            </div>
+          </div>
+
+          <div class="flex-1 min-h-0 overflow-y-auto px-6 pt-3.5 pb-4" x-show="epicTab === 'notes'">
+            <template x-if="!(selectedEpic?.notes || []).length">
+              <p class="font-mono text-[11px] text-surface-600">No notes yet.</p>
+            </template>
+            <template x-for="n in (selectedEpic?.notes || [])" :key="n.id">
+              <div class="mb-3 pb-3 border-b border-surface-700/40">
+                <div class="font-mono text-[10.5px] text-surface-600 mb-1">
+                  <span x-text="n.author"></span> · <span x-text="n.at"></span>
+                </div>
+                <div class="ticket-prose ticket-read text-[13px]" x-effect="setProse($el, n.text)"></div>
+              </div>
+            </template>
+          </div>
+        </div>
+
+        <!-- Brief. One block per top-level section of the body, in file order.
+             A click opens the whole-body editor anchored at that section, which
+             is what _blockAnchor already computes for the preview/editor swap;
+             there are no per-section editors. -->
+        <div class="shrink-0 w-[460px] border-l border-surface-700/50 bg-surface-950 flex flex-col min-h-0">
+          <div class="shrink-0 px-5 pt-3 pb-[9px] border-b border-surface-700/70 flex items-center gap-2.5">
+            <span class="font-mono text-[10px] font-bold tracking-[.12em] uppercase text-tx-faint">brief</span>
+            <div class="flex-1"></div>
+            <span x-show="epicBriefSaving" class="font-mono text-[10px] text-surface-600">saving...</span>
+            <span x-show="epicBriefSaved && !epicBriefSaving" class="font-mono text-[10px] text-ok/70">saved</span>
+            <span x-show="!epicBriefSaving && !epicBriefSaved" class="font-mono text-[10px] text-surface-600">markdown · click to edit</span>
+          </div>
+          <!-- The same click-to-edit swap as the ticket body, and the same
+               overflow rule: the gutter stays at zero, so a short value wraps
+               at the width caretLineTop measures a prefix against. -->
+          <div class="flex-1 min-h-0 overflow-y-auto px-5 py-4">
+            <template x-if="epicEditingBrief">
+              <div class="md-editor">
+                <div class="md-editor-hl" aria-hidden="true" x-effect="setEditorHighlight($el, editForm.body)"></div>
+                <textarea x-model="editForm.body" x-ref="bodyEditor"
+                  @input="autoGrowBody($el); epicDebounceBrief()"
+                  @blur="epicBlurBriefEdit()"
+                  @keydown.escape="$event.stopPropagation(); epicExitBriefEdit()"
+                  @keydown.enter="if ($event.metaKey || $event.ctrlKey) { $event.preventDefault(); epicExitBriefEdit(); }"
+                  class="w-full min-h-[200px] overflow-hidden resize-none focus:outline-none"
+                  spellcheck="false"></textarea>
+              </div>
+            </template>
+            <template x-if="!epicEditingBrief">
+              <div @click="epicBeginBriefEdit($event)" class="cursor-text min-h-[200px]">
+                <div x-show="editForm.body" x-ref="bodyPreview" class="ticket-prose ticket-read" x-effect="setProse($el, editForm.body)"></div>
+                <p x-show="!editForm.body" class="font-mono text-[11px] text-surface-600">No brief yet. Click to write one.</p>
+              </div>
+            </template>
+          </div>
+        </div>
+      </div>
+    </div>
+    </template>
     </div>
 
     <!-- New ticket page -->
@@ -2823,9 +3130,25 @@
               <p class="text-[11px] text-surface-600 mt-0.5">Repository the agent will work in. Supports ~.</p>
             </div>
 
+            <!-- Kind. An epic is a brief that groups other tickets, so it
+                 carries none of the fields below: choosing it hides them
+                 rather than sending values the daemon would drop. -->
+            <div class="flex items-center gap-2.5">
+              <span class="text-[13px] font-mono text-tx-3 flex items-center gap-1.5"><svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M3 6h18M6 12h15M9 18h12"/></svg>Kind</span>
+              <div class="ml-auto flex gap-1 bg-surface-900 border border-edge-card rounded-[7px] p-[3px]">
+                <template x-for="k in [{ value: '', label: 'ticket' }, { value: 'epic', label: 'epic' }]" :key="k.label">
+                  <button type="button" @click="createForm.kind = k.value"
+                          class="font-mono text-[11px] px-[11px] py-[3px] rounded-[5px] transition-colors"
+                          :class="createForm.kind === k.value ? 'bg-surface-850 text-tx-hi font-bold' : 'text-tx-3 hover:text-tx-2'"
+                          x-text="k.label"></button>
+                </template>
+              </div>
+            </div>
+            <p x-show="createForm.kind === 'epic'" class="text-[11px] text-surface-600 -mt-2">An epic is never run: no pipeline, no agent, no schedule. It is created <span class="text-tx-3">open</span>, and its status is derived from its sub-tickets from then on.</p>
+
             <!-- Explicit height, matching the padded inputs above: a native
                  select drops the vertical padding in WebKit. -->
-            <div class="grid grid-cols-3 gap-3">
+            <div class="grid grid-cols-3 gap-3" x-show="createForm.kind !== 'epic'">
               <div>
                 <label for="new-pipeline" class="text-[13px] font-mono text-tx-3 mb-1 flex items-center gap-1.5"><svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="opacity-50"><polyline points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="3"/><polyline points="21 16 21 21 16 21"/><line x1="15" y1="15" x2="21" y2="21"/><line x1="4" y1="4" x2="9" y2="9"/></svg>Pipeline</label>
                 <select id="new-pipeline" x-model="createForm.pipeline" @change="onPipelineChange()"
@@ -2859,11 +3182,11 @@
                 <p x-show="createSchedulePinned()" class="text-[11px] text-surface-600 mt-0.5">&middot; set by start-at</p>
               </div>
             </div>
-            <p class="text-[11px] text-surface-600 -mt-2">Pipeline → stages the ticket runs through. Agent → defaults to pipeline's. Status → <span class="text-tx-3">todo</span> queues automatically; <span class="text-tx-3">open</span> stays a draft.</p>
+            <p class="text-[11px] text-surface-600 -mt-2" x-show="createForm.kind !== 'epic'">Pipeline → stages the ticket runs through. Agent → defaults to pipeline's. Status → <span class="text-tx-3">todo</span> queues automatically; <span class="text-tx-3">open</span> stays a draft.</p>
 
             <!-- Start at: one field taking both grammars the CLI takes, plus
                  the presets that cover the common cases. -->
-            <div class="flex flex-col gap-2.5">
+            <div class="flex flex-col gap-2.5" x-show="createForm.kind !== 'epic'">
               <div class="flex items-center gap-2.5">
                 <span class="text-[13px] font-mono text-tx-3 flex items-center gap-1.5"><svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="opacity-50"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15.5 14"/></svg>Start at</span>
                 <div class="ml-auto flex gap-1 bg-surface-900 border border-edge-card rounded-[7px] p-[3px]">

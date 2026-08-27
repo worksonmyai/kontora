@@ -79,6 +79,9 @@ type TicketService interface {
 	RemoveDependency(id string, dependencyID string) error
 	LinkTickets(id string, relatedIDs []string) error
 	UnlinkTickets(id string, relatedIDs []string) error
+	SetParent(id string, parentID string) error
+	ClearParent(id string) error
+	SetChildOrder(id string, children []string) error
 	UpdateTicket(id string, req UpdateTicketRequest) error
 	UploadTicket(content []byte) (TicketInfo, error)
 	GetLogs(id string, stage string) (string, error)
@@ -250,6 +253,10 @@ type CreateTicketRequest struct {
 	// ScheduledAt creates the ticket open with a pickup time. It cannot be
 	// combined with a Status other than "open".
 	ScheduledAt string `json:"scheduled_at,omitempty"`
+	// Kind is "epic" for a ticket that groups others. An epic is created open
+	// with no pipeline and no agent. Parent files the new ticket under one.
+	Kind   string `json:"kind,omitempty"`
+	Parent string `json:"parent,omitempty"`
 }
 
 // ScheduleTicketRequest sets or clears a ticket's pickup time. Clear is a
@@ -283,6 +290,16 @@ type ListTicketsOptions struct {
 // names exactly one related ticket; a link call may name several.
 type RelationRequest struct {
 	Related []string `json:"related"`
+}
+
+// ParentRequest names the epic a ticket is filed under.
+type ParentRequest struct {
+	Parent string `json:"parent"`
+}
+
+// ChildOrderRequest is an epic's manual child order. An empty list clears it.
+type ChildOrderRequest struct {
+	Children []string `json:"children"`
 }
 
 type UpdateTicketRequest struct {
@@ -460,6 +477,13 @@ type TicketInfo struct {
 	// so it is detail-only. It carries more than a TicketRef because the tree
 	// renders each child's stage and elapsed as well as its status.
 	Children []TicketChild `json:"children,omitempty"`
+	// Kind is the ticket's kind field, empty for ordinary work and "epic" for a
+	// ticket that groups others. ChildOrder is the epic's own children list. It
+	// is not named children because that name is taken by the derived tree
+	// above, which is a different thing: this one orders, it does not decide
+	// membership, and it can name an id that is not a child.
+	Kind       string   `json:"kind,omitempty"`
+	ChildOrder []string `json:"child_order,omitempty"`
 }
 
 // TicketRef is one end of a relation. Title and Status are filled in when the
@@ -742,6 +766,8 @@ func TicketInfoFromView(v app.View) TicketInfo {
 		ArchivedAt:    v.ArchivedAt,
 		ArchivedBy:    v.ArchivedBy,
 		ArchiveNote:   v.ArchiveNote,
+		Kind:          v.Kind,
+		ChildOrder:    v.Children,
 	}
 	if v.Parent != "" {
 		info.Parent = &TicketRef{ID: v.Parent}

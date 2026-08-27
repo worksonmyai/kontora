@@ -49,6 +49,10 @@ type View struct {
 	Deps   []string
 	Links  []string
 	Parent string
+	// Kind is the ticket's kind field, empty for ordinary work and "epic" for
+	// a ticket that groups others. Children is the epic's manual child order.
+	Kind     string
+	Children []string
 	// The archive stamp, all empty unless Status is archived. ArchivedFrom is
 	// the closed status the ticket held before it was archived.
 	ArchivedFrom string
@@ -113,6 +117,8 @@ func BuildView(cfg *config.Config, t *ticket.Ticket, detail bool) View {
 		Deps:        t.Deps,
 		Links:       t.Links,
 		Parent:      t.Parent,
+		Kind:        string(t.Kind),
+		Children:    t.Children,
 
 		ArchivedFrom: string(t.ArchivedFrom),
 		ArchivedAt:   t.ArchivedAt,
@@ -130,7 +136,7 @@ func BuildView(cfg *config.Config, t *ticket.Ticket, detail bool) View {
 				break
 			}
 		}
-	} else if t.Kontora && t.Pipeline == "" {
+	} else if t.Kontora && t.Pipeline == "" && t.Kind != ticket.KindEpic {
 		v.Agent = cfg.DefaultAgent
 	}
 
@@ -141,7 +147,9 @@ func BuildView(cfg *config.Config, t *ticket.Ticket, detail bool) View {
 		}
 		v.Stages = stages
 	}
-	if t.Kontora && t.Pipeline == "" && len(v.Stages) == 0 {
+	// An epic gets neither the default agent nor a stage ribbon: it has no
+	// pipeline because it is not work, not because its pipeline is implied.
+	if t.Kontora && t.Pipeline == "" && len(v.Stages) == 0 && t.Kind != ticket.KindEpic {
 		v.Stages = []string{"default"}
 	}
 

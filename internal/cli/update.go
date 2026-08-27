@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/worksonmyai/kontora/internal/config"
+	"github.com/worksonmyai/kontora/internal/ticket"
 	"github.com/worksonmyai/kontora/internal/ticket/app"
 	"github.com/worksonmyai/kontora/internal/ticket/store"
 	"github.com/worksonmyai/kontora/internal/web"
@@ -26,7 +27,10 @@ func Update(cfg *config.Config, id string, req web.UpdateTicketRequest) error {
 	}
 	t := st.Ticket
 
-	if !cfg.StatusAllowsEdit(string(t.Status)) {
+	// An epic is editable in every status. The statuses the check excludes are
+	// the ones where an agent owns the file or the work is over, and an epic has
+	// neither: its status is a summary of its children.
+	if t.Kind != ticket.KindEpic && !cfg.StatusAllowsEdit(string(t.Status)) {
 		return fmt.Errorf("%w: cannot update ticket in status %s", app.ErrInvalidState, t.Status)
 	}
 

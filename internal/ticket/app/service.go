@@ -94,6 +94,17 @@ func (s *Service) isValidSetStatus(status ticket.Status) bool {
 	return s.cfg().IsCustomStatus(string(status))
 }
 
+// refuseEpic reports the error for an operation that would run or move an epic
+// by hand. An epic's status is derived from its children, so a write here would
+// be overwritten by the next derivation pass, and nothing about an epic is
+// runnable.
+func refuseEpic(t *ticket.Ticket, id, verb string) error {
+	if t.Kind != ticket.KindEpic {
+		return nil
+	}
+	return fmt.Errorf("%w: cannot %s epic %s, its status is derived from its children", ErrInvalidState, verb, id)
+}
+
 // SetStatus changes a ticket's status with validation.
 func (s *Service) SetStatus(id string, status ticket.Status) (Result, error) {
 	if !s.isValidSetStatus(status) {
@@ -106,6 +117,10 @@ func (s *Service) SetStatus(id string, status ticket.Status) (Result, error) {
 	}
 	st, err := s.repo.Get(resolved)
 	if err != nil {
+		return Result{}, err
+	}
+
+	if err := refuseEpic(st.Ticket, resolved, "move"); err != nil {
 		return Result{}, err
 	}
 
@@ -189,6 +204,9 @@ func (s *Service) Retry(id string) (Result, error) {
 	if !st.Ticket.Kontora {
 		return Result{}, fmt.Errorf("%w: ticket is not initialized", ErrInvalidState)
 	}
+	if err := refuseEpic(st.Ticket, resolved, "retry"); err != nil {
+		return Result{}, err
+	}
 
 	if st.Ticket.Status == ticket.StatusInProgress || st.Ticket.Status == ticket.StatusTodo || st.Ticket.Status == ticket.StatusArchived {
 		return Result{}, fmt.Errorf("%w: cannot retry ticket in status %s", ErrInvalidState, st.Ticket.Status)
@@ -235,6 +253,9 @@ func (s *Service) Skip(id string) (Result, error) {
 	}
 	if t.Status == ticket.StatusArchived {
 		return Result{}, fmt.Errorf("%w: cannot skip archived ticket %s", ErrInvalidState, resolved)
+	}
+	if err := refuseEpic(t, resolved, "skip"); err != nil {
+		return Result{}, err
 	}
 
 	pipelineCfg, ok := s.cfg().Pipelines[t.Pipeline]
@@ -329,6 +350,37 @@ func resolveInitFields(cfg *config.Config, t *ticket.Ticket, req InitRequest) (p
 	return pipeline, agent, nil
 }
 
+// applyInitFields writes the run's fields onto the ticket. It is a function of
+// its own because Init is at gocyclo's ceiling. Nothing is saved here: the
+// caller writes the file once, after the status is settled too.
+func applyInitFields(t *ticket.Ticket, req InitRequest, pipeline, agent string) error {
+	if err := t.SetField("pipeline", pipeline); err != nil {
+		return fmt.Errorf("setting pipeline: %w", err)
+	}
+	if req.Path != "" {
+		if err := t.SetField("path", req.Path); err != nil {
+			return fmt.Errorf("setting path: %w", err)
+		}
+	}
+	// Writing only on a change keeps init from stamping an empty agent field
+	// onto a ticket that never had one, while still clearing one that "none"
+	// opted out of.
+	if agent != t.Agent {
+		if err := t.SetField("agent", agent); err != nil {
+			return fmt.Errorf("setting agent: %w", err)
+		}
+	}
+	if req.Branch != "" {
+		if err := t.SetField("branch", req.Branch); err != nil {
+			return fmt.Errorf("setting branch: %w", err)
+		}
+	}
+	if err := t.SetField("kontora", true); err != nil {
+		return fmt.Errorf("setting kontora: %w", err)
+	}
+	return nil
+}
+
 // Init initializes a ticket for daemon processing: sets pipeline, path,
 // kontora=true, status, and stage. A ticket that is already initialized may
 // pass through it again while it sits in open, which rewrites those fields but
@@ -344,6 +396,9 @@ func (s *Service) Init(id string, req InitRequest) (Result, error) {
 	}
 
 	t := st.Ticket
+	if err := refuseEpic(t, resolved, "initialize"); err != nil {
+		return Result{}, err
+	}
 	// An initialized ticket may go through init again while it waits in open:
 	// the dashboard queues it through the same form, so the fields the form
 	// shows are the fields the run gets. A later status means a run already
@@ -361,29 +416,8 @@ func (s *Service) Init(id string, req InitRequest) (Result, error) {
 		return Result{}, err
 	}
 
-	if err := t.SetField("pipeline", pipeline); err != nil {
-		return Result{}, fmt.Errorf("setting pipeline: %w", err)
-	}
-	if req.Path != "" {
-		if err := t.SetField("path", req.Path); err != nil {
-			return Result{}, fmt.Errorf("setting path: %w", err)
-		}
-	}
-	// Writing only on a change keeps init from stamping an empty agent field
-	// onto a ticket that never had one, while still clearing one that "none"
-	// opted out of.
-	if agent != t.Agent {
-		if err := t.SetField("agent", agent); err != nil {
-			return Result{}, fmt.Errorf("setting agent: %w", err)
-		}
-	}
-	if req.Branch != "" {
-		if err := t.SetField("branch", req.Branch); err != nil {
-			return Result{}, fmt.Errorf("setting branch: %w", err)
-		}
-	}
-	if err := t.SetField("kontora", true); err != nil {
-		return Result{}, fmt.Errorf("setting kontora: %w", err)
+	if err := applyInitFields(t, req, pipeline, agent); err != nil {
+		return Result{}, err
 	}
 
 	status := req.Status

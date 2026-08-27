@@ -143,6 +143,12 @@ func (d *Daemon) scheduleSetRefusalLocked(id string, t *ticket.Ticket) error {
 	if !t.Kontora {
 		return fmt.Errorf("%w: ticket %s is not initialized", web.ErrInvalidState, id)
 	}
+	// A schedule is a promise to move the ticket to todo, and an epic's status
+	// is derived from its children. It is never picked up either, so the
+	// timestamp would only put a status on it that nothing acts on.
+	if t.Kind == ticket.KindEpic {
+		return fmt.Errorf("%w: %s is an epic, which is never picked up", web.ErrInvalidState, id)
+	}
 	if err := d.scheduleWriteRefusalLocked(id, t); err != nil {
 		return err
 	}

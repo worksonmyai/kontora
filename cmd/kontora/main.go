@@ -407,6 +407,8 @@ func cmdNew() {
 	branch := fs.String("branch", "", "work branch name (defaults to <branch_prefix>/<id>)")
 	baseBranch := fs.String("base-branch", "", "branch the work branch starts from (defaults to the repo default branch)")
 	status := fs.String("status", "", "initial status, open or todo (defaults to todo)")
+	kind := fs.String("kind", "", "\"epic\" for a ticket that groups others through their parent")
+	parent := fs.String("parent", "", "id of the epic to file this ticket under")
 	at := fs.String("at", "", "schedule pickup for an instant, e.g. 2026-09-01T09:00:00+02:00 or \"2026-09-01 09:00\"")
 	after := fs.String("after", "", "schedule pickup this long from now, e.g. 90m, 24h, 3d, 2w")
 	descriptionFile := fs.String("description-file", "", "read the ticket description from a file ('-' for stdin)")
@@ -453,6 +455,8 @@ func cmdNew() {
 			Branch:      *branch,
 			BaseBranch:  *baseBranch,
 			ScheduledAt: scheduledAt,
+			Kind:        *kind,
+			Parent:      *parent,
 		})
 		if err != nil {
 			log.Fatal(err)
@@ -485,6 +489,8 @@ func cmdNew() {
 		Branch:      *branch,
 		BaseBranch:  *baseBranch,
 		ScheduledAt: scheduledAt,
+		Kind:        *kind,
+		Parent:      *parent,
 		NoEdit:      true,
 	})
 	if err != nil {

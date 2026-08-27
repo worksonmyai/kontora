@@ -38,6 +38,8 @@ var Commands = []Command{
 		{Name: "branch", Desc: "Work branch name", Value: "text"},
 		{Name: "base-branch", Desc: "Branch the work branch starts from", Value: "text"},
 		{Name: "status", Desc: "Initial status", Value: "text", Choices: []string{"open", "todo"}},
+		{Name: "kind", Desc: "Ticket kind", Value: "text", Choices: []string{"epic"}},
+		{Name: "parent", Desc: "Epic to file this ticket under", Value: "ticket"},
 		{Name: "at", Desc: "Schedule pickup for an RFC 3339 instant", Value: "text"},
 		{Name: "after", Desc: "Schedule pickup this long from now, e.g. 24h", Value: "text"},
 		{Name: "description-file", Desc: "Read the description from a file ('-' for stdin)", Value: "path"},

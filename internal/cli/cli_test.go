@@ -1906,3 +1906,117 @@ func TestReadDescription(t *testing.T) {
 	_, err = ReadDescription(filepath.Join(dir, "missing.md"), nil)
 	require.ErrorContains(t, err, "reading description")
 }
+
+// TestNew_Epic pins what `kontora new -kind epic` writes: a kind, no pipeline
+// and no agent whatever the project defaults say, and status open, because the
+// derivation takes the status from there.
+func TestNew_Epic(t *testing.T) {
+	dir := t.TempDir()
+	cfg := testConfig(dir)
+	cfg.DefaultPipeline = "default"
+	cfg.DefaultAgent = "claude-sonnet"
+	repoDir := initTestRepo(t)
+
+	id, err := New(cfg, NewOpts{
+		Path:   repoDir,
+		Title:  "An epic",
+		Kind:   "epic",
+		NoEdit: true,
+	})
+	require.NoError(t, err)
+
+	data, err := os.ReadFile(filepath.Join(dir, id+".md"))
+	require.NoError(t, err)
+	content := string(data)
+	assert.Contains(t, content, "kind: epic")
+	assert.Contains(t, content, "status: open")
+	assert.NotContains(t, content, "pipeline:")
+	assert.NotContains(t, content, "agent:")
+}
+
+func TestNew_EpicRejections(t *testing.T) {
+	cases := []struct {
+		name    string
+		opts    NewOpts
+		wantErr string
+	}{
+		{name: "an unknown kind", opts: NewOpts{Kind: "saga"}, wantErr: `kind must be "epic"`},
+		{name: "an epic is created open", opts: NewOpts{Kind: "epic", Status: "todo"}, wantErr: "an epic is created open"},
+		{name: "an epic has no pipeline", opts: NewOpts{Kind: "epic", Pipeline: "default"}, wantErr: "no pipeline and no agent"},
+		{name: "epics do not nest", opts: NewOpts{Kind: "epic", Parent: "epc-100"}, wantErr: "epics do not nest"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			cfg := testConfig(dir)
+			opts := tc.opts
+			opts.Path = initTestRepo(t)
+			opts.Title = "T"
+			opts.NoEdit = true
+
+			_, err := New(cfg, opts)
+			require.ErrorContains(t, err, tc.wantErr)
+
+			entries, err := os.ReadDir(dir)
+			require.NoError(t, err)
+			assert.Empty(t, entries, "no ticket file may be written")
+		})
+	}
+}
+
+// A ticket created under an epic carries the parent, and is otherwise an
+// ordinary ticket: it keeps its pipeline and can be created todo. The parent is
+// checked here and not only in Service.SetParent, because creation is the other
+// way a parent reaches the file and a bad one is a dangling reference nothing
+// reports.
+func TestNew_Parent(t *testing.T) {
+	cases := []struct {
+		name string
+		// parent is the -parent value, with "{epic}" standing for the id of the
+		// epic each case creates first.
+		parent  string
+		wantErr string
+	}{
+		{name: "an epic by its full id", parent: "{epic}"},
+		{name: "an unknown parent", parent: "epc-nope", wantErr: `parent epc-nope: ticket "epc-nope" not found`},
+		{name: "a parent that is not an epic", parent: "{plain}", wantErr: "is not an epic"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			cfg := testConfig(dir)
+			repoDir := initTestRepo(t)
+
+			epicID, err := New(cfg, NewOpts{Path: repoDir, Title: "An epic", Kind: "epic", NoEdit: true})
+			require.NoError(t, err)
+			plainID, err := New(cfg, NewOpts{Path: repoDir, Title: "Not an epic", NoEdit: true})
+			require.NoError(t, err)
+
+			parent := tc.parent
+			switch parent {
+			case "{epic}":
+				parent = epicID
+			case "{plain}":
+				parent = plainID
+			}
+
+			id, err := New(cfg, NewOpts{
+				Path:   repoDir,
+				Title:  "A child",
+				Parent: parent,
+				NoEdit: true,
+			})
+			if tc.wantErr != "" {
+				require.ErrorContains(t, err, tc.wantErr)
+				return
+			}
+			require.NoError(t, err)
+
+			data, err := os.ReadFile(filepath.Join(dir, id+".md"))
+			require.NoError(t, err)
+			assert.Contains(t, string(data), "parent: "+epicID)
+		})
+	}
+}

@@ -632,7 +632,21 @@ func (d *Daemon) buildService() *app.Service {
 		AfterSave: func(id string, st *app.StoredTicket) {
 			d.mu.Lock()
 			defer d.mu.Unlock()
+			// Read before the swap: SetParent and ClearParent are service
+			// writes, and the epic a child left is only named by the copy the
+			// cache still holds.
+			var prev *ticket.Ticket
+			if old, ok := d.tickets[id]; ok {
+				prev = old.ticket
+			}
 			d.tickets[id] = newTicketState(st.Ticket, st.FilePath)
+			// A service write is how the API and the remote CLI move a child,
+			// so the epic above it is derived again here as well.
+			if st.Ticket.Kind == ticket.KindEpic {
+				d.rederiveEpicLocked(id, "")
+			} else {
+				d.rederiveEpicMoveLocked(prev, st.Ticket)
+			}
 		},
 		ListTickets: func() []*app.StoredTicket {
 			d.mu.Lock()
@@ -934,7 +948,7 @@ func (d *Daemon) initialScan(dir string) error {
 		// installs, pre-upgrade tickets) or our own name. A ticket claimed by
 		// another instance sharing this tickets_dir is left in_progress and not
 		// enqueued, so starting a second daemon can't steal or kill its work.
-		if t.Kontora && t.Status == ticket.StatusInProgress {
+		if t.Kontora && t.Status == ticket.StatusInProgress && t.Kind != ticket.KindEpic {
 			if t.ClaimedBy == "" || t.ClaimedBy == d.instanceName {
 				d.ticketLog(t.ID).Warn("crash recovery: resetting to todo")
 				_ = t.SetField("status", string(ticket.StatusTodo))
@@ -958,6 +972,12 @@ func (d *Daemon) initialScan(dir string) error {
 		d.mu.Unlock()
 		scanned = append(scanned, t)
 	}
+
+	// An epic is read before the children it derives from, so its status is
+	// settled once, after the whole directory is in the map.
+	d.mu.Lock()
+	d.rederiveAllEpicsLocked()
+	d.mu.Unlock()
 
 	if !*cfg.AutoPickUp {
 		return nil
@@ -1030,6 +1050,18 @@ func (d *Daemon) handleFileChanged(path string) {
 	// The edit can also add, move or remove a schedule, so the timer's next
 	// deadline is recomputed whether or not this ticket is the nearest one.
 	defer d.signalSchedule()
+	// An external edit to a child, or to the epic's own kind or children list,
+	// is a reason to derive the epic again. A hand-edited parent field moves the
+	// ticket between two epics, so both ends are derived.
+	if t.Kind == ticket.KindEpic {
+		defer d.rederiveEpicLocked(t.ID, "")
+	} else {
+		var prevT *ticket.Ticket
+		if known {
+			prevT = prev.ticket
+		}
+		defer d.rederiveEpicMoveLocked(prevT, t)
+	}
 
 	if !t.Kontora {
 		return
@@ -1070,7 +1102,7 @@ func (d *Daemon) handleFileChanged(path string) {
 		// Claimed by us but no local agent is running it: a stale self-claim that
 		// came back through sync, or the both-sides-yielded state. Reset it to
 		// todo and re-enqueue, matching live crash recovery.
-		if _, running := d.running[t.ID]; !running && t.ClaimedBy == d.instanceName {
+		if _, running := d.running[t.ID]; !running && t.ClaimedBy == d.instanceName && t.Kind != ticket.KindEpic {
 			log.Info("recovering stale self-claim", "claimed_by", t.ClaimedBy)
 			_ = t.SetField("status", string(ticket.StatusTodo))
 			// A ticket that cannot be written back is still enqueued as todo,
@@ -1119,6 +1151,7 @@ func (d *Daemon) handleFileRemoved(path string) {
 				d.ticketLog(id).Info("killing agent", "reason", "file removed")
 				cancel()
 			}
+			parent := ts.ticket.Parent
 			d.removeQueuedLocked(id)
 			d.broadcastTicketDeleted(ts)
 			delete(d.tickets, id)
@@ -1127,6 +1160,11 @@ func (d *Daemon) handleFileRemoved(path string) {
 			// Whoever depended on this ticket now names an id nothing answers,
 			// which blocks them.
 			d.reconcileDependenciesLocked(id)
+			// The epic above it has one child fewer, which can be what finishes
+			// it or what reopens it.
+			if parent != "" {
+				d.rederiveEpicLocked(parent, "")
+			}
 			return
 		}
 	}
@@ -1295,6 +1333,12 @@ func (d *Daemon) enqueue(t *ticket.Ticket) {
 	if t == nil || !t.Kontora {
 		return
 	}
+	// An epic is not work: it has no pipeline, so a todo one would otherwise
+	// take the pipeline-less branch and be spawned an agent with the default
+	// agent. Its status is derived, but a hand-edited file can still say todo.
+	if t.Kind == ticket.KindEpic {
+		return
+	}
 	if d.queued[t.ID] {
 		return
 	}
@@ -1384,6 +1428,9 @@ func (d *Daemon) claimableLocked(ticketID string, log *slog.Logger) (*ticketStat
 
 	// The ticket must still be managed by Kontora and in a state to process.
 	if !ts.ticket.Kontora || ts.ticket.Status != ticket.StatusTodo {
+		return nil, false
+	}
+	if ts.ticket.Kind == ticket.KindEpic {
 		return nil, false
 	}
 
@@ -3067,6 +3114,9 @@ func (d *Daemon) setTicketState(id string, t *ticket.Ticket, path string) {
 	}
 	d.tickets[id] = &ticketState{ticket: t, filePath: path, modTime: modTime}
 	d.reconcileDependenciesLocked(id)
+	// Every daemon write path funnels through here, which makes it the one
+	// place a child's new status can reach the epic that derives from it.
+	d.rederiveParentEpicLocked(t)
 }
 
 func (d *Daemon) stageLogPath(ticketID, stageName string) string {

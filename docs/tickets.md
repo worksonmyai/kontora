@@ -30,7 +30,8 @@ These are set when creating a ticket (manually or via `kontora new`). `notify` a
 | Field | Required | Default | Description |
 |-------|----------|---------|-------------|
 | `id` | yes | — | Unique identifier, format `<prefix>-<4 alphanum>` (e.g., `kon-q88f`). |
-| `status` | yes | `todo` | Current ticket status (see [Status lifecycle](#status-lifecycle)). |
+| `status` | yes | `todo` | Current ticket status (see [Status lifecycle](#status-lifecycle)). On an epic it is derived from the children and written back by the daemon. |
+| `kind` | no | — | `epic` for a ticket that groups others; absent for ordinary work. See [Epics](#epics). |
 | `pipeline` | no | — | Name of the pipeline to run (must exist in config). Filled in at creation from a matching [project](configuration.md#projects) when one is configured and no pipeline is given. When it ends up empty, the ticket runs in standalone mode with the default agent. |
 | `agent` | no | — | Override the agent for this ticket. Applies to standalone tickets or overrides the pipeline's agent at every stage. Filled in at creation from a matching [project](configuration.md#projects) when one is configured and no agent is given. |
 | `path` | yes | — | Path to the repository (supports `~`, e.g., `~/projects/kontora`). |
@@ -39,7 +40,8 @@ These are set when creating a ticket (manually or via `kontora new`). `notify` a
 | `scheduled_at` | no | — | RFC 3339 instant at which the daemon moves an `open` ticket to `todo`. See [Scheduled pickup](#scheduled-pickup). |
 | `deps` | no | — | Ids of the tickets this one waits on. The scheduler holds the ticket back until every one of them is resolved; see [Relations](#relations). |
 | `links` | no | — | Ids of related tickets. See [Relations](#relations). |
-| `parent` | no | — | Id of the epic or parent ticket. Read only; see [Relations](#relations). |
+| `parent` | no | — | Id of the epic this ticket belongs to. See [Relations](#relations). |
+| `children` | no | — | On an epic, the manual order of its sub-tickets. Order only; membership is what each child's `parent` says. See [Epics](#epics). |
 | `notify` | no | — | Statuses whose arrival this ticket asks to be told about. Written by hand only. Without it the ticket is silent. See [Notifications](#notifications). |
 | `notify_channels` | no | — | Channels this ticket's notifications go to, above the project's and the global default. Written by hand only. See [Notifications](#notifications). |
 
@@ -47,7 +49,7 @@ These are set when creating a ticket (manually or via `kontora new`). `notify` a
 
 `deps`, `links` and `parent` name other tickets. Kontora reads them and shows each id as a link to that ticket, with a hover card giving its title and status. The details rail lists every relation as its own row. The ones you navigate by are also on the ticket tab itself: `deps`, `links` and the derived `blocks` on a strip at the top, one line unless a ticket carries too many ids to fit, and `parent` as a crumb in the app header, between `board` and the open ticket's id.
 
-`deps` and `links` are written by [`kontora dep`, `kontora undep`, `kontora link` and `kontora unlink`](cli.md#relations). `parent` is not written by any command; it comes from whatever created the ticket. Only `deps` reaches the scheduler, through [dependency-aware scheduling](#dependency-aware-scheduling); `links` and `parent` are for navigation.
+`deps` and `links` are written by [`kontora dep`, `kontora undep`, `kontora link` and `kontora unlink`](cli.md#relations). `parent` is written by `kontora new` with a parent flag, by the epic page, or by hand. Only `deps` reaches the scheduler, through [dependency-aware scheduling](#dependency-aware-scheduling); `links` and `parent` are for navigation and for the epic rollup.
 
 ```yaml
 deps: [kon-a1b2]
@@ -60,6 +62,27 @@ Both the flow form above and a block sequence are read. An id with no ticket fil
 Two more relations are derived on read rather than stored, because each edge is written on the other ticket alone. `blocks` is the reverse of `deps`: the tickets whose `deps` name this one. `children` is the reverse of `parent`: the tickets whose `parent` names this one. They are read by scanning every ticket file, so both cover tickets the board hides.
 
 `children` renders as a sub-ticket tree at the top of the ticket tab, one row per child with its title, id, stage and elapsed time, and a `3 of 5` rollup counting the children that are `done`. The tree draws 12 rows before it offers a reveal for the rest, and a click on a row opens that child. A ticket with no children draws no tree.
+
+#### Epics
+
+An epic is a ticket file like any other with two differences: `kind: epic`, and no pipeline. It is not runnable work — no agent, no branch, no worktree, no run history — and the scheduler never enqueues, claims or spawns anything for it, whatever status its file carries. What it holds is the brief for work that spans several tickets: the description, the design, the decisions, the open questions, the success criteria.
+
+```yaml
+id: kon-e7c1
+kontora: true
+kind: epic
+status: in_progress      # derived, written back by the daemon
+path: ~/projects/kontora
+children: [kon-b12e, kon-c04d, kon-9b31]   # order only
+```
+
+Create one with `kontora new -kind epic`, and file a ticket under it with `kontora new -parent kon-e7c1` or `POST /api/tickets/{id}/parent`. Both creation paths check the parent the same way `POST .../parent` does: it has to exist and it has to be an epic. Epics do not nest: setting `parent` on a ticket whose `kind` is `epic` is refused.
+
+The status is derived from the children and rewritten by the daemon whenever one of them changes, so moving an epic by hand is refused too, and so are the verbs that would move it as a side effect: `pause`, `run`, `retry`, `skip`, `init` and `schedule`. Archiving one is allowed and is terminal: the derivation stops there, and a restore hands the epic back to it. Archived children are ignored. Any child in `todo`, `in_progress`, `paused` or `human_review` gives `in_progress`; otherwise every remaining child being terminal with at least one `done` gives `done`; every remaining child `cancelled` gives `cancelled`; anything else, including no children at all, gives `open`. An epic that closes itself records a note saying which child landed last. The brief stays editable in every one of those statuses, because no agent ever owns an epic's file.
+
+`children` orders the sub-tickets and nothing else. Membership is what each child's `parent` says, so an id here that names no child is ignored on read, and a child the list does not name sorts after every child it does, by `created`. Dragging a row on the epic page writes this one list, and writes no child file.
+
+Deleting an epic keeps its work: every child has its `parent` cleared, and no child file is deleted or archived.
 
 #### Base branch
 

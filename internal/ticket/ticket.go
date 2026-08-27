@@ -125,6 +125,15 @@ const (
 	StatusLegacyClosed Status = "closed"
 )
 
+// Kind names what a ticket is, for the tickets that are not ordinary work. It
+// is a named type rather than a string so it cannot be swapped with free text.
+type Kind string
+
+// KindEpic marks a ticket that groups others through their parent field. An
+// epic is never run: it has no pipeline, no branch and no worktree, and its
+// status is derived from its children rather than written by hand.
+const KindEpic Kind = "epic"
+
 type HistoryEntry struct {
 	Stage string `yaml:"stage"`
 	Agent string `yaml:"agent"`
@@ -170,6 +179,7 @@ type Ticket struct {
 	ID          string     `yaml:"id"`
 	Kontora     bool       `yaml:"kontora"`
 	Status      Status     `yaml:"status"`
+	Kind        Kind       `yaml:"kind,omitempty"`
 	Pipeline    string     `yaml:"pipeline"`
 	Path        string     `yaml:"path"`
 	Agent       string     `yaml:"agent"`
@@ -190,6 +200,10 @@ type Ticket struct {
 	Deps   []string `yaml:"deps"`
 	Links  []string `yaml:"links"`
 	Parent string   `yaml:"parent"`
+	// Children orders an epic's sub-tickets. Membership is defined by the
+	// child's parent field, never by this list: an ID here that names no child
+	// is ignored, and a child missing from it sorts last by created.
+	Children []string `yaml:"children,omitempty"`
 	// ScheduledAt is the instant an open ticket becomes todo, as an RFC 3339
 	// string. It is a string rather than a *time.Time so a hand-edited value the
 	// strict parser rejects stays visible instead of making the whole ticket

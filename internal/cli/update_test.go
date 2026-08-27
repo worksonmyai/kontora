@@ -114,15 +114,34 @@ agent: a1
 	}
 }
 
-func TestUpdate_RejectedByState(t *testing.T) {
-	cases := []string{"in_progress", "done", "cancelled", "archived"}
-	for _, status := range cases {
-		t.Run(status, func(t *testing.T) {
+func TestUpdate_StateGuard(t *testing.T) {
+	cases := []struct {
+		name    string
+		status  string
+		kind    string
+		allowed bool
+	}{
+		{name: "in_progress", status: "in_progress"},
+		{name: "done", status: "done"},
+		{name: "cancelled", status: "cancelled"},
+		{name: "archived", status: "archived"},
+		// An epic is editable in every status it derives. The statuses above
+		// are refused because an agent owns the file or the work is over, and
+		// an epic has neither: the brief is why the ticket exists.
+		{name: "epic in_progress", status: "in_progress", kind: "epic", allowed: true},
+		{name: "epic done", status: "done", kind: "epic", allowed: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
+			kindLine := ""
+			if tc.kind != "" {
+				kindLine = "kind: " + tc.kind + "\n"
+			}
 			original := `---
 id: tst-st
-status: ` + status + `
-pipeline: one-stage
+status: ` + tc.status + `
+` + kindLine + `pipeline: one-stage
 path: ~/repo
 ---
 # Body
@@ -131,11 +150,16 @@ path: ~/repo
 
 			cfg := updateTestConfig(dir)
 			err := Update(cfg, "tst-st", web.UpdateTicketRequest{Body: new("changed")})
-			require.ErrorIs(t, err, app.ErrInvalidState)
+			data, readErr := os.ReadFile(filepath.Join(dir, "tst-st.md"))
+			require.NoError(t, readErr)
 
+			if tc.allowed {
+				require.NoError(t, err)
+				assert.Contains(t, string(data), "changed")
+				return
+			}
+			require.ErrorIs(t, err, app.ErrInvalidState)
 			// File must be untouched.
-			data, err := os.ReadFile(filepath.Join(dir, "tst-st.md"))
-			require.NoError(t, err)
 			assert.Equal(t, original, string(data))
 		})
 	}

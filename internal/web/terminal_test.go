@@ -203,6 +203,9 @@ func (m *mockTerminalService) AddDependency(_ string, _ string) error           
 func (m *mockTerminalService) RemoveDependency(_ string, _ string) error              { return nil }
 func (m *mockTerminalService) LinkTickets(_ string, _ []string) error                 { return nil }
 func (m *mockTerminalService) UnlinkTickets(_ string, _ []string) error               { return nil }
+func (m *mockTerminalService) SetParent(_ string, _ string) error                     { return nil }
+func (m *mockTerminalService) ClearParent(_ string) error                             { return nil }
+func (m *mockTerminalService) SetChildOrder(_ string, _ []string) error               { return nil }
 func (m *mockTerminalService) UpdateTicket(_ string, _ UpdateTicketRequest) error     { return nil }
 func (m *mockTerminalService) UploadTicket(_ []byte) (TicketInfo, error)              { return TicketInfo{}, nil }
 func (m *mockTerminalService) GetLogs(_ string, _ string) (string, error) {

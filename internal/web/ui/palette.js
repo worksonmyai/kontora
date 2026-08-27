@@ -296,7 +296,30 @@ export function kontoraPalette() {
         }
       }
 
-      if (scoped && this.paletteScopeKind !== 'schedule') {
+      // Pulling a ticket into the open epic. The scope is the epic, and the
+      // rows are the tickets that could join it: an epic cannot be a child, and
+      // a ticket already in this epic has nothing to pull.
+      if (scoped && this.paletteScopeKind === 'epic-pull') {
+        var self = this;
+        var candidates = this.tickets.filter(function (t) {
+          if (t.kind === 'epic' || t.id === scoped.id) return false;
+          if (t.parent && t.parent.id === scoped.id) return false;
+          return !q || self._paletteMatches(t, q);
+        });
+        var pullable = this._paletteRank(candidates).slice(0, PALETTE_MAX_TICKETS);
+        if (pullable.length) {
+          groups.push({
+            label: 'Pull into ' + scoped.id,
+            hint: this.parseTitleTag(scoped).rest,
+            items: pullable.map(function (t) {
+              var row = self._paletteTicketRow(t);
+              return Object.assign({}, row, { id: 'pull:' + t.id, kind: 'epicpull' });
+            }),
+          });
+        }
+      }
+
+      if (scoped && this.paletteScopeKind !== 'schedule' && this.paletteScopeKind !== 'epic-pull') {
         var legal = this.paletteMoves(scoped);
         var moves = legal.filter(m => !q || m.label.toLowerCase().includes(q));
         var items = [];
@@ -424,8 +447,22 @@ export function kontoraPalette() {
         this._paletteReset();
         return;
       }
+      // The pull scope was entered from the epic page, not by drilling into a
+      // ticket, so popping it closes the palette rather than landing on the
+      // actions of a ticket the user never chose.
+      if (this.paletteScopeKind === 'epic-pull') { this.closePalette(); return; }
       this.paletteScope = null;
       this._paletteReset();
+    },
+
+    // Open the palette straight into the pull-in scope for the open epic. It
+    // fetches nothing: every row is derived from this.tickets, which the board
+    // already holds.
+    openPaletteScope(kind) {
+      if (kind !== 'epic-pull' || !this.selectedEpic) return;
+      this.openPalette();
+      if (!this.paletteOpen) return;
+      this.palettePush(this.selectedEpic.id, 'epic-pull');
     },
 
     palettePush(id, kind) {
@@ -507,6 +544,11 @@ export function kontoraPalette() {
         return;
       }
       if (row.kind === 'scheduledrill') { this.palettePush(row.ticketId, 'schedule'); return; }
+      if (row.kind === 'epicpull') {
+        this.closePalette();
+        await this.epicPullIn(row.ticketId);
+        return;
+      }
       if (row.kind === 'schedule' || row.kind === 'scheduleclear' || row.kind === 'schedulerun') {
         await this._paletteRunSchedule(row);
         return;

@@ -11,6 +11,7 @@ import (
 	"github.com/worksonmyai/kontora/internal/config"
 	"github.com/worksonmyai/kontora/internal/ticket"
 	"github.com/worksonmyai/kontora/internal/ticket/app"
+	"github.com/worksonmyai/kontora/internal/ticket/store"
 )
 
 // yamlQuote wraps a string in double quotes if it contains characters
@@ -44,6 +45,12 @@ type NewOpts struct {
 	// watching daemon never sees it as todo before the schedule is in place.
 	ScheduledAt string
 	NoEdit      bool
+	// Kind is "epic" for a ticket that groups others, empty for ordinary work.
+	// An epic is created open with no pipeline and no agent: it is not run, and
+	// its status is derived from its children from then on.
+	Kind string
+	// Parent files the new ticket under an epic.
+	Parent string
 }
 
 // New creates a ticket file and optionally opens it in $EDITOR.
@@ -69,6 +76,13 @@ func New(cfg *config.Config, opts NewOpts) (string, error) {
 			return "", fmt.Errorf("a scheduled ticket is created open, not %q: the schedule is what moves it to todo", opts.Status)
 		}
 	}
+	isEpic := opts.Kind == string(ticket.KindEpic)
+	if err := checkEpicOpts(&opts); err != nil {
+		return "", err
+	}
+	if err := resolveParent(cfg, &opts); err != nil {
+		return "", err
+	}
 	if opts.Status == "" {
 		opts.Status = "todo"
 	}
@@ -77,8 +91,12 @@ func New(cfg *config.Config, opts NewOpts) (string, error) {
 	}
 
 	// Every creation path reaches New, so this is the one place where the
-	// project and top-level defaults are stamped into the ticket.
-	opts.Pipeline, opts.Agent = cfg.ResolveTicketDefaults(opts.Path, opts.Pipeline, opts.Agent)
+	// project and top-level defaults are stamped into the ticket. An epic skips
+	// it: a stamped pipeline would give it a stage ribbon and an agent it has
+	// no run for.
+	if !isEpic {
+		opts.Pipeline, opts.Agent = cfg.ResolveTicketDefaults(opts.Path, opts.Pipeline, opts.Agent)
+	}
 
 	// A name the config does not know would otherwise sit in the frontmatter
 	// until the daemon picked the ticket up and paused it.
@@ -96,7 +114,7 @@ func New(cfg *config.Config, opts NewOpts) (string, error) {
 	// An open ticket is a draft, which is why it skips the check. A scheduled one
 	// is a commitment to run unattended, so the repository has to be right now
 	// rather than at a pickup nobody is watching.
-	if opts.Status != "open" || opts.ScheduledAt != "" {
+	if !isEpic && (opts.Status != "open" || opts.ScheduledAt != "") {
 		if err := CheckRepo(opts.Path, opts.BaseBranch); err != nil {
 			return "", err
 		}
@@ -111,33 +129,7 @@ func New(cfg *config.Config, opts NewOpts) (string, error) {
 		}
 	}
 
-	now := time.Now().UTC().Format(time.RFC3339)
-	pipelineLine := ""
-	if opts.Pipeline != "" {
-		pipelineLine = fmt.Sprintf("pipeline: %s\n", yamlQuote(opts.Pipeline))
-	}
-	agentLine := ""
-	if opts.Agent != "" {
-		agentLine = fmt.Sprintf("agent: %s\n", yamlQuote(opts.Agent))
-	}
-	branchLine := ""
-	if opts.Branch != "" {
-		branchLine = fmt.Sprintf("branch: %s\n", yamlQuote(opts.Branch))
-	}
-	baseBranchLine := ""
-	if opts.BaseBranch != "" {
-		baseBranchLine = fmt.Sprintf("base_branch: %s\n", yamlQuote(opts.BaseBranch))
-	}
-	scheduledLine := ""
-	if opts.ScheduledAt != "" {
-		scheduledLine = fmt.Sprintf("scheduled_at: %q\n", opts.ScheduledAt)
-	}
-	body := "\n"
-	if opts.Body != "" {
-		body = "\n" + opts.Body + "\n"
-	}
-	content := fmt.Sprintf("---\nid: %s\nkontora: true\nstatus: %s\n%s%s%s%s%spath: %s\ncreated: %s\n---\n# %s\n%s",
-		id, yamlQuote(opts.Status), pipelineLine, agentLine, branchLine, baseBranchLine, scheduledLine, yamlQuote(opts.Path), now, opts.Title, body)
+	content := ticketFrontmatter(id, opts, time.Now().UTC().Format(time.RFC3339))
 
 	dir := config.ExpandTilde(cfg.TicketsDir)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -155,6 +147,94 @@ func New(cfg *config.Config, opts NewOpts) (string, error) {
 	}
 
 	return id, nil
+}
+
+// ticketFrontmatter renders the whole ticket file. Every optional field is a
+// line that is either written or absent: an empty value is not the same as no
+// value for the round-trip parser, and a stamped empty field would show up in
+// the dashboard as a field somebody set.
+func ticketFrontmatter(id string, opts NewOpts, created string) string {
+	line := func(key, value string) string {
+		if value == "" {
+			return ""
+		}
+		return fmt.Sprintf("%s: %s\n", key, yamlQuote(value))
+	}
+	// Quoted rather than passed through line(): the daemon stores the instant
+	// quoted, and a round-trip has to leave the line as it found it.
+	scheduled := ""
+	if opts.ScheduledAt != "" {
+		scheduled = fmt.Sprintf("scheduled_at: %q\n", opts.ScheduledAt)
+	}
+	body := "\n"
+	if opts.Body != "" {
+		body = "\n" + opts.Body + "\n"
+	}
+	return fmt.Sprintf("---\nid: %s\nkontora: true\n%sstatus: %s\n%s%s%s%s%s%spath: %s\ncreated: %s\n---\n# %s\n%s",
+		id,
+		line("kind", opts.Kind),
+		yamlQuote(opts.Status),
+		line("pipeline", opts.Pipeline),
+		line("agent", opts.Agent),
+		line("branch", opts.Branch),
+		line("base_branch", opts.BaseBranch),
+		scheduled,
+		line("parent", opts.Parent),
+		yamlQuote(opts.Path), created, opts.Title, body)
+}
+
+// checkEpicOpts validates the epic-only rules and settles the status an epic is
+// created with. It takes a pointer because "an epic is created open" is a
+// default as well as a rule. A ticket with no kind passes through untouched.
+func checkEpicOpts(opts *NewOpts) error {
+	if opts.Kind == "" {
+		return nil
+	}
+	if opts.Kind != string(ticket.KindEpic) {
+		return fmt.Errorf("kind must be %q, got %q", ticket.KindEpic, opts.Kind)
+	}
+	if opts.ScheduledAt != "" {
+		return fmt.Errorf("an epic is never run, so it cannot be scheduled")
+	}
+	if opts.Pipeline != "" || opts.Agent != "" {
+		return fmt.Errorf("an epic has no pipeline and no agent")
+	}
+	if opts.Parent != "" {
+		return fmt.Errorf("epics do not nest")
+	}
+	switch opts.Status {
+	case "":
+		opts.Status = "open"
+	case "open":
+	default:
+		return fmt.Errorf("an epic is created open, not %q: its status is derived from its children", opts.Status)
+	}
+	return nil
+}
+
+// resolveParent checks the epic a new ticket is filed under and rewrites the
+// option to the full id, so -parent takes a prefix the way every other ticket
+// argument does. Service.SetParent enforces the same two rules on an existing
+// ticket; without this the creation path is the way around them, and a bad
+// parent reaches the file as a dangling reference nothing reports.
+func resolveParent(cfg *config.Config, opts *NewOpts) error {
+	if opts.Parent == "" {
+		return nil
+	}
+	repo := store.NewDiskRepo(cfg.TicketsDir)
+	parentID, err := repo.Resolve(opts.Parent)
+	if err != nil {
+		return fmt.Errorf("parent %s: %w", opts.Parent, err)
+	}
+	st, err := repo.Get(parentID)
+	if err != nil {
+		return fmt.Errorf("parent %s: %w", parentID, err)
+	}
+	if st.Ticket.Kind != ticket.KindEpic {
+		return fmt.Errorf("%w: %s is not an epic", app.ErrNotAnEpic, parentID)
+	}
+	opts.Parent = parentID
+	return nil
 }
 
 // ReadDescription reads the markdown a ticket body starts with. The path "-"

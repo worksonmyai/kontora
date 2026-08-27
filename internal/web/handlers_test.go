@@ -278,6 +278,18 @@ func (m *mockService) UnlinkTickets(id string, relatedIDs []string) error {
 	return m.relation("unlink", id, relatedIDs)
 }
 
+func (m *mockService) SetParent(id string, parentID string) error {
+	return m.relation("parent", id, []string{parentID})
+}
+
+func (m *mockService) ClearParent(id string) error {
+	return m.relation("unparent", id, nil)
+}
+
+func (m *mockService) SetChildOrder(id string, children []string) error {
+	return m.relation("children", id, children)
+}
+
 func (m *mockService) InitTicket(id string, req InitTicketRequest) error {
 	if m.initFn != nil {
 		return m.initFn(id, req)
@@ -2564,8 +2576,11 @@ func delNoConfirm(t *testing.T, srv *Server, path string) httpResult {
 
 func TestHandleRelations(t *testing.T) {
 	cases := []struct {
-		name       string
-		path       string
+		name string
+		path string
+		// put is set for the child-order route, which replaces a list rather
+		// than adding one edge.
+		put        bool
 		body       string
 		relationFn func(verb, id string, related []string) error
 		wantStatus int
@@ -2639,17 +2654,71 @@ func TestHandleRelations(t *testing.T) {
 			wantStatus: http.StatusConflict,
 			wantCall:   "dep t-001 t-002",
 		},
+		{
+			name:       "parent names the epic",
+			path:       "/api/tickets/t-001/parent",
+			body:       `{"parent":"epc-100"}`,
+			wantStatus: http.StatusOK,
+			wantCall:   "parent t-001 epc-100",
+		},
+		{
+			name:       "an empty parent is refused",
+			path:       "/api/tickets/t-001/parent",
+			body:       `{"parent":""}`,
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "a nested epic is a 409",
+			path:       "/api/tickets/t-001/parent",
+			body:       `{"parent":"epc-100"}`,
+			relationFn: func(string, string, []string) error { return ErrInvalidState },
+			wantStatus: http.StatusConflict,
+			wantCall:   "parent t-001 epc-100",
+		},
+		{
+			name:       "unparent takes no body",
+			path:       "/api/tickets/t-001/unparent",
+			wantStatus: http.StatusOK,
+			wantCall:   "unparent t-001 ",
+		},
+		{
+			name:       "the child order is replaced whole",
+			path:       "/api/tickets/epc-100/children",
+			put:        true,
+			body:       `{"children":["t-002","t-001"]}`,
+			wantStatus: http.StatusOK,
+			wantCall:   "children epc-100 t-002,t-001",
+		},
+		{
+			name:       "an empty child order clears it",
+			path:       "/api/tickets/epc-100/children",
+			put:        true,
+			body:       `{"children":[]}`,
+			wantStatus: http.StatusOK,
+			wantCall:   "children epc-100 ",
+		},
+		{
+			name:       "an empty child id is refused",
+			path:       "/api/tickets/epc-100/children",
+			put:        true,
+			body:       `{"children":["t-002",""]}`,
+			wantStatus: http.StatusBadRequest,
+		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			svc := &mockService{
-				tickets:    []TicketInfo{{ID: "t-001", Status: "todo"}},
+				tickets:    []TicketInfo{{ID: "t-001", Status: "todo"}, {ID: "epc-100", Status: "open", Kind: "epic"}},
 				relationFn: tc.relationFn,
 			}
 			srv := startHandlerTestServer(t, svc)
 
-			res := post(t, srv, tc.path, tc.body)
+			send := post
+			if tc.put {
+				send = put
+			}
+			res := send(t, srv, tc.path, tc.body)
 			assert.Equal(t, tc.wantStatus, res.statusCode)
 			if tc.wantCall == "" {
 				assert.Empty(t, svc.relationCalls, "a rejected request must not reach the service")

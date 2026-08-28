@@ -76,4 +76,10 @@ type InitRequest struct {
 	Branch   string // git branch; if empty, the daemon names one from the ticket ID
 	Status   string // "open" or "todo"; defaults to "todo"
 	Stage    string // starting stage; if empty, defaults to first pipeline stage
+	// Notify and NotifyChannels are the ticket's notification fields. A nil
+	// slice leaves what the ticket already carries alone; an empty non-nil one
+	// removes the field. The other fields cannot make that distinction, which
+	// is why they read an empty string as "leave alone" instead.
+	Notify         []string
+	NotifyChannels []string
 }

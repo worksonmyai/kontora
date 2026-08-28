@@ -378,6 +378,34 @@ func applyInitFields(t *ticket.Ticket, req InitRequest, pipeline, agent string) 
 	if err := t.SetField("kontora", true); err != nil {
 		return fmt.Errorf("setting kontora: %w", err)
 	}
+	if err := SetNotifyFields(t, req.Notify, req.NotifyChannels); err != nil {
+		return err
+	}
+	return nil
+}
+
+// SetNotifyFields writes the two notification fields, or removes them. A nil
+// slice is a caller that said nothing about the field and leaves it as it is;
+// an empty non-nil one deletes the key rather than leaving `notify: []` behind,
+// so a ticket that asks for nothing reads the way one that never asked does.
+func SetNotifyFields(t *ticket.Ticket, notify, channels []string) error {
+	for _, f := range []struct {
+		key  string
+		list []string
+	}{{ticket.FieldNotify, notify}, {ticket.FieldNotifyChannels, channels}} {
+		if f.list == nil {
+			continue
+		}
+		var err error
+		if len(f.list) == 0 {
+			err = t.DeleteField(f.key)
+		} else {
+			err = t.SetField(f.key, f.list)
+		}
+		if err != nil {
+			return fmt.Errorf("setting %s: %w", f.key, err)
+		}
+	}
 	return nil
 }
 

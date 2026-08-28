@@ -25,7 +25,7 @@ Automate GitHub Releases with zig cc cross-compilation.
 
 ### User-defined fields
 
-These are set when creating a ticket (manually or via `kontora new`). `notify` and `notify_channels` are the exception: neither `kontora new` nor the API takes them, so they are written into the markdown by hand or with `kontora update`.
+These are set when creating a ticket (manually or via `kontora new`). `notify` and `notify_channels` are the exception: `kontora new` does not take them, so they come from the dashboard's `notify me` row, from `kontora update`, or from a hand edit.
 
 | Field | Required | Default | Description |
 |-------|----------|---------|-------------|
@@ -42,8 +42,8 @@ These are set when creating a ticket (manually or via `kontora new`). `notify` a
 | `links` | no | — | Ids of related tickets. See [Relations](#relations). |
 | `parent` | no | — | Id of the epic this ticket belongs to. See [Relations](#relations). |
 | `children` | no | — | On an epic, the manual order of its sub-tickets. Order only; membership is what each child's `parent` says. See [Epics](#epics). |
-| `notify` | no | — | Statuses whose arrival this ticket asks to be told about. Written by hand only. Without it the ticket is silent. See [Notifications](#notifications). |
-| `notify_channels` | no | — | Channels this ticket's notifications go to, above the project's and the global default. Written by hand only. See [Notifications](#notifications). |
+| `notify` | no | — | Statuses whose arrival this ticket asks to be told about. Without it the ticket is silent. See [Notifications](#notifications). |
+| `notify_channels` | no | — | Channels this ticket's notifications go to, above the project's and the global default. See [Notifications](#notifications). |
 
 #### Relations
 
@@ -122,6 +122,10 @@ A `done` notification carries the ticket's per-run `summary`. It fires from the 
 `notify_channels` names where this ticket's notifications go. It is resolved as the first non-empty of the ticket's list, its project's, and `notifications.default`; `none` in the list silences the ticket while leaving its `notify:` list readable, and the same channel twice is one message. See [notifications](configuration.md#notifications) for the channels themselves.
 
 Three things that would otherwise make a ticket quiet with no explanation are warned about when the daemon reads it, at startup and on every later edit, and then ignored: a status in `notify` that nothing reaches, a channel name nothing answers to, and a `notify:` list that resolves to no channel at all. A malformed `notify:` value makes the whole ticket unparseable, the same as a malformed `deps:`.
+
+Both fields are also editable from the dashboard, in the `notify me` row of the start-ticket modal and in the `notify` row of a ticket's details rail. The row asks one question with three answers — off, when it needs me (`[paused, human_review, waiting]`), when it is finished (`[done]`) — and puts the full status set behind `custom`. It states the channel it resolves to rather than asking, until a second channel is configured. The rail row opens only where the API accepts a frontmatter edit, so a running ticket shows its setting and cannot change it: an agent owns the file, and the write would be lost when the run puts it back.
+
+The API takes them too: `notify` and `notify_channels` on `POST /api/tickets/{id}/init` and `PUT /api/tickets/{id}`. An absent key leaves the ticket's own field alone and `[]` removes it. Unlike a hand edit, a request naming a status nothing reaches or a channel nothing answers to is refused with a 400 rather than warned about.
 
 #### Scheduled pickup
 

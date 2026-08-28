@@ -43,6 +43,13 @@ type View struct {
 	Summary     string
 	// FinalSummary is the ticket-level outcome, not the latest run's summary.
 	FinalSummary string
+	// Notify and NotifyChannels are the ticket's own notification fields as
+	// written in the frontmatter: which statuses ask to be told about, and
+	// where. Neither is resolved here — an empty NotifyChannels means the
+	// ticket defers to its project and the global default, which is a
+	// different thing from naming none.
+	Notify         []string
+	NotifyChannels []string
 	// Deps, Links and Parent are the relation ids as written in the frontmatter.
 	// They are ids only: resolving one to a title needs the whole store, which
 	// this projection does not see.
@@ -119,6 +126,9 @@ func BuildView(cfg *config.Config, t *ticket.Ticket, detail bool) View {
 		Parent:      t.Parent,
 		Kind:        string(t.Kind),
 		Children:    t.Children,
+
+		Notify:         t.Notify.Statuses,
+		NotifyChannels: t.NotifyChannels,
 
 		ArchivedFrom: string(t.ArchivedFrom),
 		ArchivedAt:   t.ArchivedAt,

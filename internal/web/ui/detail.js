@@ -45,6 +45,11 @@ export function kontoraDetail() {
       this.setStageOpen = false;
       this.scheduleEditing = false;
       this.scheduleError = null;
+      // The draft holds the previous ticket's statuses, and the editor saves on
+      // every click, so leaving it open would write them onto the new one.
+      this.notifyEditing = false;
+      this.notifyDraft = null;
+      this.notifyError = null;
       this.ticketChanges = null;
       this.collapsedStages = {};
       this.relExpanded = {};

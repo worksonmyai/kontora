@@ -380,7 +380,13 @@ export function kontoraCreate() {
         branch: ticket.branch || '',
         autoBranch: ticket.auto_branch || '',
         ticketPath: ticket.path || '',
+        // The ticket's own fields, not the resolved ones: the row edits what
+        // gets written, and an empty channel list is the ticket deferring to
+        // its project rather than naming nothing.
+        notify: (ticket.notify || []).slice(),
+        notifyChannels: (ticket.notify_channels || []).slice(),
       };
+      this.initNotifyOpen = false;
       this.initError = null;
       this.initModal = true;
       if (!this.configCache) {
@@ -483,6 +489,11 @@ export function kontoraCreate() {
             path: this.initForm.path,
             agent: this.initForm.agent || 'none',
             branch: (this.initForm.branch || '').trim() || undefined,
+            // Both always sent, empty included: the row shows what the ticket
+            // will carry, so leaving them out would let a ticket keep a notify
+            // list the user just switched off.
+            notify: this.initForm.notify,
+            notify_channels: this.initForm.notifyChannels,
           }),
         });
         if (!res.ok) {

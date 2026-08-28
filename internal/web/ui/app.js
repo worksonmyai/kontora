@@ -64,7 +64,11 @@ export function kontoraApp() {
     // an unrelated earlier failure and must not lose its own to the toast's
     // 10s timer.
     initError: null,
-    initForm: { ticketId: '', status: '', tag: '', titleRest: '', pipeline: '', agent: '', path: '', branch: '', autoBranch: '', ticketPath: '' },
+    initForm: { ticketId: '', status: '', tag: '', titleRest: '', pipeline: '', agent: '', path: '', branch: '', autoBranch: '', ticketPath: '', notify: [], notifyChannels: [] },
+    // Whether the init modal's status chip row is unfolded. It is a view state,
+    // not a mode: the segmented control reads the status list itself, so the
+    // chips can be open under any of the three answers.
+    initNotifyOpen: false,
     // Pipeline and agent the path's project supplies, tracked so a value that
     // only got there by inheritance can be told from one the user chose.
     // Declared here rather than assigned on first use because the modal reads
@@ -168,6 +172,16 @@ export function kontoraApp() {
     _blockOffsetsSrc: null,
     _blockOffsetsFor: null,
     setStageOpen: false,
+    // The rail's notify editor: whether it is open, the draft it edits, whether
+    // its chip row is unfolded, and the two lines a save leaves behind.
+    // notifyError is the editor's own, kept out of `error` so the global
+    // toast's timer cannot take it away mid-edit.
+    notifyEditing: false,
+    notifyDraft: null,
+    notifyChips: false,
+    notifySaving: false,
+    notifySaved: false,
+    notifyError: null,
     // Relation rows the user expanded past the first RELATION_CAP chips, keyed
     // by row. Cleared with the ticket, so opening another one starts collapsed.
     relExpanded: {},

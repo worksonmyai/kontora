@@ -23,6 +23,7 @@ import (
 	"github.com/worksonmyai/kontora/internal/notify"
 	"github.com/worksonmyai/kontora/internal/process"
 	"github.com/worksonmyai/kontora/internal/ticket"
+	"github.com/worksonmyai/kontora/internal/web"
 )
 
 // notifyRecorder stands in for the dispatcher. The daemon calls it from its own
@@ -919,4 +920,126 @@ func TestSpawnFieldsAreNotWrittenOverALateStatusChange(t *testing.T) {
 
 	assert.Equal(t, ticket.StatusPaused, h.readTask("n-15.md").Status, "the pause survives")
 	assert.Empty(t, rec.sends(t), "no transition to report")
+}
+
+// The web API is the second way a notify: field is written, after a hand edit.
+// One table over both endpoints, because they share validateNotifyFields and
+// app.SetNotifyFields and only differ in which one the request reaches.
+func TestDaemon_NotifyFieldsThroughTheAPI(t *testing.T) {
+	tests := []struct {
+		name string
+		// Exactly one of the two runs.
+		update   *web.UpdateTicketRequest
+		init     *web.InitTicketRequest
+		wantErr  error
+		want     []string
+		wantChan []string
+	}{
+		{
+			name:     "update writes both fields",
+			update:   &web.UpdateTicketRequest{Notify: []string{"paused", "human_review", "waiting"}, NotifyChannels: []string{"tg"}},
+			want:     []string{"paused", "human_review", "waiting"},
+			wantChan: []string{"tg"},
+		},
+		{
+			name:   "an empty list removes the field",
+			update: &web.UpdateTicketRequest{Notify: []string{}, NotifyChannels: []string{}},
+		},
+		{
+			name:     "a request that says nothing leaves the fields alone",
+			update:   &web.UpdateTicketRequest{Agent: new("agent2")},
+			want:     []string{"done"},
+			wantChan: []string{"tg"},
+		},
+		{
+			name:    "a status nothing reaches is refused",
+			update:  &web.UpdateTicketRequest{Notify: []string{"nearly_done"}},
+			wantErr: web.ErrInvalidNotify,
+		},
+		{
+			name:    "a channel nothing answers to is refused",
+			update:  &web.UpdateTicketRequest{NotifyChannels: []string{"slack"}},
+			wantErr: web.ErrInvalidNotify,
+		},
+		{
+			name:    "none beside a channel is refused",
+			update:  &web.UpdateTicketRequest{NotifyChannels: []string{"none", "tg"}},
+			wantErr: web.ErrInvalidNotify,
+		},
+		{
+			name:     "none alone silences the ticket",
+			update:   &web.UpdateTicketRequest{NotifyChannels: []string{"none"}},
+			want:     []string{"done"},
+			wantChan: []string{"none"},
+		},
+		{
+			name:     "the pseudo-status waiting is accepted",
+			update:   &web.UpdateTicketRequest{Notify: []string{"waiting"}},
+			want:     []string{"waiting"},
+			wantChan: []string{"tg"},
+		},
+		{
+			name:     "init writes what the modal picked",
+			init:     &web.InitTicketRequest{Pipeline: "one-stage", Status: "open", Notify: []string{"human_review"}, NotifyChannels: []string{"tg"}},
+			want:     []string{"human_review"},
+			wantChan: []string{"tg"},
+		},
+		{
+			name: "init clears what the ticket carried",
+			init: &web.InitTicketRequest{Pipeline: "one-stage", Status: "open", Notify: []string{}, NotifyChannels: []string{}},
+		},
+		{
+			name:    "init refuses an unconfigured channel too",
+			init:    &web.InitTicketRequest{Pipeline: "one-stage", Status: "open", NotifyChannels: []string{"slack"}},
+			wantErr: web.ErrInvalidNotify,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			h.cfg.Notifications.Channels = map[string]config.NotifyChannel{"tg": {Type: config.NotifyTelegram}}
+			d := h.newDaemon(h.cfg)
+
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+
+			h.writeTicket("n-api.md", fmt.Sprintf(`---
+id: n-api
+kontora: true
+status: open
+pipeline: one-stage
+path: %s
+created: 2026-01-01T00:00:00Z
+notify: [done]
+notify_channels: [tg]
+---
+# Ticket with notify fields
+`, h.repoDir))
+
+			errCh := make(chan error, 1)
+			go func() { errCh <- d.Run(ctx) }()
+			time.Sleep(200 * time.Millisecond)
+
+			var err error
+			if tc.update != nil {
+				err = d.UpdateTicket("n-api", *tc.update)
+			} else {
+				req := *tc.init
+				req.Path = h.repoDir
+				err = d.InitTicket("n-api", req)
+			}
+			if tc.wantErr != nil {
+				assert.ErrorIs(t, err, tc.wantErr)
+			} else {
+				require.NoError(t, err)
+				got := h.readTask("n-api.md")
+				assert.Equal(t, tc.want, got.Notify.Statuses)
+				assert.Equal(t, tc.wantChan, got.NotifyChannels)
+			}
+
+			cancel()
+			require.NoError(t, <-errCh)
+		})
+	}
 }

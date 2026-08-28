@@ -178,3 +178,22 @@ func TestTicketInfoFromView_Notes(t *testing.T) {
 	assert.Equal(t, "Investigate timeout", info.Notes[0].Text)
 	assert.Equal(t, body, info.Body, "parsing notes must not rewrite the body")
 }
+
+// The ticket's own notify fields ride the projection, unresolved: the rail
+// states where they go, and the dashboard resolves the project and the global
+// default from the config payload.
+func TestTicketInfoFromView_Notify(t *testing.T) {
+	info := TicketInfoFromView(app.View{
+		ID:             "t1",
+		Notify:         []string{"human_review", "waiting"},
+		NotifyChannels: []string{"tg"},
+	})
+	assert.Equal(t, []string{"human_review", "waiting"}, info.Notify)
+	assert.Equal(t, []string{"tg"}, info.NotifyChannels)
+
+	// A ticket that names neither carries neither key, so the row reads "off"
+	// rather than an empty list somebody has to interpret.
+	encoded, err := json.Marshal(TicketInfoFromView(app.View{ID: "t2"}))
+	require.NoError(t, err)
+	assert.NotContains(t, string(encoded), "notify")
+}

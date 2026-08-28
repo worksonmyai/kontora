@@ -2770,3 +2770,29 @@ func TestDaemon_ArchiveListAndRoundTrip(t *testing.T) {
 
 	require.ErrorIs(t, d.RestoreTicket("kon-a1"), web.ErrInvalidState, "a done ticket cannot be restored")
 }
+
+// The dashboard resolves a ticket's channel the way the daemon does, so it
+// needs the same three inputs. Names only: a channel's chat id or webhook URL
+// is not something a browser has any use for.
+func TestDaemon_GetConfig_NotifyChannelNamesOnly(t *testing.T) {
+	h := newHarness(t)
+	h.cfg.Notifications.Channels = map[string]config.NotifyChannel{
+		"tg":  {Type: config.NotifyTelegram, ChatID: "-100123"},
+		"ops": {Type: config.NotifyWebhook, URL: "https://hooks.example.com/abc"},
+	}
+	h.cfg.Notifications.Default = []string{"tg"}
+	h.cfg.Projects = map[string]config.Project{
+		"kontora": {Path: h.repoDir, NotifyChannels: []string{"ops"}},
+	}
+	d := h.newDaemon(h.cfg)
+
+	got := d.GetConfig()
+	assert.Equal(t, []string{"ops", "tg"}, got.Channels)
+	assert.Equal(t, []string{"tg"}, got.DefaultChannels)
+	assert.Equal(t, []string{"ops"}, got.Projects[0].NotifyChannels)
+
+	payload, err := json.Marshal(got)
+	require.NoError(t, err)
+	assert.NotContains(t, string(payload), "hooks.example.com")
+	assert.NotContains(t, string(payload), "-100123")
+}

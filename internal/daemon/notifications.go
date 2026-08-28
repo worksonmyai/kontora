@@ -12,6 +12,7 @@ import (
 	"github.com/worksonmyai/kontora/internal/config"
 	"github.com/worksonmyai/kontora/internal/notify"
 	"github.com/worksonmyai/kontora/internal/ticket"
+	"github.com/worksonmyai/kontora/internal/web"
 )
 
 // Notifier is the seam the daemon sends ticket observations through. The real
@@ -161,6 +162,38 @@ func unmatchedNotify(cfg *config.Config, t *ticket.Ticket) []notifyWarning {
 		})
 	}
 	return out
+}
+
+// validateNotifyFields refuses the two notify mistakes a request can make that
+// nothing downstream would ever report: a status no ticket reaches, and a
+// channel name nothing answers to. unmatchedNotify warns about the same two on
+// a ticket already on disk, because a file the daemon merely read is not its to
+// reject; a request is, and answering 400 is the only chance the caller gets to
+// hear about a typo before the ticket runs silently to the end.
+//
+// A nil list is a request that said nothing about the field. The third case
+// unmatchedNotify warns about — statuses that resolve to no channel — stays a
+// warning: it depends on config the caller may be about to write.
+func validateNotifyFields(cfg *config.Config, statuses, channels []string) error {
+	for _, s := range statuses {
+		if s != notify.StatusWaiting && !cfg.IsKnownStatus(s) {
+			return fmt.Errorf("%w: no ticket ever reaches status %q", web.ErrInvalidNotify, s)
+		}
+	}
+	for _, name := range channels {
+		if name == config.NoneSentinel {
+			// "none" silences the ticket. Beside a channel name it is the
+			// contradiction the config validator refuses in its own lists.
+			if len(channels) > 1 {
+				return fmt.Errorf("%w: %q silences the list and cannot be combined with a channel", web.ErrInvalidNotify, config.NoneSentinel)
+			}
+			continue
+		}
+		if _, ok := cfg.Notifications.Channels[name]; !ok {
+			return fmt.Errorf("%w: no channel named %q is configured", web.ErrInvalidNotify, name)
+		}
+	}
+	return nil
 }
 
 // forgetNotifyLocked drops everything remembered about a ticket that is gone.

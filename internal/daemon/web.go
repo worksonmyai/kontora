@@ -236,12 +236,13 @@ func (d *Daemon) GetConfig() web.ConfigInfo {
 	for i, name := range projectNames {
 		p := cfg.Projects[name]
 		projects[i] = web.ProjectInfo{
-			Name:         name,
-			Path:         p.Path,
-			ResolvedPath: config.NormalizeRepoPath(p.Path),
-			Pipeline:     p.Pipeline,
-			Agent:        p.Agent,
-			BranchPrefix: p.BranchPrefix,
+			Name:           name,
+			Path:           p.Path,
+			ResolvedPath:   config.NormalizeRepoPath(p.Path),
+			Pipeline:       p.Pipeline,
+			Agent:          p.Agent,
+			BranchPrefix:   p.BranchPrefix,
+			NotifyChannels: p.NotifyChannels,
 		}
 	}
 	return web.ConfigInfo{
@@ -253,6 +254,10 @@ func (d *Daemon) GetConfig() web.ConfigInfo {
 		Author:         cfg.Author,
 		BranchPrefix:   cfg.BranchPrefix,
 		CustomStatuses: cfg.Statuses,
+		// Names alone. A channel's own struct holds a chat id or a webhook URL,
+		// and the browser only ever needs to say where a notification lands.
+		Channels:        slices.Sorted(maps.Keys(cfg.Notifications.Channels)),
+		DefaultChannels: cfg.Notifications.Default,
 	}
 }
 
@@ -804,12 +809,17 @@ func (d *Daemon) SetSummary(id string, text string) error {
 // InitTicket initializes a non-kontora ticket: sets pipeline, path, kontora=true,
 // status=todo, stage to the first pipeline stage, and enqueues it.
 func (d *Daemon) InitTicket(id string, req web.InitTicketRequest) error {
+	if err := validateNotifyFields(d.config(), req.Notify, req.NotifyChannels); err != nil {
+		return err
+	}
 	_, err := d.svc.Init(id, app.InitRequest{
-		Pipeline: req.Pipeline,
-		Path:     req.Path,
-		Agent:    req.Agent,
-		Branch:   req.Branch,
-		Status:   req.Status,
+		Pipeline:       req.Pipeline,
+		Path:           req.Path,
+		Agent:          req.Agent,
+		Branch:         req.Branch,
+		Status:         req.Status,
+		Notify:         req.Notify,
+		NotifyChannels: req.NotifyChannels,
 	})
 	if err == nil {
 		d.signalSchedule()
@@ -889,6 +899,9 @@ func (d *Daemon) UpdateTicket(id string, req web.UpdateTicketRequest) error {
 	}
 
 	cfg := d.config()
+	if err := validateNotifyFields(cfg, req.Notify, req.NotifyChannels); err != nil {
+		return err
+	}
 	if req.Pipeline != nil {
 		pipeline := config.ClearNone(*req.Pipeline)
 		if pipeline != "" {
@@ -925,6 +938,9 @@ func (d *Daemon) UpdateTicket(id string, req web.UpdateTicketRequest) error {
 		if err := t2.SetField("base_branch", *req.BaseBranch); err != nil {
 			return err
 		}
+	}
+	if err := app.SetNotifyFields(t2, req.Notify, req.NotifyChannels); err != nil {
+		return err
 	}
 	if req.Body != nil {
 		t2.SetBody(*req.Body)

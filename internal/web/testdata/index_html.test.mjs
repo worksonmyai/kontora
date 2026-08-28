@@ -11986,3 +11986,188 @@ test("opening a ticket replaces the epic page rather than stacking on it", async
   assert.equal(state.epicPageOpen(), false);
   assert.equal(state.selectedTicket.id, "kon-b12e");
 });
+
+// ─── notify row ───
+
+// One channel, one project, so the resolution has all three levels to walk.
+function notifyState(overrides = {}) {
+  const state = loadKontoraState(overrides);
+  state.configCache = {
+    pipelines: ["build"],
+    agents: ["claude"],
+    channels: ["tg"],
+    default_channels: ["tg"],
+    projects: [{ name: "kontora", path: "~/projects/kontora", resolved_path: "/home/a/projects/kontora" }],
+  };
+  return state;
+}
+
+test("the notify mode is read off the statuses instead of being stored beside them", () => {
+  const state = notifyState();
+  const mode = (notify) => state.notifyModeOf({ notify });
+
+  assert.equal(mode([]), "off");
+  // Order is not part of the answer: the file may list them any way round.
+  assert.equal(mode(["waiting", "paused", "human_review"]), "needs");
+  assert.equal(mode(["done"]), "done");
+  // One status short of a mode is not that mode.
+  assert.equal(mode(["paused", "human_review"]), "custom");
+  assert.equal(mode(["done", "cancelled"]), "custom");
+});
+
+test("picking a mode replaces the statuses and leaves the channels alone", () => {
+  const state = notifyState();
+  const form = { notify: ["done"], notifyChannels: ["tg"], path: "~/projects/kontora" };
+
+  state.notifyPickMode(form, "needs");
+  assert.deepEqual(vmValue(form.notify), ["paused", "human_review", "waiting"]);
+
+  // Off clears the statuses only: turning notifications back on must not
+  // re-ask where they go.
+  state.notifyPickMode(form, "off");
+  assert.deepEqual(vmValue(form.notify), []);
+  assert.deepEqual(vmValue(form.notifyChannels), ["tg"]);
+});
+
+test("toggling a chip moves the row to custom without clearing what is there", () => {
+  const state = notifyState();
+  const form = { notify: ["paused", "human_review", "waiting"], notifyChannels: [], path: "" };
+
+  state.notifyToggleStatus(form, "done");
+  assert.deepEqual(vmValue(form.notify), ["paused", "human_review", "waiting", "done"]);
+  assert.equal(state.notifyModeOf(form), "custom");
+
+  state.notifyToggleStatus(form, "done");
+  assert.equal(state.notifyModeOf(form), "needs");
+});
+
+test("the row states the channel it resolves to, through every level", () => {
+  const state = notifyState();
+  const where = (form) => state.notifyWhere(form);
+
+  // The ticket's own list wins.
+  assert.equal(where({ notify: ["done"], notifyChannels: ["tg"], path: "" }), "→ tg");
+  // Then the project's, matched on either spelling of the path.
+  state.configCache.projects[0].notify_channels = ["ops"];
+  assert.equal(where({ notify: ["done"], notifyChannels: [], path: "/home/a/projects/kontora" }), "→ ops");
+  // Then the global default, for a path no project owns.
+  assert.equal(where({ notify: ["done"], notifyChannels: [], path: "~/elsewhere" }), "→ tg");
+  // `none` stops the walk rather than falling through to the level below.
+  assert.equal(where({ notify: ["done"], notifyChannels: ["none"], path: "~/projects/kontora" }), "→ no channel");
+  // Nothing to route while no status is picked.
+  assert.equal(where({ notify: [], notifyChannels: ["tg"], path: "" }), "");
+});
+
+test("the echo line and the rail value say the same thing two ways", () => {
+  const state = notifyState();
+  const form = { notify: [], notifyChannels: [], path: "~/projects/kontora" };
+
+  assert.equal(state.notifyEcho(form), "no notify: field written");
+  assert.equal(state.notifyLabel(form), "off");
+
+  state.notifyPickMode(form, "needs");
+  assert.equal(state.notifyEcho(form), "notify: [paused, human_review, waiting]");
+  assert.equal(state.notifyLabel(form), "when it needs me → tg");
+
+  state.notifyPickMode(form, "done");
+  assert.equal(state.notifyLabel(form), "when finished → tg");
+
+  // A custom list spells its statuses out: a label nobody can read back is a
+  // label nobody can trust.
+  state.notifyToggleStatus(form, "paused");
+  assert.equal(state.notifyLabel(form), "done, paused → tg");
+});
+
+test("the channel row only appears once there is a second channel to pick", () => {
+  const state = notifyState();
+  assert.equal(state.notifyPicksChannel(), false);
+
+  state.configCache.channels = ["tg", "ops"];
+  assert.equal(state.notifyPicksChannel(), true);
+
+  const form = { notify: ["done"], notifyChannels: [], path: "~/projects/kontora" };
+  const chips = () => vmValue(state.notifyChannelChips(form)).map((c) => [c.key, c.on]);
+
+  // Inherit is what a ticket that names nothing is on.
+  assert.deepEqual(chips(), [["inherit", true], ["tg", false], ["ops", false], ["none", false]]);
+
+  // Picking an explicit channel drops the inherit; unpicking the last one
+  // falls back to it.
+  state.notifyToggleChannel(form, { key: "ops", kind: "channel", on: false });
+  assert.deepEqual(chips(), [["inherit", false], ["tg", false], ["ops", true], ["none", false]]);
+  state.notifyToggleChannel(form, { key: "ops", kind: "channel", on: true });
+  assert.deepEqual(chips(), [["inherit", true], ["tg", false], ["ops", false], ["none", false]]);
+
+  // Silence replaces the list rather than joining it, which is the one
+  // combination the daemon refuses.
+  state.notifyToggleChannel(form, { key: "tg", kind: "channel", on: false });
+  state.notifyToggleChannel(form, { key: "none", kind: "silence", on: false });
+  assert.deepEqual(vmValue(form.notifyChannels), ["none"]);
+});
+
+test("the channel hint names what the ticket will actually do", () => {
+  const state = notifyState();
+  state.configCache.channels = ["tg", "ops"];
+  const hint = (form) => state.notifyChannelHint(form);
+
+  // No status beats every channel state.
+  assert.match(hint({ notify: [], notifyChannels: ["ops"], path: "~/projects/kontora" }), /^Silent\./);
+  assert.match(hint({ notify: ["done"], notifyChannels: ["none"], path: "" }), /^Silenced for this ticket\./);
+  assert.match(hint({ notify: ["done"], notifyChannels: ["ops"], path: "~/projects/kontora" }), /^Overrides project kontora /);
+  assert.match(hint({ notify: ["done"], notifyChannels: [], path: "~/projects/kontora" }), /^Inherited: resolves to tg, from project kontora\./);
+  // A path no project owns inherits from the global default by name.
+  assert.match(hint({ notify: ["done"], notifyChannels: [], path: "~/elsewhere" }), /from notifications\.default\./);
+});
+
+test("the rail row is read-only exactly where the API refuses a frontmatter edit", () => {
+  const state = notifyState();
+  const canEdit = (status) => { state.selectedTicket = { id: "kon-1", status }; return state.notifyCanEdit(); };
+
+  ["open", "todo", "paused", "human_review"].forEach((s) => assert.equal(canEdit(s), true, s));
+  // An agent owns the file while it runs, and the terminal statuses are over.
+  ["in_progress", "done", "cancelled", "archived"].forEach((s) => assert.equal(canEdit(s), false, s));
+
+  state.configCache.custom_statuses = ["blocked"];
+  assert.equal(canEdit("blocked"), true);
+});
+
+test("a rail edit saves at once and folds the answer back into the board", async () => {
+  const seen = [];
+  const state = notifyState({
+    fetch: async (url, opts) => {
+      seen.push({ url, body: JSON.parse(opts.body) });
+      return { ok: true, json: async () => ({ id: "kon-1", status: "todo", notify: ["done"], notify_channels: [], body: "" }) };
+    },
+  });
+  state.tickets = [{ id: "kon-1", status: "todo" }];
+  state.selectedTicket = { id: "kon-1", status: "todo", path: "~/projects/kontora", notify: ["paused"], notify_channels: ["tg"] };
+
+  state.openNotifyEditor();
+  assert.deepEqual(vmValue(state.notifyDraft.notify), ["paused"]);
+
+  state.notifyPickMode(state.notifyDraft, "done");
+  await flushMicrotasks();
+
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0].url, "/api/tickets/kon-1");
+  // Both fields on every request: they are edited together, and the channel
+  // list has to survive a change to the statuses.
+  assert.deepEqual(seen[0].body, { notify: ["done"], notify_channels: ["tg"] });
+  assert.deepEqual(vmValue(state.selectedTicket.notify), ["done"]);
+});
+
+test("the rail editor does not carry one ticket's statuses onto the next", async () => {
+  const state = notifyState({
+    fetch: async () => ({ ok: true, json: async () => ({ id: "kon-2", status: "todo", body: "", notes: [] }) }),
+  });
+  state.$nextTick = () => Promise.resolve();
+  state.selectedTicket = { id: "kon-1", status: "todo", path: "", notify: ["paused"], notify_channels: [] };
+  state.openNotifyEditor();
+  assert.equal(state.notifyEditing, true);
+
+  await state.selectTicket({ id: "kon-2", status: "todo" });
+  await flushMicrotasks();
+
+  assert.equal(state.notifyEditing, false);
+  assert.equal(state.notifyDraft, null);
+});

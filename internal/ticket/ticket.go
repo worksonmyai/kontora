@@ -61,6 +61,13 @@ func IsCanonicalPath(path, id string) bool {
 	return id != "" && filepath.Base(path) == id+".md"
 }
 
+// The two frontmatter keys holding a ticket's notification fields. They are
+// named because the daemon and the application service both write them.
+const (
+	FieldNotify         = "notify"
+	FieldNotifyChannels = "notify_channels"
+)
+
 // NotifyList reads either a single status or a sequence, so `notify: done` and
 // `notify: [human_review, done]` both work. It is a type rather than a plain
 // []string so a later per-channel mapping form can be added without changing

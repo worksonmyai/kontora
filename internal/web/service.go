@@ -17,9 +17,13 @@ var (
 	// ErrInvalidSchedule is a scheduled_at the daemon will not store: one that
 	// is not RFC 3339, or one already in the past. It is a bad request rather
 	// than a state conflict, so it answers 400 like the other body errors.
-	ErrInvalidSchedule     = errors.New("invalid schedule")
-	ErrLogNotFound         = errors.New("log not found")
-	ErrUnknownAgent        = errors.New("unknown agent")
+	ErrInvalidSchedule = errors.New("invalid schedule")
+	ErrLogNotFound     = errors.New("log not found")
+	ErrUnknownAgent    = errors.New("unknown agent")
+	// ErrInvalidNotify is a notify: status or a notify_channels: name that
+	// nothing would ever match. The chips cannot produce one, but the API is
+	// public, and both mistakes are silent at delivery time.
+	ErrInvalidNotify       = errors.New("invalid notify")
 	ErrUnknownPipeline     = errors.New("unknown pipeline")
 	ErrDeleteRejected      = errors.New("delete rejected")
 	ErrInvalidConfig       = errors.New("invalid config")
@@ -276,6 +280,13 @@ type InitTicketRequest struct {
 	// opens as part of a start action, so an init with no status asked for the
 	// run. An init that says "open" leaves any schedule the ticket carries.
 	Status string `json:"status,omitempty"`
+	// Notify names the statuses the ticket asks to be told about, and
+	// NotifyChannels where, both as the frontmatter spells them. A key the body
+	// leaves out decodes to nil and leaves the ticket's own field alone; `[]`
+	// removes it. The string fields above cannot say the difference, which is
+	// why an empty one there means "inherit" rather than "clear".
+	Notify         []string `json:"notify,omitempty"`
+	NotifyChannels []string `json:"notify_channels,omitempty"`
 }
 
 // ListTicketsOptions narrows or widens a list response. IncludeHidden adds the
@@ -309,6 +320,12 @@ type UpdateTicketRequest struct {
 	Agent      *string `json:"agent,omitempty"`
 	Branch     *string `json:"branch,omitempty"`
 	BaseBranch *string `json:"base_branch,omitempty"`
+	// The notification fields, read the way InitTicketRequest reads them: an
+	// absent key leaves the ticket's own alone, `[]` removes it. They need no
+	// pointer to tell those apart, which is the only reason the fields above
+	// carry one.
+	Notify         []string `json:"notify,omitempty"`
+	NotifyChannels []string `json:"notify_channels,omitempty"`
 }
 
 type PipelineInfo struct {
@@ -379,6 +396,11 @@ type ProjectInfo struct {
 	Pipeline     string `json:"pipeline"`
 	Agent        string `json:"agent"`
 	BranchPrefix string `json:"branch_prefix,omitempty"`
+	// NotifyChannels is the project's own channel list, which sits between a
+	// ticket's and the global default. The dashboard resolves the same three
+	// the daemon does, because the init modal states the channel for a path
+	// that is still being typed.
+	NotifyChannels []string `json:"notify_channels,omitempty"`
 }
 
 type ConfigInfo struct {
@@ -392,6 +414,12 @@ type ConfigInfo struct {
 	Author         string   `json:"author,omitempty"`
 	BranchPrefix   string   `json:"branch_prefix"`
 	CustomStatuses []string `json:"custom_statuses,omitempty"`
+	// Channels are the configured notification channel names, sorted, and
+	// DefaultChannels is notifications.default. Names only: what a channel is
+	// and where it posts has no business in a browser, and its credential is
+	// never in the config struct to begin with.
+	Channels        []string `json:"channels,omitempty"`
+	DefaultChannels []string `json:"default_channels,omitempty"`
 }
 
 type TicketInfo struct {
@@ -457,6 +485,12 @@ type TicketInfo struct {
 	ArchivedAt   *time.Time `json:"archived_at,omitempty"`
 	ArchivedBy   string     `json:"archived_by,omitempty"`
 	ArchiveNote  string     `json:"archive_note,omitempty"`
+
+	// Notify and NotifyChannels are the ticket's own notification fields, not
+	// the resolved ones: an empty NotifyChannels defers to the project and the
+	// global default, and the dashboard resolves those from ConfigInfo.
+	Notify         []string `json:"notify,omitempty"`
+	NotifyChannels []string `json:"notify_channels,omitempty"`
 
 	// Ready reports that no dependency holds the ticket back, and Blockers names
 	// the ones that do. Both are derived on read, not stored, and only mean
@@ -768,6 +802,9 @@ func TicketInfoFromView(v app.View) TicketInfo {
 		ArchiveNote:   v.ArchiveNote,
 		Kind:          v.Kind,
 		ChildOrder:    v.Children,
+
+		Notify:         v.Notify,
+		NotifyChannels: v.NotifyChannels,
 	}
 	if v.Parent != "" {
 		info.Parent = &TicketRef{ID: v.Parent}

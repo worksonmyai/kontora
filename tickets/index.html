@@ -1,0 +1,1410 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Agent orchestration tool. Multi-stage pipelines, git worktree isolation, kanban board.">
+      
+      
+      
+        <link rel="canonical" href="https://worksonmyai.github.io/kontora/tickets/">
+      
+      
+        <link rel="prev" href="../configuration/">
+      
+      
+        <link rel="next" href="../api/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>Tickets - Kontora</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.ec1eaa64.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=DM+Sans:300,300i,400,400i,700,700i%7CJetBrains+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"DM Sans";--md-code-font:"JetBrains Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../stylesheets/extra.css">
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="slate" data-md-color-primary="custom" data-md-color-accent="custom">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#ticket-format" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="Kontora" class="md-header__button md-logo" aria-label="Kontora" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Kontora
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Tickets
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="slate" data-md-color-primary="custom" data-md-color-accent="custom"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="custom" data-md-color-accent="custom"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/worksonmyai/kontora" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    worksonmyai/kontora
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="Kontora" class="md-nav__button md-logo" aria-label="Kontora" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    Kontora
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/worksonmyai/kontora" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    worksonmyai/kontora
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cli/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CLI
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../configuration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Tickets
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Tickets
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#example" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Example
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#frontmatter-fields" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Frontmatter fields
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Frontmatter fields">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#user-defined-fields" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        User-defined fields
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="User-defined fields">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#relations" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Relations
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#epics" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Epics
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#base-branch" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Base branch
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#notifications" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Notifications
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#scheduled-pickup" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Scheduled pickup
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#daemon-managed-fields" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Daemon-managed fields
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#custom-fields" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Custom fields
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#body" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Body
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#status-lifecycle" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Status lifecycle
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#dependency-aware-scheduling" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Dependency-aware scheduling
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#running-on-multiple-machines" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Running on multiple machines
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#archiving-old-tickets" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Archiving old tickets
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#history" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        History
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#notes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Notes
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#ticket-id-format" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Ticket ID format
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#creating-tickets" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Creating tickets
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#example" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Example
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#frontmatter-fields" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Frontmatter fields
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Frontmatter fields">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#user-defined-fields" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        User-defined fields
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="User-defined fields">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#relations" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Relations
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#epics" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Epics
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#base-branch" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Base branch
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#notifications" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Notifications
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#scheduled-pickup" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Scheduled pickup
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#daemon-managed-fields" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Daemon-managed fields
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#custom-fields" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Custom fields
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#body" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Body
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#status-lifecycle" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Status lifecycle
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#dependency-aware-scheduling" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Dependency-aware scheduling
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#running-on-multiple-machines" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Running on multiple machines
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#archiving-old-tickets" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Archiving old tickets
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#history" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        History
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#notes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Notes
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#ticket-id-format" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Ticket ID format
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#creating-tickets" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Creating tickets
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="ticket-format">Ticket Format<a class="headerlink" href="#ticket-format" title="Permanent link">&para;</a></h1>
+<p>Tickets are markdown files with YAML frontmatter. They live in the directory specified by <code>tickets_dir</code> in the <a href="../configuration/">configuration</a>. Any tool that can write a markdown file — a text editor, Obsidian, a script — is a valid client.</p>
+<p>Kontora lists every valid ticket file that has an <code>id</code>, even when the file does not have <code>kontora: true</code>. Files without an <code>id</code> are treated as ordinary notes and are hidden. Tickets without <code>kontora: true</code> are shown with a <code>not a kontora ticket</code> marker and must be initialized before Kontora will run an agent for them.</p>
+<p>Deleting the markdown file removes the ticket from the daemon and web UI, but does not clean up any git worktree. If you want the normal cleanup path, cancel the ticket before deleting its file.</p>
+<h2 id="example">Example<a class="headerlink" href="#example" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nn">---</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="nt">id</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">kon-q88f</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="nt">kontora</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="nt">status</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">todo</span>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="nt">path</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">~/projects/kontora</span>
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="nt">created</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2026-02-25T19:39:45Z</span>
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="nn">---</span>
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="c1"># Add GoReleaser to kontora</span>
+<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>
+<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a><span class="l l-Scalar l-Scalar-Plain">Automate GitHub Releases with zig cc cross-compilation.</span>
+</code></pre></div>
+<h2 id="frontmatter-fields">Frontmatter fields<a class="headerlink" href="#frontmatter-fields" title="Permanent link">&para;</a></h2>
+<h3 id="user-defined-fields">User-defined fields<a class="headerlink" href="#user-defined-fields" title="Permanent link">&para;</a></h3>
+<p>These are set when creating a ticket (manually or via <code>kontora new</code>). <code>notify</code> and <code>notify_channels</code> are the exception: <code>kontora new</code> does not take them, so they come from the dashboard's <code>notify me</code> row, from <code>kontora update</code>, or from a hand edit.</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Required</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>id</code></td>
+<td>yes</td>
+<td>—</td>
+<td>Unique identifier, format <code>&lt;prefix&gt;-&lt;4 alphanum&gt;</code> (e.g., <code>kon-q88f</code>).</td>
+</tr>
+<tr>
+<td><code>status</code></td>
+<td>yes</td>
+<td><code>todo</code></td>
+<td>Current ticket status (see <a href="#status-lifecycle">Status lifecycle</a>). On an epic it is derived from the children and written back by the daemon.</td>
+</tr>
+<tr>
+<td><code>kind</code></td>
+<td>no</td>
+<td>—</td>
+<td><code>epic</code> for a ticket that groups others; absent for ordinary work. See <a href="#epics">Epics</a>.</td>
+</tr>
+<tr>
+<td><code>pipeline</code></td>
+<td>no</td>
+<td>—</td>
+<td>Name of the pipeline to run (must exist in config). Filled in at creation from a matching <a href="../configuration/#projects">project</a> when one is configured and no pipeline is given. When it ends up empty, the ticket runs in standalone mode with the default agent.</td>
+</tr>
+<tr>
+<td><code>agent</code></td>
+<td>no</td>
+<td>—</td>
+<td>Override the agent for this ticket. Applies to standalone tickets or overrides the pipeline's agent at every stage. Filled in at creation from a matching <a href="../configuration/#projects">project</a> when one is configured and no agent is given.</td>
+</tr>
+<tr>
+<td><code>path</code></td>
+<td>yes</td>
+<td>—</td>
+<td>Path to the repository (supports <code>~</code>, e.g., <code>~/projects/kontora</code>).</td>
+</tr>
+<tr>
+<td><code>base_branch</code></td>
+<td>no</td>
+<td>—</td>
+<td>Branch the ticket's work branch starts from. Empty means the repository's default branch. See <a href="#base-branch">Base branch</a>.</td>
+</tr>
+<tr>
+<td><code>created</code></td>
+<td>no</td>
+<td>—</td>
+<td>RFC 3339 timestamp. Set automatically by <code>kontora new</code>.</td>
+</tr>
+<tr>
+<td><code>scheduled_at</code></td>
+<td>no</td>
+<td>—</td>
+<td>RFC 3339 instant at which the daemon moves an <code>open</code> ticket to <code>todo</code>. See <a href="#scheduled-pickup">Scheduled pickup</a>.</td>
+</tr>
+<tr>
+<td><code>deps</code></td>
+<td>no</td>
+<td>—</td>
+<td>Ids of the tickets this one waits on. The scheduler holds the ticket back until every one of them is resolved; see <a href="#relations">Relations</a>.</td>
+</tr>
+<tr>
+<td><code>links</code></td>
+<td>no</td>
+<td>—</td>
+<td>Ids of related tickets. See <a href="#relations">Relations</a>.</td>
+</tr>
+<tr>
+<td><code>parent</code></td>
+<td>no</td>
+<td>—</td>
+<td>Id of the epic this ticket belongs to. See <a href="#relations">Relations</a>.</td>
+</tr>
+<tr>
+<td><code>children</code></td>
+<td>no</td>
+<td>—</td>
+<td>On an epic, the manual order of its sub-tickets. Order only; membership is what each child's <code>parent</code> says. See <a href="#epics">Epics</a>.</td>
+</tr>
+<tr>
+<td><code>notify</code></td>
+<td>no</td>
+<td>—</td>
+<td>Statuses whose arrival this ticket asks to be told about. Without it the ticket is silent. See <a href="#notifications">Notifications</a>.</td>
+</tr>
+<tr>
+<td><code>notify_channels</code></td>
+<td>no</td>
+<td>—</td>
+<td>Channels this ticket's notifications go to, above the project's and the global default. See <a href="#notifications">Notifications</a>.</td>
+</tr>
+</tbody>
+</table>
+<h4 id="relations">Relations<a class="headerlink" href="#relations" title="Permanent link">&para;</a></h4>
+<p><code>deps</code>, <code>links</code> and <code>parent</code> name other tickets. Kontora reads them and shows each id as a link to that ticket, with a hover card giving its title and status. The details rail lists every relation as its own row. The ones you navigate by are also on the ticket tab itself: <code>deps</code>, <code>links</code> and the derived <code>blocks</code> on a strip at the top, one line unless a ticket carries too many ids to fit, and <code>parent</code> as a crumb in the app header, between <code>board</code> and the open ticket's id.</p>
+<p><code>deps</code> and <code>links</code> are written by <a href="../cli/#relations"><code>kontora dep</code>, <code>kontora undep</code>, <code>kontora link</code> and <code>kontora unlink</code></a>. <code>parent</code> is written by <code>kontora new</code> with a parent flag, by the epic page, or by hand. Only <code>deps</code> reaches the scheduler, through <a href="#dependency-aware-scheduling">dependency-aware scheduling</a>; <code>links</code> and <code>parent</code> are for navigation and for the epic rollup.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="nt">deps</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">kon-a1b2</span><span class="p p-Indicator">]</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="nt">links</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">kon-c3d4</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">kon-e5f6</span><span class="p p-Indicator">]</span>
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="nt">parent</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">kon-9zzz</span>
+</code></pre></div>
+<p>Both the flow form above and a block sequence are read. An id with no ticket file behind it stays on screen as plain text: the frontmatter still points at it, and there is nothing to open.</p>
+<p>Two more relations are derived on read rather than stored, because each edge is written on the other ticket alone. <code>blocks</code> is the reverse of <code>deps</code>: the tickets whose <code>deps</code> name this one. <code>children</code> is the reverse of <code>parent</code>: the tickets whose <code>parent</code> names this one. They are read by scanning every ticket file, so both cover tickets the board hides.</p>
+<p><code>children</code> renders as a sub-ticket tree at the top of the ticket tab, one row per child with its title, id, stage and elapsed time, and a <code>3 of 5</code> rollup counting the children that are <code>done</code>. The tree draws 12 rows before it offers a reveal for the rest, and a click on a row opens that child. A ticket with no children draws no tree.</p>
+<h4 id="epics">Epics<a class="headerlink" href="#epics" title="Permanent link">&para;</a></h4>
+<p>An epic is a ticket file like any other with two differences: <code>kind: epic</code>, and no pipeline. It is not runnable work — no agent, no branch, no worktree, no run history — and the scheduler never enqueues, claims or spawns anything for it, whatever status its file carries. What it holds is the brief for work that spans several tickets: the description, the design, the decisions, the open questions, the success criteria.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="nt">id</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">kon-e7c1</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="nt">kontora</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="nt">kind</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">epic</span>
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="nt">status</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">in_progress</span><span class="w">      </span><span class="c1"># derived, written back by the daemon</span>
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="nt">path</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">~/projects/kontora</span>
+<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="nt">children</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">kon-b12e</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">kon-c04d</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">kon-9b31</span><span class="p p-Indicator">]</span><span class="w">   </span><span class="c1"># order only</span>
+</code></pre></div>
+<p>Create one with <code>kontora new -kind epic</code>, and file a ticket under it with <code>kontora new -parent kon-e7c1</code> or <code>POST /api/tickets/{id}/parent</code>. Both creation paths check the parent the same way <code>POST .../parent</code> does: it has to exist and it has to be an epic. Epics do not nest: setting <code>parent</code> on a ticket whose <code>kind</code> is <code>epic</code> is refused.</p>
+<p>The status is derived from the children and rewritten by the daemon whenever one of them changes, so moving an epic by hand is refused too, and so are the verbs that would move it as a side effect: <code>pause</code>, <code>run</code>, <code>retry</code>, <code>skip</code>, <code>init</code> and <code>schedule</code>. Archiving one is allowed and is terminal: the derivation stops there, and a restore hands the epic back to it. Archived children are ignored. Any child in <code>todo</code>, <code>in_progress</code>, <code>paused</code> or <code>human_review</code> gives <code>in_progress</code>; otherwise every remaining child being terminal with at least one <code>done</code> gives <code>done</code>; every remaining child <code>cancelled</code> gives <code>cancelled</code>; anything else, including no children at all, gives <code>open</code>. An epic that closes itself records a note saying which child landed last. The brief stays editable in every one of those statuses, because no agent ever owns an epic's file.</p>
+<p><code>children</code> orders the sub-tickets and nothing else. Membership is what each child's <code>parent</code> says, so an id here that names no child is ignored on read, and a child the list does not name sorts after every child it does, by <code>created</code>. Dragging a row on the epic page writes this one list, and writes no child file.</p>
+<p>Deleting an epic keeps its work: every child has its <code>parent</code> cleared, and no child file is deleted or archived.</p>
+<h4 id="base-branch">Base branch<a class="headerlink" href="#base-branch" title="Permanent link">&para;</a></h4>
+<p>Kontora normally cuts a ticket's worktree from the repository's default branch. Set <code>base_branch</code> to start it somewhere else:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="nt">base_branch</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">develop</span>
+</code></pre></div>
+<p>The value must name a branch. Kontora looks it up as a local branch first (<code>refs/heads/develop</code>) and then as a remote-tracking branch (<code>refs/remotes/origin/develop</code>), so both <code>develop</code> and <code>origin/develop</code> work. Tags, raw commit SHAs, and revision expressions such as <code>HEAD~1</code> are rejected, even when the name looks like a branch: a <code>v1.0</code> tag does not resolve unless a <code>v1.0</code> branch also exists.</p>
+<p>Kontora never runs <code>git fetch</code>, so <code>base_branch: develop</code> uses whatever the local <code>develop</code> points at right now. A branch that exists only on the remote does not resolve.</p>
+<p>The base applies once, when the worktree is first created. Changing <code>base_branch</code> afterwards does not move, recreate, or rebase the work branch, because that could discard the agent's work. It does change how later human reviews are built: the review diff is measured from the merge-base of the work branch and the resolved base, so a ticket based on <code>develop</code> shows only the agent's commits and not <code>develop</code>'s.</p>
+<p><code>base_branch</code> must not name the ticket's own work branch. That combination fails worktree creation and pauses the ticket. Without the check, git would silently check the base branch out and the agent would commit onto it.</p>
+<p>When <code>base_branch</code> is set through <code>kontora new</code> or <code>POST /api/tickets</code>, Kontora checks that the branch exists before writing the ticket file. The check is skipped for a ticket created with <code>status: open</code>, which is not ready to run and never reaches the repository check. A hand-written ticket or a value set through <code>kontora update</code> is not checked up front either, because the repository at <code>path</code> can change afterwards. Such a value surfaces later: <code>git worktree add</code> fails, the daemon pauses the ticket, and the resolution error is written to <code>last_error</code>.</p>
+<h4 id="notifications">Notifications<a class="headerlink" href="#notifications" title="Permanent link">&para;</a></h4>
+<p><code>notify</code> lists the statuses this ticket asks to be told about. It is opt-in per ticket: without the field nothing is sent, however many channels the config names.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="nt">notify</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">human_review</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">done</span><span class="p p-Indicator">]</span>
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="nt">notify_channels</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">tg</span><span class="p p-Indicator">]</span>
+</code></pre></div>
+<p>Both a single status (<code>notify: done</code>) and a list are read. Any status works, including a <a href="../configuration/#top-level-fields">custom one</a>, plus the pseudo-status <code>waiting</code>.</p>
+<p>Only a transition the daemon decided on its own sends. <code>kontora done &lt;id&gt;</code>, a drag in the dashboard, and any other change a person asked for update what the daemon remembers and send nothing: the point is to hear about work you were not watching, and you were watching when you made the change yourself. A ticket the daemon has not seen before is recorded without sending, so a restart over a ticket already in a listed status is silent.</p>
+<p>A <code>done</code> notification carries the ticket's per-run <code>summary</code>. It fires from the write that ends the run, and <code>final_summary</code> is written up to two minutes later by a separate pass, so it cannot be in the message.</p>
+<p><code>waiting</code> fires when a running agent blocks on a question, once per question rather than once per poll. It works for <code>pi</code> agents only: the marker behind it is published by the pi extension Kontora injects, so <code>notify: [waiting]</code> on a claude ticket never fires. The marker is polled every two seconds, so a question answered faster than that is legitimately never seen.</p>
+<p><code>notify_channels</code> names where this ticket's notifications go. It is resolved as the first non-empty of the ticket's list, its project's, and <code>notifications.default</code>; <code>none</code> in the list silences the ticket while leaving its <code>notify:</code> list readable, and the same channel twice is one message. See <a href="../configuration/#notifications">notifications</a> for the channels themselves.</p>
+<p>Three things that would otherwise make a ticket quiet with no explanation are warned about when the daemon reads it, at startup and on every later edit, and then ignored: a status in <code>notify</code> that nothing reaches, a channel name nothing answers to, and a <code>notify:</code> list that resolves to no channel at all. A malformed <code>notify:</code> value makes the whole ticket unparseable, the same as a malformed <code>deps:</code>.</p>
+<p>Both fields are also editable from the dashboard, in the <code>notify me</code> row of the start-ticket modal and in the <code>notify</code> row of a ticket's details rail. The row asks one question with three answers — off, when it needs me (<code>[paused, human_review, waiting]</code>), when it is finished (<code>[done]</code>) — and puts the full status set behind <code>custom</code>. It states the channel it resolves to rather than asking, until a second channel is configured. The rail row opens only where the API accepts a frontmatter edit, so a running ticket shows its setting and cannot change it: an agent owns the file, and the write would be lost when the run puts it back.</p>
+<p>The API takes them too: <code>notify</code> and <code>notify_channels</code> on <code>POST /api/tickets/{id}/init</code> and <code>PUT /api/tickets/{id}</code>. An absent key leaves the ticket's own field alone and <code>[]</code> removes it. Unlike a hand edit, a request naming a status nothing reaches or a channel nothing answers to is refused with a 400 rather than warned about.</p>
+<h4 id="scheduled-pickup">Scheduled pickup<a class="headerlink" href="#scheduled-pickup" title="Permanent link">&para;</a></h4>
+<p><code>scheduled_at</code> holds the instant an <code>open</code> ticket becomes <code>todo</code>:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="nt">status</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">open</span>
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="nt">scheduled_at</span><span class="p">:</span><span class="w"> </span><span class="s">"2026-09-01T07:00:00Z"</span>
+</code></pre></div>
+<p>Write it with <a href="../cli/#kontora-schedule-ticket_id"><code>kontora schedule</code></a>, with <code>kontora new --at</code>/<code>--after</code>, or from the dashboard — the ticket detail panel, the schedule scope in the command palette, the Start-at field on the new-ticket page, or the phone's schedule sheet. All of them normalize the instant to UTC, second precision, so a schedule set from two time zones compares equal, and all of them refuse an instant already in the past: a mistyped year would otherwise start the agent at once.</p>
+<p>The time itself is written the same way everywhere: an absolute instant (<code>2026-09-01T09:00:00+02:00</code>, or <code>"2026-09-01 09:00"</code> in your own zone) or a delay from now (<code>90m</code>, <code>24h</code>, <code>3d</code>, <code>2w</code>). A date with no time is refused, because which midnight it means depends on the zone reading it.</p>
+<p>The timestamp is a one-time trigger, not a status. A scheduled ticket sits in the Open column and stays out of the ready queue until its deadline, and its card shows the time it starts in your own zone.</p>
+<p>At or after that instant the daemon writes <code>status: todo</code> and removes <code>scheduled_at</code> in one save, then hands the ticket to the ordinary pickup rules. It does not bypass them:</p>
+<ul>
+<li>With <a href="../configuration/#auto_pick_up"><code>auto_pick_up: false</code></a> the ticket becomes <code>todo</code> and waits there for an explicit <code>kontora run</code>.</li>
+<li>An unresolved dependency keeps it out of the queue, and <a href="#dependency-aware-scheduling">dependency-aware scheduling</a> queues it once the dependency closes.</li>
+</ul>
+<p>The daemon rebuilds its wake-ups from the ticket files at startup, so a schedule survives a restart. One whose deadline passed while the daemon was down is promoted on the first pass after the initial scan.</p>
+<p>A promotion is deferred, not lost, while a run or a Plannotator session owns the ticket; it happens once that ends. A value the RFC 3339 parser rejects is left alone and shown as it stands, so a hand-edited typo leaves the ticket open rather than starting it at an instant nobody asked for.</p>
+<p><code>kontora run</code> on a scheduled ticket removes the timestamp and sets <code>status: todo</code> in the same save, and queues the ticket even with <code>auto_pick_up: false</code>. Every other lifecycle move off <code>open</code> drops the timestamp too: <code>retry</code>, <code>skip</code>, <code>move</code>, an <code>init</code> that queues the ticket, and parking the ticket for an <a href="../configuration/#plannotator">annotation run</a>. Each of them has already answered the question the schedule was asking. An uploaded <code>.md</code> file loses any <code>scheduled_at</code> it carries, for the same reason the upload is clamped to <code>open</code>: it arrives as a draft, not as a run request.</p>
+<h3 id="daemon-managed-fields">Daemon-managed fields<a class="headerlink" href="#daemon-managed-fields" title="Permanent link">&para;</a></h3>
+<p>These are set and updated by the daemon as the ticket progresses through its pipeline. Do not edit them manually while the daemon is running.</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>kontora</code></td>
+<td>Boolean. When <code>true</code>, the daemon may manage and execute this ticket. Tickets without <code>kontora: true</code> are still listed, but are not auto-picked up and cannot be run/retried/skipped until initialized. Set by <code>kontora init</code>.</td>
+</tr>
+<tr>
+<td><code>stage</code></td>
+<td>Current pipeline stage name. Set to the first stage on pickup.</td>
+</tr>
+<tr>
+<td><code>attempt</code></td>
+<td>Retry counter for the current stage. Reset to 0 on advance/back.</td>
+</tr>
+<tr>
+<td><code>started_at</code></td>
+<td>When the current stage started.</td>
+</tr>
+<tr>
+<td><code>completed_at</code></td>
+<td>When the ticket finished (status became <code>done</code>).</td>
+</tr>
+<tr>
+<td><code>branch</code></td>
+<td>Git worktree branch. Set it before pickup to choose the name. If empty, the default is <code>&lt;prefix&gt;/&lt;title-slug&gt;-&lt;ticket-id&gt;</code>; <a href="../configuration/#branch-naming"><code>branch_naming</code></a> mode <code>off</code> uses <code>&lt;prefix&gt;/&lt;ticket-id&gt;</code>. The daemon stores a slug name before worktree creation and stores the ID-derived name after worktree creation succeeds.</td>
+</tr>
+<tr>
+<td><code>history</code></td>
+<td>List of completed stage records.</td>
+</tr>
+<tr>
+<td><code>last_error</code></td>
+<td>Error message from the last failed stage run.</td>
+</tr>
+<tr>
+<td><code>summary</code></td>
+<td>Summary of the stage run that ended most recently: the text the agent wrote with <code>kontora summary</code>, or its final session message as a fallback. Cleared when a new stage starts; each stage keeps its own copy on its <code>history</code> entry.</td>
+</tr>
+<tr>
+<td><code>final_summary</code></td>
+<td>Summary of the whole ticket, written after a run ends the pipeline successfully or a rework run succeeds, and at least two runs recorded a summary. The agent that ran that stage writes it from the ticket text and every recorded run summary, in one non-interactive pass with no tools and a two-minute timeout. It opens with a few sentences on what the ticket asked for, then describes what was done; a ticket whose body says nothing beyond its title gets the description alone. It is not a copy of any run: <code>summary</code> and the <code>history</code> entries keep their own text. Cleared when a new run starts. Generation is best effort: a failure leaves the field empty and is reported in the daemon log, so a ticket can finish without it.</td>
+</tr>
+<tr>
+<td><code>claimed_by</code></td>
+<td>The daemon <a href="../configuration/"><code>instance_name</code></a> that last picked the ticket up. Written in the same update that sets <code>status: in_progress</code>. Consulted only while the ticket is <code>in_progress</code>; a stale value on a <code>todo</code> or <code>done</code> ticket is ignored.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="custom-fields">Custom fields<a class="headerlink" href="#custom-fields" title="Permanent link">&para;</a></h3>
+<p>Any field not listed above is preserved through round-trips. The daemon will not overwrite or remove fields it doesn't recognize:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="nn">---</span>
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="nt">id</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">poi-q88f</span>
+<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="nt">status</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">todo</span>
+<a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="nt">pipeline</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">default</span>
+<a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ticket</span>
+<a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a><span class="nt">priority</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2</span>
+<a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a><span class="nt">tags</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">ui</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">backend</span><span class="p p-Indicator">]</span>
+<a id="__codelineno-6-8" name="__codelineno-6-8" href="#__codelineno-6-8"></a><span class="nn">---</span>
+</code></pre></div>
+<h2 id="body">Body<a class="headerlink" href="#body" title="Permanent link">&para;</a></h2>
+<p>Everything after the closing <code>---</code> is the ticket body. It's standard markdown.</p>
+<p>The first <code># Heading</code> is treated as the ticket title and is available in prompt templates as <code>{{ .Ticket.Title }}</code>. The full body is available as <code>{{ .Ticket.Description }}</code>.</p>
+<h2 id="status-lifecycle">Status lifecycle<a class="headerlink" href="#status-lifecycle" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>open → todo → in_progress → done ──────→ archived
+<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>                   ↓                       ↑
+<a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a>            paused / cancelled ────────────┘
+</code></pre></div>
+<table>
+<thead>
+<tr>
+<th>Status</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>open</code></td>
+<td>Drafted but not ready for the daemon to pick up. A <a href="#scheduled-pickup"><code>scheduled_at</code></a> stamp moves it to <code>todo</code> at a set time.</td>
+</tr>
+<tr>
+<td><code>todo</code></td>
+<td>Ready for the daemon. The scheduler picks it up in creation order, once its <code>deps</code> are resolved.</td>
+</tr>
+<tr>
+<td><code>in_progress</code></td>
+<td>An agent is currently working on it.</td>
+</tr>
+<tr>
+<td><code>paused</code></td>
+<td>Stopped by a failure policy or by the user. Set <code>status: todo</code> to resume.</td>
+</tr>
+<tr>
+<td><code>human_review</code></td>
+<td>Parked for a person to look at, by a stage policy or <code>kontora move</code>. The agent's work is finished, so this releases the tickets that depend on it.</td>
+</tr>
+<tr>
+<td><code>done</code></td>
+<td>All pipeline stages completed successfully.</td>
+</tr>
+<tr>
+<td><code>cancelled</code></td>
+<td>Manually cancelled by the user.</td>
+</tr>
+<tr>
+<td><code>archived</code></td>
+<td>An old closed ticket, hidden from the main views. Terminal; still on disk.</td>
+</tr>
+<tr>
+<td><code>closed</code></td>
+<td>Read-only compatibility. Tickets written by the external ticket CLI carry it. Kontora reads it as closed: it releases dependents, <code>kontora ls --closed</code> shows it, and the archive sweep accepts it. No command writes it.</td>
+</tr>
+</tbody>
+</table>
+<p>The daemon only picks up tickets that have both <code>kontora: true</code> and <code>status: todo</code>. A non-Kontora ticket can still appear in any status column, but Kontora will not start or resume work on it until you initialize it. To pause a running Kontora ticket, use <code>kontora pause &lt;id&gt;</code> or set <code>status: paused</code> in the file — the daemon will detect the change and stop the agent.</p>
+<h2 id="dependency-aware-scheduling">Dependency-aware scheduling<a class="headerlink" href="#dependency-aware-scheduling" title="Permanent link">&para;</a></h2>
+<p>The daemon starts an agent for a <code>kontora: true</code> ticket in <code>todo</code> only when every id in its <code>deps</code> names a ticket that no longer holds work: <code>human_review</code>, <code>done</code>, <code>cancelled</code>, <code>archived</code>, or the legacy <code>closed</code> that tickets from the external ticket CLI carry. <code>human_review</code> releases dependents because the agent has finished and only a person's verdict is left; the review can still send the ticket back, and a dependent that is already running then keeps going. Every other status blocks, including a custom one. So does an id with no ticket file, because nothing on disk says whether that work is finished.</p>
+<p>Readiness is derived on every read. It is not a status and is not written to any file: there is no <code>blocked</code> status, and a ticket waiting on a dependency stays <code>todo</code>.</p>
+<p>The queue reacts to the whole store, not just to edits of the waiting ticket:</p>
+<ul>
+<li>Closing a dependency queues every ready ticket that waited on it, with no further edit to their files.</li>
+<li>Adding a dependency to a queued ticket drops it from the queue again. A ticket that is already running is left alone: an edge added mid-run does not interrupt it.</li>
+<li>Deleting a resolved dependency blocks its dependents again, because the id now names nothing.</li>
+<li>Readiness is checked twice, once when the ticket joins the queue and once when the agent is about to be spawned, which closes the gap between the two.</li>
+</ul>
+<p>A cycle never starts an agent. Every ticket on it waits on another ticket that is not closed, so none of them is ever ready. <code>kontora dep</code> refuses to create a new cycle, but one that arrived through hand-edited files or file sync resolves this way rather than by an error.</p>
+<p>Ready tickets run oldest <code>created</code> first. Two tickets created at the same time run in id order, so the queue is deterministic.</p>
+<h2 id="running-on-multiple-machines">Running on multiple machines<a class="headerlink" href="#running-on-multiple-machines" title="Permanent link">&para;</a></h2>
+<p>When a <code>tickets_dir</code> is synced across machines (iCloud, Syncthing, ...), two daemons can see the same tickets. File sync is eventually consistent, so there is no cross-machine lock; instead each daemon records its <a href="../configuration/"><code>instance_name</code></a> in <code>claimed_by</code> when it picks a ticket up, and consults that claim before acting on an <code>in_progress</code> ticket:</p>
+<ul>
+<li><strong>Crash recovery</strong> on startup resets an <code>in_progress</code> ticket back to <code>todo</code> only when <code>claimed_by</code> is empty or matches this daemon. A ticket claimed by another instance is left running; starting a second daemon no longer steals or kills the first's work.</li>
+<li><strong>During a run</strong>, if a foreign claim arrives through sync, the daemon cancels its own agent and leaves the file untouched. The losing worktree is kept (it may hold unpushed commits).</li>
+<li><strong>Both sides can briefly claim</strong> the same <code>todo</code> ticket within the sync window. Once sync settles, one claim wins and the other daemon yields; a ticket left <code>in_progress</code> with a self-claim but no running agent is reset to <code>todo</code> and re-enqueued.</li>
+</ul>
+<p>There is no automatic takeover of a claim by claim age or a heartbeat. If the owning machine goes offline mid-run, its tickets stay <code>in_progress</code> until that daemon restarts or someone manually sets <code>status: todo</code>. Two machines that share a hostname must set <code>instance_name</code> explicitly, or the protection cannot tell them apart.</p>
+<p><code>archived</code> is a terminal built-in status for closed tickets. Archived tickets are hidden from <code>kontora ls</code> (including <code>--closed</code>), the TUI, and the WebUI board, but their markdown files are kept on disk. The daemon never enqueues an archived ticket, and a live transition to <code>archived</code> stops any running agent and cleans up its worktree, just like <code>done</code>/<code>cancelled</code>. It cannot be set as a custom status, and <code>move</code> still refuses it in both directions: archiving and restoring have their own verbs.</p>
+<p>A ticket reaches <code>archived</code> through the <code>kontora archive</code> sweep (below), through the WebUI's Archive item on a <code>done</code> or <code>cancelled</code> ticket's card and detail menus, or by editing a file's <code>status</code> field. The sweep and the WebUI write the same four fields, so a swept ticket and one archived from the UI are the same thing. A file edited by hand carries only what was typed into it, and the restore fallback below is what covers a ticket that arrived in <code>archived</code> without them:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="nt">status</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">archived</span>
+<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="nt">archived_from</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">done</span><span class="w">      </span><span class="c1"># the closed status held before archiving</span>
+<a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="nt">archived_at</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2026-08-26T09:12:00Z</span>
+<a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a><span class="nt">archived_by</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">web</span><span class="w">         </span><span class="c1"># "web" or "sweep"</span>
+<a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a><span class="nt">archive_note</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">superseded by kon-244</span>
+</code></pre></div>
+<p>Restoring is the WebUI's Archive view, from a row or from the open ticket: it writes <code>archived_from</code> back into <code>status</code> and removes all four fields. A ticket archived before those fields existed, or one whose <code>archived_from</code> names a status that is no longer a board column, restores to <code>done</code> rather than staying stranded.</p>
+<h2 id="archiving-old-tickets">Archiving old tickets<a class="headerlink" href="#archiving-old-tickets" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a>kontora<span class="w"> </span>archive<span class="w"> </span>--days<span class="w"> </span><span class="m">30</span><span class="w">            </span><span class="c1"># archive done/cancelled tickets untouched for 30+ days</span>
+<a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a>kontora<span class="w"> </span>archive<span class="w"> </span>--days<span class="w"> </span><span class="m">30</span><span class="w"> </span>--yes<span class="w">      </span><span class="c1"># skip the confirmation prompt</span>
+<a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a>kontora<span class="w"> </span>archive<span class="w"> </span>--days<span class="w"> </span><span class="m">30</span><span class="w"> </span>--dry-run<span class="w">  </span><span class="c1"># list what would be archived, write nothing</span>
+<a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a>kontora<span class="w"> </span>archive<span class="w"> </span>--days<span class="w"> </span><span class="m">30</span><span class="w"> </span>--path<span class="w"> </span>~/projects/kontora<span class="w">  </span><span class="c1"># limit the run to one repository</span>
+<a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a>kontora<span class="w"> </span>archive<span class="w"> </span>--days<span class="w"> </span><span class="m">30</span><span class="w"> </span>--project<span class="w"> </span>kontora<span class="w">          </span><span class="c1"># the same, by configured project name</span>
+<a id="__codelineno-9-6" name="__codelineno-9-6" href="#__codelineno-9-6"></a>kontora<span class="w"> </span>archive<span class="w"> </span>--days<span class="w"> </span><span class="m">7</span><span class="w"> </span>--status<span class="w"> </span>cancelled<span class="w">          </span><span class="c1"># sweep cancelled tickets sooner than done ones</span>
+</code></pre></div>
+<p><code>kontora archive --days N</code> marks every <code>done</code>, <code>cancelled</code> or legacy <code>closed</code> ticket whose markdown file was last modified at or before <code>now - N days</code> as <code>archived</code>. The cutoff uses the file's modification time (the same value the WebUI shows as "updated"), because cancelled tickets have no <code>completed_at</code>. <code>--days</code> is required and must be a positive number.</p>
+<p>Every run first prints a table of the matching tickets, with the ID, the closed status, the title taken from the ticket's first markdown heading, and the repository path. <code>--dry-run</code> stops there and changes nothing. Otherwise the command asks <code>Archive N tickets? [y/N]</code> and archives only on <code>y</code> or <code>yes</code>; any other answer leaves every file alone. <code>-y</code>/<code>--yes</code> archives without asking. When stdin is not a terminal, the prompt cannot be answered, so a run that would write files fails and asks for <code>--yes</code> instead.</p>
+<p><code>--path</code> limits the run to tickets whose <code>path</code> field is that repository. Both sides are compared after tilde expansion and cleaning, so <code>~/projects/kontora</code>, the same directory in absolute form, and a trailing slash all select the same tickets. Only the complete path matches: a ticket pointing at a subdirectory of the given path is left alone, as is a ticket with no <code>path</code> field.</p>
+<p><code>--project NAME</code> selects the same tickets through the <code>path</code> of a project in the config <code>projects</code> map, so the path does not have to be typed. A name that is not configured is an error, because a typo would otherwise look like a run where nothing was old enough. <code>--path</code> and <code>--project</code> cannot be combined.</p>
+<p><code>--status</code> narrows the run to one closed status: <code>done</code>, <code>cancelled</code>, or the legacy <code>closed</code> that tickets from the external ticket CLI carry. Any other value is rejected. Without it all three are archived. The sweep only ever writes <code>archived</code>; no command writes <code>closed</code>, and every ticket it archives gets the four archive fields above, with <code>archived_by: sweep</code>.</p>
+<h2 id="history">History<a class="headerlink" href="#history" title="Permanent link">&para;</a></h2>
+<p>The daemon appends a record to <code>history</code> after each stage completes:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="nt">history</span><span class="p">:</span>
+<a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">stage</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">plan</span>
+<a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a><span class="w">    </span><span class="nt">agent</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">claude-opus</span>
+<a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a><span class="w">    </span><span class="nt">model</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">haiku</span>
+<a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a><span class="w">    </span><span class="nt">effort</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">low</span>
+<a id="__codelineno-10-6" name="__codelineno-10-6" href="#__codelineno-10-6"></a><span class="w">    </span><span class="nt">exit_code</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0</span>
+<a id="__codelineno-10-7" name="__codelineno-10-7" href="#__codelineno-10-7"></a><span class="w">    </span><span class="nt">started_at</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2026-03-01T10:01:00Z</span>
+<a id="__codelineno-10-8" name="__codelineno-10-8" href="#__codelineno-10-8"></a><span class="w">    </span><span class="nt">completed_at</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2026-03-01T10:05:00Z</span>
+<a id="__codelineno-10-9" name="__codelineno-10-9" href="#__codelineno-10-9"></a><span class="w">    </span><span class="nt">session_kind</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">claude</span>
+<a id="__codelineno-10-10" name="__codelineno-10-10" href="#__codelineno-10-10"></a><span class="w">    </span><span class="nt">session_ref</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2f1e0c7a-9b3e-4d21-8f77-0c1a5e6b2d44</span>
+<a id="__codelineno-10-11" name="__codelineno-10-11" href="#__codelineno-10-11"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">stage</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">code</span>
+<a id="__codelineno-10-12" name="__codelineno-10-12" href="#__codelineno-10-12"></a><span class="w">    </span><span class="nt">agent</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">claude-sonnet</span>
+<a id="__codelineno-10-13" name="__codelineno-10-13" href="#__codelineno-10-13"></a><span class="w">    </span><span class="nt">exit_code</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1</span>
+<a id="__codelineno-10-14" name="__codelineno-10-14" href="#__codelineno-10-14"></a><span class="w">    </span><span class="nt">started_at</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2026-03-01T10:06:00Z</span>
+<a id="__codelineno-10-15" name="__codelineno-10-15" href="#__codelineno-10-15"></a><span class="w">    </span><span class="nt">completed_at</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2026-03-01T10:15:00Z</span>
+<a id="__codelineno-10-16" name="__codelineno-10-16" href="#__codelineno-10-16"></a><span class="w">    </span><span class="nt">session_kind</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">pi</span>
+<a id="__codelineno-10-17" name="__codelineno-10-17" href="#__codelineno-10-17"></a><span class="w">    </span><span class="nt">session_ref</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">pi-sessions/code/01JC9F3K7Q.jsonl</span>
+</code></pre></div>
+<p><code>model</code> and <code>effort</code> are what the agent ran with for that run, resolved from the
+stage override, then the agent's own key, then the flags in the agent's <code>args</code>.
+An absent key means nothing selected one and the agent used its CLI's own
+default. They are not what the agent reported running as: an agent given
+<code>model: opus</code> can report <code>claude-opus-4-6</code>.</p>
+<p><code>session_kind</code> and <code>session_ref</code> name the agent's own session JSONL for that
+run. <code>kontora sessions</code> turns them back into paths; see
+<a href="../cli/#kontora-sessions-flags-ticket_id">the CLI reference</a>. Both are absent
+when the run wrote no session Kontora can point at, which is every run by an
+agent that is neither Claude nor pi, and every run recorded before the two
+fields existed.</p>
+<p>The reference is an identifier rather than a path, because a path would name a
+file on one machine and ticket files travel between them. For <code>claude</code> it is the
+session UUID Kontora minted, resolved against
+<code>$CLAUDE_CONFIG_DIR/projects/*/&lt;uuid&gt;.jsonl</code>; for <code>pi</code> it is the file's path
+relative to <code>&lt;logs_dir&gt;/&lt;ticket-id&gt;</code>, because pi names its own file. Read on the
+wrong machine, an identifier visibly resolves to nothing, while an absolute path
+often points at a real file holding another run's bytes.</p>
+<p><code>session_kind</code> is recorded rather than derived from <code>agent</code>, because <code>agent</code> is a
+config name and the config that gave it a kind can be edited or gone by the time
+the row is read.</p>
+<h2 id="notes">Notes<a class="headerlink" href="#notes" title="Permanent link">&para;</a></h2>
+<p>Use <code>kontora note &lt;ticket-id&gt; "message"</code> to append a note under a <code>## Notes</code> section in the body. This is how you communicate with the agent between stages — the next stage's prompt can include <code>{{ .Ticket.Description }}</code> to read the full body including notes. The web UI has a <code>notes</code> tab on the ticket page for the same thing.</p>
+<p>A note is a bold byline followed by its text. The byline is a <code>·</code>-separated field list: timestamp, author, note id, then optional flags.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a>## Notes
+<a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a>
+<a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a>**2026-03-06T12:00:00Z · alexander · q88f**
+<a id="__codelineno-11-4" name="__codelineno-11-4" href="#__codelineno-11-4"></a>
+<a id="__codelineno-11-5" name="__codelineno-11-5" href="#__codelineno-11-5"></a>Use the existing search index, don't create a new one.
+<a id="__codelineno-11-6" name="__codelineno-11-6" href="#__codelineno-11-6"></a>
+<a id="__codelineno-11-7" name="__codelineno-11-7" href="#__codelineno-11-7"></a>**2026-03-06T12:04:10Z · claude · a1b2 · re:q88f**
+<a id="__codelineno-11-8" name="__codelineno-11-8" href="#__codelineno-11-8"></a>
+<a id="__codelineno-11-9" name="__codelineno-11-9" href="#__codelineno-11-9"></a>Done — reusing internal/search.
+<a id="__codelineno-11-10" name="__codelineno-11-10" href="#__codelineno-11-10"></a>
+<a id="__codelineno-11-11" name="__codelineno-11-11" href="#__codelineno-11-11"></a>**2026-03-06T12:30:00Z · kontora · n3x0 · edited**
+<a id="__codelineno-11-12" name="__codelineno-11-12" href="#__codelineno-11-12"></a>
+<a id="__codelineno-11-13" name="__codelineno-11-13" href="#__codelineno-11-13"></a>paused: stage-end hook failed
+</code></pre></div>
+<p>The id is 4 lowercase alphanumerics, unique within the ticket, and it is what the <a href="../api/#notes">note endpoints</a> address. <code>re:&lt;id&gt;</code> makes the note a reply to that id; one level only, so a reply cannot be replied to, and deleting a note deletes its replies with it. <code>edited</code> marks a note whose text was replaced.</p>
+<p>The author is a plain name and cannot contain <code>·</code>, a newline or <code>**</code>. Kontora signs its own notes <code>kontora</code>, an agent signs with its configured name from <code>$KONTORA_AGENT</code>, and a person signs with the <a href="../configuration/#author"><code>author</code></a> config field. A ticket that pauses gets a <code>kontora</code> note carrying the reason, which is why a pause shows up in the conversation rather than as a lifecycle row.</p>
+<p>A byline that does not match this grammar is left alone: <code>**2026-03-06T12:00:00Z**</code> written before this format, or anything hand-typed, still parses, with no author and no id. Such a note is addressed by position (<code>#0</code>, <code>#1</code>) until something acts on it, at which point it is minted a real id in the same write.</p>
+<p>Reactions are not in the body. They live in <code>&lt;tickets_dir&gt;/&lt;ticket-id&gt;.notes.json</code> beside the ticket file, so the body stays readable to the agent that receives it in a stage prompt. A ticket copied without that file keeps its conversation and loses its reactions.</p>
+<h2 id="ticket-id-format">Ticket ID format<a class="headerlink" href="#ticket-id-format" title="Permanent link">&para;</a></h2>
+<p>IDs are <code>&lt;prefix&gt;-&lt;4 random alphanumeric chars&gt;</code> (e.g., <code>poi-q88f</code>).</p>
+<p>The prefix comes from the directory name (the ticket's <code>path</code> field): the first alphanumeric character of each <code>-</code> or <code>_</code> separated segment, lowercased and joined, with no length limit. A name that yields fewer than two of them uses its own first 3 alphanumerics instead, so a single-word repository still gets a readable prefix.</p>
+<table>
+<thead>
+<tr>
+<th>Directory</th>
+<th>Prefix</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>astra-l</code></td>
+<td><code>al</code></td>
+</tr>
+<tr>
+<td><code>grafana-assistant-app</code></td>
+<td><code>gaa</code></td>
+</tr>
+<tr>
+<td><code>deployment_tools</code></td>
+<td><code>dt</code></td>
+</tr>
+<tr>
+<td><code>hackathon-17-haimdall-sigil-sdk</code></td>
+<td><code>h1hss</code></td>
+</tr>
+<tr>
+<td><code>kontora</code></td>
+<td><code>kon</code></td>
+</tr>
+<tr>
+<td><code>sigil</code></td>
+<td><code>sig</code></td>
+</tr>
+</tbody>
+</table>
+<p>A project can pin a prefix instead of deriving one, with <a href="../configuration/#projects"><code>prefix</code></a> in its config entry.</p>
+<p>CLI commands accept prefix matches: <code>kontora done kon</code> resolves to the ticket with ID <code>kon-q88f</code> if it's the only match.</p>
+<h2 id="creating-tickets">Creating tickets<a class="headerlink" href="#creating-tickets" title="Permanent link">&para;</a></h2>
+<p><strong>With the CLI:</strong></p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a>kontora<span class="w"> </span>new<span class="w"> </span><span class="s2">"Fix the search index"</span><span class="w">                              </span><span class="c1"># uses current git root</span>
+<a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a>kontora<span class="w"> </span>new<span class="w"> </span>--path<span class="w"> </span>~/projects/kontora<span class="w"> </span><span class="s2">"Fix the search index"</span><span class="w">      </span><span class="c1"># explicit path</span>
+</code></pre></div>
+<p><strong>Manually:</strong> Create a <code>.md</code> file in <code>tickets_dir</code> with the frontmatter above. The daemon watches the directory and lists valid ticket files with an <code>id</code>. It only picks up new <code>status: todo</code> tickets automatically when they also have <code>kontora: true</code>; otherwise they remain visible as <code>not a kontora ticket</code> until initialized.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.instant", "navigation.sections", "content.code.copy", "toc.follow"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+    
+  </body>
+</html>

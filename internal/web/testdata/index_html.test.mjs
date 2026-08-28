@@ -5321,7 +5321,7 @@ test("index.html renders every settings section the rail lists", () => {
   const rail = [...app.matchAll(/\{ key: '([a-z]+)', label:/g)].map((m) => m[1]);
   assert.deepEqual(rail, [
     "general", "environment", "agents", "stages", "pipelines",
-    "projects", "web", "assistant", "plannotator", "statuses", "display",
+    "projects", "web", "assistant", "plannotator", "notifications", "statuses", "display",
   ]);
   for (const key of rail) {
     assert.match(html, new RegExp(`x-show="settingsSection === '${key}'"`), key);
@@ -5410,6 +5410,7 @@ test("the rail summarizes each section from the loaded config", async () => {
       web: "127.0.0.1:8080 · no token",
       assistant: "disabled",
       plannotator: "review + annotate",
+      notifications: "no channels",
       statuses: "7 built-in · 0 custom",
       display: "badges, dark theme",
     },
@@ -5687,6 +5688,337 @@ test("every settings section is in exactly one rail group", () => {
 
   assert.deepEqual(grouped.slice().sort(), [...state.settingsSections].map((s) => s.key).sort());
   assert.equal(new Set(grouped).size, grouped.length);
+});
+
+const SETTINGS_NOTIFY_FIXTURE = `tickets_dir: ~/org/tickets
+
+notifications:
+  # where a ticket can reach me
+  enabled: true
+  timeout: 10s
+  attempts: 3
+  default:
+    - tg-me
+  channels:
+    tg-me:
+      type: telegram
+      secret_env: KONTORA_TG_TOKEN
+      chat_id: "123456"
+    ops:
+      type: webhook
+      url: https://example.com/hooks/kontora
+      method: POST
+      headers:
+        X-Kontora: board
+`;
+
+test("a channel written under Alpine's proxy reaches the daemon as YAML", async () => {
+  // The document cannot be read back off the component while it is being
+  // written: a node stored through the reactive Proxy fails yaml's own isMap
+  // check, and stringify then throws instead of writing the file.
+  const daemon = settingsFetch({ raw: SETTINGS_NOTIFY_FIXTURE });
+  const state = settingsReactive(loadKontoraState({ fetch: daemon.fetch }));
+  state._settingsYAML = await import(yamlPath);
+  await state._settingsParse(SETTINGS_NOTIFY_FIXTURE);
+
+  state.settingsNewChannelName = "mm";
+  state.settingsNotifAddChannel();
+  const ch = state.settingsNotifChannel("mm");
+  ch.type = "webhook";
+  ch.url = "https://example.com/mm";
+  state.settingsNewHeaderKey.mm = "X-Token";
+  state.settingsNotifAddHeader("mm");
+  ch.headers["X-Token"] = "abc";
+
+  assert.equal(await state.saveSettings(), true);
+  const sent = JSON.parse(daemon.puts()[0].init.body).content;
+  assert.match(sent, /^ {4}mm:\n {6}type: webhook\n {6}url: https:\/\/example\.com\/mm\n {6}headers:\n {8}X-Token: abc$/m);
+  assert.equal(state.settingsDirty(), false);
+});
+
+test("the notifications block round-trips with no edits", async () => {
+  const state = await settingsState(SETTINGS_NOTIFY_FIXTURE);
+
+  assert.deepEqual([...state.settingsChangedPaths()], []);
+  assert.equal(await state._settingsWrite(), SETTINGS_NOTIFY_FIXTURE);
+});
+
+test("the notifications model reads the block as the form holds it", async () => {
+  const state = await settingsState(SETTINGS_NOTIFY_FIXTURE);
+  const n = state.settingsConfig.notifications;
+
+  assert.equal(n.enabled, true);
+  assert.deepEqual([n.timeout, n.attempts, n.backoff], ["10s", "3", ""]);
+  assert.deepEqual([...n.default], ["tg-me"]);
+  assert.deepEqual([...state.settingsNotifChannelNames()], ["ops", "tg-me"]);
+  assert.equal(state.settingsNotifChannel("tg-me").chat_id, "123456");
+  assert.deepEqual({ ...state.settingsNotifChannel("ops").headers }, { "X-Kontora": "board" });
+  // Read off the type rather than stored: a webhook draws url, method and
+  // headers, and nothing a telegram channel would.
+  assert.equal(state.settingsNotifHasField("ops", "url"), true);
+  assert.equal(state.settingsNotifHasField("ops", "chat_id"), false);
+  assert.equal(state.settingsNotifTarget("ops"), "POST https://example.com/hooks/kontora");
+  assert.equal(state.settingsNotifSecretLabel("tg-me"), "secret from $KONTORA_TG_TOKEN");
+});
+
+test("an absent notifications block reads as enabled with nothing configured", async () => {
+  const state = await settingsState(SETTINGS_BARE_FIXTURE);
+
+  assert.equal(state.settingsConfig.notifications.enabled, true);
+  assert.deepEqual([...state.settingsNotifChannelNames()], []);
+  // The default is what applyDefaults would supply, so it is not an edit and
+  // nothing is written for it.
+  assert.deepEqual([...state.settingsChangedPaths()], []);
+  assert.equal(state.settingsSectionSummary("notifications"), "no channels");
+});
+
+test("every notifications edit is one the daemon only picks up on a restart", async () => {
+  const state = await settingsState(SETTINGS_NOTIFY_FIXTURE);
+
+  state.settingsConfig.notifications.attempts = "5";
+  state.settingsNotifChannel("ops").url = "https://example.com/hooks/other";
+  assert.equal(state.settingsRestartPending(), 2);
+  assert.equal(state.settingsIsRestartOnly("notifications.channels.ops"), true);
+});
+
+test("editing the notifications block writes only the keys that changed", async () => {
+  const state = await settingsState(SETTINGS_NOTIFY_FIXTURE);
+
+  state.settingsConfig.notifications.enabled = false;
+  state.settingsConfig.notifications.attempts = "5";
+  state.settingsConfig.notifications.backoff = "2s";
+  const out = await state._settingsWrite();
+
+  assert.match(out, /^ {2}enabled: false$/m);
+  assert.match(out, /^ {2}attempts: 5$/m);
+  assert.match(out, /^ {2}backoff: 2s$/m);
+  // The comment inside the block, and the keys nothing touched, survive.
+  assert.match(out, /^ {2}# where a ticket can reach me$/m);
+  assert.match(out, /^ {2}timeout: 10s$/m);
+});
+
+test("a channel added in the form is written whole", async () => {
+  const state = await settingsState(SETTINGS_NOTIFY_FIXTURE);
+
+  state.settingsNewChannelName = "mm";
+  state.settingsNotifAddChannel();
+  const ch = state.settingsNotifChannel("mm");
+  ch.type = "mattermost";
+  ch.secret_file = "~/.config/kontora/mm-url";
+  ch.channel = "kontora";
+  state.settingsNotifToggleDefault("mm");
+  const out = await state._settingsWrite();
+
+  assert.match(out, /^ {4}mm:\n {6}type: mattermost\n {6}secret_file: ~\/\.config\/kontora\/mm-url\n {6}channel: kontora$/m);
+  assert.match(out, /^ {2}default:\n {4}- tg-me\n {4}- mm$/m);
+  assert.equal(state.settingsNewChannelName, "");
+});
+
+test("a removed channel takes its whole node and its place in the default list", async () => {
+  const state = await settingsState(SETTINGS_NOTIFY_FIXTURE);
+
+  state.settingsNotifRemoveChannel("tg-me");
+  const out = await state._settingsWrite();
+
+  assert.equal(out.includes("tg-me"), false);
+  // Not an empty mapping left behind: config.Validate rejects a channel with
+  // no type, so a save that left `tg-me: {}` could never be reloaded.
+  assert.equal(/tg-me:\s*\{\}/.test(out), false);
+  // An emptied list is the key going, not `default: []` left behind.
+  assert.equal(out.includes("default"), false);
+  assert.match(out, /^ {4}ops:$/m);
+});
+
+test("a header added and one removed are written entry by entry", async () => {
+  const state = await settingsState(SETTINGS_NOTIFY_FIXTURE);
+
+  state.settingsNewHeaderKey.ops = "X-Token";
+  state.settingsNotifAddHeader("ops");
+  state.settingsNotifChannel("ops").headers["X-Token"] = "abc";
+  state.settingsNotifRemoveHeader("ops", "X-Kontora");
+  const out = await state._settingsWrite();
+
+  assert.match(out, /^ {8}X-Token: abc$/m);
+  assert.equal(out.includes("X-Kontora"), false);
+  assert.equal(state.settingsNewHeaderOpen.ops, false);
+});
+
+test("switching a channel's type drops the fields the new type does not use", async () => {
+  const state = await settingsState(SETTINGS_NOTIFY_FIXTURE);
+
+  state.settingsNotifChannel("tg-me").type = "webhook";
+  state.settingsNotifChannel("tg-me").url = "https://example.com/tg";
+  const out = await state._settingsWrite();
+
+  assert.match(out, /^ {4}tg-me:\n {6}type: webhook\n {6}secret_env: KONTORA_TG_TOKEN\n {6}url: https:\/\/example\.com\/tg$/m);
+  assert.equal(out.includes("chat_id"), false);
+  // The value is kept in the form, so switching back does not lose it.
+  assert.equal(state.settingsNotifChannel("tg-me").chat_id, "123456");
+});
+
+test("picking one secret source clears the other", async () => {
+  const state = await settingsState(SETTINGS_NOTIFY_FIXTURE);
+
+  assert.equal(state.settingsNotifSecretMode("tg-me"), "env");
+  // A webhook with no credential shows none rather than an empty env var row.
+  assert.equal(state.settingsNotifSecretMode("ops"), "none");
+  state.settingsNotifSetSecretMode("tg-me", "file");
+  state.settingsNotifChannel("tg-me").secret_file = "~/.config/kontora/tg";
+  const out = await state._settingsWrite();
+
+  assert.equal(state.settingsNotifChannel("tg-me").secret_env, "");
+  assert.equal(out.includes("secret_env"), false);
+  assert.match(out, /^ {6}secret_file: ~\/\.config\/kontora\/tg$/m);
+});
+
+test("the default picker and the opt-out clear each other", async () => {
+  const state = await settingsState(SETTINGS_NOTIFY_FIXTURE);
+  const n = state.settingsConfig.notifications;
+
+  assert.deepEqual([...state.settingsNotifDefaultChoices()], ["ops", "tg-me", "none"]);
+  state.settingsNotifToggleDefault("ops");
+  assert.deepEqual([...n.default], ["tg-me", "ops"]);
+  state.settingsNotifToggleDefault("none");
+  assert.deepEqual([...n.default], ["none"]);
+  state.settingsNotifToggleDefault("ops");
+  assert.deepEqual([...n.default], ["ops"]);
+  assert.deepEqual([...state._settingsNotificationErrors()], []);
+});
+
+test("the notifications section blocks a save the daemon would refuse", async () => {
+  const cases = [
+    {
+      name: "a type nothing delivers over",
+      edit: (s) => { s.settingsNotifChannel("tg-me").type = "signal"; },
+      want: 'notifications.channels "tg-me": unknown type "signal" (use telegram, mattermost or webhook)',
+    },
+    {
+      name: "no type at all",
+      edit: (s) => { s.settingsNotifChannel("tg-me").type = ""; },
+      want: 'notifications.channels "tg-me": type is required (telegram, mattermost or webhook)',
+    },
+    {
+      name: "telegram with no chat",
+      edit: (s) => { s.settingsNotifChannel("tg-me").chat_id = ""; },
+      want: 'notifications.channels "tg-me": telegram needs chat_id',
+    },
+    {
+      name: "telegram with no credential",
+      edit: (s) => { s.settingsNotifChannel("tg-me").secret_env = ""; },
+      want: 'notifications.channels "tg-me": telegram needs the bot token in secret_env or secret_file',
+    },
+    {
+      name: "both secret sources",
+      edit: (s) => { s.settingsNotifChannel("tg-me").secret_file = "~/tg"; },
+      want: 'notifications.channels "tg-me": set secret_env or secret_file, not both',
+    },
+    {
+      name: "a webhook with no url",
+      edit: (s) => { s.settingsNotifChannel("ops").url = ""; },
+      want: 'notifications.channels "ops": webhook needs url',
+    },
+    {
+      name: "a url nothing can post to",
+      edit: (s) => { s.settingsNotifChannel("ops").url = "ftp://example.com/hook"; },
+      want: 'notifications.channels "ops": url "ftp://example.com/hook": scheme "ftp" is not supported (use http or https)',
+    },
+    {
+      name: "a url with no scheme",
+      edit: (s) => { s.settingsNotifChannel("ops").url = "example.com/hook"; },
+      want: 'notifications.channels "ops": url "example.com/hook": scheme "" is not supported (use http or https)',
+    },
+    {
+      name: "a body-less method",
+      edit: (s) => { s.settingsNotifChannel("ops").method = "GET"; },
+      want: 'notifications.channels "ops": method "GET" is not supported (use POST, PUT, PATCH)',
+    },
+    {
+      name: "two headers that are one header",
+      edit: (s) => { s.settingsNotifChannel("ops").headers["x-kontora"] = "board"; },
+      want: 'notifications.channels "ops": headers "X-Kontora" and "x-kontora" are the same header',
+    },
+    {
+      name: "attempts outside the range",
+      edit: (s) => { s.settingsConfig.notifications.attempts = "0"; },
+      want: "notifications.attempts 0: must be between 1 and 10 (1 sends once and does not retry)",
+    },
+    {
+      name: "a default naming no channel",
+      edit: (s) => { s.settingsConfig.notifications.default = ["nope"]; },
+      want: 'notifications.default: unknown channel "nope"',
+    },
+    {
+      name: "the opt-out beside a channel",
+      edit: (s) => { s.settingsConfig.notifications.default = ["tg-me", "none"]; },
+      want: 'notifications.default: "none" silences the list and cannot be combined with a channel',
+    },
+  ];
+
+  for (const c of cases) {
+    const state = await settingsState(SETTINGS_NOTIFY_FIXTURE);
+    c.edit(state);
+    assert.deepEqual([...state.settingsClientErrors()], [c.want], c.name);
+  }
+});
+
+test("a channel named after the opt-out is refused", async () => {
+  const state = await settingsState(SETTINGS_NOTIFY_FIXTURE);
+
+  state.settingsNewChannelName = "none";
+  state.settingsNotifAddChannel();
+  assert.deepEqual([...state.settingsClientErrors()], [
+    'notifications.channels "none": name is reserved for the opt-out',
+  ]);
+});
+
+test("a rejected save leaves the notifications form as it was typed", async () => {
+  const daemon = settingsFetch({
+    raw: SETTINGS_NOTIFY_FIXTURE,
+    put: { status: 400, ok: false, json: async () => ({ error: 'notifications.channels "ops": webhook needs url' }) },
+  });
+  const state = await settingsState(SETTINGS_NOTIFY_FIXTURE, { fetch: daemon.fetch });
+
+  state.settingsNotifChannel("ops").url = "https://example.com/other";
+  assert.equal(await state.saveSettings(), false);
+  assert.deepEqual([...state.settingsErrors], ['notifications.channels "ops": webhook needs url']);
+  assert.equal(state.settingsNotifChannel("ops").url, "https://example.com/other");
+});
+
+test("the notifications summary and the advisory say what the daemon will do", async () => {
+  const state = await settingsState(SETTINGS_NOTIFY_FIXTURE);
+
+  assert.equal(state.settingsSectionSummary("notifications"), "2 channels · default tg-me");
+  assert.match(state.settingsNotifAdvisory(), /until the daemon restarts/);
+  state.settingsConfig.notifications.enabled = false;
+  assert.match(state.settingsNotifAdvisory(), /^Delivery is off/);
+  state.settingsConfig.notifications.default = [];
+  assert.equal(state.settingsSectionSummary("notifications"), "2 channels · no default");
+});
+
+test("the notifications search reaches a channel by name and by type", async () => {
+  const state = await settingsState(SETTINGS_NOTIFY_FIXTURE);
+
+  state.settingsQuery = "mattermost";
+  assert.equal(state.settingsSectionMatches("notifications"), true);
+  state.settingsQuery = "tg-me";
+  assert.equal(state.settingsSectionMatches("notifications"), true);
+  assert.equal(state.settingsRowVisible("ops", "webhook", "notifications"), false);
+  assert.equal(state.settingsRowVisible("tg-me", "telegram", "notifications"), true);
+});
+
+test("a project's notify_channels are shown on its card and never written", async () => {
+  const state = await settingsState(`${SETTINGS_NOTIFY_FIXTURE}
+projects:
+  kontora:
+    path: ~/projects/kontora
+    notify_channels:
+      - ops
+`);
+
+  assert.deepEqual([...state.settingsConfig.projects.kontora.notify_channels], ["ops"]);
+  assert.equal(Object.keys(state.settingsConfig.projects.kontora).includes("notify_channels"), true);
+  // Absent from the flattened paths, so no edit anywhere can rewrite it.
+  assert.equal(state.settingsChangedPaths().some((p) => p.includes("notify_channels")), false);
 });
 
 test("escape clears the settings search without unwinding the global escape chain", () => {

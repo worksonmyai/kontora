@@ -114,6 +114,7 @@ const SETTINGS_SECTIONS = [
   { key: 'web', label: 'web', blurb: 'This dashboard and the HTTP API the CLI talks to.' },
   { key: 'assistant', label: 'assistant', blurb: 'The chat docked beside the board. An empty agent disables it.' },
   { key: 'plannotator', label: 'plannotator', blurb: 'Human review of the diff, and annotation of the ticket. Review notes feed the rework stage; ticket notes rewrite the ticket.' },
+  { key: 'notifications', label: 'notifications', blurb: 'Where a ticket can tell you it changed. Which statuses it tells you about is per ticket.' },
   { key: 'statuses', label: 'statuses', blurb: 'Extra board columns a pipeline step can route to.' },
   { key: 'display', label: 'display', blurb: 'Browser-local. Never written to config.yaml.' },
 ];
@@ -123,7 +124,7 @@ const SETTINGS_SECTIONS = [
 const SETTINGS_NAV_GROUPS = [
   { title: 'runtime', hue: 'indigo', keys: ['general', 'environment', 'web'] },
   { title: 'orchestration', hue: 'cyan', keys: ['agents', 'stages', 'pipelines', 'projects'] },
-  { title: 'human in the loop', hue: 'mauve', keys: ['assistant', 'plannotator', 'statuses'] },
+  { title: 'human in the loop', hue: 'mauve', keys: ['assistant', 'plannotator', 'notifications', 'statuses'] },
   { title: 'this browser', hue: 'green', keys: ['display'] },
 ];
 
@@ -145,9 +146,36 @@ const SETTINGS_SEARCH_EXTRA = {
   agents: ['binary', 'effort', 'args', 'failure_patterns'],
   stages: ['prompt', 'timeout', 'model', 'effort'],
   pipelines: ['on_success', 'on_failure', 'max_retries'],
-  projects: ['pipeline', 'agent', 'branch_prefix'],
+  projects: ['pipeline', 'agent', 'branch_prefix', 'notify_channels'],
+  notifications: [
+    'enabled', 'timeout one delivery attempt', 'attempts', 'backoff between attempts',
+    'default channels a notification goes to', 'telegram chat_id', 'mattermost incoming webhook',
+    'webhook url method headers', 'secret_env', 'secret_file',
+  ],
   display: ['pipeline_badges', 'agent_meta', 'theme dark light'],
 };
+
+// config.NotifyTelegram, NotifyMattermost, NotifyWebhook, with what each one
+// needs beside a credential. The form draws only the fields of the picked type,
+// and settingsNotifChannelValue writes only those.
+const SETTINGS_NOTIFY_TYPES = [
+  { key: 'telegram', fields: ['chat_id'], secret: 'The bot token.', blurb: 'A bot posts into one chat.' },
+  { key: 'mattermost', fields: ['channel'], secret: 'The whole incoming-webhook URL.', blurb: 'An incoming webhook posts into its channel.' },
+  { key: 'webhook', fields: ['url', 'method', 'headers'], secret: 'An optional bearer token.', blurb: 'Any endpoint that takes the ticket as JSON.' },
+];
+
+// config.notifyMethods. Anything else is body-less or something no receiver
+// expects, and config.Validate rejects it.
+const SETTINGS_NOTIFY_METHODS = ['POST', 'PUT', 'PATCH'];
+
+// config.NoneSentinel: the opt-out. It is a channel name everywhere a channel
+// list is written, and means nothing beside a real one.
+const SETTINGS_NOTIFY_NONE = 'none';
+
+// Every per-type field, for a channel whose type is not one of the three: a
+// half-typed one still has to flatten to what was typed, or the edit reads as
+// no change. A save is blocked on the type itself.
+const SETTINGS_NOTIFY_FIELDS = ['chat_id', 'channel', 'url', 'method'];
 
 // Root scalar keys the general section edits, with the value applyDefaults
 // would supply when the key is absent (internal/config/config.go).
@@ -244,6 +272,15 @@ export function kontoraSettings() {
     settingsNewEnvKey: '',
     settingsNewStatus: '',
     settingsNewStatusOpen: false,
+    settingsNewChannelName: '',
+    settingsNewChannelOpen: false,
+    // Keyed by channel name, the way the per-agent drafts below are keyed by
+    // field path: a webhook's header rows are one control per channel.
+    settingsNewHeaderOpen: {},
+    settingsNewHeaderKey: {},
+    // Which secret source a channel's radio pair shows while both fields are
+    // empty. Never written to YAML.
+    settingsNotifSecretPick: {},
     // The per-agent control appears once per stage and twice in general, so its
     // open state and its draft key are keyed by field path rather than being one
     // boolean per control the way the three add/remove pairs above are.
@@ -271,6 +308,9 @@ export function kontoraSettings() {
     settingsTokens: SETTINGS_TOKENS,
     settingsNavGroups: SETTINGS_NAV_GROUPS,
     settingsConcurrencyOptions: SETTINGS_CONCURRENCY_OPTIONS,
+    settingsNotifTypes: SETTINGS_NOTIFY_TYPES,
+    settingsNotifMethods: SETTINGS_NOTIFY_METHODS,
+    settingsNotifNone: SETTINGS_NOTIFY_NONE,
 
     // ---- loading -----------------------------------------------------------
 
@@ -310,6 +350,7 @@ export function kontoraSettings() {
       this.settingsOpenStage = null;
       this.settingsConcurrencyCustom = false;
       this.settingsClearPerAgentDrafts('');
+      this.settingsClearNotifDrafts();
     },
 
     async _settingsLoadYAML() {
@@ -405,6 +446,44 @@ export function kontoraSettings() {
           }
         });
       }
+      errs.push(...this._settingsNotificationErrors());
+      return errs;
+    },
+
+    // config.validateNotifications, message for message. The daemon checks the
+    // block whether or not it is enabled — a channel is only ever reached
+    // because a ticket names it, so a half-written one fails at the moment
+    // somebody relies on it — and so does this.
+    _settingsNotificationErrors() {
+      const n = this.settingsConfig.notifications;
+      const errs = [];
+      const attempts = n.attempts.trim();
+      if (/^\d+$/.test(attempts) && (Number(attempts) < 1 || Number(attempts) > 10)) {
+        errs.push(`notifications.attempts ${Number(attempts)}: must be between 1 and 10 (1 sends once and does not retry)`);
+      }
+      // Sorted, so two bad channels always report in the same order.
+      for (const name of this.settingsNotifChannelNames()) {
+        errs.push(...settingsNotifChannelErrors(name, n.channels[name]));
+      }
+      errs.push(...this._settingsNotifListErrors('notifications.default', n.default));
+      return errs;
+    },
+
+    // config.checkNotifyChannelList. Only notifications.default is editable
+    // here; a project's own list is read-only on its card.
+    _settingsNotifListErrors(scope, names) {
+      const errs = [];
+      for (const name of names) {
+        if (name === SETTINGS_NOTIFY_NONE) {
+          if (names.length > 1) {
+            errs.push(`${scope}: "${SETTINGS_NOTIFY_NONE}" silences the list and cannot be combined with a channel`);
+          }
+          continue;
+        }
+        if (!Object.hasOwn(this.settingsConfig.notifications.channels, name)) {
+          errs.push(`${scope}: unknown channel "${name}"`);
+        }
+      }
       return errs;
     },
 
@@ -465,8 +544,11 @@ export function kontoraSettings() {
       return settingsAgentKind(this.settingsConfig?.agents?.[name]);
     },
 
+    // The whole notifications block is pinned by prefix rather than by name:
+    // reload.go keeps the running one wholesale, and a channel path carries a
+    // name no list could hold.
     settingsIsRestartOnly(path) {
-      return SETTINGS_RESTART_ONLY.includes(path);
+      return SETTINGS_RESTART_ONLY.includes(path) || path === 'notifications' || path.startsWith('notifications.');
     },
 
     // ---- saving ------------------------------------------------------------
@@ -546,12 +628,17 @@ export function kontoraSettings() {
     // would send. The document is re-parsed from the text on disk first: a
     // rejected save left its values in the old document, and those paths are no
     // longer changed paths, so nothing would overwrite them.
+    // The document is a local until it has been written: reading it back off
+    // the component hands out Alpine's reactive Proxy, and a node stored
+    // through one fails yaml's own isMap check — its type symbol is
+    // non-configurable, so the Proxy may not answer with a wrapped value.
     async _settingsWrite() {
       const yaml = await this._settingsLoadYAML();
-      this._settingsDoc = yaml.parseDocument(this._settingsRawText);
-      settingsApply(yaml, this._settingsDoc, this.settingsConfig, this.settingsBaseline);
+      const doc = yaml.parseDocument(this._settingsRawText);
+      settingsApply(yaml, doc, this.settingsConfig, this.settingsBaseline);
+      this._settingsDoc = doc;
       try {
-        return String(this._settingsDoc);
+        return String(doc);
       } catch (e) {
         // A structure the writer cannot express — an anchor whose alias it
         // would strand — leaves the library's own message, which names nothing
@@ -580,6 +667,7 @@ export function kontoraSettings() {
       this.settingsSavedAt = '';
       this.settingsConcurrencyCustom = false;
       this.settingsClearPerAgentDrafts('');
+      this.settingsClearNotifDrafts();
     },
 
     // Restore one stage to what is on disk. A stage the baseline never had
@@ -736,6 +824,153 @@ export function kontoraSettings() {
       this.settingsConfig.statuses = this.settingsConfig.statuses.filter(s => s !== name);
     },
 
+    // ---- notifications -----------------------------------------------------
+
+    // Prefixed settingsNotif*, not notify*: ui/notify.js owns the unprefixed
+    // family for the ticket's own notify row, and merge() throws on a repeat.
+
+    // Half-typed rows and picker state for channels the reloaded or reverted
+    // model no longer has. The same reason settingsClearPerAgentDrafts exists.
+    settingsClearNotifDrafts() {
+      this.settingsNewChannelName = '';
+      this.settingsNewChannelOpen = false;
+      this.settingsNewHeaderOpen = {};
+      this.settingsNewHeaderKey = {};
+      this.settingsNotifSecretPick = {};
+    },
+
+    settingsNotifChannelNames() {
+      return Object.keys(this.settingsConfig?.notifications?.channels || {}).sort();
+    },
+
+    settingsNotifChannel(name) {
+      return this.settingsConfig.notifications.channels[name];
+    },
+
+    // The type's row, or null for a channel whose type is unset or unknown.
+    // Drives which fields the card draws.
+    settingsNotifTypeSpec(name) {
+      const type = this.settingsNotifChannel(name).type.trim();
+      return SETTINGS_NOTIFY_TYPES.find(t => t.key === type) || null;
+    },
+
+    settingsNotifHasField(name, field) {
+      const spec = this.settingsNotifTypeSpec(name);
+      return !!spec && spec.fields.includes(field);
+    },
+
+    settingsNotifAddChannel() {
+      const name = (this.settingsNewChannelName || '').trim();
+      // hasOwn, not `in`: a channel named after an Object.prototype member
+      // would otherwise never be addable, with nothing on screen saying why.
+      if (!name || Object.hasOwn(this.settingsConfig.notifications.channels, name)) return;
+      this.settingsConfig.notifications.channels[name] = settingsNotifChannelModel({ type: 'telegram' });
+      this.settingsNewChannelName = '';
+      this.settingsNewChannelOpen = false;
+    },
+
+    // The channel goes, and its name goes with it wherever it was named. A
+    // default list left pointing at a channel that no longer exists is what
+    // config.checkNotifyChannelList rejects, and the save would fail on it.
+    settingsNotifRemoveChannel(name) {
+      delete this.settingsConfig.notifications.channels[name];
+      this.settingsConfig.notifications.default = this.settingsConfig.notifications.default.filter(c => c !== name);
+      delete this.settingsNewHeaderOpen[name];
+      delete this.settingsNewHeaderKey[name];
+    },
+
+    // Which of the two the credential comes from, or 'none' for a webhook that
+    // needs no token. config.Validate refuses both at once, so picking one
+    // clears the other rather than leaving a save that cannot succeed. With
+    // neither filled the answer is what the type implies: only a webhook can go
+    // without a credential at all.
+    settingsNotifSecretMode(name) {
+      const ch = this.settingsNotifChannel(name);
+      if (ch.secret_file.trim()) return 'file';
+      if (ch.secret_env.trim()) return 'env';
+      return this.settingsNotifSecretPick[name] || (this.settingsNotifHasField(name, 'url') ? 'none' : 'env');
+    },
+
+    settingsNotifSetSecretMode(name, mode) {
+      const ch = this.settingsNotifChannel(name);
+      if (mode === 'env') ch.secret_file = '';
+      if (mode === 'file') ch.secret_env = '';
+      if (mode === 'none') { ch.secret_env = ''; ch.secret_file = ''; }
+      this.settingsNotifSecretPick[name] = mode;
+    },
+
+    settingsNotifHeaderKeys(name) {
+      return Object.keys(this.settingsNotifChannel(name).headers).sort();
+    },
+
+    settingsNotifAddHeader(name) {
+      const key = (this.settingsNewHeaderKey[name] || '').trim();
+      const headers = this.settingsNotifChannel(name).headers;
+      if (!key || Object.hasOwn(headers, key)) return;
+      headers[key] = '';
+      this.settingsNewHeaderKey[name] = '';
+      this.settingsNewHeaderOpen[name] = false;
+    },
+
+    settingsNotifRemoveHeader(name, key) {
+      delete this.settingsNotifChannel(name).headers[key];
+    },
+
+    // What the default list offers: every configured channel, plus the opt-out.
+    settingsNotifDefaultChoices() {
+      return [...this.settingsNotifChannelNames(), SETTINGS_NOTIFY_NONE];
+    },
+
+    settingsNotifDefaultOn(name) {
+      return this.settingsConfig.notifications.default.includes(name);
+    },
+
+    // "none" silences the list and means nothing beside a channel, so the two
+    // sides of the picker clear each other rather than composing an error.
+    settingsNotifToggleDefault(name) {
+      const n = this.settingsConfig.notifications;
+      if (n.default.includes(name)) {
+        n.default = n.default.filter(c => c !== name);
+        return;
+      }
+      if (name === SETTINGS_NOTIFY_NONE) { n.default = [SETTINGS_NOTIFY_NONE]; return; }
+      n.default = [...n.default.filter(c => c !== SETTINGS_NOTIFY_NONE), name];
+    },
+
+    // One line for a channel's header: where it delivers, in the terms of its
+    // own type. Never a credential — the config only ever names one.
+    settingsNotifTarget(name) {
+      const ch = this.settingsNotifChannel(name);
+      switch (ch.type.trim()) {
+        case 'telegram': return ch.chat_id.trim() ? `chat ${ch.chat_id.trim()}` : 'no chat_id';
+        case 'mattermost': return ch.channel.trim() ? `channel ${ch.channel.trim()}` : 'the webhook\'s own channel';
+        case 'webhook': {
+          const url = ch.url.trim();
+          return url ? `${ch.method.trim().toUpperCase() || 'POST'} ${url}` : 'no url';
+        }
+        default: return 'no type';
+      }
+    },
+
+    settingsNotifSecretLabel(name) {
+      const ch = this.settingsNotifChannel(name);
+      if (ch.secret_env.trim()) return `secret from $${ch.secret_env.trim()}`;
+      if (ch.secret_file.trim()) return `secret from ${ch.secret_file.trim()}`;
+      return 'no secret';
+    },
+
+    // The advisory box, in the shape the web section uses. Both halves are
+    // facts about this daemon: reload.go pins the whole block, and the channel
+    // names the ticket picker offers come from the running config.
+    settingsNotifAdvisory() {
+      const n = this.settingsConfig?.notifications;
+      if (!n) return '';
+      const restart = 'Notifications are read once, at startup. A reload keeps the running channels and logs a warning, so nothing here takes effect — and no channel added here is offered on a ticket — until the daemon restarts.';
+      if (!n.enabled) return `Delivery is off: nothing is sent, whatever a ticket asks for. ${restart}`;
+      if (!this.settingsNotifChannelNames().length) return `No channels, so nothing can be delivered. ${restart}`;
+      return restart;
+    },
+
     // Splice a template token into the prompt at the caret, then put the caret
     // back after it. Without the refocus the user loses their place on every
     // chip click.
@@ -834,6 +1069,13 @@ export function kontoraSettings() {
         return `${agent} · ${row ? row.label : mode}`;
       }
       if (key === 'plannotator') return 'review + annotate';
+      if (key === 'notifications') {
+        const names = this.settingsNotifChannelNames();
+        if (!names.length) return 'no channels';
+        const list = cfg.notifications.default;
+        const where = list.length ? `default ${list.join(', ')}` : 'no default';
+        return `${plural(names.length, 'channel', 'channels')} · ${where}`;
+      }
       if (key === 'statuses') return `${SETTINGS_BUILTIN_STATUSES.length} built-in · ${cfg.statuses.length} custom`;
       if (key === 'display') {
         return `${this.showPipelineBadges ? 'badges' : 'no badges'}, ${this.lightTheme ? 'light' : 'dark'} theme`;
@@ -902,6 +1144,9 @@ export function kontoraSettings() {
         }
       }
       if (key === 'projects') for (const n of this.settingsProjectNames()) out.push(n, cfg.projects[n].path);
+      if (key === 'notifications') {
+        for (const n of this.settingsNotifChannelNames()) out.push(n, cfg.notifications.channels[n].type);
+      }
       if (key === 'statuses') out.push(...SETTINGS_BUILTIN_STATUSES, ...cfg.statuses);
       return out;
     },
@@ -1046,6 +1291,7 @@ export function kontoraSettings() {
       if (key === 'stages') return Object.keys(cfg.stages).length;
       if (key === 'pipelines') return Object.keys(cfg.pipelines).length;
       if (key === 'projects') return Object.keys(cfg.projects).length;
+      if (key === 'notifications') return Object.keys(cfg.notifications.channels).length;
       if (key === 'statuses') return cfg.statuses.length;
       return '';
     },
@@ -1213,7 +1459,23 @@ function settingsModel(raw) {
     auto_pick_up: raw.auto_pick_up === undefined || raw.auto_pick_up === null ? true : !!raw.auto_pick_up,
     summary_model: settingsPerAgentModel(raw.summary_model),
     summary_effort: settingsPerAgentModel(raw.summary_effort),
+    notifications: {
+      // config.applyDefaults: an absent enabled is true.
+      enabled: raw.notifications?.enabled === undefined || raw.notifications?.enabled === null
+        ? true : !!raw.notifications.enabled,
+      timeout: str(raw.notifications?.timeout),
+      attempts: str(raw.notifications?.attempts),
+      backoff: str(raw.notifications?.backoff),
+      default: (raw.notifications?.default || []).map(String),
+      // Object.create(null) here and on headers below: a channel named after an
+      // Object.prototype member is a key like any other, and settingsClone
+      // keeps the null prototype.
+      channels: Object.create(null),
+    },
   };
+  for (const [name, ch] of Object.entries(raw.notifications?.channels || {})) {
+    model.notifications.channels[name] = settingsNotifChannelModel(ch);
+  }
   for (const f of SETTINGS_GENERAL_FIELDS) model.general[f.key] = str(raw[f.key]);
   for (const [k, v] of Object.entries(raw.environment || {})) model.environment[k] = str(v);
   for (const [name, agent] of Object.entries(raw.agents || {})) {
@@ -1261,9 +1523,73 @@ function settingsModel(raw) {
       pipeline: str(project?.pipeline),
       agent: str(project?.agent),
       branch_prefix: str(project?.branch_prefix),
+      // Read-only: shown on the project card, absent from settingsFlatten, so
+      // no save ever writes it.
+      notify_channels: (project?.notify_channels || []).map(String),
     };
   }
   return model;
+}
+
+// One notifications.channels entry as the form holds it. Every field is a
+// string so an input round-trips it, and every type's fields are kept while
+// another type is picked: switching back does not lose what was typed.
+function settingsNotifChannelModel(raw) {
+  const str = v => (v === undefined || v === null ? '' : String(v));
+  const headers = Object.create(null);
+  for (const [k, v] of Object.entries(raw?.headers || {})) headers[k] = str(v);
+  return {
+    type: str(raw?.type),
+    secret_env: str(raw?.secret_env),
+    secret_file: str(raw?.secret_file),
+    chat_id: str(raw?.chat_id),
+    channel: str(raw?.channel),
+    url: str(raw?.url),
+    method: str(raw?.method),
+    headers,
+  };
+}
+
+// The map a save writes for one channel: the fields its type uses, trimmed,
+// with the empty ones dropped. A field belonging to another type is not
+// written, so picking webhook after telegram leaves no chat_id behind.
+function settingsNotifChannelValue(ch) {
+  const out = {};
+  const type = ch.type.trim();
+  if (type) out.type = type;
+  for (const key of ['secret_env', 'secret_file']) {
+    if (ch[key].trim()) out[key] = ch[key].trim();
+  }
+  const spec = SETTINGS_NOTIFY_TYPES.find(t => t.key === type);
+  for (const key of (spec ? spec.fields : SETTINGS_NOTIFY_FIELDS)) {
+    if (key === 'headers') continue;
+    if (ch[key].trim()) out[key] = ch[key].trim();
+  }
+  if (!spec || spec.fields.includes('headers')) {
+    const headers = {};
+    for (const k of Object.keys(ch.headers).sort()) {
+      if (k.trim()) headers[k.trim()] = ch.headers[k];
+    }
+    if (Object.keys(headers).length) out.headers = headers;
+  }
+  return out;
+}
+
+// The string the flat path holds for one channel. Change detection compares
+// these, so it has to name every field a save would write, headers included.
+function settingsNotifChannelFlat(ch) {
+  if (!ch) return '';
+  const value = settingsNotifChannelValue(ch);
+  const lines = [];
+  for (const [k, v] of Object.entries(value)) {
+    if (k === 'headers') {
+      lines.push('headers');
+      for (const hk of Object.keys(v)) lines.push(`  ${hk}: ${v[hk]}`);
+      continue;
+    }
+    lines.push(`${k}: ${v}`);
+  }
+  return lines.join('\n');
 }
 
 // path -> string for every YAML-backed field. Display preferences are absent by
@@ -1301,6 +1627,17 @@ function settingsFlatten(cfg) {
   out['plannotator.reviews_dir'] = cfg.plannotator.reviews_dir;
   for (const f of SETTINGS_ASSISTANT_KEYS) out[`assistant.${f}`] = cfg.assistant[f];
   out.statuses = cfg.statuses.join('\n');
+  out['notifications.enabled'] = cfg.notifications.enabled ? 'true' : 'false';
+  out['notifications.timeout'] = cfg.notifications.timeout;
+  out['notifications.attempts'] = cfg.notifications.attempts;
+  out['notifications.backoff'] = cfg.notifications.backoff;
+  out['notifications.default'] = cfg.notifications.default.join('\n');
+  // One path per channel, not one per field. A removed channel is then a single
+  // deletion of its node: deleting field by field would leave `name: {}`, which
+  // config.Validate rejects for having no type.
+  for (const [name, ch] of Object.entries(cfg.notifications.channels)) {
+    out[`notifications.channels.${name}`] = settingsNotifChannelFlat(ch);
+  }
   return out;
 }
 
@@ -1438,6 +1775,9 @@ function settingsNodeFor(path, cfg) {
     const v = cfg.general[path].trim();
     return { keys: [path], value: v === '' ? null : v };
   }
+  // Before the name/field split below: a channel name can carry dots, and
+  // notifications has no per-field paths for one anyway.
+  if (path.startsWith('notifications.')) return settingsNotifNodeFor(path, cfg);
   const [group, ...rest] = parts;
   if (group === 'environment') {
     const key = parts.slice(1).join('.');
@@ -1482,4 +1822,85 @@ function settingsNodeFor(path, cfg) {
   }
   const v = cfg.projects[name][field].trim();
   return { keys: ['projects', name, field], value: v === '' ? null : v };
+}
+
+// The document path and value for one notifications path. A channel is written
+// whole, through settingsApplyMap, so an added one appears with every field it
+// needs and a removed one takes its whole node with it.
+function settingsNotifNodeFor(path, cfg) {
+  const n = cfg.notifications;
+  const field = path.slice('notifications.'.length);
+  if (field === 'enabled') return { keys: ['notifications', 'enabled'], value: n.enabled };
+  if (field === 'default') {
+    return { keys: ['notifications', 'default'], value: n.default.length ? n.default.slice() : null };
+  }
+  if (field === 'attempts') {
+    const raw = n.attempts.trim();
+    // Non-numeric text goes through unchanged, the max_concurrent_agents rule:
+    // the daemon reports it rather than the client dropping the edit.
+    return { keys: ['notifications', 'attempts'], value: raw === '' ? null : (/^\d+$/.test(raw) ? Number(raw) : raw) };
+  }
+  if (field === 'timeout' || field === 'backoff') {
+    const v = n[field].trim();
+    return { keys: ['notifications', field], value: v === '' ? null : v };
+  }
+  const name = field.slice('channels.'.length);
+  const ch = n.channels[name];
+  return { keys: ['notifications', 'channels', name], value: ch ? settingsNotifChannelValue(ch) : null };
+}
+
+// config.validateNotifyChannel, message for message. Only the channel's own
+// shape: the channel list that names it is checked by _settingsNotifListErrors.
+function settingsNotifChannelErrors(name, ch) {
+  const at = `notifications.channels "${name}"`;
+  if (name === SETTINGS_NOTIFY_NONE) return [`${at}: name is reserved for the opt-out`];
+  if (ch.secret_env.trim() && ch.secret_file.trim()) {
+    return [`${at}: set secret_env or secret_file, not both`];
+  }
+  const hasSecret = !!(ch.secret_env.trim() || ch.secret_file.trim());
+  const type = ch.type.trim();
+  const types = SETTINGS_NOTIFY_TYPES.map(t => t.key);
+  const list = `${types.slice(0, -1).join(', ')} or ${types[types.length - 1]}`;
+  switch (type) {
+    case 'telegram':
+      if (!hasSecret) return [`${at}: telegram needs the bot token in secret_env or secret_file`];
+      if (!ch.chat_id.trim()) return [`${at}: telegram needs chat_id`];
+      return [];
+    case 'mattermost':
+      if (!hasSecret) return [`${at}: mattermost needs the incoming-webhook URL in secret_env or secret_file`];
+      return [];
+    case 'webhook':
+      return settingsNotifWebhookErrors(at, ch);
+    case '':
+      return [`${at}: type is required (${list})`];
+    default:
+      return [`${at}: unknown type "${type}" (use ${list})`];
+  }
+}
+
+function settingsNotifWebhookErrors(at, ch) {
+  const url = ch.url.trim();
+  if (!url) return [`${at}: webhook needs url`];
+  // net/url's own scheme grammar, not the URL constructor: url.Parse takes a
+  // string with no scheme at all, and the scheme check below is what rejects
+  // it, so the two have to agree on what "no scheme" means.
+  const m = /^([a-zA-Z][a-zA-Z0-9+.-]*):/.exec(url);
+  const scheme = m ? m[1].toLowerCase() : '';
+  if (scheme !== 'http' && scheme !== 'https') {
+    return [`${at}: url "${url}": scheme "${scheme}" is not supported (use http or https)`];
+  }
+  const method = ch.method.trim();
+  if (method && !SETTINGS_NOTIFY_METHODS.includes(method.toUpperCase())) {
+    return [`${at}: method "${method}" is not supported (use ${SETTINGS_NOTIFY_METHODS.join(', ')})`];
+  }
+  // net/http canonicalizes a header name when it sets it, so two names that
+  // differ only in case land on one header and one value is dropped.
+  const seen = new Map();
+  for (const key of Object.keys(ch.headers).sort()) {
+    const canon = key.trim().toLowerCase();
+    if (!canon) continue;
+    if (seen.has(canon)) return [`${at}: headers "${seen.get(canon)}" and "${key}" are the same header`];
+    seen.set(canon, key);
+  }
+  return [];
 }

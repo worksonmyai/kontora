@@ -4726,7 +4726,7 @@
                         <span class="ml-auto shrink-0 font-mono text-[10.5px] text-tx-faint"
                               x-text="settingsProjectTickets(name).running ? settingsProjectTickets(name).running + ' running' : 'idle'"></span>
                       </header>
-                      <div class="grid grid-cols-2 lg:grid-cols-4 gap-3.5 p-4 px-[18px]">
+                      <div class="grid grid-cols-2 lg:grid-cols-5 gap-3.5 p-4 px-[18px]">
                         <span class="flex flex-col gap-1 min-w-0">
                           <span class="font-mono text-[9.5px] uppercase tracking-[.14em] text-tx-faint">pipeline</span>
                           <span class="font-mono text-[12.5px] text-tx-2 truncate" x-text="settingsConfig.projects[name].pipeline || 'default'"></span>
@@ -4743,6 +4743,11 @@
                         <span class="flex flex-col gap-1 min-w-0">
                           <span class="font-mono text-[9.5px] uppercase tracking-[.14em] text-tx-faint">tickets</span>
                           <span class="font-mono text-[12.5px] text-tx-2 truncate" x-text="settingsProjectTickets(name).total + ' on the board'"></span>
+                        </span>
+                        <span class="flex flex-col gap-1 min-w-0">
+                          <span class="font-mono text-[9.5px] uppercase tracking-[.14em] text-tx-faint">notify_channels</span>
+                          <span class="font-mono text-[12.5px] text-tx-2 truncate"
+                                x-text="settingsConfig.projects[name].notify_channels.length ? settingsConfig.projects[name].notify_channels.join(', ') : 'inherits default'"></span>
                         </span>
                       </div>
                     </section>
@@ -4991,6 +4996,242 @@
                       <span class="text-[12px] leading-[1.55] text-tx-3">Review notes feed the rework stage; ticket notes queue a run that rewrites the ticket.</span>
                     </div>
                   </section>
+                </div>
+
+                <!-- ===== notifications ===== -->
+                <div x-show="settingsSection === 'notifications'" class="flex flex-col gap-3.5">
+                  <section class="border border-edge-card rounded-xl bg-surface-900 overflow-hidden">
+                    <header class="flex items-baseline gap-2.5 p-[13px] px-[18px] bg-surface-850/45 border-b border-surface-700/40" data-pipe-color="mauve">
+                      <span class="w-1.5 h-1.5 rounded-full self-center shrink-0" style="background: hsl(var(--pipe-h))"></span>
+                      <h2 class="m-0 font-mono text-[12.5px] font-bold text-tx-hi tracking-[.02em]">delivery</h2>
+                      <span class="text-[11.5px] text-tx-4">How hard the daemon tries. The whole block needs a restart.</span>
+                    </header>
+                    <div x-show="settingsRowVisible('enabled', 'Off sends nothing, whatever a ticket asks for.', 'notifications')"
+                         class="grid grid-cols-1 lg:grid-cols-[232px_minmax(0,1fr)] gap-3 lg:gap-6 p-4 px-[18px] border-t border-surface-700/[0.28] items-start">
+                      <div class="flex flex-col gap-1 min-w-0">
+                        <span class="flex items-center gap-[7px] flex-wrap">
+                          <span class="font-mono text-[12.5px] text-tx-2">enabled</span>
+                          <span class="font-mono text-[9.5px] uppercase tracking-[.08em] text-warn bg-warn/10 border border-warn/[0.22] rounded px-[5px] py-px">restart</span>
+                        </span>
+                        <span class="text-[11.5px] leading-[1.55] text-tx-4">Off sends nothing, whatever a ticket asks for.</span>
+                      </div>
+                      <div class="flex flex-col gap-1.5 min-w-0">
+                        <button type="button" role="switch" aria-label="notifications enabled" :aria-checked="settingsConfig.notifications.enabled"
+                                @click="settingsConfig.notifications.enabled = !settingsConfig.notifications.enabled"
+                                class="flex items-center gap-2.5 bg-transparent border-0 p-0 cursor-pointer">
+                          <span class="relative w-10 h-[22px] rounded-full transition-colors shrink-0" :class="settingsConfig.notifications.enabled ? 'bg-accent' : 'bg-surface-700'">
+                            <span class="absolute top-[3px] w-4 h-4 rounded-full bg-accent-fg transition-[left] duration-150" :style="settingsConfig.notifications.enabled ? 'left:21px' : 'left:2px'"></span>
+                          </span>
+                          <span class="text-[12.5px] text-tx-2" x-text="settingsConfig.notifications.enabled ? 'On — a ticket is delivered to the channels it names' : 'Off — nothing is delivered'"></span>
+                        </button>
+                      </div>
+                    </div>
+                    <template x-for="f in [
+                        { key: 'timeout', placeholder: '10s', help: 'Bounds one delivery attempt.' },
+                        { key: 'attempts', placeholder: '3', help: 'How many attempts one notification gets. 1 sends once and does not retry.' },
+                        { key: 'backoff', placeholder: '1s', help: 'Wait before the second attempt, doubled for each after it.' },
+                      ]" :key="f.key">
+                      <div x-show="settingsRowVisible(f.key, f.help, 'notifications')"
+                           class="grid grid-cols-1 lg:grid-cols-[232px_minmax(0,1fr)] gap-3 lg:gap-6 p-4 px-[18px] border-t border-surface-700/[0.28] items-start">
+                        <div class="flex flex-col gap-1 min-w-0">
+                          <span class="flex items-center gap-[7px] flex-wrap">
+                            <label :for="'notif-' + f.key" class="font-mono text-[12.5px] text-tx-2" x-text="f.key"></label>
+                            <span class="font-mono text-[9.5px] uppercase tracking-[.08em] text-warn bg-warn/10 border border-warn/[0.22] rounded px-[5px] py-px">restart</span>
+                          </span>
+                          <span class="text-[11.5px] leading-[1.55] text-tx-4" x-text="f.help"></span>
+                        </div>
+                        <div class="flex flex-col gap-1.5 min-w-0">
+                          <input :id="'notif-' + f.key" type="text" x-model="settingsConfig.notifications[f.key]" :placeholder="f.placeholder"
+                                 class="w-[110px] bg-surface-800 border rounded-[7px] py-2 px-3 font-mono text-[12.5px] text-tx-2 focus:outline-none focus:border-accent/40"
+                                 :class="(f.key === 'attempts' ? settingsIntValid(settingsConfig.notifications[f.key]) : settingsDurationValid(settingsConfig.notifications[f.key])) ? 'border-edge-input' : 'border-err'">
+                          <span class="font-mono text-[10.5px] text-tx-faint" x-text="settingsConfig.notifications[f.key].trim() ? '' : 'default · ' + f.placeholder"></span>
+                        </div>
+                      </div>
+                    </template>
+                  </section>
+
+                  <section class="border border-edge-card rounded-xl bg-surface-900 overflow-hidden">
+                    <header class="flex items-baseline gap-2.5 p-[13px] px-[18px] bg-surface-850/45 border-b border-surface-700/40" data-pipe-color="indigo">
+                      <span class="w-1.5 h-1.5 rounded-full self-center shrink-0" style="background: hsl(var(--pipe-h))"></span>
+                      <h2 class="m-0 font-mono text-[12.5px] font-bold text-tx-hi tracking-[.02em]">default</h2>
+                      <span class="text-[11.5px] text-tx-4">Where a notification goes when neither the ticket nor its project names a channel.</span>
+                    </header>
+                    <div class="p-4 px-[18px] flex flex-col gap-2.5">
+                      <div class="flex flex-wrap items-center gap-2">
+                        <template x-for="c in settingsNotifDefaultChoices()" :key="c">
+                          <button type="button" class="notify-chip" :data-kind="c === settingsNotifNone ? 'silence' : 'channel'"
+                                  :data-on="settingsNotifDefaultOn(c) ? '1' : null" :aria-pressed="settingsNotifDefaultOn(c)"
+                                  @click="settingsNotifToggleDefault(c)" x-text="c"></button>
+                        </template>
+                      </div>
+                      <p class="m-0 text-[11.5px] text-tx-faint"
+                         x-text="settingsConfig.notifications.default.length
+                           ? (settingsNotifDefaultOn(settingsNotifNone)
+                              ? 'Silenced: a ticket that names no channel of its own is not delivered anywhere.'
+                              : 'A ticket that names no channel of its own goes to ' + settingsConfig.notifications.default.join(', ') + '.')
+                           : 'Unset: a ticket has to name a channel, or its project has to.'"></p>
+                    </div>
+                  </section>
+
+                  <template x-for="name in settingsNotifChannelNames()" :key="name">
+                    <section x-show="settingsRowVisible(name, settingsNotifChannel(name).type, 'notifications')"
+                             class="border border-edge-card rounded-xl bg-surface-900 overflow-hidden">
+                      <header class="flex items-baseline gap-2.5 p-[13px] px-[18px] bg-surface-850/45 border-b border-surface-700/40" data-pipe-color="cyan">
+                        <span class="w-1.5 h-1.5 rounded-full self-center shrink-0" style="background: hsl(var(--pipe-h))"></span>
+                        <h2 class="m-0 font-mono text-[12.5px] font-bold text-tx-hi tracking-[.02em]" x-text="name"></h2>
+                        <span class="font-mono text-[11.5px] text-tx-4 min-w-0 truncate" x-text="settingsNotifTarget(name)"></span>
+                        <span x-show="settingsPathDirty('notifications.channels.' + name)" x-cloak class="w-1.5 h-1.5 rounded-full bg-accent self-center shrink-0" aria-label="unsaved"></span>
+                        <button type="button" @click="settingsNotifRemoveChannel(name)" :aria-label="'Remove ' + name"
+                                class="ml-auto shrink-0 font-mono text-[11.5px] h-[26px] px-2.5 rounded-[7px] bg-surface-900 border border-surface-700/70 text-tx-3 hover:text-err hover:border-err/30 transition-colors">remove</button>
+                      </header>
+
+                      <div class="grid grid-cols-1 lg:grid-cols-[232px_minmax(0,1fr)] gap-3 lg:gap-6 p-4 px-[18px] border-t border-surface-700/[0.28] items-start">
+                        <div class="flex flex-col gap-1 min-w-0">
+                          <span class="font-mono text-[12.5px] text-tx-2">type</span>
+                          <span class="text-[11.5px] leading-[1.55] text-tx-4" x-text="(settingsNotifTypeSpec(name) || {}).blurb || 'Pick what this channel delivers over.'"></span>
+                        </div>
+                        <div class="notify-seg" role="radiogroup" aria-label="channel type">
+                          <template x-for="t in settingsNotifTypes" :key="t.key">
+                            <button type="button" role="radio" :aria-checked="settingsNotifChannel(name).type === t.key"
+                                    @click="settingsNotifChannel(name).type = t.key" x-text="t.key"></button>
+                          </template>
+                        </div>
+                      </div>
+
+                      <div class="grid grid-cols-1 lg:grid-cols-[232px_minmax(0,1fr)] gap-3 lg:gap-6 p-4 px-[18px] border-t border-surface-700/[0.28] items-start">
+                        <div class="flex flex-col gap-1 min-w-0">
+                          <span class="font-mono text-[12.5px] text-tx-2">secret</span>
+                          <span class="text-[11.5px] leading-[1.55] text-tx-4"
+                                x-text="((settingsNotifTypeSpec(name) || {}).secret || 'The credential.') + ' Named here, never written: the daemon reads it when it starts.'"></span>
+                        </div>
+                        <div class="flex flex-col gap-1.5 min-w-0">
+                          <div class="notify-seg notify-seg-sm" role="radiogroup" aria-label="secret source">
+                            <button type="button" role="radio" :aria-checked="settingsNotifSecretMode(name) === 'env'"
+                                    @click="settingsNotifSetSecretMode(name, 'env')">env var</button>
+                            <button type="button" role="radio" :aria-checked="settingsNotifSecretMode(name) === 'file'"
+                                    @click="settingsNotifSetSecretMode(name, 'file')">file</button>
+                            <button type="button" role="radio" x-show="settingsNotifHasField(name, 'url')" :aria-checked="settingsNotifSecretMode(name) === 'none'"
+                                    @click="settingsNotifSetSecretMode(name, 'none')">none</button>
+                          </div>
+                          <input x-show="settingsNotifSecretMode(name) === 'env'" type="text" x-model="settingsNotifChannel(name).secret_env"
+                                 :aria-label="name + ' secret_env'" placeholder="KONTORA_TELEGRAM_TOKEN"
+                                 class="w-full max-w-[30rem] bg-surface-800 border border-edge-input rounded-[7px] py-2 px-3 font-mono text-[12.5px] text-tx-2 focus:outline-none focus:border-accent/40">
+                          <input x-show="settingsNotifSecretMode(name) === 'file'" type="text" x-model="settingsNotifChannel(name).secret_file"
+                                 :aria-label="name + ' secret_file'" placeholder="~/.config/kontora/telegram-token"
+                                 class="w-full max-w-[30rem] bg-surface-800 border border-edge-input rounded-[7px] py-2 px-3 font-mono text-[12.5px] text-tx-2 focus:outline-none focus:border-accent/40">
+                          <span class="font-mono text-[10.5px] text-tx-faint" x-text="settingsNotifSecretLabel(name)"></span>
+                        </div>
+                      </div>
+
+                      <div x-show="settingsNotifHasField(name, 'chat_id')"
+                           class="grid grid-cols-1 lg:grid-cols-[232px_minmax(0,1fr)] gap-3 lg:gap-6 p-4 px-[18px] border-t border-surface-700/[0.28] items-start">
+                        <div class="flex flex-col gap-1 min-w-0">
+                          <span class="font-mono text-[12.5px] text-tx-2">chat_id</span>
+                          <span class="text-[11.5px] leading-[1.55] text-tx-4">The chat the bot posts into. Negative for a group.</span>
+                        </div>
+                        <input type="text" x-model="settingsNotifChannel(name).chat_id" :aria-label="name + ' chat_id'" placeholder="123456789"
+                               class="w-full max-w-[30rem] bg-surface-800 border border-edge-input rounded-[7px] py-2 px-3 font-mono text-[12.5px] text-tx-2 focus:outline-none focus:border-accent/40">
+                      </div>
+
+                      <div x-show="settingsNotifHasField(name, 'channel')"
+                           class="grid grid-cols-1 lg:grid-cols-[232px_minmax(0,1fr)] gap-3 lg:gap-6 p-4 px-[18px] border-t border-surface-700/[0.28] items-start">
+                        <div class="flex flex-col gap-1 min-w-0">
+                          <span class="font-mono text-[12.5px] text-tx-2">channel</span>
+                          <span class="text-[11.5px] leading-[1.55] text-tx-4">Overrides the channel the incoming webhook was made for. Optional.</span>
+                        </div>
+                        <input type="text" x-model="settingsNotifChannel(name).channel" :aria-label="name + ' channel'" placeholder="the webhook's own channel"
+                               class="w-full max-w-[30rem] bg-surface-800 border border-edge-input rounded-[7px] py-2 px-3 font-mono text-[12.5px] text-tx-2 focus:outline-none focus:border-accent/40">
+                      </div>
+
+                      <div x-show="settingsNotifHasField(name, 'url')"
+                           class="grid grid-cols-1 lg:grid-cols-[232px_minmax(0,1fr)] gap-3 lg:gap-6 p-4 px-[18px] border-t border-surface-700/[0.28] items-start">
+                        <div class="flex flex-col gap-1 min-w-0">
+                          <span class="font-mono text-[12.5px] text-tx-2">url</span>
+                          <span class="text-[11.5px] leading-[1.55] text-tx-4">Where the ticket is posted as JSON. http or https.</span>
+                        </div>
+                        <div class="flex flex-col gap-1.5 min-w-0">
+                          <input type="text" x-model="settingsNotifChannel(name).url" :aria-label="name + ' url'" placeholder="https://example.com/hooks/kontora"
+                                 class="w-full max-w-[30rem] bg-surface-800 border border-edge-input rounded-[7px] py-2 px-3 font-mono text-[12.5px] text-tx-2 focus:outline-none focus:border-accent/40">
+                          <div class="notify-seg notify-seg-sm" role="radiogroup" aria-label="method">
+                            <template x-for="m in settingsNotifMethods" :key="m">
+                              <button type="button" role="radio"
+                                      :aria-checked="(settingsNotifChannel(name).method.trim().toUpperCase() || 'POST') === m"
+                                      @click="settingsNotifChannel(name).method = m" x-text="m"></button>
+                            </template>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div x-show="settingsNotifHasField(name, 'headers')"
+                           class="grid grid-cols-1 lg:grid-cols-[232px_minmax(0,1fr)] gap-3 lg:gap-6 p-4 px-[18px] border-t border-surface-700/[0.28] items-start">
+                        <div class="flex flex-col gap-1 min-w-0">
+                          <span class="font-mono text-[12.5px] text-tx-2">headers</span>
+                          <span class="text-[11.5px] leading-[1.55] text-tx-4">Sent with every request. Two names that differ only in case are one header, and the save is refused.</span>
+                        </div>
+                        <div class="flex flex-col gap-1.5 min-w-0">
+                          <template x-for="key in settingsNotifHeaderKeys(name)" :key="key">
+                            <div class="flex items-center gap-2">
+                              <input type="text" :value="key" readonly :aria-label="name + ' header'"
+                                     class="w-40 flex-none bg-surface-800 border border-surface-700/50 rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none">
+                              <span class="text-surface-600 font-mono">=</span>
+                              <input type="text" x-model="settingsNotifChannel(name).headers[key]" :aria-label="name + ' ' + key"
+                                     class="w-56 bg-surface-800 border border-surface-700/50 rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40">
+                              <button type="button" @click="settingsNotifRemoveHeader(name, key)" :aria-label="'Remove ' + key"
+                                      class="w-7 h-7 shrink-0 flex items-center justify-center border border-surface-700/50 rounded text-surface-600 hover:text-err hover:border-err/30 transition-colors">
+                                <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+                              </button>
+                            </div>
+                          </template>
+                          <button type="button" x-show="!settingsNewHeaderOpen[name]" @click="settingsNewHeaderOpen[name] = true"
+                                  class="w-64 flex items-center justify-center gap-1.5 p-1.5 px-3 border border-dashed border-surface-700 rounded-lg text-surface-600 font-mono text-[12px] hover:text-tx-3 hover:border-edge-hover transition-colors">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M6 2v8M2 6h8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+                            add header
+                          </button>
+                          <div x-show="settingsNewHeaderOpen[name]" x-cloak class="flex items-center gap-2">
+                            <input type="text" x-model="settingsNewHeaderKey[name]" placeholder="X-Kontora" :aria-label="name + ' new header name'"
+                                   @keydown.enter.prevent="settingsNotifAddHeader(name)" @keydown.escape="settingsNewHeaderOpen[name] = false; settingsNewHeaderKey[name] = ''"
+                                   class="w-40 flex-none bg-surface-800 border border-surface-700/50 rounded px-3 py-1.5 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40">
+                            <button type="button" @click="settingsNotifAddHeader(name)"
+                                    :disabled="!(settingsNewHeaderKey[name] || '').trim()"
+                                    class="font-mono text-[12px] h-8 px-4 rounded bg-accent border border-accent text-accent-fg hover:bg-accent-bright transition-colors disabled:opacity-50">add</button>
+                            <button type="button" @click="settingsNewHeaderOpen[name] = false; settingsNewHeaderKey[name] = ''"
+                                    class="font-mono text-[12px] h-8 px-4 rounded bg-surface-900 border border-surface-700/60 text-tx-3">cancel</button>
+                          </div>
+                        </div>
+                      </div>
+                    </section>
+                  </template>
+
+                  <p x-show="!settingsNotifChannelNames().length && !settingsNewChannelOpen" class="m-0 text-[11.5px] text-tx-faint">
+                    No channels. Until one exists, a ticket's notify row has nowhere to send to.</p>
+
+                  <div class="flex items-center gap-2">
+                    <button type="button" x-show="!settingsNewChannelOpen" @click="settingsNewChannelOpen = true; $nextTick(() => $refs.newChannel && $refs.newChannel.focus())"
+                            class="w-64 flex items-center justify-center gap-1.5 p-2 px-3 border border-dashed border-surface-700 rounded-lg text-surface-600 font-mono text-[12px] hover:text-tx-3 hover:border-edge-hover transition-colors">
+                      <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M6 2v8M2 6h8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+                      add channel
+                    </button>
+                    <template x-if="settingsNewChannelOpen">
+                      <div class="flex items-center gap-2">
+                        <input x-ref="newChannel" type="text" x-model="settingsNewChannelName" placeholder="tg-me" aria-label="New channel name"
+                               @keydown.enter.prevent="settingsNotifAddChannel()" @keydown.escape="settingsNewChannelOpen = false; settingsNewChannelName = ''"
+                               class="w-64 bg-surface-800 border rounded-[7px] py-2 px-3 font-mono text-[12.5px] text-tx-2 focus:outline-none focus:border-accent/40"
+                               :class="settingsNewChannelName.trim() === settingsNotifNone ? 'border-err' : 'border-edge-input'">
+                        <button type="button" @click="settingsNotifAddChannel()"
+                                :disabled="!settingsNewChannelName.trim() || settingsNotifChannelNames().includes(settingsNewChannelName.trim())"
+                                class="font-mono text-[12px] h-8 px-4 rounded-md bg-accent border border-accent text-accent-fg hover:bg-accent-bright transition-colors disabled:opacity-50">add</button>
+                        <button type="button" @click="settingsNewChannelOpen = false; settingsNewChannelName = ''"
+                                class="font-mono text-[12px] h-8 px-4 rounded-md bg-surface-900 border border-surface-700/60 text-tx-3">cancel</button>
+                      </div>
+                    </template>
+                  </div>
+                  <p x-show="settingsNewChannelName.trim() === settingsNotifNone" x-cloak class="m-0 text-[11.5px] text-err">
+                    "none" is reserved for the opt-out and cannot name a channel.</p>
+
+                  <div class="flex gap-2.5 p-3 px-3.5 rounded-[9px] border border-warn/[0.22] bg-warn/[0.08]">
+                    <span class="font-mono text-[12px] text-warn">!</span>
+                    <span class="text-[12px] leading-[1.55] text-tx-3" x-text="settingsNotifAdvisory()"></span>
+                  </div>
                 </div>
 
                 <!-- ===== statuses ===== -->

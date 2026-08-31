@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.35.0](https://github.com/worksonmyai/kontora/compare/v0.34.0...v0.35.0) - 2026-08-31
+
+- Bump gh, opencode, pi and Claude Code in the image
+
 ## [0.33.0](https://github.com/worksonmyai/kontora/compare/v0.32.0...v0.33.0) - 2026-08-16
 
 - fix linter

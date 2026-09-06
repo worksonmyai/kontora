@@ -3096,6 +3096,11 @@ test("the edit form applies project defaults without changing the branch", () =>
       want: { pipeline: "implement", agent: "claude", branch: "" },
     },
     {
+      name: "dot segments are cleaned before matching",
+      from: "", fields: {}, to: "/home/u/projects/other/../kontora/.",
+      want: { pipeline: "implement", agent: "claude", branch: "" },
+    },
+    {
       name: "inherited values follow the retarget",
       from: "~/projects/kontora",
       fields: { pipeline: "implement", agent: "claude", branch: "" },
@@ -11555,8 +11560,8 @@ test("a remembered thread the daemon has dropped opens empty and quietly", async
 
 // The local wall time the schedule fields hold, and the instant it means. Built
 // with the runner's own zone so the assertions hold wherever the suite runs.
-const SCHED_LOCAL = "2026-09-01T09:00";
-const SCHED_ISO = new Date(2026, 8, 1, 9, 0, 0, 0).toISOString().replace(/\.\d{3}Z$/, "Z");
+const SCHED_LOCAL = "2099-09-01T09:00";
+const SCHED_ISO = new Date(2099, 8, 1, 9, 0, 0, 0).toISOString().replace(/\.\d{3}Z$/, "Z");
 
 // A component whose fetch records what was posted where.
 function scheduleState() {
@@ -11599,7 +11604,7 @@ test("the create form sends the instant its start-at field means", async () => {
 
 test("the start-at field takes both grammars kontora schedule takes", async () => {
   const cases = [
-    { name: "a space between date and time", text: "2026-09-01 09:00", want: SCHED_ISO },
+    { name: "a space between date and time", text: "2099-09-01 09:00", want: SCHED_ISO },
     { name: "a T between date and time", text: SCHED_LOCAL, want: SCHED_ISO },
     { name: "a delay in hours", text: "24h", want: null },
     { name: "a delay in days", text: "3d", want: null },
@@ -11622,7 +11627,7 @@ test("the start-at field takes both grammars kontora schedule takes", async () =
 test("start-at refuses what it cannot read rather than creating an unscheduled ticket", async () => {
   // A bare date is the trap: Date reads that form as UTC, so accepting it would
   // schedule the ticket for midnight in some other zone.
-  for (const bad of ["2026-09", "2026-09-01", "not a date", "3 days", "2020-01-01 09:00"]) {
+  for (const bad of ["2099-09", "2099-09-01", "not a date", "3 days", "2020-01-01 09:00"]) {
     const { state, posted } = scheduleState();
     await createLater(state, bad);
 
@@ -11662,8 +11667,8 @@ test("the echo line names the instant in the reader's own zone", async () => {
   await createLater(state, SCHED_LOCAL);
 
   const echo = state.createScheduleEcho();
-  const local = new Date(2026, 8, 1, 9, 0, 0, 0);
-  assert.match(echo.long, /^Tue 1 Sep 2026, 09:00$/, echo.long);
+  const local = new Date(2099, 8, 1, 9, 0, 0, 0);
+  assert.match(echo.long, /^Tue 1 Sep 2099, 09:00$/, echo.long);
   assert.equal(new Date(echo.rfc).getTime(), local.getTime(), "the echoed instant is the one being sent");
   assert.match(echo.distance, /^in /);
 });
@@ -12341,9 +12346,10 @@ test("the notify mode is read off the statuses instead of being stored beside th
   assert.equal(mode([]), "off");
   // Order is not part of the answer: the file may list them any way round.
   assert.equal(mode(["waiting", "paused", "human_review"]), "needs");
-  assert.equal(mode(["done"]), "done");
+  assert.equal(mode(["done", "human_review"]), "done");
   // One status short of a mode is not that mode.
   assert.equal(mode(["paused", "human_review"]), "custom");
+  assert.equal(mode(["done"]), "custom");
   assert.equal(mode(["done", "cancelled"]), "custom");
 });
 
@@ -12402,22 +12408,34 @@ test("the echo line and the rail value say the same thing two ways", () => {
   assert.equal(state.notifyLabel(form), "when it needs me → tg");
 
   state.notifyPickMode(form, "done");
+  assert.deepEqual(vmValue(form.notify), ["human_review", "done"]);
   assert.equal(state.notifyLabel(form), "when finished → tg");
 
   // A custom list spells its statuses out: a label nobody can read back is a
   // label nobody can trust.
   state.notifyToggleStatus(form, "paused");
-  assert.equal(state.notifyLabel(form), "done, paused → tg");
+  assert.equal(state.notifyLabel(form), "human_review, done, paused → tg");
 });
 
-test("the channel row only appears once there is a second channel to pick", () => {
+test("the channel row appears for a choice or an unrouted notification", () => {
   const state = notifyState();
-  assert.equal(state.notifyPicksChannel(), false);
+  const form = { notify: ["human_review", "done"], notifyChannels: [], path: "~/projects/kontora" };
+  assert.equal(state.notifyPicksChannel(form), false, "one inherited channel needs no choice");
 
+  state.configCache.default_channels = [];
+  assert.equal(state.notifyPicksChannel(form), true, "the only channel must be offered when inheritance finds nothing");
+
+  state.configCache.channels = [];
+  assert.equal(state.notifyPicksChannel(form), true, "silence remains available when no channel is configured");
+  assert.deepEqual(
+    vmValue(state.notifyChannelChips(form)).map((c) => c.key),
+    ["inherit", "none"],
+  );
+
+  state.configCache.default_channels = ["tg"];
   state.configCache.channels = ["tg", "ops"];
-  assert.equal(state.notifyPicksChannel(), true);
+  assert.equal(state.notifyPicksChannel(form), true, "multiple channels are always a choice");
 
-  const form = { notify: ["done"], notifyChannels: [], path: "~/projects/kontora" };
   const chips = () => vmValue(state.notifyChannelChips(form)).map((c) => [c.key, c.on]);
 
   // Inherit is what a ticket that names nothing is on.
@@ -12437,6 +12455,108 @@ test("the channel row only appears once there is a second channel to pick", () =
   assert.deepEqual(vmValue(form.notifyChannels), ["none"]);
 });
 
+test("an unrouted notification is invalid unless it is explicitly silenced", () => {
+  const state = notifyState();
+  const form = { notify: ["human_review", "done"], notifyChannels: [], path: "~/projects/kontora" };
+
+  assert.equal(state.notifyRouteError(form), "");
+  state.configCache.default_channels = [];
+  assert.equal(state.notifyRouteError(form), "Choose a notification channel, configure an inherited route, or turn notifications off.");
+
+  state.configCache.projects[0].notify_channels = ["tg"];
+  form.path = "/home/a/projects/other/../kontora/.";
+  assert.equal(state.notifyRouteError(form), "", "project matching cleans dot segments like the daemon");
+  state.configCache.projects[0].notify_channels = [];
+  form.path = "~/projects/kontora";
+
+  form.notifyChannels = ["none"];
+  assert.equal(state.notifyRouteError(form), "");
+
+  form.notifyChannels = [];
+  state.configCache.default_channels = ["none"];
+  assert.equal(state.notifyRouteError(form), "", "an inherited silence is deliberate");
+  assert.match(state.notifyChannelHint(form), /^Inherited: silenced by notifications\.default\./);
+
+  state.configCache.default_channels = [];
+  state.configCache.projects[0].notify_channels = ["none"];
+  assert.equal(state.notifyRouteError(form), "", "a project silence is deliberate");
+  assert.match(state.notifyChannelHint(form), /^Inherited: silenced by project kontora\./);
+
+  form.notify = [];
+  state.configCache.projects[0].notify_channels = [];
+  assert.equal(state.notifyRouteError(form), "");
+});
+
+test("the init modal does not start a ticket with an accidental silent route", async () => {
+  const seen = [];
+  const state = notifyState({ fetch: async (...args) => { seen.push(args); return { ok: true }; } });
+  state.configCache.default_channels = [];
+  state.initForm = {
+    ticketId: "kon-1", path: "/home/a/projects/kontora", pipeline: "build", agent: "claude",
+    branch: "", notify: ["human_review", "done"], notifyChannels: [],
+  };
+
+  await state.submitInitTicket();
+
+  assert.equal(seen.length, 0);
+  assert.equal(state.initSubmitting, false);
+  assert.equal(state.initError, "Choose a notification channel, configure an inherited route, or turn notifications off.");
+
+  state.notifyToggleChannel(state.initForm, { key: "tg", kind: "channel", on: false });
+  assert.equal(state.initError, null);
+  await state.submitInitTicket();
+  assert.equal(seen.length, 1);
+  assert.deepEqual(JSON.parse(seen[0][1].body).notify_channels, ["tg"]);
+});
+
+test("changing the init path clears an unrouted error when the project supplies a route", async () => {
+  const seen = [];
+  const state = notifyState({ fetch: async (...args) => { seen.push(args); return { ok: true }; } });
+  state.configCache.default_channels = [];
+  state.configCache.projects[0].notify_channels = ["tg"];
+  state.initForm = {
+    ticketId: "kon-1", path: "/elsewhere", pipeline: "build", agent: "claude", branch: "",
+    notify: ["human_review", "done"], notifyChannels: [],
+  };
+  state._initInherited = { pipeline: "", agent: "" };
+
+  await state.submitInitTicket();
+  assert.ok(state.initError);
+
+  state.initForm.path = "/home/a/projects/kontora";
+  state.onInitPathChange();
+  assert.equal(state.initError, null);
+
+  await state.submitInitTicket();
+  assert.equal(seen.length, 1);
+});
+
+test("the rail waits for a channel before saving an enabled notification", async () => {
+  const seen = [];
+  const state = notifyState({
+    fetch: async (url, opts) => {
+      seen.push({ url, body: JSON.parse(opts.body) });
+      return { ok: true, json: async () => ({ id: "kon-1", status: "todo", notify: ["human_review", "done"], notify_channels: ["tg"], body: "" }) };
+    },
+  });
+  state.configCache.default_channels = [];
+  state.tickets = [{ id: "kon-1", status: "todo" }];
+  state.selectedTicket = { id: "kon-1", status: "todo", path: "/home/a/projects/kontora", notify: [], notify_channels: [] };
+  state.notifyDraft = {
+    notify: ["human_review", "done"], notifyChannels: [], path: "/home/a/projects/kontora", autosave: true,
+  };
+
+  await state.saveNotify();
+  assert.equal(seen.length, 0);
+  assert.equal(state.notifyError, "Choose a notification channel, configure an inherited route, or turn notifications off.");
+
+  state.notifyToggleChannel(state.notifyDraft, { key: "tg", kind: "channel", on: false });
+  await flushMicrotasks();
+  assert.equal(seen.length, 1);
+  assert.deepEqual(seen[0].body, { notify: ["human_review", "done"], notify_channels: ["tg"] });
+  assert.equal(state.notifyError, null);
+});
+
 test("the channel hint names what the ticket will actually do", () => {
   const state = notifyState();
   state.configCache.channels = ["tg", "ops"];
@@ -12445,10 +12565,13 @@ test("the channel hint names what the ticket will actually do", () => {
   // No status beats every channel state.
   assert.match(hint({ notify: [], notifyChannels: ["ops"], path: "~/projects/kontora" }), /^Silent\./);
   assert.match(hint({ notify: ["done"], notifyChannels: ["none"], path: "" }), /^Silenced for this ticket\./);
-  assert.match(hint({ notify: ["done"], notifyChannels: ["ops"], path: "~/projects/kontora" }), /^Overrides project kontora /);
-  assert.match(hint({ notify: ["done"], notifyChannels: [], path: "~/projects/kontora" }), /^Inherited: resolves to tg, from project kontora\./);
-  // A path no project owns inherits from the global default by name.
-  assert.match(hint({ notify: ["done"], notifyChannels: [], path: "~/elsewhere" }), /from notifications\.default\./);
+  assert.match(hint({ notify: ["done"], notifyChannels: ["ops"], path: "~/projects/kontora" }), /^Overrides notifications\.default /);
+  assert.match(hint({ notify: ["done"], notifyChannels: [], path: "~/projects/kontora" }), /^Inherited: resolves to tg, from notifications\.default\./);
+  state.configCache.projects[0].notify_channels = ["ops"];
+  assert.match(hint({ notify: ["done"], notifyChannels: [], path: "~/projects/kontora" }), /^Inherited: resolves to ops, from project kontora\./);
+  state.configCache.projects[0].notify_channels = [];
+  state.configCache.default_channels = [];
+  assert.match(hint({ notify: ["done"], notifyChannels: ["ops"], path: "~/projects/kontora" }), /^Set for this ticket because no project or default route applies\./);
 });
 
 test("the rail row is read-only exactly where the API refuses a frontmatter edit", () => {
@@ -12468,7 +12591,7 @@ test("a rail edit saves at once and folds the answer back into the board", async
   const state = notifyState({
     fetch: async (url, opts) => {
       seen.push({ url, body: JSON.parse(opts.body) });
-      return { ok: true, json: async () => ({ id: "kon-1", status: "todo", notify: ["done"], notify_channels: [], body: "" }) };
+      return { ok: true, json: async () => ({ id: "kon-1", status: "todo", notify: ["human_review", "done"], notify_channels: [], body: "" }) };
     },
   });
   state.tickets = [{ id: "kon-1", status: "todo" }];
@@ -12484,8 +12607,8 @@ test("a rail edit saves at once and folds the answer back into the board", async
   assert.equal(seen[0].url, "/api/tickets/kon-1");
   // Both fields on every request: they are edited together, and the channel
   // list has to survive a change to the statuses.
-  assert.deepEqual(seen[0].body, { notify: ["done"], notify_channels: ["tg"] });
-  assert.deepEqual(vmValue(state.selectedTicket.notify), ["done"]);
+  assert.deepEqual(seen[0].body, { notify: ["human_review", "done"], notify_channels: ["tg"] });
+  assert.deepEqual(vmValue(state.selectedTicket.notify), ["human_review", "done"]);
 });
 
 test("the rail editor does not carry one ticket's statuses onto the next", async () => {

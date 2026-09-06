@@ -269,7 +269,9 @@ func TestNotifyStaysSilentForRequestedChanges(t *testing.T) {
 			tt.change(t, d, "n-3")
 
 			require.Eventually(t, func() bool {
-				return rec.lastFor(t, "n-3").Origin == notify.OriginRequest
+				return slices.ContainsFunc(rec.all(), func(obs notify.Observation) bool {
+					return obs.ID == "n-3" && obs.Origin == notify.OriginRequest
+				})
 			}, 5*time.Second, 20*time.Millisecond)
 			assert.Empty(t, rec.sends(t), "a change a person asked for must not send")
 		})

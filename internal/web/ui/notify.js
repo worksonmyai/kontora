@@ -9,8 +9,10 @@
 const NOTIFY_MODES = [
   { key: 'off', label: 'off', statuses: [] },
   { key: 'needs', label: 'when it needs me', statuses: ['paused', 'human_review', 'waiting'] },
-  { key: 'done', label: 'when it is finished', statuses: ['done'] },
+  { key: 'done', label: 'when it is finished', statuses: ['human_review', 'done'] },
 ];
+
+const NOTIFY_ROUTE_ERROR = 'Choose a notification channel, configure an inherited route, or turn notifications off.';
 
 // Chip order: what the two modes write first, then the rest of the board. The
 // hues come from .notify-chip[data-status] in index.html, so a status with no
@@ -72,23 +74,27 @@ export function kontoraNotify() {
       this.notifyChanged(form);
     },
 
-    // The channels a ticket's notifications go to: its own list, else its
-    // project's, else the global default, with `none` anywhere in the winning
-    // list meaning nowhere. It mirrors config.NotifyChannelsFor rather than
-    // reading a resolved field off the ticket, because the init modal states
-    // the channel for a path the user is still typing.
-    notifyResolve(form) {
-      var project = this.projectForPath(form && form.path) || {};
-      var lists = [
-        (form && form.notifyChannels) || [],
-        project.notify_channels || [],
-        this.configCache?.default_channels || [],
+    // The route follows config.NotifyChannelsFor, but keeps its source and an
+    // explicit silence so the form can explain an empty result accurately.
+    notifyRoute(form) {
+      var project = this.projectForPath(form && form.path);
+      var choices = [
+        { channels: (form && form.notifyChannels) || [], source: 'ticket' },
       ];
-      for (var i = 0; i < lists.length; i++) {
-        if (!lists[i].length) continue;
-        return lists[i].includes(NOTIFY_SILENCE) ? [] : lists[i].slice();
-      }
-      return [];
+      if (project) choices.push({ channels: project.notify_channels || [], source: 'project ' + project.name });
+      choices.push({ channels: this.configCache?.default_channels || [], source: 'notifications.default' });
+
+      var route = choices.find(c => c.channels.length) || { channels: [], source: '' };
+      var silenced = route.channels.includes(NOTIFY_SILENCE);
+      return {
+        channels: silenced ? [] : route.channels.slice(),
+        silenced,
+        source: route.source,
+      };
+    },
+
+    notifyResolve(form) {
+      return this.notifyRoute(form).channels;
     },
 
     // The `→ tg` line beside the segmented control. Empty while no status is
@@ -100,6 +106,13 @@ export function kontoraNotify() {
       if (!((form && form.notify) || []).length) return '';
       var channels = this.notifyResolve(form);
       return '→ ' + (channels.length ? channels.join(', ') : 'no channel');
+    },
+
+    notifyRouteError(form) {
+      var statuses = (form && form.notify) || [];
+      var route = this.notifyRoute(form);
+      if (!statuses.length || route.silenced || route.channels.length) return '';
+      return NOTIFY_ROUTE_ERROR;
     },
 
     // The YAML this row is about to write, in the spelling the file gets. Same
@@ -123,10 +136,14 @@ export function kontoraNotify() {
       return what + ' ' + this.notifyWhere(form);
     },
 
-    // Whether the row asks for a channel at all. With one channel configured
-    // there is nothing to choose, so it states the resolved one instead.
-    notifyPicksChannel() {
-      return (this.configCache?.channels || []).length > 1;
+    // An unrouted notification keeps the silence option available even when no
+    // delivery channel exists.
+    notifyPicksChannel(form) {
+      var configured = this.configCache?.channels || [];
+      if (configured.length > 1) return true;
+      var own = (form && form.notifyChannels) || [];
+      var active = ((form && form.notify) || []).length > 0;
+      return own.length > 0 || (active && this.notifyResolve(form).length === 0);
     },
 
     // The channel chips, in the same vocabulary as the status ones: what the
@@ -174,24 +191,28 @@ export function kontoraNotify() {
       if (own.includes(NOTIFY_SILENCE)) {
         return 'Silenced for this ticket. The status list is kept, so removing the silence resumes it.';
       }
-      var project = this.projectForPath(form && form.path);
-      var from = project ? 'project ' + project.name : 'notifications.default';
+      var inherited = this.notifyRoute({ path: form && form.path, notifyChannels: [] });
       if (own.length) {
-        return 'Overrides ' + from + ' for this ticket. The same channel twice is one message.';
+        if (!inherited.source) return 'Set for this ticket because no project or default route applies.';
+        return 'Overrides ' + inherited.source + ' for this ticket. The same channel twice is one message.';
       }
-      var inherited = this.notifyResolve({ path: form && form.path, notifyChannels: [] });
-      if (!inherited.length) {
+      if (inherited.silenced) {
+        return 'Inherited: silenced by ' + inherited.source + '. Pick a channel to override it for this ticket alone.';
+      }
+      if (!inherited.channels.length) {
         return 'Inherited: nothing is configured to receive it. Set notifications.default or the project\'s notify_channels.';
       }
-      return 'Inherited: resolves to ' + inherited.join(', ') + ', from ' + from + '. Pick a channel to override it for this ticket alone.';
+      return 'Inherited: resolves to ' + inherited.channels.join(', ') + ', from ' + inherited.source + '. Pick a channel to override it for this ticket alone.';
     },
 
-    // What a form does after any change to either field. The init modal submits
-    // with the rest of the form and needs nothing; the rail saves at once, and
-    // says so with a flag on the draft rather than an identity check, which
-    // Alpine's proxies make an unreliable way to tell two objects apart.
+    // The autosave flag distinguishes the rail draft from the init form because
+    // Alpine's proxies make object identity unreliable here.
     notifyChanged(form) {
-      if (form && form.autosave) this.saveNotify();
+      if (form && form.autosave) {
+        this.saveNotify();
+      } else {
+        this.initError = null;
+      }
     },
 
     // ─── the details rail row ───
@@ -244,8 +265,13 @@ export function kontoraNotify() {
     async saveNotify() {
       var t = this.selectedTicket;
       if (!t || !this.notifyDraft) return;
-      this.notifySaving = true;
       this.notifyError = null;
+      var routeError = this.notifyRouteError(this.notifyDraft);
+      if (routeError) {
+        this.notifyError = routeError;
+        return;
+      }
+      this.notifySaving = true;
       try {
         const res = await fetch('/api/tickets/' + t.id, {
           method: 'PUT',

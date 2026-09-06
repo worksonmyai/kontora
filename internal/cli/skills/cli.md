@@ -107,7 +107,7 @@ Exits 0 whether or not anything matched.
 - `--base-branch NAME` — branch the work branch starts from.
 - `--status STATUS` — `open` or `todo`. Defaults to `todo`.
 - `--at TIME` — schedule pickup for an instant: RFC 3339, or a local wall time
-  such as `"2026-09-01 09:00"`.
+  such as `"2099-09-01 09:00"`.
 - `--after DURATION` — schedule pickup this long from now, e.g. `90m`, `24h`,
   `3d`, `2w`.
 - `--description-file PATH` — read the body from a file, `-` for stdin.
@@ -183,7 +183,7 @@ clear the time the daemon moves an `open` ticket to `todo`. Needs a running
 daemon. Exactly one of the three flags is required.
 
 - `--at TIME` — an RFC 3339 instant or a local wall time such as
-  `"2026-09-01 09:00"`, stored normalized to UTC. A date with no time is
+  `"2099-09-01 09:00"`, stored normalized to UTC. A date with no time is
   refused. An instant already in the past is refused.
 - `--after DURATION` — a duration from now (Go's units plus `d` and `w`, so
   `3d` and `1w2d3h` both work), resolved on this machine's clock.

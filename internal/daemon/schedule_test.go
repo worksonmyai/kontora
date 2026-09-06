@@ -566,7 +566,7 @@ func TestRunTicketRefusesARunningTicket(t *testing.T) {
 // Clearing, rescheduling or deleting the nearest ticket must move the loop's
 // next wake-up, and must not act on the ticket the stale deadline named.
 func TestScheduleRecalculatesAfterChanges(t *testing.T) {
-	now := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	now := time.Date(2099, 9, 1, 12, 0, 0, 0, time.UTC)
 	near := ticket.FormatSchedule(now.Add(10 * time.Second))
 	far := ticket.FormatSchedule(now.Add(45 * time.Second))
 

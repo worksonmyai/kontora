@@ -18,7 +18,7 @@ const FieldScheduledAt = "scheduled_at"
 func ParseSchedule(s string) (time.Time, error) {
 	at, err := time.Parse(time.RFC3339, s)
 	if err != nil {
-		return time.Time{}, fmt.Errorf("%s must be an RFC 3339 timestamp such as 2026-09-01T09:00:00Z, got %q", FieldScheduledAt, s)
+		return time.Time{}, fmt.Errorf("%s must be an RFC 3339 timestamp such as 2099-09-01T09:00:00Z, got %q", FieldScheduledAt, s)
 	}
 	return at, nil
 }
@@ -74,7 +74,7 @@ func (t *Ticket) ClearSchedule() error {
 var scheduleLocalLayouts = []string{"2006-01-02 15:04:05", "2006-01-02T15:04:05", "2006-01-02 15:04", "2006-01-02T15:04"}
 
 // ParseScheduleFlex reads a pickup time the way a person spells one: RFC 3339,
-// or a local wall time such as "2026-09-01 09:00".
+// or a local wall time such as "2099-09-01 09:00".
 //
 // It is the front door for flag and free-text input only. ParseSchedule stays
 // the parser for stored and wire values, because the field is compared as text
@@ -95,7 +95,7 @@ func ParseScheduleFlex(s string) (time.Time, error) {
 			return at, nil
 		}
 	}
-	return time.Time{}, fmt.Errorf("%s must be an RFC 3339 instant such as 2026-09-01T09:00:00Z or a local time such as \"2026-09-01 09:00\", got %q", FieldScheduledAt, s)
+	return time.Time{}, fmt.Errorf("%s must be an RFC 3339 instant such as 2099-09-01T09:00:00Z or a local time such as \"2099-09-01 09:00\", got %q", FieldScheduledAt, s)
 }
 
 // scheduleDayUnits matches the day and week units time.ParseDuration does not

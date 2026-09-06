@@ -214,7 +214,7 @@ export function kontoraPalette() {
       if (!parsed || !parsed.iso) {
         rows.push(this._paletteScheduleRow(t, {
           key: 'type', glyph: '⌨', title: parsed && parsed.error ? parsed.error : 'type a time or a duration',
-          sub: '2026-09-01 09:00 · 24h · 3d · 2w',
+          sub: '2099-09-01 09:00 · 24h · 3d · 2w',
         }));
       }
       return rows;
@@ -660,7 +660,7 @@ export function kontoraPalette() {
 
     palettePlaceholder() {
       if (!this.paletteScope) return 'Search tickets, or type a command…';
-      if (this.paletteScopeKind === 'schedule') return 'A time or a duration: 2026-09-01 09:00, 24h, 3d…';
+      if (this.paletteScopeKind === 'schedule') return 'A time or a duration: 2099-09-01 09:00, 24h, 3d…';
       return 'Action for ' + this.paletteScope + '…';
     },
 

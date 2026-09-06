@@ -409,7 +409,7 @@ func cmdNew() {
 	status := fs.String("status", "", "initial status, open or todo (defaults to todo)")
 	kind := fs.String("kind", "", "\"epic\" for a ticket that groups others through their parent")
 	parent := fs.String("parent", "", "id of the epic to file this ticket under")
-	at := fs.String("at", "", "schedule pickup for an instant, e.g. 2026-09-01T09:00:00+02:00 or \"2026-09-01 09:00\"")
+	at := fs.String("at", "", "schedule pickup for an instant, e.g. 2099-09-01T09:00:00+02:00 or \"2099-09-01 09:00\"")
 	after := fs.String("after", "", "schedule pickup this long from now, e.g. 90m, 24h, 3d, 2w")
 	descriptionFile := fs.String("description-file", "", "read the ticket description from a file ('-' for stdin)")
 	quiet := fs.Bool("quiet", false, "print only the new ticket ID")
@@ -737,7 +737,7 @@ func runOutcome(blockers []string) string {
 func cmdSchedule() {
 	fs := flag.NewFlagSet("schedule", flag.ExitOnError)
 	configPath, ticketsDir := addStoreFlags(fs)
-	at := fs.String("at", "", "pickup time as an instant, e.g. 2026-09-01T09:00:00+02:00 or \"2026-09-01 09:00\"")
+	at := fs.String("at", "", "pickup time as an instant, e.g. 2099-09-01T09:00:00+02:00 or \"2099-09-01 09:00\"")
 	after := fs.String("after", "", "pickup time this long from now, e.g. 90m, 24h, 3d, 2w")
 	clearFlag := fs.Bool("clear", false, "remove the schedule and leave the ticket open")
 	urlFlag, tokenFlag := addRemoteFlags(fs)

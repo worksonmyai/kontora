@@ -123,7 +123,9 @@ A `done` notification carries the ticket's per-run `summary`. It fires from the 
 
 Three things that would otherwise make a ticket quiet with no explanation are warned about when the daemon reads it, at startup and on every later edit, and then ignored: a status in `notify` that nothing reaches, a channel name nothing answers to, and a `notify:` list that resolves to no channel at all. A malformed `notify:` value makes the whole ticket unparseable, the same as a malformed `deps:`.
 
-Both fields are also editable from the dashboard, in the `notify me` row of the start-ticket modal and in the `notify` row of a ticket's details rail. The row asks one question with three answers — off, when it needs me (`[paused, human_review, waiting]`), when it is finished (`[done]`) — and puts the full status set behind `custom`. It states the channel it resolves to rather than asking, until a second channel is configured. The rail row opens only where the API accepts a frontmatter edit, so a running ticket shows its setting and cannot change it: an agent owns the file, and the write would be lost when the run puts it back.
+Both fields are editable from the dashboard. The start-ticket modal uses `notify me`; the details rail uses `notify`. The row has three presets: off, when it needs me (`[paused, human_review, waiting]`), and when it is finished (`[human_review, done]`). The full status set is behind `custom`.
+
+The row states one inherited channel instead of asking for it. If no inherited route exists, the channel picker appears. The dashboard refuses to save or start until the ticket has a route, is silenced, or turns notifications off. The rail row opens only where the API accepts a frontmatter edit. A running ticket shows its setting but cannot change it because the agent owns the file.
 
 The API takes them too: `notify` and `notify_channels` on `POST /api/tickets/{id}/init` and `PUT /api/tickets/{id}`. An absent key leaves the ticket's own field alone and `[]` removes it. Unlike a hand edit, a request naming a status nothing reaches or a channel nothing answers to is refused with a 400 rather than warned about.
 
@@ -133,12 +135,12 @@ The API takes them too: `notify` and `notify_channels` on `POST /api/tickets/{id
 
 ```yaml
 status: open
-scheduled_at: "2026-09-01T07:00:00Z"
+scheduled_at: "2099-09-01T07:00:00Z"
 ```
 
 Write it with [`kontora schedule`](cli.md#kontora-schedule-ticket_id), with `kontora new --at`/`--after`, or from the dashboard — the ticket detail panel, the schedule scope in the command palette, the Start-at field on the new-ticket page, or the phone's schedule sheet. All of them normalize the instant to UTC, second precision, so a schedule set from two time zones compares equal, and all of them refuse an instant already in the past: a mistyped year would otherwise start the agent at once.
 
-The time itself is written the same way everywhere: an absolute instant (`2026-09-01T09:00:00+02:00`, or `"2026-09-01 09:00"` in your own zone) or a delay from now (`90m`, `24h`, `3d`, `2w`). A date with no time is refused, because which midnight it means depends on the zone reading it.
+The time itself is written the same way everywhere: an absolute instant (`2099-09-01T09:00:00+02:00`, or `"2099-09-01 09:00"` in your own zone) or a delay from now (`90m`, `24h`, `3d`, `2w`). A date with no time is refused, because which midnight it means depends on the zone reading it.
 
 The timestamp is a one-time trigger, not a status. A scheduled ticket sits in the Open column and stays out of the ready queue until its deadline, and its card shows the time it starts in your own zone.
 

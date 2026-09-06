@@ -11,6 +11,29 @@ export function newCreateForm() {
 // branch and the daemon names one at pickup.
 const BRANCH_PLACEHOLDER = 'daemon assigns branch when run starts';
 
+// Project lookup has to clean paths the way filepath.Clean does in the daemon;
+// otherwise a valid dot segment changes notification routing and defaults.
+function cleanProjectPath(raw) {
+  var path = (raw || '').trim();
+  if (!path) return '';
+  var rooted = path.startsWith('/');
+  var home = path.startsWith('~/');
+  var rest = rooted ? path.slice(1) : home ? path.slice(2) : path;
+  var parts = [];
+  rest.split('/').forEach(part => {
+    if (!part || part === '.') return;
+    if (part === '..') {
+      if (parts.length && parts[parts.length - 1] !== '..') parts.pop();
+      else if (!rooted && !home) parts.push(part);
+      return;
+    }
+    parts.push(part);
+  });
+  if (rooted) return '/' + parts.join('/');
+  if (home) return parts.length ? '~/' + parts.join('/') : '~';
+  return parts.join('/') || '.';
+}
+
 // The create-ticket modal and the init-from-an-existing-file modal.
 export function kontoraCreate() {
   return {
@@ -47,7 +70,7 @@ export function kontoraCreate() {
       var index = Object.create(null);
       projects.forEach(p => {
         [p.path, p.resolved_path].forEach(raw => {
-          var norm = (raw || '').trim().replace(/\/+$/, '');
+          var norm = cleanProjectPath(raw);
           // First project wins, matching the find() this replaces.
           if (norm && index[norm] === undefined) index[norm] = p;
         });
@@ -59,7 +82,7 @@ export function kontoraCreate() {
 
     // The project configured for a repository path.
     projectForPath(path) {
-      var typed = (path || '').trim().replace(/\/+$/, '');
+      var typed = cleanProjectPath(path);
       if (!typed) return null;
       return this._projectIndex()[typed] || null;
     },
@@ -425,6 +448,7 @@ export function kontoraCreate() {
         this.initForm.agent = next.agent;
       }
       this._initInherited = next;
+      this.initError = null;
     },
 
     closeInitModal() {
@@ -475,8 +499,14 @@ export function kontoraCreate() {
 
     async submitInitTicket() {
       if (!this.initForm.path) return;
-      this.initSubmitting = true;
       this.initError = null;
+      var routeError = this.notifyRouteError(this.initForm);
+      if (routeError) {
+        this.initError = routeError;
+        this.initSubmitting = false;
+        return;
+      }
+      this.initSubmitting = true;
       try {
         const res = await fetch('/api/tickets/' + this.initForm.ticketId + '/init', {
           method: 'POST',

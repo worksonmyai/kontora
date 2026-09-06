@@ -1102,10 +1102,10 @@
             </div>
             <p x-show="!initBranchResolved()" class="text-[11px] text-surface-600">Enter a branch only to override automatic naming.</p>
           </div>
-          <!-- notify: one question with three answers. The channel is resolved
-               and stated rather than asked for, until a second one is
-               configured and there is something to choose. The full status set
-               is one click away under `custom`. -->
+          <!-- notify: one question with three answers. A resolved single
+               channel is stated rather than asked for. An unrouted notification
+               exposes the channel picker so the ticket cannot start silently.
+               The full status set is one click away under `custom`. -->
           <div class="flex flex-col gap-[8px]">
             <label class="font-mono text-[11px] tracking-[.06em] uppercase text-tx-faint">notify me</label>
             <div class="flex items-center gap-[10px] flex-wrap">
@@ -1116,7 +1116,7 @@
                           x-text="m.label"></button>
                 </template>
               </div>
-              <span x-show="!notifyPicksChannel()" class="font-mono text-[11px] text-surface-600" x-text="notifyWhere(initForm)"></span>
+              <span x-show="!notifyPicksChannel(initForm)" class="font-mono text-[11px] text-surface-600" x-text="notifyWhere(initForm)"></span>
               <button type="button" class="ml-auto font-mono text-[11px] text-accent hover:underline"
                       :aria-expanded="initNotifyOpen" @click="initNotifyOpen = !initNotifyOpen">custom</button>
             </div>
@@ -1128,9 +1128,9 @@
                         @click="notifyToggleStatus(initForm, s)" x-text="s"></button>
               </template>
             </div>
-            <!-- The channel row replaces the resolved line once more than one
-                 channel exists. Below one there is nothing to pick. -->
-            <template x-if="notifyPicksChannel()">
+            <!-- The channel row replaces the resolved line when there is a
+                 choice to make or an unrouted notification to fix. -->
+            <template x-if="notifyPicksChannel(initForm)">
               <div class="flex flex-col gap-[6px]">
                 <div class="flex flex-wrap items-center gap-[6px]">
                   <template x-for="c in notifyChannelChips(initForm)" :key="c.key">
@@ -2949,7 +2949,7 @@
                                 @click="notifyToggleStatus(notifyDraft, s)" x-text="s"></button>
                       </template>
                     </div>
-                    <template x-if="notifyPicksChannel()">
+                    <template x-if="notifyPicksChannel(notifyDraft)">
                       <div class="flex flex-col gap-[6px]">
                         <div class="flex flex-wrap items-center gap-[6px]">
                           <template x-for="c in notifyChannelChips(notifyDraft)" :key="c.key">
@@ -3384,7 +3384,7 @@
                        :class="createScheduleISO() ? 'sched-input-set' : (createScheduleError() ? 'border-err/50' : 'border-surface-700/50')">
                     <input id="new-scheduled-at" x-model="createForm.scheduled_at" @input="onCreateScheduleChange()" type="text"
                            class="flex-1 min-w-0 bg-transparent font-mono text-sm text-tx-2 focus:outline-none"
-                           placeholder="2026-09-01 09:00">
+                           placeholder="2099-09-01 09:00">
                     <template x-if="!createForm.scheduled_at">
                       <span class="flex items-center gap-2 shrink-0">
                         <span class="w-px h-4 bg-surface-700"></span>
@@ -6030,7 +6030,7 @@
                      duration, with the native picker behind the icon. -->
                 <div style="display:flex;align-items:center;gap:12px;height:52px;padding:0 14px;border-radius:11px;background:rgba(var(--surface-950),1);border:1px solid rgba(var(--surface-700),.6);">
                   <input x-model="scheduleDraft" @input="scheduleError = null" type="text" inputmode="text"
-                         placeholder="2026-09-01 09:00 · 24h · 3d"
+                         placeholder="2099-09-01 09:00 · 24h · 3d"
                          style="flex:1;min-width:0;background:transparent;border:0;outline:none;font-family:'JetBrains Mono',monospace;font-size:14px;color:rgba(var(--tx),1);"/>
                   <button style="color:rgba(var(--tx-3),1);display:flex;flex:none;width:44px;height:44px;align-items:center;justify-content:flex-end;background:transparent;border:0;" aria-label="Pick a date"
                           @click="$refs.mobileSchedulePicker.showPicker ? $refs.mobileSchedulePicker.showPicker() : $refs.mobileSchedulePicker.click()">

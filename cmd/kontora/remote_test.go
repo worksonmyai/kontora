@@ -441,9 +441,9 @@ func TestRemoteScheduleSendsAnInstant(t *testing.T) {
 	}{
 		{
 			name: "--at is normalized to UTC",
-			args: []string{"schedule", "abc", "--at", "2026-09-01T11:00:00+02:00"},
+			args: []string{"schedule", "abc", "--at", "2099-09-01T11:00:00+02:00"},
 			want: func(t *testing.T, body map[string]any) {
-				assert.Equal(t, "2026-09-01T09:00:00Z", body["scheduled_at"])
+				assert.Equal(t, "2099-09-01T09:00:00Z", body["scheduled_at"])
 				assert.Nil(t, body["clear"])
 			},
 		},

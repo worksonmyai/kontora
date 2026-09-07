@@ -116,13 +116,15 @@ func TestSendKeysUnderReadOnlyClient(t *testing.T) {
 	// TMUX_TMPDIR then overruns the ~104-byte sun_path limit on macOS.
 	tmpdir, err := os.MkdirTemp("", "kt")
 	require.NoError(t, err)
+	t.Setenv("TMUX", "")
 	t.Setenv("TMUX_TMPDIR", tmpdir)
+
+	session := "kontora-rotest-" + randomSuffix()
 	t.Cleanup(func() {
-		_ = exec.Command("tmux", "kill-server").Run()
+		_ = exec.Command("tmux", "kill-session", "-t", "="+session).Run()
 		_ = os.RemoveAll(tmpdir)
 	})
 
-	session := "kontora-rotest-" + randomSuffix()
 	ticketID := "test-ro-" + randomSuffix()
 	dir := t.TempDir()
 
@@ -167,6 +169,29 @@ func TestSendKeysUnderReadOnlyClient(t *testing.T) {
 			requireFileContains(t, outFile, tc.name+"_OK", 5*time.Second)
 		})
 	}
+}
+
+func TestSendKeysUnderReadOnlyClientKeepsParentServer(t *testing.T) {
+	skipIfNoTmux(t)
+
+	testBinary, err := os.Executable()
+	require.NoError(t, err)
+
+	socket := "kontora-parenttest-" + randomSuffix()
+	session := "kontora-parenttest-" + randomSuffix()
+	t.Cleanup(func() { _ = exec.Command("tmux", "-L", socket, "kill-server").Run() })
+
+	exitFile := filepath.Join(t.TempDir(), "exit")
+	script := fmt.Sprintf(
+		"%s -test.run=^TestSendKeysUnderReadOnlyClient$ -test.count=1; printf '%%s' $? > %s; sleep 30",
+		shellQuote(testBinary),
+		shellQuote(exitFile),
+	)
+	out, err := exec.Command("tmux", "-L", socket, "new-session", "-d", "-s", session, "-n", "runner", "--", "/bin/sh", "-c", script).CombinedOutput()
+	require.NoError(t, err, "tmux new-session: %s", strings.TrimSpace(string(out)))
+
+	requireFileContains(t, exitFile, "0", 10*time.Second)
+	require.NoError(t, exec.Command("tmux", "-L", socket, "has-session", "-t", "="+session).Run())
 }
 
 // requireReadOnlyClient waits for an attaching client to show up as read-only,

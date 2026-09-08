@@ -75,6 +75,7 @@ When working on ticket workflows, follow the sequence: plan → create ticket �
 ## Conventions
 
 ### Tests
+- Before a stage starts a preview Kontora daemon, unset `KONTORA_TICKETS_DIR` and `TICKETS_DIR`. The inherited live store overrides `tickets_dir` in the preview config. `auto_pick_up: false` does not stop stale self-claim recovery. Use `env -u KONTORA_TICKETS_DIR -u TICKETS_DIR KONTORA_CONFIG=<path> kontora start`.
 - Use table test cases pattern as much as possible.
 - Prefer high-level tests that cover behaviour over testing implementation details.
 - Daemon tests use `testHarness`: `newHarness(t)` → `h.newDaemon(cfg, opts...)` → `go func() { errCh <- d.Run(ctx) }()`, with `DirectRunner` to avoid a tmux dependency. End with `cancel(); require.NoError(t, <-errCh)`.

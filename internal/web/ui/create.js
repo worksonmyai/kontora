@@ -38,6 +38,7 @@ function cleanProjectPath(raw) {
 export function kontoraCreate() {
   return {
     async openCreateModal() {
+      this.closeAgentPicker(false);
       this.createForm = newCreateForm();
       this.createTouched = { pipeline: false, agent: false };
       this.currentView = 'new';
@@ -54,6 +55,7 @@ export function kontoraCreate() {
     },
 
     closeCreateModal() {
+      this.closeAgentPicker(false);
       this.currentView = 'board';
       this.createSubmitting = false;
       this.writeHash();
@@ -391,6 +393,7 @@ export function kontoraCreate() {
     },
 
     async openInitModal(ticket) {
+      this.closeAgentPicker(false);
       var pt = this.parseTitleTag(ticket);
       this.initForm = {
         ticketId: ticket.id,
@@ -420,13 +423,12 @@ export function kontoraCreate() {
           this.initError = 'Failed to load config';
         }
       }
-      // The form shows what the ticket would run with, not a "project default"
-      // placeholder: the fields the ticket leaves blank are filled from the
-      // project that owns the path, the same values the daemon would resolve.
+      // ticket.agent can be a resolved stage value. Use it only for a stored
+      // override; otherwise show the project agent Init will apply.
       this._initInherited = this.projectDefaultsFor(this.initForm.path);
+      this._initAgentFollowsProject = !ticket.agent_override;
       var pipeline = ticket.pipeline || this._initInherited.pipeline;
-      var agent = ticket.agent || this._initInherited.agent;
-      // Defer select values until after x-for has created <option> elements.
+      var agent = ticket.agent_override ? ticket.agent : this._initInherited.agent;
       await this.$nextTick();
       this.initForm.pipeline = pipeline;
       this.initForm.agent = agent;
@@ -444,14 +446,13 @@ export function kontoraCreate() {
       if (!this.initForm.pipeline || this.initForm.pipeline === prev.pipeline) {
         this.initForm.pipeline = next.pipeline;
       }
-      if (!this.initForm.agent || this.initForm.agent === prev.agent) {
-        this.initForm.agent = next.agent;
-      }
+      if (this._initAgentFollowsProject) this.initForm.agent = next.agent;
       this._initInherited = next;
       this.initError = null;
     },
 
     closeInitModal() {
+      this.closeAgentPicker(false);
       this.initModal = false;
       this.initSubmitting = false;
     },

@@ -318,6 +318,7 @@ export function kontoraDetail() {
     },
 
     closeDetail() {
+      this.closeAgentPicker(false);
       this.flushEditSave();
       this.closeTerminal();
       this.terminalRW = false;
@@ -725,7 +726,8 @@ export function kontoraDetail() {
       if (!this.selectedTicket || !editable.includes(this.selectedTicket.status)) return;
       this.editingBody = false;
       var pipeline = this.selectedTicket.pipeline || '';
-      var agent = this.selectedTicket.agent || '';
+      this._editAgentFollowsProject = !this.selectedTicket.agent_override;
+      var agent = this.selectedTicket.agent_override ? (this.selectedTicket.agent || '') : '';
       var body = this.selectedTicket.body || '';
       this._bodyLead = body.startsWith('\n') ? '\n' : '';
       this.editForm = {
@@ -751,9 +753,8 @@ export function kontoraDetail() {
         }
       }
       this._editInherited = this.projectDefaultsFor(this.editForm.path);
-      // Defer select values until after x-for has created <option> elements.
-      // Alpine's x-model effect on the <select> fires before x-for populates
-      // options, so setting the value immediately would fail to match.
+      // The native fallback still needs its x-for options before Alpine applies
+      // the value, or an older browser would lose the current selection.
       await this.$nextTick();
       this.editForm.pipeline = pipeline;
       this.editForm.agent = agent;
@@ -778,9 +779,7 @@ export function kontoraDetail() {
       if (!this.editForm.pipeline || this.editForm.pipeline === prev.pipeline) {
         this.editForm.pipeline = next.pipeline;
       }
-      if (!this.editForm.agent || this.editForm.agent === prev.agent) {
-        this.editForm.agent = next.agent;
-      }
+      if (this._editAgentFollowsProject) this.editForm.agent = next.agent;
       this._editInherited = next;
 
       this.saveEdit();
@@ -796,7 +795,8 @@ export function kontoraDetail() {
         if (editedBody !== (this.selectedTicket.body || '')) body.body = editedBody;
         if (this.editForm.pipeline !== (this.selectedTicket.pipeline || '')) body.pipeline = this.editForm.pipeline;
         if (this.editForm.path !== (this.selectedTicket.path || '')) body.path = this.editForm.path;
-        if (this.editForm.agent !== (this.selectedTicket.agent || '')) body.agent = this.editForm.agent;
+        const agentOverride = this.selectedTicket.agent_override ? (this.selectedTicket.agent || '') : '';
+        if (this.editForm.agent !== agentOverride) body.agent = this.editForm.agent;
         if (this.editForm.branch !== (this.selectedTicket.branch || '')) body.branch = this.editForm.branch;
         if (this.editForm.base_branch !== (this.selectedTicket.base_branch || '')) body.base_branch = this.editForm.base_branch;
         if (Object.keys(body).length === 0) { this.editSubmitting = false; return; }

@@ -1444,10 +1444,23 @@ func TestDaemon_RawConfig_NoPathConfigured(t *testing.T) {
 
 func TestDaemon_GetConfig_ReturnsAgents(t *testing.T) {
 	h := newHarness(t)
+	h.cfg.Agents["agent1"] = config.Agent{
+		Binary: "claude",
+		Args:   []string{"--model", "claude-sonnet-4-5"},
+		Effort: "high",
+	}
+	h.cfg.Agents["agent2"] = config.Agent{
+		Binary: "nono",
+		Args:   []string{"run", "--", "pi", "--model=openai/gpt-5.4", "--thinking", "medium"},
+	}
 	d := h.newDaemon(h.cfg)
 
 	cfg := d.GetConfig()
-	assert.Equal(t, []string{"agent1", "agent2"}, cfg.Agents)
+	assert.Equal(t, []string{"agent1", "agent2"}, cfg.Agents, "the legacy name list remains available and sorted")
+	assert.Equal(t, []web.AgentInfo{
+		{Name: "agent1", Model: "claude-sonnet-4-5", Effort: "high"},
+		{Name: "agent2", Model: "openai/gpt-5.4", Effort: "medium"},
+	}, cfg.AgentInfos, "metadata uses each agent's effective defaults in the same order")
 }
 
 func TestDaemon_CreateTicket_WithAgent(t *testing.T) {

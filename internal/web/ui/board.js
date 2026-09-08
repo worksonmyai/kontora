@@ -445,6 +445,7 @@ export function kontoraBoard() {
     // the terminal container. This is the one path that disposes the terminal:
     // its container is going away, so the instance cannot be carried over.
     _onBreakpointChange() {
+      this.closeAgentPicker(false);
       // The palette has no phone layout, so a window narrowed while it is open
       // would leave it floating over the phone board.
       if (this.isMobile && this.paletteOpen) this.closePalette();
@@ -533,6 +534,7 @@ export function kontoraBoard() {
         if (self.isMobile) return;
         e.preventDefault();
         e.stopPropagation();
+        self.closeAgentPicker(false);
         if (key === 'k') self.togglePalette();
         else self.toggleAssistant();
       }, true);

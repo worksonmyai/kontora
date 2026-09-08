@@ -51,6 +51,7 @@ export function kontoraTickets() {
       // exists at a time and crossing the breakpoint rebuilds it.
       this.$watch('isMobile', () => this._onBreakpointChange());
       this._bindGlobalEvents();
+      this.setupAgentPicker();
       try {
         var cfgRes = await fetch('/api/config');
         if (cfgRes.status === 401) this.needsAuth = true;
@@ -296,6 +297,7 @@ export function kontoraTickets() {
         if (this.selectedTicket?.id === ticket.id) {
           var prevSummary = this.selectedTicket.summary;
           if (this.editing && !['open', 'todo', 'paused'].concat(this.configCache?.custom_statuses || []).includes(ticket.status)) {
+            this.closeAgentPickerHost('edit');
             this.flushEditSave();
             this.editing = false;
             this.editingBody = false;

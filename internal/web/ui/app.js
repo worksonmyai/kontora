@@ -69,11 +69,11 @@ export function kontoraApp() {
     // not a mode: the segmented control reads the status list itself, so the
     // chips can be open under any of the three answers.
     initNotifyOpen: false,
-    // Pipeline and agent the path's project supplies, tracked so a value that
-    // only got there by inheritance can be told from one the user chose.
-    // Declared here rather than assigned on first use because the modal reads
-    // it while rendering, so it has to be reactive from the start.
+    // Project defaults for the init path. Pipeline provenance can use value
+    // equality. Agent provenance needs its own bit because an explicit override
+    // can equal the project default.
     _initInherited: { pipeline: '', agent: '' },
+    _initAgentFollowsProject: false,
     actionLoading: null,
     // The detail panel's schedule editor. scheduleDraft is a local wall time,
     // the value a datetime-local input holds; the API is sent the instant it
@@ -160,10 +160,10 @@ export function kontoraApp() {
     editSubmitting: false,
     editSaved: false,
     _editDebounce: null,
-    // The pipeline and agent the edit form inherited from the project that owns
-    // its current path. onEditPathChange compares against these values to keep
-    // user-selected values.
+    // Project defaults for the edit path. Agent provenance is separate because
+    // an explicit override can equal the project default.
     _editInherited: null,
+    _editAgentFollowsProject: false,
     // The newline between the closing --- and the first line of the body, which
     // the file has and the source editor must not show as an empty first line.
     // Stripped when the form is filled and put back when it is saved, so a body

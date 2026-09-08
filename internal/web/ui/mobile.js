@@ -140,6 +140,7 @@ export function kontoraMobile() {
       this.sheet = { type: 'actions', ticket: t };
     },
     async openNewSheet() {
+      this.closeAgentPicker(false);
       this.createForm = newCreateForm();
       this.createTouched = { pipeline: false, agent: false };
       this.error = null;
@@ -152,6 +153,7 @@ export function kontoraMobile() {
       }
     },
     closeSheet() {
+      this.closeAgentPicker(false);
       this.sheet = null;
     },
 

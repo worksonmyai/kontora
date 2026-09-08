@@ -7,6 +7,7 @@
 // method may call across module lines freely. No two mixins may define the
 // same key; merge() throws if they do.
 import { kontoraActivity } from './activity.js';
+import { kontoraAgentPicker } from './agent_picker.js';
 import { kontoraApp } from './app.js';
 import { kontoraArchive, archiveDerive } from './archive.js';
 import { kontoraAssistant, assistantStream } from './assistant.js';
@@ -51,6 +52,7 @@ function kontora() {
     kontoraApp(),
     kontoraTickets(),
     kontoraCreate(),
+    kontoraAgentPicker(),
     kontoraDetail(),
     kontoraBoard(),
     kontoraFilter(),

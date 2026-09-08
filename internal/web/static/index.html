@@ -63,11 +63,26 @@
     .pal-panel { animation: pal-in 0.14s ease-out; }
     .pal-scrim { animation: scrim-in 0.12s ease-out; }
 
+    /* Agent picker panels enter the top layer through the Popover API. The
+       explicit inset and margin reset the user-agent centering rules. */
+    @keyframes agent-picker-pop { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+    .agent-picker-popover { position: fixed; inset: auto; margin: 0; padding: 0; }
+    .agent-picker-pop { animation: agent-picker-pop 0.12s ease-out; }
+    .agent-picker-scroll { scrollbar-width: thin; scrollbar-color: rgba(var(--surface-700), 1) transparent; }
+    .agent-picker-scroll::-webkit-scrollbar { width: 9px; }
+    .agent-picker-scroll::-webkit-scrollbar-thumb {
+      background: rgba(var(--surface-700), 1);
+      border: 3px solid transparent;
+      border-radius: 9999px;
+      background-clip: content-box;
+    }
+
     @media (prefers-reduced-motion: reduce) {
       .pulse-dot { animation: none; }
       .slide-up { animation: none; }
       .sweep { animation: none; }
       .pal-panel, .pal-scrim { animation: none; }
+      .agent-picker-pop { animation: none; }
       .status-chip[data-status="in_progress"]::before { animation: none; }
     }
 
@@ -887,7 +902,7 @@
 </head>
 
 <body class="h-full bg-surface-950 text-tx font-sans overflow-hidden" x-data="kontora()" x-cloak
-      @keydown.escape.window="if (paletteOpen) palettePop(); else if (deleteModal) closeDeleteModal(); else if (noteDeleteTarget) noteCloseDelete(); else if (initModal) closeInitModal(); else if (settingsGuard) settingsGuard = false; else if (currentView === 'new') closeCreateModal(); else if (detailMenuOpen) detailMenuOpen = false; else if (colMenuOpen) colMenuOpen = null; else if (sheet) closeSheet(); else if (assistantEscape()) {} else if (archivePromptId) closeArchivePrompt(); else if (terminalRW && terminalWanted()) toggleTerminalRW(); else if (archiveDetailOpen()) archiveCloseDetail(); else if (selectedTicket) closeDetail();"
+      @keydown.escape.window="if (_agentPickerOpenHost) closeAgentPicker(true); else if (paletteOpen) palettePop(); else if (deleteModal) closeDeleteModal(); else if (noteDeleteTarget) noteCloseDelete(); else if (initModal) closeInitModal(); else if (settingsGuard) settingsGuard = false; else if (currentView === 'new') closeCreateModal(); else if (detailMenuOpen) detailMenuOpen = false; else if (colMenuOpen) colMenuOpen = null; else if (sheet) closeSheet(); else if (assistantEscape()) {} else if (archivePromptId) closeArchivePrompt(); else if (terminalRW && terminalWanted()) toggleTerminalRW(); else if (archiveDetailOpen()) archiveCloseDetail(); else if (selectedTicket) closeDetail();"
       @dragenter.prevent="if ($event.dataTransfer && $event.dataTransfer.types.includes('Files')) uploadDragging = true"
       @dragover.prevent>
 
@@ -1071,17 +1086,10 @@
             </div>
           </div>
           <div class="grid grid-cols-2 max-[420px]:grid-cols-1 gap-[14px]">
-            <div class="flex flex-col gap-[7px]">
-              <label for="init-agent" class="font-mono text-[11px] tracking-[.06em] uppercase text-tx-faint">agent</label>
-              <select id="init-agent" x-model="initForm.agent"
-                      class="w-full box-border h-[39px] bg-surface-800 border border-edge-input rounded-[7px] px-[12px] font-mono text-[13px] text-tx focus:outline-none focus:border-accent">
-                <!-- Half-width cell: the create form's longer wording is cut off
-                     here. The footer's run line spells the same rule out. -->
-                <option value="">default (per stage)</option>
-                <template x-for="a in configCache?.agents || []" :key="a">
-                  <option :value="a" x-text="a"></option>
-                </template>
-              </select>
+            <div class="flex flex-col gap-[7px] min-w-0">
+              <label id="init-agent-label" :for="_agentPickerPopoverSupported ? agentPickerTriggerID('init') : agentPickerFallbackID('init')" class="font-mono text-[11px] tracking-[.06em] uppercase text-tx-faint">agent</label>
+              <div x-data="{ pickerHost: 'init' }" x-html="agentPickerControl"></div>
+              <span class="font-mono text-[10.5px] text-surface-600 truncate" x-text="agentPickerHint('init')"></span>
             </div>
             <div class="flex flex-col gap-[7px] min-w-0">
               <label for="init-path" class="font-mono text-[11px] tracking-[.06em] uppercase text-tx-faint">path <span class="text-accent">*</span></label>
@@ -2489,15 +2497,9 @@
                             </template>
                           </select>
                         </div>
-                        <div>
-                          <label class="text-xs font-mono text-surface-600 mb-1 flex items-center gap-1.5"><svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="opacity-50"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/></svg>Agent</label>
-                          <select x-model="editForm.agent" @change="saveEdit()"
-                            class="w-full h-8 bg-surface-800 border border-surface-700 rounded-[7px] px-[10px] text-[12.5px] text-tx-2 font-mono focus:outline-none focus:border-accent">
-                            <option value="">Default</option>
-                            <template x-for="a in (configCache?.agents || [])" :key="a">
-                              <option :value="a" x-text="a"></option>
-                            </template>
-                          </select>
+                        <div class="min-w-0">
+                          <label id="edit-agent-label" :for="_agentPickerPopoverSupported ? agentPickerTriggerID('edit') : agentPickerFallbackID('edit')" class="text-xs font-mono text-surface-600 mb-1 flex items-center gap-1.5"><svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="opacity-50"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/></svg>Agent</label>
+                          <div x-data="{ pickerHost: 'edit' }" x-html="agentPickerControl"></div>
                         </div>
                         <div>
                           <label class="text-xs font-mono text-surface-600 mb-1 flex items-center gap-1.5"><svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="opacity-50"><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"/></svg>Path</label>
@@ -3329,15 +3331,9 @@
                   </template>
                 </select>
               </div>
-              <div>
-                <label for="new-agent" class="text-[13px] font-mono text-tx-3 mb-1 flex items-center gap-1.5"><svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="opacity-50"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/></svg>Agent</label>
-                <select id="new-agent" x-model="createForm.agent" @change="createTouched.agent = true"
-                        class="w-full h-[36px] bg-surface-800 border border-surface-700/50 rounded px-2 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40">
-                  <option value="">default (each stage picks its own)</option>
-                  <template x-for="a in configCache?.agents || []" :key="a">
-                    <option :value="a" x-text="a"></option>
-                  </template>
-                </select>
+              <div class="min-w-0">
+                <label id="new-agent-label" :for="_agentPickerPopoverSupported ? agentPickerTriggerID('create') : agentPickerFallbackID('create')" class="text-[13px] font-mono text-tx-3 mb-1 flex items-center gap-1.5"><svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="opacity-50"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/></svg>Agent</label>
+                <div x-data="{ pickerHost: 'create' }" x-html="agentPickerControl"></div>
               </div>
               <div>
                 <label for="new-status" class="text-[13px] font-mono text-tx-3 mb-1 flex items-center gap-1.5"><svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="opacity-50"><circle cx="12" cy="12" r="10"/></svg>Status</label>
@@ -6181,11 +6177,8 @@
                     </select>
                   </div>
                   <div style="flex:1;min-width:0;">
-                    <div style="font-family:'JetBrains Mono',monospace;font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:rgba(var(--surface-600),1);margin-bottom:6px;">Agent</div>
-                    <select x-model="createForm.agent" @change="createTouched.agent = true" style="width:100%;height:42px;padding:0 10px;font-family:'JetBrains Mono',monospace;font-size:13px;border-radius:10px;background:rgba(var(--surface-950),1);border:1px solid rgba(var(--surface-700),.6);color:rgba(var(--tx-3),1);outline:none;">
-                      <option value="">default (each stage picks its own)</option>
-                      <template x-for="a in (configCache?.agents || [])" :key="a"><option :value="a" x-text="a"></option></template>
-                    </select>
+                    <label id="mobile-new-agent-label" :for="_agentPickerPopoverSupported ? agentPickerTriggerID('mobile-create') : agentPickerFallbackID('mobile-create')" style="font-family:'JetBrains Mono',monospace;font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:rgba(var(--surface-600),1);margin-bottom:6px;display:block;">Agent</label>
+                    <div x-data="{ pickerHost: 'mobile-create' }" x-html="agentPickerControl"></div>
                   </div>
                 </div>
                 <div>

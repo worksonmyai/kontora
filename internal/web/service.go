@@ -403,12 +403,23 @@ type ProjectInfo struct {
 	NotifyChannels []string `json:"notify_channels,omitempty"`
 }
 
+// AgentInfo describes one configured agent. Model and Effort are defaults
+// Kontora detects in its supported config fields and CLI flags.
+type AgentInfo struct {
+	Name   string `json:"name"`
+	Model  string `json:"model"`
+	Effort string `json:"effort"`
+}
+
 type ConfigInfo struct {
 	Pipelines     []string       `json:"pipelines"`
 	PipelineInfos []PipelineInfo `json:"pipeline_infos"`
-	Agents        []string       `json:"agents"`
-	Projects      []ProjectInfo  `json:"projects,omitempty"`
-	DefaultAgent  string         `json:"default_agent,omitempty"`
+	// Agents is retained for API compatibility; AgentInfos adds picker metadata
+	// in the same sorted order.
+	Agents       []string      `json:"agents"`
+	AgentInfos   []AgentInfo   `json:"agent_infos"`
+	Projects     []ProjectInfo `json:"projects,omitempty"`
+	DefaultAgent string        `json:"default_agent,omitempty"`
 	// Author is the name the web composer signs a note with. The page needs it
 	// to tell your own notes from everyone else's.
 	Author         string   `json:"author,omitempty"`

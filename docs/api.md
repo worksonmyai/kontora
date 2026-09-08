@@ -18,7 +18,7 @@ When the web server is enabled, the following endpoints are exposed:
 | `GET /api/tickets/archived` | The archived tickets, one row per ticket, for the Archive view. |
 | `POST /api/tickets/{id}/archive` | Archive a closed ticket (optional `{"note": "..."}` body). |
 | `POST /api/tickets/{id}/restore` | Return an archived ticket to the status it was archived from. |
-| `GET /api/config` | Available pipelines, agents, and projects (JSON). Projects are sorted by name and carry `name`, `path`, `resolved_path` (`~` expanded), `pipeline`, `agent`, and `notify_channels`. `channels` and `default_channels` are the configured notification channel names and `notifications.default`; names only, never a chat id or a webhook URL. |
+| `GET /api/config` | Available pipelines, agents, and projects (JSON). `agents` remains the sorted agent-name list; `agent_infos` adds sorted `{name, model, effort}` metadata for each agent. Projects are sorted by name and carry `name`, `path`, `resolved_path` (`~` expanded), `pipeline`, `agent`, and `notify_channels`. `channels` and `default_channels` are the configured notification channel names and `notifications.default`; names only, never a chat id or a webhook URL. |
 | `GET /api/tickets/{id}/logs` | Get agent logs for a ticket (optional `?stage=` query param). |
 | `POST /api/tickets/{id}/summary` | Set the ticket's `summary` field (`{"text": "..."}` body). |
 | `GET /api/tickets/{id}/changes` | Commits and changed files on the ticket's branch relative to its `base_branch`, or the repo's default branch when unset. Empty payload when the ticket has no branch or the branch was deleted. |
@@ -46,6 +46,8 @@ When the web server is enabled, the following endpoints are exposed:
 | `GET /api/events` | Server-Sent Events stream of ticket updates. |
 | `GET /ws/terminal/{id}` | Read-only WebSocket relay of a running agent's tmux session. |
 | `GET /health` | Health check (returns 200). |
+
+Each `agent_infos` entry in `GET /api/config` reports the model and effort that Kontora detects. Kontora reads the agent's `effort` field and supported CLI flags. Pipeline and stage overrides are not applied. Both response fields are always present. An empty value means Kontora detected no setting.
 
 ### The message being written
 

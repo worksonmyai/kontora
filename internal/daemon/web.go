@@ -231,6 +231,16 @@ func (d *Daemon) GetConfig() web.ConfigInfo {
 		infos[i] = web.PipelineInfo{Name: name, Stages: stageNames, MaxRetries: maxRetries, DefaultAgent: defaultAgent}
 	}
 	agents := slices.Sorted(maps.Keys(cfg.Agents))
+	agentInfos := make([]web.AgentInfo, len(agents))
+	for i, name := range agents {
+		agent := cfg.Agents[name]
+		model, effort := agent.Effective("", "")
+		agentInfos[i] = web.AgentInfo{
+			Name:   name,
+			Model:  model,
+			Effort: effort,
+		}
+	}
 	projectNames := slices.Sorted(maps.Keys(cfg.Projects))
 	projects := make([]web.ProjectInfo, len(projectNames))
 	for i, name := range projectNames {
@@ -249,6 +259,7 @@ func (d *Daemon) GetConfig() web.ConfigInfo {
 		Pipelines:      pipelines,
 		PipelineInfos:  infos,
 		Agents:         agents,
+		AgentInfos:     agentInfos,
 		Projects:       projects,
 		DefaultAgent:   cfg.DefaultAgent,
 		Author:         cfg.Author,

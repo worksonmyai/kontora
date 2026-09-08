@@ -2059,6 +2059,10 @@ func TestHandleConfig(t *testing.T) {
 		configInfo: ConfigInfo{
 			Pipelines: []string{"default", "review"},
 			Agents:    []string{"opus", "sonnet"},
+			AgentInfos: []AgentInfo{
+				{Name: "opus", Model: "claude-opus-4-6", Effort: "high"},
+				{Name: "sonnet", Model: "", Effort: ""},
+			},
 		},
 	}
 	srv := startHandlerTestServer(t, svc)
@@ -2069,7 +2073,12 @@ func TestHandleConfig(t *testing.T) {
 	var cfg ConfigInfo
 	require.NoError(t, json.Unmarshal([]byte(res.body), &cfg))
 	assert.Equal(t, []string{"default", "review"}, cfg.Pipelines)
-	assert.Equal(t, []string{"opus", "sonnet"}, cfg.Agents)
+	assert.Equal(t, []string{"opus", "sonnet"}, cfg.Agents, "the legacy agent name list remains in the response")
+	assert.Equal(t, []AgentInfo{
+		{Name: "opus", Model: "claude-opus-4-6", Effort: "high"},
+		{Name: "sonnet", Model: "", Effort: ""},
+	}, cfg.AgentInfos)
+	assert.Contains(t, res.body, `"model":"","effort":""`, "empty effective defaults must be explicit JSON strings")
 }
 
 // --- GET/PUT /api/config/raw ---

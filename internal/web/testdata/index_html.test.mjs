@@ -3077,8 +3077,12 @@ function editPathState(fromPath, fields) {
   state.configCache = { projects: EDIT_PROJECTS, pipelines: [], agents: [] };
   state.selectedTicket = { id: "kon-1", status: "open", path: fromPath, ...fields };
   state.editing = true;
-  state.editForm = { body: "", path: fromPath, pipeline: "", agent: "", branch: "", ...fields };
+  state.editForm = {
+    body: "", path: fromPath, pipeline: "", branch: "", ...fields,
+    agent: fields.agent_override ? (fields.agent || "") : "",
+  };
   state._editInherited = state.projectDefaultsFor(fromPath);
+  state._editAgentFollowsProject = !fields.agent_override;
   state.saveEdit = () => { state.savedPath = state.editForm.path; };
   return state;
 }
@@ -3110,7 +3114,7 @@ test("the edit form applies project defaults without changing the branch", () =>
     {
       name: "values the user chose are kept",
       from: "~/projects/kontora",
-      fields: { pipeline: "review-only", agent: "codex", branch: "wip/experiment" },
+      fields: { pipeline: "review-only", agent: "codex", agent_override: true, branch: "wip/experiment" },
       to: "~/projects/widget-api",
       want: { pipeline: "review-only", agent: "codex", branch: "wip/experiment" },
     },
@@ -3281,10 +3285,10 @@ test("the init modal states what starting the ticket does", () => {
   assert.ok(options.includes(`<option value="">none (single run, no stages)</option>`));
   assert.ok(options.includes(`<option :value="p" x-text="p">`));
   assert.equal(options.includes("pipelineLabel"), false);
-  // Agent shares a row with Path, and the create form's wording does not fit
-  // the half-width select.
-  const agent = html.slice(html.indexOf('id="init-agent"'));
-  assert.ok(agent.slice(0, agent.indexOf("</select>")).includes(`<option value="">default (per stage)</option>`));
+  // Agent shares a row with Path. The shared picker keeps the shorter label
+  // and puts its resolved hint on a separate line.
+  assert.match(html, /x-data="\{ pickerHost: 'init' \}" x-html="agentPickerControl"/);
+  assert.match(html, /x-text="agentPickerHint\('init'\)"/);
 });
 
 test("the init modal's error line is its own, not the app-wide one", () => {
@@ -6069,6 +6073,425 @@ test("slash focuses the settings search, and only there", () => {
   assert.deepEqual(focused, ["settings-search"]);
 });
 
+// ── Agent picker ─────────────────────────────────────────────────────────
+
+const PICKER_AGENTS = [
+  { name: "claude", model: "sonnet", effort: "", running: 2 },
+  { name: "claude-opus", model: "opus", effort: "high", running: 0 },
+  { name: "codex", model: "gpt-5-codex", effort: "medium", running: 1 },
+  { name: "pi", model: "gpt-5.6", effort: "high", running: 0 },
+  { name: "haiku", model: "haiku", effort: "", running: 0 },
+  { name: "aider", model: "deepseek-v3", effort: "", running: 0 },
+];
+
+function pickerState({ recents = [], agents = PICKER_AGENTS, config = {}, overrides = {} } = {}) {
+  const stored = { "kontora-recent-agents": JSON.stringify(recents) };
+  const state = loadKontoraState({
+    localStorage: {
+      getItem(key) { return Object.hasOwn(stored, key) ? stored[key] : null; },
+      setItem(key, value) { stored[key] = String(value); },
+    },
+    ...overrides,
+  });
+  state.$nextTick = (callback) => { if (callback) callback(); return Promise.resolve(); };
+  state.configCache = {
+    agents: agents.map((agent) => agent.name),
+    agent_infos: agents.map(({ name, model, effort }) => ({ name, model, effort })),
+    default_agent: "claude",
+    pipelines: ["default"],
+    pipeline_infos: [{ name: "default", stages: ["implement", "review"], default_agent: "claude" }],
+    projects: [],
+    ...config,
+  };
+  state._agentRunning = Object.create(null);
+  agents.forEach((agent) => { state._agentRunning[agent.name] = agent.running || 0; });
+  state.createForm.pipeline = "default";
+  return { state, stored };
+}
+
+test("the agent picker groups inherit, recent, and remaining configured agents", () => {
+  const { state } = pickerState({ recents: ["codex", "gone", "pi"] });
+
+  const groups = vmValue(state.agentPickerGroups("create"));
+  assert.deepEqual(groups.map((group) => group.name), ["inherit", "recent", "all agents"]);
+  assert.deepEqual(groups[1].rows.map((row) => row.value), ["codex", "pi"]);
+  assert.deepEqual(groups[2].rows.map((row) => row.value), ["claude", "claude-opus", "haiku", "aider"]);
+  assert.equal(groups[0].rows[0].meta, "implement → claude");
+  assert.equal(groups[1].rows[0].meta, "gpt-5-codex · medium");
+  assert.equal(groups[2].rows[0].isDefault, true);
+  assert.equal(state.agentPickerRunningTotal(), 3);
+  assert.match(state.agentPickerDotStyle("codex"), /--st-progress/);
+});
+
+test("a no-pipeline picker names the standalone default without mentioning stages", () => {
+  const { state } = pickerState();
+  state.createForm.pipeline = "";
+
+  assert.equal(state.agentPickerBlankLabel("create"), "default agent");
+  assert.equal(state.agentPickerInheritMeta("create"), "single run → claude");
+  assert.equal(state.agentPickerHint("create"), "single run → claude");
+});
+
+test("the picker falls back to name-only agent rows from an older daemon", () => {
+  const { state } = pickerState({ config: { agent_infos: undefined } });
+
+  const claude = state.agentPickerRows("create").find((row) => row.value === "claude");
+  assert.equal(claude.meta, "");
+  assert.equal(claude.isDefault, true);
+});
+
+test("agent filtering starts at six agents and matches names or models", () => {
+  const { state } = pickerState();
+  assert.equal(state.agentPickerHasFilter(), true);
+
+  state.agentPickerState("create").query = "GPT-5";
+  let rows = vmValue(state.agentPickerRows("create"));
+  assert.deepEqual(rows.map((row) => row.value), ["codex", "pi"]);
+  assert.equal(rows.some((row) => row.inherit), false);
+
+  state.agentPickerState("create").query = "nothing";
+  assert.equal(state.agentPickerRows("create").length, 0);
+  state.agentPickerPickActive("create");
+  assert.equal(state.createForm.agent, "");
+
+  state.configCache.agents = state.configCache.agents.slice(0, 5);
+  state.configCache.agent_infos = state.configCache.agent_infos.slice(0, 5);
+  assert.equal(state.agentPickerHasFilter(), false);
+});
+
+test("agent choices are remembered most recent first, deduplicated, and capped", () => {
+  const { state, stored } = pickerState({ recents: ["pi", "codex"] });
+
+  for (const name of ["claude", "pi", "haiku", "aider"]) {
+    state.agentPickerChoose("create", name, false);
+  }
+
+  assert.deepEqual([...state.recentAgents], ["aider", "haiku", "pi"]);
+  assert.deepEqual(JSON.parse(stored["kontora-recent-agents"]), ["aider", "haiku", "pi"]);
+  assert.equal(state.createTouched.agent, true);
+
+  state.agentPickerChoose("create", "", false);
+  assert.deepEqual([...state.recentAgents], ["aider", "haiku", "pi"]);
+});
+
+test("malformed or unavailable recent-agent storage leaves an empty list", () => {
+  const malformed = loadKontoraState({
+    localStorage: { getItem: () => "{", setItem() { throw new Error("full"); } },
+  });
+  assert.deepEqual([...malformed.recentAgents], []);
+  assert.doesNotThrow(() => malformed.rememberAgent("claude"));
+
+  const unavailable = loadKontoraState({
+    localStorage: { getItem() { throw new Error("blocked"); }, setItem() {} },
+  });
+  assert.deepEqual([...unavailable.recentAgents], []);
+});
+
+test("the four picker adapters preserve their host side effects", () => {
+  const { state } = pickerState();
+  let saves = 0;
+  state.saveEdit = () => { saves += 1; };
+
+  state.agentPickerChoose("create", "codex", false);
+  assert.equal(state.createForm.agent, "codex");
+  assert.equal(state.createTouched.agent, true);
+
+  state.initForm.agent = "";
+  state.agentPickerChoose("init", "pi", false);
+  assert.equal(state.initForm.agent, "pi");
+  assert.equal(saves, 0);
+
+  state.editForm.agent = "";
+  state.agentPickerChoose("edit", "claude", false);
+  assert.equal(state.editForm.agent, "claude");
+  assert.equal(saves, 1);
+
+  state.createTouched.agent = false;
+  state.agentPickerChoose("mobile-create", "haiku", false);
+  assert.equal(state.createForm.agent, "haiku");
+  assert.equal(state.createTouched.agent, true);
+});
+
+test("init and detail edit the stored agent override, not the resolved agent", async () => {
+  const { state } = pickerState();
+  state.parseTitleTag = () => ({ tag: "", rest: "Ticket" });
+
+  await state.openInitModal({
+    id: "kon-init", status: "open", path: "/work/repo", pipeline: "default",
+    agent: "claude",
+  });
+  assert.equal(state.initForm.agent, "");
+
+  state.configCache.projects = [{
+    name: "repo", path: "/work/repo", resolved_path: "/work/repo", pipeline: "default", agent: "codex",
+  }];
+  await state.openInitModal({
+    id: "kon-project", status: "open", path: "/work/repo", pipeline: "default",
+    agent: "claude",
+  });
+  assert.equal(state.initForm.agent, "codex");
+
+  state.selectedTicket = {
+    id: "kon-edit", status: "open", path: "/work/other", pipeline: "default",
+    agent: "claude", body: "",
+  };
+  await state.startEditing();
+  assert.equal(state.editForm.agent, "");
+
+  state.selectedTicket.agent_override = true;
+  state.selectedTicket.agent = "codex";
+  await state.startEditing();
+  assert.equal(state.editForm.agent, "codex");
+});
+
+test("path changes preserve an explicit override equal to the old project default", async () => {
+  const { state } = pickerState({
+    config: {
+      projects: [
+        { name: "old", path: "/work/old", resolved_path: "/work/old", pipeline: "default", agent: "claude" },
+        { name: "new", path: "/work/new", resolved_path: "/work/new", pipeline: "default", agent: "pi" },
+      ],
+    },
+  });
+  state.parseTitleTag = () => ({ tag: "", rest: "Ticket" });
+  state.saveEdit = () => {};
+
+  await state.openInitModal({
+    id: "kon-init", status: "open", path: "/work/old", pipeline: "default",
+    agent: "claude", agent_override: true,
+  });
+  state.initForm.path = "/work/new";
+  state.onInitPathChange();
+  assert.equal(state.initForm.agent, "claude");
+
+  state.agentPickerChoose("init", "", false);
+  state.initForm.path = "/work/old";
+  state.onInitPathChange();
+  assert.equal(state.initForm.agent, "", "an explicit inherit choice must stay blank");
+
+  state.selectedTicket = {
+    id: "kon-edit", status: "open", path: "/work/old", pipeline: "default",
+    agent: "claude", agent_override: true, body: "",
+  };
+  await state.startEditing();
+  state.editForm.path = "/work/new";
+  state.onEditPathChange();
+  assert.equal(state.editForm.agent, "claude");
+
+  state.selectedTicket = {
+    id: "kon-inherit", status: "open", path: "/work/old", pipeline: "default",
+    agent: "claude", body: "",
+  };
+  await state.startEditing();
+  state.editForm.path = "/work/new";
+  state.onEditPathChange();
+  assert.equal(state.editForm.agent, "pi", "an untouched project value follows the new path");
+});
+
+test("a status update closes the detail picker before removing its edit host", () => {
+  const { state } = pickerState();
+  const closed = [];
+  state.closeAgentPickerHost = (host) => { closed.push(host); };
+  state.flushEditSave = () => {};
+  state.selectedTicket = { id: "kon-edit", status: "open", body: "", children: [] };
+  state.tickets = [{ id: "kon-edit", status: "open" }];
+  state.editing = true;
+  state.activeTab = "ticket";
+
+  state.applyTicketUpdate({ id: "kon-edit", status: "in_progress", body: "" });
+
+  assert.deepEqual(closed, ["edit"]);
+  assert.equal(state.editing, false);
+});
+
+test("detail saves adding or clearing an override even when the resolved name is unchanged", async () => {
+  const requests = [];
+  const { state } = pickerState({
+    overrides: {
+      fetch: async (_url, init) => {
+        requests.push(JSON.parse(init.body));
+        const agent = requests.at(-1).agent;
+        return {
+          ok: true,
+          json: async () => ({
+            id: "kon-edit", status: "open", path: "/work/repo", pipeline: "default",
+            agent: agent || "claude", agent_override: !!agent, body: "",
+          }),
+        };
+      },
+    },
+  });
+  state.tickets = [];
+  state.selectedTicket = {
+    id: "kon-edit", status: "open", path: "/work/repo", pipeline: "default",
+    agent: "claude", body: "",
+  };
+  await state.startEditing();
+  state.editForm.agent = "claude";
+  await state.saveEdit();
+  assert.equal(requests[0].agent, "claude");
+
+  state.selectedTicket = {
+    id: "kon-edit", status: "open", path: "/work/repo", pipeline: "default",
+    agent: "codex", agent_override: true, body: "",
+  };
+  await state.startEditing();
+  state.editForm.agent = "";
+  await state.saveEdit();
+  assert.equal(requests[1].agent, "");
+});
+
+test("agent picker keyboard movement wraps and scrolls with list scrollTop", () => {
+  const list = {
+    scrollTop: 10,
+    getBoundingClientRect: () => ({ top: 20, bottom: 100 }),
+  };
+  const row = { getBoundingClientRect: () => ({ top: 95, bottom: 120 }) };
+  const { state } = pickerState({
+    overrides: {
+      document: {
+        getElementById(id) { return id.endsWith("-list") ? list : id.includes("-row-") ? row : null; },
+        querySelector: () => null,
+        documentElement: { style: {} },
+      },
+    },
+  });
+  state.agentPickerState("create").active = 0;
+  state.agentPickerMove("create", -1);
+
+  assert.equal(state.agentPickerActiveIndex("create"), state.agentPickerRows("create").length - 1);
+  assert.equal(/\s/.test(state.agentPickerActiveID("create")), false);
+  assert.equal(list.scrollTop, 30);
+});
+
+test("agent picker setup closes on outside mouse and host scrolling", () => {
+  const listeners = {};
+  let hidden = 0;
+  const panel = { hidePopover() { hidden += 1; } };
+  const document = {
+    getElementById(id) { return id === "agent-picker-create" ? panel : null; },
+    querySelector: () => null,
+    documentElement: { style: {} },
+    addEventListener(type, handler) { listeners[type] = handler; },
+  };
+  const { state } = pickerState({
+    overrides: {
+      document,
+      window: { innerWidth: 600, innerHeight: 500, addEventListener() {} },
+    },
+  });
+  state.setupAgentPicker();
+  state._agentPickerOpenHost = "create";
+  state.agentPickerState("create").open = true;
+
+  listeners.mousedown({ target: { closest: () => ({}) } });
+  assert.equal(state.agentPickerIsOpen("create"), true);
+
+  listeners.scroll({ target: { closest: () => null } });
+  assert.equal(state.agentPickerIsOpen("create"), false);
+  assert.equal(hidden, 1);
+
+  state._agentPickerOpenHost = "create";
+  state.agentPickerState("create").open = true;
+  listeners.mousedown({ target: { closest: () => null } });
+  assert.equal(state.agentPickerIsOpen("create"), false);
+  assert.equal(hidden, 2);
+});
+
+test("filtering resets scroll and repositions an above-trigger picker", () => {
+  const { state } = pickerState();
+  let positioned = 0;
+  state.positionAgentPicker = () => { positioned += 1; };
+
+  state.agentPickerSetQuery("create", "codex");
+
+  assert.equal(state.agentPickerState("create").active, 0);
+  assert.equal(positioned, 1);
+});
+
+test("agent picker placement flips above and clamps to the viewport", () => {
+  const { state } = pickerState();
+  const placement = state.agentPickerPlacement(
+    { left: 280, top: 440, right: 340, bottom: 475 },
+    { width: 300, height: 220 },
+    { left: 0, top: 0, width: 400, height: 500 },
+  );
+
+  assert.equal(placement.placeAbove, true);
+  assert.equal(placement.left, 92);
+  assert.equal(placement.top, 214);
+});
+
+test("opening a supported picker uses the top layer and restores focus", async () => {
+  class PopoverElement {}
+  PopoverElement.prototype.showPopover = function() {};
+  const calls = [];
+  const trigger = {
+    focus() { calls.push("trigger-focus"); },
+    getBoundingClientRect: () => ({ left: 20, top: 20, right: 170, bottom: 56 }),
+  };
+  const panel = {
+    style: {}, offsetHeight: 180,
+    showPopover() { calls.push("show"); },
+    hidePopover() { calls.push("hide"); },
+  };
+  const list = {
+    style: {}, offsetHeight: 100, offsetParent: {},
+    focus() { calls.push("list-focus"); }, blur() {},
+  };
+  const filter = { offsetParent: {}, focus() { calls.push("filter-focus"); }, blur() {} };
+  const elements = {
+    "new-agent": trigger,
+    "agent-picker-create": panel,
+    "agent-picker-create-list": list,
+    "agent-picker-create-filter": filter,
+  };
+  const { state } = pickerState({
+    overrides: {
+      HTMLElement: PopoverElement,
+      window: { innerWidth: 600, innerHeight: 500, addEventListener() {} },
+      document: {
+        getElementById(id) { return elements[id] || null; },
+        querySelector: () => null,
+        documentElement: { style: {} },
+      },
+    },
+  });
+
+  let activeScrolled = 0;
+  state.scrollAgentPickerActive = () => { activeScrolled += 1; };
+
+  assert.equal(state._agentPickerPopoverSupported, true);
+  await state.openAgentPicker("create");
+  assert.equal(state.agentPickerIsOpen("create"), true);
+  assert.deepEqual(calls.slice(0, 2), ["show", "filter-focus"]);
+  assert.match(panel.style.left, /px$/);
+  assert.match(panel.style.top, /px$/);
+  assert.equal(activeScrolled, 1);
+
+  state.closeAgentPicker(true);
+  assert.deepEqual(calls.slice(-2), ["hide", "trigger-focus"]);
+});
+
+test("the shared picker markup wires all hosts, ARIA, Popover, and fallback behavior", () => {
+  const html = fs.readFileSync(htmlPath, "utf8");
+
+  const hosts = [...html.matchAll(/x-data="\{ pickerHost: '([^']+)' \}" x-html="agentPickerControl"/g)].map((match) => match[1]);
+  assert.deepEqual(hosts.sort(), ["create", "edit", "init", "mobile-create"]);
+  assert.match(uiSource, /popover="manual" role="presentation"/);
+  assert.match(uiSource, /role="listbox" tabindex="-1"/);
+  assert.match(uiSource, /role="option" :aria-selected="row\.selected"/);
+  assert.match(uiSource, /:aria-activedescendant="agentPickerActiveID\(pickerHost\)"/);
+  assert.match(uiSource, /:aria-labelledby="agentPickerLabelID\(pickerHost\) \+ ' ' \+ agentPickerValueID\(pickerHost\)"/);
+  assert.match(uiSource, /x-show="!_agentPickerPopoverSupported"/);
+  assert.match(uiSource, /<div x-show="_agentPickerPopoverSupported" :id="agentPickerPanelID/);
+  assert.match(uiSource, /typeof HTMLElement\.prototype\.showPopover === 'function'/);
+  assert.equal((html.match(/:for="_agentPickerPopoverSupported \? agentPickerTriggerID/g) || []).length, 4);
+  assert.equal(/x-model="(?:initForm|editForm|createForm)\.agent"/.test(html), false);
+  assert.match(html, /\.agent-picker-pop \{ animation: agent-picker-pop 0\.12s ease-out; \}/);
+  assert.match(html, /\.agent-picker-pop \{ animation: none; \}/);
+});
+
 // ── Command palette ──────────────────────────────────────────────────────
 
 // Three tickets across the statuses the palette rows differ on.
@@ -6794,7 +7217,7 @@ test("init wires the palette query watcher to the query handler", () => {
 test("the palette leads the Escape stack and the highlight follows the mouse, not the pointer entering", () => {
   const html = fs.readFileSync(htmlPath, "utf8");
 
-  assert.match(html, /@keydown\.escape\.window="if \(paletteOpen\) palettePop\(\); else if \(deleteModal\)/);
+  assert.match(html, /@keydown\.escape\.window="if \(_agentPickerOpenHost\) closeAgentPicker\(true\); else if \(paletteOpen\) palettePop\(\); else if \(deleteModal\)/);
   // mouseenter would move the highlight when the list re-renders under a
   // stationary cursor.
   assert.match(html, /@mousemove="paletteHover\(row\.id\)"/);

@@ -2676,11 +2676,10 @@ func (d *Daemon) runAgentOnce(taskCtx context.Context, t *ticket.Ticket, p spawn
 	}
 	p.log.Info("agent exited", attrs...)
 
-	// A clean exit can still hide a failed run: Claude ends the turn (firing the
-	// Stop hook, exit 0) after a quota/usage limit or API error, so the pipeline
-	// would read exit 0 as success and advance the ticket. Detect that and pause
-	// instead. Non-zero exits already flow through the pipeline's on_failure
-	// handling, so leave those alone. Skip when the run was cancelled.
+	// A clean exit can still hide a failed run when an agent records a provider
+	// error in its session or output. Detect that and pause instead. Non-zero
+	// exits already flow through the pipeline's on_failure handling, so leave
+	// those alone. Skip when the run was cancelled.
 	if result.ExitCode == 0 && taskCtx.Err() == nil {
 		if reason, kind, detected := d.detectAgentError(p.agentCfg, params, logStart, scope.startedAt); detected {
 			p.log.Warn("agent error detected despite clean exit", "stage", p.stageName, "reason", reason, "kind", kind)
@@ -3646,9 +3645,9 @@ func finalAssistantMessage(log *slog.Logger, params RunnerParams, startedAt time
 }
 
 // detectAgentError inspects a finished agent run for failures that leave a
-// clean exit code: quota/usage limits and API errors. Claude runs are checked
-// structurally from the session JSONL; any agent's output log is matched
-// against the agent's configured failure_patterns. Returns a human-readable
+// clean exit code: quota/usage limits and API errors. Claude and pi runs are
+// checked structurally from the session JSONL; any agent's output log is
+// matched against the agent's configured failure_patterns. Returns a human-readable
 // reason, the layer that matched (metrics.ErrorKindSessionAPI or
 // metrics.ErrorKindFailurePattern), and true when a failure is detected. Call
 // after materializeAgentLogs so the log file reflects the final session.
@@ -3656,6 +3655,13 @@ func (d *Daemon) detectAgentError(agentCfg config.Agent, params RunnerParams, lo
 	if agentCfg.IsClaude() && params.SessionID != "" {
 		if path, _ := sessionFile(params, startedAt); path != "" {
 			if reason, ok := scanClaudeSessionError(path); ok {
+				return reason, metrics.ErrorKindSessionAPI, true
+			}
+		}
+	}
+	if agentCfg.IsPi() && params.SessionDir != "" {
+		if path, _ := sessionFile(params, startedAt); path != "" {
+			if reason, ok := scanPiSessionError(path, startedAt); ok {
 				return reason, metrics.ErrorKindSessionAPI, true
 			}
 		}

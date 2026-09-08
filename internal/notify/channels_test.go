@@ -63,8 +63,8 @@ func TestRender(t *testing.T) {
 		},
 		{
 			name:     "a pause carries the error",
-			event:    Event{TicketID: "kon-a", From: "in_progress", To: "paused", Fields: Fields{LastError: "runner failed"}},
-			contains: []string{"runner failed"},
+			event:    Event{TicketID: "kon-a", From: "in_progress", To: "paused", Fields: Fields{LastError: "agent error: Provided authentication token is expired."}},
+			contains: []string{"agent error: Provided authentication token is expired."},
 		},
 	}
 	for _, tt := range tests {

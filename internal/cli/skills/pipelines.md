@@ -122,6 +122,13 @@ or when its output matches one of the agent's `failure_patterns` even on a
 clean exit. `last_error` on the ticket holds the reason. What happens next is
 the step's `on_failure`.
 
+After a clean exit, Kontora also checks Claude and Pi session records for
+structured failures. A synthetic Claude API error, or a final Pi assistant
+message with an `error` or `aborted` stop reason, pauses the ticket before
+pipeline evaluation. The failure does not consume a retry or advance the
+stage. Kontora adds the reason as a system note. If Pi wrote no session file,
+Kontora uses the process exit code and output patterns instead.
+
 A daemon restart mid-stage puts the ticket back to `todo` and schedules the
 stage again. For `claude` and `pi` the run resumes the interrupted conversation
 and gets `resume_prompt` instead of the stage prompt, so the agent continues

@@ -609,38 +609,72 @@ func TestMetricsCrashRecoveryResumeReportsTheWholeSession(t *testing.T) {
 // a clean exit code: the error is counted under the layer that caught it, and
 // the run is a failure.
 func TestMetricsAgentErrorsRecordTheDetectionLayer(t *testing.T) {
-	h := newHarness(t)
-	runner := func(_ context.Context, p RunnerParams) (process.Result, error) {
-		require.NoError(t, os.MkdirAll(filepath.Dir(p.LogFile), 0o755))
-		require.NoError(t, os.WriteFile(p.LogFile, []byte("working...\nError: quota exceeded for today\n"), 0o644))
-		return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now()}, nil
+	tests := []struct {
+		name     string
+		agent    config.Agent
+		run      func(*testing.T, RunnerParams)
+		wantKind string
+	}{
+		{
+			name:     "output failure pattern",
+			agent:    config.Agent{Binary: "some-agent", FailurePatterns: []string{"(?i)quota exceeded"}},
+			wantKind: metrics.ErrorKindFailurePattern,
+			run: func(t *testing.T, p RunnerParams) {
+				require.NoError(t, os.MkdirAll(filepath.Dir(p.LogFile), 0o755))
+				require.NoError(t, os.WriteFile(p.LogFile, []byte("working...\nError: quota exceeded for today\n"), 0o644))
+			},
+		},
+		{
+			name:     "pi session error",
+			agent:    config.Agent{Binary: "pi", FailurePatterns: []string{}},
+			wantKind: metrics.ErrorKindSessionAPI,
+			run: func(t *testing.T, p RunnerParams) {
+				require.NoError(t, os.MkdirAll(p.SessionDir, 0o755))
+				line := fmt.Sprintf(
+					`{"type":"message","timestamp":%q,"message":{"role":"assistant","stopReason":"error","errorMessage":"Provided authentication token is expired."}}`,
+					time.Now().UTC().Format(time.RFC3339Nano),
+				)
+				require.NoError(t, os.WriteFile(filepath.Join(p.SessionDir, "session.jsonl"), []byte(line), 0o644))
+			},
+		},
 	}
 
-	cfg := h.defaultConfig("some-agent", "some-agent")
-	cfg.Agents["agent1"] = config.Agent{Binary: "some-agent", FailurePatterns: []string{"(?i)quota exceeded"}}
-	d, collect := h.newMetricsDaemon(cfg, WithRunner(runner))
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := newHarness(t)
+			runner := func(_ context.Context, p RunnerParams) (process.Result, error) {
+				tt.run(t, p)
+				now := time.Now()
+				return process.Result{ExitCode: 0, StartedAt: now, ExitedAt: now}, nil
+			}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	errCh := make(chan error, 1)
-	go func() { errCh <- d.Run(ctx) }()
-	time.Sleep(200 * time.Millisecond)
+			cfg := h.defaultConfig(tt.agent.Binary, tt.agent.Binary)
+			cfg.Agents["agent1"] = tt.agent
+			d, collect := h.newMetricsDaemon(cfg, WithRunner(runner))
 
-	h.writeTicket("tst-aerr.md", h.taskMD("tst-aerr", "todo", "one-stage"))
-	h.waitForStatus("tst-aerr.md", ticket.StatusPaused, 10*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			errCh := make(chan error, 1)
+			go func() { errCh <- d.Run(ctx) }()
+			time.Sleep(200 * time.Millisecond)
 
-	cancel()
-	require.NoError(t, <-errCh)
+			h.writeTicket("tst-aerr.md", h.taskMD("tst-aerr", "todo", "one-stage"))
+			h.waitForStatus("tst-aerr.md", ticket.StatusPaused, 10*time.Second)
 
-	got := collect()
-	agentErrs, ok := got["kontora.agent.errors"]
-	require.True(t, ok, "kontora.agent.errors must be exported")
-	assert.Equal(t, map[string]int64{metrics.ErrorKindFailurePattern: 1}, sumByAttr(t, agentErrs, "kind"))
-	assert.Equal(t, map[string]int64{"agent1": 1}, sumByAttr(t, agentErrs, "agent"))
-	assert.Equal(t, map[string]int64{"step1": 1}, sumByAttr(t, agentErrs, "stage"))
+			cancel()
+			require.NoError(t, <-errCh)
 
-	assert.Equal(t, map[string]int64{"failure": 1}, sumByAttr(t, got["kontora.stage.runs"], "outcome"),
-		"a run paused by a detected error is a failed run")
+			got := collect()
+			agentErrs, ok := got["kontora.agent.errors"]
+			require.True(t, ok, "kontora.agent.errors must be exported")
+			assert.Equal(t, map[string]int64{tt.wantKind: 1}, sumByAttr(t, agentErrs, "kind"))
+			assert.Equal(t, map[string]int64{"agent1": 1}, sumByAttr(t, agentErrs, "agent"))
+			assert.Equal(t, map[string]int64{"step1": 1}, sumByAttr(t, agentErrs, "stage"))
+
+			assert.Equal(t, map[string]int64{"failure": 1}, sumByAttr(t, got["kontora.stage.runs"], "outcome"),
+				"a run paused by a detected error is a failed run")
+		})
+	}
 }
 
 // TestMetricsReworkOutcomes covers the built-in rework stage's own record,

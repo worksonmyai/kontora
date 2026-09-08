@@ -2785,6 +2785,71 @@ func TestPipelinePausesOnClaudeAPIError(t *testing.T) {
 	require.NoError(t, <-errCh)
 }
 
+func TestPipelinePausesOnPiProviderError(t *testing.T) {
+	h := newHarness(t)
+	eventLog := filepath.Join(t.TempDir(), "events.log")
+	calls := make(chan struct{}, 2)
+
+	runner := func(_ context.Context, p RunnerParams) (process.Result, error) {
+		calls <- struct{}{}
+		require.NotEmpty(t, p.SessionDir, "pi agent should get a session directory")
+		require.NoError(t, os.MkdirAll(p.SessionDir, 0o755))
+		line := fmt.Sprintf(
+			`{"type":"message","timestamp":%q,"message":{"role":"assistant","stopReason":"error","errorMessage":"Provided authentication token is expired."}}`,
+			time.Now().UTC().Format(time.RFC3339Nano),
+		)
+		require.NoError(t, os.WriteFile(filepath.Join(p.SessionDir, "session.jsonl"), []byte(line), 0o644))
+		now := time.Now()
+		return process.Result{ExitCode: 0, StartedAt: now, ExitedAt: now}, nil
+	}
+
+	cfg := h.defaultConfig("pi", "pi")
+	cfg.Agents["agent1"] = config.Agent{Binary: "pi", FailurePatterns: []string{}}
+	cfg.Hooks = config.Hooks{
+		config.HookStageStart: {appendHook("before", eventLog, "$KONTORA_EVENT")},
+		config.HookStageEnd:   {appendHook("after", eventLog, "$KONTORA_EVENT ${KONTORA_EXIT_CODE}")},
+	}
+
+	d := New(cfg,
+		WithLogger(testLogger(t)),
+		WithDebounce(50*time.Millisecond),
+		WithLockPath(h.lockPath),
+		WithRunner(runner),
+		WithAgentLookup(passthroughAgentLookup),
+		WithSkipOrphanCleanup(),
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() { errCh <- d.Run(ctx) }()
+	time.Sleep(200 * time.Millisecond)
+
+	h.writeTicket("tst-pi-error.md", h.taskMD("tst-pi-error", "todo", "two-stage"))
+
+	result := h.waitForStatus("tst-pi-error.md", ticket.StatusPaused, 10*time.Second)
+	assert.Equal(t, "step1", result.Stage)
+	assert.Zero(t, result.Attempt)
+	assert.Empty(t, result.History, "a provider failure should not record a successful run")
+	assert.Equal(t, "agent error: Provided authentication token is expired.", result.LastError)
+	assert.Contains(t, result.Body, "agent error: Provided authentication token is expired.")
+	assert.Equal(t, []string{"stage_start", "stage_end 0"}, waitForLines(t, eventLog, 2))
+
+	select {
+	case <-calls:
+	case <-time.After(time.Second):
+		t.Fatal("the first stage did not run")
+	}
+	select {
+	case <-calls:
+		t.Fatal("the next stage ran after the provider failure")
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	cancel()
+	require.NoError(t, <-errCh)
+}
+
 func TestPipelinePausesOnFailurePattern(t *testing.T) {
 	h := newHarness(t)
 

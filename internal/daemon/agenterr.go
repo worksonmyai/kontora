@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"time"
 )
 
 // apiErrorMarker gates JSON parsing to lines that could carry the error flag,
@@ -59,6 +60,49 @@ func scanClaudeSessionError(path string) (string, bool) {
 type sessionErrEntry struct {
 	IsAPIErrorMessage bool            `json:"isApiErrorMessage"`
 	Message           json.RawMessage `json:"message"`
+}
+
+// The final assistant message since startedAt decides, matching Pi's text mode.
+func scanPiSessionError(path string, startedAt time.Time) (string, bool) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", false
+	}
+	defer f.Close()
+
+	reader := bufio.NewReader(f)
+	var reason string
+	var found bool
+	for {
+		line, readErr := reader.ReadBytes('\n')
+		var ev struct {
+			Timestamp time.Time `json:"timestamp"`
+			Message   struct {
+				Role         string `json:"role"`
+				StopReason   string `json:"stopReason"`
+				ErrorMessage string `json:"errorMessage"`
+			} `json:"message"`
+		}
+		if json.Unmarshal(line, &ev) == nil &&
+			ev.Message.Role == "assistant" &&
+			(startedAt.IsZero() || !ev.Timestamp.Before(startedAt)) {
+			switch ev.Message.StopReason {
+			case "error", "aborted":
+				found = true
+				reason = ev.Message.ErrorMessage
+				if reason == "" {
+					reason = fmt.Sprintf("the turn stopped: %s", ev.Message.StopReason)
+				}
+			default:
+				found = false
+				reason = ""
+			}
+		}
+		if readErr != nil {
+			break
+		}
+	}
+	return reason, found
 }
 
 // errMessageText pulls the first text block out of a session message, tolerating

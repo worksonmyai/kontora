@@ -4627,6 +4627,9 @@ test("failure_patterns keeps its three states apart", async () => {
 
   assert.deepEqual(vmValue(state.settingsFailurePatterns("pi")), { mode: "disabled", patterns: [] });
 
+  const html = fs.readFileSync(htmlPath, "utf8");
+  assert.match(html, /Set to \[\]\. Output pattern matching is off\. Structured session errors from Claude and Pi still pause the ticket, as do non-zero exits\./);
+
   state.settingsConfig.agents.pi.failure_patterns = ["quota exceeded"];
   assert.deepEqual(vmValue(state.settingsFailurePatterns("pi")), { mode: "override", patterns: ["quota exceeded"] });
 });

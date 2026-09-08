@@ -310,7 +310,7 @@ agents:
 | `binary` | yes | Executable name or path. |
 | `args` | no | Arguments passed to the binary. The rendered prompt is appended as the last argument. |
 | `environment` | no | Map of environment variables to set for this agent's processes (merged with top-level `environment`). An empty value unsets a variable the top-level map set. |
-| `failure_patterns` | no | Regexes matched against the agent's output log after it exits. A match pauses the ticket even on a clean exit — catching agents that report failures (quota, API errors) without a non-zero exit code. Unset uses the built-in defaults (below); set an explicit list to override, or `[]` to disable. Claude also gets structural detection from its session log regardless. |
+| `failure_patterns` | no | Regexes matched against the agent's output log after it exits. A match pauses the ticket even on a clean exit. Unset uses the built-in defaults below. Set an explicit list to override them, or `[]` to disable pattern matching. Structured Claude and Pi session checks remain active. |
 | `resume` | no | Set `false` to make every stage this agent runs start a new conversation, even after a daemon restart interrupted one (see [resuming after a restart](#resuming-after-a-restart)). Unset means resume is on for `claude` and `pi`; any other agent always starts fresh. |
 | `effort` | no | Reasoning effort every invocation of this agent starts from, passed as `--effort` to `claude` and `--thinking` to `pi`. It replaces the same flag in this agent's own `args`, and a stage's `effort` overrides it (see [stages](#stages)). Only those two CLIs take a flag for it: an `effort` on any other agent fails to load. The level names are passed through unchecked, so a new one works without a Kontora release, and a typo shows up as an agent that fails to start. |
 | `checkpoint_compaction_tokens` | no | Enables phase-boundary compaction for `pi` and `claude` when positive. Compaction runs only when measured context tokens are greater than this value. Zero or unset disables it. Negative values, and any value on an agent that is neither `pi` nor `claude`, fail validation. Wrapped agents, such as `nono run -- pi` or `nono run -- claude`, are supported. |
@@ -341,7 +341,20 @@ When `failure_patterns` is omitted, an agent inherits these defaults, tuned to m
 (?i)Rate limit reached for        # OpenAI-backed agents: rate limit
 ```
 
-To turn detection off for an agent, set `failure_patterns: []`.
+Set `failure_patterns: []` to disable output pattern matching for an agent.
+This does not disable structured session checks. After a clean exit, the daemon
+checks Claude sessions for synthetic API errors. It checks the current Pi
+invocation's final assistant message for an `error` or `aborted` stop reason.
+The pause reason includes Pi's nonempty `errorMessage` unchanged. If Pi did not
+provide one, it includes `the turn stopped: <stopReason>`.
+
+A structured session failure pauses the ticket before pipeline evaluation. The
+daemon runs the matching `stage_end` hooks, but does not consume a retry, advance
+the stage, or add a successful history row. The reason is stored in `last_error`
+and a system note, and appears in ticket views and pause notifications.
+
+If a Pi run writes no session file, the daemon does not inspect an older file.
+It uses the process exit code and the configured output patterns instead.
 
 ### Resuming after a restart
 
@@ -1112,8 +1125,8 @@ metrics off.
 `outcome` is `success`, `failure`, or `cancelled`. `action` is the pipeline
 action the exit produced: `advance`, `complete`, `retry`, `back`, `pause`, or
 `park`. On `kontora.agent.errors`, `kind` is `session_api_error` for a failure
-found in Claude's session record and `failure_pattern` for one matched against
-the agent's output log. On `kontora.agent.tokens` it is `input`, `output`,
+found in a Claude or Pi session record. It is `failure_pattern` for one matched
+against the agent's output log. On `kontora.agent.tokens` it is `input`, `output`,
 `cache_create`, or `cache_read`. A run is dropped whole if any one of its
 session records left its usage key unfilled; the counter never reports a
 partial figure. On `kontora.notifications.sent`, `result` is `ok` for a

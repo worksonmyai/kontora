@@ -327,11 +327,10 @@ type Agent struct {
 	Args        []string          `yaml:"args"`
 	Environment map[string]string `yaml:"environment"`
 	// FailurePatterns are regexes matched against the agent's output log after
-	// it exits. A match pauses the ticket even when the agent exited cleanly —
-	// catching agents that report errors (quota, API failures) without a
-	// non-zero exit code. When unset, DefaultFailurePatterns apply; set an
-	// explicit list to override them, or [] to disable detection for this agent.
-	// Claude also gets structural detection from its session JSONL regardless.
+	// it exits. A match pauses the ticket even when the agent exited cleanly.
+	// When unset, DefaultFailurePatterns apply; set an explicit list to override
+	// them, or [] to disable pattern matching. Claude and pi also get structural
+	// detection from their session JSONL regardless.
 	FailurePatterns []string `yaml:"failure_patterns"`
 	// Effort is the reasoning effort every stage this agent runs starts from,
 	// unless the stage overrides it. Only claude and pi take a flag for it; any

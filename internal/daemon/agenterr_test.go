@@ -5,10 +5,12 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/worksonmyai/kontora/internal/config"
+	"github.com/worksonmyai/kontora/internal/metrics"
 )
 
 func TestScanClaudeSessionError(t *testing.T) {
@@ -89,6 +91,147 @@ func TestScanClaudeSessionErrorMissingFile(t *testing.T) {
 	reason, found := scanClaudeSessionError(filepath.Join(t.TempDir(), "nope.jsonl"))
 	assert.False(t, found)
 	assert.Empty(t, reason)
+}
+
+func TestScanPiSessionError(t *testing.T) {
+	startedAt := time.Date(2026, time.August, 11, 2, 7, 40, 0, time.UTC)
+	tests := []struct {
+		name       string
+		content    string
+		wantReason string
+		wantFound  bool
+	}{
+		{
+			name:       "usage limit",
+			content:    `{"type":"message","timestamp":"2026-08-11T02:07:44.744Z","message":{"role":"assistant","stopReason":"error","errorMessage":"Codex error: The usage limit has been reached","diagnostic":{"stack":"private details"}}}`,
+			wantReason: "Codex error: The usage limit has been reached",
+			wantFound:  true,
+		},
+		{
+			name:       "expired token",
+			content:    `{"type":"message","timestamp":"2026-08-11T02:07:44.744Z","message":{"role":"assistant","stopReason":"error","errorMessage":"Provided authentication token is expired."}}`,
+			wantReason: "Provided authentication token is expired.",
+			wantFound:  true,
+		},
+		{
+			name:       "aborted with error message",
+			content:    `{"type":"message","timestamp":"2026-08-11T02:07:44.744Z","message":{"role":"assistant","stopReason":"aborted","errorMessage":"request cancelled upstream"}}`,
+			wantReason: "request cancelled upstream",
+			wantFound:  true,
+		},
+		{
+			name:       "aborted without error message",
+			content:    `{"type":"message","timestamp":"2026-08-11T02:07:44.744Z","message":{"role":"assistant","stopReason":"aborted"}}`,
+			wantReason: "the turn stopped: aborted",
+			wantFound:  true,
+		},
+		{
+			name: "later clean assistant message wins",
+			content: `{"type":"message","timestamp":"2026-08-11T02:07:44.744Z","message":{"role":"assistant","stopReason":"error","errorMessage":"temporary error"}}` + "\n" +
+				`{"type":"message","timestamp":"2026-08-11T02:07:45.744Z","message":{"role":"assistant","stopReason":"stop"}}`,
+			wantFound: false,
+		},
+		{
+			name: "old invocation error is ignored",
+			content: `{"type":"message","timestamp":"2026-08-11T02:07:39.999Z","message":{"role":"assistant","stopReason":"error","errorMessage":"old error"}}` + "\n" +
+				`{"type":"message","timestamp":"2026-08-11T02:07:44.744Z","message":{"role":"assistant","stopReason":"stop"}}`,
+			wantFound: false,
+		},
+		{
+			name:      "old invocation error without a current message is ignored",
+			content:   `{"type":"message","timestamp":"2026-08-11T02:07:39.999Z","message":{"role":"assistant","stopReason":"error","errorMessage":"old error"}}`,
+			wantFound: false,
+		},
+		{
+			name: "missing assistant messages",
+			content: `{"type":"session","timestamp":"2026-08-11T02:07:44.000Z"}` + "\n" +
+				`{"type":"message","timestamp":"2026-08-11T02:07:44.744Z","message":{"role":"user"}}`,
+			wantFound: false,
+		},
+		{
+			name:      "malformed input",
+			content:   "not json\n{\"type\":\"message\"",
+			wantFound: false,
+		},
+		{
+			name: "malformed and oversized lines before an error",
+			content: "not json\n" +
+				`{"type":"message","timestamp":"2026-08-11T02:07:43.000Z","message":{"role":"toolResult","content":"` + strings.Repeat("x", 2<<20) + `"}}` + "\n" +
+				`{"type":"message","timestamp":"2026-08-11T02:07:44.744Z","message":{"role":"assistant","stopReason":"error","errorMessage":"Request timed out."}}`,
+			wantReason: "Request timed out.",
+			wantFound:  true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "session.jsonl")
+			require.NoError(t, os.WriteFile(path, []byte(tt.content), 0o644))
+
+			reason, found := scanPiSessionError(path, startedAt)
+			assert.Equal(t, tt.wantFound, found)
+			assert.Equal(t, tt.wantReason, reason)
+		})
+	}
+}
+
+func TestScanPiSessionErrorMissingFile(t *testing.T) {
+	reason, found := scanPiSessionError(filepath.Join(t.TempDir(), "nope.jsonl"), time.Now())
+	assert.False(t, found)
+	assert.Empty(t, reason)
+}
+
+func TestDetectAgentErrorPiWithoutCurrentSession(t *testing.T) {
+	startedAt := time.Now()
+	dir := t.TempDir()
+	sessionDir := filepath.Join(dir, "sessions")
+	require.NoError(t, os.MkdirAll(sessionDir, 0o755))
+	staleSession := filepath.Join(sessionDir, "old.jsonl")
+	require.NoError(t, os.WriteFile(staleSession, []byte(
+		`{"type":"message","timestamp":"2026-08-11T02:07:44.744Z","message":{"role":"assistant","stopReason":"error","errorMessage":"old error"}}`,
+	), 0o644))
+	staleTime := startedAt.Add(-time.Minute)
+	require.NoError(t, os.Chtimes(staleSession, staleTime, staleTime))
+
+	tests := []struct {
+		name       string
+		log        string
+		patterns   []string
+		wantReason string
+		wantKind   string
+		wantFound  bool
+	}{
+		{
+			name:      "old session is ignored",
+			log:       "all good\n",
+			wantFound: false,
+		},
+		{
+			name:       "output patterns remain active",
+			log:        "Error: quota exceeded\n",
+			patterns:   []string{"quota exceeded"},
+			wantReason: `output matched failure pattern "quota exceeded"`,
+			wantKind:   metrics.ErrorKindFailurePattern,
+			wantFound:  true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			logFile := filepath.Join(dir, strings.ReplaceAll(tt.name, " ", "-")+".log")
+			require.NoError(t, os.WriteFile(logFile, []byte(tt.log), 0o644))
+			d := &Daemon{}
+			reason, kind, found := d.detectAgentError(
+				config.Agent{Binary: "pi", FailurePatterns: tt.patterns},
+				RunnerParams{SessionDir: sessionDir, LogFile: logFile},
+				0,
+				startedAt,
+			)
+			assert.Equal(t, tt.wantFound, found)
+			assert.Equal(t, tt.wantReason, reason)
+			assert.Equal(t, tt.wantKind, kind)
+		})
+	}
 }
 
 func TestDefaultFailurePatternsMatchRealErrors(t *testing.T) {

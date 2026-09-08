@@ -52,7 +52,7 @@ agents:
 | `args` | Arguments before the prompt. |
 | `environment` | Variables for this agent only, merged over the top-level map. |
 | `effort` | Reasoning effort every invocation starts from. Only `claude` and `pi` take a flag for it. |
-| `failure_patterns` | Regexes matched against the output log after the agent exits. A match pauses the ticket even on a clean exit. `[]` disables it. |
+| `failure_patterns` | Regexes matched against the output log after the agent exits. A match pauses the ticket even on a clean exit. `[]` disables pattern matching, but structured Claude and Pi session checks remain active. |
 | `resume` | `false` makes every stage start a new conversation, even after a restart interrupted one. |
 | `checkpoint_compaction_tokens` | Positive turns on phase-boundary compaction for `pi` and `claude`. |
 

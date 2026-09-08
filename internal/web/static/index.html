@@ -4651,7 +4651,7 @@
                             </template>
                           </div>
                           <span class="text-[11px] text-tx-faint"
-                                x-text="settingsFailurePatterns(name).mode === 'default' ? 'Using the 8 built-in defaults — API errors, usage limits, prompt-too-long, provider quota. Set an explicit list in config.yaml to override, or [] to disable.' : (settingsFailurePatterns(name).mode === 'disabled' ? 'Set to []. Failure detection is off for this agent; only a non-zero exit pauses the ticket.' : 'An explicit list in config.yaml, replacing the built-in defaults.')"></span>
+                                x-text="settingsFailurePatterns(name).mode === 'default' ? 'Using the 8 built-in defaults: API errors, usage limits, prompt-too-long, provider quota. Set an explicit list in config.yaml to override, or [] to disable pattern matching.' : (settingsFailurePatterns(name).mode === 'disabled' ? 'Set to []. Output pattern matching is off. Structured session errors from Claude and Pi still pause the ticket, as do non-zero exits.' : 'An explicit list in config.yaml, replacing the built-in defaults.')"></span>
                         </div>
                       </div>
                     </section>

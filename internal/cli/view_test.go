@@ -47,6 +47,11 @@ func TestViewRendersFrontmatterFields(t *testing.T) {
 			want:   []string{"base:      origin/develop"},
 		},
 		{
+			name:   "provider error",
+			fields: "last_error: 'agent error: Provided authentication token is expired.'\n",
+			want:   []string{"Last error: agent error: Provided authentication token is expired."},
+		},
+		{
 			name:   "a schedule prints in the reader's own zone",
 			fields: "scheduled_at: \"2026-09-01T09:00:00Z\"\n",
 			want:   []string{"starts:    " + scheduledLocal},

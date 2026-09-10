@@ -464,24 +464,37 @@ export function kontoraArchive() {
     async archiveOpenRow(row) {
       if (!row || !row.id) return;
       if (this.selectedTicket && this.selectedTicket.id === row.id) return;
+      var detailSeq = ++this._ticketDetailSeq;
+      var updateSeq = this._selectedTicketUpdateSeq;
+      var mine = () => this._archiveDetailId === row.id && detailSeq === this._ticketDetailSeq;
       this.archiveTab = 'ticket';
       this._resetActivity();
+      this._resetTicketCost();
       this.ticketChanges = null;
       this._archiveDetailId = row.id;
       // The row's fields are enough to draw the header while the body loads.
       // path rides along so the header's [tag] prefix has its fallback before
       // the body lands.
       this.selectedTicket = { id: row.id, title: row.title, status: 'archived', branch: row.branch, path: row.path };
+      this.fetchTicketCost(row.id);
       this.archiveDetailLoading = true;
       try {
-        const res = await fetch('/api/tickets/' + encodeURIComponent(row.id));
-        if (res.ok) {
+        while (mine()) {
+          const res = await fetch('/api/tickets/' + encodeURIComponent(row.id));
+          if (!mine() || !res.ok) break;
           const full = await res.json();
-          if (this._archiveDetailId === row.id) this.selectedTicket = full;
+          if (!mine()) return;
+          if (updateSeq !== this._selectedTicketUpdateSeq) {
+            updateSeq = this._selectedTicketUpdateSeq;
+            continue;
+          }
+          if (full.id === row.id) this.selectedTicket = full;
+          break;
         }
       } catch (e) {
-        this.error = 'Failed to load ticket details';
+        if (mine()) this.error = 'Failed to load ticket details';
       }
+      if (!mine()) return;
       this.archiveDetailLoading = false;
       const t = this.selectedTicket;
       if (!t || t.id !== row.id) return;
@@ -496,10 +509,12 @@ export function kontoraArchive() {
     },
 
     _archiveClearDetail() {
+      this._ticketDetailSeq++;
       this.selectedTicket = null;
       this.archiveTab = 'ticket';
       this.archiveDetailLoading = false;
       this._resetActivity();
+      this._resetTicketCost();
       this.ticketChanges = null;
     },
 
@@ -510,6 +525,9 @@ export function kontoraArchive() {
       const t = this.selectedTicket;
       if (!t) return [];
       const out = [];
+      const cost = this.currentTicketCost();
+      const estimate = this.costLabel(cost);
+      if (estimate) out.push({ k: 'estimate', v: estimate, title: this.costTooltip(cost) });
       const wall = this.ticketWall();
       if (wall) out.push({ k: 'wall', v: wall });
       const segs = this.stageRibbon();

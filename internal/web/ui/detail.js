@@ -42,6 +42,7 @@ export function kontoraDetail() {
       this.logViewStage = null;
       this.logViewLoading = false;
       this._resetActivity();
+      this._resetTicketCost();
       this.setStageOpen = false;
       this.scheduleEditing = false;
       this.scheduleError = null;
@@ -60,30 +61,46 @@ export function kontoraDetail() {
       this.childrenExpanded = false;
       this.noteDraft = '';
       this.noteResetDrafts();
+      var detailSeq = ++this._ticketDetailSeq;
+      var updateSeq = this._selectedTicketUpdateSeq;
+      var mine = () => this.selectedTicket?.id === ticket.id && detailSeq === this._ticketDetailSeq;
       this.selectedTicket = ticket;
       this._pushRecentTicket(ticket.id);
+      this.fetchTicketCost(ticket.id);
       this.detailLoading = true;
       try {
-        var res = await fetch('/api/tickets/' + ticket.id);
-        if (res.ok) {
+        while (mine()) {
+          var res = await fetch('/api/tickets/' + encodeURIComponent(ticket.id));
+          if (!mine() || !res.ok) break;
           var full = await res.json();
-          this.selectedTicket = full;
-          var idx = this.tickets.findIndex(function(t) { return t.id === full.id; });
-          if (idx >= 0) {
-            var before = this.tickets[idx];
-            var entry = this.boardEntry(full);
-            this.tickets[idx] = entry;
-            // The replacement can change agent, status, or any rendered field,
-            // so refresh the cached board and the agent tally from it. Usually
-            // it changes none of them, and a recompute re-filters and re-sorts
-            // every column, so opening a ticket pays for that only when the
-            // board would draw something different.
-            if (this.boardEntryChanged(before, entry)) this.recomputeBoard();
+          if (!mine()) return;
+          // Ticket SSE omits the body. Repeat a read that an SSE update
+          // overtook instead of replacing newer ticket fields with the old response.
+          if (updateSeq !== this._selectedTicketUpdateSeq) {
+            updateSeq = this._selectedTicketUpdateSeq;
+            continue;
           }
+          if (full.id === ticket.id) {
+            this.selectedTicket = full;
+            var idx = this.tickets.findIndex(function(t) { return t.id === full.id; });
+            if (idx >= 0) {
+              var before = this.tickets[idx];
+              var entry = this.boardEntry(full);
+              this.tickets[idx] = entry;
+              // The replacement can change agent, status, or any rendered field,
+              // so refresh the cached board and the agent tally from it. Usually
+              // it changes none of them, and a recompute re-filters and re-sorts
+              // every column, so opening a ticket pays for that only when the
+              // board would draw something different.
+              if (this.boardEntryChanged(before, entry)) this.recomputeBoard();
+            }
+          }
+          break;
         }
       } catch (e) {
-        this.error = 'Failed to load ticket details';
+        if (mine()) this.error = 'Failed to load ticket details';
       }
+      if (!mine()) return;
       this.detailLoading = false;
       // The rail's churn block is always on, so the branch diff is read for
       // every ticket that has one rather than only for summarised runs.
@@ -152,7 +169,7 @@ export function kontoraDetail() {
       hist.forEach(function (h) { totalRuns[h.stage] = (totalRuns[h.stage] || 0) + 1; });
       var walked = Object.create(null);
       var cards = [];
-      hist.forEach(function (h) {
+      hist.forEach(function (h, historyIndex) {
         var run = walked[h.stage] || 0;
         walked[h.stage] = run + 1;
         if (!h.summary) return;
@@ -163,6 +180,7 @@ export function kontoraDetail() {
           key: h.stage + '#' + run,
           stage: h.stage,
           run: run,
+          historyIndex: historyIndex,
           summary: h.summary,
           failed: h.exit_code !== 0,
           agent: h.agent || '',
@@ -202,6 +220,8 @@ export function kontoraDetail() {
       if (card.seconds > 0) parts.push(this.formatSeconds(card.seconds));
       if (card.runs > 1) parts.push('×' + card.runs);
       if (card.agent) parts.push(card.agent);
+      var cost = this.costLabel(this.ticketRunCost(card.historyIndex));
+      if (cost) parts.push(cost);
       if (card.failed) parts.push('failed');
       return parts.join(' · ');
     },
@@ -246,6 +266,78 @@ export function kontoraDetail() {
           if (this.selectedTicket?.id === id) this.ticketChanges = changes;
         }
       } catch (e) { /* the card simply shows no commit list */ }
+    },
+
+    _resetTicketCost() {
+      this._ticketCostSeq++;
+      this.ticketCost = null;
+    },
+
+    async fetchTicketCost(id) {
+      var seq = ++this._ticketCostSeq;
+      var mine = () => this.selectedTicket?.id === id && seq === this._ticketCostSeq;
+      if (mine()) this.ticketCost = null;
+      try {
+        var res = await fetch('/api/tickets/' + encodeURIComponent(id) + '/cost');
+        if (!mine() || !res.ok) return;
+        var cost = await res.json();
+        if (mine() && cost.id === id) this.ticketCost = cost;
+      } catch (e) { /* an unavailable estimate stays absent */ }
+    },
+
+    formatCostUSD(value) {
+      if (value === null || value === undefined || value === '') return '';
+      var match = /^(\d+)(?:\.(\d+))?$/.exec(String(value));
+      if (!match) return '';
+      var whole = match[1].replace(/^0+(?=\d)/, '');
+      var fraction = match[2] || '';
+      if (whole === '0' && !/[1-9]/.test(fraction)) return '$0.00';
+      if (whole === '0' && (fraction + '0000').slice(0, 4) === '0000') return '<$0.0001';
+
+      var places = whole === '0' && (fraction + '00').slice(0, 2) === '00' ? 4 : 2;
+      var scale = 10n ** BigInt(places);
+      var kept = (fraction + '0'.repeat(places)).slice(0, places);
+      var units = BigInt(whole) * scale + BigInt(kept || '0');
+      if (fraction.length > places && fraction[places] >= '5') units++;
+      var roundedWhole = units / scale;
+      var roundedFraction = String(units % scale).padStart(places, '0');
+      return '$' + roundedWhole + '.' + roundedFraction;
+    },
+
+    currentTicketCost() {
+      var cost = this.ticketCost;
+      return cost && cost.id === this.selectedTicket?.id ? cost : null;
+    },
+
+    costLabel(cost) {
+      if (!cost) return '';
+      var label = this.formatCostUSD(cost.cost_usd);
+      if (!label) {
+        return cost.cost_usd == null && cost.tracked_runs > 0 && cost.priced_runs === 0 ? 'unknown' : '';
+      }
+      return label + (cost.priced_runs < cost.tracked_runs ? '+' : '');
+    },
+
+    costTooltip(cost) {
+      if (!cost) return '';
+      if (cost.cost_usd != null && cost.tracked_runs === undefined) {
+        return 'Estimated using the bundled snapshot of standard model rates';
+      }
+      if (!cost.tracked_runs) return '';
+      var coverage = cost.priced_runs + ' of ' + cost.tracked_runs + ' runs priced';
+      if (cost.priced_runs === 0) return 'No estimate using the bundled snapshot of standard model rates · ' + coverage;
+      return (cost.priced_runs < cost.tracked_runs
+        ? 'Known subtotal using the bundled snapshot of standard model rates · '
+        : 'Estimated using the bundled snapshot of standard model rates · ') + coverage;
+    },
+
+    ticketStageCost(stage) {
+      return (this.currentTicketCost()?.stages || []).find(function (cost) { return cost.name === stage; }) || null;
+    },
+
+    ticketRunCost(historyIndex) {
+      if (!Number.isInteger(historyIndex)) return null;
+      return (this.currentTicketCost()?.runs || []).find(function (cost) { return cost.history_index === historyIndex; }) || null;
     },
 
     // The chain behind the ladder. Guarded on the selected ticket the way
@@ -333,6 +425,7 @@ export function kontoraDetail() {
       this.logViewStage = null;
       this.logViewLoading = false;
       this._resetActivity();
+      this._resetTicketCost();
       this.ticketChanges = null;
       this.collapsedStages = {};
       this.relExpanded = {};
@@ -343,6 +436,7 @@ export function kontoraDetail() {
       this.childrenExpanded = false;
       this.noteDraft = '';
       this.noteResetDrafts();
+      this._ticketDetailSeq++;
       this.writeHash();
     },
 
@@ -958,7 +1052,9 @@ export function kontoraDetail() {
     },
 
     isStageClickable(stage, ticket) {
-      if (!ticket || !ticket.stages || ticket.stages.length === 0) return false;
+      if (!ticket) return false;
+      if ((ticket.history || []).some(function (run) { return run.stage === stage; })) return true;
+      if (!ticket.stages || ticket.stages.length === 0) return false;
       if (ticket.status === 'todo' || ticket.status === 'open') return false;
       if (ticket.status === 'done') return true;
       var stageIdx = ticket.stages.indexOf(stage);
@@ -972,10 +1068,12 @@ export function kontoraDetail() {
       if (stage === this.selectedTicket.stage && this.selectedTicket.status === 'in_progress') {
         this.logViewContent = null;
         this.logViewStage = null;
+        this.detailTab = 'terminal';
         this.openTerminal();
         return;
       }
       if (!this.isStageClickable(stage, this.selectedTicket)) return;
+      this.detailTab = 'logs';
       this.closeTerminal();
       this.fetchStageLogs(this.selectedTicket.id, stage);
     },

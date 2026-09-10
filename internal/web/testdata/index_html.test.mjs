@@ -7416,7 +7416,7 @@ test("the ribbon sizes each stage by its real duration", () => {
   const state = pageState(TAPE_TICKET);
   const segs = state.stageRibbon();
 
-  assert.deepEqual(segs.map((s) => s.name), ["plan", "review", "commit"]);
+  assert.deepEqual(Array.from(segs, (s) => s.name), ["plan", "review", "commit"]);
   assert.equal(segs[0].seconds, 40);
   // Two runs of 20s and 30s, five minutes apart: the queue gap does not count.
   assert.equal(segs[1].seconds, 50);
@@ -7493,6 +7493,351 @@ test("meters follow the ticket's status", () => {
   const review = pageState({ ...TAPE_TICKET, started_at: "2026-08-08T11:06:00Z" }, { configCache });
   assert.deepEqual(Array.from(review.ribbonMeters(), (m) => m.k), ["wall"], "no verified usage means no tokens meter");
   assert.equal(review.ribbonMeters()[0].v, "6m");
+});
+
+test("cost formatting distinguishes zero, small values and unknown estimates", () => {
+  const state = pageState(TAPE_TICKET);
+
+  assert.equal(state.formatCostUSD(null), "");
+  assert.equal(state.formatCostUSD("0.000000"), "$0.00");
+  assert.equal(state.formatCostUSD("0.000001"), "<$0.0001");
+  assert.equal(state.formatCostUSD("0.001234"), "$0.0012");
+  assert.equal(state.formatCostUSD("0.009999"), "$0.0100");
+  assert.equal(state.formatCostUSD("1.005000"), "$1.01");
+  assert.equal(state.formatCostUSD("2.675000"), "$2.68");
+  assert.equal(state.formatCostUSD("1.239999"), "$1.24");
+  assert.equal(state.formatCostUSD("10000000000000.000000"), "$10000000000000.00");
+  assert.equal(state.formatCostUSD("invalid"), "");
+  assert.equal(state.costLabel({ cost_usd: "0.420000", priced_runs: 1, tracked_runs: 2 }), "$0.42+");
+  assert.equal(state.costLabel({ cost_usd: null, priced_runs: 0, tracked_runs: 1 }), "unknown");
+  assert.equal(state.costLabel({ cost_usd: null }), "", "an unpriced History row shows no value");
+  assert.equal(
+    state.costTooltip({ cost_usd: "0.000000499" }),
+    "Estimated using the bundled snapshot of standard model rates",
+    "a run value is still identified as an estimate",
+  );
+  assert.equal(
+    state.costTooltip({ cost_usd: "0.420000", priced_runs: 1, tracked_runs: 2 }),
+    "Known subtotal using the bundled snapshot of standard model rates · 1 of 2 runs priced",
+  );
+  assert.equal(
+    state.costTooltip({ cost_usd: null, priced_runs: 0, tracked_runs: 2 }),
+    "No estimate using the bundled snapshot of standard model rates · 0 of 2 runs priced",
+  );
+});
+
+test("cost helpers reject state from another selected ticket", () => {
+  const state = pageState({ id: "kon-current", status: "done", stages: ["code"], history: [{ stage: "code" }] });
+  state.ticketCost = {
+    id: "kon-stale", cost_usd: "9.000000", priced_runs: 1, tracked_runs: 1,
+    stages: [{ name: "code", cost_usd: "9.000000", priced_runs: 1, tracked_runs: 1 }],
+    runs: [{ history_index: 0, cost_usd: "9.000000" }],
+  };
+
+  assert.equal(state.currentTicketCost(), null);
+  assert.equal(state.ticketStageCost("code"), null);
+  assert.equal(state.ticketRunCost(0), null);
+  assert.deepEqual(Array.from(state.ribbonMeters(), (meter) => meter.k), []);
+});
+
+test("the stage ribbon includes historical and synthetic cost stages", () => {
+  const state = pageState({
+    id: "kon-cost", status: "done", stages: ["plan"],
+    history: [{ stage: "retired", run: 0, started_at: "2026-08-08T11:00:00Z", completed_at: "2026-08-08T11:00:10Z" }],
+  });
+  state.ticketCost = {
+    id: "kon-cost", cost_usd: "0.300000", priced_runs: 2, tracked_runs: 2,
+    stages: [
+      { name: "retired", cost_usd: "0.200000", priced_runs: 1, tracked_runs: 1 },
+      { name: "default", cost_usd: "0.100000", priced_runs: 1, tracked_runs: 1 },
+    ],
+  };
+
+  const segs = state.stageRibbon();
+  assert.deepEqual(Array.from(segs, (seg) => seg.name), ["plan", "retired", "default"]);
+  assert.equal(segs[1].runs, 1);
+  assert.equal(state.costLabel(segs[1].cost), "$0.20");
+  assert.equal(segs[2].runs, 0, "the synthetic default run does not invent History");
+  assert.equal(segs[2].state, "done");
+});
+
+test("stage cost coverage includes retries, annotations and unpriced runs", () => {
+  const state = pageState({
+    id: "kon-stage-cost", status: "done", stages: ["code"],
+    history: [
+      { stage: "code", run: 0 },
+      { stage: "code", run: 0, kind: "annotation" },
+      { stage: "code", run: 0 },
+    ],
+  });
+  state.ticketCost = {
+    id: "kon-stage-cost", cost_usd: "0.100000", priced_runs: 2, tracked_runs: 3,
+    stages: [{ name: "code", cost_usd: "0.100000", priced_runs: 2, tracked_runs: 3 }],
+  };
+
+  const seg = state.stageRibbon()[0];
+  assert.equal(seg.runs, 3);
+  assert.equal(state.costLabel(seg.cost), "$0.10+");
+  assert.equal(state.ribbonMeters()[0].v, "$0.10+");
+  assert.match(state.ribbonMeters()[0].title, /2 of 3 runs priced/);
+});
+
+test("run estimates use the History index instead of legacy run numbers", () => {
+  const state = pageState({
+    id: "kon-cost", status: "done", stages: ["code"],
+    history: [
+      { stage: "code", run: 0, summary: "first" },
+      { stage: "code", run: 0, kind: "annotation", summary: "annotation" },
+    ],
+  });
+  state.ticketCost = {
+    id: "kon-cost",
+    runs: [
+      { history_index: 0, cost_usd: "0.100000", priced_runs: 1, tracked_runs: 1 },
+      { history_index: 1, cost_usd: "0.200000", priced_runs: 1, tracked_runs: 1 },
+    ],
+  };
+
+  assert.equal(state.costLabel(state.ticketRunCost(0)), "$0.10");
+  assert.equal(state.costLabel(state.ticketRunCost(1)), "$0.20");
+  const cards = state.summaryCards();
+  assert.equal(cards[0].historyIndex, 1);
+  assert.match(state.stageCardMeta(cards[0]), /\$0\.20/);
+});
+
+test("mobile costs remain visible for running, retried and unpriced tickets", () => {
+  const state = pageState({
+    id: "kon-mobile", status: "in_progress", stage: "code", stages: ["plan", "code"],
+    history: [{ stage: "plan", run: 0 }],
+  });
+  state.ticketCost = {
+    id: "kon-mobile", cost_usd: "0.100000", priced_runs: 1, tracked_runs: 2,
+    stages: [
+      { name: "plan", cost_usd: "0.100000", priced_runs: 1, tracked_runs: 1 },
+      { name: "retired", cost_usd: null, priced_runs: 0, tracked_runs: 1 },
+    ],
+  };
+
+  assert.equal(state.mobileHasRun(state.selectedTicket), true);
+  assert.equal(state.mobileTicketCostLabel(), "est. $0.10+ · 1/2");
+  assert.deepEqual(Array.from(state.mobileCostStages(), (seg) => seg.name), ["plan", "retired"]);
+  assert.equal(state.mobileCostStageLabel(state.mobileCostStages()[1]), "retired · unknown · 0/1");
+
+  state.selectedTicket.status = "todo";
+  assert.equal(state.mobileHasRun(state.selectedTicket), true, "a retried ticket keeps its run tabs");
+});
+
+test("mobile stage costs open completed stage logs", () => {
+  const state = pageState({
+    id: "kon-mobile", status: "in_progress", stage: "code", stages: ["plan", "code"],
+    history: [{ stage: "plan", run: 0 }],
+  });
+  const calls = [];
+  state.terminalOpen = true;
+  state.closeTerminal = () => { state.terminalOpen = false; };
+  state.fetchStageLogs = (id, stage) => calls.push([id, stage]);
+
+  state.mobileOpenCostStage(state.stageRibbon()[0]);
+
+  assert.equal(state.detailTab, "logs");
+  assert.equal(state.terminalOpen, false);
+  assert.deepEqual(calls, [["kon-mobile", "plan"]]);
+});
+
+test("normal and archive detail open paths request ticket cost", async () => {
+  for (const archive of [false, true]) {
+    const state = loadKontoraState();
+    const requested = [];
+    state.fetchTicketCost = (id) => requested.push(id);
+    if (archive) {
+      await state.archiveOpenRow({ id: "kon-archive", title: "Archived", path: "/repo" });
+      assert.deepEqual(requested, ["kon-archive"]);
+    } else {
+      await state.selectTicket({ id: "kon-board", title: "Board", status: "done" });
+      assert.deepEqual(requested, ["kon-board"]);
+    }
+  }
+});
+
+test("overlapping detail requests keep the newest selected ticket", async () => {
+  const first = deferred();
+  const second = deferred();
+  var calls = 0;
+  const state = loadKontoraState({ fetch: () => (++calls === 1 ? first.promise : second.promise) });
+  state.fetchTicketCost = () => {};
+
+  const oldRequest = state.selectTicket({ id: "kon-first", title: "First", status: "done" });
+  const newRequest = state.selectTicket({ id: "kon-second", title: "Second", status: "done" });
+  second.resolve({ ok: true, json: async () => ({ id: "kon-second", title: "Second full", status: "done" }) });
+  await newRequest;
+  first.resolve({ ok: true, json: async () => ({ id: "kon-first", title: "First full", status: "done" }) });
+  await oldRequest;
+
+  assert.equal(state.selectedTicket.id, "kon-second");
+  assert.equal(state.selectedTicket.title, "Second full");
+});
+
+test("same-ticket SSE updates outrank older detail responses", async () => {
+  for (const archive of [false, true]) {
+    const first = deferred();
+    const second = deferred();
+    const secondStarted = deferred();
+    var calls = 0;
+    const state = loadKontoraState({
+      fetch: () => {
+        calls++;
+        if (calls === 2) secondStarted.resolve();
+        return calls === 1 ? first.promise : second.promise;
+      },
+    });
+    state.fetchTicketCost = () => {};
+    state.fetchChain = () => {};
+    state.fetchChanges = () => {};
+    state.fetchActivity = () => {};
+    if (archive) state.currentView = "archive";
+
+    const row = { id: "kon-current", title: "Initial", status: archive ? "archived" : "in_progress", history: [] };
+    const request = archive ? state.archiveOpenRow(row) : state.selectTicket(row);
+    state.applyTicketUpdate({
+      ...row,
+      title: "New event",
+      status: archive ? "archived" : "human_review",
+      history: [{ stage: "plan" }, { stage: "code" }],
+      kontora: true,
+    });
+    first.resolve({ ok: true, json: async () => ({ ...row, title: "Old detail", body: "# Old" }) });
+    await secondStarted.promise;
+    second.resolve({
+      ok: true,
+      json: async () => ({
+        ...row,
+        title: "New detail",
+        status: archive ? "archived" : "human_review",
+        history: [{ stage: "plan" }, { stage: "code" }],
+        body: "# Current",
+      }),
+    });
+    await request;
+
+    assert.equal(state.selectedTicket.title, "New detail", archive ? "archive" : "normal");
+    assert.equal(state.selectedTicket.history.length, 2, archive ? "archive" : "normal");
+    assert.equal(state.selectedTicket.body, "# Current", archive ? "archive" : "normal");
+  }
+});
+
+test("an archived detail response cannot cross a close and reopen", async () => {
+  const first = deferred();
+  const second = deferred();
+  var calls = 0;
+  const state = loadKontoraState({ fetch: () => (++calls === 1 ? first.promise : second.promise) });
+  state.fetchTicketCost = () => {};
+  const row = { id: "kon-archive", title: "Archive", status: "done" };
+
+  const oldRequest = state.archiveOpenRow(row);
+  state.archiveCloseDetail();
+  const newRequest = state.archiveOpenRow(row);
+  second.resolve({ ok: true, json: async () => ({ id: row.id, title: "New detail", status: "archived" }) });
+  await newRequest;
+  first.resolve({ ok: true, json: async () => ({ id: row.id, title: "Old detail", status: "archived" }) });
+  await oldRequest;
+
+  assert.equal(state.selectedTicket.id, row.id);
+  assert.equal(state.selectedTicket.title, "New detail");
+});
+
+test("ticket cost requests reject older responses for the same ticket", async () => {
+  const first = deferred();
+  const second = deferred();
+  var calls = 0;
+  const state = loadKontoraState({ fetch: () => (++calls === 1 ? first.promise : second.promise) });
+  state.selectedTicket = { id: "kon-cost" };
+
+  const oldRequest = state.fetchTicketCost("kon-cost");
+  const newRequest = state.fetchTicketCost("kon-cost");
+  second.resolve({ ok: true, json: async () => ({ id: "kon-cost", cost_usd: "2.000000" }) });
+  await newRequest;
+  first.resolve({ ok: true, json: async () => ({ id: "kon-cost", cost_usd: "1.000000" }) });
+  await oldRequest;
+
+  assert.equal(state.ticketCost.cost_usd, "2.000000");
+  state.closeTerminal = () => {};
+  state.flushEditSave = () => {};
+  state.closeDetail();
+  assert.equal(state.ticketCost, null);
+});
+
+test("a failed ticket cost refresh clears stale coverage", async () => {
+  const cases = [
+    { name: "non-OK response", fetch: async () => ({ ok: false }) },
+    { name: "request error", fetch: async () => { throw new Error("offline"); } },
+  ];
+  for (const tc of cases) {
+    const state = loadKontoraState({ fetch: tc.fetch });
+    state.selectedTicket = { id: "kon-cost" };
+    state.ticketCost = { id: "kon-cost", cost_usd: "1.000000", priced_runs: 1, tracked_runs: 1 };
+
+    await state.fetchTicketCost("kon-cost");
+
+    assert.equal(state.ticketCost, null, tc.name);
+  }
+});
+
+test("ticket cost requests cannot cross ticket or archive close boundaries", async () => {
+  const first = deferred();
+  const second = deferred();
+  var calls = 0;
+  const state = loadKontoraState({ fetch: () => (++calls === 1 ? first.promise : second.promise) });
+  state.selectedTicket = { id: "kon-first" };
+  const oldRequest = state.fetchTicketCost("kon-first");
+  state.selectedTicket = { id: "kon-second" };
+  const newRequest = state.fetchTicketCost("kon-second");
+
+  first.resolve({ ok: true, json: async () => ({ id: "kon-first", cost_usd: "1.000000" }) });
+  await oldRequest;
+  assert.equal(state.ticketCost, null);
+
+  state._archiveClearDetail();
+  second.resolve({ ok: true, json: async () => ({ id: "kon-second", cost_usd: "2.000000" }) });
+  await newRequest;
+  assert.equal(state.ticketCost, null);
+});
+
+test("archive meters include complete and measured-zero estimates", () => {
+  const state = pageState({ id: "kon-archive", status: "archived", stages: [] });
+  state.ticketCost = { id: "kon-archive", cost_usd: "0.000000", priced_runs: 1, tracked_runs: 1, stages: [] };
+
+  const estimate = state.archiveMeters().find((meter) => meter.k === "estimate");
+  assert.equal(estimate.v, "$0.00");
+  assert.match(estimate.title, /Estimated using the bundled snapshot of standard model rates/);
+});
+
+test("relevant SSE changes refetch cost once per batch", () => {
+  const cases = [
+    {
+      name: "History changed",
+      initial: { id: "kon-cost", status: "todo", history: [] },
+      update: { id: "kon-cost", status: "todo", history: [{ stage: "plan", run: 0 }] },
+    },
+    {
+      name: "standalone status changed without History",
+      initial: { id: "kon-cost", status: "in_progress", history: [] },
+      update: { id: "kon-cost", status: "done", history: [] },
+    },
+  ];
+
+  for (const tc of cases) {
+    const state = loadKontoraState();
+    state.selectedTicket = { ...tc.initial };
+    state.tickets = [{ ...tc.initial }];
+    state.updateFavicon = () => {};
+    const fetched = [];
+    state.fetchTicketCost = (id) => fetched.push(id);
+    state._pendingTicketUpdates = [tc.update, { id: "other", status: "todo", history: [] }];
+
+    state.flushTicketUpdates();
+
+    assert.deepEqual(fetched, ["kon-cost"], tc.name);
+  }
 });
 
 test("a tape that declares usage partial shows no token count", () => {
@@ -8782,6 +9127,12 @@ test("index.html renders the ribbon, transcript and rail the page needs", () => 
   // A 308px rail, and a churn block whose height does not follow the file count.
   assert.match(html, /w-\[308px\] border-l border-surface-700\/50/);
   assert.match(html, /class="flex flex-col gap-\[9px\] h-\[152px\] shrink-0"/);
+  // Cost appears in both desktop ribbons, both History lists, and the mobile controls.
+  assert.equal((html.match(/costLabel\(seg\.cost\)/g) || []).length, 6);
+  assert.equal((html.match(/costLabel\(ticketRunCost\(hi\)\)/g) || []).length, 4);
+  assert.match(html, /x-text="mobileTicketCostLabel\(\)"/);
+  assert.match(html, /aria-label="Stage cost estimates"/);
+  assert.match(html, /x-for="\(seg, si\) in stageRibbon\(\)" :key="seg\.name"/);
   // One resolvable desktop terminal target.
   assert.equal((html.match(/id="terminal-session"/g) || []).length, 1);
   assert.equal(html.includes('id="terminal-container"'), false);
@@ -8971,8 +9322,8 @@ const LEGACY_TICKET = {
   history: RETRY_TICKET.history.map(({ run, ...rest }) => rest),
 };
 
-// The pipeline was repointed after the run, so review is no longer one of its
-// stages and the ribbon has no segment for it.
+// The pipeline was repointed after the run, so review comes from History
+// rather than the current stage list.
 const DROPPED_STAGE_TICKET = { ...RETRY_TICKET, id: "kon-s5", stages: ["implement"] };
 
 test("summaryCards builds one card per summarised run", () => {
@@ -8998,12 +9349,10 @@ test("summaryCards builds one card per summarised run", () => {
       keys: ["review#1", "review#0", "implement#0"],
     },
     {
-      // No ribbon segment for review, so each card reads its own clock and the
-      // stage's own attempt count.
       name: "stage dropped from the pipeline",
       ticket: DROPPED_STAGE_TICKET,
       keys: ["review#1", "review#0", "implement#0"],
-      meta: ["20m 00s · ×2 · codex", "30m 00s · ×2 · codex · failed", "5m 00s · claude"],
+      meta: ["50m 00s · ×2 · codex", "50m 00s · ×2 · codex · failed", "5m 00s · claude"],
     },
     {
       name: "running ticket with an empty top-level summary",

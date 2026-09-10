@@ -91,6 +91,7 @@ type TicketService interface {
 	GetLogs(id string, stage string) (string, error)
 	GetActivity(q ActivityQuery) (ActivityInfo, error)
 	GetStats(q StatsQuery) (StatsInfo, error)
+	GetTicketCost(id string) (TicketCostInfo, error)
 	GetChanges(id string) (ChangesInfo, error)
 	GetChain(id string) (ChainInfo, error)
 	GetRawConfig() (string, error)
@@ -384,6 +385,42 @@ type StatsQuery struct {
 // unchanged: the client does no math over it, so there is nothing for the web
 // layer to reshape.
 type StatsInfo = stats.Result
+
+// TicketCostInfo is one ticket's estimated spend. CostUSD is the known subtotal
+// and is nil when no tracked run could be priced. PricedRuns and TrackedRuns
+// expose incomplete coverage rather than making that subtotal look complete.
+type TicketCostInfo struct {
+	ID          string                `json:"id"`
+	CostUSD     *string               `json:"cost_usd"`
+	PricedRuns  int                   `json:"priced_runs"`
+	TrackedRuns int                   `json:"tracked_runs"`
+	Stages      []TicketCostStageInfo `json:"stages"`
+	Runs        []TicketCostRunInfo   `json:"runs"`
+}
+
+// TicketCostStageInfo totals a stage's tracked runs, including annotations and
+// the synthetic default run for an ended no-pipeline ticket.
+type TicketCostStageInfo struct {
+	Name        string  `json:"name"`
+	CostUSD     *string `json:"cost_usd"`
+	PricedRuns  int     `json:"priced_runs"`
+	TrackedRuns int     `json:"tracked_runs"`
+}
+
+// HistoryIndex is nil only for the synthetic default run of an ended
+// no-pipeline ticket. Model preserves the recorded spelling; ResolvedModel is
+// its catalog ID.
+type TicketCostRunInfo struct {
+	HistoryIndex  *int    `json:"history_index"`
+	Stage         string  `json:"stage"`
+	Run           int     `json:"run"`
+	Model         string  `json:"model,omitempty"`
+	ModelSource   string  `json:"model_source,omitempty"`
+	ResolvedModel string  `json:"resolved_model,omitempty"`
+	SidecarModel  string  `json:"sidecar_model,omitempty"`
+	HistoryModel  string  `json:"history_model,omitempty"`
+	CostUSD       *string `json:"cost_usd"`
+}
 
 // ProjectInfo describes one configured project. Path is the value as written in
 // the config file; ResolvedPath is the same path tilde-expanded and cleaned, so

@@ -1,0 +1,6 @@
+{
+  "data": [
+    {"id": "same/model", "pricing": {"prompt": "0"}},
+    {"id": "same/model", "pricing": {"prompt": "0.000001"}}
+  ]
+}

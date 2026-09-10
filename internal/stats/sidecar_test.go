@@ -7,10 +7,89 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/worksonmyai/kontora/internal/logfmt"
 )
+
+func TestReadSidecarMetadata(t *testing.T) {
+	tests := []struct {
+		name      string
+		content   string
+		wantModel string
+		wantUsage *SidecarUsage
+		wantErr   bool
+	}{
+		{
+			name:      "four disjoint categories",
+			content:   `{"version":1,"model":"claude-sonnet-4-6","totals":{"input":10,"output":20,"cache_create":30,"cache_read":40},"events":[`,
+			wantModel: "claude-sonnet-4-6",
+			wantUsage: &SidecarUsage{Input: 10, Output: 20, CacheCreate: 30, CacheRead: 40},
+		},
+		{
+			name:      "measured zero",
+			content:   `{"version":1,"model":"free","totals":{"input":0,"output":0,"cache_create":0,"cache_read":0},"events":[]}`,
+			wantModel: "free",
+			wantUsage: &SidecarUsage{},
+		},
+		{
+			name:      "partial",
+			content:   `{"version":1,"model":"m","totals":{"input":1,"output":2,"cache_create":3,"cache_read":4},"partial":["usage"],"events":[]}`,
+			wantModel: "m",
+		},
+		{
+			name:      "missing category",
+			content:   `{"version":1,"model":"m","totals":{"input":1,"output":2,"cache_create":3},"events":[]}`,
+			wantModel: "m",
+		},
+		{
+			name:      "null totals",
+			content:   `{"version":1,"model":"m","totals":null,"events":[]}`,
+			wantModel: "m",
+		},
+		{
+			name:      "null category",
+			content:   `{"version":1,"model":"m","totals":{"input":1,"output":2,"cache_create":null,"cache_read":4},"events":[]}`,
+			wantModel: "m",
+		},
+		{
+			name:      "malformed category",
+			content:   `{"version":1,"model":"m","totals":{"input":"one","output":2,"cache_create":3,"cache_read":4},"events":[]}`,
+			wantModel: "m",
+		},
+		{
+			name:      "missing events field",
+			content:   `{"version":1,"model":"m","totals":{"input":1,"output":2,"cache_create":3,"cache_read":4}}`,
+			wantModel: "m",
+		},
+		{
+			name:      "unsupported version",
+			content:   `{"version":2,"model":"m","totals":{"input":1,"output":2,"cache_create":3,"cache_read":4},"events":[]}`,
+			wantModel: "m",
+		},
+		{
+			name:    "malformed version",
+			content: `{"version":"one","model":"m","totals":{"input":1,"output":2,"cache_create":3,"cache_read":4},"events":[]}`,
+			wantErr: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "step.0.events.json")
+			require.NoError(t, os.WriteFile(path, []byte(tc.content), 0o644))
+			got, err := ReadSidecarMetadata(path)
+			if tc.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantModel, got.Model)
+			assert.Equal(t, tc.wantUsage, got.Usage)
+		})
+	}
+}
 
 func TestSidecarTotals(t *testing.T) {
 	// A tape with 5000 events, so a reader that decoded the array would be

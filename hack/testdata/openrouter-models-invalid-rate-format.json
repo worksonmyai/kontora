@@ -1,0 +1,10 @@
+{
+  "data": [
+    {
+      "id": "provider/model",
+      "pricing": {
+        "prompt": "1e-6"
+      }
+    }
+  ]
+}

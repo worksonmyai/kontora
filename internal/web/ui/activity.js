@@ -278,8 +278,8 @@ export function kontoraActivity() {
 
     // ---- stage ribbon ------------------------------------------------------
 
-    // One segment per pipeline stage, sized by the summed duration of its runs.
-    // Gaps between runs are queue time and do not count toward a stage.
+    // One segment per known stage, sized by the summed duration of its runs.
+    // History and cost can name stages removed from the current pipeline.
     stageRibbon() {
       var t = this.selectedTicket;
       if (!t) return [];
@@ -292,12 +292,25 @@ export function kontoraActivity() {
         e.seconds += runSeconds(h);
       });
 
-      var stages = t.stages || [];
-      var currentIdx = stages.indexOf(t.stage);
-      return stages.map(function (name, i) {
+      var stages = [];
+      var seen = Object.create(null);
+      function add(name) {
+        if (!name || seen[name]) return;
+        seen[name] = true;
+        stages.push(name);
+      }
+      (t.stages || []).forEach(add);
+      (t.history || []).forEach(function (h) { add(h.stage); });
+      (this.currentTicketCost()?.stages || []).forEach(function (cost) { add(cost.name); });
+
+      var pipelineStages = t.stages || [];
+      var currentIdx = pipelineStages.indexOf(t.stage);
+      return stages.map(function (name) {
+        var i = pipelineStages.indexOf(name);
         var a = agg[name] || { seconds: 0, runs: 0, last: null };
+        var cost = self.ticketStageCost(name);
         var running = t.status === 'in_progress' && name === t.stage;
-        var done = !running && (t.status === 'done' || a.runs > 0 || (currentIdx >= 0 && i < currentIdx));
+        var done = !running && (t.status === 'done' || a.runs > 0 || (cost && cost.tracked_runs > 0) || (i >= 0 && currentIdx >= 0 && i < currentIdx));
         var seconds = a.seconds;
         if (running && t.started_at) {
           var live = Math.floor((self.now - new Date(t.started_at)) / 1000);
@@ -310,6 +323,7 @@ export function kontoraActivity() {
           seconds: seconds,
           state: running ? 'running' : (done ? 'done' : 'queued'),
           meta: running || done ? self.formatSeconds(seconds) : 'not started',
+          cost: cost,
         };
       });
     },
@@ -367,6 +381,9 @@ export function kontoraActivity() {
       var t = this.selectedTicket;
       if (!t) return [];
       var out = [];
+      var cost = this.currentTicketCost();
+      var estimate = this.costLabel(cost);
+      if (estimate) out.push({ k: 'estimate', v: estimate, title: this.costTooltip(cost) });
       var tokens = this.tapeTokens(this.activity && this.activity.tape);
       if (t.status === 'in_progress') {
         if (t.started_at) out.push({ k: 'elapsed', v: this.formatDuration(t) });

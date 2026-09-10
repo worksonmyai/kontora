@@ -254,6 +254,7 @@ export function kontoraTickets() {
     },
 
     applyTicketUpdate(ticket) {
+      if (this.selectedTicket?.id === ticket.id) this._selectedTicketUpdateSeq++;
       if (ticket.status === 'archived') {
         // Archived tickets are hidden from the board: drop them from client
         // state and close the detail panel if the archived ticket was selected.
@@ -314,6 +315,7 @@ export function kontoraTickets() {
             // `kontora note` or a daemon pause has to land even while the body
             // is being typed into. Notes are not an edited field.
             this.selectedTicket.notes = ticket.notes;
+            this.selectedTicket.history = ticket.history;
           } else {
             var body = this.selectedTicket.body;
             this.selectedTicket = ticket;
@@ -372,7 +374,15 @@ export function kontoraTickets() {
       if (this._dragging) return;
       var pending = this._pendingTicketUpdates;
       this._pendingTicketUpdates = [];
+      var selectedID = this.selectedTicket?.id;
+      var costStateBefore = selectedID
+        ? JSON.stringify([this.selectedTicket.status, this.selectedTicket.history || []])
+        : '';
       pending.forEach(t => this.applyTicketUpdate(t));
+      var costStateAfter = selectedID && this.selectedTicket?.id === selectedID
+        ? JSON.stringify([this.selectedTicket.status, this.selectedTicket.history || []])
+        : '';
+      if (selectedID && costStateAfter !== costStateBefore) this.fetchTicketCost(selectedID);
       if (this._chainTouchedBy(pending)) this.fetchChain(this.selectedTicket.id);
       // recomputeBoard rebuilds the board and refreshes runningAgents +
       // _statusCounts, which updateFavicon then reads.

@@ -117,6 +117,14 @@ export function kontoraApp() {
     noteDraft: '',
     noteSubmitting: false,
     detailLoading: false,
+    // Bumped when a detail request starts or its panel closes. Ticket ids alone
+    // cannot reject an old response after the same ticket is closed and reopened.
+    _ticketDetailSeq: 0,
+    _selectedTicketUpdateSeq: 0,
+    // Derived separately from ticket SSE payloads because reading activity
+    // sidecars must not hold the daemon's scheduler lock.
+    ticketCost: null,
+    _ticketCostSeq: 0,
     // Commits and changed files for the open ticket's branch, from the changes
     // endpoint. Null until fetched; fetched for finished tickets only.
     ticketChanges: null,

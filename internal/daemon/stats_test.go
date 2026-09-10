@@ -11,7 +11,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/worksonmyai/kontora/internal/config"
 	"github.com/worksonmyai/kontora/internal/logfmt"
+	"github.com/worksonmyai/kontora/internal/ticket"
 	"github.com/worksonmyai/kontora/internal/web"
 )
 
@@ -55,6 +57,11 @@ func TestStatsCacheSidecar(t *testing.T) {
 		require.True(t, ok)
 		require.NotNil(t, usage)
 		assert.Equal(t, 42, usage.In)
+
+		metadata, ok := c.sidecarMetadata(path, false)
+		require.True(t, ok)
+		require.NotNil(t, metadata.Usage)
+		assert.Equal(t, int64(42), metadata.Usage.Input, "the cache retains raw disjoint usage")
 	})
 
 	t.Run("a run that has ended and wrote no tape is remembered", func(t *testing.T) {
@@ -72,6 +79,63 @@ func TestStatsCacheSidecar(t *testing.T) {
 		_, _, ok = c.sidecar(path, true)
 		assert.False(t, ok, "the absence is cached, not re-checked")
 	})
+}
+
+func TestSimpleTicketRun(t *testing.T) {
+	now := time.Now()
+	tests := []struct {
+		name    string
+		ticket  ticket.Ticket
+		wantRun bool
+		wantKey int
+	}{
+		{name: "unrecorded completed run", ticket: ticket.Ticket{ID: "kon-simple", StartedAt: &now, CompletedAt: &now}, wantRun: true},
+		{name: "unrecorded paused run", ticket: ticket.Ticket{ID: "kon-paused", Status: ticket.StatusPaused, StartedAt: &now}, wantRun: true},
+		{
+			name: "completed ticket with annotation history",
+			ticket: ticket.Ticket{ID: "kon-annotated", StartedAt: &now, CompletedAt: &now, History: []ticket.HistoryEntry{
+				{Stage: simpleStageName, Kind: ticket.KindAnnotation, CompletedAt: &now},
+			}},
+			wantRun: true,
+			wantKey: 1,
+		},
+		{
+			name: "paused ticket with annotation history",
+			ticket: ticket.Ticket{ID: "kon-paused-annotated", Status: ticket.StatusPaused, StartedAt: &now, History: []ticket.HistoryEntry{
+				{Stage: simpleStageName, Kind: ticket.KindAnnotation, CompletedAt: &now},
+			}},
+			wantRun: true,
+			wantKey: 1,
+		},
+		{
+			name: "annotation without simple completion",
+			ticket: ticket.Ticket{ID: "kon-only-annotation", StartedAt: &now, History: []ticket.HistoryEntry{
+				{Stage: simpleStageName, Kind: ticket.KindAnnotation, CompletedAt: &now},
+			}},
+		},
+		{
+			name: "failed annotation does not invent a simple run",
+			ticket: ticket.Ticket{ID: "kon-failed-annotation", Status: ticket.StatusPaused, StartedAt: &now, AnnotationReturnStatus: ticket.StatusOpen, History: []ticket.HistoryEntry{
+				{Stage: simpleStageName, Kind: ticket.KindAnnotation, CompletedAt: &now},
+			}},
+		},
+		{name: "active standalone retry excludes its old completed run", ticket: ticket.Ticket{ID: "kon-live", Status: ticket.StatusInProgress, StartedAt: &now, CompletedAt: &now}},
+		{name: "pipeline ticket", ticket: ticket.Ticket{ID: "kon-pipe", Pipeline: "pipe", StartedAt: &now, CompletedAt: &now}},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			run, path, ok := simpleTicketRun(&config.Config{DefaultAgent: "claude"}, "/logs", &tc.ticket)
+			assert.Equal(t, tc.wantRun, ok)
+			if !tc.wantRun {
+				assert.Zero(t, run)
+				assert.Empty(t, path)
+				return
+			}
+			assert.Equal(t, simpleStageName, run.Stage)
+			assert.Equal(t, filepath.Join("/logs", tc.ticket.ID, fmt.Sprintf("default.%d.events.json", tc.wantKey)), path)
+		})
+	}
 }
 
 func TestStatsSidecarPathRejectsAPlantedStage(t *testing.T) {

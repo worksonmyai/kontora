@@ -1888,7 +1888,7 @@
 
       <!-- Stage ribbon: one segment per stage, grown by its real duration -->
       <div class="shrink-0 px-6 pb-[13px] border-b border-surface-700/60 flex items-end gap-5"
-           x-show="(selectedTicket?.stages || []).length > 0">
+           x-show="stageRibbon().length > 0 || ribbonMeters().length > 0">
         <div class="flex-1 flex gap-1 items-stretch min-w-0"
              :class="['todo', 'open'].includes(selectedTicket?.status) ? 'opacity-60' : ''">
           <template x-for="seg in stageRibbon()" :key="seg.name">
@@ -1905,6 +1905,8 @@
                         x-show="seg.runs > 1" class="text-surface-600" x-text="' ×' + seg.runs"></span>
                 </span>
                 <span class="font-mono text-[10.5px] text-surface-600 whitespace-nowrap" x-text="seg.meta"></span>
+                <span x-show="costLabel(seg.cost)" :title="costTooltip(seg.cost)"
+                      class="font-mono text-[10.5px] text-tx-3 whitespace-nowrap" x-text="costLabel(seg.cost)"></span>
               </div>
               <template x-if="seg.state === 'running'">
                 <div class="h-[5px] rounded-[3px] bg-st-progress/[0.22] overflow-hidden relative">
@@ -1923,7 +1925,7 @@
           <template x-for="m in ribbonMeters()" :key="m.k">
             <div class="flex flex-col gap-[3px]">
               <span class="font-mono text-[10px] uppercase tracking-[.12em] text-tx-faint" x-text="m.k"></span>
-              <span class="font-mono text-[14px] text-tx-hi num" x-text="m.v"></span>
+              <span class="font-mono text-[14px] text-tx-hi num" :title="m.title || ''" x-text="m.v"></span>
             </div>
           </template>
         </div>
@@ -2169,7 +2171,8 @@
                             <span class="stage-card-name" x-text="card.stage"></span>
                             <span x-show="ci === 0" class="stage-card-pill">latest</span>
                             <span class="flex-1"></span>
-                            <span class="num font-mono text-[10.5px] text-surface-600" x-text="stageCardMeta(card)"></span>
+                            <span class="num font-mono text-[10.5px] text-surface-600"
+                                  :title="costTooltip(ticketRunCost(card.historyIndex))" x-text="stageCardMeta(card)"></span>
                           </button>
                           <div x-show="!collapsedStages[card.key]"
                                class="ticket-prose stage-card-body"
@@ -2798,8 +2801,11 @@
                             class="flex items-center gap-2 min-w-0 text-left hover:text-tx-2 transition-colors">
                       <span :class="h.exit_code === 0 ? 'text-ok' : 'text-st-cancel'" x-text="h.exit_code === 0 ? '✓' : '✕'"></span>
                       <span class="text-tx-3 truncate" x-text="historyLabel(h)"></span>
-                      <span x-show="historySettings(h)" class="shrink-0 px-1 rounded border border-surface-700 text-tx-faint" x-text="historySettings(h)"></span>
+                      <span x-show="historySettings(h)" class="shrink-0 max-w-[72px] truncate px-1 rounded border border-surface-700 text-tx-faint"
+                            :title="historySettings(h)" x-text="historySettings(h)"></span>
                       <span class="flex-1"></span>
+                      <span x-show="costLabel(ticketRunCost(hi))" class="text-tx-3 shrink-0 num"
+                            :title="costTooltip(ticketRunCost(hi))" x-text="costLabel(ticketRunCost(hi))"></span>
                       <span class="text-surface-600 shrink-0"
                             x-text="'exit ' + h.exit_code + (formatElapsed(h.started_at, h.completed_at) ? ' · ' + formatElapsed(h.started_at, h.completed_at) : '')"></span>
                     </button>
@@ -3964,6 +3970,8 @@
                   <div class="flex items-baseline gap-1.5 min-w-0">
                     <span class="font-mono text-[11.5px] text-tx-2 truncate"><span x-show="seg.state === 'done'" aria-hidden="true">✓ </span><span x-text="seg.name"></span></span>
                     <span class="font-mono text-[10.5px] text-surface-600 truncate" x-text="seg.meta"></span>
+                    <span x-show="costLabel(seg.cost)" :title="costTooltip(seg.cost)"
+                          class="font-mono text-[10.5px] text-tx-3 shrink-0" x-text="costLabel(seg.cost)"></span>
                   </div>
                   <div class="h-[5px] rounded-[3px]" :class="seg.state === 'done' ? 'bg-st-done/50' : 'bg-surface-700'"></div>
                 </div>
@@ -3974,7 +3982,7 @@
             <template x-for="m in archiveMeters()" :key="m.k">
               <div class="flex flex-col gap-[3px]">
                 <span class="font-mono text-[10px] uppercase tracking-[.12em] text-tx-faint" x-text="m.k"></span>
-                <span class="font-mono text-[14px] text-tx-hi num" x-text="m.v"></span>
+                <span class="font-mono text-[14px] text-tx-hi num" :title="m.title || ''" x-text="m.v"></span>
               </div>
             </template>
           </div>
@@ -4068,6 +4076,8 @@
                         <span :class="h.exit_code === 0 ? 'text-ok' : 'text-st-cancel'" x-text="h.exit_code === 0 ? '✓' : '✕'"></span>
                         <span class="text-tx-3 truncate" x-text="historyLabel(h)"></span>
                         <span class="flex-1"></span>
+                        <span x-show="costLabel(ticketRunCost(hi))" class="text-tx-3 shrink-0 num"
+                              :title="costTooltip(ticketRunCost(hi))" x-text="costLabel(ticketRunCost(hi))"></span>
                         <span class="text-surface-600 shrink-0"
                               x-text="'exit ' + h.exit_code + (formatElapsed(h.started_at, h.completed_at) ? ' · ' + formatElapsed(h.started_at, h.completed_at) : '')"></span>
                       </div>
@@ -5810,15 +5820,31 @@
               <span x-text="waitingFor(selectedTicket)"></span>
             </span>
           </template>
+          <span x-show="mobileTicketCostLabel()" :title="costTooltip(currentTicketCost())" :aria-label="costTooltip(currentTicketCost())"
+                style="padding:2px 8px;border-radius:9999px;border:1px solid rgba(var(--surface-700),.5);font-family:'JetBrains Mono',monospace;font-size:11px;color:rgba(var(--tx-2),1);"
+                x-text="mobileTicketCostLabel()"></span>
           <template x-if="selectedTicket && !selectedTicket.kontora">
             <span style="padding:2px 8px;border-radius:9999px;border:1px solid hsl(var(--st-paused) / .25);background:hsl(var(--st-paused) / .12);color:hsl(var(--st-paused));font-family:'JetBrains Mono',monospace;font-size:11px;">not a kontora ticket</span>
           </template>
         </div>
+        <template x-if="mobileCostStages().length">
+          <div aria-label="Stage cost estimates" style="display:flex;align-items:center;gap:7px;overflow-x:auto;padding:0 16px 8px;">
+            <template x-for="seg in mobileCostStages()" :key="seg.name">
+              <button type="button" @click="mobileOpenCostStage(seg)"
+                      :disabled="seg.state !== 'done' || !seg.runs"
+                      :title="costTooltip(seg.cost)" :aria-label="seg.name + ': ' + costTooltip(seg.cost)"
+                      :style="'flex:none;border:1px solid rgba(var(--surface-700),.5);background:rgba(var(--surface-900),1);border-radius:6px;padding:4px 8px;font-family:\'JetBrains Mono\',monospace;font-size:10.5px;color:rgba(var(--tx-3),1);cursor:' + (seg.state === 'done' && seg.runs ? 'pointer' : 'default') + ';'"
+                      x-text="mobileCostStageLabel(seg)"></button>
+            </template>
+          </div>
+        </template>
         <template x-if="mobileHasRun(selectedTicket)">
           <div style="display:flex;gap:18px;padding:0 16px;">
             <button @click="mobileSwitchTab(mobileFirstTab())"
-                    :style="'border:none;background:transparent;padding:10px 0;font-family:\'JetBrains Mono\',monospace;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;cursor:pointer;border-bottom:2px solid ' + (detailTab!=='ticket' ? 'rgba(var(--accent),1)' : 'transparent') + ';color:' + (detailTab!=='ticket' ? 'rgba(var(--tx),1)' : 'rgba(var(--surface-600),1)') + ';'"
+                    :style="'border:none;background:transparent;padding:10px 0;font-family:\'JetBrains Mono\',monospace;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;cursor:pointer;border-bottom:2px solid ' + (detailTab===mobileFirstTab() ? 'rgba(var(--accent),1)' : 'transparent') + ';color:' + (detailTab===mobileFirstTab() ? 'rgba(var(--tx),1)' : 'rgba(var(--surface-600),1)') + ';'"
                     x-text="mobileFirstTabLabel()"></button>
+            <button x-show="selectedTicket?.status === 'in_progress'" @click="mobileSwitchTab('logs')"
+                    :style="'border:none;background:transparent;padding:10px 0;font-family:\'JetBrains Mono\',monospace;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;cursor:pointer;border-bottom:2px solid ' + (detailTab==='logs' ? 'rgba(var(--accent),1)' : 'transparent') + ';color:' + (detailTab==='logs' ? 'rgba(var(--tx),1)' : 'rgba(var(--surface-600),1)') + ';'">≡ logs</button>
             <button @click="mobileSwitchTab('ticket')"
                     :style="'border:none;background:transparent;padding:10px 0;font-family:\'JetBrains Mono\',monospace;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;cursor:pointer;border-bottom:2px solid ' + (detailTab==='ticket' ? 'rgba(var(--accent),1)' : 'transparent') + ';color:' + (detailTab==='ticket' ? 'rgba(var(--tx),1)' : 'rgba(var(--surface-600),1)') + ';'">▤ ticket</button>
           </div>
@@ -5854,12 +5880,16 @@
 
         <!-- logs (stage history) -->
         <div x-show="detailTab==='logs'" class="overflow-y-auto" style="flex:1;min-height:0;padding:14px 16px 24px;">
-          <template x-if="selectedTicket?.stages?.length">
+          <template x-if="stageRibbon().length">
             <div style="display:flex;align-items:center;gap:7px;overflow-x:auto;padding-bottom:12px;">
-              <template x-for="(s, si) in selectedTicket.stages" :key="s">
+              <template x-for="(seg, si) in stageRibbon()" :key="seg.name">
                 <span style="display:flex;align-items:center;gap:7px;flex:none;">
                   <template x-if="si>0"><span style="color:rgba(var(--surface-700),1);">→</span></template>
-                  <button @click="clickStage(s)" :style="mobileStageStyle(s)" x-text="s"></button>
+                  <button @click="clickStage(seg.name)" :style="mobileStageStyle(seg.name)">
+                    <span x-text="seg.name"></span>
+                    <span x-show="costLabel(seg.cost)" :title="costTooltip(seg.cost)"
+                          style="margin-left:5px;opacity:.72;" x-text="costLabel(seg.cost)"></span>
+                  </button>
                 </span>
               </template>
             </div>

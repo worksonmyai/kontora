@@ -1,0 +1,33 @@
+{
+  "data": [
+    {
+      "id": "zeta/text-model",
+      "name": "Ignored display name",
+      "pricing": {
+        "prompt": "0.0000012300",
+        "completion": "0.0000045600",
+        "input_cache_read": "0.0000001200",
+        "input_cache_write": "0.0000015000",
+        "image": "0.99"
+      }
+    },
+    {
+      "id": "openrouter/dynamic-test",
+      "pricing": {
+        "prompt": "-1",
+        "completion": "-1"
+      }
+    },
+    {
+      "id": "alpha/free-model",
+      "pricing": {
+        "prompt": "0",
+        "completion": "0"
+      }
+    }
+  ],
+  "total_count": 3,
+  "links": {
+    "self": "https://openrouter.ai/api/v1/models"
+  }
+}

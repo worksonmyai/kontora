@@ -43,6 +43,7 @@ type mockService struct {
 	logsFn         func(id, stage string) (string, error)
 	activityFn     func(q ActivityQuery) (ActivityInfo, error)
 	statsFn        func(q StatsQuery) (StatsInfo, error)
+	costFn         func(id string) (TicketCostInfo, error)
 	changesFn      func(id string) (ChangesInfo, error)
 	chainFn        func(id string) (ChainInfo, error)
 	reviewFn       func(id string) error
@@ -320,6 +321,12 @@ func (m *mockService) GetStats(q StatsQuery) (StatsInfo, error) {
 	}
 	return StatsInfo{}, nil
 }
+func (m *mockService) GetTicketCost(id string) (TicketCostInfo, error) {
+	if m.costFn != nil {
+		return m.costFn(id)
+	}
+	return TicketCostInfo{}, nil
+}
 func (m *mockService) GetChanges(id string) (ChangesInfo, error) {
 	if m.changesFn != nil {
 		return m.changesFn(id)
@@ -415,6 +422,49 @@ func TestHandleGetTicket_NotFound(t *testing.T) {
 
 	res := get(t, srv, "/api/tickets/nonexistent")
 	assert.Equal(t, http.StatusNotFound, res.statusCode)
+}
+
+// --- GET /api/tickets/{id}/cost ---
+
+func TestHandleGetTicketCost(t *testing.T) {
+	zero := "0.000000"
+	tests := []struct {
+		name       string
+		costFn     func(string) (TicketCostInfo, error)
+		wantStatus int
+		wantBody   string
+	}{
+		{
+			name: "wire format keeps null distinct from zero",
+			costFn: func(id string) (TicketCostInfo, error) {
+				return TicketCostInfo{
+					ID: id, CostUSD: &zero, PricedRuns: 1, TrackedRuns: 2,
+					Stages: []TicketCostStageInfo{{Name: "zero", CostUSD: &zero, PricedRuns: 1, TrackedRuns: 1}},
+					Runs: []TicketCostRunInfo{
+						{HistoryIndex: nil, Stage: "missing", Run: 0, Model: "unknown", CostUSD: nil},
+						{HistoryIndex: new(1), Stage: "zero", Run: 0, Model: "claude-haiku-4-5", ModelSource: "sidecar", ResolvedModel: "anthropic/claude-haiku-4.5", CostUSD: &zero},
+					},
+				}, nil
+			},
+			wantStatus: http.StatusOK,
+			wantBody:   `{"id":"kon-c1","cost_usd":"0.000000","priced_runs":1,"tracked_runs":2,"stages":[{"name":"zero","cost_usd":"0.000000","priced_runs":1,"tracked_runs":1}],"runs":[{"history_index":null,"stage":"missing","run":0,"model":"unknown","cost_usd":null},{"history_index":1,"stage":"zero","run":0,"model":"claude-haiku-4-5","model_source":"sidecar","resolved_model":"anthropic/claude-haiku-4.5","cost_usd":"0.000000"}]}`,
+		},
+		{
+			name:       "unknown ticket",
+			costFn:     func(string) (TicketCostInfo, error) { return TicketCostInfo{}, ErrTicketNotFound },
+			wantStatus: http.StatusNotFound,
+			wantBody:   `{"error":"ticket not found"}`,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := startHandlerTestServer(t, &mockService{costFn: tc.costFn})
+			res := get(t, srv, "/api/tickets/kon-c1/cost")
+			assert.Equal(t, tc.wantStatus, res.statusCode)
+			assert.JSONEq(t, tc.wantBody, res.body)
+		})
+	}
 }
 
 // --- DELETE /api/tickets/{id} ---

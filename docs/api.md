@@ -8,6 +8,7 @@ When the web server is enabled, the following endpoints are exposed:
 | `GET /api/tickets` | List all board tickets (JSON). `?all=true` adds the ones whose status has no board column: archived, legacy `closed`, and any foreign status. |
 | `POST /api/tickets` | Create a new ticket (JSON body: `title`, `path`, optional `pipeline`, `agent`, `status`, `body`, `branch`, `base_branch`, `scheduled_at`). A `scheduled_at` creates the ticket `open` and cannot be combined with another status; one that is malformed or already past answers 400. |
 | `GET /api/tickets/{id}` | Get ticket details (JSON). |
+| `GET /api/tickets/{id}/cost` | Estimate the cost of finished tracked runs from their activity sidecars and the bundled model-price catalog. |
 | `DELETE /api/tickets/{id}` | Delete the ticket markdown file without worktree cleanup. Requires `X-Kontora-Confirm: delete-ticket-file`. Only deletes files inside `tickets_dir`. |
 | `POST /api/tickets/{id}/pause` | Pause a running ticket. |
 | `POST /api/tickets/{id}/retry` | Retry a paused ticket. |
@@ -48,6 +49,84 @@ When the web server is enabled, the following endpoints are exposed:
 | `GET /health` | Health check (returns 200). |
 
 Each `agent_infos` entry in `GET /api/config` reports the model and effort that Kontora detects. Kontora reads the agent's `effort` field and supported CLI flags. Pipeline and stage overrides are not applied. Both response fields are always present. An empty value means Kontora detected no setting.
+
+### Cost estimates
+
+`GET /api/tickets/{id}/cost` returns the known ticket subtotal and its coverage:
+
+```json
+{
+  "id": "kon-example",
+  "cost_usd": "0.012345",
+  "priced_runs": 2,
+  "tracked_runs": 3,
+  "stages": [
+    {"name": "implement", "cost_usd": "0.012345", "priced_runs": 2, "tracked_runs": 3}
+  ],
+  "runs": [
+    {
+      "history_index": 0,
+      "stage": "implement",
+      "run": 0,
+      "model": "openai-codex/gpt-5.6-sol",
+      "model_source": "sidecar",
+      "sidecar_model": "openai-codex/gpt-5.6-sol",
+      "history_model": "openai/gpt-5.6-sol",
+      "resolved_model": "openai/gpt-5.6-sol",
+      "cost_usd": "0.012345"
+    },
+    {"history_index": 1, "stage": "implement", "run": 1, "cost_usd": null}
+  ]
+}
+```
+
+Every `cost_usd` is a decimal US-dollar string or `null`. A measured free run
+returns `"0.000000"`. An unpriced run returns `null`. A ticket or stage with
+partial coverage returns its known subtotal and reports fewer `priced_runs`
+than `tracked_runs`. Its subtotal is `null` only when none of its runs can be
+priced. `sidecar_model` and `history_model` preserve the source values when
+present; `model` is the value chosen for resolution. An unknown ticket returns
+404.
+
+Run sidecars are matched by their position among all rows for a stage. This also
+covers old History rows and annotation rows whose stored `run` field does not
+identify the sidecar. `history_index` addresses the row in the ticket's History
+array. It is `null` for the synthetic `default` run of an ended standalone
+ticket, which has a sidecar but no History row.
+
+Kontora calculates estimates from fresh input, output, cache-read, and
+cache-write tokens. It uses the sidecar model first and the History model as a
+fallback. Kontora leaves a run unpriced if:
+
+- usage is missing or partial;
+- the stage name is empty, `.`, `..`, or contains `/` or `\`;
+- the model is unknown;
+- a token count is negative; or
+- a used token category has no rate.
+
+The bundled catalog is a snapshot of OpenRouter's [Models
+API](https://openrouter.ai/docs/api/api-reference/models/list-all-models-and-their-properties).
+Model pricing data is provided by [OpenRouter](https://openrouter.ai/). The
+snapshot uses standard top-provider text-token rates and ignores conditional
+long-context, time-window, request, tool, and media prices. Kontora applies the
+snapshot in the current binary to old runs, so an estimate can change after an
+upgrade and is not a bill.
+
+The estimate excludes calls that do not write complete activity sidecars. This
+includes final-summary runs, the Plannotator subprocess, and nested Pi tool
+calls. If a sidecar records a model change, Kontora prices the entire run at the
+final recorded model because the sidecar stores one run total, not totals per
+model.
+
+Maintainers can refresh the committed offline snapshot with:
+
+```bash
+make model-prices
+```
+
+The command fetches the OpenRouter Models API, validates and sorts the retained
+records, then replaces `internal/pricing/catalog.json` atomically. Builds and
+tests never fetch the catalog.
 
 ### The message being written
 

@@ -1,0 +1,10 @@
+{
+  "data": [
+    {
+      "id": "invalid/rate",
+      "pricing": {
+        "prompt": 0.000001
+      }
+    }
+  ]
+}

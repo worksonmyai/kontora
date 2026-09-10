@@ -24,6 +24,7 @@ Kontora is an agent orchestration tool. You write tickets as markdown files, it 
 - **Dependency-aware scheduling**: a ticket waits until every ticket it depends on is closed
 - **Any agent** that has a CLI (Claude Code, Pi, etc.)
 - **Web dashboard and TUI** kanban board
+- **Per-ticket cost estimates** from recorded token usage and an offline model-price catalog
 
 ## Install
 
@@ -183,6 +184,26 @@ projects:
 Hooks run in the worktree, get the ticket's context as `KONTORA_*` variables, and by default pause the ticket when one fails.
 
 Full reference: [docs/configuration.md](docs/configuration.md)
+
+## Model price estimates
+
+Ticket details estimate each finished run from the token counts in its activity
+sidecar. Ticket and stage totals show coverage when a sidecar or model rate is
+missing, so an unknown cost is not displayed as zero. See the [cost API
+reference](docs/api.md#cost-estimates) for the payload and limits.
+
+Kontora ships an offline snapshot of OpenRouter's standard top-provider text
+token rates. Model pricing data is provided by
+[OpenRouter](https://openrouter.ai/). Builds and tests do not contact OpenRouter.
+Maintainers refresh the committed snapshot explicitly:
+
+```bash
+make model-prices
+```
+
+Old runs use the snapshot in the current binary, not the price from the day they
+ran. Conditional prices and model calls without complete activity sidecars are
+not included, so the result is an estimate rather than a bill.
 
 ## Remote mode
 

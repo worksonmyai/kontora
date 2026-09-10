@@ -39,7 +39,9 @@ export function kontoraMobile() {
     // A ticket "has a run" once it leaves the draft/queued states; that's when
     // the terminal/logs tabs and the detail tab bar appear.
     mobileHasRun(t) {
-      return !!t && !['open', 'todo'].includes(t.status);
+      if (!t) return false;
+      if (!['open', 'todo'].includes(t.status) || (t.history || []).length > 0) return true;
+      return this.selectedTicket?.id === t.id && (this.ticketCost?.tracked_runs || 0) > 0;
     },
     // The first (non-ticket) detail tab: a live terminal while running, the
     // stage-log history otherwise.
@@ -87,6 +89,38 @@ export function kontoraMobile() {
           this.fetchStageLogs(t.id, stage);
         }
       }
+    },
+
+    mobileTicketCostLabel() {
+      var cost = this.currentTicketCost();
+      var label = this.costLabel(cost);
+      if (!label) return '';
+      if (cost.priced_runs < cost.tracked_runs) {
+        label += ' · ' + cost.priced_runs + '/' + cost.tracked_runs;
+      }
+      return 'est. ' + label;
+    },
+
+    mobileCostStages() {
+      return this.stageRibbon().filter(function (seg) {
+        return seg.cost && seg.cost.tracked_runs > 0;
+      });
+    },
+
+    mobileCostStageLabel(seg) {
+      if (!seg?.cost) return '';
+      var label = seg.name + ' · ' + this.costLabel(seg.cost);
+      if (seg.cost.priced_runs < seg.cost.tracked_runs) {
+        label += ' · ' + seg.cost.priced_runs + '/' + seg.cost.tracked_runs;
+      }
+      return label;
+    },
+
+    mobileOpenCostStage(seg) {
+      if (!seg || seg.state !== 'done' || !seg.runs || !this.selectedTicket) return;
+      this.detailTab = 'logs';
+      if (this.terminalOpen) this.closeTerminal();
+      this.fetchStageLogs(this.selectedTicket.id, seg.name);
     },
 
     // Inline style for one chip in the logs-tab stage strip.

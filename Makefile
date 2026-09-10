@@ -1,4 +1,4 @@
-.PHONY: all build test test-race test-scripts lint fmt install clean assets css
+.PHONY: all build test test-race test-scripts lint fmt install clean assets css model-prices
 
 all: build
 
@@ -24,6 +24,12 @@ test-race:
 
 test-scripts:
 	./hack/changelog-for-release.test.sh
+	./hack/update-model-prices.test.sh
+
+# Refresh the committed catalog explicitly; normal builds and tests only read
+# its embedded snapshot and do not contact OpenRouter.
+model-prices:
+	./hack/update-model-prices.py --output internal/pricing/catalog.json
 
 lint:
 	golangci-lint run

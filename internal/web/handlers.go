@@ -39,6 +39,15 @@ func (s *Server) handleGetTicket(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, tkt)
 }
 
+func (s *Server) handleGetTicketCost(w http.ResponseWriter, r *http.Request) {
+	cost, err := s.svc.GetTicketCost(r.PathValue("id"))
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, cost)
+}
+
 func (s *Server) handleDeleteTicket(w http.ResponseWriter, r *http.Request) {
 	if r.Header.Get("X-Kontora-Confirm") != "delete-ticket-file" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing delete confirmation"})

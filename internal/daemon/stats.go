@@ -51,11 +51,10 @@ type statsResult struct {
 // The map keeps one entry per run the logs dir holds and is never pruned. That
 // is a few dozen bytes per run against a directory the daemon writes itself.
 type statsSidecar struct {
-	modTime time.Time
-	size    int64
-	model   string
-	usage   *stats.Usage
-	missing bool
+	modTime  time.Time
+	size     int64
+	metadata stats.SidecarMetadata
+	missing  bool
 }
 
 // statsTicket pairs the aggregator's view of a ticket with the sidecar path of
@@ -219,7 +218,7 @@ func (d *Daemon) statsTicketsLocked(cfg *config.Config, now time.Time) ([]statsT
 // The ticket's own fields describe the run, since the simple path runs an agent
 // once per pickup under the "default" stage.
 func simpleTicketRun(cfg *config.Config, logsDir string, t *ticket.Ticket) (stats.Run, string, bool) {
-	if t.Pipeline != "" || len(t.History) > 0 || t.StartedAt == nil {
+	if !simpleTicketEnded(t) {
 		return stats.Run{}, "", false
 	}
 	agent := t.Agent
@@ -238,7 +237,19 @@ func simpleTicketRun(cfg *config.Config, logsDir string, t *ticket.Ticket) (stat
 		ExitCode:    exit,
 		StartedAt:   cloneTime(t.StartedAt),
 		CompletedAt: cloneTime(t.CompletedAt),
-	}, statsSidecarPath(logsDir, t.ID, simpleStageName, 0), true
+	}, statsSidecarPath(logsDir, t.ID, simpleStageName, stageRunIndex(t, simpleStageName)), true
+}
+
+func simpleTicketEnded(t *ticket.Ticket) bool {
+	if t.Pipeline != "" || t.StartedAt == nil || t.Status == ticket.StatusInProgress {
+		return false
+	}
+	if t.CompletedAt != nil {
+		return true
+	}
+	// A failed simple run pauses without completed_at. AnnotationReturnStatus
+	// identifies a paused annotation instead of a newly ended simple run.
+	return t.Status == ticket.StatusPaused && t.AnnotationReturnStatus == ""
 }
 
 // statsSidecarPath is stageEventsPath over an already expanded logs dir. It
@@ -286,12 +297,31 @@ func (c *statsCache) fillUsage(tickets []statsTicket, opts stats.Options) {
 
 // sidecar reads one tape's metadata, through the cache. ended reports whether
 // the run is over, which is what makes an absent sidecar worth remembering.
+// The cache retains the four disjoint categories even though this Stats wrapper
+// folds CacheCreate and CacheRead into Usage.In.
 func (c *statsCache) sidecar(path string, ended bool) (string, *stats.Usage, bool) {
+	metadata, ok := c.sidecarMetadata(path, ended)
+	if !ok {
+		return "", nil, false
+	}
+	if metadata.Usage == nil {
+		return metadata.Model, nil, true
+	}
+	u := metadata.Usage
+	return metadata.Model, &stats.Usage{
+		In:          int(u.Input + u.CacheCreate + u.CacheRead),
+		Out:         int(u.Output),
+		CacheCreate: int(u.CacheCreate),
+		CacheRead:   int(u.CacheRead),
+	}, true
+}
+
+func (c *statsCache) sidecarMetadata(path string, ended bool) (stats.SidecarMetadata, bool) {
 	c.mu.Lock()
 	cached, cachedOK := c.sidecars[path]
 	c.mu.Unlock()
 	if cachedOK && cached.missing {
-		return "", nil, false
+		return stats.SidecarMetadata{}, false
 	}
 
 	info, err := os.Stat(path)
@@ -299,21 +329,21 @@ func (c *statsCache) sidecar(path string, ended bool) (string, *stats.Usage, boo
 		if ended {
 			c.storeSidecar(path, statsSidecar{missing: true})
 		}
-		return "", nil, false
+		return stats.SidecarMetadata{}, false
 	}
 	if cachedOK && cached.size == info.Size() && cached.modTime.Equal(info.ModTime()) {
-		return cached.model, cached.usage, true
+		return cached.metadata, true
 	}
 
-	model, usage, err := stats.SidecarTotals(path)
+	metadata, err := stats.ReadSidecarMetadata(path)
 	if err != nil {
 		// A tape that fails to parse fails the same way next time. Remember the
 		// empty answer against its size and modtime, like any other read, so one
 		// corrupt file is not re-parsed on every poll.
-		model, usage = "", nil
+		metadata = stats.SidecarMetadata{}
 	}
-	c.storeSidecar(path, statsSidecar{modTime: info.ModTime(), size: info.Size(), model: model, usage: usage})
-	return model, usage, true
+	c.storeSidecar(path, statsSidecar{modTime: info.ModTime(), size: info.Size(), metadata: metadata})
+	return metadata, true
 }
 
 func (c *statsCache) storeSidecar(path string, entry statsSidecar) {

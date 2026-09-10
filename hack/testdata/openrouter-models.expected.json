@@ -1,0 +1,34 @@
+{
+  "source": {
+    "name": "OpenRouter",
+    "url": "https://openrouter.ai/api/v1/models",
+    "documentation_url": "https://openrouter.ai/docs/guides/overview/models",
+    "attribution": "Model pricing data provided by OpenRouter (https://openrouter.ai/).",
+    "rate_basis": "Standard top-provider text token prices in USD per token"
+  },
+  "models": [
+    {
+      "id": "alpha/free-model",
+      "pricing": {
+        "prompt": "0",
+        "completion": "0"
+      }
+    },
+    {
+      "id": "openrouter/dynamic-test",
+      "pricing": {
+        "prompt": "-1",
+        "completion": "-1"
+      }
+    },
+    {
+      "id": "zeta/text-model",
+      "pricing": {
+        "prompt": "0.0000012300",
+        "completion": "0.0000045600",
+        "input_cache_read": "0.0000001200",
+        "input_cache_write": "0.0000015000"
+      }
+    }
+  ]
+}

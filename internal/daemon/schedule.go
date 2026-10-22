@@ -27,13 +27,13 @@ const scheduleIdle = time.Hour
 // already past when the wait is computed cannot spin it.
 const scheduleFloor = time.Second
 
-// scheduleRetryMin and scheduleRetryMax bound the wait after a promotion fails.
+// scheduleRetryInitial and scheduleRetryMax bound the wait after a promotion fails.
 // A file that cannot be written (a read-only mount, a bad mode) fails the same
 // way every pass, and without a backoff the deadline stays due and the loop
 // retries every scheduleFloor for as long as the ticket exists.
 const (
-	scheduleRetryMin = 5 * time.Second
-	scheduleRetryMax = 5 * time.Minute
+	scheduleRetryInitial = 5 * time.Second
+	scheduleRetryMax     = 5 * time.Minute
 )
 
 // scheduleBackoff is when the loop may try a failed promotion again, and the
@@ -344,7 +344,7 @@ func (d *Daemon) promoteScheduledLocked(id string, now time.Time) {
 // twice and re-reads the file every scheduleFloor for as long as it exists.
 // Must be called with d.mu held.
 func (d *Daemon) backOffScheduleLocked(id string, now time.Time) {
-	wait := scheduleRetryMin
+	wait := scheduleRetryInitial
 	if prev, ok := d.scheduleRetry[id]; ok {
 		wait = min(prev.wait*2, scheduleRetryMax)
 	}

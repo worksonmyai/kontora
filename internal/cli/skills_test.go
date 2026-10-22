@@ -57,15 +57,37 @@ func TestSkills(t *testing.T) {
 			notWant: []string{"--description-file"},
 		},
 		{
-			name: "show prints the whole topic",
-			args: []string{"show", "tickets"},
-			want: []string{"# Tickets", "## Status lifecycle", "## Relations"},
+			name:    "show prints the whole topic",
+			args:    []string{"show", "tickets"},
+			want:    []string{"# Tickets", "## Status lifecycle", "## Relations", "## Epics"},
+			notWant: []string{"No command writes it", "`parent` names an epic and is read-only"},
+		},
+		{
+			name:    "epic reference is available as a section",
+			args:    []string{"show", "tickets", "Epics"},
+			want:    []string{"## Epics", "kind: epic", "--kind epic", "--parent", "human_review", "children", "display order", "every status", "kontora view --body EPIC_ID", "not inlined"},
+			notWant: []string{"## Body"},
 		},
 		{
 			name:    "show of a section prints that section only",
 			args:    []string{"show", "cli", "kontora new"},
-			want:    []string{"## kontora new", "--description-file"},
+			want:    []string{"## kontora new", "--description-file", "--kind epic", "--parent", "--status open"},
 			notWant: []string{"## kontora view"},
+		},
+		{
+			name: "stage reference explains epic context",
+			args: []string{"show", "pipelines", "Stages"},
+			want: []string{"epic id, title", "not inlined", "kontora view --body EPIC_ID"},
+		},
+		{
+			name: "update reference explains epic brief editing",
+			args: []string{"show", "cli", "kontora update"},
+			want: []string{"epic", "every status", "--body-file"},
+		},
+		{
+			name: "list reference identifies omitted epic fields",
+			args: []string{"show", "cli", "kontora ls"},
+			want: []string{"omits `kind`", "children"},
 		},
 		{
 			name:    "a section matches on a unique substring",

@@ -1,11 +1,36 @@
 package daemon
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/worksonmyai/kontora/internal/notify"
 	"github.com/worksonmyai/kontora/internal/ticket"
 )
+
+func (d *Daemon) epicPromptContext(parentID string) string {
+	if parentID == "" {
+		return ""
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	parent, ok := d.tickets[parentID]
+	if !ok || parent.ticket.Kind != ticket.KindEpic {
+		return ""
+	}
+	return fmt.Sprintf(`
+
+## Epic context
+This ticket is part of an epic.
+- Epic ID: %s
+- Epic title: %s
+
+Before starting work, read the epic brief with:
+  kontora view --body -- %s
+
+Keep your work scoped to this child ticket; the epic provides shared context.`,
+		parentID, parent.ticket.Title(), shellQuote(parentID))
+}
 
 // ticketIndexLocked snapshots the tracked tickets as a dependency index. Must
 // be called with d.mu held.

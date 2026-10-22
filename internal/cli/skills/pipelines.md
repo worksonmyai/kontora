@@ -4,8 +4,8 @@ A pipeline is an ordered list of steps. Each step names a stage and the agent
 that runs it, and says what happens on success and on failure. A ticket
 references a pipeline by name in its `pipeline` frontmatter field.
 
-A ticket with no pipeline runs standalone: one agent invocation with the
-default agent, no stages.
+An ordinary ticket with no pipeline runs standalone: one agent invocation with
+the default agent, no stages. An epic has no pipeline and never runs.
 
 ## Stages
 
@@ -27,11 +27,17 @@ Prompt templates are Go `text/template` with these expressions:
 |------------|-------------|
 | `{{ .Ticket.ID }}` | Ticket id. |
 | `{{ .Ticket.Title }}` | The body's first `# Heading`. |
-| `{{ .Ticket.Description }}` | The whole body, notes included. |
+| `{{ .Ticket.Description }}` | This ticket's body and notes, without its epic's brief. |
 | `{{ .Ticket.FilePath }}` | Absolute path to the ticket's markdown file. |
 | `{{ file "PLAN.md" }}` | Contents of a file, relative to the worktree. |
 | `{{ plannotatorReview }}` | Feedback from the last Plannotator code review. |
 | `{{ plannotatorAnnotations }}` | Pending Plannotator annotations on the ticket. |
+
+For a child of an epic, Kontora appends the epic id, title and a command to read
+its brief. This does not require a template variable and also applies to
+standalone and resumed runs. The brief and notes are not inlined; the agent
+must read them with `kontora view --body EPIC_ID`. Missing parents and parents
+that are not epics add no context. An empty rendered prompt stays empty.
 
 `file` is how stages communicate. Every stage of a ticket shares one git
 worktree, so a plan stage writes `PLAN.md` and a code stage reads it with

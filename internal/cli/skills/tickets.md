@@ -36,7 +36,8 @@ hand before the ticket runs.
 | Field | Required | Description |
 |-------|----------|-------------|
 | `id` | yes | `<prefix>-<4 alphanumerics>`, e.g. `kon-q88f`. |
-| `status` | yes | See the status lifecycle below. Defaults to `todo`. |
+| `status` | yes | Defaults to `todo` for ordinary tickets. An epic starts `open`, then derives its status from its children. |
+| `kind` | no | `epic` for a shared brief that groups tickets. Absent for ordinary work. |
 | `path` | yes | Repository the ticket works in. `~` is expanded at runtime. |
 | `pipeline` | no | Name of a pipeline in the config. Empty means the ticket runs standalone with the default agent. |
 | `agent` | no | Agent override for this ticket. Replaces the pipeline's agent at every stage. |
@@ -45,11 +46,13 @@ hand before the ticket runs.
 | `scheduled_at` | no | RFC 3339 instant at which the daemon moves an `open` ticket to `todo`. See the scheduled pickup section. |
 | `deps` | no | Ids this ticket waits on. |
 | `links` | no | Ids of related tickets. |
-| `parent` | no | Id of the epic or parent ticket. No command writes it. |
+| `parent` | no | Epic id. Set with `kontora new --parent ID`, or change through the web UI or parent API. |
+| `children` | no | An epic's preferred display order of child ids. Membership comes from each child's `parent`. |
 
-`pipeline` and `agent` are filled in at creation from a matching project in the
-config when one exists and neither is given. Pass the literal `none` to opt out
-of a project default.
+For ordinary tickets, `pipeline` and `agent` are filled in at creation from a
+matching project when neither is given. Pass the literal `none` to opt out.
+Epics skip these defaults and reject explicit pipeline or agent values, including
+`none`.
 
 Any field not listed here is preserved through a round trip. The daemon does
 not remove or overwrite fields it does not recognise.
@@ -90,7 +93,7 @@ Written by the daemon as a ticket progresses. Never set them by hand.
 
 | Field | Description |
 |-------|-------------|
-| `kontora` | `true` means the daemon may run this ticket. Set by `kontora init`. |
+| `kontora` | `true` makes an ordinary ticket eligible to run. Set by `kontora new` or `kontora init`. Epics never run. |
 | `stage` | Current pipeline stage. Set to the first stage on pickup. |
 | `attempt` | Retry counter for the current stage. Reset on advance or back. |
 | `started_at` | When the current stage started. |
@@ -103,6 +106,9 @@ Written by the daemon as a ticket progresses. Never set them by hand.
 | `claimed_by` | The daemon `instance_name` that last picked the ticket up. |
 
 ## Status lifecycle
+
+This lifecycle describes ordinary tickets. Epic statuses summarize their children;
+see `kontora skills show tickets Epics`.
 
 ```
 open -> todo -> in_progress -> done ------> archived
@@ -126,8 +132,8 @@ A config may declare extra parked statuses under `statuses:`. A stage's
 `on_success` or `on_failure` can park a ticket in one, and `kontora move` can
 put a ticket there.
 
-The daemon only picks up a ticket that has both `kontora: true` and
-`status: todo`.
+The daemon only picks up an ordinary ticket that has both `kontora: true` and
+`status: todo`. An epic is never picked up, even if its file says `todo`.
 
 ## Relations
 
@@ -138,11 +144,14 @@ because the agent's work is done and only a person's verdict is left. Any other
 status blocks, and so does an id with no file behind it.
 
 `links` is a symmetric "related" list and means nothing to the scheduler.
-`parent` names an epic and is read-only.
+`parent` names the epic that groups a ticket. Create a child with
+`kontora new --parent EPIC_ID`. To move an existing ticket into or out of an
+epic, use the web UI or the parent API. There are no CLI parent/unparent verbs.
 
-Two relations are derived on read rather than stored, because each edge lives
-on the other ticket: `blocks` is the reverse of `deps`, and `children` is the
-reverse of `parent`.
+`blocks` is the reverse of `deps`. Child membership is the reverse of `parent`.
+Both are derived on read. The epic's stored `children` list controls display
+order only: it does not add members or set execution order. Use `deps` for
+execution prerequisites.
 
 Readiness is derived on every read. It is not a status: there is no `blocked`
 status, and a ticket waiting on a dependency stays `todo`. Closing a dependency
@@ -153,6 +162,61 @@ closed. `kontora dep` refuses to create a new cycle.
 
 Write these with `kontora dep`, `kontora undep`, `kontora link` and
 `kontora unlink`.
+
+## Epics
+
+Use an epic for a shared brief spanning separately executable tickets. Its body
+holds the goal, design, decisions and success criteria. Each child remains an
+ordinary ticket with its own agent and pipeline.
+
+Child-agent prompts include the epic id, title and a command to read its brief.
+The agent must run `kontora view --body EPIC_ID` before starting work. The brief
+and notes are not inlined. This applies to pipeline stages, standalone runs and
+resumed runs. Missing parents and parents that are not epics add no context;
+an empty prompt stays empty.
+
+An epic has `kind: epic`. It never runs an agent or creates a worktree, and it
+has no execution branch, pipeline or run history. Epics cannot nest.
+
+```sh
+kontora new --kind epic --status open --path ~/projects/myrepo --description-file brief.md "Add authentication"
+kontora new --parent EPIC_ID --status open --path ~/projects/myrepo "Implement the login API"
+```
+
+Replace `EPIC_ID` with the id returned by the first command. Do not pass
+`--pipeline`, `--agent`, `--at`, `--after` or `--parent` when creating an epic.
+The children remain open until explicitly queued.
+
+The daemon derives an epic's status whenever its children change. Archived
+children are ignored. Apply these rules in order:
+
+| Remaining children | Epic status |
+|--------------------|-------------|
+| Any `todo`, `in_progress`, `paused` or `human_review` child | `in_progress` |
+| No children, or any child outside `done`, `closed` and `cancelled` | `open` |
+| All children terminal, with at least one `done` or legacy `closed` child | `done` |
+| All children `cancelled` | `cancelled` |
+
+Run, retry, pause, skip, init, schedule and manual status changes are refused on
+an epic. Its brief stays editable in every status through
+`kontora update EPIC_ID --body-file FILE`. Archiving stops status derivation;
+restoring through the web UI resumes it.
+
+The web UI provides these relation operations. The API equivalents are:
+
+- `POST /api/tickets/{id}/parent` with `{"parent":"EPIC_ID"}` sets a child's parent.
+- `POST /api/tickets/{id}/unparent` clears a child's parent.
+- `PUT /api/tickets/{id}/children` with `{"children":["CHILD_ID"]}` sets an epic's display order.
+
+The parent must exist and be an epic. Reordering does not modify child tickets
+or create dependencies. Deleting an epic through the daemon keeps its children
+and clears their parent references. Local `kontora delete` only removes the
+epic file; use remote mode for that cleanup.
+
+On desktop, create an epic from New ticket by choosing Kind: epic. Epics appear
+above Projects in the sidebar, not in board columns. The sidebar defaults to
+hidden, and its Epics section is hidden when the board has no epics.
+`kontora ls --json` omits `kind`, so it cannot identify epics by that field.
 
 ## Body
 

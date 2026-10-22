@@ -74,7 +74,8 @@ it print a table instead. Prefer `--json` when parsing.
 `--ready` and `--blocked` cannot be combined. `--json` prints an array of
 objects with `id`, `title`, `status`, `kontora`, `path`, `project`, `pipeline`,
 `stage`, `agent`, `created_at`, `started_at`, `completed_at`, `deps`, `links`,
-`parent`, `ready` and `blockers`. It never carries the ticket body.
+`parent`, `ready` and `blockers`. It omits `kind`, an epic's `children` order,
+and the ticket body. Do not infer that no epics exist from missing `kind` values.
 
 ## kontora search
 
@@ -105,7 +106,11 @@ Exits 0 whether or not anything matched.
 - `--agent NAME` — agent to use, or `none` to skip the project default.
 - `--branch NAME` — work branch name.
 - `--base-branch NAME` — branch the work branch starts from.
-- `--status STATUS` — `open` or `todo`. Defaults to `todo`.
+- `--status STATUS`: `open` or `todo`. Defaults to `todo` for ordinary tickets;
+  epics accept only `open` and default to it.
+- `--kind epic`: create a shared brief that groups tickets and never runs.
+- `--parent EPIC_ID`: create an ordinary ticket under an existing epic. Accepts
+  a unique id prefix. Epics cannot have parents.
 - `--at TIME` — schedule pickup for an instant: RFC 3339, or a local wall time
   such as `"2099-09-01 09:00"`.
 - `--after DURATION` — schedule pickup this long from now, e.g. `90m`, `24h`,
@@ -118,6 +123,18 @@ after a generated `# <title>` heading.
 
 A ticket created with `--status open` is never visible as `todo`, so a daemon
 with `auto_pick_up: true` cannot claim it before you finish editing it.
+
+With `--kind epic`, omit pipeline, agent, parent and schedule flags. Even
+`--pipeline none` and `--agent none` are refused. Project defaults are skipped.
+The daemon derives the epic's status from its children; its brief remains editable.
+
+```sh
+kontora new --kind epic --status open --path ~/projects/myrepo --description-file brief.md "Add authentication"
+kontora new --parent EPIC_ID --status open --path ~/projects/myrepo "Implement the login API"
+```
+
+Replace `EPIC_ID` with the new epic's id. `--parent` groups the child; it does
+not queue it or create dependencies. See `kontora skills show tickets Epics`.
 
 `--at` and `--after` write `status: open` and `scheduled_at` in the same single
 write. Neither combines with the other, or with `--status todo`, and neither
@@ -150,11 +167,20 @@ field.
 - `--branch NAME` — set the work branch (`""` clears it).
 - `--base-branch NAME` — set the base branch (`""` clears it).
 
+An epic's brief is editable in every status, including `in_progress`, through
+`--body-file`. Ordinary tickets reject edits while running or terminal. There
+are no `--kind` or `--parent` update flags; change an existing ticket's parent
+through the web UI or parent API described in `kontora skills show tickets Epics`.
+
 ## kontora delete
 
 `kontora delete TICKET_ID -f` — delete the ticket's markdown file. `-f` or
 `--yes` is required. The worktree is not cleaned up; cancel the ticket first if
 you want the normal cleanup path.
+
+For an epic, use remote mode (`--url` or `KONTORA_URL`) so the daemon clears
+its children's parent references before deletion. The children are kept. Local
+mode only deletes the epic file and leaves those references unchanged.
 
 ## kontora init
 

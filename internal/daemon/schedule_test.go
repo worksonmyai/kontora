@@ -510,13 +510,13 @@ func TestPromoteScheduleWriteFailureKeepsTheSchedule(t *testing.T) {
 	assert.Equal(t, ticket.StatusOpen, got.Status)
 	assert.Equal(t, past, got.ScheduledAt)
 	assert.Empty(t, d.queuedIDs())
-	assert.Equal(t, scheduleRetryMin, d.nextScheduleWait(now), "a failed promotion must not stay due")
+	assert.Equal(t, scheduleRetryInitial, d.nextScheduleWait(now), "a failed promotion must not stay due")
 
-	d.promoteDueSchedules(now.Add(scheduleRetryMin))
-	assert.Equal(t, 2*scheduleRetryMin, d.nextScheduleWait(now.Add(scheduleRetryMin)), "each failure doubles the wait")
+	d.promoteDueSchedules(now.Add(scheduleRetryInitial))
+	assert.Equal(t, 2*scheduleRetryInitial, d.nextScheduleWait(now.Add(scheduleRetryInitial)), "each failure doubles the wait")
 
 	// A write that succeeds drops the backoff with the schedule.
-	retried := now.Add(3 * scheduleRetryMin)
+	retried := now.Add(3 * scheduleRetryInitial)
 	require.NoError(t, os.Chmod(path, 0o644))
 	d.promoteDueSchedules(retried)
 	got = h.readTask("sch-a.md")

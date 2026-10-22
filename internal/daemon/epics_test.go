@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -52,6 +53,80 @@ created: %s
 ---
 # Child %s
 `, id, status, h.repoDir, parent, created, id)
+}
+
+func TestEpicContextInAgentPrompt(t *testing.T) {
+	cases := []struct {
+		name         string
+		parent       string
+		standalone   bool
+		resume       bool
+		emptyPrompt  bool
+		resumePrompt string
+		wantEpic     bool
+	}{
+		{name: "pipeline child", parent: "epc-a", wantEpic: true},
+		{name: "standalone child", parent: "epc-a", standalone: true, wantEpic: true},
+		{name: "resumed pipeline child", parent: "epc-a", resume: true, wantEpic: true},
+		{name: "resumed standalone child", parent: "epc-a", standalone: true, resume: true, wantEpic: true},
+		{name: "custom resume prompt", parent: "epc-a", resume: true, resumePrompt: "Continue {{ .Ticket.ID }}", wantEpic: true},
+		{name: "no parent"},
+		{name: "missing parent", parent: "epc-missing"},
+		{name: "ordinary parent", parent: "ordinary"},
+		{name: "empty stage prompt", parent: "epc-a", emptyPrompt: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rd := newResumeDaemon(t, "claude", nil)
+			rd.h.writeTicket("epc-a.md", rd.h.epicMD("epc-a", "open")+"\nEpic brief that must not be inlined.\n")
+			rd.h.writeTicket("ordinary.md", rd.h.taskMD("ordinary", "open", "one-stage"))
+			child := rd.h.epicChildMD(resumeTicketID, "todo", tc.parent, "2026-01-02T00:00:00Z")
+			if tc.standalone {
+				child = strings.Replace(child, "pipeline: one-stage\n", "", 1)
+			}
+			if tc.emptyPrompt {
+				stage := rd.cfg.Stages[resumeStage]
+				stage.Prompt = ""
+				rd.cfg.Stages[resumeStage] = stage
+			}
+			rd.cfg.ResumePrompt = tc.resumePrompt
+			if tc.resume {
+				stage := resumeStage
+				if tc.standalone {
+					stage = simpleStageName
+				}
+				plantClaudeSession(t, rd.claudeDir, resumeTestSessionID)
+				writeRecordFile(t, rd.cfg, resumeTicketID, stage, resumeRecord{
+					SessionID: resumeTestSessionID,
+					Stage:     stage,
+					Agent:     agentKindClaude,
+					Worktree:  rd.wtPath,
+					Instance:  rd.d.instanceName,
+					StartedAt: time.Now().Add(-time.Minute),
+				})
+			}
+
+			rd.runWith(t, child, ticket.StatusDone)
+			spawns := rd.invocations(t)
+			require.Len(t, spawns, 1)
+			got := renderedPrompt(spawns[0])
+			if tc.wantEpic {
+				assert.Contains(t, got, "## Epic context")
+				assert.Contains(t, got, "Epic ID: epc-a")
+				assert.Contains(t, got, "Epic title: Epic epc-a")
+				assert.Contains(t, got, "kontora view --body -- 'epc-a'")
+				assert.Contains(t, got, "Before starting work, read the epic brief")
+				assert.Contains(t, got, "Keep your work scoped to this child ticket")
+			} else {
+				assert.NotContains(t, got, "## Epic context")
+				assert.NotContains(t, got, "kontora view --body")
+			}
+			assert.NotContains(t, got, "Epic brief that must not be inlined")
+			if tc.resume {
+				assert.Contains(t, spawns[0].Args, "--resume")
+			}
+		})
+	}
 }
 
 // An epic is not work. Whatever status its file carries, it is never queued and

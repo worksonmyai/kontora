@@ -4095,7 +4095,7 @@ created: 2026-01-01T00:00:00Z
 	assert.Contains(t, result.LastError, "branch feat/stacked in use by ticket tst-ca")
 
 	cancel()
-	<-errCh
+	require.NoError(t, <-errCh)
 }
 
 // TestSelfWriteSuppression covers how the daemon tells its own ticket writes

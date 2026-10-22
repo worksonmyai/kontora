@@ -130,6 +130,7 @@ func (d *Daemon) renderTicketPrompt(cfg *config.Config, tmpl string, t *ticket.T
 	rendered += fmt.Sprintf("\nTask ID: %s", t.ID)
 	rendered += fmt.Sprintf("\nTicket: %s", filePath)
 	rendered += fmt.Sprintf("\nWorkspace: %s", wtPath)
+	rendered += d.epicPromptContext(t.Parent)
 
 	rendered += fmt.Sprintf("\n\nIMPORTANT: When you finish your work, write your results as a note on the ticket. Include all relevant details so they are preserved. Use:\n  kontora note %s \"your results here\"", t.ID)
 

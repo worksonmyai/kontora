@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.36.0](https://github.com/worksonmyai/kontora/compare/v0.35.0...v0.36.0) - 2026-10-16
+
+- update model prices
+- Add ticket cost estimates
+- Update claude md
+- Pause Pi stages on provider errors
+- Add agent picker to web dashboard
+- Keep tmux tests off the runner server
+- Fix unrouted notification settings
+
 ## [0.33.0](https://github.com/worksonmyai/kontora/compare/v0.32.0...v0.33.0) - 2026-08-16
 
 - fix linter

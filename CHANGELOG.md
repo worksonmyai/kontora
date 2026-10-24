@@ -1,5 +1,64 @@
 # Changelog
 
+## [0.34.0](https://github.com/worksonmyai/kontora/compare/v0.33.0...v0.34.0) - 2026-08-28
+
+- Edit notifications from the settings tab
+- Set notify and notify_channels from the dashboard
+- fix layout
+- Rebuild the settings view with grouped rail, overview tiles and field cards
+- Add epics to group tickets under briefs
+- Detach send-keys from whatever tmux client is attached
+- Take a time or a delay on every schedule surface
+- Add scheduled pickup for tickets
+- Add opt-in ticket status notifications to Telegram, Mattermost, and webhooks
+- Support default_pipeline and improve setup, doctor, and help for new users
+- Hold the daemon lock while a run edits its ticket
+- Paint the archive rows in the project colors the board uses
+- Cut repeated work in the archive filter, the column sort and a ticket open
+- Keep the board drag smooth on a long column
+- Stop a stage agent from closing its own ticket
+- Warn at daemon start when the environment moves tickets_dir
+- Tear down the ticket page when it closes
+- Window the archive list and rebuild the heavy views on entry
+- Add ticket notes as dedicated tab with linear-style UI
+- Add archive: ticket model, service and API endpoints
+- ticket in human_review should resolve dependencies
+- Fix the lint failures from golangci-lint 2.13.1
+- Stream pi assistant's replies token by token
+- Stream the web UI assistant's replies token by token
+- Interleave the assistant's messages with the tape
+- Give the assistant a reference command and context-aware system prompt
+- Add assistant configuration to the settings pane
+- Resume an assistant thread only when the session file exists
+- Show the running assistant turn in the thread and follow the tape
+- Give spawned agents the bin dirs kontora already searches
+- Close the hover card when a chip is clicked
+- Add web assistant pane with agent turns and autonomy gates
+- Add chain ladder: dependency chains on ticket pages
+- Hide the diff tab until a ticket has a branch
+- Add shell completions for zsh, bash, and fish
+- Detect pi agent blocked on ask_user_question
+- Show the start form when queueing an initialized ticket
+- Read the tickets dir and the pager from the environment
+- Derive ticket ID prefixes from directory name segments
+- fix tests
+- Bump Go to 1.27.0
+- bump deps
+- Bump Go to 1.27.0
+- Fix prealloc and stringsseq lint findings in internal/web
+- Split web UI to ES modules bundled by esbuild
+- Add web daemon hardening: CSP, security headers, and origin checks
+- Use errors.AsType for exec.ExitError in exitCode
+- Add ticket restart: stage picker for all parked statuses
+- Add checkpoint compaction for Claude Code runs
+- Add kontora search: ripgrep-style ticket search with regex, filters, and multiple output modes
+- Add native ticket tracking: relations, scheduling, and list surface
+- Add kontora sessions: print agent session file paths per stage and run
+- Add ticket goal to final-summary opening
+- Add checkpoint compaction for Pi runs
+- Show model and reasoning effort in the web UI
+- test: guard hits slice with a mutex in remote flag test
+
 ## [0.33.0](https://github.com/worksonmyai/kontora/compare/v0.32.0...v0.33.0) - 2026-08-16
 
 - fix linter

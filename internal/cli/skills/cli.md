@@ -3,9 +3,9 @@
 Every verb is a flat top-level word: `kontora <verb> [flags] [arguments]`.
 Flags use Go's `flag` package, so `-flag` and `--flag` both work.
 
-Go's flag parser stops at the first positional argument. Put flags before the
-free-form text of `new`, `note` and `summary`, or they are read as part of the
-text.
+For `note` and `summary`, put all flags before the ticket ID. Go's flag parser
+stops at that first positional argument. For `new`, put flags before the title.
+Other verbs also accept flags after positional arguments.
 
 Any verb that takes a `TICKET_ID` accepts a unique prefix of one: `kontora view
 kon-q` finds `kon-q88f`. A prefix matching two tickets is an error naming both.
@@ -22,8 +22,40 @@ current stage. You cannot change that ticket's status: `done`, `cancel`, `move`,
 is `archive`. Kontora decides the next status from your exit code, so exit 0 when
 the stage's work is done and non-zero when it is not.
 
-Record what you did with `note` and `summary`, which are never refused. Every
-verb works normally against any other ticket.
+Record what you did with `note` and `summary` through the Handoff submission
+method below. Neither command has the lifecycle restriction. Every verb works
+normally against any other ticket.
+
+## Handoff submission
+
+Prefer Pi's `kontora_note({text: string})` and
+`kontora_summary({text: string})` tools when available. Kontora's injected
+extension binds them to the current ticket; do not supply a ticket ID.
+Availability requires ticket context, not checkpoint compaction. Tool
+restrictions still apply. The dashboard assistant does not receive these tools.
+
+Native tools reject blank text, embedded NUL, and text above 32,768 UTF-8 bytes.
+They pass text literally without shell evaluation. The CLI still applies the
+normalization described under `kontora note` and `kontora summary`.
+Native text appears in process arguments. Use stdin for large or sensitive text.
+
+If native tools are unavailable, or stdin is needed:
+
+1. Use your file-writing tool to create unique scratch files outside the repository.
+2. Put the note or summary text in the corresponding file.
+3. Submit the file through stdin using the commands below.
+
+```sh
+kontora note TICKET_ID < /absolute/path/note.md
+kontora summary TICKET_ID < /absolute/path/summary.txt
+```
+
+Replace `TICKET_ID` and each example path with the actual ticket ID and scratch path.
+Do not embed generated text in shell arguments or payload-bearing shell commands.
+Do not create the files with `echo` or `printf`.
+
+If a launched submission fails or lacks acknowledgement, read the ticket before resubmitting.
+The write outcome may be unknown. Do not retry automatically or switch submission methods automatically.
 
 ## Common flags
 
@@ -267,8 +299,10 @@ daemon record your run against the wrong stage.
 ## kontora note
 
 `kontora note TICKET_ID [TEXT]` — append a note under the body's `## Notes`
-section. Reads the text from stdin when it is not given as an argument, so
-`git log --oneline | kontora note kon-q88f` works.
+section. Positional text remains supported. Without text arguments, it reads
+stdin and removes trailing LF characters. Notes also trim surrounding whitespace
+and reject empty text. For literal submission, use the Handoff submission
+method: `kontora skills show cli "Handoff submission"`.
 
 This is how you leave something for the next stage to read: a stage prompt
 containing `{{ .Ticket.Description }}` gets the whole body, notes included.
@@ -283,13 +317,29 @@ is, so you do not have to pass it.
 | `--author NAME` | Override the author. |
 | `--reply-to NOTE_ID` | Reply to that note. One level only: replying to a reply is refused. |
 
-Both are flags, so write them before the free-form text.
+Put both flags before the ticket ID, including when using stdin:
+
+```sh
+kontora note --reply-to NOTE_ID TICKET_ID < /absolute/path/note.md
+```
 
 ## kontora summary
 
-`kontora summary TICKET_ID [TEXT]` — set the ticket's one-line summary. Reads
-stdin when the text is not an argument. The daemon clears it when a new stage
-starts, and each stage keeps its own copy on its `history` entry.
+`kontora summary TICKET_ID [TEXT]` — set the ticket's summary.
+Positional text remains supported. Without text arguments, it reads stdin and
+removes trailing LF characters. Summaries preserve spaces and internal newlines;
+the command does not shorten them or force them onto one line.
+
+Use the Handoff submission method for literal text:
+`kontora skills show cli "Handoff submission"`.
+
+```sh
+kontora summary TICKET_ID < /absolute/path/summary.txt
+```
+
+The daemon clears the summary when a new stage starts. At stage completion,
+it captures the summary on the ticket and its `history` entry. Stage capture
+cuts text above 4,000 bytes at a UTF-8 boundary and appends `\n[truncated]`.
 
 ## kontora dep
 

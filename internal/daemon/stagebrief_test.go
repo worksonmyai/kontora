@@ -25,7 +25,9 @@ func TestStageBrief(t *testing.T) {
 		for _, verb := range []string{"done", "cancel", "move", "pause", "retry", "skip", "set-stage", "schedule"} {
 			assert.Contains(t, got, verb, "the brief must name every verb rejectSelfMove refuses")
 		}
-		assert.Contains(t, got, "kontora note kon-q88f")
+		assert.Contains(t, got, "shared handoff instructions in the run prompt")
+		assert.NotContains(t, got, "kontora note")
+		assert.NotContains(t, got, "kontora summary")
 	})
 
 	t.Run("an override replaces it whole and is not a template", func(t *testing.T) {

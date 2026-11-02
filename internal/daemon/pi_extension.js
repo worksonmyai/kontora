@@ -6,6 +6,7 @@
 export default function (pi) {
   const THRESHOLD = __CHECKPOINT_THRESHOLD__;
   const ENABLED = __CHECKPOINT_ENABLED__;
+  const TICKET_ID = process.env.KONTORA_TICKET_ID;
   // Where to publish the "blocked on a question" marker the daemon polls.
   // Empty for a run the daemon does not watch.
   const WAIT_MARKER = __WAIT_MARKER_PATH__;
@@ -172,6 +173,69 @@ export default function (pi) {
     openQuestions = Object.create(null);
     removeMarker();
   });
+
+  function registerHandoff(verb, acknowledgement) {
+    pi.registerTool({
+      name: "kontora_" + verb,
+      label: verb === "note" ? "Ticket Note" : "Ticket Summary",
+      description:
+        (verb === "note" ? "Append a note to" : "Set the summary of") +
+        " the current Kontora ticket. Text is submitted literally without a shell. " +
+        "Text must be nonblank, contain no NUL, and fit 32,768 UTF-8 bytes. " +
+        "Text appears in process arguments; use file-to-stdin submission for sensitive or larger text. " +
+        "If submission fails, read the ticket before resubmitting.",
+      parameters: {
+        type: "object",
+        properties: { text: { type: "string", description: "The text to submit." } },
+        required: ["text"],
+      },
+      executionMode: "sequential",
+      execute: async function (_toolCallId, params, signal, _onUpdate, ctx) {
+        var text = params && params.text;
+        if (typeof text !== "string" || text.trim() === "") {
+          throw new Error("Text must be a nonblank string.");
+        }
+        if (text.includes("\0")) {
+          throw new Error("Text must not contain NUL.");
+        }
+        if (Buffer.byteLength(text, "utf8") > 32768) {
+          throw new Error("Text must not exceed 32,768 UTF-8 bytes.");
+        }
+        if (signal && signal.aborted) {
+          throw new Error("Submission cancelled; text was not submitted.");
+        }
+
+        var uncertain = "The write outcome may be unknown. Read the ticket before resubmitting. Do not retry automatically.";
+        var result;
+        try {
+          result = await pi.exec("kontora", [verb, "--", TICKET_ID, text], {
+            cwd: ctx.cwd,
+            signal: signal,
+            timeout: 30_000,
+          });
+        } catch (_error) {
+          throw new Error("Kontora execution failed. " + uncertain);
+        }
+        if (result.code !== 0 || result.killed) {
+          throw new Error("Kontora execution did not succeed. " + uncertain);
+        }
+        // A signal-killed process can report code 0, so require confirm's line too.
+        var lines = result.stdout.replace(/\x1b\[[0-9;:]*m/g, "").split(/\r?\n/);
+        if (!lines.includes(TICKET_ID + " " + acknowledgement)) {
+          throw new Error("Kontora acknowledgement is missing. " + uncertain);
+        }
+        return {
+          content: [{ type: "text", text: TICKET_ID + " " + acknowledgement + "." }],
+          details: undefined,
+        };
+      },
+    });
+  }
+
+  if (TICKET_ID) {
+    registerHandoff("note", "note added");
+    registerHandoff("summary", "summary set");
+  }
 
   if (ENABLED && THRESHOLD > 0) {
     pi.registerTool({

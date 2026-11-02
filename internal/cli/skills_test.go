@@ -75,6 +75,59 @@ func TestSkills(t *testing.T) {
 			notWant: []string{"## kontora view"},
 		},
 		{
+			name: "stage reference uses shared handoffs without changing lifecycle restrictions",
+			args: []string{"show", "cli", "If you are a stage agent"},
+			want: []string{
+				"KONTORA_TICKET_ID", "Handoff submission", "exit 0", "non-zero",
+				"`done`, `cancel`, `move`", "`pause`, `retry`, `skip`, `set-stage`", "`archive`",
+			},
+			notWant: []string{"## Handoff submission"},
+		},
+		{
+			name: "handoff reference prefers native tools with safe stdin fallback",
+			args: []string{"show", "cli", "Handoff submission"},
+			want: []string{
+				"kontora_note({text: string})", "kontora_summary({text: string})",
+				"current ticket", "checkpoint", "32,768 UTF-8 bytes", "blank text", "NUL",
+				"process arguments", "large or sensitive text", "stdin",
+				"file-writing tool", "unique scratch files outside the repository",
+				"kontora note TICKET_ID < /absolute/path/note.md",
+				"kontora summary TICKET_ID < /absolute/path/summary.txt",
+				"payload-bearing shell commands", "echo", "printf",
+				"read the ticket before resubmitting", "Do not retry automatically",
+			},
+			notWant: []string{"## Common flags"},
+		},
+		{
+			name: "note reference preserves input and flag rules",
+			args: []string{"show", "cli", "kontora note"},
+			want: []string{
+				"[TEXT]", "Positional text remains supported", "trailing LF", "surrounding whitespace",
+				"before the ticket ID", "--author NAME", "--reply-to NOTE_ID", "$KONTORA_AGENT",
+				"kontora note --reply-to NOTE_ID TICKET_ID < /absolute/path/note.md",
+				"Handoff submission",
+			},
+			notWant: []string{"before the free-form text", "echo TEXT", "## kontora summary"},
+		},
+		{
+			name: "summary reference preserves normalization and stage capture",
+			args: []string{"show", "cli", "kontora summary"},
+			want: []string{
+				"[TEXT]", "Positional text remains supported", "trailing LF",
+				"spaces and internal newlines", "4,000 bytes", "[truncated]", "history",
+				"kontora summary TICKET_ID < /absolute/path/summary.txt", "Handoff submission",
+			},
+			notWant: []string{"echo TEXT", "## kontora dep"},
+		},
+		{
+			name: "cli reference puts handoff flags before the ticket ID",
+			args: []string{"show", "cli"},
+			want: []string{"For `note` and `summary`, put all flags before the ticket ID"},
+			notWant: []string{
+				"before the free-form text", "echo TEXT |", "kontora note <id> \"message\"",
+			},
+		},
+		{
 			name: "stage reference explains epic context",
 			args: []string{"show", "pipelines", "Stages"},
 			want: []string{"epic id, title", "not inlined", "kontora view --body EPIC_ID"},

@@ -453,6 +453,7 @@ func TestResumeClaudeContinuesRecordedSession(t *testing.T) {
 	assert.Contains(t, got, "was interrupted when the daemon restarted")
 	assert.Contains(t, got, "## Operational Context")
 	assert.Contains(t, got, "Ticket ID: "+resumeTicketID)
+	assertSafeHandoff(t, got, resumeTicketID, true)
 	assert.NotContains(t, got, resumeStagePrompt)
 }
 
@@ -483,6 +484,8 @@ func TestResumePiContinuesStageSessionFile(t *testing.T) {
 	prompt := renderedPrompt(spawns[0])
 	assert.Contains(t, prompt, "was interrupted when the daemon restarted")
 	assert.Contains(t, prompt, "## Phase checkpoints")
+	assertSafeHandoff(t, prompt, resumeTicketID, true)
+	assert.Contains(t, prompt, "Only after the note succeeds")
 	assert.Contains(t, extensionContent, "const THRESHOLD = 150000;")
 	assert.Contains(t, extensionContent, "const ENABLED = true;")
 }

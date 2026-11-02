@@ -85,7 +85,22 @@ TUI: `kontora` or `kontora ls`.
 
 Monitor: `kontora attach` (tmux session), `kontora logs <id>`.
 
-Manage: `kontora pause <id>`, `kontora retry <id>`, `kontora done <id>`, `kontora cancel <id>`, `kontora note <id> "message"`.
+Manage: `kontora pause <id>`, `kontora retry <id>`, `kontora done <id>`, `kontora cancel <id>`.
+
+For handoff notes and summaries, prefer Pi's `kontora_note({text: string})` and `kontora_summary({text: string})` tools when available. Kontora binds them to the current ticket, independently of checkpoint settings. Tool restrictions still apply. Other agents and the dashboard assistant use stdin.
+
+Native tools reject blank text, embedded NUL, and text above 32,768 UTF-8 bytes. Native payloads appear in process arguments; use stdin for large or sensitive text.
+
+For stdin submission, use a file-writing tool to create unique scratch files outside the repository, then submit them:
+
+```sh
+kontora note TICKET_ID < /absolute/path/note.md
+kontora summary TICKET_ID < /absolute/path/summary.txt
+```
+
+Replace `TICKET_ID` and each example path with the actual ticket ID and scratch path. Do not embed generated text in shell arguments or payload-bearing shell commands. Do not create the files with `echo` or `printf`. Put all flags before the ticket ID. Positional text remains supported. Stdin removes trailing LF characters; notes also trim surrounding whitespace. Summaries preserve spaces and internal newlines; stage capture later cuts text above 4,000 bytes and appends `\n[truncated]`.
+
+If a launched submission fails or lacks acknowledgement, read the ticket before resubmitting. The write outcome may be unknown; do not retry or switch methods automatically. Custom prompts replace defaults and remain user-owned; Kontora does not rewrite their unsafe examples.
 
 ## Remote mode
 

@@ -410,18 +410,34 @@ func TestSystemPrompt(t *testing.T) {
 		{
 			name: "the built-in brief",
 			data: func(d PromptData) PromptData { return d },
-			want: []string{"READ-ONLY", "/tickets", "kontora view", "kontora skills list"},
+			want: []string{"READ-ONLY", "Every change is refused at the tool boundary", "/tickets", "kontora view", "kontora skills list",
+				"kontora note TICKET_ID < /absolute/path/note.md", "kontora summary TICKET_ID < /absolute/path/summary.txt",
+				"file-writing tool", "unique scratch paths outside the repository", "Do not put payload text in shell arguments",
+				"Do not create these files with `echo`, `printf`, or other payload-bearing shell commands",
+				"Never edit a ticket markdown file", "approval rules", "In read-only mode, do not create files"},
+			notWant: []string{"kontora_note", "kontora_summary", "your results here"},
 		},
 		{
 			name:    "auto mode",
 			data:    func(d PromptData) PromptData { d.Autonomy = config.AutonomyAuto; return d },
-			want:    []string{"AUTO mode"},
+			want:    []string{"AUTO mode", "except deleting a ticket", "still held for approval", "kontora note TICKET_ID <"},
 			notWant: []string{"READ-ONLY"},
+		},
+		{
+			name: "ask mode keeps file creation and submission subject to approval",
+			data: func(d PromptData) PromptData { d.Autonomy = config.AutonomyAsk; return d },
+			want: []string{"ASK mode", "a change is held until the user approves", "do not retry", "approval rules", "file creation and submission"},
+		},
+		{
+			name:     "a blank override keeps the built-in brief",
+			override: "  \n",
+			data:     func(d PromptData) PromptData { return d },
+			want:     []string{"READ-ONLY", "kontora note TICKET_ID <", "kontora summary TICKET_ID <"},
 		},
 		{
 			name: "an unknown mode falls back to the careful one",
 			data: func(d PromptData) PromptData { d.Autonomy = "nonsense"; return d },
-			want: []string{"ASK mode"},
+			want: []string{"ASK mode", "a change is held until the user approves", "do not retry", "kontora summary TICKET_ID <"},
 		},
 		{
 			name: "a configured board",
@@ -460,7 +476,7 @@ func TestSystemPrompt(t *testing.T) {
 				return d
 			},
 			want:    []string{"my own brief"},
-			notWant: []string{"READ-ONLY", "Board:", "Current page:", "kontora view"},
+			notWant: []string{"READ-ONLY", "Board:", "Current page:", "kontora view", "file-writing tool", "kontora note"},
 		},
 	}
 

@@ -13,7 +13,7 @@ Run `kontora help` for the same list of commands this page documents.
 | `--url URL` | every command that can drive a daemon | Remote daemon URL. A non-empty value switches the command into [remote mode](#remote-mode). Defaults to `$KONTORA_URL`. |
 | `--token TOKEN` | the same commands | Bearer token for the remote daemon. Defaults to `$KONTORA_TOKEN`. |
 
-Flags may be written before, between, or after the positional arguments: `kontora pause abc --config ~/k.yaml` is the same as `kontora pause --config ~/k.yaml abc`. The exceptions are `new`, `note`, and `summary`, whose last argument is free-form text — a flag-looking word there is taken as part of the text, so pass flags before the text.
+For `note` and `summary`, put all flags before the ticket ID, even when reading stdin. Their parser stops at the first positional argument. For `new`, put flags before the title. Other verbs accept flags before, between, or after positional arguments: `kontora pause abc --config ~/k.yaml` matches `kontora pause --config ~/k.yaml abc`.
 
 ## Ticket IDs
 
@@ -215,14 +215,35 @@ Moves the ticket to a named stage of its pipeline without running anything.
 
 ### `kontora note TICKET_ID [TEXT]` / `kontora summary TICKET_ID [TEXT]`
 
-Append a note, or set the ticket's one-line summary. Both read the text from stdin when it is not given as an argument, so `git log --oneline | kontora note kon-q88f` works.
+Append a note, or set the ticket's summary. Positional text remains supported. Without text arguments, both commands read stdin and remove trailing LF characters.
+
+Prefer Pi's `kontora_note({text: string})` and `kontora_summary({text: string})` tools when available. Kontora's injected extension binds both tools to the current ticket, regardless of checkpoint settings. Tool restrictions still apply. Other agents and the dashboard assistant use stdin.
+
+Native tools reject blank text, embedded NUL, and text above 32,768 UTF-8 bytes. They pass text literally to the CLI without a shell. Native payloads appear in process arguments, so use stdin for large or process-list-sensitive text.
+
+For stdin submission, use a file-writing tool to create unique scratch files outside the repository. Submit the files with redirection:
+
+```sh
+kontora note TICKET_ID < /absolute/path/note.md
+kontora summary TICKET_ID < /absolute/path/summary.txt
+```
+
+Replace `TICKET_ID` and each example path with the actual ticket ID and scratch path. Do not embed generated text in shell arguments or payload-bearing shell commands. Do not create the files with `echo` or `printf`. Redirection keeps shell syntax in the file from being evaluated.
+
+If a launched submission fails or lacks acknowledgement, its write outcome may be unknown. Read the ticket before resubmitting; do not retry or switch methods automatically.
+
+Notes trim surrounding whitespace and reject empty text. Summaries preserve spaces and internal newlines; the command does not force them onto one line or truncate them. At stage completion, the daemon captures the summary on the ticket and its `history` entry. Stage capture cuts text above 4,000 bytes at a UTF-8 boundary and appends `\n[truncated]`. A new stage clears the ticket's summary.
 
 | Flag | Description |
 |------|-------------|
 | `--author NAME` | Who the note is from. Defaults to `$KONTORA_AGENT`, which the daemon exports to every agent it spawns, and then to the config's [`author`](configuration.md#author). |
 | `--reply-to NOTE_ID` | The 4-character id of the note this replies to. One level only: replying to a reply is refused. |
 
-Both are flags, so they go before the free-form text, as the caveat under the global flags above describes.
+These note flags must precede the ticket ID:
+
+```sh
+kontora note --reply-to NOTE_ID TICKET_ID < /absolute/path/note.md
+```
 
 ### `kontora phase-complete TICKET_ID --completed TEXT --next TEXT`
 

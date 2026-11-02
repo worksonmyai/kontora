@@ -331,7 +331,23 @@ the row is read.
 
 ## Notes
 
-Use `kontora note <ticket-id> "message"` to append a note under a `## Notes` section in the body. This is how you communicate with the agent between stages — the next stage's prompt can include `{{ .Ticket.Description }}` to read the full body including notes. The web UI has a `notes` tab on the ticket page for the same thing.
+Use `kontora note` to append a note under a `## Notes` section in the body. The next stage can read the note through `{{ .Ticket.Description }}`. The web UI also has a `notes` tab on the ticket page.
+
+Prefer Pi's `kontora_note({text: string})` tool when available; it targets the current ticket. Otherwise, use a file-writing tool to create a unique scratch file outside the repository. Submit the file through stdin:
+
+```sh
+kontora note TICKET_ID < /absolute/path/note.md
+```
+
+Replace `TICKET_ID` and the example path with the actual ticket ID and scratch path. Do not put generated text in shell arguments or payload-bearing shell commands. Do not create the file with `echo` or `printf`. Put flags such as `--author` and `--reply-to` before the ticket ID.
+
+Positional text remains supported. Stdin removes trailing LF characters, and notes trim surrounding whitespace. For summaries, prefer `kontora_summary({text: string})` when available, or submit a scratch file through stdin:
+
+```sh
+kontora summary TICKET_ID < /absolute/path/summary.txt
+```
+
+Summaries preserve spaces and internal newlines after stdin removes trailing LF characters. The CLI does not truncate summaries; later stage capture cuts text above 4,000 bytes and appends `\n[truncated]`. See the [CLI reference](cli.md#kontora-note-ticket_id-text--kontora-summary-ticket_id-text) for native input limits and process-list visibility.
 
 A note is a bold byline followed by its text. The byline is a `·`-separated field list: timestamp, author, note id, then optional flags.
 

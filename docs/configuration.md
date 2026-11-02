@@ -429,15 +429,36 @@ Prompts are Go [text/template](https://pkg.go.dev/text/template) strings with th
 
 The `file` function is how stages communicate — an earlier stage writes a file (e.g., `PLAN.md`) and a later stage reads it via the template.
 
+### Stage handoffs
+
+Kontora appends handoff instructions to stage, standalone, resumed, annotation, and rework prompts. These instructions require a results note. In a pipeline, the next stage reads the note.
+
+Prefer Pi's `kontora_note({text: string})` and `kontora_summary({text: string})` tools when available. The injected extension binds both tools to `KONTORA_TICKET_ID`, independently of checkpoint settings. Tool restrictions still apply. Other agents and the dashboard assistant use stdin.
+
+Native tools reject blank text, embedded NUL, and text above 32,768 UTF-8 bytes. They pass text literally without shell evaluation, but the payload appears in process arguments. Use stdin for large or process-list-sensitive text.
+
+For stdin submission, use a file-writing tool to create unique scratch files outside the repository. Submit the files with redirection:
+
+```sh
+kontora note TICKET_ID < /absolute/path/note.md
+kontora summary TICKET_ID < /absolute/path/summary.txt
+```
+
+Replace `TICKET_ID` and each example path with the actual ticket ID and scratch path. Do not embed generated text in shell arguments or payload-bearing shell commands. Do not create the files with `echo` or `printf`. Put all CLI flags before the ticket ID.
+
+If a launched submission fails or lacks acknowledgement, read the ticket before resubmitting. The write outcome may be unknown; do not retry or switch methods automatically. Checkpoint runs require the durable phase note before the phase-completion signal, using the same submission method.
+
 ### The stage brief
 
 Every stage agent is also given a short brief, appended to its own system prompt with `--append-system-prompt`. The stage prompt says what to do; the brief says who is in charge of the ticket.
 
-Kontora decides the ticket's next status from the stage's exit code. An agent that sets the status itself is not signalling an outcome, it is overriding one: the daemon reads any such write as a human's, kills the run and discards the exit, so the step's `on_success` never applies, no history entry is recorded and no final summary is written. The built-in brief states that, points the agent at `kontora note` and `kontora summary` for recording its work, and names the verbs the CLI refuses.
+Kontora decides the ticket's next status from the stage's exit code. An agent that sets the status itself is not signalling an outcome, it is overriding one: the daemon reads any such write as a human's, kills the run and discards the exit, so the step's `on_success` never applies, no history entry is recorded and no final summary is written. The built-in brief states that, points the agent at the shared [handoff instructions](#stage-handoffs), and names the verbs the CLI refuses.
 
 Those refusals are real, not advice. The daemon exports `KONTORA_TICKET_ID` to the agent, and `done`, `cancel`, `move`, `pause`, `retry`, `skip`, `set-stage` and `schedule` aimed at that ticket are rejected before anything is written, as is `archive`, which sweeps the whole store. A prefix counts: `kontora done kon-q` is refused while `kon-q88f` is running. Everything else, `note` and `summary` included, is untouched, and the same commands work normally against any other ticket and from any shell outside a run.
 
-Set `system_prompt:` to replace the built-in brief. It is used verbatim rather than as a template, so a replacement that wants the ticket ID has to state the rule without naming it. Only `claude` and `pi` agents take the flag; every other agent is given no brief either way.
+Set `system_prompt:` to replace the whole built-in brief. Kontora uses the replacement as literal text, not a template. A replacement that needs the ticket ID must state the rule without naming it. Only `claude` and `pi` agents take the flag; every other agent receives no brief either way. An empty or whitespace-only value keeps the built-in brief.
+
+Custom prompts remain user-owned. Kontora does not rewrite unsafe examples in `system_prompt`, `annotation_prompt`, or `assistant.prompt`. Each replacement must include the guidance it needs from the default prompt. The operational handoff instructions remain appended to run prompts; they do not change custom prompt text.
 
 ## pipelines
 
@@ -755,9 +776,13 @@ another status (`kontora pause <id>`, the board menu, or any other status move):
 that clears `annotation_return_status`, and the status you chose is where the
 ticket stays.
 
-The restriction to the ticket file is stated in the prompt and only there. A
-stage carries no tool policy, so an agent that ignores the instruction is not
-stopped by anything. Set the ticket's `agent` to a profile with narrower
+The default annotation prompt permits changes only to the ticket's Markdown
+body. It also permits scratch files outside the repository solely for note and
+summary submission. It forbids changes to other project files, implementation,
+tests, commits, and pushes. A custom `annotation_prompt` replaces these defaults.
+
+These restrictions are prompt instructions, not a tool policy. An agent that
+ignores them is not stopped. Set the ticket's `agent` to a profile with narrower
 permissions if that matters to you.
 
 The run works in the ticket's existing worktree when a previous run created one,
@@ -820,6 +845,13 @@ assistant:
 | `autonomy` | no | `ask` | The mode a new chat starts in. |
 | `prompt` | no | built-in | Replaces the whole system brief, mode paragraph included. |
 | `stream` | no | `true` | Whether a turn asks for the message as it is written, so the pane renders prose before the message completes. |
+
+The built-in assistant prompt uses file-to-stdin submission for notes and
+summaries, as described under [stage handoffs](#stage-handoffs). The dashboard
+assistant does not receive the native handoff tools, even when its agent is Pi.
+The submission method does not change the assistant's approval rules.
+A custom `assistant.prompt` replaces the whole default, including its mode
+paragraph and safe submission guidance; Kontora does not update custom text.
 
 ### Replies as they are written
 

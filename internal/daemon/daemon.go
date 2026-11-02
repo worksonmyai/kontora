@@ -58,7 +58,8 @@ Change the ticket at {{ .Ticket.FilePath }} so that it satisfies every note. Do 
 
 Rules for this run:
 
-- Edit only {{ .Ticket.FilePath }}.
+- Edit only {{ .Ticket.FilePath }}. You may create temporary files outside the repository solely for note and summary submission.
+- Do not modify other project files.
 - Change the markdown body only. Leave the YAML frontmatter between the --- lines exactly as it is; the daemon owns those fields.
 - Do not write code, do not run tests, and do not commit or push anything.
 - Do not do the work the ticket describes. This run changes what the ticket asks for, nothing else.`
@@ -90,9 +91,9 @@ Do not set the status yourself. The kontora verbs done, cancel, move, pause,
 retry, skip, set-stage and schedule are refused on {{ .Ticket }} while you are
 its stage, and editing the ticket file by hand races the daemon, which owns it.
 
-Record what you did with "kontora note {{ .Ticket }}" and
-"kontora summary {{ .Ticket }}". Run "kontora skills list" for the reference
-topics and "kontora skills show <topic>" for one.`))
+Record what you did using the shared handoff instructions in the run prompt.
+Run "kontora skills list" for the reference topics and
+"kontora skills show <topic>" for one.`))
 
 // stageBrief renders the brief one run is given. An override replaces it whole
 // and is used verbatim: a user who writes their own brief has said what they
@@ -131,8 +132,6 @@ func (d *Daemon) renderTicketPrompt(cfg *config.Config, tmpl string, t *ticket.T
 	rendered += fmt.Sprintf("\nTicket: %s", filePath)
 	rendered += fmt.Sprintf("\nWorkspace: %s", wtPath)
 	rendered += d.epicPromptContext(t.Parent)
-
-	rendered += fmt.Sprintf("\n\nIMPORTANT: When you finish your work, write your results as a note on the ticket. Include all relevant details so they are preserved. Use:\n  kontora note %s \"your results here\"", t.ID)
 
 	return rendered, nil
 }
@@ -2765,24 +2764,33 @@ func buildOperationalAppendix(taskID, filePath, wtPath string, isPipeline bool, 
 	fmt.Fprintf(&b, "- Ticket ID: %s\n", taskID)
 	fmt.Fprintf(&b, "- Ticket file: %s\n", filePath)
 	fmt.Fprintf(&b, "- Worktree: %s\n", wtPath)
-	fmt.Fprintf(&b, "- `kontora note %s \"...\"` — appends a timestamped note\n", taskID)
 	fmt.Fprintf(&b, "- `kontora view %s` — prints ticket contents to stdout\n", taskID)
 	b.WriteString("- Do not search $HOME for tickets or config; use the paths above.\n")
-	fmt.Fprintf(&b, "\nWhen you finish, record a few-line summary of what this run did with:\n  kontora summary %s \"...\"\n", taskID)
+	b.WriteString("\n## Handoff instructions\n")
+	b.WriteString("Prefer `kontora_note` and `kontora_summary` when available. These tools are bound to the current ticket; pass the text in their `text` field.\n")
+	b.WriteString("If native tools are unavailable, write the note and summary with your file-writing tool.\n")
+	b.WriteString("Use unique scratch paths outside the repository.\n")
+	b.WriteString("Replace the example paths below with those absolute paths, then submit each file through stdin:\n")
+	fmt.Fprintf(&b, "  kontora note %s < /absolute/path/note.md\n", taskID)
+	fmt.Fprintf(&b, "  kontora summary %s < /absolute/path/summary.txt\n", taskID)
+	b.WriteString("Do not put payload text in shell arguments. Do not create these files with `echo`, `printf`, or other payload-bearing shell commands.\n")
+	b.WriteString("\nIMPORTANT: When you finish your work, write your results as a note on the ticket.\n")
+	b.WriteString("Use the method above. Include all relevant details so they are preserved.")
 	if isPipeline {
-		fmt.Fprintf(&b, "\nIMPORTANT: When you finish your work, write your results as a note on the ticket. Include all relevant details — the next stage of the pipeline will read this note to continue the work. Use:\n  kontora note %s \"your results here\"", taskID)
+		b.WriteString(" The next stage of the pipeline will read this note to continue the work.")
 	}
+	b.WriteString("\nAlso record a few-line summary of what this run did using the same method.\n")
 	if checkpointKind != "" {
 		b.WriteString("\n\n## Phase checkpoints\n")
 		b.WriteString("At each boundary between top-level ticket phases:\n")
 		b.WriteString("1. Run the tests for the completed phase.\n")
-		fmt.Fprintf(&b, "2. Write a `phase-N:` note with `kontora note %s \"...\"`.\n", taskID)
-		b.WriteString("3. In the note, list changed files, decisions, test results, unresolved issues, and the next phase.\n")
+		b.WriteString("2. Prepare a note listing changed files, decisions, test results, unresolved issues, and the next phase.\n")
+		b.WriteString("3. Submit a durable `phase-N:` note using the shared handoff instructions above.\n")
 		if checkpointKind == config.AgentKindClaude {
-			fmt.Fprintf(&b, "4. Run `kontora phase-complete %s --completed \"<the phase that just finished>\" --next \"<the phase to begin next>\"`, then end your turn. Do not start the next phase yourself: kontora compacts the context if it needs to and then prompts you to continue.\n", taskID)
+			fmt.Fprintf(&b, "4. Only after the note succeeds, run `kontora phase-complete %s --completed \"<the phase that just finished>\" --next \"<the phase to begin next>\"`, then end your turn. Do not start the next phase yourself: kontora compacts the context if it needs to and then prompts you to continue.\n", taskID)
 			b.WriteString("Do not run the command after the final phase.\n")
 		} else {
-			b.WriteString("4. Call `kontora_phase_complete` with `completed_phase` and `next_phase`.\n")
+			b.WriteString("4. Only after the note succeeds, call `kontora_phase_complete` with `completed_phase` and `next_phase`.\n")
 			b.WriteString("Do not call the tool after the final phase.\n")
 		}
 	}

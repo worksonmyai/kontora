@@ -806,7 +806,7 @@ func cmdNote() {
 			log.Fatalf("stat stdin: %v", err)
 		}
 		if fi.Mode()&os.ModeCharDevice != 0 {
-			log.Fatal("note text is required: kontora note TICKET_ID TEXT or echo TEXT | kontora note TICKET_ID")
+			log.Fatal("note text is required: kontora note TICKET_ID TEXT or kontora note TICKET_ID < /absolute/path/note.md")
 		}
 		data, err := io.ReadAll(os.Stdin)
 		if err != nil {
@@ -866,7 +866,7 @@ func cmdSummary() {
 			log.Fatalf("stat stdin: %v", err)
 		}
 		if fi.Mode()&os.ModeCharDevice != 0 {
-			log.Fatal("summary text is required: kontora summary TICKET_ID TEXT or echo TEXT | kontora summary TICKET_ID")
+			log.Fatal("summary text is required: kontora summary TICKET_ID TEXT or kontora summary TICKET_ID < /absolute/path/summary.txt")
 		}
 		data, err := io.ReadAll(os.Stdin)
 		if err != nil {

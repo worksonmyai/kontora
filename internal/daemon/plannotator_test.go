@@ -579,6 +579,7 @@ func TestPlannotatorReworkDisablesCheckpointCompaction(t *testing.T) {
 	assert.Contains(t, extensionContent, "const ENABLED = false;")
 	assert.Contains(t, extensionContent, "agent_settled")
 	assert.NotContains(t, renderedPrompt(runs.all()[0]), "## Phase checkpoints")
+	assertSafeHandoff(t, renderedPrompt(runs.all()[0]), id, true)
 
 	cancel()
 	require.NoError(t, <-errCh)

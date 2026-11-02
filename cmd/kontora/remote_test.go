@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -21,6 +22,7 @@ import (
 	"github.com/worksonmyai/kontora/internal/cli"
 	"github.com/worksonmyai/kontora/internal/config"
 	"github.com/worksonmyai/kontora/internal/testutil"
+	"github.com/worksonmyai/kontora/internal/ticket"
 	"github.com/worksonmyai/kontora/internal/web"
 )
 
@@ -53,19 +55,304 @@ func buildKontora(t *testing.T) string {
 // runCLI runs the built binary with the given args and environment.
 func runCLI(t *testing.T, env []string, args ...string) (string, error) {
 	t.Helper()
-	bin := buildKontora(t)
-	cmd := exec.Command(bin, args...)
-	// A fresh HOME guarantees there is no local config file to fall back on, and
-	// blanking the tickets-dir vars keeps a developer's own exports out of the
-	// child. They come first so a caller's env still wins.
-	base := []string{
-		"HOME=" + t.TempDir(),
-		config.TicketsDirEnvVar + "=",
-		config.LegacyTicketsDirEnvVar + "=",
-	}
-	cmd.Env = append(os.Environ(), append(base, env...)...)
+	return runCLIWithStdin(t, env, nil, args...)
+}
+
+func runCLIWithStdin(t *testing.T, env []string, stdin io.Reader, args ...string) (string, error) {
+	t.Helper()
+	cmd := exec.Command(buildKontora(t), args...)
+	cmd.Env = cliTestEnv(t, env)
+	cmd.Stdin = stdin
 	out, err := cmd.CombinedOutput()
 	return string(out), err
+}
+
+// Subprocesses must not reach a developer's store or daemon through inherited config.
+func cliTestEnv(t *testing.T, env []string) []string {
+	t.Helper()
+	isolated := []string{
+		"HOME", "XDG_CONFIG_HOME", "KONTORA_URL", "KONTORA_TOKEN",
+		config.PathEnvVar, config.TicketsDirEnvVar, config.LegacyTicketsDirEnvVar,
+		config.AgentEnvVar, config.TicketEnvVar, config.StageEnvVar,
+	}
+	base := slices.DeleteFunc(os.Environ(), func(entry string) bool {
+		key, _, _ := strings.Cut(entry, "=")
+		return slices.Contains(isolated, key)
+	})
+	home := t.TempDir()
+	base = append(base, "HOME="+home, "XDG_CONFIG_HOME="+filepath.Join(home, ".config"))
+	for _, key := range isolated[2:] {
+		base = append(base, key+"=")
+	}
+	return append(base, env...)
+}
+
+// Keep the payload within the existing note grammar: shell safety does not
+// change how Markdown headings or note bylines are parsed.
+const handoffLiteralText = " \tLiteral `printf backticks` and $(printf substitution), ${HOME}\n" +
+	"mixed 'single' and \"double\" quotes, C:\\scratch\\file, Unicode 日本語 🚀\n\nlast line \t\r\n\n"
+
+type handoffInputCase struct {
+	name   string
+	verb   string
+	agent  string
+	author string
+	reply  bool
+}
+
+func handoffInputCases() []handoffInputCase {
+	return []handoffInputCase{
+		{name: "note default author", verb: "note"},
+		{name: "note agent author", verb: "note", agent: "agent-user"},
+		{name: "note explicit author and reply", verb: "note", agent: "agent-user", author: "flag-user", reply: true},
+		{name: "summary", verb: "summary"},
+	}
+}
+
+type handoffFixture struct {
+	env        []string
+	ticketPath string
+	parentID   string
+}
+
+func newHandoffFixture(t *testing.T) handoffFixture {
+	t.Helper()
+	scratch := t.TempDir()
+	store := filepath.Join(scratch, "tickets")
+	require.NoError(t, os.MkdirAll(store, 0o755))
+	configPath := filepath.Join(scratch, "config.yaml")
+	require.NoError(t, os.WriteFile(configPath, fmt.Appendf(nil, `tickets_dir: %q
+worktrees_dir: %q
+logs_dir: %q
+author: configured-user
+agents:
+  claude:
+    binary: true
+`, store, filepath.Join(scratch, "worktrees"), filepath.Join(scratch, "logs")), 0o600))
+
+	tkt, err := ticket.ParseBytes([]byte("---\nid: kon-safe\nstatus: open\nsummary: old summary\n---\n# Scratch handoff\n"))
+	require.NoError(t, err)
+	parent, err := tkt.AddNote(ticket.AddNoteOptions{Text: "Existing parent", Author: "parent-user"})
+	require.NoError(t, err)
+	data, err := tkt.Marshal()
+	require.NoError(t, err)
+	path := filepath.Join(store, "kon-safe.md")
+	require.NoError(t, os.WriteFile(path, data, 0o600))
+	return handoffFixture{
+		env: []string{
+			"KONTORA_URL=",
+			config.PathEnvVar + "=" + configPath,
+			config.TicketsDirEnvVar + "=" + store,
+			config.LegacyTicketsDirEnvVar + "=",
+		},
+		ticketPath: path,
+		parentID:   parent.ID,
+	}
+}
+
+func assertHandoffStored(t *testing.T, fixture handoffFixture, verb, text, author, parent string) {
+	t.Helper()
+	tkt, err := ticket.ParseFile(fixture.ticketPath)
+	require.NoError(t, err)
+	notes := ticket.ParseNotes(tkt.Body)
+	require.NotEmpty(t, notes)
+	assert.Equal(t, "Existing parent", notes[0].Text)
+	assert.Equal(t, fixture.parentID, notes[0].ID)
+	assert.Equal(t, "parent-user", notes[0].Author)
+	if verb == "summary" {
+		// Summary's frontmatter retains whitespace; only stdin strips final LFs.
+		assert.Equal(t, text, tkt.Summary)
+		require.Len(t, notes, 1)
+		return
+	}
+	assert.Equal(t, "old summary", tkt.Summary)
+	require.Len(t, notes, 2)
+	// Reading ticket Markdown normalizes CRLF before parsing note text.
+	assert.Equal(t, strings.TrimSpace(strings.ReplaceAll(text, "\r\n", "\n")), notes[1].Text)
+	assert.Equal(t, author, notes[1].Author)
+	assert.Equal(t, parent, notes[1].ParentID)
+	assert.NotEmpty(t, notes[1].ID)
+}
+
+func TestHandoffInput_LocalPersistence(t *testing.T) {
+	for _, tc := range handoffInputCases() {
+		for _, mode := range []string{"stdin", "positional"} {
+			t.Run(tc.name+"/"+mode, func(t *testing.T) {
+				fixture := newHandoffFixture(t)
+				env := append(slices.Clone(fixture.env), config.AgentEnvVar+"="+tc.agent)
+				args := []string{tc.verb}
+				author := "configured-user"
+				if tc.agent != "" {
+					author = tc.agent
+				}
+				if tc.author != "" {
+					args = append(args, "--author", tc.author)
+					author = tc.author
+				}
+				parent := ""
+				if tc.reply {
+					parent = fixture.parentID
+					args = append(args, "--reply-to", parent)
+				}
+				args = append(args, "kon-safe")
+				var stdin io.Reader
+				want := handoffLiteralText
+				if mode == "stdin" {
+					stdin = strings.NewReader(handoffLiteralText)
+					want = strings.TrimRight(want, "\n")
+				} else {
+					args = append(args, handoffLiteralText)
+				}
+				out, err := runCLIWithStdin(t, env, stdin, args...)
+				require.NoError(t, err, out)
+				ack := "note added"
+				if tc.verb == "summary" {
+					ack = "summary set"
+				}
+				assert.Contains(t, out, "kon-safe "+ack)
+				assertHandoffStored(t, fixture, tc.verb, want, author, parent)
+			})
+		}
+	}
+}
+
+func TestHandoffInput_RemoteRequests(t *testing.T) {
+	for _, tc := range handoffInputCases() {
+		for _, mode := range []string{"stdin", "positional"} {
+			t.Run(tc.name+"/"+mode, func(t *testing.T) {
+				type request struct {
+					method, path, contentType, auth string
+					body                            map[string]string
+					err                             error
+				}
+				requests := make(chan request, 4)
+				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if r.Method == http.MethodGet && r.URL.Path == "/api/tickets" {
+						_ = json.NewEncoder(w).Encode(map[string]any{"tickets": []map[string]string{{"id": "abc123"}}})
+						return
+					}
+					var body map[string]string
+					err := json.NewDecoder(r.Body).Decode(&body)
+					requests <- request{r.Method, r.URL.Path, r.Header.Get("Content-Type"), r.Header.Get("Authorization"), body, err}
+					_ = json.NewEncoder(w).Encode(map[string]string{"id": "abc123"})
+				}))
+				defer srv.Close()
+
+				env := []string{"KONTORA_URL=" + srv.URL, "KONTORA_TOKEN=handoff-token", config.AgentEnvVar + "=" + tc.agent}
+				args := []string{tc.verb}
+				want := map[string]string{"text": handoffLiteralText}
+				if tc.agent != "" {
+					want["author"] = tc.agent
+				}
+				if tc.author != "" {
+					args = append(args, "--author", tc.author)
+					want["author"] = tc.author
+				}
+				if tc.reply {
+					args = append(args, "--reply-to", "p123")
+					want["parent"] = "p123"
+				}
+				args = append(args, "abc123")
+				var stdin io.Reader
+				if mode == "stdin" {
+					stdin = strings.NewReader(handoffLiteralText)
+					want["text"] = strings.TrimRight(handoffLiteralText, "\n")
+				} else {
+					args = append(args, handoffLiteralText)
+				}
+				out, err := runCLIWithStdin(t, env, stdin, args...)
+				require.NoError(t, err, out)
+				ack := "note added"
+				if tc.verb == "summary" {
+					ack = "summary set"
+				}
+				assert.Contains(t, out, "abc123 "+ack)
+				require.Len(t, requests, 1, "exactly one mutation request")
+				got := <-requests
+				require.NoError(t, got.err)
+				assert.Equal(t, http.MethodPost, got.method)
+				assert.Equal(t, "/api/tickets/abc123/"+tc.verb, got.path)
+				assert.Equal(t, "application/json", got.contentType)
+				assert.Equal(t, "Bearer handoff-token", got.auth)
+				// The remote CLI does not trim note whitespace or fill in the
+				// config author: those are the receiving daemon's responsibility.
+				assert.Equal(t, want, got.body)
+			})
+		}
+	}
+}
+
+func TestHandoffInput_FileRedirection(t *testing.T) {
+	for _, verb := range []string{"note", "summary"} {
+		t.Run(verb, func(t *testing.T) {
+			fixture := newHandoffFixture(t)
+			scratch := t.TempDir()
+			sentinel := filepath.Join(scratch, "must-not-exist")
+			text := handoffLiteralText + "$(touch \"" + sentinel + "\") and `touch \"" + sentinel + "\"`\n\n"
+			input := filepath.Join(scratch, "handoff input.txt")
+			require.NoError(t, os.WriteFile(input, []byte(text), 0o600))
+			cmd := exec.Command("sh", "-c", `exec "$1" "$2" "$3" < "$4"`,
+				"handoff-redirection", buildKontora(t), verb, "kon-safe", input)
+			cmd.Env = cliTestEnv(t, fixture.env)
+			out, err := cmd.CombinedOutput()
+			require.NoError(t, err, string(out))
+			assert.NoFileExists(t, sentinel, "neither substitution may execute")
+			assertHandoffStored(t, fixture, verb, strings.TrimRight(text, "\n"), "configured-user", "")
+		})
+	}
+}
+
+func TestHandoffInput_InheritedRemoteSettings(t *testing.T) {
+	var mu sync.Mutex
+	var hits int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		mu.Lock()
+		hits++
+		mu.Unlock()
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	// Every inherited destination is scratch space or a test server. Even a
+	// broken isolation helper must not send a request to a live daemon/store.
+	inherited := t.TempDir()
+	configPath := filepath.Join(inherited, "config.yaml")
+	require.NoError(t, os.WriteFile(configPath, []byte("invalid inherited config: [\n"), 0o600))
+	for key, value := range map[string]string{
+		"KONTORA_URL": srv.URL, "KONTORA_TOKEN": "inherited-secret",
+		config.PathEnvVar:             configPath,
+		config.TicketsDirEnvVar:       filepath.Join(inherited, "tickets"),
+		config.LegacyTicketsDirEnvVar: filepath.Join(inherited, "legacy-tickets"),
+		config.AgentEnvVar:            "inherited-agent", config.TicketEnvVar: "kon-safe", config.StageEnvVar: "inherited-stage",
+		"XDG_CONFIG_HOME": inherited,
+	} {
+		t.Setenv(key, value)
+	}
+	for _, entry := range cliTestEnv(t, nil) {
+		key, value, _ := strings.Cut(entry, "=")
+		switch key {
+		case "KONTORA_URL", "KONTORA_TOKEN", config.PathEnvVar,
+			config.TicketsDirEnvVar, config.LegacyTicketsDirEnvVar,
+			config.AgentEnvVar, config.TicketEnvVar, config.StageEnvVar:
+			assert.Empty(t, value, key)
+		case "XDG_CONFIG_HOME":
+			assert.NotEqual(t, inherited, value)
+		}
+	}
+	for _, verb := range []string{"note", "summary"} {
+		t.Run(verb, func(t *testing.T) {
+			fixture := newHandoffFixture(t)
+			out, err := runCLIWithStdin(t, fixture.env, strings.NewReader(handoffLiteralText), verb, "kon-safe")
+			require.NoError(t, err, out)
+			assertHandoffStored(t, fixture, verb, strings.TrimRight(handoffLiteralText, "\n"), "configured-user", "")
+		})
+	}
+	mu.Lock()
+	assert.Zero(t, hits, "local fixtures must not use the inherited remote route")
+	mu.Unlock()
+	for _, dir := range []string{"tickets", "legacy-tickets"} {
+		assert.NoDirExists(t, filepath.Join(inherited, dir), "inherited store must remain untouched")
+	}
 }
 
 func TestRemoteDispatch_RunWithoutLocalConfig(t *testing.T) {

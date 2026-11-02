@@ -843,7 +843,7 @@ func TestNoteInstructionAppended(t *testing.T) {
 	// The last arg is the rendered prompt with note instruction and context block.
 	require.NotEmpty(t, captured, "expected at least one arg from agent runner")
 	prompt := captured[len(captured)-1]
-	assert.Contains(t, prompt, "kontora note tst-note", "note instruction not found in pipeline prompt")
+	assertSafeHandoff(t, prompt, "tst-note", true)
 	assert.Contains(t, prompt, "Task ID: tst-note", "task ID context not found in pipeline prompt")
 	assert.Contains(t, prompt, "Ticket:", "ticket context not found in pipeline prompt")
 	assert.Contains(t, prompt, "Workspace:", "workspace context not found in pipeline prompt")
@@ -864,7 +864,7 @@ func TestBuildOperationalAppendix(t *testing.T) {
 		wantNone       []string
 	}{
 		{
-			name:       "simple task includes context but not pipeline instruction",
+			name:       "standalone task includes a results note without pipeline wording",
 			taskID:     "tst-1234",
 			filePath:   "/home/user/.kontora/tasks/tst-1234.md",
 			wtPath:     "/home/user/.kontora/worktrees/tst-1234",
@@ -879,7 +879,7 @@ func TestBuildOperationalAppendix(t *testing.T) {
 				"Do not search $HOME",
 			},
 			wantNone: []string{
-				"IMPORTANT: When you finish your work",
+				"next stage of the pipeline",
 				"## Phase checkpoints",
 			},
 		},
@@ -898,7 +898,7 @@ func TestBuildOperationalAppendix(t *testing.T) {
 				"kontora view pip-abcd",
 				"Do not search $HOME",
 				"IMPORTANT: When you finish your work",
-				"kontora note pip-abcd \"your results here\"",
+				"next stage of the pipeline",
 			},
 			wantNone: []string{
 				"## Phase checkpoints",
@@ -956,7 +956,7 @@ func TestBuildOperationalAppendix(t *testing.T) {
 				"`kontora_phase_complete`",
 			},
 			wantNone: []string{
-				"IMPORTANT: When you finish your work",
+				"next stage of the pipeline",
 			},
 		},
 	}
@@ -964,6 +964,12 @@ func TestBuildOperationalAppendix(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			got := buildOperationalAppendix(tc.taskID, tc.filePath, tc.wtPath, tc.isPipeline, tc.checkpointKind)
+			assertSafeHandoff(t, got, tc.taskID, tc.isPipeline)
+			if tc.checkpointKind != "" {
+				assert.Contains(t, got, "Submit a durable `phase-N:` note using the shared handoff instructions above")
+				assert.Contains(t, got, "Only after the note succeeds")
+				assert.Less(t, strings.Index(got, "Submit a durable `phase-N:` note"), strings.Index(got, "4. "))
+			}
 			for _, want := range tc.wantAll {
 				assert.Contains(t, got, want)
 			}
@@ -971,6 +977,37 @@ func TestBuildOperationalAppendix(t *testing.T) {
 				assert.NotContains(t, got, absent)
 			}
 		})
+	}
+}
+
+func assertSafeHandoff(t *testing.T, got, taskID string, isPipeline bool) {
+	t.Helper()
+	for _, want := range []string{
+		"## Handoff instructions",
+		"Prefer `kontora_note` and `kontora_summary` when available",
+		"bound to the current ticket",
+		"file-writing tool",
+		"unique scratch paths outside the repository",
+		"kontora note " + taskID + " < /absolute/path/note.md",
+		"kontora summary " + taskID + " < /absolute/path/summary.txt",
+		"Do not put payload text in shell arguments",
+		"Do not create these files with `echo`, `printf`, or other payload-bearing shell commands",
+		"a few-line summary",
+	} {
+		assert.Contains(t, got, want)
+	}
+	assert.Equal(t, 1, strings.Count(got, "IMPORTANT: When you finish your work"), "require one results note instruction")
+	if isPipeline {
+		assert.Contains(t, got, "next stage of the pipeline")
+	} else {
+		assert.NotContains(t, got, "next stage of the pipeline")
+	}
+	for _, absent := range []string{
+		"kontora note " + taskID + " \"",
+		"kontora summary " + taskID + " \"",
+		"your results here",
+	} {
+		assert.NotContains(t, got, absent)
 	}
 }
 
@@ -1006,7 +1043,7 @@ func TestSimpleTaskNoteInstructionAndContext(t *testing.T) {
 	require.NotEmpty(t, captured, "expected at least one arg from agent runner")
 	prompt := captured[len(captured)-1]
 	assert.Contains(t, prompt, "Test ticket tst-snote", "ticket title not found in simple task prompt")
-	assert.Contains(t, prompt, "kontora note tst-snote", "note instruction not found in simple task prompt")
+	assertSafeHandoff(t, prompt, "tst-snote", false)
 	assert.Contains(t, prompt, "Ticket ID: tst-snote", "ticket ID context not found in simple task prompt")
 	assert.Contains(t, prompt, "Ticket file:", "ticket file context not found in simple task prompt")
 	assert.Contains(t, prompt, "Worktree:", "worktree context not found in simple task prompt")

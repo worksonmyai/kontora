@@ -21,12 +21,21 @@ function createFakeAPI() {
   const tools = {};
   const entries = [];
   const messages = [];
+  const execCalls = [];
 
   const api = {
     handlers,
     tools,
     entries,
     messages,
+    execCalls,
+    execResult: { code: 0, killed: false, stdout: "", stderr: "" },
+
+    async exec(command, args, options) {
+      execCalls.push({ command, args, options });
+      if (api.execHandler) return api.execHandler(command, args, options);
+      return api.execResult;
+    },
 
     on(event, handler) {
       if (!handlers[event]) handlers[event] = [];
@@ -62,6 +71,7 @@ function createFakeContext(overrides) {
   let compactCalls = [];
 
   const ctx = {
+    cwd: "/scratch/worktree",
     shutdownCalled: () => shutdownCalled,
     compactCalls: () => compactCalls,
 
@@ -96,7 +106,7 @@ function createFakeContext(overrides) {
 }
 
 // Load the rendered extension source from the Go test wrapper.
-function loadExtension(source) {
+function loadExtension(source, ticketID) {
   const api = createFakeAPI();
 
   // The extension uses `export default function (pi) { ... }`.
@@ -112,7 +122,15 @@ function loadExtension(source) {
 
   // Use Function constructor to avoid strict-mode issues with eval.
   const factory = new Function(fullSource + "\nreturn __factory;")();
-  factory(api);
+  const previousTicket = process.env.KONTORA_TICKET_ID;
+  try {
+    if (ticketID === undefined) delete process.env.KONTORA_TICKET_ID;
+    else process.env.KONTORA_TICKET_ID = ticketID;
+    factory(api);
+  } finally {
+    if (previousTicket === undefined) delete process.env.KONTORA_TICKET_ID;
+    else process.env.KONTORA_TICKET_ID = previousTicket;
+  }
   return api;
 }
 
@@ -170,6 +188,126 @@ const { enabled: ENABLED_SOURCE, disabled: DISABLED_SOURCE } = loadSources();
 if (!process.env.KONTORA_PI_EXT_ENABLED) {
   process.env.KONTORA_PI_EXT_ENABLED = ENABLED_SOURCE;
   process.env.KONTORA_PI_EXT_DISABLED = DISABLED_SOURCE;
+}
+
+const HANDOFF_TICKET = "test-abcd";
+const HANDOFFS = [
+  { verb: "note", acknowledgement: "note added" },
+  { verb: "summary", acknowledgement: "summary set" },
+];
+
+for (const [checkpoint, source] of [["enabled", ENABLED_SOURCE], ["disabled", DISABLED_SOURCE]]) {
+  for (const ticketID of [undefined, "", HANDOFF_TICKET]) {
+    test(`handoff registration: checkpoint ${checkpoint}, ticket ${ticketID || "absent"}`, () => {
+      const api = loadExtension(source, ticketID);
+      for (const { verb } of HANDOFFS) {
+        const tool = api.tools[`kontora_${verb}`];
+        assert.equal(Boolean(tool), Boolean(ticketID));
+        if (tool) {
+          assert.equal(tool.executionMode, "sequential");
+          assert.deepEqual(Object.keys(tool.parameters.properties), ["text"]);
+          assert.deepEqual(tool.parameters.required, ["text"]);
+          assert.equal(tool.parameters.properties.text.type, "string");
+        }
+      }
+    });
+  }
+}
+
+for (const { verb, acknowledgement } of HANDOFFS) {
+  test(`${verb} sends literal text to the captured ticket`, async () => {
+    const api = loadExtension(DISABLED_SOURCE, HANDOFF_TICKET);
+    api.execResult.stdout = `${HANDOFF_TICKET} ${acknowledgement}\n`;
+    const ctx = createFakeContext();
+    const signal = new AbortController().signal;
+    const text = "  `touch sentinel` $(touch sentinel) 'single' \"double\" \\ $HOME\nUnicode: 雪😀\n";
+    const result = await api.tools[`kontora_${verb}`].execute(
+      "call", { text, ticketID: "wrong-ticket" }, signal, undefined, ctx
+    );
+    assert.deepEqual(api.execCalls, [{
+      command: "kontora",
+      args: [verb, "--", HANDOFF_TICKET, text],
+      options: { cwd: ctx.cwd, signal, timeout: 30_000 },
+    }]);
+    assert.equal(result.details, undefined);
+    assert.equal(result.content[0].text, `${HANDOFF_TICKET} ${acknowledgement}.`);
+  });
+
+  for (const [name, text, valid] of [
+    ["empty", "", false],
+    ["whitespace", " \n\t\u2003", false],
+    ["NUL", "text\0tail", false],
+    ["non-string", 12, false],
+    ["byte limit", "😀".repeat(8192), true],
+    ["over byte limit", "😀".repeat(8192) + "a", false],
+  ]) {
+    test(`${verb} input: ${name}`, async () => {
+      const api = loadExtension(ENABLED_SOURCE, HANDOFF_TICKET);
+      api.execResult.stdout = `${HANDOFF_TICKET} ${acknowledgement}\n`;
+      const call = () => api.tools[`kontora_${verb}`].execute(
+        "call", { text }, undefined, undefined, createFakeContext()
+      );
+      if (valid) await call();
+      else await assert.rejects(call, /text/i);
+      assert.equal(api.execCalls.length, valid ? 1 : 0);
+    });
+  }
+
+  for (const [name, result] of [
+    ["nonzero", { code: 1, killed: false, stdout: `${HANDOFF_TICKET} ${acknowledgement}\n` }],
+    ["killed", { code: 0, killed: true, stdout: `${HANDOFF_TICKET} ${acknowledgement}\n` }],
+    ["no acknowledgement", { code: 0, killed: false, stdout: "" }],
+    ["wrong ticket", { code: 0, killed: false, stdout: `test-other ${acknowledgement}\n` }],
+    ["partial acknowledgement", { code: 0, killed: false, stdout: `prefix ${HANDOFF_TICKET} ${acknowledgement}\n` }],
+    ["wrong verb", { code: 0, killed: false, stdout: `${HANDOFF_TICKET} other acknowledgement\n` }],
+    ["rejected execution", null],
+  ]) {
+    test(`${verb} execution: ${name} never retries`, async () => {
+      const api = loadExtension(DISABLED_SOURCE, HANDOFF_TICKET);
+      api.execResult = result;
+      if (result === null) api.execHandler = async () => { throw new Error("spawn failed"); };
+      await assert.rejects(
+        () => api.tools[`kontora_${verb}`].execute("call", { text: "payload" }, undefined, undefined, createFakeContext()),
+        /write outcome may be unknown.*read the ticket before resubmitting/i
+      );
+      assert.equal(api.execCalls.length, 1);
+    });
+  }
+
+  test(`${verb} accepts colored acknowledgement lines`, async () => {
+    const api = loadExtension(DISABLED_SOURCE, HANDOFF_TICKET);
+    api.execResult.stdout = `other output\n\x1b[36m${HANDOFF_TICKET}\x1b[0m \x1b[2m${acknowledgement}\x1b[0m\r\n`;
+    await api.tools[`kontora_${verb}`].execute("call", { text: "payload" }, undefined, undefined, createFakeContext());
+    assert.equal(api.execCalls.length, 1);
+  });
+
+  test(`${verb} rejects pre-execution cancellation`, async () => {
+    const api = loadExtension(DISABLED_SOURCE, HANDOFF_TICKET);
+    const controller = new AbortController();
+    controller.abort();
+    await assert.rejects(
+      () => api.tools[`kontora_${verb}`].execute("call", { text: "payload" }, controller.signal, undefined, createFakeContext()),
+      /cancelled.*not submitted/i
+    );
+    assert.equal(api.execCalls.length, 0);
+  });
+
+  test(`${verb} propagates in-flight cancellation without retry`, async () => {
+    const api = loadExtension(DISABLED_SOURCE, HANDOFF_TICKET);
+    const controller = new AbortController();
+    api.execHandler = async (_command, _args, options) => {
+      assert.equal(options.signal, controller.signal);
+      return new Promise((resolve) => {
+        options.signal.addEventListener("abort", () => resolve({ code: 0, killed: true, stdout: "" }), { once: true });
+        controller.abort();
+      });
+    };
+    await assert.rejects(
+      () => api.tools[`kontora_${verb}`].execute("call", { text: "payload" }, controller.signal, undefined, createFakeContext()),
+      /write outcome may be unknown.*read the ticket before resubmitting/i
+    );
+    assert.equal(api.execCalls.length, 1);
+  });
 }
 
 // ─── Tests: disabled extension ──────────────────────────────────────────────

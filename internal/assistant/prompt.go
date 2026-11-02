@@ -58,6 +58,14 @@ Change with ` + "`kontora new`, `kontora init`, `kontora run`, `kontora schedule
 KONTORA_URL and KONTORA_TOKEN are set, so those calls go through the running
 daemon and it sees every change immediately. Never edit a ticket markdown file
 directly: the daemon owns those files and a hand edit races it.
+
+For note and summary text, use your file-writing tool to write files at unique scratch paths outside the repository.
+Replace TICKET_ID and the example paths below, then submit each file through stdin:
+  kontora note TICKET_ID < /absolute/path/note.md
+  kontora summary TICKET_ID < /absolute/path/summary.txt
+Do not put payload text in shell arguments. Do not create these files with ` + "`echo`, `printf`" + `, or other payload-bearing shell commands.
+The thread's approval rules still apply to file creation and submission. In read-only mode, do not create files.
+
 Run ` + "`kontora skills list`" + ` for the reference topics and
 ` + "`kontora skills show <topic>`" + ` for one. Read the topic rather than guessing
 a flag; ` + "`kontora <verb> -h`" + ` prints one verb's usage.

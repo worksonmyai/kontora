@@ -633,7 +633,13 @@ func TestAnnotate_RewritesTicketAndRestoresStatus(t *testing.T) {
 	assert.Contains(t, prompt, "sharpen the goal", "the annotations reach the agent")
 	assert.Contains(t, prompt, filePath, "the prompt names the exact ticket file")
 	assert.Contains(t, prompt, "Edit only "+filePath)
-	assert.Contains(t, prompt, "do not commit or push anything")
+	assert.Contains(t, prompt, "temporary files outside the repository solely for note and summary submission")
+	assert.Contains(t, prompt, "Do not modify other project files")
+	assert.Contains(t, prompt, "Change the markdown body only")
+	assert.Contains(t, prompt, "Leave the YAML frontmatter between the --- lines exactly as it is")
+	assert.Contains(t, prompt, "Do not write code, do not run tests, and do not commit or push anything")
+	assert.Contains(t, prompt, "Do not do the work the ticket describes")
+	assertSafeHandoff(t, prompt, "tst-an06", false)
 	assert.NotContains(t, prompt, "do step2 for", "the stage prompt must not be used")
 
 	// No final-summary pass: this run did not touch the work the ticket did.
@@ -1099,6 +1105,8 @@ func TestAnnotate_ConfiguredPrompt(t *testing.T) {
 			prompt := renderedPrompt(spawns[0])
 			assert.Contains(t, prompt, fmt.Sprintf("CUSTOM %s\nthe notes", id))
 			assert.NotContains(t, prompt, "Rules for this run")
+			assert.NotContains(t, prompt, "temporary files outside the repository solely")
+			assertSafeHandoff(t, prompt, id, false)
 		})
 	}
 }

@@ -110,7 +110,7 @@ export function kontoraDetail() {
       // The ladder is derived from every ticket file on disk, so it cannot be
       // read off the board and has to be fetched for each ticket opened.
       if (this.selectedTicket?.id) {
-        this.fetchChain(this.selectedTicket.id, true);
+        this.fetchChain(this.selectedTicket.id);
       }
       if (this.selectedTicket?.status !== 'in_progress' && this.selectedTicket?.status !== 'todo' && this.selectedTicket?.status !== 'open'
           && this.selectedTicket?.history?.length > 0) {
@@ -344,10 +344,7 @@ export function kontoraDetail() {
     // fetchChanges is, and on a sequence number as well: the SSE path refetches
     // the same ticket, so the id alone cannot tell two in-flight requests apart
     // and an older response could land last.
-    //
-    // `seed` sets the collapsed default, and only the first fetch for a ticket
-    // passes it: a refetch must not undo the user's expand or collapse.
-    async fetchChain(id, seed) {
+    async fetchChain(id) {
       var seq = ++this._chainSeq;
       var mine = () => this.selectedTicket?.id === id && seq === this._chainSeq;
       this.chainError = null;
@@ -361,8 +358,6 @@ export function kontoraDetail() {
         var chain = await res.json();
         if (!mine()) return;
         this.chain = chain;
-        // A cleared chain and a two-node one have a single line to say.
-        if (seed) this.chainCollapsed = chain.verdict === 'ready' || chain.total <= 2;
       } catch (e) {
         if (mine()) this.chainError = 'Failed to load the chain';
       }

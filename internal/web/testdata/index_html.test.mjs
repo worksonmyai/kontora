@@ -8789,30 +8789,29 @@ test("deleting a node of the open chain refetches the ladder", async () => {
   assert.equal(fetched, 1);
 });
 
-test("the chain fetch seeds the ladder collapsed only when it has one line to say", async () => {
+test("the chain opens expanded and refetches preserve the user's choice", async () => {
   const cases = [
-    { name: "a blocked six-node chain opens on the ladder", chain: CHAIN_PAYLOAD, want: false },
-    { name: "a ready chain opens shut", chain: { ...CHAIN_PAYLOAD, verdict: "ready" }, want: true },
-    { name: "a two-node chain opens shut", chain: { ...CHAIN_PAYLOAD, total: 2 }, want: true },
+    { name: "a blocked six-node chain opens expanded", chain: CHAIN_PAYLOAD },
+    { name: "a ready chain opens expanded", chain: { ...CHAIN_PAYLOAD, verdict: "ready" } },
+    { name: "a two-node chain opens expanded", chain: { ...CHAIN_PAYLOAD, total: 2 } },
   ];
 
   for (const c of cases) {
     const state = loadKontoraState({ fetch: async () => ({ ok: true, json: async () => c.chain }) });
     state.selectedTicket = { id: "pca-d3q9", status: "todo" };
-    await state.fetchChain("pca-d3q9", true);
-    assert.equal(state.chainCollapsed, c.want, c.name);
+    await state.fetchChain("pca-d3q9");
+    assert.equal(state.chainCollapsed, false, c.name);
     assert.equal(state.chainError, null, c.name);
   }
 
-  // Only the first fetch for a ticket seeds it: an SSE refetch must not undo
-  // the user's own expand or collapse.
+  // An SSE refetch must not undo the user's own expand or collapse.
   const kept = loadKontoraState({ fetch: async () => ({ ok: true, json: async () => ({ ...CHAIN_PAYLOAD, verdict: "ready" }) }) });
   kept.selectedTicket = { id: "pca-d3q9", status: "todo" };
-  await kept.fetchChain("pca-d3q9", true);
-  assert.equal(kept.chainCollapsed, true);
-  kept.chainCollapsed = false;
-  await kept.fetchChain("pca-d3q9");
-  assert.equal(kept.chainCollapsed, false, "a refetch leaves the ladder as the user left it");
+  for (const collapsed of [true, false]) {
+    kept.chainCollapsed = collapsed;
+    await kept.fetchChain("pca-d3q9");
+    assert.equal(kept.chainCollapsed, collapsed, "a refetch leaves the ladder as the user left it");
+  }
 
   // A response for a ticket the user has already navigated away from is dropped.
   const stale = loadKontoraState({ fetch: async () => ({ ok: true, json: async () => CHAIN_PAYLOAD }) });

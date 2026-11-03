@@ -2,7 +2,6 @@ package cli
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 
 	"github.com/worksonmyai/kontora/internal/config"
@@ -32,7 +31,7 @@ func Summary(tasksDir string, taskID string, text string) error {
 		return fmt.Errorf("marshalling ticket: %w", err)
 	}
 
-	if err := os.WriteFile(path, out, 0o644); err != nil {
+	if err := ticket.WriteOffline(path, out); err != nil {
 		return fmt.Errorf("writing ticket file: %w", err)
 	}
 	return nil

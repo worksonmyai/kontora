@@ -11,6 +11,7 @@ import (
 // View is the domain-level projection of a ticket.
 // Adapters (HTTP handlers, TUI renderers) convert from this.
 type View struct {
+	Managed       *ticket.ManagedOwnership
 	ID            string
 	Title         string
 	Status        string
@@ -104,7 +105,9 @@ type HistoryView struct {
 // (History, LastError, LastLog, Body) are left empty; the board cards never read
 // them. The detail endpoint and SSE ticket_updated events pass detail=true.
 func BuildView(cfg *config.Config, t *ticket.Ticket, detail bool) View {
+	t = t.Clone()
 	v := View{
+		Managed:     t.Managed,
 		ID:          t.ID,
 		Title:       t.Title(),
 		Status:      string(t.Status),

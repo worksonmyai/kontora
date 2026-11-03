@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -143,18 +144,21 @@ type RunnerFunc func(ctx context.Context, p RunnerParams) (process.Result, error
 
 // RunnerParams contains the parameters passed to a RunnerFunc.
 type RunnerParams struct {
-	Binary      string
-	Args        []string
-	Dir         string
-	Timeout     time.Duration
-	TicketID    string            // ticket ID used as tmux window name
-	SessionName string            // tmux session; ignored by DirectRunner
-	LogFile     string            // path for agent output log (PTY capture or materialized session log)
-	Interactive bool              // use interactive tmux wait-for flow (for Claude agents)
-	SessionID   string            // Claude session ID; used for session JSONL materialization after agent exit
-	SessionDir  string            // pi session directory; used for session JSONL materialization after agent exit
-	Env         map[string]string // environment variables to set for the agent process
-	OnReady     func()            // called after the agent process is running (e.g. tmux window created)
+	Binary             string
+	Args               []string
+	Dir                string
+	Timeout            time.Duration
+	TicketID           string // ticket ID; also the tmux window name when AttemptID is empty
+	AttemptID          string
+	ReplaceEnv         bool
+	RequireTermination bool
+	SessionName        string            // tmux session; ignored by DirectRunner
+	LogFile            string            // path for agent output log (PTY capture or materialized session log)
+	Interactive        bool              // use interactive tmux wait-for flow (for Claude agents)
+	SessionID          string            // Claude session ID; used for session JSONL materialization after agent exit
+	SessionDir         string            // pi session directory; used for session JSONL materialization after agent exit
+	Env                map[string]string // environment variables to set for the agent process
+	OnReady            func()            // called after the agent process is running (e.g. tmux window created)
 	// OnIdle is asked what to do each time an interactive agent signals it is
 	// idle. Nil, which is every run but a checkpointing Claude one, finishes the
 	// run on the first signal. DirectRunner ignores it: without a terminal there
@@ -177,14 +181,20 @@ func DirectRunner(ctx context.Context, p RunnerParams) (process.Result, error) {
 			}
 		}
 	}
+	env := p.Env
+	if !p.ReplaceEnv {
+		env = withCommonPath(env)
+	}
 	return process.Run(ctx, process.RunParams{
-		Binary:  p.Binary,
-		Args:    p.Args,
-		Dir:     p.Dir,
-		Timeout: p.Timeout,
-		Stdout:  logFile,
-		Stderr:  logFile,
-		Env:     envPairs(withCommonPath(p.Env)),
+		Binary:             p.Binary,
+		Args:               p.Args,
+		Dir:                p.Dir,
+		Timeout:            p.Timeout,
+		Stdout:             logFile,
+		Stderr:             logFile,
+		Env:                envPairs(env),
+		ReplaceEnv:         p.ReplaceEnv,
+		RequireTermination: p.RequireTermination,
 	})
 }
 
@@ -217,12 +227,16 @@ func envPairs(env map[string]string) []string {
 
 // tmuxRunner wraps tmux.Run for use as a RunnerFunc.
 func tmuxRunner(ctx context.Context, p RunnerParams) (process.Result, error) {
+	if p.ReplaceEnv {
+		return process.Result{}, fmt.Errorf("tmux replacement environment requires the managed authority integration")
+	}
 	return tmux.Run(ctx, tmux.RunParams{
 		Binary:         p.Binary,
 		Args:           p.Args,
 		Dir:            p.Dir,
 		Timeout:        p.Timeout,
 		TicketID:       p.TicketID,
+		AttemptID:      p.AttemptID,
 		SessionName:    p.SessionName,
 		LogFile:        p.LogFile,
 		Interactive:    p.Interactive,
@@ -429,6 +443,7 @@ type Daemon struct {
 	queued          map[string]bool    // dedupe: prevents same ticket being enqueued twice
 	runningBranches map[string]string  // repoPath\x00branch → ticketID holding the branch
 	sem             chan struct{}
+	managedDispatch *managedDispatch
 	// waiting holds, per ticket, the question its running agent is blocked on,
 	// as the run's marker poller last read it. Only a live run has an entry.
 	waiting map[string]waitingState
@@ -653,7 +668,7 @@ func (d *Daemon) buildService() *app.Service {
 			defer d.mu.Unlock()
 			result := make([]*app.StoredTicket, 0, len(d.tickets))
 			for _, ts := range d.tickets {
-				result = append(result, &app.StoredTicket{Ticket: ts.ticket, FilePath: ts.filePath})
+				result = append(result, &app.StoredTicket{Ticket: ts.ticket.Clone(), FilePath: ts.filePath})
 			}
 			return result
 		},
@@ -689,6 +704,9 @@ func (d *Daemon) Run(ctx context.Context) error {
 	tasksDir := expandTilde(cfg.TicketsDir)
 	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
 		return fmt.Errorf("creating tickets dir: %w", err)
+	}
+	if err := discoverControlAuthority(tasksDir); err != nil {
+		return err
 	}
 	logsDir := expandTilde(cfg.LogsDir)
 	if err := os.MkdirAll(logsDir, 0o755); err != nil {
@@ -948,7 +966,7 @@ func (d *Daemon) initialScan(dir string) error {
 		// installs, pre-upgrade tickets) or our own name. A ticket claimed by
 		// another instance sharing this tickets_dir is left in_progress and not
 		// enqueued, so starting a second daemon can't steal or kill its work.
-		if t.Kontora && t.Status == ticket.StatusInProgress && t.Kind != ticket.KindEpic {
+		if t.Kontora && t.Status == ticket.StatusInProgress && t.Kind != ticket.KindEpic && !t.HasOwnershipMetadata() {
 			if t.ClaimedBy == "" || t.ClaimedBy == d.instanceName {
 				d.ticketLog(t.ID).Warn("crash recovery: resetting to todo")
 				_ = t.SetField("status", string(ticket.StatusTodo))
@@ -1002,6 +1020,10 @@ func (d *Daemon) initialScan(dir string) error {
 func (d *Daemon) handleEvent(ev watcher.Event) {
 	switch ev.Op {
 	case watcher.OpChanged:
+		if _, err := os.Stat(ev.Path); errors.Is(err, os.ErrNotExist) {
+			d.handleFileRemoved(ev.Path)
+			return
+		}
 		// A removal is never the daemon's own write, so the suppression check
 		// belongs here rather than above the switch: consulting it for a
 		// removed file would drop the ticket's own deletion.
@@ -1015,6 +1037,10 @@ func (d *Daemon) handleEvent(ev watcher.Event) {
 }
 
 func (d *Daemon) handleFileChanged(path string) {
+	if err := ticket.CheckBoardControl(expandTilde(d.config().TicketsDir)); err != nil {
+		d.log.Error("external ticket event refused while board authority requires reconciliation", "path", path, "err", err)
+		return
+	}
 	t, err := ticket.ParseFile(path)
 	if err != nil {
 		d.log.Error("parse failed", "path", path, "err", err)
@@ -1028,6 +1054,10 @@ func (d *Daemon) handleFileChanged(path string) {
 		return
 	}
 
+	if t.HasOwnershipMetadata() {
+		d.log.Error("external managed ticket requires its owning daemon", "ticket", t.ID)
+		return
+	}
 	log := d.ticketLog(t.ID)
 	cfg := d.config()
 
@@ -1122,14 +1152,14 @@ func (d *Daemon) handleFileChanged(path string) {
 			cancel()
 		}
 		if t.Status == ticket.StatusCancelled {
-			go d.cleanupWorktree(log, t)
+			d.background.Go(func() { d.cleanupWorktree(log, t) })
 		}
 	case ticket.StatusDone, ticket.StatusArchived:
 		if cancel, ok := d.running[t.ID]; ok {
 			log.Info("killing agent", "reason", "user set "+string(t.Status))
 			cancel()
 		}
-		go d.cleanupWorktree(log, t)
+		d.background.Go(func() { d.cleanupWorktree(log, t) })
 	default:
 		if cfg.IsCustomStatus(string(t.Status)) {
 			if cancel, ok := d.running[t.ID]; ok {
@@ -1141,6 +1171,10 @@ func (d *Daemon) handleFileChanged(path string) {
 }
 
 func (d *Daemon) handleFileRemoved(path string) {
+	if err := ticket.CheckBoardControl(expandTilde(d.config().TicketsDir)); err != nil {
+		d.log.Error("ticket removal requires managed reconciliation", "path", path, "err", err)
+		return
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
@@ -1259,14 +1293,27 @@ func isTerminalOverride(s ticket.Status) bool {
 }
 
 // cleanupWorktree resolves repo info from a ticket and removes its worktree.
-// Safe to call from a goroutine (does not hold d.mu).
+// Safe to call from a goroutine. Callers must not hold d.mu.
 func (d *Daemon) cleanupWorktree(log *slog.Logger, t *ticket.Ticket) {
+	if t.HasOwnershipMetadata() || ticket.CheckBoardControl(expandTilde(d.config().TicketsDir)) != nil {
+		log.Warn("ordinary cleanup refused for managed control state")
+		return
+	}
 	_, repoPath, err := d.resolvePath(t)
 	if err != nil {
 		log.Warn("worktree cleanup: resolve path failed", "err", err)
 		return
 	}
-	d.removeWorktreeByBranch(log, repoPath, ticketBranch(d.config(), t))
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	branch := ticketBranch(d.config(), t)
+	_, running := d.running[t.ID]
+	_, branchReserved := d.runningBranches[repoPath+"\x00"+branch]
+	if running || branchReserved {
+		log.Warn("worktree cleanup deferred while execution remains reserved")
+		return
+	}
+	d.removeWorktreeByBranch(log, repoPath, branch)
 }
 
 // blockersLocked returns the dependency ids that hold a ticket back: the ones
@@ -1330,7 +1377,7 @@ func (d *Daemon) reconcileDependenciesLocked(id string) {
 // enqueue adds a ticket to the queue. Must be called with d.mu held.
 // Skips enqueue if the ticket is already queued or blocked by a dependency.
 func (d *Daemon) enqueue(t *ticket.Ticket) {
-	if t == nil || !t.Kontora {
+	if t == nil || !t.Kontora || t.HasOwnershipMetadata() || ticket.CheckBoardControl(expandTilde(d.config().TicketsDir)) != nil {
 		return
 	}
 	// An epic is not work: it has no pipeline, so a todo one would otherwise
@@ -1365,56 +1412,7 @@ func (d *Daemon) syncQueueDepthLocked() {
 }
 
 func (d *Daemon) scheduler(ctx context.Context, wg *sync.WaitGroup) {
-	go func() {
-		<-ctx.Done()
-		d.mu.Lock()
-		d.queueCond.Signal()
-		d.mu.Unlock()
-	}()
-
-	for {
-		// The slot is taken before the queue head, not after. Popping first would
-		// hide the ticket from the queue for as long as the daemon stays busy:
-		// it would not be counted as queued, and a ticket enqueued in the
-		// meantime could not overtake it however much older it is.
-		select {
-		case d.sem <- struct{}{}:
-		case <-ctx.Done():
-			return
-		}
-
-		d.mu.Lock()
-		for d.queue.Len() == 0 {
-			if ctx.Err() != nil {
-				d.mu.Unlock()
-				<-d.sem
-				return
-			}
-			d.queueCond.Wait()
-		}
-
-		item := heap.Pop(&d.queue).(*queueItem)
-		delete(d.queued, item.ticketID)
-		d.syncQueueDepthLocked()
-		d.mu.Unlock()
-
-		if ctx.Err() != nil {
-			<-d.sem
-			return
-		}
-
-		// The slot is already held by the time an item is popped, so the wait ends
-		// here. Recorded after the unlock, because the exporter's collect path
-		// must never end up waiting behind d.mu.
-		d.metrics.QueueWait(ctx, time.Since(item.enqueuedAt))
-
-		wg.Add(1)
-		go func(ticketID string) {
-			defer wg.Done()
-			defer func() { <-d.sem }()
-			d.runTicket(ctx, ticketID)
-		}(item.ticketID)
-	}
+	d.dispatch(ctx, wg)
 }
 
 // claimableLocked reports whether a popped ticket may still be started, and
@@ -1426,6 +1424,9 @@ func (d *Daemon) claimableLocked(ticketID string, log *slog.Logger) (*ticketStat
 		return nil, false
 	}
 
+	if ts.ticket.HasOwnershipMetadata() || ticket.CheckBoardControl(expandTilde(d.config().TicketsDir)) != nil {
+		return nil, false
+	}
 	// The ticket must still be managed by Kontora and in a state to process.
 	if !ts.ticket.Kontora || ts.ticket.Status != ticket.StatusTodo {
 		return nil, false
@@ -1478,6 +1479,9 @@ func (d *Daemon) requeueAfter(ctx context.Context, ticketID string, delay time.D
 }
 
 func (d *Daemon) runTicket(ctx context.Context, ticketID string) {
+	if _, ok := ctx.Value(ordinaryReservationKey{}).(*atomic.Bool); !ok {
+		ctx = context.WithValue(ctx, ordinaryReservationKey{}, new(atomic.Bool))
+	}
 	log := d.ticketLog(ticketID)
 	cfg := d.config()
 
@@ -1537,15 +1541,7 @@ func (d *Daemon) runTicket(ctx context.Context, ticketID string) {
 		d.runningBranches[branchKey] = ticketID
 	}
 
-	defer func() {
-		taskCancel()
-		d.mu.Lock()
-		delete(d.running, ticketID)
-		if branchKey != "" && d.runningBranches[branchKey] == ticketID {
-			delete(d.runningBranches, branchKey)
-		}
-		d.mu.Unlock()
-	}()
+	defer d.finishOrdinaryRun(taskCtx, taskCancel, ticketID, branchKey, filePath, log)
 
 	// A pending annotation owns the pickup, whether or not the ticket has a
 	// pipeline: the run rewrites the ticket and hands the status back, so no stage
@@ -2171,6 +2167,20 @@ func (d *Daemon) finishAgentExit(ctx context.Context, t *ticket.Ticket, p handle
 	}
 
 	d.mu.Lock()
+	current, err := ticket.ParseFile(p.filePath)
+	if err != nil {
+		d.mu.Unlock()
+		return
+	}
+	if current.Status != t.Status || current.Stage != t.Stage || current.Attempt != t.Attempt ||
+		current.Pipeline != t.Pipeline || current.ClaimedBy != t.ClaimedBy ||
+		current.Branch != t.Branch || current.Path != t.Path ||
+		!reflect.DeepEqual(current.History, t.History) || current.HasOwnershipMetadata() {
+		d.mu.Unlock()
+		return
+	}
+	// Notes and summaries do not change the completed execution's identity.
+	t = current
 	d.setTicketState(p.ticketID, t, p.filePath)
 
 	// Re-enqueue if advance/retry/back.
@@ -2198,6 +2208,9 @@ func (d *Daemon) finishAgentExit(ctx context.Context, t *ticket.Ticket, p handle
 // its running entry while an agent writes prose about it. Only daemon shutdown
 // stops it.
 func (d *Daemon) startFinalSummary(ctx context.Context, t *ticket.Ticket, p handleExitParams, kind pipeline.ActionKind) {
+	if t.HasOwnershipMetadata() || ticket.CheckBoardControl(expandTilde(d.config().TicketsDir)) != nil {
+		return
+	}
 	terminalSuccess := kind == pipeline.ActionComplete ||
 		(kind == pipeline.ActionPark && p.result.ExitCode == 0)
 	if !terminalSuccess {
@@ -2497,6 +2510,9 @@ func (d *Daemon) recordStageRun(taskCtx context.Context, p spawnAgentParams, att
 // stage_end hooks itself: the stage_start hooks have already run, and a pair
 // left unmatched is exactly the case a teardown hook exists for.
 func (d *Daemon) finishAttempt(taskCtx context.Context, t *ticket.Ticket, p spawnAgentParams, attempt agentAttempt) (agentRun, bool) {
+	if ordinaryReservationRetained(taskCtx) {
+		return attempt.run, false
+	}
 	if !attempt.ok {
 		d.runStageEndHooksAfterFailure(taskCtx, p, attempt)
 	}
@@ -2601,17 +2617,25 @@ func (d *Daemon) runAgentOnce(taskCtx context.Context, t *ticket.Ticket, p spawn
 	if rec != nil && p.annotation {
 		scope.prior = sessionUsageTotals(params)
 	}
-	// The clear is deferred so that every way this function can end, including a
-	// runner error or a cancelled ticket, leaves no entry claiming the run is
-	// still going.
+	// Confirmed stops clear live-run state even after errors or cancellation.
+	// Uncertain termination retains the execution record.
 	d.setLiveRun(p.ticketID, liveRun{stage: p.stageName, agent: p.agentName, run: p.run, params: params, startedAt: scope.startedAt})
-	defer d.clearLiveRun(p.ticketID)
+	defer func() {
+		if !ordinaryReservationRetained(taskCtx) {
+			d.clearLiveRun(p.ticketID)
+		}
+	}()
 	// Stage logs are appended across retries (pipe-pane, DirectRunner), so record
 	// where this run's output starts. Failure-pattern detection only scans from
 	// here, otherwise a previous attempt's error would keep matching on retry.
 	logStart := fileSize(params.LogFile)
 	eventsFile := stageEventsPath(p.cfg, p.ticketID, p.stageName, p.run)
 	result, runnerErr := d.runner(taskCtx, params)
+	if errors.Is(runnerErr, process.ErrTerminationUncertain) {
+		retainOrdinaryReservation(taskCtx)
+		p.log.Error("runner termination unconfirmed; execution state retained", "err", runnerErr)
+		return agentAttempt{run: agentRun{Result: result}, started: true}
+	}
 	// Read here, not where the pause reason is built: the agent's session
 	// shutdown removes the marker on its way out, and the poller then clears the
 	// state, while log materialization and the tmux kill below can take seconds.
@@ -3080,6 +3104,22 @@ func (d *Daemon) writeTicketLocked(t *ticket.Ticket, path string, origin notify.
 }
 
 func (d *Daemon) writeTicketFile(t *ticket.Ticket, path string, origin notify.Origin) (time.Time, error) {
+	var modTime time.Time
+	err := ticket.WithOrdinaryRouting(expandTilde(d.config().TicketsDir), func() error {
+		var err error
+		modTime, err = d.writeOrdinaryTicketFile(t, path, origin)
+		return err
+	})
+	return modTime, err
+}
+
+func (d *Daemon) writeOrdinaryTicketFile(t *ticket.Ticket, path string, origin notify.Origin) (time.Time, error) {
+	if t.HasOwnershipMetadata() {
+		return time.Time{}, ticket.ErrManaged
+	}
+	if err := ticket.CheckBoardControl(expandTilde(d.config().TicketsDir)); err != nil {
+		return time.Time{}, err
+	}
 	data, err := t.Marshal()
 	if err != nil {
 		return time.Time{}, err

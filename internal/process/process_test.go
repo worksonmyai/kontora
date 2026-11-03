@@ -3,7 +3,9 @@ package process
 import (
 	"bytes"
 	"context"
+	"errors"
 	"path/filepath"
+	"syscall"
 	"testing"
 	"time"
 
@@ -60,8 +62,7 @@ func TestRunTimeout(t *testing.T) {
 		Args:    []string{"60"},
 		Timeout: 100 * time.Millisecond,
 	})
-	require.NoError(t, err)
-	assert.NotEqual(t, 0, result.ExitCode)
+	assertStoppedOrUncertain(t, result, err)
 }
 
 func TestRunContextCancel(t *testing.T) {
@@ -74,9 +75,7 @@ func TestRunContextCancel(t *testing.T) {
 			Binary: "sleep",
 			Args:   []string{"60"},
 		})
-		// Use assert (not require) — t.FailNow() panics from goroutines.
-		assert.NoError(t, err)
-		assert.NotEqual(t, 0, result.ExitCode)
+		assertStoppedOrUncertain(t, result, err)
 	}()
 
 	time.Sleep(50 * time.Millisecond)
@@ -89,17 +88,49 @@ func TestRunContextCancel(t *testing.T) {
 	}
 }
 
+func assertStoppedOrUncertain(t *testing.T, result Result, err error) {
+	t.Helper()
+	if errors.Is(err, syscall.EPERM) {
+		assert.ErrorIs(t, err, ErrTerminationUncertain)
+		assert.Equal(t, TerminationUnknown, result.Termination)
+		t.Log("process-group inspection denied; runner correctly reported unconfirmed termination")
+		return
+	}
+	assert.NoError(t, err)
+	assert.NotEqual(t, 0, result.ExitCode)
+	assert.Equal(t, TerminationProcessGroupGone, result.Termination)
+}
+
 func TestRunEnv(t *testing.T) {
-	var buf bytes.Buffer
-	result, err := Run(context.Background(), RunParams{
-		Binary: "sh",
-		Args:   []string{"-c", "echo $KONTORA_TEST_VAR"},
-		Stdout: &buf,
-		Env:    []string{"KONTORA_TEST_VAR=hello_from_kontora"},
-	})
-	require.NoError(t, err)
-	require.Equal(t, 0, result.ExitCode)
-	assert.Equal(t, "hello_from_kontora\n", buf.String())
+	t.Setenv("KONTORA_INHERITED", "parent")
+	t.Setenv("KONTORA_OVERRIDE", "old")
+	t.Setenv("KONTORA_TEST_VAR", "")
+	for _, tt := range []struct {
+		name    string
+		env     []string
+		replace bool
+		want    string
+	}{
+		{name: "inherit", want: "parent|old|"},
+		{name: "append and override", env: []string{"KONTORA_OVERRIDE=new", "KONTORA_TEST_VAR=hello"}, want: "parent|new|hello"},
+		{name: "replace", replace: true, env: []string{"KONTORA_TEST_VAR=hello"}, want: "||hello"},
+		{name: "replace with nil", replace: true, want: "||"},
+		{name: "replace with empty", replace: true, env: []string{}, want: "||"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			result, err := Run(context.Background(), RunParams{
+				Binary:     "/bin/sh",
+				Args:       []string{"-c", `printf '%s|%s|%s' "$KONTORA_INHERITED" "$KONTORA_OVERRIDE" "$KONTORA_TEST_VAR"`},
+				Stdout:     &buf,
+				Env:        tt.env,
+				ReplaceEnv: tt.replace,
+			})
+			require.NoError(t, err)
+			require.Equal(t, 0, result.ExitCode)
+			assert.Equal(t, tt.want, buf.String())
+		})
+	}
 }
 
 func TestRunDir(t *testing.T) {

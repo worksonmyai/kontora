@@ -2,7 +2,6 @@ package cli
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 	"time"
 
@@ -18,9 +17,9 @@ type NoteOptions struct {
 }
 
 // Note appends a note to a ticket file directly, without a daemon. The write is
-// read-modify-write with no lock, so a daemon running against the same store
-// can lose the note; `kontora note` routes through the daemon when one answers
-// and only falls back here when none does.
+// read-modify-write with an unlocked read, so a daemon running against the same
+// ordinary store can lose the note; `kontora note` routes through the daemon when
+// one answers and only falls back here when none does.
 func Note(tasksDir string, taskID string, text string, opts NoteOptions) error {
 	tasksDir = config.ExpandTilde(tasksDir)
 	resolved, err := resolveTaskID(tasksDir, taskID)
@@ -48,7 +47,7 @@ func Note(tasksDir string, taskID string, text string, opts NoteOptions) error {
 		return fmt.Errorf("marshalling ticket: %w", err)
 	}
 
-	if err := os.WriteFile(path, out, 0o644); err != nil {
+	if err := ticket.WriteOffline(path, out); err != nil {
 		return fmt.Errorf("writing ticket file: %w", err)
 	}
 	return nil

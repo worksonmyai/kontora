@@ -2,6 +2,8 @@ package tmux
 
 import (
 	"context"
+	"crypto/sha256"
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -21,11 +23,14 @@ const (
 
 // RunParams contains parameters for running a command inside a tmux window.
 type RunParams struct {
-	Binary      string
-	Args        []string
-	Dir         string
-	Timeout     time.Duration
-	TicketID    string
+	Binary   string
+	Args     []string
+	Dir      string
+	Timeout  time.Duration
+	TicketID string
+	// AttemptID scopes the window and default hook channels to one execution.
+	// Empty preserves the ticket's existing window and channel names.
+	AttemptID   string
 	SessionName string // tmux session name; defaults to DefaultSessionName if empty
 	LogFile     string
 	Interactive bool              // when true, use tmux wait-for + /exit flow for hook-based completion
@@ -52,6 +57,25 @@ type RunParams struct {
 	CompactChannel string
 }
 
+// WindowName returns the execution's window name. Callers must use the same
+// name in hook channels and when attaching to or inspecting an attempt.
+func (p RunParams) WindowName() string {
+	if p.AttemptID == "" {
+		return p.TicketID
+	}
+	normalize := func(s string) string {
+		return strings.Map(func(r rune) rune {
+			if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_' {
+				return r
+			}
+			return '_'
+		}, s)
+	}
+	// The digest separates identities whose normalized names are the same.
+	digest := sha256.Sum256([]byte(fmt.Sprintf("%d:%s%s", len(p.TicketID), p.TicketID, p.AttemptID)))
+	return normalize(p.TicketID) + "--" + normalize(p.AttemptID) + fmt.Sprintf("-%x", digest[:6])
+}
+
 func (p RunParams) compactTimeout() time.Duration {
 	if p.CompactTimeout > 0 {
 		return p.CompactTimeout
@@ -63,7 +87,7 @@ func (p RunParams) compactChannel() string {
 	if p.CompactChannel != "" {
 		return p.CompactChannel
 	}
-	return CompactChannelName(p.session(), p.TicketID, "")
+	return CompactChannelName(p.session(), p.WindowName(), "")
 }
 
 func (p RunParams) session() string {
@@ -78,6 +102,9 @@ func (p RunParams) session() string {
 // then sends /exit. Standard mode polls an exit file. On timeout or context
 // cancellation the window is killed.
 func Run(ctx context.Context, p RunParams) (process.Result, error) {
+	if err := ctx.Err(); err != nil {
+		return process.Result{ExitCode: -1}, err
+	}
 	if p.Interactive {
 		return runInteractive(ctx, p)
 	}
@@ -112,7 +139,7 @@ func runInteractive(ctx context.Context, p RunParams) (process.Result, error) {
 
 	startedAt := time.Now()
 
-	if err := newWindow(sess, p.TicketID, p.Dir, scriptPath); err != nil {
+	if err := newWindow(sess, p.WindowName(), p.Dir, scriptPath); err != nil {
 		os.Remove(scriptPath)
 		return process.Result{ExitCode: -1}, err
 	}
@@ -128,13 +155,13 @@ func runInteractive(ctx context.Context, p RunParams) (process.Result, error) {
 	}()
 
 	if usePipePaneLogging {
-		if err := PipePaneTo(sess, p.TicketID, p.LogFile); err != nil {
-			_ = KillWindow(sess, p.TicketID)
-			return process.Result{ExitCode: -1, StartedAt: startedAt, ExitedAt: time.Now()}, err
+		if err := PipePaneTo(sess, p.WindowName(), p.LogFile); err != nil {
+			tm := windowTmux{session: sess, ticketID: p.WindowName()}
+			return windowResult(tm, -1, startedAt, errors.Join(err, stopWindow(tm)))
 		}
 		if err := os.WriteFile(gateFile, []byte("go"), 0o644); err != nil {
-			_ = KillWindow(sess, p.TicketID)
-			return process.Result{ExitCode: -1, StartedAt: startedAt, ExitedAt: time.Now()}, fmt.Errorf("writing gate file: %w", err)
+			tm := windowTmux{session: sess, ticketID: p.WindowName()}
+			return windowResult(tm, -1, startedAt, errors.Join(fmt.Errorf("writing gate file: %w", err), stopWindow(tm)))
 		}
 	}
 
@@ -144,12 +171,9 @@ func runInteractive(ctx context.Context, p RunParams) (process.Result, error) {
 		defer cancel()
 	}
 
-	code, err := idleLoop(ctx, windowTmux{session: sess, ticketID: p.TicketID}, p, startedAt)
-	return process.Result{
-		ExitCode:  code,
-		StartedAt: startedAt,
-		ExitedAt:  time.Now(),
-	}, err
+	tm := windowTmux{session: sess, ticketID: p.WindowName()}
+	code, err := idleLoop(ctx, tm, p, startedAt)
+	return windowResult(tm, code, startedAt, err)
 }
 
 // runStandard executes a non-interactive command in tmux, polling an exit
@@ -184,7 +208,7 @@ func runStandard(ctx context.Context, p RunParams) (process.Result, error) {
 
 	startedAt := time.Now()
 
-	if err := newWindow(sess, p.TicketID, p.Dir, scriptPath); err != nil {
+	if err := newWindow(sess, p.WindowName(), p.Dir, scriptPath); err != nil {
 		os.Remove(scriptPath)
 		return process.Result{ExitCode: -1}, err
 	}
@@ -200,12 +224,13 @@ func runStandard(ctx context.Context, p RunParams) (process.Result, error) {
 		}
 	}()
 
+	tm := windowTmux{session: sess, ticketID: p.WindowName()}
 	if p.LogFile != "" {
-		if err := PipePaneTo(sess, p.TicketID, p.LogFile); err != nil {
-			return process.Result{}, err
+		if err := PipePaneTo(sess, p.WindowName(), p.LogFile); err != nil {
+			return windowResult(tm, -1, startedAt, errors.Join(err, stopWindow(tm)))
 		}
 		if err := os.WriteFile(gateFile, []byte("go"), 0o644); err != nil {
-			return process.Result{}, fmt.Errorf("writing gate file: %w", err)
+			return windowResult(tm, -1, startedAt, errors.Join(fmt.Errorf("writing gate file: %w", err), stopWindow(tm)))
 		}
 	}
 
@@ -223,49 +248,65 @@ func runStandard(ctx context.Context, p RunParams) (process.Result, error) {
 		case <-ticker.C:
 			code, done := readExitFile(exitPath)
 			if done {
-				return process.Result{
-					ExitCode:  code,
-					StartedAt: startedAt,
-					ExitedAt:  time.Now(),
-				}, nil
+				return windowResult(tm, code, startedAt, nil)
 			}
-			if !HasWindow(sess, p.TicketID) {
+			present, err := tm.InspectWindow()
+			if err != nil {
+				return windowResult(tm, -1, startedAt, err)
+			}
+			if !present {
 				for range 5 {
 					time.Sleep(pollInterval)
 					if code, ok := readExitFile(exitPath); ok {
-						return process.Result{
-							ExitCode:  code,
-							StartedAt: startedAt,
-							ExitedAt:  time.Now(),
-						}, nil
+						return windowResult(tm, code, startedAt, nil)
 					}
 				}
-				return process.Result{
-					ExitCode:  -1,
-					StartedAt: startedAt,
-					ExitedAt:  time.Now(),
-				}, fmt.Errorf("tmux window for ticket %q vanished without writing exit code", p.TicketID)
+				return windowResult(tm, -1, startedAt, fmt.Errorf("tmux window for ticket %q vanished without writing exit code", p.TicketID))
 			}
 		case <-ctx.Done():
-			_ = KillWindow(sess, p.TicketID)
-			return process.Result{
-				ExitCode:  -1,
-				StartedAt: startedAt,
-				ExitedAt:  time.Now(),
-			}, ctx.Err()
+			return windowResult(tm, -1, startedAt, errors.Join(ctx.Err(), stopWindow(tm)))
 		}
 	}
 }
 
-// waitForWindowExit polls HasWindow until the window is gone or timeout.
-func waitForWindowExit(sessionName, taskID string, timeout time.Duration) {
+var errWindowExitTimeout = errors.New("tmux window exit wait timed out")
+
+// waitForWindowExit only succeeds after an exact query confirms absence.
+func waitForWindowExit(sessionName, windowName string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if !HasWindow(sessionName, taskID) {
-			return
+	for {
+		present, err := InspectWindow(sessionName, windowName)
+		if err != nil {
+			return err
+		}
+		if !present {
+			return nil
+		}
+		if !time.Now().Before(deadline) {
+			return fmt.Errorf("%w: window %q still exists after %s", errWindowExitTimeout, windowName, timeout)
 		}
 		time.Sleep(pollInterval)
 	}
+}
+
+func stopWindow(tm idleTmux) error {
+	killErr := tm.KillWindow()
+	waitErr := tm.WaitWindowExit(5 * time.Second)
+	if waitErr != nil {
+		waitErr = errors.Join(process.ErrTerminationUncertain, waitErr)
+	}
+	return errors.Join(killErr, waitErr)
+}
+
+func windowResult(tm idleTmux, code int, startedAt time.Time, err error) (process.Result, error) {
+	result := process.Result{ExitCode: code, StartedAt: startedAt, ExitedAt: time.Now()}
+	present, inspectErr := tm.InspectWindow()
+	if inspectErr != nil {
+		err = errors.Join(err, process.ErrTerminationUncertain, inspectErr)
+	} else if !present {
+		result.Termination = process.TerminationWindowGone
+	}
+	return result, err
 }
 
 func readExitFile(path string) (code int, done bool) {

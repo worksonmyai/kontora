@@ -2,6 +2,7 @@ package store
 
 import (
 	"fmt"
+	"path/filepath"
 
 	"github.com/worksonmyai/kontora/internal/ticket"
 	"github.com/worksonmyai/kontora/internal/ticket/app"
@@ -11,6 +12,7 @@ import (
 // DaemonRepo delegates to. The daemon constructs these with closures that
 // handle mutex locking and internal state coordination.
 type DaemonRepoCallbacks struct {
+	ManagedMutation func(app.ManagedMutation) (*app.StoredTicket, error)
 	// PathLookup returns the file path for a ticket ID.
 	// Implementations are responsible for their own synchronization.
 	PathLookup func(id string) (string, error)
@@ -22,7 +24,8 @@ type DaemonRepoCallbacks struct {
 	// in-memory state with the mutated ticket.
 	AfterSave func(id string, st *app.StoredTicket)
 
-	// ListTickets returns all tracked tickets from daemon state.
+	// ListTickets returns detached snapshots of all tracked tickets.
+	// Implementations must clone tickets while holding their cache mutex.
 	ListTickets func() []*app.StoredTicket
 }
 
@@ -35,6 +38,13 @@ type DaemonRepo struct {
 // NewDaemonRepo creates a DaemonRepo with the given callbacks.
 func NewDaemonRepo(cb DaemonRepoCallbacks) *DaemonRepo {
 	return &DaemonRepo{cb: cb}
+}
+
+func (r *DaemonRepo) MutateManaged(req app.ManagedMutation) (*app.StoredTicket, error) {
+	if r.cb.ManagedMutation == nil {
+		return nil, ticket.ErrManaged
+	}
+	return r.cb.ManagedMutation(req)
 }
 
 func (r *DaemonRepo) Resolve(idOrPrefix string) (string, error) {
@@ -62,9 +72,23 @@ func (r *DaemonRepo) List() ([]*app.StoredTicket, error) {
 }
 
 func (r *DaemonRepo) Save(st *app.StoredTicket) error {
-	if err := r.cb.WriteTicket(st.Ticket, st.FilePath); err != nil {
-		return err
-	}
-	r.cb.AfterSave(st.Ticket.ID, st)
-	return nil
+	return ticket.WithOfflineWrite(filepath.Dir(st.FilePath), func() error {
+		if err := ticket.RejectImportedOwnership(st.Ticket); err != nil {
+			return err
+		}
+		path, err := r.cb.PathLookup(st.Ticket.ID)
+		if err != nil {
+			return err
+		}
+		if filepath.Clean(path) != filepath.Clean(st.FilePath) {
+			return fmt.Errorf("ticket path changed")
+		}
+		cloned := *st
+		cloned.Ticket = st.Ticket.Clone()
+		if err := r.cb.WriteTicket(cloned.Ticket, cloned.FilePath); err != nil {
+			return err
+		}
+		r.cb.AfterSave(cloned.Ticket.ID, &cloned)
+		return nil
+	})
 }

@@ -164,6 +164,7 @@ func SafeRef(kind, ref string) bool {
 // Record is the on-disk <stage>.session JSON: the agent session a stage run
 // opened. The JSON tags are persisted and must not change.
 type Record struct {
+	AttemptID string `json:"attempt_id,omitempty"`
 	// SessionID is the Claude session UUID. Pi leaves it empty: pi names its
 	// session file itself, so the file does not exist yet at write time.
 	SessionID string    `json:"session_id"`

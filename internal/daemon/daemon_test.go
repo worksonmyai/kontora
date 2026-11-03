@@ -139,7 +139,9 @@ func (h *testHarness) newDaemon(cfg *config.Config, opts ...Option) *Daemon {
 		WithAgentLookup(passthroughAgentLookup),
 		WithSkipOrphanCleanup(),
 	)
-	return New(cfg, append(base, opts...)...)
+	d := New(cfg, append(base, opts...)...)
+	h.t.Cleanup(d.background.Wait)
+	return d
 }
 
 // newMetricsDaemon returns a daemon recording into a ManualReader, plus a

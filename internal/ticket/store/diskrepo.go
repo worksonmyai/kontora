@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -67,6 +66,9 @@ func PickPrefixMatch(idOrPrefix string, matches []string) (string, error) {
 }
 
 func (r *DiskRepo) Get(id string) (*app.StoredTicket, error) {
+	if !ticket.IsSafeID(id) {
+		return nil, fmt.Errorf("unsafe ticket id %q", id)
+	}
 	path := filepath.Join(r.dir, id+".md")
 	t, err := ticket.ParseFile(path)
 	if err != nil {
@@ -99,9 +101,15 @@ func (r *DiskRepo) List() ([]*app.StoredTicket, error) {
 }
 
 func (r *DiskRepo) Save(st *app.StoredTicket) error {
+	if err := ticket.RejectImportedOwnership(st.Ticket); err != nil {
+		return err
+	}
 	out, err := st.Ticket.Marshal()
 	if err != nil {
 		return fmt.Errorf("marshalling ticket: %w", err)
 	}
-	return os.WriteFile(st.FilePath, out, 0o644)
+	if filepath.Clean(filepath.Dir(st.FilePath)) != filepath.Clean(r.dir) || !ticket.IsCanonicalPath(st.FilePath, st.Ticket.ID) {
+		return fmt.Errorf("ticket path outside repository")
+	}
+	return ticket.WriteOffline(st.FilePath, out)
 }

@@ -22,10 +22,13 @@ type stubTmux struct {
 	waits map[string]chan struct{}
 	// latched counts signals sent while nobody was waiting, which tmux holds
 	// and hands to the next waiter.
-	latched  map[string]int
-	killed   bool
-	exited   bool
-	noWindow bool
+	latched    map[string]int
+	killed     bool
+	exited     bool
+	noWindow   bool
+	inspectErr error
+	killErr    error
+	waitErr    error
 }
 
 func newStubTmux(channels ...string) *stubTmux {
@@ -49,14 +52,17 @@ func (s *stubTmux) latch(channel string) {
 
 func (s *stubTmux) SendKeys(keys string) error    { return s.record("keys:" + keys) }
 func (s *stubTmux) SendLiteral(text string) error { return s.record("literal:" + text) }
-func (s *stubTmux) KillWindow() error             { s.set(&s.killed); return nil }
+func (s *stubTmux) KillWindow() error             { s.set(&s.killed); return s.killErr }
 func (s *stubTmux) Signal(string)                 {}
-func (s *stubTmux) WaitWindowExit(time.Duration)  { s.set(&s.exited) }
+func (s *stubTmux) WaitWindowExit(time.Duration) error {
+	s.set(&s.exited)
+	return s.waitErr
+}
 
-func (s *stubTmux) HasWindow() bool {
+func (s *stubTmux) InspectWindow() (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return !s.noWindow
+	return !s.noWindow, s.inspectErr
 }
 
 func (s *stubTmux) WaitFor(ctx context.Context, channel string) error {

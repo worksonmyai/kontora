@@ -53,7 +53,7 @@ type Service struct {
 
 // New creates a Service.
 func New(cfg ConfigFunc, repo Repository, runtime RuntimeHooks) *Service {
-	return &Service{cfg: cfg, repo: repo, runtime: runtime}
+	return &Service{cfg: cfg, repo: detachedRepository{repo}, runtime: runtime}
 }
 
 // Get retrieves a single ticket by ID (supports prefix matching).
@@ -115,7 +115,7 @@ func (s *Service) SetStatus(id string, status ticket.Status) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	st, err := s.repo.Get(resolved)
+	st, err := s.mutationTicket(resolved)
 	if err != nil {
 		return Result{}, err
 	}
@@ -196,7 +196,7 @@ func (s *Service) Retry(id string) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	st, err := s.repo.Get(resolved)
+	st, err := s.mutationTicket(resolved)
 	if err != nil {
 		return Result{}, err
 	}
@@ -242,7 +242,7 @@ func (s *Service) Skip(id string) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	st, err := s.repo.Get(resolved)
+	st, err := s.mutationTicket(resolved)
 	if err != nil {
 		return Result{}, err
 	}
@@ -418,7 +418,7 @@ func (s *Service) Init(id string, req InitRequest) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	st, err := s.repo.Get(resolved)
+	st, err := s.mutationTicket(resolved)
 	if err != nil {
 		return Result{}, err
 	}

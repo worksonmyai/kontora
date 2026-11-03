@@ -1,6 +1,7 @@
 package tmux
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -36,10 +37,9 @@ func CompactChannelName(sessionName, ticketID, scope string) string {
 	return name
 }
 
-// WindowTarget returns the tmux target for a ticket's window (=session:window).
-// Uses = prefix for exact session name matching.
+// WindowTarget matches both the session and window names exactly.
 func WindowTarget(sessionName, ticketID string) string {
-	return "=" + sessionName + ":" + ticketID
+	return "=" + sessionName + ":=" + ticketID
 }
 
 // sendKeysCmd builds a send-keys invocation detached from any client. Without
@@ -87,16 +87,40 @@ func SendKeysLiteral(sessionName, ticketID, text string) error {
 
 // KillWindow destroys a ticket's tmux window.
 func KillWindow(sessionName, ticketID string) error {
-	out, err := exec.Command("tmux", "kill-window", "-t", WindowTarget(sessionName, ticketID)).CombinedOutput()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "tmux", "kill-window", "-t", WindowTarget(sessionName, ticketID)).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("tmux kill-window: %s: %w", strings.TrimSpace(string(out)), err)
 	}
 	return nil
 }
 
-// HasWindow returns true if a tmux window for the given ticket exists.
+// HasWindow preserves the bool-only API. Use InspectWindow when absence must be verified.
 func HasWindow(sessionName, ticketID string) bool {
-	return exec.Command("tmux", "list-panes", "-t", WindowTarget(sessionName, ticketID)).Run() == nil
+	present, err := InspectWindow(sessionName, ticketID)
+	return err == nil && present
+}
+
+// InspectWindow compares exact names. Query failures do not count as absence.
+func InspectWindow(sessionName, windowName string) (bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "tmux", "list-windows", "-a", "-F", "#{session_name}\t#{window_name}").CombinedOutput()
+	if err != nil {
+		message := strings.TrimSpace(string(out))
+		if strings.HasPrefix(message, "no server running on ") || message == "no sessions" ||
+			(strings.HasPrefix(message, "error connecting to ") && strings.HasSuffix(message, " (No such file or directory)")) {
+			return false, nil
+		}
+		return false, fmt.Errorf("inspecting tmux window: %s: %w", message, err)
+	}
+	for line := range strings.SplitSeq(string(out), "\n") {
+		if line == sessionName+"\t"+windowName {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // ListWindows returns names of all windows in the given tmux session.

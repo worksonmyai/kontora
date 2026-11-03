@@ -50,6 +50,9 @@ type scheduleBackoff struct {
 // a ticket parsed before the claim would put back the status, started_at and
 // claimed_by the claim wrote.
 func (d *Daemon) ScheduleTicket(id string, req web.ScheduleTicketRequest) error {
+	if err := d.ordinaryMutationAllowed(id); err != nil {
+		return err
+	}
 	var at time.Time
 	if !req.Clear {
 		parsed, err := ticket.ParseSchedule(req.ScheduledAt)
@@ -126,7 +129,13 @@ func (d *Daemon) ScheduleTicket(id string, req web.ScheduleTicketRequest) error 
 // scheduleWriteRefusalLocked reports why the daemon cannot write a ticket's
 // schedule field at all. A running agent owns the file, so a write under it is
 // lost when the run writes the file back. Must be called with d.mu held.
-func (d *Daemon) scheduleWriteRefusalLocked(id string, _ *ticket.Ticket) error {
+func (d *Daemon) scheduleWriteRefusalLocked(id string, t *ticket.Ticket) error {
+	if t.HasOwnershipMetadata() {
+		return ticket.ErrManaged
+	}
+	if err := ticket.CheckBoardControl(expandTilde(d.config().TicketsDir)); err != nil {
+		return err
+	}
 	// d.running is registered when the scheduler claims the ticket, before the
 	// file says in_progress, so it catches a pickup the cached status has not
 	// seen yet.

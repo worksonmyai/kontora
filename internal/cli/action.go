@@ -2,12 +2,8 @@ package cli
 
 import (
 	"fmt"
-	"net"
-	"os"
 	"path/filepath"
-	"strconv"
 
-	"github.com/worksonmyai/kontora/internal/cli/remote"
 	"github.com/worksonmyai/kontora/internal/config"
 	"github.com/worksonmyai/kontora/internal/ticket"
 	"github.com/worksonmyai/kontora/internal/ticket/app"
@@ -75,7 +71,7 @@ func SetStage(cfg *config.Config, taskID, targetStage string) error {
 	if err != nil {
 		return fmt.Errorf("marshalling ticket: %w", err)
 	}
-	return os.WriteFile(filePath, out, 0o644)
+	return ticket.WriteOffline(filePath, out)
 }
 
 // Run enqueues a ticket for processing via the local daemon API.
@@ -89,8 +85,7 @@ func Run(cfg *config.Config, taskID string) ([]string, error) {
 		return nil, err
 	}
 
-	base := "http://" + net.JoinHostPort(cfg.Web.Host, strconv.Itoa(cfg.Web.Port))
-	info, err := remote.New(base, cfg.Web.Token).Run(resolvedID)
+	info, err := LocalClient(cfg).Run(resolvedID)
 	if err != nil {
 		return nil, err
 	}

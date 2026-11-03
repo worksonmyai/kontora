@@ -146,6 +146,28 @@ func TestPaths(t *testing.T) {
 	assert.Equal(t, "/logs/kon-1/pi-sessions/implement", PiDir(logs, id, "implement"))
 	assert.Equal(t, "/logs/kon-1/implement.session", RecordPath(logs, id, "implement"))
 	assert.Equal(t, "/logs/kon-1/implement.completed-session", CompletedRecordPath(logs, id, "implement"))
+	for _, tc := range []struct {
+		id    string
+		valid bool
+	}{
+		{id: "attempt-1", valid: true}, {id: ""}, {id: ".."}, {id: "../escape"}, {id: "a:b"}, {id: "a\x00b"}, {id: "a*b"},
+	} {
+		t.Run("attempt/"+tc.id, func(t *testing.T) {
+			path, err := AttemptDir(logs, tc.id)
+			if !tc.valid {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, "/logs/attempts/attempt-1", path)
+			logPath, err := AttemptLogPath(logs, tc.id)
+			require.NoError(t, err)
+			assert.Equal(t, path+"/output.log", logPath)
+			waitPath, err := AttemptWaitPath(logs, tc.id)
+			require.NoError(t, err)
+			assert.Equal(t, path+"/waiting.json", waitPath)
+		})
+	}
 }
 
 func TestReadRecord(t *testing.T) {

@@ -446,6 +446,11 @@ func (d *Daemon) runReworkStage(ctx, taskCtx context.Context, cfg *config.Config
 	// built-in rework run would be invisible.
 	started := time.Now()
 	result, runnerErr := d.runner(taskCtx, params)
+	if errors.Is(runnerErr, process.ErrTerminationUncertain) {
+		retainOrdinaryReservation(taskCtx)
+		log.Error("rework termination unconfirmed; execution state retained", "err", runnerErr)
+		return
+	}
 	d.clearLiveRun(ticketID)
 	d.recordReworkRun(taskCtx, agentName, t.Pipeline, result, runnerErr, time.Since(started))
 	stageEndCtx := reworkHookCtx

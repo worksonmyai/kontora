@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -43,8 +42,7 @@ func newSource(cfg *config.Config) Source {
 	if cfg.Web.Enabled != nil && !*cfg.Web.Enabled {
 		return &fileSource{cfg: cfg}
 	}
-	base := "http://" + net.JoinHostPort(cfg.Web.Host, fmt.Sprintf("%d", cfg.Web.Port))
-	client := remote.New(base, cfg.Web.Token)
+	client := cli.LocalClient(cfg)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	if err := client.Ping(ctx); err == nil {

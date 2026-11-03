@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/worksonmyai/kontora/internal/config"
+	"github.com/worksonmyai/kontora/internal/ticket"
 )
 
 // Delete removes a ticket markdown file from the tickets directory. It resolves
@@ -37,8 +38,10 @@ func Delete(ticketsDir, id string) error {
 		return fmt.Errorf("refusing to delete non-markdown ticket file: %s", pathAbs)
 	}
 
-	if err := os.Remove(path); err != nil {
-		return fmt.Errorf("removing ticket file: %w", err)
-	}
-	return nil
+	return ticket.WithOfflineWrite(ticketsDir, func() error {
+		if err := os.Remove(path); err != nil {
+			return fmt.Errorf("removing ticket file: %w", err)
+		}
+		return nil
+	})
 }

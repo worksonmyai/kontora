@@ -12,6 +12,7 @@ import (
 	"github.com/worksonmyai/kontora/internal/cli/remote"
 	"github.com/worksonmyai/kontora/internal/config"
 	"github.com/worksonmyai/kontora/internal/logfmt"
+	"github.com/worksonmyai/kontora/internal/ticket"
 	"github.com/worksonmyai/kontora/internal/web"
 )
 
@@ -21,7 +22,9 @@ import (
 // keeping a second implementation that reads behind the daemon's back.
 func LocalClient(cfg *config.Config) *remote.Client {
 	base := "http://" + net.JoinHostPort(cfg.Web.Host, strconv.Itoa(cfg.Web.Port))
-	return remote.New(base, cfg.Web.Token)
+	return remote.New(base, cfg.Web.Token).GuardMutations(func(run func() error) error {
+		return ticket.WithOrdinaryRouting(config.ExpandTilde(cfg.TicketsDir), run)
+	})
 }
 
 // PrintStats renders the throughput figures the Stats page shows.

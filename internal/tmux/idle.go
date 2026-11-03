@@ -2,9 +2,12 @@ package tmux
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os/exec"
 	"time"
+
+	"github.com/worksonmyai/kontora/internal/process"
 )
 
 // IdleAction is what the daemon wants done when an interactive agent goes idle.
@@ -56,13 +59,13 @@ const compactDrainTimeout = 250 * time.Millisecond
 type idleTmux interface {
 	SendKeys(keys string) error
 	SendLiteral(text string) error
-	HasWindow() bool
+	InspectWindow() (bool, error)
 	KillWindow() error
 	WaitFor(ctx context.Context, channel string) error
 	// Signal unblocks anyone waiting on channel, including this loop's own
 	// wait-for goroutine on a path that is already returning.
 	Signal(channel string)
-	WaitWindowExit(timeout time.Duration)
+	WaitWindowExit(timeout time.Duration) error
 }
 
 // windowTmux drives a real ticket window.
@@ -75,15 +78,15 @@ func (w windowTmux) SendKeys(keys string) error { return SendKeys(w.session, w.t
 func (w windowTmux) SendLiteral(text string) error {
 	return SendKeysLiteral(w.session, w.ticketID, text)
 }
-func (w windowTmux) HasWindow() bool   { return HasWindow(w.session, w.ticketID) }
-func (w windowTmux) KillWindow() error { return KillWindow(w.session, w.ticketID) }
+func (w windowTmux) InspectWindow() (bool, error) { return InspectWindow(w.session, w.ticketID) }
+func (w windowTmux) KillWindow() error            { return KillWindow(w.session, w.ticketID) }
 
 func (w windowTmux) WaitFor(ctx context.Context, channel string) error {
 	return exec.CommandContext(ctx, "tmux", "wait-for", channel).Run()
 }
 
-func (w windowTmux) WaitWindowExit(timeout time.Duration) {
-	waitForWindowExit(w.session, w.ticketID, timeout)
+func (w windowTmux) WaitWindowExit(timeout time.Duration) error {
+	return waitForWindowExit(w.session, w.ticketID, timeout)
 }
 
 func (w windowTmux) Signal(channel string) {
@@ -94,19 +97,22 @@ func (w windowTmux) Signal(channel string) {
 // the agent signals it is idle, asks p.OnIdle what to do, and either types what
 // the decision asks for and waits again, or sends /exit and returns.
 func idleLoop(ctx context.Context, tm idleTmux, p RunParams, startedAt time.Time) (int, error) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	sess := p.session()
-	channel := ChannelName(sess, p.TicketID)
+	channel := ChannelName(sess, p.WindowName())
 	compactChannel := p.compactChannel()
 
-	windowGone := make(chan struct{}, 1)
+	windowGone := make(chan error, 1)
 	go func() {
 		ticker := time.NewTicker(pollInterval)
 		defer ticker.Stop()
 		for {
 			select {
 			case <-ticker.C:
-				if !tm.HasWindow() {
-					windowGone <- struct{}{}
+				present, err := tm.InspectWindow()
+				if err != nil || !present {
+					windowGone <- err
 					return
 				}
 			case <-ctx.Done():
@@ -129,11 +135,10 @@ func idleLoop(ctx context.Context, tm idleTmux, p RunParams, startedAt time.Time
 	for {
 		select {
 		case err := <-hookFired:
+			if ctx.Err() != nil {
+				return -1, errors.Join(ctx.Err(), stopWindow(tm))
+			}
 			if err != nil {
-				if ctx.Err() != nil {
-					_ = tm.KillWindow()
-					return -1, ctx.Err()
-				}
 				return -1, fmt.Errorf("tmux wait-for: %w", err)
 			}
 
@@ -143,8 +148,7 @@ func idleLoop(ctx context.Context, tm idleTmux, p RunParams, startedAt time.Time
 			if first {
 				first = false
 				if err := checkMinDuration(p, startedAt); err != nil {
-					_ = tm.KillWindow()
-					return 1, err
+					return 1, errors.Join(err, stopWindow(tm))
 				}
 			}
 
@@ -153,7 +157,11 @@ func idleLoop(ctx context.Context, tm idleTmux, p RunParams, startedAt time.Time
 			// success would advance the pipeline over work that stopped
 			// halfway, and a signal left latched by an earlier turn makes it
 			// race the windowGone poller below for who reports it.
-			if !tm.HasWindow() {
+			present, err := tm.InspectWindow()
+			if err != nil {
+				return -1, errors.Join(process.ErrTerminationUncertain, err)
+			}
+			if !present {
 				return 1, nil
 			}
 
@@ -162,24 +170,47 @@ func idleLoop(ctx context.Context, tm idleTmux, p RunParams, startedAt time.Time
 				decision = p.OnIdle(ctx, IdleEvent{CompactErr: compactErr})
 			}
 			compactErr = nil
+			if ctx.Err() != nil {
+				return -1, errors.Join(ctx.Err(), stopWindow(tm))
+			}
 
 			if decision.Action == IdleFinish {
 				if err := tm.SendKeys("/exit"); err != nil {
+					if ctx.Err() != nil {
+						return -1, errors.Join(ctx.Err(), err, stopWindow(tm))
+					}
 					return -1, fmt.Errorf("sending /exit after hook: %w", err)
 				}
-				tm.WaitWindowExit(5 * time.Second)
+				// Allow five seconds after /exit. A timeout still completes the turn
+				// successfully, but an open window provides no termination evidence.
+				waitErr := tm.WaitWindowExit(5 * time.Second)
+				if ctx.Err() != nil {
+					return -1, errors.Join(ctx.Err(), stopWindow(tm))
+				}
+				if waitErr != nil && !errors.Is(waitErr, errWindowExitTimeout) {
+					return -1, errors.Join(process.ErrTerminationUncertain, waitErr)
+				}
 				return 0, nil
 			}
 
 			if decision.Action == IdleCompact {
 				compactErr = compact(ctx, tm, compactChannel, decision.CompactInstructions, p.compactTimeout())
 			}
+			if ctx.Err() != nil {
+				return -1, errors.Join(ctx.Err(), stopWindow(tm))
+			}
 			if err := tm.SendLiteral(decision.Continuation); err != nil {
 				return -1, fmt.Errorf("sending continuation prompt: %w", err)
 			}
 			arm()
 
-		case <-windowGone:
+		case inspectErr := <-windowGone:
+			if ctx.Err() != nil {
+				return -1, errors.Join(ctx.Err(), stopWindow(tm))
+			}
+			if inspectErr != nil {
+				return -1, errors.Join(process.ErrTerminationUncertain, inspectErr)
+			}
 			// The agent was exited by hand: the window is gone but wait-for was
 			// never signaled. Signal it ourselves to unblock the goroutine, then
 			// report the run as failed.
@@ -187,9 +218,9 @@ func idleLoop(ctx context.Context, tm idleTmux, p RunParams, startedAt time.Time
 			return 1, nil
 
 		case <-ctx.Done():
-			_ = tm.KillWindow()
+			err := stopWindow(tm)
 			tm.Signal(channel)
-			return -1, ctx.Err()
+			return -1, errors.Join(ctx.Err(), err)
 		}
 	}
 }

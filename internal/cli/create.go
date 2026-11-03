@@ -129,6 +129,9 @@ func New(cfg *config.Config, opts NewOpts) (string, error) {
 		}
 	}
 
+	if !ticket.IsSafeID(id) {
+		return "", fmt.Errorf("unsafe ticket id %q", id)
+	}
 	content := ticketFrontmatter(id, opts, time.Now().UTC().Format(time.RFC3339))
 
 	dir := config.ExpandTilde(cfg.TicketsDir)
@@ -136,12 +139,12 @@ func New(cfg *config.Config, opts NewOpts) (string, error) {
 		return "", fmt.Errorf("creating tickets dir: %w", err)
 	}
 	path := filepath.Join(dir, id+".md")
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+	if err := ticket.WriteOffline(path, []byte(content)); err != nil {
 		return "", fmt.Errorf("writing ticket file: %w", err)
 	}
 
 	if !opts.NoEdit {
-		if err := openEditor(cfg.Editor, path); err != nil {
+		if err := Edit(dir, cfg.Editor, id); err != nil {
 			return id, err
 		}
 	}

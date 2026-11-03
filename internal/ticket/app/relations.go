@@ -3,6 +3,7 @@ package app
 import (
 	"errors"
 	"fmt"
+	"os"
 	"slices"
 	"strings"
 
@@ -38,6 +39,9 @@ func (s *Service) resolveRelation(ticketID string, relatedIDs []string) (string,
 		if !slices.Contains(related, other) {
 			related = append(related, other)
 		}
+	}
+	if err := s.ordinaryParticipants(append([]string{resolved}, related...)...); err != nil {
+		return "", nil, err
 	}
 	return resolved, related, nil
 }
@@ -260,6 +264,9 @@ func (s *Service) SetParent(ticketID, epicID string) (RelationResult, error) {
 	if st.Ticket.Kind == ticket.KindEpic {
 		return RelationResult{}, fmt.Errorf("%w: %s is an epic, and epics do not nest", ErrNotAnEpic, resolved)
 	}
+	if err := s.ordinaryFormerParent(st.Ticket.Parent); err != nil {
+		return RelationResult{}, err
+	}
 	if st.Ticket.Parent == parentID {
 		return RelationResult{ID: resolved, Related: related}, nil
 	}
@@ -297,6 +304,12 @@ func (s *Service) ClearParent(ticketID string) (RelationResult, error) {
 		return RelationResult{}, err
 	}
 	was := st.Ticket.Parent
+	if err := ordinary(st); err != nil {
+		return RelationResult{}, err
+	}
+	if err := s.ordinaryFormerParent(was); err != nil {
+		return RelationResult{}, err
+	}
 	if was == "" {
 		return RelationResult{ID: resolved}, nil
 	}
@@ -312,6 +325,20 @@ func (s *Service) ClearParent(ticketID string) (RelationResult, error) {
 	s.runtime.BroadcastUpdated(resolved)
 	s.runtime.BroadcastUpdated(was)
 	return RelationResult{ID: resolved, Related: []string{was}, Changed: []string{resolved}}, nil
+}
+
+func (s *Service) ordinaryFormerParent(id string) error {
+	if id == "" {
+		return nil
+	}
+	st, err := s.repo.Get(id)
+	if errors.Is(err, ErrNotFound) || errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return ordinary(st)
 }
 
 // SetChildOrder writes an epic's manual child order. It writes one file, the
@@ -344,6 +371,9 @@ func (s *Service) SetChildOrder(epicID string, ids []string) (RelationResult, er
 		}
 	}
 
+	if err := s.ordinaryParticipants(append([]string{resolved}, order...)...); err != nil {
+		return RelationResult{}, err
+	}
 	if slices.Equal(order, st.Ticket.Children) {
 		return RelationResult{ID: resolved, Related: order}, nil
 	}

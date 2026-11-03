@@ -56,6 +56,23 @@ func TestSetParent(t *testing.T) {
 			child: "tsk-001", parent: "epc-100", wantParent: "epc-100",
 		},
 		{
+			name: "a deleted former parent does not prevent moving",
+			tickets: map[string]string{
+				"epc-100": epicFM,
+				"tsk-001": "---\nid: tsk-001\nstatus: open\nkontora: true\nparent: epc-deleted\n---\n# A task\n",
+			},
+			child: "tsk-001", parent: "epc-100", wantParent: "epc-100",
+		},
+		{
+			name: "a managed former parent still prevents moving",
+			tickets: map[string]string{
+				"epc-100": epicFM,
+				"epc-old": "---\nid: epc-old\nkind: epic\nmanaged: {}\n---\n# Managed epic\n",
+				"tsk-001": "---\nid: tsk-001\nstatus: open\nkontora: true\nparent: epc-old\n---\n# A task\n",
+			},
+			child: "tsk-001", parent: "epc-100", wantErr: ticket.ErrManaged,
+		},
+		{
 			name: "the parent must be an epic",
 			tickets: map[string]string{
 				"tsk-001": "---\nid: tsk-001\nstatus: open\nkontora: true\n---\n# A task\n",
@@ -112,19 +129,38 @@ func TestSetParent(t *testing.T) {
 // Clearing a parent writes the child. Clearing one that is not there writes
 // nothing, so a repeated call is not a repeated file write.
 func TestClearParent(t *testing.T) {
-	repo := newMemRepo()
-	repo.add("epc-100", epicFM)
-	repo.add("tsk-001", "---\nid: tsk-001\nstatus: open\nkontora: true\nparent: epc-100\n---\n# A task\n")
-	svc := New(Static(testCfg()), repo, &spyRuntime{})
+	for _, tc := range []struct {
+		name    string
+		parent  string
+		wantErr error
+	}{
+		{name: "existing", parent: epicFM},
+		{name: "deleted"},
+		{name: "managed", parent: "---\nid: epc-100\nkind: epic\nmanaged: {}\n---\n# Managed epic\n", wantErr: ticket.ErrManaged},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := newMemRepo()
+			if tc.parent != "" {
+				repo.add("epc-100", tc.parent)
+			}
+			repo.add("tsk-001", "---\nid: tsk-001\nstatus: open\nkontora: true\nparent: epc-100\n---\n# A task\n")
+			svc := New(Static(testCfg()), repo, &spyRuntime{})
 
-	_, err := svc.ClearParent("tsk-001")
-	require.NoError(t, err)
-	assert.Empty(t, repo.tickets["tsk-001"].Ticket.Parent)
-	assert.Equal(t, []string{"tsk-001"}, repo.saved)
+			_, err := svc.ClearParent("tsk-001")
+			if tc.wantErr != nil {
+				require.ErrorIs(t, err, tc.wantErr)
+				require.Empty(t, repo.saved)
+				return
+			}
+			require.NoError(t, err)
+			assert.Empty(t, repo.tickets["tsk-001"].Ticket.Parent)
+			assert.Equal(t, []string{"tsk-001"}, repo.saved)
 
-	_, err = svc.ClearParent("tsk-001")
-	require.NoError(t, err)
-	assert.Equal(t, []string{"tsk-001"}, repo.saved)
+			_, err = svc.ClearParent("tsk-001")
+			require.NoError(t, err)
+			assert.Equal(t, []string{"tsk-001"}, repo.saved)
+		})
+	}
 }
 
 // The order list writes one file, the epic's, and never a child.

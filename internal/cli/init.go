@@ -3,7 +3,6 @@ package cli
 import (
 	"fmt"
 	"io"
-	"os"
 	"path/filepath"
 	"slices"
 	"sort"
@@ -45,6 +44,9 @@ func Enable(cfg *config.Config, taskID string, opts EnableOpts, w io.Writer) err
 		return err
 	}
 
+	if err := ticket.CheckOrdinaryWrite(tasksDir); err != nil {
+		return err
+	}
 	path := filepath.Join(tasksDir, resolved+".md")
 	t, err := ticket.ParseFile(path)
 	if err != nil {
@@ -123,7 +125,7 @@ func Enable(cfg *config.Config, taskID string, opts EnableOpts, w io.Writer) err
 	if err != nil {
 		return fmt.Errorf("marshalling ticket: %w", err)
 	}
-	if err := os.WriteFile(path, out, 0o644); err != nil {
+	if err := ticket.WriteOffline(path, out); err != nil {
 		return fmt.Errorf("writing ticket file: %w", err)
 	}
 

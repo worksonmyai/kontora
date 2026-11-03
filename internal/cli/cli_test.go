@@ -1133,7 +1133,7 @@ path: /tmp/testrepo
 # Ticket
 `,
 			ticketID:   "tst-001",
-			wantErrMsg: `"=kontora-scratch:tst-001" not found`,
+			wantErrMsg: `"=kontora-scratch:=tst-001" not found`,
 		},
 	}
 

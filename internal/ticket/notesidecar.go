@@ -82,6 +82,10 @@ func LoadNoteReactions(dir, ticketID string) (NoteReactions, error) {
 // removed from the map, so an emptied sidecar is an empty object rather than a
 // tree of husks.
 func SetNoteReaction(dir, ticketID, noteID, emoji, actor string, on bool) error {
+	return WithOfflineWrite(dir, func() error { return setNoteReaction(dir, ticketID, noteID, emoji, actor, on) })
+}
+
+func setNoteReaction(dir, ticketID, noteID, emoji, actor string, on bool) error {
 	if err := validNoteEmoji(emoji); err != nil {
 		return err
 	}
@@ -124,6 +128,10 @@ func SetNoteReaction(dir, ticketID, noteID, emoji, actor string, on bool) error 
 // RemoveNoteSidecar deletes a ticket's sidecar. A ticket that never had one is
 // not an error.
 func RemoveNoteSidecar(dir, ticketID string) error {
+	return WithOfflineWrite(dir, func() error { return removeNoteSidecar(dir, ticketID) })
+}
+
+func removeNoteSidecar(dir, ticketID string) error {
 	path, err := NoteSidecarPath(dir, ticketID)
 	if err != nil {
 		return err

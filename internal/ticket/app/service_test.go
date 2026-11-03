@@ -50,7 +50,7 @@ func (r *memRepo) Resolve(idOrPrefix string) (string, error) {
 func (r *memRepo) Get(id string) (*StoredTicket, error) {
 	st, ok := r.tickets[id]
 	if !ok {
-		return nil, fmt.Errorf("ticket %q not found", id)
+		return nil, fmt.Errorf("%w: %s", ErrNotFound, id)
 	}
 	out, err := st.Ticket.Marshal()
 	if err != nil {

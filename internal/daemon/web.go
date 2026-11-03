@@ -68,6 +68,11 @@ func (d *Daemon) GetTicket(id string) (web.TicketInfo, error) {
 
 // CreateTicket creates a new ticket file and registers it in the daemon.
 func (d *Daemon) CreateTicket(req web.CreateTicketRequest) (web.TicketInfo, error) {
+	release, admissionErr := d.ordinaryMutationAdmission("")
+	if admissionErr != nil {
+		return web.TicketInfo{}, admissionErr
+	}
+	defer release()
 	cfg := d.config()
 	id, err := cli.GenerateID(cfg, req.Path)
 	if err != nil {
@@ -150,6 +155,11 @@ func (d *Daemon) CreateTicket(req web.CreateTicketRequest) (web.TicketInfo, erro
 
 // UploadTicket imports a ticket from raw .md file content.
 func (d *Daemon) UploadTicket(content []byte) (web.TicketInfo, error) {
+	release, admissionErr := d.ordinaryMutationAdmission("")
+	if admissionErr != nil {
+		return web.TicketInfo{}, admissionErr
+	}
+	defer release()
 	cfg := d.config()
 	t, err := ticket.ParseBytes(content)
 	if err != nil {
@@ -272,8 +282,28 @@ func (d *Daemon) GetConfig() web.ConfigInfo {
 	}
 }
 
+func (d *Daemon) ordinaryMutationAdmission(id string) (func(), error) {
+	release, err := ticket.LockOrdinaryRouting(expandTilde(d.config().TicketsDir))
+	if errors.Is(err, ticket.ErrManaged) {
+		return nil, fmt.Errorf("%w: %w", web.ErrInvalidState, err)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if err := d.ordinaryMutationAllowed(id); err != nil {
+		release()
+		return nil, err
+	}
+	return release, nil
+}
+
 // DeleteTicket removes the ticket markdown file without triggering worktree cleanup.
 func (d *Daemon) DeleteTicket(id string) error {
+	release, admissionErr := d.ordinaryMutationAdmission(id)
+	if admissionErr != nil {
+		return admissionErr
+	}
+	defer release()
 	d.mu.Lock()
 	ts, ok := d.tickets[id]
 	if !ok {
@@ -281,6 +311,7 @@ func (d *Daemon) DeleteTicket(id string) error {
 		return web.ErrTicketNotFound
 	}
 	filePath := ts.filePath
+	kind := ts.ticket.Kind
 	cancel, running := d.running[id]
 	d.mu.Unlock()
 
@@ -291,7 +322,7 @@ func (d *Daemon) DeleteTicket(id string) error {
 	// Deleting an epic keeps its work. The children are ordinary tickets that
 	// happen to be filed under it, so they are taken out of it rather than
 	// deleted with it.
-	if ts.ticket.Kind == ticket.KindEpic {
+	if kind == ticket.KindEpic {
 		if err := d.orphanEpicChildren(id); err != nil {
 			return err
 		}
@@ -382,6 +413,11 @@ func (d *Daemon) guardDeletePath(filePath string) error {
 // Intentionally not using the shared app.Service: it needs to cancel the
 // running agent and re-read from disk to avoid racing with runTicket.
 func (d *Daemon) PauseTicket(id string) error {
+	release, admissionErr := d.ordinaryMutationAdmission(id)
+	if admissionErr != nil {
+		return admissionErr
+	}
+	defer release()
 	d.mu.Lock()
 
 	ts, ok := d.tickets[id]
@@ -436,6 +472,11 @@ func (d *Daemon) PauseTicket(id string) error {
 
 // RetryTicket resets a non-running ticket to todo and re-enqueues it.
 func (d *Daemon) RetryTicket(id string) error {
+	release, admissionErr := d.ordinaryMutationAdmission(id)
+	if admissionErr != nil {
+		return admissionErr
+	}
+	defer release()
 	_, err := d.svc.Retry(id)
 	return mapAppError(err)
 }
@@ -449,6 +490,11 @@ func (d *Daemon) RetryTicket(id string) error {
 // whether or not auto_pick_up is on, so it does not go through the dependency
 // reconciliation that gates automatic pickup.
 func (d *Daemon) RunTicket(id string) error {
+	release, admissionErr := d.ordinaryMutationAdmission(id)
+	if admissionErr != nil {
+		return admissionErr
+	}
+	defer release()
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
@@ -509,6 +555,11 @@ func (d *Daemon) RunTicket(id string) error {
 // SkipStage advances a ticket to the next pipeline stage, or completes it
 // if already on the last stage.
 func (d *Daemon) SkipStage(id string) error {
+	release, admissionErr := d.ordinaryMutationAdmission(id)
+	if admissionErr != nil {
+		return admissionErr
+	}
+	defer release()
 	_, err := d.svc.Skip(id)
 	return mapAppError(err)
 }
@@ -520,6 +571,11 @@ func (d *Daemon) SkipStage(id string) error {
 // between the read and the write, and this write would then put back a ticket
 // parsed before the claim, dropping status, started_at and claimed_by.
 func (d *Daemon) SetStage(id string, stage string) error {
+	release, admissionErr := d.ordinaryMutationAdmission(id)
+	if admissionErr != nil {
+		return admissionErr
+	}
+	defer release()
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
@@ -578,6 +634,11 @@ func (d *Daemon) SetStage(id string, stage string) error {
 
 // MoveTicket sets a ticket's status to newStatus with transition validation.
 func (d *Daemon) MoveTicket(id string, newStatus string) error {
+	release, admissionErr := d.ordinaryMutationAdmission(id)
+	if admissionErr != nil {
+		return admissionErr
+	}
+	defer release()
 	d.mu.Lock()
 	ts, known := d.tickets[id]
 	isEpic := known && ts.ticket.Kind == ticket.KindEpic
@@ -675,12 +736,22 @@ func historyWallSeconds(history []ticket.HistoryEntry) int {
 
 // ArchiveTicket archives one closed ticket from the web UI.
 func (d *Daemon) ArchiveTicket(id string, note string) error {
+	release, admissionErr := d.ordinaryMutationAdmission(id)
+	if admissionErr != nil {
+		return admissionErr
+	}
+	defer release()
 	_, err := d.svc.ArchiveTicket(id, note, app.ArchivedByWeb)
 	return mapAppError(err)
 }
 
 // RestoreTicket returns an archived ticket to the status it was archived from.
 func (d *Daemon) RestoreTicket(id string) error {
+	release, admissionErr := d.ordinaryMutationAdmission(id)
+	if admissionErr != nil {
+		return admissionErr
+	}
+	defer release()
 	_, err := d.svc.RestoreTicket(id)
 	return mapAppError(err)
 }
@@ -689,6 +760,11 @@ func (d *Daemon) RestoreTicket(id string) error {
 // local cli.Note path. An empty author signs as the configured one, so a note
 // from the web composer carries the name of the person running the daemon.
 func (d *Daemon) AddNote(id string, req web.AddNoteRequest) error {
+	release, admissionErr := d.ordinaryMutationAdmission(id)
+	if admissionErr != nil {
+		return admissionErr
+	}
+	defer release()
 	author := req.Author
 	if author == "" {
 		author = d.config().Author
@@ -706,6 +782,11 @@ func (d *Daemon) AddNote(id string, req web.AddNoteRequest) error {
 
 // EditNote replaces one note's text and flags its byline as edited.
 func (d *Daemon) EditNote(id, noteID, text string) error {
+	release, admissionErr := d.ordinaryMutationAdmission(id)
+	if admissionErr != nil {
+		return admissionErr
+	}
+	defer release()
 	return d.mutateNotes(id, func(t *ticket.Ticket) error {
 		_, err := t.EditNote(noteID, text)
 		return err
@@ -714,6 +795,11 @@ func (d *Daemon) EditNote(id, noteID, text string) error {
 
 // DeleteNote removes one note and its replies.
 func (d *Daemon) DeleteNote(id, noteID string) error {
+	release, admissionErr := d.ordinaryMutationAdmission(id)
+	if admissionErr != nil {
+		return admissionErr
+	}
+	defer release()
 	return d.mutateNotes(id, func(t *ticket.Ticket) error {
 		return t.DeleteNote(noteID)
 	})
@@ -724,6 +810,11 @@ func (d *Daemon) DeleteNote(id, noteID string) error {
 // every open page sees it move. A note that has no id yet is minted one first,
 // because the sidecar keys on that id.
 func (d *Daemon) SetReaction(id, noteID, emoji, actor string, on bool) error {
+	release, admissionErr := d.ordinaryMutationAdmission(id)
+	if admissionErr != nil {
+		return admissionErr
+	}
+	defer release()
 	cfg := d.config()
 	if actor == "" {
 		actor = cfg.Author
@@ -790,6 +881,11 @@ func (d *Daemon) mutateNotes(id string, mutate func(*ticket.Ticket) error) error
 // SetSummary sets a ticket's summary frontmatter field, mirroring the local
 // cli.Summary path.
 func (d *Daemon) SetSummary(id string, text string) error {
+	release, admissionErr := d.ordinaryMutationAdmission(id)
+	if admissionErr != nil {
+		return admissionErr
+	}
+	defer release()
 	d.mu.Lock()
 	ts, ok := d.tickets[id]
 	if !ok {
@@ -820,6 +916,11 @@ func (d *Daemon) SetSummary(id string, text string) error {
 // InitTicket initializes a non-kontora ticket: sets pipeline, path, kontora=true,
 // status=todo, stage to the first pipeline stage, and enqueues it.
 func (d *Daemon) InitTicket(id string, req web.InitTicketRequest) error {
+	release, admissionErr := d.ordinaryMutationAdmission(id)
+	if admissionErr != nil {
+		return admissionErr
+	}
+	defer release()
 	if err := validateNotifyFields(d.config(), req.Notify, req.NotifyChannels); err != nil {
 		return err
 	}
@@ -842,42 +943,101 @@ func (d *Daemon) InitTicket(id string, req web.InitTicketRequest) error {
 // mutation it goes through the application service, so the daemon and the CLI
 // reject the same calls and the queue is reconciled the same way.
 func (d *Daemon) AddDependency(id string, dependencyID string) error {
+	release, admissionErr := d.ordinaryMutationAdmission(id)
+	if admissionErr != nil {
+		return admissionErr
+	}
+	defer release()
+	if err := d.ordinaryMutationAllowed(dependencyID); err != nil {
+		return err
+	}
 	_, err := d.svc.AddDependency(id, dependencyID)
 	return mapAppError(err)
 }
 
 // RemoveDependency drops a dependency edge.
 func (d *Daemon) RemoveDependency(id string, dependencyID string) error {
+	release, admissionErr := d.ordinaryMutationAdmission(id)
+	if admissionErr != nil {
+		return admissionErr
+	}
+	defer release()
+	if err := d.ordinaryMutationAllowed(dependencyID); err != nil {
+		return err
+	}
 	_, err := d.svc.RemoveDependency(id, dependencyID)
 	return mapAppError(err)
 }
 
 // LinkTickets relates a ticket to each of relatedIDs, on both sides.
 func (d *Daemon) LinkTickets(id string, relatedIDs []string) error {
+	release, admissionErr := d.ordinaryMutationAdmission(id)
+	if admissionErr != nil {
+		return admissionErr
+	}
+	defer release()
+	for _, related := range relatedIDs {
+		if err := d.ordinaryMutationAllowed(related); err != nil {
+			return err
+		}
+	}
 	_, err := d.svc.Link(id, relatedIDs...)
 	return mapAppError(err)
 }
 
 // UnlinkTickets removes the relation between a ticket and each of relatedIDs.
 func (d *Daemon) UnlinkTickets(id string, relatedIDs []string) error {
+	release, admissionErr := d.ordinaryMutationAdmission(id)
+	if admissionErr != nil {
+		return admissionErr
+	}
+	defer release()
+	for _, related := range relatedIDs {
+		if err := d.ordinaryMutationAllowed(related); err != nil {
+			return err
+		}
+	}
 	_, err := d.svc.Unlink(id, relatedIDs...)
 	return mapAppError(err)
 }
 
 // SetParent files a ticket under an epic.
 func (d *Daemon) SetParent(id string, parentID string) error {
+	release, admissionErr := d.ordinaryMutationAdmission(id)
+	if admissionErr != nil {
+		return admissionErr
+	}
+	defer release()
+	if err := d.ordinaryMutationAllowed(parentID); err != nil {
+		return err
+	}
 	_, err := d.svc.SetParent(id, parentID)
 	return mapAppError(err)
 }
 
 // ClearParent takes a ticket out of its epic.
 func (d *Daemon) ClearParent(id string) error {
+	release, admissionErr := d.ordinaryMutationAdmission(id)
+	if admissionErr != nil {
+		return admissionErr
+	}
+	defer release()
 	_, err := d.svc.ClearParent(id)
 	return mapAppError(err)
 }
 
 // SetChildOrder writes an epic's manual child order.
 func (d *Daemon) SetChildOrder(id string, children []string) error {
+	release, admissionErr := d.ordinaryMutationAdmission(id)
+	if admissionErr != nil {
+		return admissionErr
+	}
+	defer release()
+	for _, child := range children {
+		if err := d.ordinaryMutationAllowed(child); err != nil {
+			return err
+		}
+	}
 	_, err := d.svc.SetChildOrder(id, children)
 	return mapAppError(err)
 }
@@ -885,6 +1045,11 @@ func (d *Daemon) SetChildOrder(id string, children []string) error {
 // UpdateTicket updates body and frontmatter fields of a ticket.
 // Allowed in statuses: open, todo, paused.
 func (d *Daemon) UpdateTicket(id string, req web.UpdateTicketRequest) error {
+	release, admissionErr := d.ordinaryMutationAdmission(id)
+	if admissionErr != nil {
+		return admissionErr
+	}
+	defer release()
 	d.mu.Lock()
 	ts, ok := d.tickets[id]
 	if !ok {

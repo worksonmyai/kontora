@@ -198,6 +198,21 @@ type CreateOpts struct {
 }
 
 func (m *Manager) Create(opts CreateOpts) (wtPath string, created bool, err error) {
+	err = withBranchOwnership(opts.RepoPath, func(_ string, leases map[string]BranchOwnership) error {
+		if err := refuseOwned(opts.RepoPath, leases, opts.Branch, m.Path(opts.RepoName, opts.TaskID)); err != nil {
+			return err
+		}
+		if err := checkWorktreeOwnership(opts.RepoPath, m.Path(opts.RepoName, opts.TaskID), leases); err != nil {
+			return err
+		}
+		var createErr error
+		wtPath, created, createErr = m.create(opts, leases)
+		return createErr
+	})
+	return wtPath, created, err
+}
+
+func (m *Manager) create(opts CreateOpts, leases map[string]BranchOwnership) (wtPath string, created bool, err error) {
 	// Reject a base that names the work branch before anything else. Behind the
 	// reuse short-circuit below, the collision would be silent: `git worktree
 	// add -b develop <path> develop` fails with "a branch named 'develop'
@@ -213,6 +228,9 @@ func (m *Manager) Create(opts CreateOpts) (wtPath string, created bool, err erro
 	if existing, err := FindWorktreeForBranch(opts.RepoPath, opts.Branch); err != nil {
 		return "", false, fmt.Errorf("finding existing worktree: %w", err)
 	} else if existing != "" {
+		if err := checkWorktreeOwnership(opts.RepoPath, existing, leases); err != nil {
+			return "", false, err
+		}
 		return existing, false, nil
 	}
 
@@ -321,14 +339,22 @@ var ErrDirtyWorktree = fmt.Errorf("worktree has uncommitted changes")
 // No-op when no worktree holds the branch. Returns ErrDirtyWorktree when the
 // discovered worktree has uncommitted changes.
 func (m *Manager) Remove(repoPath, branch string) error {
-	wtPath, err := FindWorktreeForBranch(repoPath, branch)
-	if err != nil {
-		return fmt.Errorf("finding worktree for branch: %w", err)
-	}
-	if wtPath == "" {
-		return nil
-	}
-	return m.RemoveAt(repoPath, wtPath)
+	return withBranchOwnership(repoPath, func(_ string, leases map[string]BranchOwnership) error {
+		if err := refuseOwned(repoPath, leases, branch, ""); err != nil {
+			return err
+		}
+		wtPath, err := FindWorktreeForBranch(repoPath, branch)
+		if err != nil {
+			return fmt.Errorf("finding worktree for branch: %w", err)
+		}
+		if wtPath == "" {
+			return nil
+		}
+		if err := checkWorktreeOwnership(repoPath, wtPath, leases); err != nil {
+			return err
+		}
+		return m.removeAt(repoPath, wtPath)
+	})
 }
 
 // RemoveAt removes the worktree at wtPath directly, skipping branch discovery.
@@ -339,7 +365,15 @@ func (m *Manager) RemoveAt(repoPath, wtPath string) error {
 	if wtPath == "" {
 		return nil
 	}
+	return withBranchOwnership(repoPath, func(_ string, leases map[string]BranchOwnership) error {
+		if err := checkWorktreeOwnership(repoPath, wtPath, leases); err != nil {
+			return err
+		}
+		return m.removeAt(repoPath, wtPath)
+	})
+}
 
+func (m *Manager) removeAt(repoPath, wtPath string) error {
 	if dirty, err := isDirty(wtPath); err != nil {
 		return fmt.Errorf("checking worktree status: %w", err)
 	} else if dirty {

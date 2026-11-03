@@ -182,19 +182,30 @@ type HistoryEntry struct {
 // ticket from reviewer annotations, not to do stage work.
 const KindAnnotation = "annotation"
 
+type ManagedOwnership struct {
+	BoardID               string `yaml:"board_id" json:"board_id"`
+	OwnerID               string `yaml:"owner_id" json:"owner_id"`
+	ObjectiveID           string `yaml:"objective_id" json:"objective_id"`
+	Generation            uint64 `yaml:"generation" json:"generation"`
+	DocumentRevision      uint64 `yaml:"document_revision" json:"document_revision"`
+	SpecificationRevision uint64 `yaml:"specification_revision" json:"specification_revision"`
+	AttemptID             string `yaml:"attempt_id,omitempty" json:"attempt_id,omitempty"`
+}
+
 type Ticket struct {
-	ID          string     `yaml:"id"`
-	Kontora     bool       `yaml:"kontora"`
-	Status      Status     `yaml:"status"`
-	Kind        Kind       `yaml:"kind,omitempty"`
-	Pipeline    string     `yaml:"pipeline"`
-	Path        string     `yaml:"path"`
-	Agent       string     `yaml:"agent"`
-	Stage       string     `yaml:"stage"`
-	Attempt     int        `yaml:"attempt"`
-	StartedAt   *time.Time `yaml:"started_at"`
-	CompletedAt *time.Time `yaml:"completed_at"`
-	Branch      string     `yaml:"branch"`
+	Managed     *ManagedOwnership `yaml:"managed,omitempty"`
+	ID          string            `yaml:"id"`
+	Kontora     bool              `yaml:"kontora"`
+	Status      Status            `yaml:"status"`
+	Kind        Kind              `yaml:"kind,omitempty"`
+	Pipeline    string            `yaml:"pipeline"`
+	Path        string            `yaml:"path"`
+	Agent       string            `yaml:"agent"`
+	Stage       string            `yaml:"stage"`
+	Attempt     int               `yaml:"attempt"`
+	StartedAt   *time.Time        `yaml:"started_at"`
+	CompletedAt *time.Time        `yaml:"completed_at"`
+	Branch      string            `yaml:"branch"`
 	// BaseBranch names the branch the work branch starts from. Empty means the
 	// repository's default branch.
 	BaseBranch string         `yaml:"base_branch"`

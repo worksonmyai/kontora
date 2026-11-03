@@ -69,7 +69,7 @@ func TestChannelName(t *testing.T) {
 }
 
 func TestWindowTarget(t *testing.T) {
-	assert.Equal(t, "=kontora:tst-001", WindowTarget(DefaultSessionName, "tst-001"))
+	assert.Equal(t, "=kontora:=tst-001", WindowTarget(DefaultSessionName, "tst-001"))
 }
 
 func TestSendKeys(t *testing.T) {
@@ -565,17 +565,15 @@ func TestRunWindowVanished(t *testing.T) {
 
 	ticketID := "test-rvan-" + randomSuffix()
 
-	go func() {
-		time.Sleep(300 * time.Millisecond)
-		_ = KillWindow(testSession, ticketID)
-	}()
-
-	result, err := Run(context.Background(), RunParams{
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	result, err := Run(ctx, RunParams{
 		SessionName: testSession,
 		Binary:      "sleep",
 		Args:        []string{"999"},
 		Dir:         t.TempDir(),
 		TicketID:    ticketID,
+		OnReady:     func() { require.NoError(t, KillWindow(testSession, ticketID)) },
 	})
 	require.ErrorContains(t, err, "vanished")
 	assert.Equal(t, -1, result.ExitCode)
@@ -592,12 +590,9 @@ func TestRunInteractiveWindowVanished(t *testing.T) {
 
 	ticketID := "test-rivan-" + randomSuffix()
 
-	go func() {
-		time.Sleep(300 * time.Millisecond)
-		_ = KillWindow(testSession, ticketID)
-	}()
-
-	result, err := Run(context.Background(), RunParams{
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	result, err := Run(ctx, RunParams{
 		SessionName: testSession,
 		Binary:      "sleep",
 		Args:        []string{"999"},
@@ -605,6 +600,7 @@ func TestRunInteractiveWindowVanished(t *testing.T) {
 		TicketID:    ticketID,
 		Interactive: true,
 		MinDuration: -1,
+		OnReady:     func() { require.NoError(t, KillWindow(testSession, ticketID)) },
 	})
 	require.NoError(t, err)
 	assert.Equal(t, 1, result.ExitCode)

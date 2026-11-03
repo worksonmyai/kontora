@@ -26,9 +26,10 @@ import (
 
 // Client talks to a kontora daemon's HTTP/SSE API.
 type Client struct {
-	base  string
-	token string
-	hc    *http.Client
+	base          string
+	token         string
+	operatorToken string
+	hc            *http.Client
 }
 
 var (
@@ -109,6 +110,9 @@ func (c *Client) newRequest(ctx context.Context, method, path string, body io.Re
 	}
 	if c.token != "" {
 		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	if c.operatorToken != "" {
+		req.Header.Set(web.OperatorTokenHeader, c.operatorToken)
 	}
 	return req, nil
 }

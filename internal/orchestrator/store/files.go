@@ -394,6 +394,10 @@ func (s *Store) readArtifact(ref orchestrator.ArtifactRef) ([]byte, error) {
 func (s *Store) PutArtifact(data []byte) (orchestrator.ArtifactRef, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.putArtifact(data)
+}
+
+func (s *Store) putArtifact(data []byte) (orchestrator.ArtifactRef, error) {
 	if err := s.available(); err != nil {
 		return orchestrator.ArtifactRef{}, err
 	}

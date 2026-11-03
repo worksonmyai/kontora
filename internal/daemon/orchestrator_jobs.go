@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/worksonmyai/kontora/internal/orchestrator"
@@ -14,10 +15,11 @@ import (
 )
 
 type managedExecution struct {
-	store    *controlstore.Store
-	runner   RunnerFunc
-	logsDir  string
-	capacity int
+	store              *controlstore.Store
+	runner             RunnerFunc
+	logsDir            string
+	capacity           int
+	operatorSecretKeys []string
 }
 
 func (e *managedExecution) reserve(attempt orchestrator.Attempt, leases []orchestrator.Lease) error {
@@ -62,6 +64,15 @@ func (e *managedExecution) freeze(profile string, timeout time.Duration, command
 	if profile == "" || timeout <= 0 || command.Binary == "" || command.Directory == "" {
 		return orchestrator.Recipe{}, errors.New("managed execution requires a complete recipe")
 	}
+	environment, err := process.SanitizeEnvironment(nil, envPairs(command.Environment), e.operatorSecretKeys)
+	if err != nil {
+		return orchestrator.Recipe{}, err
+	}
+	command.Environment = make(map[string]string, len(environment))
+	for _, entry := range environment {
+		key, value, _ := strings.Cut(entry, "=")
+		command.Environment[key] = value
+	}
 	data, err := json.Marshal(command)
 	if err != nil {
 		return orchestrator.Recipe{}, err
@@ -91,6 +102,10 @@ func (e *managedExecution) execute(ctx context.Context, attemptID string) bool {
 	}
 	var command frozenCommand
 	if err := json.Unmarshal(data, &command); err != nil {
+		return false
+	}
+	clean, err := process.SanitizeEnvironment(nil, envPairs(command.Environment), e.operatorSecretKeys)
+	if err != nil || len(clean) != len(command.Environment) {
 		return false
 	}
 	params := RunnerParams{Binary: command.Binary, Args: command.Args, Dir: command.Directory, Env: command.Environment, Timeout: attempt.Recipe.Timeout, ReplaceEnv: true, RequireTermination: true, AttemptID: attemptID}

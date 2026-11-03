@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -16,16 +17,18 @@ import (
 
 func TestManagedExecution(t *testing.T) {
 	for _, tc := range []struct {
-		name     string
-		kind     orchestrator.WorkKind
-		leases   []orchestrator.Lease
-		evidence process.TerminationEvidence
-		parking  bool
-		timeout  bool
-		want     orchestrator.AttemptStatus
-		held     bool
+		name              string
+		kind              orchestrator.WorkKind
+		leases            []orchestrator.Lease
+		evidence          process.TerminationEvidence
+		parking           bool
+		secretEnvironment bool
+		timeout           bool
+		want              orchestrator.AttemptStatus
+		held              bool
 	}{
 		{name: "ticketless job", kind: orchestrator.WorkJob, evidence: process.TerminationProcessGroupGone, want: orchestrator.AttemptSucceeded},
+		{name: "operator secrets removed before freezing", kind: orchestrator.WorkJob, secretEnvironment: true, evidence: process.TerminationProcessGroupGone, want: orchestrator.AttemptSucceeded},
 		{name: "leased job", kind: orchestrator.WorkJob, leases: []orchestrator.Lease{{Key: "repo", WorkID: "job"}}, evidence: process.TerminationProcessGroupGone, want: orchestrator.AttemptSucceeded},
 		{name: "accounted summary", kind: orchestrator.WorkSummary, evidence: process.TerminationProcessGroupGone, want: orchestrator.AttemptSucceeded},
 		{name: "timeout with exit zero", kind: orchestrator.WorkJob, evidence: process.TerminationProcessGroupGone, timeout: true, want: orchestrator.AttemptFailed},
@@ -39,14 +42,31 @@ func TestManagedExecution(t *testing.T) {
 			assignedControl(t, store)
 			controlApply(t, store, orchestrator.Command{Kind: orchestrator.PutWork, Work: orchestrator.WorkItem{ID: "job", ObjectiveID: "objective", Kind: tc.kind, Specification: "perform work"}})
 			execution := managedExecution{store: store, logsDir: t.TempDir(), capacity: 1}
-			recipe, err := execution.freeze("worker-"+string(tc.kind), time.Minute, frozenCommand{Binary: "worker", Directory: t.TempDir(), Args: []string{"frozen"}})
+			command := frozenCommand{Binary: "worker", Directory: t.TempDir(), Args: []string{"frozen"}}
+			if tc.secretEnvironment {
+				execution.operatorSecretKeys = []string{"OPERATOR_ALIAS"}
+				command.Environment = map[string]string{"KONTORA_TOKEN": "shared-secret", "OPERATOR_ALIAS": "operator-secret", "SAFE": "value"}
+			}
+			recipe, err := execution.freeze("worker-"+string(tc.kind), time.Minute, command)
 			require.NoError(t, err)
+			if tc.secretEnvironment {
+				data, err := store.ReadArtifact(recipe.Artifacts[0])
+				require.NoError(t, err)
+				require.NotContains(t, string(data), "shared-secret")
+				require.NotContains(t, string(data), "operator-secret")
+				var frozen frozenCommand
+				require.NoError(t, json.Unmarshal(data, &frozen))
+				require.Equal(t, map[string]string{"SAFE": "value"}, frozen.Environment)
+			}
 			require.NoError(t, execution.reserve(orchestrator.Attempt{ID: "attempt", WorkID: "job", ObjectiveID: "objective", SpecificationRevision: 1, Recipe: recipe, Reservation: orchestrator.Reservation{Slots: 1}}, tc.leases))
 			execution.runner = func(_ context.Context, params RunnerParams) (process.Result, error) {
 				require.Equal(t, "attempt", params.AttemptID)
 				require.Empty(t, params.TicketID)
 				require.Equal(t, []string{"frozen"}, params.Args)
 				require.True(t, params.ReplaceEnv)
+				if tc.secretEnvironment {
+					require.Equal(t, map[string]string{"SAFE": "value"}, params.Env)
+				}
 				require.Contains(t, params.LogFile, "attempts/attempt/output.log")
 				if tc.parking {
 					controlApply(t, store, orchestrator.Command{Kind: orchestrator.AskQuestion, Question: orchestrator.Question{ID: "question", ObjectiveID: "objective", WorkID: "job", AttemptID: "attempt", SpecificationRevision: 1, Prompt: "continue?"}})

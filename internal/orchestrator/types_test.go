@@ -9,11 +9,17 @@ import (
 func TestDomainRecordRoundTrip(t *testing.T) {
 	for _, value := range []any{
 		Objective{ID: "o", DocumentRevision: 7, CriteriaRevision: 3, CurrentPlan: 2},
-		WorkItem{ID: "w", DocumentRevision: 9, SpecificationRevision: 4, ActiveAttemptID: "attempt-unique", LastAttemptID: "attempt-unique"},
+		Plan{ID: "p", ReplacedWorkIDs: []string{"old"}, ReplacementWorkIDs: map[string]string{"old": "new"}},
+		WorkItem{ID: "w", DocumentRevision: 9, SpecificationRevision: 4, ActiveAttemptID: "attempt-unique", LastAttemptID: "attempt-unique", AcceptanceRequired: true},
+		AcceptanceBinding{Obligations: []ResultRef{{ResultID: "r", WorkID: "feedback", Generation: 1}}},
 		Attempt{ID: "attempt-unique", WorkID: "w", SpecificationRevision: 4},
 		Result{ID: "r", WorkID: "w", AttemptID: "attempt-unique", Generation: 2, SpecificationRevision: 4},
 		Question{ID: "q", AttemptID: "attempt-unique", SpecificationRevision: 4},
-		Acceptance{ID: "accept", CriteriaRevision: 3, PlanRevision: 2, Results: []ResultRef{{ResultID: "r", WorkID: "w", Generation: 2}}},
+		Acceptance{ID: "accept", CriteriaRevision: 3, PlanRevision: 2, Results: []ResultRef{{ResultID: "r", WorkID: "w", Generation: 2}}, Binding: &AcceptanceBinding{CriteriaRevision: 3, PlanRevision: 2, VerificationPolicyID: "checks"}, ReviewID: "review"},
+		CheckedOutput{Disposition: OutputResearch, VerificationPolicyID: "checks", Outputs: []QualifiedOutput{{Artifact: evidenceArtifact()}}, Sources: []Citation{{Source: "source", Evidence: evidenceArtifact()}}, Review: &OutputReview{ReviewerID: "reviewer", Evidence: evidenceArtifact()}},
+		VerificationPolicy{ID: "checks", ObjectiveID: "o", Revision: "v1", Definitions: []CheckDefinition{{ID: "test", Command: []string{"go", "test"}}}, OperatorID: "operator", RecordedAt: testNow},
+		VerificationExecution{VerificationPolicyID: "checks", DefinitionID: "test", Command: []string{"go", "test"}, Outputs: []QualifiedOutput{{Repository: "repo", Commit: outputHead}}},
+		CombinedReview{ID: "review", ObjectiveID: "o", ReviewerID: "reviewer", Evidence: evidenceArtifact(), AttemptIDs: []string{"producer", "check"}, Binding: AcceptanceBinding{Current: []QualifiedResult{{Result: ResultRef{ResultID: "r", WorkID: "w", Generation: 1}, Outputs: []QualifiedOutput{{Repository: "repo", Commit: outputHead}}, Ranges: []ReviewRange{{Repository: "repo", BaseCommit: outputBase, HeadCommit: outputHead}}}}}},
 	} {
 		t.Run(reflect.TypeOf(value).Name(), func(t *testing.T) {
 			data, err := json.Marshal(value)
@@ -28,6 +34,21 @@ func TestDomainRecordRoundTrip(t *testing.T) {
 				t.Fatalf("record identities changed: %s", data)
 			}
 		})
+	}
+}
+
+func TestLegacyPlanEncoding(t *testing.T) {
+	const legacy = `{"id":"p","objective_id":"o","revision":1,"rationale":"replace","work_ids":[],"required_results":[],"replaced_work_ids":["old"]}`
+	var p Plan
+	if err := json.Unmarshal([]byte(legacy), &p); err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != legacy {
+		t.Fatalf("legacy plan encoding changed: %s", data)
 	}
 }
 

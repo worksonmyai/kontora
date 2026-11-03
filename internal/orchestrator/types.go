@@ -39,27 +39,29 @@ type Usage struct {
 }
 
 type Objective struct {
-	ID               string           `json:"id"`
-	DocumentRevision DocumentRevision `json:"document_revision"`
-	Assignment       string           `json:"assignment"`
-	Criteria         []string         `json:"criteria"`
-	CriteriaRevision uint64           `json:"criteria_revision"`
-	Policy           Policy           `json:"policy"`
-	Budget           Budget           `json:"budget"`
-	Usage            Usage            `json:"usage"`
-	Status           ObjectiveStatus  `json:"status"`
-	BlockedReason    string           `json:"blocked_reason,omitempty"`
-	CurrentPlan      PlanRevision     `json:"current_plan"`
+	ID                   string           `json:"id"`
+	DocumentRevision     DocumentRevision `json:"document_revision"`
+	Assignment           string           `json:"assignment"`
+	Criteria             []string         `json:"criteria"`
+	CriteriaRevision     uint64           `json:"criteria_revision"`
+	Policy               Policy           `json:"policy"`
+	Budget               Budget           `json:"budget"`
+	Usage                Usage            `json:"usage"`
+	Status               ObjectiveStatus  `json:"status"`
+	BlockedReason        string           `json:"blocked_reason,omitempty"`
+	CurrentPlan          PlanRevision     `json:"current_plan"`
+	VerificationPolicyID string           `json:"verification_policy_id,omitempty"`
 }
 
 type Plan struct {
-	ID              string       `json:"id"`
-	ObjectiveID     string       `json:"objective_id"`
-	Revision        PlanRevision `json:"revision"`
-	Rationale       string       `json:"rationale"`
-	WorkIDs         []string     `json:"work_ids"`
-	RequiredResults []string     `json:"required_results"`
-	ReplacedWorkIDs []string     `json:"replaced_work_ids"`
+	ID                 string            `json:"id"`
+	ObjectiveID        string            `json:"objective_id"`
+	Revision           PlanRevision      `json:"revision"`
+	Rationale          string            `json:"rationale"`
+	WorkIDs            []string          `json:"work_ids"`
+	RequiredResults    []string          `json:"required_results"`
+	ReplacedWorkIDs    []string          `json:"replaced_work_ids"`
+	ReplacementWorkIDs map[string]string `json:"replacement_work_ids,omitempty"`
 }
 
 type WorkKind string
@@ -82,6 +84,7 @@ type WorkItem struct {
 	SpecificationRevision SpecificationRevision `json:"specification_revision"`
 	Specification         string                `json:"specification"`
 	Notes                 string                `json:"notes,omitempty"`
+	AcceptanceRequired    bool                  `json:"acceptance_required,omitempty"`
 	Dependencies          []string              `json:"dependencies"`
 	Inputs                []ResultRef           `json:"inputs"`
 	ActiveAttemptID       string                `json:"active_attempt_id,omitempty"`
@@ -102,13 +105,14 @@ type ArtifactRef struct {
 }
 
 type Recipe struct {
-	Profile               string        `json:"profile"`
-	ConfigurationRevision string        `json:"configuration_revision"`
-	PricingRevision       string        `json:"pricing_revision,omitempty"`
-	Timeout               time.Duration `json:"timeout"`
-	Repository            string        `json:"repository,omitempty"`
-	BaseCommit            string        `json:"base_commit,omitempty"`
-	Artifacts             []ArtifactRef `json:"artifacts"`
+	Profile               string                 `json:"profile"`
+	ConfigurationRevision string                 `json:"configuration_revision"`
+	PricingRevision       string                 `json:"pricing_revision,omitempty"`
+	Timeout               time.Duration          `json:"timeout"`
+	Repository            string                 `json:"repository,omitempty"`
+	BaseCommit            string                 `json:"base_commit,omitempty"`
+	Artifacts             []ArtifactRef          `json:"artifacts"`
+	Verification          *VerificationExecution `json:"verification,omitempty"`
 }
 
 type AttemptStatus string
@@ -155,14 +159,18 @@ type Lease struct {
 }
 
 type Check struct {
-	DefinitionRevision    string        `json:"definition_revision"`
-	ConfigurationRevision string        `json:"configuration_revision"`
-	Command               []string      `json:"command"`
-	Directory             string        `json:"directory"`
-	Timeout               time.Duration `json:"timeout"`
-	ExitCode              int           `json:"exit_code"`
-	InputsUnchanged       bool          `json:"inputs_unchanged"`
-	Log                   ArtifactRef   `json:"log"`
+	DefinitionRevision    string            `json:"definition_revision"`
+	ConfigurationRevision string            `json:"configuration_revision"`
+	Command               []string          `json:"command"`
+	Directory             string            `json:"directory"`
+	Timeout               time.Duration     `json:"timeout"`
+	ExitCode              int               `json:"exit_code"`
+	InputsUnchanged       bool              `json:"inputs_unchanged"`
+	Log                   ArtifactRef       `json:"log"`
+	ID                    string            `json:"id,omitempty"`
+	AttemptID             string            `json:"attempt_id,omitempty"`
+	Inputs                []ResultRef       `json:"inputs,omitzero"`
+	Outputs               []QualifiedOutput `json:"outputs,omitzero"`
 }
 
 type Result struct {
@@ -177,6 +185,7 @@ type Result struct {
 	Checks                []Check               `json:"checks"`
 	Valid                 bool                  `json:"valid"`
 	InvalidReason         string                `json:"invalid_reason,omitempty"`
+	Checked               *CheckedOutput        `json:"checked,omitempty"`
 }
 
 type ActionStatus string
@@ -227,28 +236,33 @@ type Question struct {
 }
 
 type Acceptance struct {
-	ID               string       `json:"id"`
-	ObjectiveID      string       `json:"objective_id"`
-	OperatorID       string       `json:"operator_id"`
-	CriteriaRevision uint64       `json:"criteria_revision"`
-	PlanRevision     PlanRevision `json:"plan_revision"`
-	CheckRevision    string       `json:"check_revision"`
-	Results          []ResultRef  `json:"results"`
-	AcceptedAt       time.Time    `json:"accepted_at"`
+	ID               string             `json:"id"`
+	ObjectiveID      string             `json:"objective_id"`
+	OperatorID       string             `json:"operator_id"`
+	CriteriaRevision uint64             `json:"criteria_revision"`
+	PlanRevision     PlanRevision       `json:"plan_revision"`
+	CheckRevision    string             `json:"check_revision"`
+	Results          []ResultRef        `json:"results"`
+	AcceptedAt       time.Time          `json:"accepted_at"`
+	Binding          *AcceptanceBinding `json:"binding,omitempty"`
+	ReviewID         string             `json:"review_id,omitempty"`
 }
 
 type State struct {
-	BoardID     string                `json:"board_id"`
-	Revision    uint64                `json:"revision"`
-	Objectives  map[string]Objective  `json:"objectives"`
-	Plans       map[string]Plan       `json:"plans"`
-	Work        map[string]WorkItem   `json:"work"`
-	Attempts    map[string]Attempt    `json:"attempts"`
-	Results     map[string]Result     `json:"results"`
-	Actions     map[string]Action     `json:"actions"`
-	Questions   map[string]Question   `json:"questions"`
-	Acceptances map[string]Acceptance `json:"acceptances"`
-	Leases      map[string]Lease      `json:"leases"`
+	BoardID              string                        `json:"board_id"`
+	Revision             uint64                        `json:"revision"`
+	Requests             map[string]ControlRequest     `json:"requests,omitempty"`
+	Objectives           map[string]Objective          `json:"objectives"`
+	Plans                map[string]Plan               `json:"plans"`
+	Work                 map[string]WorkItem           `json:"work"`
+	Attempts             map[string]Attempt            `json:"attempts"`
+	Results              map[string]Result             `json:"results"`
+	Actions              map[string]Action             `json:"actions"`
+	Questions            map[string]Question           `json:"questions"`
+	Acceptances          map[string]Acceptance         `json:"acceptances"`
+	Leases               map[string]Lease              `json:"leases"`
+	VerificationPolicies map[string]VerificationPolicy `json:"verification_policies,omitempty"`
+	Reviews              map[string]CombinedReview     `json:"reviews,omitempty"`
 }
 
 func NewState(boardID string) State {

@@ -71,21 +71,58 @@ func TestPlanReplacement(t *testing.T) {
 	for _, tc := range []struct {
 		name           string
 		work, replaced []string
+		replacements   map[string]string
 		good           bool
 	}{
-		{"retain", []string{"w"}, nil, true},
-		{"silent-drop", nil, nil, false},
-		{"explicit-replace", nil, []string{"w"}, true},
-		{"keep-and-replace", []string{"w"}, []string{"w"}, false},
+		{"retain", []string{"w"}, nil, nil, true},
+		{"silent-drop", nil, nil, nil, false},
+		{"explicit-replace", nil, []string{"w"}, nil, true},
+		{"keep-and-replace", []string{"w"}, []string{"w"}, nil, false},
+		{"bound replacement", []string{"successor"}, []string{"w"}, map[string]string{"w": "successor"}, true},
+		{"unreplaced source", []string{"w", "successor"}, nil, map[string]string{"w": "successor"}, false},
+		{"unplanned target", nil, []string{"w"}, map[string]string{"w": "successor"}, false},
+		{"missing target", nil, []string{"w"}, map[string]string{"w": "missing"}, false},
+		{"self replacement", nil, []string{"w"}, map[string]string{"w": "w"}, false},
+		{"duplicate replaced work", []string{"successor"}, []string{"w", "w"}, nil, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s := testState(t)
+			s = applyTest(t, s, Command{Kind: PutWork, Work: WorkItem{ID: "successor", ObjectiveID: "o", Kind: WorkJob, Specification: "replacement"}})
 			s = applyTest(t, s, Command{Kind: PutPlan, Plan: Plan{ID: "p1", ObjectiveID: "o", Revision: 1, WorkIDs: []string{"w"}, RequiredResults: []string{"w"}}})
-			_, err := Apply(s, Command{Kind: PutPlan, ExpectedRevision: s.Revision, Plan: Plan{ID: "p2", ObjectiveID: "o", Revision: 2, WorkIDs: tc.work, RequiredResults: tc.work, ReplacedWorkIDs: tc.replaced}})
+			_, err := Apply(s, Command{Kind: PutPlan, ExpectedRevision: s.Revision, Plan: Plan{ID: "p2", ObjectiveID: "o", Revision: 2, WorkIDs: tc.work, RequiredResults: tc.work, ReplacedWorkIDs: tc.replaced, ReplacementWorkIDs: tc.replacements}})
 			if (err == nil) != tc.good {
 				t.Fatalf("plan revision: %v", err)
 			}
 		})
+	}
+}
+
+func TestReplacementBindingDurability(t *testing.T) {
+	s := testState(t)
+	for _, id := range []string{"successor", "other"} {
+		s = applyTest(t, s, Command{Kind: PutWork, Work: WorkItem{ID: id, ObjectiveID: "o", Kind: WorkJob, Specification: id}})
+	}
+	s = applyTest(t, s, Command{Kind: PutPlan, Plan: Plan{ID: "p1", ObjectiveID: "o", Revision: 1, WorkIDs: []string{"w"}, RequiredResults: []string{"w"}}})
+	s = applyTest(t, s, Command{Kind: PutPlan, Plan: Plan{ID: "p2", ObjectiveID: "o", Revision: 2, WorkIDs: []string{"successor", "other"}, RequiredResults: []string{"successor"}, ReplacedWorkIDs: []string{"w"}, ReplacementWorkIDs: map[string]string{"w": "successor"}}})
+	for _, p := range []Plan{
+		{ID: "p3", ObjectiveID: "o", Revision: 3, WorkIDs: []string{"w", "other"}, ReplacedWorkIDs: []string{"successor"}, ReplacementWorkIDs: map[string]string{"successor": "w"}},
+		{ID: "p3", ObjectiveID: "o", Revision: 3, WorkIDs: []string{"successor", "other"}, RequiredResults: []string{"successor"}, ReplacementWorkIDs: map[string]string{"w": "other"}},
+		{ID: "p3", ObjectiveID: "o", Revision: 3, WorkIDs: []string{"successor", "other"}, RequiredResults: []string{"successor"}, ReplacedWorkIDs: []string{"w"}},
+	} {
+		if _, err := Apply(s, Command{Kind: PutPlan, ExpectedRevision: s.Revision, Plan: p}); err == nil {
+			t.Fatal("accepted cyclic or rebound replacement")
+		}
+	}
+	n, err := Clone(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n.Revision++
+	p := n.Plans["p2"]
+	p.ReplacementWorkIDs["w"] = "other"
+	n.Plans[p.ID] = p
+	if err := ValidateTransition(s, n); err == nil {
+		t.Fatal("rewrote historical replacement edge")
 	}
 }
 
@@ -124,11 +161,17 @@ func TestArtifactReferences(t *testing.T) {
 	s := testState(t)
 	a := ArtifactRef{Hash: "a", Size: 10}
 	b := ArtifactRef{Hash: "b", Size: 20}
-	s.Attempts["test"] = Attempt{Recipe: Recipe{Artifacts: []ArtifactRef{a}}, Logs: []ArtifactRef{b, a}}
-	s.Results["test"] = Result{Artifacts: []ArtifactRef{a}, Checks: []Check{{Log: b}}}
+	c := ArtifactRef{Hash: "c", Size: 1}
+	d := ArtifactRef{Hash: "d", Size: 2}
+	e := ArtifactRef{Hash: "e", Size: 3}
+	f := ArtifactRef{Hash: "f", Size: 4}
+	g := ArtifactRef{Hash: "g", Size: 5}
+	s.Attempts["test"] = Attempt{Recipe: Recipe{Artifacts: []ArtifactRef{a}, Verification: &VerificationExecution{Outputs: []QualifiedOutput{{Artifact: c}}}}, Logs: []ArtifactRef{b, a}}
+	s.Results["test"] = Result{Artifacts: []ArtifactRef{a}, Checks: []Check{{Log: b}}, Checked: &CheckedOutput{Evidence: d, Sources: []Citation{{Evidence: e}}, Review: &OutputReview{Evidence: f}}}
+	s.Reviews = map[string]CombinedReview{"test": {Evidence: g}}
 	s.Actions["test"] = Action{Payload: a}
 	refs := ReferencedArtifacts(s)
-	if len(refs) != 2 || refs[0] != a || refs[1] != b {
+	if len(refs) != 7 || refs[0] != a || refs[1] != b || refs[2] != c || refs[3] != d || refs[4] != e || refs[5] != f || refs[6] != g {
 		t.Fatalf("artifact references: %+v", refs)
 	}
 }

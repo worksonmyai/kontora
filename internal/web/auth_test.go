@@ -156,6 +156,24 @@ func TestAuth_QueryTokenOnStaticSetsCookieAndRedirects(t *testing.T) {
 	assert.NotContains(t, loc, "token", "token must be stripped from the redirect target")
 }
 
+func TestTokenMatches(t *testing.T) {
+	for _, tc := range []struct {
+		name, want, got string
+		match           bool
+	}{
+		{name: "equal", want: "secret", got: "secret", match: true},
+		{name: "different same length", want: "secret", got: "secrex"},
+		{name: "different length", want: "secret", got: "s"},
+		{name: "missing", want: "secret"},
+		{name: "unconfigured", got: "secret"},
+		{name: "both empty"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.match, tokenMatches(tc.want, tc.got))
+		})
+	}
+}
+
 func TestIsHTTPS(t *testing.T) {
 	tests := []struct {
 		name           string

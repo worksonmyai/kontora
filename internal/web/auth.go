@@ -1,6 +1,7 @@
 package web
 
 import (
+	"crypto/sha256"
 	"crypto/subtle"
 	"net/http"
 	"strings"
@@ -72,8 +73,7 @@ func isHTTPS(r *http.Request) bool {
 
 // tokenMatches compares the configured and presented tokens in constant time.
 func tokenMatches(want, got string) bool {
-	if got == "" {
-		return false
-	}
-	return subtle.ConstantTimeCompare([]byte(want), []byte(got)) == 1
+	wantHash := sha256.Sum256([]byte(want))
+	gotHash := sha256.Sum256([]byte(got))
+	return subtle.ConstantTimeCompare(wantHash[:], gotHash[:]) == 1 && want != "" && got != ""
 }

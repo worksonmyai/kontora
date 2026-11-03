@@ -21,58 +21,65 @@ var (
 type CommandKind string
 
 const (
-	CreateObjective    CommandKind = "create_objective"
-	SetObjectiveStatus CommandKind = "set_objective_status"
-	PutWork            CommandKind = "put_work"
-	NoteWork           CommandKind = "note_work"
-	ReviseWork         CommandKind = "revise_work"
-	PutPlan            CommandKind = "put_plan"
-	AdmitAttempt       CommandKind = "admit_attempt"
-	CancelAttempt      CommandKind = "cancel_attempt"
-	ParkAttempt        CommandKind = "park_attempt"
-	UncertainAttempt   CommandKind = "uncertain_attempt"
-	StopAttempt        CommandKind = "stop_attempt"
-	RecordResult       CommandKind = "record_result"
-	RecordAction       CommandKind = "record_action"
-	ApproveAction      CommandKind = "approve_action"
-	ResolveAction      CommandKind = "resolve_action"
-	AskQuestion        CommandKind = "ask_question"
-	AnswerQuestion     CommandKind = "answer_question"
-	ReleaseLease       CommandKind = "release_lease"
+	CreateObjective          CommandKind = "create_objective"
+	SetObjectiveStatus       CommandKind = "set_objective_status"
+	PutWork                  CommandKind = "put_work"
+	NoteWork                 CommandKind = "note_work"
+	ReviseWork               CommandKind = "revise_work"
+	PutPlan                  CommandKind = "put_plan"
+	AdmitAttempt             CommandKind = "admit_attempt"
+	CancelAttempt            CommandKind = "cancel_attempt"
+	ParkAttempt              CommandKind = "park_attempt"
+	UncertainAttempt         CommandKind = "uncertain_attempt"
+	StopAttempt              CommandKind = "stop_attempt"
+	RecordResult             CommandKind = "record_result"
+	RecordCheckedResult      CommandKind = "record_checked_result"
+	RecordVerificationPolicy CommandKind = "record_verification_policy"
+	RecordCombinedReview     CommandKind = "record_combined_review"
+	RecordAcceptance         CommandKind = "record_acceptance"
+	RecordAction             CommandKind = "record_action"
+	ApproveAction            CommandKind = "approve_action"
+	ResolveAction            CommandKind = "resolve_action"
+	AskQuestion              CommandKind = "ask_question"
+	AnswerQuestion           CommandKind = "answer_question"
+	ReleaseLease             CommandKind = "release_lease"
 )
 
 type Command struct {
-	Kind             CommandKind
-	ExpectedRevision uint64
-	Objective        Objective
-	Work             WorkItem
-	Plan             Plan
-	Attempt          Attempt
-	Result           Result
-	Action           Action
-	Question         Question
-	ObjectiveID      string
-	WorkID           string
-	AttemptID        string
-	QuestionID       string
-	ActionID         string
-	LeaseKey         string
-	Preconditions    Preconditions
-	Status           ObjectiveStatus
-	AttemptStatus    AttemptStatus
-	ActionStatus     ActionStatus
-	Reason           string
-	Notes            string
-	Answer           string
-	OperatorID       string
-	Receipt          string
-	Approval         *Approval
-	At               time.Time
-	Usage            Usage
-	CostKnown        bool
-	Logs             []ArtifactRef
-	Leases           []Lease
-	Capacity         int
+	Kind               CommandKind
+	ExpectedRevision   uint64
+	Objective          Objective
+	Work               WorkItem
+	Plan               Plan
+	Attempt            Attempt
+	Result             Result
+	VerificationPolicy VerificationPolicy
+	Review             CombinedReview
+	Acceptance         Acceptance
+	Action             Action
+	Question           Question
+	ObjectiveID        string
+	WorkID             string
+	AttemptID          string
+	QuestionID         string
+	ActionID           string
+	LeaseKey           string
+	Preconditions      Preconditions
+	Status             ObjectiveStatus
+	AttemptStatus      AttemptStatus
+	ActionStatus       ActionStatus
+	Reason             string
+	Notes              string
+	Answer             string
+	OperatorID         string
+	Receipt            string
+	Approval           *Approval
+	At                 time.Time
+	Usage              Usage
+	CostKnown          bool
+	Logs               []ArtifactRef
+	Leases             []Lease
+	Capacity           int
 }
 
 func Clone(s State) (State, error) {
@@ -146,7 +153,18 @@ func apply(s *State, c Command) error {
 	case StopAttempt:
 		return stop(s, c)
 	case RecordResult:
+		if c.Result.Checked != nil {
+			return fmt.Errorf("use record_checked_result for checked evidence")
+		}
 		return recordResult(s, c)
+	case RecordCheckedResult:
+		return recordCheckedResult(s, c)
+	case RecordVerificationPolicy:
+		return recordVerificationPolicy(s, c)
+	case RecordCombinedReview:
+		return recordCombinedReview(s, c)
+	case RecordAcceptance:
+		return recordAcceptance(s, c)
 	case RecordAction:
 		return recordAction(s, c)
 	case ApproveAction:
@@ -259,7 +277,7 @@ func putPlan(s *State, c Command) error {
 	}
 	for _, id := range p.ReplacedWorkIDs {
 		w, ok := s.Work[id]
-		if !ok || w.ObjectiveID != o.ID || w.ActiveAttemptID != "" {
+		if !ok || w.ObjectiveID != o.ID || w.ActiveAttemptID != "" || w.ReplacedBy != "" {
 			return ErrConflict
 		}
 		if err := canInvalidate(*s, id); err != nil {
@@ -290,6 +308,34 @@ func putPlan(s *State, c Command) error {
 	o.CurrentPlan, o.DocumentRevision = p.Revision, o.DocumentRevision+1
 	s.Objectives[o.ID] = o
 	return nil
+}
+
+// Replacement edges are explicit; legacy replacement lists do not choose successors.
+func replacementWork(s State, workID string, revision PlanRevision) (string, error) {
+	seen := map[string]bool{}
+	for {
+		if seen[workID] {
+			return "", fmt.Errorf("work replacement cycle at %s", workID)
+		}
+		seen[workID] = true
+		w, ok := s.Work[workID]
+		if !ok {
+			return "", ErrConflict
+		}
+		if w.ReplacedBy == "" || s.Plans[w.ReplacedBy].Revision > revision {
+			return workID, nil
+		}
+		next := ""
+		for _, p := range s.Plans {
+			if p.ObjectiveID == w.ObjectiveID && p.Revision <= revision && p.ReplacementWorkIDs[workID] != "" {
+				next = p.ReplacementWorkIDs[workID]
+			}
+		}
+		if next == "" {
+			return "", nil
+		}
+		workID = next
+	}
 }
 
 func transitionAttempt(s *State, c Command, status AttemptStatus) error {
@@ -332,7 +378,7 @@ func recordResult(s *State, c Command) error {
 	if r.Generation != generation+1 || !r.Valid {
 		return fmt.Errorf("invalid result generation")
 	}
-	if r.Commit == "" && len(r.Artifacts) == 0 {
+	if !hasRetainedOutput(r) {
 		return fmt.Errorf("result requires retained output")
 	}
 	for _, check := range r.Checks {
@@ -557,6 +603,14 @@ func validateNewAttempt(s State, w WorkItem, c Command) error {
 	}
 	if a.Recipe.Repository != "" && !contains(s.Objectives[w.ObjectiveID].Policy.Repositories, a.Recipe.Repository) {
 		return fmt.Errorf("repository outside objective scope")
+	}
+	if a.Recipe.Verification != nil {
+		if a.Recipe.Verification.VerificationPolicyID != s.Objectives[w.ObjectiveID].VerificationPolicyID {
+			return ErrStale
+		}
+		if err := validateVerificationRecipe(s, a); err != nil {
+			return err
+		}
 	}
 	if a.Reservation.Slots <= 0 || c.Capacity <= 0 {
 		return fmt.Errorf("positive execution capacity required")

@@ -197,6 +197,8 @@ func Validate(s State) error {
 		validateActions,
 		validateQuestions,
 		validateAcceptances,
+		validateCheckedRecords,
+		validateControlRequests,
 		validateArtifacts,
 		ValidateGraph,
 	} {
@@ -261,8 +263,24 @@ func validatePlans(s State) error {
 			}
 		}
 		for _, wid := range p.ReplacedWorkIDs {
-			if seen[wid] || s.Work[wid].ObjectiveID != p.ObjectiveID {
+			if seen[wid] || s.Work[wid].ObjectiveID != p.ObjectiveID || s.Work[wid].ReplacedBy != p.ID {
 				return fmt.Errorf("invalid replaced work %s", wid)
+			}
+			seen[wid] = true
+		}
+		for source, target := range p.ReplacementWorkIDs {
+			w := s.Work[source]
+			replaced := s.Plans[w.ReplacedBy]
+			if source == target || w.ObjectiveID != p.ObjectiveID || replaced.ID == "" || replaced.Revision > p.Revision || !contains(p.WorkIDs, target) {
+				return fmt.Errorf("invalid replacement binding %s", source)
+			}
+			for _, other := range s.Plans {
+				if other.ID != p.ID && other.ObjectiveID == p.ObjectiveID && other.ReplacementWorkIDs[source] != "" {
+					return fmt.Errorf("duplicate replacement binding %s", source)
+				}
+			}
+			if _, err := replacementWork(s, source, s.Objectives[p.ObjectiveID].CurrentPlan); err != nil {
+				return err
 			}
 		}
 	}
@@ -297,7 +315,7 @@ func validateWork(s State) error {
 		if w.LastAttemptID != "" && s.Attempts[w.LastAttemptID].WorkID != id {
 			return fmt.Errorf("missing last attempt %s", id)
 		}
-		if w.ReplacedBy != "" && s.Plans[w.ReplacedBy].ObjectiveID != w.ObjectiveID {
+		if w.ReplacedBy != "" && (s.Plans[w.ReplacedBy].ObjectiveID != w.ObjectiveID || !contains(s.Plans[w.ReplacedBy].ReplacedWorkIDs, id)) {
 			return fmt.Errorf("missing replacement plan %s", id)
 		}
 	}
@@ -313,6 +331,9 @@ func validateAttempt(s State, id string, a Attempt) error {
 		if err := checkRef(s, ref); err != nil {
 			return err
 		}
+	}
+	if err := validateVerificationRecipe(s, a); err != nil {
+		return err
 	}
 	return validateAttemptStatus(s, w, a)
 }
@@ -411,7 +432,7 @@ func validateResults(s State) error {
 	for id, r := range s.Results {
 		w := s.Work[r.WorkID]
 		a := s.Attempts[r.AttemptID]
-		if id == "" || r.ID != id || w.ID == "" || a.WorkID != w.ID || a.Status != AttemptSucceeded || r.Generation == 0 || r.SpecificationRevision != a.SpecificationRevision || !reflect.DeepEqual(r.Inputs, a.Inputs) || (r.Commit == "" && len(r.Artifacts) == 0) {
+		if id == "" || r.ID != id || w.ID == "" || a.WorkID != w.ID || a.Status != AttemptSucceeded || r.Generation == 0 || r.SpecificationRevision != a.SpecificationRevision || !reflect.DeepEqual(r.Inputs, a.Inputs) || !hasRetainedOutput(r) {
 			return fmt.Errorf("invalid result %s", id)
 		}
 		if generations[w.ID] == nil {
@@ -423,6 +444,11 @@ func validateResults(s State) error {
 		generations[w.ID][r.Generation] = true
 		for _, ref := range r.Inputs {
 			if err := checkRef(s, ref); err != nil {
+				return err
+			}
+		}
+		if r.Checked != nil {
+			if err := validateCheckedOutput(s, r); err != nil {
 				return err
 			}
 		}
@@ -539,6 +565,8 @@ func ValidateTransition(before, after State) error {
 		validateActionTransitions,
 		validateQuestionTransitions,
 		validateAcceptanceTransitions,
+		validateCheckedTransitions,
+		validateControlRequestTransitions,
 	} {
 		if err := validate(before, after); err != nil {
 			return err
@@ -567,10 +595,13 @@ func validateWorkTransitions(before, after State) error {
 		if !specChanged && n.SpecificationRevision != old.SpecificationRevision {
 			return fmt.Errorf("specification revision changed without new inputs %s", id)
 		}
+		if old.ReplacedBy != "" && old.ReplacedBy != n.ReplacedBy {
+			return fmt.Errorf("replacement changed %s", id)
+		}
 		if (old.Notes != n.Notes || old.ReplacedBy != n.ReplacedBy || old.Divergence != n.Divergence) && n.DocumentRevision != old.DocumentRevision+1 {
 			return fmt.Errorf("document changed without new revision %s", id)
 		}
-		if !ok || old.ID != n.ID || old.ObjectiveID != n.ObjectiveID || old.Kind != n.Kind || old.TicketID != n.TicketID || old.OwnershipGeneration != n.OwnershipGeneration || n.DocumentRevision < old.DocumentRevision || n.SpecificationRevision < old.SpecificationRevision {
+		if !ok || old.ID != n.ID || old.ObjectiveID != n.ObjectiveID || old.Kind != n.Kind || old.TicketID != n.TicketID || old.AcceptanceRequired != n.AcceptanceRequired || old.OwnershipGeneration != n.OwnershipGeneration || n.DocumentRevision < old.DocumentRevision || n.SpecificationRevision < old.SpecificationRevision {
 			return fmt.Errorf("work identity changed %s", id)
 		}
 	}
@@ -700,7 +731,17 @@ func validateAcceptanceTransitions(before, after State) error {
 func ReferencedArtifacts(s State) []ArtifactRef {
 	refs := map[ArtifactRef]bool{}
 	add := func(ref ArtifactRef) { refs[ref] = true }
+	for _, request := range s.Requests {
+		add(request.Response)
+	}
 	for _, a := range s.Attempts {
+		if v := a.Recipe.Verification; v != nil {
+			for _, output := range v.Outputs {
+				if output.Artifact != (ArtifactRef{}) {
+					add(output.Artifact)
+				}
+			}
+		}
 		for _, ref := range a.Recipe.Artifacts {
 			add(ref)
 		}
@@ -717,6 +758,27 @@ func ReferencedArtifacts(s State) []ArtifactRef {
 				add(ch.Log)
 			}
 		}
+	}
+	for _, r := range s.Results {
+		if x := r.Checked; x != nil {
+			if x.Evidence != (ArtifactRef{}) {
+				add(x.Evidence)
+			}
+			for _, output := range x.Outputs {
+				if output.Artifact != (ArtifactRef{}) {
+					add(output.Artifact)
+				}
+			}
+			for _, source := range x.Sources {
+				add(source.Evidence)
+			}
+			if x.Review != nil {
+				add(x.Review.Evidence)
+			}
+		}
+	}
+	for _, review := range s.Reviews {
+		add(review.Evidence)
 	}
 	for _, a := range s.Actions {
 		if a.Payload != (ArtifactRef{}) {

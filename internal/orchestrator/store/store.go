@@ -330,6 +330,10 @@ func (s *Store) ApplyBatch(expectedRevision uint64, commands []orchestrator.Comm
 func (s *Store) Transact(expectedRevision uint64, change func(orchestrator.State) (orchestrator.State, error)) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.transact(expectedRevision, change)
+}
+
+func (s *Store) transact(expectedRevision uint64, change func(orchestrator.State) (orchestrator.State, error)) error {
 	if err := s.available(); err != nil {
 		return err
 	}

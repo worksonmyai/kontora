@@ -21,21 +21,39 @@ var staticFS embed.FS
 var uiFS embed.FS
 
 type Server struct {
-	svc         TicketService
-	broker      *SSEBroker
-	httpSrv     *http.Server
-	log         *slog.Logger
-	listener    net.Listener
-	token       string
-	tmuxSession string
-	assets      map[string]*staticAsset
+	svc          TicketService
+	broker       *SSEBroker
+	httpSrv      *http.Server
+	log          *slog.Logger
+	listener     net.Listener
+	token        string
+	tmuxSession  string
+	assets       map[string]*staticAsset
+	orchestrator OrchestratorService
+	authority    *AuthorityConfig
 
 	// wsPatterns is the resolved Host allowlist spelled the way
 	// coder/websocket matches origins.
 	wsPatterns []string
 }
 
-func New(svc TicketService, broker *SSEBroker, host string, port int, token string, allowedHosts []string, tmuxSession string, log *slog.Logger) (*Server, error) {
+type ServerOption func(*Server) error
+
+func WithOrchestratorService(service OrchestratorService) ServerOption {
+	return func(s *Server) error {
+		if service == nil {
+			return fmt.Errorf("orchestrator service is required")
+		}
+		s.orchestrator = service
+		return nil
+	}
+}
+
+func WithAuthority(authority AuthorityConfig) ServerOption {
+	return func(s *Server) error { s.authority = &authority; return nil }
+}
+
+func New(svc TicketService, broker *SSEBroker, host string, port int, token string, allowedHosts []string, tmuxSession string, log *slog.Logger, options ...ServerOption) (*Server, error) {
 	assets, err := loadAssets()
 	if err != nil {
 		return nil, err
@@ -51,10 +69,26 @@ func New(svc TicketService, broker *SSEBroker, host string, port int, token stri
 		wsPatterns:  wsOriginPatterns(resolved),
 	}
 
+	for _, option := range options {
+		if option == nil {
+			return nil, fmt.Errorf("nil web server option")
+		}
+		if err := option(s); err != nil {
+			return nil, err
+		}
+	}
+	if s.orchestrator != nil && (s.authority == nil || len(s.authority.Operators) == 0) {
+		return nil, fmt.Errorf("orchestrator service requires transport-established operator authority")
+	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
+	mux.HandleFunc("GET /api/objectives", s.handleObjectives)
+	mux.HandleFunc("GET /api/objectives/{id}", s.handleObjective)
+	mux.HandleFunc("POST /api/objectives", s.handleObjectiveControl)
+	mux.HandleFunc("POST /api/objectives/{id}/controls", s.handleObjectiveControl)
 	mux.HandleFunc("GET /api/tickets", s.handleListTickets)
 	mux.HandleFunc("POST /api/tickets", s.handleCreateTicket)
 	mux.HandleFunc("GET /api/stats", s.handleGetStats)
@@ -117,9 +151,13 @@ func New(svc TicketService, broker *SSEBroker, host string, port int, token stri
 	mux.HandleFunc("GET /ws/terminal/{id}", s.handleTerminalWS)
 	mux.Handle("GET /", s.staticHandler(http.HandlerFunc(s.serveAsset)))
 
+	authenticated, err := AuthorityMiddleware(s.token, s.authority, gzipMiddleware(mux))
+	if err != nil {
+		return nil, err
+	}
 	s.httpSrv = &http.Server{
 		Addr:              fmt.Sprintf("%s:%d", host, port),
-		Handler:           securityMiddleware(resolved, authMiddleware(s.token, gzipMiddleware(mux))),
+		Handler:           securityMiddleware(resolved, authenticated),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	return s, nil

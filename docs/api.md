@@ -34,21 +34,91 @@ When the web server is enabled, the following endpoints are exposed:
 | `POST /api/tickets/{id}/plannotator-review` | Open the ticket's branch diff in Plannotator. Only in `human_review`. Submitted feedback routes the ticket to the built-in rework stage. See [plannotator](configuration.md#plannotator). |
 | `POST /api/tickets/{id}/plannotator-annotate` | Open the ticket's own markdown in Plannotator. Only in `open`. Submitted annotations set `kontora: true` and schedule a run that rewrites the ticket. |
 | `GET /api/assistant` | Whether the [assistant](configuration.md#assistant) is configured: `enabled`, and when it is, `agent`, `kind`, `model`, `autonomy` and `workdir`. `enabled: false` carries a `hint` naming what to set, which is what the pane shows in place of its composer. |
+| `GET /api/assistant/companion` | Companion health, revision, current attention and recent changes. Available without `assistant.agent`. |
+| `PATCH /api/assistant/companion` | Record an explicit caught-up checkpoint (`{"revision": 12}`). |
+| `PATCH /api/assistant/companion/items/{id}` | Set shared read state using the item's revision (`{"revision": 7, "read": true}`). |
+| `POST /api/assistant/companion/messages` | Request a briefing, investigation or follow-up. See [Companion](#companion). |
 | `GET /api/assistant/threads` | The chat history, most recently used first. |
 | `POST /api/assistant/threads` | Open a chat (optional `{"autonomy": "read"\|"ask"\|"auto"}`; the configured default otherwise). Answers 201 with the chat. |
 | `GET /api/assistant/threads/{id}` | One chat and the messages posted to it. |
 | `DELETE /api/assistant/threads/{id}` | Drop a chat and its transcript. |
 | `GET /api/assistant/threads/{id}/activity` | One poll of a chat: the transcript as a `logfmt` tape sliced at `?after=N`, the messages, whether a turn is running, the message being written right now, and any change waiting on the user. Carries an `ETag` and answers `If-None-Match` with 304. |
 | `GET /api/assistant/threads/{id}/stream` | Server-Sent Events stream of the message being written, pushed as it grows. Answers 204 when nothing is running and nothing was typed. |
-| `POST /api/assistant/threads/{id}/messages` | Post a message (`{"text": "...", "autonomy": "..."}`). Answers 202: the reply arrives through the activity poll. |
+| `POST /api/assistant/threads/{id}/messages` | Post an ordinary chat message (`{"text": "...", "autonomy": "..."}`). Answers 202: the reply arrives through the activity poll. Companion-purpose threads reject this route. |
 | `POST /api/assistant/threads/{id}/stop` | Cancel the turn the chat is running. |
 | `POST /api/assistant/gate/{gid}` | Answer a change the assistant is waiting on (`{"decision": "approve"\|"skip"}`). |
 | `POST /api/assistant/gate/ask` | The agent side of the tool gate, called by the claude `PreToolUse` hook and the pi `tool_call` handler. Authenticated by the per-turn secret in the agent's environment, not by the web token alone. Blocks while a change waits on the user. |
-| `GET /api/events` | Server-Sent Events stream of ticket updates. |
+| `GET /api/events` | Server-Sent Events stream of ticket updates and companion invalidations. |
 | `GET /ws/terminal/{id}` | Read-only WebSocket relay of a running agent's tmux session. |
 | `GET /health` | Health check (returns 200). |
 
 Each `agent_infos` entry in `GET /api/config` reports the model and effort that Kontora detects. Kontora reads the agent's `effort` field and supported CLI flags. Pipeline and stage overrides are not applied. Both response fields are always present. An empty value means Kontora detected no setting.
+
+### Companion
+
+The companion endpoints use the same authentication as the other web endpoints.
+`GET /api/assistant/companion` returns a snapshot with:
+
+- `enabled`, `name`, `ai_available` and a configuration `hint` when needed;
+- `health` and an `error` when storage is degraded;
+- `revision`, the snapshot revision, and `caught_up`, the saved checkpoint;
+- `observed_at`, the last observation time;
+- `items`, the current attention and retained inactive records, including read
+  state and item revisions.
+
+The inbox and read state are shared across devices, not isolated per person.
+The snapshot remains available without a configured model agent. Only requested
+AI actions need `assistant.agent`.
+
+`PATCH /api/assistant/companion` requires `{"revision": 12}`, using the snapshot
+revision the user explicitly caught up to.
+`PATCH /api/assistant/companion/items/{id}` requires `{"revision": 7, "read": true}`
+or `read: false`, using that item's revision. Both return the updated snapshot.
+If an item revision is stale, refetch before retrying. Neither operation changes a
+ticket, answers a question or completes a review. Storage failures refuse
+updates that cannot be saved; task execution and notifications continue.
+
+`POST /api/assistant/companion/messages` accepts:
+
+```json
+{
+  "kind": "investigation",
+  "text": "Why is this ticket paused?",
+  "ticket_ids": ["kon-example"]
+}
+```
+
+`kind` must be `briefing`, `investigation` or `followup`.
+`text` must be non-blank and at most 32 KiB (32,768 UTF-8 bytes).
+`ticket_ids` accepts at most five tickets. An investigation requires at least one; other request kinds can omit it. Optional `thread_id`
+continues a companion-purpose thread; omitting it creates one. An accepted
+request returns 202 with the thread, including its ID. Use the existing thread,
+activity, stream, Stop and delete endpoints for the conversation.
+
+Kontora builds evidence server-side and saves it before starting the model.
+Each request has a 32 KiB evidence limit. Capture metadata includes times,
+source revisions, observation windows, omissions and an outdated marker when
+sources change. Metadata remains available during streaming and after reopening
+the chat. Historical explanations do not change current attention.
+
+Companion threads have immutable `purpose: "companion"`. The ordinary message
+route rejects them, so clients cannot bypass evidence capture. Companion turns
+deny every tool call and autonomy escalation. They cannot mutate tickets,
+execute approvals or send outbound messages. Enforcement uses runtime hooks
+with a trusted configured agent, not an OS sandbox.
+
+After successful persistence, `GET /api/events` sends a payload-free
+`companion_updated` invalidation. Clients must refetch the snapshot on connection,
+reconnection, focus and a periodic fallback. The event stream is not an inbox
+history. Startup, observation, reload and reconnection never start model turns.
+
+The store retains all active items plus at most 500 inactive records, each no
+older than 30 days. Degraded health means the store cannot provide normal
+persistence guarantees. Disabling the companion on reload retains data and
+blocks new requests; an already-running requested turn remains stoppable.
+Polling can miss short-lived transitions, and offline events are not a complete
+history. A disappeared question is not proof that someone answered it.
+See [companion configuration](configuration.md#companion-inbox-and-requested-explanations).
 
 ### Cost estimates
 
@@ -191,7 +261,20 @@ A link is written to both tickets, one file at a time, because two markdown file
 
 A ticket whose `branch` is empty carries `auto_branch` in `GET /api/tickets` and `GET /api/tickets/{id}`: the branch the daemon would assign at pickup, resolved for the path the ticket names and the current [branch naming](configuration.md#branch-naming) mode. It is a read-only projection, not a stored field, and it is absent once `branch` is set.
 
-The assistant endpoints answer 501 when no `assistant.agent` is configured, 404 for an unknown chat, and 409 for a second message on a chat whose turn is still running. A chat keeps the agent it was created with, so a message to one whose agent has been repointed or removed also answers 409: its agent session cannot resume on another CLI, and the chat has to be started again. 503 is the separate refusal for the daemon's global turn cap, which is not about this chat at all. `POST /api/assistant/gate/{gid}` answers 404 once the change has already been answered or the turn that raised it has ended, so a stale card cannot resolve twice. `POST /api/assistant/gate/ask` answers 403 when the secret does not match the chat's current turn, which is what stops an unrelated local process approving its own writes against a tokenless loopback daemon.
+Assistant model-turn endpoints answer 501 when no `assistant.agent` is configured.
+The companion snapshot and inbox updates do not require one.
+Requests for an unknown chat return 404.
+Posting another message to a chat whose turn is still running returns 409.
+A chat keeps its original agent. Repointing or removing that agent makes later
+messages return 409; an agent session cannot resume on another CLI. Start a new
+chat instead. The daemon's global turn cap returns 503, independently of any
+single chat.
+
+`POST /api/assistant/gate/{gid}` answers 404 after the change is answered or its
+turn ends, so a stale card cannot resolve twice. `POST /api/assistant/gate/ask`
+answers 403 when the secret does not match the chat's current turn. This prevents
+unrelated local processes from approving their own writes against a tokenless
+loopback daemon.
 
 ## Notes
 

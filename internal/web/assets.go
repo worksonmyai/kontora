@@ -26,6 +26,7 @@ var assetContentTypes = map[string]string{
 	".mjs":   "text/javascript; charset=utf-8",
 	".css":   "text/css; charset=utf-8",
 	".woff2": "font/woff2",
+	".png":   "image/png",
 }
 
 const (

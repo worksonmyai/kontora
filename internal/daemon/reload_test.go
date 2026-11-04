@@ -386,6 +386,14 @@ func TestReload_AppliesLiveFields(t *testing.T) {
 			},
 		},
 		{
+			name: "companion without assistant agent",
+			opts: configOpts{extra: "assistant:\n  companion:\n    enabled: true\n    name: Miso\n"},
+			verify: func(t *testing.T, cfg *config.Config) {
+				assert.Equal(t, config.Companion{Enabled: true, Name: "Miso"}, cfg.Assistant.Companion)
+				assert.False(t, cfg.Assistant.Enabled())
+			},
+		},
+		{
 			name: "pipeline stage list",
 			opts: configOpts{pipelines: `  one-stage:
     - stage: step2

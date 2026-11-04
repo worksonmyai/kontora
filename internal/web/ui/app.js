@@ -162,6 +162,8 @@ export function kontoraApp() {
     _terminalSeq: 0,
     _terminalOpening: false,
     _eventSource: null,
+    _sseReconnect: null,
+    _appDestroyed: false,
     editing: false,
     editingBody: false,
     editForm: { body: '', pipeline: '', path: '', agent: '' },
@@ -316,6 +318,17 @@ export function kontoraApp() {
 
     _knownCustomStatuses: {
       review: { label: 'Review', color: 'bg-review', tint: 'var(--st-review)', emptyIcon: '<path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/>' },
+    },
+
+    destroy() {
+      this._appDestroyed = true;
+      this.companionDestroy();
+      clearTimeout(this._sseReconnect);
+      clearInterval(this._nowTimer);
+      if (this._eventSource) this._eventSource.close();
+      this._stopAssistantPoll();
+      this._stopAssistantTick();
+      this._assistantCloseStream();
     },
 
     showToast(msg) {

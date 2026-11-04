@@ -4444,6 +4444,7 @@ test("the assistant block writes only the field that changed", async () => {
   assert.deepEqual(vmValue(state.settingsConfig.assistant), {
     agent: "claude", model: "opus", effort: "", workdir: "~/org",
     timeout: "10m", autonomy: "ask", prompt: "Answer from the board.\n",
+    companion: { enabled: false, name: "Kotik" },
   });
   assert.deepEqual([...state.settingsChangedPaths()], []);
 
@@ -11188,6 +11189,7 @@ function assistantState(opts = {}) {
     },
     fetch: async (url, init) => {
       requests.push({ url, init });
+      if (opts.fetch) return opts.fetch(url, init);
       const key = Object.keys(routes).find((k) => url === k || url.startsWith(k + "?"));
       const body = key ? routes[key] : (opts.fallback || {});
       if (body && body.__status) return { ok: false, status: body.__status, json: async () => body };
@@ -11201,7 +11203,7 @@ function assistantState(opts = {}) {
   const runTimers = () => {
     for (const fn of timers.splice(0, timers.length)) if (fn) fn();
   };
-  return { state, store, requests, listeners, scroller, streams, runFrames, runTimers };
+  return { state, store, requests, listeners, scroller, streams, runFrames, runTimers, routes };
 }
 
 test("the pane opens and closes, and remembers that it was open", async () => {
@@ -11529,7 +11531,7 @@ test("config_reloaded refreshes the assistant payload and the board's config cac
 
   // The real handlers, not stubs: the two mixins that own them are merged into
   // the same object connectSSE runs on, and a rename would break this.
-  assert.deepEqual(urls, ["/api/assistant", "/api/config"]);
+  assert.deepEqual(urls, ["/api/assistant", "/api/assistant/companion", "/api/config"]);
   assert.equal(state.assistantAgent.agent, "cl");
   assert.equal(state.assistantAutonomy, "auto");
 });
@@ -12306,9 +12308,9 @@ test("no assistant agent replaces the composer with the configure hint", async (
   // The two are complementary templates, so the composer is not merely hidden:
   // it is not built, and neither is the input the pane would otherwise focus.
   const html = fs.readFileSync(htmlPath, "utf8");
-  assert.match(html, /x-if="!assistantEnabled\(\)"[\s\S]{0,200}?id="assistant-configure"/);
+  assert.match(html, /x-if="!assistantEnabled\(\) && !companionThread\(\) && assistantView === 'thread'"[\s\S]{0,200}?id="assistant-configure"/);
   const composer = html.slice(html.indexOf('<!-- Composer -->'));
-  assert.match(composer.slice(0, 200), /x-if="assistantEnabled\(\)"/);
+  assert.match(composer.slice(0, 200), /x-if="\(assistantEnabled\(\) \|\| companionThread\(\)\) && assistantView === 'thread'"/);
   assert.ok(composer.includes('id="assistant-input"'));
 });
 
@@ -13399,4 +13401,437 @@ test("the rail editor does not carry one ticket's statuses onto the next", async
 
   assert.equal(state.notifyEditing, false);
   assert.equal(state.notifyDraft, null);
+});
+
+// No refresh path may POST a message.
+const COMPANION_SNAPSHOT = {
+  enabled: true, name: "Kotik", ai_available: false, hint: "Set assistant.agent for explanations.",
+  health: "ok", revision: 7, caught_up: 0, observed_at: "2026-11-03T10:00:00Z",
+  items: [
+    { id: "q/1", ticket_id: "kon-1", condition: "question", title: "A question", detail: "Continue?", revision: 3, active: true, read: false },
+    { id: "r2", ticket_id: "kon-2", condition: "human_review", title: "Review work", revision: 4, active: true, read: true },
+    { id: "p3", ticket_id: "kon-3", condition: "paused", title: "Paused", revision: 2, active: false, read: false, inactive_reason: "no_longer_observed", identity_limited: true },
+  ],
+};
+
+function companionState(opts = {}) {
+  return assistantState({ ...opts, routes: {
+    "/api/assistant/companion": COMPANION_SNAPSHOT,
+    "/api/assistant": { enabled: false, hint: "No agent" },
+    ...opts.routes,
+  } });
+}
+
+test("companion inbox works without an agent and never starts a passive turn", async () => {
+  const { state, requests, listeners } = companionState();
+  await state.initAssistant();
+  await state.companionInit();
+  assert.equal(state.assistantEnabled(), false);
+  assert.equal(state.assistantView, "inbox");
+  assert.equal(state.companionState(), "needs you");
+  assert.equal(state.companionCounts(), "2 active / 2 unread");
+  assert.equal(state.companionCanAsk(), false);
+  assert.equal(state.companionCanWrite(), true);
+  await state.companionSend("briefing", "Brief me", []);
+  assert.equal(requests.some(r => r.init?.method === "POST"), false);
+  assert.ok(listeners.some(l => l.type === "focus"));
+  state.destroy();
+  assert.equal(listeners.some(l => l.type === "focus"), false);
+  assert.equal(state.companionTimer, null);
+});
+
+test("reading an item changes only companion state with its expected revision", async () => {
+  const { state, requests, routes } = companionState();
+  await state.companionRefresh();
+  const item = state.companionSnapshot.items[0];
+  routes["/api/assistant/companion/items/q%2F1"] = {
+    ...COMPANION_SNAPSHOT, revision: 8,
+    items: COMPANION_SNAPSHOT.items.map(i => i.id === item.id ? { ...i, read: true, revision: 4 } : i),
+  };
+  routes["/api/assistant/companion"] = routes["/api/assistant/companion/items/q%2F1"];
+  await state.companionRead(item, true);
+  await flushMicrotasks();
+  const writes = requests.filter(r => r.init?.method);
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0].url, "/api/assistant/companion/items/q%2F1");
+  assert.deepEqual(JSON.parse(writes[0].init.body), { revision: 3, read: true });
+  assert.equal(state.companionSnapshot.items[0].active, true);
+  assert.equal(state.companionSnapshot.items[0].read, true);
+  assert.equal(state.companionCounts(), "2 active / 1 unread");
+  assert.equal(state.companionState(), "needs you", "read attention still needs a person");
+});
+
+test("caught-up checkpoint sends the snapshot revision, not a ticket operation", async () => {
+  const { state, requests } = companionState();
+  await state.companionRefresh();
+  await state.companionCatchUp();
+  const write = requests.find(r => r.init?.method === "PATCH");
+  assert.equal(write.url, "/api/assistant/companion");
+  assert.deepEqual(JSON.parse(write.init.body), { revision: 7 });
+  assert.equal(state.companionCounts(), "2 active / 2 unread", "a checkpoint does not mark items read");
+});
+
+test("read conflicts refetch shared state and keep the failed-save message", async () => {
+  const { state, routes, requests } = companionState();
+  await state.companionRefresh();
+  routes["/api/assistant/companion/items/q%2F1"] = { __status: 409, error: "revision changed" };
+  routes["/api/assistant/companion"] = { ...COMPANION_SNAPSHOT, revision: 9 };
+  await state.companionRead(state.companionSnapshot.items[0], true);
+  assert.equal(state.companionSnapshot.revision, 9);
+  assert.match(state.companionError, /Read state was not saved.*revision changed/);
+  assert.equal(requests.at(-1).url, "/api/assistant/companion");
+  assert.equal(state.companionSnapshot.items[0].read, false);
+});
+
+test("degraded and disconnected attention stays visible and blocks read writes", async () => {
+  const { state, routes } = companionState();
+  await state.companionRefresh();
+  routes["/api/assistant/companion"] = { ...COMPANION_SNAPSHOT, health: "degraded", error: "storage is read-only" };
+  await state.companionRefresh();
+  assert.equal(state.companionState(), "degraded");
+  assert.equal(state.companionCanWrite(), false);
+  routes["/api/assistant/companion"] = { __status: 503, error: "offline" };
+  await state.companionRefresh();
+  assert.equal(state.companionState(), "disconnected");
+  assert.equal(state.companionItems().length, 3, "a failed fetch must not empty saved attention");
+  assert.match(state.companionError, /may be stale/);
+  routes["/api/assistant/companion"] = COMPANION_SNAPSHOT;
+  await state.companionRefresh();
+  assert.equal(state.companionDisconnected, false);
+  assert.equal(state.companionError, "");
+});
+
+test("SSE invalidation and reconnect rebuild the inbox without payload data or model calls", async () => {
+  const { state, streams, routes, requests, runTimers } = companionState({ manualTimers: true });
+  state.connectSSE();
+  streams[0].emit("open", {});
+  await flushMicrotasks();
+  routes["/api/assistant/companion"] = { ...COMPANION_SNAPSHOT, revision: 8, items: [] };
+  streams[0].emit("companion_updated", "");
+  await flushMicrotasks();
+  assert.equal(state.companionItems().length, 0);
+  streams[0].onerror();
+  assert.equal(state.companionState(), "disconnected");
+  runTimers();
+  routes["/api/assistant/companion"] = { ...COMPANION_SNAPSHOT, revision: 10 };
+  streams[1].emit("open", {});
+  await flushMicrotasks();
+  assert.equal(state.companionSnapshot.revision, 10);
+  assert.equal(state.companionCounts(), "2 active / 2 unread");
+  assert.equal(requests.some(r => r.init?.method === "POST"), false);
+  state.destroy();
+});
+
+test("focus and the 30 second fallback revalidate settled evidence without attention changes", async () => {
+  const handlers = new Map();
+  const intervals = new Map();
+  const calls = [];
+  let outdated = false;
+  const state = loadKontoraState({
+    window: { innerWidth: 1200, addEventListener: (name, fn) => handlers.set(name, fn), removeEventListener: name => handlers.delete(name) },
+    setInterval: (fn, ms) => { intervals.set(ms, fn); return ms; },
+    clearInterval: id => intervals.delete(id),
+    fetch: async (url, init) => {
+      calls.push({ url, init });
+      const body = url === "/api/assistant/companion" ? COMPANION_SNAPSHOT :
+        { running: false, evidence: [{ revision: 7, outdated }] };
+      return { ok: true, json: async () => body };
+    },
+  });
+  state.$nextTick = cb => { if (cb) cb(); return Promise.resolve(); };
+  state.assistantOpen = true;
+  state.assistantThread = { id: "ksettled", purpose: "companion", running: false };
+  await state.companionInit();
+  await flushMicrotasks();
+  assert.ok(intervals.has(30000));
+  assert.equal(state.companionEvidence()[0].outdated, false);
+  outdated = true;
+  handlers.get("focus")();
+  await flushMicrotasks();
+  assert.equal(state.companionEvidence()[0].outdated, true);
+  state.assistantThread.evidence[0].outdated = false;
+  intervals.get(30000)();
+  await flushMicrotasks();
+  assert.equal(state.companionEvidence()[0].outdated, true);
+  assert.equal(calls.filter(r => r.url === "/api/assistant/companion").length, 3);
+  assert.equal(calls.filter(r => r.url.includes("/ksettled/activity")).length, 3);
+  assert.equal(calls.some(r => r.init?.method === "POST"), false);
+  const count = calls.length;
+  state.destroy();
+  assert.equal(intervals.size, 0);
+  assert.equal(handlers.size, 0);
+  await state.companionRefresh();
+  assert.equal(calls.length, count);
+});
+
+test("an old inbox response cannot overwrite a newer saved read snapshot", async () => {
+  let release;
+  const readSnapshot = { ...COMPANION_SNAPSHOT, revision: 8, items: [] };
+  const { state } = companionState({ fetch: async (url, init) => {
+    if (init?.method === "PATCH") return { ok: true, json: async () => readSnapshot };
+    return new Promise(resolve => { release = () => resolve({ ok: true, json: async () => COMPANION_SNAPSHOT }); });
+  } });
+  state.companionSnapshot = COMPANION_SNAPSHOT;
+  const pending = state.companionRefresh();
+  await state.companionRead(COMPANION_SNAPSHOT.items[0], true);
+  release();
+  await pending;
+  // The queued reconciliation may now fetch again; the fenced first GET cannot paint revision 7.
+  assert.equal(state.companionSnapshot.revision, 8);
+  state.destroy();
+});
+
+test("explicit companion explanations keep counts visible while thinking and use the dedicated followup route", async () => {
+  const thread = { id: "k123", purpose: "companion", running: true, evidence: [{ captured_at: "2026-11-03T10:00:00Z", sources: { "kon-1": "r1" }, revision: 7, omissions: ["Activity truncated"], outdated: false }] };
+  const { state, requests } = companionState({ routes: {
+    "/api/assistant/companion": { ...COMPANION_SNAPSHOT, ai_available: true },
+    "/api/assistant/companion/messages": thread,
+    "/api/assistant/threads/k123/activity": { running: true, evidence: thread.evidence },
+  } });
+  await state.companionRefresh();
+  state.assistantOpen = true;
+  await state.companionSend("investigation", "Explain this ticket", ["kon-1"]);
+  assert.equal(state.assistantThread.purpose, "companion");
+  assert.equal(state.assistantView, "thread");
+  assert.equal(state.assistantMessages[0].text, "Explain this ticket", "requested text stays visible before the turn is recorded");
+  assert.equal(state.companionState(), "thinking");
+  assert.equal(state.companionCounts(), "2 active / 2 unread");
+  assert.equal(state.assistantAutonomy, "ask", "companion admission does not change general chat autonomy");
+  state.setAssistantAutonomy("auto");
+  assert.equal(state.assistantAutonomy, "ask");
+  state._assistantSetStreaming(false);
+  state.assistantDraft = "What evidence is missing?";
+  await state.sendAssistantMessage();
+  const sends = requests.filter(r => r.init?.method === "POST");
+  assert.equal(sends.length, 2);
+  assert.ok(sends.every(r => r.url === "/api/assistant/companion/messages"));
+  assert.deepEqual(JSON.parse(sends[1].init.body), { thread_id: "k123", kind: "followup", text: "What evidence is missing?", ticket_ids: [] });
+  state._mergeAssistantActivity({ running: false, evidence: [{ ...thread.evidence[0], outdated: true }] });
+  assert.equal(state.companionEvidence()[0].outdated, true);
+  state.destroy();
+});
+
+test("a disabled companion cannot start another explanation but its running turn stays stoppable", async () => {
+  const { state, requests } = companionState();
+  state.companionSnapshot = { ...COMPANION_SNAPSHOT, enabled: false, ai_available: true };
+  state.assistantThread = { id: "krunning", purpose: "companion", running: true };
+  state._assistantSetStreaming(true);
+  assert.equal(state.companionState(), "thinking");
+  assert.equal(state.companionCanAsk(), false);
+  await state.companionSend("followup", "More detail", []);
+  await state.stopAssistantTurn();
+  const sends = requests.filter(r => r.init?.method === "POST");
+  assert.equal(sends.length, 1);
+  assert.equal(sends[0].url, "/api/assistant/threads/krunning/stop");
+  state.destroy();
+});
+
+for (const revision of [7, 8]) {
+  test(`attention refresh revalidates settled evidence at revision ${revision}`, async () => {
+    const { state, requests, routes, listeners } = companionState({ etag: "current", routes: {
+      "/api/assistant/threads/kold/activity": { running: false, evidence: [{ revision: 7, outdated: false }] },
+    } });
+    state.assistantThread = { id: "kold", purpose: "companion", running: false };
+    state.assistantOpen = true;
+    await state.companionInit();
+    await flushMicrotasks();
+    assert.equal(state.companionEvidence()[0].outdated, false);
+    assert.equal(state._assistantPoll, null, "settled chats have no activity poll");
+    routes["/api/assistant/companion"] = { ...COMPANION_SNAPSHOT, revision };
+    routes["/api/assistant/threads/kold/activity"] = { running: false, evidence: [{ revision: 7, outdated: true }] };
+    listeners.find(l => l.type === "focus").handler();
+    await flushMicrotasks();
+    assert.equal(state.companionEvidence()[0].outdated, true);
+    const reads = requests.filter(r => r.url.includes("/kold/activity"));
+    assert.equal(reads.length, 2);
+    assert.ok(reads.every(r => !r.init.headers["If-None-Match"]), "evidence must be revalidated without the old activity ETag");
+    assert.equal(requests.some(r => r.init?.method === "POST"), false);
+    state.destroy();
+  });
+}
+
+for (const change of ["chat", "draft", "view", "roundtrip", "pending selection", "new chat"]) {
+  test(`delayed companion POST preserves a changed ${change}`, async () => {
+    const admission = deferred();
+    const selection = deferred();
+    const created = deferred();
+    const original = { id: "ksource", purpose: "companion", running: false };
+    const other = { id: "abc123", running: false, autonomy: "ask" };
+    const { state, requests, store } = companionState({ store: { "kontora-assistant-thread": original.id }, fetch: async (url, init) => {
+      if (url === "/api/assistant/companion/messages") return admission.promise;
+      if (url === "/api/assistant/threads" && init?.method === "POST") return created.promise;
+      if (url === "/api/assistant/threads/abc123" && change === "pending selection") return selection.promise;
+      const body = url === "/api/assistant/threads/abc123" ? other :
+        url === "/api/assistant/threads/ksource" ? original :
+        url === "/api/assistant/threads" ? { threads: [original] } : { running: false };
+      return { ok: true, json: async () => body };
+    } });
+    state.assistantAgent = { enabled: true };
+    state.companionSnapshot = { ...COMPANION_SNAPSHOT, ai_available: true };
+    state.assistantThread = original;
+    state.assistantDraft = "Explain the capture";
+    const pending = state.sendAssistantMessage();
+    assert.equal(state.companionBusy, true);
+    let navigation;
+    if (change === "chat") await state.assistantSelectThread(other.id);
+    if (change === "roundtrip") {
+      await state.assistantSelectThread(other.id);
+      await state.assistantSelectThread(original.id);
+    }
+    if (change === "view") state.assistantView = "history";
+    if (change === "pending selection") navigation = state.assistantSelectThread(other.id);
+    if (change === "new chat") navigation = state.assistantNewThread();
+    state.assistantDraft = "New unsent text";
+    const selected = state.assistantThread;
+    const view = state.assistantView;
+    const savedID = store["kontora-assistant-thread"];
+    admission.resolve({ ok: true, json: async () => ({ ...original, turns: 2, messages: [] }) });
+    await pending;
+    assert.equal(state.assistantDraft, "New unsent text");
+    if (change === "draft") assert.equal(state.assistantThread.id, selected.id);
+    else assert.equal(state.assistantThread, selected, "the delayed response must not adopt over a newer selection");
+    assert.equal(state.assistantView, view);
+    assert.equal(store["kontora-assistant-thread"], savedID);
+    assert.equal(state.companionBusy, false);
+    assert.ok(requests.some(r => r.url === "/api/assistant/threads" && !r.init?.method), "the accepted turn remains discoverable in history");
+    if (change === "pending selection") selection.resolve({ ok: true, json: async () => other });
+    if (change === "new chat") created.resolve({ ok: true, json: async () => other });
+    if (navigation) await navigation;
+    if (navigation) assert.equal(state.assistantThread.id, other.id);
+    state.destroy();
+  });
+}
+
+test("an inbox investigation preserves an unrelated draft", async () => {
+  const { state } = companionState({ routes: {
+    "/api/assistant/companion/messages": { id: "kinvestigation", purpose: "companion", running: false },
+  } });
+  state.companionSnapshot = { ...COMPANION_SNAPSHOT, ai_available: true };
+  state.assistantView = "inbox";
+  state.assistantDraft = "An unsent general question";
+  await state.companionSend("investigation", "Investigate this ticket", ["kon-1"]);
+  assert.equal(state.assistantThread.id, "kinvestigation");
+  assert.equal(state.assistantView, "thread");
+  assert.equal(state.assistantDraft, "An unsent general question");
+  state.destroy();
+});
+
+test("a successful companion followup clears only its submitted draft", async () => {
+  const { state } = companionState({ routes: {
+    "/api/assistant/companion/messages": { id: "kfollowup", purpose: "companion", turns: 2 },
+  } });
+  state.companionSnapshot = { ...COMPANION_SNAPSHOT, ai_available: true };
+  state.assistantThread = { id: "kfollowup", purpose: "companion" };
+  state.assistantDraft = "  Explain the capture  ";
+  await state.sendAssistantMessage();
+  assert.equal(state.assistantDraft, "");
+  assert.equal(state.assistantMessages[0].text, "Explain the capture");
+  state.destroy();
+});
+
+for (const entry of ["startup", "desktop", "mobile", "history"]) {
+  test(`saved companion history is available without observation or an agent: ${entry}`, async () => {
+    const thread = { id: "ksaved", purpose: "companion", running: false };
+    const { state, requests } = companionState({ store: { "kontora-assistant-open": entry === "startup" ? "1" : "0" }, routes: {
+      "/api/assistant/threads": { threads: [thread] },
+      "/api/assistant/threads/ksaved": thread,
+      "/api/assistant/threads/ksaved/activity": { running: false, evidence: [{ revision: 1, outdated: true }] },
+    } });
+    state.companionSnapshot = { ...COMPANION_SNAPSHOT, enabled: false, ai_available: false };
+    await state.initAssistant();
+    if (entry === "desktop") state.toggleAssistant();
+    if (entry === "mobile") { state.isMobile = true; state.openAssistantSheet(); }
+    if (entry === "history") { state.assistantView = "history"; await state.assistantLoadThreads(); }
+    await flushMicrotasks();
+    assert.equal(state.assistantEnabled(), false);
+    assert.deepEqual(vmValue(state.assistantThreads), [thread]);
+    await state.assistantSelectThread(thread.id);
+    assert.equal(state.companionEvidence()[0].outdated, true);
+    assert.equal(state.companionCanAsk(), false);
+    assert.equal(requests.some(r => r.init?.method === "POST"), false);
+    state.destroy();
+  });
+}
+
+for (const mobile of [false, true]) {
+  for (const alreadySelected of [false, true]) {
+    test(`inbox links leave Stats and show ticket detail (mobile=${mobile}, selected=${alreadySelected})`, async () => {
+      const ticket = { id: "kon-1", title: "A question", status: "open", body: "" };
+      const { state, requests } = companionState({ routes: { "/api/tickets/kon-1": ticket } });
+      state.isMobile = mobile;
+      state.currentView = "stats";
+      state.sheet = mobile ? { type: "assistant" } : null;
+      state.tickets = [ticket];
+      if (alreadySelected) state.selectedTicket = ticket;
+      await state.companionOpenTicket(COMPANION_SNAPSHOT.items[0]);
+      assert.equal(state.currentView, "board");
+      assert.equal(state.selectedTicket.id, ticket.id);
+      assert.equal(state.routeHash(), "#/t/kon-1");
+      assert.equal(state.sheet, null);
+      assert.equal(requests.filter(r => r.url === "/api/tickets/kon-1").length, alreadySelected ? 0 : 1);
+      state.destroy();
+    });
+  }
+}
+
+test("inbox links respect dirty Settings without selecting a hidden ticket", async () => {
+  const state = await settingsState();
+  state.settingsConfig.general.branch_prefix = "unsaved";
+  state.currentView = "settings";
+  state.isMobile = true;
+  state.sheet = { type: "assistant" };
+  assert.equal(state.settingsDirty(), true);
+  await state.companionOpenTicket(COMPANION_SNAPSHOT.items[0]);
+  assert.equal(state.currentView, "settings");
+  assert.equal(state.settingsGuard, true);
+  assert.equal(state.settingsGuardTarget, "board");
+  assert.equal(state.selectedTicket, null);
+  assert.equal(state.sheet.type, "assistant");
+  assert.equal(state.settingsConfig.general.branch_prefix, "unsaved");
+  state.destroy();
+});
+
+test("companion inbox distinguishes disabled storage, completion, and the changes checkpoint", () => {
+  const { state } = companionState();
+  assert.match(state.companionInboxMarkup, /Observation is disabled\. Saved attention remains on disk\. Re-enable the companion in Assistant settings to load it\./);
+  assert.match(state.companionInboxMarkup, />Set changes checkpoint<\/button>/);
+  assert.match(state.companionInboxMarkup, /Future explanations omit inactive changes at or before this checkpoint\. Read state does not change\./);
+  assert.match(state.companionInboxMarkup, /x-text="companionInactiveReason\(item\)"/);
+  for (const [reason, label] of [["completed", "Completed"], ["interrupted", "Interrupted"], ["no_longer_observed", "No longer observed"], ["", "No longer observed"]]) {
+    assert.equal(state.companionInactiveReason({ inactive_reason: reason }), label);
+  }
+});
+
+test("desktop and mobile reuse the companion inbox, state text, evidence, and missing-agent hint", () => {
+  const html = fs.readFileSync(htmlPath, "utf8");
+  const { state } = companionState();
+  for (const key of ["companionHeaderMarkup", "companionInboxMarkup", "companionEvidenceMarkup"]) {
+    assert.equal(html.split(`x-html="${key}"`).length - 1, 2, key);
+  }
+  assert.match(state.companionHeaderMarkup, /role="status" x-text="companionState\(\)"/);
+  assert.match(state.companionHeaderMarkup, /companionCounts\(\)/);
+  assert.match(state.companionInboxMarkup, /Reading an item does not answer a question or change a ticket/);
+  assert.match(state.companionInboxMarkup, /companionSnapshot\?\.hint/);
+  assert.match(state.companionEvidenceMarkup, /packet\.sources/);
+  const css = fs.readFileSync(path.join(dirname, "../../../hack/tailwind.css"), "utf8");
+  assert.match(css, /prefers-reduced-motion:reduce/);
+  assert.match(css, /image-rendering:pixelated/);
+  const sprite = fs.readFileSync(path.join(dirname, "../static/kotik.png"));
+  assert.equal(sprite.subarray(1, 4).toString(), "PNG");
+  assert.equal(sprite.readUInt32BE(16), 96);
+  assert.equal(sprite.readUInt32BE(20), 32);
+});
+
+test("companion settings round-trip independently without rewriting the assistant config", async () => {
+  const state = await settingsState(SETTINGS_ASSISTANT_FIXTURE);
+  state.settingsConfig.assistant.agent = "";
+  state.settingsConfig.assistant.companion.enabled = true;
+  state.settingsConfig.assistant.companion.name = "  Miso  ";
+  assert.equal(state.settingsSectionSummary("assistant"), "Miso inbox");
+  assert.deepEqual([...state.settingsChangedPaths()].sort(), ["assistant.agent", "assistant.companion.enabled", "assistant.companion.name"]);
+  const out = await state._settingsWrite();
+  assert.match(out, /companion:\n\s+enabled: true\n\s+name: Miso/);
+  assert.match(out, /# the chat beside the board/);
+  state.settingsConfig.assistant.companion.name = "x".repeat(65);
+  assert.match(state._settingsAssistantErrors().join(" "), /assistant.companion.name/);
 });

@@ -112,7 +112,7 @@ const SETTINGS_SECTIONS = [
   { key: 'pipelines', label: 'pipelines', blurb: 'Stages wired to agents, with a routing rule per step.' },
   { key: 'projects', label: 'projects', blurb: 'Defaults a new ticket picks up from the repo it points at.' },
   { key: 'web', label: 'web', blurb: 'This dashboard and the HTTP API the CLI talks to.' },
-  { key: 'assistant', label: 'assistant', blurb: 'The chat docked beside the board. An empty agent disables it.' },
+  { key: 'assistant', label: 'assistant', blurb: 'Board chat and the companion inbox. The inbox works without an agent.' },
   { key: 'plannotator', label: 'plannotator', blurb: 'Human review of the diff, and annotation of the ticket. Review notes feed the rework stage; ticket notes rewrite the ticket.' },
   { key: 'notifications', label: 'notifications', blurb: 'Where a ticket can tell you it changed. Which statuses it tells you about is per ticket.' },
   { key: 'statuses', label: 'statuses', blurb: 'Extra board columns a pipeline step can route to.' },
@@ -142,7 +142,7 @@ const SETTINGS_SLOT_PILLS = 24;
 const SETTINGS_SEARCH_EXTRA = {
   general: ['auto_pick_up start todo tickets automatically', 'summary_model final summary pass', 'summary_effort final summary pass'],
   web: ['host bind address', 'port', 'token credential for /api and /ws'],
-  assistant: ['agent', 'model', 'effort', 'autonomy', 'prompt brief'],
+  assistant: ['agent', 'model', 'effort', 'autonomy', 'prompt brief', 'companion enabled name Kotik inbox observation'],
   agents: ['binary', 'effort', 'args', 'failure_patterns'],
   stages: ['prompt', 'timeout', 'model', 'effort'],
   pipelines: ['on_success', 'on_failure', 'max_retries'],
@@ -487,25 +487,27 @@ export function kontoraSettings() {
       return errs;
     },
 
-    // config.validateAssistant. An empty agent disables the pane, and the
-    // daemon then checks nothing else in the block, so neither does this.
-    // Empty autonomy and timeout are left alone too: applyDefaults fills them.
+    // Companion validation is independent of the agent. Empty autonomy and
+    // timeout are left alone: applyDefaults fills them.
     // Its effort check is not mirrored: effortFlag() is empty for exactly the
     // kinds the agent check rejects, so the daemon stops at that one first.
     _settingsAssistantErrors() {
       const a = this.settingsConfig.assistant;
+      const errs = [];
+      const companionName = a.companion.name.trim();
+      if ([...companionName].length > 64) errs.push('assistant.companion.name: must be 1-64 characters and not blank');
+      if (/\p{Cc}/u.test(companionName)) errs.push('assistant.companion.name: must not contain control characters');
       const name = a.agent.trim();
-      if (!name) return [];
+      if (!name) return errs;
       // hasOwn, not a truth test: agents is a plain object, so an agent named
       // after an Object.prototype member would otherwise look configured and
       // the read of its binary below would throw.
       if (!Object.hasOwn(this.settingsConfig.agents, name)) {
-        return [`assistant.agent "${name}": not found in agents`];
+        return errs.concat(`assistant.agent "${name}": not found in agents`);
       }
       const agent = this.settingsConfig.agents[name];
       const binary = agent.binary.trim();
       const kind = settingsAgentKind(agent);
-      const errs = [];
       if (binary && !kind) {
         errs.push(`assistant.agent "${name}": runs ${binary}, and the assistant only supports claude and pi ` +
           '(they are the CLIs that take a session id, which one chat needs)');
@@ -1063,10 +1065,11 @@ export function kontoraSettings() {
       if (key === 'projects') return this.settingsProjectNames().join(', ');
       if (key === 'assistant') {
         const agent = cfg.assistant.agent.trim();
-        if (!agent) return 'disabled';
+        const inbox = cfg.assistant.companion.enabled ? (cfg.assistant.companion.name.trim() || 'Kotik') + ' inbox' : '';
+        if (!agent) return inbox || 'disabled';
         const mode = cfg.assistant.autonomy.trim() || 'ask';
         const row = this.assistantAutonomies().find(a => a.key === mode);
-        return `${agent} · ${row ? row.label : mode}`;
+        return `${agent} · ${row ? row.label : mode}` + (inbox ? ' + ' + inbox : '');
       }
       if (key === 'plannotator') return 'review + annotate';
       if (key === 'notifications') {
@@ -1455,6 +1458,10 @@ function settingsModel(raw) {
       timeout: str(raw.assistant?.timeout),
       autonomy: str(raw.assistant?.autonomy),
       prompt: str(raw.assistant?.prompt),
+      companion: {
+        enabled: raw.assistant?.companion?.enabled === true,
+        name: str(raw.assistant?.companion?.name) || 'Kotik',
+      },
     },
     auto_pick_up: raw.auto_pick_up === undefined || raw.auto_pick_up === null ? true : !!raw.auto_pick_up,
     summary_model: settingsPerAgentModel(raw.summary_model),
@@ -1626,6 +1633,8 @@ function settingsFlatten(cfg) {
   out['plannotator.timeout'] = cfg.plannotator.timeout;
   out['plannotator.reviews_dir'] = cfg.plannotator.reviews_dir;
   for (const f of SETTINGS_ASSISTANT_KEYS) out[`assistant.${f}`] = cfg.assistant[f];
+  out['assistant.companion.enabled'] = cfg.assistant.companion.enabled ? 'true' : 'false';
+  out['assistant.companion.name'] = cfg.assistant.companion.name;
   out.statuses = cfg.statuses.join('\n');
   out['notifications.enabled'] = cfg.notifications.enabled ? 'true' : 'false';
   out['notifications.timeout'] = cfg.notifications.timeout;
@@ -1794,6 +1803,11 @@ function settingsNodeFor(path, cfg) {
     return { keys: ['plannotator', rest[0]], value: v === '' ? null : v };
   }
   if (group === 'assistant') {
+    if (rest[0] === 'companion') {
+      const field = rest[1];
+      const v = cfg.assistant.companion[field];
+      return { keys: ['assistant', 'companion', field], value: field === 'enabled' ? !!v : (v.trim() || null) };
+    }
     const field = rest[0];
     // The prompt is the one field whose whitespace can be deliberate, the same
     // rule stage prompts follow.

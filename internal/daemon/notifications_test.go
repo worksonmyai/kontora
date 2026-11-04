@@ -640,8 +640,10 @@ func TestNotificationsDeliverEndToEnd(t *testing.T) {
 		status       int
 		wantRequests int
 		wantResult   string
+		companion    bool
 	}{
 		{name: "delivered", status: http.StatusOK, wantRequests: 1, wantResult: "ok"},
+		{name: "companion does not duplicate delivery", status: http.StatusOK, wantRequests: 1, wantResult: "ok", companion: true},
 		{name: "a 5xx is retried then dropped", status: http.StatusServiceUnavailable, wantRequests: attempts, wantResult: "failed"},
 		{name: "a 401 is not retried", status: http.StatusUnauthorized, wantRequests: 1, wantResult: "failed"},
 	}
@@ -652,6 +654,7 @@ func TestNotificationsDeliverEndToEnd(t *testing.T) {
 			srv, requests := notifyWireServer(t, tt.status, `{"description":"nope"}`)
 
 			cfg := h.defaultConfig("true", "true")
+			cfg.Assistant.Companion.Enabled = tt.companion
 			cfg.Notifications = config.Notifications{
 				Attempts: new(attempts),
 				Timeout:  config.Duration{Duration: 2 * time.Second},

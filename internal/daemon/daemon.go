@@ -490,6 +490,7 @@ type Daemon struct {
 	// the agent's tool boundary for as long as the person takes, and d.mu is
 	// held across ticket writes.
 	assistant *assistantState
+	companion *companionState
 
 	// webAddr is the address the web server listens on, so an assistant turn
 	// can tell its agent where to send its own kontora calls. Empty until the
@@ -585,6 +586,7 @@ func New(cfg *config.Config, opts ...Option) *Daemon {
 		plannotatorDeferred: make(map[string]struct{}),
 		selfWrites:          make(map[string]selfWrite),
 		assistant:           newAssistantState(),
+		companion:           newCompanionState(),
 		stats:               newStatsCache(),
 	}
 	d.cfg.Store(cfg)
@@ -743,6 +745,9 @@ func (d *Daemon) Run(ctx context.Context) error {
 	if !d.skipOrphanCleanup {
 		d.cleanOrphanedWindows()
 	}
+
+	stopCompanion := d.startCompanion()
+	defer stopCompanion()
 
 	d.log.Info("daemon started", "dir", tasksDir, "tasks", len(d.tickets), "queued", d.queue.Len(), "tmux_session", d.tmuxSession)
 

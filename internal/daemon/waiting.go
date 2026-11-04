@@ -19,10 +19,12 @@ const defaultWaitPollInterval = 2 * time.Second
 // memory rather than in the ticket file: persisting it would leave stale state
 // behind after a crash and rewrite the markdown for every question.
 type waitingState struct {
-	Tool       string
-	ToolCallID string
-	Since      time.Time
-	Question   string
+	Invocation   string
+	RawStartedAt string
+	Tool         string
+	ToolCallID   string
+	Since        time.Time
+	Question     string
 }
 
 // waitMarker is the on-disk form the pi extension writes.
@@ -49,12 +51,15 @@ func readWaitMarker(path string, seen time.Time) *waitingState {
 		return nil
 	}
 	since, err := time.Parse(time.RFC3339, m.StartedAt)
+	rawStartedAt := m.StartedAt
 	if err != nil {
 		since = seen
+		rawStartedAt = ""
 	}
 	return &waitingState{
-		Tool:       m.Tool,
-		ToolCallID: m.ToolCallID,
+		RawStartedAt: rawStartedAt,
+		Tool:         m.Tool,
+		ToolCallID:   m.ToolCallID,
 		// Normalized so applyWaitMarker's == holds across polls: parsing an
 		// offset like +02:00 builds a fresh location each time, and the ticker's
 		// own time carries a monotonic reading. Either would compare unequal to
@@ -83,6 +88,7 @@ func (d *Daemon) startWaitWatcher(ticketID, path string) (stop func()) {
 
 // watchWaitMarker follows one run's marker until ctx ends.
 func (d *Daemon) watchWaitMarker(ctx context.Context, ticketID, path string) {
+	invocation := newSessionID()
 	ticker := time.NewTicker(d.waitPoll)
 	defer ticker.Stop()
 	for {
@@ -90,7 +96,11 @@ func (d *Daemon) watchWaitMarker(ctx context.Context, ticketID, path string) {
 		case <-ctx.Done():
 			return
 		case now := <-ticker.C:
-			d.applyWaitMarker(ticketID, readWaitMarker(path, now))
+			st := readWaitMarker(path, now)
+			if st != nil {
+				st.Invocation = invocation
+			}
+			d.applyWaitMarker(ticketID, st)
 		}
 	}
 }

@@ -122,7 +122,8 @@ The dashboard and the HTTP API the client commands use in remote mode.
 
 ## assistant
 
-The dashboard's assistant pane, which is what runs this conversation.
+The dashboard's assistant pane supports ordinary chats and the optional Kotik
+companion inbox.
 
 ```yaml
 assistant:
@@ -133,20 +134,25 @@ assistant:
   timeout: 10m
   autonomy: ask
   prompt: ""
+  companion:
+    enabled: false
+    name: Kotik
 ```
 
 | Field | Default | Description |
 |-------|---------|-------------|
-| `agent` | none | Which `agents:` entry runs the assistant. Empty disables the pane. Its binary must be `claude` or `pi`. |
+| `agent` | none | Which `agents:` entry runs model turns. Empty disables chat, not an enabled companion inbox. Its binary must be `claude` or `pi`. |
 | `model`, `effort` | the agent's own | Applied the way a stage's are. |
 | `workdir` | `tickets_dir` | The directory every turn runs in. Fixed when a chat opens. |
 | `timeout` | `10m` | Bounds one turn. |
 | `autonomy` | `ask` | The mode a new chat starts in: `read`, `ask` or `auto`. |
-| `prompt` | built-in | Replaces the whole system brief. |
+| `prompt` | built-in | Replaces the ordinary chat brief, not the companion brief. |
+| `companion.enabled` | `false` | Enable ticket observation without requiring a model or open browser. |
+| `companion.name` | `Kotik` | At most 64 Unicode characters; no blank names or control characters. An empty value uses `Kotik`. |
 
-Autonomy is enforced at the agent's tool boundary, not by asking the agent to
-behave. A tool call with no rule counts as a change, so a mode can only ever be
-stricter than expected.
+Ordinary chat autonomy is enforced at the agent's tool boundary, not by asking
+the agent to behave. A tool call with no rule counts as a change, so a mode can
+only ever be stricter than expected.
 
 | Mode | Reads | Changes | Deleting a ticket |
 |------|-------|---------|-------------------|
@@ -154,12 +160,47 @@ stricter than expected.
 | `ask` | run | held for approval | held |
 | `auto` | run | run | held |
 
+### Companion
+
+Set `assistant.companion.enabled: true` to enable Kotik. Kontora validates the
+name even without an assistant agent or when observation is disabled. The daemon
+owns one shared inbox and read state across devices. It tracks questions, paused tickets,
+human review, recent completions and changes since an explicit caught-up
+checkpoint. Reading attention does not answer questions or change tickets.
+
+The inbox works without `assistant.agent`; only AI actions need that setting.
+Startup, polling, reload and browser reconnection never start model turns.
+Briefings, investigations and follow-ups require an explicit user request.
+Each request accepts at most five selected tickets and 32 KiB of server-built
+evidence. Kontora saves evidence before model admission. Capture metadata and
+omissions remain visible when the chat reopens. Source changes mark explanations
+outdated instead of changing historical answers or current attention.
+
+Companion chats deny every tool call and autonomy escalation, regardless of
+`assistant.autonomy` or `assistant.prompt`. They cannot run commands, inspect
+arbitrary files, mutate tickets, answer agents, execute approvals or send
+outbound messages. Existing notifications remain separate. Kontora enforces
+these restrictions through runtime hooks with a trusted configured agent.
+This is not an OS sandbox against malicious binaries or installed extensions.
+
+Attention lives at `<logs_dir>/companion/<daemon-scope>/state.json`, scoped by
+normalized daemon-lock and ticket-directory paths. The inbox retains all active
+items plus at most 500 inactive records, with inactive records kept at most
+30 days. A corrupt, unsupported or unavailable store reports degraded health
+and preserves the existing file. Kontora refuses read-state updates it cannot
+save; task execution and notifications continue.
+
+Polling can miss short-lived transitions, and offline history is incomplete.
+A question that disappears is no longer observed, not proven answered.
+
 ## Reloading
 
 The daemon watches its config file, and `SIGHUP` reloads it too. `agents`,
 `stages`, `pipelines`, `projects`, `statuses`, `environment`, `auto_pick_up`,
 `default_agent`, the branch settings and the `assistant` block all reload live
-and apply to the next run, never to one already going.
+and apply to the next run, never to one already going. Disabling the companion
+stops observation and blocks new companion requests without deleting stored
+data. An already-running requested turn remains stoppable.
 
 `tickets_dir`, `worktrees_dir`, `logs_dir`, `instance_name`, `tmux_session`,
 `max_concurrent_agents` and the whole `web` and `metrics` blocks need a

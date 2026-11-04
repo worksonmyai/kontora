@@ -332,13 +332,17 @@ func TestAssistantActivityCursorAndETag(t *testing.T) {
 
 func TestAssistantRoutesRequireToken(t *testing.T) {
 	srv := startTestServer(t, &mockService{}, NewSSEBroker(), "secret", tmux.DefaultSessionName)
-	for _, path := range []string{
-		"/api/assistant",
-		"/api/assistant/threads",
-		"/api/assistant/threads/t1/activity",
+	for _, tc := range []struct{ method, path string }{
+		{http.MethodGet, "/api/assistant"},
+		{http.MethodGet, "/api/assistant/threads"},
+		{http.MethodGet, "/api/assistant/threads/t1/activity"},
+		{http.MethodGet, "/api/assistant/companion"},
+		{http.MethodPatch, "/api/assistant/companion"},
+		{http.MethodPatch, "/api/assistant/companion/items/item"},
+		{http.MethodPost, "/api/assistant/companion/messages"},
 	} {
-		res := get(t, srv, path)
-		assert.Equal(t, http.StatusUnauthorized, res.statusCode, "path %s", path)
+		res := request(t, srv, tc.method, tc.path, "")
+		assert.Equal(t, http.StatusUnauthorized, res.statusCode, "path %s", tc.path)
 	}
 	res := request(t, srv, http.MethodPost, "/api/assistant/gate/ask", `{"thread":"t1"}`)
 	assert.Equal(t, http.StatusUnauthorized, res.statusCode)
@@ -395,6 +399,26 @@ func readSSE(t *testing.T, body io.Reader, want int) []string {
 }
 
 func TestHandleAssistantStream(t *testing.T) {
+	t.Run("companion evidence metadata is available before the streamed answer", func(t *testing.T) {
+		captured := time.Now().UTC()
+		svc := &mockService{
+			assistantPartFn:  func(string) (AssistantPartialInfo, error) { return AssistantPartialInfo{Running: true, Gen: 1}, nil },
+			assistantThreads: []AssistantThreadInfo{{ID: "k123", Purpose: "companion", Evidence: []CompanionEvidenceInfo{{ID: "capture", CapturedAt: captured}}}},
+		}
+		srv := startHandlerTestServer(t, svc)
+		ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+		defer cancel()
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+srv.Addr()+"/api/assistant/threads/k123/stream", nil)
+		require.NoError(t, err)
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		frames := readSSE(t, resp.Body, 2)
+		require.Len(t, frames, 2)
+		assert.Contains(t, frames[1], "event: evidence")
+		assert.Contains(t, frames[1], `"id":"capture"`)
+		assert.Contains(t, frames[1], "captured_at")
+	})
 	t.Run("nothing running and nothing typed answers 204", func(t *testing.T) {
 		// EventSource does not retry a 204, so a pane left open on a finished
 		// thread stops asking.

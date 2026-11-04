@@ -2376,6 +2376,11 @@ func TestHandleSSE_EventPayloads(t *testing.T) {
 			event: TicketEvent{Type: "config_reloaded"},
 			want:  `{}`,
 		},
+		{
+			name:  "companion invalidation has no ticket or inbox payload",
+			event: TicketEvent{Type: "companion_updated", Ticket: TicketInfo{ID: "not-in-payload"}},
+			want:  `{}`,
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

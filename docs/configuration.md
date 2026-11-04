@@ -825,7 +825,7 @@ listed under `agents:`.
 
 ```yaml
 assistant:
-  agent: claude          # required to enable; no agent means no assistant
+  agent: claude          # required for model turns, not the companion inbox
   model: sonnet          # optional
   effort: medium         # optional
   workdir: ~/.kontora/tickets   # optional, defaults to tickets_dir
@@ -833,25 +833,30 @@ assistant:
   autonomy: ask          # optional: read | ask | auto
   prompt: ""             # optional, replaces the built-in system brief
   stream: true           # optional; unset means on
+  companion:
+    enabled: false       # optional; observation needs no model
+    name: Kotik
 ```
 
 | Field | Required | Default | Description |
 |-------|----------|---------|-------------|
-| `agent` | no | none | Which `agents:` entry the assistant runs. Empty disables the pane, which then shows a configure hint instead of a composer. |
+| `agent` | no | none | Which `agents:` entry runs model turns. Empty disables chat, but an enabled companion inbox still works. |
 | `model` | no | the agent's own | Applied the way a stage's `model` is. |
 | `effort` | no | the agent's own | Reasoning effort. Rejected for an agent whose CLI takes no flag for it. |
 | `workdir` | no | `tickets_dir` | The working directory every turn runs in. |
 | `timeout` | no | `10m` | Bounds one turn. |
 | `autonomy` | no | `ask` | The mode a new chat starts in. |
-| `prompt` | no | built-in | Replaces the whole system brief, mode paragraph included. |
+| `prompt` | no | built-in | Replaces the ordinary chat brief, mode paragraph included. Does not replace the companion brief. |
 | `stream` | no | `true` | Whether a turn asks for the message as it is written, so the pane renders prose before the message completes. |
+| `companion.enabled` | no | `false` | Observe ticket attention independently of model configuration and open browsers. |
+| `companion.name` | no | `Kotik` | Display name, limited to 64 Unicode characters. Blank names and control characters are rejected. An empty value uses `Kotik`. |
 
 The built-in assistant prompt uses file-to-stdin submission for notes and
 summaries, as described under [stage handoffs](#stage-handoffs). The dashboard
 assistant does not receive the native handoff tools, even when its agent is Pi.
 The submission method does not change the assistant's approval rules.
-A custom `assistant.prompt` replaces the whole default, including its mode
-paragraph and safe submission guidance; Kontora does not update custom text.
+A custom `assistant.prompt` replaces the ordinary chat default, including its
+mode paragraph and safe submission guidance; Kontora does not update custom text.
 
 ### Replies as they are written
 
@@ -907,6 +912,7 @@ silently starting from nothing.
 
 ### Autonomy
 
+These modes apply to ordinary chats. Companion chats deny every tool call.
 The mode is enforced at the agent's tool boundary, not by asking the agent to
 behave: claude runs a `PreToolUse` hook, pi a `tool_call` handler, and both ask
 the daemon before the tool runs. A tool call the daemon has no rule for counts
@@ -938,8 +944,62 @@ secret the tool gate authenticates its calls with. `KONTORA_URL` names loopback
 even when `web.host` is a wildcard: the daemon refuses a request whose `Host` is
 `0.0.0.0`, so the agent has to reach it by an address it answers to.
 
-Chats are stored under `<logs_dir>/assistant/<chat-id>/`. Deleting one from the
-history removes its transcript with it.
+Ordinary chats are stored under `<logs_dir>/assistant/<chat-id>/`. Deleting one
+from the history removes its transcript with it.
+
+### Companion inbox and requested explanations
+
+Set `assistant.companion.enabled: true` to enable Kotik. Kontora validates the
+companion name even without an assistant agent or when observation is disabled.
+The daemon maintains one shared inbox, including read state across devices. The inbox shows current
+questions, paused tickets and tickets awaiting human review. It also records
+recent completions and changes since an explicit caught-up checkpoint.
+Reading an item does not answer a question, complete a review or change a ticket.
+A paused ticket is not necessarily a failed ticket; its recorded error is separate.
+
+Observation runs without an open browser or `assistant.agent`. Without an agent,
+only the AI actions show a configuration hint. Startup, polling, reload and
+browser reconnection never start model turns. A briefing, investigation or
+follow-up requires an explicit user request and uses the assistant's configured
+agent. Requested turns have the same model costs, timeouts and concurrency
+limits as ordinary chats.
+
+Kotik uses server-built evidence from recorded ticket details, summaries and
+activity. Each request accepts at most five selected tickets and 32 KiB of
+evidence. Kontora saves the evidence before starting the model. Capture times,
+source revisions, observation windows and omissions remain available when the
+chat reopens. Later source changes mark an explanation outdated; they do not
+rewrite its answer or establish current attention. Changed or deleted sources
+can leave evidence unavailable. The Changes tab remains the place to inspect
+code changes; commit and file statistics are not patch evidence.
+
+Companion chats use a separate built-in brief. They deny all tool calls and
+reject autonomy escalation, regardless of `assistant.autonomy` or
+`assistant.prompt`. Kotik cannot run commands, inspect arbitrary source files,
+mutate tickets, answer agents or execute approvals. It sends no outbound
+messages and does not change existing notifications. These restrictions rely on
+Kontora's runtime hooks and the trusted configured agent. They are not an OS
+sandbox against malicious agent binaries or installed extensions.
+
+Kontora stores attention at
+`<logs_dir>/companion/<daemon-scope>/state.json`. The scope comes from normalized
+daemon-lock and ticket-directory paths. Companion chats and evidence use the
+same scope, separate from ordinary chats. The inbox retains all active items
+plus the latest 500 inactive records, with inactive records kept for at most
+30 days. Retention never prunes active attention.
+
+If the store is corrupt, unsupported or unavailable, Kotik reports degraded
+health. Kontora preserves the existing file and refuses read-state updates it
+cannot save. Ordinary task execution and notifications continue.
+
+The `assistant` block reloads live. Disabling the companion stops observation
+and prevents new companion requests, but retains stored data. A requested turn
+already running remains stoppable through the existing Stop action.
+
+Kotik is not a complete audit log. Polling and combined wake signals can miss
+short-lived transitions. Kotik cannot reconstruct every event while the daemon
+was offline. A question that disappears is only no longer observed, not proven
+answered. Missing source identifiers can also limit question tracking.
 
 ## notifications
 
@@ -1213,7 +1273,7 @@ change a prompt or an agent's arguments while agents are working.
 `agents`, `stages`, `pipelines`, `projects`, `statuses`, `environment`,
 `auto_pick_up`, `default_agent`, `branch_prefix`, `branch_naming`,
 `resume_prompt`, `annotation_prompt`, `summary_model`, `summary_effort`, and the
-whole `plannotator` block.
+whole `plannotator` and `assistant` blocks.
 
 A run reads the prompts and the `plannotator` block when it starts, so a reload
 changes the next run, never one already going.

@@ -15,6 +15,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
 )
@@ -182,7 +184,7 @@ const (
 var Autonomies = []string{AutonomyRead, AutonomyAsk, AutonomyAuto}
 
 // Assistant configures the dashboard's assistant pane. An empty Agent disables
-// it: the pane then shows a configure hint instead of a composer.
+// model turns, but the companion inbox can run without one.
 //
 // The agent must be one whose Kind() is known, because a thread is one agent
 // session — the first turn mints a session id and every later turn resumes it,
@@ -205,7 +207,14 @@ type Assistant struct {
 	// renders prose before it completes. Unset means on: an opt-out, because a
 	// claude that does not know the flag fails every turn and needs an escape
 	// hatch.
-	Stream *bool `yaml:"stream"`
+	Stream    *bool     `yaml:"stream"`
+	Companion Companion `yaml:"companion"`
+}
+
+// Companion configures observation independently of the assistant agent.
+type Companion struct {
+	Enabled bool   `yaml:"enabled"`
+	Name    string `yaml:"name"`
 }
 
 // Enabled reports whether an assistant agent was chosen.
@@ -890,6 +899,9 @@ func (c *Config) applyServiceDefaults() {
 	if c.Assistant.Timeout.Duration == 0 {
 		c.Assistant.Timeout.Duration = 10 * time.Minute
 	}
+	if c.Assistant.Companion.Name == "" {
+		c.Assistant.Companion.Name = "Kotik"
+	}
 
 	if c.Metrics.Enabled == nil {
 		c.Metrics.Enabled = new(false)
@@ -1405,11 +1417,15 @@ func (c *Config) checkNotifyChannelList(scope string, names []string) error {
 	return nil
 }
 
-// validateAssistant checks the assistant section. An empty agent is valid and
-// means the pane is disabled, so every other field is only checked once one is
-// named.
+// validateAssistant checks companion settings even without a model agent.
 func (c *Config) validateAssistant() error {
 	a := c.Assistant
+	if a.Companion.Name != "" && (strings.TrimSpace(a.Companion.Name) == "" || utf8.RuneCountInString(a.Companion.Name) > 64) {
+		return fmt.Errorf("assistant.companion.name: must be 1-64 characters and not blank")
+	}
+	if strings.ContainsFunc(a.Companion.Name, unicode.IsControl) {
+		return fmt.Errorf("assistant.companion.name: must not contain control characters")
+	}
 	if a.Agent == "" {
 		return nil
 	}

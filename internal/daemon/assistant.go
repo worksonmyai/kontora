@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/worksonmyai/kontora/internal/assistant"
+	"github.com/worksonmyai/kontora/internal/companion"
 	"github.com/worksonmyai/kontora/internal/config"
 	"github.com/worksonmyai/kontora/internal/logfmt"
 	"github.com/worksonmyai/kontora/internal/process"
@@ -37,7 +38,7 @@ var assistantExtensionJS string
 const assistantMaxConcurrent = 2
 
 // assistantStopWait bounds how long deleting a thread waits for its in-flight
-// turn to end before removing the directory anyway.
+// turn to end. A timeout leaves the directory intact and returns busy.
 const assistantStopWait = 5 * time.Second
 
 // assistantGateTimeout is how long a parked write waits for a person before it
@@ -94,7 +95,12 @@ func WithTurnSpawner(fn TurnSpawner) Option {
 // assistantState is the daemon's assistant bookkeeping. One turn runs per
 // thread at a time, because the agent session it resumes cannot take two.
 type assistantState struct {
-	mu sync.Mutex
+	// lifecycle serializes preparation/admission, deletion and shutdown. Never
+	// acquire it while holding d.mu or mu. Turn completion must not acquire it:
+	// deletion holds it while joining the turn.
+	lifecycle sync.Mutex
+	mu        sync.Mutex
+	closed    bool
 	// running maps a thread id to the cancel of its in-flight turn.
 	running map[string]context.CancelFunc
 	// nonces maps a thread id to the secret this turn's agent was given.
@@ -109,8 +115,6 @@ type assistantState struct {
 	gateLog map[string][]assistant.GateRecord
 	// live holds the text each thread's agent is typing right now.
 	live *assistant.LiveText
-	// writeMu serializes the thread-file update that counts a change.
-	writeMu sync.Mutex
 }
 
 func newAssistantState() *assistantState {
@@ -130,37 +134,36 @@ func newAssistantState() *assistantState {
 // global cap are different things to say to someone who just pressed send.
 func (a *assistantState) claim(threadID, nonce string, cancel context.CancelFunc) error {
 	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.closed {
+		return fmt.Errorf("%w: assistant admission is closed", web.ErrAssistantBusy)
+	}
 	if _, busy := a.running[threadID]; busy {
-		a.mu.Unlock()
 		return web.ErrAssistantBusy
 	}
-	a.mu.Unlock()
-
 	select {
 	case a.sem <- struct{}{}:
 	default:
 		return web.ErrAssistantAtCapacity
 	}
-
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	// Re-checked under the lock: two posts to the same thread can both pass the
-	// first check and then both take a global slot.
-	if _, busy := a.running[threadID]; busy {
-		<-a.sem
-		return web.ErrAssistantBusy
-	}
 	a.running[threadID] = cancel
 	a.nonces[threadID] = nonce
 	a.done[threadID] = make(chan struct{})
 	delete(a.gateLog, threadID)
-	a.live.Start(threadID)
 	return nil
 }
 
 func (a *assistantState) release(threadID string) {
 	a.mu.Lock()
+	defer a.mu.Unlock()
 	_, held := a.running[threadID]
+	if !held {
+		return
+	}
+	// Cleanup is part of ownership, not something an old turn can do after
+	// exposing its slot to a new turn (or signaling deletion to proceed).
+	a.gate.Clear(threadID)
+	a.live.End(threadID)
 	done := a.done[threadID]
 	delete(a.running, threadID)
 	delete(a.nonces, threadID)
@@ -168,32 +171,10 @@ func (a *assistantState) release(threadID string) {
 	// Whatever the turn record did not take is from a gate call that outlived
 	// the turn, and belongs to nothing.
 	delete(a.gateLog, threadID)
-	a.mu.Unlock()
-	if held {
-		<-a.sem
-	}
+	<-a.sem
 	if done != nil {
 		close(done)
 	}
-	a.gate.Clear(threadID)
-	a.live.End(threadID)
-}
-
-// recordGate appends what the gate answered for one tool call.
-func (a *assistantState) recordGate(threadID string, rec assistant.GateRecord) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.gateLog[threadID] = append(a.gateLog[threadID], rec)
-}
-
-// takeGates hands the turn's gate records to whoever is writing its record and
-// forgets them.
-func (a *assistantState) takeGates(threadID string) []assistant.GateRecord {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	recs := a.gateLog[threadID]
-	delete(a.gateLog, threadID)
-	return recs
 }
 
 func (a *assistantState) isRunning(threadID string) bool {
@@ -219,23 +200,25 @@ func (a *assistantState) stop(threadID string) bool {
 // let go, so a caller that is about to remove the thread directory does not race
 // the turn writing its log back into it. The wait is bounded: a spawner that
 // ignores its context must not hold the request open.
-func (a *assistantState) stopAndWait(threadID string, timeout time.Duration) {
+func (a *assistantState) stopAndWait(threadID string, timeout time.Duration) bool {
 	a.mu.Lock()
 	cancel, ok := a.running[threadID]
 	done := a.done[threadID]
 	a.mu.Unlock()
 	if !ok {
-		return
+		return true
 	}
 	cancel()
 	if done == nil {
-		return
+		return false
 	}
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 	select {
 	case <-done:
+		return true
 	case <-timer.C:
+		return false
 	}
 }
 
@@ -244,12 +227,15 @@ func (a *assistantState) stopAndWait(threadID string, timeout time.Duration) {
 // shutdown therefore has to end them explicitly, or the wait for background
 // work would sit out the whole assistant timeout.
 func (a *assistantState) stopAll() {
+	a.lifecycle.Lock()
 	a.mu.Lock()
+	a.closed = true
 	cancels := make([]context.CancelFunc, 0, len(a.running))
 	for _, cancel := range a.running {
 		cancels = append(cancels, cancel)
 	}
 	a.mu.Unlock()
+	a.lifecycle.Unlock()
 	for _, cancel := range cancels {
 		cancel()
 	}
@@ -269,6 +255,22 @@ func (a *assistantState) nonceMatches(threadID, nonce string) bool {
 // per call rather than held, so a reload that moves logs_dir is followed.
 func (d *Daemon) assistantStore(cfg *config.Config) *assistant.Store {
 	return assistant.NewStore(filepath.Join(expandTilde(cfg.LogsDir), "assistant"))
+}
+
+// assistantThreadStore is the sole resolver for thread artifacts, sessions,
+// evidence and hook lookups.
+func (d *Daemon) assistantThreadStore(cfg *config.Config, id string) *assistant.Store {
+	if strings.HasPrefix(id, "k") {
+		root := filepath.Join(expandTilde(cfg.LogsDir), "companion",
+			companion.Scope(expandTilde(d.lockPath), expandTilde(cfg.TicketsDir)), "assistant")
+		// Agents run in the thread cwd, not necessarily the daemon cwd. Both
+		// runtimes must receive an absolute session location for relative logs_dir.
+		if absolute, err := filepath.Abs(root); err == nil {
+			root = absolute
+		}
+		return assistant.NewStore(root)
+	}
+	return d.assistantStore(cfg)
 }
 
 // assistantAgent resolves the configured assistant agent, or reports that the
@@ -305,8 +307,8 @@ func assistantThreadAgent(cfg *config.Config, thread assistant.Thread) (config.A
 	return agentCfg, nil
 }
 
-// AssistantConfig reports whether the pane can be used and, when it cannot, why
-// not in the words the configure hint shows.
+// AssistantConfig reports whether assistant model turns are configured and gives
+// the configure hint when they are not.
 func (d *Daemon) AssistantConfig() web.AssistantConfigInfo {
 	cfg := d.config()
 	agentCfg, err := assistantAgent(cfg)
@@ -336,6 +338,17 @@ func (d *Daemon) ListAssistantThreads() ([]web.AssistantThreadInfo, error) {
 	if err != nil {
 		return nil, err
 	}
+	companions, err := d.assistantThreadStore(cfg, "k").List()
+	if err != nil {
+		d.log.Warn("listing companion chats failed", "err", err)
+	}
+	threads = append(threads, companions...)
+	slices.SortFunc(threads, func(a, b assistant.Thread) int {
+		if cmp := b.UpdatedAt.Compare(a.UpdatedAt); cmp != 0 {
+			return cmp
+		}
+		return strings.Compare(a.ID, b.ID)
+	})
 	out := make([]web.AssistantThreadInfo, 0, len(threads))
 	for _, t := range threads {
 		out = append(out, d.assistantThreadInfo(t, nil))
@@ -347,6 +360,27 @@ func (d *Daemon) ListAssistantThreads() ([]web.AssistantThreadInfo, error) {
 // are fixed here: a thread is one agent session, and claude keys its session
 // files by working directory, so neither can move between turns.
 func (d *Daemon) CreateAssistantThread(req web.CreateAssistantThreadRequest) (web.AssistantThreadInfo, error) {
+	return d.createAssistantThread(req, false)
+}
+
+// createCompanionThread is server-only: clients cannot choose a thread purpose.
+func (d *Daemon) createCompanionThread() (web.AssistantThreadInfo, error) {
+	return d.createAssistantThread(web.CreateAssistantThreadRequest{Autonomy: config.AutonomyRead}, true)
+}
+
+func (d *Daemon) createAssistantThread(req web.CreateAssistantThreadRequest, companionRequest bool) (web.AssistantThreadInfo, error) {
+	d.assistant.lifecycle.Lock()
+	defer d.assistant.lifecycle.Unlock()
+	return d.createAssistantThreadLocked(req, companionRequest)
+}
+
+func (d *Daemon) createAssistantThreadLocked(req web.CreateAssistantThreadRequest, companionRequest bool) (web.AssistantThreadInfo, error) {
+	d.assistant.mu.Lock()
+	closed := d.assistant.closed
+	d.assistant.mu.Unlock()
+	if closed {
+		return web.AssistantThreadInfo{}, web.ErrAssistantBusy
+	}
 	cfg := d.config()
 	agentCfg, err := assistantAgent(cfg)
 	if err != nil {
@@ -369,7 +403,12 @@ func (d *Daemon) CreateAssistantThread(req web.CreateAssistantThreadRequest) (we
 		Cwd:       expandTilde(cfg.Assistant.Workdir),
 		Autonomy:  autonomy,
 	}
-	if err := d.assistantStore(cfg).Save(thread); err != nil {
+	if companionRequest {
+		thread.ID = assistant.NewCompanionID()
+		thread.Purpose = assistant.PurposeCompanion
+		thread.Autonomy = config.AutonomyRead
+	}
+	if err := d.assistantThreadStore(cfg, thread.ID).Save(thread); err != nil {
 		return web.AssistantThreadInfo{}, err
 	}
 	return d.assistantThreadInfo(thread, []web.AssistantMessage{}), nil
@@ -378,24 +417,34 @@ func (d *Daemon) CreateAssistantThread(req web.CreateAssistantThreadRequest) (we
 // GetAssistantThread returns one thread with the messages posted to it.
 func (d *Daemon) GetAssistantThread(id string) (web.AssistantThreadInfo, error) {
 	cfg := d.config()
-	store := d.assistantStore(cfg)
+	store := d.assistantThreadStore(cfg, id)
 	thread, err := store.Load(id)
 	if err != nil {
 		return web.AssistantThreadInfo{}, assistantErr(err)
 	}
-	return d.assistantThreadInfo(thread, assistantMessages(store, id)), nil
+	info := d.assistantThreadInfo(thread, assistantMessages(store, id))
+	info.Evidence = d.companionEvidenceInfo(id)
+	return info, nil
 }
 
 // DeleteAssistantThread drops a thread and its transcript.
 func (d *Daemon) DeleteAssistantThread(id string) error {
-	d.assistant.stopAndWait(id, assistantStopWait)
+	return d.deleteAssistantThread(id, assistantStopWait)
+}
+
+func (d *Daemon) deleteAssistantThread(id string, timeout time.Duration) error {
+	d.assistant.lifecycle.Lock()
+	defer d.assistant.lifecycle.Unlock()
+	if !d.assistant.stopAndWait(id, timeout) {
+		return web.ErrAssistantBusy
+	}
 	d.assistant.live.Clear(id)
-	return assistantErr(d.assistantStore(d.config()).Delete(id))
+	return assistantErr(d.assistantThreadStore(d.config(), id).Delete(id))
 }
 
 // StopAssistantTurn cancels the turn a thread is running.
 func (d *Daemon) StopAssistantTurn(id string) error {
-	if _, err := d.assistantStore(d.config()).Load(id); err != nil {
+	if _, err := d.assistantThreadStore(d.config(), id).Load(id); err != nil {
 		return assistantErr(err)
 	}
 	d.assistant.stop(id)
@@ -408,13 +457,14 @@ func (d *Daemon) StopAssistantTurn(id string) error {
 // same response, so one poll drives the tool rows and the proposal card.
 func (d *Daemon) AssistantActivity(q web.AssistantActivityQuery) (web.AssistantActivityInfo, error) {
 	cfg := d.config()
-	store := d.assistantStore(cfg)
+	store := d.assistantThreadStore(cfg, q.ID)
 	thread, err := store.Load(q.ID)
 	if err != nil {
 		return web.AssistantActivityInfo{}, assistantErr(err)
 	}
 
 	info := web.AssistantActivityInfo{
+		Evidence: d.companionEvidenceInfo(q.ID),
 		Running:  d.assistant.isRunning(q.ID),
 		Autonomy: thread.Autonomy,
 		Messages: assistantMessages(store, q.ID),
@@ -510,7 +560,7 @@ func assistantPartialLanded(tape logfmt.Tape, partial string, sealed, truncated 
 func (d *Daemon) AssistantPartial(id string) (web.AssistantPartialInfo, error) {
 	p := d.assistant.live.Snapshot(id)
 	if !p.Present {
-		if _, err := d.assistantStore(d.config()).Load(id); err != nil {
+		if _, err := d.assistantThreadStore(d.config(), id).Load(id); err != nil {
 			return web.AssistantPartialInfo{}, assistantErr(err)
 		}
 	}
@@ -532,6 +582,10 @@ func assistantETag(path string, turns int, info web.AssistantActivityInfo) strin
 	}
 	var b strings.Builder
 	b.WriteString(base)
+	if len(info.Evidence) > 0 {
+		data, _ := json.Marshal(info.Evidence)
+		b.Write(data)
+	}
 	fmt.Fprintf(&b, "|running=%t|messages=%d", info.Running, len(info.Messages))
 	if n := len(info.Messages); n > 0 {
 		last := info.Messages[n-1]
@@ -559,7 +613,10 @@ func (d *Daemon) assistantSessionPath(cfg *config.Config, thread assistant.Threa
 	} else {
 		claudeConfigDir = session.ClaudeConfigDir(nil)
 	}
-	piDir, err := d.assistantStore(cfg).PiSessionDir(thread.ID)
+	if thread.Purpose == assistant.PurposeCompanion && thread.Kind == config.AgentKindClaude {
+		claudeConfigDir = d.companionClaudeDir(cfg, thread.ID)
+	}
+	piDir, err := d.assistantThreadStore(cfg, thread.ID).PiSessionDir(thread.ID)
 	if err != nil {
 		piDir = ""
 	}
@@ -569,19 +626,65 @@ func (d *Daemon) assistantSessionPath(cfg *config.Config, thread assistant.Threa
 // PostAssistantMessage starts a turn. It returns as soon as the subprocess is
 // under way: the reply arrives through the activity poll, not this response.
 func (d *Daemon) PostAssistantMessage(id string, req web.AssistantMessageRequest) error {
+	return d.postAssistantMessage(id, req, false)
+}
+
+func (d *Daemon) postAssistantMessage(id string, req web.AssistantMessageRequest, companionRequest bool) error {
+	return d.postAssistantMessagePrepared(id, req, companionRequest, nil)
+}
+
+// postAssistantMessagePrepared lets the server persist captured evidence after
+// claiming the thread but before metadata save/spawn. Preparation must not take
+// lifecycle again. Failure releases ownership without admitting a model turn.
+func (d *Daemon) postAssistantMessagePrepared(id string, req web.AssistantMessageRequest, companionRequest bool, prepare func(*assistant.Store, assistant.Thread, *web.AssistantMessageRequest) error) error {
+	d.assistant.lifecycle.Lock()
+	defer d.assistant.lifecycle.Unlock()
+	return d.postAssistantMessagePreparedLocked(id, req, companionRequest, prepare)
+}
+
+func (d *Daemon) postAssistantMessagePreparedLocked(id string, req web.AssistantMessageRequest, companionRequest bool, prepare func(*assistant.Store, assistant.Thread, *web.AssistantMessageRequest) error) error {
 	text := strings.TrimSpace(req.Text)
 	if text == "" {
 		return fmt.Errorf("%w: the message is empty", web.ErrInvalidConfig)
 	}
 	cfg := d.config()
-	store := d.assistantStore(cfg)
+	store := d.assistantThreadStore(cfg, id)
+	nonce, err := assistantNonce()
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	if err := d.assistant.claim(id, nonce, cancel); err != nil {
+		cancel()
+		return err
+	}
+	admitted := false
+	defer func() {
+		if !admitted {
+			cancel()
+			d.assistant.release(id)
+		}
+	}()
+	// Claim before loading counters: a losing post never reads stale metadata
+	// and cannot overwrite the winning turn's session, title or turn count.
 	thread, err := store.Load(id)
 	if err != nil {
 		return assistantErr(err)
 	}
+	if (thread.Purpose == assistant.PurposeCompanion) != companionRequest {
+		return fmt.Errorf("%w: companion messages require server-built evidence", web.ErrAssistantGateDenied)
+	}
+	if companionRequest && req.Autonomy != "" && req.Autonomy != config.AutonomyRead {
+		return fmt.Errorf("%w: companion autonomy cannot be escalated", web.ErrAssistantGateDenied)
+	}
 	agentCfg, err := assistantThreadAgent(cfg, thread)
 	if err != nil {
 		return err
+	}
+	if prepare != nil {
+		if err := prepare(store, thread, &req); err != nil {
+			return err
+		}
 	}
 	if slices.Contains(config.Autonomies, req.Autonomy) {
 		thread.Autonomy = req.Autonomy
@@ -600,23 +703,17 @@ func (d *Daemon) PostAssistantMessage(id string, req web.AssistantMessageRequest
 	}
 	thread.UpdatedAt = time.Now().UTC()
 
-	nonce, err := assistantNonce()
-	if err != nil {
-		return err
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	if err := d.assistant.claim(id, nonce, cancel); err != nil {
-		cancel()
-		return err
-	}
 	// Written before the turn starts, so the gate and the poll both read the
 	// autonomy and the session this turn actually runs with.
 	if err := store.Save(thread); err != nil {
-		d.assistant.release(id)
-		cancel()
 		return err
 	}
+	// Failed validation/preparation must not erase the previous streamed answer.
+	d.assistant.mu.Lock()
+	d.assistant.live.Start(id)
+	d.assistant.mu.Unlock()
 
+	admitted = true
 	d.background.Go(func() {
 		defer cancel()
 		d.runAssistantTurn(ctx, cfg, agentCfg, store, thread, text, req.Context, resume)
@@ -722,8 +819,11 @@ func (d *Daemon) runAssistantTurn(ctx context.Context, cfg *config.Config, agent
 	turn := assistant.Turn{N: thread.Turns, Text: text, Context: pageContext, StartedAt: time.Now().UTC()}
 
 	finish := func(err error) {
+		d.assistant.mu.Lock()
+		defer d.assistant.mu.Unlock()
 		turn.EndedAt = time.Now().UTC()
-		turn.Gates = d.assistant.takeGates(thread.ID)
+		turn.Gates = d.assistant.gateLog[thread.ID]
+		delete(d.assistant.gateLog, thread.ID)
 		if err != nil {
 			turn.Error = err.Error()
 			turn.ExitCode = 1
@@ -745,6 +845,12 @@ func (d *Daemon) runAssistantTurn(ctx context.Context, cfg *config.Config, agent
 	}
 
 	env := d.assistantEnv(cfg, agentCfg, thread.ID)
+	if thread.Purpose == assistant.PurposeCompanion && thread.Kind == config.AgentKindClaude {
+		if err := d.prepareCompanionClaude(cfg, thread, env); err != nil {
+			finish(err)
+			return
+		}
+	}
 	gateFile, err := d.writeAssistantGateFile(agentCfg.Kind(), env)
 	if err != nil {
 		finish(fmt.Errorf("writing the tool gate: %w", err))
@@ -758,6 +864,7 @@ func (d *Daemon) runAssistantTurn(ctx context.Context, cfg *config.Config, agent
 		Resume:    resume,
 		GateFile:  gateFile,
 		SystemPrompt: assistant.SystemPrompt(cfg.Assistant.Prompt, assistant.PromptData{
+			Purpose:      thread.Purpose,
 			Autonomy:     thread.Autonomy,
 			Cwd:          thread.Cwd,
 			TicketsDir:   expandTilde(cfg.TicketsDir),
@@ -789,11 +896,19 @@ func (d *Daemon) runAssistantTurn(ctx context.Context, cfg *config.Config, agent
 	if cfg.Assistant.StreamEnabled() {
 		spec.Stream = true
 		live, id := d.assistant.live, thread.ID
+		nonce := env[assistantNonceEnv]
+		current := func(fn func()) {
+			d.assistant.mu.Lock()
+			defer d.assistant.mu.Unlock()
+			if d.assistant.nonces[id] == nonce && nonce != "" {
+				fn()
+			}
+		}
 		stream = assistant.StreamHandler{
-			Block: func() { live.Block(id) },
-			Text:  func(delta string) { live.Append(id, delta) },
-			Tool:  func(name string) { live.Tool(id, name) },
-			Seal:  func() { live.Seal(id) },
+			Block: func() { current(func() { live.Block(id) }) },
+			Text:  func(delta string) { current(func() { live.Append(id, delta) }) },
+			Tool:  func(name string) { current(func() { live.Tool(id, name) }) },
+			Seal:  func() { current(func() { live.Seal(id) }) },
 		}
 		log.Debug("assistant turn asks for partial messages", "kind", agentCfg.Kind())
 	}
@@ -844,6 +959,65 @@ func (d *Daemon) runAssistantTurn(ctx context.Context, cfg *config.Config, agent
 		}
 	}
 	finish(err)
+}
+
+func (d *Daemon) companionClaudeDir(cfg *config.Config, id string) string {
+	dir, _ := d.assistantThreadStore(cfg, id).Dir(id)
+	return filepath.Join(dir, "claude")
+}
+
+// prepareCompanionClaude separates session storage from credentials. Modern
+// Claude supports a secure-storage home independent of CLAUDE_CONFIG_DIR; an
+// explicit empty value selects the default (unhashed) macOS Keychain identity.
+// Preserve the original spelling, since the Keychain hashes that exact value.
+func (d *Daemon) prepareCompanionClaude(cfg *config.Config, thread assistant.Thread, env map[string]string) error {
+	original, ok := env["CLAUDE_CONFIG_DIR"]
+	if !ok {
+		original = os.Getenv("CLAUDE_CONFIG_DIR")
+	}
+	if _, ok := env["CLAUDE_SECURESTORAGE_CONFIG_DIR"]; !ok {
+		if inherited, ok := os.LookupEnv("CLAUDE_SECURESTORAGE_CONFIG_DIR"); ok {
+			env["CLAUDE_SECURESTORAGE_CONFIG_DIR"] = inherited
+		} else {
+			env["CLAUDE_SECURESTORAGE_CONFIG_DIR"] = original
+		}
+	}
+	dir := d.companionClaudeDir(cfg, thread.ID)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	// OAuth metadata and settings-based apiKeyHelper/provider configuration
+	// are separate from secure credentials. Seed private copies, never link
+	// writable configuration or transcripts back into the general profile.
+	home := env["HOME"]
+	if home == "" {
+		home, _ = os.UserHomeDir()
+	}
+	sourceDir := expandTilde(original)
+	if sourceDir == "" {
+		sourceDir = filepath.Join(home, ".claude")
+	}
+	for _, name := range []string{".claude.json", "settings.json"} {
+		target := filepath.Join(dir, name)
+		if _, err := os.Stat(target); err == nil {
+			continue
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		data, err := os.ReadFile(filepath.Join(sourceDir, name))
+		if errors.Is(err, os.ErrNotExist) && original == "" && name == ".claude.json" {
+			data, err = os.ReadFile(filepath.Join(home, ".claude.json"))
+		}
+		if err == nil {
+			if err := os.WriteFile(target, data, 0o600); err != nil {
+				return err
+			}
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	env["CLAUDE_CONFIG_DIR"] = dir
+	return nil
 }
 
 // assistantEnv is the agent environment plus what the turn needs on top: the
@@ -975,54 +1149,52 @@ func writeTempFile(pattern, content string) (string, error) {
 // the gate: the claude hook and the pi extension both reach it, and it blocks
 // while a write waits for the person at the pane.
 func (d *Daemon) AskAssistantGate(req web.AssistantGateAskRequest) (web.AssistantGateAskResponse, error) {
-	if !d.assistant.nonceMatches(req.Thread, req.Nonce) {
+	// Take the config snapshot before mu: no callback may invert d.mu's lock
+	// order. Validation, parking, records and write counters share turn ownership.
+	store := d.assistantThreadStore(d.config(), req.Thread)
+	a := d.assistant
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	current := func() bool { return req.Nonce != "" && a.nonces[req.Thread] == req.Nonce }
+	if !current() {
 		return web.AssistantGateAskResponse{}, web.ErrAssistantGateDenied
 	}
-	thread, err := d.assistantStore(d.config()).Load(req.Thread)
+	thread, err := store.Load(req.Thread)
 	if err != nil {
 		return web.AssistantGateAskResponse{}, assistantErr(err)
 	}
 
 	kind := assistant.Classify(req.Tool, req.Input)
 	verdict := assistant.Resolve(thread.Autonomy, kind)
-	call := assistant.Call{
-		ThreadID: req.Thread,
-		Tool:     req.Tool,
-		Arg:      assistantCallArg(req.Input),
-		Kind:     kind,
+	// This precedes ALL allow/park paths, including reads and unknown tools.
+	if thread.Purpose == assistant.PurposeCompanion {
+		verdict = assistant.VerdictDeny
 	}
-
-	record := func(approved bool) {
-		d.assistant.recordGate(req.Thread, assistant.GateRecord{
-			Tool:     req.Tool,
-			Arg:      call.Arg,
-			Kind:     kind,
-			Verdict:  verdict,
-			Approved: approved,
-		})
+	call := assistant.Call{ThreadID: req.Thread, Tool: req.Tool, Arg: assistantCallArg(req.Input), Kind: kind}
+	approved := verdict == assistant.VerdictAllow
+	if verdict == assistant.VerdictPark {
+		_, done := a.gate.Park(call)
+		a.mu.Unlock()
+		approved = <-done
+		a.mu.Lock()
+		// Clear can wake an old hook after another turn has been admitted.
+		if !current() {
+			return web.AssistantGateAskResponse{}, web.ErrAssistantGateDenied
+		}
 	}
-
-	switch verdict {
-	case assistant.VerdictAllow:
-		record(true)
+	a.gateLog[req.Thread] = append(a.gateLog[req.Thread], assistant.GateRecord{
+		Tool: req.Tool, Arg: call.Arg, Kind: kind, Verdict: verdict, Approved: approved,
+	})
+	if approved {
 		if kind != assistant.DecisionRead {
-			d.recordAssistantWrite(req.Thread)
+			d.recordAssistantWriteLocked(store, req.Thread)
 		}
 		return web.AssistantGateAskResponse{Allow: true}, nil
-	case assistant.VerdictDeny:
-		record(false)
-		return web.AssistantGateAskResponse{Allow: false, Reason: assistant.DenyReason(kind, thread.Autonomy)}, nil
-	case assistant.VerdictPark:
-		_, done := d.assistant.gate.Park(call)
-		approved := <-done
-		record(approved)
-		if approved {
-			d.recordAssistantWrite(req.Thread)
-			return web.AssistantGateAskResponse{Allow: true}, nil
-		}
-		return web.AssistantGateAskResponse{Allow: false, Reason: assistant.DenyReason(kind, thread.Autonomy)}, nil
 	}
-	return web.AssistantGateAskResponse{}, fmt.Errorf("unknown gate verdict %q", verdict)
+	if thread.Purpose == assistant.PurposeCompanion {
+		return web.AssistantGateAskResponse{Reason: "Kotik is observational: all tools are denied."}, nil
+	}
+	return web.AssistantGateAskResponse{Reason: assistant.DenyReason(kind, thread.Autonomy)}, nil
 }
 
 // ResolveAssistantGate is the person's answer to a parked write.
@@ -1033,14 +1205,9 @@ func (d *Daemon) ResolveAssistantGate(gateID string, approve bool) error {
 	return nil
 }
 
-// recordAssistantWrite counts a change the thread made, so the history row can
-// say how much a chat did without reading its whole transcript.
-func (d *Daemon) recordAssistantWrite(threadID string) {
-	// Read-modify-write on one file, and in auto mode two tool calls reach it
-	// at once, so the increment is serialized rather than lost.
-	d.assistant.writeMu.Lock()
-	defer d.assistant.writeMu.Unlock()
-	store := d.assistantStore(d.config())
+// recordAssistantWriteLocked counts a current turn's write. The caller holds
+// assistant.mu, serializing it against completion and nonce replacement.
+func (d *Daemon) recordAssistantWriteLocked(store *assistant.Store, threadID string) {
 	thread, err := store.Load(threadID)
 	if err != nil {
 		return
@@ -1080,6 +1247,7 @@ func assistantMessages(store *assistant.Store, id string) []web.AssistantMessage
 
 func (d *Daemon) assistantThreadInfo(t assistant.Thread, messages []web.AssistantMessage) web.AssistantThreadInfo {
 	return web.AssistantThreadInfo{
+		Purpose:   t.Purpose,
 		ID:        t.ID,
 		Title:     t.Title,
 		CreatedAt: t.CreatedAt,

@@ -125,6 +125,7 @@ export function kontoraAssistant() {
     _assistantCursor: 0,
     _assistantETag: '',
     _assistantLoadSeq: 0,
+    _assistantSelectionSeq: 0,
     _assistantResize: null,
     _assistantTurnStart: null,
     _assistantTick: null,
@@ -238,9 +239,10 @@ export function kontoraAssistant() {
     // it was left on. Called from the component's init.
     async initAssistant() {
       await this._assistantRefreshConfig();
-      if (!this.assistantEnabled()) return;
       const last = assistantStored('kontora-assistant-thread', '');
-      if (last) await this.assistantSelectThread(last, { quiet: true });
+      if (last && (this.assistantEnabled() || last.startsWith('k'))) {
+        await this.assistantSelectThread(last, { quiet: true });
+      }
       if (this.assistantOpen) this.assistantLoadThreads();
     },
 
@@ -295,8 +297,8 @@ export function kontoraAssistant() {
       assistantStore('kontora-assistant-open', '1');
       assistantStore('kontora-assistant-rail', '0');
       this.assistantRecomputeContext();
-      if (this.assistantEnabled()) {
-        this.assistantLoadThreads();
+      this.assistantLoadThreads();
+      if (this.assistantEnabled() || this.companionThread()) {
         // One poll now rather than re-arming: opening onto a chat whose turn is
         // already running has nothing armed yet, and the payload is what says
         // it is running.
@@ -321,11 +323,11 @@ export function kontoraAssistant() {
     // bottom sheet the rest of the mobile layer uses.
     openAssistantSheet() {
       this.assistantOpen = true;
-      this.assistantView = 'thread';
+      if (this.companionSnapshot?.enabled && !this.assistantThread) this.assistantView = 'inbox';
       this.sheet = { type: 'assistant' };
       this.assistantRecomputeContext();
-      if (this.assistantEnabled()) {
-        this.assistantLoadThreads();
+      this.assistantLoadThreads();
+      if (this.assistantEnabled() || this.companionThread()) {
         this._loadAssistantActivity();
         if (this.assistantStreaming) this._assistantOpenStream();
       }
@@ -371,7 +373,6 @@ export function kontoraAssistant() {
     // --- threads ---------------------------------------------------------
 
     async assistantLoadThreads() {
-      if (!this.assistantEnabled()) return;
       try {
         const res = await this._assistantFetch('/api/assistant/threads');
         const data = await res.json();
@@ -383,6 +384,7 @@ export function kontoraAssistant() {
 
     async assistantNewThread() {
       if (!this.assistantEnabled()) return null;
+      this._assistantSelectionSeq++;
       this.assistantError = null;
       try {
         const res = await this._assistantFetch('/api/assistant/threads', {
@@ -403,6 +405,7 @@ export function kontoraAssistant() {
     },
 
     async assistantSelectThread(id, opts) {
+      this._assistantSelectionSeq++;
       const quiet = !!(opts && opts.quiet);
       // Before the fetch: a frame in flight for the old thread must not paint
       // into the new one.
@@ -438,6 +441,7 @@ export function kontoraAssistant() {
         return;
       }
       if (this.assistantThread && this.assistantThread.id === id) {
+        this._assistantSelectionSeq++;
         // Through the setter, or the pane keeps counting for a chat that is
         // gone.
         this._assistantSetStreaming(false);
@@ -454,7 +458,7 @@ export function kontoraAssistant() {
       this.assistantThread = thread;
       this.assistantMessages = messages || [];
       this._assistantSetStreaming(!!(thread && thread.running));
-      if (thread && thread.autonomy) this.assistantAutonomy = thread.autonomy;
+      if (thread && thread.autonomy && thread.purpose !== 'companion') this.assistantAutonomy = thread.autonomy;
       if (thread && thread.id) assistantStore('kontora-assistant-thread', thread.id);
     },
 
@@ -497,6 +501,7 @@ export function kontoraAssistant() {
 
     async sendAssistantMessage() {
       const text = (this.assistantDraft || '').trim();
+      if (this.companionThread()) return this.companionSend('followup', text, []);
       if (!text || !this.assistantEnabled() || this.assistantStreaming) return;
       let thread = this.assistantThread;
       if (!thread) {
@@ -545,6 +550,7 @@ export function kontoraAssistant() {
     },
 
     setAssistantAutonomy(mode) {
+      if (this.companionThread()) return;
       this.assistantAutonomy = mode;
       this.assistantAutonomyOpen = false;
       assistantStore('kontora-assistant-autonomy', mode);
@@ -618,8 +624,11 @@ export function kontoraAssistant() {
       this._assistantSetStreaming(!!data.running);
       this.assistantGate = data.gate || null;
       if (data.messages) this.assistantMessages = this._assistantMergeMessages(data.messages);
-      if (data.autonomy) this.assistantAutonomy = data.autonomy;
-      if (this.assistantThread) this.assistantThread.running = !!data.running;
+      if (data.autonomy && !this.companionThread()) this.assistantAutonomy = data.autonomy;
+      if (this.assistantThread) {
+        this.assistantThread.running = !!data.running;
+        if (Object.hasOwn(data, 'evidence')) this.assistantThread.evidence = data.evidence;
+      }
       this._assistantScrollToEnd();
     },
 
@@ -913,6 +922,7 @@ export function kontoraAssistant() {
     // an "@" anywhere in it, and close it as soon as neither holds.
     assistantDraftChanged() {
       const draft = this.assistantDraft || '';
+      if (this.companionThread()) { this.assistantMenu = null; return; }
       if (draft.startsWith('/')) {
         const term = draft.slice(1).toLowerCase();
         const rows = ASSISTANT_SLASH

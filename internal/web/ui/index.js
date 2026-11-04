@@ -13,6 +13,7 @@ import { kontoraArchive, archiveDerive } from './archive.js';
 import { kontoraAssistant, assistantStream } from './assistant.js';
 import { kontoraBoard } from './board.js';
 import { kontoraCreate } from './create.js';
+import { kontoraCompanion } from './companion.js';
 import { kontoraDetail } from './detail.js';
 import { kontoraEpics } from './epics.js';
 import { kontoraFilter } from './filter.js';
@@ -69,6 +70,7 @@ function kontora() {
     kontoraArchive(),
     kontoraEpics(),
     kontoraAssistant(),
+    kontoraCompanion(),
   );
 }
 

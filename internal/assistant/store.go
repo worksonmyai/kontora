@@ -24,6 +24,8 @@ import (
 // is fixed when the thread is created: the agent, the model and the working
 // directory cannot move between turns without breaking session resume.
 type Thread struct {
+	// Purpose is fixed at creation. Empty preserves ordinary assistant chats.
+	Purpose   string    `json:"purpose,omitempty"`
 	ID        string    `json:"id"`
 	Title     string    `json:"title"`
 	CreatedAt time.Time `json:"created_at"`
@@ -64,8 +66,13 @@ type GateRecord struct {
 	Approved bool     `json:"approved,omitempty"`
 }
 
+const PurposeCompanion = "companion"
+
 // ErrThreadNotFound is returned for an id no thread directory answers to.
 var ErrThreadNotFound = errors.New("assistant thread not found")
+
+// ErrThreadPurpose prevents reusing a session with different authority.
+var ErrThreadPurpose = errors.New("assistant thread purpose is immutable")
 
 // threadIDRe is what a directory name under the store root may look like. Ids
 // are minted here, but they also arrive from a URL path, so they are checked
@@ -81,6 +88,9 @@ func NewID() string {
 	_, _ = rand.Read(b[:])
 	return fmt.Sprintf("%x", b[:])
 }
+
+// NewCompanionID reserves a namespace disjoint from the general hex IDs.
+func NewCompanionID() string { return "k" + NewID() }
 
 // TitleMax is where a thread title taken from the first message is cut.
 const TitleMax = 48
@@ -107,7 +117,7 @@ func Title(text string) string {
 //	<root>/<thread-id>/turn.<n>.log  that turn's captured stdout
 //	<root>/<thread-id>/pi-sessions/  a pi thread's transcript
 //
-// A claude thread's transcript stays in claude's own config directory, which is
+// A general claude thread's transcript stays in claude's own config directory, which is
 // where claude puts it and where SessionPath looks.
 type Store struct{ root string }
 
@@ -149,6 +159,16 @@ func (s *Store) Save(t Thread) error {
 	if err != nil {
 		return err
 	}
+	if (strings.HasPrefix(t.ID, "k")) != (t.Purpose == PurposeCompanion) || (t.Purpose != "" && t.Purpose != PurposeCompanion) {
+		return ErrThreadPurpose
+	}
+	previous, loadErr := s.Load(t.ID)
+	if loadErr == nil && previous.Purpose != t.Purpose {
+		return ErrThreadPurpose
+	}
+	if loadErr != nil && !errors.Is(loadErr, ErrThreadNotFound) {
+		return loadErr
+	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
@@ -175,6 +195,9 @@ func (s *Store) Load(id string) (Thread, error) {
 	var t Thread
 	if err := json.Unmarshal(data, &t); err != nil {
 		return Thread{}, fmt.Errorf("thread %s: %w", id, err)
+	}
+	if t.ID != id || (strings.HasPrefix(id, "k")) != (t.Purpose == PurposeCompanion) || (t.Purpose != "" && t.Purpose != PurposeCompanion) {
+		return Thread{}, ErrThreadPurpose
 	}
 	return t, nil
 }

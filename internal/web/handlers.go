@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/worksonmyai/kontora/internal/companion"
 	"github.com/worksonmyai/kontora/internal/ticket"
 )
 
@@ -814,7 +815,7 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			var data []byte
-			if ev.Type == "config_reloaded" {
+			if ev.Type == "config_reloaded" || ev.Type == "companion_updated" {
 				// Carries no ticket. Without this the zero TicketInfo would go
 				// out and read as an event about a ticket with an empty id.
 				data = []byte("{}")
@@ -917,6 +918,8 @@ func writeServiceError(w http.ResponseWriter, err error) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
 	case errors.Is(err, ErrAssistantBusy):
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+	case errors.Is(err, companion.ErrStorageUnavailable):
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
 	case errors.Is(err, ErrAssistantAtCapacity):
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
 	case errors.Is(err, ErrAssistantStale):

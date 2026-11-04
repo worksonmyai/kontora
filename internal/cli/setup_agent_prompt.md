@@ -68,6 +68,8 @@ it and the user does not want it changed.
 - How many agents may run at once?
 - Where must automation stop and wait for a human?
 - May a stage commit? May a stage push or open a pull request?
+- Should Kotik observe ticket attention? It is off by default and shares one
+  inbox and read state across devices. Model explanations run only when requested.
 
 Kontora runs a configured binary directly with `exec`. It does not start a
 shell, so shell functions, aliases, and shell-only PATH entries do not apply.
@@ -90,7 +92,7 @@ Top-level keys: `tickets_dir`, `logs_dir`, `worktrees_dir`, `branch_prefix`,
 `max_concurrent_agents`,
 `auto_pick_up`, `instance_name`, `tmux_session`, `statuses`, `environment`,
 `hooks`, `resume_prompt`, `annotation_prompt`, `summary_model`, `web`,
-`agents`, `stages`, `pipelines`, `projects`, `plannotator`.
+`agents`, `stages`, `pipelines`, `projects`, `plannotator`, `assistant`.
 
 ```yaml
 tickets_dir: ~/.kontora/tickets
@@ -159,6 +161,48 @@ ticket-level agent replaces the agent on every step of its pipeline at runtime.
 Set a project agent only when one agent should run the whole pipeline for that
 repository.
 
+## Optional companion
+
+Configure Kotik under `assistant`, not as a pipeline or notification channel:
+
+```yaml
+assistant:
+  companion:
+    enabled: false
+    name: Kotik
+```
+
+Enable observation only if the user wants it. `enabled` defaults to `false`;
+`name` defaults to `Kotik`, including when explicitly empty.
+
+The daemon maintains one shared inbox without an open browser or configured
+model. Reading an item does not answer a question, complete a review or mutate
+a ticket. The inbox retains all active items plus at most 500 inactive records.
+Inactive records expire after 30 days. State lives at
+`<logs_dir>/companion/<daemon-scope>/state.json`, scoped by normalized daemon-lock
+and ticket-directory paths.
+
+Briefings, investigations and follow-ups require explicit user requests and
+`assistant.agent`, naming an existing `claude` or `pi` agent. No model runs on
+startup, polling, reload or browser reconnection. Each request accepts at most
+five selected tickets and 32 KiB of server-built evidence. Kontora saves the
+evidence before starting the model. Capture metadata and omissions remain
+available when reopening chats. Changed sources mark explanations outdated;
+they do not rewrite historical answers or current attention.
+
+Companion chats deny all tools and autonomy escalation. They cannot run
+commands, inspect arbitrary files, mutate tickets, answer agents, execute
+approvals or send outbound messages. `assistant.autonomy` and `assistant.prompt`
+do not override companion restrictions. Kontora uses runtime hooks with a
+trusted configured agent; this is not an OS sandbox against malicious binaries
+or installed extensions. Existing notifications remain independent.
+
+If storage is corrupt, unsupported or unavailable, the companion reports
+degraded health and preserves the file. Kontora refuses read-state updates it
+cannot save, while task execution and notifications continue. Polling can miss
+short-lived transitions, and offline events are not a complete history.
+A disappeared question is not proof that someone answered it.
+
 ## Workflow archetypes
 
 Offer these. Create only the ones the user picks. Do not write all of them.
@@ -203,6 +247,9 @@ The config fails to load when any of these does not hold:
   with `-`.
 - `branch_naming.mode`, at the top level and inside a project, is `off` or
   `slug`.
+- `assistant.companion.name` is at most 64 Unicode characters, not whitespace-only,
+  and contains no control characters. An empty value defaults to `Kotik`.
+  Validation does not depend on `assistant.agent` or `companion.enabled`.
 - Every `timeout` carries a unit: `60m`, `2h`, `90s`. A bare number does not
   parse.
 - A `model`, on a stage or in `summary_model`, is one pattern or a map. Every
@@ -267,7 +314,10 @@ found when that stage starts, not before. Read every prompt you write.
 A running daemon reloads these without a restart: `agents`, `stages`,
 `pipelines`, `projects`, `statuses`, `environment`, `auto_pick_up`,
 `default_agent`, `branch_prefix`, `branch_naming`, `editor`, `resume_prompt`,
-`annotation_prompt`, `summary_model`, and `plannotator`.
+`annotation_prompt`, `summary_model`, `plannotator`, and `assistant`.
+Disabling `assistant.companion.enabled` stops observation and prevents new
+companion requests. Disabling retains stored data. An already-running requested
+turn remains stoppable.
 
 These need a daemon restart: `tickets_dir`, `worktrees_dir`, `logs_dir`,
 `instance_name`, `tmux_session`, `max_concurrent_agents`, and the whole `web`

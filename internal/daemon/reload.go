@@ -53,6 +53,7 @@ func (d *Daemon) reloadConfig() error {
 	cur := d.config()
 	pinRestartOnly(cur, next, d.log)
 	d.cfg.Store(next)
+	d.wakeCompanion()
 
 	d.log.Info("config reloaded",
 		"agents", len(next.Agents),

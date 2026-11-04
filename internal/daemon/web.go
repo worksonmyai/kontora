@@ -1595,6 +1595,7 @@ func (d *Daemon) HasTerminalSession(id string) bool {
 // broadcastTicketUpdate sends a ticket_updated event for the given ticket ID.
 // Must be called with d.mu held.
 func (d *Daemon) broadcastTicketUpdate(id string) {
+	d.wakeCompanion()
 	if d.broker == nil {
 		return
 	}
@@ -1620,6 +1621,7 @@ func (d *Daemon) broadcastTicketUpdateLocking(id string) {
 // broadcastTicketDeleted sends a ticket_deleted event for the given ticket.
 // Must be called with d.mu held.
 func (d *Daemon) broadcastTicketDeleted(ts *ticketState) {
+	d.wakeCompanion()
 	if d.broker == nil || ts == nil {
 		return
 	}

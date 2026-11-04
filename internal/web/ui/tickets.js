@@ -80,6 +80,7 @@ export function kontoraTickets() {
       // After the auth check, so a pane on a tokenless session does not fire a
       // second 401 of its own.
       this.initAssistant();
+      this.companionInit();
       // Open whatever the URL addresses. Tickets are loaded by now, so a
       // #/t/<id> link can resolve against the board.
       await this.applyRoute();
@@ -414,9 +415,12 @@ export function kontoraTickets() {
     },
 
     connectSSE() {
+      if (this._appDestroyed) return;
       if (this._eventSource) this._eventSource.close();
       const es = new EventSource('/api/events');
       this._eventSource = es;
+      es.addEventListener('open', () => { this.companionRefresh(); });
+      es.addEventListener('companion_updated', () => { this.companionRefresh(); });
       es.addEventListener('ticket_updated', (e) => {
         this.queueTicketUpdate(JSON.parse(e.data));
       });
@@ -445,6 +449,7 @@ export function kontoraTickets() {
         // produces — the endpoint reloads, then the watcher sees the write —
         // costs two requests and changes nothing.
         this._assistantRefreshConfig();
+        this.companionRefresh();
         this._settingsRefreshConfigCache();
       });
       es.addEventListener('plannotator_started', (e) => {
@@ -471,7 +476,10 @@ export function kontoraTickets() {
         // is disconnected, we'll never see the finished event and the button
         // would stay disabled until a full page refresh.
         this.plannotatorInFlight = {};
-        setTimeout(() => this.connectSSE(), 3000);
+        this.companionDisconnected = true;
+        this.companionError = 'Disconnected. Attention may be stale until the daemon reconnects.';
+        clearTimeout(this._sseReconnect);
+        this._sseReconnect = setTimeout(() => this.connectSSE(), 3000);
       };
     },
 

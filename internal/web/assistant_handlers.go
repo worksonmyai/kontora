@@ -220,6 +220,11 @@ func (s *Server) handleAssistantStream(w http.ResponseWriter, r *http.Request) {
 	gen, sent, tool := first.Gen, first.Text, first.Tool
 	sealed := first.Sealed
 	send("reset", map[string]any{"gen": gen, "text": sent, "tool": tool})
+	if strings.HasPrefix(id, "k") {
+		if thread, err := s.svc.GetAssistantThread(id); err == nil {
+			send("evidence", thread.Evidence)
+		}
+	}
 	if sealed {
 		send("end", struct{}{})
 	}

@@ -2342,6 +2342,7 @@ pipelines:
 			name: "absent section is disabled and still defaulted",
 			check: func(t *testing.T, a Assistant) {
 				assert.False(t, a.Enabled())
+				assert.Equal(t, Companion{Enabled: false, Name: "Kotik"}, a.Companion)
 				assert.Equal(t, "/tmp/tasks", a.Workdir)
 				assert.Equal(t, AutonomyAsk, a.Autonomy)
 				assert.Equal(t, 10*time.Minute, a.Timeout.Duration)
@@ -2451,6 +2452,89 @@ assistant:
 			require.NoError(t, err)
 			tt.check(t, cfg.Assistant)
 		})
+	}
+}
+
+func TestLoadCompanion(t *testing.T) {
+	const base = "agents:\n  claude:\n    binary: claude\n"
+	tests := []struct {
+		name      string
+		companion string
+		want      Companion
+		wantErr   string
+	}{
+		{name: "absent", want: Companion{Name: "Kotik"}},
+		{name: "empty section", companion: "{}", want: Companion{Name: "Kotik"}},
+		{name: "enabled without model", companion: "{enabled: true}", want: Companion{Enabled: true, Name: "Kotik"}},
+		{name: "explicitly disabled", companion: "{enabled: false, name: Cat}", want: Companion{Name: "Cat"}},
+		{name: "custom name", companion: "{enabled: true, name: Котик}", want: Companion{Enabled: true, Name: "Котик"}},
+		{name: "empty name defaults", companion: `{name: ""}`, want: Companion{Name: "Kotik"}},
+		{name: "unknown field", companion: "{enabeld: true}", wantErr: "field enabeld not found"},
+		{name: "invalid enabled type", companion: "{enabled: sometimes}", wantErr: "cannot unmarshal"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			input := base
+			if tt.companion != "" {
+				input += "assistant:\n  companion: " + tt.companion + "\n"
+			}
+			cfg, err := LoadReader(strings.NewReader(input))
+			if tt.wantErr != "" {
+				require.ErrorContains(t, err, tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			assert.False(t, cfg.Assistant.Enabled(), "observation does not enable model turns")
+			assert.Equal(t, tt.want, cfg.Assistant.Companion)
+
+			out, err := yaml.Marshal(cfg)
+			require.NoError(t, err)
+			again, err := LoadReader(bytes.NewReader(out))
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, again.Assistant.Companion)
+		})
+	}
+}
+
+func TestLoadCompanionNameValidation(t *testing.T) {
+	const base = "agents:\n  claude:\n    binary: claude\n"
+	tests := []struct {
+		name    string
+		value   string
+		wantErr string
+	}{
+		{name: "one character", value: "K"},
+		{name: "64 characters", value: strings.Repeat("k", 64)},
+		{name: "64 Unicode characters", value: strings.Repeat("猫", 64)},
+		{name: "spaces within name", value: "Kotik the cat"},
+		{name: "65 characters", value: strings.Repeat("k", 65), wantErr: "1-64 characters"},
+		{name: "65 Unicode characters", value: strings.Repeat("猫", 65), wantErr: "1-64 characters"},
+		{name: "blank", value: "   ", wantErr: "not blank"},
+		{name: "Unicode whitespace", value: "\u2003", wantErr: "not blank"},
+		{name: "newline", value: "Ko\ntik", wantErr: "control characters"},
+		{name: "carriage return", value: "Ko\rtik", wantErr: "control characters"},
+		{name: "tab", value: "Ko\ttik", wantErr: "control characters"},
+		{name: "null", value: "Ko\x00tik", wantErr: "control characters"},
+		{name: "escape", value: "Ko\x1btik", wantErr: "control characters"},
+		{name: "delete", value: "Ko\x7ftik", wantErr: "control characters"},
+		{name: "Unicode control", value: "Ko\u0085tik", wantErr: "control characters"},
+	}
+	for _, agent := range []string{"", "claude"} {
+		for _, enabled := range []bool{false, true} {
+			for _, tt := range tests {
+				t.Run(fmt.Sprintf("agent=%s/enabled=%t/%s", agent, enabled, tt.name), func(t *testing.T) {
+					input := base + fmt.Sprintf("assistant:\n  agent: %q\n  companion:\n    enabled: %t\n    name: %q\n", agent, enabled, tt.value)
+					cfg, err := LoadReader(strings.NewReader(input))
+					if tt.wantErr != "" {
+						require.ErrorContains(t, err, "assistant.companion.name")
+						assert.ErrorContains(t, err, tt.wantErr)
+						return
+					}
+					require.NoError(t, err)
+					assert.Equal(t, Companion{Enabled: enabled, Name: tt.value}, cfg.Assistant.Companion)
+				})
+			}
+		}
 	}
 }
 

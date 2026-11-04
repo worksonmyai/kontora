@@ -111,10 +111,14 @@ type TicketService interface {
 	StopAssistantTurn(id string) error
 	ResolveAssistantGate(gateID string, approve bool) error
 	AskAssistantGate(req AssistantGateAskRequest) (AssistantGateAskResponse, error)
+	CompanionSnapshot() CompanionInfo
+	ReadCompanionItem(id string, revision uint64, read bool) (CompanionInfo, error)
+	CatchUpCompanion(revision uint64) (CompanionInfo, error)
+	PostCompanionMessage(req CompanionMessageRequest) (AssistantThreadInfo, error)
 }
 
-// AssistantConfigInfo tells the pane whether it can be used. Enabled false plus
-// Hint is what the configure state renders instead of a composer.
+// AssistantConfigInfo tells the pane whether assistant model turns are configured.
+// Enabled false plus Hint is what ordinary chat's configure state renders instead of a composer.
 type AssistantConfigInfo struct {
 	Enabled  bool   `json:"enabled"`
 	Agent    string `json:"agent,omitempty"`
@@ -128,18 +132,20 @@ type AssistantConfigInfo struct {
 // AssistantThreadInfo is one chat as the history list and the pane header read
 // it. Messages is filled only by the single-thread reads.
 type AssistantThreadInfo struct {
-	ID        string             `json:"id"`
-	Title     string             `json:"title"`
-	CreatedAt time.Time          `json:"created_at"`
-	UpdatedAt time.Time          `json:"updated_at"`
-	Agent     string             `json:"agent,omitempty"`
-	Kind      string             `json:"kind,omitempty"`
-	Model     string             `json:"model,omitempty"`
-	Autonomy  string             `json:"autonomy"`
-	Turns     int                `json:"turns"`
-	Writes    int                `json:"writes"`
-	Running   bool               `json:"running"`
-	Messages  []AssistantMessage `json:"messages,omitempty"`
+	Purpose   string                  `json:"purpose,omitempty"`
+	Evidence  []CompanionEvidenceInfo `json:"evidence,omitempty"`
+	ID        string                  `json:"id"`
+	Title     string                  `json:"title"`
+	CreatedAt time.Time               `json:"created_at"`
+	UpdatedAt time.Time               `json:"updated_at"`
+	Agent     string                  `json:"agent,omitempty"`
+	Kind      string                  `json:"kind,omitempty"`
+	Model     string                  `json:"model,omitempty"`
+	Autonomy  string                  `json:"autonomy"`
+	Turns     int                     `json:"turns"`
+	Writes    int                     `json:"writes"`
+	Running   bool                    `json:"running"`
+	Messages  []AssistantMessage      `json:"messages,omitempty"`
 }
 
 // AssistantMessage is one user turn. The agent's side of the conversation comes
@@ -190,12 +196,13 @@ type AssistantPartialInfo struct {
 // messages, and any write waiting on the person. They ride together so one
 // request drives the tool rows, the prose and the proposal card.
 type AssistantActivityInfo struct {
-	Running  bool               `json:"running"`
-	Autonomy string             `json:"autonomy,omitempty"`
-	Offset   int                `json:"offset,omitempty"`
-	Tape     *logfmt.Tape       `json:"tape,omitempty"`
-	Gate     *assistant.Pending `json:"gate,omitempty"`
-	Messages []AssistantMessage `json:"messages,omitempty"`
+	Evidence []CompanionEvidenceInfo `json:"evidence,omitempty"`
+	Running  bool                    `json:"running"`
+	Autonomy string                  `json:"autonomy,omitempty"`
+	Offset   int                     `json:"offset,omitempty"`
+	Tape     *logfmt.Tape            `json:"tape,omitempty"`
+	Gate     *assistant.Pending      `json:"gate,omitempty"`
+	Messages []AssistantMessage      `json:"messages,omitempty"`
 
 	// Partial is the message being written, empty once the session file carries
 	// it. PartialGen is bumped by a new block, so a reader replaces rather than

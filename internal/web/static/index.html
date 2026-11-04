@@ -4839,6 +4839,13 @@
 
                 <!-- ===== assistant ===== -->
                 <div x-show="settingsSection === 'assistant'" class="flex flex-col gap-[18px]">
+                  <section class="companion-settings" x-show="settingsRowVisible('companion', 'enabled name Kotik inbox observation', 'assistant')" aria-label="Companion settings">
+                    <h3>Companion inbox</h3>
+                    <label class="companion-setting-toggle"><input type="checkbox" x-model="settingsConfig.assistant.companion.enabled"> Enable observation</label>
+                    <p>The inbox works without an agent. Briefings and investigations run only when you ask.</p>
+                    <label for="companion-name">Name</label>
+                    <input id="companion-name" type="text" x-model="settingsConfig.assistant.companion.name" placeholder="Kotik">
+                  </section>
                   <section class="border border-edge-card rounded-xl bg-surface-900 overflow-hidden">
                     <header class="flex items-baseline gap-2.5 p-[13px] px-[18px] bg-surface-850/45 border-b border-surface-700/40" data-pipe-color="mauve">
                       <span class="w-1.5 h-1.5 rounded-full self-center shrink-0" style="background: hsl(var(--pipe-h))"></span>
@@ -4867,7 +4874,7 @@
                                   class="flex flex-col gap-0.5 items-start min-w-[132px] py-[9px] px-[13px] rounded-[9px] border text-left transition-colors"
                                   :class="!settingsConfig.assistant.agent ? 'border-accent/50 bg-accent/[0.12] text-tx-hi' : 'border-surface-700/60 bg-surface-800 text-tx-3 hover:border-edge-hover'">
                             <span class="font-mono text-[12.5px]">none</span>
-                            <span class="text-[10.5px] text-tx-faint">the pane is disabled</span>
+                            <span class="text-[10.5px] text-tx-faint">New AI turns are disabled. The companion inbox needs no agent.</span>
                           </button>
                         </div>
                       </div>
@@ -5452,8 +5459,11 @@
         </button>
       </div>
 
+      <div class="companion-surface" x-html="companionHeaderMarkup"></div>
+      <div class="companion-inbox-view" x-show="assistantView === 'inbox'" x-html="companionInboxMarkup"></div>
+
       <!-- Context strip: what a bare "it" would mean in this chat. -->
-      <div x-show="assistantView === 'thread' && assistantContext.length" x-cloak
+      <div x-show="assistantView === 'thread' && !companionThread() && assistantContext.length" x-cloak
            class="flex items-center gap-1.5 px-3 py-1.5 shrink-0 border-b border-surface-700 overflow-x-auto">
         <span class="font-mono text-[10px] uppercase tracking-[.1em] text-surface-600 shrink-0">context</span>
         <template x-for="chip in assistantContext" :key="chip.key">
@@ -5484,12 +5494,14 @@
 
       <!-- Thread -->
       <div id="assistant-thread" x-show="assistantView === 'thread'" @scroll.passive="assistantThreadScrolled()" class="flex-1 min-h-0 overflow-y-auto px-3 py-3 flex flex-col gap-3">
+        <div x-show="companionThread()" x-html="companionEvidenceMarkup"></div>
 
         <!-- Empty state. Shown before the first message of the first chat. -->
         <template x-if="!assistantMessages.length && !assistantEvents.length">
           <div class="m-auto max-w-[300px] text-center flex flex-col gap-2">
-            <p class="text-[13px] text-tx-2 m-0">Ask about the board.</p>
-            <p class="text-[11.5px] leading-[1.6] text-surface-600 m-0">
+            <p class="text-[13px] text-tx-2 m-0" x-text="companionThread() ? 'Ask about the captured records.' : 'Ask about the board.'"></p>
+            <p x-show="companionThread()" class="companion-note">Explanations use recorded evidence. The companion cannot run commands or change tickets.</p>
+            <p x-show="!companionThread()" class="text-[11.5px] leading-[1.6] text-surface-600 m-0">
               What is running, why a ticket is stuck, what the last run changed. It drives Kontora
               with the same verbs the CLI uses, and writes go through the same API.
             </p>
@@ -5580,7 +5592,7 @@
       </div>
 
       <!-- Configure hint. Replaces the composer when no assistant agent is set. -->
-      <template x-if="!assistantEnabled()">
+      <template x-if="!assistantEnabled() && !companionThread() && assistantView === 'thread'">
         <div id="assistant-configure" class="shrink-0 border-t border-surface-700 p-3 flex flex-col gap-2">
           <p class="text-[12px] leading-[1.55] text-tx-3 m-0" x-text="assistantAgent ? assistantAgent.hint : 'Loading…'"></p>
           <p class="text-[11.5px] leading-[1.55] text-surface-600 m-0">
@@ -5595,7 +5607,7 @@
       </template>
 
       <!-- Composer -->
-      <template x-if="assistantEnabled()">
+      <template x-if="(assistantEnabled() || companionThread()) && assistantView === 'thread'">
       <div class="shrink-0 border-t border-surface-700 p-2 relative">
 
         <!-- The slash and mention menus, over the composer. -->
@@ -5621,7 +5633,8 @@
         <div class="flex items-center gap-2 mt-1.5">
           <!-- Autonomy. The mode the next message runs in. -->
           <div class="relative">
-            <button id="assistant-autonomy" @click="assistantAutonomyOpen = !assistantAutonomyOpen"
+            <span x-show="companionThread()" class="companion-note">Observation only</span>
+            <button id="assistant-autonomy" x-show="!companionThread()" @click="assistantAutonomyOpen = !assistantAutonomyOpen"
                     class="font-mono text-[11px] h-[24px] px-2 rounded-[6px] bg-surface-900 border border-edge-input text-tx-3 hover:text-tx-2 hover:border-edge-hover transition-colors flex items-center gap-1.5"
                     :aria-expanded="assistantAutonomyOpen ? 'true' : 'false'">
               <span class="w-1.5 h-1.5 rounded-full shrink-0"
@@ -5645,7 +5658,7 @@
 
           <button x-show="assistantStreaming" @click="stopAssistantTurn()"
                   class="ml-auto font-mono text-[11px] h-[24px] px-2.5 rounded-[6px] bg-surface-900 border border-edge-input text-tx-3 hover:text-err transition-colors">stop</button>
-          <button id="assistant-send" x-show="!assistantStreaming" @click="sendAssistantMessage()" :disabled="!assistantDraft.trim()"
+          <button id="assistant-send" x-show="!assistantStreaming" @click="sendAssistantMessage()" :disabled="!assistantDraft.trim() || (companionThread() && !companionCanAsk())"
                   class="ml-auto font-mono text-[11.5px] h-[24px] px-3 rounded-[6px] bg-accent text-accent-fg hover:bg-accent-bright transition-colors disabled:opacity-40">send</button>
         </div>
 
@@ -5664,6 +5677,10 @@
         <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z"/></svg>
       </button>
       <span x-show="assistantStreaming" class="w-1.5 h-1.5 rounded-full pulse-dot" style="background: hsl(var(--pipe-h))" aria-label="working"></span>
+      <button type="button" class="companion-rail-cat" @click="toggleAssistantRail(); companionOpenInbox()" :aria-label="companionName() + ': ' + companionState() + ', ' + companionCounts()" :title="companionState() + ': ' + companionCounts()">
+        <span class="companion-cat" :data-state="companionState()" aria-hidden="true"></span>
+        <span x-text="(companionSnapshot?.items || []).filter(i => i.active).length + '/' + (companionSnapshot?.items || []).filter(i => !i.read).length" aria-hidden="true"></span>
+      </button>
       <span x-show="assistantGate" x-cloak class="w-1.5 h-1.5 rounded-full bg-warn" aria-label="waiting for your approval"></span>
     </aside>
     </template>
@@ -6101,9 +6118,16 @@
                 </button>
               </div>
 
-              <div id="assistant-sheet-thread" @scroll.passive="assistantThreadScrolled()" style="flex:1;min-height:0;overflow-y:auto;padding:14px 18px;display:flex;flex-direction:column;gap:12px;">
+              <div class="companion-surface" x-html="companionHeaderMarkup"></div>
+              <div class="companion-inbox-view" x-show="assistantView === 'inbox'" x-html="companionInboxMarkup"></div>
+              <div x-show="assistantView === 'history'" class="companion-inbox-view companion-history">
+                <p x-show="!assistantThreads.length">No chats yet.</p>
+                <template x-for="t in assistantThreads" :key="t.id"><button type="button" @click="assistantSelectThread(t.id)" x-text="t.title"></button></template>
+              </div>
+              <div id="assistant-sheet-thread" x-show="assistantView === 'thread'" @scroll.passive="assistantThreadScrolled()" style="flex:1;min-height:0;overflow-y:auto;padding:14px 18px;display:flex;flex-direction:column;gap:12px;">
+                <div x-show="companionThread()" x-html="companionEvidenceMarkup"></div>
                 <template x-if="!assistantMessages.length && !assistantEvents.length">
-                  <p style="margin:auto 0;font-size:13px;line-height:1.6;color:rgba(var(--surface-600),1);text-align:center;">Ask about the board. It drives Kontora with the same verbs the CLI uses.</p>
+                  <p style="margin:auto 0;font-size:13px;line-height:1.6;color:rgba(var(--surface-600),1);text-align:center;" x-text="companionThread() ? 'Ask about the captured records. The companion cannot run commands or change tickets.' : 'Ask about the board. It drives Kontora with the same verbs the CLI uses.'"></p>
                 </template>
                 <template x-for="row in assistantThreadRows()" :key="'s' + row.key">
                   <div :style="row.msg ? 'align-self:flex-end;max-width:85%;border-radius:12px;padding:8px 11px;background:rgba(var(--surface-850),1);border:1px solid rgba(var(--surface-700),.6);' : 'min-width:0;'">
@@ -6157,26 +6181,29 @@
                 </template>
               </div>
 
-              <template x-if="!assistantEnabled()">
+              <template x-if="!assistantEnabled() && !companionThread() && assistantView === 'thread'">
                 <div style="padding:14px 18px;border-top:1px solid rgba(var(--surface-700),.4);">
                   <p style="margin:0;font-size:13px;line-height:1.55;color:rgba(var(--tx-3),1);" x-text="assistantAgent ? assistantAgent.hint : 'Loading\u2026'"></p>
                 </div>
               </template>
 
-              <template x-if="assistantEnabled()">
+              <template x-if="(assistantEnabled() || companionThread()) && assistantView === 'thread'">
                 <div style="padding:12px 18px 4px;border-top:1px solid rgba(var(--surface-700),.4);display:flex;flex-direction:column;gap:9px;">
                   <textarea x-model="assistantDraft" rows="2" placeholder="Ask about the board\u2026" aria-label="Message the assistant"
                             style="width:100%;padding:10px 12px;font-size:13.5px;line-height:1.5;border-radius:10px;background:rgba(var(--surface-950),1);border:1px solid rgba(var(--surface-700),.6);color:rgba(var(--tx),1);outline:none;resize:none;font-family:'DM Sans',sans-serif;"></textarea>
                   <div style="display:flex;align-items:center;gap:9px;">
                     <template x-for="mode in assistantAutonomies()" :key="'sa' + mode.key">
-                      <button @click="setAssistantAutonomy(mode.key)"
+                      <button x-show="!companionThread()" @click="setAssistantAutonomy(mode.key)"
                               :style="'height:30px;padding:0 10px;border-radius:8px;font-family:\'JetBrains Mono\',monospace;font-size:12px;border:1px solid rgba(var(--surface-700),.6);background:' + (assistantAutonomy === mode.key ? 'rgba(var(--surface-800),1)' : 'transparent') + ';color:' + (assistantAutonomy === mode.key ? 'rgba(var(--tx),1)' : 'rgba(var(--surface-600),1)') + ';'"
                               x-text="mode.key"></button>
                     </template>
-                    <button @click="sendAssistantMessage()" :disabled="!assistantDraft.trim()"
+                    <span x-show="companionThread()" class="companion-note">Observation only</span>
+                    <button x-show="assistantStreaming" @click="stopAssistantTurn()" class="companion-stop">Stop</button>
+                    <button @click="sendAssistantMessage()" :disabled="assistantStreaming || !assistantDraft.trim() || (companionThread() && !companionCanAsk())"
                             :style="'margin-left:auto;height:34px;padding:0 16px;border-radius:9px;font-family:\'JetBrains Mono\',monospace;font-size:13px;' + (!assistantDraft.trim() ? 'border:1px solid rgba(var(--surface-700),.7);background:rgba(var(--surface-950),1);color:rgba(var(--surface-600),1);' : 'border:1px solid rgba(var(--accent),1);background:rgba(var(--accent),1);color:rgba(var(--accent-fg),1);font-weight:600;')"
                             x-text="assistantStreaming ? 'working\u2026' : 'send'"></button>
                   </div>
+                  <p x-show="assistantError" role="status" class="companion-note" x-text="assistantError"></p>
                 </div>
               </template>
             </div>

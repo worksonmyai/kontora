@@ -345,12 +345,12 @@ func TestReadWaitMarker(t *testing.T) {
 		{
 			name: "complete marker",
 			body: `{"tool":"ask_user_question","tool_call_id":"c1","started_at":"2026-08-22T11:30:00Z","question":"Which one?"}`,
-			want: &waitingState{Tool: "ask_user_question", ToolCallID: "c1", Since: since, Question: "Which one?"},
+			want: &waitingState{Tool: "ask_user_question", ToolCallID: "c1", RawStartedAt: "2026-08-22T11:30:00Z", Since: since, Question: "Which one?"},
 		},
 		{
 			name: "no question text falls back to the tool alone",
 			body: `{"tool":"question","tool_call_id":"c2","started_at":"2026-08-22T11:30:00Z","question":""}`,
-			want: &waitingState{Tool: "question", ToolCallID: "c2", Since: since},
+			want: &waitingState{Tool: "question", ToolCallID: "c2", RawStartedAt: "2026-08-22T11:30:00Z", Since: since},
 		},
 		{
 			// A clock the daemon cannot parse still has to produce a badge.
@@ -363,7 +363,7 @@ func TestReadWaitMarker(t *testing.T) {
 			// carries milliseconds. RFC3339 parsing takes them.
 			name: "the extension's own millisecond timestamp",
 			body: `{"tool":"ask_user_question","tool_call_id":"c0","started_at":"2026-08-22T11:30:00.227Z","question":"Q"}`,
-			want: &waitingState{Tool: "ask_user_question", ToolCallID: "c0", Since: since.Add(227 * time.Millisecond), Question: "Q"},
+			want: &waitingState{Tool: "ask_user_question", ToolCallID: "c0", RawStartedAt: "2026-08-22T11:30:00.227Z", Since: since.Add(227 * time.Millisecond), Question: "Q"},
 		},
 		{
 			// A zone offset must not survive into the state: two reads of one
@@ -371,7 +371,7 @@ func TestReadWaitMarker(t *testing.T) {
 			// wait on every tick.
 			name: "offset start time is normalized to UTC",
 			body: `{"tool":"question","tool_call_id":"c5","started_at":"2026-08-22T13:30:00+02:00"}`,
-			want: &waitingState{Tool: "question", ToolCallID: "c5", Since: since},
+			want: &waitingState{Tool: "question", ToolCallID: "c5", RawStartedAt: "2026-08-22T13:30:00+02:00", Since: since},
 		},
 		{name: "not json", body: `{"tool":`, want: nil},
 		{name: "no tool", body: `{"tool_call_id":"c4"}`, want: nil},

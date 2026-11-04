@@ -11340,12 +11340,46 @@ test("escape closes the pane only once nothing inside it is open", () => {
   assert.equal(state.assistantEscape(), false);
 });
 
-test("the body escape chain reaches the pane after the sheets and before the terminal", () => {
+test("Escape returns ticket details to the board before closing the assistant", () => {
+  const html = fs.readFileSync(htmlPath, "utf8");
+  const chain = html.match(/@keydown\.escape\.window="([^"]+)"/)[1];
+  const cases = [
+    { name: "assistant closed", assistantOpen: false },
+    { name: "assistant open", assistantOpen: true },
+    { name: "detail menu open", assistantOpen: true, detailMenuOpen: true },
+    { name: "delete dialog open", assistantOpen: true, deleteModal: true },
+  ];
+
+  for (const tc of cases) {
+    const { state, location } = routerState("#/t/kon-1");
+    state.selectedTicket = { id: "kon-1", status: "open" };
+    state.assistantOpen = tc.assistantOpen;
+    state.detailMenuOpen = !!tc.detailMenuOpen;
+    state.deleteModal = !!tc.deleteModal;
+    state.closeDeleteModal = () => { state.deleteModal = false; };
+    const pressEscape = new Function("state", `with (state) { ${chain} }`);
+
+    pressEscape(state);
+
+    if (tc.detailMenuOpen || tc.deleteModal) {
+      assert.equal(state.selectedTicket?.id, "kon-1", tc.name);
+      assert.equal(state.detailMenuOpen, false, tc.name);
+      assert.equal(state.deleteModal, false, tc.name);
+      pressEscape(state);
+    }
+    assert.equal(state.selectedTicket, null, tc.name);
+    assert.equal(state.currentView, "board", tc.name);
+    assert.equal(location.hash, "#/", tc.name);
+    assert.equal(state.assistantOpen, tc.assistantOpen, tc.name);
+  }
+});
+
+test("the body escape chain reaches the pane after sheets and ticket details", () => {
   const html = fs.readFileSync(htmlPath, "utf8");
   const chain = html.match(/@keydown\.escape\.window="([^"]+)"/)[1];
 
   assert.ok(chain.indexOf("closeSheet()") < chain.indexOf("assistantEscape()"));
-  assert.ok(chain.indexOf("assistantEscape()") < chain.indexOf("terminalRW"));
+  assert.ok(chain.indexOf("closeDetail()") < chain.indexOf("assistantEscape()"));
   // The palette is first, so ⎋ with both open closes the palette and leaves the
   // pane where it was.
   assert.ok(chain.indexOf("palettePop()") < chain.indexOf("assistantEscape()"));

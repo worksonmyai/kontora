@@ -978,8 +978,8 @@ export function kontoraAssistant() {
     },
 
     // Escape closes whatever the pane has open, innermost first, and reports
-    // whether it consumed the key. The body chain calls it after the palette
-    // and the sheets, so those still win.
+    // whether it consumed the key. The body chain calls it after the palette,
+    // sheets and ticket details, so those still win.
     assistantEscape() {
       if (this.assistantMenu) { this.assistantMenu = null; return true; }
       if (this.assistantAutonomyOpen) { this.assistantAutonomyOpen = false; return true; }

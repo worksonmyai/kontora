@@ -902,7 +902,7 @@
 </head>
 
 <body class="h-full bg-surface-950 text-tx font-sans overflow-hidden" x-data="kontora()" x-cloak
-      @keydown.escape.window="if (_agentPickerOpenHost) closeAgentPicker(true); else if (paletteOpen) palettePop(); else if (deleteModal) closeDeleteModal(); else if (noteDeleteTarget) noteCloseDelete(); else if (initModal) closeInitModal(); else if (settingsGuard) settingsGuard = false; else if (currentView === 'new') closeCreateModal(); else if (detailMenuOpen) detailMenuOpen = false; else if (colMenuOpen) colMenuOpen = null; else if (sheet) closeSheet(); else if (assistantEscape()) {} else if (archivePromptId) closeArchivePrompt(); else if (terminalRW && terminalWanted()) toggleTerminalRW(); else if (archiveDetailOpen()) archiveCloseDetail(); else if (selectedTicket) closeDetail();"
+      @keydown.escape.window="if (_agentPickerOpenHost) closeAgentPicker(true); else if (paletteOpen) palettePop(); else if (deleteModal) closeDeleteModal(); else if (noteDeleteTarget) noteCloseDelete(); else if (initModal) closeInitModal(); else if (settingsGuard) settingsGuard = false; else if (currentView === 'new') closeCreateModal(); else if (detailMenuOpen) detailMenuOpen = false; else if (colMenuOpen) colMenuOpen = null; else if (sheet) closeSheet(); else if (archivePromptId) closeArchivePrompt(); else if (terminalRW && terminalWanted()) toggleTerminalRW(); else if (archiveDetailOpen()) archiveCloseDetail(); else if (selectedTicket) closeDetail(); else if (assistantEscape()) {}"
       @dragenter.prevent="if ($event.dataTransfer && $event.dataTransfer.types.includes('Files')) uploadDragging = true"
       @dragover.prevent>
 

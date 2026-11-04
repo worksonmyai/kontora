@@ -106,7 +106,8 @@ func HasWindow(sessionName, ticketID string) bool {
 func InspectWindow(sessionName, windowName string) (bool, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "tmux", "list-windows", "-a", "-F", "#{session_name}\t#{window_name}").CombinedOutput()
+	// Without -u, tmux replaces the tab separator with an underscore under the C locale.
+	out, err := exec.CommandContext(ctx, "tmux", "-u", "list-windows", "-a", "-F", "#{session_name}\t#{window_name}").CombinedOutput()
 	if err != nil {
 		message := strings.TrimSpace(string(out))
 		if strings.HasPrefix(message, "no server running on ") || message == "no sessions" ||

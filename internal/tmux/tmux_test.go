@@ -533,25 +533,41 @@ func TestRunContextCancel(t *testing.T) {
 func TestRunLogCapture(t *testing.T) {
 	skipIfNoTmux(t)
 
-	dir := t.TempDir()
-	logPath := filepath.Join(dir, "test.log")
-	ticketID := "test-rlog-" + randomSuffix()
-	t.Cleanup(func() { _ = KillWindow(testSession, ticketID) })
+	for _, tc := range []struct {
+		name   string
+		locale string
+	}{
+		{name: "inherited locale"},
+		{name: "C locale", locale: "C"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.locale != "" {
+				t.Setenv("LC_ALL", tc.locale)
+				t.Setenv("TMUX", "")
+				// Even an empty TMUX makes tmux use UTF-8.
+				require.NoError(t, os.Unsetenv("TMUX"))
+			}
+			dir := t.TempDir()
+			logPath := filepath.Join(dir, "test.log")
+			ticketID := "test-rlog-" + randomSuffix()
+			t.Cleanup(func() { _ = KillWindow(testSession, ticketID) })
 
-	result, err := Run(context.Background(), RunParams{
-		SessionName: testSession,
-		Binary:      "sh",
-		Args:        []string{"-c", "echo RUNNER_LOG_TEST; sleep 1"},
-		Dir:         dir,
-		TicketID:    ticketID,
-		LogFile:     logPath,
-	})
-	require.NoError(t, err)
-	assert.Equal(t, 0, result.ExitCode)
+			result, err := Run(context.Background(), RunParams{
+				SessionName: testSession,
+				Binary:      "sh",
+				Args:        []string{"-c", "echo RUNNER_LOG_TEST; sleep 1"},
+				Dir:         dir,
+				TicketID:    ticketID,
+				LogFile:     logPath,
+			})
+			require.NoError(t, err)
+			assert.Equal(t, 0, result.ExitCode)
 
-	data, err := os.ReadFile(logPath)
-	require.NoError(t, err)
-	assert.Contains(t, string(data), "RUNNER_LOG_TEST")
+			data, err := os.ReadFile(logPath)
+			require.NoError(t, err)
+			assert.Contains(t, string(data), "RUNNER_LOG_TEST")
+		})
+	}
 }
 
 func randomSuffix() string {

@@ -16,7 +16,7 @@ import (
 func TestInspectWindow(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "tmux"), []byte(`#!/bin/sh
-if [ "$1" != list-windows ] || [ "$2" != -a ] || [ "$3" != -F ]; then exit 99; fi
+if [ "$1" != -u ] || [ "$2" != list-windows ] || [ "$3" != -a ] || [ "$4" != -F ]; then exit 99; fi
 printf '%s' "$TEST_TMUX_OUTPUT"
 exit "$TEST_TMUX_CODE"
 `), 0o755))
@@ -123,6 +123,7 @@ func TestRunCancellationKillFailure(t *testing.T) {
 		t.Run(map[bool]string{false: "standard", true: "interactive"}[interactive], func(t *testing.T) {
 			dir := t.TempDir()
 			require.NoError(t, os.WriteFile(filepath.Join(dir, "tmux"), []byte(`#!/bin/sh
+if [ "$1" = -u ]; then shift; fi
 case "$1" in
 new-window) exit 0 ;;
 kill-window) echo 'kill failed' >&2; exit 1 ;;

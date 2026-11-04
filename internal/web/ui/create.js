@@ -39,6 +39,8 @@ export function kontoraCreate() {
   return {
     async openCreateModal() {
       this.closeAgentPicker(false);
+      if (this.selectedEpic) await this.closeEpic();
+      if (this.selectedTicket) this.closeDetail();
       this.createForm = newCreateForm();
       this.createTouched = { pipeline: false, agent: false };
       this.currentView = 'new';
@@ -213,6 +215,7 @@ export function kontoraCreate() {
     // Submit is blocked while the field cannot be read: sending nothing would
     // create an unscheduled ticket, which is not what the form says it will do.
     createBlocked() {
+      if (this.createForm.kind === 'epic') return false;
       return !!this.createScheduleError() || (this.createSchedulePinned() && !this.createScheduleISO());
     },
 
@@ -268,8 +271,7 @@ export function kontoraCreate() {
       var lines = ['---'];
       var scheduled = this.createScheduleISO();
       if (f.title)    lines.push('title: ' + JSON.stringify(f.title));
-      // An epic is created open with no pipeline and no agent, so the preview
-      // must not echo the form's defaults back at fields the daemon drops.
+      // Creating an epic selects its agent but does not activate supervision.
       if (f.kind)     lines.push('kind: ' + f.kind);
       lines.push('status: ' + (f.kind === 'epic' ? 'open' : (scheduled ? 'open' : (f.status || 'todo'))));
       // Directly under status, because it is the field that moves it, and in
@@ -277,7 +279,7 @@ export function kontoraCreate() {
       // line above the field shows the same instant in the local zone.
       if (f.kind !== 'epic' && scheduled) lines.push('scheduled_at: ' + JSON.stringify(scheduled));
       if (f.kind !== 'epic' && f.pipeline) lines.push('pipeline: ' + f.pipeline);
-      if (f.kind !== 'epic' && f.agent)    lines.push('agent: ' + f.agent);
+      if (f.agent)    lines.push('agent: ' + f.agent);
       if (f.path)     lines.push('path: ' + f.path);
       if (f.parent)   lines.push('parent: ' + f.parent);
       if (f.branch)   lines.push('branch: ' + f.branch);
@@ -310,11 +312,13 @@ export function kontoraCreate() {
       try {
         const body = { title: this.createForm.title, path: this.createForm.path };
         if (this.createForm.parent) body.parent = this.createForm.parent;
-        // An epic takes neither: it has no pipeline and no agent, and sending
-        // the opt-out sentinel would be refused rather than ignored.
+        // Activation belongs to the start form, not creation.
         if (this.createForm.kind === 'epic') {
           body.kind = 'epic';
           body.status = 'open';
+          if (this.createForm.agent) body.agent = this.createForm.agent;
+          if (this.createForm.branch) body.branch = this.createForm.branch;
+          if (this.createForm.base_branch) body.base_branch = this.createForm.base_branch;
           if (this.createForm.body) body.body = this.createForm.body;
           return await this._submitCreate(body);
         }
@@ -389,7 +393,7 @@ export function kontoraCreate() {
     // still gets the form on its way out of open, so queueing it is a deliberate
     // step with the pipeline, path and branch of the run in front of the user.
     needsInitModal(ticket) {
-      return !ticket.kontora || ticket.status === 'open';
+      return this.epicCanStart(ticket) || !ticket.kontora || ticket.status === 'open';
     },
 
     async openInitModal(ticket) {
@@ -397,6 +401,7 @@ export function kontoraCreate() {
       var pt = this.parseTitleTag(ticket);
       this.initForm = {
         ticketId: ticket.id,
+        kind: ticket.kind || '',
         status: ticket.status || '',
         tag: pt.tag || '',
         titleRest: pt.rest || '',
@@ -427,12 +432,12 @@ export function kontoraCreate() {
       // override; otherwise show the project agent Init will apply.
       this._initInherited = this.projectDefaultsFor(this.initForm.path);
       this._initAgentFollowsProject = !ticket.agent_override;
-      var pipeline = ticket.pipeline || this._initInherited.pipeline;
+      var pipeline = ticket.kind === 'epic' ? '' : (ticket.pipeline || this._initInherited.pipeline);
       var agent = ticket.agent_override ? ticket.agent : this._initInherited.agent;
       await this.$nextTick();
       this.initForm.pipeline = pipeline;
       this.initForm.agent = agent;
-      document.getElementById('init-pipeline')?.focus();
+      document.getElementById(ticket.kind === 'epic' ? 'init-agent' : 'init-pipeline')?.focus();
     },
 
     // Re-apply the project defaults after the path field changes. A value the
@@ -443,7 +448,9 @@ export function kontoraCreate() {
       var prev = this._initInherited || { pipeline: '', agent: '' };
       var next = this.projectDefaultsFor(this.initForm.path);
 
-      if (!this.initForm.pipeline || this.initForm.pipeline === prev.pipeline) {
+      if (this.initForm.kind === 'epic') {
+        this.initForm.pipeline = '';
+      } else if (!this.initForm.pipeline || this.initForm.pipeline === prev.pipeline) {
         this.initForm.pipeline = next.pipeline;
       }
       if (this._initAgentFollowsProject) this.initForm.agent = next.agent;
@@ -493,13 +500,14 @@ export function kontoraCreate() {
     // Ordered stages of the pipeline the init form names. Empty for "none",
     // which runs the ticket once with no stage machine behind it.
     initStages() {
+      if (this.initForm.kind === 'epic') return [];
       var infos = this.configCache?.pipeline_infos || [];
       var info = infos.find(i => i.name === this.initForm.pipeline);
       return (info && info.stages) || [];
     },
 
     async submitInitTicket() {
-      if (!this.initForm.path) return;
+      if (!this.initForm.path || this.initSubmitting) return;
       this.initError = null;
       var routeError = this.notifyRouteError(this.initForm);
       if (routeError) {
@@ -516,7 +524,8 @@ export function kontoraCreate() {
           // deliberate opt-out. "none" says so; a blank field would make the
           // daemon inherit the project default the user just cleared.
           body: JSON.stringify({
-            pipeline: this.initForm.pipeline || 'none',
+            pipeline: this.initForm.kind === 'epic' ? undefined : (this.initForm.pipeline || 'none'),
+            status: this.initForm.kind === 'epic' ? 'todo' : undefined,
             path: this.initForm.path,
             agent: this.initForm.agent || 'none',
             branch: (this.initForm.branch || '').trim() || undefined,

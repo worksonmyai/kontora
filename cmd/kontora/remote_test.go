@@ -26,6 +26,23 @@ import (
 	"github.com/worksonmyai/kontora/internal/web"
 )
 
+func TestRemoteListEpicMetadata(t *testing.T) {
+	row := remoteListItem(web.TicketInfo{
+		ID: "e1", Kind: "epic", EpicExecution: "agent", ChildOrder: []string{"c2", "c1"},
+		Branch: "integration", BaseBranch: "main",
+	})
+	var out bytes.Buffer
+	require.NoError(t, cli.RenderList(cli.Listing{Items: []cli.ListItem{row}}, &out, cli.ListOpts{JSON: true}))
+	var rows []map[string]any
+	require.NoError(t, json.Unmarshal(out.Bytes(), &rows))
+	require.Len(t, rows, 1)
+	assert.Equal(t, "epic", rows[0]["kind"])
+	assert.Equal(t, "agent", rows[0]["epic_execution"])
+	assert.Equal(t, []any{"c2", "c1"}, rows[0]["child_order"])
+	assert.Equal(t, "integration", rows[0]["branch"])
+	assert.Equal(t, "main", rows[0]["base_branch"])
+}
+
 var (
 	buildOnce sync.Once
 	builtBin  string
@@ -546,33 +563,42 @@ func TestRemoteDispatch_UpdateSelectedFields(t *testing.T) {
 }
 
 func TestRemoteDispatch_InitWithFlags(t *testing.T) {
-	var initPath string
-	var gotReq map[string]string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.URL.Path == "/api/tickets" && r.Method == http.MethodGet:
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"tickets":        []map[string]string{{"id": "abc123"}},
-				"running_agents": 0,
-			})
-		case r.URL.Path == "/api/tickets/abc123/init":
-			initPath = r.URL.Path
-			_ = json.NewDecoder(r.Body).Decode(&gotReq)
-			_ = json.NewEncoder(w).Encode(map[string]string{"id": "abc123"})
-		default:
-			w.WriteHeader(http.StatusNotFound)
-		}
-	}))
-	defer srv.Close()
-
-	out, err := runCLI(t, []string{"KONTORA_URL=" + srv.URL}, "init", "abc", "--pipeline", "two-stage", "--path", "/repo", "--status", "open")
-	require.NoError(t, err, out)
-	assert.Equal(t, "/api/tickets/abc123/init", initPath)
-	assert.Equal(t, "two-stage", gotReq["pipeline"])
-	assert.Equal(t, "/repo", gotReq["path"])
-	// Dropping it would leave a remote init with no way to ask for open, which
-	// is the only status that keeps a scheduled ticket's timestamp.
-	assert.Equal(t, "open", gotReq["status"])
+	for _, tc := range []struct {
+		name, kind, pipeline, path, status string
+		flags                              []string
+	}{
+		{"ordinary", "", "two-stage", "/repo", "open", []string{"--pipeline", "two-stage", "--path", "/repo", "--status", "open"}},
+		{"epic", "epic", "", "", "todo", []string{"--status", "todo"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var initPath string
+			var gotReq map[string]string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case r.URL.Path == "/api/tickets" && r.Method == http.MethodGet:
+					_ = json.NewEncoder(w).Encode(map[string]any{
+						"tickets": []map[string]string{{"id": "abc123", "kind": tc.kind}}, "running_agents": 0,
+					})
+				case r.URL.Path == "/api/tickets/abc123" && r.Method == http.MethodGet:
+					_ = json.NewEncoder(w).Encode(web.TicketInfo{ID: "abc123", Kind: tc.kind})
+				case r.URL.Path == "/api/tickets/abc123/init":
+					initPath = r.URL.Path
+					_ = json.NewDecoder(r.Body).Decode(&gotReq)
+					_ = json.NewEncoder(w).Encode(map[string]string{"id": "abc123"})
+				default:
+					w.WriteHeader(http.StatusNotFound)
+				}
+			}))
+			defer srv.Close()
+			args := append([]string{"init", "abc"}, tc.flags...)
+			out, err := runCLI(t, []string{"KONTORA_URL=" + srv.URL}, args...)
+			require.NoError(t, err, out)
+			assert.Equal(t, "/api/tickets/abc123/init", initPath)
+			assert.Equal(t, tc.pipeline, gotReq["pipeline"])
+			assert.Equal(t, tc.path, gotReq["path"])
+			assert.Equal(t, tc.status, gotReq["status"])
+		})
+	}
 }
 
 func TestRemoteDispatch_InitMissingFlagsFails(t *testing.T) {

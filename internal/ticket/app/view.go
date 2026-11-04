@@ -59,8 +59,9 @@ type View struct {
 	Parent string
 	// Kind is the ticket's kind field, empty for ordinary work and "epic" for
 	// a ticket that groups others. Children is the epic's manual child order.
-	Kind     string
-	Children []string
+	Kind          string
+	EpicExecution string
+	Children      []string
 	// The archive stamp, all empty unless Status is archived. ArchivedFrom is
 	// the closed status the ticket held before it was archived.
 	ArchivedFrom string
@@ -107,28 +108,29 @@ type HistoryView struct {
 func BuildView(cfg *config.Config, t *ticket.Ticket, detail bool) View {
 	t = t.Clone()
 	v := View{
-		Managed:     t.Managed,
-		ID:          t.ID,
-		Title:       t.Title(),
-		Status:      string(t.Status),
-		Kontora:     t.Kontora,
-		Stage:       t.Stage,
-		Pipeline:    t.Pipeline,
-		Path:        t.Path,
-		Attempt:     t.Attempt,
-		CreatedAt:   t.Created,
-		StartedAt:   t.StartedAt,
-		CompletedAt: t.CompletedAt,
-		FinishedAt:  FinishedAt(t),
-		Branch:      t.Branch,
-		BaseBranch:  t.BaseBranch,
-		ClaimedBy:   t.ClaimedBy,
-		ScheduledAt: t.ScheduledAt,
-		Deps:        t.Deps,
-		Links:       t.Links,
-		Parent:      t.Parent,
-		Kind:        string(t.Kind),
-		Children:    t.Children,
+		Managed:       t.Managed,
+		ID:            t.ID,
+		Title:         t.Title(),
+		Status:        string(t.Status),
+		Kontora:       t.Kontora,
+		Stage:         t.Stage,
+		Pipeline:      t.Pipeline,
+		Path:          t.Path,
+		Attempt:       t.Attempt,
+		CreatedAt:     t.Created,
+		StartedAt:     t.StartedAt,
+		CompletedAt:   t.CompletedAt,
+		FinishedAt:    FinishedAt(t),
+		Branch:        t.Branch,
+		BaseBranch:    t.BaseBranch,
+		ClaimedBy:     t.ClaimedBy,
+		ScheduledAt:   t.ScheduledAt,
+		Deps:          t.Deps,
+		Links:         t.Links,
+		Parent:        t.Parent,
+		Kind:          string(t.Kind),
+		EpicExecution: t.EpicExecution,
+		Children:      t.Children,
 
 		Notify:         t.Notify.Statuses,
 		NotifyChannels: t.NotifyChannels,
@@ -149,7 +151,7 @@ func BuildView(cfg *config.Config, t *ticket.Ticket, detail bool) View {
 				break
 			}
 		}
-	} else if t.Kontora && t.Pipeline == "" && t.Kind != ticket.KindEpic {
+	} else if t.Kontora && t.Pipeline == "" && !t.IsPassiveEpic() {
 		v.Agent = cfg.DefaultAgent
 	}
 
@@ -160,10 +162,13 @@ func BuildView(cfg *config.Config, t *ticket.Ticket, detail bool) View {
 		}
 		v.Stages = stages
 	}
-	// An epic gets neither the default agent nor a stage ribbon: it has no
+	// A passive epic gets neither the default agent nor a stage ribbon: it has no
 	// pipeline because it is not work, not because its pipeline is implied.
-	if t.Kontora && t.Pipeline == "" && len(v.Stages) == 0 && t.Kind != ticket.KindEpic {
+	if t.Kontora && t.Pipeline == "" && len(v.Stages) == 0 && !t.IsPassiveEpic() {
 		v.Stages = []string{"default"}
+		if t.IsAgentEpic() {
+			v.Stage = "default"
+		}
 	}
 
 	if detail {

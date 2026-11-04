@@ -203,6 +203,8 @@ export function kontoraAgentPicker() {
     },
 
     agentPickerPipeline(host) {
+      var ticket = host === 'init' ? this.initForm : host === 'edit' ? this.selectedTicket : this.createForm;
+      if (ticket?.kind === 'epic') return '';
       if (host === 'init') return this.initForm.pipeline || '';
       if (host === 'edit') return this.editForm.pipeline || '';
       return this.createForm.pipeline || '';

@@ -72,7 +72,7 @@ func (d *Daemon) rederiveEpicMoveLocked(prev, t *ticket.Ticket) {
 	d.rederiveEpicLocked(prev.Parent, "")
 }
 
-// rederiveEpicLocked recomputes an epic's status from its children and writes
+// rederiveEpicLocked recomputes a passive epic's status from its children and writes
 // it back. lastChild names the child whose change triggered the pass, for the
 // note an epic that closes itself carries; it may be empty. Must be called with
 // d.mu held.
@@ -91,7 +91,7 @@ func (d *Daemon) rederiveEpicLocked(epicID, lastChild string) {
 		log.Error("epic derivation: re-reading the epic failed", "err", err)
 		return
 	}
-	if t2.Kind != ticket.KindEpic {
+	if !t2.IsPassiveEpic() {
 		d.setTicketState(epicID, t2, ts.filePath)
 		return
 	}

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -9,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/worksonmyai/kontora/internal/config"
+	"github.com/worksonmyai/kontora/internal/ticket"
 	"github.com/worksonmyai/kontora/internal/ticket/app"
 	"github.com/worksonmyai/kontora/internal/web"
 )
@@ -110,6 +112,107 @@ agent: a1
 			data, err := os.ReadFile(filepath.Join(dir, "tst-none.md"))
 			require.NoError(t, err)
 			assert.Contains(t, string(data), tc.want)
+		})
+	}
+}
+
+func TestUpdate_AgentEpicRepository(t *testing.T) {
+	path := initTestRepo(t)
+	other := initTestRepo(t)
+	for _, id := range []string{"e1", "child"} {
+		t.Run(id, func(t *testing.T) {
+			dir := t.TempDir()
+			writeTicket(t, dir, "e1.md", fmt.Sprintf("---\nid: e1\nkind: epic\nepic_execution: agent\nstatus: open\npath: %q\n---\n# Epic\n", path))
+			writeTicket(t, dir, "child.md", fmt.Sprintf("---\nid: child\nparent: e1\nstatus: open\npath: %q\n---\n# Child\n", path))
+			cfg := updateTestConfig(dir)
+			require.ErrorIs(t, Update(cfg, id, web.UpdateTicketRequest{Path: &other}), app.ErrInvalidState)
+			tkt, err := ticket.ParseFile(filepath.Join(dir, id+".md"))
+			require.NoError(t, err)
+			assert.Equal(t, path, tkt.Path)
+			require.NoError(t, Update(cfg, id, web.UpdateTicketRequest{Path: &path}))
+		})
+	}
+}
+
+func TestUpdate_AgentEpicBranchSeparation(t *testing.T) {
+	path := initTestRepo(t)
+	for _, tc := range []struct {
+		name, id, mode string
+		req            web.UpdateTicketRequest
+		wantErr        bool
+	}{
+		{name: "child cannot take integration branch", id: "child", mode: "agent", req: web.UpdateTicketRequest{Branch: new("integration")}, wantErr: true},
+		{name: "epic cannot take child branch", id: "e1", mode: "agent", req: web.UpdateTicketRequest{Branch: new("child-work")}, wantErr: true},
+		{name: "whitespace cannot bypass separation", id: "child", mode: "agent", req: web.UpdateTicketRequest{Branch: new(" integration ")}, wantErr: true},
+		{name: "child keeps separate branch and epic base", id: "child", mode: "agent", req: web.UpdateTicketRequest{Branch: new("other-child"), BaseBranch: new("integration")}},
+		{name: "epic keeps separate branch", id: "e1", mode: "agent", req: web.UpdateTicketRequest{Branch: new("other-integration")}},
+		{name: "passive parent remains grouping only", id: "child", req: web.UpdateTicketRequest{Branch: new("integration")}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeTicket(t, dir, "e1.md", fmt.Sprintf("---\nid: e1\nkind: epic\nepic_execution: %q\nstatus: paused\npath: %q\nbranch: integration\n---\n# Epic\n", tc.mode, path))
+			writeTicket(t, dir, "child.md", fmt.Sprintf("---\nid: child\nparent: e1\nstatus: open\npath: %q\nbranch: child-work\n---\n# Child\n", path))
+			file := filepath.Join(dir, tc.id+".md")
+			before, err := os.ReadFile(file)
+			require.NoError(t, err)
+			err = Update(updateTestConfig(dir), tc.id, tc.req)
+			if tc.wantErr {
+				require.ErrorIs(t, err, app.ErrInvalidState)
+				after, err := os.ReadFile(file)
+				require.NoError(t, err)
+				assert.Equal(t, before, after)
+				return
+			}
+			require.NoError(t, err)
+			got, err := ticket.ParseFile(file)
+			require.NoError(t, err)
+			assert.Equal(t, *tc.req.Branch, got.Branch)
+		})
+	}
+}
+
+func TestUpdate_DanglingGroupingParent(t *testing.T) {
+	dir := t.TempDir()
+	path := initTestRepo(t)
+	writeTicket(t, dir, "child.md", "---\nid: child\nparent: deleted-epic\nstatus: open\npath: old\n---\n# Child\n")
+	require.NoError(t, Update(updateTestConfig(dir), "child", web.UpdateTicketRequest{Path: &path, Branch: new("child-work")}))
+	got, err := ticket.ParseFile(filepath.Join(dir, "child.md"))
+	require.NoError(t, err)
+	assert.Equal(t, path, got.Path)
+	assert.Equal(t, "deleted-epic", got.Parent)
+}
+
+func TestUpdate_AgentEpicRestrictions(t *testing.T) {
+	path := initTestRepo(t)
+	for _, tc := range []struct {
+		name, status string
+		req          web.UpdateTicketRequest
+		allowed      bool
+	}{
+		{name: "edit draft", status: "open", req: web.UpdateTicketRequest{Body: new("updated")}, allowed: true},
+		{name: "edit paused", status: "paused", req: web.UpdateTicketRequest{Agent: new("a1")}, allowed: true},
+		{name: "branch", status: "open", req: web.UpdateTicketRequest{Branch: new("integration"), BaseBranch: new("main")}, allowed: true},
+		{name: "no pipeline", status: "open", req: web.UpdateTicketRequest{Pipeline: new("one-stage")}},
+		{name: "clear pipeline", status: "open", req: web.UpdateTicketRequest{Pipeline: new("none")}, allowed: true},
+		{name: "running", status: "in_progress", req: web.UpdateTicketRequest{Body: new("updated")}},
+		{name: "done", status: "done", req: web.UpdateTicketRequest{Body: new("updated")}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			original := fmt.Sprintf("---\nid: e1\nkind: epic\nepic_execution: agent\nstatus: %s\npath: %q\n---\n# Epic\n", tc.status, path)
+			writeTicket(t, dir, "e1.md", original)
+			err := Update(updateTestConfig(dir), "e1", tc.req)
+			if tc.allowed {
+				require.NoError(t, err)
+				tkt, err := ticket.ParseFile(filepath.Join(dir, "e1.md"))
+				require.NoError(t, err)
+				assert.True(t, tkt.IsAgentEpic())
+				return
+			}
+			require.ErrorIs(t, err, app.ErrInvalidState)
+			out, err := os.ReadFile(filepath.Join(dir, "e1.md"))
+			require.NoError(t, err)
+			assert.Equal(t, original, string(out))
 		})
 	}
 }

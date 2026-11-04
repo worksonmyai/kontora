@@ -325,6 +325,7 @@ func newResumeDaemon(t *testing.T, agentBinary string, run func(ctx context.Cont
 	h := newHarness(t)
 	claudeDir := t.TempDir()
 	cfg := h.defaultConfig(agentBinary, agentBinary)
+	cfg.MaxConcurrentEpicSupervisors = 4
 	cfg.Environment = map[string]string{"CLAUDE_CONFIG_DIR": claudeDir}
 
 	rd := &resumeDaemon{h: h, cfg: cfg, claudeDir: claudeDir}

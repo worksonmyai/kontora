@@ -3712,8 +3712,8 @@ test("index.html renders every prose block through the idempotent write", () => 
   // rebuild-per-effect would ruin; the archive's read-only ticket tab renders
   // its body through it too; and the notes tab's own note and reply bodies
   // are markdown like every other authored block; and the epic page renders
-  // both its brief and its own notes the same way.
-  assert.equal(html.match(/x-effect="setProse\(\$el, /g).length, 12);
+  // both its brief and its own notes the same way, including the mobile brief.
+  assert.equal(html.match(/x-effect="setProse\(\$el, /g).length, 13);
   assert.equal(html.match(/x-effect="setSummaryProse\(\$el, /g).length, 2);
   // Nothing in the markup writes a note as plain text any more: the rail block
   // that did is gone and the notes tab renders markdown.
@@ -10964,7 +10964,7 @@ test("the detail panel's re-run button says restart on a finished ticket", () =>
   const html = fs.readFileSync(htmlPath, "utf8");
   // One button, one endpoint, three statuses, and only on a ticket the daemon owns:
   // Service.Retry rejects a foreign one before it looks at the status.
-  assert.ok(html.includes(`<template x-if="['paused', 'done', 'cancelled'].includes(selectedTicket?.status) && selectedTicket?.kontora">`));
+  assert.ok(html.includes(`<template x-if="['paused', 'done', 'cancelled'].includes(selectedTicket?.status) && selectedTicket?.kontora && (selectedTicket?.kind !== 'epic' || epicIsAgent(selectedTicket))">`));
   assert.ok(html.includes(`<button @click="action('retry')" :disabled="!!actionLoading"`));
   assert.ok(html.includes(`<span x-text="retryLabel()"></span>`));
 });
@@ -13046,11 +13046,12 @@ test("the create preview drops the fields an epic does not have", () => {
   assert.match(yaml, /kind: epic/);
   assert.match(yaml, /status: open/);
   assert.equal(/pipeline:/.test(yaml), false);
-  assert.equal(/agent:/.test(yaml), false);
+  assert.match(yaml, /agent: claude/);
+  assert.equal(/epic_execution:/.test(yaml), false);
   assert.equal(/scheduled_at:/.test(yaml), false);
 });
 
-test("creating an epic from the form posts the kind and none of the run fields", async () => {
+test("creating an epic selects its agent without activating supervision", async () => {
   const posted = [];
   const state = loadKontoraState({
     fetch: async (url, opts) => { posted.push({ url, ...opts }); return { ok: true, json: async () => ({ id: "kon-e7c1" }) }; },
@@ -13066,7 +13067,7 @@ test("creating an epic from the form posts the kind and none of the run fields",
   assert.equal(posted.length, 1);
   assert.equal(posted[0].url, "/api/tickets");
   assert.deepEqual(JSON.parse(posted[0].body), {
-    title: "An epic", path: "/r/kontora", kind: "epic", status: "open", body: "## Description\n",
+    title: "An epic", path: "/r/kontora", kind: "epic", status: "open", agent: "claude", body: "## Description\n",
   });
 });
 
@@ -13132,6 +13133,628 @@ test("opening a ticket replaces the epic page rather than stacking on it", async
   // behind it.
   assert.equal(state.epicPageOpen(), false);
   assert.equal(state.selectedTicket.id, "kon-b12e");
+});
+
+function epicSupervisorUI({ mobile = false, status = 'in_progress', mode = 'agent' } = {}) {
+  const requests = [], sockets = [];
+  const epic = { id: 'kon-e7c1', title: 'Supervised epic', kind: 'epic', kontora: true, path: '/r/kontora',
+    status, epic_execution: mode, agent: 'claude', agent_override: true,
+    stage: mode === 'agent' ? 'default' : '', stages: mode === 'agent' ? ['default'] : [],
+    body: '\n# Brief\n', branch: 'epic/integration', history: [] };
+  const location = { protocol: 'http:', host: 'localhost:8080', hash: '#/' };
+  const containers = { 'terminal-session': { textContent: '' }, 'terminal-container-mobile': { textContent: '' } };
+  const { ctx, state } = loadKontoraContext({
+    location,
+    document: {
+      getElementById: id => containers[id] || null,
+      querySelector: () => null,
+      querySelectorAll: () => [],
+      hasFocus: () => true,
+      documentElement: { style: {} },
+    },
+    WebSocket: class {
+      static OPEN = 1;
+      constructor(url) { this.url = url; this.readyState = 1; this.closed = false; sockets.push(this); }
+      send() {}
+      close() { this.closed = true; this.readyState = 3; }
+    },
+    fetch: async (url, opts = {}) => {
+      requests.push({ url, ...opts });
+      if (opts.method === 'PUT') Object.assign(epic, JSON.parse(opts.body));
+      if (url.endsWith('/init')) Object.assign(epic, { status: 'todo', epic_execution: 'agent' });
+      if (url.endsWith('/pause')) epic.status = 'paused';
+      if (url.endsWith('/retry')) epic.status = 'todo';
+      if (url.endsWith('/cost')) return { ok: true, json: async () => ({ id: epic.id, tracked_runs: 0 }) };
+      if (url.endsWith('/chain')) return { ok: true, json: async () => ({ id: epic.id, nodes: [] }) };
+      if (url.endsWith('/changes')) return { ok: true, json: async () => ({ files: [], commits: [] }) };
+      if (url.endsWith('/logs')) return { ok: true, json: async () => ({ content: 'supervisor log' }) };
+      if (url.includes('/activity')) return { ok: true, headers: { get: () => null }, json: async () => ({ source: 'log', content: 'supervisor activity' }) };
+      return { ok: true, json: async () => ({ ...epic }) };
+    },
+  });
+  stubXterm(ctx.termState);
+  state.isMobile = mobile;
+  state.$nextTick = callback => { if (callback) callback(); return Promise.resolve(); };
+  state.configCache = { agents: ['claude'], default_agent: 'claude', pipelines: ['build'],
+    pipeline_infos: [{ name: 'build', stages: ['code'], default_agent: 'worker' }],
+    projects: [{ name: 'repo', path: epic.path, pipeline: 'build', agent: 'claude' }] };
+  state.tickets = [state.boardEntry(epic), ...['child-a', 'child-b', 'child-c'].map(id => ({
+    id, title: id, kontora: true, agent: 'claude', status: 'open', path: epic.path, parent: { id: epic.id },
+  }))];
+  state.recomputeBoard();
+  return { state, ctx, location, epic, requests, sockets };
+}
+
+for (const derived of ['open', 'in_progress', 'done', 'cancelled']) {
+  test(`start epic confirms one supervisor, not children: passive ${derived}`, async () => {
+    const { state, epic, requests } = epicSupervisorUI({ status: derived, mode: '' });
+    await state.openEpic(epic.id);
+    requests.length = 0;
+    await state.epicSupervisorActions().find(a => a.label === 'start epic').run();
+    assert.equal(state.initModal, true);
+    assert.equal(state.initForm.ticketId, epic.id);
+    assert.equal(state.initForm.kind, 'epic');
+    assert.equal(state.initForm.pipeline, '');
+    assert.deepEqual(vmValue(state.initStages()), []);
+    assert.equal(requests.length, 0);
+    state.onInitPathChange();
+    assert.equal(state.initForm.pipeline, '', 'project defaults cannot add a child pipeline');
+    state.initForm.branch = 'epic/new';
+    await state.submitInitTicket();
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0].url, '/api/tickets/' + epic.id + '/init');
+    assert.deepEqual(JSON.parse(requests[0].body), {
+      path: epic.path, agent: 'claude', branch: 'epic/new', status: 'todo', notify: [], notify_channels: [],
+    });
+    assert.equal(state.initModal, false);
+    assert.ok(state.tickets.slice(1).every(t => t.status === 'open'));
+  });
+}
+
+for (const mobile of [false, true]) {
+  test(`epic watch, return, Back and reload share the epic session: mobile=${mobile}`, async () => {
+    const { state, ctx, epic, location, sockets } = epicSupervisorUI({ mobile });
+    location.hash = '#/e/' + epic.id;
+    await state.applyRoute();
+    assert.equal(state.selectedEpic.id, epic.id);
+    assert.equal(state.selectedTicket, null);
+    const hashWrites = [];
+    const writeHash = state.writeHash;
+    state.writeHash = function () {
+      const before = location.hash;
+      writeHash.call(this);
+      if (location.hash !== before) {
+        hashWrites.push(location.hash);
+        queueMicrotask(() => state.applyRoute());
+      }
+    };
+    await state.epicWatchAgent();
+    await flushMicrotasks();
+    assert.deepEqual(hashWrites, ['#/t/' + epic.id], 'overlay switches never publish an intermediate board route');
+    assert.equal(state.selectedEpic, null);
+    assert.equal(state.selectedTicket.id, epic.id);
+    assert.equal(location.hash, '#/t/' + epic.id);
+    assert.equal(state.terminalWanted(), true);
+    assert.equal(state.displayStage(), 'default', 'first-run activity uses the supervisor session key');
+    assert.equal(state.detailTab === 'terminal' || !mobile, true);
+    assert.equal(sockets.length, 1);
+    assert.ok(sockets[0].url.includes('/ws/terminal/' + epic.id));
+    const first = sockets[0];
+    location.hash = '#/e/' + epic.id;
+    await state.applyRoute();
+    assert.equal(first.closed, true);
+    assert.equal(ctx.termState.ws, null);
+    assert.equal(state.terminalOpen, false);
+    assert.equal(state.selectedTicket, null);
+    assert.equal(state.selectedEpic.id, epic.id);
+    location.hash = '#/t/' + epic.id;
+    await state.applyRoute();
+    await flushMicrotasks();
+    assert.equal(sockets.filter(s => !s.closed).length, 1);
+    assert.equal(state.selectedEpic, null);
+    state.closeDetail();
+    location.hash = '#/t/' + epic.id;
+    await state.applyRoute();
+    await flushMicrotasks();
+    assert.equal(sockets.filter(s => !s.closed).length, 1, 'reload-style deep link creates one attachment');
+    await state.action('pause');
+    assert.equal(sockets.filter(s => !s.closed).length, 0);
+    assert.equal(state.selectedTicket.status, 'paused');
+    assert.ok(state.tickets.slice(1).every(t => t.status === 'open'));
+    state.closeDetail();
+  });
+}
+
+test('brief navigation saves the previous epic draft and ignores late detail responses', async () => {
+  const { state, epic, requests } = epicSupervisorUI({ status: 'paused' });
+  await state.openEpic(epic.id);
+  state.epicEditingBrief = true;
+  state.editForm.body = '# Updated brief';
+  state.epicDebounceBrief();
+  requests.length = 0;
+  await state.epicWatchAgent();
+  assert.equal(requests.filter(r => r.method === 'PUT').length, 1);
+  assert.equal(requests[0].url, '/api/tickets/' + epic.id);
+  assert.deepEqual(JSON.parse(requests[0].body), { body: '\n# Updated brief' });
+  assert.equal(state.selectedTicket.body, '\n# Updated brief');
+  assert.equal(state.selectedEpic, null);
+  assert.equal(state._epicBriefDebounce, null);
+  state.closeDetail();
+
+  const late = deferred();
+  const delayed = loadKontoraState({ fetch: () => late.promise });
+  delayed.tickets = [epic];
+  const opening = delayed.openEpic(epic.id);
+  delayed.closeEpic();
+  late.resolve({ ok: true, json: async () => ({ ...epic, body: 'late body' }) });
+  await opening;
+  assert.equal(delayed.selectedEpic, null);
+  assert.equal(delayed._epicDetail, null);
+});
+
+test('a failed brief save keeps the draft instead of starting or watching the supervisor', async () => {
+  const { state, ctx, epic } = epicSupervisorUI({ status: 'open' });
+  await state.openEpic(epic.id);
+  state.epicEditingBrief = true;
+  state.editForm.body = 'Unsaved brief';
+  ctx.fetch = async () => ({ ok: false, json: async () => ({ error: 'save rejected' }) });
+  await state.epicStart();
+  assert.equal(state.initModal, false);
+  assert.equal(state.selectedEpic.id, epic.id);
+  await state.epicWatchAgent();
+  assert.equal(state.selectedTicket, null);
+  assert.equal(state.editForm.body, 'Unsaved brief');
+  assert.equal(state.error, 'save rejected');
+});
+
+test('a later execution selection supersedes navigation waiting on an epic brief save', async () => {
+  const { state, ctx, epic } = epicSupervisorUI({ status: 'paused' });
+  await state.openEpic(epic.id);
+  state.epicEditingBrief = true;
+  state.editForm.body = 'Saved before leaving';
+  const gate = deferred();
+  const originalFetch = ctx.fetch;
+  ctx.fetch = async (url, opts) => {
+    if (opts?.method === 'PUT') await gate.promise;
+    return originalFetch(url, opts);
+  };
+  const first = state.selectTicket(state.tickets[1]);
+  const second = state.selectTicket(state.tickets[2]);
+  gate.resolve();
+  await Promise.all([first, second]);
+  assert.equal(state.selectedTicket.id, 'child-b');
+  assert.equal(state.selectedEpic, null);
+  state.closeDetail();
+});
+
+for (const action of ['start', 'watch', 'ticket', 'epic', 'close', 'route', 'view']) {
+  for (const ok of [true, false]) {
+    test(`blurred pending brief save gates ${action}: success=${ok}`, async () => {
+      const { state, ctx, epic, location } = epicSupervisorUI({ status: 'open', mobile: action === 'watch' });
+      await state.openEpic(epic.id);
+      const other = { ...epic, id: 'other' };
+      state.tickets.push(other);
+      state.$refs = {};
+      state.epicEditingBrief = true;
+      state.editForm.body = 'Draft saved after blur';
+      state.epicDebounceBrief();
+      const gate = deferred();
+      const originalFetch = ctx.fetch;
+      let puts = 0;
+      ctx.fetch = async (url, opts) => {
+        if (opts?.method === 'PUT') {
+          puts++;
+          await gate.promise;
+          if (!ok) return { ok: false, json: async () => ({ error: 'save rejected' }) };
+        }
+        return originalFetch(url, opts);
+      };
+      state.epicBlurBriefEdit();
+      assert.equal(state.epicEditingBrief, false);
+      assert.equal(state.epicBriefSaving, true);
+      assert.equal(state._epicBriefDebounce, null);
+      let finished = false;
+      const actions = {
+        start: () => state.epicStart(),
+        watch: () => state.epicWatchAgent(),
+        ticket: () => state.selectTicket(state.tickets[1]),
+        epic: () => state.openEpic(other.id),
+        close: () => state.closeEpic(),
+        route: () => { location.hash = '#/stats'; return state.applyRoute(); },
+        view: () => state.gotoView('stats'),
+      };
+      const navigating = Promise.resolve(actions[action]()).then(() => { finished = true; });
+      await flushMicrotasks();
+      assert.equal(finished, false);
+      assert.equal(state.selectedEpic.id, epic.id);
+      assert.equal(state.selectedTicket, null);
+      assert.equal(state.initModal, false);
+      assert.equal(puts, 1, 'navigation shares the save started by blur');
+      gate.resolve();
+      await navigating;
+      assert.equal(puts, 1);
+      assert.equal(state.epicBriefSaving, false);
+      if (!ok) {
+        assert.equal(state.selectedEpic.id, epic.id);
+        assert.equal(state.selectedTicket, null);
+        assert.equal(state.initModal, false);
+        assert.equal(state.currentView, 'board');
+        assert.equal(location.hash, '#/e/' + epic.id);
+        assert.equal(state.editForm.body, 'Draft saved after blur');
+        assert.equal(state.epicBriefSaved, false);
+        assert.equal(state.error, 'save rejected');
+        ctx.fetch = originalFetch;
+        assert.equal(await state.epicFlushBrief(), true);
+        assert.equal(epic.body, '\nDraft saved after blur');
+      } else {
+        assert.equal(epic.body, '\nDraft saved after blur');
+        if (action === 'start') {
+          assert.equal(state.initModal, true);
+          assert.equal(state.initForm.ticketId, epic.id);
+        } else if (action === 'watch' || action === 'ticket') {
+          assert.equal(state.selectedEpic, null);
+          assert.equal(state.selectedTicket.id, action === 'watch' ? epic.id : 'child-a');
+        } else if (action === 'epic') assert.equal(state.selectedEpic.id, other.id);
+        else assert.equal(state.selectedEpic, null);
+        if (action === 'route' || action === 'view') assert.equal(state.currentView, 'stats');
+      }
+      state.closeStats();
+      if (state.selectedTicket) state.closeDetail();
+      if (state.selectedEpic) await state.closeEpic();
+    });
+  }
+}
+
+for (const ok of [true, false]) {
+  test(`brief writes serialize newer drafts and Start waits for the last write: success=${ok}`, async () => {
+    const { state, ctx, epic } = epicSupervisorUI({ status: 'open' });
+    await state.openEpic(epic.id);
+    state.$refs = {};
+    state.epicEditingBrief = true;
+    state.editForm.body = 'First draft';
+    const gates = [deferred(), deferred()];
+    const bodies = [];
+    const originalFetch = ctx.fetch;
+    ctx.fetch = async (url, opts) => {
+      if (opts?.method === 'PUT') {
+        const index = bodies.length;
+        bodies.push(JSON.parse(opts.body).body);
+        await gates[index].promise;
+        if (index === 1 && !ok) return { ok: false, json: async () => ({ error: 'new draft rejected' }) };
+      }
+      return originalFetch(url, opts);
+    };
+    const saving = state.epicSaveBrief();
+    state.editForm.body = 'Newest draft';
+    state.epicDebounceBrief();
+    state.epicBlurBriefEdit();
+    const starting = state.epicStart();
+    assert.deepEqual(bodies, ['\nFirst draft']);
+    gates[0].resolve();
+    await flushMicrotasks();
+    assert.deepEqual(bodies, ['\nFirst draft', '\nNewest draft']);
+    assert.equal(state.epicBriefSaving, true);
+    assert.equal(state.initModal, false);
+    gates[1].resolve();
+    assert.equal(await saving, ok);
+    await starting;
+    assert.equal(state.epicBriefSaving, false);
+    assert.equal(state.epicBriefSaved, ok);
+    assert.equal(state.initModal, ok);
+    assert.equal(state.editForm.body, 'Newest draft');
+    assert.equal(epic.body, ok ? '\nNewest draft' : '\nFirst draft');
+    if (!ok) {
+      ctx.fetch = originalFetch;
+      await state.epicStart();
+      assert.equal(epic.body, '\nNewest draft');
+      assert.equal(state.initModal, true);
+    }
+    await state.closeEpic();
+  });
+}
+
+for (const target of ['ticket', 'epic', 'board']) {
+  for (const routed of [true, false]) {
+    test(`a newer ${routed ? 'route' : 'selection'} to ${target} supersedes a delayed epic route load`, async () => {
+      const { state, ctx, epic, location } = epicSupervisorUI({ status: 'paused', mobile: routed });
+      const other = { ...epic, id: 'other' };
+      state.tickets.push(other);
+      const gate = deferred();
+      const originalFetch = ctx.fetch;
+      ctx.fetch = async (url, opts) => {
+        if (url === '/api/tickets/' + epic.id) await gate.promise;
+        return originalFetch(url, opts);
+      };
+      location.hash = '#/e/' + epic.id;
+      const first = state.applyRoute();
+      if (routed) {
+        location.hash = target === 'ticket' ? '#/t/child-b' : target === 'epic' ? '#/e/other' : '#/';
+        await state.applyRoute();
+      } else if (target === 'ticket') await state.selectTicket(state.tickets[2]);
+      else if (target === 'epic') await state.openEpic(other.id);
+      else await state.closeEpic();
+      const latestHash = location.hash;
+      gate.resolve();
+      await first;
+      assert.equal(location.hash, latestHash);
+      assert.equal(location.hash, target === 'ticket' ? '#/t/child-b' : target === 'epic' ? '#/e/other' : '#/');
+      assert.equal(state.selectedTicket?.id || null, target === 'ticket' ? 'child-b' : null);
+      assert.equal(state.selectedEpic?.id || null, target === 'epic' ? other.id : null);
+      assert.equal(state._applyingRoute, null);
+      if (state.selectedTicket) state.closeDetail();
+      if (state.selectedEpic) await state.closeEpic();
+    });
+  }
+}
+
+for (const older of ['#/t/child-a', '#/e/other', '#/']) {
+  for (const newer of ['#/t/child-b', '#/e/other', '#/']) {
+    test(`a newer route ${newer} supersedes ${older} waiting on a blurred brief save`, async () => {
+      const { state, ctx, epic, location } = epicSupervisorUI({ status: 'paused', mobile: newer.startsWith('#/t/') });
+      state.tickets.push({ ...epic, id: 'other' });
+      await state.openEpic(epic.id);
+      state.$refs = {};
+      state.epicEditingBrief = true;
+      state.editForm.body = 'Saved before either route';
+      const gate = deferred();
+      const originalFetch = ctx.fetch;
+      let puts = 0;
+      ctx.fetch = async (url, opts) => {
+        if (opts?.method === 'PUT') { puts++; await gate.promise; }
+        return originalFetch(url, opts);
+      };
+      state.epicBlurBriefEdit();
+      location.hash = older;
+      const first = state.applyRoute();
+      location.hash = newer;
+      const second = state.applyRoute();
+      await flushMicrotasks();
+      assert.equal(state.selectedEpic.id, epic.id);
+      assert.equal(puts, 1);
+      gate.resolve();
+      await Promise.all([first, second]);
+      assert.equal(puts, 1);
+      assert.equal(epic.body, '\nSaved before either route');
+      assert.equal(location.hash, newer);
+      assert.equal(state.selectedTicket?.id || null, newer.startsWith('#/t/') ? 'child-b' : null);
+      assert.equal(state.selectedEpic?.id || null, newer.startsWith('#/e/') ? 'other' : null);
+      assert.equal(state._applyingRoute, null);
+      if (state.selectedTicket) state.closeDetail();
+      if (state.selectedEpic) await state.closeEpic();
+    });
+  }
+}
+
+for (const mobile of [false, true]) {
+  for (const newer of ['#/t/child-b', '#/e/kon-e7c1']) {
+    test(`a newer route ${newer} supersedes a delayed ticket route: mobile=${mobile}`, async () => {
+      const { state, ctx, location } = epicSupervisorUI({ status: 'paused', mobile });
+      const gate = deferred();
+      const originalFetch = ctx.fetch;
+      ctx.fetch = async (url, opts) => {
+        if (url === '/api/tickets/child-a') await gate.promise;
+        return originalFetch(url, opts);
+      };
+      location.hash = '#/t/child-a';
+      const first = state.applyRoute();
+      location.hash = newer;
+      await state.applyRoute();
+      const latestTab = state.detailTab;
+      gate.resolve();
+      await first;
+      assert.equal(location.hash, newer);
+      assert.equal(state.selectedTicket?.id || null, newer.startsWith('#/t/') ? 'child-b' : null);
+      assert.equal(state.selectedEpic?.id || null, newer.startsWith('#/e/') ? 'kon-e7c1' : null);
+      assert.equal(state.detailTab, latestTab);
+      assert.equal(state._applyingRoute, null);
+      if (state.selectedTicket) state.closeDetail();
+      if (state.selectedEpic) await state.closeEpic();
+    });
+  }
+}
+
+for (const action of ['start', 'watch', 'route', 'view']) {
+  for (const ok of [true, false]) {
+    test(`a newer route supersedes ${action} during a blurred save: success=${ok}`, async () => {
+      const { state, ctx, epic, location } = epicSupervisorUI({ status: 'open' });
+      await state.openEpic(epic.id);
+      state.$refs = {};
+      state.epicEditingBrief = true;
+      state.editForm.body = 'Retained draft';
+      const gate = deferred();
+      const originalFetch = ctx.fetch;
+      let puts = 0;
+      ctx.fetch = async (url, opts) => {
+        if (opts?.method === 'PUT') {
+          puts++;
+          await gate.promise;
+          if (!ok) return { ok: false, json: async () => ({ error: 'save rejected' }) };
+        }
+        return originalFetch(url, opts);
+      };
+      state.epicBlurBriefEdit();
+      let first;
+      if (action === 'start') first = state.epicStart();
+      else if (action === 'watch') first = state.epicWatchAgent();
+      else if (action === 'view') first = state.gotoView('stats');
+      else { location.hash = '#/t/child-a'; first = state.applyRoute(); }
+      location.hash = '#/t/child-b';
+      const second = state.applyRoute();
+      gate.resolve();
+      await Promise.all([first, second]);
+      assert.equal(puts, 1);
+      assert.equal(state.initModal, false);
+      assert.equal(state.currentView, 'board');
+      assert.equal(state.selectedTicket?.id || null, ok ? 'child-b' : null);
+      assert.equal(state.selectedEpic?.id || null, ok ? null : epic.id);
+      assert.equal(location.hash, ok ? '#/t/child-b' : '#/e/' + epic.id);
+      assert.equal(state._applyingRoute, null);
+      if (!ok) {
+        assert.equal(state.editForm.body, 'Retained draft');
+        ctx.fetch = originalFetch;
+        await state.epicFlushBrief();
+      }
+      if (state.selectedTicket) state.closeDetail();
+      if (state.selectedEpic) await state.closeEpic();
+    });
+  }
+}
+
+test('a superseded route cannot release hash suppression owned by a newer delayed route', async () => {
+  const { state, ctx, epic, location } = epicSupervisorUI({ status: 'paused' });
+  state.tickets.push({ ...epic, id: 'other' });
+  const gates = [deferred(), deferred()];
+  const originalFetch = ctx.fetch;
+  ctx.fetch = async (url, opts) => {
+    if (url === '/api/tickets/' + epic.id) await gates[0].promise;
+    if (url === '/api/tickets/other') await gates[1].promise;
+    return originalFetch(url, opts);
+  };
+  location.hash = '#/e/' + epic.id;
+  const first = state.applyRoute();
+  location.hash = '#/e/other';
+  const second = state.applyRoute();
+  gates[0].resolve();
+  await first;
+  assert.equal(location.hash, '#/e/other');
+  assert.equal(state._applyingRoute, state._navigationSeq);
+  gates[1].resolve();
+  await second;
+  assert.equal(state.selectedEpic.id, 'other');
+  assert.equal(location.hash, '#/e/other');
+  assert.equal(state._applyingRoute, null);
+  await state.closeEpic();
+});
+
+test('passive execution links offer activation without attaching a nonexistent supervisor', async () => {
+  const { state, epic, sockets, location } = epicSupervisorUI({ mode: '', mobile: true });
+  location.hash = '#/t/' + epic.id;
+  await state.applyRoute();
+  await flushMicrotasks();
+  assert.equal(state.selectedTicket.id, epic.id);
+  assert.equal(state.detailTab, 'ticket');
+  assert.equal(sockets.length, 0);
+  assert.equal(state.mobilePrimaryAction(state.selectedTicket).label, 'start epic');
+  assert.deepEqual(vmValue(state.detailMoves(state.selectedTicket)), [{ label: 'Start epic', endpoint: 'run' }]);
+  await state.moveTicketVia(epic.id, 'run', null);
+  assert.equal(state.initForm.ticketId, epic.id);
+  state.closeDetail();
+});
+
+test('activation SSE refreshes execution mode without replacing an open body draft', async () => {
+  const { state, epic, location } = epicSupervisorUI({ status: 'open', mode: '' });
+  location.hash = '#/t/' + epic.id;
+  await state.applyRoute();
+  await flushMicrotasks();
+  assert.equal(state.editing, true);
+  state.editForm.body = 'Local draft';
+  const activated = { ...epic, status: 'todo', epic_execution: 'agent' };
+  state.applyTicketUpdate(activated);
+  state.recomputeBoard();
+  assert.equal(state.epicIsAgent(state.selectedTicket), true);
+  assert.equal(state.epicCanStart(state.selectedTicket), false);
+  assert.equal(state.editForm.body, 'Local draft');
+  assert.equal(state.boardEntryChanged(epic, { ...epic, epic_execution: 'agent' }), true);
+  state.editing = false;
+  state.closeDetail();
+});
+
+test('supervisor status and process counts stay separate from child progress', async () => {
+  const { state, epic } = epicSupervisorUI();
+  state.tickets.push({ id: 'passive', kind: 'epic', status: 'in_progress', kontora: true, agent: 'claude' });
+  state.tickets[1].status = 'in_progress';
+  state.recomputeBoard();
+  assert.equal(state.runningAgents, 2);
+  assert.equal(state.agentRunningCount('claude'), 2);
+  assert.equal(state.agentPickerRunningTotal(), 2);
+  assert.equal(state._boardTotal, 3);
+  assert.equal(state.epicRollup(epic.id).total, 3);
+  assert.ok(state.columns.every(col => state.boardTickets(col.key).every(t => t.kind !== 'epic')));
+  await state.openEpic(epic.id);
+  state.applyTicketUpdate({ ...state.tickets[1], status: 'done' });
+  state.recomputeBoard();
+  assert.equal(state.selectedEpic.status, 'in_progress');
+  assert.equal(state.epicRollup(epic.id).done, 1);
+  assert.equal(state.runningAgents, 1);
+  assert.equal(state.epicCanEditBrief(), false);
+});
+
+test('supervisor controls use its lifecycle, without stage skip or schedule', async () => {
+  const { state, epic, requests } = epicSupervisorUI();
+  await state.openEpic(epic.id);
+  assert.deepEqual(vmValue(state.epicSupervisorActions().map(a => a.label)), ['watch agent', 'pause supervisor']);
+  requests.length = 0;
+  await state.epicSupervisorActions().find(a => a.label === 'pause supervisor').run();
+  assert.deepEqual(requests.map(r => r.url), ['/api/tickets/' + epic.id + '/pause']);
+  assert.equal(state.selectedEpic.status, 'paused');
+  assert.deepEqual(vmValue(state.epicSupervisorActions().map(a => a.label)), ['watch agent', 'retry supervisor']);
+  await state.epicAction('retry');
+  assert.equal(state.selectedEpic.status, 'todo');
+  state.applyTicketUpdate({ ...epic, status: 'human_review' });
+  state.recomputeBoard();
+  assert.deepEqual(vmValue(state.epicSupervisorActions().map(a => a.label)), ['watch agent', 'review supervisor', 'approve', 'send back']);
+  assert.equal(state.canSchedule(epic), false);
+  await state.epicWatchAgent();
+  assert.equal(state.canSetStage(), false);
+  assert.ok(state.mobileSheetActions(state.selectedTicket).every(a => a.label !== 'Skip stage'));
+  state.closeDetail();
+});
+
+test('finished supervisors reuse summaries, activity and the integration diff', async () => {
+  const { state, epic, requests } = epicSupervisorUI({ status: 'human_review' });
+  epic.summary = 'Combined result is ready for review';
+  epic.history = [{ stage: 'default', run: 0, agent: 'claude', exit_code: 0, summary: epic.summary }];
+  await state.openEpic(epic.id);
+  requests.length = 0;
+  await state.epicWatchAgent();
+  await flushMicrotasks();
+  assert.equal(state.activeTab, 'summary');
+  assert.equal(state.showSummaryTab(), true);
+  assert.equal(state.showDiffTab(), true);
+  assert.equal(state.summaryCards()[0].summary, epic.summary);
+  assert.ok(requests.some(r => r.url.startsWith('/api/tickets/' + epic.id + '/activity')));
+  assert.ok(requests.some(r => r.url === '/api/tickets/' + epic.id + '/changes'));
+  state.closeDetail();
+});
+
+test('switching epics flushes the previous brief without writing onto the next epic', async () => {
+  const { state, epic, requests } = epicSupervisorUI({ mode: '' });
+  const other = { ...epic, id: 'other' };
+  state.tickets.push(other);
+  await state.openEpic(epic.id);
+  state.epicEditingBrief = true;
+  state.editForm.body = '# Previous draft';
+  state.epicDebounceBrief();
+  requests.length = 0;
+  await state.openEpic(other.id);
+  assert.equal(state.selectedEpic.id, other.id);
+  const saves = requests.filter(r => r.method === 'PUT');
+  assert.deepEqual(saves.map(r => r.url), ['/api/tickets/' + epic.id]);
+  assert.deepEqual(JSON.parse(saves[0].body), { body: '\n# Previous draft' });
+  assert.equal(state.epicEditingBrief, false);
+  state.closeEpic();
+});
+
+test('epic controls and brief surfaces are available in both responsive layouts', () => {
+  const html = fs.readFileSync(htmlPath, 'utf8');
+  assert.equal(html.includes('epicQueueOpen'), false);
+  assert.equal(html.includes('queue all open'), false);
+  assert.equal(html.match(/x-for="a in epicSupervisorActions\(\)"/g).length, 2);
+  assert.equal(html.match(/@click="openEpic\(selectedTicket.id\)"/g).length, 2);
+  assert.match(html, /class="flex flex-col gap-\[7px\]" x-show="initForm.kind !== 'epic'"/);
+  assert.match(html, /aria-label="Epic overview"/);
+});
+
+test('supervisor capacity is a restart-only integer with a default of four', async () => {
+  const state = await settingsState();
+  const field = state.settingsGeneralFields.find(f => f.key === 'max_concurrent_epic_supervisors');
+  assert.equal(field.placeholder, '4');
+  assert.equal(state.settingsIsRestartOnly(field.key), true);
+  assert.ok(state.settingsGeneralTextRows('execution').some(f => f.key === field.key));
+  state.settingsConfig.general.max_concurrent_epic_supervisors = '6';
+  assert.match(await state._settingsWrite(), /^max_concurrent_epic_supervisors: 6$/m);
+  state.settingsConfig.general.max_concurrent_epic_supervisors = 'many';
+  assert.match(await state._settingsWrite(), /^max_concurrent_epic_supervisors: many$/m);
 });
 
 // ─── notify row ───

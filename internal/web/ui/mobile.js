@@ -27,7 +27,7 @@ export function kontoraMobile() {
       this._swipeY = t.clientY;
     },
     onBoardTouchEnd(e) {
-      if (this.selectedTicket || this.sheet) return;
+      if (this.selectedTicket || this.selectedEpic || this.sheet) return;
       var t = e.changedTouches[0];
       var dx = t.clientX - (this._swipeX || 0);
       var dy = t.clientY - (this._swipeY || 0);
@@ -39,7 +39,7 @@ export function kontoraMobile() {
     // A ticket "has a run" once it leaves the draft/queued states; that's when
     // the terminal/logs tabs and the detail tab bar appear.
     mobileHasRun(t) {
-      if (!t) return false;
+      if (!t || (t.kind === 'epic' && !this.epicIsAgent(t))) return false;
       if (!['open', 'todo'].includes(t.status) || (t.history || []).length > 0) return true;
       return this.selectedTicket?.id === t.id && (this.ticketCost?.tracked_runs || 0) > 0;
     },
@@ -52,13 +52,14 @@ export function kontoraMobile() {
       return this.selectedTicket && this.selectedTicket.status === 'in_progress' ? '›_ terminal' : '≡ logs';
     },
 
-    async openMobileTicket(t) {
+    async openMobileTicket(t, navigation = ++this._navigationSeq) {
       // Pick the detail tab from the card's status before selectTicket() runs,
       // so the right pane is already visible when the live terminal attaches.
-      if (t.status === 'in_progress') this.detailTab = 'terminal';
+      if (t.status === 'in_progress' && this.mobileHasRun(t)) this.detailTab = 'terminal';
       else if (this.mobileHasRun(t)) this.detailTab = 'logs';
       else this.detailTab = 'ticket';
-      await this.selectTicket(t);
+      await this.selectTicket(t, navigation);
+      if (navigation !== this._navigationSeq || this.selectedTicket?.id !== t.id) return;
       // The board card lacks detail fields, so the summary check runs on the
       // full ticket selectTicket fetched.
       if (this.detailTab === 'logs' && this.summaryFirst(this.selectedTicket)) {
@@ -142,6 +143,7 @@ export function kontoraMobile() {
       var self = this, id = t && t.id;
       var run = function(ep) { return function() { self.moveTicketVia(id, ep, null); }; };
       var move = function(st) { return function() { self.moveTicketVia(id, 'move', { status: st }); }; };
+      if (this.epicCanStart(t)) return { label: 'start epic', run: function() { self.openInitModal(t); } };
       var map = {
         open:         { label: 'queue',          run: run('run') },
         todo:         { label: 'queue',          run: run('run') },
@@ -157,6 +159,12 @@ export function kontoraMobile() {
       var self = this, id = t && t.id;
       var run = function(ep) { return function() { self.moveTicketVia(id, ep, null); }; };
       var move = function(st) { return function() { self.moveTicketVia(id, 'move', { status: st }); }; };
+      if (this.epicIsAgent(t) && t.status === 'in_progress') {
+        return { label: 'pause supervisor', run: function() { self.action('pause'); } };
+      }
+      if (t?.kind === 'epic' && !this.epicIsAgent(t)) {
+        return { label: 'epic overview', run: function() { self.openEpic(id); } };
+      }
       var map = {
         open:         { label: 'cancel',    run: move('cancelled') },
         todo:         { label: 'cancel',    run: move('cancelled') },
@@ -293,6 +301,14 @@ export function kontoraMobile() {
       var run = function(ep) { return function() { self.moveTicketVia(t.id, ep, null); }; };
       var move = function(st) { return function() { self.moveTicketVia(t.id, 'move', { status: st }); }; };
       var s = t.status;
+      if (t.kind === 'epic') {
+        add('Epic overview', 'default', function() { self.openEpic(t.id); });
+        if (this.epicCanStart(t)) {
+          add('Start epic', 'primary', function() { self.openInitModal(t); });
+          return rows;
+        }
+        if (!this.epicIsAgent(t)) return rows;
+      }
       if ((s === 'open' || s === 'todo') && !t.kontora) add('Initialize ticket', 'warn', function() { self.openInitModal(t); });
       // On a scheduled ticket "Queue agent" is the run-now action: the daemon
       // drops the timestamp in the same save.
@@ -309,8 +325,8 @@ export function kontoraMobile() {
         add('Move to open', 'default', move('open'));
         add('Cancel ticket', 'danger', move('cancelled'));
       } else if (s === 'in_progress') {
-        add('Pause agent', 'warn', function() { self.action('pause'); });
-        add('Skip stage', 'default', function() { self.action('skip'); });
+        add(this.epicIsAgent(t) ? 'Pause supervisor' : 'Pause agent', 'warn', function() { self.moveTicketVia(t.id, 'pause', null); });
+        if (t.kind !== 'epic') add('Skip stage', 'default', function() { self.action('skip'); });
         add('Send to review', 'primary', move('human_review'));
         add('Mark done', 'default', move('done'));
         add('Cancel ticket', 'danger', move('cancelled'));

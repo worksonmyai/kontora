@@ -306,6 +306,8 @@ export function kontoraTickets() {
           }
           if (this.editing) {
             this.selectedTicket.status = ticket.status;
+            this.selectedTicket.kind = ticket.kind;
+            this.selectedTicket.epic_execution = ticket.epic_execution;
             this.selectedTicket.stage = ticket.stage;
             this.selectedTicket.attempt = ticket.attempt;
             // A schedule set or cleared by the CLI, by another browser, or by

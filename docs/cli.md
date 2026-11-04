@@ -62,7 +62,7 @@ Lists tickets. On a terminal with no flags it opens the kanban TUI; any filter, 
 
 The static table has ID, status, title, project, stage, agent, and the ids blocking the ticket.
 
-`--json` prints an array of objects with `id`, `title`, `status`, `kontora`, `path`, `project`, `pipeline`, `stage`, `agent`, `created_at`, `started_at`, `completed_at`, `deps`, `links`, `parent`, `ready` and `blockers`. It never carries the ticket body; `kontora view --body` is what prints that. `deps`, `links` and `blockers` are always arrays, and an empty result is `[]`, so a script can iterate without a nil check.
+`--json` prints an array of objects with `id`, `title`, `status`, `kontora`, `path`, `project`, `pipeline`, `stage`, `agent`, `created_at`, `started_at`, `completed_at`, `deps`, `links`, `parent`, `kind`, `epic_execution`, `child_order`, `branch`, `base_branch`, `ready` and `blockers`. `epic_execution: "agent"` identifies an activated supervisor. `child_order` is stored display order, not membership; use each child's `parent` to find members. It never carries the ticket body; `kontora view --body` is what prints that. `deps`, `links` and `blockers` are always arrays, and an empty result is `[]`, so a script can iterate without a nil check.
 
 Remote mode asks the daemon for every ticket, including the hidden statuses, and applies the same filters locally, so a flag means the same thing on both sides.
 
@@ -118,7 +118,7 @@ Creates a ticket and prints its ID. Without `--path` it uses the current git roo
 
 The ticket file is written once, complete. A ticket created with `--status open` is therefore never visible as `todo`, so a daemon with `auto_pick_up: true` watching the directory cannot claim it before you finish editing it. `--status open` also skips the repository check creation normally runs, because an open ticket is not ready to run.
 
-`--kind epic` creates the ticket `open` with no pipeline and no agent, and skips the repository check: an epic is never run. It cannot be combined with `--pipeline`, `--agent`, `--parent`, `--at` or `--after`, or with `--status todo`. From then on the daemon derives the status from the children.
+`--kind epic` creates a passive epic in `open` and skips the repository check. It accepts `--agent` without starting it. It cannot be combined with a pipeline, `--parent`, `--at`, `--after` or `--status todo`. Creation never starts a supervisor. The daemon derives passive status from children. Use `kontora run EPIC_ID` to activate a supervisor; see [Epics](tickets.md#epics).
 
 `--at` and `--after` create the ticket `open` with a [`scheduled_at`](tickets.md#scheduled-pickup) stamp, in the same single write. They cannot be combined with each other, or with `--status todo`: the schedule is what moves the ticket to `todo`. An `--at` already in the past is refused, and a scheduled ticket has its repository checked at creation the way a `todo` one does, because nobody is watching when it starts.
 
@@ -151,6 +151,8 @@ Changes frontmatter fields or the body of an existing ticket. At least one flag 
 | `--branch NAME` | Set the work branch (`""` clears it). |
 | `--base-branch NAME` | Set the base branch (`""` clears it). |
 
+A passive epic's brief is editable in every status. An activated agent epic uses ordinary edit restrictions while running or terminal. Epics never accept a pipeline.
+
 ### `kontora delete TICKET_ID -f`
 
 Deletes the ticket's markdown file. `-f` or `--yes` is required. The worktree is not cleaned up; cancel the ticket first if you want the normal cleanup path.
@@ -167,13 +169,17 @@ Marks an existing ticket file `kontora: true` so the daemon will run it. Without
 | `--stage NAME` | Starting stage. Defaults to the pipeline's first stage when `--pipeline` is given. |
 | `--status STATUS` | `open` or `todo`. Defaults to asking. |
 
-In remote mode `--pipeline` and `--path` are both required, because the pickers cannot run over HTTP. `--status` is sent; `--stage` is not, so the remote form starts at the pipeline's first stage. Initializing a [scheduled](tickets.md#scheduled-pickup) ticket with `--status todo` queues it now and drops the timestamp; `--status open` keeps it.
+For an epic, explicit `--status todo` activates a supervisor and validates that every child uses the epic's repository. Omit `--pipeline` and `--stage`; use `--agent` to select the supervisor. Passive epic initialization without explicit `--status todo` is refused. Starting an epic through local `init` requires a running daemon, so it queues the supervisor even with `auto_pick_up: false`.
+
+For ordinary tickets in remote mode, `--pipeline` and `--path` are both required, because the pickers cannot run over HTTP. `--status` is sent; `--stage` is not, so the remote form starts at the pipeline's first stage. Initializing a [scheduled](tickets.md#scheduled-pickup) ticket with `--status todo` queues it now and drops the timestamp; `--status open` keeps it.
 
 ## Lifecycle
 
 ### `kontora run TICKET_ID`
 
 Enqueues an `open` or `todo` ticket. Needs a running daemon. When the ticket's dependencies are not all closed it reports it as blocked, naming them, rather than saying it was queued: the daemon will not pick it up until they close. See [dependency-aware scheduling](tickets.md#dependency-aware-scheduling).
+
+On a passive epic, `run` explicitly activates a supervisor and writes `epic_execution: agent`. Activation requires one Git repository for the epic and every child. The supervisor uses its own branch and worktree; children retain theirs. Successful completion goes to `human_review`. See [Epics](tickets.md#epics) for review, Git and approval limits, and upgrade requirements.
 
 ### `kontora schedule TICKET_ID`
 
@@ -191,7 +197,7 @@ Exactly one of the three is required. Scheduling a `todo` ticket returns it to `
 
 ### `kontora pause TICKET_ID`
 
-Stops a running ticket and parks it in `paused`. A ticket that already closed cannot be paused; use `retry` to reopen it.
+Stops a running ticket and parks it in `paused`. A ticket that already closed cannot be paused; use `retry` to reopen it. On an agent epic, pause stops only the supervisor. Running children continue.
 
 ### `kontora retry TICKET_ID`
 

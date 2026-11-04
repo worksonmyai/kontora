@@ -129,9 +129,9 @@ func TestEpicContextInAgentPrompt(t *testing.T) {
 	}
 }
 
-// An epic is not work. Whatever status its file carries, it is never queued and
-// never claimed, so no agent is ever spawned for it.
-func TestEpicIsNeverEnqueuedOrClaimed(t *testing.T) {
+// A passive epic is not work. Whatever status its file carries, it is never
+// automatically queued or claimed, so no agent is ever spawned for it.
+func TestPassiveEpicIsNeverEnqueuedOrClaimed(t *testing.T) {
 	for _, status := range []string{"todo", "in_progress"} {
 		t.Run(status, func(t *testing.T) {
 			h := newHarness(t)
@@ -206,10 +206,9 @@ func TestChildFinishingDerivesTheEpic(t *testing.T) {
 	require.NoError(t, <-errCh)
 }
 
-// An epic has no pipeline to run and no status of its own to write, so every
-// verb that would put one there refuses it rather than succeeding and being
-// silently undone by the next derivation.
-func TestEpicRefusesTheRunVerbs(t *testing.T) {
+// Passive epics still refuse verbs that would overwrite their derived status.
+// Explicit RunTicket is different: it opts the epic into agent supervision.
+func TestPassiveEpicRefusesDerivedStatusVerbs(t *testing.T) {
 	h := newHarness(t)
 	// A child in human_review holds the epic at in_progress, which is the
 	// status pause needs and the one nothing else here changes.
@@ -230,7 +229,6 @@ func TestEpicRefusesTheRunVerbs(t *testing.T) {
 		name string
 		call func() error
 	}{
-		{name: "run", call: func() error { return d.RunTicket("epc-a") }},
 		{name: "move", call: func() error { return d.MoveTicket("epc-a", "done") }},
 		{name: "pause", call: func() error { return d.PauseTicket("epc-a") }},
 		{name: "schedule", call: func() error {

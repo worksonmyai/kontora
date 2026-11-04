@@ -63,10 +63,14 @@ func TestSkills(t *testing.T) {
 			notWant: []string{"No command writes it", "`parent` names an epic and is read-only"},
 		},
 		{
-			name:    "epic reference is available as a section",
-			args:    []string{"show", "tickets", "Epics"},
-			want:    []string{"## Epics", "kind: epic", "--kind epic", "--parent", "human_review", "children", "display order", "every status", "kontora view --body EPIC_ID", "not inlined"},
-			notWant: []string{"## Body"},
+			name: "epic reference is available as a section",
+			args: []string{"show", "tickets", "Epics"},
+			want: []string{"## Epics", "kind: epic", "--kind epic", "--parent", "human_review", "children", "display order", "every status", "kontora view --body EPIC_ID", "not inlined",
+				"epic_execution: agent", "kontora run EPIC_ID", "--status todo", "same Git repository",
+				"stops only its", "supervisor", "Children already running continue", "rework", "history", "session",
+				"base_branch", "does not rebase", "approval requirements", "off-machine", "mixed versions",
+				"max_concurrent_epic_supervisors", "four additional agent processes", "Cancelled and archived"},
+			notWant: []string{"## Body", "Run, retry, pause, skip, init", "ls --json` omits"},
 		},
 		{
 			name:    "show of a section prints that section only",
@@ -138,9 +142,35 @@ func TestSkills(t *testing.T) {
 			want: []string{"epic", "every status", "--body-file"},
 		},
 		{
-			name: "list reference identifies omitted epic fields",
-			args: []string{"show", "cli", "kontora ls"},
-			want: []string{"omits `kind`", "children"},
+			name:    "list reference exposes epic execution and Git fields",
+			args:    []string{"show", "cli", "kontora ls"},
+			want:    []string{"kind", "epic_execution", "child_order", "branch", "base_branch", "not membership", "parent"},
+			notWant: []string{"omits `kind`"},
+		},
+		{
+			name: "run reference explains explicit epic activation",
+			args: []string{"show", "cli", "kontora run"},
+			want: []string{"epic_execution: agent", "same Git repository", "human_review", "Creation and draft edits never activate"},
+		},
+		{
+			name: "pause reference limits epic cancellation to the supervisor",
+			args: []string{"show", "cli", "kontora pause"},
+			want: []string{"only the supervisor", "Running children continue"},
+		},
+		{
+			name: "config reference exposes separate supervisor capacity",
+			args: []string{"show", "config", "Top-level fields"},
+			want: []string{"max_concurrent_epic_supervisors", "`4`", "negative values are rejected", "Requires restart", "four agent processes", "oldest eligible", "Unconfirmed", "Upgrade every daemon"},
+		},
+		{
+			name: "reload reference pins both capacities",
+			args: []string{"show", "config", "Reloading"},
+			want: []string{"max_concurrent_agents", "max_concurrent_epic_supervisors", "restart"},
+		},
+		{
+			name: "pipeline reference separates worker and supervisor runs",
+			args: []string{"show", "pipelines", "What a run is"},
+			want: []string{"max_concurrent_epic_supervisors", "four additional agent processes", "oldest", "pool has capacity", "human_review", "rework", "history"},
 		},
 		{
 			name:    "a section matches on a unique substring",

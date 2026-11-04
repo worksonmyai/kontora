@@ -266,7 +266,8 @@ type CreateTicketRequest struct {
 	// combined with a Status other than "open".
 	ScheduledAt string `json:"scheduled_at,omitempty"`
 	// Kind is "epic" for a ticket that groups others. An epic is created open
-	// with no pipeline and no agent. Parent files the new ticket under one.
+	// with no pipeline. Agent selects its supervisor without starting it.
+	// Parent files the new ticket under one.
 	Kind   string `json:"kind,omitempty"`
 	Parent string `json:"parent,omitempty"`
 }
@@ -571,8 +572,9 @@ type TicketInfo struct {
 	// is not named children because that name is taken by the derived tree
 	// above, which is a different thing: this one orders, it does not decide
 	// membership, and it can name an id that is not a child.
-	Kind       string   `json:"kind,omitempty"`
-	ChildOrder []string `json:"child_order,omitempty"`
+	Kind          string   `json:"kind,omitempty"`
+	EpicExecution string   `json:"epic_execution,omitempty"`
+	ChildOrder    []string `json:"child_order,omitempty"`
 }
 
 // TicketRef is one end of a relation. Title and Status are filled in when the
@@ -856,6 +858,7 @@ func TicketInfoFromView(v app.View) TicketInfo {
 		ArchivedBy:    v.ArchivedBy,
 		ArchiveNote:   v.ArchiveNote,
 		Kind:          v.Kind,
+		EpicExecution: v.EpicExecution,
 		ChildOrder:    v.Children,
 
 		Notify:         v.Notify,

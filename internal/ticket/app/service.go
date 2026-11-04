@@ -94,12 +94,10 @@ func (s *Service) isValidSetStatus(status ticket.Status) bool {
 	return s.cfg().IsCustomStatus(string(status))
 }
 
-// refuseEpic reports the error for an operation that would run or move an epic
-// by hand. An epic's status is derived from its children, so a write here would
-// be overwritten by the next derivation pass, and nothing about an epic is
-// runnable.
+// refuseEpic protects passive epics from manual lifecycle changes. Agent epics
+// use ordinary lifecycle operations; their status is not derived.
 func refuseEpic(t *ticket.Ticket, id, verb string) error {
-	if t.Kind != ticket.KindEpic {
+	if !t.IsPassiveEpic() {
 		return nil
 	}
 	return fmt.Errorf("%w: cannot %s epic %s, its status is derived from its children", ErrInvalidState, verb, id)
@@ -254,8 +252,8 @@ func (s *Service) Skip(id string) (Result, error) {
 	if t.Status == ticket.StatusArchived {
 		return Result{}, fmt.Errorf("%w: cannot skip archived ticket %s", ErrInvalidState, resolved)
 	}
-	if err := refuseEpic(t, resolved, "skip"); err != nil {
-		return Result{}, err
+	if t.Kind == ticket.KindEpic {
+		return Result{}, fmt.Errorf("%w: epics have no pipeline stage to skip", ErrInvalidState)
 	}
 
 	pipelineCfg, ok := s.cfg().Pipelines[t.Pipeline]
@@ -424,8 +422,8 @@ func (s *Service) Init(id string, req InitRequest) (Result, error) {
 	}
 
 	t := st.Ticket
-	if err := refuseEpic(t, resolved, "initialize"); err != nil {
-		return Result{}, err
+	if t.Kind == ticket.KindEpic {
+		return s.initEpic(st, req)
 	}
 	// An initialized ticket may go through init again while it waits in open:
 	// the dashboard queues it through the same form, so the fields the form
@@ -445,6 +443,9 @@ func (s *Service) Init(id string, req InitRequest) (Result, error) {
 	}
 
 	if err := applyInitFields(t, req, pipeline, agent); err != nil {
+		return Result{}, err
+	}
+	if err := s.ValidateExecutionSettings(t); err != nil {
 		return Result{}, err
 	}
 

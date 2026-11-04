@@ -13,7 +13,7 @@ import { clockHM } from './format.js';
 // logs a warning (internal/daemon/reload.go, pinRestartOnly), so a save that
 // touches one must not claim the change took effect.
 const SETTINGS_RESTART_ONLY = [
-  'tickets_dir', 'worktrees_dir', 'logs_dir', 'instance_name', 'max_concurrent_agents',
+  'tickets_dir', 'worktrees_dir', 'logs_dir', 'instance_name', 'max_concurrent_agents', 'max_concurrent_epic_supervisors',
   'web.host', 'web.port', 'web.token',
 ];
 
@@ -185,7 +185,8 @@ const SETTINGS_GENERAL_FIELDS = [
   { key: 'logs_dir', placeholder: '~/.kontora/logs', help: 'Per-stage agent output. The LOGS pane reads from here.' },
   { key: 'branch_prefix', placeholder: 'kontora', help: "Fallback when the ticket's project sets none." },
   { key: 'default_agent', placeholder: 'claude', help: 'Used when a pipeline step or ticket names no agent.' },
-  { key: 'max_concurrent_agents', placeholder: '3', help: 'Hard cap on tmux sessions running at once.' },
+  { key: 'max_concurrent_agents', placeholder: '3', help: 'Hard cap on worker tmux sessions. Epic supervisors use separate slots.' },
+  { key: 'max_concurrent_epic_supervisors', placeholder: '4', help: 'Supervisor limit, separate from worker slots. Requires a daemon restart.' },
   { key: 'instance_name', placeholder: "this machine's hostname", help: 'Identifies this daemon when several share one tickets_dir.' },
 ];
 
@@ -195,7 +196,7 @@ const SETTINGS_GENERAL_FIELDS = [
 // fails the test that holds every key to exactly one of them.
 const SETTINGS_GENERAL_GROUPS = {
   locations: ['tickets_dir', 'worktrees_dir', 'logs_dir'],
-  execution: ['max_concurrent_agents', 'default_agent', 'branch_prefix', 'instance_name'],
+  execution: ['max_concurrent_agents', 'max_concurrent_epic_supervisors', 'default_agent', 'branch_prefix', 'instance_name'],
 };
 
 const SETTINGS_GENERAL_CUSTOM = ['max_concurrent_agents', 'default_agent'];
@@ -1303,7 +1304,7 @@ export function kontoraSettings() {
 
     // The one place currentView changes. Opening Settings loads it; leaving a
     // dirty Settings opens the guard instead of navigating.
-    async gotoView(view) {
+    async gotoView(view, navigation = ++this._navigationSeq) {
       if (this.currentView === 'settings' && view !== 'settings' && this.settingsDirty()) {
         this.settingsGuardTarget = view;
         this.settingsGuard = true;
@@ -1313,6 +1314,11 @@ export function kontoraSettings() {
       // hash through here, so this one call covers every path out of Stats.
       if (this.currentView === 'stats' && view !== 'stats') this.closeStats();
       if (this.currentView === 'archive' && view !== 'archive') this.closeArchive();
+      if (view !== 'board' && this.selectedEpic) {
+        if (await this.closeEpic(false) === false) return;
+        if (navigation !== this._navigationSeq) return;
+      }
+      if (view !== 'board' && this.selectedTicket && this.epicIsAgent(this.selectedTicket)) this.closeDetail(false);
       if (view === 'stats') { this.currentView = 'stats'; this.openStats(); this.writeHash(); return; }
       if (view === 'archive') { this.currentView = 'archive'; this.openArchive(); this.writeHash(); return; }
       if (view === 'settings') { await this.openSettings(); this.writeHash(); return; }
@@ -1769,11 +1775,11 @@ function settingsNodeFor(path, cfg) {
   const parts = path.split('.');
   if (path === 'statuses') return { keys: ['statuses'], value: cfg.statuses.slice() };
   if (path === 'auto_pick_up') return { keys: ['auto_pick_up'], value: cfg.auto_pick_up };
-  if (path === 'max_concurrent_agents') {
-    const raw = cfg.general.max_concurrent_agents.trim();
+  if (path === 'max_concurrent_agents' || path === 'max_concurrent_epic_supervisors') {
+    const raw = cfg.general[path].trim();
     // Non-numeric text is written through unchanged so the daemon reports it
     // rather than the client silently dropping the edit.
-    return { keys: ['max_concurrent_agents'], value: raw === '' ? null : (/^\d+$/.test(raw) ? Number(raw) : raw) };
+    return { keys: [path], value: raw === '' ? null : (/^\d+$/.test(raw) ? Number(raw) : raw) };
   }
   // Before the general fallthrough below, which reads cfg.general[path]: these
   // two live on the model's top level, not in general.

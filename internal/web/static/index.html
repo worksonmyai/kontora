@@ -902,7 +902,7 @@
 </head>
 
 <body class="h-full bg-surface-950 text-tx font-sans overflow-hidden" x-data="kontora()" x-cloak
-      @keydown.escape.window="if (_agentPickerOpenHost) closeAgentPicker(true); else if (paletteOpen) palettePop(); else if (deleteModal) closeDeleteModal(); else if (noteDeleteTarget) noteCloseDelete(); else if (initModal) closeInitModal(); else if (settingsGuard) settingsGuard = false; else if (currentView === 'new') closeCreateModal(); else if (detailMenuOpen) detailMenuOpen = false; else if (colMenuOpen) colMenuOpen = null; else if (sheet) closeSheet(); else if (archivePromptId) closeArchivePrompt(); else if (terminalRW && terminalWanted()) toggleTerminalRW(); else if (archiveDetailOpen()) archiveCloseDetail(); else if (selectedTicket) closeDetail(); else if (assistantEscape()) {}"
+      @keydown.escape.window="if (_agentPickerOpenHost) closeAgentPicker(true); else if (paletteOpen) palettePop(); else if (deleteModal) closeDeleteModal(); else if (noteDeleteTarget) noteCloseDelete(); else if (initModal) closeInitModal(); else if (settingsGuard) settingsGuard = false; else if (currentView === 'new') closeCreateModal(); else if (detailMenuOpen) detailMenuOpen = false; else if (colMenuOpen) colMenuOpen = null; else if (sheet) closeSheet(); else if (archivePromptId) closeArchivePrompt(); else if (terminalRW && terminalWanted()) toggleTerminalRW(); else if (archiveDetailOpen()) archiveCloseDetail(); else if (selectedTicket) closeDetail(); else if (selectedEpic) closeEpic(); else if (assistantEscape()) {}"
       @dragenter.prevent="if ($event.dataTransfer && $event.dataTransfer.types.includes('Files')) uploadDragging = true"
       @dragover.prevent>
 
@@ -1055,7 +1055,7 @@
       </div>
       <form @submit.prevent="submitInitTicket()" class="flex flex-col min-h-0">
         <div class="p-[18px_20px] flex flex-col gap-[16px] overflow-y-auto min-h-0">
-          <div class="flex flex-col gap-[7px]">
+          <div class="flex flex-col gap-[7px]" x-show="initForm.kind !== 'epic'">
             <div class="flex items-center gap-2">
               <label for="init-pipeline" class="font-mono text-[11px] tracking-[.06em] uppercase text-tx-faint">pipeline</label>
               <span x-show="initPipelineProject()" class="ml-auto font-mono text-[10px] px-[6px] py-px rounded-[4px] text-tx-3 bg-surface-800 border border-surface-700">from project <span x-text="initPipelineProject()?.name"></span></span>
@@ -1152,10 +1152,11 @@
             </template>
             <p class="m-0 font-mono text-[11px] text-tx-3" x-text="notifyEcho(initForm)"></p>
           </div>
+          <p x-show="initForm.kind === 'epic'" class="text-[11px] text-surface-600">All sub-tickets must use this repository. Pausing stops only the supervisor; child agents keep running.</p>
           <p x-show="initError" class="text-[11px] text-err" x-text="initError"></p>
         </div>
         <div class="shrink-0 p-[14px_20px] border-t border-surface-700 bg-surface-rail/60 flex items-center gap-[12px]">
-          <p class="m-0 font-mono text-[11px] leading-[1.5] text-surface-600">creates a worktree, then runs <span class="text-tx-3" x-text="initStages().length ? initStages().length + (initStages().length === 1 ? ' stage' : ' stages') : 'a single pass'"></span> on <span x-text="initForm.agent || 'the agent each stage picks'"></span></p>
+          <p class="m-0 font-mono text-[11px] leading-[1.5] text-surface-600">creates a worktree, then runs <span class="text-tx-3" x-text="initForm.kind === 'epic' ? 'the epic supervisor' : (initStages().length ? initStages().length + (initStages().length === 1 ? ' stage' : ' stages') : 'a single pass')"></span> on <span x-text="initForm.agent || 'the agent each stage picks'"></span></p>
           <div class="ml-auto flex items-center gap-[9px] shrink-0">
             <button type="button" @click="closeInitModal()"
                     class="font-mono text-[13px] h-[31px] px-[14px] rounded-[7px] bg-transparent border border-edge-input text-tx-3 hover:text-tx-2 hover:border-edge-hover transition-colors">
@@ -1164,7 +1165,7 @@
             <button type="submit" :disabled="initSubmitting"
                     class="text-[13px] font-sans font-semibold h-[31px] px-[16px] rounded-[7px] bg-accent text-accent-fg hover:bg-accent-bright transition-colors flex items-center gap-[7px] disabled:opacity-50 disabled:cursor-not-allowed">
               <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor"><polygon points="6 4 20 12 6 20"/></svg>
-              <span x-text="initSubmitting ? 'starting...' : 'start ticket'"></span>
+              <span x-text="initSubmitting ? 'starting...' : (initForm.kind === 'epic' ? 'start epic' : 'start ticket')"></span>
             </button>
           </div>
         </div>
@@ -1417,15 +1418,15 @@
         </div>
       </template>
 
-      <!-- Epic actions. No run, retry or pause: an epic is not work. "queue all
-           open" is the one verb it has, and it acts on the children. -->
+      <!-- Epic actions target the supervisor, never the child set. -->
       <template x-if="epicPageOpen()">
         <div class="flex items-center gap-2">
-          <button @click="epicQueueOpen()" :disabled="!epicRollup(selectedEpic?.id).counts.open"
-                  class="h-7 px-3 rounded-[7px] font-mono text-[11.5px] bg-surface-900 border border-edge-input text-tx-2 hover:text-accent hover:border-accent/35 transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1.5"
-                  data-tip-t="Queues every open sub-ticket. Each one starts the way the board's own move starts it.">
-            queue all open
-          </button>
+          <template x-for="a in epicSupervisorActions()" :key="a.label">
+            <button type="button" @click="a.run()" :disabled="!!actionLoading || !!plannotatorInFlight[selectedEpic?.id]"
+                    :title="a.label === 'pause supervisor' ? 'Stops only the supervisor. Child agents keep running.' : ''"
+                    class="h-7 px-3 rounded-[7px] font-mono text-[11.5px] bg-surface-900 border border-edge-input text-tx-2 hover:text-accent hover:border-accent/35 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                    x-text="a.label"></button>
+          </template>
           <button @click="epicTab = 'children'; $nextTick(() => $refs.epicAddInput?.focus())"
                   class="h-7 px-3 rounded-[7px] font-mono text-[11.5px] bg-surface-900 border border-edge-input text-tx-2 hover:text-accent hover:border-accent/35 transition-colors flex items-center gap-1.5">
             + sub-ticket
@@ -1437,15 +1438,17 @@
            the same frame and has no second header of its own. -->
       <template x-if="boardDetailOpen()">
         <div class="flex items-center gap-2">
-          <template x-if="selectedTicket?.status === 'in_progress'">
+          <button type="button" x-show="selectedTicket?.kind === 'epic'" @click="openEpic(selectedTicket.id)"
+                  class="font-mono text-[12px] text-accent hover:underline">epic overview</button>
+          <template x-if="selectedTicket?.status === 'in_progress' && (selectedTicket?.kind !== 'epic' || epicIsAgent(selectedTicket))">
             <button @click="action('pause')" :disabled="!!actionLoading"
                     class="h-7 px-3 rounded-[7px] font-mono text-[11.5px] bg-surface-900 border border-edge-input text-tx-2 hover:text-st-paused hover:border-st-paused/35 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5"
-                    data-tip-t="Stops the running agent and pauses the ticket.">
+                    :data-tip-t="epicIsAgent(selectedTicket) ? 'Stops only the supervisor. Child agents keep running.' : 'Stops the running agent and pauses the ticket.'">
               <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="14" y="4" width="4" height="16" rx="1"/><rect x="6" y="4" width="4" height="16" rx="1"/></svg>
-              <span x-text="actionLoading === 'pause' ? 'pausing...' : 'pause'"></span>
+              <span x-text="actionLoading === 'pause' ? 'pausing...' : (epicIsAgent(selectedTicket) ? 'pause supervisor' : 'pause')"></span>
             </button>
           </template>
-          <template x-if="selectedTicket?.status === 'in_progress'">
+          <template x-if="selectedTicket?.status === 'in_progress' && selectedTicket?.kind !== 'epic'">
             <button @click="action('skip')" :disabled="!!actionLoading"
                     class="h-7 px-3 rounded-[7px] font-mono text-[11.5px] bg-surface-900 border border-edge-input text-tx-2 hover:text-tx hover:border-edge-hover transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5"
                     data-tip-t="Skips the current stage and advances to the next one.">
@@ -1455,7 +1458,7 @@
           </template>
           <!-- Retry is a kontora-only endpoint: app.Service.Retry rejects a ticket
                the daemon does not own, so a foreign one gets no button. -->
-          <template x-if="['paused', 'done', 'cancelled'].includes(selectedTicket?.status) && selectedTicket?.kontora">
+          <template x-if="['paused', 'done', 'cancelled'].includes(selectedTicket?.status) && selectedTicket?.kontora && (selectedTicket?.kind !== 'epic' || epicIsAgent(selectedTicket))">
             <button @click="action('retry')" :disabled="!!actionLoading"
                     class="h-7 px-3 rounded-[7px] font-mono text-[11.5px] bg-surface-900 border border-edge-input text-tx-2 hover:text-ok hover:border-ok/30 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5"
                     data-tip-t="Queues the ticket again from its current stage.">
@@ -1463,7 +1466,7 @@
               <span x-text="retryLabel()"></span>
             </button>
           </template>
-          <template x-if="selectedTicket?.status === 'human_review' && selectedTicket?.kontora">
+          <template x-if="selectedTicket?.status === 'human_review' && selectedTicket?.kontora && (selectedTicket?.kind !== 'epic' || epicIsAgent(selectedTicket))">
             <button type="button" :disabled="!!plannotatorInFlight[selectedTicket?.id]"
                     @click="startPlannotatorReview(selectedTicket)"
                     class="h-7 px-3 rounded-[7px] font-mono text-[11.5px] bg-surface-900 border border-edge-input text-tx-2 hover:text-accent hover:border-accent/40 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5"
@@ -2490,7 +2493,7 @@
                          tree has nothing to clear. -->
                     <div :class="(selectedTicket?.children || []).length > 0 ? 'pt-5' : ''">
                       <div class="grid grid-cols-3 gap-3 mb-3">
-                        <div>
+                        <div x-show="selectedTicket?.kind !== 'epic'">
                           <label class="text-xs font-mono text-surface-600 mb-1 flex items-center gap-1.5"><svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="opacity-50"><polyline points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="3"/><polyline points="21 16 21 21 16 21"/><line x1="15" y1="15" x2="21" y2="21"/><line x1="4" y1="4" x2="9" y2="9"/></svg>Pipeline</label>
                           <select x-model="editForm.pipeline" @change="saveEdit()"
                             class="w-full h-8 bg-surface-800 border border-surface-700 rounded-[7px] px-[10px] text-[12.5px] text-tx-2 font-mono focus:outline-none focus:border-accent">
@@ -3059,9 +3062,8 @@
 
     <!-- Epic page. An overlay over the board like the ticket page, driven by
          selectedEpic rather than a currentView, and wrapped in x-if for the
-         same reason: closing gives the nodes and bindings back. It is a
-         deliberate subtraction from the ticket page — no session, activity,
-         summary or diff, because an epic has no run. -->
+         same reason: closing gives the nodes and bindings back. The overview
+         has no session, activity, summary or diff; execution has its own page. -->
     <template x-if="selectedEpic">
     <div class="absolute inset-0 z-30 flex flex-col bg-surface-950">
 
@@ -3076,11 +3078,8 @@
           <span class="pipe-tag shrink-0"
                 :data-pipe-color="selectedEpic ? ticketPipeColor(selectedEpic) : 'none'"
                 x-text="selectedEpic ? ticketTagLabel(selectedEpic) : ''"></span>
-          <!-- Said rather than left blank: an epic has no pipeline and no
-               branch by design, and a page with the fields missing reads as a
-               page that failed to load them. -->
           <span class="font-mono text-[11px] text-surface-600 truncate"
-                x-text="(selectedEpic?.path || '') + ' · no pipeline · no branch'"></span>
+                x-text="epicDescription(selectedEpic)"></span>
         </div>
         <h1 class="text-[21px] font-semibold leading-[1.3] text-tx-hi min-w-0">
           <template x-if="parseTitleTag(selectedEpic).tag">
@@ -3239,7 +3238,7 @@
             <div class="flex-1"></div>
             <span x-show="epicBriefSaving" class="font-mono text-[10px] text-surface-600">saving...</span>
             <span x-show="epicBriefSaved && !epicBriefSaving" class="font-mono text-[10px] text-ok/70">saved</span>
-            <span x-show="!epicBriefSaving && !epicBriefSaved" class="font-mono text-[10px] text-surface-600">markdown · click to edit</span>
+            <span x-show="!epicBriefSaving && !epicBriefSaved" class="font-mono text-[10px] text-surface-600" x-text="epicCanEditBrief() ? 'markdown · click to edit' : 'read only'"></span>
           </div>
           <!-- The same click-to-edit swap as the ticket body, and the same
                overflow rule: the gutter stays at zero, so a short value wraps
@@ -3260,7 +3259,7 @@
             <template x-if="!epicEditingBrief">
               <div @click="epicBeginBriefEdit($event)" class="cursor-text min-h-[200px]">
                 <div x-show="editForm.body" x-ref="bodyPreview" class="ticket-prose ticket-read" x-effect="setProse($el, editForm.body)"></div>
-                <p x-show="!editForm.body" class="font-mono text-[11px] text-surface-600">No brief yet. Click to write one.</p>
+                <p x-show="!editForm.body" class="font-mono text-[11px] text-surface-600" x-text="epicCanEditBrief() ? 'No brief yet. Click to write one.' : 'No brief yet.'"></p>
               </div>
             </template>
           </div>
@@ -3308,9 +3307,7 @@
               <p class="text-[11px] text-surface-600 mt-0.5">Repository the agent will work in. Supports ~.</p>
             </div>
 
-            <!-- Kind. An epic is a brief that groups other tickets, so it
-                 carries none of the fields below: choosing it hides them
-                 rather than sending values the daemon would drop. -->
+            <!-- Creation keeps epics passive until an explicit start. -->
             <div class="flex items-center gap-2.5">
               <span class="text-[13px] font-mono text-tx-3 flex items-center gap-1.5"><svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M3 6h18M6 12h15M9 18h12"/></svg>Kind</span>
               <div class="ml-auto flex gap-1 bg-surface-900 border border-edge-card rounded-[7px] p-[3px]">
@@ -3322,12 +3319,12 @@
                 </template>
               </div>
             </div>
-            <p x-show="createForm.kind === 'epic'" class="text-[11px] text-surface-600 -mt-2">An epic is never run: no pipeline, no agent, no schedule. It is created <span class="text-tx-3">open</span>, and its status is derived from its sub-tickets from then on.</p>
+            <p x-show="createForm.kind === 'epic'" class="text-[11px] text-surface-600 -mt-2">An epic is created <span class="text-tx-3">open</span> without starting its agent. Start it later to supervise sub-tickets in this repository. No pipeline or schedule.</p>
 
             <!-- Explicit height, matching the padded inputs above: a native
                  select drops the vertical padding in WebKit. -->
-            <div class="grid grid-cols-3 gap-3" x-show="createForm.kind !== 'epic'">
-              <div>
+            <div class="grid grid-cols-3 gap-3">
+              <div x-show="createForm.kind !== 'epic'">
                 <label for="new-pipeline" class="text-[13px] font-mono text-tx-3 mb-1 flex items-center gap-1.5"><svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="opacity-50"><polyline points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="3"/><polyline points="21 16 21 21 16 21"/><line x1="15" y1="15" x2="21" y2="21"/><line x1="4" y1="4" x2="9" y2="9"/></svg>Pipeline</label>
                 <select id="new-pipeline" x-model="createForm.pipeline" @change="onPipelineChange()"
                         class="w-full h-[36px] bg-surface-800 border border-surface-700/50 rounded px-2 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40">
@@ -3341,7 +3338,7 @@
                 <label id="new-agent-label" :for="_agentPickerPopoverSupported ? agentPickerTriggerID('create') : agentPickerFallbackID('create')" class="text-[13px] font-mono text-tx-3 mb-1 flex items-center gap-1.5"><svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="opacity-50"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/></svg>Agent</label>
                 <div x-data="{ pickerHost: 'create' }" x-html="agentPickerControl"></div>
               </div>
-              <div>
+              <div x-show="createForm.kind !== 'epic'">
                 <label for="new-status" class="text-[13px] font-mono text-tx-3 mb-1 flex items-center gap-1.5"><svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="opacity-50"><circle cx="12" cy="12" r="10"/></svg>Status</label>
                 <!-- Pinned open while Start at is on later: a schedule is
                      what moves the ticket to todo, and the two together are the
@@ -5739,6 +5736,12 @@
       </div>
     </div>
 
+    <div x-show="epics.length" class="flex gap-2 overflow-x-auto p-3">
+      <template x-for="e in epics" :key="e.id">
+        <button type="button" @click="openEpic(e.id)" class="shrink-0 font-mono text-xs text-accent" x-text="e.title + ' · ' + statusLabel(e.status)"></button>
+      </template>
+    </div>
+
     <!-- ===== Card list (swipe to change column) ===== -->
     <div class="flex-1 min-h-0 overflow-y-auto"
          style="padding:14px 12px 48px;display:flex;flex-direction:column;gap:9px;"
@@ -5809,6 +5812,45 @@
     </div>
 
     <!-- ===== Ticket detail (full-screen overlay) ===== -->
+    <template x-if="selectedEpic && currentView === 'board'">
+      <section class="fixed inset-0 z-40 bg-surface-950 flex flex-col" aria-label="Epic overview">
+        <header class="shrink-0 p-4 border-b border-surface-700 flex flex-col gap-3">
+          <button type="button" @click="closeEpic()" class="text-left font-mono text-xs text-accent">back to board</button>
+          <h1 class="text-lg text-tx-hi" x-text="selectedEpic.title"></h1>
+          <p class="font-mono text-xs text-tx-3" x-text="epicDescription(selectedEpic)"></p>
+          <div class="flex flex-wrap gap-2">
+            <template x-for="a in epicSupervisorActions()" :key="a.label">
+              <button type="button" @click="a.run()" :disabled="!!actionLoading || !!plannotatorInFlight[selectedEpic.id]"
+                      :title="a.label === 'pause supervisor' ? 'Stops only the supervisor. Child agents keep running.' : ''"
+                      class="px-3 py-2 rounded border border-edge-input font-mono text-xs text-accent disabled:opacity-40" x-text="a.label"></button>
+            </template>
+          </div>
+          <p class="font-mono text-xs text-tx-3" x-text="epicRollup(selectedEpic.id).done + '/' + epicRollup(selectedEpic.id).total + ' sub-tickets done'"></p>
+        </header>
+        <div class="flex-1 min-h-0 overflow-y-auto p-4 flex flex-col gap-4">
+          <template x-for="c in epicRollup(selectedEpic.id).children" :key="c.id">
+            <button type="button" @click="openTicketRef(c)" class="text-left font-mono text-xs text-tx-2" x-text="c.id + ' · ' + c.title + ' · ' + statusLabel(c.status)"></button>
+          </template>
+          <div class="flex gap-2">
+            <input x-model="epicAddDraft" @keydown.enter.prevent="epicAddChild()" aria-label="New sub-ticket title" placeholder="New sub-ticket" class="min-w-0 flex-1 bg-surface-800 text-tx-2 px-3 py-2 rounded">
+            <button type="button" @click="epicAddChild()" :disabled="epicAddBusy" class="font-mono text-xs text-accent">add</button>
+          </div>
+          <h2 class="font-mono text-xs text-tx-3">brief</h2>
+          <template x-if="epicEditingBrief">
+            <textarea x-model="editForm.body" x-ref="bodyEditor" @input="autoGrowBody($el); epicDebounceBrief()"
+                      @blur="epicBlurBriefEdit()" @keydown.escape.stop="epicExitBriefEdit()"
+                      class="w-full min-h-[200px] bg-surface-800 text-tx-2 p-3" aria-label="Epic brief"></textarea>
+          </template>
+          <template x-if="!epicEditingBrief">
+            <div @click="epicBeginBriefEdit($event)">
+              <div x-ref="bodyPreview" class="ticket-prose ticket-read" x-effect="setProse($el, editForm.body)"></div>
+              <p x-show="!editForm.body" class="font-mono text-xs text-surface-600" x-text="epicCanEditBrief() ? 'No brief yet. Tap to write one.' : 'No brief yet.'"></p>
+            </div>
+          </template>
+        </div>
+      </section>
+    </template>
+
     <div x-show="isMobile && selectedTicket && currentView === 'board'" x-cloak class="detail-enter"
          style="position:fixed;inset:0;z-index:40;display:flex;flex-direction:column;background:rgba(var(--surface-950),1);">
       <!-- header -->
@@ -5818,6 +5860,7 @@
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
           </button>
           <span style="font-family:'JetBrains Mono',monospace;font-size:11px;color:rgba(var(--surface-600),1);flex:1;" x-text="selectedTicket?.id"></span>
+          <button type="button" x-show="selectedTicket?.kind === 'epic'" @click="openEpic(selectedTicket.id)" class="font-mono text-xs text-accent">epic overview</button>
           <button @click="openActionsSheet(selectedTicket)" style="width:32px;height:32px;border:1px solid rgba(var(--surface-700),.5);background:rgba(var(--surface-900),1);color:rgba(var(--tx-3),1);border-radius:8px;display:flex;align-items:center;justify-content:center;flex:none;" aria-label="Actions">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="2.2"/><circle cx="12" cy="12" r="2.2"/><circle cx="19" cy="12" r="2.2"/></svg>
           </button>
@@ -6225,8 +6268,14 @@
                   <div style="font-family:'JetBrains Mono',monospace;font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:rgba(var(--surface-600),1);margin-bottom:6px;">Path</div>
                   <input x-model="createForm.path" @input="onCreatePathChange()" placeholder="~/projects/myrepo" style="width:100%;height:42px;padding:0 12px;font-family:'JetBrains Mono',monospace;font-size:13px;border-radius:10px;background:rgba(var(--surface-950),1);border:1px solid rgba(var(--surface-700),.6);color:rgba(var(--tx),1);outline:none;"/>
                 </div>
+                <label class="font-mono text-xs text-tx-3">Kind
+                  <select x-model="createForm.kind" class="bg-surface-800 text-tx-2 px-3 py-2 rounded">
+                    <option value="">ticket</option>
+                    <option value="epic">epic (created open, start later)</option>
+                  </select>
+                </label>
                 <div style="display:flex;gap:12px;">
-                  <div style="flex:1;min-width:0;">
+                  <div x-show="createForm.kind !== 'epic'" style="flex:1;min-width:0;">
                     <div style="font-family:'JetBrains Mono',monospace;font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:rgba(var(--surface-600),1);margin-bottom:6px;">Pipeline</div>
                     <select x-model="createForm.pipeline" @change="onPipelineChange()" style="width:100%;height:42px;padding:0 10px;font-family:'JetBrains Mono',monospace;font-size:13px;border-radius:10px;background:rgba(var(--surface-950),1);border:1px solid rgba(var(--surface-700),.6);color:rgba(var(--tx-3),1);outline:none;">
                       <option value="">none (single run, no stages)</option>
@@ -6238,7 +6287,7 @@
                     <div x-data="{ pickerHost: 'mobile-create' }" x-html="agentPickerControl"></div>
                   </div>
                 </div>
-                <div>
+                <div x-show="createForm.kind !== 'epic'">
                   <div style="font-family:'JetBrains Mono',monospace;font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:rgba(var(--surface-600),1);margin-bottom:6px;">Start at</div>
                   <input x-model="createForm.scheduled_at" @change="onCreateScheduleChange()" type="datetime-local" :min="scheduleMin()" style="width:100%;height:42px;padding:0 12px;font-family:'JetBrains Mono',monospace;font-size:13px;border-radius:10px;background:rgba(var(--surface-950),1);border:1px solid rgba(var(--surface-700),.6);color:rgba(var(--tx),1);outline:none;"/>
                   <div style="font-size:11px;color:rgba(var(--surface-600),1);margin-top:5px;">Your local time. The ticket waits in open until then.</div>

@@ -6,11 +6,12 @@ When the web server is enabled, the following endpoints are exposed:
 |----------|-------------|
 | `GET /` | Static dashboard UI. |
 | `GET /api/tickets` | List all board tickets (JSON). `?all=true` adds the ones whose status has no board column: archived, legacy `closed`, and any foreign status. |
-| `POST /api/tickets` | Create a new ticket (JSON body: `title`, `path`, optional `pipeline`, `agent`, `status`, `body`, `branch`, `base_branch`, `scheduled_at`). A `scheduled_at` creates the ticket `open` and cannot be combined with another status; one that is malformed or already past answers 400. |
+| `POST /api/tickets` | Create a new ticket (JSON body: `title`, `path`, optional `pipeline`, `agent`, `status`, `body`, `branch`, `base_branch`, `scheduled_at`, `kind`, `parent`). A `scheduled_at` creates the ticket `open` and cannot be combined with another status; one that is malformed or already past answers 400. |
 | `GET /api/tickets/{id}` | Get ticket details (JSON). |
 | `GET /api/tickets/{id}/cost` | Estimate the cost of finished tracked runs from their activity sidecars and the bundled model-price catalog. |
 | `DELETE /api/tickets/{id}` | Delete the ticket markdown file without worktree cleanup. Requires `X-Kontora-Confirm: delete-ticket-file`. Only deletes files inside `tickets_dir`. |
-| `POST /api/tickets/{id}/pause` | Pause a running ticket. |
+| `POST /api/tickets/{id}/run` | Queue a ticket. On a passive epic, explicitly activate a supervisor. See [Epics](#epics). |
+| `POST /api/tickets/{id}/pause` | Pause a running ticket. On an agent epic, stop only its supervisor; running children continue. |
 | `POST /api/tickets/{id}/retry` | Retry a paused ticket. |
 | `POST /api/tickets/{id}/skip` | Skip the current pipeline stage. |
 | `POST /api/tickets/{id}/set-stage` | Move ticket to a specific pipeline stage (`{"stage": "..."}` body). |
@@ -29,6 +30,9 @@ When the web server is enabled, the following endpoints are exposed:
 | `POST /api/tickets/{id}/undep` | Drop a dependency edge (`{"related": ["<id>"]}` body, exactly one id). |
 | `POST /api/tickets/{id}/link` | Relate the ticket to each id in `{"related": [...]}`, on both sides. |
 | `POST /api/tickets/{id}/unlink` | Remove the relation between the ticket and each id in `{"related": [...]}`. |
+| `POST /api/tickets/{id}/parent` | Set a child's epic (`{"parent":"EPIC_ID"}`). Agent epics require the same repository. |
+| `POST /api/tickets/{id}/unparent` | Clear a child's parent. |
+| `PUT /api/tickets/{id}/children` | Set an epic's display order (`{"children":["CHILD_ID"]}`). Does not change membership or execution order. |
 | `PUT /api/tickets/{id}` | Update an open ticket's body or frontmatter fields (`body`, `pipeline`, `path`, `agent`, `branch`, `base_branch`, `notify`, `notify_channels`). On the two notify fields an absent key leaves the ticket's own alone and `[]` removes it; a status nothing reaches or a channel nothing answers to is refused with 400. See [notifications](tickets.md#notifications). |
 | `POST /api/tickets/upload` | Import tickets from raw `.md` file content (multipart form). Requires `X-Kontora-Confirm: upload-tickets`. Every uploaded ticket arrives as an `open` draft: the status is clamped and any `scheduled_at` is dropped. |
 | `POST /api/tickets/{id}/plannotator-review` | Open the ticket's branch diff in Plannotator. Only in `human_review`. Submitted feedback routes the ticket to the built-in rework stage. See [plannotator](configuration.md#plannotator). |
@@ -53,6 +57,47 @@ When the web server is enabled, the following endpoints are exposed:
 | `GET /health` | Health check (returns 200). |
 
 Each `agent_infos` entry in `GET /api/config` reports the model and effort that Kontora detects. Kontora reads the agent's `effort` field and supported CLI flags. Pipeline and stage overrides are not applied. Both response fields are always present. An empty value means Kontora detected no setting.
+
+### Epics
+
+`POST /api/tickets` with `kind: "epic"` creates a passive epic in `open`.
+Creation never starts an agent. A passive epic can store agent and branch settings,
+but has no pipeline, worktree or run history. Their status summarizes children, and their brief stays
+editable in every status. Epics cannot nest.
+
+`POST /api/tickets/{id}/run` explicitly activates a passive epic. Initialization
+with explicit `{"status":"todo"}` also activates it; omit pipeline and stage.
+Activation writes `epic_execution: "agent"`, resolves the supervisor agent and
+queues the epic. The epic and every child must use the same Git repository.
+Linked worktrees and symlink paths to that repository are allowed. Passive epics
+can group different repositories until activation. Draft edits never activate them.
+
+Ticket payloads include `kind`, `epic_execution`, `branch` and `base_branch`.
+`epic_execution: "agent"` distinguishes an activated epic from passive grouping.
+`child_order` is the stored display order. Detail payloads also include the
+derived `children` array; membership comes from each child's `parent`.
+The CLI's `ls --json` exposes these fields too.
+
+The supervisor runs in the epic's own branch and worktree. Children retain their
+own pipelines, branches, worktrees and commits. Pause stops only the supervisor;
+running children continue. Agent epics use ordinary edit restrictions while
+running or terminal. Successful supervisor exit parks the epic in `human_review`,
+never directly in `done`. Kontora requires a nonempty child set, with every child
+`done`, legacy `closed` or `human_review`. Cancelled and archived children do not
+pass. This does not prove integration, verification claims or human acceptance.
+Plannotator reviews the combined epic diff; feedback starts supervisor rework.
+The epic records supervisor history, summaries, logs, activity and sessions.
+
+Supervisors use `max_concurrent_epic_supervisors`, default `4`, separately from
+worker capacity. This permits four additional agent processes. Dependencies
+control scheduling, not the commits present in a child's Git base. Activation
+does not grant push, publication, destructive reset or shared-history permissions.
+Existing approval requirements and off-machine write restrictions still apply.
+See [Epics](tickets.md#epics) for integration rules.
+
+Upgrade every daemon and client sharing the ticket directory before activation.
+Older versions treat all epics as passive and can overwrite supervisor status.
+Do not run mixed versions against activated epics.
 
 ### Companion
 
@@ -237,7 +282,7 @@ On `POST /api/tickets/{id}/init`, a blank `pipeline` or `agent` first falls back
 
 Both Plannotator endpoints return 202 once the session is accepted, and report its outcome over `GET /api/events` as a `plannotator_finished` event. They return 404 for an unknown ticket, 409 when a Plannotator process is already open for the ticket or its status does not allow the requested pass, and 500 when the `plannotator` binary is not installed. `GET /api/tickets` and `GET /api/tickets/{id}` carry `can_annotate`, which answers the same status rules the annotate endpoint enforces.
 
-Relations ride both ticket payloads as arrays of `{id, title, status}`. `GET /api/tickets` carries the id alone; `GET /api/tickets/{id}` and the SSE ticket updates also carry the title and status of every ticket the daemon still has on disk, and add the two derived reverse edges: `blocks`, the tickets whose `deps` name this one, and `children`, the tickets whose `parent` names it. Both are sorted by id and absent from the list payload. A ref with no title and no status names a ticket that is not in `tickets_dir`. See [Relations](tickets.md#relations).
+Relations ride both ticket payloads as arrays of `{id, title, status}`. `GET /api/tickets` carries the id alone; `GET /api/tickets/{id}` and the SSE ticket updates also carry the title and status of every ticket the daemon still has on disk, and add the two derived reverse edges: `blocks`, the tickets whose `deps` name this one, and `children`, the tickets whose `parent` names it. `blocks` is sorted by id. Epic children follow the stored display order, then creation order. Both are absent from the list payload. A ref with no title and no status names a ticket that is not in `tickets_dir`. See [Relations](tickets.md#relations).
 
 `GET /api/tickets/{id}/chain` is the derived view of the same edges. It walks the whole store, so archived tickets and statuses with no board column stay in the graph. `nodes` is sorted roots to goal with `depth` monotonic non-decreasing, and every upstream node comes before the ticket itself, which comes before every downstream node. Each node carries `depth`, `direction` (`upstream`, `self` or `downstream`), `on_critical_path`, `holds_chain`, `waits_on` (`{open, total}` over that node's own `deps`, including the deps outside the chain) and `missing`. At most one node has `holds_chain` set: the node the chain waits on. While a dep blocks the ticket that is an unresolved dep upstream with no unresolved dep of its own, so it names work that can start now; while nothing blocks the ticket it is the first unresolved node from the ticket onward along the critical path, which is the ticket itself until it closes. A chain whose nodes are all resolved has no such node.
 

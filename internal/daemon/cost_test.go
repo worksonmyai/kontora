@@ -149,6 +149,25 @@ func TestGetTicketCostStandaloneAndRunning(t *testing.T) {
 		assert.Equal(t, "0.000001", *got.CostUSD)
 	})
 
+	for _, status := range []ticket.Status{ticket.StatusHumanReview, ticket.StatusPaused, ticket.StatusDone} {
+		t.Run("supervisor history counted once "+string(status), func(t *testing.T) {
+			logs := t.TempDir()
+			tk := &ticket.Ticket{
+				ID: "kon-supervisor", Kind: ticket.KindEpic, EpicExecution: ticket.EpicExecutionAgent,
+				Status: status, StartedAt: &now, CompletedAt: &now,
+				History: []ticket.HistoryEntry{{Stage: simpleStageName, StartedAt: &now, CompletedAt: &now}},
+			}
+			writeCostSidecar(t, logs, tk.ID, simpleStageName, 0, completeCostSidecar("claude-haiku-4-5", 1, 0, 0, 0))
+			got, err := costTestDaemon(t, logs, tk).GetTicketCost(tk.ID)
+			require.NoError(t, err)
+			require.Len(t, got.Runs, 1)
+			require.NotNil(t, got.Runs[0].HistoryIndex)
+			assert.Equal(t, 1, got.PricedRuns)
+			assert.Equal(t, 1, got.TrackedRuns)
+			assert.Equal(t, "0.000001", *got.CostUSD)
+		})
+	}
+
 	t.Run("completed standalone after an annotation gets both runs", func(t *testing.T) {
 		logs := t.TempDir()
 		tk := &ticket.Ticket{

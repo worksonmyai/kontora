@@ -30,8 +30,9 @@ These are set when creating a ticket (manually or via `kontora new`). `notify` a
 | Field | Required | Default | Description |
 |-------|----------|---------|-------------|
 | `id` | yes | — | Unique identifier, format `<prefix>-<4 alphanum>` (e.g., `kon-q88f`). |
-| `status` | yes | `todo` | Current ticket status (see [Status lifecycle](#status-lifecycle)). On an epic it is derived from the children and written back by the daemon. |
+| `status` | yes | `todo` | Current ticket status (see [Status lifecycle](#status-lifecycle)). On a passive epic it is derived from the children. On an agent epic it tracks the supervisor. |
 | `kind` | no | — | `epic` for a ticket that groups others; absent for ordinary work. See [Epics](#epics). |
+| `epic_execution` | no | — | Empty for a passive epic; `agent` after explicit activation. Invalid on ordinary tickets. See [Epics](#epics). |
 | `pipeline` | no | — | Name of the pipeline to run (must exist in config). Filled in at creation from a matching [project](configuration.md#projects) when one is configured and no pipeline is given. When it ends up empty, the ticket runs in standalone mode with the default agent. |
 | `agent` | no | — | Override the agent for this ticket. Applies to standalone tickets or overrides the pipeline's agent at every stage. Filled in at creation from a matching [project](configuration.md#projects) when one is configured and no agent is given. |
 | `path` | yes | — | Path to the repository (supports `~`, e.g., `~/projects/kontora`). |
@@ -65,7 +66,9 @@ Two more relations are derived on read rather than stored, because each edge is 
 
 #### Epics
 
-An epic is a ticket file like any other with two differences: `kind: epic`, and no pipeline. It is not runnable work — no agent, no branch, no worktree, no run history — and the scheduler never enqueues, claims or spawns anything for it, whatever status its file carries. What it holds is the brief for work that spans several tickets: the description, the design, the decisions, the open questions, the success criteria.
+An epic has `kind: epic` and no pipeline. Its body holds the shared brief, design, decisions and success criteria for its children.
+
+An epic starts passive, with no `epic_execution` value. A passive epic runs no agent and creates no branch, worktree or run history. Its status summarizes its children. Existing epics stay passive until explicitly started.
 
 ```yaml
 id: kon-e7c1
@@ -80,7 +83,23 @@ Create one with `kontora new -kind epic`, and file a ticket under it with `konto
 
 For a child ticket, Kontora adds the epic id, title and a brief-reading command to each non-empty agent prompt. This includes pipeline stages, standalone runs and resumed runs. The agent is instructed to run `kontora view --body EPIC_ID` before starting and keep its work scoped to the child. The brief and notes are not copied into the prompt. Missing parents and parents that are not epics add no context.
 
-The status is derived from the children and rewritten by the daemon whenever one of them changes, so moving an epic by hand is refused too, and so are the verbs that would move it as a side effect: `pause`, `run`, `retry`, `skip`, `init` and `schedule`. Archiving one is allowed and is terminal: the derivation stops there, and a restore hands the epic back to it. Archived children are ignored. Any child in `todo`, `in_progress`, `paused` or `human_review` gives `in_progress`; otherwise every remaining child being terminal with at least one `done` gives `done`; every remaining child `cancelled` gives `cancelled`; anything else, including no children at all, gives `open`. An epic that closes itself records a note saying which child landed last. The brief stays editable in every one of those statuses, because no agent ever owns an epic's file.
+The daemon rewrites a passive epic's status whenever its children change. Archived children are ignored. Any child in `todo`, `in_progress`, `paused` or `human_review` gives `in_progress`. Otherwise, terminal children with at least one `done` or legacy `closed` give `done`. All remaining children `cancelled` gives `cancelled`; anything else, including no children, gives `open`.
+
+A passive epic's brief stays editable in every status. Manual status changes, pause, retry, skip and schedule are refused. Archiving stops status derivation; restoring resumes it.
+
+To activate a supervisor, use `kontora run EPIC_ID`, the dashboard's Run action, or explicit `kontora init EPIC_ID --status todo`. Activation writes `epic_execution: agent` and queues the epic. Creating an epic, editing its brief or changing its children does not activate it. The epic and every child must name the same Git repository. Linked worktrees and symlink paths to that repository are allowed. Passive epics can group different repositories until activation.
+
+The supervisor uses an ordinary coding agent in the epic's own branch and worktree. It reads the brief and children, creates open children, starts selected work, monitors progress and integrates child results. Children keep their own pipelines, branches, worktrees and commits. Display order does not set execution order.
+
+Pausing an agent epic stops only its supervisor. Children already running continue; pause those children separately if needed. Retry restarts the supervisor, which must inspect existing child results and interrupted Git operations before continuing. Agent epics use ordinary edit restrictions while running or terminal.
+
+A successful supervisor exit sends the epic to `human_review`, never directly to `done`. Kontora requires at least one child, with every child `done`, legacy `closed` or `human_review`. Cancelled and archived children do not satisfy that check. The check does not prove integration or test claims, and a child's `human_review` does not mean human acceptance. Review the combined epic diff. Plannotator feedback starts another supervisor run for rework. Supervisor runs record history, summaries, logs, activity and session references on the epic.
+
+Git integration remains agent work. Dependencies control scheduling; they do not put prerequisite commits into a child's base branch. Set `base_branch` before first execution where needed. Changing it later does not rebase an existing worktree. The supervisor must serialize integration writes and must not modify a running child's worktree. Activation does not authorize pushes, publication, destructive resets or changes to shared history. Existing approval requirements and restrictions on off-machine writes still apply.
+
+Supervisors use a separate pool: `max_concurrent_epic_supervisors`, default `4`, in addition to `max_concurrent_agents`. At default settings, epics can add four agent processes beyond the worker limit. The queue chooses the oldest eligible ticket whose pool has capacity.
+
+Upgrade every daemon and client sharing the ticket directory before activating an epic. Older versions treat all epics as passive and can overwrite supervisor status through child rollups. Do not run mixed versions against activated epics.
 
 `children` orders the sub-tickets and nothing else. Membership is what each child's `parent` says, so an id here that names no child is ignored on read, and a child the list does not name sorts after every child it does, by `created`. Dragging a row on the epic page writes this one list, and writes no child file.
 
@@ -233,7 +252,7 @@ The queue reacts to the whole store, not just to edits of the waiting ticket:
 
 A cycle never starts an agent. Every ticket on it waits on another ticket that is not closed, so none of them is ever ready. `kontora dep` refuses to create a new cycle, but one that arrived through hand-edited files or file sync resolves this way rather than by an error.
 
-Ready tickets run oldest `created` first. Two tickets created at the same time run in id order, so the queue is deterministic.
+Ready tickets run oldest `created` first among tickets whose capacity pool has a free slot. Workers and epic supervisors use separate pools. Two tickets created at the same time run in id order.
 
 ## Running on multiple machines
 

@@ -69,6 +69,7 @@ type GetOptions struct {
 type ListOptions struct{}
 
 // InitRequest carries parameters for initializing a ticket.
+// A passive epic requires explicit Status "todo"; initialization never starts children.
 type InitRequest struct {
 	Pipeline string
 	Path     string

@@ -21,21 +21,26 @@ import (
 // the `--json` object, so it carries the relations and the derived readiness
 // but never the ticket body: a listing is for choosing a ticket, not reading it.
 type ListItem struct {
-	ID          string     `json:"id"`
-	Title       string     `json:"title"`
-	Status      string     `json:"status"`
-	Kontora     bool       `json:"kontora"`
-	Path        string     `json:"path,omitempty"`
-	Project     string     `json:"project,omitempty"`
-	Pipeline    string     `json:"pipeline,omitempty"`
-	Stage       string     `json:"stage,omitempty"`
-	Agent       string     `json:"agent,omitempty"`
-	CreatedAt   *time.Time `json:"created_at,omitempty"`
-	StartedAt   *time.Time `json:"started_at,omitempty"`
-	CompletedAt *time.Time `json:"completed_at,omitempty"`
-	Deps        []string   `json:"deps"`
-	Links       []string   `json:"links"`
-	Parent      string     `json:"parent,omitempty"`
+	ID            string     `json:"id"`
+	Title         string     `json:"title"`
+	Status        string     `json:"status"`
+	Kontora       bool       `json:"kontora"`
+	Path          string     `json:"path,omitempty"`
+	Project       string     `json:"project,omitempty"`
+	Pipeline      string     `json:"pipeline,omitempty"`
+	Stage         string     `json:"stage,omitempty"`
+	Agent         string     `json:"agent,omitempty"`
+	CreatedAt     *time.Time `json:"created_at,omitempty"`
+	StartedAt     *time.Time `json:"started_at,omitempty"`
+	CompletedAt   *time.Time `json:"completed_at,omitempty"`
+	Deps          []string   `json:"deps"`
+	Links         []string   `json:"links"`
+	Parent        string     `json:"parent,omitempty"`
+	Kind          string     `json:"kind"`
+	EpicExecution string     `json:"epic_execution"`
+	ChildOrder    []string   `json:"child_order"`
+	Branch        string     `json:"branch"`
+	BaseBranch    string     `json:"base_branch"`
 	// ScheduledAt is the raw scheduled_at frontmatter value, so a listing shows
 	// a malformed hand edit rather than hiding it.
 	ScheduledAt string `json:"scheduled_at,omitempty"`
@@ -222,6 +227,9 @@ func RenderList(l Listing, w io.Writer, opts ListOpts) error {
 			if items[i].Links == nil {
 				items[i].Links = []string{}
 			}
+			if items[i].ChildOrder == nil {
+				items[i].ChildOrder = []string{}
+			}
 			if items[i].Blockers == nil {
 				items[i].Blockers = []string{}
 			}
@@ -318,29 +326,34 @@ func LocalItems(cfg *config.Config) ([]ListItem, error) {
 func listItem(cfg *config.Config, t *ticket.Ticket) ListItem {
 	project, _, _ := cfg.ProjectFor(t.Path)
 	return ListItem{
-		ID:          t.ID,
-		Title:       t.Title(),
-		Status:      string(t.Status),
-		Kontora:     t.Kontora,
-		Path:        t.Path,
-		Project:     project,
-		Pipeline:    t.Pipeline,
-		Stage:       displayStage(t),
-		Agent:       displayAgent(cfg, t),
-		CreatedAt:   t.Created,
-		StartedAt:   t.StartedAt,
-		CompletedAt: t.CompletedAt,
-		Deps:        t.Deps,
-		Links:       t.Links,
-		Parent:      t.Parent,
-		ScheduledAt: t.ScheduledAt,
+		ID:            t.ID,
+		Title:         t.Title(),
+		Status:        string(t.Status),
+		Kontora:       t.Kontora,
+		Path:          t.Path,
+		Project:       project,
+		Pipeline:      t.Pipeline,
+		Stage:         displayStage(t),
+		Agent:         displayAgent(cfg, t),
+		CreatedAt:     t.Created,
+		StartedAt:     t.StartedAt,
+		CompletedAt:   t.CompletedAt,
+		Deps:          t.Deps,
+		Links:         t.Links,
+		Parent:        t.Parent,
+		Kind:          string(t.Kind),
+		EpicExecution: t.EpicExecution,
+		ChildOrder:    t.Children,
+		Branch:        t.Branch,
+		BaseBranch:    t.BaseBranch,
+		ScheduledAt:   t.ScheduledAt,
 	}
 }
 
-// displayStage names the stage column. A kontora ticket with no pipeline runs
+// displayStage names the stage column. A non-epic Kontora ticket with no pipeline runs
 // standalone rather than having no stage.
 func displayStage(t *ticket.Ticket) string {
-	if t.Stage == "" && t.Pipeline == "" && t.Kontora {
+	if t.Stage == "" && t.Pipeline == "" && t.Kontora && t.Kind != ticket.KindEpic {
 		return "standalone"
 	}
 	return t.Stage
@@ -355,7 +368,7 @@ func displayAgent(cfg *config.Config, t *ticket.Ticket) string {
 	if t.Agent != "" {
 		return t.Agent
 	}
-	if t.Kontora {
+	if t.Kontora && !t.IsPassiveEpic() {
 		return cfg.DefaultAgent
 	}
 	return ""

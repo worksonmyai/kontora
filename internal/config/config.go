@@ -90,32 +90,33 @@ func (m PerAgent) For(agentName string, a Agent) string {
 }
 
 type Config struct {
-	TicketsDir          string              `yaml:"tickets_dir"`
-	BranchPrefix        string              `yaml:"branch_prefix"`
-	BranchNaming        BranchNaming        `yaml:"branch_naming"`
-	WorktreesDir        string              `yaml:"worktrees_dir"`
-	LogsDir             string              `yaml:"logs_dir"`
-	Editor              string              `yaml:"editor"`
-	Pager               string              `yaml:"pager"`
-	DefaultAgent        string              `yaml:"default_agent"`
-	DefaultPipeline     string              `yaml:"default_pipeline"`
-	MaxConcurrentAgents int                 `yaml:"max_concurrent_agents"`
-	AutoPickUp          *bool               `yaml:"auto_pick_up"`
-	InstanceName        string              `yaml:"instance_name"`
-	Author              string              `yaml:"author"`
-	TmuxSession         string              `yaml:"tmux_session"`
-	Web                 Web                 `yaml:"web"`
-	Agents              map[string]Agent    `yaml:"agents"`
-	Stages              map[string]Stage    `yaml:"stages"`
-	Pipelines           map[string]Pipeline `yaml:"pipelines"`
-	Projects            map[string]Project  `yaml:"projects"`
-	Statuses            []string            `yaml:"statuses"`
-	Environment         map[string]string   `yaml:"environment"`
-	Hooks               Hooks               `yaml:"hooks"`
-	Plannotator         Plannotator         `yaml:"plannotator"`
-	Assistant           Assistant           `yaml:"assistant"`
-	Metrics             Metrics             `yaml:"metrics"`
-	Notifications       Notifications       `yaml:"notifications"`
+	TicketsDir                   string              `yaml:"tickets_dir"`
+	BranchPrefix                 string              `yaml:"branch_prefix"`
+	BranchNaming                 BranchNaming        `yaml:"branch_naming"`
+	WorktreesDir                 string              `yaml:"worktrees_dir"`
+	LogsDir                      string              `yaml:"logs_dir"`
+	Editor                       string              `yaml:"editor"`
+	Pager                        string              `yaml:"pager"`
+	DefaultAgent                 string              `yaml:"default_agent"`
+	DefaultPipeline              string              `yaml:"default_pipeline"`
+	MaxConcurrentAgents          int                 `yaml:"max_concurrent_agents"`
+	MaxConcurrentEpicSupervisors int                 `yaml:"max_concurrent_epic_supervisors"`
+	AutoPickUp                   *bool               `yaml:"auto_pick_up"`
+	InstanceName                 string              `yaml:"instance_name"`
+	Author                       string              `yaml:"author"`
+	TmuxSession                  string              `yaml:"tmux_session"`
+	Web                          Web                 `yaml:"web"`
+	Agents                       map[string]Agent    `yaml:"agents"`
+	Stages                       map[string]Stage    `yaml:"stages"`
+	Pipelines                    map[string]Pipeline `yaml:"pipelines"`
+	Projects                     map[string]Project  `yaml:"projects"`
+	Statuses                     []string            `yaml:"statuses"`
+	Environment                  map[string]string   `yaml:"environment"`
+	Hooks                        Hooks               `yaml:"hooks"`
+	Plannotator                  Plannotator         `yaml:"plannotator"`
+	Assistant                    Assistant           `yaml:"assistant"`
+	Metrics                      Metrics             `yaml:"metrics"`
+	Notifications                Notifications       `yaml:"notifications"`
 
 	// SummaryModel selects the model the final summary pass runs with, resolved
 	// against the agent that ran the last stage. It is one top-level field rather
@@ -839,6 +840,9 @@ func (c *Config) applyCoreDefaults() {
 	if c.MaxConcurrentAgents == 0 {
 		c.MaxConcurrentAgents = 3
 	}
+	if c.MaxConcurrentEpicSupervisors == 0 {
+		c.MaxConcurrentEpicSupervisors = 4
+	}
 	if c.AutoPickUp == nil {
 		c.AutoPickUp = new(true)
 	}
@@ -1025,6 +1029,9 @@ func (c *Config) StatusAllowsEdit(s string) bool {
 }
 
 func (c *Config) Validate() error {
+	if c.MaxConcurrentEpicSupervisors < 0 {
+		return fmt.Errorf("max_concurrent_epic_supervisors must not be negative")
+	}
 	if err := validateBranchNamingMode(c.BranchNaming.Mode); err != nil {
 		return err
 	}

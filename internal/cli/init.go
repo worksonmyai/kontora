@@ -13,6 +13,8 @@ import (
 	"github.com/worksonmyai/kontora/internal/config"
 	"github.com/worksonmyai/kontora/internal/ticket"
 	"github.com/worksonmyai/kontora/internal/ticket/app"
+	"github.com/worksonmyai/kontora/internal/ticket/store"
+	"github.com/worksonmyai/kontora/internal/web"
 )
 
 // pickOneFn is the function used to prompt the user for a single choice.
@@ -51,6 +53,12 @@ func Enable(cfg *config.Config, taskID string, opts EnableOpts, w io.Writer) err
 	t, err := ticket.ParseFile(path)
 	if err != nil {
 		return fmt.Errorf("parsing ticket: %w", err)
+	}
+
+	// Epics bypass pipeline pickers and the already-initialized shortcut:
+	// passive epics are created kontora=true, but still need an explicit start.
+	if t.Kind == ticket.KindEpic {
+		return enableEpic(cfg, t, opts, w)
 	}
 
 	if t.Kontora {
@@ -113,23 +121,59 @@ func Enable(cfg *config.Config, taskID string, opts EnableOpts, w io.Writer) err
 			return err
 		}
 	}
-	if err := t.SetField("status", val); err != nil {
-		return fmt.Errorf("setting status: %w", err)
+	svc := app.New(app.Static(cfg), store.NewDiskRepo(cfg.TicketsDir), app.NoopRuntime{})
+	pipeline, agent := t.Pipeline, t.Agent
+	if pipeline == "" {
+		pipeline = config.NoneSentinel
 	}
-
-	if err := t.SetField("kontora", true); err != nil {
-		return fmt.Errorf("setting kontora: %w", err)
+	if agent == "" {
+		agent = config.NoneSentinel
 	}
-
-	out, err := t.Marshal()
+	_, err = svc.Init(resolved, app.InitRequest{
+		Pipeline: pipeline, Path: t.Path, Agent: agent,
+		Stage: t.Stage, Status: val,
+	})
 	if err != nil {
-		return fmt.Errorf("marshalling ticket: %w", err)
-	}
-	if err := ticket.WriteOffline(path, out); err != nil {
-		return fmt.Errorf("writing ticket file: %w", err)
+		return err
 	}
 
 	fmt.Fprintf(w, "%s %s\n", styleFaint.Render(resolved), styleOK.Render("initialized"))
+	return nil
+}
+
+func enableEpic(cfg *config.Config, t *ticket.Ticket, opts EnableOpts, w io.Writer) error {
+	start := opts.Status == string(ticket.StatusTodo) || (t.IsAgentEpic() && opts.Status == "")
+	if start {
+		repoPath := t.Path
+		if opts.Path != "" {
+			repoPath = opts.Path
+		}
+		if err := CheckRepo(repoPath, t.BaseBranch); err != nil {
+			return err
+		}
+	}
+	req := web.InitTicketRequest{
+		Pipeline: opts.Pipeline, Path: opts.Path, Agent: opts.Agent, Status: opts.Status,
+	}
+	if req.Path == "" {
+		req.Path = t.Path
+	}
+	var err error
+	if opts.Stage != "" {
+		return fmt.Errorf("%w: epics cannot have a stage", app.ErrInvalidState)
+	}
+	if start {
+		err = LocalClient(cfg).Init(t.ID, req)
+	} else {
+		svc := app.New(app.Static(cfg), store.NewDiskRepo(cfg.TicketsDir), app.NoopRuntime{})
+		_, err = svc.Init(t.ID, app.InitRequest{
+			Pipeline: req.Pipeline, Path: req.Path, Agent: req.Agent, Status: req.Status,
+		})
+	}
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(w, "%s %s\n", styleFaint.Render(t.ID), styleOK.Render("initialized"))
 	return nil
 }
 

@@ -20,7 +20,7 @@ export function kontoraDetail() {
       ];
     },
 
-    async selectTicket(ticket) {
+    async selectTicket(ticket, navigation = ++this._navigationSeq) {
       if (this.selectedTicket?.id === ticket.id) {
         this.closeDetail();
         return;
@@ -29,7 +29,10 @@ export function kontoraDetail() {
       // from it, a sub-ticket row for instance, replaces it rather than
       // stacking on it: both pages carry a body editor, and only one of them
       // can own the refs behind it.
-      if (this.selectedEpic) this.closeEpic();
+      if (this.selectedEpic) {
+        if (await this.closeEpic(false) === false) return;
+        if (navigation !== this._navigationSeq) return;
+      }
       // The editor holds the previous ticket's body. Saving it before the swap,
       // then dropping it, keeps a pending debounce or a later flush from writing
       // that body onto the ticket being opened. startEditing re-arms it below.
@@ -119,7 +122,8 @@ export function kontoraDetail() {
         // Finished tickets with a summary open on the summary tab; the
         // transcript stays prefetched for the activity tab.
         this.activeTab = this.summaryFirst(this.selectedTicket) ? 'summary' : 'activity';
-      } else if (this.selectedTicket?.status === 'in_progress') {
+      } else if (this.selectedTicket?.status === 'in_progress' &&
+          (this.selectedTicket.kind !== 'epic' || this.epicIsAgent(this.selectedTicket))) {
         this.activeTab = 'session';
         this.openTerminal();
       } else {
@@ -404,7 +408,8 @@ export function kontoraDetail() {
       }
     },
 
-    closeDetail() {
+    closeDetail(writeRoute = true) {
+      if (writeRoute) ++this._navigationSeq;
       this.closeAgentPicker(false);
       this.flushEditSave();
       this.closeTerminal();
@@ -432,7 +437,7 @@ export function kontoraDetail() {
       this.noteDraft = '';
       this.noteResetDrafts();
       this._ticketDetailSeq++;
-      this.writeHash();
+      if (writeRoute) this.writeHash();
     },
 
     // Whether the board's own ticket page is what is open. The Archive view
@@ -487,7 +492,7 @@ export function kontoraDetail() {
     },
 
     writeHash() {
-      if (this._applyingRoute) return;
+      if (this._applyingRoute === this._navigationSeq) return;
       var next = this.routeHash();
       if (location.hash === next) return;
       location.hash = next;
@@ -498,18 +503,22 @@ export function kontoraDetail() {
     // fired by our own writeHash costs nothing.
     async applyRoute() {
       var r = this.parseHash(location.hash);
-      this._applyingRoute = true;
+      var navigation = ++this._navigationSeq;
+      var mine = () => navigation === this._navigationSeq;
+      this._applyingRoute = navigation;
       try {
         // The two overlays are exclusive, so the epic branch closes whichever
         // one the hash does not name.
         if (r.epicId) {
-          if (this.selectedTicket) this.closeDetail();
-          if (!this.selectedEpic || this.selectedEpic.id !== r.epicId) this.openEpic(r.epicId);
+          if (this.selectedTicket) this.closeDetail(false);
+          if (!this.selectedEpic || this.selectedEpic.id !== r.epicId) await this.openEpic(r.epicId, navigation);
+          if (!mine()) return;
         } else if (this.selectedEpic) {
-          this.closeEpic();
+          if (await this.closeEpic(false) === false) return;
+          if (!mine()) return;
         }
         if (r.ticketId) {
-          if (this.selectedTicket && this.selectedTicket.id === r.ticketId) return;
+          var alreadySelected = this.selectedTicket?.id === r.ticketId;
           var t = this.tickets.find(function(x) { return x.id === r.ticketId; });
           // The detail rail covers whatever view is underneath, and selectTicket
           // does not touch currentView, so the switch below still has to run:
@@ -518,17 +527,22 @@ export function kontoraDetail() {
           if (!t && this.selectedTicket) {
             // The hash names a ticket this board does not have. Fall back to the
             // board rather than rendering an empty shell.
-            this.closeDetail();
+            this.closeDetail(false);
           }
-          if (t) await this.selectTicket(t);
+          if (t && !alreadySelected) {
+            if (this.isMobile) await this.openMobileTicket(t, navigation);
+            else await this.selectTicket(t, navigation);
+            if (!mine()) return;
+          }
         } else if (this.selectedTicket) {
-          this.closeDetail();
+          this.closeDetail(false);
         }
-        if (this.currentView !== r.view) await this.gotoView(r.view);
+        if (this.currentView !== r.view) await this.gotoView(r.view, navigation);
+        if (!mine()) return;
       } finally {
-        this._applyingRoute = false;
+        if (this._applyingRoute === navigation) this._applyingRoute = null;
+        if (mine()) this.writeHash();
       }
-      this.writeHash();
     },
 
     copyTicketId(id) {
@@ -575,8 +589,11 @@ export function kontoraDetail() {
         const updated = await res.json();
         const idx = this.tickets.findIndex(t => t.id === updated.id);
         if (idx >= 0) this.tickets[idx] = this.boardEntry(updated);
-        this.selectedTicket = updated;
-        if (type === 'pause' || type === 'skip') this.closeTerminal();
+        if (this.selectedTicket?.id === updated.id) {
+          this.selectedTicket = updated;
+          if (type === 'pause' || type === 'skip') this.closeTerminal();
+        }
+        this.recomputeBoard();
       } catch (e) {
         this.error = type + ' failed: ' + e.message;
       } finally {
@@ -626,7 +643,7 @@ export function kontoraDetail() {
     // daemon holds the rest of the rules, an open annotation pass among them,
     // and its refusal is what the editor shows.
     canSchedule(ticket) {
-      return !!ticket && !!ticket.kontora && ['open', 'todo'].includes(ticket.status);
+      return !!ticket && ticket.kind !== 'epic' && !!ticket.kontora && ['open', 'todo'].includes(ticket.status);
     },
 
     // A ticket's scheduled pickup as local wall time, or "" when it has none.
@@ -768,7 +785,10 @@ export function kontoraDetail() {
         if (updated && updated.id) {
           const idx = this.tickets.findIndex(t => t.id === updated.id);
           if (idx >= 0) this.tickets[idx] = this.boardEntry(updated);
-          if (this.selectedTicket?.id === updated.id) this.selectedTicket = updated;
+          if (this.selectedTicket?.id === updated.id) {
+            this.selectedTicket = updated;
+            if (endpoint === 'pause') this.closeTerminal();
+          }
           this.recomputeBoard();
         }
       } catch (e) {
@@ -865,7 +885,9 @@ export function kontoraDetail() {
       var prev = this._editInherited || { pipeline: '', agent: '' };
       var next = this.projectDefaultsFor(this.editForm.path);
 
-      if (!this.editForm.pipeline || this.editForm.pipeline === prev.pipeline) {
+      if (this.selectedTicket?.kind === 'epic') {
+        this.editForm.pipeline = '';
+      } else if (!this.editForm.pipeline || this.editForm.pipeline === prev.pipeline) {
         this.editForm.pipeline = next.pipeline;
       }
       if (this._editAgentFollowsProject) this.editForm.agent = next.agent;
@@ -882,7 +904,7 @@ export function kontoraDetail() {
         const body = {};
         const editedBody = this._bodyLead + this.editForm.body;
         if (editedBody !== (this.selectedTicket.body || '')) body.body = editedBody;
-        if (this.editForm.pipeline !== (this.selectedTicket.pipeline || '')) body.pipeline = this.editForm.pipeline;
+        if (this.selectedTicket.kind !== 'epic' && this.editForm.pipeline !== (this.selectedTicket.pipeline || '')) body.pipeline = this.editForm.pipeline;
         if (this.editForm.path !== (this.selectedTicket.path || '')) body.path = this.editForm.path;
         const agentOverride = this.selectedTicket.agent_override ? (this.selectedTicket.agent || '') : '';
         if (this.editForm.agent !== agentOverride) body.agent = this.editForm.agent;
@@ -1080,7 +1102,7 @@ export function kontoraDetail() {
     // affordance.
     canSetStage() {
       const status = this.selectedTicket?.status;
-      if (!status) return false;
+      if (!status || this.selectedTicket.kind === 'epic') return false;
       return ['open', 'todo', 'paused', 'human_review', 'done', 'cancelled']
         .concat(this.configCache?.custom_statuses || [])
         .includes(status);

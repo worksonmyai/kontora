@@ -264,6 +264,9 @@ func (s *Service) SetParent(ticketID, epicID string) (RelationResult, error) {
 	if st.Ticket.Kind == ticket.KindEpic {
 		return RelationResult{}, fmt.Errorf("%w: %s is an epic, and epics do not nest", ErrNotAnEpic, resolved)
 	}
+	if err := ValidateEpicChildRepository(parent.Ticket, st.Ticket); err != nil {
+		return RelationResult{}, err
+	}
 	if err := s.ordinaryFormerParent(st.Ticket.Parent); err != nil {
 		return RelationResult{}, err
 	}

@@ -308,7 +308,7 @@ export function kontoraBoard() {
     // draws, and the tallies recomputeBoard keeps. A status with no column of
     // its own counts as changed, because the caller cannot show it either way.
     boardEntryChanged(before, after) {
-      if (!before || !after || before.status !== after.status) return true;
+      if (!before || !after || before.status !== after.status || before.epic_execution !== after.epic_execution) return true;
       var col = this._columnForStatus(after.status);
       if (!col) return true;
       return this._cardSig(before, col) !== this._cardSig(after, col);
@@ -754,21 +754,21 @@ export function kontoraBoard() {
       // Per-agent running tally for the sidebar, filled in this same pass so
       // agentRunningCount doesn't filter the whole ticket array per agent row.
       var running = Object.create(null);
-      // Epics collected on the way past. An epic is not work: it takes no
-      // column, and its derived status must not reach the tallies behind the
-      // favicon and the running pill, which would double-count its children.
+      // Passive status rollups are not processes. Supervisors count once,
+      // but all epics stay in the rail rather than adding worker cards.
       var epics = [];
       for (var i = 0; i < this.tickets.length; i++) {
         var t = this.tickets[i];
         if (t.kind === 'epic') {
           epics.push(t);
-          continue;
+          if (!this.epicIsAgent(t)) continue;
         }
         if (t.kontora && counts[t.status] !== undefined) counts[t.status]++;
         if (t.kontora && t.waiting_for_input) counts.needsInput++;
         if (t.kontora && t.status === 'in_progress' && t.agent) {
           running[t.agent] = (running[t.agent] || 0) + 1;
         }
+        if (t.kind === 'epic') continue;
         var key = colOf[t.status];
         if (key === undefined) continue;            // no column -> not rendered
         if (filtering && !this.ticketMatchesQuery(t, query)) continue;

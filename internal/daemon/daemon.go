@@ -441,8 +441,9 @@ type Daemon struct {
 	running         map[string]context.CancelFunc
 	liveRuns        map[string]liveRun // ticket ID → the agent invocation in flight
 	queued          map[string]bool    // dedupe: prevents same ticket being enqueued twice
-	runningBranches map[string]string  // repoPath\x00branch → ticketID holding the branch
+	runningBranches map[string]string  // commonDir\x00branch → ticketID holding the branch
 	sem             chan struct{}
+	epicSem         chan struct{}
 	managedDispatch *managedDispatch
 	// waiting holds, per ticket, the question its running agent is blocked on,
 	// as the run's marker poller last read it. Only a live run has an entry.
@@ -576,6 +577,7 @@ func New(cfg *config.Config, opts ...Option) *Daemon {
 		queued:          make(map[string]bool),
 		runningBranches: make(map[string]string),
 		sem:             make(chan struct{}, cfg.MaxConcurrentAgents),
+		epicSem:         make(chan struct{}, cfg.MaxConcurrentEpicSupervisors),
 		waiting:         make(map[string]waitingState),
 		waitAnnounced:   make(map[string]map[string]bool),
 		notifyWarned:    make(map[string]string),
@@ -903,8 +905,8 @@ func (d *Daemon) startMetrics(ctx context.Context, cfg *config.Config) func() {
 	// lock-free state: taking d.mu here would stall every export behind a
 	// wedged tmux call or a ticket write.
 	if err := d.metrics.ObserveScheduler(
-		func() int64 { return int64(len(d.sem)) },
-		func() int64 { return int64(cap(d.sem)) },
+		func() int64 { return int64(len(d.sem) + len(d.epicSem)) },
+		func() int64 { return int64(cap(d.sem) + cap(d.epicSem)) },
 		func() int64 { return d.queueDepth.Load() },
 	); err != nil {
 		d.log.Warn("registering scheduler gauges failed", "err", err)
@@ -971,7 +973,7 @@ func (d *Daemon) initialScan(dir string) error {
 		// installs, pre-upgrade tickets) or our own name. A ticket claimed by
 		// another instance sharing this tickets_dir is left in_progress and not
 		// enqueued, so starting a second daemon can't steal or kill its work.
-		if t.Kontora && t.Status == ticket.StatusInProgress && t.Kind != ticket.KindEpic && !t.HasOwnershipMetadata() {
+		if t.Kontora && t.Status == ticket.StatusInProgress && !t.IsPassiveEpic() && !t.HasOwnershipMetadata() {
 			if t.ClaimedBy == "" || t.ClaimedBy == d.instanceName {
 				d.ticketLog(t.ID).Warn("crash recovery: resetting to todo")
 				_ = t.SetField("status", string(ticket.StatusTodo))
@@ -1137,7 +1139,7 @@ func (d *Daemon) handleFileChanged(path string) {
 		// Claimed by us but no local agent is running it: a stale self-claim that
 		// came back through sync, or the both-sides-yielded state. Reset it to
 		// todo and re-enqueue, matching live crash recovery.
-		if _, running := d.running[t.ID]; !running && t.ClaimedBy == d.instanceName && t.Kind != ticket.KindEpic {
+		if _, running := d.running[t.ID]; !running && t.ClaimedBy == d.instanceName && !t.IsPassiveEpic() {
 			log.Info("recovering stale self-claim", "claimed_by", t.ClaimedBy)
 			_ = t.SetField("status", string(ticket.StatusTodo))
 			// A ticket that cannot be written back is still enqueued as todo,
@@ -1309,11 +1311,16 @@ func (d *Daemon) cleanupWorktree(log *slog.Logger, t *ticket.Ticket) {
 		log.Warn("worktree cleanup: resolve path failed", "err", err)
 		return
 	}
+	commonDir, err := worktree.CommonDir(repoPath)
+	if err != nil {
+		log.Warn("worktree cleanup: resolve repository identity failed", "err", err)
+		return
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	branch := ticketBranch(d.config(), t)
 	_, running := d.running[t.ID]
-	_, branchReserved := d.runningBranches[repoPath+"\x00"+branch]
+	_, branchReserved := d.runningBranches[commonDir+"\x00"+branch]
 	if running || branchReserved {
 		log.Warn("worktree cleanup deferred while execution remains reserved")
 		return
@@ -1385,10 +1392,8 @@ func (d *Daemon) enqueue(t *ticket.Ticket) {
 	if t == nil || !t.Kontora || t.HasOwnershipMetadata() || ticket.CheckBoardControl(expandTilde(d.config().TicketsDir)) != nil {
 		return
 	}
-	// An epic is not work: it has no pipeline, so a todo one would otherwise
-	// take the pipeline-less branch and be spawned an agent with the default
-	// agent. Its status is derived, but a hand-edited file can still say todo.
-	if t.Kind == ticket.KindEpic {
+	// Passive epic statuses summarize children, not an execution request.
+	if t.IsPassiveEpic() {
 		return
 	}
 	if d.queued[t.ID] {
@@ -1436,7 +1441,7 @@ func (d *Daemon) claimableLocked(ticketID string, log *slog.Logger) (*ticketStat
 	if !ts.ticket.Kontora || ts.ticket.Status != ticket.StatusTodo {
 		return nil, false
 	}
-	if ts.ticket.Kind == ticket.KindEpic {
+	if ts.ticket.IsPassiveEpic() {
 		return nil, false
 	}
 
@@ -1511,6 +1516,11 @@ func (d *Daemon) runTicket(ctx context.Context, ticketID string) {
 	}
 	t := ts.ticket
 	filePath := ts.filePath
+	if !dispatchPoolMatches(ctx, t) {
+		d.enqueue(t)
+		d.mu.Unlock()
+		return
+	}
 
 	// Register cancel func before mutating status so concurrent ops
 	// can properly cancel the ticket while it's setting up worktrees.
@@ -1535,7 +1545,15 @@ func (d *Daemon) runTicket(ctx context.Context, ticketID string) {
 	branch := ticketBranch(cfg, t)
 	var branchKey string
 	if t.AnnotationReturnStatus == "" {
-		branchKey = expandTilde(t.Path) + "\x00" + branch
+		repoIdentity, err := worktree.CommonDir(expandTilde(t.Path))
+		if err != nil {
+			taskCancel()
+			delete(d.running, ticketID)
+			d.mu.Unlock()
+			d.pauseTicket(t, filePath, "resolve repository identity: "+err.Error())
+			return
+		}
+		branchKey = repoIdentity + "\x00" + branch
 		if holder, ok := d.runningBranches[branchKey]; ok && holder != ticketID {
 			taskCancel()
 			delete(d.running, ticketID)
@@ -1557,7 +1575,7 @@ func (d *Daemon) runTicket(ctx context.Context, ticketID string) {
 		return
 	}
 
-	if t.Pipeline == "" {
+	if t.IsAgentEpic() || t.Pipeline == "" {
 		d.mu.Unlock()
 		d.runSimpleTicket(ctx, taskCtx, cfg, log, ticketID, t, filePath)
 		return
@@ -1761,6 +1779,10 @@ func (d *Daemon) runSimpleTicket(ctx, taskCtx context.Context, cfg *config.Confi
 		_ = t.SetField("status", string(ticket.StatusInProgress))
 		_ = t.SetField("started_at", now.Format(time.RFC3339))
 		_ = t.SetField("claimed_by", d.instanceName)
+		if t.IsAgentEpic() {
+			_ = t.SetField("summary", "")
+			_ = t.DeleteField("completed_at")
+		}
 		return nil
 	}); err != nil {
 		log.Error("write failed", "phase", "pickup", "err", err)
@@ -1799,8 +1821,15 @@ func (d *Daemon) runSimpleTicket(ctx, taskCtx context.Context, cfg *config.Confi
 		rendered += buildOperationalAppendix(t.ID, filePath, wtPath, false, checkpointKind(agentCfg))
 	}
 
+	feedback, err := epicFeedback(cfg, t)
+	if err != nil {
+		d.pauseTicket(t, filePath, err.Error())
+		return
+	}
+	rendered += feedback
 	log.Info("spawning agent", "agent", agentName, "binary", agentCfg.Binary)
 
+	runIndex := stageRunIndex(t, simpleStageName)
 	run, spawnOK := d.spawnAgentRun(taskCtx, t, spawnAgentParams{
 		cfg:        cfg,
 		ctx:        ctx,
@@ -1809,7 +1838,7 @@ func (d *Daemon) runSimpleTicket(ctx, taskCtx context.Context, cfg *config.Confi
 		filePath:   filePath,
 		agentName:  agentName,
 		stageName:  simpleStageName,
-		run:        stageRunIndex(t, simpleStageName),
+		run:        runIndex,
 		wtPath:     wtPath,
 		repoPath:   repoPath,
 		branch:     branch,
@@ -1865,15 +1894,19 @@ func (d *Daemon) runSimpleTicket(ctx, taskCtx context.Context, cfg *config.Confi
 		return
 	}
 
-	// The hooks can take as long as their timeout allows, and one of them can
-	// write the ticket itself through KONTORA_TICKET_FILE, so the read the write
-	// below builds on is taken after them.
+	var completionErr error
+	if t.IsAgentEpic() && result.ExitCode == 0 && hookErr == nil {
+		completionErr = d.epicCompletionError(ticketID)
+	}
+
+	// Hooks and fresh child reads can outlast a user's pause request.
 	t2, guardOK := d.readTicketForExit(guard)
 	if !guardOK {
 		return
 	}
 
-	// Simple exit handling: 0 → done, non-0 → paused.
+	// Successful exits become done for ordinary tickets or human_review for agent epics.
+	// Failed runs, hooks or child checks pause the ticket.
 	switch {
 	case result.ExitCode != 0:
 		_ = t2.SetField("status", string(ticket.StatusPaused))
@@ -1886,6 +1919,15 @@ func (d *Daemon) runSimpleTicket(ctx, taskCtx context.Context, cfg *config.Confi
 		_ = t2.SetField("last_error", hookErr.Error())
 		_ = t2.SetField("summary", runSummary(t2.Summary, run.FinalMessage))
 		appendSystemNote(t2, hookErr.Error())
+	case completionErr != nil:
+		_ = t2.SetField("status", string(ticket.StatusPaused))
+		_ = t2.SetField("last_error", completionErr.Error())
+		appendSystemNote(t2, completionErr.Error())
+	case t2.IsAgentEpic():
+		_ = t2.SetField("status", string(ticket.StatusHumanReview))
+		_ = t2.SetField("stage", "")
+		_ = t2.SetField("last_error", "")
+		log.Info("epic ready for human review", "branch", t2.Branch)
 	default:
 		_ = t2.SetField("status", string(ticket.StatusDone))
 		_ = t2.SetField("last_error", "")
@@ -1904,7 +1946,7 @@ func (d *Daemon) runSimpleTicket(ctx, taskCtx context.Context, cfg *config.Confi
 		return
 	}
 
-	if result.ExitCode == 0 && hookErr == nil {
+	if result.ExitCode == 0 && hookErr == nil && !t2.IsAgentEpic() {
 		d.removeWorktreeAt(log, repoPath, wtPath)
 	}
 
@@ -2430,7 +2472,12 @@ func (d *Daemon) spawnAgentRun(taskCtx context.Context, t *ticket.Ticket, p spaw
 	// time, and a hook there would report two runs for one.
 	started := time.Now()
 	var attempt agentAttempt
-	defer func() { d.recordStageRun(taskCtx, p, attempt, time.Since(started)) }()
+	defer func() {
+		d.recordStageRun(taskCtx, p, attempt, time.Since(started))
+		if t.IsAgentEpic() && !p.annotation && (attempt.started || !attempt.run.Result.StartedAt.IsZero() || attempt.run.SessionRef != "") && !ordinaryReservationRetained(taskCtx) && p.ctx.Err() == nil {
+			d.recordEpicRun(p, attempt.run)
+		}
+	}()
 
 	binaryPath, err := d.agentLookup(p.agentCfg.Binary)
 	if err != nil {
@@ -2544,6 +2591,11 @@ func (d *Daemon) runAgentOnce(taskCtx context.Context, t *ticket.Ticket, p spawn
 		}
 		p.log.Info("resuming agent session", "stage", p.stageName, "agent", rec.Agent,
 			"session_id", rec.SessionID, "annotation", p.annotation)
+	}
+
+	rendered, promptErr := epicInvocationPrompt(t, p, rendered, rec != nil)
+	if promptErr != nil {
+		return agentAttempt{pauseReason: promptErr.Error()}
 	}
 
 	model := p.stageCfg.Model.For(p.agentName, p.agentCfg)

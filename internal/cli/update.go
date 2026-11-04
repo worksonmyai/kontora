@@ -27,10 +27,9 @@ func Update(cfg *config.Config, id string, req web.UpdateTicketRequest) error {
 	}
 	t := st.Ticket
 
-	// An epic is editable in every status. The statuses the check excludes are
-	// the ones where an agent owns the file or the work is over, and an epic has
-	// neither: its status is a summary of its children.
-	if t.Kind != ticket.KindEpic && !cfg.StatusAllowsEdit(string(t.Status)) {
+	// Only a passive epic's derived status does not constrain brief editing.
+	// Agent epics use the same edit guard as ordinary work.
+	if !t.IsPassiveEpic() && !cfg.StatusAllowsEdit(string(t.Status)) {
 		return fmt.Errorf("%w: cannot update ticket in status %s", app.ErrInvalidState, t.Status)
 	}
 
@@ -39,6 +38,9 @@ func Update(cfg *config.Config, id string, req web.UpdateTicketRequest) error {
 		// mean "no pipeline", or the word would work in new and init and error
 		// out in update.
 		pipeline := config.ClearNone(*req.Pipeline)
+		if t.Kind == ticket.KindEpic && pipeline != "" {
+			return fmt.Errorf("%w: epics have no pipeline", app.ErrInvalidState)
+		}
 		if pipeline != "" {
 			if _, ok := cfg.Pipelines[pipeline]; !ok {
 				return fmt.Errorf("unknown pipeline %q", pipeline)
@@ -78,5 +80,11 @@ func Update(cfg *config.Config, id string, req web.UpdateTicketRequest) error {
 		t.SetBody(*req.Body)
 	}
 
+	if req.Path != nil || req.Branch != nil {
+		svc := app.New(app.Static(cfg), repo, app.NoopRuntime{})
+		if err := svc.ValidateExecutionSettings(t); err != nil {
+			return err
+		}
+	}
 	return repo.Save(st)
 }

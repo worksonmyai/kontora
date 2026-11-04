@@ -136,7 +136,7 @@ func (d *Daemon) statsTicketsLocked(cfg *config.Config, now time.Time) ([]statsT
 
 	live := stats.Live{
 		Running: len(d.running),
-		Slots:   cfg.MaxConcurrentAgents,
+		Slots:   cfg.MaxConcurrentAgents + cfg.MaxConcurrentEpicSupervisors,
 		Queued:  len(d.queue),
 	}
 	for _, item := range d.queue {
@@ -241,7 +241,7 @@ func simpleTicketRun(cfg *config.Config, logsDir string, t *ticket.Ticket) (stat
 }
 
 func simpleTicketEnded(t *ticket.Ticket) bool {
-	if t.Pipeline != "" || t.StartedAt == nil || t.Status == ticket.StatusInProgress {
+	if t.Pipeline != "" || t.IsAgentEpic() || t.StartedAt == nil || t.Status == ticket.StatusInProgress {
 		return false
 	}
 	if t.CompletedAt != nil {

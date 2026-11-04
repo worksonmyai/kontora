@@ -110,7 +110,7 @@ func (d *Daemon) companionTickets() []companionTicket {
 	out := make([]companionTicket, 0, len(d.tickets))
 	for _, ts := range d.tickets {
 		t := ts.ticket
-		if t.Kind == ticket.KindEpic {
+		if t.IsPassiveEpic() {
 			continue
 		}
 		ct := companionTicket{ID: t.ID, Identity: t.ID + ":" + companionTime(t.Created), Title: t.Title(), Body: t.Body, Status: t.Status, Stage: t.Stage, StartedAt: companionTime(t.StartedAt), CompletedAt: companionTime(t.CompletedAt), LastError: t.LastError, Summary: t.Summary, FinalSummary: t.FinalSummary, Waiting: d.waiting[t.ID]}

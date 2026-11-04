@@ -21,7 +21,8 @@ Read `kontora config` for what a particular board actually runs.
 | `branch_prefix` | `kontora` | Prefix of a ticket's work branch. A project can override it. |
 | `branch_naming` | `mode: slug` | How a ticket with an empty `branch` is named. `off` uses `<prefix>/<id>`. |
 | `default_agent` | inferred | Agent for tickets with no pipeline. Defaults to `claude` when an agent has that name, otherwise the only agent. |
-| `max_concurrent_agents` | `3` | How many stage runs happen at once. |
+| `max_concurrent_agents` | `3` | Maximum worker runs at once, excluding epic supervisors. |
+| `max_concurrent_epic_supervisors` | `4` | Maximum epic supervisors in a separate pool. Zero or omission uses `4`; negative values are rejected. Requires restart. |
 | `auto_pick_up` | `true` | Whether the daemon claims new `todo` tickets on its own. |
 | `instance_name` | hostname | Identifies this daemon when several share a synced `tickets_dir`. Written to `claimed_by`. |
 | `tmux_session` | `kontora` | The tmux session agent windows go in. |
@@ -33,6 +34,15 @@ For `tickets_dir` alone the environment beats the file: `--tickets-dir`, then
 setting is the other way round.
 
 All paths take `~`, expanded at runtime rather than at load.
+
+Epic supervisors can add four agent processes beyond the default three workers.
+A supervisor waiting for children does not occupy a worker slot. The queue
+chooses the oldest eligible ticket whose pool has capacity. Unconfirmed
+termination retains the reservation in the pool that started the process.
+Creation leaves epics passive. Activate explicitly with `kontora run EPIC_ID`
+or init with `--status todo`. The epic and children must share one Git repository.
+Upgrade every daemon and client sharing the ticket directory before activation;
+older versions can overwrite supervisor status. See `kontora skills show tickets Epics`.
 
 ## agents
 
@@ -203,6 +213,6 @@ stops observation and blocks new companion requests without deleting stored
 data. An already-running requested turn remains stoppable.
 
 `tickets_dir`, `worktrees_dir`, `logs_dir`, `instance_name`, `tmux_session`,
-`max_concurrent_agents` and the whole `web` and `metrics` blocks need a
+`max_concurrent_agents`, `max_concurrent_epic_supervisors` and the whole `web` and `metrics` blocks need a
 restart: a reload keeps the running value and logs a warning naming the one it
 ignored. A file that fails to load leaves the running configuration in place.

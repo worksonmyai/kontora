@@ -246,6 +246,45 @@ func TestPlannotator_NoStateChangePaths(t *testing.T) {
 	}
 }
 
+func TestEpicAgentReviewFeedbackRunsSupervisorAndReturnsToReview(t *testing.T) {
+	const id = "epc-feedback"
+	h := newPlannotatorHarness(t)
+	h.cfg.MaxConcurrentEpicSupervisors = 4
+	var runs annotationRun
+	d := h.newAnnotationDaemon(func(_ context.Context, p RunnerParams) (process.Result, error) {
+		runs.record(p)
+		now := time.Now()
+		return process.Result{ExitCode: 0, StartedAt: now, ExitedAt: now}, nil
+	})
+	h.seedReviewWorktree(id)
+	h.writeTicket("epc-c1.md", h.epicChildMD("epc-c1", "done", id, "2026-01-02T00:00:00Z"))
+	md := strings.Replace(h.agentEpicMD(id, "human_review", "epc-c1"), "epic_execution: agent\n", "epic_execution: agent\nbranch: kontora/"+id+"\n", 1)
+	_, stop := startAnnotationDaemon(t, h, d, id, md)
+	defer stop()
+
+	require.NoError(t, d.StartPlannotatorReview(id))
+	require.Eventually(t, func() bool { return h.callCount.Load() == 1 }, 3*time.Second, 20*time.Millisecond)
+	feedback := "Verify the combined child result and fix the integration regression."
+	h.stdoutCh <- feedback
+	// The initial state was already human_review, so history proves that the
+	// feedback run actually happened before accepting the final status.
+	require.Eventually(t, func() bool {
+		tk, err := ticket.ParseFile(filepath.Join(h.tasksDir, id+".md"))
+		return err == nil && tk.Status == ticket.StatusHumanReview && len(tk.History) == 1
+	}, 5*time.Second, 20*time.Millisecond)
+	waitForAgentsDone(t, d, 5*time.Second)
+	require.Len(t, runs.all(), 1)
+	p := renderedPrompt(runs.all()[0])
+	assert.Contains(t, p, "## Epic supervisor")
+	assert.Contains(t, p, feedback, "the feedback file must reach the supervisor, not a generic rework agent")
+	got := h.readTask(id + ".md")
+	assert.True(t, got.IsAgentEpic())
+	assert.Equal(t, "default", got.History[0].Stage)
+	assert.Zero(t, got.History[0].ExitCode)
+	assert.DirExists(t, runs.all()[0].Dir)
+	assert.Equal(t, ticket.StatusDone, h.readTask("epc-c1.md").Status)
+}
+
 // TestPlannotator_ReworkClaim asserts the rework pickup writes claimed_by in
 // the same in_progress transition, matching the pipeline and simple paths.
 func TestPlannotator_ReworkClaim(t *testing.T) {

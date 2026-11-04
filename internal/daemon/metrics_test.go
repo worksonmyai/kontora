@@ -163,8 +163,8 @@ func TestMetricsSchedulerGaugesAndQueueWait(t *testing.T) {
 	require.NoError(t, <-errCh)
 
 	got := collect()
-	assert.Equal(t, int64(4), gaugeValue(t, got, "kontora.scheduler.capacity"),
-		"capacity is cap(d.sem), the configured concurrency")
+	assert.Equal(t, int64(cfg.MaxConcurrentAgents+cfg.MaxConcurrentEpicSupervisors), gaugeValue(t, got, "kontora.scheduler.capacity"),
+		"capacity includes independent worker and supervisor pools")
 	assert.Equal(t, int64(0), gaugeValue(t, got, "kontora.scheduler.active"),
 		"every slot is released once the runs finish")
 	assert.Equal(t, int64(0), gaugeValue(t, got, "kontora.queue.depth"),
@@ -297,7 +297,7 @@ func TestMetricsGaugeCallbacksDoNotTakeDaemonLock(t *testing.T) {
 	select {
 	case got := <-done:
 		assert.Equal(t, int64(2), gaugeValue(t, got, "kontora.scheduler.active"))
-		assert.Equal(t, int64(4), gaugeValue(t, got, "kontora.scheduler.capacity"))
+		assert.Equal(t, int64(cfg.MaxConcurrentAgents+cfg.MaxConcurrentEpicSupervisors), gaugeValue(t, got, "kontora.scheduler.capacity"))
 		assert.Equal(t, int64(3), gaugeValue(t, got, "kontora.queue.depth"))
 	case <-time.After(5 * time.Second):
 		t.Fatal("collection blocked on d.mu")

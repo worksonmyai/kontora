@@ -425,10 +425,7 @@ func (d *Daemon) PauseTicket(id string) error {
 		d.mu.Unlock()
 		return web.ErrTicketNotFound
 	}
-	// An epic derives in_progress routinely and has no agent to cancel, so
-	// without this the pause writes a status the derivation did not produce and
-	// nothing puts it back.
-	if ts.ticket.Kind == ticket.KindEpic {
+	if ts.ticket.IsPassiveEpic() {
 		d.mu.Unlock()
 		return fmt.Errorf("%w: %s is an epic, its status is derived from its children", web.ErrInvalidState, id)
 	}
@@ -519,8 +516,14 @@ func (d *Daemon) RunTicket(id string) error {
 	if err != nil {
 		return err
 	}
-	if t2.Kind == ticket.KindEpic {
-		return fmt.Errorf("%w: %s is an epic, which has no pipeline to run", web.ErrInvalidState, id)
+	if t2.IsPassiveEpic() {
+		if t2.Status == ticket.StatusArchived {
+			return fmt.Errorf("%w: cannot start archived epic %s", web.ErrInvalidState, id)
+		}
+		d.mu.Unlock()
+		_, err := d.svc.Init(id, app.InitRequest{Status: string(ticket.StatusTodo)})
+		d.mu.Lock()
+		return mapAppError(err)
 	}
 	switch t2.Status { //nolint:exhaustive // only open and todo can be run
 	case ticket.StatusOpen, ticket.StatusTodo:
@@ -641,7 +644,7 @@ func (d *Daemon) MoveTicket(id string, newStatus string) error {
 	defer release()
 	d.mu.Lock()
 	ts, known := d.tickets[id]
-	isEpic := known && ts.ticket.Kind == ticket.KindEpic
+	isEpic := known && ts.ticket.IsPassiveEpic()
 	d.mu.Unlock()
 	if isEpic {
 		return fmt.Errorf("%w: %s is an epic, its status is derived from its children", web.ErrInvalidState, id)
@@ -1057,15 +1060,11 @@ func (d *Daemon) UpdateTicket(id string, req web.UpdateTicketRequest) error {
 		return web.ErrTicketNotFound
 	}
 	status := ts.ticket.Status
-	kind := ts.ticket.Kind
+	passiveEpic := ts.ticket.IsPassiveEpic()
 	filePath := ts.filePath
 	d.mu.Unlock()
 
-	// An epic is editable in every status. The statuses the check excludes are
-	// the ones where an agent owns the file or the work is over, and an epic has
-	// neither: its status is a summary of its children, and the brief is the
-	// whole reason the ticket exists.
-	if kind != ticket.KindEpic && !d.config().StatusAllowsEdit(string(status)) {
+	if !passiveEpic && !d.config().StatusAllowsEdit(string(status)) {
 		return fmt.Errorf("%w: cannot edit ticket %s in status %s", web.ErrInvalidState, id, status)
 	}
 
@@ -1080,6 +1079,9 @@ func (d *Daemon) UpdateTicket(id string, req web.UpdateTicketRequest) error {
 	}
 	if req.Pipeline != nil {
 		pipeline := config.ClearNone(*req.Pipeline)
+		if t2.Kind == ticket.KindEpic && pipeline != "" {
+			return fmt.Errorf("%w: epics have no pipeline", web.ErrInvalidState)
+		}
 		if pipeline != "" {
 			if _, ok := cfg.Pipelines[pipeline]; !ok {
 				return fmt.Errorf("%w %q", web.ErrUnknownPipeline, pipeline)
@@ -1113,6 +1115,11 @@ func (d *Daemon) UpdateTicket(id string, req web.UpdateTicketRequest) error {
 	if req.BaseBranch != nil {
 		if err := t2.SetField("base_branch", *req.BaseBranch); err != nil {
 			return err
+		}
+	}
+	if req.Path != nil || req.Branch != nil {
+		if err := d.svc.ValidateExecutionSettings(t2); err != nil {
+			return mapAppError(err)
 		}
 	}
 	if err := app.SetNotifyFields(t2, req.Notify, req.NotifyChannels); err != nil {

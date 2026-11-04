@@ -56,9 +56,37 @@ func TestLoadMinimalDefaults(t *testing.T) {
 
 	assert.Equal(t, "~/.kontora/worktrees", cfg.WorktreesDir)
 	assert.Equal(t, 3, cfg.MaxConcurrentAgents)
+	assert.Equal(t, 4, cfg.MaxConcurrentEpicSupervisors)
 	assert.Equal(t, BranchNaming{Mode: BranchNamingModeSlug}, cfg.BranchNaming)
 	require.NotNil(t, cfg.AutoPickUp)
 	assert.True(t, *cfg.AutoPickUp, "auto_pick_up should default to true")
+}
+
+func TestMaxConcurrentEpicSupervisors(t *testing.T) {
+	for _, tc := range []struct {
+		value int
+		want  int
+	}{
+		{0, 4},
+		{1, 1},
+		{8, 8},
+		{-1, -1},
+	} {
+		t.Run(fmt.Sprint(tc.value), func(t *testing.T) {
+			cfg, err := LoadReader(strings.NewReader(fmt.Sprintf("tickets_dir: /tmp/tickets\nagents:\n  claude:\n    binary: claude\nmax_concurrent_epic_supervisors: %d\n", tc.value)))
+			if tc.value < 0 {
+				require.ErrorContains(t, err, "max_concurrent_epic_supervisors must not be negative")
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, cfg.MaxConcurrentEpicSupervisors)
+			data, err := yaml.Marshal(cfg)
+			require.NoError(t, err)
+			assert.Contains(t, string(data), fmt.Sprintf("max_concurrent_epic_supervisors: %d", tc.want))
+		})
+	}
+	cfg := &Config{MaxConcurrentEpicSupervisors: -1}
+	require.ErrorContains(t, cfg.Validate(), "max_concurrent_epic_supervisors")
 }
 
 func TestApplyServerEnvOverridesSetsWebToken(t *testing.T) {

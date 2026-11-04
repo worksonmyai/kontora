@@ -64,10 +64,13 @@ export function kontoraEpics() {
     epicBriefSaved: false,
     _epicBriefLead: '',
     _epicBriefDebounce: null,
+    _epicBriefSave: null,
+    _epicBriefSavedBody: '',
     // The last detail fetch, which is where the body and the notes come from.
     // A board recompute rebuilds selectedEpic out of the list, which carries
     // neither, so the two are merged rather than one replacing the other.
     _epicDetail: null,
+    _epicDetailSeq: 0,
     // Roll-up per epic id, rebuilt in the same pass. It is an imperative cache
     // for the reason _board is one: a template read has to be O(1).
     _epicRollup: {},
@@ -116,6 +119,8 @@ export function kontoraEpics() {
       return {
         id: epic.id,
         title: epic.title || epic.id,
+        supervisorStatus: this.epicIsAgent(epic) ? epic.status : '',
+        supervisorWaiting: this.epicIsAgent(epic) && epic.waiting_for_input,
         done: done,
         total: total,
         pct: total ? Math.round((done / total) * 100) : 0,
@@ -183,6 +188,8 @@ export function kontoraEpics() {
     // The rail's note line, one sentence about why the epic is not finished.
     epicNote(id) {
       var r = this.epicRollup(id);
+      if (r.supervisorWaiting) return 'supervisor needs input';
+      if (r.supervisorStatus) return 'supervisor ' + (r.supervisorStatus === 'todo' ? 'queued' : this.statusLabel(r.supervisorStatus));
       if (r.holder) return r.holder.id + ' holds it';
       if (r.next) return r.next.id + ' is running';
       if (r.total && r.done + (r.counts.cancelled || 0) === r.total) return 'ready to close';
@@ -192,6 +199,11 @@ export function kontoraEpics() {
 
     epicNoteClass(id) {
       var r = this.epicRollup(id);
+      if (r.supervisorWaiting) return 'text-st-review';
+      if (r.supervisorStatus) {
+        return { in_progress: 'text-st-progress', todo: 'text-st-progress', paused: 'text-st-paused',
+          human_review: 'text-st-review', done: 'text-st-done', cancelled: 'text-st-cancel' }[r.supervisorStatus] || 'text-surface-600';
+      }
       if (r.holder) return 'text-st-review';
       if (r.next) return 'text-st-progress';
       if (r.total && r.done + (r.counts.cancelled || 0) === r.total) return 'text-st-done';
@@ -256,15 +268,94 @@ export function kontoraEpics() {
       return !!this.selectedEpic;
     },
 
+    epicIsAgent(ticket) {
+      return ticket?.kind === 'epic' && ticket.epic_execution === 'agent';
+    },
+
+    epicCanStart(ticket) {
+      return ticket?.kind === 'epic' && ticket.status !== 'archived' && (!ticket.epic_execution ||
+        (this.epicIsAgent(ticket) && ticket.status === 'open'));
+    },
+
+    epicCanEditBrief() {
+      return !!this.selectedEpic && this._epicDetail?.id === this.selectedEpic.id && (!this.epicIsAgent(this.selectedEpic) ||
+        ['open', 'todo', 'paused'].includes(this.selectedEpic.status));
+    },
+
+    epicDescription(ticket) {
+      if (!ticket) return '';
+      return [ticket.path, this.epicIsAgent(ticket) ? 'supervisor · ' + this.statusLabel(ticket.status) : 'passive epic',
+        ticket.agent, ticket.branch || 'no branch yet'].filter(Boolean).join(' · ');
+    },
+
+    epicSupervisorActions() {
+      var epic = this.selectedEpic;
+      if (!epic) return [];
+      var self = this, actions = [];
+      if (this.epicCanStart(epic)) actions.push({ label: 'start epic', run: () => self.epicStart() });
+      if (!this.epicIsAgent(epic)) return actions;
+      actions.push({ label: 'watch agent', run: () => self.epicWatchAgent() });
+      if (epic.status === 'in_progress') {
+        actions.push({ label: 'pause supervisor', run: () => self.epicAction('pause') });
+      }
+      if (['paused', 'done', 'cancelled'].includes(epic.status)) {
+        actions.push({ label: epic.status === 'paused' ? 'retry supervisor' : 'restart supervisor', run: () => self.epicAction('retry') });
+      }
+      if (epic.status === 'human_review') {
+        actions.push({ label: 'review supervisor', run: () => self.startPlannotatorReview(epic) });
+        actions.push({ label: 'approve', run: () => self.epicAction('move', 'done') });
+        actions.push({ label: 'send back', run: () => self.epicAction('retry') });
+      }
+      return actions;
+    },
+
+    async epicStart() {
+      if (!this.epicCanStart(this.selectedEpic)) return;
+      var id = this.selectedEpic.id;
+      var navigation = ++this._navigationSeq;
+      if (await this.epicFlushBrief() === false) return;
+      if (navigation === this._navigationSeq && this.selectedEpic?.id === id) await this.openInitModal(this.selectedEpic);
+    },
+
+    async epicWatchAgent() {
+      var epic = this.selectedEpic;
+      if (!this.epicIsAgent(epic)) return;
+      var navigation = ++this._navigationSeq;
+      if (await this.epicFlushBrief() === false) return;
+      if (navigation !== this._navigationSeq || this.selectedEpic?.id !== epic.id) return;
+      if (this.isMobile) await this.openMobileTicket(epic);
+      else await this.selectTicket(epic);
+    },
+
+    async epicAction(endpoint, status) {
+      var epic = this.selectedEpic;
+      if (!this.epicIsAgent(epic) || this.actionLoading) return;
+      this.actionLoading = endpoint;
+      try {
+        await this.moveTicketVia(epic.id, endpoint, status ? { status: status } : null);
+      } finally {
+        this.actionLoading = null;
+      }
+    },
+
     // The board list carries no body, and the brief is the body. The row is
     // shown first and the fetch fills the brief in, which is what selectTicket
     // does for a ticket page.
-    async openEpic(id) {
+    async openEpic(id, navigation = ++this._navigationSeq) {
+      if (this.currentView !== 'board') await this.gotoView('board', navigation);
+      if (navigation !== this._navigationSeq || this.currentView !== 'board') return;
       var epic = (this.tickets || []).find(function (t) { return t.id === id && t.kind === 'epic'; });
       if (!epic) return;
       // The ticket page and the epic page are two overlays over one board, so
       // opening either closes the other.
-      if (this.selectedTicket) this.closeDetail();
+      if (this.selectedTicket) this.closeDetail(false);
+      if (this.selectedEpic) {
+        if (await this.closeEpic(false) === false) return;
+        if (navigation !== this._navigationSeq) return;
+      }
+      this._epicDetail = null;
+      this.epicBriefSaved = false;
+      this.editForm.body = '';
       this.selectedEpic = epic;
       this.epicTab = 'children';
       this.epicAddDraft = '';
@@ -278,30 +369,38 @@ export function kontoraEpics() {
     // onto selectedEpic, because every board recompute replaces that object
     // with the list entry, which has neither.
     async epicFetchDetail(id) {
+      var seq = ++this._epicDetailSeq;
       try {
         var res = await fetch('/api/tickets/' + encodeURIComponent(id));
         if (!res.ok) return;
         var full = await res.json();
-        this._epicDetail = full;
-        if (this.selectedEpic && this.selectedEpic.id === full.id) {
+        if (seq === this._epicDetailSeq && this.selectedEpic?.id === id && full.id === id) {
+          this._epicDetail = full;
           this.selectedEpic = Object.assign({}, this.selectedEpic, { body: full.body, notes: full.notes });
-          this._epicLoadBrief(full.body);
+          if (!this.epicEditingBrief && !this._epicBriefSave) this._epicLoadBrief(full.body);
         }
       } catch (e) {
-        this.error = 'Failed to load the epic brief';
+        if (seq === this._epicDetailSeq && this.selectedEpic?.id === id) this.error = 'Failed to load the epic brief';
       }
     },
 
-    closeEpic() {
-      if (!this.selectedEpic) return;
-      // A brief edited up to the moment the page closes is saved, the way
-      // blurBodyEdit saves a ticket's body on the way out.
-      this.epicFlushBrief();
-      this.selectedEpic = null;
-      this._epicDetail = null;
-      this.epicAddDraft = '';
-      this.epicEditingBrief = false;
-      this.writeHash();
+    closeEpic(writeRoute = true) {
+      if (writeRoute) ++this._navigationSeq;
+      if (!this.selectedEpic) return true;
+      var id = this.selectedEpic.id;
+      var navigation = this._navigationSeq;
+      var close = (ok) => {
+        if (!ok || navigation !== this._navigationSeq || this.selectedEpic?.id !== id) return false;
+        this.selectedEpic = null;
+        this._epicDetailSeq++;
+        this._epicDetail = null;
+        this.epicAddDraft = '';
+        this.epicEditingBrief = false;
+        if (writeRoute) this.writeHash();
+        return true;
+      };
+      var saving = this.epicFlushBrief();
+      return saving && typeof saving.then === 'function' ? saving.then(close) : close(saving);
     },
 
     // Re-read the open epic out of this.tickets after an SSE flush, so the page
@@ -320,6 +419,11 @@ export function kontoraEpics() {
         this.closeEpic();
         return;
       }
+      if (this.epicEditingBrief && this.epicIsAgent(fresh) &&
+          !['open', 'todo', 'paused'].includes(fresh.status)) {
+        this.epicFlushBrief();
+        this.epicEditingBrief = false;
+      }
       var detail = this._epicDetail && this._epicDetail.id === id ? this._epicDetail : null;
       this.selectedEpic = detail
         ? Object.assign({}, fresh, { body: detail.body, notes: detail.notes })
@@ -335,16 +439,6 @@ export function kontoraEpics() {
       var r = this.epicRollup(this.selectedEpic ? this.selectedEpic.id : '');
       if (!r.holder) return;
       await this.moveTicketVia(r.holder.id, 'done', null);
-    },
-
-    // Queue every open child of the epic. Each is one run request, the same one
-    // the board's own move posts.
-    async epicQueueOpen() {
-      var r = this.epicRollup(this.selectedEpic ? this.selectedEpic.id : '');
-      var open = r.children.filter(function (c) { return c.status === 'open'; });
-      for (var i = 0; i < open.length; i++) {
-        await this.moveTicketVia(open[i].id, 'run', null);
-      }
     },
 
     // One JSON request, with the failure reported the way moveTicketVia
@@ -419,13 +513,14 @@ export function kontoraEpics() {
       var text = body || '';
       this._epicBriefLead = text.startsWith('\n') ? '\n' : '';
       this.editForm.body = text.slice(this._epicBriefLead.length);
+      this._epicBriefSavedBody = text;
     },
 
     // A click on a rendered section opens the editor with that section left
     // where it is on screen. There are no per-section editors: the anchor is
     // the whole of what per-block means here.
     epicBeginBriefEdit(event) {
-      if (!this.selectedEpic) return;
+      if (!this.epicCanEditBrief()) return;
       var anchor = this._blockAnchor(event.target);
       this.epicEditingBrief = true;
       this.$nextTick(() => this._anchorEditor(anchor));
@@ -459,27 +554,34 @@ export function kontoraEpics() {
         clearTimeout(this._epicBriefDebounce);
         this._epicBriefDebounce = null;
       }
-      if (this.epicEditingBrief) this.epicSaveBrief();
+      return this.epicSaveBrief();
     },
 
-    // One PUT carrying the body, which is the same request the ticket page's
-    // saveEdit makes. The epic is editable in every status it can derive,
-    // because no agent ever owns its file.
-    async epicSaveBrief() {
-      if (!this.selectedEpic) return;
+    epicSaveBrief() {
+      if (this._epicBriefSave) return this._epicBriefSave;
+      if (!this.selectedEpic || this._epicDetail?.id !== this.selectedEpic.id) return true;
+      if (this._epicBriefLead + this.editForm.body === this._epicBriefSavedBody) return true;
       var id = this.selectedEpic.id;
-      var body = this._epicBriefLead + this.editForm.body;
-      if (this._epicDetail && this._epicDetail.id === id && this._epicDetail.body === body) return;
       this.epicBriefSaving = true;
       this.epicBriefSaved = false;
-      var ok = await this._epicRequest('PUT', '/api/tickets/' + encodeURIComponent(id), { body: body });
-      this.epicBriefSaving = false;
-      if (!ok) return;
-      this.epicBriefSaved = true;
-      if (this._epicDetail && this._epicDetail.id === id) this._epicDetail.body = body;
-      if (this.selectedEpic && this.selectedEpic.id === id) {
-        this.selectedEpic = Object.assign({}, this.selectedEpic, { body: body });
-      }
+      // A second PUT must not overtake the first or let navigation drop a newer draft.
+      this._epicBriefSave = (async () => {
+        while (this.selectedEpic?.id === id) {
+          var body = this._epicBriefLead + this.editForm.body;
+          if (body === this._epicBriefSavedBody) return true;
+          if (!await this._epicRequest('PUT', '/api/tickets/' + encodeURIComponent(id), { body: body })) return false;
+          this._epicBriefSavedBody = body;
+          if (this._epicDetail?.id === id) this._epicDetail.body = body;
+          this.selectedEpic = Object.assign({}, this.selectedEpic, { body: body });
+        }
+        return true;
+      })().finally(() => {
+        this._epicBriefSave = null;
+        this.epicBriefSaving = false;
+        this.epicBriefSaved = this.selectedEpic?.id === id &&
+          this._epicBriefLead + this.editForm.body === this._epicBriefSavedBody;
+      });
+      return this._epicBriefSave;
     },
 
     epicToggleGroup(key) {

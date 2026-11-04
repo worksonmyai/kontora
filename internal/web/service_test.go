@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/worksonmyai/kontora/internal/ticket"
 	"github.com/worksonmyai/kontora/internal/ticket/app"
 )
 
@@ -100,7 +101,7 @@ func TestTicketInfoFromView_Relations(t *testing.T) {
 	// A ticket with no relations carries none of the keys.
 	encoded, err := json.Marshal(TicketInfoFromView(app.View{ID: "t6"}))
 	require.NoError(t, err)
-	for _, key := range []string{"deps", "links", "parent", "blocks", "children", "kind", "child_order"} {
+	for _, key := range []string{"deps", "links", "parent", "blocks", "children", "kind", "epic_execution", "child_order"} {
 		assert.NotContains(t, string(encoded), `"`+key+`"`)
 	}
 
@@ -110,6 +111,20 @@ func TestTicketInfoFromView_Relations(t *testing.T) {
 	assert.Equal(t, "epic", epic.Kind)
 	assert.Equal(t, []string{"t2", "t3"}, epic.ChildOrder)
 	assert.Nil(t, epic.Children)
+
+	for _, mode := range []string{"", ticket.EpicExecutionAgent} {
+		t.Run("execution="+mode, func(t *testing.T) {
+			info := TicketInfoFromView(app.View{ID: "e1", Kind: "epic", EpicExecution: mode})
+			assert.Equal(t, mode, info.EpicExecution)
+			encoded, err := json.Marshal(info)
+			require.NoError(t, err)
+			if mode == "" {
+				assert.NotContains(t, string(encoded), `"epic_execution"`)
+			} else {
+				assert.Contains(t, string(encoded), `"epic_execution":"agent"`)
+			}
+		})
+	}
 }
 
 func TestParseNotes(t *testing.T) {

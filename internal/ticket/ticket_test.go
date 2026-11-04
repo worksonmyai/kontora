@@ -10,6 +10,42 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestEpicExecution(t *testing.T) {
+	for _, tc := range []struct {
+		name, fields            string
+		agent, passive, invalid bool
+	}{
+		{name: "ordinary"},
+		{name: "passive", fields: "kind: epic\n", passive: true},
+		{name: "agent", fields: "kind: epic\nepic_execution: agent\n", agent: true},
+		{name: "unknown", fields: "kind: epic\nepic_execution: auto\n", invalid: true},
+		{name: "not epic", fields: "epic_execution: agent\n", invalid: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tkt, err := ParseBytes([]byte("---\nid: e1\n" + tc.fields + "custom: preserved\n---\n# Brief\n"))
+			if tc.invalid {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.agent, tkt.IsAgentEpic())
+			assert.Equal(t, tc.passive, tkt.IsPassiveEpic())
+			cloned := tkt.Clone()
+			assert.Equal(t, tkt.EpicExecution, cloned.EpicExecution)
+			require.NoError(t, cloned.SetField("branch", "integration"))
+			out, err := cloned.Marshal()
+			require.NoError(t, err)
+			reparsed, err := ParseBytes(out)
+			require.NoError(t, err)
+			assert.Equal(t, tc.agent, reparsed.IsAgentEpic())
+			assert.Contains(t, string(out), "custom: preserved")
+			if tc.agent || tc.passive {
+				require.Error(t, reparsed.SetSchedule(time.Now()))
+			}
+		})
+	}
+}
+
 func TestParseBasic(t *testing.T) {
 	tkt, err := ParseFile("testdata/basic.md")
 	require.NoError(t, err)

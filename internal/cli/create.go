@@ -46,9 +46,10 @@ type NewOpts struct {
 	ScheduledAt string
 	NoEdit      bool
 	// Kind is "epic" for a ticket that groups others, empty for ordinary work.
-	// An epic is created open with no pipeline and no agent: it is not run, and
-	// its status is derived from its children from then on.
+	// An epic is always created open; creation never starts its supervisor.
 	Kind string
+	// EpicExecution may mark an epic as "agent" without activating it.
+	EpicExecution string
 	// Parent files the new ticket under an epic.
 	Parent string
 }
@@ -92,8 +93,8 @@ func New(cfg *config.Config, opts NewOpts) (string, error) {
 
 	// Every creation path reaches New, so this is the one place where the
 	// project and top-level defaults are stamped into the ticket. An epic skips
-	// it: a stamped pipeline would give it a stage ribbon and an agent it has
-	// no run for.
+	// them: it cannot have a pipeline, and supervisor defaults are resolved
+	// only when it is explicitly started.
 	if !isEpic {
 		opts.Pipeline, opts.Agent = cfg.ResolveTicketDefaults(opts.Path, opts.Pipeline, opts.Agent)
 	}
@@ -173,9 +174,10 @@ func ticketFrontmatter(id string, opts NewOpts, created string) string {
 	if opts.Body != "" {
 		body = "\n" + opts.Body + "\n"
 	}
-	return fmt.Sprintf("---\nid: %s\nkontora: true\n%sstatus: %s\n%s%s%s%s%s%spath: %s\ncreated: %s\n---\n# %s\n%s",
+	return fmt.Sprintf("---\nid: %s\nkontora: true\n%s%sstatus: %s\n%s%s%s%s%s%spath: %s\ncreated: %s\n---\n# %s\n%s",
 		id,
 		line("kind", opts.Kind),
+		line("epic_execution", opts.EpicExecution),
 		yamlQuote(opts.Status),
 		line("pipeline", opts.Pipeline),
 		line("agent", opts.Agent),
@@ -190,18 +192,26 @@ func ticketFrontmatter(id string, opts NewOpts, created string) string {
 // created with. It takes a pointer because "an epic is created open" is a
 // default as well as a rule. A ticket with no kind passes through untouched.
 func checkEpicOpts(opts *NewOpts) error {
+	if opts.EpicExecution != "" && opts.EpicExecution != ticket.EpicExecutionAgent {
+		return fmt.Errorf("unknown epic_execution %q", opts.EpicExecution)
+	}
 	if opts.Kind == "" {
+		if opts.EpicExecution != "" {
+			return fmt.Errorf("epic_execution requires kind: epic")
+		}
 		return nil
 	}
 	if opts.Kind != string(ticket.KindEpic) {
 		return fmt.Errorf("kind must be %q, got %q", ticket.KindEpic, opts.Kind)
 	}
 	if opts.ScheduledAt != "" {
-		return fmt.Errorf("an epic is never run, so it cannot be scheduled")
+		return fmt.Errorf("an epic cannot be scheduled; start its supervisor explicitly")
 	}
-	if opts.Pipeline != "" || opts.Agent != "" {
-		return fmt.Errorf("an epic has no pipeline and no agent")
+	if config.ClearNone(opts.Pipeline) != "" {
+		return fmt.Errorf("an epic has no pipeline")
 	}
+	opts.Pipeline = ""
+	opts.Agent = config.ClearNone(opts.Agent)
 	if opts.Parent != "" {
 		return fmt.Errorf("epics do not nest")
 	}
@@ -210,14 +220,14 @@ func checkEpicOpts(opts *NewOpts) error {
 		opts.Status = "open"
 	case "open":
 	default:
-		return fmt.Errorf("an epic is created open, not %q: its status is derived from its children", opts.Status)
+		return fmt.Errorf("an epic is created open, not %q: creation does not start its supervisor", opts.Status)
 	}
 	return nil
 }
 
 // resolveParent checks the epic a new ticket is filed under and rewrites the
 // option to the full id, so -parent takes a prefix the way every other ticket
-// argument does. Service.SetParent enforces the same two rules on an existing
+// argument does. Service.SetParent enforces the same rules on an existing
 // ticket; without this the creation path is the way around them, and a bad
 // parent reaches the file as a dangling reference nothing reports.
 func resolveParent(cfg *config.Config, opts *NewOpts) error {
@@ -235,6 +245,9 @@ func resolveParent(cfg *config.Config, opts *NewOpts) error {
 	}
 	if st.Ticket.Kind != ticket.KindEpic {
 		return fmt.Errorf("%w: %s is not an epic", app.ErrNotAnEpic, parentID)
+	}
+	if err := app.ValidateEpicChildRepository(st.Ticket, &ticket.Ticket{ID: opts.ID, Path: opts.Path}); err != nil {
+		return err
 	}
 	opts.Parent = parentID
 	return nil

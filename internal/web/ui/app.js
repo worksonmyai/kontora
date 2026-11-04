@@ -64,7 +64,7 @@ export function kontoraApp() {
     // an unrelated earlier failure and must not lose its own to the toast's
     // 10s timer.
     initError: null,
-    initForm: { ticketId: '', status: '', tag: '', titleRest: '', pipeline: '', agent: '', path: '', branch: '', autoBranch: '', ticketPath: '', notify: [], notifyChannels: [] },
+    initForm: { ticketId: '', kind: '', status: '', tag: '', titleRest: '', pipeline: '', agent: '', path: '', branch: '', autoBranch: '', ticketPath: '', notify: [], notifyChannels: [] },
     // Whether the init modal's status chip row is unfolded. It is a view state,
     // not a mode: the segmented control reads the status list itself, so the
     // chips can be open under any of the three answers.
@@ -225,9 +225,10 @@ export function kontoraApp() {
     showAgentMeta: (function() { try { return localStorage.getItem('kontora-show-agent-meta') !== '0'; } catch (e) { return true; } })(),
     colMenuOpen: null,
     currentView: 'board',
-    // Set while applyRoute drives state from the hash, so the transitions it
-    // calls do not write the hash back and stack up history entries.
-    _applyingRoute: false,
+    // Only the current navigation may suppress hash writes. An older route can
+    // still be awaiting a fetch or save after another selection takes over.
+    _applyingRoute: null,
+    _navigationSeq: 0,
     // Map of ticketId → true while a plannotator subprocess is in flight for it.
     plannotatorInFlight: {},
     // Board cards are rendered imperatively (not via Alpine), so the open card
@@ -312,6 +313,8 @@ export function kontoraApp() {
     // validMoves entries shown as action buttons in the detail panel sidebar.
     detailMoves(ticket) {
       if (!ticket) return [];
+      if (this.epicCanStart(ticket)) return [{ label: 'Start epic', endpoint: 'run' }];
+      if (ticket.kind === 'epic' && !this.epicIsAgent(ticket)) return [];
       var covered = this._detailCoveredMoves[ticket.status] || [];
       return (this.validMoves[ticket.status] || []).filter(mv => !covered.includes(mv.endpoint));
     },

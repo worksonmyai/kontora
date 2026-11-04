@@ -298,8 +298,8 @@ func interactiveTerminal() bool {
 func cmdInit() {
 	fs := flag.NewFlagSet("init", flag.ExitOnError)
 	configPath, ticketsDir := addStoreFlags(fs)
-	pipeline := fs.String("pipeline", "", "pipeline name, or \"none\" for a standalone ticket (required in remote mode)")
-	repoPath := fs.String("path", "", "repository path, on the daemon host in remote mode (required in remote mode)")
+	pipeline := fs.String("pipeline", "", "pipeline name, or \"none\" for a standalone ticket (required for remote ordinary tickets)")
+	repoPath := fs.String("path", "", "repository path, on the daemon host in remote mode (required for remote ordinary tickets)")
 	agent := fs.String("agent", "", "agent name, or \"none\" to skip the project default")
 	stage := fs.String("stage", "", "starting pipeline stage (defaults to the pipeline's first stage)")
 	status := fs.String("status", "", "initial status, open or todo (defaults to asking)")
@@ -310,13 +310,22 @@ func cmdInit() {
 		log.Fatal("ticket ID is required: kontora init TICKET_ID")
 	}
 
-	// Remote init is non-interactive: the TUI pickers don't work over HTTP, so
-	// pipeline and path must be supplied as flags.
+	// Remote ordinary tickets need explicit settings because HTTP has no TUI pickers.
 	if rc := remoteClient(*urlFlag, *tokenFlag); rc != nil {
+		id, resolveErr := rc.ResolveID(taskID)
 		if *pipeline == "" || *repoPath == "" {
-			log.Fatal("remote init requires --pipeline and --path")
+			if resolveErr != nil {
+				log.Fatal("remote init requires --pipeline and --path for ordinary tickets")
+			}
+			t, err := rc.GetTicket(id)
+			if err != nil || t.Kind != "epic" {
+				log.Fatal("remote init requires --pipeline and --path for ordinary tickets")
+			}
 		}
-		if err := rc.Init(mustResolveRemote(rc, taskID), web.InitTicketRequest{
+		if resolveErr != nil {
+			log.Fatal(resolveErr)
+		}
+		if err := rc.Init(id, web.InitTicketRequest{
 			Pipeline: *pipeline,
 			Path:     *repoPath,
 			Agent:    *agent,

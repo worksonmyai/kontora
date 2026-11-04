@@ -20,35 +20,62 @@ import (
 )
 
 func TestCompanionObservation(t *testing.T) {
-	h := newHarness(t)
-	cfg := h.defaultConfig("true", "true")
-	cfg.Assistant.Companion.Enabled = true
-	var calls atomic.Int32
-	d := h.newDaemon(cfg, WithTurnSpawner(func(context.Context, TurnParams) (string, error) { calls.Add(1); return "", nil }))
-	now := time.Now().UTC()
-	task := &ticket.Ticket{ID: "kon-test", Status: ticket.StatusPaused, Created: &now, Body: "# Needs a person", LastError: "recorded error"}
-	d.mu.Lock()
-	d.tickets[task.ID] = &ticketState{ticket: task}
-	d.mu.Unlock()
-	stop := d.startCompanion()
-	defer stop()
-	s := d.CompanionSnapshot()
-	require.True(t, s.Enabled)
-	require.False(t, s.AIAvailable)
-	require.Equal(t, "ok", s.Health)
-	require.Len(t, s.Items, 1)
-	require.True(t, s.Items[0].Active)
-	item := s.Items[0]
-	s, err := d.ReadCompanionItem(item.ID, item.Revision, true)
-	require.NoError(t, err)
-	require.True(t, s.Items[0].Read)
-	require.True(t, s.Items[0].Active)
-	require.Equal(t, ticket.StatusPaused, task.Status)
-	require.Zero(t, calls.Load())
-	_, err = d.PostCompanionMessage(web.CompanionMessageRequest{Kind: "briefing", Text: "Explain"})
-	require.ErrorIs(t, err, web.ErrAssistantDisabled)
-	d.reconcileCompanion(false)
-	require.Zero(t, calls.Load())
+	cases := []struct {
+		name, execution, condition string
+		kind                       ticket.Kind
+		status                     ticket.Status
+	}{
+		{name: "ordinary pause", status: ticket.StatusPaused, condition: "paused"},
+		{name: "passive epic", kind: ticket.KindEpic, status: ticket.StatusPaused},
+		{name: "supervisor pause", kind: ticket.KindEpic, execution: ticket.EpicExecutionAgent, status: ticket.StatusPaused, condition: "paused"},
+		{name: "supervisor review", kind: ticket.KindEpic, execution: ticket.EpicExecutionAgent, status: ticket.StatusHumanReview, condition: "human_review"},
+		{name: "supervisor question", kind: ticket.KindEpic, execution: ticket.EpicExecutionAgent, status: ticket.StatusInProgress, condition: "question"},
+		{name: "supervisor completion", kind: ticket.KindEpic, execution: ticket.EpicExecutionAgent, status: ticket.StatusInProgress, condition: "completion"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			cfg := h.defaultConfig("true", "true")
+			cfg.Assistant.Companion.Enabled = true
+			var calls atomic.Int32
+			d := h.newDaemon(cfg, WithTurnSpawner(func(context.Context, TurnParams) (string, error) { calls.Add(1); return "", nil }))
+			now := time.Now().UTC()
+			task := &ticket.Ticket{ID: "kon-test", Kind: tc.kind, EpicExecution: tc.execution, Status: tc.status, Created: &now, Body: "# Needs a person", LastError: "recorded error"}
+			if tc.condition == "completion" {
+				task.History = []ticket.HistoryEntry{{Stage: simpleStageName, CompletedAt: &now}}
+			}
+			if tc.condition == "question" {
+				d.waiting[task.ID] = waitingState{Tool: "ask_user_question", ToolCallID: "question-1", Question: "Which branch?"}
+			}
+			d.mu.Lock()
+			d.tickets[task.ID] = &ticketState{ticket: task}
+			d.mu.Unlock()
+			stop := d.startCompanion()
+			defer stop()
+			s := d.CompanionSnapshot()
+			require.True(t, s.Enabled)
+			require.False(t, s.AIAvailable)
+			require.Equal(t, "ok", s.Health)
+			if tc.condition == "" {
+				require.Empty(t, s.Items)
+				return
+			}
+			require.Len(t, s.Items, 1)
+			require.Equal(t, tc.condition, s.Items[0].Condition)
+			require.Equal(t, tc.condition != "completion", s.Items[0].Active)
+			item := s.Items[0]
+			s, err := d.ReadCompanionItem(item.ID, item.Revision, true)
+			require.NoError(t, err)
+			require.True(t, s.Items[0].Read)
+			require.Equal(t, tc.condition != "completion", s.Items[0].Active)
+			require.Equal(t, tc.status, task.Status)
+			require.Zero(t, calls.Load())
+			_, err = d.PostCompanionMessage(web.CompanionMessageRequest{Kind: "briefing", Text: "Explain"})
+			require.ErrorIs(t, err, web.ErrAssistantDisabled)
+			d.reconcileCompanion(false)
+			require.Zero(t, calls.Load())
+		})
+	}
 }
 
 func TestCompanionDaemonNoBrowser(t *testing.T) {

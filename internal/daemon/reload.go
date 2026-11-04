@@ -114,6 +114,11 @@ func pinRestartOnly(cur, next *config.Config, log *slog.Logger) {
 		next.MaxConcurrentAgents = cur.MaxConcurrentAgents
 	}
 
+	if next.MaxConcurrentEpicSupervisors != cur.MaxConcurrentEpicSupervisors {
+		warn("max_concurrent_epic_supervisors", cur.MaxConcurrentEpicSupervisors, next.MaxConcurrentEpicSupervisors)
+		next.MaxConcurrentEpicSupervisors = cur.MaxConcurrentEpicSupervisors
+	}
+
 	// One warning per differing web child, so "port changed" doesn't read as
 	// "the whole web block changed". The token value is never logged.
 	if !reflect.DeepEqual(next.Web.Enabled, cur.Web.Enabled) {

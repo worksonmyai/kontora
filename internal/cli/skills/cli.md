@@ -106,8 +106,10 @@ it print a table instead. Prefer `--json` when parsing.
 `--ready` and `--blocked` cannot be combined. `--json` prints an array of
 objects with `id`, `title`, `status`, `kontora`, `path`, `project`, `pipeline`,
 `stage`, `agent`, `created_at`, `started_at`, `completed_at`, `deps`, `links`,
-`parent`, `ready` and `blockers`. It omits `kind`, an epic's `children` order,
-and the ticket body. Do not infer that no epics exist from missing `kind` values.
+`parent`, `kind`, `epic_execution`, `child_order`, `branch`, `base_branch`,
+`ready` and `blockers`. `epic_execution: "agent"` identifies a supervisor.
+`child_order` is stored display order, not membership. Read each child's `parent`
+across the complete listing to find all children. The listing omits the ticket body.
 
 ## kontora search
 
@@ -140,7 +142,7 @@ Exits 0 whether or not anything matched.
 - `--base-branch NAME` — branch the work branch starts from.
 - `--status STATUS`: `open` or `todo`. Defaults to `todo` for ordinary tickets;
   epics accept only `open` and default to it.
-- `--kind epic`: create a shared brief that groups tickets and never runs.
+- `--kind epic`: create a passive shared brief. Creation never starts a supervisor.
 - `--parent EPIC_ID`: create an ordinary ticket under an existing epic. Accepts
   a unique id prefix. Epics cannot have parents.
 - `--at TIME` — schedule pickup for an instant: RFC 3339, or a local wall time
@@ -156,9 +158,10 @@ after a generated `# <title>` heading.
 A ticket created with `--status open` is never visible as `todo`, so a daemon
 with `auto_pick_up: true` cannot claim it before you finish editing it.
 
-With `--kind epic`, omit pipeline, agent, parent and schedule flags. Even
-`--pipeline none` and `--agent none` are refused. Project defaults are skipped.
-The daemon derives the epic's status from its children; its brief remains editable.
+With `--kind epic`, omit pipeline, parent and schedule flags. `--agent` selects
+the future supervisor without starting it. Project defaults are skipped.
+The daemon derives the passive epic's status from its children; its brief remains editable.
+Use `kontora run EPIC_ID` later to activate a supervisor.
 
 ```sh
 kontora new --kind epic --status open --path ~/projects/myrepo --description-file brief.md "Add authentication"
@@ -199,8 +202,9 @@ field.
 - `--branch NAME` — set the work branch (`""` clears it).
 - `--base-branch NAME` — set the base branch (`""` clears it).
 
-An epic's brief is editable in every status, including `in_progress`, through
-`--body-file`. Ordinary tickets reject edits while running or terminal. There
+A passive epic's brief is editable in every status, including `in_progress`,
+through `--body-file`. Agent epics and ordinary tickets reject edits while
+running or terminal. Epics never accept a pipeline. There
 are no `--kind` or `--parent` update flags; change an existing ticket's parent
 through the web UI or parent API described in `kontora skills show tickets Epics`.
 
@@ -226,13 +230,27 @@ always name them from a script or an agent.
 - `--stage NAME` — starting stage. Defaults to the pipeline's first.
 - `--status STATUS` — `open` or `todo`. Defaults to asking.
 
-In remote mode `--pipeline` and `--path` are both required.
+For an epic, explicit `--status todo` activates a supervisor. Omit `--pipeline`
+and `--stage`; `--agent` selects the supervisor. Passive epic initialization
+without explicit `--status todo` is refused. Activation requires the epic and
+every child to use the same Git repository.
+Local `init` requires a running daemon when starting an epic.
+It queues the supervisor even with `auto_pick_up: false`.
+
+For ordinary tickets in remote mode, `--pipeline` and `--path` are both required.
 
 ## kontora run
 
 `kontora run TICKET_ID` — enqueue an `open` or `todo` ticket. Needs a running
 daemon. A ticket whose deps are not all closed is reported as blocked, naming
 them, rather than queued.
+
+On a passive epic, this explicitly activates a supervisor and writes
+`epic_execution: agent`. Creation and draft edits never activate it. The epic
+and every child must use the same Git repository. The supervisor uses its own
+branch and worktree, while children keep theirs. Success parks the epic in
+`human_review`. See `kontora skills show tickets Epics` for review, rework,
+Git and approval limits, capacity and mixed-version upgrade requirements.
 
 ## kontora schedule
 
@@ -257,6 +275,7 @@ ticket now.
 
 `kontora pause TICKET_ID` — stop a running ticket and park it in `paused`. A
 ticket that already closed cannot be paused. Refused on your own ticket.
+On an agent epic, this stops only the supervisor. Running children continue.
 
 ## kontora retry
 

@@ -14,6 +14,27 @@ import (
 	"github.com/worksonmyai/kontora/internal/config"
 )
 
+func TestListEpicMetadata(t *testing.T) {
+	dir := t.TempDir()
+	writeTicket(t, dir, "e1.md", "---\nid: e1\nkind: epic\nepic_execution: agent\nstatus: open\nkontora: true\nchildren: [c2, c1]\nbranch: integration\nbase_branch: main\n---\n# Epic\n")
+	writeTicket(t, dir, "e2.md", "---\nid: e2\nkind: epic\nstatus: open\nkontora: true\n---\n# Passive\n")
+	items, err := LocalItems(&config.Config{TicketsDir: dir, DefaultAgent: "a"})
+	require.NoError(t, err)
+	var out bytes.Buffer
+	require.NoError(t, RenderList(Listing{Items: items}, &out, ListOpts{JSON: true}))
+	var rows []map[string]any
+	require.NoError(t, json.Unmarshal(out.Bytes(), &rows))
+	require.Len(t, rows, 2)
+	assert.Equal(t, "epic", rows[0]["kind"])
+	assert.Equal(t, "agent", rows[0]["epic_execution"])
+	assert.Equal(t, []any{"c2", "c1"}, rows[0]["child_order"])
+	assert.Equal(t, "integration", rows[0]["branch"])
+	assert.Equal(t, "main", rows[0]["base_branch"])
+	assert.Equal(t, []any{}, rows[1]["child_order"])
+	assert.NotContains(t, rows[1], "stage")
+	assert.NotContains(t, rows[1], "agent")
+}
+
 // listFixture writes one ticket per spec line of the form
 // "<id> <status> [dep=<id>] [path=<path>]".
 func listFixture(t *testing.T, specs ...string) *config.Config {

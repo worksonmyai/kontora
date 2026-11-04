@@ -59,6 +59,9 @@ func (t *Ticket) Schedule() (time.Time, bool) {
 
 // SetSchedule writes the normalized form of at into the frontmatter.
 func (t *Ticket) SetSchedule(at time.Time) error {
+	if t.Kind == KindEpic {
+		return fmt.Errorf("epics cannot be scheduled")
+	}
 	return t.SetField(FieldScheduledAt, FormatSchedule(at))
 }
 

@@ -14,6 +14,7 @@ import (
 
 	"github.com/worksonmyai/kontora/internal/config"
 	"github.com/worksonmyai/kontora/internal/testutil"
+	"github.com/worksonmyai/kontora/internal/ticket"
 	"github.com/worksonmyai/kontora/internal/tmux"
 )
 
@@ -1907,6 +1908,51 @@ func TestReadDescription(t *testing.T) {
 	require.ErrorContains(t, err, "reading description")
 }
 
+func TestNew_EpicAgentIsDraft(t *testing.T) {
+	for _, mode := range []string{"", ticket.EpicExecutionAgent} {
+		t.Run("mode="+mode, func(t *testing.T) {
+			dir := t.TempDir()
+			cfg := &config.Config{TicketsDir: dir, DefaultPipeline: "missing", Agents: map[string]config.Agent{"a": {Binary: "true"}}}
+			id, err := New(cfg, NewOpts{Path: "not-a-repository-yet", Title: "Epic", Kind: "epic", EpicExecution: mode, Agent: "a", NoEdit: true})
+			require.NoError(t, err)
+			tkt, err := ticket.ParseFile(filepath.Join(dir, id+".md"))
+			require.NoError(t, err)
+			assert.Equal(t, ticket.StatusOpen, tkt.Status)
+			assert.Equal(t, "a", tkt.Agent)
+			assert.Empty(t, tkt.Pipeline)
+			assert.Empty(t, tkt.Stage)
+			assert.Equal(t, mode, tkt.EpicExecution)
+		})
+	}
+	for _, opts := range []NewOpts{{Kind: "epic", EpicExecution: "auto"}, {EpicExecution: "agent"}} {
+		opts.Path, opts.Title, opts.NoEdit = "draft", "Epic", true
+		_, err := New(&config.Config{TicketsDir: t.TempDir()}, opts)
+		require.Error(t, err)
+	}
+}
+
+func TestInit_EpicStartRequiresDaemon(t *testing.T) {
+	for _, status := range []string{"", "open", "todo"} {
+		t.Run("status="+status, func(t *testing.T) {
+			dir := t.TempDir()
+			repo := initTestRepo(t)
+			cfg := &config.Config{TicketsDir: dir, DefaultPipeline: "missing", DefaultAgent: "a", Agents: map[string]config.Agent{"a": {Binary: "true"}}}
+			id, err := New(cfg, NewOpts{Path: repo, Title: "Epic", Kind: "epic", Agent: "a", NoEdit: true})
+			require.NoError(t, err)
+			var out bytes.Buffer
+			err = Enable(cfg, id, EnableOpts{Status: status}, &out)
+			tkt, readErr := ticket.ParseFile(filepath.Join(dir, id+".md"))
+			require.NoError(t, readErr)
+			require.Error(t, err)
+			if status == "todo" {
+				assert.Contains(t, err.Error(), "daemon not reachable")
+			}
+			assert.True(t, tkt.IsPassiveEpic())
+			assert.Equal(t, ticket.StatusOpen, tkt.Status)
+		})
+	}
+}
+
 // TestNew_Epic pins what `kontora new -kind epic` writes: a kind, no pipeline
 // and no agent whatever the project defaults say, and status open, because the
 // derivation takes the status from there.
@@ -1942,7 +1988,7 @@ func TestNew_EpicRejections(t *testing.T) {
 	}{
 		{name: "an unknown kind", opts: NewOpts{Kind: "saga"}, wantErr: `kind must be "epic"`},
 		{name: "an epic is created open", opts: NewOpts{Kind: "epic", Status: "todo"}, wantErr: "an epic is created open"},
-		{name: "an epic has no pipeline", opts: NewOpts{Kind: "epic", Pipeline: "default"}, wantErr: "no pipeline and no agent"},
+		{name: "an epic has no pipeline", opts: NewOpts{Kind: "epic", Pipeline: "default"}, wantErr: "no pipeline"},
 		{name: "epics do not nest", opts: NewOpts{Kind: "epic", Parent: "epc-100"}, wantErr: "epics do not nest"},
 	}
 

@@ -202,6 +202,7 @@ func TestReload_InvalidConfigKeepsRunning(t *testing.T) {
 		content string
 	}{
 		{"unknown field", h.yaml(configOpts{extra: "unknown_field: x\n"})},
+		{"negative supervisor capacity", h.yaml(configOpts{extra: "max_concurrent_epic_supervisors: -1\n"})},
 		{"pipeline references a missing stage", h.yaml(configOpts{pipelines: `  one-stage:
     - stage: nonexistent
       agent: agent1
@@ -250,7 +251,8 @@ notifications:
       chat_id: "1"
   default: [tg]
 `
-	metricsAfter := `metrics:
+	metricsAfter := `max_concurrent_epic_supervisors: 8
+metrics:
   enabled: false
   endpoint: collector.example:4318
   insecure: false
@@ -293,6 +295,7 @@ notifications:
 	assert.Equal(t, "test-instance", got.InstanceName)
 	assert.Equal(t, "kontora-test", got.TmuxSession)
 	assert.Equal(t, 4, got.MaxConcurrentAgents)
+	assert.Equal(t, 4, got.MaxConcurrentEpicSupervisors)
 	assert.Equal(t, before.Web, got.Web, "the web block is pinned whole")
 	assert.Equal(t, before.Metrics, got.Metrics, "the metrics block is pinned whole")
 	assert.Equal(t, "localhost:4318", got.Metrics.Endpoint, "the running exporter's endpoint survives the reload")
@@ -303,7 +306,7 @@ notifications:
 	logs := h.logBuf.String()
 	for _, field := range []string{
 		"tickets_dir", "worktrees_dir", "logs_dir", "instance_name", "tmux_session",
-		"max_concurrent_agents", "web.host", "web.port", "web.token", "web.allowed_hosts",
+		"max_concurrent_agents", "max_concurrent_epic_supervisors", "web.host", "web.port", "web.token", "web.allowed_hosts",
 		"metrics.enabled", "metrics.endpoint", "metrics.headers", "metrics.interval", "metrics.insecure",
 		"notifications.enabled", "notifications.channels", "notifications.default",
 		"notifications.timeout", "notifications.attempts", "notifications.backoff",

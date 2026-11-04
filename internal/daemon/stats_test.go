@@ -121,6 +121,13 @@ func TestSimpleTicketRun(t *testing.T) {
 		},
 		{name: "active standalone retry excludes its old completed run", ticket: ticket.Ticket{ID: "kon-live", Status: ticket.StatusInProgress, StartedAt: &now, CompletedAt: &now}},
 		{name: "pipeline ticket", ticket: ticket.Ticket{ID: "kon-pipe", Pipeline: "pipe", StartedAt: &now, CompletedAt: &now}},
+		{
+			name: "supervisor uses recorded history only",
+			ticket: ticket.Ticket{ID: "kon-epic", Kind: ticket.KindEpic, EpicExecution: ticket.EpicExecutionAgent,
+				Status: ticket.StatusDone, StartedAt: &now, CompletedAt: &now,
+				History: []ticket.HistoryEntry{{Stage: simpleStageName, StartedAt: &now, CompletedAt: &now}},
+			},
+		},
 	}
 
 	for _, tc := range tests {

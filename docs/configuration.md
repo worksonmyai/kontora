@@ -71,6 +71,7 @@ worktrees_dir: ~/.kontora/worktrees
 logs_dir: ~/.kontora/logs
 editor: nvim
 max_concurrent_agents: 3
+max_concurrent_epic_supervisors: 4
 
 web:
   enabled: true
@@ -170,7 +171,8 @@ pipelines:
 | `pager` | no | none | Pager for `kontora view`, `logs` and `activity`, split on whitespace. Used only when stdout is a terminal. `$KONTORA_PAGER`, `$TICKET_PAGER` and `$PAGER` all outrank it, and it has no effect in remote mode, which reads no config. |
 | `default_agent` | no | (inferred) | Agent used for tickets without a pipeline. Defaults to `claude` if an agent with that name exists, otherwise inferred when there is exactly one agent. Must be set explicitly when multiple agents are defined and none is named `claude`. |
 | `default_pipeline` | no | — | Pipeline a new ticket takes when neither the command line nor a matching project names one (see [projects](#projects)). Unset, such a ticket runs one agent on its description instead. Must name a configured pipeline. |
-| `max_concurrent_agents` | no | `3` | Maximum number of agents running simultaneously. |
+| `max_concurrent_agents` | no | `3` | Maximum simultaneous worker runs. Epic supervisors use a separate pool. |
+| `max_concurrent_epic_supervisors` | no | `4` | Maximum simultaneous epic supervisors, in addition to worker capacity. Zero or omission uses `4`; negative values are rejected. Requires a daemon restart. |
 | `instance_name` | no | `os.Hostname()` | Identifies this daemon when several run against one synced `tickets_dir`. Written to a ticket's `claimed_by` on pickup so daemons don't steal or kill each other's work (see [multi-machine tickets](tickets.md#running-on-multiple-machines)). Falls back to `default` if the hostname can't be read. Two machines that share a hostname must set this explicitly, or the protection can't tell them apart. |
 | `author` | no | the OS user | The name a note written by a person is signed with: the web composer's, and a bare `kontora note`. An agent's own note is signed with `$KONTORA_AGENT` instead, and Kontora's own with `kontora` (see [notes](tickets.md#notes)). Cannot contain `·`, a newline or `**`. |
 | `tmux_session` | no | `kontora` | The tmux session the daemon puts agent windows in. Allowed characters are `A-Z a-z 0-9 _ -`, 1 to 64 of them, and the name cannot start with `-`. Set a distinct value per daemon when you run more than one on a machine: startup cleanup, `kontora attach`, the TUI, and the web terminal are all scoped to this session, and two daemons sharing it can also signal each other's agents through the tmux `wait-for` channel when their ticket IDs collide. |
@@ -187,6 +189,10 @@ pipelines:
 | `web` | no | — | Web dashboard settings (see [web](#web)). Enabled by default. |
 
 All paths support `~` for the home directory. Tilde expansion happens at runtime, not at config load time.
+
+Epic supervisors use separate capacity so a supervisor waiting for its children cannot occupy a worker's slot. With the default settings, three workers and four additional supervisor processes can run at once. Each pool keeps oldest-first order among eligible tickets. A full worker pool does not block a supervisor, and a full supervisor pool does not block a worker. Unconfirmed process termination retains the reservation in the pool that started it.
+
+Creating an epic leaves it passive. Only an explicit run or initialization with `status: todo` activates its supervisor. The epic and every child must use one Git repository. See [Epics](tickets.md#epics) for pause, review, Git and approval limits. Upgrade all daemons and clients sharing the ticket directory before activation; older versions can overwrite supervisor status.
 
 ## branch naming
 
@@ -1287,7 +1293,7 @@ daemon names an existing ticket whose branch is still empty.
 ### What needs a restart
 
 `tickets_dir`, `worktrees_dir`, `logs_dir`, `instance_name`, `tmux_session`,
-`max_concurrent_agents`, and the whole `web` and `metrics` blocks
+`max_concurrent_agents`, `max_concurrent_epic_supervisors`, and the whole `web` and `metrics` blocks
 (`metrics.enabled`, `metrics.endpoint`, `metrics.insecure`, `metrics.interval`,
 `metrics.headers`). The daemon reads these once at startup: the watched
 directory, the worktree root, the claim name, the tmux session, the semaphore

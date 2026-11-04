@@ -7,6 +7,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/worksonmyai/kontora/internal/ticket"
 )
 
 // managedDispatch stays disabled until the authority and integration paths are installed.
@@ -98,6 +100,48 @@ func (d *Daemon) readyManagedJobLocked() int {
 	return first
 }
 
+type dispatchPoolKey struct{}
+
+// dispatchPoolMatches checks the reservation again after dispatch releases the
+// mutex. A ticket can change execution mode before runTicket claims it.
+func dispatchPoolMatches(ctx context.Context, t *ticket.Ticket) bool {
+	epic, reserved := ctx.Value(dispatchPoolKey{}).(bool)
+	return !reserved || epic == t.IsAgentEpic()
+}
+
+func (d *Daemon) ticketPool(t *ticket.Ticket) chan struct{} {
+	if t.IsAgentEpic() {
+		return d.epicSem
+	}
+	return d.sem
+}
+
+// Heap storage is not sorted, so compare every eligible item with Less.
+func (d *Daemon) readyOrdinaryJobLocked() int {
+	eligible := d.queue[:0]
+	for _, item := range d.queue {
+		if _, ok := d.claimableLocked(item.ticketID, d.ticketLog(item.ticketID)); !ok {
+			delete(d.queued, item.ticketID)
+			continue
+		}
+		eligible = append(eligible, item)
+	}
+	if len(eligible) != d.queue.Len() {
+		clear(d.queue[len(eligible):])
+		d.queue = eligible
+		heap.Init(&d.queue)
+		d.syncQueueDepthLocked()
+	}
+	first := -1
+	for i, item := range d.queue {
+		pool := d.ticketPool(d.tickets[item.ticketID].ticket)
+		if len(pool) < cap(pool) && (first < 0 || d.queue.Less(i, first)) {
+			first = i
+		}
+	}
+	return first
+}
+
 func (d *Daemon) dispatch(ctx context.Context, wg *sync.WaitGroup) {
 	go func() {
 		<-ctx.Done()
@@ -113,22 +157,26 @@ func (d *Daemon) dispatch(ctx context.Context, wg *sync.WaitGroup) {
 				return
 			}
 			managedIndex := d.readyManagedJobLocked()
-			hasOrdinary := d.queue.Len() > 0
+			ordinaryIndex := d.readyOrdinaryJobLocked()
+			hasOrdinary := ordinaryIndex >= 0
 			if !hasOrdinary && managedIndex < 0 {
 				d.queueCond.Wait()
 				continue
 			}
 			managed := managedIndex >= 0 && (!hasOrdinary || d.managedDispatch.preferManaged)
 			slots := 1
+			pool := d.sem
 			if managed {
 				slots = d.managedDispatch.queue[managedIndex].slotCount()
+			} else {
+				pool = d.ticketPool(d.tickets[d.queue[ordinaryIndex].ticketID].ticket)
 			}
-			if slots > cap(d.sem)-len(d.sem) {
+			if slots > cap(pool)-len(pool) {
 				d.queueCond.Wait()
 				continue
 			}
 			for range slots {
-				d.sem <- struct{}{}
+				pool <- struct{}{}
 			}
 			if managed {
 				state := d.managedDispatch
@@ -162,7 +210,8 @@ func (d *Daemon) dispatch(ctx context.Context, wg *sync.WaitGroup) {
 					d.queueCond.Broadcast()
 				})
 			} else {
-				item := heap.Pop(&d.queue).(*queueItem)
+				item := heap.Remove(&d.queue, ordinaryIndex).(*queueItem)
+				epic := d.tickets[item.ticketID].ticket.IsAgentEpic()
 				delete(d.queued, item.ticketID)
 				d.syncQueueDepthLocked()
 				if d.managedDispatch != nil {
@@ -172,11 +221,12 @@ func (d *Daemon) dispatch(ctx context.Context, wg *sync.WaitGroup) {
 				d.metrics.QueueWait(ctx, time.Since(item.enqueuedAt))
 				wg.Go(func() {
 					runCtx := context.WithValue(ctx, ordinaryReservationKey{}, &atomic.Bool{})
+					runCtx = context.WithValue(runCtx, dispatchPoolKey{}, epic)
 					defer func() {
 						d.mu.Lock()
 						defer d.mu.Unlock()
 						if !ordinaryReservationRetained(runCtx) {
-							<-d.sem
+							<-pool
 						} else {
 							d.log.Error("ordinary attempt termination unconfirmed; reservation retained", "ticket", item.ticketID)
 						}

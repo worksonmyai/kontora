@@ -136,10 +136,27 @@ const (
 // is a named type rather than a string so it cannot be swapped with free text.
 type Kind string
 
-// KindEpic marks a ticket that groups others through their parent field. An
-// epic is never run: it has no pipeline, no branch and no worktree, and its
-// status is derived from its children rather than written by hand.
+// KindEpic marks a ticket that groups others through their parent field.
+// Without EpicExecution it is passive and its status is derived from children.
 const KindEpic Kind = "epic"
+
+const EpicExecutionAgent = "agent"
+
+func (t *Ticket) IsAgentEpic() bool {
+	return t.Kind == KindEpic && t.EpicExecution == EpicExecutionAgent
+}
+
+func (t *Ticket) IsPassiveEpic() bool { return t.Kind == KindEpic && t.EpicExecution == "" }
+
+func (t *Ticket) validateEpicExecution() error {
+	if t.EpicExecution != "" && t.EpicExecution != EpicExecutionAgent {
+		return fmt.Errorf("unknown epic_execution %q", t.EpicExecution)
+	}
+	if t.EpicExecution != "" && t.Kind != KindEpic {
+		return fmt.Errorf("epic_execution requires kind: epic")
+	}
+	return nil
+}
 
 type HistoryEntry struct {
 	Stage string `yaml:"stage"`
@@ -193,19 +210,21 @@ type ManagedOwnership struct {
 }
 
 type Ticket struct {
-	Managed     *ManagedOwnership `yaml:"managed,omitempty"`
-	ID          string            `yaml:"id"`
-	Kontora     bool              `yaml:"kontora"`
-	Status      Status            `yaml:"status"`
-	Kind        Kind              `yaml:"kind,omitempty"`
-	Pipeline    string            `yaml:"pipeline"`
-	Path        string            `yaml:"path"`
-	Agent       string            `yaml:"agent"`
-	Stage       string            `yaml:"stage"`
-	Attempt     int               `yaml:"attempt"`
-	StartedAt   *time.Time        `yaml:"started_at"`
-	CompletedAt *time.Time        `yaml:"completed_at"`
-	Branch      string            `yaml:"branch"`
+	Managed *ManagedOwnership `yaml:"managed,omitempty"`
+	ID      string            `yaml:"id"`
+	Kontora bool              `yaml:"kontora"`
+	Status  Status            `yaml:"status"`
+	Kind    Kind              `yaml:"kind,omitempty"`
+	// EpicExecution is empty for passive grouping or "agent" for a supervisor.
+	EpicExecution string     `yaml:"epic_execution,omitempty"`
+	Pipeline      string     `yaml:"pipeline"`
+	Path          string     `yaml:"path"`
+	Agent         string     `yaml:"agent"`
+	Stage         string     `yaml:"stage"`
+	Attempt       int        `yaml:"attempt"`
+	StartedAt     *time.Time `yaml:"started_at"`
+	CompletedAt   *time.Time `yaml:"completed_at"`
+	Branch        string     `yaml:"branch"`
 	// BaseBranch names the branch the work branch starts from. Empty means the
 	// repository's default branch.
 	BaseBranch string         `yaml:"base_branch"`
@@ -322,6 +341,9 @@ func ParseBytes(data []byte) (*Ticket, error) {
 	if err := doc.Content[0].Decode(&t); err != nil {
 		return nil, fmt.Errorf("decoding fields: %w", err)
 	}
+	if err := t.validateEpicExecution(); err != nil {
+		return nil, err
+	}
 	t.Body = body
 	t.rawNode = doc.Content[0]
 	t.rawBody = body
@@ -413,6 +435,9 @@ func (t *Ticket) syncFromNode() error {
 	}
 	var decoded Ticket
 	if err := t.rawNode.Decode(&decoded); err != nil {
+		return err
+	}
+	if err := decoded.validateEpicExecution(); err != nil {
 		return err
 	}
 	decoded.Body = t.Body

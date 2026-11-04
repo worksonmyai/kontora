@@ -5,7 +5,8 @@ that runs it, and says what happens on success and on failure. A ticket
 references a pipeline by name in its `pipeline` frontmatter field.
 
 An ordinary ticket with no pipeline runs standalone: one agent invocation with
-the default agent, no stages. An epic has no pipeline and never runs.
+the default agent, no stages. An epic has no pipeline. A passive epic never
+runs; an explicitly activated agent epic runs a supervisor in its own worktree.
 
 ## Stages
 
@@ -82,8 +83,18 @@ One run is one agent process for one stage of one ticket, started in the
 ticket's git worktree, in a detached tmux window. A stage that retries produces
 several runs; the run number counts them within the stage.
 
-The daemon runs at most `max_concurrent_agents` of them at once, taking `todo`
-kontora tickets whose deps are closed, oldest `created` first.
+The daemon runs at most `max_concurrent_agents` workers at once. Epic supervisors
+use a separate `max_concurrent_epic_supervisors` pool, default `4`. This allows
+four additional agent processes. The queue takes `todo` kontora tickets whose
+deps are closed, oldest `created` first among tickets whose pool has capacity.
+Unconfirmed termination retains the reservation in the pool that started it.
+
+Activate an epic explicitly with `kontora run EPIC_ID` or init with `--status todo`.
+The epic and children must share one Git repository. Children keep their own
+pipelines, branches and worktrees. Pausing the epic stops only its supervisor.
+A successful supervisor run goes to `human_review`; Plannotator feedback starts
+supervisor rework. The epic records supervisor history, logs, activity and sessions.
+See `kontora skills show tickets Epics` for Git and approval limits and upgrade requirements.
 
 An assistant chat turn is not a run: it is a headless process, takes no
 concurrency slot, and belongs to no ticket.

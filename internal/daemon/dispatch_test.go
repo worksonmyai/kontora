@@ -4,6 +4,7 @@ import (
 	"container/heap"
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/worksonmyai/kontora/internal/orchestrator"
 	"github.com/worksonmyai/kontora/internal/process"
+	"github.com/worksonmyai/kontora/internal/ticket"
 )
 
 func TestSharedDispatch(t *testing.T) {
@@ -221,6 +223,217 @@ func TestManagedDispatchSlotRefusal(t *testing.T) {
 		t.Fatal("refused admission leaked slots")
 	}
 	require.Eventually(t, func() bool { return len(d.sem) == 0 }, time.Second, time.Millisecond)
+}
+
+func TestDispatchPoolsRunIndependently(t *testing.T) {
+	for _, firstEpic := range []bool{false, true} {
+		t.Run(map[bool]string{false: "worker pool full", true: "supervisor pool full"}[firstEpic], func(t *testing.T) {
+			h := newHarness(t)
+			h.cfg.MaxConcurrentAgents = 1
+			h.cfg.MaxConcurrentEpicSupervisors = 1
+			calls := make(chan string, 3)
+			d := h.newDaemon(h.cfg, WithRunner(func(ctx context.Context, p RunnerParams) (process.Result, error) {
+				calls <- p.TicketID
+				<-ctx.Done()
+				return process.Result{Termination: process.TerminationProcessGroupGone}, ctx.Err()
+			}))
+			write := func(id string, epic bool) string {
+				md := h.taskMD(id, "todo", "one-stage")
+				if epic {
+					md = strings.Replace(h.epicMD(id, "todo"), "kind: epic\n", "kind: epic\nepic_execution: agent\n", 1)
+				}
+				return h.writeTicket(id+".md", md)
+			}
+			write("first", firstEpic)
+			stop := startDaemon(t, d)
+			defer func() {
+				stop()
+				require.Empty(t, d.sem, "confirmed worker shutdown releases worker capacity")
+				require.Empty(t, d.epicSem, "confirmed supervisor shutdown releases supervisor capacity")
+			}()
+			select {
+			case id := <-calls:
+				require.Equal(t, "first", id)
+			case <-time.After(5 * time.Second):
+				t.Fatal("first pool did not start")
+			}
+			d.handleFileChanged(write("waiting", firstEpic))
+			d.handleFileChanged(write("other", !firstEpic))
+			select {
+			case id := <-calls:
+				require.Equal(t, "other", id)
+			case <-time.After(5 * time.Second):
+				t.Fatal("full pool blocked the other pool")
+			}
+			require.Len(t, d.sem, 1)
+			require.Len(t, d.epicSem, 1)
+			d.mu.Lock()
+			waiting := d.queued["waiting"]
+			d.mu.Unlock()
+			require.True(t, waiting, "saturated pool must leave waiting work queued")
+		})
+	}
+}
+
+func TestEpicUncertainExecutionRetainsOnlySupervisorPool(t *testing.T) {
+	h := newHarness(t)
+	h.cfg.MaxConcurrentAgents = 1
+	h.cfg.MaxConcurrentEpicSupervisors = 1
+	epicMD := func(id string) string {
+		return strings.Replace(h.epicMD(id, "todo"), "kind: epic\n", "kind: epic\nepic_execution: agent\n", 1)
+	}
+	h.writeTicket("uncertain.md", epicMD("uncertain"))
+	calls := make(chan string, 3)
+	d := h.newDaemon(h.cfg, WithRunner(func(_ context.Context, p RunnerParams) (process.Result, error) {
+		calls <- p.TicketID
+		result := process.Result{StartedAt: time.Now(), ExitedAt: time.Now()}
+		if p.TicketID == "uncertain" {
+			return result, process.ErrTerminationUncertain
+		}
+		result.Termination = process.TerminationProcessGroupGone
+		return result, nil
+	}))
+	stop := startDaemon(t, d)
+	defer stop()
+	select {
+	case id := <-calls:
+		require.Equal(t, "uncertain", id)
+	case <-time.After(5 * time.Second):
+		t.Fatal("supervisor did not start")
+	}
+	d.handleFileChanged(h.writeTicket("replacement.md", epicMD("replacement")))
+	d.handleFileChanged(h.writeTicket("worker.md", h.taskMD("worker", "todo", "one-stage")))
+	select {
+	case id := <-calls:
+		require.Equal(t, "worker", id, "uncertain supervisor must not admit another supervisor")
+	case <-time.After(5 * time.Second):
+		t.Fatal("retained supervisor reservation blocked worker capacity")
+	}
+	h.waitForStatus("worker.md", ticket.StatusDone, 5*time.Second)
+	require.Eventually(t, func() bool { return len(d.sem) == 0 }, time.Second, time.Millisecond)
+	require.Len(t, d.epicSem, 1)
+	d.mu.Lock()
+	_, running := d.running["uncertain"]
+	_, live := d.liveRuns["uncertain"]
+	branches := len(d.runningBranches)
+	d.mu.Unlock()
+	require.True(t, running)
+	require.True(t, live)
+	require.Equal(t, 1, branches)
+	select {
+	case id := <-calls:
+		t.Fatalf("replacement admitted after uncertain supervisor termination: %s", id)
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+func TestDispatchPoolSelection(t *testing.T) {
+	for _, tc := range []struct {
+		name                         string
+		workersFull, supervisorsFull bool
+		want                         string
+	}{
+		{name: "oldest across both pools", want: "epic-old"},
+		{name: "workers full", workersFull: true, want: "epic-old"},
+		{name: "supervisors full", supervisorsFull: true, want: "worker-old"},
+		{name: "both full", workersFull: true, supervisorsFull: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			d := h.newDaemon(h.cfg)
+			d.sem = make(chan struct{}, 1)
+			d.epicSem = make(chan struct{}, 1)
+			if tc.workersFull {
+				d.sem <- struct{}{}
+			}
+			if tc.supervisorsFull {
+				d.epicSem <- struct{}{}
+			}
+			for i, id := range []string{"worker-new", "epic-new", "worker-old", "epic-old"} {
+				task := &ticket.Ticket{ID: id, Kontora: true, Status: ticket.StatusTodo}
+				if i%2 == 1 {
+					task.Kind, task.EpicExecution = ticket.KindEpic, "agent"
+				}
+				d.tickets[id] = &ticketState{ticket: task}
+				d.queued[id] = true
+				heap.Push(&d.queue, &queueItem{ticketID: id, created: time.Unix(int64(4-i), 0)})
+			}
+			index := d.readyOrdinaryJobLocked()
+			if tc.want == "" {
+				require.Equal(t, -1, index)
+			} else {
+				require.GreaterOrEqual(t, index, 0)
+				require.Equal(t, tc.want, d.queue[index].ticketID)
+			}
+			require.Len(t, d.queue, 4, "full pools must leave tickets queued")
+		})
+	}
+}
+
+func TestDispatchRechecksQueueEligibilityAndMode(t *testing.T) {
+	h := newHarness(t)
+	d := h.newDaemon(h.cfg)
+	d.sem = make(chan struct{}, 1)
+	d.epicSem = make(chan struct{}, 1)
+	d.sem <- struct{}{}
+	for _, id := range []string{"missing", "passive", "blocked", "paused", "changed"} {
+		task := &ticket.Ticket{ID: id, Kontora: true, Status: ticket.StatusTodo}
+		switch id {
+		case "missing":
+			// A deleted ticket can remain in the heap until the next dispatch.
+		case "passive":
+			task.Kind = ticket.KindEpic
+		case "blocked":
+			task.Deps = []string{"missing-dependency"}
+		case "paused":
+			task.Status = ticket.StatusPaused
+		}
+		if id != "missing" {
+			d.tickets[id] = &ticketState{ticket: task}
+		}
+		d.queued[id] = true
+		heap.Push(&d.queue, &queueItem{ticketID: id})
+	}
+	d.syncQueueDepthLocked()
+	require.Equal(t, -1, d.readyOrdinaryJobLocked())
+	require.Len(t, d.queue, 1)
+	require.EqualValues(t, 1, d.queueDepth.Load())
+	require.Equal(t, map[string]bool{"changed": true}, d.queued)
+
+	changed := d.tickets["changed"].ticket
+	changed.Kind, changed.EpicExecution = ticket.KindEpic, "agent"
+	require.Equal(t, 0, d.readyOrdinaryJobLocked())
+	require.Equal(t, d.epicSem, d.ticketPool(changed))
+	workerCtx := context.WithValue(context.Background(), dispatchPoolKey{}, false)
+	epicCtx := context.WithValue(context.Background(), dispatchPoolKey{}, true)
+	require.False(t, dispatchPoolMatches(workerCtx, changed))
+	require.True(t, dispatchPoolMatches(epicCtx, changed))
+	changed.Kind, changed.EpicExecution = "", ""
+	require.Equal(t, -1, d.readyOrdinaryJobLocked())
+	require.False(t, dispatchPoolMatches(epicCtx, changed))
+	require.True(t, dispatchPoolMatches(workerCtx, changed))
+	require.True(t, dispatchPoolMatches(context.Background(), changed), "direct execution has no dispatcher reservation")
+}
+
+func TestDispatchPickupRequeuesChangedPool(t *testing.T) {
+	for _, epic := range []bool{false, true} {
+		t.Run(map[bool]string{false: "supervisor became worker", true: "worker became supervisor"}[epic], func(t *testing.T) {
+			h := newHarness(t)
+			d := h.newDaemon(h.cfg)
+			task := &ticket.Ticket{ID: "changed", Kontora: true, Status: ticket.StatusTodo}
+			if epic {
+				task.Kind, task.EpicExecution = ticket.KindEpic, "agent"
+			}
+			d.tickets[task.ID] = &ticketState{ticket: task}
+			ctx := context.WithValue(context.Background(), dispatchPoolKey{}, !epic)
+			d.runTicket(ctx, task.ID)
+			require.True(t, d.queued[task.ID], "pickup must retry admission in the current pool")
+			require.Len(t, d.queue, 1)
+			require.EqualValues(t, 1, d.queueDepth.Load())
+			require.Empty(t, d.running, "a mismatched reservation must never claim or spawn work")
+			require.Equal(t, ticket.StatusTodo, task.Status)
+		})
+	}
 }
 
 func TestManagedDispatchSelection(t *testing.T) {

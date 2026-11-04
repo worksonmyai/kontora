@@ -592,7 +592,8 @@ export function kontoraPalette() {
       if (this.currentView !== 'board') await this.gotoView('board');
       if (this.currentView !== 'board') return false;
       if (this.selectedTicket?.id === t.id) return true;
-      await this.selectTicket(t);
+      if (this.isMobile) await this.openMobileTicket(t);
+      else await this.selectTicket(t);
       return true;
     },
 

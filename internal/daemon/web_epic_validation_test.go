@@ -80,50 +80,71 @@ func TestDaemon_UpdateEpicExecutionSettings(t *testing.T) {
 	}
 }
 
-func TestDaemon_EpicActivationReadsCurrentChildRepository(t *testing.T) {
-	for _, tc := range []struct {
-		entry    string
-		newChild bool
-	}{
-		{entry: "run"},
-		{entry: "init"},
-		{entry: "run", newChild: true},
-		{entry: "init", newChild: true},
-	} {
-		t.Run(fmt.Sprintf("%s/new-child=%t", tc.entry, tc.newChild), func(t *testing.T) {
-			h := newEpicAgentHarness(t)
-			h.cfg.AutoPickUp = new(false)
-			d := h.newDaemon(h.cfg)
-			for id, md := range map[string]string{
-				"epc-a":     h.epicMD("epc-a", "open"),
-				"epc-child": h.epicChildMD("epc-child", "open", "epc-a", "2026-01-02T00:00:00Z"),
-			} {
-				path := h.writeTicket(id+".md", md)
-				tkt, err := ticket.ParseFile(path)
+func TestDaemon_EpicActivationReadsCurrentFiles(t *testing.T) {
+	for _, entry := range []string{"run", "init"} {
+		for _, tc := range []struct {
+			name, childEdit, unrelatedMarkdown string
+			wantErr                            bool
+		}{
+			{name: "child repository changed", childEdit: "repository", wantErr: true},
+			{name: "new child", childEdit: "new", wantErr: true},
+			{name: "malformed known child", childEdit: "malformed", wantErr: true},
+			{name: "clean store"},
+			{name: "unrelated notes", unrelatedMarkdown: "# Unrelated notes\n"},
+			{name: "unrelated invalid YAML", unrelatedMarkdown: "---\nid: unrelated\nstatus: [\n---\n# Invalid\n"},
+		} {
+			t.Run(entry+"/"+tc.name, func(t *testing.T) {
+				h := newEpicAgentHarness(t)
+				h.cfg.AutoPickUp = new(false)
+				d := h.newDaemon(h.cfg)
+				for id, md := range map[string]string{
+					"epc-a":     h.epicMD("epc-a", "open"),
+					"epc-child": h.epicChildMD("epc-child", "open", "epc-a", "2026-01-02T00:00:00Z"),
+				} {
+					path := h.writeTicket(id+".md", md)
+					tkt, err := ticket.ParseFile(path)
+					require.NoError(t, err)
+					d.tickets[id] = newTicketState(tkt, path)
+				}
+				if tc.unrelatedMarkdown != "" {
+					h.writeTicket("unrelated-notes.md", tc.unrelatedMarkdown)
+				}
+				childID := "epc-child"
+				switch tc.childEdit {
+				case "new":
+					childID = "epc-new"
+					h.writeTicket(childID+".md", fmt.Sprintf("---\nid: %s\nparent: epc-a\nstatus: open\npath: %q\n---\n# New child\n", childID, initRepo(t)))
+					assert.NotContains(t, d.tickets, childID)
+				case "repository":
+					other := initRepo(t)
+					require.NoError(t, cli.Update(h.cfg, childID, web.UpdateTicketRequest{Path: &other}))
+					assert.Equal(t, h.repoDir, d.tickets[childID].ticket.Path, "the watcher has not adopted the local edit")
+				case "malformed":
+					h.writeTicket(childID+".md", "# Broken child\n")
+				}
+				var err error
+				if entry == "run" {
+					err = d.RunTicket("epc-a")
+				} else {
+					err = d.InitTicket("epc-a", web.InitTicketRequest{Status: "todo"})
+				}
+				if tc.wantErr {
+					if tc.childEdit == "malformed" {
+						require.ErrorContains(t, err, "no frontmatter found")
+					} else {
+						require.ErrorIs(t, err, web.ErrInvalidState)
+						assert.NotEqual(t, h.repoDir, h.readTask(childID+".md").Path)
+					}
+					assert.True(t, h.readTask("epc-a.md").IsPassiveEpic())
+					assert.Empty(t, d.queue)
+					return
+				}
 				require.NoError(t, err)
-				d.tickets[id] = newTicketState(tkt, path)
-			}
-			other := initRepo(t)
-			childID := "epc-child"
-			if tc.newChild {
-				childID = "epc-new"
-				h.writeTicket(childID+".md", fmt.Sprintf("---\nid: %s\nparent: epc-a\nstatus: open\npath: %q\n---\n# New child\n", childID, other))
-				assert.NotContains(t, d.tickets, childID)
-			} else {
-				require.NoError(t, cli.Update(h.cfg, childID, web.UpdateTicketRequest{Path: &other}))
-				assert.Equal(t, h.repoDir, d.tickets[childID].ticket.Path, "the watcher has not adopted the local edit")
-			}
-			var err error
-			if tc.entry == "run" {
-				err = d.RunTicket("epc-a")
-			} else {
-				err = d.InitTicket("epc-a", web.InitTicketRequest{Status: "todo"})
-			}
-			require.ErrorIs(t, err, web.ErrInvalidState)
-			assert.True(t, h.readTask("epc-a.md").IsPassiveEpic())
-			assert.Empty(t, d.queue)
-			assert.Equal(t, other, h.readTask(childID+".md").Path)
-		})
+				assert.True(t, h.readTask("epc-a.md").IsAgentEpic())
+				assert.Len(t, d.queue, 1)
+				assert.Equal(t, ticket.StatusOpen, h.readTask("epc-child.md").Status)
+			})
+		}
 	}
 }
 

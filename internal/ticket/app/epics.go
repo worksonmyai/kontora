@@ -178,7 +178,7 @@ func (s *Service) ValidateExecutionSettings(t *ticket.Ticket) error {
 			}
 			fresh, err := ticket.ParseFile(path)
 			if err != nil {
-				return err
+				continue
 			}
 			if ticket.IsCanonicalPath(path, fresh.ID) {
 				index[fresh.ID] = fresh

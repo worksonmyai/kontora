@@ -15,11 +15,13 @@ const ACTIVITY_POLL_MS = 2000;
 // The activity tab: the transcript tape, its poller, and the stage ribbon.
 export function kontoraActivity() {
   return {
+    _activityExplicit: false,
+
     // The newest run the transcript can show from history. Every history entry
     // describes a finished run, so the last one is the most recently completed
     // stage.
     latestCompletedRun() {
-      var h = (this.selectedTicket && this.selectedTicket.history) || [];
+      var h = this.outputSubject()?.history || [];
       if (!h.length) return null;
       var last = h[h.length - 1];
       return { stage: last.stage, run: last.run || 0 };
@@ -29,7 +31,7 @@ export function kontoraActivity() {
     // that stage's history rows, as the daemon does: a history row is written
     // when a run ends, so the running one is the next index.
     runningRun() {
-      var t = this.selectedTicket;
+      var t = this.outputSubject();
       if (!t || t.status !== 'in_progress' || !t.stage) return null;
       var run = 0;
       (t.history || []).forEach(function (h) { if (h.stage === t.stage) run++; });
@@ -42,6 +44,9 @@ export function kontoraActivity() {
     },
 
     _resetActivity() {
+      this._invalidateRawLog();
+      this._activityLoadSeq++;
+      this._activityExplicit = false;
       this._stopActivityPoll();
       this.activity = null;
       this.activityStage = null;
@@ -61,7 +66,8 @@ export function kontoraActivity() {
 
     // Load one run's transcript, replacing everything the pane holds.
     async fetchActivity(stage, run) {
-      if (!this.selectedTicket) return;
+      if (!this.outputSubject()) return;
+      this._invalidateRawLog();
       this._stopActivityPoll();
       this.activityStage = stage || '';
       this.activityRun = run || 0;
@@ -71,15 +77,14 @@ export function kontoraActivity() {
       this.expandedTools = {};
       this.tapeWindow = TAPE_WINDOW_SIZE;
       await this._loadActivity(stage, run, { merge: false });
-      this.activityLoading = false;
     },
 
     // Fetch one activity payload. merge=true is the polling path: only the
     // payload is replaced, so the expand map, the grown window and the scroll
     // offset all survive the tick.
     async _loadActivity(stage, run, { merge = false } = {}) {
-      if (!this.selectedTicket) return;
-      var id = this.selectedTicket.id;
+      if (!this.outputSubject()) return;
+      var id = this.outputSubject().id;
       var seq = ++this._activityLoadSeq;
       var url = '/api/tickets/' + encodeURIComponent(id) + '/activity'
         + '?stage=' + encodeURIComponent(stage || '') + '&run=' + (run || 0);
@@ -97,25 +102,30 @@ export function kontoraActivity() {
         if (!this._activityCurrent(id, stage, run, seq)) return;
         if (res.status === 304) {
           this._activityFailures = 0;
+          this.activityError = null;
           this._armActivityPoll(stage, run, true);
           return;
         }
         if (!res.ok) {
           var err = await res.json().catch(function () { return {}; });
+          if (!this._activityCurrent(id, stage, run, seq)) return;
           this._activityFailed(merge, err.error || 'Failed to load activity');
-          this._armActivityPoll(stage, run, merge);
+          this._armActivityPoll(stage, run, merge || this._activityIsRunning(stage, run));
           return;
         }
         data = await res.json();
       } catch (e) {
         if (!this._activityCurrent(id, stage, run, seq)) return;
         this._activityFailed(merge, 'Failed to load activity');
-        this._armActivityPoll(stage, run, merge);
+        this._armActivityPoll(stage, run, merge || this._activityIsRunning(stage, run));
         return;
+      } finally {
+        if (this._activityCurrent(id, stage, run, seq)) this.activityLoading = false;
       }
       if (!this._activityCurrent(id, stage, run, seq)) return;
 
       this._activityFailures = 0;
+      this.activityError = null;
       this._activityETag = res.headers.get('ETag');
       if (merge) {
         this._mergeActivity(data);
@@ -123,7 +133,7 @@ export function kontoraActivity() {
         this.activity = data;
         this.activityError = null;
       }
-      this._armActivityPoll(stage, run, !!data.live);
+      this._armActivityPoll(stage, run, !!data.live || this._activityIsRunning(stage, run));
     },
 
     // Whether a response still describes what the pane is showing. seq drops an
@@ -132,7 +142,7 @@ export function kontoraActivity() {
     // that poll's partial tape afterwards would cut the transcript back down.
     _activityCurrent(id, stage, run, seq) {
       return seq === this._activityLoadSeq
-        && !!this.selectedTicket && this.selectedTicket.id === id
+        && this.outputSubject()?.id === id
         && this.activityStage === (stage || '') && this.activityRun === (run || 0);
     },
 
@@ -179,18 +189,101 @@ export function kontoraActivity() {
         clearTimeout(this._activityPoll);
         this._activityPoll = null;
       }
-      if (!live || this.activeTab !== 'activity' || !this.selectedTicket) return;
+      if (!live || this.outputTab() !== 'activity' || !this.outputSubject()) return;
       var self = this;
+      var id = this.outputSubject().id, seq = this._activityLoadSeq;
       this._activityPoll = setTimeout(function () {
         self._activityPoll = null;
-        self._loadActivity(stage, run, { merge: true });
+        if (!self._activityCurrent(id, stage, run, seq) || self.outputTab() !== 'activity') return;
+        self._loadActivity(stage, run, { merge: !!self.activity });
       }, ACTIVITY_POLL_MS);
+    },
+
+    _activityIsRunning(stage, run) {
+      var current = this.runningRun();
+      return !!current && current.stage === stage && current.run === (run || 0);
+    },
+
+    outputRuns() {
+      var t = this.outputSubject();
+      if (!t) return [];
+      var runs = (t.history || []).map(h => ({ stage: h.stage, run: h.run || 0,
+        key: h.stage + '#' + (h.run || 0), label: h.stage + ' · attempt ' + ((h.run || 0) + 1) }));
+      var live = this.runningRun();
+      if (live) runs.push({ ...live, key: live.stage + '#' + live.run,
+        label: live.stage + ' · attempt ' + (live.run + 1) + ' · live' });
+      return runs.reverse();
+    },
+
+    outputRunKey() {
+      var run = this.outputTab() === 'session' ? this.runningRun() : null;
+      if (run) return run.stage + '#' + run.run;
+      return this.activityStage === null ? '' : this.activityStage + '#' + this.activityRun;
+    },
+
+    selectOutputRun(key) {
+      var run = this.outputRuns().find(r => r.key === key);
+      if (run) this.openActivity(run.stage, run.run);
     },
 
     // Show the transcript for one run and bring the activity tab forward.
     openActivity(stage, run) {
-      this.activeTab = 'activity';
+      this._activityExplicit = true;
+      if (this.selectedEpic) this.epicSwitchTab('activity', false);
+      else this.activeTab = 'activity';
       this.fetchActivity(stage, run);
+    },
+
+    reconcileOutput(previous) {
+      var t = this.outputSubject();
+      if (!t && previous) {
+        this.closeTerminal();
+        this._resetActivity();
+        if (this.selectedEpic && ['session', 'activity'].includes(this.epicTab)) this.epicSwitchTab('children');
+        return;
+      }
+      if (!t || t.id !== previous?.id) return;
+      if (t.status !== 'in_progress') {
+        this.closeTerminal();
+        this._stopActivityPoll();
+        var completed = this.latestCompletedRun();
+        if (this.outputTab() === 'session' && previous.status === 'in_progress' && completed) {
+          this.activity = null;
+          this._activityExplicit = false;
+          this.activityStage = completed.stage;
+          this.activityRun = completed.run;
+          if (this.selectedEpic) this.epicSwitchTab('activity');
+          else if (!this.isMobile) this.switchTab('activity');
+          else this.mobileSwitchTab('logs');
+        } else if (this.outputTab() === 'activity') {
+          if (!this._activityExplicit && completed &&
+              (completed.stage !== this.activityStage || completed.run !== this.activityRun)) {
+            this.fetchActivity(completed.stage, completed.run);
+          } else if (this.activityStage !== null) {
+            this._loadActivity(this.activityStage, this.activityRun, { merge: !!this.activity });
+          }
+        }
+      } else if (this.outputTab() === 'session' && !this.terminalOpen) {
+        this.openTerminal();
+      } else if (this.outputTab() === 'activity' && !this._activityExplicit) {
+        // History arrives before final status. Stay on the displayed execution
+        // until a new start or stage, rather than inventing the next attempt.
+        if (previous.status === 'in_progress' && previous.stage === t.stage &&
+            previous.started_at === t.started_at && previous.history !== undefined && this.activityStage !== null) return;
+        var run = this.activityTarget();
+        if (run && (run.stage !== this.activityStage || run.run !== this.activityRun)) {
+          this.fetchActivity(run.stage, run.run);
+        }
+      }
+    },
+
+    outputReady(id) {
+      if (this.outputSubject()?.id !== id) return;
+      if (this.terminalWanted()) this.reconnectTerminal();
+      else if (this.outputTab() === 'activity') {
+        var run = this.activityStage === null ? this.activityTarget() : { stage: this.activityStage, run: this.activityRun };
+        if (run && this._activityIsRunning(run.stage, run.run)) this.fetchActivity(run.stage, run.run);
+      }
     },
 
     // Whether this run's session file left the dimension unfilled. The view
@@ -224,7 +317,7 @@ export function kontoraActivity() {
     // scroll offset moves down by the height they add; without that the reader
     // is thrown back to older events.
     loadEarlierTapeEvents() {
-      var el = document.getElementById('activity-scroll');
+      var el = document.getElementById(this.outputContainerID('activity'));
       var height = el ? el.scrollHeight : 0;
       var top = el ? el.scrollTop : 0;
       this.tapeWindow = Math.min(this.tapeEvents().length, this.tapeWindow + TAPE_WINDOW_SIZE);

@@ -59,6 +59,7 @@ export function kontoraBoard() {
     _cardHTML(ticket, col) {
       var esc = (s) => this._escapeHtml(s);
       var inProgressCol = col.key === 'in_progress';
+      var supervisor = this.epicIsAgent(ticket);
       var selected = this.selectedTicket && this.selectedTicket.id === ticket.id;
 
       // shrink-0: the column list is a flex column, and overflow-hidden (which
@@ -68,8 +69,8 @@ export function kontoraBoard() {
                  'bg-surface-900 border-edge-card hover:border-edge-hover hover:bg-surface-850',
                  'flex flex-col gap-1.5'];
       // The epic a child belongs to, if any. It paints a spine down the card's
-      // left edge and a "3/6 epic" count in the footer, both in the epic's own
-      // hue. data-pipe-color goes on those two spans and not on the card root:
+      // left edge and an "Epic: 3 of 6 done" count in the footer, both in the
+      // epic's own hue. data-pipe-color goes on those spans, not the card root:
       // the root's --pipe-h is the ticket's own pipeline, and reusing it would
       // repaint the pipeline tag in the epic's colour.
       var epic = this.epicCardInfo(ticket);
@@ -86,13 +87,13 @@ export function kontoraBoard() {
       var glyph = '';
       if (inProgressCol && ticket.status === 'in_progress') {
         glyph = '<span class="flex items-center gap-[5px] text-[10px] font-mono card-glyph-running">'
-          + '<span class="w-[5px] h-[5px] rounded-full pulse-dot" style="background: hsl(var(--st-progress))"></span><span>' + esc(ticket.stage) + '</span></span>';
+          + '<span class="w-[5px] h-[5px] rounded-full pulse-dot" style="background: hsl(var(--st-progress))"></span><span>' + esc(supervisor ? 'supervising' : ticket.stage) + '</span></span>';
       } else if (inProgressCol && ticket.status === 'paused') {
         glyph = '<span class="flex items-center gap-1 text-[10px] font-mono card-glyph-paused"><span>⏸</span>'
-          + (ticket.stage ? '<span>' + esc(ticket.stage) + '</span>' : '') + '</span>';
+          + (supervisor ? '<span>paused</span>' : (ticket.stage ? '<span>' + esc(ticket.stage) + '</span>' : '')) + '</span>';
       } else if (inProgressCol && ticket.status === 'todo') {
         glyph = '<span class="flex items-center gap-1 text-[10px] font-mono text-surface-600"><span>◌</span>'
-          + (ticket.stage ? '<span>' + esc(ticket.stage) + '</span>' : '') + '</span>';
+          + (supervisor ? '<span>queued</span>' : (ticket.stage ? '<span>' + esc(ticket.stage) + '</span>' : '')) + '</span>';
       }
 
       // Nothing moves until a human answers in the terminal, so the badge
@@ -126,7 +127,7 @@ export function kontoraBoard() {
       // The current stage counts as half done — the stage index is the only
       // progress signal available.
       var progress = '';
-      if (ticket.status === 'in_progress' && ticket.stages && ticket.stages.length > 1) {
+      if (!supervisor && ticket.status === 'in_progress' && ticket.stages && ticket.stages.length > 1) {
         var ci = ticket.stages.indexOf(ticket.stage);
         if (ci >= 0) {
           var pct = Math.round(((ci + 0.5) / ticket.stages.length) * 100);
@@ -157,11 +158,11 @@ export function kontoraBoard() {
           + esc(this.timeAgo(ticket.created_at)) + '</span>';
       }
 
-      // Badge row: pipeline badge (toggleable) + status glyph + import badge.
+      // Badge row: supervisor identity + pipeline badge (toggleable) + status/import glyphs.
       // The kebab menu is absolutely positioned so the row can be omitted
       // entirely when it has no content.
       var badgeRow = '';
-      var badgeParts = (this.showPipelineBadges
+      var badgeParts = (supervisor ? '<span class="pipe-tag shrink-0">supervisor</span>' : '') + (this.showPipelineBadges
         ? '<span class="pipe-tag truncate">' + esc(this.ticketTagLabel(ticket)) + '</span>'
         : '') + notKontoraBadge + glyph + scheduled + waiting;
       if (badgeParts) {
@@ -203,14 +204,14 @@ export function kontoraBoard() {
         ? '<span class="flex items-center gap-1.5 min-w-0"><span class="text-edge-faint">·</span>'
           + '<span class="truncate" data-pipe-color="' + esc(epicHue) + '" style="color: hsl(var(--pipe-h) / 0.9)"'
           + ' data-tip="' + esc(epic.title) + '">'
-          + esc(epic.done + '/' + epic.total + ' epic') + '</span></span>'
+          + esc('Epic: ' + epic.done + ' of ' + epic.total + ' done') + '</span></span>'
         : '';
 
       return '<div class="' + cls.join(' ') + '"'
         + ' data-ticket-id="' + esc(ticket.id) + '"'
         + ' data-pipe-color="' + esc(this.ticketPipeColor(ticket)) + '"'
         + ' role="listitem" tabindex="0"'
-        + ' aria-label="' + esc('Ticket ' + ticket.id + ': ' + (ticket.title || '')) + '">'
+        + ' aria-label="' + esc((supervisor ? 'Supervisor ' : 'Ticket ') + ticket.id + ': ' + (ticket.title || '')) + '">'
         + epicSpine
         + menu
         + badgeRow
@@ -238,10 +239,10 @@ export function kontoraBoard() {
       // reviewFinishedAt, so its result stands in for both here. ticket.parent,
       // ticket.deps and ticket.links reach it only through the relation line
       // and, for parent, the epic spine, so those two strings stand in for
-      // them. ticket.kind is in the signature although an epic draws no card:
-      // a ticket that becomes one has to stop drawing the card it had.
+      // them. kind and epic_execution also govern supervisor identity and
+      // whether an epic draws a card at all.
       //
-      // The spine and the "3/6 epic" footer are the one part of a card that is
+      // The spine and the "Epic: 3 of 6 done" footer are the part of a card that is
       // board state rather than ticket state: a sibling finishing has to
       // repaint this card, and only _epicRollup knows that happened.
       var epic = this._epicRollup[(ticket.parent && ticket.parent.id) || ''];
@@ -255,7 +256,7 @@ export function kontoraBoard() {
               this.reviewFinishedAt(ticket),
               (ticket.stages || []).join('>'),
               this._cardRelationSummary(ticket),
-              ticket.kind, epicSig,
+              ticket.kind, ticket.epic_execution, epicSig,
               this.showPipelineBadges ? 1 : 0, this.showAgentMeta ? 1 : 0].join('\u0001');
     },
 
@@ -279,13 +280,23 @@ export function kontoraBoard() {
     _cardMenuHTML(ticket) {
       var esc = (s) => this._escapeHtml(s);
       var items = '';
+      var supervisor = this.epicIsAgent(ticket);
+      if (supervisor) {
+        items += '<button type="button" class="card-menu-item w-full px-3 py-2 text-left text-[12px] font-mono text-tx-3 hover:bg-surface-850 hover:text-tx-2 transition-colors" data-act="epic-overview">Epic overview</button>';
+      }
       if (!ticket.kontora) {
         items += '<button type="button" class="card-menu-item w-full px-3 py-2 text-left text-[12px] font-mono text-warn hover:bg-surface-850 hover:text-warn transition-colors" data-act="init">Initialize</button>';
       }
       var moves = this.validMoves[ticket.status] || [];
       moves.forEach((mv) => {
+        var label = mv.label;
+        if (supervisor) {
+          if (mv.endpoint === 'pause') label = 'Pause supervisor';
+          else if (mv.endpoint === 'retry') label = ['done', 'cancelled'].includes(ticket.status) ? 'Restart supervisor' : 'Retry supervisor';
+          else if (mv.endpoint === 'run') label = 'Start supervisor';
+        }
         items += '<button type="button" class="card-menu-item w-full px-3 py-2 text-left text-[12px] font-mono text-tx-3 hover:bg-surface-850 hover:text-tx-2 transition-colors" data-act="'
-          + esc(mv.endpoint) + '"' + (mv.status ? ' data-status="' + esc(mv.status) + '"' : '') + '>' + esc(mv.label) + '</button>';
+          + esc(mv.endpoint) + '"' + (mv.status ? ' data-status="' + esc(mv.status) + '"' : '') + '>' + esc(label) + '</button>';
       });
       // Archive is not a move: SetStatus refuses archived, so it has its own
       // verb and its own item rather than a row in validMoves.
@@ -451,7 +462,25 @@ export function kontoraBoard() {
       if (this.isMobile && this.paletteOpen) this.closePalette();
       this.closeTerminal();
       this._destroyTerminal();
-      this.$nextTick(() => this._mountBoard());
+      this._activityLoadSeq++;
+      this.activityLoading = false;
+      this._stopActivityPoll();
+      if (this.selectedTicket) {
+        if (this.isMobile) this.detailTab = this.activeTab === 'session' ? 'terminal'
+          : (this.activeTab === 'activity' ? 'logs' : 'ticket');
+        else if (this.detailTab === 'terminal') this.activeTab = 'session';
+        else if (this.detailTab === 'logs') this.activeTab = 'activity';
+        else if (['session', 'activity'].includes(this.activeTab)) this.activeTab = 'ticket';
+      }
+      this.$nextTick(() => {
+        this._mountBoard();
+        if (this.terminalWanted()) this.openTerminal();
+        else if (this.isMobile && this.selectedTicket && this.detailTab === 'logs') this.mobileSwitchTab('logs');
+        else if (this.outputTab() === 'activity') {
+          var run = this.activityStage === null ? this.activityTarget() : { stage: this.activityStage, run: this.activityRun };
+          if (run) this.fetchActivity(run.stage, run.run);
+        }
+      });
     },
 
     // One delegated click/keydown handler for the whole board: menu toggle, menu
@@ -474,6 +503,8 @@ export function kontoraBoard() {
           if (act === 'init') {
             var it = self.tickets.find(function (t) { return t.id === mid; });
             if (it) self.openInitModal(it);
+          } else if (act === 'epic-overview') {
+            self.openEpic(mid);
           } else if (act === 'archive') {
             self.openArchivePrompt(mid);
           } else {
@@ -502,7 +533,7 @@ export function kontoraBoard() {
       });
       root.addEventListener('keydown', function (e) {
         var card = e.target.closest('.kt-card');
-        if (card && (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar')) {
+        if (card && !e.target.closest('button') && (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar')) {
           e.preventDefault();
           e.stopPropagation();
           var t = self.tickets.find(function (x) { return x.id === card.dataset.ticketId; });
@@ -754,8 +785,9 @@ export function kontoraBoard() {
       // Per-agent running tally for the sidebar, filled in this same pass so
       // agentRunningCount doesn't filter the whole ticket array per agent row.
       var running = Object.create(null);
-      // Passive status rollups are not processes. Supervisors count once,
-      // but all epics stay in the rail rather than adding worker cards.
+      // Passive status rollups are not processes and stay sidebar-only.
+      // Agent-backed epics join the board and process tallies once, just like
+      // workers; collecting them for the rail must not count them again.
       var epics = [];
       for (var i = 0; i < this.tickets.length; i++) {
         var t = this.tickets[i];
@@ -768,7 +800,6 @@ export function kontoraBoard() {
         if (t.kontora && t.status === 'in_progress' && t.agent) {
           running[t.agent] = (running[t.agent] || 0) + 1;
         }
-        if (t.kind === 'epic') continue;
         var key = colOf[t.status];
         if (key === undefined) continue;            // no column -> not rendered
         if (filtering && !this.ticketMatchesQuery(t, query)) continue;

@@ -38,9 +38,11 @@ function cleanProjectPath(raw) {
 export function kontoraCreate() {
   return {
     async openCreateModal() {
+      var navigation = ++this._navigationSeq;
       this.closeAgentPicker(false);
-      if (this.selectedEpic) await this.closeEpic();
-      if (this.selectedTicket) this.closeDetail();
+      if (this.selectedEpic && await this.closeEpic(false) === false) return;
+      if (navigation !== this._navigationSeq) return;
+      if (this.selectedTicket) this.closeDetail(false);
       this.createForm = newCreateForm();
       this.createTouched = { pipeline: false, agent: false };
       this.currentView = 'new';

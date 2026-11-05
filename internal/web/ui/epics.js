@@ -71,6 +71,7 @@ export function kontoraEpics() {
     // neither, so the two are merged rather than one replacing the other.
     _epicDetail: null,
     _epicDetailSeq: 0,
+    _epicUpdateSeq: 0,
     // Roll-up per epic id, rebuilt in the same pass. It is an imperative cache
     // for the reason _board is one: a template read has to be O(1).
     _epicRollup: {},
@@ -295,6 +296,7 @@ export function kontoraEpics() {
       if (this.epicCanStart(epic)) actions.push({ label: 'start epic', run: () => self.epicStart() });
       if (!this.epicIsAgent(epic)) return actions;
       actions.push({ label: 'watch agent', run: () => self.epicWatchAgent() });
+      actions.push({ label: 'run details', run: () => self.epicRunDetails() });
       if (epic.status === 'in_progress') {
         actions.push({ label: 'pause supervisor', run: () => self.epicAction('pause') });
       }
@@ -317,7 +319,36 @@ export function kontoraEpics() {
       if (navigation === this._navigationSeq && this.selectedEpic?.id === id) await this.openInitModal(this.selectedEpic);
     },
 
-    async epicWatchAgent() {
+    epicWatchAgent() {
+      if (!this.epicIsAgent(this.selectedEpic)) return;
+      this.epicSwitchTab(this.selectedEpic.status === 'in_progress' ? 'session' : 'activity');
+    },
+
+    epicSwitchTab(tab, load = true) {
+      if (['session', 'activity'].includes(tab) && !this.epicIsAgent(this.selectedEpic)) return;
+      if (tab !== this.epicTab) this._invalidateRawLog();
+      this.epicTab = tab;
+      if (tab !== 'activity') {
+        this._activityLoadSeq++;
+        this.activityLoading = false;
+        this._stopActivityPoll();
+      }
+      if (this.isMobile && tab !== 'session') this.closeTerminal();
+      if (tab === 'session' && this.terminalWanted()) {
+        this.$nextTick(() => {
+          if (!this.terminalWanted()) return;
+          if (this.terminalOpen) this.refitTerminal();
+          else this.openTerminal();
+        });
+      }
+      if (tab === 'activity' && load) {
+        var target = this.activityStage !== null
+          ? { stage: this.activityStage, run: this.activityRun } : this.activityTarget();
+        if (target) this.fetchActivity(target.stage, target.run);
+      }
+    },
+
+    async epicRunDetails() {
       var epic = this.selectedEpic;
       if (!this.epicIsAgent(epic)) return;
       var navigation = ++this._navigationSeq;
@@ -353,6 +384,11 @@ export function kontoraEpics() {
         if (await this.closeEpic(false) === false) return;
         if (navigation !== this._navigationSeq) return;
       }
+      this.closeTerminal();
+      this.terminalRW = false;
+      this._resetActivity();
+      this.logViewContent = null;
+      this.logViewStage = null;
       this._epicDetail = null;
       this.epicBriefSaved = false;
       this.editForm.body = '';
@@ -370,17 +406,37 @@ export function kontoraEpics() {
     // with the list entry, which has neither.
     async epicFetchDetail(id) {
       var seq = ++this._epicDetailSeq;
+      var update = this._epicUpdateSeq;
+      var mine = () => seq === this._epicDetailSeq && this.selectedEpic?.id === id;
       try {
-        var res = await fetch('/api/tickets/' + encodeURIComponent(id));
-        if (!res.ok) return;
-        var full = await res.json();
-        if (seq === this._epicDetailSeq && this.selectedEpic?.id === id && full.id === id) {
+        while (mine()) {
+          var res = await fetch('/api/tickets/' + encodeURIComponent(id));
+          if (!mine()) return;
+          if (!res.ok) throw new Error('detail request failed');
+          var full = await res.json();
+          if (!mine()) return;
+          if (update !== this._epicUpdateSeq) {
+            update = this._epicUpdateSeq;
+            continue;
+          }
+          if (full.id !== id) return;
+          var previous = this.selectedEpic;
+          var keepDraft = this._epicDetail?.id === id && (this.epicEditingBrief || this._epicBriefSave ||
+            this._epicBriefLead + this.editForm.body !== this._epicBriefSavedBody);
           this._epicDetail = full;
-          this.selectedEpic = Object.assign({}, this.selectedEpic, { body: full.body, notes: full.notes });
-          if (!this.epicEditingBrief && !this._epicBriefSave) this._epicLoadBrief(full.body);
+          this.selectedEpic = full;
+          if (!keepDraft) this._epicLoadBrief(full.body);
+          var index = this.tickets.findIndex(t => t.id === id);
+          if (index >= 0) {
+            var before = this.tickets[index];
+            this.tickets[index] = this.boardEntry(full);
+            if (this.boardEntryChanged(before, this.tickets[index])) this.recomputeBoard();
+          }
+          this.reconcileOutput(previous);
+          return;
         }
       } catch (e) {
-        if (seq === this._epicDetailSeq && this.selectedEpic?.id === id) this.error = 'Failed to load the epic brief';
+        if (mine()) this.error = 'Failed to load epic details';
       }
     },
 
@@ -391,6 +447,9 @@ export function kontoraEpics() {
       var navigation = this._navigationSeq;
       var close = (ok) => {
         if (!ok || navigation !== this._navigationSeq || this.selectedEpic?.id !== id) return false;
+        this.closeTerminal();
+        this.terminalRW = false;
+        this._resetActivity();
         this.selectedEpic = null;
         this._epicDetailSeq++;
         this._epicDetail = null;
@@ -426,7 +485,8 @@ export function kontoraEpics() {
       }
       var detail = this._epicDetail && this._epicDetail.id === id ? this._epicDetail : null;
       this.selectedEpic = detail
-        ? Object.assign({}, fresh, { body: detail.body, notes: detail.notes })
+        ? Object.assign({}, detail, fresh, { body: detail.body, notes: detail.notes,
+          history: detail.history, last_error: detail.last_error, last_log: detail.last_log })
         : fresh;
     },
 

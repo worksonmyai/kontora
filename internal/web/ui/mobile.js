@@ -76,6 +76,10 @@ export function kontoraMobile() {
 
     mobileSwitchTab(tab) {
       if (!this.selectedTicket) return;
+      if (tab !== this.detailTab) this._invalidateRawLog();
+      this._activityLoadSeq++;
+      this.activityLoading = false;
+      this._stopActivityPoll();
       this.detailTab = tab;
       if (tab === 'terminal') {
         this.logViewContent = null;
@@ -144,6 +148,9 @@ export function kontoraMobile() {
       var run = function(ep) { return function() { self.moveTicketVia(id, ep, null); }; };
       var move = function(st) { return function() { self.moveTicketVia(id, 'move', { status: st }); }; };
       if (this.epicCanStart(t)) return { label: 'start epic', run: function() { self.openInitModal(t); } };
+      if (this.epicIsAgent(t) && ['paused', 'done', 'cancelled'].includes(t.status)) {
+        return { label: t.status === 'paused' ? 'retry supervisor' : 'restart supervisor', run: run('retry') };
+      }
       var map = {
         open:         { label: 'queue',          run: run('run') },
         todo:         { label: 'queue',          run: run('run') },
@@ -331,7 +338,7 @@ export function kontoraMobile() {
         add('Mark done', 'default', move('done'));
         add('Cancel ticket', 'danger', move('cancelled'));
       } else if (s === 'paused') {
-        add('Resume', 'primary', run('retry'));
+        add(this.epicIsAgent(t) ? 'Retry supervisor' : 'Resume', 'primary', run('retry'));
         add('Mark done', 'default', move('done'));
         add('Cancel ticket', 'danger', move('cancelled'));
       } else if (s === 'human_review') {
@@ -340,12 +347,12 @@ export function kontoraMobile() {
         add('Send back', 'warn', run('retry'));
         add('Cancel ticket', 'danger', move('cancelled'));
       } else if (s === 'done') {
-        add('Re-open', 'default', run('retry'));
+        add(this.epicIsAgent(t) ? 'Restart supervisor' : 'Re-open', 'default', run('retry'));
         add('Send to review', 'default', move('human_review'));
         if (t.branch) add('Copy branch', 'default', function() { self.copyBranch(t.branch); });
         add('Delete file', 'danger', function() { self.openDeleteModal(); });
       } else if (s === 'cancelled') {
-        add('Re-open', 'default', run('retry'));
+        add(this.epicIsAgent(t) ? 'Restart supervisor' : 'Re-open', 'default', run('retry'));
         add('Delete file', 'danger', function() { self.openDeleteModal(); });
       } else {
         (this.validMoves[s] || []).forEach(function(mv) {

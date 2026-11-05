@@ -41,10 +41,41 @@ export function kontoraTerminal() {
       return termState.cssLoad;
     },
 
+    terminalConnected: false,
+    terminalError: null,
+
+    outputSubject() {
+      var subject = this.selectedTicket || this.selectedEpic;
+      return subject && (subject.kind !== 'epic' || this.epicIsAgent(subject)) ? subject : null;
+    },
+
+    outputTab() {
+      if (this.selectedEpic) return this.epicTab;
+      return this.isMobile ? (this.detailTab === 'terminal' ? 'session' : this.detailTab) : this.activeTab;
+    },
+
+    outputContainerID(kind) {
+      if (this.selectedEpic) return kind === 'terminal'
+        ? (this.isMobile ? 'epic-terminal-mobile' : 'epic-terminal-session')
+        : (this.isMobile ? 'epic-activity-scroll-mobile' : 'epic-activity-scroll');
+      return kind === 'terminal' ? (this.isMobile ? 'terminal-container-mobile' : 'terminal-session') : 'activity-scroll';
+    },
+
+    outputNoRunText() {
+      var t = this.outputSubject();
+      if (!t) return 'This epic has no supervisor.';
+      if (t.status === 'in_progress') return 'Waiting for the supervisor output...';
+      if (t.status === 'todo') return 'Supervisor queued. Output will appear when it starts.';
+      if (t.last_error && !(t.history || []).length) return 'Supervisor failed before recording a run.';
+      if ((t.history || []).length) return 'No live session. Choose a recorded run above.';
+      return 'Supervisor has not recorded a run yet.';
+    },
+
     async openTerminal() {
-      if (!this.selectedTicket || this.terminalOpen) return;
+      if (!this.outputSubject() || !this.terminalWanted() || this.terminalOpen) return;
       var seq = ++this._terminalSeq;
-      var ticketId = this.selectedTicket.id;
+      var ticketId = this.outputSubject().id;
+      this.terminalError = null;
       this.terminalOpen = true;
       this._terminalOpening = true;
       try {
@@ -69,14 +100,15 @@ export function kontoraTerminal() {
         }
         await this.$nextTick();
         if (!this.terminalOpen || this._terminalSeq !== seq) return;
-        if (!this.terminalWanted() || this.selectedTicket?.id !== ticketId) {
+        if (!this.terminalWanted() || this.outputSubject()?.id !== ticketId) {
           this.closeTerminal();
           return;
         }
         this._connectTerminal(seq);
       } catch (e) {
         console.error('terminal load error:', e);
-        this.error = 'Failed to load terminal';
+        if (this._terminalSeq !== seq) return;
+        this.terminalError = 'Failed to load terminal';
         // _connectTerminal may already have attached the resize observer.
         this.closeTerminal();
       } finally {
@@ -85,7 +117,7 @@ export function kontoraTerminal() {
     },
 
     reconnectTerminal() {
-      if (!this.selectedTicket || !this.terminalWanted() || this._terminalOpening) return;
+      if (!this.outputSubject() || !this.terminalWanted() || this._terminalOpening) return;
       if (this.terminalOpen) this.closeTerminal();
       this.openTerminal();
     },
@@ -95,7 +127,7 @@ export function kontoraTerminal() {
       // On phone width the live terminal attaches into the mobile detail's own
       // container; on desktop into the panel container (fullscreen keeps the
       // same container — the panel just grows to fill the viewport).
-      var container = document.getElementById(this.isMobile ? 'terminal-container-mobile' : 'terminal-session');
+      var container = document.getElementById(this.outputContainerID('terminal'));
       // Returning with terminalOpen still set would strand the tab: switchTab
       // only refits a terminal it believes is open, so nothing would retry.
       if (!container) {
@@ -197,7 +229,7 @@ export function kontoraTerminal() {
         termState.inputDisposable.dispose();
         termState.inputDisposable = null;
       }
-      if (this._terminalSeq !== seq || !termState.term) return;
+      if (this._terminalSeq !== seq || !termState.term || this.outputSubject()?.status !== 'in_progress') return;
       // Whoever asked for a stream gets exactly one. Without this, a read-write
       // toggle landing before _connectTerminal's requestAnimationFrame orphans
       // the socket it opened, and its kontora-view session outlives the page.
@@ -211,20 +243,33 @@ export function kontoraTerminal() {
       // terminalRW resets to false on ticket switch and detail close.
       term.options.cursorBlink = this.terminalRW;
       var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-      var url = proto + '//' + location.host + '/ws/terminal/' + self.selectedTicket.id
+      var url = proto + '//' + location.host + '/ws/terminal/' + encodeURIComponent(self.outputSubject().id)
         + '?cols=' + term.cols + '&rows=' + term.rows + (self.terminalRW ? '&rw=1' : '');
       var ws = new WebSocket(url);
       ws.binaryType = 'arraybuffer';
       termState.ws = ws;
       ws.onmessage = function(e) {
-        if (self._terminalSeq !== seq) {
+        if (self._terminalSeq !== seq || termState.ws !== ws) {
           ws.close();
           return;
         }
         term.write(new Uint8Array(e.data));
       };
-      ws.onclose = function() { if (termState.ws === ws) termState.ws = null; };
-      ws.onerror = function() { if (termState.ws === ws) termState.ws = null; };
+      this.terminalConnected = false;
+      ws.onopen = function() {
+        if (self._terminalSeq !== seq || termState.ws !== ws) return;
+        self.terminalConnected = true;
+        self.terminalError = null;
+      };
+      var disconnected = function() {
+        if (self._terminalSeq !== seq || termState.ws !== ws) return;
+        self.terminalConnected = false;
+        self.terminalError = 'Terminal disconnected. Retry to reconnect.';
+        termState.ws = null;
+        ws.close();
+      };
+      ws.onclose = disconnected;
+      ws.onerror = disconnected;
       if (self.terminalRW) {
         termState.inputDisposable = term.onData(function(data) {
           if (self._terminalSeq === seq && ws.readyState === WebSocket.OPEN) {
@@ -271,6 +316,7 @@ export function kontoraTerminal() {
       this._terminalOpening = false;
       this._disconnectStream();
       this.terminalOpen = false;
+      this.terminalConnected = false;
     },
 
     toggleTerminalRW() {

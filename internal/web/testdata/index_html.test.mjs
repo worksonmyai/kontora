@@ -598,7 +598,7 @@ test("openTerminal cancels stale startup after teardown", async () => {
   const nextTick = deferred();
   const connectCalls = [];
 
-  state.selectedTicket = { id: "tst-001" };
+  state.selectedTicket = { id: "tst-001", status: "in_progress" };
   state.activeTab = "session";
   state.$nextTick = () => nextTick.promise;
   ctx.termState.Terminal = class {};
@@ -625,7 +625,7 @@ test("openTerminal clears terminalOpen if the tab changes before startup complet
   const connectCalls = [];
   let closeCalls = 0;
 
-  state.selectedTicket = { id: "tst-001" };
+  state.selectedTicket = { id: "tst-001", status: "in_progress" };
   state.activeTab = "session";
   state.$nextTick = () => nextTick.promise;
   ctx.termState.Terminal = class {};
@@ -655,7 +655,7 @@ test("reconnectTerminal does nothing while the terminal is already opening", () 
   let closeCalls = 0;
   let openCalls = 0;
 
-  state.selectedTicket = { id: "tst-001" };
+  state.selectedTicket = { id: "tst-001", status: "in_progress" };
   state.activeTab = "session";
   state.terminalOpen = true;
   state._terminalOpening = true;
@@ -677,7 +677,7 @@ test("reconnectTerminal tears down and reopens once when transport is ready", ()
   let closeCalls = 0;
   let openCalls = 0;
 
-  state.selectedTicket = { id: "tst-001" };
+  state.selectedTicket = { id: "tst-001", status: "in_progress" };
   state.activeTab = "session";
   state.terminalOpen = true;
   state._terminalOpening = false;
@@ -3707,13 +3707,13 @@ test("index.html renders every prose block through the idempotent write", () => 
   assert.equal(html.includes('x-html="renderMarkdown'), false);
   // Two writers share the pattern, counted apart: entity chips belong to the
   // stage summary, and a ticket body swapped onto setSummaryProse would keep
-  // any combined total the same. Ten: the assistant's own prose runs through
+  // any combined total the same. The assistant's own prose runs through
   // the same write in both layers, and a streaming pane is exactly the case a
   // rebuild-per-effect would ruin; the archive's read-only ticket tab renders
   // its body through it too; and the notes tab's own note and reply bodies
   // are markdown like every other authored block; and the epic page renders
-  // both its brief and its own notes the same way, including the mobile brief.
-  assert.equal(html.match(/x-effect="setProse\(\$el, /g).length, 13);
+  // both its brief and its own notes the same way in both layouts.
+  assert.equal(html.match(/x-effect="setProse\(\$el, /g).length, 14);
   assert.equal(html.match(/x-effect="setSummaryProse\(\$el, /g).length, 2);
   // Nothing in the markup writes a note as plain text any more: the rail block
   // that did is gone and the notes tab renders markdown.
@@ -8014,7 +8014,8 @@ test("index.html binds the transcript to the windowed tail", () => {
   assert.match(html, /x-for="\{ ev, idx \} in visibleTapeEvents\(\)" :key="idx"/);
   // Tool state is read by the full-array index, never by the window offset.
   assert.match(html, /@click="toggleTool\(ev, idx\)"/);
-  assert.equal((html.match(/toolExpanded\(ev, idx\)/g) || []).length, 2);
+  // Ticket activity plus desktop and mobile embedded epic activity.
+  assert.equal((html.match(/toolExpanded\(ev, idx\)/g) || []).length, 6);
   assert.equal(/\b(toggleTool|toolExpanded)\(ev, i\)/.test(html), false);
   // One control above the first rendered event, carrying the hidden count.
   assert.match(html, /<template x-if="hiddenTapeEventCount\(\) > 0">/);
@@ -8038,7 +8039,7 @@ test("index.html marks a live run and holds back the finished-run states", () =>
   // A run in flight with nothing recorded yet is waiting, not empty, and says
   // so once for both the structured and the plaintext source.
   assert.match(html, /x-if="!activityLoading && activity\?\.live && !tapeEvents\(\)\.length && !activity\.content"/);
-  assert.equal((html.match(/Waiting for the agent's first step/g) || []).length, 1);
+  assert.equal((html.match(/Waiting for the agent's first step/g) || []).length, 3);
   assert.match(html, /x-if="!tapeEvents\(\)\.length && !activity\?\.live"/);
 });
 
@@ -8226,8 +8227,9 @@ test("a running stage keeps polling its transcript every two seconds", async () 
   assert.equal(h.calls[1].ifNoneMatch, '"a"', "and the validator of the payload it holds");
   assert.equal(h.pending(), 1);
 
-  // The run has ended: the payload is the completed transcript and nothing is
-  // scheduled after it.
+  // The run has ended in the ticket state as well as in its final payload.
+  // A still-running ticket must retry even if a startup payload is not live.
+  h.state.selectedTicket = { ...RUNNING_TICKET, status: 'done' };
   await h.tick();
   assert.equal(h.state.activity.live, false);
   assert.deepEqual(h.state.tapeEvents().map((e) => e.text), ["line 0", "line 1", "line 2"]);
@@ -11108,8 +11110,8 @@ test("index.html badges a waiting ticket in the detail header and both mobile la
   // Mobile board card and mobile detail header.
   assert.match(html, /x-if="ticket\.waiting_for_input"/);
   assert.match(html, /x-if="selectedTicket\?\.waiting_for_input"/);
-  // Three badges, and each shows its own elapsed time.
-  assert.equal(html.match(/class="waiting-chip"/g).length, 3);
+  // Three ticket badges with elapsed time, plus both embedded epic headers.
+  assert.equal(html.match(/class="waiting-chip"/g).length, 5);
   assert.equal(html.match(/waitingFor\((selectedTicket|ticket)\)/g).length, 3);
   // The chip reuses the review hue and the shared pulse animation.
   assert.match(html, /\.waiting-chip \{[^}]*--st-review/s);
@@ -12755,7 +12757,7 @@ const EPIC_TICKETS = [
   { id: "kon-9b31", title: "Epic page", status: "done", kontora: true, created_at: "2026-01-03T00:00:00Z", parent: { id: "kon-e7c1" } },
 ];
 
-test("an epic takes no column and does not count toward the status tallies", () => {
+test("a passive epic takes no column and does not count toward the status tallies", () => {
   const state = loadKontoraState();
   state.tickets = EPIC_TICKETS;
   state.recomputeBoard();
@@ -12866,13 +12868,13 @@ test("a child's card carries the epic spine and the epic count", () => {
   // still paints the pipeline tag.
   assert.match(html, /class="absolute left-0 top-0 bottom-0 w-\[3px\]" data-pipe-color="[a-z]+"/);
   assert.match(html, /pl-\[14px\]/);
-  assert.match(html, />1\/3 epic</);
+  assert.match(html, />Epic: 1 of 3 done</);
   assert.equal(html.includes('data-pipe-color'), true);
 
   // A ticket in no epic gets neither.
   const plain = state._cardHTML(orphan, col);
   assert.equal(/w-\[3px\]/.test(plain), false);
-  assert.equal(/epic</.test(plain), false);
+  assert.equal(/Epic:/.test(plain), false);
   assert.equal(/pl-\[14px\]/.test(plain), false);
 });
 
@@ -12889,6 +12891,10 @@ test("a sibling finishing changes the card signature of every other child", () =
 
   assert.notEqual(state._cardSig(child(), col), before,
     "the epic count on this card moved, so its signature has to move with it");
+  for (const sibling of state.tickets.filter(t => t.parent?.id === 'kon-e7c1')) {
+    const html = state._cardHTML(sibling, state._columnForStatus(sibling.status));
+    assert.match(html, />Epic: 2 of 3 done</, 'all siblings share the exact updated rollup label');
+  }
 });
 
 test("the epics rail row opens the page and draws one block per child", () => {
@@ -13079,7 +13085,7 @@ test("the brief seeds the editor and saves the whole body", async () => {
     fetch: async (url, opts) => {
       seen.push({ url, ...opts });
       if (!opts || !opts.method || opts.method === "GET") {
-        return { ok: true, json: async () => ({ id: "kon-e7c1", body: "\n# Epics\n\n## Description\n\nWhy.\n", notes: [] }) };
+        return { ok: true, json: async () => ({ ...EPIC_TICKETS[0], body: "\n# Epics\n\n## Description\n\nWhy.\n", notes: [] }) };
       }
       return { ok: true, json: async () => ({}) };
     },
@@ -13117,7 +13123,7 @@ test("opening a ticket replaces the epic page rather than stacking on it", async
     fetch: async (url) => ({
       ok: true,
       json: async () => (String(url).includes("kon-e7c1")
-        ? { id: "kon-e7c1", body: "", notes: [] }
+        ? { ...EPIC_TICKETS[0], body: "", notes: [] }
         : { id: "kon-b12e", status: "in_progress", body: "" }),
     }),
   });
@@ -13135,14 +13141,17 @@ test("opening a ticket replaces the epic page rather than stacking on it", async
   assert.equal(state.selectedTicket.id, "kon-b12e");
 });
 
-function epicSupervisorUI({ mobile = false, status = 'in_progress', mode = 'agent' } = {}) {
+function epicSupervisorUI({ mobile = false, status = 'in_progress', mode = 'agent', overrides = {} } = {}) {
   const requests = [], sockets = [];
   const epic = { id: 'kon-e7c1', title: 'Supervised epic', kind: 'epic', kontora: true, path: '/r/kontora',
     status, epic_execution: mode, agent: 'claude', agent_override: true,
     stage: mode === 'agent' ? 'default' : '', stages: mode === 'agent' ? ['default'] : [],
     body: '\n# Brief\n', branch: 'epic/integration', history: [] };
   const location = { protocol: 'http:', host: 'localhost:8080', hash: '#/' };
-  const containers = { 'terminal-session': { textContent: '' }, 'terminal-container-mobile': { textContent: '' } };
+  const containers = Object.fromEntries([
+    'terminal-session', 'terminal-container-mobile', 'epic-terminal-session', 'epic-terminal-mobile',
+    'activity-scroll', 'epic-activity-scroll', 'epic-activity-scroll-mobile',
+  ].map(id => [id, { textContent: '', scrollTop: 0, scrollHeight: 1000 }]));
   const { ctx, state } = loadKontoraContext({
     location,
     document: {
@@ -13171,6 +13180,7 @@ function epicSupervisorUI({ mobile = false, status = 'in_progress', mode = 'agen
       if (url.includes('/activity')) return { ok: true, headers: { get: () => null }, json: async () => ({ source: 'log', content: 'supervisor activity' }) };
       return { ok: true, json: async () => ({ ...epic }) };
     },
+    ...overrides,
   });
   stubXterm(ctx.termState);
   state.isMobile = mobile;
@@ -13178,12 +13188,662 @@ function epicSupervisorUI({ mobile = false, status = 'in_progress', mode = 'agen
   state.configCache = { agents: ['claude'], default_agent: 'claude', pipelines: ['build'],
     pipeline_infos: [{ name: 'build', stages: ['code'], default_agent: 'worker' }],
     projects: [{ name: 'repo', path: epic.path, pipeline: 'build', agent: 'claude' }] };
-  state.tickets = [state.boardEntry(epic), ...['child-a', 'child-b', 'child-c'].map(id => ({
+  const slimEpic = state.boardEntry(epic);
+  // /api/tickets is deliberately slimmer than detail and SSE payloads.
+  for (const key of ['history', 'last_error', 'last_log']) delete slimEpic[key];
+  state.tickets = [slimEpic, ...['child-a', 'child-b', 'child-c'].map(id => ({
     id, title: id, kontora: true, agent: 'claude', status: 'open', path: epic.path, parent: { id: epic.id },
   }))];
   state.recomputeBoard();
-  return { state, ctx, location, epic, requests, sockets };
+  return { state, ctx, location, epic, requests, sockets, containers };
 }
+
+// Keep activity retries deterministic without leaving real poll timers alive.
+function supervisorClock() {
+  const timers = new Map();
+  let next = 1;
+  return {
+    timers,
+    overrides: {
+      setTimeout(fn, ms) { const id = next++; timers.set(id, { fn, ms }); return id; },
+      clearTimeout(id) { timers.delete(id); },
+    },
+    async tick(id) {
+      const timer = timers.get(id);
+      assert.ok(timer, 'expected an armed timer');
+      timers.delete(id);
+      timer.fn();
+      await flushMicrotasks();
+    },
+  };
+}
+
+for (const mobile of [false, true]) {
+  test(`embedded epic watch keeps the epic, route and brief draft: mobile=${mobile}`, async () => {
+    const { state, ctx, epic, location, requests, sockets, containers } = epicSupervisorUI({ mobile, status: 'paused' });
+    await state.openEpic(epic.id);
+    state.epicEditingBrief = true;
+    state.editForm.body = 'Do not flush this draft';
+    state.epicDebounceBrief();
+    const debounce = state._epicBriefDebounce;
+    state.applyTicketUpdate({ ...epic, status: 'in_progress' });
+    // Running briefs are normally flushed by recompute; this test isolates watch.
+    state.epicEditingBrief = true;
+    requests.length = 0;
+    state.epicWatchAgent();
+    await flushMicrotasks();
+    assert.equal(state.selectedEpic.id, epic.id);
+    assert.equal(state.selectedTicket, null);
+    assert.equal(location.hash, '#/e/' + epic.id);
+    assert.equal(state.outputSubject(), state.selectedEpic);
+    assert.equal(state.outputTab(), 'session');
+    assert.equal(state.epicTab, 'session');
+    assert.equal(state.terminalWanted(), true);
+    assert.equal(state.editForm.body, 'Do not flush this draft');
+    assert.equal(state._epicBriefDebounce, debounce, 'watch neither cancels nor flushes a pending save');
+    assert.equal(requests.length, 0);
+    const terminalID = mobile ? 'epic-terminal-mobile' : 'epic-terminal-session';
+    const activityID = mobile ? 'epic-activity-scroll-mobile' : 'epic-activity-scroll';
+    assert.equal(state.outputContainerID('terminal'), terminalID);
+    assert.equal(state.outputContainerID('activity'), activityID);
+    assert.equal(ctx.termState.term.element.parentNode, containers[terminalID]);
+    assert.equal(sockets.length, 1);
+    assert.match(sockets[0].url, new RegExp('/ws/terminal/' + epic.id + '\\?'));
+    clearTimeout(debounce);
+    state._epicBriefDebounce = null;
+    state.destroy();
+  });
+
+  test(`passive epic never exposes output or attaches a terminal: mobile=${mobile}`, async () => {
+    const { state, epic, sockets, requests } = epicSupervisorUI({ mobile, mode: '' });
+    await state.openEpic(epic.id);
+    requests.length = 0;
+    state.epicWatchAgent();
+    state.epicSwitchTab('session');
+    state.epicSwitchTab('activity');
+    await state.openTerminal();
+    assert.equal(state.epicTab, 'children');
+    assert.equal(state.outputSubject(), null);
+    assert.equal(!!state.terminalWanted(), false);
+    assert.deepEqual(vmValue(state.outputRuns()), []);
+    assert.equal(sockets.length, 0);
+    assert.equal(requests.length, 0);
+    state.applyTicketUpdate({ ...epic, epic_execution: 'agent', status: 'in_progress', stage: 'default' });
+    state.recomputeBoard();
+    state.epicWatchAgent();
+    await flushMicrotasks();
+    state.epicSwitchTab('activity');
+    await flushMicrotasks();
+    assert.equal(sockets.length, 1);
+    state.applyTicketUpdate({ ...epic });
+    state.recomputeBoard();
+    assert.equal(sockets[0].closed, true);
+    assert.equal(state.outputSubject(), null);
+    assert.equal(state._activityPoll, null);
+    state.destroy();
+  });
+
+  for (const { status, history, error, message } of [
+    { status: 'open', history: [], message: /has not recorded a run/ },
+    { status: 'todo', history: [], message: /queued.*when it starts/ },
+    { status: 'paused', history: [], error: 'startup failed', message: /failed before recording a run/ },
+    { status: 'human_review', history: [{ stage: 'default', run: 0 }], message: /No live session.*recorded run/ },
+  ]) {
+    test(`epic session names its no-run state without connecting: mobile=${mobile}, status=${status}`, async () => {
+      const { state, epic, sockets } = epicSupervisorUI({ mobile, status });
+      epic.history = history;
+      epic.last_error = error;
+      await state.openEpic(epic.id);
+      state.epicSwitchTab('session');
+      await flushMicrotasks();
+      await state.openTerminal();
+      assert.match(state.outputNoRunText(), message);
+      assert.equal(state.terminalWanted(), false);
+      assert.equal(state.terminalOpen, false);
+      assert.equal(state.selectedTicket, null);
+      assert.equal(sockets.length, 0);
+      state.destroy();
+    });
+  }
+
+  for (const failure of ['http', 'network']) {
+    test(`epic detail reports ${failure} failure without abandoning the overview: mobile=${mobile}`, async () => {
+      const { state, ctx, epic, location } = epicSupervisorUI({ mobile, status: 'paused' });
+      ctx.fetch = async () => {
+        if (failure === 'network') throw new Error('offline');
+        return { ok: false };
+      };
+      await state.openEpic(epic.id);
+      assert.equal(state.error, 'Failed to load epic details');
+      assert.equal(state.selectedEpic.id, epic.id);
+      assert.equal(state.selectedTicket, null);
+      assert.equal(location.hash, '#/e/' + epic.id);
+      assert.equal(state.epicCanEditBrief(), false);
+      state.destroy();
+    });
+  }
+
+  test(`queued epic session attaches when readiness precedes the buffered running update: mobile=${mobile}`, async () => {
+    const frames = [];
+    const { state, epic, sockets } = epicSupervisorUI({ mobile, status: 'todo', overrides: {
+      requestAnimationFrame: fn => { frames.push(fn); return frames.length; },
+      cancelAnimationFrame() {},
+    } });
+    await state.openEpic(epic.id);
+    state.epicSwitchTab('session');
+    state.connectSSE();
+    state._eventSource.emit('ticket_updated', { ...epic, status: 'in_progress' });
+    state._eventSource.emit('terminal_ready', { id: epic.id });
+    while (frames.length) frames.shift()();
+    await flushMicrotasks();
+    while (frames.length) frames.shift()();
+    assert.equal(state.terminalWanted(), true);
+    assert.equal(sockets.length, 1);
+    assert.match(sockets[0].url, new RegExp('/ws/terminal/' + epic.id + '\\?'));
+    state.destroy();
+  });
+
+  for (const status of ['paused', 'done', 'human_review']) {
+    test(`stopped epic activity loads when initial history arrives: mobile=${mobile}, status=${status}`, async () => {
+      const { state, ctx, epic, requests } = epicSupervisorUI({ mobile, status });
+      epic.history = [{ stage: 'default', run: 0 }];
+      const detail = deferred();
+      const originalFetch = ctx.fetch;
+      ctx.fetch = async (url, opts) => {
+        if (url === '/api/tickets/' + epic.id) await detail.promise;
+        return originalFetch(url, opts);
+      };
+      const opening = state.openEpic(epic.id);
+      state.epicSwitchTab('activity');
+      assert.equal(state.activityStage, null);
+      detail.resolve();
+      await opening;
+      await flushMicrotasks();
+      assert.equal(state.outputRunKey(), 'default#0');
+      assert.equal(state.activity.content, 'supervisor activity');
+      assert.equal(requests.filter(r => r.url.includes('/activity')).length, 1);
+      assert.equal(state._activityPoll, null);
+      state.destroy();
+    });
+  }
+
+  for (const tab of ['session', 'activity']) {
+    test(`history before final status keeps the completed epic attempt: mobile=${mobile}, tab=${tab}`, async () => {
+      const clock = supervisorClock();
+      const { state, epic, requests, sockets } = epicSupervisorUI({ mobile, overrides: clock.overrides });
+      await state.openEpic(epic.id);
+      state.epicSwitchTab(tab);
+      await flushMicrotasks();
+      requests.length = 0;
+      const finished = { ...epic, history: [{ stage: 'default', run: 0, exit_code: 0 }] };
+      state.applyTicketUpdate(finished);
+      await flushMicrotasks();
+      state.applyTicketUpdate({ ...finished, title: 'A later note update' });
+      await flushMicrotasks();
+      state.applyTicketUpdate({ ...finished, status: 'human_review' });
+      await flushMicrotasks();
+      assert.equal(state.epicTab, 'activity');
+      assert.equal(state.outputRunKey(), 'default#0');
+      assert.equal(state.activity.content, 'supervisor activity');
+      assert.ok(requests.some(r => r.url.includes('/activity?stage=default&run=0')));
+      assert.ok(requests.every(r => !r.url.endsWith('run=1')), 'completion cannot request an unrecorded next attempt');
+      assert.equal(state._activityPoll, null);
+      assert.ok(sockets.every(s => s.closed));
+      state.destroy();
+    });
+  }
+
+  for (const status of ['todo', 'paused']) {
+    test(`same-status epic updates preserve a session with no recorded run: mobile=${mobile}, status=${status}`, async () => {
+      const { state, epic, requests } = epicSupervisorUI({ mobile, status });
+      if (status === 'paused') epic.last_error = 'startup failed';
+      await state.openEpic(epic.id);
+      state.epicSwitchTab('session');
+      const explanation = state.outputNoRunText();
+      requests.length = 0;
+      state.applyTicketUpdate({ ...epic, notes: [{ text: 'new note' }] });
+      await flushMicrotasks();
+      assert.equal(state.epicTab, 'session');
+      assert.equal(state.outputNoRunText(), explanation);
+      assert.equal(state.activityStage, null);
+      assert.equal(state.activityError, null);
+      assert.equal(requests.length, 0);
+      state.destroy();
+    });
+  }
+
+  test(`epic output startup failure retries and terminal_ready refreshes activity: mobile=${mobile}`, async () => {
+    const clock = supervisorClock();
+    const { state, ctx, epic } = epicSupervisorUI({ mobile, overrides: clock.overrides });
+    await state.openEpic(epic.id);
+    let reads = 0;
+    ctx.fetch = async url => {
+      assert.match(url, new RegExp('/api/tickets/' + epic.id + '/activity\\?stage=default&run=0'));
+      reads++;
+      if (reads === 1) return { ok: false, json: async () => ({ error: 'session not created yet' }) };
+      return { ok: true, headers: { get: () => null }, json: async () => ({ source: 'log', content: 'ready ' + reads }) };
+    };
+    state.epicSwitchTab('activity');
+    await flushMicrotasks();
+    assert.equal(state.activityError, 'session not created yet');
+    assert.equal(clock.timers.get(state._activityPoll).ms, 2000);
+    await clock.tick(state._activityPoll);
+    assert.equal(state.activity.content, 'ready 2');
+    assert.equal(state.activityError, null);
+    assert.ok(state._activityPoll !== null, 'running status polls even before the payload reports live');
+    state.connectSSE();
+    state._eventSource.emit('terminal_ready', { id: 'child-a' });
+    await flushMicrotasks();
+    assert.equal(reads, 2, 'another ticket cannot refresh this output');
+    state._eventSource.emit('terminal_ready', { id: epic.id });
+    await flushMicrotasks();
+    assert.equal(reads, 3);
+    assert.equal(state.activity.content, 'ready 3');
+    state.epicSwitchTab('children');
+    assert.equal(state._activityPoll, null);
+    state.destroy();
+    assert.equal(clock.timers.size, 0);
+  });
+}
+
+for (const owner of ['worker', 'epic']) {
+  for (const pollStatus of [200, 304]) {
+    for (const delayed of ['response', 'json']) {
+      test(`raw ${owner} output survives a same-run ${pollStatus} activity poll during ${delayed}`, async () => {
+        const clock = supervisorClock();
+        const opened = [];
+        const { state, ctx, epic } = epicSupervisorUI({ overrides: { ...clock.overrides,
+          Blob, URL: { createObjectURL: () => 'blob:raw-output' },
+        } });
+        await state.openEpic(epic.id);
+        if (owner === 'worker') {
+          state.selectedEpic = null;
+          state.selectedTicket = { ...epic, kind: 'ticket' };
+          state.activeTab = 'activity';
+        } else state.epicSwitchTab('activity', false);
+        ctx.window.open = url => opened.push(url);
+        const gate = deferred();
+        let reads = 0;
+        ctx.fetch = async url => {
+          if (url.includes('/logs')) {
+            if (delayed === 'response') await gate.promise;
+            return { ok: true, json: async () => {
+              if (delayed === 'json') await gate.promise;
+              return { content: 'raw stage output' };
+            } };
+          }
+          reads++;
+          return { ok: true, status: reads > 1 ? pollStatus : 200, headers: { get: () => 'etag' },
+            json: async () => ({ source: 'events', live: true, tape: { events: [] } }) };
+        };
+        await state.fetchActivity('default', 0);
+        const raw = state.openRawLog();
+        await flushMicrotasks();
+        await clock.tick(state._activityPoll);
+        assert.equal(reads, 2);
+        gate.resolve();
+        await raw;
+        assert.deepEqual(opened, ['blob:raw-output']);
+        assert.equal(state.error, null);
+        state.destroy();
+      });
+    }
+  }
+}
+
+for (const mobile of [false, true]) {
+  for (const supersession of ['same run', 'tab round trip', 'run round trip', 'close/reopen', 'destroy']) {
+    for (const ok of [true, false]) {
+      test(`raw epic output ignores stale ${ok ? 'success' : 'failure'} after ${supersession}: mobile=${mobile}`, async () => {
+        const clock = supervisorClock();
+        const opened = [];
+        const { state, ctx, epic } = epicSupervisorUI({ mobile, overrides: { ...clock.overrides,
+          Blob, URL: { createObjectURL: () => 'blob:stale-output' },
+        } });
+        epic.history = [{ stage: 'default', run: 0 }];
+        await state.openEpic(epic.id);
+        ctx.window.open = url => opened.push(url);
+        const originalFetch = ctx.fetch;
+        const gate = deferred();
+        ctx.fetch = async (url, opts) => {
+          if (!url.includes('/logs')) return originalFetch(url, opts);
+          await gate.promise;
+          return { ok, json: async () => ({ content: 'stale raw output' }) };
+        };
+        state.epicSwitchTab('activity', false);
+        await state.fetchActivity('default', 0);
+        state.activity = { tape: { events: [] } };
+        const raw = state.openRawLog();
+        if (supersession === 'same run') state.selectOutputRun('default#0');
+        else if (supersession === 'tab round trip') {
+          state.epicSwitchTab('children');
+          state.epicSwitchTab('activity', false);
+        } else if (supersession === 'run round trip') {
+          state.selectOutputRun('default#1');
+          state.selectOutputRun('default#0');
+        } else if (supersession === 'close/reopen') {
+          await state.closeEpic();
+          await state.openEpic(epic.id);
+          state.epicSwitchTab('activity', false);
+          await state.fetchActivity('default', 0);
+        } else state.destroy();
+        await flushMicrotasks();
+        gate.resolve();
+        await raw;
+        assert.deepEqual(opened, []);
+        assert.equal(state.error, null);
+        state.destroy();
+      });
+    }
+  }
+}
+
+for (const recordedRun of [false, true]) {
+  test(`epic detail retains errors across slim board recomputes: recordedRun=${recordedRun}`, async () => {
+    const { state, epic } = epicSupervisorUI({ status: 'paused' });
+    epic.history = recordedRun ? [{ stage: 'default', run: 0, exit_code: 1 }] : [];
+    epic.last_error = 'supervisor failed';
+    epic.last_log = 'failure log';
+    assert.equal('history' in state.tickets[0], false);
+    assert.equal('last_error' in state.tickets[0], false);
+    assert.equal('last_log' in state.tickets[0], false);
+    await state.openEpic(epic.id);
+    state.recomputeBoard();
+    assert.deepEqual(vmValue(state.selectedEpic.history), epic.history);
+    assert.equal(state.selectedEpic.last_error, epic.last_error);
+    assert.equal(state.selectedEpic.last_log, epic.last_log);
+    assert.deepEqual(vmValue(state.outputRuns().map(r => r.key)), recordedRun ? ['default#0'] : []);
+    if (!recordedRun) assert.match(state.outputNoRunText(), /failed before recording/);
+    state.destroy();
+  });
+}
+
+test('epic detail overtaken by SSE repeats without restoring a cleared error or replacing a brief edit', async () => {
+  const { state, ctx, epic } = epicSupervisorUI({ status: 'paused' });
+  epic.last_error = 'old failure';
+  await state.openEpic(epic.id);
+  state.epicEditingBrief = true;
+  state.editForm.body = 'Local brief in progress';
+  const stale = { ...epic, history: [], last_error: 'old failure', body: 'stale server brief' };
+  const current = { ...epic, history: [{ stage: 'default', run: 0 }], last_error: '', last_log: '', body: 'remote brief' };
+  const gate = deferred();
+  let reads = 0;
+  ctx.fetch = async () => ({ ok: true, json: async () => {
+    if (++reads === 1) { await gate.promise; return stale; }
+    return current;
+  } });
+  const loading = state.epicFetchDetail(epic.id);
+  await flushMicrotasks();
+  state.applyTicketUpdate(current);
+  state.recomputeBoard();
+  assert.equal(state.selectedEpic.last_error, '');
+  gate.resolve();
+  await loading;
+  assert.equal(reads, 2, 'SSE invalidates the in-flight detail snapshot');
+  state.recomputeBoard();
+  assert.equal(state.selectedEpic.last_error, '');
+  assert.equal(state.selectedEpic.last_log, '');
+  assert.deepEqual(vmValue(state.selectedEpic.history), current.history);
+  assert.equal(state.epicEditingBrief, true);
+  assert.equal(state.editForm.body, 'Local brief in progress');
+  const withoutErrors = { ...current };
+  delete withoutErrors.last_error;
+  delete withoutErrors.last_log;
+  state.applyTicketUpdate(withoutErrors);
+  state.applyTicketUpdate({ ...state.tickets[1], status: 'done' });
+  state.recomputeBoard();
+  assert.equal(state.selectedEpic.last_error, undefined, 'omitted optional fields clear previous errors');
+  assert.equal(state.selectedEpic.last_log, undefined);
+  assert.deepEqual(vmValue(state.selectedEpic.history), current.history);
+  assert.equal(state.editForm.body, 'Local brief in progress');
+  state.destroy();
+});
+
+for (const mobile of [false, true]) {
+  for (const supersession of ['close/reopen', 'tab', 'run', 'destroy']) {
+    for (const delayed of ['response', 'json', 'error json']) {
+      test(`epic activity generation drops delayed ${delayed} after ${supersession}: mobile=${mobile}`, async () => {
+        const clock = supervisorClock();
+        const { state, ctx, epic } = epicSupervisorUI({ mobile, overrides: clock.overrides });
+        epic.history = [{ stage: 'default', run: 0 }];
+        await state.openEpic(epic.id);
+        const gate = deferred();
+        const originalFetch = ctx.fetch;
+        let reads = 0;
+        ctx.fetch = async (url, opts) => {
+          if (!url.includes('/activity')) return originalFetch(url, opts);
+          if (++reads !== 1) return { ok: true, headers: { get: () => null }, json: async () => ({ source: 'log', content: 'current output' }) };
+          if (delayed === 'response') await gate.promise;
+          return {
+            ok: delayed !== 'error json', headers: { get: () => 'stale-etag' },
+            json: async () => {
+              if (delayed !== 'response') await gate.promise;
+              return delayed === 'error json' ? { error: 'stale error' } : { source: 'log', content: 'stale output', live: true };
+            },
+          };
+        };
+        state.epicSwitchTab('activity', false);
+        const first = state.fetchActivity('default', 0);
+        await flushMicrotasks();
+        if (supersession === 'close/reopen') {
+          await state.closeEpic();
+          await state.openEpic(epic.id);
+          state.epicSwitchTab('activity', false);
+          await state.fetchActivity('default', 1);
+        } else if (supersession === 'run') {
+          state.selectOutputRun('default#1');
+          await flushMicrotasks();
+        } else if (supersession === 'destroy') state.destroy();
+        else state.epicSwitchTab('children');
+        const poll = state._activityPoll;
+        gate.resolve();
+        await first;
+        assert.equal(state.selectedEpic.id, epic.id);
+        assert.equal(state.selectedTicket, null);
+        assert.equal(state.activityError, null);
+        assert.equal(state.activityLoading, false);
+        assert.equal(state._activityPoll, poll, 'stale responses cannot re-arm the poll');
+        if (supersession === 'tab' || supersession === 'destroy') {
+          assert.equal(state.activity, null);
+          if (supersession === 'tab') assert.equal(state.epicTab, 'children');
+          else assert.equal(state._appDestroyed, true);
+          assert.equal(poll, null);
+        } else {
+          assert.equal(state.activity.content, 'current output');
+          assert.equal(state.outputRunKey(), 'default#1');
+        }
+        state.destroy();
+        assert.equal(clock.timers.size, 0);
+      });
+    }
+  }
+
+  test(`detail hydration corrects an automatic activity target while its first read is pending: mobile=${mobile}`, async () => {
+    const clock = supervisorClock();
+    const { state, ctx, epic } = epicSupervisorUI({ mobile, overrides: clock.overrides });
+    epic.history = [{ stage: 'default', run: 0 }];
+    const detail = deferred(), oldRead = deferred(), currentRead = deferred();
+    ctx.fetch = async url => {
+      if (!url.includes('/activity')) {
+        await detail.promise;
+        return { ok: true, json: async () => ({ ...epic }) };
+      }
+      const old = url.endsWith('run=0');
+      await (old ? oldRead : currentRead).promise;
+      return { ok: true, headers: { get: () => null }, json: async () => ({ content: old ? 'old run' : 'current run', live: !old }) };
+    };
+    const opening = state.openEpic(epic.id);
+    state.epicSwitchTab('activity');
+    await flushMicrotasks();
+    assert.equal(state.outputRunKey(), 'default#0');
+    detail.resolve();
+    await opening;
+    assert.equal(state.outputRunKey(), 'default#1');
+    assert.equal(state.activityLoading, true);
+    oldRead.resolve();
+    await flushMicrotasks();
+    assert.equal(state.activityLoading, true, 'an older read cannot finish the current loading state');
+    currentRead.resolve();
+    await flushMicrotasks();
+    assert.equal(state.activityLoading, false);
+    assert.equal(state.activity.content, 'current run');
+    state.destroy();
+  });
+
+  for (const pendingActivity of [false, true]) {
+    test(`epic completion, retry and historical selection keep run identities: mobile=${mobile}, pendingActivity=${pendingActivity}`, async () => {
+      const clock = supervisorClock();
+      const { state, ctx, epic, requests, sockets } = epicSupervisorUI({ mobile, overrides: clock.overrides });
+      await state.openEpic(epic.id);
+      state.epicWatchAgent();
+      await flushMicrotasks();
+      const socket = sockets[0];
+      const pending = deferred();
+      if (pendingActivity) {
+        const originalFetch = ctx.fetch;
+        let reads = 0;
+        ctx.fetch = async (url, opts) => {
+          if (url.includes('/activity') && ++reads === 1) await pending.promise;
+          return originalFetch(url, opts);
+        };
+        state.epicSwitchTab('activity');
+        await flushMicrotasks();
+        assert.equal(state.activityLoading, true);
+      }
+      const history = [{ stage: 'default', run: 0, exit_code: 1 }];
+      Object.assign(epic, { status: 'paused', history, last_error: 'run failed' });
+      state.applyTicketUpdate({ ...epic });
+      state.recomputeBoard();
+      await flushMicrotasks();
+      assert.equal(socket.closed, true);
+      assert.equal(state.epicTab, 'activity');
+      assert.equal(state.outputRunKey(), 'default#0');
+      assert.equal(state.activityLoading, false);
+      pending.resolve();
+      await flushMicrotasks();
+      assert.equal(state.activityLoading, false);
+      assert.equal(state._activityPoll, null);
+      assert.deepEqual(vmValue(state.outputRuns().map(r => r.key)), ['default#0']);
+      await state.epicAction('retry');
+      assert.equal(state.selectedEpic.status, 'todo');
+      assert.match(state.outputNoRunText(), /queued/i);
+      state.applyTicketUpdate({ ...epic, status: 'in_progress', last_error: '' });
+      state.recomputeBoard();
+      assert.deepEqual(vmValue(state.outputRuns().map(r => r.key)), ['default#1', 'default#0']);
+      requests.length = 0;
+      state.selectOutputRun('default#0');
+      await flushMicrotasks();
+      assert.equal(state.outputRunKey(), 'default#0');
+      assert.equal(state._activityPoll, null, 'historical runs do not poll a newer live run');
+      const beforeReady = requests.length;
+      state.outputReady(epic.id);
+      await flushMicrotasks();
+      assert.equal(requests.length, beforeReady, 'ready cannot replace an explicitly selected historical run');
+      state.selectOutputRun('default#1');
+      await flushMicrotasks();
+      assert.equal(state.outputRunKey(), 'default#1');
+      assert.ok(requests.at(-1).url.endsWith('/activity?stage=default&run=1'));
+      assert.ok(state._activityPoll !== null);
+      state.epicWatchAgent();
+      await flushMicrotasks();
+      assert.equal(state.epicTab, 'session');
+      assert.equal(sockets.filter(s => !s.closed).length, 1);
+      assert.equal(state._activityPoll, null);
+      assert.equal(state.outputRunKey(), 'default#1', 'the live session selector must not label a historical run');
+      state.destroy();
+    });
+  }
+
+  test(`epic socket disconnect requires explicit reconnect and ignores stale callbacks: mobile=${mobile}`, async () => {
+    const { state, ctx, epic, sockets } = epicSupervisorUI({ mobile });
+    await state.openEpic(epic.id);
+    state.epicWatchAgent();
+    await flushMicrotasks();
+    const first = sockets[0];
+    first.onopen();
+    assert.equal(state.terminalConnected, true);
+    first.close();
+    first.onclose();
+    assert.equal(state.terminalConnected, false);
+    assert.match(state.terminalError, /disconnected.*retry/i);
+    assert.equal(ctx.termState.ws, null);
+    assert.equal(sockets.length, 1, 'disconnect does not spin an automatic retry');
+    state.reconnectTerminal();
+    await flushMicrotasks();
+    assert.equal(sockets.length, 2);
+    sockets[1].onopen();
+    first.onclose();
+    assert.equal(state.terminalConnected, true);
+    assert.equal(state.terminalError, null);
+    assert.equal(ctx.termState.ws, sockets[1]);
+    state.connectSSE();
+    state._eventSource.emit('terminal_ready', { id: 'child-a' });
+    await flushMicrotasks();
+    assert.equal(sockets.length, 2);
+    state._eventSource.emit('terminal_ready', { id: epic.id });
+    await flushMicrotasks();
+    assert.equal(sockets.length, 3, 'ready for the selected supervisor reconnects its session');
+    assert.equal(sockets[1].closed, true);
+    state.destroy();
+    assert.equal(sockets[2].closed, true);
+    assert.equal(ctx.termState.term, null);
+  });
+
+  test(`epic terminal opening generation survives close and reopen of the same ID: mobile=${mobile}`, async () => {
+    const { state, ctx, epic, sockets } = epicSupervisorUI({ mobile });
+    await state.openEpic(epic.id);
+    const gate = deferred();
+    let ticks = 0;
+    state.$nextTick = callback => {
+      if (callback) { callback(); return Promise.resolve(); }
+      return ++ticks === 1 ? gate.promise : Promise.resolve();
+    };
+    state.epicWatchAgent();
+    assert.equal(state._terminalOpening, true);
+    await state.closeEpic();
+    await state.openEpic(epic.id);
+    state.epicWatchAgent();
+    await flushMicrotasks();
+    const current = ctx.termState.ws;
+    assert.equal(sockets.length, 1);
+    gate.resolve();
+    await flushMicrotasks();
+    assert.equal(sockets.length, 1);
+    assert.equal(ctx.termState.ws, current);
+    assert.equal(state.terminalOpen, true);
+    state.destroy();
+  });
+}
+
+test('epic terminal remounts into the replacement breakpoint container and destroy cancels output', async () => {
+  const clock = supervisorClock();
+  const { state, ctx, epic, sockets, containers } = epicSupervisorUI({ overrides: clock.overrides });
+  await state.openEpic(epic.id);
+  state.epicWatchAgent();
+  await flushMicrotasks();
+  const desktop = ctx.termState.term;
+  assert.equal(desktop.element.parentNode, containers['epic-terminal-session']);
+  state.isMobile = true;
+  state._onBreakpointChange();
+  assert.equal(sockets[0].closed, true);
+  assert.equal(desktop.disposed, true);
+  assert.equal(ctx.termState.term, null);
+  assert.equal(state.selectedEpic.id, epic.id);
+  await flushMicrotasks();
+  const phone = ctx.termState.term;
+  assert.notEqual(phone, desktop);
+  assert.equal(phone.element.parentNode, containers['epic-terminal-mobile']);
+  state.epicSwitchTab('activity');
+  await flushMicrotasks();
+  assert.ok(state._activityPoll !== null);
+  state.destroy();
+  assert.equal(phone.disposed, true);
+  assert.equal(ctx.termState.ws, null);
+  assert.equal(ctx.termState.term, null);
+  assert.equal(state.activity, null);
+  assert.equal(state._activityPoll, null);
+  assert.equal(clock.timers.size, 0);
+});
 
 for (const derived of ['open', 'in_progress', 'done', 'cancelled']) {
   test(`start epic confirms one supervisor, not children: passive ${derived}`, async () => {
@@ -13212,7 +13872,7 @@ for (const derived of ['open', 'in_progress', 'done', 'cancelled']) {
 }
 
 for (const mobile of [false, true]) {
-  test(`epic watch, return, Back and reload share the epic session: mobile=${mobile}`, async () => {
+  test(`epic run details, return, Back and reload share the epic session: mobile=${mobile}`, async () => {
     const { state, ctx, epic, location, sockets } = epicSupervisorUI({ mobile });
     location.hash = '#/e/' + epic.id;
     await state.applyRoute();
@@ -13228,7 +13888,7 @@ for (const mobile of [false, true]) {
         queueMicrotask(() => state.applyRoute());
       }
     };
-    await state.epicWatchAgent();
+    await state.epicRunDetails();
     await flushMicrotasks();
     assert.deepEqual(hashWrites, ['#/t/' + epic.id], 'overlay switches never publish an intermediate board route');
     assert.equal(state.selectedEpic, null);
@@ -13272,7 +13932,7 @@ test('brief navigation saves the previous epic draft and ignores late detail res
   state.editForm.body = '# Updated brief';
   state.epicDebounceBrief();
   requests.length = 0;
-  await state.epicWatchAgent();
+  await state.epicRunDetails();
   assert.equal(requests.filter(r => r.method === 'PUT').length, 1);
   assert.equal(requests[0].url, '/api/tickets/' + epic.id);
   assert.deepEqual(JSON.parse(requests[0].body), { body: '\n# Updated brief' });
@@ -13292,7 +13952,7 @@ test('brief navigation saves the previous epic draft and ignores late detail res
   assert.equal(delayed._epicDetail, null);
 });
 
-test('a failed brief save keeps the draft instead of starting or watching the supervisor', async () => {
+test('a failed brief save keeps the draft instead of starting or opening supervisor run details', async () => {
   const { state, ctx, epic } = epicSupervisorUI({ status: 'open' });
   await state.openEpic(epic.id);
   state.epicEditingBrief = true;
@@ -13301,7 +13961,7 @@ test('a failed brief save keeps the draft instead of starting or watching the su
   await state.epicStart();
   assert.equal(state.initModal, false);
   assert.equal(state.selectedEpic.id, epic.id);
-  await state.epicWatchAgent();
+  await state.epicRunDetails();
   assert.equal(state.selectedTicket, null);
   assert.equal(state.editForm.body, 'Unsaved brief');
   assert.equal(state.error, 'save rejected');
@@ -13327,10 +13987,10 @@ test('a later execution selection supersedes navigation waiting on an epic brief
   state.closeDetail();
 });
 
-for (const action of ['start', 'watch', 'ticket', 'epic', 'close', 'route', 'view']) {
+for (const action of ['start', 'run details', 'ticket', 'epic', 'close', 'route', 'view', 'new']) {
   for (const ok of [true, false]) {
     test(`blurred pending brief save gates ${action}: success=${ok}`, async () => {
-      const { state, ctx, epic, location } = epicSupervisorUI({ status: 'open', mobile: action === 'watch' });
+      const { state, ctx, epic, location } = epicSupervisorUI({ status: 'open', mobile: action === 'run details' });
       await state.openEpic(epic.id);
       const other = { ...epic, id: 'other' };
       state.tickets.push(other);
@@ -13356,7 +14016,8 @@ for (const action of ['start', 'watch', 'ticket', 'epic', 'close', 'route', 'vie
       let finished = false;
       const actions = {
         start: () => state.epicStart(),
-        watch: () => state.epicWatchAgent(),
+        'run details': () => state.epicRunDetails(),
+        new: () => state.openCreateModal(),
         ticket: () => state.selectTicket(state.tickets[1]),
         epic: () => state.openEpic(other.id),
         close: () => state.closeEpic(),
@@ -13391,12 +14052,16 @@ for (const action of ['start', 'watch', 'ticket', 'epic', 'close', 'route', 'vie
         if (action === 'start') {
           assert.equal(state.initModal, true);
           assert.equal(state.initForm.ticketId, epic.id);
-        } else if (action === 'watch' || action === 'ticket') {
+        } else if (action === 'run details' || action === 'ticket') {
           assert.equal(state.selectedEpic, null);
-          assert.equal(state.selectedTicket.id, action === 'watch' ? epic.id : 'child-a');
+          assert.equal(state.selectedTicket.id, action === 'run details' ? epic.id : 'child-a');
         } else if (action === 'epic') assert.equal(state.selectedEpic.id, other.id);
         else assert.equal(state.selectedEpic, null);
         if (action === 'route' || action === 'view') assert.equal(state.currentView, 'stats');
+        if (action === 'new') {
+          assert.equal(state.currentView, 'new');
+          assert.equal(location.hash, '#/new');
+        }
       }
       state.closeStats();
       if (state.selectedTicket) state.closeDetail();
@@ -13553,7 +14218,7 @@ for (const mobile of [false, true]) {
   }
 }
 
-for (const action of ['start', 'watch', 'route', 'view']) {
+for (const action of ['start', 'run details', 'route', 'view', 'new']) {
   for (const ok of [true, false]) {
     test(`a newer route supersedes ${action} during a blurred save: success=${ok}`, async () => {
       const { state, ctx, epic, location } = epicSupervisorUI({ status: 'open' });
@@ -13575,7 +14240,8 @@ for (const action of ['start', 'watch', 'route', 'view']) {
       state.epicBlurBriefEdit();
       let first;
       if (action === 'start') first = state.epicStart();
-      else if (action === 'watch') first = state.epicWatchAgent();
+      else if (action === 'run details') first = state.epicRunDetails();
+      else if (action === 'new') first = state.openCreateModal();
       else if (action === 'view') first = state.gotoView('stats');
       else { location.hash = '#/t/child-a'; first = state.applyRoute(); }
       location.hash = '#/t/child-b';
@@ -13659,6 +14325,77 @@ test('activation SSE refreshes execution mode without replacing an open body dra
   state.closeDetail();
 });
 
+for (const supervisorsOnly of [true, false]) {
+  test(`supervisor board counts and filters work with hidden sidebar and badges: supervisorsOnly=${supervisorsOnly}`, () => {
+    const { state, epic } = epicSupervisorUI();
+    state.sidebarHidden = true;
+    state.showPipelineBadges = false;
+    const passive = { ...epic, id: 'passive', epic_execution: '', waiting_for_input: true };
+    state.tickets = [state.tickets[0], passive, ...(supervisorsOnly ? [] : state.tickets.slice(1))];
+    if (!supervisorsOnly) {
+      state.tickets[2].status = 'in_progress';
+      state.tickets[3].status = 'done';
+    }
+    state.recomputeBoard();
+    const total = supervisorsOnly ? 1 : 4;
+    const running = supervisorsOnly ? 1 : 2;
+    assert.equal(state._boardTotal, total);
+    assert.equal(state.runningAgents, running);
+    assert.equal(state._statusCounts.in_progress, running);
+    assert.equal(state._statusCounts.needsInput, 0, 'passive rollups never count as waiting processes');
+    assert.equal(state.agentRunningCount('claude'), running);
+    assert.equal(state.epics.length, 2);
+    assert.equal(bt(state, 'in_progress').filter(t => t.id === epic.id).length, 1);
+    const col = state.columns.find(c => c.key === 'in_progress');
+    const card = state._cardHTML(state.tickets[0], col);
+    assert.match(card, /aria-label="Supervisor /);
+    assert.match(card, />supervisor<\/span>/, 'identity survives disabled pipeline badges');
+    assert.match(card, />supervising<\/span>/);
+    assert.match(state._cardMenuHTML(epic), />Epic overview<\/button>/);
+    assert.match(state._cardMenuHTML(epic), />Pause supervisor<\/button>/);
+    for (const [query, expected] of [
+      ['epic:kon-e7c1', total], ['epic:=kon-e7c1', total],
+      ['project:=repo', total], ['agent:=claude', total],
+      ['Supervised', 1], ['epic:passive', 0], ['project:missing', 0],
+    ]) {
+      state.searchQuery = query;
+      state.recomputeBoard();
+      assert.equal(state._boardTotal, expected, query);
+      assert.equal(state.runningAgents, running, 'process tallies ignore filters');
+    }
+    state.destroy();
+  });
+}
+
+for (const [status, label] of [['in_progress', 'supervising'], ['todo', 'queued'], ['paused', 'paused']]) {
+  test(`supervisor board uses ${label}, not a pipeline stage`, () => {
+    const { state, epic } = epicSupervisorUI({ status });
+    const ticket = { ...epic, stage: 'code', stages: ['plan', 'code', 'review'] };
+    state.showPipelineBadges = false;
+    const col = state.columns.find(c => c.key === 'in_progress');
+    const card = state._cardHTML(ticket, col);
+    assert.match(card, />supervisor<\/span>/);
+    assert.ok(card.includes('>' + label + '</span>'));
+    assert.equal(card.includes('card-progress'), false, 'supervisors have no child pipeline progress');
+    assert.equal(card.includes('>code</span>'), false);
+    if (status !== 'in_progress') {
+      const mobileCards = fs.readFileSync(htmlPath, 'utf8').split('x-for="ticket in boardTickets(mobileColumn().key)"')[1]
+        .split('<!-- ===== Ticket detail')[0];
+      const statusTemplate = [...mobileCards.matchAll(/<template x-if="([^"]+)">([\s\S]*?)<\/template>/g)]
+        .find(([, , content]) => content.includes('>' + label + '</span>'));
+      assert.ok(statusTemplate, 'mobile supervisor card names ' + label);
+      const visible = t => vm.runInNewContext(statusTemplate[1], {
+        ticket: t, epicIsAgent: t => state.epicIsAgent(t), mobileColumn: () => ({ key: 'in_progress' }),
+        showPipelineBadges: false, showAgentMeta: false,
+      });
+      assert.equal(visible(ticket), true);
+      assert.equal(visible({ ...ticket, status: 'in_progress' }), false);
+      assert.equal(visible({ ...ticket, kind: 'ticket' }), false);
+    }
+    state.destroy();
+  });
+}
+
 test('supervisor status and process counts stay separate from child progress', async () => {
   const { state, epic } = epicSupervisorUI();
   state.tickets.push({ id: 'passive', kind: 'epic', status: 'in_progress', kontora: true, agent: 'claude' });
@@ -13667,9 +14404,9 @@ test('supervisor status and process counts stay separate from child progress', a
   assert.equal(state.runningAgents, 2);
   assert.equal(state.agentRunningCount('claude'), 2);
   assert.equal(state.agentPickerRunningTotal(), 2);
-  assert.equal(state._boardTotal, 3);
+  assert.equal(state._boardTotal, 4);
   assert.equal(state.epicRollup(epic.id).total, 3);
-  assert.ok(state.columns.every(col => state.boardTickets(col.key).every(t => t.kind !== 'epic')));
+  assert.deepEqual(vmValue(state.columns.flatMap(col => [...state.boardTickets(col.key)]).filter(t => t.kind === 'epic').map(t => t.id)), [epic.id]);
   await state.openEpic(epic.id);
   state.applyTicketUpdate({ ...state.tickets[1], status: 'done' });
   state.recomputeBoard();
@@ -13679,22 +14416,43 @@ test('supervisor status and process counts stay separate from child progress', a
   assert.equal(state.epicCanEditBrief(), false);
 });
 
+for (const operation of ['pause', 'drag']) {
+  test(`rejected supervisor ${operation} leaves children unchanged`, async () => {
+    const { state, ctx, epic, requests } = epicSupervisorUI();
+    await state.openEpic(epic.id);
+    const children = JSON.stringify(state.tickets.slice(1));
+    ctx.fetch = async (url, opts) => {
+      requests.push({ url, ...opts });
+      return { ok: false, json: async () => ({ error: 'supervisor transition refused' }) };
+    };
+    requests.length = 0;
+    if (operation === 'drag') await state.moveTask(epic.id, 'done');
+    else await state.epicAction('pause');
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0].url, '/api/tickets/' + epic.id + '/' + (operation === 'drag' ? 'move' : 'pause'));
+    assert.equal(state.selectedEpic.status, 'in_progress');
+    assert.equal(JSON.stringify(state.tickets.slice(1)), children);
+    assert.equal(state.error, 'supervisor transition refused');
+    state.destroy();
+  });
+}
+
 test('supervisor controls use its lifecycle, without stage skip or schedule', async () => {
   const { state, epic, requests } = epicSupervisorUI();
   await state.openEpic(epic.id);
-  assert.deepEqual(vmValue(state.epicSupervisorActions().map(a => a.label)), ['watch agent', 'pause supervisor']);
+  assert.deepEqual(vmValue(state.epicSupervisorActions().map(a => a.label)), ['watch agent', 'run details', 'pause supervisor']);
   requests.length = 0;
   await state.epicSupervisorActions().find(a => a.label === 'pause supervisor').run();
   assert.deepEqual(requests.map(r => r.url), ['/api/tickets/' + epic.id + '/pause']);
   assert.equal(state.selectedEpic.status, 'paused');
-  assert.deepEqual(vmValue(state.epicSupervisorActions().map(a => a.label)), ['watch agent', 'retry supervisor']);
+  assert.deepEqual(vmValue(state.epicSupervisorActions().map(a => a.label)), ['watch agent', 'run details', 'retry supervisor']);
   await state.epicAction('retry');
   assert.equal(state.selectedEpic.status, 'todo');
   state.applyTicketUpdate({ ...epic, status: 'human_review' });
   state.recomputeBoard();
-  assert.deepEqual(vmValue(state.epicSupervisorActions().map(a => a.label)), ['watch agent', 'review supervisor', 'approve', 'send back']);
+  assert.deepEqual(vmValue(state.epicSupervisorActions().map(a => a.label)), ['watch agent', 'run details', 'review supervisor', 'approve', 'send back']);
   assert.equal(state.canSchedule(epic), false);
-  await state.epicWatchAgent();
+  await state.epicRunDetails();
   assert.equal(state.canSetStage(), false);
   assert.ok(state.mobileSheetActions(state.selectedTicket).every(a => a.label !== 'Skip stage'));
   state.closeDetail();
@@ -13706,7 +14464,7 @@ test('finished supervisors reuse summaries, activity and the integration diff', 
   epic.history = [{ stage: 'default', run: 0, agent: 'claude', exit_code: 0, summary: epic.summary }];
   await state.openEpic(epic.id);
   requests.length = 0;
-  await state.epicWatchAgent();
+  await state.epicRunDetails();
   await flushMicrotasks();
   assert.equal(state.activeTab, 'summary');
   assert.equal(state.showSummaryTab(), true);
@@ -13743,6 +14501,12 @@ test('epic controls and brief surfaces are available in both responsive layouts'
   assert.equal(html.match(/@click="openEpic\(selectedTicket.id\)"/g).length, 2);
   assert.match(html, /class="flex flex-col gap-\[7px\]" x-show="initForm.kind !== 'epic'"/);
   assert.match(html, /aria-label="Epic overview"/);
+  for (const id of ['epic-terminal-session', 'epic-terminal-mobile', 'epic-activity-scroll', 'epic-activity-scroll-mobile']) {
+    assert.equal(html.split('id="' + id + '"').length - 1, 1, id + ' is a distinct embedded output container');
+  }
+  assert.equal(html.match(/x-for="r in outputRuns\(\)"/g).length, 2);
+  assert.equal(html.match(/@change="selectOutputRun\(\$event.target.value\)"/g).length, 2);
+  assert.equal(html.split('Transcript truncated. Open the full raw stage log; it may show a different attempt.').length - 1, 2);
 });
 
 test('supervisor capacity is a restart-only integer with a default of four', async () => {

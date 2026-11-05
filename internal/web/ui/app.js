@@ -325,6 +325,9 @@ export function kontoraApp() {
 
     destroy() {
       this._appDestroyed = true;
+      this.closeTerminal();
+      this._destroyTerminal();
+      this._resetActivity();
       this.companionDestroy();
       clearTimeout(this._sseReconnect);
       clearInterval(this._nowTimer);

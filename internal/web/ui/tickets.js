@@ -209,14 +209,14 @@ export function kontoraTickets() {
     // Whether the content column is showing agent output: the live session
     // while a stage runs, or a finished stage's activity.
     logTabActive() {
-      return this.activeTab === 'session' || this.activeTab === 'activity';
+      return this.outputTab() === 'session' || this.outputTab() === 'activity';
     },
 
     // Whether the live terminal should be attached right now. The desktop
     // reads the session tab; mobile has its own tab state and must not depend
     // on a desktop-only value.
     terminalWanted() {
-      return this.isMobile ? this.detailTab === 'terminal' : this.activeTab === 'session';
+      return this.outputSubject()?.status === 'in_progress' && this.outputTab() === 'session';
     },
 
     showTerminalTab() {
@@ -255,6 +255,14 @@ export function kontoraTickets() {
     },
 
     applyTicketUpdate(ticket) {
+      var previousOutput = this.outputSubject();
+      if (this.selectedEpic?.id === ticket.id) {
+        this._epicUpdateSeq++;
+        var body = this._epicDetail?.body;
+        this.selectedEpic = Object.assign({}, ticket, { body: body, history: ticket.history,
+          last_error: ticket.last_error, last_log: ticket.last_log });
+        if (this._epicDetail) this._epicDetail = this.selectedEpic;
+      }
       if (this.selectedTicket?.id === ticket.id) this._selectedTicketUpdateSeq++;
       if (ticket.status === 'archived') {
         // Archived tickets are hidden from the board: drop them from client
@@ -327,26 +335,6 @@ export function kontoraTickets() {
           if (this.logTabActive() && !this.showTerminalTab()) {
             this.activeTab = 'ticket';
           }
-          if (this.selectedTicket.status !== 'in_progress') {
-            this._stopActivityPoll();
-            // The stage that was live has exited and written its sidecar, so one
-            // last read swaps the partial tape for the completed transcript.
-            if (this.activity?.live && this.activeTab === 'activity') {
-              this._loadActivity(this.activityStage, this.activityRun, { merge: true });
-            }
-          }
-          // A stage that finished while its live session was open has no
-          // terminal left to show, so the same column becomes the transcript.
-          // Nothing has fetched that transcript yet, so load it here too:
-          // switchTab is bypassed, and an unloaded activity tab reads as
-          // "no completed stage yet" right after a run that produced one.
-          if (this.activeTab === 'session' && this.selectedTicket.status !== 'in_progress') {
-            this.activeTab = 'activity';
-            if (!this.activity && !this.activityLoading) {
-              var latestRun = this.latestCompletedRun();
-              if (latestRun) this.fetchActivity(latestRun.stage, latestRun.run);
-            }
-          }
           if (this.activeTab === 'summary' && !this.showSummaryTab()) {
             this.activeTab = 'ticket';
           }
@@ -357,6 +345,7 @@ export function kontoraTickets() {
           }
         }
       }
+      if (previousOutput?.id === ticket.id) this.reconcileOutput(previousOutput);
     },
 
     // Buffer SSE ticket_updated payloads and flush them on a single animation
@@ -442,9 +431,7 @@ export function kontoraTickets() {
       });
       es.addEventListener('terminal_ready', (e) => {
         const ticket = JSON.parse(e.data);
-        if (this.selectedTicket?.id === ticket.id && this.terminalWanted()) {
-          this.reconnectTerminal();
-        }
+        this.outputReady(ticket.id);
       });
       es.addEventListener('config_reloaded', () => {
         // Both are plain re-fetches, so the second event a settings save
@@ -543,7 +530,7 @@ export function kontoraTickets() {
     // The history entry the activity tab is showing, or null when the run has
     // not finished and so has no entry yet.
     activityHistoryEntry() {
-      var h = (this.selectedTicket && this.selectedTicket.history) || [];
+      var h = this.outputSubject()?.history || [];
       var stage = this.activityStage;
       var run = this.activityRun || 0;
       for (var i = h.length - 1; i >= 0; i--) {

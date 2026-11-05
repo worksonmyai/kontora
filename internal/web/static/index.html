@@ -1427,7 +1427,7 @@
                     class="h-7 px-3 rounded-[7px] font-mono text-[11.5px] bg-surface-900 border border-edge-input text-tx-2 hover:text-accent hover:border-accent/35 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                     x-text="a.label"></button>
           </template>
-          <button @click="epicTab = 'children'; $nextTick(() => $refs.epicAddInput?.focus())"
+          <button @click="epicSwitchTab('children'); $nextTick(() => $refs.epicAddInput?.focus())"
                   class="h-7 px-3 rounded-[7px] font-mono text-[11.5px] bg-surface-900 border border-edge-input text-tx-2 hover:text-accent hover:border-accent/35 transition-colors flex items-center gap-1.5">
             + sub-ticket
           </button>
@@ -1597,17 +1597,19 @@
                 <span class="flex-1 min-w-0 truncate text-[12px]"
                       :class="selectedEpic?.id === e.id ? 'text-tx' : 'text-tx-2'"
                       x-text="e.title || e.id"></span>
-                <span class="font-mono num text-[10px] text-surface-600 shrink-0"
-                      x-text="epicRollup(e.id).done + '/' + epicRollup(e.id).total"></span>
               </span>
+              <span x-show="epicIsAgent(e)" class="font-mono text-[9.5px] pl-[11px] truncate"
+                    :class="epicNoteClass(e.id)" x-text="epicNote(e.id)"></span>
               <span class="flex items-center gap-1.5 pl-[11px] min-w-0">
+                <span class="font-mono num text-[10px] text-surface-600 shrink-0"
+                      x-text="epicRollup(e.id).done + '/' + epicRollup(e.id).total + ' done'"></span>
                 <span class="flex gap-0.5 shrink-0">
                   <template x-for="(seg, i) in epicRollup(e.id).segs" :key="seg.id + i">
                     <span class="w-[9px] h-1 rounded-[1px]"
                           :style="seg.hue ? 'background: hsl(var(' + seg.hue + '))' : 'background: rgb(var(--surface-700))'"></span>
                   </template>
                 </span>
-                <span class="font-mono text-[9.5px] truncate min-w-0"
+                <span x-show="!epicIsAgent(e)" class="font-mono text-[9.5px] truncate min-w-0"
                       :class="epicNoteClass(e.id)" x-text="epicNote(e.id)"></span>
               </span>
             </button>
@@ -2012,6 +2014,10 @@
                       @click.stop="copyCmd('kontora attach ' + selectedTicket?.id)"
                       x-text="copiedCmd === 'kontora attach ' + selectedTicket?.id ? '✓ copied' : 'kontora attach ' + selectedTicket?.id"></span>
               </div>
+              <div x-show="terminalError" class="shrink-0 px-6 pb-3 font-mono text-xs text-err" role="alert">
+                <span x-text="terminalError"></span>
+                <button type="button" @click="reconnectTerminal()" class="ml-3 underline">retry connection</button>
+              </div>
               <div id="terminal-session"
                    class="flex-1 min-h-0 mx-6 mb-5 bg-surface-deep border border-surface-700 rounded-[10px] p-[14px_18px] overflow-hidden transition-shadow"
                    :class="terminalRW ? 'ring-1 ring-err/40' : ''"></div>
@@ -2048,7 +2054,10 @@
                   <p class="font-mono text-[12px] text-surface-600">Loading activity...</p>
                 </template>
                 <template x-if="!activityLoading && activityError">
-                  <p class="font-mono text-[12px] text-err" x-text="activityError"></p>
+                  <div class="font-mono text-[12px] text-err" role="alert">
+                    <p x-text="activityError"></p>
+                    <button type="button" @click="fetchActivity(activityStage, activityRun)" class="underline">retry activity</button>
+                  </div>
                 </template>
                 <template x-if="!activityLoading && !activityError && !activity && !runningRun()">
                   <p class="font-mono text-[12px] text-surface-600">No completed stage yet.</p>
@@ -3062,8 +3071,8 @@
 
     <!-- Epic page. An overlay over the board like the ticket page, driven by
          selectedEpic rather than a currentView, and wrapped in x-if for the
-         same reason: closing gives the nodes and bindings back. The overview
-         has no session, activity, summary or diff; execution has its own page. -->
+         same reason: closing gives the nodes and bindings back. Agent-backed
+         epics embed supervisor output while keeping the brief alongside it. -->
     <template x-if="selectedEpic">
     <div class="absolute inset-0 z-30 flex flex-col bg-surface-950">
 
@@ -3075,6 +3084,11 @@
             epic
           </span>
           <span class="status-chip shrink-0" :data-status="selectedEpic?.status" x-text="statusLabel(selectedEpic?.status)"></span>
+          <span x-show="selectedEpic?.waiting_for_input" class="waiting-chip"
+                :title="'Waiting for input: ' + waitingLabel(selectedEpic)">
+            <span class="waiting-dot pulse-dot"></span>needs input
+            <span x-text="waitingFor(selectedEpic)"></span>
+          </span>
           <span class="pipe-tag shrink-0"
                 :data-pipe-color="selectedEpic ? ticketPipeColor(selectedEpic) : 'none'"
                 x-text="selectedEpic ? ticketTagLabel(selectedEpic) : ''"></span>
@@ -3144,23 +3158,161 @@
 
       <div class="flex-1 min-h-0 flex min-w-0">
 
-        <!-- Sub-tickets -->
         <div class="flex-1 min-w-0 flex flex-col bg-surface-frame min-h-0">
-          <div class="shrink-0 px-6 pt-3 flex items-center gap-5 border-b border-surface-700/70">
-            <button type="button" @click="epicTab = 'children'"
+          <template x-if="selectedEpic?.last_error">
+            <div class="shrink-0 mx-6 mt-3 border-l-[3px] border-err pl-3 font-mono text-xs text-err whitespace-pre-wrap break-words" role="alert" x-text="selectedEpic.last_error"></div>
+          </template>
+          <div class="shrink-0 px-6 pt-3 flex items-center gap-5 flex-wrap border-b border-surface-700/70">
+            <button type="button" x-show="epicIsAgent(selectedEpic)" @click="epicSwitchTab('session')"
+                    class="font-mono text-[12px] pb-[9px] border-b-2 transition-colors"
+                    :class="epicTab === 'session' ? 'border-accent text-tx-hi font-bold' : 'border-transparent text-surface-600 hover:text-tx-3'">session</button>
+            <button type="button" x-show="epicIsAgent(selectedEpic)" @click="epicSwitchTab('activity')"
+                    class="font-mono text-[12px] pb-[9px] border-b-2 transition-colors"
+                    :class="epicTab === 'activity' ? 'border-accent text-tx-hi font-bold' : 'border-transparent text-surface-600 hover:text-tx-3'">activity</button>
+            <button type="button" @click="epicSwitchTab('children')"
                     class="font-mono text-[12px] pb-[9px] border-b-2 transition-colors"
                     :class="epicTab === 'children' ? 'border-accent text-tx-hi font-bold' : 'border-transparent text-surface-600 hover:text-tx-3'">
               sub-tickets <span class="text-tx-faint" x-text="epicRollup(selectedEpic?.id).total"></span>
             </button>
-            <button type="button" @click="epicTab = 'notes'"
+            <button type="button" @click="epicSwitchTab('notes')"
                     class="font-mono text-[12px] pb-[9px] border-b-2 transition-colors"
                     :class="epicTab === 'notes' ? 'border-accent text-tx-hi font-bold' : 'border-transparent text-surface-600 hover:text-tx-3'">
               notes <span class="text-tx-faint" x-text="(selectedEpic?.notes || []).length"></span>
             </button>
             <div class="flex-1"></div>
-            <span class="font-mono text-[10px] text-surface-600 border border-edge-input rounded-md px-2 py-[3px] mb-1.5">group: status</span>
-            <span class="font-mono text-[10px] text-surface-600 border border-edge-input rounded-md px-2 py-[3px] mb-1.5">⇅ manual order</span>
+            <span x-show="epicTab === 'children'" class="font-mono text-[10px] text-surface-600 border border-edge-input rounded-md px-2 py-[3px] mb-1.5">group: status</span>
+            <span x-show="epicTab === 'children'" class="font-mono text-[10px] text-surface-600 border border-edge-input rounded-md px-2 py-[3px] mb-1.5">⇅ manual order</span>
           </div>
+
+          <template x-if="epicIsAgent(selectedEpic)">
+            <div x-show="epicTab === 'session' || epicTab === 'activity'" class="flex-1 min-h-0 flex flex-col">
+              <div class="shrink-0 px-6 py-2 flex items-center gap-2 flex-wrap">
+                <label class="font-mono text-[11px] text-tx-3 flex items-center gap-2">
+                  run
+                  <select aria-label="Supervisor output run" :value="outputRunKey()" @change="selectOutputRun($event.target.value)"
+                          :disabled="!outputRuns().length" class="min-w-0 bg-surface-900 border border-edge-input rounded-md px-2 py-1 text-tx-2">
+                    <template x-for="r in outputRuns()" :key="r.key">
+                      <option :value="r.key" :selected="r.key === outputRunKey()" x-text="r.label"></option>
+                    </template>
+                  </select>
+                </label>
+                <button type="button" @click="epicRunDetails()" class="font-mono text-[11px] text-accent hover:underline">run details</button>
+                <div class="flex-1"></div>
+                <button type="button" @click="toggleLogFollow()" :aria-pressed="logFollow"
+                        class="font-mono text-[10px] px-2 py-1 rounded-md border border-edge-input"
+                        :class="logFollow ? 'text-tx-2' : 'text-surface-600'">⇣ follow</button>
+                <button type="button" x-show="epicTab === 'activity'" @click="openRawLog()"
+                        class="font-mono text-[10px] px-2 py-1 rounded-md border border-edge-input text-tx-3">⧉ raw</button>
+              </div>
+
+              <div x-show="epicTab === 'session'" class="flex-1 min-h-0 flex flex-col">
+                <p x-show="outputSubject()?.status !== 'in_progress'" class="px-6 py-3 font-mono text-xs text-surface-600" x-text="outputNoRunText()"></p>
+                <div x-show="outputSubject()?.status === 'in_progress'" class="flex-1 min-h-0 flex flex-col">
+                  <div class="shrink-0 px-6 py-2 flex items-center gap-3 flex-wrap font-mono text-[11px]">
+                    <span class="text-surface-600" x-text="'tmux · ' + outputSubject()?.id"></span>
+                    <span :class="terminalConnected ? 'text-st-progress' : 'text-surface-600'" x-text="terminalConnected ? 'connected' : (terminalError ? 'disconnected' : 'connecting…')" role="status"></span>
+                    <div class="flex-1"></div>
+                    <button type="button" @click="toggleTerminalRW()" :disabled="!terminalConnected"
+                            class="px-2 py-1 rounded-md border border-edge-input disabled:opacity-40"
+                            :class="terminalRW ? 'text-err bg-err/10 border-err/40' : 'text-tx-3'" x-text="terminalRW ? 'read-write' : 'read-only'"></button>
+                  </div>
+                  <div x-show="terminalError" class="shrink-0 px-6 pb-3 flex items-center gap-3 font-mono text-xs text-err" role="alert">
+                    <span class="whitespace-pre-wrap break-words" x-text="terminalError"></span>
+                    <button type="button" @click="reconnectTerminal()" class="shrink-0 underline">retry connection</button>
+                  </div>
+                  <div id="epic-terminal-session" class="flex-1 min-h-0 mx-6 mb-5 bg-surface-deep border border-surface-700 rounded-[10px] p-[14px_18px] overflow-hidden"
+                       :class="terminalRW ? 'ring-1 ring-err/40' : ''"></div>
+                </div>
+              </div>
+
+              <div x-show="epicTab === 'activity'" class="flex-1 min-h-0 flex flex-col">
+                <div class="shrink-0 px-6 pt-2 flex items-center gap-2.5 flex-wrap">
+                  <span class="side-label">activity</span>
+                  <span class="font-mono text-[11px] text-tx-3" x-text="activityStage || 'latest'"></span>
+                  <span x-show="activityRun > 0" class="font-mono text-[10.5px] text-surface-600" x-text="'attempt ' + (activityRun + 1)"></span>
+                  <span x-show="activity?.live" class="font-mono text-[10.5px] px-2 py-[2px] rounded-full border border-st-progress/40 text-st-progress">live</span>
+                  <span x-show="activity?.tape?.model" class="font-mono text-[10.5px] px-2 py-[2px] rounded-full border border-surface-700 text-tx-faint" x-text="activity?.tape?.model"></span>
+                  <span x-show="activityEffort()" class="font-mono text-[10.5px] px-2 py-[2px] rounded-full border border-surface-700 text-tx-faint" x-text="activityEffort()"></span>
+                  <span x-show="tapeTokens(activity?.tape)" class="font-mono text-[10.5px] text-surface-600" x-text="tapeTokens(activity?.tape) + ' tokens'"></span>
+                </div>
+                <div x-show="activity?.stale && !activity?.live" class="shrink-0 px-6 pt-2 font-mono text-[11px] text-warn">
+                  showing the latest run of this stage — no structured record was kept for attempt <span x-text="activityRun + 1"></span>
+                </div>
+                <div x-show="activity?.tape?.truncated" class="shrink-0 px-6 pt-2 font-mono text-[11px] text-surface-600">Transcript truncated. Open the full raw stage log; it may show a different attempt.</div>
+                <div id="epic-activity-scroll" class="flex-1 min-h-0 overflow-y-auto px-6 pt-[14px] pb-2"
+                     x-effect="activity; if (logFollow) $nextTick(() => { $el.scrollTop = $el.scrollHeight; })">
+                  <template x-if="activityLoading">
+                    <p class="font-mono text-[12px] text-surface-600">Loading activity...</p>
+                  </template>
+                  <template x-if="!activityLoading && activityError">
+                    <div class="font-mono text-[12px] text-err" role="alert">
+                      <p class="whitespace-pre-wrap break-words" x-text="activityError"></p>
+                      <button type="button" @click="selectOutputRun(outputRunKey())" class="underline">retry activity</button>
+                    </div>
+                  </template>
+                  <template x-if="!activityLoading && !activityError && !activity">
+                    <p class="font-mono text-[12px] text-surface-600" x-text="outputNoRunText()"></p>
+                  </template>
+                  <template x-if="!activityLoading && activity?.live && !tapeEvents().length && !activity.content">
+                    <p class="font-mono text-[12px] text-surface-600">Waiting for the agent's first step...</p>
+                  </template>
+                  <template x-if="!activityLoading && activity?.tape">
+                    <div class="flex flex-col gap-px">
+                      <template x-if="!tapeEvents().length && !activity?.live">
+                        <p class="font-mono text-[12px] text-surface-600">This run produced no recorded activity.</p>
+                      </template>
+                      <template x-if="hiddenTapeEventCount() > 0">
+                        <button type="button" @click="loadEarlierTapeEvents()"
+                                class="self-start my-2 font-mono text-[11px] text-tx-3 border border-surface-700 rounded-md px-3 py-1 hover:text-tx hover:border-surface-600 transition-colors"
+                                x-text="'load earlier events (' + hiddenTapeEventCount() + ' hidden)'"></button>
+                      </template>
+                      <template x-for="{ ev, idx } in visibleTapeEvents()" :key="idx">
+                        <div>
+                          <template x-if="ev.kind === 'model'">
+                            <div class="flex items-center gap-3 py-2">
+                              <span class="font-mono text-[10.5px] px-2 py-[2px] rounded-full border border-surface-700 text-tx-faint" x-text="ev.model"></span>
+                              <span class="flex-1 h-px bg-surface-700/70"></span>
+                              <span class="font-mono text-[10.5px] text-tx-faint" x-text="eventTime(ev)"></span>
+                            </div>
+                          </template>
+                          <template x-if="ev.kind === 'text'">
+                            <div class="flex gap-3 py-1">
+                              <span x-show="!tapePartial('time')" class="shrink-0 w-[46px] font-mono text-[10.5px] text-tx-faint" x-text="eventTime(ev)"></span>
+                              <div class="flex-1 min-w-0 border-l-2 border-accent/45 pl-3">
+                                <p class="m-0 text-[14.5px] leading-[1.6] text-tx [text-wrap:pretty] whitespace-pre-wrap break-words" x-text="ev.text"></p>
+                              </div>
+                            </div>
+                          </template>
+                          <template x-if="ev.kind === 'tool'">
+                            <div class="flex gap-3 py-[2px]">
+                              <span x-show="!tapePartial('time')" class="shrink-0 w-[46px] font-mono text-[10.5px] text-tx-faint pt-1" x-text="eventTime(ev)"></span>
+                              <div class="flex-1 min-w-0 rounded-md transition-colors cursor-pointer"
+                                   :class="toolFailed(ev) ? 'border-l-2 border-st-cancel/60 bg-st-cancel/[0.06] rounded-r-md px-3 py-[7px]' : 'px-[9px] py-1 hover:bg-surface-900'"
+                                   @click="toggleTool(ev, idx)">
+                                <div class="flex items-baseline gap-[9px] min-w-0">
+                                  <span class="shrink-0 min-w-[42px] font-mono text-[11.5px] font-bold"
+                                        :class="toolFailed(ev) ? 'text-st-cancel' : 'text-accent-bright'" x-text="ev.tool"></span>
+                                  <span class="flex-1 min-w-0 font-mono text-[11.5px] text-tx-3 truncate" x-text="(ev.arg || '').trim()"></span>
+                                  <span class="shrink-0 font-mono text-[11px] text-surface-600" x-show="ev.summary" x-text="'⎿ ' + ev.summary"></span>
+                                  <span x-show="toolFailed(ev)" class="shrink-0 font-mono text-[11px] text-st-cancel">failed</span>
+                                </div>
+                                <pre x-show="toolExpanded(ev, idx) && ev.result"
+                                     class="mt-2 mb-0 max-h-[320px] overflow-auto font-mono text-[11px] leading-[1.7] text-tx-log whitespace-pre-wrap break-words" x-text="ev.result"></pre>
+                                <p x-show="toolExpanded(ev, idx) && ev.truncated" class="mt-1 mb-0 font-mono text-[10.5px] text-surface-600">result truncated</p>
+                              </div>
+                            </div>
+                          </template>
+                        </div>
+                      </template>
+                    </div>
+                  </template>
+                  <template x-if="!activityLoading && activity && !activity.tape && activity.content">
+                    <pre class="m-0 font-mono text-[12px] leading-[1.85] text-tx-log whitespace-pre-wrap break-words" x-html="renderLogHTML(activity.content)"></pre>
+                  </template>
+                </div>
+              </div>
+            </div>
+          </template>
 
           <div class="flex-1 min-h-0 overflow-y-auto px-6 pt-3.5 pb-4" x-show="epicTab === 'children'">
             <template x-for="g in epicGroups()" :key="g.key">
@@ -5738,7 +5890,13 @@
 
     <div x-show="epics.length" class="flex gap-2 overflow-x-auto p-3">
       <template x-for="e in epics" :key="e.id">
-        <button type="button" @click="openEpic(e.id)" class="shrink-0 font-mono text-xs text-accent" x-text="e.title + ' · ' + statusLabel(e.status)"></button>
+        <button type="button" @click="openEpic(e.id)" :title="e.title || e.id"
+                class="shrink-0 flex flex-col items-start gap-1 px-3 py-2 rounded border border-edge-input font-mono text-xs text-accent">
+          <span x-text="e.title || e.id"></span>
+          <span x-show="epicIsAgent(e)" :class="epicNoteClass(e.id)" x-text="epicNote(e.id)"></span>
+          <span x-show="!epicIsAgent(e)" class="text-tx-3">passive epic</span>
+          <span class="text-surface-600" x-text="epicRollup(e.id).done + ' of ' + epicRollup(e.id).total + ' done'"></span>
+        </button>
       </template>
     </div>
 
@@ -5770,10 +5928,21 @@
                 :style="'display:flex;flex-direction:column;gap:9px;text-align:left;width:100%;padding:12px 13px;border-radius:11px;background:rgba(var(--surface-900),1);border:1px solid rgba(var(--surface-700),.5);border-left:2px solid ' + (ticket.status==='in_progress' ? 'hsl(var(--st-progress))' : (ticket.status==='paused' ? 'hsl(var(--st-paused) / .8)' : 'hsl(var(--pipe-h) / .55)')) + ';cursor:pointer;' + (ticket.status==='cancelled' ? 'opacity:.62;' : (mobileColumn().key === 'open' && ticket.scheduled_at ? 'opacity:.72;' : '')) + (!ticket.kontora ? 'border-style:dashed;' : '')">
           <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
             <div style="display:flex;align-items:center;gap:8px;min-width:0;">
+              <span x-show="epicIsAgent(ticket)" class="pipe-tag">Supervisor</span>
               <span class="pipe-tag" x-show="showPipelineBadges" style="overflow:hidden;text-overflow:ellipsis;max-width:100%;" x-text="ticketTagLabel(ticket)"></span>
               <template x-if="ticket.status==='in_progress'">
                 <span style="display:flex;align-items:center;gap:5px;font-family:'JetBrains Mono',monospace;font-size:11px;color:hsl(var(--st-progress));flex:none;">
-                  <span class="pulse-dot">●</span><span x-text="ticket.stage"></span>
+                  <span class="pulse-dot">●</span><span x-text="epicIsAgent(ticket) ? 'supervising' : ticket.stage"></span>
+                </span>
+              </template>
+              <template x-if="epicIsAgent(ticket) && mobileColumn().key === 'in_progress' && ticket.status === 'paused'">
+                <span class="card-glyph-paused" style="display:flex;align-items:center;gap:5px;font-family:'JetBrains Mono',monospace;font-size:11px;flex:none;">
+                  <span>⏸</span><span>paused</span>
+                </span>
+              </template>
+              <template x-if="epicIsAgent(ticket) && mobileColumn().key === 'in_progress' && ticket.status === 'todo'">
+                <span style="display:flex;align-items:center;gap:5px;font-family:'JetBrains Mono',monospace;font-size:11px;color:rgba(var(--surface-600),1);flex:none;">
+                  <span>◌</span><span>queued</span>
                 </span>
               </template>
               <template x-if="mobileColumn().key === 'open' && scheduleChip(ticket)">
@@ -5795,6 +5964,10 @@
             </template>
           </div>
           <p :style="'font-size:13.5px;line-height:1.45;color:rgba(var(--tx),1);margin:0;' + (ticket.status==='cancelled' ? 'text-decoration:line-through;text-decoration-color:rgba(var(--surface-600),.6);' : '')" x-text="ticket.title"></p>
+          <template x-if="epicCardInfo(ticket)">
+            <span class="font-mono text-[11px] text-tx-3" :title="epicCardInfo(ticket).title || epicCardInfo(ticket).id"
+                  x-text="'Epic: ' + epicCardInfo(ticket).done + ' of ' + epicCardInfo(ticket).total + ' done'"></span>
+          </template>
           <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;font-family:'JetBrains Mono',monospace;font-size:11px;color:rgba(var(--surface-600),1);">
             <span style="display:flex;align-items:center;gap:7px;min-width:0;">
               <span style="white-space:nowrap;" x-text="ticket.id"></span>
@@ -5818,6 +5991,10 @@
           <button type="button" @click="closeEpic()" class="text-left font-mono text-xs text-accent">back to board</button>
           <h1 class="text-lg text-tx-hi" x-text="selectedEpic.title"></h1>
           <p class="font-mono text-xs text-tx-3" x-text="epicDescription(selectedEpic)"></p>
+          <span x-show="selectedEpic.waiting_for_input" class="waiting-chip" :title="'Waiting for input: ' + waitingLabel(selectedEpic)">
+            <span class="waiting-dot pulse-dot"></span>needs input
+            <span x-text="waitingFor(selectedEpic)"></span>
+          </span>
           <div class="flex flex-wrap gap-2">
             <template x-for="a in epicSupervisorActions()" :key="a.label">
               <button type="button" @click="a.run()" :disabled="!!actionLoading || !!plannotatorInFlight[selectedEpic.id]"
@@ -5826,8 +6003,21 @@
             </template>
           </div>
           <p class="font-mono text-xs text-tx-3" x-text="epicRollup(selectedEpic.id).done + '/' + epicRollup(selectedEpic.id).total + ' sub-tickets done'"></p>
+          <template x-if="selectedEpic.last_error">
+            <p class="border-l-[3px] border-err pl-3 font-mono text-xs text-err whitespace-pre-wrap break-words" role="alert" x-text="selectedEpic.last_error"></p>
+          </template>
         </header>
-        <div class="flex-1 min-h-0 overflow-y-auto p-4 flex flex-col gap-4">
+        <nav class="shrink-0 flex gap-5 px-4 pt-3 overflow-x-auto border-b border-surface-700" aria-label="Epic tabs">
+          <button type="button" x-show="epicIsAgent(selectedEpic)" @click="epicSwitchTab('session')"
+                  class="font-mono text-xs pb-2 border-b-2" :class="epicTab === 'session' ? 'border-accent text-tx-hi' : 'border-transparent text-surface-600'">session</button>
+          <button type="button" x-show="epicIsAgent(selectedEpic)" @click="epicSwitchTab('activity')"
+                  class="font-mono text-xs pb-2 border-b-2" :class="epicTab === 'activity' ? 'border-accent text-tx-hi' : 'border-transparent text-surface-600'">activity</button>
+          <button type="button" @click="epicSwitchTab('children')"
+                  class="shrink-0 font-mono text-xs pb-2 border-b-2" :class="epicTab === 'children' ? 'border-accent text-tx-hi' : 'border-transparent text-surface-600'">sub-tickets + brief</button>
+          <button type="button" @click="epicSwitchTab('notes')"
+                  class="font-mono text-xs pb-2 border-b-2" :class="epicTab === 'notes' ? 'border-accent text-tx-hi' : 'border-transparent text-surface-600'">notes</button>
+        </nav>
+        <div x-show="epicTab === 'children'" class="flex-1 min-h-0 overflow-y-auto p-4 flex flex-col gap-4">
           <template x-for="c in epicRollup(selectedEpic.id).children" :key="c.id">
             <button type="button" @click="openTicketRef(c)" class="text-left font-mono text-xs text-tx-2" x-text="c.id + ' · ' + c.title + ' · ' + statusLabel(c.status)"></button>
           </template>
@@ -5848,6 +6038,142 @@
             </div>
           </template>
         </div>
+        <div x-show="epicTab === 'notes'" class="flex-1 min-h-0 overflow-y-auto p-4">
+          <template x-if="!(selectedEpic.notes || []).length">
+            <p class="font-mono text-xs text-surface-600">No notes yet.</p>
+          </template>
+          <template x-for="n in (selectedEpic.notes || [])" :key="n.id">
+            <div class="mb-3 pb-3 border-b border-surface-700/40">
+              <div class="font-mono text-[10.5px] text-surface-600 mb-1"><span x-text="n.author"></span> · <span x-text="n.at"></span></div>
+              <div class="ticket-prose ticket-read text-[13px]" x-effect="setProse($el, n.text)"></div>
+            </div>
+          </template>
+        </div>
+        <template x-if="epicIsAgent(selectedEpic)">
+          <div x-show="epicTab === 'session' || epicTab === 'activity'" class="flex-1 min-h-0 flex flex-col">
+            <div class="shrink-0 p-3 flex items-center gap-2 flex-wrap">
+              <label class="min-w-0 font-mono text-[11px] text-tx-3 flex items-center gap-2">
+                run
+                <select aria-label="Supervisor output run" :value="outputRunKey()" @change="selectOutputRun($event.target.value)"
+                        :disabled="!outputRuns().length" class="min-w-0 bg-surface-900 border border-edge-input rounded-md px-2 py-1 text-tx-2">
+                  <template x-for="r in outputRuns()" :key="r.key">
+                    <option :value="r.key" :selected="r.key === outputRunKey()" x-text="r.label"></option>
+                  </template>
+                </select>
+              </label>
+              <button type="button" @click="epicRunDetails()" class="font-mono text-[11px] text-accent">run details</button>
+              <button type="button" @click="toggleLogFollow()" :aria-pressed="logFollow"
+                      class="font-mono text-[10px] px-2 py-1 rounded-md border border-edge-input"
+                      :class="logFollow ? 'text-tx-2' : 'text-surface-600'">⇣ follow</button>
+              <button type="button" x-show="epicTab === 'activity'" @click="openRawLog()"
+                      class="font-mono text-[10px] px-2 py-1 rounded-md border border-edge-input text-tx-3">⧉ raw</button>
+            </div>
+            <div x-show="epicTab === 'session'" class="flex-1 min-h-0 flex flex-col">
+              <p x-show="outputSubject()?.status !== 'in_progress'" class="p-4 font-mono text-xs text-surface-600" x-text="outputNoRunText()"></p>
+              <div x-show="outputSubject()?.status === 'in_progress'" class="flex-1 min-h-0 flex flex-col">
+                <div class="shrink-0 px-3 pb-2 flex items-center gap-3 flex-wrap font-mono text-[11px]">
+                  <span class="text-surface-600" x-text="'tmux · ' + outputSubject()?.id"></span>
+                  <span :class="terminalConnected ? 'text-st-progress' : 'text-surface-600'" x-text="terminalConnected ? 'connected' : (terminalError ? 'disconnected' : 'connecting…')" role="status"></span>
+                  <button type="button" @click="toggleTerminalRW()" :disabled="!terminalConnected"
+                          class="px-2 py-1 rounded-md border border-edge-input disabled:opacity-40"
+                          :class="terminalRW ? 'text-err bg-err/10 border-err/40' : 'text-tx-3'" x-text="terminalRW ? 'read-write' : 'read-only'"></button>
+                </div>
+                <div x-show="terminalError" class="shrink-0 px-3 pb-3 flex items-center gap-3 font-mono text-xs text-err" role="alert">
+                  <span class="whitespace-pre-wrap break-words" x-text="terminalError"></span>
+                  <button type="button" @click="reconnectTerminal()" class="shrink-0 underline">retry connection</button>
+                </div>
+                <div id="epic-terminal-mobile" class="flex-1 min-h-0 mx-3 mb-3 p-1.5 rounded-[10px] bg-surface-deep border border-surface-700 overflow-hidden"
+                     :class="terminalRW ? 'ring-1 ring-err/40' : ''"></div>
+              </div>
+            </div>
+            <div x-show="epicTab === 'activity'" class="flex-1 min-h-0 flex flex-col">
+              <div class="shrink-0 px-4 flex items-center gap-2 flex-wrap">
+                <span class="side-label">activity</span>
+                <span class="font-mono text-[11px] text-tx-3" x-text="activityStage || 'latest'"></span>
+                <span x-show="activityRun > 0" class="font-mono text-[10.5px] text-surface-600" x-text="'attempt ' + (activityRun + 1)"></span>
+                <span x-show="activity?.live" class="font-mono text-[10.5px] px-2 py-[2px] rounded-full border border-st-progress/40 text-st-progress">live</span>
+                <span x-show="activity?.tape?.model" class="font-mono text-[10.5px] px-2 py-[2px] rounded-full border border-surface-700 text-tx-faint" x-text="activity?.tape?.model"></span>
+                <span x-show="activityEffort()" class="font-mono text-[10.5px] px-2 py-[2px] rounded-full border border-surface-700 text-tx-faint" x-text="activityEffort()"></span>
+                <span x-show="tapeTokens(activity?.tape)" class="font-mono text-[10.5px] text-surface-600" x-text="tapeTokens(activity?.tape) + ' tokens'"></span>
+              </div>
+              <div x-show="activity?.stale && !activity?.live" class="shrink-0 px-4 pt-2 font-mono text-[11px] text-warn">
+                showing the latest run of this stage — no structured record was kept for attempt <span x-text="activityRun + 1"></span>
+              </div>
+              <div x-show="activity?.tape?.truncated" class="shrink-0 px-4 pt-2 font-mono text-[11px] text-surface-600">Transcript truncated. Open the full raw stage log; it may show a different attempt.</div>
+              <div id="epic-activity-scroll-mobile" class="flex-1 min-h-0 overflow-y-auto px-4 pt-3 pb-4"
+                   x-effect="activity; if (logFollow) $nextTick(() => { $el.scrollTop = $el.scrollHeight; })">
+                <template x-if="activityLoading">
+                  <p class="font-mono text-xs text-surface-600">Loading activity...</p>
+                </template>
+                <template x-if="!activityLoading && activityError">
+                  <div class="font-mono text-xs text-err" role="alert">
+                    <p class="whitespace-pre-wrap break-words" x-text="activityError"></p>
+                    <button type="button" @click="selectOutputRun(outputRunKey())" class="underline">retry activity</button>
+                  </div>
+                </template>
+                <template x-if="!activityLoading && !activityError && !activity">
+                  <p class="font-mono text-xs text-surface-600" x-text="outputNoRunText()"></p>
+                </template>
+                <template x-if="!activityLoading && activity?.live && !tapeEvents().length && !activity.content">
+                  <p class="font-mono text-xs text-surface-600">Waiting for the agent's first step...</p>
+                </template>
+                <template x-if="!activityLoading && activity?.tape">
+                  <div class="flex flex-col gap-px">
+                    <template x-if="!tapeEvents().length && !activity?.live">
+                      <p class="font-mono text-xs text-surface-600">This run produced no recorded activity.</p>
+                    </template>
+                    <template x-if="hiddenTapeEventCount() > 0">
+                      <button type="button" @click="loadEarlierTapeEvents()"
+                              class="self-start my-2 font-mono text-[11px] text-tx-3 border border-surface-700 rounded-md px-3 py-1 hover:text-tx hover:border-surface-600 transition-colors"
+                              x-text="'load earlier events (' + hiddenTapeEventCount() + ' hidden)'"></button>
+                    </template>
+                    <template x-for="{ ev, idx } in visibleTapeEvents()" :key="idx">
+                      <div>
+                        <template x-if="ev.kind === 'model'">
+                          <div class="flex items-center gap-3 py-2">
+                            <span class="font-mono text-[10.5px] px-2 py-[2px] rounded-full border border-surface-700 text-tx-faint" x-text="ev.model"></span>
+                            <span class="flex-1 h-px bg-surface-700/70"></span>
+                            <span class="font-mono text-[10.5px] text-tx-faint" x-text="eventTime(ev)"></span>
+                          </div>
+                        </template>
+                        <template x-if="ev.kind === 'text'">
+                          <div class="flex gap-3 py-1">
+                            <span x-show="!tapePartial('time')" class="shrink-0 w-[46px] font-mono text-[10.5px] text-tx-faint" x-text="eventTime(ev)"></span>
+                            <div class="flex-1 min-w-0 border-l-2 border-accent/45 pl-3">
+                              <p class="m-0 text-[14.5px] leading-[1.6] text-tx [text-wrap:pretty] whitespace-pre-wrap break-words" x-text="ev.text"></p>
+                            </div>
+                          </div>
+                        </template>
+                        <template x-if="ev.kind === 'tool'">
+                          <div class="flex gap-3 py-[2px]">
+                            <span x-show="!tapePartial('time')" class="shrink-0 w-[46px] font-mono text-[10.5px] text-tx-faint pt-1" x-text="eventTime(ev)"></span>
+                            <div class="flex-1 min-w-0 rounded-md transition-colors cursor-pointer"
+                                 :class="toolFailed(ev) ? 'border-l-2 border-st-cancel/60 bg-st-cancel/[0.06] rounded-r-md px-3 py-[7px]' : 'px-[9px] py-1 hover:bg-surface-900'"
+                                 @click="toggleTool(ev, idx)">
+                              <div class="flex items-baseline gap-[9px] min-w-0">
+                                <span class="shrink-0 min-w-[42px] font-mono text-[11.5px] font-bold"
+                                      :class="toolFailed(ev) ? 'text-st-cancel' : 'text-accent-bright'" x-text="ev.tool"></span>
+                                <span class="flex-1 min-w-0 font-mono text-[11.5px] text-tx-3 truncate" x-text="(ev.arg || '').trim()"></span>
+                                <span class="shrink-0 font-mono text-[11px] text-surface-600" x-show="ev.summary" x-text="'⎿ ' + ev.summary"></span>
+                                <span x-show="toolFailed(ev)" class="shrink-0 font-mono text-[11px] text-st-cancel">failed</span>
+                              </div>
+                              <pre x-show="toolExpanded(ev, idx) && ev.result"
+                                   class="mt-2 mb-0 max-h-[320px] overflow-auto font-mono text-[11px] leading-[1.7] text-tx-log whitespace-pre-wrap break-words" x-text="ev.result"></pre>
+                              <p x-show="toolExpanded(ev, idx) && ev.truncated" class="mt-1 mb-0 font-mono text-[10.5px] text-surface-600">result truncated</p>
+                            </div>
+                          </div>
+                        </template>
+                      </div>
+                    </template>
+                  </div>
+                </template>
+                <template x-if="!activityLoading && activity && !activity.tape && activity.content">
+                  <pre class="m-0 font-mono text-xs leading-[1.85] text-tx-log whitespace-pre-wrap break-words" x-html="renderLogHTML(activity.content)"></pre>
+                </template>
+              </div>
+            </div>
+          </div>
+        </template>
       </section>
     </template>
 
@@ -5922,6 +6248,10 @@
               <span style="display:flex;align-items:center;gap:5px;color:hsl(var(--st-progress));"><span class="pulse-dot" style="width:6px;height:6px;border-radius:9999px;background:hsl(var(--st-progress));"></span>live</span>
               <button @click="toggleTerminalRW()" :style="'background:transparent;border:none;cursor:pointer;font-family:\'JetBrains Mono\',monospace;font-size:11px;color:' + (terminalRW ? 'rgba(var(--err),1)' : 'rgba(var(--surface-600),1)') + ';'" x-text="terminalRW ? 'read-write' : 'read-only'"></button>
             </div>
+          </div>
+          <div x-show="terminalError" class="shrink-0 px-3 pb-3 font-mono text-xs text-err" role="alert">
+            <span x-text="terminalError"></span>
+            <button type="button" @click="reconnectTerminal()" class="ml-3 underline">retry connection</button>
           </div>
           <div id="terminal-container-mobile" :style="'flex:1;min-height:0;margin:0 12px 10px;padding:6px;border-radius:10px;background:rgba(var(--surface-deep),1);border:1px solid ' + (terminalRW ? 'rgba(var(--err),.4)' : 'rgba(var(--surface-700),.4)') + ';overflow:hidden;'"></div>
           <div style="flex:none;margin:0 12px;padding:10px 12px;border-top:1px solid rgba(var(--surface-700),.4);">

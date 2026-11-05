@@ -377,6 +377,7 @@ export function kontoraDetail() {
       // The live session only exists while a stage runs. Asking for it on a
       // finished ticket lands on that stage's transcript instead.
       if (tab === 'session' && this.selectedTicket?.status !== 'in_progress') tab = 'activity';
+      if (tab !== this.activeTab) this._invalidateRawLog();
       this.activeTab = tab;
       // Leaving the session tab keeps the stream and the terminal: the tab
       // content is x-show, so the container survives, and output that arrives
@@ -391,6 +392,8 @@ export function kontoraDetail() {
         }
       }
       if (tab !== 'activity') {
+        this._activityLoadSeq++;
+        this.activityLoading = false;
         this._stopActivityPoll();
       } else if (!this.activity && !this.activityLoading) {
         var target = this.activityTarget();
@@ -587,12 +590,7 @@ export function kontoraDetail() {
           return;
         }
         const updated = await res.json();
-        const idx = this.tickets.findIndex(t => t.id === updated.id);
-        if (idx >= 0) this.tickets[idx] = this.boardEntry(updated);
-        if (this.selectedTicket?.id === updated.id) {
-          this.selectedTicket = updated;
-          if (type === 'pause' || type === 'skip') this.closeTerminal();
-        }
+        this.applyTicketUpdate(updated);
         this.recomputeBoard();
       } catch (e) {
         this.error = type + ' failed: ' + e.message;
@@ -783,12 +781,7 @@ export function kontoraDetail() {
         }
         const updated = await res.json().catch(() => null);
         if (updated && updated.id) {
-          const idx = this.tickets.findIndex(t => t.id === updated.id);
-          if (idx >= 0) this.tickets[idx] = this.boardEntry(updated);
-          if (this.selectedTicket?.id === updated.id) {
-            this.selectedTicket = updated;
-            if (endpoint === 'pause') this.closeTerminal();
-          }
+          this.applyTicketUpdate(updated);
           this.recomputeBoard();
         }
       } catch (e) {
@@ -1140,6 +1133,7 @@ export function kontoraDetail() {
     },
 
     async fetchStageLogs(ticketId, stage) {
+      this._invalidateRawLog();
       this.logViewStage = stage;
       this.logViewLoading = true;
       this.logViewContent = null;
@@ -1227,23 +1221,32 @@ export function kontoraDetail() {
       if (this.logFollow) this.scrollLogToEnd();
     },
     scrollLogToEnd() {
-      if (this.terminalOpen && termState.term) {
+      if (this.outputTab() === 'session' && this.terminalOpen && termState.term) {
         try { termState.term.scrollToBottom(); } catch (e) {}
         return;
       }
-      var el = document.getElementById('activity-scroll') || document.getElementById('stage-log-pre');
+      var el = document.getElementById(this.outputContainerID('activity')) || document.getElementById('stage-log-pre');
       if (el) el.scrollTop = el.scrollHeight;
+    },
+
+    _rawLogEpoch: 0,
+
+    // Polling must not cancel a pending raw-log request.
+    _invalidateRawLog() {
+      this._rawLogEpoch++;
     },
 
     // Open the currently viewed log as plain text in a new tab.
     async openRawLog() {
-      if (!this.selectedTicket) return;
-      var content = this.logViewContent;
+      var subject = this.outputSubject();
+      if (!subject || this._appDestroyed) return;
+      var generation = this._rawLogEpoch;
+      var content = this.selectedEpic ? null : this.logViewContent;
       if (content === null && this.activity && !this.activity.tape) content = this.activity.content;
       if (content === null || content === undefined) {
         try {
-          var url = '/api/tickets/' + this.selectedTicket.id + '/logs';
-          var stage = this.activityStage || this.logViewStage || this.selectedTicket.stage;
+          var url = '/api/tickets/' + encodeURIComponent(subject.id) + '/logs';
+          var stage = this.activityStage || this.logViewStage || subject.stage;
           if (stage) url += '?stage=' + encodeURIComponent(stage);
           var res = await fetch(url);
           if (res.ok) {
@@ -1252,6 +1255,7 @@ export function kontoraDetail() {
           }
         } catch (e) { /* fall through to the guard below */ }
       }
+      if (this._appDestroyed || generation !== this._rawLogEpoch || this.outputSubject()?.id !== subject.id) return;
       if (content === null || content === undefined) {
         this.error = 'No log available yet';
         return;

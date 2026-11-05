@@ -87,6 +87,12 @@ Monitor: `kontora attach` (tmux session), `kontora logs <id>`.
 
 Manage: `kontora pause <id>`, `kontora retry <id>`, `kontora done <id>`, `kontora cancel <id>`.
 
+Ticket agents receive shared handoff instructions on nonempty pipeline, standalone, resumed, annotation, and rework prompts, independently of custom system briefs. Before asking clarification questions, they must read `kontora view TICKET_ID` and reuse applicable recorded answers. They must ask only about missing, conflicting, or changed requirements.
+
+Immediately after receiving a user answer, ticket agents must save each question and its answer together on the current ticket. Preserve selected options and free-text details; distinguish user answers from agent assumptions. Use the handoff methods below and confirm persistence before continuing work or asking another question round. Do not defer answer notes until a phase boundary or completion. Answer notes supplement results notes, run summaries, and any configured phase checkpoints. The built-in annotation prompt prohibits reviewer-annotation replies, but requires new clarification records and preservation of existing notes.
+
+These ticket-agent rules do not apply to the dashboard assistant. They are prompt instructions, not automatic capture: a crash before submission can still lose an answer. They do not fix concurrent ticket writes.
+
 For handoff notes and summaries, prefer Pi's `kontora_note({text: string})` and `kontora_summary({text: string})` tools when available. Kontora binds them to the current ticket, independently of checkpoint settings. Tool restrictions still apply. Other agents and the dashboard assistant use stdin.
 
 Native tools reject blank text, embedded NUL, and text above 32,768 UTF-8 bytes. Native payloads appear in process arguments; use stdin for large or sensitive text.
@@ -100,7 +106,7 @@ kontora summary TICKET_ID < /absolute/path/summary.txt
 
 Replace `TICKET_ID` and each example path with the actual ticket ID and scratch path. Do not embed generated text in shell arguments or payload-bearing shell commands. Do not create the files with `echo` or `printf`. Put all flags before the ticket ID. Positional text remains supported. Stdin removes trailing LF characters; notes also trim surrounding whitespace. Summaries preserve spaces and internal newlines; stage capture later cuts text above 4,000 bytes and appends `\n[truncated]`.
 
-If a launched submission fails or lacks acknowledgement, read the ticket before resubmitting. The write outcome may be unknown; do not retry or switch methods automatically. Custom prompts replace defaults and remain user-owned; Kontora does not rewrite their unsafe examples.
+If a launched submission fails or lacks acknowledgement, read the ticket before resubmitting. The write outcome may be unknown; do not retry blindly or switch methods automatically. Ticket agents must report unresolved save failures and stop dependent work. Custom prompts replace defaults and remain user-owned; Kontora does not rewrite their unsafe examples.
 
 ## Remote mode
 

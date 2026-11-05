@@ -610,7 +610,7 @@ func TestResumeSimpleTicket(t *testing.T) {
 	assert.Contains(t, spawns[0].Args, "--resume")
 	got := renderedPrompt(spawns[0])
 	assert.Contains(t, got, "was interrupted when the daemon restarted")
-	assert.NotContains(t, got, "the next stage of the pipeline")
+	assertSafeHandoff(t, got, resumeTicketID, false)
 	assert.NoFileExists(t, resumeRecordPath(rd.cfg, resumeTicketID, "default"))
 }
 
@@ -625,6 +625,7 @@ func TestResumePromptConfigured(t *testing.T) {
 	require.Len(t, spawns, 1)
 	got := renderedPrompt(spawns[0])
 	assert.Contains(t, got, "Continue the interrupted work on "+resumeTicketID)
+	assertSafeHandoff(t, got, resumeTicketID, true)
 	assert.Contains(t, got, "## Operational Context")
 	assert.Contains(t, got, "Worktree: "+rd.wtPath)
 	assert.NotContains(t, got, "was interrupted when the daemon restarted")

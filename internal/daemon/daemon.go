@@ -55,7 +55,7 @@ const defaultAnnotationPrompt = `A reviewer annotated ticket {{ .Ticket.ID }} â€
 
 {{ plannotatorAnnotations }}
 
-Change the ticket at {{ .Ticket.FilePath }} so that it satisfies every note. Do not add replies to the notes in the ticket text. Leave the parts the reviewer did not comment on as they are.
+Change the ticket at {{ .Ticket.FilePath }} so that it satisfies every note. Do not add replies to reviewer annotations in the ticket text. Record new user clarifications as ticket notes using the shared handoff instructions below. Preserve existing ticket notes when rewriting the body. Leave the parts the reviewer did not comment on as they are.
 
 Rules for this run:
 
@@ -2855,6 +2855,16 @@ func buildOperationalAppendix(taskID, filePath, wtPath string, isPipeline bool, 
 	fmt.Fprintf(&b, "  kontora note %s < /absolute/path/note.md\n", taskID)
 	fmt.Fprintf(&b, "  kontora summary %s < /absolute/path/summary.txt\n", taskID)
 	b.WriteString("Do not put payload text in shell arguments. Do not create these files with `echo`, `printf`, or other payload-bearing shell commands.\n")
+	fmt.Fprintf(&b, "If submission fails or lacks acknowledgement, read `kontora view %s` to check the outcome.\n", taskID)
+	b.WriteString("Do not retry blindly or switch transports automatically.\n")
+	b.WriteString("If the save remains unresolved, report the failure and stop dependent work.\n")
+	b.WriteString("\n## User clarifications\n")
+	fmt.Fprintf(&b, "Before asking clarification questions, read the current ticket with `kontora view %s`.\n", taskID)
+	b.WriteString("Reuse applicable recorded answers. Ask only about missing, conflicting, or changed requirements.\n")
+	b.WriteString("Immediately after receiving a user answer, save each question and its user answer together on the current ticket.\n")
+	b.WriteString("Preserve selected options and free-text details. Distinguish user answers from agent assumptions; do not substitute assumptions for answers.\n")
+	b.WriteString("Submit the answer note using the shared handoff instructions above before continuing work or asking another question round.\n")
+	b.WriteString("Do not defer answer notes until a phase boundary or completion. Continue only after confirming the answer note was saved.\n")
 	b.WriteString("\nIMPORTANT: When you finish your work, write your results as a note on the ticket.\n")
 	b.WriteString("Use the method above. Include all relevant details so they are preserved.")
 	if isPipeline {

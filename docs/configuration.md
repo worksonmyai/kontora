@@ -437,7 +437,15 @@ The `file` function is how stages communicate — an earlier stage writes a file
 
 ### Stage handoffs
 
-Kontora appends handoff instructions to stage, standalone, resumed, annotation, and rework prompts. These instructions require a results note. In a pipeline, the next stage reads the note.
+Kontora appends handoff instructions to nonempty stage, standalone, resumed, annotation, and rework prompts. These instructions require a results note. In a pipeline, the next stage reads the note.
+
+Before asking clarification questions, ticket agents must read the current ticket with `kontora view TICKET_ID`. They must reuse applicable recorded answers and ask only about missing, conflicting, or changed requirements.
+
+Immediately after receiving a user answer, agents must save each question and its answer together on the current ticket. Notes must preserve selected options and free-text details and distinguish user answers from agent assumptions. Agents must use the handoff methods below and confirm persistence before continuing work or asking another question round. Answer notes must not wait until a phase boundary or completion. They supplement results notes, run summaries, and phase checkpoints.
+
+The built-in annotation prompt prohibits replies to reviewer annotations, but requires recording new user clarifications and preserving existing ticket notes.
+
+These are prompt instructions, not automatic capture. A crash after an answer arrives but before note submission can still lose that answer. The instructions do not fix concurrent ticket writes.
 
 Prefer Pi's `kontora_note({text: string})` and `kontora_summary({text: string})` tools when available. The injected extension binds both tools to `KONTORA_TICKET_ID`, independently of checkpoint settings. Tool restrictions still apply. Other agents and the dashboard assistant use stdin.
 
@@ -452,7 +460,7 @@ kontora summary TICKET_ID < /absolute/path/summary.txt
 
 Replace `TICKET_ID` and each example path with the actual ticket ID and scratch path. Do not embed generated text in shell arguments or payload-bearing shell commands. Do not create the files with `echo` or `printf`. Put all CLI flags before the ticket ID.
 
-If a launched submission fails or lacks acknowledgement, read the ticket before resubmitting. The write outcome may be unknown; do not retry or switch methods automatically. Checkpoint runs require the durable phase note before the phase-completion signal, using the same submission method.
+If a launched submission fails or lacks acknowledgement, read the ticket before resubmitting. The write outcome may be unknown; do not retry blindly or switch methods automatically. If the save remains unresolved, report the failure and stop dependent work. Checkpoint runs require the durable phase note before the phase-completion signal, using the same submission method.
 
 ### The stage brief
 

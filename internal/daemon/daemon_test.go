@@ -995,6 +995,18 @@ func assertSafeHandoff(t *testing.T, got, taskID string, isPipeline bool) {
 		"Do not put payload text in shell arguments",
 		"Do not create these files with `echo`, `printf`, or other payload-bearing shell commands",
 		"a few-line summary",
+		"If submission fails or lacks acknowledgement, read `kontora view " + taskID + "` to check the outcome",
+		"Do not retry blindly or switch transports automatically",
+		"If the save remains unresolved, report the failure and stop dependent work",
+		"Before asking clarification questions, read the current ticket with `kontora view " + taskID + "`",
+		"Reuse applicable recorded answers",
+		"Ask only about missing, conflicting, or changed requirements",
+		"Immediately after receiving a user answer, save each question and its user answer together on the current ticket",
+		"Preserve selected options and free-text details",
+		"Distinguish user answers from agent assumptions; do not substitute assumptions for answers",
+		"Submit the answer note using the shared handoff instructions above before continuing work or asking another question round",
+		"Do not defer answer notes until a phase boundary or completion",
+		"Continue only after confirming the answer note was saved",
 	} {
 		assert.Contains(t, got, want)
 	}

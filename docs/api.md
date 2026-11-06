@@ -90,10 +90,13 @@ The epic records supervisor history, summaries, logs, activity and sessions.
 
 Supervisors use `max_concurrent_epic_supervisors`, default `4`, separately from
 worker capacity. This permits four additional agent processes. Dependencies
-control scheduling, not the commits present in a child's Git base. Activation
-does not grant push, publication, destructive reset or shared-history permissions.
-Existing approval requirements and off-machine write restrictions still apply.
-See [Epics](tickets.md#epics) for integration rules.
+control scheduling, not the commits present in a child's Git base. The supervisor
+may commit and rebase local branches owned by the epic without per-operation
+approval, but never on `main`, `master`, or the repository's default branch.
+The supervisor must investigate questions before asking the user. It must not
+publish or write to external services, including through children or tools.
+These are agent instructions, not runtime enforcement.
+See [Epics](tickets.md#epics) for integration rules and safety limits.
 
 Upgrade every daemon and client sharing the ticket directory before activation.
 Older versions treat all epics as passive and can overwrite supervisor status.

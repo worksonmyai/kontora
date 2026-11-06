@@ -295,8 +295,17 @@ func TestEpicAgentRoleSurvivesFreshAndCustomResumePrompts(t *testing.T) {
 				"Serialize integration-branch writes.",
 				"Never rebase or modify a child worktree while its agent is running.",
 				"Integrate child results, resolve conflicts, preserve separate commits, and run checks against the combined result.",
-				"Existing commit approvals and off-machine write restrictions still apply.",
-				"Starting an epic does not authorize pushes, publication, destructive resets, or changes to shared history.",
+				"Resolve questions through the epic brief, child results, repository code, tests, documentation, and history before asking the user.",
+				"Choose safe, reversible defaults within the epic's scope and record important assumptions in epic notes.",
+				"Ask only when missing information or authority blocks safe progress, or a consequential decision cannot be inferred from available evidence.",
+				"Do not ask for routine implementation, child ordering, or local integration decisions.",
+				"You may commit and rebase local branches owned by this epic without asking for per-operation approval.",
+				"Before each operation, verify the current branch and worktree. Never commit or rebase on main, master, or the repository's default branch.",
+				"If HEAD is detached or branch ownership is unclear, resolve that before writing.",
+				"Preserve unrelated work. Do not perform destructive resets or rewrite published or shared history.",
+				"Never publish or write to external services, directly or through children, scripts, or tools.",
+				"This includes pushes, pull requests, remote issues or comments, messages, uploads, and releases.",
+				"Read-only external lookups are allowed. Keep all results and progress notes local.",
 			} {
 				assert.Contains(t, got, clause)
 			}

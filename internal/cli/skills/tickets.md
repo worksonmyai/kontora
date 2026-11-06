@@ -231,9 +231,24 @@ references on the epic.
 Dependencies control scheduling, not Git contents. Verify prerequisite commits
 exist in a child's base before starting it. Set `base_branch` before first
 execution; changing it later does not rebase an existing worktree. Serialize
-integration writes. Never modify a running child's worktree. Activation does
-not authorize pushes, publication, destructive resets or changes to shared
-history. Existing approval requirements and off-machine write restrictions apply.
+integration writes. Never modify a running child's worktree.
+
+The supervisor may commit and rebase local branches owned by the epic without
+per-operation approval. It must first verify the branch and worktree. It must
+not commit or rebase on `main`, `master`, or the repository's default branch.
+It must resolve detached HEAD or unclear branch ownership before writing.
+It must preserve unrelated work and avoid destructive resets or rewriting
+published or shared history.
+
+The supervisor must investigate questions before asking the user. It should
+choose safe, reversible defaults within the epic's scope and record important
+assumptions in epic notes. It should ask only when missing information or
+authority blocks safe progress, or evidence cannot settle a consequential decision.
+
+The supervisor must not publish or make off-machine writes, including through
+children, scripts, or tools. This prohibits pushes, pull requests, remote issues
+or comments, messages, uploads, and releases. Read-only external lookups are
+allowed. Results and progress notes stay local.
 
 Supervisors use `max_concurrent_epic_supervisors`, default `4`, separately from
 `max_concurrent_agents`. This allows four additional agent processes. The queue

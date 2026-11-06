@@ -95,7 +95,13 @@ Pausing an agent epic stops only its supervisor. Children already running contin
 
 A successful supervisor exit sends the epic to `human_review`, never directly to `done`. Kontora requires at least one child, with every child `done`, legacy `closed` or `human_review`. Cancelled and archived children do not satisfy that check. The check does not prove integration or test claims, and a child's `human_review` does not mean human acceptance. Review the combined epic diff. Plannotator feedback starts another supervisor run for rework. Supervisor runs record history, summaries, logs, activity and session references on the epic.
 
-Git integration remains agent work. Dependencies control scheduling; they do not put prerequisite commits into a child's base branch. Set `base_branch` before first execution where needed. Changing it later does not rebase an existing worktree. The supervisor must serialize integration writes and must not modify a running child's worktree. Activation does not authorize pushes, publication, destructive resets or changes to shared history. Existing approval requirements and restrictions on off-machine writes still apply.
+Git integration remains agent work. Dependencies control scheduling; they do not put prerequisite commits into a child's base branch. Set `base_branch` before first execution where needed. Changing it later does not rebase an existing worktree. The supervisor must serialize integration writes and must not modify a running child's worktree.
+
+The supervisor may commit and rebase local branches owned by the epic without per-operation approval. It must first verify the branch and worktree. It must not commit or rebase on `main`, `master`, or the repository's default branch. It must resolve detached HEAD or unclear branch ownership before writing. It must preserve unrelated work and avoid destructive resets or rewriting published or shared history.
+
+The supervisor must investigate questions before asking the user. It should choose safe, reversible defaults within the epic's scope and record important assumptions in epic notes. It should ask only when missing information or authority blocks safe progress, or evidence cannot settle a consequential decision.
+
+The supervisor must not publish or make off-machine writes, including through children, scripts, or tools. This prohibits pushes, pull requests, remote issues or comments, messages, uploads, and releases. Read-only external lookups are allowed. Results and progress notes stay local. These are agent instructions, not runtime enforcement.
 
 Supervisors use a separate pool: `max_concurrent_epic_supervisors`, default `4`, in addition to `max_concurrent_agents`. At default settings, epics can add four agent processes beyond the worker limit. The queue chooses the oldest eligible ticket whose pool has capacity.
 

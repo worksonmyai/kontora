@@ -286,6 +286,8 @@ func TestEpicAgentRoleSurvivesFreshAndCustomResumePrompts(t *testing.T) {
 			assert.Contains(t, got, "## Epic supervisor")
 			assert.Contains(t, got, "kontora skills show")
 			for _, clause := range []string{
+				"Create children with --parent and omit --path to inherit the epic's repository path and its project defaults.",
+				"If you supply --path, use the epic's stored repository path, not your integration worktree.",
 				"On resume or retry, inspect children, branches, worktrees, dirty files, and interrupted merges or rebases before issuing commands.",
 				"Do not restart children blindly.",
 				"Use your branch as the integration branch. Children retain separate branches, worktrees, and commits.",

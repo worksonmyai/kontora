@@ -99,7 +99,7 @@ A ticket whose frontmatter cannot be parsed is reported on stderr with the count
 
 ### `kontora new [flags] TITLE`
 
-Creates a ticket and prints its ID. Without `--path` it uses the current git root; in remote mode `--path` is required and names a path on the daemon host.
+Creates a ticket and prints its ID. Locally, omitting `--path` with `--parent EPIC_ID` uses the resolved parent epic's stored `path`. Without `--parent`, it uses the current git root. An explicit `--path` always wins. Remote mode still requires `--path` on the daemon host, even with `--parent`. API creation (`POST /api/tickets`) likewise requires `path`.
 
 | Flag | Description |
 |------|-------------|

@@ -563,7 +563,9 @@ The pipeline and agent defaults are applied when a ticket is created (`kontora n
 
 A value you supply yourself wins over the project default. On `kontora init` a value the ticket file already declares wins too: the project fills a blank field, it never replaces a pipeline or an agent the ticket chose. The two fields are independent: naming a pipeline still lets the agent come from the project.
 
-`path` is matched after `~` expansion and cleaning, so `~/projects/kontora`, `/home/you/projects/kontora`, and a trailing slash all reach the same entry. Only the complete path matches. A ticket pointing at `~/projects/kontora/internal` inherits nothing, and symlinks are not resolved. A relative path is not resolved either, because only the daemon host knows what it would be relative to: `kontora new --path . "..."` matches no project. Without `--path`, `kontora new` fills in the current git root, which is absolute and does match.
+`path` is matched after `~` expansion and cleaning, so `~/projects/kontora`, `/home/you/projects/kontora`, and a trailing slash all reach the same entry. Only the complete path matches. A ticket pointing at `~/projects/kontora/internal` inherits nothing, and symlinks are not resolved. A relative path is not resolved either, because only the daemon host knows what it would be relative to: `kontora new --path . "..."` matches no project.
+
+Locally, `kontora new --parent EPIC_ID` without `--path` inherits the resolved parent epic's stored `path`. Without a parent, it uses the current git root, which can be a linked worktree rather than the configured repository path. Project matching remains lexical: a linked-worktree path does not match the main repository's entry. An explicit `--path` wins. Remote and API creation still require a daemon-host path, even with a parent.
 
 ### Opting out with `none`
 

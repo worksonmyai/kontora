@@ -410,7 +410,7 @@ func cmdLs() {
 func cmdNew() {
 	fs := flag.NewFlagSet("new", flag.ExitOnError)
 	configPath, ticketsDir := addStoreFlags(fs)
-	repoPath := fs.String("path", "", "repository path (defaults to current git root)")
+	repoPath := fs.String("path", "", "repository path (defaults to the parent epic's path, otherwise current git root; required in remote mode)")
 	pipeline := fs.String("pipeline", "", "pipeline name, or \"none\" to skip the project default")
 	agent := fs.String("agent", "", "agent name, or \"none\" to skip the project default")
 	branch := fs.String("branch", "", "work branch name (defaults to <branch_prefix>/<id>)")
@@ -474,9 +474,9 @@ func cmdNew() {
 		return
 	}
 
-	// Default to current git root if --path not specified.
+	// Without a parent, default to current git root if --path not specified.
 	path := *repoPath
-	if path == "" {
+	if path == "" && *parent == "" {
 		path, err = cli.GitRoot()
 		if err != nil {
 			log.Fatal(err)

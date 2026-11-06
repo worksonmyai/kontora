@@ -56,9 +56,6 @@ type NewOpts struct {
 
 // New creates a ticket file and optionally opens it in $EDITOR.
 func New(cfg *config.Config, opts NewOpts) (string, error) {
-	if opts.Path == "" {
-		return "", fmt.Errorf("-path is required")
-	}
 	if opts.Title == "" {
 		return "", fmt.Errorf("title is required")
 	}
@@ -83,6 +80,9 @@ func New(cfg *config.Config, opts NewOpts) (string, error) {
 	}
 	if err := resolveParent(cfg, &opts); err != nil {
 		return "", err
+	}
+	if opts.Path == "" {
+		return "", fmt.Errorf("-path is required")
 	}
 	if opts.Status == "" {
 		opts.Status = "todo"
@@ -245,6 +245,9 @@ func resolveParent(cfg *config.Config, opts *NewOpts) error {
 	}
 	if st.Ticket.Kind != ticket.KindEpic {
 		return fmt.Errorf("%w: %s is not an epic", app.ErrNotAnEpic, parentID)
+	}
+	if opts.Path == "" {
+		opts.Path = st.Ticket.Path
 	}
 	if err := app.ValidateEpicChildRepository(st.Ticket, &ticket.Ticket{ID: opts.ID, Path: opts.Path}); err != nil {
 		return err

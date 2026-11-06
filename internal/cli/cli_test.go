@@ -15,6 +15,7 @@ import (
 	"github.com/worksonmyai/kontora/internal/config"
 	"github.com/worksonmyai/kontora/internal/testutil"
 	"github.com/worksonmyai/kontora/internal/ticket"
+	"github.com/worksonmyai/kontora/internal/ticket/app"
 	"github.com/worksonmyai/kontora/internal/tmux"
 )
 
@@ -2017,52 +2018,106 @@ func TestNew_EpicRejections(t *testing.T) {
 // way a parent reaches the file and a bad one is a dangling reference nothing
 // reports.
 func TestNew_Parent(t *testing.T) {
+	repoDir := initTestRepo(t)
+	otherRepo := initTestRepo(t)
+	draftPath := filepath.Join(t.TempDir(), "future-repo")
+	paths := map[string]string{"repo": repoDir, "other": otherRepo}
 	cases := []struct {
-		name string
-		// parent is the -parent value, with "{epic}" standing for the id of the
-		// epic each case creates first.
-		parent  string
-		wantErr string
+		name              string
+		parent            string
+		path              string
+		pipeline          string
+		agent             string
+		epicExecution     string
+		status            string
+		missingParentPath bool
+		draftParent       bool
+		wantPipeline      string
+		wantAgent         string
+		wantErr           string
+		wantErrIs         error
 	}{
-		{name: "an epic by its full id", parent: "{epic}"},
-		{name: "an unknown parent", parent: "epc-nope", wantErr: `parent epc-nope: ticket "epc-nope" not found`},
-		{name: "a parent that is not an epic", parent: "{plain}", wantErr: "is not an epic"},
+		{name: "an epic by its full id", parent: "epc-100", path: "repo", wantPipeline: "default", wantAgent: "claude-sonnet"},
+		{name: "an unknown parent", parent: "epc-nope", path: "repo", wantErr: `parent epc-nope: ticket "epc-nope" not found`},
+		{name: "a parent that is not an epic", parent: "tsk-100", path: "repo", wantErr: "is not an epic"},
+		{name: "an omitted path inherits the epic repository", parent: "epc-100", wantPipeline: "default", wantAgent: "claude-sonnet"},
+		{name: "a parent prefix also supplies the path", parent: "epc-1", wantPipeline: "default", wantAgent: "claude-sonnet"},
+		{name: "an explicit path wins for a passive epic", parent: "epc-100", path: "other", wantPipeline: "release", wantAgent: "codex"},
+		{name: "a draft inherits a repository that does not exist yet", parent: "epc-100", draftParent: true, wantPipeline: "default", wantAgent: "claude-sonnet"},
+		{name: "a runnable child checks the inherited repository", parent: "epc-100", status: "todo", wantPipeline: "default", wantAgent: "claude-sonnet"},
+		{name: "a runnable child rejects a nonexistent inherited repository", parent: "epc-100", status: "todo", draftParent: true, wantErr: "not a git repository"},
+		{name: "an explicit pipeline wins", parent: "epc-100", pipeline: "release", wantPipeline: "release", wantAgent: "claude-sonnet"},
+		{name: "an explicit agent wins", parent: "epc-100", agent: "codex", wantPipeline: "default", wantAgent: "codex"},
+		{name: "none skips the pipeline default", parent: "epc-100", pipeline: "none", wantAgent: "claude-sonnet"},
+		{name: "none skips the agent default", parent: "epc-100", agent: "none", wantPipeline: "default"},
+		{name: "none skips both defaults", parent: "epc-100", pipeline: "none", agent: "none"},
+		{name: "an active epic supplies its repository", parent: "epc-100", epicExecution: ticket.EpicExecutionAgent, wantPipeline: "default", wantAgent: "claude-sonnet"},
+		{name: "an active epic rejects another repository", parent: "epc-100", path: "other", epicExecution: ticket.EpicExecutionAgent, wantErr: "must use the same repository", wantErrIs: app.ErrInvalidState},
+		{name: "a passive epic with no path requires an explicit path", parent: "epc-100", missingParentPath: true, wantErr: "-path is required"},
+		{name: "an active epic with no path keeps its validation error", parent: "epc-100", missingParentPath: true, epicExecution: ticket.EpicExecutionAgent, wantErr: "require a repository path", wantErrIs: app.ErrInvalidState},
+		{name: "an explicit path allows a pathless passive epic", parent: "epc-100", path: "repo", missingParentPath: true, wantPipeline: "default", wantAgent: "claude-sonnet"},
+		{name: "an unknown parent cannot supply a path", parent: "epc-nope", wantErr: `parent epc-nope: ticket "epc-nope" not found`},
+		{name: "a non-epic cannot supply a path", parent: "tsk-100", wantErr: "is not an epic"},
+		{name: "no parent or path still fails", wantErr: "-path is required"},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
 			cfg := testConfig(dir)
-			repoDir := initTestRepo(t)
-
-			epicID, err := New(cfg, NewOpts{Path: repoDir, Title: "An epic", Kind: "epic", NoEdit: true})
-			require.NoError(t, err)
-			plainID, err := New(cfg, NewOpts{Path: repoDir, Title: "Not an epic", NoEdit: true})
-			require.NoError(t, err)
-
-			parent := tc.parent
-			switch parent {
-			case "{epic}":
-				parent = epicID
-			case "{plain}":
-				parent = plainID
+			cfg.Pipelines["release"] = cfg.Pipelines["default"]
+			cfg.Agents["codex"] = config.Agent{Binary: "codex"}
+			cfg.Projects = map[string]config.Project{
+				"repo":  {Path: repoDir, Prefix: "prj", Pipeline: "default", Agent: "claude-sonnet"},
+				"other": {Path: otherRepo, Prefix: "oth", Pipeline: "release", Agent: "codex"},
+				"draft": {Path: draftPath, Prefix: "draft", Pipeline: "default", Agent: "claude-sonnet"},
+			}
+			epicPath := repoDir
+			if tc.draftParent {
+				epicPath = draftPath
+			}
+			if tc.missingParentPath {
+				epicPath = ""
+			}
+			writeTicket(t, dir, "epc-100.md", fmt.Sprintf("---\nid: epc-100\nkind: epic\nepic_execution: %q\nstatus: open\npath: %q\nagent: codex\nbranch: integration\nbase_branch: epic-base\n---\n# An epic\n", tc.epicExecution, epicPath))
+			writeTicket(t, dir, "tsk-100.md", "---\nid: tsk-100\nstatus: open\n---\n# Not an epic\n")
+			status := tc.status
+			if status == "" {
+				status = "open"
 			}
 
 			id, err := New(cfg, NewOpts{
-				Path:   repoDir,
-				Title:  "A child",
-				Parent: parent,
-				NoEdit: true,
+				Path: paths[tc.path], Title: "A child", Parent: tc.parent,
+				Pipeline: tc.pipeline, Agent: tc.agent, Status: status, NoEdit: true,
 			})
 			if tc.wantErr != "" {
 				require.ErrorContains(t, err, tc.wantErr)
+				if tc.wantErrIs != nil {
+					assert.ErrorIs(t, err, tc.wantErrIs)
+				}
+				entries, readErr := os.ReadDir(dir)
+				require.NoError(t, readErr)
+				assert.Len(t, entries, 2, "rejected creation must not write a child")
 				return
 			}
 			require.NoError(t, err)
 
-			data, err := os.ReadFile(filepath.Join(dir, id+".md"))
+			tkt, err := ticket.ParseFile(filepath.Join(dir, id+".md"))
 			require.NoError(t, err)
-			assert.Contains(t, string(data), "parent: "+epicID)
+			wantPath, wantPrefix := repoDir, "prj-"
+			if tc.path == "other" {
+				wantPath, wantPrefix = otherRepo, "oth-"
+			} else if tc.draftParent {
+				wantPath, wantPrefix = draftPath, "draft-"
+			}
+			assert.Equal(t, wantPath, tkt.Path)
+			assert.True(t, strings.HasPrefix(id, wantPrefix), "ticket id %s", id)
+			assert.Equal(t, "epc-100", tkt.Parent)
+			assert.Equal(t, tc.wantPipeline, tkt.Pipeline)
+			assert.Equal(t, tc.wantAgent, tkt.Agent)
+			assert.Equal(t, status, string(tkt.Status))
+			assert.Empty(t, tkt.Branch)
+			assert.Empty(t, tkt.BaseBranch)
 		})
 	}
 }

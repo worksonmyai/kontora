@@ -183,12 +183,17 @@ stay passive until explicitly activated. Epics cannot nest.
 
 ```sh
 kontora new --kind epic --status open --path ~/projects/myrepo --description-file brief.md "Add authentication"
-kontora new --parent EPIC_ID --status open --path ~/projects/myrepo "Implement the login API"
+kontora new --parent EPIC_ID --status open "Implement the login API"
 ```
 
 Replace `EPIC_ID` with the id returned by the first command. Do not pass
 `--pipeline`, `--at`, `--after` or `--parent` when creating an epic.
 The children remain open until explicitly queued.
+
+Supervisors creating children locally should pass `--parent` and omit `--path`.
+The child inherits the resolved parent epic's stored `path`, not the current git root.
+An explicit `--path` wins; use the epic's stored repository path, not its integration worktree.
+Remote and API creation still require a daemon-host path, even with a parent.
 
 The daemon derives a passive epic's status whenever its children change.
 Archived children are ignored. Apply these rules in order:

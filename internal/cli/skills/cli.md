@@ -132,8 +132,13 @@ Exits 0 whether or not anything matched.
 
 ## kontora new
 
-`kontora new [flags] TITLE` — create a ticket and print its id. Without
-`--path` it uses the current git root; in remote mode `--path` is required.
+`kontora new [flags] TITLE` — create a ticket and print its id.
+Locally, omitting `--path` with `--parent EPIC_ID` uses the resolved parent epic's
+stored `path`. Without `--parent`, it uses the current git root.
+An explicit `--path` always wins. Remote mode still requires `--path` on the
+daemon host, even with `--parent`. API creation likewise requires `path`.
+
+Project defaults use the selected path.
 
 - `--path PATH` — repository the ticket works in.
 - `--pipeline NAME` — pipeline to run, or `none` for a standalone ticket.
@@ -165,10 +170,11 @@ Use `kontora run EPIC_ID` later to activate a supervisor.
 
 ```sh
 kontora new --kind epic --status open --path ~/projects/myrepo --description-file brief.md "Add authentication"
-kontora new --parent EPIC_ID --status open --path ~/projects/myrepo "Implement the login API"
+kontora new --parent EPIC_ID --status open "Implement the login API"
 ```
 
-Replace `EPIC_ID` with the new epic's id. `--parent` groups the child; it does
+Replace `EPIC_ID` with the new epic's id. The example uses local mode and inherits
+the epic's stored repository path. `--parent` groups the child; it does
 not queue it or create dependencies. See `kontora skills show tickets Epics`.
 
 `--at` and `--after` write `status: open` and `scheduled_at` in the same single

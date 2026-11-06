@@ -77,7 +77,13 @@ func runCLI(t *testing.T, env []string, args ...string) (string, error) {
 
 func runCLIWithStdin(t *testing.T, env []string, stdin io.Reader, args ...string) (string, error) {
 	t.Helper()
+	return runCLIInDir(t, "", env, stdin, args...)
+}
+
+func runCLIInDir(t *testing.T, dir string, env []string, stdin io.Reader, args ...string) (string, error) {
+	t.Helper()
 	cmd := exec.Command(buildKontora(t), args...)
+	cmd.Dir = dir
 	cmd.Env = cliTestEnv(t, env)
 	cmd.Stdin = stdin
 	out, err := cmd.CombinedOutput()
@@ -816,6 +822,11 @@ func TestRemoteNewRejectsScheduledTodo(t *testing.T) {
 
 func TestNewWritesAgentAndProjectDefaults(t *testing.T) {
 	repoDir := testutil.InitRepo(t)
+	wtDir := filepath.Join(t.TempDir(), "supervisor")
+	out, err := exec.Command("git", "-C", repoDir, "worktree", "add", "--detach", wtDir, "HEAD").CombinedOutput()
+	require.NoError(t, err, string(out))
+	wtDir, err = filepath.EvalSymlinks(wtDir)
+	require.NoError(t, err)
 	ticketsDir := t.TempDir()
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
 	require.NoError(t, os.WriteFile(configPath, fmt.Appendf(nil, `
@@ -838,45 +849,121 @@ pipelines:
 projects:
   repo:
     path: %s
+    prefix: prj
     pipeline: implement
     agent: claude
 `, ticketsDir, repoDir), 0o644))
 
+	cfg, err := config.Load(configPath)
+	require.NoError(t, err)
+	_, err = cli.New(cfg, cli.NewOpts{
+		ID: "epc-100", Path: repoDir, Title: "Epic", Kind: "epic", EpicExecution: ticket.EpicExecutionAgent,
+		Agent: "codex", Branch: "integration", BaseBranch: "epic-base", NoEdit: true,
+	})
+	require.NoError(t, err)
+
 	cases := []struct {
-		name     string
-		args     []string
-		contains []string
-		absent   []string
+		name       string
+		path       string
+		parent     string
+		dir        string
+		args       []string
+		wantPath   string
+		wantPrefix string
+		contains   []string
+		absent     []string
 	}{
 		{
-			name:     "project defaults fill blank fields",
-			args:     []string{"Inherited"},
+			name: "project defaults fill blank fields", path: repoDir,
+			args: []string{"Inherited"}, wantPath: repoDir, wantPrefix: "prj-",
 			contains: []string{"pipeline: implement", "agent: claude"},
 		},
 		{
-			name:     "explicit agent overrides the project default",
-			args:     []string{"--agent", "codex", "Explicit agent"},
+			name: "explicit agent overrides the project default", path: repoDir,
+			args: []string{"--agent", "codex", "Explicit agent"}, wantPath: repoDir, wantPrefix: "prj-",
 			contains: []string{"pipeline: implement", "agent: codex"},
 		},
 		{
-			name:     "none opts the pipeline out",
-			args:     []string{"--pipeline", "none", "Standalone"},
-			contains: []string{"agent: claude"},
-			absent:   []string{"pipeline:"},
+			name: "none opts the pipeline out", path: repoDir,
+			args: []string{"--pipeline", "none", "Standalone"}, wantPath: repoDir, wantPrefix: "prj-",
+			contains: []string{"agent: claude"}, absent: []string{"pipeline:"},
+		},
+		{
+			name: "a supervisor child inherits the epic repository", parent: "epc-100",
+			args: []string{"Child"}, wantPath: repoDir, wantPrefix: "prj-",
+			contains: []string{"pipeline: implement", "agent: claude"},
+		},
+		{
+			name: "a child resolves a parent prefix", parent: "epc-1",
+			args: []string{"Child by prefix"}, wantPath: repoDir, wantPrefix: "prj-",
+			contains: []string{"pipeline: implement", "agent: claude"},
+		},
+		{
+			name: "an inherited path keeps an explicit agent", parent: "epc-100",
+			args: []string{"--agent", "codex", "Explicit child agent"}, wantPath: repoDir, wantPrefix: "prj-",
+			contains: []string{"pipeline: implement", "agent: codex"},
+		},
+		{
+			name: "a child can opt out of the pipeline", parent: "epc-100",
+			args: []string{"--pipeline", "none", "Standalone child"}, wantPath: repoDir, wantPrefix: "prj-",
+			contains: []string{"agent: claude"}, absent: []string{"pipeline:"},
+		},
+		{
+			name: "a child can opt out of the agent", parent: "epc-100",
+			args: []string{"--agent", "none", "Stage agent child"}, wantPath: repoDir, wantPrefix: "prj-",
+			contains: []string{"pipeline: implement"}, absent: []string{"agent:"},
+		},
+		{
+			name: "a child can be created outside a repository", parent: "epc-100", dir: t.TempDir(),
+			args: []string{"Child outside Git"}, wantPath: repoDir, wantPrefix: "prj-",
+			contains: []string{"pipeline: implement", "agent: claude"},
+		},
+		{
+			name: "an explicit child path remains authoritative", path: wtDir, parent: "epc-100",
+			args: []string{"Explicit worktree"}, wantPath: wtDir, wantPrefix: "sup-",
+			absent: []string{"pipeline:", "agent:"},
+		},
+		{
+			name: "an independent ticket still uses the current Git root",
+			args: []string{"Independent"}, wantPath: wtDir, wantPrefix: "sup-",
+			absent: []string{"pipeline:", "agent:"},
 		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			args := append([]string{"new", "--config", configPath, "--path", repoDir}, tc.args...)
-			out, err := runCLI(t, nil, args...)
+			args := []string{"new", "--status", "open", "--quiet"}
+			if tc.path != "" {
+				args = append(args, "--path", tc.path)
+			}
+			if tc.parent != "" {
+				args = append(args, "--parent", tc.parent)
+			}
+			args = append(args, tc.args...)
+			dir := tc.dir
+			if dir == "" {
+				dir = wtDir
+			}
+			out, err := runCLIInDir(t, dir, []string{config.PathEnvVar + "=" + configPath}, nil, args...)
 			require.NoError(t, err, out)
 
-			id := strings.Fields(out)[0]
-			data, err := os.ReadFile(filepath.Join(ticketsDir, id+".md"))
+			id := strings.TrimSpace(out)
+			assert.True(t, strings.HasPrefix(id, tc.wantPrefix), "ticket id %s", id)
+			path := filepath.Join(ticketsDir, id+".md")
+			tkt, err := ticket.ParseFile(path)
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantPath, tkt.Path)
+			assert.Equal(t, ticket.StatusOpen, tkt.Status)
+			assert.Empty(t, tkt.Branch)
+			assert.Empty(t, tkt.BaseBranch)
+			if tc.parent != "" {
+				assert.Equal(t, "epc-100", tkt.Parent)
+			} else {
+				assert.Empty(t, tkt.Parent)
+			}
+			data, err := os.ReadFile(path)
 			require.NoError(t, err)
 			content := string(data)
-
 			for _, want := range tc.contains {
 				assert.Contains(t, content, want)
 			}

@@ -20,6 +20,8 @@ You supervise epic %s using ordinary coding-agent execution.
 Load the Kontora skill. Read the installed epic reference with kontora skills show tickets Epics.
 Read the epic brief, complete child set, dependencies, history, and existing results through the CLI.
 Choose child order and parallelism. Create necessary children as open, then explicitly start selected work.
+Create children with --parent and omit --path to inherit the epic's repository path and its project defaults.
+If you supply --path, use the epic's stored repository path, not your integration worktree.
 Monitor children through CLI reads and shell waits. Do not exit merely because children are running.
 On resume or retry, inspect children, branches, worktrees, dirty files, and interrupted merges or rebases before issuing commands.
 Do not restart children blindly.

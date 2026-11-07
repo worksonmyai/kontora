@@ -94,15 +94,17 @@ type finalSummaryTicket struct {
 	Body  string
 }
 
-// finalSummaryRun is one history row that recorded a summary.
+// finalSummaryRun is one history row that recorded a summary or outcome reason.
 type finalSummaryRun struct {
-	Stage    string
-	Run      int
-	ExitCode int
-	Summary  string
+	Stage         string
+	Run           int
+	ExitCode      int
+	RunOutcome    string
+	OutcomeReason string
+	Summary       string
 }
 
-// eligibleFinalSummaryRuns returns every history row that recorded a summary,
+// eligibleFinalSummaryRuns returns every history row with a summary or outcome reason,
 // oldest first. A stage that ran more than once contributes one entry per run:
 // a retry and the run it retried did different work.
 //
@@ -118,14 +120,16 @@ func eligibleFinalSummaryRuns(t *ticket.Ticket) []finalSummaryRun {
 	for _, h := range t.History {
 		run := seen[h.Stage]
 		seen[h.Stage] = run + 1
-		if h.Summary == "" || h.Kind == ticket.KindAnnotation {
+		if (h.Summary == "" && h.OutcomeReason == "") || h.Kind == ticket.KindAnnotation {
 			continue
 		}
 		runs = append(runs, finalSummaryRun{
-			Stage:    h.Stage,
-			Run:      run,
-			ExitCode: h.ExitCode,
-			Summary:  h.Summary,
+			Stage:         h.Stage,
+			Run:           run,
+			ExitCode:      h.ExitCode,
+			RunOutcome:    string(h.RunOutcome),
+			OutcomeReason: h.OutcomeReason,
+			Summary:       h.Summary,
 		})
 	}
 	return runs
@@ -190,11 +194,11 @@ func finalSummaryTicketBlock(tkt finalSummaryTicket) string {
 func finalSummaryRunBlock(runs []finalSummaryRun) string {
 	var data strings.Builder
 	for i, r := range runs {
-		outcome := "succeeded"
-		if r.ExitCode != 0 {
-			outcome = fmt.Sprintf("failed with exit code %d", r.ExitCode)
+		outcome := r.RunOutcome
+		if outcome == "" {
+			outcome = "unverified task outcome"
 		}
-		fmt.Fprintf(&data, "### %d. stage %s, run %d, %s\n\n%s\n\n", i+1, r.Stage, r.Run, outcome, r.Summary)
+		fmt.Fprintf(&data, "### %d. stage %s, run %d, %s (runner exit status %d)\n\n%s\n%s\n\n", i+1, r.Stage, r.Run, outcome, r.ExitCode, r.OutcomeReason, r.Summary)
 	}
 	return data.String()
 }

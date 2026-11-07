@@ -19,12 +19,12 @@ import (
 var errExecutionChanged = errors.New("ticket execution changed")
 
 type executionIdentity struct {
-	id, pipeline, stage, path, branch, base, owner, epic, parent string
-	kind                                                         ticket.Kind
-	annotation                                                   ticket.Status
-	attempt                                                      int
-	started                                                      string
-	kontora                                                      bool
+	id, pipeline, stage, path, branch, base, owner, epic, parent, invocation string
+	kind                                                                     ticket.Kind
+	annotation                                                               ticket.Status
+	attempt                                                                  int
+	started                                                                  string
+	kontora                                                                  bool
 }
 
 func executionOf(t *ticket.Ticket) executionIdentity {
@@ -32,7 +32,7 @@ func executionOf(t *ticket.Ticket) executionIdentity {
 		id: t.ID, pipeline: t.Pipeline, stage: t.Stage, path: t.Path,
 		branch: t.Branch, base: t.BaseBranch, owner: t.ClaimedBy,
 		epic: t.EpicExecution, parent: t.Parent, kind: t.Kind,
-		annotation: t.AnnotationReturnStatus, attempt: t.Attempt,
+		annotation: t.AnnotationReturnStatus, attempt: t.Attempt, invocation: t.InvocationID,
 		started: derefTime(t.StartedAt).UTC().Format(time.RFC3339Nano), kontora: t.Kontora,
 	}
 }
@@ -243,7 +243,7 @@ func (d *Daemon) claimExecution(ctx context.Context, cfg *config.Config, id stri
 		}
 		if t.AnnotationReturnStatus == "" {
 			branchKey = identity + "\x00" + t.Branch
-			if holder, exists := d.runningBranches[branchKey]; exists {
+			if holder, exists := d.branchHolderLocked(branchKey); exists {
 				return fmt.Errorf("branch %s in use by ticket %s", t.Branch, holder)
 			}
 		}

@@ -89,6 +89,28 @@ path: /repo
 	}
 }
 
+func TestViewHistorySeparatesOutcomeFromRunnerExit(t *testing.T) {
+	for _, outcome := range []string{"", "complete", "blocked", "protocol_error", "failed"} {
+		t.Run(outcome, func(t *testing.T) {
+			dir := t.TempDir()
+			fields := ""
+			if outcome != "" {
+				fields = "    run_outcome: " + outcome + "\n"
+			}
+			writeTicket(t, dir, "tst-001.md", "---\nid: tst-001\nstatus: todo\ninvocation_id: active\nhistory:\n  - stage: default\n    agent: claude\n    exit_code: 0\n    outcome_reason: needs input\n    invocation_id: previous\n"+fields+"---\n# Title\n")
+			var buf bytes.Buffer
+			require.NoError(t, View(testConfig(dir), "tst-001", &buf))
+			want := outcome
+			if want == "" {
+				want = "unknown/unverified"
+			}
+			assert.Contains(t, buf.String(), "outcome: "+want+" · runner exit 0 · needs input · invocation previous")
+			assert.Contains(t, buf.String(), "invocation: active")
+			assert.NotContains(t, buf.String(), "✓")
+		})
+	}
+}
+
 func TestViewBody(t *testing.T) {
 	dir := t.TempDir()
 	cfg := &config.Config{TicketsDir: dir}

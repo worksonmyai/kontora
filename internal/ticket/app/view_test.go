@@ -10,6 +10,29 @@ import (
 	"github.com/worksonmyai/kontora/internal/ticket"
 )
 
+func TestBuildView_RunOutcomes(t *testing.T) {
+	tk := &ticket.Ticket{
+		InvocationID: "active",
+		History: []ticket.HistoryEntry{
+			{Stage: "default", ExitCode: 0}, // legacy, not verified complete
+			{Stage: "default", ExitCode: 0, RunOutcome: ticket.RunOutcomeBlocked, OutcomeReason: "needs input", InvocationID: "previous"},
+		},
+	}
+	for _, detail := range []bool{false, true} {
+		v := BuildView(&config.Config{}, tk, detail)
+		assert.Equal(t, "active", v.InvocationID)
+		if !detail {
+			assert.Empty(t, v.History)
+			continue
+		}
+		assert.Empty(t, v.History[0].RunOutcome)
+		assert.Equal(t, "blocked", v.History[1].RunOutcome)
+		assert.Equal(t, "needs input", v.History[1].OutcomeReason)
+		assert.Equal(t, "previous", v.History[1].InvocationID)
+		assert.Zero(t, v.History[1].ExitCode)
+	}
+}
+
 // The review column orders by the finish time, so it has to hold still when the
 // markdown is rewritten, and it has to be the same in both projections: the
 // board builds its cards with detail=false and the SSE update with detail=true.

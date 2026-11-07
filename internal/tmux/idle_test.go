@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -277,6 +278,72 @@ func TestIdleLoop(t *testing.T) {
 
 			assert.Equal(t, tt.wantTyped, tm.sent())
 			assert.Equal(t, tt.wantExited, tm.exited)
+		})
+	}
+}
+
+func TestIdleLoopTerminalReported(t *testing.T) {
+	for _, tt := range []struct {
+		name           string
+		action         IdleAction
+		beforeIdle     bool
+		inDecision     bool
+		compactTimeout bool
+	}{
+		{name: "before idle skips checkpoint decision", action: IdleCompact, beforeIdle: true},
+		{name: "during prompt decision suppresses continuation", action: IdlePrompt, inDecision: true},
+		{name: "during compact decision suppresses compaction", action: IdleCompact, inDecision: true},
+		{name: "during compaction suppresses continuation", action: IdleCompact},
+		{name: "during timed out compaction suppresses continuation", action: IdleCompact, compactTimeout: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			p := RunParams{TicketID: "terminal-report", MinDuration: -1, CompactTimeout: 200 * time.Millisecond}
+			channel := ChannelName(p.session(), p.WindowName())
+			compactChannel := p.compactChannel()
+			tm := newStubTmux(channel, compactChannel)
+			var reported atomic.Bool
+			var calls atomic.Int32
+			p.TerminalReported = reported.Load
+			p.OnIdle = func(context.Context, IdleEvent) IdleDecision {
+				calls.Add(1)
+				if tt.inDecision {
+					reported.Store(true)
+				}
+				return IdleDecision{Action: tt.action, Continuation: "must not continue"}
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			done := make(chan error, 1)
+			go func() {
+				code, err := idleLoop(ctx, tm, p, time.Now())
+				assert.Equal(t, 0, code)
+				done <- err
+			}()
+			if tt.beforeIdle {
+				reported.Store(true)
+				// A report alone must neither kill the running agent nor send /exit.
+				time.Sleep(2 * pollInterval)
+				assert.Empty(t, tm.sent())
+			}
+			tm.signal(t, channel)
+			wantTyped := []string{"keys:/exit"}
+			if !tt.beforeIdle && !tt.inDecision {
+				tm.awaitTyped(t, "literal:/compact")
+				reported.Store(true)
+				if !tt.compactTimeout {
+					tm.signal(t, compactChannel)
+				}
+				wantTyped = []string{"literal:/compact", "keys:/exit"}
+			}
+			require.NoError(t, <-done)
+			assert.Equal(t, wantTyped, tm.sent())
+			assert.False(t, tm.killed, "terminal reporting must use normal shutdown, not kill")
+			assert.True(t, tm.exited)
+			if tt.beforeIdle {
+				assert.Zero(t, calls.Load())
+			} else {
+				assert.EqualValues(t, 1, calls.Load())
+			}
 		})
 	}
 }

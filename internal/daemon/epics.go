@@ -8,6 +8,9 @@ import (
 	"github.com/worksonmyai/kontora/internal/ticket"
 )
 
+// epicPromptContext supplies descriptive context for children of any epic,
+// including passive epics. It must not grant supervised implementation authority;
+// that belongs to supervisedInstructions, bound from the invocation's scope.
 func (d *Daemon) epicPromptContext(parentID string) string {
 	if parentID == "" {
 		return ""

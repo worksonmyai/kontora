@@ -1,4 +1,4 @@
-.PHONY: all build test test-race test-scripts lint fmt install clean assets css model-prices
+.PHONY: all build test test-race test-pi-sdk test-scripts lint fmt install clean assets css model-prices
 
 all: build
 
@@ -21,6 +21,9 @@ test:
 
 test-race:
 	go test -race -timeout 5m ./...
+
+test-pi-sdk:
+	node --test internal/daemon/testdata/pi_extension.sdk.test.mjs
 
 test-scripts:
 	./hack/changelog-for-release.test.sh

@@ -7,6 +7,25 @@ export default function (pi) {
   const THRESHOLD = __CHECKPOINT_THRESHOLD__;
   const ENABLED = __CHECKPOINT_ENABLED__;
   const TICKET_ID = process.env.KONTORA_TICKET_ID;
+  // Capture the daemon's invocation, never identities supplied by the model.
+  const RESULT_CONTEXT = {
+    KONTORA_RESULT_VERSION: process.env.KONTORA_RESULT_VERSION,
+    KONTORA_INVOCATION_ID: process.env.KONTORA_INVOCATION_ID,
+    KONTORA_RESULT_TICKET: process.env.KONTORA_RESULT_TICKET,
+    KONTORA_RESULT_STAGE: process.env.KONTORA_RESULT_STAGE,
+    KONTORA_RESULT_FILE: process.env.KONTORA_RESULT_FILE,
+  };
+  const RESULT_ENABLED = Object.values(RESULT_CONTEXT).some((v) => v !== undefined && v !== "");
+  if (RESULT_ENABLED) {
+    for (var key in RESULT_CONTEXT) {
+      if (!RESULT_CONTEXT[key] || !RESULT_CONTEXT[key].trim()) {
+        throw new Error("Missing result execution context: " + key);
+      }
+    }
+    if (RESULT_CONTEXT.KONTORA_RESULT_VERSION !== "1") {
+      throw new Error("Unsupported KONTORA_RESULT_VERSION.");
+    }
+  }
   // Where to publish the "blocked on a question" marker the daemon polls.
   // Empty for a run the daemon does not watch.
   const WAIT_MARKER = __WAIT_MARKER_PATH__;
@@ -22,9 +41,76 @@ export default function (pi) {
   let checkpointPending = false;
   let compactionInFlight = false;
   let continuationPending = false;
+  let deferredContinuation = null;
   let generation = 0;
   let consumedCheckpoints = {};
   let pendingCheckpoint = null;
+  let terminalReported = false;
+  let terminalAtTurnStart = false;
+
+  function terminalResultPresent() {
+    if (!terminalReported && RESULT_ENABLED) {
+      var fs = nodeModule("node:fs");
+      terminalReported = !!(fs && fs.existsSync(RESULT_CONTEXT.KONTORA_RESULT_FILE));
+    }
+    if (terminalReported) {
+      checkpointPending = false;
+      pendingCheckpoint = null;
+      continuationPending = false;
+      deferredContinuation = null;
+    }
+    return terminalReported;
+  }
+
+  // The final-turn abort cancels queued work. Filtering also removes stale
+  // checkpoint text from the ordinary response after result publication.
+  pi.on("context", function (event, _ctx) {
+    if (!terminalResultPresent()) return;
+    return {
+      messages: event.messages.filter((m) => m.customType !== "kontora-continuation"),
+    };
+  });
+
+  pi.on("tool_call", function (_event, _ctx) {
+    if (terminalResultPresent()) {
+      return { block: true, reason: "A terminal Kontora result was published; further tools are blocked.", terminate: true };
+    }
+  });
+
+  pi.on("turn_start", function () {
+    terminalAtTurnStart = terminalResultPresent();
+  });
+
+  pi.on("turn_end", function (event, ctx) {
+    if (ctx.mode !== "tui") return;
+    var message = event.message;
+    if (!message || message.role !== "assistant" || !terminalResultPresent()) return;
+    if (!terminalAtTurnStart && message.content.some((part) => part.type === "toolCall")) return;
+    // Keep the response after the publishing tool, then clear TUI queues even
+    // when that response is truncated or attempts another tool call.
+    // Awaiting idleness here would deadlock the active run.
+    ctx.abort();
+  });
+
+  function continueWhenIdle(text, ctx) {
+    if (terminalResultPresent()) {
+      tryShutdown(ctx);
+      return;
+    }
+    // ExtensionAPI has no queue-cancellation method. Do not put supervised
+    // follow-ups in Pi's queue while the ordinary response can still report.
+    if (RESULT_ENABLED && !ctx.isIdle()) {
+      deferredContinuation = text;
+      continuationPending = true;
+      return;
+    }
+    deferredContinuation = null;
+    continuationPending = true;
+    pi.sendMessage(
+      { customType: "kontora-continuation", content: text, display: false },
+      { triggerTurn: true, deliverAs: "followUp" }
+    );
+  }
 
   // A call to one of these does not return until the human answers, and no pi
   // event says "a question is open", so the tool call is the only signal.
@@ -109,16 +195,21 @@ export default function (pi) {
 
   function tryShutdown(ctx) {
     if (!shutdownRequested) return;
-    if (checkpointPending || compactionInFlight || continuationPending) return;
+    if (!terminalResultPresent() &&
+        (checkpointPending || compactionInFlight || continuationPending)) return;
     ctx.shutdown();
   }
 
   pi.on("agent_settled", function (_event, ctx) {
     shutdownRequested = true;
+    if (!terminalResultPresent() && deferredContinuation !== null) {
+      continueWhenIdle(deferredContinuation, ctx);
+    }
     tryShutdown(ctx);
   });
 
   pi.on("agent_start", function (_event, _ctx) {
+    shutdownRequested = false;
     continuationPending = false;
   });
 
@@ -169,6 +260,7 @@ export default function (pi) {
   pi.on("session_shutdown", function (_event, _ctx) {
     // A callback from the previous generation must not enqueue a message.
     generation++;
+    deferredContinuation = null;
     // A clean /exit while a question is open must not leave the marker behind.
     openQuestions = Object.create(null);
     removeMarker();
@@ -237,6 +329,102 @@ export default function (pi) {
     registerHandoff("summary", "summary set");
   }
 
+  if (RESULT_ENABLED) {
+    pi.registerTool({
+      name: "kontora_result",
+      label: "Stage Result",
+      description:
+        "Report the current Kontora stage as complete or blocked. Summary must be nonblank; " +
+        "blocked also requires a nonblank next_step. Submits literal JSON without a shell. " +
+        "The payload must fit 32,768 UTF-8 bytes and contain no NUL. " +
+        "Reporting does not kill the agent. Do not retry automatically on uncertain submission.",
+      parameters: {
+        type: "object",
+        properties: {
+          outcome: { type: "string", enum: ["complete", "blocked"] },
+          summary: { type: "string", minLength: 1 },
+          next_step: { type: "string" },
+        },
+        required: ["outcome", "summary"],
+        additionalProperties: false,
+      },
+      executionMode: "sequential",
+      execute: async function (_toolCallId, params, signal, _onUpdate, ctx) {
+        var outcome = params && params.outcome;
+        if (outcome !== "complete" && outcome !== "blocked") {
+          throw new Error("Outcome must be complete or blocked.");
+        }
+        var payload = { outcome: outcome, summary: params.summary };
+        if (typeof payload.summary !== "string" || !payload.summary.trim()) {
+          throw new Error("Summary must be a nonblank string.");
+        }
+        if (params.next_step !== undefined) payload.next_step = params.next_step;
+        if (outcome === "blocked" &&
+            (typeof payload.next_step !== "string" || !payload.next_step.trim())) {
+          throw new Error("Blocked results require a nonblank next_step.");
+        }
+        if (payload.next_step !== undefined && typeof payload.next_step !== "string") {
+          throw new Error("next_step must be a string.");
+        }
+        if (payload.summary.includes("\0") ||
+            (payload.next_step !== undefined && payload.next_step.includes("\0"))) {
+          throw new Error("Result text must not contain NUL.");
+        }
+        var json = JSON.stringify(payload);
+        if (Buffer.byteLength(json, "utf8") > 32768) {
+          throw new Error("Result payload must not exceed 32,768 UTF-8 bytes.");
+        }
+        if (signal && signal.aborted) {
+          throw new Error("Submission cancelled; result was not submitted.");
+        }
+        var fs = nodeModule("node:fs");
+        var os = nodeModule("node:os");
+        var path = nodeModule("node:path");
+        if (!fs || !os || !path) throw new Error("Result submission requires Node filesystem support.");
+        var dir = fs.mkdtempSync(path.join(os.tmpdir(), "kontora-result-"));
+        var inputFile = path.join(dir, "payload.json");
+        var uncertain = "The result outcome may be unknown. Inspect " +
+          JSON.stringify(RESULT_CONTEXT.KONTORA_RESULT_FILE) + " before resubmitting. Do not retry automatically.";
+        try {
+          fs.writeFileSync(inputFile, json, { mode: 0o600, flag: "wx" });
+          var result;
+          try {
+            result = await pi.exec("kontora", [
+              "result", "--input-file", inputFile, RESULT_CONTEXT.KONTORA_RESULT_TICKET,
+            ], { cwd: ctx.cwd, signal: signal, timeout: 30_000, maxBuffer: 32768 });
+          } catch (error) {
+            throw new Error("Kontora execution failed: " +
+              (error && error.message ? error.message : String(error)) + ". " + uncertain);
+          }
+          var execution = "Exit status=" + result.code + ", killed=" + !!result.killed +
+            ", truncated=" + !!result.truncated + ". stderr: " + (result.stderr || "(empty)");
+          if (result.code !== 0 || result.killed || result.truncated) {
+            throw new Error("Kontora execution did not succeed. " + execution + "\n" + uncertain);
+          }
+          var ack;
+          try {
+            ack = JSON.parse(result.stdout);
+          } catch (_error) {
+            throw new Error("Invalid Kontora result acknowledgement. " + execution + "\n" + uncertain);
+          }
+          if (!ack || ack.accepted !== true ||
+              ack.invocation_id !== RESULT_CONTEXT.KONTORA_INVOCATION_ID ||
+              ack.outcome !== outcome) {
+            throw new Error("Kontora result acknowledgement does not match. " + execution + "\n" + uncertain);
+          }
+          terminalReported = true;
+          terminalResultPresent();
+          return {
+            content: [{ type: "text", text: "Kontora stage result accepted: " + outcome + "." }],
+            details: ack,
+          };
+        } finally {
+          fs.rmSync(dir, { recursive: true, force: true });
+        }
+      },
+    });
+  }
+
   if (ENABLED && THRESHOLD > 0) {
     pi.registerTool({
       name: "kontora_phase_complete",
@@ -263,6 +451,12 @@ export default function (pi) {
         required: ["completed_phase", "next_phase"],
       },
       execute: function (_toolCallId, params, _signal, _onUpdate, ctx) {
+        if (terminalResultPresent()) {
+          return {
+            content: [{ type: "text", text: "A terminal result was reported; checkpoint continuation is suppressed." }],
+            details: undefined,
+          };
+        }
         var completed = params && params.completed_phase;
         var next = params && params.next_phase;
 
@@ -397,6 +591,7 @@ export default function (pi) {
     });
 
     pi.on("turn_end", function (_event, ctx) {
+      if (terminalResultPresent()) return;
       if (!checkpointPending || !pendingCheckpoint) return;
 
       var cp = pendingCheckpoint;
@@ -429,6 +624,10 @@ export default function (pi) {
           compactionInFlight = false;
 
           if (capturedGen !== generation) return;
+          if (terminalResultPresent()) {
+            tryShutdown(ctx);
+            return;
+          }
 
           pi.appendEntry("kontora-phase-checkpoint", {
             completed_phase: cp.completed_phase,
@@ -441,17 +640,7 @@ export default function (pi) {
               result && result.estimatedTokensAfter,
           });
 
-          if (!continuationPending) {
-            continuationPending = true;
-            pi.sendMessage(
-              {
-                customType: "kontora-continuation",
-                content: continuationText,
-                display: false,
-              },
-              { triggerTurn: true, deliverAs: "followUp" }
-            );
-          }
+          if (!continuationPending) continueWhenIdle(continuationText, ctx);
         },
         onError: function (error) {
           if (callbackHandled) return;
@@ -459,6 +648,10 @@ export default function (pi) {
           compactionInFlight = false;
 
           if (capturedGen !== generation) return;
+          if (terminalResultPresent()) {
+            tryShutdown(ctx);
+            return;
+          }
 
           var msg = error && error.message ? error.message : "";
           var outcome = msg.toLowerCase().indexOf("already compacted") !== -1
@@ -474,17 +667,7 @@ export default function (pi) {
             error: msg,
           });
 
-          if (!continuationPending) {
-            continuationPending = true;
-            pi.sendMessage(
-              {
-                customType: "kontora-continuation",
-                content: continuationText,
-                display: false,
-              },
-              { triggerTurn: true, deliverAs: "followUp" }
-            );
-          }
+          if (!continuationPending) continueWhenIdle(continuationText, ctx);
         },
       });
     });

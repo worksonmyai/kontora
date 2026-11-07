@@ -253,6 +253,7 @@ func TestEpicAgentReviewFeedbackRunsSupervisorAndReturnsToReview(t *testing.T) {
 	h.cfg.MaxConcurrentEpicSupervisors = 4
 	var runs annotationRun
 	d := h.newAnnotationDaemon(func(_ context.Context, p RunnerParams) (process.Result, error) {
+		completeEpicInvocation(t, p)
 		runs.record(p)
 		now := time.Now()
 		return process.Result{ExitCode: 0, StartedAt: now, ExitedAt: now}, nil

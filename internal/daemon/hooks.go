@@ -120,6 +120,10 @@ func (d *Daemon) runStageEndHooksAfterFailure(taskCtx context.Context, p spawnAg
 	if claim := executionFrom(taskCtx); claim != nil && !d.executionCurrent(taskCtx, claim.snapshot, p.filePath) {
 		return
 	}
+	if _, ok := d.readTicketForExit(exitGuardParams{log: p.log, ticketID: p.ticketID, filePath: p.filePath,
+		repoPath: p.repoPath, wtPath: p.wtPath, execution: attempt.run.Execution, claim: executionFrom(taskCtx)}); !ok {
+		return
+	}
 	exitCode := attempt.run.Result.ExitCode
 	hookErr := d.runHooks(taskCtx, p.cfg, p.log, hook.Context{
 		Event:      config.HookStageEnd,
@@ -131,6 +135,7 @@ func (d *Daemon) runStageEndHooksAfterFailure(taskCtx context.Context, p spawnAg
 		Stage:      p.stageName,
 		Agent:      p.agentName,
 		ExitCode:   &exitCode,
+		RunOutcome: attempt.run.Outcome,
 	})
 	if hookErr != nil {
 		p.log.Warn("stage_end hooks failed after a failed run", "stage", p.stageName, "err", hookErr)

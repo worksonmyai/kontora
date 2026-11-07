@@ -2618,8 +2618,8 @@ func TestDaemon_GetStatsRunIndex(t *testing.T) {
 	assert.Equal(t, 3, res.Stages[0].Runs)
 	assert.InDelta(t, 100.0/3, res.Stages[0].RetryPct, 0.01,
 		"one of the three stage runs is a second attempt, counted positionally")
-	assert.InDelta(t, 50.0, res.Totals.FirstPassPct, 0.01,
-		"kon-r1's step1 was retried, kon-r2's was not")
+	assert.Zero(t, res.Totals.FirstPassPct, "legacy history has no verified task completion")
+	assert.Equal(t, 3, res.Stages[0].Unknown)
 
 	agents := map[string]stats.Agent{}
 	for _, a := range res.Agents {

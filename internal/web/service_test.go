@@ -82,10 +82,11 @@ func TestUpdateTicketRequestDescription(t *testing.T) {
 
 func TestTicketInfoFromView_HistoryRun(t *testing.T) {
 	info := TicketInfoFromView(app.View{
-		ID: "t1",
+		ID:           "t1",
+		InvocationID: "active",
 		History: []app.HistoryView{
 			{Stage: "review", Run: 0},
-			{Stage: "review", Run: 1, Model: "haiku", Effort: "low"},
+			{Stage: "review", Run: 1, Model: "haiku", Effort: "low", RunOutcome: "blocked", OutcomeReason: "needs input", InvocationID: "previous"},
 		},
 	})
 	require.Len(t, info.History, 2)
@@ -93,6 +94,18 @@ func TestTicketInfoFromView_HistoryRun(t *testing.T) {
 	assert.Equal(t, 1, info.History[1].Run)
 	assert.Equal(t, "haiku", info.History[1].Model)
 	assert.Equal(t, "low", info.History[1].Effort)
+	assert.Equal(t, "active", info.InvocationID)
+	assert.Empty(t, info.History[0].RunOutcome)
+	assert.Equal(t, "blocked", info.History[1].RunOutcome)
+	assert.Equal(t, "needs input", info.History[1].OutcomeReason)
+	assert.Equal(t, "previous", info.History[1].InvocationID)
+	assert.Zero(t, info.History[1].ExitCode)
+	payload, err := json.Marshal(info)
+	require.NoError(t, err)
+	assert.Contains(t, string(payload), `"invocation_id":"active"`)
+	assert.Contains(t, string(payload), `"invocation_id":"previous"`)
+	assert.Contains(t, string(payload), `"run_outcome":"blocked"`)
+	assert.Contains(t, string(payload), `"outcome_reason":"needs input"`)
 
 	// A run that passed no flag sends no key, so the browser can tell "none
 	// passed" from "passed an empty value".
@@ -100,6 +113,9 @@ func TestTicketInfoFromView_HistoryRun(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotContains(t, string(encoded), "model")
 	assert.NotContains(t, string(encoded), "effort")
+	assert.NotContains(t, string(encoded), "run_outcome")
+	assert.NotContains(t, string(encoded), "outcome_reason")
+	assert.NotContains(t, string(encoded), "invocation_id")
 }
 
 func TestTicketInfoFromView_ClaimedBy(t *testing.T) {

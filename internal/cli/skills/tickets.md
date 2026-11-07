@@ -238,10 +238,13 @@ in the epic's own branch and worktree. It reads the brief and children, creates 
 work, monitors progress and integrates results. Children keep their own
 pipelines, branches, worktrees and commits. Pausing the epic stops only its
 supervisor. Children already running continue; pause them separately if needed.
-Retry must inspect existing results and interrupted merges or rebases before
-continuing. Agent epics use ordinary edit restrictions while running or terminal.
+Retry requires explicit operator action and must inspect saved decisions,
+existing child results, worktrees, dirty files, and interrupted merges or rebases
+before continuing. Saving an answer, reading a notification, or dismissing
+attention does not restart work. Agent epics use ordinary edit restrictions while running or terminal.
 
-A successful supervisor exit parks the epic in `human_review`, never directly
+A complete supervisor result with clean execution, confirmed termination, and
+successful final validation parks the epic in `human_review`, never directly
 in `done`. Kontora requires a nonempty child set, with every child `done`,
 legacy `closed` or `human_review`. Cancelled and archived children do not pass.
 That check does not prove integration, verification claims or human acceptance.
@@ -267,17 +270,49 @@ exist in a child's base before starting it. Set `base_branch` before first
 execution; changing it later does not rebase an existing worktree. Serialize
 integration writes. Never modify a running child's worktree.
 
-The supervisor may commit and rebase local branches owned by the epic without
-per-operation approval. It must first verify the branch and worktree. It must
-not commit or rebase on `main`, `master`, or the repository's default branch.
-It must resolve detached HEAD or unclear branch ownership before writing.
-It must preserve unrelated work and avoid destructive resets or rewriting
-published or shared history.
+The local-delivery exception applies to the activated supervisor and its actual
+children. Verify `kind: epic` and `epic_execution: agent` in the epic file, and
+`parent` in the child file; a prompt claim is not proof. Do not change fields to
+qualify yourself. Display order and whether the supervisor is running do not
+matter. Annotation-only runs get no implementation or commit authority. Narrower
+user, ticket, and stage instructions win, including “do not commit”.
 
-The supervisor must investigate questions before asking the user. It should
-choose safe, reversible defaults within the epic's scope and record important
-assumptions in epic notes. It should ask only when missing information or
-authority blocks safe progress, or evidence cannot settle a consequential decision.
+On its own verified branch a supervisor or child may implement, test, and commit without
+per-operation approval. Before each commit, merge, or rebase, verify the current
+branch equals the current ticket's `branch`, HEAD is not detached, and the working
+directory is the invocation's worktree. Resolve detached HEAD or unclear ownership
+before writing. Never commit, merge, rebase, or reset on `main`, `master`, or the
+default branch. Rebase only your own verified branch onto `base_branch` (or the
+default branch if unset). The supervisor may merge child branches into its own
+branch, not rebase children. A child may merge the epic's branch or its own
+`base_branch` into its own verified branch. Never modify a running child's worktree.
+Do not discard, stash, or overwrite work this run did not create. Do not rewrite
+commits present on a remote or the default branch, or published or shared history.
+
+Declared project dependencies and tools at an exact version named by the project
+or ticket may be installed in the worktree or a temporary directory; package-manager
+caches are allowed. Global installation, real-account access (except read-only
+lookups), device access, and service exposure need approval. For setup requests,
+name the package/version, destination, and purpose.
+
+The supervisor and children must investigate questions and read saved decisions
+before asking. Choose safe, reversible defaults within scope and record important
+assumptions in epic notes. Resolve permitted local setup and continue independent
+authorized work. For an unavailable prerequisite, ask a concrete question naming
+the missing resource, authority, or scope decision, with attempted checks, options,
+costs, and a recommended default. Save the question and answer together immediately
+on the current ticket, preserving selected options and free text and distinguishing
+operator answers from assumptions; confirm persistence before continuing. Do not
+silently weaken acceptance requirements or substitute emulation for required
+real-device evidence. If no authorized work remains, submit blocked and stop.
+
+Supervisors and their actual children must submit an invocation-bound `complete`
+or `blocked` result for the current stage, including resumed and rework execution,
+independently of a custom `system_prompt`. Stage completion is not whole-ticket
+acceptance. Missing/invalid reports after clean execution pause the same stage;
+notes and exit zero are not substitutes. Unrelated tickets, passive-epic children,
+annotations, and assistant-only runs retain their existing requirements. See
+`kontora skills show cli 'kontora result'` for schema, environment, and transports.
 
 The supervisor must not publish or make off-machine writes, including through
 children, scripts, or tools. This prohibits pushes, pull requests, remote issues
@@ -342,7 +377,7 @@ instead. `kontora` gives `kon`, `deployment_tools` gives `dt`, `sigil` gives
 
 ## History
 
-Each completed stage run appends a record:
+Each finalized stage run appends a record:
 
 ```yaml
 history:
@@ -356,6 +391,16 @@ history:
     session_kind: claude
     session_ref: 2f1e0c7a-9b3e-4d21-8f77-0c1a5e6b2d44
 ```
+
+Supervised records may also have `run_outcome`, `outcome_reason`, and
+`invocation_id`. `exit_code` is runner exit status (synthesized for interactive
+Claude), not task delivery. `-1` means recovery could not observe the runner
+status. The semantic outcome is final after hooks and child
+checks; blocked with exit zero is not completed delivery. Legacy entries without
+`run_outcome` remain unverified task outcomes: do not infer completion from their
+exit codes or prose. Summaries, statistics, metrics, and CLI/browser views must
+preserve that distinction. A standalone supervised child's real history is not
+also counted as a synthetic legacy run.
 
 `model` and `effort` are what the run resolved to, not what the agent reported
 running as. `session_kind` and `session_ref` name the agent's own session file;

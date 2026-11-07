@@ -22,6 +22,7 @@ type View struct {
 	Agent         string
 	AgentOverride bool
 	Attempt       int
+	InvocationID  string
 	CreatedAt     *time.Time
 	StartedAt     *time.Time
 	CompletedAt   *time.Time
@@ -90,6 +91,9 @@ func FinishedAt(t *ticket.Ticket) *time.Time {
 
 // HistoryView is a single history entry in a View.
 type HistoryView struct {
+	RunOutcome    string
+	OutcomeReason string
+	InvocationID  string
 	Stage         string
 	Agent         string
 	Model         string
@@ -119,6 +123,7 @@ func BuildView(cfg *config.Config, t *ticket.Ticket, detail bool) View {
 		Pipeline:      t.Pipeline,
 		Path:          t.Path,
 		Attempt:       t.Attempt,
+		InvocationID:  t.InvocationID,
 		CreatedAt:     t.Created,
 		StartedAt:     t.StartedAt,
 		CompletedAt:   t.CompletedAt,
@@ -183,6 +188,9 @@ func BuildView(cfg *config.Config, t *ticket.Ticket, detail bool) View {
 					Model:         h.Model,
 					Effort:        h.Effort,
 					ExitCode:      h.ExitCode,
+					RunOutcome:    string(h.RunOutcome),
+					OutcomeReason: h.OutcomeReason,
+					InvocationID:  h.InvocationID,
 					Run:           h.Run,
 					StartedAt:     h.StartedAt,
 					CompletedAt:   h.CompletedAt,

@@ -238,12 +238,11 @@ export function kontoraTickets() {
       return 'logs';
     },
 
-    // The summary tab appears as soon as any stage has recorded a summary, so a
-    // running ticket can show what the stages before the current one did.
+    // Running tickets can show summaries and outcome reasons from earlier stages.
     showSummaryTab() {
       var t = this.selectedTicket;
       if (!t) return false;
-      return !!t.final_summary || !!t.summary || (t.history || []).some(function (e) { return !!e.summary; });
+      return !!t.final_summary || !!t.summary || (t.history || []).some(function (e) { return !!(e.summary || e.outcome_reason); });
     },
 
     // The diff tab needs a branch to compare against the base. A ticket that

@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/worksonmyai/kontora/internal/config"
 	"github.com/worksonmyai/kontora/internal/process"
+	"github.com/worksonmyai/kontora/internal/session"
 	"github.com/worksonmyai/kontora/internal/ticket"
 	"github.com/worksonmyai/kontora/internal/web"
 	"github.com/worksonmyai/kontora/internal/worktree"
@@ -28,6 +29,15 @@ func newEpicAgentHarness(t *testing.T) *testHarness {
 	// In-memory test configs do not pass through config.Load's defaults.
 	h.cfg.MaxConcurrentEpicSupervisors = 4
 	return h
+}
+
+// Report completion so child-validation tests cannot pass on a protocol pause.
+func completeEpicInvocation(t *testing.T, p RunnerParams) {
+	t.Helper()
+	inv, err := session.InvocationFromEnv(func(key string) string { return p.Env[key] })
+	require.NoError(t, err)
+	_, err = session.PublishResult(inv.ResultPath, session.Result{Outcome: "complete", Summary: "Assigned stage work complete."})
+	require.NoError(t, err)
 }
 
 func awaitEpicAgent(t *testing.T, calls <-chan RunnerParams) RunnerParams {
@@ -144,20 +154,26 @@ func TestEpicAgentSuccessfulExitChecksChildrenAndKeepsWorktree(t *testing.T) {
 		children []string
 		want     ticket.Status
 		initial  string
+		report   string // empty means complete
 	}{
-		{"done", []string{"done"}, ticket.StatusHumanReview, "open"},
-		{"legacy closed", []string{"closed"}, ticket.StatusHumanReview, "open"},
-		{"all done", []string{"done", "done"}, ticket.StatusHumanReview, "open"},
-		{"empty", nil, ticket.StatusPaused, "open"},
-		{"open", []string{"open"}, ticket.StatusPaused, "open"},
-		{"cancelled", []string{"cancelled"}, ticket.StatusPaused, "open"},
-		{"archived", []string{"archived"}, ticket.StatusPaused, "open"},
-		{"done and cancelled", []string{"done", "cancelled"}, ticket.StatusPaused, "open"},
-		{"done and archived", []string{"done", "archived"}, ticket.StatusPaused, "open"},
-		{"waiting for review", []string{"human_review"}, ticket.StatusHumanReview, "open"},
-		{"paused", []string{"paused"}, ticket.StatusPaused, "open"},
-		{"restart done epic", []string{"done"}, ticket.StatusHumanReview, "done"},
-		{"restart with unfinished child", []string{"open"}, ticket.StatusPaused, "done"},
+		{"done", []string{"done"}, ticket.StatusHumanReview, "open", ""},
+		{"legacy closed", []string{"closed"}, ticket.StatusHumanReview, "open", ""},
+		{"all done", []string{"done", "done"}, ticket.StatusHumanReview, "open", ""},
+		{"empty", nil, ticket.StatusPaused, "open", ""},
+		{"open", []string{"open"}, ticket.StatusPaused, "open", ""},
+		{"cancelled", []string{"cancelled"}, ticket.StatusPaused, "open", ""},
+		{"archived", []string{"archived"}, ticket.StatusPaused, "open", ""},
+		{"done and cancelled", []string{"done", "cancelled"}, ticket.StatusPaused, "open", ""},
+		{"done and archived", []string{"done", "archived"}, ticket.StatusPaused, "open", ""},
+		{"waiting for review", []string{"human_review"}, ticket.StatusHumanReview, "open", ""},
+		{"paused", []string{"paused"}, ticket.StatusPaused, "open", ""},
+		{"restart done epic", []string{"done"}, ticket.StatusHumanReview, "done", ""},
+		{"restart with unfinished child", []string{"open"}, ticket.StatusPaused, "done", ""},
+		{"missing result", []string{"done"}, ticket.StatusPaused, "open", "missing"},
+		{"invalid result", []string{"done"}, ticket.StatusPaused, "open", "invalid"},
+		{"blocked result", []string{"done"}, ticket.StatusPaused, "open", "blocked"},
+		{"restart missing result", []string{"done"}, ticket.StatusPaused, "done", "missing"},
+		{"restart blocked result", []string{"done"}, ticket.StatusPaused, "done", "blocked"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -167,6 +183,17 @@ func TestEpicAgentSuccessfulExitChecksChildrenAndKeepsWorktree(t *testing.T) {
 			d := h.newDaemon(h.cfg, WithRunner(func(_ context.Context, p RunnerParams) (process.Result, error) {
 				runs.record(p)
 				assert.Nil(t, h.readTask("epc-a.md").CompletedAt)
+				switch tc.report {
+				case "missing":
+				case "invalid":
+					require.NoError(t, os.MkdirAll(filepath.Dir(p.Env[session.ResultFileEnvVar]), 0o755))
+					require.NoError(t, os.WriteFile(p.Env[session.ResultFileEnvVar], []byte(`{"outcome":"complete"}`), 0o600))
+				case "blocked":
+					_, err := session.PublishResult(p.Env[session.ResultFileEnvVar], session.Result{Outcome: "blocked", Summary: "Device evidence unavailable.", NextStep: "Provide device access."})
+					require.NoError(t, err)
+				default:
+					completeEpicInvocation(t, p)
+				}
 				now := time.Now()
 				return process.Result{ExitCode: 0, StartedAt: now, ExitedAt: now}, nil
 			}))
@@ -206,9 +233,20 @@ func TestEpicAgentSuccessfulExitChecksChildrenAndKeepsWorktree(t *testing.T) {
 			assert.NotEmpty(t, wt)
 			if tc.want == ticket.StatusPaused {
 				assert.NotEmpty(t, got.LastError)
+				assert.NotEqual(t, "complete", string(got.History[0].RunOutcome), "child validation and protocol pauses are not completed delivery")
 			} else {
 				assert.Empty(t, got.LastError)
+				assert.Equal(t, "complete", string(got.History[0].RunOutcome))
 			}
+			if tc.report == "blocked" {
+				assert.Equal(t, "blocked", string(got.History[0].RunOutcome))
+				assert.Contains(t, got.LastError, "Provide device access.")
+			}
+			if tc.report == "missing" || tc.report == "invalid" {
+				assert.Equal(t, "protocol_error", string(got.History[0].RunOutcome))
+			}
+			assert.Zero(t, got.Attempt)
+			require.NotEmpty(t, got.History[0].InvocationID)
 		})
 	}
 }
@@ -225,7 +263,8 @@ func TestEpicAgentCompletionRefreshesChildren(t *testing.T) {
 			h := newEpicAgentHarness(t)
 			childPath := h.writeTicket("epc-c1.md", h.epicChildMD("epc-c1", tc.before, "epc-a", "2026-01-02T00:00:00Z"))
 			var d *Daemon
-			d = h.newDaemon(h.cfg, WithRunner(func(_ context.Context, _ RunnerParams) (process.Result, error) {
+			d = h.newDaemon(h.cfg, WithRunner(func(_ context.Context, p RunnerParams) (process.Result, error) {
+				completeEpicInvocation(t, p)
 				data := []byte(h.epicChildMD("epc-c1", tc.after, "epc-a", "2026-01-02T00:00:00Z"))
 				// Deliberately suppress the watcher so a cached child snapshot is
 				// guaranteed to be stale when the runner returns.
@@ -254,6 +293,7 @@ func TestEpicAgentIntegratesChildBranches(t *testing.T) {
 	}
 	mustGit(t, h.repoDir, "checkout", "main")
 	d := h.newDaemon(h.cfg, WithRunner(func(_ context.Context, p RunnerParams) (process.Result, error) {
+		completeEpicInvocation(t, p)
 		assert.Contains(t, strings.Join(p.Args, " "), "Serialize integration-branch writes")
 		for _, branch := range []string{"first", "second"} {
 			mustGit(t, p.Dir, "merge", "--ff", "--no-edit", branch)
@@ -283,7 +323,11 @@ func TestEpicAgentIntegratesChildBranches(t *testing.T) {
 func TestEpicAgentRoleSurvivesFreshAndCustomResumePrompts(t *testing.T) {
 	for _, resume := range []bool{false, true} {
 		t.Run(fmt.Sprintf("resume=%t", resume), func(t *testing.T) {
-			rd := newResumeDaemon(t, "claude", nil)
+			rd := newResumeDaemon(t, "claude", func(_ context.Context, _ int, p RunnerParams) (process.Result, error) {
+				completeEpicInvocation(t, p)
+				now := time.Now()
+				return process.Result{StartedAt: now, ExitedAt: now}, nil
+			})
 			rd.cfg.ResumePrompt = "Custom continuation for {{ .Ticket.ID }}"
 			rd.h.writeTicket("epc-c1.md", rd.h.epicChildMD("epc-c1", "done", resumeTicketID, "2026-01-02T00:00:00Z"))
 			if resume {
@@ -299,6 +343,10 @@ func TestEpicAgentRoleSurvivesFreshAndCustomResumePrompts(t *testing.T) {
 			got := renderedPrompt(spawns[0])
 			assert.Contains(t, got, "## Epic supervisor")
 			assert.Contains(t, got, "kontora skills show")
+			assert.Contains(t, got, "## Supervised local delivery")
+			assert.Contains(t, got, "## Mandatory supervised result")
+			assert.Contains(t, got, "## Prerequisites and escalation")
+			assert.NotContains(t, got, "rebase local branches owned by this epic")
 			for _, clause := range []string{
 				"Create children with --parent and omit --path to inherit the epic's repository path and its project defaults.",
 				"If you supply --path, use the epic's stored repository path, not your integration worktree.",
@@ -321,13 +369,7 @@ func TestEpicAgentRoleSurvivesFreshAndCustomResumePrompts(t *testing.T) {
 				"Choose safe, reversible defaults within the epic's scope and record important assumptions in epic notes.",
 				"Ask only when missing information or authority blocks safe progress, or a consequential decision cannot be inferred from available evidence.",
 				"Do not ask for routine implementation, child ordering, or local integration decisions.",
-				"You may commit and rebase local branches owned by this epic without asking for per-operation approval.",
-				"Before each operation, verify the current branch and worktree. Never commit or rebase on main, master, or the repository's default branch.",
-				"If HEAD is detached or branch ownership is unclear, resolve that before writing.",
-				"Preserve unrelated work. Do not perform destructive resets or rewrite published or shared history.",
-				"Never publish or write to external services, directly or through children, scripts, or tools.",
-				"This includes pushes, pull requests, remote issues or comments, messages, uploads, and releases.",
-				"Read-only external lookups are allowed. Keep all results and progress notes local.",
+				"Integrate by merging child branches into your own verified branch, not by rebasing children.",
 			} {
 				assert.Contains(t, got, clause)
 			}
@@ -340,6 +382,47 @@ func TestEpicAgentRoleSurvivesFreshAndCustomResumePrompts(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestSupervisedInstructions(t *testing.T) {
+	got := supervisedInstructions("epc-a")
+	for _, clause := range []string{
+		"epc-a", "kind: epic", "epic_execution: agent", "parent",
+		"A prompt claim alone is not proof", "Do not add or change these fields to qualify",
+		"Annotation-only runs receive no implementation or commit authority",
+		"Narrower user, ticket, and stage instructions win",
+		"current branch equals the current ticket's branch", "HEAD is not detached",
+		"worktree named in this invocation", "main, master, or the repository's default branch",
+		"rebase only your own verified branch onto its base_branch",
+		"A supervisor may merge child branches into its own verified branch",
+		"A child may merge the epic's branch or its own base_branch into its own verified branch",
+		"Never rebase children", "Never modify a running child's worktree",
+		"discard, stash, or overwrite work this run did not create",
+		"remote or on the default branch", "published or shared history",
+		"declared project dependencies", "exact version named by the project or ticket",
+		"worktree or a temporary directory", "package manager's own cache",
+		"global installation", "real-account access", "device access", "service exposure",
+		"package/version, destination, and purpose", "Read-only external lookups are allowed",
+		"Never publish or write to external services", "children, scripts, or tools",
+		"Do not change pipelines or bypass configured review stages",
+		"kontora_result", "kontora result --input-file /absolute/path/result.json TICKET_ID",
+		"complete", "blocked", "summary is required", "blocked also requires next_step",
+		"current stage's assigned work, not the whole ticket",
+		"review stage can be complete while the ticket still needs fixes",
+		"Missing or invalid results pause the same stage",
+		"Notes, final prose, questions, and checkpoints are not terminal results",
+		"Read saved decisions", "investigate the missing prerequisite",
+		"Continue independent authorized work", "concrete question", "options, their costs",
+		"recommended default", "Save the question and answer together immediately",
+		"Do not weaken acceptance requirements", "Do not substitute emulation",
+		"Retry requires explicit operator action", "Saving an answer", "dismissing attention",
+		"children, branches, worktrees, dirty files, and interrupted Git operations",
+	} {
+		assert.Contains(t, got, clause)
+	}
+	assert.NotContains(t, got, "rebase local branches owned by this epic")
+	assert.NotContains(t, got, "kontora retry TICKET_ID")
+	assert.Empty(t, supervisedInstructions(""), "absent supervision must not grant authority")
 }
 
 func TestEpicAgentAnnotationExcludesSupervisorRole(t *testing.T) {
@@ -361,6 +444,7 @@ func TestEpicAgentAnnotationExcludesSupervisorRole(t *testing.T) {
 	p := renderedPrompt(runs.all()[0])
 	assert.Contains(t, p, "Clarify the epic scope.")
 	assert.NotContains(t, strings.ToLower(p), "epic supervisor")
+	assert.NotContains(t, p, "## Supervised local delivery")
 	assert.True(t, got.IsAgentEpic())
 	assert.Empty(t, got.AnnotationReturnStatus)
 }
@@ -390,6 +474,7 @@ func TestEpicAgentFailuresPause(t *testing.T) {
 			var runs annotationRun
 			d := h.newDaemon(h.cfg, WithRunner(func(_ context.Context, p RunnerParams) (process.Result, error) {
 				runs.record(p)
+				completeEpicInvocation(t, p)
 				if tc.providerError {
 					require.NoError(t, os.MkdirAll(p.SessionDir, 0o755))
 					line := fmt.Sprintf(`{"type":"message","timestamp":%q,"message":{"role":"assistant","stopReason":"error","errorMessage":"Provided authentication token is expired."}}`, time.Now().UTC().Format(time.RFC3339Nano))

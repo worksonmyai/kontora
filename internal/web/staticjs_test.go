@@ -16,6 +16,12 @@ func TestStaticIndexJS(t *testing.T) {
 	}
 }
 
+func TestStatsOutcomesJS(t *testing.T) {
+	if out, err := nodeTest(t, "stats_outcomes.test.mjs").CombinedOutput(); err != nil {
+		t.Fatalf("node stats outcome tests failed:\n%s", out)
+	}
+}
+
 // TestUIMixinKeys is its own node run because index_html.test.mjs drives the
 // merged component, and this one has to see the mixins before they are merged.
 func TestUIMixinKeys(t *testing.T) {

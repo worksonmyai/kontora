@@ -106,6 +106,7 @@ var handlers = map[string]func(){
 	"stats":               cmdStats,
 	"estimate-compaction": cmdEstimateCompaction,
 	"phase-complete":      cmdPhaseComplete,
+	"result":              cmdResult,
 	"review":              func() { cmdPlannotator("review") },
 	"annotate":            func() { cmdPlannotator("annotate") },
 	"attach":              cmdAttach,
@@ -1118,6 +1119,20 @@ func cmdPhaseComplete() {
 	}
 
 	if err := cli.PhaseComplete(os.Getenv(cli.CheckpointFileEnvVar), *completed, *next, time.Now(), os.Stdout); err != nil {
+		log.Fatal(err)
+	}
+}
+
+// cmdResult publishes a stage result using only the daemon-supplied invocation
+// environment. It deliberately reads no config and performs no ticket resolution.
+func cmdResult() {
+	fs := flag.NewFlagSet("result", flag.ExitOnError)
+	inputFile := fs.String("input-file", "", "absolute path to result JSON (default: stdin)")
+	ticketID := parseTicketFlags(fs, os.Args[2:])
+	if ticketID == "" {
+		log.Fatal("ticket ID is required: kontora result [--input-file /absolute/path/result.json] TICKET_ID")
+	}
+	if err := cli.ReportResult(ticketID, *inputFile, os.Stdin, os.Stdout, os.Getenv); err != nil {
 		log.Fatal(err)
 	}
 }

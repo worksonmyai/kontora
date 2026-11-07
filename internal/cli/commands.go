@@ -121,6 +121,9 @@ var Commands = []Command{
 		{Name: "thresholds", Desc: "Comma-separated token thresholds", Value: "text"},
 		{Name: "top", Desc: "Number of top sessions to show", Value: "text"},
 	}},
+	{Name: "result", Group: "Other", Desc: "Report a terminal stage result for the current invocation", TicketID: true, Flags: []Flag{
+		{Name: "input-file", Desc: "Absolute path to result JSON (default: stdin)", Value: "path"},
+	}},
 	{Name: "phase-complete", Group: "Other", Desc: "Signal a phase boundary from inside a checkpointing run", TicketID: true, Flags: []Flag{
 		{Name: "completed", Desc: "The phase that just finished", Value: "text"},
 		{Name: "next", Desc: "The phase to begin next", Value: "text"},

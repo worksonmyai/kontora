@@ -158,9 +158,23 @@ func (t *Ticket) validateEpicExecution() error {
 	return nil
 }
 
+// RunOutcome is the semantic result of a run, independent of the runner's exit
+// code. An empty value means legacy/unverified history, never verified complete.
+type RunOutcome string
+
+const (
+	RunOutcomeComplete      RunOutcome = "complete"
+	RunOutcomeBlocked       RunOutcome = "blocked"
+	RunOutcomeProtocolError RunOutcome = "protocol_error"
+	RunOutcomeFailed        RunOutcome = "failed"
+)
+
 type HistoryEntry struct {
-	Stage string `yaml:"stage"`
-	Agent string `yaml:"agent"`
+	RunOutcome    RunOutcome `yaml:"run_outcome,omitempty" json:"run_outcome,omitempty"`
+	OutcomeReason string     `yaml:"outcome_reason,omitempty" json:"outcome_reason,omitempty"`
+	InvocationID  string     `yaml:"invocation_id,omitempty" json:"invocation_id,omitempty"`
+	Stage         string     `yaml:"stage"`
+	Agent         string     `yaml:"agent"`
 	// Model and Effort are what Kontora passed the agent, resolved from the
 	// stage override and the agent's own default, not what the agent reported
 	// running as. Empty means Kontora passed no flag and the agent used its own
@@ -225,6 +239,8 @@ type Ticket struct {
 	StartedAt     *time.Time `yaml:"started_at"`
 	CompletedAt   *time.Time `yaml:"completed_at"`
 	Branch        string     `yaml:"branch"`
+	// InvocationID identifies the active invocation, not the most recent run.
+	InvocationID string `yaml:"invocation_id,omitempty" json:"invocation_id,omitempty"`
 	// BaseBranch names the branch the work branch starts from. Empty means the
 	// repository's default branch.
 	BaseBranch string         `yaml:"base_branch"`

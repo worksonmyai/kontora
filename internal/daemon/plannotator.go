@@ -391,6 +391,14 @@ func (d *Daemon) runReworkStage(ctx, taskCtx context.Context, cfg *config.Config
 		rendered += buildOperationalAppendix(t.ID, filePath, wtPath, true, "")
 	}
 
+	p := spawnAgentParams{cfg: cfg, ctx: ctx, log: log, ticketID: ticketID, filePath: filePath, agentName: agentName,
+		stageName: config.ReworkStageName, wtPath: wtPath, repoPath: repoPath, branch: branch, run: stageRunIndex(t, config.ReworkStageName), agentCfg: agentCfg}
+	epicID, scopeErr := d.invocationScope(t, p)
+	if scopeErr != nil {
+		d.pauseExecution(taskCtx, t, filePath, scopeErr.Error())
+		return
+	}
+	rendered += supervisedInstructions(epicID)
 	// Rework spawns its agent here rather than through runAgentOnce, so the
 	// stage model and effort are resolved on this path too.
 	model := stageCfg.Model.For(agentName, agentCfg)
@@ -413,14 +421,17 @@ func (d *Daemon) runReworkStage(ctx, taskCtx context.Context, cfg *config.Config
 		// records a run, so a rework blocked by its own hook must not be the one
 		// case missing from kontora.stage.runs.
 		d.recordReworkRun(taskCtx, agentName, t.Pipeline, process.Result{}, hookErr, 0)
-		if taskCtx.Err() == nil {
-			d.pauseExecution(taskCtx, t, filePath, hookErr.Error())
-		}
+		d.pauseReworkUnlessCancelled(taskCtx, t, filePath, hookErr)
 		return
 	}
 
 	params := d.buildRunnerParams(cfg, agentCfg, stageCfg, binaryPath, args, wtPath, ticketID,
 		agentName, config.ReworkStageName, config.ReworkStageName, sessionID, checkpointSetup{})
+	execution, bindErr := d.bindExecution(t, p, &params, epicID)
+	if bindErr != nil {
+		d.pauseExecution(taskCtx, t, filePath, "persist rework invocation: "+bindErr.Error())
+		return
+	}
 	runIndex := stageRunIndex(t, config.ReworkStageName)
 	// Rework always opens a session of its own, so nothing in it belongs to an
 	// earlier run and the scope carries no prior usage.
@@ -430,6 +441,7 @@ func (d *Daemon) runReworkStage(ctx, taskCtx context.Context, cfg *config.Config
 	// spawnAgentRun, so it records its own stage run. Without this every
 	// built-in rework run would be invisible.
 	started := time.Now()
+	logStart := fileSize(params.LogFile)
 	result, runnerErr := d.runner(taskCtx, params)
 	if errors.Is(runnerErr, process.ErrTerminationUncertain) {
 		retainOrdinaryReservation(taskCtx)
@@ -437,19 +449,32 @@ func (d *Daemon) runReworkStage(ctx, taskCtx context.Context, cfg *config.Config
 		return
 	}
 	d.clearLiveRun(ticketID)
-	d.recordReworkRun(taskCtx, agentName, t.Pipeline, result, runnerErr, time.Since(started))
+	if execution == nil {
+		d.recordReworkRun(taskCtx, agentName, t.Pipeline, result, runnerErr, time.Since(started))
+	}
+	run := agentRun{Result: result, Model: effModel, Effort: effEffort, Execution: execution}
+	defer func() {
+		d.recordStoppedInvocation(ctx, taskCtx, filePath, agentName, config.ReworkStageName, runIndex, run)
+	}()
+	failure := ""
+	if runnerErr != nil {
+		failure = "rework: runner failed: " + runnerErr.Error()
+		run.ForcePause = true
+	}
+	classifyExecution(execution, &run, failure)
 	stageEndCtx := reworkHookCtx
 	stageEndCtx.Event = config.HookStageEnd
 	stageEndCtx.ExitCode = &result.ExitCode
-
-	guard := exitGuardParams{
-		log: log, ticketID: ticketID, filePath: filePath, repoPath: repoPath, wtPath: wtPath,
-		execution: executionFrom(taskCtx), snapshot: t,
-	}
-	if runnerErr != nil && taskCtx.Err() == nil {
+	stageEndCtx.RunOutcome = run.Outcome
+	guard := exitGuardParams{log: log, ticketID: ticketID, filePath: filePath, repoPath: repoPath, wtPath: wtPath,
+		execution: execution, claim: executionFrom(taskCtx), snapshot: t}
+	if taskCtx.Err() == nil {
 		if _, ok := d.readTicketForExit(guard); !ok {
 			return
 		}
+	}
+
+	if execution == nil && runnerErr != nil && taskCtx.Err() == nil {
 		log.Error("rework: runner failed", "err", runnerErr)
 		d.killTaskWindow(ticketID)
 		// The stage_start hooks have run, so their counterpart runs on this path
@@ -465,17 +490,26 @@ func (d *Daemon) runReworkStage(ctx, taskCtx context.Context, cfg *config.Config
 	usage, usageComplete := d.materializeAgentLogs(log, params, stageEventsPath(cfg, ticketID, config.ReworkStageName, runIndex), scope)
 	d.recordTokens(taskCtx, config.ReworkStageName, agentName, usage, usageComplete)
 	sessionKind, sessionRef := runSessionRef(cfg, ticketID, params, scope.startedAt)
+	run.SessionKind, run.SessionRef = sessionKind, sessionRef
+	validated := d.validateAgentAttempt(taskCtx, p, params, logStart, scope.startedAt, run)
+	if !validated.ok {
+		d.runStageEndHooksAfterFailure(taskCtx, p, validated)
+		d.pauseExecution(taskCtx, t, filePath, validated.pauseReason)
+		return
+	}
+	run = validated.run
+	stageEndCtx.RunOutcome = run.Outcome
 
-	if taskCtx.Err() != nil {
-		if ctx.Err() != nil {
-			log.Warn("rework: interrupted by shutdown")
-			return
-		}
-		log.Info("rework: interrupted by user")
+	if reworkInterrupted(ctx, taskCtx, log) {
 		return
 	}
 
 	if _, ok := d.readTicketForExit(guard); !ok {
+		return
+	}
+	run.FinalMessage = finalAssistantMessage(log, params, scope.startedAt)
+	if err := d.beginFinalization(cfg, execution, run); err != nil {
+		log.Error("persist rework finalization", "err", err)
 		return
 	}
 	hookErr := d.runHooks(taskCtx, cfg, log, stageEndCtx)
@@ -484,72 +518,7 @@ func (d *Daemon) runReworkStage(ctx, taskCtx context.Context, cfg *config.Config
 		return
 	}
 
-	finalMessage := finalAssistantMessage(log, params, scope.startedAt)
-	t2, err := d.patchExecution(taskCtx, t, filePath, func(t2 *ticket.Ticket) error {
-		summary := runSummary(t2.Summary, finalMessage)
-		history := t2.History
-		history = append(history, ticket.HistoryEntry{
-			Stage:       config.ReworkStageName,
-			Agent:       agentName,
-			Model:       effModel,
-			Effort:      effEffort,
-			ExitCode:    result.ExitCode,
-			Run:         runIndex,
-			StartedAt:   t2.StartedAt,
-			CompletedAt: &result.ExitedAt,
-			Summary:     summary,
-			SessionKind: sessionKind,
-			SessionRef:  sessionRef,
-		})
-		_ = t2.SetField("history", history)
-		_ = t2.SetField("summary", summary)
-
-		switch {
-		case result.ExitCode != 0:
-			_ = t2.SetField("status", string(ticket.StatusPaused))
-			_ = t2.SetField("last_error", fmt.Sprintf("rework agent exited with code %d", result.ExitCode))
-			log.Warn("rework paused", "exit_code", result.ExitCode)
-		case hookErr != nil:
-			// The rework itself succeeded, so the hook decides the outcome alone.
-			_ = t2.SetField("status", string(ticket.StatusPaused))
-			_ = t2.SetField("last_error", hookErr.Error())
-			appendSystemNote(t2, hookErr.Error())
-		default:
-			_ = t2.SetField("status", string(ticket.StatusHumanReview))
-			_ = t2.SetField("last_error", "")
-			log.Info("rework completed, routed back to human_review", "branch", t2.Branch)
-		}
-
-		return nil
-	})
-	if err != nil {
-		log.Error("rework: write failed", "phase", "exit", "err", err)
-		return
-	}
-
-	if result.ExitCode == 0 && hookErr == nil {
-		d.killTaskWindow(ticketID)
-	}
-
-	// Rework is the successful end of a review round, so the ticket-level
-	// summary is regenerated from the history this run just extended. It runs
-	// on the daemon's context, off this goroutine, for the reasons in
-	// startFinalSummary.
-	if result.ExitCode == 0 && hookErr == nil {
-		params := finalSummaryParams{
-			log:       log,
-			cfg:       cfg,
-			ticketID:  ticketID,
-			filePath:  filePath,
-			agentName: agentName,
-			dir:       repoPath,
-			tkt:       finalSummaryTicket{Title: t2.Title(), Body: t2.Body},
-			runs:      eligibleFinalSummaryRuns(t2),
-			status:    t2.Status,
-			expected:  t2.Clone(),
-		}
-		d.background.Go(func() { d.runFinalSummary(ctx, params) })
-	}
+	d.finalizeRework(ctx, taskCtx, p, run, hookErr, guard)
 }
 
 // recordReworkRun reports the built-in rework stage's run, matching what

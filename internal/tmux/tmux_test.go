@@ -14,6 +14,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/worksonmyai/kontora/internal/process"
 )
 
 // testSession groups windows on the isolated test server set up by TestMain.
@@ -418,13 +419,15 @@ func TestWriteInteractiveWrapper_PathAppendFollowsEnvExport(t *testing.T) {
 
 func TestWriteStandardWrapper(t *testing.T) {
 	cases := []struct {
-		name     string
-		env      map[string]string
-		pathDirs []string
-		wantPath string
+		name               string
+		env                map[string]string
+		pathDirs           []string
+		wantPath           string
+		requireTermination bool
 	}{
 		{name: "no env"},
 		{name: "with env", env: map[string]string{"KEY": "value"}},
+		{name: "required termination disables debug shell", requireTermination: true},
 		{
 			name:     "with path dirs",
 			pathDirs: []string{"/home/u/.local/bin"},
@@ -434,7 +437,7 @@ func TestWriteStandardWrapper(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			path, err := writeStandardWrapper([]string{"echo", "hello"}, "/tmp/exit", "", tc.env, tc.pathDirs)
+			path, err := writeStandardWrapper([]string{"echo", "hello"}, "/tmp/exit", "", tc.env, tc.pathDirs, tc.requireTermination)
 			require.NoError(t, err)
 			defer os.Remove(path)
 
@@ -445,7 +448,11 @@ func TestWriteStandardWrapper(t *testing.T) {
 			assert.Contains(t, script, "'echo' 'hello'")
 			assert.Contains(t, script, "_EC=$?")
 			assert.Contains(t, script, "echo $_EC > '/tmp/exit'")
-			assert.Contains(t, script, `exec "${SHELL:-/bin/sh}"`)
+			if tc.requireTermination {
+				assert.NotContains(t, script, `exec "${SHELL:-/bin/sh}"`)
+			} else {
+				assert.Contains(t, script, `exec "${SHELL:-/bin/sh}"`)
+			}
 			for k, v := range tc.env {
 				assert.Contains(t, script, fmt.Sprintf("export %s='%s'", k, v))
 			}
@@ -487,12 +494,15 @@ func TestRunExitCode(t *testing.T) {
 	skipIfNoTmux(t)
 
 	cases := []struct {
-		name         string
-		binary       string
-		wantExitCode int
+		name               string
+		binary             string
+		wantExitCode       int
+		requireTermination bool
 	}{
-		{"success", "true", 0},
-		{"failure", "false", 1},
+		{"success", "true", 0, false},
+		{"failure", "false", 1, false},
+		{"required success", "true", 0, true},
+		{"required failure", "false", 1, true},
 	}
 
 	for _, tc := range cases {
@@ -500,13 +510,20 @@ func TestRunExitCode(t *testing.T) {
 			ticketID := "test-r-" + tc.name + "-" + randomSuffix()
 			t.Cleanup(func() { _ = KillWindow(testSession, ticketID) })
 			result, err := Run(context.Background(), RunParams{
-				SessionName: testSession,
-				Binary:      tc.binary,
-				Dir:         t.TempDir(),
-				TicketID:    ticketID,
+				SessionName:        testSession,
+				Binary:             tc.binary,
+				Dir:                t.TempDir(),
+				TicketID:           ticketID,
+				RequireTermination: tc.requireTermination,
 			})
 			require.NoError(t, err)
 			assert.Equal(t, tc.wantExitCode, result.ExitCode)
+			if tc.requireTermination {
+				assert.Equal(t, process.TerminationWindowGone, result.Termination)
+				present, inspectErr := InspectWindow(testSession, ticketID)
+				require.NoError(t, inspectErr)
+				assert.False(t, present)
+			}
 			assert.False(t, result.StartedAt.IsZero(), "StartedAt is zero")
 			assert.False(t, result.ExitedAt.IsZero(), "ExitedAt is zero")
 		})
@@ -559,11 +576,14 @@ func TestRunLogCapture(t *testing.T) {
 	skipIfNoTmux(t)
 
 	for _, tc := range []struct {
-		name   string
-		locale string
+		name               string
+		locale             string
+		requireTermination bool
+		wantCode           int
 	}{
 		{name: "inherited locale"},
 		{name: "C locale", locale: "C"},
+		{name: "required failure retains logs not shell", requireTermination: true, wantCode: 7},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if tc.locale != "" {
@@ -578,15 +598,19 @@ func TestRunLogCapture(t *testing.T) {
 			t.Cleanup(func() { _ = KillWindow(testSession, ticketID) })
 
 			result, err := Run(context.Background(), RunParams{
-				SessionName: testSession,
-				Binary:      "sh",
-				Args:        []string{"-c", "echo RUNNER_LOG_TEST; sleep 1"},
-				Dir:         dir,
-				TicketID:    ticketID,
-				LogFile:     logPath,
+				SessionName:        testSession,
+				Binary:             "sh",
+				Args:               []string{"-c", fmt.Sprintf("echo RUNNER_LOG_TEST; sleep 1; exit %d", tc.wantCode)},
+				Dir:                dir,
+				TicketID:           ticketID,
+				LogFile:            logPath,
+				RequireTermination: tc.requireTermination,
 			})
 			require.NoError(t, err)
-			assert.Equal(t, 0, result.ExitCode)
+			assert.Equal(t, tc.wantCode, result.ExitCode)
+			if tc.requireTermination {
+				assert.Equal(t, process.TerminationWindowGone, result.Termination)
+			}
 
 			data, err := os.ReadFile(logPath)
 			require.NoError(t, err)

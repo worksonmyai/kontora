@@ -108,7 +108,8 @@ Creation and initialization resolve actual membership themselves.
 The supervisor runs standalone, without a pipeline, in the epic's own branch and worktree.
 Children retain their own pipelines, branches, worktrees and commits. Pause stops only the supervisor;
 running children continue. Agent epics use ordinary edit restrictions while
-running or terminal. Successful supervisor exit parks the epic in `human_review`,
+running or terminal. A complete supervisor result with clean execution, confirmed
+termination, and successful final validation parks the epic in `human_review`,
 never directly in `done`. Kontora requires a nonempty child set, with every child
 `done`, legacy `closed` or `human_review`. Cancelled and archived children do not
 pass. This does not prove integration, verification claims or human acceptance.
@@ -117,12 +118,30 @@ The epic records supervisor history, summaries, logs, activity and sessions.
 
 Supervisors use `max_concurrent_epic_supervisors`, default `4`, separately from
 worker capacity. This permits four additional agent processes. Dependencies
-control scheduling, not the commits present in a child's Git base. The supervisor
-may commit and rebase local branches owned by the epic without per-operation
-approval, but never on `main`, `master`, or the repository's default branch.
-The supervisor must investigate questions before asking the user. It must not
-publish or write to external services, including through children or tools.
-These are agent instructions, not runtime enforcement.
+control scheduling, not the commits present in a child's Git base. Local delivery
+is limited to an activated supervisor and its actual children, after verification
+of ticket fields, the current ticket's branch, non-detached HEAD, and invocation
+worktree. Narrower user, ticket, and stage instructions win; annotation runs get
+no implementation authority. A run may commit on its own verified branch and
+rebase only that branch onto its base (default branch if unset). A supervisor may
+merge child branches into its own branch, not rebase children; a child may merge
+the epic's branch or its own base into its own branch. Never write on `main`,
+`master`, or the default branch, modify a running child's worktree, discard
+unrelated work, or rewrite remote/default-branch or published/shared history.
+Declared dependencies and project/ticket-pinned tools may be set up in worktrees
+or temporary directories (including package-manager caches). Global installation,
+real-account/device access, and service exposure require approval.
+
+Supervisors and children must investigate prerequisites, reuse saved decisions,
+resolve permitted local setup, and continue independent work. Escalations name
+attempted checks, a concrete resource/authority/scope question, options, costs,
+and a recommended default. Save answers immediately. Do not silently weaken
+requirements or replace required real-device evidence with emulation. If no
+authorized work remains, submit blocked. Retry requires explicit operator action;
+saving an answer, reading a notification, or dismissing attention does not restart
+execution. Publication and off-machine writes remain prohibited, including through
+children, scripts, or tools; read-only lookups are allowed. These authority limits
+are agent instructions, not an OS security boundary.
 Supervisor prompts prohibit changing, clearing or replacing child pipelines and
 editing pipeline definitions, stage definitions or project pipeline defaults.
 Supervisors must omit pipeline overrides when creating children. They must not bypass the
@@ -137,6 +156,39 @@ See [Epics](tickets.md#epics) for integration rules and safety limits.
 Upgrade every daemon and client sharing the ticket directory before activation.
 Older versions treat all epics as passive and can overwrite supervisor status.
 Do not run mixed versions against activated epics.
+
+### Supervised outcomes and recovery
+
+Activated epic supervisors and their actual children, including child rework,
+require invocation-bound `complete` or `blocked` results. This is not an additional
+HTTP lifecycle endpoint: agents use Pi's `kontora_result` or `kontora result`
+with daemon-bound execution context. See [schema, environment, and CLI transport](cli.md#supervised-results).
+Unrelated tickets, passive-epic children, annotations, and assistant-only runs
+retain their existing result requirements. Completing a stage is not whole-ticket
+completion or human acceptance.
+
+Blocked results and missing/invalid results after a clean supervised run pause
+the same stage, retaining worktree and retry count. Complete reports do not
+override execution/provider failure, hooks, or child validation. History exposes
+optional `run_outcome`, `outcome_reason`, and `invocation_id` separately from
+`exit_code` (runner exit status, or `-1` when recovery could not observe it).
+Outcomes are final after hooks and child checks.
+Rows without semantic outcomes are legacy, unverified task outcomes; exit zero
+or old prose must not be reinterpreted as verified completion. The same distinction
+applies to summaries, statistics, and metrics. Standalone supervised runs with
+real history are not also counted as synthetic legacy runs.
+
+Recovery reconciles invocation metadata, reports, and finalization before
+replacement. It confirms termination first; uncertainty retains reservations and
+prevents branch reuse. A marker precedes hooks, and a replayable transition is
+persisted after hooks and child checks. Replay uses invocation identity to avoid
+duplicate history and does not rerun hooks. Unknown hook effects pause for
+inspection. Atomic ticket replacement must succeed before metadata is retired.
+Foreign ownership and operator lifecycle changes take precedence. See
+[recovery rules](configuration.md#supervised-recovery) for all interrupted states.
+This covers daemon-process recovery, not exactly-once shell effects, exactly-once
+telemetry across restart, or host-power-loss durability. Upgrade CLI and daemon
+together; do not restart live epics or migrate ticket state as part of rollout.
 
 ### Companion
 

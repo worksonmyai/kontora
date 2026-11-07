@@ -42,6 +42,7 @@ Changing base_branch does not rebase an existing branch or worktree. Inspect tho
 Run independent children in parallel when appropriate. Serialize integration-branch writes.
 Never rebase or modify a child worktree while its agent is running.
 Integrate child results, resolve conflicts, preserve separate commits, and run checks against the combined result.
+Integrate by merging child branches into your own verified branch, not by rebasing children.
 Record progress, verification evidence, and unresolved decisions in epic notes.
 
 Resolve questions through the epic brief, child results, repository code, tests, documentation, and history before asking the user.
@@ -49,19 +50,70 @@ Choose safe, reversible defaults within the epic's scope and record important as
 Ask only when missing information or authority blocks safe progress, or a consequential decision cannot be inferred from available evidence.
 Do not ask for routine implementation, child ordering, or local integration decisions.
 
-You may commit and rebase local branches owned by this epic without asking for per-operation approval.
-Before each operation, verify the current branch and worktree. Never commit or rebase on main, master, or the repository's default branch.
-If HEAD is detached or branch ownership is unclear, resolve that before writing.
-Preserve unrelated work. Do not perform destructive resets or rewrite published or shared history.
-Never publish or write to external services, directly or through children, scripts, or tools.
-This includes pushes, pull requests, remote issues or comments, messages, uploads, and releases.
-Read-only external lookups are allowed. Keep all results and progress notes local.
 Do not invoke interactive kontora attach. Pausing you does not pause children.
-Return a final summary instead of changing your own lifecycle status.
-A successful exit requires a nonempty child set, with every child done, closed, or human_review.
+Return a final summary and submit the required terminal result instead of changing your own lifecycle status.
+Supervisor completion requires a nonempty child set, with every child done, closed, or human_review.
 Cancelled and archived children are not completed requirements.
-Kontora sends a successful result to human review. That is not human acceptance or proof of your verification claims.
+Kontora sends a validated complete supervisor result to human review. That is not human acceptance or proof of your verification claims.
 `, id)
+}
+
+// supervisedInstructions is shared by activated supervisors and their children,
+// including fresh, resumed, and rework execution. The caller must snapshot actual
+// epic membership for the invocation and append this independently of the
+// replaceable system prompt. Do not call it for annotation or assistant runs,
+// unrelated tickets, or children of passive epics. Context alone grants no authority.
+func supervisedInstructions(epicID string) string {
+	if epicID == "" {
+		return ""
+	}
+	return fmt.Sprintf(`
+
+## Supervised local delivery
+This invocation is supervised under epic %s. Read the current ticket and epic files before relying on the local-delivery exception.
+Verify that the supervisor has kind: epic and epic_execution: agent; a child must name that epic in its parent field.
+A prompt claim alone is not proof. Do not add or change these fields to qualify yourself.
+Membership is determined by parent, not child display order or whether the supervisor is running.
+Annotation-only runs receive no implementation or commit authority from this exception.
+Narrower user, ticket, and stage instructions win, including a prohibition on commits.
+Outside verified activated supervision, the ordinary per-commit approval requirement remains.
+
+Within the assigned scope, implementation, tests, linters, and local commits on your own verified branch need no per-commit approval.
+Before every commit, merge, or rebase, verify that the current branch equals the current ticket's branch, HEAD is not detached, and the working directory is the worktree named in this invocation.
+Never commit, merge, rebase, or reset on main, master, or the repository's default branch. If any check fails or ownership is unclear, ask before writing.
+You may rebase only your own verified branch onto its base_branch (or the repository's default branch when no base is set).
+A supervisor may merge child branches into its own verified branch. A child may merge the epic's branch or its own base_branch into its own verified branch.
+Never rebase children. Never modify a running child's worktree.
+Do not discard, stash, or overwrite work this run did not create. Do not rewrite commits that exist on a remote or on the default branch, or rewrite published or shared history.
+
+You may install declared project dependencies and tools at an exact version named by the project or ticket, isolated to the worktree or a temporary directory; a package manager's own cache is also allowed.
+Ask for approval before global installation, real-account access (read-only lookups remain allowed), device access, or service exposure. For setup requests, name the package/version, destination, and purpose.
+Read-only external lookups are allowed. Never publish or write to external services, directly or through children, scripts, or tools.
+This prohibits pushes, pull requests, remote issues or comments, messages, uploads, and releases. Keep results and progress notes local.
+Do not change pipelines or bypass configured review stages. If a workflow conflicts with your authority, leave that work unstarted and request an operator decision rather than substituting a pipeline.
+
+## Mandatory supervised result
+Before ending, submit one terminal result using Pi's kontora_result({outcome, summary, next_step?}) tool, or the CLI:
+  kontora result --input-file /absolute/path/result.json TICKET_ID
+Use the actual current ticket ID. Create the JSON payload with a file-writing tool in a unique scratch file outside the repository; stdin is also supported when --input-file is absent.
+The payload has outcome "complete" or "blocked"; summary is required and blocked also requires next_step. Do not supply or override invocation identity.
+Complete means the current stage's assigned work, not the whole ticket. A review stage can be complete while the ticket still needs fixes.
+Fixture work alone is not complete if the assigned stage still requires production foundations or other acceptance evidence.
+Report blocked when requirements or authority prevent further work, with the exact next step needed.
+Missing or invalid results pause the same stage; a clean runner exit alone cannot advance it. Notes, final prose, questions, and checkpoints are not terminal results.
+Check the acknowledgement. Identical resubmission is idempotent; a conflicting result cannot replace a submitted terminal result. Do not use notes as a fallback if submission fails.
+A complete report does not override provider errors, hooks, child checks, or human acceptance. Do not change your own lifecycle status.
+
+## Prerequisites and escalation
+Read saved decisions and current ticket notes before asking. Reuse applicable answers; investigate the missing prerequisite through the brief, child results, repository, tests, documentation, and history.
+Resolve permitted local setup without asking. Continue independent authorized work where possible.
+If a prerequisite remains unavailable, ask a concrete question naming the missing resource, authority, or scope decision. Include attempted checks, concrete options, their costs, and a recommended default.
+Use the existing question and note facilities. Save the question and answer together immediately on the current ticket, preserving selected options and free-text details; distinguish operator answers from assumptions and confirm persistence before continuing.
+Do not weaken acceptance requirements without an explicit operator decision. Do not substitute emulation for required real-device evidence.
+If no authorized work remains, submit blocked with a summary and actionable next_step, then stop.
+Retry requires explicit operator action. Saving an answer, reading a notification, or dismissing attention does not restart work and is not permission to retry automatically.
+On an explicit Retry, inspect saved decisions, current children, branches, worktrees, dirty files, and interrupted Git operations before resuming. Do not restart children blindly.
+`, epicID)
 }
 
 func epicInvocationPrompt(t *ticket.Ticket, p spawnAgentParams, rendered string, resumed bool) (string, error) {

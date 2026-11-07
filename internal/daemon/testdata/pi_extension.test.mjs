@@ -8,7 +8,7 @@
 // Run with:  node --test internal/daemon/testdata/pi_extension.test.mjs
 
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -57,9 +57,12 @@ function createFakeAPI() {
     // Helpers for tests to fire events.
     async fire(event, eventObj, ctx) {
       const hs = handlers[event] || [];
+      let result;
       for (const h of hs) {
-        await h(eventObj || {}, ctx);
+        const next = await h(eventObj || {}, ctx);
+        if (next !== undefined) result = next;
       }
+      return result;
     },
   };
 
@@ -68,12 +71,20 @@ function createFakeAPI() {
 
 function createFakeContext(overrides) {
   let shutdownCalled = 0;
+  let abortCalled = 0;
   let compactCalls = [];
 
   const ctx = {
     cwd: "/scratch/worktree",
+    mode: "tui",
     shutdownCalled: () => shutdownCalled,
+    abortCalled: () => abortCalled,
     compactCalls: () => compactCalls,
+
+    abort() {
+      abortCalled++;
+      return new Promise(() => {});
+    },
 
     shutdown() {
       shutdownCalled++;
@@ -106,7 +117,12 @@ function createFakeContext(overrides) {
 }
 
 // Load the rendered extension source from the Go test wrapper.
-function loadExtension(source, ticketID) {
+const RESULT_ENV_KEYS = [
+  "KONTORA_RESULT_VERSION", "KONTORA_INVOCATION_ID", "KONTORA_RESULT_TICKET",
+  "KONTORA_RESULT_STAGE", "KONTORA_RESULT_FILE",
+];
+
+function loadExtension(source, ticketID, resultEnv = {}) {
   const api = createFakeAPI();
 
   // The extension uses `export default function (pi) { ... }`.
@@ -122,14 +138,20 @@ function loadExtension(source, ticketID) {
 
   // Use Function constructor to avoid strict-mode issues with eval.
   const factory = new Function(fullSource + "\nreturn __factory;")();
-  const previousTicket = process.env.KONTORA_TICKET_ID;
+  const env = { ...resultEnv, KONTORA_TICKET_ID: ticketID };
+  const keys = [...RESULT_ENV_KEYS, "KONTORA_TICKET_ID"];
+  const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
   try {
-    if (ticketID === undefined) delete process.env.KONTORA_TICKET_ID;
-    else process.env.KONTORA_TICKET_ID = ticketID;
+    for (const key of keys) {
+      if (env[key] === undefined) delete process.env[key];
+      else process.env[key] = env[key];
+    }
     factory(api);
   } finally {
-    if (previousTicket === undefined) delete process.env.KONTORA_TICKET_ID;
-    else process.env.KONTORA_TICKET_ID = previousTicket;
+    for (const key of keys) {
+      if (previous[key] === undefined) delete process.env[key];
+      else process.env[key] = previous[key];
+    }
   }
   return api;
 }
@@ -309,6 +331,367 @@ for (const { verb, acknowledgement } of HANDOFFS) {
     assert.equal(api.execCalls.length, 1);
   });
 }
+
+// ─── Tests: invocation-bound terminal results ───────────────────────────────
+
+function resultFixture(t, source = ENABLED_SOURCE) {
+  const dir = mkdtempSync(path.join(tmpdir(), "kontora-result-test-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const env = {
+    KONTORA_RESULT_VERSION: "1",
+    KONTORA_INVOCATION_ID: "invocation-123",
+    KONTORA_RESULT_TICKET: "result-ticket",
+    KONTORA_RESULT_STAGE: "implement",
+    KONTORA_RESULT_FILE: path.join(dir, "result artifact 雪.json"),
+  };
+  const api = loadExtension(source, "different-note-ticket", env);
+  api.execResult = {
+    code: 0, killed: false,
+    stdout: JSON.stringify({ accepted: true, invocation_id: env.KONTORA_INVOCATION_ID, outcome: "complete" }),
+  };
+  const ctx = createFakeContext({ contextUsage: { tokens: 200000 } });
+  const submit = (params = { outcome: "complete", summary: "Done." }, signal) =>
+    api.tools.kontora_result.execute("result-call", params, signal, undefined, ctx);
+  const checkpoint = () => api.tools.kontora_phase_complete.execute(
+    "checkpoint-call", { completed_phase: "Phase 1", next_phase: "Phase 2" }, undefined, undefined, ctx
+  );
+  return { api, ctx, env, submit, checkpoint };
+}
+
+for (const [name, source] of [["enabled", ENABLED_SOURCE], ["disabled", DISABLED_SOURCE], ["zero threshold", renderLocally(0, true)]]) {
+  test(`result registration is independent of checkpoints: ${name}`, (t) => {
+    assert.equal(loadExtension(source, HANDOFF_TICKET).tools.kontora_result, undefined);
+    const { api } = resultFixture(t, source);
+    const tool = api.tools.kontora_result;
+    assert.equal(tool.executionMode, "sequential");
+    assert.deepEqual(tool.parameters.required, ["outcome", "summary"]);
+    assert.deepEqual(tool.parameters.properties.outcome.enum, ["complete", "blocked"]);
+    assert.deepEqual(Object.keys(tool.parameters.properties), ["outcome", "summary", "next_step"]);
+  });
+}
+
+for (const key of RESULT_ENV_KEYS) {
+  for (const value of [undefined, "", " \t"]) {
+    test(`partial result context errors: ${key}=${JSON.stringify(value)}`, (t) => {
+      const { env } = resultFixture(t);
+      assert.throws(() => loadExtension(DISABLED_SOURCE, undefined, { ...env, [key]: value }), new RegExp(key));
+    });
+  }
+}
+
+test("unsupported result context version errors", (t) => {
+  const { env } = resultFixture(t);
+  assert.throws(() => loadExtension(DISABLED_SOURCE, undefined, { ...env, KONTORA_RESULT_VERSION: "2" }), /version/i);
+});
+
+for (const outcome of ["complete", "blocked"]) {
+  test(`result ${outcome} uses a private temporary literal payload and JSON acknowledgement`, async (t) => {
+    const { api, ctx, env, submit } = resultFixture(t, DISABLED_SOURCE);
+    const signal = new AbortController().signal;
+    const payload = {
+      outcome,
+      summary: "  `touch sentinel` $(touch sentinel) 'single' \"double\" \\ $HOME\nUnicode: 雪😀\n",
+      next_step: "Provide the missing resource.\n",
+    };
+    let inputFile;
+    api.execHandler = async (command, args, options) => {
+      assert.equal(command, "kontora");
+      assert.equal(args[0], "result");
+      assert.equal(args[1], "--input-file");
+      assert.equal(args[3], env.KONTORA_RESULT_TICKET);
+      assert.equal(args.length, 4);
+      inputFile = args[2];
+      assert.ok(path.isAbsolute(inputFile));
+      assert.notEqual(inputFile, env.KONTORA_RESULT_FILE);
+      assert.equal(statSync(inputFile).mode & 0o777, 0o600);
+      assert.equal(statSync(path.dirname(inputFile)).mode & 0o777, 0o700);
+      assert.deepEqual(JSON.parse(readFileSync(inputFile, "utf8")), payload);
+      assert.deepEqual(options, { cwd: ctx.cwd, signal, timeout: 30_000, maxBuffer: 32768 });
+      return { code: 0, killed: false, stdout: JSON.stringify({ accepted: true, invocation_id: env.KONTORA_INVOCATION_ID, outcome }) + "\n" };
+    };
+    const result = await submit({ ...payload, invocation_id: "wrong", ticket: "wrong", stage: "wrong", version: 99 }, signal);
+    assert.equal(result.isError, undefined);
+    assert.equal(result.terminate, undefined);
+    assert.match(result.content[0].text, /accepted/);
+    assert.equal(existsSync(path.dirname(inputFile)), false);
+    assert.equal(ctx.shutdownCalled(), 0, "report must not shut down the agent");
+    await api.fire("agent_settled", {}, ctx);
+    assert.equal(ctx.shutdownCalled(), 1, "normal settlement still shuts down");
+  });
+}
+
+for (const [name, params] of [
+  ["missing params", undefined],
+  ["invalid outcome", { outcome: "done", summary: "Done" }],
+  ["empty summary", { outcome: "complete", summary: "" }],
+  ["blank summary", { outcome: "complete", summary: " \n\t" }],
+  ["non-string summary", { outcome: "complete", summary: 42 }],
+  ["missing next step", { outcome: "blocked", summary: "Blocked" }],
+  ["blank next step", { outcome: "blocked", summary: "Blocked", next_step: " \n" }],
+  ["non-string next step", { outcome: "complete", summary: "Done", next_step: 42 }],
+  ["NUL summary", { outcome: "complete", summary: "a\0b" }],
+  ["NUL next step", { outcome: "blocked", summary: "Blocked", next_step: "a\0b" }],
+  ["oversized UTF-8", { outcome: "complete", summary: "😀".repeat(8192) }],
+  ["oversized escaped JSON", { outcome: "complete", summary: "\n".repeat(16384) }],
+]) {
+  test(`result rejects ${name} without execution`, async (t) => {
+    const { api, ctx } = resultFixture(t);
+    await assert.rejects(() => api.tools.kontora_result.execute("call", params, undefined, undefined, ctx));
+    assert.equal(api.execCalls.length, 0);
+  });
+}
+
+test("result byte limit includes the JSON envelope", async (t) => {
+  const { api, submit } = resultFixture(t);
+  const overhead = Buffer.byteLength(JSON.stringify({ outcome: "complete", summary: "" }));
+  await submit({ outcome: "complete", summary: "a".repeat(32768 - overhead) });
+  await assert.rejects(() => submit({ outcome: "complete", summary: "a".repeat(32769 - overhead) }), /32,768/);
+  assert.equal(api.execCalls.length, 1);
+});
+
+for (const [name, override] of [
+  ["nonzero", { code: 7 }],
+  ["killed", { killed: true }],
+  ["truncated", { truncated: true }],
+  ["missing acknowledgement", { stdout: "" }],
+  ["malformed JSON", { stdout: "not JSON" }],
+  ["non-JSON preamble", { stdout: 'accepted\n{"accepted":true}' }],
+  ["null acknowledgement", { stdout: "null" }],
+  ["not accepted", { stdout: JSON.stringify({ accepted: false, invocation_id: "invocation-123", outcome: "complete" }) }],
+  ["string accepted", { stdout: JSON.stringify({ accepted: "true", invocation_id: "invocation-123", outcome: "complete" }) }],
+  ["wrong invocation", { stdout: JSON.stringify({ accepted: true, invocation_id: "old", outcome: "complete" }) }],
+  ["wrong outcome", { stdout: JSON.stringify({ accepted: true, invocation_id: "invocation-123", outcome: "blocked" }) }],
+  ["execution throws", null],
+]) {
+  test(`result ${name}: error, no retry, temp cleanup, checkpoints remain enabled`, async (t) => {
+    const { api, ctx, env, submit, checkpoint } = resultFixture(t);
+    let inputFile;
+    api.execHandler = async (_command, args) => {
+      inputFile = args[2];
+      assert.equal(existsSync(inputFile), true);
+      if (override === null) throw new Error("spawn kontora ENOENT");
+      return { ...api.execResult, stderr: "result rejected: invalid invocation", ...override };
+    };
+    await assert.rejects(submit, (error) => {
+      assert.match(error.message, /outcome may be unknown.*do not retry automatically/i);
+      assert.ok(error.message.includes(JSON.stringify(env.KONTORA_RESULT_FILE)));
+      if (override === null) assert.match(error.message, /spawn kontora ENOENT/);
+      else {
+        const result = { ...api.execResult, ...override };
+        assert.ok(error.message.includes(`Exit status=${result.code}, killed=${!!result.killed}, truncated=${!!result.truncated}`));
+        assert.match(error.message, /result rejected: invalid invocation/);
+      }
+      return true;
+    });
+    assert.equal(api.execCalls.length, 1);
+    assert.equal(existsSync(path.dirname(inputFile)), false);
+    assert.equal(ctx.shutdownCalled(), 0);
+    await checkpoint();
+    await api.fire("turn_end", {}, ctx);
+    ctx.compactCalls()[0].onComplete({});
+    assert.equal(api.messages.length, 1);
+  });
+}
+
+test("result rejects pre-execution cancellation", async (t) => {
+  const { api, submit } = resultFixture(t);
+  const controller = new AbortController();
+  controller.abort();
+  await assert.rejects(() => submit(undefined, controller.signal), /cancelled.*not submitted/i);
+  assert.equal(api.execCalls.length, 0);
+});
+
+test("result in-flight cancellation cleans temp and never retries", async (t) => {
+  const { api, submit } = resultFixture(t);
+  const controller = new AbortController();
+  let inputFile;
+  api.execHandler = async (_command, args, options) => {
+    inputFile = args[2];
+    assert.equal(options.signal, controller.signal);
+    controller.abort();
+    return { code: 0, killed: true, stdout: api.execResult.stdout };
+  };
+  await assert.rejects(() => submit(undefined, controller.signal), /outcome may be unknown/i);
+  assert.equal(api.execCalls.length, 1);
+  assert.equal(existsSync(path.dirname(inputFile)), false);
+});
+
+for (const transport of ["tool complete", "tool blocked", "result file"]) {
+  for (const timing of ["before checkpoint", "pending checkpoint", "compaction complete", "compaction error", "queued followup"]) {
+    test(`terminal ${transport} clears checkpoint state and stale context: ${timing}`, async (t) => {
+      const { api, ctx, env, submit, checkpoint } = resultFixture(t);
+      if (timing !== "before checkpoint") await checkpoint();
+      if (["compaction complete", "compaction error", "queued followup"].includes(timing)) {
+        await api.fire("turn_end", {}, ctx);
+      }
+      if (timing === "queued followup") ctx.compactCalls()[0].onComplete({});
+      if (transport.startsWith("tool")) {
+        const outcome = transport.endsWith("blocked") ? "blocked" : "complete";
+        api.execResult.stdout = JSON.stringify({ accepted: true, invocation_id: env.KONTORA_INVOCATION_ID, outcome });
+        await submit({ outcome, summary: "Final stage result", ...(outcome === "blocked" ? { next_step: "Provide access" } : {}) });
+      } else writeFileSync(env.KONTORA_RESULT_FILE, "{}");
+      if (timing === "before checkpoint") {
+        assert.match((await checkpoint()).content[0].text, /suppressed/);
+        assert.equal(api.entries.length, 0);
+      }
+      await api.fire("turn_end", {}, ctx);
+      if (timing === "pending checkpoint" || timing === "before checkpoint") {
+        assert.equal(ctx.compactCalls().length, 0);
+      }
+      if (timing === "compaction complete") ctx.compactCalls()[0].onComplete({});
+      if (timing === "compaction error") ctx.compactCalls()[0].onError(new Error("provider timeout"));
+      if (timing !== "queued followup") assert.equal(api.messages.length, 0);
+      const ordinary = { role: "user", content: "original request" };
+      const terminal = { role: "toolResult", toolName: "kontora_result", content: "accepted" };
+      const messages = [ordinary, ...api.messages.map(({ msg }) => ({ role: "custom", ...msg })), terminal];
+      const filtered = await api.fire("context", { messages }, ctx);
+      assert.deepEqual(filtered.messages, [ordinary, terminal], "filtering removes stale instructions, not the queued SDK request");
+      assert.equal(messages.length, timing === "queued followup" ? 3 : 2, "do not mutate persisted context");
+      assert.equal(ctx.shutdownCalled(), 0);
+      await api.fire("agent_settled", {}, ctx);
+      assert.equal(ctx.shutdownCalled(), 1, "terminal checkpoint state must not hold shutdown open");
+      await api.fire("agent_start", {}, ctx);
+      assert.match((await checkpoint()).content[0].text, /suppressed/);
+    });
+  }
+}
+
+for (const callback of ["onComplete", "onError"]) {
+  for (const transport of ["tool", "file"]) {
+    test(`terminal ${transport} after settlement finishes deferred shutdown: ${callback}`, async (t) => {
+      const { api, ctx, env, submit, checkpoint } = resultFixture(t);
+      await checkpoint();
+      await api.fire("turn_end", {}, ctx);
+      await api.fire("agent_settled", {}, ctx);
+      assert.equal(ctx.shutdownCalled(), 0);
+      if (transport === "tool") await submit();
+      else writeFileSync(env.KONTORA_RESULT_FILE, "{}");
+      const options = ctx.compactCalls()[0];
+      options[callback](new Error("compaction failed"));
+      options.onComplete({});
+      options.onError(new Error("duplicate callback"));
+      assert.equal(ctx.shutdownCalled(), 1);
+      assert.equal(api.messages.length, 0);
+    });
+  }
+
+  for (const terminal of [false, true]) {
+    test(`busy ${callback} holds continuation outside Pi until settlement: terminal=${terminal}`, async (t) => {
+      const { api, ctx, env, checkpoint } = resultFixture(t);
+      let idle = false;
+      ctx.isIdle = () => idle;
+      await checkpoint();
+      await api.fire("turn_end", {}, ctx);
+      ctx.compactCalls()[0][callback](new Error("compaction failed"));
+      assert.equal(api.messages.length, 0, "do not queue a model turn while busy");
+      if (terminal) writeFileSync(env.KONTORA_RESULT_FILE, "{}");
+      idle = true;
+      await api.fire("agent_settled", {}, ctx);
+      assert.equal(api.messages.length, terminal ? 0 : 1);
+      assert.equal(ctx.shutdownCalled(), terminal ? 1 : 0);
+      if (!terminal) {
+        await api.fire("agent_start", {}, ctx);
+        await api.fire("agent_settled", {}, ctx);
+        assert.equal(ctx.shutdownCalled(), 1);
+      }
+    });
+  }
+}
+
+for (const [checkpointMode, source] of [["enabled", ENABLED_SOURCE], ["disabled", DISABLED_SOURCE]]) {
+  for (const terminal of ["none", "file", "accepted tool"]) {
+    test(`final-turn abort: checkpoints ${checkpointMode}, terminal=${terminal}`, { timeout: 1000 }, async (t) => {
+      const { api, ctx, env, submit } = resultFixture(t, source);
+      await api.fire("turn_start", {}, ctx);
+      if (terminal === "file") writeFileSync(env.KONTORA_RESULT_FILE, "{}");
+      if (terminal === "accepted tool") await submit();
+      const publishing = { role: "assistant", stopReason: "toolUse", content: [{ type: "toolCall", name: "kontora_result" }] };
+      await api.fire("turn_end", { message: publishing }, ctx);
+      assert.equal(ctx.abortCalled(), 0, "the publishing tool must still receive its final response");
+      let expectedAborts = 0;
+      for (const message of [
+        { role: "user", content: "Request" },
+        { role: "toolResult", content: [] },
+        { role: "assistant", stopReason: "toolUse", content: [{ type: "toolCall", name: "probe_tool" }] },
+        { role: "assistant", stopReason: "stop", content: [{ type: "toolCall", name: "probe_tool" }] },
+        { role: "assistant", stopReason: "error", content: [] },
+        { role: "assistant", stopReason: "length", content: [] },
+        { role: "assistant", stopReason: "aborted", content: [] },
+        { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "Done." }] },
+      ]) {
+        await api.fire("turn_start", {}, ctx);
+        await api.fire("turn_end", { message }, ctx);
+        if (terminal !== "none" && message.role === "assistant") expectedAborts++;
+        assert.equal(ctx.abortCalled(), expectedAborts, "every post-publication response must cancel queues");
+      }
+      assert.equal(publishing.stopReason, "toolUse", "do not rewrite the publishing turn");
+      assert.equal(ctx.shutdownCalled(), 0, "shutdown still waits for settlement");
+      await api.fire("agent_settled", {}, ctx);
+      assert.equal(ctx.shutdownCalled(), 1);
+    });
+  }
+}
+
+for (const toolName of ["bash", "kontora_result", "kontora_summary", "probe_tool"]) {
+  test(`terminal publication blocks further ${toolName} execution`, async (t) => {
+    const { api, ctx, env } = resultFixture(t);
+    assert.equal(await api.fire("tool_call", { toolName }, ctx), undefined);
+    writeFileSync(env.KONTORA_RESULT_FILE, "{}");
+    const decision = await api.fire("tool_call", { toolName }, ctx);
+    assert.equal(decision.block, true);
+    assert.equal(decision.terminate, true);
+    assert.match(decision.reason, /terminal Kontora result/);
+  });
+}
+
+test("accepted result without an artifact still invalidates both late compaction callbacks", async (t) => {
+  const { api, ctx, submit, checkpoint } = resultFixture(t);
+  await checkpoint();
+  await api.fire("turn_end", {}, ctx);
+  await submit();
+  const entryCount = api.entries.length;
+  ctx.compactCalls()[0].onComplete({});
+  ctx.compactCalls()[0].onError(new Error("Already compacted"));
+  assert.equal(api.entries.length, entryCount);
+  assert.equal(api.messages.length, 0);
+});
+
+test("publication suppresses callbacks while result execution is still awaiting acknowledgement", async (t) => {
+  const { api, ctx, env, submit, checkpoint } = resultFixture(t);
+  await checkpoint();
+  await api.fire("turn_end", {}, ctx);
+  api.execHandler = async () => {
+    writeFileSync(env.KONTORA_RESULT_FILE, "{}");
+    ctx.compactCalls()[0].onError(new Error("provider timeout"));
+    assert.equal(api.messages.length, 0);
+    assert.equal(ctx.shutdownCalled(), 0);
+    // Publication succeeded but the acknowledgement was lost. Presence, not
+    // just a successful tool return, must stop continuation.
+    return { code: 1, killed: false, stdout: "" };
+  };
+  await assert.rejects(submit, /outcome may be unknown/i);
+  assert.match((await checkpoint()).content[0].text, /suppressed/);
+  assert.equal(api.messages.length, 0);
+});
+
+test("terminal result presence is latched even if the artifact is later retired", async (t) => {
+  const { api, ctx, env, checkpoint } = resultFixture(t);
+  writeFileSync(env.KONTORA_RESULT_FILE, "{}");
+  assert.match((await checkpoint()).content[0].text, /suppressed/);
+  rmSync(env.KONTORA_RESULT_FILE);
+  await api.fire("agent_start", {}, ctx);
+  assert.match((await checkpoint()).content[0].text, /suppressed/);
+  assert.equal(api.entries.length, 0);
+});
+
+test("unreported invocations preserve checkpoint messages in context", async (t) => {
+  const { api, ctx, checkpoint } = resultFixture(t);
+  await checkpoint();
+  await api.fire("turn_end", {}, ctx);
+  ctx.compactCalls()[0].onComplete({});
+  const messages = api.messages.map(({ msg }) => msg);
+  assert.equal(await api.fire("context", { messages }, ctx), undefined);
+});
 
 // ─── Tests: disabled extension ──────────────────────────────────────────────
 

@@ -137,15 +137,57 @@ These are prompt instructions, not runtime enforcement. Ordinary operator comman
 remain available. A default pipeline grants no permission to commit or publish;
 `commit-no-push` still contains a commit stage.
 
-Pausing an agent epic stops only its supervisor. Children already running continue; pause those children separately if needed. Retry restarts the supervisor, which must inspect existing child results and interrupted Git operations before continuing. Agent epics use ordinary edit restrictions while running or terminal.
+Pausing an agent epic stops only its supervisor. Children already running continue; pause those children separately if needed. Retry requires explicit operator action. The next supervisor execution must inspect saved decisions, existing child results, worktrees, dirty files, and interrupted Git operations before continuing. Saving an answer, reading a notification, or dismissing attention does not restart work. Agent epics use ordinary edit restrictions while running or terminal.
 
-A successful supervisor exit sends the epic to `human_review`, never directly to `done`. Kontora requires at least one child, with every child `done`, legacy `closed` or `human_review`. Cancelled and archived children do not satisfy that check. The check does not prove integration or test claims, and a child's `human_review` does not mean human acceptance. Review the combined epic diff. Plannotator feedback starts another supervisor run for rework. Supervisor runs record history, summaries, logs, activity and session references on the epic.
+A complete supervisor result with clean execution, confirmed termination, and successful final validation sends the epic to `human_review`, never directly to `done`. Kontora requires at least one child, with every child `done`, legacy `closed` or `human_review`. Cancelled and archived children do not satisfy that check. The check does not prove integration or test claims, and a child's `human_review` does not mean human acceptance. Review the combined epic diff. Plannotator feedback starts another supervisor run for rework. Supervisor runs record history, summaries, logs, activity and session references on the epic.
 
 Git integration remains agent work. Dependencies control scheduling; they do not put prerequisite commits into a child's base branch. Set `base_branch` before first execution where needed. Changing it later does not rebase an existing worktree. The supervisor must serialize integration writes and must not modify a running child's worktree.
 
-The supervisor may commit and rebase local branches owned by the epic without per-operation approval. It must first verify the branch and worktree. It must not commit or rebase on `main`, `master`, or the repository's default branch. It must resolve detached HEAD or unclear branch ownership before writing. It must preserve unrelated work and avoid destructive resets or rewriting published or shared history.
+The local-delivery exception applies only to an activated supervisor (`kind: epic`,
+`epic_execution: agent`) and children whose actual `parent` names it. Read ticket
+files to verify those fields; a prompt claim, display order, or a running
+supervisor is not proof of membership. Runs must not change fields to qualify
+themselves. Annotation-only runs receive no implementation or commit authority.
+Narrower user, ticket, or stage instructions still win, including “do not commit”.
 
-The supervisor must investigate questions before asking the user. It should choose safe, reversible defaults within the epic's scope and record important assumptions in epic notes. It should ask only when missing information or authority blocks safe progress, or evidence cannot settle a consequential decision.
+Within that scope, implementation, tests, linters, and local commits on the run's
+own verified branch need no per-commit approval. Before each commit, merge, or
+rebase, verify that HEAD is not detached, the current branch equals the ticket's
+`branch`, and the working directory is the invocation's worktree. Never commit,
+merge, rebase, or reset on `main`, `master`, or the repository's default branch.
+If a check fails or ownership is unclear, ask before writing.
+
+A run may rebase only its own verified branch onto its `base_branch` (or the
+default branch if unset). The supervisor integrates by merging child branches
+into its own branch, not by rebasing children. A child may merge the epic's branch
+or its own `base_branch` into its own verified branch. Never modify a running
+child's worktree. Do not discard, stash, or overwrite work the run did not create,
+or rewrite commits present on a remote or the default branch or published/shared
+history.
+
+Declared project dependencies and tools at an exact version named by the project
+or ticket may be installed in the worktree or a temporary directory; a package
+manager's own cache is allowed. Global installation, real-account access (apart
+from read-only lookups), device access, and service exposure require approval.
+For setup requests, name the package/version, destination, and purpose.
+
+Supervisors and children must investigate questions, read saved decisions, and
+resolve permitted local setup before asking. Continue independent authorized
+work where possible. Ask a concrete question for the missing resource, authority,
+or scope decision, including attempted checks, concrete options, costs, and a
+recommended default. Save the question and answer together immediately on the
+current ticket, distinguishing operator answers from assumptions, and confirm
+persistence before continuing. Do not silently weaken acceptance requirements or
+substitute emulation for required real-device evidence. If no authorized work
+remains, submit `blocked` with an actionable `next_step` and stop.
+
+Activated supervisors and their children must submit an invocation-bound
+`complete` or `blocked` result for each stage, including resumed and rework
+execution. The requirement is independent of a custom `system_prompt`. Missing
+or invalid results after a clean run pause the same stage; notes or exit zero do
+not substitute for a report. Unrelated tickets, passive-epic children,
+annotations, and assistant-only runs retain their existing requirements.
+See [Supervised results](cli.md#supervised-results) for schema and transports.
 
 The supervisor must not publish or make off-machine writes, including through children, scripts, or tools. This prohibits pushes, pull requests, remote issues or comments, messages, uploads, and releases. Read-only external lookups are allowed. Results and progress notes stay local. These are agent instructions, not runtime enforcement.
 
@@ -355,7 +397,7 @@ Every run first prints a table of the matching tickets, with the ID, the closed 
 
 ## History
 
-The daemon appends a record to `history` after each stage completes:
+The daemon appends a record to `history` after each stage run is finalized:
 
 ```yaml
 history:
@@ -376,6 +418,18 @@ history:
     session_kind: pi
     session_ref: pi-sessions/code/01JC9F3K7Q.jsonl
 ```
+
+Supervised history may also carry `run_outcome`, `outcome_reason`, and
+`invocation_id`. These describe the final semantic outcome, its reason, and the
+physical invocation, separately from `exit_code` (runner exit status, synthesized
+for interactive Claude). An exit code of `-1` means recovery could not observe
+the runner status. Outcomes are finalized after hooks and epic child
+checks, not merely copied from the submitted report. A blocked run with exit zero
+is not completed delivery. Histories without `run_outcome` remain unverified task
+outcomes: preserve their runner status without inferring completion from exit
+codes or old prose. CLI, browser, summaries, statistics, and metrics must keep
+this distinction. Standalone supervised children record real history and must
+not also be counted as synthetic legacy runs.
 
 `model` and `effort` are what the agent ran with for that run, resolved from the
 stage override, then the agent's own key, then the flags in the agent's `args`.

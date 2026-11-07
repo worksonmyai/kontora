@@ -155,7 +155,20 @@ export function kontoraDetail() {
       return h && h.length ? h[h.length - 1].stage : '';
     },
 
-    // One card per run that recorded a summary, newest first. Duration and run
+    // Missing outcomes are legacy/unverified, regardless of runner exit code.
+    runOutcomeLabel(h) {
+      return ['complete', 'blocked', 'protocol_error', 'failed'].includes(h?.run_outcome)
+        ? h.run_outcome : 'unknown/unverified';
+    },
+
+    runOutcomeClass(h) {
+      var outcome = this.runOutcomeLabel(h);
+      if (outcome === 'complete') return 'text-ok';
+      if (outcome === 'failed' || outcome === 'protocol_error') return 'text-st-cancel';
+      return 'text-tx-faint';
+    },
+
+    // One card per run with a summary or outcome reason, newest first. Duration and run
     // count come from stageRibbon(), so a card and the ribbon segment above it
     // cannot disagree. Both are per stage, so two runs of one stage show the
     // same stage total.
@@ -174,10 +187,11 @@ export function kontoraDetail() {
       hist.forEach(function (h) { totalRuns[h.stage] = (totalRuns[h.stage] || 0) + 1; });
       var walked = Object.create(null);
       var cards = [];
-      hist.forEach(function (h, historyIndex) {
+      hist.forEach((h, historyIndex) => {
         var run = walked[h.stage] || 0;
         walked[h.stage] = run + 1;
-        if (!h.summary) return;
+        var summary = h.summary || h.outcome_reason;
+        if (!summary) return;
         // A stage the current pipeline no longer lists has no ribbon segment to
         // agree with, so the card reads this run's own clock.
         var seg = segs[h.stage];
@@ -186,8 +200,12 @@ export function kontoraDetail() {
           stage: h.stage,
           run: run,
           historyIndex: historyIndex,
-          summary: h.summary,
-          failed: h.exit_code !== 0,
+          summary: summary,
+          failed: h.run_outcome === 'failed' || h.run_outcome === 'protocol_error',
+          outcome: this.runOutcomeLabel(h),
+          outcomeReason: h.outcome_reason || '',
+          invocationID: h.invocation_id || '',
+          exitCode: h.exit_code,
           agent: h.agent || '',
           seconds: seg ? seg.seconds : runSeconds(h),
           runs: seg ? seg.runs : totalRuns[h.stage],
@@ -200,19 +218,18 @@ export function kontoraDetail() {
       if (top && (!cards.length || cards[0].summary !== top)) {
         cards.unshift({
           key: 'summary#top', stage: this.summaryStage(), run: -1,
-          summary: top, failed: false, agent: '', seconds: 0, runs: 1,
+          summary: top, failed: false, outcome: 'unknown/unverified', agent: '', seconds: 0, runs: 1,
         });
       }
       return cards;
     },
 
-    // A failed run keeps the error hue wherever it sits. Otherwise the newest
-    // card is the outcome and carries the done hue whatever stage produced it,
-    // and an earlier card takes its hue from the stage's position in the
-    // pipeline rather than from its name.
+    // Only a verified complete run gets the newest card's done hue.
+    // Earlier cards use the stage's pipeline position unless failed or blocked.
     stageHue(card, i) {
       if (card.failed) return '--st-error';
-      if (i === 0) return '--st-done';
+      if (i === 0 && card.outcome === 'complete') return '--st-done';
+      if (card.outcome === 'blocked') return '--st-paused';
       var stages = this.selectedTicket?.stages || [];
       var idx = stages.indexOf(card.stage);
       var cycle = ['--st-open', '--st-review', '--st-paused'];
@@ -227,7 +244,10 @@ export function kontoraDetail() {
       if (card.agent) parts.push(card.agent);
       var cost = this.costLabel(this.ticketRunCost(card.historyIndex));
       if (cost) parts.push(cost);
-      if (card.failed) parts.push('failed');
+      parts.push('outcome: ' + card.outcome);
+      if (Number.isInteger(card.exitCode)) parts.push('runner exit ' + card.exitCode);
+      if (card.outcomeReason) parts.push(card.outcomeReason);
+      if (card.invocationID) parts.push('invocation ' + card.invocationID);
       return parts.join(' · ');
     },
 

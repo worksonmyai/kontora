@@ -65,6 +65,7 @@ func TestEpicAgentInterruptedAccountingSurvivesRetry(t *testing.T) {
 					result.ExitCode = -1
 					return result, assert.AnError
 				}
+				completeEpicInvocation(t, p)
 				return result, nil
 			}))
 			h.writeTicket("epc-a.md", h.agentEpicMD("epc-a", "todo", "epc-c1"))
@@ -121,7 +122,8 @@ func TestEpicAgentPauseDuringChildRefresh(t *testing.T) {
 	h := newEpicAgentHarness(t)
 	childPath := filepath.Join(h.tasksDir, "epc-c1.md")
 	h.cfg.Hooks = config.Hooks{config.HookStageEnd: {{Name: "delayed-child", Run: fmt.Sprintf("mkfifo %q", childPath)}}}
-	d := h.newDaemon(h.cfg, WithRunner(func(context.Context, RunnerParams) (process.Result, error) {
+	d := h.newDaemon(h.cfg, WithRunner(func(_ context.Context, p RunnerParams) (process.Result, error) {
+		completeEpicInvocation(t, p)
 		now := time.Now()
 		return process.Result{StartedAt: now, ExitedAt: now}, nil
 	}))

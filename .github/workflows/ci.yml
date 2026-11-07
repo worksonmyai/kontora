@@ -67,6 +67,22 @@ jobs:
       - name: Build
         run: go build ./cmd/kontora
 
+  pi-sdk:
+    runs-on: ubuntu-latest
+    container: node:26
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+
+      - name: Install Docker-pinned Pi SDK
+        run: npm install --prefix "$RUNNER_TEMP/pi-sdk" --ignore-scripts --no-audit --no-fund --save-exact "@earendil-works/pi-coding-agent@$(awk -F= '/^ARG PI_VERSION=/{print $2}' Dockerfile)"
+
+      - name: Test Pi lifecycle with offline models
+        env:
+          KONTORA_PI_SDK_DIR: ${{ runner.temp }}/pi-sdk/node_modules/@earendil-works/pi-coding-agent
+        run: node --test internal/daemon/testdata/pi_extension.sdk.test.mjs
+
   scripts:
     runs-on: ubuntu-latest
     steps:

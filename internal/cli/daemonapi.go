@@ -53,10 +53,11 @@ func PrintStats(info web.StatsInfo, w io.Writer) error {
 	if len(info.Stages) > 0 {
 		fmt.Fprintf(w, "\n%s\n", styleBold.Render("Stages"))
 		tw = tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-		fmt.Fprintln(tw, "  STAGE\tRUNS\tFAILED\tP50\tP90\tTOKENS")
+		fmt.Fprintln(tw, "  STAGE\tRUNS\tCOMPLETE\tBLOCKED\tPROTOCOL_ERROR\tFAILED\tUNVERIFIED\tRUNNER_FAILED\tP50\tP90\tTOKENS")
 		for _, s := range info.Stages {
-			fmt.Fprintf(tw, "  %s\t%d\t%d\t%s\t%s\t%d\n",
-				s.Name, s.Runs, s.Failed, formatMillis(s.P50MS), formatMillis(s.P90MS), s.Tokens)
+			fmt.Fprintf(tw, "  %s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%s\t%s\t%d\n",
+				s.Name, s.Runs, s.Complete, s.Blocked, s.ProtocolError, s.Failed, s.Unknown, s.RunnerFailed,
+				formatMillis(s.P50MS), formatMillis(s.P90MS), s.Tokens)
 		}
 		if err := tw.Flush(); err != nil {
 			return err

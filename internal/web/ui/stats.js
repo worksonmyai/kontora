@@ -231,7 +231,7 @@ function statsKpis(payload) {
       ? { label: 'first-pass', value: '—', unit: '', delta: 'no stage runs', tone: 'neutral' }
       : {
           label: 'first-pass', value: String(Math.round(t.first_pass_pct || 0)), unit: '%',
-          delta: Math.round(100 - (t.first_pass_pct || 0)) + '% needed a retry',
+          delta: Math.round(100 - (t.first_pass_pct || 0)) + '% not verified first-pass',
           tone: statsFirstPassColor(t.first_pass_pct) === 'ok' ? 'ok' : 'warn',
         },
     {
@@ -297,7 +297,20 @@ export function statsDerive(payload) {
     const runs = s.runs || 0;
     const tokenRuns = s.token_runs || 0;
     const measured = tokenRuns > 0;
-    const failed = (s.failed || 0) + ' failed';
+    // Semantic outcomes partition the runs; runner failures are independent.
+    // Unknown includes legacy zero exits, not verified completions.
+    const outcomes = [
+      ['complete', 'complete'],
+      ['blocked', 'blocked'],
+      ['protocol_error', 'protocol error', 'protocol errors'],
+      ['failed', 'failed'],
+      ['unknown', 'unverified'],
+      ['runner_failed', 'runner failure', 'runner failures'],
+    ].filter(function(pair) { return pair[0] === 'failed' || (s[pair[0]] || 0) > 0; })
+      .map(function(pair) {
+        const count = s[pair[0]] || 0;
+        return count + ' ' + (count !== 1 && pair[2] ? pair[2] : pair[1]);
+      }).join(' · ');
     return {
       name: s.name,
       color: STATS_STAGE_COLORS[i % STATS_STAGE_COLORS.length],
@@ -308,7 +321,7 @@ export function statsDerive(payload) {
         share: s.share || 0,
         value: statsDuration(s.p50_ms),
         sub: 'p90 ' + statsDuration(s.p90_ms),
-        meta: runs + ' runs · ' + failed,
+        meta: runs + ' runs · ' + outcomes,
         tip: s.name + ' · ' + Math.round(s.share || 0) + '% of measured time · p50 ' +
           statsDuration(s.p50_ms) + ' · p90 ' + statsDuration(s.p90_ms),
       },
@@ -323,7 +336,7 @@ export function statsDerive(payload) {
         // The total covers the runs that recorded counts. When that is fewer
         // than the stage ran, the row counts those instead of implying the
         // total spans them all.
-        meta: (measured && tokenRuns < runs ? tokenRuns + ' of ' + runs + ' runs measured' : runs + ' runs') + ' · ' + failed,
+        meta: (measured && tokenRuns < runs ? tokenRuns + ' of ' + runs + ' runs measured' : runs + ' runs') + ' · ' + outcomes,
         tip: measured
           ? s.name + ' · ' + Math.round(s.token_share || 0) + '% of stage tokens · ' +
             statsCompact(s.tokens) + ' over ' + tokenRuns + ' measured runs'

@@ -7,8 +7,9 @@ For `note` and `summary`, put all flags before the ticket ID. Go's flag parser
 stops at that first positional argument. For `new`, put flags before the title.
 Other verbs also accept flags after positional arguments.
 
-Any verb that takes a `TICKET_ID` accepts a unique prefix of one: `kontora view
-kon-q` finds `kon-q88f`. A prefix matching two tickets is an error naming both.
+Verbs that take a `TICKET_ID` accept a unique prefix, except for `result`,
+which requires the exact invocation ticket ID. `kontora view kon-q` finds
+`kon-q88f`. A prefix matching two tickets is an error naming both.
 Matching is from the start of the id only.
 
 Exit codes: 0 on success, non-zero on failure with the reason on stderr. A
@@ -19,8 +20,10 @@ search that matches nothing still exits 0.
 When `KONTORA_TICKET_ID` is set, this process is the agent running that ticket's
 current stage. You cannot change that ticket's status: `done`, `cancel`, `move`,
 `pause`, `retry`, `skip`, `set-stage` and `schedule` aimed at it are refused, as
-is `archive`. Kontora decides the next status from your exit code, so exit 0 when
-the stage's work is done and non-zero when it is not.
+is `archive`. Kontora owns the next status. For unsupervised execution, exit 0 when
+the stage's work is done and non-zero when it is not. Activated epic supervisors
+and their children must also submit an explicit result; exit zero alone cannot
+advance supervised work. See `kontora skills show cli 'kontora result'`.
 
 Record what you did with `note` and `summary` through the Handoff submission
 method below. Neither command has the lifecycle restriction. Every verb works
@@ -56,6 +59,60 @@ Do not create the files with `echo` or `printf`.
 
 If a launched submission fails or lacks acknowledgement, read the ticket before resubmitting.
 The write outcome may be unknown. Do not retry automatically or switch submission methods automatically.
+
+## kontora result
+
+```sh
+kontora result --input-file /absolute/path/result.json TICKET_ID
+kontora result TICKET_ID < /absolute/path/result.json
+```
+
+Mandatory for activated epic supervisors and their actual children, including
+fresh, resumed, and rework runs. Unrelated tickets, passive-epic children,
+annotations, and assistant-only runs retain their existing requirements.
+
+Prefer Pi's `kontora_result({outcome, summary, next_step?})` tool when available;
+it is independent of checkpoint compaction and binds the current invocation.
+Otherwise create a unique scratch JSON file outside the repository with a
+file-writing tool, then use the CLI above. Put flags before the ticket ID. Do not
+interpolate generated payloads into shell commands. Without `--input-file`, the
+CLI reads stdin; the input-file path must be absolute.
+
+```json
+{"outcome":"blocked","summary":"Required device evidence is unavailable.","next_step":"Provide device access or explicitly change the requirement."}
+```
+
+Only `complete` and `blocked` outcomes are allowed. `summary` must be nonblank;
+`blocked` also requires nonblank `next_step`. `complete` means this stage's assigned
+work, not the whole ticket. A review stage can complete while fixes remain.
+Fixture work alone is not complete when production foundations or other required
+evidence remain. All payload fields are strings; optional `next_step` may be
+omitted for complete. Only those three fields are accepted. The limit is 32 KiB
+of valid UTF-8 JSON; NULs, duplicate/unknown fields and trailing content are rejected.
+
+The daemon supplies `KONTORA_RESULT_VERSION` (`1`), `KONTORA_INVOCATION_ID`,
+`KONTORA_RESULT_TICKET`, `KONTORA_RESULT_STAGE`, and absolute `KONTORA_RESULT_FILE`
+after configured environment merging. Do not select or override invocation
+identity. Missing context or an incompatible version is an error, not a no-op.
+Each physical launch gets a fresh identity, including retry and resume-to-fresh
+fallback. Check acknowledgement: identical resubmission is idempotent; conflicting
+replacement is rejected. Old results cannot finalize newer work.
+
+Notes, summaries, final prose, questions, and phase checkpoints are not terminal
+results. Missing/invalid reports after a clean run pause the same stage; blocked
+also pauses without consuming a retry, entering pipeline retry/back policies, or
+removing the worktree. Complete cannot override execution/provider errors, hooks,
+or epic child checks. Do not change your own lifecycle status.
+
+If requirements or authority block work, investigate and resolve permitted local
+setup, then ask a concrete resource/authority/scope question with attempted checks,
+options, costs, and a recommended default. Save the question and answer together
+immediately and confirm persistence. Do not weaken requirements or substitute
+emulation for required real-device evidence. When no authorized work remains,
+submit blocked and stop. Retry requires explicit operator action; saving an
+answer, reading a notification, or dismissing attention does not restart work.
+On Retry inspect saved decisions, current children, worktrees, dirty files, and
+interrupted Git operations. Upgrade CLI and daemon together.
 
 ## Common flags
 

@@ -130,13 +130,16 @@ func newCheckpointController(setup checkpointSetup, env map[string]string, sessi
 // as soon as ctx is cancelled: the runner is inside this call, so a wait that
 // ignored ctx would hold up a shutdown or a stage timeout.
 func (c *checkpointController) onIdle(ctx context.Context, ev tmux.IdleEvent) tmux.IdleDecision {
+	if terminalReported(c.env["KONTORA_RESULT_FILE"]) {
+		return tmux.IdleDecision{Action: tmux.IdleFinish}
+	}
 	compacted := c.settlePending(ev.CompactErr)
 
 	rec, ok := c.nextCheckpoint()
 	if !ok && c.suspectStaleWake(compacted) {
 		rec, ok = c.awaitCheckpoint(ctx)
 	}
-	if !ok {
+	if !ok || terminalReported(c.env["KONTORA_RESULT_FILE"]) {
 		return tmux.IdleDecision{Action: tmux.IdleFinish}
 	}
 

@@ -166,7 +166,8 @@ type RunnerParams struct {
 	OnIdle func(context.Context, tmux.IdleEvent) tmux.IdleDecision
 	// CompactChannel is the tmux wait-for channel this run's PostCompact hook
 	// signals. Empty for every run that does not checkpoint.
-	CompactChannel string
+	CompactChannel   string
+	TerminalReported func() bool
 }
 
 // DirectRunner wraps process.Run for use without tmux (useful in tests).
@@ -231,21 +232,23 @@ func tmuxRunner(ctx context.Context, p RunnerParams) (process.Result, error) {
 		return process.Result{}, fmt.Errorf("tmux replacement environment requires the managed authority integration")
 	}
 	return tmux.Run(ctx, tmux.RunParams{
-		Binary:         p.Binary,
-		Args:           p.Args,
-		Dir:            p.Dir,
-		Timeout:        p.Timeout,
-		TicketID:       p.TicketID,
-		AttemptID:      p.AttemptID,
-		SessionName:    p.SessionName,
-		LogFile:        p.LogFile,
-		Interactive:    p.Interactive,
-		SessionID:      p.SessionID,
-		Env:            p.Env,
-		PathDirs:       process.CommonBinDirs(),
-		OnReady:        p.OnReady,
-		OnIdle:         p.OnIdle,
-		CompactChannel: p.CompactChannel,
+		Binary:             p.Binary,
+		Args:               p.Args,
+		Dir:                p.Dir,
+		Timeout:            p.Timeout,
+		TicketID:           p.TicketID,
+		AttemptID:          p.AttemptID,
+		SessionName:        p.SessionName,
+		LogFile:            p.LogFile,
+		Interactive:        p.Interactive,
+		SessionID:          p.SessionID,
+		Env:                p.Env,
+		PathDirs:           process.CommonBinDirs(),
+		OnReady:            p.OnReady,
+		OnIdle:             p.OnIdle,
+		CompactChannel:     p.CompactChannel,
+		RequireTermination: p.RequireTermination,
+		TerminalReported:   p.TerminalReported,
 	})
 }
 
@@ -448,16 +451,18 @@ type Daemon struct {
 	// the config file watcher, and the raw-config endpoint).
 	reloadMu sync.Mutex
 
-	mu              sync.Mutex
-	tickets         map[string]*ticketState
-	executions      map[string]*executionClaim
-	running         map[string]context.CancelFunc
-	liveRuns        map[string]liveRun // ticket ID → the agent invocation in flight
-	queued          map[string]bool    // dedupe: prevents same ticket being enqueued twice
-	runningBranches map[string]string  // commonDir\x00branch → ticketID holding the branch
-	sem             chan struct{}
-	epicSem         chan struct{}
-	managedDispatch *managedDispatch
+	mu                    sync.Mutex
+	tickets               map[string]*ticketState
+	executions            map[string]*executionClaim
+	running               map[string]context.CancelFunc
+	liveRuns              map[string]liveRun // ticket ID → the agent invocation in flight
+	queued                map[string]bool    // dedupe: prevents same ticket being enqueued twice
+	runningBranches       map[string]string  // commonDir\x00branch → ticketID holding the branch
+	recoveredReservations map[string]recoveredReservation
+	pendingFinalizations  map[string]func(*ticket.Ticket)
+	sem                   chan struct{}
+	epicSem               chan struct{}
+	managedDispatch       *managedDispatch
 	// waiting holds, per ticket, the question its running agent is blocked on,
 	// as the run's marker poller last read it. Only a live run has an entry.
 	waiting map[string]waitingState
@@ -825,6 +830,9 @@ func (d *Daemon) Run(ctx context.Context) error {
 	stopReloadTriggers := d.startReloadTriggers(ctx, &wg, hup)
 	defer stopReloadTriggers()
 
+	removals := time.NewTicker(time.Second)
+	defer removals.Stop()
+
 	// Event loop.
 	for {
 		select {
@@ -843,6 +851,9 @@ func (d *Daemon) Run(ctx context.Context) error {
 				return nil
 			}
 			d.log.Error("watcher error", "err", err)
+
+		case <-removals.C:
+			d.reconcileRegisteredRemovals()
 
 		case <-ctx.Done():
 			d.log.Info("shutting down")
@@ -951,6 +962,9 @@ func (d *Daemon) initialScan(dir string) error {
 		t, err := ticket.ParseFile(path)
 		if err != nil {
 			d.log.Warn("skipping file", "file", entry.Name(), "err", err)
+			d.mu.Lock()
+			d.reserveUnparsedExecutionLocked(path)
+			d.mu.Unlock()
 			continue
 		}
 		if t.ID == "" {
@@ -963,39 +977,43 @@ func (d *Daemon) initialScan(dir string) error {
 
 		d.mu.Lock()
 
-		// Crash recovery: reset running → todo (kontora tickets only). Only
-		// recover tickets this instance owns: an empty claim (single-machine
-		// installs, pre-upgrade tickets) or our own name. A ticket claimed by
-		// another instance sharing this tickets_dir is left in_progress and not
-		// enqueued, so starting a second daemon can't steal or kill its work.
-		if t.Kontora && t.Status == ticket.StatusInProgress && !t.IsPassiveEpic() && !t.HasOwnershipMetadata() {
-			if t.ClaimedBy == "" || t.ClaimedBy == d.instanceName {
-				d.ticketLog(t.ID).Warn("crash recovery: resetting to todo")
-				_ = t.SetField("status", string(ticket.StatusTodo))
-				// A ticket that cannot be written back is still enqueued as
-				// todo, the way this has always behaved: the in-memory status
-				// is what the scheduler reads, but pickup requires persisted
-				// todo before it can run.
-				if err := d.writeTicketLocked(t, path, notify.OriginObserved); err != nil {
-					d.ticketLog(t.ID).Error("crash recovery: write failed", "err", err)
-				}
-			} else {
-				d.ticketLog(t.ID).Info("in_progress on another instance, leaving alone", "claimed_by", t.ClaimedBy)
-			}
-		}
-
 		d.tickets[t.ID] = newTicketState(t, path)
-		// Seeded after crash recovery so the remembered status is todo rather
-		// than the stale in_progress the file still held on entry.
+		// Seed from the file's current status before crash recovery.
+		// Successful recovery writes update the remembered status.
 		d.observe(t, notify.OriginObserved)
 		d.warnUnmatchedNotifyLocked(cfg, t)
 		d.mu.Unlock()
 		scanned = append(scanned, t)
 	}
 
-	// An epic is read before the children it derives from, so its status is
-	// settled once, after the whole directory is in the map.
+	// Recovery needs the complete ticket set before deciding supervision scope.
 	d.mu.Lock()
+	for _, t := range scanned {
+		if t.HasOwnershipMetadata() || d.claimedElsewhere(t) {
+			continue
+		}
+		_, journalErr := os.Stat(executionPath(cfg, t.ID))
+		if journalErr != nil {
+			if t.IsPassiveEpic() {
+				continue
+			}
+			if t.Status != ticket.StatusInProgress || !t.Kontora {
+				epicID, scopeErr := d.supervision(t, t.AnnotationReturnStatus != "")
+				if epicID == "" && scopeErr == nil {
+					continue
+				}
+			}
+		}
+		path := d.tickets[t.ID].filePath
+		if !d.reconcileExecutionLocked(t, path) {
+			_ = t.SetField("status", string(ticket.StatusTodo))
+			if err := d.writeTicketLocked(t, path, notify.OriginObserved); err != nil {
+				d.ticketLog(t.ID).Error("crash recovery: write failed", "err", err)
+				_ = t.SetField("status", string(ticket.StatusInProgress))
+			}
+		}
+		d.tickets[t.ID] = newTicketState(t, path)
+	}
 	d.rederiveAllEpicsLocked()
 	d.mu.Unlock()
 
@@ -1034,6 +1052,15 @@ func (d *Daemon) handleEvent(ev watcher.Event) {
 		}
 		d.handleFileChanged(ev.Path)
 	case watcher.OpRemoved:
+		// Atomic replacement can leave a removal event after the new file exists.
+		if _, err := os.Stat(ev.Path); err == nil {
+			if !d.isSelfWrite(ev.Path) {
+				d.handleFileChanged(ev.Path)
+			}
+			return
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return
+		}
 		d.handleFileRemoved(ev.Path)
 	}
 }
@@ -1052,16 +1079,7 @@ func (d *Daemon) handleFileChanged(path string) {
 		d.log.Error("parse failed", "path", path, "err", err)
 		return
 	}
-	if t.ID == "" {
-		return
-	}
-	if !ticket.IsCanonicalPath(path, t.ID) {
-		d.log.Warn("ignoring non-canonical ticket file", "path", path, "id", t.ID)
-		return
-	}
-
-	if t.HasOwnershipMetadata() {
-		d.log.Error("external managed ticket requires its owning daemon", "ticket", t.ID)
+	if !d.acceptObservedTicket(t, path) {
 		return
 	}
 	d.adoptObservedTicket(t, path, observed)
@@ -1073,8 +1091,9 @@ func (d *Daemon) adoptObservedTicket(t *ticket.Ticket, path string, observed os.
 
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	// A daemon replacement during parsing already updated the cached state.
 	current, err := os.Stat(path)
-	if err != nil || !os.SameFile(observed, current) || observed.Size() != current.Size() || !observed.ModTime().Equal(current.ModTime()) {
+	if !sameObservedFile(observed, current, nil, err) {
 		return
 	}
 
@@ -1105,6 +1124,10 @@ func (d *Daemon) adoptObservedTicket(t *ticket.Ticket, path string, observed os.
 			prevT = prev.ticket
 		}
 		defer d.rederiveEpicMoveLocked(prevT, t)
+	}
+
+	if d.reconcileRetainedExecutionLocked(t, path) {
+		return
 	}
 
 	if !t.Kontora {
@@ -1145,12 +1168,12 @@ func (d *Daemon) adoptObservedTicket(t *ticket.Ticket, path string, observed os.
 		// todo and re-enqueue, matching live crash recovery.
 		if _, running := d.running[t.ID]; !running && t.ClaimedBy == d.instanceName && !t.IsPassiveEpic() {
 			log.Info("recovering stale self-claim", "claimed_by", t.ClaimedBy)
-			_ = t.SetField("status", string(ticket.StatusTodo))
-			// A ticket that cannot be written back is still enqueued as todo,
-			// the way crash recovery does it: the in-memory status is what the
-			// scheduler reads, but pickup requires persisted todo before it can run.
-			if err := d.writeTicketLocked(t, path, notify.OriginObserved); err != nil {
-				log.Error("recover stale self-claim: write failed", "err", err)
+			if !d.reconcileExecutionLocked(t, path) {
+				_ = t.SetField("status", string(ticket.StatusTodo))
+				if err := d.writeTicketLocked(t, path, notify.OriginObserved); err != nil {
+					log.Error("recover stale self-claim: write failed", "err", err)
+					_ = t.SetField("status", string(ticket.StatusInProgress))
+				}
 			}
 			d.tickets[t.ID] = newTicketState(t, path)
 			d.enqueue(t)
@@ -1305,8 +1328,8 @@ func isTerminalOverride(s ticket.Status) bool {
 // cleanupWorktree resolves repo info from a ticket and removes its worktree.
 // Safe to call from a goroutine. Callers must not hold d.mu.
 func (d *Daemon) cleanupWorktree(log *slog.Logger, t *ticket.Ticket) {
-	if t.HasOwnershipMetadata() || ticket.CheckBoardControl(expandTilde(d.config().TicketsDir)) != nil {
-		log.Warn("ordinary cleanup refused for managed control state")
+	if t.HasOwnershipMetadata() || d.claimedElsewhere(t) || ticket.CheckBoardControl(expandTilde(d.config().TicketsDir)) != nil {
+		log.Warn("ordinary cleanup refused for managed or foreign control state")
 		return
 	}
 	_, repoPath, err := d.resolvePath(t)
@@ -1323,7 +1346,7 @@ func (d *Daemon) cleanupWorktree(log *slog.Logger, t *ticket.Ticket) {
 	defer d.mu.Unlock()
 	branch := ticketBranch(d.config(), t)
 	_, running := d.running[t.ID]
-	_, branchReserved := d.runningBranches[commonDir+"\x00"+branch]
+	_, branchReserved := d.branchHolderLocked(commonDir + "\x00" + branch)
 	if running || branchReserved {
 		log.Warn("worktree cleanup deferred while execution remains reserved")
 		return
@@ -1646,6 +1669,7 @@ func (d *Daemon) runTicket(ctx context.Context, ticketID string) {
 		stageName:    stageName,
 		run:          runIndex,
 		result:       run.Result,
+		runData:      run,
 		finalMessage: run.FinalMessage,
 		model:        run.Model,
 		effort:       run.Effort,
@@ -1738,31 +1762,25 @@ func (d *Daemon) runSimpleTicket(ctx, taskCtx context.Context, cfg *config.Confi
 		return
 	}
 	result := run.Result
+	defer d.recordStoppedInvocation(ctx, taskCtx, filePath, agentName, simpleStageName, runIndex, run)
 
-	// Handle context cancellation.
-	if taskCtx.Err() != nil {
-		if ctx.Err() != nil {
-			log.Warn("interrupted by shutdown")
-			return
-		}
-		if t2, err := ticket.ParseFile(filePath); err == nil {
-			if isTerminalOverride(t2.Status) {
-				d.removeWorktreeAt(log, repoPath, wtPath)
-				d.killTaskWindow(ticketID)
-			}
-		}
-		log.Info("interrupted by user")
+	guard := exitGuardParams{log: log, ticketID: ticketID, filePath: filePath, repoPath: repoPath, wtPath: wtPath,
+		execution: run.Execution, claim: executionFrom(taskCtx), snapshot: t}
+	if d.simpleInterrupted(ctx, taskCtx, guard) {
 		return
 	}
 
 	// Checked before the hooks for what it rules out, not for the ticket it
 	// returns: hooks that write the worktree must not run for an exit this
 	// instance may not act on.
-	guard := exitGuardParams{log: log, ticketID: ticketID, filePath: filePath, repoPath: repoPath, wtPath: wtPath, execution: executionFrom(taskCtx), snapshot: t}
 	if _, ok := d.readTicketForExit(guard); !ok {
 		return
 	}
 
+	if err := d.beginFinalization(cfg, run.Execution, run); err != nil {
+		log.Error("persist finalization marker", "err", err)
+		return
+	}
 	// A ticket without a pipeline runs one stage under simpleStageName, so it
 	// fires the post-run event too. spawnAgentRun already fired the pre-run one.
 	hookErr := d.runHooks(taskCtx, cfg, log, hook.Context{
@@ -1775,6 +1793,7 @@ func (d *Daemon) runSimpleTicket(ctx, taskCtx context.Context, cfg *config.Confi
 		Stage:      simpleStageName,
 		Agent:      agentName,
 		ExitCode:   &result.ExitCode,
+		RunOutcome: run.Outcome,
 	})
 	if taskCtx.Err() != nil {
 		log.Info("interrupted during stage_end hooks")
@@ -1792,52 +1811,50 @@ func (d *Daemon) runSimpleTicket(ctx, taskCtx context.Context, cfg *config.Confi
 		return
 	}
 
-	saved, err := d.patchExecution(taskCtx, t2, filePath, func(t2 *ticket.Ticket) error {
-		// Successful exits become done for ordinary tickets or human_review for agent epics.
-		// Failed runs, hooks or child checks pause the ticket.
-		switch {
-		case result.ExitCode != 0:
-			_ = t2.SetField("status", string(ticket.StatusPaused))
-			_ = t2.SetField("last_error", fmt.Sprintf("agent exited with code %d", result.ExitCode))
-			log.Warn("paused", "exit_code", result.ExitCode)
-		case hookErr != nil:
-			// The agent succeeded, so the hook decides the outcome alone. Its run is
-			// still recorded: a paused ticket with no summary hides what the agent did.
-			_ = t2.SetField("status", string(ticket.StatusPaused))
-			_ = t2.SetField("last_error", hookErr.Error())
-			_ = t2.SetField("summary", runSummary(t2.Summary, run.FinalMessage))
-			appendSystemNote(t2, hookErr.Error())
-		case completionErr != nil:
-			_ = t2.SetField("status", string(ticket.StatusPaused))
-			_ = t2.SetField("last_error", completionErr.Error())
-			appendSystemNote(t2, completionErr.Error())
-		case t2.IsAgentEpic():
-			_ = t2.SetField("status", string(ticket.StatusHumanReview))
-			_ = t2.SetField("stage", "")
-			_ = t2.SetField("last_error", "")
-			log.Info("epic ready for human review", "branch", t2.Branch)
-		default:
-			_ = t2.SetField("status", string(ticket.StatusDone))
-			_ = t2.SetField("last_error", "")
-			_ = t2.SetField("summary", runSummary(t2.Summary, run.FinalMessage))
-			completedAt := result.ExitedAt
-			if completedAt.IsZero() {
-				completedAt = time.Now()
+	finish := func(current *ticket.Ticket) {
+		d.recordValidatedRun(ctx, simpleStageName, agentName, current.Pipeline, run)
+		if current.Status == ticket.StatusDone {
+			d.killTaskWindow(ticketID)
+			if !current.IsAgentEpic() {
+				d.removeWorktreeAt(log, repoPath, wtPath)
 			}
-			_ = t2.SetField("completed_at", completedAt.Format(time.RFC3339))
-			log.Info("completed", "branch", t2.Branch)
 		}
+	}
+	saved, err := d.patchFinalExecution(taskCtx, t2, filePath, run.Execution, func(current *ticket.Ticket) error {
+		applySimpleExit(current, run, hookErr, completionErr)
+		if run.Outcome == "complete" && current.Status == ticket.StatusPaused {
+			run.Outcome, run.OutcomeReason = "failed", current.LastError
+		}
+		appendRunHistory(current, run, agentName, simpleStageName, runIndex)
 		return nil
-	})
+	}, finish)
 	if err != nil {
 		log.Error("write failed", "phase", "exit", "err", err)
 		return
 	}
-
-	if result.ExitCode == 0 && hookErr == nil && !saved.IsAgentEpic() {
-		d.killTaskWindow(ticketID)
-		d.removeWorktreeAt(log, repoPath, wtPath)
+	if run.Execution != nil {
+		d.completeFinalization(run.Execution, saved)
+	} else {
+		finish(saved)
 	}
+}
+
+func (d *Daemon) simpleInterrupted(root, task context.Context, p exitGuardParams) bool {
+	if task.Err() == nil {
+		return false
+	}
+	if root.Err() != nil {
+		p.log.Warn("interrupted by shutdown")
+		return true
+	}
+	if current, err := ticket.ParseFile(p.filePath); err == nil {
+		if isTerminalOverride(current.Status) && !d.claimedElsewhere(current) && (p.execution == nil || current.InvocationID == p.execution.Invocation.ID) {
+			d.removeWorktreeAt(p.log, p.repoPath, p.wtPath)
+			d.killTaskWindow(p.ticketID)
+		}
+	}
+	p.log.Info("interrupted by user")
+	return true
 }
 
 // exitGuardParams is what readTicketForExit needs to decide an exit is still
@@ -1848,7 +1865,8 @@ type exitGuardParams struct {
 	filePath  string
 	repoPath  string
 	wtPath    string
-	execution *executionClaim
+	execution *executionRecord
+	claim     *executionClaim
 	snapshot  *ticket.Ticket
 }
 
@@ -1864,10 +1882,14 @@ func (d *Daemon) readTicketForExit(p exitGuardParams) (*ticket.Ticket, bool) {
 		return nil, false
 	}
 
+	if p.execution != nil && t2.InvocationID != p.execution.Invocation.ID {
+		p.log.Info("discarding exit result: invocation replaced")
+		return nil, false
+	}
 	// If user changed status while running, respect that.
 	if d.isUserOverride(t2.Status) {
 		p.log.Info("user override during execution", "status", t2.Status)
-		if isTerminalOverride(t2.Status) {
+		if isTerminalOverride(t2.Status) && !d.claimedElsewhere(t2) {
 			d.removeWorktreeAt(p.log, p.repoPath, p.wtPath)
 			d.killTaskWindow(p.ticketID)
 		}
@@ -1893,11 +1915,15 @@ func (d *Daemon) readTicketForExit(p exitGuardParams) (*ticket.Ticket, bool) {
 	if t2.HasOwnershipMetadata() || t2.Status != ticket.StatusInProgress {
 		return nil, false
 	}
-	if p.execution != nil {
-		if d.executions[p.ticketID] != p.execution || executionOf(t2) != p.execution.expected {
+	if p.claim != nil {
+		if d.executions[p.ticketID] != p.claim || executionOf(t2) != p.claim.expected {
 			return nil, false
 		}
 	} else if p.snapshot != nil && executionOf(t2) != executionOf(p.snapshot) {
+		return nil, false
+	}
+	if p.execution != nil && !executionMatches(t2, p.execution) {
+		p.log.Info("discarding exit result: invocation or lifecycle changed")
 		return nil, false
 	}
 	return t2, true
@@ -1914,6 +1940,7 @@ type handleExitParams struct {
 	stageName    string
 	run          int
 	result       process.Result
+	runData      agentRun
 	finalMessage string
 	// model and effort are what the run passed the agent, and sessionKind and
 	// sessionRef locate the session JSONL it wrote. All four are recorded on
@@ -1929,6 +1956,7 @@ type handleExitParams struct {
 }
 
 func (d *Daemon) handleAgentExit(ctx, taskCtx context.Context, p handleExitParams) {
+	defer d.recordStoppedInvocation(ctx, taskCtx, p.filePath, p.agentName, p.stageName, p.run, p.runData)
 	// If context was cancelled, don't evaluate exit as a pipeline failure.
 	// Distinguish daemon shutdown (ctx cancelled) from user cancel (only taskCtx).
 	if taskCtx.Err() != nil {
@@ -1938,7 +1966,7 @@ func (d *Daemon) handleAgentExit(ctx, taskCtx context.Context, p handleExitParam
 		}
 		// User changed status (e.g. cancelled, done, paused, or open) while running. Clean up worktree if in a terminal override.
 		if t2, err := ticket.ParseFile(p.filePath); err == nil {
-			if isTerminalOverride(t2.Status) {
+			if isTerminalOverride(t2.Status) && !d.claimedElsewhere(t2) && (p.runData.Execution == nil || t2.InvocationID == p.runData.Execution.Invocation.ID) {
 				d.removeWorktreeAt(p.log, p.repoPath, p.wtPath)
 				d.killTaskWindow(p.ticketID)
 			}
@@ -1951,12 +1979,17 @@ func (d *Daemon) handleAgentExit(ctx, taskCtx context.Context, p handleExitParam
 	// returns: an exit the guards discard is not this stage's outcome to act on,
 	// and hooks that write the worktree must not run for it.
 	guard := exitGuardParams{
-		log: p.log, ticketID: p.ticketID, filePath: p.filePath, repoPath: p.repoPath, wtPath: p.wtPath, execution: executionFrom(taskCtx),
+		log: p.log, ticketID: p.ticketID, filePath: p.filePath, repoPath: p.repoPath, wtPath: p.wtPath,
+		execution: p.runData.Execution, claim: executionFrom(taskCtx),
 	}
 	if _, ok := d.readTicketForExit(guard); !ok {
 		return
 	}
 
+	if err := d.beginFinalization(p.cfg, p.runData.Execution, p.runData); err != nil {
+		p.log.Error("persist finalization marker", "err", err)
+		return
+	}
 	// stage_end runs before the exit is evaluated, so a hook still sees the
 	// worktree as the agent left it. It runs after the guards above, because an
 	// exit those discard is not this stage's outcome to act on. Its failure
@@ -1971,6 +2004,7 @@ func (d *Daemon) handleAgentExit(ctx, taskCtx context.Context, p handleExitParam
 		Stage:      p.stageName,
 		Agent:      p.agentName,
 		ExitCode:   &p.result.ExitCode,
+		RunOutcome: p.runData.Outcome,
 	})
 	if taskCtx.Err() != nil {
 		p.log.Info("interrupted during stage_end hooks", "stage", p.stageName)
@@ -1987,18 +2021,19 @@ func (d *Daemon) handleAgentExit(ctx, taskCtx context.Context, p handleExitParam
 
 	var exitAction pipeline.Action
 	hookPaused := hookErr != nil
-	saved, err := d.patchExecution(taskCtx, t2, p.filePath, func(t2 *ticket.Ticket) error {
+	finish := func(current *ticket.Ticket) {
+		d.metrics.Transition(ctx, p.stageName, exitAction.Kind.String())
+		d.recordValidatedRun(ctx, p.stageName, p.agentName, current.Pipeline, p.runData)
+		d.finishAgentExit(ctx, current, p, exitAction.Kind, hookPaused)
+	}
+	saved, err := d.patchFinalExecution(taskCtx, t2, p.filePath, p.runData.Execution, func(current *ticket.Ticket) error {
 		var err error
-		exitAction, err = pipeline.Evaluate(t2, p.pipelineCfg, pipeline.Event{
-			Kind:      pipeline.EventAgentExited,
-			ExitCode:  p.result.ExitCode,
-			Timestamp: p.result.ExitedAt,
-		})
+		exitAction, err = evaluateAgentExit(current, &p, hookErr)
 		if err != nil {
 			return fmt.Errorf("evaluate exit failed: %w", err)
 		}
 
-		summary := runSummary(t2.Summary, p.finalMessage)
+		summary := runSummary(current.Summary, p.finalMessage)
 		if exitAction.History != nil {
 			// The agent that actually ran, together with the settings resolved for
 			// it. The engine names the pipeline step's agent, which the ticket's own
@@ -2021,47 +2056,38 @@ func (d *Daemon) handleAgentExit(ctx, taskCtx context.Context, p handleExitParam
 		case pipeline.ActionAdvance:
 			p.log.Info("advancing", "from", p.stageName, "to", nextStage)
 		case pipeline.ActionComplete:
-			p.log.Info("completed", "branch", t2.Branch)
+			p.log.Info("completed", "branch", current.Branch)
 		case pipeline.ActionRetry:
-			attempt := fieldValue(exitAction.Fields, "attempt")
-			p.log.Info("retrying", "stage", p.stageName, "attempt", attempt)
+			p.log.Info("retrying", "stage", p.stageName, "attempt", fieldValue(exitAction.Fields, "attempt"))
 		case pipeline.ActionBack:
 			p.log.Info("going back", "from", p.stageName, "to", nextStage)
 		case pipeline.ActionPause:
 			p.log.Warn("paused", "stage", p.stageName, "exit_code", p.result.ExitCode)
 		case pipeline.ActionPark:
-			status := fieldValue(exitAction.Fields, "status")
-			p.log.Info("parked", "stage", p.stageName, "status", status, "exit_code", p.result.ExitCode)
+			p.log.Info("parked", "stage", p.stageName, "status", fieldValue(exitAction.Fields, "status"), "exit_code", p.result.ExitCode)
 		case pipeline.ActionSpawn:
 			p.log.Warn("unexpected spawn action after exit", "stage", p.stageName)
 		}
 
-		if err := d.applyAction(t2, exitAction); err != nil {
+		if err := d.applyAction(current, exitAction); err != nil {
 			return fmt.Errorf("apply action failed: %w", err)
 		}
-
-		switch {
-		case exitAction.Kind == pipeline.ActionPause:
-			_ = t2.SetField("last_error", fmt.Sprintf("agent exited with code %d (stage: %s)", p.result.ExitCode, p.stageName))
-		case exitAction.Kind == pipeline.ActionPark && p.result.ExitCode != 0:
-			_ = t2.SetField("last_error", fmt.Sprintf("agent exited with code %d (stage: %s)", p.result.ExitCode, p.stageName))
-		default:
-			_ = t2.SetField("last_error", "")
-		}
-		_ = t2.SetField("summary", summary)
-
+		setAgentExitError(current, p, exitAction)
+		_ = current.SetField("summary", summary)
 		if hookPaused {
-			recordStageEndHookFailure(t2, hookErr)
+			recordStageEndHookFailure(current, hookErr)
 		}
 		return nil
-	})
+	}, finish)
 	if err != nil {
 		p.log.Error("write failed", "phase", "exit", "err", err)
 		return
 	}
-
-	d.metrics.Transition(ctx, p.stageName, exitAction.Kind.String())
-	d.finishAgentExit(ctx, saved, p, exitAction.Kind, hookPaused)
+	if p.runData.Execution != nil {
+		d.completeFinalization(p.runData.Execution, saved)
+	} else {
+		finish(saved)
+	}
 }
 
 // recordStageEndHookFailure stops a ticket whose stage_end hook failed under a
@@ -2285,7 +2311,9 @@ type spawnAgentParams struct {
 	// annotation marks the run a submitted set of Plannotator annotations
 	// schedules. Such a run continues the session the stage's last run left behind
 	// rather than a crash-recovery record.
-	annotation bool
+	annotation          bool
+	supervisionID       string
+	supervisionResolved bool
 }
 
 // sessionStage keys the agent session storage this run uses. An annotation run
@@ -2321,8 +2349,13 @@ type agentRun struct {
 	// SessionKind and SessionRef locate the session JSONL this invocation
 	// wrote, in the form ticket history stores. Both are empty for an agent
 	// that writes no session Kontora can point at.
-	SessionKind string
-	SessionRef  string
+	SessionKind   string
+	SessionRef    string
+	Execution     *executionRecord
+	Outcome       string
+	OutcomeReason string
+	Reported      bool
+	ForcePause    bool
 }
 
 // agentAttempt is the outcome of one runAgentOnce call.
@@ -2349,14 +2382,22 @@ func (d *Daemon) spawnAgentRun(taskCtx context.Context, t *ticket.Ticket, p spaw
 	if !d.executionCurrent(taskCtx, t, p.filePath) {
 		return agentRun{}, false
 	}
+	epicID, scopeErr := d.invocationScope(t, p)
+	if scopeErr != nil {
+		d.pauseExecution(taskCtx, t, p.filePath, scopeErr.Error())
+		return agentRun{}, false
+	}
+	p.supervisionID, p.supervisionResolved = epicID, true
 	// One measurement per stage run, taken here rather than inside
 	// runAgentOnce: a resumed run that did no work calls runAgentOnce a second
 	// time, and a hook there would report two runs for one.
 	started := time.Now()
 	var attempt agentAttempt
 	defer func() {
-		d.recordStageRun(taskCtx, p, attempt, time.Since(started))
-		if t.IsAgentEpic() && !p.annotation && (attempt.started || !attempt.run.Result.StartedAt.IsZero() || attempt.run.SessionRef != "") && !ordinaryReservationRetained(taskCtx) && p.ctx.Err() == nil {
+		if attempt.run.Execution == nil {
+			d.recordStageRun(taskCtx, p, attempt, time.Since(started))
+		}
+		if attempt.run.Execution == nil && t.IsAgentEpic() && !p.annotation && (attempt.started || !attempt.run.Result.StartedAt.IsZero() || attempt.run.SessionRef != "") && !ordinaryReservationRetained(taskCtx) && p.ctx.Err() == nil {
 			d.recordEpicRun(taskCtx, t, p, attempt.run)
 		}
 	}()
@@ -2393,7 +2434,7 @@ func (d *Daemon) spawnAgentRun(taskCtx context.Context, t *ticket.Ticket, p spaw
 
 	if rec := d.resumableRecord(p); rec != nil {
 		attempt = d.runAgentOnce(taskCtx, t, p, binaryPath, rec)
-		if attempt.started {
+		if attempt.started || attempt.run.Reported || ordinaryReservationRetained(taskCtx) {
 			return d.finishAttempt(taskCtx, t, p, attempt)
 		}
 		// An agent that already finished its work can exit inside the tmux
@@ -2478,6 +2519,11 @@ func (d *Daemon) runAgentOnce(taskCtx context.Context, t *ticket.Ticket, p spawn
 			"session_id", rec.SessionID, "annotation", p.annotation)
 	}
 
+	epicID, scopeErr := d.invocationScope(t, p)
+	if scopeErr != nil {
+		return agentAttempt{pauseReason: scopeErr.Error()}
+	}
+	rendered += supervisedInstructions(epicID)
 	rendered, promptErr := epicInvocationPrompt(t, p, rendered, rec != nil)
 	if promptErr != nil {
 		return agentAttempt{pauseReason: promptErr.Error()}
@@ -2545,6 +2591,10 @@ func (d *Daemon) runAgentOnce(taskCtx context.Context, t *ticket.Ticket, p spawn
 	}
 
 	params := d.buildRunnerParams(p.cfg, p.agentCfg, p.stageCfg, binaryPath, args, p.wtPath, p.ticketID, p.agentName, p.stageName, p.sessionStage(rec), sessionID, ckpt)
+	execution, bindErr := d.bindExecution(t, p, &params, epicID)
+	if bindErr != nil {
+		return agentAttempt{pauseReason: "persist invocation: " + bindErr.Error()}
+	}
 	// An annotation run continues the session the stage already finished, and
 	// Claude's --resume and pi's --session <path> both append to that same
 	// JSONL, so the totals read once it returns carry the tokens the stage
@@ -2574,9 +2624,9 @@ func (d *Daemon) runAgentOnce(taskCtx context.Context, t *ticket.Ticket, p spawn
 	eventsFile := stageEventsPath(p.cfg, p.ticketID, p.stageName, p.run)
 	result, runnerErr := d.runner(taskCtx, params)
 	if errors.Is(runnerErr, process.ErrTerminationUncertain) {
-		retainOrdinaryReservation(taskCtx)
+		d.retainUncertainExecution(taskCtx, t, execution)
 		p.log.Error("runner termination unconfirmed; execution state retained", "err", runnerErr)
-		return agentAttempt{run: agentRun{Result: result}, started: true}
+		return agentAttempt{run: agentRun{Result: result, Execution: execution}, started: true}
 	}
 	// Read here, not where the pause reason is built: the agent's session
 	// shutdown removes the marker on its way out, and the poller then clears the
@@ -2604,11 +2654,15 @@ func (d *Daemon) runAgentOnce(taskCtx context.Context, t *ticket.Ticket, p spawn
 		// A runner can fail after a complete turn, and that turn wrote a
 		// session, so the reference is recorded on this path too.
 		failKind, failRef := runSessionRef(p.cfg, p.ticketID, params, scope.startedAt)
+		failedRun := agentRun{Result: result, Resumed: rec != nil, Model: effModel, Effort: effEffort,
+			SessionKind: failKind, SessionRef: failRef}
+		classifyExecution(execution, &failedRun, runnerFailureReason(runnerErr, openQuestion, hadOpenQuestion))
+		if execution != nil {
+			failedRun.ForcePause = true
+			return agentAttempt{run: failedRun, ok: true, started: agentDidWork(result)}
+		}
 		return agentAttempt{
-			run: agentRun{
-				Result: result, Resumed: rec != nil, Model: effModel, Effort: effEffort,
-				SessionKind: failKind, SessionRef: failRef,
-			},
+			run:     failedRun,
 			started: agentDidWork(result),
 			// Built here rather than by the caller, which runs after the
 			// deferred cleanup has dropped the question.
@@ -2630,6 +2684,7 @@ func (d *Daemon) runAgentOnce(taskCtx context.Context, t *ticket.Ticket, p spawn
 		SessionRef:   sessionRef,
 	}
 
+	classifyExecution(execution, &run, "")
 	dur := result.ExitedAt.Sub(result.StartedAt).Truncate(time.Second)
 	attrs := []any{"stage", p.stageName, "exit_code", result.ExitCode, "duration", dur}
 	if result.ExitCode != 0 {
@@ -2642,19 +2697,27 @@ func (d *Daemon) runAgentOnce(taskCtx context.Context, t *ticket.Ticket, p spawn
 	}
 	p.log.Info("agent exited", attrs...)
 
-	// A clean exit can still hide a failed run when an agent records a provider
-	// error in its session or output. Detect that and pause instead. Non-zero
-	// exits already flow through the pipeline's on_failure handling, so leave
-	// those alone. Skip when the run was cancelled.
-	if result.ExitCode == 0 && taskCtx.Err() == nil {
-		if reason, kind, detected := d.detectAgentError(p.agentCfg, params, logStart, scope.startedAt); detected {
+	return d.validateAgentAttempt(taskCtx, p, params, logStart, scope.startedAt, run)
+}
+
+func (d *Daemon) validateAgentAttempt(taskCtx context.Context, p spawnAgentParams, params RunnerParams, logStart int64, startedAt time.Time, run agentRun) agentAttempt {
+	// Non-zero exits already follow the pipeline's failure policy.
+	if run.Result.ExitCode == 0 && taskCtx.Err() == nil {
+		if reason, kind, detected := d.detectAgentError(p.agentCfg, params, logStart, startedAt); detected {
 			p.log.Warn("agent error detected despite clean exit", "stage", p.stageName, "reason", reason, "kind", kind)
 			d.metrics.AgentError(taskCtx, p.stageName, p.agentName, kind)
 			d.killTaskWindow(p.ticketID)
+			if run.Execution != nil {
+				failure := "agent error: " + reason
+				if run.Outcome == "blocked" && run.OutcomeReason != "" {
+					failure += "; " + run.OutcomeReason
+				}
+				run.Outcome, run.OutcomeReason, run.ForcePause = "failed", failure, true
+				return agentAttempt{run: run, ok: true, started: true}
+			}
 			return agentAttempt{run: run, started: true, pauseReason: "agent error: " + reason}
 		}
 	}
-
 	return agentAttempt{run: run, ok: true, started: true}
 }
 
@@ -3057,8 +3120,20 @@ func (d *Daemon) writeOrdinaryTicketFile(t *ticket.Ticket, path string, origin n
 	if err != nil {
 		return time.Time{}, err
 	}
+	perm := os.FileMode(0o644)
+	if st, err := os.Stat(path); err == nil {
+		perm = st.Mode().Perm()
+		// Rename alone would replace a read-only ticket in a writable directory.
+		f, err := os.OpenFile(path, os.O_WRONLY, 0)
+		if err != nil {
+			return time.Time{}, err
+		}
+		if err := f.Close(); err != nil {
+			return time.Time{}, err
+		}
+	}
 	d.recordSelfWrite(path, data)
-	if err := os.WriteFile(path, data, 0o644); err != nil {
+	if err := atomicWriteFile(path, data, perm); err != nil {
 		d.forgetSelfWrite(path)
 		return time.Time{}, err
 	}
@@ -3256,6 +3331,10 @@ func (d *Daemon) killAll() {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	for id, cancel := range d.running {
+		// Retained executions have no live runner to cancel. Startup must reconcile their journals.
+		if _, retained := d.recoveredReservations[id]; retained {
+			continue
+		}
 		d.ticketLog(id).Info("killing agent", "reason", "shutdown")
 		cancel()
 	}
@@ -3279,7 +3358,8 @@ func (d *Daemon) partitionWindows(windows []string) (mine, foreign []string) {
 	defer d.mu.Unlock()
 	for _, name := range windows {
 		ts, known := d.tickets[name]
-		if known && !d.claimedElsewhere(ts.ticket) {
+		_, reserved := d.running[name]
+		if known && !reserved && !d.claimedElsewhere(ts.ticket) && !ts.ticket.HasOwnershipMetadata() {
 			mine = append(mine, name)
 		} else {
 			foreign = append(foreign, name)

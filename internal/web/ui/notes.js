@@ -120,13 +120,16 @@ export function kontoraNotes() {
           });
         }
         if (h.completed_at) {
-          var ok = h.exit_code === 0;
+          var outcome = this.runOutcomeLabel(h);
+          var color = outcome === 'complete' ? 'green'
+            : outcome === 'blocked' ? 'amber'
+            : outcome === 'failed' || outcome === 'protocol_error' ? 'rose' : 'indigo';
           rows.push({
             kind: 'event',
             key: 'e:' + i + ':end',
             at: h.completed_at,
-            color: ok ? 'green' : 'rose',
-            label: stage + (ok ? ' done' : ' failed'),
+            color: color,
+            label: stage + ' · ' + outcome,
             meta: this.noteRunMeta(h),
           });
         }
@@ -138,7 +141,9 @@ export function kontoraNotes() {
     },
 
     noteRunMeta(h) {
-      var meta = 'exit ' + (h.exit_code || 0);
+      var meta = 'runner exit ' + (Number.isInteger(h.exit_code) ? h.exit_code : 'unknown');
+      if (h.outcome_reason) meta += ' · ' + h.outcome_reason;
+      if (h.invocation_id) meta += ' · invocation ' + h.invocation_id;
       if (h.started_at && h.completed_at) {
         var secs = Math.round((new Date(h.completed_at) - new Date(h.started_at)) / 1000);
         var dur = this.formatSeconds(secs);

@@ -87,7 +87,7 @@ func (d *Daemon) readyManagedJobLocked() int {
 	}
 	first := -1
 	for i, job := range state.queue {
-		if job.planner && plannerActive || job.slotCount() > cap(d.sem)-len(d.sem) || !job.ready() {
+		if job.planner && plannerActive || job.slotCount() > d.availablePoolSlotsLocked(d.sem) || !job.ready() {
 			continue
 		}
 		if first < 0 {
@@ -135,7 +135,7 @@ func (d *Daemon) readyOrdinaryJobLocked() int {
 	first := -1
 	for i, item := range d.queue {
 		pool := d.ticketPool(d.tickets[item.ticketID].ticket)
-		if len(pool) < cap(pool) && (first < 0 || d.queue.Less(i, first)) {
+		if d.availablePoolSlotsLocked(pool) > 0 && (first < 0 || d.queue.Less(i, first)) {
 			first = i
 		}
 	}
@@ -171,7 +171,7 @@ func (d *Daemon) dispatch(ctx context.Context, wg *sync.WaitGroup) {
 			} else {
 				pool = d.ticketPool(d.tickets[d.queue[ordinaryIndex].ticketID].ticket)
 			}
-			if slots > cap(pool)-len(pool) {
+			if slots > d.availablePoolSlotsLocked(pool) {
 				d.queueCond.Wait()
 				continue
 			}

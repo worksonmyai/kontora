@@ -2818,15 +2818,17 @@
                   <template x-for="(h, hi) in selectedTicket.history" :key="hi">
                     <button type="button" @click="openActivity(h.stage, h.run || 0)"
                             class="flex items-center gap-2 min-w-0 text-left hover:text-tx-2 transition-colors">
-                      <span :class="h.exit_code === 0 ? 'text-ok' : 'text-st-cancel'" x-text="h.exit_code === 0 ? '✓' : '✕'"></span>
+                      <span :class="runOutcomeClass(h)" x-text="runOutcomeLabel(h)"></span>
                       <span class="text-tx-3 truncate" x-text="historyLabel(h)"></span>
+                      <span x-show="h.outcome_reason" class="text-tx-3 truncate" :title="h.outcome_reason" x-text="h.outcome_reason"></span>
+                      <span x-show="h.invocation_id" class="text-tx-faint truncate" :title="h.invocation_id" x-text="'invocation ' + h.invocation_id"></span>
                       <span x-show="historySettings(h)" class="shrink-0 max-w-[72px] truncate px-1 rounded border border-surface-700 text-tx-faint"
                             :title="historySettings(h)" x-text="historySettings(h)"></span>
                       <span class="flex-1"></span>
                       <span x-show="costLabel(ticketRunCost(hi))" class="text-tx-3 shrink-0 num"
                             :title="costTooltip(ticketRunCost(hi))" x-text="costLabel(ticketRunCost(hi))"></span>
                       <span class="text-surface-600 shrink-0"
-                            x-text="'exit ' + h.exit_code + (formatElapsed(h.started_at, h.completed_at) ? ' · ' + formatElapsed(h.started_at, h.completed_at) : '')"></span>
+                            x-text="'runner exit ' + h.exit_code + (formatElapsed(h.started_at, h.completed_at) ? ' · ' + formatElapsed(h.started_at, h.completed_at) : '')"></span>
                     </button>
                   </template>
                 </div>
@@ -3806,7 +3808,7 @@
         <div class="stats-card flex-col gap-2.5 min-h-0">
           <div class="flex items-baseline justify-between">
             <span class="stats-title">agents &amp; models</span>
-            <span class="stats-cap">first-pass = no retry</span>
+            <span class="stats-cap">first-pass = verified complete, no retry</span>
           </div>
           <div class="grid grid-cols-[1.3fr_48px_104px_50px_56px] gap-2.5 font-mono text-[9px] tracking-[.02em] uppercase text-tx-4 pb-1.5 border-b border-surface-700 whitespace-nowrap">
             <span>agent</span><span class="text-right">runs</span><span>first-pass</span><span class="text-right">median</span><span class="text-right">tok/run</span>
@@ -4234,13 +4236,15 @@
                   <div class="flex flex-col gap-[7px] font-mono text-[10.5px]">
                     <template x-for="(h, hi) in selectedTicket.history" :key="hi">
                       <div class="flex items-center gap-2 min-w-0">
-                        <span :class="h.exit_code === 0 ? 'text-ok' : 'text-st-cancel'" x-text="h.exit_code === 0 ? '✓' : '✕'"></span>
+                        <span :class="runOutcomeClass(h)" x-text="runOutcomeLabel(h)"></span>
                         <span class="text-tx-3 truncate" x-text="historyLabel(h)"></span>
+                        <span x-show="h.outcome_reason" class="text-tx-3 truncate" :title="h.outcome_reason" x-text="h.outcome_reason"></span>
+                        <span x-show="h.invocation_id" class="text-tx-faint truncate" :title="h.invocation_id" x-text="'invocation ' + h.invocation_id"></span>
                         <span class="flex-1"></span>
                         <span x-show="costLabel(ticketRunCost(hi))" class="text-tx-3 shrink-0 num"
                               :title="costTooltip(ticketRunCost(hi))" x-text="costLabel(ticketRunCost(hi))"></span>
                         <span class="text-surface-600 shrink-0"
-                              x-text="'exit ' + h.exit_code + (formatElapsed(h.started_at, h.completed_at) ? ' · ' + formatElapsed(h.started_at, h.completed_at) : '')"></span>
+                              x-text="'runner exit ' + h.exit_code + (formatElapsed(h.started_at, h.completed_at) ? ' · ' + formatElapsed(h.started_at, h.completed_at) : '')"></span>
                       </div>
                     </template>
                   </div>
@@ -6320,6 +6324,9 @@
 
         <!-- ticket (body) -->
         <div x-show="detailTab==='ticket'" class="overflow-y-auto" style="flex:1;min-height:0;padding:18px 16px 24px;">
+          <template x-if="selectedTicket?.last_error">
+            <div role="alert" style="border-left:3px solid rgba(var(--err),1);padding-left:12px;margin-bottom:18px;font-family:'JetBrains Mono',monospace;font-size:12px;white-space:pre-wrap;overflow-wrap:anywhere;color:rgba(var(--err),1);" x-text="selectedTicket.last_error"></div>
+          </template>
           <h1 style="font-family:'JetBrains Mono',monospace;font-size:19px;font-weight:700;line-height:1.35;color:rgba(var(--tx),1);margin:0 0 18px;" x-text="selectedTicket?.title"></h1>
           <!-- Outcome card: the whole ticket, not the run that ended last. The
                stage summaries stay below in their own card. -->

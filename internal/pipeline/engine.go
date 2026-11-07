@@ -16,9 +16,13 @@ const (
 )
 
 type Event struct {
-	Kind      EventKind
-	ExitCode  int
-	Timestamp time.Time
+	Kind          EventKind
+	ExitCode      int
+	Timestamp     time.Time
+	RunOutcome    string // complete, blocked, protocol_error or failed; empty preserves legacy behavior
+	OutcomeReason string
+	InvocationID  string
+	ForcePause    bool
 }
 
 type ActionKind int
@@ -119,14 +123,29 @@ func handleAgentExited(t *ticket.Ticket, pipeline config.Pipeline, ev Event) (Ac
 
 	step := pipeline[idx]
 	history := &ticket.HistoryEntry{
-		Stage:       step.Stage,
-		Agent:       step.Agent,
-		ExitCode:    ev.ExitCode,
-		StartedAt:   t.StartedAt,
-		CompletedAt: &ev.Timestamp,
+		Stage:         step.Stage,
+		Agent:         step.Agent,
+		ExitCode:      ev.ExitCode,
+		StartedAt:     t.StartedAt,
+		CompletedAt:   &ev.Timestamp,
+		RunOutcome:    ticket.RunOutcome(ev.RunOutcome),
+		OutcomeReason: ev.OutcomeReason,
+		InvocationID:  ev.InvocationID,
 	}
 
-	if ev.ExitCode == 0 {
+	// Failures that require operator action must not retry or roll back.
+	if ev.ForcePause || ev.RunOutcome == "blocked" || ev.RunOutcome == "protocol_error" {
+		return Action{
+			Kind: ActionPause,
+			Fields: []FieldUpdate{
+				{Key: "status", Value: string(ticket.StatusPaused)},
+				{Key: "last_error", Value: ev.OutcomeReason},
+			},
+			History: history,
+		}, nil
+	}
+
+	if ev.ExitCode == 0 && ev.RunOutcome != "failed" {
 		return handleSuccess(step, idx, pipeline, ev, history)
 	}
 	return handleFailure(step, idx, pipeline, t, history)

@@ -512,6 +512,7 @@ type TicketInfo struct {
 	Agent         string     `json:"agent"`
 	AgentOverride bool       `json:"agent_override,omitempty"`
 	Attempt       int        `json:"attempt"`
+	InvocationID  string     `json:"invocation_id,omitempty"`
 	CreatedAt     *time.Time `json:"created_at,omitempty"`
 	StartedAt     *time.Time `json:"started_at,omitempty"`
 	// FinishedAt is when the last stage run completed. It is in the board
@@ -673,8 +674,11 @@ const (
 )
 
 type HistoryInfo struct {
-	Stage string `json:"stage"`
-	Agent string `json:"agent,omitempty"`
+	RunOutcome    string `json:"run_outcome,omitempty"`
+	OutcomeReason string `json:"outcome_reason,omitempty"`
+	InvocationID  string `json:"invocation_id,omitempty"`
+	Stage         string `json:"stage"`
+	Agent         string `json:"agent,omitempty"`
 	// Model and Effort are what Kontora passed the agent, not what the agent
 	// reported running as. Absent means Kontora passed no flag.
 	Model       string     `json:"model,omitempty"`
@@ -858,6 +862,7 @@ func TicketInfoFromView(v app.View) TicketInfo {
 		Path:            v.Path,
 		Agent:           v.Agent,
 		AgentOverride:   v.AgentOverride,
+		InvocationID:    v.InvocationID,
 		Attempt:         v.Attempt,
 		CreatedAt:       v.CreatedAt,
 		StartedAt:       v.StartedAt,
@@ -900,6 +905,9 @@ func TicketInfoFromView(v app.View) TicketInfo {
 				Model:         h.Model,
 				Effort:        h.Effort,
 				ExitCode:      h.ExitCode,
+				RunOutcome:    h.RunOutcome,
+				OutcomeReason: h.OutcomeReason,
+				InvocationID:  h.InvocationID,
 				Run:           h.Run,
 				StartedAt:     h.StartedAt,
 				CompletedAt:   h.CompletedAt,

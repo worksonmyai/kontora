@@ -176,13 +176,16 @@ func (d *Daemon) statsTicketsLocked(cfg *config.Config, now time.Time) ([]statsT
 				attempts[h.Stage] = attempt + 1
 			}
 			st.ticket.History = append(st.ticket.History, stats.Run{
-				Stage:       h.Stage,
-				Agent:       h.Agent,
-				ExitCode:    h.ExitCode,
-				Run:         attempt,
-				StartedAt:   cloneTime(h.StartedAt),
-				CompletedAt: cloneTime(h.CompletedAt),
-				Kind:        h.Kind,
+				Stage:         h.Stage,
+				Agent:         h.Agent,
+				ExitCode:      h.ExitCode,
+				RunOutcome:    string(h.RunOutcome),
+				OutcomeReason: h.OutcomeReason,
+				InvocationID:  h.InvocationID,
+				Run:           attempt,
+				StartedAt:     cloneTime(h.StartedAt),
+				CompletedAt:   cloneTime(h.CompletedAt),
+				Kind:          h.Kind,
 			})
 			st.paths = append(st.paths, statsSidecarPath(logsDir, t.ID, h.Stage, file))
 		}
@@ -212,11 +215,8 @@ func (d *Daemon) statsTicketsLocked(cfg *config.Config, now time.Time) ([]statsT
 	return out, live
 }
 
-// simpleTicketRun stands in for the history row a ticket with no pipeline never
-// gets: that path never calls pipeline.Evaluate, so nothing appends one, and
-// its runs, its duration and the tokens its sidecar holds would all read zero.
-// The ticket's own fields describe the run, since the simple path runs an agent
-// once per pickup under the "default" stage.
+// Legacy standalone runs have no history row. Their timestamps and sidecars
+// still contribute to statistics, unless history already records the current run.
 func simpleTicketRun(cfg *config.Config, logsDir string, t *ticket.Ticket) (stats.Run, string, bool) {
 	if !simpleTicketEnded(t) {
 		return stats.Run{}, "", false
@@ -231,7 +231,14 @@ func simpleTicketRun(cfg *config.Config, logsDir string, t *ticket.Ticket) (stat
 	if t.Status == ticket.StatusPaused {
 		exit = 1
 	}
+	attempt := 0
+	for _, h := range t.History {
+		if h.Stage == simpleStageName && h.Kind == "" {
+			attempt++
+		}
+	}
 	return stats.Run{
+		Run:         attempt,
 		Stage:       simpleStageName,
 		Agent:       agent,
 		ExitCode:    exit,
@@ -243,6 +250,13 @@ func simpleTicketRun(cfg *config.Config, logsDir string, t *ticket.Ticket) (stat
 func simpleTicketEnded(t *ticket.Ticket) bool {
 	if t.Pipeline != "" || t.IsAgentEpic() || t.StartedAt == nil || t.Status == ticket.StatusInProgress {
 		return false
+	}
+	for _, h := range t.History {
+		if h.Kind != ticket.KindAnnotation &&
+			((h.StartedAt != nil && !h.StartedAt.Before(*t.StartedAt)) ||
+				(h.CompletedAt != nil && !h.CompletedAt.Before(*t.StartedAt))) {
+			return false
+		}
 	}
 	if t.CompletedAt != nil {
 		return true

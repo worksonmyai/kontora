@@ -4323,13 +4323,24 @@ func TestSelfWriteSuppression(t *testing.T) {
 // changes to the file, never for its disappearance.
 func TestRemovalIsNeverSuppressed(t *testing.T) {
 	h := newHarness(t)
-	d := h.newDaemon(h.cfg)
+	ready := make(chan struct{})
+	logger := slog.New(slog.NewTextHandler(writerFunc(func(b []byte) (int, error) {
+		if strings.Contains(string(b), `msg="daemon started"`) {
+			close(ready)
+		}
+		return len(b), nil
+	}), nil))
+	d := h.newDaemon(h.cfg, WithLogger(logger))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	errCh := make(chan error, 1)
 	go func() { errCh <- d.Run(ctx) }()
-	time.Sleep(200 * time.Millisecond)
+	select {
+	case <-ready:
+	case <-ctx.Done():
+		t.Fatal("daemon did not start")
+	}
 
 	// status=open keeps the ticket out of the queue, so the only writes to the
 	// file are the creation the daemon made itself.

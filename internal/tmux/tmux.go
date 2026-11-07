@@ -277,7 +277,7 @@ func writeInteractiveWrapper(cmd []string, gateFile string, env map[string]strin
 // writeStandardWrapper creates a temporary executable script that runs cmd,
 // writes $? to exitFile, and self-deletes. Used for non-interactive agents
 // where completion is detected by polling the exit file.
-func writeStandardWrapper(cmd []string, exitFile, gateFile string, env map[string]string, pathDirs []string) (string, error) {
+func writeStandardWrapper(cmd []string, exitFile, gateFile string, env map[string]string, pathDirs []string, requireTermination bool) (string, error) {
 	f, err := os.CreateTemp("", "kontora-wrapper-*.sh")
 	if err != nil {
 		return "", err
@@ -300,7 +300,9 @@ func writeStandardWrapper(cmd []string, exitFile, gateFile string, env map[strin
 	b.WriteString("_EC=$?\n")
 	fmt.Fprintf(&b, "echo $_EC > %s\n", shellQuote(exitFile))
 	fmt.Fprintf(&b, "rm -f %s\n", shellQuote(f.Name()))
-	b.WriteString("if [ $_EC -ne 0 ]; then exec \"${SHELL:-/bin/sh}\"; fi\n")
+	if !requireTermination {
+		b.WriteString("if [ $_EC -ne 0 ]; then exec \"${SHELL:-/bin/sh}\"; fi\n")
+	}
 
 	if _, err := f.WriteString(b.String()); err != nil {
 		f.Close()

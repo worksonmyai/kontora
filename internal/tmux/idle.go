@@ -166,39 +166,32 @@ func idleLoop(ctx context.Context, tm idleTmux, p RunParams, startedAt time.Time
 			}
 
 			decision := IdleDecision{Action: IdleFinish}
-			if p.OnIdle != nil {
+			if !p.terminalReported() && p.OnIdle != nil {
 				decision = p.OnIdle(ctx, IdleEvent{CompactErr: compactErr})
 			}
 			compactErr = nil
 			if ctx.Err() != nil {
 				return -1, errors.Join(ctx.Err(), stopWindow(tm))
 			}
-
-			if decision.Action == IdleFinish {
-				if err := tm.SendKeys("/exit"); err != nil {
-					if ctx.Err() != nil {
-						return -1, errors.Join(ctx.Err(), err, stopWindow(tm))
-					}
-					return -1, fmt.Errorf("sending /exit after hook: %w", err)
-				}
-				// Allow five seconds after /exit. A timeout still completes the turn
-				// successfully, but an open window provides no termination evidence.
-				waitErr := tm.WaitWindowExit(5 * time.Second)
-				if ctx.Err() != nil {
-					return -1, errors.Join(ctx.Err(), stopWindow(tm))
-				}
-				if waitErr != nil && !errors.Is(waitErr, errWindowExitTimeout) {
-					return -1, errors.Join(process.ErrTerminationUncertain, waitErr)
-				}
-				return 0, nil
+			if p.terminalReported() {
+				decision.Action = IdleFinish
 			}
-
 			if decision.Action == IdleCompact {
 				compactErr = compact(ctx, tm, compactChannel, decision.CompactInstructions, p.compactTimeout())
 			}
 			if ctx.Err() != nil {
 				return -1, errors.Join(ctx.Err(), stopWindow(tm))
 			}
+			// A terminal result may have arrived while the decision or compaction
+			// was in flight. Recheck at the continuation boundary, then use the
+			// normal /exit flow rather than killing the reporting agent.
+			if p.terminalReported() {
+				decision.Action = IdleFinish
+			}
+			if decision.Action == IdleFinish {
+				return finishIdle(ctx, tm, p.RequireTermination)
+			}
+
 			if err := tm.SendLiteral(decision.Continuation); err != nil {
 				return -1, fmt.Errorf("sending continuation prompt: %w", err)
 			}
@@ -223,6 +216,25 @@ func idleLoop(ctx context.Context, tm idleTmux, p RunParams, startedAt time.Time
 			return -1, errors.Join(ctx.Err(), err)
 		}
 	}
+}
+
+func finishIdle(ctx context.Context, tm idleTmux, requireTermination bool) (int, error) {
+	if err := tm.SendKeys("/exit"); err != nil {
+		if ctx.Err() != nil {
+			return -1, errors.Join(ctx.Err(), err, stopWindow(tm))
+		}
+		return -1, fmt.Errorf("sending /exit after hook: %w", err)
+	}
+	// Allow five seconds after /exit. Only unrelated runs may count a
+	// timeout as success without termination evidence.
+	waitErr := tm.WaitWindowExit(5 * time.Second)
+	if ctx.Err() != nil {
+		return -1, errors.Join(ctx.Err(), stopWindow(tm))
+	}
+	if waitErr != nil && (requireTermination || !errors.Is(waitErr, errWindowExitTimeout)) {
+		return -1, errors.Join(process.ErrTerminationUncertain, waitErr)
+	}
+	return 0, nil
 }
 
 // compact types /compact and waits for the agent's PostCompact hook to signal.

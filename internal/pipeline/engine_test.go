@@ -56,7 +56,7 @@ func TestEvaluate(t *testing.T) {
 	pipeline := testPipeline()
 	ts := time.Date(2026, 3, 5, 11, 0, 0, 0, time.UTC)
 
-	tests := []struct {
+	type testCase struct {
 		name             string
 		ticket           *ticket.Ticket
 		ev               Event
@@ -69,7 +69,10 @@ func TestEvaluate(t *testing.T) {
 		wantHistoryStage string
 		wantHistoryAgent string
 		wantHistoryExit  int
-	}{
+		wantFieldsAbsent []string
+		pipeline         config.Pipeline
+	}
+	tests := []testCase{
 		{
 			name:           "pickup spawns correct agent",
 			ticket:         testTicket("plan", ticket.StatusTodo, 0),
@@ -179,6 +182,38 @@ func TestEvaluate(t *testing.T) {
 			wantHistoryExit:  137,
 		},
 		{
+			name:             "complete report advances only current stage",
+			ticket:           testTicket("plan", ticket.StatusInProgress, 0),
+			ev:               Event{Kind: EventAgentExited, RunOutcome: "complete", OutcomeReason: "plan ready", InvocationID: "inv-complete", Timestamp: ts},
+			wantKind:         ActionAdvance,
+			wantFields:       map[string]string{"status": "todo", "stage": "code", "attempt": "0"},
+			wantFieldsAbsent: []string{"completed_at"},
+			wantHistory:      true,
+			wantHistoryStage: "plan",
+			wantHistoryAgent: "opus",
+		},
+		{
+			name:             "complete report finishes last stage",
+			ticket:           testTicket("commit", ticket.StatusInProgress, 0),
+			ev:               Event{Kind: EventAgentExited, RunOutcome: "complete", Timestamp: ts},
+			wantKind:         ActionComplete,
+			wantFields:       map[string]string{"status": "done"},
+			wantHistory:      true,
+			wantHistoryStage: "commit",
+			wantHistoryAgent: "sonnet",
+		},
+		{
+			name:             "complete report cannot override runner failure",
+			ticket:           testTicket("code", ticket.StatusInProgress, 1),
+			ev:               Event{Kind: EventAgentExited, ExitCode: 1, RunOutcome: "complete", Timestamp: ts},
+			wantKind:         ActionRetry,
+			wantFields:       map[string]string{"status": "todo", "attempt": "2"},
+			wantHistory:      true,
+			wantHistoryStage: "code",
+			wantHistoryAgent: "sonnet",
+			wantHistoryExit:  1,
+		},
+		{
 			name:    "agent exited wrong status errors",
 			ticket:  testTicket("plan", ticket.StatusTodo, 0),
 			ev:      Event{Kind: EventAgentExited, ExitCode: 0, Timestamp: ts},
@@ -186,9 +221,65 @@ func TestEvaluate(t *testing.T) {
 		},
 	}
 
+	// Semantic failures retain every existing failure policy, even with exit zero.
+	for _, tc := range []struct {
+		stage    string
+		attempt  int
+		kind     ActionKind
+		fields   map[string]string
+		pipeline config.Pipeline
+	}{
+		{"plan", 0, ActionPause, map[string]string{"status": "paused"}, pipeline},
+		{"code", 0, ActionRetry, map[string]string{"status": "todo", "attempt": "1"}, pipeline},
+		{"code", 1, ActionRetry, map[string]string{"status": "todo", "attempt": "2"}, pipeline},
+		{"code", 2, ActionPause, map[string]string{"status": "paused"}, pipeline},
+		{"review", 1, ActionBack, map[string]string{"status": "todo", "stage": "code", "attempt": "0"}, pipeline},
+		{"commit", 1, ActionPause, map[string]string{"status": "paused"}, pipeline},
+		{"code", 1, ActionPark, map[string]string{"status": "needs_fix"}, testPipelineWithCustomStatuses()},
+	} {
+		idx, err := stageIndex(tc.pipeline, tc.stage)
+		require.NoError(t, err)
+		for _, exitCode := range []int{0, 1} {
+			tests = append(tests, testCase{
+				name:             fmt.Sprintf("failed %s attempt %d policy %s exit %d", tc.stage, tc.attempt, tc.pipeline[idx].OnFailure, exitCode),
+				ticket:           testTicket(tc.stage, ticket.StatusInProgress, tc.attempt),
+				ev:               Event{Kind: EventAgentExited, ExitCode: exitCode, RunOutcome: "failed", OutcomeReason: "validation failed", InvocationID: "inv-failed", Timestamp: ts},
+				wantKind:         tc.kind,
+				wantFields:       tc.fields,
+				wantFieldsAbsent: []string{"completed_at"},
+				wantHistory:      true,
+				wantHistoryStage: tc.stage,
+				wantHistoryAgent: tc.pipeline[idx].Agent,
+				wantHistoryExit:  exitCode,
+				pipeline:         tc.pipeline,
+			})
+			// Neither blocked nor protocol errors enter the failure policy,
+			// even when the runner failed or retries have been exhausted.
+			for _, disposition := range []struct {
+				outcome    string
+				forcePause bool
+			}{{"blocked", false}, {"protocol_error", false}, {"failed", true}} {
+				tt := tests[len(tests)-1]
+				tt.name = fmt.Sprintf("%s forced=%t %s attempt %d policy %s exit %d", disposition.outcome, disposition.forcePause, tc.stage, tc.attempt, tc.pipeline[idx].OnFailure, exitCode)
+				tt.ev.RunOutcome = disposition.outcome
+				tt.ev.ForcePause = disposition.forcePause
+				tt.ev.OutcomeReason = "requires operator action"
+				tt.ev.InvocationID = "inv-" + disposition.outcome
+				tt.wantKind = ActionPause
+				tt.wantFields = map[string]string{"status": "paused", "last_error": tt.ev.OutcomeReason}
+				tt.wantFieldsAbsent = []string{"stage", "attempt", "completed_at"}
+				tests = append(tests, tt)
+			}
+		}
+	}
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			action, err := Evaluate(tt.ticket, pipeline, tt.ev)
+			p := pipeline
+			if tt.pipeline != nil {
+				p = tt.pipeline
+			}
+			action, err := Evaluate(tt.ticket, p, tt.ev)
 			if tt.wantErr {
 				require.Error(t, err)
 				return
@@ -212,6 +303,12 @@ func TestEvaluate(t *testing.T) {
 				}
 			}
 
+			for _, key := range tt.wantFieldsAbsent {
+				for _, field := range action.Fields {
+					assert.NotEqual(t, key, field.Key, "unexpected field update")
+				}
+			}
+
 			if tt.wantSpawnAgent != "" {
 				require.NotNil(t, action.Spawn)
 				assert.Equal(t, tt.wantSpawnAgent, action.Spawn.Agent)
@@ -223,6 +320,10 @@ func TestEvaluate(t *testing.T) {
 				assert.Equal(t, tt.wantHistoryStage, action.History.Stage)
 				assert.Equal(t, tt.wantHistoryAgent, action.History.Agent)
 				assert.Equal(t, tt.wantHistoryExit, action.History.ExitCode)
+				assert.Equal(t, tt.ev.RunOutcome, string(action.History.RunOutcome))
+				assert.Equal(t, tt.ev.OutcomeReason, action.History.OutcomeReason)
+				assert.Equal(t, tt.ev.InvocationID, action.History.InvocationID)
+				assert.Equal(t, tt.ticket.StartedAt, action.History.StartedAt)
 				require.NotNil(t, action.History.CompletedAt)
 				assert.True(t, action.History.CompletedAt.Equal(ts), "History.CompletedAt = %v, want %v", action.History.CompletedAt, ts)
 			}

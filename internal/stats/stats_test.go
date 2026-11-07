@@ -23,7 +23,7 @@ func ago(days, hour int) *time.Time {
 
 func mkRun(stage, agent string, idx int, start *time.Time, dur time.Duration) Run {
 	end := start.Add(dur)
-	return Run{Stage: stage, Agent: agent, Run: idx, StartedAt: start, CompletedAt: &end}
+	return Run{Stage: stage, Agent: agent, Run: idx, StartedAt: start, CompletedAt: &end, RunOutcome: "complete"}
 }
 
 // spent attaches the input and output counts a run's sidecar reported. A run
@@ -31,6 +31,32 @@ func mkRun(stage, agent string, idx int, start *time.Time, dur time.Duration) Ru
 func spent(r Run, in, out int) Run {
 	r.Usage = &Usage{In: in, Out: out}
 	return r
+}
+
+func TestSemanticOutcomesAreIndependentOfRunnerExit(t *testing.T) {
+	tickets := []Ticket{}
+	for _, outcome := range []string{"complete", "blocked", "protocol_error", "failed", "", "future"} {
+		r := spent(mkRun("default", "claude", 0, ago(1, 9), time.Minute), 100, 10)
+		r.RunOutcome = outcome
+		tickets = append(tickets, Ticket{ID: "ticket-" + outcome, History: []Run{r}})
+	}
+	r := mkRun("default", "claude", 0, ago(1, 9), time.Minute)
+	r.RunOutcome = ""
+	r.ExitCode = 7
+	tickets = append(tickets, Ticket{ID: "runner-failed", History: []Run{r}})
+	result := Compute(tickets, Options{Now: testNow, Days: 7})
+	require.Len(t, result.Stages, 1)
+	s := result.Stages[0]
+	require.Equal(t, 7, s.Runs)
+	require.Equal(t, 1, s.Complete)
+	require.Equal(t, 1, s.Blocked)
+	require.Equal(t, 1, s.ProtocolError)
+	require.Equal(t, 1, s.Failed)
+	require.Equal(t, 3, s.Unknown)
+	require.Equal(t, 1, s.RunnerFailed)
+	require.InDelta(t, 100.0/7, result.Totals.FirstPassPct, 0.001)
+	require.InDelta(t, 100.0/7, result.Agents[0].FirstPassPct, 0.001)
+	require.Equal(t, int64(600), result.Totals.TokensIn, "unverified and blocked runs still cost tokens")
 }
 
 func TestCompute(t *testing.T) {
@@ -259,6 +285,7 @@ func TestCompute(t *testing.T) {
 				func() Run {
 					r := mkRun("test", "claude", 1, ago(5, 11), time.Minute)
 					r.ExitCode = 1
+					r.RunOutcome = "failed"
 					return r
 				}(),
 			}}},

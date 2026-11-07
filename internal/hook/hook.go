@@ -39,6 +39,8 @@ type Context struct {
 	Agent      string
 	Project    string
 	ExitCode   *int
+	// RunOutcome is the pre-hook agent outcome; later validation may reject it.
+	RunOutcome string
 }
 
 func (c Context) env() []string {
@@ -52,6 +54,7 @@ func (c Context) env() []string {
 		"KONTORA_STAGE=" + c.Stage,
 		"KONTORA_AGENT=" + c.Agent,
 		"KONTORA_PROJECT=" + c.Project,
+		"KONTORA_RUN_OUTCOME=" + c.RunOutcome,
 	}
 	if c.ExitCode != nil {
 		env = append(env, "KONTORA_EXIT_CODE="+strconv.Itoa(*c.ExitCode))

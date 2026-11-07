@@ -69,6 +69,9 @@ func View(cfg *config.Config, taskID string, w io.Writer) error {
 	} else if t.StartedAt != nil {
 		fmt.Fprintf(w, "started:   %s\n", FormatTimestamp(t.StartedAt))
 	}
+	if t.InvocationID != "" {
+		fmt.Fprintf(w, "invocation: %s\n", t.InvocationID)
+	}
 	if t.Attempt > 0 {
 		fmt.Fprintf(w, "attempt:   %d\n", t.Attempt)
 	}
@@ -79,11 +82,18 @@ func View(cfg *config.Config, taskID string, w io.Writer) error {
 	if len(t.History) > 0 {
 		fmt.Fprintf(w, "\nHistory:\n")
 		for _, h := range t.History {
-			exit := "✓"
-			if h.ExitCode != 0 {
-				exit = fmt.Sprintf("✗ exit %d", h.ExitCode)
+			outcome := string(h.RunOutcome)
+			if outcome == "" {
+				outcome = "unknown/unverified"
 			}
-			fmt.Fprintf(w, "  %s (%s) %s\n", historyStage(h), h.Agent, exit)
+			fmt.Fprintf(w, "  %s (%s) outcome: %s · runner exit %d", historyStage(h), h.Agent, outcome, h.ExitCode)
+			if h.OutcomeReason != "" {
+				fmt.Fprintf(w, " · %s", h.OutcomeReason)
+			}
+			if h.InvocationID != "" {
+				fmt.Fprintf(w, " · invocation %s", h.InvocationID)
+			}
+			fmt.Fprintln(w)
 		}
 	}
 

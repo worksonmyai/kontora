@@ -9,6 +9,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/worksonmyai/kontora/internal/process"
 	"github.com/worksonmyai/kontora/internal/ticket"
 	"github.com/worksonmyai/kontora/internal/web"
 )
@@ -64,12 +65,17 @@ func TestEpicContextInAgentPrompt(t *testing.T) {
 		emptyPrompt  bool
 		resumePrompt string
 		wantEpic     bool
+		supervised   bool
 	}{
 		{name: "pipeline child", parent: "epc-a", wantEpic: true},
 		{name: "standalone child", parent: "epc-a", standalone: true, wantEpic: true},
 		{name: "resumed pipeline child", parent: "epc-a", resume: true, wantEpic: true},
 		{name: "resumed standalone child", parent: "epc-a", standalone: true, resume: true, wantEpic: true},
 		{name: "custom resume prompt", parent: "epc-a", resume: true, resumePrompt: "Continue {{ .Ticket.ID }}", wantEpic: true},
+		{name: "supervised pipeline child", parent: "epc-a", wantEpic: true, supervised: true},
+		{name: "supervised standalone child", parent: "epc-a", standalone: true, wantEpic: true, supervised: true},
+		{name: "supervised resumed pipeline child", parent: "epc-a", resume: true, wantEpic: true, supervised: true},
+		{name: "supervised custom resume child", parent: "epc-a", resume: true, resumePrompt: "Continue {{ .Ticket.ID }}", wantEpic: true, supervised: true},
 		{name: "no parent"},
 		{name: "missing parent", parent: "epc-missing"},
 		{name: "ordinary parent", parent: "ordinary"},
@@ -77,8 +83,21 @@ func TestEpicContextInAgentPrompt(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			rd := newResumeDaemon(t, "claude", nil)
-			rd.h.writeTicket("epc-a.md", rd.h.epicMD("epc-a", "open")+"\nEpic brief that must not be inlined.\n")
+			rd := newResumeDaemon(t, "claude", func(_ context.Context, _ int, p RunnerParams) (process.Result, error) {
+				if tc.supervised {
+					completeEpicInvocation(t, p)
+				}
+				now := time.Now()
+				return process.Result{StartedAt: now, ExitedAt: now}, nil
+			})
+			epic := rd.h.epicMD("epc-a", "open")
+			if tc.supervised {
+				// A paused supervisor still supervises its actual children. Its
+				// display order intentionally omits this child.
+				epic = rd.h.agentEpicMD("epc-a", "paused")
+				rd.cfg.SystemPrompt = "Custom brief: do not commit."
+			}
+			rd.h.writeTicket("epc-a.md", epic+"\nEpic brief that must not be inlined.\n")
 			rd.h.writeTicket("ordinary.md", rd.h.taskMD("ordinary", "open", "one-stage"))
 			child := rd.h.epicChildMD(resumeTicketID, "todo", tc.parent, "2026-01-02T00:00:00Z")
 			if tc.standalone {
@@ -122,6 +141,17 @@ func TestEpicContextInAgentPrompt(t *testing.T) {
 				assert.NotContains(t, got, "kontora view --body")
 			}
 			assert.NotContains(t, got, "Epic brief that must not be inlined")
+			if tc.supervised {
+				assert.Contains(t, got, "## Supervised local delivery")
+				assert.Contains(t, got, "## Mandatory supervised result")
+				assert.Contains(t, got, "## Prerequisites and escalation")
+				assert.Contains(t, got, "Narrower user, ticket, and stage instructions win")
+				assert.Contains(t, strings.Join(spawns[0].Args, " "), "Custom brief: do not commit.")
+				assert.True(t, spawns[0].RequireTermination)
+			} else {
+				assert.NotContains(t, got, "## Supervised local delivery", "passive epic context grants no authority")
+				assert.NotContains(t, got, "## Mandatory supervised result")
+			}
 			if tc.resume {
 				assert.Contains(t, spawns[0].Args, "--resume")
 			}

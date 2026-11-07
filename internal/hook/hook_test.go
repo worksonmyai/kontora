@@ -28,7 +28,8 @@ func TestRun(t *testing.T) {
 		// specs run against a fresh temp directory used as the worktree.
 		specs []Spec
 		// exitCode, when set, is the KONTORA_EXIT_CODE a post-run event carries.
-		exitCode *int
+		exitCode   *int
+		runOutcome string
 		// cancelAfter cancels the context that long after Run starts; zero
 		// leaves it live. A negative value cancels before Run is called.
 		cancelAfter time.Duration
@@ -72,6 +73,39 @@ func TestRun(t *testing.T) {
 			name:      "an event without an exit code leaves the variable unset",
 			specs:     []Spec{{Run: `echo "${KONTORA_EXIT_CODE-unset}" > code.txt`}},
 			wantFiles: map[string]string{"code.txt": "unset\n"},
+		},
+		{
+			name:       "a complete outcome does not replace a nonzero exit code",
+			specs:      []Spec{{Run: `printf '%s\n' "$KONTORA_RUN_OUTCOME" "$KONTORA_EXIT_CODE" > outcome.txt`}},
+			runOutcome: "complete",
+			exitCode:   new(3),
+			wantFiles:  map[string]string{"outcome.txt": "complete\n3\n"},
+		},
+		{
+			name:       "a blocked outcome preserves exit zero",
+			specs:      []Spec{{Run: `printf '%s\n' "$KONTORA_RUN_OUTCOME" "$KONTORA_EXIT_CODE" > outcome.txt`}},
+			runOutcome: "blocked",
+			exitCode:   new(0),
+			wantFiles:  map[string]string{"outcome.txt": "blocked\n0\n"},
+		},
+		{
+			name:       "a protocol error preserves exit zero",
+			specs:      []Spec{{Run: `printf '%s\n' "$KONTORA_RUN_OUTCOME" "$KONTORA_EXIT_CODE" > outcome.txt`}},
+			runOutcome: "protocol_error",
+			exitCode:   new(0),
+			wantFiles:  map[string]string{"outcome.txt": "protocol_error\n0\n"},
+		},
+		{
+			name:       "a failed outcome preserves exit zero",
+			specs:      []Spec{{Run: `printf '%s\n' "$KONTORA_RUN_OUTCOME" "$KONTORA_EXIT_CODE" > outcome.txt`}},
+			runOutcome: "failed",
+			exitCode:   new(0),
+			wantFiles:  map[string]string{"outcome.txt": "failed\n0\n"},
+		},
+		{
+			name:      "a legacy context exposes an empty outcome without an exit code",
+			specs:     []Spec{{Run: `printf '%s\n' "${KONTORA_RUN_OUTCOME-unset}" "${KONTORA_EXIT_CODE-unset}" > outcome.txt`}},
+			wantFiles: map[string]string{"outcome.txt": "\nunset\n"},
 		},
 		{
 			name:    "a fatal hook that exits non-zero reports its name and code",
@@ -155,6 +189,7 @@ func TestRun(t *testing.T) {
 				Agent:      "agent1",
 				Project:    "kontora",
 				ExitCode:   tt.exitCode,
+				RunOutcome: tt.runOutcome,
 			}, &out, func(_ Spec, err error) { warns = append(warns, err.Error()) })
 
 			if tt.wantErr == "" {

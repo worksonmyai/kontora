@@ -54,6 +54,10 @@ type Run struct {
 	Agent    string
 	Model    string
 	ExitCode int
+	// RunOutcome is semantic, independent of ExitCode. Empty is unverified.
+	RunOutcome    string
+	OutcomeReason string
+	InvocationID  string
 	// Run is the zero-based attempt index of this run among the stage runs of
 	// the same stage, counted by the caller from the rows before it. It is not
 	// the run index that keys the sidecar file, which counts annotation rows too.
@@ -153,25 +157,36 @@ type Bucket struct {
 // no counts leaves every run of the stage unmeasured. Annotation runs are left
 // out of every token field here, exactly as they are out of the time figures,
 // so a window's stage tokens sum to at most its total.
+//
+// Complete, Blocked, ProtocolError, Failed and Unknown partition semantic
+// outcomes. RunnerFailed independently counts non-zero runner exits; neither a
+// zero exit nor an unknown/legacy outcome is a verified semantic completion.
 type Stage struct {
-	Name       string  `json:"name"`
-	P50MS      int64   `json:"p50_ms"`
-	P90MS      int64   `json:"p90_ms"`
-	Share      float64 `json:"share"`
-	Runs       int     `json:"runs"`
-	Failed     int     `json:"failed"`
-	RetryPct   float64 `json:"retry_pct"`
-	Tokens     int64   `json:"tokens"`
-	TokensP90  int64   `json:"tokens_p90"`
-	TokenShare float64 `json:"token_share"`
-	TokenRuns  int     `json:"token_runs"`
+	Name          string  `json:"name"`
+	P50MS         int64   `json:"p50_ms"`
+	P90MS         int64   `json:"p90_ms"`
+	Share         float64 `json:"share"`
+	Runs          int     `json:"runs"`
+	Complete      int     `json:"complete"`
+	Blocked       int     `json:"blocked"`
+	ProtocolError int     `json:"protocol_error"`
+	Failed        int     `json:"failed"`
+	Unknown       int     `json:"unknown"`
+	RunnerFailed  int     `json:"runner_failed"`
+	RetryPct      float64 `json:"retry_pct"`
+	Tokens        int64   `json:"tokens"`
+	TokensP90     int64   `json:"tokens_p90"`
+	TokenShare    float64 `json:"token_share"`
+	TokenRuns     int     `json:"token_runs"`
 }
 
 // Agent is one agent's quality. Every figure counts stage runs alone, token
 // counts included, so the tooltip's runs and tokens-per-run multiply out.
 // TokensPerRun is null when none of the agent's runs recorded usable token
 // counts, so an agent whose sessions all left a count unfilled is not reported
-// as free.
+// as free. FirstPassPct is the percentage of observed ticket/stage pairs that
+// completed verifiably on attempt zero with a zero runner exit. Unknown outcomes
+// remain in the denominator but never count as verified success.
 type Agent struct {
 	Name             string  `json:"name"`
 	Model            string  `json:"model,omitempty"`
@@ -201,7 +216,8 @@ type Live struct {
 }
 
 // Totals holds the headline figures. The two delta fields are null when the
-// preceding window has nothing to compare against.
+// preceding window has nothing to compare against. FirstPassPct uses the same
+// verified-completion rule as Agent.FirstPassPct, not merely absence of retries.
 type Totals struct {
 	Shipped            int     `json:"shipped"`
 	ShippedThisWeek    int     `json:"shipped_this_week"`
@@ -401,7 +417,7 @@ func aggregate(tickets []Ticket, w window, unit string, loc *time.Location) wind
 	agents := map[string]*agentAcc{}
 	projects := map[string]*projectAcc{}
 	var cycles []int64
-	firstPassPairs := map[string]int{} // ticket\x00stage → highest run index
+	firstPassPairs := map[string]bool{} // ticket\x00stage → verified complete without retries
 
 	for _, t := range tickets {
 		if inRange(t.CompletedAt, start, endExcl) {
@@ -462,13 +478,25 @@ func aggregate(tickets []Ticket, w window, unit string, loc *time.Location) wind
 					a.tokenRuns++
 				}
 				a.tickets[t.ID] = struct{}{}
-				a.pairs[t.ID+"\x00"+r.Stage] = max(a.pairs[t.ID+"\x00"+r.Stage], r.Run)
+				recordFirstPass(a.pairs, t.ID+"\x00"+r.Stage, r)
 			}
 
 			s := stageAccFor(stages, r.Stage)
 			s.runs++
-			if r.ExitCode != 0 {
+			switch r.RunOutcome {
+			case "complete":
+				s.complete++
+			case "blocked":
+				s.blocked++
+			case "protocol_error":
+				s.protocolError++
+			case "failed":
 				s.failed++
+			default:
+				s.unknown++
+			}
+			if r.ExitCode != 0 {
+				s.runnerFailed++
 			}
 			if r.Run > 0 {
 				s.retries++
@@ -484,7 +512,7 @@ func aggregate(tickets []Ticket, w window, unit string, loc *time.Location) wind
 				s.tokenRuns++
 			}
 			key := t.ID + "\x00" + r.Stage
-			firstPassPairs[key] = max(firstPassPairs[key], r.Run)
+			recordFirstPass(firstPassPairs, key, r)
 		}
 	}
 
@@ -506,8 +534,8 @@ func aggregate(tickets []Ticket, w window, unit string, loc *time.Location) wind
 	}
 	if len(firstPassPairs) > 0 {
 		clean := 0
-		for _, maxRun := range firstPassPairs {
-			if maxRun == 0 {
+		for _, verified := range firstPassPairs {
+			if verified {
 				clean++
 			}
 		}
@@ -516,15 +544,26 @@ func aggregate(tickets []Ticket, w window, unit string, loc *time.Location) wind
 	return agg
 }
 
+func recordFirstPass(pairs map[string]bool, key string, r Run) {
+	verified := r.Run == 0 && r.RunOutcome == "complete" && r.ExitCode == 0
+	previous, seen := pairs[key]
+	pairs[key] = verified && (!seen || previous)
+}
+
 type stageAcc struct {
-	durations   []int64
-	totalMS     int64
-	tokens      int64
-	tokenPerRun []int64
-	tokenRuns   int
-	runs        int
-	failed      int
-	retries     int
+	durations     []int64
+	totalMS       int64
+	tokens        int64
+	tokenPerRun   []int64
+	tokenRuns     int
+	runs          int
+	complete      int
+	blocked       int
+	protocolError int
+	failed        int
+	unknown       int
+	runnerFailed  int
+	retries       int
 }
 
 type agentAcc struct {
@@ -535,7 +574,7 @@ type agentAcc struct {
 	runs      int
 	retries   int
 	tickets   map[string]struct{}
-	pairs     map[string]int
+	pairs     map[string]bool
 }
 
 type projectAcc struct {
@@ -559,7 +598,7 @@ func agentAccFor(m map[string]*agentAcc, name string) *agentAcc {
 	a := &agentAcc{
 		models:  map[string]int{},
 		tickets: map[string]struct{}{},
-		pairs:   map[string]int{},
+		pairs:   map[string]bool{},
 	}
 	m[name] = a
 	return a
@@ -687,15 +726,20 @@ func stageSeries(m map[string]*stageAcc) []Stage {
 	out := make([]Stage, 0, len(m))
 	for name, a := range m {
 		s := Stage{
-			Name:      name,
-			P50MS:     percentile(a.durations, 50),
-			P90MS:     percentile(a.durations, 90),
-			Runs:      a.runs,
-			Failed:    a.failed,
-			RetryPct:  pct(a.retries, a.runs),
-			Tokens:    a.tokens,
-			TokensP90: percentile(a.tokenPerRun, 90),
-			TokenRuns: a.tokenRuns,
+			Name:          name,
+			P50MS:         percentile(a.durations, 50),
+			P90MS:         percentile(a.durations, 90),
+			Runs:          a.runs,
+			Complete:      a.complete,
+			Blocked:       a.blocked,
+			ProtocolError: a.protocolError,
+			Failed:        a.failed,
+			Unknown:       a.unknown,
+			RunnerFailed:  a.runnerFailed,
+			RetryPct:      pct(a.retries, a.runs),
+			Tokens:        a.tokens,
+			TokensP90:     percentile(a.tokenPerRun, 90),
+			TokenRuns:     a.tokenRuns,
 		}
 		if total > 0 {
 			s.Share = float64(a.totalMS) / float64(total) * 100
@@ -718,8 +762,8 @@ func agentSeries(m map[string]*agentAcc) []Agent {
 	out := make([]Agent, 0, len(m))
 	for name, a := range m {
 		clean := 0
-		for _, maxRun := range a.pairs {
-			if maxRun == 0 {
+		for _, verified := range a.pairs {
+			if verified {
 				clean++
 			}
 		}

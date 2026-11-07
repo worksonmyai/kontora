@@ -9771,12 +9771,12 @@ test("the notes feed interleaves lifecycle rows, sorts ascending and nests repli
   const rows = feed.filter((i) => i.kind === "event");
   assert.deepEqual(vmValue(rows.map((r) => [r.label, r.color])), [
     ["picked up · stage plan", "indigo"],
-    ["plan done", "green"],
+    ["plan · unknown/unverified", "indigo"],
     ["retried · stage review", "amber"],
-    ["review failed", "rose"],
+    ["review · unknown/unverified", "indigo"],
     ["moved to human review", "mauve"],
   ]);
-  assert.equal(rows[1].meta, "exit 0 · 40s");
+  assert.equal(rows[1].meta, "runner exit 0 · 40s");
 });
 
 test("a ticket with no notes draws no lifecycle rows", () => {
@@ -9918,20 +9918,50 @@ const LEGACY_TICKET = {
 // rather than the current stage list.
 const DROPPED_STAGE_TICKET = { ...RETRY_TICKET, id: "kon-s5", stages: ["implement"] };
 
+test("semantic outcomes stay separate from runner exits in summary and lifecycle", () => {
+  const cases = [
+    { outcome: "complete", label: "complete", hue: "--st-done", color: "green", cls: "text-ok" },
+    { outcome: "blocked", label: "blocked", hue: "--st-paused", color: "amber", cls: "text-tx-faint" },
+    { outcome: "protocol_error", label: "protocol_error", hue: "--st-error", color: "rose", cls: "text-st-cancel" },
+    { outcome: "failed", label: "failed", hue: "--st-error", color: "rose", cls: "text-st-cancel" },
+    { outcome: undefined, label: "unknown/unverified", hue: "--st-open", color: "indigo", cls: "text-tx-faint" },
+  ];
+  for (const c of cases) {
+    for (const exit of [0, 7]) {
+      const h = { stage: "default", summary: "Run summary", run_outcome: c.outcome,
+        exit_code: exit, outcome_reason: "reason text", invocation_id: "inv-1",
+        started_at: "2026-08-08T11:00:00Z", completed_at: "2026-08-08T11:00:40Z" };
+      const state = pageState({ id: "kon-outcome", status: "done", history: [h], stages: ["default"] });
+      const card = state.summaryCards()[0];
+      assert.equal(state.runOutcomeLabel(h), c.label);
+      assert.equal(state.runOutcomeClass(h), c.cls);
+      assert.equal(state.stageHue(card, 0), c.hue);
+      assert.match(state.stageCardMeta(card), new RegExp("outcome: " + c.label + " · runner exit " + exit + " · reason text · invocation inv-1"));
+      const end = state.noteLifecycleRows().find((row) => row.key === "e:0:end");
+      assert.equal(end.label, "default · " + c.label);
+      assert.equal(end.color, c.color);
+      assert.equal(end.meta, "runner exit " + exit + " · reason text · invocation inv-1 · 40s");
+    }
+  }
+  const html = fs.readFileSync(htmlPath, "utf8");
+  assert.equal((html.match(/x-text="runOutcomeLabel\(h\)"/g) || []).length, 2, "live and archive history both show semantics");
+  assert.doesNotMatch(html, /h\.exit_code === 0 \? '✓'/);
+});
+
 test("summaryCards builds one card per summarised run", () => {
   const cases = [
     {
       name: "finished four-stage pipeline",
       ticket: SUMMARY_TICKET,
       keys: ["commit#0", "fix-review#0", "review#0", "implement#0"],
-      hues: ["--st-done", "--st-paused", "--st-review", "--st-open"],
+      hues: ["--st-open", "--st-paused", "--st-review", "--st-open"],
     },
     {
       name: "stage that ran twice",
       ticket: RETRY_TICKET,
       keys: ["review#1", "review#0", "implement#0"],
-      hues: ["--st-done", "--st-error", "--st-open"],
-      meta: ["50m 00s · ×2 · codex", "50m 00s · ×2 · codex · failed", "5m 00s · claude"],
+      hues: ["--st-review", "--st-review", "--st-open"],
+      meta: ["50m 00s · ×2 · codex · outcome: unknown/unverified · runner exit 0", "50m 00s · ×2 · codex · outcome: unknown/unverified · runner exit 1", "5m 00s · claude · outcome: unknown/unverified · runner exit 0"],
     },
     {
       // Alpine throws on a duplicate x-for key, so the whole tab would render
@@ -9944,7 +9974,7 @@ test("summaryCards builds one card per summarised run", () => {
       name: "stage dropped from the pipeline",
       ticket: DROPPED_STAGE_TICKET,
       keys: ["review#1", "review#0", "implement#0"],
-      meta: ["50m 00s · ×2 · codex", "50m 00s · ×2 · codex · failed", "5m 00s · claude"],
+      meta: ["50m 00s · ×2 · codex · outcome: unknown/unverified · runner exit 0", "50m 00s · ×2 · codex · outcome: unknown/unverified · runner exit 1", "5m 00s · claude · outcome: unknown/unverified · runner exit 0"],
     },
     {
       name: "running ticket with an empty top-level summary",
@@ -9962,6 +9992,12 @@ test("summaryCards builds one card per summarised run", () => {
       keys: ["summary#top"],
     },
     {
+      name: "blocked result without separate prose still has a summary card",
+      ticket: { id: "kon-result-only", status: "paused", history: [{stage: "default", exit_code: 0, run_outcome: "blocked", outcome_reason: "Provide device access"}] },
+      keys: ["default#0"],
+      hues: ["--st-paused"],
+    },
+    {
       name: "runs without a summary are skipped",
       ticket: { ...SUMMARY_TICKET, summary: "", history: SUMMARY_TICKET.history.map((h, i) => (i === 1 ? { ...h, summary: "" } : h)) },
       keys: ["commit#0", "fix-review#0", "implement#0"],
@@ -9974,6 +10010,23 @@ test("summaryCards builds one card per summarised run", () => {
     assert.deepEqual(cards.map((k) => k.key), c.keys, c.name);
     if (c.hues) assert.deepEqual(cards.map((card, i) => state.stageHue(card, i)), c.hues, c.name);
     if (c.meta) assert.deepEqual(cards.map((card) => state.stageCardMeta(card)), c.meta, c.name);
+  }
+});
+
+test("report-only history keeps the Summary tab reachable", () => {
+  for (const outcome of ["complete", "blocked", "protocol_error", "failed", undefined]) {
+    const ticket = { id: "kon-report-only", status: "paused", history: [
+      { stage: "default", run_outcome: outcome, outcome_reason: "Provide device access" },
+    ] };
+    const state = pageState(ticket);
+    assert.equal(state.showSummaryTab(), true, outcome);
+    assert.equal(state.summaryCards()[0].summary, "Provide device access", outcome);
+    state.activeTab = "summary";
+    state.applyTicketUpdate({ ...ticket, title: "Updated title" });
+    assert.equal(state.activeTab, "summary", outcome);
+  }
+  for (const ticket of [null, { history: [] }, { history: [{ stage: "default", run_outcome: "blocked" }] }]) {
+    assert.equal(pageState(ticket).showSummaryTab(), false);
   }
 });
 
@@ -10223,6 +10276,8 @@ test("both summary views put the ticket-level outcome above the stage summaries"
 
   // Mobile: the outcome above the last run's summary, which keeps its stage.
   const mobile = html.slice(html.indexOf(`x-show="detailTab==='ticket'"`));
+  assert.match(mobile, /x-if="selectedTicket\?\.last_error"[\s\S]*?role="alert"[^>]*x-text="selectedTicket\.last_error"/);
+  assert.ok(mobile.indexOf('x-text="selectedTicket.last_error"') < mobile.indexOf('x-if="selectedTicket?.summary"'));
   assert.ok(mobile.indexOf('x-if="finalSummary()"') < mobile.indexOf('x-if="selectedTicket?.summary"'));
   assert.match(mobile, /x-text="'\u00b7 ' \+ summaryStage\(\)"/);
 });

@@ -17,7 +17,7 @@ For `note` and `summary`, put all flags before the ticket ID, even when reading 
 
 ## Ticket IDs
 
-Every command that takes a `TICKET_ID` accepts a unique prefix of one: `kontora view kon-q` finds `kon-q88f`. A prefix that matches more than one ticket is an error naming every match, rather than a guess.
+Commands that take a `TICKET_ID` accept a unique prefix, except for `result`, which requires the exact invocation ticket ID. For example, `kontora view kon-q` finds `kon-q88f`. A prefix that matches more than one ticket is an error naming every match, rather than a guess.
 
 ## Environment variables
 
@@ -30,7 +30,13 @@ Every command that takes a `TICKET_ID` accepts a unique prefix of one: `kontora 
 | `KONTORA_TICKETS_DIR` | every command that reads the local ticket store | Overrides `tickets_dir` from the config file. The daemon exports its resolved value to the agents it spawns. |
 | `TICKETS_DIR` | the same commands | Compatibility alias for the standalone `ticket` CLI. Read only when `KONTORA_TICKETS_DIR` is unset or blank. |
 | `KONTORA_AGENT` | `kontora note` | The configured name of the agent the run belongs to. The daemon exports it to the agents it spawns, so an agent's own note is signed with the name it runs as. `--author` outranks it. |
-| `KONTORA_STAGE` | — | The stage the run belongs to. Exported to spawned agents and to hooks; no command reads it. |
+| `KONTORA_STAGE` | agents and hooks | The stage the run belongs to. |
+| `KONTORA_TICKET_ID` | stage agents and lifecycle commands | Current ticket; prevents an agent from changing its own lifecycle. |
+| `KONTORA_RESULT_VERSION` | `result` | Supervised result protocol version, currently `1`. |
+| `KONTORA_INVOCATION_ID` | `result` | Identity of this physical invocation; changes on retry and resume-to-fresh fallback. |
+| `KONTORA_RESULT_TICKET` | `result` | Exact ticket identity bound to this invocation. |
+| `KONTORA_RESULT_STAGE` | `result` | Stage identity bound to this invocation. |
+| `KONTORA_RESULT_FILE` | `result` | Absolute path to the immutable per-invocation result artifact. |
 | `KONTORA_PAGER` | `view`, `logs`, `activity` | Pager command, split on whitespace the way `$EDITOR` is. Used only when stdout is a terminal, so a redirect or a pipe is never paged. Set but blank turns paging off. |
 | `TICKET_PAGER` | the same commands | Read when `KONTORA_PAGER` is unset, so a `ticket` user's setting carries over. |
 | `PAGER` | the same commands | The last fallback before the config's `pager`. |
@@ -38,6 +44,57 @@ Every command that takes a `TICKET_ID` accepts a unique prefix of one: `kontora 
 The tickets dir is resolved `--tickets-dir` → `$KONTORA_TICKETS_DIR` → `$TICKETS_DIR` → `tickets_dir:` → `~/.kontora/tickets`, and the pager `$KONTORA_PAGER` → `$TICKET_PAGER` → `$PAGER` → `pager:` → none.
 
 Note that unlike every other setting, the environment beats the config file for the tickets dir. A stray export therefore changes which store every command reads, and a daemon that cannot see the variable — one started by launchd or systemd, which pass a minimal environment — keeps reading the file. `kontora doctor` names the source that won and warns when the two disagree.
+
+## Supervised results
+
+### `kontora result [--input-file /absolute/path/result.json] TICKET_ID`
+
+Submit the current invocation's terminal result. Without `--input-file`, read JSON
+from stdin. Put flags before the ticket ID. This command requires daemon-supplied
+invocation context; outside a bound invocation it fails rather than succeeding as
+a no-op. Do not set these variables yourself or use another invocation's context.
+The daemon binds result variables after configured agent environment merging.
+
+```json
+{
+  "outcome": "blocked",
+  "summary": "Required native-device evidence is unavailable.",
+  "next_step": "Provide device access or explicitly change the proof-first requirement."
+}
+```
+
+Only `outcome`, `summary`, and optional `next_step` are accepted. `outcome` is
+`complete` or `blocked`; `summary` must be nonblank, and `blocked` requires a
+nonblank `next_step`. All fields are strings. Payloads must be valid UTF-8 JSON,
+at most 32 KiB, with no NULs, duplicate or unknown fields, or trailing content.
+Incompatible context versions are rejected. Invocation identity is not a payload
+field. Use a file-writing tool to create a unique scratch file outside the repo,
+then submit it; do not interpolate generated JSON into shell commands.
+
+Pi also exposes `kontora_result({outcome, summary, next_step?})`, independently of
+checkpoint compaction. It submits through the CLI without a shell and checks the
+acknowledgement. Check acknowledgement with either transport: identical
+resubmission is idempotent; a conflicting submission cannot replace the first
+result. A late result cannot finalize a replacement invocation. Notes, summaries,
+final prose, question markers, and phase checkpoints are not terminal results.
+
+Activated epic supervisors and their children, including rework, must report.
+Passive-epic children, unrelated tickets, annotations, and assistant-only runs
+retain their existing result requirements. `complete` means the assigned current
+stage is complete, not the whole ticket or human acceptance. Review completion
+can still leave fixes for later stages. Fixture work is not complete if the
+stage still requires production foundations or other acceptance evidence.
+
+`blocked`, or a missing/invalid result after a clean supervised run, pauses the
+same stage without consuming a retry or deleting the worktree. It does not enter
+pipeline `retry` or `back` policies. A complete report cannot override execution
+or provider failures, hooks, or epic child validation. The daemon owns lifecycle
+transitions; do not mark your own ticket done. See [recovery](configuration.md#supervised-recovery)
+for interrupted runs and [local authority](tickets.md#epics) for escalation.
+
+Upgrade the CLI and daemon together. Verify effective Pi/Claude instructions
+before enabling autonomous local commits. Do not use rollout to restart live
+epics or migrate existing ticket state.
 
 ## Tickets
 

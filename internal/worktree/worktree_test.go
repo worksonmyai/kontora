@@ -1,6 +1,7 @@
 package worktree
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -136,6 +137,85 @@ func TestCreateAndRemove(t *testing.T) {
 	_, err = os.Stat(path)
 	assert.True(t, os.IsNotExist(err), "worktree dir still exists after remove")
 	assertBranchExists(t, repoDir, "kontora/tkt-1")
+}
+
+func TestCreateOccupiedDestination(t *testing.T) {
+	for _, kind := range []string{"other branch", "other repository", "detached", "directory", "file"} {
+		for _, branchExists := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/existing branch=%t", kind, branchExists), func(t *testing.T) {
+				repoDir := initRepo(t)
+				m := New(t.TempDir())
+				opts := CreateOpts{RepoPath: repoDir, RepoName: "myrepo", TaskID: "tkt-1", Branch: "feat/requested"}
+				destination := m.Path(opts.RepoName, opts.TaskID)
+				require.NoError(t, os.MkdirAll(filepath.Dir(destination), 0o755))
+				if branchExists {
+					mustGit(t, repoDir, "branch", opts.Branch)
+				}
+
+				occupantRepo := repoDir
+				switch kind {
+				case "other branch":
+					mustGit(t, repoDir, "worktree", "add", "-b", "feat/old", destination)
+				case "other repository":
+					occupantRepo = initRepo(t)
+					mustGit(t, occupantRepo, "worktree", "add", "-b", opts.Branch, destination)
+				case "detached":
+					mustGit(t, repoDir, "worktree", "add", "--detach", destination, "HEAD")
+				case "directory":
+					require.NoError(t, os.Mkdir(destination, 0o755))
+				case "file":
+					require.NoError(t, os.WriteFile(destination, []byte("keep file"), 0o644))
+				}
+
+				gitOutput := func(dir string, args ...string) string {
+					t.Helper()
+					cmd := exec.Command("git", args...)
+					cmd.Dir = dir
+					out, err := cmd.CombinedOutput()
+					require.NoError(t, err, "git %v: %s", args, out)
+					return string(out)
+				}
+				checkout := kind == "other branch" || kind == "other repository" || kind == "detached"
+				var head, status, staged string
+				if kind != "file" {
+					require.NoError(t, os.WriteFile(filepath.Join(destination, "staged.txt"), []byte("staged work"), 0o644))
+					require.NoError(t, os.WriteFile(filepath.Join(destination, "untracked.txt"), []byte("untracked work"), 0o644))
+				}
+				if checkout {
+					mustGit(t, destination, "add", "staged.txt")
+					head = gitOutput(destination, "rev-parse", "--abbrev-ref", "HEAD")
+					status = gitOutput(destination, "status", "--porcelain")
+					staged = gitOutput(destination, "diff", "--cached")
+				}
+				registrations := gitOutput(repoDir, "worktree", "list", "--porcelain")
+				occupantRegistrations := gitOutput(occupantRepo, "worktree", "list", "--porcelain")
+
+				path, created, err := m.Create(opts)
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "git worktree add")
+				assert.Empty(t, path)
+				assert.False(t, created)
+				assert.Equal(t, registrations, gitOutput(repoDir, "worktree", "list", "--porcelain"))
+				assert.Equal(t, occupantRegistrations, gitOutput(occupantRepo, "worktree", "list", "--porcelain"))
+				if checkout {
+					assert.Equal(t, head, gitOutput(destination, "rev-parse", "--abbrev-ref", "HEAD"))
+					assert.Equal(t, status, gitOutput(destination, "status", "--porcelain"))
+					assert.Equal(t, staged, gitOutput(destination, "diff", "--cached"))
+				}
+				if kind == "file" {
+					data, err := os.ReadFile(destination)
+					require.NoError(t, err)
+					assert.Equal(t, "keep file", string(data))
+				} else {
+					for name, want := range map[string]string{"staged.txt": "staged work", "untracked.txt": "untracked work"} {
+						data, err := os.ReadFile(filepath.Join(destination, name))
+						require.NoError(t, err)
+						assert.Equal(t, want, string(data))
+					}
+				}
+			})
+		}
+	}
 }
 
 func TestCreateAfterRemoveReusesBranch(t *testing.T) {
@@ -428,6 +508,10 @@ func TestCreateReusesDirtyWorktree(t *testing.T) {
 	// Make worktree dirty with an untracked file.
 	dirtyFile := filepath.Join(pathA, "dirty.txt")
 	require.NoError(t, os.WriteFile(dirtyFile, []byte("wip"), 0o644))
+	stagedFile := filepath.Join(pathA, "staged.txt")
+	require.NoError(t, os.WriteFile(stagedFile, []byte("staged wip"), 0o644))
+	mustGit(t, pathA, "add", "staged.txt")
+	stagedBlob := revParse(t, pathA, ":staged.txt")
 
 	pathB, createdB, err := m.Create(CreateOpts{RepoPath: repoDir, RepoName: "myrepo", TaskID: "tkt-b", Branch: "feat/stacked"})
 	require.NoError(t, err)
@@ -438,6 +522,11 @@ func TestCreateReusesDirtyWorktree(t *testing.T) {
 	data, err := os.ReadFile(dirtyFile)
 	require.NoError(t, err)
 	assert.Equal(t, "wip", string(data))
+	data, err = os.ReadFile(stagedFile)
+	require.NoError(t, err)
+	assert.Equal(t, "staged wip", string(data))
+	assert.Equal(t, stagedBlob, revParse(t, pathB, ":staged.txt"))
+	assertBranch(t, pathB, "feat/stacked")
 }
 
 func TestRemoveByBranchDiscoversPath(t *testing.T) {

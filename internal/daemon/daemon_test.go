@@ -3886,6 +3886,78 @@ func TestRetryTicket_ClearsLastError(t *testing.T) {
 	require.NoError(t, <-errCh)
 }
 
+func TestRetryTicket_ChangedEpicBranchRefusesOldWorktree(t *testing.T) {
+	for _, branchExists := range []bool{false, true} {
+		t.Run(fmt.Sprintf("existing branch=%t", branchExists), func(t *testing.T) {
+			h := newEpicAgentHarness(t)
+			h.cfg.MaxConcurrentEpicSupervisors = 1
+			calls := make(chan RunnerParams, 3)
+			d := h.newDaemon(h.cfg, WithRunner(func(_ context.Context, p RunnerParams) (process.Result, error) {
+				calls <- p
+				return process.Result{ExitCode: -1, StartedAt: time.Now(), ExitedAt: time.Now()}, assert.AnError
+			}))
+			h.writeTicket("epc-retry.md", h.agentEpicMD("epc-retry", "todo"))
+			h.writeTicket("epc-next.md", h.agentEpicMD("epc-next", "paused"))
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			errCh := make(chan error, 1)
+			go func() { errCh <- d.Run(ctx) }()
+			defer func() { cancel(); require.NoError(t, <-errCh) }()
+
+			first := awaitEpicAgent(t, calls)
+			wtPath := first.Dir
+			h.waitForStatus("epc-retry.md", ticket.StatusPaused, 5*time.Second)
+			waitForAgentsDone(t, d, 5*time.Second)
+			before := h.readTask("epc-retry.md")
+			require.NoError(t, os.WriteFile(filepath.Join(wtPath, "staged.txt"), []byte("staged work"), 0o644))
+			require.NoError(t, os.WriteFile(filepath.Join(wtPath, "untracked.txt"), []byte("untracked work"), 0o644))
+			mustGit(t, wtPath, "add", "staged.txt")
+			gitOutput := func(dir string, args ...string) string {
+				t.Helper()
+				out, err := runGit(dir, args...)
+				require.NoError(t, err)
+				return out
+			}
+			registrations := gitOutput(h.repoDir, "worktree", "list", "--porcelain")
+			status := gitOutput(wtPath, "status", "--porcelain")
+			staged := gitOutput(wtPath, "diff", "--cached")
+			const branch = "feat/replacement"
+			if branchExists {
+				mustGit(t, h.repoDir, "branch", branch)
+			}
+			require.NoError(t, d.UpdateTicket("epc-retry", web.UpdateTicketRequest{Branch: new(branch)}))
+			require.NoError(t, d.RetryTicket("epc-retry"))
+
+			result := h.waitForStatus("epc-retry.md", ticket.StatusPaused, 5*time.Second)
+			waitForAgentsDone(t, d, 5*time.Second)
+			assert.Contains(t, result.LastError, "create worktree failed:")
+			assert.Equal(t, branch, result.Branch)
+			assert.Equal(t, before.History, result.History, "refused preparation must not record an agent invocation")
+			assert.Empty(t, calls, "retry must not invoke an agent on the old branch")
+			assert.Equal(t, before.Branch, strings.TrimSpace(gitOutput(wtPath, "branch", "--show-current")))
+			assert.Equal(t, registrations, gitOutput(h.repoDir, "worktree", "list", "--porcelain"))
+			assert.Equal(t, status, gitOutput(wtPath, "status", "--porcelain"))
+			assert.Equal(t, staged, gitOutput(wtPath, "diff", "--cached"))
+			for name, want := range map[string]string{"staged.txt": "staged work", "untracked.txt": "untracked work"} {
+				data, err := os.ReadFile(filepath.Join(wtPath, name))
+				require.NoError(t, err)
+				assert.Equal(t, want, string(data))
+			}
+			d.mu.Lock()
+			assert.Empty(t, d.running)
+			assert.Empty(t, d.runningBranches)
+			d.mu.Unlock()
+			require.Eventually(t, func() bool { return len(d.epicSem) == 0 }, time.Second, time.Millisecond,
+				"preparation failure must release supervisor capacity")
+
+			require.NoError(t, d.RetryTicket("epc-next"))
+			next := awaitEpicAgent(t, calls)
+			assert.Equal(t, "epc-next", next.TicketID, "another epic must be able to use the released capacity")
+			h.waitForStatus("epc-next.md", ticket.StatusPaused, 5*time.Second)
+			waitForAgentsDone(t, d, 5*time.Second)
+		})
+	}
+}
+
 func TestPauseTicket_ManualPause_NoLastError(t *testing.T) {
 	h := newHarness(t)
 	cfg := h.defaultConfig("sleep", "sleep")

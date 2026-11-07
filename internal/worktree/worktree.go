@@ -267,10 +267,6 @@ func (m *Manager) create(opts CreateOpts, leases map[string]BranchOwnership) (wt
 		cmd = exec.Command("git", "worktree", "add", wtPath, opts.Branch)
 		cmd.Dir = opts.RepoPath
 		if out, err := cmd.CombinedOutput(); err != nil {
-			// Another goroutine may have created the worktree concurrently.
-			if _, statErr := os.Stat(wtPath); statErr == nil {
-				return wtPath, false, nil
-			}
 			return "", false, fmt.Errorf("git worktree add (existing branch): %s: %w", strings.TrimSpace(string(out)), err)
 		}
 	}

@@ -325,6 +325,7 @@ func newResumeDaemon(t *testing.T, agentBinary string, run func(ctx context.Cont
 	h := newHarness(t)
 	claudeDir := t.TempDir()
 	cfg := h.defaultConfig(agentBinary, agentBinary)
+	cfg.BranchNaming.Mode = config.BranchNamingModeOff
 	cfg.MaxConcurrentEpicSupervisors = 4
 	cfg.Environment = map[string]string{"CLAUDE_CONFIG_DIR": claudeDir}
 
@@ -790,29 +791,34 @@ func TestResumeThatDoesNotStartFallsBackToFreshRun(t *testing.T) {
 // Pausing is a deliberate restart. The daemon is still up when the agent dies,
 // so nothing is left to resume and the stage starts over on the next pickup.
 func TestResumeRecordRemovedOnUserPause(t *testing.T) {
+	running := make(chan struct{})
 	rd := newResumeDaemon(t, "claude", func(ctx context.Context, _ int, _ RunnerParams) (process.Result, error) {
+		close(running)
 		<-ctx.Done()
 		return process.Result{ExitCode: -1, StartedAt: time.Now(), ExitedAt: time.Now()}, ctx.Err()
 	})
 
+	rd.h.writeTicket(resumeTicketID+".md", rd.h.taskMD(resumeTicketID, "todo", "one-stage"))
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
 	errCh := make(chan error, 1)
 	go func() { errCh <- rd.d.Run(ctx) }()
+	defer func() {
+		cancel()
+		require.NoError(t, <-errCh)
+	}()
 
-	time.Sleep(200 * time.Millisecond)
-	rd.h.writeTicket(resumeTicketID+".md", rd.h.taskMD(resumeTicketID, "todo", "one-stage"))
-	rd.h.waitForStatus(resumeTicketID+".md", ticket.StatusInProgress, 10*time.Second)
+	select {
+	case <-running:
+	case <-time.After(10 * time.Second):
+		t.Fatal("agent never started")
+	}
+	require.FileExists(t, rd.recordPath())
 
-	time.Sleep(100 * time.Millisecond)
 	paused := strings.Replace(rd.h.taskMD(resumeTicketID, "todo", "one-stage"), "status: todo", "status: paused", 1)
 	rd.d.handleFileChanged(rd.h.writeTicket(resumeTicketID+".md", paused))
 
 	waitForAgentsDone(t, rd.d, 10*time.Second)
 	assert.NoFileExists(t, rd.recordPath())
-
-	cancel()
-	require.NoError(t, <-errCh)
 }
 
 // The runner can also fail after the agent completed a turn: tmux cannot send

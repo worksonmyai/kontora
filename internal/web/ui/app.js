@@ -64,15 +64,16 @@ export function kontoraApp() {
     // an unrelated earlier failure and must not lose its own to the toast's
     // 10s timer.
     initError: null,
-    initForm: { ticketId: '', kind: '', status: '', tag: '', titleRest: '', pipeline: '', agent: '', path: '', branch: '', autoBranch: '', ticketPath: '', notify: [], notifyChannels: [] },
+    initForm: { ticketId: '', kind: '', status: '', tag: '', titleRest: '', pipeline: '', pipelineChoice: 'inherit', canInheritPipeline: true, epicChild: false, parentID: '', agent: '', path: '', branch: '', autoBranch: '', ticketPath: '', notify: [], notifyChannels: [] },
     // Whether the init modal's status chip row is unfolded. It is a view state,
     // not a mode: the segmented control reads the status list itself, so the
     // chips can be open under any of the three answers.
     initNotifyOpen: false,
-    // Project defaults for the init path. Pipeline provenance can use value
-    // equality. Agent provenance needs its own bit because an explicit override
-    // can equal the project default.
+    // Project defaults for the init path. Agent provenance needs its own bit
+    // because an explicit override can equal the project default.
     _initInherited: { pipeline: '', agent: '' },
+    _initContextSeq: 0,
+    _initOpening: false,
     _initAgentFollowsProject: false,
     actionLoading: null,
     // The detail panel's schedule editor. scheduleDraft is a local wall time,

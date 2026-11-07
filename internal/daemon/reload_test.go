@@ -19,6 +19,7 @@ import (
 	"github.com/worksonmyai/kontora/internal/config"
 	"github.com/worksonmyai/kontora/internal/process"
 	"github.com/worksonmyai/kontora/internal/ticket"
+	"github.com/worksonmyai/kontora/internal/web"
 )
 
 // reloadHarness pairs the daemon test harness with a real config file on disk,
@@ -202,6 +203,7 @@ func TestReload_InvalidConfigKeepsRunning(t *testing.T) {
 		content string
 	}{
 		{"unknown field", h.yaml(configOpts{extra: "unknown_field: x\n"})},
+		{"project references a missing epic child pipeline", h.yaml(configOpts{extra: fmt.Sprintf("projects:\n  repo:\n    path: %s\n    epic_child_pipeline: missing\n", h.repoDir)})},
 		{"negative supervisor capacity", h.yaml(configOpts{extra: "max_concurrent_epic_supervisors: -1\n"})},
 		{"pipeline references a missing stage", h.yaml(configOpts{pipelines: `  one-stage:
     - stage: nonexistent
@@ -418,6 +420,14 @@ func TestReload_AppliesLiveFields(t *testing.T) {
 			},
 		},
 		{
+			name: "epic child pipeline",
+			opts: configOpts{extra: "projects:\n  repo:\n    path: /tmp/reload-project\n    epic_child_pipeline: two-stage\n"},
+			verify: func(t *testing.T, cfg *config.Config) {
+				pipeline, _ := cfg.ResolveTicketDefaults("/tmp/reload-project", "", "", true)
+				assert.Equal(t, "two-stage", pipeline)
+			},
+		},
+		{
 			name: "stage prompt",
 			opts: configOpts{step1Prompt: "rewritten prompt"},
 			verify: func(t *testing.T, cfg *config.Config) {
@@ -436,6 +446,32 @@ func TestReload_AppliesLiveFields(t *testing.T) {
 			tc.verify(t, d.config())
 		})
 	}
+}
+
+func TestReload_EpicChildDefaultsPreserveAssignments(t *testing.T) {
+	h := newReloadHarness(t)
+	projectConfig := func(pipeline string) string {
+		return h.yaml(configOpts{extra: fmt.Sprintf("projects:\n  repo:\n    path: %s\n    pipeline: one-stage\n    epic_child_pipeline: %s\n", h.repoDir, pipeline)})
+	}
+	d := h.newDaemonWithConfig(t, projectConfig("one-stage"))
+	h.writeTicket("epc-parent.md", fmt.Sprintf("---\nid: epc-parent\nkind: epic\nstatus: open\npath: %s\n---\n# Parent\n", h.repoDir))
+	require.NoError(t, d.initialScan(h.tasksDir))
+	before, err := d.CreateTicket(web.CreateTicketRequest{Title: "Before reload", Parent: "epc-parent", Path: h.repoDir, Status: "open"})
+	require.NoError(t, err)
+	assert.Equal(t, "one-stage", before.Pipeline)
+	beforeBytes, err := os.ReadFile(filepath.Join(h.tasksDir, before.ID+".md"))
+	require.NoError(t, err)
+
+	h.writeConfig(t, projectConfig("two-stage"))
+	require.NoError(t, d.reloadConfig())
+	after, err := d.CreateTicket(web.CreateTicketRequest{Title: "After reload", Parent: "epc-parent", Path: h.repoDir, Status: "open"})
+	require.NoError(t, err)
+	assert.Equal(t, "two-stage", after.Pipeline)
+	stored := h.readTask(before.ID + ".md")
+	assert.Equal(t, "one-stage", stored.Pipeline)
+	afterBytes, err := os.ReadFile(filepath.Join(h.tasksDir, before.ID+".md"))
+	require.NoError(t, err)
+	assert.Equal(t, beforeBytes, afterBytes)
 }
 
 func TestReloadAppliesCheckpointCompactionThreshold(t *testing.T) {

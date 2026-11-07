@@ -4,7 +4,7 @@ import { localScheduleText, parseScheduleInput, pickerToScheduleText, scheduleEc
 // sheet and the component's initial state — and a field added in only two of
 // them is a field the third silently drops.
 export function newCreateForm() {
-  return { title: '', path: '', pipeline: '', agent: '', status: 'todo', body: '', branch: '', base_branch: '', scheduled_at: '', scheduleMode: 'now', kind: '', parent: '' };
+  return { title: '', path: '', pipeline: '', pipelineChoice: 'inherit', agent: '', status: 'todo', body: '', branch: '', base_branch: '', scheduled_at: '', scheduleMode: 'now', kind: '', parent: '' };
 }
 
 // What a branch field says when no name can be shown: the ticket carries no
@@ -56,6 +56,7 @@ export function kontoraCreate() {
           this.error = 'Failed to load config';
         }
       }
+      this.onCreatePathChange();
     },
 
     closeCreateModal() {
@@ -105,16 +106,38 @@ export function kontoraCreate() {
       return this.projectForPath(this.createForm.path);
     },
 
-    // Prefill the selects the user has not touched from the project that owns
-    // the typed path. cli.New applies the same defaults on submit, so this is a
-    // preview of what the server will do, not the mechanism.
-    //
-    // Every untouched select is rewritten on each keystroke, including back to
-    // blank once the path stops matching: leaving the previous project's values
-    // in place would create the ticket with a pipeline picked for another repo.
+    pipelineOverride(choice) {
+      if (!choice || choice === 'inherit') return undefined;
+      return choice === 'none' ? 'none' : choice.slice('pipeline:'.length);
+    },
+
+    pipelinePreview(choice, defaults) {
+      var override = this.pipelineOverride(choice);
+      return override === undefined ? defaults.pipeline : override === 'none' ? '' : override;
+    },
+
+    inheritedPipelineLabel(defaults) {
+      var source = defaults.pipelineSource;
+      var label = source === 'default_pipeline' ? 'Use global default'
+        : source === 'epic_child_pipeline' ? 'Use project epic-child default'
+        : source === 'pipeline' ? 'Use project default' : 'Inherit';
+      return label + ' (' + (defaults.pipeline || 'single run, no stages') + ')';
+    },
+
+    createPipelineDefaults() {
+      var parentID = this.createForm.parent;
+      var parent = (this.tickets || []).find(t => t.id === parentID);
+      if (!parent && this.selectedEpic?.id === parentID) parent = this.selectedEpic;
+      return this.projectDefaultsFor(this.createForm.path, parent?.kind === 'epic');
+    },
+
+    syncCreatePipeline() {
+      this.createForm.pipeline = this.createForm.kind === 'epic' ? ''
+        : this.pipelinePreview(this.createForm.pipelineChoice, this.createPipelineDefaults());
+    },
+
     onCreatePathChange() {
-      var project = this.createProject();
-      if (!this.createTouched.pipeline) this.createForm.pipeline = (project && project.pipeline) || '';
+      this.syncCreatePipeline();
       this.syncCreateAgent();
     },
 
@@ -130,6 +153,7 @@ export function kontoraCreate() {
 
     onPipelineChange() {
       this.createTouched.pipeline = true;
+      this.syncCreatePipeline();
       this.syncCreateAgent();
     },
 
@@ -324,10 +348,8 @@ export function kontoraCreate() {
           if (this.createForm.body) body.body = this.createForm.body;
           return await this._submitCreate(body);
         }
-        // The selects carry the resolved values, so an empty one is a
-        // deliberate opt-out. "none" says so; a blank field would make the
-        // daemon inherit the project default the user just cleared.
-        body.pipeline = this.createForm.pipeline || 'none';
+        var pipeline = this.pipelineOverride(this.createForm.pipelineChoice);
+        if (pipeline !== undefined) body.pipeline = pipeline;
         body.agent = this.createForm.agent || 'none';
         var scheduled = this.createScheduleISO();
         if (scheduled) {
@@ -400,6 +422,28 @@ export function kontoraCreate() {
 
     async openInitModal(ticket) {
       this.closeAgentPicker(false);
+      var seq = ++this._initContextSeq;
+      var navigation = this._navigationSeq;
+      var current = () => seq === this._initContextSeq && navigation === this._navigationSeq;
+      this.initModal = false;
+      this._initOpening = true;
+      this.initSubmitting = false;
+      try {
+        var res = await fetch('/api/tickets/' + ticket.id);
+        if (res.status === 404 && current()) {
+          this.error = 'Ticket no longer exists';
+          return;
+        }
+        if (res.ok) {
+          var fresh = await res.json();
+          if (fresh.id === ticket.id) ticket = fresh;
+        }
+      } catch (e) {
+        // A failed preview refresh must not turn inheritance into a stored override.
+      } finally {
+        if (seq === this._initContextSeq) this._initOpening = false;
+      }
+      if (!current()) return;
       var pt = this.parseTitleTag(ticket);
       this.initForm = {
         ticketId: ticket.id,
@@ -408,6 +452,10 @@ export function kontoraCreate() {
         tag: pt.tag || '',
         titleRest: pt.rest || '',
         pipeline: '',
+        pipelineChoice: '',
+        canInheritPipeline: !ticket.pipeline,
+        epicChild: !!ticket.epic_child,
+        parentID: ticket.parent?.id || '',
         agent: '',
         path: ticket.path || '',
         branch: ticket.branch || '',
@@ -419,6 +467,7 @@ export function kontoraCreate() {
         notify: (ticket.notify || []).slice(),
         notifyChannels: (ticket.notify_channels || []).slice(),
       };
+      var form = this.initForm;
       this.initNotifyOpen = false;
       this.initError = null;
       this.initModal = true;
@@ -430,48 +479,67 @@ export function kontoraCreate() {
           this.initError = 'Failed to load config';
         }
       }
+      if (!this.initModal || form !== this.initForm) return;
       // ticket.agent can be a resolved stage value. Use it only for a stored
       // override; otherwise show the project agent Init will apply.
-      this._initInherited = this.projectDefaultsFor(this.initForm.path);
+      this._initInherited = this.projectDefaultsFor(this.initForm.path, this.initForm.epicChild);
       this._initAgentFollowsProject = !ticket.agent_override;
-      var pipeline = ticket.kind === 'epic' ? '' : (ticket.pipeline || this._initInherited.pipeline);
       var agent = ticket.agent_override ? ticket.agent : this._initInherited.agent;
       await this.$nextTick();
-      this.initForm.pipeline = pipeline;
+      if (!this.initModal || form !== this.initForm) return;
+      this.initForm.pipelineChoice = ticket.pipeline ? 'pipeline:' + ticket.pipeline : 'inherit';
+      this.onInitPipelineChange();
       this.initForm.agent = agent;
       document.getElementById(ticket.kind === 'epic' ? 'init-agent' : 'init-pipeline')?.focus();
     },
 
-    // Re-apply the project defaults after the path field changes. A value the
-    // user chose is kept; one that only got there by inheriting from the
-    // previous path is replaced, so retargeting the ticket cannot start it with
-    // another repository's pipeline.
-    onInitPathChange() {
-      var prev = this._initInherited || { pipeline: '', agent: '' };
-      var next = this.projectDefaultsFor(this.initForm.path);
+    onInitPipelineChange() {
+      this.initForm.pipeline = this.initForm.kind === 'epic' ? ''
+        : this.pipelinePreview(this.initForm.pipelineChoice, this._initInherited);
+    },
 
-      if (this.initForm.kind === 'epic') {
-        this.initForm.pipeline = '';
-      } else if (!this.initForm.pipeline || this.initForm.pipeline === prev.pipeline) {
-        this.initForm.pipeline = next.pipeline;
-      }
-      if (this._initAgentFollowsProject) this.initForm.agent = next.agent;
-      this._initInherited = next;
+    onInitPathChange() {
+      this._initInherited = this.projectDefaultsFor(this.initForm.path, this.initForm.epicChild);
+      this.onInitPipelineChange();
+      if (this._initAgentFollowsProject) this.initForm.agent = this._initInherited.agent;
       this.initError = null;
+    },
+
+    async refreshInitContext(ticketID) {
+      if (!this.initModal) return;
+      if (ticketID && ticketID !== this.initForm.ticketId && ticketID !== this.initForm.parentID) return;
+      var id = this.initForm.ticketId;
+      var seq = ++this._initContextSeq;
+      try {
+        var res = await fetch('/api/tickets/' + id);
+        if (!this.initModal || seq !== this._initContextSeq || this.initForm.ticketId !== id) return;
+        if (res.status === 404) {
+          this.closeInitModal();
+          return;
+        }
+        if (!res.ok) return;
+        var ticket = await res.json();
+        if (!this.initModal || seq !== this._initContextSeq || ticket.id !== id) return;
+        this.initForm.epicChild = !!ticket.epic_child;
+        this.initForm.parentID = ticket.parent?.id || '';
+        this._initInherited = this.projectDefaultsFor(this.initForm.path, this.initForm.epicChild);
+        this.onInitPipelineChange();
+      } catch (e) {
+        // Keep the snapshot on network failure; submission still resolves inheritance on the server.
+      }
     },
 
     closeInitModal() {
       this.closeAgentPicker(false);
       this.initModal = false;
+      this._initOpening = false;
+      this._initContextSeq++;
       this.initSubmitting = false;
     },
 
-    // The project the pipeline value came from, or null. The badge sits on the
-    // pipeline label row and claims that provenance, so it tests the value: the
-    // ticket's own field and the select both override the inherited one, and
-    // the path resolving to a project says nothing about either.
     initPipelineProject() {
-      if (!this.initForm.pipeline || this.initForm.pipeline !== this._initInherited.pipeline) return null;
+      if (this.initForm.pipelineChoice !== 'inherit') return null;
+      if (!['pipeline', 'epic_child_pipeline'].includes(this._initInherited.pipelineSource)) return null;
       return this.projectForPath(this.initForm.path);
     },
 
@@ -522,11 +590,8 @@ export function kontoraCreate() {
         const res = await fetch('/api/tickets/' + this.initForm.ticketId + '/init', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          // The selects carry the resolved values, so an empty one is a
-          // deliberate opt-out. "none" says so; a blank field would make the
-          // daemon inherit the project default the user just cleared.
           body: JSON.stringify({
-            pipeline: this.initForm.kind === 'epic' ? undefined : (this.initForm.pipeline || 'none'),
+            pipeline: this.initForm.kind === 'epic' ? undefined : this.pipelineOverride(this.initForm.pipelineChoice),
             status: this.initForm.kind === 'epic' ? 'todo' : undefined,
             path: this.initForm.path,
             agent: this.initForm.agent || 'none',

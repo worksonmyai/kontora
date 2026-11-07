@@ -46,7 +46,14 @@ export function kontoraTickets() {
       this.$watch('selectedTicket', () => this._markSelectedCard());
       // Custom statuses add columns; recompute so _board gains the new key,
       // then renderBoard (called by recomputeBoard) fills the new column DOM.
-      this.$watch('configCache', () => this.$nextTick(() => this.recomputeBoard()));
+      this.$watch('configCache', () => this.$nextTick(() => {
+        this.recomputeBoard();
+        if (this.currentView === 'new' || this.sheet?.type === 'new') this.syncCreatePipeline();
+        if (this.initModal) {
+          this._initInherited = this.projectDefaultsFor(this.initForm.path, this.initForm.epicChild);
+          this.onInitPipelineChange();
+        }
+      }));
       // Desktop and mobile are complementary x-if layers, so only one board
       // exists at a time and crossing the breakpoint rebuilds it.
       this.$watch('isMobile', () => this._onBreakpointChange());
@@ -255,6 +262,7 @@ export function kontoraTickets() {
     },
 
     applyTicketUpdate(ticket) {
+      this.refreshInitContext(ticket.id);
       var previousOutput = this.outputSubject();
       if (this.selectedEpic?.id === ticket.id) {
         this._epicUpdateSeq++;
@@ -316,6 +324,8 @@ export function kontoraTickets() {
             this.selectedTicket.status = ticket.status;
             this.selectedTicket.kind = ticket.kind;
             this.selectedTicket.epic_execution = ticket.epic_execution;
+            this.selectedTicket.epic_child = ticket.epic_child;
+            this.selectedTicket.parent = ticket.parent;
             this.selectedTicket.stage = ticket.stage;
             this.selectedTicket.attempt = ticket.attempt;
             // A schedule set or cleared by the CLI, by another browser, or by
@@ -345,6 +355,7 @@ export function kontoraTickets() {
           }
         }
       }
+      if (this.createForm.parent === ticket.id) this.syncCreatePipeline();
       if (previousOutput?.id === ticket.id) this.reconcileOutput(previousOutput);
     },
 
@@ -418,6 +429,9 @@ export function kontoraTickets() {
       es.addEventListener('ticket_deleted', (e) => {
         const ticket = JSON.parse(e.data);
         this.tickets = this.tickets.filter(t => t.id !== ticket.id);
+        if (this.initModal && this.initForm.ticketId === ticket.id) this.closeInitModal();
+        else this.refreshInitContext(ticket.id);
+        if (this.createForm.parent === ticket.id) this.syncCreatePipeline();
         if (this.selectedTicket?.id === ticket.id) {
           this.closeDetail();
         } else if (this._chainHasNode(ticket.id)) {

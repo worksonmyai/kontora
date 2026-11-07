@@ -138,7 +138,12 @@ stored `path`. Without `--parent`, it uses the current git root.
 An explicit `--path` always wins. Remote mode still requires `--path` on the
 daemon host, even with `--parent`. API creation likewise requires `path`.
 
-Project defaults use the selected path.
+Project defaults use the selected path and lexical matching. An explicit
+`--pipeline` wins; otherwise an ordinary ticket under any actual epic uses project
+`epic_child_pipeline`, then project `pipeline`, global `default_pipeline`, then
+standalone execution. Passive and agent epics both qualify. A missing or
+ordinary-ticket parent does not qualify. `--pipeline none` skips pipeline defaults
+without changing independent agent resolution.
 
 - `--path PATH` — repository the ticket works in.
 - `--pipeline NAME` — pipeline to run, or `none` for a standalone ticket.
@@ -236,6 +241,19 @@ always name them from a script or an agent.
 - `--stage NAME` — starting stage. Defaults to the pipeline's first.
 - `--status STATUS` — `open` or `todo`. Defaults to asking.
 
+For ordinary tickets, pipeline precedence is explicit request, stored nonempty
+pipeline, project `epic_child_pipeline` for an actual epic child, project `pipeline`,
+global `default_pipeline`. Initialization resolves actual membership
+before filling a blank pipeline, for both passive and agent epics.
+
+If the pipeline remains blank, local `init` opens the pipeline picker, or errors if no pipelines are configured.
+Pass `--pipeline none` for standalone execution.
+
+`--pipeline none` stores a blank for this request, not durable opt-out provenance.
+A later initialization can fill it unless the caller opts out again. Agent
+resolution stays independent. Existing assignments are not migrated after config,
+parent or detail-path changes; operators must retarget them explicitly.
+
 For an epic, explicit `--status todo` activates a supervisor. Omit `--pipeline`
 and `--stage`; `--agent` selects the supervisor. Passive epic initialization
 without explicit `--status todo` is refused. Activation requires the epic and
@@ -254,8 +272,19 @@ them, rather than queued.
 On a passive epic, this explicitly activates a supervisor and writes
 `epic_execution: agent`. Creation and draft edits never activate it. The epic
 and every child must use the same Git repository. The supervisor uses its own
-branch and worktree, while children keep theirs. Success parks the epic in
-`human_review`. See `kontora skills show tickets Epics` for review, rework,
+branch and worktree, without a pipeline, while children keep theirs. Success parks
+the epic in `human_review`.
+
+Supervisor prompts prohibit changing, clearing or replacing child pipelines and
+editing pipeline definitions, stage definitions or project pipeline defaults.
+Create children without `--pipeline`. Do not bypass workflows through `init`,
+stage skipping, direct file edits or pause/retry sequences. If configured work
+conflicts with your authority, report the conflict, request an operator decision
+and leave that work unstarted. Do not substitute another pipeline. These are
+prompt instructions, not runtime enforcement; operator commands remain available.
+Pipeline defaults do not authorize commits or publication.
+
+See `kontora skills show tickets Epics` for review, rework,
 Git and approval limits, capacity and mixed-version upgrade requirements.
 
 ## kontora schedule

@@ -524,14 +524,18 @@ pipelines:
 ## projects
 
 Map of project name to a repository and the defaults tickets for it should get.
-Without a `projects:` block nothing changes: a ticket created for a repository
-with no entry still gets no pipeline and no agent.
+Without a matching project, an ordinary ticket uses `default_pipeline` when set.
+Project agent defaults do not apply; standalone execution uses `default_agent`.
+
+Upgrade all clients and daemon binaries that read the config before adding
+`epic_child_pipeline`. Older binaries reject the new key because YAML loading is strict.
 
 ```yaml
 projects:
   kontora:
     path: ~/projects/kontora
     pipeline: implement-review-commit
+    epic_child_pipeline: default
     agent: claude
   widget-api:
     path: ~/projects/widget-api
@@ -541,7 +545,8 @@ projects:
 | Field | Required | Description |
 |-------|----------|-------------|
 | `path` | yes | Repository the entry applies to. |
-| `pipeline` | no | Pipeline written into new tickets for this repository. |
+| `pipeline` | no | Ordinary pipeline default at creation or initialization. |
+| `epic_child_pipeline` | no | Pipeline default for ordinary tickets whose resolved parent is an epic, passive or agent. Falls back to `pipeline` when unset. |
 | `agent` | no | Agent written into new tickets for this repository. |
 | `prefix` | no | Ticket-ID prefix for this repository, instead of one derived from the directory name. Lowercase letters and digits only. |
 | `branch_prefix` | no | Overrides the top-level `branch_prefix` for this repository. |
@@ -549,8 +554,9 @@ projects:
 | `hooks` | no | Commands run at this repository's lifecycle events, after the top-level ones (see [hooks](#hooks)). |
 | `notify_channels` | no | Overrides `notifications.default` for tickets in this repository. The sole entry `none` silences the project (see [notifications](#notifications)). |
 
-`pipeline`, `agent` and `prefix` are read when the ticket is created. The
-daemon reads `branch_prefix` and `branch_naming` when it names an empty branch,
+`pipeline`, `epic_child_pipeline` and `agent` supply creation and initialization
+defaults. `prefix` is read only at creation. The daemon reads `branch_prefix`
+and `branch_naming` when it names an empty branch,
 so the current config applies until pickup. A ticket that already carries a
 `branch` keeps it.
 
@@ -559,9 +565,40 @@ repositories would otherwise share it. Without it the prefix comes from the
 directory name; see [ticket ID format](tickets.md#ticket-id-format) for the
 rule. Changing it renames nothing: existing IDs stay as they are.
 
-The pipeline and agent defaults are applied when a ticket is created (`kontora new`, `POST /api/tickets`, the TUI and web create forms) or initialized (`kontora init`, `POST /api/tickets/{id}/init`), and are written into the ticket's frontmatter. The ticket file keeps saying exactly what will run, and an existing ticket is never rewritten.
+Kontora writes pipeline and agent defaults into frontmatter at creation or initialization.
+Creation includes `kontora new`, `POST /api/tickets`, and the TUI and web forms.
+Initialization includes `kontora init` and `POST /api/tickets/{id}/init`.
 
-A value you supply yourself wins over the project default. On `kontora init` a value the ticket file already declares wins too: the project fills a blank field, it never replaces a pipeline or an agent the ticket chose. The two fields are independent: naming a pipeline still lets the agent come from the project.
+For an ordinary ticket, pipeline selection uses the first applicable value:
+
+1. The explicit request, including `none` for standalone execution.
+2. The stored nonempty pipeline, during initialization only.
+3. The matching project's `epic_child_pipeline`, if the resolved parent is an epic.
+4. The matching project's `pipeline`.
+5. The global `default_pipeline`.
+6. Standalone execution.
+
+`epic_child_pipeline` applies under any actual epic, whether passive or agent.
+A missing parent or an ordinary-ticket parent does not qualify. Initialization
+resolves actual membership before filling a blank pipeline, including parents
+on disk that the daemon has not discovered yet. Epics themselves never get a
+pipeline; their supervisors run standalone. Supervisor prompts prohibit workflow changes
+and bypasses. These instructions are not runtime enforcement; see
+[Epics](tickets.md#epics) for authority conflicts and operator decisions.
+
+Agent selection remains independent. A pipeline override or `--pipeline none`
+still allows the project to supply the agent. Initialization preserves a stored
+agent unless the request overrides it.
+
+Existing assignments are not migrated. A config reload, reparenting, or a path
+edit in ticket details does not replace the stored pipeline. Operators must
+explicitly retarget existing tickets. Raw uploads and daemon startup do not apply
+these defaults. A later initialization can still fill a blank pipeline.
+
+Browser create and init forms omit `pipeline` for inheritance, send the configured
+name for an explicit choice, and send `none` for standalone execution. An inherited
+preview is only a snapshot; the backend resolves the default when submitted.
+Choosing a named pipeline equal to the preview still makes an explicit choice.
 
 `path` is matched after `~` expansion and cleaning, so `~/projects/kontora`, `/home/you/projects/kontora`, and a trailing slash all reach the same entry. Only the complete path matches. A ticket pointing at `~/projects/kontora/internal` inherits nothing, and symlinks are not resolved. A relative path is not resolved either, because only the daemon host knows what it would be relative to: `kontora new --path . "..."` matches no project.
 
@@ -569,20 +606,26 @@ Locally, `kontora new --parent EPIC_ID` without `--path` inherits the resolved p
 
 ### Opting out with `none`
 
-Once a project sets a default pipeline, leaving `--pipeline` blank no longer produces a standalone ticket. Pass the literal `none` instead:
+When a project or global pipeline default applies, omitting `--pipeline` inherits
+that default. Pass the literal `none` for standalone execution instead:
 
 ```bash
 kontora new --path ~/projects/kontora --pipeline none "one agent run, no stages"
 ```
 
-`none` means "leave this field blank and skip the project default". It is accepted wherever a command takes a pipeline or agent name: the `kontora new`, `kontora update`, and remote `kontora init` flags, the `pipeline` and `agent` fields of `POST /api/tickets`, `POST /api/tickets/{id}/init`, and `PUT /api/tickets/{id}`, the TUI create form, and the web selects. The literal string never reaches the frontmatter. Because it is reserved, a pipeline or an agent named `none` fails config validation.
+`none` means "leave this field blank and skip pipeline or agent defaults for this request". It is accepted wherever a command takes a pipeline or agent name: the `kontora new`, `kontora update`, and `kontora init` flags, the `pipeline` and `agent` fields of `POST /api/tickets`, `POST /api/tickets/{id}/init`, and `PUT /api/tickets/{id}`, the TUI create form, and the web selects. The literal string never reaches the frontmatter. Because it is reserved, a pipeline or an agent named `none` fails config validation.
+
+`none` is not durable provenance: Kontora stores a blank field, not the opt-out.
+A later initialization can fill that blank from current defaults unless the caller
+passes `none` again. A pipeline opt-out does not disable independent agent resolution.
 
 Only those commands read the sentinel. `pipeline: none` written by hand into a ticket that is already initialized stays there, and the daemon pauses the ticket with `unknown pipeline "none"`. Leave the field out instead.
 
 ### Validation rules
 
 - `path` is required.
-- `pipeline` and `agent`, when set, must exist in `pipelines:` and `agents:`.
+- `pipeline` and `epic_child_pipeline`, when set, must name configured pipelines. Neither accepts `none`.
+- `agent`, when set, must name a configured agent.
 - Two projects may not have paths that expand and clean to the same directory, which would make the lookup pick one at random.
 - No pipeline and no agent may be named `none`.
 
@@ -1287,17 +1330,19 @@ change a prompt or an agent's arguments while agents are working.
 ### What reloads live
 
 `agents`, `stages`, `pipelines`, `projects`, `statuses`, `environment`,
-`auto_pick_up`, `default_agent`, `branch_prefix`, `branch_naming`,
+`auto_pick_up`, `default_agent`, `default_pipeline`, `branch_prefix`, `branch_naming`,
 `resume_prompt`, `annotation_prompt`, `summary_model`, `summary_effort`, and the
 whole `plannotator` and `assistant` blocks.
 
 A run reads the prompts and the `plannotator` block when it starts, so a reload
 changes the next run, never one already going.
 
-Editing `projects` reloads live, but the pipeline and agent defaults are stamped
-into a ticket when it is created or initialized. A reload changes what the next
-ticket gets, never what an existing one already carries. A project's
-`branch_prefix` and `branch_naming` are not stamped, so a reload changes how the
+Editing `projects`, including `epic_child_pipeline`, or `default_pipeline` reloads live.
+The new defaults affect later creation and initialization, without rewriting existing
+assignments. Initialization preserves a stored nonempty pipeline before applying defaults.
+An invalid child-pipeline reference rejects the reload and leaves the running config unchanged.
+
+A project's `branch_prefix` and `branch_naming` are not stamped, so a reload changes how the
 daemon names an existing ticket whose branch is still empty.
 
 ### What needs a restart

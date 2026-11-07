@@ -256,25 +256,27 @@ func (d *Daemon) GetConfig() web.ConfigInfo {
 	for i, name := range projectNames {
 		p := cfg.Projects[name]
 		projects[i] = web.ProjectInfo{
-			Name:           name,
-			Path:           p.Path,
-			ResolvedPath:   config.NormalizeRepoPath(p.Path),
-			Pipeline:       p.Pipeline,
-			Agent:          p.Agent,
-			BranchPrefix:   p.BranchPrefix,
-			NotifyChannels: p.NotifyChannels,
+			Name:              name,
+			Path:              p.Path,
+			ResolvedPath:      config.NormalizeRepoPath(p.Path),
+			Pipeline:          p.Pipeline,
+			EpicChildPipeline: p.EpicChildPipeline,
+			Agent:             p.Agent,
+			BranchPrefix:      p.BranchPrefix,
+			NotifyChannels:    p.NotifyChannels,
 		}
 	}
 	return web.ConfigInfo{
-		Pipelines:      pipelines,
-		PipelineInfos:  infos,
-		Agents:         agents,
-		AgentInfos:     agentInfos,
-		Projects:       projects,
-		DefaultAgent:   cfg.DefaultAgent,
-		Author:         cfg.Author,
-		BranchPrefix:   cfg.BranchPrefix,
-		CustomStatuses: cfg.Statuses,
+		Pipelines:       pipelines,
+		PipelineInfos:   infos,
+		Agents:          agents,
+		AgentInfos:      agentInfos,
+		Projects:        projects,
+		DefaultAgent:    cfg.DefaultAgent,
+		DefaultPipeline: cfg.DefaultPipeline,
+		Author:          cfg.Author,
+		BranchPrefix:    cfg.BranchPrefix,
+		CustomStatuses:  cfg.Statuses,
 		// Names alone. A channel's own struct holds a chat id or a webhook URL,
 		// and the browser only ever needs to say where a notification lands.
 		Channels:        slices.Sorted(maps.Keys(cfg.Notifications.Channels)),
@@ -1668,6 +1670,9 @@ func (d *Daemon) buildTicketInfo(cfg *config.Config, ts *ticketState, includeBod
 	}
 	info.CanAnnotate = annotateRefusal(ts.ticket) == nil
 	info.Project, _, _ = cfg.ProjectFor(ts.ticket.Path)
+	if parent := d.tickets[ts.ticket.Parent]; parent != nil && ts.ticket.Kind != ticket.KindEpic {
+		info.EpicChild = parent.ticket.Kind == ticket.KindEpic
+	}
 	d.decorateNotes(cfg, ts.ticket.ID, info.Notes)
 	info.Blockers = d.blockersLocked(ts.ticket)
 	info.Ready = len(info.Blockers) == 0

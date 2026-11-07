@@ -316,7 +316,7 @@ func (s *Service) Skip(id string) (Result, error) {
 // A blank request field keeps what the ticket file already declares, so a
 // project default fills a field instead of replacing a value the ticket chose.
 // "none" is how a caller asks for the field to be cleared.
-func resolveInitFields(cfg *config.Config, t *ticket.Ticket, req InitRequest) (pipeline, agent string, err error) {
+func (s *Service) resolveInitFields(cfg *config.Config, t *ticket.Ticket, req InitRequest) (pipeline, agent string, err error) {
 	// The project is keyed by the path the ticket ends up with, which req.Path
 	// overrides when set.
 	repoPath := req.Path
@@ -330,7 +330,14 @@ func resolveInitFields(cfg *config.Config, t *ticket.Ticket, req InitRequest) (p
 	if agent == "" {
 		agent = t.Agent
 	}
-	pipeline, agent = cfg.ResolveTicketDefaults(repoPath, pipeline, agent)
+	var epicChild bool
+	if _, project, _ := cfg.ProjectFor(repoPath); pipeline == "" && project.EpicChildPipeline != "" {
+		epicChild, err = s.IsEpicChild(t.Parent)
+		if err != nil {
+			return "", "", err
+		}
+	}
+	pipeline, agent = cfg.ResolveTicketDefaults(repoPath, pipeline, agent, epicChild)
 
 	if pipeline != "" {
 		if steps, ok := cfg.Pipelines[pipeline]; !ok || len(steps) == 0 {
@@ -437,7 +444,7 @@ func (s *Service) Init(id string, req InitRequest) (Result, error) {
 
 	cfg := s.cfg()
 
-	pipeline, agent, err := resolveInitFields(cfg, t, req)
+	pipeline, agent, err := s.resolveInitFields(cfg, t, req)
 	if err != nil {
 		return Result{}, err
 	}

@@ -146,7 +146,7 @@ const SETTINGS_SEARCH_EXTRA = {
   agents: ['binary', 'effort', 'args', 'failure_patterns'],
   stages: ['prompt', 'timeout', 'model', 'effort'],
   pipelines: ['on_success', 'on_failure', 'max_retries'],
-  projects: ['pipeline', 'agent', 'branch_prefix', 'notify_channels'],
+  projects: ['pipeline', 'epic_child_pipeline', 'agent', 'branch_prefix', 'notify_channels'],
   notifications: [
     'enabled', 'timeout one delivery attempt', 'attempts', 'backoff between attempts',
     'default channels a notification goes to', 'telegram chat_id', 'mattermost incoming webhook',
@@ -1147,7 +1147,9 @@ export function kontoraSettings() {
           for (const step of cfg.pipelines[p]) out.push(step.stage, step.agent, step.on_success, step.on_failure);
         }
       }
-      if (key === 'projects') for (const n of this.settingsProjectNames()) out.push(n, cfg.projects[n].path);
+      if (key === 'projects') for (const n of this.settingsProjectNames()) {
+        out.push(n, cfg.projects[n].path, cfg.projects[n].pipeline, cfg.projects[n].epic_child_pipeline);
+      }
       if (key === 'notifications') {
         for (const n of this.settingsNotifChannelNames()) out.push(n, cfg.notifications.channels[n].type);
       }
@@ -1534,6 +1536,8 @@ function settingsModel(raw) {
     model.projects[name] = {
       path: str(project?.path),
       pipeline: str(project?.pipeline),
+      // Read-only: exclude this field from settingsFlatten to preserve its YAML node.
+      epic_child_pipeline: str(project?.epic_child_pipeline),
       agent: str(project?.agent),
       branch_prefix: str(project?.branch_prefix),
       // Read-only: shown on the project card, absent from settingsFlatten, so

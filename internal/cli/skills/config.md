@@ -5,6 +5,9 @@ being ignored. `kontora config` prints the effective configuration with
 defaults applied and `web.token` masked; in remote mode it prints the daemon's
 pipelines, agents and custom statuses.
 
+Upgrade all clients and daemon binaries that read the config before adding
+`epic_child_pipeline`. Older strict-YAML loaders reject the key.
+
 The file is found at `$KONTORA_CONFIG`, then `./.kontora/config.yaml`, then
 `$XDG_CONFIG_HOME/kontora/config.yaml`, then `~/.config/kontora/config.yaml`.
 
@@ -21,6 +24,7 @@ Read `kontora config` for what a particular board actually runs.
 | `branch_prefix` | `kontora` | Prefix of a ticket's work branch. A project can override it. |
 | `branch_naming` | `mode: slug` | How a ticket with an empty `branch` is named. `off` uses `<prefix>/<id>`. |
 | `default_agent` | inferred | Agent for tickets with no pipeline. Defaults to `claude` when an agent has that name, otherwise the only agent. |
+| `default_pipeline` | — | Pipeline fallback after applicable project defaults. Must name a configured pipeline. |
 | `max_concurrent_agents` | `3` | Maximum worker runs at once, excluding epic supervisors. |
 | `max_concurrent_epic_supervisors` | `4` | Maximum epic supervisors in a separate pool. Zero or omission uses `4`; negative values are rejected. Requires restart. |
 | `auto_pick_up` | `true` | Whether the daemon claims new `todo` tickets on its own. |
@@ -85,24 +89,49 @@ projects:
   kontora:
     path: ~/projects/kontora
     pipeline: default
+    epic_child_pipeline: default
     agent: claude
 ```
 
 | Field | Description |
 |-------|-------------|
 | `path` | Repository directory. Required. |
-| `pipeline` | Default pipeline for tickets created for this path. |
+| `pipeline` | Ordinary pipeline default at creation or initialization for this path. |
+| `epic_child_pipeline` | Pipeline default for ordinary children of any actual epic, passive or agent. Falls back to `pipeline` when unset. |
 | `agent` | Default agent for the same. |
 | `prefix` | Pin the ticket id prefix instead of deriving it from the directory name. |
 | `branch_prefix`, `branch_naming` | Override the top-level branch settings. |
 | `hooks` | Lifecycle hooks scoped to this project. |
 
 The name is what `--project` on `ls`, `search`, `archive` and `stats` matches.
-Two projects may not resolve to the same directory.
+Two projects may not resolve to the same directory. Matching is lexical after
+`~` expansion and cleaning; linked worktrees and symlinks do not gain a match.
 
-Once a project sets a default pipeline, leaving `--pipeline` blank no longer
-makes a standalone ticket. Pass the literal `none` for that. A pipeline or an
-agent named `none` fails validation, because the word is reserved.
+For ordinary tickets, pipeline precedence is:
+
+1. Explicit request, including `none` for standalone execution.
+2. Stored nonempty pipeline, during initialization only.
+3. Project `epic_child_pipeline`, when the resolved parent is an actual epic.
+4. Project `pipeline`.
+5. Global `default_pipeline`.
+6. Standalone execution.
+
+Missing or ordinary-ticket parents do not qualify for the child default. Epics
+never get a pipeline; supervisors run standalone. Pipeline and agent resolution
+are independent, including when the caller passes `--pipeline none`.
+
+Kontora stamps defaults into frontmatter at creation or initialization. Existing
+assignments are not migrated. Config reloads, reparenting and detail-path edits do
+not replace stored pipelines; operators must retarget existing tickets explicitly.
+Raw uploads and daemon startup do not apply defaults.
+
+`none` is a ticket-level opt-out for this request, not durable provenance. A later
+initialization can fill the blank unless the caller opts out again. Project
+`pipeline` and `epic_child_pipeline` must name configured pipelines; neither accepts
+`none`. No pipeline or agent may be named `none`.
+
+Browser inheritance omits `pipeline`; standalone sends `none`. The backend resolves
+current defaults at submission, independently of the preview snapshot.
 
 ## statuses
 
@@ -207,9 +236,13 @@ A question that disappears is no longer observed, not proven answered.
 
 The daemon watches its config file, and `SIGHUP` reloads it too. `agents`,
 `stages`, `pipelines`, `projects`, `statuses`, `environment`, `auto_pick_up`,
-`default_agent`, the branch settings and the `assistant` block all reload live
-and apply to the next run, never to one already going. Disabling the companion
-stops observation and blocks new companion requests without deleting stored
+`default_agent`, `default_pipeline`, the branch settings and the `assistant` block.
+All reload live. Run settings apply to the next run, never to one already going.
+Pipeline defaults affect later creation and initialization, not existing assignments.
+Initialization preserves stored nonempty pipelines.
+An invalid child-pipeline reference rejects the reload and keeps the running config.
+
+Disabling the companion stops observation and blocks new companion requests without deleting stored
 data. An already-running requested turn remains stoppable.
 
 `tickets_dir`, `worktrees_dir`, `logs_dir`, `instance_name`, `tmux_session`,

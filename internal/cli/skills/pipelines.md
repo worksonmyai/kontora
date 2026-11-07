@@ -6,7 +6,28 @@ references a pipeline by name in its `pipeline` frontmatter field.
 
 An ordinary ticket with no pipeline runs standalone: one agent invocation with
 the default agent, no stages. An epic has no pipeline. A passive epic never
-runs; an explicitly activated agent epic runs a supervisor in its own worktree.
+runs; an explicitly activated agent epic runs a standalone supervisor in its own worktree.
+
+## Default selection
+
+For ordinary tickets, creation and initialization resolve pipelines in this order:
+
+1. Explicit request, including `none` for standalone execution.
+2. Stored nonempty pipeline, during initialization only.
+3. Project `epic_child_pipeline`, for a child of any actual epic, passive or agent.
+4. Project `pipeline`.
+5. Global `default_pipeline`.
+6. Standalone execution.
+
+Missing or ordinary-ticket parents do not qualify for the child default.
+Kontora writes the result into frontmatter. Existing assignments are not migrated
+after config changes, reparenting or detail-path edits. Operators must retarget
+them explicitly. `none` is not durable provenance: later initialization can fill
+the blank unless the caller opts out again. Agent resolution stays independent.
+
+Upgrade all clients and daemon binaries that read the config before adding
+`epic_child_pipeline`. Older strict-YAML loaders reject the key. The setting must
+name a configured pipeline; `none` remains a ticket-level opt-out.
 
 ## Stages
 
@@ -100,6 +121,18 @@ An assistant chat turn is not a run: it is a headless process, takes no
 concurrency slot, and belongs to no ticket.
 
 ## Moving a ticket by hand
+
+Supervisor prompts prohibit changing, clearing or replacing child pipelines and
+editing pipeline definitions, stage definitions or project pipeline defaults.
+Supervisors must create children without `--pipeline`. They must not bypass a
+workflow through `init`, stage skipping, direct file edits or pause/retry sequences.
+If configured work conflicts with their authority, they must report the conflict,
+request an operator decision and leave that work unstarted. They must not substitute
+another pipeline. These are prompt instructions, not runtime enforcement.
+A pipeline default does not authorize commits or publication; `commit-no-push`
+still contains a commit stage.
+
+The following commands remain available to ordinary operators:
 
 - `kontora skip ID` — advance to the next stage without running the current
   one, or mark the ticket done when it is already on the last stage.

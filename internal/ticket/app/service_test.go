@@ -649,6 +649,7 @@ func TestInit_ProjectDefaults(t *testing.T) {
 	cases := []struct {
 		name         string
 		frontmatter  string // extra ticket fields, one per line
+		parentKind   string
 		req          InitRequest
 		wantPipeline string
 		wantAgent    string
@@ -711,6 +712,17 @@ func TestInit_ProjectDefaults(t *testing.T) {
 			req:          InitRequest{Path: "~/projects/other"},
 			wantPipeline: "",
 		},
+		{name: "epic child takes specialized default", parentKind: "epic", req: InitRequest{Path: "~/projects/test"}, wantPipeline: "child", wantAgent: "claude-sonnet", wantStage: "code"},
+		{name: "ordinary parent keeps ordinary default", parentKind: "ordinary", req: InitRequest{Path: "~/projects/test"}, wantPipeline: "default", wantAgent: "claude-sonnet", wantStage: "code"},
+		{name: "missing parent keeps ordinary default", parentKind: "missing", req: InitRequest{Path: "~/projects/test"}, wantPipeline: "default", wantAgent: "claude-sonnet", wantStage: "code"},
+		{name: "stored child pipeline wins", parentKind: "epic", frontmatter: "pipeline: release\nagent: codex\n", req: InitRequest{Path: "~/projects/test"}, wantPipeline: "release", wantAgent: "codex", wantStage: "code"},
+		{name: "request overrides stored child pipeline", parentKind: "epic", frontmatter: "pipeline: release\n", req: InitRequest{Path: "~/projects/test", Pipeline: "default"}, wantPipeline: "default", wantAgent: "claude-sonnet", wantStage: "code"},
+		{name: "child opts out of pipeline independently", parentKind: "epic", frontmatter: "pipeline: release\n", req: InitRequest{Path: "~/projects/test", Pipeline: "none"}, wantAgent: "claude-sonnet"},
+		{name: "child keeps independent request agent", parentKind: "epic", req: InitRequest{Path: "~/projects/test", Agent: "codex"}, wantPipeline: "child", wantAgent: "codex", wantStage: "code"},
+		{name: "child opts out of agent independently", parentKind: "epic", req: InitRequest{Path: "~/projects/test", Agent: "none"}, wantPipeline: "child", wantStage: "code"},
+		{name: "stored path selects child project", parentKind: "epic", frontmatter: "path: ~/projects/test\n", wantPipeline: "child", wantAgent: "claude-sonnet", wantStage: "code"},
+		{name: "final request path selects child project", parentKind: "epic", frontmatter: "path: ~/projects/other\n", req: InitRequest{Path: "~/projects/test"}, wantPipeline: "child", wantAgent: "claude-sonnet", wantStage: "code"},
+		{name: "final request path leaves child project", parentKind: "epic", frontmatter: "path: ~/projects/test\n", req: InitRequest{Path: "~/projects/other"}},
 	}
 
 	for _, tc := range cases {
@@ -719,11 +731,24 @@ func TestInit_ProjectDefaults(t *testing.T) {
 			cfg.Pipelines["release"] = cfg.Pipelines["default"]
 			cfg.Agents["codex"] = config.Agent{Binary: "codex"}
 			cfg.Projects = map[string]config.Project{
-				"test": {Path: "~/projects/test", Pipeline: "default", Agent: "claude-sonnet"},
+				"test": {Path: "~/projects/test", Pipeline: "default", EpicChildPipeline: "child", Agent: "claude-sonnet"},
 			}
+			cfg.Pipelines["child"] = cfg.Pipelines["default"]
+			cfg.TicketsDir = t.TempDir()
 
 			repo := newMemRepo()
-			repo.add("tst-001", "---\nid: tst-001\nstatus: open\n"+tc.frontmatter+"---\n# Test\n")
+			fields := tc.frontmatter
+			if tc.parentKind != "" {
+				fields += "parent: epc-100\n"
+				if tc.parentKind != "missing" {
+					kind := ""
+					if tc.parentKind == "epic" {
+						kind = "epic"
+					}
+					repo.add("epc-100", fmt.Sprintf("---\nid: epc-100\nkind: %q\n---\n# Parent\n", kind))
+				}
+			}
+			repo.add("tst-001", "---\nid: tst-001\nstatus: open\n"+fields+"---\n# Test\n")
 			svc := New(Static(cfg), repo, &spyRuntime{})
 
 			_, err := svc.Init("tst-001", tc.req)
@@ -734,6 +759,9 @@ func TestInit_ProjectDefaults(t *testing.T) {
 			assert.Equal(t, tc.wantAgent, tkt.Agent)
 			assert.Equal(t, tc.wantStage, tkt.Stage)
 			assert.Equal(t, tc.wantBranch, tkt.Branch)
+			if tc.req.Path != "" {
+				assert.Equal(t, tc.req.Path, tkt.Path)
+			}
 		})
 	}
 }

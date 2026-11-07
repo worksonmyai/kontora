@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/worksonmyai/kontora/internal/cli"
+	"github.com/worksonmyai/kontora/internal/config"
 	"github.com/worksonmyai/kontora/internal/ticket"
 	"github.com/worksonmyai/kontora/internal/web"
 )
@@ -182,25 +183,92 @@ func TestDaemon_LocalEpicInitQueuesWithoutAutoPickup(t *testing.T) {
 	waitForAgentsDone(t, d, 5*time.Second)
 }
 
-func TestDaemon_InitDanglingGroupingChild(t *testing.T) {
-	for _, cachedParent := range []bool{false, true} {
-		t.Run(fmt.Sprintf("cached-parent=%t", cachedParent), func(t *testing.T) {
+func TestDaemon_InitGroupingChildDefaults(t *testing.T) {
+	for _, tc := range []struct {
+		name, parent, pipeline, stored string
+		cached, finalPath, unset       bool
+		wantPipeline                   string
+		wantErr                        bool
+	}{
+		{name: "missing uncached parent", wantPipeline: "two-stage"},
+		{name: "deleted cached parent", parent: "deleted", cached: true, wantPipeline: "two-stage"},
+		{name: "uncached passive parent", parent: "epic", wantPipeline: "one-stage"},
+		{name: "uncached active parent", parent: "agent", wantPipeline: "one-stage"},
+		{name: "cached passive parent", parent: "epic", cached: true, wantPipeline: "one-stage"},
+		{name: "ordinary parent", parent: "ordinary", wantPipeline: "two-stage"},
+		{name: "malformed uncached parent", parent: "malformed", wantErr: true},
+		{name: "malformed cached parent", parent: "malformed", cached: true, wantErr: true},
+		{name: "uncached parent id mismatch", parent: "mismatch", wantErr: true},
+		{name: "cached parent id mismatch", parent: "mismatch", cached: true, wantErr: true},
+		{name: "explicit named pipeline", parent: "epic", pipeline: "two-stage", wantPipeline: "two-stage"},
+		{name: "stored pipeline wins", parent: "epic", stored: "two-stage", wantPipeline: "two-stage"},
+		{name: "request overrides stored pipeline", parent: "epic", stored: "two-stage", pipeline: "retry-stage", wantPipeline: "retry-stage"},
+		{name: "standalone keeps independent agent", parent: "epic", pipeline: "none"},
+		{name: "explicit pipeline skips extra lookup", parent: "malformed", pipeline: "two-stage", wantPipeline: "two-stage"},
+		{name: "standalone skips extra lookup", parent: "malformed", pipeline: "none"},
+		{name: "unset child default skips extra lookup", parent: "malformed", unset: true, wantPipeline: "two-stage"},
+		{name: "request final path controls defaults", parent: "epic", finalPath: true, wantPipeline: "retry-stage"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t)
 			h.cfg.AutoPickUp = new(false)
-			d := h.newDaemon(h.cfg)
-			if cachedParent {
-				path := h.writeTicket("deleted-epic.md", h.epicMD("deleted-epic", "open"))
-				parent, err := ticket.ParseFile(path)
-				require.NoError(t, err)
-				d.tickets[parent.ID] = newTicketState(parent, path)
-				require.NoError(t, os.Remove(path))
+			project := config.Project{Path: h.repoDir, Pipeline: "two-stage", EpicChildPipeline: "one-stage", Agent: "agent2"}
+			if tc.unset {
+				project.EpicChildPipeline = ""
 			}
-			path := h.writeTicket("child.md", fmt.Sprintf("---\nid: child\nparent: deleted-epic\nstatus: open\npath: %q\n---\n# Child\n", h.repoDir))
+			h.cfg.Projects = map[string]config.Project{"repo": project}
+			reqPath := ""
+			if tc.finalPath {
+				reqPath = initRepo(t)
+				h.cfg.Projects["other"] = config.Project{Path: reqPath, Pipeline: "retry-stage", Agent: "agent2"}
+			}
+			d := h.newDaemon(h.cfg)
+			if tc.parent != "" {
+				md := h.epicMD("epc-parent", "open")
+				if tc.parent == "agent" {
+					md = h.agentEpicMD("epc-parent", "open")
+				}
+				path := h.writeTicket("epc-parent.md", md)
+				if tc.cached {
+					parent, err := ticket.ParseFile(path)
+					require.NoError(t, err)
+					d.tickets[parent.ID] = newTicketState(parent, path)
+				}
+				switch tc.parent {
+				case "deleted":
+					require.NoError(t, os.Remove(path))
+				case "malformed":
+					h.writeTicket("epc-parent.md", "---\nid: [\n---\n")
+				case "mismatch":
+					h.writeTicket("epc-parent.md", h.epicMD("different-id", "open"))
+				case "ordinary":
+					h.writeTicket("epc-parent.md", "---\nid: epc-parent\nstatus: open\n---\n# Ordinary\n")
+				}
+			}
+			path := h.writeTicket("child.md", fmt.Sprintf("---\nid: child\nparent: epc-parent\nstatus: open\npath: %q\npipeline: %q\n---\n# Child\n", h.repoDir, tc.stored))
+			before, err := os.ReadFile(path)
+			require.NoError(t, err)
 			tkt, err := ticket.ParseFile(path)
 			require.NoError(t, err)
 			d.tickets["child"] = newTicketState(tkt, path)
-			require.NoError(t, d.InitTicket("child", web.InitTicketRequest{Status: "todo"}))
-			assert.Equal(t, ticket.StatusTodo, h.readTask("child.md").Status)
+			err = d.InitTicket("child", web.InitTicketRequest{Status: "todo", Pipeline: tc.pipeline, Path: reqPath})
+			if tc.wantErr {
+				require.Error(t, err)
+				after, readErr := os.ReadFile(path)
+				require.NoError(t, readErr)
+				assert.Equal(t, before, after)
+				assert.False(t, d.tickets["child"].ticket.Kontora)
+				assert.Empty(t, d.queue)
+				return
+			}
+			require.NoError(t, err)
+			got := h.readTask("child.md")
+			assert.Equal(t, ticket.StatusTodo, got.Status)
+			assert.Equal(t, tc.wantPipeline, got.Pipeline)
+			assert.Equal(t, "agent2", got.Agent)
+			if reqPath != "" {
+				assert.Equal(t, reqPath, got.Path)
+			}
 			assert.Len(t, d.queue, 1)
 		})
 	}

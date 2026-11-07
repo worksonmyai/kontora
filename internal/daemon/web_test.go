@@ -160,26 +160,54 @@ created: 2026-01-01T00:00:00Z
 }
 
 func TestDaemon_GetTicket(t *testing.T) {
-	h := newHarness(t)
-	d := h.newDaemon(h.cfg)
+	for _, tc := range []struct {
+		name, parent, parentKind, execution string
+		wantEpicChild                       bool
+	}{
+		{name: "no parent"},
+		{name: "passive epic", parent: "epc-parent", parentKind: "epic", wantEpicChild: true},
+		{name: "agent epic", parent: "epc-parent", parentKind: "epic", execution: "agent", wantEpicChild: true},
+		{name: "ordinary parent", parent: "epc-parent", parentKind: "ticket"},
+		{name: "missing parent", parent: "epc-missing"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			d := h.newDaemon(h.cfg)
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
+			md := h.taskMD("tst-g01", "open", "one-stage")
+			if tc.parent != "" {
+				md = strings.Replace(md, "status: open", "parent: "+tc.parent+"\nstatus: open", 1)
+			}
+			h.writeTicket("tst-g01.md", md)
+			if tc.parentKind != "" {
+				parent := fmt.Sprintf("---\nid: epc-parent\nkind: %s\nstatus: archived\npath: %s\n", tc.parentKind, h.repoDir)
+				if tc.execution != "" {
+					parent += "epic_execution: " + tc.execution + "\n"
+				}
+				h.writeTicket("epc-parent.md", parent+"---\n# Parent\n")
+			}
+			errCh := make(chan error, 1)
+			go func() { errCh <- d.Run(ctx) }()
+			require.Eventually(t, func() bool {
+				info, err := d.GetTicket("tst-g01")
+				return err == nil && info.EpicChild == tc.wantEpicChild
+			}, 5*time.Second, 20*time.Millisecond)
 
-	h.writeTicket("tst-g01.md", h.taskMD("tst-g01", "open", "one-stage"))
-
-	errCh := make(chan error, 1)
-	go func() { errCh <- d.Run(ctx) }()
-	time.Sleep(200 * time.Millisecond)
-
-	info, err := d.GetTicket("tst-g01")
-	require.NoError(t, err)
-	assert.Equal(t, "tst-g01", info.ID)
-	assert.Equal(t, "open", info.Status)
-	assert.Contains(t, info.Body, "Test ticket tst-g01")
-
-	cancel()
-	require.NoError(t, <-errCh)
+			info, err := d.GetTicket("tst-g01")
+			require.NoError(t, err)
+			assert.Equal(t, "tst-g01", info.ID)
+			assert.Equal(t, "open", info.Status)
+			assert.Contains(t, info.Body, "Test ticket tst-g01")
+			assert.Equal(t, tc.wantEpicChild, info.EpicChild)
+			listed := d.ListTickets(web.ListTicketsOptions{})
+			require.Len(t, listed, 1, "hidden parent need not appear on the board")
+			assert.Equal(t, tc.wantEpicChild, listed[0].EpicChild)
+			cancel()
+			require.NoError(t, <-errCh)
+		})
+	}
 }
 
 func TestDaemon_GetTicket_NotFound(t *testing.T) {
@@ -1841,18 +1869,21 @@ func TestDaemon_GetConfig_ReturnsProjectsSortedByName(t *testing.T) {
 	h := newHarness(t)
 	h.cfg.Projects = map[string]config.Project{
 		"widget-api": {Path: "~/projects/widget-api", Pipeline: "one-stage"},
-		"kontora":    {Path: h.repoDir, Pipeline: "two-stage", Agent: "agent2"},
+		"kontora":    {Path: h.repoDir, Pipeline: "two-stage", EpicChildPipeline: "one-stage", Agent: "agent2"},
 	}
+	h.cfg.DefaultPipeline = "two-stage"
 	d := h.newDaemon(h.cfg)
 
+	assert.Equal(t, "two-stage", d.GetConfig().DefaultPipeline)
 	got := d.GetConfig().Projects
 	require.Len(t, got, 2)
 	assert.Equal(t, web.ProjectInfo{
-		Name:         "kontora",
-		Path:         h.repoDir,
-		ResolvedPath: h.repoDir,
-		Pipeline:     "two-stage",
-		Agent:        "agent2",
+		Name:              "kontora",
+		Path:              h.repoDir,
+		ResolvedPath:      h.repoDir,
+		Pipeline:          "two-stage",
+		EpicChildPipeline: "one-stage",
+		Agent:             "agent2",
 	}, got[0])
 	assert.Equal(t, web.ProjectInfo{
 		Name:         "widget-api",

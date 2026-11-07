@@ -2,13 +2,16 @@ package app
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/worksonmyai/kontora/internal/config"
 	"github.com/worksonmyai/kontora/internal/testutil"
 	"github.com/worksonmyai/kontora/internal/ticket"
 )
@@ -27,6 +30,7 @@ func TestEpicActivation(t *testing.T) {
 		{name: "explicit start", req: InitRequest{Status: "todo"}},
 		{name: "marked draft", mode: "agent", req: InitRequest{Status: "open"}},
 		{name: "marked start", mode: "agent", req: InitRequest{}},
+		{name: "pipeline opt out", req: InitRequest{Status: "todo", Pipeline: "none"}},
 		{name: "pipeline rejected", req: InitRequest{Status: "todo", Pipeline: "default"}, wantErr: true},
 		{name: "stage rejected", req: InitRequest{Status: "todo", Stage: "code"}, wantErr: true},
 		{name: "unknown agent", req: InitRequest{Status: "todo", Agent: "missing"}, wantErr: true},
@@ -42,10 +46,14 @@ func TestEpicActivation(t *testing.T) {
 			repo.add("epc-100", fmt.Sprintf("---\nid: epc-100\nkind: epic\nkontora: true\nstatus: open\nepic_execution: %q\npath: %q\n---\n# Epic\n", tc.mode, path))
 			require.NoError(t, repo.tickets["epc-100"].Ticket.SetField("base_branch", tc.base))
 			if tc.childPath != "" {
-				repo.add("child", fmt.Sprintf("---\nid: child\nparent: epc-100\npath: %q\nstatus: open\nbranch: child-work\n---\n# Child\n", tc.childPath))
+				repo.add("child", fmt.Sprintf("---\nid: child\nparent: epc-100\npath: %q\npipeline: default\nstatus: open\nbranch: child-work\n---\n# Child\n", tc.childPath))
 			}
 			cfg := testCfg()
 			cfg.DefaultPipeline = "default" // never inherited by the supervisor
+			cfg.Pipelines["child"] = cfg.Pipelines["default"]
+			cfg.Projects = map[string]config.Project{
+				"repo": {Path: path, Pipeline: "default", EpicChildPipeline: "child", Agent: cfg.DefaultAgent},
+			}
 			runtime := &spyRuntime{}
 			svc := New(Static(cfg), repo, runtime)
 			_, err := svc.Init("epc-100", tc.req)
@@ -67,6 +75,7 @@ func TestEpicActivation(t *testing.T) {
 			}
 			if tc.childPath != "" {
 				assert.Equal(t, ticket.StatusOpen, repo.tickets["child"].Ticket.Status)
+				assert.Equal(t, "default", repo.tickets["child"].Ticket.Pipeline)
 			}
 		})
 	}
@@ -105,6 +114,7 @@ func TestInitChildExecutionSettings(t *testing.T) {
 	other := testutil.InitRepo(t)
 	for _, tc := range []struct {
 		name, parentMode, path, branch string
+		childPipeline                  string
 		missingParent                  bool
 		wantErr                        bool
 	}{
@@ -113,6 +123,9 @@ func TestInitChildExecutionSettings(t *testing.T) {
 		{name: "shared integration branch", parentMode: "agent", path: path, branch: "integration", wantErr: true},
 		{name: "passive grouping parent", path: other, branch: "integration"},
 		{name: "dangling grouping parent", path: other, missingParent: true},
+		{name: "active child default", parentMode: "agent", path: path, childPipeline: "child"},
+		{name: "passive child default", path: other, childPipeline: "child"},
+		{name: "missing parent with child default", path: other, missingParent: true, childPipeline: "child"},
 	} {
 		for _, status := range []string{"open", "todo"} {
 			t.Run(tc.name+"/"+status, func(t *testing.T) {
@@ -122,7 +135,13 @@ func TestInitChildExecutionSettings(t *testing.T) {
 				}
 				repo.add("child", fmt.Sprintf("---\nid: child\nparent: epc-100\nstatus: open\npath: %q\n---\n# Child\n", path))
 				runtime := &spyRuntime{}
-				svc := New(Static(testCfg()), repo, runtime)
+				cfg := testCfg()
+				cfg.TicketsDir = t.TempDir()
+				cfg.Pipelines["child"] = cfg.Pipelines["default"]
+				cfg.Projects = map[string]config.Project{
+					"repo": {Path: tc.path, Pipeline: "default", EpicChildPipeline: tc.childPipeline},
+				}
+				svc := New(Static(cfg), repo, runtime)
 				_, err := svc.Init("child", InitRequest{Path: tc.path, Branch: tc.branch, Status: status})
 				if tc.wantErr {
 					require.ErrorIs(t, err, ErrInvalidState)
@@ -134,8 +153,135 @@ func TestInitChildExecutionSettings(t *testing.T) {
 				assert.Equal(t, tc.path, repo.tickets["child"].Ticket.Path)
 				assert.Equal(t, tc.branch, repo.tickets["child"].Ticket.Branch)
 				assert.Equal(t, ticket.Status(status), repo.tickets["child"].Ticket.Status)
+				wantPipeline := "default"
+				if tc.childPipeline != "" && !tc.missingParent {
+					wantPipeline = tc.childPipeline
+				}
+				assert.Equal(t, wantPipeline, repo.tickets["child"].Ticket.Pipeline)
 			})
 		}
+	}
+}
+
+type parentReadRepo struct {
+	*memRepo
+	parentID string
+	getErr   error
+	reads    int
+}
+
+func (r *parentReadRepo) Get(id string) (*StoredTicket, error) {
+	if id == r.parentID {
+		r.reads++
+		if r.getErr != nil {
+			return nil, r.getErr
+		}
+	}
+	return r.memRepo.Get(id)
+}
+
+func TestInitParentDefaultsResolution(t *testing.T) {
+	path := testutil.InitRepo(t)
+	for _, tc := range []struct {
+		name, parentID, disk, cached, pipeline, stored string
+		readErr                                        error
+		unset, wantErr                                 bool
+		wantPipeline                                   string
+		wantReads                                      int
+	}{
+		{name: "uncached passive epic", disk: "epic", wantPipeline: "child", wantReads: 1},
+		{name: "uncached active epic", disk: "agent", wantPipeline: "child", wantReads: 1},
+		{name: "uncached ordinary parent", disk: "ordinary", wantPipeline: "default", wantReads: 1},
+		{name: "missing parent", wantPipeline: "default", wantReads: 1},
+		{name: "filesystem missing from repository", readErr: os.ErrNotExist, disk: "epic", wantPipeline: "child", wantReads: 1},
+		{name: "repository error cannot use disk fallback", readErr: os.ErrPermission, disk: "epic", wantErr: true, wantReads: 1},
+		{name: "disk parse error", disk: "malformed", wantErr: true, wantReads: 1},
+		{name: "disk read error", disk: "directory", wantErr: true, wantReads: 1},
+		{name: "disk id mismatch", disk: "mismatch", wantErr: true, wantReads: 1},
+		{name: "repository epic", cached: "epic", wantPipeline: "child", wantReads: 2},
+		{name: "repository ordinary parent", cached: "ordinary", wantPipeline: "default", wantReads: 2},
+		{name: "repository epic id mismatch", cached: "mismatch", wantErr: true, wantReads: 1},
+		{name: "repository ordinary id mismatch", cached: "ordinary-mismatch", wantErr: true, wantReads: 1},
+		{name: "unsafe parent", parentID: "../outside", wantErr: true, wantReads: 1},
+		{name: "no parent", parentID: "none", wantPipeline: "default"},
+		{name: "named request skips lookup", readErr: os.ErrPermission, pipeline: "default", wantPipeline: "default"},
+		{name: "stored pipeline skips lookup", readErr: os.ErrPermission, stored: "default", wantPipeline: "default"},
+		{name: "none request skips lookup", readErr: os.ErrPermission, pipeline: "none"},
+		{name: "stored none skips lookup", readErr: os.ErrPermission, stored: "none"},
+		{name: "unset child default skips lookup", readErr: os.ErrPermission, unset: true, wantPipeline: "default"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := testCfg()
+			cfg.TicketsDir = t.TempDir()
+			cfg.Pipelines["child"] = cfg.Pipelines["default"]
+			project := config.Project{Path: path, Pipeline: "default", EpicChildPipeline: "child", Agent: cfg.DefaultAgent}
+			if tc.unset {
+				project.EpicChildPipeline = ""
+			}
+			cfg.Projects = map[string]config.Project{"repo": project}
+			parentID := tc.parentID
+			switch parentID {
+			case "":
+				parentID = "epc-100"
+			case "none":
+				parentID = ""
+			}
+			repo := &parentReadRepo{memRepo: newMemRepo(), parentID: parentID, getErr: tc.readErr}
+			repo.add("child", fmt.Sprintf("---\nid: child\nstatus: open\nparent: %q\npath: %q\npipeline: %q\n---\n# Child\n", parentID, path, tc.stored))
+			if tc.cached != "" {
+				id, kind := parentID, "epic"
+				if strings.HasSuffix(tc.cached, "mismatch") {
+					id = "other"
+				}
+				if strings.HasPrefix(tc.cached, "ordinary") {
+					kind = ""
+				}
+				repo.add(parentID, fmt.Sprintf("---\nid: %s\nkind: %q\n---\n# Parent\n", id, kind))
+			}
+			if tc.disk != "" {
+				file := filepath.Join(cfg.TicketsDir, parentID+".md")
+				kind, mode, id := "epic", "", parentID
+				switch tc.disk {
+				case "agent":
+					mode = "agent"
+				case "ordinary":
+					kind = ""
+				case "mismatch":
+					id = "other"
+				}
+				content := fmt.Sprintf("---\nid: %s\nkind: %q\nepic_execution: %q\npath: %q\n---\n# Parent\n", id, kind, mode, path)
+				if tc.disk == "malformed" {
+					content = "---\nid: [\n---\n"
+				}
+				if tc.disk == "directory" {
+					require.NoError(t, os.Mkdir(file, 0o755))
+				} else {
+					require.NoError(t, os.WriteFile(file, []byte(content), 0o644))
+				}
+			}
+			before, err := repo.tickets["child"].Ticket.Marshal()
+			require.NoError(t, err)
+			runtime := &spyRuntime{}
+			svc := New(Static(cfg), repo, runtime)
+			_, err = svc.Init("child", InitRequest{Pipeline: tc.pipeline, Status: "open"})
+			assert.Equal(t, tc.wantReads, repo.reads)
+			if tc.wantErr {
+				require.Error(t, err)
+				if tc.readErr != nil {
+					assert.ErrorIs(t, err, tc.readErr)
+				}
+				assert.Empty(t, repo.saved)
+				assert.Empty(t, runtime.updated)
+				after, marshalErr := repo.tickets["child"].Ticket.Marshal()
+				require.NoError(t, marshalErr)
+				assert.Equal(t, before, after)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantPipeline, repo.tickets["child"].Ticket.Pipeline)
+			assert.Equal(t, cfg.DefaultAgent, repo.tickets["child"].Ticket.Agent)
+			assert.Equal(t, []string{"child"}, repo.saved)
+		})
 	}
 }
 
@@ -219,12 +365,16 @@ func TestAgentEpicSetParent(t *testing.T) {
 	for _, childPath := range []string{path, testutil.InitRepo(t)} {
 		repo := newMemRepo()
 		repo.add("epc-100", fmt.Sprintf("---\nid: epc-100\nkind: epic\nepic_execution: agent\npath: %q\n---\n# Epic\n", path))
-		repo.add("child", fmt.Sprintf("---\nid: child\npath: %q\n---\n# Child\n", childPath))
-		svc := New(Static(testCfg()), repo, &spyRuntime{})
+		repo.add("child", fmt.Sprintf("---\nid: child\npath: %q\npipeline: default\n---\n# Child\n", childPath))
+		cfg := testCfg()
+		cfg.Pipelines["child"] = cfg.Pipelines["default"]
+		cfg.Projects = map[string]config.Project{"repo": {Path: path, EpicChildPipeline: "child"}}
+		svc := New(Static(cfg), repo, &spyRuntime{})
 		_, err := svc.SetParent("child", "epc-100")
 		if childPath == path {
 			require.NoError(t, err)
 			assert.Equal(t, "epc-100", repo.tickets["child"].Ticket.Parent)
+			assert.Equal(t, "default", repo.tickets["child"].Ticket.Pipeline)
 		} else {
 			require.ErrorIs(t, err, ErrInvalidState)
 			assert.Empty(t, repo.saved)

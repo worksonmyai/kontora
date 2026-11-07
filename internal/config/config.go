@@ -585,13 +585,14 @@ func ClearNone(value string) string {
 // Project names a repository and the defaults that apply to its tickets.
 // Every default is optional; an entry may set any of them, or none.
 type Project struct {
-	Path         string       `yaml:"path"`
-	Pipeline     string       `yaml:"pipeline"`
-	Agent        string       `yaml:"agent"`
-	Prefix       string       `yaml:"prefix"`
-	BranchPrefix string       `yaml:"branch_prefix"`
-	BranchNaming BranchNaming `yaml:"branch_naming"`
-	Hooks        Hooks        `yaml:"hooks"`
+	Path              string       `yaml:"path"`
+	Pipeline          string       `yaml:"pipeline"`
+	EpicChildPipeline string       `yaml:"epic_child_pipeline"`
+	Agent             string       `yaml:"agent"`
+	Prefix            string       `yaml:"prefix"`
+	BranchPrefix      string       `yaml:"branch_prefix"`
+	BranchNaming      BranchNaming `yaml:"branch_naming"`
+	Hooks             Hooks        `yaml:"hooks"`
 	// NotifyChannels overrides notifications.default for tickets in this
 	// repository. The sole entry "none" silences the project even when a global
 	// default is set.
@@ -1472,6 +1473,14 @@ func (c *Config) validateProjects() error {
 				return fmt.Errorf("project %q: unknown pipeline %q", name, p.Pipeline)
 			}
 		}
+		if p.EpicChildPipeline == NoneSentinel {
+			return fmt.Errorf("project %q: epic_child_pipeline must name a pipeline, not %q", name, NoneSentinel)
+		}
+		if p.EpicChildPipeline != "" {
+			if _, ok := c.Pipelines[p.EpicChildPipeline]; !ok {
+				return fmt.Errorf("project %q: epic_child_pipeline: unknown pipeline %q", name, p.EpicChildPipeline)
+			}
+		}
 		if p.Agent != "" {
 			if _, ok := c.Agents[p.Agent]; !ok {
 				return fmt.Errorf("project %q: unknown agent %q", name, p.Agent)
@@ -1533,13 +1542,12 @@ func (c *Config) ProjectFor(repoPath string) (string, Project, bool) {
 	return "", Project{}, false
 }
 
-// ResolveTicketDefaults resolves the pipeline and agent a ticket for repoPath
-// should carry. A blank pipeline takes the matching project's, then
-// default_pipeline; a blank agent takes the matching project's. The literal
-// "none" clears the field and skips every default, so a standalone ticket stays
-// reachable inside a configured project. The two fields resolve independently:
-// opting the pipeline out still inherits the project agent.
-func (c *Config) ResolveTicketDefaults(repoPath, pipeline, agent string) (resolvedPipeline, resolvedAgent string) {
+// ResolveTicketDefaults resolves the pipeline and agent for a ticket in repoPath.
+// For epic children, a blank pipeline takes the project's epic_child_pipeline first.
+// Other blank pipelines take the project's pipeline, then default_pipeline.
+// A blank agent takes the project's agent, regardless of epicChild.
+// The literal "none" clears either field and skips its defaults independently.
+func (c *Config) ResolveTicketDefaults(repoPath, pipeline, agent string, epicChild bool) (resolvedPipeline, resolvedAgent string) {
 	pipelineOptOut := pipeline == NoneSentinel
 	pipeline = ClearNone(pipeline)
 	agentOptOut := agent == NoneSentinel
@@ -1547,7 +1555,12 @@ func (c *Config) ResolveTicketDefaults(repoPath, pipeline, agent string) (resolv
 
 	if _, project, ok := c.ProjectFor(repoPath); ok {
 		if pipeline == "" && !pipelineOptOut {
-			pipeline = project.Pipeline
+			if epicChild {
+				pipeline = project.EpicChildPipeline
+			}
+			if pipeline == "" {
+				pipeline = project.Pipeline
+			}
 		}
 		if agent == "" && !agentOptOut {
 			agent = project.Agent

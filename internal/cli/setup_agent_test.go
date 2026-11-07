@@ -63,6 +63,24 @@ func TestWriteAgentSetupPrompt(t *testing.T) {
 			notWant: []string{"State: missing", "Symlink target:"},
 		},
 		{
+			name: "valid config with epic child default",
+			setup: func(t *testing.T, dir string) string {
+				path := filepath.Join(dir, "config.yaml")
+				cfg := validSetupConfig + `
+default_pipeline: default
+projects:
+  myrepo:
+    path: ~/projects/myrepo
+    pipeline: default
+    epic_child_pipeline: default
+`
+				require.NoError(t, os.WriteFile(path, []byte(cfg), 0o644))
+				return path
+			},
+			want:    []string{"State: valid", "Change only what the user asks for."},
+			notWant: []string{"State: invalid", "State: missing"},
+		},
+		{
 			name: "invalid config",
 			setup: func(t *testing.T, dir string) string {
 				path := filepath.Join(dir, "config.yaml")
@@ -119,6 +137,26 @@ func TestWriteAgentSetupPrompt(t *testing.T) {
 			out := buf.String()
 
 			assert.Contains(t, out, path, "the brief must name the resolved config path")
+			for _, want := range []string{
+				"separate `epic_child_pipeline`, including children of passive epics",
+				"epic_child_pipeline: default", "Neither accepts `none`",
+				"1. Explicit request", "2. Stored nonempty pipeline", "3. Project `epic_child_pipeline`",
+				"4. Project `pipeline`", "5. Global `default_pipeline`", "6. Standalone execution",
+				"under passive and agent epics", "Missing or ordinary-ticket parents do not qualify",
+				"Existing assignments are not", "migrated after config changes, reparenting or detail-path edits",
+				"not durable opt-out provenance", "unless the caller opts out again", "Agent resolution stays independent",
+				"Epics never get pipelines; supervisors run standalone",
+				"not to change, clear or replace child pipelines", "must not edit pipeline\ndefinitions, stage definitions or project pipeline defaults",
+				"create children without `--pipeline`", "`init`, stage skipping, direct\nfile edits or pause/retry sequences",
+				"report the conflict, request an operator decision and leave that work\nunstarted",
+				"must not substitute another pipeline", "prompt instructions,\nnot runtime enforcement",
+				"Ordinary operator commands remain available", "does not authorize commits or publication",
+				"Upgrade all clients and daemon binaries", "Older strict-YAML loaders reject the key",
+				"Do not add the key\nuntil compatible binaries are installed",
+				"Initialization preserves\nstored nonempty pipelines before applying defaults",
+			} {
+				assert.Contains(t, out, want)
+			}
 			for _, want := range tc.want {
 				assert.Contains(t, out, want)
 			}

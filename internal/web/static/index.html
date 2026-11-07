@@ -902,7 +902,7 @@
 </head>
 
 <body class="h-full bg-surface-950 text-tx font-sans overflow-hidden" x-data="kontora()" x-cloak
-      @keydown.escape.window="if (_agentPickerOpenHost) closeAgentPicker(true); else if (paletteOpen) palettePop(); else if (deleteModal) closeDeleteModal(); else if (noteDeleteTarget) noteCloseDelete(); else if (initModal) closeInitModal(); else if (settingsGuard) settingsGuard = false; else if (currentView === 'new') closeCreateModal(); else if (detailMenuOpen) detailMenuOpen = false; else if (colMenuOpen) colMenuOpen = null; else if (sheet) closeSheet(); else if (archivePromptId) closeArchivePrompt(); else if (terminalRW && terminalWanted()) toggleTerminalRW(); else if (archiveDetailOpen()) archiveCloseDetail(); else if (selectedTicket) closeDetail(); else if (selectedEpic) closeEpic(); else if (assistantEscape()) {}"
+      @keydown.escape.window="if (_agentPickerOpenHost) closeAgentPicker(true); else if (paletteOpen) palettePop(); else if (deleteModal) closeDeleteModal(); else if (noteDeleteTarget) noteCloseDelete(); else if (initModal || _initOpening) closeInitModal(); else if (settingsGuard) settingsGuard = false; else if (currentView === 'new') closeCreateModal(); else if (detailMenuOpen) detailMenuOpen = false; else if (colMenuOpen) colMenuOpen = null; else if (sheet) closeSheet(); else if (archivePromptId) closeArchivePrompt(); else if (terminalRW && terminalWanted()) toggleTerminalRW(); else if (archiveDetailOpen()) archiveCloseDetail(); else if (selectedTicket) closeDetail(); else if (selectedEpic) closeEpic(); else if (assistantEscape()) {}"
       @dragenter.prevent="if ($event.dataTransfer && $event.dataTransfer.types.includes('Files')) uploadDragging = true"
       @dragover.prevent>
 
@@ -1065,11 +1065,14 @@
                  WebKit clamps a menulist to its own metrics and drops the
                  vertical padding, so a padded select ends up shorter than the
                  input beside it. -->
-            <select id="init-pipeline" x-model="initForm.pipeline"
+            <select id="init-pipeline" x-model="initForm.pipelineChoice" @change="onInitPipelineChange()"
                     class="w-full box-border h-[39px] bg-surface-800 border border-edge-input rounded-[7px] px-[12px] font-mono text-[13px] text-tx focus:outline-none focus:border-accent">
-              <option value="">none (single run, no stages)</option>
+              <template x-if="initForm.canInheritPipeline">
+                <option value="inherit" x-text="inheritedPipelineLabel(_initInherited)"></option>
+              </template>
+              <option value="none">none (single run, no stages)</option>
               <template x-for="p in configCache?.pipelines || []" :key="p">
-                <option :value="p" x-text="p"></option>
+                <option :value="'pipeline:' + p" x-text="p"></option>
               </template>
             </select>
             <div class="pt-[2px] flex flex-wrap items-center gap-[6px]">
@@ -3464,7 +3467,7 @@
               <span class="text-[13px] font-mono text-tx-3 flex items-center gap-1.5"><svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M3 6h18M6 12h15M9 18h12"/></svg>Kind</span>
               <div class="ml-auto flex gap-1 bg-surface-900 border border-edge-card rounded-[7px] p-[3px]">
                 <template x-for="k in [{ value: '', label: 'ticket' }, { value: 'epic', label: 'epic' }]" :key="k.label">
-                  <button type="button" @click="createForm.kind = k.value"
+                  <button type="button" @click="createForm.kind = k.value; syncCreatePipeline()"
                           class="font-mono text-[11px] px-[11px] py-[3px] rounded-[5px] transition-colors"
                           :class="createForm.kind === k.value ? 'bg-surface-850 text-tx-hi font-bold' : 'text-tx-3 hover:text-tx-2'"
                           x-text="k.label"></button>
@@ -3478,11 +3481,12 @@
             <div class="grid grid-cols-3 gap-3">
               <div x-show="createForm.kind !== 'epic'">
                 <label for="new-pipeline" class="text-[13px] font-mono text-tx-3 mb-1 flex items-center gap-1.5"><svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="opacity-50"><polyline points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="3"/><polyline points="21 16 21 21 16 21"/><line x1="15" y1="15" x2="21" y2="21"/><line x1="4" y1="4" x2="9" y2="9"/></svg>Pipeline</label>
-                <select id="new-pipeline" x-model="createForm.pipeline" @change="onPipelineChange()"
+                <select id="new-pipeline" x-model="createForm.pipelineChoice" @change="onPipelineChange()"
                         class="w-full h-[36px] bg-surface-800 border border-surface-700/50 rounded px-2 text-sm text-tx-2 font-mono focus:outline-none focus:border-accent/40">
-                  <option value="">none (single run, no stages)</option>
+                  <option value="inherit" x-text="inheritedPipelineLabel(createPipelineDefaults())"></option>
+                  <option value="none">none (single run, no stages)</option>
                   <template x-for="p in configCache?.pipelines || []" :key="p">
-                    <option :value="p" x-text="p"></option>
+                    <option :value="'pipeline:' + p" x-text="p"></option>
                   </template>
                 </select>
               </div>
@@ -3567,7 +3571,7 @@
                 </div>
               </template>
             </div>
-            <p x-show="createProject()" class="text-[11px] text-surface-600 -mt-2">Defaults from project <span class="text-tx-3" x-text="createProject()?.name"></span>.</p>
+            <p x-show="createProject()" class="text-[11px] text-surface-600 -mt-2">Project <span class="text-tx-3" x-text="createProject()?.name"></span>.</p>
 
             <div>
               <label for="new-branch" class="text-[13px] font-mono text-tx-3 mb-1 flex items-center gap-1.5"><svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="opacity-50"><line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>Branch</label>
@@ -4873,7 +4877,7 @@
                 <!-- ===== projects (read-only) ===== -->
                 <div x-show="settingsSection === 'projects'" class="flex flex-col gap-3">
                   <template x-for="name in settingsProjectNames()" :key="name">
-                    <section x-show="settingsRowVisible(name, settingsConfig.projects[name].path, 'projects')"
+                    <section x-show="settingsRowVisible(name, settingsConfig.projects[name].path + ' ' + settingsConfig.projects[name].pipeline + ' epic_child_pipeline ' + settingsConfig.projects[name].epic_child_pipeline, 'projects')"
                              class="border border-edge-card rounded-xl bg-surface-900 overflow-hidden" :data-pipe-color="pipelineColorByName(name)">
                       <header class="flex items-baseline gap-2.5 p-[13px] px-[18px] border-b border-surface-700/40" style="background: hsl(var(--pipe-h) / .06)">
                         <span class="font-mono text-[13px] font-bold shrink-0" style="color: hsl(var(--pipe-h))" x-text="name"></span>
@@ -4885,6 +4889,10 @@
                         <span class="flex flex-col gap-1 min-w-0">
                           <span class="font-mono text-[9.5px] uppercase tracking-[.14em] text-tx-faint">pipeline</span>
                           <span class="font-mono text-[12.5px] text-tx-2 truncate" x-text="settingsConfig.projects[name].pipeline || 'default'"></span>
+                        </span>
+                        <span class="flex flex-col gap-1 min-w-0">
+                          <span class="font-mono text-[9.5px] uppercase tracking-[.14em] text-tx-faint">epic_child_pipeline</span>
+                          <span class="font-mono text-[12.5px] text-tx-2 truncate" x-text="settingsConfig.projects[name].epic_child_pipeline || 'inherits pipeline default'"></span>
                         </span>
                         <span class="flex flex-col gap-1 min-w-0">
                           <span class="font-mono text-[9.5px] uppercase tracking-[.14em] text-tx-faint">agent</span>
@@ -6599,7 +6607,7 @@
                   <input x-model="createForm.path" @input="onCreatePathChange()" placeholder="~/projects/myrepo" style="width:100%;height:42px;padding:0 12px;font-family:'JetBrains Mono',monospace;font-size:13px;border-radius:10px;background:rgba(var(--surface-950),1);border:1px solid rgba(var(--surface-700),.6);color:rgba(var(--tx),1);outline:none;"/>
                 </div>
                 <label class="font-mono text-xs text-tx-3">Kind
-                  <select x-model="createForm.kind" class="bg-surface-800 text-tx-2 px-3 py-2 rounded">
+                  <select x-model="createForm.kind" @change="syncCreatePipeline()" class="bg-surface-800 text-tx-2 px-3 py-2 rounded">
                     <option value="">ticket</option>
                     <option value="epic">epic (created open, start later)</option>
                   </select>
@@ -6607,9 +6615,10 @@
                 <div style="display:flex;gap:12px;">
                   <div x-show="createForm.kind !== 'epic'" style="flex:1;min-width:0;">
                     <div style="font-family:'JetBrains Mono',monospace;font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:rgba(var(--surface-600),1);margin-bottom:6px;">Pipeline</div>
-                    <select x-model="createForm.pipeline" @change="onPipelineChange()" style="width:100%;height:42px;padding:0 10px;font-family:'JetBrains Mono',monospace;font-size:13px;border-radius:10px;background:rgba(var(--surface-950),1);border:1px solid rgba(var(--surface-700),.6);color:rgba(var(--tx-3),1);outline:none;">
-                      <option value="">none (single run, no stages)</option>
-                      <template x-for="p in (configCache?.pipelines || [])" :key="p"><option :value="p" x-text="p"></option></template>
+                    <select x-model="createForm.pipelineChoice" @change="onPipelineChange()" style="width:100%;height:42px;padding:0 10px;font-family:'JetBrains Mono',monospace;font-size:13px;border-radius:10px;background:rgba(var(--surface-950),1);border:1px solid rgba(var(--surface-700),.6);color:rgba(var(--tx-3),1);outline:none;">
+                      <option value="inherit" x-text="inheritedPipelineLabel(createPipelineDefaults())"></option>
+                      <option value="none">none (single run, no stages)</option>
+                      <template x-for="p in (configCache?.pipelines || [])" :key="p"><option :value="'pipeline:' + p" x-text="p"></option></template>
                     </select>
                   </div>
                   <div style="flex:1;min-width:0;">

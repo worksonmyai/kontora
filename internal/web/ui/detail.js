@@ -764,8 +764,7 @@ export function kontoraDetail() {
       // /move: an unmanaged one cannot execute at all, and a managed one in open
       // gets the form so the run's fields are confirmed before it is queued.
       if (ticket && this.needsInitModal(ticket) && this.ticketActionWouldStart(endpoint, body)) {
-        this.openInitModal(ticket);
-        return;
+        return this.openInitModal(ticket);
       }
       try {
         var opts = { method: 'POST' };
@@ -798,8 +797,7 @@ export function kontoraDetail() {
         // dismisses the init modal. The drag dropped the render cache for both
         // columns, so this render patches them even though no status changed.
         this.recomputeBoard();
-        this.openInitModal(ticket);
-        return;
+        return this.openInitModal(ticket);
       }
       const oldStatus = ticket ? ticket.status : null;
       if (ticket) ticket.status = newStatus;
@@ -862,31 +860,25 @@ export function kontoraDetail() {
       this.editForm.agent = agent;
     },
 
-    // Pipeline and agent defaults for the project that owns path. The daemon
-    // names an empty branch at pickup.
-    projectDefaultsFor(path) {
+    // Membership is a preview snapshot. The backend resolves defaults again on submit.
+    projectDefaultsFor(path, epicChild = false) {
       var project = this.projectForPath(path) || {};
+      var source = epicChild && project.epic_child_pipeline ? 'epic_child_pipeline'
+        : project.pipeline ? 'pipeline' : this.configCache?.default_pipeline ? 'default_pipeline' : '';
       return {
-        pipeline: project.pipeline || '',
+        pipeline: source === 'default_pipeline' ? this.configCache.default_pipeline : (project[source] || ''),
+        pipelineSource: source,
         agent: project.agent || '',
       };
     },
 
-    // Re-apply inherited pipeline and agent values after the path changes.
-    // Keep values the user selected and leave the branch unchanged.
+    // Path edits preserve the stored workflow. Only the inherited agent follows the project.
     onEditPathChange() {
-      var prev = this._editInherited || { pipeline: '', agent: '' };
       var next = this.projectDefaultsFor(this.editForm.path);
-
-      if (this.selectedTicket?.kind === 'epic') {
-        this.editForm.pipeline = '';
-      } else if (!this.editForm.pipeline || this.editForm.pipeline === prev.pipeline) {
-        this.editForm.pipeline = next.pipeline;
-      }
       if (this._editAgentFollowsProject) this.editForm.agent = next.agent;
       this._editInherited = next;
 
-      this.saveEdit();
+      return this.saveEdit();
     },
 
     async saveEdit() {

@@ -1814,13 +1814,53 @@ func TestLoadProjects(t *testing.T) {
 	cfg, err := Load("testdata/projects.yaml")
 	require.NoError(t, err)
 
-	require.Len(t, cfg.Projects, 2)
-	assert.Equal(t, Project{Path: "~/projects/widget-api"}, cfg.Projects["widget-api"])
+	cases := []struct {
+		name              string
+		want              Project
+		wantPipeline      string
+		wantChildPipeline string
+	}{
+		{
+			name: "kontora",
+			want: Project{
+				Path: "~/projects/kontora", Pipeline: "implement", EpicChildPipeline: "epic-child",
+				Agent: "claude", BranchPrefix: "feature",
+			},
+			wantPipeline:      "implement",
+			wantChildPipeline: "epic-child",
+		},
+		{
+			name: "widget-api",
+			want: Project{Path: "~/projects/widget-api"},
+		},
+		{
+			name:              "epic-only",
+			want:              Project{Path: "~/projects/epic-only", EpicChildPipeline: "epic-child"},
+			wantChildPipeline: "epic-child",
+		},
+	}
 
-	name, p, ok := cfg.ProjectFor(filepath.Join(home, "projects", "kontora"))
-	require.True(t, ok)
-	assert.Equal(t, "kontora", name)
-	assert.Equal(t, Project{Path: "~/projects/kontora", Pipeline: "implement", Agent: "claude", BranchPrefix: "feature"}, p)
+	require.Len(t, cfg.Projects, len(cases))
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, cfg.Projects[tc.name])
+			repoPath := filepath.Join(home, "projects", tc.name)
+			name, p, ok := cfg.ProjectFor(repoPath)
+			require.True(t, ok)
+			assert.Equal(t, tc.name, name)
+			assert.Equal(t, tc.want, p)
+
+			for _, epicChild := range []bool{false, true} {
+				wantPipeline := tc.wantPipeline
+				if epicChild {
+					wantPipeline = tc.wantChildPipeline
+				}
+				pipeline, agent := cfg.ResolveTicketDefaults(repoPath, "", "", epicChild)
+				assert.Equal(t, wantPipeline, pipeline, "epicChild=%t", epicChild)
+				assert.Equal(t, tc.want.Agent, agent, "epicChild=%t", epicChild)
+			}
+		})
+	}
 }
 
 func TestLoadProjectsRejected(t *testing.T) {
@@ -1838,6 +1878,16 @@ func TestLoadProjectsRejected(t *testing.T) {
 			name:    "unknown pipeline",
 			fixture: "project_unknown_pipeline.yaml",
 			wantErr: []string{`project "kontora"`, `unknown pipeline "missing-pipeline"`},
+		},
+		{
+			name:    "unknown epic child pipeline",
+			fixture: "project_unknown_epic_child_pipeline.yaml",
+			wantErr: []string{`project "kontora"`, "epic_child_pipeline", `unknown pipeline "missing-pipeline"`},
+		},
+		{
+			name:    "epic child pipeline cannot opt out",
+			fixture: "project_none_epic_child_pipeline.yaml",
+			wantErr: []string{`project "kontora"`, "epic_child_pipeline", `must name a pipeline, not "none"`},
 		},
 		{
 			name:    "unknown agent",
@@ -1966,33 +2016,29 @@ func TestResolveTicketDefaults(t *testing.T) {
 	inProject := filepath.Join(home, "projects", "kontora")
 	unlisted := filepath.Join(home, "projects", "elsewhere")
 
-	newCfg := func(defaultPipeline string) *Config {
-		return &Config{
-			DefaultPipeline: defaultPipeline,
-			Projects: map[string]Project{
-				"kontora": {Path: "~/projects/kontora", Pipeline: "implement", Agent: "claude"},
-			},
-		}
-	}
-
 	cases := []struct {
-		name            string
-		defaultPipeline string
-		repoPath        string
-		pipeline        string
-		agent           string
-		wantPipeline    string
-		wantAgent       string
+		name              string
+		projectPipeline   string
+		epicChildPipeline string
+		defaultPipeline   string
+		repoPath          string
+		pipeline          string
+		agent             string
+		epicChild         bool
+		wantPipeline      string
+		wantAgent         string
 	}{
 		{
-			name:         "explicit value outranks the project",
-			repoPath:     inProject,
-			pipeline:     "review",
-			wantPipeline: "review",
-			wantAgent:    "claude",
+			name:            "explicit value outranks the project",
+			projectPipeline: "implement",
+			repoPath:        inProject,
+			pipeline:        "review",
+			wantPipeline:    "review",
+			wantAgent:       "claude",
 		},
 		{
 			name:            "the project outranks the default",
+			projectPipeline: "implement",
 			defaultPipeline: "fallback",
 			repoPath:        inProject,
 			wantPipeline:    "implement",
@@ -2013,6 +2059,7 @@ func TestResolveTicketDefaults(t *testing.T) {
 		},
 		{
 			name:            "none opts out of the project and the default",
+			projectPipeline: "implement",
 			defaultPipeline: "fallback",
 			repoPath:        inProject,
 			pipeline:        NoneSentinel,
@@ -2031,10 +2078,202 @@ func TestResolveTicketDefaults(t *testing.T) {
 		},
 		{
 			name:            "an agent opt-out still takes the default pipeline",
+			projectPipeline: "implement",
 			defaultPipeline: "fallback",
 			repoPath:        inProject,
 			agent:           NoneSentinel,
 			wantPipeline:    "implement",
+		},
+		{
+			name:              "an epic child takes the specialized pipeline before other defaults",
+			projectPipeline:   "implement",
+			epicChildPipeline: "child-implement",
+			defaultPipeline:   "fallback",
+			repoPath:          inProject,
+			epicChild:         true,
+			wantPipeline:      "child-implement",
+			wantAgent:         "claude",
+		},
+		{
+			name:              "an ordinary ticket ignores the specialized pipeline",
+			projectPipeline:   "implement",
+			epicChildPipeline: "child-implement",
+			defaultPipeline:   "fallback",
+			repoPath:          inProject,
+			wantPipeline:      "implement",
+			wantAgent:         "claude",
+		},
+		{
+			name:              "an epic child can have only a specialized pipeline",
+			epicChildPipeline: "child-implement",
+			repoPath:          inProject,
+			epicChild:         true,
+			wantPipeline:      "child-implement",
+			wantAgent:         "claude",
+		},
+		{
+			name:              "a specialized pipeline outranks the global default without an ordinary pipeline",
+			epicChildPipeline: "child-implement",
+			defaultPipeline:   "fallback",
+			repoPath:          inProject,
+			epicChild:         true,
+			wantPipeline:      "child-implement",
+			wantAgent:         "claude",
+		},
+		{
+			name:              "an ordinary ticket uses the global default instead of the specialized pipeline",
+			epicChildPipeline: "child-implement",
+			defaultPipeline:   "fallback",
+			repoPath:          inProject,
+			wantPipeline:      "fallback",
+			wantAgent:         "claude",
+		},
+		{
+			name:              "an ordinary ticket stays blank with only a specialized pipeline",
+			epicChildPipeline: "child-implement",
+			repoPath:          inProject,
+			wantAgent:         "claude",
+		},
+		{
+			name:            "an epic child falls back to the ordinary project pipeline",
+			projectPipeline: "implement",
+			defaultPipeline: "fallback",
+			repoPath:        inProject,
+			epicChild:       true,
+			wantPipeline:    "implement",
+			wantAgent:       "claude",
+		},
+		{
+			name:            "an epic child falls back to the global default",
+			defaultPipeline: "fallback",
+			repoPath:        inProject,
+			epicChild:       true,
+			wantPipeline:    "fallback",
+			wantAgent:       "claude",
+		},
+		{
+			name:      "an epic child stays blank without pipeline defaults",
+			repoPath:  inProject,
+			epicChild: true,
+			wantAgent: "claude",
+		},
+		{
+			name:              "an explicit pipeline outranks the specialized pipeline",
+			projectPipeline:   "implement",
+			epicChildPipeline: "child-implement",
+			defaultPipeline:   "fallback",
+			repoPath:          inProject,
+			pipeline:          "review",
+			epicChild:         true,
+			wantPipeline:      "review",
+			wantAgent:         "claude",
+		},
+		{
+			name:              "pipeline opt-out skips the specialized pipeline and keeps the project agent",
+			projectPipeline:   "implement",
+			epicChildPipeline: "child-implement",
+			defaultPipeline:   "fallback",
+			repoPath:          inProject,
+			pipeline:          NoneSentinel,
+			epicChild:         true,
+			wantAgent:         "claude",
+		},
+		{
+			name:              "agent opt-out keeps the specialized pipeline",
+			projectPipeline:   "implement",
+			epicChildPipeline: "child-implement",
+			defaultPipeline:   "fallback",
+			repoPath:          inProject,
+			agent:             NoneSentinel,
+			epicChild:         true,
+			wantPipeline:      "child-implement",
+		},
+		{
+			name:              "both opt-outs skip every project and global default",
+			projectPipeline:   "implement",
+			epicChildPipeline: "child-implement",
+			defaultPipeline:   "fallback",
+			repoPath:          inProject,
+			pipeline:          NoneSentinel,
+			agent:             NoneSentinel,
+			epicChild:         true,
+		},
+		{
+			name:              "an explicit agent is unchanged for an epic child",
+			epicChildPipeline: "child-implement",
+			repoPath:          inProject,
+			agent:             "pi",
+			epicChild:         true,
+			wantPipeline:      "child-implement",
+			wantAgent:         "pi",
+		},
+		{
+			name:              "an explicit agent is unchanged for an ordinary ticket",
+			projectPipeline:   "implement",
+			epicChildPipeline: "child-implement",
+			repoPath:          inProject,
+			agent:             "pi",
+			wantPipeline:      "implement",
+			wantAgent:         "pi",
+		},
+		{
+			name:              "an unmatched epic child takes only the global default",
+			projectPipeline:   "implement",
+			epicChildPipeline: "child-implement",
+			defaultPipeline:   "fallback",
+			repoPath:          unlisted,
+			epicChild:         true,
+			wantPipeline:      "fallback",
+		},
+		{
+			name:              "an unmatched epic child stays blank without a global default",
+			projectPipeline:   "implement",
+			epicChildPipeline: "child-implement",
+			repoPath:          unlisted,
+			epicChild:         true,
+		},
+		{
+			name:              "an unmatched epic child keeps explicit values",
+			epicChildPipeline: "child-implement",
+			defaultPipeline:   "fallback",
+			repoPath:          unlisted,
+			pipeline:          "review",
+			agent:             "pi",
+			epicChild:         true,
+			wantPipeline:      "review",
+			wantAgent:         "pi",
+		},
+		{
+			name:              "an unmatched epic child can opt out of the global default",
+			epicChildPipeline: "child-implement",
+			defaultPipeline:   "fallback",
+			repoPath:          unlisted,
+			pipeline:          NoneSentinel,
+			agent:             NoneSentinel,
+			epicChild:         true,
+		},
+		{
+			name:              "an empty repository path takes only the global default",
+			epicChildPipeline: "child-implement",
+			defaultPipeline:   "fallback",
+			epicChild:         true,
+			wantPipeline:      "fallback",
+		},
+		{
+			name:              "an epic child in a subdirectory does not inherit project defaults",
+			epicChildPipeline: "child-implement",
+			defaultPipeline:   "fallback",
+			repoPath:          filepath.Join(inProject, "internal"),
+			epicChild:         true,
+			wantPipeline:      "fallback",
+		},
+		{
+			name:              "an epic child matches the normalized project path",
+			epicChildPipeline: "child-implement",
+			repoPath:          "~/projects/kontora/",
+			epicChild:         true,
+			wantPipeline:      "child-implement",
+			wantAgent:         "claude",
 		},
 	}
 
@@ -2042,7 +2281,16 @@ func TestResolveTicketDefaults(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("HOME", home)
 
-			pipeline, agent := newCfg(tc.defaultPipeline).ResolveTicketDefaults(tc.repoPath, tc.pipeline, tc.agent)
+			cfg := &Config{
+				DefaultPipeline: tc.defaultPipeline,
+				Projects: map[string]Project{
+					"kontora": {
+						Path: "~/projects/kontora", Pipeline: tc.projectPipeline,
+						EpicChildPipeline: tc.epicChildPipeline, Agent: "claude",
+					},
+				},
+			}
+			pipeline, agent := cfg.ResolveTicketDefaults(tc.repoPath, tc.pipeline, tc.agent, tc.epicChild)
 			assert.Equal(t, tc.wantPipeline, pipeline)
 			assert.Equal(t, tc.wantAgent, agent)
 		})

@@ -435,12 +435,13 @@ type TicketCostRunInfo struct {
 // a browser can match it against an absolute path a user typed without knowing
 // the daemon host's home directory.
 type ProjectInfo struct {
-	Name         string `json:"name"`
-	Path         string `json:"path"`
-	ResolvedPath string `json:"resolved_path"`
-	Pipeline     string `json:"pipeline"`
-	Agent        string `json:"agent"`
-	BranchPrefix string `json:"branch_prefix,omitempty"`
+	Name              string `json:"name"`
+	Path              string `json:"path"`
+	ResolvedPath      string `json:"resolved_path"`
+	Pipeline          string `json:"pipeline"`
+	EpicChildPipeline string `json:"epic_child_pipeline"`
+	Agent             string `json:"agent"`
+	BranchPrefix      string `json:"branch_prefix,omitempty"`
 	// NotifyChannels is the project's own channel list, which sits between a
 	// ticket's and the global default. The dashboard resolves the same three
 	// the daemon does, because the init modal states the channel for a path
@@ -461,10 +462,11 @@ type ConfigInfo struct {
 	PipelineInfos []PipelineInfo `json:"pipeline_infos"`
 	// Agents is retained for API compatibility; AgentInfos adds picker metadata
 	// in the same sorted order.
-	Agents       []string      `json:"agents"`
-	AgentInfos   []AgentInfo   `json:"agent_infos"`
-	Projects     []ProjectInfo `json:"projects,omitempty"`
-	DefaultAgent string        `json:"default_agent,omitempty"`
+	Agents          []string      `json:"agents"`
+	AgentInfos      []AgentInfo   `json:"agent_infos"`
+	Projects        []ProjectInfo `json:"projects,omitempty"`
+	DefaultAgent    string        `json:"default_agent,omitempty"`
+	DefaultPipeline string        `json:"default_pipeline"`
 	// Author is the name the web composer signs a note with. The page needs it
 	// to tell your own notes from everyone else's.
 	Author         string   `json:"author,omitempty"`
@@ -485,7 +487,9 @@ type TicketInfo struct {
 	Kontora  bool   `json:"kontora"`
 	Stage    string `json:"stage"`
 	Pipeline string `json:"pipeline"`
-	Path     string `json:"path"`
+	// EpicChild is a preview from the current index, not default-resolution authority.
+	EpicChild bool   `json:"epic_child"`
+	Path      string `json:"path"`
 	// Project is the configured project whose path is the ticket's, empty when
 	// no project matches. It is derived from the config, not stored.
 	Project       string     `json:"project,omitempty"`

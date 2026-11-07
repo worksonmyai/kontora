@@ -64,6 +64,9 @@ it and the user does not want it changed.
 - Which pipeline should a new ticket run when nothing names one? That answer is
   `default_pipeline`. Without it, such a ticket runs one agent on its
   description instead of a pipeline.
+- Which pipeline should each project use for ordinary tickets? Should children of
+  any epic use a separate `epic_child_pipeline`, including children of passive epics?
+  Both project fields must name configured pipelines. Neither accepts `none`.
 - What git branch prefix should Kontora use for work branches?
 - How many agents may run at once?
 - Where must automation stop and wait for a human?
@@ -101,7 +104,7 @@ worktrees_dir: ~/.kontora/worktrees
 branch_prefix: kontora
 max_concurrent_agents: 3
 default_agent: claude
-default_pipeline: implement-review-commit
+default_pipeline: default
 
 web:
   enabled: true
@@ -136,6 +139,7 @@ projects:
   myrepo:
     path: ~/projects/myrepo
     pipeline: default
+    epic_child_pipeline: default # optional; can name a different configured pipeline
     agent: claude
     prefix: mr # optional; ticket IDs are <prefix>-<4 random alphanumerics>
 ```
@@ -160,6 +164,46 @@ A project's `agent` is stamped into each new ticket for that repository, and a
 ticket-level agent replaces the agent on every step of its pipeline at runtime.
 Set a project agent only when one agent should run the whole pipeline for that
 repository.
+
+## Epic-child pipeline defaults
+
+For an ordinary ticket, pipeline precedence is:
+
+1. Explicit request, including `none` for standalone execution.
+2. Stored nonempty pipeline, during initialization only.
+3. Project `epic_child_pipeline`, when the resolved parent is an actual epic.
+4. Project `pipeline`.
+5. Global `default_pipeline`.
+6. Standalone execution.
+
+The child default applies under passive and agent epics, independently of supervisor
+activation. Missing or ordinary-ticket parents do not qualify. Initialization resolves
+actual membership before filling a blank pipeline. Project matching remains lexical;
+linked worktrees and symlinks do not gain a match.
+
+Kontora stores defaults at creation or initialization. Existing assignments are not
+migrated after config changes, reparenting or detail-path edits. Operators must
+retarget existing tickets explicitly. Raw uploads and daemon startup do not apply
+defaults. `none` stores a blank, not durable opt-out provenance. A later initialization
+can fill it unless the caller opts out again. Agent resolution stays independent,
+including when the request uses `--pipeline none`.
+
+Epics never get pipelines; supervisors run standalone. Supervisor prompts instruct
+them not to change, clear or replace child pipelines. They must not edit pipeline
+definitions, stage definitions or project pipeline defaults.
+Supervisors must create children without `--pipeline`. They must not bypass workflows through `init`, stage skipping, direct
+file edits or pause/retry sequences. If configured work conflicts with their authority,
+they must report the conflict, request an operator decision and leave that work
+unstarted. They must not substitute another pipeline. These are prompt instructions,
+not runtime enforcement. Ordinary operator commands remain available.
+
+A pipeline default does not authorize commits or publication. `commit-no-push` still
+contains a commit stage. Ask about the user's authority boundary before selecting
+child workflows, rather than removing stages to make conflicting work runnable.
+
+Upgrade all clients and daemon binaries that read the config before adding
+`epic_child_pipeline`. Older strict-YAML loaders reject the key. Do not add the key
+until compatible binaries are installed.
 
 ## Optional companion
 
@@ -240,7 +284,9 @@ The config fails to load when any of these does not hold:
 - A stage appears at most once in the same pipeline.
 - Every project has a `path`, and no two projects normalize to the same
   directory.
-- A project's `pipeline` and `agent`, when set, exist.
+- A project's `pipeline` and `epic_child_pipeline`, when set, name configured
+  pipelines. Neither accepts `none`; it is only a ticket-level opt-out.
+- A project's `agent`, when set, names a configured agent.
 - A custom status matches `[a-z][a-z0-9_]*`, is not repeated, and does not clash
   with a built-in status or with `next`, `retry`, `back`.
 - `tmux_session` is 1 to 64 characters from `A-Za-z0-9_-` and does not start
@@ -313,7 +359,7 @@ found when that stage starts, not before. Read every prompt you write.
 
 A running daemon reloads these without a restart: `agents`, `stages`,
 `pipelines`, `projects`, `statuses`, `environment`, `auto_pick_up`,
-`default_agent`, `branch_prefix`, `branch_naming`, `editor`, `resume_prompt`,
+`default_agent`, `default_pipeline`, `branch_prefix`, `branch_naming`, `editor`, `resume_prompt`,
 `annotation_prompt`, `summary_model`, `plannotator`, and `assistant`.
 Disabling `assistant.companion.enabled` stops observation and prevents new
 companion requests. Disabling retains stored data. An already-running requested
@@ -325,7 +371,10 @@ block. The daemon keeps the running value and logs one warning per field that
 differs on disk.
 
 A running agent keeps the prompt, arguments, model, timeout, and binary it
-started with. An edit takes effect on the next stage that spawns.
+started with. An edit takes effect on the next stage that spawns. Changes to project
+`epic_child_pipeline` or other pipeline defaults affect later creation and
+initialization without rewriting existing assignments. Initialization preserves
+stored nonempty pipelines before applying defaults.
 
 A reload is all-or-nothing: an invalid file is logged and the daemon keeps
 running on the previous config.

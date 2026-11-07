@@ -1684,6 +1684,11 @@ func TestInit_ProjectDefaults(t *testing.T) {
 		path            string
 		ticketPipeline  string
 		ticketAgent     string
+		parentKind      string
+		parentMode      string
+		childPipeline   string
+		opts            EnableOpts
+		wantErr         bool
 		defaultPipeline string
 		pipelinePick    string // pipeline picker return; empty means it must not open
 		wantOutput      string
@@ -1736,6 +1741,21 @@ func TestInit_ProjectDefaults(t *testing.T) {
 			ticketPipeline: "none",
 			wantContains:   []string{`pipeline: ""`, "agent: claude-sonnet"},
 		},
+		{name: "passive epic child default", path: repoDir, parentKind: "epic", childPipeline: "child", wantOutput: "pipeline child from project repo", wantContains: []string{"pipeline: child", "agent: claude-sonnet"}},
+		{name: "active epic child default", path: repoDir, parentKind: "epic", parentMode: "agent", childPipeline: "child", wantContains: []string{"pipeline: child", "agent: claude-sonnet"}},
+		{name: "ordinary parent keeps ordinary default", path: repoDir, parentKind: "ordinary", childPipeline: "child", wantContains: []string{"pipeline: default", "agent: claude-sonnet"}},
+		{name: "missing parent keeps ordinary default", path: repoDir, parentKind: "missing", childPipeline: "child", wantContains: []string{"pipeline: default"}},
+		{name: "stored child pipeline is preserved", path: repoDir, parentKind: "epic", childPipeline: "child", ticketPipeline: "release", wantContains: []string{"pipeline: release"}},
+		{name: "request child pipeline wins", path: repoDir, parentKind: "epic", childPipeline: "child", ticketPipeline: "release", opts: EnableOpts{Pipeline: "default"}, wantContains: []string{"pipeline: default"}},
+		{name: "child pipeline opt out keeps project agent", path: repoDir, parentKind: "epic", childPipeline: "child", opts: EnableOpts{Pipeline: "none"}, wantContains: []string{`pipeline: ""`, "agent: claude-sonnet"}},
+		{name: "child agent resolves independently", path: repoDir, parentKind: "epic", childPipeline: "child", opts: EnableOpts{Agent: "codex"}, wantContains: []string{"pipeline: child", "agent: codex"}},
+		{name: "request path selects child default", path: unlistedRepo, parentKind: "epic", childPipeline: "child", opts: EnableOpts{Path: repoDir}, wantContains: []string{"pipeline: child", "agent: claude-sonnet"}},
+		{name: "request path leaves child project", path: repoDir, parentKind: "epic", childPipeline: "child", opts: EnableOpts{Path: agentOnlyRepo}, defaultPipeline: "release", wantContains: []string{"pipeline: release", "agent: codex"}},
+		{name: "parent read error leaves ticket unchanged", path: unlistedRepo, parentKind: "malformed", childPipeline: "child", opts: EnableOpts{Path: repoDir}, wantErr: true},
+		{name: "parent read error before pickers", path: repoDir, parentKind: "malformed", childPipeline: "child", wantErr: true},
+		{name: "explicit pipeline skips malformed parent default lookup", path: repoDir, parentKind: "malformed", childPipeline: "child", opts: EnableOpts{Pipeline: "release"}, wantContains: []string{"pipeline: release", "agent: claude-sonnet"}},
+		{name: "standalone skips malformed parent default lookup", path: repoDir, parentKind: "malformed", childPipeline: "child", opts: EnableOpts{Pipeline: "none"}, wantContains: []string{`pipeline: ""`, "agent: claude-sonnet"}},
+		{name: "unset child default skips malformed parent lookup", path: repoDir, parentKind: "malformed", wantContains: []string{"pipeline: default", "agent: claude-sonnet"}},
 	}
 
 	for _, tc := range cases {
@@ -1749,8 +1769,26 @@ func TestInit_ProjectDefaults(t *testing.T) {
 				"plain": {Path: agentOnlyRepo, Agent: "codex"},
 			}
 			cfg.DefaultPipeline = tc.defaultPipeline
+			cfg.Pipelines["child"] = cfg.Pipelines["default"]
+			project := cfg.Projects["repo"]
+			project.EpicChildPipeline = tc.childPipeline
+			cfg.Projects["repo"] = project
 
 			frontmatter := fmt.Sprintf("---\nid: tst-001\nstatus: open\npath: %s\n", tc.path)
+			if tc.parentKind != "" {
+				frontmatter += "parent: epc-100\n"
+				if tc.parentKind != "missing" {
+					kind := ""
+					if tc.parentKind == "epic" {
+						kind = "epic"
+					}
+					content := fmt.Sprintf("---\nid: epc-100\nkind: %q\nepic_execution: %q\npath: %q\n---\n# Parent\n", kind, tc.parentMode, repoDir)
+					if tc.parentKind == "malformed" {
+						content = "---\nid: [\n---\n"
+					}
+					writeTicket(t, dir, "epc-100.md", content)
+				}
+			}
 			if tc.ticketPipeline != "" {
 				frontmatter += "pipeline: " + tc.ticketPipeline + "\n"
 			}
@@ -1777,8 +1815,19 @@ func TestInit_ProjectDefaults(t *testing.T) {
 			}
 			t.Cleanup(func() { pickOneDescsFn = pickOneDescs })
 
+			before, err := os.ReadFile(filepath.Join(dir, "tst-001.md"))
+			require.NoError(t, err)
 			var buf bytes.Buffer
-			require.NoError(t, Enable(cfg, "tst-001", EnableOpts{}, &buf))
+			err = Enable(cfg, "tst-001", tc.opts, &buf)
+			if tc.wantErr {
+				require.Error(t, err)
+				assert.False(t, pipelinePicked)
+				after, readErr := os.ReadFile(filepath.Join(dir, "tst-001.md"))
+				require.NoError(t, readErr)
+				assert.Equal(t, before, after)
+				return
+			}
+			require.NoError(t, err)
 			assert.Equal(t, tc.pipelinePick != "", pipelinePicked, "pipeline picker")
 			if tc.wantOutput != "" {
 				assert.Contains(t, buf.String(), tc.wantOutput)
@@ -2029,6 +2078,7 @@ func TestNew_Parent(t *testing.T) {
 		pipeline          string
 		agent             string
 		epicExecution     string
+		childPipeline     string
 		status            string
 		missingParentPath bool
 		draftParent       bool
@@ -2056,6 +2106,12 @@ func TestNew_Parent(t *testing.T) {
 		{name: "a passive epic with no path requires an explicit path", parent: "epc-100", missingParentPath: true, wantErr: "-path is required"},
 		{name: "an active epic with no path keeps its validation error", parent: "epc-100", missingParentPath: true, epicExecution: ticket.EpicExecutionAgent, wantErr: "require a repository path", wantErrIs: app.ErrInvalidState},
 		{name: "an explicit path allows a pathless passive epic", parent: "epc-100", path: "repo", missingParentPath: true, wantPipeline: "default", wantAgent: "claude-sonnet"},
+		{name: "a passive epic uses its child default", parent: "epc-100", childPipeline: "child", wantPipeline: "child", wantAgent: "claude-sonnet"},
+		{name: "an active epic uses its child default", parent: "epc-100", epicExecution: ticket.EpicExecutionAgent, childPipeline: "child", wantPipeline: "child", wantAgent: "claude-sonnet"},
+		{name: "a child default uses the explicit final path", parent: "epc-100", path: "other", childPipeline: "child", wantPipeline: "release", wantAgent: "codex"},
+		{name: "a child keeps a named pipeline", parent: "epc-100", childPipeline: "child", pipeline: "release", wantPipeline: "release", wantAgent: "claude-sonnet"},
+		{name: "a child can opt out of its child default", parent: "epc-100", childPipeline: "child", pipeline: "none", wantAgent: "claude-sonnet"},
+		{name: "a child default keeps an independent agent", parent: "epc-100", childPipeline: "child", agent: "codex", wantPipeline: "child", wantAgent: "codex"},
 		{name: "an unknown parent cannot supply a path", parent: "epc-nope", wantErr: `parent epc-nope: ticket "epc-nope" not found`},
 		{name: "a non-epic cannot supply a path", parent: "tsk-100", wantErr: "is not an epic"},
 		{name: "no parent or path still fails", wantErr: "-path is required"},
@@ -2072,6 +2128,10 @@ func TestNew_Parent(t *testing.T) {
 				"other": {Path: otherRepo, Prefix: "oth", Pipeline: "release", Agent: "codex"},
 				"draft": {Path: draftPath, Prefix: "draft", Pipeline: "default", Agent: "claude-sonnet"},
 			}
+			cfg.Pipelines["child"] = cfg.Pipelines["default"]
+			project := cfg.Projects["repo"]
+			project.EpicChildPipeline = tc.childPipeline
+			cfg.Projects["repo"] = project
 			epicPath := repoDir
 			if tc.draftParent {
 				epicPath = draftPath

@@ -104,7 +104,7 @@ Creates a ticket and prints its ID. Locally, omitting `--path` with `--parent EP
 | Flag | Description |
 |------|-------------|
 | `--path PATH` | Repository the ticket works in. |
-| `--pipeline NAME` | Pipeline to run, or `none` to skip the project default and run standalone. |
+| `--pipeline NAME` | Explicit pipeline, or `none` to skip all pipeline defaults and run standalone. |
 | `--agent NAME` | Agent to use, or `none` to skip the project default. |
 | `--branch NAME` | Work branch name. Defaults to `<branch_prefix>/<id>`. |
 | `--base-branch NAME` | Branch the work branch starts from. Defaults to the repository's default branch. |
@@ -117,6 +117,13 @@ Creates a ticket and prints its ID. Locally, omitting `--path` with `--parent EP
 | `--quiet` | Print only the new ticket ID. |
 
 The ticket file is written once, complete. A ticket created with `--status open` is therefore never visible as `todo`, so a daemon with `auto_pick_up: true` watching the directory cannot claim it before you finish editing it. `--status open` also skips the repository check creation normally runs, because an open ticket is not ready to run.
+
+For ordinary tickets, an explicit `--pipeline` wins. Otherwise Kontora uses the
+matching project's `epic_child_pipeline` for a child of any actual epic, passive or
+agent. It then falls back to the project's `pipeline`, global `default_pipeline`,
+and standalone execution. A missing or ordinary-ticket parent never qualifies for
+the child default. Project matching uses the selected path and remains lexical.
+`--pipeline none` does not change independent agent resolution.
 
 `--kind epic` creates a passive epic in `open` and skips the repository check. It accepts `--agent` without starting it. It cannot be combined with a pipeline, `--parent`, `--at`, `--after` or `--status todo`. Creation never starts a supervisor. The daemon derives passive status from children. Use `kontora run EPIC_ID` to activate a supervisor; see [Epics](tickets.md#epics).
 
@@ -169,6 +176,20 @@ Marks an existing ticket file `kontora: true` so the daemon will run it. Without
 | `--stage NAME` | Starting stage. Defaults to the pipeline's first stage when `--pipeline` is given. |
 | `--status STATUS` | `open` or `todo`. Defaults to asking. |
 
+For ordinary tickets, pipeline precedence is explicit request, stored nonempty
+pipeline, project `epic_child_pipeline` for an actual epic child, project `pipeline`,
+global `default_pipeline`. The child default applies under passive
+and agent epics. Initialization resolves actual membership before filling a blank
+pipeline. Agent defaults remain independent.
+
+If the pipeline remains blank, local `init` opens the pipeline picker, or errors if no pipelines are configured.
+Pass `--pipeline none` for standalone execution.
+
+`--pipeline none` leaves a blank pipeline for this request. Kontora does not store
+the opt-out; a later initialization can fill the blank unless you pass `none` again.
+Existing assignments are not migrated after config, parent or detail-path changes.
+Operators must retarget stored pipelines explicitly with `kontora update --pipeline`.
+
 For an epic, explicit `--status todo` activates a supervisor and validates that every child uses the epic's repository. Omit `--pipeline` and `--stage`; use `--agent` to select the supervisor. Passive epic initialization without explicit `--status todo` is refused. Starting an epic through local `init` requires a running daemon, so it queues the supervisor even with `auto_pick_up: false`.
 
 For ordinary tickets in remote mode, `--pipeline` and `--path` are both required, because the pickers cannot run over HTTP. `--status` is sent; `--stage` is not, so the remote form starts at the pipeline's first stage. Initializing a [scheduled](tickets.md#scheduled-pickup) ticket with `--status todo` queues it now and drops the timestamp; `--status open` keeps it.
@@ -179,7 +200,16 @@ For ordinary tickets in remote mode, `--pipeline` and `--path` are both required
 
 Enqueues an `open` or `todo` ticket. Needs a running daemon. When the ticket's dependencies are not all closed it reports it as blocked, naming them, rather than saying it was queued: the daemon will not pick it up until they close. See [dependency-aware scheduling](tickets.md#dependency-aware-scheduling).
 
-On a passive epic, `run` explicitly activates a supervisor and writes `epic_execution: agent`. Activation requires one Git repository for the epic and every child. The supervisor uses its own branch and worktree; children retain theirs. Successful completion goes to `human_review`. See [Epics](tickets.md#epics) for review, Git and approval limits, and upgrade requirements.
+On a passive epic, `run` explicitly activates a supervisor and writes `epic_execution: agent`. Activation requires one Git repository for the epic and every child. The supervisor runs standalone without a pipeline, using its own branch and worktree; children retain theirs. Successful completion goes to `human_review`.
+
+Supervisor prompts prohibit changing, clearing or replacing child pipelines and editing
+pipeline definitions, stage definitions or project pipeline defaults. Supervisors must
+create children without `--pipeline`. They must not bypass workflows through `init`,
+stage skipping, direct file edits or pause/retry sequences. If work conflicts with
+their authority, supervisors must report the conflict and leave that work unstarted
+pending an operator decision. These are prompt instructions, not runtime enforcement;
+ordinary operator commands remain available. Pipeline defaults do not grant permission
+to commit or publish. See [Epics](tickets.md#epics) for review, Git and approval limits, and upgrade requirements.
 
 ### `kontora schedule TICKET_ID`
 

@@ -3087,29 +3087,29 @@ function editPathState(fromPath, fields) {
   return state;
 }
 
-test("the edit form applies project defaults without changing the branch", () => {
+test("the edit form preserves pipelines and applies agent defaults without changing the branch", () => {
   const cases = [
     {
-      name: "blank fields inherit from the project",
+      name: "a blank pipeline stays standalone",
       from: "", fields: {}, to: "~/projects/kontora",
-      want: { pipeline: "implement", agent: "claude", branch: "" },
+      want: { pipeline: "", agent: "claude", branch: "" },
     },
     {
       name: "an absolute path matches the same project",
       from: "", fields: {}, to: "/home/u/projects/kontora",
-      want: { pipeline: "implement", agent: "claude", branch: "" },
+      want: { pipeline: "", agent: "claude", branch: "" },
     },
     {
       name: "dot segments are cleaned before matching",
       from: "", fields: {}, to: "/home/u/projects/other/../kontora/.",
-      want: { pipeline: "implement", agent: "claude", branch: "" },
+      want: { pipeline: "", agent: "claude", branch: "" },
     },
     {
       name: "inherited values follow the retarget",
       from: "~/projects/kontora",
       fields: { pipeline: "implement", agent: "claude", branch: "" },
       to: "~/projects/widget-api",
-      want: { pipeline: "commit-no-push", agent: "pi-opus", branch: "" },
+      want: { pipeline: "implement", agent: "pi-opus", branch: "" },
     },
     {
       name: "values the user chose are kept",
@@ -3123,7 +3123,7 @@ test("the edit form applies project defaults without changing the branch", () =>
       from: "~/projects/kontora",
       fields: { pipeline: "implement", agent: "claude", branch: "old/branch" },
       to: "~/projects/other",
-      want: { pipeline: "", agent: "", branch: "old/branch" },
+      want: { pipeline: "implement", agent: "", branch: "old/branch" },
     },
   ];
 
@@ -3155,6 +3155,224 @@ test("the init form never fills or replaces the branch", async () => {
     assert.equal(state.initForm.branch, branch);
     assert.equal(state.initForm.pipeline, "commit-no-push");
   }
+});
+
+test("create and init pipeline choices keep preview strings separate from request overrides", async () => {
+  const cases = [
+    { choice: 'inherit', want: undefined, preview: 'child', source: 'epic_child_pipeline' },
+    { choice: 'none', want: 'none', preview: '', source: 'epic_child_pipeline' },
+    { choice: 'pipeline:child', want: 'child', preview: 'child', source: 'epic_child_pipeline' },
+    { choice: 'pipeline:inherit', want: 'inherit', preview: 'inherit', source: 'epic_child_pipeline' },
+    { choice: 'pipeline:pipeline:child', want: 'pipeline:child', preview: 'pipeline:child', source: 'epic_child_pipeline' },
+    { choice: 'inherit', epicChild: false, want: undefined, preview: 'ordinary', source: 'pipeline' },
+    { choice: 'inherit', projectPipeline: '', epicChild: false, want: undefined, preview: 'global', source: 'default_pipeline' },
+    { choice: 'inherit', projectPipeline: '', childPipeline: '', want: undefined, preview: 'global', source: 'default_pipeline' },
+    { choice: 'inherit', projectPipeline: '', childPipeline: '', global: '', want: undefined, preview: '', source: '' },
+    ...['desktop', 'mobile'].flatMap(kindTransition => [
+      { kindTransition, choice: 'inherit', want: undefined, preview: 'child', source: 'epic_child_pipeline' },
+      { kindTransition, choice: 'none', want: 'none', preview: '', source: 'epic_child_pipeline' },
+      { kindTransition, choice: 'pipeline:child', want: 'child', preview: 'child', source: 'epic_child_pipeline' },
+    ]),
+  ];
+  for (const c of cases) {
+    const sent = [];
+    const ticket = { id: 'kon-child', path: '/repos/api', parent: { id: 'kon-parent' }, epic_child: c.epicChild !== false };
+    const state = loadKontoraState({ fetch: async (url, options = {}) => {
+      if (!options.method) return { ok: true, json: async () => ticket };
+      sent.push({ url, body: JSON.parse(options.body) });
+      return { ok: true, json: async () => ({}) };
+    } });
+    state.configCache = {
+      projects: [{ name: 'api', path: ticket.path, pipeline: c.projectPipeline ?? 'ordinary', epic_child_pipeline: c.childPipeline ?? 'child' }],
+      default_pipeline: c.global ?? 'global',
+      pipelines: ['ordinary', 'child', 'inherit', 'pipeline:child'],
+      pipeline_infos: [{ name: 'child', stages: ['implement', 'review'] }],
+    };
+    state.$nextTick = async () => {};
+    state.closeCreateModal = () => {};
+    state.tickets = [{ id: 'kon-parent', kind: ticket.epic_child ? 'epic' : '' }];
+    Object.assign(state.createForm, { title: 'Child', path: ticket.path, parent: 'kon-parent', pipelineChoice: c.choice });
+    state.onPipelineChange();
+    if (c.kindTransition) {
+      const html = fs.readFileSync(htmlPath, 'utf8');
+      const handler = c.kindTransition === 'desktop'
+        ? html.match(/@click="(createForm\.kind = k\.value[^"]*)"/)[1]
+        : html.match(/<select x-model="createForm\.kind"[^>]*>/)[0].match(/@change="([^"]*)"/)?.[1] || '';
+      const changeKind = new Function('state', 'k', `with (state) { ${handler} }`);
+      state.createForm.kind = 'epic';
+      state.createForm.path = '/other';
+      state.onCreatePathChange();
+      state.createForm.path = ticket.path;
+      state.onCreatePathChange();
+      if (c.kindTransition === 'mobile') state.createForm.kind = '';
+      changeKind(state, { value: '' });
+      assert.equal(state.createForm.pipelineChoice, c.choice);
+      assert.equal(state.agentPickerPipeline(c.kindTransition === 'mobile' ? 'mobile-create' : 'create'), c.preview);
+      assert.match(state.agentPickerHint('create'), c.preview ? /each stage/ : /single run/);
+    }
+    assert.equal(state.createForm.pipeline, c.preview, JSON.stringify(c));
+    assert.equal(state.createPipelineDefaults().pipelineSource, c.source);
+    assert.equal(state.createPreviewYaml.includes('pipeline: ' + c.preview), !!c.preview);
+    await state.openInitModal({ ...ticket, epic_child: false });
+    state.initForm.pipelineChoice = c.choice;
+    state.onInitPipelineChange();
+    assert.equal(state.initForm.pipeline, c.preview);
+    assert.deepEqual(vmValue(state.initStages()), c.preview === 'child' ? ['implement', 'review'] : []);
+    if (c.source === 'default_pipeline') {
+      assert.equal(state.initPipelineProject(), null);
+      assert.match(state.inheritedPipelineLabel(state._initInherited), /global default/);
+    }
+    state.createForm.path = '/other';
+    state.onCreatePathChange();
+    state.initForm.path = '/other';
+    state.onInitPathChange();
+    const retargeted = c.choice === 'inherit' ? (c.global ?? 'global') : c.preview;
+    assert.equal(state.createForm.pipeline, retargeted, 'path changes only replace inherited previews');
+    assert.equal(state.initForm.pipeline, retargeted, 'init preserves explicit choices');
+    // A preview can be stale at submission. The server must still resolve inheritance.
+    state.configCache.default_pipeline = 'changed-after-preview';
+    await state.submitCreateTicket();
+    await state.submitInitTicket();
+    assert.equal(sent.length, 2);
+    for (const { body } of sent) {
+      assert.equal(body.pipeline, c.want);
+      assert.equal(Object.hasOwn(body, 'pipeline'), c.want !== undefined);
+    }
+  }
+  const html = fs.readFileSync(htmlPath, 'utf8');
+  assert.equal((html.match(/x-model="createForm.pipelineChoice"/g) || []).length, 2, 'desktop and mobile use choice tokens');
+  assert.match(html, /x-model="initForm.pipelineChoice" @change="onInitPipelineChange\(\)"/);
+});
+
+test("init refreshes child membership on relevant events without changing explicit choices or stored pipelines", async () => {
+  for (const choice of ['inherit', 'none', 'pipeline:child']) {
+    const listeners = {};
+    const requests = [];
+    let fresh = { id: 'kon-child', status: 'open', path: '/repo', pipeline: '', parent: { id: 'kon-parent' }, epic_child: true };
+    const state = loadKontoraState({
+      EventSource: class { addEventListener(name, fn) { listeners[name] = fn; } close() {} },
+      fetch: async (url, options = {}) => {
+        requests.push({ url, ...options });
+        return { ok: true, json: async () => ({ ...fresh }) };
+      },
+    });
+    state.configCache = { projects: [{ name: 'repo', path: '/repo', pipeline: 'ordinary', epic_child_pipeline: 'child' }] };
+    state.$nextTick = async () => {};
+    state.recomputeBoard = () => {};
+    state.updateFavicon = () => {};
+    state.connectSSE();
+    await state.openInitModal({ ...fresh, epic_child: false });
+    assert.equal(requests[0].url, '/api/tickets/kon-child');
+    assert.equal(state.initForm.pipeline, 'child', 'opening uses fresh detail membership');
+    state.initForm.pipelineChoice = choice;
+    state.onInitPipelineChange();
+    state.selectedTicket = { ...fresh };
+    state.editing = true;
+    state.editForm = { body: 'local body', pipeline: '', path: '/repo', agent: '', branch: '', base_branch: '' };
+    for (const event of ['unrelated', 'parent-update', 'child-update', 'parent-delete', 'parent-restore']) {
+      fresh = { ...fresh, epic_child: event === 'parent-restore' };
+      const before = requests.length;
+      if (event === 'parent-delete') listeners.ticket_deleted({ data: JSON.stringify({ id: 'kon-parent' }) });
+      else state.applyTicketUpdate(event === 'child-update' ? { ...fresh }
+        : { id: event === 'unrelated' ? 'kon-other' : 'kon-parent', kind: event === 'parent-restore' ? 'epic' : '', status: 'open' });
+      await flushMicrotasks();
+      assert.equal(requests.length, before + (event === 'unrelated' ? 0 : 1), event);
+      const inherited = event === 'unrelated' || event === 'parent-restore' ? 'child' : 'ordinary';
+      assert.equal(state.initForm.pipeline, choice === 'inherit' ? inherited : choice === 'none' ? '' : 'child', event);
+      assert.equal(state.initForm.pipelineChoice, choice, event);
+      assert.equal(state.editForm.pipeline, '', event);
+      assert.equal(state.selectedTicket.pipeline, '', event);
+    }
+    await state.saveEdit();
+    const put = requests.find(r => r.method === 'PUT');
+    assert.ok(put);
+    assert.equal(Object.hasOwn(JSON.parse(put.body), 'pipeline'), false, 'body autosave does not write the preview');
+    listeners.ticket_deleted({ data: JSON.stringify({ id: 'kon-child' }) });
+    assert.equal(state.initModal, false, 'deleting the child closes its start form');
+  }
+});
+
+test("init ignores stale refresh responses and responses after closing", async () => {
+  const html = fs.readFileSync(htmlPath, 'utf8');
+  const escape = new Function('state', `with (state) { ${html.match(/@keydown\.escape\.window="([^"]+)"/)[1]} }`);
+  const cancellations = [
+    { name: 'close init', cancel: state => state.closeInitModal() },
+    { name: 'Escape', cancel: state => escape(state) },
+    { name: 'Escape from board', cancel: state => { state.selectedTicket = null; escape(state); } },
+    { name: 'close detail', cancel: state => state.closeDetail() },
+    { name: 'navigate to Stats', cancel: state => state.gotoView('stats') },
+  ];
+  for (const phase of ['response', 'body']) {
+    for (const cancellation of cancellations) {
+      const delayed = deferred();
+      const ticket = { id: 'kon-child', status: 'open', path: '/repo' };
+      const state = loadKontoraState({ fetch: async () => {
+        if (phase === 'response') await delayed.promise;
+        return { ok: true, json: async () => {
+          if (phase === 'body') await delayed.promise;
+          return ticket;
+        } };
+      } });
+      state.configCache = { projects: [] };
+      state.$nextTick = async () => {};
+      state.writeHash = () => {};
+      state.openStats = () => {};
+      state.selectedTicket = ticket;
+      const opening = state.openInitModal(ticket);
+      await flushMicrotasks();
+      await cancellation.cancel(state);
+      delayed.resolve();
+      await opening;
+      assert.equal(state.initModal, false, `${phase}: ${cancellation.name}`);
+      assert.equal(state.initForm.ticketId, '', 'canceled opening does not replace the form');
+      assert.equal(state.initSubmitting, false);
+      assert.equal(state._initOpening, false);
+    }
+  }
+  const openings = [];
+  const superseded = loadKontoraState({ fetch: () => {
+    const response = deferred();
+    openings.push(response);
+    return response.promise;
+  } });
+  superseded.configCache = { projects: [] };
+  superseded.$nextTick = async () => {};
+  const first = superseded.openInitModal({ id: 'kon-old', path: '/repo' });
+  const second = superseded.openInitModal({ id: 'kon-new', path: '/repo' });
+  openings[0].resolve({ status: 404, ok: false });
+  await first;
+  assert.equal(superseded._initOpening, true, 'stale completion cannot clear the newer pending opening');
+  assert.equal(superseded.error, null, 'a stale 404 does not report an error');
+  assert.equal(superseded.initModal, false);
+  openings[1].resolve({ ok: true, json: async () => ({ id: 'kon-new', path: '/repo' }) });
+  await second;
+  assert.equal(superseded.initModal, true);
+  assert.equal(superseded.initForm.ticketId, 'kon-new');
+  assert.equal(superseded._initOpening, false);
+  const pending = [];
+  const ticket = { id: 'kon-child', path: '/repo', parent: { id: 'kon-parent' }, epic_child: false };
+  let hold = false;
+  const controlled = loadKontoraState({ fetch: () => hold
+    ? new Promise(resolve => pending.push(resolve))
+    : Promise.resolve({ ok: true, json: async () => ticket }) });
+  controlled.configCache = { projects: [{ name: 'repo', path: '/repo', pipeline: 'ordinary', epic_child_pipeline: 'child' }] };
+  controlled.$nextTick = async () => {};
+  await controlled.openInitModal(ticket);
+  hold = true;
+  const old = controlled.refreshInitContext('kon-parent');
+  const latest = controlled.refreshInitContext('kon-child');
+  pending[1]({ ok: true, json: async () => ({ ...ticket, epic_child: true }) });
+  await latest;
+  assert.equal(controlled.initForm.pipeline, 'child');
+  pending[0]({ ok: true, json: async () => ticket });
+  await old;
+  assert.equal(controlled.initForm.pipeline, 'child', 'older membership cannot replace the latest preview');
+  const closing = controlled.refreshInitContext('kon-parent');
+  controlled.closeInitModal();
+  pending[2]({ ok: true, json: async () => ticket });
+  await closing;
+  assert.equal(controlled.initModal, false);
+  assert.equal(controlled.initForm.pipeline, 'child');
 });
 
 test("create and init requests omit empty branches and send custom branches", async () => {
@@ -3200,10 +3418,12 @@ test("create and init requests omit empty branches and send custom branches", as
   }
 });
 
-test("edit requests omit an unchanged empty branch and send a custom branch", async () => {
+test("edit path requests preserve pipelines, omit empty branches and send custom branches", async () => {
   const cases = [
     { name: "empty branch", selected: "", edited: "", wantBranch: undefined },
     { name: "custom branch", selected: "", edited: "my/custom-branch", wantBranch: "my/custom-branch" },
+    { name: "stored pipeline equals the old default", pipeline: "implement", selected: "", edited: "", wantBranch: undefined },
+    { name: "explicit named pipeline", pipeline: "review-only", selected: "", edited: "", wantBranch: undefined },
   ];
 
   for (const c of cases) {
@@ -3211,24 +3431,27 @@ test("edit requests omit an unchanged empty branch and send a custom branch", as
     const state = loadKontoraState({
       fetch: async (_url, options) => {
         sent = JSON.parse(options.body);
-        return { ok: true, json: async () => ({ id: "kon-1", path: "/repos/new", branch: c.edited }) };
+        return { ok: true, json: async () => ({ id: "kon-1", path: "~/projects/widget-api", branch: c.edited, pipeline: c.pipeline || '' }) };
       },
     });
-    state.selectedTicket = { id: "kon-1", path: "/repos/old", branch: c.selected };
+    state.configCache = { projects: EDIT_PROJECTS };
+    state.selectedTicket = { id: "kon-1", path: "~/projects/kontora", branch: c.selected, pipeline: c.pipeline || '' };
+    state._editInherited = state.projectDefaultsFor(state.selectedTicket.path);
     state.editing = true;
     state.editForm = {
       body: "",
-      pipeline: "",
-      path: "/repos/new",
+      pipeline: c.pipeline || '',
+      path: "~/projects/widget-api",
       agent: "",
       branch: c.edited,
       base_branch: "",
     };
     state.tickets = [];
 
-    await state.saveEdit();
+    await state.onEditPathChange();
 
     assert.ok(sent, c.name);
+    assert.equal(Object.hasOwn(sent, 'pipeline'), false, c.name);
     if (c.wantBranch) {
       assert.equal(sent.branch, c.wantBranch, c.name);
     } else {
@@ -3282,8 +3505,9 @@ test("the init modal states what starting the ticket does", () => {
   // The stages moved out of the select's option labels and into the strip.
   const select = html.slice(html.indexOf('id="init-pipeline"'));
   const options = select.slice(0, select.indexOf("</select>"));
-  assert.ok(options.includes(`<option value="">none (single run, no stages)</option>`));
-  assert.ok(options.includes(`<option :value="p" x-text="p">`));
+  assert.ok(options.includes(`<option value="inherit" x-text="inheritedPipelineLabel(_initInherited)">`));
+  assert.ok(options.includes(`<option value="none">none (single run, no stages)</option>`));
+  assert.ok(options.includes(`<option :value="'pipeline:' + p" x-text="p">`));
   assert.equal(options.includes("pipelineLabel"), false);
   // Agent shares a row with Path. The shared picker keeps the shorter label
   // and puts its resolved hint on a separate line.
@@ -3379,6 +3603,25 @@ test("the pipeline badge names a project only when the pipeline came from it", a
       want: null,
     },
     {
+      name: "a stored pipeline equal to the old default is still explicit",
+      ticket: { id: "kon-1", status: "open", path: "~/projects/kontora", pipeline: "implement" },
+      retarget: "~/projects/widget-api",
+      want: null,
+      wantPipeline: "implement",
+    },
+    {
+      name: "selecting the default by name is explicit",
+      ticket: { id: "kon-1", status: "open", path: "~/projects/kontora" },
+      pipeline: "implement",
+      want: null,
+    },
+    {
+      name: "global fallback is not a project default",
+      ticket: { id: "kon-1", status: "open", path: "/repos/global" },
+      want: null,
+      wantPipeline: "implement",
+    },
+    {
       name: "a value the user picked in the select",
       ticket: { id: "kon-1", status: "open", path: "~/projects/kontora" },
       pipeline: "commit-no-push",
@@ -3404,8 +3647,15 @@ test("the pipeline badge names a project only when the pipeline came from it", a
   ];
 
   for (const c of cases) {
-    const state = loadKontoraState();
-    state.configCache = { projects: EDIT_PROJECTS, pipelines: ["implement", "commit-no-push"], agents: [] };
+    let submitted;
+    const state = loadKontoraState({ fetch: async (_url, options = {}) => {
+      if (options.method) submitted = JSON.parse(options.body);
+      return { ok: true, json: async () => options.method ? {} : c.ticket };
+    } });
+    state.configCache = {
+      projects: [...EDIT_PROJECTS, { name: 'global', path: '/repos/global' }],
+      pipelines: ["implement", "commit-no-push"], agents: [], default_pipeline: 'implement',
+    };
     state.$nextTick = async () => {};
 
     await state.openInitModal(c.ticket);
@@ -3413,9 +3663,18 @@ test("the pipeline badge names a project only when the pipeline came from it", a
       state.initForm.path = c.retarget;
       state.onInitPathChange();
     }
-    if (c.pipeline !== undefined) state.initForm.pipeline = c.pipeline;
+    if (c.pipeline !== undefined) {
+      state.initForm.pipelineChoice = c.pipeline ? 'pipeline:' + c.pipeline : 'none';
+      state.onInitPipelineChange();
+    }
 
     assert.equal(state.initPipelineProject()?.name ?? null, c.want, c.name);
+    if (c.wantPipeline) assert.equal(state.initForm.pipeline, c.wantPipeline, c.name);
+    assert.equal(state.initForm.canInheritPipeline, !c.ticket.pipeline, c.name);
+    await state.submitInitTicket();
+    const wantOverride = c.pipeline !== undefined ? (c.pipeline || 'none') : (c.ticket.pipeline || undefined);
+    assert.equal(submitted.pipeline, wantOverride, c.name);
+    assert.equal(Object.hasOwn(submitted, 'pipeline'), wantOverride !== undefined, c.name);
   }
 });
 
@@ -6019,19 +6278,33 @@ test("the notifications search reaches a channel by name and by type", async () 
   assert.equal(state.settingsRowVisible("tg-me", "telegram", "notifications"), true);
 });
 
-test("a project's notify_channels are shown on its card and never written", async () => {
-  const state = await settingsState(`${SETTINGS_NOTIFY_FIXTURE}
+test("read-only project defaults are searchable and preserve YAML on unrelated saves", async () => {
+  const text = `${SETTINGS_NOTIFY_FIXTURE}
 projects:
   kontora:
     path: ~/projects/kontora
+    epic_child_pipeline: "child-workflow" # keep this comment and quoting
     notify_channels:
       - ops
-`);
+`;
+  const daemon = settingsFetch({ raw: text });
+  const state = await settingsState(text, { fetch: daemon.fetch });
 
   assert.deepEqual([...state.settingsConfig.projects.kontora.notify_channels], ["ops"]);
-  assert.equal(Object.keys(state.settingsConfig.projects.kontora).includes("notify_channels"), true);
-  // Absent from the flattened paths, so no edit anywhere can rewrite it.
-  assert.equal(state.settingsChangedPaths().some((p) => p.includes("notify_channels")), false);
+  assert.equal(state.settingsConfig.projects.kontora.epic_child_pipeline, "child-workflow");
+  for (const query of ['epic_child_pipeline', 'child-workflow']) {
+    state.settingsQuery = query;
+    assert.equal(state.settingsSectionMatches('projects'), true, query);
+    assert.equal(state.settingsRowVisible('kontora', '~/projects/kontora epic_child_pipeline child-workflow', 'projects'), true, query);
+  }
+  state.settingsQuery = '';
+  state.settingsConfig.general.branch_prefix = 'agent';
+  assert.deepEqual([...state.settingsChangedPaths()], ['branch_prefix']);
+  assert.equal(await state.saveSettings(), true);
+  const saved = JSON.parse(daemon.puts()[0].init.body).content;
+  assert.ok(saved.includes('    epic_child_pipeline: "child-workflow" # keep this comment and quoting'));
+  assert.match(saved, /notify_channels:\n      - ops/);
+  assert.match(fs.readFileSync(htmlPath, 'utf8'), /x-text="settingsConfig\.projects\[name\]\.epic_child_pipeline \|\| 'inherits pipeline default'"/);
 });
 
 test("escape clears the settings search without unwinding the global escape chain", () => {
@@ -13856,7 +14129,9 @@ for (const derived of ['open', 'in_progress', 'done', 'cancelled']) {
     assert.equal(state.initForm.kind, 'epic');
     assert.equal(state.initForm.pipeline, '');
     assert.deepEqual(vmValue(state.initStages()), []);
-    assert.equal(requests.length, 0);
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0].url, '/api/tickets/' + epic.id, 'opening init refreshes detail');
+    requests.length = 0;
     state.onInitPathChange();
     assert.equal(state.initForm.pipeline, '', 'project defaults cannot add a child pipeline');
     state.initForm.branch = 'epic/new';

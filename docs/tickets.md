@@ -33,7 +33,7 @@ These are set when creating a ticket (manually or via `kontora new`). `notify` a
 | `status` | yes | `todo` | Current ticket status (see [Status lifecycle](#status-lifecycle)). On a passive epic it is derived from the children. On an agent epic it tracks the supervisor. |
 | `kind` | no | — | `epic` for a ticket that groups others; absent for ordinary work. See [Epics](#epics). |
 | `epic_execution` | no | — | Empty for a passive epic; `agent` after explicit activation. Invalid on ordinary tickets. See [Epics](#epics). |
-| `pipeline` | no | — | Name of the pipeline to run (must exist in config). Filled in at creation from a matching [project](configuration.md#projects) when one is configured and no pipeline is given. When it ends up empty, the ticket runs in standalone mode with the default agent. |
+| `pipeline` | no | — | Configured pipeline name, stored at creation or initialization using the [default precedence](configuration.md#projects). Empty means standalone execution with the ticket's agent or `default_agent`. |
 | `agent` | no | — | Override the agent for this ticket. Applies to standalone tickets or overrides the pipeline's agent at every stage. Filled in at creation from a matching [project](configuration.md#projects) when one is configured and no agent is given. |
 | `path` | yes | — | Path to the repository (supports `~`, e.g., `~/projects/kontora`). |
 | `base_branch` | no | — | Branch the ticket's work branch starts from. Empty means the repository's default branch. See [Base branch](#base-branch). |
@@ -50,7 +50,7 @@ These are set when creating a ticket (manually or via `kontora new`). `notify` a
 
 `deps`, `links` and `parent` name other tickets. Kontora reads them and shows each id as a link to that ticket, with a hover card giving its title and status. The details rail lists every relation as its own row. The ones you navigate by are also on the ticket tab itself: `deps`, `links` and the derived `blocks` on a strip at the top, one line unless a ticket carries too many ids to fit, and `parent` as a crumb in the app header, between `board` and the open ticket's id.
 
-`deps` and `links` are written by [`kontora dep`, `kontora undep`, `kontora link` and `kontora unlink`](cli.md#relations). `parent` is written by `kontora new` with a parent flag, by the epic page, or by hand. Only `deps` reaches the scheduler, through [dependency-aware scheduling](#dependency-aware-scheduling); `links` and `parent` are for navigation and for the epic rollup.
+`deps` and `links` are written by [`kontora dep`, `kontora undep`, `kontora link` and `kontora unlink`](cli.md#relations). `parent` is written by `kontora new` with a parent flag, by the epic page, or by hand. Only `deps` controls scheduling, through [dependency-aware scheduling](#dependency-aware-scheduling). `parent` supplies epic context and can select a creation or initialization default; it does not set execution order.
 
 ```yaml
 deps: [kon-a1b2]
@@ -81,6 +81,30 @@ children: [kon-b12e, kon-c04d, kon-9b31]   # order only
 
 Create one with `kontora new -kind epic`, and file a ticket under it with `kontora new -parent kon-e7c1` or `POST /api/tickets/{id}/parent`. Both creation paths check the parent the same way `POST .../parent` does: it has to exist and it has to be an epic. Epics do not nest: setting `parent` on a ticket whose `kind` is `epic` is refused.
 
+An ordinary child of any actual epic can use the matching project's
+`epic_child_pipeline`. This applies under passive and agent epics, independently of
+supervisor activation. Missing or ordinary-ticket parents do not qualify.
+
+Pipeline precedence at creation or initialization is:
+
+1. Explicit request, including `none` for standalone execution.
+2. Stored nonempty pipeline, during initialization only.
+3. Project `epic_child_pipeline`, for an actual epic child.
+4. Project `pipeline`.
+5. Global `default_pipeline`.
+6. Standalone execution.
+
+Kontora stores the resolved pipeline in the ticket, not a live link to a default.
+Existing assignments are not migrated after config changes, reparenting or detail-path
+edits. Operators must retarget them explicitly. `none` stores a blank, not durable
+opt-out provenance. A later initialization can fill that blank unless the caller
+opts out again. Agent resolution stays independent of the pipeline opt-out.
+
+`epic_child` in API responses is an ephemeral membership snapshot for previews.
+It is not frontmatter or authoritative default resolution. Browser inheritance omits
+`pipeline`; explicit standalone sends `none`. Creation and initialization resolve the
+current default at submission.
+
 For a child ticket, Kontora adds the epic id, title and a brief-reading command to each non-empty agent prompt. This includes pipeline stages, standalone runs and resumed runs. The agent is instructed to run `kontora view --body EPIC_ID` before starting and keep its work scoped to the child. The brief and notes are not copied into the prompt. Missing parents and parents that are not epics add no context.
 
 The daemon rewrites a passive epic's status whenever its children change. Archived children are ignored. Any child in `todo`, `in_progress`, `paused` or `human_review` gives `in_progress`. Otherwise, terminal children with at least one `done` or legacy `closed` give `done`. All remaining children `cancelled` gives `cancelled`; anything else, including no children, gives `open`.
@@ -89,7 +113,21 @@ A passive epic's brief stays editable in every status. Manual status changes, pa
 
 To activate a supervisor, use `kontora run EPIC_ID`, the dashboard's Run action, or explicit `kontora init EPIC_ID --status todo`. Activation writes `epic_execution: agent` and queues the epic. Creating an epic, editing its brief or changing its children does not activate it. The epic and every child must name the same Git repository. Linked worktrees and symlink paths to that repository are allowed. Passive epics can group different repositories until activation.
 
-The supervisor uses an ordinary coding agent in the epic's own branch and worktree. It reads the brief and children, creates open children, starts selected work, monitors progress and integrates child results. Children keep their own pipelines, branches, worktrees and commits. Display order does not set execution order.
+The supervisor runs standalone, without a pipeline, using an ordinary coding agent
+in the epic's own branch and worktree. It reads the brief and children, creates open children, starts selected work, monitors progress and integrates child results. Children keep their own pipelines, branches, worktrees and commits. Display order does not set execution order.
+
+Supervisor prompts instruct it to preserve child workflows:
+
+- Do not change, clear or replace a child's pipeline.
+- Do not edit pipeline definitions, stage definitions or project pipeline defaults.
+- Create children without `--pipeline` so Kontora selects the configured default.
+- Do not bypass workflows through `init`, stage skipping, direct file edits or pause/retry sequences.
+- If configured work conflicts with your authority, do not start it. Report the conflict and request an operator decision.
+- Do not substitute another pipeline.
+
+These are prompt instructions, not runtime enforcement. Ordinary operator commands
+remain available. A default pipeline grants no permission to commit or publish;
+`commit-no-push` still contains a commit stage.
 
 Pausing an agent epic stops only its supervisor. Children already running continue; pause those children separately if needed. Retry restarts the supervisor, which must inspect existing child results and interrupted Git operations before continuing. Agent epics use ordinary edit restrictions while running or terminal.
 
@@ -105,6 +143,8 @@ The supervisor must not publish or make off-machine writes, including through ch
 
 Supervisors use a separate pool: `max_concurrent_epic_supervisors`, default `4`, in addition to `max_concurrent_agents`. At default settings, epics can add four agent processes beyond the worker limit. The queue chooses the oldest eligible ticket whose pool has capacity.
 
+Upgrade all clients and daemon binaries that read the config before adding
+`epic_child_pipeline`; older strict-YAML loaders reject the key.
 Upgrade every daemon and client sharing the ticket directory before activating an epic. Older versions treat all epics as passive and can overwrite supervisor status through child rollups. Do not run mixed versions against activated epics.
 
 `children` orders the sub-tickets and nothing else. Membership is what each child's `parent` says, so an id here that names no child is ignored on read, and a child the list does not name sorts after every child it does, by `created`. Dragging a row on the epic page writes this one list, and writes no child file.

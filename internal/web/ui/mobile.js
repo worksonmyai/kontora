@@ -200,6 +200,7 @@ export function kontoraMobile() {
           if (res.ok) this.configCache = await res.json();
         } catch (e) { /* form still works with empty pipeline/agent lists */ }
       }
+      this.onCreatePathChange();
     },
     closeSheet() {
       this.closeAgentPicker(false);

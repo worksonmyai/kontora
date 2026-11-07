@@ -96,7 +96,7 @@ func New(cfg *config.Config, opts NewOpts) (string, error) {
 	// them: it cannot have a pipeline, and supervisor defaults are resolved
 	// only when it is explicitly started.
 	if !isEpic {
-		opts.Pipeline, opts.Agent = cfg.ResolveTicketDefaults(opts.Path, opts.Pipeline, opts.Agent)
+		opts.Pipeline, opts.Agent = cfg.ResolveTicketDefaults(opts.Path, opts.Pipeline, opts.Agent, opts.Parent != "")
 	}
 
 	// A name the config does not know would otherwise sit in the frontmatter

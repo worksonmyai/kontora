@@ -249,12 +249,20 @@ func applyEnableOpts(cfg *config.Config, t *ticket.Ticket, opts EnableOpts) erro
 // "none" opt-out, so neither the picker nor the frontmatter ever sees the
 // sentinel. Each value it fills is printed with where it came from.
 func applyTicketDefaults(cfg *config.Config, t *ticket.Ticket, w io.Writer) error {
-	pipeline, agent := cfg.ResolveTicketDefaults(t.Path, t.Pipeline, t.Agent)
+	name, project, inProject := cfg.ProjectFor(t.Path)
+	var epicChild bool
+	if t.Pipeline == "" && project.EpicChildPipeline != "" {
+		svc := app.New(app.Static(cfg), store.NewDiskRepo(cfg.TicketsDir), app.NoopRuntime{})
+		var err error
+		epicChild, err = svc.IsEpicChild(t.Parent)
+		if err != nil {
+			return err
+		}
+	}
+	pipeline, agent := cfg.ResolveTicketDefaults(t.Path, t.Pipeline, t.Agent, epicChild)
 	if pipeline == t.Pipeline && agent == t.Agent {
 		return nil
 	}
-	name, project, inProject := cfg.ProjectFor(t.Path)
-
 	var taken []string
 	if pipeline != t.Pipeline {
 		if err := t.SetField("pipeline", pipeline); err != nil {
@@ -262,7 +270,7 @@ func applyTicketDefaults(cfg *config.Config, t *ticket.Ticket, w io.Writer) erro
 		}
 		if pipeline != "" {
 			source := "default_pipeline"
-			if inProject && project.Pipeline == pipeline {
+			if inProject && (project.Pipeline == pipeline || epicChild && project.EpicChildPipeline == pipeline) {
 				source = "project " + name
 			}
 			taken = append(taken, fmt.Sprintf("pipeline %s from %s", pipeline, source))

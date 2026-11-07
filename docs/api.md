@@ -20,12 +20,12 @@ When the web server is enabled, the following endpoints are exposed:
 | `GET /api/tickets/archived` | The archived tickets, one row per ticket, for the Archive view. |
 | `POST /api/tickets/{id}/archive` | Archive a closed ticket (optional `{"note": "..."}` body). |
 | `POST /api/tickets/{id}/restore` | Return an archived ticket to the status it was archived from. |
-| `GET /api/config` | Available pipelines, agents, and projects (JSON). `agents` remains the sorted agent-name list; `agent_infos` adds sorted `{name, model, effort}` metadata for each agent. Projects are sorted by name and carry `name`, `path`, `resolved_path` (`~` expanded), `pipeline`, `agent`, and `notify_channels`. `channels` and `default_channels` are the configured notification channel names and `notifications.default`; names only, never a chat id or a webhook URL. |
+| `GET /api/config` | Available pipelines, agents, and projects (JSON). `agents` remains the sorted agent-name list; `agent_infos` adds sorted `{name, model, effort}` metadata for each agent. The top-level `default_pipeline` exposes the global pipeline default. Projects are sorted by name and carry `name`, `path`, `resolved_path` (`~` expanded), `pipeline`, `epic_child_pipeline`, `agent`, and `notify_channels`. `channels` and `default_channels` are the configured notification channel names and `notifications.default`; names only, never a chat id or a webhook URL. |
 | `GET /api/tickets/{id}/logs` | Get agent logs for a ticket (optional `?stage=` query param). |
 | `POST /api/tickets/{id}/summary` | Set the ticket's `summary` field (`{"text": "..."}` body). |
 | `GET /api/tickets/{id}/changes` | Commits and changed files on the ticket's branch relative to its `base_branch`, or the repo's default branch when unset. Empty payload when the ticket has no branch or the branch was deleted. |
 | `GET /api/tickets/{id}/chain` | The dependency chain through the ticket: everything it transitively waits on, itself, and everything that transitively waits on it. |
-| `POST /api/tickets/{id}/init` | Initialize a non-kontora ticket (`pipeline`, `path`, optional `agent`, `branch`, `status`, `notify`, `notify_channels`). `status` is `todo` by default; `open` leaves the ticket a draft and keeps any `scheduled_at` it carries. See [notifications](tickets.md#notifications) for the two notify fields. |
+| `POST /api/tickets/{id}/init` | Initialize a non-kontora ticket (`path`, optional `pipeline`, `agent`, `branch`, `status`, `notify`, `notify_channels`). `status` is `todo` by default; `open` leaves the ticket a draft and keeps any `scheduled_at` it carries. See [notifications](tickets.md#notifications) for the two notify fields. |
 | `POST /api/tickets/{id}/dep` | Make the ticket wait on another one (`{"related": ["<id>"]}` body, exactly one id). |
 | `POST /api/tickets/{id}/undep` | Drop a dependency edge (`{"related": ["<id>"]}` body, exactly one id). |
 | `POST /api/tickets/{id}/link` | Relate the ticket to each id in `{"related": [...]}`, on both sides. |
@@ -76,10 +76,16 @@ Ticket payloads include `kind`, `epic_execution`, `branch` and `base_branch`.
 `epic_execution: "agent"` distinguishes an activated epic from passive grouping.
 `child_order` is the stored display order. Detail payloads also include the
 derived `children` array; membership comes from each child's `parent`.
-The CLI's `ls --json` exposes these fields too.
+The CLI's `ls --json` exposes the execution and Git fields and `child_order` too.
 
-The supervisor runs in the epic's own branch and worktree. Children retain their
-own pipelines, branches, worktrees and commits. Pause stops only the supervisor;
+`TicketInfo.epic_child` is a derived boolean on list, detail and event payloads.
+It is true for an ordinary ticket whose parent is an epic in the daemon's current
+index, regardless of passive or agent execution. It is an ephemeral preview
+snapshot, never stored frontmatter or authoritative default resolution.
+Creation and initialization resolve actual membership themselves.
+
+The supervisor runs standalone, without a pipeline, in the epic's own branch and worktree.
+Children retain their own pipelines, branches, worktrees and commits. Pause stops only the supervisor;
 running children continue. Agent epics use ordinary edit restrictions while
 running or terminal. Successful supervisor exit parks the epic in `human_review`,
 never directly in `done`. Kontora requires a nonempty child set, with every child
@@ -96,6 +102,15 @@ approval, but never on `main`, `master`, or the repository's default branch.
 The supervisor must investigate questions before asking the user. It must not
 publish or write to external services, including through children or tools.
 These are agent instructions, not runtime enforcement.
+Supervisor prompts prohibit changing, clearing or replacing child pipelines and
+editing pipeline definitions, stage definitions or project pipeline defaults.
+Supervisors must omit pipeline overrides when creating children. They must not bypass the
+workflow through `init`, stage skipping, direct file edits or pause/retry sequences.
+If configured work conflicts with their authority, they must report the conflict,
+request an operator decision and leave that work unstarted. They must not substitute
+another pipeline. These are prompt instructions, not runtime enforcement or
+restrictions on ordinary operator APIs.
+A default pipeline does not authorize commits or publication.
 See [Epics](tickets.md#epics) for integration rules and safety limits.
 
 Upgrade every daemon and client sharing the ticket directory before activation.
@@ -279,9 +294,35 @@ opening, when nothing is running and nothing was typed: `EventSource` does not
 retry a 204, so a stale pane stops asking. Like `GET /api/events`, the response
 is never gzipped.
 
-On `POST /api/tickets` and `POST /api/tickets/{id}/init`, a blank `pipeline` or `agent` takes the default of the [project](configuration.md#projects) matching `path`. Send the literal `none` to leave that field blank and skip its project default. `PUT /api/tickets/{id}` reads `none` the same way, as "clear this field"; it has no project default to skip.
+For ordinary tickets, `POST /api/tickets` and `POST /api/tickets/{id}/init` resolve
+`pipeline` in this order:
 
-On `POST /api/tickets/{id}/init`, a blank `pipeline` or `agent` first falls back to what the ticket file already declares, so the project default fills an empty field instead of replacing the ticket's own value.
+1. An explicit request value, including `none` for standalone execution.
+2. A stored nonempty pipeline, on initialization only.
+3. The matching project's `epic_child_pipeline`, when the resolved parent is an actual epic.
+4. The matching project's `pipeline`.
+5. The global `default_pipeline`.
+6. Standalone execution.
+
+Project matching uses the final request-overridden `path`. Passive and agent epics
+both qualify as parents; missing or ordinary-ticket parents do not. Epics themselves
+never receive a pipeline. See [projects](configuration.md#projects) for lexical path matching.
+
+An omitted or blank `agent` preserves the stored agent during initialization, then
+uses the project agent default. Pipeline and agent selection are independent:
+`"pipeline":"none"` does not skip agent resolution. The literal `none` clears the
+selected field and skips its defaults for this request. Kontora stores a blank,
+not durable opt-out provenance. A later initialization can fill it unless the
+caller sends `none` again.
+
+Browser inheritance omits `pipeline`; explicit standalone sends `"pipeline":"none"`.
+A named choice sends the configured name, even when it equals the inherited preview.
+Browser choice tokens such as `pipeline:NAME` are not API pipeline names.
+The backend resolves current defaults rather than trusting a preview snapshot.
+
+`PUT /api/tickets/{id}` treats `none` as "clear this field" and applies no defaults.
+Existing assignments are not migrated when config or membership changes. Changing
+`path` in ticket details preserves the stored pipeline; retarget it explicitly.
 
 Both Plannotator endpoints return 202 once the session is accepted, and report its outcome over `GET /api/events` as a `plannotator_finished` event. They return 404 for an unknown ticket, 409 when a Plannotator process is already open for the ticket or its status does not allow the requested pass, and 500 when the `plannotator` binary is not installed. `GET /api/tickets` and `GET /api/tickets/{id}` carry `can_annotate`, which answers the same status rules the annotate endpoint enforces.
 

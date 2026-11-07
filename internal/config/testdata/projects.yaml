@@ -15,11 +15,22 @@ pipelines:
       on_success: done
       on_failure: pause
 
+  epic-child:
+    - stage: code
+      agent: claude
+      on_success: done
+      on_failure: pause
+
 projects:
   kontora:
     path: ~/projects/kontora
     pipeline: implement
+    epic_child_pipeline: epic-child
     agent: claude
     branch_prefix: feature
   widget-api:
     path: ~/projects/widget-api
+    epic_child_pipeline: ""
+  epic-only:
+    path: ~/projects/epic-only
+    epic_child_pipeline: epic-child

@@ -13,6 +13,40 @@ import (
 	"github.com/worksonmyai/kontora/internal/worktree"
 )
 
+// IsEpicChild resolves parent kind without requiring the daemon to have indexed
+// the parent. Missing parents and ordinary tickets do not establish epic membership.
+func (s *Service) IsEpicChild(parentID string) (bool, error) {
+	if parentID == "" {
+		return false, nil
+	}
+	st, err := s.repo.Get(parentID)
+	if err == nil {
+		if st.Ticket.ID != parentID {
+			return false, fmt.Errorf("%w: parent %s file declares id %q", ErrInvalidState, parentID, st.Ticket.ID)
+		}
+		return st.Ticket.Kind == ticket.KindEpic, nil
+	}
+	if !errors.Is(err, ErrNotFound) && !errors.Is(err, os.ErrNotExist) {
+		return false, fmt.Errorf("reading parent %s: %w", parentID, err)
+	}
+	// Watcher discovery can lag creation.
+	if !ticket.IsSafeID(parentID) {
+		return false, fmt.Errorf("%w: unsafe parent id %q", ErrInvalidState, parentID)
+	}
+	path := filepath.Join(config.ExpandTilde(s.cfg().TicketsDir), parentID+".md")
+	parent, err := ticket.ParseFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("reading parent %s: %w", parentID, err)
+	}
+	if !ticket.IsCanonicalPath(path, parent.ID) {
+		return false, fmt.Errorf("%w: parent %s file declares id %q", ErrInvalidState, parentID, parent.ID)
+	}
+	return parent.Kind == ticket.KindEpic, nil
+}
+
 // Linked worktrees and symlink spellings of the same repo are valid.
 // Passive epics can group tickets from different repositories until activation.
 func ValidateEpicChildRepository(epic, child *ticket.Ticket) error {
@@ -82,7 +116,7 @@ func (s *Service) initEpic(st *StoredTicket, req InitRequest) (Result, error) {
 			return Result{}, err
 		}
 	}
-	_, agent := s.cfg().ResolveTicketDefaults(t.Path, config.NoneSentinel, firstNonempty(req.Agent, t.Agent))
+	_, agent := s.cfg().ResolveTicketDefaults(t.Path, config.NoneSentinel, firstNonempty(req.Agent, t.Agent), false)
 	if agent == "" {
 		agent = s.cfg().DefaultAgent
 	}

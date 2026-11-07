@@ -846,11 +846,17 @@ pipelines:
       agent: claude
       on_success: done
       on_failure: pause
+  child:
+    - stage: code
+      agent: claude
+      on_success: done
+      on_failure: pause
 projects:
   repo:
     path: %s
     prefix: prj
     pipeline: implement
+    epic_child_pipeline: child
     agent: claude
 `, ticketsDir, repoDir), 0o644))
 
@@ -891,17 +897,22 @@ projects:
 		{
 			name: "a supervisor child inherits the epic repository", parent: "epc-100",
 			args: []string{"Child"}, wantPath: repoDir, wantPrefix: "prj-",
-			contains: []string{"pipeline: implement", "agent: claude"},
+			contains: []string{"pipeline: child", "agent: claude"},
 		},
 		{
 			name: "a child resolves a parent prefix", parent: "epc-1",
 			args: []string{"Child by prefix"}, wantPath: repoDir, wantPrefix: "prj-",
-			contains: []string{"pipeline: implement", "agent: claude"},
+			contains: []string{"pipeline: child", "agent: claude"},
 		},
 		{
 			name: "an inherited path keeps an explicit agent", parent: "epc-100",
 			args: []string{"--agent", "codex", "Explicit child agent"}, wantPath: repoDir, wantPrefix: "prj-",
-			contains: []string{"pipeline: implement", "agent: codex"},
+			contains: []string{"pipeline: child", "agent: codex"},
+		},
+		{
+			name: "a child can name the ordinary pipeline explicitly", parent: "epc-100",
+			args: []string{"--pipeline", "implement", "Named child"}, wantPath: repoDir, wantPrefix: "prj-",
+			contains: []string{"pipeline: implement", "agent: claude"},
 		},
 		{
 			name: "a child can opt out of the pipeline", parent: "epc-100",
@@ -911,12 +922,12 @@ projects:
 		{
 			name: "a child can opt out of the agent", parent: "epc-100",
 			args: []string{"--agent", "none", "Stage agent child"}, wantPath: repoDir, wantPrefix: "prj-",
-			contains: []string{"pipeline: implement"}, absent: []string{"agent:"},
+			contains: []string{"pipeline: child"}, absent: []string{"agent:"},
 		},
 		{
 			name: "a child can be created outside a repository", parent: "epc-100", dir: t.TempDir(),
 			args: []string{"Child outside Git"}, wantPath: repoDir, wantPrefix: "prj-",
-			contains: []string{"pipeline: implement", "agent: claude"},
+			contains: []string{"pipeline: child", "agent: claude"},
 		},
 		{
 			name: "an explicit child path remains authoritative", path: wtDir, parent: "epc-100",

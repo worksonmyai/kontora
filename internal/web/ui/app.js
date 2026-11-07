@@ -171,6 +171,9 @@ export function kontoraApp() {
     editSubmitting: false,
     editSaved: false,
     _editDebounce: null,
+    // Queues and failed drafts outlive the overlay that submitted them.
+    _editorSaves: Object.create(null),
+    _editorGeneration: 0,
     // Project defaults for the edit path. Agent provenance is separate because
     // an explicit override can equal the project default.
     _editInherited: null,

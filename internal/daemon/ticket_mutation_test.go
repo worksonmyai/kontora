@@ -23,8 +23,8 @@ import (
 )
 
 func TestTicketMutationPublicNotes(t *testing.T) {
-	for _, summary := range []bool{false, true} {
-		t.Run(map[bool]string{false: "notes", true: "notes_and_summary"}[summary], func(t *testing.T) {
+	for _, mode := range []string{"notes", "notes_and_summary", "notes_and_description"} {
+		t.Run(mode, func(t *testing.T) {
 			h := newHarness(t)
 			d := h.newDaemon(h.cfg)
 			path := h.writeTicket("tst-notes.md", h.taskMD("tst-notes", "open", "one-stage"))
@@ -39,9 +39,12 @@ func TestTicketMutationPublicNotes(t *testing.T) {
 			require.NoError(t, ticket.WithBoardMutation(h.tasksDir, func() error {
 				go func() { errs <- d.AddNote("tst-notes", web.AddNoteRequest{Text: "first note"}) }()
 				go func() {
-					if summary {
+					switch mode {
+					case "notes_and_summary":
 						errs <- d.SetSummary("tst-notes", "current summary")
-					} else {
+					case "notes_and_description":
+						errs <- d.UpdateTicket("tst-notes", web.UpdateTicketRequest{Description: new("# New description")})
+					default:
 						errs <- d.AddNote("tst-notes", web.AddNoteRequest{Text: "second note"})
 					}
 				}()
@@ -70,6 +73,11 @@ func TestTicketMutationPublicNotes(t *testing.T) {
 					}
 				}
 				fresh := h.readTask("tst-notes.md")
+				if mode == "notes_and_description" {
+					if _, err := fresh.AddNote(ticket.AddNoteOptions{Text: "intervening note"}); err != nil {
+						return err
+					}
+				}
 				if err := fresh.SetField("branch", "intervening-branch"); err != nil {
 					return err
 				}
@@ -84,13 +92,19 @@ func TestTicketMutationPublicNotes(t *testing.T) {
 			}
 			stored := h.readTask("tst-notes.md")
 			expectedNotes := count
-			if summary {
+			if mode == "notes_and_summary" {
 				expectedNotes--
 			}
 			assert.Len(t, ticket.ParseNotes(stored.Body), expectedNotes)
 			assert.Equal(t, "intervening-branch", stored.Branch)
-			if summary {
+			if mode == "notes_and_summary" {
 				assert.Equal(t, "current summary", stored.Summary)
+			}
+			if mode == "notes_and_description" {
+				description, _ := ticket.SplitDescription(stored.Body)
+				assert.Equal(t, "# New description\n", description)
+				assert.Contains(t, stored.Body, "intervening note")
+				assert.Contains(t, stored.Body, "first note")
 			}
 			assert.Equal(t, stored.Body, d.tickets["tst-notes"].ticket.Body)
 		})

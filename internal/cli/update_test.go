@@ -57,6 +57,53 @@ agent: a1
 	assert.Contains(t, content, "agent: a1")
 }
 
+func TestUpdate_DescriptionCompatibility(t *testing.T) {
+	const prefix = "# Original\n\nDetails  \r\n\n"
+	const tail = " \t## Notes \r\n\n**legacy**\n\nold note\n## Later\nkeep\n## Notes\nsecond section"
+	for _, tc := range []struct {
+		name    string
+		req     web.UpdateTicketRequest
+		want    string
+		invalid bool
+	}{
+		{name: "omitted", want: prefix + tail},
+		{name: "round trip", req: web.UpdateTicketRequest{Description: new(prefix)}, want: prefix + tail},
+		{name: "replace", req: web.UpdateTicketRequest{Description: new("# Changed")}, want: "# Changed\n" + tail},
+		{name: "clear", req: web.UpdateTicketRequest{Description: new("")}, want: tail},
+		{name: "full body replaces notes", req: web.UpdateTicketRequest{Body: new("# Full\n## Notes\nreplacement")}, want: "# Full\n## Notes\nreplacement"},
+		{name: "full body clears", req: web.UpdateTicketRequest{Body: new("")}},
+		{name: "mixed fields", req: web.UpdateTicketRequest{Body: new(""), Description: new(""), Pipeline: new("two-stage")}, invalid: true},
+		{name: "delimiter", req: web.UpdateTicketRequest{Description: new("new\n \t## Notes \r\n"), Pipeline: new("two-stage")}, invalid: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeTicket(t, dir, "tst-desc.md", "---\nid: tst-desc\nstatus: open\npipeline: one-stage\ncustom: keep\n---\n"+prefix+tail)
+			path := filepath.Join(dir, "tst-desc.md")
+			before, err := os.ReadFile(path)
+			require.NoError(t, err)
+			err = Update(updateTestConfig(dir), "tst-desc", tc.req)
+			if tc.invalid {
+				require.Error(t, err)
+				after, err := os.ReadFile(path)
+				require.NoError(t, err)
+				assert.Equal(t, before, after)
+				return
+			}
+			require.NoError(t, err)
+			stored, err := ticket.ParseFile(path)
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, stored.Body)
+			assert.Equal(t, "one-stage", stored.Pipeline)
+			after, err := os.ReadFile(path)
+			require.NoError(t, err)
+			assert.Contains(t, string(after), "custom: keep\n")
+			if tc.want == prefix+tail {
+				assert.Equal(t, before, after)
+			}
+		})
+	}
+}
+
 func TestUpdate_ClearsAgentWithEmptyString(t *testing.T) {
 	dir := t.TempDir()
 	writeTicket(t, dir, "tst-002.md", `---

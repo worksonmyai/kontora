@@ -21,6 +21,14 @@ created: 2026-02-25T19:39:45Z
 Automate GitHub Releases with zig cc cross-compilation.
 ```
 
+## Description editing
+
+The ordinary ticket editor and epic brief editor change only the text before the first `## Notes` line. Surrounding whitespace on that line is ignored. The editors show everything from that heading onward as read-only content, including later sections. Use note actions to change notes. Use `kontora update TICKET_ID --body-file FILE` to edit later sections or intentionally replace the entire body, including notes.
+
+Description saves merge with the current stored tail inside a transaction. They preserve note formatting and identities even if the browser has not received a note event. Saves for the same ticket remain ordered when its editor closes and reopens. Acknowledgements do not replace text typed after submission. Failed drafts remain in the current browser page; reloading the page loses them. Separate browser sessions do not detect conflicting description edits.
+
+The whole body, including notes and later sections, remains available to stage prompts.
+
 ## Frontmatter fields
 
 ### User-defined fields

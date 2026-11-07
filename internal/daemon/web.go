@@ -956,6 +956,9 @@ func (d *Daemon) SetChildOrder(id string, children []string) error {
 // UpdateTicket updates body and frontmatter fields of a ticket.
 // Allowed in statuses: open, todo, paused.
 func (d *Daemon) UpdateTicket(id string, req web.UpdateTicketRequest) error {
+	if err := req.ValidateDescription(); err != nil {
+		return err
+	}
 	release, admissionErr := d.ordinaryMutationAdmission(id)
 	if admissionErr != nil {
 		return admissionErr
@@ -1059,6 +1062,9 @@ func applyTicketUpdate(cfg *config.Config, t2 *ticket.Ticket, req web.UpdateTick
 	}
 	if req.Body != nil {
 		t2.SetBody(*req.Body)
+	}
+	if req.Description != nil {
+		return t2.SetDescription(*req.Description)
 	}
 
 	return nil
@@ -1539,6 +1545,8 @@ func (d *Daemon) broadcastTicketUpdate(id string) {
 	// and both detail views fetch their own copy. It is the largest field by
 	// far, and the event stream is excluded from gzip.
 	info.Body = ""
+	info.Description = nil
+	info.DescriptionTail = nil
 	d.broker.Broadcast(web.TicketEvent{Type: "ticket_updated", Ticket: info})
 }
 

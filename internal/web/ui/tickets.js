@@ -257,8 +257,16 @@ export function kontoraTickets() {
     // tab. Every ticket stored in this.tickets goes through here; the detail
     // panel reads selectedTicket, which keeps the whole ticket.
     boardEntry(ticket) {
-      var { body, notes, ...rest } = ticket;
+      var { body, notes, description, description_tail, ...rest } = ticket;
       return rest;
+    },
+
+    _mergeDetailProjection(previous, update) {
+      var merged = { ...update };
+      ['body', 'description', 'description_tail'].forEach(key => {
+        if (key in previous) merged[key] = previous[key];
+      });
+      return merged;
     },
 
     applyTicketUpdate(ticket) {
@@ -266,8 +274,9 @@ export function kontoraTickets() {
       var previousOutput = this.outputSubject();
       if (this.selectedEpic?.id === ticket.id) {
         this._epicUpdateSeq++;
-        var body = this._epicDetail?.body;
-        this.selectedEpic = Object.assign({}, ticket, { body: body, history: ticket.history,
+        var detail = this._epicDetail;
+        this.selectedEpic = Object.assign({}, detail, ticket, { body: detail?.body,
+          description: detail?.description, description_tail: detail?.description_tail, history: ticket.history,
           last_error: ticket.last_error, last_log: ticket.last_log });
         if (this._epicDetail) this._epicDetail = this.selectedEpic;
       }
@@ -284,9 +293,7 @@ export function kontoraTickets() {
           if (this.archiveDetailOpen()) {
             // broadcastTicketUpdate strips the body from the event, so the copy
             // the overlay fetched has to survive the swap.
-            var archivedBody = this.selectedTicket.body;
-            this.selectedTicket = ticket;
-            if (archivedBody) this.selectedTicket.body = archivedBody;
+            this.selectedTicket = this._mergeDetailProjection(this.selectedTicket, ticket);
           } else {
             this.closeDetail();
           }
@@ -338,9 +345,7 @@ export function kontoraTickets() {
             this.selectedTicket.notes = ticket.notes;
             this.selectedTicket.history = ticket.history;
           } else {
-            var body = this.selectedTicket.body;
-            this.selectedTicket = ticket;
-            if (body) this.selectedTicket.body = body;
+            this.selectedTicket = this._mergeDetailProjection(this.selectedTicket, ticket);
           }
           if (this.logTabActive() && !this.showTerminalTab()) {
             this.activeTab = 'ticket';

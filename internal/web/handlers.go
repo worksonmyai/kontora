@@ -532,6 +532,10 @@ func (s *Server) handleUpdateTicket(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON body"})
 		return
 	}
+	if err := req.ValidateDescription(); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
 	if req.Pipeline != nil && containsNewline(*req.Pipeline) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "pipeline must not contain newlines"})
 		return

@@ -41,7 +41,18 @@ func TestSplitCRLF(t *testing.T) {
 	yaml, body, err := Split(input)
 	require.NoError(t, err)
 	assert.Equal(t, "id: test\nstatus: open", yaml)
-	assert.Equal(t, "# Title\n", body)
+	assert.Equal(t, "# Title\r\n", body)
+}
+
+func TestSplitMixedLineEndings(t *testing.T) {
+	for _, header := range []string{"---\nid: test\n---\n", "---\r\nid: test\r\n---\r\n", "---\nid: test\r\n---\r\n"} {
+		for _, tail := range []string{"# Title\r\n\r\n## Notes\r\nraw\r\n", "# Title\n\r\n## Notes\r\nraw\n---\nkeep"} {
+			yaml, body, err := Split(header + tail)
+			require.NoError(t, err)
+			assert.Equal(t, "id: test", yaml)
+			assert.Equal(t, tail, body)
+		}
+	}
 }
 
 func TestSplitNoClosing(t *testing.T) {

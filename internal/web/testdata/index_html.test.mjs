@@ -2994,19 +2994,332 @@ test("a save that lands after the panel closed does not reopen it", async () => 
   });
   state.tickets = [{ id: "kon-1", title: "One", status: "todo", kontora: true }];
   state.selectedTicket = { id: "kon-1", title: "One", status: "todo", kontora: true, body: "old" };
-  state.editing = true;
-  state.editForm = { body: "typed", pipeline: "", path: "", agent: "", branch: "" };
+  state.configCache = {};
+  state.$nextTick = async () => {};
+  await state.startEditing();
+  state.editForm.body = 'typed';
 
   // closeDetail flushes the pending body, then clears the selection while the
-  // request is still in flight.
+  // save is still pending.
   const pending = state.saveEdit();
-  state.selectedTicket = null;
+  state.closeTerminal = () => {};
+  state._resetActivity = () => {};
+  state.closeDetail(false);
   await pending;
 
   assert.equal(state.selectedTicket, null);
   assert.equal(state.editSubmitting, false);
-  assert.equal(sent.body, "typed");
-  assert.equal(state.tickets[0].status, "paused");
+  assert.equal(sent.description, "typed");
+  assert.equal(state._editorSaves['kon-1'].ack.description, 'typed');
+});
+
+function descriptionEditorUI(kind = '', id = 'kon-desc') {
+  let stored = {
+    id, title: 'Description', status: 'open', kontora: true, kind,
+    description: '# Description\n\n',
+    description_tail: '## Notes\r\n\r\n**custom · person · a1b2**\r\nkeep raw\r\n\r\n## Later\r\nkeep later\r\n',
+    notes: [{ id: 'a1b2', text: 'keep raw' }],
+  };
+  stored.body = stored.description + stored.description_tail;
+  const writes = [];
+  let intercept = async () => true;
+  let respond = async (_url, _opts, full) => ({ ok: true, json: async () => full });
+  const { state, ctx } = loadKontoraContext({
+    fetch: async (url, opts) => {
+      if (opts?.method === 'PUT') {
+        const request = JSON.parse(opts.body);
+        writes.push(request);
+        if (!await intercept(request, writes.length)) return { ok: false, json: async () => ({ error: 'save rejected' }) };
+        stored = { ...stored, ...request };
+        if (Object.hasOwn(request, 'body')) {
+          const prefix = request.body.split(/^[^\S\n]*## Notes[^\S\n]*$/m)[0];
+          stored.description = prefix;
+          stored.description_tail = request.body.slice(prefix.length);
+          stored.notes = stored.notes.filter(note => request.body.includes(note.text));
+        }
+        stored.body = stored.description + stored.description_tail;
+      } else if (opts?.method === 'POST' && url.endsWith('/note')) {
+        const note = { id: 'c3d4', text: JSON.parse(opts.body).text };
+        stored = { ...stored, notes: [...stored.notes, note], description_tail: stored.description_tail + '\n' + note.text };
+        stored.body = stored.description + stored.description_tail;
+      }
+      return respond(url, opts, { ...stored });
+    },
+  });
+  state.configCache = {};
+  state.$nextTick = async () => {};
+  state.closeTerminal = () => {};
+  state.openTerminal = () => {};
+  state.fetchTicketCost = () => {};
+  state.fetchChain = () => {};
+  state.updateFavicon = () => {};
+  state.recomputeBoard = () => {};
+  state.tickets = [state.boardEntry(stored)];
+  const open = async () => {
+    if (kind === 'epic') await state.openEpic(stored.id);
+    else await state.selectTicket(state.tickets[0]);
+    await flushMicrotasks();
+  };
+  return { state, ctx, writes, open, stored: () => stored,
+    intercept: fn => { intercept = fn; },
+    respond: fn => { respond = fn; },
+    save: () => kind === 'epic' ? state.epicSaveBrief() : state.saveEdit(),
+    close: () => kind === 'epic' ? state.closeEpic(false) : state.closeDetail(false),
+  };
+}
+
+for (const kind of ['', 'epic']) {
+  test(`description acknowledgement preserves newer typing and raw tail: ${kind || 'ordinary'}`, async () => {
+    const ui = descriptionEditorUI(kind);
+    await ui.open();
+    const { state } = ui;
+    const tail = ui.stored().description_tail;
+    assert.equal(state.editForm.body, '# Description\n\n');
+    const pending = deferred();
+    ui.intercept(async () => { await pending.promise; return true; });
+    state.editForm.body = '# Submitted\n\n';
+    const saving = ui.save();
+    await flushMicrotasks();
+    state.editForm.body = '# Newer typing\n\n';
+    pending.resolve();
+    await saving;
+    assert.equal(state.editForm.body, '# Newer typing\n\n');
+    if (!kind) {
+      assert.equal(state._editorSaves['kon-desc'].ack.description, '# Submitted\n\n');
+      assert.equal(state.editSaved, false);
+      await ui.save();
+    }
+    assert.equal(ui.stored().description, '# Newer typing\n\n');
+    assert.equal(ui.stored().description_tail, tail);
+    assert.ok(ui.writes.every(request => !Object.hasOwn(request, 'body')));
+    await ui.close();
+  });
+
+  test(`description saves remain ordered through close and reopen: ${kind || 'ordinary'}`, async () => {
+    const ui = descriptionEditorUI(kind);
+    await ui.open();
+    const pending = deferred();
+    ui.intercept(async () => { await pending.promise; return true; });
+    ui.state.editForm.body = '# First\n';
+    const first = ui.save();
+    await flushMicrotasks();
+    const closing = ui.close();
+    const reopening = (async () => { await closing; await ui.open(); })();
+    await flushMicrotasks();
+    assert.equal(ui.writes.length, 1);
+    pending.resolve();
+    await first;
+    await reopening;
+    ui.state.editForm.body = '# Second\n';
+    await ui.save();
+    assert.deepEqual(ui.writes.map(write => write.description), ['# First\n', '# Second\n']);
+    assert.equal(ui.stored().description, '# Second\n');
+    await ui.close();
+  });
+
+  test(`failed description draft can be retried without replacing newer text: ${kind || 'ordinary'}`, async () => {
+    const ui = descriptionEditorUI(kind);
+    await ui.open();
+    ui.intercept(async () => false);
+    ui.state.editForm.body = '# Recover me\n';
+    assert.equal(await ui.save(), false);
+    assert.equal(ui.state.editForm.body, '# Recover me\n');
+    assert.equal(ui.state._editorSaves['kon-desc'].ack.description, '# Description\n\n');
+    if (!kind) {
+      ui.close();
+      await ui.open();
+      assert.equal(ui.state.editForm.body, '# Recover me\n');
+    }
+    ui.intercept(async () => true);
+    assert.equal(await ui.save(), true);
+    assert.equal(ui.stored().description, '# Recover me\n');
+    await ui.close();
+  });
+}
+
+test('ordinary description draft survives a note acknowledgement without SSE, then a delayed SSE', async () => {
+  const ui = descriptionEditorUI();
+  await ui.open();
+  const { state } = ui;
+  state.editForm.body = '# Local description\n';
+  state.noteDraft = 'acknowledged note';
+  await state.submitNote();
+  assert.equal(state.editForm.body, '# Local description\n');
+  assert.equal(state.selectedTicket.notes.length, 2);
+  const event = state.boardEntry(ui.stored());
+  event.notes = ui.stored().notes;
+  state.applyTicketUpdate(event);
+  assert.equal(state.editForm.body, '# Local description\n');
+  await state.saveEdit();
+  assert.equal(ui.stored().description, '# Local description\n');
+  assert.equal(ui.stored().notes.length, 2);
+  assert.match(ui.stored().body, /acknowledged note/);
+  assert.match(ui.stored().body, /## Later\r\nkeep later/);
+  state.closeDetail(false);
+});
+
+test('description queues accept ticket IDs that match Object.prototype names', async () => {
+  for (const id of ['constructor', 'toString']) {
+    const ui = descriptionEditorUI('', id);
+    await ui.open();
+    ui.state.editForm.body = '# Saved\n';
+    assert.equal(await ui.save(), true);
+    assert.equal(ui.stored().description, '# Saved\n');
+    ui.close();
+  }
+});
+
+test('editor re-entry keeps changed saves and queued reverts in order', async () => {
+  const ui = descriptionEditorUI();
+  await ui.open();
+  const { state } = ui;
+  const pending = deferred();
+  ui.respond(async (_url, opts, full) => {
+    if (opts?.method === 'PUT' && full.description === '# Change\n') await pending.promise;
+    return { ok: true, json: async () => full };
+  });
+  state.editForm.body = '# Change\n';
+  const changed = ui.save();
+  await flushMicrotasks();
+  assert.equal(ui.stored().description, '# Change\n');
+  state.editForm.body = '# Description\n\n';
+  const reverted = ui.save();
+  state.applyTicketUpdate({ ...state.boardEntry(ui.stored()), status: 'human_review' });
+  state.applyTicketUpdate({ ...state.boardEntry(ui.stored()), status: 'open' });
+  state.switchTab('ticket');
+  await flushMicrotasks();
+  state.editForm.body = '# Latest\n';
+  const latest = ui.save();
+  await flushMicrotasks();
+  assert.equal(ui.writes.length, 1, 're-entry must not create a parallel queue');
+  pending.resolve();
+  assert.deepEqual(await Promise.all([changed, reverted, latest]), [true, true, true]);
+  assert.deepEqual(ui.writes.map(write => write.description), ['# Change\n', '# Description\n\n', '# Latest\n']);
+  assert.equal(ui.stored().description, '# Latest\n');
+  assert.equal(state.editForm.body, '# Latest\n');
+  assert.equal(state._editorSaves['kon-desc'].ack.description, '# Latest\n');
+  await ui.close();
+});
+
+for (const kind of ['', 'epic']) {
+  for (const failure of ['truncated', 'missing identity']) {
+    test(`successful description response must decode a ticket: ${kind || 'ordinary'}, ${failure}`, async () => {
+      const ui = descriptionEditorUI(kind);
+      await ui.open();
+      const original = ui.state.selectedTicket || ui.state.selectedEpic;
+      ui.respond(async (_url, opts, full) => ({
+        ok: true,
+        json: async () => {
+          if (opts?.method !== 'PUT') return full;
+          if (failure === 'truncated') throw new Error('terminated');
+          return {};
+        },
+      }));
+      ui.state.editForm.body = '# Persisted but unacknowledged\n';
+      assert.equal(await ui.save(), false);
+      assert.equal(ui.stored().description, '# Persisted but unacknowledged\n');
+      assert.equal((ui.state.selectedTicket || ui.state.selectedEpic).id, original.id);
+      assert.equal(ui.state.tickets[0].id, original.id);
+      assert.equal(ui.state._editorSaves[original.id].ack.description, '# Description\n\n');
+      assert.equal(ui.state.editForm.body, '# Persisted but unacknowledged\n');
+      assert.ok(ui.state.error);
+      ui.respond(async (_url, _opts, full) => ({ ok: true, json: async () => full }));
+      assert.equal(await ui.save(), true);
+      await ui.close();
+    });
+  }
+
+  test(`description acknowledgement refreshes projections after SSE: ${kind || 'ordinary'}`, async () => {
+    const ui = descriptionEditorUI(kind);
+    await ui.open();
+    const { state } = ui;
+    const pending = deferred();
+    ui.respond(async (_url, opts, full) => {
+      if (opts?.method === 'PUT') {
+        state.applyTicketUpdate(state.boardEntry(full));
+        state.applyTicketUpdate({ ...state.boardEntry(full), status: 'human_review', title: 'Newer status event' });
+        await pending.promise;
+      }
+      return { ok: true, json: async () => full };
+    });
+    state.editForm.body = '# Saved before SSE\n';
+    const saving = ui.save();
+    await flushMicrotasks();
+    Object.assign(ui.stored(), { status: 'human_review', title: 'Newer status event' });
+    pending.resolve();
+    assert.equal(await saving, true);
+    const selected = state.selectedTicket || state.selectedEpic;
+    assert.equal(selected.description, '# Saved before SSE\n');
+    assert.equal(selected.body, ui.stored().body);
+    assert.equal(selected.status, 'human_review');
+    assert.equal(selected.title, 'Newer status event');
+    assert.equal(state.tickets[0].status, 'human_review');
+    await ui.close();
+  });
+}
+
+for (const editing of [true, false]) {
+  test(`delayed note response preserves an acknowledged description: editing=${editing}`, async () => {
+    const ui = descriptionEditorUI();
+    await ui.open();
+    const { state } = ui;
+    const pending = deferred();
+    ui.respond(async (_url, opts, full) => {
+      if (opts?.method === 'POST') await pending.promise;
+      if (opts?.method === 'PUT') {
+        full.title = 'New description';
+        ui.stored().title = full.title;
+      }
+      return { ok: true, json: async () => full };
+    });
+    state.noteDraft = 'Delayed note';
+    const noting = state.submitNote();
+    await flushMicrotasks();
+    state.editForm.body = '# New description\n';
+    assert.equal(await ui.save(), true);
+    state.editing = editing;
+    pending.resolve();
+    await noting;
+    assert.equal(state.selectedTicket.description, '# New description\n');
+    assert.equal(state.selectedTicket.title, 'New description');
+    assert.equal(state.tickets[0].title, 'New description');
+    assert.equal(state.selectedTicket.body, ui.stored().body);
+    assert.equal(state.selectedTicket.notes.length, 2);
+    assert.equal(state.editForm.body, '# New description\n');
+    assert.match(state.descriptionTail(state.selectedTicket), /Delayed note/);
+    await ui.close();
+  });
+}
+
+test('a queued description revert still follows an outstanding changed draft', async () => {
+  const ui = descriptionEditorUI();
+  await ui.open();
+  const pending = deferred();
+  ui.intercept(async () => { await pending.promise; return true; });
+  ui.state.editForm.body = '# Change\n';
+  const changed = ui.save();
+  ui.state.editForm.body = '# Description\n\n';
+  const reverted = ui.save();
+  await flushMicrotasks();
+  assert.equal(ui.writes.length, 1);
+  pending.resolve();
+  await Promise.all([changed, reverted]);
+  assert.equal(ui.stored().description, '# Description\n\n');
+  assert.equal(ui.writes.length, 2);
+  ui.close();
+});
+
+test('description projections stay off browser board entries and protected tails remain visible', () => {
+  const state = loadKontoraState();
+  const entry = state.boardEntry({ id: 'a', body: 'all', notes: [], description: '', description_tail: '## Notes' });
+  assert.deepEqual(vmValue(entry), { id: 'a' });
+  const html = fs.readFileSync(htmlPath, 'utf8');
+  for (const subject of ['selectedTicket', 'selectedEpic']) {
+    assert.ok(html.includes('setProse($el, descriptionTail(' + subject + '))'));
+  }
+  const mobileBrief = html.slice(html.indexOf('aria-label="Epic brief"'), html.indexOf('<div x-show="epicTab === \'notes\'"'));
+  assert.ok(mobileBrief.includes('setProse($el, descriptionTail(selectedEpic))'));
+  assert.match(mobileBrief, /Notes and later sections are read only here/);
 });
 
 test("flushEditSave cancels the pending debounce and saves once", () => {
@@ -3059,7 +3372,8 @@ test("the editor hides the newline the frontmatter left on the body", async () =
 
     state.editForm.body += "typed";
     await state.saveEdit();
-    assert.equal(sent.body, c.body + "typed", c.name);
+    assert.equal(sent.description, c.body + "typed", c.name);
+    assert.equal(Object.hasOwn(sent, 'body'), false, c.name);
   }
 });
 
@@ -3267,8 +3581,8 @@ test("init refreshes child membership on relevant events without changing explic
     state.initForm.pipelineChoice = choice;
     state.onInitPipelineChange();
     state.selectedTicket = { ...fresh };
-    state.editing = true;
-    state.editForm = { body: 'local body', pipeline: '', path: '/repo', agent: '', branch: '', base_branch: '' };
+    await state.startEditing();
+    state.editForm.body = 'local body';
     for (const event of ['unrelated', 'parent-update', 'child-update', 'parent-delete', 'parent-restore']) {
       fresh = { ...fresh, epic_child: event === 'parent-restore' };
       const before = requests.length;
@@ -3435,9 +3749,9 @@ test("edit path requests preserve pipelines, omit empty branches and send custom
       },
     });
     state.configCache = { projects: EDIT_PROJECTS };
-    state.selectedTicket = { id: "kon-1", path: "~/projects/kontora", branch: c.selected, pipeline: c.pipeline || '' };
-    state._editInherited = state.projectDefaultsFor(state.selectedTicket.path);
-    state.editing = true;
+    state.selectedTicket = { id: "kon-1", status: 'open', path: "~/projects/kontora", branch: c.selected, pipeline: c.pipeline || '' };
+    state.$nextTick = async () => {};
+    await state.startEditing();
     state.editForm = {
       body: "",
       pipeline: c.pipeline || '',
@@ -3889,16 +4203,18 @@ test("opening another ticket never writes the previous body onto it", async () =
     state.openTerminal = () => {};
     state.tickets = [{ id: "kon-1", title: "One", status: "todo", kontora: true, body: "old" }, other];
     state.selectedTicket = state.tickets[0];
-    state.editing = true;
+    state.configCache = {};
+    state.$nextTick = async () => {};
+    await state.startEditing();
     state.editingBody = true;
-    state.editForm = { body: "typed", pipeline: "", path: "", agent: "", branch: "" };
+    state.editForm.body = 'typed';
 
     state.debounceSaveEdit();
     await state.selectTicket(other);
     c.act(state);
     await new Promise((resolve) => setTimeout(resolve, c.wait));
 
-    assert.deepEqual(puts, [{ url: "/api/tickets/kon-1", body: { body: "typed" } }], c.name);
+    assert.deepEqual(puts, [{ url: "/api/tickets/kon-1", body: { description: "typed" } }], c.name);
     assert.equal(state._editDebounce, null, c.name);
     assert.equal(state.editing, false, c.name);
     assert.equal(state.editingBody, false, c.name);
@@ -3972,7 +4288,7 @@ test("index.html renders every prose block through the idempotent write", () => 
   // its body through it too; and the notes tab's own note and reply bodies
   // are markdown like every other authored block; and the epic page renders
   // both its brief and its own notes the same way in both layouts.
-  assert.equal(html.match(/x-effect="setProse\(\$el, /g).length, 14);
+  assert.equal(html.match(/x-effect="setProse\(\$el, /g).length, 17);
   assert.equal(html.match(/x-effect="setSummaryProse\(\$el, /g).length, 2);
   // Nothing in the markup writes a note as plain text any more: the rail block
   // that did is gone and the notes tab renders markdown.
@@ -9505,7 +9821,7 @@ test("opening a reply box closes the edit box, and both clear with the ticket", 
   assert.deepEqual([state.noteReplyOn, state.noteReplyDraft, state.noteEditOn], [null, "", null]);
 });
 
-test("a note mutation replaces the ticket, and patches only the notes while editing", () => {
+test("a note mutation refreshes the snapshot without replacing the editor draft", () => {
   const state = pageState(NOTES_TICKET, { tickets: [{ id: "kon-1" }], recomputeBoard: () => {} });
   const full = { ...NOTES_TICKET, title: "renamed", notes: [{ id: "z9z9", text: "new" }] };
 
@@ -9513,9 +9829,10 @@ test("a note mutation replaces the ticket, and patches only the notes while edit
   assert.equal(state.selectedTicket.title, "renamed");
 
   state.editing = true;
-  state.selectedTicket = { ...NOTES_TICKET, title: "being typed" };
+  state.editForm.body = 'being typed';
   state._noteApplyTicket("kon-1", full);
-  assert.equal(state.selectedTicket.title, "being typed", "an edited field is not overwritten");
+  assert.equal(state.selectedTicket.title, 'renamed');
+  assert.equal(state.editForm.body, 'being typed');
   assert.deepEqual(vmValue(state.selectedTicket.notes.map((n) => n.id)), ["z9z9"]);
 });
 
@@ -13350,9 +13667,7 @@ test("creating an epic selects its agent without activating supervision", async 
   });
 });
 
-// The brief is the epic's whole point, so it edits in place: one textarea over
-// the whole body, opened by a click on the rendered section, saved with one PUT.
-test("the brief seeds the editor and saves the whole body", async () => {
+test("the brief seeds the description editor and saves only the description", async () => {
   const seen = [];
   const state = loadKontoraState({
     fetch: async (url, opts) => {
@@ -13360,7 +13675,7 @@ test("the brief seeds the editor and saves the whole body", async () => {
       if (!opts || !opts.method || opts.method === "GET") {
         return { ok: true, json: async () => ({ ...EPIC_TICKETS[0], body: "\n# Epics\n\n## Description\n\nWhy.\n", notes: [] }) };
       }
-      return { ok: true, json: async () => ({}) };
+      return { ok: true, json: async () => ({ ...EPIC_TICKETS[0], body: JSON.parse(opts.body).description }) };
     },
   });
   state.tickets = EPIC_TICKETS;
@@ -13380,7 +13695,7 @@ test("the brief seeds the editor and saves the whole body", async () => {
   assert.equal(seen.length, 1);
   assert.equal(seen[0].url, "/api/tickets/kon-e7c1");
   assert.equal(seen[0].method, "PUT");
-  assert.deepEqual(JSON.parse(seen[0].body), { body: "\n# Epics\n\n## Description\n\nBecause.\n" });
+  assert.deepEqual(JSON.parse(seen[0].body), { description: "\n# Epics\n\n## Description\n\nBecause.\n" });
   assert.equal(state.selectedEpic.body, "\n# Epics\n\n## Description\n\nBecause.\n");
   assert.equal(state.epicBriefSaved, true);
 
@@ -13442,7 +13757,10 @@ function epicSupervisorUI({ mobile = false, status = 'in_progress', mode = 'agen
     },
     fetch: async (url, opts = {}) => {
       requests.push({ url, ...opts });
-      if (opts.method === 'PUT') Object.assign(epic, JSON.parse(opts.body));
+      if (opts.method === 'PUT') {
+        Object.assign(epic, JSON.parse(opts.body));
+        if (typeof epic.description === 'string') epic.body = epic.description;
+      }
       if (url.endsWith('/init')) Object.assign(epic, { status: 'todo', epic_execution: 'agent' });
       if (url.endsWith('/pause')) epic.status = 'paused';
       if (url.endsWith('/retry')) epic.status = 'todo';
@@ -14210,7 +14528,7 @@ test('brief navigation saves the previous epic draft and ignores late detail res
   await state.epicRunDetails();
   assert.equal(requests.filter(r => r.method === 'PUT').length, 1);
   assert.equal(requests[0].url, '/api/tickets/' + epic.id);
-  assert.deepEqual(JSON.parse(requests[0].body), { body: '\n# Updated brief' });
+  assert.deepEqual(JSON.parse(requests[0].body), { description: '\n# Updated brief' });
   assert.equal(state.selectedTicket.body, '\n# Updated brief');
   assert.equal(state.selectedEpic, null);
   assert.equal(state._epicBriefDebounce, null);
@@ -14358,7 +14676,7 @@ for (const ok of [true, false]) {
     ctx.fetch = async (url, opts) => {
       if (opts?.method === 'PUT') {
         const index = bodies.length;
-        bodies.push(JSON.parse(opts.body).body);
+        bodies.push(JSON.parse(opts.body).description);
         await gates[index].promise;
         if (index === 1 && !ok) return { ok: false, json: async () => ({ error: 'new draft rejected' }) };
       }
@@ -14369,6 +14687,7 @@ for (const ok of [true, false]) {
     state.epicDebounceBrief();
     state.epicBlurBriefEdit();
     const starting = state.epicStart();
+    await flushMicrotasks();
     assert.deepEqual(bodies, ['\nFirst draft']);
     gates[0].resolve();
     await flushMicrotasks();
@@ -14763,7 +15082,7 @@ test('switching epics flushes the previous brief without writing onto the next e
   assert.equal(state.selectedEpic.id, other.id);
   const saves = requests.filter(r => r.method === 'PUT');
   assert.deepEqual(saves.map(r => r.url), ['/api/tickets/' + epic.id]);
-  assert.deepEqual(JSON.parse(saves[0].body), { body: '\n# Previous draft' });
+  assert.deepEqual(JSON.parse(saves[0].body), { description: '\n# Previous draft' });
   assert.equal(state.epicEditingBrief, false);
   state.closeEpic();
 });

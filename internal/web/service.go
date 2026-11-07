@@ -323,18 +323,29 @@ type ChildOrderRequest struct {
 }
 
 type UpdateTicketRequest struct {
-	Body       *string `json:"body,omitempty"`
-	Pipeline   *string `json:"pipeline,omitempty"`
-	Path       *string `json:"path,omitempty"`
-	Agent      *string `json:"agent,omitempty"`
-	Branch     *string `json:"branch,omitempty"`
-	BaseBranch *string `json:"base_branch,omitempty"`
+	Body        *string `json:"body,omitempty"`
+	Description *string `json:"description,omitempty"`
+	Pipeline    *string `json:"pipeline,omitempty"`
+	Path        *string `json:"path,omitempty"`
+	Agent       *string `json:"agent,omitempty"`
+	Branch      *string `json:"branch,omitempty"`
+	BaseBranch  *string `json:"base_branch,omitempty"`
 	// The notification fields, read the way InitTicketRequest reads them: an
 	// absent key leaves the ticket's own alone, `[]` removes it. They need no
 	// pointer to tell those apart, which is the only reason the fields above
 	// carry one.
 	Notify         []string `json:"notify,omitempty"`
 	NotifyChannels []string `json:"notify_channels,omitempty"`
+}
+
+func (r UpdateTicketRequest) ValidateDescription() error {
+	if r.Body != nil && r.Description != nil {
+		return errors.New("body and description cannot be combined")
+	}
+	if r.Description != nil {
+		return ticket.ValidateDescription(*r.Description)
+	}
+	return nil
 }
 
 type PipelineInfo struct {
@@ -532,12 +543,14 @@ type TicketInfo struct {
 	WaitingTool     string     `json:"waiting_tool,omitempty"`
 	WaitingQuestion string     `json:"waiting_question,omitempty"`
 
-	Stages    []string      `json:"stages,omitempty"`
-	History   []HistoryInfo `json:"history,omitempty"`
-	Body      string        `json:"body,omitempty"`
-	LastError string        `json:"last_error,omitempty"`
-	LastLog   string        `json:"last_log,omitempty"`
-	Summary   string        `json:"summary,omitempty"`
+	Stages          []string      `json:"stages,omitempty"`
+	History         []HistoryInfo `json:"history,omitempty"`
+	Body            string        `json:"body,omitempty"`
+	Description     *string       `json:"description,omitempty"`
+	DescriptionTail *string       `json:"description_tail,omitempty"`
+	LastError       string        `json:"last_error,omitempty"`
+	LastLog         string        `json:"last_log,omitempty"`
+	Summary         string        `json:"summary,omitempty"`
 	// FinalSummary is the ticket-level outcome. Like the other detail fields it
 	// is absent from board list payloads, which never render it.
 	FinalSummary string     `json:"final_summary,omitempty"`
@@ -836,39 +849,41 @@ type ArchivedTicketInfo struct {
 // TicketInfoFromView converts an app.View to a TicketInfo.
 func TicketInfoFromView(v app.View) TicketInfo {
 	info := TicketInfo{
-		ID:            v.ID,
-		Title:         v.Title,
-		Status:        v.Status,
-		Kontora:       v.Kontora,
-		Stage:         v.Stage,
-		Pipeline:      v.Pipeline,
-		Path:          v.Path,
-		Agent:         v.Agent,
-		AgentOverride: v.AgentOverride,
-		Attempt:       v.Attempt,
-		CreatedAt:     v.CreatedAt,
-		StartedAt:     v.StartedAt,
-		FinishedAt:    v.FinishedAt,
-		Branch:        v.Branch,
-		BaseBranch:    v.BaseBranch,
-		ClaimedBy:     v.ClaimedBy,
-		ScheduledAt:   v.ScheduledAt,
-		Stages:        v.Stages,
-		Body:          v.Body,
-		LastError:     v.LastError,
-		LastLog:       v.LastLog,
-		Summary:       v.Summary,
-		FinalSummary:  v.FinalSummary,
-		Notes:         ParseNotes(v.Body),
-		Deps:          ticketRefs(v.Deps),
-		Links:         ticketRefs(v.Links),
-		ArchivedFrom:  v.ArchivedFrom,
-		ArchivedAt:    v.ArchivedAt,
-		ArchivedBy:    v.ArchivedBy,
-		ArchiveNote:   v.ArchiveNote,
-		Kind:          v.Kind,
-		EpicExecution: v.EpicExecution,
-		ChildOrder:    v.Children,
+		ID:              v.ID,
+		Title:           v.Title,
+		Status:          v.Status,
+		Kontora:         v.Kontora,
+		Stage:           v.Stage,
+		Pipeline:        v.Pipeline,
+		Path:            v.Path,
+		Agent:           v.Agent,
+		AgentOverride:   v.AgentOverride,
+		Attempt:         v.Attempt,
+		CreatedAt:       v.CreatedAt,
+		StartedAt:       v.StartedAt,
+		FinishedAt:      v.FinishedAt,
+		Branch:          v.Branch,
+		BaseBranch:      v.BaseBranch,
+		ClaimedBy:       v.ClaimedBy,
+		ScheduledAt:     v.ScheduledAt,
+		Stages:          v.Stages,
+		Body:            v.Body,
+		Description:     v.Description,
+		DescriptionTail: v.DescriptionTail,
+		LastError:       v.LastError,
+		LastLog:         v.LastLog,
+		Summary:         v.Summary,
+		FinalSummary:    v.FinalSummary,
+		Notes:           ParseNotes(v.Body),
+		Deps:            ticketRefs(v.Deps),
+		Links:           ticketRefs(v.Links),
+		ArchivedFrom:    v.ArchivedFrom,
+		ArchivedAt:      v.ArchivedAt,
+		ArchivedBy:      v.ArchivedBy,
+		ArchiveNote:     v.ArchiveNote,
+		Kind:            v.Kind,
+		EpicExecution:   v.EpicExecution,
+		ChildOrder:      v.Children,
 
 		Notify:         v.Notify,
 		NotifyChannels: v.NotifyChannels,

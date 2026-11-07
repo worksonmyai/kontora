@@ -33,7 +33,7 @@ When the web server is enabled, the following endpoints are exposed:
 | `POST /api/tickets/{id}/parent` | Set a child's epic (`{"parent":"EPIC_ID"}`). Agent epics require the same repository. |
 | `POST /api/tickets/{id}/unparent` | Clear a child's parent. |
 | `PUT /api/tickets/{id}/children` | Set an epic's display order (`{"children":["CHILD_ID"]}`). Does not change membership or execution order. |
-| `PUT /api/tickets/{id}` | Update an open ticket's body or frontmatter fields (`body`, `pipeline`, `path`, `agent`, `branch`, `base_branch`, `notify`, `notify_channels`). On the two notify fields an absent key leaves the ticket's own alone and `[]` removes it; a status nothing reaches or a channel nothing answers to is refused with 400. See [notifications](tickets.md#notifications). |
+| `PUT /api/tickets/{id}` | Update an editable ticket's description, full body or frontmatter fields (`description`, `body`, `pipeline`, `path`, `agent`, `branch`, `base_branch`, `notify`, `notify_channels`). On the two notify fields an absent key leaves the ticket's own alone and `[]` removes it; a status nothing reaches or a channel nothing answers to is refused with 400. See [notifications](tickets.md#notifications). |
 | `POST /api/tickets/upload` | Import tickets from raw `.md` file content (multipart form). Requires `X-Kontora-Confirm: upload-tickets`. Every uploaded ticket arrives as an `open` draft: the status is clamped and any `scheduled_at` is dropped. |
 | `POST /api/tickets/{id}/plannotator-review` | Open the ticket's branch diff in Plannotator. Only in `human_review`. Submitted feedback routes the ticket to the built-in rework stage. See [plannotator](configuration.md#plannotator). |
 | `POST /api/tickets/{id}/plannotator-annotate` | Open the ticket's own markdown in Plannotator. Only in `open`. Submitted annotations set `kontora: true` and schedule a run that rewrites the ticket. |
@@ -331,6 +331,7 @@ Browser choice tokens such as `pipeline:NAME` are not API pipeline names.
 The backend resolves current defaults rather than trusting a preview snapshot.
 
 `PUT /api/tickets/{id}` treats `none` as "clear this field" and applies no defaults.
+
 Existing assignments are not migrated when config or membership changes. Changing
 `path` in ticket details preserves the stored pipeline; retarget it explicitly.
 
@@ -349,6 +350,21 @@ Both ticket payloads carry `project`, the configured project whose path is the t
 The four relation endpoints take the same body, `{"related": [...]}`, and answer with the changed ticket. They return 400 for an empty list, an empty id, or more than one id on the two dependency verbs; 404 for an id no ticket answers; and 409 when the ticket is related to itself or when a dependency would close a cycle, with the cycle named in the error. A rejected call writes no file. Repeating a call that has nothing left to do returns 200 and writes nothing.
 
 A link is written to both tickets, one file at a time, because two markdown files cannot be written together. When the second write fails the error names both tickets and which one was already changed, and repeating the request repairs the missing side.
+
+## Description and full-body updates
+
+Send `{"description":"# Title\n\nNew description.\n\n"}` to replace the prefix before the first recognized `## Notes` line. Recognition ignores surrounding whitespace. The server preserves everything from that heading onward, including later sections and unknown note formatting. Description and note writes share a transaction, so a stale description draft cannot remove acknowledged notes.
+
+- Omitted or null `description` makes no description-only update; an empty string clears the prefix.
+- A description containing a recognized `## Notes` line returns 400.
+- A request with non-null `body` and non-null `description` returns 400.
+- If a nonempty replacement lacks a final newline before an existing tail, the server inserts one.
+
+`body` remains an explicit replacement of the whole document, including notes. Existing CLI full-body updates keep that behavior. Stage prompts still receive the entire body.
+
+Detail responses include `description` and `description_tail`, even when empty. Board lists and ticket events omit both fields.
+
+Browser editors change only `description` and show the protected tail read-only. Saves for one ticket remain ordered across closing and reopening its editor. Failed description drafts remain recoverable in the current page, but do not survive a page reload. Independent browser sessions still use last-write-wins for description edits.
 
 ## Archive
 

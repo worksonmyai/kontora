@@ -6,22 +6,28 @@ import (
 )
 
 // Split splits a markdown file into YAML frontmatter and body.
-// It normalizes \r\n to \n. Only the first two --- delimiters are considered.
+// It normalizes YAML line endings but preserves body bytes. Only the first two --- delimiters are considered.
 func Split(data string) (yaml string, body string, err error) {
-	normalized := strings.ReplaceAll(data, "\r\n", "\n")
-
-	if !strings.HasPrefix(normalized, "---\n") {
+	rest, found := strings.CutPrefix(data, "---\n")
+	if !found {
+		rest, found = strings.CutPrefix(data, "---\r\n")
+	}
+	if !found {
 		return "", "", errors.New("no frontmatter found: file must start with ---")
 	}
 
-	rest := normalized[4:] // skip opening "---\n"
-	yamlContent, after, found := strings.Cut(rest, "\n---\n")
-	if !found {
+	end, delimiterLen := strings.Index(rest, "\n---\n"), len("\n---\n")
+	if crlfEnd := strings.Index(rest, "\n---\r\n"); crlfEnd >= 0 && (end < 0 || crlfEnd < end) {
+		end, delimiterLen = crlfEnd, len("\n---\r\n")
+	}
+	if end < 0 {
 		if strings.HasSuffix(rest, "\n---") {
-			return rest[:len(rest)-4], "", nil
+			end, delimiterLen = len(rest)-len("\n---"), len("\n---")
+		} else {
+			return "", "", errors.New("no closing --- found for frontmatter")
 		}
-		return "", "", errors.New("no closing --- found for frontmatter")
 	}
 
-	return yamlContent, after, nil
+	yamlContent := strings.TrimSuffix(rest[:end], "\r")
+	return strings.ReplaceAll(yamlContent, "\r\n", "\n"), rest[end+delimiterLen:], nil
 }

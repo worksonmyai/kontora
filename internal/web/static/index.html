@@ -2538,7 +2538,7 @@
                           placeholder="repo default">
                       </div>
                       <div class="flex items-center justify-between mb-1">
-                        <label class="text-xs font-mono text-surface-600 flex items-center gap-1.5"><svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="opacity-50"><line x1="17" y1="10" x2="3" y2="10"/><line x1="21" y1="6" x2="3" y2="6"/><line x1="21" y1="14" x2="3" y2="14"/><line x1="17" y1="18" x2="3" y2="18"/></svg>Body</label>
+                        <label class="text-xs font-mono text-surface-600 flex items-center gap-1.5"><svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="opacity-50"><line x1="17" y1="10" x2="3" y2="10"/><line x1="21" y1="6" x2="3" y2="6"/><line x1="21" y1="14" x2="3" y2="14"/><line x1="17" y1="18" x2="3" y2="18"/></svg>Description</label>
                         <span x-show="editSubmitting" class="text-xs font-mono text-surface-600">saving...</span>
                         <span x-show="editSaved && !editSubmitting" class="text-xs font-mono text-ok/70">saved</span>
                       </div>
@@ -2566,6 +2566,10 @@
                           <span x-show="editForm.body" class="absolute top-1 right-2 text-[11px] font-mono text-surface-600 opacity-0 group-hover/edit:opacity-100 transition-opacity">click to edit</span>
                         </div>
                       </template>
+                      <div x-show="descriptionTail(selectedTicket)" class="mt-4">
+                        <p class="text-xs font-mono text-surface-600">Notes and later sections are read only here. Use the Notes tab to change notes. Use CLI full-body editing for later sections.</p>
+                        <div class="ticket-prose ticket-read" x-effect="setProse($el, descriptionTail(selectedTicket))"></div>
+                      </div>
                     </div>
                   </template>
                   <!-- Read-only view for non-editable tickets -->
@@ -3383,8 +3387,7 @@
           </div>
         </div>
 
-        <!-- Brief. One block per top-level section of the body, in file order.
-             A click opens the whole-body editor anchored at that section, which
+        <!-- Brief. A click opens the description editor anchored at that section, which
              is what _blockAnchor already computes for the preview/editor swap;
              there are no per-section editors. -->
         <div class="shrink-0 w-[460px] border-l border-surface-700/50 bg-surface-950 flex flex-col min-h-0">
@@ -3417,6 +3420,10 @@
                 <p x-show="!editForm.body" class="font-mono text-[11px] text-surface-600" x-text="epicCanEditBrief() ? 'No brief yet. Click to write one.' : 'No brief yet.'"></p>
               </div>
             </template>
+            <div x-show="descriptionTail(selectedEpic)" class="mt-4">
+              <p class="text-xs font-mono text-surface-600">Notes and later sections are read only here. Use kontora note to add notes and CLI full-body editing for later sections.</p>
+              <div class="ticket-prose ticket-read" x-effect="setProse($el, descriptionTail(selectedEpic))"></div>
+            </div>
           </div>
         </div>
       </div>
@@ -6045,6 +6052,10 @@
               <p x-show="!editForm.body" class="font-mono text-xs text-surface-600" x-text="epicCanEditBrief() ? 'No brief yet. Tap to write one.' : 'No brief yet.'"></p>
             </div>
           </template>
+          <div x-show="descriptionTail(selectedEpic)" class="mt-4">
+            <p class="text-xs font-mono text-surface-600">Notes and later sections are read only here. Use kontora note to add notes and CLI full-body editing for later sections.</p>
+            <div class="ticket-prose ticket-read" x-effect="setProse($el, descriptionTail(selectedEpic))"></div>
+          </div>
         </div>
         <div x-show="epicTab === 'notes'" class="flex-1 min-h-0 overflow-y-auto p-4">
           <template x-if="!(selectedEpic.notes || []).length">

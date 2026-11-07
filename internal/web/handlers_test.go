@@ -1459,6 +1459,50 @@ func TestHandleUpdateTicket_Success(t *testing.T) {
 	assert.Equal(t, "new body", result.Body)
 }
 
+func TestHandleUpdateTicket_Description(t *testing.T) {
+	for _, tc := range []struct {
+		name, body string
+		want       *string
+		status     int
+	}{
+		{name: "replace", body: `{"description":"new prefix"}`, want: new("new prefix"), status: http.StatusOK},
+		{name: "clear", body: `{"description":""}`, want: new(""), status: http.StatusOK},
+		{name: "omitted", body: `{}`, status: http.StatusOK},
+		{name: "null", body: `{"description":null}`, status: http.StatusOK},
+		{name: "null description with body", body: `{"body":"replacement","description":null}`, status: http.StatusOK},
+		{name: "null body with description", body: `{"body":null,"description":"prefix"}`, want: new("prefix"), status: http.StatusOK},
+		{name: "both null", body: `{"body":null,"description":null}`, status: http.StatusOK},
+		{name: "both fields", body: `{"body":"full","description":"prefix"}`, status: http.StatusBadRequest},
+		{name: "both empty", body: `{"body":"","description":""}`, status: http.StatusBadRequest},
+		{name: "delimiter", body: `{"description":"new\n## Notes\ntext"}`, status: http.StatusBadRequest},
+		{name: "padded delimiter", body: `{"description":" \t## Notes \r\n"}`, status: http.StatusBadRequest},
+		{name: "wrong type", body: `{"description":false}`, status: http.StatusBadRequest},
+		{name: "full body still allowed", body: `{"body":"new\n## Notes\ntext"}`, status: http.StatusOK},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			called := false
+			svc := &mockService{tickets: []TicketInfo{{ID: "t-001", Description: tc.want, DescriptionTail: new("")}}}
+			svc.updateFn = func(id string, req UpdateTicketRequest) error {
+				called = true
+				assert.Equal(t, "t-001", id)
+				assert.Equal(t, tc.want, req.Description)
+				return nil
+			}
+			srv := startHandlerTestServer(t, svc)
+			res := put(t, srv, "/api/tickets/t-001", tc.body)
+			assert.Equal(t, tc.status, res.statusCode)
+			assert.Equal(t, tc.status == http.StatusOK, called)
+			if tc.want != nil && called {
+				var result TicketInfo
+				require.NoError(t, json.Unmarshal([]byte(res.body), &result))
+				assert.Equal(t, tc.want, result.Description)
+				require.NotNil(t, result.DescriptionTail)
+				assert.Empty(t, *result.DescriptionTail)
+			}
+		})
+	}
+}
+
 func TestHandleUpdateTicket_NotFound(t *testing.T) {
 	svc := &mockService{
 		updateFn: func(_ string, _ UpdateTicketRequest) error {

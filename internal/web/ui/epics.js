@@ -53,8 +53,7 @@ export function kontoraEpics() {
     epicAddDraft: '',
     epicAddBusy: false,
     epicDragging: false,
-    // The brief editor. It is the whole body in one textarea, the way a
-    // ticket's is, and it borrows editForm.body so _blockAnchor, _anchorEditor
+    // The brief editor borrows editForm.body so _blockAnchor, _anchorEditor
     // and autoGrowBody work here unchanged rather than being written twice.
     // The two overlays never stand at once, and startEditing rebuilds editForm
     // from scratch whenever a ticket page opens, so neither can read the
@@ -65,7 +64,6 @@ export function kontoraEpics() {
     _epicBriefLead: '',
     _epicBriefDebounce: null,
     _epicBriefSave: null,
-    _epicBriefSavedBody: '',
     // The last detail fetch, which is where the body and the notes come from.
     // A board recompute rebuilds selectedEpic out of the list, which carries
     // neither, so the two are merged rather than one replacing the other.
@@ -396,7 +394,10 @@ export function kontoraEpics() {
       this.epicTab = 'children';
       this.epicAddDraft = '';
       this.epicEditingBrief = false;
+      ++this._editorGeneration;
       this.writeHash();
+      await this._waitEditorSaves(id);
+      if (navigation !== this._navigationSeq || this.selectedEpic?.id !== id) return;
       await this.epicFetchDetail(id);
     },
 
@@ -422,10 +423,10 @@ export function kontoraEpics() {
           if (full.id !== id) return;
           var previous = this.selectedEpic;
           var keepDraft = this._epicDetail?.id === id && (this.epicEditingBrief || this._epicBriefSave ||
-            this._epicBriefLead + this.editForm.body !== this._epicBriefSavedBody);
+            this._epicBriefLead + this.editForm.body !== this._editorSaves[id]?.ack.description);
           this._epicDetail = full;
           this.selectedEpic = full;
-          if (!keepDraft) this._epicLoadBrief(full.body);
+          if (!keepDraft) this._epicLoadBrief(full);
           var index = this.tickets.findIndex(t => t.id === id);
           if (index >= 0) {
             var before = this.tickets[index];
@@ -451,6 +452,7 @@ export function kontoraEpics() {
         this.terminalRW = false;
         this._resetActivity();
         this.selectedEpic = null;
+        ++this._editorGeneration;
         this._epicDetailSeq++;
         this._epicDetail = null;
         this.epicAddDraft = '';
@@ -566,14 +568,14 @@ export function kontoraEpics() {
 
     // ---- the brief ---------------------------------------------------------
 
-    // Seed the editor from the body the fetch returned. The leading newline is
+    // Seed from the retained draft or fetched description. The leading newline is
     // held aside and put back on save, so a round-trip through the editor does
     // not move the first line.
-    _epicLoadBrief(body) {
-      var text = body || '';
+    _epicLoadBrief(ticket) {
+      var state = this._loadEditorDraft(ticket, { description: this.descriptionText(ticket) });
+      var text = state.draft.description;
       this._epicBriefLead = text.startsWith('\n') ? '\n' : '';
       this.editForm.body = text.slice(this._epicBriefLead.length);
-      this._epicBriefSavedBody = text;
     },
 
     // A click on a rendered section opens the editor with that section left
@@ -605,6 +607,7 @@ export function kontoraEpics() {
     },
 
     epicDebounceBrief() {
+      this.epicBriefSaved = false;
       if (this._epicBriefDebounce) clearTimeout(this._epicBriefDebounce);
       this._epicBriefDebounce = setTimeout(() => this.epicSaveBrief(), 800);
     },
@@ -620,26 +623,26 @@ export function kontoraEpics() {
     epicSaveBrief() {
       if (this._epicBriefSave) return this._epicBriefSave;
       if (!this.selectedEpic || this._epicDetail?.id !== this.selectedEpic.id) return true;
-      if (this._epicBriefLead + this.editForm.body === this._epicBriefSavedBody) return true;
       var id = this.selectedEpic.id;
+      var generation = this._editorGeneration;
+      var state = this._editorSaves[id];
+      if (!state) return true;
+      if (this._epicBriefLead + this.editForm.body === state.ack.description) return true;
       this.epicBriefSaving = true;
       this.epicBriefSaved = false;
       // A second PUT must not overtake the first or let navigation drop a newer draft.
       this._epicBriefSave = (async () => {
         while (this.selectedEpic?.id === id) {
           var body = this._epicBriefLead + this.editForm.body;
-          if (body === this._epicBriefSavedBody) return true;
-          if (!await this._epicRequest('PUT', '/api/tickets/' + encodeURIComponent(id), { body: body })) return false;
-          this._epicBriefSavedBody = body;
-          if (this._epicDetail?.id === id) this._epicDetail.body = body;
-          this.selectedEpic = Object.assign({}, this.selectedEpic, { body: body });
+          if (body === state.ack.description) return true;
+          if (!await this._queueEditorSave(id, { description: body }, generation)) return false;
         }
         return true;
       })().finally(() => {
         this._epicBriefSave = null;
         this.epicBriefSaving = false;
         this.epicBriefSaved = this.selectedEpic?.id === id &&
-          this._epicBriefLead + this.editForm.body === this._epicBriefSavedBody;
+          this._epicBriefLead + this.editForm.body === state.ack.description;
       });
       return this._epicBriefSave;
     },

@@ -72,6 +72,7 @@ export function kontoraDetail() {
       this.fetchTicketCost(ticket.id);
       this.detailLoading = true;
       try {
+        if (this._editorSaves[ticket.id]) await this._waitEditorSaves(ticket.id);
         while (mine()) {
           var res = await fetch('/api/tickets/' + encodeURIComponent(ticket.id));
           if (!mine() || !res.ok) break;
@@ -421,6 +422,8 @@ export function kontoraDetail() {
       this.deleteModal = false;
       this.editing = false;
       this.editingBody = false;
+      ++this._editorGeneration;
+      this.editSubmitting = false;
       this.deleteSubmitting = false;
       this.selectedTicket = null;
       this.activeTab = 'ticket';
@@ -828,17 +831,33 @@ export function kontoraDetail() {
       var pipeline = this.selectedTicket.pipeline || '';
       this._editAgentFollowsProject = !this.selectedTicket.agent_override;
       var agent = this.selectedTicket.agent_override ? (this.selectedTicket.agent || '') : '';
-      var body = this.selectedTicket.body || '';
-      this._bodyLead = body.startsWith('\n') ? '\n' : '';
-      this.editForm = {
-        body: body.slice(this._bodyLead.length),
-        pipeline: '',
+      var generation = ++this._editorGeneration;
+      var id = this.selectedTicket.id;
+      var state = this._loadEditorDraft(this.selectedTicket, {
+        description: this.descriptionText(this.selectedTicket),
+        pipeline: pipeline,
         path: this.selectedTicket.path || '',
-        agent: '',
+        agent: agent,
         branch: this.selectedTicket.branch || '',
         base_branch: this.selectedTicket.base_branch || '',
+      });
+      if (this.selectedTicket.kind === 'epic') {
+        delete state.ack.pipeline;
+        delete state.draft.pipeline;
+        delete state.target.pipeline;
+      }
+      var draft = state.draft;
+      this._bodyLead = draft.description.startsWith('\n') ? '\n' : '';
+      this.editForm = {
+        body: draft.description.slice(this._bodyLead.length),
+        pipeline: draft.pipeline,
+        path: draft.path,
+        agent: draft.agent,
+        branch: draft.branch,
+        base_branch: draft.base_branch,
       };
       this.editing = true;
+      this.editSubmitting = false;
       this.editSaved = false;
       if (!this.configCache) {
         try {
@@ -856,8 +875,9 @@ export function kontoraDetail() {
       // The native fallback still needs its x-for options before Alpine applies
       // the value, or an older browser would lose the current selection.
       await this.$nextTick();
-      this.editForm.pipeline = pipeline;
-      this.editForm.agent = agent;
+      if (generation !== this._editorGeneration || this.selectedTicket?.id !== id) return;
+      this.editForm.pipeline = draft.pipeline;
+      this.editForm.agent = draft.agent;
     },
 
     // Membership is a preview snapshot. The backend resolves defaults again on submit.
@@ -881,48 +901,142 @@ export function kontoraDetail() {
       return this.saveEdit();
     },
 
+    _ordinaryEditorDraft() {
+      var draft = { description: this._bodyLead + this.editForm.body };
+      ['path', 'agent', 'branch', 'base_branch'].forEach(key => { draft[key] = this.editForm[key] || ''; });
+      if (this.selectedTicket?.kind !== 'epic') draft.pipeline = this.editForm.pipeline || '';
+      return draft;
+    },
+
     async saveEdit() {
-      if (!this.selectedTicket || !this.editing) return;
+      if (!this.selectedTicket || !this.editing) return true;
+      var id = this.selectedTicket.id;
+      var generation = this._editorGeneration;
       this.editSubmitting = true;
       this.editSaved = false;
-      try {
-        const body = {};
-        const editedBody = this._bodyLead + this.editForm.body;
-        if (editedBody !== (this.selectedTicket.body || '')) body.body = editedBody;
-        if (this.selectedTicket.kind !== 'epic' && this.editForm.pipeline !== (this.selectedTicket.pipeline || '')) body.pipeline = this.editForm.pipeline;
-        if (this.editForm.path !== (this.selectedTicket.path || '')) body.path = this.editForm.path;
-        const agentOverride = this.selectedTicket.agent_override ? (this.selectedTicket.agent || '') : '';
-        if (this.editForm.agent !== agentOverride) body.agent = this.editForm.agent;
-        if (this.editForm.branch !== (this.selectedTicket.branch || '')) body.branch = this.editForm.branch;
-        if (this.editForm.base_branch !== (this.selectedTicket.base_branch || '')) body.base_branch = this.editForm.base_branch;
-        if (Object.keys(body).length === 0) { this.editSubmitting = false; return; }
-        const res = await fetch('/api/tickets/' + this.selectedTicket.id, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
-        });
-        if (res.ok) {
-          const updated = await res.json();
-          const idx = this.tickets.findIndex(t => t.id === updated.id);
-          if (idx >= 0) this.tickets[idx] = this.boardEntry(updated);
-          // A save flushed on the way out resolves after the panel closed or
-          // selected another ticket, and an unguarded assignment reopens it.
-          if (this.selectedTicket?.id === updated.id) {
-            this.selectedTicket = updated;
-            this.editSaved = true;
-            setTimeout(() => { this.editSaved = false; }, 1500);
-          }
-        } else {
-          const data = await res.json().catch(() => ({}));
-          this.error = data.error || 'Failed to save';
-        }
-      } catch (e) {
-        this.error = 'Failed to save: ' + e.message;
+      var submitted = this._ordinaryEditorDraft();
+      var pending = this._queueEditorSave(id, submitted, generation);
+      var ok = await pending;
+      if (this.selectedTicket?.id === id && generation === this._editorGeneration && this._editorSaves[id]?.tail === pending) {
+        this.editSubmitting = false;
+        this.editSaved = ok && this._sameEditorDraft(this._ordinaryEditorDraft(), submitted);
       }
-      this.editSubmitting = false;
+      return ok;
+    },
+
+    descriptionText(ticket) {
+      if (typeof ticket?.description === 'string') return ticket.description;
+      return (ticket?.body || '').split(/^[^\S\n]*## Notes[^\S\n]*$/m)[0];
+    },
+
+    descriptionTail(ticket) {
+      if (typeof ticket?.description_tail === 'string') return ticket.description_tail;
+      var body = ticket?.body || '';
+      return body.slice(this.descriptionText(ticket).length);
+    },
+
+    _sameEditorDraft(a, b) {
+      var keys = new Set([...Object.keys(a), ...Object.keys(b)]);
+      return [...keys].every(key => a[key] === b[key]);
+    },
+
+    _loadEditorDraft(ticket, snapshot) {
+      var state = this._editorSaves[ticket.id];
+      if (!state || (!state.pending && this._sameEditorDraft(state.draft, state.ack))) {
+        state = this._editorSaves[ticket.id] = {
+          ack: { ...snapshot }, draft: { ...snapshot }, target: { ...snapshot }, sequence: 0,
+          pending: 0, ackSequence: state?.ackSequence || 0, tail: Promise.resolve(true),
+        };
+      } else {
+        var ack = state.pending ? { ...state.ack } : {};
+        var draft = state.pending ? { ...state.draft } : {};
+        Object.keys(snapshot).forEach(key => {
+          ack[key] = key in state.ack ? state.ack[key] : snapshot[key];
+          draft[key] = key in state.draft ? state.draft[key] : snapshot[key];
+        });
+        state.ack = ack;
+        state.draft = draft;
+        if (!state.pending) state.target = { ...ack };
+      }
+      return state;
+    },
+
+    async _waitEditorSaves(id) {
+      // A completion may enqueue another submission before its caller closes.
+      var tail;
+      do {
+        tail = this._editorSaves[id]?.tail;
+        if (tail) await tail;
+      } while (tail !== this._editorSaves[id]?.tail);
+    },
+
+    _queueEditorSave(id, draft, generation) {
+      var state = this._editorSaves[id];
+      if (!state) return Promise.resolve(false);
+      state.draft = { ...draft };
+      if (this._sameEditorDraft(draft, state.target)) return state.tail;
+      var submitted = { ...draft };
+      var sequence = ++state.sequence;
+      state.pending++;
+      state.target = submitted;
+      var save = async () => {
+        var body = {};
+        Object.keys(submitted).forEach(key => {
+          if (submitted[key] !== state.ack[key]) body[key] = submitted[key];
+        });
+        try {
+          if (Object.keys(body).length) {
+            var update = this._selectedTicketUpdateSeq;
+            var epicUpdate = this._epicUpdateSeq;
+            var res = await fetch('/api/tickets/' + encodeURIComponent(id), {
+              method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+            });
+            if (!res.ok) {
+              var failure = await res.json().catch(() => ({}));
+              throw new Error(failure.error || 'Failed to save');
+            }
+            var full = await res.json();
+            if (full?.id !== id) throw new Error('Invalid ticket response');
+            while (generation === this._editorGeneration &&
+                ((this.selectedTicket?.id === id && update !== this._selectedTicketUpdateSeq) ||
+                 (this.selectedEpic?.id === id && epicUpdate !== this._epicUpdateSeq))) {
+              update = this._selectedTicketUpdateSeq;
+              epicUpdate = this._epicUpdateSeq;
+              var refresh = await fetch('/api/tickets/' + encodeURIComponent(id));
+              if (!refresh.ok) throw new Error('Failed to refresh saved ticket');
+              full = await refresh.json();
+              if (full?.id !== id) throw new Error('Invalid ticket response');
+            }
+            if (generation === this._editorGeneration) {
+              if (this.selectedTicket?.id === id && update === this._selectedTicketUpdateSeq) this.selectedTicket = full;
+              if (this.selectedEpic?.id === id && epicUpdate === this._epicUpdateSeq) {
+                this.selectedEpic = full;
+                this._epicDetail = full;
+              }
+              var idx = this.tickets.findIndex(t => t.id === id);
+              if (idx >= 0 && update === this._selectedTicketUpdateSeq && epicUpdate === this._epicUpdateSeq) {
+                this.tickets[idx] = this.boardEntry(full);
+                this.recomputeBoard();
+              }
+            }
+          }
+          state.ack = submitted;
+          state.ackSequence++;
+          return true;
+        } catch (e) {
+          this.error = e.message;
+          return false;
+        } finally {
+          state.pending--;
+          if (state.sequence === sequence) state.target = { ...state.ack };
+        }
+      };
+      state.tail = state.tail.then(save);
+      return state.tail;
     },
 
     debounceSaveEdit() {
+      this.editSaved = false;
       if (this._editDebounce) clearTimeout(this._editDebounce);
       this._editDebounce = setTimeout(() => this.saveEdit(), 800);
     },
@@ -935,7 +1049,7 @@ export function kontoraDetail() {
         clearTimeout(this._editDebounce);
         this._editDebounce = null;
       }
-      this.saveEdit();
+      return this.saveEdit();
     },
 
     // Enter body edit mode with the clicked block left where it is on screen.

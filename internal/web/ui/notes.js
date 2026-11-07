@@ -268,13 +268,13 @@ export function kontoraNotes() {
       }
     },
 
-    // One request against a ticket's note routes. Every one of them answers
-    // with the whole ticket, so the page replaces its copy rather than
-    // reconciling: the reply, the edit and the reaction all land the same way.
+    // Note routes return whole tickets, but their snapshots can precede a description save.
     async _noteRequest(path, method, body, failure) {
       var t = this.selectedTicket;
       if (!t) return false;
       var id = t.id;
+      var update = this._selectedTicketUpdateSeq;
+      var acknowledged = this._editorSaves[id]?.ackSequence || 0;
       try {
         var init = { method: method };
         if (body) {
@@ -288,7 +288,7 @@ export function kontoraNotes() {
           return false;
         }
         var full = await res.json();
-        this._noteApplyTicket(id, full);
+        this._noteApplyTicket(id, full, update, acknowledged);
         return true;
       } catch (e) {
         this.error = failure;
@@ -296,19 +296,22 @@ export function kontoraNotes() {
       }
     },
 
-    // Replace the open ticket and its board row with what the mutation returned.
-    // While the ticket tab is editing, only the notes are taken: the rest of the
-    // payload would overwrite the fields being typed into.
-    _noteApplyTicket(id, full) {
+    _noteApplyTicket(id, full, update, acknowledged) {
+      var stale = (update !== undefined && update !== this._selectedTicketUpdateSeq) ||
+        (acknowledged !== undefined && acknowledged !== (this._editorSaves[id]?.ackSequence || 0));
       if (this.selectedTicket && this.selectedTicket.id === id) {
-        if (this.editing) {
-          this.selectedTicket.notes = full.notes;
+        if (this.editing || stale) {
+          var description = this.descriptionText(this.selectedTicket);
+          var tail = this.descriptionTail(full);
+          this.selectedTicket = { ...this.selectedTicket, notes: full.notes,
+            description: description, description_tail: tail, body: description + tail };
         } else {
           this.selectedTicket = full;
         }
+        this._selectedTicketUpdateSeq++;
       }
       var idx = this.tickets.findIndex(function (x) { return x.id === id; });
-      if (idx >= 0) {
+      if (idx >= 0 && !stale) {
         this.tickets[idx] = this.boardEntry(full);
         this.recomputeBoard();
       }

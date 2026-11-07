@@ -35,13 +35,15 @@ type View struct {
 	// ScheduledAt is the raw scheduled_at frontmatter value, so a malformed
 	// hand edit is shown rather than hidden. It is a board field, not a
 	// detail-only one: an Open card renders it.
-	ScheduledAt string
-	Stages      []string
-	History     []HistoryView
-	Body        string
-	LastError   string
-	LastLog     string
-	Summary     string
+	ScheduledAt     string
+	Stages          []string
+	History         []HistoryView
+	Body            string
+	Description     *string
+	DescriptionTail *string
+	LastError       string
+	LastLog         string
+	Summary         string
 	// FinalSummary is the ticket-level outcome, not the latest run's summary.
 	FinalSummary string
 	// Notify and NotifyChannels are the ticket's own notification fields as
@@ -195,6 +197,9 @@ func BuildView(cfg *config.Config, t *ticket.Ticket, detail bool) View {
 		v.Summary = t.Summary
 		v.FinalSummary = t.FinalSummary
 		v.Body = t.Body
+		description, tail := ticket.SplitDescription(t.Body)
+		v.Description = &description
+		v.DescriptionTail = &tail
 	}
 
 	return v

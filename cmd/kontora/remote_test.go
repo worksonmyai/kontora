@@ -190,8 +190,7 @@ func assertHandoffStored(t *testing.T, fixture handoffFixture, verb, text, autho
 	}
 	assert.Equal(t, "old summary", tkt.Summary)
 	require.Len(t, notes, 2)
-	// Reading ticket Markdown normalizes CRLF before parsing note text.
-	assert.Equal(t, strings.TrimSpace(strings.ReplaceAll(text, "\r\n", "\n")), notes[1].Text)
+	assert.Equal(t, strings.TrimSpace(text), notes[1].Text)
 	assert.Equal(t, author, notes[1].Author)
 	assert.Equal(t, parent, notes[1].ParentID)
 	assert.NotEmpty(t, notes[1].ID)

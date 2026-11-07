@@ -16,6 +16,9 @@ import (
 // open/todo/paused/human_review (or a custom status), and pipeline/agent values
 // are validated against the config.
 func Update(cfg *config.Config, id string, req web.UpdateTicketRequest) error {
+	if err := req.ValidateDescription(); err != nil {
+		return err
+	}
 	repo := store.NewDiskRepo(cfg.TicketsDir)
 	var prepared *app.PreparedExecutionSettings
 	if req.Path != nil || req.Branch != nil {
@@ -113,6 +116,9 @@ func applyUpdate(cfg *config.Config, t *ticket.Ticket, req web.UpdateTicketReque
 	}
 	if req.Body != nil {
 		t.SetBody(*req.Body)
+	}
+	if req.Description != nil {
+		return t.SetDescription(*req.Description)
 	}
 
 	return nil

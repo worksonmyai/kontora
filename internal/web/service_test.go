@@ -8,9 +8,77 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/worksonmyai/kontora/internal/config"
 	"github.com/worksonmyai/kontora/internal/ticket"
 	"github.com/worksonmyai/kontora/internal/ticket/app"
 )
+
+func TestTicketInfoFromView_Description(t *testing.T) {
+	for _, body := range []string{"", "# Title\n", "# Title\n\n \t## Notes \r\nraw\n## Later\nkeep"} {
+		t.Run(body, func(t *testing.T) {
+			tkt, err := ticket.ParseBytes([]byte("---\nid: tst-desc\nstatus: open\n---\n" + body))
+			require.NoError(t, err)
+			for _, detail := range []bool{false, true} {
+				info := TicketInfoFromView(app.BuildView(&config.Config{}, tkt, detail))
+				encoded, err := json.Marshal(info)
+				require.NoError(t, err)
+				var fields map[string]json.RawMessage
+				require.NoError(t, json.Unmarshal(encoded, &fields))
+				if !detail {
+					assert.Nil(t, info.Description)
+					assert.Nil(t, info.DescriptionTail)
+					assert.NotContains(t, fields, "description")
+					assert.NotContains(t, fields, "description_tail")
+					continue
+				}
+				description, tail := ticket.SplitDescription(body)
+				require.NotNil(t, info.Description)
+				require.NotNil(t, info.DescriptionTail)
+				assert.Equal(t, description, *info.Description)
+				assert.Equal(t, tail, *info.DescriptionTail)
+				assert.Contains(t, fields, "description")
+				assert.Contains(t, fields, "description_tail")
+				assert.Equal(t, body, info.Body)
+			}
+		})
+	}
+}
+
+func TestUpdateTicketRequestDescription(t *testing.T) {
+	for _, tc := range []struct {
+		body    string
+		want    *string
+		invalid bool
+	}{
+		{body: `{}`},
+		{body: `{"description":null}`},
+		{body: `{"description":""}`, want: new("")},
+		{body: `{"description":"new"}`, want: new("new")},
+		{body: `{"body":"## Notes"}`},
+		{body: `{"body":"replacement","description":null}`},
+		{body: `{"body":null,"description":"prefix"}`, want: new("prefix")},
+		{body: `{"body":null,"description":null}`},
+		{body: `{"body":"","description":""}`, want: new(""), invalid: true},
+		{body: `{"description":"text\n \t## Notes \r\n"}`, want: new("text\n \t## Notes \r\n"), invalid: true},
+	} {
+		t.Run(tc.body, func(t *testing.T) {
+			var req UpdateTicketRequest
+			require.NoError(t, json.Unmarshal([]byte(tc.body), &req))
+			assert.Equal(t, tc.want, req.Description)
+			if tc.invalid {
+				require.Error(t, req.ValidateDescription())
+			} else {
+				require.NoError(t, req.ValidateDescription())
+			}
+			encoded, err := json.Marshal(req)
+			require.NoError(t, err)
+			var fields map[string]json.RawMessage
+			require.NoError(t, json.Unmarshal(encoded, &fields))
+			_, present := fields["description"]
+			assert.Equal(t, tc.want != nil, present)
+		})
+	}
+}
 
 func TestTicketInfoFromView_HistoryRun(t *testing.T) {
 	info := TicketInfoFromView(app.View{

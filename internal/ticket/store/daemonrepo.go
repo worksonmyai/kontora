@@ -12,6 +12,11 @@ import (
 // DaemonRepo delegates to. The daemon constructs these with closures that
 // handle mutex locking and internal state coordination.
 type DaemonRepoCallbacks struct {
+	// WithMutation holds daemon admission/board coordination across the entire
+	// callback, including fresh scoped reads, writes and cache updates. Its Save
+	// must not re-enter the outer repository or re-acquire those locks.
+	WithMutation func(func(app.MutationRepository) error) error
+
 	ManagedMutation func(app.ManagedMutation) (*app.StoredTicket, error)
 	// PathLookup returns the file path for a ticket ID.
 	// Implementations are responsible for their own synchronization.
@@ -71,7 +76,20 @@ func (r *DaemonRepo) List() ([]*app.StoredTicket, error) {
 	return r.cb.ListTickets(), nil
 }
 
+func (r *DaemonRepo) WithMutation(fn func(app.MutationRepository) error) error {
+	if r.cb.WithMutation == nil {
+		return fmt.Errorf("daemon mutation transaction callback is not configured")
+	}
+	return r.cb.WithMutation(fn)
+}
+
 func (r *DaemonRepo) Save(st *app.StoredTicket) error {
+	if r.cb.WithMutation != nil {
+		return r.WithMutation(func(scoped app.MutationRepository) error {
+			return scoped.Save(st)
+		})
+	}
+	// Adapters without transaction coordination support single-document Save only.
 	return ticket.WithOfflineWrite(filepath.Dir(st.FilePath), func() error {
 		if err := ticket.RejectImportedOwnership(st.Ticket); err != nil {
 			return err

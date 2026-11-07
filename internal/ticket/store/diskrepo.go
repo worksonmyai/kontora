@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -100,16 +101,62 @@ func (r *DiskRepo) List() ([]*app.StoredTicket, error) {
 	return result, nil
 }
 
+func (r *DiskRepo) WithMutation(fn func(app.MutationRepository) error) error {
+	return ticket.WithOfflineWrite(r.dir, func() error {
+		return fn(diskMutationRepository{MutationRepository: r, dir: r.dir})
+	})
+}
+
 func (r *DiskRepo) Save(st *app.StoredTicket) error {
+	return r.WithMutation(func(scoped app.MutationRepository) error {
+		return scoped.Save(st)
+	})
+}
+
+// Reads always hit disk, including after another Save within the same scope.
+// Save must not call WriteOffline, which would acquire the mutation lock again.
+type diskMutationRepository struct {
+	app.MutationRepository
+	dir string
+}
+
+func (r diskMutationRepository) Save(st *app.StoredTicket) error {
+	if st == nil || st.Ticket == nil {
+		return fmt.Errorf("missing ticket")
+	}
+	if err := ticket.CheckBoardControl(r.dir); err != nil {
+		return err
+	}
 	if err := ticket.RejectImportedOwnership(st.Ticket); err != nil {
+		return err
+	}
+	if !ticket.IsSafeID(st.Ticket.ID) || filepath.Clean(filepath.Dir(st.FilePath)) != filepath.Clean(r.dir) || !ticket.IsCanonicalPath(st.FilePath, st.Ticket.ID) {
+		return fmt.Errorf("ticket path outside repository")
+	}
+	current, err := r.Get(st.Ticket.ID)
+	if err != nil {
+		return err
+	}
+	if current.Ticket.ID != st.Ticket.ID {
+		return fmt.Errorf("ticket id does not match destination")
+	}
+	if err := ticket.RejectImportedOwnership(current.Ticket); err != nil {
 		return err
 	}
 	out, err := st.Ticket.Marshal()
 	if err != nil {
 		return fmt.Errorf("marshalling ticket: %w", err)
 	}
-	if filepath.Clean(filepath.Dir(st.FilePath)) != filepath.Clean(r.dir) || !ticket.IsCanonicalPath(st.FilePath, st.Ticket.ID) {
-		return fmt.Errorf("ticket path outside repository")
+	// Preserve WriteOffline's validation of the actual serialized document.
+	parsed, err := ticket.ParseBytes(out)
+	if err != nil {
+		return err
 	}
-	return ticket.WriteOffline(st.FilePath, out)
+	if err := ticket.RejectImportedOwnership(parsed); err != nil {
+		return err
+	}
+	if parsed.ID != st.Ticket.ID {
+		return fmt.Errorf("ticket id does not match destination")
+	}
+	return os.WriteFile(st.FilePath, out, 0o644)
 }

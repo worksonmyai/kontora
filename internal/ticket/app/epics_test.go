@@ -170,6 +170,10 @@ type parentReadRepo struct {
 	reads    int
 }
 
+func (r *parentReadRepo) WithMutation(fn func(MutationRepository) error) error {
+	return r.memRepo.WithMutation(func(MutationRepository) error { return fn(r) })
+}
+
 func (r *parentReadRepo) Get(id string) (*StoredTicket, error) {
 	if id == r.parentID {
 		r.reads++
@@ -264,7 +268,12 @@ func TestInitParentDefaultsResolution(t *testing.T) {
 			runtime := &spyRuntime{}
 			svc := New(Static(cfg), repo, runtime)
 			_, err = svc.Init("child", InitRequest{Pipeline: tc.pipeline, Status: "open"})
-			assert.Equal(t, tc.wantReads, repo.reads)
+			if tc.wantReads == 0 {
+				assert.Zero(t, repo.reads)
+			} else {
+				// Init resolves once during preparation and again in the scope.
+				assert.GreaterOrEqual(t, repo.reads, tc.wantReads)
+			}
 			if tc.wantErr {
 				require.Error(t, err)
 				if tc.readErr != nil {
@@ -291,6 +300,10 @@ type staleListingRepo struct {
 }
 
 func (r staleListingRepo) List() ([]*StoredTicket, error) { return r.listed, nil }
+
+func (r staleListingRepo) WithMutation(fn func(MutationRepository) error) error {
+	return r.memRepo.WithMutation(func(MutationRepository) error { return fn(r) })
+}
 
 func TestEpicActivationRefreshesChildFiles(t *testing.T) {
 	path := testutil.InitRepo(t)
@@ -332,11 +345,15 @@ func TestEpicActivationRefreshesChildFiles(t *testing.T) {
 }
 
 func TestAgentEpicOperations(t *testing.T) {
+	path := testutil.InitRepo(t)
 	for _, verb := range []string{"pause", "retry", "skip"} {
 		t.Run(verb, func(t *testing.T) {
 			repo := newMemRepo()
 			repo.add("epc-100", "---\nid: epc-100\nkind: epic\nepic_execution: agent\nkontora: true\nstatus: human_review\n---\n# Epic\n")
 			repo.add("child", "---\nid: child\nparent: epc-100\nstatus: in_progress\n---\n# Child\n")
+			for _, st := range repo.tickets {
+				require.NoError(t, st.Ticket.SetField("path", path))
+			}
 			runtime := &spyRuntime{}
 			svc := New(Static(testCfg()), repo, runtime)
 			var err error
@@ -393,6 +410,54 @@ func TestAgentEpicRepositoryIdentity(t *testing.T) {
 	require.NoError(t, ValidateEpicChildRepository(epic, &ticket.Ticket{ID: "c", Path: linked}))
 	require.ErrorIs(t, ValidateEpicChildRepository(epic, &ticket.Ticket{ID: "c", Path: testutil.InitRepo(t)}), ErrInvalidState)
 	require.ErrorIs(t, ValidateEpicChildRepository(epic, &ticket.Ticket{ID: "c"}), ErrInvalidState)
+}
+
+func TestExecutionPreparationToleratesOnlyUnrelatedDiscoveryErrors(t *testing.T) {
+	path := testutil.InitRepo(t)
+	for _, related := range []bool{false, true} {
+		t.Run(fmt.Sprintf("related=%v", related), func(t *testing.T) {
+			repo := &parentReadRepo{memRepo: newMemRepo(), parentID: "broken", getErr: os.ErrPermission}
+			repo.add("epic", fmt.Sprintf("---\nid: epic\nkind: epic\nepic_execution: agent\npath: %q\n---\n# Epic\n", path))
+			parent := ""
+			if related {
+				parent = "epic"
+			}
+			repo.add("broken", fmt.Sprintf("---\nid: broken\nparent: %q\n---\n# Broken\n", parent))
+			svc := New(Static(testCfg()), repo, NoopRuntime{})
+			prepared, err := svc.PrepareExecutionSettings(repo.tickets["epic"].Ticket)
+			if related {
+				require.ErrorIs(t, err, os.ErrPermission)
+				return
+			}
+			require.NoError(t, err)
+			require.NoError(t, repo.WithMutation(func(scoped MutationRepository) error {
+				return prepared.Validate(scoped, repo.tickets["epic"].Ticket)
+			}))
+		})
+	}
+}
+
+func TestInitResolvesGitOnlyBeforeMutationScope(t *testing.T) {
+	path := testutil.InitRepo(t)
+	realGit, err := exec.LookPath("git")
+	require.NoError(t, err)
+	bin := t.TempDir()
+	locked := filepath.Join(bin, "locked")
+	script := fmt.Sprintf("#!/bin/sh\nif test -e %q; then exit 99; fi\nexec %q \"$@\"\n", locked, realGit)
+	require.NoError(t, os.WriteFile(filepath.Join(bin, "git"), []byte(script), 0o755))
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	inner := newMemRepo()
+	inner.add("epic", fmt.Sprintf("---\nid: epic\nkind: epic\nstatus: open\npath: %q\nbranch: integration\n---\n# Epic\n", path))
+	inner.add("child", fmt.Sprintf("---\nid: child\nparent: epic\npath: %q\n---\n# Child\n", path))
+	repo := transactionTestRepository{MutationRepository: inner, withMutation: func(fn func(MutationRepository) error) error {
+		return inner.WithMutation(func(scoped MutationRepository) error {
+			require.NoError(t, os.WriteFile(locked, nil, 0o600))
+			defer os.Remove(locked)
+			return fn(scoped)
+		})
+	}}
+	_, err = New(Static(testCfg()), repo, NoopRuntime{}).Init("epic", InitRequest{Status: "todo"})
+	require.NoError(t, err)
 }
 
 const epicFM = "---\nid: epc-100\nstatus: open\nkontora: true\nkind: epic\n---\n# An epic\n"

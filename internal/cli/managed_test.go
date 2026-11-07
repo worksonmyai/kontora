@@ -86,7 +86,7 @@ func TestManagedOfflineWritersRefusePersistedReservation(t *testing.T) {
 		"editor":  func() error { return Edit(dir, "false", "tst-001") },
 		"update":  func() error { return Update(cfg, "tst-001", web.UpdateTicketRequest{Body: &body}) },
 		"status":  func() error { return SetStatus(cfg, "tst-001", "done") },
-		"retry":   func() error { return Retry(dir, "tst-001") },
+		"retry":   func() error { return Retry(cfg, "tst-001") },
 		"skip":    func() error { return Skip(cfg, "tst-001") },
 		"link":    func() error { _, err := relationService(cfg).Link("tst-001", "tst-002"); return err },
 		"archive": func() error {

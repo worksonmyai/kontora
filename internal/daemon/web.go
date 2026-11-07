@@ -3,6 +3,7 @@ package daemon
 import (
 	"bytes"
 	"container/heap"
+	"context"
 	"errors"
 	"fmt"
 	"maps"
@@ -430,52 +431,25 @@ func (d *Daemon) PauseTicket(id string) error {
 		return admissionErr
 	}
 	defer release()
-	d.mu.Lock()
-
-	ts, ok := d.tickets[id]
-	if !ok {
-		d.mu.Unlock()
-		return web.ErrTicketNotFound
-	}
-	if ts.ticket.IsPassiveEpic() {
-		d.mu.Unlock()
-		return fmt.Errorf("%w: %s is an epic, its status is derived from its children", web.ErrInvalidState, id)
-	}
-	if ts.ticket.Status != ticket.StatusInProgress {
-		status := ts.ticket.Status
-		d.mu.Unlock()
-		return fmt.Errorf("%w: cannot pause ticket %s in status %s (only a running ticket can be paused)", web.ErrInvalidState, id, status)
-	}
-
-	filePath := ts.filePath
-	cancel, hasCancel := d.running[id]
-	d.mu.Unlock()
-
-	// Re-read ticket from disk to get a fresh copy that doesn't race with runTicket.
-	t2, err := ticket.ParseFile(filePath)
-	if err != nil {
+	var cancel context.CancelFunc
+	if err := d.mutateTicket(id, func(t *ticket.Ticket) error {
+		if t.IsPassiveEpic() {
+			return fmt.Errorf("%w: %s is an epic, its status is derived from its children", web.ErrInvalidState, id)
+		}
+		if t.Status != ticket.StatusInProgress {
+			return fmt.Errorf("%w: cannot pause ticket %s in status %s (only a running ticket can be paused)", web.ErrInvalidState, id, t.Status)
+		}
+		cancel = d.running[id]
+		if err := t.SetField("status", "paused"); err != nil {
+			return err
+		}
+		return t.SetField("last_error", "")
+	}); err != nil {
 		return err
 	}
-	if err := t2.SetField("status", "paused"); err != nil {
-		return fmt.Errorf("setting status: %w", err)
-	}
-	if err := t2.SetField("last_error", ""); err != nil {
-		return fmt.Errorf("clearing last_error: %w", err)
-	}
-	if err := d.writeTicket(t2, filePath, notify.OriginRequest); err != nil {
-		return err
-	}
-
-	// Cancel the running agent. The handleAgentExit path will see status=paused
-	// on re-read and skip pipeline evaluation.
-	if hasCancel {
+	if cancel != nil {
 		cancel()
 	}
-
-	d.mu.Lock()
-	d.setTicketState(id, t2, filePath)
-	d.broadcastTicketUpdate(id)
-	d.mu.Unlock()
 	return nil
 }
 
@@ -494,75 +468,71 @@ func (d *Daemon) RetryTicket(id string) error {
 // open one to todo first and dropping any schedule it was waiting on: an
 // explicit run is the answer to "now", so the timestamp has nothing left to do.
 //
-// The whole read-modify-write holds d.mu for the reason SetStage does, and the
-// enqueue is under the same lock: a run asked for by hand queues the ticket
-// whether or not auto_pick_up is on, so it does not go through the dependency
-// reconciliation that gates automatic pickup.
+// The whole read-modify-write holds d.mu for the reason SetStage does. Enqueue
+// runs after commit against current state: an explicit run queues the ticket
+// whether or not auto_pick_up is on.
 func (d *Daemon) RunTicket(id string) error {
 	release, admissionErr := d.ordinaryMutationAdmission(id)
 	if admissionErr != nil {
 		return admissionErr
 	}
 	defer release()
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
-	ts, ok := d.tickets[id]
-	if !ok {
-		return web.ErrTicketNotFound
-	}
-	if !ts.ticket.Kontora {
-		return fmt.Errorf("%w: ticket is not initialized", web.ErrInvalidState)
-	}
-	// d.running is registered when the scheduler claims the ticket, before the
-	// file says in_progress. Without this the run is enqueued a second time
-	// while the first is still starting, and the scheduler pops it, finds it
-	// running and puts it straight back.
-	if _, running := d.running[id]; running {
-		return fmt.Errorf("%w: ticket %s is already running", web.ErrInvalidState, id)
-	}
-
-	// Read from disk rather than from the cache: the file is the state a pickup
-	// would act on, and the watcher is debounced, so the cache can lag an edit.
-	t2, err := ticket.ParseFile(ts.filePath)
-	if err != nil {
-		return err
-	}
-	if t2.IsPassiveEpic() {
-		if t2.Status == ticket.StatusArchived {
-			return fmt.Errorf("%w: cannot start archived epic %s", web.ErrInvalidState, id)
-		}
-		d.mu.Unlock()
-		_, err := d.svc.Init(id, app.InitRequest{Status: string(ticket.StatusTodo)})
-		d.mu.Lock()
-		return mapAppError(err)
-	}
-	switch t2.Status { //nolint:exhaustive // only open and todo can be run
-	case ticket.StatusOpen, ticket.StatusTodo:
-	default:
-		return fmt.Errorf("%w: cannot run ticket in status %s (must be open or todo)", web.ErrInvalidState, t2.Status)
-	}
-
-	// One save carries both edits, so no watcher ever sees the ticket todo with
-	// the schedule still on it.
-	if t2.Status == ticket.StatusOpen || t2.ScheduledAt != "" {
-		if err := t2.SetField("status", string(ticket.StatusTodo)); err != nil {
-			return fmt.Errorf("setting status: %w", err)
-		}
-		if err := t2.SetField("last_error", ""); err != nil {
-			return fmt.Errorf("clearing last_error: %w", err)
-		}
-		if err := t2.ClearSchedule(); err != nil {
-			return fmt.Errorf("clearing %s: %w", ticket.FieldScheduledAt, err)
-		}
-		if err := d.writeTicketLocked(t2, ts.filePath, notify.OriginRequest); err != nil {
+	activateEpic := false
+	err := d.withTicketMutation(func(repo app.MutationRepository) error {
+		st, err := repo.Get(id)
+		if err != nil {
 			return err
 		}
-		d.setTicketState(id, t2, ts.filePath)
+		t := st.Ticket
+		if !t.Kontora {
+			return fmt.Errorf("%w: ticket is not initialized", web.ErrInvalidState)
+		}
+		// d.running is registered when the scheduler claims the ticket, before the
+		// file says in_progress. Without this the run is enqueued a second time
+		// while the first is still starting, and the scheduler pops it, finds it
+		// running and puts it straight back.
+		if _, running := d.running[id]; running {
+			return fmt.Errorf("%w: ticket %s is already running", web.ErrInvalidState, id)
+		}
+		if t.IsPassiveEpic() {
+			if t.Status == ticket.StatusArchived {
+				return fmt.Errorf("%w: cannot start archived epic %s", web.ErrInvalidState, id)
+			}
+			activateEpic = true
+			return nil
+		}
+		switch t.Status { //nolint:exhaustive // only open and todo can be run
+		case ticket.StatusOpen, ticket.StatusTodo:
+		default:
+			return fmt.Errorf("%w: cannot run ticket in status %s (must be open or todo)", web.ErrInvalidState, t.Status)
+		}
+		// One save carries both edits, so no watcher ever sees the ticket todo with
+		// the schedule still on it.
+		if t.Status == ticket.StatusOpen || t.ScheduledAt != "" {
+			if err := t.SetField("status", string(ticket.StatusTodo)); err != nil {
+				return err
+			}
+			if err := t.SetField("last_error", ""); err != nil {
+				return err
+			}
+			if err := t.ClearSchedule(); err != nil {
+				return err
+			}
+			return repo.Save(st)
+		}
+		// Enqueue and pickup must see this read even when no write was needed.
+		d.setTicketState(id, t.Clone(), st.FilePath)
+		return nil
+	})
+	if err != nil {
+		return mapAppError(err)
 	}
-
-	d.enqueue(t2)
-	d.broadcastTicketUpdate(id)
+	if activateEpic {
+		_, err := d.svc.Init(id, app.InitRequest{Status: string(ticket.StatusTodo)})
+		return mapAppError(err)
+	}
+	(&daemonRuntime{d: d}).Enqueue(&ticket.Ticket{ID: id, Kontora: true})
+	d.broadcastTicketUpdateLocking(id)
 	d.signalSchedule()
 	return nil
 }
@@ -591,60 +561,32 @@ func (d *Daemon) SetStage(id string, stage string) error {
 		return admissionErr
 	}
 	defer release()
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
-	ts, ok := d.tickets[id]
-	if !ok {
-		return web.ErrTicketNotFound
-	}
-
-	// A running agent owns the ticket file. A stage written under it is lost
-	// when the run writes the file back at the end of the stage. d.running is
-	// registered when the scheduler claims the ticket, before the file says
-	// in_progress, so it catches a pickup the cached status has not seen yet.
-	_, running := d.running[id]
-	if running || ts.ticket.Status == ticket.StatusInProgress {
-		return fmt.Errorf("%w: cannot change the stage of ticket %s while it is running", web.ErrInvalidState, id)
-	}
-
-	pipelineName := ts.ticket.Pipeline
-	filePath := ts.filePath
-
-	pipelineCfg, ok := d.config().Pipelines[pipelineName]
-	if !ok {
-		if pipelineName == "" {
-			return fmt.Errorf("%w: ticket %s has no pipeline, so it has no stages", web.ErrInvalidState, id)
+	return d.mutateTicket(id, func(t *ticket.Ticket) error {
+		// A running agent owns the ticket file. A stage written under it is lost
+		// when the run writes the file back at the end of the stage. d.running is
+		// registered when the scheduler claims the ticket, before the file says
+		// in_progress, so it catches a pickup the cached status has not seen yet.
+		_, running := d.running[id]
+		if running || t.Status == ticket.StatusInProgress {
+			return fmt.Errorf("%w: cannot change the stage of ticket %s while it is running", web.ErrInvalidState, id)
 		}
-		return fmt.Errorf("%w: unknown pipeline %q for ticket %s", web.ErrInvalidState, pipelineName, id)
-	}
-
-	stageNames := make([]string, len(pipelineCfg))
-	for i, s := range pipelineCfg {
-		stageNames[i] = s.Stage
-	}
-	if !slices.Contains(stageNames, stage) {
-		return fmt.Errorf("%w: stage %q not found in pipeline %q (has %s)", web.ErrInvalidState, stage, pipelineName, strings.Join(stageNames, ", "))
-	}
-
-	// Read from disk rather than from the cache: the file is the state a pickup
-	// would act on.
-	t2, err := ticket.ParseFile(filePath)
-	if err != nil {
-		return err
-	}
-
-	if err := t2.SetField("stage", stage); err != nil {
-		return fmt.Errorf("failed to set ticket stage to %q: %w", stage, err)
-	}
-
-	if err := d.writeTicketLocked(t2, filePath, notify.OriginRequest); err != nil {
-		return err
-	}
-
-	d.setTicketState(id, t2, filePath)
-	d.broadcastTicketUpdate(id)
-	return nil
+		pipelineName := t.Pipeline
+		pipelineCfg, ok := d.config().Pipelines[pipelineName]
+		if !ok {
+			if pipelineName == "" {
+				return fmt.Errorf("%w: ticket %s has no pipeline, so it has no stages", web.ErrInvalidState, id)
+			}
+			return fmt.Errorf("%w: unknown pipeline %q for ticket %s", web.ErrInvalidState, pipelineName, id)
+		}
+		stageNames := make([]string, len(pipelineCfg))
+		for i, s := range pipelineCfg {
+			stageNames[i] = s.Stage
+		}
+		if !slices.Contains(stageNames, stage) {
+			return fmt.Errorf("%w: stage %q not found in pipeline %q (has %s)", web.ErrInvalidState, stage, pipelineName, strings.Join(stageNames, ", "))
+		}
+		return t.SetField("stage", stage)
+	})
 }
 
 // MoveTicket sets a ticket's status to newStatus with transition validation.
@@ -866,31 +808,7 @@ var errNoteUnchanged = errors.New("note unchanged")
 // back and broadcasts. The ticket is re-read rather than taken from the cache
 // so a note never clobbers a field the daemon wrote since the last watch event.
 func (d *Daemon) mutateNotes(id string, mutate func(*ticket.Ticket) error) error {
-	d.mu.Lock()
-	ts, ok := d.tickets[id]
-	if !ok {
-		d.mu.Unlock()
-		return web.ErrTicketNotFound
-	}
-	filePath := ts.filePath
-	d.mu.Unlock()
-
-	t2, err := ticket.ParseFile(filePath)
-	if err != nil {
-		return err
-	}
-	if err := mutate(t2); err != nil {
-		return err
-	}
-	if err := d.writeTicket(t2, filePath, notify.OriginRequest); err != nil {
-		return err
-	}
-
-	d.mu.Lock()
-	d.setTicketState(id, t2, filePath)
-	d.broadcastTicketUpdate(id)
-	d.mu.Unlock()
-	return nil
+	return d.mutateTicket(id, mutate)
 }
 
 // SetSummary sets a ticket's summary frontmatter field, mirroring the local
@@ -901,31 +819,9 @@ func (d *Daemon) SetSummary(id string, text string) error {
 		return admissionErr
 	}
 	defer release()
-	d.mu.Lock()
-	ts, ok := d.tickets[id]
-	if !ok {
-		d.mu.Unlock()
-		return web.ErrTicketNotFound
-	}
-	filePath := ts.filePath
-	d.mu.Unlock()
-
-	t2, err := ticket.ParseFile(filePath)
-	if err != nil {
-		return err
-	}
-	if err := t2.SetField("summary", text); err != nil {
-		return fmt.Errorf("setting summary: %w", err)
-	}
-	if err := d.writeTicket(t2, filePath, notify.OriginRequest); err != nil {
-		return err
-	}
-
-	d.mu.Lock()
-	d.setTicketState(id, t2, filePath)
-	d.broadcastTicketUpdate(id)
-	d.mu.Unlock()
-	return nil
+	return d.mutateTicket(id, func(t *ticket.Ticket) error {
+		return t.SetField("summary", text)
+	})
 }
 
 // InitTicket initializes a non-kontora ticket: sets pipeline, path, kontora=true,
@@ -1065,27 +961,56 @@ func (d *Daemon) UpdateTicket(id string, req web.UpdateTicketRequest) error {
 		return admissionErr
 	}
 	defer release()
-	d.mu.Lock()
-	ts, ok := d.tickets[id]
-	if !ok {
-		d.mu.Unlock()
-		return web.ErrTicketNotFound
-	}
-	status := ts.ticket.Status
-	passiveEpic := ts.ticket.IsPassiveEpic()
-	filePath := ts.filePath
-	d.mu.Unlock()
-
-	if !passiveEpic && !d.config().StatusAllowsEdit(string(status)) {
-		return fmt.Errorf("%w: cannot edit ticket %s in status %s", web.ErrInvalidState, id, status)
-	}
-
-	t2, err := ticket.ParseFile(filePath)
-	if err != nil {
-		return err
-	}
-
 	cfg := d.config()
+	var prepared *app.PreparedExecutionSettings
+	if req.Path != nil || req.Branch != nil {
+		d.mu.Lock()
+		ts, ok := d.tickets[id]
+		if !ok {
+			d.mu.Unlock()
+			return web.ErrTicketNotFound
+		}
+		path := ts.filePath
+		d.mu.Unlock()
+		proposal, err := ticket.ParseFile(path)
+		if err != nil {
+			return err
+		}
+		if err := applyTicketUpdate(cfg, proposal, req); err != nil {
+			return err
+		}
+		prepared, err = d.svc.PrepareExecutionSettings(proposal)
+		if err != nil {
+			return mapAppError(err)
+		}
+	}
+	err := d.withTicketMutation(func(repo app.MutationRepository) error {
+		st, err := repo.Get(id)
+		if err != nil {
+			return err
+		}
+		t := st.Ticket
+		if !t.IsPassiveEpic() && !cfg.StatusAllowsEdit(string(t.Status)) {
+			return fmt.Errorf("%w: cannot edit ticket %s in status %s", web.ErrInvalidState, id, t.Status)
+		}
+		if err := applyTicketUpdate(cfg, t, req); err != nil {
+			return err
+		}
+		if prepared != nil {
+			if err := prepared.Validate(repo, t); err != nil {
+				return err
+			}
+		}
+		return repo.Save(st)
+	})
+	if err != nil {
+		return mapAppError(err)
+	}
+	d.broadcastTicketUpdateLocking(id)
+	return nil
+}
+
+func applyTicketUpdate(cfg *config.Config, t2 *ticket.Ticket, req web.UpdateTicketRequest) error {
 	if err := validateNotifyFields(cfg, req.Notify, req.NotifyChannels); err != nil {
 		return err
 	}
@@ -1129,11 +1054,6 @@ func (d *Daemon) UpdateTicket(id string, req web.UpdateTicketRequest) error {
 			return err
 		}
 	}
-	if req.Path != nil || req.Branch != nil {
-		if err := d.svc.ValidateExecutionSettings(t2); err != nil {
-			return mapAppError(err)
-		}
-	}
 	if err := app.SetNotifyFields(t2, req.Notify, req.NotifyChannels); err != nil {
 		return err
 	}
@@ -1141,14 +1061,6 @@ func (d *Daemon) UpdateTicket(id string, req web.UpdateTicketRequest) error {
 		t2.SetBody(*req.Body)
 	}
 
-	if err := d.writeTicket(t2, filePath, notify.OriginRequest); err != nil {
-		return err
-	}
-
-	d.mu.Lock()
-	d.setTicketState(id, t2, filePath)
-	d.broadcastTicketUpdate(id)
-	d.mu.Unlock()
 	return nil
 }
 

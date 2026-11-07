@@ -2,6 +2,7 @@ package app
 
 import (
 	"fmt"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -13,8 +14,10 @@ import (
 
 // memRepo is an in-memory Repository for tests.
 type memRepo struct {
-	tickets map[string]*StoredTicket
-	saveErr error // when set, Save returns it without mutating state
+	mu             sync.Mutex
+	beforeMutation func()
+	tickets        map[string]*StoredTicket
+	saveErr        error // when set, Save returns it without mutating state
 	// saveErrFor fails the save of one ticket only, which is how a symmetric
 	// link write is made to fail half-way.
 	saveErrFor map[string]error
@@ -23,6 +26,17 @@ type memRepo struct {
 
 func newMemRepo() *memRepo {
 	return &memRepo{tickets: make(map[string]*StoredTicket)}
+}
+
+func (r *memRepo) WithMutation(fn func(MutationRepository) error) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.beforeMutation != nil {
+		hook := r.beforeMutation
+		r.beforeMutation = nil
+		hook()
+	}
+	return fn(r)
 }
 
 func (r *memRepo) add(id, content string) {

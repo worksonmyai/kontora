@@ -70,26 +70,6 @@ func ValidateEpicChildRepository(epic, child *ticket.Ticket) error {
 	return nil
 }
 
-// Adapters changing an epic's path must pass the full index, not just a filtered
-// board listing. Membership comes from parent, not the manual order list.
-func ValidateEpicRepositories(epic *ticket.Ticket, index map[string]*ticket.Ticket) error {
-	if !epic.IsAgentEpic() {
-		return nil
-	}
-	if err := ValidateEpicChildRepository(epic, epic); err != nil {
-		return err
-	}
-	for _, child := range ticket.EpicChildren(index, epic.ID) {
-		if child.Kind == ticket.KindEpic {
-			return fmt.Errorf("%w: epics do not nest", ErrInvalidState)
-		}
-		if err := ValidateEpicChildRepository(epic, child); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 func (s *Service) initEpic(st *StoredTicket, req InitRequest) (Result, error) {
 	t := st.Ticket
 	if t.Status == ticket.StatusArchived {
@@ -129,10 +109,7 @@ func (s *Service) initEpic(st *StoredTicket, req InitRequest) (Result, error) {
 	if err := applyInitFields(t, req, "", agent); err != nil {
 		return Result{}, err
 	}
-	if err := s.ValidateExecutionSettings(t); err != nil {
-		return Result{}, err
-	}
-	if err := validateEpicGitSettings(t); err != nil {
+	if err := s.validateExecution(t); err != nil {
 		return Result{}, err
 	}
 	for _, field := range []struct {
@@ -171,18 +148,25 @@ func validateEpicGitSettings(t *ticket.Ticket) error {
 	return nil
 }
 
-// Validation reads each file again because the daemon's listing can lag local edits.
-// Missing grouping parents do not prevent ordinary work.
+// ValidateExecutionSettings is the non-transactional convenience API. Mutation
+// callers must prepare before locking and Validate against their scoped repo.
 func (s *Service) ValidateExecutionSettings(t *ticket.Ticket) error {
+	_, err := s.PrepareExecutionSettings(t)
+	return err
+}
+
+// executionIndex refreshes discovery entries, including children not yet in the
+// watcher's index. Missing grouping parents do not prevent ordinary work.
+func executionIndex(repo MutationRepository, cfg *config.Config, t *ticket.Ticket) (map[string]*ticket.Ticket, error) {
 	if !t.IsAgentEpic() && t.Parent == "" {
-		return nil
+		return map[string]*ticket.Ticket{t.ID: t}, nil
 	}
-	stored, err := s.repo.List()
+	stored, err := repo.List()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	index := make(map[string]*ticket.Ticket, len(stored))
-	dir := filepath.Clean(config.ExpandTilde(s.cfg().TicketsDir))
+	dir := filepath.Clean(config.ExpandTilde(cfg.TicketsDir))
 	diskBacked := false
 	for _, st := range stored {
 		if st.FilePath != "" && filepath.Clean(filepath.Dir(st.FilePath)) == dir {
@@ -191,12 +175,17 @@ func (s *Service) ValidateExecutionSettings(t *ticket.Ticket) error {
 		if !t.IsAgentEpic() && st.Ticket.ID != t.Parent {
 			continue
 		}
-		fresh, err := s.repo.Get(st.Ticket.ID)
+		fresh, err := repo.Get(st.Ticket.ID)
 		if errors.Is(err, ErrNotFound) || errors.Is(err, os.ErrNotExist) {
 			continue
 		}
 		if err != nil {
-			return err
+			// Discovery of an unrelated malformed file is not a requested
+			// participant read. Known children and the requested parent are.
+			if st.Ticket.Parent == t.ID || st.Ticket.ID == t.Parent || st.Ticket.ID == t.ID {
+				return nil, err
+			}
+			continue
 		}
 		index[fresh.Ticket.ID] = fresh.Ticket
 	}
@@ -204,7 +193,7 @@ func (s *Service) ValidateExecutionSettings(t *ticket.Ticket) error {
 	if diskBacked {
 		files, err := ticket.ListFiles(dir)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		for _, path := range files {
 			if !t.IsAgentEpic() && filepath.Base(path) != t.Parent+".md" {
@@ -220,30 +209,7 @@ func (s *Service) ValidateExecutionSettings(t *ticket.Ticket) error {
 		}
 	}
 	index[t.ID] = t
-	if parent := index[t.Parent]; parent != nil {
-		if err := validateEpicChildSettings(s.cfg(), parent, t); err != nil {
-			return err
-		}
-	}
-	if err := ValidateEpicRepositories(t, index); err != nil {
-		return err
-	}
-	for _, child := range ticket.EpicChildren(index, t.ID) {
-		if err := validateEpicChildSettings(s.cfg(), t, child); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func validateEpicChildSettings(cfg *config.Config, epic, child *ticket.Ticket) error {
-	if err := ValidateEpicChildRepository(epic, child); err != nil {
-		return err
-	}
-	if epic.IsAgentEpic() && executionBranch(cfg, epic) == executionBranch(cfg, child) {
-		return fmt.Errorf("%w: integration branch must differ from child %s branch", ErrInvalidState, child.ID)
-	}
-	return nil
+	return index, nil
 }
 
 func executionBranch(cfg *config.Config, t *ticket.Ticket) string {

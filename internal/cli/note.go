@@ -2,11 +2,12 @@ package cli
 
 import (
 	"fmt"
-	"path/filepath"
 	"time"
 
 	"github.com/worksonmyai/kontora/internal/config"
 	"github.com/worksonmyai/kontora/internal/ticket"
+	"github.com/worksonmyai/kontora/internal/ticket/app"
+	"github.com/worksonmyai/kontora/internal/ticket/store"
 )
 
 // NoteOptions carries the byline fields beside the note's text. An empty
@@ -16,39 +17,31 @@ type NoteOptions struct {
 	ReplyTo string
 }
 
-// Note appends a note to a ticket file directly, without a daemon. The write is
-// read-modify-write with an unlocked read, so a daemon running against the same
-// ordinary store can lose the note; `kontora note` routes through the daemon when
-// one answers and only falls back here when none does.
+// Note appends a note to a ticket file directly, without a daemon. The fresh
+// read and write share the board mutation lock with other local mutations.
 func Note(tasksDir string, taskID string, text string, opts NoteOptions) error {
 	tasksDir = config.ExpandTilde(tasksDir)
-	resolved, err := resolveTaskID(tasksDir, taskID)
-	if err != nil {
-		return err
-	}
-
-	path := filepath.Join(tasksDir, resolved+".md")
-	t, err := ticket.ParseFile(path)
-	if err != nil {
-		return fmt.Errorf("parsing ticket: %w", err)
-	}
-
-	if _, err := t.AddNote(ticket.AddNoteOptions{
-		Text:     text,
-		Author:   opts.Author,
-		ParentID: opts.ReplyTo,
-		At:       time.Now(),
-	}); err != nil {
-		return err
-	}
-
-	out, err := t.Marshal()
-	if err != nil {
-		return fmt.Errorf("marshalling ticket: %w", err)
-	}
-
-	if err := ticket.WriteOffline(path, out); err != nil {
-		return fmt.Errorf("writing ticket file: %w", err)
-	}
-	return nil
+	repo := store.NewDiskRepo(tasksDir)
+	return repo.WithMutation(func(repo app.MutationRepository) error {
+		resolved, err := repo.Resolve(taskID)
+		if err != nil {
+			return err
+		}
+		st, err := repo.Get(resolved)
+		if err != nil {
+			return fmt.Errorf("parsing ticket: %w", err)
+		}
+		if _, err := st.Ticket.AddNote(ticket.AddNoteOptions{
+			Text:     text,
+			Author:   opts.Author,
+			ParentID: opts.ReplyTo,
+			At:       time.Now(),
+		}); err != nil {
+			return err
+		}
+		if err := repo.Save(st); err != nil {
+			return fmt.Errorf("writing ticket file: %w", err)
+		}
+		return nil
+	})
 }

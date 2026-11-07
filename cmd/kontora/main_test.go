@@ -27,6 +27,7 @@ import (
 	"github.com/worksonmyai/kontora/internal/config"
 	"github.com/worksonmyai/kontora/internal/frontmatter"
 	"github.com/worksonmyai/kontora/internal/testutil"
+	"github.com/worksonmyai/kontora/internal/ticket"
 	"github.com/worksonmyai/kontora/internal/web"
 )
 
@@ -265,7 +266,7 @@ func TestCreateViewListEndToEnd(t *testing.T) {
 	assert.Contains(t, out, "--ready and --blocked")
 }
 
-// TestTicketsDirPrecedence runs the built binary once per rung of the ladder:
+// TestTicketsDirPrecedence runs the built binary for each rung of the ladder:
 // --tickets-dir, then KONTORA_TICKETS_DIR, then TICKETS_DIR, then the file. Each
 // store holds one ticket named after it, so the store that answered is the one
 // the ID names.
@@ -342,6 +343,19 @@ func TestTicketsDirPrecedence(t *testing.T) {
 			require.NoError(t, json.Unmarshal([]byte(out), &items))
 			require.Len(t, items, 1)
 			assert.Equal(t, "ticket in "+tc.want, items[0]["title"])
+
+			// Retry needs the resolved execution config as well as the selected
+			// store, even for an ordinary ticket without an explicit branch.
+			id := items[0]["id"].(string)
+			for _, action := range []string{"pause", "retry"} {
+				args := append([]string{action, "--config", configPath, id}, tc.args...)
+				out, err := runCLI(t, tc.env, args...)
+				require.NoError(t, err, out)
+			}
+			got, err := ticket.ParseFile(filepath.Join(stores[tc.want], id+".md"))
+			require.NoError(t, err)
+			assert.Equal(t, ticket.StatusTodo, got.Status)
+			assert.Empty(t, got.Branch)
 		})
 	}
 }

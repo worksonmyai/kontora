@@ -16,9 +16,9 @@ func Pause(cfg *config.Config, taskID string) error {
 }
 
 // Retry resets a ticket to todo with attempt=0 for re-processing.
-func Retry(tasksDir, taskID string) error {
-	repo := store.NewDiskRepo(tasksDir)
-	svc := app.New(app.Static(nil), repo, app.NoopRuntime{})
+func Retry(cfg *config.Config, taskID string) error {
+	repo := store.NewDiskRepo(cfg.TicketsDir)
+	svc := app.New(app.Static(cfg), repo, app.NoopRuntime{})
 	_, err := svc.Retry(taskID)
 	return err
 }

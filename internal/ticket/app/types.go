@@ -4,13 +4,22 @@ import (
 	"github.com/worksonmyai/kontora/internal/ticket"
 )
 
-// Repository abstracts ticket storage. Implementations handle disk-based
-// and daemon-state-based backends.
-type Repository interface {
+// MutationRepository is the reader/writer available inside a mutation scope.
+// It deliberately cannot start another transaction.
+type MutationRepository interface {
 	Resolve(idOrPrefix string) (string, error)
 	Get(id string) (*StoredTicket, error)
 	List() ([]*StoredTicket, error)
 	Save(st *StoredTicket) error
+}
+
+// Repository abstracts disk-based and daemon-state-based ticket storage.
+type Repository interface {
+	MutationRepository
+	// WithMutation serializes the callback's fresh reads and writes against
+	// other board mutations. The scoped repository must not escape the callback.
+	// Writes are not rolled back if the callback fails after a successful Save.
+	WithMutation(func(MutationRepository) error) error
 }
 
 // StoredTicket pairs a parsed ticket with its storage path.

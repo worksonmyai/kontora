@@ -944,7 +944,7 @@ func cmdAction(action string) {
 	case "pause":
 		err = cli.Pause(cfg, id)
 	case "retry":
-		err = cli.Retry(cfg.TicketsDir, id)
+		err = cli.Retry(cfg, id)
 	case "cancel":
 		err = cli.Cancel(cfg, id)
 	case "done":

@@ -2,6 +2,7 @@ package app
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -231,30 +232,64 @@ func TestLink(t *testing.T) {
 	}
 }
 
-// A link spans two markdown files, which cannot be written together. The second
-// write failing must say so and name both tickets, and a retry must repair the
-// side that is missing rather than stopping at the side that is already right.
-func TestLink_PartialWriteIsReportedAndRepaired(t *testing.T) {
-	repo := relationRepo(t, "a links: []", "b links: []")
-	boom := errors.New("disk full")
-	repo.saveErrFor = map[string]error{"b": boom}
-	svc := New(Static(testCfg()), repo, &spyRuntime{})
+// A link spans multiple markdown files, which cannot be written together. A later
+// write failing must say so and name the tickets, and a retry must repair the
+// sides that are missing rather than stopping at a side that is already right.
+func TestLinks_PartialWriteIsReportedAndRepaired(t *testing.T) {
+	for _, unlink := range []bool{false, true} {
+		for failedAt, failedID := range []string{"a", "b", "c"} {
+			t.Run(fmt.Sprintf("unlink=%v/fail=%s", unlink, failedID), func(t *testing.T) {
+				repo := relationRepo(t, "a links: []", "b links: []", "c links: []")
+				if unlink {
+					repo = relationRepo(t, "a links: [b, c]", "b links: [a]", "c links: [a]")
+				}
+				before := map[string]string{}
+				for _, id := range []string{"a", "b", "c"} {
+					before[id] = marshalled(t, repo, id)
+				}
+				boom := errors.New("disk full")
+				repo.saveErrFor = map[string]error{failedID: boom}
+				rt := &spyRuntime{}
+				svc := New(Static(testCfg()), repo, rt)
+				call := svc.Link
+				if unlink {
+					call = svc.Unlink
+				}
 
-	_, err := svc.Link("a", "b")
-	require.Error(t, err)
-	assert.ErrorContains(t, err, "a")
-	assert.ErrorContains(t, err, "b")
-	assert.ErrorIs(t, err, boom)
-	assert.Equal(t, []string{"b"}, repo.tickets["a"].Ticket.Links, "the side that was written keeps its link")
-	assert.Empty(t, repo.tickets["b"].Ticket.Links, "the side whose save failed is unchanged")
+				result, err := call("a", "b", "c")
+				require.ErrorIs(t, err, boom)
+				assert.ErrorContains(t, err, "saving "+failedID)
+				order := []string{"a", "b", "c"}
+				assert.Equal(t, order[:failedAt], append([]string{}, result.Changed...))
+				assert.Equal(t, order[:failedAt], append([]string{}, repo.saved...))
+				assert.Equal(t, order[:failedAt], append([]string{}, rt.updated...), "publish only successful saves")
+				for _, id := range order[failedAt:] {
+					assert.Equal(t, before[id], marshalled(t, repo, id), "failed and later participants stay unchanged")
+				}
+				for _, id := range order[:failedAt] {
+					assert.NotEqual(t, before[id], marshalled(t, repo, id))
+				}
 
-	repo.saveErrFor = nil
-	repo.saved = nil
-	result, err := svc.Link("a", "b")
-	require.NoError(t, err)
-	assert.Equal(t, []string{"a"}, repo.tickets["b"].Ticket.Links)
-	assert.Equal(t, []string{"b"}, repo.tickets["a"].Ticket.Links)
-	assert.Equal(t, []string{"b"}, result.Changed, "the repaired call writes only the missing side")
+				repo.saveErrFor = nil
+				repo.saved = nil
+				rt.updated = nil
+				result, err = call("a", "b", "c")
+				require.NoError(t, err)
+				assert.Equal(t, order[failedAt:], result.Changed, "repair only the missing sides")
+				assert.Equal(t, result.Changed, repo.saved)
+				assert.Equal(t, result.Changed, rt.updated)
+				for _, id := range order {
+					if unlink {
+						assert.Empty(t, repo.tickets[id].Ticket.Links)
+					} else if id == "a" {
+						assert.Equal(t, []string{"b", "c"}, repo.tickets[id].Ticket.Links)
+					} else {
+						assert.Equal(t, []string{"a"}, repo.tickets[id].Ticket.Links)
+					}
+				}
+			})
+		}
+	}
 }
 
 func TestUnlink(t *testing.T) {

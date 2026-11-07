@@ -637,6 +637,7 @@ func (d *Daemon) config() *config.Config { return d.cfg.Load() }
 
 func (d *Daemon) buildService() *app.Service {
 	repo := store.NewDaemonRepo(store.DaemonRepoCallbacks{
+		WithMutation: d.withTicketMutation,
 		PathLookup: func(id string) (string, error) {
 			d.mu.Lock()
 			defer d.mu.Unlock()
@@ -645,31 +646,6 @@ func (d *Daemon) buildService() *app.Service {
 				return "", app.ErrNotFound
 			}
 			return ts.filePath, nil
-		},
-		WriteTicket: func(t *ticket.Ticket, path string) error {
-			// Every caller of the service layer is a request: the HTTP API, or
-			// the CLI in --url mode. The local CLI writes the file itself and
-			// arrives as a watcher event instead.
-			return d.writeTicket(t, path, notify.OriginRequest)
-		},
-		AfterSave: func(id string, st *app.StoredTicket) {
-			d.mu.Lock()
-			defer d.mu.Unlock()
-			// Read before the swap: SetParent and ClearParent are service
-			// writes, and the epic a child left is only named by the copy the
-			// cache still holds.
-			var prev *ticket.Ticket
-			if old, ok := d.tickets[id]; ok {
-				prev = old.ticket
-			}
-			d.tickets[id] = newTicketState(st.Ticket, st.FilePath)
-			// A service write is how the API and the remote CLI move a child,
-			// so the epic above it is derived again here as well.
-			if st.Ticket.Kind == ticket.KindEpic {
-				d.rederiveEpicLocked(id, "")
-			} else {
-				d.rederiveEpicMoveLocked(prev, st.Ticket)
-			}
 		},
 		ListTickets: func() []*app.StoredTicket {
 			d.mu.Lock()
@@ -3201,6 +3177,7 @@ func (d *Daemon) writeOrdinaryTicketFile(t *ticket.Ticket, path string, origin n
 	}
 	d.recordSelfWrite(path, data)
 	if err := os.WriteFile(path, data, 0o644); err != nil {
+		d.forgetSelfWrite(path)
 		return time.Time{}, err
 	}
 	// Every daemon write funnels through here, which is what makes this the one

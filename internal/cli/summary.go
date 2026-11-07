@@ -2,37 +2,31 @@ package cli
 
 import (
 	"fmt"
-	"path/filepath"
 
 	"github.com/worksonmyai/kontora/internal/config"
-	"github.com/worksonmyai/kontora/internal/ticket"
+	"github.com/worksonmyai/kontora/internal/ticket/app"
+	"github.com/worksonmyai/kontora/internal/ticket/store"
 )
 
 // Summary sets the ticket's summary frontmatter field.
 func Summary(tasksDir string, taskID string, text string) error {
 	tasksDir = config.ExpandTilde(tasksDir)
-	resolved, err := resolveTaskID(tasksDir, taskID)
-	if err != nil {
-		return err
-	}
-
-	path := filepath.Join(tasksDir, resolved+".md")
-	t, err := ticket.ParseFile(path)
-	if err != nil {
-		return fmt.Errorf("parsing ticket: %w", err)
-	}
-
-	if err := t.SetField("summary", text); err != nil {
-		return fmt.Errorf("setting summary: %w", err)
-	}
-
-	out, err := t.Marshal()
-	if err != nil {
-		return fmt.Errorf("marshalling ticket: %w", err)
-	}
-
-	if err := ticket.WriteOffline(path, out); err != nil {
-		return fmt.Errorf("writing ticket file: %w", err)
-	}
-	return nil
+	repo := store.NewDiskRepo(tasksDir)
+	return repo.WithMutation(func(repo app.MutationRepository) error {
+		resolved, err := repo.Resolve(taskID)
+		if err != nil {
+			return err
+		}
+		st, err := repo.Get(resolved)
+		if err != nil {
+			return fmt.Errorf("parsing ticket: %w", err)
+		}
+		if err := st.Ticket.SetField("summary", text); err != nil {
+			return fmt.Errorf("setting summary: %w", err)
+		}
+		if err := repo.Save(st); err != nil {
+			return fmt.Errorf("writing ticket file: %w", err)
+		}
+		return nil
+	})
 }

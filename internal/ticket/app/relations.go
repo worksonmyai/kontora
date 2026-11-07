@@ -64,6 +64,12 @@ func (s *Service) index() (map[string]*ticket.Ticket, error) {
 // dependent ticket: the reverse edge is derived, not stored. Adding an edge the
 // ticket already has succeeds without a second entry.
 func (s *Service) AddDependency(ticketID, dependencyID string) (RelationResult, error) {
+	return mutate(s, func(scoped *Service) (RelationResult, error) {
+		return scoped.addDependency(ticketID, dependencyID)
+	})
+}
+
+func (s *Service) addDependency(ticketID, dependencyID string) (RelationResult, error) {
 	resolved, related, err := s.resolveRelation(ticketID, []string{dependencyID})
 	if err != nil {
 		return RelationResult{}, err
@@ -103,6 +109,12 @@ func (s *Service) AddDependency(ticketID, dependencyID string) (RelationResult, 
 // RemoveDependency drops dependencyID from ticketID's deps. Removing an edge
 // that is not there succeeds and writes nothing.
 func (s *Service) RemoveDependency(ticketID, dependencyID string) (RelationResult, error) {
+	return mutate(s, func(scoped *Service) (RelationResult, error) {
+		return scoped.removeDependency(ticketID, dependencyID)
+	})
+}
+
+func (s *Service) removeDependency(ticketID, dependencyID string) (RelationResult, error) {
 	resolved, related, err := s.resolveRelation(ticketID, []string{dependencyID})
 	if err != nil {
 		return RelationResult{}, err
@@ -134,13 +146,17 @@ func (s *Service) RemoveDependency(ticketID, dependencyID string) (RelationResul
 // relatedIDs. It links the first ticket to each later one and does not link the
 // later ones to each other.
 func (s *Service) Link(ticketID string, relatedIDs ...string) (RelationResult, error) {
-	return s.mutateLinks(ticketID, relatedIDs, true)
+	return mutate(s, func(scoped *Service) (RelationResult, error) {
+		return scoped.mutateLinks(ticketID, relatedIDs, true)
+	})
 }
 
 // Unlink removes the symmetric edge between ticketID and each of relatedIDs.
 // Removing an edge that is not there succeeds and writes nothing.
 func (s *Service) Unlink(ticketID string, relatedIDs ...string) (RelationResult, error) {
-	return s.mutateLinks(ticketID, relatedIDs, false)
+	return mutate(s, func(scoped *Service) (RelationResult, error) {
+		return scoped.mutateLinks(ticketID, relatedIDs, false)
+	})
 }
 
 // mutateLinks adds or removes symmetric link edges. Two markdown files cannot be
@@ -246,6 +262,39 @@ func (s *Service) SetParent(ticketID, epicID string) (RelationResult, error) {
 	if err != nil {
 		return RelationResult{}, err
 	}
+	child, err := s.repo.Get(resolved)
+	if err != nil {
+		return RelationResult{}, err
+	}
+	parent, err := s.repo.Get(related[0])
+	if err != nil {
+		return RelationResult{}, err
+	}
+	// Git identity resolution must not run while a mutation lock is held.
+	if err := ValidateEpicChildRepository(parent.Ticket, child.Ticket); err != nil {
+		return RelationResult{}, err
+	}
+	childInputs, parentInputs := executionInputs(s.cfg(), child.Ticket), executionInputs(s.cfg(), parent.Ticket)
+	return mutate(s, func(scoped *Service) (RelationResult, error) {
+		scoped.validateExecution = func(t *ticket.Ticket) error {
+			freshParent, err := scoped.repo.Get(related[0])
+			if err != nil {
+				return err
+			}
+			if executionInputs(scoped.cfg(), t) != childInputs || executionInputs(scoped.cfg(), freshParent.Ticket) != parentInputs {
+				return executionChanged(t.ID)
+			}
+			return nil
+		}
+		return scoped.setParent(resolved, related[0])
+	})
+}
+
+func (s *Service) setParent(ticketID, epicID string) (RelationResult, error) {
+	resolved, related, err := s.resolveRelation(ticketID, []string{epicID})
+	if err != nil {
+		return RelationResult{}, err
+	}
 	parentID := related[0]
 
 	st, err := s.repo.Get(resolved)
@@ -264,7 +313,7 @@ func (s *Service) SetParent(ticketID, epicID string) (RelationResult, error) {
 	if st.Ticket.Kind == ticket.KindEpic {
 		return RelationResult{}, fmt.Errorf("%w: %s is an epic, and epics do not nest", ErrNotAnEpic, resolved)
 	}
-	if err := ValidateEpicChildRepository(parent.Ticket, st.Ticket); err != nil {
+	if err := s.validateExecution(st.Ticket); err != nil {
 		return RelationResult{}, err
 	}
 	if err := s.ordinaryFormerParent(st.Ticket.Parent); err != nil {
@@ -298,6 +347,10 @@ func (s *Service) SetParent(ticketID, epicID string) (RelationResult, error) {
 // ClearParent takes a ticket out of its epic. Clearing a parent a ticket does
 // not have succeeds and writes nothing.
 func (s *Service) ClearParent(ticketID string) (RelationResult, error) {
+	return mutate(s, func(scoped *Service) (RelationResult, error) { return scoped.clearParent(ticketID) })
+}
+
+func (s *Service) clearParent(ticketID string) (RelationResult, error) {
 	resolved, err := s.repo.Resolve(ticketID)
 	if err != nil {
 		return RelationResult{}, err
@@ -348,6 +401,10 @@ func (s *Service) ordinaryFormerParent(id string) error {
 // epic's: the list orders, it does not decide membership, so an id it names
 // that is not a child is stored and ignored on read.
 func (s *Service) SetChildOrder(epicID string, ids []string) (RelationResult, error) {
+	return mutate(s, func(scoped *Service) (RelationResult, error) { return scoped.setChildOrder(epicID, ids) })
+}
+
+func (s *Service) setChildOrder(epicID string, ids []string) (RelationResult, error) {
 	resolved, err := s.repo.Resolve(epicID)
 	if err != nil {
 		return RelationResult{}, err

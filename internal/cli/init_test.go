@@ -24,30 +24,56 @@ import (
 	"github.com/worksonmyai/kontora/internal/web"
 )
 
-func TestInit_LocalChildExecutionSettings(t *testing.T) {
+func TestLocalChildExecutionSettings(t *testing.T) {
 	path := initTestRepo(t)
 	other := initTestRepo(t)
 	for _, tc := range []struct {
-		name, mode, path, branch string
-		missingParent            bool
-		wantErr                  bool
+		name, mode, path, branch, epicBranch string
+		missingParent, noParent              bool
+		wantErr                              bool
 	}{
+		{name: "branchless ordinary ticket", path: path, noParent: true},
 		{name: "separate branch", mode: "agent", path: path, branch: "child-work"},
+		{name: "branchless child", mode: "agent", path: path},
+		{name: "configured implicit branch collision", mode: "agent", path: path, epicBranch: "custom/child", wantErr: true},
 		{name: "cross repository", mode: "agent", path: other, wantErr: true},
+		{name: "cross repository with explicit branch", mode: "agent", path: other, branch: "child-work", wantErr: true},
 		{name: "integration branch", mode: "agent", path: path, branch: "integration", wantErr: true},
 		{name: "passive parent", path: other, branch: "integration"},
 		{name: "deleted parent", path: other, missingParent: true},
 	} {
-		for _, status := range []string{"open", "todo"} {
-			t.Run(tc.name+"/"+status, func(t *testing.T) {
+		for _, action := range []string{"init open", "init todo", "retry"} {
+			t.Run(tc.name+"/"+action, func(t *testing.T) {
 				dir := t.TempDir()
-				if !tc.missingParent {
-					writeTicket(t, dir, "epic.md", fmt.Sprintf("---\nid: epic\nkind: epic\nepic_execution: %q\nstatus: paused\npath: %q\nbranch: integration\n---\n# Epic\n", tc.mode, path))
+				parent := "epic"
+				if tc.noParent {
+					parent = ""
+				} else if !tc.missingParent {
+					branch := tc.epicBranch
+					if branch == "" {
+						branch = "integration"
+					}
+					writeTicket(t, dir, "epic.md", fmt.Sprintf("---\nid: epic\nkind: epic\nepic_execution: %q\nstatus: paused\npath: %q\nbranch: %q\n---\n# Epic\n", tc.mode, path, branch))
 				}
-				before := fmt.Sprintf("---\nid: child\nparent: epic\nstatus: open\npath: %q\nbranch: %q\n---\n# Child\n", path, tc.branch)
+				status, initialPath, lifecycleFields := "open", path, "status: open\n"
+				switch action {
+				case "retry":
+					status, initialPath = "todo", tc.path
+					lifecycleFields = "kontora: true\nstatus: paused\nattempt: 3\nlast_error: previous failure\n"
+				case "init todo":
+					status = "todo"
+				}
+				before := fmt.Sprintf("---\nid: child\nparent: %q\npath: %q\nbranch: %q\n%s---\n# Child\n", parent, initialPath, tc.branch, lifecycleFields)
 				writeTicket(t, dir, "child.md", before)
 				cfg := updateTestConfig(dir)
-				err := Enable(cfg, "child", EnableOpts{Path: tc.path, Pipeline: "none", Status: status}, io.Discard)
+				cfg.BranchPrefix = "custom"
+				cfg.BranchNaming.Mode = config.BranchNamingModeOff
+				var err error
+				if action == "retry" {
+					err = Retry(cfg, "chi")
+				} else {
+					err = Enable(cfg, "child", EnableOpts{Path: tc.path, Pipeline: "none", Status: status}, io.Discard)
+				}
 				if tc.wantErr {
 					require.ErrorIs(t, err, app.ErrInvalidState)
 					after, err := os.ReadFile(filepath.Join(dir, "child.md"))
@@ -62,7 +88,12 @@ func TestInit_LocalChildExecutionSettings(t *testing.T) {
 				assert.Equal(t, tc.path, got.Path)
 				assert.Equal(t, ticket.Status(status), got.Status)
 				assert.Equal(t, tc.branch, got.Branch)
+				assert.Equal(t, parent, got.Parent)
 				assert.Empty(t, got.Pipeline)
+				if action == "retry" {
+					assert.Zero(t, got.Attempt)
+					assert.Empty(t, got.LastError)
+				}
 			})
 		}
 	}

@@ -15,7 +15,9 @@ func (r *daemonRuntime) Enqueue(t *ticket.Ticket) {
 	}
 	r.d.mu.Lock()
 	defer r.d.mu.Unlock()
-	r.d.enqueue(t)
+	if current, ok := r.d.tickets[t.ID]; ok && current.ticket.Status == ticket.StatusTodo {
+		r.d.enqueue(current.ticket)
+	}
 }
 
 func (r *daemonRuntime) Cancel(ticketID string) {

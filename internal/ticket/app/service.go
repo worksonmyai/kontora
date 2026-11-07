@@ -49,6 +49,8 @@ type Service struct {
 	cfg     ConfigFunc
 	repo    Repository
 	runtime RuntimeHooks
+	// validateExecution is set only on a call-local service, never the shared one.
+	validateExecution func(*ticket.Ticket) error
 }
 
 // New creates a Service.
@@ -105,6 +107,10 @@ func refuseEpic(t *ticket.Ticket, id, verb string) error {
 
 // SetStatus changes a ticket's status with validation.
 func (s *Service) SetStatus(id string, status ticket.Status) (Result, error) {
+	return mutate(s, func(scoped *Service) (Result, error) { return scoped.setStatus(id, status) })
+}
+
+func (s *Service) setStatus(id string, status ticket.Status) (Result, error) {
 	if !s.isValidSetStatus(status) {
 		return Result{}, fmt.Errorf("invalid status %q", status)
 	}
@@ -198,16 +204,46 @@ func (s *Service) Retry(id string) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
+	prepared, preparationErr := s.PrepareExecutionSettings(st.Ticket)
+	return mutate(s, func(scoped *Service) (Result, error) {
+		scoped.validateExecution = func(t *ticket.Ticket) error {
+			if preparationErr != nil {
+				return preparationErr
+			}
+			return prepared.Validate(scoped.repo, t)
+		}
+		return scoped.retry(id)
+	})
+}
 
-	if !st.Ticket.Kontora {
-		return Result{}, fmt.Errorf("%w: ticket is not initialized", ErrInvalidState)
+func validateRetry(t *ticket.Ticket, resolved string) error {
+	if !t.Kontora {
+		return fmt.Errorf("%w: ticket is not initialized", ErrInvalidState)
 	}
-	if err := refuseEpic(st.Ticket, resolved, "retry"); err != nil {
+	if err := refuseEpic(t, resolved, "retry"); err != nil {
+		return err
+	}
+	if t.Status == ticket.StatusInProgress || t.Status == ticket.StatusTodo || t.Status == ticket.StatusArchived {
+		return fmt.Errorf("%w: cannot retry ticket in status %s", ErrInvalidState, t.Status)
+	}
+	return nil
+}
+
+func (s *Service) retry(id string) (Result, error) {
+	resolved, err := s.repo.Resolve(id)
+	if err != nil {
+		return Result{}, err
+	}
+	st, err := s.mutationTicket(resolved)
+	if err != nil {
 		return Result{}, err
 	}
 
-	if st.Ticket.Status == ticket.StatusInProgress || st.Ticket.Status == ticket.StatusTodo || st.Ticket.Status == ticket.StatusArchived {
-		return Result{}, fmt.Errorf("%w: cannot retry ticket in status %s", ErrInvalidState, st.Ticket.Status)
+	if err := validateRetry(st.Ticket, resolved); err != nil {
+		return Result{}, err
+	}
+	if err := s.validateExecution(st.Ticket); err != nil {
+		return Result{}, err
 	}
 
 	if err := st.Ticket.SetField("attempt", 0); err != nil {
@@ -236,6 +272,10 @@ func (s *Service) Retry(id string) (Result, error) {
 // Skip advances a ticket to the next pipeline stage, or marks it done
 // if it is already on the final stage.
 func (s *Service) Skip(id string) (Result, error) {
+	return mutate(s, func(scoped *Service) (Result, error) { return scoped.skip(id) })
+}
+
+func (s *Service) skip(id string) (Result, error) {
 	resolved, err := s.repo.Resolve(id)
 	if err != nil {
 		return Result{}, err
@@ -419,6 +459,33 @@ func SetNotifyFields(t *ticket.Ticket, notify, channels []string) error {
 // pass through it again while it sits in open, which rewrites those fields but
 // keeps its stage and attempt count.
 func (s *Service) Init(id string, req InitRequest) (Result, error) {
+	// Build and validate the proposed execution identity without holding a
+	// mutation lock. The dry-run repository never publishes the proposal.
+	cfg := s.cfg()
+	var prepared *PreparedExecutionSettings
+	preflight := &Service{cfg: Static(cfg), repo: preparationRepository{s.repo}, runtime: NoopRuntime{}}
+	preflight.validateExecution = func(t *ticket.Ticket) error {
+		var err error
+		prepared, err = preflight.PrepareExecutionSettings(t)
+		if err == nil && t.IsAgentEpic() {
+			err = validateEpicGitSettings(t)
+		}
+		return err
+	}
+	_, preparationErr := preflight.init(id, req)
+	return mutate(s, func(scoped *Service) (Result, error) {
+		scoped.cfg = Static(cfg)
+		scoped.validateExecution = func(t *ticket.Ticket) error {
+			if preparationErr != nil {
+				return preparationErr
+			}
+			return prepared.Validate(scoped.repo, t)
+		}
+		return scoped.init(id, req)
+	})
+}
+
+func (s *Service) init(id string, req InitRequest) (Result, error) {
 	resolved, err := s.repo.Resolve(id)
 	if err != nil {
 		return Result{}, err
@@ -452,7 +519,7 @@ func (s *Service) Init(id string, req InitRequest) (Result, error) {
 	if err := applyInitFields(t, req, pipeline, agent); err != nil {
 		return Result{}, err
 	}
-	if err := s.ValidateExecutionSettings(t); err != nil {
+	if err := s.validateExecution(t); err != nil {
 		return Result{}, err
 	}
 

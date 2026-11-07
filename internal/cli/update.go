@@ -17,16 +17,51 @@ import (
 // are validated against the config.
 func Update(cfg *config.Config, id string, req web.UpdateTicketRequest) error {
 	repo := store.NewDiskRepo(cfg.TicketsDir)
-	resolved, err := repo.Resolve(id)
-	if err != nil {
-		return err
+	var prepared *app.PreparedExecutionSettings
+	if req.Path != nil || req.Branch != nil {
+		// Resolving Git repository identities can run subprocesses, so prepare
+		// the proposal before taking the board mutation lock. Nothing is saved.
+		resolved, err := repo.Resolve(id)
+		if err != nil {
+			return err
+		}
+		st, err := repo.Get(resolved)
+		if err != nil {
+			return err
+		}
+		if err := applyUpdate(cfg, st.Ticket, req); err != nil {
+			return err
+		}
+		svc := app.New(app.Static(cfg), repo, app.NoopRuntime{})
+		prepared, err = svc.PrepareExecutionSettings(st.Ticket)
+		if err != nil {
+			return err
+		}
 	}
-	st, err := repo.Get(resolved)
-	if err != nil {
-		return err
-	}
-	t := st.Ticket
+	return repo.WithMutation(func(repo app.MutationRepository) error {
+		resolved, err := repo.Resolve(id)
+		if err != nil {
+			return err
+		}
+		st, err := repo.Get(resolved)
+		if err != nil {
+			return err
+		}
+		if err := applyUpdate(cfg, st.Ticket, req); err != nil {
+			return err
+		}
+		if prepared != nil {
+			// Reject changed execution inputs; this check reads fresh state but
+			// never invokes Git while the transaction is held.
+			if err := prepared.Validate(repo, st.Ticket); err != nil {
+				return err
+			}
+		}
+		return repo.Save(st)
+	})
+}
 
+func applyUpdate(cfg *config.Config, t *ticket.Ticket, req web.UpdateTicketRequest) error {
 	// Only a passive epic's derived status does not constrain brief editing.
 	// Agent epics use the same edit guard as ordinary work.
 	if !t.IsPassiveEpic() && !cfg.StatusAllowsEdit(string(t.Status)) {
@@ -80,11 +115,5 @@ func Update(cfg *config.Config, id string, req web.UpdateTicketRequest) error {
 		t.SetBody(*req.Body)
 	}
 
-	if req.Path != nil || req.Branch != nil {
-		svc := app.New(app.Static(cfg), repo, app.NoopRuntime{})
-		if err := svc.ValidateExecutionSettings(t); err != nil {
-			return err
-		}
-	}
-	return repo.Save(st)
+	return nil
 }

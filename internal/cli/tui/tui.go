@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"syscall"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -19,7 +20,6 @@ func Run(cfg *config.Config) error {
 	src := newSource(cfg)
 
 	m := newModel(src)
-	m.list.connected = src.Connected()
 
 	p := tea.NewProgram(m, tea.WithAltScreen())
 
@@ -42,17 +42,28 @@ func Run(cfg *config.Config) error {
 	}
 
 	if final, ok := result.(model); ok && final.attachTarget != "" {
-		return doAttach(cfg.TmuxSessionName(), final.attachTarget)
+		session, socket := src.Attachment()
+		return doAttach(session, socket, final.attachTarget)
 	}
 	return nil
 }
 
-func doAttach(sessionName, taskID string) error {
+func doAttach(sessionName, socket, taskID string) error {
+	args, err := attachArgs(sessionName, socket, taskID)
+	if err != nil {
+		return err
+	}
 	tmuxBin, err := exec.LookPath("tmux")
 	if err != nil {
 		return fmt.Errorf("tmux not found: %w", err)
 	}
-	target := tmux.WindowTarget(sessionName, taskID)
-	args := []string{"tmux", "attach-session", "-t", target, "-r"}
 	return syscall.Exec(tmuxBin, args, os.Environ())
+}
+
+func attachArgs(sessionName, socket, taskID string) ([]string, error) {
+	if sessionName == "" || !filepath.IsAbs(socket) || taskID == "" {
+		return nil, errAttachmentUnavailable
+	}
+	target := tmux.WindowTarget(sessionName, taskID)
+	return []string{"tmux", "-S", socket, "attach-session", "-t", target, "-r"}, nil
 }

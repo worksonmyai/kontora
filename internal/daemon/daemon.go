@@ -406,6 +406,10 @@ type Daemon struct {
 	version      string
 	log          *slog.Logger
 
+	storeIdentityOnce sync.Once
+	storeIdentity     atomic.Pointer[string]
+	tmuxSocket        atomic.Pointer[string]
+
 	// metrics is never nil: New installs a no-op-backed recorder so no call
 	// site needs an enabled check. Run replaces it when the config turns
 	// export on. meterProvider, when set by WithMeterProvider, takes
@@ -815,6 +819,9 @@ func (d *Daemon) Run(ctx context.Context) error {
 	}
 
 	var wg sync.WaitGroup
+	wg.Go(func() {
+		d.discoverTmuxSocket(ctx, 5*time.Second, 5*time.Second)
+	})
 
 	// Scheduler goroutine.
 	wg.Go(func() {
@@ -942,6 +949,7 @@ func (d *Daemon) releaseLock(f *os.File) {
 // whole store, which a single pass would still be building when it reached the
 // first todo ticket.
 func (d *Daemon) initialScan(dir string) error {
+	d.freezeStoreIdentity(dir)
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return err

@@ -16,13 +16,38 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// testSession keeps this package's tmux windows out of the session a real
-// daemon owns, so `go test` can never kill a running agent.
+// testSession groups windows on the isolated test server set up by TestMain.
 var testSession = fmt.Sprintf("kontora-tmuxtest-%d", os.Getpid())
 
 func TestMain(m *testing.M) {
+	// A separate session alone still shares the developer's live server. Clear
+	// the inherited socket and use a short private directory (macOS sun_path
+	// is limited to about 104 bytes) for every integration test in this package.
+	dir, err := os.MkdirTemp("/tmp", "kt")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	for key, value := range map[string]string{"TMUX": "", "TMUX_TMPDIR": dir} {
+		if err := os.Setenv(key, value); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			_ = os.RemoveAll(dir)
+			os.Exit(1)
+		}
+	}
+	// Keep the private server alive between tests that remove their last window.
+	if _, err := exec.LookPath("tmux"); err == nil {
+		out, err := exec.Command("tmux", "-f", "/dev/null", "new-session", "-d", "-s", testSession+"-anchor", "--", "sleep", "3600").CombinedOutput()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "starting test tmux server: %s: %v\n", out, err)
+			_ = exec.Command("tmux", "-N", "kill-server").Run()
+			_ = os.RemoveAll(dir)
+			os.Exit(1)
+		}
+	}
 	code := m.Run()
-	_ = exec.Command("tmux", "kill-session", "-t", "="+testSession).Run()
+	_ = exec.Command("tmux", "-N", "kill-server").Run()
+	_ = os.RemoveAll(dir)
 	os.Exit(code)
 }
 

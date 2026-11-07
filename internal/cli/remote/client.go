@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"sort"
@@ -30,6 +31,7 @@ type Client struct {
 	token         string
 	operatorToken string
 	hc            *http.Client
+	localOnly     bool
 }
 
 var (
@@ -77,11 +79,49 @@ func New(base, token string) *Client {
 	}
 }
 
+// NewLocal restricts automatic discovery to loopback, without proxies or redirects.
+// Explicit remote clients continue to use New.
+func NewLocal(host string, port int, token string) (*Client, error) {
+	if host == "" || strings.EqualFold(host, "localhost") {
+		host = "127.0.0.1"
+	}
+	ip := net.ParseIP(host)
+	if ip == nil || (!ip.IsLoopback() && !ip.IsUnspecified()) {
+		return nil, fmt.Errorf("automatic local connection requires a loopback address")
+	}
+	if ip.IsUnspecified() {
+		if ip.To4() != nil {
+			host = "127.0.0.1"
+		} else {
+			host = "::1"
+		}
+	}
+	t := newTransport()
+	t.Proxy = nil
+	dialer := &net.Dialer{Timeout: 2 * time.Second}
+	t.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+		h, _, err := net.SplitHostPort(address)
+		if err != nil || !net.ParseIP(h).IsLoopback() {
+			return nil, fmt.Errorf("refusing non-loopback connection to %q", address)
+		}
+		return dialer.DialContext(ctx, network, address)
+	}
+	base := "http://" + net.JoinHostPort(host, strconv.Itoa(port))
+	c := NewWithClient(base, token, &http.Client{
+		Transport: t,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return fmt.Errorf("redirects disabled for automatic local connection")
+		},
+	})
+	c.localOnly = true
+	return c, nil
+}
+
 // newTransport bounds connection setup and the wait for response headers, but
 // not the lifetime of the response body. A total http.Client.Timeout would also
 // cap the body, which would tear down the long-lived SSE stream every few
 // seconds even when the daemon is healthy.
-func newTransport() http.RoundTripper {
+func newTransport() *http.Transport {
 	t := http.DefaultTransport.(*http.Transport).Clone()
 	t.ResponseHeaderTimeout = 10 * time.Second
 	return t
@@ -120,6 +160,12 @@ func (c *Client) newRequest(ctx context.Context, method, path string, body io.Re
 // doJSON performs a request with an optional JSON body and decodes a JSON
 // response into out (when non-nil). Responses with status >= 400 become errors.
 func (c *Client) doJSON(method, path string, reqBody, out any) error {
+	ctx, cancel := context.WithTimeout(context.Background(), unaryRequestTimeout)
+	defer cancel()
+	return c.doJSONContext(ctx, method, path, reqBody, out)
+}
+
+func (c *Client) doJSONContext(ctx context.Context, method, path string, reqBody, out any) error {
 	var rdr io.Reader
 	if reqBody != nil {
 		b, err := json.Marshal(reqBody)
@@ -128,8 +174,6 @@ func (c *Client) doJSON(method, path string, reqBody, out any) error {
 		}
 		rdr = bytes.NewReader(b)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), unaryRequestTimeout)
-	defer cancel()
 	req, err := c.newRequest(ctx, method, path, rdr)
 	if err != nil {
 		return err
@@ -142,7 +186,7 @@ func (c *Client) doJSON(method, path string, reqBody, out any) error {
 		return &transportError{base: c.base, err: err}
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode >= 400 {
+	if resp.StatusCode >= 400 || (c.localOnly && resp.StatusCode >= 300) {
 		return decodeError(resp)
 	}
 	if out != nil {
@@ -292,8 +336,15 @@ func (c *Client) PlannotatorAnnotate(id string) error {
 
 // Config returns the daemon's pipelines, agents, and related metadata.
 func (c *Client) Config() (web.ConfigInfo, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), unaryRequestTimeout)
+	defer cancel()
+	return c.ConfigContext(ctx)
+}
+
+// ConfigContext keeps automatic source selection within the caller's deadline.
+func (c *Client) ConfigContext(ctx context.Context) (web.ConfigInfo, error) {
 	var cfg web.ConfigInfo
-	if err := c.doJSON(http.MethodGet, "/api/config", nil, &cfg); err != nil {
+	if err := c.doJSONContext(ctx, http.MethodGet, "/api/config", nil, &cfg); err != nil {
 		return web.ConfigInfo{}, err
 	}
 	return cfg, nil

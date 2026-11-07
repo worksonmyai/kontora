@@ -34,7 +34,10 @@ type detailModel struct {
 	agents   []string // available agents for cycling (empty = not yet fetched)
 	agentIdx int      // current index into agents (0 = pipeline default)
 
-	err error
+	err        error
+	readOnly   bool
+	attachable bool
+	diagnostic string
 }
 
 func newDetailModel(info web.TicketInfo, width, height int) detailModel {
@@ -225,9 +228,22 @@ func (m detailModel) View() string {
 	b.WriteByte('\n')
 
 	// Status bar
+	b.WriteString(styledHints(m.hints()))
+	if m.diagnostic != "" {
+		b.WriteString("\n " + styleFaint.Render(m.diagnostic))
+	}
+
+	if m.err != nil {
+		b.WriteString("\n " + lipgloss.NewStyle().Foreground(lipgloss.Color("1")).Render(m.err.Error()))
+	}
+
+	return b.String()
+}
+
+func (m detailModel) hints() []string {
 	var parts []string
 	st := ticket.Status(m.ticket.Status)
-	if m.ticket.Kontora {
+	if !m.readOnly && m.ticket.Kontora {
 		if st == ticket.StatusInProgress {
 			parts = append(parts, "p pause")
 		}
@@ -238,17 +254,13 @@ func (m detailModel) View() string {
 			parts = append(parts, "s skip")
 		}
 	}
-	if st == ticket.StatusOpen || st == ticket.StatusTodo || st == ticket.StatusPaused {
+	if !m.readOnly && (st == ticket.StatusOpen || st == ticket.StatusTodo || st == ticket.StatusPaused) {
 		parts = append(parts, "g agent")
 	}
-	parts = append(parts, "a attach", "l logs", "1/2 tabs", "esc back")
-	b.WriteString(styledHints(parts))
-
-	if m.err != nil {
-		b.WriteString("\n " + lipgloss.NewStyle().Foreground(lipgloss.Color("1")).Render(m.err.Error()))
+	if m.attachable {
+		parts = append(parts, "a attach")
 	}
-
-	return b.String()
+	return append(parts, "l logs", "1/2 tabs", "esc back")
 }
 
 func writeMeta(b *strings.Builder, key, value string) {

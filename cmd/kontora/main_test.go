@@ -1,12 +1,25 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
+	"github.com/charmbracelet/x/ansi"
+	"github.com/creack/pty/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -14,6 +27,7 @@ import (
 	"github.com/worksonmyai/kontora/internal/config"
 	"github.com/worksonmyai/kontora/internal/frontmatter"
 	"github.com/worksonmyai/kontora/internal/testutil"
+	"github.com/worksonmyai/kontora/internal/web"
 )
 
 func TestResolveConfigPath(t *testing.T) {
@@ -416,6 +430,209 @@ func TestTicketsDirEnvNote(t *testing.T) {
 			require.NoError(t, err)
 
 			assert.Equal(t, tc.want, foldEnvOverConfig(cfg, configPath))
+		})
+	}
+}
+
+func TestLocalTUIRejectsUnverifiedDaemonBoard(t *testing.T) {
+	bin := buildKontora(t)
+	for _, tc := range []struct {
+		name, identity, diagnostic string
+	}{
+		{name: "different directory", identity: "board-a", diagnostic: "does not match requested board"},
+		{name: "missing identity", diagnostic: "directory identity missing"},
+		{name: "relative identity", identity: "relative/tickets", diagnostic: "directory identity missing"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			scratch := t.TempDir()
+			boardA, boardB := filepath.Join(scratch, "board-a"), filepath.Join(scratch, "board-b")
+			originals := map[string]string{}
+			for dir, title := range map[string]string{boardA: "Daemon board A", boardB: "Requested board B"} {
+				require.NoError(t, os.MkdirAll(dir, 0o755))
+				path := filepath.Join(dir, "kon-shared.md")
+				originals[path] = "---\nid: kon-shared\nstatus: paused\nkontora: true\n---\n# " + title + "\n\n" + title + " detail body\n"
+				require.NoError(t, os.WriteFile(path, []byte(originals[path]), 0o600))
+			}
+			identity := tc.identity
+			if identity == "board-a" {
+				identity = boardA
+			}
+			var mu sync.Mutex
+			var requests []string
+			probed := make(chan struct{}, 1)
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				mu.Lock()
+				requests = append(requests, r.Method+" "+r.URL.Path)
+				mu.Unlock()
+				switch r.URL.Path {
+				case "/api/config":
+					_ = json.NewEncoder(w).Encode(web.ConfigInfo{
+						TicketsDir: identity, TmuxSession: "board-a", TmuxSocket: filepath.Join(scratch, "a.sock"),
+						Agents: []string{"claude", "codex"},
+					})
+					select {
+					case probed <- struct{}{}:
+					default:
+					}
+				case "/api/tickets":
+					_ = json.NewEncoder(w).Encode(map[string]any{"tickets": []web.TicketInfo{
+						{ID: "kon-shared", Title: "Daemon board A", Status: "paused", Kontora: true},
+					}})
+				case "/api/events":
+					w.Header().Set("Content-Type", "text/event-stream")
+					fmt.Fprint(w, "event: ticket_updated\ndata: {\"ticket\":{\"id\":\"kon-shared\",\"title\":\"Daemon board A\"}}\n\n")
+				default:
+					_ = json.NewEncoder(w).Encode(web.TicketInfo{ID: "kon-shared", Title: "Daemon board A", Status: "paused", Kontora: true})
+				}
+			}))
+			defer srv.Close()
+			host, port, err := net.SplitHostPort(srv.Listener.Addr().String())
+			require.NoError(t, err)
+			portNumber, err := strconv.Atoi(port)
+			require.NoError(t, err)
+			configPath := filepath.Join(scratch, "config.yaml")
+			require.NoError(t, os.WriteFile(configPath, fmt.Appendf(nil, `tickets_dir: %q
+worktrees_dir: %q
+logs_dir: %q
+agents:
+  claude:
+    binary: true
+web:
+  host: %q
+  port: %d
+`, boardA, filepath.Join(scratch, "wt"), filepath.Join(scratch, "logs"), host, portNumber), 0o600))
+			// A broken attachment guard must not execute the developer's tmux.
+			tools := filepath.Join(scratch, "bin")
+			require.NoError(t, os.MkdirAll(tools, 0o755))
+			attached := filepath.Join(scratch, "attached")
+			require.NoError(t, os.WriteFile(filepath.Join(tools, "tmux"), fmt.Appendf(nil, "#!/bin/sh\nprintf attached > %q\nexit 91\n", attached), 0o755))
+
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+			cmd := exec.CommandContext(ctx, bin, "ls", "--config", configPath, "--tickets-dir", boardB)
+			cmd.Dir = scratch
+			cmd.Env = cliTestEnv(t, []string{"TERM=xterm-256color", "TMUX=", "PATH=" + tools + string(os.PathListSeparator) + os.Getenv("PATH")})
+			terminal, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: 40, Cols: 400})
+			require.NoError(t, err)
+			exited := make(chan struct{})
+			var processErr error
+			go func() {
+				processErr = cmd.Wait()
+				close(exited)
+			}()
+			output := make(chan string, 64)
+			readDone := make(chan struct{})
+			go func() {
+				defer close(readDone)
+				defer close(output)
+				buf := make([]byte, 32*1024)
+				pending := ""
+				for {
+					n, err := terminal.Read(buf)
+					if n > 0 {
+						chunk := string(buf[:n])
+						// Termenv queries the cursor while detecting terminal colors.
+						// A cursor-only reply reports that OSC colors are unsupported.
+						pending += chunk
+						for strings.Contains(pending, "\x1b[6n") {
+							_, pending, _ = strings.Cut(pending, "\x1b[6n")
+							_, _ = io.WriteString(terminal, "\x1b[1;1R")
+						}
+						if len(pending) > 3 {
+							pending = pending[len(pending)-3:]
+						}
+						select {
+						case output <- chunk:
+						case <-ctx.Done():
+							return
+						}
+					}
+					if err != nil {
+						return
+					}
+				}
+			}()
+			t.Cleanup(func() {
+				cancel()
+				_ = terminal.Close()
+				<-exited
+				<-readDone
+			})
+			var transcript strings.Builder
+			waitFor := func(wants ...string) string {
+				t.Helper()
+				var fresh strings.Builder
+				timer := time.NewTimer(5 * time.Second)
+				defer timer.Stop()
+				for {
+					plain := ansi.Strip(fresh.String())
+					if slices.ContainsFunc(wants, func(want string) bool { return !strings.Contains(plain, want) }) {
+						select {
+						case chunk, ok := <-output:
+							require.True(t, ok, "PTY closed before %q:\n%s", wants, ansi.Strip(transcript.String()))
+							transcript.WriteString(chunk)
+							fresh.WriteString(chunk)
+						case <-timer.C:
+							t.Fatalf("waiting for %q:\n%s", wants, ansi.Strip(transcript.String()))
+						}
+						continue
+					}
+					return plain
+				}
+			}
+			send := func(keys string) {
+				t.Helper()
+				_, err := io.WriteString(terminal, keys)
+				require.NoError(t, err)
+			}
+			select {
+			case <-probed:
+			case <-ctx.Done():
+				t.Fatal("CLI did not probe /api/config")
+			}
+			initial := waitFor("Requested board B", "file mode", tc.diagnostic, "actions and attachment disabled")
+			for _, hint := range []string{"a attach", "p pause", "r retry", "s skip", "n new"} {
+				assert.NotContains(t, initial, hint)
+			}
+			for i, key := range []string{"a", "p", "r", "s", "n", "g"} {
+				// A unique filter proves the process handled each action and stayed on the board.
+				// NUL separates keys so Bubble Tea cannot combine them into one rune message.
+				marker := strconv.Itoa(i + 1)
+				send(key + "\x00/\x00" + marker)
+				wants := []string{"/" + marker + "▌"}
+				if key == "a" {
+					wants = append(wants, "verified daemon socket and session required")
+				}
+				waitFor(wants...)
+				send("\x1b")
+				waitFor("file mode")
+			}
+			send("\r")
+			waitFor("Requested board B detail body")
+			send("g")
+			waitFor("daemon not verified; actions and attachment unavailable")
+			send("q")
+			waitFor("file mode")
+			send("q")
+			select {
+			case <-exited:
+				require.NoError(t, processErr, ansi.Strip(transcript.String()))
+			case <-ctx.Done():
+				t.Fatal("CLI did not exit after q")
+			}
+			for chunk := range output {
+				transcript.WriteString(chunk)
+			}
+			assert.NotContains(t, ansi.Strip(transcript.String()), "Daemon board A")
+			assert.NoFileExists(t, attached)
+			mu.Lock()
+			assert.Equal(t, []string{"GET /api/config"}, requests, "no board A reads, mutations, or subscriptions")
+			mu.Unlock()
+			for path, original := range originals {
+				data, err := os.ReadFile(path)
+				require.NoError(t, err)
+				assert.Equal(t, original, string(data), path)
+			}
 		})
 	}
 }

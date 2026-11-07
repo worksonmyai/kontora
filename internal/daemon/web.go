@@ -221,9 +221,16 @@ func (d *Daemon) UploadTicket(content []byte) (web.TicketInfo, error) {
 	return info, nil
 }
 
-// GetConfig returns available pipelines and agents from the daemon config.
+// GetConfig returns available pipelines, agents and the daemon's runtime identity.
 func (d *Daemon) GetConfig() web.ConfigInfo {
 	cfg := d.config()
+	var ticketsDir, socket string
+	if identity := d.storeIdentity.Load(); identity != nil {
+		ticketsDir = *identity
+	}
+	if discovered := d.tmuxSocket.Load(); discovered != nil {
+		socket = *discovered
+	}
 	pipelines := slices.Sorted(maps.Keys(cfg.Pipelines))
 	infos := make([]web.PipelineInfo, len(pipelines))
 	for i, name := range pipelines {
@@ -267,6 +274,9 @@ func (d *Daemon) GetConfig() web.ConfigInfo {
 		}
 	}
 	return web.ConfigInfo{
+		TicketsDir:      ticketsDir,
+		TmuxSession:     d.tmuxSession,
+		TmuxSocket:      socket,
 		Pipelines:       pipelines,
 		PipelineInfos:   infos,
 		Agents:          agents,

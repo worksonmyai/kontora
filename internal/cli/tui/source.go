@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/worksonmyai/kontora/internal/cli"
@@ -19,8 +20,8 @@ import (
 )
 
 // Source abstracts the data backend for the TUI. There are two
-// implementations: apiSource (daemon running) and fileSource (daemon not
-// running, reads ticket files directly from disk).
+// implementations: apiSource (daemon verified for the requested directory)
+// and fileSource (daemon unverified, reads ticket files directly from disk).
 type Source interface {
 	FetchTickets() ([]web.TicketInfo, int, error)
 	FetchTask(id string) (web.TicketInfo, error)
@@ -34,31 +35,79 @@ type Source interface {
 	SetStage(id, stage string) error
 	Subscribe(ctx context.Context) <-chan web.TicketEvent
 	Connected() bool
+	Diagnostic() string
+	Attachment() (session, socket string)
 }
 
-// newSource probes the daemon API; if reachable, returns an apiSource,
-// otherwise falls back to fileSource.
 func newSource(cfg *config.Config) Source {
-	if cfg.Web.Enabled != nil && !*cfg.Web.Enabled {
-		return &fileSource{cfg: cfg}
+	if dir, err := config.DirectoryIdentity(cfg.TicketsDir); err == nil {
+		local := *cfg
+		local.TicketsDir = dir
+		cfg = &local
 	}
-	client := cli.LocalClient(cfg)
+	fallback := &fileSource{cfg: cfg, diagnostic: "daemon unavailable; actions and attachment disabled"}
+	if cfg.Web.Enabled != nil && !*cfg.Web.Enabled {
+		fallback.diagnostic = "web API disabled; actions and attachment disabled"
+		return fallback
+	}
+	client, err := remote.NewLocal(cfg.Web.Host, cfg.Web.Port, cfg.Web.Token)
+	if err != nil {
+		fallback.diagnostic = err.Error() + "; actions and attachment disabled"
+		return fallback
+	}
+	client = client.GuardMutations(func(run func() error) error {
+		return ticket.WithOrdinaryRouting(config.ExpandTilde(cfg.TicketsDir), run)
+	})
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	if err := client.Ping(ctx); err == nil {
-		return &apiSource{client: client}
+	identity, err := client.ConfigContext(ctx)
+	if err != nil {
+		fallback.diagnostic = "cannot verify daemon: " + err.Error() + "; actions and attachment disabled"
+		return fallback
 	}
-	return &fileSource{cfg: cfg}
+	if !filepath.IsAbs(identity.TicketsDir) {
+		fallback.diagnostic = "daemon directory identity missing; actions and attachment disabled"
+		return fallback
+	}
+	matches, err := config.SameDirectory(cfg.TicketsDir, identity.TicketsDir)
+	if err != nil {
+		fallback.diagnostic = fmt.Sprintf("cannot compare daemon board %q with requested board %q: %v; actions and attachment disabled", identity.TicketsDir, cfg.TicketsDir, err)
+		return fallback
+	}
+	if !matches {
+		fallback.diagnostic = fmt.Sprintf("daemon board %q does not match requested board %q; actions and attachment disabled", identity.TicketsDir, cfg.TicketsDir)
+		return fallback
+	}
+	return &apiSource{client: client, identity: identity}
 }
 
 // --- apiSource ---
 
 // apiSource adapts a remote.Client to the TUI Source interface.
 type apiSource struct {
-	client *remote.Client
+	client    *remote.Client
+	mu        sync.RWMutex
+	configSeq uint64
+	identity  web.ConfigInfo
 }
 
 func (s *apiSource) Connected() bool { return true }
+
+func (s *apiSource) Attachment() (string, string) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.identity.TmuxSession == "" || !filepath.IsAbs(s.identity.TmuxSocket) {
+		return "", ""
+	}
+	return s.identity.TmuxSession, s.identity.TmuxSocket
+}
+
+func (s *apiSource) Diagnostic() string {
+	if session, _ := s.Attachment(); session == "" {
+		return "daemon socket identity unavailable; attachment disabled"
+	}
+	return ""
+}
 
 func (s *apiSource) FetchTickets() ([]web.TicketInfo, int, error) {
 	return s.client.ListTickets()
@@ -73,7 +122,32 @@ func (s *apiSource) FetchLogs(id, stage string) (string, error) {
 }
 
 func (s *apiSource) FetchConfig() (web.ConfigInfo, error) {
-	return s.client.Config()
+	s.mu.Lock()
+	s.configSeq++
+	seq := s.configSeq
+	s.mu.Unlock()
+	cfg, err := s.client.Config()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if seq != s.configSeq {
+		return cfg, err
+	}
+	s.identity.TmuxSession, s.identity.TmuxSocket = "", ""
+	if err != nil {
+		return cfg, err
+	}
+	if !filepath.IsAbs(cfg.TicketsDir) {
+		return cfg, fmt.Errorf("daemon directory identity missing")
+	}
+	matches, err := config.SameDirectory(s.identity.TicketsDir, cfg.TicketsDir)
+	if err != nil {
+		return cfg, fmt.Errorf("cannot compare daemon board identity: %w", err)
+	}
+	if !matches {
+		return cfg, fmt.Errorf("daemon board identity changed")
+	}
+	s.identity.TmuxSession, s.identity.TmuxSocket = cfg.TmuxSession, cfg.TmuxSocket
+	return cfg, nil
 }
 
 func (s *apiSource) CreateTicket(req web.CreateTicketRequest) (web.TicketInfo, error) {
@@ -99,10 +173,13 @@ func (s *apiSource) Subscribe(ctx context.Context) <-chan web.TicketEvent {
 // --- fileSource ---
 
 type fileSource struct {
-	cfg *config.Config
+	cfg        *config.Config
+	diagnostic string
 }
 
-func (s *fileSource) Connected() bool { return false }
+func (s *fileSource) Connected() bool              { return false }
+func (s *fileSource) Diagnostic() string           { return s.diagnostic }
+func (s *fileSource) Attachment() (string, string) { return "", "" }
 
 func (s *fileSource) FetchTickets() ([]web.TicketInfo, int, error) {
 	svc := s.newService()
@@ -142,7 +219,8 @@ func (s *fileSource) FetchLogs(id, stage string) (string, error) {
 	return buf.String(), nil
 }
 
-var errDaemonNotRunning = fmt.Errorf("daemon not running — actions unavailable in file mode")
+var errDaemonNotRunning = fmt.Errorf("daemon not verified; actions and attachment unavailable in file mode")
+var errAttachmentUnavailable = fmt.Errorf("verified daemon socket and session required for attachment")
 
 func (s *fileSource) FetchConfig() (web.ConfigInfo, error) {
 	return web.ConfigInfo{}, errDaemonNotRunning

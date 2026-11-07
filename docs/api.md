@@ -58,6 +58,16 @@ When the web server is enabled, the following endpoints are exposed:
 
 Each `agent_infos` entry in `GET /api/config` reports the model and effort that Kontora detects. Kontora reads the agent's `effort` field and supported CLI flags. Pipeline and stage overrides are not applied. Both response fields are always present. An empty value means Kontora detected no setting.
 
+`GET /api/config` also exposes optional runtime identity:
+
+| Field | Meaning |
+|-------|---------|
+| `tickets_dir` | Absolute directory for the running ticket store, with symlinks resolved. Omitted if unavailable. |
+| `tmux_session` | The running daemon's tmux session name. |
+| `tmux_socket` | The existing server's absolute socket path, discovered in the background. Omitted until discovery succeeds or if the session disappears. Discovery does not start a server. |
+
+The daemon captures directory identity when it opens the store. Retargeting a store symlink or editing restart-only settings does not change that identity. Socket discovery does not delay config responses. Automatic local TUI connections require matching filesystem directory identity. Missing identity, including responses from older daemons, selects read-only file mode. A missing socket disables attachment without disabling ticket actions on a verified board. Explicit remote clients do not require these fields. Initial verification does not protect a long-lived client against server replacement at the same address.
+
 ### Epics
 
 `POST /api/tickets` with `kind: "epic"` creates a passive epic in `open`.

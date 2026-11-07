@@ -403,6 +403,62 @@ func TestRemoteDispatch_RunWithoutLocalConfig(t *testing.T) {
 	assert.Equal(t, "Bearer secret", authHeader)
 }
 
+func TestRemoteDispatch_ListWithoutDirectoryIdentity(t *testing.T) {
+	for _, tc := range []struct {
+		name, identity string
+		useEnv         bool
+	}{
+		{name: "url with missing identity"},
+		{name: "url with another board", identity: "/remote/board-a"},
+		{name: "environment with missing identity", useEnv: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			boardB := t.TempDir()
+			require.NoError(t, os.WriteFile(filepath.Join(boardB, "kon-shared.md"), []byte(
+				"---\nid: kon-shared\nstatus: paused\nkontora: true\n---\n# Requested board B\n"), 0o600))
+			var mu sync.Mutex
+			var requests, auth []string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				mu.Lock()
+				requests = append(requests, r.Method+" "+r.URL.Path)
+				auth = append(auth, r.Header.Get("Authorization"))
+				mu.Unlock()
+				switch r.URL.Path {
+				case "/api/config":
+					_ = json.NewEncoder(w).Encode(web.ConfigInfo{TicketsDir: tc.identity})
+				case "/api/tickets":
+					_ = json.NewEncoder(w).Encode(map[string]any{"tickets": []web.TicketInfo{
+						{ID: "kon-shared", Title: "Daemon board A", Status: "paused", Kontora: true},
+					}})
+				default:
+					w.WriteHeader(http.StatusNotFound)
+				}
+			}))
+			defer srv.Close()
+			args := []string{"ls", "--json", "--tickets-dir", boardB,
+				"--config", filepath.Join(t.TempDir(), "missing-config.yaml")}
+			var env []string
+			if tc.useEnv {
+				env = []string{"KONTORA_URL=" + srv.URL, "KONTORA_TOKEN=explicit-token"}
+			} else {
+				args = append(args, "--url", srv.URL, "--token", "explicit-token")
+			}
+			out, err := runCLI(t, env, args...)
+			require.NoError(t, err, out)
+			var rows []map[string]any
+			require.NoError(t, json.Unmarshal([]byte(out), &rows))
+			require.Len(t, rows, 1)
+			assert.Equal(t, "kon-shared", rows[0]["id"])
+			assert.Equal(t, "Daemon board A", rows[0]["title"])
+			assert.NotContains(t, out, "Requested board B")
+			mu.Lock()
+			assert.Equal(t, []string{"GET /api/tickets"}, requests, "explicit remote mode must not probe local directory identity")
+			assert.Equal(t, []string{"Bearer explicit-token"}, auth)
+			mu.Unlock()
+		})
+	}
+}
+
 func TestRemoteDispatch_PauseSendsExactID(t *testing.T) {
 	var pausePath string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

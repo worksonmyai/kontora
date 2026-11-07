@@ -64,7 +64,13 @@ The static table has ID, status, title, project, stage, agent, and the ids block
 
 `--json` prints an array of objects with `id`, `title`, `status`, `kontora`, `path`, `project`, `pipeline`, `stage`, `agent`, `created_at`, `started_at`, `completed_at`, `deps`, `links`, `parent`, `kind`, `epic_execution`, `child_order`, `branch`, `base_branch`, `ready` and `blockers`. `epic_execution: "agent"` identifies an activated supervisor. `child_order` is stored display order, not membership; use each child's `parent` to find members. It never carries the ticket body; `kontora view --body` is what prints that. `deps`, `links` and `blockers` are always arrays, and an empty result is `[]`, so a script can iterate without a nil check.
 
-Remote mode asks the daemon for every ticket, including the hidden statuses, and applies the same filters locally, so a flag means the same thing on both sides.
+The local TUI uses the daemon API only after verifying that its advertised `tickets_dir` identifies the requested local directory. Requested paths can be relative, contain `~`, or use symlinks. Automatic discovery accepts only loopback addresses, `localhost`, or wildcard addresses normalized to loopback. It does not use proxies or follow redirects.
+
+If verification fails, the TUI displays the requested files with a diagnostic. Ticket actions and terminal attachment are disabled. Older daemons without directory identity also use file mode. With a verified daemon, attachment additionally requires its advertised tmux session and socket. The TUI passes that socket with `tmux -S`, rather than inheriting the client's server selection. Socket discovery never starts a tmux server. The TUI refreshes attachment identity every two seconds, so sessions created after startup become attachable without restarting the TUI.
+
+Verification applies to the initial connection. It does not bind a long-lived TUI to one daemon across server replacement at the same address.
+
+Explicit remote mode (`--url` or `KONTORA_URL`) does not require local directory identity. Remote mode asks the daemon for every ticket, including the hidden statuses, and applies the same filters locally, so a flag means the same thing on both sides.
 
 ### `kontora search [flags] QUERY`
 

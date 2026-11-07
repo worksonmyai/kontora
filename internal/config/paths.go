@@ -1,10 +1,60 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
 )
+
+// DirectoryIdentity resolves local path aliases to an existing absolute directory.
+func DirectoryIdentity(path string) (string, error) {
+	if path == "" {
+		return "", fmt.Errorf("directory path is empty")
+	}
+	absolute := ExpandTilde(path)
+	if !filepath.IsAbs(absolute) {
+		wd, err := os.Getwd()
+		if err != nil {
+			return "", err
+		}
+		// Join and Abs would clean parent components before resolving symlinks.
+		absolute = wd + string(filepath.Separator) + absolute
+	}
+	resolved, err := filepath.EvalSymlinks(absolute)
+	if err != nil {
+		return "", err
+	}
+	info, err := os.Stat(resolved)
+	if err != nil {
+		return "", err
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("%q is not a directory", path)
+	}
+	return resolved, nil
+}
+
+// SameDirectory compares filesystem identity rather than path spelling.
+func SameDirectory(a, b string) (bool, error) {
+	first, err := DirectoryIdentity(a)
+	if err != nil {
+		return false, err
+	}
+	second, err := DirectoryIdentity(b)
+	if err != nil {
+		return false, err
+	}
+	firstInfo, err := os.Stat(first)
+	if err != nil {
+		return false, err
+	}
+	secondInfo, err := os.Stat(second)
+	if err != nil {
+		return false, err
+	}
+	return os.SameFile(firstInfo, secondInfo), nil
+}
 
 // ResolveConfigPath finds the config file by checking the local .kontora
 // directory first, then each config dir for kontora/config.yaml.

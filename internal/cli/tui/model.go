@@ -73,24 +73,24 @@ type model struct {
 }
 
 func newModel(src Source) model {
-	return model{
-		view:   viewList,
-		list:   newListModel(),
-		source: src,
-	}
+	list := newListModel()
+	list.connected = src.Connected()
+	list.diagnostic = src.Diagnostic()
+	session, socket := src.Attachment()
+	list.attachable = session != "" && socket != ""
+	return model{view: viewList, list: list, source: src}
 }
 
 func (m model) Init() tea.Cmd {
-	cmds := []tea.Cmd{m.fetchCustomStatusesCmd()}
-	if m.source != nil && m.source.Connected() {
-		cmds = append(cmds, m.fetchTasksCmd())
-	} else {
-		cmds = append(cmds, m.fetchTasksCmd(), tickCmd())
-	}
-	return tea.Batch(cmds...)
+	return tea.Batch(m.fetchCustomStatusesCmd(), m.fetchTasksCmd(), tickCmd())
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	m.list.diagnostic = m.source.Diagnostic()
+	m.detail.diagnostic = m.list.diagnostic
+	session, socket := m.source.Attachment()
+	m.list.attachable = session != "" && socket != ""
+	m.detail.attachable = m.list.attachable
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
@@ -107,6 +107,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case customStatusesMsg:
 		m.list.customStatuses = msg.statuses
 		m.list.buildColumns()
+		m.list.clampCursor()
 		return m, nil
 
 	case ticketsRefreshedMsg:
@@ -132,6 +133,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tickMsg:
+		if m.source.Connected() {
+			return m, tea.Batch(m.fetchCustomStatusesCmd(), tickCmd())
+		}
 		return m, tea.Batch(m.fetchTasksCmd(), tickCmd())
 
 	case configMsg:
@@ -195,6 +199,25 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if (m.view == viewList && !m.list.filtering) || m.view == viewDetail {
+		var err error
+		if (isKey(msg, "p", "r", "s", "n") || (m.view == viewDetail && isKey(msg, "g"))) && !m.source.Connected() {
+			err = errDaemonNotRunning
+		}
+		if isKey(msg, "a") {
+			if session, socket := m.source.Attachment(); session == "" || socket == "" {
+				err = errAttachmentUnavailable
+			}
+		}
+		if err != nil {
+			if m.view == viewList {
+				m.list.err = err
+			} else {
+				m.detail.err = err
+			}
+			return m, nil
+		}
+	}
 	switch m.view {
 	case viewList:
 		return m.handleListKey(msg)
@@ -424,6 +447,10 @@ func (m model) createTaskCmd(req web.CreateTicketRequest) tea.Cmd {
 
 func (m model) openDetail(info web.TicketInfo) (model, tea.Cmd) {
 	m.detail = newDetailModel(info, m.width, m.height)
+	m.detail.readOnly = !m.source.Connected()
+	m.detail.diagnostic = m.source.Diagnostic()
+	session, socket := m.source.Attachment()
+	m.detail.attachable = session != "" && socket != ""
 	m.view = viewDetail
 	// This body is newer than anything a refresh in flight can carry.
 	m.refreshSeq++

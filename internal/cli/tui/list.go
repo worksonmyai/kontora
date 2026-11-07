@@ -64,7 +64,9 @@ type listModel struct {
 	filtering bool
 	filter    string
 
-	connected bool
+	connected  bool
+	attachable bool
+	diagnostic string
 	// loaded turns true on the first ticket refresh. Bubble Tea renders once
 	// before Init's fetch resolves, and an empty list before that means "not
 	// fetched yet", not "no tickets".
@@ -365,7 +367,7 @@ func (m listModel) View() string {
 	if m.connected {
 		header += styleFaint.Render(" · ") + styleConnected.Render("connected")
 	} else {
-		header += styleFaint.Render(" · ") + styleDisconnected.Render("disconnected")
+		header += styleFaint.Render(" · ") + styleDisconnected.Render("file mode")
 	}
 	if m.filtering {
 		filterStr := styleFilter.Render("/" + m.filter + "▌")
@@ -454,11 +456,18 @@ func (m listModel) View() string {
 
 	// Status bar
 	b.WriteByte('\n')
-	b.WriteString(styledHints([]string{
-		"h/l columns", "j/k navigate", "enter detail", "d done", "/ filter",
-		"n new", "p pause", "r retry", "s skip", "a attach",
-		"q quit",
-	}))
+	hints := []string{"h/l columns", "j/k navigate", "enter detail", "d done", "/ filter"}
+	if m.connected {
+		hints = append(hints, "n new", "p pause", "r retry", "s skip")
+	}
+	if m.attachable {
+		hints = append(hints, "a attach")
+	}
+	hints = append(hints, "q quit")
+	b.WriteString(styledHints(hints))
+	if m.diagnostic != "" {
+		b.WriteString("\n " + styleFaint.Render(m.diagnostic))
+	}
 
 	if m.err != nil {
 		b.WriteString("\n " + styleError.Render(m.err.Error()))

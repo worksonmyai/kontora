@@ -124,6 +124,35 @@ func InspectWindow(sessionName, windowName string) (bool, error) {
 	return false, nil
 }
 
+// SocketPath discovers the socket of an existing session without ever starting
+// a server. The global -N flag (before display-message) disables server startup.
+func SocketPath(ctx context.Context, sessionName string) (string, error) {
+	if sessionName == "" {
+		return "", fmt.Errorf("tmux socket: session name is empty")
+	}
+	// display-message can succeed for a missing target with an empty session
+	// context. Check the returned name as well as using an exact session target.
+	out, err := exec.CommandContext(ctx, "tmux", "-N", "display-message", "-p", "-t", "="+sessionName+":", "#{session_name}:#{socket_path}").CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("tmux socket: %s: %w", strings.TrimSpace(string(out)), err)
+	}
+	name, path, ok := strings.Cut(strings.TrimSuffix(string(out), "\n"), ":")
+	if !ok || name != sessionName {
+		return "", fmt.Errorf("tmux socket: session %q not found", sessionName)
+	}
+	if !filepath.IsAbs(path) || strings.ContainsAny(path, "\x00\r\n") {
+		return "", fmt.Errorf("tmux socket: invalid absolute socket path %q", path)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return "", fmt.Errorf("tmux socket: %w", err)
+	}
+	if info.Mode()&os.ModeSocket == 0 {
+		return "", fmt.Errorf("tmux socket: %q is not a socket", path)
+	}
+	return path, nil
+}
+
 // ListWindows returns names of all windows in the given tmux session.
 func ListWindows(sessionName string) ([]string, error) {
 	out, err := exec.Command("tmux", "list-windows", "-t", "="+sessionName, "-F", "#{window_name}").CombinedOutput()

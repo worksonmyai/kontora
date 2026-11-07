@@ -3,8 +3,10 @@ package daemon
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -225,6 +227,94 @@ func TestReload_InvalidConfigKeepsRunning(t *testing.T) {
 	h.writeConfig(t, h.yaml(configOpts{branchPrefix: "recovered"}))
 	require.NoError(t, d.reloadConfig())
 	assert.Equal(t, "recovered", d.config().BranchPrefix)
+}
+
+func TestReload_GetConfigAdvertisesRuntimeIdentity(t *testing.T) {
+	h := newReloadHarness(t)
+	store := t.TempDir()
+	alias := filepath.Join(t.TempDir(), "tickets")
+	require.NoError(t, os.Symlink(store, alias))
+	cwd, err := os.Getwd()
+	require.NoError(t, err)
+	relative, err := filepath.Rel(cwd, alias)
+	require.NoError(t, err)
+	initial := strings.Replace(h.yaml(configOpts{}), "tickets_dir: "+h.tasksDir, "tickets_dir: "+relative, 1)
+
+	// Never contact the developer's default server.
+	socketDir, err := os.MkdirTemp("", "kt")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.RemoveAll(socketDir) })
+	socket := filepath.Join(socketDir, "socket")
+	listener, err := net.Listen("unix", socket)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = listener.Close() })
+	binDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(binDir, "tmux"), []byte(`#!/bin/sh
+[ "$#" = 6 ] && [ "$1" = -N ] && [ "$2" = display-message ] && [ "$3" = -p ] && [ "$4" = -t ] && [ "$5" = '=kontora-test:' ] && [ "$6" = '#{session_name}:#{socket_path}' ] || exit 99
+printf 'kontora-test:%s\n' "$TEST_TMUX_SOCKET"
+`), 0o755))
+	t.Setenv("PATH", binDir)
+	t.Setenv("TEST_TMUX_SOCKET", socket)
+	d := h.newDaemonWithConfig(t, initial)
+	require.NoError(t, d.initialScan(relative))
+	startIdentityDiscovery(t, d, 10*time.Millisecond, time.Second)
+	require.Eventually(t, func() bool {
+		return d.GetConfig().TmuxSocket == socket
+	}, 3*time.Second, 10*time.Millisecond)
+
+	assertIdentity := func() {
+		t.Helper()
+		got := d.GetConfig()
+		assert.Equal(t, mustEvalDir(t, store), got.TicketsDir)
+		assert.True(t, filepath.IsAbs(got.TicketsDir))
+		assert.Equal(t, "kontora-test", got.TmuxSession)
+		assert.Equal(t, socket, got.TmuxSocket)
+		data, err := json.Marshal(got)
+		require.NoError(t, err)
+		var fields map[string]any
+		require.NoError(t, json.Unmarshal(data, &fields))
+		assert.Equal(t, got.TicketsDir, fields["tickets_dir"])
+		assert.Equal(t, got.TmuxSession, fields["tmux_session"])
+		assert.Equal(t, socket, fields["tmux_socket"])
+	}
+	assertIdentity()
+
+	changed := strings.Replace(h.yaml(configOpts{branchPrefix: "reloaded"}), "tickets_dir: "+h.tasksDir, "tickets_dir: "+t.TempDir(), 1)
+	changed = strings.Replace(changed, "tmux_session: kontora-test", "tmux_session: edited-session", 1)
+	h.writeConfig(t, changed)
+	require.NoError(t, d.reloadConfig())
+	assert.Equal(t, "reloaded", d.config().BranchPrefix, "live fields still reload")
+	assertIdentity()
+
+	require.NoError(t, listener.Close())
+	require.Eventually(t, func() bool {
+		return d.GetConfig().TmuxSocket == ""
+	}, 3*time.Second, 10*time.Millisecond)
+	got := d.GetConfig()
+	assert.Empty(t, got.TmuxSocket)
+	data, err := json.Marshal(got)
+	require.NoError(t, err)
+	assert.NotContains(t, string(data), `"tmux_socket"`)
+}
+
+func TestGetConfigOmitsUnavailableRuntimeIdentity(t *testing.T) {
+	h := newReloadHarness(t)
+	require.NoError(t, os.Remove(h.tasksDir))
+	d := h.newDaemonWithConfig(t, h.yaml(configOpts{}))
+	require.Error(t, d.initialScan(h.tasksDir))
+	require.NoError(t, os.Mkdir(h.tasksDir, 0o755))
+	require.NoError(t, d.initialScan(h.tasksDir))
+	got := d.GetConfig()
+	assert.Empty(t, got.TicketsDir)
+	assert.Empty(t, got.TmuxSocket)
+	assert.Equal(t, d.tmuxSession, got.TmuxSession)
+	data, err := json.Marshal(got)
+	require.NoError(t, err)
+	assert.NotContains(t, string(data), `"tickets_dir"`)
+	assert.NotContains(t, string(data), `"tmux_socket"`)
+	data, err = json.Marshal(web.ConfigInfo{})
+	require.NoError(t, err)
+	assert.NotContains(t, string(data), `"tmux_session"`, "runtime identity fields are optional")
 }
 
 func TestReload_NoConfigPath(t *testing.T) {
@@ -898,9 +988,9 @@ func TestReload_TicketsDirEnvBeatsFileEdit(t *testing.T) {
 	h := newReloadHarness(t)
 	envDir := t.TempDir()
 	t.Setenv(config.TicketsDirEnvVar, envDir)
-
 	d := h.newDaemonWithConfig(t, h.yaml(configOpts{}))
 	require.Equal(t, envDir, d.config().TicketsDir, "the environment must win at startup")
+	require.NoError(t, d.initialScan(d.config().TicketsDir))
 
 	otherDir := t.TempDir()
 	changed := strings.Replace(h.yaml(configOpts{}), "tickets_dir: "+h.tasksDir, "tickets_dir: "+otherDir, 1)
@@ -908,6 +998,8 @@ func TestReload_TicketsDirEnvBeatsFileEdit(t *testing.T) {
 	require.NoError(t, d.reloadConfig())
 
 	assert.Equal(t, envDir, d.config().TicketsDir)
+	assert.Equal(t, mustEvalDir(t, envDir), d.GetConfig().TicketsDir,
+		"runtime identity must advertise the effective environment-selected store")
 	assert.NotContains(t, h.logBuf.String(), "tickets_dir",
 		"both sides of the pin see the environment's value, so there is nothing to warn about")
 }

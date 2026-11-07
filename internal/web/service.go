@@ -458,6 +458,11 @@ type AgentInfo struct {
 }
 
 type ConfigInfo struct {
+	// Runtime identity describes the running daemon, not pending restart-only edits.
+	TicketsDir  string `json:"tickets_dir,omitempty"`
+	TmuxSession string `json:"tmux_session,omitempty"`
+	TmuxSocket  string `json:"tmux_socket,omitempty"`
+
 	Pipelines     []string       `json:"pipelines"`
 	PipelineInfos []PipelineInfo `json:"pipeline_infos"`
 	// Agents is retained for API compatibility; AgentInfos adds picker metadata

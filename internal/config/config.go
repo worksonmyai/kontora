@@ -1689,5 +1689,6 @@ func ExpandTilde(path string) string {
 	if err != nil {
 		return path
 	}
-	return filepath.Join(home, path[2:])
+	// Cleaning symlink/.. here would change the directory the path identifies.
+	return home + path[1:]
 }

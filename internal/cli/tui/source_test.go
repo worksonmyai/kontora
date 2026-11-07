@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -176,8 +177,9 @@ func TestFileSource_FetchTask(t *testing.T) {
 
 func TestAPISource_FetchConfig(t *testing.T) {
 	want := web.ConfigInfo{
-		Pipelines: []string{"default", "review"},
-		Agents:    []string{"claude", "aider"},
+		TicketsDir: t.TempDir(),
+		Pipelines:  []string{"default", "review"},
+		Agents:     []string{"claude", "aider"},
 	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/config" {
@@ -188,11 +190,91 @@ func TestAPISource_FetchConfig(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	src := &apiSource{client: remote.NewWithClient(srv.URL, "", srv.Client())}
+	src := &apiSource{client: remote.NewWithClient(srv.URL, "", srv.Client()), identity: want}
 	cfg, err := src.FetchConfig()
 	require.NoError(t, err)
 	assert.Equal(t, []string{"default", "review"}, cfg.Pipelines)
 	assert.Equal(t, []string{"claude", "aider"}, cfg.Agents)
+	board := want.TicketsDir
+	mdl := newModel(src)
+	for _, tc := range []struct {
+		name      string
+		dir       string
+		session   string
+		socket    string
+		fail      bool
+		available bool
+	}{
+		{name: "first session starts", dir: board, session: "daemon", socket: "/tmp/daemon.sock", available: true},
+		{name: "socket unavailable again", dir: board, session: "daemon"},
+		{name: "socket returns", dir: board, session: "daemon", socket: "/tmp/daemon.sock", available: true},
+		{name: "different board", dir: t.TempDir(), session: "other", socket: "/tmp/other.sock", fail: true},
+		{name: "missing identity", session: "other", socket: "/tmp/other.sock", fail: true},
+		{name: "relative socket", dir: board, session: "daemon", socket: "relative.sock"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			want.TicketsDir, want.TmuxSession, want.TmuxSocket = tc.dir, tc.session, tc.socket
+			msg := mdl.fetchCustomStatusesCmd()()
+			if tc.fail {
+				require.IsType(t, errMsg{}, msg)
+			} else {
+				require.IsType(t, customStatusesMsg{}, msg)
+			}
+			updated, _ := mdl.Update(msg)
+			mdl = updated.(model)
+			assert.Equal(t, tc.available, mdl.list.attachable)
+			assert.Equal(t, tc.available, mdl.detail.attachable)
+			session, socket := src.Attachment()
+			if tc.available {
+				assert.Equal(t, tc.session, session)
+				assert.Equal(t, tc.socket, socket)
+				assert.Empty(t, src.Diagnostic())
+			} else {
+				assert.Empty(t, session)
+				assert.Empty(t, socket)
+				assert.Contains(t, src.Diagnostic(), "attachment disabled")
+			}
+			assert.True(t, src.Connected())
+		})
+	}
+}
+
+func TestAPISource_ConfigRefreshOrdering(t *testing.T) {
+	for _, tc := range []struct {
+		name, older, newer string
+	}{
+		{"revoked socket", "/tmp/old.sock", ""},
+		{"new socket", "", "/tmp/new.sock"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			board := t.TempDir()
+			started, release := make(chan struct{}), make(chan struct{})
+			var requests atomic.Int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				socket := tc.newer
+				if requests.Add(1) == 1 {
+					socket = tc.older
+					close(started)
+					<-release
+				}
+				_ = json.NewEncoder(w).Encode(web.ConfigInfo{TicketsDir: board, TmuxSession: "daemon", TmuxSocket: socket})
+			}))
+			defer srv.Close()
+			src := &apiSource{client: remote.NewWithClient(srv.URL, "", srv.Client()), identity: web.ConfigInfo{TicketsDir: board}}
+			finished := make(chan error, 1)
+			go func() {
+				_, err := src.FetchConfig()
+				finished <- err
+			}()
+			<-started
+			_, err := src.FetchConfig()
+			close(release)
+			require.NoError(t, err)
+			require.NoError(t, <-finished)
+			_, socket := src.Attachment()
+			assert.Equal(t, tc.newer, socket)
+		})
+	}
 }
 
 func TestAPISource_CreateTicket(t *testing.T) {

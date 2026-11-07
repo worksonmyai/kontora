@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -25,6 +26,9 @@ type mockSource struct {
 	createdTask web.TicketInfo
 	createErr   error
 	updateErr   error
+	session     string
+	socket      string
+	diagnostic  string
 }
 
 func (s *mockSource) FetchTickets() ([]web.TicketInfo, int, error) {
@@ -71,6 +75,8 @@ func (s *mockSource) CreateTicket(req web.CreateTicketRequest) (web.TicketInfo, 
 }
 func (s *mockSource) Subscribe(context.Context) <-chan web.TicketEvent { return nil }
 func (s *mockSource) Connected() bool                                  { return s.connected }
+func (s *mockSource) Diagnostic() string                               { return s.diagnostic }
+func (s *mockSource) Attachment() (string, string)                     { return s.session, s.socket }
 
 func TestModel_WindowSize(t *testing.T) {
 	src := &mockSource{tickets: testTickets(), running: 1}
@@ -91,9 +97,41 @@ func TestModel_TasksRefreshed(t *testing.T) {
 
 	tickets := testTickets()
 	result, _ := m.Update(ticketsRefreshedMsg{tickets: tickets, running: 1})
-	model := result.(model)
-	assert.Len(t, model.list.filtered, 3)
-	assert.Equal(t, 1, model.list.running)
+	mdl := result.(model)
+	assert.Len(t, mdl.list.filtered, 3)
+	assert.Equal(t, 1, mdl.list.running)
+	for _, available := range []bool{true, false} {
+		if available {
+			src.session, src.socket = "daemon", "/tmp/daemon.sock"
+		} else {
+			src.session, src.socket = "", ""
+		}
+		result, _ = mdl.Update(customStatusesMsg{})
+		mdl = result.(model)
+		assert.Equal(t, available, mdl.list.attachable)
+		assert.Equal(t, available, mdl.detail.attachable)
+	}
+}
+
+func TestModel_CustomStatusRefreshClampsCursor(t *testing.T) {
+	for _, statuses := range [][]string{nil, {"custom-a"}, {"custom-a", "custom-b"}} {
+		t.Run(strings.Join(statuses, "/"), func(t *testing.T) {
+			m := newModel(&mockSource{connected: true})
+			m.list.customStatuses = []string{"custom-a", "custom-b"}
+			m.list.setTickets([]web.TicketInfo{
+				{ID: "tst-001", Status: "todo"},
+				{ID: "tst-002", Status: "custom-a"},
+				{ID: "tst-003", Status: "custom-b"},
+			}, 0)
+			m.list.colIdx = 2
+			updated, _ := m.Update(customStatusesMsg{statuses: statuses})
+			m = updated.(model)
+			assert.Equal(t, len(statuses), m.list.colIdx)
+			assert.NotPanics(t, func() {
+				_, _ = m.Update(tea.KeyMsg{Type: tea.KeyLeft})
+			})
+		})
+	}
 }
 
 func TestModel_TaskUpdated(t *testing.T) {
@@ -260,7 +298,7 @@ func TestModel_QuitFromList(t *testing.T) {
 }
 
 func TestModel_AttachFromList(t *testing.T) {
-	src := &mockSource{tickets: testTickets(), running: 1}
+	src := &mockSource{tickets: testTickets(), running: 1, connected: true, session: "daemon", socket: "/tmp/daemon.sock"}
 	m := newModel(src)
 	m.list.setTickets(testTickets(), 1)
 

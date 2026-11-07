@@ -90,6 +90,9 @@ func (d *Daemon) runWorktreeCreatedHooks(taskCtx context.Context, cfg *config.Co
 		return false
 	}
 
+	if !d.executionCurrent(taskCtx, t, filePath) {
+		return false
+	}
 	reason := hookErr.Error()
 	err := d.worktrees.RemoveAt(hc.RepoPath, hc.Worktree)
 	d.logRemoveResult(log, err)
@@ -98,7 +101,7 @@ func (d *Daemon) runWorktreeCreatedHooks(taskCtx context.Context, cfg *config.Co
 	} else {
 		reason += fmt.Sprintf(" (worktree kept at %s: %s; its hooks run again on the next pickup)", hc.Worktree, err)
 	}
-	d.pauseTicket(t, filePath, reason)
+	d.pauseExecution(taskCtx, t, filePath, reason)
 	return false
 }
 
@@ -112,6 +115,9 @@ func (d *Daemon) runWorktreeCreatedHooks(taskCtx context.Context, cfg *config.Co
 // replace the reason the run failed.
 func (d *Daemon) runStageEndHooksAfterFailure(taskCtx context.Context, p spawnAgentParams, attempt agentAttempt) {
 	if p.annotation || taskCtx.Err() != nil {
+		return
+	}
+	if claim := executionFrom(taskCtx); claim != nil && !d.executionCurrent(taskCtx, claim.snapshot, p.filePath) {
 		return
 	}
 	exitCode := attempt.run.Result.ExitCode

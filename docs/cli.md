@@ -239,6 +239,8 @@ Stops a running ticket and parks it in `paused`. A ticket that already closed ca
 
 Resets a non-running ticket to `todo` with the attempt counter cleared, and re-enqueues it.
 
+Acceptance means queued, not started. Before preparing a replacement workspace, the daemon checks for leftover tmux windows. Duplicate windows or uncertain cleanup prevent replacement and preserve execution reservations. Inspect `last_error` and the prior window before retrying again.
+
 ### `kontora cancel TICKET_ID` / `kontora done TICKET_ID`
 
 Move the ticket to `cancelled` or `done`, stopping any running agent and cleaning up its worktree.
@@ -249,11 +251,17 @@ The general form of the three above: moves a ticket to any status the config all
 
 ### `kontora skip TICKET_ID`
 
-Advances the ticket to the next stage of its pipeline, or marks it done when it is already on the last one.
+Intermediate skip sets the next stage to `todo`. Daemon/API skip queues dependency-ready work even with `auto_pick_up: false`. Disk-only skip does not enqueue; use `kontora run TICKET_ID` afterward when automatic pickup is off. Final skip marks the ticket done without recording a successful run.
+
+If an agent is running, use `kontora pause TICKET_ID` first. Wait for the agent to stop before using `skip`. An active Plannotator review also blocks stage changes; close the review first.
 
 ### `kontora set-stage TICKET_ID STAGE`
 
-Moves the ticket to a named stage of its pipeline without running anything.
+Moves the ticket to a named stage of its pipeline. Leaves status and attempt unchanged; does not retry or queue the ticket. A ticket already in `todo` remains eligible for pickup.
+
+If an agent is running, pause the ticket first and wait for the agent to stop. Close any active Plannotator review before changing the stage. Use `kontora retry TICKET_ID` separately when you want to restart a paused ticket.
+
+The daemon can reject a stage change while teardown continues, even after status becomes `paused`. Disk-only CLI commands cannot observe daemon teardown; wait for termination before using them.
 
 ### `kontora note TICKET_ID [TEXT]` / `kontora summary TICKET_ID [TEXT]`
 

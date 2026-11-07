@@ -340,15 +340,21 @@ run's history entry is lost with it.
 
 ## kontora skip
 
-`kontora skip TICKET_ID` — advance the ticket to the next stage of its
-pipeline, or mark it done when it is already on the last one. Runs nothing.
-Refused on your own ticket.
+`kontora skip TICKET_ID` — intermediate skip sets the next stage to `todo`.
+Daemon/API skip queues dependency-ready work even with `auto_pick_up: false`.
+Disk-only skip does not enqueue; use `kontora run TICKET_ID` afterward when
+automatic pickup is off. Final skip marks the ticket done without recording a
+successful run.
+
+Refused on your own ticket. Pause a running ticket first and wait for
+termination. Close any active Plannotator review before changing stages.
 
 ## kontora set-stage
 
 `kontora set-stage TICKET_ID STAGE` — move the ticket to a named stage of its
-pipeline without running anything. Refused on your own ticket: it would make the
-daemon record your run against the wrong stage.
+pipeline without retrying it. Status and attempt stay unchanged; a `todo` ticket
+remains eligible for pickup. Pause first and wait for termination. Close active
+Plannotator reviews. Refused on your own ticket.
 
 ## kontora note
 

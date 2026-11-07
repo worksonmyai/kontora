@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -440,6 +441,100 @@ func TestPlannotator_ReworkPath(t *testing.T) {
 
 	cancel()
 	require.NoError(t, <-errCh)
+}
+
+func TestPlannotator_ReworkConditionalExit(t *testing.T) {
+	cases := []struct {
+		name         string
+		field        string
+		value        any
+		runnerError  bool
+		replaceToken bool
+		hookMoves    bool
+	}{
+		{name: "fresh completion"},
+		{name: "fresh runner failure", runnerError: true},
+		{name: "stage changed", field: "stage", value: "step1"},
+		{name: "new invocation", field: "started_at", value: "2026-11-02T12:00:00Z"},
+		{name: "token replaced", replaceToken: true},
+		{name: "failed runner with changed claim", field: "claimed_by", value: "other-instance", runnerError: true},
+		{name: "failed runner with replaced token", replaceToken: true, runnerError: true},
+		{name: "hook changes execution", hookMoves: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newPlannotatorHarness(t)
+			const id = "tst-rcond"
+			path := h.seedReviewTicket(id)
+			snapshot := h.readTask(id + ".md")
+			require.NoError(t, snapshot.SetField("stage", config.ReworkStageName))
+			require.NoError(t, snapshot.SetField("status", string(ticket.StatusInProgress)))
+			require.NoError(t, snapshot.SetField("started_at", "2026-11-01T12:00:00Z"))
+			data, err := snapshot.Marshal()
+			require.NoError(t, err)
+			require.NoError(t, os.WriteFile(path, data, 0o644))
+			h.cfg.Stages[config.ReworkStageName] = config.Stage{}
+			marker := filepath.Join(t.TempDir(), "end-hook")
+			hookCommand := fmt.Sprintf("printf 'ran' > %q; printf '\\nhook note\\n' >> \"$KONTORA_TICKET_FILE\"", marker)
+			if tc.hookMoves {
+				hookCommand += `; awk '{sub(/^stage: rework$/, "stage: step1"); print}' "$KONTORA_TICKET_FILE" > "$KONTORA_TICKET_FILE.tmp"; mv "$KONTORA_TICKET_FILE.tmp" "$KONTORA_TICKET_FILE"`
+			}
+			h.cfg.Hooks = config.Hooks{config.HookStageEnd: {{Name: "end", Run: hookCommand}}}
+			var d *Daemon
+			d = h.newAnnotationDaemon(func(context.Context, RunnerParams) (process.Result, error) {
+				fresh := h.readTask(id + ".md")
+				assert.Equal(t, executionOf(snapshot), executionOf(fresh), "setup must not change the claim")
+				fresh.SetBody(fresh.Body + "\nsubmitted note\n")
+				require.NoError(t, fresh.SetField("summary", "submitted run summary"))
+				require.NoError(t, fresh.SetField("final_summary", "submitted final summary"))
+				if tc.field != "" {
+					require.NoError(t, fresh.SetField(tc.field, tc.value))
+				}
+				out, err := fresh.Marshal()
+				require.NoError(t, err)
+				require.NoError(t, os.WriteFile(path, out, 0o644))
+				if tc.replaceToken {
+					d.executions[id] = &executionClaim{expected: executionOf(snapshot)}
+				}
+				if tc.runnerError {
+					return process.Result{}, errors.New("runner failure")
+				}
+				return process.Result{ExitCode: 0, ExitedAt: time.Now()}, nil
+			})
+			d.tickets[id] = newTicketState(snapshot.Clone(), path)
+			claim := &executionClaim{expected: executionOf(snapshot), snapshot: snapshot}
+			d.executions[id] = claim
+			ctx := context.WithValue(context.Background(), executionContextKey{}, claim)
+			d.runReworkStage(context.Background(), ctx, h.cfg, testLogger(t), id, snapshot, path)
+			d.background.Wait()
+			after := h.readTask(id + ".md")
+			assert.Contains(t, after.Body, "submitted note")
+			assert.Equal(t, "submitted run summary", after.Summary)
+			assert.Equal(t, "submitted final summary", after.FinalSummary)
+			if tc.field != "" || tc.replaceToken {
+				assert.NoFileExists(t, marker, "stale executions must not run end hooks")
+				assert.Equal(t, ticket.StatusInProgress, after.Status)
+				assert.Len(t, after.History, 2)
+				return
+			}
+			assert.FileExists(t, marker)
+			assert.Contains(t, after.Body, "hook note")
+			switch {
+			case tc.hookMoves:
+				assert.Equal(t, "step1", after.Stage)
+				assert.Equal(t, ticket.StatusInProgress, after.Status)
+				assert.Len(t, after.History, 2)
+			case tc.runnerError:
+				assert.Equal(t, ticket.StatusPaused, after.Status)
+				assert.Contains(t, after.LastError, "runner failure")
+				assert.Len(t, after.History, 2)
+			default:
+				assert.Equal(t, ticket.StatusHumanReview, after.Status)
+				require.Len(t, after.History, 3)
+				assert.Equal(t, "submitted run summary", after.History[2].Summary)
+			}
+		})
+	}
 }
 
 // TestPlannotator_ReworkCompletion drives the full loop: plannotator captures

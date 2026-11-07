@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/worksonmyai/kontora/internal/config"
 	"github.com/worksonmyai/kontora/internal/notify"
@@ -347,7 +346,7 @@ func (d *Daemon) runAnnotationRun(ctx, taskCtx context.Context, cfg *config.Conf
 		// empty set of notes, and its clean exit would then delete the file and
 		// clear the marker as if they had been applied.
 		log.Error("annotation: reading the annotations failed", "path", annotationsFile, "err", readErr)
-		d.pauseTicket(t, filePath, "annotation: reading the annotations failed: "+readErr.Error())
+		d.pauseExecution(taskCtx, t, filePath, "annotation: reading the annotations failed: "+readErr.Error())
 		return
 	case pending == "":
 		// Nothing to act on: the file was removed, or reviews_dir moved between the
@@ -355,7 +354,7 @@ func (d *Daemon) runAnnotationRun(ctx, taskCtx context.Context, cfg *config.Conf
 		// ticket is handed back rather than paused over an agent it no longer needs.
 		log.Warn("annotation: no annotations pending, returning the ticket to its status",
 			"path", annotationsFile, "status", returnStatus)
-		d.clearAnnotationMarker(log, ticketID, filePath, returnStatus)
+		d.clearAnnotationMarker(taskCtx, log, t, filePath, returnStatus)
 		return
 	}
 
@@ -363,7 +362,7 @@ func (d *Daemon) runAnnotationRun(ctx, taskCtx context.Context, cfg *config.Conf
 	agentCfg, ok := cfg.Agents[agentName]
 	if !ok {
 		log.Error("annotation: unknown agent", "agent", agentName)
-		d.pauseTicket(t, filePath, fmt.Sprintf("annotation: unknown agent %q", agentName))
+		d.pauseExecution(taskCtx, t, filePath, fmt.Sprintf("annotation: unknown agent %q", agentName))
 		return
 	}
 
@@ -380,19 +379,15 @@ func (d *Daemon) runAnnotationRun(ctx, taskCtx context.Context, cfg *config.Conf
 	wtPath, err := d.annotationWorkDir(t, ticketID, filePath)
 	if err != nil {
 		log.Error("annotation: resolve work dir failed", "err", err)
-		d.pauseTicket(t, filePath, "annotation: resolve work dir failed: "+err.Error())
+		d.pauseExecution(taskCtx, t, filePath, "annotation: resolve work dir failed: "+err.Error())
 		return
 	}
 
-	if err := d.editTicket(t, filePath, notify.OriginDaemon, func() error {
-		_ = t.SetField("status", string(ticket.StatusInProgress))
-		_ = t.SetField("started_at", time.Now().Format(time.RFC3339))
-		_ = t.SetField("claimed_by", d.instanceName)
-		// Only last_log moves: unlike a stage pickup this run must not clear summary
-		// or final_summary, which still describe the work the ticket has done.
-		_ = t.SetField("last_log", d.stageLogPath(ticketID, stageName))
-		return nil
-	}); err != nil {
+	t, err = d.patchExecution(taskCtx, t, filePath, func(fresh *ticket.Ticket) error {
+		// Annotation runs leave the summaries of the ticket's work intact.
+		return fresh.SetField("last_log", d.stageLogPath(ticketID, stageName))
+	})
+	if err != nil {
 		log.Error("annotation: write failed", "phase", "pickup", "err", err)
 		return
 	}
@@ -411,7 +406,7 @@ func (d *Daemon) runAnnotationRun(ctx, taskCtx context.Context, cfg *config.Conf
 	rendered, err := d.renderTicketPrompt(cfg, tmpl, t, filePath, wtPath)
 	if err != nil {
 		log.Error("annotation: render prompt failed", "err", err)
-		d.pauseTicket(t, filePath, "annotation: render prompt failed: "+err.Error())
+		d.pauseExecution(taskCtx, t, filePath, "annotation: render prompt failed: "+err.Error())
 		return
 	}
 	if !strings.Contains(rendered, pending) {
@@ -419,7 +414,7 @@ func (d *Daemon) runAnnotationRun(ctx, taskCtx context.Context, cfg *config.Conf
 		// success, and that success is what deletes the notes. Reached by an
 		// annotation_prompt that leaves out {{ plannotatorAnnotations }}.
 		log.Error("annotation: the rendered prompt does not carry the annotations", "path", annotationsFile)
-		d.pauseTicket(t, filePath,
+		d.pauseExecution(taskCtx, t, filePath,
 			"annotation: the rendered prompt does not carry the annotations; annotation_prompt must include {{ plannotatorAnnotations }}")
 		return
 	}
@@ -467,7 +462,8 @@ func (d *Daemon) runAnnotationRun(ctx, taskCtx context.Context, cfg *config.Conf
 		return
 	}
 
-	d.finishAnnotationRun(log, annotationExit{
+	d.finishAnnotationRun(taskCtx, log, annotationExit{
+		snapshot:        t,
 		ticketID:        ticketID,
 		filePath:        filePath,
 		annotationsFile: annotationsFile,
@@ -483,38 +479,24 @@ func (d *Daemon) runAnnotationRun(ctx, taskCtx context.Context, cfg *config.Conf
 // clearAnnotationMarker hands the ticket back its status without running
 // anything. It is the way out of a pickup that has no annotations to act on,
 // which would otherwise repeat on every transition to todo.
-func (d *Daemon) clearAnnotationMarker(log *slog.Logger, ticketID, filePath string, returnStatus ticket.Status) {
-	t2, err := ticket.ParseFile(filePath)
-	if err != nil {
-		log.Error("annotation: re-read failed", "phase", "clear marker", "err", err)
-		return
-	}
-	// The same guards the exit handler applies: whoever moved or claimed the
-	// ticket while this pickup was starting owns it now.
-	if d.isUserOverride(t2.Status) {
-		log.Info("annotation: user override before the run started", "status", t2.Status)
-		return
-	}
-	if d.claimedElsewhere(t2) {
-		log.Info("annotation: claimed by another instance", "claimed_by", t2.ClaimedBy)
-		return
-	}
+func (d *Daemon) clearAnnotationMarker(ctx context.Context, log *slog.Logger, snapshot *ticket.Ticket, filePath string, returnStatus ticket.Status) {
 	status, lastError := d.restoredStatus(returnStatus)
-	_ = t2.SetField("status", string(status))
-	_ = t2.SetField("annotation_return_status", "")
-	if lastError != "" {
-		_ = t2.SetField("last_error", lastError)
-	}
-	if err := d.writeTicket(t2, filePath, notify.OriginDaemon); err != nil {
+	t2, err := d.patchExecution(ctx, snapshot, filePath, func(fresh *ticket.Ticket) error {
+		_ = fresh.SetField("status", string(status))
+		_ = fresh.SetField("annotation_return_status", "")
+		if lastError != "" {
+			_ = fresh.SetField("last_error", lastError)
+		}
+		return nil
+	})
+	if err != nil {
 		log.Error("annotation: write failed", "phase", "clear marker", "err", err)
 		return
 	}
 	d.mu.Lock()
-	d.setTicketState(ticketID, t2, filePath)
 	if t2.Status == ticket.StatusTodo {
 		d.enqueue(t2)
 	}
-	d.broadcastTicketUpdate(ticketID)
 	// The marker refuses a promotion, and this write clears it. It is a
 	// self-write, so the watcher event is dropped and nothing else would tell
 	// the schedule loop the refusal is over.
@@ -529,6 +511,7 @@ func (d *Daemon) clearAnnotationMarker(log *slog.Logger, ticketID, filePath stri
 const annotationStageName = "annotation"
 
 type annotationExit struct {
+	snapshot        *ticket.Ticket
 	ticketID        string
 	filePath        string
 	annotationsFile string
@@ -538,8 +521,7 @@ type annotationExit struct {
 	// returnStatus is the status the ticket carried when it was annotated, read
 	// before the run so a rewrite of the frontmatter cannot lose it.
 	returnStatus ticket.Status
-	// priorSummary is the summary the ticket's own work left behind, read before
-	// the run so this one can put it back.
+	// priorSummary distinguishes the earlier work summary from an annotation summary.
 	priorSummary string
 	run          agentRun
 }
@@ -547,68 +529,52 @@ type annotationExit struct {
 // finishAnnotationRun applies the run's outcome: the ticket's own status on
 // success, paused with last_error otherwise. It records one annotation history
 // entry either way, and starts no final-summary pass.
-func (d *Daemon) finishAnnotationRun(log *slog.Logger, p annotationExit) {
-	t2, err := ticket.ParseFile(p.filePath)
-	if err != nil {
-		log.Error("annotation: re-read failed after agent exit", "err", err)
-		return
-	}
-	if d.isUserOverride(t2.Status) {
-		log.Info("annotation: user override during execution", "status", t2.Status)
-		return
-	}
-	if d.claimedElsewhere(t2) {
-		log.Info("annotation: discarding exit result, claimed by another instance", "claimed_by", t2.ClaimedBy)
-		d.killTaskWindow(p.ticketID)
-		return
-	}
-
+func (d *Daemon) finishAnnotationRun(ctx context.Context, log *slog.Logger, p annotationExit) {
 	result := p.run.Result
-	// Every run is asked for a summary, and `kontora summary` writes it to the
-	// ticket. This one describes a ticket rewrite rather than the work the ticket
-	// did, so it goes to the history row and the ticket gets its own summary back.
-	written := t2.Summary
-	if written == p.priorSummary {
-		written = ""
-	}
-	_ = t2.SetField("summary", p.priorSummary)
-	history := t2.History
-	history = append(history, ticket.HistoryEntry{
-		Stage:         p.stageName,
-		Agent:         p.agentName,
-		Model:         p.run.Model,
-		Effort:        p.run.Effort,
-		ExitCode:      result.ExitCode,
-		Run:           p.runIndex,
-		StartedAt:     t2.StartedAt,
-		CompletedAt:   &result.ExitedAt,
-		Summary:       runSummary(written, p.run.FinalMessage),
-		Kind:          ticket.KindAnnotation,
-		SessionReused: p.run.Resumed,
-		SessionKind:   p.run.SessionKind,
-		SessionRef:    p.run.SessionRef,
-	})
-	_ = t2.SetField("history", history)
-
 	done := result.ExitCode == 0
-	if done {
-		status, lastError := d.restoredStatus(p.returnStatus)
-		_ = t2.SetField("status", string(status))
-		_ = t2.SetField("annotation_return_status", "")
-		if lastError != "" {
-			_ = t2.SetField("last_error", lastError)
+	t2, err := d.patchExecution(ctx, p.snapshot, p.filePath, func(t2 *ticket.Ticket) error {
+		// An unchanged summary belongs to the earlier work, not this annotation run.
+		written := t2.Summary
+		if written == p.priorSummary {
+			written = ""
 		}
-		log.Info("annotation completed", "status", status, "session_reused", p.run.Resumed)
-		d.killTaskWindow(p.ticketID)
-	} else {
-		// annotation_return_status and the annotations file both stay, so a
-		// retry runs against the same feedback.
-		_ = t2.SetField("status", string(ticket.StatusPaused))
-		_ = t2.SetField("last_error", fmt.Sprintf("annotation agent exited with code %d", result.ExitCode))
-		log.Warn("annotation paused", "exit_code", result.ExitCode)
-	}
+		history := t2.History
+		history = append(history, ticket.HistoryEntry{
+			Stage:         p.stageName,
+			Agent:         p.agentName,
+			Model:         p.run.Model,
+			Effort:        p.run.Effort,
+			ExitCode:      result.ExitCode,
+			Run:           p.runIndex,
+			StartedAt:     t2.StartedAt,
+			CompletedAt:   &result.ExitedAt,
+			Summary:       runSummary(written, p.run.FinalMessage),
+			Kind:          ticket.KindAnnotation,
+			SessionReused: p.run.Resumed,
+			SessionKind:   p.run.SessionKind,
+			SessionRef:    p.run.SessionRef,
+		})
+		_ = t2.SetField("history", history)
 
-	if err := d.writeTicket(t2, p.filePath, notify.OriginDaemon); err != nil {
+		if done {
+			status, lastError := d.restoredStatus(p.returnStatus)
+			_ = t2.SetField("status", string(status))
+			_ = t2.SetField("annotation_return_status", "")
+			if lastError != "" {
+				_ = t2.SetField("last_error", lastError)
+			}
+			log.Info("annotation completed", "status", status, "session_reused", p.run.Resumed)
+		} else {
+			// annotation_return_status and the annotations file both stay, so a
+			// retry runs against the same feedback.
+			_ = t2.SetField("status", string(ticket.StatusPaused))
+			_ = t2.SetField("last_error", fmt.Sprintf("annotation agent exited with code %d", result.ExitCode))
+			log.Warn("annotation paused", "exit_code", result.ExitCode)
+		}
+
+		return nil
+	})
+	if err != nil {
 		// The annotations stay on disk: they are the only copy of what the reviewer
 		// wrote, and the marker is still set, so the next pickup runs against them
 		// again.
@@ -621,17 +587,16 @@ func (d *Daemon) finishAnnotationRun(log *slog.Logger, p annotationExit) {
 		if rmErr := os.Remove(p.annotationsFile); rmErr != nil && !os.IsNotExist(rmErr) {
 			log.Warn("annotation: removing the annotations file failed", "path", p.annotationsFile, "err", rmErr)
 		}
+		d.killTaskWindow(p.ticketID)
 	}
 
 	d.mu.Lock()
-	d.setTicketState(p.ticketID, t2, p.filePath)
 	// A ticket annotated while it was waiting to run goes back to waiting, and a
 	// todo ticket that is not queued would sit there until something else moved
 	// it.
 	if t2.Status == ticket.StatusTodo {
 		d.enqueue(t2)
 	}
-	d.broadcastTicketUpdate(p.ticketID)
 	// A completed run clears annotation_return_status through a self-write, so
 	// the watcher event is dropped: nothing else tells the schedule loop that
 	// the refusal a pending annotation makes is over.

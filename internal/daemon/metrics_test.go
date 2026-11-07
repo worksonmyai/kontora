@@ -761,8 +761,13 @@ func TestMetricsReworkStopsBeforeItsAgent(t *testing.T) {
 			tk, err := ticket.ParseFile(filePath)
 			require.NoError(t, err)
 
-			ctx := context.Background()
-			d.runReworkStage(ctx, ctx, h.cfg, testLogger(t), tt.id, tk, filePath)
+			require.NoError(t, tk.SetField("status", string(ticket.StatusTodo)))
+			require.NoError(t, tk.SetField("stage", config.ReworkStageName))
+			data, err := tk.Marshal()
+			require.NoError(t, err)
+			require.NoError(t, os.WriteFile(filePath, data, 0o644))
+			d.tickets[tk.ID] = newTicketState(tk, filePath)
+			d.runTicket(context.Background(), tt.id)
 
 			paused, err := ticket.ParseFile(filePath)
 			require.NoError(t, err)

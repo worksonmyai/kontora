@@ -1,9 +1,6 @@
 package cli
 
 import (
-	"fmt"
-	"path/filepath"
-
 	"github.com/worksonmyai/kontora/internal/config"
 	"github.com/worksonmyai/kontora/internal/ticket"
 	"github.com/worksonmyai/kontora/internal/ticket/app"
@@ -35,43 +32,10 @@ func Done(cfg *config.Config, taskID string) error {
 
 // SetStage moves a ticket to a specific pipeline stage by name.
 func SetStage(cfg *config.Config, taskID, targetStage string) error {
-	tasksDir := config.ExpandTilde(cfg.TicketsDir)
-	resolvedID, err := resolveTaskID(tasksDir, taskID)
-	if err != nil {
-		return err
-	}
-
-	filePath := filepath.Join(tasksDir, resolvedID+".md")
-	t, err := ticket.ParseFile(filePath)
-	if err != nil {
-		return fmt.Errorf("parsing ticket: %w", err)
-	}
-
-	pipelineCfg, ok := cfg.Pipelines[t.Pipeline]
-	if !ok {
-		return fmt.Errorf("unknown pipeline %q for ticket %s", t.Pipeline, resolvedID)
-	}
-
-	found := false
-	for _, step := range pipelineCfg {
-		if step.Stage == targetStage {
-			found = true
-			break
-		}
-	}
-	if !found {
-		return fmt.Errorf("stage %q not found in pipeline %q", targetStage, t.Pipeline)
-	}
-
-	if err := t.SetField("stage", targetStage); err != nil {
-		return fmt.Errorf("setting stage: %w", err)
-	}
-
-	out, err := t.Marshal()
-	if err != nil {
-		return fmt.Errorf("marshalling ticket: %w", err)
-	}
-	return ticket.WriteOffline(filePath, out)
+	repo := store.NewDiskRepo(cfg.TicketsDir)
+	svc := app.New(app.Static(cfg), repo, app.NoopRuntime{})
+	_, err := svc.SetStage(taskID, targetStage)
+	return err
 }
 
 // Run enqueues a ticket for processing via the local daemon API.

@@ -1191,13 +1191,49 @@ func TestFinalSummaryConcurrentEdits(t *testing.T) {
 		{
 			name: "an unrelated field changed",
 			edit: func(t *testing.T, tk *ticket.Ticket) {
-				require.NoError(t, tk.SetField("base_branch", "develop"))
+				require.NoError(t, tk.SetField("last_log", "new-log"))
 				tk.SetBody(tk.Body + "\nedited while the summary ran\n")
 			},
 			wantFinal: "the whole ticket",
 			check: func(t *testing.T, after *ticket.Ticket) {
-				assert.Equal(t, "develop", after.BaseBranch)
+				assert.Equal(t, "new-log", after.LastLog)
 				assert.Contains(t, after.Body, "edited while the summary ran")
+			},
+		},
+		{
+			name: "execution changed without a status change",
+			edit: func(t *testing.T, tk *ticket.Ticket) {
+				require.NoError(t, tk.SetField("started_at", "2026-11-01T12:00:00Z"))
+			},
+			check: func(t *testing.T, after *ticket.Ticket) {
+				require.NotNil(t, after.StartedAt)
+				assert.Equal(t, "2026-11-01T12:00:00Z", after.StartedAt.Format(time.RFC3339))
+			},
+		},
+		{
+			name: "newer run summary",
+			edit: func(t *testing.T, tk *ticket.Ticket) {
+				require.NoError(t, tk.SetField("summary", "newer summary"))
+			},
+			check: func(t *testing.T, after *ticket.Ticket) {
+				assert.Equal(t, "newer summary", after.Summary)
+			},
+		},
+		{
+			name: "acknowledged final summary",
+			edit: func(t *testing.T, tk *ticket.Ticket) {
+				require.NoError(t, tk.SetField("final_summary", "submitted summary"))
+			},
+			wantFinal: "submitted summary",
+			check:     func(_ *testing.T, _ *ticket.Ticket) {},
+		},
+		{
+			name: "base changed",
+			edit: func(t *testing.T, tk *ticket.Ticket) {
+				require.NoError(t, tk.SetField("base_branch", "develop"))
+			},
+			check: func(t *testing.T, after *ticket.Ticket) {
+				assert.Equal(t, "develop", after.BaseBranch)
 			},
 		},
 	}
@@ -1247,6 +1283,7 @@ func TestFinalSummaryConcurrentEdits(t *testing.T) {
 				dir:       h.repoDir,
 				runs:      eligibleFinalSummaryRuns(tkt),
 				status:    tkt.Status,
+				expected:  tkt.Clone(),
 			})
 
 			if tc.removed {

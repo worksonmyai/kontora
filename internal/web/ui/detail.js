@@ -583,6 +583,10 @@ export function kontoraDetail() {
 
     async action(type) {
       if (!this.selectedTicket || this.actionLoading) return;
+      if (type === 'skip' && !this.canSkipStage()) {
+        this.error = 'Pause first and wait for the agent and review to stop before changing stages.';
+        return;
+      }
       this.actionLoading = type;
       this.error = null;
       try {
@@ -1194,17 +1198,18 @@ export function kontoraDetail() {
       this.fetchStageLogs(this.selectedTicket.id, stage);
     },
 
-    // Changing the stage is a bookkeeping edit on the ticket file, so it is
-    // open on any parked ticket. in_progress is the exception: an agent owns
-    // the worktree and the file. archived tickets never reach the board, and
-    // legacy closed ones come from the foreign ticket CLI, so neither gets an
-    // affordance.
-    canSetStage() {
-      const status = this.selectedTicket?.status;
-      if (!status || this.selectedTicket.kind === 'epic') return false;
+    // Active agents and reviews own the stage until they stop. A queued ticket
+    // stays queued after a stage edit; selecting a stage does not retry it.
+    canSetStage(ticket = this.selectedTicket) {
+      const status = ticket?.status;
+      if (!status || ticket.kind === 'epic' || this.plannotatorInFlight?.[ticket.id]) return false;
       return ['open', 'todo', 'paused', 'human_review', 'done', 'cancelled']
         .concat(this.configCache?.custom_statuses || [])
         .includes(status);
+    },
+
+    canSkipStage(ticket = this.selectedTicket) {
+      return !!(ticket?.kontora && ticket.stage && ticket.stages?.length && this.canSetStage(ticket));
     },
 
     // A ticket that gained a pipeline through the detail form has no stage yet.
@@ -1217,6 +1222,10 @@ export function kontoraDetail() {
     async setStage(stage) {
       // The empty value is the picker's placeholder, not a stage.
       if (!this.selectedTicket || !stage) return;
+      if (!this.canSetStage()) {
+        this.error = 'Pause first and wait for the agent and review to stop before changing stages.';
+        return;
+      }
       this.error = null;
       try {
         const res = await fetch('/api/tickets/' + this.selectedTicket.id + '/set-stage', {

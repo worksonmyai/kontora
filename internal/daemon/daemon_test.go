@@ -2234,10 +2234,14 @@ created: 2026-01-01T00:00:00Z
 	require.NoError(t, <-errCh)
 }
 
-func TestGeneratedBranchWriteFailureUsesFallback(t *testing.T) {
+func TestGeneratedBranchClaimWriteFailureDoesNotLaunch(t *testing.T) {
 	h := newHarness(t)
 	h.cfg.BranchNaming.Mode = config.BranchNamingModeSlug
-	d := h.newDaemon(h.cfg)
+	launched := false
+	d := h.newDaemon(h.cfg, WithRunner(func(context.Context, RunnerParams) (process.Result, error) {
+		launched = true
+		return process.Result{}, nil
+	}))
 
 	tkt, err := ticket.ParseBytes(fmt.Appendf(nil, `---
 id: tst-write
@@ -2249,16 +2253,24 @@ path: %s
 `, h.repoDir))
 	require.NoError(t, err)
 
-	blocker := filepath.Join(h.tasksDir, "blocker")
-	require.NoError(t, os.WriteFile(blocker, nil, 0o644))
-	badPath := filepath.Join(blocker, "tst-write.md")
+	path := filepath.Join(h.tasksDir, "tst-write.md")
+	data, err := tkt.Marshal()
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(path, data, 0o444))
+	t.Cleanup(func() { _ = os.Chmod(path, 0o644) })
+	d.tickets[tkt.ID] = newTicketState(tkt, path)
+	d.runTicket(context.Background(), tkt.ID)
 
-	d.mu.Lock()
-	d.persistGeneratedBranchLocked(h.cfg, testLogger(t), tkt, badPath)
-	d.mu.Unlock()
-
+	got := h.readTask("tst-write.md")
+	assert.Equal(t, ticket.StatusTodo, got.Status)
+	assert.Empty(t, got.Branch)
+	assert.Nil(t, got.StartedAt)
+	assert.Empty(t, got.ClaimedBy)
+	assert.False(t, launched)
+	assert.Empty(t, d.running)
+	assert.Empty(t, d.runningBranches)
+	assert.Empty(t, d.executions)
 	assert.Empty(t, tkt.Branch)
-	assert.Equal(t, "kontora/tst-write", ticketBranch(h.cfg, tkt))
 	assert.False(t, gitBranchExists(h.repoDir, "kontora/fix-retry-persistence-tst-write"))
 }
 

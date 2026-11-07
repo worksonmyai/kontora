@@ -613,7 +613,7 @@ func TestAnnotate_RewritesTicketAndRestoresStatus(t *testing.T) {
 	assert.Equal(t, "step2", got.Stage, "the pipeline must not advance")
 	assert.Empty(t, got.LastError)
 	assert.Contains(t, got.Body, "rewritten from the annotations")
-	assert.Equal(t, "coded it", got.Summary, "the ticket keeps the summary of the work it did")
+	assert.Equal(t, "answered the notes", got.Summary, "the latest submitted summary survives annotation completion")
 	assert.Equal(t, "the whole ticket", got.FinalSummary)
 	assert.NoFileExists(t, annotationsPath(h.reviewsDir, "tst-an06"),
 		"the annotations are removed only after a successful run")
@@ -1392,6 +1392,100 @@ func TestAnnotate_PiSessionDir(t *testing.T) {
 			assert.Contains(t, extensionContent, "agent_settled")
 			assert.NotContains(t, renderedPrompt(spawns[0]), "## Phase checkpoints")
 		})
+	}
+}
+
+func TestAnnotate_ConditionalPersistence(t *testing.T) {
+	changes := []struct {
+		name, field string
+		value       any
+	}{
+		{name: "same execution"},
+		{name: "stage changed", field: "stage", value: "step1"},
+		{name: "attempt changed", field: "attempt", value: 2},
+		{name: "claim changed", field: "claimed_by", value: "other-instance"},
+		{name: "new invocation", field: "started_at", value: "2026-11-02T12:00:00Z"},
+		{name: "status changed", field: "status", value: "todo"},
+		{name: "token replaced"},
+	}
+	for _, operation := range []string{"complete", "no annotations", "setup failure"} {
+		for _, change := range changes {
+			t.Run(operation+"/"+change.name, func(t *testing.T) {
+				h := newPlannotatorHarness(t)
+				const id = "tst-cond"
+				path := h.writeTicket(id+".md", h.annotationTicketMD(id, "in_progress",
+					"annotation_return_status: open\nsummary: prior work\nstarted_at: 2026-11-01T12:00:00Z\n"))
+				snapshot := h.readTask(id + ".md")
+				d := h.newAnnotationDaemon(func(context.Context, RunnerParams) (process.Result, error) {
+					t.Fatal("no agent should run")
+					return process.Result{}, nil
+				})
+				d.tickets[id] = newTicketState(snapshot.Clone(), path)
+				claim := &executionClaim{expected: executionOf(snapshot), snapshot: snapshot}
+				d.executions[id] = claim
+				ctx := context.WithValue(context.Background(), executionContextKey{}, claim)
+				if change.name == "token replaced" {
+					d.executions[id] = &executionClaim{expected: executionOf(snapshot)}
+				}
+				fresh := snapshot.Clone()
+				fresh.SetBody(fresh.Body + "\nacknowledged note\n")
+				require.NoError(t, fresh.SetField("summary", "annotation result"))
+				require.NoError(t, fresh.SetField("final_summary", "submitted final summary"))
+				if change.field != "" {
+					require.NoError(t, fresh.SetField(change.field, change.value))
+				}
+				before, err := fresh.Marshal()
+				require.NoError(t, err)
+				require.NoError(t, os.WriteFile(path, before, 0o644))
+				annotations := annotationsPath(h.reviewsDir, id)
+				if operation != "no annotations" {
+					require.NoError(t, os.WriteFile(annotations, []byte("pending annotations"), 0o644))
+				}
+				switch operation {
+				case "complete":
+					d.finishAnnotationRun(ctx, testLogger(t), annotationExit{
+						snapshot: snapshot, ticketID: id, filePath: path, annotationsFile: annotations,
+						stageName: "step2", agentName: "agent2", returnStatus: ticket.StatusOpen,
+						priorSummary: snapshot.Summary,
+						run:          agentRun{Result: process.Result{ExitCode: 0, ExitedAt: time.Now()}},
+					})
+				case "no annotations":
+					d.runAnnotationRun(context.Background(), ctx, h.cfg, testLogger(t), id, snapshot, path)
+				case "setup failure":
+					require.NoError(t, snapshot.SetField("agent", "unknown"))
+					// The context claim remains authoritative even when a local snapshot changes.
+					d.runAnnotationRun(context.Background(), ctx, h.cfg, testLogger(t), id, snapshot, path)
+				}
+				afterBytes, err := os.ReadFile(path)
+				require.NoError(t, err)
+				if change.name != "same execution" {
+					assert.Equal(t, string(before), string(afterBytes))
+					if operation != "no annotations" {
+						assert.FileExists(t, annotations)
+					}
+					return
+				}
+				after := h.readTask(id + ".md")
+				assert.Contains(t, after.Body, "acknowledged note")
+				assert.Equal(t, "submitted final summary", after.FinalSummary)
+				if operation == "setup failure" {
+					assert.Equal(t, ticket.StatusPaused, after.Status)
+					assert.Equal(t, "annotation result", after.Summary)
+					assert.FileExists(t, annotations)
+				} else {
+					assert.Equal(t, ticket.StatusOpen, after.Status)
+					assert.Empty(t, after.AnnotationReturnStatus)
+					if operation == "complete" {
+						require.Len(t, after.History, 1)
+						assert.Equal(t, "annotation result", after.History[0].Summary)
+						assert.Equal(t, "annotation result", after.Summary)
+						assert.NoFileExists(t, annotations)
+					} else {
+						assert.Equal(t, "annotation result", after.Summary)
+					}
+				}
+			})
+		}
 	}
 }
 

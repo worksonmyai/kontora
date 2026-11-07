@@ -14,6 +14,11 @@ func (d *Daemon) finishOrdinaryRun(ctx context.Context, cancel context.CancelFun
 		return
 	}
 	d.mu.Lock()
+	if claim := executionFrom(ctx); claim != nil && d.executions[ticketID] != claim {
+		d.mu.Unlock()
+		return
+	}
+	delete(d.executions, ticketID)
 	delete(d.running, ticketID)
 	if branchKey != "" && d.runningBranches[branchKey] == ticketID {
 		delete(d.runningBranches, branchKey)

@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 	"github.com/worksonmyai/kontora/internal/config"
 	"github.com/worksonmyai/kontora/internal/notify"
 	"github.com/worksonmyai/kontora/internal/ticket"
+	"github.com/worksonmyai/kontora/internal/ticket/app"
 )
 
 func epicSupervisorRole(id string) string {
@@ -129,21 +131,33 @@ func epicFeedback(cfg *config.Config, t *ticket.Ticket) (string, error) {
 	return "\n\n## Human review feedback\nAddress this feedback in the combined result:\n" + string(data), nil
 }
 
-func (d *Daemon) recordEpicRun(p spawnAgentParams, run agentRun) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	t, err := ticket.ParseFile(p.filePath)
-	if err != nil || !t.IsAgentEpic() || t.ClaimedBy != d.instanceName {
+func (d *Daemon) recordEpicRun(ctx context.Context, snapshot *ticket.Ticket, p spawnAgentParams, run agentRun) {
+	err := d.withTicketMutationOrigin(notify.OriginDaemon, func(repo app.MutationRepository) error {
+		st, err := repo.Get(p.ticketID)
+		if err != nil {
+			return err
+		}
+		t := st.Ticket
+		expected := executionOf(snapshot)
+		if claim := executionFrom(ctx); claim != nil {
+			if d.executions[t.ID] != claim {
+				return errExecutionChanged
+			}
+			expected = claim.expected
+		}
+		// Interrupted attempts remain evidence, not permission to change lifecycle state.
+		if !t.IsAgentEpic() || t.HasOwnershipMetadata() || t.ClaimedBy != d.instanceName || executionOf(t) != expected {
+			return errExecutionChanged
+		}
+		appendEpicHistory(t, run, p.agentName, p.run)
+		_ = t.SetField("summary", runSummary(t.Summary, run.FinalMessage))
+		return repo.Save(st)
+	})
+	if err != nil {
+		p.log.Info("supervisor accounting refused", "err", err)
 		return
 	}
-	appendEpicHistory(t, run, p.agentName, p.run)
-	_ = t.SetField("summary", runSummary(t.Summary, run.FinalMessage))
-	if err := d.writeTicketLocked(t, p.filePath, notify.OriginDaemon); err != nil {
-		p.log.Error("record supervisor run", "err", err)
-		return
-	}
-	d.setTicketState(t.ID, t, p.filePath)
-	d.broadcastTicketUpdate(t.ID)
+	d.broadcastTicketUpdateLocking(p.ticketID)
 }
 
 func appendEpicHistory(t *ticket.Ticket, run agentRun, agent string, index int) {

@@ -143,18 +143,21 @@ func TestEpicAgentSuccessfulExitChecksChildrenAndKeepsWorktree(t *testing.T) {
 		name     string
 		children []string
 		want     ticket.Status
+		initial  string
 	}{
-		{"done", []string{"done"}, ticket.StatusHumanReview},
-		{"legacy closed", []string{"closed"}, ticket.StatusHumanReview},
-		{"all done", []string{"done", "done"}, ticket.StatusHumanReview},
-		{"empty", nil, ticket.StatusPaused},
-		{"open", []string{"open"}, ticket.StatusPaused},
-		{"cancelled", []string{"cancelled"}, ticket.StatusPaused},
-		{"archived", []string{"archived"}, ticket.StatusPaused},
-		{"done and cancelled", []string{"done", "cancelled"}, ticket.StatusPaused},
-		{"done and archived", []string{"done", "archived"}, ticket.StatusPaused},
-		{"waiting for review", []string{"human_review"}, ticket.StatusHumanReview},
-		{"paused", []string{"paused"}, ticket.StatusPaused},
+		{"done", []string{"done"}, ticket.StatusHumanReview, "open"},
+		{"legacy closed", []string{"closed"}, ticket.StatusHumanReview, "open"},
+		{"all done", []string{"done", "done"}, ticket.StatusHumanReview, "open"},
+		{"empty", nil, ticket.StatusPaused, "open"},
+		{"open", []string{"open"}, ticket.StatusPaused, "open"},
+		{"cancelled", []string{"cancelled"}, ticket.StatusPaused, "open"},
+		{"archived", []string{"archived"}, ticket.StatusPaused, "open"},
+		{"done and cancelled", []string{"done", "cancelled"}, ticket.StatusPaused, "open"},
+		{"done and archived", []string{"done", "archived"}, ticket.StatusPaused, "open"},
+		{"waiting for review", []string{"human_review"}, ticket.StatusHumanReview, "open"},
+		{"paused", []string{"paused"}, ticket.StatusPaused, "open"},
+		{"restart done epic", []string{"done"}, ticket.StatusHumanReview, "done"},
+		{"restart with unfinished child", []string{"open"}, ticket.StatusPaused, "done"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -163,6 +166,7 @@ func TestEpicAgentSuccessfulExitChecksChildrenAndKeepsWorktree(t *testing.T) {
 			var runs annotationRun
 			d := h.newDaemon(h.cfg, WithRunner(func(_ context.Context, p RunnerParams) (process.Result, error) {
 				runs.record(p)
+				assert.Nil(t, h.readTask("epc-a.md").CompletedAt)
 				now := time.Now()
 				return process.Result{ExitCode: 0, StartedAt: now, ExitedAt: now}, nil
 			}))
@@ -172,14 +176,24 @@ func TestEpicAgentSuccessfulExitChecksChildrenAndKeepsWorktree(t *testing.T) {
 				ids = append(ids, id)
 				h.writeTicket(id+".md", h.epicChildMD(id, status, "epc-a", "2026-01-02T00:00:00Z"))
 			}
-			h.writeTicket("epc-a.md", h.agentEpicMD("epc-a", "open", ids...))
+			md := h.agentEpicMD("epc-a", tc.initial, ids...)
+			if tc.initial == "done" {
+				md = strings.Replace(md, "status: done\n", "status: done\ncompleted_at: 2026-01-03T00:00:00Z\n", 1)
+			}
+			h.writeTicket("epc-a.md", md)
 			stop := startDaemon(t, d)
 			defer stop()
 			waitEpicIndexed(t, d, "epc-a")
-			require.NoError(t, d.RunTicket("epc-a"))
+			if tc.initial == "done" {
+				require.NotNil(t, h.readTask("epc-a.md").CompletedAt)
+				require.NoError(t, d.RetryTicket("epc-a"))
+			} else {
+				require.NoError(t, d.RunTicket("epc-a"))
+			}
 			got := h.waitForStatus("epc-a.md", tc.want, 5*time.Second)
 			waitForAgentsDone(t, d, 5*time.Second)
 			assert.True(t, got.IsAgentEpic())
+			assert.Nil(t, got.CompletedAt)
 			assert.Empty(t, got.Pipeline)
 			require.Len(t, got.History, 1)
 			assert.Equal(t, "default", got.History[0].Stage)

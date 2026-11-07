@@ -15,18 +15,23 @@ import (
 // Lock order is the board mutation lock, routing admission, then d.mu.
 // Callbacks must use the scoped repository, not public daemon methods.
 func (d *Daemon) withTicketMutation(fn func(app.MutationRepository) error) error {
+	return d.withTicketMutationOrigin(notify.OriginRequest, fn)
+}
+
+func (d *Daemon) withTicketMutationOrigin(origin notify.Origin, fn func(app.MutationRepository) error) error {
 	dir := expandTilde(d.config().TicketsDir)
 	return ticket.WithOfflineWrite(dir, func() error {
 		d.mu.Lock()
 		defer d.mu.Unlock()
-		return fn(&daemonMutationRepository{d: d, disk: store.NewDiskRepo(dir), dir: dir})
+		return fn(&daemonMutationRepository{d: d, disk: store.NewDiskRepo(dir), dir: dir, origin: origin})
 	})
 }
 
 type daemonMutationRepository struct {
-	d    *Daemon
-	disk *store.DiskRepo
-	dir  string
+	d      *Daemon
+	disk   *store.DiskRepo
+	dir    string
+	origin notify.Origin
 }
 
 func (r *daemonMutationRepository) Resolve(id string) (string, error) {
@@ -88,7 +93,7 @@ func (r *daemonMutationRepository) Save(st *app.StoredTicket) error {
 	if err := ticket.RejectImportedOwnership(t); err != nil {
 		return err
 	}
-	modTime, err := r.d.writeOrdinaryTicketFile(t, st.FilePath, notify.OriginRequest)
+	modTime, err := r.d.writeOrdinaryTicketFile(t, st.FilePath, r.origin)
 	if err != nil {
 		return err
 	}

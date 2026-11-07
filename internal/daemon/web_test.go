@@ -305,6 +305,13 @@ func TestDaemon_SkipStage(t *testing.T) {
 	// Pause first (can't skip a running ticket without pausing).
 	require.NoError(t, d.PauseTicket("tst-s01"))
 	h.waitForStatus("tst-s01.md", ticket.StatusPaused, 5*time.Second)
+	require.Eventually(t, func() bool {
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		_, running := d.running["tst-s01"]
+		_, live := d.liveRuns["tst-s01"]
+		return !running && !live
+	}, 5*time.Second, 10*time.Millisecond)
 
 	// Skip step1 → step2.
 	require.NoError(t, d.SkipStage("tst-s01"))

@@ -730,7 +730,7 @@ func TestReload_StrandedTicketPauses(t *testing.T) {
       on_success: done
       on_failure: pause
 `},
-			wantError: "evaluate pickup failed",
+			wantError: `stage "step1" not found in pipeline`,
 		},
 	}
 

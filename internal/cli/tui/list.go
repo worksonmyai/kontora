@@ -458,7 +458,12 @@ func (m listModel) View() string {
 	b.WriteByte('\n')
 	hints := []string{"h/l columns", "j/k navigate", "enter detail", "d done", "/ filter"}
 	if m.connected {
-		hints = append(hints, "n new", "p pause", "r retry", "s skip")
+		hints = append(hints, "n new", "p pause", "r retry")
+		if sel := m.selected(); sel != nil && sel.Status == string(ticket.StatusInProgress) {
+			hints = append(hints, "pause first to change stages")
+		} else {
+			hints = append(hints, "s skip")
+		}
 	}
 	if m.attachable {
 		hints = append(hints, "a attach")

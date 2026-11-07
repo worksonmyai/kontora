@@ -4,6 +4,7 @@ import (
 	"container/heap"
 	"context"
 	"errors"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -420,11 +421,16 @@ func TestDispatchPickupRequeuesChangedPool(t *testing.T) {
 		t.Run(map[bool]string{false: "supervisor became worker", true: "worker became supervisor"}[epic], func(t *testing.T) {
 			h := newHarness(t)
 			d := h.newDaemon(h.cfg)
-			task := &ticket.Ticket{ID: "changed", Kontora: true, Status: ticket.StatusTodo}
+			path := h.writeTicket("tst-changed.md", h.taskMD("tst-changed", "todo", "one-stage"))
+			task := h.readTask("tst-changed.md")
 			if epic {
-				task.Kind, task.EpicExecution = ticket.KindEpic, "agent"
+				require.NoError(t, task.SetField("kind", "epic"))
+				require.NoError(t, task.SetField("epic_execution", "agent"))
 			}
-			d.tickets[task.ID] = &ticketState{ticket: task}
+			data, err := task.Marshal()
+			require.NoError(t, err)
+			require.NoError(t, os.WriteFile(path, data, 0o644))
+			d.tickets[task.ID] = newTicketState(task, path)
 			ctx := context.WithValue(context.Background(), dispatchPoolKey{}, !epic)
 			d.runTicket(ctx, task.ID)
 			require.True(t, d.queued[task.ID], "pickup must retry admission in the current pool")

@@ -16,6 +16,7 @@ import (
 	"github.com/worksonmyai/kontora/internal/notify"
 	"github.com/worksonmyai/kontora/internal/process"
 	"github.com/worksonmyai/kontora/internal/ticket"
+	"github.com/worksonmyai/kontora/internal/ticket/app"
 )
 
 // finalSummaryTimeout bounds the summary subprocess. Stage timeouts are sized
@@ -338,6 +339,8 @@ type finalSummaryParams struct {
 	tkt    finalSummaryTicket
 	runs   []finalSummaryRun
 	status ticket.Status
+	// expected is cloned from the persisted terminal ticket before the worker starts.
+	expected *ticket.Ticket
 }
 
 // runFinalSummary synthesizes one ticket-level summary from the run summaries
@@ -354,6 +357,19 @@ func (d *Daemon) runFinalSummary(ctx context.Context, p finalSummaryParams) {
 	if len(p.runs) < finalSummaryMinRuns {
 		return
 	}
+	if p.expected == nil {
+		if err := d.withTicketMutation(func(repo app.MutationRepository) error {
+			st, err := repo.Get(p.ticketID)
+			if err != nil {
+				return err
+			}
+			p.expected = st.Ticket.Clone()
+			return nil
+		}); err != nil {
+			p.log.Warn("discarding final summary: initial read failed", "err", err)
+			return
+		}
+	}
 	text, err := d.generateFinalSummary(ctx, p)
 	if err != nil {
 		// Nothing else records this: the field stays empty, last_error is left
@@ -366,7 +382,7 @@ func (d *Daemon) runFinalSummary(ctx context.Context, p finalSummaryParams) {
 		p.log.Warn("no final summary written", "agent", p.agentName, "err", err)
 		return
 	}
-	d.storeFinalSummary(p, text)
+	d.storeFinalSummary(ctx, p, text)
 }
 
 // generateFinalSummary runs the agent once and returns the text it wrote.
@@ -413,32 +429,33 @@ func (d *Daemon) generateFinalSummary(ctx context.Context, p finalSummaryParams)
 // an agent took to answer: a status change or a new run in that window means
 // the generated text describes a ticket that no longer exists, and any other
 // edit must survive the write.
-func (d *Daemon) storeFinalSummary(p finalSummaryParams, text string) {
-	fresh, err := ticket.ParseFile(p.filePath)
+func (d *Daemon) storeFinalSummary(ctx context.Context, p finalSummaryParams, text string) {
+	err := d.withTicketMutationOrigin(notify.OriginDaemon, func(repo app.MutationRepository) error {
+		st, err := repo.Get(p.ticketID)
+		if err != nil {
+			return err
+		}
+		fresh := st.Ticket
+		if ctx.Err() != nil || st.FilePath != p.filePath || fresh.HasOwnershipMetadata() ||
+			fresh.Status != p.status || p.expected == nil || executionOf(fresh) != executionOf(p.expected) {
+			return errExecutionChanged
+		}
+		if !slices.Equal(eligibleFinalSummaryRuns(fresh), p.runs) || fresh.Summary != p.expected.Summary {
+			return errExecutionChanged
+		}
+		// A submitted final summary takes precedence over background synthesis.
+		if fresh.FinalSummary != "" {
+			return errExecutionChanged
+		}
+		if err := fresh.SetField("final_summary", text); err != nil {
+			return err
+		}
+		return repo.Save(st)
+	})
 	if err != nil {
-		p.log.Warn("discarding final summary: re-read failed", "err", err)
-		return
-	}
-	if fresh.Status != p.status {
-		p.log.Info("discarding final summary: status changed", "from", p.status, "to", fresh.Status)
-		return
-	}
-	if !slices.Equal(eligibleFinalSummaryRuns(fresh), p.runs) {
-		p.log.Info("discarding final summary: run summaries changed")
-		return
-	}
-	if err := fresh.SetField("final_summary", text); err != nil {
-		p.log.Error("set field failed", "field", "final_summary", "err", err)
-		return
-	}
-	if err := d.writeTicket(fresh, p.filePath, notify.OriginDaemon); err != nil {
-		p.log.Error("write failed", "phase", "final_summary", "err", err)
+		p.log.Warn("discarding final summary", "err", err)
 		return
 	}
 	p.log.Info("final summary stored", "bytes", len(text))
-
-	d.mu.Lock()
-	d.setTicketState(p.ticketID, fresh, p.filePath)
-	d.broadcastTicketUpdate(p.ticketID)
-	d.mu.Unlock()
+	d.broadcastTicketUpdateLocking(p.ticketID)
 }

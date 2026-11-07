@@ -22,6 +22,7 @@ import (
 	"github.com/worksonmyai/kontora/internal/notify"
 	"github.com/worksonmyai/kontora/internal/ticket"
 	"github.com/worksonmyai/kontora/internal/ticket/app"
+	"github.com/worksonmyai/kontora/internal/ticket/store"
 	"github.com/worksonmyai/kontora/internal/tmux"
 	"github.com/worksonmyai/kontora/internal/web"
 	"github.com/worksonmyai/kontora/internal/worktree"
@@ -545,7 +546,7 @@ func (d *Daemon) SkipStage(id string) error {
 		return admissionErr
 	}
 	defer release()
-	_, err := d.svc.Skip(id)
+	_, err := d.stageChangeService(id).Skip(id)
 	return mapAppError(err)
 }
 
@@ -561,32 +562,28 @@ func (d *Daemon) SetStage(id string, stage string) error {
 		return admissionErr
 	}
 	defer release()
-	return d.mutateTicket(id, func(t *ticket.Ticket) error {
-		// A running agent owns the ticket file. A stage written under it is lost
-		// when the run writes the file back at the end of the stage. d.running is
-		// registered when the scheduler claims the ticket, before the file says
-		// in_progress, so it catches a pickup the cached status has not seen yet.
-		_, running := d.running[id]
-		if running || t.Status == ticket.StatusInProgress {
-			return fmt.Errorf("%w: cannot change the stage of ticket %s while it is running", web.ErrInvalidState, id)
-		}
-		pipelineName := t.Pipeline
-		pipelineCfg, ok := d.config().Pipelines[pipelineName]
-		if !ok {
-			if pipelineName == "" {
-				return fmt.Errorf("%w: ticket %s has no pipeline, so it has no stages", web.ErrInvalidState, id)
-			}
-			return fmt.Errorf("%w: unknown pipeline %q for ticket %s", web.ErrInvalidState, pipelineName, id)
-		}
-		stageNames := make([]string, len(pipelineCfg))
-		for i, s := range pipelineCfg {
-			stageNames[i] = s.Stage
-		}
-		if !slices.Contains(stageNames, stage) {
-			return fmt.Errorf("%w: stage %q not found in pipeline %q (has %s)", web.ErrInvalidState, stage, pipelineName, strings.Join(stageNames, ", "))
-		}
-		return t.SetField("stage", stage)
+	_, err := d.stageChangeService(id).SetStage(id, stage)
+	return mapAppError(err)
+}
+
+func (d *Daemon) stageChangeService(id string) *app.Service {
+	repo := store.NewDaemonRepo(store.DaemonRepoCallbacks{
+		WithMutation: func(fn func(app.MutationRepository) error) error {
+			return d.withTicketMutation(func(scoped app.MutationRepository) error {
+				// running covers startup, shutdown, and unconfirmed termination even
+				// when the ticket file already says paused. Check under the same
+				// lock as the stage write so a scheduler claim cannot slip between.
+				_, running := d.running[id]
+				_, live := d.liveRuns[id]
+				_, annotating := d.plannotator[id]
+				if running || live || annotating {
+					return fmt.Errorf("%w: cannot change the stage of ticket %s while execution or review is active; pause first and wait for the agent and review to stop", app.ErrInvalidState, id)
+				}
+				return fn(scoped)
+			})
+		},
 	})
+	return app.New(d.config, repo, &daemonRuntime{d: d})
 }
 
 // MoveTicket sets a ticket's status to newStatus with transition validation.

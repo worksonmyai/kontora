@@ -68,6 +68,17 @@ Each `agent_infos` entry in `GET /api/config` reports the model and effort that 
 
 The daemon captures directory identity when it opens the store. Retargeting a store symlink or editing restart-only settings does not change that identity. Socket discovery does not delay config responses. Automatic local TUI connections require matching filesystem directory identity. Missing identity, including responses from older daemons, selects read-only file mode. A missing socket disables attachment without disabling ticket actions on a verified board. Explicit remote clients do not require these fields. Initial verification does not protect a long-lived client against server replacement at the same address.
 
+### Stage changes
+
+`skip` and `set-stage` return 409 while execution or Plannotator review owns the ticket.
+Pause first, wait for termination, and close the review. A `paused` response alone does not confirm teardown finished.
+
+On a stopped ticket, `skip` queues the next stage. On the final stage, it marks the ticket done without successful run history.
+`set-stage` leaves status and attempt unchanged and does not retry. An existing `todo` ticket remains eligible for pickup.
+
+A successful `retry` response means accepted and queued. Replacement cleanup runs before workspace preparation.
+If tmux inspection or cleanup cannot establish termination, the daemon refuses replacement and keeps its execution reservations.
+
 ### Epics
 
 `POST /api/tickets` with `kind: "epic"` creates a passive epic in `open`.

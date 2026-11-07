@@ -1446,15 +1446,15 @@
           <template x-if="selectedTicket?.status === 'in_progress' && (selectedTicket?.kind !== 'epic' || epicIsAgent(selectedTicket))">
             <button @click="action('pause')" :disabled="!!actionLoading"
                     class="h-7 px-3 rounded-[7px] font-mono text-[11.5px] bg-surface-900 border border-edge-input text-tx-2 hover:text-st-paused hover:border-st-paused/35 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5"
-                    :data-tip-t="epicIsAgent(selectedTicket) ? 'Stops only the supervisor. Child agents keep running.' : 'Stops the running agent and pauses the ticket.'">
+                    :data-tip-t="epicIsAgent(selectedTicket) ? 'Stops only the supervisor. Child agents keep running.' : 'Stops the running agent and pauses the ticket. Pause first and wait for the agent to stop before changing stages.'">
               <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="14" y="4" width="4" height="16" rx="1"/><rect x="6" y="4" width="4" height="16" rx="1"/></svg>
               <span x-text="actionLoading === 'pause' ? 'pausing...' : (epicIsAgent(selectedTicket) ? 'pause supervisor' : 'pause')"></span>
             </button>
           </template>
-          <template x-if="selectedTicket?.status === 'in_progress' && selectedTicket?.kind !== 'epic'">
+          <template x-if="canSkipStage()">
             <button @click="action('skip')" :disabled="!!actionLoading"
                     class="h-7 px-3 rounded-[7px] font-mono text-[11.5px] bg-surface-900 border border-edge-input text-tx-2 hover:text-tx hover:border-edge-hover transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5"
-                    data-tip-t="Skips the current stage and advances to the next one.">
+                    data-tip-t="Queues the next stage, or marks the ticket done on the final stage. Pause first if an agent is running.">
               <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 4 15 12 5 20 5 4"/><line x1="19" y1="5" x2="19" y2="19"/></svg>
               <span x-text="actionLoading === 'skip' ? 'skipping...' : 'skip stage'"></span>
             </button>
@@ -2937,6 +2937,7 @@
                     <template x-if="!(canSetStage() && setStageOpen)">
                       <span class="text-tx-2"
                             :class="canSetStage() ? 'cursor-pointer hover:text-accent border-b border-dashed border-surface-600 hover:border-accent/40' : ''"
+                            :title="selectedTicket?.status === 'in_progress' ? 'Pause first and wait for the agent to stop before changing stages.' : (plannotatorInFlight[selectedTicket?.id] ? 'Close the review before changing stages.' : '')"
                             @click="if (canSetStage()) setStageOpen = true"
                             x-text="displayStage()"></span>
                     </template>

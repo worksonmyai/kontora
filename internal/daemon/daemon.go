@@ -290,9 +290,15 @@ func WithConfigOverride(fn func(*config.Config)) Option {
 }
 
 // WithRunner overrides the default runner (tmux-based). Use DirectRunner for
-// tests that don't need tmux.
+// tests that don't need tmux. Custom runners skip tmux preparation unless
+// WithExecutionPreparer is also supplied.
 func WithRunner(fn RunnerFunc) Option {
-	return func(d *Daemon) { d.runner = fn }
+	return func(d *Daemon) {
+		d.runner = fn
+		if !d.executionPreparerExplicit {
+			d.executionPreparer = nil
+		}
+	}
 }
 
 // WithSkipOrphanCleanup disables the startup cleanup of tmux windows left
@@ -384,18 +390,20 @@ type windowOps struct {
 var defaultWindowOps = windowOps{list: tmux.ListWindows, kill: tmux.KillWindow}
 
 type Daemon struct {
-	cfg                 atomic.Pointer[config.Config]
-	worktrees           *worktree.Manager
-	runner              RunnerFunc
-	plannotatorSpawner  PlannotatorSpawner
-	plannotatorLookup   PlannotatorLookup
-	finalSummarySpawner FinalSummarySpawner
-	turnSpawner         TurnSpawner
-	agentLookup         AgentLookup
-	skipOrphanCleanup   bool
-	windows             windowOps
-	broker              *web.SSEBroker
-	svc                 *app.Service
+	cfg                       atomic.Pointer[config.Config]
+	worktrees                 *worktree.Manager
+	runner                    RunnerFunc
+	executionPreparer         ExecutionPreparer
+	executionPreparerExplicit bool
+	plannotatorSpawner        PlannotatorSpawner
+	plannotatorLookup         PlannotatorLookup
+	finalSummarySpawner       FinalSummarySpawner
+	turnSpawner               TurnSpawner
+	agentLookup               AgentLookup
+	skipOrphanCleanup         bool
+	windows                   windowOps
+	broker                    *web.SSEBroker
+	svc                       *app.Service
 
 	debounce     time.Duration
 	waitPoll     time.Duration // how often a run's marker poller stats its file
@@ -442,6 +450,7 @@ type Daemon struct {
 
 	mu              sync.Mutex
 	tickets         map[string]*ticketState
+	executions      map[string]*executionClaim
 	running         map[string]context.CancelFunc
 	liveRuns        map[string]liveRun // ticket ID → the agent invocation in flight
 	queued          map[string]bool    // dedupe: prevents same ticket being enqueued twice
@@ -560,6 +569,7 @@ func New(cfg *config.Config, opts ...Option) *Daemon {
 	d := &Daemon{
 		worktrees:           worktree.New(expandTilde(cfg.WorktreesDir)),
 		runner:              tmuxRunner,
+		executionPreparer:   tmux.EnsureWindowAbsent,
 		plannotatorSpawner:  defaultPlannotatorSpawner,
 		plannotatorLookup:   defaultPlannotatorLookup,
 		finalSummarySpawner: defaultFinalSummarySpawner,
@@ -580,6 +590,7 @@ func New(cfg *config.Config, opts ...Option) *Daemon {
 		liveRuns:        make(map[string]liveRun),
 		queued:          make(map[string]bool),
 		runningBranches: make(map[string]string),
+		executions:      make(map[string]*executionClaim),
 		sem:             make(chan struct{}, cfg.MaxConcurrentAgents),
 		epicSem:         make(chan struct{}, cfg.MaxConcurrentEpicSupervisors),
 		waiting:         make(map[string]waitingState),
@@ -963,8 +974,8 @@ func (d *Daemon) initialScan(dir string) error {
 				_ = t.SetField("status", string(ticket.StatusTodo))
 				// A ticket that cannot be written back is still enqueued as
 				// todo, the way this has always behaved: the in-memory status
-				// is what the scheduler reads, and refusing to run over a
-				// failed write would strand the ticket instead.
+				// is what the scheduler reads, but pickup requires persisted
+				// todo before it can run.
 				if err := d.writeTicketLocked(t, path, notify.OriginObserved); err != nil {
 					d.ticketLog(t.ID).Error("crash recovery: write failed", "err", err)
 				}
@@ -1032,6 +1043,10 @@ func (d *Daemon) handleFileChanged(path string) {
 		d.log.Error("external ticket event refused while board authority requires reconciliation", "path", path, "err", err)
 		return
 	}
+	observed, err := os.Stat(path)
+	if err != nil {
+		return
+	}
 	t, err := ticket.ParseFile(path)
 	if err != nil {
 		d.log.Error("parse failed", "path", path, "err", err)
@@ -1049,11 +1064,19 @@ func (d *Daemon) handleFileChanged(path string) {
 		d.log.Error("external managed ticket requires its owning daemon", "ticket", t.ID)
 		return
 	}
+	d.adoptObservedTicket(t, path, observed)
+}
+
+func (d *Daemon) adoptObservedTicket(t *ticket.Ticket, path string, observed os.FileInfo) {
 	log := d.ticketLog(t.ID)
 	cfg := d.config()
 
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	current, err := os.Stat(path)
+	if err != nil || !os.SameFile(observed, current) || observed.Size() != current.Size() || !observed.ModTime().Equal(current.ModTime()) {
+		return
+	}
 
 	prev, known := d.tickets[t.ID]
 	d.tickets[t.ID] = newTicketState(t, path)
@@ -1095,9 +1118,6 @@ func (d *Daemon) handleFileChanged(path string) {
 				log.Info("killing agent", "reason", "status changed to todo")
 				cancel()
 			}
-			// Kill any leftover tmux window (e.g. from a paused ticket being retried).
-			d.killTaskWindow(t.ID)
-
 			if !*cfg.AutoPickUp {
 				log.Info("skipping auto pick-up", "pipeline", t.Pipeline)
 			} else if !known {
@@ -1128,8 +1148,7 @@ func (d *Daemon) handleFileChanged(path string) {
 			_ = t.SetField("status", string(ticket.StatusTodo))
 			// A ticket that cannot be written back is still enqueued as todo,
 			// the way crash recovery does it: the in-memory status is what the
-			// scheduler reads, and returning here would leave the ticket
-			// claimed by this instance and never picked up again.
+			// scheduler reads, but pickup requires persisted todo before it can run.
 			if err := d.writeTicketLocked(t, path, notify.OriginObserved); err != nil {
 				log.Error("recover stale self-claim: write failed", "err", err)
 			}
@@ -1209,7 +1228,7 @@ func ticketBranch(cfg *config.Config, t *ticket.Ticket) string {
 // autoTicketBranch returns the branch a ticket that carries none would run on:
 // the slug-derived name when its project has branch naming on and the title
 // yields a slug, the ID-derived name otherwise. Pickup produces the same two
-// names, one through persistGeneratedBranchLocked and one through ticketBranch,
+// names, one through the claim transaction and one through ticketBranch,
 // so the web UI can show this before a run starts.
 func autoTicketBranch(cfg *config.Config, t *ticket.Ticket) string {
 	if cfg.BranchNamingFor(t.Path).Mode == config.BranchNamingModeSlug {
@@ -1493,74 +1512,27 @@ func (d *Daemon) runTicket(ctx context.Context, ticketID string) {
 		return
 	}
 
-	ts, ok := d.claimableLocked(ticketID, log)
-	if !ok {
-		d.mu.Unlock()
+	d.mu.Unlock()
+	taskCtx, taskCancel, t, filePath, branchKey, err := d.claimExecution(ctx, cfg, ticketID, log)
+	if err != nil {
+		log.Info("pickup refused", "err", err)
 		return
 	}
-	t := ts.ticket
-	filePath := ts.filePath
-	if !dispatchPoolMatches(ctx, t) {
-		d.enqueue(t)
-		d.mu.Unlock()
-		return
-	}
-
-	// Register cancel func before mutating status so concurrent ops
-	// can properly cancel the ticket while it's setting up worktrees.
-	taskCtx, taskCancel := context.WithCancel(ctx)
-	d.running[ticketID] = taskCancel
-
-	// A pending annotation must not stamp a branch. The run edits the ticket file,
-	// and a ticket annotated before its first stage has no work to put on a branch
-	// yet.
-	if t.AnnotationReturnStatus == "" {
-		d.persistGeneratedBranchLocked(cfg, log, t, filePath)
-	}
-
-	// Reserve the branch atomically so two tickets targeting the same
-	// repository and branch can't both pass this guard and reuse each
-	// other's worktree by surprise. Keyed by (repoPath, branch) because
-	// identical branch names in different repos don't collide.
-	//
-	// An annotation run reserves nothing: it builds no worktree and stamps no
-	// branch, and two tickets that name neither a repository nor a branch would
-	// share one key and pause each other.
-	branch := ticketBranch(cfg, t)
-	var branchKey string
-	if t.AnnotationReturnStatus == "" {
-		repoIdentity, err := worktree.CommonDir(expandTilde(t.Path))
-		if err != nil {
-			taskCancel()
-			delete(d.running, ticketID)
-			d.mu.Unlock()
-			d.pauseTicket(t, filePath, "resolve repository identity: "+err.Error())
-			return
-		}
-		branchKey = repoIdentity + "\x00" + branch
-		if holder, ok := d.runningBranches[branchKey]; ok && holder != ticketID {
-			taskCancel()
-			delete(d.running, ticketID)
-			d.mu.Unlock()
-			d.pauseTicket(t, filePath, fmt.Sprintf("branch %s in use by ticket %s", branch, holder))
-			return
-		}
-		d.runningBranches[branchKey] = ticketID
-	}
-
 	defer d.finishOrdinaryRun(taskCtx, taskCancel, ticketID, branchKey, filePath, log)
+	branch := ticketBranch(cfg, t)
+	if !d.prepareExecution(taskCtx, t, filePath) {
+		return
+	}
 
 	// A pending annotation owns the pickup, whether or not the ticket has a
 	// pipeline: the run rewrites the ticket and hands the status back, so no stage
 	// runs and no pipeline action is evaluated.
 	if t.AnnotationReturnStatus != "" {
-		d.mu.Unlock()
 		d.runAnnotationRun(ctx, taskCtx, cfg, log, ticketID, t, filePath)
 		return
 	}
 
 	if t.IsAgentEpic() || t.Pipeline == "" {
-		d.mu.Unlock()
 		d.runSimpleTicket(ctx, taskCtx, cfg, log, ticketID, t, filePath)
 		return
 	}
@@ -1570,16 +1542,9 @@ func (d *Daemon) runTicket(ctx context.Context, ticketID string) {
 		// A config reload can drop a pipeline out from under a todo ticket.
 		// Pause it with a reason so it does not sit in todo unexplained.
 		log.Error("unknown pipeline", "pipeline", t.Pipeline)
-		d.mu.Unlock()
-		d.pauseTicket(t, filePath, fmt.Sprintf("unknown pipeline %q", t.Pipeline))
+		d.pauseExecution(taskCtx, t, filePath, fmt.Sprintf("unknown pipeline %q", t.Pipeline))
 		return
 	}
-
-	// If stage is empty, set to first stage.
-	if t.Stage == "" {
-		_ = t.SetField("stage", pipelineCfg[0].Stage)
-	}
-	d.mu.Unlock()
 
 	// Out-of-band rework stage: when built-in rework handling is enabled and
 	// the ticket is parked in the rework stage (set by StartPlannotatorReview)
@@ -1593,32 +1558,6 @@ func (d *Daemon) runTicket(ctx context.Context, ticketID string) {
 		return
 	}
 
-	// Evaluate pickup.
-	action, err := pipeline.Evaluate(t, pipelineCfg, pipeline.Event{
-		Kind:      pipeline.EventPickedUp,
-		Timestamp: time.Now(),
-	})
-	if err != nil {
-		// A reload that removes the ticket's stage reaches here. Pause with the
-		// reason rather than leaving the ticket stuck in todo.
-		log.Error("evaluate pickup failed", "err", err)
-		d.pauseTicket(t, filePath, "evaluate pickup failed: "+err.Error())
-		return
-	}
-
-	// Apply fields (status=in_progress, started_at). The ticket is claimed for
-	// this instance in the same write that flips it to in_progress, so a daemon
-	// on another machine sharing the tickets_dir sees the owner before it acts.
-	if err := d.editTicket(t, filePath, notify.OriginDaemon, func() error {
-		if err := d.applyAction(t, action); err != nil {
-			return fmt.Errorf("apply action: %w", err)
-		}
-		_ = t.SetField("claimed_by", d.instanceName)
-		return nil
-	}); err != nil {
-		log.Error("write failed", "phase", "pickup", "err", err)
-		return
-	}
 	log.Info("picked up", "pipeline", t.Pipeline, "stage", t.Stage)
 	d.broadcastTicketUpdateLocking(ticketID)
 
@@ -1628,8 +1567,14 @@ func (d *Daemon) runTicket(ctx context.Context, ticketID string) {
 		return
 	}
 
-	stageName := action.Spawn.Stage
-	agentName := action.Spawn.Agent
+	stageName := t.Stage
+	var agentName string
+	for _, step := range pipelineCfg {
+		if step.Stage == stageName {
+			agentName = step.Agent
+			break
+		}
+	}
 	if t.Agent != "" {
 		agentName = t.Agent
 	}
@@ -1637,7 +1582,7 @@ func (d *Daemon) runTicket(ctx context.Context, ticketID string) {
 	agentCfg, agentOK := cfg.Agents[agentName]
 	if !agentOK {
 		log.Error("unknown agent", "agent", agentName)
-		d.pauseTicket(t, filePath, fmt.Sprintf("unknown agent %q", agentName))
+		d.pauseExecution(taskCtx, t, filePath, fmt.Sprintf("unknown agent %q", agentName))
 		return
 	}
 	stageCfg := cfg.Stages[stageName]
@@ -1660,7 +1605,7 @@ func (d *Daemon) runTicket(ctx context.Context, ticketID string) {
 	rendered, err := d.renderTicketPrompt(cfg, stageCfg.Prompt, t, filePath, wtPath)
 	if err != nil {
 		log.Error("render prompt failed", "stage", stageName, "err", err)
-		d.pauseTicket(t, filePath, "render prompt failed: "+err.Error())
+		d.pauseExecution(taskCtx, t, filePath, "render prompt failed: "+err.Error())
 		return
 	}
 	if rendered != "" {
@@ -1713,33 +1658,6 @@ func (d *Daemon) runTicket(ctx context.Context, ticketID string) {
 	})
 }
 
-// persistGeneratedBranchLocked writes a generated branch while d.mu excludes
-// watcher updates. If the write fails, worktree creation and cleanup both use
-// ticketBranch's derived fallback.
-func (d *Daemon) persistGeneratedBranchLocked(cfg *config.Config, log *slog.Logger, t *ticket.Ticket, filePath string) {
-	if cfg.BranchNamingFor(t.Path).Mode != config.BranchNamingModeSlug || strings.TrimSpace(t.Branch) != "" {
-		return
-	}
-
-	branch, ok := generatedTicketBranch(cfg, t)
-	if !ok {
-		return
-	}
-	oldBranch := t.Branch
-	if err := t.SetField("branch", branch); err != nil {
-		log.Error("set generated branch failed", "branch", branch, "err", err)
-		return
-	}
-	if err := d.writeTicketLocked(t, filePath, notify.OriginDaemon); err != nil {
-		if resetErr := t.SetField("branch", oldBranch); resetErr != nil {
-			log.Error("reset generated branch failed", "branch", branch, "err", resetErr)
-		}
-		log.Error("persist generated branch failed", "branch", branch, "err", err)
-		return
-	}
-	log.Info("generated branch", "branch", branch)
-}
-
 // simpleStageName keys the log, the session and the history rows of a ticket
 // that runs without a pipeline. It is not a configured stage, so nothing reads
 // a prompt or a timeout under this name.
@@ -1753,25 +1671,10 @@ func (d *Daemon) runSimpleTicket(ctx, taskCtx context.Context, cfg *config.Confi
 	agentCfg, ok := cfg.Agents[agentName]
 	if !ok {
 		log.Error("unknown agent", "agent", agentName)
-		d.pauseTicket(t, filePath, fmt.Sprintf("unknown agent %q", agentName))
+		d.pauseExecution(taskCtx, t, filePath, fmt.Sprintf("unknown agent %q", agentName))
 		return
 	}
 
-	// Set status=in_progress, started_at, and claim for this instance.
-	now := time.Now()
-	if err := d.editTicket(t, filePath, notify.OriginDaemon, func() error {
-		_ = t.SetField("status", string(ticket.StatusInProgress))
-		_ = t.SetField("started_at", now.Format(time.RFC3339))
-		_ = t.SetField("claimed_by", d.instanceName)
-		if t.IsAgentEpic() {
-			_ = t.SetField("summary", "")
-			_ = t.DeleteField("completed_at")
-		}
-		return nil
-	}); err != nil {
-		log.Error("write failed", "phase", "pickup", "err", err)
-		return
-	}
 	log.Info("picked up (simple)", "agent", agentName)
 
 	// Check if we were paused/cancelled between pickup and now.
@@ -1798,7 +1701,7 @@ func (d *Daemon) runSimpleTicket(ctx, taskCtx context.Context, cfg *config.Confi
 	rendered, err := d.renderTicketPrompt(cfg, defaultPromptTemplate, t, filePath, wtPath)
 	if err != nil {
 		log.Error("render prompt failed", "err", err)
-		d.pauseTicket(t, filePath, "render prompt failed: "+err.Error())
+		d.pauseExecution(taskCtx, t, filePath, "render prompt failed: "+err.Error())
 		return
 	}
 	if rendered != "" {
@@ -1807,7 +1710,7 @@ func (d *Daemon) runSimpleTicket(ctx, taskCtx context.Context, cfg *config.Confi
 
 	feedback, err := epicFeedback(cfg, t)
 	if err != nil {
-		d.pauseTicket(t, filePath, err.Error())
+		d.pauseExecution(taskCtx, t, filePath, err.Error())
 		return
 	}
 	rendered += feedback
@@ -1855,7 +1758,7 @@ func (d *Daemon) runSimpleTicket(ctx, taskCtx context.Context, cfg *config.Confi
 	// Checked before the hooks for what it rules out, not for the ticket it
 	// returns: hooks that write the worktree must not run for an exit this
 	// instance may not act on.
-	guard := exitGuardParams{log: log, ticketID: ticketID, filePath: filePath, repoPath: repoPath, wtPath: wtPath}
+	guard := exitGuardParams{log: log, ticketID: ticketID, filePath: filePath, repoPath: repoPath, wtPath: wtPath, execution: executionFrom(taskCtx), snapshot: t}
 	if _, ok := d.readTicketForExit(guard); !ok {
 		return
 	}
@@ -1889,65 +1792,64 @@ func (d *Daemon) runSimpleTicket(ctx, taskCtx context.Context, cfg *config.Confi
 		return
 	}
 
-	// Successful exits become done for ordinary tickets or human_review for agent epics.
-	// Failed runs, hooks or child checks pause the ticket.
-	switch {
-	case result.ExitCode != 0:
-		_ = t2.SetField("status", string(ticket.StatusPaused))
-		_ = t2.SetField("last_error", fmt.Sprintf("agent exited with code %d", result.ExitCode))
-		log.Warn("paused", "exit_code", result.ExitCode)
-	case hookErr != nil:
-		// The agent succeeded, so the hook decides the outcome alone. Its run is
-		// still recorded: a paused ticket with no summary hides what the agent did.
-		_ = t2.SetField("status", string(ticket.StatusPaused))
-		_ = t2.SetField("last_error", hookErr.Error())
-		_ = t2.SetField("summary", runSummary(t2.Summary, run.FinalMessage))
-		appendSystemNote(t2, hookErr.Error())
-	case completionErr != nil:
-		_ = t2.SetField("status", string(ticket.StatusPaused))
-		_ = t2.SetField("last_error", completionErr.Error())
-		appendSystemNote(t2, completionErr.Error())
-	case t2.IsAgentEpic():
-		_ = t2.SetField("status", string(ticket.StatusHumanReview))
-		_ = t2.SetField("stage", "")
-		_ = t2.SetField("last_error", "")
-		log.Info("epic ready for human review", "branch", t2.Branch)
-	default:
-		_ = t2.SetField("status", string(ticket.StatusDone))
-		_ = t2.SetField("last_error", "")
-		_ = t2.SetField("summary", runSummary(t2.Summary, run.FinalMessage))
-		completedAt := result.ExitedAt
-		if completedAt.IsZero() {
-			completedAt = time.Now()
+	saved, err := d.patchExecution(taskCtx, t2, filePath, func(t2 *ticket.Ticket) error {
+		// Successful exits become done for ordinary tickets or human_review for agent epics.
+		// Failed runs, hooks or child checks pause the ticket.
+		switch {
+		case result.ExitCode != 0:
+			_ = t2.SetField("status", string(ticket.StatusPaused))
+			_ = t2.SetField("last_error", fmt.Sprintf("agent exited with code %d", result.ExitCode))
+			log.Warn("paused", "exit_code", result.ExitCode)
+		case hookErr != nil:
+			// The agent succeeded, so the hook decides the outcome alone. Its run is
+			// still recorded: a paused ticket with no summary hides what the agent did.
+			_ = t2.SetField("status", string(ticket.StatusPaused))
+			_ = t2.SetField("last_error", hookErr.Error())
+			_ = t2.SetField("summary", runSummary(t2.Summary, run.FinalMessage))
+			appendSystemNote(t2, hookErr.Error())
+		case completionErr != nil:
+			_ = t2.SetField("status", string(ticket.StatusPaused))
+			_ = t2.SetField("last_error", completionErr.Error())
+			appendSystemNote(t2, completionErr.Error())
+		case t2.IsAgentEpic():
+			_ = t2.SetField("status", string(ticket.StatusHumanReview))
+			_ = t2.SetField("stage", "")
+			_ = t2.SetField("last_error", "")
+			log.Info("epic ready for human review", "branch", t2.Branch)
+		default:
+			_ = t2.SetField("status", string(ticket.StatusDone))
+			_ = t2.SetField("last_error", "")
+			_ = t2.SetField("summary", runSummary(t2.Summary, run.FinalMessage))
+			completedAt := result.ExitedAt
+			if completedAt.IsZero() {
+				completedAt = time.Now()
+			}
+			_ = t2.SetField("completed_at", completedAt.Format(time.RFC3339))
+			log.Info("completed", "branch", t2.Branch)
 		}
-		_ = t2.SetField("completed_at", completedAt.Format(time.RFC3339))
-		log.Info("completed", "branch", t2.Branch)
-		d.killTaskWindow(ticketID)
-	}
-
-	if err := d.writeTicket(t2, filePath, notify.OriginDaemon); err != nil {
+		return nil
+	})
+	if err != nil {
 		log.Error("write failed", "phase", "exit", "err", err)
 		return
 	}
 
-	if result.ExitCode == 0 && hookErr == nil && !t2.IsAgentEpic() {
+	if result.ExitCode == 0 && hookErr == nil && !saved.IsAgentEpic() {
+		d.killTaskWindow(ticketID)
 		d.removeWorktreeAt(log, repoPath, wtPath)
 	}
-
-	d.mu.Lock()
-	d.setTicketState(ticketID, t2, filePath)
-	d.broadcastTicketUpdate(ticketID)
-	d.mu.Unlock()
 }
 
 // exitGuardParams is what readTicketForExit needs to decide an exit is still
 // the daemon's to act on, and to clean up when it is not.
 type exitGuardParams struct {
-	log      *slog.Logger
-	ticketID string
-	filePath string
-	repoPath string
-	wtPath   string
+	log       *slog.Logger
+	ticketID  string
+	filePath  string
+	repoPath  string
+	wtPath    string
+	execution *executionClaim
+	snapshot  *ticket.Ticket
 }
 
 // readTicketForExit re-reads the ticket after an agent has exited and reports
@@ -1984,6 +1886,18 @@ func (d *Daemon) readTicketForExit(p exitGuardParams) (*ticket.Ticket, bool) {
 		d.mu.Lock()
 		d.tickets[p.ticketID] = newTicketState(t2, p.filePath)
 		d.mu.Unlock()
+		return nil, false
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if t2.HasOwnershipMetadata() || t2.Status != ticket.StatusInProgress {
+		return nil, false
+	}
+	if p.execution != nil {
+		if d.executions[p.ticketID] != p.execution || executionOf(t2) != p.execution.expected {
+			return nil, false
+		}
+	} else if p.snapshot != nil && executionOf(t2) != executionOf(p.snapshot) {
 		return nil, false
 	}
 	return t2, true
@@ -2037,7 +1951,7 @@ func (d *Daemon) handleAgentExit(ctx, taskCtx context.Context, p handleExitParam
 	// returns: an exit the guards discard is not this stage's outcome to act on,
 	// and hooks that write the worktree must not run for it.
 	guard := exitGuardParams{
-		log: p.log, ticketID: p.ticketID, filePath: p.filePath, repoPath: p.repoPath, wtPath: p.wtPath,
+		log: p.log, ticketID: p.ticketID, filePath: p.filePath, repoPath: p.repoPath, wtPath: p.wtPath, execution: executionFrom(taskCtx),
 	}
 	if _, ok := d.readTicketForExit(guard); !ok {
 		return
@@ -2071,91 +1985,83 @@ func (d *Daemon) handleAgentExit(ctx, taskCtx context.Context, p handleExitParam
 		return
 	}
 
-	// Use the fresh ticket from disk (preserves user edits during execution)
-	// but restore status to running for engine's precondition.
-	_ = t2.SetField("status", string(ticket.StatusInProgress))
+	var exitAction pipeline.Action
+	hookPaused := hookErr != nil
+	saved, err := d.patchExecution(taskCtx, t2, p.filePath, func(t2 *ticket.Ticket) error {
+		var err error
+		exitAction, err = pipeline.Evaluate(t2, p.pipelineCfg, pipeline.Event{
+			Kind:      pipeline.EventAgentExited,
+			ExitCode:  p.result.ExitCode,
+			Timestamp: p.result.ExitedAt,
+		})
+		if err != nil {
+			return fmt.Errorf("evaluate exit failed: %w", err)
+		}
 
-	// Evaluate exit.
-	exitAction, err := pipeline.Evaluate(t2, p.pipelineCfg, pipeline.Event{
-		Kind:      pipeline.EventAgentExited,
-		ExitCode:  p.result.ExitCode,
-		Timestamp: p.result.ExitedAt,
+		summary := runSummary(t2.Summary, p.finalMessage)
+		if exitAction.History != nil {
+			// The agent that actually ran, together with the settings resolved for
+			// it. The engine names the pipeline step's agent, which the ticket's own
+			// agent field overrides at spawn. Reading the name back off the ticket
+			// here instead would let a stage_end hook that rewrites that field leave
+			// a row naming one agent beside another's model and effort.
+			if p.agentName != "" {
+				exitAction.History.Agent = p.agentName
+			}
+			exitAction.History.Summary = summary
+			exitAction.History.Run = p.run
+			exitAction.History.Model = p.model
+			exitAction.History.Effort = p.effort
+			exitAction.History.SessionKind = p.sessionKind
+			exitAction.History.SessionRef = p.sessionRef
+		}
+
+		nextStage := fieldValue(exitAction.Fields, "stage")
+		switch exitAction.Kind {
+		case pipeline.ActionAdvance:
+			p.log.Info("advancing", "from", p.stageName, "to", nextStage)
+		case pipeline.ActionComplete:
+			p.log.Info("completed", "branch", t2.Branch)
+		case pipeline.ActionRetry:
+			attempt := fieldValue(exitAction.Fields, "attempt")
+			p.log.Info("retrying", "stage", p.stageName, "attempt", attempt)
+		case pipeline.ActionBack:
+			p.log.Info("going back", "from", p.stageName, "to", nextStage)
+		case pipeline.ActionPause:
+			p.log.Warn("paused", "stage", p.stageName, "exit_code", p.result.ExitCode)
+		case pipeline.ActionPark:
+			status := fieldValue(exitAction.Fields, "status")
+			p.log.Info("parked", "stage", p.stageName, "status", status, "exit_code", p.result.ExitCode)
+		case pipeline.ActionSpawn:
+			p.log.Warn("unexpected spawn action after exit", "stage", p.stageName)
+		}
+
+		if err := d.applyAction(t2, exitAction); err != nil {
+			return fmt.Errorf("apply action failed: %w", err)
+		}
+
+		switch {
+		case exitAction.Kind == pipeline.ActionPause:
+			_ = t2.SetField("last_error", fmt.Sprintf("agent exited with code %d (stage: %s)", p.result.ExitCode, p.stageName))
+		case exitAction.Kind == pipeline.ActionPark && p.result.ExitCode != 0:
+			_ = t2.SetField("last_error", fmt.Sprintf("agent exited with code %d (stage: %s)", p.result.ExitCode, p.stageName))
+		default:
+			_ = t2.SetField("last_error", "")
+		}
+		_ = t2.SetField("summary", summary)
+
+		if hookPaused {
+			recordStageEndHookFailure(t2, hookErr)
+		}
+		return nil
 	})
 	if err != nil {
-		p.log.Error("evaluate exit failed", "stage", p.stageName, "err", err)
-		d.pauseTicket(t2, p.filePath, "evaluate exit failed: "+err.Error())
-		return
-	}
-
-	summary := runSummary(t2.Summary, p.finalMessage)
-	if exitAction.History != nil {
-		// The agent that actually ran, together with the settings resolved for
-		// it. The engine names the pipeline step's agent, which the ticket's own
-		// agent field overrides at spawn. Reading the name back off the ticket
-		// here instead would let a stage_end hook that rewrites that field leave
-		// a row naming one agent beside another's model and effort.
-		if p.agentName != "" {
-			exitAction.History.Agent = p.agentName
-		}
-		exitAction.History.Summary = summary
-		exitAction.History.Run = p.run
-		exitAction.History.Model = p.model
-		exitAction.History.Effort = p.effort
-		exitAction.History.SessionKind = p.sessionKind
-		exitAction.History.SessionRef = p.sessionRef
-	}
-
-	nextStage := fieldValue(exitAction.Fields, "stage")
-	switch exitAction.Kind {
-	case pipeline.ActionAdvance:
-		p.log.Info("advancing", "from", p.stageName, "to", nextStage)
-	case pipeline.ActionComplete:
-		p.log.Info("completed", "branch", t2.Branch)
-	case pipeline.ActionRetry:
-		attempt := fieldValue(exitAction.Fields, "attempt")
-		p.log.Info("retrying", "stage", p.stageName, "attempt", attempt)
-	case pipeline.ActionBack:
-		p.log.Info("going back", "from", p.stageName, "to", nextStage)
-	case pipeline.ActionPause:
-		p.log.Warn("paused", "stage", p.stageName, "exit_code", p.result.ExitCode)
-	case pipeline.ActionPark:
-		status := fieldValue(exitAction.Fields, "status")
-		p.log.Info("parked", "stage", p.stageName, "status", status, "exit_code", p.result.ExitCode)
-	case pipeline.ActionSpawn:
-		p.log.Warn("unexpected spawn action after exit", "stage", p.stageName)
-	}
-
-	// Recorded after the switch, not per case, so a kind added later cannot be
-	// forgotten here.
-	d.metrics.Transition(ctx, p.stageName, exitAction.Kind.String())
-
-	if err := d.applyAction(t2, exitAction); err != nil {
-		p.log.Error("apply action failed", "phase", "exit", "err", err)
-		d.pauseTicket(t2, p.filePath, "apply action failed: "+err.Error())
-		return
-	}
-
-	switch {
-	case exitAction.Kind == pipeline.ActionPause:
-		_ = t2.SetField("last_error", fmt.Sprintf("agent exited with code %d (stage: %s)", p.result.ExitCode, p.stageName))
-	case exitAction.Kind == pipeline.ActionPark && p.result.ExitCode != 0:
-		_ = t2.SetField("last_error", fmt.Sprintf("agent exited with code %d (stage: %s)", p.result.ExitCode, p.stageName))
-	default:
-		_ = t2.SetField("last_error", "")
-	}
-	_ = t2.SetField("summary", summary)
-
-	hookPaused := hookErr != nil
-	if hookPaused {
-		recordStageEndHookFailure(t2, hookErr)
-	}
-
-	if err := d.writeTicket(t2, p.filePath, notify.OriginDaemon); err != nil {
 		p.log.Error("write failed", "phase", "exit", "err", err)
 		return
 	}
 
-	d.finishAgentExit(ctx, t2, p, exitAction.Kind, hookPaused)
+	d.metrics.Transition(ctx, p.stageName, exitAction.Kind.String())
+	d.finishAgentExit(ctx, saved, p, exitAction.Kind, hookPaused)
 }
 
 // recordStageEndHookFailure stops a ticket whose stage_end hook failed under a
@@ -2257,6 +2163,7 @@ func (d *Daemon) startFinalSummary(ctx context.Context, t *ticket.Ticket, p hand
 		tkt:       finalSummaryTicket{Title: t.Title(), Body: t.Body},
 		runs:      eligibleFinalSummaryRuns(t),
 		status:    t.Status,
+		expected:  t.Clone(),
 	}
 	d.background.Go(func() { d.runFinalSummary(ctx, params) })
 }
@@ -2282,13 +2189,16 @@ type prepareWorktreeParams struct {
 
 // prepareWorktreeForAgent resolves the ticket's repo path, creates (or reuses)
 // a worktree for the given branch, runs the worktree_created hooks when it
-// created one, and writes the branch/last_log fields. On failure the ticket is
+// created one, and writes the last_log field. On failure the ticket is
 // paused and ok=false is returned so the caller can return immediately.
 func (d *Daemon) prepareWorktreeForAgent(taskCtx context.Context, p prepareWorktreeParams) (repoPath, wtPath string, ok bool) {
+	if !d.executionCurrent(taskCtx, p.t, p.filePath) {
+		return "", "", false
+	}
 	repoName, repoPath, err := d.resolvePath(p.t)
 	if err != nil {
 		p.log.Error("resolve path failed", "err", err)
-		d.pauseTicket(p.t, p.filePath, "resolve path failed: "+err.Error())
+		d.pauseExecution(taskCtx, p.t, p.filePath, "resolve path failed: "+err.Error())
 		return "", "", false
 	}
 
@@ -2298,7 +2208,7 @@ func (d *Daemon) prepareWorktreeForAgent(taskCtx context.Context, p prepareWorkt
 	})
 	if err != nil {
 		p.log.Error("create worktree failed", "path", repoPath, "err", err)
-		d.pauseTicket(p.t, p.filePath, "create worktree failed: "+err.Error())
+		d.pauseExecution(taskCtx, p.t, p.filePath, "create worktree failed: "+err.Error())
 		return "", "", false
 	}
 	if !created {
@@ -2326,31 +2236,16 @@ func (d *Daemon) prepareWorktreeForAgent(taskCtx context.Context, p prepareWorkt
 		p.log.Info("cancelled before the spawn fields were written")
 		return "", "", false
 	}
-	if err := d.editTicket(p.t, p.filePath, notify.OriginDaemon, func() error {
-		if err := p.t.SetField("branch", p.branch); err != nil {
-			p.log.Error("set field failed", "field", "branch", "err", err)
-		}
-		if err := p.t.SetField("last_log", d.stageLogPath(p.ticketID, p.stageName)); err != nil {
-			p.log.Error("set field failed", "field", "last_log", "err", err)
-		}
-		// Clear the previous run's summary so the field always describes the run
-		// that ended most recently.
-		if err := p.t.SetField("summary", ""); err != nil {
-			p.log.Error("set field failed", "field", "summary", "err", err)
-		}
-		// The ticket-level summary covers the runs recorded so far, which this run
-		// is about to add to, so it is stale from here until the run ends. Only a
-		// pipeline ticket can have one: nothing generates it for the simple path.
-		if p.isPipeline {
-			if err := p.t.SetField("final_summary", ""); err != nil {
-				p.log.Error("set field failed", "field", "final_summary", "err", err)
-			}
-		}
+	saved, err := d.patchExecution(taskCtx, p.t, p.filePath, func(fresh *ticket.Ticket) error {
+		_ = fresh.SetField("last_log", d.stageLogPath(p.ticketID, p.stageName))
+		clearExecutionSummaries(fresh, p.t, p.isPipeline)
 		return nil
-	}); err != nil {
+	})
+	if err != nil {
 		p.log.Error("write failed", "phase", "spawn_fields", "err", err)
 		return "", "", false
 	}
+	*p.t = *saved
 	return repoPath, wtPath, true
 }
 
@@ -2451,6 +2346,9 @@ type agentAttempt struct {
 // ticket is paused and ok=false is returned so the caller can return
 // immediately.
 func (d *Daemon) spawnAgentRun(taskCtx context.Context, t *ticket.Ticket, p spawnAgentParams) (agentRun, bool) {
+	if !d.executionCurrent(taskCtx, t, p.filePath) {
+		return agentRun{}, false
+	}
 	// One measurement per stage run, taken here rather than inside
 	// runAgentOnce: a resumed run that did no work calls runAgentOnce a second
 	// time, and a hook there would report two runs for one.
@@ -2459,7 +2357,7 @@ func (d *Daemon) spawnAgentRun(taskCtx context.Context, t *ticket.Ticket, p spaw
 	defer func() {
 		d.recordStageRun(taskCtx, p, attempt, time.Since(started))
 		if t.IsAgentEpic() && !p.annotation && (attempt.started || !attempt.run.Result.StartedAt.IsZero() || attempt.run.SessionRef != "") && !ordinaryReservationRetained(taskCtx) && p.ctx.Err() == nil {
-			d.recordEpicRun(p, attempt.run)
+			d.recordEpicRun(taskCtx, t, p, attempt.run)
 		}
 	}()
 
@@ -2467,7 +2365,7 @@ func (d *Daemon) spawnAgentRun(taskCtx context.Context, t *ticket.Ticket, p spaw
 	if err != nil {
 		p.log.Error("agent binary lookup failed", "binary", p.agentCfg.Binary, "err", err)
 		attempt.pauseReason = fmt.Sprintf("agent binary unavailable: %s", err)
-		d.pauseTicket(t, p.filePath, attempt.pauseReason)
+		d.pauseExecution(taskCtx, t, p.filePath, attempt.pauseReason)
 		return agentRun{}, false
 	}
 
@@ -2487,7 +2385,7 @@ func (d *Daemon) spawnAgentRun(taskCtx context.Context, t *ticket.Ticket, p spaw
 		if hookErr != nil {
 			if taskCtx.Err() == nil {
 				attempt.pauseReason = hookErr.Error()
-				d.pauseTicket(t, p.filePath, attempt.pauseReason)
+				d.pauseExecution(taskCtx, t, p.filePath, attempt.pauseReason)
 			}
 			return agentRun{}, false
 		}
@@ -2553,7 +2451,7 @@ func (d *Daemon) finishAttempt(taskCtx context.Context, t *ticket.Ticket, p spaw
 		d.runStageEndHooksAfterFailure(taskCtx, p, attempt)
 	}
 	if attempt.pauseReason != "" {
-		d.pauseTicket(t, p.filePath, attempt.pauseReason)
+		d.pauseExecution(taskCtx, t, p.filePath, attempt.pauseReason)
 	}
 	return attempt.run, attempt.ok
 }
@@ -2563,6 +2461,9 @@ func (d *Daemon) finishAttempt(taskCtx context.Context, t *ticket.Ticket, p spaw
 // prompt replaces the stage prompt, except for an annotation run, whose
 // annotations are the only instruction it has.
 func (d *Daemon) runAgentOnce(taskCtx context.Context, t *ticket.Ticket, p spawnAgentParams, binaryPath string, rec *resumeRecord) agentAttempt {
+	if !d.executionCurrent(taskCtx, t, p.filePath) {
+		return agentAttempt{}
+	}
 	rendered := p.rendered
 	if rec != nil {
 		if !p.annotation {
@@ -3125,25 +3026,6 @@ func (d *Daemon) writeTicket(t *ticket.Ticket, path string, origin notify.Origin
 	return nil
 }
 
-// editTicket applies edits to a ticket the store still hands out to readers,
-// then writes the file, both under d.mu. Every reader of d.tickets holds that
-// lock, and SetField re-decodes the whole struct from the YAML node, so an
-// unlocked edit races every field a reader touches and not only the one it
-// sets. Callers must not hold d.mu.
-//
-// origin is always OriginDaemon today. It stays a parameter so a
-// human-initiated edit added here later cannot inherit it by default.
-//
-//nolint:unparam // the parameter is the contract, not a leftover
-func (d *Daemon) editTicket(t *ticket.Ticket, path string, origin notify.Origin, edits func() error) error {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	if err := edits(); err != nil {
-		return err
-	}
-	return d.writeTicketLocked(t, path, origin)
-}
-
 // writeTicketLocked is writeTicket for callers that already hold d.mu.
 func (d *Daemon) writeTicketLocked(t *ticket.Ticket, path string, origin notify.Origin) error {
 	modTime, err := d.writeTicketFile(t, path, origin)
@@ -3267,22 +3149,29 @@ func appendSystemNote(t *ticket.Ticket, text string) {
 func (d *Daemon) pauseTicket(t *ticket.Ticket, path, reason string) {
 	log := d.ticketLog(t.ID)
 	log.Warn("pausing", "reason", reason)
-	d.mu.Lock()
-	if reason != "" {
-		appendSystemNote(t, reason)
+	err := d.withTicketMutationOrigin(notify.OriginDaemon, func(repo app.MutationRepository) error {
+		st, err := repo.Get(t.ID)
+		if err != nil {
+			return err
+		}
+		if st.FilePath != path || st.Ticket.Status != t.Status || executionOf(st.Ticket) != executionOf(t) {
+			return errExecutionChanged
+		}
+		if _, running := d.running[t.ID]; running {
+			return errExecutionChanged
+		}
+		if reason != "" {
+			appendSystemNote(st.Ticket, reason)
+		}
+		_ = st.Ticket.SetField("last_error", reason)
+		_ = st.Ticket.SetField("status", string(ticket.StatusPaused))
+		return repo.Save(st)
+	})
+	if err != nil {
+		log.Info("pause refused", "err", err)
+		return
 	}
-	if err := t.SetField("last_error", reason); err != nil {
-		log.Error("pause: set last_error failed", "err", err)
-	}
-	if err := t.SetField("status", string(ticket.StatusPaused)); err != nil {
-		log.Error("pause: set status failed", "err", err)
-	}
-	if err := d.writeTicketLocked(t, path, notify.OriginDaemon); err != nil {
-		log.Error("pause: write failed", "err", err)
-	}
-	d.setTicketState(t.ID, t, path)
-	d.broadcastTicketUpdate(t.ID)
-	d.mu.Unlock()
+	d.broadcastTicketUpdateLocking(t.ID)
 }
 
 // selfWrite is what the daemon knows about its own last write to a ticket

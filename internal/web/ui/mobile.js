@@ -333,8 +333,7 @@ export function kontoraMobile() {
         add('Move to open', 'default', move('open'));
         add('Cancel ticket', 'danger', move('cancelled'));
       } else if (s === 'in_progress') {
-        add(this.epicIsAgent(t) ? 'Pause supervisor' : 'Pause agent', 'warn', function() { self.moveTicketVia(t.id, 'pause', null); });
-        if (t.kind !== 'epic') add('Skip stage', 'default', function() { self.action('skip'); });
+        add(this.epicIsAgent(t) ? 'Pause supervisor' : 'Pause agent before changing stages', 'warn', function() { self.moveTicketVia(t.id, 'pause', null); });
         add('Send to review', 'primary', move('human_review'));
         add('Mark done', 'default', move('done'));
         add('Cancel ticket', 'danger', move('cancelled'));
@@ -360,6 +359,7 @@ export function kontoraMobile() {
           add(mv.label, 'default', mv.status ? move(mv.status) : run(mv.endpoint));
         });
       }
+      if (this.canSkipStage(t)) add('Skip stage', 'default', run('skip'));
       return rows;
     },
     mobileActionColor(kind) {

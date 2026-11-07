@@ -270,7 +270,7 @@ func TestRetry_RejectsArchived(t *testing.T) {
 
 func TestSkip_AdvancesToNextStage(t *testing.T) {
 	repo := newMemRepo()
-	repo.add("tst-001", "---\nid: tst-001\nstatus: in_progress\nkontora: true\npipeline: default\nstage: code\n---\n# Test\n")
+	repo.add("tst-001", "---\nid: tst-001\nstatus: paused\nkontora: true\npipeline: default\nstage: code\n---\n# Test\n")
 	rt := &spyRuntime{}
 	svc := New(Static(testCfg()), repo, rt)
 
@@ -284,7 +284,7 @@ func TestSkip_AdvancesToNextStage(t *testing.T) {
 
 func TestSkip_LastStage_MarksDone(t *testing.T) {
 	repo := newMemRepo()
-	repo.add("tst-001", "---\nid: tst-001\nstatus: in_progress\nkontora: true\npipeline: default\nstage: review\n---\n# Test\n")
+	repo.add("tst-001", "---\nid: tst-001\nstatus: paused\nkontora: true\npipeline: default\nstage: review\n---\n# Test\n")
 	rt := &spyRuntime{}
 	svc := New(Static(testCfg()), repo, rt)
 
@@ -297,7 +297,7 @@ func TestSkip_LastStage_MarksDone(t *testing.T) {
 
 func TestSkip_UnknownPipeline(t *testing.T) {
 	repo := newMemRepo()
-	repo.add("tst-001", "---\nid: tst-001\nstatus: in_progress\nkontora: true\npipeline: nonexistent\nstage: code\n---\n# Test\n")
+	repo.add("tst-001", "---\nid: tst-001\nstatus: paused\nkontora: true\npipeline: nonexistent\nstage: code\n---\n# Test\n")
 	svc := New(Static(testCfg()), repo, &spyRuntime{})
 
 	_, err := svc.Skip("tst-001")

@@ -162,11 +162,12 @@ func TestEpicAgentPauseDuringChildRefresh(t *testing.T) {
 	}()
 	rootCtx, cancelRoot := context.WithCancel(context.Background())
 	defer cancelRoot()
-	taskCtx, cancelTask := context.WithCancel(rootCtx)
-	d.running[tk.ID] = cancelTask
+	taskCtx, cancelTask, claimed, claimedPath, branchKey, err := d.claimExecution(rootCtx, h.cfg, tk.ID, testLogger(t))
+	require.NoError(t, err)
+	defer d.finishOrdinaryRun(taskCtx, cancelTask, tk.ID, branchKey, claimedPath, testLogger(t))
 	done := make(chan struct{})
 	go func() {
-		d.runSimpleTicket(rootCtx, taskCtx, h.cfg, testLogger(t), tk.ID, tk, path)
+		d.runSimpleTicket(rootCtx, taskCtx, h.cfg, testLogger(t), tk.ID, claimed, claimedPath)
 		close(done)
 	}()
 	select {

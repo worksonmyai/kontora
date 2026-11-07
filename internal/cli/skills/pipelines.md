@@ -134,16 +134,23 @@ still contains a commit stage.
 
 The following commands remain available to ordinary operators:
 
-- `kontora skip ID` — advance to the next stage without running the current
-  one, or mark the ticket done when it is already on the last stage.
-- `kontora set-stage ID STAGE` — jump to a named stage of the ticket's
-  pipeline. Nothing runs; the ticket stays in whatever status it is in.
+- `kontora skip ID` — intermediate skip sets the next stage to `todo`.
+  Final skip marks the ticket done without recording a successful run.
+- `kontora set-stage ID STAGE` — select a named pipeline stage without retrying.
+  Status and attempt stay unchanged; a `todo` ticket remains eligible for pickup.
 - `kontora retry ID` — reset a non-running ticket to `todo` with the attempt
   counter cleared, and re-enqueue it. This is what resumes a `paused` ticket.
 - `kontora pause ID` — stop the running agent and park the ticket in `paused`.
 - `kontora run ID` — enqueue an `open` or `todo` ticket.
 
-`skip` and `set-stage` both need the ticket to have a pipeline.
+Daemon/API skip queues dependency-ready work even with `auto_pick_up: false`.
+Disk-only skip does not enqueue; use `kontora run TICKET_ID` afterward when
+automatic pickup is off.
+
+`skip` and `set-stage` require a pipeline and stopped execution. Pause first,
+wait for termination, and close any active Plannotator review. A persisted
+`paused` status does not prove teardown finished. The daemon refuses stage
+changes until execution stops; a disk-only CLI cannot observe daemon teardown.
 
 ## Where the files are
 

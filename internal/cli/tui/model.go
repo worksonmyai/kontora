@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"errors"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -263,6 +264,10 @@ func (m model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case isKey(msg, "s"):
 		if sel := m.list.selected(); sel != nil {
+			if sel.Status == string(ticket.StatusInProgress) {
+				m.list.err = errors.New("pause first and wait for the agent to stop before changing stages")
+				return m, nil
+			}
 			return m, actionCmd(func() error { return m.source.SkipStage(sel.ID) })
 		}
 	case isKey(msg, "a"):
@@ -300,6 +305,10 @@ func (m model) handleDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case isKey(msg, "r"):
 		return m, actionCmd(func() error { return m.source.RetryTicket(m.detail.ticket.ID) })
 	case isKey(msg, "s"):
+		if m.detail.ticket.Status == string(ticket.StatusInProgress) {
+			m.detail.err = errors.New("pause first and wait for the agent to stop before changing stages")
+			return m, nil
+		}
 		return m, actionCmd(func() error { return m.source.SkipStage(m.detail.ticket.ID) })
 	case isKey(msg, "a"):
 		m.attachTarget = m.detail.ticket.ID

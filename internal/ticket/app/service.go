@@ -289,21 +289,14 @@ func (s *Service) skip(id string) (Result, error) {
 	if !t.Kontora {
 		return Result{}, fmt.Errorf("%w: ticket is not initialized", ErrInvalidState)
 	}
-	if t.Status == ticket.StatusArchived {
-		return Result{}, fmt.Errorf("%w: cannot skip archived ticket %s", ErrInvalidState, resolved)
-	}
-	if t.Kind == ticket.KindEpic {
-		return Result{}, fmt.Errorf("%w: epics have no pipeline stage to skip", ErrInvalidState)
-	}
-
-	pipelineCfg, ok := s.cfg().Pipelines[t.Pipeline]
-	if !ok {
-		return Result{}, fmt.Errorf("unknown pipeline %q for ticket %s", t.Pipeline, resolved)
+	pipelineCfg, err := s.stageChangePipeline(t)
+	if err != nil {
+		return Result{}, err
 	}
 
 	currentIdx := stageIndex(pipelineCfg, t.Stage)
 	if currentIdx < 0 {
-		return Result{}, fmt.Errorf("stage %q not found in pipeline %q", t.Stage, t.Pipeline)
+		return Result{}, fmt.Errorf("%w: stage %q not found in pipeline %q", ErrInvalidState, t.Stage, t.Pipeline)
 	}
 
 	var newStatus string
@@ -348,6 +341,55 @@ func (s *Service) skip(id string) (Result, error) {
 	s.runtime.ReconcileDependencies(resolved)
 	s.runtime.BroadcastUpdated(resolved)
 	return Result{ID: resolved, Status: newStatus}, nil
+}
+
+func (s *Service) stageChangePipeline(t *ticket.Ticket) (config.Pipeline, error) {
+	if t.Status == ticket.StatusInProgress {
+		return nil, fmt.Errorf("%w: cannot change the stage of ticket %s while it is running; pause first and wait for the agent to stop", ErrInvalidState, t.ID)
+	}
+	if t.Status == ticket.StatusArchived {
+		return nil, fmt.Errorf("%w: cannot change the stage of archived ticket %s", ErrInvalidState, t.ID)
+	}
+	if t.Kind == ticket.KindEpic {
+		return nil, fmt.Errorf("%w: epics have no pipeline stage to change", ErrInvalidState)
+	}
+	if t.Pipeline == "" {
+		return nil, fmt.Errorf("%w: ticket %s has no pipeline, so it has no stages", ErrInvalidState, t.ID)
+	}
+	steps, ok := s.cfg().Pipelines[t.Pipeline]
+	if !ok {
+		return nil, fmt.Errorf("%w: unknown pipeline %q for ticket %s", ErrInvalidState, t.Pipeline, t.ID)
+	}
+	return steps, nil
+}
+
+// SetStage changes only the stage. It does not retry or enqueue the ticket.
+func (s *Service) SetStage(id, stage string) (Result, error) {
+	return mutate(s, func(scoped *Service) (Result, error) {
+		resolved, err := scoped.repo.Resolve(id)
+		if err != nil {
+			return Result{}, err
+		}
+		st, err := scoped.mutationTicket(resolved)
+		if err != nil {
+			return Result{}, err
+		}
+		steps, err := scoped.stageChangePipeline(st.Ticket)
+		if err != nil {
+			return Result{}, err
+		}
+		if stageIndex(steps, stage) < 0 {
+			return Result{}, fmt.Errorf("%w: stage %q not found in pipeline %q", ErrInvalidState, stage, st.Ticket.Pipeline)
+		}
+		if err := st.Ticket.SetField("stage", stage); err != nil {
+			return Result{}, fmt.Errorf("setting stage: %w", err)
+		}
+		if err := scoped.repo.Save(st); err != nil {
+			return Result{}, err
+		}
+		scoped.runtime.BroadcastUpdated(resolved)
+		return Result{ID: resolved, Status: string(st.Ticket.Status)}, nil
+	})
 }
 
 // resolveInitFields decides the pipeline and agent Init writes, and rejects a

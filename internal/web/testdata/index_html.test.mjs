@@ -11482,17 +11482,38 @@ test("the stage picker opens on every status but a running one", () => {
     { status: "closed", want: false },
     { status: "waiting", custom: ["waiting"], want: true },
     { status: "waiting", want: false },
+    { status: "paused", review: true, want: false },
+    { status: "human_review", kind: "epic", want: false },
   ];
 
   for (const c of cases) {
     const state = loadKontoraState();
     state.configCache = c.custom ? { custom_statuses: c.custom } : null;
-    state.selectedTicket = { id: "kon-a", status: c.status, stage: "plan", stages: ["plan", "code"] };
+    state.selectedTicket = { id: "kon-a", kontora: true, kind: c.kind || "", status: c.status, stage: "plan", stages: ["plan", "code"] };
+    if (c.review) state.plannotatorInFlight["kon-a"] = true;
     assert.equal(state.canSetStage(), c.want, `${c.status} custom=${c.custom || "none"}`);
+    assert.equal(state.canSkipStage(), c.want, `${c.status} review=${!!c.review}`);
+    assert.equal(state.mobileSheetActions(state.selectedTicket).some(a => a.label === "Skip stage"), c.want);
   }
 
   // Nothing selected, nothing to move.
   assert.equal(loadKontoraState().canSetStage(), false);
+});
+
+test("stage actions refuse active execution and review without making requests", async () => {
+  for (const operation of ["skip", "set-stage"]) {
+    for (const review of [false, true]) {
+      const calls = [];
+      const { state } = loadKontoraContext({ fetch: url => { calls.push(url); throw new Error("unexpected request"); } });
+      state.selectedTicket = { id: "kon-a", kontora: true, status: review ? "paused" : "in_progress", stage: "plan", stages: ["plan", "code"] };
+      if (review) state.plannotatorInFlight["kon-a"] = true;
+      if (operation === "skip") await state.action("skip");
+      else await state.setStage("code");
+      assert.deepEqual(calls, []);
+      assert.match(state.error, /Pause first/);
+      assert.equal(state.selectedTicket.stage, "plan");
+    }
+  }
 });
 
 test("the stage row is gated on the predicate and on the pipeline, not on the stage", () => {

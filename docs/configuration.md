@@ -62,6 +62,29 @@ pipelines:
       on_failure: pause
 ```
 
+## Secondary ticket folders
+
+```yaml
+tickets_dir: ~/org/tickets
+secondary_tickets_dirs:
+  - ~/org/team-tickets
+  - ~/org/shared-backlog
+```
+
+The dashboard combines secondary tickets with the primary board and labels their
+source folder. Primary execution and agent counts still use only `tickets_dir`.
+Relationships resolve within each folder. The daemon never runs, recovers, schedules,
+or derives epic statuses in a secondary folder.
+
+Paths support `~`. Kontora resolves directory aliases after primary environment and
+command-line overrides. A secondary folder cannot alias primary or another secondary
+folder. Discovery is nonrecursive. Missing or unreadable secondary folders appear as
+unavailable without stopping primary execution; Kontora does not create them.
+
+Secondary folders need filesystem write access for edits and Claim. Existing managed
+board protections still apply. Settings exposes the list, but changing it requires a
+restart. See [Claim](tickets.md#claim-from-a-secondary-folder) for transfer rules.
+
 ## Full example
 
 ```yaml
@@ -163,6 +186,7 @@ pipelines:
 | Field | Required | Default | Description |
 |-------|----------|---------|-------------|
 | `tickets_dir` | no | `~/.kontora/tickets` | Directory containing ticket markdown files. Overridden by `$TICKETS_DIR`, then `$KONTORA_TICKETS_DIR`, then `--tickets-dir`: for this one field the environment beats the file (see [environment variables](cli.md#environment-variables)). |
+| `secondary_tickets_dirs` | no | `[]` | Additional folders for browsing and non-lifecycle editing. Requires restart. See [secondary folders](#secondary-ticket-folders). |
 | `branch_prefix` | no | `kontora` | Git branch prefix. A project can override it (see [projects](#projects)). |
 | `branch_naming` | no | `mode: slug` | How the daemon names a ticket with an empty `branch` field (see [branch naming](#branch-naming)). |
 | `worktrees_dir` | no | `~/.kontora/worktrees` | Where git worktrees are created. |
@@ -1412,7 +1436,7 @@ daemon names an existing ticket whose branch is still empty.
 
 ### What needs a restart
 
-`tickets_dir`, `worktrees_dir`, `logs_dir`, `instance_name`, `tmux_session`,
+`tickets_dir`, `secondary_tickets_dirs`, `worktrees_dir`, `logs_dir`, `instance_name`, `tmux_session`,
 `max_concurrent_agents`, `max_concurrent_epic_supervisors`, and the whole `web` and `metrics` blocks
 (`metrics.enabled`, `metrics.endpoint`, `metrics.insecure`, `metrics.interval`,
 `metrics.headers`). The daemon reads these once at startup: the watched

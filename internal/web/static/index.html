@@ -1339,6 +1339,17 @@
     </div>
     </template>
 
+    <template x-if="ticketSources.length > 0 && !boardDetailOpen() && !epicPageOpen()">
+      <select x-model="sourceFilter" @change="recomputeBoard()" aria-label="Filter by ticket folder"
+              class="max-w-[220px] min-w-0 font-mono text-[12px] rounded-[7px] bg-surface-900 border border-edge-input text-tx-2 px-2 py-[7px] focus:outline-none focus:border-accent">
+        <option value="">All folders</option>
+        <option value="primary">Primary folder</option>
+        <template x-for="source in ticketSources" :key="source.id">
+          <option :value="source.id" x-text="(source.id === 'primary' ? 'primary' : source.path) + (source.available === false ? ' (unavailable)' : '')"></option>
+        </template>
+      </select>
+    </template>
+
     <template x-if="boardDetailOpen()">
       <div class="flex items-center gap-3 min-w-0">
         <button type="button" @click="closeDetail()"
@@ -1364,6 +1375,7 @@
           </span>
         </template>
         <span class="font-mono text-[12px] text-tx-2 truncate" x-text="selectedTicket?.id"></span>
+        <span class="font-mono text-[11px] text-tx-3 truncate" :title="sourceLabel(selectedTicket)" x-text="sourceLabel(selectedTicket)"></span>
         <span x-show="detailLoading" class="font-mono text-[11px] text-surface-600">loading...</span>
       </div>
     </template>
@@ -1441,9 +1453,15 @@
            the same frame and has no second header of its own. -->
       <template x-if="boardDetailOpen()">
         <div class="flex items-center gap-2">
-          <button type="button" x-show="selectedTicket?.kind === 'epic'" @click="openEpic(selectedTicket.id)"
+          <button type="button" x-show="isSecondary(selectedTicket)" @click="claimTicket()"
+                  :disabled="!ticketCanClaim(selectedTicket) || claimSubmitting"
+                  :title="selectedTicket?.refusal_reason || 'Move into primary without starting work. Related tickets are not moved; references resolve in primary.'"
+                  class="h-7 px-3 rounded-[7px] font-mono text-[11.5px] bg-accent text-accent-fg disabled:opacity-50 disabled:cursor-not-allowed"
+                  x-text="claimSubmitting ? 'Claiming…' : 'Claim'"></button>
+          <span x-show="isSecondary(selectedTicket) && !ticketCanClaim(selectedTicket)" class="max-w-[240px] text-[11px] text-warn" x-text="selectedTicket?.refusal_reason || 'This ticket cannot be claimed.'"></span>
+          <button type="button" x-show="!isSecondary(selectedTicket) && selectedTicket?.kind === 'epic'" @click="openEpic(selectedTicket.id)"
                   class="font-mono text-[12px] text-accent hover:underline">epic overview</button>
-          <template x-if="selectedTicket?.status === 'in_progress' && (selectedTicket?.kind !== 'epic' || epicIsAgent(selectedTicket))">
+          <template x-if="ticketCanControl(selectedTicket) && selectedTicket?.status === 'in_progress' && (selectedTicket?.kind !== 'epic' || epicIsAgent(selectedTicket))">
             <button @click="action('pause')" :disabled="!!actionLoading"
                     class="h-7 px-3 rounded-[7px] font-mono text-[11.5px] bg-surface-900 border border-edge-input text-tx-2 hover:text-st-paused hover:border-st-paused/35 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5"
                     :data-tip-t="epicIsAgent(selectedTicket) ? 'Stops only the supervisor. Child agents keep running.' : 'Stops the running agent and pauses the ticket. Pause first and wait for the agent to stop before changing stages.'">
@@ -1451,7 +1469,7 @@
               <span x-text="actionLoading === 'pause' ? 'pausing...' : (epicIsAgent(selectedTicket) ? 'pause supervisor' : 'pause')"></span>
             </button>
           </template>
-          <template x-if="canSkipStage()">
+          <template x-if="ticketCanControl(selectedTicket) && canSkipStage()">
             <button @click="action('skip')" :disabled="!!actionLoading"
                     class="h-7 px-3 rounded-[7px] font-mono text-[11.5px] bg-surface-900 border border-edge-input text-tx-2 hover:text-tx hover:border-edge-hover transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5"
                     data-tip-t="Queues the next stage, or marks the ticket done on the final stage. Pause first if an agent is running.">
@@ -1461,7 +1479,7 @@
           </template>
           <!-- Retry is a kontora-only endpoint: app.Service.Retry rejects a ticket
                the daemon does not own, so a foreign one gets no button. -->
-          <template x-if="['paused', 'done', 'cancelled'].includes(selectedTicket?.status) && selectedTicket?.kontora && (selectedTicket?.kind !== 'epic' || epicIsAgent(selectedTicket))">
+          <template x-if="ticketCanControl(selectedTicket) && ['paused', 'done', 'cancelled'].includes(selectedTicket?.status) && selectedTicket?.kontora && (selectedTicket?.kind !== 'epic' || epicIsAgent(selectedTicket))">
             <button @click="action('retry')" :disabled="!!actionLoading"
                     class="h-7 px-3 rounded-[7px] font-mono text-[11.5px] bg-surface-900 border border-edge-input text-tx-2 hover:text-ok hover:border-ok/30 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5"
                     data-tip-t="Queues the ticket again from its current stage.">
@@ -1469,7 +1487,7 @@
               <span x-text="retryLabel()"></span>
             </button>
           </template>
-          <template x-if="selectedTicket?.status === 'human_review' && selectedTicket?.kontora && (selectedTicket?.kind !== 'epic' || epicIsAgent(selectedTicket))">
+          <template x-if="ticketCanControl(selectedTicket) && selectedTicket?.status === 'human_review' && selectedTicket?.kontora && (selectedTicket?.kind !== 'epic' || epicIsAgent(selectedTicket))">
             <button type="button" :disabled="!!plannotatorInFlight[selectedTicket?.id]"
                     @click="startPlannotatorReview(selectedTicket)"
                     class="h-7 px-3 rounded-[7px] font-mono text-[11.5px] bg-surface-900 border border-edge-input text-tx-2 hover:text-accent hover:border-accent/40 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5"
@@ -1478,7 +1496,7 @@
               <span x-text="plannotatorInFlight[selectedTicket?.id] ? 'reviewing…' : 'plannotator review'"></span>
             </button>
           </template>
-          <template x-if="canAnnotateTicket(selectedTicket)">
+          <template x-if="ticketCanControl(selectedTicket) && canAnnotateTicket(selectedTicket)">
             <button type="button" :disabled="!!plannotatorInFlight[selectedTicket?.id]"
                     @click="startPlannotatorAnnotate(selectedTicket)"
                     class="h-7 px-3 rounded-[7px] font-mono text-[11.5px] bg-surface-900 border border-edge-input text-tx-2 hover:text-accent hover:border-accent/40 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5"
@@ -1488,7 +1506,7 @@
             </button>
           </template>
           <!-- Status transitions from validMoves, the same source as the card menu. -->
-          <template x-for="mv in detailMoves(selectedTicket)" :key="mv.label">
+          <template x-for="mv in (ticketCanControl(selectedTicket) ? detailMoves(selectedTicket) : [])" :key="mv.label">
             <button type="button"
                     @click="moveTicketVia(selectedTicket.id, mv.endpoint, mv.status ? { status: mv.status } : null)"
                     class="h-7 px-3 rounded-[7px] font-mono text-[11.5px] border transition-colors flex items-center gap-1.5"
@@ -1500,7 +1518,7 @@
                     x-text="(mv.label === 'Approve' ? '✓ ' : (mv.label === 'Cancel' ? '✕ ' : (mv.label === 'Send back' ? '↩ ' : ''))) + mv.label.toLowerCase()"></button>
           </template>
 
-          <div class="relative" @click.outside="detailMenuOpen = false">
+          <div x-show="ticketCanControl(selectedTicket)" class="relative" @click.outside="detailMenuOpen = false">
             <button @click.stop="detailMenuOpen = !detailMenuOpen"
                     class="w-7 h-7 rounded-[7px] bg-surface-850 border border-edge-hover text-tx-2 hover:bg-surface-800 transition-colors flex items-center justify-center"
                     aria-haspopup="menu" :aria-expanded="detailMenuOpen" aria-label="More actions">
@@ -1702,13 +1720,21 @@
     <!-- Board area (kanban) -->
     <div :inert="!!selectedTicket || !!selectedEpic" class="relative flex flex-col flex-1 min-w-0 min-h-0 bg-surface-frame">
 
+    <div x-show="sourcesError || ticketSources.some(s => s.available === false)" x-cloak role="alert"
+         class="shrink-0 px-4 py-2 font-mono text-[12px] text-warn border-b border-surface-700">
+      <p x-show="sourcesError" x-text="sourcesError"></p>
+      <template x-for="source in ticketSources.filter(s => s.available === false)" :key="source.id">
+        <p x-text="(source.path || source.id) + ': ' + (source.error || 'Folder unavailable')"></p>
+      </template>
+    </div>
+
     <!-- Empty-board panel. Gated on the raw ticket list, so a search that
          matches nothing keeps showing the per-column empty state instead. The
          parent adds !loading, so the panel waits for the first fetch. It covers
          the board rather than replacing it: #board-cols stays mounted, so the
          Sortable bindings and the imperative card renderer survive the first
          ticket arriving. -->
-    <div id="board-empty-desktop" x-show="tickets.length === 0" x-cloak
+    <div id="board-empty-desktop" x-show="allBoardTickets().length === 0 && !sourcesError && !ticketSources.some(s => s.available === false)" x-cloak
          class="absolute inset-0 z-20 flex items-center justify-center p-6 bg-surface-frame">
       <div class="w-full max-w-[460px] rounded-xl border border-edge-card bg-surface-900 p-6 flex flex-col gap-4">
         <div>
@@ -1894,9 +1920,19 @@
         </h1>
       </div>
 
+      <template x-if="isSecondary(selectedTicket) && ticketCanEdit(selectedTicket)">
+        <form @submit.prevent="saveSourceRelation()" class="shrink-0 flex flex-wrap items-center gap-2 px-6 pb-3">
+          <select x-model="sourceRelationDraft().action" aria-label="Relationship action" class="bg-surface-900 border border-edge-input rounded px-2 py-1 text-xs">
+            <template x-for="option in sourceRelationOptions" :key="option.value"><option :value="option.value" x-text="option.label"></option></template>
+          </select>
+          <input x-model="sourceRelationDraft().targets" aria-label="Source relationship ticket IDs" placeholder="Ticket IDs in this folder" class="min-w-0 flex-1 bg-surface-900 border border-edge-input rounded px-2 py-1 text-xs">
+          <button type="submit" :disabled="sourceRelationSubmitting" class="text-xs text-accent disabled:opacity-50">Save relationship</button>
+        </form>
+      </template>
+
       <!-- Stage ribbon: one segment per stage, grown by its real duration -->
       <div class="shrink-0 px-6 pb-[13px] border-b border-surface-700/60 flex items-end gap-5"
-           x-show="stageRibbon().length > 0 || ribbonMeters().length > 0">
+           x-show="!isSecondary(selectedTicket) && (stageRibbon().length > 0 || ribbonMeters().length > 0)">
         <div class="flex-1 flex gap-1 items-stretch min-w-0"
              :class="['todo', 'open'].includes(selectedTicket?.status) ? 'opacity-60' : ''">
           <template x-for="seg in stageRibbon()" :key="seg.name">
@@ -1953,18 +1989,18 @@
           <!-- Tab bar -->
           <div class="flex-1 min-w-0 px-6 pt-[11px]">
             <div class="flex items-center gap-5">
-              <button x-show="selectedTicket?.status === 'in_progress'" @click="switchTab('session')"
+              <button x-show="!isSecondary(selectedTicket) && selectedTicket?.status === 'in_progress'" @click="switchTab('session')"
                       class="flex items-center gap-[7px] font-mono text-[12px] pb-[9px] border-b-2 transition-colors"
                       :class="activeTab === 'session' ? 'text-tx-hi font-bold border-accent' : 'text-surface-600 border-transparent hover:text-tx-3'">
                 <span class="w-[5px] h-[5px] rounded-full bg-st-progress pulse-dot"></span>session
               </button>
-              <button x-show="showTerminalTab()" @click="switchTab('activity')"
+              <button x-show="!isSecondary(selectedTicket) && showTerminalTab()" @click="switchTab('activity')"
                       class="font-mono text-[12px] pb-[9px] border-b-2 transition-colors"
                       :class="activeTab === 'activity' ? 'text-tx-hi font-bold border-accent' : 'text-surface-600 border-transparent hover:text-tx-3'">activity</button>
               <button x-show="showSummaryTab()" @click="switchTab('summary')"
                       class="font-mono text-[12px] pb-[9px] border-b-2 transition-colors"
                       :class="activeTab === 'summary' ? 'text-tx-hi font-bold border-accent' : 'text-surface-600 border-transparent hover:text-tx-3'">summary</button>
-              <button x-show="showDiffTab()" @click="switchTab('diff')"
+              <button x-show="!isSecondary(selectedTicket) && showDiffTab()" @click="switchTab('diff')"
                       class="font-mono text-[12px] pb-[9px] border-b-2 transition-colors"
                       :class="activeTab === 'diff' ? 'text-tx-hi font-bold border-accent' : 'text-surface-600 border-transparent hover:text-tx-3'">
                 diff <span class="text-tx-faint" x-text="churn().count || ''"></span></button>
@@ -1977,14 +2013,14 @@
                       class="font-mono text-[12px] pb-[9px] border-b-2 transition-colors"
                       :class="activeTab === 'notes' ? 'text-tx-hi font-bold border-accent' : 'text-surface-600 border-transparent hover:text-tx-3'">notes</button>
               <div class="flex-1"></div>
-              <button @click="toggleLogFollow()" x-show="logTabActive()"
+              <button @click="toggleLogFollow()" x-show="!isSecondary(selectedTicket) && logTabActive()"
                       class="font-mono text-[10px] px-2.5 py-1 mb-[6px] rounded-md border transition-colors"
                       :class="logFollow ? 'text-tx-2 border-edge-hover' : 'text-surface-600 border-edge-input hover:text-tx-2 hover:border-edge-hover'"
                       data-tip-t="Autoscroll to the newest output">⇣ follow</button>
-              <button @click="openRawLog()" x-show="activeTab === 'activity'"
+              <button @click="openRawLog()" x-show="!isSecondary(selectedTicket) && activeTab === 'activity'"
                       class="font-mono text-[10px] px-2.5 py-1 mb-[6px] rounded-md border border-edge-input text-surface-600 hover:text-tx-2 hover:border-edge-hover transition-colors"
                       data-tip-t="Open the current log as plain text">⧉ raw</button>
-              <button x-show="activeTab === 'activity' && selectedTicket?.status === 'in_progress'"
+              <button x-show="!isSecondary(selectedTicket) && activeTab === 'activity' && selectedTicket?.status === 'in_progress'"
                       @click="switchTab('session')"
                       class="font-mono text-[11px] pb-[9px] text-accent hover:underline">← back to live</button>
             </div>
@@ -2001,7 +2037,7 @@
           <div class="flex-1 min-h-0 overflow-hidden">
 
             <!-- Live session: the source of truth while a stage runs -->
-            <div x-show="activeTab === 'session'" class="h-full min-h-0 flex flex-col bg-surface-frame">
+            <div x-show="!isSecondary(selectedTicket) && activeTab === 'session'" class="h-full min-h-0 flex flex-col bg-surface-frame">
               <div class="shrink-0 flex items-center gap-[10px] px-6 pt-[11px] pb-[9px]">
                 <span class="font-mono text-[11px] text-surface-600"
                       x-text="'tmux · ' + (selectedTicket?.id || '') + (selectedTicket?.agent ? ' · ' + selectedTicket.agent : '')"></span>
@@ -2031,7 +2067,7 @@
             </div>
 
             <!-- Activity: the structured transcript of one stage run, live while it runs -->
-            <div x-show="activeTab === 'activity'" class="h-full min-h-0 flex flex-col bg-surface-frame">
+            <div x-show="!isSecondary(selectedTicket) && activeTab === 'activity'" class="h-full min-h-0 flex flex-col bg-surface-frame">
               <div class="shrink-0 px-6 pt-[14px] flex items-center gap-2.5 flex-wrap">
                 <span class="side-label">activity</span>
                 <span class="font-mono text-[11px] text-tx-3" x-text="activityStage || 'latest'"></span>
@@ -2161,7 +2197,7 @@
                           <span class="final-card-dot"></span>
                           <span class="final-card-name">final outcome</span>
                         </div>
-                        <div class="ticket-prose final-card-body" x-effect="setSummaryProse($el, finalSummary())"></div>
+                        <div class="ticket-prose final-card-body" x-effect="isSecondary(selectedTicket) ? setProse($el, finalSummary()) : setSummaryProse($el, finalSummary())"></div>
                       </div>
                     </template>
                     <template x-for="(card, ci) in summaryCards()" :key="card.key">
@@ -2187,18 +2223,19 @@
                             <span x-show="ci === 0" class="stage-card-pill">latest</span>
                             <span class="flex-1"></span>
                             <span class="num font-mono text-[10.5px] text-surface-600"
-                                  :title="costTooltip(ticketRunCost(card.historyIndex))" x-text="stageCardMeta(card)"></span>
+                                  :title="!isSecondary(selectedTicket) && !card.imported ? costTooltip(ticketRunCost(card.historyIndex)) : ''"
+                                  x-text="isSecondary(selectedTicket) || card.imported ? [card.seconds > 0 ? formatSeconds(card.seconds) : '', card.agent, 'outcome: ' + card.outcome, card.outcomeReason].filter(Boolean).join(' · ') : stageCardMeta(card)"></span>
                           </button>
                           <div x-show="!collapsedStages[card.key]"
                                class="ticket-prose stage-card-body"
                                :class="ci === 0 ? 'is-latest' : 'is-earlier'"
-                               x-effect="setSummaryProse($el, card.summary)"></div>
+                               x-effect="isSecondary(selectedTicket) || card.imported ? setProse($el, card.summary) : setSummaryProse($el, card.summary)"></div>
                         </div>
                       </div>
                     </template>
                   </div>
 
-                  <template x-if="ticketChanges?.commits?.length">
+                  <template x-if="!isSecondary(selectedTicket) && ticketChanges?.commits?.length">
                     <div class="summary-rail">
                       <div class="rail-card">
                         <div class="side-label mb-[11px]">commits</div>
@@ -2229,7 +2266,7 @@
             </div>
 
             <!-- Diff: the numstat file list the changes endpoint returns -->
-            <div x-show="activeTab === 'diff'" x-transition.opacity.duration.150ms
+            <div x-show="!isSecondary(selectedTicket) && activeTab === 'diff'" x-transition.opacity.duration.150ms
                  class="h-full flex flex-col bg-surface-frame">
               <div class="flex-1 min-h-0 overflow-y-auto">
                 <div class="max-w-3xl mx-auto px-6 pt-4 pb-6 flex flex-col gap-5">
@@ -2383,7 +2420,7 @@
                                 <span class="font-mono text-[10.5px] truncate"
                                       :class="row.holds_chain ? 'text-st-paused' : 'text-surface-600'"
                                       x-text="row.holds_chain ? 'holds the chain' : row.meta"></span>
-                                <button type="button" x-show="row.holds_chain && chainResumeMove()"
+                                <button type="button" x-show="ticketCanControl(selectedTicket) && row.holds_chain && chainResumeMove()"
                                         @click.stop="resumeChainHolder()"
                                         class="shrink-0 font-mono text-[10px] text-accent bg-accent/[.09] border border-accent/30 rounded-md px-2 py-[2px] hover:bg-accent/15 transition-colors"
                                         x-text="chainResumeMove()?.label"></button>
@@ -2498,12 +2535,12 @@
                       </div>
                     </div>
                   </template>
-                  <!-- Editable form for editable tickets (open/todo/paused) -->
-                  <template x-if="editing && ['open', 'todo', 'paused'].includes(selectedTicket?.status)">
+                  <!-- Secondary tickets remain editable in every status. -->
+                  <template x-if="editing && editorCanEdit(selectedTicket)">
                     <!-- The top padding is the gap under the sub-ticket tree, so
                          it is bound rather than fixed: a ticket that draws no
                          tree has nothing to clear. -->
-                    <div :class="(selectedTicket?.children || []).length > 0 ? 'pt-5' : ''">
+                    <fieldset :disabled="editorClaimLocked()" :class="(selectedTicket?.children || []).length > 0 ? 'pt-5' : ''">
                       <div class="grid grid-cols-3 gap-3 mb-3">
                         <div x-show="selectedTicket?.kind !== 'epic'">
                           <label class="text-xs font-mono text-surface-600 mb-1 flex items-center gap-1.5"><svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="opacity-50"><polyline points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="3"/><polyline points="21 16 21 21 16 21"/><line x1="15" y1="15" x2="21" y2="21"/><line x1="4" y1="4" x2="9" y2="9"/></svg>Pipeline</label>
@@ -2570,10 +2607,10 @@
                         <p class="text-xs font-mono text-surface-600">Notes and later sections are read only here. Use the Notes tab to change notes. Use CLI full-body editing for later sections.</p>
                         <div class="ticket-prose ticket-read" x-effect="setProse($el, descriptionTail(selectedTicket))"></div>
                       </div>
-                    </div>
+                    </fieldset>
                   </template>
                   <!-- Read-only view for non-editable tickets -->
-                  <template x-if="!editing || !['open', 'todo', 'paused'].includes(selectedTicket?.status)">
+                  <template x-if="!editing || !editorCanEdit(selectedTicket)">
                     <!-- No box to click, but the same inset as the editable
                          body, so a running ticket reads at the same measure and
                          the same left edge as an idle one. -->
@@ -2779,7 +2816,7 @@
           <div class="flex-1 min-h-0 overflow-y-auto p-4 pb-[22px] flex flex-col gap-4">
 
             <!-- Churn: bounded regardless of how many files changed -->
-            <div class="flex flex-col gap-[9px] h-[152px] shrink-0" x-show="churn().count > 0">
+            <div class="flex flex-col gap-[9px] h-[152px] shrink-0" x-show="!isSecondary(selectedTicket) && churn().count > 0">
               <div class="flex items-baseline gap-2">
                 <span class="side-label">churn</span>
                 <div class="flex-1"></div>
@@ -2816,8 +2853,10 @@
                 <span class="side-label">history</span>
                 <div class="flex flex-col gap-[7px] font-mono text-[10.5px]">
                   <template x-for="(h, hi) in selectedTicket.history" :key="hi">
-                    <button type="button" @click="openActivity(h.stage, h.run || 0)"
-                            class="flex items-center gap-2 min-w-0 text-left hover:text-tx-2 transition-colors">
+                    <button type="button" @click="if (!isSecondary(selectedTicket) && !h.imported) openActivity(h.stage, h.run || 0)"
+                            :disabled="isSecondary(selectedTicket) || h.imported"
+                            :title="[h.started_at, h.completed_at].filter(Boolean).join(' / ')"
+                            class="flex flex-wrap items-center gap-2 min-w-0 text-left hover:text-tx-2 transition-colors disabled:cursor-default">
                       <span :class="runOutcomeClass(h)" x-text="runOutcomeLabel(h)"></span>
                       <span class="text-tx-3 truncate" x-text="historyLabel(h)"></span>
                       <span x-show="h.outcome_reason" class="text-tx-3 truncate" :title="h.outcome_reason" x-text="h.outcome_reason"></span>
@@ -2825,10 +2864,13 @@
                       <span x-show="historySettings(h)" class="shrink-0 max-w-[72px] truncate px-1 rounded border border-surface-700 text-tx-faint"
                             :title="historySettings(h)" x-text="historySettings(h)"></span>
                       <span class="flex-1"></span>
-                      <span x-show="costLabel(ticketRunCost(hi))" class="text-tx-3 shrink-0 num"
+                      <span x-show="!isSecondary(selectedTicket) && !h.imported && costLabel(ticketRunCost(hi))" class="text-tx-3 shrink-0 num"
                             :title="costTooltip(ticketRunCost(hi))" x-text="costLabel(ticketRunCost(hi))"></span>
                       <span class="text-surface-600 shrink-0"
                             x-text="'runner exit ' + h.exit_code + (formatElapsed(h.started_at, h.completed_at) ? ' · ' + formatElapsed(h.started_at, h.completed_at) : '')"></span>
+                      <span x-show="h.imported" class="text-tx-faint">imported</span>
+                      <span x-show="isSecondary(selectedTicket) || h.imported" class="w-full text-tx-faint" x-text="[h.started_at, h.completed_at].filter(Boolean).map(at => formatAbsDate(at)).join(' / ')"></span>
+                      <span x-show="(isSecondary(selectedTicket) || h.imported) && h.summary" class="w-full whitespace-pre-wrap text-tx-3" x-text="h.summary"></span>
                     </button>
                   </template>
                 </div>
@@ -2918,7 +2960,7 @@
                 <template x-if="selectedTicket?.stages?.length > 1"><span class="text-surface-600">stage</span></template>
                 <template x-if="selectedTicket?.stages?.length > 1">
                   <span>
-                    <template x-if="canSetStage() && setStageOpen">
+                    <template x-if="ticketCanControl(selectedTicket) && canSetStage() && setStageOpen">
                       <select class="text-[11px] font-mono bg-surface-800 text-tx-3 border border-edge-input rounded px-1 py-0.5 outline-none focus:border-accent/40"
                               @change="setStage($event.target.value); setStageOpen = false"
                               @blur="setStageOpen = false"
@@ -2936,11 +2978,11 @@
                         </template>
                       </select>
                     </template>
-                    <template x-if="!(canSetStage() && setStageOpen)">
+                    <template x-if="!(ticketCanControl(selectedTicket) && canSetStage() && setStageOpen)">
                       <span class="text-tx-2"
-                            :class="canSetStage() ? 'cursor-pointer hover:text-accent border-b border-dashed border-surface-600 hover:border-accent/40' : ''"
+                            :class="ticketCanControl(selectedTicket) && canSetStage() ? 'cursor-pointer hover:text-accent border-b border-dashed border-surface-600 hover:border-accent/40' : ''"
                             :title="selectedTicket?.status === 'in_progress' ? 'Pause first and wait for the agent to stop before changing stages.' : (plannotatorInFlight[selectedTicket?.id] ? 'Close the review before changing stages.' : '')"
-                            @click="if (canSetStage()) setStageOpen = true"
+                            @click="if (ticketCanControl(selectedTicket) && canSetStage()) setStageOpen = true"
                             x-text="displayStage()"></span>
                     </template>
                   </span>
@@ -3016,8 +3058,8 @@
                 </template>
                 <span class="text-surface-600">path</span>
                 <span class="text-tx-2 break-all" x-text="selectedTicket?.path" :title="selectedTicket?.path"></span>
-                <template x-if="selectedTicket?.last_log"><span class="text-surface-600">log</span></template>
-                <template x-if="selectedTicket?.last_log">
+                <template x-if="!isSecondary(selectedTicket) && selectedTicket?.last_log"><span class="text-surface-600">log</span></template>
+                <template x-if="!isSecondary(selectedTicket) && selectedTicket?.last_log">
                   <button type="button" class="copyable text-tx-2 hover:text-tx text-left break-all justify-self-start"
                         @click.stop="copyCmd(selectedTicket?.last_log)"
                         x-text="copiedCmd === selectedTicket?.last_log ? '✓ copied' : selectedTicket?.last_log"></button>
@@ -3053,7 +3095,7 @@
                                   :disabled="scheduleSubmitting" @click="clearTicketSchedule()">clear</button>
                         </template>
                         <template x-if="selectedTicket?.scheduled_at && canSchedule(selectedTicket)">
-                          <button type="button" class="text-[10.5px] text-accent hover:underline"
+                          <button type="button" x-show="ticketCanControl(selectedTicket)" class="text-[10.5px] text-accent hover:underline"
                                   @click="moveTicketVia(selectedTicket.id, 'run')">run now</button>
                         </template>
                       </span>
@@ -3067,7 +3109,7 @@
           </div>
 
           <!-- Terminal: pinned to the rail bottom for non-running tickets -->
-          <div class="shrink-0 p-4 pt-0 flex flex-col gap-[9px]" x-show="selectedTicket?.status !== 'in_progress'">
+          <div class="shrink-0 p-4 pt-0 flex flex-col gap-[9px]" x-show="ticketCanControl(selectedTicket) && selectedTicket?.status !== 'in_progress'">
             <div class="h-px bg-surface-700"></div>
             <button type="button" @click="attachTerminal()"
                     class="w-full font-mono text-[12px] px-3 py-2.5 rounded-lg bg-surface-900 border border-edge-input text-accent hover:border-accent transition-colors flex items-center justify-center gap-2"
@@ -4235,16 +4277,19 @@
                   <span class="side-label">history</span>
                   <div class="flex flex-col gap-[7px] font-mono text-[10.5px]">
                     <template x-for="(h, hi) in selectedTicket.history" :key="hi">
-                      <div class="flex items-center gap-2 min-w-0">
+                      <div class="flex flex-wrap items-center gap-2 min-w-0" :title="[h.started_at, h.completed_at].filter(Boolean).join(' / ')">
                         <span :class="runOutcomeClass(h)" x-text="runOutcomeLabel(h)"></span>
                         <span class="text-tx-3 truncate" x-text="historyLabel(h)"></span>
                         <span x-show="h.outcome_reason" class="text-tx-3 truncate" :title="h.outcome_reason" x-text="h.outcome_reason"></span>
                         <span x-show="h.invocation_id" class="text-tx-faint truncate" :title="h.invocation_id" x-text="'invocation ' + h.invocation_id"></span>
                         <span class="flex-1"></span>
-                        <span x-show="costLabel(ticketRunCost(hi))" class="text-tx-3 shrink-0 num"
+                        <span x-show="!h.imported && costLabel(ticketRunCost(hi))" class="text-tx-3 shrink-0 num"
                               :title="costTooltip(ticketRunCost(hi))" x-text="costLabel(ticketRunCost(hi))"></span>
                         <span class="text-surface-600 shrink-0"
                               x-text="'runner exit ' + h.exit_code + (formatElapsed(h.started_at, h.completed_at) ? ' · ' + formatElapsed(h.started_at, h.completed_at) : '')"></span>
+                        <span x-show="h.imported" class="text-tx-faint">imported</span>
+                        <span x-show="h.imported" class="w-full text-tx-faint" x-text="[h.started_at, h.completed_at].filter(Boolean).map(at => formatAbsDate(at)).join(' / ')"></span>
+                        <span x-show="h.imported && h.summary" class="w-full whitespace-pre-wrap text-tx-3" x-text="h.summary"></span>
                       </div>
                     </template>
                   </div>
@@ -4550,9 +4595,22 @@
                     <header class="flex items-baseline gap-2.5 p-[13px] px-[18px] bg-surface-850/45 border-b border-surface-700/40" data-pipe-color="indigo">
                       <span class="w-1.5 h-1.5 rounded-full self-center shrink-0" style="background: hsl(var(--pipe-h))"></span>
                       <h2 class="m-0 font-mono text-[12.5px] font-bold text-tx-hi tracking-[.02em]">locations</h2>
-                      <span class="text-[11.5px] text-tx-4">Three directories on the daemon host.</span>
+                      <span class="text-[11.5px] text-tx-4">Directories on the daemon host.</span>
                     </header>
-                    <template x-for="f in settingsGeneralGroup('locations')" :key="f.key">
+                    <div x-show="settingsRowVisible('secondary_tickets_dirs', 'Secondary ticket folders', 'general')"
+                         class="grid grid-cols-1 lg:grid-cols-[232px_minmax(0,1fr)] gap-3 lg:gap-6 p-4 px-[18px] border-t border-surface-700/[0.28] items-start">
+                      <div class="flex flex-col gap-1">
+                        <label for="gen-secondary_tickets_dirs" class="font-mono text-[12.5px] text-tx-2">secondary_tickets_dirs</label>
+                        <span class="font-mono text-[9.5px] text-warn">restart to apply</span>
+                        <span class="text-[11.5px] leading-[1.55] text-tx-4">One folder per line. Browse and edit tickets here. Claim a ticket into primary before running it. Relationships stay within each folder.</span>
+                      </div>
+                      <div class="flex flex-col gap-1.5 min-w-0">
+                        <textarea id="gen-secondary_tickets_dirs" x-model="settingsConfig.general.secondary_tickets_dirs" rows="4" placeholder="~/org/team-tickets"
+                                  class="w-full max-w-[30rem] bg-surface-800 border border-edge-input rounded-[7px] py-2 px-3 font-mono text-[12.5px] text-tx-2 focus:outline-none focus:border-accent/40"></textarea>
+                        <span x-show="settingsPathDirty('secondary_tickets_dirs')" class="font-mono text-[10.5px] text-tx-faint">changed: takes effect after a daemon restart</span>
+                      </div>
+                    </div>
+                    <template x-for="f in settingsGeneralGroup('locations').filter(f => f.key !== 'secondary_tickets_dirs')" :key="f.key">
                       <div x-show="settingsRowVisible(f.key, f.help, 'general')" class="grid grid-cols-1 lg:grid-cols-[232px_minmax(0,1fr)] gap-3 lg:gap-6 p-4 px-[18px] border-t border-surface-700/[0.28] items-start">
                         <div class="flex flex-col gap-1 min-w-0">
                           <span class="flex items-center gap-[7px] flex-wrap">
@@ -5896,6 +5954,22 @@
           <input x-model="searchQuery" placeholder="Filter, or project:name" aria-label="Filter tickets" style="width:100%;height:38px;padding:0 12px 0 34px;font-family:'JetBrains Mono',monospace;font-size:13px;border-radius:9px;background:rgba(var(--surface-900),1);border:1px solid rgba(var(--surface-700),.5);color:rgba(var(--tx),1);outline:none;"/>
         </div>
       </div>
+      <div x-show="ticketSources.length > 0 || sourcesError" class="px-4 pb-2">
+        <select x-model="sourceFilter" @change="recomputeBoard()" aria-label="Filter by ticket folder"
+                class="w-full bg-surface-900 border border-edge-input rounded-[7px] px-2 py-2 font-mono text-[12px] text-tx-2">
+          <option value="">All folders</option>
+          <option value="primary">Primary folder</option>
+          <template x-for="source in ticketSources" :key="source.id">
+            <option :value="source.id" x-text="(source.id === 'primary' ? 'primary' : source.path) + (source.available === false ? ' (unavailable)' : '')"></option>
+          </template>
+        </select>
+        <div x-show="sourcesError || ticketSources.some(s => s.available === false)" x-cloak role="alert" class="mt-2 font-mono text-[11px] text-warn break-all">
+          <p x-show="sourcesError" x-text="sourcesError"></p>
+          <template x-for="source in ticketSources.filter(s => s.available === false)" :key="source.id">
+            <p x-text="(source.path || source.id) + ': ' + (source.error || 'Folder unavailable')"></p>
+          </template>
+        </div>
+      </div>
       <div style="display:flex;gap:4px;overflow-x:auto;padding:0 12px;">
         <template x-for="(col, ci) in columns" :key="col.key">
           <button @click="setActiveColumn(ci)"
@@ -5927,7 +6001,7 @@
       <!-- Empty-board panel, same gate as the desktop one plus !loading: the
            mobile layer has no loading guard above it, and init() holds loading
            true across two fetches with tickets still empty. -->
-      <template x-if="!loading && tickets.length === 0">
+      <template x-if="!loading && allBoardTickets().length === 0 && !sourcesError && !ticketSources.some(s => s.available === false)">
         <div id="board-empty-mobile" style="border:1px solid rgba(var(--surface-700),.6);border-radius:12px;background:rgba(var(--surface-900),1);padding:18px 16px;margin-top:6px;display:flex;flex-direction:column;gap:12px;">
           <div style="font-size:15px;font-weight:600;color:rgba(var(--tx),1);">The board is empty</div>
           <p style="font-size:12.5px;line-height:1.6;color:rgba(var(--tx-3),1);margin:0;">A ticket is one piece of work. Kontora gives it a git worktree and runs the pipeline stages on it.</p>
@@ -5939,10 +6013,10 @@
           <button @click="copyCmd(agentSetupRequest)" style="height:38px;border-radius:10px;border:1px solid rgba(var(--surface-700),.7);background:rgba(var(--surface-850),1);color:rgba(var(--tx-3),1);font-family:'JetBrains Mono',monospace;font-size:12.5px;font-weight:600;" x-text="copiedCmd === agentSetupRequest ? '\u2713 copied' : 'copy request'"></button>
         </div>
       </template>
-      <template x-if="tickets.length > 0 && boardTickets(mobileColumn().key).length === 0">
+      <template x-if="allBoardTickets().length > 0 && boardTickets(mobileColumn().key).length === 0">
         <div style="font-family:'JetBrains Mono',monospace;text-align:center;font-size:12px;color:rgba(var(--surface-600),1);border:1px dashed rgba(var(--surface-700),.6);border-radius:10px;padding:34px 16px;margin-top:6px;" x-text="'∅ ' + mobileColumn().emptyText.toLowerCase()"></div>
       </template>
-      <template x-for="ticket in boardTickets(mobileColumn().key)" :key="ticket.id">
+      <template x-for="ticket in boardTickets(mobileColumn().key)" :key="ticketKey(ticket)">
         <button @click="openMobileTicket(ticket)"
                 :data-pipe-color="ticketPipeColor(ticket)"
                 :style="'display:flex;flex-direction:column;gap:9px;text-align:left;width:100%;padding:12px 13px;border-radius:11px;background:rgba(var(--surface-900),1);border:1px solid rgba(var(--surface-700),.5);border-left:2px solid ' + (ticket.status==='in_progress' ? 'hsl(var(--st-progress))' : (ticket.status==='paused' ? 'hsl(var(--st-paused) / .8)' : 'hsl(var(--pipe-h) / .55)')) + ';cursor:pointer;' + (ticket.status==='cancelled' ? 'opacity:.62;' : (mobileColumn().key === 'open' && ticket.scheduled_at ? 'opacity:.72;' : '')) + (!ticket.kontora ? 'border-style:dashed;' : '')">
@@ -5991,6 +6065,7 @@
           <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;font-family:'JetBrains Mono',monospace;font-size:11px;color:rgba(var(--surface-600),1);">
             <span style="display:flex;align-items:center;gap:7px;min-width:0;">
               <span style="white-space:nowrap;" x-text="ticket.id"></span>
+              <span x-show="isSecondary(ticket)" class="truncate text-accent" :title="sourceLabel(ticket)" x-text="sourceLabel(ticket)"></span>
               <template x-if="showAgentMeta && ticket.agent">
                 <span style="display:flex;align-items:center;gap:6px;min-width:0;">
                   <span style="color:rgba(var(--edge-faint),1);">·</span>
@@ -6201,7 +6276,7 @@
       </section>
     </template>
 
-    <div x-show="isMobile && selectedTicket && currentView === 'board'" x-cloak class="detail-enter"
+    <div x-show="isMobile && selectedTicket && currentView === 'board'" x-cloak class="detail-enter flex"
          style="position:fixed;inset:0;z-index:40;display:flex;flex-direction:column;background:rgba(var(--surface-950),1);">
       <!-- header -->
       <div style="flex:none;padding-top:54px;border-bottom:1px solid rgba(var(--surface-700),.4);background:rgba(var(--surface-deep),1);">
@@ -6210,14 +6285,20 @@
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
           </button>
           <span style="font-family:'JetBrains Mono',monospace;font-size:11px;color:rgba(var(--surface-600),1);flex:1;" x-text="selectedTicket?.id"></span>
-          <button type="button" x-show="selectedTicket?.kind === 'epic'" @click="openEpic(selectedTicket.id)" class="font-mono text-xs text-accent">epic overview</button>
-          <button @click="openActionsSheet(selectedTicket)" style="width:32px;height:32px;border:1px solid rgba(var(--surface-700),.5);background:rgba(var(--surface-900),1);color:rgba(var(--tx-3),1);border-radius:8px;display:flex;align-items:center;justify-content:center;flex:none;" aria-label="Actions">
+          <button type="button" x-show="isSecondary(selectedTicket)" @click="claimTicket()"
+                  :disabled="!ticketCanClaim(selectedTicket) || claimSubmitting" :title="selectedTicket?.refusal_reason || 'Move into primary without starting work. Related tickets are not moved; references resolve in primary.'"
+                  class="font-mono text-xs px-3 py-2 rounded bg-accent text-accent-fg disabled:opacity-50 disabled:cursor-not-allowed"
+                  x-text="claimSubmitting ? 'Claiming…' : 'Claim'"></button>
+          <button type="button" x-show="!isSecondary(selectedTicket) && selectedTicket?.kind === 'epic'" @click="openEpic(selectedTicket.id)" class="font-mono text-xs text-accent">epic overview</button>
+          <button x-show="ticketCanControl(selectedTicket)" @click="openActionsSheet(selectedTicket)" style="width:32px;height:32px;border:1px solid rgba(var(--surface-700),.5);background:rgba(var(--surface-900),1);color:rgba(var(--tx-3),1);border-radius:8px;display:flex;align-items:center;justify-content:center;flex:none;" aria-label="Actions">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="2.2"/><circle cx="12" cy="12" r="2.2"/><circle cx="19" cy="12" r="2.2"/></svg>
           </button>
         </div>
         <div style="display:flex;align-items:center;gap:8px;padding:0 16px 10px;flex-wrap:wrap;">
           <span class="pipe-tag" :data-pipe-color="selectedTicket ? ticketPipeColor(selectedTicket) : 'none'" x-text="selectedTicket ? ticketTagLabel(selectedTicket) : ''"></span>
           <span class="status-chip" :data-status="selectedTicket?.status" x-text="selectedTicket?.status"></span>
+          <span class="font-mono text-[11px] text-tx-3 break-all" x-text="sourceLabel(selectedTicket)"></span>
+          <span x-show="isSecondary(selectedTicket) && !ticketCanClaim(selectedTicket)" class="w-full font-mono text-[11px] text-warn" x-text="selectedTicket?.refusal_reason || 'This ticket cannot be claimed.'"></span>
           <template x-if="scheduleLabel(selectedTicket)">
             <button @click="canSchedule(selectedTicket) && openScheduleSheet(selectedTicket)" class="sched-chip" :disabled="!canSchedule(selectedTicket)" :style="canSchedule(selectedTicket) ? 'cursor:pointer;' : 'cursor:default;'">
               <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15.5 14"/></svg>
@@ -6230,14 +6311,14 @@
               <span x-text="waitingFor(selectedTicket)"></span>
             </span>
           </template>
-          <span x-show="mobileTicketCostLabel()" :title="costTooltip(currentTicketCost())" :aria-label="costTooltip(currentTicketCost())"
+          <span x-show="!isSecondary(selectedTicket) && mobileTicketCostLabel()" :title="costTooltip(currentTicketCost())" :aria-label="costTooltip(currentTicketCost())"
                 style="padding:2px 8px;border-radius:9999px;border:1px solid rgba(var(--surface-700),.5);font-family:'JetBrains Mono',monospace;font-size:11px;color:rgba(var(--tx-2),1);"
                 x-text="mobileTicketCostLabel()"></span>
           <template x-if="selectedTicket && !selectedTicket.kontora">
             <span style="padding:2px 8px;border-radius:9999px;border:1px solid hsl(var(--st-paused) / .25);background:hsl(var(--st-paused) / .12);color:hsl(var(--st-paused));font-family:'JetBrains Mono',monospace;font-size:11px;">not a kontora ticket</span>
           </template>
         </div>
-        <template x-if="mobileCostStages().length">
+        <template x-if="!isSecondary(selectedTicket) && mobileCostStages().length">
           <div aria-label="Stage cost estimates" style="display:flex;align-items:center;gap:7px;overflow-x:auto;padding:0 16px 8px;">
             <template x-for="seg in mobileCostStages()" :key="seg.name">
               <button type="button" @click="mobileOpenCostStage(seg)"
@@ -6248,7 +6329,7 @@
             </template>
           </div>
         </template>
-        <template x-if="mobileHasRun(selectedTicket)">
+        <template x-if="!isSecondary(selectedTicket) && mobileHasRun(selectedTicket)">
           <div style="display:flex;gap:18px;padding:0 16px;">
             <button @click="mobileSwitchTab(mobileFirstTab())"
                     :style="'border:none;background:transparent;padding:10px 0;font-family:\'JetBrains Mono\',monospace;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;cursor:pointer;border-bottom:2px solid ' + (detailTab===mobileFirstTab() ? 'rgba(var(--accent),1)' : 'transparent') + ';color:' + (detailTab===mobileFirstTab() ? 'rgba(var(--tx),1)' : 'rgba(var(--surface-600),1)') + ';'"
@@ -6265,7 +6346,7 @@
       <div style="flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden;">
 
         <!-- terminal (live; in_progress) -->
-        <div x-show="detailTab==='terminal'" style="flex:1;min-height:0;display:flex;flex-direction:column;">
+        <div x-show="!isSecondary(selectedTicket) && detailTab==='terminal'" style="flex:1;min-height:0;display:flex;flex-direction:column;">
           <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:12px 16px 8px;flex-wrap:wrap;flex:none;">
             <span style="font-family:'JetBrains Mono',monospace;font-size:11px;padding:3px 9px;border-radius:5px;background:rgba(var(--surface-800),1);color:rgba(var(--tx-3),1);" x-text="selectedTicket?.agent || 'default'"></span>
             <div style="display:flex;align-items:center;gap:12px;font-family:'JetBrains Mono',monospace;font-size:11px;">
@@ -6293,7 +6374,7 @@
         </div>
 
         <!-- logs (stage history) -->
-        <div x-show="detailTab==='logs'" class="overflow-y-auto" style="flex:1;min-height:0;padding:14px 16px 24px;">
+        <div x-show="!isSecondary(selectedTicket) && detailTab==='logs'" class="overflow-y-auto" style="flex:1;min-height:0;padding:14px 16px 24px;">
           <template x-if="stageRibbon().length">
             <div style="display:flex;align-items:center;gap:7px;overflow-x:auto;padding-bottom:12px;">
               <template x-for="(seg, si) in stageRibbon()" :key="seg.name">
@@ -6346,7 +6427,7 @@
                 </template>
               </div>
               <div class="ticket-prose text-sm" x-effect="setProse($el, selectedTicket.summary)"></div>
-              <template x-if="ticketChanges?.commits?.length">
+              <template x-if="!isSecondary(selectedTicket) && ticketChanges?.commits?.length">
                 <div style="margin-top:10px;padding-top:10px;border-top:1px solid rgba(var(--surface-700),.3);font-family:'JetBrains Mono',monospace;font-size:11px;">
                   <div style="color:rgba(var(--surface-600),1);margin-bottom:6px;"
                        x-text="ticketChanges.commits.length + ' commit' + (ticketChanges.commits.length === 1 ? '' : 's') + ' · ' + ticketChanges.files.length + ' file' + (ticketChanges.files.length === 1 ? '' : 's') + ' vs ' + ticketChanges.base"></div>
@@ -6400,17 +6481,55 @@
               </div>
             </template>
           </div>
-          <template x-if="selectedTicket?.body">
-            <div class="ticket-prose text-sm" x-effect="setProse($el, selectedTicket.body)"></div>
+          <template x-if="isSecondary(selectedTicket) && editing && editorCanEdit(selectedTicket)">
+            <fieldset :disabled="editorClaimLocked()" class="flex flex-col gap-3 mb-4">
+              <template x-for="field in ['pipeline', 'agent', 'path', 'branch', 'base_branch']" :key="field">
+                <label class="flex flex-col gap-1 font-mono text-[12px] text-tx-3">
+                  <span x-text="field"></span>
+                  <input type="text" x-model="editForm[field]" @change="field === 'path' ? onEditPathChange() : saveEdit()"
+                         class="w-full bg-surface-900 border border-edge-input rounded px-3 py-2 text-tx-2">
+                </label>
+              </template>
+              <label for="mobile-secondary-description" class="font-mono text-[12px] text-tx-3">Description</label>
+              <textarea id="mobile-secondary-description" x-model="editForm.body" @input="debounceSaveEdit()" @blur="saveEdit()" rows="8"
+                        class="w-full bg-surface-900 border border-edge-input rounded px-3 py-2 text-[13px] text-tx-2"></textarea>
+              <span x-show="editSubmitting" class="font-mono text-[11px] text-tx-3">saving…</span>
+              <div x-show="descriptionTail(selectedTicket)" class="ticket-prose text-sm" x-effect="setProse($el, descriptionTail(selectedTicket))"></div>
+            </fieldset>
           </template>
-          <template x-if="!selectedTicket?.body">
-            <div style="font-family:'JetBrains Mono',monospace;font-size:13px;color:rgba(var(--surface-600),1);">No ticket description.</div>
+          <template x-if="!(isSecondary(selectedTicket) && editing && editorCanEdit(selectedTicket))">
+            <div>
+              <div class="ticket-prose text-sm" x-effect="setProse($el, selectedTicket?.body || '')"></div>
+              <p x-show="!selectedTicket?.body" class="font-mono text-[13px] text-surface-600">No ticket description.</p>
+            </div>
+          </template>
+          <template x-if="isSecondary(selectedTicket) && ticketCanEdit(selectedTicket)">
+            <form @submit.prevent="saveSourceRelation()" class="flex flex-col gap-2 mt-4">
+              <select x-model="sourceRelationDraft().action" aria-label="Relationship action" class="bg-surface-900 border border-edge-input rounded px-2 py-2 text-xs">
+                <template x-for="option in sourceRelationOptions" :key="option.value"><option :value="option.value" x-text="option.label"></option></template>
+              </select>
+              <input x-model="sourceRelationDraft().targets" aria-label="Source relationship ticket IDs" placeholder="Ticket IDs in this folder" class="bg-surface-900 border border-edge-input rounded px-2 py-2 text-xs">
+              <button type="submit" :disabled="sourceRelationSubmitting" class="text-xs text-accent disabled:opacity-50">Save relationship</button>
+            </form>
+          </template>
+          <template x-if="isSecondary(selectedTicket) || (selectedTicket?.history || []).some(h => h.imported)">
+            <section class="mt-5 flex flex-col gap-3" aria-label="Imported history">
+              <h2 class="font-mono text-[12px] text-tx-3">history</h2>
+              <template x-for="(h, hi) in selectedTicket?.history || []" :key="hi">
+                <div class="border-t border-surface-700 pt-3 font-mono text-[11px] text-tx-3">
+                  <span x-text="historyLabel(h)"></span>
+                  <span x-show="h.imported" class="text-tx-faint"> · imported</span>
+                  <p x-text="[h.started_at, h.completed_at].filter(Boolean).map(at => formatAbsDate(at)).join(' / ')"></p>
+                  <p x-show="h.summary" class="whitespace-pre-wrap" x-text="h.summary"></p>
+                </div>
+              </template>
+            </section>
           </template>
         </div>
       </div>
 
       <!-- action bar -->
-      <div style="flex:none;display:flex;gap:10px;padding:12px 16px 32px;border-top:1px solid rgba(var(--surface-700),.4);background:rgba(var(--surface-deep),1);">
+      <div x-show="ticketCanControl(selectedTicket)" style="flex:none;display:flex;gap:10px;padding:12px 16px 32px;border-top:1px solid rgba(var(--surface-700),.4);background:rgba(var(--surface-deep),1);">
         <button @click="mobileSecondaryAction(selectedTicket).run()" style="flex:1;height:46px;border-radius:11px;border:1px solid rgba(var(--surface-700),.7);background:rgba(var(--surface-900),1);color:rgba(var(--tx-3),1);font-family:'JetBrains Mono',monospace;font-size:14px;font-weight:600;" x-text="mobileSecondaryAction(selectedTicket).label"></button>
         <button @click="mobilePrimaryAction(selectedTicket).run()" style="flex:1.4;height:46px;border-radius:11px;border:1px solid rgba(var(--accent),1);background:rgba(var(--accent),1);color:rgba(var(--accent-fg),1);font-family:'JetBrains Mono',monospace;font-size:14px;font-weight:700;display:flex;align-items:center;justify-content:center;gap:8px;">
           <span style="width:7px;height:7px;border-radius:9999px;background:rgba(var(--accent-fg),.55);flex:none;"></span>
@@ -6427,7 +6546,7 @@
           <div style="width:38px;height:4px;border-radius:9999px;background:rgba(var(--surface-700),1);margin:2px auto 12px;flex:none;"></div>
 
           <!-- actions sheet -->
-          <template x-if="sheet.type==='actions'">
+          <template x-if="sheet.type==='actions' && ticketCanControl(sheet.ticket)">
             <div style="display:flex;flex-direction:column;min-height:0;">
               <div style="padding:0 18px 12px;border-bottom:1px solid rgba(var(--surface-700),.4);">
                 <div style="font-family:'JetBrains Mono',monospace;font-size:11px;color:rgba(var(--surface-600),1);" x-text="sheet.ticket.id"></div>
@@ -6445,7 +6564,7 @@
           </template>
 
           <!-- schedule sheet: set, move or clear a ticket's pickup time. -->
-          <template x-if="sheet.type==='schedule'">
+          <template x-if="sheet.type==='schedule' && ticketCanControl(sheet.ticket)">
             <div style="display:flex;flex-direction:column;min-height:0;">
               <div style="padding:0 18px 14px;border-bottom:1px solid rgba(var(--surface-700),.4);">
                 <div style="font-family:'JetBrains Mono',monospace;font-size:11px;color:rgba(var(--surface-600),1);" x-text="sheet.ticket.id + ' · ' + sheet.ticket.status"></div>

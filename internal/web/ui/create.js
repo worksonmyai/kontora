@@ -417,10 +417,11 @@ export function kontoraCreate() {
     // still gets the form on its way out of open, so queueing it is a deliberate
     // step with the pipeline, path and branch of the run in front of the user.
     needsInitModal(ticket) {
-      return this.epicCanStart(ticket) || !ticket.kontora || ticket.status === 'open';
+      return this.ticketCanControl(ticket) && (this.epicCanStart(ticket) || !ticket.kontora || ticket.status === 'open');
     },
 
     async openInitModal(ticket) {
+      if (!this.ticketCanControl(ticket)) return;
       this.closeAgentPicker(false);
       var seq = ++this._initContextSeq;
       var navigation = this._navigationSeq;

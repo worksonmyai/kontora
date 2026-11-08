@@ -42,6 +42,9 @@ func (r *daemonMutationRepository) Resolve(id string) (string, error) {
 }
 
 func (r *daemonMutationRepository) Get(id string) (*app.StoredTicket, error) {
+	if err := r.d.checkTransferAdmissionLocked(id); err != nil {
+		return nil, err
+	}
 	st, err := r.disk.Get(id)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, app.ErrNotFound
@@ -56,7 +59,17 @@ func (r *daemonMutationRepository) Get(id string) (*app.StoredTicket, error) {
 }
 
 func (r *daemonMutationRepository) List() ([]*app.StoredTicket, error) {
-	return r.disk.List()
+	tickets, err := r.disk.List()
+	if err != nil {
+		return nil, err
+	}
+	visible := tickets[:0]
+	for _, st := range tickets {
+		if err := r.d.checkTransferAdmissionLocked(st.Ticket.ID); err == nil {
+			visible = append(visible, st)
+		}
+	}
+	return visible, nil
 }
 
 func (r *daemonMutationRepository) Save(st *app.StoredTicket) error {

@@ -35,6 +35,9 @@ func (d *Daemon) ordinaryMutationAllowed(id string) error {
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if err := d.checkTransferAdmissionLocked(id); err != nil {
+		return mapAppError(err)
+	}
 	if ts, ok := d.tickets[id]; ok && ts.ticket.HasOwnershipMetadata() {
 		return fmt.Errorf("%w: %w", web.ErrInvalidState, ticket.ErrManaged)
 	}

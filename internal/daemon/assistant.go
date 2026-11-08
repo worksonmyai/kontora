@@ -626,6 +626,9 @@ func (d *Daemon) assistantSessionPath(cfg *config.Config, thread assistant.Threa
 // PostAssistantMessage starts a turn. It returns as soon as the subprocess is
 // under way: the reply arrives through the activity poll, not this response.
 func (d *Daemon) PostAssistantMessage(id string, req web.AssistantMessageRequest) error {
+	if req.Source != "" && req.Source != "primary" {
+		return fmt.Errorf("%w: secondary ticket context is not supported by the assistant", web.ErrInvalidState)
+	}
 	return d.postAssistantMessage(id, req, false)
 }
 

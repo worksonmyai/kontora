@@ -3,6 +3,7 @@ package ticket
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"syscall"
@@ -52,7 +53,24 @@ func CheckOrdinaryWrite(dir string) error {
 		return err
 	}
 	for _, path := range paths {
-		t, err := ParseFile(path)
+		f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		st, err := f.Stat()
+		if err != nil || !st.Mode().IsRegular() {
+			_ = f.Close()
+			return fmt.Errorf("unsafe nonregular ticket file %s", path)
+		}
+		data, err := io.ReadAll(f)
+		_ = f.Close()
+		if err != nil {
+			return err
+		}
+		t, err := ParseBytes(data)
 		if err == nil && t.HasOwnershipMetadata() {
 			return fmt.Errorf("%w: %s", ErrManaged, t.ID)
 		}
@@ -78,6 +96,16 @@ func WithOrdinaryRouting(dir string, fn func() error) error {
 // LockOrdinaryRouting excludes authority acquisition through the disk write and cache update.
 // It must not wait for authority while a caller holds a daemon admission mutex.
 func LockOrdinaryRouting(dir string) (release func(), err error) {
+	return lockRouting(dir, syscall.LOCK_SH)
+}
+
+// LockTransferSource excludes scheduled writes as well as authority acquisition.
+// Callers must acquire both board mutation locks before taking this admission.
+func LockTransferSource(dir string) (release func(), err error) {
+	return lockRouting(dir, syscall.LOCK_EX)
+}
+
+func lockRouting(dir string, mode int) (release func(), err error) {
 	if err := os.MkdirAll(filepath.Join(dir, ".kontora"), 0o755); err != nil {
 		return nil, err
 	}
@@ -85,7 +113,7 @@ func LockOrdinaryRouting(dir string) (release func(), err error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_SH|syscall.LOCK_NB); err != nil {
+	if err := syscall.Flock(int(f.Fd()), mode|syscall.LOCK_NB); err != nil {
 		f.Close()
 		if errors.Is(err, syscall.EWOULDBLOCK) {
 			return nil, fmt.Errorf("%w: board authority is active", ErrManaged)
@@ -125,7 +153,15 @@ func RejectImportedOwnership(t *Ticket) error {
 	return nil
 }
 
+func CreateOffline(path string, data []byte) error {
+	return writeOffline(path, data, true)
+}
+
 func WriteOffline(path string, data []byte) error {
+	return writeOffline(path, data, false)
+}
+
+func writeOffline(path string, data []byte, create bool) error {
 	return WithOfflineWrite(filepath.Dir(path), func() error {
 		t, err := ParseBytes(data)
 		if err != nil {
@@ -137,6 +173,47 @@ func WriteOffline(path string, data []byte) error {
 		if !IsSafeID(t.ID) || !IsCanonicalPath(path, t.ID) {
 			return fmt.Errorf("ticket id does not match destination")
 		}
+		if create {
+			if _, err := os.Lstat(filepath.Join(filepath.Dir(path), t.ID+".notes.json")); !errors.Is(err, os.ErrNotExist) {
+				if err == nil {
+					err = os.ErrExist
+				}
+				return err
+			}
+			return PublishNew(path, data, 0o644)
+		}
 		return os.WriteFile(path, data, 0o644)
 	})
+}
+
+// PublishNew exposes only complete files and never replaces an existing entry.
+// The caller holds board routing admission through publication and registration.
+func PublishNew(path string, data []byte, perm os.FileMode) error {
+	f, err := os.CreateTemp(filepath.Dir(path), ".ticket-create-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(f.Name())
+	defer f.Close()
+	if err := f.Chmod(perm); err != nil {
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	if err := os.Link(f.Name(), path); err != nil {
+		return err
+	}
+	dir, err := os.Open(filepath.Dir(path))
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	return dir.Sync()
 }

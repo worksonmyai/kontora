@@ -1,8 +1,11 @@
 package ticket
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -47,6 +50,80 @@ func TestOfflineOwnershipRefusal(t *testing.T) {
 			require.Equal(t, data, actual)
 		})
 	}
+}
+
+func TestTransferRoutingAdmission(t *testing.T) {
+	for _, heldExclusive := range []bool{false, true} {
+		t.Run(fmt.Sprint(heldExclusive), func(t *testing.T) {
+			dir := t.TempDir()
+			lock := LockOrdinaryRouting
+			if heldExclusive {
+				lock = LockTransferSource
+			}
+			release, err := lock(dir)
+			require.NoError(t, err)
+			defer release()
+			_, err = LockTransferSource(dir)
+			require.ErrorIs(t, err, ErrManaged)
+			if heldExclusive {
+				_, err = LockOrdinaryRouting(dir)
+				require.ErrorIs(t, err, ErrManaged)
+			}
+		})
+	}
+}
+
+func TestCreateOfflineDoesNotOverwrite(t *testing.T) {
+	for _, collision := range []string{"markdown", "markdown symlink", "sidecar", "sidecar symlink"} {
+		t.Run(collision, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "tst-new.md")
+			existing := path
+			if strings.HasPrefix(collision, "sidecar") {
+				existing = filepath.Join(dir, "tst-new.notes.json")
+			}
+			if strings.HasSuffix(collision, "symlink") {
+				require.NoError(t, os.Symlink("missing", existing))
+			} else {
+				require.NoError(t, os.WriteFile(existing, []byte("original"), 0o644))
+			}
+			require.Error(t, CreateOffline(path, []byte("---\nid: tst-new\n---\n# New\n")))
+			if strings.HasSuffix(collision, "symlink") {
+				target, err := os.Readlink(existing)
+				require.NoError(t, err)
+				require.Equal(t, "missing", target)
+			} else {
+				data, err := os.ReadFile(existing)
+				require.NoError(t, err)
+				require.Equal(t, "original", string(data))
+			}
+		})
+	}
+}
+
+func TestCreateOfflineConcurrentPublication(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "tst-new.md")
+	const writers = 12
+	results := make(chan error, writers)
+	var wg sync.WaitGroup
+	for range writers {
+		wg.Go(func() {
+			results <- CreateOffline(path, []byte("---\nid: tst-new\n---\n# New\n"))
+		})
+	}
+	wg.Wait()
+	close(results)
+	winners := 0
+	for err := range results {
+		if err == nil {
+			winners++
+		}
+	}
+	require.Equal(t, 1, winners)
+	got, err := ParseFile(path)
+	require.NoError(t, err)
+	require.Equal(t, "New", got.Title())
 }
 
 func TestRejectImportedOwnershipBeforeCreation(t *testing.T) {

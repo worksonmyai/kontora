@@ -133,7 +133,7 @@ func (d *Daemon) CreateTicket(req web.CreateTicketRequest) (web.TicketInfo, erro
 	ts := newTicketState(t, filePath)
 	d.tickets[id] = ts
 	// Seeded explicitly: recordSelfWriteBlind above ate the watcher event, and
-	// cli.New wrote the file with a raw os.WriteFile, so this path reaches
+	// cli.New published the new file, so this path reaches
 	// neither handleFileChanged nor writeTicketFile.
 	d.observe(t, notify.OriginObserved)
 	d.warnUnmatchedNotifyLocked(cfg, t)
@@ -208,7 +208,7 @@ func (d *Daemon) UploadTicket(content []byte) (web.TicketInfo, error) {
 	}
 
 	filePath := filepath.Join(config.ExpandTilde(cfg.TicketsDir), t.ID+".md")
-	if err := d.writeTicket(t, filePath, notify.OriginRequest); err != nil {
+	if err := d.createTicketFile(t, filePath, notify.OriginRequest); err != nil {
 		return web.TicketInfo{}, fmt.Errorf("writing ticket file: %w", err)
 	}
 
@@ -1105,6 +1105,10 @@ func (d *Daemon) GetActivity(q web.ActivityQuery) (web.ActivityInfo, error) {
 	var nextRun int
 	var lr liveRun
 	var registered bool
+	if ok && ts.ticket.IsImportedRun(q.Stage, q.Run) {
+		d.mu.Unlock()
+		return web.ActivityInfo{}, web.ErrLogNotFound
+	}
 	if ok {
 		for _, h := range ts.ticket.History {
 			if h.Stage == q.Stage && h.Run > newestRun {
@@ -1592,6 +1596,8 @@ func (d *Daemon) broadcastTerminalReady(id string) {
 func (d *Daemon) buildTicketInfo(cfg *config.Config, ts *ticketState, includeBody bool) web.TicketInfo {
 	v := app.BuildView(cfg, ts.ticket, includeBody)
 	info := web.TicketInfoFromView(v)
+	info.CanEdit = !ts.ticket.HasOwnershipMetadata()
+	info.CanControl = !ts.ticket.HasOwnershipMetadata()
 	if strings.TrimSpace(info.Branch) == "" {
 		info.AutoBranch = autoTicketBranch(cfg, ts.ticket)
 	}

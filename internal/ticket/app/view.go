@@ -91,6 +91,7 @@ func FinishedAt(t *ticket.Ticket) *time.Time {
 
 // HistoryView is a single history entry in a View.
 type HistoryView struct {
+	Imported      bool
 	RunOutcome    string
 	OutcomeReason string
 	InvocationID  string
@@ -183,6 +184,7 @@ func BuildView(cfg *config.Config, t *ticket.Ticket, detail bool) View {
 			v.History = make([]HistoryView, len(t.History))
 			for i, h := range t.History {
 				v.History[i] = HistoryView{
+					Imported:      t.IsImportedHistory(i),
 					Stage:         h.Stage,
 					Agent:         h.Agent,
 					Model:         h.Model,

@@ -9,6 +9,56 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestStageActivityImportedHistory(t *testing.T) {
+	ticketsDir := t.TempDir()
+	logsDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(ticketsDir, "act-imported.md"), []byte(`---
+id: act-imported
+status: done
+imported_history_count: 3
+history:
+  - {stage: review}
+  - {stage: plan}
+  - {stage: review, kind: annotation}
+  - {stage: review, run: 2}
+---
+# Imported activity
+`), 0o644))
+	logDir := filepath.Join(logsDir, "act-imported")
+	require.NoError(t, os.MkdirAll(logDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(logDir, "review.log"), []byte("local plaintext"), 0o644))
+	for _, run := range []string{"0", "2"} {
+		require.NoError(t, os.WriteFile(filepath.Join(logDir, "review."+run+".events.json"),
+			[]byte(`{"version":1,"events":[{"kind":"text","text":"local tape"}]}`), 0o644))
+	}
+	for _, tc := range []struct {
+		name, stage string
+		run         int
+	}{
+		{name: "existing sidecar", stage: "review"},
+		{name: "plaintext fallback", stage: "review", run: 1},
+		{name: "interleaved stage", stage: "plan"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tape, content, err := StageActivity(ticketsDir, logsDir, "act-imp", tc.stage, tc.run)
+			require.ErrorIs(t, err, os.ErrNotExist)
+			assert.Contains(t, err.Error(), "imported run")
+			assert.Nil(t, tape)
+			assert.Empty(t, content)
+		})
+	}
+	tape, content, err := StageActivity(ticketsDir, logsDir, "act-imp", "review", 2)
+	require.NoError(t, err)
+	require.NotNil(t, tape)
+	assert.Empty(t, content)
+	assert.Equal(t, "local tape", tape.Events[0].Text)
+	require.NoError(t, os.Remove(filepath.Join(logDir, "review.2.events.json")))
+	tape, content, err = StageActivity(ticketsDir, logsDir, "act-imp", "review", 2)
+	require.NoError(t, err)
+	assert.Nil(t, tape)
+	assert.Equal(t, "local plaintext", content)
+}
+
 func TestStageActivity(t *testing.T) {
 	ticketsDir := t.TempDir()
 	logsDir := t.TempDir()

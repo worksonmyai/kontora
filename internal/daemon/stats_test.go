@@ -283,6 +283,88 @@ func TestStatsSnapshotRetargetedStandaloneRun(t *testing.T) {
 	}
 }
 
+func TestStatsSnapshotImportedHistory(t *testing.T) {
+	now := time.Now()
+	start := now.Add(-time.Minute)
+	tk := &ticket.Ticket{ID: "kon-imported-stats", Pipeline: "pipe", ImportedHistoryCount: 3, History: []ticket.HistoryEntry{
+		{Stage: "code", StartedAt: &start, CompletedAt: &now},
+		{Stage: "plan", StartedAt: &start, CompletedAt: &now},
+		{Stage: "code", Kind: ticket.KindAnnotation, StartedAt: &start, CompletedAt: &now},
+		{Stage: "code", Run: 0, StartedAt: &start, CompletedAt: &now},
+	}}
+	cfg := &config.Config{LogsDir: t.TempDir()}
+	for _, row := range []struct {
+		stage string
+		run   int
+		input int64
+	}{{"code", 0, 1000}, {"plan", 0, 1000}, {"code", 1, 1000}, {"code", 2, 1}} {
+		writeCostSidecar(t, cfg.LogsDir, tk.ID, row.stage, row.run, completeCostSidecar("claude-haiku-4-5", row.input, 0, 0, 0))
+	}
+	d := &Daemon{tickets: map[string]*ticketState{tk.ID: {ticket: tk}}}
+	snapshot, _ := d.statsSnapshot(cfg, now)
+	require.Len(t, snapshot, 1)
+	require.Len(t, snapshot[0].ticket.History, 1)
+	assert.Equal(t, 1, snapshot[0].ticket.History[0].Run, "stage attempts exclude annotations but retain imported occurrences")
+	assert.Equal(t, []string{statsSidecarPath(cfg.LogsDir, tk.ID, "code", 2)}, snapshot[0].paths)
+	cache := newStatsCache()
+	opts := stats.Options{Now: now, Days: 7}
+	cache.fillUsage(snapshot, opts)
+	result := stats.Compute([]stats.Ticket{snapshot[0].ticket}, opts)
+	assert.Equal(t, 1, result.Totals.Runs)
+	assert.Equal(t, int64(1), result.Totals.TokensIn)
+	assert.Len(t, cache.sidecars, 1)
+
+	tk.ImportedHistoryCount = len(tk.History)
+	snapshot, _ = d.statsSnapshot(cfg, now)
+	require.Len(t, snapshot, 1)
+	assert.Empty(t, snapshot[0].ticket.History)
+	assert.Empty(t, snapshot[0].paths)
+}
+
+func TestStatsSnapshotClaimedLegacyStandalone(t *testing.T) {
+	cfg := &config.Config{LogsDir: t.TempDir()}
+	tk := &ticket.Ticket{ID: "kon-claimed-legacy", Status: ticket.StatusOpen}
+	writeCostSidecar(t, cfg.LogsDir, tk.ID, simpleStageName, 0, completeCostSidecar("claude-haiku-4-5", 1000, 0, 0, 0))
+	d := &Daemon{tickets: map[string]*ticketState{tk.ID: {ticket: tk}}}
+	now := time.Now()
+	snapshot, _ := d.statsSnapshot(cfg, now)
+	require.Len(t, snapshot, 1)
+	assert.Empty(t, snapshot[0].ticket.History)
+	assert.Empty(t, snapshot[0].paths)
+	cache := newStatsCache()
+	cache.fillUsage(snapshot, stats.Options{Now: now, Days: 7})
+	assert.Empty(t, cache.sidecars)
+}
+
+func TestImportedHistoryDoesNotSuppressLaterStandalone(t *testing.T) {
+	now := time.Now()
+	future := now.Add(time.Hour)
+	tk := &ticket.Ticket{
+		ID: "kon-later-standalone", Status: ticket.StatusDone, StartedAt: &now, CompletedAt: &now,
+		ImportedHistoryCount: 2,
+		History: []ticket.HistoryEntry{
+			{Stage: simpleStageName, StartedAt: &future, CompletedAt: &future},
+			{Stage: simpleStageName, Kind: ticket.KindAnnotation, CompletedAt: &future},
+		},
+	}
+	cfg := &config.Config{LogsDir: t.TempDir()}
+	writeCostSidecar(t, cfg.LogsDir, tk.ID, simpleStageName, 2, completeCostSidecar("claude-haiku-4-5", 1, 0, 0, 0))
+	d := costTestDaemon(t, cfg.LogsDir, tk)
+	cost, err := d.GetTicketCost(tk.ID)
+	require.NoError(t, err)
+	require.Len(t, cost.Runs, 1)
+	assert.Nil(t, cost.Runs[0].HistoryIndex)
+	assert.Equal(t, 2, cost.Runs[0].Run)
+	require.NotNil(t, cost.CostUSD)
+	assert.Equal(t, "0.000001", *cost.CostUSD)
+
+	snapshot, _ := d.statsSnapshot(cfg, now)
+	require.Len(t, snapshot, 1)
+	require.Len(t, snapshot[0].ticket.History, 1)
+	assert.Equal(t, 1, snapshot[0].ticket.History[0].Run)
+	assert.Equal(t, []string{statsSidecarPath(cfg.LogsDir, tk.ID, simpleStageName, 2)}, snapshot[0].paths)
+}
+
 func TestStatsSidecarPathRejectsAPlantedStage(t *testing.T) {
 	logs := "/var/logs"
 	assert.Equal(t, filepath.Join(logs, "kon-1", "step1.2.events.json"),

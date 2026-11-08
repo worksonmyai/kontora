@@ -93,6 +93,14 @@ func StageActivity(tasksDir, logsDir, taskID, stage string, run int) (tape *logf
 		return nil, buf.String(), nil
 	}
 
+	t, err := ticket.ParseFile(filepath.Join(tasksDir, resolvedID+".md"))
+	if err != nil {
+		return nil, "", err
+	}
+	if t.IsImportedRun(stage, run) {
+		return nil, "", fmt.Errorf("imported run has no local activity: %w", os.ErrNotExist)
+	}
+
 	sidecar := session.EventsPath(expandedLogsDir, resolvedID, stage, run)
 	switch data, readErr := os.ReadFile(sidecar); {
 	case readErr == nil:

@@ -276,8 +276,8 @@ export function kontoraNotes() {
     // Note routes return whole tickets, but their snapshots can precede a description save.
     async _noteRequest(path, method, body, failure) {
       var t = this.selectedTicket;
-      if (!t) return false;
-      var id = t.id;
+      if (!this.ticketCanEdit(t)) return false;
+      var id = this.ticketKey(t);
       var update = this._selectedTicketUpdateSeq;
       var acknowledged = this._editorSaves[id]?.ackSequence || 0;
       try {
@@ -286,13 +286,14 @@ export function kontoraNotes() {
           init.headers = { 'Content-Type': 'application/json' };
           init.body = JSON.stringify(body);
         }
-        var res = await fetch('/api/tickets/' + encodeURIComponent(id) + path, init);
+        var res = await fetch(this.ticketURL(t, path), init);
         if (!res.ok) {
           var err = await res.json().catch(function () { return {}; });
           this.error = err.error || failure;
           return false;
         }
         var full = await res.json();
+        full = { ...full, source: t.source || full.source };
         this._noteApplyTicket(id, full, update, acknowledged);
         return true;
       } catch (e) {
@@ -304,20 +305,22 @@ export function kontoraNotes() {
     _noteApplyTicket(id, full, update, acknowledged) {
       var stale = (update !== undefined && update !== this._selectedTicketUpdateSeq) ||
         (acknowledged !== undefined && acknowledged !== (this._editorSaves[id]?.ackSequence || 0));
-      if (this.selectedTicket && this.selectedTicket.id === id) {
+      if (this.ticketKey(this.selectedTicket) === id) {
         if (this.editing || stale) {
           var description = this.descriptionText(this.selectedTicket);
           var tail = this.descriptionTail(full);
           this.selectedTicket = { ...this.selectedTicket, notes: full.notes,
-            description: description, description_tail: tail, body: description + tail };
+            description: description, description_tail: tail, body: description + tail, revision: full.revision,
+            can_edit: full.can_edit, can_claim: full.can_claim, refusal_reason: full.refusal_reason, claim_warnings: full.claim_warnings };
         } else {
           this.selectedTicket = full;
         }
         this._selectedTicketUpdateSeq++;
       }
-      var idx = this.tickets.findIndex(function (x) { return x.id === id; });
+      var entries = this.isSecondary(full) ? this.secondaryTickets : this.tickets;
+      var idx = entries.findIndex(x => this.ticketKey(x) === id);
       if (idx >= 0 && !stale) {
-        this.tickets[idx] = this.boardEntry(full);
+        entries[idx] = this.boardEntry(full);
         this.recomputeBoard();
       }
     },

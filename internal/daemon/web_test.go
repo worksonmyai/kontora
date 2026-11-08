@@ -20,10 +20,42 @@ import (
 	"github.com/worksonmyai/kontora/internal/cli/remote"
 	"github.com/worksonmyai/kontora/internal/config"
 	"github.com/worksonmyai/kontora/internal/logfmt"
+	"github.com/worksonmyai/kontora/internal/notify"
 	"github.com/worksonmyai/kontora/internal/stats"
 	"github.com/worksonmyai/kontora/internal/ticket"
 	"github.com/worksonmyai/kontora/internal/web"
 )
+
+func TestDaemon_NewTicketPublicationRefusesCollisions(t *testing.T) {
+	for _, suffix := range []string{".md", ".notes.json"} {
+		for _, symlink := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/symlink=%t", suffix, symlink), func(t *testing.T) {
+				h := newHarness(t)
+				d := h.newDaemon(h.cfg)
+				id := "tst-collision"
+				path := filepath.Join(h.tasksDir, id+".md")
+				collision := filepath.Join(h.tasksDir, id+suffix)
+				if symlink {
+					require.NoError(t, os.Symlink("missing", collision))
+				} else {
+					require.NoError(t, os.WriteFile(collision, []byte("claimed contents"), 0o644))
+				}
+				tk, err := ticket.ParseBytes([]byte(h.taskMD(id, "open", "one-stage")))
+				require.NoError(t, err)
+				require.Error(t, d.createTicketFile(tk, path, notify.OriginRequest))
+				if symlink {
+					target, err := os.Readlink(collision)
+					require.NoError(t, err)
+					assert.Equal(t, "missing", target)
+				} else {
+					got, err := os.ReadFile(collision)
+					require.NoError(t, err)
+					assert.Equal(t, "claimed contents", string(got))
+				}
+			})
+		}
+	}
+}
 
 func TestDaemon_ListTickets(t *testing.T) {
 	h := newHarness(t)

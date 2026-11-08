@@ -736,6 +736,63 @@ func TestNotifyRoundTrip(t *testing.T) {
 	assert.Equal(t, []string{"mm"}, reparsed.NotifyChannels)
 }
 
+func TestImportedHistoryRoundTrip(t *testing.T) {
+	tk, err := ParseBytes([]byte("---\nid: imported-1\nstatus: open\ncustom: kept\nhistory:\n  - {stage: code, summary: imported summary}\n---\n# Imported\n"))
+	require.NoError(t, err)
+	assert.Zero(t, tk.ImportedHistoryCount)
+	require.NoError(t, tk.SetField("imported_history_count", len(tk.History)))
+	require.NoError(t, tk.SetField("history", append(tk.History, HistoryEntry{Stage: "code", Run: 1, Summary: "local summary"})))
+	require.NoError(t, tk.SetField("status", "done"))
+	out, err := tk.Marshal()
+	require.NoError(t, err)
+	assert.Contains(t, string(out), "custom: kept")
+	parsed, err := ParseBytes(out)
+	require.NoError(t, err)
+	assert.Equal(t, 1, parsed.ImportedHistoryCount)
+	assert.True(t, parsed.IsImportedHistory(0))
+	assert.False(t, parsed.IsImportedHistory(1))
+	assert.Equal(t, "imported summary", parsed.History[0].Summary)
+	assert.Equal(t, "local summary", parsed.History[1].Summary)
+	assert.Equal(t, tk.Body, parsed.Body)
+	assert.Equal(t, 1, parsed.Clone().ImportedHistoryCount)
+	require.NoError(t, parsed.DeleteField("imported_history_count"))
+	assert.Zero(t, parsed.ImportedHistoryCount)
+}
+
+func TestIsImportedRun(t *testing.T) {
+	tk := &Ticket{ImportedHistoryCount: 3, History: []HistoryEntry{
+		{Stage: "code"},
+		{Stage: "plan"},
+		{Stage: "code", Kind: KindAnnotation},
+		{Stage: "code", Run: 99},
+	}}
+	for _, tc := range []struct {
+		name, stage string
+		run         int
+		imported    bool
+	}{
+		{name: "first legacy occurrence", stage: "code", imported: true},
+		{name: "interleaved stage", stage: "plan", imported: true},
+		{name: "annotation occurrence", stage: "code", run: 1, imported: true},
+		{name: "local occurrence", stage: "code", run: 2},
+		{name: "stored run is not an occurrence", stage: "code", run: 99},
+		{name: "next occurrence", stage: "code", run: 3},
+		{name: "unknown stage", stage: "review"},
+		{name: "negative occurrence", stage: "code", run: -1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.imported, tk.IsImportedRun(tc.stage, tc.run))
+		})
+	}
+	assert.False(t, tk.IsImportedHistory(-1))
+	assert.False(t, tk.IsImportedHistory(len(tk.History)))
+	tk.ImportedHistoryCount = -1
+	assert.False(t, tk.IsImportedRun("code", 0))
+	tk.ImportedHistoryCount = 100
+	assert.True(t, tk.IsImportedRun("code", 2))
+	assert.False(t, tk.IsImportedRun("code", 3))
+}
+
 func TestNotifyIsNotAddedToATicketWithoutIt(t *testing.T) {
 	tkt, err := ParseBytes([]byte("---\nid: n-3\nkontora: true\nstatus: todo\n---\n# body\n"))
 	require.NoError(t, err)

@@ -2639,13 +2639,12 @@ test("index.html gates the empty-board panel on the raw ticket list", () => {
   const html = htmlNoComments();
 
   const desktop = elementWithId(html, "board-empty-desktop");
-  assert.match(desktop, /x-show="tickets\.length === 0"/);
+  assert.match(desktop, /x-show="allBoardTickets\(\)\.length === 0 && !sourcesError && !ticketSources\.some\(s => s\.available === false\)"/);
   // The panel covers the board instead of replacing it: it is a sibling of
   // #board-cols inside the same board area, so Alpine keeps the column DOM and
   // its Sortable bindings mounted while the panel shows.
   assert.equal(desktop.includes('id="board-cols"'), false);
-  const panelStart = html.lastIndexOf("<div", html.indexOf('id="board-empty-desktop"'));
-  const boardArea = elementAt(html, panelStart - 1);
+  const boardArea = elementAt(html, html.indexOf(':inert="!!selectedTicket || !!selectedEpic"'));
   assert.ok(boardArea.includes('id="board-cols"'), "panel and columns share the board area");
 
   // Desktop inherits !loading from the board view; mobile has no such wrapper,
@@ -2653,14 +2652,14 @@ test("index.html gates the empty-board panel on the raw ticket list", () => {
   // panel while the first fetch is still in flight.
   const boardView = elementAt(html, html.indexOf(`x-show="!loading && currentView === 'board'"`));
   assert.ok(boardView.includes('id="board-empty-desktop"'), "desktop panel sits under the !loading board view");
-  const mobileGate = '<template x-if="!loading && tickets.length === 0">';
+  const mobileGate = '<template x-if="!loading && allBoardTickets().length === 0 && !sourcesError && !ticketSources.some(s => s.available === false)">';
   const mobileIdx = html.indexOf(mobileGate);
   assert.ok(mobileIdx > 0, "mobile panel needs its own !loading gate");
   assert.match(html.slice(mobileIdx + mobileGate.length, mobileIdx + mobileGate.length + 40), /^\s*<div id="board-empty-mobile"/);
 
   // Mobile's per-column empty state stands down while the panel shows, so the
   // two never stack.
-  assert.match(html, /x-if="tickets\.length > 0 && boardTickets\(mobileColumn\(\)\.key\)\.length === 0"/);
+  assert.match(html, /x-if="allBoardTickets\(\)\.length > 0 && boardTickets\(mobileColumn\(\)\.key\)\.length === 0"/);
 });
 
 // The copy path needs a secure context, which plain HTTP over a tailnet is not,
@@ -3013,8 +3012,9 @@ test("a save that lands after the panel closed does not reopen it", async () => 
   assert.equal(state._editorSaves['kon-1'].ack.description, 'typed');
 });
 
-function descriptionEditorUI(kind = '', id = 'kon-desc') {
+function descriptionEditorUI(kind = '', id = 'kon-desc', source = '') {
   let stored = {
+    ...(source ? { source, revision: 'reviewed', can_edit: true, can_claim: true, can_control: false } : {}),
     id, title: 'Description', status: 'open', kontora: true, kind,
     description: '# Description\n\n',
     description_tail: '## Notes\r\n\r\n**custom · person · a1b2**\r\nkeep raw\r\n\r\n## Later\r\nkeep later\r\n',
@@ -3022,10 +3022,12 @@ function descriptionEditorUI(kind = '', id = 'kon-desc') {
   };
   stored.body = stored.description + stored.description_tail;
   const writes = [];
+  const requests = [];
   let intercept = async () => true;
   let respond = async (_url, _opts, full) => ({ ok: true, json: async () => full });
   const { state, ctx } = loadKontoraContext({
     fetch: async (url, opts) => {
+      requests.push({ url, opts });
       if (opts?.method === 'PUT') {
         const request = JSON.parse(opts.body);
         writes.push(request);
@@ -3054,19 +3056,422 @@ function descriptionEditorUI(kind = '', id = 'kon-desc') {
   state.fetchChain = () => {};
   state.updateFavicon = () => {};
   state.recomputeBoard = () => {};
-  state.tickets = [state.boardEntry(stored)];
+  state.ticketSources = source ? [{ id: source, path: '/source', available: true }] : [];
+  state.tickets = source ? [{ id, title: 'Primary namesake', status: 'open' }] : [state.boardEntry(stored)];
+  state.secondaryTickets = source ? [state.boardEntry(stored)] : [];
   const open = async () => {
-    if (kind === 'epic') await state.openEpic(stored.id);
-    else await state.selectTicket(state.tickets[0]);
+    if (kind === 'epic' && !source) await state.openEpic(stored.id);
+    else await state.selectTicket(source ? state.secondaryTickets[0] : state.tickets[0]);
     await flushMicrotasks();
   };
-  return { state, ctx, writes, open, stored: () => stored,
+  return { state, ctx, writes, requests, open, stored: () => stored,
     intercept: fn => { intercept = fn; },
     respond: fn => { respond = fn; },
     save: () => kind === 'epic' ? state.epicSaveBrief() : state.saveEdit(),
     close: () => kind === 'epic' ? state.closeEpic(false) : state.closeDetail(false),
   };
 }
+
+for (const mobile of [false, true]) {
+  test(`secondary namesake editing stays source-qualified: mobile=${mobile}`, async () => {
+    const ui = descriptionEditorUI('', 'same', 'team');
+    await ui.open();
+    const { state } = ui;
+    state.isMobile = mobile;
+    if (mobile) { state.closeDetail(false); await state.openMobileTicket(state.secondaryTickets[0]); }
+    state.editForm.body = '# Secondary draft';
+    assert.equal(await state.saveEdit(), true);
+    assert.equal(state.tickets[0].title, 'Primary namesake');
+    assert.equal(state.outputSubject(), null);
+    assert.equal(state.ticketCanControl(state.selectedTicket), false);
+    assert.ok(ui.requests.every(r => r.url.startsWith('/api/sources/team/tickets/same')));
+    state.applyTicketUpdate({ id: 'same', title: 'Changed primary', status: 'open' });
+    assert.equal(state.selectedTicket.source, 'team');
+    assert.equal(state.editForm.body, '# Secondary draft');
+    assert.ok(state._editorSaves['team/same']);
+  });
+}
+
+test('combined secondary statuses never count as primary execution', () => {
+  const state = loadKontoraState();
+  state.updateFavicon = () => {};
+  state.renderBoard = () => {};
+  state.tickets = [{ id: 'same', status: 'in_progress', kontora: true, agent: 'test' }];
+  state.secondaryTickets = [
+    { id: 'same', source: 'team', status: 'in_progress', kontora: true, agent: 'test' },
+    { id: 'old', source: 'team', status: 'archived' },
+    { id: 'foreign', source: 'team', status: 'external' },
+  ];
+  state.recomputeBoard();
+  assert.equal(state.runningAgents, 1);
+  assert.equal(state._statusCounts.in_progress, 1);
+  assert.equal(state.boardTickets('in_progress').length, 2);
+  assert.equal(state.boardTickets('archived').length, 1);
+  assert.equal(state.boardTickets('external').length, 1);
+  state.sourceFilter = 'primary';
+  state.recomputeBoard();
+  assert.equal(state._boardTotal, 1);
+  assert.equal(state.runningAgents, 1);
+  assert.equal(state.tickets.length, 1);
+});
+
+test('secondary Claim retains a rejected draft and submits nothing', async () => {
+  const ui = descriptionEditorUI('', 'same', 'team');
+  await ui.open();
+  ui.ctx.window.confirm = () => true;
+  ui.intercept(async () => false);
+  ui.state.editForm.body = '# Keep failed draft';
+  assert.equal(await ui.state.claimTicket(), false);
+  assert.equal(ui.state.selectedTicket.source, 'team');
+  assert.equal(ui.state.editForm.body, '# Keep failed draft');
+  assert.equal(ui.requests.filter(r => r.url.endsWith('/claim')).length, 0);
+  assert.equal(ui.state.editorClaimLocked(), false);
+});
+
+test('secondary Claim survives a deletion event before its response and opens primary', async () => {
+  const ui = descriptionEditorUI('', 'claim', 'team');
+  await ui.open();
+  ui.ctx.window.confirm = () => true;
+  const primary = { ...ui.stored(), source: undefined, can_control: true, status: 'open' };
+  ui.respond(async (url, opts, full) => {
+    if (url.endsWith('/claim')) {
+      assert.equal(JSON.parse(opts.body).revision, 'reviewed');
+      ui.state.deleteSecondaryTicket({ id: 'claim', source: 'team' });
+      assert.equal(ui.state.selectedTicket.source, 'team');
+      return { ok: true, json: async () => primary };
+    }
+    return { ok: true, json: async () => url.startsWith('/api/tickets/') ? primary : full };
+  });
+  assert.equal(await ui.state.claimTicket(), true);
+  assert.equal(ui.state.isSecondary(ui.state.selectedTicket), false);
+  assert.equal(ui.state.selectedTicket.id, 'claim');
+  assert.equal(ui.state.secondaryTickets.length, 0);
+});
+
+test('secondary notes, reactions and relationships never address primary namesakes', async () => {
+  const ui = descriptionEditorUI('', 'same', 'team');
+  await ui.open();
+  const { state } = ui;
+  state.secondaryTickets.push({ id: 'related', source: 'team', title: 'Source relation', status: 'open' });
+  state.tickets.push({ id: 'related', title: 'Primary relation', status: 'open' });
+  let opened;
+  state._paletteOpenTicket = async ticket => { opened = ticket; };
+  await state.openTicketRef({ id: 'related', title: 'Source relation', status: 'open' });
+  assert.equal(opened.source, 'team');
+  await state.moveTicketVia(state.ticketKey(state.selectedTicket), 'run');
+  assert.equal(ui.requests.filter(r => r.url.endsWith('/run')).length, 0);
+  state.switchTab('notes');
+  assert.equal(state.activeTab, 'notes');
+  state.noteDraft = 'Only in source';
+  await state.submitNote();
+  assert.ok(ui.requests.some(r => r.url === '/api/sources/team/tickets/same/note' && r.opts?.method === 'POST'));
+  assert.equal(state.tickets[0].title, 'Primary namesake');
+  state.sourceRelationDraft().targets = 'related';
+  ui.respond(async (url, opts, full) => {
+    if (url.endsWith('/dep')) {
+      assert.equal(url, '/api/sources/team/tickets/same/dep');
+      assert.deepEqual(JSON.parse(opts.body), { related: ['related'] });
+      full.deps = [{ id: 'related', title: 'Source relation', status: 'open' }];
+    }
+    return { ok: true, json: async () => full };
+  });
+  assert.equal(await state.saveSourceRelation(), true);
+  assert.equal(state.selectedTicket.deps[0].title, 'Source relation');
+  assert.equal(state.sourceRelationDraft(state.tickets[0]).targets, '');
+  assert.equal(state.tickets[0].title, 'Primary namesake');
+  state.applySecondaryUpdate({ ...ui.stored(), title: 'Source event' });
+  assert.equal(state.tickets[0].title, 'Primary namesake');
+  assert.equal(state.secondaryTickets[0].title, 'Source event');
+});
+
+for (const source of ['', 'team', 'other']) {
+  test(`late schedule completion only rebinds the matching primary editor: source=${source || 'primary'}`, async () => {
+    const ui = descriptionEditorUI('', 'same', source);
+    await ui.open();
+    const { state } = ui;
+    const scheduled = deferred();
+    ui.respond(async (url, _opts, full) => url.endsWith('/schedule')
+      ? scheduled.promise : { ok: true, json: async () => full });
+    const pending = state._postSchedule({ id: 'same', status: 'open', kontora: true }, { clear: true });
+    const form = state.editForm;
+    const generation = state._editorGeneration;
+    scheduled.resolve({ ok: true, json: async () => ({ id: 'same', status: 'open', kontora: true, description: 'Scheduled primary body' }) });
+    await pending;
+    if (source) {
+      assert.equal(state.selectedTicket.source, source);
+      assert.equal(state.editForm, form);
+      assert.equal(state._editorGeneration, generation);
+      state.editForm.body = 'Source draft after scheduling';
+      await state.saveEdit();
+      assert.equal(ui.requests.at(-1).url, `/api/sources/${source}/tickets/same`);
+      assert.equal(state.tickets[0].description, undefined);
+    } else {
+      assert.equal(state.editForm.body, 'Scheduled primary body');
+      assert.ok(state._editorGeneration > generation);
+    }
+  });
+}
+
+test('a schedule started before navigating to a secondary namesake cannot change its save address', async () => {
+  const ui = descriptionEditorUI('', 'same', 'team');
+  const { state } = ui;
+  const primary = { id: 'same', status: 'open', kontora: true, description: 'Primary body' };
+  const scheduled = deferred();
+  ui.respond(async (url, _opts, full) => url.endsWith('/schedule') ? scheduled.promise
+    : { ok: true, json: async () => url.startsWith('/api/tickets/') ? primary : full });
+  await state.selectTicket(primary);
+  const pending = state._postSchedule(primary, { clear: true });
+  await state.selectTicket(state.secondaryTickets[0]);
+  state.editForm.body = 'Secondary input while primary schedule waits';
+  const generation = state._editorGeneration;
+  scheduled.resolve({ ok: true, json: async () => primary });
+  await pending;
+  assert.equal(state.selectedTicket.source, 'team');
+  assert.equal(state._editorGeneration, generation);
+  await state.saveEdit();
+  assert.equal(ui.requests.at(-1).url, '/api/sources/team/tickets/same');
+  assert.equal(ui.writes.at(-1).description, 'Secondary input while primary schedule waits');
+});
+
+test('schedule completion preserves a dirty matching primary draft', async () => {
+  const ui = descriptionEditorUI('', 'same');
+  await ui.open();
+  ui.state.editForm.body = 'Unsaved primary draft';
+  ui.state._applyScheduled({ id: 'same', status: 'open', kontora: true, description: 'Server body' });
+  assert.equal(ui.state.editForm.body, 'Unsaved primary draft');
+});
+
+for (const editing of [false, true]) {
+  test(`secondary SSE keeps the revision of the displayed description: editing=${editing}`, async () => {
+    const ui = descriptionEditorUI('', 'same', 'team');
+    await ui.open();
+    const { state } = ui;
+    const description = state.selectedTicket.description;
+    state.editing = editing;
+    const sources = [];
+    ui.ctx.EventSource = makeEventSourceFake(sources);
+    state.connectSSE();
+    sources[0].emit('secondary_ticket_updated', { ...ui.stored(), revision: 'unseen', description: 'Unreviewed body', title: 'New title' });
+    assert.equal(state.secondaryTickets[0].revision, 'unseen');
+    assert.equal(state.selectedTicket.title, 'New title');
+    assert.equal(state.selectedTicket.description, description);
+    assert.equal(state.selectedTicket.revision, 'reviewed');
+    ui.ctx.window.confirm = () => true;
+    ui.respond(async (url, opts, full) => {
+      if (url.endsWith('/claim')) {
+        assert.equal(JSON.parse(opts.body).revision, 'reviewed');
+        return { ok: false, json: async () => ({ error: 'stale reviewed revision' }) };
+      }
+      return { ok: true, json: async () => full };
+    });
+    assert.equal(await state.claimTicket(), false);
+    assert.equal(state.selectedTicket.source, 'team');
+    assert.equal(state.selectedTicket.description, description);
+  });
+}
+
+test('Claim refuses an unseen description fetched after SSE overtakes its editor save', async () => {
+  const ui = descriptionEditorUI('', 'same', 'team');
+  await ui.open();
+  const { state } = ui;
+  ui.ctx.window.confirm = () => true;
+  ui.intercept(async () => {
+    state.applySecondaryUpdate({ ...ui.stored(), revision: 'unseen', title: 'Concurrent update' });
+    return true;
+  });
+  ui.respond(async (_url, opts, full) => ({ ok: true, json: async () => opts?.method === 'PUT'
+    ? full : { ...full, revision: 'unseen', description: 'Concurrent external description' } }));
+  state.editForm.body = 'Reviewed local input';
+  assert.equal(await state.claimTicket(), false);
+  assert.equal(state.editForm.body, 'Reviewed local input');
+  assert.equal(state.selectedTicket.source, 'team');
+  assert.match(state.error, /description changed/);
+  assert.equal(ui.requests.filter(r => r.url.endsWith('/claim')).length, 0);
+});
+
+for (const mobile of [false, true]) {
+  test(`Claim locks the source editor before loading it: mobile=${mobile}`, async () => {
+    const ui = descriptionEditorUI('', 'same', 'team');
+    const { state } = ui;
+    state.isMobile = mobile;
+    ui.ctx.window.confirm = () => false;
+    const loading = deferred();
+    ui.respond(async (_url, _opts, full) => {
+      await loading.promise;
+      return { ok: true, json: async () => full };
+    });
+    const pending = state.claimTicket(state.secondaryTickets[0]);
+    assert.equal(state.claimSubmitting, true);
+    assert.equal(state.editorClaimLocked({ id: 'same', source: 'team' }), true);
+    assert.equal(state.editorClaimLocked({ id: 'same', source: 'other' }), false);
+    await flushMicrotasks();
+    assert.equal(state.editorClaimLocked(), true);
+    loading.resolve();
+    assert.equal(await pending, false);
+    assert.equal(state.editorClaimLocked(), false);
+    assert.equal(state.editing, true);
+  });
+
+  test(`Claim locks input through debounced save, response and JSON waits: mobile=${mobile}`, async () => {
+    const ui = descriptionEditorUI('', 'same', 'team');
+    await ui.open();
+    const { state } = ui;
+    state.isMobile = mobile;
+    ui.ctx.window.confirm = () => true;
+    const save = deferred(), response = deferred(), json = deferred();
+    const primary = { ...ui.stored(), source: undefined, can_control: true };
+    ui.intercept(async () => { await save.promise; return true; });
+    ui.respond(async (url, _opts, full) => {
+      if (url.endsWith('/claim')) {
+        await response.promise;
+        return { ok: true, json: async () => { await json.promise; return primary; } };
+      }
+      return { ok: true, json: async () => url.startsWith('/api/tickets/') ? primary : full };
+    });
+    state.editForm.body = 'Draft before Claim';
+    state.debounceSaveEdit();
+    const timer = state._editDebounce;
+    const pending = state.claimTicket();
+    assert.equal(state._editDebounce, null);
+    assert.equal(timer._destroyed, true);
+    await flushMicrotasks();
+    assert.equal(state.editorClaimLocked(), true);
+    assert.equal(ui.requests.filter(r => r.url.endsWith('/claim')).length, 0);
+    state.editingBody = false;
+    state.beginBodyEdit({});
+    assert.equal(state.editingBody, false);
+    save.resolve();
+    await flushMicrotasks();
+    assert.equal(ui.writes.length, 1);
+    assert.equal(ui.writes[0].description, 'Draft before Claim');
+    assert.equal(ui.requests.filter(r => r.url.endsWith('/claim')).length, 1);
+    assert.equal(state.editorClaimLocked(), true);
+    response.resolve();
+    await flushMicrotasks();
+    assert.equal(state.editorClaimLocked(), true);
+    json.resolve();
+    assert.equal(await pending, true);
+    assert.equal(state.editorClaimLocked(), false);
+  });
+
+  test(`Claim checks the live form after awaiting a save: mobile=${mobile}`, async () => {
+    const ui = descriptionEditorUI('', 'same', 'team');
+    await ui.open();
+    const { state } = ui;
+    state.isMobile = mobile;
+    ui.ctx.window.confirm = () => true;
+    const save = deferred();
+    ui.intercept(async () => { await save.promise; return true; });
+    state.editForm.body = 'Submitted draft';
+    const pending = state.claimTicket();
+    await flushMicrotasks();
+    state.editForm.body = 'Later input';
+    save.resolve();
+    assert.equal(await pending, false);
+    assert.equal(state.editForm.body, 'Later input');
+    assert.equal(state.selectedTicket.source, 'team');
+    assert.equal(state.editing, true);
+    assert.equal(ui.requests.filter(r => r.url.endsWith('/claim')).length, 0);
+  });
+
+  for (const source of ['', 'other']) {
+    test(`Claim completion leaves another editor and its debounce untouched: mobile=${mobile}, source=${source || 'primary'}`, async () => {
+      const ui = descriptionEditorUI('', 'same', 'team');
+      await ui.open();
+      const { state } = ui;
+      state.isMobile = mobile;
+      ui.ctx.window.confirm = () => true;
+      const claimed = deferred();
+      const primary = { ...ui.stored(), source: undefined, can_control: true };
+      const other = { ...ui.stored(), id: 'other-ticket', source: source || undefined, description: 'Other body' };
+      ui.respond(async (url, _opts, full) => url.endsWith('/claim') ? claimed.promise
+        : { ok: true, json: async () => url.endsWith('/other-ticket') ? other : full });
+      const pending = state.claimTicket();
+      await flushMicrotasks();
+      if (mobile) await state.openMobileTicket(other);
+      else await state.selectTicket(other);
+      state.editForm.body = 'Unrelated pending input';
+      state.debounceSaveEdit();
+      const form = state.editForm, generation = state._editorGeneration, timer = state._editDebounce;
+      assert.equal(state.editorClaimLocked(), false);
+      claimed.resolve({ ok: true, json: async () => primary });
+      assert.equal(await pending, true);
+      assert.equal(state.editing, true);
+      assert.equal(state.editForm, form);
+      assert.equal(state.editForm.body, 'Unrelated pending input');
+      assert.equal(state._editorGeneration, generation);
+      assert.equal(state._editDebounce, timer);
+      clearTimeout(timer);
+      assert.equal(await state.flushEditSave(), true);
+      assert.equal(ui.requests.at(-1).url, source ? '/api/sources/other/tickets/other-ticket' : '/api/tickets/other-ticket');
+      assert.equal(ui.writes.at(-1).description, 'Unrelated pending input');
+    });
+  }
+}
+
+test('desktop and mobile native fieldsets disable every description and settings input during Claim', () => {
+  const html = fs.readFileSync(htmlPath, 'utf8');
+  const fieldsets = [...html.matchAll(/<fieldset :disabled="editorClaimLocked\(\)"[^>]*>([\s\S]*?)<\/fieldset>/g)];
+  assert.equal(fieldsets.length, 2);
+  for (const [index, [, content]] of fieldsets.entries()) {
+    assert.match(content, /x-model="editForm.body"/);
+    assert.match(content, index ? /x-model="editForm\[field\]"/ : /x-model="editForm.pipeline"/);
+  }
+  const tooltip = 'Move into primary without starting work. Related tickets are not moved; references resolve in primary.';
+  assert.equal(html.split(`selectedTicket?.refusal_reason || '${tooltip}'`).length - 1, 2);
+});
+
+test('secondary __proto__ status survives recomputation, rendering and later primary refresh', () => {
+  const board = fakeBoard(['open', '__proto__']);
+  const { state } = loadKontoraContext({ document: board.document });
+  state.updateFavicon = () => {};
+  state._boardInit = true;
+  state.tickets = [{ id: 'primary', title: 'Primary', status: 'open' }];
+  state.secondaryTickets = [{ id: 'foreign', title: 'Foreign', source: 'team', status: '__proto__' }];
+  state.recomputeBoard();
+  assert.equal(state.boardTickets('__proto__')[0].id, 'foreign');
+  assert.equal(Object.getPrototypeOf(state._board), null);
+  assert.match(board.els['col-__proto__'].innerHTML, /Foreign/);
+  state._cardNode = ticket => board.node(state.ticketKey(ticket));
+  state._dirtyCols.__proto__ = true;
+  state.applyTicketUpdate({ id: 'primary', title: 'Refreshed primary', status: 'open' });
+  state.recomputeBoard();
+  assert.equal(state.boardTickets('open')[0].title, 'Refreshed primary');
+  assert.equal(state.boardTickets('__proto__').length, 1);
+  assert.equal(Object.getPrototypeOf(state._rendered), null);
+});
+
+for (const deleted of [{ id: 'same', source: 'team' }, { id: 'same' }]) {
+  test(`deletion discards only matching buffered updates during a drag: source=${deleted.source || 'primary'}`, () => {
+    const sources = [];
+    const { state } = loadKontoraContext({ EventSource: makeEventSourceFake(sources) });
+    state.updateFavicon = () => {};
+    state.renderBoard = () => {};
+    state.tickets = [{ id: 'same', title: 'Primary', status: 'open' }];
+    state.secondaryTickets = ['team', 'other'].map(source => ({ id: 'same', source, title: source, status: 'open' }));
+    state.connectSSE();
+    state._dragging = true;
+    for (const ticket of state.allBoardTickets()) state.queueTicketUpdate({ ...ticket, title: 'Buffered ' + ticket.title });
+    sources[0].emit(deleted.source ? 'secondary_ticket_deleted' : 'ticket_deleted', deleted);
+    assert.equal(state._pendingTicketUpdates.length, 2);
+    state._dragging = false;
+    state.flushTicketUpdates();
+    assert.equal(state.allBoardTickets().some(t => state.sameTicket(t, deleted)), false);
+    assert.equal(state.allBoardTickets().length, 2);
+    assert.ok(state.allBoardTickets().every(t => t.title.startsWith('Buffered ')));
+  });
+}
+
+test('imported summaries remain visible without artifact navigation', async () => {
+  const { state } = loadKontoraContext({ fetch: async () => { throw new Error('unexpected artifact request'); } });
+  state.selectedTicket = { id: 'imported', status: 'open', history: [{ stage: 'code', run: 0, imported: true, summary: 'Stored summary' }] };
+  assert.equal(state.summaryCards()[0].summary, 'Stored summary');
+  assert.equal(state.summaryCards()[0].imported, true);
+  assert.equal(state.latestCompletedRun(), null);
+  assert.equal(state.outputRuns().length, 0);
+  await state.fetchActivity('code', 0);
+  assert.equal(state.activity, null);
+});
 
 for (const kind of ['', 'epic']) {
   test(`description acknowledgement preserves newer typing and raw tail: ${kind || 'ordinary'}`, async () => {
@@ -4288,8 +4693,9 @@ test("index.html renders every prose block through the idempotent write", () => 
   // its body through it too; and the notes tab's own note and reply bodies
   // are markdown like every other authored block; and the epic page renders
   // both its brief and its own notes the same way in both layouts.
-  assert.equal(html.match(/x-effect="setProse\(\$el, /g).length, 17);
-  assert.equal(html.match(/x-effect="setSummaryProse\(\$el, /g).length, 2);
+  assert.equal(html.match(/x-effect="setProse\(\$el, /g).length, 18);
+  assert.equal(html.match(/setSummaryProse\(\$el, /g).length, 2);
+  assert.match(html, /card\.imported \? setProse\(\$el, card\.summary\) : setSummaryProse/);
   // Nothing in the markup writes a note as plain text any more: the rail block
   // that did is gone and the notes tab renders markdown.
   assert.equal(html.match(/x-effect="setNoteText\(\$el, /g), null);
@@ -9672,7 +10078,7 @@ test("index.html renders the parent crumb, the relations strip and the sub-ticke
   // meta plus the resume pill.
   assert.match(html, /grid-cols-\[1fr_178px_94px_96px\]/);
   // The pill is re-derived at click time rather than read off the rendered row.
-  assert.match(html, /x-show="row\.holds_chain && chainResumeMove\(\)"/);
+  assert.match(html, /x-show="ticketCanControl\(selectedTicket\) && row\.holds_chain && chainResumeMove\(\)"/);
   assert.match(html, /@click\.stop="resumeChainHolder\(\)"/);
   // The row class is derived, so a row for a gone ticket is not painted as a
   // link it cannot be.
@@ -10163,7 +10569,7 @@ test("the summary tab renders one card per run and a commit rail", () => {
   assert.match(tab, /:aria-expanded="!collapsedStages\[card\.key\]"/);
   assert.match(tab, /x-text="earlierAllCollapsed\(\) \? 'expand all' : 'collapse all'"/);
   assert.match(tab, /x-text="summaryHeadline\(\)"/);
-  assert.match(tab, /x-text="stageCardMeta\(card\)"/);
+  assert.match(tab, /x-text="isSecondary\(selectedTicket\) \|\| card\.imported \? .* : stageCardMeta\(card\)"/);
 
   // The error banner keeps its shape and sits above the outcome rule.
   assert.ok(tab.indexOf('x-text="selectedTicket.last_error"') < tab.indexOf(">outcome<"));
@@ -10171,7 +10577,7 @@ test("the summary tab renders one card per run and a commit rail", () => {
 
   // The rail is dropped, not hidden, when the branch has no commit, and every
   // fact on it comes out of the one changes payload.
-  assert.match(tab, /<template x-if="ticketChanges\?\.commits\?\.length">/);
+  assert.match(tab, /<template x-if="!isSecondary\(selectedTicket\) && ticketChanges\?\.commits\?\.length">/);
   assert.match(tab, /x-text="ticketChanges\?\.branch"/);
   assert.match(tab, /x-text="ticketChanges\?\.base"/);
   // copyBranch stores the copied string, so each sha chip ticks on its own;
@@ -11578,8 +11984,8 @@ test("the stage row is gated on the predicate and on the pipeline, not on the st
   // The row now hangs off the pipeline alone, so a ticket that gained one
   // through the detail form still gets somewhere to set its stage.
   assert.ok(html.includes(`<template x-if="selectedTicket?.stages?.length > 1"><span class="text-surface-600">stage</span></template>`));
-  assert.ok(html.includes(`<template x-if="canSetStage() && setStageOpen">`));
-  assert.ok(html.includes(`@click="if (canSetStage()) setStageOpen = true"`));
+  assert.ok(html.includes(`<template x-if="ticketCanControl(selectedTicket) && canSetStage() && setStageOpen">`));
+  assert.ok(html.includes(`@click="if (ticketCanControl(selectedTicket) && canSetStage()) setStageOpen = true"`));
   assert.ok(html.includes(`x-text="displayStage()"`));
   // The pre-selected option is the stage on the file, never the display fallback:
   // a pick that matches the selection fires no change event.
@@ -11632,7 +12038,7 @@ test("the detail panel's re-run button says restart on a finished ticket", () =>
   const html = fs.readFileSync(htmlPath, "utf8");
   // One button, one endpoint, three statuses, and only on a ticket the daemon owns:
   // Service.Retry rejects a foreign one before it looks at the status.
-  assert.ok(html.includes(`<template x-if="['paused', 'done', 'cancelled'].includes(selectedTicket?.status) && selectedTicket?.kontora && (selectedTicket?.kind !== 'epic' || epicIsAgent(selectedTicket))">`));
+  assert.ok(html.includes(`<template x-if="ticketCanControl(selectedTicket) && ['paused', 'done', 'cancelled'].includes(selectedTicket?.status) && selectedTicket?.kontora && (selectedTicket?.kind !== 'epic' || epicIsAgent(selectedTicket))">`));
   assert.ok(html.includes(`<button @click="action('retry')" :disabled="!!actionLoading"`));
   assert.ok(html.includes(`<span x-text="retryLabel()"></span>`));
 });

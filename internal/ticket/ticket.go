@@ -245,6 +245,8 @@ type Ticket struct {
 	// repository's default branch.
 	BaseBranch string         `yaml:"base_branch"`
 	History    []HistoryEntry `yaml:"history"`
+	// The imported history prefix reserves run indexes but has no local artifacts.
+	ImportedHistoryCount int `yaml:"imported_history_count,omitempty"`
 	// Deps, Links and Parent are the ticket's relations: deps lists the tickets
 	// this one is blocked by, links is a symmetric "related" list, and parent
 	// names the epic or parent task. Deps and links are written by the relation
@@ -313,6 +315,29 @@ type Ticket struct {
 
 	rawNode *yaml.Node // preserved for round-trip
 	rawBody string     // original body bytes
+}
+
+func (t *Ticket) IsImportedHistory(index int) bool {
+	return index >= 0 && index < len(t.History) && index < t.ImportedHistoryCount
+}
+
+// IsImportedRun counts stage occurrences, including annotations and legacy rows
+// whose stored Run field is zero, to match local artifact indexes.
+func (t *Ticket) IsImportedRun(stage string, run int) bool {
+	if run < 0 {
+		return false
+	}
+	occurrence := 0
+	for i, h := range t.History {
+		if h.Stage != stage {
+			continue
+		}
+		if occurrence == run {
+			return t.IsImportedHistory(i)
+		}
+		occurrence++
+	}
+	return false
 }
 
 func ParseFile(path string) (*Ticket, error) {

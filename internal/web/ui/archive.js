@@ -567,7 +567,7 @@ export function kontoraArchive() {
     // ---- archive and restore -----------------------------------------------
 
     openArchivePrompt(id) {
-      if (!id) return;
+      if (!id || this.isSecondary(this.ticketIdentity(id)) || (this.isSecondary(this.selectedTicket) && this.selectedTicket.id === id)) return;
       this.archivePromptId = id;
       this.archiveNoteDraft = '';
       this.archivePromptError = null;
@@ -582,7 +582,7 @@ export function kontoraArchive() {
 
     async submitArchive() {
       const id = this.archivePromptId;
-      if (!id || this.archiveSubmitting) return;
+      if (!id || this.archiveSubmitting || this.isSecondary(this.ticketIdentity(id))) return;
       this.archiveSubmitting = true;
       this.archivePromptError = null;
       try {

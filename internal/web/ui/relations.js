@@ -19,7 +19,7 @@ export function kontoraRelations() {
     // resolves those from every file on disk and so covers the tickets the
     // board hides (archived, or a status with no column).
     _ticketById(id) {
-      var hit = (this.tickets || []).find(function (t) { return t.id === id; });
+      var hit = this.sourceTickets().find(function (t) { return t.id === id; });
       return hit || this._relationRefById(id);
     },
 
@@ -327,8 +327,9 @@ export function kontoraRelations() {
     // hides is opened from the ref itself and the detail fetch fills it in.
     async openTicketRef(ref) {
       if (!this.relationKnown(ref)) return;
-      var t = (this.tickets || []).find(function (x) { return x.id === ref.id; });
-      await this._paletteOpenTicket(t || { id: ref.id, title: ref.title, status: ref.status });
+      var t = this.sourceTickets().find(function (x) { return x.id === ref.id; });
+      var source = this.selectedTicket?.source;
+      await this._paletteOpenTicket(t || { id: ref.id, ...(source ? { source: source } : {}), title: ref.title, status: ref.status });
     },
 
     // A pull request link, and the only chip that navigates. The path a number

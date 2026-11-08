@@ -60,7 +60,7 @@ export function kontoraBoard() {
       var esc = (s) => this._escapeHtml(s);
       var inProgressCol = col.key === 'in_progress';
       var supervisor = this.epicIsAgent(ticket);
-      var selected = this.selectedTicket && this.selectedTicket.id === ticket.id;
+      var selected = this.sameTicket(this.selectedTicket, ticket);
 
       // shrink-0: the column list is a flex column, and overflow-hidden (which
       // clips the epic spine to the rounded corners) drops the card's automatic
@@ -73,7 +73,7 @@ export function kontoraBoard() {
       // epic's own hue. data-pipe-color goes on those spans, not the card root:
       // the root's --pipe-h is the ticket's own pipeline, and reusing it would
       // repaint the pipeline tag in the epic's colour.
-      var epic = this.epicCardInfo(ticket);
+      var epic = this.isSecondary(ticket) ? null : this.epicCardInfo(ticket);
       var epicHue = epic ? this.pipelineColorByName(epic.id) : '';
       if (epic) cls.push('pl-[14px]');
       if (selected) cls.push('is-selected');
@@ -180,6 +180,8 @@ export function kontoraBoard() {
         + '</button>'
         + '</div>';
 
+      if (!this.ticketCanControl(ticket)) menu = '';
+
       // Colored mono [tag] prefix: taken from the title's own "[tag] ..."
       // prefix when present, otherwise the project basename.
       var pt = this.parseTitleTag(ticket);
@@ -208,7 +210,8 @@ export function kontoraBoard() {
         : '';
 
       return '<div class="' + cls.join(' ') + '"'
-        + ' data-ticket-id="' + esc(ticket.id) + '"'
+        + ' data-ticket-id="' + esc(this.ticketKey(ticket)) + '"'
+        + (this.ticketCanControl(ticket) ? '' : ' data-no-drag="true"')
         + ' data-pipe-color="' + esc(this.ticketPipeColor(ticket)) + '"'
         + ' role="listitem" tabindex="0"'
         + ' aria-label="' + esc((supervisor ? 'Supervisor ' : 'Ticket ') + ticket.id + ': ' + (ticket.title || '')) + '">'
@@ -220,6 +223,7 @@ export function kontoraBoard() {
         + '<div class="flex items-center gap-2 text-[11px] font-mono text-surface-600 justify-between">'
         +   '<div class="flex items-center gap-1.5 min-w-0">'
         +     '<span class="group-hover:text-tx-3 transition-colors truncate"' + idTip + '>' + esc(ticket.id) + '</span>'
+        +     (this.isSecondary(ticket) ? '<span class="truncate text-accent" title="' + esc(this.sourceLabel(ticket)) + '">' + esc(this.sourceLabel(ticket)) + '</span>' : '')
         +     epicCount
         +     agent
         +   '</div>'
@@ -245,9 +249,10 @@ export function kontoraBoard() {
       // The spine and the "Epic: 3 of 6 done" footer are the part of a card that is
       // board state rather than ticket state: a sibling finishing has to
       // repaint this card, and only _epicRollup knows that happened.
-      var epic = this._epicRollup[(ticket.parent && ticket.parent.id) || ''];
+      var epic = this.isSecondary(ticket) ? null : this._epicRollup[(ticket.parent && ticket.parent.id) || ''];
       var epicSig = epic ? [epic.id, epic.title, epic.done, epic.total].join(':') : '';
-      return [col.key, ticket.id, ticket.title, ticket.status, ticket.stage,
+      var sourceName = this.ticketSources.find(s => s.id === ticket.source)?.path || ticket.source || 'primary';
+      return [col.key, ticket.id, ticket.source, sourceName, ticket.can_control, ticket.title, ticket.status, ticket.stage,
               ticket.pipeline, ticket.path, ticket.agent, ticket.attempt,
               ticket.kontora ? 1 : 0, ticket.started_at, ticket.created_at,
               ticket.waiting_for_input ? 1 : 0, ticket.waiting_since,
@@ -278,6 +283,7 @@ export function kontoraBoard() {
     // status for move actions. The delegated handler matches .card-menu-item at
     // click time, so it needs no rebinding.
     _cardMenuHTML(ticket) {
+      if (!this.ticketCanControl(ticket)) return '<div class="card-menu px-3 py-2 text-sm text-tx-3">Claim into primary to control this ticket.</div>';
       var esc = (s) => this._escapeHtml(s);
       var items = '';
       var supervisor = this.epicIsAgent(ticket);
@@ -367,8 +373,8 @@ export function kontoraBoard() {
       var sigs = Object.create(null);
       var ids = [];
       for (var i = 0; i < list.length; i++) {
-        ids.push(list[i].id);
-        sigs[list[i].id] = this._cardSig(list[i], col);
+        ids.push(this.ticketKey(list[i]));
+        sigs[this.ticketKey(list[i])] = this._cardSig(list[i], col);
       }
       if (!dirty && prev && !prev.empty && this._sameCards(prev, ids, sigs)) return;
       this._patchColumn(el, list, col, prev, sigs);
@@ -396,7 +402,7 @@ export function kontoraBoard() {
         return;
       }
       var target = Object.create(null);
-      list.forEach((t) => { target[t.id] = true; });
+      list.forEach((t) => { target[this.ticketKey(t)] = true; });
       var existing = Object.create(null);
       // Nodes Sortable dropped in, and cards whose ticket left the column, go
       // first so the ordering pass below sees only cards that belong here.
@@ -407,10 +413,11 @@ export function kontoraBoard() {
       });
       for (var i = 0; i < list.length; i++) {
         var t = list[i];
-        var node = existing[t.id];
+        var key = this.ticketKey(t);
+        var node = existing[key];
         if (!node) {
           node = this._cardNode(t, col);
-        } else if (prev.sigs[t.id] !== sigs[t.id]) {
+        } else if (prev.sigs[key] !== sigs[key]) {
           var fresh = this._cardNode(t, col);
           el.replaceChild(fresh, node);
           node = fresh;
@@ -523,7 +530,7 @@ export function kontoraBoard() {
         if (card) {
           e.stopPropagation();
           self._closeCardMenu();
-          var t = self.tickets.find(function (x) { return x.id === card.dataset.ticketId; });
+          var t = self.allBoardTickets().find(x => self.ticketKey(x) === card.dataset.ticketId);
           if (t) self.selectTicket(t);
           return;
         }
@@ -536,7 +543,7 @@ export function kontoraBoard() {
         if (card && !e.target.closest('button') && (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar')) {
           e.preventDefault();
           e.stopPropagation();
-          var t = self.tickets.find(function (x) { return x.id === card.dataset.ticketId; });
+          var t = self.allBoardTickets().find(x => self.ticketKey(x) === card.dataset.ticketId);
           if (t) self.selectTicket(t);
         } else if (e.key === 'Escape') {
           self._closeCardMenu();
@@ -651,7 +658,7 @@ export function kontoraBoard() {
 
     // Move the .is-selected highlight without re-rendering a column.
     _markSelectedCard() {
-      var sel = this.selectedTicket ? this.selectedTicket.id : null;
+      var sel = this.ticketKey(this.selectedTicket) || null;
       document.querySelectorAll('#board-cols .kt-card').forEach(function (el) {
         el.classList.toggle('is-selected', el.dataset.ticketId === sel);
       });
@@ -714,7 +721,8 @@ export function kontoraBoard() {
         animation: 150,
         ghostClass: 'sortable-ghost',
         dragClass: 'sortable-drag',
-        filter: '.empty-state',
+        filter: '.empty-state, [data-no-drag]',
+        preventOnFilter: false,
         onStart: function(evt) {
           tuneAnimations();
           // Sortable owns the card nodes until the drop: a reconcile that runs
@@ -771,8 +779,8 @@ export function kontoraBoard() {
       var query = this.parseFilterQuery(this.searchQuery);
       var filtering = !this.filterQueryEmpty(query);
       // status -> column key. Each status maps to exactly one column.
-      var colOf = {};
-      var board = {};
+      var colOf = Object.create(null);
+      var board = Object.create(null);
       cols.forEach(col => {
         board[col.key] = [];
         col.statuses.forEach(s => { colOf[s] = col.key; });
@@ -789,19 +797,21 @@ export function kontoraBoard() {
       // Agent-backed epics join the board and process tallies once, just like
       // workers; collecting them for the rail must not count them again.
       var epics = [];
-      for (var i = 0; i < this.tickets.length; i++) {
-        var t = this.tickets[i];
-        if (t.kind === 'epic') {
+      var entries = this.allBoardTickets();
+      for (var i = 0; i < entries.length; i++) {
+        var t = entries[i];
+        if (!this.isSecondary(t) && t.kind === 'epic') {
           epics.push(t);
           if (!this.epicIsAgent(t)) continue;
         }
-        if (t.kontora && counts[t.status] !== undefined) counts[t.status]++;
-        if (t.kontora && t.waiting_for_input) counts.needsInput++;
-        if (t.kontora && t.status === 'in_progress' && t.agent) {
+        if (!this.isSecondary(t) && t.kontora && counts[t.status] !== undefined) counts[t.status]++;
+        if (!this.isSecondary(t) && t.kontora && t.waiting_for_input) counts.needsInput++;
+        if (!this.isSecondary(t) && t.kontora && t.status === 'in_progress' && t.agent) {
           running[t.agent] = (running[t.agent] || 0) + 1;
         }
         var key = colOf[t.status];
         if (key === undefined) continue;            // no column -> not rendered
+        if (this.sourceFilter && (this.isSecondary(t) ? t.source : 'primary') !== this.sourceFilter) continue;
         if (filtering && !this.ticketMatchesQuery(t, query)) continue;
         board[key].push(t);
       }

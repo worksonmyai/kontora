@@ -63,6 +63,7 @@ export function kontoraPalette() {
     // moveTicketVia already routes a start of an unmanaged ticket to the init
     // modal, so Initialize is that same call under an explicit label.
     paletteMoves(t) {
+      if (!this.ticketCanControl(t)) return [];
       if (!t) return [];
       var moves = (this.validMoves[t.status] || []).slice();
       if (!t.kontora) moves.unshift({ label: 'Initialize', endpoint: 'run' });
@@ -97,7 +98,7 @@ export function kontoraPalette() {
       var mark = this._paletteStatusMarks[t.status] || { glyph: '#', cls: 'text-surface-600' };
       var pt = this.parseTitleTag(t);
       return {
-        id: 'ticket:' + t.id, kind: 'ticket', ticketId: t.id,
+        id: 'ticket:' + this.ticketKey(t), kind: 'ticket', ticketId: this.ticketKey(t),
         move: null, tab: null, nav: null, fromStatus: t.status,
         glyph: mark.glyph, glyphClass: mark.cls,
         // Coloured from the tag itself, as the board card and the detail header
@@ -113,6 +114,7 @@ export function kontoraPalette() {
     // Row line 2: id, stage position, agent, and whether kontora manages it.
     _paletteTicketSub(t) {
       var bits = [t.id];
+      if (this.isSecondary(t)) bits.push(this.sourceLabel(t));
       var stages = t.stages || [];
       var at = t.stage ? stages.indexOf(t.stage) : -1;
       if (at >= 0) bits.push(t.stage + ' ' + (at + 1) + '/' + stages.length);
@@ -154,7 +156,7 @@ export function kontoraPalette() {
 
     _paletteTabRow(t, tab) {
       return this._paletteCmdRow({
-        id: 'tab:' + t.id + ':' + tab.tab, kind: 'tab', ticketId: t.id, tab: tab.tab,
+        id: 'tab:' + this.ticketKey(t) + ':' + tab.tab, kind: 'tab', ticketId: this.ticketKey(t), tab: tab.tab,
         glyph: '❯', title: tab.label,
         meta: tab.tab === 'session' && t.status === 'in_progress' ? 'live' : '',
       });
@@ -268,7 +270,8 @@ export function kontoraPalette() {
       if (!this.paletteOpen) { this.paletteGroups = []; this._paletteRows = []; return; }
       var q = (this.paletteQuery || '').trim().toLowerCase();
       var groups = [];
-      var scoped = this.paletteScope ? this.tickets.find(t => t.id === this.paletteScope) : null;
+      var entries = this.allBoardTickets();
+      var scoped = this.paletteScope ? entries.find(t => this.ticketKey(t) === this.paletteScope) : null;
       // The scoped ticket was deleted or archived while the palette was open.
       if (this.paletteScope && !scoped) this.paletteScope = null;
 
@@ -341,12 +344,12 @@ export function kontoraPalette() {
             items: items,
           });
         }
-        var tabs = this._paletteTabs.filter(tb => !q || tb.label.toLowerCase().includes(q));
+        var tabs = this._paletteTabs.filter(tb => (!this.isSecondary(scoped) || tb.tab === 'ticket') && (!q || tb.label.toLowerCase().includes(q)));
         if (tabs.length) {
           groups.push({ label: 'Open', hint: '', items: tabs.map(tb => this._paletteTabRow(scoped, tb)) });
         }
       } else if (!scoped) {
-        var open = this.selectedTicket ? this.tickets.find(t => t.id === this.selectedTicket.id) : null;
+        var open = this.selectedTicket ? entries.find(t => this.sameTicket(t, this.selectedTicket)) : null;
         if (open && !q) {
           var lead = [];
           if (this.paletteMoves(open).length) lead.push(this._paletteDrillRow(open));
@@ -359,8 +362,8 @@ export function kontoraPalette() {
         }
         // RECENT lists only ids still on the board, so a deleted ticket drops out.
         var ranked = q
-          ? this._paletteRank(this.tickets.filter(t => this._paletteMatches(t, q)))
-          : this.recentTickets.map(id => this.tickets.find(t => t.id === id)).filter(Boolean);
+          ? this._paletteRank(entries.filter(t => this._paletteMatches(t, q)))
+          : this.recentTickets.map(id => entries.find(t => this.ticketKey(t) === id)).filter(Boolean);
         if (ranked.length) {
           var shown = ranked.slice(0, PALETTE_MAX_TICKETS);
           groups.push({
@@ -562,7 +565,7 @@ export function kontoraPalette() {
         await this.gotoView(nav.view);
         return;
       }
-      var t = this.tickets.find(x => x.id === row.ticketId);
+      var t = this.allBoardTickets().find(x => this.ticketKey(x) === row.ticketId);
       if (!t) return;
       this.closePalette();
       if (!await this._paletteOpenTicket(t)) return;
@@ -591,7 +594,7 @@ export function kontoraPalette() {
     async _paletteOpenTicket(t) {
       if (this.currentView !== 'board') await this.gotoView('board');
       if (this.currentView !== 'board') return false;
-      if (this.selectedTicket?.id === t.id) return true;
+      if (this.sameTicket(this.selectedTicket, t)) return true;
       if (this.isMobile) await this.openMobileTicket(t);
       else await this.selectTicket(t);
       return true;
@@ -684,7 +687,7 @@ export function kontoraPalette() {
     },
 
     paletteScopePipeColor() {
-      var t = this.paletteScope ? this.tickets.find(x => x.id === this.paletteScope) : null;
+      var t = this.paletteScope ? this.allBoardTickets().find(x => this.ticketKey(x) === this.paletteScope) : null;
       return t ? this.ticketPipeColor(t) : 'none';
     },
 

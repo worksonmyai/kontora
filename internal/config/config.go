@@ -91,6 +91,7 @@ func (m PerAgent) For(agentName string, a Agent) string {
 
 type Config struct {
 	TicketsDir                   string              `yaml:"tickets_dir"`
+	SecondaryTicketsDirs         []string            `yaml:"secondary_tickets_dirs"`
 	BranchPrefix                 string              `yaml:"branch_prefix"`
 	BranchNaming                 BranchNaming        `yaml:"branch_naming"`
 	WorktreesDir                 string              `yaml:"worktrees_dir"`

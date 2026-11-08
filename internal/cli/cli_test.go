@@ -19,6 +19,22 @@ import (
 	"github.com/worksonmyai/kontora/internal/tmux"
 )
 
+func TestNewRefusesExistingClaimDestination(t *testing.T) {
+	for _, suffix := range []string{".md", ".notes.json"} {
+		t.Run(suffix, func(t *testing.T) {
+			cfg := &config.Config{TicketsDir: t.TempDir()}
+			id := "tst-claimed"
+			path := filepath.Join(cfg.TicketsDir, id+suffix)
+			require.NoError(t, os.WriteFile(path, []byte("claimed contents"), 0o644))
+			_, err := New(cfg, NewOpts{ID: id, Path: t.TempDir(), Title: "Delayed creation", Status: "open", NoEdit: true})
+			require.Error(t, err)
+			got, err := os.ReadFile(path)
+			require.NoError(t, err)
+			assert.Equal(t, "claimed contents", string(got))
+		})
+	}
+}
+
 func TestYamlQuote(t *testing.T) {
 	cases := []struct {
 		input string

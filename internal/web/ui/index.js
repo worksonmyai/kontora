@@ -27,6 +27,7 @@ import { kontoraSettings } from './settings.js';
 import { statsDerive, kontoraStats } from './stats.js';
 import { kontoraTerminal, termState } from './terminal.js';
 import { kontoraTickets } from './tickets.js';
+import { kontoraSources } from './sources.js';
 
 // Object.assign would read each source's getters as it copied them, and
 // `columns` and `createPreviewYaml` would then run against a half-built
@@ -52,6 +53,7 @@ function kontora() {
   return merge(
     kontoraApp(),
     kontoraTickets(),
+    kontoraSources(),
     kontoraCreate(),
     kontoraAgentPicker(),
     kontoraDetail(),

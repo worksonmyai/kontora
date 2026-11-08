@@ -13,7 +13,7 @@ import { clockHM } from './format.js';
 // logs a warning (internal/daemon/reload.go, pinRestartOnly), so a save that
 // touches one must not claim the change took effect.
 const SETTINGS_RESTART_ONLY = [
-  'tickets_dir', 'worktrees_dir', 'logs_dir', 'instance_name', 'max_concurrent_agents', 'max_concurrent_epic_supervisors',
+  'tickets_dir', 'secondary_tickets_dirs', 'worktrees_dir', 'logs_dir', 'instance_name', 'max_concurrent_agents', 'max_concurrent_epic_supervisors',
   'web.host', 'web.port', 'web.token',
 ];
 
@@ -181,6 +181,7 @@ const SETTINGS_NOTIFY_FIELDS = ['chat_id', 'channel', 'url', 'method'];
 // would supply when the key is absent (internal/config/config.go).
 const SETTINGS_GENERAL_FIELDS = [
   { key: 'tickets_dir', placeholder: '~/.kontora/tickets', help: 'Markdown tickets are read from and written to this directory.' },
+  { key: 'secondary_tickets_dirs', placeholder: '~/org/team-tickets', help: 'One folder per line. Browse and edit these tickets without running them. Restart the daemon to apply changes.' },
   { key: 'worktrees_dir', placeholder: '~/.kontora/worktrees', help: 'One git worktree per ticket lives here.' },
   { key: 'logs_dir', placeholder: '~/.kontora/logs', help: 'Per-stage agent output. The LOGS pane reads from here.' },
   { key: 'branch_prefix', placeholder: 'kontora', help: "Fallback when the ticket's project sets none." },
@@ -195,7 +196,7 @@ const SETTINGS_GENERAL_FIELDS = [
 // rather than sliced off the table, so a field added above lands in a card or
 // fails the test that holds every key to exactly one of them.
 const SETTINGS_GENERAL_GROUPS = {
-  locations: ['tickets_dir', 'worktrees_dir', 'logs_dir'],
+  locations: ['tickets_dir', 'secondary_tickets_dirs', 'worktrees_dir', 'logs_dir'],
   execution: ['max_concurrent_agents', 'max_concurrent_epic_supervisors', 'default_agent', 'branch_prefix', 'instance_name'],
 };
 
@@ -1491,7 +1492,7 @@ function settingsModel(raw) {
   for (const [name, ch] of Object.entries(raw.notifications?.channels || {})) {
     model.notifications.channels[name] = settingsNotifChannelModel(ch);
   }
-  for (const f of SETTINGS_GENERAL_FIELDS) model.general[f.key] = str(raw[f.key]);
+  for (const f of SETTINGS_GENERAL_FIELDS) model.general[f.key] = f.key === 'secondary_tickets_dirs' ? (raw[f.key] || []).join('\n') : str(raw[f.key]);
   for (const [k, v] of Object.entries(raw.environment || {})) model.environment[k] = str(v);
   for (const [name, agent] of Object.entries(raw.agents || {})) {
     model.agents[name] = {
@@ -1778,6 +1779,7 @@ function settingsOpenPath(yaml, doc, keys) {
 function settingsNodeFor(path, cfg) {
   const parts = path.split('.');
   if (path === 'statuses') return { keys: ['statuses'], value: cfg.statuses.slice() };
+  if (path === 'secondary_tickets_dirs') return { keys: [path], value: cfg.general[path].split('\n').map(p => p.trim()).filter(Boolean) };
   if (path === 'auto_pick_up') return { keys: ['auto_pick_up'], value: cfg.auto_pick_up };
   if (path === 'max_concurrent_agents' || path === 'max_concurrent_epic_supervisors') {
     const raw = cfg.general[path].trim();

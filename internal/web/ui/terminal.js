@@ -46,7 +46,7 @@ export function kontoraTerminal() {
 
     outputSubject() {
       var subject = this.selectedTicket || this.selectedEpic;
-      return subject && (subject.kind !== 'epic' || this.epicIsAgent(subject)) ? subject : null;
+      return subject && !this.isSecondary(subject) && (subject.kind !== 'epic' || this.epicIsAgent(subject)) ? subject : null;
     },
 
     outputTab() {

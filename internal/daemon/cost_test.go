@@ -295,6 +295,65 @@ func TestCalculateRunCostMissingRate(t *testing.T) {
 	assert.False(t, ok, "a missing rate for a nonzero category is unpriced")
 }
 
+func TestGetTicketCostImportedHistory(t *testing.T) {
+	logs := t.TempDir()
+	now := time.Now()
+	tk := &ticket.Ticket{ID: "kon-imported-cost", Pipeline: "pipe", ImportedHistoryCount: 3, History: []ticket.HistoryEntry{
+		{Stage: "code", CompletedAt: &now},
+		{Stage: "plan", CompletedAt: &now},
+		{Stage: "code", Kind: ticket.KindAnnotation, CompletedAt: &now},
+		{Stage: "code", Run: 2, CompletedAt: &now},
+	}}
+	for _, row := range []struct {
+		stage string
+		run   int
+		input int64
+	}{{"code", 0, 1000}, {"plan", 0, 1000}, {"code", 1, 1000}, {"code", 2, 1}} {
+		writeCostSidecar(t, logs, tk.ID, row.stage, row.run, completeCostSidecar("claude-haiku-4-5", row.input, 0, 0, 0))
+	}
+	d := costTestDaemon(t, logs, tk)
+	got, err := d.GetTicketCost(tk.ID)
+	require.NoError(t, err)
+	require.Len(t, got.Runs, 1)
+	require.NotNil(t, got.Runs[0].HistoryIndex)
+	assert.Equal(t, 3, *got.Runs[0].HistoryIndex)
+	assert.Equal(t, 2, got.Runs[0].Run)
+	assert.Equal(t, 1, got.TrackedRuns)
+	assert.Equal(t, 1, got.PricedRuns)
+	require.NotNil(t, got.CostUSD)
+	assert.Equal(t, "0.000001", *got.CostUSD)
+	require.Len(t, got.Stages, 1)
+	assert.Equal(t, "code", got.Stages[0].Name)
+	assert.Len(t, d.stats.sidecars, 1, "imported sidecars are never read")
+
+	tk.ImportedHistoryCount = len(tk.History)
+	got, err = d.GetTicketCost(tk.ID)
+	require.NoError(t, err)
+	assert.Empty(t, got.Runs)
+	assert.Empty(t, got.Stages)
+	assert.Zero(t, got.TrackedRuns)
+	assert.Nil(t, got.CostUSD)
+}
+
+func TestGetTicketCostClaimedLegacyStandalone(t *testing.T) {
+	logs := t.TempDir()
+	now := time.Now()
+	tk := &ticket.Ticket{ID: "kon-claimed-legacy", Status: ticket.StatusOpen}
+	writeCostSidecar(t, logs, tk.ID, simpleStageName, 0, completeCostSidecar("claude-haiku-4-5", 1000, 0, 0, 0))
+	d := costTestDaemon(t, logs, tk)
+	got, err := d.GetTicketCost(tk.ID)
+	require.NoError(t, err)
+	assert.Empty(t, got.Runs, "Claim clears execution timestamps even when there were no history rows")
+	assert.Nil(t, got.CostUSD)
+	assert.Empty(t, d.stats.sidecars)
+
+	tk.StartedAt, tk.CompletedAt, tk.Status = &now, &now, ticket.StatusDone
+	got, err = d.GetTicketCost(tk.ID)
+	require.NoError(t, err)
+	require.Len(t, got.Runs, 1)
+	assert.Zero(t, got.Runs[0].Run)
+}
+
 func TestGetTicketCostNotFound(t *testing.T) {
 	h := newHarness(t)
 	d := h.newDaemon(h.cfg)

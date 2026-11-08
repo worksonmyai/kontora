@@ -10,6 +10,30 @@ import (
 	"github.com/worksonmyai/kontora/internal/ticket"
 )
 
+func TestBuildView_ImportedHistory(t *testing.T) {
+	start := time.Now().Add(-time.Hour)
+	end := start.Add(time.Minute)
+	tk := &ticket.Ticket{ImportedHistoryCount: 2, History: []ticket.HistoryEntry{
+		{Stage: "code", Summary: "imported stage", StartedAt: &start, CompletedAt: &end},
+		{Stage: "code", Kind: ticket.KindAnnotation, Summary: "imported annotation", StartedAt: &start, CompletedAt: &end},
+		{Stage: "code", Run: 2, Summary: "local"},
+	}}
+	view := BuildView(&config.Config{}, tk, true)
+	assert.Len(t, view.History, 3)
+	for i, row := range view.History {
+		assert.Equal(t, i < 2, row.Imported)
+		assert.Equal(t, tk.History[i].Summary, row.Summary)
+		assert.Equal(t, tk.History[i].StartedAt, row.StartedAt)
+		assert.Equal(t, tk.History[i].CompletedAt, row.CompletedAt)
+		assert.Equal(t, tk.History[i].Run, row.Run)
+	}
+	assert.Empty(t, BuildView(&config.Config{}, tk, false).History)
+	tk.ImportedHistoryCount = 0
+	for _, row := range BuildView(&config.Config{}, tk, true).History {
+		assert.False(t, row.Imported)
+	}
+}
+
 func TestBuildView_RunOutcomes(t *testing.T) {
 	tk := &ticket.Ticket{
 		InvocationID: "active",

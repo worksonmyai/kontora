@@ -223,6 +223,8 @@ export function kontoraNotify() {
     // shows the row and does not open it: an agent owns the file, and the write
     // would be lost when the run puts it back.
     notifyCanEdit() {
+      if (!this.ticketCanEdit(this.selectedTicket)) return false;
+      if (this.isSecondary(this.selectedTicket)) return true;
       var status = this.selectedTicket?.status;
       if (!status) return false;
       return ['open', 'todo', 'paused', 'human_review']
@@ -264,7 +266,7 @@ export function kontoraNotify() {
     // compare against.
     async saveNotify() {
       var t = this.selectedTicket;
-      if (!t || !this.notifyDraft) return;
+      if (!this.ticketCanEdit(t) || !this.notifyDraft) return;
       this.notifyError = null;
       var routeError = this.notifyRouteError(this.notifyDraft);
       if (routeError) {
@@ -273,7 +275,7 @@ export function kontoraNotify() {
       }
       this.notifySaving = true;
       try {
-        const res = await fetch('/api/tickets/' + t.id, {
+        const res = await fetch(this.ticketURL(t), {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -286,12 +288,13 @@ export function kontoraNotify() {
           this.notifyError = data.error || 'Failed to save notify';
           return;
         }
-        const updated = await res.json();
-        const idx = this.tickets.findIndex(x => x.id === updated.id);
-        if (idx >= 0) this.tickets[idx] = this.boardEntry(updated);
+        const updated = { ...await res.json(), source: t.source };
+        const entries = this.isSecondary(t) ? this.secondaryTickets : this.tickets;
+        const idx = entries.findIndex(x => this.sameTicket(x, t));
+        if (idx >= 0) entries[idx] = this.boardEntry(updated);
         // The panel may have moved on while this was in flight, and an
         // unguarded assignment would reopen the ticket it left.
-        if (this.selectedTicket?.id === updated.id) {
+        if (this.sameTicket(this.selectedTicket, updated)) {
           this.selectedTicket = updated;
           this.notifySaved = true;
           setTimeout(() => { this.notifySaved = false; }, 1500);

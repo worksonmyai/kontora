@@ -21,7 +21,7 @@ export function kontoraDetail() {
     },
 
     async selectTicket(ticket, navigation = ++this._navigationSeq) {
-      if (this.selectedTicket?.id === ticket.id) {
+      if (this.sameTicket(this.selectedTicket, ticket)) {
         this.closeDetail();
         return;
       }
@@ -66,15 +66,16 @@ export function kontoraDetail() {
       this.noteResetDrafts();
       var detailSeq = ++this._ticketDetailSeq;
       var updateSeq = this._selectedTicketUpdateSeq;
-      var mine = () => this.selectedTicket?.id === ticket.id && detailSeq === this._ticketDetailSeq;
+      var key = this.ticketKey(ticket);
+      var mine = () => this.sameTicket(this.selectedTicket, ticket) && detailSeq === this._ticketDetailSeq;
       this.selectedTicket = ticket;
-      this._pushRecentTicket(ticket.id);
+      this._pushRecentTicket(key);
       this.fetchTicketCost(ticket.id);
       this.detailLoading = true;
       try {
-        if (this._editorSaves[ticket.id]) await this._waitEditorSaves(ticket.id);
+        if (this._editorSaves[key]) await this._waitEditorSaves(key);
         while (mine()) {
-          var res = await fetch('/api/tickets/' + encodeURIComponent(ticket.id));
+          var res = await fetch(this.ticketURL(ticket));
           if (!mine() || !res.ok) break;
           var full = await res.json();
           if (!mine()) return;
@@ -85,12 +86,14 @@ export function kontoraDetail() {
             continue;
           }
           if (full.id === ticket.id) {
+            full = { ...full, source: ticket.source || full.source };
             this.selectedTicket = full;
-            var idx = this.tickets.findIndex(function(t) { return t.id === full.id; });
+            var entries = this.isSecondary(ticket) ? this.secondaryTickets : this.tickets;
+            var idx = entries.findIndex(t => this.sameTicket(t, full));
             if (idx >= 0) {
-              var before = this.tickets[idx];
+              var before = entries[idx];
               var entry = this.boardEntry(full);
-              this.tickets[idx] = entry;
+              entries[idx] = entry;
               // The replacement can change agent, status, or any rendered field,
               // so refresh the cached board and the agent tally from it. Usually
               // it changes none of them, and a recompute re-filters and re-sorts
@@ -106,6 +109,13 @@ export function kontoraDetail() {
       }
       if (!mine()) return;
       this.detailLoading = false;
+      if (this.isSecondary(this.selectedTicket)) {
+        this.activeTab = 'ticket';
+        this.detailTab = 'ticket';
+        await this.startEditing();
+        this.writeHash();
+        return;
+      }
       // The rail's churn block is always on, so the branch diff is read for
       // every ticket that has one rather than only for summarised runs.
       if (this.selectedTicket?.branch) {
@@ -194,12 +204,13 @@ export function kontoraDetail() {
         if (!summary) return;
         // A stage the current pipeline no longer lists has no ribbon segment to
         // agree with, so the card reads this run's own clock.
-        var seg = segs[h.stage];
+        var seg = h.imported ? null : segs[h.stage];
         cards.push({
           key: h.stage + '#' + run,
           stage: h.stage,
           run: run,
           historyIndex: historyIndex,
+          imported: !!h.imported,
           summary: summary,
           failed: h.run_outcome === 'failed' || h.run_outcome === 'protocol_error',
           outcome: this.runOutcomeLabel(h),
@@ -208,7 +219,7 @@ export function kontoraDetail() {
           exitCode: h.exit_code,
           agent: h.agent || '',
           seconds: seg ? seg.seconds : runSeconds(h),
-          runs: seg ? seg.runs : totalRuns[h.stage],
+          runs: h.imported ? 1 : (seg ? seg.runs : totalRuns[h.stage]),
         });
       });
       cards.reverse();
@@ -284,11 +295,12 @@ export function kontoraDetail() {
     },
 
     async fetchChanges(id) {
+      if (this.isSecondary(this.selectedTicket)) return;
       try {
         var res = await fetch('/api/tickets/' + id + '/changes');
         if (res.ok) {
           var changes = await res.json();
-          if (this.selectedTicket?.id === id) this.ticketChanges = changes;
+          if (!this.isSecondary(this.selectedTicket) && this.selectedTicket?.id === id) this.ticketChanges = changes;
         }
       } catch (e) { /* the card simply shows no commit list */ }
     },
@@ -299,8 +311,9 @@ export function kontoraDetail() {
     },
 
     async fetchTicketCost(id) {
+      if (this.isSecondary(this.selectedTicket)) return;
       var seq = ++this._ticketCostSeq;
-      var mine = () => this.selectedTicket?.id === id && seq === this._ticketCostSeq;
+      var mine = () => !this.isSecondary(this.selectedTicket) && this.selectedTicket?.id === id && seq === this._ticketCostSeq;
       if (mine()) this.ticketCost = null;
       try {
         var res = await fetch('/api/tickets/' + encodeURIComponent(id) + '/cost');
@@ -370,8 +383,9 @@ export function kontoraDetail() {
     // the same ticket, so the id alone cannot tell two in-flight requests apart
     // and an older response could land last.
     async fetchChain(id) {
+      if (this.isSecondary(this.selectedTicket)) return;
       var seq = ++this._chainSeq;
-      var mine = () => this.selectedTicket?.id === id && seq === this._chainSeq;
+      var mine = () => !this.isSecondary(this.selectedTicket) && this.selectedTicket?.id === id && seq === this._chainSeq;
       this.chainError = null;
       try {
         var res = await fetch('/api/tickets/' + id + '/chain');
@@ -389,6 +403,7 @@ export function kontoraDetail() {
     },
 
     switchTab(tab) {
+      if (this.isSecondary(this.selectedTicket) && !['ticket', 'summary', 'notes'].includes(tab)) return;
       // The tab content uses x-show, so leaving it would otherwise keep a
       // focused textarea mounted and bring it back with stale geometry.
       if (tab !== 'ticket' && this.editingBody) {
@@ -481,6 +496,11 @@ export function kontoraDetail() {
       var h = String(hash == null ? '' : hash).replace(/^#/, '');
       // An epic page is an overlay over the board, like a ticket page, so it
       // reports the board view and names the epic separately.
+      var secondary = h.match(/^\/s\/([^/]+)\/t\/(.+)$/);
+      if (secondary) {
+        try { return { view: 'board', source: decodeURIComponent(secondary[1]), ticketId: decodeURIComponent(secondary[2]) }; }
+        catch (e) { return { view: 'board', ticketId: null }; }
+      }
       if (h.indexOf('/e/') === 0 && h.length > 3) {
         var rawEpic = h.slice(3);
         var epicID;
@@ -509,6 +529,7 @@ export function kontoraDetail() {
       // board list does not hold, so a reloaded #/t/<id> would find nothing and
       // fall back to the board.
       if (this.currentView === 'archive') return '#/archive';
+      if (this.isSecondary(this.selectedTicket)) return '#/s/' + encodeURIComponent(this.selectedTicket.source) + '/t/' + encodeURIComponent(this.selectedTicket.id);
       if (this.selectedTicket) return '#/t/' + encodeURIComponent(this.selectedTicket.id);
       if (this.selectedEpic) return '#/e/' + encodeURIComponent(this.selectedEpic.id);
       if (this.currentView === 'new') return '#/new';
@@ -544,8 +565,9 @@ export function kontoraDetail() {
           if (!mine()) return;
         }
         if (r.ticketId) {
-          var alreadySelected = this.selectedTicket?.id === r.ticketId;
-          var t = this.tickets.find(function(x) { return x.id === r.ticketId; });
+          var identity = { source: r.source, id: r.ticketId };
+          var alreadySelected = this.sameTicket(this.selectedTicket, identity);
+          var t = this.allBoardTickets().find(x => this.sameTicket(x, identity));
           // The detail rail covers whatever view is underneath, and selectTicket
           // does not touch currentView, so the switch below still has to run:
           // opening a ticket from Stats would otherwise leave its poll armed and
@@ -602,7 +624,7 @@ export function kontoraDetail() {
     },
 
     async action(type) {
-      if (!this.selectedTicket || this.actionLoading) return;
+      if (!this.ticketCanControl(this.selectedTicket) || this.actionLoading) return;
       if (type === 'skip' && !this.canSkipStage()) {
         this.error = 'Pause first and wait for the agent and review to stop before changing stages.';
         return;
@@ -627,7 +649,7 @@ export function kontoraDetail() {
     },
 
     openDeleteModal() {
-      if (!this.selectedTicket || this.deleteSubmitting) return;
+      if (!this.ticketCanControl(this.selectedTicket) || this.deleteSubmitting) return;
       this.deleteModal = true;
     },
 
@@ -637,7 +659,7 @@ export function kontoraDetail() {
     },
 
     async deleteSelectedTicket() {
-      if (!this.selectedTicket || this.deleteSubmitting) return;
+      if (!this.ticketCanControl(this.selectedTicket) || this.deleteSubmitting) return;
       const ticketId = this.selectedTicket.id;
       this.deleteSubmitting = true;
       this.error = null;
@@ -668,7 +690,7 @@ export function kontoraDetail() {
     // daemon holds the rest of the rules, an open annotation pass among them,
     // and its refusal is what the editor shows.
     canSchedule(ticket) {
-      return !!ticket && ticket.kind !== 'epic' && !!ticket.kontora && ['open', 'todo'].includes(ticket.status);
+      return this.ticketCanControl(ticket) && ticket.kind !== 'epic' && !!ticket.kontora && ['open', 'todo'].includes(ticket.status);
     },
 
     // A ticket's scheduled pickup as local wall time, or "" when it has none.
@@ -742,7 +764,7 @@ export function kontoraDetail() {
 
     async _postSchedule(ticket, body) {
       var t = ticket || this.selectedTicket;
-      if (!t || this.scheduleSubmitting) return;
+      if (!this.ticketCanControl(t) || this.scheduleSubmitting) return;
       this.scheduleSubmitting = true;
       this.scheduleError = null;
       try {
@@ -774,7 +796,12 @@ export function kontoraDetail() {
       if (idx >= 0) this.tickets[idx] = this.boardEntry(updated);
       // The schedule route answers with the detail projection, body included,
       // so the open ticket can be replaced whole.
-      if (this.selectedTicket?.id === updated.id) this.selectedTicket = updated;
+      if (this.sameTicket(this.selectedTicket, updated)) {
+        var state = this._editorSaves[this.ticketKey(updated)];
+        if (this.editing && state) state.draft = this._ordinaryEditorDraft();
+        this.selectedTicket = updated;
+        if (this.editing && this.editorCanEdit(updated)) this.startEditing();
+      }
       this.recomputeBoard();
     },
 
@@ -786,7 +813,8 @@ export function kontoraDetail() {
 
     async moveTicketVia(ticketId, endpoint, body) {
       this.error = null;
-      var ticket = this.tickets.find(t => t.id === ticketId);
+      var ticket = this.allBoardTickets().find(t => this.ticketKey(t) === ticketId);
+      if ((ticket && !this.ticketCanControl(ticket)) || this.isSecondary(this.ticketIdentity(ticketId))) return;
       // Starting a ticket goes through the init modal, not /run, /retry, or
       // /move: an unmanaged one cannot execute at all, and a managed one in open
       // gets the form so the run's fields are confirmed before it is queued.
@@ -817,7 +845,8 @@ export function kontoraDetail() {
 
     async moveTask(ticketId, newStatus) {
       this.error = null;
-      const ticket = this.tickets.find(t => t.id === ticketId);
+      const ticket = this.allBoardTickets().find(t => this.ticketKey(t) === ticketId);
+      if ((ticket && !this.ticketCanControl(ticket)) || this.isSecondary(this.ticketIdentity(ticketId))) return;
       if (ticket && this.needsInitModal(ticket) && ['todo', 'in_progress'].includes(newStatus)) {
         // A drag here has already moved the DOM node into the target column;
         // rebuild from canonical data so the card snaps back if the user
@@ -849,14 +878,13 @@ export function kontoraDetail() {
     },
 
     async startEditing() {
-      const editable = ['open', 'todo', 'paused'].concat(this.configCache?.custom_statuses || []);
-      if (!this.selectedTicket || !editable.includes(this.selectedTicket.status)) return;
+      if (!this.editorCanEdit()) return;
       this.editingBody = false;
       var pipeline = this.selectedTicket.pipeline || '';
       this._editAgentFollowsProject = !this.selectedTicket.agent_override;
       var agent = this.selectedTicket.agent_override ? (this.selectedTicket.agent || '') : '';
       var generation = ++this._editorGeneration;
-      var id = this.selectedTicket.id;
+      var id = this.ticketKey(this.selectedTicket);
       var state = this._loadEditorDraft(this.selectedTicket, {
         description: this.descriptionText(this.selectedTicket),
         pipeline: pipeline,
@@ -899,7 +927,7 @@ export function kontoraDetail() {
       // The native fallback still needs its x-for options before Alpine applies
       // the value, or an older browser would lose the current selection.
       await this.$nextTick();
-      if (generation !== this._editorGeneration || this.selectedTicket?.id !== id) return;
+      if (generation !== this._editorGeneration || this.ticketKey(this.selectedTicket) !== id) return;
       this.editForm.pipeline = draft.pipeline;
       this.editForm.agent = draft.agent;
     },
@@ -934,14 +962,15 @@ export function kontoraDetail() {
 
     async saveEdit() {
       if (!this.selectedTicket || !this.editing) return true;
-      var id = this.selectedTicket.id;
+      if (!this.ticketCanEdit(this.selectedTicket)) return false;
+      var id = this.ticketKey(this.selectedTicket);
       var generation = this._editorGeneration;
       this.editSubmitting = true;
       this.editSaved = false;
       var submitted = this._ordinaryEditorDraft();
       var pending = this._queueEditorSave(id, submitted, generation);
       var ok = await pending;
-      if (this.selectedTicket?.id === id && generation === this._editorGeneration && this._editorSaves[id]?.tail === pending) {
+      if (this.ticketKey(this.selectedTicket) === id && generation === this._editorGeneration && this._editorSaves[id]?.tail === pending) {
         this.editSubmitting = false;
         this.editSaved = ok && this._sameEditorDraft(this._ordinaryEditorDraft(), submitted);
       }
@@ -965,9 +994,10 @@ export function kontoraDetail() {
     },
 
     _loadEditorDraft(ticket, snapshot) {
-      var state = this._editorSaves[ticket.id];
+      var key = this.ticketKey(ticket);
+      var state = this._editorSaves[key];
       if (!state || (!state.pending && this._sameEditorDraft(state.draft, state.ack))) {
-        state = this._editorSaves[ticket.id] = {
+        state = this._editorSaves[key] = {
           ack: { ...snapshot }, draft: { ...snapshot }, target: { ...snapshot }, sequence: 0,
           pending: 0, ackSequence: state?.ackSequence || 0, tail: Promise.resolve(true),
         };
@@ -1012,7 +1042,7 @@ export function kontoraDetail() {
           if (Object.keys(body).length) {
             var update = this._selectedTicketUpdateSeq;
             var epicUpdate = this._epicUpdateSeq;
-            var res = await fetch('/api/tickets/' + encodeURIComponent(id), {
+            var res = await fetch(this.ticketURL(id), {
               method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
             });
             if (!res.ok) {
@@ -1020,26 +1050,29 @@ export function kontoraDetail() {
               throw new Error(failure.error || 'Failed to save');
             }
             var full = await res.json();
-            if (full?.id !== id) throw new Error('Invalid ticket response');
+            full = { ...full, source: this.ticketIdentity(id).source || full.source };
+            if (this.ticketKey(full) !== id) throw new Error('Invalid ticket response');
             while (generation === this._editorGeneration &&
-                ((this.selectedTicket?.id === id && update !== this._selectedTicketUpdateSeq) ||
+                ((this.ticketKey(this.selectedTicket) === id && update !== this._selectedTicketUpdateSeq) ||
                  (this.selectedEpic?.id === id && epicUpdate !== this._epicUpdateSeq))) {
               update = this._selectedTicketUpdateSeq;
               epicUpdate = this._epicUpdateSeq;
-              var refresh = await fetch('/api/tickets/' + encodeURIComponent(id));
+              var refresh = await fetch(this.ticketURL(id));
               if (!refresh.ok) throw new Error('Failed to refresh saved ticket');
               full = await refresh.json();
-              if (full?.id !== id) throw new Error('Invalid ticket response');
+              full = { ...full, source: this.ticketIdentity(id).source || full.source };
+              if (this.ticketKey(full) !== id) throw new Error('Invalid ticket response');
             }
             if (generation === this._editorGeneration) {
-              if (this.selectedTicket?.id === id && update === this._selectedTicketUpdateSeq) this.selectedTicket = full;
+              if (this.ticketKey(this.selectedTicket) === id && update === this._selectedTicketUpdateSeq) this.selectedTicket = full;
               if (this.selectedEpic?.id === id && epicUpdate === this._epicUpdateSeq) {
                 this.selectedEpic = full;
                 this._epicDetail = full;
               }
-              var idx = this.tickets.findIndex(t => t.id === id);
+              var entries = this.isSecondary(full) ? this.secondaryTickets : this.tickets;
+              var idx = entries.findIndex(t => this.ticketKey(t) === id);
               if (idx >= 0 && update === this._selectedTicketUpdateSeq && epicUpdate === this._epicUpdateSeq) {
-                this.tickets[idx] = this.boardEntry(full);
+                entries[idx] = this.boardEntry(full);
                 this.recomputeBoard();
               }
             }
@@ -1078,6 +1111,7 @@ export function kontoraDetail() {
 
     // Enter body edit mode with the clicked block left where it is on screen.
     beginBodyEdit(event) {
+      if (this.editorClaimLocked()) return;
       var anchor = this._blockAnchor(event.target);
       this.editingBody = true;
       // Alpine runs x-init before x-model, so the textarea carries no value
@@ -1222,7 +1256,7 @@ export function kontoraDetail() {
     // stays queued after a stage edit; selecting a stage does not retry it.
     canSetStage(ticket = this.selectedTicket) {
       const status = ticket?.status;
-      if (!status || ticket.kind === 'epic' || this.plannotatorInFlight?.[ticket.id]) return false;
+      if (!this.ticketCanControl(ticket) || !status || ticket.kind === 'epic' || this.plannotatorInFlight?.[ticket.id]) return false;
       return ['open', 'todo', 'paused', 'human_review', 'done', 'cancelled']
         .concat(this.configCache?.custom_statuses || [])
         .includes(status);
@@ -1268,6 +1302,7 @@ export function kontoraDetail() {
     },
 
     async fetchStageLogs(ticketId, stage) {
+      if (this.isSecondary(this.selectedTicket)) return;
       this._invalidateRawLog();
       this.logViewStage = stage;
       this.logViewLoading = true;

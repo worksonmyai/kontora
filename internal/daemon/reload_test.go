@@ -409,6 +409,101 @@ notifications:
 	assert.NotContains(t, logs, "KONTORA_TG_", "a notification channel is redacted whole, names included")
 }
 
+func TestReload_PinsSecondaryTicketsDirs(t *testing.T) {
+	first, second := t.TempDir(), filepath.Join(t.TempDir(), "unavailable")
+	for _, tc := range []struct {
+		name    string
+		before  []string
+		after   []string
+		warning bool
+	}{
+		{"defaults", nil, nil, false},
+		{"empty equals default", nil, []string{}, false},
+		{"add", nil, []string{first}, true},
+		{"remove", []string{first}, nil, true},
+		{"replace with unavailable", []string{first}, []string{second}, true},
+		{"reorder", []string{first, second}, []string{second, first}, true},
+		{"unchanged", []string{first, second}, []string{first, second}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newReloadHarness(t)
+			listYAML := func(dirs []string) string {
+				encoded, err := json.Marshal(dirs)
+				require.NoError(t, err)
+				return "secondary_tickets_dirs: " + string(encoded) + "\n"
+			}
+			d := h.newDaemonWithConfig(t, h.yaml(configOpts{extra: listYAML(tc.before)}))
+			before := d.config()
+			h.writeConfig(t, h.yaml(configOpts{branchPrefix: "feature", extra: listYAML(tc.after)}))
+			require.NoError(t, d.reloadConfig())
+			got := d.config()
+			assert.Equal(t, before.SecondaryTicketsDirs, got.SecondaryTicketsDirs)
+			assert.Equal(t, "feature", got.BranchPrefix, "live fields still apply")
+			if tc.warning {
+				assert.Contains(t, h.logBuf.String(), "field=secondary_tickets_dirs")
+			} else {
+				assert.NotContains(t, h.logBuf.String(), "field=secondary_tickets_dirs")
+			}
+			if len(got.SecondaryTicketsDirs) > 0 {
+				got.SecondaryTicketsDirs[0] = "changed snapshot"
+				assert.Equal(t, tc.before, before.SecondaryTicketsDirs, "reload must not share the source slice with the previous snapshot")
+			}
+			_, err := os.Stat(second)
+			assert.ErrorIs(t, err, os.ErrNotExist)
+		})
+	}
+}
+
+func TestReload_ValidatesSecondarySourcesAfterOverrides(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		envAliases  bool
+		flagAliases bool
+		fileAliases bool
+		wantErr     bool
+	}{
+		{name: "file alias", fileAliases: true, wantErr: true},
+		{name: "environment introduces alias", envAliases: true, wantErr: true},
+		{name: "flag introduces alias", flagAliases: true, wantErr: true},
+		{name: "flag removes file and environment aliases", fileAliases: true, envAliases: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newReloadHarness(t)
+			secondary := t.TempDir()
+			list := fmt.Sprintf("secondary_tickets_dirs: [%q]\n", secondary)
+			flagPrimary := h.tasksDir
+			var options []Option
+			if tc.flagAliases || !tc.wantErr {
+				options = append(options, WithConfigOverride(func(c *config.Config) {
+					c.SetTicketsDir(flagPrimary)
+				}))
+			}
+			d := h.newDaemonWithConfig(t, h.yaml(configOpts{extra: list}), options...)
+			before := d.config()
+			if tc.envAliases {
+				t.Setenv(config.TicketsDirEnvVar, secondary)
+			}
+			if tc.flagAliases {
+				flagPrimary = secondary
+			}
+			changed := h.yaml(configOpts{branchPrefix: "feature", extra: list})
+			if tc.fileAliases {
+				changed = strings.Replace(changed, "tickets_dir: "+h.tasksDir, "tickets_dir: "+secondary, 1)
+			}
+			h.writeConfig(t, changed)
+			err := d.reloadConfig()
+			if tc.wantErr {
+				require.ErrorContains(t, err, "aliases tickets_dir")
+				assert.Same(t, before, d.config(), "invalid sources must not publish any live changes")
+			} else {
+				require.NoError(t, err)
+				assert.Equal(t, "feature", d.config().BranchPrefix)
+				assert.Equal(t, h.tasksDir, d.config().TicketsDir)
+			}
+		})
+	}
+}
+
 // TestReload_ReappliesConfigOverride covers `kontora start --address/--port`.
 // The flags are applied in memory and never written to the file, so a reload
 // must re-apply them. Without that, the reloaded config carries the file's own

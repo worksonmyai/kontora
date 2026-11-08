@@ -451,6 +451,10 @@ type Daemon struct {
 	// the config file watcher, and the raw-config endpoint).
 	reloadMu sync.Mutex
 
+	secondaryMu     sync.Mutex
+	secondary       map[string]*secondaryCatalog
+	transferBlocked map[string]bool
+
 	mu                    sync.Mutex
 	tickets               map[string]*ticketState
 	executions            map[string]*executionClaim
@@ -733,6 +737,22 @@ func (d *Daemon) Run(ctx context.Context) error {
 	}
 	defer w.Close()
 
+	blocked, recoveryErr := store.RecoverTransfers(tasksDir)
+	d.mu.Lock()
+	d.transferBlocked = blocked
+	d.mu.Unlock()
+	if recoveryErr != nil {
+		if len(blocked) == 0 {
+			return fmt.Errorf("recovering ticket transfers: %w", recoveryErr)
+		}
+		d.log.Error("recovering ticket transfers", "err", recoveryErr)
+	}
+	stopSecondary, err := d.startSecondary(ctx)
+	if err != nil {
+		return err
+	}
+	defer stopSecondary()
+
 	if err := d.initialScan(tasksDir); err != nil {
 		return fmt.Errorf("initial scan: %w", err)
 	}
@@ -959,6 +979,9 @@ func (d *Daemon) initialScan(dir string) error {
 			continue
 		}
 		path := filepath.Join(dir, entry.Name())
+		if d.isTransferBlocked(strings.TrimSuffix(entry.Name(), ".md")) {
+			continue
+		}
 		t, err := ticket.ParseFile(path)
 		if err != nil {
 			d.log.Warn("skipping file", "file", entry.Name(), "err", err)
@@ -1066,6 +1089,9 @@ func (d *Daemon) handleEvent(ev watcher.Event) {
 }
 
 func (d *Daemon) handleFileChanged(path string) {
+	if d.isTransferBlocked(strings.TrimSuffix(filepath.Base(path), ".md")) {
+		return
+	}
 	if err := ticket.CheckBoardControl(expandTilde(d.config().TicketsDir)); err != nil {
 		d.log.Error("external ticket event refused while board authority requires reconciliation", "path", path, "err", err)
 		return
@@ -1091,6 +1117,9 @@ func (d *Daemon) adoptObservedTicket(t *ticket.Ticket, path string, observed os.
 
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if d.transferBlocked[t.ID] {
+		return
+	}
 	// A daemon replacement during parsing already updated the cached state.
 	current, err := os.Stat(path)
 	if !sameObservedFile(observed, current, nil, err) {
@@ -1415,7 +1444,7 @@ func (d *Daemon) reconcileDependenciesLocked(id string) {
 // enqueue adds a ticket to the queue. Must be called with d.mu held.
 // Skips enqueue if the ticket is already queued or blocked by a dependency.
 func (d *Daemon) enqueue(t *ticket.Ticket) {
-	if t == nil || !t.Kontora || t.HasOwnershipMetadata() || ticket.CheckBoardControl(expandTilde(d.config().TicketsDir)) != nil {
+	if t == nil || !t.Kontora || d.checkTransferAdmissionLocked(t.ID) != nil || t.HasOwnershipMetadata() || ticket.CheckBoardControl(expandTilde(d.config().TicketsDir)) != nil {
 		return
 	}
 	// Passive epic statuses summarize children, not an execution request.
@@ -1460,7 +1489,7 @@ func (d *Daemon) claimableLocked(ticketID string, log *slog.Logger) (*ticketStat
 		return nil, false
 	}
 
-	if ts.ticket.HasOwnershipMetadata() || ticket.CheckBoardControl(expandTilde(d.config().TicketsDir)) != nil {
+	if d.checkTransferAdmissionLocked(ticketID) != nil || ts.ticket.HasOwnershipMetadata() || ticket.CheckBoardControl(expandTilde(d.config().TicketsDir)) != nil {
 		return nil, false
 	}
 	// The ticket must still be managed by Kontora and in a state to process.
@@ -3109,7 +3138,38 @@ func (d *Daemon) writeTicketFile(t *ticket.Ticket, path string, origin notify.Or
 	return modTime, err
 }
 
+func (d *Daemon) createTicketFile(t *ticket.Ticket, path string, origin notify.Origin) error {
+	return ticket.WithOfflineWrite(expandTilde(d.config().TicketsDir), func() error {
+		if err := d.checkPendingTransfer(t.ID); err != nil {
+			return err
+		}
+		if err := ticket.RejectImportedOwnership(t); err != nil {
+			return err
+		}
+		if _, err := os.Lstat(filepath.Join(filepath.Dir(path), t.ID+".notes.json")); !errors.Is(err, os.ErrNotExist) {
+			if err == nil {
+				err = os.ErrExist
+			}
+			return err
+		}
+		data, err := t.Marshal()
+		if err != nil {
+			return err
+		}
+		d.recordSelfWrite(path, data)
+		if err := ticket.PublishNew(path, data, 0o644); err != nil {
+			d.forgetSelfWrite(path)
+			return err
+		}
+		d.observe(t, origin)
+		return nil
+	})
+}
+
 func (d *Daemon) writeOrdinaryTicketFile(t *ticket.Ticket, path string, origin notify.Origin) (time.Time, error) {
+	if err := d.checkPendingTransfer(t.ID); err != nil {
+		return time.Time{}, err
+	}
 	if t.HasOwnershipMetadata() {
 		return time.Time{}, ticket.ErrManaged
 	}
@@ -3120,17 +3180,21 @@ func (d *Daemon) writeOrdinaryTicketFile(t *ticket.Ticket, path string, origin n
 	if err != nil {
 		return time.Time{}, err
 	}
-	perm := os.FileMode(0o644)
-	if st, err := os.Stat(path); err == nil {
-		perm = st.Mode().Perm()
-		// Rename alone would replace a read-only ticket in a writable directory.
-		f, err := os.OpenFile(path, os.O_WRONLY, 0)
-		if err != nil {
-			return time.Time{}, err
-		}
-		if err := f.Close(); err != nil {
-			return time.Time{}, err
-		}
+	st, err := os.Lstat(path)
+	if err != nil {
+		return time.Time{}, err
+	}
+	if !st.Mode().IsRegular() {
+		return time.Time{}, fmt.Errorf("unsafe nonregular ticket file %s", path)
+	}
+	perm := st.Mode().Perm()
+	// Rename alone would replace a read-only ticket in a writable directory.
+	f, err := os.OpenFile(path, os.O_WRONLY, 0)
+	if err != nil {
+		return time.Time{}, err
+	}
+	if err := f.Close(); err != nil {
+		return time.Time{}, err
 	}
 	d.recordSelfWrite(path, data)
 	if err := atomicWriteFile(path, data, perm); err != nil {

@@ -39,7 +39,7 @@ export function kontoraMobile() {
     // A ticket "has a run" once it leaves the draft/queued states; that's when
     // the terminal/logs tabs and the detail tab bar appear.
     mobileHasRun(t) {
-      if (!t || (t.kind === 'epic' && !this.epicIsAgent(t))) return false;
+      if (!t || this.isSecondary(t) || (t.kind === 'epic' && !this.epicIsAgent(t))) return false;
       if (!['open', 'todo'].includes(t.status) || (t.history || []).length > 0) return true;
       return this.selectedTicket?.id === t.id && (this.ticketCost?.tracked_runs || 0) > 0;
     },
@@ -59,7 +59,7 @@ export function kontoraMobile() {
       else if (this.mobileHasRun(t)) this.detailTab = 'logs';
       else this.detailTab = 'ticket';
       await this.selectTicket(t, navigation);
-      if (navigation !== this._navigationSeq || this.selectedTicket?.id !== t.id) return;
+      if (navigation !== this._navigationSeq || !this.sameTicket(this.selectedTicket, t)) return;
       // The board card lacks detail fields, so the summary check runs on the
       // full ticket selectTicket fetched.
       if (this.detailTab === 'logs' && this.summaryFirst(this.selectedTicket)) {
@@ -75,7 +75,7 @@ export function kontoraMobile() {
     },
 
     mobileSwitchTab(tab) {
-      if (!this.selectedTicket) return;
+      if (!this.selectedTicket || (this.isSecondary(this.selectedTicket) && tab !== 'ticket')) return;
       if (tab !== this.detailTab) this._invalidateRawLog();
       this._activityLoadSeq++;
       this.activityLoading = false;
@@ -144,6 +144,7 @@ export function kontoraMobile() {
     // directly, the secondary the alternate one; unknown statuses fall back to
     // the actions sheet.
     mobilePrimaryAction(t) {
+      if (!this.ticketCanControl(t)) return { label: this.ticketCanClaim(t) ? 'claim' : 'view', run: () => this.ticketCanClaim(t) ? this.claimTicket(t) : this._paletteOpenTicket(t) };
       var self = this, id = t && t.id;
       var run = function(ep) { return function() { self.moveTicketVia(id, ep, null); }; };
       var move = function(st) { return function() { self.moveTicketVia(id, 'move', { status: st }); }; };
@@ -163,6 +164,7 @@ export function kontoraMobile() {
       return map[t && t.status] || { label: 'actions', run: function() { self.openActionsSheet(t); } };
     },
     mobileSecondaryAction(t) {
+      if (!this.ticketCanControl(t)) return { label: 'details', run: () => this._paletteOpenTicket(t) };
       var self = this, id = t && t.id;
       var run = function(ep) { return function() { self.moveTicketVia(id, ep, null); }; };
       var move = function(st) { return function() { self.moveTicketVia(id, 'move', { status: st }); }; };
@@ -303,6 +305,7 @@ export function kontoraMobile() {
     },
 
     mobileSheetActions(t) {
+      if (!this.ticketCanControl(t)) return this.ticketCanClaim(t) ? [{ label: 'Claim into primary', kind: 'primary', run: () => this.claimTicket(t) }] : [];
       if (!t) return [];
       var self = this, rows = [];
       var add = function(label, kind, fn) { rows.push({ label: label, kind: kind, run: function() { self.closeSheet(); fn(); } }); };

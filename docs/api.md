@@ -68,6 +68,42 @@ Each `agent_infos` entry in `GET /api/config` reports the model and effort that 
 
 The daemon captures directory identity when it opens the store. Retargeting a store symlink or editing restart-only settings does not change that identity. Socket discovery does not delay config responses. Automatic local TUI connections require matching filesystem directory identity. Missing identity, including responses from older daemons, selects read-only file mode. A missing socket disables attachment without disabling ticket actions on a verified board. Explicit remote clients do not require these fields. Initial verification does not protect a long-lived client against server replacement at the same address.
 
+### Secondary ticket sources
+
+Existing `/api/tickets` routes remain primary-only. Secondary operations use the
+configured source ID, never a client-supplied filesystem path.
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /api/ticket-sources` | Configured source IDs, paths, availability, and diagnostics. |
+| `GET /api/sources/{source}/tickets` | Secondary tickets across all statuses. |
+| `GET /api/sources/{source}/tickets/{id}` | Source-local detail, relations, revision, and capabilities. |
+| `PUT /api/sources/{source}/tickets/{id}` | Existing editable fields, regardless of status. Rejects unknown or lifecycle fields. |
+| `POST /api/sources/{source}/tickets/{id}/claim` | Claim into primary using `{"revision":"REVIEWED_REVISION"}`. Returns primary detail without starting execution. |
+
+Source-qualified note, reaction, summary, dependency, link, parent, and child-order
+routes use the same suffixes and request bodies as primary routes. Relationships
+resolve only within that source. Lifecycle and artifact routes are refused; they do
+not fall back to primary tickets with the same ID.
+
+Secondary payloads add `source`, `revision`, `can_edit`, `can_control`, `can_claim`,
+`refusal_reason`, and `claim_warnings`. Capabilities are advisory; each mutation
+rechecks permissions and stored state. `can_control` is false for secondary tickets.
+Unavailable sources refuse edits and Claim. Controlled boards remain browse-only.
+
+Claim checks both boards under local locks and refuses revision changes, running
+markers, unsafe files, destination collisions, and reserved primary identities.
+See [Claim rules and coordination limits](tickets.md#claim-from-a-secondary-folder).
+Imported history rows expose `imported: true`; activity lookup refuses those runs,
+and cost/statistics enrichment excludes them without reusing their run indexes.
+
+Secondary updates use `secondary_ticket_updated` and `secondary_ticket_deleted`
+SSE events. Their ticket payload includes both `source` and `id`. Clients must not
+replace a primary namesake on receipt of a secondary event.
+
+Assistant message requests naming a secondary `source` are refused before agent
+admission. Secondary-context assistant workflows are unsupported.
+
 ### Stage changes
 
 `skip` and `set-stage` return 409 while execution or Plannotator review owns the ticket.

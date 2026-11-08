@@ -24,6 +24,12 @@ export function kontoraTickets() {
         });
         cols.splice(doneIdx, 0, ...customCols);
       }
+      var known = new Set(cols.flatMap(c => c.statuses));
+      for (var t of this.secondaryTickets) {
+        if (known.has(t.status)) continue;
+        known.add(t.status);
+        cols.push({ key: t.status, statuses: [t.status], label: t.status, color: 'bg-surface-600', emptyText: 'No tickets', tip: 'Secondary status' });
+      }
       return cols;
     },
 
@@ -68,6 +74,7 @@ export function kontoraTickets() {
       }
       try {
         await this.fetchTasks();
+        await this.fetchTicketSources();
       } catch (e) {
         if (!this.needsAuth) this.error = 'Failed to load tickets';
       }
@@ -227,7 +234,7 @@ export function kontoraTickets() {
     },
 
     showTerminalTab() {
-      if (!this.selectedTicket) return false;
+      if (!this.selectedTicket || this.isSecondary(this.selectedTicket)) return false;
       if (this.selectedTicket.status === 'in_progress') return true;
       if (this.selectedTicket.history?.length > 0) return true;
       return false;
@@ -248,7 +255,7 @@ export function kontoraTickets() {
     // The diff tab needs a branch to compare against the base. A ticket that
     // has not started one has nothing the changes endpoint could answer with.
     showDiffTab() {
-      return !!this.selectedTicket?.branch;
+      return !this.isSecondary(this.selectedTicket) && !!this.selectedTicket?.branch;
     },
 
     // Board cards render neither the body nor the notes parsed out of it, and
@@ -265,10 +272,13 @@ export function kontoraTickets() {
       ['body', 'description', 'description_tail'].forEach(key => {
         if (key in previous) merged[key] = previous[key];
       });
+      // A secondary revision authorizes Claim of the displayed document, not an unseen SSE update.
+      if (this.isSecondary(previous)) merged.revision = previous.revision;
       return merged;
     },
 
     applyTicketUpdate(ticket) {
+      if (this.isSecondary(ticket)) { this.applySecondaryUpdate(ticket); return; }
       this.refreshInitContext(ticket.id);
       var previousOutput = this.outputSubject();
       if (this.selectedEpic?.id === ticket.id) {
@@ -279,13 +289,13 @@ export function kontoraTickets() {
           last_error: ticket.last_error, last_log: ticket.last_log });
         if (this._epicDetail) this._epicDetail = this.selectedEpic;
       }
-      if (this.selectedTicket?.id === ticket.id) this._selectedTicketUpdateSeq++;
+      if (this.sameTicket(this.selectedTicket, ticket)) this._selectedTicketUpdateSeq++;
       if (ticket.status === 'archived') {
         // Archived tickets are hidden from the board: drop them from client
         // state and close the detail panel if the archived ticket was selected.
         this.tickets = this.tickets.filter(t => t.id !== ticket.id);
         if (this.currentView === 'archive') this.archivePatchRow(ticket);
-        if (this.selectedTicket?.id === ticket.id) {
+        if (this.sameTicket(this.selectedTicket, ticket)) {
           // The Archive view is where an archived ticket belongs, so its own
           // overlay stays open and takes the update. Any other open page is the
           // board's, which cannot hold a ticket the board no longer lists.
@@ -314,11 +324,11 @@ export function kontoraTickets() {
         // stage position and the wall bounds are recomputed rather than left
         // stale beside a stage name that has moved on.
         var kids = this.selectedTicket?.children;
-        if (kids && ticket.parent?.id === this.selectedTicket.id) {
+        if (kids && !this.isSecondary(this.selectedTicket) && ticket.parent?.id === this.selectedTicket.id) {
           var ci = kids.findIndex(function (c) { return c.id === ticket.id; });
           if (ci >= 0) Object.assign(kids[ci], this.childRowFromEvent(ticket));
         }
-        if (this.selectedTicket?.id === ticket.id) {
+        if (this.sameTicket(this.selectedTicket, ticket)) {
           var prevSummary = this.selectedTicket.summary;
           if (this.editing && !['open', 'todo', 'paused'].concat(this.configCache?.custom_statuses || []).includes(ticket.status)) {
             this.closeAgentPickerHost('edit');
@@ -427,16 +437,27 @@ export function kontoraTickets() {
       this._eventSource = es;
       es.addEventListener('open', () => { this.companionRefresh(); });
       es.addEventListener('companion_updated', () => { this.companionRefresh(); });
+      es.addEventListener('ticket_sources_changed', () => { this.fetchTicketSources(); });
       es.addEventListener('ticket_updated', (e) => {
         this.queueTicketUpdate(JSON.parse(e.data));
       });
+      es.addEventListener('secondary_ticket_updated', (e) => {
+        var payload = JSON.parse(e.data);
+        this.queueTicketUpdate(payload.ticket || payload);
+      });
+      es.addEventListener('secondary_ticket_deleted', (e) => {
+        var payload = JSON.parse(e.data);
+        this.deleteSecondaryTicket(payload.ticket || payload);
+        if (this.paletteOpen) this.recomputePalette();
+      });
       es.addEventListener('ticket_deleted', (e) => {
         const ticket = JSON.parse(e.data);
+        this._pendingTicketUpdates = this._pendingTicketUpdates.filter(t => !this.sameTicket(t, ticket));
         this.tickets = this.tickets.filter(t => t.id !== ticket.id);
         if (this.initModal && this.initForm.ticketId === ticket.id) this.closeInitModal();
         else this.refreshInitContext(ticket.id);
         if (this.createForm.parent === ticket.id) this.syncCreatePipeline();
-        if (this.selectedTicket?.id === ticket.id) {
+        if (this.sameTicket(this.selectedTicket, ticket)) {
           this.closeDetail();
         } else if (this._chainHasNode(ticket.id)) {
           // A dep or a dependent of the open ticket is gone: the ladder would
@@ -499,7 +520,7 @@ export function kontoraTickets() {
     },
 
     async startPlannotator(ticket, endpoint, label) {
-      if (!ticket) return;
+      if (!this.ticketCanControl(ticket)) return;
       const id = ticket.id;
       if (this.plannotatorInFlight[id]) return;
       // Optimistically reflect in-flight state; the SSE event confirms it. The

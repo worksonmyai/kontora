@@ -500,6 +500,10 @@ export function kontoraAssistant() {
     // --- sending ---------------------------------------------------------
 
     async sendAssistantMessage() {
+      if (this.isSecondary(this.selectedTicket)) {
+        this.assistantError = 'The assistant is unavailable for secondary tickets. Claim the ticket into primary first.';
+        return;
+      }
       const text = (this.assistantDraft || '').trim();
       if (this.companionThread()) return this.companionSend('followup', text, []);
       if (!text || !this.assistantEnabled() || this.assistantStreaming) return;
@@ -520,7 +524,7 @@ export function kontoraAssistant() {
         await this._assistantFetch('/api/assistant/threads/' + encodeURIComponent(thread.id) + '/messages', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ text: text, autonomy: this.assistantAutonomy, context: this._assistantPageContext() }),
+          body: JSON.stringify({ text: text, autonomy: this.assistantAutonomy, context: this._assistantPageContext(), source: this.isSecondary(this.selectedTicket) ? this.selectedTicket.source : undefined }),
         });
       } catch (e) {
         this._assistantSetStreaming(false);

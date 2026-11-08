@@ -21,7 +21,7 @@ export function kontoraActivity() {
     // describes a finished run, so the last one is the most recently completed
     // stage.
     latestCompletedRun() {
-      var h = this.outputSubject()?.history || [];
+      var h = (this.outputSubject()?.history || []).filter(row => !row.imported);
       if (!h.length) return null;
       var last = h[h.length - 1];
       return { stage: last.stage, run: last.run || 0 };
@@ -66,7 +66,7 @@ export function kontoraActivity() {
 
     // Load one run's transcript, replacing everything the pane holds.
     async fetchActivity(stage, run) {
-      if (!this.outputSubject()) return;
+      if (!this.outputSubject() || this.importedRun(stage, run)) return;
       this._invalidateRawLog();
       this._stopActivityPoll();
       this.activityStage = stage || '';
@@ -83,7 +83,7 @@ export function kontoraActivity() {
     // payload is replaced, so the expand map, the grown window and the scroll
     // offset all survive the tick.
     async _loadActivity(stage, run, { merge = false } = {}) {
-      if (!this.outputSubject()) return;
+      if (!this.outputSubject() || this.importedRun(stage, run)) return;
       var id = this.outputSubject().id;
       var seq = ++this._activityLoadSeq;
       var url = '/api/tickets/' + encodeURIComponent(id) + '/activity'
@@ -207,7 +207,7 @@ export function kontoraActivity() {
     outputRuns() {
       var t = this.outputSubject();
       if (!t) return [];
-      var runs = (t.history || []).map(h => ({ stage: h.stage, run: h.run || 0,
+      var runs = (t.history || []).filter(h => !h.imported).map(h => ({ stage: h.stage, run: h.run || 0,
         key: h.stage + '#' + (h.run || 0), label: h.stage + ' · attempt ' + ((h.run || 0) + 1) }));
       var live = this.runningRun();
       if (live) runs.push({ ...live, key: live.stage + '#' + live.run,
@@ -226,8 +226,13 @@ export function kontoraActivity() {
       if (run) this.openActivity(run.stage, run.run);
     },
 
+    importedRun(stage, run) {
+      return (this.selectedTicket?.history || []).some(h => h.imported && h.stage === stage && (h.run || 0) === (run || 0));
+    },
+
     // Show the transcript for one run and bring the activity tab forward.
     openActivity(stage, run) {
+      if (this.isSecondary(this.selectedTicket) || this.importedRun(stage, run)) return;
       this._activityExplicit = true;
       if (this.selectedEpic) this.epicSwitchTab('activity', false);
       else this.activeTab = 'activity';

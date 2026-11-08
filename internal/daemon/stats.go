@@ -57,15 +57,12 @@ type statsSidecar struct {
 	missing  bool
 }
 
-// statsTicket pairs the aggregator's view of a ticket with the sidecar path of
-// each of its runs. The paths are keyed by a different index from the run
-// numbers the aggregator reads: a sidecar counts every history row of its
-// stage, annotation rows included, while stats.Run.Run counts stage attempts
-// alone.
+// statsTicket pairs each local run with its sidecar path. Sidecar indexes count
+// every history row of the stage, including imported rows and annotations.
+// stats.Run.Run counts stage attempts alone.
 type statsTicket struct {
 	ticket stats.Ticket
-	// paths has one entry per History row. It is empty for a row whose stage
-	// name cannot key a file.
+	// paths has one entry per projected run. An unsafe stage has an empty path.
 	paths []string
 }
 
@@ -168,12 +165,16 @@ func (d *Daemon) statsTicketsLocked(cfg *config.Config, now time.Time) ([]statsT
 		// report the whole history as first-pass.
 		files := map[string]int{}    // sidecar key: every row of the stage
 		attempts := map[string]int{} // attempt index: stage runs alone
-		for _, h := range t.History {
+		for i, h := range t.History {
 			file := files[h.Stage]
 			files[h.Stage] = file + 1
 			attempt := attempts[h.Stage]
 			if h.Kind == "" {
 				attempts[h.Stage] = attempt + 1
+			}
+			// Imported runs reserve indexes without contributing local statistics.
+			if t.IsImportedHistory(i) {
+				continue
 			}
 			st.ticket.History = append(st.ticket.History, stats.Run{
 				Stage:         h.Stage,
@@ -251,8 +252,8 @@ func simpleTicketEnded(t *ticket.Ticket) bool {
 	if t.Pipeline != "" || t.IsAgentEpic() || t.StartedAt == nil || t.Status == ticket.StatusInProgress {
 		return false
 	}
-	for _, h := range t.History {
-		if h.Kind != ticket.KindAnnotation &&
+	for i, h := range t.History {
+		if !t.IsImportedHistory(i) && h.Kind != ticket.KindAnnotation &&
 			((h.StartedAt != nil && !h.StartedAt.Before(*t.StartedAt)) ||
 				(h.CompletedAt != nil && !h.CompletedAt.Before(*t.StartedAt))) {
 			return false

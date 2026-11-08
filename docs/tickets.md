@@ -29,6 +29,49 @@ Description saves merge with the current stored tail inside a transaction. They 
 
 The whole body, including notes and later sections, remains available to stage prompts.
 
+## Claim from a secondary folder
+
+Configured [secondary folders](configuration.md#secondary-ticket-folders) appear on
+the dashboard beside primary tickets. Source labels distinguish tickets with the
+same ID. Secondary tickets support description, execution settings, notes, reactions,
+summary, and folder-local relationship edits in every status. They cannot run,
+change status or stage, schedule, initialize, archive, restore, delete, or open an
+agent-backed review through this daemon. Another daemon that owns the source as
+primary can still react to edits.
+
+Claim moves one ticket and its reaction sidecar into primary storage under the same
+ID. The browser saves the editor first. If saving fails, Claim stops and retains the
+draft. Claim requires the revision the browser reviewed and refuses:
+
+- `in_progress`, including stale statuses, invocation markers, or pending annotations.
+- Managed tickets or controlled source boards.
+- Symlinked or nonregular ticket and sidecar files.
+- Destination ticket, reaction, log, or reserved execution identities.
+- Changes to the source since the reviewed revision.
+
+A stale `claimed_by` alone does not prevent Claim. Claim sets the destination to
+`open` and clears runtime, scheduling, archive, and current error/log fields.
+It preserves enrollment, custom fields, relationships, summaries, notes, and history.
+Claim never starts an agent. A passive epic resumes normal derived-status handling
+in primary storage.
+
+Relationships remain folder-local. Claim does not move dependencies, links, parents,
+or children. The confirmation warns about missing references and primary namesakes.
+Imported history retains its summaries and timestamps, but does not use primary logs
+or costs. `imported_history_count` marks that history prefix. Later local stage runs
+keep distinct indexes. Source worktrees, logs, sessions, and journals are not moved.
+
+Transfers use ordered local locks, private backups, and no-overwrite publication.
+Startup recovers pending transfers before primary discovery. Unresolved conflicts
+retain recoverable files, exclude the destination identity from execution, and log
+the transfer location for investigation. Do not remove these backups before resolving
+the conflict.
+
+All local writers must use an updated Kontora binary for coordination. Older binaries,
+arbitrary editors, and independently synced machines can bypass the locks. Claim
+checks stored markers, not remote process health; manually clearing runtime markers
+can defeat that protection.
+
 ## Frontmatter fields
 
 ### User-defined fields
@@ -285,6 +328,7 @@ These are set and updated by the daemon as the ticket progresses through its pip
 | `completed_at` | When the ticket finished (status became `done`). |
 | `branch` | Git worktree branch. Set it before pickup to choose the name. If empty, the default is `<prefix>/<title-slug>-<ticket-id>`; [`branch_naming`](configuration.md#branch-naming) mode `off` uses `<prefix>/<ticket-id>`. The daemon stores a slug name before worktree creation and stores the ID-derived name after worktree creation succeeds. |
 | `history` | List of completed stage records. |
+| `imported_history_count` | Number of history entries imported by Claim. Imported rows never use local artifact or cost enrichment. |
 | `last_error` | Error message from the last failed stage run. |
 | `summary` | Summary of the stage run that ended most recently: the text the agent wrote with `kontora summary`, or its final session message as a fallback. Cleared when a new stage starts; each stage keeps its own copy on its `history` entry. |
 | `final_summary` | Summary of the whole ticket, written after a run ends the pipeline successfully or a rework run succeeds, and at least two runs recorded a summary. The agent that ran that stage writes it from the ticket text and every recorded run summary, in one non-interactive pass with no tools and a two-minute timeout. It opens with a few sentences on what the ticket asked for, then describes what was done; a ticket whose body says nothing beyond its title gets the description alone. It is not a copy of any run: `summary` and the `history` entries keep their own text. Cleared when a new run starts. Generation is best effort: a failure leaves the field empty and is reported in the daemon log, so a ticket can finish without it. |

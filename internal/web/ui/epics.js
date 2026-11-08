@@ -272,7 +272,7 @@ export function kontoraEpics() {
     },
 
     epicCanStart(ticket) {
-      return ticket?.kind === 'epic' && ticket.status !== 'archived' && (!ticket.epic_execution ||
+      return this.ticketCanControl(ticket) && ticket.kind === 'epic' && ticket.status !== 'archived' && (!ticket.epic_execution ||
         (this.epicIsAgent(ticket) && ticket.status === 'open'));
     },
 
@@ -371,6 +371,12 @@ export function kontoraEpics() {
     // shown first and the fetch fills the brief in, which is what selectTicket
     // does for a ticket page.
     async openEpic(id, navigation = ++this._navigationSeq) {
+      var identity = this.ticketIdentity(id);
+      if (this.isSecondary(identity)) {
+        var secondary = this.secondaryTickets.find(t => this.sameTicket(t, identity));
+        if (secondary) await this._paletteOpenTicket(secondary);
+        return;
+      }
       if (this.currentView !== 'board') await this.gotoView('board', navigation);
       if (navigation !== this._navigationSeq || this.currentView !== 'board') return;
       var epic = (this.tickets || []).find(function (t) { return t.id === id && t.kind === 'epic'; });
@@ -507,6 +513,7 @@ export function kontoraEpics() {
     // reports one: the daemon's own message on this.error, and no throw, so a
     // refused drag leaves the page usable. Returns whether it landed.
     async _epicRequest(method, url, body) {
+      if (this.isSecondary(this.selectedTicket) || this.isSecondary(this.selectedEpic)) return false;
       this.error = null;
       try {
         var opts = { method: method };

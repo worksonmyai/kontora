@@ -140,7 +140,7 @@ func New(cfg *config.Config, opts NewOpts) (string, error) {
 		return "", fmt.Errorf("creating tickets dir: %w", err)
 	}
 	path := filepath.Join(dir, id+".md")
-	if err := ticket.WriteOffline(path, []byte(content)); err != nil {
+	if err := ticket.CreateOffline(path, []byte(content)); err != nil {
 		return "", fmt.Errorf("writing ticket file: %w", err)
 	}
 

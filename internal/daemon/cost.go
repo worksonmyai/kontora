@@ -8,9 +8,10 @@ import (
 )
 
 type costHistoryRow struct {
-	stage string
-	model string
-	ended bool
+	stage    string
+	model    string
+	ended    bool
+	imported bool
 }
 
 type costTicketSnapshot struct {
@@ -47,6 +48,9 @@ func (d *Daemon) GetTicketCost(id string) (web.TicketCostInfo, error) {
 	appendRun := func(historyIndex *int, row costHistoryRow) {
 		run := positions[row.stage]
 		positions[row.stage] = run + 1
+		if row.imported {
+			return
+		}
 
 		stageIndex, ok := stageIndexes[row.stage]
 		if !ok {
@@ -130,9 +134,10 @@ func (d *Daemon) costSnapshot(id string) (costTicketSnapshot, error) {
 	}
 	for i, row := range t.History {
 		snapshot.history[i] = costHistoryRow{
-			stage: row.Stage,
-			model: row.Model,
-			ended: row.CompletedAt != nil,
+			stage:    row.Stage,
+			model:    row.Model,
+			ended:    row.CompletedAt != nil,
+			imported: t.IsImportedHistory(i),
 		}
 	}
 	return snapshot, nil

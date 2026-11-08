@@ -14,7 +14,7 @@ export function kontoraApp() {
     // delete, detail-panel actions, debounced search), so template reads are
     // O(1) lookups instead of re-filtering and re-sorting every column on every
     // reactive read.
-    _board: {},
+    _board: Object.create(null),
     _boardTotal: 0,
     // Global kontora status counts from the last recomputeBoard pass, used by
     // updateFavicon. Tallied ignoring searchQuery (the favicon reflects all
@@ -316,7 +316,7 @@ export function kontoraApp() {
 
     // validMoves entries shown as action buttons in the detail panel sidebar.
     detailMoves(ticket) {
-      if (!ticket) return [];
+      if (!this.ticketCanControl(ticket)) return [];
       if (this.epicCanStart(ticket)) return [{ label: 'Start epic', endpoint: 'run' }];
       if (ticket.kind === 'epic' && !this.epicIsAgent(ticket)) return [];
       var covered = this._detailCoveredMoves[ticket.status] || [];

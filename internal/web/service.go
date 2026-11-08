@@ -168,6 +168,7 @@ type CreateAssistantThreadRequest struct {
 // than prefixed to the message, so the pane's own bubble stays what the user
 // typed.
 type AssistantMessageRequest struct {
+	Source   string `json:"source,omitempty"`
 	Text     string `json:"text"`
 	Autonomy string `json:"autonomy,omitempty"`
 	Context  string `json:"context,omitempty"`
@@ -497,12 +498,19 @@ type ConfigInfo struct {
 }
 
 type TicketInfo struct {
-	ID       string `json:"id"`
-	Title    string `json:"title"`
-	Status   string `json:"status"`
-	Kontora  bool   `json:"kontora"`
-	Stage    string `json:"stage"`
-	Pipeline string `json:"pipeline"`
+	Source        string   `json:"source,omitempty"`
+	Revision      string   `json:"revision,omitempty"`
+	CanEdit       bool     `json:"can_edit"`
+	CanControl    bool     `json:"can_control"`
+	CanClaim      bool     `json:"can_claim"`
+	RefusalReason string   `json:"refusal_reason,omitempty"`
+	ClaimWarnings []string `json:"claim_warnings,omitempty"`
+	ID            string   `json:"id"`
+	Title         string   `json:"title"`
+	Status        string   `json:"status"`
+	Kontora       bool     `json:"kontora"`
+	Stage         string   `json:"stage"`
+	Pipeline      string   `json:"pipeline"`
 	// EpicChild is a preview from the current index, not default-resolution authority.
 	EpicChild bool   `json:"epic_child"`
 	Path      string `json:"path"`
@@ -674,6 +682,7 @@ const (
 )
 
 type HistoryInfo struct {
+	Imported      bool   `json:"imported,omitempty"`
 	RunOutcome    string `json:"run_outcome,omitempty"`
 	OutcomeReason string `json:"outcome_reason,omitempty"`
 	InvocationID  string `json:"invocation_id,omitempty"`
@@ -900,6 +909,7 @@ func TicketInfoFromView(v app.View) TicketInfo {
 		info.History = make([]HistoryInfo, len(v.History))
 		for i, h := range v.History {
 			info.History[i] = HistoryInfo{
+				Imported:      h.Imported,
 				Stage:         h.Stage,
 				Agent:         h.Agent,
 				Model:         h.Model,

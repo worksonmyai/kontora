@@ -49,6 +49,9 @@ func (d *Daemon) reloadConfig() error {
 	if d.configOverride != nil {
 		d.configOverride(next)
 	}
+	if _, err := next.SecondarySources(); err != nil {
+		return err
+	}
 
 	cur := d.config()
 	pinRestartOnly(cur, next, d.log)
@@ -93,6 +96,10 @@ func pinRestartOnly(cur, next *config.Config, log *slog.Logger) {
 		warn("tickets_dir", cur.TicketsDir, next.TicketsDir)
 		next.TicketsDir = cur.TicketsDir
 	}
+	if !slices.Equal(next.SecondaryTicketsDirs, cur.SecondaryTicketsDirs) {
+		warn("secondary_tickets_dirs", cur.SecondaryTicketsDirs, next.SecondaryTicketsDirs)
+	}
+	next.SecondaryTicketsDirs = slices.Clone(cur.SecondaryTicketsDirs)
 	if next.WorktreesDir != cur.WorktreesDir {
 		warn("worktrees_dir", cur.WorktreesDir, next.WorktreesDir)
 		next.WorktreesDir = cur.WorktreesDir

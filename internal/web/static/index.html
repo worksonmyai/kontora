@@ -1774,7 +1774,7 @@
          "
          class="board-scroll flex-1 overflow-x-auto overflow-y-hidden"
          :class="hasOverflowRight ? 'has-overflow-right' : ''">
-      <div id="board-cols" class="flex gap-3 p-4 h-full min-w-min">
+      <div id="board-cols" class="flex gap-3 p-4 h-full min-w-0">
         <template x-for="(col, colIdx) in columns" :key="col.key">
           <div class="kanban-col flex flex-col h-full relative"
                :class="isCollapsed(col.key) ? 'w-9 flex-none' : 'flex-1 min-w-[280px] basis-0'"

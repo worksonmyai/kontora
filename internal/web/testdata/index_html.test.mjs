@@ -2588,6 +2588,16 @@ test("index.html board renders cards imperatively, not via an Alpine x-for", () 
   assert.match(html, /x-ref="colList"[\s\S]*?x-init="initSortable\(\$el\)/);
 });
 
+test("board width ignores folder path length while columns retain their minimum", () => {
+  const html = htmlNoComments();
+  const board = elementWithId(html, "board-cols");
+  const classes = board.match(/^<div\b[^>]*\bclass="([^"]*)"/)[1].split(/\s+/);
+
+  assert.ok(classes.includes("min-w-0"));
+  assert.ok(!classes.includes("min-w-min"));
+  assert.match(board, /:class="isCollapsed\(col\.key\) \? 'w-9 flex-none' : 'flex-1 min-w-\[280px\] basis-0'"/);
+});
+
 test("index.html column x-init drops the render state Alpine just invalidated", () => {
   const html = fs.readFileSync(htmlPath, "utf8");
   const app = uiSource;

@@ -5737,12 +5737,12 @@
           </div>
         </template>
 
-        <!-- The parked write. It rides the same poll as the tool rows. -->
+        <!-- Approval requests use the same poll as the tool rows. -->
         <template x-if="assistantGate">
           <div id="assistant-proposal" class="rounded-[9px] border border-warn/60 bg-surface-900 p-2.5 flex flex-col gap-2">
             <div class="flex items-baseline gap-2 min-w-0">
               <span class="font-mono text-[10px] uppercase tracking-[.1em] text-warn shrink-0"
-                    x-text="assistantGate.kind === 'delete' ? 'delete' : 'change'"></span>
+                    x-text="assistantApprovalLabel()"></span>
               <span class="font-mono text-[11px] text-tx-3 shrink-0" x-text="assistantGate.tool"></span>
             </div>
             <code class="font-mono text-[11px] leading-[1.5] text-tx-2 bg-surface-850 border border-edge-input rounded px-2 py-1.5 break-words" x-text="assistantGate.arg"></code>
@@ -6564,7 +6564,7 @@
 
                 <template x-if="assistantGate">
                   <div style="border:1px solid rgba(var(--warn),.6);background:rgba(var(--surface-900),1);border-radius:11px;padding:11px;display:flex;flex-direction:column;gap:9px;">
-                    <span style="font-family:'JetBrains Mono',monospace;font-size:11px;text-transform:uppercase;letter-spacing:.1em;color:rgba(var(--warn),1);" x-text="assistantGate.kind === 'delete' ? 'delete' : 'change'"></span>
+                    <span style="font-family:'JetBrains Mono',monospace;font-size:11px;text-transform:uppercase;letter-spacing:.1em;color:rgba(var(--warn),1);" x-text="assistantApprovalLabel()"></span>
                     <code style="font-family:'JetBrains Mono',monospace;font-size:12px;line-height:1.5;color:rgba(var(--tx-2),1);word-break:break-word;" x-text="assistantGate.arg"></code>
                     <div style="display:flex;gap:9px;">
                       <button @click="resolveAssistantGate(true)" style="flex:1;height:38px;border-radius:9px;border:1px solid rgba(var(--accent),1);background:rgba(var(--accent),1);color:rgba(var(--accent-fg),1);font-family:'JetBrains Mono',monospace;font-size:13px;font-weight:600;">approve</button>

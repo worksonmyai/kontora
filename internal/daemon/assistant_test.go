@@ -267,6 +267,7 @@ type gateHarness struct {
 	answers chan web.AssistantGateAskResponse
 	// command is what the next turn's agent asks about.
 	command string
+	tool    string
 }
 
 func newGateHarness(t *testing.T, h *testHarness) *gateHarness {
@@ -276,10 +277,14 @@ func newGateHarness(t *testing.T, h *testHarness) *gateHarness {
 		answers: make(chan web.AssistantGateAskResponse, 4),
 	}
 	g.stub.before = func(_ context.Context, p TurnParams) {
+		tool := g.tool
+		if tool == "" {
+			tool = "Bash"
+		}
 		resp, err := g.d.AskAssistantGate(web.AssistantGateAskRequest{
 			Thread: p.ThreadID,
 			Nonce:  p.Env[assistantNonceEnv],
-			Tool:   "Bash",
+			Tool:   tool,
 			Input:  map[string]any{"command": g.command},
 		})
 		assert.NoError(t, err)
@@ -294,7 +299,11 @@ func newGateHarness(t *testing.T, h *testHarness) *gateHarness {
 func (g *gateHarness) ask(t *testing.T, threadID, command string) {
 	t.Helper()
 	g.command = command
-	require.NoError(t, g.d.PostAssistantMessage(threadID, web.AssistantMessageRequest{Text: command}))
+	text := command
+	if text == "" {
+		text = g.tool
+	}
+	require.NoError(t, g.d.PostAssistantMessage(threadID, web.AssistantMessageRequest{Text: text}))
 }
 
 func (g *gateHarness) finish(t *testing.T, threadID string) {
@@ -347,7 +356,7 @@ func TestAssistantGate(t *testing.T) {
 	t.Run("an unrecognised call is parked rather than allowed", func(t *testing.T) {
 		g.ask(t, thread.ID, "make deploy")
 		gate := waitForGate(t, g.d, thread.ID)
-		assert.Equal(t, assistant.DecisionWrite, gate.Kind)
+		assert.Equal(t, assistant.DecisionUnknown, gate.Kind)
 		require.NoError(t, g.d.ResolveAssistantGate(gate.ID, false))
 		assert.False(t, (<-g.answers).Allow)
 		g.finish(t, thread.ID)
@@ -379,20 +388,52 @@ func TestAssistantGate(t *testing.T) {
 }
 
 func TestAssistantAutonomyModes(t *testing.T) {
-	tests := []struct {
+	type testCase struct {
 		name      string
 		autonomy  string
 		command   string
+		tool      string
+		wantKind  assistant.Decision
 		wantPark  bool
 		wantAllow bool
 		wantWhy   string
-	}{
+	}
+	tests := []testCase{
 		{name: "read refuses a write", autonomy: config.AutonomyRead, command: "kontora run kon-7d21", wantWhy: "read-only"},
 		{name: "read refuses a delete", autonomy: config.AutonomyRead, command: "kontora delete kon-7d21", wantWhy: "read-only"},
 		{name: "read allows a read", autonomy: config.AutonomyRead, command: "kontora view kon-7d21", wantAllow: true},
 		{name: "auto allows a write", autonomy: config.AutonomyAuto, command: "kontora run kon-7d21", wantAllow: true},
 		{name: "auto still holds a delete", autonomy: config.AutonomyAuto, command: "kontora delete kon-7d21", wantPark: true, wantAllow: true},
+		{name: "auto holds redirected deletion", autonomy: config.AutonomyAuto, command: "kontora delete kon-7d21 -f > /tmp/out", wantKind: assistant.DecisionDelete, wantPark: true, wantAllow: true},
+		{name: "auto holds quoted deletion", autonomy: config.AutonomyAuto, command: `"kontora" 'delete' kon-7d21 -f`, wantKind: assistant.DecisionDelete, wantPark: true, wantAllow: true},
+		{name: "auto holds deletion in a mixed chain", autonomy: config.AutonomyAuto, command: "kontora ls; kontora delete kon-7d21 -f 2>&1 | kontora note kon-2", wantKind: assistant.DecisionDelete, wantPark: true, wantAllow: true},
+		{name: "auto holds a wrapper", autonomy: config.AutonomyAuto, command: "env kontora delete kon-7d21 -f", wantPark: true, wantAllow: true},
+		{name: "auto holds dynamic command construction", autonomy: config.AutonomyAuto, command: `kontora "$verb" kon-7d21 -f`, wantKind: assistant.DecisionUnknown, wantPark: true, wantAllow: true},
+		{name: "auto can skip redirected deletion", autonomy: config.AutonomyAuto, command: "kontora delete kon-7d21 -f >> /tmp/out", wantPark: true, wantWhy: "skipped this deletion"},
+		{name: "auto holds unknown tools", autonomy: config.AutonomyAuto, tool: "SomeMcpTool", wantKind: assistant.DecisionUnknown, wantPark: true, wantAllow: true},
+		{name: "ask holds unknown tools", autonomy: config.AutonomyAsk, tool: "SomeMcpTool", wantPark: true, wantAllow: true},
+		{name: "read refuses unknown tools", autonomy: config.AutonomyRead, tool: "SomeMcpTool", wantWhy: "read-only"},
+		{name: "auto allows known edit tools", autonomy: config.AutonomyAuto, tool: "Edit", wantAllow: true},
+		{name: "auto can skip unknown commands", autonomy: config.AutonomyAuto, command: "sh -c 'kontora delete kon-7d21 -f'", wantPark: true, wantWhy: "Do not retry"},
+		{name: "read refuses unknown commands", autonomy: config.AutonomyRead, command: "env kontora ls", wantWhy: "read-only"},
 		{name: "ask holds a write", autonomy: config.AutonomyAsk, command: "kontora note kon-7d21 hi", wantPark: true, wantAllow: true},
+	}
+	for _, boundary := range []struct{ name, command string }{
+		{"comment backslash newline", "kontora version # \\\nkontora delete kon-7d21 -f"},
+		{"carriage return before comment marker", "kontora version \r#; kontora delete kon-7d21 -f"},
+		{"backslash CRLF", "kontora version \\\r\nkontora delete kon-7d21 -f"},
+	} {
+		for _, autonomy := range []string{config.AutonomyAuto, config.AutonomyAsk, config.AutonomyRead} {
+			why := ""
+			if autonomy == config.AutonomyRead {
+				why = "read-only"
+			}
+			tests = append(tests, testCase{
+				name: autonomy + " handles " + boundary.name, autonomy: autonomy, command: boundary.command,
+				wantKind: assistant.DecisionUnknown, wantPark: autonomy != config.AutonomyRead,
+				wantAllow: autonomy != config.AutonomyRead, wantWhy: why,
+			})
+		}
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -402,9 +443,21 @@ func TestAssistantAutonomyModes(t *testing.T) {
 			require.NoError(t, err)
 			require.Equal(t, tt.autonomy, thread.Autonomy)
 
+			g.tool = tt.tool
 			g.ask(t, thread.ID, tt.command)
 			if tt.wantPark {
 				gate := waitForGate(t, g.d, thread.ID)
+				if tt.wantKind != "" {
+					assert.Equal(t, tt.wantKind, gate.Kind)
+				}
+				select {
+				case response := <-g.answers:
+					t.Fatalf("tool received an answer before approval: %+v", response)
+				default:
+				}
+				stored, err := g.d.GetAssistantThread(thread.ID)
+				require.NoError(t, err)
+				assert.Zero(t, stored.Writes)
 				require.NoError(t, g.d.ResolveAssistantGate(gate.ID, tt.wantAllow))
 			}
 			resp := <-g.answers

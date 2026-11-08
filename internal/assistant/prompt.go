@@ -93,13 +93,14 @@ further help.`))
 // modeBriefs tell the agent what the thread's autonomy mode allows, in the same
 // words the gate refuses with.
 var modeBriefs = map[string]string{
-	config.AutonomyRead: "This thread is READ-ONLY. Every change is refused at the tool boundary. " +
+	config.AutonomyRead: "This thread is READ-ONLY. Every change and unclassified call is refused at the tool boundary. " +
 		"When the user asks for one, say exactly which command would do it and stop; do not try to run it.",
-	config.AutonomyAsk: "This thread is in ASK mode. A read runs immediately; a change is held until the user " +
+	config.AutonomyAsk: "This thread is in ASK mode. A known read runs immediately; a change or unclassified call is held until the user " +
 		"approves it in the pane. Run the command you mean to run and wait for the answer. If it comes back refused, " +
 		"the user skipped it: report that and do not retry.",
-	config.AutonomyAuto: "This thread is in AUTO mode. Reads and changes both run without asking, except deleting a " +
-		"ticket, which is still held for approval. Make the change the user asked for and nothing beyond it.",
+	config.AutonomyAuto: "This thread is in AUTO mode. Known reads and writes run without asking. " +
+		"Deletions and unclassified commands or tools are held for approval. Unsupported shell syntax, dynamic words, " +
+		"wrappers and unknown executables require approval. Make the change the user asked for and nothing beyond it.",
 }
 
 const companionPrompt = `You are Kotik, Kontora's observational companion.

@@ -27,8 +27,8 @@ func TestClassify(t *testing.T) {
 		{name: "edit", tool: "Edit", want: DecisionWrite},
 		{name: "write", tool: "Write", want: DecisionWrite},
 		{name: "notebook edit", tool: "NotebookEdit", want: DecisionWrite},
-		{name: "an unrecognised tool is a write", tool: "SomeMcpTool", want: DecisionWrite},
-		{name: "a tool with no name is a write", tool: "", want: DecisionWrite},
+		{name: "an unrecognised tool is unknown", tool: "SomeMcpTool", want: DecisionUnknown},
+		{name: "a tool with no name is unknown", tool: "", want: DecisionUnknown},
 
 		{name: "a kontora read verb", tool: "Bash", input: cmd("kontora ls"), want: DecisionRead},
 		{name: "a kontora read verb with flags", tool: "Bash", input: cmd("kontora view kon-7d21 --json"), want: DecisionRead},
@@ -41,26 +41,28 @@ func TestClassify(t *testing.T) {
 		{name: "one write in a chain taints the line", tool: "Bash", input: cmd("kontora ls && kontora move kon-7d21 done"), want: DecisionWrite},
 		{name: "delete is held apart from a write", tool: "Bash", input: cmd("kontora delete kon-7d21"), want: DecisionDelete},
 		{name: "a delete anywhere in a chain wins", tool: "Bash", input: cmd("kontora ls; kontora delete kon-7d21"), want: DecisionDelete},
+		{name: "redirection does not downgrade deletion", tool: "Bash", input: cmd("kontora delete kon-7d21 -f > /tmp/out"), want: DecisionDelete},
+		{name: "literal quoting preserves deletion", tool: "Bash", input: cmd(`"kontora" 'delete' kon-7d21 -f`), want: DecisionDelete},
 
-		{name: "a non-kontora command is a write", tool: "Bash", input: cmd("ls -la"), want: DecisionWrite},
-		{name: "a bare kontora with no verb is a write", tool: "Bash", input: cmd("kontora"), want: DecisionWrite},
-		{name: "an unknown kontora verb is a write", tool: "Bash", input: cmd("kontora frobnicate"), want: DecisionWrite},
-		{name: "an empty command is a write", tool: "Bash", input: cmd("   "), want: DecisionWrite},
-		{name: "a command substitution hides what runs", tool: "Bash", input: cmd("kontora view $(kontora ls)"), want: DecisionWrite},
+		{name: "a non-kontora command is unknown", tool: "Bash", input: cmd("ls -la"), want: DecisionUnknown},
+		{name: "a bare kontora with no verb is unknown", tool: "Bash", input: cmd("kontora"), want: DecisionUnknown},
+		{name: "an unknown kontora verb", tool: "Bash", input: cmd("kontora frobnicate"), want: DecisionUnknown},
+		{name: "an empty command is unknown", tool: "Bash", input: cmd("   "), want: DecisionUnknown},
+		{name: "a command substitution hides what runs", tool: "Bash", input: cmd("kontora view $(kontora ls)"), want: DecisionUnknown},
 		{name: "a redirection hides where the bytes go", tool: "Bash", input: cmd("kontora ls > /tmp/out"), want: DecisionWrite},
-		{name: "a pipe into another command is a write", tool: "Bash", input: cmd("kontora ls | xargs rm"), want: DecisionWrite},
-		{name: "a background read hides what follows it", tool: "Bash", input: cmd("kontora ls & curl example.com"), want: DecisionWrite},
+		{name: "a pipe into another command is unknown", tool: "Bash", input: cmd("kontora ls | xargs rm"), want: DecisionUnknown},
+		{name: "a background read hides what follows it", tool: "Bash", input: cmd("kontora ls & curl example.com"), want: DecisionUnknown},
 		{name: "the reference topics", tool: "Bash", input: cmd("kontora skills list"), want: DecisionRead},
 		{name: "one reference topic", tool: "Bash", input: cmd("kontora skills show cli"), want: DecisionRead},
 
 		{name: "the usage of a write verb", tool: "Bash", input: cmd("kontora new -h"), want: DecisionRead},
 		{name: "the long help flag", tool: "Bash", input: cmd("kontora new --help"), want: DecisionRead},
 		{name: "a help flag after a positional would append a note", tool: "Bash", input: cmd("kontora note kon-1 -h"), want: DecisionWrite},
-		{name: "help does not excuse what follows it in a chain", tool: "Bash", input: cmd("kontora new -h && rm -rf x"), want: DecisionWrite},
+		{name: "help does not excuse what follows it in a chain", tool: "Bash", input: cmd("kontora new -h && rm -rf x"), want: DecisionUnknown},
 
 		{name: "config prints", tool: "Bash", input: cmd("kontora config"), want: DecisionRead},
 		{name: "config edit opens the daemon config", tool: "Bash", input: cmd("kontora config edit"), want: DecisionWrite},
-		{name: "bash with no command field is a write", tool: "Bash", want: DecisionWrite},
+		{name: "bash with no command field is unknown", tool: "Bash", want: DecisionUnknown},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -78,12 +80,19 @@ func TestResolve(t *testing.T) {
 		{config.AutonomyRead, DecisionRead, VerdictAllow},
 		{config.AutonomyRead, DecisionWrite, VerdictDeny},
 		{config.AutonomyRead, DecisionDelete, VerdictDeny},
+		{config.AutonomyRead, DecisionUnknown, VerdictDeny},
+		{config.AutonomyRead, Decision("unexpected"), VerdictDeny},
 		{config.AutonomyAsk, DecisionRead, VerdictAllow},
 		{config.AutonomyAsk, DecisionWrite, VerdictPark},
 		{config.AutonomyAsk, DecisionDelete, VerdictPark},
+		{config.AutonomyAsk, DecisionUnknown, VerdictPark},
+		{config.AutonomyAsk, Decision("unexpected"), VerdictPark},
 		{config.AutonomyAuto, DecisionRead, VerdictAllow},
 		{config.AutonomyAuto, DecisionWrite, VerdictAllow},
 		{config.AutonomyAuto, DecisionDelete, VerdictPark},
+		{config.AutonomyAuto, DecisionUnknown, VerdictPark},
+		{config.AutonomyAuto, Decision("unexpected"), VerdictPark},
+		{config.AutonomyAuto, Decision(""), VerdictPark},
 		{"nonsense", DecisionWrite, VerdictPark},
 	}
 	for _, tt := range tests {
@@ -410,7 +419,7 @@ func TestSystemPrompt(t *testing.T) {
 		{
 			name: "the built-in brief",
 			data: func(d PromptData) PromptData { return d },
-			want: []string{"READ-ONLY", "Every change is refused at the tool boundary", "/tickets", "kontora view", "kontora skills list",
+			want: []string{"READ-ONLY", "Every change and unclassified call is refused at the tool boundary", "/tickets", "kontora view", "kontora skills list",
 				"kontora note TICKET_ID < /absolute/path/note.md", "kontora summary TICKET_ID < /absolute/path/summary.txt",
 				"file-writing tool", "unique scratch paths outside the repository", "Do not put payload text in shell arguments",
 				"Do not create these files with `echo`, `printf`, or other payload-bearing shell commands",
@@ -420,13 +429,13 @@ func TestSystemPrompt(t *testing.T) {
 		{
 			name:    "auto mode",
 			data:    func(d PromptData) PromptData { d.Autonomy = config.AutonomyAuto; return d },
-			want:    []string{"AUTO mode", "except deleting a ticket", "still held for approval", "kontora note TICKET_ID <"},
+			want:    []string{"AUTO mode", "Known reads and writes", "Deletions and unclassified commands or tools", "held for approval", "kontora note TICKET_ID <"},
 			notWant: []string{"READ-ONLY"},
 		},
 		{
 			name: "ask mode keeps file creation and submission subject to approval",
 			data: func(d PromptData) PromptData { d.Autonomy = config.AutonomyAsk; return d },
-			want: []string{"ASK mode", "a change is held until the user approves", "do not retry", "approval rules", "file creation and submission"},
+			want: []string{"ASK mode", "a change or unclassified call is held until the user approves", "do not retry", "approval rules", "file creation and submission"},
 		},
 		{
 			name:     "a blank override keeps the built-in brief",
@@ -437,7 +446,7 @@ func TestSystemPrompt(t *testing.T) {
 		{
 			name: "an unknown mode falls back to the careful one",
 			data: func(d PromptData) PromptData { d.Autonomy = "nonsense"; return d },
-			want: []string{"ASK mode", "a change is held until the user approves", "do not retry", "kontora summary TICKET_ID <"},
+			want: []string{"ASK mode", "a change or unclassified call is held until the user approves", "do not retry", "kontora summary TICKET_ID <"},
 		},
 		{
 			name: "a configured board",

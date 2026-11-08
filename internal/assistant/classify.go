@@ -1,7 +1,6 @@
 package assistant
 
 import (
-	"slices"
 	"strings"
 
 	"github.com/worksonmyai/kontora/internal/config"
@@ -17,7 +16,8 @@ const (
 	DecisionWrite Decision = "write"
 	// DecisionDelete removes a ticket. It is separated from a write because it
 	// is the one change with no cheap undo, so it is held even in auto.
-	DecisionDelete Decision = "delete"
+	DecisionDelete  Decision = "delete"
+	DecisionUnknown Decision = "unknown"
 )
 
 // Verdict is what the gate answers a tool call with.
@@ -49,7 +49,7 @@ var readTools = map[string]bool{
 
 // kontoraReadVerbs are the CLI verbs that only print. `config` is here for its
 // printing form only: `config edit` opens $EDITOR on the daemon config and is
-// caught by classifySegment before this map is read.
+// caught by classifyCall before this map is read.
 var kontoraReadVerbs = map[string]bool{
 	"ls": true, "view": true, "search": true, "logs": true, "activity": true,
 	"changes": true, "stats": true, "sessions": true, "config": true,
@@ -65,22 +65,11 @@ var kontoraWriteVerbs = map[string]bool{
 	"link": true, "unlink": true, "archive": true,
 }
 
-// shellChainOps separate one command from the next in a shell line. The bare
-// "&" is listed after "&&" so the two-character operator splits first, and it
-// has to be listed at all: without it a line that starts with a read verb and
-// backgrounds it hides everything after the ampersand from the split.
-var shellChainOps = []string{"&&", "||", ";", "&", "|", "\n"}
+var writeTools = map[string]bool{
+	"edit": true, "write": true, "notebookedit": true,
+}
 
-// shellIndirection is what makes a command line unreadable to the split below:
-// what runs inside a substitution or on the far side of a redirection is not a
-// segment this can classify.
-var shellIndirection = []string{"$(", "`", ">", "<"}
-
-// Classify reads one tool call and reports what it would do. It is fail-closed:
-// a tool with no rule, and a shell command that is not plainly a kontora read
-// verb, both count as a write. The agent has read tools of its own for anything
-// it only needs to look at, so nothing useful is lost by refusing to reason
-// about arbitrary shell.
+// Classify requires approval for tools and shell syntax it cannot classify.
 func Classify(tool string, input map[string]any) Decision {
 	name := strings.ToLower(strings.TrimSpace(tool))
 	if readTools[name] {
@@ -89,71 +78,10 @@ func Classify(tool string, input map[string]any) Decision {
 	if name == "bash" {
 		return classifyBash(stringField(input, "command"))
 	}
-	return DecisionWrite
-}
-
-// classifyBash reads a whole command line. Every command in it must be a
-// kontora read verb for the line to be a read, and one kontora delete anywhere
-// in it makes the line a delete.
-func classifyBash(command string) Decision {
-	command = strings.TrimSpace(command)
-	if command == "" {
+	if writeTools[name] {
 		return DecisionWrite
 	}
-	for _, op := range shellIndirection {
-		if strings.Contains(command, op) {
-			return DecisionWrite
-		}
-	}
-	worst := DecisionRead
-	for _, segment := range splitAny(command, shellChainOps) {
-		switch classifySegment(segment) {
-		case DecisionDelete:
-			return DecisionDelete
-		case DecisionWrite:
-			worst = DecisionWrite
-		case DecisionRead:
-			// A read never raises the worst decision seen so far.
-		}
-	}
-	return worst
-}
-
-// classifySegment reads one command. Anything that is not `kontora <verb>` is a
-// write, including an empty segment, which only a malformed line produces.
-func classifySegment(segment string) Decision {
-	fields := strings.Fields(segment)
-	if len(fields) < 2 {
-		return DecisionWrite
-	}
-	binary := fields[0]
-	if i := strings.LastIndexByte(binary, '/'); i >= 0 {
-		binary = binary[i+1:]
-	}
-	if binary != "kontora" {
-		return DecisionWrite
-	}
-	switch verb := fields[1]; {
-	case verb == "delete":
-		return DecisionDelete
-	case len(fields) == 3 && (fields[2] == "-h" || fields[2] == "--help"):
-		// Exactly three fields, so the flag set sees the flag first and prints
-		// usage before any side effect. It has to be that narrow: `note`,
-		// `summary` and `new` parse flags once and take the rest as free-form
-		// text, so `kontora note ID -h` does not print help, it appends a note
-		// reading "-h".
-		return DecisionRead
-	case verb == "config" && slices.Contains(fields[2:], "edit"):
-		// `kontora config edit` writes the daemon config, and headless it also
-		// hangs on an editor that never returns.
-		return DecisionWrite
-	case kontoraReadVerbs[verb]:
-		return DecisionRead
-	case kontoraWriteVerbs[verb]:
-		return DecisionWrite
-	default:
-		return DecisionWrite
-	}
+	return DecisionUnknown
 }
 
 // Resolve maps an autonomy mode and a classification to what the gate does.
@@ -167,10 +95,10 @@ func Resolve(autonomy string, d Decision) Verdict {
 	case config.AutonomyRead:
 		return VerdictDeny
 	case config.AutonomyAuto:
-		if d == DecisionDelete {
-			return VerdictPark
+		if d == DecisionWrite {
+			return VerdictAllow
 		}
-		return VerdictAllow
+		return VerdictPark
 	default:
 		return VerdictPark
 	}
@@ -187,19 +115,6 @@ func DenyReason(d Decision, autonomy string) string {
 	default:
 		return "The user skipped this change. Do not retry it."
 	}
-}
-
-// splitAny splits s on every one of seps.
-func splitAny(s string, seps []string) []string {
-	parts := []string{s}
-	for _, sep := range seps {
-		next := make([]string, 0, len(parts))
-		for _, p := range parts {
-			next = append(next, strings.Split(p, sep)...)
-		}
-		parts = next
-	}
-	return parts
 }
 
 // stringField reads a string out of a decoded JSON object, or "" when the key

@@ -545,7 +545,7 @@ export function kontoraAssistant() {
       return [
         { key: 'read', label: 'read only', hint: 'answers questions, changes nothing' },
         { key: 'ask', label: 'ask first', hint: 'holds every change for your approval' },
-        { key: 'auto', label: 'auto', hint: 'makes changes without asking, except deletes' },
+        { key: 'auto', label: 'auto', hint: 'runs known reads and writes; asks for deletes and unclassified calls' },
       ];
     },
 
@@ -561,7 +561,15 @@ export function kontoraAssistant() {
       return row ? row.label : this.assistantAutonomy;
     },
 
-    // --- the parked write ------------------------------------------------
+    // --- approval --------------------------------------------------------
+
+    assistantApprovalLabel() {
+      switch (this.assistantGate?.kind) {
+        case 'delete': return 'delete';
+        case 'write': return 'change';
+        default: return 'unclassified call';
+      }
+    },
 
     async resolveAssistantGate(approve) {
       const gate = this.assistantGate;

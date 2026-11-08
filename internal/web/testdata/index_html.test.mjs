@@ -12058,6 +12058,17 @@ test("approving a parked write answers the gate and clears the card", async () =
   assert.equal(state.assistantGate, null);
 });
 
+test("approval labels distinguish deletion, writes and unclassified calls", () => {
+  const html = fs.readFileSync(htmlPath, "utf8");
+  const { state } = assistantState();
+  for (const [kind, label] of [["delete", "delete"], ["write", "change"], ["unknown", "unclassified call"], ["unexpected", "unclassified call"]]) {
+    state.assistantGate = { kind };
+    assert.equal(state.assistantApprovalLabel(), label);
+  }
+  assert.equal((html.match(/x-text="assistantApprovalLabel\(\)"/g) || []).length, 2);
+  assert.match(state.assistantAutonomies().find((a) => a.key === "auto").hint, /asks for deletes and unclassified calls/);
+});
+
 test("skipping a parked write sends the refusal", async () => {
   const { state, requests } = assistantState();
   await state.initAssistant();

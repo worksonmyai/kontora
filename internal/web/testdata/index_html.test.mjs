@@ -211,6 +211,15 @@ function stubXterm(termState) {
       this.element = { clientWidth: 800, clientHeight: 400, parentNode: null };
       this.resets = 0;
       this.disposed = false;
+      this.inputListeners = [];
+      this.writes = [];
+      this.textarea = {
+        readOnly: false,
+        focuses: 0,
+        blurs: 0,
+        focus() { this.focuses += 1; },
+        blur() { this.blurs += 1; },
+      };
       created.push(this);
     }
     loadAddon() {}
@@ -223,10 +232,14 @@ function stubXterm(termState) {
     reset() {
       this.resets += 1;
     }
-    write() {}
-    onData() {
-      return { dispose() {} };
+    write(data) { this.writes.push(data); }
+    onData(handler) {
+      const listener = { handler, disposed: false, dispose() { this.disposed = true; } };
+      this.inputListeners.push(listener);
+      return listener;
     }
+    focus() { this.textarea.focus(); }
+    blur() { this.textarea.blur(); }
     scrollToBottom() {}
     dispose() {
       this.disposed = true;
@@ -269,12 +282,12 @@ async function liveTerminal() {
 
 // liveTerminal without the streaming half, so a test can hold back the frame
 // _connectTerminal defers the connect to.
-async function openedTerminal(overrides = {}) {
+async function openedTerminal(overrides = {}, { mobile = false } = {}) {
   const container = { textContent: "" };
   const { ctx, state } = loadKontoraContext({
     document: {
       getElementById(id) {
-        return id === "terminal-session" ? container : null;
+        return id === (mobile ? "terminal-container-mobile" : "terminal-session") ? container : null;
       },
       querySelector() {
         return null;
@@ -301,8 +314,10 @@ async function openedTerminal(overrides = {}) {
   });
 
   stubXterm(ctx.termState);
+  state.isMobile = mobile;
   state.selectedTicket = { id: "tst-001", status: "in_progress" };
   state.activeTab = "session";
+  state.detailTab = mobile ? "terminal" : "ticket";
   state.$nextTick = (callback) => {
     if (callback) callback();
     return Promise.resolve();
@@ -921,6 +936,214 @@ test("refitTerminal skips a container it cannot measure", async () => {
 
   assert.equal(ctx.termState.fit.fits, fitsWhileVisible, "no reflow against a hidden container");
 });
+
+async function mobileInputTerminal(subject) {
+  const sockets = [];
+  const WebSocket = class {
+    static OPEN = 1;
+    constructor(url) {
+      this.url = url;
+      this.readyState = 0;
+      this.sent = [];
+      sockets.push(this);
+    }
+    send(data) { this.sent.push(JSON.parse(data)); }
+    close() { this.readyState = 3; this.closed = true; }
+  };
+  if (subject === 'epic') {
+    const ui = epicSupervisorUI({ mobile: true, overrides: { WebSocket } });
+    await ui.state.openEpic(ui.epic.id);
+    ui.state.epicWatchAgent();
+    await flushMicrotasks();
+    return { ...ui, sockets };
+  }
+  return { ...await openedTerminal({ WebSocket }, { mobile: true }), sockets };
+}
+
+for (const subject of ['ticket', 'epic']) {
+  test(`mobile ${subject} input waits for the current RW socket without focusing or queueing`, async () => {
+    const { ctx, state, sockets } = await mobileInputTerminal(subject);
+    const term = ctx.termState.term;
+    assert.equal(term.options.disableStdin, true, 'RO terminal cannot accept input');
+    assert.equal(term.textarea.readOnly, true, 'RO taps cannot open the keyboard');
+    sockets[0].readyState = 1;
+    sockets[0].onopen();
+    assert.equal(term.textarea.readOnly, true, 'RO readiness does not enable input');
+
+    state.toggleTerminalRW();
+    const rw = ctx.termState.ws;
+    const listener = term.inputListeners.at(-1);
+    assert.match(rw.url, /rw=1/);
+    assert.equal(term.options.disableStdin, true, 'connecting is still read-only');
+    assert.equal(term.textarea.readOnly, true);
+    listener.handler('before open');
+    rw.readyState = 1;
+    listener.handler('before callback');
+    assert.deepEqual(rw.sent, []);
+    term.focus();
+    const connectingBlurs = term.textarea.blurs;
+    rw.onopen();
+    assert.ok(term.textarea.blurs > connectingBlurs, 'a tap during connection cannot retain focus when input becomes ready');
+    assert.equal(state.terminalConnected, true);
+    assert.equal(term.options.disableStdin, false);
+    assert.equal(term.textarea.readOnly, false, 'the next terminal tap can open the keyboard');
+    assert.equal(term.textarea.focuses, 1, 'socket readiness cannot focus the textarea');
+    assert.deepEqual(rw.sent, [], 'input typed before readiness is not replayed');
+    listener.handler('ready');
+    assert.deepEqual(rw.sent, [{ type: 'input', data: 'ready' }]);
+
+    term.focus();
+    const blurs = term.textarea.blurs;
+    state.toggleTerminalRW();
+    assert.equal(state.terminalRW, false);
+    assert.equal(listener.disposed, true);
+    assert.ok(term.textarea.blurs > blurs, 'ending input dismisses the keyboard');
+    assert.equal(term.options.disableStdin, true);
+    assert.equal(term.textarea.readOnly, true);
+    assert.doesNotMatch(ctx.termState.ws.url, /rw=1/);
+    rw.readyState = 1;
+    listener.handler('late input');
+    rw.onopen();
+    assert.equal(term.textarea.readOnly, true);
+    assert.equal(state.terminalConnected, false);
+    assert.equal(rw.sent.length, 1);
+    state.destroy();
+  });
+
+  for (const action of ['stream', 'teardown', 'close', 'error', 'tab', 'selection', 'detail', 'breakpoint', 'escape']) {
+    test(`mobile ${subject} input resets on ${action} and stale callbacks stay inert`, async () => {
+      const { ctx, state, sockets } = await mobileInputTerminal(subject);
+      state.toggleTerminalRW();
+      const term = ctx.termState.term;
+      const rw = ctx.termState.ws;
+      rw.readyState = 1;
+      rw.onopen();
+      const listener = term.inputListeners.at(-1);
+      term.focus();
+      const blurs = term.textarea.blurs;
+      switch (action) {
+        case 'stream': state._disconnectStream(); break;
+        case 'teardown': state.closeTerminal(); break;
+        case 'close': rw.onclose(); break;
+        case 'error': rw.onerror(); break;
+        case 'tab':
+          if (subject === 'epic') state.epicSwitchTab('children');
+          else state.mobileSwitchTab('ticket');
+          break;
+        case 'selection':
+          if (subject === 'epic') await state.openEpic(state.selectedEpic.id);
+          else await state.selectTicket({ id: 'tst-002', status: 'in_progress' });
+          break;
+        case 'detail':
+          if (subject === 'epic') await state.closeEpic();
+          else state.closeDetail();
+          break;
+        case 'breakpoint':
+          state.isMobile = false;
+          state._mountBoard = () => {};
+          state._onBreakpointChange();
+          break;
+        case 'escape': {
+          let stopped = false;
+          assert.equal(term.keyHandler({ type: 'keydown', key: 'Escape', preventDefault() {}, stopPropagation() { stopped = true; } }), false);
+          assert.equal(stopped, true);
+          assert.ok(state.outputSubject(), 'Escape leaves the detail open');
+          break;
+        }
+      }
+      await flushMicrotasks();
+      assert.equal(state.terminalRW, false);
+      assert.equal(term.textarea.readOnly, true);
+      assert.equal(term.options.disableStdin, true);
+      assert.ok(term.textarea.blurs > blurs);
+      assert.equal(listener.disposed, true, 'old input listener is disposed');
+      const connected = state.terminalConnected;
+      const writes = term.writes.length;
+      rw.readyState = 1;
+      rw.onopen();
+      rw.onmessage({ data: new ArrayBuffer(0) });
+      rw.onclose();
+      rw.onerror();
+      listener.handler('stale');
+      assert.equal(state.terminalConnected, connected);
+      assert.equal(term.textarea.readOnly, true);
+      assert.deepEqual(rw.sent, []);
+      assert.equal(term.writes.length, writes, 'old output cannot write into the reused terminal');
+      assert.ok(sockets.filter(ws => !ws.closed).every(ws => !ws.url.includes('rw=1')));
+      state.destroy();
+    });
+  }
+
+  test(`mobile ${subject} reconnects RO after a disconnect and ignores a replaced RW socket`, async () => {
+    const { ctx, state } = await mobileInputTerminal(subject);
+    state.toggleTerminalRW();
+    const first = ctx.termState.ws;
+    const term = ctx.termState.term;
+    const listener = term.inputListeners.at(-1);
+    state.toggleTerminalRW();
+    state.toggleTerminalRW();
+    const current = ctx.termState.ws;
+    first.readyState = 1;
+    first.onopen();
+    listener.handler('replaced');
+    assert.equal(state.terminalConnected, false);
+    assert.equal(term.textarea.readOnly, true);
+    assert.deepEqual(first.sent, []);
+    current.readyState = 1;
+    current.onopen();
+    first.onclose();
+    first.onerror();
+    assert.equal(state.terminalConnected, true);
+    assert.equal(term.textarea.readOnly, false);
+    current.onclose();
+    assert.equal(state.terminalRW, false);
+    state.reconnectTerminal();
+    await flushMicrotasks();
+    assert.doesNotMatch(ctx.termState.ws.url, /rw=1/);
+    assert.equal(ctx.termState.term, term, 'reconnect reuses xterm');
+    state.destroy();
+  });
+}
+
+for (const mobile of [false, true]) {
+  test(`replaced input listeners cannot send to an old socket: mobile=${mobile}`, async () => {
+    const { ctx, state } = await openedTerminal({}, { mobile });
+    const term = ctx.termState.term;
+    state.toggleTerminalRW();
+    const first = ctx.termState.ws;
+    first.onopen();
+    const listener = term.inputListeners.at(-1);
+    const sent = [];
+    first.send = data => sent.push(JSON.parse(data));
+    listener.handler('current');
+    assert.equal(sent.length, 1);
+
+    state._connectWs(state._terminalSeq - 1);
+    assert.equal(listener.disposed, false, 'a stale connect cannot remove the current listener');
+    assert.equal(ctx.termState.ws, first);
+    state._connectWs(state._terminalSeq);
+    assert.equal(listener.disposed, true);
+    const current = ctx.termState.ws;
+    current.onopen();
+    first.readyState = 1;
+    listener.handler('stale');
+    first.onopen();
+    first.onclose();
+    first.onerror();
+    assert.equal(sent.length, 1, 'socket identity matters even within the same generation');
+    assert.equal(ctx.termState.ws, current);
+    assert.equal(state.terminalConnected, true);
+    assert.equal(term.inputListeners.filter(l => !l.disposed).length, 1);
+
+    state.closeTerminal();
+    assert.equal(state.terminalRW, !mobile, 'desktop keeps its existing mode across stream teardown');
+    assert.equal(term.inputListeners.filter(l => !l.disposed).length, 0);
+    await state.openTerminal();
+    assert.equal(ctx.termState.term, term);
+    assert.equal(ctx.termState.ws.url.includes('rw=1'), !mobile);
+    state.destroy();
+  });
+}
 
 test("board columns include non-Kontora tickets in their status columns", () => {
   const state = loadKontoraState();
@@ -2528,7 +2751,7 @@ test("index.html shares routed pages and builds board layers exclusively", () =>
   }
   const css = fs.readFileSync(path.join(dirname, '../../../hack/tailwind.css'), 'utf8');
   for (const name of ['mobile-detail', 'mobile-detail-actions', 'mobile-terminal-pane', 'mobile-assistant-thread']) {
-    const tag = [...html.matchAll(/<[^>]+class="([^"]*)"[^>]*>/g)]
+    const tag = [...html.matchAll(/<[^>]+(?<!:)class="([^"]*)"[^>]*>/g)]
       .find(match => match[1].split(/\s+/).includes(name))?.[0];
     assert.ok(tag, name);
     assert.doesNotMatch(tag.match(/(?<!:)style="([^"]*)"/)?.[1] || '', /display\s*:/, name);
@@ -9324,28 +9547,38 @@ test("mobile costs remain visible for running, retried and unpriced tickets", ()
 
   assert.equal(state.mobileHasRun(state.selectedTicket), true);
   assert.equal(state.mobileTicketCostLabel(), "est. $0.10+ · 1/2");
-  assert.deepEqual(Array.from(state.mobileCostStages(), (seg) => seg.name), ["plan", "retired"]);
-  assert.equal(state.mobileCostStageLabel(state.mobileCostStages()[1]), "retired · unknown · 0/1");
+  assert.deepEqual(Array.from(state.stageRibbon(), (seg) => state.mobileStageLabel(seg)),
+    ["plan · $0.10", "code", "retired · unknown · 0/1"]);
 
   state.selectedTicket.status = "todo";
   assert.equal(state.mobileHasRun(state.selectedTicket), true, "a retried ticket keeps its run tabs");
 });
 
-test("mobile stage costs open completed stage logs", () => {
-  const state = pageState({
-    id: "kon-mobile", status: "in_progress", stage: "code", stages: ["plan", "code"],
-    history: [{ stage: "plan", run: 0 }],
-  });
-  const calls = [];
-  state.terminalOpen = true;
-  state.closeTerminal = () => { state.terminalOpen = false; };
-  state.fetchStageLogs = (id, stage) => calls.push([id, stage]);
+test("mobile stage strip preserves stage navigation with and without costs", () => {
+  for (const row of [
+    { stage: "plan", tab: "logs", open: false, logs: [["kon-mobile", "plan"]] },
+    { stage: "retired", tab: "logs", open: false, logs: [["kon-mobile", "retired"]] },
+    { stage: "code", tab: "terminal", open: true, logs: [] },
+    { stage: "test", tab: "logs", open: false, logs: [] },
+  ]) {
+    const state = pageState({
+      id: "kon-mobile", status: "in_progress", stage: "code", stages: ["plan", "code", "test"],
+      history: [{ stage: "plan", run: 0 }, { stage: "retired", run: 0 }],
+    });
+    state.ticketCost = { id: "kon-mobile", stages: [{ name: "plan", cost_usd: "0.10", priced_runs: 1, tracked_runs: 1 }] };
+    const calls = [];
+    state.detailTab = "logs";
+    state.terminalOpen = false;
+    state.openTerminal = () => { state.terminalOpen = true; };
+    state.closeTerminal = () => { state.terminalOpen = false; };
+    state.fetchStageLogs = (id, stage) => calls.push([id, stage]);
 
-  state.mobileOpenCostStage(state.stageRibbon()[0]);
+    state.clickStage(row.stage);
 
-  assert.equal(state.detailTab, "logs");
-  assert.equal(state.terminalOpen, false);
-  assert.deepEqual(calls, [["kon-mobile", "plan"]]);
+    assert.equal(state.detailTab, row.tab, row.stage);
+    assert.equal(state.terminalOpen, row.open, row.stage);
+    assert.deepEqual(calls, row.logs, row.stage);
+  }
 });
 
 test("normal and archive detail open paths request ticket cost", async () => {
@@ -10847,11 +11080,13 @@ test("index.html renders the ribbon, transcript and rail the page needs", () => 
   // A 308px rail, and a churn block whose height does not follow the file count.
   assert.match(html, /w-\[308px\] border-l border-surface-700\/50/);
   assert.match(html, /class="flex flex-col gap-\[9px\] h-\[152px\] shrink-0"/);
-  // Cost appears in both desktop ribbons, both History lists, and the mobile controls.
-  assert.equal((html.match(/costLabel\(seg\.cost\)/g) || []).length, 6);
+  // Desktop ribbons and History lists use costLabel; mobile labels also show pricing coverage.
+  assert.equal((html.match(/costLabel\(seg\.cost\)/g) || []).length, 4);
   assert.equal((html.match(/costLabel\(ticketRunCost\(hi\)\)/g) || []).length, 4);
   assert.match(html, /x-text="mobileTicketCostLabel\(\)"/);
-  assert.match(html, /aria-label="Stage cost estimates"/);
+  assert.match(html, /aria-label="Stages and cost estimates"/);
+  assert.match(html, /x-text="mobileStageLabel\(seg\)"/);
+  assert.doesNotMatch(html, /mobileCostStages\(\)|mobileOpenCostStage\(/);
   assert.match(html, /x-for="\(seg, si\) in stageRibbon\(\)" :key="seg\.name"/);
   // One resolvable desktop terminal target.
   assert.equal((html.match(/id="terminal-session"/g) || []).length, 1);

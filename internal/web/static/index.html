@@ -6129,13 +6129,13 @@
           </template>
         </header>
         <nav class="shrink-0 flex gap-5 px-4 pt-3 overflow-x-auto border-b border-surface-700" aria-label="Epic tabs">
-          <button type="button" x-show="epicIsAgent(selectedEpic)" @click="epicSwitchTab('session')"
+          <button type="button" x-show="epicIsAgent(selectedEpic)" @click="epicSwitchTab('session')" :aria-pressed="epicTab === 'session'"
                   class="font-mono text-xs pb-2 border-b-2" :class="epicTab === 'session' ? 'border-accent text-tx-hi' : 'border-transparent text-surface-600'">session</button>
-          <button type="button" x-show="epicIsAgent(selectedEpic)" @click="epicSwitchTab('activity')"
+          <button type="button" x-show="epicIsAgent(selectedEpic)" @click="epicSwitchTab('activity')" :aria-pressed="epicTab === 'activity'"
                   class="font-mono text-xs pb-2 border-b-2" :class="epicTab === 'activity' ? 'border-accent text-tx-hi' : 'border-transparent text-surface-600'">activity</button>
-          <button type="button" @click="epicSwitchTab('children')"
+          <button type="button" @click="epicSwitchTab('children')" :aria-pressed="epicTab === 'children'"
                   class="shrink-0 font-mono text-xs pb-2 border-b-2" :class="epicTab === 'children' ? 'border-accent text-tx-hi' : 'border-transparent text-surface-600'">sub-tickets + brief</button>
-          <button type="button" @click="epicSwitchTab('notes')"
+          <button type="button" @click="epicSwitchTab('notes')" :aria-pressed="epicTab === 'notes'"
                   class="font-mono text-xs pb-2 border-b-2" :class="epicTab === 'notes' ? 'border-accent text-tx-hi' : 'border-transparent text-surface-600'">notes</button>
         </nav>
         <div x-show="epicTab === 'children'" class="flex-1 min-h-0 overflow-y-auto p-4 flex flex-col gap-4">
@@ -6176,8 +6176,8 @@
         </div>
         <template x-if="epicIsAgent(selectedEpic)">
           <div x-show="epicTab === 'session' || epicTab === 'activity'" class="flex-1 min-h-0 flex flex-col">
-            <div class="shrink-0 p-3 flex items-center gap-2 flex-wrap">
-              <label class="min-w-0 font-mono text-[11px] text-tx-3 flex items-center gap-2">
+            <div class="mobile-epic-output-toolbar shrink-0 p-3 flex items-center gap-2">
+              <label class="flex-1 min-w-0 font-mono text-[11px] text-tx-3 flex items-center gap-2">
                 run
                 <select aria-label="Supervisor output run" :value="outputRunKey()" @change="selectOutputRun($event.target.value)"
                         :disabled="!outputRuns().length" class="min-w-0 bg-surface-900 border border-edge-input rounded-md px-2 py-1 text-tx-2">
@@ -6196,19 +6196,22 @@
             <div x-show="epicTab === 'session'" class="flex-1 min-h-0 flex flex-col">
               <p x-show="outputSubject()?.status !== 'in_progress'" class="p-4 font-mono text-xs text-surface-600" x-text="outputNoRunText()"></p>
               <div x-show="outputSubject()?.status === 'in_progress'" class="flex-1 min-h-0 flex flex-col">
-                <div class="shrink-0 px-3 pb-2 flex items-center gap-3 flex-wrap font-mono text-[11px]">
-                  <span class="text-surface-600" x-text="'tmux · ' + outputSubject()?.id"></span>
-                  <span :class="terminalConnected ? 'text-st-progress' : 'text-surface-600'" x-text="terminalConnected ? 'connected' : (terminalError ? 'disconnected' : 'connecting…')" role="status"></span>
-                  <button type="button" @click="toggleTerminalRW()" :disabled="!terminalConnected"
+                <div class="mobile-terminal-toolbar">
+                  <div class="mobile-epic-terminal-context">
+                    <span class="truncate" :title="outputSubject()?.id" x-text="'tmux · ' + outputSubject()?.id"></span>
+                    <span :class="terminalConnected ? 'text-st-progress' : 'text-surface-600'" x-text="terminalConnected ? 'connected' : (terminalError ? 'disconnected' : 'connecting…')" role="status"></span>
+                  </div>
+                  <button type="button" @click="toggleTerminalRW()" :disabled="!terminalOpen || !!terminalError" :aria-pressed="terminalRW"
                           class="px-2 py-1 rounded-md border border-edge-input disabled:opacity-40"
-                          :class="terminalRW ? 'text-err bg-err/10 border-err/40' : 'text-tx-3'" x-text="terminalRW ? 'read-write' : 'read-only'"></button>
+                          :class="terminalRW ? 'text-err bg-err/10 border-err/40' : 'text-tx-3'" x-text="terminalRW ? 'Done typing' : 'Enable input'"></button>
                 </div>
                 <div x-show="terminalError" class="shrink-0 px-3 pb-3 flex items-center gap-3 font-mono text-xs text-err" role="alert">
                   <span class="whitespace-pre-wrap break-words" x-text="terminalError"></span>
                   <button type="button" @click="reconnectTerminal()" class="shrink-0 underline">retry connection</button>
                 </div>
-                <div id="epic-terminal-mobile" class="flex-1 min-h-0 mx-3 mb-3 p-1.5 rounded-[10px] bg-surface-deep border border-surface-700 overflow-hidden"
-                     :class="terminalRW ? 'ring-1 ring-err/40' : ''"></div>
+                <div class="mobile-terminal-frame" :class="terminalRW ? 'mobile-terminal-input' : ''">
+                  <div id="epic-terminal-mobile" class="mobile-terminal-host"></div>
+                </div>
               </div>
             </div>
             <div x-show="epicTab === 'activity'" class="flex-1 min-h-0 flex flex-col">
@@ -6302,14 +6305,17 @@
       </section>
     </template>
 
-    <div x-show="isMobile && selectedTicket && currentView === 'board'" x-cloak class="mobile-detail detail-enter">
+    <div x-show="isMobile && selectedTicket && currentView === 'board'" x-cloak class="mobile-detail detail-enter" :class="mobileTerminalCompact() ? 'mobile-terminal-compact' : ''">
       <!-- header -->
       <div class="mobile-detail-header">
-        <div style="display:flex;align-items:center;gap:10px;padding:6px 14px 10px;">
+        <div class="mobile-detail-context">
           <button @click="closeDetail()" style="width:32px;height:32px;margin-left:-4px;border:none;background:transparent;color:rgba(var(--tx-3),1);display:flex;align-items:center;justify-content:center;flex:none;" aria-label="Back">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
           </button>
-          <span style="font-family:'JetBrains Mono',monospace;font-size:11px;color:rgba(var(--surface-600),1);flex:1;" x-text="selectedTicket?.id"></span>
+          <div class="mobile-detail-heading">
+            <span class="font-mono text-[11px] text-tx-3" x-text="selectedTicket?.id"></span>
+            <span class="mobile-detail-title" x-text="selectedTicket?.title" :title="selectedTicket?.title"></span>
+          </div>
           <button type="button" x-show="isSecondary(selectedTicket)" @click="claimTicket()"
                   :disabled="!ticketCanClaim(selectedTicket) || claimSubmitting" :title="selectedTicket?.refusal_reason || 'Move into primary without starting work. Related tickets are not moved; references resolve in primary.'"
                   class="font-mono text-xs px-3 py-2 rounded bg-accent text-accent-fg disabled:opacity-50 disabled:cursor-not-allowed"
@@ -6319,7 +6325,7 @@
             <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="2.2"/><circle cx="12" cy="12" r="2.2"/><circle cx="19" cy="12" r="2.2"/></svg>
           </button>
         </div>
-        <div style="display:flex;align-items:center;gap:8px;padding:0 16px 10px;flex-wrap:wrap;">
+        <div class="mobile-detail-secondary" style="align-items:center;gap:8px;padding:0 16px 10px;flex-wrap:wrap;">
           <span class="pipe-tag" :data-pipe-color="selectedTicket ? ticketPipeColor(selectedTicket) : 'none'" x-text="selectedTicket ? ticketTagLabel(selectedTicket) : ''"></span>
           <span class="status-chip" :data-status="selectedTicket?.status" x-text="selectedTicket?.status"></span>
           <span class="font-mono text-[11px] text-tx-3 break-all" x-text="sourceLabel(selectedTicket)"></span>
@@ -6343,25 +6349,14 @@
             <span style="padding:2px 8px;border-radius:9999px;border:1px solid hsl(var(--st-paused) / .25);background:hsl(var(--st-paused) / .12);color:hsl(var(--st-paused));font-family:'JetBrains Mono',monospace;font-size:11px;">not a kontora ticket</span>
           </template>
         </div>
-        <template x-if="!isSecondary(selectedTicket) && mobileCostStages().length">
-          <div aria-label="Stage cost estimates" style="display:flex;align-items:center;gap:7px;overflow-x:auto;padding:0 16px 8px;">
-            <template x-for="seg in mobileCostStages()" :key="seg.name">
-              <button type="button" @click="mobileOpenCostStage(seg)"
-                      :disabled="seg.state !== 'done' || !seg.runs"
-                      :title="costTooltip(seg.cost)" :aria-label="seg.name + ': ' + costTooltip(seg.cost)"
-                      :style="'flex:none;border:1px solid rgba(var(--surface-700),.5);background:rgba(var(--surface-900),1);border-radius:6px;padding:4px 8px;font-family:\'JetBrains Mono\',monospace;font-size:10.5px;color:rgba(var(--tx-3),1);cursor:' + (seg.state === 'done' && seg.runs ? 'pointer' : 'default') + ';'"
-                      x-text="mobileCostStageLabel(seg)"></button>
-            </template>
-          </div>
-        </template>
         <template x-if="!isSecondary(selectedTicket) && mobileHasRun(selectedTicket)">
           <div style="display:flex;gap:18px;padding:0 16px;">
-            <button @click="mobileSwitchTab(mobileFirstTab())"
+            <button @click="mobileSwitchTab(mobileFirstTab())" :aria-pressed="detailTab === mobileFirstTab()"
                     :style="'border:none;background:transparent;padding:10px 0;font-family:\'JetBrains Mono\',monospace;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;cursor:pointer;border-bottom:2px solid ' + (detailTab===mobileFirstTab() ? 'rgba(var(--accent),1)' : 'transparent') + ';color:' + (detailTab===mobileFirstTab() ? 'rgba(var(--tx),1)' : 'rgba(var(--surface-600),1)') + ';'"
                     x-text="mobileFirstTabLabel()"></button>
-            <button x-show="selectedTicket?.status === 'in_progress'" @click="mobileSwitchTab('logs')"
+            <button x-show="selectedTicket?.status === 'in_progress'" @click="mobileSwitchTab('logs')" :aria-pressed="detailTab === 'logs'"
                     :style="'border:none;background:transparent;padding:10px 0;font-family:\'JetBrains Mono\',monospace;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;cursor:pointer;border-bottom:2px solid ' + (detailTab==='logs' ? 'rgba(var(--accent),1)' : 'transparent') + ';color:' + (detailTab==='logs' ? 'rgba(var(--tx),1)' : 'rgba(var(--surface-600),1)') + ';'">≡ logs</button>
-            <button @click="mobileSwitchTab('ticket')"
+            <button @click="mobileSwitchTab('ticket')" :aria-pressed="detailTab === 'ticket'"
                     :style="'border:none;background:transparent;padding:10px 0;font-family:\'JetBrains Mono\',monospace;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;cursor:pointer;border-bottom:2px solid ' + (detailTab==='ticket' ? 'rgba(var(--accent),1)' : 'transparent') + ';color:' + (detailTab==='ticket' ? 'rgba(var(--tx),1)' : 'rgba(var(--surface-600),1)') + ';'">▤ ticket</button>
           </div>
         </template>
@@ -6372,44 +6367,31 @@
 
         <!-- terminal (live; in_progress) -->
         <div x-show="!isSecondary(selectedTicket) && detailTab==='terminal'" class="mobile-terminal-pane">
-          <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:12px 16px 8px;flex-wrap:wrap;flex:none;">
-            <span style="font-family:'JetBrains Mono',monospace;font-size:11px;padding:3px 9px;border-radius:5px;background:rgba(var(--surface-800),1);color:rgba(var(--tx-3),1);" x-text="selectedTicket?.agent || 'default'"></span>
-            <div style="display:flex;align-items:center;gap:12px;font-family:'JetBrains Mono',monospace;font-size:11px;">
-              <span style="display:flex;align-items:center;gap:5px;color:hsl(var(--st-progress));"><span class="pulse-dot" style="width:6px;height:6px;border-radius:9999px;background:hsl(var(--st-progress));"></span>live</span>
-              <button @click="toggleTerminalRW()" :style="'background:transparent;border:none;cursor:pointer;font-family:\'JetBrains Mono\',monospace;font-size:11px;color:' + (terminalRW ? 'rgba(var(--err),1)' : 'rgba(var(--surface-600),1)') + ';'" x-text="terminalRW ? 'read-write' : 'read-only'"></button>
-            </div>
+          <div class="mobile-terminal-toolbar">
+            <span role="status" x-text="terminalConnected ? (terminalRW ? 'Tap terminal to type' : 'Read-only') : (terminalError ? 'Disconnected' : 'Connecting…')"></span>
+            <button type="button" @click="toggleTerminalRW()" :aria-pressed="terminalRW" :disabled="!terminalOpen || !!terminalError"
+                    :class="terminalRW ? 'text-err' : 'text-tx-3'" x-text="terminalRW ? 'Done typing' : 'Enable input'"></button>
           </div>
           <div x-show="terminalError" class="shrink-0 px-3 pb-3 font-mono text-xs text-err" role="alert">
             <span x-text="terminalError"></span>
             <button type="button" @click="reconnectTerminal()" class="ml-3 underline">retry connection</button>
           </div>
-          <div id="terminal-container-mobile" :style="'flex:1;min-height:0;margin:0 12px 10px;padding:6px;border-radius:10px;background:rgba(var(--surface-deep),1);border:1px solid ' + (terminalRW ? 'rgba(var(--err),.4)' : 'rgba(var(--surface-700),.4)') + ';overflow:hidden;'"></div>
-          <div style="flex:none;margin:0 12px;padding:10px 12px;border-top:1px solid rgba(var(--surface-700),.4);">
-            <div style="font-family:'JetBrains Mono',monospace;font-size:11px;line-height:1.6;display:flex;flex-wrap:wrap;gap:8px;align-items:center;">
-              <span style="color:rgba(var(--accent),1);" x-text="'[' + (selectedTicket?.agent || 'default') + ']'"></span>
-              <template x-if="selectedTicket?.branch">
-                <span style="color:rgba(var(--accent-bright),1);" x-text="'[' + selectedTicket.branch + ']'"></span>
-              </template>
-            </div>
-            <div style="display:flex;align-items:center;gap:8px;margin-top:8px;font-family:'JetBrains Mono',monospace;font-size:11px;color:rgba(var(--tx-4),1);">
-              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M8 9l3 3-3 3M13 15h3"/></svg>
-              <span class="copyable" @click="copyCmd('kontora attach ' + selectedTicket?.id)" x-text="copiedCmd === 'kontora attach ' + selectedTicket?.id ? '✓ copied' : 'kontora attach ' + selectedTicket?.id"></span>
-            </div>
+          <div class="mobile-terminal-frame" :class="terminalRW ? 'mobile-terminal-input' : ''">
+            <div id="terminal-container-mobile" class="mobile-terminal-host"></div>
           </div>
         </div>
 
         <!-- logs (stage history) -->
         <div x-show="!isSecondary(selectedTicket) && detailTab==='logs'" class="overflow-y-auto" style="flex:1;min-height:0;padding:14px 16px 24px;">
+          <div x-show="mobileTicketCostLabel()" class="font-mono text-xs text-tx-3 mb-3" :title="costTooltip(currentTicketCost())" x-text="mobileTicketCostLabel()"></div>
           <template x-if="stageRibbon().length">
-            <div style="display:flex;align-items:center;gap:7px;overflow-x:auto;padding-bottom:12px;">
+            <div aria-label="Stages and cost estimates" style="display:flex;align-items:center;gap:7px;overflow-x:auto;padding-bottom:12px;">
               <template x-for="(seg, si) in stageRibbon()" :key="seg.name">
                 <span style="display:flex;align-items:center;gap:7px;flex:none;">
                   <template x-if="si>0"><span style="color:rgba(var(--surface-700),1);">→</span></template>
-                  <button @click="clickStage(seg.name)" :style="mobileStageStyle(seg.name)">
-                    <span x-text="seg.name"></span>
-                    <span x-show="costLabel(seg.cost)" :title="costTooltip(seg.cost)"
-                          style="margin-left:5px;opacity:.72;" x-text="costLabel(seg.cost)"></span>
-                  </button>
+                  <button type="button" @click="clickStage(seg.name)" :style="mobileStageStyle(seg.name)"
+                          :title="costTooltip(seg.cost)" :aria-label="seg.name + ': ' + costTooltip(seg.cost)"
+                          x-text="mobileStageLabel(seg)"></button>
                 </span>
               </template>
             </div>
@@ -6433,7 +6415,10 @@
           <template x-if="selectedTicket?.last_error">
             <div role="alert" style="border-left:3px solid rgba(var(--err),1);padding-left:12px;margin-bottom:18px;font-family:'JetBrains Mono',monospace;font-size:12px;white-space:pre-wrap;overflow-wrap:anywhere;color:rgba(var(--err),1);" x-text="selectedTicket.last_error"></div>
           </template>
-          <h1 style="font-family:'JetBrains Mono',monospace;font-size:19px;font-weight:700;line-height:1.35;color:rgba(var(--tx),1);margin:0 0 18px;" x-text="selectedTicket?.title"></h1>
+          <h1 style="font-family:'JetBrains Mono',monospace;font-size:19px;font-weight:700;line-height:1.35;color:rgba(var(--tx),1);margin:0 0 18px;overflow-wrap:anywhere;" x-text="selectedTicket?.title"></h1>
+          <button type="button" x-show="!isSecondary(selectedTicket) && mobileHasRun(selectedTicket)" @click="copyCmd('kontora attach ' + selectedTicket?.id)"
+                  class="copyable font-mono text-xs text-tx-3 mb-4 break-all" aria-label="Copy attach command"
+                  x-text="copiedCmd === 'kontora attach ' + selectedTicket?.id ? 'Copied' : 'kontora attach ' + selectedTicket?.id"></button>
           <!-- Outcome card: the whole ticket, not the run that ended last. The
                stage summaries stay below in their own card. -->
           <template x-if="finalSummary()">

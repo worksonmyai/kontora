@@ -67,6 +67,13 @@ export function kontoraMobile() {
       });
     },
 
+    mobileViewportHeight: 0,
+
+    mobileTerminalCompact() {
+      return this.isMobile && this.detailTab === 'terminal' &&
+        (this.terminalRW || (this.mobileViewportHeight > 0 && this.mobileViewportHeight < 500));
+    },
+
     mobileViewportGeometry() {
       const viewport = window.visualViewport;
       const positive = (value, fallback) => Number.isFinite(value) && value > 0 ? value : fallback;
@@ -83,6 +90,7 @@ export function kontoraMobile() {
     _updateMobileViewport() {
       if (!lifecycle) return;
       const geometry = this.mobileViewportGeometry();
+      this.mobileViewportHeight = geometry.height;
       const style = document.documentElement.style;
       Object.entries(geometry).forEach(([key, value]) => {
         const name = '--mobile-vv-' + key;
@@ -350,27 +358,13 @@ export function kontoraMobile() {
       return 'est. ' + label;
     },
 
-    mobileCostStages() {
-      return this.stageRibbon().filter(function (seg) {
-        return seg.cost && seg.cost.tracked_runs > 0;
-      });
-    },
-
-    mobileCostStageLabel(seg) {
-      if (!seg?.cost) return '';
+    mobileStageLabel(seg) {
+      if (!seg.cost || !seg.cost.tracked_runs) return seg.name;
       var label = seg.name + ' · ' + this.costLabel(seg.cost);
       if (seg.cost.priced_runs < seg.cost.tracked_runs) {
         label += ' · ' + seg.cost.priced_runs + '/' + seg.cost.tracked_runs;
       }
       return label;
-    },
-
-    mobileOpenCostStage(seg) {
-      if (!seg || seg.state !== 'done' || !seg.runs || !this.selectedTicket) return;
-      this.mobileFinishDescriptionEdit();
-      this.detailTab = 'logs';
-      if (this.terminalOpen) this.closeTerminal();
-      this.fetchStageLogs(this.selectedTicket.id, seg.name);
     },
 
     // Inline style for one chip in the logs-tab stage strip.

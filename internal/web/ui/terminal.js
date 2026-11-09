@@ -20,6 +20,8 @@ export const termState = {
   resizeObserver: null,
   resizeTimer: null,
   webglRetried: false,
+  // The breakpoint watcher updates isMobile before closing the old terminal.
+  mobile: false,
 };
 
 // The xterm session: its lifecycle, the websocket, and the terminal theme.
@@ -169,7 +171,7 @@ export function kontoraTerminal() {
         fontSize: 13,
         fontFamily: "'JetBrains Mono', monospace",
         cursorBlink: this.terminalRW,
-        disableStdin: false,
+        disableStdin: this.isMobile,
         scrollback: 5000,
         allowProposedApi: true,
       });
@@ -189,6 +191,8 @@ export function kontoraTerminal() {
         return false;
       });
       termState.term = term;
+      termState.mobile = this.isMobile;
+      this._setTerminalInput(false);
       termState.fit = fit;
       termState.webglRetried = false;
       this._loadWebgl();
@@ -224,55 +228,81 @@ export function kontoraTerminal() {
       termState.webglRetried = true;
     },
 
+    _setTerminalInput(ready) {
+      var term = termState.term;
+      if (!term) return;
+      var mobile = this.isMobile || termState.mobile;
+      term.options.disableStdin = mobile && !ready;
+      // A reused terminal keeps the cursor of whatever mode built it, and
+      // terminalRW resets to false on ticket switch and detail close.
+      term.options.cursorBlink = this.terminalRW && (!mobile || ready);
+      if (term.textarea) {
+        if (mobile && (!ready || term.textarea.readOnly)) term.blur();
+        term.textarea.readOnly = mobile && !ready;
+      }
+    },
+
     _connectWs(seq) {
+      if (this._terminalSeq !== seq || !this.terminalOpen || !termState.term) return;
+      this.terminalConnected = false;
+      this._setTerminalInput(false);
       if (termState.inputDisposable) {
         termState.inputDisposable.dispose();
         termState.inputDisposable = null;
       }
-      if (this._terminalSeq !== seq || !termState.term || this.outputSubject()?.status !== 'in_progress') return;
+      if (this.outputSubject()?.status !== 'in_progress') return;
       // Whoever asked for a stream gets exactly one. Without this, a read-write
       // toggle landing before _connectTerminal's requestAnimationFrame orphans
       // the socket it opened, and its kontora-view session outlives the page.
       if (termState.ws) {
-        termState.ws.close();
+        var previous = termState.ws;
         termState.ws = null;
+        previous.close();
       }
       var self = this;
       var term = termState.term;
-      // A reused terminal keeps the cursor of whatever mode built it, and
-      // terminalRW resets to false on ticket switch and detail close.
-      term.options.cursorBlink = this.terminalRW;
+      var rw = this.terminalRW;
+      var current = function() {
+        return self._terminalSeq === seq && self.terminalOpen && termState.ws === ws && termState.term === term;
+      };
       var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
       var url = proto + '//' + location.host + '/ws/terminal/' + encodeURIComponent(self.outputSubject().id)
-        + '?cols=' + term.cols + '&rows=' + term.rows + (self.terminalRW ? '&rw=1' : '');
+        + '?cols=' + term.cols + '&rows=' + term.rows + (rw ? '&rw=1' : '');
       var ws = new WebSocket(url);
       ws.binaryType = 'arraybuffer';
       termState.ws = ws;
       ws.onmessage = function(e) {
-        if (self._terminalSeq !== seq || termState.ws !== ws) {
+        if (!current()) {
           ws.close();
           return;
         }
         term.write(new Uint8Array(e.data));
       };
-      this.terminalConnected = false;
       ws.onopen = function() {
-        if (self._terminalSeq !== seq || termState.ws !== ws) return;
+        if (!current() || ws.readyState !== WebSocket.OPEN) return;
         self.terminalConnected = true;
         self.terminalError = null;
+        // A socket callback cannot open the keyboard. Input starts with a later tap.
+        self._setTerminalInput(rw && self.terminalRW);
       };
       var disconnected = function() {
-        if (self._terminalSeq !== seq || termState.ws !== ws) return;
+        if (!current()) return;
+        termState.ws = null;
         self.terminalConnected = false;
         self.terminalError = 'Terminal disconnected. Retry to reconnect.';
-        termState.ws = null;
+        if (self.isMobile || termState.mobile) self.terminalRW = false;
+        self._setTerminalInput(false);
+        if (termState.inputDisposable) {
+          termState.inputDisposable.dispose();
+          termState.inputDisposable = null;
+        }
         ws.close();
       };
       ws.onclose = disconnected;
       ws.onerror = disconnected;
-      if (self.terminalRW) {
+      if (rw) {
         termState.inputDisposable = term.onData(function(data) {
-          if (self._terminalSeq === seq && ws.readyState === WebSocket.OPEN) {
+          if (current() && self.terminalRW && self.terminalConnected && ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({ type: 'input', data: data }));
           }
         });
@@ -283,6 +313,9 @@ export function kontoraTerminal() {
     // it costs no Terminal construction and no new WebGL context. _terminalSeq is
     // left alone: cancelling an in-flight openTerminal is the caller's call.
     _disconnectStream() {
+      if (this.isMobile || termState.mobile) this.terminalRW = false;
+      this._setTerminalInput(false);
+      this.terminalConnected = false;
       clearTimeout(termState.resizeTimer);
       termState.resizeTimer = null;
       if (termState.resizeObserver) {
@@ -294,8 +327,9 @@ export function kontoraTerminal() {
         termState.inputDisposable = null;
       }
       if (termState.ws) {
-        termState.ws.close();
+        var ws = termState.ws;
         termState.ws = null;
+        ws.close();
       }
     },
 
@@ -309,6 +343,7 @@ export function kontoraTerminal() {
       termState.term = null;
       termState.fit = null;
       termState.webgl = null;
+      termState.mobile = false;
     },
 
     closeTerminal() {

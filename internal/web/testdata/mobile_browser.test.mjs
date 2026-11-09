@@ -17,6 +17,10 @@ const sourcePath = '/fixtures/team-tickets';
 const longID = 'kon-' + 'long-identifier-'.repeat(12);
 const tail = '\n## Notes\n\nProtected note identity: browser-note-1\n\n## Audit\nDo not edit this tail.\n';
 const stamp = '2026-10-01T10:00:00Z';
+const liveTitle = 'Running fixture with a long title explaining terminal keyboard layout and lifecycle behavior';
+const liveBranch = 'fixture/mobile-terminal-keyboard-layout-and-input-lifecycle-with-long-metadata';
+const liveAgent = 'fixture-agent-with-a-long-descriptive-name';
+const supervisorID = 'abcdef-abcd';
 let browser;
 const engine = process.env.KONTORA_BROWSER_ENGINE;
 assert.ok(['chromium', 'webkit'].includes(engine), 'The Go runner must select a browser engine');
@@ -44,8 +48,11 @@ function fixtures() {
   put(ticket('kon-draft', 'Secondary namesake', { source, kontora: false,
     can_control: false, can_claim: false, refusal_reason: 'Fixture is edit-only',
     description: 'Secondary-only description.\n', body: 'Secondary-only description.\n' + tail }));
-  put(ticket('kon-live', 'Running fixture', { status: 'in_progress', stage: 'code', started_at: stamp,
-    branch: 'fixture/live', can_edit: false }));
+  put(ticket('kon-live', liveTitle, { status: 'in_progress', stage: 'code', stages: ['plan', 'code', 'test'], started_at: stamp,
+    branch: liveBranch, agent: liveAgent, can_edit: false,
+    history: [{ stage: 'plan', run: 0, agent: liveAgent, started_at: stamp, completed_at: stamp, exit_code: 0 }] }));
+  put(ticket(supervisorID, 'Supervised fixture epic', { kind: 'epic', epic_mode: 'agent', epic_execution: 'agent',
+    status: 'in_progress', stage: 'code', started_at: stamp, can_edit: false }));
   put(ticket('kon-done', 'Completed fixture', { status: 'done', stage: 'code', can_edit: false,
     summary: 'Second code run complete.', branch: 'fixture/done', history: [
       { stage: 'code', run: 0, agent: 'fixture-agent', started_at: stamp, completed_at: stamp,
@@ -59,7 +66,7 @@ function fixtures() {
     agents: ['fixture-agent'], agent_infos: [{ name: 'fixture-agent', binary: 'pi' }],
     projects: [{ name: 'Fixture repository', path: '/fixtures/repository-with-a-long-name', agent: 'fixture-agent', pipeline: 'standard' }],
     custom_statuses: [], stages: ['plan', 'code'] };
-  const requests = [], mutations = [], sockets = [], violations = [], expectedHTTPFailures = [];
+  const requests = [], mutations = [], sockets = [], socketRoutes = [], messages = [], violations = [], expectedHTTPFailures = [];
   const behavior = { createFailure: null, createWait: null, saveFailure: null, outputRevision: 0 };
   let rawConfig = 'tickets_dir: /fixtures/primary\nauto_pick_up: false\nmax_concurrent_agents: 3\nagents:\n  fixture-agent:\n    binary: pi\n';
   const list = folder => [...records.values()].filter(t => t.source === folder && !t.archived_at);
@@ -128,7 +135,10 @@ function fixtures() {
       assert.equal(folder, 'primary', 'Secondary tickets cannot use control/output endpoints');
       if (method === 'GET') {
         switch (action) {
-          case 'cost': return json(route, { id, cost_usd: record.history.length || record.status === 'in_progress' ? '0.12' : null,
+          case 'cost': if (id === 'kon-live') return json(route, { id, cost_usd: '0.42', tracked_runs: 3, priced_runs: 2,
+            stages: [{ name: 'plan', cost_usd: '0.30', tracked_runs: 1, priced_runs: 1 },
+              { name: 'code', cost_usd: '0.12', tracked_runs: 2, priced_runs: 1 }], runs: [] });
+            return json(route, { id, cost_usd: record.history.length || record.status === 'in_progress' ? '0.12' : null,
             tracked_runs: record.history.length || (record.status === 'in_progress' ? 1 : 0),
             priced_runs: record.history.length || (record.status === 'in_progress' ? 1 : 0), stages: [], runs: [] });
           case 'chain': return json(route, { nodes: [], verdict: '' });
@@ -168,16 +178,18 @@ function fixtures() {
       try {
         const url = new URL(ws.url());
         assert.equal(url.origin, base.replace('http:', 'ws:'));
-        assert.equal(url.pathname, '/ws/terminal/kon-live');
+        assert.ok(['/ws/terminal/kon-live', '/ws/terminal/' + supervisorID].includes(url.pathname));
         assert.ok([...url.searchParams.keys()].every(k => ['cols', 'rows', 'rw'].includes(k)));
         assert.ok(Number(url.searchParams.get('cols')) > 0 && Number(url.searchParams.get('rows')) > 0);
         sockets.push(url);
+        socketRoutes.push(ws);
         // Do not call connectToServer(): there is no terminal server at all.
         ws.send(Buffer.from('Offline fixture terminal\r\n$ '));
         ws.onMessage(message => {
           try {
             const data = JSON.parse(String(message));
             assert.ok(['resize', 'input'].includes(data.type));
+            messages.push({ url, ...data });
           } catch (error) { violations.push(error.message); }
         });
       } catch (error) {
@@ -185,8 +197,41 @@ function fixtures() {
         ws.close({ code: 1008, reason: 'Unknown fixture socket' });
       }
     });
+    // Routed WebSockets open immediately. Hold the application's open callback
+    // and readyState together to exercise a connection still in progress.
+    await context.addInitScript(() => {
+      Object.defineProperty(navigator, 'clipboard', { value: { writeText: async text => { window.__fixtureCopied = text; } } });
+      const Socket = window.WebSocket;
+      window.__fixtureSockets = [];
+      window.__fixturePendingOpens = [];
+      window.WebSocket = class extends Socket {
+        constructor(...args) {
+          super(...args);
+          window.__fixtureSockets.push(this);
+          const descriptor = Object.getOwnPropertyDescriptor(this, 'onopen');
+          let handler;
+          const deliver = event => {
+            if (window.__fixtureHoldOpen) {
+              const readyState = Object.getOwnPropertyDescriptor(this, 'readyState');
+              Object.defineProperty(this, 'readyState', { configurable: true, value: Socket.CONNECTING });
+              window.__fixturePendingOpens.push(() => {
+                if (readyState) Object.defineProperty(this, 'readyState', readyState);
+                else delete this.readyState;
+                handler?.call(this, event);
+              });
+            } else handler?.call(this, event);
+          };
+          if (descriptor?.set) {
+            Object.defineProperty(this, 'onopen', { configurable: true, set(fn) { handler = fn; descriptor.set.call(this, deliver); } });
+          } else {
+            Object.defineProperty(this, 'onopen', { configurable: true, set(fn) { handler = fn; } });
+            this.addEventListener('open', deliver);
+          }
+        }
+      };
+    });
   }
-  return { install, records, requests, mutations, sockets, violations, behavior, expectedHTTPFailures };
+  return { install, records, requests, mutations, sockets, socketRoutes, messages, violations, behavior, expectedHTTPFailures };
 }
 
 async function withPage(t, width, theme, run) {
@@ -276,7 +321,140 @@ async function backToBoard(page) {
   await page.waitForFunction(() => !Alpine.$data(document.body).selectedTicket && !Alpine.$data(document.body).selectedEpic);
 }
 
+async function visualViewport(page, height, top = 0) {
+  await page.evaluate(({ height, top }) => {
+    Object.defineProperties(window.visualViewport, {
+      height: { configurable: true, value: height }, offsetTop: { configurable: true, value: top },
+    });
+    window.visualViewport.dispatchEvent(new Event('resize'));
+    window.visualViewport.dispatchEvent(new Event('scroll'));
+  }, { height, top });
+}
+
+async function terminalRows(page, height, top = 0) {
+  await page.waitForFunction(({ height, top }) => {
+    const host = document.getElementById('terminal-container-mobile');
+    const term = window.termState.term;
+    if (!host || !term?.element) return false;
+    const overlay = host.closest('.mobile-detail').getBoundingClientRect();
+    if (Math.abs(overlay.height - height) > 1 || Math.abs(overlay.top - top) > 1) return false;
+    const box = host.getBoundingClientRect();
+    const cell = term._core._renderService.dimensions.css.cell.height;
+    const controls = [...document.querySelectorAll('.mobile-detail-header button, .mobile-terminal-toolbar button, .mobile-detail-actions button')]
+      .map(el => el.getBoundingClientRect()).filter(rect => rect.width && rect.height);
+    return cell > 0 && term.rows >= 8 && box.height >= term.rows * cell &&
+      box.bottom <= height + top + 1 && term.element.getBoundingClientRect().top + term.rows * cell <= box.bottom + 1 &&
+      controls.every(rect => rect.width >= 44 && rect.height >= 44 && rect.top >= top && rect.bottom <= height + top + 1);
+  }, { height, top }).catch(async error => {
+    const geometry = await page.evaluate(() => {
+      const host = document.getElementById('terminal-container-mobile');
+      const term = window.termState.term;
+      return { host: host?.getBoundingClientRect().toJSON(), rows: term?.rows,
+        cell: term?._core._renderService.dimensions.css.cell.height,
+        terminal: term?.element?.getBoundingClientRect().toJSON(),
+        overlay: host?.closest('.mobile-detail').getBoundingClientRect().toJSON(),
+        controls: [...document.querySelectorAll('.mobile-detail-header button, .mobile-terminal-toolbar button, .mobile-detail-actions button')]
+          .map(el => ({ text: el.textContent, box: el.getBoundingClientRect().toJSON() })).filter(el => el.box.width && el.box.height) };
+    });
+    throw new Error(`${error.message}: ${JSON.stringify(geometry)}`, { cause: error });
+  });
+  assert.equal(await page.locator('#terminal-container-mobile .xterm').count(), 1);
+}
+
 describe('embedded responsive browser UI', { concurrency: 4 }, () => {
+  for (const width of [320, 390]) for (const theme of themes) {
+    test(`terminal visible geometry ${width}px / ${theme}`, async t => {
+      await withPage(t, width, theme, async (page, fixture) => {
+        await openTicket(page, 'kon-live');
+        await visible(page.locator('#terminal-container-mobile .xterm'));
+        await page.waitForFunction(() => Alpine.$data(document.body).terminalConnected);
+        for (const height of [360, 420, 900]) {
+          await visualViewport(page, height, height === 900 ? 0 : 12);
+          assert.equal(await page.evaluate(() => innerHeight), 900, 'Only the visual viewport shrinks');
+          await terminalRows(page, height, height === 900 ? 0 : 12);
+          const status = page.locator('.mobile-terminal-toolbar [role="status"]');
+          assert.equal(await page.locator('.mobile-detail-actions').isVisible(), height >= 500);
+          await page.evaluate(() => { window.__fixtureHoldOpen = true; });
+          await page.getByRole('button', { name: 'Enable input', exact: true }).filter({ visible: true }).click();
+          await page.waitForFunction(() => window.__fixturePendingOpens.length > 0);
+          assert.equal(await status.textContent(), 'Connecting…');
+          assert.equal(await page.locator('.mobile-detail-actions').isVisible(), false);
+          assert.equal(await page.locator('#terminal-container-mobile textarea').evaluate(el => el.readOnly), true);
+          const inputs = fixture.messages.filter(message => message.type === 'input').length;
+          await page.locator('#terminal-container-mobile .xterm-screen').click();
+          await page.keyboard.type('must-not-send');
+          assert.equal(fixture.messages.filter(message => message.type === 'input').length, inputs);
+          await terminalRows(page, height, height === 900 ? 0 : 12);
+          await page.evaluate(() => {
+            window.__fixtureHoldOpen = false;
+            window.__fixturePendingOpens.splice(0).forEach(open => open());
+          });
+          await page.waitForFunction(() => Alpine.$data(document.body).terminalConnected);
+          assert.equal(await page.locator('#terminal-container-mobile textarea').evaluate(el => el.readOnly), false);
+          assert.equal(await page.locator('#terminal-container-mobile textarea').evaluate(el => el === document.activeElement), false,
+            'A tap during connection must not open the keyboard when readiness changes');
+          await terminalRows(page, height, height === 900 ? 0 : 12);
+          await page.locator('#terminal-container-mobile .xterm-screen').click();
+          await page.keyboard.type('fixture-input');
+          await page.waitForFunction(() => document.activeElement?.classList.contains('xterm-helper-textarea'));
+          const done = page.getByRole('button', { name: 'Done typing', exact: true }).filter({ visible: true });
+          if (height === 420) await page.keyboard.press('Escape');
+          else await done.click();
+          await page.getByRole('button', { name: 'Enable input', exact: true }).filter({ visible: true }).waitFor();
+          assert.equal(await page.locator('#terminal-container-mobile textarea').evaluate(el => el === document.activeElement), false);
+          assert.equal(new URL(page.url()).hash, '#/t/kon-live');
+          await page.waitForFunction(() => Alpine.$data(document.body).terminalConnected);
+          await fixture.socketRoutes.at(-1).close({ code: 1000, reason: 'Fixture disconnect' });
+          await page.waitForFunction(() => !!Alpine.$data(document.body).terminalError);
+          assert.equal(await status.textContent(), 'Disconnected');
+          await terminalRows(page, height, height === 900 ? 0 : 12);
+          await page.getByRole('button', { name: 'retry connection', exact: true }).filter({ visible: true }).click();
+          await page.waitForFunction(() => Alpine.$data(document.body).terminalConnected);
+        }
+        assert.ok(fixture.messages.some(message => message.type === 'input' && message.url.searchParams.get('rw') === '1'));
+        assert.ok(fixture.messages.some(message => message.type === 'resize' && message.rows >= 8));
+        assert.equal(await page.evaluate(() => window.__fixtureSockets.filter(ws => ws.readyState < 2).length), 1);
+        for (const height of [360, 420, 900]) {
+          await page.setViewportSize({ width, height });
+          await visualViewport(page, height);
+          await terminalRows(page, height);
+        }
+        const detail = page.locator('.mobile-detail');
+        assert.equal(await detail.locator('.mobile-detail-title').textContent(), liveTitle);
+        await detail.getByRole('button', { name: '≡ logs', exact: true }).click();
+        assert.equal(await detail.getByRole('button', { name: '≡ logs', exact: true }).getAttribute('aria-pressed'), 'true');
+        const stages = detail.getByLabel('Stages and cost estimates');
+        await visible(stages);
+        assert.equal(await stages.getByRole('button').count(), 3, 'Each stage has one control, including unpriced stages');
+        assert.match(await stages.textContent(), /1\/2/);
+        await stages.getByRole('button', { name: /^test:/ }).click();
+        assert.equal(await detail.getByRole('button', { name: '≡ logs', exact: true }).getAttribute('aria-pressed'), 'true');
+        await stages.getByRole('button', { name: /^plan:/ }).click();
+        await visible(detail.getByText('kon-live plan fixture log revision 0', { exact: true }));
+        await stages.getByRole('button', { name: /^code:/ }).click();
+        await page.waitForFunction(() => Alpine.$data(document.body).detailTab === 'terminal' && Alpine.$data(document.body).terminalConnected);
+        await detail.getByRole('button', { name: '≡ logs', exact: true }).click();
+        assert.equal(await detail.locator('.mobile-detail-title').textContent(), liveTitle);
+        await detail.getByRole('button', { name: '▤ ticket', exact: true }).click();
+        assert.equal(await detail.locator('h1[x-text="selectedTicket?.title"]').textContent(), liveTitle);
+        await visible(detail.getByText(liveAgent, { exact: true }));
+        await visible(detail.getByText(liveBranch, { exact: true }));
+        const copy = detail.getByRole('button', { name: 'Copy attach command', exact: true });
+        await copy.focus();
+        await page.keyboard.press('Enter');
+        assert.equal(await page.evaluate(() => window.__fixtureCopied), 'kontora attach kon-live');
+        await detail.getByRole('button', { name: '›_ terminal', exact: true }).click();
+        await page.waitForFunction(() => Alpine.$data(document.body).terminalConnected);
+        assert.equal(await page.locator('#terminal-container-mobile textarea').evaluate(el => el.readOnly), true);
+        await page.getByRole('button', { name: 'Enable input', exact: true }).filter({ visible: true }).click();
+        await page.waitForFunction(() => Alpine.$data(document.body).terminalConnected);
+        await detail.getByRole('button', { name: '≡ logs', exact: true }).click();
+        await detail.getByRole('button', { name: '›_ terminal', exact: true }).click();
+        await page.waitForFunction(() => Alpine.$data(document.body).terminalConnected);
+        assert.equal(await page.locator('#terminal-container-mobile textarea').evaluate(el => el.readOnly), true);
+      });
+    });
+  }
   for (const width of widths) for (const theme of themes) {
     test(`${width}px / ${theme}`, { timeout: 110000 }, async t => {
       await withPage(t, width, theme, async (page, fixture) => {
@@ -567,7 +745,7 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
         const tab = phone ? page.locator('[x-text="mobileFirstTabLabel()"]:visible')
           : page.getByRole('button', { name: 'activity', exact: true }).filter({ visible: true });
         await tab.click();
-        if (phone) await page.getByRole('button', { name: 'plan', exact: true }).filter({ visible: true }).click();
+        if (phone) await page.getByLabel('Stages and cost estimates').getByRole('button', { name: /^plan:/ }).click();
         const output = revision => page.getByText(phone
           ? `${id} plan fixture log revision ${revision}` : `Fixture activity revision ${revision}`, { exact: true }).filter({ visible: true });
         await visible(output(0));
@@ -853,13 +1031,71 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
       });
     });
   }
+  for (const width of [320, 390]) for (const theme of themes) {
+    test(`supervisor terminal input lifecycle ${width}px / ${theme}`, async t => {
+      await withPage(t, width, theme, async (page, fixture) => {
+        await routeTo(page, '#/e/' + supervisorID);
+        const epic = page.locator('.mobile-epic');
+        await epic.getByRole('button', { name: 'session', exact: true }).click();
+        await visible(page.locator('#epic-terminal-mobile .xterm'));
+        await page.waitForFunction(() => Alpine.$data(document.body).terminalConnected);
+        await epic.getByRole('button', { name: 'Enable input', exact: true }).click();
+        await page.waitForFunction(() => Alpine.$data(document.body).terminalConnected);
+        assert.equal(await page.locator('#epic-terminal-mobile textarea').evaluate(el => el.readOnly), false);
+        await page.locator('#epic-terminal-mobile .xterm-screen').click();
+        await page.keyboard.type('supervisor-input');
+        for (const height of [420, 360, 900]) {
+          const top = height === 900 ? 0 : 12;
+          await visualViewport(page, height, top);
+          await page.waitForFunction(({ height, top }) => {
+            const box = document.querySelector('.mobile-epic').getBoundingClientRect();
+            return Math.abs(box.height - height) < 1 && Math.abs(box.top - top) < 1;
+          }, { height, top });
+          assert.equal(await page.evaluate(() => innerHeight), 900, 'Only the visual viewport shrinks');
+          const done = epic.getByRole('button', { name: 'Done typing', exact: true });
+          const box = await done.boundingBox();
+          assert.ok(box && box.width >= 44 && box.height >= 44 && box.x >= 0 && box.x + box.width <= width &&
+            box.y >= top && box.y + box.height <= top + height,
+          `Input exit outside visible overlay: ${JSON.stringify(box)} at ${width}x${height}`);
+          assert.equal(await page.locator('#epic-terminal-mobile textarea').evaluate(el => el === document.activeElement), true);
+          assert.equal(await done.evaluate(el => {
+            const box = el.getBoundingClientRect();
+            return el.contains(document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2));
+          }), true, 'Input exit must receive touch input');
+          await done.click();
+          await page.waitForFunction(() => Alpine.$data(document.body).terminalConnected && !Alpine.$data(document.body).terminalRW);
+          assert.equal(await page.locator('#epic-terminal-mobile textarea').evaluate(el => el === document.activeElement), false);
+          await visualViewport(page, 900);
+          await epic.getByRole('button', { name: 'Enable input', exact: true }).click();
+          await page.waitForFunction(() => Alpine.$data(document.body).terminalConnected);
+          await page.locator('#epic-terminal-mobile .xterm-screen').click();
+        }
+        await page.keyboard.press('Escape');
+        assert.equal(new URL(page.url()).hash, '#/e/' + supervisorID);
+        await visible(epic.getByRole('button', { name: 'Enable input', exact: true }));
+        await epic.getByRole('button', { name: 'Enable input', exact: true }).click();
+        await page.waitForFunction(() => Alpine.$data(document.body).terminalConnected);
+        await epic.getByRole('button', { name: 'activity', exact: true }).click();
+        await epic.getByRole('button', { name: 'session', exact: true }).click();
+        await page.waitForFunction(() => Alpine.$data(document.body).terminalConnected);
+        assert.equal(await page.locator('#epic-terminal-mobile textarea').evaluate(el => el.readOnly), true);
+        assert.ok(fixture.sockets.every(url => url.pathname === '/ws/terminal/' + supervisorID));
+        assert.ok(fixture.messages.some(message => message.type === 'input'));
+        assert.equal(await page.evaluate(() => window.__fixtureSockets.filter(ws => ws.readyState < 2).length), 1);
+      });
+    });
+  }
   for (const theme of themes) {
     test(`live terminal survives breakpoint roundtrip / ${theme}`, async t => {
       await withPage(t, 390, theme, async (page, fixture) => {
         await openTicket(page, 'kon-live');
         for (const width of [...widths, 390]) {
           await page.setViewportSize({ width, height: 900 });
-          await page.waitForFunction(mobile => Alpine.$data(document.body).isMobile === mobile, width < 768);
+          await page.waitForFunction(({ width }) => {
+            const app = Alpine.$data(document.body);
+            return app.isMobile === (width < 768) && (width >= 768 ||
+              Math.abs(parseFloat(document.documentElement.style.getPropertyValue('--mobile-vv-width')) - width) < 1);
+          }, { width });
           const terminal = page.locator('#terminal-session:visible, #terminal-container-mobile:visible');
           await visible(terminal.locator('.xterm'));
           await page.waitForFunction(() => Alpine.$data(document.body).terminalConnected);

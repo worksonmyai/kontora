@@ -392,6 +392,8 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
           assert.equal(mutation.body.title, 'Created in browser');
           assert.equal(mutation.body.body, 'Browser acceptance criteria.');
           assert.equal(mutation.body.path, '/fixtures/repository-with-a-long-name');
+          await page.waitForURL('**/#/');
+          await ready(page);
           await page.reload({ waitUntil: 'domcontentloaded' });
           await openTicket(page, mutation.ticket.id);
           await visible(page.getByRole('heading', { name: /Created in browser$/ }));

@@ -106,6 +106,8 @@ func TestEnsureWindowAbsentFailures(t *testing.T) {
 		inspectCode   int
 		verifyCode    int
 		killCode      int
+		exitBefore    int
+		exitAfter     int
 		wantErr       string
 		wantUncertain bool
 		wantKill      bool
@@ -131,12 +133,32 @@ func TestEnsureWindowAbsentFailures(t *testing.T) {
 		{name: "new ID reuses name", before: match, after: "session\tticket\t@8\n", wantKill: true, wantErr: "remains", wantUncertain: true},
 		{name: "malformed verification", before: match, after: "session\tticket\n", wantKill: true, wantErr: "malformed record", wantUncertain: true},
 		{name: "server exits after kill", before: match, after: "no server running on /tmp/test\n", verifyCode: 1, wantKill: true},
+		{name: "server exiting during initial inspection", exitBefore: 1},
+		{name: "persistent initial server exit", exitBefore: 3, wantErr: "server exited unexpectedly", wantUncertain: true},
+		{name: "server exiting then absent", before: match, exitAfter: 1, after: "no server running on /tmp/test\n", verifyCode: 1, wantKill: true},
+		{name: "server exiting twice then absent", before: match, exitAfter: 2, after: "error connecting to /tmp/test (No such file or directory)\n", verifyCode: 1, wantKill: true},
+		{name: "server exit then renamed survivor", before: match, exitAfter: 1, after: "other\trenamed\t@7\n", wantKill: true, wantErr: "remains", wantUncertain: true},
+		{name: "server exit then replacement", before: match, exitAfter: 1, after: "session\tticket\t@8\n", wantKill: true, wantErr: "remains", wantUncertain: true},
+		{name: "server exit then malformed output", before: match, exitAfter: 1, after: "malformed\n", wantKill: true, wantErr: "malformed record", wantUncertain: true},
+		{name: "persistent server exit after kill", before: match, exitAfter: 3, wantKill: true, wantErr: "server exited unexpectedly", wantUncertain: true},
+		{name: "server exit then permission failure", before: match, exitAfter: 1, after: "error connecting to /tmp/test (Permission denied)\n", verifyCode: 1, wantKill: true, wantErr: "Permission denied", wantUncertain: true},
+		{name: "server exit with other diagnostics", before: "server exited unexpectedly\nother failure\n", inspectCode: 1, wantErr: "other failure", wantUncertain: true},
+		{name: "kill failure survives server exit retry", before: match, killCode: 1, exitAfter: 1, wantKill: true, wantErr: "kill failed"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			dir := t.TempDir()
 			require.NoError(t, os.WriteFile(filepath.Join(dir, "tmux"), []byte(`#!/bin/sh
 printf '%s\n' "$*" >> "$TEST_TMUX_LOG"
 if [ "$1" = -u ] && [ "$2" = list-windows ] && [ "$3" = -a ] && [ "$4" = -F ] && [ "$5" = '#{session_name}	#{window_name}	#{window_id}' ]; then
+    attempt=0
+    if [ -f "$TEST_TMUX_ATTEMPTS" ]; then read -r attempt < "$TEST_TMUX_ATTEMPTS"; fi
+    printf '%s\n' "$((attempt + 1))" > "$TEST_TMUX_ATTEMPTS"
+    exits="$TEST_TMUX_EXIT_BEFORE"
+    if [ -f "$TEST_TMUX_KILLED" ]; then exits="$TEST_TMUX_EXIT_AFTER"; fi
+    if [ "$attempt" -lt "$exits" ]; then
+        printf 'server exited unexpectedly\n' >&2
+        exit 1
+    fi
     if [ -f "$TEST_TMUX_KILLED" ]; then
         printf '%s' "$TEST_TMUX_AFTER"
         exit "$TEST_TMUX_VERIFY_CODE"
@@ -146,6 +168,7 @@ if [ "$1" = -u ] && [ "$2" = list-windows ] && [ "$3" = -a ] && [ "$4" = -F ] &&
 fi
 if [ "$1" = kill-window ] && [ "$2" = -t ] && [ "$3" = @7 ] && [ "$#" = 3 ]; then
     printf done > "$TEST_TMUX_KILLED"
+    printf '0\n' > "$TEST_TMUX_ATTEMPTS"
     if [ "$TEST_TMUX_KILL_CODE" != 0 ]; then printf 'kill failed\n' >&2; fi
     exit "$TEST_TMUX_KILL_CODE"
 fi
@@ -155,6 +178,9 @@ exit 99
 			t.Setenv("PATH", dir)
 			t.Setenv("TEST_TMUX_LOG", filepath.Join(dir, "calls"))
 			t.Setenv("TEST_TMUX_KILLED", filepath.Join(dir, "killed"))
+			t.Setenv("TEST_TMUX_ATTEMPTS", filepath.Join(dir, "attempts"))
+			t.Setenv("TEST_TMUX_EXIT_BEFORE", strconv.Itoa(tt.exitBefore))
+			t.Setenv("TEST_TMUX_EXIT_AFTER", strconv.Itoa(tt.exitAfter))
 			t.Setenv("TEST_TMUX_BEFORE", tt.before)
 			t.Setenv("TEST_TMUX_AFTER", tt.after)
 			t.Setenv("TEST_TMUX_INSPECT_CODE", strconv.Itoa(tt.inspectCode))
@@ -170,13 +196,14 @@ exit 99
 			assert.Equal(t, tt.wantUncertain, errors.Is(err, process.ErrTerminationUncertain))
 			calls, readErr := os.ReadFile(filepath.Join(dir, "calls"))
 			require.NoError(t, readErr)
+			inspections := min(tt.exitBefore+1, 3)
 			if tt.wantKill {
 				assert.Equal(t, 1, strings.Count(string(calls), "kill-window -t @7\n"))
-				assert.Equal(t, 2, strings.Count(string(calls), "list-windows"), "verify even when kill fails")
+				inspections += min(tt.exitAfter+1, 3)
 			} else {
 				assert.NotContains(t, string(calls), "kill-window")
-				assert.Equal(t, 1, strings.Count(string(calls), "list-windows"))
 			}
+			assert.Equal(t, inspections, strings.Count(string(calls), "list-windows"))
 			assert.NotContains(t, string(calls), "unexpected invocation")
 		})
 	}

@@ -64,9 +64,24 @@ func inspectWindowIDs(ctx context.Context) ([]inspectedWindow, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	out, err := exec.CommandContext(ctx, "tmux", "-u", "list-windows", "-a", "-F", "#{session_name}\t#{window_name}\t#{window_id}").CombinedOutput()
-	if ctx.Err() != nil {
-		return nil, ctx.Err()
+	var out []byte
+	var err error
+	for attempt := 0; attempt < 3; attempt++ {
+		out, err = exec.CommandContext(ctx, "tmux", "-u", "list-windows", "-a", "-F", "#{session_name}\t#{window_name}\t#{window_id}").CombinedOutput()
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		if err == nil || strings.TrimSpace(string(out)) != "server exited unexpectedly" || attempt == 2 {
+			break
+		}
+		// The last-window server may exit while a query is connected.
+		timer := time.NewTimer(10 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
 	}
 	if err != nil {
 		message := strings.TrimSpace(string(out))

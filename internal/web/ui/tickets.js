@@ -416,10 +416,12 @@ export function kontoraTickets() {
     // dep on the open one becomes a downstream row, and its id is not in the
     // chain yet. The event is built with the body, so its deps are resolved refs.
     _chainTouchedBy(pending) {
-      if (!this.chain || !this.selectedTicket) return false;
-      var ids = new Set((this.chain.nodes || []).map(function (n) { return n.id; }));
-      return pending.some(function (t) {
-        if (ids.has(t.id)) return true;
+      if (!this.chain || !this.selectedTicket || this.isSecondary(this.selectedTicket)) return false;
+      var nodes = this.chain.nodes || [];
+      var ids = new Set(nodes.map(function (n) { return n.id; }));
+      return pending.some(t => {
+        if (nodes.some(n => this.sameTicket(n, t))) return true;
+        if (this.isSecondary(t)) return false;
         return (t.deps || []).some(function (d) { return ids.has(d.id || d); });
       });
     },

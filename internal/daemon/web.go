@@ -1245,6 +1245,11 @@ func (d *Daemon) GetChain(id string) (web.ChainInfo, error) {
 	index := make(map[string]*ticket.Ticket, len(d.tickets))
 	for tid, ts := range d.tickets {
 		index[tid] = ts.ticket
+		for _, dep := range ts.ticket.Deps {
+			if prerequisite, source := d.dependencyLocked(dep); source != "" {
+				index[dep] = prerequisite
+			}
+		}
 	}
 
 	res := ticket.Chain(index, id, chainNodeCap)
@@ -1270,9 +1275,10 @@ func (d *Daemon) GetChain(id string) (web.ChainInfo, error) {
 			WaitsOn:        web.ChainWaits{Open: n.WaitsOpen, Total: n.WaitsTotal},
 			Missing:        n.Missing,
 		}
-		if ts, ok := d.tickets[n.ID]; ok {
-			node.Title = ts.ticket.Title()
-			node.Status = string(ts.ticket.Status)
+		if prerequisite, source := d.dependencyLocked(n.ID); prerequisite != nil {
+			node.Title = prerequisite.Title()
+			node.Status = string(prerequisite.Status)
+			node.Source = source
 		}
 		info.Nodes = append(info.Nodes, node)
 	}
@@ -1629,7 +1635,12 @@ func (d *Daemon) buildTicketInfo(cfg *config.Config, ts *ticketState, includeBod
 	// the ids it already has; the rail is what names the other ticket.
 	if includeBody {
 		for i := range info.Deps {
-			d.resolveRefLocked(&info.Deps[i])
+			ref := &info.Deps[i]
+			if prerequisite, source := d.dependencyLocked(ref.ID); prerequisite != nil {
+				ref.Title = prerequisite.Title()
+				ref.Status = string(prerequisite.Status)
+				ref.Source = source
+			}
 		}
 		for i := range info.Links {
 			d.resolveRefLocked(&info.Links[i])

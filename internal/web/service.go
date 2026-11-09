@@ -614,6 +614,7 @@ type TicketInfo struct {
 // names a ticket that is not in the tickets dir, or comes from a board list
 // payload, which carries ids alone.
 type TicketRef struct {
+	Source string `json:"source,omitempty"`
 	ID     string `json:"id"`
 	Title  string `json:"title,omitempty"`
 	Status string `json:"status,omitempty"`
@@ -759,6 +760,7 @@ type ChainInfo struct {
 // ChainNode is one ticket in the chain, sorted roots to goal with Depth
 // monotonic non-decreasing.
 type ChainNode struct {
+	Source string `json:"source,omitempty"`
 	ID     string `json:"id"`
 	Title  string `json:"title"`
 	Status string `json:"status"`

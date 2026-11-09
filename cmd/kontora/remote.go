@@ -23,14 +23,13 @@ func printRemoteList(w io.Writer, rc *remote.Client, opts cli.ListOpts) error {
 	return cli.RenderList(remoteListing(tickets, opts), w, opts)
 }
 
-// remoteListing projects a daemon list payload onto the shared rows and applies
-// the filters. Readiness is derived here from the complete set the daemon sent.
+// remoteListing filters daemon rows without recalculating readiness. The daemon
+// can resolve dependencies in secondary folders that are absent from the listing.
 func remoteListing(tickets []web.TicketInfo, opts cli.ListOpts) cli.Listing {
 	items := make([]cli.ListItem, 0, len(tickets))
 	for _, t := range tickets {
 		items = append(items, remoteListItem(t))
 	}
-	cli.ClassifyList(items)
 	return cli.FilterList(items, opts)
 }
 
@@ -59,6 +58,8 @@ func remoteListItem(t web.TicketInfo) cli.ListItem {
 		Branch:        t.Branch,
 		BaseBranch:    t.BaseBranch,
 		ScheduledAt:   t.ScheduledAt,
+		Ready:         t.Ready,
+		Blockers:      t.Blockers,
 	}
 }
 

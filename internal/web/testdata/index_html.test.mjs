@@ -10442,10 +10442,11 @@ test("the resume pill only offers a move the daemon would take", () => {
     { name: "a running holder needs no push", status: "in_progress", want: null },
     { name: "a queued holder needs no push", status: "todo", want: null },
     { name: "a holder in review is not the pill's business", status: "human_review", want: null },
+    { name: "a secondary holder cannot run here", status: "open", source: "other-folder", want: null },
   ];
 
   for (const c of cases) {
-    const chain = { ...CHAIN_PAYLOAD, nodes: CHAIN_PAYLOAD.nodes.map((n) => (n.holds_chain ? { ...n, status: c.status } : n)) };
+    const chain = { ...CHAIN_PAYLOAD, nodes: CHAIN_PAYLOAD.nodes.map((n) => (n.holds_chain ? { ...n, status: c.status, source: c.source } : n)) };
     assert.deepEqual(vmValue(chainState(chain).chainResumeMove()), c.want, c.name);
   }
 
@@ -10461,10 +10462,17 @@ test("an SSE batch refetches the chain when it names a node or waits on one", ()
     { name: "the open ticket itself moved", pending: [{ id: "pca-d3q9", status: "in_progress" }], want: true },
     { name: "a new dependent named a node", pending: [{ id: "pca-new", status: "open", deps: [{ id: "pca-d3q9", status: "todo" }] }], want: true },
     { name: "an unrelated ticket moved", pending: [{ id: "kon-other", status: "done", deps: [{ id: "kon-x" }] }], want: false },
+    { name: "a secondary namesake is unrelated", pending: [{ id: "pca-qv0y", source: "other-folder", status: "done" }], want: false },
+    { name: "secondary relations do not add primary dependents", pending: [{ id: "other", source: "other-folder", deps: [{ id: "pca-d3q9" }] }], want: false },
+    {
+      name: "an external prerequisite moved",
+      chain: { ...CHAIN_PAYLOAD, nodes: CHAIN_PAYLOAD.nodes.map(n => n.id === "pca-qv0y" ? { ...n, source: "other-folder" } : n) },
+      pending: [{ id: "pca-qv0y", source: "other-folder", status: "done" }], want: true,
+    },
   ];
 
   for (const c of cases) {
-    assert.equal(chainState(CHAIN_PAYLOAD)._chainTouchedBy(c.pending), c.want, c.name);
+    assert.equal(chainState(c.chain || CHAIN_PAYLOAD)._chainTouchedBy(c.pending), c.want, c.name);
   }
   // With no chain loaded there is nothing to re-derive.
   assert.equal(pageState({ id: "pca-d3q9" })._chainTouchedBy([{ id: "pca-d3q9" }]), false);
@@ -10727,6 +10735,13 @@ test("a relation opens through the board entry when the board has one", async ()
   // the rest in.
   await state.openTicketRef({ id: "kon-blk1", title: "Archived blocker", status: "archived" });
   assert.deepEqual({ ...opened }, { id: "kon-blk1", title: "Archived blocker", status: "archived" });
+
+  const external = { id: "kon-wait", source: "other-folder", title: "Completed elsewhere", status: "done" };
+  state.secondaryTickets = [external];
+  await state.openTicketRef(external);
+  assert.equal(opened, external);
+  await state.openTicketRef({ id: "hidden-external", source: "other-folder", title: "Archived elsewhere", status: "archived" });
+  assert.deepEqual({ ...opened }, { id: "hidden-external", source: "other-folder", title: "Archived elsewhere", status: "archived" });
 
   // Nothing to open behind an unresolved ref.
   opened = null;

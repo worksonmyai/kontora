@@ -239,3 +239,110 @@ func TestListArchivedDependencyIsResolved(t *testing.T) {
 	cfg := listFixture(t, "tst-ready todo dep=tst-arch", "tst-arch archived")
 	assert.Equal(t, []string{"tst-ready"}, listIDs(t, cfg, ListOpts{Ready: true}))
 }
+
+func TestListSecondaryDependencyStatus(t *testing.T) {
+	cases := []struct {
+		name      string
+		primary   []string
+		secondary []string
+		ready     bool
+	}{
+		{name: "done", secondary: []string{"done"}, ready: true},
+		{name: "cancelled", secondary: []string{"cancelled"}, ready: true},
+		{name: "archived", secondary: []string{"archived"}, ready: true},
+		{name: "legacy closed", secondary: []string{"closed"}, ready: true},
+		{name: "open", secondary: []string{"open"}},
+		{name: "todo", secondary: []string{"todo"}},
+		{name: "in progress", secondary: []string{"in_progress"}},
+		{name: "unknown", secondary: []string{"unknown"}},
+		{name: "missing"},
+		{name: "primary unresolved wins", primary: []string{"open"}, secondary: []string{"done"}},
+		{name: "primary unknown wins", primary: []string{"unknown"}, secondary: []string{"done"}},
+		{name: "primary resolved wins", primary: []string{"done"}, secondary: []string{"open"}, ready: true},
+		{name: "duplicate resolved", secondary: []string{"done", "done"}},
+		{name: "duplicate mixed", secondary: []string{"open", "done"}},
+		{name: "three duplicates", secondary: []string{"done", "done", "done"}},
+		{name: "primary wins over duplicates", primary: []string{"done"}, secondary: []string{"open", "open"}, ready: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			specs := []string{"tst-work todo dep=tst-dep"}
+			for _, status := range tc.primary {
+				specs = append(specs, "tst-dep "+status)
+			}
+			cfg := listFixture(t, specs...)
+			for _, status := range tc.secondary {
+				secondary := listFixture(t, "tst-dep "+status)
+				cfg.SecondaryTicketsDirs = append(cfg.SecondaryTicketsDirs, secondary.TicketsDir)
+			}
+			items, err := LocalItems(cfg)
+			require.NoError(t, err)
+			require.Len(t, items, 1+len(tc.primary), "secondary rows must not enter the listing")
+			var work ListItem
+			for _, item := range items {
+				if item.ID == "tst-work" {
+					work = item
+				}
+			}
+			require.Equal(t, "tst-work", work.ID)
+			assert.Equal(t, tc.ready, work.Ready)
+			if tc.ready {
+				assert.Empty(t, work.Blockers)
+				assert.Equal(t, []string{"tst-work"}, listIDs(t, cfg, ListOpts{Ready: true}))
+				assert.Empty(t, listIDs(t, cfg, ListOpts{Blocked: true}))
+			} else {
+				assert.Equal(t, []string{"tst-dep"}, work.Blockers)
+				assert.Empty(t, listIDs(t, cfg, ListOpts{Ready: true}))
+				assert.Equal(t, []string{"tst-work"}, listIDs(t, cfg, ListOpts{Blocked: true}))
+			}
+		})
+	}
+}
+
+func TestListSecondaryDependenciesUseCanonicalFiles(t *testing.T) {
+	cfg := listFixture(t, "tst-work todo dep=tst-dep")
+	secondary := listFixture(t, "tst-dep done", "tst-secondary todo")
+	cfg.SecondaryTicketsDirs = []string{secondary.TicketsDir, t.TempDir()}
+	writeTicket(t, secondary.TicketsDir, "tst-dep 2.md", "---\nid: tst-dep\nstatus: open\n---\n# Conflict\n")
+	writeTicket(t, cfg.SecondaryTicketsDirs[1], "wrong-name.md", "---\nid: tst-dep\nstatus: open\n---\n# Wrong name\n")
+	assert.Equal(t, []string{"tst-work"}, listIDs(t, cfg, ListOpts{Ready: true}))
+	assert.Equal(t, []string{"tst-work"}, listIDs(t, cfg, ListOpts{ShowClosed: true, ShowArchived: true}))
+
+	require.NoError(t, os.Remove(filepath.Join(secondary.TicketsDir, "tst-dep.md")))
+	assert.Equal(t, []string{"tst-work"}, listIDs(t, cfg, ListOpts{Blocked: true}))
+	assert.Empty(t, listIDs(t, cfg, ListOpts{Ready: true}))
+}
+
+func TestListSecondaryFolderUnavailable(t *testing.T) {
+	for _, mode := range []string{"missing", "not a directory", "unreadable"} {
+		t.Run(mode, func(t *testing.T) {
+			cfg := listFixture(t, "tst-work todo dep=tst-dep")
+			path := filepath.Join(t.TempDir(), "secondary")
+			switch mode {
+			case "not a directory":
+				require.NoError(t, os.WriteFile(path, []byte("unchanged"), 0o600))
+			case "unreadable":
+				require.NoError(t, os.Mkdir(path, 0o700))
+				writeTicket(t, path, "tst-dep.md", "---\nid: tst-dep\nstatus: done\n---\n# Dependency\n")
+				require.NoError(t, os.Chmod(path, 0))
+				t.Cleanup(func() { _ = os.Chmod(path, 0o700) })
+				if _, err := os.ReadDir(path); err == nil {
+					t.Skip("the current user can read directories without permission bits")
+				}
+			}
+			cfg.SecondaryTicketsDirs = []string{path}
+			assert.Equal(t, []string{"tst-work"}, listIDs(t, cfg, ListOpts{Blocked: true}))
+			assert.Empty(t, listIDs(t, cfg, ListOpts{Ready: true}))
+			if mode == "missing" {
+				assert.NoDirExists(t, path)
+			}
+		})
+	}
+}
+
+func TestListRejectsSecondaryAlias(t *testing.T) {
+	cfg := listFixture(t, "tst-work todo")
+	cfg.SecondaryTicketsDirs = []string{cfg.TicketsDir}
+	_, err := LocalItems(cfg)
+	require.ErrorContains(t, err, "aliases tickets_dir")
+}

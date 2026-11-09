@@ -103,12 +103,11 @@ func hiddenByDefault(status ticket.Status, opts ListOpts) bool {
 	}
 }
 
-// ClassifyList fills Ready and Blockers on every item, from the statuses of the
+// classifyList fills Ready and Blockers on every item, from the statuses of the
 // whole set. It must see every ticket, including the ones a filter will drop:
 // a dependency on an archived ticket is resolved, and dropping archived tickets
 // first would make it look missing.
-func ClassifyList(items []ListItem) {
-	status := make(map[string]ticket.Status, len(items))
+func classifyList(items []ListItem, status map[string]ticket.Status) {
 	for _, it := range items {
 		status[it.ID] = ticket.Status(it.Status)
 	}
@@ -308,8 +307,8 @@ func renderListTable(items []ListItem) string {
 	return tbl.Render()
 }
 
-// LocalItems projects every canonical ticket in the tickets directory into a
-// ListItem, with readiness derived from the whole set.
+// LocalItems lists primary tickets. Dependencies absent from the primary folder
+// use a unique matching ID from an available secondary folder.
 func LocalItems(cfg *config.Config) ([]ListItem, error) {
 	stored, err := store.NewDiskRepo(cfg.TicketsDir).List()
 	if err != nil {
@@ -319,7 +318,28 @@ func LocalItems(cfg *config.Config) ([]ListItem, error) {
 	for _, st := range stored {
 		items = append(items, listItem(cfg, st.Ticket))
 	}
-	ClassifyList(items)
+	sources, err := cfg.SecondarySources()
+	if err != nil {
+		return nil, err
+	}
+	status := make(map[string]ticket.Status)
+	for _, source := range sources {
+		secondary, err := store.NewDiskRepo(source.Path).List()
+		if err != nil {
+			continue
+		}
+		for _, st := range secondary {
+			id := st.Ticket.ID
+			if _, exists := status[id]; exists {
+				// Repeated IDs cannot identify a prerequisite, even when their statuses agree.
+				status[id] = ""
+				continue
+			}
+			status[id] = st.Ticket.Status
+		}
+	}
+	// Primary statuses override secondary matches, including unresolved and unknown statuses.
+	classifyList(items, status)
 	return items, nil
 }
 

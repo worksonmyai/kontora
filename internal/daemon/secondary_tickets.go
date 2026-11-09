@@ -271,6 +271,7 @@ func (d *Daemon) setSecondaryUnavailable(id string, err error) {
 	}
 	d.secondaryMu.Unlock()
 	if changed {
+		d.reconcileSecondaryDependencies()
 		d.broker.Broadcast(web.TicketEvent{Type: "ticket_sources_changed"})
 	}
 }
@@ -298,6 +299,7 @@ func (d *Daemon) refreshSecondary(id, dir string) {
 	catalog.tickets = next
 	catalog.source.Available, catalog.source.Error = true, ""
 	d.secondaryMu.Unlock()
+	d.reconcileSecondaryDependencies()
 	if !wasAvailable {
 		d.broker.Broadcast(web.TicketEvent{Type: "ticket_sources_changed"})
 	}

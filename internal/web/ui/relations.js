@@ -203,7 +203,7 @@ export function kontoraRelations() {
     // move the daemon would refuse is never on screen.
     chainResumeMove() {
       var holder = this.chainHolder();
-      if (!holder || holder.missing) return null;
+      if (!holder || holder.missing || this.isSecondary(holder)) return null;
       var want = this._chainResumeEndpoints[holder.status];
       if (!want) return null;
       var mv = (this.validMoves[holder.status] || []).find(function (m) { return m.endpoint === want; });
@@ -327,9 +327,10 @@ export function kontoraRelations() {
     // hides is opened from the ref itself and the detail fetch fills it in.
     async openTicketRef(ref) {
       if (!this.relationKnown(ref)) return;
-      var t = this.sourceTickets().find(function (x) { return x.id === ref.id; });
-      var source = this.selectedTicket?.source;
-      await this._paletteOpenTicket(t || { id: ref.id, ...(source ? { source: source } : {}), title: ref.title, status: ref.status });
+      var source = ref.source || this.selectedTicket?.source;
+      var identity = { id: ref.id, ...(source ? { source: source } : {}) };
+      var t = this.sourceTickets(identity).find(function (x) { return x.id === ref.id; });
+      await this._paletteOpenTicket(t || { ...identity, title: ref.title, status: ref.status });
     },
 
     // A pull request link, and the only chip that navigates. The path a number

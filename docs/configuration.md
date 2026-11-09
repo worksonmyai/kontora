@@ -73,8 +73,10 @@ secondary_tickets_dirs:
 
 The dashboard combines secondary tickets with the primary board and labels their
 source folder. Primary execution and agent counts still use only `tickets_dir`.
-Relationships resolve within each folder. The daemon never runs, recovers, schedules,
-or derives epic statuses in a secondary folder.
+Links, parents, and children resolve within each folder. Primary dependencies also
+look in configured secondary folders when their ID is absent from primary. A unique
+match supplies its status; duplicate secondary IDs remain unresolved. The daemon never
+runs, recovers, schedules, or derives epic statuses in a secondary folder.
 
 Paths support `~`. Kontora resolves directory aliases after primary environment and
 command-line overrides. A secondary folder cannot alias primary or another secondary

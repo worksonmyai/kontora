@@ -234,6 +234,9 @@ func (d *Daemon) claimExecution(ctx context.Context, cfg *config.Config, id stri
 				continue
 			}
 			other, err := repo.Get(dep)
+			if errors.Is(err, app.ErrNotFound) && secondaryDependencyResolved(cfg, dep) {
+				continue
+			}
 			if err != nil || !ticket.IsDependencyResolved(other.Ticket.Status) {
 				return errExecutionChanged
 			}

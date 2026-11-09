@@ -55,8 +55,9 @@ It preserves enrollment, custom fields, relationships, summaries, notes, and his
 Claim never starts an agent. A passive epic resumes normal derived-status handling
 in primary storage.
 
-Relationships remain folder-local. Claim does not move dependencies, links, parents,
-or children. The confirmation warns about missing references and primary namesakes.
+Claim does not move dependencies, links, parents, or children. Links, parents, and
+children remain folder-local. Primary dependencies can resolve a unique match in a
+configured secondary folder. The confirmation warns about missing references and primary namesakes.
 Imported history retains its summaries and timestamps, but does not use primary logs
 or costs. `imported_history_count` marks that history prefix. Later local stage runs
 keep distinct indexes. Source worktrees, logs, sessions, and journals are not moved.
@@ -381,11 +382,19 @@ The daemon only picks up tickets that have both `kontora: true` and `status: tod
 
 The daemon starts an agent for a `kontora: true` ticket in `todo` only when every id in its `deps` names a ticket that no longer holds work: `human_review`, `done`, `cancelled`, `archived`, or the legacy `closed` that tickets from the external ticket CLI carry. `human_review` releases dependents because the agent has finished and only a person's verdict is left; the review can still send the ticket back, and a dependent that is already running then keeps going. Every other status blocks, including a custom one. So does an id with no ticket file, because nothing on disk says whether that work is finished.
 
+Primary dependencies first look for the exact ID in `tickets_dir`. If absent, they
+look in configured secondary folders. A unique match supplies its status, including
+completed work in another folder. A primary namesake always takes precedence, even
+when unfinished. Duplicate secondary IDs, missing tickets, and unavailable sources
+do not release work. Secondary prerequisites appear with their title, status, and
+source in the dependency chain, but their own relations stay within their folder.
+Kontora never starts a secondary ticket to satisfy a dependency.
+
 Readiness is derived on every read. It is not a status and is not written to any file: there is no `blocked` status, and a ticket waiting on a dependency stays `todo`.
 
 The queue reacts to the whole store, not just to edits of the waiting ticket:
 
-- Closing a dependency queues every ready ticket that waited on it, with no further edit to their files.
+- Closing a dependency queues every ready ticket that waited on it, with no further edit to their files. This includes changes in configured secondary folders.
 - Adding a dependency to a queued ticket drops it from the queue again. A ticket that is already running is left alone: an edge added mid-run does not interrupt it.
 - Deleting a resolved dependency blocks its dependents again, because the id now names nothing.
 - Readiness is checked twice, once when the ticket joins the queue and once when the agent is about to be spawned, which closes the gap between the two.

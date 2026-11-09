@@ -457,6 +457,7 @@ type Daemon struct {
 
 	mu                    sync.Mutex
 	tickets               map[string]*ticketState
+	externalDependencies  map[string]externalDependency
 	executions            map[string]*executionClaim
 	running               map[string]context.CancelFunc
 	liveRuns              map[string]liveRun // ticket ID → the agent invocation in flight
@@ -1392,7 +1393,7 @@ func (d *Daemon) blockersLocked(t *ticket.Ticket) []string {
 		if dep == "" {
 			continue
 		}
-		if ts, ok := d.tickets[dep]; ok && ticket.IsDependencyResolved(ts.ticket.Status) {
+		if prerequisite, _ := d.dependencyLocked(dep); prerequisite != nil && ticket.IsDependencyResolved(prerequisite.Status) {
 			continue
 		}
 		blockers = append(blockers, dep)

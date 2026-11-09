@@ -20,6 +20,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/worksonmyai/kontora/internal/cli"
+	"github.com/worksonmyai/kontora/internal/cli/remote"
 	"github.com/worksonmyai/kontora/internal/config"
 	"github.com/worksonmyai/kontora/internal/testutil"
 	"github.com/worksonmyai/kontora/internal/ticket"
@@ -29,7 +30,7 @@ import (
 func TestRemoteListEpicMetadata(t *testing.T) {
 	row := remoteListItem(web.TicketInfo{
 		ID: "e1", Kind: "epic", EpicExecution: "agent", ChildOrder: []string{"c2", "c1"},
-		Branch: "integration", BaseBranch: "main",
+		Branch: "integration", BaseBranch: "main", Ready: true,
 	})
 	var out bytes.Buffer
 	require.NoError(t, cli.RenderList(cli.Listing{Items: []cli.ListItem{row}}, &out, cli.ListOpts{JSON: true}))
@@ -41,6 +42,63 @@ func TestRemoteListEpicMetadata(t *testing.T) {
 	assert.Equal(t, []any{"c2", "c1"}, rows[0]["child_order"])
 	assert.Equal(t, "integration", rows[0]["branch"])
 	assert.Equal(t, "main", rows[0]["base_branch"])
+	assert.Equal(t, true, rows[0]["ready"])
+}
+
+func TestPrintRemoteListPreservesServerReadiness(t *testing.T) {
+	tickets := []web.TicketInfo{
+		{
+			ID: "tst-ready", Status: "todo", Kontora: true, Ready: true,
+			Deps: []web.TicketRef{{ID: "external-done", Status: "done"}},
+		},
+		{
+			ID: "tst-block", Status: "todo", Kontora: true, Ready: false,
+			Deps:     []web.TicketRef{{ID: "external-done", Status: "done"}, {ID: "external-open", Status: "open"}},
+			Blockers: []string{"external-open"},
+		},
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/api/tickets" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"tickets": tickets})
+	}))
+	defer srv.Close()
+
+	for _, tc := range []struct {
+		name string
+		opts cli.ListOpts
+		ids  []string
+	}{
+		{name: "all", opts: cli.ListOpts{JSON: true}, ids: []string{"tst-block", "tst-ready"}},
+		{name: "ready", opts: cli.ListOpts{JSON: true, Ready: true}, ids: []string{"tst-ready"}},
+		{name: "blocked", opts: cli.ListOpts{JSON: true, Blocked: true}, ids: []string{"tst-block"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var out bytes.Buffer
+			require.NoError(t, printRemoteList(&out, remote.New(srv.URL, ""), tc.opts))
+			var rows []cli.ListItem
+			require.NoError(t, json.Unmarshal(out.Bytes(), &rows))
+			var ids []string
+			for _, row := range rows {
+				ids = append(ids, row.ID)
+				if row.ID == "tst-ready" {
+					assert.True(t, row.Ready)
+					assert.Empty(t, row.Blockers)
+				} else {
+					assert.False(t, row.Ready)
+					assert.Equal(t, []string{"external-open"}, row.Blockers)
+				}
+			}
+			assert.Equal(t, tc.ids, ids)
+		})
+	}
+
+	var out bytes.Buffer
+	require.NoError(t, printRemoteList(&out, remote.New(srv.URL, ""), cli.ListOpts{Blocked: true}))
+	assert.Contains(t, out.String(), "external-open")
+	assert.NotContains(t, out.String(), "external-done")
 }
 
 var (
@@ -427,7 +485,7 @@ func TestRemoteDispatch_ListWithoutDirectoryIdentity(t *testing.T) {
 					_ = json.NewEncoder(w).Encode(web.ConfigInfo{TicketsDir: tc.identity})
 				case "/api/tickets":
 					_ = json.NewEncoder(w).Encode(map[string]any{"tickets": []web.TicketInfo{
-						{ID: "kon-shared", Title: "Daemon board A", Status: "paused", Kontora: true},
+						{ID: "kon-shared", Title: "Daemon board A", Status: "paused", Kontora: true, Ready: true},
 					}})
 				default:
 					w.WriteHeader(http.StatusNotFound)
@@ -449,6 +507,7 @@ func TestRemoteDispatch_ListWithoutDirectoryIdentity(t *testing.T) {
 			require.Len(t, rows, 1)
 			assert.Equal(t, "kon-shared", rows[0]["id"])
 			assert.Equal(t, "Daemon board A", rows[0]["title"])
+			assert.Equal(t, true, rows[0]["ready"])
 			assert.NotContains(t, out, "Requested board B")
 			mu.Lock()
 			assert.Equal(t, []string{"GET /api/tickets"}, requests, "explicit remote mode must not probe local directory identity")
@@ -1042,10 +1101,10 @@ projects:
 
 func TestPrintRemoteTickets(t *testing.T) {
 	tickets := []web.TicketInfo{
-		{ID: "a-done", Status: "done", Kontora: true},
-		{ID: "b-run", Status: "in_progress", Kontora: true},
-		{ID: "c-arch", Status: "archived", Kontora: true},
-		{ID: "d-foreign", Status: "todo"},
+		{ID: "a-done", Status: "done", Kontora: true, Ready: true},
+		{ID: "b-run", Status: "in_progress", Kontora: true, Ready: true},
+		{ID: "c-arch", Status: "archived", Kontora: true, Ready: true},
+		{ID: "d-foreign", Status: "todo", Ready: true},
 	}
 
 	cases := []struct {
@@ -1072,7 +1131,7 @@ func TestPrintRemoteTickets(t *testing.T) {
 		},
 		{
 			name:     "hidden closed tickets say so",
-			tickets:  []web.TicketInfo{{ID: "a-done", Status: "done", Kontora: true}},
+			tickets:  []web.TicketInfo{{ID: "a-done", Status: "done", Kontora: true, Ready: true}},
 			wantText: "Use --closed",
 		},
 		{

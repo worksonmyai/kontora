@@ -6110,22 +6110,22 @@
       <section class="mobile-epic fixed inset-0 z-40 bg-surface-950 flex flex-col" aria-label="Epic overview">
         <header class="shrink-0 p-4 border-b border-surface-700 flex flex-col gap-3">
           <button type="button" @click="closeEpic()" class="text-left font-mono text-xs text-accent">back to board</button>
-          <h1 class="text-lg text-tx-hi" x-text="selectedEpic.title"></h1>
+          <h1 class="text-lg text-tx-hi" x-text="selectedEpic?.title"></h1>
           <p class="font-mono text-xs text-tx-3" x-text="epicDescription(selectedEpic)"></p>
-          <span x-show="selectedEpic.waiting_for_input" class="waiting-chip" :title="'Waiting for input: ' + waitingLabel(selectedEpic)">
+          <span x-show="selectedEpic?.waiting_for_input" class="waiting-chip" :title="'Waiting for input: ' + waitingLabel(selectedEpic)">
             <span class="waiting-dot pulse-dot"></span>needs input
             <span x-text="waitingFor(selectedEpic)"></span>
           </span>
           <div class="flex flex-wrap gap-2">
             <template x-for="a in epicSupervisorActions()" :key="a.label">
-              <button type="button" @click="a.run()" :disabled="!!actionLoading || !!plannotatorInFlight[selectedEpic.id]"
+              <button type="button" @click="a.run()" :disabled="!!actionLoading || !!plannotatorInFlight[selectedEpic?.id]"
                       :title="a.label === 'pause supervisor' ? 'Stops only the supervisor. Child agents keep running.' : ''"
                       class="px-3 py-2 rounded border border-edge-input font-mono text-xs text-accent disabled:opacity-40" x-text="a.label"></button>
             </template>
           </div>
-          <p class="font-mono text-xs text-tx-3" x-text="epicRollup(selectedEpic.id).done + '/' + epicRollup(selectedEpic.id).total + ' sub-tickets done'"></p>
-          <template x-if="selectedEpic.last_error">
-            <p class="border-l-[3px] border-err pl-3 font-mono text-xs text-err whitespace-pre-wrap break-words" role="alert" x-text="selectedEpic.last_error"></p>
+          <p class="font-mono text-xs text-tx-3" x-text="epicRollup(selectedEpic?.id).done + '/' + epicRollup(selectedEpic?.id).total + ' sub-tickets done'"></p>
+          <template x-if="selectedEpic?.last_error">
+            <p class="border-l-[3px] border-err pl-3 font-mono text-xs text-err whitespace-pre-wrap break-words" role="alert" x-text="selectedEpic?.last_error"></p>
           </template>
         </header>
         <nav class="shrink-0 flex gap-5 px-4 pt-3 overflow-x-auto border-b border-surface-700" aria-label="Epic tabs">
@@ -6139,7 +6139,7 @@
                   class="font-mono text-xs pb-2 border-b-2" :class="epicTab === 'notes' ? 'border-accent text-tx-hi' : 'border-transparent text-surface-600'">notes</button>
         </nav>
         <div x-show="epicTab === 'children'" class="flex-1 min-h-0 overflow-y-auto p-4 flex flex-col gap-4">
-          <template x-for="c in epicRollup(selectedEpic.id).children" :key="c.id">
+          <template x-for="c in epicRollup(selectedEpic?.id).children" :key="c.id">
             <button type="button" @click="openTicketRef(c)" class="text-left font-mono text-xs text-tx-2" x-text="c.id + ' · ' + c.title + ' · ' + statusLabel(c.status)"></button>
           </template>
           <div class="flex gap-2">
@@ -6164,10 +6164,10 @@
           </div>
         </div>
         <div x-show="epicTab === 'notes'" class="flex-1 min-h-0 overflow-y-auto p-4">
-          <template x-if="!(selectedEpic.notes || []).length">
+          <template x-if="!(selectedEpic?.notes || []).length">
             <p class="font-mono text-xs text-surface-600">No notes yet.</p>
           </template>
-          <template x-for="n in (selectedEpic.notes || [])" :key="n.id">
+          <template x-for="n in (selectedEpic?.notes || [])" :key="n.id">
             <div class="mb-3 pb-3 border-b border-surface-700/40">
               <div class="font-mono text-[10.5px] text-surface-600 mb-1"><span x-text="n.author"></span> · <span x-text="n.at"></span></div>
               <div class="ticket-prose ticket-read text-[13px]" x-effect="setProse($el, n.text)"></div>

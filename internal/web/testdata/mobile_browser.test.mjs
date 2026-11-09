@@ -201,6 +201,7 @@ async function withPage(t, width, theme, run) {
   }, theme);
   const page = await context.newPage();
   page.setDefaultTimeout(4000);
+  page.setDefaultNavigationTimeout(15000);
   page.on('pageerror', error => errors.push(error.message));
   page.on('console', msg => {
     if (msg.type() !== 'error') return;
@@ -250,14 +251,18 @@ async function ready(page) {
   await page.waitForFunction(() => {
     if (!window.Alpine) return false;
     const app = Alpine.$data(document.body);
-    return !app.loading && app._applyingRoute === null && !app.detailLoading;
+    return !app.loading && app._applyingRoute === null && !app.detailLoading && !app.settingsLoading;
   });
   await page.evaluate(() => document.fonts.ready);
 }
 async function routeTo(page, route) {
   await ready(page);
   await page.evaluate(route => { location.hash = route; }, route);
-  await page.waitForFunction(route => location.hash === route, route);
+  await page.waitForFunction(route => {
+    const app = Alpine.$data(document.body);
+    return location.hash === route && app.routeHash() === route && app._applyingRoute === null;
+  }, route);
+  await ready(page);
 }
 async function openTicket(page, id, folder = 'primary') {
   await routeTo(page, folder === 'primary' ? `#/t/${id}` : `#/s/${folder}/t/${id}`);
@@ -332,21 +337,25 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
             await visible(page.locator(`${selector}:visible`).first());
             await noPageOverflow(page);
             await page.reload({ waitUntil: 'domcontentloaded' });
+            await ready(page);
             await visible(page.locator(`${selector}:visible`).first());
             assert.equal(new URL(page.url()).hash, route);
             await noPageOverflow(page);
             await page.goBack();
             await page.waitForFunction(() => Alpine.$data(document.body).currentView === 'board');
+            await ready(page);
+            assert.equal(new URL(page.url()).hash, '#/');
             assert.equal(await page.evaluate(() => Alpine.$data(document.body)._statsTimer), null);
             await page.goForward();
             await visible(page.locator(`${selector}:visible`).first());
+            await ready(page);
             assert.equal(new URL(page.url()).hash, route);
             await noPageOverflow(page);
           });
         }
         await t.test('Archive detail keeps its route before opening a running Board ticket', async () => {
           await routeTo(page, '#/archive');
-          await page.getByText('Archived fixture', { exact: true }).click();
+          await page.locator('#archive-view .archive-table-scroll').getByTitle('Archived fixture', { exact: true }).click();
           await visible(page.locator('.archive-detail:visible'));
           await page.waitForFunction(() => !Alpine.$data(document.body).archiveDetailLoading);
           assert.equal(new URL(page.url()).hash, '#/archive');

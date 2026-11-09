@@ -2517,15 +2517,26 @@ test("display toggles invalidate the rendered-card cache and drop card sections"
   assert.equal(noAgent.includes("claude-agent"), false);
 });
 
-test("index.html builds one layout layer with complementary x-if templates", () => {
+test("index.html shares routed pages and builds board layers exclusively", () => {
   const html = fs.readFileSync(htmlPath, "utf8");
-
-  // Desktop and mobile layers are built exclusively, so the inactive one costs
-  // no DOM nodes. x-show would keep both in the document.
-  assert.match(html, /<template x-if="!isMobile">\s*<main /);
-  assert.match(html, /<template x-if="isMobile">\s*<div class="h-full flex flex-col"/);
+  assert.match(html, /<main id="main-content" class="app-main"/);
+  assert.match(html, /<template x-if="!isMobile">\s*<!-- Board view:/);
+  assert.match(html, /<template x-if="isMobile">\s*<div x-show="currentView === 'board'" class="mobile-board-layer"/);
   assert.equal(/<main x-show=/.test(html), false);
-  assert.equal(/<div x-show="isMobile" x-cloak class="h-full flex flex-col"/.test(html), false);
+  for (const view of ['stats', 'settings', 'archive']) {
+    assert.equal(html.split(`<template x-if="!loading && currentView === '${view}'">`).length - 1, 1, view);
+  }
+  const css = fs.readFileSync(path.join(dirname, '../../../hack/tailwind.css'), 'utf8');
+  for (const name of ['mobile-detail', 'mobile-detail-actions', 'mobile-terminal-pane', 'mobile-assistant-thread']) {
+    const tag = [...html.matchAll(/<[^>]+class="([^"]*)"[^>]*>/g)]
+      .find(match => match[1].split(/\s+/).includes(name))?.[0];
+    assert.ok(tag, name);
+    assert.doesNotMatch(tag.match(/(?<!:)style="([^"]*)"/)?.[1] || '', /display\s*:/, name);
+    assert.match(css, new RegExp('\\.' + name + '(?=[\\s,{])[^{}]*\\{[^}]*display:flex'), name);
+  }
+  for (const tag of html.matchAll(/<button\b[^>]*class="mobile-sheet-primary"[^>]*>/g)) {
+    assert.doesNotMatch(tag[0], /\s:style=|\sstyle=/);
+  }
 });
 
 test("_mountBoard rebuilds the board and binds the delegated handler per mount", () => {
@@ -3082,6 +3093,25 @@ function descriptionEditorUI(kind = '', id = 'kon-desc', source = '') {
   };
 }
 
+// A primary paused ticket with history takes the output path in selectTicket,
+// so no desktop editor is initialized.
+function mobileDescriptionUI({ begin = true } = {}) {
+  const ui = descriptionEditorUI();
+  const { state } = ui;
+  Object.assign(ui.stored(), { status: 'paused', history: [{ stage: 'code', run: 0, imported: true }] });
+  state.isMobile = true;
+  state.tickets = [state.boardEntry(ui.stored())];
+  state.fetchStageLogs = () => {};
+  state.$refs = { mobileDescriptionEditor: { focus() {} } };
+  ui.open = async () => {
+    await state.openMobileTicket(state.tickets[0]);
+    state.mobileSwitchTab('ticket');
+    if (begin) assert.equal(await state.mobileBeginDescriptionEdit(), true);
+  };
+  ui.save = () => state.mobileFinishDescriptionEdit();
+  return ui;
+}
+
 for (const mobile of [false, true]) {
   test(`secondary namesake editing stays source-qualified: mobile=${mobile}`, async () => {
     const ui = descriptionEditorUI('', 'same', 'team');
@@ -3483,9 +3513,11 @@ test('imported summaries remain visible without artifact navigation', async () =
   assert.equal(state.activity, null);
 });
 
-for (const kind of ['', 'epic']) {
-  test(`description acknowledgement preserves newer typing and raw tail: ${kind || 'ordinary'}`, async () => {
-    const ui = descriptionEditorUI(kind);
+for (const mode of ['ordinary', 'epic', 'mobile']) {
+  const kind = mode === 'epic' ? 'epic' : '';
+  const editorUI = () => mode === 'mobile' ? mobileDescriptionUI() : descriptionEditorUI(kind);
+  test(`description acknowledgement preserves newer typing and raw tail: ${mode}`, async () => {
+    const ui = editorUI();
     await ui.open();
     const { state } = ui;
     const tail = ui.stored().description_tail;
@@ -3510,8 +3542,8 @@ for (const kind of ['', 'epic']) {
     await ui.close();
   });
 
-  test(`description saves remain ordered through close and reopen: ${kind || 'ordinary'}`, async () => {
-    const ui = descriptionEditorUI(kind);
+  test(`description saves remain ordered through close and reopen: ${mode}`, async () => {
+    const ui = editorUI();
     await ui.open();
     const pending = deferred();
     ui.intercept(async () => { await pending.promise; return true; });
@@ -3532,12 +3564,13 @@ for (const kind of ['', 'epic']) {
     await ui.close();
   });
 
-  test(`failed description draft can be retried without replacing newer text: ${kind || 'ordinary'}`, async () => {
-    const ui = descriptionEditorUI(kind);
+  test(`failed description draft can be retried without replacing newer text: ${mode}`, async () => {
+    const ui = editorUI();
     await ui.open();
     ui.intercept(async () => false);
     ui.state.editForm.body = '# Recover me\n';
     assert.equal(await ui.save(), false);
+    if (!kind) assert.equal(ui.state.editSaved, false, 'a rejected save must not show Saved');
     assert.equal(ui.state.editForm.body, '# Recover me\n');
     assert.equal(ui.state._editorSaves['kon-desc'].ack.description, '# Description\n\n');
     if (!kind) {
@@ -3549,6 +3582,265 @@ for (const kind of ['', 'epic']) {
     assert.equal(await ui.save(), true);
     assert.equal(ui.stored().description, '# Recover me\n');
     await ui.close();
+  });
+}
+
+test('mobile paused-with-history description starts an editor and focuses without scrolling', async () => {
+  const ui = mobileDescriptionUI({ begin: false });
+  await ui.open();
+  const { state } = ui;
+  assert.equal(state.mobileHasRun(state.selectedTicket), true);
+  assert.equal(state.editing, false);
+  assert.equal(state.mobileCanEditDescription(), true);
+  const focused = [];
+  state.$refs.mobileDescriptionEditor.focus = options => focused.push(vmValue(options));
+  const generation = state._editorGeneration;
+  assert.equal(await state.mobileBeginDescriptionEdit(), true);
+  assert.equal(state._editorGeneration, generation + 1);
+  assert.equal(state.editing, true);
+  assert.equal(state.editingBody, true);
+  assert.equal(state.editForm.body, ui.stored().description);
+  assert.deepEqual(focused, [{ preventScroll: true }]);
+  const tail = ui.stored().description_tail, notes = vmValue(ui.stored().notes);
+  state.mobileDescriptionInput('# Phone draft\n');
+  assert.equal(state.editSaved, false);
+  assert.equal(await state.mobileFinishDescriptionEdit(), true);
+  assert.equal(state._editDebounce, null);
+  assert.equal(state.editingBody, false);
+  assert.equal(ui.stored().description, '# Phone draft\n');
+  assert.equal(ui.stored().description_tail, tail);
+  assert.deepEqual(vmValue(ui.stored().notes), notes);
+  assert.deepEqual(ui.writes, [{ description: '# Phone draft\n' }]);
+  ui.close();
+});
+
+for (const failure of ['network', 'http', 'json']) {
+  test(`phone description editing requires a successful detail read after ${failure} failure`, async () => {
+    const ui = mobileDescriptionUI({ begin: false });
+    let connected = false;
+    ui.respond(async (_url, _opts, full) => {
+      if (connected) return { ok: true, json: async () => full };
+      if (failure === 'network') throw new Error('offline');
+      return { ok: failure !== 'http', json: async () => { throw new Error('invalid JSON'); } };
+    });
+    await ui.open();
+    const { state } = ui;
+    assert.equal(state.detailLoading, false);
+    assert.equal(state.mobileCanEditDescription(), false);
+    assert.equal(await state.mobileBeginDescriptionEdit(), false);
+    state.mobileDescriptionInput('An addition');
+    await state.mobileFinishDescriptionEdit();
+    assert.deepEqual(ui.writes, []);
+    connected = true;
+    assert.equal(await state.mobileBeginDescriptionEdit(), false, 'reconnection alone does not hydrate the board projection');
+    state.closeDetail(false);
+    await ui.open();
+    assert.equal(await state.mobileBeginDescriptionEdit(), true, 'reopening retries the detail read');
+    assert.equal(state.editForm.body, ui.stored().description);
+    state.mobileDescriptionInput('# Hydrated addition\n');
+    assert.equal(await state.mobileFinishDescriptionEdit(), true);
+    assert.equal(ui.stored().description, '# Hydrated addition\n');
+    assert.ok(ui.stored().description_tail.includes('keep raw'));
+    ui.close();
+  });
+}
+
+test('phone description editing permits a successfully loaded empty description', async () => {
+  const ui = mobileDescriptionUI();
+  ui.stored().description = '';
+  ui.stored().body = ui.stored().description_tail;
+  await ui.open();
+  assert.equal(ui.state.editForm.body, '');
+  ui.state.mobileDescriptionInput('First description');
+  assert.equal(await ui.save(), true);
+  assert.equal(ui.stored().description, 'First description');
+  assert.ok(ui.stored().description_tail.includes('keep raw'));
+  ui.close();
+});
+
+for (const boundary of ['breakpoint', 'navigation', 'destroy']) {
+  test(`Archive selection cannot submit another ticket's editor on ${boundary}`, async () => {
+    const writes = [];
+    const a = { id: 'kon-a', title: 'A', status: 'open', description: '# A\n', path: '/repo' };
+    const b = { id: 'kon-b', title: 'B', status: 'done', kind: 'epic', epic_mode: 'passive', description: '# B\n', path: '/repo', can_edit: true };
+    const state = loadKontoraState({ fetch: async (url, opts = {}) => {
+      const record = url.endsWith('/kon-b') ? b : a;
+      if (opts.method === 'PUT') {
+        const body = JSON.parse(opts.body);
+        writes.push({ id: record.id, body });
+        Object.assign(record, body);
+      }
+      return { ok: true, json: async () => ({ ...record }) };
+    } });
+    state.configCache = {};
+    state.$nextTick = async fn => fn?.();
+    state.fetchTicketCost = state.fetchChain = state.fetchChanges = state.fetchActivity = () => {};
+    state.closeTerminal = state.openTerminal = state.recomputeBoard = () => {};
+    state.tickets = [state.boardEntry(a), state.boardEntry(b)];
+    await state.openEpic(b.id);
+    assert.ok(state._editorSaves[b.id], 'ordinary overview primes the editor cache');
+    await state.closeEpic(false);
+    b.status = 'archived';
+    await state.selectTicket(state.tickets[0]);
+    assert.equal(state.editing, true);
+    state.openArchive = () => {};
+    await state.gotoView('archive');
+    await state.navigateDestination({ view: 'archive', ticketId: null });
+    await state.archiveOpenRow(b);
+    assert.equal(state.selectedTicket.id, b.id);
+    assert.equal(state.editing, false);
+    if (boundary === 'breakpoint') { state.isMobile = true; state.mobileBreakpointChanged(); }
+    if (boundary === 'navigation') { state.mobileBeforeNavigate('board'); state.closeArchive(); }
+    if (boundary === 'destroy') state.destroyMobile();
+    await state._waitEditorSaves(b.id);
+    assert.equal(b.description, '# B\n');
+    assert.deepEqual(writes, []);
+  });
+}
+
+for (const source of ['primary', 'team']) {
+  test(`editor saves reject a changed ${source} selection even with a cached draft`, async () => {
+    const ui = descriptionEditorUI();
+    await ui.open();
+    const { state } = ui;
+    const other = { ...ui.stored(), source, can_edit: true, id: source === 'primary' ? 'other' : ui.stored().id };
+    state._loadEditorDraft(other, { ...state._editorSaves['kon-desc'].ack });
+    state.selectedTicket = other;
+    state.editForm.body = '# Wrong owner\n';
+    assert.equal(await state.flushEditSave(), false);
+    assert.deepEqual(ui.writes, []);
+    state.editing = false;
+    ui.close();
+  });
+}
+
+test('Archive opens a primary namesake of a retained secondary selection', async () => {
+  const requests = [];
+  const row = { id: 'same', title: 'Primary archived', status: 'archived' };
+  const state = loadKontoraState({ fetch: async url => {
+    requests.push(url);
+    return { ok: true, json: async () => ({ ...row, description: '# Primary\n' }) };
+  } });
+  state.currentView = 'archive';
+  state.selectedTicket = { id: row.id, source: 'team', title: 'Secondary', status: 'open' };
+  state.fetchTicketCost = () => {};
+  await state.archiveOpenRow(row);
+  assert.equal(state.archiveDetailOpen(), true);
+  assert.equal(state.isSecondary(state.selectedTicket), false);
+  assert.equal(state.selectedTicket.description, '# Primary\n');
+  assert.deepEqual(requests, ['/api/tickets/same']);
+});
+
+test('mobile description reuses an active draft while an older save is pending', async () => {
+  const ui = mobileDescriptionUI();
+  await ui.open();
+  const { state } = ui;
+  const pending = deferred();
+  ui.intercept(async () => { await pending.promise; return true; });
+  state.mobileDescriptionInput('# Submitted\n');
+  const saving = state.mobileFinishDescriptionEdit();
+  await flushMicrotasks();
+  const form = state.editForm, generation = state._editorGeneration;
+  state.mobileDescriptionInput('# Still typing\n');
+  state.startEditing = () => assert.fail('must not reload an active draft');
+  assert.equal(await state.mobileBeginDescriptionEdit(), true);
+  assert.equal(state.editForm, form);
+  assert.equal(state._editorGeneration, generation);
+  assert.equal(state.editForm.body, '# Still typing\n');
+  pending.resolve();
+  await saving;
+  assert.equal(state.editSaved, false, 'older acknowledgement is not Saved for the live draft');
+  await state.mobileFinishDescriptionEdit();
+  assert.deepEqual(ui.writes.map(w => w.description), ['# Submitted\n', '# Still typing\n']);
+  ui.close();
+});
+
+for (const boundary of ['tab', 'close', 'selection', 'breakpoint']) {
+  test(`mobile description flushes on ${boundary} without reinitializing the editor`, async () => {
+    const ui = mobileDescriptionUI();
+    await ui.open();
+    const { state } = ui;
+    const pending = deferred();
+    ui.intercept(async () => { await pending.promise; return true; });
+    state.mobileDescriptionInput('# Flush this draft\n');
+    const form = state.editForm;
+    state.startEditing = () => assert.fail('a boundary must flush, not restart the editor');
+    state._mountBoard = () => {};
+    const other = { id: 'next', status: 'in_progress', body: 'Other ticket' };
+    ui.respond(async (url, _opts, full) => ({ ok: true, json: async () => url.endsWith('/next') ? other : full }));
+    if (boundary === 'tab') state.mobileSwitchTab('logs');
+    if (boundary === 'close') state.closeDetail(false);
+    if (boundary === 'selection') await state.selectTicket(other);
+    if (boundary === 'breakpoint') { state.isMobile = false; state._onBreakpointChange(); }
+    assert.equal(state._editDebounce, null);
+    assert.equal(state.editingBody, false);
+    assert.equal(state.editForm, form);
+    await flushMicrotasks();
+    assert.deepEqual(ui.writes, [{ description: '# Flush this draft\n' }]);
+    pending.resolve();
+    await state._waitEditorSaves('kon-desc');
+    assert.equal(ui.stored().description, '# Flush this draft\n');
+    if (boundary === 'close') assert.equal(state.selectedTicket, null);
+    else if (boundary === 'selection') assert.equal(state.selectedTicket.id, 'next');
+    else {
+      state.isMobile = true;
+      state.mobileSwitchTab('ticket');
+      assert.equal(await state.mobileBeginDescriptionEdit(), true);
+      assert.equal(state.editForm, form);
+    }
+    ui.close();
+  });
+}
+
+for (const lock of ['desktop', 'logs tab', 'loading', 'missing ticket', 'secondary', 'permission', 'running', 'claim']) {
+  test(`mobile description entry and input respect ${lock} lock`, async () => {
+    const ui = mobileDescriptionUI();
+    await ui.open();
+    const { state } = ui;
+    if (lock === 'desktop') state.isMobile = false;
+    if (lock === 'logs tab') state.detailTab = 'logs';
+    if (lock === 'loading') state.detailLoading = true;
+    if (lock === 'missing ticket') state.selectedTicket = null;
+    if (lock === 'secondary') Object.assign(state.selectedTicket, { source: 'team', can_edit: true });
+    if (lock === 'permission') state.selectedTicket.can_edit = false;
+    if (lock === 'running') state.selectedTicket.status = 'in_progress';
+    if (lock === 'claim') { state.claimSubmitting = true; state._claimKey = state.ticketKey(state.selectedTicket); }
+    const body = state.editForm.body;
+    state.editingBody = false;
+    assert.equal(state.mobileCanEditDescription(), false);
+    assert.equal(await state.mobileBeginDescriptionEdit(), false);
+    state.mobileDescriptionInput('must not enter draft');
+    assert.equal(state.editForm.body, body);
+    assert.equal(state.editingBody, false);
+    assert.equal(state._editDebounce, null);
+    assert.deepEqual(ui.writes, []);
+    // No pending draft to flush after changing the fixture's identity/permissions.
+    state.editing = false;
+    ui.close();
+  });
+}
+
+for (const { editing, boundary } of [false, true].flatMap(editing =>
+  ['tab', 'close', 'selection', 'breakpoint', 'destroy', 'permission', 'claim'].map(boundary => ({ editing, boundary })))) {
+  test(`mobile description does not focus after delayed entry crosses ${boundary}: editing=${editing}`, async () => {
+    const ui = mobileDescriptionUI({ begin: editing });
+    await ui.open();
+    const { state } = ui;
+    const tick = deferred();
+    state.$nextTick = () => tick.promise;
+    state.$refs.mobileDescriptionEditor.focus = () => assert.fail('stale entry focused');
+    const opening = state.mobileBeginDescriptionEdit();
+    if (boundary === 'tab') state.mobileSwitchTab('logs');
+    if (boundary === 'close') state.closeDetail(false);
+    if (boundary === 'selection') { ++state._ticketDetailSeq; state.selectedTicket = { id: 'other', status: 'paused' }; }
+    if (boundary === 'breakpoint') state.mobileBreakpointChanged();
+    if (boundary === 'destroy') { state.destroyMobile(); state._appDestroyed = true; }
+    if (boundary === 'permission') state.selectedTicket.can_edit = false;
+    if (boundary === 'claim') { state.claimSubmitting = true; state._claimKey = state.ticketKey(state.selectedTicket); }
+    tick.resolve();
+    assert.equal(await opening, false);
+    state.editing = false;
+    ui.close();
   });
 }
 
@@ -3918,7 +4210,7 @@ test("create and init pipeline choices keep preview strings separate from reques
       pipeline_infos: [{ name: 'child', stages: ['implement', 'review'] }],
     };
     state.$nextTick = async () => {};
-    state.closeCreateModal = () => {};
+    await state.openCreateModal();
     state.tickets = [{ id: 'kon-parent', kind: ticket.epic_child ? 'epic' : '' }];
     Object.assign(state.createForm, { title: 'Child', path: ticket.path, parent: 'kon-parent', pipelineChoice: c.choice });
     state.onPipelineChange();
@@ -3977,7 +4269,7 @@ test("init refreshes child membership on relevant events without changing explic
   for (const choice of ['inherit', 'none', 'pipeline:child']) {
     const listeners = {};
     const requests = [];
-    let fresh = { id: 'kon-child', status: 'open', path: '/repo', pipeline: '', parent: { id: 'kon-parent' }, epic_child: true };
+    let fresh = { id: 'kon-child', status: 'open', path: '/repo', pipeline: '', description: '', parent: { id: 'kon-parent' }, epic_child: true };
     const state = loadKontoraState({
       EventSource: class { addEventListener(name, fn) { listeners[name] = fn; } close() {} },
       fetch: async (url, options = {}) => {
@@ -4113,7 +4405,8 @@ test("create and init requests omit empty branches and send custom branches", as
         return { ok: true, json: async () => ({}) };
       },
     });
-    state.closeCreateModal = () => {};
+    state.configCache = {};
+    await state.openCreateModal();
     state.closeInitModal = () => {};
     state.createForm = {
       title: "Fix retry",
@@ -4164,7 +4457,7 @@ test("edit path requests preserve pipelines, omit empty branches and send custom
       },
     });
     state.configCache = { projects: EDIT_PROJECTS };
-    state.selectedTicket = { id: "kon-1", status: 'open', path: "~/projects/kontora", branch: c.selected, pipeline: c.pipeline || '' };
+    state.selectedTicket = { id: "kon-1", status: 'open', description: '', path: "~/projects/kontora", branch: c.selected, pipeline: c.pipeline || '' };
     state.$nextTick = async () => {};
     await state.startEditing();
     state.editForm = {
@@ -4703,7 +4996,7 @@ test("index.html renders every prose block through the idempotent write", () => 
   // its body through it too; and the notes tab's own note and reply bodies
   // are markdown like every other authored block; and the epic page renders
   // both its brief and its own notes the same way in both layouts.
-  assert.equal(html.match(/x-effect="setProse\(\$el, /g).length, 18);
+  assert.equal(html.match(/x-effect="setProse\(\$el, /g).length, 20);
   assert.equal(html.match(/setSummaryProse\(\$el, /g).length, 2);
   assert.match(html, /card\.imported \? setProse\(\$el, card\.summary\) : setSummaryProse/);
   // Nothing in the markup writes a note as plain text any more: the rail block
@@ -6297,7 +6590,7 @@ test("index.html wires the settings shell to the guard and the section rail", ()
   assert.ok(direct[0].index > html.indexOf(`x-show="col.key === 'open' && colHover"`));
 
   // The guard closes before the create form and every other overlay below it.
-  assert.match(html, /else if \(settingsGuard\) settingsGuard = false; else if \(currentView === 'new'\)/);
+  assert.match(html, /else if \(settingsGuard\) settingsGuard = false; else if \(sheet\) closeSheet\(\); else if \(currentView === 'new'\)/);
 
   assert.match(html, /<template x-if="!loading && currentView === 'settings'">/);
   assert.match(html, /w-\[214px\][^"]*bg-surface-frame border-r border-surface-700\/50/);
@@ -7118,6 +7411,192 @@ function pickerState({ recents = [], agents = PICKER_AGENTS, config = {}, overri
   return { state, stored };
 }
 
+// Only the APIs consumed by mobile/picker lifecycle methods. This does not
+// emulate layout, native popover, or browser event propagation; browser tests
+// own those. Frames stay queued so cancellation and stale callbacks are visible.
+function mobileLifecycleDOM({ visualViewport = true } = {}) {
+  function events() {
+    const listeners = [];
+    return {
+      listeners,
+      addEventListener(name, handler, options) { listeners.push({ name, handler, options }); },
+      removeEventListener(name, handler, options) {
+        const i = listeners.findIndex(l => l.name === name && l.handler === handler && l.options === options);
+        assert.notEqual(i, -1, 'remove the exact registered listener/options');
+        listeners.splice(i, 1);
+      },
+      emit(name, event = {}) { [...listeners].filter(l => l.name === name).forEach(l => l.handler(event)); },
+    };
+  }
+  const frames = new Map(), cancelled = [], elements = {}, selectors = {};
+  let frameID = 0;
+  const properties = new Map();
+  const style = {
+    setProperty(name, value, priority = '') { properties.set(name, { value, priority }); },
+    getPropertyValue(name) { return properties.get(name)?.value || ''; },
+    getPropertyPriority(name) { return properties.get(name)?.priority || ''; },
+    removeProperty(name) { properties.delete(name); },
+  };
+  const document = Object.assign(events(), {
+    activeElement: null,
+    documentElement: { style },
+    getElementById: id => elements[id] || null,
+    querySelector: selector => selectors[selector] || null,
+    querySelectorAll: selector => selectors[selector] || [],
+  });
+  const viewport = visualViewport ? Object.assign(events(), { offsetTop: 20, offsetLeft: 10, width: 360, height: 500 }) : undefined;
+  const window = Object.assign(events(), { innerWidth: 600, innerHeight: 800, visualViewport: viewport });
+  function node(attrs = {}, parent = null) {
+    const attributes = new Map(Object.entries(attrs));
+    const el = {
+      parent, isConnected: true, tabIndex: 0, offsetParent: {}, style: {}, focuses: [],
+      hasAttribute: name => attributes.has(name),
+      getAttribute: name => attributes.get(name) ?? null,
+      setAttribute(name, value) { attributes.set(name, value); },
+      removeAttribute(name) { attributes.delete(name); },
+      contains(target) { for (; target; target = target.parent) if (target === el) return true; return false; },
+      closest(selector) {
+        for (let target = el; target; target = target.parent) {
+          if (selector === '[data-agent-picker-panel]' && target.hasAttribute('data-agent-picker-panel')) return target;
+          if (selector === '[inert]' && target.hasAttribute('inert')) return target;
+          if (selector === '[inert], [hidden], [aria-hidden="true"]' &&
+              (target.hasAttribute('inert') || target.hasAttribute('hidden') || target.getAttribute('aria-hidden') === 'true')) return target;
+        }
+        return null;
+      },
+      matches: selector => selector === ':disabled' && el.hasAttribute('disabled'),
+      getClientRects: () => [{}],
+      focus(options = {}) { el.focuses.push(vmValue(options)); document.activeElement = el; },
+      blur() { if (document.activeElement === el) document.activeElement = null; },
+    };
+    return el;
+  }
+  return {
+    window, document, viewport, elements, selectors, style, node, frames, cancelled,
+    runFrame() { const callbacks = [...frames.values()]; frames.clear(); callbacks.forEach(cb => cb()); },
+    overrides: {
+      window, document,
+      requestAnimationFrame(callback) { const id = ++frameID; frames.set(id, callback); return id; },
+      cancelAnimationFrame(id) { cancelled.push(id); frames.delete(id); },
+      getComputedStyle: () => ({ visibility: 'visible' }),
+    },
+  };
+}
+
+for (const geometry of [
+  { name: 'no visualViewport', viewport: undefined, expected: { top: 0, left: 0, width: 600, height: 800, bottom: 0 } },
+  { name: 'offset visualViewport', viewport: { offsetTop: 30, offsetLeft: 15, width: 320, height: 400 }, expected: { top: 30, left: 15, width: 320, height: 400, bottom: 370 } },
+  { name: 'invalid visualViewport values', viewport: { offsetTop: -1, offsetLeft: NaN, width: 0, height: Infinity }, expected: { top: 0, left: 0, width: 600, height: 800, bottom: 0 } },
+  { name: 'viewport extends below layout', viewport: { offsetTop: 100, offsetLeft: 0, width: 500, height: 900 }, expected: { top: 100, left: 0, width: 500, height: 900, bottom: 0 } },
+]) {
+  test(`mobile and picker viewport geometry: ${geometry.name}`, () => {
+    const dom = mobileLifecycleDOM({ visualViewport: false });
+    dom.window.visualViewport = geometry.viewport;
+    const { state } = pickerState({ overrides: dom.overrides });
+    assert.deepEqual(vmValue(state.mobileViewportGeometry()), geometry.expected);
+    const { bottom, ...pickerGeometry } = geometry.expected;
+    assert.deepEqual(vmValue(state.agentPickerViewport()), pickerGeometry);
+    state.initMobile();
+    for (const [key, value] of Object.entries(geometry.expected)) {
+      assert.equal(dom.style.getPropertyValue('--mobile-vv-' + key), value + 'px');
+    }
+    state.destroyMobile();
+  });
+}
+
+for (const visualViewport of [false, true]) {
+  test(`mobile lifecycle coalesces geometry, uses layout breakpoint and cleans up: visualViewport=${visualViewport}`, () => {
+    const dom = mobileLifecycleDOM({ visualViewport });
+    const { state } = pickerState({ overrides: dom.overrides });
+    const watches = new Map();
+    let unwatched = 0;
+    state.$watch = (key, cb) => { watches.set(key, cb); return () => { watches.delete(key); ++unwatched; }; };
+    dom.style.setProperty('--mobile-vv-top', '7px', 'important');
+    state.initMobile();
+    state.initMobile();
+    assert.equal(dom.window.listeners.length, 1);
+    assert.equal(dom.document.listeners.length, 2);
+    assert.equal(dom.viewport?.listeners.length || 0, visualViewport ? 2 : 0);
+    assert.equal(watches.size, 1);
+    assert.equal(state.isMobile, true);
+    dom.window.innerHeight = 400;
+    if (dom.viewport) { dom.viewport.height = 200; dom.viewport.width = 100; }
+    dom.window.emit('resize');
+    dom.viewport?.emit('resize');
+    dom.viewport?.emit('scroll');
+    assert.equal(state.isMobile, true, 'keyboard height/pinch width is not a breakpoint');
+    assert.equal(dom.frames.size, 1);
+    dom.runFrame();
+    assert.equal(dom.style.getPropertyValue('--mobile-vv-height'), visualViewport ? '200px' : '400px');
+    dom.window.innerWidth = 768;
+    dom.window.emit('resize');
+    assert.equal(state.isMobile, false, 'desktop begins at exactly 768 layout pixels');
+    const staleFrame = [...dom.frames.values()][0];
+    const staleResize = dom.window.listeners[0].handler;
+    const pendingFrame = [...dom.frames.keys()][0];
+    // Removal must use the viewport captured at registration, not this getter.
+    dom.window.visualViewport = undefined;
+    state.destroyMobile();
+    state.destroyMobile();
+    assert.deepEqual(dom.cancelled, [pendingFrame]);
+    assert.equal(dom.frames.size, 0);
+    assert.equal(dom.window.listeners.length, 0);
+    assert.equal(dom.document.listeners.length, 0);
+    assert.equal(dom.viewport?.listeners.length || 0, 0);
+    assert.equal(unwatched, 1);
+    assert.equal(dom.style.getPropertyValue('--mobile-vv-top'), '7px');
+    assert.equal(dom.style.getPropertyPriority('--mobile-vv-top'), 'important');
+    assert.equal(dom.style.getPropertyValue('--mobile-vv-height'), '');
+    staleResize();
+    staleFrame();
+    assert.equal(dom.frames.size, 0);
+    assert.equal(dom.style.getPropertyValue('--mobile-vv-height'), '');
+    state._appDestroyed = true;
+    state.initMobile();
+    assert.equal(dom.window.listeners.length, 0);
+  });
+
+  test(`picker lifecycle removes listeners and cancels resize/focus RAF: visualViewport=${visualViewport}`, () => {
+    const dom = mobileLifecycleDOM({ visualViewport });
+    const { state } = pickerState({ overrides: dom.overrides });
+    let positioned = 0;
+    state.positionAgentPicker = () => { ++positioned; };
+    state.setupAgentPicker();
+    state.setupAgentPicker();
+    assert.equal(dom.document.listeners.length, 2);
+    assert.equal(dom.document.listeners.find(l => l.name === 'scroll').options, true);
+    assert.equal(dom.window.listeners.length, 1);
+    assert.equal(dom.viewport?.listeners.length || 0, visualViewport ? 2 : 0);
+    state._agentPickerOpenHost = 'create';
+    state.agentPickerState('create').open = true;
+    dom.window.emit('resize');
+    dom.viewport?.emit('resize');
+    dom.viewport?.emit('scroll');
+    assert.equal(dom.frames.size, 1);
+    dom.runFrame();
+    assert.equal(positioned, 1);
+    // No focus target exists yet.
+    state.focusAgentPicker('create');
+    dom.window.emit('resize');
+    assert.equal(dom.frames.size, 2);
+    const staleFrames = [...dom.frames.values()];
+    dom.window.visualViewport = undefined;
+    state.destroyAgentPicker();
+    state.destroyAgentPicker();
+    assert.equal(dom.cancelled.length, 2);
+    assert.equal(dom.frames.size, 0);
+    assert.equal(dom.document.listeners.length, 0);
+    assert.equal(dom.window.listeners.length, 0);
+    assert.equal(dom.viewport?.listeners.length || 0, 0);
+    assert.equal(state._agentPickerOpenHost, null);
+    staleFrames.forEach(cb => cb());
+    assert.equal(positioned, 1);
+    assert.equal(dom.frames.size, 0);
+    assert.equal(state._agentPickerFocusFrame, null);
+    assert.equal(state._agentPickerResizeFrame, null);
+  });
+}
+
 test("the agent picker groups inherit, recent, and remaining configured agents", () => {
   const { state } = pickerState({ recents: ["codex", "gone", "pi"] });
 
@@ -7418,18 +7897,19 @@ test("filtering resets scroll and repositions an above-trigger picker", () => {
   assert.equal(positioned, 1);
 });
 
-test("agent picker placement flips above and clamps to the viewport", () => {
-  const { state } = pickerState();
-  const placement = state.agentPickerPlacement(
-    { left: 280, top: 440, right: 340, bottom: 475 },
-    { width: 300, height: 220 },
-    { left: 0, top: 0, width: 400, height: 500 },
-  );
-
-  assert.equal(placement.placeAbove, true);
-  assert.equal(placement.left, 92);
-  assert.equal(placement.top, 214);
-});
+for (const placement of [
+  { name: 'flips above and clamps right', rect: { left: 280, top: 440, bottom: 475 }, viewport: { left: 0, top: 0, width: 400, height: 500 }, expected: { placeAbove: true, left: 92, top: 214 } },
+  { name: 'places below with visual viewport offsets', rect: { left: 15, top: 100, bottom: 130 }, viewport: { left: 40, top: 80, width: 400, height: 500 }, expected: { placeAbove: false, left: 48, top: 136 } },
+  { name: 'clamps to keyboard viewport bottom', rect: { left: 280, top: 440, bottom: 475 }, viewport: { left: 40, top: 80, width: 340, height: 300 }, expected: { placeAbove: true, left: 72, top: 152 } },
+]) {
+  test(`agent picker placement ${placement.name}`, () => {
+    const { state } = pickerState();
+    const result = state.agentPickerPlacement(placement.rect, { width: 300, height: 220 }, placement.viewport);
+    const { available, ...position } = vmValue(result);
+    assert.deepEqual(position, placement.expected);
+    assert.ok(available >= 0);
+  });
+}
 
 test("opening a supported picker uses the top layer and restores focus", async () => {
   class PopoverElement {}
@@ -7481,6 +7961,224 @@ test("opening a supported picker uses the top layer and restores focus", async (
   state.closeAgentPicker(true);
   assert.deepEqual(calls.slice(-2), ["hide", "trigger-focus"]);
 });
+
+function sheetLifecycleUI() {
+  const dom = mobileLifecycleDOM();
+  const { node, document, selectors, elements } = dom;
+  const opener = node(), fallback = node();
+  const dialog = node();
+  const first = node({ 'data-mobile-sheet-initial-focus': '' }, dialog);
+  const trigger = node({}, dialog), last = node({}, dialog);
+  const panel = node({ 'data-agent-picker-panel': '' }, dialog);
+  const filter = node({}, panel), list = node({}, panel);
+  const backgrounds = [node(), node({ inert: '', 'aria-hidden': 'false' }), node({ 'aria-hidden': 'true' })];
+  const ancestor = node();
+  dialog.parent = ancestor;
+  dialog.querySelectorAll = () => [trigger, first, last, filter, list];
+  selectors['[data-mobile-sheet-dialog]'] = dialog;
+  selectors['[data-mobile-sheet-background]'] = [...backgrounds, ancestor, first];
+  selectors['[data-mobile-focus-fallback]'] = fallback;
+  Object.assign(elements, {
+    'mobile-new-agent': trigger,
+    'agent-picker-mobile-create': panel,
+    'agent-picker-mobile-create-filter': filter,
+    'agent-picker-mobile-create-list': list,
+  });
+  Object.assign(panel, { offsetHeight: 180, showPopover() {}, hidePopover() {} });
+  list.offsetHeight = 100;
+  trigger.getBoundingClientRect = () => ({ left: 20, top: 200, right: 200, bottom: 240 });
+  class PopoverElement {}
+  PopoverElement.prototype.showPopover = function() {};
+  const { state } = pickerState({ overrides: { ...dom.overrides, HTMLElement: PopoverElement } });
+  document.activeElement = opener;
+  state.initMobile();
+  state.openActionsSheet({ id: 'sheet-ticket', status: 'paused' });
+  return { dom, state, opener, fallback, dialog, first, trigger, last, panel, filter, list, backgrounds, ancestor };
+}
+
+function mobileKey(key, shiftKey = false) {
+  return {
+    key, shiftKey, defaultPrevented: false, stopped: false,
+    preventDefault() { this.defaultPrevented = true; },
+    stopImmediatePropagation() { this.stopped = true; },
+  };
+}
+
+for (const exit of ['close', 'replace', 'breakpoint', 'destroy']) {
+  test(`mobile sheet inerts only background siblings and restores prior attributes: ${exit}`, () => {
+    const ui = sheetLifecycleUI();
+    const { dom, state, backgrounds, ancestor, dialog, first, opener } = ui;
+    assert.equal(dom.document.activeElement, first, 'explicit initial focus beats DOM order');
+    backgrounds.forEach(el => {
+      assert.equal(el.hasAttribute('inert'), true);
+      assert.equal(el.getAttribute('aria-hidden'), 'true');
+    });
+    assert.equal(ancestor.hasAttribute('inert'), false, 'never inert the dialog ancestor');
+    assert.equal(dialog.hasAttribute('inert'), false);
+    assert.equal(first.hasAttribute('inert'), false, 'never inert descendants');
+    if (exit === 'replace') {
+      state.sheet = { type: 'schedule' };
+      state._syncMobileSheet();
+      assert.equal(opener.focuses.length, 0, 'sheet replacement must not flash focus onto the background');
+      state.closeSheet();
+    } else if (exit === 'close') state.closeSheet();
+    else if (exit === 'breakpoint') { state.isMobile = false; state.mobileBreakpointChanged(); }
+    else state.destroyMobile();
+    assert.equal(state.sheet, null);
+    assert.equal(backgrounds[0].hasAttribute('inert'), false);
+    assert.equal(backgrounds[0].getAttribute('aria-hidden'), null);
+    assert.equal(backgrounds[1].hasAttribute('inert'), true);
+    assert.equal(backgrounds[1].getAttribute('aria-hidden'), 'false');
+    assert.equal(backgrounds[2].hasAttribute('inert'), false);
+    assert.equal(backgrounds[2].getAttribute('aria-hidden'), 'true');
+    assert.equal(opener.focuses.length, ['close', 'replace'].includes(exit) ? 1 : 0);
+    state.destroyMobile();
+  });
+}
+
+for (const unavailable of ['disconnected', 'inert', 'disabled', 'hidden', 'no rects']) {
+  test(`sheet focus restoration falls back when opener is ${unavailable}`, () => {
+    const { dom, state, opener, fallback } = sheetLifecycleUI();
+    if (unavailable === 'disconnected') opener.isConnected = false;
+    if (unavailable === 'inert') opener.setAttribute('inert', '');
+    if (unavailable === 'disabled') opener.setAttribute('disabled', '');
+    if (unavailable === 'hidden') opener.setAttribute('aria-hidden', 'true');
+    if (unavailable === 'no rects') opener.getClientRects = () => [];
+    state.closeSheet();
+    assert.equal(dom.document.activeElement, fallback);
+    assert.equal(opener.focuses.length, 0);
+    state.destroyMobile();
+  });
+}
+
+test('sheet traps Tab/focus without including native picker options; Escape closes picker first', async () => {
+  const ui = sheetLifecycleUI();
+  const { dom, state, first, trigger, last, filter, panel, opener } = ui;
+  assert.deepEqual([...state._mobileSheetFocusable()], [trigger, first, last]);
+  last.focus();
+  const tab = mobileKey('Tab');
+  dom.document.emit('keydown', tab);
+  assert.equal(tab.defaultPrevented, true);
+  assert.equal(dom.document.activeElement, trigger);
+  const backwards = mobileKey('Tab', true);
+  dom.document.emit('keydown', backwards);
+  assert.equal(dom.document.activeElement, last);
+  dom.document.emit('focusin', { target: opener });
+  assert.equal(dom.document.activeElement, trigger, 'redirect escaped focus inside the sheet');
+  await state.openAgentPicker('mobile-create');
+  assert.equal(dom.document.activeElement, filter);
+  assert.equal(state.agentPickerOwnsTarget(filter), true);
+  assert.equal(state.agentPickerOwnsTarget(trigger), true);
+  assert.equal(state.agentPickerOwnsTarget(opener), false);
+  dom.document.emit('focusin', { target: filter });
+  assert.equal(dom.document.activeElement, filter, 'sheet must not steal native picker focus');
+  const handled = mobileKey('Escape');
+  handled.preventDefault();
+  dom.document.emit('keydown', handled);
+  assert.equal(state.agentPickerIsOpen('mobile-create'), true);
+  const escape = mobileKey('Escape');
+  dom.document.emit('keydown', escape);
+  assert.equal(escape.defaultPrevented, true);
+  assert.equal(escape.stopped, true, 'capture handler prevents global Escape from also closing the sheet');
+  assert.equal(state._agentPickerOpenHost, null);
+  assert.ok(state.sheet);
+  assert.equal(dom.document.activeElement, trigger);
+  assert.equal(state.agentPickerOwnsTarget(panel), false, 'closed picker owns no targets');
+  const sheetEscape = mobileKey('Escape');
+  dom.document.emit('keydown', sheetEscape);
+  assert.equal(sheetEscape.stopped, true);
+  assert.equal(state.sheet, null);
+  assert.equal(dom.document.activeElement, opener);
+  state.destroyMobile();
+});
+
+for (const shiftKey of [false, true]) {
+  test(`native picker Tab advances within the sheet without a delayed close: shift=${shiftKey}`, async () => {
+    const { dom, state, first, last } = sheetLifecycleUI();
+    await state.openAgentPicker('mobile-create');
+    const tab = mobileKey('Tab', shiftKey);
+    state.agentPickerTab('mobile-create', tab);
+    assert.equal(tab.defaultPrevented, true);
+    assert.equal(state._agentPickerOpenHost, null);
+    assert.equal(state._agentPickerTabTimer, null);
+    assert.equal(dom.document.activeElement, shiftKey ? last : first);
+    assert.ok(state.sheet);
+    state.destroyMobile();
+  });
+}
+
+for (const boundary of ['close', 'replace', 'destroy']) {
+  test(`deferred sheet focus cannot inert/focus a superseded sheet: ${boundary}`, () => {
+    const { dom, state, dialog, opener, backgrounds } = sheetLifecycleUI();
+    state.closeSheet();
+    const callbacks = [];
+    state.$nextTick = cb => { if (cb) callbacks.push(cb); return Promise.resolve(); };
+    state.openActionsSheet({ id: 'old' });
+    if (boundary === 'close') state.closeSheet();
+    if (boundary === 'replace') state.openActionsSheet({ id: 'new' });
+    if (boundary === 'destroy') state.destroyMobile();
+    const focuses = dialog.focuses.length;
+    callbacks[0]();
+    assert.equal(dom.document.activeElement, opener);
+    assert.equal(dialog.focuses.length, focuses);
+    assert.equal(backgrounds[0].hasAttribute('inert'), false);
+    if (boundary === 'replace') {
+      callbacks[1]();
+      assert.equal(backgrounds[0].hasAttribute('inert'), true);
+      assert.notEqual(dom.document.activeElement, opener);
+    }
+    state.destroyMobile();
+  });
+}
+
+for (const target of ['filter', 'list']) {
+  test(`native picker retries ${target} focus only while its opening is current`, async () => {
+    const { dom, state, filter, list, trigger } = sheetLifecycleUI();
+    if (target === 'list') state.configCache.agents = state.configCache.agents.slice(0, 5);
+    const control = target === 'filter' ? filter : list;
+    control.offsetParent = null;
+    await state.openAgentPicker('mobile-create');
+    assert.equal(dom.frames.size, 1);
+    control.offsetParent = {};
+    dom.runFrame();
+    assert.equal(dom.document.activeElement, control);
+    assert.equal(state._agentPickerFocusFrame, null);
+    state.closeAgentPicker(true);
+    assert.equal(dom.document.activeElement, trigger);
+    control.offsetParent = null;
+    await state.openAgentPicker('mobile-create');
+    const stale = [...dom.frames.values()][0];
+    state.closeAgentPicker(false);
+    control.offsetParent = {};
+    const focused = control.focuses.length;
+    stale();
+    assert.equal(control.focuses.length, focused);
+    assert.equal(dom.frames.size, 0);
+    state.destroyMobile();
+  });
+}
+
+for (const failure of ['unsupported', 'missing panel', 'missing method', 'show throws', 'closed before tick']) {
+  test(`native picker opening safely falls back or cancels: ${failure}`, async () => {
+    const { dom, state, panel } = sheetLifecycleUI();
+    const ticks = deferred();
+    state.$nextTick = () => ticks.promise;
+    if (failure === 'unsupported') state._agentPickerPopoverSupported = false;
+    if (failure === 'missing panel') delete dom.elements['agent-picker-mobile-create'];
+    if (failure === 'missing method') panel.showPopover = undefined;
+    if (failure === 'show throws') panel.showPopover = () => { throw new Error('not available'); };
+    const opening = state.openAgentPicker('mobile-create');
+    if (failure === 'closed before tick') state.closeAgentPicker(false);
+    ticks.resolve();
+    await opening;
+    assert.equal(state._agentPickerOpenHost, null);
+    assert.equal(state.agentPickerState('mobile-create').open, false);
+    assert.equal(state._agentPickerPopoverSupported, failure === 'closed before tick');
+    assert.equal(dom.frames.size, 0);
+    assert.ok(state.sheet, 'picker failure does not dismiss the containing sheet');
+    state.destroyMobile();
+  });
+}
 
 test("the shared picker markup wires all hosts, ARIA, Popover, and fallback behavior", () => {
   const html = fs.readFileSync(htmlPath, "utf8");
@@ -13485,8 +14183,13 @@ function scheduleState() {
 
 // Fills in the create form and switches Start at to "later", which is what
 // turns the text field into a schedule.
-async function createLater(state, text) {
-  await state.openCreateModal();
+async function createLater(state, text, entry = "desktop") {
+  if (entry === "mobile") {
+    state.isMobile = true;
+    await state.openNewSheet();
+  } else {
+    await state.openCreateModal();
+  }
   state.createForm.title = "Later";
   state.createForm.path = "/repo";
   state.setCreateScheduleMode("later");
@@ -13494,18 +14197,24 @@ async function createLater(state, text) {
   state.onCreateScheduleChange();
 }
 
-test("the create form sends the instant its start-at field means", async () => {
-  const { state, posted } = scheduleState();
-  await createLater(state, SCHED_LOCAL);
+for (const entry of ["desktop", "mobile"]) {
+  test(`the create form sends the instant its start-at field means: ${entry}`, async () => {
+    const { state, posted } = scheduleState();
+    await createLater(state, SCHED_LOCAL, entry);
+    const submit = () => entry === "mobile" ? state.submitCreateTicketMobile() : state.submitCreateTicket();
 
-  await state.submitCreateTicket();
+    assert.equal(await submit(), true);
 
-  assert.equal(posted.length, 1);
-  assert.equal(posted[0].url, "/api/tickets");
-  assert.equal(posted[0].body.scheduled_at, SCHED_ISO);
-  assert.equal(posted[0].body.status, "open", "a schedule is what moves the ticket, so it starts open");
-  assert.equal(state.createForm.status, "open");
-});
+    assert.equal(posted.length, 1);
+    assert.equal(posted[0].url, "/api/tickets");
+    assert.equal(posted[0].body.scheduled_at, SCHED_ISO);
+    assert.equal(posted[0].body.status, "open", "a schedule is what moves the ticket, so it starts open");
+    assert.equal(state.createForm.status, "open");
+    assert.equal(state.createSubmitting, false);
+    if (entry === "mobile") assert.equal(state.sheet, null);
+    else assert.equal(state.currentView, "board");
+  });
+}
 
 test("the start-at field takes both grammars kontora schedule takes", async () => {
   const cases = [
@@ -13529,30 +14238,450 @@ test("the start-at field takes both grammars kontora schedule takes", async () =
   }
 });
 
-test("start-at refuses what it cannot read rather than creating an unscheduled ticket", async () => {
-  // A bare date is the trap: Date reads that form as UTC, so accepting it would
-  // schedule the ticket for midnight in some other zone.
-  for (const bad of ["2099-09", "2099-09-01", "not a date", "3 days", "2020-01-01 09:00"]) {
-    const { state, posted } = scheduleState();
-    await createLater(state, bad);
+for (const entry of ["desktop", "mobile"]) {
+  test(`start-at refuses what it cannot read rather than creating an unscheduled ticket: ${entry}`, async () => {
+    // A bare date must not become midnight in another time zone.
+    for (const bad of ["", "2099-09", "2099-09-01", "not a date", "3 days", "2020-01-01 09:00"]) {
+      const { state, posted } = scheduleState();
+      await createLater(state, bad, entry);
+      const form = state.createForm;
+      const sheet = state.sheet;
 
-    assert.ok(state.createScheduleError(), bad);
-    assert.equal(state.createBlocked(), true, bad);
-    await state.submitCreateTicket();
-    assert.equal(posted.length, 0, bad);
+      if (bad) assert.ok(state.createScheduleError(), bad);
+      assert.equal(state.createBlocked(), true, bad);
+      const result = entry === "mobile" ? await state.submitCreateTicketMobile() : await state.submitCreateTicket();
+      assert.equal(result, false, bad);
+      assert.equal(posted.length, 0, bad);
+      assert.equal(state.createSubmitting, false, bad);
+      assert.equal(state.createForm, form, bad);
+      if (entry === "mobile") assert.equal(state.sheet, sheet, bad);
+      else assert.equal(state.currentView, "new", bad);
+    }
+  });
+
+  test(`start-at on now creates an ordinary ticket, whatever the field holds: ${entry}`, async () => {
+    const { state, posted } = scheduleState();
+    await createLater(state, SCHED_LOCAL, entry);
+    state.setCreateScheduleMode("now");
+
+    assert.equal(state.createForm.scheduled_at, "", "leaving later drops the time rather than hiding it");
+    const result = entry === "mobile" ? await state.submitCreateTicketMobile() : await state.submitCreateTicket();
+    assert.equal(result, true);
+
+    assert.equal(posted[0].body.scheduled_at, undefined);
+    assert.equal(posted[0].body.status, "todo");
+  });
+}
+
+test("the mobile create input submits future times, clears to now and rejects invalid times", async () => {
+  const html = fs.readFileSync(htmlPath, "utf8");
+  const mobile = html.slice(html.indexOf('<select x-model="createForm.kind"'));
+  const input = mobile.match(/<input\b[^>]*(?:(?:x-model|:value)="createForm\.scheduled_at"|aria-label="Start at")[^>]*>/)?.[0];
+  assert.ok(input, "the mobile create form has a schedule input");
+  const handler = input.match(/@(?:change|input)="([^"]*)"/)?.[1];
+  assert.ok(handler, "the schedule input updates the create schedule mode");
+  const change = new Function("state", "$event", `with (state) { ${handler} }`);
+
+  for (const value of [SCHED_LOCAL, "", "2099-09-01"]) {
+    const { state, posted } = scheduleState();
+    state.isMobile = true;
+    await state.openNewSheet();
+    Object.assign(state.createForm, { title: "Later", path: "/repo", scheduled_at: SCHED_LOCAL });
+    change(state, { target: { value: SCHED_LOCAL } });
+    assert.equal(state.createForm.scheduleMode, "later");
+    assert.equal(state.createScheduleISO(), SCHED_ISO);
+    state.createForm.scheduled_at = value;
+    change(state, { target: { value } });
+    const blocked = value === "2099-09-01";
+    assert.equal(state.createForm.scheduleMode, value ? "later" : "now");
+    assert.equal(state.createBlocked(), blocked);
+    const sheet = state.sheet;
+    assert.equal(await state.submitCreateTicketMobile(), !blocked);
+    assert.equal(posted.length, blocked ? 0 : 1);
+    if (blocked) {
+      assert.equal(state.sheet, sheet);
+      assert.ok(state.createScheduleError());
+    } else {
+      assert.equal(posted[0].body.scheduled_at, value ? SCHED_ISO : undefined);
+      assert.equal(posted[0].body.status, value ? "open" : "todo");
+    }
   }
 });
 
-test("start-at on now creates an ordinary ticket, whatever the field holds", async () => {
-  const { state, posted } = scheduleState();
+for (const entry of ["desktop", "mobile"]) {
+  test(`create errors belong to the form and reset when another form opens: ${entry}`, async () => {
+    const { state } = scheduleState();
+    assert.equal(state.createError, null);
+    state.error = "Unrelated failure";
+    state.createError = "Old create failure";
+    state.createSubmitting = true;
+    if (entry === "mobile") { state.isMobile = true; await state.openNewSheet(); }
+    else await state.openCreateModal();
+    assert.equal(state.createError, null);
+    assert.equal(state.createSubmitting, false);
+    assert.equal(state.error, "Unrelated failure");
+    state.createError = "Another create failure";
+    if (entry === "mobile") state.closeSheet();
+    else state.closeCreateModal();
+    assert.equal(state.createError, null);
+  });
+}
+
+for (const kind of ["", "epic"]) {
+  for (const scenario of ["desktop:http", "desktop:unreadable", "desktop:network", "mobile:http", "mobile:unreadable", "mobile:network"]) {
+    const [entry, failure] = scenario.split(":");
+    test(`create failures keep the draft and allow a retry: kind=${kind || "ticket"}, ${scenario}`, async () => {
+      const { state, ctx } = loadKontoraContext();
+      state.configCache = {};
+      if (entry === "mobile") { state.isMobile = true; await state.openNewSheet(); }
+      else await state.openCreateModal();
+      Object.assign(state.createForm, { title: "Draft", path: "/repo", kind });
+      const submit = () => entry === "mobile" ? state.submitCreateTicketMobile() : state.submitCreateTicket();
+      const sheet = state.sheet;
+      state.error = "Unrelated failure";
+      ctx.fetch = async () => {
+        if (failure === "network") throw new Error("offline");
+        return { ok: false, json: async () => {
+          if (failure === "unreadable") throw new Error("bad JSON");
+          return { error: "Create rejected" };
+        } };
+      };
+      const form = state.createForm;
+      assert.equal(await submit(), false);
+      assert.equal(state.createError, failure === "http" ? "Create rejected"
+        : failure === "network" ? "Failed to create ticket: offline" : "Failed to create ticket");
+      assert.equal(state.error, "Unrelated failure");
+      if (entry === "mobile") assert.equal(state.sheet, sheet);
+      else assert.equal(state.currentView, "new");
+      assert.equal(state.createForm, form);
+      assert.equal(state.createSubmitting, false);
+      ctx.fetch = async () => ({ ok: true });
+      assert.equal(await submit(), true);
+      assert.equal(state.createError, null);
+      assert.equal(state.createSubmitting, false);
+      assert.equal(state.currentView, "board");
+      if (entry === "mobile") assert.equal(state.sheet, null);
+    });
+  }
+}
+
+for (const entry of ["desktop", "mobile"]) {
+  test(`create rejects missing fields without closing the form: ${entry}`, async () => {
+    for (const missing of ["title", "path"]) {
+      const { state, posted } = scheduleState();
+      await createLater(state, SCHED_LOCAL, entry);
+      state.createForm[missing] = " \t ";
+      const sheet = state.sheet;
+      const result = entry === "mobile" ? await state.submitCreateTicketMobile() : await state.submitCreateTicket();
+      assert.equal(result, false);
+      assert.equal(posted.length, 0);
+      assert.equal(state.createSubmitting, false);
+      if (entry === "mobile") assert.equal(state.sheet, sheet);
+      else assert.equal(state.currentView, "new");
+    }
+  });
+
+  test(`create ignores a second submit while the first POST is pending: ${entry}`, async () => {
+    const { state, ctx } = loadKontoraContext();
+    state.configCache = {};
+    await createLater(state, SCHED_LOCAL, entry);
+    const gate = deferred();
+    let posts = 0;
+    ctx.fetch = () => { posts++; return gate.promise; };
+    const submit = () => entry === "mobile" ? state.submitCreateTicketMobile() : state.submitCreateTicket();
+    const sheet = state.sheet;
+    const first = submit();
+    assert.equal(state.createSubmitting, true);
+    assert.equal(await submit(), false);
+    assert.equal(posts, 1);
+    if (entry === "mobile") assert.equal(state.sheet, sheet);
+    gate.resolve({ ok: true });
+    assert.equal(await first, true);
+    assert.equal(state.createSubmitting, false);
+  });
+}
+
+function pendingCreateReply({ ok = true, delayJSON = false, network = false, unreadable = false }, data) {
+  const gate = deferred();
+  return {
+    release: () => gate.resolve(),
+    fetch: async () => {
+      if (!delayJSON) await gate.promise;
+      if (network) throw new Error('offline');
+      return { ok, json: async () => {
+        if (delayJSON) await gate.promise;
+        if (unreadable) throw new Error('bad JSON');
+        return data;
+      } };
+    },
+  };
+}
+
+const pendingCreateCases = {
+  config: [
+    { name: 'response success' },
+    { name: 'JSON success', delayJSON: true },
+    { name: 'HTTP failure', ok: false },
+    { name: 'network failure', network: true },
+    { name: 'JSON failure', delayJSON: true, unreadable: true },
+  ],
+  POST: [
+    { name: 'response success' },
+    { name: 'HTTP failure', ok: false },
+    { name: 'network failure', network: true },
+    { name: 'error JSON success', ok: false, delayJSON: true },
+    { name: 'error JSON failure', ok: false, delayJSON: true, unreadable: true },
+  ],
+};
+
+for (const phase of ['config', 'POST']) {
+  for (const reply of pendingCreateCases[phase]) {
+    for (const overlay of ['navigation', 'assistant']) {
+      for (const closeOverlay of [false, true]) {
+        test(`routed New keeps pending ${phase} ${reply.name} across ${overlay}: close=${closeOverlay}`, async () => {
+          const { state, ctx } = loadKontoraContext();
+          state.isMobile = true;
+          state.error = 'Unrelated failure';
+          const data = phase === 'config'
+            ? { projects: [{ path: '/repo', agent: 'project-agent', pipeline: 'project-pipeline' }] }
+            : { error: 'Create rejected' };
+          const pending = pendingCreateReply(reply, data);
+          state.configCache = {};
+          await state.gotoView('new');
+          Object.assign(state.createForm, { title: 'Draft', path: '/repo' });
+          const showOverlay = () => {
+            // The mobile navigation button assigns the sheet directly.
+            if (overlay === 'navigation') state.sheet = { type: 'navigation' };
+            else {
+              state.assistantLoadThreads = async () => {};
+              state.openAssistantSheet();
+            }
+          };
+          if (closeOverlay) showOverlay();
+          if (phase === 'config') state.configCache = null;
+          ctx.fetch = pending.fetch;
+          const request = phase === 'config' ? state.loadCreateConfig() : state.submitCreateTicket();
+          await flushMicrotasks();
+          const form = state.createForm;
+          if (closeOverlay) state.closeSheet();
+          else showOverlay();
+          const sheet = state.sheet;
+          assert.equal(state.currentView, 'new');
+          if (phase === 'POST') assert.equal(state.createSubmitting, true);
+          pending.release();
+          const result = await request;
+          const success = reply.ok !== false && !reply.network && !reply.unreadable;
+          assert.equal(state.createForm, form);
+          assert.equal(state.sheet, sheet, 'the routed form does not own the other sheet');
+          assert.equal(state.error, 'Unrelated failure');
+          assert.equal(state.createSubmitting, false);
+          if (phase === 'config') {
+            assert.equal(state.currentView, 'new');
+            assert.equal(state.configCache, success ? data : null);
+            assert.equal(state.createError, success ? null : 'Failed to load config');
+            if (success) {
+              assert.equal(form.agent, 'project-agent');
+              assert.equal(form.pipeline, 'project-pipeline');
+            }
+          } else {
+            assert.equal(result, success);
+            assert.equal(state.currentView, success ? 'board' : 'new');
+            assert.equal(state.createError, success ? null : reply.network ? 'Failed to create ticket: offline'
+              : reply.unreadable ? 'Failed to create ticket' : 'Create rejected');
+          }
+        });
+      }
+    }
+
+    for (const clear of ['primary deletion', 'secondary deletion', 'primary archive']) {
+      test(`New sheet keeps pending ${phase} ${reply.name} across SSE ${clear}`, async () => {
+        const sources = [];
+        const { state, ctx } = loadKontoraContext({ EventSource: makeEventSourceFake(sources) });
+        state.isMobile = true;
+        state.updateFavicon = () => {};
+        const primary = { id: 'same', title: 'Primary', status: 'open', kontora: true };
+        const secondary = { ...primary, source: 'team', title: 'Secondary' };
+        state.tickets = [primary];
+        state.secondaryTickets = [secondary];
+        state.selectedTicket = clear === 'secondary deletion' ? secondary : primary;
+        state.connectSSE();
+        const data = phase === 'config'
+          ? { projects: [{ path: '/repo', agent: 'project-agent', pipeline: 'project-pipeline' }] }
+          : { error: 'Create rejected' };
+        const pending = pendingCreateReply(reply, data);
+        let request;
+        if (phase === 'config') {
+          ctx.fetch = pending.fetch;
+          request = state.openNewSheet();
+        } else {
+          state.configCache = {};
+          await state.openNewSheet();
+          Object.assign(state.createForm, { title: 'Draft', path: '/repo' });
+          ctx.fetch = pending.fetch;
+          request = state.submitCreateTicketMobile();
+        }
+        await flushMicrotasks();
+        const form = state.createForm;
+        form.path = '/repo';
+        const sheet = state.sheet;
+        const selected = state.selectedTicket;
+        if (clear === 'secondary deletion') {
+          sources[0].emit('ticket_deleted', primary);
+          assert.equal(state.selectedTicket, selected, 'primary namesake deletion leaves the secondary selection');
+          sources[0].emit('secondary_ticket_deleted', { ticket: secondary });
+        } else {
+          sources[0].emit('secondary_ticket_deleted', { ticket: secondary });
+          assert.equal(state.selectedTicket, selected, 'secondary namesake deletion leaves the primary selection');
+          if (clear === 'primary deletion') sources[0].emit('ticket_deleted', primary);
+          else {
+            sources[0].emit('ticket_updated', { ...primary, status: 'archived' });
+            state.flushTicketUpdates();
+          }
+        }
+        assert.equal(state.selectedTicket, null);
+        assert.equal(state.sheet, sheet);
+        if (phase === 'POST') assert.equal(state.createSubmitting, true);
+        pending.release();
+        const result = await request;
+        const success = reply.ok !== false && !reply.network && !reply.unreadable;
+        assert.equal(state.createForm, form);
+        assert.equal(state.createSubmitting, false);
+        assert.equal(state.currentView, 'board');
+        if (phase === 'config') {
+          assert.equal(state.sheet, sheet);
+          assert.equal(state.configCache, success ? data : null);
+          assert.equal(state.createError, success ? null : 'Failed to load config');
+          if (success) {
+            assert.equal(form.agent, 'project-agent');
+            assert.equal(form.pipeline, 'project-pipeline');
+          }
+        } else {
+          assert.equal(result, success);
+          assert.equal(state.sheet, success ? null : sheet);
+          assert.equal(state.createError, success ? null : reply.network ? 'Failed to create ticket: offline'
+            : reply.unreadable ? 'Failed to create ticket' : 'Create rejected');
+        }
+      });
+    }
+  }
+}
+
+for (const delayed of ["response", "json", "failure", "http"]) {
+  for (const scenario of ["desktop:close", "desktop:reopen", "desktop:navigate", "desktop:destroy", "mobile:close", "mobile:reopen", "mobile:navigate", "mobile:replacement", "mobile:destroy"]) {
+    const [entry, supersession] = scenario.split(":");
+    test(`create config ignores delayed ${delayed} after ${scenario}`, async () => {
+      const gate = deferred();
+      const { state } = loadKontoraContext({ fetch: async () => {
+        if (delayed === "response") return gate.promise;
+        if (delayed === "failure") { await gate.promise; throw new Error("offline"); }
+        if (delayed === "http") { await gate.promise; return { ok: false }; }
+        return { ok: true, json: () => gate.promise };
+      } });
+      state.isMobile = entry === "mobile";
+      const open = () => entry === "mobile" ? state.openNewSheet() : state.openCreateModal();
+      const opening = open();
+      await flushMicrotasks();
+      const oldForm = state.createForm;
+      if (supersession === "close") {
+        if (entry === "mobile") state.closeSheet();
+        else state.closeCreateModal();
+      } else if (supersession === "navigate") await state.gotoView("stats");
+      else if (supersession === "destroy") state.destroy();
+      else if (supersession === "replacement") state.sheet = { type: 'new' };
+      else {
+        state.configCache = { projects: [{ path: "/repo", agent: "new-agent", pipeline: "new-pipeline" }] };
+        await open();
+      }
+      Object.assign(state.createForm, { path: "/repo", agent: "draft-agent", pipeline: "draft-pipeline" });
+      state.createError = "Current create failure";
+      state.error = "Current global failure";
+      const config = state.configCache;
+      const staleConfig = { projects: [{ path: "/repo", agent: "old-agent", pipeline: "old-pipeline" }] };
+      gate.resolve(delayed === "response" ? { ok: true, json: async () => staleConfig } : staleConfig);
+      await opening;
+      assert.equal(state.configCache, config);
+      assert.equal(state.createForm.agent, "draft-agent");
+      assert.equal(state.createForm.pipeline, "draft-pipeline");
+      assert.equal(state.createError, "Current create failure");
+      assert.equal(state.error, "Current global failure");
+      if (supersession === "reopen") assert.notEqual(state.createForm, oldForm);
+    });
+  }
+}
+
+for (const scenario of ["desktop:http", "desktop:network", "mobile:http", "mobile:network"]) {
+  const [entry, failure] = scenario.split(":");
+  test(`create config reports ${scenario} failure only on the current form`, async () => {
+    const { state } = loadKontoraContext({ fetch: async () => {
+      if (failure === "network") throw new Error("offline");
+      return { ok: false };
+    } });
+    state.error = "Unrelated failure";
+    if (entry === "mobile") { state.isMobile = true; await state.openNewSheet(); }
+    else await state.openCreateModal();
+    assert.equal(state.createError, "Failed to load config");
+    assert.equal(state.error, "Unrelated failure");
+    if (entry === "mobile") assert.equal(state.sheet?.type, "new");
+    else assert.equal(state.currentView, "new");
+  });
+}
+
+for (const outcome of ["success", "http", "network", "error JSON"]) {
+  for (const supersession of ["close", "reopen", "navigate", "mobile replacement", "destroy"]) {
+    test(`create POST ignores stale ${outcome} after ${supersession}`, async () => {
+      const { state, ctx } = loadKontoraContext();
+      state.configCache = {};
+      await createLater(state, SCHED_LOCAL, supersession === "mobile replacement" ? "mobile" : "desktop");
+      const gate = deferred();
+      ctx.fetch = async () => {
+        if (outcome === "error JSON") return { ok: false, json: () => gate.promise };
+        await gate.promise;
+        if (outcome === "network") throw new Error("offline");
+        return { ok: outcome === "success", json: async () => ({ error: "Old failure" }) };
+      };
+      const posting = state.submitCreateTicket();
+      await flushMicrotasks();
+      if (supersession === "close") state.closeCreateModal();
+      else if (supersession === "reopen") await state.openCreateModal();
+      else if (supersession === "navigate") await state.gotoView("board");
+      else if (supersession === "destroy") state._appDestroyed = true;
+      else state.sheet = { type: "actions", ticket: { id: "other" } };
+      state.createForm.title = "New draft";
+      state.createSubmitting = true;
+      state.createError = "New create failure";
+      state.error = "New global failure";
+      const form = state.createForm;
+      const sheet = state.sheet;
+      const view = state.currentView;
+      gate.resolve({ error: "Old failure" });
+      assert.equal(await posting, false);
+      assert.equal(state.createForm, form);
+      assert.equal(state.createForm.title, "New draft");
+      assert.equal(state.sheet, sheet);
+      assert.equal(state.currentView, view);
+      assert.equal(state.createSubmitting, true);
+      assert.equal(state.createError, "New create failure");
+      assert.equal(state.error, "New global failure");
+    });
+  }
+}
+
+test("closing create invalidates a POST even when the same draft object is reused", async () => {
+  const { state, ctx } = loadKontoraContext();
+  state.configCache = {};
   await createLater(state, SCHED_LOCAL);
-  state.setCreateScheduleMode("now");
-
-  assert.equal(state.createForm.scheduled_at, "", "leaving later drops the time rather than hiding it");
-  await state.submitCreateTicket();
-
-  assert.equal(posted[0].body.scheduled_at, undefined);
-  assert.equal(posted[0].body.status, "todo");
+  const gate = deferred();
+  ctx.fetch = () => gate.promise;
+  const posting = state.submitCreateTicket();
+  state.closeCreateModal();
+  state.currentView = "new";
+  state.createSubmitting = true;
+  state.createError = "Current failure";
+  gate.resolve({ ok: true });
+  assert.equal(await posting, false);
+  assert.equal(state.currentView, "new");
+  assert.equal(state.createSubmitting, true);
+  assert.equal(state.createError, "Current failure");
 });
 
 test("the frontmatter preview shows the schedule under the open it forces", async () => {
@@ -14155,19 +15284,50 @@ test("creating an epic selects its agent without activating supervision", async 
   const state = loadKontoraState({
     fetch: async (url, opts) => { posted.push({ url, ...opts }); return { ok: true, json: async () => ({ id: "kon-e7c1" }) }; },
   });
-  state.createForm = {
-    ...state.createForm, title: "An epic", path: "/r/kontora", body: "## Description\n",
-    pipeline: "default", agent: "claude", status: "todo", kind: "epic",
-    scheduleMode: "later", scheduled_at: "2099-01-01 09:00",
-  };
+  state.configCache = {};
+  for (const schedule of ["2099-01-01 09:00", "not a date", ""]) {
+    for (const choice of ["inherit", "none", "pipeline:default"]) {
+      await state.openCreateModal();
+      Object.assign(state.createForm, {
+        title: "An epic", path: "/r/kontora", body: "## Description\n",
+        pipeline: "default", agent: "claude", status: "todo", kind: "epic",
+        scheduleMode: "later", scheduled_at: schedule, pipelineChoice: choice,
+      });
+      assert.equal(state.createScheduleISO(), "");
+      assert.equal(state.createScheduleError(), "");
+      assert.equal(state.createSchedulePinned(), false);
+      assert.equal(state.createScheduleEcho(), null);
+      assert.equal(state.createBlocked(), false);
+      assert.equal(await state.submitCreateTicket(), true);
+      assert.equal(state.createSubmitting, false);
+    }
+  }
 
-  await state.submitCreateTicket();
+  assert.equal(posted.length, 9);
+  for (const request of posted) {
+    assert.equal(request.url, "/api/tickets");
+    assert.deepEqual(JSON.parse(request.body), {
+      title: "An epic", path: "/r/kontora", kind: "epic", status: "open", agent: "claude", body: "## Description\n",
+    });
+  }
+});
 
-  assert.equal(posted.length, 1);
-  assert.equal(posted[0].url, "/api/tickets");
-  assert.deepEqual(JSON.parse(posted[0].body), {
-    title: "An epic", path: "/r/kontora", kind: "epic", status: "open", agent: "claude", body: "## Description\n",
-  });
+test("switching from an epic restores the ticket schedule without activating the epic", async () => {
+  const { state, posted } = scheduleState();
+  await createLater(state, SCHED_LOCAL);
+  state.createForm.kind = "epic";
+  state.onCreateScheduleChange();
+  assert.equal(state.createForm.status, "open");
+  assert.equal(state.createScheduleISO(), "");
+  assert.equal(state.createBlocked(), false);
+  assert.doesNotMatch(state.createPreviewYaml, /scheduled_at:|pipeline:|epic_execution:/);
+  state.createForm.kind = "";
+  state.onCreateScheduleChange();
+  assert.equal(state.createScheduleISO(), SCHED_ISO);
+  assert.equal(state.createSchedulePinned(), true);
+  assert.equal(await state.submitCreateTicket(), true);
+  assert.equal(posted[0].body.scheduled_at, SCHED_ISO);
+  assert.equal(posted[0].body.status, "open");
 });
 
 test("the brief seeds the description editor and saves only the description", async () => {
@@ -16302,9 +17462,9 @@ test("inbox links respect dirty Settings without selecting a hidden ticket", asy
   await state.companionOpenTicket(COMPANION_SNAPSHOT.items[0]);
   assert.equal(state.currentView, "settings");
   assert.equal(state.settingsGuard, true);
-  assert.equal(state.settingsGuardTarget, "board");
+  assert.deepEqual(vmValue(state.settingsGuardTarget), { view: 'board', ticketId: 'kon-1' });
   assert.equal(state.selectedTicket, null);
-  assert.equal(state.sheet.type, "assistant");
+  assert.equal(state.sheet, null, 'the sheet must release focus so the Settings guard is operable');
   assert.equal(state.settingsConfig.general.branch_prefix, "unsaved");
   state.destroy();
 });
@@ -16353,3 +17513,194 @@ test("companion settings round-trip independently without rewriting the assistan
   state.settingsConfig.assistant.companion.name = "x".repeat(65);
   assert.match(state._settingsAssistantErrors().join(" "), /assistant.companion.name/);
 });
+
+for (const sameStage of [false, true]) {
+  for (const delayed of ['response', 'json']) {
+    for (const outcome of ['success', 'http', 'json', 'network']) {
+      if (delayed === 'json' && outcome === 'network') continue;
+      test(`stage logs ignore obsolete ${outcome}: delayed ${delayed}, same stage=${sameStage}`, async () => {
+        const requests = [];
+        const state = loadKontoraState({ fetch: () => {
+          const pending = deferred();
+          requests.push(pending);
+          return pending.promise;
+        } });
+        state.selectedTicket = { id: 'logs-a', status: 'paused' };
+        state.isMobile = true;
+        state.detailTab = 'logs';
+        const oldJSON = deferred();
+        const old = state.fetchStageLogs('logs-a', 'first');
+        const response = { ok: outcome !== 'http', json: () => oldJSON.promise };
+        if (delayed === 'json') {
+          requests[0].resolve(response);
+          await flushMicrotasks();
+        }
+        const fresh = state.fetchStageLogs('logs-a', sameStage ? 'first' : 'second');
+        const expectedStage = sameStage ? 'first' : 'second';
+        if (delayed === 'response') {
+          if (outcome === 'network') requests[0].reject(new Error('old connection'));
+          else requests[0].resolve(response);
+        }
+        if (outcome === 'json') oldJSON.reject(new Error('old JSON'));
+        else oldJSON.resolve(outcome === 'http' ? { error: '<old error>' } : { content: 'old content' });
+        await old;
+        assert.equal(state.logViewLoading, true, 'obsolete completion cannot finish the current request');
+        assert.equal(state.logViewStage, expectedStage);
+        assert.equal(state.logViewContent, null);
+        assert.equal(state.error, null);
+        requests[1].resolve({ ok: true, json: async () => ({ content: 'latest content' }) });
+        await fresh;
+        assert.equal(state.logViewLoading, false);
+        assert.equal(state.logViewContent, 'latest content');
+        assert.equal(state.error, null);
+      });
+    }
+  }
+}
+
+for (const boundary of ['close/reopen', 'source', 'mobile tab', 'desktop tab', 'route', 'epic', 'breakpoint', 'destroy', 'activity']) {
+  for (const delayed of ['response', 'json']) {
+    test(`stage-log ownership ends at ${boundary}, delayed ${delayed}`, async () => {
+      const pending = deferred();
+      const json = deferred();
+      const identity = { id: 'logs-a', status: 'paused', kind: 'ticket', source: 'primary' };
+      const epic = { id: 'epic-a', status: 'open', kind: 'epic' };
+      const state = loadKontoraState({ fetch: async url => {
+        if (/\/logs(?:\?|$)/.test(url)) return pending.promise;
+        return { ok: true, json: async () => url.includes('epic-a') ? epic : identity };
+      } });
+      state.$nextTick = cb => { cb?.(); return Promise.resolve(); };
+      state.selectedTicket = identity;
+      state.tickets = [identity, epic];
+      state.isMobile = true;
+      state.detailTab = 'logs';
+      state.activeTab = 'activity';
+      state.fetchChain = () => {};
+      state.fetchTicketCost = () => {};
+      state._mountBoard = () => {};
+      state.openStats = () => {};
+      state._loadActivity = async () => {};
+      const old = state.fetchStageLogs(identity.id, 'first');
+      const response = { ok: true, json: () => json.promise };
+      if (delayed === 'json') { pending.resolve(response); await flushMicrotasks(); }
+      if (boundary === 'close/reopen') { state.closeDetail(false); await state.selectTicket(identity); }
+      if (boundary === 'source') await state.selectTicket({ ...identity, source: 'other' });
+      if (boundary === 'mobile tab') state.mobileSwitchTab('ticket');
+      if (boundary === 'desktop tab') state.switchTab('ticket');
+      if (boundary === 'route') await state.gotoView('stats');
+      if (boundary === 'epic') await state.openEpic(epic.id);
+      if (boundary === 'breakpoint') { state.isMobile = false; state._onBreakpointChange(); }
+      if (boundary === 'destroy') state.destroy();
+      if (boundary === 'activity') await state.fetchActivity('first', 0);
+      state.logViewContent = 'current context';
+      state.logViewStage = 'current';
+      state.logViewLoading = false;
+      state.error = null;
+      pending.resolve(response);
+      json.resolve({ content: 'obsolete content' });
+      await old;
+      assert.equal(state.logViewContent, 'current context');
+      assert.equal(state.logViewStage, 'current');
+      assert.equal(state.logViewLoading, false);
+      assert.equal(state.error, null);
+    });
+  }
+}
+
+for (const destination of [
+  { view: 'stats' },
+  { view: 'board', ticketId: 'route-a' },
+  { view: 'board', ticketId: 'route-a', source: 'other' },
+  { view: 'board', epicId: 'epic-a' },
+]) {
+  for (const continuation of ['stay', 'discard', 'save', 'failed save']) {
+    test(`dirty Settings preserves complete ${JSON.stringify(destination)} after ${continuation}`, async () => {
+      const location = { hash: '#/settings' };
+      const primary = { id: 'route-a', status: 'in_progress', kind: 'ticket' };
+      const secondary = { ...primary, source: 'other', status: 'open' };
+      const epic = { id: 'epic-a', kind: 'epic', status: 'open' };
+      const state = loadKontoraState({ location, fetch: async url => ({ ok: true, json: async () => url.includes('epic-a') ? epic : url.includes('/sources/') ? secondary : primary }) });
+      state.$nextTick = cb => { cb?.(); return Promise.resolve(); };
+      state.currentView = 'settings';
+      state.isMobile = true;
+      state.tickets = [primary, epic];
+      state.secondaryTickets = [secondary];
+      let dirty = true;
+      let opened = 0;
+      state.settingsDirty = () => dirty;
+      state.discardSettings = () => { dirty = false; };
+      state.saveSettings = async () => { if (continuation === 'failed save') return false; dirty = false; return true; };
+      state.openStats = () => {};
+      state.fetchChain = () => {};
+      state.fetchTicketCost = () => {};
+      state.openTerminal = () => { assert.equal(state.currentView, 'board'); opened++; };
+      await state.navigateDestination(destination);
+      assert.equal(state.currentView, 'settings');
+      assert.equal(state.selectedTicket, null);
+      assert.equal(state.selectedEpic, null);
+      assert.equal(opened, 0);
+      assert.deepEqual(vmValue(state.settingsGuardTarget), destination);
+      assert.equal(location.hash, '#/settings');
+      if (continuation === 'stay') { state.settingsGuard = false; return; }
+      if (continuation === 'discard') await state.settingsGuardDiscard();
+      else await state.settingsGuardSave();
+      if (continuation === 'failed save') {
+        assert.equal(state.currentView, 'settings');
+        assert.equal(state.settingsGuard, true);
+        assert.equal(dirty, true);
+        return;
+      }
+      assert.equal(state.currentView, destination.view);
+      assert.equal(state.settingsGuard, false);
+      if (destination.ticketId) {
+        assert.equal(state.selectedTicket.id, destination.ticketId);
+        assert.equal(state.isSecondary(state.selectedTicket), !!destination.source);
+        if (!destination.source) assert.ok(opened > 0, 'running output attaches after Board activation');
+      }
+      if (destination.epicId) assert.equal(state.selectedEpic.id, destination.epicId);
+    });
+  }
+}
+
+for (const mobile of [false, true]) {
+  test(`cross-page ticket navigation publishes only its final destination: mobile=${mobile}`, async () => {
+    const detail = deferred();
+    const previous = { id: 'route-old', status: 'in_progress' };
+    const next = { id: 'route-next', status: 'in_progress' };
+    let state;
+    let hash = '#/stats';
+    const writes = [];
+    const location = { get hash() { return hash; }, set hash(value) {
+      if (hash === value) return;
+      hash = value;
+      writes.push(value);
+      queueMicrotask(() => state.applyRoute());
+    } };
+    state = loadKontoraState({ location, fetch: async url => {
+      assert.equal(url, '/api/tickets/route-next');
+      await detail.promise;
+      return { ok: true, json: async () => next };
+    } });
+    state.$nextTick = cb => { cb?.(); return Promise.resolve(); };
+    state.isMobile = mobile;
+    state.currentView = 'stats';
+    state.selectedTicket = previous;
+    state.tickets = [previous, next];
+    state.fetchTicketCost = () => {};
+    state.fetchChain = () => {};
+    state.closeStats = () => {};
+    const opened = [];
+    state.openTerminal = () => { assert.equal(state.currentView, 'board'); opened.push(state.selectedTicket.id); };
+    const opening = state._paletteOpenTicket(next);
+    await flushMicrotasks();
+    assert.deepEqual(writes, [], 'do not publish the old selection during a pending destination');
+    assert.deepEqual(opened, [], 'do not reattach the ticket left behind Stats');
+    detail.resolve();
+    assert.equal(await opening, true);
+    await flushMicrotasks();
+    assert.deepEqual(writes, ['#/t/route-next']);
+    assert.equal(state.selectedTicket.id, next.id);
+    assert.ok(opened.length > 0);
+    assert.ok(opened.every(id => id === next.id));
+  });
+}

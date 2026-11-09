@@ -1307,27 +1307,61 @@ export function kontoraSettings() {
 
     // The one place currentView changes. Opening Settings loads it; leaving a
     // dirty Settings opens the guard instead of navigating.
-    async gotoView(view, navigation = ++this._navigationSeq) {
+    async gotoView(view, navigation = ++this._navigationSeq, destination = view) {
       if (this.currentView === 'settings' && view !== 'settings' && this.settingsDirty()) {
-        this.settingsGuardTarget = view;
+        this.settingsGuardTarget = destination;
+        if (this.isMobile && this.sheet) this.closeSheet();
         this.settingsGuard = true;
-        return;
+        return false;
       }
       // currentView changes nowhere else, and applyRoute routes even a ticket
       // hash through here, so this one call covers every path out of Stats.
+      if (view !== 'board' && this.selectedEpic) {
+        if (await this.closeEpic(false) === false) return false;
+        if (navigation !== this._navigationSeq) return false;
+      }
+      this.mobileBeforeNavigate(view);
+      if (this.currentView === 'board' && view !== 'board') {
+        this.flushEditSave();
+        this._invalidateStageLogs();
+        this._activityLoadSeq++;
+        this.activityLoading = false;
+        this._stopActivityPoll();
+        this.closeTerminal();
+      }
       if (this.currentView === 'stats' && view !== 'stats') this.closeStats();
       if (this.currentView === 'archive' && view !== 'archive') this.closeArchive();
-      if (view !== 'board' && this.selectedEpic) {
-        if (await this.closeEpic(false) === false) return;
-        if (navigation !== this._navigationSeq) return;
-      }
       if (view !== 'board' && this.selectedTicket && this.epicIsAgent(this.selectedTicket)) this.closeDetail(false);
       if (view === 'stats') { this.currentView = 'stats'; this.openStats(); this.writeHash(); return; }
       if (view === 'archive') { this.currentView = 'archive'; this.openArchive(); this.writeHash(); return; }
       if (view === 'settings') { await this.openSettings(); this.writeHash(); return; }
-      if (view === 'new') { await this.openCreateModal(); this.writeHash(); return; }
+      if (view === 'new') { await this.openCreateModal(navigation); this.writeHash(); return; }
       this.currentView = 'board';
-      this.writeHash();
+      if (typeof destination === 'string') this.writeHash();
+      var retained = this.selectedTicket || this.selectedEpic;
+      var returnsToSelection = typeof destination === 'string'
+        || (destination.ticketId && this.sameTicket(this.selectedTicket, { id: destination.ticketId, source: destination.source }))
+        || (destination.epicId && this.selectedEpic?.id === destination.epicId);
+      // Routed returns keep the selected ticket, so selection does not reload its output.
+      // Wait until the board has mounted before restarting the retained tab.
+      if (retained && returnsToSelection) this.$nextTick(() => {
+        if (this.currentView !== 'board' || navigation !== this._navigationSeq
+            || retained !== (this.selectedTicket || this.selectedEpic)) return;
+        if (this.terminalWanted()) this.openTerminal();
+        else if (this.isMobile && this.selectedTicket && this.detailTab === 'logs') {
+          var ticket = this.selectedTicket;
+          var stage = this.logViewStage || ticket.stage || ticket.history?.at(-1)?.stage;
+          this.fetchStageLogs(ticket.id, stage);
+        } else if (this.outputTab() === 'activity') {
+          var run = this.activityStage === null ? this.activityTarget() : { stage: this.activityStage, run: this.activityRun };
+          if (run) this.fetchActivity(run.stage, run.run);
+        }
+      });
+      return true;
+    },
+
+    _resumeSettingsDestination(target) {
+      return typeof target === 'object' && target ? this.navigateDestination(target) : this.gotoView(target || 'board');
     },
 
     settingsGuardDiscard() {
@@ -1335,7 +1369,7 @@ export function kontoraSettings() {
       const target = this.settingsGuardTarget;
       this.settingsGuard = false;
       this.settingsGuardTarget = null;
-      return this.gotoView(target || 'board');
+      return this._resumeSettingsDestination(target);
     },
 
     async settingsGuardSave() {
@@ -1343,7 +1377,7 @@ export function kontoraSettings() {
       const target = this.settingsGuardTarget;
       this.settingsGuard = false;
       this.settingsGuardTarget = null;
-      await this.gotoView(target || 'board');
+      await this._resumeSettingsDestination(target);
     },
   };
 }

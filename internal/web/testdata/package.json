@@ -1,0 +1,9 @@
+{
+  "name": "kontora-browser-tests",
+  "private": true,
+  "type": "module",
+  "description": "Opt-in browser tests only; not needed by Go builds or ordinary tests.",
+  "devDependencies": {
+    "playwright": "1.65.0"
+  }
+}

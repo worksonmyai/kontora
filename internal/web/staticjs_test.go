@@ -1,11 +1,18 @@
 package web
 
 import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 func TestStaticIndexJS(t *testing.T) {
@@ -27,6 +34,73 @@ func TestStatsOutcomesJS(t *testing.T) {
 func TestUIMixinKeys(t *testing.T) {
 	if out, err := nodeTest(t, "ui_mixins.test.mjs").CombinedOutput(); err != nil {
 		t.Fatalf("node mixin tests failed:\n%s", out)
+	}
+}
+
+// TestMobileBrowserJS is deliberately opt-in: ordinary Go tests and builds
+// need neither npm nor a downloaded browser. See make test-browser-install and
+// make test-browser. Once opted in, missing dependencies are failures, not skips.
+func TestMobileBrowserJS(t *testing.T) {
+	if os.Getenv("KONTORA_TEST_BROWSER") != "1" {
+		t.Skip("set KONTORA_TEST_BROWSER=1 to run the Playwright browser suite")
+	}
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Fatal("Browser tests require Node.js 20 or later on PATH. Install Node.js, then run make test-browser-install.")
+	}
+	// Never use the developer overlay, a daemon, or a ticket store. Only the
+	// actual embedded asset handler is reachable on this ephemeral loopback port.
+	t.Setenv("KONTORA_WEB_DIR", "")
+	assets, err := buildAssets()
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{assets: assets}
+	paths := []string{"/"}
+	for name := range assets {
+		paths = append(paths, "/"+name)
+	}
+	manifest, err := json.Marshal(paths)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	var leaked []string
+	server := httptest.NewServer(securityMiddleware(nil, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		name := strings.TrimPrefix(r.URL.Path, "/")
+		if name == "" {
+			name = "index.html"
+		}
+		if r.Method != http.MethodGet || assets[name] == nil || r.URL.RawQuery != "" {
+			mu.Lock()
+			leaked = append(leaked, r.Method+" "+r.URL.String())
+			mu.Unlock()
+			http.Error(w, "browser fixture interception missed a request", http.StatusForbidden)
+			return
+		}
+		s.serveAsset(w, r)
+	})))
+	defer server.Close()
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	for _, engine := range []string{"chromium", "webkit"} {
+		t.Run(engine, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
+			defer cancel()
+			cmd := exec.CommandContext(ctx, "node", "--test", filepath.Join(filepath.Dir(thisFile), "testdata", "mobile_browser.test.mjs"))
+			cmd.Env = append(os.Environ(), "KONTORA_BROWSER_URL="+server.URL, "KONTORA_BROWSER_ASSETS="+string(manifest), "KONTORA_BROWSER_ENGINE="+engine)
+			out, runErr := cmd.CombinedOutput()
+			if runErr != nil {
+				t.Fatalf("browser tests failed (%v):\n%s", runErr, out)
+			}
+			t.Logf("%s", out)
+		})
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(leaked) > 0 {
+		t.Errorf("requests escaped browser interception: %v", leaked)
 	}
 }
 

@@ -213,9 +213,8 @@ export function kontoraArchive() {
       this.archiveLoad();
     },
 
-    // Leaving the view drops the overlay, but only when the overlay is the one
-    // this view opened: applyRoute opens a board ticket before it switches
-    // views, and that ticket must survive the switch.
+    // Leaving the view drops its overlay, but must not clear a board ticket
+    // selected by another navigation.
     closeArchive() {
       if (this._archiveDetailId && this.selectedTicket && this.selectedTicket.id === this._archiveDetailId) {
         this._archiveClearDetail();
@@ -463,7 +462,11 @@ export function kontoraArchive() {
 
     async archiveOpenRow(row) {
       if (!row || !row.id) return;
-      if (this.selectedTicket && this.selectedTicket.id === row.id) return;
+      if (this.archiveDetailOpen() && this.selectedTicket.id === row.id && !this.isSecondary(this.selectedTicket)) return;
+      this.flushEditSave();
+      this.editing = false;
+      this.editingBody = false;
+      ++this._editorGeneration;
       var detailSeq = ++this._ticketDetailSeq;
       var updateSeq = this._selectedTicketUpdateSeq;
       var mine = () => this._archiveDetailId === row.id && detailSeq === this._ticketDetailSeq;
@@ -509,6 +512,9 @@ export function kontoraArchive() {
     },
 
     _archiveClearDetail() {
+      this.editing = false;
+      this.editingBody = false;
+      ++this._editorGeneration;
       this._ticketDetailSeq++;
       this.selectedTicket = null;
       this.archiveTab = 'ticket';

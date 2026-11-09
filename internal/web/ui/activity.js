@@ -44,6 +44,7 @@ export function kontoraActivity() {
     },
 
     _resetActivity() {
+      this._invalidateStageLogs();
       this._invalidateRawLog();
       this._activityLoadSeq++;
       this._activityExplicit = false;
@@ -67,6 +68,7 @@ export function kontoraActivity() {
     // Load one run's transcript, replacing everything the pane holds.
     async fetchActivity(stage, run) {
       if (!this.outputSubject() || this.importedRun(stage, run)) return;
+      this._invalidateStageLogs();
       this._invalidateRawLog();
       this._stopActivityPoll();
       this.activityStage = stage || '';

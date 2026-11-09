@@ -37,32 +37,64 @@ function cleanProjectPath(raw) {
 // The create-ticket modal and the init-from-an-existing-file modal.
 export function kontoraCreate() {
   return {
-    async openCreateModal() {
-      var navigation = ++this._navigationSeq;
+    createError: null,
+    _createGeneration: 0,
+
+    resetCreateForm() {
+      this.invalidateCreateForm();
+      this.createForm = newCreateForm();
+      this.createTouched = { pipeline: false, agent: false };
+    },
+
+    invalidateCreateForm() {
+      this._createGeneration++;
+      this.createError = null;
+      this.createSubmitting = false;
+    },
+
+    _createContext() {
+      var form = this.createForm;
+      var generation = this._createGeneration;
+      // Only the New sheet or routed New page owns creation. Background
+      // selections and unrelated sheets can change while its request is pending.
+      var owner = this.sheet?.type === 'new' ? this.sheet : 'new';
+      return () => !this._appDestroyed && form === this.createForm && generation === this._createGeneration &&
+        (owner === 'new' ? this.currentView === 'new' : this.sheet === owner);
+    },
+
+    async openCreateModal(navigation = ++this._navigationSeq) {
       this.closeAgentPicker(false);
       if (this.selectedEpic && await this.closeEpic(false) === false) return;
       if (navigation !== this._navigationSeq) return;
       if (this.selectedTicket) this.closeDetail(false);
-      this.createForm = newCreateForm();
-      this.createTouched = { pipeline: false, agent: false };
+      this.resetCreateForm();
       this.currentView = 'new';
       this.writeHash();
-      this.error = null;
+      await this.loadCreateConfig();
+    },
+
+    async loadCreateConfig() {
+      var current = this._createContext();
       if (!this.configCache) {
         try {
           const res = await fetch('/api/config');
-          if (res.ok) this.configCache = await res.json();
+          if (!current()) return;
+          if (!res.ok) throw new Error('Failed to load config');
+          const config = await res.json();
+          if (!current()) return;
+          this.configCache = config;
         } catch (e) {
-          this.error = 'Failed to load config';
+          if (!current()) return;
+          this.createError = 'Failed to load config';
         }
       }
-      this.onCreatePathChange();
+      if (current()) this.onCreatePathChange();
     },
 
     closeCreateModal() {
       this.closeAgentPicker(false);
+      this.invalidateCreateForm();
       this.currentView = 'board';
-      this.createSubmitting = false;
       this.writeHash();
     },
 
@@ -164,7 +196,7 @@ export function kontoraCreate() {
     // "now" is not the absence of a schedule with leftover text — it is the
     // choice, so the text is ignored until the user switches back to "later".
     createSchedule() {
-      if (this.createForm.scheduleMode !== 'later') return { iso: '', at: null, error: '' };
+      if (this.createForm.kind === 'epic' || this.createForm.scheduleMode !== 'later') return { iso: '', at: null, error: '' };
       return parseScheduleInput(this.createForm.scheduled_at, new Date());
     },
 
@@ -218,14 +250,14 @@ export function kontoraCreate() {
     // user build the --status todo + --at conflict the CLI rejects. Clearing
     // the field puts the select back.
     onCreateScheduleChange() {
-      this.createForm.status = this.createSchedulePinned() ? 'open' : 'todo';
+      this.createForm.status = this.createForm.kind === 'epic' || this.createSchedulePinned() ? 'open' : 'todo';
     },
 
     // Whether the Status select is pinned open by the Start-at field. It is the
     // mode that pins it, not a parsed instant: leaving the select editable
     // while the user is mid-way through typing a time would flip it twice.
     createSchedulePinned() {
-      return this.createForm.scheduleMode === 'later';
+      return this.createForm.kind !== 'epic' && this.createForm.scheduleMode === 'later';
     },
 
     // The native picker writes a datetime-local value; the field itself holds
@@ -331,10 +363,11 @@ export function kontoraCreate() {
     },
 
     async submitCreateTicket() {
-      if (!this.createForm.title || !this.createForm.path) return;
-      if (this.createBlocked()) return;
+      if (this.createSubmitting) return false;
+      if (!(this.createForm.title || '').trim() || !(this.createForm.path || '').trim() || this.createBlocked()) return false;
+      var current = this._createContext();
       this.createSubmitting = true;
-      this.error = null;
+      this.createError = null;
       try {
         const body = { title: this.createForm.title, path: this.createForm.path };
         if (this.createForm.parent) body.parent = this.createForm.parent;
@@ -346,7 +379,7 @@ export function kontoraCreate() {
           if (this.createForm.branch) body.branch = this.createForm.branch;
           if (this.createForm.base_branch) body.base_branch = this.createForm.base_branch;
           if (this.createForm.body) body.body = this.createForm.body;
-          return await this._submitCreate(body);
+          return await this._submitCreate(body, current);
         }
         var pipeline = this.pipelineOverride(this.createForm.pipelineChoice);
         if (pipeline !== undefined) body.pipeline = pipeline;
@@ -362,29 +395,30 @@ export function kontoraCreate() {
         if (this.createForm.body) body.body = this.createForm.body;
         if (this.createForm.branch) body.branch = this.createForm.branch;
         if (this.createForm.base_branch) body.base_branch = this.createForm.base_branch;
-        await this._submitCreate(body);
+        return await this._submitCreate(body, current);
       } catch (e) {
-        this.error = 'Failed to create ticket: ' + e.message;
-        this.createSubmitting = false;
+        if (current()) this.createError = 'Failed to create ticket: ' + e.message;
+        return false;
+      } finally {
+        if (current()) this.createSubmitting = false;
       }
     },
 
-    // The one POST both create paths land on. It leaves createSubmitting set on
-    // failure the way the form always has: the modal stays open with the
-    // daemon's message on it, and the next submit clears both.
-    async _submitCreate(body) {
+    // An obsolete response must not close another form or replace its error.
+    async _submitCreate(body, current) {
       const res = await fetch('/api/tickets', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
       });
+      if (!current()) return false;
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        this.error = data.error || 'Failed to create ticket';
-        this.createSubmitting = false;
-        return;
+        if (current()) this.createError = data?.error || 'Failed to create ticket';
+        return false;
       }
-      this.closeCreateModal();
+      if (this.sheet?.type !== 'new') this.closeCreateModal();
+      return true;
     },
 
     async handleUpload(fileList) {

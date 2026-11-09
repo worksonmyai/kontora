@@ -20,6 +20,12 @@ profile.cov
 # Dependency directories (remove the comment below to include it)
 # vendor/
 
+# Opt-in browser test dependencies and diagnostics
+/internal/web/testdata/node_modules/
+!/internal/web/testdata/package-lock.json
+/playwright-report/
+/test-results/
+
 # Go workspace file
 go.work
 go.work.sum

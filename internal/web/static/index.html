@@ -3,7 +3,7 @@
 <html lang="en" class="h-full">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <meta name="color-scheme" content="light dark">
   <title>kontora</title>
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><circle cx='8' cy='8' r='7' fill='%235b6078'/></svg>">
@@ -901,8 +901,8 @@
   </style>
 </head>
 
-<body class="h-full bg-surface-950 text-tx font-sans overflow-hidden" x-data="kontora()" x-cloak
-      @keydown.escape.window="if (_agentPickerOpenHost) closeAgentPicker(true); else if (paletteOpen) palettePop(); else if (deleteModal) closeDeleteModal(); else if (noteDeleteTarget) noteCloseDelete(); else if (initModal || _initOpening) closeInitModal(); else if (settingsGuard) settingsGuard = false; else if (currentView === 'new') closeCreateModal(); else if (detailMenuOpen) detailMenuOpen = false; else if (colMenuOpen) colMenuOpen = null; else if (sheet) closeSheet(); else if (archivePromptId) closeArchivePrompt(); else if (terminalRW && terminalWanted()) toggleTerminalRW(); else if (archiveDetailOpen()) archiveCloseDetail(); else if (selectedTicket) closeDetail(); else if (selectedEpic) closeEpic(); else if (assistantEscape()) {}"
+<body class="app-shell bg-surface-950 text-tx font-sans overflow-hidden" x-data="kontora()" x-cloak
+      @keydown.escape.window="if (_agentPickerOpenHost) closeAgentPicker(true); else if (paletteOpen) palettePop(); else if (deleteModal) closeDeleteModal(); else if (noteDeleteTarget) noteCloseDelete(); else if (initModal || _initOpening) closeInitModal(); else if (settingsGuard) settingsGuard = false; else if (sheet) closeSheet(); else if (currentView === 'new') closeCreateModal(); else if (detailMenuOpen) detailMenuOpen = false; else if (colMenuOpen) colMenuOpen = null; else if (archivePromptId) closeArchivePrompt(); else if (terminalRW && terminalWanted()) toggleTerminalRW(); else if (archiveDetailOpen()) archiveCloseDetail(); else if (selectedTicket) closeDetail(); else if (selectedEpic) closeEpic(); else if (assistantEscape()) {}"
       @dragenter.prevent="if ($event.dataTransfer && $event.dataTransfer.types.includes('Files')) uploadDragging = true"
       @dragover.prevent>
 
@@ -1243,7 +1243,7 @@
   </div>
 
   <!-- Unsaved-settings guard: in-app navigation out of a dirty Settings view. -->
-  <div x-show="settingsGuard" x-transition.opacity x-cloak class="fixed inset-0 z-50 flex items-center justify-center bg-black/60" @click.self="settingsGuard = false">
+  <div id="settings-guard-layer" x-show="settingsGuard" x-transition.opacity x-cloak class="fixed inset-0 z-[80] flex items-center justify-center bg-black/60" @click.self="settingsGuard = false">
     <div role="dialog" aria-modal="true" aria-labelledby="settings-guard-title"
          class="bg-surface-900 border border-surface-700 rounded-xl shadow-xl p-5 w-[28rem] max-w-[90%] mx-4 slide-up" @click.stop>
       <h2 id="settings-guard-title" class="text-base font-semibold text-tx-hi m-0 mb-2">Leave settings?</h2>
@@ -1293,7 +1293,7 @@
   </div>
 
   <!-- Top bar (desktop / tablet; the phone-width layer has its own app bar) -->
-  <header x-show="!isMobile" class="h-[54px] bg-surface-rail border-b border-surface-700 flex items-center gap-4 px-[18px] shrink-0">
+  <header x-show="!isMobile" data-mobile-sheet-background class="desktop-header bg-surface-rail border-b border-surface-700 flex items-center gap-4 px-[18px] shrink-0">
     <button @click="toggleSidebar()"
             class="w-7 h-7 -ml-1 rounded text-surface-600 hover:text-tx-3 hover:bg-surface-900 transition-colors flex items-center justify-center shrink-0"
             :aria-label="sidebarHidden ? 'Show sidebar' : 'Hide sidebar'"
@@ -1394,7 +1394,7 @@
       </div>
     </template>
 
-    <div class="flex items-center gap-2 text-xs font-mono shrink-0 ml-auto">
+    <div class="desktop-header-actions flex items-center gap-2 text-xs font-mono ml-auto">
       <template x-if="!selectedTicket && searchQuery && searchQuery.trim()">
         <span class="text-[11px] text-surface-600 mx-1">
           <span class="text-tx-3" x-text="filteredTicketCount()"></span> matched
@@ -1544,11 +1544,74 @@
     </div>
   </header>
 
-  <!-- Main layout (desktop / tablet). x-if, not x-show: the two layers are
-       built exclusively so the inactive one costs no DOM nodes. _mountBoard()
-       re-renders and re-binds the board whenever this layer is (re)built. -->
-  <template x-if="!isMobile">
-  <main class="flex h-[calc(100%-54px)] min-h-0 relative">
+  <!-- Phone chrome precedes the shared host so header height is intrinsic. -->
+  <template x-if="isMobile">
+    <header class="mobile-chrome" data-mobile-sheet-background>
+    <!-- ===== Board chrome: app bar + search + status tabs ===== -->
+    <div class="mobile-chrome-inner">
+      <div class="mobile-app-bar">
+        <button type="button" @click="sheet = { type: 'navigation' }" data-mobile-focus-fallback aria-label="Open navigation" aria-haspopup="dialog" class="mobile-icon-button">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+        </button>
+        <div class="mobile-wordmark">
+          <span style="font-family:'JetBrains Mono',monospace;font-weight:700;font-size:16px;letter-spacing:.04em;color:rgba(var(--tx-2),1);">kontora</span>
+        </div>
+        <span class="running-pill mobile-running-pill" :class="runningAgents === 0 ? 'is-idle' : ''" :aria-label="runningAgents + ' running'">
+          <span class="running-pill-dot" :class="runningAgents > 0 ? 'pulse-dot' : ''"></span>
+          <span style="color:rgba(var(--tx),1);" x-text="runningAgents"></span>
+          <span class="mobile-running-label" style="color:rgba(var(--surface-600),1);">running</span>
+        </span>
+        <button id="assistant-mobile-trigger" @click="openAssistantSheet()" data-pipe-color="mauve" style="width:34px;height:34px;border:1px solid rgba(var(--surface-700),.6);background:rgba(var(--surface-900),1);color:hsl(var(--pipe-h));border-radius:8px;display:flex;align-items:center;justify-content:center;flex:none;" aria-label="Assistant">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z"/></svg>
+        </button>
+        <button @click="toggleTheme()" style="width:34px;height:34px;border:1px solid rgba(var(--surface-700),.6);background:rgba(var(--surface-900),1);color:rgba(var(--surface-600),1);border-radius:8px;display:flex;align-items:center;justify-content:center;flex:none;" aria-label="Toggle theme">
+          <svg x-show="!lightTheme" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+          <svg x-show="lightTheme" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+        </button>
+        <button @click="openNewSheet()" class="mobile-new-button" style="height:34px;padding:0 12px;border:1px solid rgba(var(--accent),1);background:rgba(var(--accent),1);color:rgba(var(--accent-fg),1);border-radius:8px;display:flex;align-items:center;gap:5px;font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:600;flex:none;" aria-label="New ticket">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg><span class="mobile-new-label">new</span>
+        </button>
+      </div>
+      <div x-show="currentView === 'board'" class="mobile-board-search" style="padding:0 16px 10px;">
+        <div style="position:relative;display:flex;align-items:center;">
+          <svg style="position:absolute;left:11px;width:14px;height:14px;color:rgba(var(--surface-600),1);" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+          <input x-model="searchQuery" placeholder="Filter, or project:name" aria-label="Filter tickets" style="width:100%;height:38px;padding:0 12px 0 34px;font-family:'JetBrains Mono',monospace;font-size:13px;border-radius:9px;background:rgba(var(--surface-900),1);border:1px solid rgba(var(--surface-700),.5);color:rgba(var(--tx),1);outline:none;"/>
+        </div>
+      </div>
+      <div x-show="currentView === 'board' && (ticketSources.length > 0 || sourcesError)" class="px-4 pb-2">
+        <select x-model="sourceFilter" @change="recomputeBoard()" aria-label="Filter by ticket folder"
+                class="w-full bg-surface-900 border border-edge-input rounded-[7px] px-2 py-2 font-mono text-[12px] text-tx-2">
+          <option value="">All folders</option>
+          <option value="primary">Primary folder</option>
+          <template x-for="source in ticketSources" :key="source.id">
+            <option :value="source.id" x-text="(source.id === 'primary' ? 'primary' : source.path) + (source.available === false ? ' (unavailable)' : '')"></option>
+          </template>
+        </select>
+        <div x-show="sourcesError || ticketSources.some(s => s.available === false)" x-cloak role="alert" class="mt-2 font-mono text-[11px] text-warn break-all">
+          <p x-show="sourcesError" x-text="sourcesError"></p>
+          <template x-for="source in ticketSources.filter(s => s.available === false)" :key="source.id">
+            <p x-text="(source.path || source.id) + ': ' + (source.error || 'Folder unavailable')"></p>
+          </template>
+        </div>
+      </div>
+      <nav x-show="currentView === 'board'" class="mobile-status-tabs" aria-label="Ticket status">
+        <template x-for="(col, ci) in columns" :key="col.key">
+          <button @click="setActiveColumn(ci)" :aria-pressed="activeColumn === ci"
+                  :style="'display:flex;align-items:center;gap:7px;flex:none;padding:9px 6px 11px;border:none;background:transparent;cursor:pointer;border-bottom:2px solid ' + (activeColumn===ci ? 'hsl('+col.tint+')' : 'transparent') + ';color:' + (activeColumn===ci ? 'hsl('+col.tint+')' : 'rgba(var(--tx-3),1)') + ';'">
+            <span :style="'width:7px;height:7px;border-radius:9999px;flex:none;background:hsl('+col.tint+');'"></span>
+            <span style="font-family:'JetBrains Mono',monospace;font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;white-space:nowrap;" x-text="col.label"></span>
+            <span :style="'font-family:\'JetBrains Mono\',monospace;font-size:10px;font-weight:700;padding:1px 6px;border-radius:9999px;' + (activeColumn===ci ? 'color:hsl('+col.tint+');background:hsl('+col.tint+' / .15);' : 'color:rgba(var(--surface-600),1);background:rgba(var(--surface-800),1);')" x-text="boardTickets(col.key).length"></span>
+          </button>
+        </template>
+      </nav>
+    </div>
+
+    </header>
+  </template>
+
+  <!-- This host survives every route and breakpoint. Only board/detail layers
+       are exclusive; routed New, Stats, Archive and Settings are shared. -->
+  <main id="main-content" class="app-main" data-mobile-sheet-background>
 
     <!-- Palette command confirmation. Neutral, unlike the red error alert. -->
     <div x-show="toast" x-transition.opacity x-cloak role="status"
@@ -1557,6 +1620,7 @@
     </div>
 
     <!-- Left sidebar (hideable) -->
+    <template x-if="!isMobile">
     <aside x-show="!sidebarHidden" x-cloak
            x-transition:enter="transition-all duration-150 ease-out"
            x-transition:enter-start="opacity-0 -translate-x-2"
@@ -1704,11 +1768,14 @@
       </div>
     </aside>
 
+    </template>
+
     <!-- Loading state -->
     <div x-show="loading" class="flex-1 flex items-center justify-center">
       <span class="text-surface-600 font-mono text-sm">loading...</span>
     </div>
 
+    <template x-if="!isMobile">
     <!-- Board view: the kanban board with the ticket page stacked over it.
          Cards use content-visibility: auto, whose rendering state the browser
          drops when a subtree stops being displayed. Hiding the board with
@@ -3476,11 +3543,13 @@
     </template>
     </div>
 
+    </template>
+
     <!-- New ticket page -->
-    <div x-show="!loading && currentView === 'new'" x-cloak class="flex flex-1 min-w-0 min-h-0">
+    <div id="new-view" x-show="!loading && currentView === 'new'" x-cloak class="flex flex-1 min-w-0 min-h-0">
       <!-- Form pane -->
       <div class="flex-1 min-w-0 overflow-y-auto">
-        <div class="max-w-2xl mx-auto px-8 py-6">
+        <div class="new-form-content max-w-2xl mx-auto px-8 py-6">
           <div class="flex items-center justify-between mb-5">
             <div class="flex items-baseline gap-3 min-w-0">
               <h1 class="text-base font-semibold text-tx-2 m-0">New ticket</h1>
@@ -3492,6 +3561,7 @@
           </div>
 
           <form @submit.prevent="submitCreateTicket()" class="space-y-4">
+            <p x-show="createError" x-cloak role="alert" class="font-mono text-sm text-err whitespace-pre-wrap break-words" x-text="createError"></p>
             <div>
               <label for="new-title" class="text-[13px] font-mono text-tx-3 mb-1 flex items-center gap-1.5"><svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="opacity-50"><polyline points="4 7 4 4 20 4 20 7"/><line x1="9" y1="20" x2="15" y2="20"/><line x1="12" y1="4" x2="12" y2="20"/></svg>Title *</label>
               <input id="new-title" x-model="createForm.title" type="text" required
@@ -3530,7 +3600,7 @@
 
             <!-- Explicit height, matching the padded inputs above: a native
                  select drops the vertical padding in WebKit. -->
-            <div class="grid grid-cols-3 gap-3">
+            <div class="new-form-options grid grid-cols-1 sm:grid-cols-3 gap-3">
               <div x-show="createForm.kind !== 'epic'">
                 <label for="new-pipeline" class="text-[13px] font-mono text-tx-3 mb-1 flex items-center gap-1.5"><svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="opacity-50"><polyline points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="3"/><polyline points="21 16 21 21 16 21"/><line x1="15" y1="15" x2="21" y2="21"/><line x1="4" y1="4" x2="9" y2="9"/></svg>Pipeline</label>
                 <select id="new-pipeline" x-model="createForm.pipelineChoice" @change="onPipelineChange()"
@@ -3589,7 +3659,7 @@
 
                   <div class="flex items-center gap-2 h-9 px-2.5 bg-surface-800 rounded border"
                        :class="createScheduleISO() ? 'sched-input-set' : (createScheduleError() ? 'border-err/50' : 'border-surface-700/50')">
-                    <input id="new-scheduled-at" x-model="createForm.scheduled_at" @input="onCreateScheduleChange()" type="text"
+                    <input id="new-scheduled-at" aria-label="Start date or duration" x-model="createForm.scheduled_at" @input="onCreateScheduleChange()" type="text"
                            class="flex-1 min-w-0 bg-transparent font-mono text-sm text-tx-2 focus:outline-none"
                            placeholder="2099-09-01 09:00">
                     <template x-if="!createForm.scheduled_at">
@@ -3605,7 +3675,7 @@
                       <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="17" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="16" y1="2" x2="16" y2="6"/></svg>
                     </button>
                     <input x-ref="createSchedulePicker" type="datetime-local" :min="scheduleMin()" tabindex="-1" aria-hidden="true"
-                           class="sr-only" @change="onCreateSchedulePicked($event.target.value)">
+                           class="sr-only" @change="isMobile ? onMobileCreateSchedulePicked($event.target.value) : onCreateSchedulePicked($event.target.value)">
                   </div>
 
                   <template x-if="createScheduleEcho()">
@@ -3646,7 +3716,7 @@
                       class="text-[12px] font-mono h-8 px-4 rounded bg-surface-900 border border-surface-700/60 text-tx-3 hover:text-tx-2 hover:border-surface-600 transition-colors">
                 cancel
               </button>
-              <button type="submit" :disabled="createSubmitting || !createForm.title || !createForm.path || createBlocked()"
+              <button type="submit" :disabled="createSubmitting || !createForm.title.trim() || !createForm.path.trim() || createBlocked()"
                       class="text-[12px] font-mono h-8 px-4 rounded bg-accent text-accent-fg border border-accent hover:bg-accent-bright hover:border-accent-bright transition-colors disabled:opacity-50 disabled:cursor-not-allowed font-medium">
                 <span x-text="createSubmitting ? 'creating...' : (createSchedulePinned() ? 'schedule ticket' : 'create ticket')"></span>
               </button>
@@ -3656,7 +3726,7 @@
       </div>
 
       <!-- Live YAML frontmatter preview -->
-      <div class="hidden md:flex w-[420px] shrink-0 border-l border-surface-700/50 bg-surface-deep flex-col">
+      <div class="new-preview hidden xl:flex w-[420px] shrink-0 border-l border-surface-700/50 bg-surface-deep flex-col">
         <div class="px-4 h-9 border-b border-surface-700/30 flex items-center gap-2">
           <span class="font-mono text-[10px] font-semibold text-surface-600 uppercase tracking-widest">frontmatter preview</span>
           <span class="font-mono text-[10px] text-tx-4 ml-auto truncate" x-show="createForm.title" x-text="createForm.title.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'') + '.md'"></span>
@@ -3675,10 +3745,10 @@
 
     <!-- Stats -->
     <template x-if="!loading && currentView === 'stats'">
-    <div class="flex flex-col flex-1 min-w-0 min-h-0 bg-surface-frame gap-2.5 px-4 py-3.5 overflow-y-auto">
+    <div id="stats-view" class="flex flex-col flex-1 min-w-0 min-h-0 bg-surface-frame gap-2.5 px-4 py-3.5 overflow-y-auto">
 
       <!-- Filter bar -->
-      <div class="flex items-center gap-2.5 shrink-0 h-7">
+      <div class="stats-filters flex items-center gap-2.5 shrink-0">
         <span class="stats-title text-[11px]">stats</span>
         <span class="w-px h-4 bg-surface-700"></span>
         <div class="flex gap-1 bg-surface-900 border border-edge-card rounded-[7px] p-[3px]">
@@ -3715,7 +3785,7 @@
       </div>
 
       <!-- KPI strip -->
-      <div class="grid grid-cols-6 gap-2.5 shrink-0">
+      <div class="stats-kpis grid grid-cols-2 lg:grid-cols-3 2xl:grid-cols-6 gap-2.5 shrink-0">
         <template x-for="k in statsCards()" :key="k.label">
           <div class="stats-card stats-kpi flex-col gap-1.5" :data-tip-t="k.tip">
             <span class="font-mono text-[10px] font-semibold tracking-[.12em] uppercase text-tx-4" x-text="k.label"></span>
@@ -3731,7 +3801,7 @@
       </div>
 
       <!-- Activity: heat map | weekly bars -->
-      <div class="stats-card flex-row gap-[22px] shrink-0">
+      <div class="stats-activity stats-card flex-row gap-[22px] shrink-0">
         <div class="flex flex-col gap-[9px] min-w-0">
           <div class="flex items-center gap-[9px]">
             <span class="stats-title">stage runs per day</span>
@@ -3798,7 +3868,7 @@
       </div>
 
       <!-- Bottom row: stages | agents | projects over right now -->
-      <div class="flex-1 min-h-[340px] grid grid-cols-[1.05fr_1.25fr_1fr] gap-2.5">
+      <div class="stats-panels flex-1 min-h-[340px] grid grid-cols-1 xl:grid-cols-[1.05fr_1.25fr_1fr] gap-2.5">
 
         <div class="stats-card flex-col gap-[11px] min-h-0">
           <!-- The toggle redraws this card alone. Both modes come out of the
@@ -3962,11 +4032,11 @@
     <!-- Archive: the archived tickets, with the read-only ticket page stacked
          over the list the way the board stacks its own detail. -->
     <template x-if="!loading && currentView === 'archive'">
-    <div class="relative flex flex-col flex-1 min-w-0 min-h-0 bg-surface-frame">
+    <div id="archive-view" class="relative flex flex-col flex-1 min-w-0 min-h-0 bg-surface-frame">
 
       <!-- Toolbar -->
       <div :inert="archiveDetailOpen()" class="shrink-0 flex flex-col gap-[9px] px-4 pt-3 pb-2.5 border-b border-surface-700/[.55]">
-        <div class="flex items-center gap-2.5 h-[30px]">
+        <div class="archive-toolbar flex items-center gap-2.5">
           <span class="stats-title text-[11px]">archive</span>
           <span class="w-px h-4 bg-surface-700"></span>
           <div class="relative flex items-center flex-1 max-w-[430px] min-w-[180px]">
@@ -4042,7 +4112,7 @@
 
       <!-- Header strip and rows share one horizontal scroller, so the columns
            stay aligned when the pane is narrower than the table. -->
-      <div :inert="archiveDetailOpen()" class="flex-1 min-h-0 overflow-auto">
+      <div :inert="archiveDetailOpen()" class="archive-table-scroll flex-1 min-h-0 overflow-auto" role="region" aria-label="Archived tickets table, scroll horizontally for all columns" tabindex="0">
         <div class="min-w-[1120px]">
           <div class="sticky top-0 z-10 flex items-center h-7 px-4 bg-surface-frame border-b border-surface-700/60 font-mono text-[10px] font-bold uppercase tracking-[.1em] text-tx-4">
             <button type="button" @click="archiveSort('id')" class="w-24 shrink-0 text-left hover:text-tx-3 transition-colors">
@@ -4133,14 +4203,14 @@
       <!-- Read-only ticket page. New markup, but it drives selectedTicket, so
            stageRibbon(), churn(), ticketWall() and tapeTokens() all read the
            ticket the board's own page would have handed them. -->
-      <div x-show="archiveDetailOpen()" x-cloak class="absolute inset-0 z-30 flex flex-col bg-surface-frame">
+      <div x-show="archiveDetailOpen()" x-cloak class="archive-detail absolute inset-0 z-30 flex flex-col bg-surface-frame">
 
         <!-- Header -->
-        <div class="shrink-0 flex items-center gap-[11px] px-5 py-[11px] border-b border-surface-700/70 overflow-x-auto">
+        <div class="archive-detail-header shrink-0 flex flex-wrap items-center gap-[11px] px-5 py-[11px] border-b border-surface-700/70">
           <button type="button" @click="archiveCloseDetail()"
                   class="shrink-0 whitespace-nowrap font-mono text-[12px] text-tx-3 hover:text-tx-2 transition-colors">archive</button>
           <span class="shrink-0 text-edge-faint">/</span>
-          <span class="shrink-0 whitespace-nowrap font-mono text-[12px] text-tx-2" x-text="selectedTicket?.id"></span>
+          <span class="min-w-0 max-w-full break-all font-mono text-[12px] text-tx-2" x-text="selectedTicket?.id"></span>
           <span class="status-chip shrink-0" :data-status="archiveDetailStatus()"
                 x-text="archiveDetailStatus()"></span>
           <span class="shrink-0 whitespace-nowrap h-[21px] px-2.5 inline-flex items-center rounded-full border border-surface-700 font-mono text-[10.5px] text-tx-faint"
@@ -4161,7 +4231,7 @@
         </div>
 
         <!-- Title, stage ribbon and meters -->
-        <div class="shrink-0 px-5 pt-3.5 pb-[13px] flex items-end gap-5">
+        <div class="archive-detail-title shrink-0 px-5 pt-3.5 pb-[13px] flex items-end gap-5">
           <div class="flex-1 min-w-0 flex flex-col gap-2.5">
             <h2 class="m-0 text-[16px] font-semibold leading-[1.4] text-tx-hi [text-wrap:pretty]">
               <span x-show="parseTitleTag(selectedTicket || {}).tag" class="title-tag"
@@ -4193,10 +4263,10 @@
           </div>
         </div>
 
-        <div class="flex-1 min-h-0 flex flex-col">
+        <div class="archive-detail-body flex-1 min-h-0 flex flex-col">
           <!-- Tab bar. The rail cell closes the row so the rule crosses the
                rail exactly as it does on the board. -->
-          <div class="shrink-0 flex items-stretch border-b border-surface-700/70">
+          <div class="archive-detail-tabs shrink-0 flex items-stretch border-b border-surface-700/70">
             <div class="flex-1 min-w-0 px-5 pt-[11px] flex items-center gap-5">
               <button type="button" @click="archiveTab = 'ticket'"
                       class="font-mono text-[12px] pb-[9px] border-b-2 transition-colors"
@@ -4210,9 +4280,9 @@
             <div class="w-[308px] shrink-0 border-l border-surface-700/50"></div>
           </div>
 
-          <div class="flex-1 min-h-0 flex">
+          <div class="archive-detail-columns flex-1 min-h-0 flex">
             <!-- Content column -->
-            <div class="flex-1 min-w-0 overflow-y-auto px-5 pt-4 pb-7">
+            <div class="archive-detail-content flex-1 min-w-0 overflow-y-auto px-5 pt-4 pb-7">
               <div x-show="archiveTab === 'ticket'" class="max-w-[760px] flex flex-col gap-[11px]">
                 <span class="font-mono text-[10.5px] text-tx-4" x-text="selectedTicket?.id ? selectedTicket.id + '.md' : ''"></span>
                 <div x-show="archiveDetailLoading" class="font-mono text-[11.5px] text-surface-600">loading…</div>
@@ -4237,7 +4307,7 @@
             </div>
 
             <!-- Rail -->
-            <div class="w-[308px] shrink-0 border-l border-surface-700/50 overflow-y-auto p-4 pb-[22px] flex flex-col gap-4">
+            <div class="archive-detail-rail w-[308px] shrink-0 border-l border-surface-700/50 overflow-y-auto p-4 pb-[22px] flex flex-col gap-4">
               <!-- Churn -->
               <div class="flex flex-col gap-[9px]">
                 <div class="flex items-baseline gap-2">
@@ -4361,10 +4431,10 @@
 
     <!-- Settings -->
     <template x-if="!loading && currentView === 'settings'">
-    <div class="flex flex-1 min-w-0 min-h-0">
+    <div id="settings-view" class="flex flex-1 min-w-0 min-h-0">
 
       <!-- Section rail -->
-      <nav class="w-[214px] shrink-0 bg-surface-frame border-r border-surface-700/50 flex flex-col min-h-0" aria-label="Settings sections">
+      <nav class="settings-section-rail w-[214px] shrink-0 bg-surface-frame border-r border-surface-700/50 flex flex-col min-h-0" aria-label="Settings sections">
         <div class="p-3 pb-2.5 border-b border-surface-700/35">
           <div class="relative flex items-center">
             <svg class="absolute left-[9px] w-3 h-3 text-surface-600 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
@@ -4411,7 +4481,25 @@
       <!-- Content pane -->
       <div class="flex-1 min-w-0 flex flex-col min-h-0">
         <div class="flex-1 min-h-0 overflow-y-auto">
-          <div class="max-w-[62rem] p-6 px-7 pb-12 flex flex-col gap-6">
+          <div class="settings-content max-w-[62rem] p-6 px-7 pb-12 flex flex-col gap-6">
+            <label class="settings-mobile-section font-mono text-sm text-tx-3" for="settings-mobile-section">Settings section
+              <select id="settings-mobile-section" x-model="settingsSection" class="w-full mt-2 px-3 py-2 rounded bg-surface-900 border border-edge-input text-tx">
+                <template x-for="section in settingsSections" :key="section.key">
+                  <option :value="section.key" x-text="section.label"></option>
+                </template>
+              </select>
+            </label>
+
+            <section class="settings-mobile-section" aria-label="Settings filter">
+              <label class="font-mono text-sm text-tx-3" for="settings-search-compact">Search settings</label>
+              <div class="flex items-center gap-2 mt-2">
+                <input id="settings-search-compact" type="search" x-model="settingsQuery" placeholder="search settings"
+                       @keydown.escape="if (settingsQuery) { $event.stopPropagation(); settingsQuery = '' }"
+                       class="flex-1 min-w-0 px-3 py-2 rounded bg-surface-900 border border-edge-input text-tx focus:outline-none focus:border-accent">
+                <button type="button" x-show="settingsQuery" @click="settingsQuery = ''" aria-label="Clear settings search"
+                        class="px-3 py-2 rounded border border-edge-input font-mono text-sm text-tx-3">clear</button>
+              </div>
+            </section>
 
             <!-- Page header -->
             <div class="flex items-start justify-between gap-4">
@@ -5618,7 +5706,7 @@
             </template>
           </div>
 
-          <div class="p-3 px-6 flex items-center gap-3">
+          <div class="settings-review-actions p-3 px-6 flex items-center gap-3">
             <button type="button" @click="settingsDiffOpen = !settingsDiffOpen" class="flex-1 min-w-0 flex items-center gap-2 text-left">
               <span class="font-mono text-[11px] text-surface-600 shrink-0" x-text="settingsDiffOpen ? '▾' : '▸'"></span>
               <span class="font-mono text-[11px] text-accent shrink-0">
@@ -5911,9 +5999,6 @@
       <span x-show="assistantGate" x-cloak class="w-1.5 h-1.5 rounded-full bg-warn" aria-label="waiting for your approval"></span>
     </aside>
     </template>
-  </main>
-  </template>
-
   <!-- ============================================================= -->
   <!-- Mobile (phone-width) layer. Not built at all on desktop/tablet.-->
   <!-- Reuses the same Alpine data + ticket operations; only the      -->
@@ -5921,66 +6006,7 @@
   <!-- sheet) differ.                                                 -->
   <!-- ============================================================= -->
   <template x-if="isMobile">
-  <div class="h-full flex flex-col" style="background:rgba(var(--surface-950),1);">
-
-    <!-- ===== Board chrome: app bar + search + status tabs ===== -->
-    <div style="flex:none;background:rgba(var(--surface-950),1);border-bottom:1px solid rgba(var(--surface-700),.5);padding-top:54px;">
-      <div style="display:flex;align-items:center;gap:10px;padding:6px 16px 10px;">
-        <span style="width:34px;height:34px;margin-left:-6px;color:rgba(var(--surface-600),1);display:flex;align-items:center;justify-content:center;flex:none;" aria-hidden="true">
-          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
-        </span>
-        <div style="display:flex;align-items:baseline;gap:8px;flex:1;min-width:0;">
-          <span style="font-family:'JetBrains Mono',monospace;font-weight:700;font-size:16px;letter-spacing:.04em;color:rgba(var(--tx-2),1);">kontora</span>
-        </div>
-        <span class="running-pill" :class="runningAgents === 0 ? 'is-idle' : ''" style="height:26px;border-radius:7px;flex:none;">
-          <span class="running-pill-dot" :class="runningAgents > 0 ? 'pulse-dot' : ''"></span>
-          <span style="color:rgba(var(--tx),1);" x-text="runningAgents"></span>
-          <span style="color:rgba(var(--surface-600),1);">running</span>
-        </span>
-        <button id="assistant-mobile-trigger" @click="openAssistantSheet()" data-pipe-color="mauve" style="width:34px;height:34px;border:1px solid rgba(var(--surface-700),.6);background:rgba(var(--surface-900),1);color:hsl(var(--pipe-h));border-radius:8px;display:flex;align-items:center;justify-content:center;flex:none;" aria-label="Assistant">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z"/></svg>
-        </button>
-        <button @click="toggleTheme()" style="width:34px;height:34px;border:1px solid rgba(var(--surface-700),.6);background:rgba(var(--surface-900),1);color:rgba(var(--surface-600),1);border-radius:8px;display:flex;align-items:center;justify-content:center;flex:none;" aria-label="Toggle theme">
-          <svg x-show="!lightTheme" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
-          <svg x-show="lightTheme" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
-        </button>
-        <button @click="openNewSheet()" style="height:34px;padding:0 12px;border:1px solid rgba(var(--accent),1);background:rgba(var(--accent),1);color:rgba(var(--accent-fg),1);border-radius:8px;display:flex;align-items:center;gap:5px;font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:600;flex:none;" aria-label="New ticket">
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>new
-        </button>
-      </div>
-      <div style="padding:0 16px 10px;">
-        <div style="position:relative;display:flex;align-items:center;">
-          <svg style="position:absolute;left:11px;width:14px;height:14px;color:rgba(var(--surface-600),1);" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
-          <input x-model="searchQuery" placeholder="Filter, or project:name" aria-label="Filter tickets" style="width:100%;height:38px;padding:0 12px 0 34px;font-family:'JetBrains Mono',monospace;font-size:13px;border-radius:9px;background:rgba(var(--surface-900),1);border:1px solid rgba(var(--surface-700),.5);color:rgba(var(--tx),1);outline:none;"/>
-        </div>
-      </div>
-      <div x-show="ticketSources.length > 0 || sourcesError" class="px-4 pb-2">
-        <select x-model="sourceFilter" @change="recomputeBoard()" aria-label="Filter by ticket folder"
-                class="w-full bg-surface-900 border border-edge-input rounded-[7px] px-2 py-2 font-mono text-[12px] text-tx-2">
-          <option value="">All folders</option>
-          <option value="primary">Primary folder</option>
-          <template x-for="source in ticketSources" :key="source.id">
-            <option :value="source.id" x-text="(source.id === 'primary' ? 'primary' : source.path) + (source.available === false ? ' (unavailable)' : '')"></option>
-          </template>
-        </select>
-        <div x-show="sourcesError || ticketSources.some(s => s.available === false)" x-cloak role="alert" class="mt-2 font-mono text-[11px] text-warn break-all">
-          <p x-show="sourcesError" x-text="sourcesError"></p>
-          <template x-for="source in ticketSources.filter(s => s.available === false)" :key="source.id">
-            <p x-text="(source.path || source.id) + ': ' + (source.error || 'Folder unavailable')"></p>
-          </template>
-        </div>
-      </div>
-      <div style="display:flex;gap:4px;overflow-x:auto;padding:0 12px;">
-        <template x-for="(col, ci) in columns" :key="col.key">
-          <button @click="setActiveColumn(ci)"
-                  :style="'display:flex;align-items:center;gap:7px;flex:none;padding:9px 6px 11px;border:none;background:transparent;cursor:pointer;border-bottom:2px solid ' + (activeColumn===ci ? 'hsl('+col.tint+')' : 'transparent') + ';color:' + (activeColumn===ci ? 'hsl('+col.tint+')' : 'rgba(var(--tx-3),1)') + ';'">
-            <span :style="'width:7px;height:7px;border-radius:9999px;flex:none;background:hsl('+col.tint+');'"></span>
-            <span style="font-family:'JetBrains Mono',monospace;font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;white-space:nowrap;" x-text="col.label"></span>
-            <span :style="'font-family:\'JetBrains Mono\',monospace;font-size:10px;font-weight:700;padding:1px 6px;border-radius:9999px;' + (activeColumn===ci ? 'color:hsl('+col.tint+');background:hsl('+col.tint+' / .15);' : 'color:rgba(var(--surface-600),1);background:rgba(var(--surface-800),1);')" x-text="boardTickets(col.key).length"></span>
-          </button>
-        </template>
-      </div>
-    </div>
+  <div x-show="currentView === 'board'" class="mobile-board-layer">
 
     <div x-show="epics.length" class="flex gap-2 overflow-x-auto p-3">
       <template x-for="e in epics" :key="e.id">
@@ -6081,7 +6107,7 @@
 
     <!-- ===== Ticket detail (full-screen overlay) ===== -->
     <template x-if="selectedEpic && currentView === 'board'">
-      <section class="fixed inset-0 z-40 bg-surface-950 flex flex-col" aria-label="Epic overview">
+      <section class="mobile-epic fixed inset-0 z-40 bg-surface-950 flex flex-col" aria-label="Epic overview">
         <header class="shrink-0 p-4 border-b border-surface-700 flex flex-col gap-3">
           <button type="button" @click="closeEpic()" class="text-left font-mono text-xs text-accent">back to board</button>
           <h1 class="text-lg text-tx-hi" x-text="selectedEpic.title"></h1>
@@ -6276,10 +6302,9 @@
       </section>
     </template>
 
-    <div x-show="isMobile && selectedTicket && currentView === 'board'" x-cloak class="detail-enter flex"
-         style="position:fixed;inset:0;z-index:40;display:flex;flex-direction:column;background:rgba(var(--surface-950),1);">
+    <div x-show="isMobile && selectedTicket && currentView === 'board'" x-cloak class="mobile-detail detail-enter">
       <!-- header -->
-      <div style="flex:none;padding-top:54px;border-bottom:1px solid rgba(var(--surface-700),.4);background:rgba(var(--surface-deep),1);">
+      <div class="mobile-detail-header">
         <div style="display:flex;align-items:center;gap:10px;padding:6px 14px 10px;">
           <button @click="closeDetail()" style="width:32px;height:32px;margin-left:-4px;border:none;background:transparent;color:rgba(var(--tx-3),1);display:flex;align-items:center;justify-content:center;flex:none;" aria-label="Back">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
@@ -6290,7 +6315,7 @@
                   class="font-mono text-xs px-3 py-2 rounded bg-accent text-accent-fg disabled:opacity-50 disabled:cursor-not-allowed"
                   x-text="claimSubmitting ? 'Claiming…' : 'Claim'"></button>
           <button type="button" x-show="!isSecondary(selectedTicket) && selectedTicket?.kind === 'epic'" @click="openEpic(selectedTicket.id)" class="font-mono text-xs text-accent">epic overview</button>
-          <button x-show="ticketCanControl(selectedTicket)" @click="openActionsSheet(selectedTicket)" style="width:32px;height:32px;border:1px solid rgba(var(--surface-700),.5);background:rgba(var(--surface-900),1);color:rgba(var(--tx-3),1);border-radius:8px;display:flex;align-items:center;justify-content:center;flex:none;" aria-label="Actions">
+          <button x-show="ticketCanControl(selectedTicket)" @click="openActionsSheet(selectedTicket)" style="width:32px;height:32px;border:1px solid rgba(var(--surface-700),.5);background:rgba(var(--surface-900),1);color:rgba(var(--tx-3),1);border-radius:8px;align-items:center;justify-content:center;flex:none;" aria-label="Actions" class="flex">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="2.2"/><circle cx="12" cy="12" r="2.2"/><circle cx="19" cy="12" r="2.2"/></svg>
           </button>
         </div>
@@ -6346,7 +6371,7 @@
       <div style="flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden;">
 
         <!-- terminal (live; in_progress) -->
-        <div x-show="!isSecondary(selectedTicket) && detailTab==='terminal'" style="flex:1;min-height:0;display:flex;flex-direction:column;">
+        <div x-show="!isSecondary(selectedTicket) && detailTab==='terminal'" class="mobile-terminal-pane">
           <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:12px 16px 8px;flex-wrap:wrap;flex:none;">
             <span style="font-family:'JetBrains Mono',monospace;font-size:11px;padding:3px 9px;border-radius:5px;background:rgba(var(--surface-800),1);color:rgba(var(--tx-3),1);" x-text="selectedTicket?.agent || 'default'"></span>
             <div style="display:flex;align-items:center;gap:12px;font-family:'JetBrains Mono',monospace;font-size:11px;">
@@ -6497,7 +6522,32 @@
               <div x-show="descriptionTail(selectedTicket)" class="ticket-prose text-sm" x-effect="setProse($el, descriptionTail(selectedTicket))"></div>
             </fieldset>
           </template>
-          <template x-if="!(isSecondary(selectedTicket) && editing && editorCanEdit(selectedTicket))">
+          <template x-if="!isSecondary(selectedTicket) && mobileCanEditDescription()">
+            <div class="mobile-description mb-4">
+              <template x-if="editing && editingBody">
+                <div class="flex flex-col gap-2">
+                  <div class="flex items-center justify-between gap-2">
+                    <label for="mobile-description-editor" class="font-mono text-[12px] text-tx-3">Description</label>
+                    <button type="button" @pointerdown.prevent @click="mobileFinishDescriptionEdit()" class="font-mono text-[12px] text-accent">Done</button>
+                  </div>
+                  <textarea id="mobile-description-editor" x-ref="mobileDescriptionEditor" x-model="editForm.body"
+                            @input="mobileDescriptionInput($event.target.value)" @blur="mobileFinishDescriptionEdit()"
+                            @keydown.escape.stop.prevent="mobileFinishDescriptionEdit()" rows="10"
+                            class="w-full bg-surface-900 border border-edge-input rounded px-3 py-2 font-mono text-tx-2"></textarea>
+                  <span x-show="editSubmitting" role="status" class="font-mono text-[11px] text-tx-3">saving…</span>
+                </div>
+              </template>
+              <template x-if="!editing || !editingBody">
+                <div class="mobile-description-preview">
+                  <button type="button" @click="mobileBeginDescriptionEdit()" class="font-mono text-[12px] text-accent">Edit description</button>
+                  <div class="ticket-prose text-sm" x-effect="setProse($el, editing ? editForm.body : descriptionText(selectedTicket))"></div>
+                  <p x-show="!(editing ? editForm.body : descriptionText(selectedTicket))" class="font-mono text-[13px] text-surface-600">No description yet. Tap Edit description to write one.</p>
+                </div>
+              </template>
+              <div x-show="descriptionTail(selectedTicket)" class="ticket-prose text-sm mt-4" x-effect="setProse($el, descriptionTail(selectedTicket))"></div>
+            </div>
+          </template>
+          <template x-if="!(isSecondary(selectedTicket) && editing && editorCanEdit(selectedTicket)) && !mobileCanEditDescription()">
             <div>
               <div class="ticket-prose text-sm" x-effect="setProse($el, selectedTicket?.body || '')"></div>
               <p x-show="!selectedTicket?.body" class="font-mono text-[13px] text-surface-600">No ticket description.</p>
@@ -6529,7 +6579,7 @@
       </div>
 
       <!-- action bar -->
-      <div x-show="ticketCanControl(selectedTicket)" style="flex:none;display:flex;gap:10px;padding:12px 16px 32px;border-top:1px solid rgba(var(--surface-700),.4);background:rgba(var(--surface-deep),1);">
+      <div x-show="ticketCanControl(selectedTicket)" class="mobile-detail-actions">
         <button @click="mobileSecondaryAction(selectedTicket).run()" style="flex:1;height:46px;border-radius:11px;border:1px solid rgba(var(--surface-700),.7);background:rgba(var(--surface-900),1);color:rgba(var(--tx-3),1);font-family:'JetBrains Mono',monospace;font-size:14px;font-weight:600;" x-text="mobileSecondaryAction(selectedTicket).label"></button>
         <button @click="mobilePrimaryAction(selectedTicket).run()" style="flex:1.4;height:46px;border-radius:11px;border:1px solid rgba(var(--accent),1);background:rgba(var(--accent),1);color:rgba(var(--accent-fg),1);font-family:'JetBrains Mono',monospace;font-size:14px;font-weight:700;display:flex;align-items:center;justify-content:center;gap:8px;">
           <span style="width:7px;height:7px;border-radius:9999px;background:rgba(var(--accent-fg),.55);flex:none;"></span>
@@ -6538,12 +6588,31 @@
       </div>
     </div>
 
+  </div>
+  </template>
+  </main>
+
     <!-- ===== Bottom sheet (actions / new ticket) ===== -->
     <template x-if="isMobile && sheet">
-      <div>
-        <div @click="closeSheet()" class="sheet-scrim" style="position:fixed;inset:0;z-index:60;background:rgba(0,0,0,.55);"></div>
-        <div class="sheet-panel" style="position:fixed;left:0;right:0;bottom:0;z-index:61;background:rgba(var(--surface-900),1);border-top:1px solid rgba(var(--surface-700),.6);border-radius:20px 20px 0 0;padding:10px 0 34px;max-height:82%;display:flex;flex-direction:column;box-shadow:0 -10px 40px rgba(0,0,0,.4);">
-          <div style="width:38px;height:4px;border-radius:9999px;background:rgba(var(--surface-700),1);margin:2px auto 12px;flex:none;"></div>
+      <div class="mobile-sheet-viewport">
+        <div @click="closeSheet()" class="sheet-scrim mobile-sheet-scrim" aria-hidden="true"></div>
+        <div class="sheet-panel mobile-sheet-panel" role="dialog" aria-modal="true" aria-labelledby="mobile-sheet-title"
+             tabindex="-1" x-ref="mobileSheetDialog" data-mobile-sheet-dialog>
+          <div class="mobile-sheet-handle" aria-hidden="true"></div>
+          <div class="mobile-sheet-heading">
+            <h2 id="mobile-sheet-title" class="font-mono text-sm text-tx-2 m-0"
+                x-text="({ navigation: 'Navigation', actions: 'Ticket actions', schedule: 'Start later', assistant: 'Assistant', new: 'New ticket' })[sheet.type] || 'Ticket' "></h2>
+            <button type="button" @click="closeSheet()" class="mobile-sheet-close" data-mobile-sheet-initial-focus>Close</button>
+          </div>
+
+          <template x-if="sheet.type === 'navigation'">
+            <nav class="mobile-navigation" aria-label="Main navigation">
+              <template x-for="view in [{ key: 'board', label: 'Dashboard' }, { key: 'new', label: 'New ticket' }, { key: 'stats', label: 'Stats' }, { key: 'archive', label: 'Archive' }, { key: 'settings', label: 'Settings' }]" :key="view.key">
+                <button type="button" @click="if (view.key === currentView) closeSheet(); else await gotoView(view.key)"
+                        :aria-current="currentView === view.key ? 'page' : null" x-text="view.label"></button>
+              </template>
+            </nav>
+          </template>
 
           <!-- actions sheet -->
           <template x-if="sheet.type==='actions' && ticketCanControl(sheet.ticket)">
@@ -6582,16 +6651,16 @@
                 <template x-for="p in mobileSchedulePresets()" :key="p.key">
                   <button @click="mobileSchedulePick(p)"
                           :style="'display:flex;align-items:center;gap:12px;height:52px;padding:0 14px;border-radius:11px;width:100%;text-align:left;' + (mobileSchedulePresetSelected(p) ? 'background:hsl(var(--st-open) / .12);border:1px solid hsl(var(--st-open) / .4);' : 'background:rgba(var(--surface-950),1);border:1px solid rgba(var(--surface-700),.6);')">
-                    <span style="font-family:'JetBrains Mono',monospace;font-size:13px;flex:none;" :style="mobileSchedulePresetSelected(p) ? 'color:hsl(var(--st-open));' : 'color:rgba(var(--surface-600),1);'" aria-hidden="true">◷</span>
+                    <span class="font-mono text-[13px] shrink-0" :style="mobileSchedulePresetSelected(p) ? 'color:hsl(var(--st-open));' : 'color:rgba(var(--surface-600),1);'" aria-hidden="true">◷</span>
                     <span style="flex:1;min-width:0;font-size:14.5px;color:rgba(var(--tx),1);" x-text="p.label"></span>
-                    <span style="font-family:'JetBrains Mono',monospace;font-size:12px;flex:none;" :style="mobileSchedulePresetSelected(p) ? 'color:hsl(var(--st-open));' : 'color:rgba(var(--surface-600),1);'" x-text="p.rel"></span>
+                    <span class="font-mono text-[12px] shrink-0" :style="mobileSchedulePresetSelected(p) ? 'color:hsl(var(--st-open));' : 'color:rgba(var(--surface-600),1);'" x-text="p.rel"></span>
                   </button>
                 </template>
 
                 <!-- The same one field the desktop form has: a time or a
                      duration, with the native picker behind the icon. -->
                 <div style="display:flex;align-items:center;gap:12px;height:52px;padding:0 14px;border-radius:11px;background:rgba(var(--surface-950),1);border:1px solid rgba(var(--surface-700),.6);">
-                  <input x-model="scheduleDraft" @input="scheduleError = null" type="text" inputmode="text"
+                  <input x-model="scheduleDraft" @input="scheduleError = null" type="text" inputmode="text" aria-label="Start date or duration"
                          placeholder="2099-09-01 09:00 · 24h · 3d"
                          style="flex:1;min-width:0;background:transparent;border:0;outline:none;font-family:'JetBrains Mono',monospace;font-size:14px;color:rgba(var(--tx),1);"/>
                   <button style="color:rgba(var(--tx-3),1);display:flex;flex:none;width:44px;height:44px;align-items:center;justify-content:flex-end;background:transparent;border:0;" aria-label="Pick a date"
@@ -6609,11 +6678,7 @@
                   <button @click="sheet.ticket.scheduled_at ? clearScheduleSheet(sheet.ticket) : closeSheet()" :disabled="scheduleSubmitting"
                           style="flex:1;height:46px;border-radius:11px;border:1px solid rgba(var(--surface-700),.7);background:rgba(var(--surface-950),1);color:rgba(var(--tx-3),1);font-family:'JetBrains Mono',monospace;font-size:14px;font-weight:600;"
                           x-text="sheet.ticket.scheduled_at ? 'clear' : 'cancel'"></button>
-                  <!-- One :style, not a static style plus a bound one: Alpine
-                       drops the static attribute when the binding evaluates to
-                       an empty string, and the button loses its flex with it. -->
-                  <button @click="submitScheduleMobile(sheet.ticket)" :disabled="scheduleSubmitting"
-                          :style="'flex:1.4;height:46px;border-radius:11px;border:1px solid rgba(var(--accent),1);background:rgba(var(--accent),1);color:rgba(var(--accent-fg),1);font-family:\'JetBrains Mono\',monospace;font-size:14px;font-weight:700;' + (scheduleSubmitting ? 'opacity:.5;' : '')"
+                  <button @click="submitScheduleMobile(sheet.ticket)" :disabled="scheduleSubmitting || !mobileScheduleParsed().iso" class="mobile-sheet-primary"
                           x-text="scheduleSubmitting ? 'saving…' : 'schedule'"></button>
                 </div>
                 <button @click="runNowFromSheet(sheet.ticket)"
@@ -6624,7 +6689,7 @@
 
           <!-- assistant sheet. The phone equivalent of the docked pane. -->
           <template x-if="sheet.type==='assistant'">
-            <div id="assistant-sheet" style="display:flex;flex-direction:column;min-height:0;flex:1;">
+            <div id="assistant-sheet" class="mobile-assistant-sheet">
               <div style="display:flex;align-items:center;gap:8px;padding:0 18px 12px;border-bottom:1px solid rgba(var(--surface-700),.4);">
                 <span data-pipe-color="mauve" style="color:hsl(var(--pipe-h));display:flex;flex:none;" aria-hidden="true">
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z"/></svg>
@@ -6643,7 +6708,7 @@
                 <p x-show="!assistantThreads.length">No chats yet.</p>
                 <template x-for="t in assistantThreads" :key="t.id"><button type="button" @click="assistantSelectThread(t.id)" x-text="t.title"></button></template>
               </div>
-              <div id="assistant-sheet-thread" x-show="assistantView === 'thread'" @scroll.passive="assistantThreadScrolled()" style="flex:1;min-height:0;overflow-y:auto;padding:14px 18px;display:flex;flex-direction:column;gap:12px;">
+              <div id="assistant-sheet-thread" x-show="assistantView === 'thread'" @scroll.passive="assistantThreadScrolled()" class="mobile-assistant-thread">
                 <div x-show="companionThread()" x-html="companionEvidenceMarkup"></div>
                 <template x-if="!assistantMessages.length && !assistantEvents.length">
                   <p style="margin:auto 0;font-size:13px;line-height:1.6;color:rgba(var(--surface-600),1);text-align:center;" x-text="companionThread() ? 'Ask about the captured records. The companion cannot run commands or change tickets.' : 'Ask about the board. It drives Kontora with the same verbs the CLI uses.'"></p>
@@ -6737,12 +6802,12 @@
               </div>
               <div style="overflow-y:auto;padding:16px 18px;display:flex;flex-direction:column;gap:14px;">
                 <div>
-                  <div style="font-family:'JetBrains Mono',monospace;font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:rgba(var(--surface-600),1);margin-bottom:6px;">Title</div>
-                  <input x-model="createForm.title" placeholder="What should the agent build?" style="width:100%;height:42px;padding:0 12px;font-size:14px;border-radius:10px;background:rgba(var(--surface-950),1);border:1px solid rgba(var(--surface-700),.6);color:rgba(var(--tx),1);outline:none;"/>
+                  <div style="font-family:'JetBrains Mono',monospace;font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:rgba(var(--surface-600),1);margin-bottom:6px;">Title (required)</div>
+                  <input x-model="createForm.title" required aria-label="Ticket title" placeholder="What should the agent build?" style="width:100%;height:42px;padding:0 12px;font-size:14px;border-radius:10px;background:rgba(var(--surface-950),1);border:1px solid rgba(var(--surface-700),.6);color:rgba(var(--tx),1);outline:none;"/>
                 </div>
                 <div>
-                  <div style="font-family:'JetBrains Mono',monospace;font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:rgba(var(--surface-600),1);margin-bottom:6px;">Path</div>
-                  <input x-model="createForm.path" @input="onCreatePathChange()" placeholder="~/projects/myrepo" style="width:100%;height:42px;padding:0 12px;font-family:'JetBrains Mono',monospace;font-size:13px;border-radius:10px;background:rgba(var(--surface-950),1);border:1px solid rgba(var(--surface-700),.6);color:rgba(var(--tx),1);outline:none;"/>
+                  <div style="font-family:'JetBrains Mono',monospace;font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:rgba(var(--surface-600),1);margin-bottom:6px;">Path (required)</div>
+                  <input x-model="createForm.path" required @input="onCreatePathChange()" aria-label="Repository path" placeholder="~/projects/myrepo" style="width:100%;height:42px;padding:0 12px;font-family:'JetBrains Mono',monospace;font-size:13px;border-radius:10px;background:rgba(var(--surface-950),1);border:1px solid rgba(var(--surface-700),.6);color:rgba(var(--tx),1);outline:none;"/>
                 </div>
                 <label class="font-mono text-xs text-tx-3">Kind
                   <select x-model="createForm.kind" @change="syncCreatePipeline()" class="bg-surface-800 text-tx-2 px-3 py-2 rounded">
@@ -6753,7 +6818,7 @@
                 <div style="display:flex;gap:12px;">
                   <div x-show="createForm.kind !== 'epic'" style="flex:1;min-width:0;">
                     <div style="font-family:'JetBrains Mono',monospace;font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:rgba(var(--surface-600),1);margin-bottom:6px;">Pipeline</div>
-                    <select x-model="createForm.pipelineChoice" @change="onPipelineChange()" style="width:100%;height:42px;padding:0 10px;font-family:'JetBrains Mono',monospace;font-size:13px;border-radius:10px;background:rgba(var(--surface-950),1);border:1px solid rgba(var(--surface-700),.6);color:rgba(var(--tx-3),1);outline:none;">
+                    <select x-model="createForm.pipelineChoice" @change="onPipelineChange()" aria-label="Pipeline" style="width:100%;height:42px;padding:0 10px;font-family:'JetBrains Mono',monospace;font-size:13px;border-radius:10px;background:rgba(var(--surface-950),1);border:1px solid rgba(var(--surface-700),.6);color:rgba(var(--tx-3),1);outline:none;">
                       <option value="inherit" x-text="inheritedPipelineLabel(createPipelineDefaults())"></option>
                       <option value="none">none (single run, no stages)</option>
                       <template x-for="p in (configCache?.pipelines || [])" :key="p"><option :value="'pipeline:' + p" x-text="p"></option></template>
@@ -6766,16 +6831,18 @@
                 </div>
                 <div x-show="createForm.kind !== 'epic'">
                   <div style="font-family:'JetBrains Mono',monospace;font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:rgba(var(--surface-600),1);margin-bottom:6px;">Start at</div>
-                  <input x-model="createForm.scheduled_at" @change="onCreateScheduleChange()" type="datetime-local" :min="scheduleMin()" style="width:100%;height:42px;padding:0 12px;font-family:'JetBrains Mono',monospace;font-size:13px;border-radius:10px;background:rgba(var(--surface-950),1);border:1px solid rgba(var(--surface-700),.6);color:rgba(var(--tx),1);outline:none;"/>
+                  <input @change="onMobileCreateSchedulePicked($event.target.value)" aria-label="Start at" type="datetime-local" :min="scheduleMin()" style="width:100%;height:42px;padding:0 12px;font-family:'JetBrains Mono',monospace;font-size:13px;border-radius:10px;background:rgba(var(--surface-950),1);border:1px solid rgba(var(--surface-700),.6);color:rgba(var(--tx),1);outline:none;"/>
                   <div style="font-size:11px;color:rgba(var(--surface-600),1);margin-top:5px;">Your local time. The ticket waits in open until then.</div>
+                  <p x-show="createScheduleError()" role="alert" class="font-mono text-xs text-err mt-2" x-text="createScheduleError()"></p>
                 </div>
                 <div>
                   <div style="font-family:'JetBrains Mono',monospace;font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:rgba(var(--surface-600),1);margin-bottom:6px;">Body</div>
-                  <textarea x-model="createForm.body" placeholder="Context, acceptance criteria, links…" style="width:100%;height:84px;padding:10px 12px;font-size:13.5px;line-height:1.5;border-radius:10px;background:rgba(var(--surface-950),1);border:1px solid rgba(var(--surface-700),.6);color:rgba(var(--tx),1);outline:none;resize:none;font-family:'DM Sans',sans-serif;"></textarea>
+                  <textarea x-model="createForm.body" aria-label="Ticket body" placeholder="Context, acceptance criteria, links…" style="width:100%;height:84px;padding:10px 12px;font-size:13.5px;line-height:1.5;border-radius:10px;background:rgba(var(--surface-950),1);border:1px solid rgba(var(--surface-700),.6);color:rgba(var(--tx),1);outline:none;resize:none;font-family:'DM Sans',sans-serif;"></textarea>
                 </div>
-                <div style="display:flex;gap:10px;margin-top:2px;">
+                <p x-show="createError" x-cloak role="alert" class="font-mono text-sm text-err whitespace-pre-wrap break-words" x-text="createError"></p>
+                <div class="mobile-create-actions">
                   <button @click="closeSheet()" style="flex:1;height:46px;border-radius:11px;border:1px solid rgba(var(--surface-700),.7);background:rgba(var(--surface-950),1);color:rgba(var(--tx-3),1);font-family:'JetBrains Mono',monospace;font-size:14px;font-weight:600;">cancel</button>
-                  <button @click="submitCreateTicketMobile()" :disabled="createSubmitting || !createForm.title || !createForm.path" style="flex:1.4;height:46px;border-radius:11px;border:1px solid rgba(var(--accent),1);background:rgba(var(--accent),1);color:rgba(var(--accent-fg),1);font-family:'JetBrains Mono',monospace;font-size:14px;font-weight:700;" :style="(createSubmitting || !createForm.title || !createForm.path) ? 'opacity:.5;' : ''" x-text="createSubmitting ? 'creating…' : 'create ticket'"></button>
+                  <button @click="submitCreateTicketMobile()" :disabled="createSubmitting || !createForm.title.trim() || !createForm.path.trim() || createBlocked()" class="mobile-sheet-primary" x-text="createSubmitting ? 'creating…' : 'create ticket'"></button>
                 </div>
               </div>
             </div>
@@ -6783,9 +6850,6 @@
         </div>
       </div>
     </template>
-
-  </div>
-  </template>
 
   <script src="/app.js"></script>
 </body>

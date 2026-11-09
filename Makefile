@@ -1,4 +1,4 @@
-.PHONY: all build test test-race test-pi-sdk test-scripts lint fmt install clean assets css model-prices
+.PHONY: all build test test-race test-pi-sdk test-scripts test-browser test-browser-install lint fmt install clean assets css model-prices
 
 all: build
 
@@ -21,6 +21,15 @@ test:
 
 test-race:
 	go test -race -timeout 5m ./...
+
+BROWSER_CACHE ?= $(if $(XDG_CACHE_HOME),$(XDG_CACHE_HOME),$(HOME)/.cache)/kontora-playwright
+
+test-browser-install:
+	npm ci --prefix internal/web/testdata --ignore-scripts --no-audit --no-fund
+	PLAYWRIGHT_BROWSERS_PATH="$(BROWSER_CACHE)" node internal/web/testdata/node_modules/playwright/cli.js install chromium webkit
+
+test-browser:
+	KONTORA_TEST_BROWSER=1 PLAYWRIGHT_BROWSERS_PATH="$(BROWSER_CACHE)" go test -count=1 -timeout 8m ./internal/web -run '^TestMobileBrowserJS$$' -v
 
 test-pi-sdk:
 	node --test internal/daemon/testdata/pi_extension.sdk.test.mjs

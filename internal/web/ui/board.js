@@ -463,6 +463,8 @@ export function kontoraBoard() {
     // the terminal container. This is the one path that disposes the terminal:
     // its container is going away, so the instance cannot be carried over.
     _onBreakpointChange() {
+      this.mobileBreakpointChanged();
+      this._invalidateStageLogs();
       this.closeAgentPicker(false);
       // The palette has no phone layout, so a window narrowed while it is open
       // would leave it floating over the phone board.
@@ -482,8 +484,8 @@ export function kontoraBoard() {
       this.$nextTick(() => {
         this._mountBoard();
         if (this.terminalWanted()) this.openTerminal();
-        else if (this.isMobile && this.selectedTicket && this.detailTab === 'logs') this.mobileSwitchTab('logs');
-        else if (this.outputTab() === 'activity') {
+        else if (this.currentView === 'board' && this.isMobile && this.selectedTicket && this.detailTab === 'logs') this.mobileSwitchTab('logs');
+        else if (this.currentView === 'board' && this.outputTab() === 'activity') {
           var run = this.activityStage === null ? this.activityTarget() : { stage: this.activityStage, run: this.activityRun };
           if (run) this.fetchActivity(run.stage, run.run);
         }

@@ -174,6 +174,7 @@ export function kontoraApp() {
     // Queues and failed drafts outlive the overlay that submitted them.
     _editorSaves: Object.create(null),
     _editorGeneration: 0,
+    _editorTicketKey: null,
     // Project defaults for the edit path. Agent provenance is separate because
     // an explicit override can equal the project default.
     _editInherited: null,
@@ -329,6 +330,10 @@ export function kontoraApp() {
 
     destroy() {
       this._appDestroyed = true;
+      this.destroyMobile();
+      this.destroyAgentPicker();
+      if (this._routeListener) window.removeEventListener('hashchange', this._routeListener);
+      this.closeStats();
       this.closeTerminal();
       this._destroyTerminal();
       this._resetActivity();

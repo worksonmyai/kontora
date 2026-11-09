@@ -377,7 +377,7 @@ export function kontoraEpics() {
         if (secondary) await this._paletteOpenTicket(secondary);
         return;
       }
-      if (this.currentView !== 'board') await this.gotoView('board', navigation);
+      if (this.currentView !== 'board') await this.gotoView('board', navigation, { view: 'board', epicId: id });
       if (navigation !== this._navigationSeq || this.currentView !== 'board') return;
       var epic = (this.tickets || []).find(function (t) { return t.id === id && t.kind === 'epic'; });
       if (!epic) return;

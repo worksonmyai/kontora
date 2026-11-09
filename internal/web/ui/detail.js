@@ -21,6 +21,10 @@ export function kontoraDetail() {
     },
 
     async selectTicket(ticket, navigation = ++this._navigationSeq) {
+      if (this.currentView !== 'board') {
+        if (await this.gotoView('board', navigation, { view: 'board', ticketId: ticket.id, source: ticket.source }) === false) return;
+        if (navigation !== this._navigationSeq) return;
+      }
       if (this.sameTicket(this.selectedTicket, ticket)) {
         this.closeDetail();
         return;
@@ -76,7 +80,11 @@ export function kontoraDetail() {
         if (this._editorSaves[key]) await this._waitEditorSaves(key);
         while (mine()) {
           var res = await fetch(this.ticketURL(ticket));
-          if (!mine() || !res.ok) break;
+          if (!mine()) return;
+          if (!res.ok) {
+            this.error = 'Failed to load ticket details';
+            break;
+          }
           var full = await res.json();
           if (!mine()) return;
           // Ticket SSE omits the body. Repeat a read that an SSE update
@@ -413,7 +421,10 @@ export function kontoraDetail() {
       // The live session only exists while a stage runs. Asking for it on a
       // finished ticket lands on that stage's transcript instead.
       if (tab === 'session' && this.selectedTicket?.status !== 'in_progress') tab = 'activity';
-      if (tab !== this.activeTab) this._invalidateRawLog();
+      if (tab !== this.activeTab) {
+        this._invalidateStageLogs();
+        this._invalidateRawLog();
+      }
       this.activeTab = tab;
       // Leaving the session tab keeps the stream and the terminal: the tab
       // content is x-show, so the container survives, and output that arrives
@@ -485,7 +496,7 @@ export function kontoraDetail() {
     // drives the same selectedTicket state but brings its own header, so the
     // app header's breadcrumb and action bar must not follow it there.
     boardDetailOpen() {
-      return !!this.selectedTicket && this.currentView !== 'archive';
+      return !!this.selectedTicket && this.currentView === 'board';
     },
 
     // ---- hash routing ------------------------------------------------------
@@ -529,12 +540,12 @@ export function kontoraDetail() {
       // board list does not hold, so a reloaded #/t/<id> would find nothing and
       // fall back to the board.
       if (this.currentView === 'archive') return '#/archive';
-      if (this.isSecondary(this.selectedTicket)) return '#/s/' + encodeURIComponent(this.selectedTicket.source) + '/t/' + encodeURIComponent(this.selectedTicket.id);
-      if (this.selectedTicket) return '#/t/' + encodeURIComponent(this.selectedTicket.id);
-      if (this.selectedEpic) return '#/e/' + encodeURIComponent(this.selectedEpic.id);
       if (this.currentView === 'new') return '#/new';
       if (this.currentView === 'stats') return '#/stats';
       if (this.currentView === 'settings') return '#/settings';
+      if (this.isSecondary(this.selectedTicket)) return '#/s/' + encodeURIComponent(this.selectedTicket.source) + '/t/' + encodeURIComponent(this.selectedTicket.id);
+      if (this.selectedTicket) return '#/t/' + encodeURIComponent(this.selectedTicket.id);
+      if (this.selectedEpic) return '#/e/' + encodeURIComponent(this.selectedEpic.id);
       return '#/';
     },
 
@@ -549,11 +560,17 @@ export function kontoraDetail() {
     // Every branch is a no-op when the state already matches, so the hashchange
     // fired by our own writeHash costs nothing.
     async applyRoute() {
-      var r = this.parseHash(location.hash);
-      var navigation = ++this._navigationSeq;
+      return this.navigateDestination(this.parseHash(location.hash));
+    },
+
+    async navigateDestination(r, navigation = ++this._navigationSeq) {
       var mine = () => navigation === this._navigationSeq;
       this._applyingRoute = navigation;
       try {
+        if (this.currentView !== r.view) {
+          if (await this.gotoView(r.view, navigation, r) === false || !mine()) return false;
+        }
+        if (this.sheet && (r.ticketId || r.epicId)) this.closeSheet(false);
         // The two overlays are exclusive, so the epic branch closes whichever
         // one the hash does not name.
         if (r.epicId) {
@@ -568,10 +585,8 @@ export function kontoraDetail() {
           var identity = { source: r.source, id: r.ticketId };
           var alreadySelected = this.sameTicket(this.selectedTicket, identity);
           var t = this.allBoardTickets().find(x => this.sameTicket(x, identity));
-          // The detail rail covers whatever view is underneath, and selectTicket
-          // does not touch currentView, so the switch below still has to run:
-          // opening a ticket from Stats would otherwise leave its poll armed and
-          // put the user back on Stats when the rail closes.
+          // Board activation precedes selection so output mounts in a visible
+          // container and Stats polling stops before the ticket opens.
           if (!t && this.selectedTicket) {
             // The hash names a ticket this board does not have. Fall back to the
             // board rather than rendering an empty shell.
@@ -582,11 +597,12 @@ export function kontoraDetail() {
             else await this.selectTicket(t, navigation);
             if (!mine()) return;
           }
-        } else if (this.selectedTicket) {
+        } else if (this.selectedTicket && r.view !== 'archive') {
           this.closeDetail(false);
         }
-        if (this.currentView !== r.view) await this.gotoView(r.view, navigation);
-        if (!mine()) return;
+        if (!mine()) return false;
+        if (r.view === 'board' && this.terminalWanted()) this.openTerminal();
+        return true;
       } finally {
         if (this._applyingRoute === navigation) this._applyingRoute = null;
         if (mine()) this.writeHash();
@@ -878,13 +894,14 @@ export function kontoraDetail() {
     },
 
     async startEditing() {
-      if (!this.editorCanEdit()) return;
+      if (!this.editorCanEdit() || !this.ticketDescriptionLoaded()) return;
       this.editingBody = false;
       var pipeline = this.selectedTicket.pipeline || '';
       this._editAgentFollowsProject = !this.selectedTicket.agent_override;
       var agent = this.selectedTicket.agent_override ? (this.selectedTicket.agent || '') : '';
       var generation = ++this._editorGeneration;
       var id = this.ticketKey(this.selectedTicket);
+      this._editorTicketKey = id;
       var state = this._loadEditorDraft(this.selectedTicket, {
         description: this.descriptionText(this.selectedTicket),
         pipeline: pipeline,
@@ -964,6 +981,7 @@ export function kontoraDetail() {
       if (!this.selectedTicket || !this.editing) return true;
       if (!this.ticketCanEdit(this.selectedTicket)) return false;
       var id = this.ticketKey(this.selectedTicket);
+      if (id !== this._editorTicketKey) return false;
       var generation = this._editorGeneration;
       this.editSubmitting = true;
       this.editSaved = false;
@@ -975,6 +993,11 @@ export function kontoraDetail() {
         this.editSaved = ok && this._sameEditorDraft(this._ordinaryEditorDraft(), submitted);
       }
       return ok;
+    },
+
+    ticketDescriptionLoaded(ticket = this.selectedTicket) {
+      // Board and SSE projections omit both fields, including for empty descriptions.
+      return typeof ticket?.description === 'string' || typeof ticket?.body === 'string';
     },
 
     descriptionText(ticket) {
@@ -1240,6 +1263,7 @@ export function kontoraDetail() {
     clickStage(stage) {
       if (!this.selectedTicket) return;
       if (stage === this.selectedTicket.stage && this.selectedTicket.status === 'in_progress') {
+        this._invalidateStageLogs();
         this.logViewContent = null;
         this.logViewStage = null;
         this.detailTab = 'terminal';
@@ -1301,8 +1325,19 @@ export function kontoraDetail() {
       }
     },
 
+    _stageLogSeq: 0,
+
+    _invalidateStageLogs() {
+      ++this._stageLogSeq;
+      this.logViewLoading = false;
+    },
+
     async fetchStageLogs(ticketId, stage) {
-      if (this.isSecondary(this.selectedTicket)) return;
+      if (!this.selectedTicket || this.selectedTicket.id !== ticketId || this.isSecondary(this.selectedTicket) || this.currentView !== 'board') return;
+      const key = this.ticketKey(this.selectedTicket);
+      const sequence = ++this._stageLogSeq;
+      const mine = () => sequence === this._stageLogSeq && !this._appDestroyed &&
+        this.currentView === 'board' && this.ticketKey(this.selectedTicket) === key;
       this._invalidateRawLog();
       this.logViewStage = stage;
       this.logViewLoading = true;
@@ -1313,18 +1348,21 @@ export function kontoraDetail() {
         var res = await fetch(url);
         if (!res.ok) {
           var errData = await res.json().catch(function() { return {}; });
+          if (!mine()) return;
           this.error = errData.error || 'Failed to load stage logs';
           this.logViewContent = null;
           this.logViewLoading = false;
           return;
         }
         var data = await res.json();
+        if (!mine()) return;
         this.logViewContent = data.content || '';
       } catch (e) {
+        if (!mine()) return;
         this.error = 'Failed to load stage logs';
         this.logViewContent = null;
       }
-      this.logViewLoading = false;
+      if (mine()) this.logViewLoading = false;
     },
 
     // Classes for one stepper pill in the stages row. Completed stages get the

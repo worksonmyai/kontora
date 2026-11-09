@@ -34,10 +34,9 @@ export function kontoraTickets() {
     },
 
     async init() {
-      window.addEventListener('resize', () => {
-        this.isMobile = window.innerWidth < 768;
-      });
-      window.addEventListener('hashchange', () => { this.applyRoute(); });
+      this.initMobile();
+      this._routeListener = () => { this.applyRoute(); };
+      window.addEventListener('hashchange', this._routeListener);
       // Advance the reactive clock (detail panel duration, mobile cards) and
       // patch the imperatively rendered card timers in place every 30s.
       this._nowTimer = setInterval(() => { this.now = Date.now(); this._updateCardTimers(); }, 30000);
@@ -230,7 +229,7 @@ export function kontoraTickets() {
     // reads the session tab; mobile has its own tab state and must not depend
     // on a desktop-only value.
     terminalWanted() {
-      return this.outputSubject()?.status === 'in_progress' && this.outputTab() === 'session';
+      return this.currentView === 'board' && this.outputSubject()?.status === 'in_progress' && this.outputTab() === 'session';
     },
 
     showTerminalTab() {

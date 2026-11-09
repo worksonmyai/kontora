@@ -48,7 +48,7 @@ const AGENT_PICKER_CONTROL = `
              @keydown.arrow-up.prevent="agentPickerMove(pickerHost, -1)"
              @keydown.enter.prevent="agentPickerPickActive(pickerHost)"
              @keydown.escape.prevent.stop="closeAgentPicker(true)"
-             @keydown.tab="agentPickerTab(pickerHost)"
+             @keydown.tab="agentPickerTab(pickerHost, $event)"
              role="combobox" aria-autocomplete="list" aria-expanded="true"
              :aria-controls="agentPickerListID(pickerHost)"
              :aria-activedescendant="agentPickerActiveID(pickerHost)"
@@ -64,7 +64,7 @@ const AGENT_PICKER_CONTROL = `
          @keydown.arrow-up.prevent="agentPickerMove(pickerHost, -1)"
          @keydown.enter.prevent="agentPickerPickActive(pickerHost)"
          @keydown.escape.prevent.stop="closeAgentPicker(true)"
-         @keydown.tab="agentPickerTab(pickerHost)"
+         @keydown.tab="agentPickerTab(pickerHost, $event)"
          class="agent-picker-scroll overflow-y-auto pt-[5px]">
       <template x-for="group in agentPickerGroups(pickerHost)" :key="group.name">
         <div role="presentation">
@@ -126,18 +126,31 @@ export function kontoraAgentPicker() {
     _agentPickerOpenHost: null,
     _agentPickerEventsBound: false,
     _agentPickerResizeFrame: null,
+    _agentPickerFocusFrame: null,
+    _agentPickerTabTimer: null,
+    _agentPickerCleanup: null,
+    _agentPickerOpenSequence: 0,
+    _agentPickerDestroyed: false,
     _agentPickerPopoverSupported: typeof HTMLElement !== 'undefined' && typeof HTMLElement.prototype.showPopover === 'function',
 
     setupAgentPicker() {
-      if (this._agentPickerEventsBound) return;
+      if (this._agentPickerEventsBound || this._appDestroyed) return;
       this._agentPickerEventsBound = true;
+      this._agentPickerDestroyed = false;
+      const removers = [];
+      const listen = (target, name, handler, options) => {
+        if (!target?.addEventListener) return;
+        target.addEventListener(name, handler, options);
+        removers.push(() => target.removeEventListener(name, handler, options));
+      };
+      this._agentPickerCleanup = () => removers.forEach(remove => remove());
       const self = this;
-      document.addEventListener('mousedown', function(e) {
+      listen(document, 'mousedown', function(e) {
         if (!self._agentPickerOpenHost) return;
         if (e.target.closest && e.target.closest('[data-agent-picker-control]')) return;
         self.closeAgentPicker(false);
       });
-      document.addEventListener('scroll', function(e) {
+      listen(document, 'scroll', function(e) {
         if (!self._agentPickerOpenHost) return;
         if (e.target.closest && e.target.closest('[data-agent-picker-panel]')) return;
         self.closeAgentPicker(false);
@@ -146,14 +159,30 @@ export function kontoraAgentPicker() {
         if (!self._agentPickerOpenHost || self._agentPickerResizeFrame !== null) return;
         self._agentPickerResizeFrame = requestAnimationFrame(function() {
           self._agentPickerResizeFrame = null;
-          self.positionAgentPicker();
+          if (!self._agentPickerDestroyed && !self._appDestroyed) self.positionAgentPicker();
         });
       };
-      window.addEventListener('resize', reposition);
-      if (window.visualViewport) {
-        window.visualViewport.addEventListener('resize', reposition);
-        window.visualViewport.addEventListener('scroll', reposition);
-      }
+      listen(window, 'resize', reposition);
+      // Capture the same viewport instance for removal, not a later getter.
+      const viewport = window.visualViewport;
+      listen(viewport, 'resize', reposition);
+      listen(viewport, 'scroll', reposition);
+    },
+
+    destroyAgentPicker() {
+      this._agentPickerDestroyed = true;
+      this.closeAgentPicker(false);
+      this._agentPickerCleanup?.();
+      this._agentPickerCleanup = null;
+      this._agentPickerEventsBound = false;
+    },
+
+    agentPickerOwnsTarget(target) {
+      const host = this._agentPickerOpenHost;
+      if (!host || !target) return false;
+      const panel = document.getElementById(this.agentPickerPanelID(host));
+      const trigger = document.getElementById(this.agentPickerTriggerID(host));
+      return !!panel?.contains(target) || !!trigger?.contains(target);
     },
 
     agentPickerState(host) {
@@ -388,8 +417,9 @@ export function kontoraAgentPicker() {
     },
 
     async openAgentPicker(host) {
-      if (!this._agentPickerPopoverSupported) return;
+      if (!this._agentPickerPopoverSupported || this._agentPickerDestroyed || this._appDestroyed) return;
       this.closeAgentPicker(false);
+      const sequence = this._agentPickerOpenSequence;
       const state = this.agentPickerState(host);
       state.query = '';
       const value = this.agentPickerValue(host);
@@ -399,6 +429,7 @@ export function kontoraAgentPicker() {
       state.open = true;
       this._agentPickerOpenHost = host;
       await this.$nextTick();
+      if (sequence !== this._agentPickerOpenSequence || !this.agentPickerIsOpen(host) || this._agentPickerDestroyed || this._appDestroyed) return;
       const panel = document.getElementById(this.agentPickerPanelID(host));
       if (!panel || typeof panel.showPopover !== 'function') {
         state.open = false;
@@ -416,10 +447,19 @@ export function kontoraAgentPicker() {
       }
       this.positionAgentPicker();
       this.focusAgentPicker(host);
-      this.$nextTick(() => this.scrollAgentPickerActive(host));
+      this.$nextTick(() => {
+        if (sequence === this._agentPickerOpenSequence && this.agentPickerIsOpen(host)) this.scrollAgentPickerActive(host);
+      });
     },
 
     closeAgentPicker(restoreFocus) {
+      ++this._agentPickerOpenSequence;
+      if (this._agentPickerResizeFrame !== null) cancelAnimationFrame(this._agentPickerResizeFrame);
+      if (this._agentPickerFocusFrame !== null) cancelAnimationFrame(this._agentPickerFocusFrame);
+      if (this._agentPickerTabTimer !== null) clearTimeout(this._agentPickerTabTimer);
+      this._agentPickerResizeFrame = null;
+      this._agentPickerFocusFrame = null;
+      this._agentPickerTabTimer = null;
       const host = this._agentPickerOpenHost;
       if (!host) return;
       const state = this.agentPickerState(host);
@@ -435,7 +475,8 @@ export function kontoraAgentPicker() {
       if (filter?.blur) filter.blur();
       if (list?.blur) list.blur();
       this._agentPickerOpenHost = null;
-      if (restoreFocus) document.getElementById(this.agentPickerTriggerID(host))?.focus();
+      const trigger = document.getElementById(this.agentPickerTriggerID(host));
+      if (restoreFocus && !this._agentPickerDestroyed && !this._appDestroyed && trigger && trigger.isConnected !== false && !trigger.closest?.('[inert]')) trigger.focus({ preventScroll: true });
     },
 
     closeAgentPickerHost(host) {
@@ -444,24 +485,35 @@ export function kontoraAgentPicker() {
 
     focusAgentPicker(host) {
       const self = this;
+      const sequence = this._agentPickerOpenSequence;
+      if (this._agentPickerFocusFrame !== null) cancelAnimationFrame(this._agentPickerFocusFrame);
       let frames = 0;
       const focus = function() {
-        if (!self.agentPickerIsOpen(host)) return;
+        self._agentPickerFocusFrame = null;
+        if (sequence !== self._agentPickerOpenSequence || !self.agentPickerIsOpen(host) || self._agentPickerDestroyed || self._appDestroyed) return;
         const id = self.agentPickerHasFilter() ? self.agentPickerFilterID(host) : self.agentPickerListID(host);
         const target = document.getElementById(id);
         if (target && target.offsetParent) {
-          target.focus();
+          target.focus({ preventScroll: true });
           return;
         }
         frames += 1;
-        if (frames <= AGENT_PICKER_FOCUS_FRAMES) requestAnimationFrame(focus);
+        if (frames <= AGENT_PICKER_FOCUS_FRAMES) self._agentPickerFocusFrame = requestAnimationFrame(focus);
       };
       focus();
     },
 
-    agentPickerTab(host) {
-      setTimeout(() => {
-        if (this._agentPickerOpenHost === host) this.closeAgentPicker(false);
+    agentPickerTab(host, event) {
+      if (event && this.isMobile && this.sheet) {
+        const trigger = document.getElementById(this.agentPickerTriggerID(host));
+        this.closeAgentPicker(false);
+        if (this.mobileSheetTab(event, trigger)) return;
+      }
+      const sequence = this._agentPickerOpenSequence;
+      if (this._agentPickerTabTimer !== null) clearTimeout(this._agentPickerTabTimer);
+      this._agentPickerTabTimer = setTimeout(() => {
+        this._agentPickerTabTimer = null;
+        if (sequence === this._agentPickerOpenSequence && this._agentPickerOpenHost === host) this.closeAgentPicker(false);
       }, 0);
     },
 
@@ -469,7 +521,9 @@ export function kontoraAgentPicker() {
       const state = this.agentPickerState(host);
       state.query = query;
       state.active = 0;
+      const sequence = this._agentPickerOpenSequence;
       this.$nextTick(() => {
+        if (sequence !== this._agentPickerOpenSequence) return;
         const list = document.getElementById(this.agentPickerListID(host));
         if (list) list.scrollTop = 0;
         this.positionAgentPicker();
@@ -481,7 +535,10 @@ export function kontoraAgentPicker() {
       if (!rows.length) return;
       const state = this.agentPickerState(host);
       state.active = ((this.agentPickerActiveIndex(host) + delta) % rows.length + rows.length) % rows.length;
-      this.$nextTick(() => this.scrollAgentPickerActive(host));
+      const sequence = this._agentPickerOpenSequence;
+      this.$nextTick(() => {
+        if (sequence === this._agentPickerOpenSequence) this.scrollAgentPickerActive(host);
+      });
     },
 
     agentPickerHover(host, key) {
@@ -529,9 +586,12 @@ export function kontoraAgentPicker() {
 
     agentPickerViewport() {
       const viewport = window.visualViewport;
-      return viewport
-        ? { left: viewport.offsetLeft, top: viewport.offsetTop, width: viewport.width, height: viewport.height }
-        : { left: 0, top: 0, width: window.innerWidth, height: window.innerHeight };
+      const positive = (value, fallback) => Number.isFinite(value) && value > 0 ? value : fallback;
+      const offset = value => Number.isFinite(value) && value >= 0 ? value : 0;
+      return {
+        left: offset(viewport?.offsetLeft), top: offset(viewport?.offsetTop),
+        width: positive(viewport?.width, window.innerWidth), height: positive(viewport?.height, window.innerHeight),
+      };
     },
 
     agentPickerPlacement(rect, panelSize, viewport, gap = 6, gutter = 8) {

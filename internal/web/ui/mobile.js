@@ -3,11 +3,247 @@
 // bottom sheets for actions and the new-ticket form. It reuses the desktop
 // board's ticket data and operations — only the layout and a few view-state
 // fields (activeColumn, detailTab, sheet) are its own.
-import { newCreateForm } from './create.js';
 import { isoWithOffset, localScheduleText, parseScheduleInput, pickerToScheduleText, schedulePresets } from './format.js';
 
 export function kontoraMobile() {
+  // Keep DOM nodes and listener handles out of Alpine's reactive state.
+  let lifecycle = null;
+  let sheetFocus = null;
+  let descriptionSequence = 0;
+
   return {
+    initMobile() {
+      if (lifecycle || this._appDestroyed) return;
+      const owner = lifecycle = { listeners: [], watches: [], frame: null, styles: [] };
+      const listen = (target, name, handler, options) => {
+        if (!target?.addEventListener) return;
+        target.addEventListener(name, handler, options);
+        owner.listeners.push(() => target.removeEventListener(name, handler, options));
+      };
+      const update = () => {
+        if (lifecycle !== owner || this._appDestroyed) return;
+        // Use the layout viewport, never the keyboard/pinch-zoom viewport, for
+        // the board breakpoint.
+        this.isMobile = window.innerWidth < 768;
+        if (owner.frame !== null) return;
+        owner.frame = requestAnimationFrame(() => {
+          owner.frame = null;
+          if (lifecycle === owner && !this._appDestroyed) this._updateMobileViewport();
+        });
+      };
+      listen(window, 'resize', update);
+      const viewport = window.visualViewport;
+      listen(viewport, 'resize', update);
+      listen(viewport, 'scroll', update);
+      listen(document, 'keydown', e => this._mobileSheetKeydown(e), true);
+      listen(document, 'focusin', e => this._mobileSheetFocusin(e), true);
+      if (this.$watch) {
+        const unwatch = this.$watch('sheet', () => {
+          if (lifecycle === owner && !this._appDestroyed) this._syncMobileSheet();
+        });
+        if (typeof unwatch === 'function') owner.watches.push(unwatch);
+      }
+      this.isMobile = window.innerWidth < 768;
+      this._updateMobileViewport();
+      this._syncMobileSheet();
+    },
+
+    destroyMobile() {
+      const owner = lifecycle;
+      lifecycle = null;
+      ++descriptionSequence;
+      this.closeAgentPicker(false);
+      this.flushEditSave();
+      this.editingBody = false;
+      this.closeSheet(false);
+      if (!owner) return;
+      owner.listeners.forEach(remove => remove());
+      owner.watches.forEach(remove => remove());
+      if (owner.frame !== null) cancelAnimationFrame(owner.frame);
+      owner.styles.forEach(({ name, value, priority }) => {
+        const style = document.documentElement.style;
+        if (value) style.setProperty(name, value, priority);
+        else style.removeProperty(name);
+      });
+    },
+
+    mobileViewportGeometry() {
+      const viewport = window.visualViewport;
+      const positive = (value, fallback) => Number.isFinite(value) && value > 0 ? value : fallback;
+      const offset = value => Number.isFinite(value) && value >= 0 ? value : 0;
+      const top = offset(viewport?.offsetTop);
+      const height = positive(viewport?.height, window.innerHeight);
+      return {
+        top, left: offset(viewport?.offsetLeft),
+        width: positive(viewport?.width, window.innerWidth), height,
+        bottom: Math.max(0, window.innerHeight - top - height),
+      };
+    },
+
+    _updateMobileViewport() {
+      if (!lifecycle) return;
+      const geometry = this.mobileViewportGeometry();
+      const style = document.documentElement.style;
+      Object.entries(geometry).forEach(([key, value]) => {
+        const name = '--mobile-vv-' + key;
+        if (!lifecycle.styles.some(saved => saved.name === name)) {
+          lifecycle.styles.push({ name, value: style.getPropertyValue(name), priority: style.getPropertyPriority(name) });
+        }
+        style.setProperty(name, value + 'px');
+      });
+    },
+
+    mobileBreakpointChanged() {
+      ++descriptionSequence;
+      this.flushEditSave();
+      this.editingBody = false;
+      this.closeSheet(false);
+    },
+
+    // Navigation guards must run before this cleanup.
+    mobileBeforeNavigate(view) {
+      if (view === this.currentView) return;
+      ++descriptionSequence;
+      if (this.isMobile) {
+        this.flushEditSave();
+        this.editingBody = false;
+      }
+      this.closeSheet(false);
+    },
+
+    mobileCanEditDescription() {
+      return this.isMobile && this.currentView === 'board' && this.detailTab === 'ticket' && !this.detailLoading &&
+        this.ticketDescriptionLoaded() && !!this.selectedTicket &&
+        !this.isSecondary(this.selectedTicket) && this.editorCanEdit(this.selectedTicket) && !this.editorClaimLocked();
+    },
+
+    async mobileBeginDescriptionEdit() {
+      if (!this.mobileCanEditDescription()) return false;
+      const sequence = ++descriptionSequence;
+      const key = this.ticketKey(this.selectedTicket);
+      const detailSequence = this._ticketDetailSeq;
+      // Reinitializing an active editor would replace an unsaved draft.
+      const starting = this.editing ? null : this.startEditing();
+      const generation = this._editorGeneration;
+      if (starting) await starting;
+      if (sequence !== descriptionSequence || this._appDestroyed || detailSequence !== this._ticketDetailSeq ||
+          generation !== this._editorGeneration || this.ticketKey(this.selectedTicket) !== key ||
+          !this.editing || !this.mobileCanEditDescription()) return false;
+      this.editingBody = true;
+      await this.$nextTick();
+      if (sequence !== descriptionSequence || this._appDestroyed || !this.mobileCanEditDescription() || !this.editingBody ||
+          detailSequence !== this._ticketDetailSeq || this.ticketKey(this.selectedTicket) !== key || generation !== this._editorGeneration) return false;
+      this.$refs.mobileDescriptionEditor?.focus({ preventScroll: true });
+      return true;
+    },
+
+    mobileDescriptionInput(value) {
+      if (!this.editing || !this.mobileCanEditDescription()) return;
+      // Explicit assignment works with or without x-model listener ordering.
+      this.editForm.body = value;
+      this.debounceSaveEdit();
+    },
+
+    mobileFinishDescriptionEdit() {
+      ++descriptionSequence;
+      const saved = this.flushEditSave();
+      this.editingBody = false;
+      return saved;
+    },
+
+    // Inert only siblings of the sheet. Native picker popovers stay in its DOM subtree.
+    _syncMobileSheet() {
+      if (!lifecycle || this._appDestroyed) return;
+      const sheet = this.isMobile ? this.sheet : null;
+      if (sheetFocus?.sheet === sheet) return;
+      const returnFocus = sheetFocus?.returnFocus || document.activeElement;
+      this._releaseMobileSheetFocus(!sheet);
+      if (!sheet) return;
+      const owner = lifecycle;
+      const focus = sheetFocus = { sheet, returnFocus, dialog: null, backgrounds: [] };
+      this.$nextTick(() => {
+        if (lifecycle !== owner || sheetFocus !== focus || this.sheet !== sheet || !this.isMobile || this._appDestroyed) return;
+        const dialog = document.querySelector('[data-mobile-sheet-dialog]') || document.querySelector('.sheet-panel');
+        if (!dialog) return;
+        focus.dialog = dialog;
+        document.querySelectorAll('[data-mobile-sheet-background]').forEach(el => {
+          if (el.contains(dialog) || dialog.contains(el)) return;
+          focus.backgrounds.push({ el, inert: el.hasAttribute('inert'), hidden: el.getAttribute('aria-hidden') });
+          el.setAttribute('inert', '');
+          el.setAttribute('aria-hidden', 'true');
+        });
+        const initial = this._mobileSheetFocusable().find(el => el.hasAttribute('data-mobile-sheet-initial-focus'));
+        (initial || this._mobileSheetFocusable()[0] || dialog).focus({ preventScroll: true });
+      });
+    },
+
+    _releaseMobileSheetFocus(restore) {
+      const focus = sheetFocus;
+      sheetFocus = null;
+      if (!focus) return;
+      focus.backgrounds.forEach(({ el, inert, hidden }) => {
+        if (!inert) el.removeAttribute('inert');
+        if (hidden === null) el.removeAttribute('aria-hidden');
+        else el.setAttribute('aria-hidden', hidden);
+      });
+      if (!restore) return;
+      const target = this._mobileFocusAvailable(focus.returnFocus) ? focus.returnFocus
+        : document.querySelector('[data-mobile-focus-fallback]');
+      if (this._mobileFocusAvailable(target)) target.focus({ preventScroll: true });
+    },
+
+    _mobileFocusAvailable(el) {
+      return !!el?.isConnected && typeof el.focus === 'function' && !el.closest('[inert], [hidden], [aria-hidden="true"]') &&
+        !el.matches(':disabled') && el.getClientRects().length > 0 && getComputedStyle(el).visibility !== 'hidden';
+    },
+
+    _mobileSheetFocusable() {
+      const dialog = sheetFocus?.dialog;
+      if (!dialog) return [];
+      return Array.from(dialog.querySelectorAll('a[href], button, input, select, textarea, [tabindex], [contenteditable="true"]'))
+        .filter(el => el.tabIndex >= 0 && this._mobileFocusAvailable(el) && !el.closest('[data-agent-picker-panel]'));
+    },
+
+    // The picker calls this with its trigger on Tab, so closing the top-layer
+    // panel advances within the sheet rather than escaping to the page behind.
+    mobileSheetTab(event, from) {
+      const dialog = sheetFocus?.dialog;
+      if (!dialog || !this.sheet || !this.isMobile) return false;
+      const items = this._mobileSheetFocusable();
+      const active = from || document.activeElement;
+      const index = items.indexOf(active);
+      const next = index < 0 ? (event.shiftKey ? items.length - 1 : 0) : index + (event.shiftKey ? -1 : 1);
+      if (from || index < 0 || next < 0 || next >= items.length) {
+        event.preventDefault();
+        const target = items.length ? items[(next + items.length) % items.length] : dialog;
+        target.focus();
+      }
+      return true;
+    },
+
+    _mobileSheetKeydown(event) {
+      if (!sheetFocus?.dialog || !this.sheet || !this.isMobile || event.defaultPrevented) return;
+      if (this._agentPickerOpenHost) {
+        if (event.key !== 'Escape') return;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        this.closeAgentPicker(true);
+        return;
+      }
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        this.closeSheet();
+      } else if (event.key === 'Tab') this.mobileSheetTab(event);
+    },
+
+    _mobileSheetFocusin(event) {
+      const dialog = sheetFocus?.dialog;
+      if (!dialog || !this.sheet || !this.isMobile || dialog.contains(event.target)) return;
+      if (this.agentPickerOwnsTarget(event.target)) return;
+      (this._mobileSheetFocusable()[0] || dialog).focus({ preventScroll: true });
+    },
+
     // The status column currently shown on the board, clamped to a valid index.
     mobileColumn() {
       var cols = this.columns;
@@ -53,6 +289,10 @@ export function kontoraMobile() {
     },
 
     async openMobileTicket(t, navigation = ++this._navigationSeq) {
+      if (this.currentView !== 'board') {
+        if (await this.gotoView('board', navigation, { view: 'board', ticketId: t.id, source: t.source }) === false) return;
+        if (navigation !== this._navigationSeq) return;
+      }
       // Pick the detail tab from the card's status before selectTicket() runs,
       // so the right pane is already visible when the live terminal attaches.
       if (t.status === 'in_progress' && this.mobileHasRun(t)) this.detailTab = 'terminal';
@@ -76,7 +316,11 @@ export function kontoraMobile() {
 
     mobileSwitchTab(tab) {
       if (!this.selectedTicket || (this.isSecondary(this.selectedTicket) && tab !== 'ticket')) return;
-      if (tab !== this.detailTab) this._invalidateRawLog();
+      if (tab !== 'ticket' && this.editing) this.mobileFinishDescriptionEdit();
+      if (tab !== this.detailTab) {
+        this._invalidateStageLogs();
+        this._invalidateRawLog();
+      }
       this._activityLoadSeq++;
       this.activityLoading = false;
       this._stopActivityPoll();
@@ -123,6 +367,7 @@ export function kontoraMobile() {
 
     mobileOpenCostStage(seg) {
       if (!seg || seg.state !== 'done' || !seg.runs || !this.selectedTicket) return;
+      this.mobileFinishDescriptionEdit();
       this.detailTab = 'logs';
       if (this.terminalOpen) this.closeTerminal();
       this.fetchStageLogs(this.selectedTicket.id, seg.name);
@@ -187,32 +432,43 @@ export function kontoraMobile() {
     },
 
     openActionsSheet(t) {
-      if (!t) return;
+      if (!t || this._appDestroyed) return;
+      this.closeAgentPicker(false);
       this.sheet = { type: 'actions', ticket: t };
+      this._syncMobileSheet();
     },
     async openNewSheet() {
+      if (this._appDestroyed) return;
+      const owner = lifecycle;
       this.closeAgentPicker(false);
-      this.createForm = newCreateForm();
-      this.createTouched = { pipeline: false, agent: false };
-      this.error = null;
+      this.resetCreateForm();
       this.sheet = { type: 'new' };
-      if (!this.configCache) {
-        try {
-          var res = await fetch('/api/config');
-          if (res.ok) this.configCache = await res.json();
-        } catch (e) { /* form still works with empty pipeline/agent lists */ }
-      }
-      this.onCreatePathChange();
+      const sheet = this.sheet;
+      const form = this.createForm;
+      this._syncMobileSheet();
+      await this.loadCreateConfig();
+      return lifecycle === owner && !this._appDestroyed && this.sheet === sheet && this.createForm === form;
     },
-    closeSheet() {
+    closeSheet(restoreFocus = true) {
       this.closeAgentPicker(false);
+      if (this.sheet?.type === 'new') this.invalidateCreateForm();
       this.sheet = null;
+      this._releaseMobileSheetFocus(restoreFocus);
+    },
+
+    onMobileCreateSchedulePicked(value) {
+      this.createForm.scheduled_at = value;
+      this.setCreateScheduleMode(value ? 'later' : 'now');
     },
 
     async submitCreateTicketMobile() {
-      this.error = null;
-      await this.submitCreateTicket();
-      if (!this.error) this.closeSheet();
+      const sheet = this.sheet;
+      if (sheet?.type !== 'new' || this.createSubmitting) return false;
+      const form = this.createForm;
+      const owner = lifecycle;
+      const ok = await this.submitCreateTicket();
+      if (ok === true && lifecycle === owner && !this._appDestroyed && this.sheet === sheet && this.createForm === form) this.closeSheet();
+      return ok === true;
     },
 
     // Action rows for the actions sheet, status by status. Each row closes the
@@ -220,12 +476,15 @@ export function kontoraMobile() {
     // The phone's schedule editor. It is a sheet rather than an inline row: the
     // detail overlay has no spare width for a date field and its buttons.
     openScheduleSheet(t) {
+      if (this._appDestroyed || !this.canSchedule(t)) return;
+      this.closeAgentPicker(false);
       this.openScheduleEditor(t);
       // The draft is the text the one field holds, in the grammar the CLI and
       // the desktop form take, not the datetime-local value openScheduleEditor
       // wrote for the rail.
       this.scheduleDraft = t && t.scheduled_at ? localScheduleText(new Date(t.scheduled_at)) : '';
       this.sheet = { type: 'schedule', ticket: t };
+      this._syncMobileSheet();
     },
 
     // The three presets the sheet offers, the first three of the shared table.
@@ -278,15 +537,19 @@ export function kontoraMobile() {
         this.scheduleError = parsed.error || 'Enter a time or a duration.';
         return;
       }
+      if (this.scheduleSubmitting) return;
+      const sheet = this.sheet;
       await this._postSchedule(t, { scheduled_at: parsed.iso });
-      if (!this.scheduleError) this.closeSheet();
+      if (!this._appDestroyed && this.sheet === sheet && !this.scheduleError) this.closeSheet();
     },
 
     // Clearing from inside the sheet, where the error line is on screen and the
     // toast fallback the actions sheet needs is not wanted.
     async clearScheduleSheet(t) {
+      if (this.scheduleSubmitting) return;
+      const sheet = this.sheet;
       await this.clearTicketSchedule(t);
-      if (!this.scheduleError) this.closeSheet();
+      if (!this._appDestroyed && this.sheet === sheet && !this.scheduleError) this.closeSheet();
     },
 
     // "run now instead": the daemon drops the timestamp in the same save that

@@ -67,6 +67,33 @@ jobs:
       - name: Build
         run: go build ./cmd/kontora
 
+  browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6
+        with:
+          go-version-file: go.mod
+
+      # Node is test-only. Ordinary Go tests/build jobs do not install npm deps.
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '26'
+
+      - name: Install exact test-only Playwright and browsers
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/kontora-playwright
+        run: |
+          npm ci --prefix internal/web/testdata --ignore-scripts --no-audit --no-fund
+          node internal/web/testdata/node_modules/playwright/cli.js install --with-deps chromium webkit
+
+      - name: Test real embedded UI with offline browser fixtures
+        run: make test-browser BROWSER_CACHE="$RUNNER_TEMP/kontora-playwright"
+
   pi-sdk:
     runs-on: ubuntu-latest
     container: node:26

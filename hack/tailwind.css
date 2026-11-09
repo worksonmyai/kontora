@@ -121,3 +121,160 @@
   #assistant-pane *, #assistant-sheet *, #assistant-rail * { animation:none !important; transition:none !important; }
   .companion-actions button:active, .companion-tabs button:active { transform:none; }
 }
+
+/* A single intrinsic-height shell. Routed pages share this host at every
+   width; x-if only replaces the board/detail layer at the 768px breakpoint. */
+.app-shell { display:flex; flex-direction:column; height:100vh; height:100dvh; min-height:0; }
+.app-main { display:flex; flex:1; min-width:0; min-height:0; position:relative; overflow:hidden; }
+.desktop-header { min-height:54px; padding-top:10px; padding-bottom:10px; flex-wrap:wrap; row-gap:10px; }
+.desktop-header-actions { flex-wrap:wrap; min-width:0; max-width:100%; }
+.desktop-header-actions > div { flex-wrap:wrap; min-width:0; }
+.desktop-header button, .desktop-header select { max-width:100%; }
+.settings-mobile-section { display:none; }
+.settings-mobile-section input, .settings-mobile-section button { min-height:44px; }
+.stats-filters, .archive-toolbar { flex-wrap:wrap; min-height:30px; height:auto; }
+.stats-filters > label { max-width:100%; min-width:0; }
+.stats-filters > label > span, .archive-toolbar > button > span { overflow-wrap:anywhere; }
+.stats-activity { flex-wrap:wrap; }
+.stats-activity > div:first-child { max-width:100%; overflow-x:auto; }
+.stats-activity > div:last-child { min-width:min(240px,100%); }
+.archive-table-scroll { overscroll-behavior:contain; }
+.archive-detail-header { max-height:50%; min-width:0; overflow-y:auto; }
+.archive-detail-title { max-height:35%; min-width:0; overflow-y:auto; }
+.archive-detail-title h2 { overflow-wrap:anywhere; }
+#new-view { container-type:inline-size; }
+@container (max-width:900px) { .new-preview { display:none; } }
+
+/* x-show must be the only writer of inline display. No !important display
+   rules here: hiding the terminal, action bar and thread must actually hide. */
+.mobile-board-layer { display:flex; flex-direction:column; flex:1; min-width:0; min-height:0; background:rgb(var(--surface-950)); }
+.mobile-chrome { flex:none; min-width:0; background:rgb(var(--surface-950)); }
+.mobile-chrome-inner { border-bottom:1px solid rgb(var(--surface-700) / .5); padding-top:max(6px,env(safe-area-inset-top)); }
+.mobile-app-bar { display:grid; grid-template-columns:44px minmax(0,1fr) repeat(3,44px); align-items:center; gap:6px; padding:6px max(10px,env(safe-area-inset-right)) 10px max(10px,env(safe-area-inset-left)); }
+.mobile-wordmark { min-width:0; overflow:hidden; }
+.mobile-wordmark > span { display:block; font-size:15px !important; letter-spacing:0 !important; }
+.mobile-icon-button { display:flex; align-items:center; justify-content:center; width:44px; height:44px; color:rgb(var(--tx-3)); border:1px solid rgb(var(--edge-input)); border-radius:8px; }
+.mobile-app-bar > button { width:44px !important; height:44px !important; padding:0 !important; margin:0; justify-content:center; }
+.mobile-new-label { display:none; }
+.mobile-running-pill { grid-row:2; grid-column:1 / -1; justify-self:start; }
+.mobile-status-tabs { display:flex; gap:4px; overflow-x:auto; padding:0 max(12px,env(safe-area-inset-right)) 0 max(12px,env(safe-area-inset-left)); overscroll-behavior-x:contain; }
+.mobile-status-tabs button { min-height:44px; }
+.mobile-detail, .mobile-epic {
+  position:fixed; top:var(--mobile-vv-top,0px); left:var(--mobile-vv-left,0px);
+  width:var(--mobile-vv-width,100%); height:var(--mobile-vv-height,100dvh);
+  right:auto; bottom:auto; z-index:40; display:flex; flex-direction:column; min-height:0; overflow:hidden; background:rgb(var(--surface-950));
+}
+.mobile-detail-header { flex:none; max-height:55%; overflow-y:auto; padding-top:env(safe-area-inset-top); border-bottom:1px solid rgb(var(--surface-700) / .4); background:rgb(var(--surface-deep)); }
+.mobile-epic { padding-bottom:env(safe-area-inset-bottom); }
+.mobile-epic > header { max-height:45%; overflow-y:auto; padding-top:max(16px,env(safe-area-inset-top)); }
+.mobile-terminal-pane { flex:1; min-height:0; display:flex; flex-direction:column; }
+.mobile-detail-actions { flex:none; display:flex; gap:10px; padding:12px max(16px,env(safe-area-inset-right)) max(12px,env(safe-area-inset-bottom)) max(16px,env(safe-area-inset-left)); border-top:1px solid rgb(var(--surface-700) / .4); background:rgb(var(--surface-deep)); }
+.mobile-detail-actions > button { min-width:0; height:auto !important; min-height:46px; padding:8px; overflow-wrap:anywhere; }
+.mobile-description-preview { display:block; width:100%; text-align:left; padding:12px; border:1px solid rgb(var(--edge-input)); border-radius:8px; background:rgb(var(--surface-900)); overflow-wrap:anywhere; }
+.mobile-description textarea { min-height:220px; resize:vertical; }
+.mobile-description-preview > button { margin-bottom:8px; }
+.mobile-assistant-sheet { display:flex; flex-direction:column; flex:1; min-height:0; overflow-y:auto; overscroll-behavior:contain; }
+.mobile-assistant-sheet > .companion-surface { flex:none; }
+.mobile-assistant-thread { flex:1 0 80px; min-height:80px; overflow-y:auto; padding:14px 18px; display:flex; flex-direction:column; gap:12px; overscroll-behavior:contain; }
+.mobile-create-actions { display:flex; gap:10px; margin-top:2px; }
+
+/* Sheets must stay outside the inert content host. */
+.mobile-sheet-viewport {
+  position:fixed; top:var(--mobile-vv-top,0px); left:var(--mobile-vv-left,0px);
+  width:var(--mobile-vv-width,100%); height:var(--mobile-vv-height,100dvh);
+  z-index:60; display:flex; flex-direction:column; justify-content:flex-end; min-height:0; isolation:isolate;
+}
+.mobile-sheet-scrim { position:absolute; inset:0; background:rgb(0 0 0 / .55); }
+.mobile-sheet-panel { position:relative; z-index:1; display:flex; flex-direction:column; min-height:0; max-height:calc(100% - 12px); overflow:hidden; background:rgb(var(--surface-900)); border-top:1px solid rgb(var(--surface-700) / .6); border-radius:20px 20px 0 0; padding:10px max(0px,env(safe-area-inset-right)) max(12px,env(safe-area-inset-bottom)) max(0px,env(safe-area-inset-left)); box-shadow:0 -10px 40px rgb(0 0 0 / .4); }
+.mobile-sheet-panel:has(#assistant-sheet) { height:92%; }
+.mobile-sheet-panel > template + div, .mobile-sheet-panel > div { min-height:0; }
+.mobile-sheet-handle { width:38px; height:4px; border-radius:9999px; background:rgb(var(--surface-700)); margin:2px auto 4px; flex:none; }
+.mobile-sheet-heading { display:flex; flex:none; align-items:center; justify-content:space-between; gap:12px; padding:0 18px 8px; }
+.mobile-sheet-close { min-width:60px; min-height:44px; border:1px solid rgb(var(--edge-input)); border-radius:8px; padding:8px 12px; color:rgb(var(--tx-2)); font:12px 'JetBrains Mono',monospace; }
+.mobile-sheet-primary { flex:1.4; min-width:0; min-height:46px; padding:8px 12px; border:1px solid rgb(var(--accent)); border-radius:11px; background:rgb(var(--accent)); color:rgb(var(--accent-fg)); font:700 14px 'JetBrains Mono',monospace; }
+.mobile-sheet-primary:disabled { opacity:.5; cursor:not-allowed; }
+.mobile-navigation { display:flex; flex-direction:column; gap:6px; padding:0 18px 12px; overflow-y:auto; }
+.mobile-navigation button { min-height:48px; padding:10px 12px; text-align:left; border:1px solid rgb(var(--edge-input)); border-radius:8px; color:rgb(var(--tx-2)); }
+.mobile-navigation button[aria-current="page"] { background:rgb(var(--accent) / .12); border-color:rgb(var(--accent) / .5); color:rgb(var(--accent)); }
+
+@media (min-width:768px) and (max-width:1100px) {
+  .desktop-header h1 > button > span:last-child { display:none; }
+  .app-main > aside:first-of-type { width:180px; }
+}
+@media (max-width:1100px) {
+  .settings-section-rail { display:none; }
+  .settings-mobile-section { display:block; }
+  .settings-content > div:first-of-type { flex-wrap:wrap; }
+  .settings-content > div:first-of-type > div { flex-wrap:wrap; }
+  .settings-review-actions { flex-wrap:wrap; padding:12px 16px; gap:8px; }
+  .settings-review-actions > button:first-child { flex-basis:100%; }
+}
+@media (max-width:1279px) {
+  .stats-panels { flex:none; min-height:0; }
+  .stats-panels > div { min-height:200px; }
+}
+@media (max-width:767px) {
+  .app-main { padding-bottom:env(safe-area-inset-bottom); }
+  .new-form-content, .settings-content { padding:18px 16px 24px; }
+  .new-form-options { grid-template-columns:minmax(0,1fr); }
+  #new-view form > div:last-child { flex-wrap:wrap; }
+  #new-view form > div:last-child > button { flex:1; height:auto; min-height:44px; }
+  #new-view form .h-9 { height:auto; min-height:44px; flex-wrap:wrap; padding:8px; }
+  #new-view form .h-9 > span { display:none; }
+  #new-view form .h-9 > input { flex-basis:70%; }
+  #new-view form .h-9 > button { justify-content:center; align-items:center; }
+  #new-view form .items-baseline { flex-wrap:wrap; }
+  #new-view input:not([type="checkbox"]):not([type="radio"]):not(.sr-only), #new-view select { min-height:44px; }
+  #stats-view { padding:14px 12px 24px; }
+  .stats-kpis { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  .stats-activity { flex-direction:column; gap:16px; }
+  .stats-activity > .w-px { display:none; }
+  #stats-view .stats-title, #stats-view .stats-cap { white-space:normal; overflow-wrap:anywhere; }
+  .stats-panels { grid-template-columns:minmax(0,1fr); }
+  .stats-panels .stats-card { overflow-x:auto; }
+  .stats-panels .stats-card > div:first-child { flex-wrap:wrap; }
+  .archive-toolbar > div.relative { flex-basis:100%; max-width:none; min-width:0; order:1; }
+  #archive-view .archive-toolbar input { min-height:44px; }
+  #archive-view button[aria-label="Open command palette"] { display:none; }
+  .archive-table-scroll { scrollbar-gutter:stable; }
+  .archive-table-scroll > div > div { min-height:44px; }
+  .archive-table-scroll [data-act] { min-width:44px; min-height:44px; }
+  .archive-table-scroll span.w-\[84px\] { width:140px; }
+  .archive-detail-title { flex-wrap:wrap; }
+  .archive-detail-title > div:last-child { max-width:100%; flex-wrap:wrap; padding-left:0; border-left:0; }
+  .archive-detail-body { overflow-y:auto; }
+  .archive-detail-tabs > div:first-child { flex-wrap:wrap; gap:12px; }
+  .archive-detail-tabs > div:empty { display:none; }
+  .archive-detail-columns { flex:none; flex-direction:column; }
+  .archive-detail-content, .archive-detail-rail { flex:none; overflow:visible; }
+  .archive-detail-rail { width:100%; border-left:0; border-top:1px solid rgb(var(--surface-700) / .5); }
+  .settings-content { overflow-wrap:anywhere; }
+  .settings-content .grid-cols-3 { grid-template-columns:minmax(0,1fr); }
+  .settings-content .flex.items-center:has(> .shrink-0) { flex-wrap:wrap; }
+  .settings-content .w-64 { max-width:100%; }
+  .settings-content input.flex-none { flex-basis:100%; width:100%; }
+  .settings-content .flex:has(> input) { min-width:0; }
+  .settings-content input, .settings-content select, .settings-content textarea { max-width:100%; min-width:0; }
+  .settings-content .flex.items-center.gap-2:has(> input), .settings-content .flex.items-end { flex-wrap:wrap; }
+  .settings-review-actions > span { flex:1; }
+  .mobile-detail button, .mobile-epic button, .mobile-sheet-panel button { min-width:44px; min-height:44px; }
+  .mobile-sheet-panel label { max-width:100%; }
+  .mobile-sheet-panel input, .mobile-sheet-panel select, .mobile-sheet-panel textarea { max-width:100%; min-width:0; }
+  .mobile-sheet-panel input:not(.sr-only), .mobile-sheet-panel select { min-height:44px; }
+  /* 16px prevents iOS focus zoom even for legacy inline-sized controls. */
+  input:not(.xterm-helper-textarea), select, textarea:not(.xterm-helper-textarea) { font-size:16px !important; }
+  .mobile-sheet-panel button:disabled { opacity:.5; cursor:not-allowed; }
+}
+@media (max-width:767px), (pointer:coarse) {
+  button, a[href], select, input:not([type="checkbox"]):not([type="radio"]):not(.sr-only):not(.xterm-helper-textarea), [role="button"] { min-height:44px; }
+  .agent-picker-scroll [role="option"] { min-height:44px; }
+  button, a[href], [role="button"] { min-width:44px; }
+  .desktop-header { gap:10px; }
+  .card-menu-btn { opacity:1; }
+}
+/* The inline page stylesheet removes input outlines. */
+.app-shell input:focus-visible, .app-shell select:focus-visible, .app-shell textarea:focus-visible { outline:2px solid rgb(var(--accent)); outline-offset:2px; }
+.app-shell label:has(> select:focus-visible) { outline:2px solid rgb(var(--accent)); outline-offset:2px; }
+@media (prefers-reduced-motion:reduce) {
+  .sheet-panel, .sheet-scrim, .detail-enter { animation:none !important; transition:none !important; }
+}

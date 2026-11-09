@@ -592,9 +592,9 @@ export function kontoraPalette() {
     // container. Returns whether the ticket is on screen; the caller confirms
     // nothing when it is not.
     async _paletteOpenTicket(t) {
-      if (this.currentView !== 'board') await this.gotoView('board');
+      if (this.currentView !== 'board') await this.gotoView('board', ++this._navigationSeq, { view: 'board', ticketId: t.id, source: t.source });
       if (this.currentView !== 'board') return false;
-      if (this.sameTicket(this.selectedTicket, t)) return true;
+      if (this.sameTicket(this.selectedTicket, t)) { this.writeHash(); return true; }
       if (this.isMobile) await this.openMobileTicket(t);
       else await this.selectTicket(t);
       return true;

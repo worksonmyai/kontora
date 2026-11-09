@@ -2854,6 +2854,37 @@ func TestDaemon_ArchiveListAndRoundTrip(t *testing.T) {
 	require.ErrorIs(t, d.RestoreTicket("kon-a1"), web.ErrInvalidState, "a done ticket cannot be restored")
 }
 
+func TestDaemon_ArchiveListScalarAgent(t *testing.T) {
+	h := newHarness(t)
+	h.cfg.DefaultAgent = "agent1"
+	h.cfg.Pipelines["archive-test"] = config.Pipeline{{Stage: "work", Agent: "agent2"}}
+	d := h.newDaemon(h.cfg)
+	cases := []struct {
+		id, fields, agent string
+	}{
+		{"arc-default", "kontora: true\n", "agent1"},
+		{"arc-stage", "pipeline: archive-test\nstage: work\n", "agent2"},
+		{"arc-override", "pipeline: archive-test\nstage: work\nagent: agent1\n", "agent1"},
+		{"arc-missing", "kontora: true\npipeline: archive-test\nstage: missing\n", ""},
+		{"arc-passive", "kontora: true\nkind: epic\n", ""},
+		{"arc-supervisor", "kontora: true\nkind: epic\nepic_execution: agent\n", "agent1"},
+	}
+	for _, tc := range cases {
+		h.writeTicket(tc.id+".md", "---\nid: "+tc.id+"\nstatus: archived\n"+tc.fields+"---\n# Archive scalar\n")
+	}
+	require.NoError(t, d.initialScan(h.tasksDir))
+	rows := d.ListArchivedTickets()
+	require.Len(t, rows, len(cases))
+	byID := make(map[string]web.ArchivedTicketInfo, len(rows))
+	for _, row := range rows {
+		byID[row.ID] = row
+	}
+	for _, tc := range cases {
+		assert.Equal(t, tc.agent, byID[tc.id].Agent, tc.id)
+		assert.NotNil(t, byID[tc.id].ArchivedAt, "legacy archive falls back to mtime")
+	}
+}
+
 // The dashboard resolves a ticket's channel the way the daemon does, so it
 // needs the same three inputs. Names only: a channel's chat id or webhook URL
 // is not something a browser has any use for.

@@ -254,7 +254,7 @@ async function withPage(t, width, theme, run) {
   const page = await context.newPage();
   page.setDefaultTimeout(4000);
   page.setDefaultNavigationTimeout(15000);
-  page.on('pageerror', error => errors.push(error.message));
+  page.on('pageerror', error => errors.push(error.stack || error.message));
   page.on('console', msg => {
     if (msg.type() !== 'error') return;
     if (msg.text().startsWith('Failed to load resource:') && fixture.expectedHTTPFailures.includes(msg.location().url)) return;
@@ -1279,3 +1279,57 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
     });
   }
 });
+
+for (const width of [390, 1280]) {
+  test(`Archive settles and reloads after navigation through shipped Alpine / ${width}px`, async t => {
+    await withPage(t, width, 'dark', async (page, fixture) => {
+      for (let visit = 1; visit <= 3; visit++) {
+        await routeTo(page, '#/archive');
+        await visible(page.getByText('Archived fixture', { exact: true }));
+        await page.waitForFunction(() => !Alpine.$data(document.body).archiveLoading);
+        assert.equal(fixture.requests.filter(r => r === 'GET /api/tickets/archived').length, visit);
+        assert.equal(await page.evaluate(() => Alpine.$data(document.body)._archiveFlight), null);
+        await routeTo(page, '#/');
+        await page.locator('#archive-view').waitFor({ state: 'detached' });
+      }
+      assert.deepEqual(fixture.mutations, []);
+    });
+  });
+
+  test(`large-board metadata through shipped Alpine / ${width}px`, async t => {
+    await withPage(t, width, 'dark', async page => {
+      const result = await page.evaluate(() => {
+        const state = Alpine.reactive(kontora());
+        let scans = 0;
+        state.tickets = Array.from({ length: 5 }, (_, i) => ({ id: 'primary-' + i, title: 'Primary', status: 'open' }));
+        state.secondaryTickets = Array.from({ length: 2161 }, (_, i) => ({
+          id: 'secondary-' + i, source: 'secondary', title: 'Secondary ' + i,
+          get status() { scans++; return i < 1742 ? 'archived' : 'open'; },
+        }));
+        state.recomputeBoard();
+        const columns = state.columns;
+        state.setActiveColumn(columns.findIndex(c => c.key === 'archived'));
+        const initial = state.mobileTickets().length;
+        state.mobileLoadMore();
+        const expanded = state.mobileTickets().length;
+        state.secondaryTickets[0].title = 'Renamed';
+        state.recomputeBoard();
+        const stable = columns === state.columns;
+        scans = 0;
+        for (let i = 0; i < 1000; i++) {
+          state.columns;
+          state.mobileColumn();
+          state.mobileTickets();
+        }
+        const repeatedReads = scans;
+        const counts = [state._boardTotal, state.boardTickets('archived').length, state.secondaryTickets.length];
+        state.searchQuery = 'secondary-1741';
+        state.recomputeBoard();
+        return { initial, expanded, stable, repeatedReads, counts,
+          filtered: state._boardTotal, visible: state.mobileTickets().length, retained: state.secondaryTickets.length };
+      });
+      assert.deepEqual(result, { initial: 100, expanded: 200, stable: true, repeatedReads: 0,
+        counts: [2166, 1742, 2161], filtered: 1, visible: 1, retained: 2161 });
+    });
+  });
+}

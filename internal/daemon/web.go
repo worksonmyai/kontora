@@ -646,7 +646,7 @@ func (d *Daemon) ListArchivedTickets() []web.ArchivedTicketInfo {
 			Pipeline: t.Pipeline,
 			// The agent is resolved, not read: a ticket with no agent field
 			// takes its pipeline step's, or the configured default.
-			Agent:       app.BuildView(cfg, t, false).Agent,
+			Agent:       app.ResolveViewAgent(cfg, t),
 			Branch:      t.Branch,
 			Path:        t.Path,
 			Status:      string(t.ArchivedFrom),

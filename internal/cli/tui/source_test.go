@@ -131,12 +131,16 @@ func TestAPISource_Subscribe(t *testing.T) {
 	defer cancel()
 
 	ch := src.Subscribe(ctx)
-	select {
-	case ev := <-ch:
-		assert.Equal(t, "ticket_updated", ev.Type)
-		assert.Equal(t, "tst-001", ev.Ticket.ID)
-	case <-ctx.Done():
-		t.Fatal("timeout waiting for SSE event")
+	for _, want := range []string{remote.SSEConnected, "ticket_updated"} {
+		select {
+		case ev := <-ch:
+			assert.Equal(t, want, ev.Type)
+			if want == "ticket_updated" {
+				assert.Equal(t, "tst-001", ev.Ticket.ID)
+			}
+		case <-ctx.Done():
+			t.Fatal("timeout waiting for SSE event")
+		}
 	}
 }
 

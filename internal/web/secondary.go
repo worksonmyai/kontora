@@ -15,13 +15,14 @@ import (
 
 // SecondaryTicketService is optional. Each mutation must hold source routing
 // admission for the complete operation, including reaction sidecar writes.
+// Mutations return their post-write projection to avoid another source scan.
 type SecondaryTicketService interface {
 	ListTicketSources() []TicketSourceInfo
 	ListSecondaryTickets(source string) ([]TicketInfo, error)
 	GetSecondaryTicket(source, id string) (TicketInfo, error)
-	UpdateSecondaryTicket(source, id string, req UpdateTicketRequest) error
+	UpdateSecondaryTicket(source, id string, req UpdateTicketRequest) (TicketInfo, error)
 	ClaimSecondaryTicket(source, id, revision string) (TicketInfo, error)
-	MutateSecondaryTicket(source, id string, op SecondaryMutation) error
+	MutateSecondaryTicket(source, id string, op SecondaryMutation) (TicketInfo, error)
 }
 
 type TicketSourceInfo struct {
@@ -190,11 +191,12 @@ func (s *Server) handleSecondaryUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	source, id := r.PathValue("source"), r.PathValue("id")
-	if err := svc.UpdateSecondaryTicket(source, id, req); err != nil {
+	tkt, err := svc.UpdateSecondaryTicket(source, id, req)
+	if err != nil {
 		writeSecondaryError(w, err)
 		return
 	}
-	writeSecondaryTicket(w, svc, source, id)
+	writeJSON(w, http.StatusOK, tkt)
 }
 
 func validateSecondaryUpdate(req *UpdateTicketRequest) error {
@@ -258,11 +260,12 @@ func (s *Server) handleSecondaryMutation(w http.ResponseWriter, r *http.Request,
 		return
 	}
 	source, id := r.PathValue("source"), r.PathValue("id")
-	if err := svc.MutateSecondaryTicket(source, id, op); err != nil {
+	tkt, err := svc.MutateSecondaryTicket(source, id, op)
+	if err != nil {
 		writeSecondaryError(w, err)
 		return
 	}
-	writeSecondaryTicket(w, svc, source, id)
+	writeJSON(w, http.StatusOK, tkt)
 }
 
 func decodeSecondaryMutation(r *http.Request, action string) (SecondaryMutation, error) {

@@ -150,8 +150,13 @@ func TestSecondaryEditingIsSourceLocal(t *testing.T) {
 			defer stop()
 			source := d.ListTicketSources()[0].ID
 			description := "# Edited secondary\n"
-			require.NoError(t, d.UpdateSecondaryTicket(source, "same", web.UpdateTicketRequest{Description: &description}))
-			require.NoError(t, d.MutateSecondaryTicket(source, "same", web.SecondaryMutation{Action: web.SecondaryAddNote, Text: "Source-only note", Author: "person"}))
+			updated, err := d.UpdateSecondaryTicket(source, "same", web.UpdateTicketRequest{Description: &description})
+			require.NoError(t, err)
+			assert.Equal(t, "Edited secondary", updated.Title)
+			noted, err := d.MutateSecondaryTicket(source, "same", web.SecondaryMutation{Action: web.SecondaryAddNote, Text: "Source-only note", Author: "person"})
+			require.NoError(t, err)
+			require.Len(t, noted.Notes, 1)
+			assert.Equal(t, "Source-only note", noted.Notes[0].Text)
 			st, err := ticket.ParseFile(path)
 			require.NoError(t, err)
 			assert.Equal(t, ticket.Status(status), st.Status)

@@ -99,7 +99,8 @@ func TestSecondaryDetailWaitsForCompleteRevision(t *testing.T) {
 	revision, err := store.Revision(dir, "review")
 	require.NoError(t, err)
 	assert.Equal(t, revision, got.info.Revision)
-	require.NoError(t, d.UpdateSecondaryTicket(source, "review", web.UpdateTicketRequest{Description: new("# Unseen\n")}))
+	_, err = d.UpdateSecondaryTicket(source, "review", web.UpdateTicketRequest{Description: new("# Unseen\n")})
+	require.NoError(t, err)
 	_, err = d.ClaimSecondaryTicket(source, "review", got.info.Revision)
 	require.ErrorContains(t, err, "revision changed")
 	assert.FileExists(t, path)
@@ -251,15 +252,11 @@ func TestSecondarySnapshotReadCounts(t *testing.T) {
 			require.NoError(t, os.Rename(dir, dir+"-captured"))
 			t.Cleanup(func() { _ = os.RemoveAll(dir + "-captured") })
 			for _, observed := range snapshot.tickets {
-				for _, detail := range []bool{false, true} {
-					info := d.secondaryTicketInfo(&cfg, "source", observed, snapshot, detail)
-					require.NotEmpty(t, info.Revision)
-					require.Len(t, info.Deps, 1)
-					assert.NotEmpty(t, info.Deps[0].Title)
-					if detail {
-						require.Len(t, info.Blocks, 1)
-					}
-				}
+				info := d.secondaryTicketInfo(&cfg, "source", observed, snapshot)
+				require.NotEmpty(t, info.Revision)
+				require.Len(t, info.Deps, 1)
+				assert.NotEmpty(t, info.Deps[0].Title)
+				require.Len(t, info.Blocks, 1)
 			}
 		})
 	}

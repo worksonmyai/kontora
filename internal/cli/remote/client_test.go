@@ -348,6 +348,12 @@ func TestClient_SSEStreamEOFBacksOff(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	c := New(srv.URL, "")
 	ch := c.Subscribe(ctx)
+	select {
+	case ev := <-ch:
+		require.Equal(t, SSEConnected, ev.Type)
+	case <-time.After(time.Second):
+		t.Fatal("missing initial connection notification")
+	}
 
 	require.Eventually(t, func() bool { return hits.Load() == 1 }, time.Second, 10*time.Millisecond)
 	time.Sleep(50 * time.Millisecond)

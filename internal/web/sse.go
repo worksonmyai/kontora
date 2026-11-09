@@ -4,7 +4,7 @@ import "sync"
 
 // SSEBroker manages Server-Sent Events subscriptions and broadcasting.
 // Subscribers receive TicketEvents on a buffered channel. When a client's
-// channel is full, individual events are dropped (non-blocking send).
+// channel is full, the subscription closes so the client can resynchronize.
 type SSEBroker struct {
 	mu      sync.Mutex
 	clients map[chan TicketEvent]struct{}
@@ -36,7 +36,7 @@ func (b *SSEBroker) Subscribe() (<-chan TicketEvent, func()) {
 }
 
 // Broadcast sends an event to all subscribed clients. If a client's
-// channel is full, the event is dropped for that client (non-blocking).
+// channel is full, that subscription closes without blocking other clients.
 func (b *SSEBroker) Broadcast(event TicketEvent) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -44,6 +44,8 @@ func (b *SSEBroker) Broadcast(event TicketEvent) {
 		select {
 		case ch <- event:
 		default:
+			delete(b.clients, ch)
+			close(ch)
 		}
 	}
 }

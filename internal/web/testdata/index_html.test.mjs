@@ -1763,23 +1763,25 @@ test("queueTicketUpdate coalesces a burst into a single recompute", () => {
   state.recomputeBoard = () => { recomputes += 1; realRecompute(); };
   state.tickets = [];
 
-  // Pretend a frame is already scheduled so queued updates only buffer.
+  // Hold derived work while every event updates the model.
   state._boardRaf = 1;
   state.queueTicketUpdate({ id: "kon-1", title: "One", status: "todo", kontora: true });
   state.queueTicketUpdate({ id: "kon-2", title: "Two", status: "todo", kontora: true });
 
-  assert.equal(state._pendingTicketUpdates.length, 2);
+  assert.equal(state._boardDirty, true);
+  assert.equal(state.tickets.length, 2);
+  assert.equal('_pendingTicketUpdates' in state, false);
   assert.equal(recomputes, 0);
 
   state.flushTicketUpdates();
 
   assert.equal(recomputes, 1);
-  assert.equal(state._pendingTicketUpdates.length, 0);
+  assert.equal(state._boardDirty, false);
   assert.equal(state._boardRaf, null);
   assert.deepEqual(bt(state, "in_progress").map(t => t.id).sort(), ["kon-1", "kon-2"]);
 });
 
-test("queueTicketUpdate flushes the buffer and refreshes the cached board", () => {
+test("queueTicketUpdate applies immediately and refreshes the cached board", () => {
   const state = loadKontoraState();
   state.updateFavicon = () => {};
   state.tickets = [];
@@ -1788,7 +1790,7 @@ test("queueTicketUpdate flushes the buffer and refreshes the cached board", () =
   state.queueTicketUpdate({ id: "kon-1", title: "One", status: "human_review", kontora: true, updated_at: "2026-05-19T09:00:00Z" });
 
   assert.deepEqual(bt(state, "human_review").map(t => t.id), ["kon-1"]);
-  assert.equal(state._pendingTicketUpdates.length, 0);
+  assert.equal(state._boardDirty, false);
 });
 
 test("moveTask re-buckets the cached board optimistically and reverts on failure", async () => {
@@ -2651,7 +2653,7 @@ test("an update during a drag lands when the drag ends", async () => {
   assert.deepEqual(board.ops, ["replace:rev-1"]);
 });
 
-test("ticket updates that arrive during a drag are applied at the drop", async () => {
+test("ticket updates during a drag update the model without touching card DOM", async () => {
   let opts = null;
   const { board, state, built } = renderedBoard(
     [
@@ -2663,11 +2665,16 @@ test("ticket updates that arrive during a drag are applied at the drop", async (
   state.initSortable(board.els["col-in_progress"]);
   const dragged = { dataset: { dropStatus: "todo" }, closest: () => null };
   opts.onStart({ from: dragged });
+  const query = board.document.querySelectorAll;
+  board.document.querySelectorAll = () => { throw new Error('drag-owned card access'); };
+  state._markSelectedCard();
+  state._updateCardTimers();
+  board.document.querySelectorAll = query;
 
   state.queueTicketUpdate({ id: "rev-1", title: "R1 renamed", status: "human_review", kontora: true, updated_at: "2026-05-19T12:00:00Z" });
   assert.deepEqual(board.ops, [], "an update mid-drag must not touch the cards");
-  assert.equal(state.tickets[1].title, "R1", "and must not land in the board data yet");
-  assert.equal(state._pendingTicketUpdates.length, 1);
+  assert.equal(state.tickets[1].title, "R1 renamed", "the canonical model updates immediately");
+  assert.equal(state._boardDirty, true);
 
   opts.onEnd({ item: { dataset: { ticketId: "kon-a" } }, from: dragged, to: dragged });
   await flushMicrotasks();
@@ -2675,7 +2682,7 @@ test("ticket updates that arrive during a drag are applied at the drop", async (
   assert.equal(state.tickets[1].title, "R1 renamed");
   assert.deepEqual(built, ["rev-1"]);
   assert.deepEqual(board.ops, ["replace:rev-1"]);
-  assert.equal(state._pendingTicketUpdates.length, 0);
+  assert.equal(state._boardDirty, false);
 });
 
 test("opening a ticket recomputes the board only when the card would change", async () => {
@@ -2819,7 +2826,7 @@ test("index.html board renders cards imperatively, not via an Alpine x-for", () 
   // The per-ticket card x-for template was removed (cards come from renderColumn).
   assert.equal(/x-for="ticket in boardTickets\(col\.key\)"/.test(html), false);
   // The imperative card-list container is still wired for Sortable.
-  assert.match(html, /x-ref="colList"[\s\S]*?x-init="initSortable\(\$el\)/);
+  assert.match(html, /x-ref="colList"[\s\S]*?x-data="boardSortableOwner\(col\.key\)"/);
 });
 
 test("board width ignores folder path length while columns retain their minimum", () => {
@@ -2832,14 +2839,15 @@ test("board width ignores folder path length while columns retain their minimum"
   assert.match(board, /:class="isCollapsed\(col\.key\) \? 'w-9 flex-none' : 'flex-1 min-w-\[280px\] basis-0'"/);
 });
 
-test("index.html column x-init drops the render state Alpine just invalidated", () => {
+test("index.html column owner drops the render state Alpine just invalidated", () => {
   const html = fs.readFileSync(htmlPath, "utf8");
   const app = uiSource;
 
-  // Alpine builds the column element empty, so the x-init must drop that
+  // Alpine builds the column element empty, so the owner's init must drop that
   // column's cached signatures or renderColumn would skip filling it. The name
   // has to be the field app.js actually keeps, hence the pair of assertions.
-  assert.match(html, /x-init="initSortable\(\$el\)[^"]*delete _rendered\[col\.key\]/);
+  assert.match(html, /x-data="boardSortableOwner\(col\.key\)"/);
+  assert.match(app, /boardSortableOwner\(key\)[\s\S]*?delete self\._rendered\[key\]/);
   assert.match(app, /^ {4}_rendered: .+,$/m);
   // _renderedHTML was replaced by the per-card cache; a leftover reference in an
   // Alpine expression throws at evaluation time and skips the renderColumn call.
@@ -3705,7 +3713,7 @@ test('secondary __proto__ status survives recomputation, rendering and later pri
 });
 
 for (const deleted of [{ id: 'same', source: 'team' }, { id: 'same' }]) {
-  test(`deletion discards only matching buffered updates during a drag: source=${deleted.source || 'primary'}`, () => {
+  test(`deletion retains namesakes under ordered updates during a drag: source=${deleted.source || 'primary'}`, () => {
     const sources = [];
     const { state } = loadKontoraContext({ EventSource: makeEventSourceFake(sources) });
     state.updateFavicon = () => {};
@@ -3716,7 +3724,8 @@ for (const deleted of [{ id: 'same', source: 'team' }, { id: 'same' }]) {
     state._dragging = true;
     for (const ticket of state.allBoardTickets()) state.queueTicketUpdate({ ...ticket, title: 'Buffered ' + ticket.title });
     sources[0].emit(deleted.source ? 'secondary_ticket_deleted' : 'ticket_deleted', deleted);
-    assert.equal(state._pendingTicketUpdates.length, 2);
+    assert.equal('_pendingTicketUpdates' in state, false);
+    assert.equal(state.allBoardTickets().length, 2);
     state._dragging = false;
     state.flushTicketUpdates();
     assert.equal(state.allBoardTickets().some(t => state.sameTicket(t, deleted)), false);
@@ -9865,8 +9874,9 @@ test("relevant SSE changes refetch cost once per batch", () => {
     state.updateFavicon = () => {};
     const fetched = [];
     state.fetchTicketCost = (id) => fetched.push(id);
-    state._pendingTicketUpdates = [tc.update, { id: "other", status: "todo", history: [] }];
-
+    state._boardRaf = 1;
+    state.queueTicketUpdate(tc.update);
+    state.queueTicketUpdate({ id: "other", status: "todo", history: [] });
     state.flushTicketUpdates();
 
     assert.deepEqual(fetched, ["kon-cost"], tc.name);
@@ -10801,7 +10811,16 @@ test("an SSE batch refetches the chain when it names a node or waits on one", ()
   ];
 
   for (const c of cases) {
-    assert.equal(chainState(c.chain || CHAIN_PAYLOAD)._chainTouchedBy(c.pending), c.want, c.name);
+    const state = chainState(c.chain || CHAIN_PAYLOAD);
+    assert.equal(state._chainTouchedBy(c.pending), c.want, c.name);
+    state._boardRaf = 1;
+    state.fetchTicketCost = () => {};
+    state.updateFavicon = () => {};
+    const fetched = [];
+    state.fetchChain = id => fetched.push(id);
+    for (const ticket of c.pending) state.queueTicketUpdate(ticket);
+    state.flushTicketUpdates();
+    assert.deepEqual(fetched, c.want ? ['pca-d3q9'] : [], c.name + ': queued updates');
   }
   // With no chain loaded there is nothing to re-derive.
   assert.equal(pageState({ id: "pca-d3q9" })._chainTouchedBy([{ id: "pca-d3q9" }]), false);
@@ -16982,7 +17001,7 @@ for (const [status, label] of [['in_progress', 'supervising'], ['todo', 'queued'
     assert.equal(card.includes('card-progress'), false, 'supervisors have no child pipeline progress');
     assert.equal(card.includes('>code</span>'), false);
     if (status !== 'in_progress') {
-      const mobileCards = fs.readFileSync(htmlPath, 'utf8').split('x-for="ticket in boardTickets(mobileColumn().key)"')[1]
+      const mobileCards = fs.readFileSync(htmlPath, 'utf8').split('x-for="ticket in mobileTickets()"')[1]
         .split('<!-- ===== Ticket detail')[0];
       const statusTemplate = [...mobileCards.matchAll(/<template x-if="([^"]+)">([\s\S]*?)<\/template>/g)]
         .find(([, , content]) => content.includes('>' + label + '</span>'));
@@ -18048,5 +18067,473 @@ for (const mobile of [false, true]) {
     assert.equal(state.selectedTicket.id, next.id);
     assert.ok(opened.length > 0);
     assert.ok(opened.every(id => id === next.id));
+  });
+}
+
+for (const filter of ['', 'secondary-1741']) {
+  test(`large corpus metadata reads scan zero tickets: ${filter || 'full board'}`, () => {
+    const state = loadKontoraState();
+    state.tickets = Array.from({ length: 5 }, (_, i) => ({ id: 'primary-' + i, status: 'open', title: 'Primary' }));
+    let reads = 0;
+    state.secondaryTickets = Array.from({ length: 2161 }, (_, i) => ({
+      id: 'secondary-' + i, source: 'team', title: 'Secondary ' + i,
+      get status() { reads++; return i < 1742 ? 'archived' : 'open'; },
+    }));
+    state.searchQuery = filter;
+    state.recomputeBoard();
+    const columns = state.columns;
+    const archived = columns.findIndex(c => c.key === 'archived');
+    state.setActiveColumn(archived);
+    reads = 0;
+    for (let i = 0; i < 100; i++) {
+      assert.equal(state.columns, columns);
+      state.mobileColumn();
+      state.mobileTickets();
+    }
+    assert.equal(reads, 0);
+    assert.ok(state.mobileTickets().length <= 100);
+    assert.equal(state.secondaryTickets.length, 2161);
+    if (!filter) {
+      assert.equal(state.boardTickets('archived').length, 1742);
+      assert.equal(state.mobileTickets().length, 100);
+      state.mobileLoadMore();
+      assert.equal(state.mobileTickets().length, 200);
+      state.searchQuery = 'secondary-1741';
+      state.recomputeBoard();
+      assert.equal(state.mobileTickets().length, 1);
+    } else assert.equal(state.mobileTickets().length, 1);
+    state.applySecondaryUpdate({ id: 'secondary-0', source: 'team', title: 'Renamed', status: 'archived' });
+    state.recomputeBoard();
+    assert.equal(state.columns, columns, 'title changes retain column identity');
+    state.applySecondaryUpdate({ id: 'new', source: 'other', title: 'New', status: 'tombstone' });
+    state.recomputeBoard();
+    assert.ok(state.columns.some(c => c.key === 'tombstone'));
+    state.deleteSecondaryTicket({ id: 'new', source: 'other' });
+    state.recomputeBoard();
+    assert.equal(state.columns.some(c => c.key === 'tombstone'), false);
+  });
+}
+
+test('withheld frames retain no event snapshots and preserve intermediate editor transitions', () => {
+  const frames = new Map();
+  let sequence = 0;
+  const state = loadKontoraState({ requestAnimationFrame: cb => { frames.set(++sequence, cb); return sequence; }, cancelAnimationFrame: id => frames.delete(id) });
+  state.updateFavicon = () => {};
+  state.selectedTicket = { id: 'same', status: 'open', history: [], body: 'Reviewed' };
+  state.tickets = [{ ...state.selectedTicket }];
+  state.editing = true;
+  state.editingBody = true;
+  let saves = 0;
+  state.flushEditSave = () => { saves++; return Promise.resolve(true); };
+  state.queueTicketUpdate({ id: 'same', title: 'Running', status: 'in_progress', history: [] });
+  state.queueTicketUpdate({ id: 'same', title: 'Editable', status: 'open', history: [] });
+  for (let i = 0; i < 10000; i++) state.queueTicketUpdate({ id: 'same', title: String(i), status: 'open', history: [] });
+  assert.equal(saves, 1);
+  assert.equal(state.editing, false);
+  assert.equal(state.editingBody, false);
+  assert.equal(state.selectedTicket.title, '9999');
+  assert.equal(state.selectedTicket.body, 'Reviewed');
+  assert.equal(state.tickets[0].title, '9999');
+  assert.equal('_pendingTicketUpdates' in state, false);
+  assert.equal(frames.size, 1);
+  state.flushTicketUpdates();
+  assert.equal(frames.size, 0);
+  assert.equal(state._boardDirty, false);
+});
+
+test('secondary sweep uses indexed slots and has no primary cost or chain effects', () => {
+  const state = loadKontoraState();
+  state._boardRaf = 1;
+  state.tickets = [{ id: 'same', title: 'Primary', status: 'open', history: [] }];
+  state.selectedTicket = { ...state.tickets[0] };
+  state.chain = { nodes: [{ id: 'same' }] };
+  state.secondaryTickets = Array.from({ length: 2161 }, (_, i) => ({ id: i ? 's-' + i : 'same', source: 'team', status: 'archived', title: 'Old' }));
+  state.secondarySlot({ id: 'same', source: 'team' });
+  state.secondaryTickets.findIndex = () => { throw new Error('full-array ingestion search'); };
+  const calls = [];
+  state.fetchTicketCost = () => calls.push('cost');
+  state.fetchChain = () => calls.push('chain');
+  state.updateFavicon = () => {};
+  for (let i = 0; i < 2161; i++) state.queueTicketUpdate({ id: i ? 's-' + i : 'same', source: 'team', status: 'archived', title: 'New ' + i });
+  state.flushTicketUpdates();
+  assert.deepEqual(calls, []);
+  assert.equal(state.selectedTicket.title, 'Primary');
+  state.selectedTicket = { id: 'same', source: 'team' };
+  assert.equal(state._ticketById('same').title, 'New 0');
+  const slot = state.secondarySlot({ id: 'same', source: 'team' });
+  state.secondaryTickets[slot] = { id: 'same', source: 'team', status: 'archived', title: 'Detail replacement' };
+  assert.equal(state._ticketById('same').title, 'Detail replacement');
+  state.applySecondaryUpdate({ id: 'same', source: 'other', status: 'tombstone', title: 'Namesake' });
+  state.deleteSecondaryTicket({ id: 'same', source: 'team' });
+  assert.equal(state.sourceTicketById('same', { source: 'team' }), undefined);
+  assert.equal(state.sourceTicketById('same', { source: 'other' }).title, 'Namesake');
+});
+
+for (const secondary of [false, true]) {
+  test(`snapshot decoding cannot overwrite newer events or resurrect deletions: ${secondary ? 'secondary' : 'primary'}`, async () => {
+    const decode = deferred();
+    const events = [];
+    const identity = secondary ? { source: 'team' } : {};
+    const stale = ['updated', 'deleted', 'untouched'].map(id => ({ ...identity, id, title: 'Stale', status: 'open', revision: 'old' }));
+    const { state } = loadKontoraContext({ EventSource: makeEventSourceFake(events), fetch: async url => {
+      if (url === '/api/ticket-sources') return { ok: true, json: async () => [{ id: 'team', available: true }] };
+      return { ok: true, json: () => decode.promise };
+    } });
+    state._boardRaf = 1;
+    state.updateFavicon = () => {};
+    state.fetchTicketCost = () => {};
+    if (secondary) state.secondaryTickets = stale.map(t => ({ ...t }));
+    else state.tickets = stale.map(t => ({ ...t }));
+    state.selectedTicket = { ...stale[0], body: 'Reviewed body' };
+    state.editing = true;
+    state.editForm = { titleRest: 'Unsaved draft', body: 'Unsaved body' };
+    state.connectSSE();
+    const loading = secondary ? state.fetchTicketSources() : state.fetchTasks();
+    await flushMicrotasks();
+    const newer = { ...stale[0], title: 'Newer', revision: 'new' };
+    events[0].emit(secondary ? 'secondary_ticket_updated' : 'ticket_updated', newer);
+    events[0].emit(secondary ? 'secondary_ticket_deleted' : 'ticket_deleted', stale[1]);
+    decode.resolve(secondary ? stale : { tickets: stale });
+    await loading;
+    const entries = secondary ? state.secondaryTickets : state.tickets;
+    assert.equal(entries.find(t => t.id === 'updated').title, 'Newer');
+    assert.equal(entries.some(t => t.id === 'deleted'), false);
+    assert.equal(entries.some(t => t.id === 'untouched'), true);
+    assert.equal(state.selectedTicket.body, 'Reviewed body');
+    assert.equal(state.editForm.body, 'Unsaved body');
+    if (secondary) assert.equal(state.selectedTicket.revision, 'old', 'Claim still requires the reviewed revision');
+  });
+}
+
+for (const secondary of [false, true]) {
+  test(`snapshot refreshes coalesce one trailing read: ${secondary ? 'secondary' : 'primary'}`, async () => {
+    const first = deferred();
+    let calls = 0, active = 0, maximum = 0;
+    const state = loadKontoraState({ fetch: async url => {
+      if (url === '/api/ticket-sources') return { ok: true, json: async () => [{ id: 'team', available: true }] };
+      calls++; active++; maximum = Math.max(maximum, active);
+      if (calls === 1) await first.promise;
+      active--;
+      return { ok: true, json: async () => secondary ? [] : { tickets: [] } };
+    } });
+    state.updateFavicon = () => {};
+    const refresh = () => secondary ? state.fetchTicketSources() : state.fetchTasks();
+    const loading = refresh();
+    await flushMicrotasks();
+    for (let i = 0; i < 20; i++) refresh();
+    first.resolve();
+    await loading;
+    assert.equal(calls, 2);
+    assert.equal(maximum, 1);
+  });
+}
+
+for (const secondary of [false, true]) for (const editing of [false, true]) {
+  test(`reconnect refreshes detail without replacing drafts or reviewed revisions: secondary=${secondary}, editing=${editing}`, async () => {
+    const ticket = { id: 'reviewed', source: secondary ? 'team' : 'primary', status: 'open', title: 'Current', revision: 'new', can_edit: true };
+    const requests = [];
+    const state = loadKontoraState({ fetch: async url => {
+      requests.push(url);
+      if (url === '/api/ticket-sources') return { ok: true, json: async () => [{ id: 'team', available: true }] };
+      if (url === '/api/tickets') return { ok: true, json: async () => ({ tickets: secondary ? [] : [ticket] }) };
+      if (url === '/api/sources/team/tickets') return { ok: true, json: async () => secondary ? [ticket] : [] };
+      assert.equal(state.selectedTicket.history.length, 1, 'list snapshots preserve detail-only fields until detail refresh');
+      assert.equal(state.selectedTicket.notes.length, 1);
+      return { ok: true, json: async () => ({ ...ticket, body: 'Current body', description: 'Current body', description_tail: '' }) };
+    } });
+    state._boardRaf = 1;
+    state.updateFavicon = () => {};
+    state.selectedTicket = { ...ticket, revision: 'reviewed', body: 'Reviewed body', history: [{ stage: 'code' }], notes: [{ id: 'kept' }] };
+    state.editForm.body = 'Unsaved draft';
+    state.editing = editing;
+    if (secondary) state.secondaryTickets = [ticket];
+    else state.tickets = [ticket];
+    await state.resyncTickets();
+    assert.equal(requests.filter(url => url.endsWith('/reviewed')).length, 1);
+    assert.equal(state.selectedTicket.body, editing ? 'Reviewed body' : 'Current body');
+    assert.equal(state.editForm.body, 'Unsaved draft');
+    assert.equal(state.selectedTicket.revision, secondary || editing ? 'reviewed' : 'new');
+  });
+}
+
+test('reconnect detail retries an overtaken decode and cannot reopen a different selection', async () => {
+  const decode = deferred();
+  let calls = 0;
+  const state = loadKontoraState({ fetch: async () => {
+    calls++;
+    return { ok: true, json: () => calls === 1 ? decode.promise : Promise.resolve({ id: 'selected', status: 'open', body: 'Latest body' }) };
+  } });
+  state._boardRaf = 1;
+  state.selectedTicket = { id: 'selected', status: 'open', body: 'Old body' };
+  const refresh = state.refreshSelectedTicket();
+  await flushMicrotasks();
+  state.queueTicketUpdate({ id: 'selected', status: 'open', title: 'New event' });
+  decode.resolve({ id: 'selected', status: 'open', body: 'Stale body' });
+  await refresh;
+  assert.equal(calls, 2);
+  assert.equal(state.selectedTicket.body, 'Latest body');
+  const late = deferred();
+  state.selectedTicket = { id: 'selected', status: 'open' };
+  const context = loadKontoraContext({ fetch: async () => ({ ok: true, json: () => late.promise }) });
+  context.state.selectedTicket = state.selectedTicket;
+  const opening = context.state.refreshSelectedTicket();
+  await flushMicrotasks();
+  context.state.selectedTicket = { id: 'different', body: 'Different body' };
+  context.state._ticketDetailSeq++;
+  late.resolve({ id: 'selected', status: 'open', body: 'Late body' });
+  await opening;
+  assert.equal(context.state.selectedTicket.id, 'different');
+  assert.equal(context.state.selectedTicket.body, 'Different body');
+});
+
+for (const failure of ['unavailable', 'HTTP failure', 'rejection']) {
+  test(`source refresh preserves an editor and its pending draft after ${failure}`, async () => {
+    const streams = [], timers = new Map(), writes = [];
+    let mode = failure, timer = 0, recovery;
+    const ticket = { id: 'draft', source: 'team', title: 'Draft', status: 'open', can_edit: true,
+      can_claim: true, revision: 'reviewed', description: 'Server text', description_tail: '' };
+    const { state } = loadKontoraContext({ EventSource: makeEventSourceFake(streams),
+      setTimeout: cb => { timers.set(++timer, cb); return timer; },
+      clearTimeout: id => timers.delete(id),
+      fetch: async (url, options) => {
+        if (options?.method === 'PUT') {
+          writes.push({ url, body: JSON.parse(options.body) });
+          return { ok: true, json: async () => ({ ...ticket, ...writes.at(-1).body }) };
+        }
+        if (url === '/api/ticket-sources') {
+          if (recovery) await recovery.promise;
+          return { ok: true, json: async () => [
+            { id: 'team', available: mode !== 'unavailable' }, { id: 'healthy', available: true },
+          ] };
+        }
+        if (url === '/api/sources/healthy/tickets') return { ok: true, json: async () => [{ id: 'fresh', source: 'healthy', status: 'open' }] };
+        assert.equal(url, '/api/sources/team/tickets');
+        if (mode === 'rejection') throw new Error('offline');
+        return { ok: mode !== 'HTTP failure', json: async () => mode === 'deleted' ? [] : [ticket] };
+      } });
+    state.configCache = {};
+    state.$nextTick = async () => {};
+    state._boardRaf = 1;
+    state.selectedTicket = { ...ticket };
+    state.secondaryTickets = [{ ...ticket }];
+    state.ticketSources = [{ id: 'team', available: true }];
+    await state.startEditing();
+    state.editingBody = true;
+    state.editForm.body = 'Unsaved text';
+    state.debounceSaveEdit();
+    state.connectSSE();
+    streams[0].emit('ticket_sources_changed');
+    await flushMicrotasks();
+    assert.equal(state.selectedTicket?.id, 'draft');
+    assert.equal(state.editing, true);
+    assert.equal(state.editingBody, true);
+    assert.equal(state.editForm.body, 'Unsaved text');
+    assert.equal(state.secondaryTickets.some(t => t.source === 'healthy'), true);
+    assert.equal(state.secondaryTickets.some(t => state.sameTicket(t, ticket)), true, 'failed sources retain their last successful rows');
+    assert.equal(state.ticketCanEdit(state.selectedTicket), false);
+    assert.equal(state.ticketCanClaim(state.selectedTicket), false);
+    assert.equal(timers.size, 1, 'source failure does not cancel the pending debounce');
+    timers.clear();
+    assert.equal(await state.flushEditSave(), false);
+    assert.equal(state._editorSaves['team/draft'].draft.description, 'Unsaved text');
+    assert.deepEqual(writes, [], 'unavailable sources refuse writes');
+    mode = 'healthy';
+    recovery = deferred();
+    state.debounceSaveEdit();
+    streams[0].emit('ticket_sources_changed');
+    streams[0].emit('secondary_ticket_updated', ticket);
+    await flushMicrotasks();
+    assert.equal(state.editing, true, 'a recovery update must not treat stale source availability as lost edit permission');
+    assert.equal(state.editingBody, true);
+    assert.equal(timers.size, 1, 'recovery updates preserve the pending debounce');
+    recovery.resolve();
+    await flushMicrotasks();
+    assert.equal(state.selectedTicket?.id, 'draft');
+    assert.equal(state.editing, true);
+    assert.equal(state.editForm.body, 'Unsaved text');
+    assert.equal(await state.flushEditSave(), true);
+    assert.deepEqual(writes, [{ url: '/api/sources/team/tickets/draft', body: { description: 'Unsaved text' } }]);
+    assert.equal(state._editorSaves['team/draft'].ack.description, 'Unsaved text');
+    mode = 'deleted';
+    streams[0].emit('ticket_sources_changed');
+    await flushMicrotasks();
+    assert.equal(state.selectedTicket, null, 'healthy authoritative absence still closes the editor');
+  });
+}
+
+for (const secondary of [false, true]) for (const editing of [false, true]) {
+  test(`overlapping SSE opens share detail work and retry only newer events: secondary=${secondary}, editing=${editing}`, async () => {
+    const streams = [], detailReads = [], lists = deferred();
+    const ticket = { id: 'shared', source: secondary ? 'team' : 'primary', status: 'open', title: 'Shared',
+      revision: 'new', can_edit: true };
+    const { state } = loadKontoraContext({ EventSource: makeEventSourceFake(streams), fetch: async url => {
+      if (url === '/api/tickets') { await lists.promise; return { ok: true, json: async () => ({ tickets: secondary ? [] : [ticket] }) }; }
+      if (url === '/api/ticket-sources') { await lists.promise; return { ok: true, json: async () => [{ id: 'team', available: true }] }; }
+      if (url === '/api/sources/team/tickets') return { ok: true, json: async () => secondary ? [ticket] : [] };
+      assert.equal(url, secondary ? '/api/sources/team/tickets/shared' : '/api/tickets/shared');
+      const decode = deferred();
+      detailReads.push(decode);
+      return { ok: true, json: () => decode.promise };
+    } });
+    state._boardRaf = 1;
+    state.updateFavicon = () => {};
+    state.companionRefresh = () => {};
+    state.selectedTicket = { ...ticket, revision: 'reviewed', body: 'Reviewed body' };
+    state.editing = editing;
+    state.editForm.body = 'Unsaved draft';
+    if (secondary) state.secondaryTickets = [ticket]; else state.tickets = [ticket];
+    state.connectSSE();
+    for (let i = 0; i < 20; i++) streams[0].emit('open');
+    lists.resolve();
+    await flushMicrotasks();
+    assert.equal(detailReads.length, 1, 'overlapping resync readers share one detail decode');
+    streams[0].emit(secondary ? 'secondary_ticket_updated' : 'ticket_updated', { ...ticket, title: 'Newer event' });
+    state.editForm.body = 'Typed during decode';
+    detailReads[0].resolve({ ...ticket, body: 'Overtaken body' });
+    await flushMicrotasks();
+    assert.equal(detailReads.length, 2, 'one event requires one shared retry');
+    const entries = secondary ? state.secondaryTickets : state.tickets;
+    assert.equal(entries.find(t => t.id === 'shared').title, 'Newer event');
+    if (secondary || !editing) assert.equal(state.selectedTicket.title, 'Newer event');
+    detailReads[1].resolve({ ...ticket, title: 'Latest', body: 'Latest body' });
+    await flushMicrotasks();
+    assert.equal(detailReads.length, 2, 'successful peers cannot invalidate each other');
+    assert.equal(state.selectedTicket.body, editing ? 'Reviewed body' : 'Latest body');
+    assert.equal(state.selectedTicket.revision, secondary || editing ? 'reviewed' : 'new');
+    assert.equal(state.editForm.body, 'Typed during decode');
+    streams[0].emit('open');
+    await flushMicrotasks();
+    assert.equal(detailReads.length, 3, 'a later reconnect still refreshes detail');
+    state.selectedTicket = { id: 'other', status: 'open', body: 'Other body' };
+    state._ticketDetailSeq++;
+    detailReads[2].resolve({ ...ticket, body: 'Late body' });
+    await flushMicrotasks();
+    assert.equal(state.selectedTicket.body, 'Other body');
+  });
+}
+
+for (const failure of ['HTTP failure', 'rejection', 'decode failure']) {
+  test(`SSE reconnect retries its queued primary refresh after ${failure}`, async () => {
+    const streams = [], first = deferred();
+    let reads = 0;
+    const ticket = { id: 'recovered', status: 'open' };
+    const { state } = loadKontoraContext({ EventSource: makeEventSourceFake(streams), fetch: async url => {
+      if (url === '/api/ticket-sources') return { ok: true, json: async () => [] };
+      assert.equal(url, '/api/tickets');
+      if (++reads === 1) return first.promise;
+      return { ok: true, json: async () => ({ tickets: [ticket] }) };
+    } });
+    state._boardRaf = 1;
+    state.updateFavicon = () => {};
+    state.companionRefresh = () => {};
+    state.connectSSE();
+    streams[0].emit('open');
+    streams[0].emit('open');
+    if (failure === 'rejection') first.reject(new Error('offline'));
+    else first.resolve({ ok: failure === 'decode failure', json: async () => { throw new Error('decode'); } });
+    await flushMicrotasks();
+    assert.equal(reads, 2);
+    assert.equal(state.tickets[0]?.id, 'recovered');
+    assert.equal(state.error, null);
+  });
+}
+
+test('a pending reconnect detail cannot close an editor after its source becomes unavailable', async () => {
+  const streams = [], decoding = deferred();
+  let available = true, detailReads = 0;
+  const ticket = { id: 'editing', source: 'team', status: 'open', can_edit: true, revision: 'reviewed', description: 'Reviewed' };
+  const { state } = loadKontoraContext({ EventSource: makeEventSourceFake(streams), fetch: async url => {
+    if (url === '/api/tickets') return { ok: true, json: async () => ({ tickets: [] }) };
+    if (url === '/api/ticket-sources') return { ok: true, json: async () => [{ id: 'team', available }] };
+    if (url === '/api/sources/team/tickets') return { ok: true, json: async () => [ticket] };
+    assert.equal(url, '/api/sources/team/tickets/editing');
+    detailReads++;
+    return { ok: true, json: () => decoding.promise };
+  } });
+  state.configCache = {};
+  state.$nextTick = async () => {};
+  state._boardRaf = 1;
+  state.updateFavicon = () => {};
+  state.companionRefresh = () => {};
+  state.secondaryTickets = [ticket];
+  state.selectedTicket = { ...ticket };
+  await state.startEditing();
+  state.editingBody = true;
+  state.editForm.body = 'Pending draft';
+  state.connectSSE();
+  streams[0].emit('open');
+  await flushMicrotasks();
+  assert.equal(detailReads, 1);
+  available = false;
+  streams[0].emit('ticket_sources_changed');
+  await flushMicrotasks();
+  decoding.resolve({ ...ticket, description: 'Stale detail', revision: 'unreviewed' });
+  await flushMicrotasks();
+  assert.equal(state.selectedTicket?.id, 'editing');
+  assert.equal(state.selectedTicket.description, 'Reviewed');
+  assert.equal(state.selectedTicket.revision, 'reviewed');
+  assert.equal(state.editing, true);
+  assert.equal(state.editingBody, true);
+  assert.equal(state.editForm.body, 'Pending draft');
+  assert.equal(state.ticketCanEdit(state.selectedTicket), false);
+});
+
+test('a failed shared reconnect detail releases its flight for the next reconnect', async () => {
+  const streams = [], failing = deferred();
+  let reads = 0;
+  const ticket = { id: 'retry-detail', status: 'open' };
+  const { state } = loadKontoraContext({ EventSource: makeEventSourceFake(streams), fetch: async url => {
+    if (url === '/api/tickets') return { ok: true, json: async () => ({ tickets: [ticket] }) };
+    if (url === '/api/ticket-sources') return { ok: true, json: async () => [] };
+    assert.equal(url, '/api/tickets/retry-detail');
+    if (++reads === 1) return failing.promise;
+    return { ok: true, json: async () => ({ ...ticket, body: 'Recovered body' }) };
+  } });
+  state._boardRaf = 1;
+  state.updateFavicon = () => {};
+  state.companionRefresh = () => {};
+  state.selectedTicket = { ...ticket, body: 'Reviewed body' };
+  state.connectSSE();
+  for (let i = 0; i < 20; i++) streams[0].emit('open');
+  await flushMicrotasks();
+  assert.equal(reads, 1);
+  failing.resolve({ ok: false });
+  await flushMicrotasks();
+  assert.equal(state.error, 'Failed to refresh ticket details');
+  assert.equal(state.selectedTicket.body, 'Reviewed body');
+  streams[0].emit('open');
+  await flushMicrotasks();
+  assert.equal(reads, 2);
+  assert.equal(state.selectedTicket.body, 'Recovered body');
+});
+
+test('a failed primary refresh without a queued reconnect still reports its error', async () => {
+  const state = loadKontoraState({ fetch: async () => ({ ok: false }) });
+  await assert.rejects(state.fetchTasks(), /Failed to fetch tickets/);
+});
+
+for (const [selected, arriving] of [['archived', 'abandoned'], ['tombstone', 'closed']]) {
+  test(`secondary SSE sorted insertion preserves phone column ${selected} when ${arriving} arrives`, () => {
+    const streams = [];
+    const { state } = loadKontoraContext({ EventSource: makeEventSourceFake(streams) });
+    state.isMobile = true;
+    state._boardRaf = 1;
+    state.updateFavicon = () => {};
+    state.secondaryTickets = [{ id: 'existing', source: 'team', title: 'Existing', status: selected }];
+    state.recomputeBoard();
+    state.setActiveColumn(state.columns.findIndex(c => c.key === selected));
+    const before = state.activeColumn;
+    state.connectSSE();
+    streams[0].emit('secondary_ticket_updated', { id: 'new', source: 'team', title: 'New', status: arriving });
+    state.flushTicketUpdates();
+    assert.equal(state.mobileColumn().key, selected);
+    assert.ok(state.activeColumn > before, 'the sorted schema inserted a preceding column');
+    assert.equal(state.mobileTickets()[0].id, 'existing');
+    streams[0].emit('secondary_ticket_deleted', { id: 'new', source: 'team' });
+    state.flushTicketUpdates();
+    assert.equal(state.mobileColumn().key, selected);
+    streams[0].emit('secondary_ticket_deleted', { id: 'existing', source: 'team' });
+    state.flushTicketUpdates();
+    assert.ok(state.activeColumn >= 0 && state.activeColumn < state.columns.length, 'removed selection has a valid fallback');
   });
 }

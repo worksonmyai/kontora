@@ -1830,15 +1830,7 @@
     </div>
 
     <!-- Kanban board -->
-    <div x-data="{ hasOverflowRight: false }"
-         x-init="
-           const el = $el;
-           const check = () => { hasOverflowRight = el.scrollWidth - el.scrollLeft - el.clientWidth > 4; };
-           el.addEventListener('scroll', check, { passive: true });
-           window.addEventListener('resize', check);
-           $watch('loading', val => { if (!val) $nextTick(check); });
-           $nextTick(check);
-         "
+    <div x-data="boardOverflowOwner('x')"
          class="board-scroll flex-1 overflow-x-auto overflow-y-hidden"
          :class="hasOverflowRight ? 'has-overflow-right' : ''">
       <div id="board-cols" class="flex gap-3 p-4 h-full min-w-0">
@@ -1862,7 +1854,7 @@
                 <div class="absolute inset-0"
                      :id="'col-' + col.key"
                      :data-drop-status="col.dropStatus"
-                     x-init="initSortable($el)"></div>
+                     x-data="boardSortableOwner(col.key)"></div>
               </div>
             </template>
 
@@ -1905,29 +1897,7 @@
                 </div>
                 <!-- Card list (overflow fade + "more" chip shown when column has more below) -->
                 <div class="col-fade flex-1 min-h-0 flex flex-col relative"
-                     x-data="{ overflowBottom: false }"
-                     x-init="
-                       const list = $refs.colList;
-                       const check = () => {
-                         overflowBottom = list.scrollHeight - list.scrollTop - list.clientHeight > 4;
-                       };
-                       // Sortable moves nodes on every drag step, so the
-                       // childList observer below fires in bursts; one frame
-                       // takes one layout read, not one per mutation batch.
-                       let queued = false;
-                       const schedule = () => {
-                         if (queued) return;
-                         queued = true;
-                         requestAnimationFrame(() => { queued = false; check(); });
-                       };
-                       list.addEventListener('scroll', check, { passive: true });
-                       window.addEventListener('resize', schedule);
-                       const mo = new MutationObserver(schedule);
-                       mo.observe(list, { childList: true });
-                       const ro = new ResizeObserver(schedule);
-                       ro.observe(list);
-                       schedule();
-                     "
+                     x-data="boardOverflowOwner('y')"
                      :class="overflowBottom ? 'has-overflow-bottom' : ''">
                   <div x-show="overflowBottom && colHover"
                        x-transition:enter="transition-opacity duration-150" x-transition:enter-start="opacity-0" x-transition:enter-end="opacity-100"
@@ -1940,7 +1910,7 @@
                      x-ref="colList"
                      :id="'col-' + col.key"
                      :data-drop-status="col.dropStatus"
-                     x-init="initSortable($el); $nextTick(() => { delete _rendered[col.key]; renderColumn(col.key); })">
+                     x-data="boardSortableOwner(col.key)">
                   <!-- Cards are injected imperatively by renderColumn() (ui/board.js); see
                        _cardHTML for the markup this reproduces. -->
                   </div>
@@ -3444,7 +3414,7 @@
                   <span class="flex-1 h-px bg-surface-700/[.55]"></span>
                 </button>
                 <div x-show="!epicGroupCollapsed[g.key]" class="flex flex-col"
-                     :data-epic-group="g.key" x-init="epicInitSortable($el)">
+                     :data-epic-group="g.key" x-data="epicSortableOwner()">
                   <template x-for="r in g.rows" :key="r.id">
                     <div class="epic-row group" :data-child-id="r.id" @click="openTicketRef(r)">
                       <span class="epic-row-handle" aria-hidden="true">⠿</span>
@@ -6042,10 +6012,10 @@
       <template x-if="allBoardTickets().length > 0 && boardTickets(mobileColumn().key).length === 0">
         <div style="font-family:'JetBrains Mono',monospace;text-align:center;font-size:12px;color:rgba(var(--surface-600),1);border:1px dashed rgba(var(--surface-700),.6);border-radius:10px;padding:34px 16px;margin-top:6px;" x-text="'∅ ' + mobileColumn().emptyText.toLowerCase()"></div>
       </template>
-      <template x-for="ticket in boardTickets(mobileColumn().key)" :key="ticketKey(ticket)">
+      <template x-for="ticket in mobileTickets()" :key="ticketKey(ticket)">
         <button @click="openMobileTicket(ticket)"
                 :data-pipe-color="ticketPipeColor(ticket)"
-                :style="'display:flex;flex-direction:column;gap:9px;text-align:left;width:100%;padding:12px 13px;border-radius:11px;background:rgba(var(--surface-900),1);border:1px solid rgba(var(--surface-700),.5);border-left:2px solid ' + (ticket.status==='in_progress' ? 'hsl(var(--st-progress))' : (ticket.status==='paused' ? 'hsl(var(--st-paused) / .8)' : 'hsl(var(--pipe-h) / .55)')) + ';cursor:pointer;' + (ticket.status==='cancelled' ? 'opacity:.62;' : (mobileColumn().key === 'open' && ticket.scheduled_at ? 'opacity:.72;' : '')) + (!ticket.kontora ? 'border-style:dashed;' : '')">
+                :style="'display:flex;flex-direction:column;gap:9px;text-align:left;width:100%;padding:12px 13px;border-radius:11px;background:rgba(var(--surface-900),1);border:1px solid rgba(var(--surface-700),.5);border-left:2px solid ' + (ticket.status==='in_progress' ? 'hsl(var(--st-progress))' : (ticket.status==='paused' ? 'hsl(var(--st-paused) / .8)' : 'hsl(var(--pipe-h) / .55)')) + ';cursor:pointer;' + (ticket.status==='cancelled' ? 'opacity:.62;' : (ticket.status === 'open' && ticket.scheduled_at ? 'opacity:.72;' : '')) + (!ticket.kontora ? 'border-style:dashed;' : '')">
           <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
             <div style="display:flex;align-items:center;gap:8px;min-width:0;">
               <span x-show="epicIsAgent(ticket)" class="pipe-tag">Supervisor</span>
@@ -6055,17 +6025,17 @@
                   <span class="pulse-dot">●</span><span x-text="epicIsAgent(ticket) ? 'supervising' : ticket.stage"></span>
                 </span>
               </template>
-              <template x-if="epicIsAgent(ticket) && mobileColumn().key === 'in_progress' && ticket.status === 'paused'">
+              <template x-if="epicIsAgent(ticket) && ticket.status === 'paused'">
                 <span class="card-glyph-paused" style="display:flex;align-items:center;gap:5px;font-family:'JetBrains Mono',monospace;font-size:11px;flex:none;">
                   <span>⏸</span><span>paused</span>
                 </span>
               </template>
-              <template x-if="epicIsAgent(ticket) && mobileColumn().key === 'in_progress' && ticket.status === 'todo'">
+              <template x-if="epicIsAgent(ticket) && ticket.status === 'todo'">
                 <span style="display:flex;align-items:center;gap:5px;font-family:'JetBrains Mono',monospace;font-size:11px;color:rgba(var(--surface-600),1);flex:none;">
                   <span>◌</span><span>queued</span>
                 </span>
               </template>
-              <template x-if="mobileColumn().key === 'open' && scheduleChip(ticket)">
+              <template x-if="ticket.status === 'open' && scheduleChip(ticket)">
                 <span class="sched-chip">
                   <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15.5 14"/></svg>
                   <span x-text="scheduleChip(ticket).abs"></span>
@@ -6103,6 +6073,8 @@
           </div>
         </button>
       </template>
+      <button type="button" x-show="mobileTickets().length < boardTickets(mobileColumn().key).length"
+              @click="mobileLoadMore()" class="font-mono text-xs text-accent p-3">Load 100 more</button>
     </div>
 
     <!-- ===== Ticket detail (full-screen overlay) ===== -->

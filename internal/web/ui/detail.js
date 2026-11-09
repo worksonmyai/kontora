@@ -96,8 +96,9 @@ export function kontoraDetail() {
           if (full.id === ticket.id) {
             full = { ...full, source: ticket.source || full.source };
             this.selectedTicket = full;
+            this._touchTicket(full);
             var entries = this.isSecondary(ticket) ? this.secondaryTickets : this.tickets;
-            var idx = entries.findIndex(t => this.sameTicket(t, full));
+            var idx = this.isSecondary(full) ? this.secondarySlot(full) : entries.findIndex(t => this.sameTicket(t, full));
             if (idx >= 0) {
               var before = entries[idx];
               var entry = this.boardEntry(full);
@@ -979,13 +980,16 @@ export function kontoraDetail() {
 
     async saveEdit() {
       if (!this.selectedTicket || !this.editing) return true;
-      if (!this.ticketCanEdit(this.selectedTicket)) return false;
       var id = this.ticketKey(this.selectedTicket);
       if (id !== this._editorTicketKey) return false;
+      var submitted = this._ordinaryEditorDraft();
+      if (!this.ticketCanEdit(this.selectedTicket)) {
+        if (this._editorSaves[id]) this._editorSaves[id].draft = { ...submitted };
+        return false;
+      }
       var generation = this._editorGeneration;
       this.editSubmitting = true;
       this.editSaved = false;
-      var submitted = this._ordinaryEditorDraft();
       var pending = this._queueEditorSave(id, submitted, generation);
       var ok = await pending;
       if (this.ticketKey(this.selectedTicket) === id && generation === this._editorGeneration && this._editorSaves[id]?.tail === pending) {

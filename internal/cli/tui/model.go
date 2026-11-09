@@ -2,10 +2,12 @@ package tui
 
 import (
 	"errors"
+	"slices"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/worksonmyai/kontora/internal/cli/remote"
 	"github.com/worksonmyai/kontora/internal/ticket"
 	"github.com/worksonmyai/kontora/internal/web"
 )
@@ -20,9 +22,11 @@ const (
 
 // Bubble Tea messages
 type (
+	fetchTicketsMsg     struct{}
 	ticketsRefreshedMsg struct {
 		tickets []web.TicketInfo
 		running int
+		err     error
 	}
 	taskUpdatedMsg web.TicketEvent
 	taskDetailMsg  web.TicketInfo
@@ -33,6 +37,7 @@ type (
 	taskRefreshedMsg struct {
 		info web.TicketInfo
 		seq  int
+		err  error
 	}
 	logsMsg          struct{ content string }
 	tickMsg          struct{}
@@ -71,6 +76,12 @@ type model struct {
 
 	attachTarget string
 	refreshSeq   int
+	detailRetry  bool
+	listFlight   bool
+	listAgain    bool
+	listObsolete bool
+	listRetry    bool
+	listTouched  map[string]bool
 }
 
 func newModel(src Source) model {
@@ -111,11 +122,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.list.clampCursor()
 		return m, nil
 
+	case fetchTicketsMsg:
+		return m.startListRefresh()
+
 	case ticketsRefreshedMsg:
-		m.list.setTickets(msg.tickets, msg.running)
-		m.list.connected = m.source.Connected()
-		m.list.err = nil
-		return m, nil
+		return m.finishListRefresh(msg)
 
 	case taskUpdatedMsg:
 		return m.handleTaskUpdated(web.TicketEvent(msg))
@@ -134,10 +145,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tickMsg:
-		if m.source.Connected() {
-			return m, tea.Batch(m.fetchCustomStatusesCmd(), tickCmd())
-		}
-		return m, tea.Batch(m.fetchTasksCmd(), tickCmd())
+		return m.handleTick()
 
 	case configMsg:
 		if msg.err != nil {
@@ -197,6 +205,22 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	return m, nil
+}
+
+func (m model) handleTick() (model, tea.Cmd) {
+	var cmds []tea.Cmd
+	if m.source.Connected() {
+		cmds = append(cmds, m.fetchCustomStatusesCmd())
+	}
+	if !m.source.Connected() || m.listRetry {
+		cmds = append(cmds, m.fetchTasksCmd())
+	}
+	if m.detailRetry && m.view == viewDetail {
+		m.refreshSeq++
+		m.detailRetry = false
+		cmds = append(cmds, m.refreshTaskCmd(m.detail.ticket.ID, m.refreshSeq))
+	}
+	return m, tea.Batch(append(cmds, tickCmd())...)
 }
 
 func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -376,14 +400,69 @@ func (m model) View() string {
 // Commands
 
 func (m model) fetchTasksCmd() tea.Cmd {
-	src := m.source
-	return func() tea.Msg {
-		tickets, running, err := src.FetchTickets()
-		if err != nil {
-			return errMsg{err: err}
-		}
-		return ticketsRefreshedMsg{tickets: tickets, running: running}
+	// Init receives a model copy; only Update can install snapshot protection.
+	return func() tea.Msg { return fetchTicketsMsg{} }
+}
+
+func (m model) startListRefresh() (model, tea.Cmd) {
+	if m.listFlight {
+		m.listAgain = true
+		return m, nil
 	}
+	m.listFlight = true
+	m.listObsolete = false
+	m.listRetry = false
+	m.listTouched = make(map[string]bool)
+	src := m.source
+	return m, func() tea.Msg {
+		tickets, running, err := src.FetchTickets()
+		return ticketsRefreshedMsg{tickets: tickets, running: running, err: err}
+	}
+}
+
+func (m model) finishListRefresh(msg ticketsRefreshedMsg) (model, tea.Cmd) {
+	m.listFlight = false
+	if m.listObsolete {
+		m.listAgain = false
+		m.listTouched = nil
+		return m.startListRefresh()
+	}
+	m.listRetry = msg.err != nil
+	if msg.err != nil {
+		m.list.err = msg.err
+	} else {
+		// Events received during the request outrank the snapshot, including deletions.
+		tickets := make([]web.TicketInfo, 0, len(msg.tickets))
+		for _, info := range msg.tickets {
+			if !m.listTouched[info.ID] {
+				tickets = append(tickets, info)
+			}
+		}
+		for _, info := range m.list.tickets {
+			if m.listTouched[info.ID] {
+				tickets = append(tickets, info)
+			}
+		}
+		m.list.setTickets(tickets, msg.running)
+		if len(m.listTouched) > 0 {
+			m.countRunning()
+		}
+		m.list.connected = m.source.Connected()
+		m.list.err = nil
+		if m.view == viewDetail && !slices.ContainsFunc(m.list.tickets, func(info web.TicketInfo) bool {
+			return info.ID == m.detail.ticket.ID
+		}) {
+			m.view = viewList
+			m.refreshSeq++
+			m.detailRetry = false
+		}
+	}
+	m.listTouched = nil
+	if m.listAgain {
+		m.listAgain = false
+		return m.startListRefresh()
+	}
+	return m, nil
 }
 
 func (m model) fetchTaskCmd(id string) tea.Cmd {
@@ -401,10 +480,7 @@ func (m model) refreshTaskCmd(id string, seq int) tea.Cmd {
 	src := m.source
 	return func() tea.Msg {
 		info, err := src.FetchTask(id)
-		if err != nil {
-			return errMsg{err: err}
-		}
-		return taskRefreshedMsg{info: info, seq: seq}
+		return taskRefreshedMsg{info: info, seq: seq, err: err}
 	}
 }
 
@@ -461,6 +537,7 @@ func (m model) openDetail(info web.TicketInfo) (model, tea.Cmd) {
 	session, socket := m.source.Attachment()
 	m.detail.attachable = session != "" && socket != ""
 	m.view = viewDetail
+	m.detailRetry = false
 	// This body is newer than anything a refresh in flight can carry.
 	m.refreshSeq++
 	stage := ""
@@ -471,24 +548,69 @@ func (m model) openDetail(info web.TicketInfo) (model, tea.Cmd) {
 }
 
 func (m model) handleTaskRefreshed(msg taskRefreshedMsg) model {
-	// Nothing sequences these fetches, so an overtaken one would put an older
-	// body back on screen.
+	// HTTP responses can finish out of order or after another ticket opens.
 	if msg.seq != m.refreshSeq {
 		return m
 	}
-	if m.view == viewDetail && m.detail.ticket.ID == msg.info.ID {
-		m.detail.setTicket(msg.info)
+	if m.view != viewDetail {
+		return m
+	}
+	if msg.err != nil {
+		m.detail.err = msg.err
+		m.detailRetry = true
+	} else if m.detail.ticket.ID == msg.info.ID {
+		if msg.info.Status == string(ticket.StatusArchived) {
+			m.view = viewList
+		} else {
+			m.detail.setTicket(msg.info)
+		}
+		m.detail.err = nil
+		m.detailRetry = false
 	}
 	return m
 }
 
 func (m model) handleTaskUpdated(ev web.TicketEvent) (model, tea.Cmd) {
+	if ev.Type == remote.SSEConnected {
+		if m.listFlight {
+			m.listObsolete = true
+		}
+		var listCmd, detailCmd tea.Cmd
+		m, listCmd = m.startListRefresh()
+		if m.view == viewDetail {
+			m.refreshSeq++
+			m.detailRetry = false
+			detailCmd = m.refreshTaskCmd(m.detail.ticket.ID, m.refreshSeq)
+		}
+		return m, tea.Batch(listCmd, detailCmd)
+	}
+	if ev.Ticket.Source != "" || ev.Ticket.ID == "" || (ev.Type != "ticket_updated" && ev.Type != "ticket_deleted") {
+		return m, nil
+	}
+	if m.listFlight {
+		m.listTouched[ev.Ticket.ID] = true
+	}
+	if ev.Type == "ticket_deleted" {
+		m.list.tickets = slices.DeleteFunc(m.list.tickets, func(info web.TicketInfo) bool {
+			return info.ID == ev.Ticket.ID
+		})
+		m.list.applyFilter()
+		if m.view == viewDetail && m.detail.ticket.ID == ev.Ticket.ID {
+			m.view = viewList
+			m.refreshSeq++
+			m.detailRetry = false
+		}
+		m.countRunning()
+		return m, nil
+	}
 	m.list.updateTicket(ev.Ticket)
 	var cmd tea.Cmd
 	if m.view == viewDetail && m.detail.ticket.ID == ev.Ticket.ID {
 		// An archived ticket is no longer actionable; return to the board.
 		if ev.Ticket.Status == string(ticket.StatusArchived) {
 			m.view = viewList
+			m.refreshSeq++
+			m.detailRetry = false
 		} else {
 			// The event carries every header field but no body, so it is
 			// applied over the body on screen: waiting for the refetch would
@@ -499,17 +621,21 @@ func (m model) handleTaskUpdated(ev web.TicketEvent) (model, tea.Cmd) {
 			info.Body = m.detail.ticket.Body
 			m.detail.setTicket(info)
 			m.refreshSeq++
+			m.detailRetry = false
 			cmd = m.refreshTaskCmd(ev.Ticket.ID, m.refreshSeq)
 		}
 	}
-	running := 0
-	for _, t := range m.list.tickets {
-		if t.Status == string(ticket.StatusInProgress) {
-			running++
+	m.countRunning()
+	return m, cmd
+}
+
+func (m *model) countRunning() {
+	m.list.running = 0
+	for _, info := range m.list.tickets {
+		if info.Kontora && info.Status == string(ticket.StatusInProgress) {
+			m.list.running++
 		}
 	}
-	m.list.running = running
-	return m, cmd
 }
 
 func (m model) handleAgentConfig(msg agentConfigMsg) (tea.Model, tea.Cmd) {

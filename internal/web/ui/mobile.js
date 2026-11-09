@@ -13,6 +13,24 @@ export function kontoraMobile() {
   let columnScrollSequence = 0;
 
   return {
+    _mobileWindowKey: '',
+    _mobileWindowSize: 100,
+
+    mobileWindowKey() {
+      return JSON.stringify([this.mobileColumn().key, this.searchQuery, this.sourceFilter]);
+    },
+
+    mobileTickets() {
+      var size = this._mobileWindowKey === this.mobileWindowKey() ? this._mobileWindowSize : 100;
+      return this.boardTickets(this.mobileColumn().key).slice(0, size);
+    },
+
+    mobileLoadMore() {
+      var key = this.mobileWindowKey();
+      this._mobileWindowSize = (this._mobileWindowKey === key ? this._mobileWindowSize : 100) + 100;
+      this._mobileWindowKey = key;
+    },
+
     initMobile() {
       if (lifecycle || this._appDestroyed) return;
       const owner = lifecycle = { listeners: [], watches: [], frame: null, styles: [] };

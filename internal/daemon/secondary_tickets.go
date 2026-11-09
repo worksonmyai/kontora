@@ -25,8 +25,69 @@ import (
 )
 
 type secondaryCatalog struct {
-	source  web.TicketSourceInfo
-	tickets map[string]*ticketState
+	source      web.TicketSourceInfo
+	tickets     map[string]*ticketState
+	projections map[string][sha256.Size]byte
+	observer    secondaryObserver
+}
+
+type secondaryGeneration struct {
+	done    chan struct{}
+	tickets map[string]web.TicketInfo
+	err     error
+}
+
+func (g *secondaryGeneration) result() (map[string]web.TicketInfo, error) {
+	<-g.done
+	return g.tickets, g.err
+}
+
+type secondaryObserver struct {
+	mu      sync.Mutex
+	pending *secondaryGeneration
+	idle    chan struct{}
+	observe func() (map[string]web.TicketInfo, error)
+}
+
+func (o *secondaryObserver) request() *secondaryGeneration {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	// An active scan may already have read a changed path; join its successor.
+	if o.pending == nil {
+		o.pending = &secondaryGeneration{done: make(chan struct{})}
+	}
+	g := o.pending
+	if o.idle == nil {
+		o.idle = make(chan struct{})
+		go o.run()
+	}
+	return g
+}
+
+func (o *secondaryObserver) run() {
+	for {
+		o.mu.Lock()
+		g := o.pending
+		if g == nil {
+			close(o.idle)
+			o.idle = nil
+			o.mu.Unlock()
+			return
+		}
+		o.pending = nil
+		o.mu.Unlock()
+		g.tickets, g.err = o.observe()
+		close(g.done)
+	}
+}
+
+func (o *secondaryObserver) wait() {
+	o.mu.Lock()
+	idle := o.idle
+	o.mu.Unlock()
+	if idle != nil {
+		<-idle
+	}
 }
 
 type secondaryObservation struct {
@@ -176,14 +237,24 @@ func (d *Daemon) startSecondary(ctx context.Context) (func(), error) {
 	d.secondaryMu.Lock()
 	d.secondary = make(map[string]*secondaryCatalog, len(sources))
 	for _, source := range sources {
-		d.secondary[source.ID] = &secondaryCatalog{source: web.TicketSourceInfo{ID: source.ID, Path: source.Path}, tickets: make(map[string]*ticketState)}
+		catalog := &secondaryCatalog{source: web.TicketSourceInfo{ID: source.ID, Path: source.Path}, tickets: make(map[string]*ticketState)}
+		catalog.observer.observe = func() (map[string]web.TicketInfo, error) {
+			return d.observeAndPublishSecondary(source.ID, source.Path)
+		}
+		d.secondary[source.ID] = catalog
 	}
 	d.secondaryMu.Unlock()
 	for _, source := range sources {
 		w, identity := d.openSecondaryWatcher(source.ID, source.Path)
 		wg.Go(func() { d.watchSecondary(ctx, source.ID, source.Path, w, identity) })
 	}
-	return func() { cancel(); wg.Wait() }, nil
+	return func() {
+		cancel()
+		wg.Wait()
+		for _, source := range sources {
+			d.secondary[source.ID].observer.wait()
+		}
+	}, nil
 }
 
 func (d *Daemon) openSecondaryWatcher(id, dir string) (*watcher.Watcher, os.FileInfo) {
@@ -208,7 +279,7 @@ func (d *Daemon) openSecondaryWatcher(id, dir string) (*watcher.Watcher, os.File
 		d.setSecondaryUnavailable(id, err)
 		return nil, nil
 	}
-	d.refreshSecondary(id, dir)
+	d.refreshSecondary(id)
 	return w, identity
 }
 
@@ -234,7 +305,7 @@ func (d *Daemon) watchSecondary(ctx context.Context, id, dir string, w *watcher.
 				_ = w.Close()
 				w, identity = d.openSecondaryWatcher(id, dir)
 			} else {
-				d.refreshSecondary(id, dir)
+				d.requestSecondaryObservation(id)
 			}
 		case err := <-errs:
 			d.setSecondaryUnavailable(id, err)
@@ -276,35 +347,63 @@ func (d *Daemon) setSecondaryUnavailable(id string, err error) {
 	}
 }
 
-func (d *Daemon) refreshSecondary(id, dir string) {
+func (d *Daemon) requestSecondaryObservation(id string) *secondaryGeneration {
+	d.secondaryMu.Lock()
+	catalog := d.secondary[id]
+	d.secondaryMu.Unlock()
+	if catalog == nil {
+		g := &secondaryGeneration{done: make(chan struct{}), err: web.ErrTicketNotFound}
+		close(g.done)
+		return g
+	}
+	return catalog.observer.request()
+}
+
+func (d *Daemon) refreshSecondary(id string) {
+	_, _ = d.requestSecondaryObservation(id).result()
+}
+
+func (d *Daemon) observeAndPublishSecondary(id, dir string) (map[string]web.TicketInfo, error) {
 	snapshot, err := observeSecondary(dir, readSecondaryFile)
 	if err != nil {
 		d.setSecondaryUnavailable(id, err)
-		return
+		return nil, err
 	}
 	cfg := *d.config()
 	cfg.TicketsDir = dir
 	next := make(map[string]*ticketState, len(snapshot.tickets))
+	infos := make(map[string]web.TicketInfo, len(snapshot.tickets))
+	projections := make(map[string][sha256.Size]byte, len(snapshot.tickets))
 	for ticketID, observed := range snapshot.tickets {
 		next[ticketID] = newTicketState(observed.stored.Ticket, observed.stored.FilePath)
+		info := d.secondaryTicketInfo(&cfg, id, observed, snapshot)
+		data, err := json.Marshal(info)
+		if err != nil {
+			return nil, err
+		}
+		infos[ticketID], projections[ticketID] = info, sha256.Sum256(data)
 	}
 	d.secondaryMu.Lock()
 	catalog := d.secondary[id]
 	if catalog == nil {
 		d.secondaryMu.Unlock()
-		return
+		return nil, web.ErrTicketNotFound
 	}
-	old := catalog.tickets
+	old := catalog.projections
 	wasAvailable := catalog.source.Available
-	catalog.tickets = next
+	catalog.tickets, catalog.projections = next, projections
 	catalog.source.Available, catalog.source.Error = true, ""
 	d.secondaryMu.Unlock()
 	d.reconcileSecondaryDependencies()
 	if !wasAvailable {
 		d.broker.Broadcast(web.TicketEvent{Type: "ticket_sources_changed"})
 	}
-	for _, observed := range snapshot.tickets {
-		info := d.secondaryTicketInfo(&cfg, id, observed, snapshot, true)
+	for ticketID, info := range infos {
+		if previous, ok := old[ticketID]; ok && previous == projections[ticketID] {
+			continue
+		}
+		// Compare the full projection, including bodies, before trimming SSE.
+		info.Body, info.Description, info.DescriptionTail = "", nil, nil
 		d.broker.Broadcast(web.TicketEvent{Type: "secondary_ticket_updated", Ticket: info})
 	}
 	for ticketID := range old {
@@ -313,6 +412,7 @@ func (d *Daemon) refreshSecondary(id, dir string) {
 			d.broker.Broadcast(web.TicketEvent{Type: "secondary_ticket_deleted", Ticket: info})
 		}
 	}
+	return infos, nil
 }
 
 func (d *Daemon) ListTicketSources() []web.TicketSourceInfo {
@@ -344,39 +444,38 @@ func (d *Daemon) secondaryConfig(source string) (*config.Config, error) {
 }
 
 func (d *Daemon) ListSecondaryTickets(source string) ([]web.TicketInfo, error) {
-	cfg, err := d.secondaryConfig(source)
+	infos, err := d.requestSecondaryObservation(source).result()
 	if err != nil {
 		return nil, err
 	}
-	snapshot, err := observeSecondary(cfg.TicketsDir, readSecondaryFile)
-	if err != nil {
-		return nil, err
-	}
-	result := make([]web.TicketInfo, 0, len(snapshot.tickets))
-	for _, observed := range snapshot.tickets {
-		result = append(result, d.secondaryTicketInfo(cfg, source, observed, snapshot, false))
+	result := make([]web.TicketInfo, 0, len(infos))
+	for _, info := range infos {
+		info.Body, info.Description, info.DescriptionTail = "", nil, nil
+		info.History, info.Notes, info.Blocks, info.Children = nil, nil, nil, nil
+		info.LastError, info.LastLog, info.Summary, info.FinalSummary = "", "", "", ""
+		result = append(result, info)
 	}
 	slices.SortFunc(result, func(a, b web.TicketInfo) int { return strings.Compare(a.ID, b.ID) })
 	return result, nil
 }
 
 func (d *Daemon) GetSecondaryTicket(source, id string) (web.TicketInfo, error) {
-	cfg, err := d.secondaryConfig(source)
-	if err != nil {
-		return web.TicketInfo{}, err
-	}
 	if !ticket.IsSafeID(id) {
 		return web.TicketInfo{}, web.ErrTicketNotFound
 	}
-	snapshot, err := observeSecondary(cfg.TicketsDir, readSecondaryFile)
+	return d.secondaryMutationResult(source, id)
+}
+
+func (d *Daemon) secondaryMutationResult(source, id string) (web.TicketInfo, error) {
+	infos, err := d.requestSecondaryObservation(source).result()
 	if err != nil {
 		return web.TicketInfo{}, err
 	}
-	observed := snapshot.tickets[id]
-	if observed == nil {
+	info, ok := infos[id]
+	if !ok {
 		return web.TicketInfo{}, web.ErrTicketNotFound
 	}
-	return d.secondaryTicketInfo(cfg, source, observed, snapshot, true), nil
+	return info, nil
 }
 
 func secondaryStored(dir, id string) (*app.StoredTicket, error) {
@@ -401,9 +500,9 @@ func secondaryStored(dir, id string) (*app.StoredTicket, error) {
 	return &app.StoredTicket{Ticket: t, FilePath: path}, nil
 }
 
-func (d *Daemon) secondaryTicketInfo(cfg *config.Config, source string, observed *secondaryObservation, snapshot *secondarySnapshot, detail bool) web.TicketInfo {
+func (d *Daemon) secondaryTicketInfo(cfg *config.Config, source string, observed *secondaryObservation, snapshot *secondarySnapshot) web.TicketInfo {
 	t := observed.stored.Ticket
-	info := web.TicketInfoFromView(app.BuildView(cfg, t, detail))
+	info := web.TicketInfoFromView(app.BuildView(cfg, t, true))
 	info.Source = source
 	info.Project, _, _ = cfg.ProjectFor(t.Path)
 	info.UpdatedAt = &observed.modTime
@@ -449,17 +548,15 @@ func (d *Daemon) secondaryTicketInfo(cfg *config.Config, source string, observed
 		resolve(&info.Links[i])
 	}
 	resolve(info.Parent)
-	if detail {
-		for _, id := range snapshot.blocks[t.ID] {
-			other := index[id].stored.Ticket
-			info.Blocks = append(info.Blocks, web.TicketRef{ID: other.ID, Title: other.Title(), Status: string(other.Status)})
-		}
-		for _, id := range snapshot.children[t.ID] {
-			info.Children = append(info.Children, childInfo(cfg, index[id].stored.Ticket))
-		}
-		slices.SortFunc(info.Blocks, func(a, b web.TicketRef) int { return strings.Compare(a.ID, b.ID) })
-		slices.SortFunc(info.Children, func(a, b web.TicketChild) int { return strings.Compare(a.ID, b.ID) })
+	for _, id := range snapshot.blocks[t.ID] {
+		other := index[id].stored.Ticket
+		info.Blocks = append(info.Blocks, web.TicketRef{ID: other.ID, Title: other.Title(), Status: string(other.Status)})
 	}
+	for _, id := range snapshot.children[t.ID] {
+		info.Children = append(info.Children, childInfo(cfg, index[id].stored.Ticket))
+	}
+	slices.SortFunc(info.Blocks, func(a, b web.TicketRef) int { return strings.Compare(a.ID, b.ID) })
+	slices.SortFunc(info.Children, func(a, b web.TicketChild) int { return strings.Compare(a.ID, b.ID) })
 	info.ClaimWarnings = d.claimRelationshipWarnings(t, snapshot.related[t.ID])
 	return info
 }
@@ -522,13 +619,13 @@ func (d *Daemon) claimRelationshipWarnings(t *ticket.Ticket, incoming []string) 
 	return warnings
 }
 
-func (d *Daemon) UpdateSecondaryTicket(source, id string, req web.UpdateTicketRequest) error {
+func (d *Daemon) UpdateSecondaryTicket(source, id string, req web.UpdateTicketRequest) (web.TicketInfo, error) {
 	if err := req.ValidateDescription(); err != nil {
-		return err
+		return web.TicketInfo{}, err
 	}
 	cfg, err := d.secondaryConfig(source)
 	if err != nil {
-		return err
+		return web.TicketInfo{}, err
 	}
 	repo := store.NewSecondaryRepo(cfg.TicketsDir)
 	svc := app.New(app.Static(cfg), repo, app.NoopRuntime{})
@@ -536,14 +633,14 @@ func (d *Daemon) UpdateSecondaryTicket(source, id string, req web.UpdateTicketRe
 	if req.Path != nil || req.Branch != nil || req.BaseBranch != nil {
 		proposal, err := secondaryStored(cfg.TicketsDir, id)
 		if err != nil {
-			return err
+			return web.TicketInfo{}, err
 		}
 		if err := applyTicketUpdate(cfg, proposal.Ticket, req); err != nil {
-			return err
+			return web.TicketInfo{}, err
 		}
 		prepared, err = svc.PrepareExecutionSettings(proposal.Ticket)
 		if err != nil {
-			return mapAppError(err)
+			return web.TicketInfo{}, mapAppError(err)
 		}
 	}
 	err = repo.WithMutation(func(scoped app.MutationRepository) error {
@@ -562,19 +659,18 @@ func (d *Daemon) UpdateSecondaryTicket(source, id string, req web.UpdateTicketRe
 		return scoped.Save(st)
 	})
 	if err != nil {
-		return mapAppError(err)
+		return web.TicketInfo{}, mapAppError(err)
 	}
-	d.refreshSecondary(source, cfg.TicketsDir)
-	return nil
+	return d.secondaryMutationResult(source, id)
 }
 
-func (d *Daemon) MutateSecondaryTicket(source, id string, op web.SecondaryMutation) error {
+func (d *Daemon) MutateSecondaryTicket(source, id string, op web.SecondaryMutation) (web.TicketInfo, error) {
 	cfg, err := d.secondaryConfig(source)
 	if err != nil {
-		return err
+		return web.TicketInfo{}, err
 	}
 	if _, err := secondaryStored(cfg.TicketsDir, id); err != nil {
-		return err
+		return web.TicketInfo{}, err
 	}
 	// Routing admission spans both markdown and reaction writes.
 	err = ticket.WithOrdinaryRouting(cfg.TicketsDir, func() error {
@@ -641,10 +737,9 @@ func (d *Daemon) MutateSecondaryTicket(source, id string, op web.SecondaryMutati
 		return err
 	})
 	if err != nil {
-		return mapAppError(err)
+		return web.TicketInfo{}, mapAppError(err)
 	}
-	d.refreshSecondary(source, cfg.TicketsDir)
-	return nil
+	return d.secondaryMutationResult(source, id)
 }
 
 func (d *Daemon) ClaimSecondaryTicket(source, id, revision string) (web.TicketInfo, error) {
@@ -682,7 +777,7 @@ func (d *Daemon) ClaimSecondaryTicket(source, id, revision string) (web.TicketIn
 			}
 			if !blocked[id] {
 				d.handleFileChanged(filepath.Join(expandTilde(d.config().TicketsDir), id+".md"))
-				d.refreshSecondary(source, cfg.TicketsDir)
+				d.refreshSecondary(source)
 			}
 		}
 		return web.TicketInfo{}, fmt.Errorf("%w: %v", web.ErrInvalidState, err)
@@ -697,6 +792,6 @@ func (d *Daemon) ClaimSecondaryTicket(source, id, revision string) (web.TicketIn
 	d.broadcastTicketUpdate(id)
 	info := d.buildTicketInfo(d.config(), d.tickets[id], true)
 	d.mu.Unlock()
-	d.refreshSecondary(source, cfg.TicketsDir)
+	d.refreshSecondary(source)
 	return info, nil
 }

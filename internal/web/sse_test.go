@@ -67,8 +67,16 @@ func TestSSEBroker_SlowClient(t *testing.T) {
 		b.Broadcast(TicketEvent{Type: "ticket_updated", Ticket: TicketInfo{ID: "t-slow", Attempt: i}})
 	}
 
-	// Should have 64 events buffered, 65th dropped.
 	assert.Len(t, ch, 64)
+	for range 64 {
+		_, ok := <-ch
+		require.True(t, ok)
+	}
+	_, ok := <-ch
+	require.False(t, ok)
+	b.mu.Lock()
+	require.Empty(t, b.clients)
+	b.mu.Unlock()
 }
 
 func TestSSEBroker_ConcurrentAccess(t *testing.T) {

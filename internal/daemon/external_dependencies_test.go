@@ -113,8 +113,12 @@ func TestSecondaryDependencyRefresh(t *testing.T) {
 			sources, err := h.cfg.SecondarySources()
 			require.NoError(t, err)
 			source := sources[0].ID
-			d.secondary = map[string]*secondaryCatalog{source: {source: web.TicketSourceInfo{ID: source, Path: dir}}}
-			d.refreshSecondary(source, dir)
+			catalog := &secondaryCatalog{source: web.TicketSourceInfo{ID: source, Path: dir}}
+			catalog.observer.observe = func() (map[string]web.TicketInfo, error) {
+				return d.observeAndPublishSecondary(source, dir)
+			}
+			d.secondary = map[string]*secondaryCatalog{source: catalog}
+			d.refreshSecondary(source)
 			require.NoError(t, d.initialScan(h.tasksDir))
 			if tc.remove {
 				require.NoError(t, os.Remove(path))
@@ -124,7 +128,7 @@ func TestSecondaryDependencyRefresh(t *testing.T) {
 			if tc.unavailable {
 				d.setSecondaryUnavailable(source, errors.New("source offline"))
 			} else {
-				d.refreshSecondary(source, dir)
+				d.refreshSecondary(source)
 			}
 			info, err := d.GetTicket("dep-a")
 			require.NoError(t, err)
@@ -196,8 +200,12 @@ func TestExecutionClaimRechecksSecondaryDependency(t *testing.T) {
 			sources, err := h.cfg.SecondarySources()
 			require.NoError(t, err)
 			source := sources[0].ID
-			d.secondary = map[string]*secondaryCatalog{source: {source: web.TicketSourceInfo{ID: source, Path: dir}}}
-			d.refreshSecondary(source, dir)
+			catalog := &secondaryCatalog{source: web.TicketSourceInfo{ID: source, Path: dir}}
+			catalog.observer.observe = func() (map[string]web.TicketInfo, error) {
+				return d.observeAndPublishSecondary(source, dir)
+			}
+			d.secondary = map[string]*secondaryCatalog{source: catalog}
+			d.refreshSecondary(source)
 			require.NoError(t, d.initialScan(h.tasksDir))
 			require.Equal(t, []string{"dep-a"}, d.queuedIDs())
 			if tc.remove {

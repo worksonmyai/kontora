@@ -66,7 +66,7 @@ func inspectWindowIDs(ctx context.Context) ([]inspectedWindow, error) {
 	}
 	var out []byte
 	var err error
-	for attempt := 0; attempt < 3; attempt++ {
+	for attempt := range 3 {
 		out, err = exec.CommandContext(ctx, "tmux", "-u", "list-windows", "-a", "-F", "#{session_name}\t#{window_name}\t#{window_id}").CombinedOutput()
 		if ctx.Err() != nil {
 			return nil, ctx.Err()

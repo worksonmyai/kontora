@@ -362,6 +362,83 @@ async function visualViewport(page, height, top = 0) {
   }, { height, top });
 }
 
+const terminalSelector = '#terminal-session:visible, #terminal-container-mobile:visible, #epic-terminal-session:visible, #epic-terminal-mobile:visible';
+const terminalSubjects = ['kon-live', supervisorID];
+let markerSequence = 0;
+
+async function openTerminalSubject(page, id) {
+  if (id === supervisorID) {
+    await routeTo(page, '#/e/' + id);
+    await page.getByRole('button', { name: 'session', exact: true }).filter({ visible: true }).click();
+  } else await openTicket(page, id);
+}
+
+function terminalGrid({ marker, minRows = 1, diagnostic = false } = {}) {
+  const term = window.termState.term;
+  const host = document.getElementById(Alpine.$data(document.body).outputContainerID('terminal'));
+  const screen = host?.querySelector('.xterm-screen');
+  if (!host || !term?.element || !screen) return false;
+  const box = host.getBoundingClientRect(), style = getComputedStyle(host);
+  const content = {
+    left: box.left + parseFloat(style.borderLeftWidth) + parseFloat(style.paddingLeft),
+    right: box.right - parseFloat(style.borderRightWidth) - parseFloat(style.paddingRight),
+    top: box.top + parseFloat(style.borderTopWidth) + parseFloat(style.paddingTop),
+    bottom: box.bottom - parseFloat(style.borderBottomWidth) - parseFloat(style.paddingBottom),
+  };
+  const rect = screen.getBoundingClientRect();
+  const cell = term._core._renderService.dimensions.css.cell;
+  const grid = { left: rect.left, top: rect.top,
+    right: rect.left + term.cols * cell.width, bottom: rect.top + term.rows * cell.height };
+  const contains = (outer, inner, x = true, y = true) =>
+    (!x || (inner.left >= outer.left - 1 && inner.right <= outer.right + 1)) &&
+    (!y || (inner.top >= outer.top - 1 && inner.bottom <= outer.bottom + 1));
+  const clips = [];
+  for (let el = host; el; el = el.parentElement) {
+    const css = getComputedStyle(el), bounds = el.getBoundingClientRect();
+    const x = /^(hidden|clip|auto|scroll)$/.test(css.overflowX);
+    const y = /^(hidden|clip|auto|scroll)$/.test(css.overflowY);
+    if (x || y) clips.push({ id: el.id, x, y,
+      left: bounds.left + parseFloat(css.borderLeftWidth), right: bounds.right - parseFloat(css.borderRightWidth),
+      top: bounds.top + parseFloat(css.borderTopWidth), bottom: bounds.bottom - parseFloat(css.borderBottomWidth) });
+    // The mobile overlay is fixed to the viewport, outside its ancestors' overflow clips.
+    if (css.position === 'fixed') break;
+  }
+  const proposed = window.termState.fit.proposeDimensions();
+  const lastRow = term.buffer.active.getLine(term.buffer.active.baseY + term.rows - 1)?.translateToString(true);
+  const fits = cell.width > 0 && cell.height > 0 && term.rows >= minRows && term.cols > 0 &&
+    rect.width > 0 && rect.height > 0 && content.right > content.left && content.bottom > content.top &&
+    term.element.parentElement === host && proposed?.rows === term.rows && proposed?.cols === term.cols &&
+    contains(rect, grid) && contains(content, grid) && contains(content, rect) &&
+    clips.every(clip => contains(clip, grid, clip.x, clip.y) && contains(clip, rect, clip.x, clip.y)) &&
+    contains({ left: 0, top: 0, right: innerWidth, bottom: innerHeight }, rect) &&
+    (!marker || (lastRow === marker && term.buffer.active.viewportY === term.buffer.active.baseY));
+  return diagnostic ? { fits, host: host.id, content, screen: rect.toJSON(), grid,
+    cell, rows: term.rows, cols: term.cols, proposed, clips, minRows, marker, lastRow,
+    baseY: term.buffer.active.baseY, viewportY: term.buffer.active.viewportY } : fits;
+}
+
+async function terminalGridFits(page, fixture, minRows = 1) {
+  const wait = async marker => {
+    await page.waitForFunction(terminalGrid, { marker, minRows }).catch(async error => {
+      const geometry = await page.evaluate(terminalGrid, { marker, minRows, diagnostic: true });
+      throw new Error(`${error.message}: ${JSON.stringify(geometry)}`, { cause: error });
+    });
+  };
+  await visible(page.locator(terminalSelector).locator('.xterm'));
+  if (fixture) await page.waitForFunction(() => Alpine.$data(document.body).terminalConnected && window.termState.ws?.readyState === WebSocket.OPEN);
+  await wait();
+  if (fixture) {
+    const { url, rows } = await page.evaluate(() => ({ url: window.termState.ws.url, rows: window.termState.term.rows }));
+    const index = fixture.sockets.findLastIndex(socket => socket.href === url);
+    assert.ok(index >= 0, 'The connected socket must be intercepted');
+    const marker = `last-row-${++markerSequence}`;
+    fixture.socketRoutes[index].send(Buffer.from(`\x1b[2J\x1b[${rows};1H${marker}`));
+    await wait(marker);
+  }
+  assert.equal(await page.locator(terminalSelector).locator('.xterm').count(), 1);
+  assert.equal(await page.locator('.xterm:visible').count(), 1);
+}
+
 async function terminalRows(page, height, top = 0) {
   await page.waitForFunction(({ height, top }) => {
     const host = document.getElementById('terminal-container-mobile');
@@ -370,11 +447,9 @@ async function terminalRows(page, height, top = 0) {
     const overlay = host.closest('.mobile-detail').getBoundingClientRect();
     if (Math.abs(overlay.height - height) > 1 || Math.abs(overlay.top - top) > 1) return false;
     const box = host.getBoundingClientRect();
-    const cell = term._core._renderService.dimensions.css.cell.height;
     const controls = [...document.querySelectorAll('.mobile-detail-header button, .mobile-terminal-pane button, .mobile-detail-actions button')]
       .map(el => el.getBoundingClientRect()).filter(rect => rect.width && rect.height);
-    return cell > 0 && term.rows >= 8 && box.height >= term.rows * cell &&
-      box.bottom <= height + top + 1 && term.element.getBoundingClientRect().top + term.rows * cell <= box.bottom + 1 &&
+    return box.bottom <= height + top + 1 &&
       controls.every(rect => rect.width >= 44 && rect.height >= 44 && rect.top >= top && rect.bottom <= height + top + 1);
   }, { height, top }).catch(async error => {
     const geometry = await page.evaluate(() => {
@@ -389,7 +464,7 @@ async function terminalRows(page, height, top = 0) {
     });
     throw new Error(`${error.message}: ${JSON.stringify(geometry)}`, { cause: error });
   });
-  assert.equal(await page.locator('#terminal-container-mobile .xterm').count(), 1);
+  await terminalGridFits(page, undefined, 8);
 }
 
 describe('embedded responsive browser UI', { concurrency: 4 }, () => {
@@ -589,7 +664,7 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
           assert.equal(new URL(page.url()).hash, '#/t/kon-live');
           await page.waitForFunction(() => Alpine.$data(document.body).terminalConnected);
           await fixture.socketRoutes.at(-1).close({ code: 1000, reason: 'Fixture disconnect' });
-          await page.waitForFunction(() => !!Alpine.$data(document.body).terminalError);
+          await visible(page.locator('.mobile-terminal-pane [role="alert"]'));
           assert.equal(await status.textContent(), 'Disconnected');
           await terminalRows(page, height, height === 900 ? 0 : 12);
           await page.getByRole('button', { name: 'retry connection', exact: true }).filter({ visible: true }).click();
@@ -877,21 +952,42 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
             width < 768 ? 'Open navigation' : 'Open command palette');
           assert.ok(await trigger.evaluate(el => el === document.activeElement), 'Closing restores trigger focus');
         });
-        await t.test('repeated ticket panels and offline terminals do not duplicate mounts', async () => {
-          for (let repeat = 0; repeat < 3; repeat++) {
+        await t.test('repeated ticket and epic panels keep offline terminal grids contained', async () => {
+          const socketsBefore = fixture.sockets.length;
+          for (const id of terminalSubjects) for (let repeat = 0; repeat < 3; repeat++) {
             await backToBoard(page);
-            await openTicket(page, 'kon-live');
-            const terminal = page.locator('#terminal-session:visible, #terminal-container-mobile:visible');
-            await visible(terminal.locator('.xterm'));
-            await page.waitForFunction(() => Alpine.$data(document.body).terminalConnected);
-            assert.equal(await terminal.locator('.xterm').count(), 1);
+            await openTerminalSubject(page, id);
+            const terminal = page.locator(terminalSelector);
+            await terminalGridFits(page, fixture);
             await inViewport(terminal);
+            if (width >= 768 && repeat === 0) {
+              await page.getByRole('button', { name: 'read-only', exact: true }).filter({ visible: true }).click();
+              await page.waitForFunction(() => Alpine.$data(document.body).terminalConnected &&
+                new URL(window.termState.ws.url).searchParams.get('rw') === '1');
+              await terminalGridFits(page, fixture);
+              const decoration = await terminal.evaluate(host => {
+                const frame = host.parentElement, css = getComputedStyle(host), outer = getComputedStyle(frame);
+                return { hostPadding: [css.paddingTop, css.paddingRight, css.paddingBottom, css.paddingLeft],
+                  hostBorder: [css.borderTopWidth, css.borderRightWidth, css.borderBottomWidth, css.borderLeftWidth],
+                  frameRing: frame.classList.contains('ring-1'), frameShadow: outer.boxShadow,
+                  framePadding: [outer.paddingTop, outer.paddingRight], frameBorder: outer.borderTopWidth };
+              });
+              assert.deepEqual(decoration.hostPadding, ['0px', '0px', '0px', '0px']);
+              assert.deepEqual(decoration.hostBorder, ['0px', '0px', '0px', '0px']);
+              assert.equal(decoration.frameRing, true);
+              assert.notEqual(decoration.frameShadow, 'none');
+              assert.deepEqual(decoration.framePadding, ['14px', '18px']);
+              assert.equal(decoration.frameBorder, '1px');
+              await page.getByRole('button', { name: 'activity', exact: true }).filter({ visible: true }).click();
+              await page.getByRole('button', { name: 'session', exact: true }).filter({ visible: true }).click();
+              await terminalGridFits(page, fixture);
+            }
             await backToBoard(page);
-            await page.locator('#terminal-session:visible .xterm, #terminal-container-mobile:visible .xterm').waitFor({ state: 'hidden' });
+            await page.locator('.xterm:visible').waitFor({ state: 'hidden' });
             await openTicket(page, 'kon-draft', source);
             await visible(model(page, 'editForm.body').or(page.locator('[x-ref="bodyPreview"]:visible')));
           }
-          assert.ok(fixture.sockets.length >= 3, 'Each panel reopened an intercepted terminal');
+          assert.ok(fixture.sockets.length >= socketsBefore + 6, 'Each panel reopened an intercepted terminal');
           await backToBoard(page);
           await noPageOverflow(page);
         });
@@ -1276,23 +1372,25 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
   for (const theme of themes) {
     test(`live terminal survives breakpoint roundtrip / ${theme}`, async t => {
       await withPage(t, 390, theme, async (page, fixture) => {
-        await openTicket(page, 'kon-live');
-        for (const width of [...widths, 390]) {
-          await page.setViewportSize({ width, height: 900 });
-          await page.waitForFunction(({ width }) => {
-            const app = Alpine.$data(document.body);
-            return app.isMobile === (width < 768) && (width >= 768 ||
-              Math.abs(parseFloat(document.documentElement.style.getPropertyValue('--mobile-vv-width')) - width) < 1);
-          }, { width });
-          const terminal = page.locator('#terminal-session:visible, #terminal-container-mobile:visible');
-          await visible(terminal.locator('.xterm'));
-          await page.waitForFunction(() => Alpine.$data(document.body).terminalConnected);
-          assert.equal(await page.locator('.xterm:visible').count(), 1);
-          assert.equal(new URL(page.url()).hash, '#/t/kon-live');
-          await inViewport(terminal);
-          await noPageOverflow(page);
+        for (const id of terminalSubjects) {
+          await page.setViewportSize({ width: 390, height: 900 });
+          await backToBoard(page);
+          await openTerminalSubject(page, id);
+          const socketsBefore = fixture.sockets.length;
+          for (const width of [...widths, 390]) for (const height of width === 1280 ? [900, 600, 900] : [900]) {
+            await page.setViewportSize({ width, height });
+            await page.waitForFunction(({ width }) => {
+              const app = Alpine.$data(document.body);
+              return app.isMobile === (width < 768) && (width >= 768 ||
+                Math.abs(parseFloat(document.documentElement.style.getPropertyValue('--mobile-vv-width')) - width) < 1);
+            }, { width });
+            await terminalGridFits(page, fixture);
+            assert.equal(new URL(page.url()).hash, `#/${id === supervisorID ? 'e' : 't'}/${id}`);
+            await inViewport(page.locator(terminalSelector));
+            await noPageOverflow(page);
+          }
+          assert.ok(fixture.sockets.length >= socketsBefore + 2, 'Breakpoint crossings reconnect each subject');
         }
-        assert.ok(fixture.sockets.length >= 3);
       });
     });
   }

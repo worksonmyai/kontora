@@ -2077,9 +2077,10 @@
                 <span x-text="terminalError"></span>
                 <button type="button" @click="reconnectTerminal()" class="ml-3 underline">retry connection</button>
               </div>
-              <div id="terminal-session"
-                   class="flex-1 min-h-0 mx-6 mb-5 bg-surface-deep border border-surface-700 rounded-[10px] p-[14px_18px] overflow-hidden transition-shadow"
-                   :class="terminalRW ? 'ring-1 ring-err/40' : ''"></div>
+              <div class="flex flex-1 min-h-0 min-w-0 mx-6 mb-5 bg-surface-deep border border-surface-700 rounded-[10px] p-[14px_18px] overflow-hidden transition-shadow"
+                   :class="terminalRW ? 'ring-1 ring-err/40' : ''">
+                <div id="terminal-session" class="flex-1 min-h-0 min-w-0 overflow-hidden"></div>
+              </div>
               <div x-show="!terminalOpen" class="shrink-0 px-6 pb-5 font-mono text-[11px] text-surface-600">
                 <span x-show="selectedTicket?.started_at" x-text="'running for ' + formatDuration(selectedTicket)"></span>
                 <span x-show="!selectedTicket?.started_at">no live session</span>
@@ -3292,8 +3293,10 @@
                     <span class="whitespace-pre-wrap break-words" x-text="terminalError"></span>
                     <button type="button" @click="reconnectTerminal()" class="shrink-0 underline">retry connection</button>
                   </div>
-                  <div id="epic-terminal-session" class="flex-1 min-h-0 mx-6 mb-5 bg-surface-deep border border-surface-700 rounded-[10px] p-[14px_18px] overflow-hidden"
-                       :class="terminalRW ? 'ring-1 ring-err/40' : ''"></div>
+                  <div class="flex flex-1 min-h-0 min-w-0 mx-6 mb-5 bg-surface-deep border border-surface-700 rounded-[10px] p-[14px_18px] overflow-hidden"
+                       :class="terminalRW ? 'ring-1 ring-err/40' : ''">
+                    <div id="epic-terminal-session" class="flex-1 min-h-0 min-w-0 overflow-hidden"></div>
+                  </div>
                 </div>
               </div>
 
@@ -6327,9 +6330,9 @@
             <button type="button" @click="toggleTerminalRW()" :aria-pressed="terminalRW" :disabled="!terminalOpen || !!terminalError"
                     :class="terminalRW ? 'text-err' : 'text-tx-3'" x-text="terminalRW ? 'Done typing' : 'Enable input'"></button>
           </div>
-          <div x-show="terminalError" class="shrink-0 px-3 pb-3 font-mono text-xs text-err" role="alert">
-            <span x-text="terminalError"></span>
-            <button type="button" @click="reconnectTerminal()" class="ml-3 underline">retry connection</button>
+          <div x-show="terminalError" class="mobile-terminal-error shrink-0 px-3 pb-3 flex items-center gap-3 font-mono text-xs text-err" role="alert">
+            <span class="whitespace-pre-wrap break-words" x-text="terminalError"></span>
+            <button type="button" @click="reconnectTerminal()" class="shrink-0 underline">retry connection</button>
           </div>
           <div class="mobile-terminal-frame" :class="terminalRW ? 'mobile-terminal-input' : ''">
             <div id="terminal-container-mobile" class="mobile-terminal-host"></div>

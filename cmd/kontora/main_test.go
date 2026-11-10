@@ -268,88 +268,88 @@ func TestCreateViewListEndToEnd(t *testing.T) {
 
 // TestTicketsDirPrecedence runs the built binary for each rung of the ladder:
 // --tickets-dir, then KONTORA_TICKETS_DIR, then TICKETS_DIR, then the file. Each
-// store holds one ticket named after it, so the store that answered is the one
-// the ID names.
+// created ticket must exist only in the selected store.
 func TestTicketsDirPrecedence(t *testing.T) {
-	scratch := t.TempDir()
 	repo := testutil.InitRepo(t)
-
-	stores := map[string]string{}
-	for _, name := range []string{"file", "kontora", "legacy", "flag"} {
-		dir := filepath.Join(scratch, name)
-		require.NoError(t, os.MkdirAll(dir, 0o755))
-		stores[name] = dir
-	}
-
-	configPath := filepath.Join(scratch, "config.yaml")
-	require.NoError(t, os.WriteFile(configPath, []byte(
-		"tickets_dir: "+stores["file"]+"\n"+
-			"worktrees_dir: "+filepath.Join(scratch, "wt")+"\n"+
-			"logs_dir: "+filepath.Join(scratch, "logs")+"\n"+
-			"default_agent: claude\n"+
-			"agents:\n  claude:\n    binary: true\n"), 0o644))
-
-	// One ticket per store, titled with the store's name.
-	for name, dir := range stores {
-		out, err := runCLI(t, []string{config.TicketsDirEnvVar + "=" + dir},
-			"new", "--config", configPath, "--status", "open", "--quiet",
-			"--path", repo, "ticket in "+name)
-		require.NoError(t, err, out)
-	}
-
 	cases := []struct {
-		name string
-		env  []string
-		args []string
-		want string
+		name    string
+		legacy  bool
+		kontora string
+		flag    bool
+		want    string
 	}{
 		{name: "config only", want: "file"},
-		{
-			name: "legacy var beats the file",
-			env:  []string{config.LegacyTicketsDirEnvVar + "=" + stores["legacy"]},
-			want: "legacy",
-		},
-		{
-			name: "kontora var beats the legacy var",
-			env: []string{
-				config.LegacyTicketsDirEnvVar + "=" + stores["legacy"],
-				config.TicketsDirEnvVar + "=" + stores["kontora"],
-			},
-			want: "kontora",
-		},
-		{
-			name: "flag beats both vars",
-			env: []string{
-				config.LegacyTicketsDirEnvVar + "=" + stores["legacy"],
-				config.TicketsDirEnvVar + "=" + stores["kontora"],
-			},
-			args: []string{"--tickets-dir", stores["flag"]},
-			want: "flag",
-		},
-		{
-			name: "a blank var falls back to the file",
-			env:  []string{config.TicketsDirEnvVar + "=   "},
-			want: "file",
-		},
+		{name: "legacy var beats the file", legacy: true, want: "legacy"},
+		{name: "kontora var beats the legacy var", legacy: true, kontora: "kontora", want: "kontora"},
+		{name: "flag beats both vars", legacy: true, kontora: "kontora", flag: true, want: "flag"},
+		{name: "a blank var falls back to the file", kontora: "   ", want: "file"},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			args := append([]string{"ls", "--config", configPath, "--json"}, tc.args...)
-			out, err := runCLI(t, tc.env, args...)
+			scratch := t.TempDir()
+			stores := map[string]string{}
+			for _, name := range []string{"file", "kontora", "legacy", "flag"} {
+				dir := filepath.Join(scratch, name)
+				require.NoError(t, os.MkdirAll(dir, 0o755))
+				stores[name] = dir
+			}
+			configPath := filepath.Join(scratch, "config.yaml")
+			require.NoError(t, os.WriteFile(configPath, []byte(
+				"tickets_dir: "+stores["file"]+"\n"+
+					"secondary_tickets_dirs:\n  - "+stores["file"]+"\n  - "+stores["kontora"]+"\n  - "+stores["legacy"]+"\n  - "+stores["flag"]+"\n"+
+					"worktrees_dir: "+filepath.Join(scratch, "wt")+"\n"+
+					"logs_dir: "+filepath.Join(scratch, "logs")+"\n"+
+					"default_agent: claude\n"+
+					"agents:\n  claude:\n    binary: true\n"), 0o644))
+			var env, overrides []string
+			if tc.legacy {
+				env = append(env, config.LegacyTicketsDirEnvVar+"="+stores["legacy"])
+			}
+			if tc.kontora != "" {
+				value := tc.kontora
+				if dir, ok := stores[value]; ok {
+					value = dir
+				}
+				env = append(env, config.TicketsDirEnvVar+"="+value)
+			}
+			if tc.flag {
+				overrides = []string{"--tickets-dir", stores["flag"]}
+			}
+			args := append([]string{"new", "--config", configPath, "--status", "open", "--quiet", "--path", repo}, overrides...)
+			args = append(args, "ticket in "+tc.want)
+			out, err := runCLI(t, env, args...)
 			require.NoError(t, err, out)
+			id := strings.TrimSpace(out)
+			for name, dir := range stores {
+				if name == tc.want {
+					assert.FileExists(t, filepath.Join(dir, id+".md"))
+				} else {
+					entries, err := os.ReadDir(dir)
+					require.NoError(t, err)
+					assert.Empty(t, entries, "unselected store %s must remain empty", name)
+				}
+			}
+			args = append([]string{"view", "--config", configPath, "--body", id}, overrides...)
+			out, err = runCLI(t, env, args...)
+			require.NoError(t, err, out)
+			assert.Contains(t, out, "# ticket in "+tc.want)
 
+			args = append([]string{"ls", "--config", configPath, "--json"}, overrides...)
+			out, err = runCLI(t, env, args...)
+			require.NoError(t, err, out)
 			var items []map[string]any
 			require.NoError(t, json.Unmarshal([]byte(out), &items))
 			require.Len(t, items, 1)
+			assert.Equal(t, id, items[0]["id"])
 			assert.Equal(t, "ticket in "+tc.want, items[0]["title"])
+			assert.Equal(t, "open", items[0]["status"])
 
 			// Retry needs the resolved execution config as well as the selected
 			// store, even for an ordinary ticket without an explicit branch.
-			id := items[0]["id"].(string)
 			for _, action := range []string{"pause", "retry"} {
-				args := append([]string{action, "--config", configPath, id}, tc.args...)
-				out, err := runCLI(t, tc.env, args...)
+				args := append([]string{action, "--config", configPath, id}, overrides...)
+				out, err := runCLI(t, env, args...)
 				require.NoError(t, err, out)
 			}
 			got, err := ticket.ParseFile(filepath.Join(stores[tc.want], id+".md"))

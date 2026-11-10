@@ -23,7 +23,9 @@ func (c *Config) SecondarySources() ([]TicketSource, error) {
 	if err != nil {
 		return nil, fmt.Errorf("tickets_dir: %w", err)
 	}
-	identities := []string{primary}
+	primaryInfo, _ := os.Stat(primary)
+	var identities []string
+	var indices []int
 	var sources []TicketSource
 	for i, path := range c.SecondaryTicketsDirs {
 		identity, err := sourceDirectoryIdentity(path)
@@ -31,17 +33,18 @@ func (c *Config) SecondarySources() ([]TicketSource, error) {
 			return nil, fmt.Errorf("secondary_tickets_dirs[%d]: %w", i, err)
 		}
 		info, _ := os.Stat(identity)
+		if identity == primary || (info != nil && primaryInfo != nil && os.SameFile(info, primaryInfo)) {
+			continue
+		}
 		for j, previous := range identities {
 			previousInfo, _ := os.Stat(previous)
 			if identity != previous && (info == nil || previousInfo == nil || !os.SameFile(info, previousInfo)) {
 				continue
 			}
-			if j == 0 {
-				return nil, fmt.Errorf("secondary_tickets_dirs[%d]: %q aliases tickets_dir", i, path)
-			}
-			return nil, fmt.Errorf("secondary_tickets_dirs[%d]: %q aliases secondary_tickets_dirs[%d]", i, path, j-1)
+			return nil, fmt.Errorf("secondary_tickets_dirs[%d]: %q aliases secondary_tickets_dirs[%d]", i, path, indices[j])
 		}
 		identities = append(identities, identity)
+		indices = append(indices, i)
 		hash := sha256.Sum256([]byte(identity))
 		sources = append(sources, TicketSource{ID: fmt.Sprintf("secondary-%x", hash), Path: identity})
 	}

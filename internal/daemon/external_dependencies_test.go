@@ -33,7 +33,7 @@ func TestSecondaryDependencyResolution(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t)
 			dir := t.TempDir()
-			h.cfg.SecondaryTicketsDirs = []string{dir}
+			h.cfg.SecondaryTicketsDirs = []string{h.tasksDir, dir, h.tasksDir}
 			h.writeTicket("dep-a.md", h.depTaskMD("dep-a", "todo", "2026-01-02T00:00:00Z", "dep-b"))
 			if tc.primaryStatus != "" {
 				h.writeTicket("dep-b.md", h.depTaskMD("dep-b", tc.primaryStatus, "2026-01-01T00:00:00Z"))
@@ -102,7 +102,7 @@ func TestSecondaryDependencyRefresh(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t)
 			dir := t.TempDir()
-			h.cfg.SecondaryTicketsDirs = []string{dir}
+			h.cfg.SecondaryTicketsDirs = []string{h.tasksDir, dir, h.tasksDir}
 			h.writeTicket("dep-a.md", h.depTaskMD("dep-a", "todo", "2026-01-02T00:00:00Z", "dep-b"))
 			path := filepath.Join(dir, "dep-b.md")
 			write := func(status string) {
@@ -141,7 +141,7 @@ func TestSecondaryDependencyRefresh(t *testing.T) {
 func TestSecondaryDependencyWatcherStartsPrimaryOnly(t *testing.T) {
 	h := newHarness(t)
 	dir := t.TempDir()
-	h.cfg.SecondaryTicketsDirs = []string{dir}
+	h.cfg.SecondaryTicketsDirs = []string{h.tasksDir, dir, h.tasksDir}
 	h.writeTicket("dep-a.md", h.depTaskMD("dep-a", "todo", "2026-01-02T00:00:00Z", "dep-b"))
 	path := filepath.Join(dir, "dep-b.md")
 	require.NoError(t, os.WriteFile(path, []byte(h.depTaskMD("dep-b", "open", "2026-01-01T00:00:00Z")), 0o644))
@@ -188,7 +188,7 @@ func TestExecutionClaimRechecksSecondaryDependency(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t)
 			dir := t.TempDir()
-			h.cfg.SecondaryTicketsDirs = []string{dir}
+			h.cfg.SecondaryTicketsDirs = []string{h.tasksDir, dir, h.tasksDir}
 			h.writeTicket("dep-a.md", h.depTaskMD("dep-a", "todo", "2026-01-02T00:00:00Z", "dep-b"))
 			path := filepath.Join(dir, "dep-b.md")
 			require.NoError(t, os.WriteFile(path, []byte(h.depTaskMD("dep-b", "done", "2026-01-01T00:00:00Z")), 0o644))

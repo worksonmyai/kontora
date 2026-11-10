@@ -79,9 +79,13 @@ match supplies its status; duplicate secondary IDs remain unresolved. The daemon
 runs, recovers, schedules, or derives epic statuses in a secondary folder.
 
 Paths support `~`. Kontora resolves directory aliases after primary environment and
-command-line overrides. A secondary folder cannot alias primary or another secondary
-folder. Discovery is nonrecursive. Missing or unreadable secondary folders appear as
-unavailable without stopping primary execution; Kontora does not create them.
+command-line overrides. Entries matching the selected primary folder are ignored.
+Selecting a configured secondary as primary gives it normal primary execution behavior.
+Kontora does not automatically add the previous primary folder to the secondary list.
+Aliases among the remaining secondary folders are rejected.
+
+Discovery is nonrecursive. Missing or unreadable secondary folders appear as unavailable
+without stopping primary execution; Kontora does not create them.
 
 Secondary folders need filesystem write access for edits and Claim. Existing managed
 board protections still apply. Settings exposes the list, but changing it requires a
@@ -188,7 +192,7 @@ pipelines:
 | Field | Required | Default | Description |
 |-------|----------|---------|-------------|
 | `tickets_dir` | no | `~/.kontora/tickets` | Directory containing ticket markdown files. Overridden by `$TICKETS_DIR`, then `$KONTORA_TICKETS_DIR`, then `--tickets-dir`: for this one field the environment beats the file (see [environment variables](cli.md#environment-variables)). |
-| `secondary_tickets_dirs` | no | `[]` | Additional folders for browsing and non-lifecycle editing. Requires restart. See [secondary folders](#secondary-ticket-folders). |
+| `secondary_tickets_dirs` | no | `[]` | Additional folders for browsing and non-lifecycle editing. Entries matching the selected primary folder are ignored. Requires restart. See [secondary folders](#secondary-ticket-folders). |
 | `branch_prefix` | no | `kontora` | Git branch prefix. A project can override it (see [projects](#projects)). |
 | `branch_naming` | no | `mode: slug` | How the daemon names a ticket with an empty `branch` field (see [branch naming](#branch-naming)). |
 | `worktrees_dir` | no | `~/.kontora/worktrees` | Where git worktrees are created. |

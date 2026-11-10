@@ -3363,6 +3363,12 @@ for (const mobile of [false, true]) {
   });
 }
 
+for (const control of ['x-model="sourceFilter"', '@submit.prevent="saveSourceRelation()"', 'aria-label="Relationship action"']) {
+  test(`secondary folder controls are absent from desktop and mobile markup: ${control}`, () => {
+    assert.equal(htmlNoComments().includes(control), false);
+  });
+}
+
 test('combined secondary statuses never count as primary execution', () => {
   const state = loadKontoraState();
   state.updateFavicon = () => {};

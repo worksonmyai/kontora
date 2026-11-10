@@ -1339,17 +1339,6 @@
     </div>
     </template>
 
-    <template x-if="ticketSources.length > 0 && !boardDetailOpen() && !epicPageOpen()">
-      <select x-model="sourceFilter" @change="recomputeBoard()" aria-label="Filter by ticket folder"
-              class="max-w-[220px] min-w-0 font-mono text-[12px] rounded-[7px] bg-surface-900 border border-edge-input text-tx-2 px-2 py-[7px] focus:outline-none focus:border-accent">
-        <option value="">All folders</option>
-        <option value="primary">Primary folder</option>
-        <template x-for="source in ticketSources" :key="source.id">
-          <option :value="source.id" x-text="(source.id === 'primary' ? 'primary' : source.path) + (source.available === false ? ' (unavailable)' : '')"></option>
-        </template>
-      </select>
-    </template>
-
     <template x-if="boardDetailOpen()">
       <div class="flex items-center gap-3 min-w-0">
         <button type="button" @click="closeDetail()"
@@ -1578,15 +1567,7 @@
           <input x-model="searchQuery" placeholder="Filter, or project:name" aria-label="Filter tickets" style="width:100%;height:38px;padding:0 12px 0 34px;font-family:'JetBrains Mono',monospace;font-size:13px;border-radius:9px;background:rgba(var(--surface-900),1);border:1px solid rgba(var(--surface-700),.5);color:rgba(var(--tx),1);outline:none;"/>
         </div>
       </div>
-      <div x-show="currentView === 'board' && (ticketSources.length > 0 || sourcesError)" class="px-4 pb-2">
-        <select x-model="sourceFilter" @change="recomputeBoard()" aria-label="Filter by ticket folder"
-                class="w-full bg-surface-900 border border-edge-input rounded-[7px] px-2 py-2 font-mono text-[12px] text-tx-2">
-          <option value="">All folders</option>
-          <option value="primary">Primary folder</option>
-          <template x-for="source in ticketSources" :key="source.id">
-            <option :value="source.id" x-text="(source.id === 'primary' ? 'primary' : source.path) + (source.available === false ? ' (unavailable)' : '')"></option>
-          </template>
-        </select>
+      <div x-show="currentView === 'board' && (sourcesError || ticketSources.some(s => s.available === false))" class="px-4 pb-2">
         <div x-show="sourcesError || ticketSources.some(s => s.available === false)" x-cloak role="alert" class="mt-2 font-mono text-[11px] text-warn break-all">
           <p x-show="sourcesError" x-text="sourcesError"></p>
           <template x-for="source in ticketSources.filter(s => s.available === false)" :key="source.id">
@@ -1956,16 +1937,6 @@
           <span x-text="parseTitleTag(selectedTicket || {}).rest"></span>
         </h1>
       </div>
-
-      <template x-if="isSecondary(selectedTicket) && ticketCanEdit(selectedTicket)">
-        <form @submit.prevent="saveSourceRelation()" class="shrink-0 flex flex-wrap items-center gap-2 px-6 pb-3">
-          <select x-model="sourceRelationDraft().action" aria-label="Relationship action" class="bg-surface-900 border border-edge-input rounded px-2 py-1 text-xs">
-            <template x-for="option in sourceRelationOptions" :key="option.value"><option :value="option.value" x-text="option.label"></option></template>
-          </select>
-          <input x-model="sourceRelationDraft().targets" aria-label="Source relationship ticket IDs" placeholder="Ticket IDs in this folder" class="min-w-0 flex-1 bg-surface-900 border border-edge-input rounded px-2 py-1 text-xs">
-          <button type="submit" :disabled="sourceRelationSubmitting" class="text-xs text-accent disabled:opacity-50">Save relationship</button>
-        </form>
-      </template>
 
       <!-- Stage ribbon: one segment per stage, grown by its real duration -->
       <div class="shrink-0 px-6 pb-[13px] border-b border-surface-700/60 flex items-end gap-5"
@@ -6509,15 +6480,6 @@
               <div class="ticket-prose text-sm" x-effect="setProse($el, selectedTicket?.body || '')"></div>
               <p x-show="!selectedTicket?.body" class="font-mono text-[13px] text-surface-600">No ticket description.</p>
             </div>
-          </template>
-          <template x-if="isSecondary(selectedTicket) && ticketCanEdit(selectedTicket)">
-            <form @submit.prevent="saveSourceRelation()" class="flex flex-col gap-2 mt-4">
-              <select x-model="sourceRelationDraft().action" aria-label="Relationship action" class="bg-surface-900 border border-edge-input rounded px-2 py-2 text-xs">
-                <template x-for="option in sourceRelationOptions" :key="option.value"><option :value="option.value" x-text="option.label"></option></template>
-              </select>
-              <input x-model="sourceRelationDraft().targets" aria-label="Source relationship ticket IDs" placeholder="Ticket IDs in this folder" class="bg-surface-900 border border-edge-input rounded px-2 py-2 text-xs">
-              <button type="submit" :disabled="sourceRelationSubmitting" class="text-xs text-accent disabled:opacity-50">Save relationship</button>
-            </form>
           </template>
           <template x-if="isSecondary(selectedTicket) || (selectedTicket?.history || []).some(h => h.imported)">
             <section class="mt-5 flex flex-col gap-3" aria-label="Imported history">

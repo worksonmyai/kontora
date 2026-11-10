@@ -180,7 +180,8 @@ func TestSecondaryCoordinationDelayedSourceWrites(t *testing.T) {
 			return p.sourceDaemon.writeTicket(stale, path, notify.OriginDaemon)
 		}},
 		{"secondary editor", func() error {
-			return p.destinationDaemon.UpdateSecondaryTicket(p.sourceID, "delayed", web.UpdateTicketRequest{Description: new("# Delayed secondary save")})
+			_, err := p.destinationDaemon.UpdateSecondaryTicket(p.sourceID, "delayed", web.UpdateTicketRequest{Description: new("# Delayed secondary save")})
+			return err
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -226,12 +227,14 @@ func TestSecondaryCoordinationConcurrentMutations(t *testing.T) {
 						if tc.route == "source" {
 							writerDone <- p.sourceDaemon.UpdateTicket(id, req)
 						} else {
-							writerDone <- p.destinationDaemon.UpdateSecondaryTicket(p.sourceID, id, req)
+							_, err := p.destinationDaemon.UpdateSecondaryTicket(p.sourceID, id, req)
+							writerDone <- err
 						}
 					} else if tc.route == "source" {
 						writerDone <- p.sourceDaemon.SetReaction(id, noteID, "👍", "concurrent", true)
 					} else {
-						writerDone <- p.destinationDaemon.MutateSecondaryTicket(p.sourceID, id, web.SecondaryMutation{Action: web.SecondarySetReaction, NoteID: noteID, Emoji: "👍", Actor: "concurrent", On: true})
+						_, err := p.destinationDaemon.MutateSecondaryTicket(p.sourceID, id, web.SecondaryMutation{Action: web.SecondarySetReaction, NoteID: noteID, Emoji: "👍", Actor: "concurrent", On: true})
+						writerDone <- err
 					}
 				}()
 				go func() {
@@ -378,13 +381,13 @@ func TestSecondaryCoordinationControlledSource(t *testing.T) {
 			var err error
 			switch action {
 			case "edit":
-				err = d.UpdateSecondaryTicket(source, "tst-001", web.UpdateTicketRequest{Description: new("# Forbidden")})
+				_, err = d.UpdateSecondaryTicket(source, "tst-001", web.UpdateTicketRequest{Description: new("# Forbidden")})
 			case "note":
-				err = d.MutateSecondaryTicket(source, "tst-001", web.SecondaryMutation{Action: web.SecondaryAddNote, Text: "Forbidden"})
+				_, err = d.MutateSecondaryTicket(source, "tst-001", web.SecondaryMutation{Action: web.SecondaryAddNote, Text: "Forbidden"})
 			case "reaction":
-				err = d.MutateSecondaryTicket(source, "tst-001", web.SecondaryMutation{Action: web.SecondarySetReaction, NoteID: note.ID, Emoji: "👍", Actor: "reader", On: true})
+				_, err = d.MutateSecondaryTicket(source, "tst-001", web.SecondaryMutation{Action: web.SecondarySetReaction, NoteID: note.ID, Emoji: "👍", Actor: "reader", On: true})
 			case "relation":
-				err = d.MutateSecondaryTicket(source, "tst-001", web.SecondaryMutation{Action: web.SecondaryLink, RelatedIDs: []string{"related"}})
+				_, err = d.MutateSecondaryTicket(source, "tst-001", web.SecondaryMutation{Action: web.SecondaryLink, RelatedIDs: []string{"related"}})
 			case "claim":
 				_, err = d.ClaimSecondaryTicket(source, "tst-001", info.Revision)
 			}
@@ -411,7 +414,8 @@ func TestSecondaryCoordinationRelationNamesakes(t *testing.T) {
 			primarySubject := coordinationBytes(t, filepath.Join(p.destination.tasksDir, "same.md"))
 			primaryRelated := coordinationBytes(t, filepath.Join(p.destination.tasksDir, "related.md"))
 			op := web.SecondaryMutation{Action: action, RelatedIDs: []string{"related"}, Parent: "related"}
-			require.NoError(t, p.destinationDaemon.MutateSecondaryTicket(p.sourceID, "same", op))
+			_, err := p.destinationDaemon.MutateSecondaryTicket(p.sourceID, "same", op)
+			require.NoError(t, err)
 			info, err := p.destinationDaemon.GetSecondaryTicket(p.sourceID, "same")
 			require.NoError(t, err)
 			var refs []web.TicketRef
@@ -436,7 +440,7 @@ func TestSecondaryCoordinationRelationNamesakes(t *testing.T) {
 			assert.Contains(t, info.ClaimWarnings, "related will resolve to the primary folder's ticket")
 			sourceSubject := coordinationBytes(t, filepath.Join(p.source.tasksDir, "same.md"))
 			sourceRelated := coordinationBytes(t, filepath.Join(p.source.tasksDir, "related.md"))
-			err = p.destinationDaemon.MutateSecondaryTicket(p.sourceID, "same", web.SecondaryMutation{Action: action, RelatedIDs: []string{"primary-only"}, Parent: "primary-only"})
+			_, err = p.destinationDaemon.MutateSecondaryTicket(p.sourceID, "same", web.SecondaryMutation{Action: action, RelatedIDs: []string{"primary-only"}, Parent: "primary-only"})
 			require.Error(t, err, "relations must not fall back to primary participants")
 			assert.Equal(t, sourceSubject, coordinationBytes(t, filepath.Join(p.source.tasksDir, "same.md")))
 			assert.Equal(t, sourceRelated, coordinationBytes(t, filepath.Join(p.source.tasksDir, "related.md")))

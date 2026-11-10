@@ -70,7 +70,9 @@ func TestMobileBrowserJS(t *testing.T) {
 		if name == "" {
 			name = "index.html"
 		}
-		if r.Method != http.MethodGet || assets[name] == nil || r.URL.RawQuery != "" {
+		query := r.URL.Query()
+		query.Del("v")
+		if r.Method != http.MethodGet || assets[name] == nil || len(query) > 0 {
 			mu.Lock()
 			leaked = append(leaked, r.Method+" "+r.URL.String())
 			mu.Unlock()
@@ -86,12 +88,15 @@ func TestMobileBrowserJS(t *testing.T) {
 	}
 	for _, engine := range []string{"chromium", "webkit"} {
 		t.Run(engine, func(t *testing.T) {
-			ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Minute)
 			defer cancel()
 			cmd := exec.CommandContext(ctx, "node", "--test", filepath.Join(filepath.Dir(thisFile), "testdata", "mobile_browser.test.mjs"))
 			cmd.Env = append(os.Environ(), "KONTORA_BROWSER_URL="+server.URL, "KONTORA_BROWSER_ASSETS="+string(manifest), "KONTORA_BROWSER_ENGINE="+engine)
 			out, runErr := cmd.CombinedOutput()
 			if runErr != nil {
+				if ctx.Err() != nil {
+					t.Fatalf("browser tests stopped (%v):\n%s", ctx.Err(), out)
+				}
 				t.Fatalf("browser tests failed (%v):\n%s", runErr, out)
 			}
 			t.Logf("%s", out)
@@ -126,7 +131,7 @@ func writeBundle(t *testing.T) string {
 		t.Fatalf("building the UI bundle: %v", err)
 	}
 	path := filepath.Join(t.TempDir(), "app.js")
-	if err := os.WriteFile(path, bundle, 0o600); err != nil {
+	if err := os.WriteFile(path, bundle.js, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	return path

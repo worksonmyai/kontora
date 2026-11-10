@@ -87,14 +87,14 @@ func TestAutomationRecoveryIncludesRetiredRuns(t *testing.T) {
 	got, err = d.automationStore.GetRun(retired.ID, retiredRunning.N)
 	require.NoError(t, err)
 	assert.Equal(t, "recovery_required", got.Phase)
-	assert.Len(t, d.sem, 1)
+	assert.Equal(t, 1, d.sem.used)
 	assert.NotNil(t, d.automationExecutions[retired.ID])
 	assert.Nil(t, d.automationExecutions[live.ID])
 }
 
 func TestAutomationRecoveryCapacityBeyondLimit(t *testing.T) {
 	_, d, firstDef, _ := automationFixture(t)
-	d.sem = make(chan struct{}, 1)
+	d.sem = &slotPool{limit: 1}
 	require.NoError(t, d.automationStore.Reconcile(map[string]automation.Spec{firstDef.Key: firstDef.Spec, "second": firstDef.Spec}, time.Now()))
 	rows, err := d.automationStore.List()
 	require.NoError(t, err)
@@ -105,7 +105,7 @@ func TestAutomationRecoveryCapacityBeyondLimit(t *testing.T) {
 	require.Len(t, d.automationExecutions, 2)
 	var tokenRun, debtRun automation.Run
 	for _, e := range d.automationExecutions {
-		if e.reserved {
+		if tokenRun.AutomationID == "" {
 			tokenRun = e.run
 		} else {
 			debtRun = e.run
@@ -119,9 +119,9 @@ func TestAutomationRecoveryCapacityBeyondLimit(t *testing.T) {
 	id := recoveryAbsentTmux(t)
 	tokenRun = recoveryArtifact(t, d, tokenRun, id)
 	d.recoverAutomationRun(tokenRun)
-	assert.Empty(t, d.sem)
+	assert.Equal(t, 1, d.sem.used)
 	d.mu.Lock()
-	assert.Zero(t, d.availablePoolSlotsLocked(d.sem), "an unconfirmed process must still block the free channel slot")
+	assert.Zero(t, d.availablePoolSlotsLocked(d.sem), "an unconfirmed process must still block admission")
 	d.mu.Unlock()
 	// A retry without evidence must not discard the remaining reservation.
 	d.recoverAutomationRun(debtRun)
@@ -139,18 +139,18 @@ func TestAutomationRecoveryCapacityBeyondLimit(t *testing.T) {
 
 func TestAutoStaleRecovery(t *testing.T) {
 	_, d, def, _ := automationFixture(t)
-	d.sem = make(chan struct{}, 1)
+	d.sem = &slotPool{limit: 1}
 	old := recoveryAllocate(t, d, def.ID, "old", "recovery_required")
 	next := recoveryAllocate(t, d, def.ID, "next", "running")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	successor := &automationExecution{run: next, ctx: ctx, cancel: cancel, reserved: true}
 	d.automationExecutions[def.ID] = successor
-	d.sem <- struct{}{}
+	d.sem.used++
 	old = recoveryArtifact(t, d, old, recoveryAbsentTmux(t))
 	d.recoverAutomationRun(old)
 	d.recoverAutomationRun(old)
-	assert.Len(t, d.sem, 1)
+	assert.Equal(t, 1, d.sem.used)
 	assert.Same(t, successor, d.automationExecutions[def.ID])
 	assert.True(t, successor.reserved)
 	assert.NoError(t, ctx.Err())
@@ -186,7 +186,7 @@ func TestAutoRecoveryTargetRace(t *testing.T) {
 			case <-time.After(5 * time.Second):
 				t.Fatal("recovery did not finish")
 			}
-			assert.Len(t, d.sem, 1)
+			assert.Equal(t, 1, d.sem.used)
 			current, err := d.automationStore.GetRun(def.ID, run.N)
 			require.NoError(t, err)
 			assert.Equal(t, "recovery_required", current.Phase)
@@ -250,6 +250,6 @@ func TestAutomationRecoveryStopAcrossLinkedViewer(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, present)
 	tmuxCmd("has-session", "-t", "=origin")
-	assert.Empty(t, d.sem)
+	assert.Zero(t, d.sem.used)
 	assert.Empty(t, d.automationExecutions)
 }

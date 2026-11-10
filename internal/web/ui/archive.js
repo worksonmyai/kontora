@@ -201,7 +201,11 @@ export function kontoraArchive() {
     // the view only clears an overlay this view opened, never a board ticket a
     // route change opened on the way out.
     _archiveDetailId: null,
-    _archiveLoadSeq: 0,
+    _archiveEpoch: 0,
+    _archiveFlight: null,
+    // Pending restores survive navigation. Lists must not resurrect these IDs
+    // while the POST is unresolved, even in a newly opened archive.
+    _archiveRestores: new Map(),
 
     archiveRanges: ARCHIVE_RANGES,
     archiveSortKeys: ARCHIVE_SORT_KEYS,
@@ -217,8 +221,10 @@ export function kontoraArchive() {
     // Leaving the view drops its overlay, but must not clear a board ticket
     // selected by another navigation.
     closeArchive() {
-      ++this._archiveLoadSeq;
-      this.archiveDetailLoading = false;
+      this._archiveEpoch++;
+      if (this._archiveFlight) this._archiveFlight.again = false;
+      this.archiveLoading = false;
+      this.archiveError = null;
       if (this._archiveDetailId && this.selectedTicket && this.selectedTicket.id === this._archiveDetailId) {
         this._archiveClearDetail();
       }
@@ -234,12 +240,26 @@ export function kontoraArchive() {
     },
 
     async archiveLoad() {
-      const seq = ++this._archiveLoadSeq;
+      if (this.currentView !== 'archive') return;
+      if (this._archiveFlight) {
+        this._archiveFlight.again = true;
+        if (!this.archiveRows.length) this.archiveLoading = true;
+        return;
+      }
+      this._archiveFlight = {
+        epoch: this._archiveEpoch,
+        // Keep pending IDs fenced for this whole snapshot, even if their POST
+        // settles (and removes the optimistic ID) before json() finishes.
+        touched: new Set(this._archiveRestores.keys()),
+        again: false,
+      };
+      // Alpine wraps the stored object; the finalizer must compare that proxy.
+      const flight = this._archiveFlight;
+      const mine = () => this._archiveEpoch === flight.epoch && this.currentView === 'archive';
       if (!this.archiveRows.length) this.archiveLoading = true;
       try {
         const res = await fetch('/api/tickets/archived');
-        // A session that expires while the archive is open shows the login
-        // prompt, the way every other fetch in the app treats a 401.
+        if (!mine()) return;
         if (res.status === 401) {
           this.needsAuth = true;
           this.archiveError = null;
@@ -247,14 +267,28 @@ export function kontoraArchive() {
         }
         if (!res.ok) throw new Error('archive request failed (' + res.status + ')');
         const payload = await res.json();
-        if (seq !== this._archiveLoadSeq) return;
-        this.archiveRows = payload.tickets || [];
+        if (!mine()) return;
+        // SSE patches/deletes and optimistic restores win over the snapshot
+        // this request started reading. Preserve touched rows by identity.
+        const rows = (payload.tickets || []).filter(r =>
+          !flight.touched.has(r.id) && !this._archiveRestores.has(r.id));
+        this.archiveRows = rows.concat(this.archiveRows.filter(r =>
+          flight.touched.has(r.id) && !this._archiveRestores.has(r.id)));
         this.archiveError = null;
       } catch (e) {
-        if (seq === this._archiveLoadSeq) this.archiveError = String((e && e.message) || e);
+        if (mine()) this.archiveError = String((e && e.message) || e);
       } finally {
-        if (seq === this._archiveLoadSeq) this.archiveLoading = false;
+        // A reopened view waits for the old decode without sharing its result.
+        if (this._archiveFlight === flight) {
+          this._archiveFlight = null;
+          if (mine()) this.archiveLoading = false;
+          if (flight.again && this.currentView === 'archive') this.archiveLoad();
+        }
       }
+    },
+
+    _archiveTouchRow(id) {
+      if (this._archiveFlight) this._archiveFlight.touched.add(id);
     },
 
     // The filtered and sorted list, memoized on the filter state and the row
@@ -637,14 +671,18 @@ export function kontoraArchive() {
       }
     },
 
-    // Optimistic: the row goes as soon as the click lands, and comes back at
-    // the position it held if the daemon refuses.
+    // Old restore callbacks must refresh the current epoch, not reinsert captured rows.
     async archiveRestore(id) {
       const idx = this.archiveRows.findIndex(r => r.id === id);
-      if (idx < 0) return;
+      if (idx < 0 || this._archiveRestores.has(id)) return;
       const row = this.archiveRows[idx];
+      const pending = { epoch: this._archiveEpoch, superseded: false };
+      this._archiveRestores.set(id, pending);
+      const mine = () => pending.epoch === this._archiveEpoch && this.currentView === 'archive';
+      this._archiveTouchRow(id);
       this.archiveRows = this.archiveRows.filter(r => r.id !== id);
       if (this.selectedTicket && this.selectedTicket.id === id) this.archiveCloseDetail();
+      let refresh = false;
       try {
         const res = await fetch('/api/tickets/' + encodeURIComponent(id) + '/restore', { method: 'POST' });
         if (!res.ok) {
@@ -652,14 +690,27 @@ export function kontoraArchive() {
           throw new Error(err.error || 'restore failed (' + res.status + ')');
         }
         const ticket = await res.json();
+        if (!mine() || pending.superseded) {
+          refresh = true;
+          return;
+        }
+        this.archiveDropRow(id);
         this.applyTicketUpdate(ticket);
         this.recomputeBoard();
         this.showToast(id + ' restored to the board · ' + (ticket.status || ''));
       } catch (e) {
-        const back = this.archiveRows.slice();
-        back.splice(Math.min(idx, back.length), 0, row);
-        this.archiveRows = back;
-        this.error = String((e && e.message) || e);
+        if (mine() && !pending.superseded) {
+          this._archiveTouchRow(id);
+          const back = this.archiveRows.filter(r => r.id !== id);
+          back.splice(Math.min(idx, back.length), 0, row);
+          this.archiveRows = back;
+          this.error = String((e && e.message) || e);
+        } else {
+          refresh = true;
+        }
+      } finally {
+        this._archiveRestores.delete(id);
+        if (refresh && this.currentView === 'archive') this.archiveLoad();
       }
     },
 
@@ -668,6 +719,9 @@ export function kontoraArchive() {
     // otherwise leave a read-only page open on a ticket that is back on the
     // board.
     archiveDropRow(id) {
+      this._archiveTouchRow(id);
+      const pending = this._archiveRestores.get(id);
+      if (pending) pending.superseded = true;
       if (this._archiveDetailId === id) this.archiveCloseDetail();
       if (!this.archiveRows.some(r => r.id === id)) return;
       this.archiveRows = this.archiveRows.filter(r => r.id !== id);
@@ -676,6 +730,9 @@ export function kontoraArchive() {
     // Patch one row in place of a reload, for the SSE update that arrives when
     // a ticket is archived while this view is open.
     archivePatchRow(ticket) {
+      this._archiveTouchRow(ticket.id);
+      const pending = this._archiveRestores.get(ticket.id);
+      if (pending) pending.superseded = true;
       const idx = this.archiveRows.findIndex(r => r.id === ticket.id);
       if (idx < 0) {
         // A ticket archived from somewhere else: the list has to be re-read,

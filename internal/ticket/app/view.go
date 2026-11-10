@@ -108,6 +108,23 @@ type HistoryView struct {
 	SessionReused bool
 }
 
+// ResolveViewAgent shares BuildView's agent rules without cloning preserved ticket YAML.
+func ResolveViewAgent(cfg *config.Config, t *ticket.Ticket) string {
+	if t.Agent != "" {
+		return t.Agent
+	}
+	if pipelineCfg, ok := cfg.Pipelines[t.Pipeline]; ok {
+		for _, step := range pipelineCfg {
+			if step.Stage == t.Stage {
+				return step.Agent
+			}
+		}
+	} else if t.Kontora && t.Pipeline == "" && !t.IsPassiveEpic() {
+		return cfg.DefaultAgent
+	}
+	return ""
+}
+
 // BuildView projects a ticket into a View using config for agent/stage resolution.
 // When detail is false (the list/board projection) the heavy detail-only fields
 // (History, LastError, LastLog, Body) are left empty; the board cards never read
@@ -149,19 +166,8 @@ func BuildView(cfg *config.Config, t *ticket.Ticket, detail bool) View {
 		ArchiveNote:  t.ArchiveNote,
 	}
 
-	if t.Agent != "" {
-		v.Agent = t.Agent
-		v.AgentOverride = true
-	} else if pipelineCfg, ok := cfg.Pipelines[t.Pipeline]; ok {
-		for _, step := range pipelineCfg {
-			if step.Stage == t.Stage {
-				v.Agent = step.Agent
-				break
-			}
-		}
-	} else if t.Kontora && t.Pipeline == "" && !t.IsPassiveEpic() {
-		v.Agent = cfg.DefaultAgent
-	}
+	v.Agent = ResolveViewAgent(cfg, t)
+	v.AgentOverride = t.Agent != ""
 
 	if pipelineCfg, ok := cfg.Pipelines[t.Pipeline]; ok {
 		stages := make([]string, len(pipelineCfg))

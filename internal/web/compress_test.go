@@ -79,6 +79,7 @@ func TestStaticAssets_Compression(t *testing.T) {
 	}{
 		{"html", "/", true},
 		{"app script", "/app.js", true},
+		{"app sourcemap", "/app.js.map", true},
 		{"stylesheet", "/app.css", true},
 		{"es module", "/vendor/yaml@2.8.1/yaml.mjs", true},
 		{"font", "/vendor/fonts/dm-sans-latin.woff2", false},

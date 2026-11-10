@@ -10,8 +10,27 @@ export function kontoraMobile() {
   let lifecycle = null;
   let sheetFocus = null;
   let descriptionSequence = 0;
+  let columnScrollSequence = 0;
 
   return {
+    _mobileWindowKey: '',
+    _mobileWindowSize: 100,
+
+    mobileWindowKey() {
+      return JSON.stringify([this.mobileColumn().key, this.searchQuery, this.sourceFilter]);
+    },
+
+    mobileTickets() {
+      var size = this._mobileWindowKey === this.mobileWindowKey() ? this._mobileWindowSize : 100;
+      return this.boardTickets(this.mobileColumn().key).slice(0, size);
+    },
+
+    mobileLoadMore() {
+      var key = this.mobileWindowKey();
+      this._mobileWindowSize = (this._mobileWindowKey === key ? this._mobileWindowSize : 100) + 100;
+      this._mobileWindowKey = key;
+    },
+
     initMobile() {
       if (lifecycle || this._appDestroyed) return;
       const owner = lifecycle = { listeners: [], watches: [], frame: null, styles: [] };
@@ -51,6 +70,7 @@ export function kontoraMobile() {
     destroyMobile() {
       const owner = lifecycle;
       lifecycle = null;
+      ++columnScrollSequence;
       ++descriptionSequence;
       this.closeAgentPicker(false);
       this.flushEditSave();
@@ -65,6 +85,13 @@ export function kontoraMobile() {
         if (value) style.setProperty(name, value, priority);
         else style.removeProperty(name);
       });
+    },
+
+    mobileViewportHeight: 0,
+
+    mobileTerminalCompact() {
+      return this.isMobile && this.detailTab === 'terminal' &&
+        (this.terminalRW || (this.mobileViewportHeight > 0 && this.mobileViewportHeight < 500));
     },
 
     mobileViewportGeometry() {
@@ -83,6 +110,7 @@ export function kontoraMobile() {
     _updateMobileViewport() {
       if (!lifecycle) return;
       const geometry = this.mobileViewportGeometry();
+      this.mobileViewportHeight = geometry.height;
       const style = document.documentElement.style;
       Object.entries(geometry).forEach(([key, value]) => {
         const name = '--mobile-vv-' + key;
@@ -94,6 +122,7 @@ export function kontoraMobile() {
     },
 
     mobileBreakpointChanged() {
+      ++columnScrollSequence;
       ++descriptionSequence;
       this.flushEditSave();
       this.editingBody = false;
@@ -103,6 +132,7 @@ export function kontoraMobile() {
     // Navigation guards must run before this cleanup.
     mobileBeforeNavigate(view) {
       if (view === this.currentView) return;
+      ++columnScrollSequence;
       ++descriptionSequence;
       if (this.isMobile) {
         this.flushEditSave();
@@ -253,6 +283,28 @@ export function kontoraMobile() {
 
     setActiveColumn(i) {
       this.activeColumn = Math.max(0, Math.min(i, this.columns.length - 1));
+      const sequence = ++columnScrollSequence;
+      const owner = lifecycle;
+      const strip = this.$refs?.mobileStatusTabs;
+      if (!owner || !strip || !this.isMobile || this._appDestroyed) return;
+      this.$nextTick(() => {
+        if (sequence !== columnScrollSequence || lifecycle !== owner || this._appDestroyed || !this.isMobile ||
+            this.currentView !== 'board' || this.selectedTicket || this.selectedEpic || this.sheet ||
+            this.$refs?.mobileStatusTabs !== strip || !strip.isConnected || !strip.getClientRects().length) return;
+        this.activeColumn = Math.max(0, Math.min(this.activeColumn, this.columns.length - 1));
+        const button = strip.querySelectorAll('button')[this.activeColumn];
+        if (!button) return;
+        const bounds = strip.getBoundingClientRect();
+        const selected = button.getBoundingClientRect();
+        const style = getComputedStyle(strip);
+        const left = bounds.left + strip.clientLeft + (parseFloat(style.paddingLeft) || 0);
+        const right = bounds.left + strip.clientLeft + strip.clientWidth - (parseFloat(style.paddingRight) || 0);
+        // Oversized labels stay start-aligned so repeated boundary swipes cannot alternate edges.
+        const delta = selected.right - selected.left > right - left || selected.left < left
+          ? selected.left - left : Math.max(0, selected.right - right);
+        // scrollIntoView can also scroll the page and its vertical ancestors.
+        if (delta) strip.scrollBy({ left: delta, behavior: 'instant' });
+      });
     },
 
     // Horizontal swipe on the card list moves between status columns. Mirrors
@@ -350,27 +402,13 @@ export function kontoraMobile() {
       return 'est. ' + label;
     },
 
-    mobileCostStages() {
-      return this.stageRibbon().filter(function (seg) {
-        return seg.cost && seg.cost.tracked_runs > 0;
-      });
-    },
-
-    mobileCostStageLabel(seg) {
-      if (!seg?.cost) return '';
+    mobileStageLabel(seg) {
+      if (!seg.cost || !seg.cost.tracked_runs) return seg.name;
       var label = seg.name + ' · ' + this.costLabel(seg.cost);
       if (seg.cost.priced_runs < seg.cost.tracked_runs) {
         label += ' · ' + seg.cost.priced_runs + '/' + seg.cost.tracked_runs;
       }
       return label;
-    },
-
-    mobileOpenCostStage(seg) {
-      if (!seg || seg.state !== 'done' || !seg.runs || !this.selectedTicket) return;
-      this.mobileFinishDescriptionEdit();
-      this.detailTab = 'logs';
-      if (this.terminalOpen) this.closeTerminal();
-      this.fetchStageLogs(this.selectedTicket.id, seg.name);
     },
 
     // Inline style for one chip in the logs-tab stage strip.

@@ -1474,7 +1474,7 @@ func TestDaemon_RawConfig(t *testing.T) {
 
 	// A valid replacement is written to disk and reloaded before the call
 	// returns. Live fields take effect; restart-only fields keep their running
-	// value (max_concurrent_agents is pinned, branch_prefix is not).
+	// value.
 	inMemoryBefore := d.config()
 	const updated = "max_concurrent_agents: 7\nbranch_prefix: reloaded\nagents:\n  claude:\n    binary: claude\n"
 	require.NoError(t, d.PutRawConfig(updated))
@@ -1484,8 +1484,7 @@ func TestDaemon_RawConfig(t *testing.T) {
 	assert.Equal(t, updated, string(onDisk))
 	assert.NotSame(t, inMemoryBefore, d.config(), "a saved config must be reloaded in memory")
 	assert.Equal(t, "reloaded", d.config().BranchPrefix, "live fields take effect immediately")
-	assert.Equal(t, h.cfg.MaxConcurrentAgents, d.config().MaxConcurrentAgents,
-		"max_concurrent_agents is restart-only and stays pinned")
+	assert.Equal(t, 7, d.config().MaxConcurrentAgents)
 
 	// An invalid config is rejected before the write, so the on-disk file and
 	// the running config are both left intact.
@@ -2852,6 +2851,37 @@ func TestDaemon_ArchiveListAndRoundTrip(t *testing.T) {
 	assert.Empty(t, info.ArchiveNote)
 
 	require.ErrorIs(t, d.RestoreTicket("kon-a1"), web.ErrInvalidState, "a done ticket cannot be restored")
+}
+
+func TestDaemon_ArchiveListScalarAgent(t *testing.T) {
+	h := newHarness(t)
+	h.cfg.DefaultAgent = "agent1"
+	h.cfg.Pipelines["archive-test"] = config.Pipeline{{Stage: "work", Agent: "agent2"}}
+	d := h.newDaemon(h.cfg)
+	cases := []struct {
+		id, fields, agent string
+	}{
+		{"arc-default", "kontora: true\n", "agent1"},
+		{"arc-stage", "pipeline: archive-test\nstage: work\n", "agent2"},
+		{"arc-override", "pipeline: archive-test\nstage: work\nagent: agent1\n", "agent1"},
+		{"arc-missing", "kontora: true\npipeline: archive-test\nstage: missing\n", ""},
+		{"arc-passive", "kontora: true\nkind: epic\n", ""},
+		{"arc-supervisor", "kontora: true\nkind: epic\nepic_execution: agent\n", "agent1"},
+	}
+	for _, tc := range cases {
+		h.writeTicket(tc.id+".md", "---\nid: "+tc.id+"\nstatus: archived\n"+tc.fields+"---\n# Archive scalar\n")
+	}
+	require.NoError(t, d.initialScan(h.tasksDir))
+	rows := d.ListArchivedTickets()
+	require.Len(t, rows, len(cases))
+	byID := make(map[string]web.ArchivedTicketInfo, len(rows))
+	for _, row := range rows {
+		byID[row.ID] = row
+	}
+	for _, tc := range cases {
+		assert.Equal(t, tc.agent, byID[tc.id].Agent, tc.id)
+		assert.NotNil(t, byID[tc.id].ArchivedAt, "legacy archive falls back to mtime")
+	}
 }
 
 // The dashboard resolves a ticket's channel the way the daemon does, so it

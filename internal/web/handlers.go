@@ -821,13 +821,13 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	ch, unsub := s.broker.Subscribe()
+	defer unsub()
+
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 	flusher.Flush()
-
-	ch, unsub := s.broker.Subscribe()
-	defer unsub()
 
 	for {
 		select {

@@ -5,6 +5,83 @@ const KEY_SEQ_MS = 800;
 // lucide glyph the create form and the phone sheet draw at their own sizes.
 const SCHED_CLOCK_SVG = '<svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15.5 14"/></svg>';
 
+// Resource handles deliberately stay in closures, outside Alpine's reactive
+// graph. Alpine registers x-data init/destroy, not an x-init return value.
+export function resourceOwner(setup) {
+  var mounted = false, disposed = false, dispose;
+  return {
+    init() {
+      if (mounted || disposed) return;
+      mounted = true;
+      dispose = setup.call(this, () => !disposed);
+    },
+    destroy() {
+      if (disposed) return;
+      disposed = true;
+      if (dispose) dispose();
+      dispose = null;
+    },
+  };
+}
+
+// Sortable 1.15.6 destroy() calls _onDrop() and clears GLOBAL drag state,
+// even when destroying a destination/unrelated list. Finish the source drag
+// first, suppress its application callbacks, then reconcile from the model.
+// Supplying an event to _onDrop is necessary to remove ghost/clone/classes.
+var activeSortableResource = null;
+export function mountSortableResource(el, options, reconcile) {
+  var disposed = false, cancelled = false, started = false;
+  var start = options.onStart, end = options.onEnd, change = options.onChange;
+  var choose = options.onChoose, unchoose = options.onUnchoose;
+  var resource = {
+    cancel() {
+      cancelled = true;
+      sortable._onDrop({ cancelable: false, preventDefault() {}, stopPropagation() {} });
+    },
+    reconcile,
+  };
+  var sortable = new Sortable(el, Object.assign({}, options, {
+    onChoose(evt) {
+      if (disposed) return;
+      cancelled = false;
+      started = false;
+      activeSortableResource = resource;
+      if (choose) choose(evt);
+    },
+    onUnchoose(evt) {
+      // A click can choose a card without ever starting a drag/onEnd.
+      if (!started && activeSortableResource === resource) activeSortableResource = null;
+      if (!disposed && !cancelled && unchoose) unchoose(evt);
+    },
+    onStart(evt) {
+      if (disposed) return;
+      cancelled = false;
+      started = true;
+      activeSortableResource = resource;
+      if (start) start(evt);
+    },
+    onChange(evt) {
+      if (!disposed && !cancelled && change) change(evt);
+    },
+    onEnd(evt) {
+      if (disposed || cancelled) return;
+      started = false;
+      if (activeSortableResource === resource) activeSortableResource = null;
+      if (end) return end(evt);
+    },
+  }));
+  return function () {
+    if (disposed) return;
+    disposed = true;
+    var drag = activeSortableResource;
+    activeSortableResource = null;
+    if (drag) drag.cancel();
+    sortable.destroy();
+    sortable = null;
+    if (drag) drag.reconcile();
+  };
+}
+
 // The board: card markup, the keyed column reconcile that patches only what
 // changed, drag and drop, and the global key bindings.
 export function kontoraBoard() {
@@ -660,6 +737,7 @@ export function kontoraBoard() {
 
     // Move the .is-selected highlight without re-rendering a column.
     _markSelectedCard() {
+      if (this._dragging) { this._renderHeld = true; return; }
       var sel = this.ticketKey(this.selectedTicket) || null;
       document.querySelectorAll('#board-cols .kt-card').forEach(function (el) {
         el.classList.toggle('is-selected', el.dataset.ticketId === sel);
@@ -669,6 +747,7 @@ export function kontoraBoard() {
     // Patch the running-duration / age text on the 30s tick, in place, so the
     // clock doesn't trigger a full board re-render.
     _updateCardTimers() {
+      if (this._dragging) return;
       var self = this;
       document.querySelectorAll('#board-cols [data-since]').forEach(function (el) {
         el.textContent = self.formatDuration({ started_at: el.dataset.since });
@@ -679,6 +758,58 @@ export function kontoraBoard() {
       document.querySelectorAll('#board-cols [data-finished]').forEach(function (el) {
         el.textContent = self.finishedAgo(el.dataset.finished);
       });
+    },
+
+    boardSortableOwner(key) {
+      return resourceOwner(function (alive) {
+        var self = this, el = this.$el;
+        var dispose = this.initSortable(el);
+        // A collapse/expand can mount the replacement before Alpine cleans up
+        // the old list with the same id.
+        this.$nextTick(() => {
+          if (!alive() || document.getElementById('col-' + key) !== el) return;
+          delete self._rendered[key];
+          self.renderColumn(key);
+        });
+        return dispose;
+      });
+    },
+
+    boardOverflowOwner(axis) {
+      var owner = resourceOwner(function (alive) {
+        var self = this;
+        // Query the DOM: the nested Sortable is itself x-data, so its x-ref
+        // belongs to that child scope (and has not initialized yet anyway).
+        var list = axis === 'x' ? this.$el : this.$el.querySelector('[x-ref="colList"]');
+        var frame = null;
+        function check() {
+          if (!alive()) return;
+          if (axis === 'x') self.hasOverflowRight = list.scrollWidth - list.scrollLeft - list.clientWidth > 4;
+          else self.overflowBottom = list.scrollHeight - list.scrollTop - list.clientHeight > 4;
+        }
+        function schedule() {
+          if (!alive() || frame !== null) return;
+          frame = requestAnimationFrame(() => { frame = null; check(); });
+        }
+        list.addEventListener('scroll', schedule, { passive: true });
+        window.addEventListener('resize', schedule);
+        var mo = new MutationObserver(schedule);
+        mo.observe(list, { childList: true, subtree: axis === 'x' });
+        var ro = new ResizeObserver(schedule);
+        ro.observe(list);
+        schedule();
+        return function () {
+          list.removeEventListener('scroll', schedule);
+          window.removeEventListener('resize', schedule);
+          mo.disconnect();
+          ro.disconnect();
+          if (frame !== null) cancelAnimationFrame(frame);
+          frame = null;
+        };
+      });
+      owner.hasOverflowRight = false;
+      owner.overflowBottom = false;
+      return owner;
     },
 
     initSortable(el) {
@@ -718,7 +849,7 @@ export function kontoraBoard() {
           if (s) s.option('animation', list.children.length > ANIM_THRESHOLD ? 0 : 150);
         });
       }
-      new Sortable(el, {
+      return mountSortableResource(el, {
         group: 'kanban',
         animation: 150,
         ghostClass: 'sortable-ghost',
@@ -729,8 +860,8 @@ export function kontoraBoard() {
           tuneAnimations();
           // Sortable owns the card nodes until the drop: a reconcile that runs
           // in between can move or replace the node under the cursor. Updates
-          // that arrive during the drag land in _board, and the render they
-          // asked for is held until onEnd.
+          // that arrive during the drag update the model; card reconciliation
+          // is held until the drag ends or is cancelled.
           self._dragging = true;
           setDropTarget(evt.from);
         },
@@ -740,7 +871,7 @@ export function kontoraBoard() {
           clearDropTarget();
           // Everything the daemon reported while the drag held the board. Ahead
           // of the move below, so the optimistic status lands on fresh data.
-          if (self._pendingTicketUpdates.length) self.flushTicketUpdates();
+          if (self._boardDirty) self.flushTicketUpdates();
           var ticketId = evt.item.dataset.ticketId;
           var fromDrop = evt.from.dataset.dropStatus;
           var toDrop = evt.to.dataset.dropStatus;
@@ -768,6 +899,15 @@ export function kontoraBoard() {
           // data, moving the node Sortable moved (and reverting on failure).
           self.moveTask(ticketId, toDrop);
         }
+      }, function () {
+        self._dragging = false;
+        self._renderHeld = false;
+        clearDropTarget();
+        // Both source and destination DOM may have moved; dirty every surviving
+        // column, including replacements whose id matches the disposed list.
+        self.columns.forEach((col) => { self._dirtyCols[col.key] = true; });
+        if (self._boardDirty) self.flushTicketUpdates();
+        self.renderBoard();
       });
     },
 
@@ -776,7 +916,7 @@ export function kontoraBoard() {
     // SSE flush, delete, debounced search) so the filter+sort runs once per
     // logical change rather than on every reactive template read.
     recomputeBoard() {
-      var cols = this.columns;
+      var cols = this._deriveColumns();
       // Parsed once for the whole pass rather than per ticket.
       var query = this.parseFilterQuery(this.searchQuery);
       var filtering = !this.filterQueryEmpty(query);

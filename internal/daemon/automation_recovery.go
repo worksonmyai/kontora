@@ -65,16 +65,12 @@ func (d *Daemon) reserveAutomationRecoveryLocked(run automation.Run) *automation
 	if _, exists := d.recoveredReservations[key]; exists {
 		return e
 	}
-	reservation := recoveredReservation{pool: d.sem, token: e != nil && e.reserved}
-	if !reservation.token {
-		select {
-		case d.sem <- struct{}{}:
-			reservation.token = true
-		default:
-		}
+	reservation := recoveredReservation{pool: d.sem, token: e == nil || !e.reserved}
+	if reservation.token {
+		d.sem.used++
 	}
 	if e != nil {
-		e.reserved = reservation.token
+		e.reserved = true
 	}
 	if d.recoveredReservations == nil {
 		d.recoveredReservations = make(map[string]recoveredReservation)
@@ -221,7 +217,7 @@ func (d *Daemon) recoverAutomationRun(snapshot automation.Run) {
 		if reservation, exists := d.recoveredReservations[key]; exists {
 			delete(d.recoveredReservations, key)
 			if reservation.token {
-				<-reservation.pool
+				reservation.pool.used--
 			}
 		}
 		d.queueCond.Broadcast()

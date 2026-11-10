@@ -1,8 +1,23 @@
 // Ticket store and app lifecycle: the columns, the initial load, the SSE
 // stream that keeps them current, and the per-ticket presentation helpers.
+
+// How long the first load waits for the event stream before taking its
+// snapshots anyway.
+const SSE_OPEN_WAIT_MS = 1500;
+
 export function kontoraTickets() {
+  // Resolves the first load's wait for the event stream; null once released.
+  let initialSnapshot = null;
+  let primaryFlight = null;
+  let primaryAgain = false;
+  let detailFlight = null;
+
   return {
     get columns() {
+      return this._columns || this._builtinColumns;
+    },
+
+    _deriveColumns() {
       var cols = [...this._builtinColumns];
       var custom = this.configCache?.custom_statuses || [];
       if (custom.length > 0) {
@@ -25,12 +40,22 @@ export function kontoraTickets() {
         cols.splice(doneIdx, 0, ...customCols);
       }
       var known = new Set(cols.flatMap(c => c.statuses));
+      var extra = new Set();
       for (var t of this.secondaryTickets) {
-        if (known.has(t.status)) continue;
-        known.add(t.status);
-        cols.push({ key: t.status, statuses: [t.status], label: t.status, color: 'bg-surface-600', emptyText: 'No tickets', tip: 'Secondary status' });
+        if (!known.has(t.status)) extra.add(t.status);
       }
-      return cols;
+      for (var status of [...extra].sort()) {
+        cols.push({ key: status, statuses: [status], label: status, color: 'bg-surface-600', emptyText: 'No tickets', tip: 'Secondary status' });
+      }
+      var signature = JSON.stringify(cols);
+      if (signature !== this._columnsSignature) {
+        var activeKey = this.mobileColumn()?.key;
+        this._columns = cols;
+        this._columnsSignature = signature;
+        var active = cols.findIndex(c => c.key === activeKey);
+        this.setActiveColumn(active < 0 ? this.activeColumn : active);
+      }
+      return this.columns;
     },
 
     async init() {
@@ -75,21 +100,36 @@ export function kontoraTickets() {
       this.$watch('automationsEditing', syncAutomationTerminal);
       this._bindGlobalEvents();
       this.setupAgentPicker();
+      // Every startup request is a round trip, which costs most on a phone
+      // talking to a remote daemon, so they overlap. The ticket snapshots wait
+      // for the stream to open: a snapshot taken after the subscription misses
+      // no event, so the first open needs no second copy of every list. A
+      // stream that does not open in time (a proxy holding its headers) must
+      // not hold the board; its late open resynchronizes as any reconnect does.
+      var subscribed = new Promise(resolve => { initialSnapshot = resolve; });
+      this.connectSSE();
+      var config = (async () => {
+        try {
+          var cfgRes = await fetch('/api/config');
+          if (cfgRes.status === 401) this.needsAuth = true;
+          else if (cfgRes.ok) this.configCache = await cfgRes.json();
+        } catch (e) {
+          this.error = 'Failed to load config';
+        }
+      })();
+      await Promise.race([subscribed, new Promise(resolve => setTimeout(resolve, SSE_OPEN_WAIT_MS))]);
+      initialSnapshot = null;
       try {
-        var cfgRes = await fetch('/api/config');
-        if (cfgRes.status === 401) this.needsAuth = true;
-        else if (cfgRes.ok) this.configCache = await cfgRes.json();
-      } catch (e) {
-        this.error = 'Failed to load config';
-      }
-      try {
-        await this.fetchTasks();
-        await this.fetchTicketSources();
+        await Promise.all([this.fetchTasks(), this.fetchTicketSources(), config]);
       } catch (e) {
         if (!this.needsAuth) this.error = 'Failed to load tickets';
       }
       this.loading = false;
       if (this.needsAuth) {
+        // The stream answers 401 too; retrying it would only repeat that.
+        clearTimeout(this._sseReconnect);
+        this._eventSource?.close();
+        this._eventSource = null;
         // Show the login modal instead of a board with a generic error toast.
         // A leftover ?token= in the URL means the previous attempt's token was
         // rejected (a valid one would have been consumed and stripped by the
@@ -101,7 +141,6 @@ export function kontoraTickets() {
         return;
       }
       this.automationsRefresh();
-      this.connectSSE();
       // After the auth check, so a pane on a tokenless session does not fire a
       // second 401 of its own.
       this.initAssistant();
@@ -115,17 +154,92 @@ export function kontoraTickets() {
       this.$nextTick(() => this._mountBoard());
     },
 
-    async fetchTasks() {
-      const res = await fetch('/api/tickets');
-      if (res.status === 401) { this.needsAuth = true; throw new Error('unauthorized'); }
-      if (!res.ok) throw new Error('Failed to fetch tickets');
-      const data = await res.json();
-      this.tickets = (data.tickets || []).map(t => this.boardEntry(t));
-      this.recomputeBoard();
-      // recomputeBoard derives runningAgents from in_progress kontora tickets;
-      // prefer the daemon's authoritative running count at load.
-      this.runningAgents = Math.max(0, (data.running_agents || 0) - (data.automation_running_agents || 0));
-      this.updateFavicon();
+    fetchTasks() {
+      if (primaryFlight) { primaryAgain = true; return primaryFlight; }
+      primaryFlight = (async () => {
+        do {
+          primaryAgain = false;
+          var touched = this._beginSnapshot();
+          try {
+            const res = await fetch('/api/tickets');
+            if (res.status === 401) { this.needsAuth = true; throw new Error('unauthorized'); }
+            if (!res.ok) throw new Error('Failed to fetch tickets');
+            const data = await res.json();
+            if (this._appDestroyed) return;
+            this.tickets = this._mergeSnapshot((data.tickets || []).map(t => this.boardEntry(t)), this.tickets, touched);
+            this._reconcileSnapshotSelection(this.tickets, false, touched);
+            this.recomputeBoard();
+            // Exclude automation sessions, which have their own running count.
+            this.runningAgents = Math.max(0, (data.running_agents || 0) - (data.automation_running_agents || 0));
+            this.updateFavicon();
+          } catch (e) {
+            if (!primaryAgain || this._appDestroyed) throw e;
+          } finally { this._endSnapshot(touched); }
+        } while (primaryAgain && !this._appDestroyed);
+      })().finally(() => { primaryFlight = null; });
+      return primaryFlight;
+    },
+
+    _reconcileSnapshotSelection(tickets, secondary, touched) {
+      var selected = this.selectedTicket;
+      if (!selected || this.isSecondary(selected) !== secondary || touched.has(this.ticketKey(selected))) return;
+      if (secondary && !this.sourceAvailable(selected)) return;
+      var current = tickets.find(t => this.sameTicket(t, selected));
+      if (current) this.queueTicketUpdate({ ...selected, ...current });
+      else if (!this.archiveDetailOpen() && this._claimKey !== this.ticketKey(selected)) this.closeDetail();
+    },
+
+    _releaseInitialSnapshot() {
+      var release = initialSnapshot;
+      initialSnapshot = null;
+      if (release) release();
+    },
+
+    async resyncTickets() {
+      if (this.currentView === 'archive') this.archiveLoad();
+      try {
+        await Promise.all([this.fetchTasks(), this.fetchTicketSources()]);
+        if (this._appDestroyed) return;
+        if (this.selectedEpic) await this.epicFetchDetail(this.selectedEpic.id);
+        else await this.refreshSelectedTicket();
+      } catch (e) {
+        if (!this._appDestroyed) this.error = e.message;
+      }
+    },
+
+    refreshSelectedTicket() {
+      var selected = this.selectedTicket;
+      if (!selected || !this.sourceAvailable(selected)) return;
+      var detail = this._ticketDetailSeq;
+      if (detailFlight && detailFlight.detail === detail && this.sameTicket(detailFlight.selected, selected)) return detailFlight.promise;
+      var flight = { selected, detail, promise: null };
+      detailFlight = flight;
+      flight.promise = (async () => {
+        var update = this._selectedTicketUpdateSeq;
+        var mine = () => !this._appDestroyed && detail === this._ticketDetailSeq &&
+          this.sameTicket(this.selectedTicket, selected) && this.sourceAvailable(selected);
+        while (mine()) {
+          var response = await fetch(this.ticketURL(selected));
+          if (!mine()) return;
+          if (!response.ok) throw new Error('Failed to refresh ticket details');
+          var full = await response.json();
+          if (!mine()) return;
+          if (update !== this._selectedTicketUpdateSeq) {
+            update = this._selectedTicketUpdateSeq;
+            continue;
+          }
+          if (!this.sameTicket(full, selected)) return;
+          var previous = this.selectedTicket;
+          this.applyTicketUpdate(full);
+          if (!this.sameTicket(this.selectedTicket, selected)) return;
+          if (!this.editing) {
+            this.selectedTicket = this.isSecondary(previous) ? { ...full, revision: previous.revision } : full;
+          }
+          this.scheduleBoardFlush();
+          return;
+        }
+      })().finally(() => { if (detailFlight === flight) detailFlight = null; });
+      return flight.promise;
     },
 
     // Hand the token to the server via /?token=, which validates it, sets the
@@ -290,6 +404,7 @@ export function kontoraTickets() {
 
     applyTicketUpdate(ticket) {
       if (this.isSecondary(ticket)) { this.applySecondaryUpdate(ticket); return; }
+      this._touchTicket(ticket);
       this.refreshInitContext(ticket.id);
       var previousOutput = this.outputSubject();
       if (this.selectedEpic?.id === ticket.id) {
@@ -384,36 +499,34 @@ export function kontoraTickets() {
       if (previousOutput?.id === ticket.id) this.reconcileOutput(previousOutput);
     },
 
-    // Buffer SSE ticket_updated payloads and flush them on a single animation
-    // frame so a burst of agent updates collapses into one apply + recompute.
     queueTicketUpdate(ticket) {
-      this._pendingTicketUpdates.push(ticket);
-      if (this._boardRaf !== null) return;
+      if (!this.isSecondary(ticket)) {
+        if (this.sameTicket(this.selectedTicket, ticket) &&
+            JSON.stringify([this.selectedTicket.status, this.selectedTicket.history || []]) !== JSON.stringify([ticket.status, ticket.history || []])) {
+          this._costDirtyKey = this.ticketKey(ticket);
+        }
+      }
+      if (!this._chainDirtyKey && this._chainTouchedBy([ticket])) this._chainDirtyKey = this.ticketKey(this.selectedTicket);
+      this.applyTicketUpdate(ticket);
+      this.scheduleBoardFlush();
+    },
+
+    scheduleBoardFlush() {
+      this._boardDirty = true;
+      if (this._boardRaf !== null || this._appDestroyed) return;
       this._boardRaf = requestAnimationFrame(() => this.flushTicketUpdates());
     },
 
     flushTicketUpdates() {
+      if (this._boardRaf !== null) cancelAnimationFrame(this._boardRaf);
       this._boardRaf = null;
-      // A drag owns the board until it ends: applying updates under it re-sorts
-      // the columns and patches the cards the cursor is over, which is both a
-      // stutter and a moved node. The buffer keeps filling and the drop flushes
-      // it. If a drag somehow ends without onEnd, the next update schedules a
-      // frame of its own and takes the backlog with it.
-      if (this._dragging) return;
-      var pending = this._pendingTicketUpdates;
-      this._pendingTicketUpdates = [];
-      var selectedID = this.selectedTicket?.id;
-      var costStateBefore = selectedID
-        ? JSON.stringify([this.selectedTicket.status, this.selectedTicket.history || []])
-        : '';
-      pending.forEach(t => this.applyTicketUpdate(t));
-      var costStateAfter = selectedID && this.selectedTicket?.id === selectedID
-        ? JSON.stringify([this.selectedTicket.status, this.selectedTicket.history || []])
-        : '';
-      if (selectedID && costStateAfter !== costStateBefore) this.fetchTicketCost(selectedID);
-      if (this._chainTouchedBy(pending)) this.fetchChain(this.selectedTicket.id);
-      // recomputeBoard rebuilds the board and refreshes runningAgents +
-      // _statusCounts, which updateFavicon then reads.
+      if (this._dragging || this._appDestroyed) return;
+      var key = this.ticketKey(this.selectedTicket);
+      if (key && this._costDirtyKey === key && !this.isSecondary(this.selectedTicket)) this.fetchTicketCost(this.selectedTicket.id);
+      if (key && this._chainDirtyKey === key && !this.isSecondary(this.selectedTicket)) this.fetchChain(this.selectedTicket.id);
+      this._costDirtyKey = null;
+      this._chainDirtyKey = null;
+      this._boardDirty = false;
       this.recomputeBoard();
       this.updateFavicon();
       if (this.paletteOpen) this.recomputePalette();
@@ -439,12 +552,12 @@ export function kontoraTickets() {
     },
 
     _chainHasNode(id) {
-      if (!this.chain || !this.selectedTicket) return false;
+      if (!this.chain || !this.selectedTicket || this.isSecondary(this.selectedTicket)) return false;
       return (this.chain.nodes || []).some(function (n) { return n.id === id; });
     },
 
     connectSSE() {
-      if (this._appDestroyed) return;
+      if (this._appDestroyed || this.needsAuth) return;
       if (this._eventSource) this._eventSource.close();
       const es = new EventSource('/api/events');
       this._eventSource = es;
@@ -459,6 +572,8 @@ export function kontoraTickets() {
             this.archiveOpenRow(row);
           }
         }
+        if (initialSnapshot) this._releaseInitialSnapshot();
+        else this.resyncTickets();
       });
       es.addEventListener('automations_updated', () => { this.automationsRefresh(); });
       es.addEventListener('companion_updated', () => { this.companionRefresh(); });
@@ -477,13 +592,13 @@ export function kontoraTickets() {
       });
       es.addEventListener('ticket_deleted', (e) => {
         const ticket = JSON.parse(e.data);
-        this._pendingTicketUpdates = this._pendingTicketUpdates.filter(t => !this.sameTicket(t, ticket));
+        this._touchTicket(ticket);
+        const wasSelected = this.sameTicket(this.selectedTicket, ticket);
         this.tickets = this.tickets.filter(t => t.id !== ticket.id);
+        this.archiveDropRow(ticket.id);
         if (this.initModal && this.initForm.ticketId === ticket.id) this.closeInitModal();
         else this.refreshInitContext(ticket.id);
         if (this.createForm.parent === ticket.id) this.syncCreatePipeline();
-        const wasSelected = this.sameTicket(this.selectedTicket, ticket);
-        if (this.currentView === 'archive') this.archiveDropRow(ticket.id);
         if (wasSelected) {
           this.closeDetail();
           this.error = 'Historical ticket ' + ticket.id + ' is missing. It may have been deleted.';
@@ -492,21 +607,17 @@ export function kontoraTickets() {
           // keep drawing it, holder and resume pill included.
           this.fetchChain(this.selectedTicket.id);
         }
-        this.recomputeBoard();
-        this.updateFavicon();
-        if (this.paletteOpen) this.recomputePalette();
+        this.scheduleBoardFlush();
       });
       es.addEventListener('terminal_ready', (e) => {
         const ticket = JSON.parse(e.data);
         this.outputReady(ticket.id);
       });
       es.addEventListener('config_reloaded', () => {
-        // Both are plain re-fetches, so the second event a settings save
-        // produces — the endpoint reloads, then the watcher sees the write —
-        // costs two requests and changes nothing.
         this._assistantRefreshConfig();
         this.companionRefresh();
         this._settingsRefreshConfigCache();
+        this._settingsRefreshForm();
       });
       es.addEventListener('plannotator_started', (e) => {
         const payload = JSON.parse(e.data);
@@ -528,6 +639,8 @@ export function kontoraTickets() {
       });
       es.onerror = () => {
         es.close();
+        // Waiting for a stream that failed only delays the board.
+        this._releaseInitialSnapshot();
         // Drop any in-flight markers: if a plannotator run completes while SSE
         // is disconnected, we'll never see the finished event and the button
         // would stay disabled until a full page refresh.

@@ -67,7 +67,10 @@ func Attach(ctx context.Context, c *Client, id string, rw bool) error {
 		return err
 	}
 
-	opts := &websocket.DialOptions{HTTPClient: c.hc}
+	opts := &websocket.DialOptions{
+		HTTPClient:      c.hc,
+		CompressionMode: websocket.CompressionContextTakeover,
+	}
 	if c.operatorToken != "" {
 		opts.HTTPHeader = http.Header{web.OperatorTokenHeader: {c.operatorToken}}
 	} else if c.token != "" {

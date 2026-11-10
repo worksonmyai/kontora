@@ -1,4 +1,12 @@
 export function kontoraSources() {
+  let indexed = null;
+  let indexedLength = -1;
+  const slots = new Map();
+  const sourceSlots = new Map();
+  const snapshots = new Set();
+  let sourceFlight = null;
+  let sourceAgain = false;
+
   return {
     ticketSources: [],
     secondaryTickets: [],
@@ -73,18 +81,77 @@ export function kontoraSources() {
       return this.tickets.concat(this.secondaryTickets);
     },
 
-    sourceTickets(ticket = this.selectedTicket) {
-      return this.isSecondary(ticket) ? this.secondaryTickets.filter(t => t.source === ticket.source) : this.tickets;
+    _indexSecondary() {
+      if (indexed === this.secondaryTickets && indexedLength === indexed.length) return;
+      indexed = this.secondaryTickets;
+      indexedLength = indexed.length;
+      slots.clear();
+      sourceSlots.clear();
+      indexed.forEach((t, i) => {
+        slots.set(this.ticketKey(t), i);
+        if (!sourceSlots.has(t.source)) sourceSlots.set(t.source, new Map());
+        sourceSlots.get(t.source).set(t.id, i);
+      });
     },
 
-    async fetchTicketSources() {
+    secondarySlot(ticket) {
+      this._indexSecondary();
+      return slots.get(this.ticketKey(ticket)) ?? -1;
+    },
+
+    sourceTicketById(id, ticket = this.selectedTicket) {
+      if (!this.isSecondary(ticket)) return this.tickets.find(t => t.id === id);
+      this._indexSecondary();
+      var slot = sourceSlots.get(ticket.source)?.get(id);
+      return slot === undefined ? undefined : this.secondaryTickets[slot];
+    },
+
+    sourceTickets(ticket = this.selectedTicket) {
+      if (!this.isSecondary(ticket)) return this.tickets;
+      this._indexSecondary();
+      return [...(sourceSlots.get(ticket.source)?.values() || [])].map(i => this.secondaryTickets[i]);
+    },
+
+    _beginSnapshot() {
+      var touched = new Set();
+      snapshots.add(touched);
+      return touched;
+    },
+
+    _endSnapshot(touched) {
+      snapshots.delete(touched);
+    },
+
+    _touchTicket(ticket) {
+      var key = this.ticketKey(ticket);
+      snapshots.forEach(touched => touched.add(key));
+    },
+
+    _mergeSnapshot(incoming, current, touched) {
+      return incoming.filter(t => !touched.has(this.ticketKey(t)))
+        .concat(current.filter(t => touched.has(this.ticketKey(t))));
+    },
+
+    fetchTicketSources() {
+      if (sourceFlight) { sourceAgain = true; return sourceFlight; }
+      sourceFlight = (async () => {
+        do {
+          sourceAgain = false;
+          await this._fetchTicketSources();
+        } while (sourceAgain && !this._appDestroyed);
+      })().finally(() => { sourceFlight = null; });
+      return sourceFlight;
+    },
+
+    async _fetchTicketSources() {
+      var touched = this._beginSnapshot();
       try {
         var res = await fetch('/api/ticket-sources');
         if (!res.ok) throw new Error('Failed to load ticket sources');
         this.ticketSources = await res.json();
         this.sourcesError = null;
         var lists = await Promise.all(this.ticketSources.filter(s => s.id !== 'primary').map(async source => {
-          if (!source.available) return [];
+          if (!source.available) return this.secondaryTickets.filter(t => t.source === source.id);
           try {
             var response = await fetch('/api/sources/' + encodeURIComponent(source.id) + '/tickets');
             if (!response.ok) throw new Error('Failed to load source tickets');
@@ -92,32 +159,61 @@ export function kontoraSources() {
           } catch (e) {
             source.available = false;
             source.error = e.message;
-            return [];
+            return this.secondaryTickets.filter(t => t.source === source.id);
           }
         }));
-        this.secondaryTickets = lists.flat();
+        if (this._appDestroyed) return;
+        this.secondaryTickets = this._mergeSnapshot(lists.flat(), this.secondaryTickets, touched);
+        this._indexSecondary();
+        this._reconcileSnapshotSelection(this.secondaryTickets, true, touched);
       } catch (e) {
         this.sourcesError = e.message;
+      } finally {
+        this._endSnapshot(touched);
       }
-      this.recomputeBoard();
+      this.scheduleBoardFlush();
     },
 
     applySecondaryUpdate(ticket) {
       if (!this.isSecondary(ticket)) return;
-      var idx = this.secondaryTickets.findIndex(t => this.sameTicket(t, ticket));
-      if (idx < 0) this.secondaryTickets.push(this.boardEntry(ticket));
-      else this.secondaryTickets[idx] = this.boardEntry(ticket);
+      this._touchTicket(ticket);
+      var idx = this.secondarySlot(ticket);
+      if (idx < 0) {
+        idx = this.secondaryTickets.length;
+        this.secondaryTickets.push(this.boardEntry(ticket));
+        slots.set(this.ticketKey(ticket), idx);
+        if (!sourceSlots.has(ticket.source)) sourceSlots.set(ticket.source, new Map());
+        sourceSlots.get(ticket.source).set(ticket.id, idx);
+        indexedLength++;
+      } else this.secondaryTickets[idx] = this.boardEntry(ticket);
       if (this.sameTicket(this.selectedTicket, ticket)) {
+        if (this.editing && this.sourceAvailable(ticket) && !this.ticketCanEdit(ticket)) {
+          this.closeAgentPickerHost('edit');
+          this.flushEditSave();
+          this.editing = false;
+          this.editingBody = false;
+        }
         this._selectedTicketUpdateSeq++;
         this.selectedTicket = this._mergeDetailProjection(this.selectedTicket, ticket);
       }
     },
 
     deleteSecondaryTicket(ticket, close = true) {
-      this._pendingTicketUpdates = this._pendingTicketUpdates.filter(t => !this.sameTicket(t, ticket));
-      this.secondaryTickets = this.secondaryTickets.filter(t => !this.sameTicket(t, ticket));
+      this._touchTicket(ticket);
+      var idx = this.secondarySlot(ticket);
+      if (idx >= 0) {
+        var last = this.secondaryTickets.pop();
+        slots.delete(this.ticketKey(ticket));
+        sourceSlots.get(ticket.source)?.delete(ticket.id);
+        if (idx < this.secondaryTickets.length) {
+          this.secondaryTickets[idx] = last;
+          slots.set(this.ticketKey(last), idx);
+          sourceSlots.get(last.source).set(last.id, idx);
+        }
+        indexedLength--;
+      }
       if (close && this._claimKey !== this.ticketKey(ticket) && this.sameTicket(this.selectedTicket, ticket)) this.closeDetail();
-      this.recomputeBoard();
+      this.scheduleBoardFlush();
     },
 
     sourceRelationDraft(ticket = this.selectedTicket) {

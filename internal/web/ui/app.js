@@ -16,15 +16,17 @@ export function kontoraApp() {
     // reactive read.
     _board: Object.create(null),
     _boardTotal: 0,
+    _columns: null,
+    _columnsSignature: '',
     // Global kontora status counts from the last recomputeBoard pass, used by
     // updateFavicon. Tallied ignoring searchQuery (the favicon reflects all
     // tickets, not the filtered view).
     // needsInput is camelCase because a status is [a-z][a-z0-9_]* and so
     // cannot collide with it.
     _statusCounts: { in_progress: 0, paused: 0, todo: 0, done: 0, needsInput: 0 },
-    // Buffer of ticket_updated payloads flushed once per animation frame, so a
-    // burst of agent updates triggers a single recompute and repaint.
-    _pendingTicketUpdates: [],
+    _boardDirty: false,
+    _costDirtyKey: null,
+    _chainDirtyKey: null,
     _boardRaf: null,
     _searchRaf: null,
     // Reactive clock, advanced every 30s so relative durations ("Running for
@@ -330,6 +332,10 @@ export function kontoraApp() {
 
     destroy() {
       this._appDestroyed = true;
+      if (this._boardRaf !== null) cancelAnimationFrame(this._boardRaf);
+      if (this._searchRaf !== null) cancelAnimationFrame(this._searchRaf);
+      this._boardRaf = null;
+      this._searchRaf = null;
       this.destroyMobile();
       this.destroyAgentPicker();
       if (this._routeListener) window.removeEventListener('hashchange', this._routeListener);

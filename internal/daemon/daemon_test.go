@@ -3960,7 +3960,7 @@ func TestRetryTicket_ChangedEpicBranchRefusesOldWorktree(t *testing.T) {
 			assert.Empty(t, d.running)
 			assert.Empty(t, d.runningBranches)
 			d.mu.Unlock()
-			require.Eventually(t, func() bool { return len(d.epicSem) == 0 }, time.Second, time.Millisecond,
+			require.Eventually(t, func() bool { return poolUsed(d, d.epicSem) == 0 }, time.Second, time.Millisecond,
 				"preparation failure must release supervisor capacity")
 
 			require.NoError(t, d.RetryTicket("epc-next"))

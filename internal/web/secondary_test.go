@@ -17,12 +17,13 @@ import (
 
 type secondaryMockService struct {
 	mockService
-	sources   []TicketSourceInfo
-	tickets   map[string]TicketInfo
-	calls     []string
-	mutations []SecondaryMutation
-	updates   []UpdateTicketRequest
-	err       error
+	sources        []TicketSourceInfo
+	tickets        map[string]TicketInfo
+	calls          []string
+	mutations      []SecondaryMutation
+	updates        []UpdateTicketRequest
+	mutationResult *TicketInfo
+	err            error
 }
 
 func newSecondaryMock() *secondaryMockService {
@@ -65,27 +66,33 @@ func (m *secondaryMockService) GetSecondaryTicket(source, id string) (TicketInfo
 	}
 	return tkt, nil
 }
-func (m *secondaryMockService) UpdateSecondaryTicket(source, id string, req UpdateTicketRequest) error {
+func (m *secondaryMockService) UpdateSecondaryTicket(source, id string, req UpdateTicketRequest) (TicketInfo, error) {
 	m.calls = append(m.calls, "update "+source+"/"+id)
 	m.updates = append(m.updates, req)
 	if m.err != nil {
-		return m.err
+		return TicketInfo{}, m.err
 	}
 	tkt := m.tickets[source+"/"+id]
 	if req.Body != nil {
 		tkt.Body = *req.Body
 	}
 	m.tickets[source+"/"+id] = tkt
-	return nil
+	if m.mutationResult != nil {
+		return *m.mutationResult, nil
+	}
+	return tkt, nil
 }
 func (m *secondaryMockService) ClaimSecondaryTicket(source, id, revision string) (TicketInfo, error) {
 	m.calls = append(m.calls, "claim "+source+"/"+id+"@"+revision)
 	return TicketInfo{ID: id, Title: "claimed", Status: "open"}, m.err
 }
-func (m *secondaryMockService) MutateSecondaryTicket(source, id string, op SecondaryMutation) error {
+func (m *secondaryMockService) MutateSecondaryTicket(source, id string, op SecondaryMutation) (TicketInfo, error) {
 	m.calls = append(m.calls, "mutate "+source+"/"+id)
 	m.mutations = append(m.mutations, op)
-	return m.err
+	if m.mutationResult != nil {
+		return *m.mutationResult, m.err
+	}
+	return m.tickets[source+"/"+id], m.err
 }
 
 func secondaryTestHandler(t *testing.T, svc TicketService) http.Handler {
@@ -123,7 +130,7 @@ func TestSecondarySourceQualifiedNamesakes(t *testing.T) {
 	}
 	w := secondaryRequest(handler, http.MethodPut, "/api/sources/team/tickets/same", `{"body":"new body"}`)
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
-	require.Equal(t, []string{"get team/same", "get other/same", "update team/same", "get team/same"}, m.calls)
+	require.Equal(t, []string{"get team/same", "get other/same", "update team/same"}, m.calls)
 	require.Equal(t, "new body", m.tickets["team/same"].Body)
 	require.Empty(t, m.tickets["other/same"].Body)
 	require.Empty(t, m.getTicket.Body)
@@ -188,7 +195,7 @@ func TestSecondaryMutationRoutes(t *testing.T) {
 			w := secondaryRequest(handler, tc.method, "/api/sources/team/tickets/same"+tc.suffix, tc.body)
 			require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 			require.Equal(t, []SecondaryMutation{tc.op}, m.mutations)
-			require.Equal(t, []string{"mutate team/same", "get team/same"}, m.calls)
+			require.Equal(t, []string{"mutate team/same"}, m.calls)
 			require.Contains(t, w.Body.String(), "team namesake")
 		})
 	}
@@ -289,6 +296,30 @@ func TestSecondaryValidation(t *testing.T) {
 	require.Len(t, m.updates, 1)
 	require.Equal(t, "branch", *m.updates[0].Branch)
 	require.Equal(t, "main", *m.updates[0].BaseBranch)
+}
+
+func TestSecondaryMutationReturnsCoherentServiceResult(t *testing.T) {
+	for _, tc := range []struct{ method, suffix, body, call string }{
+		{"PUT", "", `{"description":"# Written"}`, "update team/same"},
+		{"POST", "/note", `{"text":"Written note"}`, "mutate team/same"},
+		{"POST", "/notes/n001/reactions", `{"emoji":"👍"}`, "mutate team/same"},
+	} {
+		t.Run(tc.method+tc.suffix, func(t *testing.T) {
+			m := newSecondaryMock()
+			want := TicketInfo{
+				Source: "team", ID: "same", Title: "Coherent post-write", Revision: "reviewed-revision",
+				Body: "# Coherent post-write\n", Description: new("# Coherent post-write\n"), DescriptionTail: new(""),
+				Notes: []NoteInfo{{ID: "n001", Text: "Written note", Reactions: []ReactionInfo{{Emoji: "👍", Actors: []string{"reader"}}}}},
+			}
+			m.mutationResult = &want
+			w := secondaryRequest(secondaryTestHandler(t, m), tc.method, "/api/sources/team/tickets/same"+tc.suffix, tc.body)
+			require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+			var got TicketInfo
+			require.NoError(t, json.Unmarshal(w.Body.Bytes(), &got))
+			require.Equal(t, want, got)
+			require.Equal(t, []string{tc.call}, m.calls, "response must not trigger a second detail observation")
+		})
+	}
 }
 
 func TestSecondaryClaimReturnsServiceIdentity(t *testing.T) {

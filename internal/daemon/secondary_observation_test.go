@@ -99,7 +99,8 @@ func TestSecondaryDetailWaitsForCompleteRevision(t *testing.T) {
 	revision, err := store.Revision(dir, "review")
 	require.NoError(t, err)
 	assert.Equal(t, revision, got.info.Revision)
-	require.NoError(t, d.UpdateSecondaryTicket(source, "review", web.UpdateTicketRequest{Description: new("# Unseen\n")}))
+	_, err = d.UpdateSecondaryTicket(source, "review", web.UpdateTicketRequest{Description: new("# Unseen\n")})
+	require.NoError(t, err)
 	_, err = d.ClaimSecondaryTicket(source, "review", got.info.Revision)
 	require.ErrorContains(t, err, "revision changed")
 	assert.FileExists(t, path)
@@ -124,7 +125,7 @@ func TestSecondarySnapshotHashesObservedBytes(t *testing.T) {
 					require.NoError(t, os.WriteFile(path, []byte("---\nid: review\nstatus: todo\n---\n# Unseen\n"), 0o644))
 				}
 				return data, stat, err
-			})
+			}, nil)
 			require.NoError(t, err)
 			assert.Equal(t, "Reviewed", snapshot.tickets["review"].stored.Ticket.Title())
 			assert.Equal(t, reviewed, snapshot.tickets["review"].revision)
@@ -237,10 +238,11 @@ func TestSecondarySnapshotReadCounts(t *testing.T) {
 			snapshot, err := observeSecondary(dir, func(path string) ([]byte, os.FileInfo, error) {
 				reads[path]++
 				return readSecondaryFile(path)
-			})
+			}, nil)
 			require.NoError(t, err)
 			require.Len(t, snapshot.tickets, count)
-			require.Len(t, reads, 2*count)
+			// No sidecars exist, so only the documents are read.
+			require.Len(t, reads, count)
 			for path, calls := range reads {
 				assert.Equal(t, 1, calls, path)
 			}
@@ -251,15 +253,11 @@ func TestSecondarySnapshotReadCounts(t *testing.T) {
 			require.NoError(t, os.Rename(dir, dir+"-captured"))
 			t.Cleanup(func() { _ = os.RemoveAll(dir + "-captured") })
 			for _, observed := range snapshot.tickets {
-				for _, detail := range []bool{false, true} {
-					info := d.secondaryTicketInfo(&cfg, "source", observed, snapshot, detail)
-					require.NotEmpty(t, info.Revision)
-					require.Len(t, info.Deps, 1)
-					assert.NotEmpty(t, info.Deps[0].Title)
-					if detail {
-						require.Len(t, info.Blocks, 1)
-					}
-				}
+				info := d.secondaryTicketInfo(&cfg, "source", observed, snapshot)
+				require.NotEmpty(t, info.Revision)
+				require.Len(t, info.Deps, 1)
+				assert.NotEmpty(t, info.Deps[0].Title)
+				require.Len(t, info.Blocks, 1)
 			}
 		})
 	}
@@ -270,4 +268,104 @@ func TestSecondaryDanglingRelationshipWarning(t *testing.T) {
 	d := h.newDaemon(h.cfg)
 	warnings := d.claimRelationshipWarnings(&ticket.Ticket{ID: "claim", Deps: []string{"missing"}}, nil)
 	assert.Equal(t, []string{"missing is missing in primary. Claim does not move related tickets."}, warnings)
+}
+
+func TestSecondaryFileCache(t *testing.T) {
+	const before = "---\nid: review\nstatus: open\n---\n# Before\n"
+	cases := []struct {
+		name      string
+		change    func(t *testing.T, dir, path string)
+		wantReads []string
+		wantTitle string
+	}{
+		{name: "unchanged document reuses its parse", wantTitle: "Cached"},
+		{
+			name: "rewrite in place is read again",
+			change: func(t *testing.T, _, path string) {
+				// Same size, so only the timestamps tell the versions apart.
+				require.NoError(t, os.WriteFile(path, []byte("---\nid: review\nstatus: open\n---\n# Rewrit\n"), 0o644))
+			},
+			wantReads: []string{"review.md"},
+			wantTitle: "Rewrit",
+		},
+		{
+			name: "replacement by rename is read again",
+			change: func(t *testing.T, dir, path string) {
+				tmp := filepath.Join(dir, "review.tmp")
+				require.NoError(t, os.WriteFile(tmp, []byte("---\nid: review\nstatus: open\n---\n# Renamed\n"), 0o644))
+				require.NoError(t, os.Rename(tmp, path))
+			},
+			wantReads: []string{"review.md"},
+			wantTitle: "Renamed",
+		},
+		{
+			name: "new sidecar changes the revision",
+			change: func(t *testing.T, dir, _ string) {
+				require.NoError(t, os.WriteFile(filepath.Join(dir, "review.notes.json"), []byte(`{"version":1}`), 0o644))
+			},
+			wantReads: []string{"review.notes.json"},
+			wantTitle: "Cached",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "review.md")
+			require.NoError(t, os.WriteFile(path, []byte(before), 0o644))
+			// Written a moment ago, so the first observation must not cache it.
+			first, err := observeSecondary(dir, readSecondaryFile, nil)
+			require.NoError(t, err)
+			require.Empty(t, first.files)
+
+			// Seed a parse the disk never held, to tell reuse from a fresh read.
+			info, err := os.Lstat(path)
+			require.NoError(t, err)
+			identity, ok := identityOf(info)
+			require.True(t, ok)
+			cached, err := ticket.ParseBytes([]byte("---\nid: review\nstatus: open\n---\n# Cached\n"))
+			require.NoError(t, err)
+			cache := secondaryFileCache{"review.md": {identity: identity, digest: sha256Hex([]byte(before)), ticket: cached}}
+			if tc.change != nil {
+				tc.change(t, dir, path)
+			}
+
+			var reads []string
+			snapshot, err := observeSecondary(dir, func(p string) ([]byte, os.FileInfo, error) {
+				reads = append(reads, filepath.Base(p))
+				return readSecondaryFile(p)
+			}, cache)
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantReads, reads)
+			observed := snapshot.tickets["review"]
+			require.NotNil(t, observed)
+			assert.Equal(t, tc.wantTitle, observed.stored.Ticket.Title())
+			// Reuse is only correct when the reused digest describes the disk.
+			revision, err := store.Revision(dir, "review")
+			require.NoError(t, err)
+			assert.Equal(t, revision, observed.revision)
+			if tc.wantTitle == "Cached" {
+				assert.Contains(t, snapshot.files, "review.md")
+			} else {
+				assert.NotContains(t, snapshot.files, "review.md", "a document changed this recently must not be cached")
+			}
+		})
+	}
+}
+
+func TestSecondaryFileCacheDropsDeletedDocuments(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "gone.md")
+	require.NoError(t, os.WriteFile(path, []byte("---\nid: gone\nstatus: open\n---\n# Gone\n"), 0o644))
+	info, err := os.Lstat(path)
+	require.NoError(t, err)
+	identity, ok := identityOf(info)
+	require.True(t, ok)
+	parsed, err := ticket.ParseFile(path)
+	require.NoError(t, err)
+	require.NoError(t, os.Remove(path))
+
+	snapshot, err := observeSecondary(dir, readSecondaryFile, secondaryFileCache{"gone.md": {identity: identity, ticket: parsed}})
+	require.NoError(t, err)
+	assert.Empty(t, snapshot.tickets)
+	assert.Empty(t, snapshot.files)
 }

@@ -26,7 +26,7 @@ func TestResultRecoveryReservationRelease(t *testing.T) {
 			t.Run(fmt.Sprintf("supervisor=%t/%s", supervisor, trigger), func(t *testing.T) {
 				f := newResultFixture(t)
 				f.h.cfg.MaxConcurrentEpicSupervisors = 1
-				f.d.epicSem = make(chan struct{}, 1)
+				f.d.epicSem = &slotPool{limit: 1}
 				if supervisor {
 					f.rec.EpicID = f.tkt.ID
 					require.NoError(t, f.tkt.SetField("kind", "epic"))
@@ -37,7 +37,7 @@ func TestResultRecoveryReservationRelease(t *testing.T) {
 				f.d.windows.list = func(string) ([]string, error) { return nil, errors.New("temporary inspection failure") }
 				require.Equal(t, ticket.StatusInProgress, f.reconcile(t).Status)
 				require.Contains(t, f.d.running, f.tkt.ID)
-				require.Len(t, f.d.ticketPool(f.tkt), 1)
+				require.Equal(t, 1, f.d.ticketPool(f.tkt).used)
 				if trigger != "retry while unconfirmed" {
 					f.d.windows.list = func(string) ([]string, error) { return nil, nil }
 				}
@@ -53,7 +53,7 @@ func TestResultRecoveryReservationRelease(t *testing.T) {
 					if trigger == "retry while unconfirmed" {
 						f.d.handleFileChanged(f.path)
 						require.Contains(t, f.d.running, f.tkt.ID)
-						require.Len(t, f.d.ticketPool(f.tkt), 1)
+						require.Equal(t, 1, f.d.ticketPool(f.tkt).used)
 						f.d.windows.list = func(string) ([]string, error) { return nil, nil }
 						f.d.handleFileChanged(f.path)
 					}
@@ -61,8 +61,8 @@ func TestResultRecoveryReservationRelease(t *testing.T) {
 				f.d.background.Wait()
 				assert.Equal(t, ticket.StatusTodo, f.h.readTask(resultTicketID+".md").Status)
 				assert.Empty(t, f.d.running)
-				assert.Empty(t, f.d.sem)
-				assert.Empty(t, f.d.epicSem)
+				assert.Zero(t, f.d.sem.used)
+				assert.Zero(t, f.d.epicSem.used)
 				assert.Empty(t, f.d.runningBranches)
 				assert.Empty(t, f.d.recoveredReservations)
 			})
@@ -101,7 +101,7 @@ func TestResultRecoveryOriginalResourcesAndStartupOverrides(t *testing.T) {
 				assert.Equal(t, string(before), string(after), "unknown termination must preserve operator state")
 				assert.Equal(t, f.tkt.ID, f.d.runningBranches[common+"\x00"+f.rec.Branch])
 				assert.Contains(t, f.d.running, f.tkt.ID)
-				assert.Len(t, f.d.sem, 1)
+				assert.Equal(t, 1, f.d.sem.used)
 				other := f.h.readTask(resultTicketID + ".md").Clone()
 				require.NoError(t, other.SetField("id", "tst-contender"))
 				require.NoError(t, other.SetField("status", "todo"))
@@ -121,7 +121,7 @@ func TestResultRecoveryOriginalResourcesAndStartupOverrides(t *testing.T) {
 				assert.Empty(t, got.InvocationID)
 				assert.Empty(t, got.History, "an overridden transition must not replay")
 				assert.Empty(t, f.d.running)
-				assert.Empty(t, f.d.sem)
+				assert.Zero(t, f.d.sem.used)
 				assert.Empty(t, f.d.runningBranches)
 				assert.NoFileExists(t, executionPath(f.h.cfg, got.ID))
 			})
@@ -142,7 +142,7 @@ func TestResultRecoveryOverfullPool(t *testing.T) {
 				f.rec.EpicID = f.tkt.ID
 				require.NoError(t, saveExecution(f.h.cfg, f.rec))
 			}
-			pool <- struct{}{} // A live dispatcher owns this slot before recovery discovers two more executions.
+			pool.used++ // A live dispatcher owns this slot before recovery discovers two more executions.
 			f.reconcile(t)
 			other := f.tkt.Clone()
 			require.NoError(t, other.SetField("id", "tst-second-recovery"))
@@ -161,7 +161,7 @@ func TestResultRecoveryOverfullPool(t *testing.T) {
 			f.d.tickets[other.ID] = newTicketState(other, otherPath)
 			f.d.mu.Lock()
 			f.d.reconcileExecutionLocked(other, otherPath)
-			<-pool // The ordinary worker exits; both recovered executions still consume capacity.
+			pool.used-- // The ordinary worker exits; both recovered executions still consume capacity.
 			assert.Equal(t, -1, f.d.availablePoolSlotsLocked(pool))
 			f.d.mu.Unlock()
 			candidate := f.h.readTask(resultTicketID + ".md").Clone()
@@ -241,7 +241,7 @@ func TestResultSameDaemonTransitionReplay(t *testing.T) {
 			assert.NoFileExists(t, executionPath(h.cfg, got.ID))
 			assert.NoDirExists(t, rec.Worktree)
 			assert.Empty(t, d.running)
-			assert.Empty(t, d.sem)
+			assert.Zero(t, d.sem.used)
 			assert.Empty(t, d.pendingFinalizations)
 			metric, ok := collect()["kontora.stage.runs"]
 			require.True(t, ok)
@@ -272,14 +272,14 @@ func TestResultFailedFinalWriteRetainsDispatcherToken(t *testing.T) {
 		d.mu.Lock()
 		defer d.mu.Unlock()
 		reservation, exists := d.recoveredReservations[f.tkt.ID]
-		return exists && reservation.token && len(d.sem) == 1
+		return exists && reservation.pool == d.sem && d.sem.used == 1
 	}, 5*time.Second, 10*time.Millisecond)
 	require.NoError(t, os.Chmod(f.path, 0o644))
 	d.handleFileChanged(f.path)
 	d.background.Wait()
 	d.mu.Lock()
 	assert.Empty(t, d.running)
-	assert.Empty(t, d.sem)
+	assert.Zero(t, d.sem.used)
 	assert.Empty(t, d.runningBranches)
 	d.mu.Unlock()
 	assert.Equal(t, ticket.StatusDone, f.h.readTask(resultTicketID+".md").Status)
@@ -298,7 +298,7 @@ func TestResultReplayRetainsResourcesThroughCleanup(t *testing.T) {
 	f.d.handleFileChanged(f.path)
 	f.d.mu.Lock()
 	assert.Contains(t, f.d.running, f.tkt.ID, "cleanup still owns the original resources")
-	assert.Len(t, f.d.sem, 1)
+	assert.Equal(t, 1, f.d.sem.used)
 	assert.Len(t, f.d.runningBranches, 1)
 	assert.FileExists(t, executionPath(f.h.cfg, f.tkt.ID))
 	f.d.mu.Unlock()
@@ -306,7 +306,7 @@ func TestResultReplayRetainsResourcesThroughCleanup(t *testing.T) {
 	f.d.background.Wait()
 	assert.NoFileExists(t, executionPath(f.h.cfg, f.tkt.ID))
 	assert.Empty(t, f.d.running)
-	assert.Empty(t, f.d.sem)
+	assert.Zero(t, f.d.sem.used)
 	assert.Empty(t, f.d.runningBranches)
 }
 
@@ -334,7 +334,7 @@ func TestResultCancellationRetiresIdentityBeforeRetry(t *testing.T) {
 		d.windows.list = func(string) ([]string, error) { return nil, nil }
 		require.NoError(t, d.initialScan(f.h.tasksDir))
 		assert.Empty(t, d.running)
-		assert.Empty(t, d.sem)
+		assert.Zero(t, d.sem.used)
 		assert.Equal(t, ticket.StatusTodo, f.h.readTask(resultTicketID+".md").Status)
 	}
 }

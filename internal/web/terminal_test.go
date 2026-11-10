@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/creack/pty/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -37,6 +38,7 @@ func TestHandleTerminalWS_SessionExists_UpgradesWebSocket(t *testing.T) {
 		t.Skip("skipping tmux integration test in short mode")
 	}
 	requireTmux(t)
+	isolateTmux(t)
 
 	// A non-default session name also proves the handler attaches to the
 	// session the server was given rather than probing "kontora".
@@ -50,12 +52,14 @@ func TestHandleTerminalWS_SessionExists_UpgradesWebSocket(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	conn, resp, err := websocket.Dial(ctx, fmt.Sprintf("ws://%s/ws/terminal/%s?cols=80&rows=24", srv.Addr(), taskID), nil)
+	conn, resp, err := websocket.Dial(ctx, fmt.Sprintf("ws://%s/ws/terminal/%s?cols=80&rows=24", srv.Addr(), taskID),
+		&websocket.DialOptions{CompressionMode: websocket.CompressionContextTakeover})
 	require.NoError(t, err)
 	if resp != nil && resp.Body != nil {
 		defer resp.Body.Close()
 	}
 	defer func() { _ = conn.CloseNow() }()
+	assert.Contains(t, resp.Header.Get("Sec-WebSocket-Extensions"), "permessage-deflate")
 
 	// Send some output to the tmux window. Through tmux.SendKeys, not a raw
 	// send-keys: the viewer this test just dialled is a read-only client, and a
@@ -80,6 +84,68 @@ func TestHandleTerminalWS_SessionExists_UpgradesWebSocket(t *testing.T) {
 
 	assert.Contains(t, received.String(), "hello-from-tmux")
 	conn.Close(websocket.StatusNormalClosure, "")
+}
+
+func TestHandleTerminalWS_ViewerSizing(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping tmux integration test in short mode")
+	}
+	requireTmux(t)
+
+	tests := []struct {
+		name            string
+		rw              bool
+		unrelatedClient bool
+		resize          bool
+		wantWidth       string
+		wantReadOnly    string
+	}{
+		{"read-only alone", false, false, false, "200", "1"},
+		{"read-only with unrelated client", false, true, false, "200", "1"},
+		{"read-only resized with unrelated client", false, true, true, "210", "1"},
+		{"read-write with unrelated client", true, true, false, "200", "0"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			isolateTmux(t)
+			session := uniqueSession(t)
+			id := "sizing"
+			startTmuxWindow(t, session, id)
+			if tt.unrelatedClient {
+				other := session + "-unrelated"
+				startTmuxWindow(t, other, "other")
+				attachNormalClient(t, other)
+			}
+
+			srv := startTerminalTestServer(t, &mockTerminalService{hasSession: true}, session)
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			url := fmt.Sprintf("ws://%s/ws/terminal/%s?cols=200&rows=50", srv.Addr(), id)
+			if tt.rw {
+				url += "&rw=1"
+			}
+			conn, resp, err := websocket.Dial(ctx, url, nil)
+			require.NoError(t, err)
+			if resp != nil && resp.Body != nil {
+				defer resp.Body.Close()
+			}
+			defer func() { _ = conn.CloseNow() }()
+			go func() {
+				for {
+					if _, _, err := conn.Read(ctx); err != nil {
+						return
+					}
+				}
+			}()
+
+			requireTmuxOutput(t, tt.wantReadOnly, "list-clients", "-F", "#{client_readonly}",
+				"-f", "#{m:kontora-view-*,#{client_session}}")
+			if tt.resize {
+				require.NoError(t, conn.Write(ctx, websocket.MessageText, []byte(`{"type":"resize","cols":210,"rows":55}`)))
+			}
+			requireTmuxOutput(t, tt.wantWidth, "display-message", "-p", "-t", tmux.WindowTarget(session, id), "#{pane_width}")
+		})
+	}
 }
 
 func TestClampDim(t *testing.T) {
@@ -275,9 +341,57 @@ func requireTmux(t *testing.T) {
 	}
 }
 
+func isolateTmux(t *testing.T) {
+	t.Helper()
+	// tmux sockets must fit the Unix socket path limit, so avoid t.TempDir's test name.
+	dir, err := os.MkdirTemp("", "kt")
+	require.NoError(t, err)
+	t.Setenv("TMUX", "")
+	t.Setenv("TMUX_TMPDIR", dir)
+	t.Cleanup(func() {
+		_ = exec.Command("tmux", "-N", "kill-server").Run()
+		require.NoError(t, os.RemoveAll(dir))
+	})
+}
+
+func attachNormalClient(t *testing.T, session string) {
+	t.Helper()
+	cmd := exec.Command("tmux", "attach-session", "-t", "="+session)
+	cmd.Env = append(os.Environ(), "TERM=xterm-256color", "LANG=en_US.UTF-8")
+	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: 24, Cols: 80})
+	require.NoError(t, err)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = io.Copy(io.Discard, ptmx)
+	}()
+	t.Cleanup(func() {
+		_ = ptmx.Close()
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		<-done
+	})
+	requireTmuxOutput(t, session+" 0", "list-clients", "-F", "#{client_session} #{client_readonly}")
+}
+
+func requireTmuxOutput(t *testing.T, want string, args ...string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	var out []byte
+	var err error
+	for time.Now().Before(deadline) {
+		out, err = exec.Command("tmux", args...).CombinedOutput()
+		if err == nil && strings.TrimSpace(string(out)) == want {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("tmux %v: wanted %q, got %q (error: %v)", args, want, strings.TrimSpace(string(out)), err)
+}
+
 func startTmuxWindow(t *testing.T, session, window string) {
 	t.Helper()
-	newSession := exec.Command("tmux", "new-session", "-d", "-s", session, "-n", window, "-x", "80", "-y", "24")
+	newSession := exec.Command("tmux", "-f", "/dev/null", "new-session", "-d", "-s", session, "-n", window, "-x", "80", "-y", "24")
 	newSession.Env = append(os.Environ(), "TERM=xterm")
 	out, err := newSession.CombinedOutput()
 	require.NoError(t, err, "failed to create tmux session: %s", out)

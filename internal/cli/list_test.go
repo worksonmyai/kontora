@@ -340,9 +340,35 @@ func TestListSecondaryFolderUnavailable(t *testing.T) {
 	}
 }
 
-func TestListRejectsSecondaryAlias(t *testing.T) {
-	cfg := listFixture(t, "tst-work todo")
-	cfg.SecondaryTicketsDirs = []string{cfg.TicketsDir}
-	_, err := LocalItems(cfg)
-	require.ErrorContains(t, err, "aliases tickets_dir")
+func TestListSecondaryAliases(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		secondary bool
+		duplicate bool
+	}{
+		{name: "primary only"},
+		{name: "primary and secondary", secondary: true},
+		{name: "duplicate secondary", secondary: true, duplicate: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := listFixture(t, "tst-work todo")
+			cfg.SecondaryTicketsDirs = []string{cfg.TicketsDir, cfg.TicketsDir}
+			if tc.secondary {
+				secondary := listFixture(t, "tst-secondary todo")
+				cfg.SecondaryTicketsDirs = append(cfg.SecondaryTicketsDirs, secondary.TicketsDir)
+				if tc.duplicate {
+					cfg.SecondaryTicketsDirs = append(cfg.SecondaryTicketsDirs, secondary.TicketsDir)
+				}
+			}
+			items, err := LocalItems(cfg)
+			if tc.duplicate {
+				require.ErrorContains(t, err, "secondary_tickets_dirs[3]")
+				assert.ErrorContains(t, err, "aliases secondary_tickets_dirs[2]")
+				return
+			}
+			require.NoError(t, err)
+			require.Len(t, items, 1)
+			assert.Equal(t, "tst-work", items[0].ID)
+		})
+	}
 }

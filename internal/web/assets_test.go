@@ -1,10 +1,13 @@
 package web
 
 import (
+	"encoding/json"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
@@ -24,6 +27,7 @@ func TestServer_VendoredAssets(t *testing.T) {
 		wantType string
 	}{
 		{"/app.js", "javascript"},
+		{"/app.js.map", "application/json"},
 		{"/app.css", "text/css"},
 		{"/theme.js", "javascript"},
 		{"/tips.js", "javascript"},
@@ -50,6 +54,70 @@ func TestServer_VendoredAssets(t *testing.T) {
 			defer resp.Body.Close()
 			assert.Equal(t, http.StatusOK, resp.StatusCode)
 			assert.Contains(t, resp.Header.Get("Content-Type"), tc.wantType)
+		})
+	}
+}
+
+// TestServer_UISourceMapIsLinked keeps the map out of /app.js. Inline, it was
+// two thirds of the script every page load downloaded; linked, a browser
+// fetches it only while DevTools is open.
+func TestServer_UISourceMapIsLinked(t *testing.T) {
+	srv := newTestServer(t)
+
+	js := string(rawGet(t, srv, "/app.js", nil).body)
+	assert.NotContains(t, js, "sourceMappingURL=data:")
+	assert.True(t, strings.HasSuffix(strings.TrimSpace(js), "//# sourceMappingURL="+uiSourceMapAsset), "the script does not link its map")
+
+	resp := rawGet(t, srv, "/"+uiSourceMapAsset, nil)
+	require.Equal(t, http.StatusOK, resp.status)
+	var sourceMap struct {
+		Sources []string `json:"sources"`
+	}
+	require.NoError(t, json.Unmarshal(resp.body, &sourceMap))
+	assert.True(t, slices.ContainsFunc(sourceMap.Sources, func(s string) bool { return strings.HasSuffix(s, "tickets.js") }),
+		"the map does not name the UI modules: %v", sourceMap.Sources)
+}
+
+// TestServer_VersionedAssetURLs covers the reload path: index.html is the one
+// response that revalidates, and every script and stylesheet it names carries
+// a content hash that makes its bytes cacheable without asking again.
+func TestServer_VersionedAssetURLs(t *testing.T) {
+	srv := newTestServer(t)
+	html := string(rawGet(t, srv, "/", nil).body)
+
+	cases := []struct {
+		path          string
+		wantVersioned bool
+	}{
+		{"/app.js", true},
+		{"/app.css", true},
+		{"/theme.js", true},
+		{"/tips.js", true},
+		{"/vendor/fonts/fonts.css", true},
+		// fonts.css names the fonts without a version, so the preloads must too.
+		{"/vendor/fonts/dm-sans-latin.woff2", false},
+		{"/vendor/alpinejs@3.14.8/cdn.min.js", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.path, func(t *testing.T) {
+			versioned := regexp.MustCompile(`"` + regexp.QuoteMeta(tc.path) + `\?v=([0-9a-f]+)"`).FindStringSubmatch(html)
+			if !tc.wantVersioned {
+				assert.Nil(t, versioned)
+				assert.Contains(t, html, `"`+tc.path+`"`)
+				return
+			}
+			require.NotNil(t, versioned, "index.html does not version %s", tc.path)
+			assert.NotContains(t, html, `"`+tc.path+`"`)
+
+			current := rawGet(t, srv, tc.path+"?v="+versioned[1], gzipHeader())
+			require.Equal(t, http.StatusOK, current.status)
+			assert.Equal(t, cacheImmutable, current.get("Cache-Control"))
+			assert.Equal(t, rawGet(t, srv, tc.path, gzipHeader()).body, current.body)
+
+			// A document from an older build names an older version, which the
+			// current bytes must not answer for as immutable.
+			stale := rawGet(t, srv, tc.path+"?v=000000000000", gzipHeader())
+			assert.Equal(t, cacheRevalidate, stale.get("Cache-Control"))
 		})
 	}
 }
@@ -159,6 +227,9 @@ func TestServer_DevBundleRebuilds(t *testing.T) {
 	assert.Equal(t, http.StatusOK, status)
 	assert.Contains(t, body, second)
 	assert.NotContains(t, body, first, "the reply still carries the previous build")
+	sourceMap := rawGet(t, srv, "/"+uiSourceMapAsset, nil)
+	assert.Equal(t, http.StatusOK, sourceMap.status)
+	assert.Contains(t, string(sourceMap.body), second, "the map describes another build")
 
 	// A broken edit must not fall back to the last good bundle. The esbuild
 	// message goes to the log, not to an unauthenticated response body.

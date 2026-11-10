@@ -212,6 +212,15 @@ function stubXterm(termState) {
       this.element = { clientWidth: 800, clientHeight: 400, parentNode: null };
       this.resets = 0;
       this.disposed = false;
+      this.inputListeners = [];
+      this.writes = [];
+      this.textarea = {
+        readOnly: false,
+        focuses: 0,
+        blurs: 0,
+        focus() { this.focuses += 1; },
+        blur() { this.blurs += 1; },
+      };
       created.push(this);
     }
     loadAddon() {}
@@ -224,10 +233,14 @@ function stubXterm(termState) {
     reset() {
       this.resets += 1;
     }
-    write() {}
-    onData() {
-      return { dispose() {} };
+    write(data) { this.writes.push(data); }
+    onData(handler) {
+      const listener = { handler, disposed: false, dispose() { this.disposed = true; } };
+      this.inputListeners.push(listener);
+      return listener;
     }
+    focus() { this.textarea.focus(); }
+    blur() { this.textarea.blur(); }
     scrollToBottom() {}
     dispose() {
       this.disposed = true;
@@ -270,12 +283,12 @@ async function liveTerminal() {
 
 // liveTerminal without the streaming half, so a test can hold back the frame
 // _connectTerminal defers the connect to.
-async function openedTerminal(overrides = {}) {
+async function openedTerminal(overrides = {}, { mobile = false } = {}) {
   const container = { textContent: "" };
   const { ctx, state } = loadKontoraContext({
     document: {
       getElementById(id) {
-        return id === "terminal-session" ? container : null;
+        return id === (mobile ? "terminal-container-mobile" : "terminal-session") ? container : null;
       },
       querySelector() {
         return null;
@@ -302,8 +315,10 @@ async function openedTerminal(overrides = {}) {
   });
 
   stubXterm(ctx.termState);
+  state.isMobile = mobile;
   state.selectedTicket = { id: "tst-001", status: "in_progress" };
   state.activeTab = "session";
+  state.detailTab = mobile ? "terminal" : "ticket";
   state.$nextTick = (callback) => {
     if (callback) callback();
     return Promise.resolve();
@@ -927,6 +942,264 @@ test("refitTerminal skips a container it cannot measure", async () => {
   assert.equal(ctx.termState.fit.fits, fitsWhileVisible, "no reflow against a hidden container");
 });
 
+for (const mobile of [false, true]) {
+  for (const rw of [false, true]) {
+    test(`terminal sends connection-time resizes on open: mobile=${mobile} rw=${rw}`, async () => {
+      const cases = [
+        { name: 'unchanged', sizes: [], want: [] },
+        { name: 'columns changed', sizes: [[100, 24]], want: [{ type: 'resize', cols: 100, rows: 24 }] },
+        { name: 'rows changed', sizes: [[80, 30]], want: [{ type: 'resize', cols: 80, rows: 30 }] },
+        { name: 'resized', sizes: [[100, 30], [120, 40]], want: [{ type: 'resize', cols: 120, rows: 40 }] },
+        { name: 'resized back', sizes: [[100, 30], [80, 24]], want: [] },
+      ];
+      for (const tc of cases) {
+        const WebSocket = class {
+          static OPEN = 1;
+          constructor(url) {
+            this.url = url;
+            this.readyState = 0;
+            this.sent = [];
+          }
+          send(data) { this.sent.push(JSON.parse(data)); }
+          close() { this.readyState = 3; }
+        };
+        const { ctx, state } = await openedTerminal({ WebSocket }, { mobile });
+        if (rw) state.toggleTerminalRW();
+        const ws = ctx.termState.ws;
+        const term = ctx.termState.term;
+        assert.match(ws.url, /cols=80&rows=24/);
+        for (const [cols, rows] of tc.sizes) {
+          ctx.termState.fit.fit = () => { term.cols = cols; term.rows = rows; };
+          state.refitTerminal();
+        }
+        assert.deepEqual(ws.sent, [], `${tc.name}: nothing sent while connecting`);
+        ws.readyState = WebSocket.OPEN;
+        ws.onopen();
+        assert.deepEqual(ws.sent, tc.want, `${tc.name}: latest size sent on open`);
+
+        ctx.termState.fit.fit = () => { term.cols = 130; term.rows = 45; };
+        state.refitTerminal();
+        assert.deepEqual(ws.sent.at(-1), { type: 'resize', cols: 130, rows: 45 }, `${tc.name}: connected resize`);
+        const sent = ws.sent.length;
+        state.toggleTerminalRW();
+        term.cols = 140;
+        ws.readyState = WebSocket.OPEN;
+        ws.onopen();
+        assert.equal(ws.sent.length, sent, `${tc.name}: stale socket cannot send a resize`);
+        state.destroy();
+      }
+    });
+  }
+}
+
+async function mobileInputTerminal(subject) {
+  const sockets = [];
+  const WebSocket = class {
+    static OPEN = 1;
+    constructor(url) {
+      this.url = url;
+      this.readyState = 0;
+      this.sent = [];
+      sockets.push(this);
+    }
+    send(data) { this.sent.push(JSON.parse(data)); }
+    close() { this.readyState = 3; this.closed = true; }
+  };
+  if (subject === 'epic') {
+    const ui = epicSupervisorUI({ mobile: true, overrides: { WebSocket } });
+    await ui.state.openEpic(ui.epic.id);
+    ui.state.epicWatchAgent();
+    await flushMicrotasks();
+    return { ...ui, sockets };
+  }
+  return { ...await openedTerminal({ WebSocket }, { mobile: true }), sockets };
+}
+
+for (const subject of ['ticket', 'epic']) {
+  test(`mobile ${subject} input waits for the current RW socket without focusing or queueing`, async () => {
+    const { ctx, state, sockets } = await mobileInputTerminal(subject);
+    const term = ctx.termState.term;
+    assert.equal(term.options.disableStdin, true, 'RO terminal cannot accept input');
+    assert.equal(term.textarea.readOnly, true, 'RO taps cannot open the keyboard');
+    sockets[0].readyState = 1;
+    sockets[0].onopen();
+    assert.equal(term.textarea.readOnly, true, 'RO readiness does not enable input');
+
+    state.toggleTerminalRW();
+    const rw = ctx.termState.ws;
+    const listener = term.inputListeners.at(-1);
+    assert.match(rw.url, /rw=1/);
+    assert.equal(term.options.disableStdin, true, 'connecting is still read-only');
+    assert.equal(term.textarea.readOnly, true);
+    listener.handler('before open');
+    rw.readyState = 1;
+    listener.handler('before callback');
+    assert.deepEqual(rw.sent, []);
+    term.focus();
+    const connectingBlurs = term.textarea.blurs;
+    rw.onopen();
+    assert.ok(term.textarea.blurs > connectingBlurs, 'a tap during connection cannot retain focus when input becomes ready');
+    assert.equal(state.terminalConnected, true);
+    assert.equal(term.options.disableStdin, false);
+    assert.equal(term.textarea.readOnly, false, 'the next terminal tap can open the keyboard');
+    assert.equal(term.textarea.focuses, 1, 'socket readiness cannot focus the textarea');
+    assert.deepEqual(rw.sent, [], 'input typed before readiness is not replayed');
+    listener.handler('ready');
+    assert.deepEqual(rw.sent, [{ type: 'input', data: 'ready' }]);
+
+    term.focus();
+    const blurs = term.textarea.blurs;
+    state.toggleTerminalRW();
+    assert.equal(state.terminalRW, false);
+    assert.equal(listener.disposed, true);
+    assert.ok(term.textarea.blurs > blurs, 'ending input dismisses the keyboard');
+    assert.equal(term.options.disableStdin, true);
+    assert.equal(term.textarea.readOnly, true);
+    assert.doesNotMatch(ctx.termState.ws.url, /rw=1/);
+    rw.readyState = 1;
+    listener.handler('late input');
+    rw.onopen();
+    assert.equal(term.textarea.readOnly, true);
+    assert.equal(state.terminalConnected, false);
+    assert.equal(rw.sent.length, 1);
+    state.destroy();
+  });
+
+  for (const action of ['stream', 'teardown', 'close', 'error', 'tab', 'selection', 'detail', 'breakpoint', 'escape']) {
+    test(`mobile ${subject} input resets on ${action} and stale callbacks stay inert`, async () => {
+      const { ctx, state, sockets } = await mobileInputTerminal(subject);
+      state.toggleTerminalRW();
+      const term = ctx.termState.term;
+      const rw = ctx.termState.ws;
+      rw.readyState = 1;
+      rw.onopen();
+      const listener = term.inputListeners.at(-1);
+      term.focus();
+      const blurs = term.textarea.blurs;
+      switch (action) {
+        case 'stream': state._disconnectStream(); break;
+        case 'teardown': state.closeTerminal(); break;
+        case 'close': rw.onclose(); break;
+        case 'error': rw.onerror(); break;
+        case 'tab':
+          if (subject === 'epic') state.epicSwitchTab('children');
+          else state.mobileSwitchTab('ticket');
+          break;
+        case 'selection':
+          if (subject === 'epic') await state.openEpic(state.selectedEpic.id);
+          else await state.selectTicket({ id: 'tst-002', status: 'in_progress' });
+          break;
+        case 'detail':
+          if (subject === 'epic') await state.closeEpic();
+          else state.closeDetail();
+          break;
+        case 'breakpoint':
+          state.isMobile = false;
+          state._mountBoard = () => {};
+          state._onBreakpointChange();
+          break;
+        case 'escape': {
+          let stopped = false;
+          assert.equal(term.keyHandler({ type: 'keydown', key: 'Escape', preventDefault() {}, stopPropagation() { stopped = true; } }), false);
+          assert.equal(stopped, true);
+          assert.ok(state.outputSubject(), 'Escape leaves the detail open');
+          break;
+        }
+      }
+      await flushMicrotasks();
+      assert.equal(state.terminalRW, false);
+      assert.equal(term.textarea.readOnly, true);
+      assert.equal(term.options.disableStdin, true);
+      assert.ok(term.textarea.blurs > blurs);
+      assert.equal(listener.disposed, true, 'old input listener is disposed');
+      const connected = state.terminalConnected;
+      const writes = term.writes.length;
+      rw.readyState = 1;
+      rw.onopen();
+      rw.onmessage({ data: new ArrayBuffer(0) });
+      rw.onclose();
+      rw.onerror();
+      listener.handler('stale');
+      assert.equal(state.terminalConnected, connected);
+      assert.equal(term.textarea.readOnly, true);
+      assert.deepEqual(rw.sent, []);
+      assert.equal(term.writes.length, writes, 'old output cannot write into the reused terminal');
+      assert.ok(sockets.filter(ws => !ws.closed).every(ws => !ws.url.includes('rw=1')));
+      state.destroy();
+    });
+  }
+
+  test(`mobile ${subject} reconnects RO after a disconnect and ignores a replaced RW socket`, async () => {
+    const { ctx, state } = await mobileInputTerminal(subject);
+    state.toggleTerminalRW();
+    const first = ctx.termState.ws;
+    const term = ctx.termState.term;
+    const listener = term.inputListeners.at(-1);
+    state.toggleTerminalRW();
+    state.toggleTerminalRW();
+    const current = ctx.termState.ws;
+    first.readyState = 1;
+    first.onopen();
+    listener.handler('replaced');
+    assert.equal(state.terminalConnected, false);
+    assert.equal(term.textarea.readOnly, true);
+    assert.deepEqual(first.sent, []);
+    current.readyState = 1;
+    current.onopen();
+    first.onclose();
+    first.onerror();
+    assert.equal(state.terminalConnected, true);
+    assert.equal(term.textarea.readOnly, false);
+    current.onclose();
+    assert.equal(state.terminalRW, false);
+    state.reconnectTerminal();
+    await flushMicrotasks();
+    assert.doesNotMatch(ctx.termState.ws.url, /rw=1/);
+    assert.equal(ctx.termState.term, term, 'reconnect reuses xterm');
+    state.destroy();
+  });
+}
+
+for (const mobile of [false, true]) {
+  test(`replaced input listeners cannot send to an old socket: mobile=${mobile}`, async () => {
+    const { ctx, state } = await openedTerminal({}, { mobile });
+    const term = ctx.termState.term;
+    state.toggleTerminalRW();
+    const first = ctx.termState.ws;
+    first.onopen();
+    const listener = term.inputListeners.at(-1);
+    const sent = [];
+    first.send = data => sent.push(JSON.parse(data));
+    listener.handler('current');
+    assert.equal(sent.length, 1);
+
+    state._connectWs(state._terminalSeq - 1);
+    assert.equal(listener.disposed, false, 'a stale connect cannot remove the current listener');
+    assert.equal(ctx.termState.ws, first);
+    state._connectWs(state._terminalSeq);
+    assert.equal(listener.disposed, true);
+    const current = ctx.termState.ws;
+    current.onopen();
+    first.readyState = 1;
+    listener.handler('stale');
+    first.onopen();
+    first.onclose();
+    first.onerror();
+    assert.equal(sent.length, 1, 'socket identity matters even within the same generation');
+    assert.equal(ctx.termState.ws, current);
+    assert.equal(state.terminalConnected, true);
+    assert.equal(term.inputListeners.filter(l => !l.disposed).length, 1);
+
+    state.closeTerminal();
+    assert.equal(state.terminalRW, !mobile, 'desktop keeps its existing mode across stream teardown');
+    assert.equal(term.inputListeners.filter(l => !l.disposed).length, 0);
+    await state.openTerminal();
+    assert.equal(ctx.termState.term, term);
+    assert.equal(ctx.termState.ws.url.includes('rw=1'), !mobile);
+    state.destroy();
+  });
+}
+
 test("board columns include non-Kontora tickets in their status columns", () => {
   const state = loadKontoraState();
   state.tickets = [
@@ -1545,23 +1818,25 @@ test("queueTicketUpdate coalesces a burst into a single recompute", () => {
   state.recomputeBoard = () => { recomputes += 1; realRecompute(); };
   state.tickets = [];
 
-  // Pretend a frame is already scheduled so queued updates only buffer.
+  // Hold derived work while every event updates the model.
   state._boardRaf = 1;
   state.queueTicketUpdate({ id: "kon-1", title: "One", status: "todo", kontora: true });
   state.queueTicketUpdate({ id: "kon-2", title: "Two", status: "todo", kontora: true });
 
-  assert.equal(state._pendingTicketUpdates.length, 2);
+  assert.equal(state._boardDirty, true);
+  assert.equal(state.tickets.length, 2);
+  assert.equal('_pendingTicketUpdates' in state, false);
   assert.equal(recomputes, 0);
 
   state.flushTicketUpdates();
 
   assert.equal(recomputes, 1);
-  assert.equal(state._pendingTicketUpdates.length, 0);
+  assert.equal(state._boardDirty, false);
   assert.equal(state._boardRaf, null);
   assert.deepEqual(bt(state, "in_progress").map(t => t.id).sort(), ["kon-1", "kon-2"]);
 });
 
-test("queueTicketUpdate flushes the buffer and refreshes the cached board", () => {
+test("queueTicketUpdate applies immediately and refreshes the cached board", () => {
   const state = loadKontoraState();
   state.updateFavicon = () => {};
   state.tickets = [];
@@ -1570,7 +1845,7 @@ test("queueTicketUpdate flushes the buffer and refreshes the cached board", () =
   state.queueTicketUpdate({ id: "kon-1", title: "One", status: "human_review", kontora: true, updated_at: "2026-05-19T09:00:00Z" });
 
   assert.deepEqual(bt(state, "human_review").map(t => t.id), ["kon-1"]);
-  assert.equal(state._pendingTicketUpdates.length, 0);
+  assert.equal(state._boardDirty, false);
 });
 
 test("moveTask re-buckets the cached board optimistically and reverts on failure", async () => {
@@ -2433,7 +2708,7 @@ test("an update during a drag lands when the drag ends", async () => {
   assert.deepEqual(board.ops, ["replace:rev-1"]);
 });
 
-test("ticket updates that arrive during a drag are applied at the drop", async () => {
+test("ticket updates during a drag update the model without touching card DOM", async () => {
   let opts = null;
   const { board, state, built } = renderedBoard(
     [
@@ -2445,11 +2720,16 @@ test("ticket updates that arrive during a drag are applied at the drop", async (
   state.initSortable(board.els["col-in_progress"]);
   const dragged = { dataset: { dropStatus: "todo" }, closest: () => null };
   opts.onStart({ from: dragged });
+  const query = board.document.querySelectorAll;
+  board.document.querySelectorAll = () => { throw new Error('drag-owned card access'); };
+  state._markSelectedCard();
+  state._updateCardTimers();
+  board.document.querySelectorAll = query;
 
   state.queueTicketUpdate({ id: "rev-1", title: "R1 renamed", status: "human_review", kontora: true, updated_at: "2026-05-19T12:00:00Z" });
   assert.deepEqual(board.ops, [], "an update mid-drag must not touch the cards");
-  assert.equal(state.tickets[1].title, "R1", "and must not land in the board data yet");
-  assert.equal(state._pendingTicketUpdates.length, 1);
+  assert.equal(state.tickets[1].title, "R1 renamed", "the canonical model updates immediately");
+  assert.equal(state._boardDirty, true);
 
   opts.onEnd({ item: { dataset: { ticketId: "kon-a" } }, from: dragged, to: dragged });
   await flushMicrotasks();
@@ -2457,7 +2737,7 @@ test("ticket updates that arrive during a drag are applied at the drop", async (
   assert.equal(state.tickets[1].title, "R1 renamed");
   assert.deepEqual(built, ["rev-1"]);
   assert.deepEqual(board.ops, ["replace:rev-1"]);
-  assert.equal(state._pendingTicketUpdates.length, 0);
+  assert.equal(state._boardDirty, false);
 });
 
 test("opening a ticket recomputes the board only when the card would change", async () => {
@@ -2533,7 +2813,7 @@ test("index.html shares routed pages and builds board layers exclusively", () =>
   }
   const css = fs.readFileSync(path.join(dirname, '../../../hack/tailwind.css'), 'utf8');
   for (const name of ['mobile-detail', 'mobile-detail-actions', 'mobile-terminal-pane', 'mobile-assistant-thread']) {
-    const tag = [...html.matchAll(/<[^>]+class="([^"]*)"[^>]*>/g)]
+    const tag = [...html.matchAll(/<[^>]+(?<!:)class="([^"]*)"[^>]*>/g)]
       .find(match => match[1].split(/\s+/).includes(name))?.[0];
     assert.ok(tag, name);
     assert.doesNotMatch(tag.match(/(?<!:)style="([^"]*)"/)?.[1] || '', /display\s*:/, name);
@@ -2601,7 +2881,7 @@ test("index.html board renders cards imperatively, not via an Alpine x-for", () 
   // The per-ticket card x-for template was removed (cards come from renderColumn).
   assert.equal(/x-for="ticket in boardTickets\(col\.key\)"/.test(html), false);
   // The imperative card-list container is still wired for Sortable.
-  assert.match(html, /x-ref="colList"[\s\S]*?x-init="initSortable\(\$el\)/);
+  assert.match(html, /x-ref="colList"[\s\S]*?x-data="boardSortableOwner\(col\.key\)"/);
 });
 
 test("board width ignores folder path length while columns retain their minimum", () => {
@@ -2614,14 +2894,15 @@ test("board width ignores folder path length while columns retain their minimum"
   assert.match(board, /:class="isCollapsed\(col\.key\) \? 'w-9 flex-none' : 'flex-1 min-w-\[280px\] basis-0'"/);
 });
 
-test("index.html column x-init drops the render state Alpine just invalidated", () => {
+test("index.html column owner drops the render state Alpine just invalidated", () => {
   const html = fs.readFileSync(htmlPath, "utf8");
   const app = uiSource;
 
-  // Alpine builds the column element empty, so the x-init must drop that
+  // Alpine builds the column element empty, so the owner's init must drop that
   // column's cached signatures or renderColumn would skip filling it. The name
   // has to be the field app.js actually keeps, hence the pair of assertions.
-  assert.match(html, /x-init="initSortable\(\$el\)[^"]*delete _rendered\[col\.key\]/);
+  assert.match(html, /x-data="boardSortableOwner\(col\.key\)"/);
+  assert.match(app, /boardSortableOwner\(key\)[\s\S]*?delete self\._rendered\[key\]/);
   assert.match(app, /^ {4}_rendered: .+,$/m);
   // _renderedHTML was replaced by the per-card cache; a leftover reference in an
   // Alpine expression throws at evaluation time and skips the renderColumn call.
@@ -3137,6 +3418,12 @@ for (const mobile of [false, true]) {
   });
 }
 
+for (const control of ['x-model="sourceFilter"', '@submit.prevent="saveSourceRelation()"', 'aria-label="Relationship action"']) {
+  test(`secondary folder controls are absent from desktop and mobile markup: ${control}`, () => {
+    assert.equal(htmlNoComments().includes(control), false);
+  });
+}
+
 test('combined secondary statuses never count as primary execution', () => {
   const state = loadKontoraState();
   state.updateFavicon = () => {};
@@ -3487,7 +3774,7 @@ test('secondary __proto__ status survives recomputation, rendering and later pri
 });
 
 for (const deleted of [{ id: 'same', source: 'team' }, { id: 'same' }]) {
-  test(`deletion discards only matching buffered updates during a drag: source=${deleted.source || 'primary'}`, () => {
+  test(`deletion retains namesakes under ordered updates during a drag: source=${deleted.source || 'primary'}`, () => {
     const sources = [];
     const { state } = loadKontoraContext({ EventSource: makeEventSourceFake(sources) });
     state.updateFavicon = () => {};
@@ -3498,7 +3785,8 @@ for (const deleted of [{ id: 'same', source: 'team' }, { id: 'same' }]) {
     state._dragging = true;
     for (const ticket of state.allBoardTickets()) state.queueTicketUpdate({ ...ticket, title: 'Buffered ' + ticket.title });
     sources[0].emit(deleted.source ? 'secondary_ticket_deleted' : 'ticket_deleted', deleted);
-    assert.equal(state._pendingTicketUpdates.length, 2);
+    assert.equal('_pendingTicketUpdates' in state, false);
+    assert.equal(state.allBoardTickets().length, 2);
     state._dragging = false;
     state.flushTicketUpdates();
     assert.equal(state.allBoardTickets().some(t => state.sameTicket(t, deleted)), false);
@@ -6289,6 +6577,232 @@ test("a general key absent from the file is appended without reformatting", asyn
   assert.equal(out.startsWith(SETTINGS_FIXTURE.trimEnd()), true);
 });
 
+test("config_reloaded re-reads a clean Settings form, including a hidden form", async (t) => {
+  for (const view of ["settings", "board"]) await t.test(view, async () => {
+    const listeners = {};
+    const text = SETTINGS_FIXTURE + "instance_name: edited-elsewhere\n";
+    const daemon = settingsFetch({ raw: text });
+    const state = settingsReactive(await settingsState(SETTINGS_FIXTURE, {
+      fetch: daemon.fetch,
+      EventSource: class {
+        addEventListener(name, fn) { listeners[name] = fn; }
+        close() {}
+      },
+    }));
+    state.currentView = view;
+    state.settingsSection = "general";
+    state.connectSSE();
+    listeners.config_reloaded({ data: "{}" });
+    await flushMicrotasks();
+
+    assert.equal(state.currentView, view);
+    assert.equal(state.settingsSection, "general");
+    assert.equal(state.settingsConfig.general.instance_name, "edited-elsewhere");
+    assert.equal(state.settingsBaseline.general.instance_name, "edited-elsewhere");
+    assert.equal(state._settingsRawText, text);
+    assert.equal(state.settingsDirty(), false);
+    assert.equal(state.settingsLoading, false);
+    assert.equal(await state._settingsWrite(), text);
+    if (view === "board") {
+      await state.openSettings();
+      assert.equal(state.settingsConfig.general.instance_name, "edited-elsewhere");
+    }
+  });
+});
+
+test("a reload leaves unopened, dirty, or saving Settings forms alone", async (t) => {
+  for (const mode of ["unopened", "dirty", "saving"]) await t.test(mode, async () => {
+    const daemon = settingsFetch();
+    const state = mode === "unopened" ? loadKontoraState({ fetch: daemon.fetch }) :
+      await settingsState(SETTINGS_FIXTURE, { fetch: daemon.fetch });
+    if (mode === "dirty") state.settingsConfig.general.branch_prefix = "unsaved";
+    if (mode === "saving") state.settingsSaving = true;
+    const config = state.settingsConfig;
+    const raw = state._settingsRawText;
+    await state._settingsRefreshForm();
+    assert.equal(daemon.sent.length, 0);
+    assert.equal(state.settingsConfig, config);
+    assert.equal(state._settingsRawText, raw);
+    if (mode === "dirty") assert.equal(state.settingsConfig.general.branch_prefix, "unsaved");
+  });
+});
+
+test("edits made during any refresh await keep their model and baseline", async (t) => {
+  for (const phase of ["fetch", "json", "yaml"]) await t.test(phase, async () => {
+    const gate = deferred();
+    const response = { ok: true, status: 200, json: async () => ({ content: "instance_name: external\n" }) };
+    const state = await settingsState(SETTINGS_FIXTURE, {
+      fetch: async () => phase === "fetch" ? gate.promise :
+        phase === "json" ? { ...response, json: () => gate.promise } : response,
+    });
+    const yaml = state._settingsYAML;
+    if (phase === "yaml") state._settingsLoadYAML = () => gate.promise;
+    const config = state.settingsConfig;
+    const baseline = state.settingsBaseline;
+    const refresh = state._settingsRefreshForm();
+    await flushMicrotasks();
+    state.settingsConfig.general.branch_prefix = "unsaved";
+    gate.resolve(phase === "fetch" ? response : phase === "json" ? { content: "instance_name: external\n" } : yaml);
+    await refresh;
+
+    assert.equal(state.settingsConfig, config);
+    assert.equal(state.settingsBaseline, baseline);
+    assert.equal(state._settingsRawText, SETTINGS_FIXTURE);
+    assert.equal(state.settingsConfig.general.branch_prefix, "unsaved");
+    assert.deepEqual([...state.settingsChangedPaths()], ["branch_prefix"]);
+    assert.equal(state.settingsLoading, false);
+  });
+});
+
+test("the newest reload wins over a delayed response or error", async (t) => {
+  for (const outcome of ["success", "error"]) await t.test(outcome, async () => {
+    const gate = deferred();
+    let reads = 0;
+    const state = await settingsState(SETTINGS_FIXTURE, {
+      fetch: async () => ++reads === 1 ? gate.promise :
+        { ok: true, status: 200, json: async () => ({ content: "instance_name: newest\n" }) },
+    });
+    const first = state._settingsRefreshForm();
+    await state._settingsRefreshForm();
+    assert.equal(state.settingsConfig.general.instance_name, "newest");
+    if (outcome === "error") gate.reject(new Error("old failure"));
+    else gate.resolve({ ok: true, status: 200, json: async () => ({ content: "instance_name: oldest\n" }) });
+    await first;
+    assert.equal(state.settingsConfig.general.instance_name, "newest");
+    assert.equal(state._settingsRawText, "instance_name: newest\n");
+    assert.equal(state.settingsState, "ok");
+    assert.equal(state.settingsLoadError, "");
+    assert.equal(state.settingsLoading, false);
+  });
+});
+
+test("a reload skipped for edits invalidates an older response even after undo", async () => {
+  const gate = deferred();
+  const state = await settingsState(SETTINGS_FIXTURE, { fetch: () => gate.promise });
+  const config = state.settingsConfig;
+  const original = config.general.branch_prefix;
+  const refresh = state._settingsRefreshForm();
+  config.general.branch_prefix = "draft";
+  await state._settingsRefreshForm();
+  config.general.branch_prefix = original;
+  gate.resolve({ ok: true, status: 200, json: async () => ({ content: "instance_name: stale\n" }) });
+  await refresh;
+  assert.equal(state.settingsConfig, config);
+  assert.equal(state._settingsRawText, SETTINGS_FIXTURE);
+  assert.equal(state.settingsLoading, false);
+});
+
+test("draft inputs survive reloads before and during a fetch", async (t) => {
+  const drafts = {
+    channel: state => { state.settingsNewChannelName = "new-channel"; },
+    header: state => { state.settingsNewHeaderKey.ops = "X-Draft"; },
+    agent: state => { state.settingsNewPerAgentKey.summary_model = "pi-fast"; },
+    stage: state => { state.settingsNewStage = "new-stage"; },
+    environment: state => { state.settingsNewEnvKey = "NEW_KEY"; },
+    status: state => { state.settingsNewStatus = "needs_check"; },
+  };
+  for (const [name, edit] of Object.entries(drafts)) {
+    for (const phase of ["before", "during"]) await t.test(`${name}: ${phase}`, async () => {
+      const gate = deferred();
+      let reads = 0;
+      const state = await settingsState(SETTINGS_FIXTURE, { fetch: () => { reads++; return gate.promise; } });
+      const config = state.settingsConfig;
+      if (phase === "before") edit(state);
+      const refresh = state._settingsRefreshForm();
+      if (phase === "during") edit(state);
+      const draft = JSON.stringify([state.settingsNewChannelName, state.settingsNewHeaderKey,
+        state.settingsNewPerAgentKey, state.settingsNewStage, state.settingsNewEnvKey, state.settingsNewStatus]);
+      gate.resolve({ ok: true, status: 200, json: async () => ({ content: "instance_name: external\n" }) });
+      await refresh;
+      assert.equal(reads, phase === "before" ? 0 : 1);
+      assert.equal(state.settingsConfig, config);
+      assert.equal(JSON.stringify([state.settingsNewChannelName, state.settingsNewHeaderKey,
+        state.settingsNewPerAgentKey, state.settingsNewStage, state.settingsNewEnvKey, state.settingsNewStatus]), draft);
+      assert.equal(state.settingsLoading, false);
+    });
+  }
+});
+
+test("a failed background refresh keeps the editor and can retry on reopen", async (t) => {
+  const html = fs.readFileSync(htmlPath, "utf8");
+  assert.match(html, /x-show="!settingsLoading && settingsLoadError"/);
+  assert.match(html, /@click="_settingsRefreshForm\(true\)"/);
+  for (const failure of ["network", "http", "yaml"]) await t.test(failure, async () => {
+    let reads = 0;
+    const state = await settingsState(SETTINGS_FIXTURE, {
+      fetch: async () => {
+        if (++reads > 1) return { ok: true, status: 200, json: async () => ({ content: "instance_name: recovered\n" }) };
+        if (failure === "network") throw new Error("offline");
+        if (failure === "http") return { ok: false, status: 503 };
+        return { ok: true, status: 200, json: async () => ({ content: "invalid: [\n" }) };
+      },
+    });
+    const config = state.settingsConfig;
+    await state._settingsRefreshForm();
+    assert.equal(state.settingsState, "ok");
+    assert.equal(state.settingsConfig, config);
+    assert.equal(state._settingsRawText, SETTINGS_FIXTURE);
+    assert.ok(state.settingsLoadError);
+    assert.equal(state.settingsLoading, false);
+    await state.openSettings();
+    assert.equal(reads, 2);
+    assert.equal(state.settingsConfig.general.instance_name, "recovered");
+    assert.equal(state.settingsLoadError, "");
+  });
+});
+
+test("an older refresh cannot replace a saved or discarded form", async (t) => {
+  for (const action of ["save", "discard"]) await t.test(action, async () => {
+    const gate = deferred();
+    const daemon = settingsFetch();
+    let reads = 0;
+    const state = await settingsState(SETTINGS_FIXTURE, {
+      fetch: (url, init) => url === "/api/config/raw" && !init?.method && ++reads === 1 ? gate.promise : daemon.fetch(url, init),
+    });
+    const refresh = state._settingsRefreshForm();
+    state.settingsConfig.general.branch_prefix = "saved";
+    if (action === "save") assert.equal(await state.saveSettings(), true);
+    else state.discardSettings();
+    const raw = state._settingsRawText;
+    const config = state.settingsConfig;
+    gate.resolve({ ok: true, status: 200, json: async () => ({ content: "instance_name: old-response\n" }) });
+    await refresh;
+    assert.equal(state.settingsConfig, config);
+    assert.equal(state._settingsRawText, raw);
+    assert.equal(state.settingsDirty(), false);
+  });
+});
+
+test("duplicate reload events keep the save confirmation and open controls", async () => {
+  const state = await settingsState(SETTINGS_FIXTURE, { fetch: settingsFetch().fetch });
+  state.settingsSavedAt = "12:34";
+  state.settingsSavedRestart = true;
+  state.settingsOpenStage = "plan";
+  const config = state.settingsConfig;
+  await Promise.all([state._settingsRefreshForm(), state._settingsRefreshForm()]);
+  assert.equal(state.settingsConfig, config);
+  assert.equal(state.settingsSavedAt, "12:34");
+  assert.equal(state.settingsSavedRestart, true);
+  assert.equal(state.settingsOpenStage, "plan");
+  assert.equal(state.settingsLoading, false);
+});
+
+test("a reload during the initial Settings load supersedes the old read", async () => {
+  const gate = deferred();
+  let reads = 0;
+  const state = loadKontoraState({
+    fetch: async () => ++reads === 1 ? gate.promise :
+      { ok: true, status: 200, json: async () => ({ content: "instance_name: newest\n" }) },
+  });
+  state._settingsYAML = await import(yamlPath);
+  const open = state.openSettings();
+  await state._settingsRefreshForm();
+  gate.resolve({ ok: true, status: 200, json: async () => ({ content: "instance_name: oldest\n" }) });
+  await open;
+  assert.equal(state.settingsConfig.general.instance_name, "newest");
+  assert.equal(state.settingsLoading, false);
+});
+
 test("501 and 401 produce explicit states instead of an empty form", async () => {
   const unavailable = loadKontoraState({ fetch: async () => ({ status: 501, ok: false }) });
   await unavailable.openSettings();
@@ -6399,12 +6913,47 @@ test("client validation blocks the request before it is sent", async () => {
   assert.equal(state.settingsConfig.agents.claude.binary, "");
 });
 
-test("saving a restart-only field says so", async () => {
-  const state = await settingsState(SETTINGS_FIXTURE, { fetch: settingsFetch().fetch });
+test("saving a restart-only field says so", async (t) => {
+  for (const [section, key, value] of [["web", "port", "9090"], ["plannotator", "reviews_dir", "~/new-reviews"]]) {
+    await t.test(section + "." + key, async () => {
+      const state = await settingsState(SETTINGS_FIXTURE, { fetch: settingsFetch().fetch });
+      state.settingsConfig[section][key] = value;
+      assert.equal(await state.saveSettings(), true);
+      assert.equal(state.settingsSavedRestart, true);
+    });
+  }
+});
 
-  state.settingsConfig.web.port = "9090";
-  assert.equal(await state.saveSettings(), true);
-  assert.equal(state.settingsSavedRestart, true);
+test("the restart list contains exactly the pinned fields the form edits", async () => {
+  const state = await settingsState();
+  const pinned = [
+    "tickets_dir", "secondary_tickets_dirs", "worktrees_dir", "logs_dir", "instance_name",
+    "web.host", "web.port", "web.token", "plannotator.reviews_dir",
+  ];
+  for (const path of pinned) assert.equal(state.settingsIsRestartOnly(path), true, path);
+  const live = [
+    "max_concurrent_agents", "max_concurrent_epic_supervisors", "auto_pick_up", "branch_prefix",
+    "plannotator.binary", "plannotator.timeout", "notifications", "notifications.enabled",
+    "notifications.default", "notifications.attempts", "notifications.backoff", "notifications.timeout",
+    "notifications.channels.ops", "notifications.channels.ops.url", "projects.kontora.notify_channels",
+  ];
+  for (const path of live) assert.equal(state.settingsIsRestartOnly(path), false, path);
+
+  state.settingsConfig.plannotator.reviews_dir = "~/new-reviews";
+  assert.deepEqual([...state.settingsChangedPaths()], ["plannotator.reviews_dir"]);
+  assert.equal(state.settingsRestartPending(), 1);
+});
+
+test("the Settings markup has no stale notification or worker restart markers", () => {
+  const html = fs.readFileSync(htmlPath, "utf8");
+  const notifications = html.split("<!-- ===== notifications ===== -->")[1].split("<!-- =====")[0];
+  assert.ok(notifications);
+  assert.doesNotMatch(notifications, /restart/i);
+  const workers = html.split("x.key === 'max_concurrent_agents'")[1].split("x.key === 'default_agent'")[0];
+  assert.ok(workers);
+  assert.doesNotMatch(workers, /restart/i);
+  const plannotator = html.split("<!-- ===== plannotator ===== -->")[1].split("<!-- =====")[0];
+  assert.match(plannotator, /x-show="settingsIsRestartOnly\('plannotator\.' \+ f\.key\)"[^>]*>restart<\/span>/);
 });
 
 test("discard restores the baseline without writing", async () => {
@@ -6608,7 +7157,7 @@ test("index.html wires the settings shell to the guard and the section rail", ()
   // settingsState === 'ok' template, and every editable control is inside it.
   const empty = html.slice(
     html.indexOf(`settingsState === 'unavailable'`),
-    html.indexOf(`settingsState === 'parse-error'`),
+    html.indexOf(`!settingsLoading && settingsLoadError`),
   );
   assert.equal(/x-model|saveSettings/.test(empty), false);
   const editable = html.indexOf(`<template x-if="settingsState === 'ok'">`);
@@ -7074,13 +7623,19 @@ test("an absent notifications block reads as enabled with nothing configured", a
   assert.equal(state.settingsSectionSummary("notifications"), "no channels");
 });
 
-test("every notifications edit is one the daemon only picks up on a restart", async () => {
-  const state = await settingsState(SETTINGS_NOTIFY_FIXTURE);
+test("notification and concurrency edits save without restart markers", async () => {
+  const daemon = settingsFetch({ raw: SETTINGS_NOTIFY_FIXTURE });
+  const state = await settingsState(SETTINGS_NOTIFY_FIXTURE, { fetch: daemon.fetch });
 
   state.settingsConfig.notifications.attempts = "5";
   state.settingsNotifChannel("ops").url = "https://example.com/hooks/other";
-  assert.equal(state.settingsRestartPending(), 2);
-  assert.equal(state.settingsIsRestartOnly("notifications.channels.ops"), true);
+  state.settingsConfig.general.max_concurrent_agents = "6";
+  state.settingsConfig.general.max_concurrent_epic_supervisors = "2";
+  assert.equal(state.settingsRestartPending(), 0);
+  assert.equal(state.settingsIsRestartOnly("notifications"), false);
+  assert.equal(state.settingsIsRestartOnly("notifications.channels.ops"), false);
+  assert.equal(await state.saveSettings(), true);
+  assert.equal(state.settingsSavedRestart, false);
 });
 
 test("editing the notifications block writes only the keys that changed", async () => {
@@ -7290,7 +7845,9 @@ test("the notifications summary and the advisory say what the daemon will do", a
   const state = await settingsState(SETTINGS_NOTIFY_FIXTURE);
 
   assert.equal(state.settingsSectionSummary("notifications"), "2 channels · default tg-me");
-  assert.match(state.settingsNotifAdvisory(), /until the daemon restarts/);
+  assert.match(state.settingsNotifAdvisory(), /applies notification changes without a restart/);
+  assert.match(state.settingsNotifAdvisory(), /A new or changed channel whose secret cannot be read is skipped/);
+  assert.match(state.settingsNotifAdvisory(), /Unchanged channel definitions keep their running credentials/);
   state.settingsConfig.notifications.enabled = false;
   assert.match(state.settingsNotifAdvisory(), /^Delivery is off/);
   state.settingsConfig.notifications.default = [];
@@ -7486,6 +8043,102 @@ function mobileLifecycleDOM({ visualViewport = true } = {}) {
       getComputedStyle: () => ({ visibility: 'visible' }),
     },
   };
+}
+
+for (const scenario of [
+  { name: 'right overflow', requested: 3, expected: 3, left: 310, right: 450, scroll: 130 },
+  { name: 'left overflow', requested: 1, expected: 1, left: -70, right: 70, scroll: -70 },
+  { name: 'already visible', requested: 1, expected: 1, left: 30, right: 170 },
+  { name: 'oversized right overflow', requested: 999, expected: 4, left: 310, right: 680, scroll: 310, repeat: true },
+  { name: 'oversized left overflow', requested: -1, expected: 0, left: -50, right: 320, scroll: -50, repeat: true },
+  { name: 'oversized spanning both edges', requested: 4, expected: 4, left: -25, right: 345, scroll: -25, repeat: true },
+  { name: 'oversized aligned start', requested: 4, expected: 4, left: 0, right: 370, repeat: true },
+  { name: 'right safe padding', requested: 3, expected: 3, left: 210, right: 310, paddingRight: 44, scroll: 34, repeat: true },
+  { name: 'left safe padding', requested: 1, expected: 1, left: 10, right: 150, paddingLeft: 44, scroll: -34, repeat: true },
+  { name: 'inside safe edges', requested: 1, expected: 1, left: 44, right: 276, paddingLeft: 44, paddingRight: 44, repeat: true },
+  { name: 'oversized within padded strip', requested: 4, expected: 4, left: 44, right: 300, paddingLeft: 44, paddingRight: 44, repeat: true },
+  { name: 'padded border offset', requested: 3, expected: 3, left: 210, right: 310, paddingRight: 44, clientLeft: 2, scroll: 32, repeat: true },
+  { name: 'past last column', requested: 999, expected: 4, left: 310, right: 450, scroll: 130 },
+  { name: 'before first column', requested: -1, expected: 0, left: -70, right: 70, scroll: -70 },
+  { name: 'columns removed before tick', requested: 4, expected: 1, shrink: 2, left: 310, right: 450, scroll: 130 },
+  { name: 'empty columns before tick', requested: 4, expected: 0, shrink: 0 },
+  { name: 'superseded selection', requested: 3, next: 0, expected: 0, left: -70, right: 70, scroll: -70 },
+  ...['route', 'route roundtrip', 'ticket', 'epic', 'sheet', 'desktop', 'breakpoint roundtrip', 'removed', 'replaced', 'hidden', 'destroyed', 'app destroyed'].map(stop =>
+    ({ name: stop, requested: 3, expected: 3, left: 310, right: 450, stop })),
+]) {
+  test(`mobile status selection scrolls only the live strip: ${scenario.name}`, () => {
+    const dom = mobileLifecycleDOM();
+    dom.overrides.getComputedStyle = () => ({ paddingLeft: `${scenario.paddingLeft || 0}px`, paddingRight: `${scenario.paddingRight || 0}px` });
+    const { state } = pickerState({ overrides: dom.overrides });
+    state.initMobile();
+    const ticks = [], scrolls = [], reads = [];
+    let offset = 0;
+    state.$nextTick = cb => { ticks.push(cb); };
+    const button = { getBoundingClientRect() { reads.push('button'); return { left: scenario.left - offset, right: scenario.right - offset }; } };
+    const strip = { isConnected: true, clientLeft: scenario.clientLeft || 0, clientWidth: 320,
+      getClientRects: () => [{}],
+      getBoundingClientRect() { reads.push('strip'); return { left: 0, right: 320 }; },
+      querySelectorAll: () => state.columns.map(() => button),
+      scrollBy(options) { scrolls.push(vmValue(options)); offset += options.left; },
+    };
+    state.$refs = { mobileStatusTabs: strip };
+    state.setActiveColumn(scenario.requested);
+    assert.equal(scrolls.length, 0, 'wait for Alpine to update the selected status');
+    if (scenario.shrink !== undefined) state._builtinColumns = state._builtinColumns.slice(0, scenario.shrink);
+    if (scenario.next !== undefined) state.setActiveColumn(scenario.next);
+    if (scenario.stop === 'route' || scenario.stop === 'route roundtrip') {
+      state.mobileBeforeNavigate('stats');
+      state.currentView = scenario.stop === 'route' ? 'stats' : 'board';
+    }
+    if (scenario.stop === 'ticket') state.selectedTicket = { id: 'kon-a' };
+    if (scenario.stop === 'epic') state.selectedEpic = { id: 'kon-a' };
+    if (scenario.stop === 'sheet') state.sheet = { type: 'navigation' };
+    if (scenario.stop === 'desktop') state.isMobile = false;
+    if (scenario.stop === 'breakpoint roundtrip') state.mobileBreakpointChanged();
+    if (scenario.stop === 'removed') strip.isConnected = false;
+    if (scenario.stop === 'replaced') state.$refs.mobileStatusTabs = { ...strip };
+    if (scenario.stop === 'hidden') strip.getClientRects = () => [];
+    if (scenario.stop === 'destroyed') { state.destroyMobile(); state.initMobile(); }
+    if (scenario.stop === 'app destroyed') state._appDestroyed = true;
+    ticks.splice(0).forEach(cb => cb());
+    assert.equal(state.activeColumn, scenario.expected);
+    assert.deepEqual(scrolls, scenario.scroll === undefined ? [] : [{ left: scenario.scroll, behavior: 'instant' }]);
+    if (scenario.stop || scenario.shrink === 0) assert.deepEqual(reads, [], 'teardown must not measure the old board');
+    else assert.deepEqual(reads, ['strip', 'button'], 'only the latest selection measures the strip');
+    if (scenario.repeat) {
+      const count = scrolls.length;
+      for (let i = 0; i < 3; ++i) {
+        state.setActiveColumn(scenario.requested);
+        ticks.splice(0).forEach(cb => cb());
+        assert.equal(state.activeColumn, scenario.expected);
+        assert.equal(scrolls.length, count, 'repeating the same selection must not oscillate');
+      }
+    }
+    state.destroyMobile();
+  });
+}
+
+for (const scenario of [
+  { name: 'left swipe', start: 0, dx: -100, dy: 5, expected: 1 },
+  { name: 'right swipe', start: 1, dx: 100, dy: 5, expected: 0 },
+  { name: 'last column', start: 4, dx: -100, dy: 5, expected: 4 },
+  { name: 'first column', start: 0, dx: 100, dy: 5, expected: 0 },
+  { name: 'short swipe', start: 0, dx: -55, dy: 0, expected: 0 },
+  { name: 'vertical swipe', start: 0, dx: -100, dy: 100, expected: 0 },
+  ...['ticket', 'epic', 'sheet'].map(stop => ({ name: stop, start: 0, dx: -100, dy: 0, expected: 0, stop })),
+]) {
+  test(`mobile board swipe preserves thresholds and clamps: ${scenario.name}`, () => {
+    const { state } = pickerState();
+    state.$nextTick = cb => cb();
+    state.activeColumn = scenario.start;
+    if (scenario.stop === 'ticket') state.selectedTicket = { id: 'kon-a' };
+    if (scenario.stop === 'epic') state.selectedEpic = { id: 'kon-a' };
+    if (scenario.stop === 'sheet') state.sheet = { type: 'navigation' };
+    const touch = (x, y) => ({ changedTouches: [{ clientX: x, clientY: y }] });
+    state.onBoardTouchStart(touch(150, 200));
+    state.onBoardTouchEnd(touch(150 + scenario.dx, 200 + scenario.dy));
+    assert.equal(state.activeColumn, scenario.expected);
+  });
 }
 
 for (const geometry of [
@@ -9436,6 +10089,7 @@ test('archive reconnect refreshes the selected primary detail and deletion marks
   await state.applyRoute();
   const opened = [];
   state.companionRefresh = () => {};
+  state.resyncTickets = () => {};
   state.connectSSE = loadKontoraState({ EventSource: makeEventSourceFake(opened) }).connectSSE;
   state.connectSSE();
   ui.archived.body = '# Updated after reconnect';
@@ -9834,28 +10488,38 @@ test("mobile costs remain visible for running, retried and unpriced tickets", ()
 
   assert.equal(state.mobileHasRun(state.selectedTicket), true);
   assert.equal(state.mobileTicketCostLabel(), "est. $0.10+ · 1/2");
-  assert.deepEqual(Array.from(state.mobileCostStages(), (seg) => seg.name), ["plan", "retired"]);
-  assert.equal(state.mobileCostStageLabel(state.mobileCostStages()[1]), "retired · unknown · 0/1");
+  assert.deepEqual(Array.from(state.stageRibbon(), (seg) => state.mobileStageLabel(seg)),
+    ["plan · $0.10", "code", "retired · unknown · 0/1"]);
 
   state.selectedTicket.status = "todo";
   assert.equal(state.mobileHasRun(state.selectedTicket), true, "a retried ticket keeps its run tabs");
 });
 
-test("mobile stage costs open completed stage logs", () => {
-  const state = pageState({
-    id: "kon-mobile", status: "in_progress", stage: "code", stages: ["plan", "code"],
-    history: [{ stage: "plan", run: 0 }],
-  });
-  const calls = [];
-  state.terminalOpen = true;
-  state.closeTerminal = () => { state.terminalOpen = false; };
-  state.fetchStageLogs = (id, stage) => calls.push([id, stage]);
+test("mobile stage strip preserves stage navigation with and without costs", () => {
+  for (const row of [
+    { stage: "plan", tab: "logs", open: false, logs: [["kon-mobile", "plan"]] },
+    { stage: "retired", tab: "logs", open: false, logs: [["kon-mobile", "retired"]] },
+    { stage: "code", tab: "terminal", open: true, logs: [] },
+    { stage: "test", tab: "logs", open: false, logs: [] },
+  ]) {
+    const state = pageState({
+      id: "kon-mobile", status: "in_progress", stage: "code", stages: ["plan", "code", "test"],
+      history: [{ stage: "plan", run: 0 }, { stage: "retired", run: 0 }],
+    });
+    state.ticketCost = { id: "kon-mobile", stages: [{ name: "plan", cost_usd: "0.10", priced_runs: 1, tracked_runs: 1 }] };
+    const calls = [];
+    state.detailTab = "logs";
+    state.terminalOpen = false;
+    state.openTerminal = () => { state.terminalOpen = true; };
+    state.closeTerminal = () => { state.terminalOpen = false; };
+    state.fetchStageLogs = (id, stage) => calls.push([id, stage]);
 
-  state.mobileOpenCostStage(state.stageRibbon()[0]);
+    state.clickStage(row.stage);
 
-  assert.equal(state.detailTab, "logs");
-  assert.equal(state.terminalOpen, false);
-  assert.deepEqual(calls, [["kon-mobile", "plan"]]);
+    assert.equal(state.detailTab, row.tab, row.stage);
+    assert.equal(state.terminalOpen, row.open, row.stage);
+    assert.deepEqual(calls, row.logs, row.stage);
+  }
 });
 
 test("normal and archive detail open paths request ticket cost", async () => {
@@ -10048,8 +10712,9 @@ test("relevant SSE changes refetch cost once per batch", () => {
     state.updateFavicon = () => {};
     const fetched = [];
     state.fetchTicketCost = (id) => fetched.push(id);
-    state._pendingTicketUpdates = [tc.update, { id: "other", status: "todo", history: [] }];
-
+    state._boardRaf = 1;
+    state.queueTicketUpdate(tc.update);
+    state.queueTicketUpdate({ id: "other", status: "todo", history: [] });
     state.flushTicketUpdates();
 
     assert.deepEqual(fetched, ["kon-cost"], tc.name);
@@ -10984,7 +11649,16 @@ test("an SSE batch refetches the chain when it names a node or waits on one", ()
   ];
 
   for (const c of cases) {
-    assert.equal(chainState(c.chain || CHAIN_PAYLOAD)._chainTouchedBy(c.pending), c.want, c.name);
+    const state = chainState(c.chain || CHAIN_PAYLOAD);
+    assert.equal(state._chainTouchedBy(c.pending), c.want, c.name);
+    state._boardRaf = 1;
+    state.fetchTicketCost = () => {};
+    state.updateFavicon = () => {};
+    const fetched = [];
+    state.fetchChain = id => fetched.push(id);
+    for (const ticket of c.pending) state.queueTicketUpdate(ticket);
+    state.flushTicketUpdates();
+    assert.deepEqual(fetched, c.want ? ['pca-d3q9'] : [], c.name + ': queued updates');
   }
   // With no chain loaded there is nothing to re-derive.
   assert.equal(pageState({ id: "pca-d3q9" })._chainTouchedBy([{ id: "pca-d3q9" }]), false);
@@ -11359,11 +12033,13 @@ test("index.html renders the ribbon, transcript and rail the page needs", () => 
   // A 308px rail, and a churn block whose height does not follow the file count.
   assert.match(html, /w-\[308px\] border-l border-surface-700\/50/);
   assert.match(html, /class="flex flex-col gap-\[9px\] h-\[152px\] shrink-0"/);
-  // Cost appears in both desktop ribbons, both History lists, and the mobile controls.
-  assert.equal((html.match(/costLabel\(seg\.cost\)/g) || []).length, 6);
+  // Desktop ribbons and History lists use costLabel; mobile labels also show pricing coverage.
+  assert.equal((html.match(/costLabel\(seg\.cost\)/g) || []).length, 4);
   assert.equal((html.match(/costLabel\(ticketRunCost\(hi\)\)/g) || []).length, 4);
   assert.match(html, /x-text="mobileTicketCostLabel\(\)"/);
-  assert.match(html, /aria-label="Stage cost estimates"/);
+  assert.match(html, /aria-label="Stages and cost estimates"/);
+  assert.match(html, /x-text="mobileStageLabel\(seg\)"/);
+  assert.doesNotMatch(html, /mobileCostStages\(\)|mobileOpenCostStage\(/);
   assert.match(html, /x-for="\(seg, si\) in stageRibbon\(\)" :key="seg\.name"/);
   // One resolvable desktop terminal target.
   assert.equal((html.match(/id="terminal-session"/g) || []).length, 1);
@@ -14664,7 +15340,7 @@ test("no assistant agent replaces the composer with the configure hint", async (
   const html = fs.readFileSync(htmlPath, "utf8");
   assert.match(html, /x-if="!assistantEnabled\(\) && !companionThread\(\) && assistantView === 'thread'"[\s\S]{0,200}?id="assistant-configure"/);
   const composer = html.slice(html.indexOf('<!-- Composer -->'));
-  assert.match(composer.slice(0, 200), /x-if="\(assistantEnabled\(\) \|\| companionThread\(\)\) && assistantView === 'thread'"/);
+  assert.match(composer.slice(0, 200), /x-if="\(assistantEnabled\(\) \|\| companionThread\(\)\) && assistantView === 'thread' && assistantThreadVisible\(\)"/);
   assert.ok(composer.includes('id="assistant-input"'));
 });
 
@@ -17163,7 +17839,7 @@ for (const [status, label] of [['in_progress', 'supervising'], ['todo', 'queued'
     assert.equal(card.includes('card-progress'), false, 'supervisors have no child pipeline progress');
     assert.equal(card.includes('>code</span>'), false);
     if (status !== 'in_progress') {
-      const mobileCards = fs.readFileSync(htmlPath, 'utf8').split('x-for="ticket in boardTickets(mobileColumn().key)"')[1]
+      const mobileCards = fs.readFileSync(htmlPath, 'utf8').split('x-for="ticket in mobileTickets()"')[1]
         .split('<!-- ===== Ticket detail')[0];
       const statusTemplate = [...mobileCards.matchAll(/<template x-if="([^"]+)">([\s\S]*?)<\/template>/g)]
         .find(([, , content]) => content.includes('>' + label + '</span>'));
@@ -17293,11 +17969,12 @@ test('epic controls and brief surfaces are available in both responsive layouts'
   assert.equal(html.split('Transcript truncated. Open the full raw stage log; it may show a different attempt.').length - 1, 2);
 });
 
-test('supervisor capacity is a restart-only integer with a default of four', async () => {
+test('supervisor capacity reloads live and defaults to four', async () => {
   const state = await settingsState();
   const field = state.settingsGeneralFields.find(f => f.key === 'max_concurrent_epic_supervisors');
   assert.equal(field.placeholder, '4');
-  assert.equal(state.settingsIsRestartOnly(field.key), true);
+  assert.equal(state.settingsIsRestartOnly(field.key), false);
+  assert.doesNotMatch(field.help, /restart/i);
   assert.ok(state.settingsGeneralTextRows('execution').some(f => f.key === field.key));
   state.settingsConfig.general.max_concurrent_epic_supervisors = '6';
   assert.match(await state._settingsWrite(), /^max_concurrent_epic_supervisors: 6$/m);
@@ -17308,7 +17985,7 @@ test('supervisor capacity is a restart-only integer with a default of four', asy
 // ─── notify row ───
 
 // One channel, one project, so the resolution has all three levels to walk.
-function notifyState(overrides = {}) {
+function notifyState(overrides = {}, config = {}) {
   const state = loadKontoraState(overrides);
   state.configCache = {
     pipelines: ["build"],
@@ -17316,9 +17993,107 @@ function notifyState(overrides = {}) {
     channels: ["tg"],
     default_channels: ["tg"],
     projects: [{ name: "kontora", path: "~/projects/kontora", resolved_path: "/home/a/projects/kontora" }],
+    ...config,
   };
   return state;
 }
+
+for (const [name, config, expected] of [
+  ["loading", null, false],
+  ["omitted channels", {}, false],
+  ["null channels", { channels: null }, false],
+  ["empty channels", { channels: [] }, false],
+  ["one channel without a route", { channels: ["tg"] }, true],
+  ["multiple channels", { channels: ["tg", "ops"] }, true],
+]) {
+  test(`notification availability follows configured channels: ${name}`, () => {
+    const state = notifyState();
+    state.configCache = config;
+    assert.equal(state.notifyHasChannels(), expected);
+  });
+}
+
+for (const [name, config, key, allowed, channels] of [
+  ["loading Off", null, "off", false, ["removed"]],
+  ["loading enabled", null, "needs", false, ["removed"]],
+  ["unavailable enabled", { channels: [] }, "done", false, ["removed"]],
+  ["removed channel Off", { channels: [] }, "off", true, []],
+  ["omitted channels Off", {}, "off", true, []],
+  ["null channels Off", { channels: null }, "off", true, []],
+  ["configured channel Off", { channels: ["tg"] }, "off", true, ["tg"]],
+  ["configured channel enabled", { channels: ["tg"] }, "needs", true, ["tg"]],
+]) {
+  test(`the init notification preset handles ${name}`, () => {
+    const state = notifyState();
+    state.configCache = config;
+    const selected = config?.channels?.length ? ["tg"] : ["removed"];
+    state.initForm = { notify: ["done"], notifyChannels: selected };
+    state.initNotifyOpen = true;
+    state.initError = "previous error";
+    state.initPickNotifyMode(key);
+    assert.deepEqual(vmValue(state.initForm.notify), allowed ? (key === "off" ? [] : ["paused", "human_review", "waiting"]) : ["done"]);
+    assert.deepEqual(vmValue(state.initForm.notifyChannels), channels);
+    assert.equal(state.initNotifyOpen, !allowed);
+    assert.equal(state.initError, allowed ? null : "previous error");
+  });
+}
+
+for (const recover of [false, true]) {
+  test(`the init modal starts without channels${recover ? " after explicit Off recovery" : " when already off"}`, async () => {
+    const seen = [];
+    const ticket = { id: "kon-1", path: "~/projects/kontora", notify: recover ? ["done"] : [], notify_channels: recover ? ["removed"] : [] };
+    const state = notifyState({ fetch: async (url, options) => {
+      seen.push({ url, options });
+      return { ok: true, json: async () => ticket };
+    } }, { channels: [], default_channels: [] });
+    state.$nextTick = () => Promise.resolve();
+    await state.openInitModal(ticket);
+    assert.deepEqual(vmValue(state.initForm.notify), ticket.notify);
+    assert.deepEqual(vmValue(state.initForm.notifyChannels), ticket.notify_channels);
+    assert.equal(state.initNotifyOpen, false);
+    if (recover) state.initPickNotifyMode("off");
+    await state.submitInitTicket();
+    const posts = seen.filter(r => r.options?.method === "POST");
+    assert.equal(posts.length, 1);
+    assert.equal(posts[0].url, "/api/tickets/kon-1/init");
+    const body = JSON.parse(posts[0].options.body);
+    assert.deepEqual(body.notify, []);
+    assert.deepEqual(body.notify_channels, []);
+    assert.equal(state.initError, null);
+    assert.equal(state.initModal, false);
+  });
+}
+
+test("refreshing running channels changes availability without changing the init draft", () => {
+  const state = notifyState();
+  state.initModal = true;
+  state.initForm = { notify: ["done"], notifyChannels: ["removed"] };
+  state.settingsConfig = { notifications: { channels: { unsaved: {} } } };
+  for (const channels of [[], ["tg"], [], ["tg", "ops"]]) {
+    state.configCache = { ...state.configCache, channels };
+    assert.equal(state.notifyHasChannels(), channels.length > 0);
+    assert.deepEqual(vmValue(state.initForm.notify), ["done"]);
+    assert.deepEqual(vmValue(state.initForm.notifyChannels), ["removed"]);
+  }
+});
+
+test("the start dialog binds notification availability and accessible configuration guidance", () => {
+  const html = fs.readFileSync(htmlPath, 'utf8');
+  const modal = html.slice(html.indexOf('role="group" aria-label="notify me"'), html.indexOf('<!-- Delete ticket modal -->'));
+  assert.match(modal, /:aria-describedby="!configCache \? 'init-notify-loading' : \(!notifyHasChannels\(\) \? 'init-notify-unavailable' : null\)"/);
+  assert.match(modal, /:disabled="!configCache \|\| \(!notifyHasChannels\(\) && m\.key !== 'off'\)"/);
+  assert.match(modal, /@click="initPickNotifyMode\(m\.key\)"/);
+  assert.doesNotMatch(modal, /notifyPickMode\(initForm/);
+  assert.equal((modal.match(/:disabled="!configCache \|\| !notifyHasChannels\(\)"/g) || []).length, 3);
+  assert.equal((modal.match(/disabled:opacity-50 disabled:cursor-not-allowed/g) || []).length, 5);
+  assert.match(modal, /id="init-notify-help" x-show="!configCache \|\| !notifyHasChannels\(\)"/);
+  assert.match(modal, /id="init-notify-loading" x-show="!configCache">Waiting for notification configuration\. If loading does not finish, close and reopen this dialog to retry\./);
+  assert.match(modal, /id="init-notify-unavailable" x-show="configCache && !notifyHasChannels\(\)">No notification channels/);
+  assert.match(modal, /To start without notifications, select off first, even if it is already selected\./);
+  assert.match(modal, /notifications\.channels<\/code>, then restart the daemon/);
+  assert.match(modal, /<a href="https:\/\/worksonmyai\.github\.io\/kontora\/configuration\/#notifications" target="_blank" rel="noopener noreferrer"[^>]*>Configure notifications<\/a>/);
+  assert.match(modal, /<\/template>\s*<p id="init-notify-help"/);
+});
 
 test("the notify mode is read off the statuses instead of being stored beside them", () => {
   const state = notifyState();
@@ -17645,6 +18420,120 @@ test("companion inbox works without an agent and never starts a passive turn", a
   assert.equal(state.companionTimer, null);
 });
 
+for (const path of ["GET", "PATCH", "PATCH with failed refresh"]) {
+  for (const view of ["inbox", "thread", "history"]) {
+    test(`disabled ${path} snapshot reconciles ${view} without changing a running ordinary chat`, async () => {
+      const { state, routes, requests } = companionState();
+      await state.companionRefresh();
+      state.assistantThread = { id: "abc123", running: true };
+      state.assistantMessages = [{ n: 1, text: "Ordinary question" }];
+      state.assistantDraft = "Unsent text";
+      state.assistantView = view;
+      state._assistantSetStreaming(true);
+      const thread = state.assistantThread, messages = state.assistantMessages;
+      const disabled = { ...COMPANION_SNAPSHOT, enabled: false, revision: 8 };
+      routes["/api/assistant/companion"] = path === "PATCH with failed refresh" ? { __status: 503, error: "offline" } : disabled;
+      routes["/api/assistant/companion/items/q%2F1"] = disabled;
+      if (path === "GET") await state.companionRefresh();
+      else await state.companionRead(COMPANION_SNAPSHOT.items[0], true);
+      await flushMicrotasks();
+      assert.equal(state.companionEnabled(), false);
+      assert.equal(state.assistantView, view === "inbox" ? "thread" : view);
+      assert.equal(state.assistantThread, thread);
+      assert.equal(state.assistantMessages, messages);
+      assert.equal(state.assistantDraft, "Unsent text");
+      assert.equal(state.assistantStreaming, true);
+      assert.equal(state.companionDisconnected, path === "PATCH with failed refresh");
+      state.companionOpenInbox();
+      assert.notEqual(state.assistantView, "inbox");
+      assert.equal(requests.some(r => r.init?.method === "POST"), false);
+      state.destroy();
+    });
+  }
+}
+
+for (const snapshot of [null, { ...COMPANION_SNAPSHOT, enabled: false }, COMPANION_SNAPSHOT,
+  { ...COMPANION_SNAPSHOT, health: "degraded" }]) {
+  test(`companion visibility follows resolved snapshot: ${snapshot ? snapshot.enabled + '/' + snapshot.health : 'unknown'}`, () => {
+    const { state, requests } = companionState();
+    state.companionSnapshot = snapshot;
+    state.settingsConfig = { assistant: { companion: { enabled: !snapshot?.enabled } } };
+    assert.equal(state.companionEnabled(), Boolean(snapshot?.enabled));
+    if (!snapshot?.enabled) {
+      state.companionOpenInbox();
+      assert.equal(state.assistantView, "thread");
+      assert.equal(requests.length, 0);
+    }
+    state.destroy();
+  });
+}
+
+for (const running of [false, true]) {
+  test(`disabling a selected companion hides its transcript without changing state: running=${running}`, async () => {
+    const { state, requests } = companionState();
+    state.assistantThread = { id: "ksaved", purpose: "companion", running, evidence: [{ revision: 1 }] };
+    state.assistantMessages = [{ n: 1, text: "Saved question" }];
+    state.assistantDraft = "Unsent follow-up";
+    state._assistantSetStreaming(running);
+    const thread = state.assistantThread, messages = state.assistantMessages;
+    state._companionAdoptSnapshot({ ...COMPANION_SNAPSHOT, enabled: false });
+    assert.equal(state.assistantThreadVisible(), false);
+    assert.equal(state.companionThread(), true, "hidden companion threads must not become ordinary chats");
+    assert.equal(state.assistantStreaming, running);
+    assert.equal(state.assistantThread, thread);
+    assert.equal(state.assistantMessages, messages);
+    assert.equal(state.assistantDraft, "Unsent follow-up");
+    await state.sendAssistantMessage();
+    assert.equal(requests.some(r => r.init?.method === "POST"), false);
+    state._companionAdoptSnapshot(COMPANION_SNAPSHOT);
+    assert.equal(state.assistantThreadVisible(), true);
+    assert.equal(state.assistantThread, thread);
+    state._companionAdoptSnapshot({ ...COMPANION_SNAPSHOT, enabled: false });
+    state._assistantCursor = 42;
+    state._assistantETag = "companion-activity";
+    state.assistantShowChat();
+    assert.equal(state.assistantThread, null);
+    assert.equal(state.assistantThreadVisible(), true);
+    assert.equal(state.assistantView, "thread");
+    assert.equal(state.assistantDraft, "Unsent follow-up");
+    assert.equal(state._assistantCursor, 0);
+    assert.equal(state._assistantETag, "");
+    state.destroy();
+  });
+}
+
+for (const delayed of ["response", "json"]) {
+  test(`companion activity cannot enter ordinary Chat after hidden selection is cleared: delayed ${delayed}`, async () => {
+    const response = deferred();
+    const body = deferred();
+    const payload = { running: true, messages: [{ n: 1, text: "Hidden companion question" }],
+      tape: { events: [{ kind: "text", text: "Hidden companion reply" }] }, partial: "Hidden partial", partial_gen: 1 };
+    const { state } = companionState({ fetch: async () => response.promise });
+    state.assistantThread = { id: "ksaved", purpose: "companion" };
+    state._companionAdoptSnapshot(COMPANION_SNAPSHOT);
+    const pending = state._loadAssistantActivity();
+    if (delayed === "json") {
+      response.resolve({ ok: true, headers: { get: () => "old-companion" }, json: () => body.promise });
+      await flushMicrotasks();
+    }
+    state._companionAdoptSnapshot({ ...COMPANION_SNAPSHOT, enabled: false });
+    state.assistantShowChat();
+    body.resolve(payload);
+    response.resolve({ ok: true, headers: { get: () => "old-companion" }, json: async () => payload });
+    await pending;
+    assert.equal(state.assistantThread, null);
+    assert.equal(state.assistantThreadVisible(), true);
+    assert.deepEqual(vmValue(state.assistantMessages), []);
+    assert.deepEqual(vmValue(state.assistantEvents), []);
+    assert.equal(state.assistantPartial, "");
+    assert.equal(state.assistantStreaming, false);
+    assert.equal(state._assistantCursor, 0);
+    assert.equal(state._assistantETag, "");
+    assert.equal(state._assistantPoll, null);
+    state.destroy();
+  });
+}
+
 test("reading an item changes only companion state with its expected revision", async () => {
   const { state, requests, routes } = companionState();
   await state.companionRefresh();
@@ -17694,11 +18583,13 @@ test("degraded and disconnected attention stays visible and blocks read writes",
   routes["/api/assistant/companion"] = { ...COMPANION_SNAPSHOT, health: "degraded", error: "storage is read-only" };
   await state.companionRefresh();
   assert.equal(state.companionState(), "degraded");
+  assert.equal(state.companionEnabled(), true);
   assert.equal(state.companionCanWrite(), false);
   routes["/api/assistant/companion"] = { __status: 503, error: "offline" };
   await state.companionRefresh();
   assert.equal(state.companionState(), "disconnected");
   assert.equal(state.companionItems().length, 3, "a failed fetch must not empty saved attention");
+  assert.equal(state.companionEnabled(), true);
   assert.match(state.companionError, /may be stale/);
   routes["/api/assistant/companion"] = COMPANION_SNAPSHOT;
   await state.companionRefresh();
@@ -17711,10 +18602,12 @@ test("SSE invalidation and reconnect rebuild the inbox without payload data or m
   state.connectSSE();
   streams[0].emit("open", {});
   await flushMicrotasks();
-  routes["/api/assistant/companion"] = { ...COMPANION_SNAPSHOT, revision: 8, items: [] };
+  routes["/api/assistant/companion"] = { ...COMPANION_SNAPSHOT, enabled: false, revision: 8, items: [] };
   streams[0].emit("companion_updated", "");
   await flushMicrotasks();
   assert.equal(state.companionItems().length, 0);
+  assert.equal(state.companionEnabled(), false);
+  assert.equal(state.assistantView, "thread");
   streams[0].onerror();
   assert.equal(state.companionState(), "disconnected");
   runTimers();
@@ -17722,6 +18615,8 @@ test("SSE invalidation and reconnect rebuild the inbox without payload data or m
   streams[1].emit("open", {});
   await flushMicrotasks();
   assert.equal(state.companionSnapshot.revision, 10);
+  assert.equal(state.companionEnabled(), true);
+  assert.equal(state.assistantView, "thread");
   assert.equal(state.companionCounts(), "2 active / 2 unread");
   assert.equal(requests.some(r => r.init?.method === "POST"), false);
   state.destroy();
@@ -17731,14 +18626,14 @@ test("focus and the 30 second fallback revalidate settled evidence without atten
   const handlers = new Map();
   const intervals = new Map();
   const calls = [];
-  let outdated = false;
+  let outdated = false, enabled = false;
   const state = loadKontoraState({
     window: { innerWidth: 1200, addEventListener: (name, fn) => handlers.set(name, fn), removeEventListener: name => handlers.delete(name) },
     setInterval: (fn, ms) => { intervals.set(ms, fn); return ms; },
     clearInterval: id => intervals.delete(id),
     fetch: async (url, init) => {
       calls.push({ url, init });
-      const body = url === "/api/assistant/companion" ? COMPANION_SNAPSHOT :
+      const body = url === "/api/assistant/companion" ? { ...COMPANION_SNAPSHOT, enabled } :
         { running: false, evidence: [{ revision: 7, outdated }] };
       return { ok: true, json: async () => body };
     },
@@ -17749,11 +18644,15 @@ test("focus and the 30 second fallback revalidate settled evidence without atten
   await state.companionInit();
   await flushMicrotasks();
   assert.ok(intervals.has(30000));
+  assert.equal(state.companionEnabled(), false);
   assert.equal(state.companionEvidence()[0].outdated, false);
+  enabled = true;
   outdated = true;
   handlers.get("focus")();
   await flushMicrotasks();
   assert.equal(state.companionEvidence()[0].outdated, true);
+  assert.equal(state.companionEnabled(), true);
+  assert.equal(state.assistantView, "thread");
   state.assistantThread.evidence[0].outdated = false;
   intervals.get(30000)();
   await flushMicrotasks();
@@ -17769,20 +18668,42 @@ test("focus and the 30 second fallback revalidate settled evidence without atten
   assert.equal(calls.length, count);
 });
 
-test("an old inbox response cannot overwrite a newer saved read snapshot", async () => {
+test("an old disabled inbox response cannot overwrite a newer snapshot or selection", async () => {
   let release;
   const readSnapshot = { ...COMPANION_SNAPSHOT, revision: 8, items: [] };
   const { state } = companionState({ fetch: async (url, init) => {
     if (init?.method === "PATCH") return { ok: true, json: async () => readSnapshot };
-    return new Promise(resolve => { release = () => resolve({ ok: true, json: async () => COMPANION_SNAPSHOT }); });
+    return new Promise(resolve => { release = () => resolve({ ok: true, json: async () => ({ ...COMPANION_SNAPSHOT, enabled: false }) }); });
   } });
   state.companionSnapshot = COMPANION_SNAPSHOT;
+  state.assistantView = "inbox";
   const pending = state.companionRefresh();
   await state.companionRead(COMPANION_SNAPSHOT.items[0], true);
   release();
   await pending;
   // The queued reconciliation may now fetch again; the fenced first GET cannot paint revision 7.
   assert.equal(state.companionSnapshot.revision, 8);
+  assert.equal(state.companionEnabled(), true);
+  assert.equal(state.assistantView, "inbox");
+  state.destroy();
+});
+
+test("an old disabled PATCH response cannot replace a newer snapshot or selection", async () => {
+  const patch = deferred();
+  const { state } = companionState({ fetch: async (url, init) => {
+    if (init?.method === "PATCH") return patch.promise;
+    return { ok: true, json: async () => ({ ...COMPANION_SNAPSHOT, revision: 9 }) };
+  } });
+  state.companionSnapshot = COMPANION_SNAPSHOT;
+  state.assistantView = "inbox";
+  const pending = state.companionRead(COMPANION_SNAPSHOT.items[0], true);
+  await state.companionRefresh();
+  patch.resolve({ ok: true, json: async () => ({ ...COMPANION_SNAPSHOT, enabled: false, revision: 8 }) });
+  await pending;
+  await flushMicrotasks();
+  assert.equal(state.companionSnapshot.revision, 9);
+  assert.equal(state.companionEnabled(), true);
+  assert.equal(state.assistantView, "inbox");
   state.destroy();
 });
 
@@ -17816,20 +18737,69 @@ test("explicit companion explanations keep counts visible while thinking and use
   state.destroy();
 });
 
-test("a disabled companion cannot start another explanation but its running turn stays stoppable", async () => {
-  const { state, requests } = companionState();
-  state.companionSnapshot = { ...COMPANION_SNAPSHOT, enabled: false, ai_available: true };
-  state.assistantThread = { id: "krunning", purpose: "companion", running: true };
-  state._assistantSetStreaming(true);
-  assert.equal(state.companionState(), "thinking");
-  assert.equal(state.companionCanAsk(), false);
-  await state.companionSend("followup", "More detail", []);
-  await state.stopAssistantTurn();
-  const sends = requests.filter(r => r.init?.method === "POST");
-  assert.equal(sends.length, 1);
-  assert.equal(sends[0].url, "/api/assistant/threads/krunning/stop");
-  state.destroy();
-});
+for (const failure of [null, "network", "HTTP 503"]) {
+  test(`a disabled companion cannot start another explanation but its running turn stays stoppable: ${failure || 'success'}`, async () => {
+    let stopFailure = failure;
+    const { state, requests } = companionState({ fetch: async () => {
+      if (stopFailure === "network") throw new Error("Stop network failure");
+      if (stopFailure) return { ok: false, status: 503, json: async () => ({ error: "Stop unavailable" }) };
+      return { ok: true };
+    } });
+    state.companionSnapshot = { ...COMPANION_SNAPSHOT, enabled: false, ai_available: true };
+    state.assistantThread = { id: "krunning", purpose: "companion", running: true };
+    state._assistantSetStreaming(true);
+    assert.equal(state.companionState(), "thinking");
+    assert.equal(state.companionCanAsk(), false);
+    await state.companionSend("followup", "More detail", []);
+    await state.stopAssistantTurn();
+    const sends = requests.filter(r => r.init?.method === "POST");
+    assert.equal(sends.length, 1);
+    assert.equal(sends[0].url, "/api/assistant/threads/krunning/stop");
+    if (failure) {
+      assert.match(state.assistantError, /^Stop /);
+      assert.equal(state.assistantStreaming, true);
+      stopFailure = null;
+      await state.stopAssistantTurn();
+    }
+    assert.equal(state.assistantError, null);
+    state.destroy();
+  });
+}
+
+for (const kind of ["briefing", "investigation"]) {
+  for (const navigation of ["unchanged", "Chat", "History", "History then Chat", "re-enabled"]) {
+    test(`disabled snapshot preserves an admitted Inbox ${kind} unless navigation changes: ${navigation}`, async () => {
+      const admission = deferred();
+      const thread = { id: "kadmitted", purpose: "companion", running: true };
+      const { state, requests } = companionState({ fetch: async url => {
+        if (url === "/api/assistant/companion/messages") return admission.promise;
+        return { ok: true, json: async () => url.includes("/activity") ? { running: true } : {} };
+      } });
+      state.companionSnapshot = { ...COMPANION_SNAPSHOT, ai_available: true };
+      state.assistantOpen = true;
+      state.assistantView = "inbox";
+      const pending = state.companionSend(kind, "Explain this attention", ["kon-1"]);
+      state._companionAdoptSnapshot({ ...COMPANION_SNAPSHOT, enabled: false });
+      assert.equal(state.assistantView, "thread");
+      if (navigation === "Chat") state.assistantShowChat();
+      if (navigation.startsWith("History")) state.assistantShowHistory();
+      if (navigation === "History then Chat") state.assistantShowChat();
+      if (navigation === "re-enabled") state._companionAdoptSnapshot(COMPANION_SNAPSHOT);
+      const adopts = navigation === "unchanged" || navigation === "re-enabled";
+      admission.resolve({ ok: true, json: async () => thread });
+      await pending;
+      assert.equal(state.assistantThread?.id || null, adopts ? thread.id : null);
+      assert.equal(state.assistantStreaming, adopts);
+      assert.equal(state.assistantThreadVisible(), !adopts || navigation === "re-enabled");
+      assert.equal(state.assistantView, navigation === "History" ? "history" : "thread");
+      if (adopts) {
+        await state.stopAssistantTurn();
+        assert.equal(requests.at(-1).url, "/api/assistant/threads/kadmitted/stop");
+      }
+      state.destroy();
+    });
+  }
+}
 
 for (const revision of [7, 8]) {
   test(`attention refresh revalidates settled evidence at revision ${revision}`, async () => {
@@ -17883,7 +18853,7 @@ for (const change of ["chat", "draft", "view", "roundtrip", "pending selection",
       await state.assistantSelectThread(other.id);
       await state.assistantSelectThread(original.id);
     }
-    if (change === "view") state.assistantView = "history";
+    if (change === "view") state.assistantShowHistory();
     if (change === "pending selection") navigation = state.assistantSelectThread(other.id);
     if (change === "new chat") navigation = state.assistantNewThread();
     state.assistantDraft = "New unsent text";
@@ -17921,41 +18891,111 @@ test("an inbox investigation preserves an unrelated draft", async () => {
   state.destroy();
 });
 
-test("a successful companion followup clears only its submitted draft", async () => {
-  const { state } = companionState({ routes: {
-    "/api/assistant/companion/messages": { id: "kfollowup", purpose: "companion", turns: 2 },
-  } });
-  state.companionSnapshot = { ...COMPANION_SNAPSHOT, ai_available: true };
-  state.assistantThread = { id: "kfollowup", purpose: "companion" };
-  state.assistantDraft = "  Explain the capture  ";
-  await state.sendAssistantMessage();
-  assert.equal(state.assistantDraft, "");
-  assert.equal(state.assistantMessages[0].text, "Explain the capture");
-  state.destroy();
-});
+for (const clickChat of [false, true]) {
+  test(`a successful companion followup clears only its submitted draft: repeat Chat=${clickChat}`, async () => {
+    const admission = deferred();
+    const { state } = companionState({ fetch: async url => {
+      if (url === "/api/assistant/companion/messages") return admission.promise;
+      return { ok: true, json: async () => url.includes("/activity") ? { running: true } : {} };
+    } });
+    state.assistantOpen = true;
+    state.companionSnapshot = { ...COMPANION_SNAPSHOT, ai_available: true };
+    state.assistantThread = { id: "kfollowup", purpose: "companion" };
+    state.assistantDraft = "  Explain the capture  ";
+    const pending = state.sendAssistantMessage();
+    if (clickChat) state.assistantShowChat();
+    admission.resolve({ ok: true, json: async () => ({ id: "kfollowup", purpose: "companion", turns: 2, running: true }) });
+    await pending;
+    assert.equal(state.assistantDraft, "");
+    assert.equal(state.assistantMessages[0].text, "Explain the capture");
+    assert.equal(state.assistantStreaming, true);
+    assert.notEqual(state._assistantPoll, null);
+    state.destroy();
+  });
+}
 
 for (const entry of ["startup", "desktop", "mobile", "history"]) {
-  test(`saved companion history is available without observation or an agent: ${entry}`, async () => {
+  test(`disabled observation hides saved companion history and restores it on re-enable: ${entry}`, async () => {
     const thread = { id: "ksaved", purpose: "companion", running: false };
-    const { state, requests } = companionState({ store: { "kontora-assistant-open": entry === "startup" ? "1" : "0" }, routes: {
-      "/api/assistant/threads": { threads: [thread] },
+    const ordinary = { id: "abc123", running: false };
+    const { state, requests, routes, store } = companionState({ store: {
+      "kontora-assistant-open": entry === "startup" ? "1" : "0",
+      "kontora-assistant-thread": entry === "startup" ? thread.id : "",
+    }, routes: {
+      "/api/assistant/companion": { ...COMPANION_SNAPSHOT, enabled: false },
+      "/api/assistant/threads": { threads: [thread, ordinary] },
       "/api/assistant/threads/ksaved": thread,
       "/api/assistant/threads/ksaved/activity": { running: false, evidence: [{ revision: 1, outdated: true }] },
     } });
-    state.companionSnapshot = { ...COMPANION_SNAPSHOT, enabled: false, ai_available: false };
     await state.initAssistant();
     if (entry === "desktop") state.toggleAssistant();
     if (entry === "mobile") { state.isMobile = true; state.openAssistantSheet(); }
-    if (entry === "history") { state.assistantView = "history"; await state.assistantLoadThreads(); }
-    await flushMicrotasks();
+    if (entry === "history") state.assistantView = "history";
+    await state.assistantLoadThreads();
     assert.equal(state.assistantEnabled(), false);
-    assert.deepEqual(vmValue(state.assistantThreads), [thread]);
-    await state.assistantSelectThread(thread.id);
+    assert.deepEqual(vmValue(state.assistantVisibleThreads()), [ordinary]);
+    assert.equal(state.assistantThread, null);
+    assert.equal(await state.assistantSelectThread(thread.id), false);
+    assert.equal(requests.some(r => r.url.includes("/ksaved/activity")), false);
+    if (entry === "startup") assert.equal(store["kontora-assistant-thread"], thread.id);
+    const view = state.assistantView;
+    routes["/api/assistant/companion"] = COMPANION_SNAPSHOT;
+    await state.companionRefresh();
+    assert.equal(state.assistantView, view);
+    assert.deepEqual(vmValue(state.assistantVisibleThreads()), [thread, ordinary]);
+    assert.equal(await state.assistantSelectThread(thread.id), true);
     assert.equal(state.companionEvidence()[0].outdated, true);
     assert.equal(state.companionCanAsk(), false);
-    assert.equal(requests.some(r => r.init?.method === "POST"), false);
+    assert.equal(requests.some(r => r.init?.method), false);
     state.destroy();
   });
+}
+
+for (const enabled of [false, true]) {
+  test(`ordinary remembered chats restore independently of observation: ${enabled}`, async () => {
+    const thread = { id: "abc123", running: false };
+    const { state } = companionState({ store: { "kontora-assistant-thread": thread.id }, routes: {
+      "/api/assistant": { enabled: true },
+      "/api/assistant/companion": { ...COMPANION_SNAPSHOT, enabled },
+      "/api/assistant/threads/abc123": thread,
+    } });
+    await state.initAssistant();
+    assert.equal(state.assistantThread.id, thread.id);
+    assert.equal(state.assistantThreadVisible(), true);
+    state.destroy();
+  });
+}
+
+for (const enabled of [false, true, null]) {
+  for (const navigation of ["unchanged", "Chat", "History", "ordinary thread"]) {
+    test(`remembered companion waits for an initial snapshot without replacing navigation: ${enabled}/${navigation}`, async () => {
+      const snapshot = deferred();
+      const thread = { id: "ksaved", purpose: "companion", running: false };
+      const ordinary = { id: "abc123", running: false };
+      const { state } = companionState({ store: { "kontora-assistant-thread": thread.id }, fetch: async url => {
+        if (url === "/api/assistant/companion") return snapshot.promise;
+        const body = url === "/api/assistant/threads/ksaved" ? thread :
+          url === "/api/assistant/threads/abc123" ? ordinary : {};
+        return { ok: true, json: async () => body };
+      } });
+      const refresh = state.companionRefresh();
+      const restore = state.initAssistant();
+      await flushMicrotasks();
+      assert.equal(state.assistantThread, null);
+      assert.equal(state.companionEnabled(), false);
+      if (navigation === "Chat") state.assistantShowChat();
+      if (navigation === "History") state.assistantShowHistory();
+      if (navigation === "ordinary thread") await state.assistantSelectThread(ordinary.id);
+      snapshot.resolve({ ok: enabled !== null, status: enabled === null ? 503 : 200,
+        json: async () => enabled === null ? { error: "offline" } : { ...COMPANION_SNAPSHOT, enabled } });
+      await Promise.all([refresh, restore]);
+      const expected = navigation === "ordinary thread" ? ordinary.id :
+        enabled && navigation === "unchanged" ? thread.id : null;
+      assert.equal(state.assistantThread?.id || null, expected);
+      assert.equal(state.assistantView, navigation === "History" ? "history" : "thread");
+      state.destroy();
+    });
+  }
 }
 
 for (const mobile of [false, true]) {
@@ -18015,6 +19055,19 @@ test("desktop and mobile reuse the companion inbox, state text, evidence, and mi
   }
   assert.match(state.companionHeaderMarkup, /role="status" x-text="companionState\(\)"/);
   assert.match(state.companionHeaderMarkup, /companionCounts\(\)/);
+  assert.match(state.companionHeaderMarkup, /class="companion-header" x-show="companionEnabled\(\)" x-cloak/);
+  assert.match(state.companionHeaderMarkup, /x-show="companionEnabled\(\)" x-cloak @click="companionOpenInbox\(\)"/);
+  assert.match(state.companionHeaderMarkup, /@click="assistantShowChat\(\)"/);
+  assert.match(state.companionHeaderMarkup, /@click="assistantShowHistory\(\)"/);
+  assert.match(html, /id="assistant-history" @click="assistantView === 'history' \? assistantShowChat\(\) : assistantShowHistory\(\)"/);
+  assert.match(state.companionHeaderMarkup, /x-text="companionEnabled\(\) && companionThread\(\) \? companionName\(\) \+ ' chat' : 'Chat'"/);
+  assert.match(state.companionHeaderMarkup, /x-show="companionThread\(\) && assistantStreaming" @click="stopAssistantTurn\(\)"/);
+  assert.match(state.companionHeaderMarkup, /x-show="companionEnabled\(\) && companionThread\(\) && !companionSnapshot\?\.ai_available"/);
+  assert.equal(html.split(`x-show="companionEnabled() && assistantView === 'inbox'" x-cloak`).length - 1, 2);
+  assert.equal(html.split(`x-show="assistantView === 'thread' && assistantThreadVisible()"`).length - 1, 2);
+  assert.equal(html.split(`x-for="t in assistantVisibleThreads()"`).length - 1, 2);
+  assert.match(html, /class="companion-rail-cat" x-show="companionEnabled\(\)" x-cloak/);
+  assert.match(state.companionEvidenceMarkup, /x-show="companionEnabled\(\) && companionThread\(\)" x-cloak/);
   assert.match(state.companionInboxMarkup, /Reading an item does not answer a question or change a ticket/);
   assert.match(state.companionInboxMarkup, /companionSnapshot\?\.hint/);
   assert.match(state.companionEvidenceMarkup, /packet\.sources/);
@@ -18229,5 +19282,473 @@ for (const mobile of [false, true]) {
     assert.equal(state.selectedTicket.id, next.id);
     assert.ok(opened.length > 0);
     assert.ok(opened.every(id => id === next.id));
+  });
+}
+
+for (const filter of ['', 'secondary-1741']) {
+  test(`large corpus metadata reads scan zero tickets: ${filter || 'full board'}`, () => {
+    const state = loadKontoraState();
+    state.tickets = Array.from({ length: 5 }, (_, i) => ({ id: 'primary-' + i, status: 'open', title: 'Primary' }));
+    let reads = 0;
+    state.secondaryTickets = Array.from({ length: 2161 }, (_, i) => ({
+      id: 'secondary-' + i, source: 'team', title: 'Secondary ' + i,
+      get status() { reads++; return i < 1742 ? 'archived' : 'open'; },
+    }));
+    state.searchQuery = filter;
+    state.recomputeBoard();
+    const columns = state.columns;
+    const archived = columns.findIndex(c => c.key === 'archived');
+    state.setActiveColumn(archived);
+    reads = 0;
+    for (let i = 0; i < 100; i++) {
+      assert.equal(state.columns, columns);
+      state.mobileColumn();
+      state.mobileTickets();
+    }
+    assert.equal(reads, 0);
+    assert.ok(state.mobileTickets().length <= 100);
+    assert.equal(state.secondaryTickets.length, 2161);
+    if (!filter) {
+      assert.equal(state.boardTickets('archived').length, 1742);
+      assert.equal(state.mobileTickets().length, 100);
+      state.mobileLoadMore();
+      assert.equal(state.mobileTickets().length, 200);
+      state.searchQuery = 'secondary-1741';
+      state.recomputeBoard();
+      assert.equal(state.mobileTickets().length, 1);
+    } else assert.equal(state.mobileTickets().length, 1);
+    state.applySecondaryUpdate({ id: 'secondary-0', source: 'team', title: 'Renamed', status: 'archived' });
+    state.recomputeBoard();
+    assert.equal(state.columns, columns, 'title changes retain column identity');
+    state.applySecondaryUpdate({ id: 'new', source: 'other', title: 'New', status: 'tombstone' });
+    state.recomputeBoard();
+    assert.ok(state.columns.some(c => c.key === 'tombstone'));
+    state.deleteSecondaryTicket({ id: 'new', source: 'other' });
+    state.recomputeBoard();
+    assert.equal(state.columns.some(c => c.key === 'tombstone'), false);
+  });
+}
+
+test('withheld frames retain no event snapshots and preserve intermediate editor transitions', () => {
+  const frames = new Map();
+  let sequence = 0;
+  const state = loadKontoraState({ requestAnimationFrame: cb => { frames.set(++sequence, cb); return sequence; }, cancelAnimationFrame: id => frames.delete(id) });
+  state.updateFavicon = () => {};
+  state.selectedTicket = { id: 'same', status: 'open', history: [], body: 'Reviewed' };
+  state.tickets = [{ ...state.selectedTicket }];
+  state.editing = true;
+  state.editingBody = true;
+  let saves = 0;
+  state.flushEditSave = () => { saves++; return Promise.resolve(true); };
+  state.queueTicketUpdate({ id: 'same', title: 'Running', status: 'in_progress', history: [] });
+  state.queueTicketUpdate({ id: 'same', title: 'Editable', status: 'open', history: [] });
+  for (let i = 0; i < 10000; i++) state.queueTicketUpdate({ id: 'same', title: String(i), status: 'open', history: [] });
+  assert.equal(saves, 1);
+  assert.equal(state.editing, false);
+  assert.equal(state.editingBody, false);
+  assert.equal(state.selectedTicket.title, '9999');
+  assert.equal(state.selectedTicket.body, 'Reviewed');
+  assert.equal(state.tickets[0].title, '9999');
+  assert.equal('_pendingTicketUpdates' in state, false);
+  assert.equal(frames.size, 1);
+  state.flushTicketUpdates();
+  assert.equal(frames.size, 0);
+  assert.equal(state._boardDirty, false);
+});
+
+test('secondary sweep uses indexed slots and has no primary cost or chain effects', () => {
+  const state = loadKontoraState();
+  state._boardRaf = 1;
+  state.tickets = [{ id: 'same', title: 'Primary', status: 'open', history: [] }];
+  state.selectedTicket = { ...state.tickets[0] };
+  state.chain = { nodes: [{ id: 'same' }] };
+  state.secondaryTickets = Array.from({ length: 2161 }, (_, i) => ({ id: i ? 's-' + i : 'same', source: 'team', status: 'archived', title: 'Old' }));
+  state.secondarySlot({ id: 'same', source: 'team' });
+  state.secondaryTickets.findIndex = () => { throw new Error('full-array ingestion search'); };
+  const calls = [];
+  state.fetchTicketCost = () => calls.push('cost');
+  state.fetchChain = () => calls.push('chain');
+  state.updateFavicon = () => {};
+  for (let i = 0; i < 2161; i++) state.queueTicketUpdate({ id: i ? 's-' + i : 'same', source: 'team', status: 'archived', title: 'New ' + i });
+  state.flushTicketUpdates();
+  assert.deepEqual(calls, []);
+  assert.equal(state.selectedTicket.title, 'Primary');
+  state.selectedTicket = { id: 'same', source: 'team' };
+  assert.equal(state._ticketById('same').title, 'New 0');
+  const slot = state.secondarySlot({ id: 'same', source: 'team' });
+  state.secondaryTickets[slot] = { id: 'same', source: 'team', status: 'archived', title: 'Detail replacement' };
+  assert.equal(state._ticketById('same').title, 'Detail replacement');
+  state.applySecondaryUpdate({ id: 'same', source: 'other', status: 'tombstone', title: 'Namesake' });
+  state.deleteSecondaryTicket({ id: 'same', source: 'team' });
+  assert.equal(state.sourceTicketById('same', { source: 'team' }), undefined);
+  assert.equal(state.sourceTicketById('same', { source: 'other' }).title, 'Namesake');
+});
+
+for (const secondary of [false, true]) {
+  test(`snapshot decoding cannot overwrite newer events or resurrect deletions: ${secondary ? 'secondary' : 'primary'}`, async () => {
+    const decode = deferred();
+    const events = [];
+    const identity = secondary ? { source: 'team' } : {};
+    const stale = ['updated', 'deleted', 'untouched'].map(id => ({ ...identity, id, title: 'Stale', status: 'open', revision: 'old' }));
+    const { state } = loadKontoraContext({ EventSource: makeEventSourceFake(events), fetch: async url => {
+      if (url === '/api/ticket-sources') return { ok: true, json: async () => [{ id: 'team', available: true }] };
+      return { ok: true, json: () => decode.promise };
+    } });
+    state._boardRaf = 1;
+    state.updateFavicon = () => {};
+    state.fetchTicketCost = () => {};
+    if (secondary) state.secondaryTickets = stale.map(t => ({ ...t }));
+    else state.tickets = stale.map(t => ({ ...t }));
+    state.selectedTicket = { ...stale[0], body: 'Reviewed body' };
+    state.editing = true;
+    state.editForm = { titleRest: 'Unsaved draft', body: 'Unsaved body' };
+    state.connectSSE();
+    const loading = secondary ? state.fetchTicketSources() : state.fetchTasks();
+    await flushMicrotasks();
+    const newer = { ...stale[0], title: 'Newer', revision: 'new' };
+    events[0].emit(secondary ? 'secondary_ticket_updated' : 'ticket_updated', newer);
+    events[0].emit(secondary ? 'secondary_ticket_deleted' : 'ticket_deleted', stale[1]);
+    decode.resolve(secondary ? stale : { tickets: stale });
+    await loading;
+    const entries = secondary ? state.secondaryTickets : state.tickets;
+    assert.equal(entries.find(t => t.id === 'updated').title, 'Newer');
+    assert.equal(entries.some(t => t.id === 'deleted'), false);
+    assert.equal(entries.some(t => t.id === 'untouched'), true);
+    assert.equal(state.selectedTicket.body, 'Reviewed body');
+    assert.equal(state.editForm.body, 'Unsaved body');
+    if (secondary) assert.equal(state.selectedTicket.revision, 'old', 'Claim still requires the reviewed revision');
+  });
+}
+
+for (const secondary of [false, true]) {
+  test(`snapshot refreshes coalesce one trailing read: ${secondary ? 'secondary' : 'primary'}`, async () => {
+    const first = deferred();
+    let calls = 0, active = 0, maximum = 0;
+    const state = loadKontoraState({ fetch: async url => {
+      if (url === '/api/ticket-sources') return { ok: true, json: async () => [{ id: 'team', available: true }] };
+      calls++; active++; maximum = Math.max(maximum, active);
+      if (calls === 1) await first.promise;
+      active--;
+      return { ok: true, json: async () => secondary ? [] : { tickets: [] } };
+    } });
+    state.updateFavicon = () => {};
+    const refresh = () => secondary ? state.fetchTicketSources() : state.fetchTasks();
+    const loading = refresh();
+    await flushMicrotasks();
+    for (let i = 0; i < 20; i++) refresh();
+    first.resolve();
+    await loading;
+    assert.equal(calls, 2);
+    assert.equal(maximum, 1);
+  });
+}
+
+for (const secondary of [false, true]) for (const editing of [false, true]) {
+  test(`reconnect refreshes detail without replacing drafts or reviewed revisions: secondary=${secondary}, editing=${editing}`, async () => {
+    const ticket = { id: 'reviewed', source: secondary ? 'team' : 'primary', status: 'open', title: 'Current', revision: 'new', can_edit: true };
+    const requests = [];
+    const state = loadKontoraState({ fetch: async url => {
+      requests.push(url);
+      if (url === '/api/ticket-sources') return { ok: true, json: async () => [{ id: 'team', available: true }] };
+      if (url === '/api/tickets') return { ok: true, json: async () => ({ tickets: secondary ? [] : [ticket] }) };
+      if (url === '/api/sources/team/tickets') return { ok: true, json: async () => secondary ? [ticket] : [] };
+      assert.equal(state.selectedTicket.history.length, 1, 'list snapshots preserve detail-only fields until detail refresh');
+      assert.equal(state.selectedTicket.notes.length, 1);
+      return { ok: true, json: async () => ({ ...ticket, body: 'Current body', description: 'Current body', description_tail: '' }) };
+    } });
+    state._boardRaf = 1;
+    state.updateFavicon = () => {};
+    state.selectedTicket = { ...ticket, revision: 'reviewed', body: 'Reviewed body', history: [{ stage: 'code' }], notes: [{ id: 'kept' }] };
+    state.editForm.body = 'Unsaved draft';
+    state.editing = editing;
+    if (secondary) state.secondaryTickets = [ticket];
+    else state.tickets = [ticket];
+    await state.resyncTickets();
+    assert.equal(requests.filter(url => url.endsWith('/reviewed')).length, 1);
+    assert.equal(state.selectedTicket.body, editing ? 'Reviewed body' : 'Current body');
+    assert.equal(state.editForm.body, 'Unsaved draft');
+    assert.equal(state.selectedTicket.revision, secondary || editing ? 'reviewed' : 'new');
+  });
+}
+
+test('reconnect detail retries an overtaken decode and cannot reopen a different selection', async () => {
+  const decode = deferred();
+  let calls = 0;
+  const state = loadKontoraState({ fetch: async () => {
+    calls++;
+    return { ok: true, json: () => calls === 1 ? decode.promise : Promise.resolve({ id: 'selected', status: 'open', body: 'Latest body' }) };
+  } });
+  state._boardRaf = 1;
+  state.selectedTicket = { id: 'selected', status: 'open', body: 'Old body' };
+  const refresh = state.refreshSelectedTicket();
+  await flushMicrotasks();
+  state.queueTicketUpdate({ id: 'selected', status: 'open', title: 'New event' });
+  decode.resolve({ id: 'selected', status: 'open', body: 'Stale body' });
+  await refresh;
+  assert.equal(calls, 2);
+  assert.equal(state.selectedTicket.body, 'Latest body');
+  const late = deferred();
+  state.selectedTicket = { id: 'selected', status: 'open' };
+  const context = loadKontoraContext({ fetch: async () => ({ ok: true, json: () => late.promise }) });
+  context.state.selectedTicket = state.selectedTicket;
+  const opening = context.state.refreshSelectedTicket();
+  await flushMicrotasks();
+  context.state.selectedTicket = { id: 'different', body: 'Different body' };
+  context.state._ticketDetailSeq++;
+  late.resolve({ id: 'selected', status: 'open', body: 'Late body' });
+  await opening;
+  assert.equal(context.state.selectedTicket.id, 'different');
+  assert.equal(context.state.selectedTicket.body, 'Different body');
+});
+
+for (const failure of ['unavailable', 'HTTP failure', 'rejection']) {
+  test(`source refresh preserves an editor and its pending draft after ${failure}`, async () => {
+    const streams = [], timers = new Map(), writes = [];
+    let mode = failure, timer = 0, recovery;
+    const ticket = { id: 'draft', source: 'team', title: 'Draft', status: 'open', can_edit: true,
+      can_claim: true, revision: 'reviewed', description: 'Server text', description_tail: '' };
+    const { state } = loadKontoraContext({ EventSource: makeEventSourceFake(streams),
+      setTimeout: cb => { timers.set(++timer, cb); return timer; },
+      clearTimeout: id => timers.delete(id),
+      fetch: async (url, options) => {
+        if (options?.method === 'PUT') {
+          writes.push({ url, body: JSON.parse(options.body) });
+          return { ok: true, json: async () => ({ ...ticket, ...writes.at(-1).body }) };
+        }
+        if (url === '/api/ticket-sources') {
+          if (recovery) await recovery.promise;
+          return { ok: true, json: async () => [
+            { id: 'team', available: mode !== 'unavailable' }, { id: 'healthy', available: true },
+          ] };
+        }
+        if (url === '/api/sources/healthy/tickets') return { ok: true, json: async () => [{ id: 'fresh', source: 'healthy', status: 'open' }] };
+        assert.equal(url, '/api/sources/team/tickets');
+        if (mode === 'rejection') throw new Error('offline');
+        return { ok: mode !== 'HTTP failure', json: async () => mode === 'deleted' ? [] : [ticket] };
+      } });
+    state.configCache = {};
+    state.$nextTick = async () => {};
+    state._boardRaf = 1;
+    state.selectedTicket = { ...ticket };
+    state.secondaryTickets = [{ ...ticket }];
+    state.ticketSources = [{ id: 'team', available: true }];
+    await state.startEditing();
+    state.editingBody = true;
+    state.editForm.body = 'Unsaved text';
+    state.debounceSaveEdit();
+    state.connectSSE();
+    streams[0].emit('ticket_sources_changed');
+    await flushMicrotasks();
+    assert.equal(state.selectedTicket?.id, 'draft');
+    assert.equal(state.editing, true);
+    assert.equal(state.editingBody, true);
+    assert.equal(state.editForm.body, 'Unsaved text');
+    assert.equal(state.secondaryTickets.some(t => t.source === 'healthy'), true);
+    assert.equal(state.secondaryTickets.some(t => state.sameTicket(t, ticket)), true, 'failed sources retain their last successful rows');
+    assert.equal(state.ticketCanEdit(state.selectedTicket), false);
+    assert.equal(state.ticketCanClaim(state.selectedTicket), false);
+    assert.equal(timers.size, 1, 'source failure does not cancel the pending debounce');
+    timers.clear();
+    assert.equal(await state.flushEditSave(), false);
+    assert.equal(state._editorSaves['team/draft'].draft.description, 'Unsaved text');
+    assert.deepEqual(writes, [], 'unavailable sources refuse writes');
+    mode = 'healthy';
+    recovery = deferred();
+    state.debounceSaveEdit();
+    streams[0].emit('ticket_sources_changed');
+    streams[0].emit('secondary_ticket_updated', ticket);
+    await flushMicrotasks();
+    assert.equal(state.editing, true, 'a recovery update must not treat stale source availability as lost edit permission');
+    assert.equal(state.editingBody, true);
+    assert.equal(timers.size, 1, 'recovery updates preserve the pending debounce');
+    recovery.resolve();
+    await flushMicrotasks();
+    assert.equal(state.selectedTicket?.id, 'draft');
+    assert.equal(state.editing, true);
+    assert.equal(state.editForm.body, 'Unsaved text');
+    assert.equal(await state.flushEditSave(), true);
+    assert.deepEqual(writes, [{ url: '/api/sources/team/tickets/draft', body: { description: 'Unsaved text' } }]);
+    assert.equal(state._editorSaves['team/draft'].ack.description, 'Unsaved text');
+    mode = 'deleted';
+    streams[0].emit('ticket_sources_changed');
+    await flushMicrotasks();
+    assert.equal(state.selectedTicket, null, 'healthy authoritative absence still closes the editor');
+  });
+}
+
+for (const secondary of [false, true]) for (const editing of [false, true]) {
+  test(`overlapping SSE opens share detail work and retry only newer events: secondary=${secondary}, editing=${editing}`, async () => {
+    const streams = [], detailReads = [], lists = deferred();
+    const ticket = { id: 'shared', source: secondary ? 'team' : 'primary', status: 'open', title: 'Shared',
+      revision: 'new', can_edit: true };
+    const { state } = loadKontoraContext({ EventSource: makeEventSourceFake(streams), fetch: async url => {
+      if (url === '/api/tickets') { await lists.promise; return { ok: true, json: async () => ({ tickets: secondary ? [] : [ticket] }) }; }
+      if (url === '/api/ticket-sources') { await lists.promise; return { ok: true, json: async () => [{ id: 'team', available: true }] }; }
+      if (url === '/api/sources/team/tickets') return { ok: true, json: async () => secondary ? [ticket] : [] };
+      assert.equal(url, secondary ? '/api/sources/team/tickets/shared' : '/api/tickets/shared');
+      const decode = deferred();
+      detailReads.push(decode);
+      return { ok: true, json: () => decode.promise };
+    } });
+    state._boardRaf = 1;
+    state.updateFavicon = () => {};
+    state.companionRefresh = () => {};
+    state.selectedTicket = { ...ticket, revision: 'reviewed', body: 'Reviewed body' };
+    state.editing = editing;
+    state.editForm.body = 'Unsaved draft';
+    if (secondary) state.secondaryTickets = [ticket]; else state.tickets = [ticket];
+    state.connectSSE();
+    for (let i = 0; i < 20; i++) streams[0].emit('open');
+    lists.resolve();
+    await flushMicrotasks();
+    assert.equal(detailReads.length, 1, 'overlapping resync readers share one detail decode');
+    streams[0].emit(secondary ? 'secondary_ticket_updated' : 'ticket_updated', { ...ticket, title: 'Newer event' });
+    state.editForm.body = 'Typed during decode';
+    detailReads[0].resolve({ ...ticket, body: 'Overtaken body' });
+    await flushMicrotasks();
+    assert.equal(detailReads.length, 2, 'one event requires one shared retry');
+    const entries = secondary ? state.secondaryTickets : state.tickets;
+    assert.equal(entries.find(t => t.id === 'shared').title, 'Newer event');
+    if (secondary || !editing) assert.equal(state.selectedTicket.title, 'Newer event');
+    detailReads[1].resolve({ ...ticket, title: 'Latest', body: 'Latest body' });
+    await flushMicrotasks();
+    assert.equal(detailReads.length, 2, 'successful peers cannot invalidate each other');
+    assert.equal(state.selectedTicket.body, editing ? 'Reviewed body' : 'Latest body');
+    assert.equal(state.selectedTicket.revision, secondary || editing ? 'reviewed' : 'new');
+    assert.equal(state.editForm.body, 'Typed during decode');
+    streams[0].emit('open');
+    await flushMicrotasks();
+    assert.equal(detailReads.length, 3, 'a later reconnect still refreshes detail');
+    state.selectedTicket = { id: 'other', status: 'open', body: 'Other body' };
+    state._ticketDetailSeq++;
+    detailReads[2].resolve({ ...ticket, body: 'Late body' });
+    await flushMicrotasks();
+    assert.equal(state.selectedTicket.body, 'Other body');
+  });
+}
+
+for (const failure of ['HTTP failure', 'rejection', 'decode failure']) {
+  test(`SSE reconnect retries its queued primary refresh after ${failure}`, async () => {
+    const streams = [], first = deferred();
+    let reads = 0;
+    const ticket = { id: 'recovered', status: 'open' };
+    const { state } = loadKontoraContext({ EventSource: makeEventSourceFake(streams), fetch: async url => {
+      if (url === '/api/ticket-sources') return { ok: true, json: async () => [] };
+      assert.equal(url, '/api/tickets');
+      if (++reads === 1) return first.promise;
+      return { ok: true, json: async () => ({ tickets: [ticket] }) };
+    } });
+    state._boardRaf = 1;
+    state.updateFavicon = () => {};
+    state.companionRefresh = () => {};
+    state.connectSSE();
+    streams[0].emit('open');
+    streams[0].emit('open');
+    if (failure === 'rejection') first.reject(new Error('offline'));
+    else first.resolve({ ok: failure === 'decode failure', json: async () => { throw new Error('decode'); } });
+    await flushMicrotasks();
+    assert.equal(reads, 2);
+    assert.equal(state.tickets[0]?.id, 'recovered');
+    assert.equal(state.error, null);
+  });
+}
+
+test('a pending reconnect detail cannot close an editor after its source becomes unavailable', async () => {
+  const streams = [], decoding = deferred();
+  let available = true, detailReads = 0;
+  const ticket = { id: 'editing', source: 'team', status: 'open', can_edit: true, revision: 'reviewed', description: 'Reviewed' };
+  const { state } = loadKontoraContext({ EventSource: makeEventSourceFake(streams), fetch: async url => {
+    if (url === '/api/tickets') return { ok: true, json: async () => ({ tickets: [] }) };
+    if (url === '/api/ticket-sources') return { ok: true, json: async () => [{ id: 'team', available }] };
+    if (url === '/api/sources/team/tickets') return { ok: true, json: async () => [ticket] };
+    assert.equal(url, '/api/sources/team/tickets/editing');
+    detailReads++;
+    return { ok: true, json: () => decoding.promise };
+  } });
+  state.configCache = {};
+  state.$nextTick = async () => {};
+  state._boardRaf = 1;
+  state.updateFavicon = () => {};
+  state.companionRefresh = () => {};
+  state.secondaryTickets = [ticket];
+  state.selectedTicket = { ...ticket };
+  await state.startEditing();
+  state.editingBody = true;
+  state.editForm.body = 'Pending draft';
+  state.connectSSE();
+  streams[0].emit('open');
+  await flushMicrotasks();
+  assert.equal(detailReads, 1);
+  available = false;
+  streams[0].emit('ticket_sources_changed');
+  await flushMicrotasks();
+  decoding.resolve({ ...ticket, description: 'Stale detail', revision: 'unreviewed' });
+  await flushMicrotasks();
+  assert.equal(state.selectedTicket?.id, 'editing');
+  assert.equal(state.selectedTicket.description, 'Reviewed');
+  assert.equal(state.selectedTicket.revision, 'reviewed');
+  assert.equal(state.editing, true);
+  assert.equal(state.editingBody, true);
+  assert.equal(state.editForm.body, 'Pending draft');
+  assert.equal(state.ticketCanEdit(state.selectedTicket), false);
+});
+
+test('a failed shared reconnect detail releases its flight for the next reconnect', async () => {
+  const streams = [], failing = deferred();
+  let reads = 0;
+  const ticket = { id: 'retry-detail', status: 'open' };
+  const { state } = loadKontoraContext({ EventSource: makeEventSourceFake(streams), fetch: async url => {
+    if (url === '/api/tickets') return { ok: true, json: async () => ({ tickets: [ticket] }) };
+    if (url === '/api/ticket-sources') return { ok: true, json: async () => [] };
+    assert.equal(url, '/api/tickets/retry-detail');
+    if (++reads === 1) return failing.promise;
+    return { ok: true, json: async () => ({ ...ticket, body: 'Recovered body' }) };
+  } });
+  state._boardRaf = 1;
+  state.updateFavicon = () => {};
+  state.companionRefresh = () => {};
+  state.selectedTicket = { ...ticket, body: 'Reviewed body' };
+  state.connectSSE();
+  for (let i = 0; i < 20; i++) streams[0].emit('open');
+  await flushMicrotasks();
+  assert.equal(reads, 1);
+  failing.resolve({ ok: false });
+  await flushMicrotasks();
+  assert.equal(state.error, 'Failed to refresh ticket details');
+  assert.equal(state.selectedTicket.body, 'Reviewed body');
+  streams[0].emit('open');
+  await flushMicrotasks();
+  assert.equal(reads, 2);
+  assert.equal(state.selectedTicket.body, 'Recovered body');
+});
+
+test('a failed primary refresh without a queued reconnect still reports its error', async () => {
+  const state = loadKontoraState({ fetch: async () => ({ ok: false }) });
+  await assert.rejects(state.fetchTasks(), /Failed to fetch tickets/);
+});
+
+for (const [selected, arriving] of [['archived', 'abandoned'], ['tombstone', 'closed']]) {
+  test(`secondary SSE sorted insertion preserves phone column ${selected} when ${arriving} arrives`, () => {
+    const streams = [];
+    const { state } = loadKontoraContext({ EventSource: makeEventSourceFake(streams) });
+    state.isMobile = true;
+    state._boardRaf = 1;
+    state.updateFavicon = () => {};
+    state.secondaryTickets = [{ id: 'existing', source: 'team', title: 'Existing', status: selected }];
+    state.recomputeBoard();
+    state.setActiveColumn(state.columns.findIndex(c => c.key === selected));
+    const before = state.activeColumn;
+    state.connectSSE();
+    streams[0].emit('secondary_ticket_updated', { id: 'new', source: 'team', title: 'New', status: arriving });
+    state.flushTicketUpdates();
+    assert.equal(state.mobileColumn().key, selected);
+    assert.ok(state.activeColumn > before, 'the sorted schema inserted a preceding column');
+    assert.equal(state.mobileTickets()[0].id, 'existing');
+    streams[0].emit('secondary_ticket_deleted', { id: 'new', source: 'team' });
+    state.flushTicketUpdates();
+    assert.equal(state.mobileColumn().key, selected);
+    streams[0].emit('secondary_ticket_deleted', { id: 'existing', source: 'team' });
+    state.flushTicketUpdates();
+    assert.ok(state.activeColumn >= 0 && state.activeColumn < state.columns.length, 'removed selection has a valid fallback');
   });
 }

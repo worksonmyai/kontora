@@ -13,8 +13,8 @@ import { clockHM } from './format.js';
 // logs a warning (internal/daemon/reload.go, pinRestartOnly), so a save that
 // touches one must not claim the change took effect.
 const SETTINGS_RESTART_ONLY = [
-  'tickets_dir', 'secondary_tickets_dirs', 'worktrees_dir', 'logs_dir', 'instance_name', 'max_concurrent_agents', 'max_concurrent_epic_supervisors',
-  'web.host', 'web.port', 'web.token',
+  'tickets_dir', 'secondary_tickets_dirs', 'worktrees_dir', 'logs_dir', 'instance_name',
+  'web.host', 'web.port', 'web.token', 'plannotator.reviews_dir',
 ];
 
 // Mirrors config.DefaultFailurePatterns (internal/config/defaults.go). Shown
@@ -186,8 +186,8 @@ const SETTINGS_GENERAL_FIELDS = [
   { key: 'logs_dir', placeholder: '~/.kontora/logs', help: 'Per-stage agent output. The LOGS pane reads from here.' },
   { key: 'branch_prefix', placeholder: 'kontora', help: "Fallback when the ticket's project sets none." },
   { key: 'default_agent', placeholder: 'claude', help: 'Used when a pipeline step or ticket names no agent.' },
-  { key: 'max_concurrent_agents', placeholder: '3', help: 'Hard cap on worker tmux sessions. Epic supervisors use separate slots.' },
-  { key: 'max_concurrent_epic_supervisors', placeholder: '4', help: 'Supervisor limit, separate from worker slots. Requires a daemon restart.' },
+  { key: 'max_concurrent_agents', placeholder: '3', help: 'Limit for starting new worker tmux sessions. Running workers keep their slots after a decrease. Epic supervisors use separate slots.' },
+  { key: 'max_concurrent_epic_supervisors', placeholder: '4', help: 'Supervisor limit, separate from worker slots. Applies to the next admission; running supervisors keep their slots.' },
   { key: 'instance_name', placeholder: "this machine's hostname", help: 'Identifies this daemon when several share one tickets_dir.' },
 ];
 
@@ -300,6 +300,7 @@ export function kontoraSettings() {
     _settingsDoc: null,
     _settingsRawText: '',
     _settingsYAML: null,
+    _settingsRefreshSeq: 0,
 
     settingsPerAgentControl: SETTINGS_PER_AGENT_CONTROL,
     settingsSections: SETTINGS_SECTIONS,
@@ -318,28 +319,52 @@ export function kontoraSettings() {
 
     async openSettings() {
       this.currentView = 'settings';
-      if (this.settingsConfig || this.settingsLoading) return;
+      if (this.settingsLoading || (this.settingsConfig && !this.settingsLoadError)) return;
+      await this._settingsRefreshForm(true);
+    },
+
+    async _settingsRefreshForm(initial = false) {
+      const seq = ++this._settingsRefreshSeq;
+      if ((!initial && !this.settingsConfig && !this.settingsLoading) ||
+          this.settingsDirty() || this._settingsHasDrafts() || this.settingsSaving) {
+        this.settingsLoading = false;
+        return;
+      }
+      const config = this.settingsConfig;
+      // A newer read, a save, or a discard makes this response stale. Edits can
+      // also start while fetch, json, or the YAML module is still loading.
+      const canApply = () => seq === this._settingsRefreshSeq &&
+        this.settingsConfig === config && !this.settingsDirty() && !this._settingsHasDrafts() && !this.settingsSaving;
       this.settingsLoading = true;
       this.settingsLoadError = '';
       try {
         const res = await fetch('/api/config/raw');
+        if (!canApply()) return;
         if (res.status === 401) { this.needsAuth = true; this.settingsState = 'auth'; return; }
         if (res.status === 501) { this.settingsState = 'unavailable'; return; }
         if (!res.ok) throw new Error('HTTP ' + res.status);
         const data = await res.json();
-        await this._settingsParse(data.content || '');
+        if (!canApply()) return;
+        const text = data.content || '';
+        if (config && text === this._settingsRawText) {
+          this.settingsState = 'ok';
+          return;
+        }
+        await this._settingsParse(text, canApply);
       } catch (e) {
-        this.settingsState = 'parse-error';
+        if (!canApply()) return;
+        this.settingsState = config ? 'ok' : 'parse-error';
         this.settingsLoadError = e.message || String(e);
       } finally {
-        this.settingsLoading = false;
+        if (seq === this._settingsRefreshSeq) this.settingsLoading = false;
       }
     },
 
     // Parse the raw file into a Document and derive the form model from it.
     // Split out from openSettings so a test can drive it with fixture text.
-    async _settingsParse(text) {
+    async _settingsParse(text, canApply = () => true) {
       const yaml = await this._settingsLoadYAML();
+      if (!canApply()) return;
       const doc = yaml.parseDocument(text);
       if (doc.errors && doc.errors.length) throw new Error(doc.errors[0].message);
       this._settingsDoc = doc;
@@ -358,6 +383,12 @@ export function kontoraSettings() {
     async _settingsLoadYAML() {
       if (!this._settingsYAML) this._settingsYAML = await import('/vendor/yaml@2.8.1/yaml.mjs');
       return this._settingsYAML;
+    },
+
+    _settingsHasDrafts() {
+      return [this.settingsNewStage, this.settingsNewEnvKey, this.settingsNewStatus,
+        this.settingsNewChannelName, ...Object.values(this.settingsNewHeaderKey),
+        ...Object.values(this.settingsNewPerAgentKey)].some(value => !!value);
     },
 
     // ---- dirty state and diff ---------------------------------------------
@@ -548,11 +579,8 @@ export function kontoraSettings() {
       return settingsAgentKind(this.settingsConfig?.agents?.[name]);
     },
 
-    // The whole notifications block is pinned by prefix rather than by name:
-    // reload.go keeps the running one wholesale, and a channel path carries a
-    // name no list could hold.
     settingsIsRestartOnly(path) {
-      return SETTINGS_RESTART_ONLY.includes(path) || path === 'notifications' || path.startsWith('notifications.');
+      return SETTINGS_RESTART_ONLY.includes(path);
     },
 
     // ---- saving ------------------------------------------------------------
@@ -961,15 +989,15 @@ export function kontoraSettings() {
     },
 
     // The advisory box, in the shape the web section uses. Both halves are
-    // facts about this daemon: reload.go pins the whole block, and the channel
-    // names the ticket picker offers come from the running config.
+    // facts about this daemon: the channel names the ticket picker offers
+    // come from the running config.
     settingsNotifAdvisory() {
       const n = this.settingsConfig?.notifications;
       if (!n) return '';
-      const restart = 'Notifications are read once, at startup. A reload keeps the running channels and logs a warning, so nothing here takes effect — and no channel added here is offered on a ticket — until the daemon restarts.';
-      if (!n.enabled) return `Delivery is off: nothing is sent, whatever a ticket asks for. ${restart}`;
-      if (!this.settingsNotifChannelNames().length) return `No channels, so nothing can be delivered. ${restart}`;
-      return restart;
+      const reload = 'Save & reload applies notification changes without a restart. A new or changed channel whose secret cannot be read is skipped; check the daemon log. Unchanged channel definitions keep their running credentials.';
+      if (!n.enabled) return `Delivery is off: nothing is sent, whatever a ticket asks for. ${reload}`;
+      if (!this.settingsNotifChannelNames().length) return `No channels, so nothing can be delivered. ${reload}`;
+      return reload;
     },
 
     // Splice a template token into the prompt at the caret, then put the caret

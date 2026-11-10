@@ -27,14 +27,20 @@ const webDirEnv = "KONTORA_WEB_DIR"
 
 func devWebDir() string { return os.Getenv(webDirEnv) }
 
-// uiBundle returns the compiled web UI as one script.
+// uiBuild is the compiled web UI: one script and the sourcemap it links to.
+type uiBuild struct {
+	js        []byte
+	sourceMap []byte
+}
+
+// uiBundle returns the compiled web UI.
 //
 // The dev path reads $DIR/internal/web/ui and nothing else: falling back to
 // the embedded copy per file would resurrect a module deleted from the working
 // tree. Its error names the variable and the directory, because every way of
 // pointing it somewhere wrong ends in the same esbuild message about a missing
 // entry point.
-func uiBundle() ([]byte, error) {
+func uiBundle() (uiBuild, error) {
 	dir := devWebDir()
 	if dir == "" {
 		return embeddedUIBundle()
@@ -42,17 +48,17 @@ func uiBundle() ([]byte, error) {
 	src := filepath.Join(dir, "internal", "web", "ui")
 	bundle, err := buildUIBundle(os.DirFS(src))
 	if err != nil {
-		return nil, fmt.Errorf("%s=%s: building the web UI from %s: %w", webDirEnv, dir, src, err)
+		return uiBuild{}, fmt.Errorf("%s=%s: building the web UI from %s: %w", webDirEnv, dir, src, err)
 	}
 	return bundle, nil
 }
 
 // embeddedUIBundle compiles the sources baked into the binary. They cannot
 // change while the process runs, so the result is built once and kept.
-var embeddedUIBundle = sync.OnceValues(func() ([]byte, error) {
+var embeddedUIBundle = sync.OnceValues(func() (uiBuild, error) {
 	sources, err := fs.Sub(uiFS, "ui")
 	if err != nil {
-		return nil, err
+		return uiBuild{}, err
 	}
 	return buildUIBundle(sources)
 })
@@ -64,30 +70,43 @@ var embeddedUIBundle = sync.OnceValues(func() ([]byte, error) {
 // warning, and that is the defect a component split across a dozen mixin
 // literals invites: the later definition silently wins and the method it
 // replaced is simply gone.
-func buildUIBundle(sources fs.FS) ([]byte, error) {
+func buildUIBundle(sources fs.FS) (uiBuild, error) {
 	result := api.Build(api.BuildOptions{
 		EntryPoints: []string{uiEntry},
-		Bundle:      true,
+		// Names the outputs, so the script links its map as uiSourceMapAsset.
+		Outfile: uiBundleAsset,
+		Bundle:  true,
 		// index.html loads /app.js as a plain non-deferred tag while Alpine is
 		// defer, so the bundle has to run first. A module is implicitly
 		// deferred and would run after Alpine started.
 		Format: api.FormatIIFE,
 		Target: api.ES2022,
 		// A browser stack trace otherwise points into a generated file that
-		// exists nowhere on disk. Inline keeps it same-origin, so the CSP in
-		// origin.go needs nothing added.
-		Sourcemap: api.SourceMapInline,
+		// exists nowhere on disk. Linked, not inline: the map is twice the size
+		// of the script, and a browser fetches a linked map only while DevTools
+		// is open.
+		Sourcemap: api.SourceMapLinked,
 		Plugins:   []api.Plugin{uiPlugin(sources)},
 		Write:     false,
 		LogLevel:  api.LogLevelSilent,
 	})
 	if msgs := buildMessages(result); msgs != "" {
-		return nil, errors.New(msgs)
+		return uiBuild{}, errors.New(msgs)
 	}
-	if len(result.OutputFiles) != 1 {
-		return nil, fmt.Errorf("web UI bundle: esbuild produced %d output files, want 1", len(result.OutputFiles))
+	var out uiBuild
+	for _, f := range result.OutputFiles {
+		switch path.Base(filepath.ToSlash(f.Path)) {
+		case uiBundleAsset:
+			out.js = f.Contents
+		case uiSourceMapAsset:
+			out.sourceMap = f.Contents
+		}
 	}
-	return result.OutputFiles[0].Contents, nil
+	if len(result.OutputFiles) != 2 || out.js == nil || out.sourceMap == nil {
+		return uiBuild{}, fmt.Errorf("web UI bundle: esbuild produced %d output files, want %s and %s",
+			len(result.OutputFiles), uiBundleAsset, uiSourceMapAsset)
+	}
+	return out, nil
 }
 
 // buildMessages formats everything esbuild complained about, or returns "" when

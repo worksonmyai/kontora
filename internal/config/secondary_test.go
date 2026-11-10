@@ -41,7 +41,7 @@ func TestSecondarySourcesDefaultsAndYAML(t *testing.T) {
 	assert.ErrorIs(t, err, os.ErrNotExist)
 }
 
-func TestSecondarySourcesRejectAliases(t *testing.T) {
+func TestSecondarySourcesAliases(t *testing.T) {
 	root := t.TempDir()
 	t.Chdir(root)
 	t.Setenv("HOME", root)
@@ -64,24 +64,36 @@ func TestSecondarySourcesRejectAliases(t *testing.T) {
 		secondary []string
 		want      string
 	}{
-		{"primary exact", primary, []string{primary}, "aliases tickets_dir"},
-		{"primary relative", primary, []string{"./primary"}, "aliases tickets_dir"},
-		{"primary tilde", primary, []string{"~/primary"}, "aliases tickets_dir"},
-		{"primary symlink", primary, []string{primaryLink}, "aliases tickets_dir"},
-		{"primary is symlink", primaryLink, []string{primary}, "aliases tickets_dir"},
+		{"primary exact", primary, []string{primary}, ""},
+		{"primary relative", primary, []string{"./primary"}, ""},
+		{"primary tilde", primary, []string{"~/primary"}, ""},
+		{"primary symlink", primary, []string{primaryLink}, ""},
+		{"primary is symlink", primaryLink, []string{primary}, ""},
+		{"repeated primary", primary, []string{primary, "./primary", primaryLink}, ""},
 		{"secondary exact", primary, []string{secondary, secondary}, "aliases secondary_tickets_dirs[0]"},
 		{"secondary symlink", primary, []string{secondary, secondaryLink}, "aliases secondary_tickets_dirs[0]"},
-		{"missing primary", missing, []string{missing}, "aliases tickets_dir"},
+		{"missing primary", missing, []string{missing, missingLink}, ""},
 		{"missing secondary", primary, []string{missing, "./missing"}, "aliases secondary_tickets_dirs[0]"},
 		{"missing symlink", primary, []string{missing, missingLink}, "aliases secondary_tickets_dirs[0]"},
 		{"missing symlink child", primary, []string{missing + "/child", missingLink + "/child"}, "aliases secondary_tickets_dirs[0]"},
-		{"empty entry", primary, []string{""}, "directory path is empty"},
+		{"empty entry", primary, []string{""}, "secondary_tickets_dirs[0]: directory path is empty"},
+		{"duplicate after primary", primary, []string{primary, secondary, primaryLink, secondaryLink}, "secondary_tickets_dirs[3]: \"" + secondaryLink + "\" aliases secondary_tickets_dirs[1]"},
+		{"empty after primary", primary, []string{primary, secondary, ""}, "secondary_tickets_dirs[2]: directory path is empty"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := &Config{TicketsDir: tc.primary, SecondaryTicketsDirs: tc.secondary}
 			sources, err := cfg.SecondarySources()
-			require.ErrorContains(t, err, tc.want)
-			assert.Nil(t, sources, "invalid lists must not return partial sources")
+			if tc.want == "" {
+				require.NoError(t, err)
+				assert.Empty(t, sources)
+				if tc.primary == missing {
+					_, err = os.Stat(missing)
+					assert.ErrorIs(t, err, os.ErrNotExist)
+				}
+			} else {
+				require.ErrorContains(t, err, tc.want)
+				assert.Nil(t, sources, "invalid lists must not return partial sources")
+			}
 		})
 	}
 }
@@ -100,12 +112,13 @@ func TestSecondarySourcesStableIdentities(t *testing.T) {
 
 	var first TicketSource
 	for _, path := range []string{secondary, "secondary", "~/secondary", link, link + "/../secondary"} {
-		cfg := &Config{TicketsDir: primary, SecondaryTicketsDirs: []string{path}}
+		paths := []string{primary, path, primary}
+		cfg := &Config{TicketsDir: primary, SecondaryTicketsDirs: append([]string(nil), paths...)}
 		sources, err := cfg.SecondarySources()
 		require.NoError(t, err)
 		require.Len(t, sources, 1)
 		assert.Equal(t, physical, sources[0].Path)
-		assert.Equal(t, []string{path}, cfg.SecondaryTicketsDirs, "resolution must not rewrite YAML paths")
+		assert.Equal(t, paths, cfg.SecondaryTicketsDirs, "resolution must not rewrite YAML paths")
 		if first.ID == "" {
 			first = sources[0]
 		} else {
@@ -119,11 +132,16 @@ func TestSecondarySourcesStableIdentities(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, sources, 2)
 	assert.NotEqual(t, sources[0].ID, sources[1].ID)
-	cfg.SecondaryTicketsDirs = []string{other, secondary}
+	assert.Equal(t, first, sources[0], "filtering must not change retained source IDs")
+	paths := []string{primary, other, primary, secondary, primary}
+	cfg.SecondaryTicketsDirs = append([]string(nil), paths...)
 	reordered, err := cfg.SecondarySources()
 	require.NoError(t, err)
+	require.Len(t, reordered, 2)
 	assert.Equal(t, sources[0], reordered[1])
 	assert.Equal(t, sources[1], reordered[0])
+	assert.Equal(t, paths, cfg.SecondaryTicketsDirs)
+	assert.Equal(t, primary, cfg.TicketsDir)
 }
 
 func TestSecondarySourcesUnavailable(t *testing.T) {
@@ -135,7 +153,7 @@ func TestSecondarySourcesUnavailable(t *testing.T) {
 	missing := filepath.Join(link, "missing", "nested")
 	file := filepath.Join(root, "regular-file")
 	require.NoError(t, os.WriteFile(file, []byte("unchanged"), 0o644))
-	cfg := &Config{TicketsDir: filepath.Join(root, "missing-primary"), SecondaryTicketsDirs: []string{missing, file}}
+	cfg := &Config{TicketsDir: filepath.Join(root, "missing-primary"), SecondaryTicketsDirs: []string{filepath.Join(root, "missing-primary"), missing, file}}
 	sources, err := cfg.SecondarySources()
 	require.NoError(t, err)
 	require.Len(t, sources, 2)
@@ -188,19 +206,28 @@ func TestSecondarySourcesAfterPrimaryOverrides(t *testing.T) {
 				require.NoError(t, err, "loading must defer alias validation until after overrides")
 				t.Setenv(env, envPrimary)
 				assert.Equal(t, env, cfg.ApplyEnvOverrides())
-				_, err = cfg.SecondarySources()
+				sources, err := cfg.SecondarySources()
+				require.NoError(t, err)
 				if initiallyAliases {
-					require.NoError(t, err, "the environment removed the alias")
+					require.Len(t, sources, 1, "the environment removed the alias")
+					identity, err := DirectoryIdentity(secondary)
+					require.NoError(t, err)
+					assert.Equal(t, identity, sources[0].Path)
 				} else {
-					require.ErrorContains(t, err, "aliases tickets_dir")
+					assert.Empty(t, sources, "the displaced primary must not become a secondary")
 				}
 
 				cfg.SetTicketsDir(secondary)
-				_, err = cfg.SecondarySources()
-				require.ErrorContains(t, err, "aliases tickets_dir", "the command-line override wins")
+				sources, err = cfg.SecondarySources()
+				require.NoError(t, err, "the command-line override wins")
+				assert.Empty(t, sources)
 				cfg.SetTicketsDir(primary)
-				_, err = cfg.SecondarySources()
+				sources, err = cfg.SecondarySources()
 				require.NoError(t, err)
+				require.Len(t, sources, 1)
+				identity, err := DirectoryIdentity(secondary)
+				require.NoError(t, err)
+				assert.Equal(t, identity, sources[0].Path)
 			})
 		}
 	}
@@ -212,11 +239,16 @@ func TestSecondarySourcesPrimaryEnvironmentPrecedence(t *testing.T) {
 	t.Setenv(LegacyTicketsDirEnvVar, secondary)
 	t.Setenv(TicketsDirEnvVar, primary)
 	assert.Equal(t, TicketsDirEnvVar, cfg.ApplyEnvOverrides())
-	_, err := cfg.SecondarySources()
+	sources, err := cfg.SecondarySources()
 	require.NoError(t, err, "KONTORA_TICKETS_DIR must beat TICKETS_DIR")
+	require.Len(t, sources, 1)
+	identity, err := DirectoryIdentity(secondary)
+	require.NoError(t, err)
+	assert.Equal(t, identity, sources[0].Path)
 	cfg.SetTicketsDir(secondary)
-	_, err = cfg.SecondarySources()
-	require.ErrorContains(t, err, "aliases tickets_dir", "the flag must beat both environment variables")
+	sources, err = cfg.SecondarySources()
+	require.NoError(t, err, "the flag must beat both environment variables")
+	assert.Empty(t, sources)
 }
 
 func TestSecondarySourcesSymlinkParentTraversal(t *testing.T) {
@@ -227,8 +259,9 @@ func TestSecondarySourcesSymlinkParentTraversal(t *testing.T) {
 	require.NoError(t, os.Symlink(child, link))
 	primary := filepath.Join(root, "real")
 	cfg := &Config{TicketsDir: primary, SecondaryTicketsDirs: []string{link + "/.."}}
-	_, err := cfg.SecondarySources()
-	require.ErrorContains(t, err, "aliases tickets_dir")
+	sources, err := cfg.SecondarySources()
+	require.NoError(t, err)
+	assert.Empty(t, sources)
 
 	cfg.SecondaryTicketsDirs = []string{link + "/../missing", filepath.Join(primary, "missing")}
 	_, err = cfg.SecondarySources()

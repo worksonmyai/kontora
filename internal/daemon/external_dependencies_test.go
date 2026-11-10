@@ -33,7 +33,7 @@ func TestSecondaryDependencyResolution(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t)
 			dir := t.TempDir()
-			h.cfg.SecondaryTicketsDirs = []string{dir}
+			h.cfg.SecondaryTicketsDirs = []string{h.tasksDir, dir, h.tasksDir}
 			h.writeTicket("dep-a.md", h.depTaskMD("dep-a", "todo", "2026-01-02T00:00:00Z", "dep-b"))
 			if tc.primaryStatus != "" {
 				h.writeTicket("dep-b.md", h.depTaskMD("dep-b", tc.primaryStatus, "2026-01-01T00:00:00Z"))
@@ -102,7 +102,7 @@ func TestSecondaryDependencyRefresh(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t)
 			dir := t.TempDir()
-			h.cfg.SecondaryTicketsDirs = []string{dir}
+			h.cfg.SecondaryTicketsDirs = []string{h.tasksDir, dir, h.tasksDir}
 			h.writeTicket("dep-a.md", h.depTaskMD("dep-a", "todo", "2026-01-02T00:00:00Z", "dep-b"))
 			path := filepath.Join(dir, "dep-b.md")
 			write := func(status string) {
@@ -113,8 +113,12 @@ func TestSecondaryDependencyRefresh(t *testing.T) {
 			sources, err := h.cfg.SecondarySources()
 			require.NoError(t, err)
 			source := sources[0].ID
-			d.secondary = map[string]*secondaryCatalog{source: {source: web.TicketSourceInfo{ID: source, Path: dir}}}
-			d.refreshSecondary(source, dir)
+			catalog := &secondaryCatalog{source: web.TicketSourceInfo{ID: source, Path: dir}}
+			catalog.observer.observe = func() (map[string]web.TicketInfo, error) {
+				return d.observeAndPublishSecondary(source, dir)
+			}
+			d.secondary = map[string]*secondaryCatalog{source: catalog}
+			d.refreshSecondary(source)
 			require.NoError(t, d.initialScan(h.tasksDir))
 			if tc.remove {
 				require.NoError(t, os.Remove(path))
@@ -124,7 +128,7 @@ func TestSecondaryDependencyRefresh(t *testing.T) {
 			if tc.unavailable {
 				d.setSecondaryUnavailable(source, errors.New("source offline"))
 			} else {
-				d.refreshSecondary(source, dir)
+				d.refreshSecondary(source)
 			}
 			info, err := d.GetTicket("dep-a")
 			require.NoError(t, err)
@@ -141,7 +145,7 @@ func TestSecondaryDependencyRefresh(t *testing.T) {
 func TestSecondaryDependencyWatcherStartsPrimaryOnly(t *testing.T) {
 	h := newHarness(t)
 	dir := t.TempDir()
-	h.cfg.SecondaryTicketsDirs = []string{dir}
+	h.cfg.SecondaryTicketsDirs = []string{h.tasksDir, dir, h.tasksDir}
 	h.writeTicket("dep-a.md", h.depTaskMD("dep-a", "todo", "2026-01-02T00:00:00Z", "dep-b"))
 	path := filepath.Join(dir, "dep-b.md")
 	require.NoError(t, os.WriteFile(path, []byte(h.depTaskMD("dep-b", "open", "2026-01-01T00:00:00Z")), 0o644))
@@ -188,7 +192,7 @@ func TestExecutionClaimRechecksSecondaryDependency(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t)
 			dir := t.TempDir()
-			h.cfg.SecondaryTicketsDirs = []string{dir}
+			h.cfg.SecondaryTicketsDirs = []string{h.tasksDir, dir, h.tasksDir}
 			h.writeTicket("dep-a.md", h.depTaskMD("dep-a", "todo", "2026-01-02T00:00:00Z", "dep-b"))
 			path := filepath.Join(dir, "dep-b.md")
 			require.NoError(t, os.WriteFile(path, []byte(h.depTaskMD("dep-b", "done", "2026-01-01T00:00:00Z")), 0o644))
@@ -196,8 +200,12 @@ func TestExecutionClaimRechecksSecondaryDependency(t *testing.T) {
 			sources, err := h.cfg.SecondarySources()
 			require.NoError(t, err)
 			source := sources[0].ID
-			d.secondary = map[string]*secondaryCatalog{source: {source: web.TicketSourceInfo{ID: source, Path: dir}}}
-			d.refreshSecondary(source, dir)
+			catalog := &secondaryCatalog{source: web.TicketSourceInfo{ID: source, Path: dir}}
+			catalog.observer.observe = func() (map[string]web.TicketInfo, error) {
+				return d.observeAndPublishSecondary(source, dir)
+			}
+			d.secondary = map[string]*secondaryCatalog{source: catalog}
+			d.refreshSecondary(source)
 			require.NoError(t, d.initialScan(h.tasksDir))
 			require.Equal(t, []string{"dep-a"}, d.queuedIDs())
 			if tc.remove {

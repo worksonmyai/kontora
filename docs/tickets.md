@@ -286,6 +286,10 @@ Three things that would otherwise make a ticket quiet with no explanation are wa
 
 Both fields are editable from the dashboard. The start-ticket modal uses `notify me`; the details rail uses `notify`. The row has three presets: off, when it needs me (`[paused, human_review, waiting]`), and when it is finished (`[human_review, done]`). The full status set is behind `custom`.
 
+The start-ticket modal disables notification controls while configuration loads. With no configured channels, only off is available. Add a channel under [`notifications.channels`](configuration.md#notifications), then restart the daemon to enable the other controls. The modal links to these instructions in a separate tab, so the draft stays open. You can start with notifications off without configuring a channel.
+
+Opening the modal preserves existing preferences. Choosing off with no configured channels clears both notification fields, including references to removed channels. When channels are configured, off keeps the ticket's channel choices.
+
 The row states one inherited channel instead of asking for it. If no inherited route exists, the channel picker appears. The dashboard refuses to save or start until the ticket has a route, is silenced, or turns notifications off. The rail row opens only where the API accepts a frontmatter edit. A running ticket shows its setting but cannot change it because the agent owns the file.
 
 The API takes them too: `notify` and `notify_channels` on `POST /api/tickets/{id}/init` and `PUT /api/tickets/{id}`. An absent key leaves the ticket's own field alone and `[]` removes it. Unlike a hand edit, a request naming a status nothing reaches or a channel nothing answers to is refused with a 400 rather than warned about.

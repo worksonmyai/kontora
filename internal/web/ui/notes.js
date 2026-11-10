@@ -318,8 +318,9 @@ export function kontoraNotes() {
         this._selectedTicketUpdateSeq++;
       }
       var entries = this.isSecondary(full) ? this.secondaryTickets : this.tickets;
-      var idx = entries.findIndex(x => this.ticketKey(x) === id);
+      var idx = this.isSecondary(full) ? this.secondarySlot(full) : entries.findIndex(x => this.ticketKey(x) === id);
       if (idx >= 0 && !stale) {
+        this._touchTicket(full);
         entries[idx] = this.boardEntry(full);
         this.recomputeBoard();
       }

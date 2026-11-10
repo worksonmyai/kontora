@@ -743,7 +743,7 @@ func (d *Daemon) ListArchivedTickets() []web.ArchivedTicketInfo {
 			Pipeline: t.Pipeline,
 			// The agent is resolved, not read: a ticket with no agent field
 			// takes its pipeline step's, or the configured default.
-			Agent:       app.BuildView(cfg, t, false).Agent,
+			Agent:       app.ResolveViewAgent(cfg, t),
 			Branch:      t.Branch,
 			Path:        t.Path,
 			Status:      string(t.ArchivedFrom),
@@ -1583,6 +1583,26 @@ func (d *Daemon) GetRawConfig() (string, error) {
 func (d *Daemon) PutRawConfig(content string) error {
 	d.configMutationMu.Lock()
 	defer d.configMutationMu.Unlock()
+	if d.configPath == "" {
+		return web.ErrConfigPathNotSet
+	}
+	if _, err := os.Lstat(d.configPath); os.IsNotExist(err) {
+		if _, err := config.LoadReader(strings.NewReader(content)); err != nil {
+			return fmt.Errorf("%w: %s", web.ErrInvalidConfig, err)
+		}
+		if err := rejectExtraYAML([]byte(content)); err != nil {
+			return fmt.Errorf("%w: %s", web.ErrInvalidConfig, err)
+		}
+		if err := durableConfigWrite(d.configPath, []byte(content), 0o644); err != nil {
+			return err
+		}
+		if err := d.reloadConfig(); err != nil {
+			return fmt.Errorf("config saved but reload failed: %w", err)
+		}
+		return nil
+	} else if err != nil {
+		return err
+	}
 	return d.replaceConfig(content, nil)
 }
 

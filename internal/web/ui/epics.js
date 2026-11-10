@@ -1,3 +1,5 @@
+import { resourceOwner, mountSortableResource } from './board.js';
+
 // Epics: the rail section, the roll-up derivation behind it and the board card
 // spine, and the epic page.
 //
@@ -665,10 +667,39 @@ export function kontoraEpics() {
     //
     // The animation is left on: a group is at most the epic's children, which
     // is far below the board's ANIM_THRESHOLD of 25 in any epic worth grouping.
+    epicSortableOwner() {
+      return resourceOwner(function () {
+        return this.epicInitSortable(this.$el);
+      });
+    },
+
+    // Restore Sortable's moved rows to Alpine's current keyed order, not a pre-SSE snapshot.
+    // The template fields belong to shipped Alpine 3.14.8.
+    _epicRestoreRows() {
+      function restore() {
+        document.querySelectorAll('[data-epic-group]').forEach(function (list) {
+          var template = list.querySelector('template');
+          if (!template || !template._x_lookup || !template._x_prevKeys) return;
+          var rows = template._x_prevKeys.map((key) => template._x_lookup[key]).filter(Boolean);
+          var at = template;
+          rows.forEach(function (row) {
+            if (at.nextElementSibling !== row) list.insertBefore(row, at.nextElementSibling);
+            at = row;
+          });
+          // A removed source group can have left a foreign row in this list.
+          Array.from(list.children).forEach(function (row) {
+            if (row.matches('.epic-row:not(.epic-row-add)') && rows.indexOf(row) < 0) row.remove();
+          });
+        });
+      }
+      if (typeof Alpine !== 'undefined') Alpine.mutateDom(restore);
+      else restore();
+    },
+
     epicInitSortable(el) {
       if (this.isMobile) return;
       var self = this;
-      new Sortable(el, {
+      return mountSortableResource(el, {
         group: 'epic-children',
         animation: 150,
         handle: '.epic-row-handle',
@@ -682,12 +713,17 @@ export function kontoraEpics() {
           if (!childID) return;
           var from = evt.from.dataset.epicGroup;
           var to = evt.to.dataset.epicGroup;
+          var order = from === to ? self._epicOrderAfterDrop() : null;
+          self._epicRestoreRows();
           if (from !== to) {
             await self.moveTask(childID, self._epicDropStatus(to));
             return;
           }
-          await self.epicSaveOrder(self._epicOrderAfterDrop());
+          await self.epicSaveOrder(order);
         },
+      }, function () {
+        self.epicDragging = false;
+        self._epicRestoreRows();
       });
     },
 

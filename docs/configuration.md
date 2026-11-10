@@ -79,9 +79,13 @@ match supplies its status; duplicate secondary IDs remain unresolved. The daemon
 runs, recovers, schedules, or derives epic statuses in a secondary folder.
 
 Paths support `~`. Kontora resolves directory aliases after primary environment and
-command-line overrides. A secondary folder cannot alias primary or another secondary
-folder. Discovery is nonrecursive. Missing or unreadable secondary folders appear as
-unavailable without stopping primary execution; Kontora does not create them.
+command-line overrides. Entries matching the selected primary folder are ignored.
+Selecting a configured secondary as primary gives it normal primary execution behavior.
+Kontora does not automatically add the previous primary folder to the secondary list.
+Aliases among the remaining secondary folders are rejected.
+
+Discovery is nonrecursive. Missing or unreadable secondary folders appear as unavailable
+without stopping primary execution; Kontora does not create them.
 
 Secondary folders need filesystem write access for edits and Claim. Existing managed
 board protections still apply. Settings exposes the list, but changing it requires a
@@ -246,7 +250,7 @@ pipelines:
 | Field | Required | Default | Description |
 |-------|----------|---------|-------------|
 | `tickets_dir` | no | `~/.kontora/tickets` | Directory containing ticket markdown files. Overridden by `$TICKETS_DIR`, then `$KONTORA_TICKETS_DIR`, then `--tickets-dir`: for this one field the environment beats the file (see [environment variables](cli.md#environment-variables)). |
-| `secondary_tickets_dirs` | no | `[]` | Additional folders for browsing and non-lifecycle editing. Requires restart. See [secondary folders](#secondary-ticket-folders). |
+| `secondary_tickets_dirs` | no | `[]` | Additional folders for browsing and non-lifecycle editing. Entries matching the selected primary folder are ignored. Requires restart. See [secondary folders](#secondary-ticket-folders). |
 | `branch_prefix` | no | `kontora` | Git branch prefix. A project can override it (see [projects](#projects)). |
 | `branch_naming` | no | `mode: slug` | How the daemon names a ticket with an empty `branch` field (see [branch naming](#branch-naming)). |
 | `worktrees_dir` | no | `~/.kontora/worktrees` | Where git worktrees are created. |
@@ -255,8 +259,8 @@ pipelines:
 | `pager` | no | none | Pager for `kontora view`, `logs` and `activity`, split on whitespace. Used only when stdout is a terminal. `$KONTORA_PAGER`, `$TICKET_PAGER` and `$PAGER` all outrank it, and it has no effect in remote mode, which reads no config. |
 | `default_agent` | no | (inferred) | Agent used for tickets without a pipeline. Defaults to `claude` if an agent with that name exists, otherwise inferred when there is exactly one agent. Must be set explicitly when multiple agents are defined and none is named `claude`. |
 | `default_pipeline` | no | — | Pipeline a new ticket takes when neither the command line nor a matching project names one (see [projects](#projects)). Unset, such a ticket runs one agent on its description instead. Must name a configured pipeline. |
-| `max_concurrent_agents` | no | `3` | Maximum simultaneous worker runs. Epic supervisors use a separate pool. |
-| `max_concurrent_epic_supervisors` | no | `4` | Maximum simultaneous epic supervisors, in addition to worker capacity. Zero or omission uses `4`; negative values are rejected. Requires a daemon restart. |
+| `max_concurrent_agents` | no | `3` | Maximum simultaneous worker runs. Epic supervisors use a separate pool. Negative values are rejected. Reload changes the limit without stopping running agents. |
+| `max_concurrent_epic_supervisors` | no | `4` | Maximum simultaneous epic supervisors, in addition to worker capacity. Zero or omission uses `4`; negative values are rejected. Reload changes the limit without stopping running supervisors. |
 | `instance_name` | no | `os.Hostname()` | Identifies this daemon when several run against one synced `tickets_dir`. Written to a ticket's `claimed_by` on pickup so daemons don't steal or kill each other's work (see [multi-machine tickets](tickets.md#running-on-multiple-machines)). Falls back to `default` if the hostname can't be read. Two machines that share a hostname must set this explicitly, or the protection can't tell them apart. |
 | `author` | no | the OS user | The name a note written by a person is signed with: the web composer's, and a bare `kontora note`. An agent's own note is signed with `$KONTORA_AGENT` instead, and Kontora's own with `kontora` (see [notes](tickets.md#notes)). Cannot contain `·`, a newline or `**`. |
 | `tmux_session` | no | `kontora` | The tmux session the daemon puts agent windows in. Allowed characters are `A-Z a-z 0-9 _ -`, 1 to 64 of them, and the name cannot start with `-`. Set a distinct value per daemon when you run more than one on a machine: startup cleanup, `kontora attach`, the TUI, and the web terminal are all scoped to this session, and two daemons sharing it can also signal each other's agents through the tmux `wait-for` channel when their ticket IDs collide. |
@@ -926,7 +930,7 @@ plannotator:
 |-------|----------|---------|-------------|
 | `binary` | no | `plannotator` | The binary to spawn. Resolved on the daemon's `PATH`, or used as-is when absolute. |
 | `timeout` | no | `30m` | How long a session may stay open before it is cancelled. |
-| `reviews_dir` | no | `~/.kontora/plannotator-reviews` | Where captured feedback waits for the agent that consumes it. |
+| `reviews_dir` | no | `~/.kontora/plannotator-reviews` | Where captured feedback waits for the agent that consumes it. Requires a daemon restart. |
 
 Only one Plannotator process runs per ticket, so a review and an annotation
 cannot overlap. While a session is open the scheduler leaves the ticket alone,
@@ -1201,8 +1205,15 @@ health. Kontora preserves the existing file and refuses read-state updates it
 cannot save. Ordinary task execution and notifications continue.
 
 The `assistant` block reloads live. Disabling the companion stops observation
-and prevents new companion requests, but retains stored data. A requested turn
-already running remains stoppable through the existing Stop action.
+and prevents new companion requests. The dashboard hides Kotik's controls,
+Inbox and saved companion conversations, including any selected transcript and
+evidence. It does not restore a remembered companion conversation while observation
+is disabled. Ordinary Chat and History navigation remain available.
+
+Companion settings remain available, and Kontora keeps the stored data.
+Re-enable observation in Assistant settings to show the inbox and saved companion
+conversations again.
+A requested turn already running remains stoppable through the existing Stop action.
 
 Kotik is not a complete audit log. Polling and combined wake signals can miss
 short-lived transitions. Kotik cannot reconstruct every event while the daemon
@@ -1318,11 +1329,15 @@ full, or that is still queued when the daemon stops, is logged and dropped.
 Nothing is persisted and nothing is replayed, so this is not at-least-once
 delivery.
 
-`notifications` is read once at startup. A live reload keeps the running values
-and logs which field differs, because the channels and their credentials are
-built with the daemon. Restart it to pick up a change. `projects` does reload
-live, so a reload that adds a channel and points a project at it warns that the
-project has no channel this daemon can send to until it restarts.
+The whole `notifications` block reloads live. Deliveries that start after a reload
+use the updated channels, credentials, timeout, attempts and backoff. Removing a channel
+or disabling notifications drops its queued events. Enabling notifications keeps
+the tracked ticket statuses, so the next transition can be delivered without a restart.
+
+If a new or changed channel's secret cannot be read, the daemon skips that
+channel and logs a warning. The rest of the reload still applies. An unchanged
+channel keeps its running credential; editing only its secret file does not
+refresh that credential.
 
 ### The webhook payload
 
@@ -1480,11 +1495,21 @@ change a prompt or an agent's arguments while agents are working.
 
 `agents`, `stages`, `pipelines`, `projects`, `statuses`, `environment`,
 `auto_pick_up`, `default_agent`, `default_pipeline`, `branch_prefix`, `branch_naming`,
-`resume_prompt`, `annotation_prompt`, `summary_model`, `summary_effort`, and the
-whole `plannotator` and `assistant` blocks.
+`resume_prompt`, `annotation_prompt`, `summary_model`, `summary_effort`,
+`max_concurrent_agents`, `max_concurrent_epic_supervisors`, and the whole
+`notifications` and `assistant` blocks. The `plannotator` block reloads live
+except for `plannotator.reviews_dir`.
 
-A run reads the prompts and the `plannotator` block when it starts, so a reload
-changes the next run, never one already going.
+A run reads the prompts and the live `plannotator` fields when it starts.
+A reload changes the next run, never one already going.
+
+Concurrency limits apply to the next admission. Raising a limit lets queued
+work start. Lowering a limit does not stop running agents; new work waits until
+usage falls below the limit.
+
+Enabling `auto_pick_up` queues existing claimable `todo` tickets. Disabling it
+stops automatic starts, including tickets already queued. Explicit runs and
+pipeline continuations still start.
 
 Editing `projects`, including `epic_child_pipeline`, or `default_pipeline` reloads live.
 The new defaults affect later creation and initialization, without rewriting existing
@@ -1496,15 +1521,16 @@ daemon names an existing ticket whose branch is still empty.
 
 ### What needs a restart
 
-`tickets_dir`, `secondary_tickets_dirs`, `worktrees_dir`, `logs_dir`, `instance_name`, `tmux_session`,
-`max_concurrent_agents`, `max_concurrent_epic_supervisors`, and the whole `web` and `metrics` blocks
+`tickets_dir`, `secondary_tickets_dirs`, `worktrees_dir`, `logs_dir`, `instance_name`,
+`tmux_session`, `plannotator.reviews_dir`, and the whole `web` and `metrics` blocks
 (`metrics.enabled`, `metrics.endpoint`, `metrics.insecure`, `metrics.interval`,
-`metrics.headers`). The daemon reads these once at startup: the watched
-directory, the worktree root, the claim name, the tmux session, the semaphore
-size, the HTTP listener, and the metric exporter are all fixed by then. A
-reload keeps the running value and logs one warning per field that differs on
-disk, naming the field, the running value, and the value it ignored. The
-`web.token` and `metrics.headers` values are never logged.
+`metrics.headers`). These fields set directories, the claim name, the tmux session,
+the HTTP listener and the metric exporter at startup. Keeping `plannotator.reviews_dir`
+fixed lets running agents find pending review and annotation feedback.
+
+A reload keeps the running value and logs one warning per field that differs
+on disk. The warning names the field, the running value and the ignored value.
+The `web.token` and `metrics.headers` values are never logged.
 
 A reload resolves `tickets_dir` from the environment before that check, the same
 way startup does. So a daemon started with `$KONTORA_TICKETS_DIR` or
@@ -1536,15 +1562,20 @@ overrides it, and a restart with the same flag would too.
   symlink also reloads. Other files in the same directory (the daemon lock file,
   the `.kontora-config-*.tmp` files an atomic save creates and renames away)
   trigger nothing.
-- Save through `kontora config edit --url ...`. The daemon writes the file and
-  reloads it before the request returns.
+- Save through `kontora config edit --url ...` or the web Settings view.
+  The daemon writes the file and reloads it before the request returns.
+  If the config path is a symlink, the save writes to its target and keeps the link.
+
+After a reload, a Settings form with no unsaved edits shows the file's new
+content. A form with unsaved edits keeps those edits.
 
 ### Rules
 
-A reload is all-or-nothing. The daemon parses and validates the whole file
-before applying any of it: if anything fails, it logs the error and keeps
-running on the old config. Saving a half-written file mid-edit is harmless, and
-the next complete save reloads.
+The daemon parses and validates the whole file before applying any of it.
+If parsing or validation fails, it logs the error and keeps the old config.
+Saving a half-written file mid-edit is harmless; the next complete save reloads.
+A channel whose notification secret cannot be read is an exception: the daemon
+skips that channel and applies the rest of the config.
 
 **A running agent keeps the settings it started with.** The prompt, arguments,
 model, effort, timeout, and binary are fixed when the stage spawns. Editing a prompt

@@ -1,6 +1,6 @@
 // Attention is daemon-owned. Opening the inbox and refreshing it never starts a model turn.
 const COMPANION_HEADER = `
-<div class="companion-header">
+<div class="companion-header" x-show="companionEnabled()" x-cloak>
   <span class="companion-cat" :data-state="companionState()" aria-hidden="true"></span>
   <div class="companion-status">
     <span x-text="companionName()"></span>
@@ -9,12 +9,12 @@ const COMPANION_HEADER = `
   <span class="companion-count" x-text="companionCounts()"></span>
 </div>
 <nav class="companion-tabs" aria-label="Assistant views">
-  <button type="button" @click="companionOpenInbox()" :aria-pressed="assistantView === 'inbox'">Inbox</button>
-  <button type="button" @click="assistantView = 'thread'" :aria-pressed="assistantView === 'thread'" x-text="companionThread() ? companionName() + ' chat' : 'Chat'"></button>
-  <button type="button" @click="assistantView = 'history'; assistantLoadThreads()" :aria-pressed="assistantView === 'history'">History</button>
+  <button type="button" x-show="companionEnabled()" x-cloak @click="companionOpenInbox()" :aria-pressed="assistantView === 'inbox'">Inbox</button>
+  <button type="button" @click="assistantShowChat()" :aria-pressed="assistantView === 'thread'" x-text="companionEnabled() && companionThread() ? companionName() + ' chat' : 'Chat'"></button>
+  <button type="button" @click="assistantShowHistory()" :aria-pressed="assistantView === 'history'">History</button>
   <button type="button" x-show="companionThread() && assistantStreaming" @click="stopAssistantTurn()">Stop</button>
 </nav>
-<p class="companion-chat-hint companion-note" x-show="companionThread() && !companionSnapshot?.ai_available" x-text="companionSnapshot?.hint || 'Configure an assistant agent to ask for an explanation.'"></p>`;
+<p class="companion-chat-hint companion-note" x-show="companionEnabled() && companionThread() && !companionSnapshot?.ai_available" x-cloak x-text="companionSnapshot?.hint || 'Configure an assistant agent to ask for an explanation.'"></p>`;
 
 const COMPANION_INBOX = `
 <section class="companion-inbox" aria-label="Shared companion inbox">
@@ -55,7 +55,7 @@ const COMPANION_INBOX = `
 </section>`;
 
 const COMPANION_EVIDENCE = `
-<details class="companion-evidence" x-show="companionThread()">
+<details class="companion-evidence" x-show="companionEnabled() && companionThread()" x-cloak>
   <summary>Captured evidence <span x-show="companionEvidence().some(e => e.outdated)">(outdated)</span></summary>
   <p class="companion-note">Explanations describe captured records. They do not update current attention or change tickets.</p>
   <p x-show="!companionEvidence().length">Capture metadata is not available.</p>
@@ -84,6 +84,7 @@ export function kontoraCompanion() {
     companionTimer: null,
     companionFocus: null,
     companionFetchPending: false,
+    companionFetchPromise: null,
     companionFetchAgain: false,
     companionSeq: 0,
     companionDestroyed: false,
@@ -108,14 +109,19 @@ export function kontoraCompanion() {
 
     async companionRefresh() {
       if (this.companionDestroyed) return;
-      if (this.companionFetchPending) { this.companionFetchAgain = true; return; }
+      if (this.companionFetchPending) { this.companionFetchAgain = true; return this.companionFetchPromise; }
       this.companionFetchPending = true;
+      this.companionFetchPromise = this._companionFetchSnapshot();
+      return this.companionFetchPromise;
+    },
+
+    async _companionFetchSnapshot() {
       const seq = ++this.companionSeq;
       try {
         const res = await this._assistantFetch('/api/assistant/companion');
         const snapshot = await res.json();
         if (seq !== this.companionSeq) return;
-        this.companionSnapshot = snapshot;
+        this._companionAdoptSnapshot(snapshot);
         if (this.companionThread() && this.assistantOpen) {
           this._assistantETag = '';
           this._loadAssistantActivity();
@@ -135,6 +141,11 @@ export function kontoraCompanion() {
       }
     },
 
+    companionEnabled() { return Boolean(this.companionSnapshot?.enabled); },
+    _companionAdoptSnapshot(snapshot) {
+      this.companionSnapshot = snapshot;
+      if (!this.companionEnabled() && this.assistantView === 'inbox') this.assistantView = 'thread';
+    },
     companionName() { return this.companionSnapshot?.name || 'Kotik'; },
     companionThread() { return this.assistantThread?.purpose === 'companion'; },
     companionItems() {
@@ -179,7 +190,12 @@ export function kontoraCompanion() {
       return !!(this.companionSnapshot?.enabled && this.companionSnapshot.ai_available &&
         !this.companionDisconnected && !this.companionBusy && !this.assistantStreaming);
     },
-    companionOpenInbox() { this.assistantView = 'inbox'; this.companionRefresh(); },
+    companionOpenInbox() {
+      if (!this.companionEnabled()) return;
+      if (this.assistantView !== 'inbox') this._assistantSelectionSeq++;
+      this.assistantView = 'inbox';
+      this.companionRefresh();
+    },
     async companionOpenTicket(item) {
       if (!item.ticket_id) return;
       const ticket = this.tickets.find(t => t.id === item.ticket_id) || { id: item.ticket_id };
@@ -197,7 +213,7 @@ export function kontoraCompanion() {
           method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
         });
         const snapshot = await res.json();
-        if (seq === this.companionSeq) { this.companionSnapshot = snapshot; this.companionError = ''; }
+        if (seq === this.companionSeq) { this._companionAdoptSnapshot(snapshot); this.companionError = ''; }
       } catch (e) {
         await this.companionRefresh();
         this.companionError = 'Read state was not saved. ' + String(e.message || e);
@@ -219,10 +235,9 @@ export function kontoraCompanion() {
       const requestedAt = new Date().toISOString();
       const selectionSeq = this._assistantSelectionSeq;
       const threadID = this.assistantThread?.id;
-      const view = this.assistantView;
       const draft = this.assistantDraft;
       const stillSelected = () => !this.companionDestroyed && this._assistantSelectionSeq === selectionSeq &&
-        this.assistantThread?.id === threadID && this.assistantView === view;
+        this.assistantThread?.id === threadID;
       this.assistantError = null;
       this.companionError = '';
       try {

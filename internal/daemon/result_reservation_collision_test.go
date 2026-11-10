@@ -60,7 +60,7 @@ func TestResultRecoveryOverlappingBranchReservations(t *testing.T) {
 			_, exists := f.d.branchHolderLocked(key)
 			assert.False(t, exists)
 			assert.Empty(t, f.d.running)
-			assert.Empty(t, f.d.sem)
+			assert.Zero(t, f.d.sem.used)
 		})
 	}
 }

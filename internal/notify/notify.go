@@ -6,6 +6,7 @@ package notify
 import (
 	"cmp"
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"slices"
@@ -111,11 +112,14 @@ type Dispatcher struct {
 	mu       sync.Mutex
 	lastSeen map[string]string
 
-	channels map[string]Channel
-	// queues holds one queue per channel, each drained by its own worker. A
+	// workers holds one queue per channel, each drained by its own worker. A
 	// single shared worker would let one blackholed host, which costs attempts
 	// times timeout plus backoff, hold up every other channel behind it.
-	queues   map[string]chan Event
+	workers  map[string]*channelWorker
+	runCtx   context.Context
+	started  bool
+	stopped  bool
+	wg       sync.WaitGroup
 	attempts int
 	backoff  time.Duration
 	timeout  time.Duration
@@ -126,10 +130,29 @@ type Dispatcher struct {
 	// missing records the channel names already warned about, so an
 	// unconfigured name in a ticket does not warn on every transition.
 	missing map[string]bool
-	// dropped holds, per channel, what enqueue could not fit. The worker
-	// reports it: enqueue runs under the daemon lock, where the log write and
-	// the metric record belong to nobody's critical section.
-	dropped map[string]*dropRecord
+}
+
+type channelWorker struct {
+	name    string
+	channel Channel
+	queue   chan Event
+	ctx     context.Context
+	cancel  context.CancelCauseFunc
+	// dropped holds what enqueue could not fit. The worker reports it: enqueue
+	// runs under the daemon lock, where the log write and the metric record
+	// belong to nobody's critical section. Guarded by Dispatcher.mu.
+	dropped *dropRecord
+}
+
+var (
+	errReload   = errors.New("reload")
+	errShutdown = errors.New("shutdown")
+)
+
+type deliverySettings struct {
+	attempts int
+	backoff  time.Duration
+	timeout  time.Duration
 }
 
 // maxDropDetail caps how many dropped notifications are remembered by ticket
@@ -153,21 +176,11 @@ const (
 func New(opts Options) *Dispatcher {
 	d := &Dispatcher{
 		lastSeen: make(map[string]string),
-		channels: make(map[string]Channel, len(opts.Channels)),
-		queues:   make(map[string]chan Event, len(opts.Channels)),
+		workers:  make(map[string]*channelWorker),
 		missing:  make(map[string]bool),
-		dropped:  make(map[string]*dropRecord),
-		attempts: cmp.Or(opts.Attempts, defaultAttempts),
-		backoff:  cmp.Or(opts.Backoff, defaultBackoff),
-		timeout:  cmp.Or(opts.Timeout, defaultTimeout),
 		client:   opts.Client,
 		log:      opts.Log,
 		onResult: opts.OnResult,
-	}
-	depth := cmp.Or(opts.Queue, defaultQueue)
-	for _, c := range opts.Channels {
-		d.channels[c.Name()] = c
-		d.queues[c.Name()] = make(chan Event, depth)
 	}
 	if d.client == nil {
 		d.client = &http.Client{}
@@ -175,7 +188,66 @@ func New(opts Options) *Dispatcher {
 	if d.log == nil {
 		d.log = slog.New(slog.DiscardHandler)
 	}
+	d.Apply(opts)
 	return d
+}
+
+// Apply replaces channels and delivery settings while keeping ticket statuses
+// and queues for retained channel names. Existing deliveries keep their settings.
+// Queue sets the capacity of added channels only. Client, Log and OnResult
+// remain fixed by New.
+func (d *Dispatcher) Apply(opts Options) {
+	if d == nil {
+		return
+	}
+	d.mu.Lock()
+	if d.stopped {
+		d.mu.Unlock()
+		return
+	}
+	d.attempts = cmp.Or(opts.Attempts, defaultAttempts)
+	d.backoff = cmp.Or(opts.Backoff, defaultBackoff)
+	d.timeout = cmp.Or(opts.Timeout, defaultTimeout)
+	keep := make(map[string]bool, len(opts.Channels))
+	for _, ch := range opts.Channels {
+		name := ch.Name()
+		keep[name] = true
+		if w := d.workers[name]; w != nil {
+			w.channel = ch
+			continue
+		}
+		w := &channelWorker{name: name, channel: ch, queue: make(chan Event, cmp.Or(opts.Queue, defaultQueue))}
+		d.workers[name] = w
+		delete(d.missing, name)
+		if d.started {
+			d.startWorkerLocked(w)
+		}
+	}
+	var removed []*channelWorker
+	for name, w := range d.workers {
+		if !keep[name] {
+			delete(d.workers, name)
+			removed = append(removed, w)
+		}
+	}
+	d.mu.Unlock()
+	// A worker drains under d.mu, so cancellation must happen outside it.
+	for _, w := range removed {
+		if w.cancel != nil {
+			w.cancel(errReload)
+		} else {
+			d.drain(w, errReload)
+		}
+	}
+}
+
+func (d *Dispatcher) Live() bool {
+	if d == nil {
+		return false
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return !d.stopped && len(d.workers) > 0
 }
 
 // Wants reports whether a ticket's notify: list names status.
@@ -270,16 +342,22 @@ func (d *Dispatcher) enqueue(e Event, channels []string) {
 		if slices.Index(channels, name) != i {
 			continue
 		}
-		q, ok := d.queues[name]
-		if !ok {
+		d.mu.Lock()
+		w := d.workers[name]
+		stopped := d.stopped
+		if w != nil && !stopped {
+			select {
+			case w.queue <- e:
+			default:
+				d.noteDroppedLocked(w, e)
+			}
+		}
+		d.mu.Unlock()
+		if stopped {
+			d.result(name, ResultDropped)
+		} else if w == nil {
 			d.warnMissing(name, e.TicketID)
 			d.result(ChannelUnknown, ResultDropped)
-			continue
-		}
-		select {
-		case q <- e:
-		default:
-			d.noteDropped(name, e)
 		}
 	}
 }
@@ -290,46 +368,86 @@ func (d *Dispatcher) Run(ctx context.Context) {
 	if d == nil {
 		return
 	}
-	var wg sync.WaitGroup
-	for name, q := range d.queues {
-		wg.Go(func() { d.serve(ctx, d.channels[name], q) })
+	d.mu.Lock()
+	if d.started || d.stopped {
+		d.mu.Unlock()
+		return
 	}
-	wg.Wait()
+	d.started = true
+	d.runCtx = ctx
+	for _, w := range d.workers {
+		d.startWorkerLocked(w)
+	}
+	d.mu.Unlock()
+	<-ctx.Done()
+
+	d.mu.Lock()
+	d.stopped = true
+	var workers []*channelWorker
+	for _, w := range d.workers {
+		workers = append(workers, w)
+	}
+	d.mu.Unlock()
+	for _, w := range workers {
+		w.cancel(errShutdown)
+	}
+	// stopped prevents Apply from adding workers while Wait is active.
+	d.wg.Wait()
 }
 
-func (d *Dispatcher) serve(ctx context.Context, ch Channel, q chan Event) {
+func (d *Dispatcher) startWorkerLocked(w *channelWorker) {
+	w.ctx, w.cancel = context.WithCancelCause(d.runCtx)
+	d.wg.Go(func() { d.serve(w) })
+}
+
+func (d *Dispatcher) serve(w *channelWorker) {
 	for {
-		// Checked before the select, which picks at random between a done
-		// context and a ready queue: without this the worker would keep taking
-		// events after shutdown and report each as a failed delivery.
-		if ctx.Err() != nil {
-			d.drain(ch.Name(), q)
+		if w.ctx.Err() != nil {
+			d.drain(w, d.stopReason(w))
 			return
 		}
 		select {
-		case <-ctx.Done():
-			d.drain(ch.Name(), q)
+		case <-w.ctx.Done():
+			d.drain(w, d.stopReason(w))
 			return
-		case e := <-q:
-			d.deliver(ctx, ch, e)
-			d.reportDropped(ch.Name())
+		case e := <-w.queue:
+			d.mu.Lock()
+			ch := w.channel
+			active := d.workers[ch.Name()] == w
+			settings := deliverySettings{d.attempts, d.backoff, d.timeout}
+			d.mu.Unlock()
+			if !active || w.ctx.Err() != nil {
+				d.drain(w, d.stopReason(w), e)
+				return
+			}
+			d.deliver(w.ctx, ch, e, settings)
+			d.reportDropped(w)
 		}
 	}
 }
 
-// drain accounts for what is still queued when the daemon stops. Nothing is
-// persisted, so the alternative is a notification that disappears with no log
-// line and no count against it.
-func (d *Dispatcher) drain(name string, q chan Event) {
-	left := 0
+func (d *Dispatcher) stopReason(w *channelWorker) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.workers[w.name] != w {
+		return errReload
+	}
+	return errShutdown
+}
+
+// Removed workers cannot receive new events, so draining needs no queue close.
+// A worker includes an event it dequeued after removal in taken.
+func (d *Dispatcher) drain(w *channelWorker, reason error, taken ...Event) {
+	name := w.name
+	left := len(taken)
 	for {
 		select {
-		case <-q:
+		case <-w.queue:
 			left++
 		default:
-			d.reportDropped(name)
+			d.reportDropped(w)
 			if left > 0 {
-				d.log.Warn("notifications dropped at shutdown", "channel", name, "count", left)
+				d.log.Warn("notifications dropped at "+reason.Error(), "channel", name, "count", left, "reason", reason)
 				for range left {
 					d.result(name, ResultDropped)
 				}
@@ -339,13 +457,11 @@ func (d *Dispatcher) drain(name string, q chan Event) {
 	}
 }
 
-func (d *Dispatcher) noteDropped(name string, e Event) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	rec := d.dropped[name]
+func (d *Dispatcher) noteDroppedLocked(w *channelWorker, e Event) {
+	rec := w.dropped
 	if rec == nil {
 		rec = &dropRecord{}
-		d.dropped[name] = rec
+		w.dropped = rec
 	}
 	if len(rec.events) < maxDropDetail {
 		rec.events = append(rec.events, e)
@@ -355,10 +471,11 @@ func (d *Dispatcher) noteDropped(name string, e Event) {
 }
 
 // reportDropped logs and counts what enqueue could not fit since the last call.
-func (d *Dispatcher) reportDropped(name string) {
+func (d *Dispatcher) reportDropped(w *channelWorker) {
 	d.mu.Lock()
-	rec := d.dropped[name]
-	delete(d.dropped, name)
+	name := w.name
+	rec := w.dropped
+	w.dropped = nil
 	d.mu.Unlock()
 	if rec == nil {
 		return

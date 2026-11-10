@@ -19,7 +19,7 @@ export function kontoraRelations() {
     // resolves those from every file on disk and so covers the tickets the
     // board hides (archived, or a status with no column).
     _ticketById(id) {
-      var hit = this.sourceTickets().find(function (t) { return t.id === id; });
+      var hit = this.sourceTicketById(id);
       return hit || this._relationRefById(id);
     },
 

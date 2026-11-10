@@ -62,31 +62,39 @@ func TestLoadMinimalDefaults(t *testing.T) {
 	assert.True(t, *cfg.AutoPickUp, "auto_pick_up should default to true")
 }
 
-func TestMaxConcurrentEpicSupervisors(t *testing.T) {
-	for _, tc := range []struct {
-		value int
-		want  int
+func TestConcurrencyLimits(t *testing.T) {
+	for _, field := range []struct {
+		name         string
+		defaultValue int
+		limit        func(*Config) *int
 	}{
-		{0, 4},
-		{1, 1},
-		{8, 8},
-		{-1, -1},
+		{"max_concurrent_agents", 3, func(c *Config) *int { return &c.MaxConcurrentAgents }},
+		{"max_concurrent_epic_supervisors", 4, func(c *Config) *int { return &c.MaxConcurrentEpicSupervisors }},
 	} {
-		t.Run(fmt.Sprint(tc.value), func(t *testing.T) {
-			cfg, err := LoadReader(strings.NewReader(fmt.Sprintf("tickets_dir: /tmp/tickets\nagents:\n  claude:\n    binary: claude\nmax_concurrent_epic_supervisors: %d\n", tc.value)))
-			if tc.value < 0 {
-				require.ErrorContains(t, err, "max_concurrent_epic_supervisors must not be negative")
-				return
+		t.Run(field.name, func(t *testing.T) {
+			for _, value := range []int{0, 1, 8, -1} {
+				t.Run(fmt.Sprint(value), func(t *testing.T) {
+					cfg, err := LoadReader(strings.NewReader(fmt.Sprintf("tickets_dir: /tmp/tickets\nagents:\n  claude:\n    binary: claude\n%s: %d\n", field.name, value)))
+					if value < 0 {
+						require.ErrorContains(t, err, field.name+" must not be negative")
+						return
+					}
+					require.NoError(t, err)
+					want := value
+					if value == 0 {
+						want = field.defaultValue
+					}
+					assert.Equal(t, want, *field.limit(cfg))
+					data, err := yaml.Marshal(cfg)
+					require.NoError(t, err)
+					assert.Contains(t, string(data), fmt.Sprintf("%s: %d", field.name, want))
+				})
 			}
-			require.NoError(t, err)
-			assert.Equal(t, tc.want, cfg.MaxConcurrentEpicSupervisors)
-			data, err := yaml.Marshal(cfg)
-			require.NoError(t, err)
-			assert.Contains(t, string(data), fmt.Sprintf("max_concurrent_epic_supervisors: %d", tc.want))
+			cfg := &Config{}
+			*field.limit(cfg) = -1
+			require.ErrorContains(t, cfg.Validate(), field.name)
 		})
 	}
-	cfg := &Config{MaxConcurrentEpicSupervisors: -1}
-	require.ErrorContains(t, cfg.Validate(), "max_concurrent_epic_supervisors")
 }
 
 func TestApplyServerEnvOverridesSetsWebToken(t *testing.T) {

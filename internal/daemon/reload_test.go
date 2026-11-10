@@ -363,11 +363,12 @@ notifications:
       chat_id: "2"
   default: []
 `
-	d := h.newDaemonWithConfig(t, h.yaml(configOpts{extra: metricsBefore}))
+	reviewsDir := t.TempDir()
+	d := h.newDaemonWithConfig(t, h.yaml(configOpts{extra: metricsBefore, plannotator: "plannotator:\n  reviews_dir: " + reviewsDir + "\n"}))
 	before := d.config()
 
 	otherDir := t.TempDir()
-	changed := h.yaml(configOpts{extra: metricsAfter}) + "\n"
+	changed := h.yaml(configOpts{extra: metricsAfter, plannotator: "plannotator:\n  reviews_dir: " + otherDir + "\n"}) + "\n"
 	changed = strings.Replace(changed, "tickets_dir: "+h.tasksDir, "tickets_dir: "+otherDir, 1)
 	changed = strings.Replace(changed, "worktrees_dir: "+h.wtDir, "worktrees_dir: "+otherDir, 1)
 	changed = strings.Replace(changed, "logs_dir: "+h.logsDir, "logs_dir: "+otherDir, 1)
@@ -386,27 +387,27 @@ notifications:
 	assert.Equal(t, h.logsDir, got.LogsDir)
 	assert.Equal(t, "test-instance", got.InstanceName)
 	assert.Equal(t, "kontora-test", got.TmuxSession)
-	assert.Equal(t, 4, got.MaxConcurrentAgents)
-	assert.Equal(t, 4, got.MaxConcurrentEpicSupervisors)
+	assert.Equal(t, 8, got.MaxConcurrentAgents)
+	assert.Equal(t, 8, got.MaxConcurrentEpicSupervisors)
+	assert.Equal(t, reviewsDir, got.Plannotator.ReviewsDir)
 	assert.Equal(t, before.Web, got.Web, "the web block is pinned whole")
 	assert.Equal(t, before.Metrics, got.Metrics, "the metrics block is pinned whole")
 	assert.Equal(t, "localhost:4318", got.Metrics.Endpoint, "the running exporter's endpoint survives the reload")
-	assert.Equal(t, before.Notifications, got.Notifications, "the notifications block is pinned whole")
-	assert.Equal(t, "KONTORA_TG_BEFORE", got.Notifications.Channels["tg"].SecretEnv,
-		"the running senders' credentials survive the reload")
+	assert.False(t, *got.Notifications.Enabled)
+	assert.Equal(t, "KONTORA_TG_ROTATED", got.Notifications.Channels["tg"].SecretEnv)
 
 	logs := h.logBuf.String()
 	for _, field := range []string{
 		"tickets_dir", "worktrees_dir", "logs_dir", "instance_name", "tmux_session",
-		"max_concurrent_agents", "max_concurrent_epic_supervisors", "web.host", "web.port", "web.token", "web.allowed_hosts",
+		"plannotator.reviews_dir", "web.host", "web.port", "web.token", "web.allowed_hosts",
 		"metrics.enabled", "metrics.endpoint", "metrics.headers", "metrics.interval", "metrics.insecure",
-		"notifications.enabled", "notifications.channels", "notifications.default",
-		"notifications.timeout", "notifications.attempts", "notifications.backoff",
 	} {
 		assert.Contains(t, logs, "field="+field, "expected a restart-only warning for %s", field)
 	}
 	assert.NotContains(t, logs, "secret", "the web token and metrics header values must never be logged")
-	assert.NotContains(t, logs, "KONTORA_TG_", "a notification channel is redacted whole, names included")
+	assert.NotContains(t, logs, "KONTORA_TG_", "notification credentials must never be logged")
+	assert.NotContains(t, logs, "field=notifications.")
+	assert.NotContains(t, logs, "field=max_concurrent_")
 }
 
 func TestReload_PinsSecondaryTicketsDirs(t *testing.T) {
@@ -457,15 +458,20 @@ func TestReload_PinsSecondaryTicketsDirs(t *testing.T) {
 func TestReload_ValidatesSecondarySourcesAfterOverrides(t *testing.T) {
 	for _, tc := range []struct {
 		name        string
-		envAliases  bool
+		env         string
+		useFlag     bool
 		flagAliases bool
 		fileAliases bool
-		wantErr     bool
+		duplicate   bool
 	}{
-		{name: "file alias", fileAliases: true, wantErr: true},
-		{name: "environment introduces alias", envAliases: true, wantErr: true},
-		{name: "flag introduces alias", flagAliases: true, wantErr: true},
-		{name: "flag removes file and environment aliases", fileAliases: true, envAliases: true},
+		{name: "file alias", fileAliases: true},
+		{name: "environment introduces alias", env: config.TicketsDirEnvVar},
+		{name: "legacy environment introduces alias", env: config.LegacyTicketsDirEnvVar},
+		{name: "flag introduces alias", useFlag: true, flagAliases: true},
+		{name: "flag removes file and environment aliases", fileAliases: true, env: config.TicketsDirEnvVar, useFlag: true},
+		{name: "duplicate retained secondary", duplicate: true},
+		{name: "duplicate after environment alias", env: config.TicketsDirEnvVar, duplicate: true},
+		{name: "duplicate after flag alias", useFlag: true, flagAliases: true, duplicate: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newReloadHarness(t)
@@ -473,32 +479,41 @@ func TestReload_ValidatesSecondarySourcesAfterOverrides(t *testing.T) {
 			list := fmt.Sprintf("secondary_tickets_dirs: [%q]\n", secondary)
 			flagPrimary := h.tasksDir
 			var options []Option
-			if tc.flagAliases || !tc.wantErr {
+			if tc.useFlag {
 				options = append(options, WithConfigOverride(func(c *config.Config) {
 					c.SetTicketsDir(flagPrimary)
 				}))
 			}
 			d := h.newDaemonWithConfig(t, h.yaml(configOpts{extra: list}), options...)
 			before := d.config()
-			if tc.envAliases {
-				t.Setenv(config.TicketsDirEnvVar, secondary)
+			if tc.env != "" {
+				t.Setenv(tc.env, secondary)
 			}
 			if tc.flagAliases {
 				flagPrimary = secondary
 			}
-			changed := h.yaml(configOpts{branchPrefix: "feature", extra: list})
+			candidateList := list
+			if tc.duplicate {
+				other := t.TempDir()
+				candidateList = fmt.Sprintf("secondary_tickets_dirs: [%q, %q, %q, %q]\n", secondary, h.tasksDir, other, other)
+			}
+			changed := h.yaml(configOpts{branchPrefix: "feature", extra: candidateList})
 			if tc.fileAliases {
 				changed = strings.Replace(changed, "tickets_dir: "+h.tasksDir, "tickets_dir: "+secondary, 1)
 			}
 			h.writeConfig(t, changed)
 			err := d.reloadConfig()
-			if tc.wantErr {
-				require.ErrorContains(t, err, "aliases tickets_dir")
+			if tc.duplicate {
+				require.ErrorContains(t, err, "aliases secondary_tickets_dirs[2]")
+				assert.ErrorContains(t, err, "secondary_tickets_dirs[3]")
 				assert.Same(t, before, d.config(), "invalid sources must not publish any live changes")
 			} else {
 				require.NoError(t, err)
-				assert.Equal(t, "feature", d.config().BranchPrefix)
-				assert.Equal(t, h.tasksDir, d.config().TicketsDir)
+				got := d.config()
+				assert.NotSame(t, before, got)
+				assert.Equal(t, "feature", got.BranchPrefix)
+				assert.Equal(t, before.TicketsDir, got.TicketsDir)
+				assert.Equal(t, before.SecondaryTicketsDirs, got.SecondaryTicketsDirs)
 			}
 		})
 	}
@@ -567,12 +582,11 @@ func TestReload_AppliesLiveFields(t *testing.T) {
 			},
 		},
 		{
-			name: "plannotator block",
-			opts: configOpts{plannotator: "plannotator:\n  binary: /opt/plannotator\n  timeout: 5m\n  reviews_dir: /tmp/reviews\n"},
+			name: "plannotator live fields",
+			opts: configOpts{plannotator: "plannotator:\n  binary: /opt/plannotator\n  timeout: 5m\n"},
 			verify: func(t *testing.T, cfg *config.Config) {
 				assert.Equal(t, "/opt/plannotator", cfg.Plannotator.Binary)
 				assert.Equal(t, 5*time.Minute, cfg.Plannotator.Timeout.Duration)
-				assert.Equal(t, "/tmp/reviews", cfg.Plannotator.ReviewsDir)
 			},
 		},
 		{
@@ -1136,12 +1150,11 @@ func TestReload_BroadcastsConfigReloaded(t *testing.T) {
 	}
 }
 
-// TestReload_WarnsWhenAProjectNamesAnUnbuiltChannel covers the gap between the
-// two halves of a notification config: projects reload live while the channels
-// do not. Adding a channel and pointing a project at it passes validation, but
-// the running dispatcher has never heard of the channel, and the project's list
-// shadows the default that was working.
-func TestReload_WarnsWhenAProjectNamesAnUnbuiltChannel(t *testing.T) {
+// TestReload_ProjectCanNameANewChannel covers the two halves of a notification
+// config: projects and channels both reload live. Adding a channel and pointing
+// a project at it passes validation, and the running dispatcher can use the
+// channel. The project's list shadows the default that was working.
+func TestReload_ProjectCanNameANewChannel(t *testing.T) {
 	h := newReloadHarness(t)
 	before := `notifications:
   channels:
@@ -1168,7 +1181,6 @@ func TestReload_WarnsWhenAProjectNamesAnUnbuiltChannel(t *testing.T) {
 	assert.Equal(t, []string{"ops"}, d.config().Projects["api"].NotifyChannels,
 		"projects reload live")
 	logs := h.logBuf.String()
-	assert.Contains(t, logs, "project=api")
-	assert.Contains(t, logs, "channel=ops")
-	assert.Contains(t, logs, "silent until a restart")
+	assert.Contains(t, d.config().Notifications.Channels, "ops")
+	assert.NotContains(t, logs, "silent until a restart")
 }

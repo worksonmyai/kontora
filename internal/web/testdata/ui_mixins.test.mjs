@@ -87,7 +87,7 @@ test("companion mixin owns only uniquely prefixed companion keys", async () => {
   const { kontoraCompanion } = await import(path.join(uiDir, "companion.js"));
   const keys = Object.keys(kontoraCompanion());
   assert.ok(keys.length > 20);
-  assert.deepEqual(keys.filter(key => !key.startsWith("companion")), []);
+  assert.deepEqual(keys.filter(key => !/^_?companion/.test(key)), []);
 });
 
 // The pane collects page context by name, so a renamed or deleted hook goes

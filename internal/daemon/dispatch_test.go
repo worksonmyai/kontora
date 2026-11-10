@@ -41,7 +41,7 @@ func TestSharedDispatch(t *testing.T) {
 			wg.Go(func() { d.scheduler(ctx, &wg) })
 			defer func() { cancel(); wg.Wait() }()
 			time.Sleep(20 * time.Millisecond)
-			require.Empty(t, d.sem, "an empty queue must not reserve capacity")
+			require.Zero(t, poolUsed(d, d.sem), "an empty queue must not reserve capacity")
 			d.mu.Lock()
 			for i := range tc.ordinary {
 				heap.Push(&d.queue, &queueItem{ticketID: string(rune('x' + i)), enqueuedAt: time.Now()})
@@ -74,7 +74,7 @@ func TestSharedDispatch(t *testing.T) {
 					t.Fatalf("replacement admitted after uncertain stop: %s", id)
 				case <-time.After(50 * time.Millisecond):
 				}
-				require.Len(t, d.sem, slots)
+				require.Equal(t, slots, poolUsed(d, d.sem))
 			} else {
 				select {
 				case id := <-admitted:
@@ -82,7 +82,7 @@ func TestSharedDispatch(t *testing.T) {
 				case <-time.After(3 * time.Second):
 					t.Fatal("worker was starved")
 				}
-				require.Eventually(t, func() bool { return len(d.sem) == 0 }, time.Second, time.Millisecond)
+				require.Eventually(t, func() bool { return poolUsed(d, d.sem) == 0 }, time.Second, time.Millisecond)
 			}
 		})
 	}
@@ -117,7 +117,7 @@ func TestOrdinaryUncertainExecutionRetainsReservations(t *testing.T) {
 		t.Fatal("replacement admitted after uncertain ordinary termination")
 	case <-time.After(100 * time.Millisecond):
 	}
-	require.Len(t, d.sem, 1)
+	require.Equal(t, 1, poolUsed(d, d.sem))
 	d.mu.Lock()
 	_, running := d.running["ordinary"]
 	branches := len(d.runningBranches)
@@ -187,14 +187,14 @@ func TestSharedDispatchMultiSlot(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("two-slot attempt did not start after ordinary capacity was released")
 	}
-	require.Len(t, d.sem, 3)
+	require.Equal(t, 3, poolUsed(d, d.sem))
 	close(managedRelease)
-	require.Eventually(t, func() bool { return len(d.sem) == 1 }, 5*time.Second, time.Millisecond)
+	require.Eventually(t, func() bool { return poolUsed(d, d.sem) == 1 }, 5*time.Second, time.Millisecond)
 	state, err = store.State()
 	require.NoError(t, err)
 	require.False(t, state.Attempts["managed"].Reservation.Held)
 	close(ordinaryRelease["ordinary-b"])
-	require.Eventually(t, func() bool { return len(d.sem) == 0 }, 5*time.Second, time.Millisecond)
+	require.Eventually(t, func() bool { return poolUsed(d, d.sem) == 0 }, 5*time.Second, time.Millisecond)
 }
 
 func TestManagedDispatchSlotRefusal(t *testing.T) {
@@ -223,7 +223,7 @@ func TestManagedDispatchSlotRefusal(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("refused admission leaked slots")
 	}
-	require.Eventually(t, func() bool { return len(d.sem) == 0 }, time.Second, time.Millisecond)
+	require.Eventually(t, func() bool { return poolUsed(d, d.sem) == 0 }, time.Second, time.Millisecond)
 }
 
 func TestDispatchPoolsRunIndependently(t *testing.T) {
@@ -249,8 +249,8 @@ func TestDispatchPoolsRunIndependently(t *testing.T) {
 			stop := startDaemon(t, d)
 			defer func() {
 				stop()
-				require.Empty(t, d.sem, "confirmed worker shutdown releases worker capacity")
-				require.Empty(t, d.epicSem, "confirmed supervisor shutdown releases supervisor capacity")
+				require.Zero(t, poolUsed(d, d.sem), "confirmed worker shutdown releases worker capacity")
+				require.Zero(t, poolUsed(d, d.epicSem), "confirmed supervisor shutdown releases supervisor capacity")
 			}()
 			select {
 			case id := <-calls:
@@ -266,8 +266,8 @@ func TestDispatchPoolsRunIndependently(t *testing.T) {
 			case <-time.After(5 * time.Second):
 				t.Fatal("full pool blocked the other pool")
 			}
-			require.Len(t, d.sem, 1)
-			require.Len(t, d.epicSem, 1)
+			require.Equal(t, 1, poolUsed(d, d.sem))
+			require.Equal(t, 1, poolUsed(d, d.epicSem))
 			d.mu.Lock()
 			waiting := d.queued["waiting"]
 			d.mu.Unlock()
@@ -311,8 +311,8 @@ func TestEpicUncertainExecutionRetainsOnlySupervisorPool(t *testing.T) {
 		t.Fatal("retained supervisor reservation blocked worker capacity")
 	}
 	h.waitForStatus("worker.md", ticket.StatusDone, 5*time.Second)
-	require.Eventually(t, func() bool { return len(d.sem) == 0 }, time.Second, time.Millisecond)
-	require.Len(t, d.epicSem, 1)
+	require.Eventually(t, func() bool { return poolUsed(d, d.sem) == 0 }, time.Second, time.Millisecond)
+	require.Equal(t, 1, poolUsed(d, d.epicSem))
 	d.mu.Lock()
 	_, running := d.running["uncertain"]
 	_, live := d.liveRuns["uncertain"]
@@ -342,13 +342,13 @@ func TestDispatchPoolSelection(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t)
 			d := h.newDaemon(h.cfg)
-			d.sem = make(chan struct{}, 1)
-			d.epicSem = make(chan struct{}, 1)
+			d.sem = &slotPool{limit: 1}
+			d.epicSem = &slotPool{limit: 1}
 			if tc.workersFull {
-				d.sem <- struct{}{}
+				d.sem.used++
 			}
 			if tc.supervisorsFull {
-				d.epicSem <- struct{}{}
+				d.epicSem.used++
 			}
 			for i, id := range []string{"worker-new", "epic-new", "worker-old", "epic-old"} {
 				task := &ticket.Ticket{ID: id, Kontora: true, Status: ticket.StatusTodo}
@@ -374,9 +374,8 @@ func TestDispatchPoolSelection(t *testing.T) {
 func TestDispatchRechecksQueueEligibilityAndMode(t *testing.T) {
 	h := newHarness(t)
 	d := h.newDaemon(h.cfg)
-	d.sem = make(chan struct{}, 1)
-	d.epicSem = make(chan struct{}, 1)
-	d.sem <- struct{}{}
+	d.sem = &slotPool{limit: 1, used: 1}
+	d.epicSem = &slotPool{limit: 1}
 	for _, id := range []string{"missing", "passive", "blocked", "paused", "changed"} {
 		task := &ticket.Ticket{ID: id, Kontora: true, Status: ticket.StatusTodo}
 		switch id {

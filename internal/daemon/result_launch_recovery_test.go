@@ -44,7 +44,7 @@ func TestResultLaunchBindingWriteFailureRecovers(t *testing.T) {
 				assert.Empty(t, got.InvocationID)
 				assert.Empty(t, got.History)
 				assert.Empty(t, d.running)
-				assert.Empty(t, d.sem)
+				assert.Zero(t, d.sem.used)
 				assert.Empty(t, d.runningBranches)
 			}
 		})
@@ -88,7 +88,7 @@ func TestResultLaunchPreparationCrashBoundaries(t *testing.T) {
 					require.NoError(t, err)
 					assert.Equal(t, before, after)
 					assert.Contains(t, d.running, f.tkt.ID)
-					assert.Len(t, d.sem, 1)
+					assert.Equal(t, 1, d.sem.used)
 					assert.Len(t, d.runningBranches, 1)
 				}
 				for range 2 {
@@ -100,7 +100,7 @@ func TestResultLaunchPreparationCrashBoundaries(t *testing.T) {
 					assert.Empty(t, got.InvocationID)
 					assert.Empty(t, got.History)
 					assert.Empty(t, d.running)
-					assert.Empty(t, d.sem)
+					assert.Zero(t, d.sem.used)
 					assert.NoFileExists(t, executionPath(f.h.cfg, got.ID))
 				}
 			})
@@ -123,7 +123,7 @@ func TestResultLaunchLegacyUnboundJournalRecovers(t *testing.T) {
 	assert.Empty(t, got.History, "an unbound journal cannot attribute a report")
 	assert.NoFileExists(t, executionPath(f.h.cfg, got.ID))
 	assert.Empty(t, f.d.running)
-	assert.Empty(t, f.d.sem)
+	assert.Zero(t, f.d.sem.used)
 }
 
 func TestResultLaunchCommitsBeforeRunner(t *testing.T) {
@@ -188,7 +188,7 @@ func TestResultLaunchPreparationKeepsMismatchGuard(t *testing.T) {
 				assert.Empty(t, f.d.running)
 			} else {
 				assert.Contains(t, f.d.running, f.tkt.ID)
-				assert.Len(t, f.d.sem, 1)
+				assert.Equal(t, 1, f.d.sem.used)
 			}
 		})
 	}
@@ -259,7 +259,7 @@ func TestResultLegacyStartupOverridesRetainResources(t *testing.T) {
 					assert.Contains(t, d.running, f.tkt.ID)
 					assert.Equal(t, f.tkt.ID, d.runningBranches[common+"\x00"+f.tkt.Branch])
 					pool := d.ticketPool(f.tkt)
-					assert.Len(t, pool, 1)
+					assert.Equal(t, 1, pool.used)
 					assert.Zero(t, d.availablePoolSlotsLocked(pool))
 					if status == ticket.StatusPaused {
 						require.NoError(t, d.RetryTicket(f.tkt.ID))
@@ -270,7 +270,7 @@ func TestResultLegacyStartupOverridesRetainResources(t *testing.T) {
 					d.handleFileChanged(f.path)
 					d.background.Wait()
 					assert.Empty(t, d.running)
-					assert.Empty(t, pool)
+					assert.Zero(t, pool.used)
 					assert.Empty(t, d.runningBranches)
 					require.DirExists(t, wt)
 				})
@@ -294,14 +294,14 @@ func TestResultLegacyStartupDisabledTicketRetainsResources(t *testing.T) {
 			}
 			require.NoError(t, f.d.initialScan(f.h.tasksDir))
 			assert.Contains(t, f.d.running, f.tkt.ID, "disabling pickup does not confirm runner termination")
-			assert.Len(t, f.d.sem, 1)
+			assert.Equal(t, 1, f.d.sem.used)
 			got := f.h.readTask(resultTicketID + ".md")
 			assert.Equal(t, status, got.Status)
 			assert.False(t, got.Kontora)
 			f.d.windows.list = func(string) ([]string, error) { return nil, nil }
 			f.d.handleFileChanged(f.path)
 			assert.Empty(t, f.d.running)
-			assert.Empty(t, f.d.sem)
+			assert.Zero(t, f.d.sem.used)
 			got = f.h.readTask(resultTicketID + ".md")
 			assert.Equal(t, status, got.Status)
 			assert.False(t, got.Kontora)
@@ -341,7 +341,7 @@ func TestResultLegacyStartupRequiresConfirmedAbsence(t *testing.T) {
 					d.handleFileChanged(filepath.Join(f.h.tasksDir, "epc-result.md"))
 					assert.Equal(t, status, f.h.readTask(resultTicketID+".md").Status)
 					assert.Empty(t, d.running)
-					assert.Empty(t, d.sem)
+					assert.Zero(t, d.sem.used)
 					assert.Empty(t, d.runningBranches)
 				}
 			})
@@ -376,7 +376,7 @@ func TestResultLegacyStartupProtectsForeignAuthority(t *testing.T) {
 				require.NoError(t, err)
 				assert.Equal(t, before, after)
 				assert.Empty(t, d.running)
-				assert.Empty(t, d.sem)
+				assert.Zero(t, d.sem.used)
 			})
 		}
 	}

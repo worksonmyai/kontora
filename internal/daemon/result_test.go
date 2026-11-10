@@ -184,7 +184,7 @@ func TestResultRecovery(t *testing.T) {
 			require.NoError(t, err)
 			assert.Equal(t, before, after, "recovery must be idempotent")
 			assert.Empty(t, f.d.running)
-			assert.Empty(t, f.d.sem)
+			assert.Zero(t, f.d.sem.used)
 		})
 	}
 }
@@ -312,7 +312,7 @@ func TestResultRecoveryTerminationConfirmation(t *testing.T) {
 			if mode == "absent" || mode == "killed" {
 				assert.Equal(t, ticket.StatusTodo, got.Status)
 				assert.Empty(t, f.d.running)
-				assert.Empty(t, f.d.sem)
+				assert.Zero(t, f.d.sem.used)
 				if mode == "absent" {
 					assert.Zero(t, kills)
 					assert.Equal(t, 1, lists)
@@ -327,13 +327,13 @@ func TestResultRecoveryTerminationConfirmation(t *testing.T) {
 			assert.Empty(t, got.History)
 			assert.FileExists(t, executionPath(f.h.cfg, got.ID))
 			require.Contains(t, f.d.running, got.ID)
-			assert.Len(t, f.d.sem, 1)
+			assert.Equal(t, 1, f.d.sem.used)
 			common, err := worktree.CommonDir(f.h.repoDir)
 			require.NoError(t, err)
 			assert.Equal(t, got.ID, f.d.runningBranches[common+"\x00"+got.Branch])
 			f.reconcile(t)
 			assert.Len(t, f.d.running, 1)
-			assert.Len(t, f.d.sem, 1, "repeated recovery must not reserve another slot")
+			assert.Equal(t, 1, f.d.sem.used, "repeated recovery must not reserve another slot")
 			assert.Len(t, f.d.runningBranches, 1)
 		})
 	}
@@ -377,11 +377,11 @@ func TestResultRecoveryRespectsLifecycleAndOwnership(t *testing.T) {
 			assert.FileExists(t, executionPath(f.h.cfg, f.tkt.ID))
 			if tc.field == "claimed_by" || tc.field == "managed" {
 				assert.Empty(t, f.d.running)
-				assert.Empty(t, f.d.sem)
+				assert.Zero(t, f.d.sem.used)
 			} else {
 				// Operator edits do not prove that the original execution stopped.
 				assert.Contains(t, f.d.running, f.tkt.ID)
-				assert.Len(t, f.d.sem, 1)
+				assert.Equal(t, 1, f.d.sem.used)
 			}
 		})
 	}
@@ -731,11 +731,11 @@ func TestResultRecoveryReservesCorrectPool(t *testing.T) {
 			}
 			assert.Len(t, f.d.running, 1)
 			if epic {
-				assert.Len(t, f.d.epicSem, 1)
-				assert.Empty(t, f.d.sem, "a supervisor cannot consume an ordinary worker slot")
+				assert.Equal(t, 1, f.d.epicSem.used)
+				assert.Zero(t, f.d.sem.used, "a supervisor cannot consume an ordinary worker slot")
 			} else {
-				assert.Len(t, f.d.sem, 1)
-				assert.Empty(t, f.d.epicSem)
+				assert.Equal(t, 1, f.d.sem.used)
+				assert.Zero(t, f.d.epicSem.used)
 			}
 		})
 	}

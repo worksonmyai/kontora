@@ -111,7 +111,7 @@ func TestReworkFinalizationReplay(t *testing.T) {
 			require.Eventually(t, func() bool {
 				d.mu.Lock()
 				defer d.mu.Unlock()
-				return len(d.running) == 0 && len(d.sem) == 0 && len(d.runningBranches) == 0 && len(d.recoveredReservations) == 0 && len(d.pendingFinalizations) == 0
+				return len(d.running) == 0 && d.sem.used == 0 && len(d.runningBranches) == 0 && len(d.recoveredReservations) == 0 && len(d.pendingFinalizations) == 0
 			}, 5*time.Second, 10*time.Millisecond, "a blocked summary must not retain execution resources")
 			releaseSummary()
 			d.background.Wait()

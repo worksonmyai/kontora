@@ -28,7 +28,7 @@ func TestMain(m *testing.M) {
 func TestUIBundle(t *testing.T) {
 	bundle, err := embeddedUIBundle()
 	require.NoError(t, err)
-	js := string(bundle)
+	js := string(bundle.js)
 
 	for _, global := range []string{"globalThis.kontora =", "globalThis.termState =", "globalThis.statsDerive ="} {
 		assert.Contains(t, js, global)
@@ -117,7 +117,7 @@ func TestUIBundleIgnoresWorkingDirectory(t *testing.T) {
 		uiEntry: &fstest.MapFile{Data: []byte("globalThis.kontora = () => ({});\n")},
 	})
 	require.NoError(t, err)
-	assert.NotContains(t, string(bundle), "decoy")
+	assert.NotContains(t, string(bundle.js), "decoy")
 }
 
 // TestUIBundleWebDirOverride covers the dev path: KONTORA_WEB_DIR reads that
@@ -133,7 +133,7 @@ func TestUIBundleWebDirOverride(t *testing.T) {
 	t.Setenv(webDirEnv, dir)
 	bundle, err := uiBundle()
 	require.NoError(t, err)
-	assert.Contains(t, string(bundle), "the working copy")
+	assert.Contains(t, string(bundle.js), "the working copy")
 
 	t.Setenv(webDirEnv, t.TempDir())
 	_, err = uiBundle()

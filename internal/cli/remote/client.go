@@ -550,7 +550,11 @@ func (c *Client) ResolveID(input string) (string, error) {
 	return store.PickPrefixMatch(input, prefixMatches)
 }
 
-// Subscribe streams ticket events over SSE until ctx is cancelled.
+// SSEConnected marks each successful stream connection, including the first.
+// Consumers must refresh snapshots because SSE does not replay missed events.
+const SSEConnected = "sse_connected"
+
+// Subscribe streams ticket events and SSEConnected notifications until ctx is cancelled.
 func (c *Client) Subscribe(ctx context.Context) <-chan web.TicketEvent {
 	ch := make(chan web.TicketEvent, 64)
 	go func() {
@@ -591,6 +595,13 @@ func (c *Client) sseLoop(ctx context.Context, ch chan<- web.TicketEvent) {
 			continue
 		}
 
+		select {
+		case ch <- web.TicketEvent{Type: SSEConnected}:
+		case <-ctx.Done():
+			resp.Body.Close()
+			return
+		}
+
 		scanner := bufio.NewScanner(resp.Body)
 		scanner.Buffer(make([]byte, 64*1024), 1024*1024)
 		var eventType string
@@ -606,7 +617,9 @@ func (c *Client) sseLoop(ctx context.Context, ch chan<- web.TicketEvent) {
 					ev := web.TicketEvent{Type: eventType, Ticket: info}
 					select {
 					case ch <- ev:
-					default:
+					case <-ctx.Done():
+						resp.Body.Close()
+						return
 					}
 				}
 				eventType = ""

@@ -28,10 +28,10 @@ func TestAutoHookRecoveryEvidence(t *testing.T) {
 			if pending {
 				require.Equal(t, "recovery_required", saved.Phase)
 				require.Contains(t, saved.Result, "hook termination is unconfirmed")
-				require.Len(t, d.sem, 1)
+				require.Equal(t, 1, d.sem.used)
 			} else {
 				require.Equal(t, "terminal", saved.Phase)
-				require.Empty(t, d.sem)
+				require.Zero(t, d.sem.used)
 			}
 		})
 	}

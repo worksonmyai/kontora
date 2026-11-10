@@ -599,6 +599,28 @@ Existing assignments are not migrated when config or membership changes. Changin
 
 Both Plannotator endpoints return 202 once the session is accepted, and report its outcome over `GET /api/events` as a `plannotator_finished` event. They return 404 for an unknown ticket, 409 when a Plannotator process is already open for the ticket or its status does not allow the requested pass, and 500 when the `plannotator` binary is not installed. `GET /api/tickets` and `GET /api/tickets/{id}` carry `can_annotate`, which answers the same status rules the annotate endpoint enforces.
 
+## Ticket event stream
+
+`GET /api/events` reports changes over SSE. It is not an initial snapshot or a durable
+change log. `ticket_updated` carries the changed ticket's projection;
+`ticket_deleted` removes that ticket. Secondary ticket events include `source`
+and must be keyed by `(source, id)`, independently of primary tickets. An
+unchanged secondary observation emits no secondary ticket updates.
+
+Ticket update events omit `body`, `description`, and `description_tail`.
+Fetch `GET /api/tickets/{id}` for primary detail or
+`GET /api/sources/{source}/tickets/{id}` for secondary detail rather than
+replacing a loaded document with an event. An omitted body field does not
+mean the description was cleared.
+
+There are no replay IDs or `Last-Event-ID` recovery guarantees. Each subscriber
+has a 64-event queue; overflow disconnects that slow subscriber rather than
+silently continuing with a gap. Other subscribers are unaffected. After an SSE
+connection opens or reconnects, clients must refetch their authoritative lists
+(including the archive when open) and any open detail. Events received during
+that refresh must not be overwritten by an older snapshot. A reconnect cannot
+recover intermediate transitions, and this stream is not an audit trail.
+
 Relations ride both ticket payloads as arrays of `{id, title, status}`. `GET /api/tickets` carries the id alone; `GET /api/tickets/{id}` and the SSE ticket updates also carry the title and status of every ticket the daemon still has on disk, and add the two derived reverse edges: `blocks`, the tickets whose `deps` name this one, and `children`, the tickets whose `parent` names it. `blocks` is sorted by id. Epic children follow the stored display order, then creation order. Both are absent from the list payload. Dependency refs may include `source` when they resolve in a configured secondary folder. Other relations remain folder-local. A ref with no title and no status has no resolved match. See [Relations](tickets.md#relations).
 
 `GET /api/tickets/{id}/chain` is the derived view of the same edges. It walks the whole primary store, so archived tickets and statuses with no board column stay in the graph. Unique secondary prerequisites appear as leaf nodes with their title, status, and `source`; their own relations are not traversed. Use the source-qualified ticket endpoint to open them. Secondary nodes cannot be run or resumed by the primary daemon. `nodes` is sorted roots to goal with `depth` monotonic non-decreasing, and every upstream node comes before the ticket itself, which comes before every downstream node. Each node carries `depth`, `direction` (`upstream`, `self` or `downstream`), `on_critical_path`, `holds_chain`, `waits_on` (`{open, total}` over that node's own `deps`, including the deps outside the chain) and `missing`. At most one node has `holds_chain` set: the node the chain waits on. While a dep blocks the ticket that is an unresolved dep upstream with no unresolved dep of its own, so it names work that can start now; while nothing blocks the ticket it is the first unresolved node from the ticket onward along the critical path, which is the ticket itself until it closes. A chain whose nodes are all resolved has no such node.
@@ -634,7 +656,7 @@ Browser editors change only `description` and show the protected tail read-only.
 
 `POST /api/tickets/{id}/restore` writes `archived_from` back into `status` and removes all four fields. A ticket archived before those fields existed, or one whose `archived_from` names a status that is no longer a board column, restores to `done` rather than staying stranded in `archived`. It answers 409 for a ticket that is not archived.
 
-`GET /api/tickets/archived` answers `{"tickets": [...]}`. Each row carries `id`, `title`, `project`, `pipeline`, `agent`, `branch`, `path`, `archived_at`, `archived_by`, a `status` holding the ticket's `archived_from`, and `wall_seconds`: the interval from the first history entry's `started_at` to the last `completed_at`, so it spans every run rather than the newest one. A ticket with no `archived_at` reports its file mtime instead, which is the date the sweep's own cutoff uses. The path is more specific than `GET /api/tickets/{id}`, so a ticket whose id is literally `archived` is unreachable by that one path; every other route still reaches it.
+`GET /api/tickets/archived` answers `{"tickets": [...]}`. Each row carries `id`, `title`, `project`, `pipeline`, `agent`, `branch`, `path`, `archived_at`, `archived_by`, a `status` holding the ticket's `archived_from`, and `wall_seconds`: the interval from the first history entry's `started_at` to the last `completed_at`, so it spans every run rather than the newest one. A ticket with no `archived_at` reports its file mtime instead, which is the date the sweep's own cutoff uses. The row's `agent` uses the same resolution as ticket views: an explicit override, the matching pipeline stage's agent, or the configured default for managed tickets without a pipeline (except passive epics). An unknown pipeline or missing stage does not fall back to the default. The path is more specific than `GET /api/tickets/{id}`, so a ticket whose id is literally `archived` is unreachable by that one path; every other route still reaches it.
 
 A ticket whose `branch` is empty carries `auto_branch` in `GET /api/tickets` and `GET /api/tickets/{id}`: the branch the daemon would assign at pickup, resolved for the path the ticket names and the current [branch naming](configuration.md#branch-naming) mode. It is a read-only projection, not a stored field, and it is absent once `branch` is set.
 

@@ -37,7 +37,7 @@ func TestOrdinaryUncertainTerminationRetainsAdmission(t *testing.T) {
 	require.Eventually(t, func() bool {
 		d.mu.Lock()
 		defer d.mu.Unlock()
-		return d.queued["tst-next"] && len(d.sem) == 1 && len(d.runningBranches) == 1 && len(d.liveRuns) == 1
+		return d.queued["tst-next"] && d.sem.used == 1 && len(d.runningBranches) == 1 && len(d.liveRuns) == 1
 	}, 5*time.Second, 10*time.Millisecond)
 	select {
 	case next := <-calls:

@@ -24,10 +24,15 @@ func (s *Server) handleListTickets(w http.ResponseWriter, r *http.Request) {
 	if tickets == nil {
 		tickets = []TicketInfo{}
 	}
+	automationRunning := 0
+	if svc, ok := s.svc.(interface{ AutomationRunningAgents() int }); ok {
+		automationRunning = svc.AutomationRunningAgents()
+	}
 	writeJSON(w, http.StatusOK, struct {
-		Tickets       []TicketInfo `json:"tickets"`
-		RunningAgents int          `json:"running_agents"`
-	}{tickets, s.svc.RunningAgents()})
+		Tickets                 []TicketInfo `json:"tickets"`
+		RunningAgents           int          `json:"running_agents"`
+		AutomationRunningAgents int          `json:"automation_running_agents,omitempty"`
+	}{tickets, s.svc.RunningAgents(), automationRunning})
 }
 
 func (s *Server) handleGetTicket(w http.ResponseWriter, r *http.Request) {
@@ -784,14 +789,26 @@ func (s *Server) handleGetRawConfig(w http.ResponseWriter, _ *http.Request) {
 
 func (s *Server) handlePutRawConfig(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Content string `json:"content"`
+		Content         string  `json:"content"`
+		ExpectedContent *string `json:"expected_content"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 2<<20)).Decode(&body); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON body"})
 		return
 	}
-	if err := s.svc.PutRawConfig(body.Content); err != nil {
-		writeServiceError(w, err)
+	var err error
+	if body.ExpectedContent != nil {
+		if svc, ok := s.svc.(interface{ PutRawConfigIf(string, string) error }); ok {
+			err = svc.PutRawConfigIf(body.Content, *body.ExpectedContent)
+		} else {
+			writeJSONError(w, http.StatusServiceUnavailable, "conditional config writes unavailable")
+			return
+		}
+	} else {
+		err = s.svc.PutRawConfig(body.Content)
+	}
+	if err != nil {
+		writeAutomationError(w, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -819,7 +836,7 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			var data []byte
-			if ev.Type == "config_reloaded" || ev.Type == "companion_updated" {
+			if ev.Type == "config_reloaded" || ev.Type == "companion_updated" || ev.Type == "automations_updated" {
 				// Carries no ticket. Without this the zero TicketInfo would go
 				// out and read as an event about a ticket with an empty id.
 				data = []byte("{}")

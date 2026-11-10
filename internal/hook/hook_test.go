@@ -3,6 +3,8 @@ package hook
 import (
 	"bytes"
 	"context"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +13,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/worksonmyai/kontora/internal/process"
 )
 
 // A case's expected file contents cannot name the per-case temp directory up
@@ -21,6 +24,53 @@ const (
 	dirPlaceholder = "{{dir}}"
 	cwdPlaceholder = "{{cwd}}"
 )
+
+func TestAutomationContext(t *testing.T) {
+	var out bytes.Buffer
+	err := Run(context.Background(), []Spec{{Run: `printf '%s|%s|%s|%s' "$KONTORA_AUTOMATION_ID" "$KONTORA_RUN_NUMBER" "$KONTORA_TICKET_ID" "$KONTORA_STAGE"`}}, Context{
+		Worktree: t.TempDir(), AutomationID: "auto-test", RunNumber: 7, RequireTermination: true,
+	}, &out, nil)
+	require.NoError(t, err)
+	assert.Contains(t, out.String(), "auto-test|7||")
+}
+
+func TestTerminationEvidencePreserved(t *testing.T) {
+	for _, tt := range []struct {
+		name           string
+		ctxErr, runErr error
+	}{
+		{"normal", nil, nil}, {"cancelled", context.Canceled, context.Canceled}, {"timeout", nil, context.DeadlineExceeded},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			err := executionError(tt.ctxErr, tt.runErr, time.Second, process.Result{}, process.ErrTerminationUncertain, true)
+			require.ErrorIs(t, err, process.ErrTerminationUncertain)
+			if tt.runErr != nil {
+				require.ErrorIs(t, err, tt.runErr)
+			}
+		})
+	}
+	for _, strict := range []bool{false, true} {
+		t.Run(map[bool]string{false: "legacy warning", true: "automation stops"}[strict], func(t *testing.T) {
+			calls, warnings := 0, 0
+			err := run(context.Background(), []Spec{{}, {}}, Context{RequireTermination: strict}, io.Discard,
+				func(Spec, error) { warnings++ },
+				func(context.Context, Spec, Context, []string, io.Writer, string) error {
+					calls++
+					return process.ErrTerminationUncertain
+				})
+			if strict {
+				require.ErrorIs(t, err, process.ErrTerminationUncertain)
+				assert.Equal(t, 1, calls)
+				assert.Zero(t, warnings)
+			} else {
+				require.NoError(t, err)
+				assert.Equal(t, 2, calls)
+				assert.Equal(t, 2, warnings)
+			}
+		})
+	}
+	assert.True(t, errors.Is(executionError(context.Canceled, nil, 0, process.Result{}, process.ErrTerminationUncertain, false), context.Canceled))
+}
 
 func TestRun(t *testing.T) {
 	tests := []struct {

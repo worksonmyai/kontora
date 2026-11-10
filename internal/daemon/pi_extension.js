@@ -14,10 +14,22 @@ export default function (pi) {
     KONTORA_RESULT_TICKET: process.env.KONTORA_RESULT_TICKET,
     KONTORA_RESULT_STAGE: process.env.KONTORA_RESULT_STAGE,
     KONTORA_RESULT_FILE: process.env.KONTORA_RESULT_FILE,
+    KONTORA_RESULT_AUTOMATION: process.env.KONTORA_RESULT_AUTOMATION,
+    KONTORA_RESULT_RUN_NUMBER: process.env.KONTORA_RESULT_RUN_NUMBER,
   };
   const RESULT_ENABLED = Object.values(RESULT_CONTEXT).some((v) => v !== undefined && v !== "");
   if (RESULT_ENABLED) {
-    for (var key in RESULT_CONTEXT) {
+    var automationContext = !!(RESULT_CONTEXT.KONTORA_RESULT_AUTOMATION || RESULT_CONTEXT.KONTORA_RESULT_RUN_NUMBER);
+    var required = ["KONTORA_RESULT_VERSION", "KONTORA_INVOCATION_ID", "KONTORA_RESULT_FILE"];
+    if (automationContext) {
+      if (RESULT_CONTEXT.KONTORA_RESULT_TICKET || RESULT_CONTEXT.KONTORA_RESULT_STAGE) {
+        throw new Error("Result execution context cannot mix ticket and automation subjects.");
+      }
+      required.push("KONTORA_RESULT_AUTOMATION", "KONTORA_RESULT_RUN_NUMBER");
+    } else {
+      required.push("KONTORA_RESULT_TICKET", "KONTORA_RESULT_STAGE");
+    }
+    for (var key of required) {
       if (!RESULT_CONTEXT[key] || !RESULT_CONTEXT[key].trim()) {
         throw new Error("Missing result execution context: " + key);
       }
@@ -25,7 +37,19 @@ export default function (pi) {
     if (RESULT_CONTEXT.KONTORA_RESULT_VERSION !== "1") {
       throw new Error("Unsupported KONTORA_RESULT_VERSION.");
     }
+    if (automationContext) {
+      var runNumber = RESULT_CONTEXT.KONTORA_RESULT_RUN_NUMBER;
+      if (!/^[1-9][0-9]*$/.test(runNumber) || BigInt(runNumber) > 18446744073709551615n) {
+        throw new Error("Invalid automation result run number.");
+      }
+      var automationID = RESULT_CONTEXT.KONTORA_RESULT_AUTOMATION;
+      if (automationID === "." || automationID === ".." || /[\s\x00-\x1f\x7f/\\*?\[\]]/u.test(automationID)) {
+        throw new Error("Invalid automation result subject.");
+      }
+    }
   }
+  const RESULT_SUBJECT = RESULT_CONTEXT.KONTORA_RESULT_AUTOMATION || RESULT_CONTEXT.KONTORA_RESULT_TICKET;
+  const RESULT_KIND = RESULT_CONTEXT.KONTORA_RESULT_AUTOMATION ? "automation run" : "stage";
   // Where to publish the "blocked on a question" marker the daemon polls.
   // Empty for a run the daemon does not watch.
   const WAIT_MARKER = __WAIT_MARKER_PATH__;
@@ -324,7 +348,7 @@ export default function (pi) {
     });
   }
 
-  if (TICKET_ID) {
+  if (TICKET_ID && !RESULT_CONTEXT.KONTORA_RESULT_AUTOMATION) {
     registerHandoff("note", "note added");
     registerHandoff("summary", "summary set");
   }
@@ -332,9 +356,9 @@ export default function (pi) {
   if (RESULT_ENABLED) {
     pi.registerTool({
       name: "kontora_result",
-      label: "Stage Result",
+      label: RESULT_CONTEXT.KONTORA_RESULT_AUTOMATION ? "Automation Result" : "Stage Result",
       description:
-        "Report the current Kontora stage as complete or blocked. Summary must be nonblank; " +
+        "Report the current Kontora " + RESULT_KIND + " as complete or blocked. Summary must be nonblank; " +
         "blocked also requires a nonblank next_step. Submits literal JSON without a shell. " +
         "The payload must fit 32,768 UTF-8 bytes and contain no NUL. " +
         "Reporting does not kill the agent. Do not retry automatically on uncertain submission.",
@@ -390,7 +414,7 @@ export default function (pi) {
           var result;
           try {
             result = await pi.exec("kontora", [
-              "result", "--input-file", inputFile, RESULT_CONTEXT.KONTORA_RESULT_TICKET,
+              "result", "--input-file", inputFile, RESULT_SUBJECT,
             ], { cwd: ctx.cwd, signal: signal, timeout: 30_000, maxBuffer: 32768 });
           } catch (error) {
             throw new Error("Kontora execution failed: " +
@@ -415,7 +439,7 @@ export default function (pi) {
           terminalReported = true;
           terminalResultPresent();
           return {
-            content: [{ type: "text", text: "Kontora stage result accepted: " + outcome + "." }],
+            content: [{ type: "text", text: "Kontora " + RESULT_KIND + " result accepted: " + outcome + "." }],
             details: ack,
           };
         } finally {

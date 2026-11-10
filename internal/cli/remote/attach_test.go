@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/worksonmyai/kontora/internal/automation"
 	"github.com/worksonmyai/kontora/internal/web"
 )
 
@@ -22,14 +23,16 @@ func TestWSURL(t *testing.T) {
 	tests := []struct {
 		name       string
 		base       string
+		id         string
 		wantPrefix string
 	}{
-		{"http to ws", "http://daemon:8080", "ws://daemon:8080/ws/terminal/tst-001"},
-		{"https to wss", "https://daemon:8080", "wss://daemon:8080/ws/terminal/tst-001"},
+		{"http to ws", "http://daemon:8080", "tst-001", "ws://daemon:8080/ws/terminal/tst-001"},
+		{"https to wss", "https://daemon:8080", "tst-001", "wss://daemon:8080/ws/terminal/tst-001"},
+		{"automation run", "https://daemon:8080", "aut-example/42", "wss://daemon:8080/ws/automations/aut-example/42"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			u, err := wsURL(tc.base, "tst-001", true, 120, 40)
+			u, err := wsURL(tc.base, tc.id, true, 120, 40)
 			require.NoError(t, err)
 			assert.True(t, strings.HasPrefix(u, tc.wantPrefix), "got %q", u)
 			assert.Contains(t, u, "rw=1")
@@ -141,7 +144,9 @@ func TestRunBridge_AbnormalCloseSurfaced(t *testing.T) {
 
 func TestAttach_HandshakeFailuresReported(t *testing.T) {
 	cases := []struct {
-		name string
+		name     string
+		id       string
+		operator bool
 		// ticketStatus is what GET /api/tickets/{id} answers; empty means the
 		// ticket lookup itself fails with the handshake status.
 		ticketStatus string
@@ -171,11 +176,26 @@ func TestAttach_HandshakeFailuresReported(t *testing.T) {
 			handshake: http.StatusNotFound,
 			want:      "not found on the daemon",
 		},
+		{name: "ordinary automation-prefix ticket", id: "aut-1234", ticketStatus: "paused", want: `has status "paused"`},
+		{name: "automation exact-run socket", id: "aut-0123456789abcdef0123456789abcdef", handshake: http.StatusNotFound, want: "no live terminal session"},
+		{name: "automation operator credential", id: "aut-0123456789abcdef0123456789abcdef", operator: true, handshake: http.StatusUnauthorized, want: "rejected the token"},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			id := tc.id
+			if id == "" {
+				id = "tst-001"
+			}
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if tc.operator {
+					assert.Equal(t, "operator-secret", r.Header.Get(web.OperatorTokenHeader))
+				}
+				if strings.HasPrefix(r.URL.Path, "/api/automations/") {
+					require.True(t, automation.IsID(id))
+					_ = json.NewEncoder(w).Encode(automation.Definition{ID: id, Running: true, CurrentRun: &automation.Run{N: 7, Phase: "running"}})
+					return
+				}
 				if strings.HasPrefix(r.URL.Path, "/api/tickets/") {
 					if tc.ticketStatus == "" {
 						w.WriteHeader(http.StatusNotFound)
@@ -184,11 +204,17 @@ func TestAttach_HandshakeFailuresReported(t *testing.T) {
 					_ = json.NewEncoder(w).Encode(web.TicketInfo{ID: "tst-001", Status: tc.ticketStatus})
 					return
 				}
+				if automation.IsID(id) {
+					assert.Equal(t, "/ws/automations/"+id+"/7", r.URL.Path)
+				}
 				w.WriteHeader(tc.handshake)
 			}))
 			defer srv.Close()
-
-			err := Attach(context.Background(), New(srv.URL, "wrong"), "tst-001", false)
+			client := New(srv.URL, "wrong")
+			if tc.operator {
+				client.operatorToken = "operator-secret"
+			}
+			err := Attach(context.Background(), client, id, false)
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), tc.want)
 		})

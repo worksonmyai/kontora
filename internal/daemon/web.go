@@ -16,8 +16,11 @@ import (
 	"strings"
 	"time"
 
+	"gopkg.in/yaml.v3"
+
 	"github.com/worksonmyai/kontora/internal/cli"
 	"github.com/worksonmyai/kontora/internal/config"
+	"github.com/worksonmyai/kontora/internal/frontmatter"
 	"github.com/worksonmyai/kontora/internal/logfmt"
 	"github.com/worksonmyai/kontora/internal/notify"
 	"github.com/worksonmyai/kontora/internal/ticket"
@@ -32,7 +35,7 @@ import (
 func (d *Daemon) RunningAgents() int {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	return len(d.running)
+	return len(d.running) + int(d.automationActive.Load())
 }
 
 // ListTickets returns info for all tracked tickets.
@@ -70,13 +73,19 @@ func (d *Daemon) GetTicket(id string) (web.TicketInfo, error) {
 
 // CreateTicket creates a new ticket file and registers it in the daemon.
 func (d *Daemon) CreateTicket(req web.CreateTicketRequest) (web.TicketInfo, error) {
+	return d.createTicket(req)
+}
+
+func (d *Daemon) createTicket(req web.CreateTicketRequest) (web.TicketInfo, error) {
 	release, admissionErr := d.ordinaryMutationAdmission("")
 	if admissionErr != nil {
 		return web.TicketInfo{}, admissionErr
 	}
 	defer release()
 	cfg := d.config()
-	id, err := cli.GenerateID(cfg, req.Path)
+	var id string
+	var err error
+	id, err = cli.GenerateID(cfg, req.Path)
 	if err != nil {
 		return web.TicketInfo{}, fmt.Errorf("generating ticket id: %w", err)
 	}
@@ -102,7 +111,7 @@ func (d *Daemon) CreateTicket(req web.CreateTicketRequest) (web.TicketInfo, erro
 	// registers the ticket that the event would have registered.
 	d.recordSelfWriteBlind(filePath)
 
-	_, err = cli.New(cfg, cli.NewOpts{
+	opts := cli.NewOpts{
 		ID:          id,
 		Path:        req.Path,
 		Pipeline:    req.Pipeline,
@@ -116,10 +125,9 @@ func (d *Daemon) CreateTicket(req web.CreateTicketRequest) (web.TicketInfo, erro
 		Kind:        req.Kind,
 		Parent:      req.Parent,
 		NoEdit:      true,
-	})
+	}
+	_, err = cli.New(cfg, opts)
 	if err != nil {
-		// Nothing was created, so the reservation must go: the next ticket gets
-		// this id back, and its creation event has to be acted on.
 		d.forgetSelfWrite(filePath)
 		return web.TicketInfo{}, fmt.Errorf("creating ticket: %w", mapAppError(err))
 	}
@@ -163,6 +171,10 @@ func (d *Daemon) UploadTicket(content []byte) (web.TicketInfo, error) {
 	}
 	defer release()
 	cfg := d.config()
+	content, err := materializeUploadMerges(content)
+	if err != nil {
+		return web.TicketInfo{}, fmt.Errorf("invalid ticket file: %w", err)
+	}
 	t, err := ticket.ParseBytes(content)
 	if err != nil {
 		return web.TicketInfo{}, fmt.Errorf("invalid ticket file: %w", err)
@@ -223,6 +235,111 @@ func (d *Daemon) UploadTicket(content []byte) (web.TicketInfo, error) {
 	return info, nil
 }
 
+// Materialize root merges so DeleteField cannot expose inherited provenance or schedules.
+func materializeUploadMerges(content []byte) ([]byte, error) {
+	fm, body, err := frontmatter.Split(string(content))
+	if err != nil {
+		return nil, err
+	}
+	var doc yaml.Node
+	if err := yaml.Unmarshal([]byte(fm), &doc); err != nil {
+		return nil, err
+	}
+	if len(doc.Content) == 0 || doc.Content[0].Kind != yaml.MappingNode {
+		return content, nil
+	}
+	root := doc.Content[0]
+	hasMerge := false
+	for i := 0; i < len(root.Content); i += 2 {
+		hasMerge = hasMerge || root.Content[i].Tag == "!!merge"
+	}
+	if !hasMerge {
+		return content, nil
+	}
+
+	budget := uploadYAMLBudget{nodes: 10_000, slots: 10_000, textBytes: 8 << 20}
+	root, err = expandUploadAliases(root, make(map[*yaml.Node]bool), &budget)
+	if err != nil {
+		return nil, err
+	}
+	var validated map[string]any
+	if err := root.Decode(&validated); err != nil {
+		return nil, err
+	}
+	var fields map[string]yaml.Node
+	if err := root.Decode(&fields); err != nil {
+		return nil, err
+	}
+	original := root.Content
+	root.Content = nil
+	for i := 0; i < len(original); i += 2 {
+		key := original[i]
+		if key.Tag == "!!merge" {
+			continue
+		}
+		value := fields[key.Value]
+		root.Content = append(root.Content, key, &value)
+		delete(fields, key.Value)
+	}
+	for _, key := range slices.Sorted(maps.Keys(fields)) {
+		value := fields[key]
+		root.Content = append(root.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key}, &value)
+	}
+	out, err := yaml.Marshal(root)
+	if err != nil {
+		return nil, err
+	}
+	return []byte("---\n" + string(out) + "---\n" + body), nil
+}
+
+type uploadYAMLBudget struct {
+	nodes     int
+	slots     int
+	textBytes int
+}
+
+// Removing a merge can remove anchors that other imported fields still reference.
+func expandUploadAliases(node *yaml.Node, active map[*yaml.Node]bool, budget *uploadYAMLBudget) (*yaml.Node, error) {
+	// The decoder skips shadowed merge values, but this copy visits every node.
+	if budget.nodes == 0 {
+		return nil, fmt.Errorf("YAML expansion limit exceeded in upload")
+	}
+	budget.nodes--
+	if active[node] {
+		return nil, fmt.Errorf("cyclic YAML alias in upload")
+	}
+	active[node] = true
+	defer delete(active, node)
+	if node.Kind == yaml.AliasNode {
+		return expandUploadAliases(node.Alias, active, budget)
+	}
+	if len(node.Content) > budget.slots {
+		return nil, fmt.Errorf("YAML expansion limit exceeded in upload")
+	}
+	budget.slots -= len(node.Content)
+	// Strings share storage in the copy, but marshaling emits each occurrence.
+	for _, text := range []string{node.Tag, node.Value, node.HeadComment, node.LineComment, node.FootComment} {
+		if len(text) > budget.textBytes {
+			return nil, fmt.Errorf("YAML expansion limit exceeded in upload")
+		}
+		budget.textBytes -= len(text)
+	}
+	cloned := *node
+	cloned.Anchor = ""
+	if cloned.Kind == yaml.ScalarNode && cloned.Tag != "!!str" {
+		cloned.Style |= yaml.TaggedStyle
+	}
+	cloned.Content = make([]*yaml.Node, len(node.Content))
+	for i, child := range node.Content {
+		var err error
+		cloned.Content[i], err = expandUploadAliases(child, active, budget)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return &cloned, nil
+}
+
 // GetConfig returns available pipelines, agents and the daemon's runtime identity.
 func (d *Daemon) GetConfig() web.ConfigInfo {
 	cfg := d.config()
@@ -276,6 +393,8 @@ func (d *Daemon) GetConfig() web.ConfigInfo {
 		}
 	}
 	return web.ConfigInfo{
+		ConfigPath:      d.configPath,
+		LogsDir:         cfg.LogsDir,
 		TicketsDir:      ticketsDir,
 		TmuxSession:     d.tmuxSession,
 		TmuxSocket:      socket,
@@ -1484,34 +1603,29 @@ func (d *Daemon) GetRawConfig() (string, error) {
 // pinRestartOnly. If the write succeeds but the reload fails, the file stays on
 // disk and the running config is unchanged.
 func (d *Daemon) PutRawConfig(content string) error {
+	d.configMutationMu.Lock()
+	defer d.configMutationMu.Unlock()
 	if d.configPath == "" {
 		return web.ErrConfigPathNotSet
 	}
-	if _, err := config.LoadReader(strings.NewReader(content)); err != nil {
-		return fmt.Errorf("%w: %s", web.ErrInvalidConfig, err)
-	}
-	path := d.configPath
-	info, err := os.Lstat(path)
-	if err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	if err == nil && info.Mode()&os.ModeSymlink != 0 {
-		path, err = filepath.EvalSymlinks(path)
-		if err != nil {
+	if _, err := os.Lstat(d.configPath); os.IsNotExist(err) {
+		if _, err := config.LoadReader(strings.NewReader(content)); err != nil {
+			return fmt.Errorf("%w: %s", web.ErrInvalidConfig, err)
+		}
+		if err := rejectExtraYAML([]byte(content)); err != nil {
+			return fmt.Errorf("%w: %s", web.ErrInvalidConfig, err)
+		}
+		if err := durableConfigWrite(d.configPath, []byte(content), 0o644); err != nil {
 			return err
 		}
-	}
-	if err := atomicWriteFile(path, []byte(content), 0o644); err != nil {
+		if err := d.reloadConfig(); err != nil {
+			return fmt.Errorf("config saved but reload failed: %w", err)
+		}
+		return nil
+	} else if err != nil {
 		return err
 	}
-	// The write also fires the config watcher, so a second, idempotent reload
-	// usually follows. Reloading here as well keeps the behaviour the same
-	// whether or not the config path is a symlink, which the watcher's coverage
-	// depends on.
-	if err := d.reloadConfig(); err != nil {
-		return fmt.Errorf("config saved but reload failed: %w", err)
-	}
-	return nil
+	return d.replaceConfig(content, nil)
 }
 
 // atomicWriteFile writes data to a temp file in the same directory and renames
@@ -1550,6 +1664,7 @@ func (d *Daemon) HasTerminalSession(id string) bool {
 // broadcastTicketUpdate sends a ticket_updated event for the given ticket ID.
 // Must be called with d.mu held.
 func (d *Daemon) broadcastTicketUpdate(id string) {
+	d.signalAutomations()
 	d.wakeCompanion()
 	if d.broker == nil {
 		return
@@ -1578,6 +1693,7 @@ func (d *Daemon) broadcastTicketUpdateLocking(id string) {
 // broadcastTicketDeleted sends a ticket_deleted event for the given ticket.
 // Must be called with d.mu held.
 func (d *Daemon) broadcastTicketDeleted(ts *ticketState) {
+	d.signalAutomations()
 	d.wakeCompanion()
 	if d.broker == nil || ts == nil {
 		return

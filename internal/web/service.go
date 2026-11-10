@@ -470,6 +470,8 @@ type AgentInfo struct {
 }
 
 type ConfigInfo struct {
+	ConfigPath string `json:"config_path,omitempty"`
+	LogsDir    string `json:"logs_dir,omitempty"`
 	// Runtime identity describes the running daemon, not pending restart-only edits.
 	TicketsDir  string `json:"tickets_dir,omitempty"`
 	TmuxSession string `json:"tmux_session,omitempty"`

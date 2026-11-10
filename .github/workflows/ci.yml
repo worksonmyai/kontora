@@ -51,7 +51,7 @@ jobs:
           go-version-file: go.mod
 
       - name: Run tests
-        run: go test -race -timeout 5m ./...
+        run: go test -race -timeout 10m ./...
 
   build:
     runs-on: ubuntu-latest

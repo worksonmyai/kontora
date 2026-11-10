@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import vm from "node:vm";
+import { webcrypto } from "node:crypto";
 import { fileURLToPath } from "node:url";
 
 const dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -365,7 +366,9 @@ function kontoraContext(overrides = {}) {
     setTimeout,
     clearTimeout,
     structuredClone,
+    crypto: webcrypto,
     TextEncoder,
+    URLSearchParams,
     requestAnimationFrame(callback) {
       callback();
       return 1;
@@ -397,6 +400,7 @@ function kontoraContext(overrides = {}) {
     window: {
       innerWidth: 1200,
       addEventListener() {},
+      removeEventListener() {},
       getComputedStyle() {
         return {};
       },
@@ -411,6 +415,7 @@ function kontoraContext(overrides = {}) {
       hasFocus() {
         return true;
       },
+      querySelectorAll() { return []; },
       // Prose writes mark ticket ids, which walks the text nodes. The stub
       // elements here are not a tree, so the walk finds nothing; fakeProseDom
       // is the harness that exercises the marking itself.
@@ -7139,7 +7144,7 @@ test("index.html wires the settings shell to the guard and the section rail", ()
   assert.ok(direct[0].index > html.indexOf(`x-show="col.key === 'open' && colHover"`));
 
   // The guard closes before the create form and every other overlay below it.
-  assert.match(html, /else if \(settingsGuard\) settingsGuard = false; else if \(sheet\) closeSheet\(\); else if \(currentView === 'new'\)/);
+  assert.match(html, /else if \(settingsGuard\) settingsGuard = false;[\s\S]*?else if \(automationsDeleteOpen\) automationsCloseDelete\(\);[\s\S]*?else if \(sheet\) closeSheet\(\); else if \(currentView === 'new'\)/);
 
   assert.match(html, /<template x-if="!loading && currentView === 'settings'">/);
   assert.match(html, /w-\[214px\][^"]*bg-surface-frame border-r border-surface-700\/50/);
@@ -8837,7 +8842,7 @@ test("the shared picker markup wires all hosts, ARIA, Popover, and fallback beha
   const html = fs.readFileSync(htmlPath, "utf8");
 
   const hosts = [...html.matchAll(/x-data="\{ pickerHost: '([^']+)' \}" x-html="agentPickerControl"/g)].map((match) => match[1]);
-  assert.deepEqual(hosts.sort(), ["create", "edit", "init", "mobile-create"]);
+  assert.deepEqual(hosts.sort(), ["automations", "create", "edit", "init", "mobile-create"]);
   assert.match(uiSource, /popover="manual" role="presentation"/);
   assert.match(uiSource, /role="listbox" tabindex="-1"/);
   assert.match(uiSource, /role="option" :aria-selected="row\.selected"/);
@@ -8846,7 +8851,7 @@ test("the shared picker markup wires all hosts, ARIA, Popover, and fallback beha
   assert.match(uiSource, /x-show="!_agentPickerPopoverSupported"/);
   assert.match(uiSource, /<div x-show="_agentPickerPopoverSupported" :id="agentPickerPanelID/);
   assert.match(uiSource, /typeof HTMLElement\.prototype\.showPopover === 'function'/);
-  assert.equal((html.match(/:for="_agentPickerPopoverSupported \? agentPickerTriggerID/g) || []).length, 4);
+  assert.equal((html.match(/:for="_agentPickerPopoverSupported \? agentPickerTriggerID/g) || []).length, hosts.length);
   assert.equal(/x-model="(?:initForm|editForm|createForm)\.agent"/.test(html), false);
   assert.match(html, /\.agent-picker-pop \{ animation: agent-picker-pop 0\.12s ease-out; \}/);
   assert.match(html, /\.agent-picker-pop \{ animation: none; \}/);
@@ -9627,9 +9632,9 @@ test("every color utility the page writes exists in the built app.css", () => {
 
 // The fake location a router test drives. Assigning hash records the write so
 // a test can assert the inverse mapping without a real browser.
-function routerState(hash = "") {
+function routerState(hash = "", overrides = {}) {
   const location = { protocol: "http:", host: "localhost:8080", hash };
-  const state = loadKontoraState({ location });
+  const state = loadKontoraState({ location, ...overrides });
   state.$nextTick = (cb) => { if (cb) cb(); return Promise.resolve(); };
   state.closeTerminal = () => {};
   state.startEditing = () => {};
@@ -9647,6 +9652,8 @@ test("the hash router maps each route to a view", async () => {
     { hash: "#/", view: "board", ticket: null },
     { hash: "", view: "board", ticket: null },
     { hash: "#/new", view: "new", ticket: null },
+    { hash: "#/automations", view: "automations", ticket: null },
+    { hash: "#/automations?state=paused&q=notes", view: "automations", ticket: null },
     { hash: "#/stats", view: "stats", ticket: null },
     { hash: "#/settings", view: "settings", ticket: null },
     { hash: "#/t/kon-vd0j", view: "board", ticket: "kon-vd0j" },
@@ -9663,6 +9670,510 @@ test("the hash router maps each route to a view", async () => {
     assert.equal(state.routeHash(), tc.hash === "" || tc.hash === "#/nonsense" ? "#/" : tc.hash, tc.hash);
     assert.equal(location.hash, state.routeHash(), tc.hash);
   }
+});
+
+const automationSpecFields = ['agent', 'enabled', 'model', 'name', 'overlap', 'path', 'prompt', 'schedule', 'timeout', 'timezone', 'workspace'];
+const automationFires = ['2026-11-10T08:00:00Z', '2026-11-11T08:00:00Z', '2026-11-12T08:00:00Z', '2026-11-13T08:00:00Z'];
+
+function automationUI() {
+  const definitions = new Map(), receipts = new Map(), runReceipts = new Map(), requests = [], timers = new Map(), events = [], listeners = new Map();
+  let timer = 0, next = 1;
+  const behavior = { available: true, hook: null, confirm: true, createResponse: null, runResponse: null };
+  const response = (data, status = 200) => ({ ok: status < 400, status, json: async () => structuredClone(data) });
+  const history = Array.from({ length: 29 }, (_, i) => ({ automation_id: 'auto-1', key: 'morning-review', n: 29 - i, revision: 3,
+    invocation_id: 'invocation-' + i, phase: 'terminal', outcome: ['complete', 'failed', 'skipped'][i % 3], trigger: i % 2 ? 'manual' : 'schedule',
+    scheduled_for: automationFires[0], accepted_at: automationFires[0], started_at: automationFires[0], completed_at: '2026-11-10T08:04:12Z',
+    exit_code: i % 3 === 1 ? 1 : 0, result: 'Result from run ' + (29 - i), cost: i % 3 === 2 ? null : '0.31' }));
+  const lines = [{ at: automationFires[0], source: 'kontora', kind: 'lifecycle', text: 'automation auto-1 · run #29 · trigger schedule' },
+    { at: automationFires[0], source: 'agent', kind: 'tool_call', text: 'Inspect repository' },
+    { at: automationFires[0], source: 'agent', kind: 'success', text: 'No regressions found <script>not markup</script>' }];
+  const fetch = async (url, options = {}) => {
+    const method = options.method || 'GET', body = options.body ? JSON.parse(options.body) : undefined;
+    requests.push({ url, method, body });
+    const intercepted = await behavior.hook?.(url, method, body);
+    if (intercepted) return intercepted;
+    if (url === '/api/automations' && method === 'GET') return response({ available: behavior.available, error: behavior.available ? undefined : 'Store locked', definitions: [...definitions.values()] });
+    if (url === '/api/automations/preview' && method === 'POST') {
+      assert.deepEqual(Object.keys(body).sort(), ['schedule', 'timezone']);
+      assert.equal(typeof body.schedule, 'string');
+      return body.timezone === 'Invalid/Zone' ? response({ error: 'Invalid timezone' }, 400) : response({ occurrences: automationFires, human: 'Every weekday at 09:00' });
+    }
+    if (url === '/api/automations' && method === 'POST') {
+      assert.deepEqual(Object.keys(body).sort(), ['definition', 'key', 'request_id']);
+      assert.ok(body.request_id && body.key);
+      assert.deepEqual(Object.keys(body.definition).sort(), automationSpecFields);
+      if (receipts.has(body.request_id)) return behavior.createResponse?.(receipts.get(body.request_id)) || response(receipts.get(body.request_id));
+      const row = { ...body.definition, id: 'auto-' + next++, key: body.key, revision: 1, created_at: automationFires[0], next: automationFires[0], next_runs: automationFires,
+        schedule_human: 'Every weekday at 09:00', project: 'Repository', running: false, runs_total: 214, success_rate: 95, avg_wall: 252, spend_30d: '12.34', priced_runs: 19, tracked_runs: 20 };
+      definitions.set(row.id, row); receipts.set(body.request_id, structuredClone(row));
+      return behavior.createResponse?.(row) || response(row, 201);
+    }
+    const parsed = new URL(url, 'http://fixture'), match = parsed.pathname.match(/^\/api\/automations\/([^/]+)(?:\/(run|stop|pause|resume|runs)(?:\/(\d+)\/log)?)?$/);
+    assert.ok(match, 'Unexpected automation request: ' + method + ' ' + url);
+    const row = definitions.get(match[1]), action = match[2];
+    if (!row) return response({ error: 'Not found' }, 404);
+    if (method === 'GET' && action === 'runs') {
+      if (match[3]) return response({ lines, raw: lines.map(line => line.text).join('\n') });
+      const offset = Number(parsed.searchParams.get('offset')), limit = Number(parsed.searchParams.get('limit'));
+      assert.ok(limit >= 20 && limit <= 100);
+      return response({ runs: history.slice(offset, offset + limit), total: history.length });
+    }
+    if (method === 'POST' && action === 'run') {
+      assert.deepEqual(Object.keys(body), ['request_id']); assert.ok(body.request_id);
+      const key = row.id + ':' + body.request_id;
+      if (!runReceipts.has(key)) {
+        const run = { automation_id: row.id, key: row.key, n: history.length + 1, revision: 1, invocation_id: body.request_id, trigger: 'manual', accepted_at: automationFires[0],
+          phase: row.running && row.overlap === 'queue' ? 'queued' : row.running && row.overlap === 'skip' ? 'terminal' : 'running', outcome: row.running && row.overlap === 'skip' ? 'skipped' : '' };
+        runReceipts.set(key, run); history.unshift(run);
+        if (run.phase === 'running') definitions.set(row.id, { ...row, running: true, current_run: run });
+      }
+      return behavior.runResponse?.(runReceipts.get(key)) || response(runReceipts.get(key), 202);
+    }
+    if (method === 'POST' && action === 'stop') {
+      assert.deepEqual(body, { n: row.current_run.n });
+      const run = { ...row.current_run, phase: 'terminal', outcome: 'failed', exit_code: 143, result: 'stopped by user' };
+      definitions.set(row.id, { ...row, running: false, current_run: null, last_run: run });
+      return response(run, 202);
+    }
+    if (method === 'GET' && !action) return response(row);
+    if (body.revision !== row.revision) return response({ error: 'Revision conflict' }, 409);
+    if (method === 'DELETE' && !action) { definitions.delete(row.id); return response(null, 204); }
+    if (method === 'POST' && ['pause', 'resume'].includes(action)) {
+      assert.deepEqual(Object.keys(body), ['revision']);
+      const saved = { ...row, revision: row.revision + 1, enabled: action === 'resume' };
+      definitions.set(row.id, saved); return response(saved);
+    }
+    assert.equal(method, 'PUT'); assert.equal(action, undefined);
+    assert.deepEqual(Object.keys(body).sort(), ['definition', 'revision']);
+    assert.deepEqual(Object.keys(body.definition).sort(), automationSpecFields);
+    const saved = { ...row, ...body.definition, revision: row.revision + 1 };
+    definitions.set(saved.id, saved); return response(saved);
+  };
+  function mount(hash = '#/automations') {
+    const location = { protocol: 'http:', host: 'fixture', hash };
+    const state = loadKontoraState({ fetch, location, EventSource: makeEventSourceFake(events),
+      setTimeout: fn => { timers.set(++timer, fn); return timer; }, clearTimeout: id => timers.delete(id),
+      window: { innerWidth: 1280, confirm: () => behavior.confirm, addEventListener: (name, fn) => listeners.set(name, fn), removeEventListener: name => listeners.delete(name) } });
+    state.$nextTick = callback => { callback?.(); return Promise.resolve(); }; state.$refs = {};
+    state.configCache = { projects: [{ name: 'Repository', path: '/example/repository', agent: 'example-agent' }], agents: ['example-agent'] };
+    state.openTerminal = state.closeTerminal = () => {};
+    state.currentView = 'automations';
+    return state;
+  }
+  return { state: mount(), mount, definitions, requests, history, lines, events, listeners, receipts, runReceipts, behavior, response,
+    async preview() { const jobs = [...timers.values()]; timers.clear(); await Promise.all(jobs.map(fn => fn())); } };
+}
+
+async function automationDraft(ui) {
+  await ui.state.automationsOpen(); ui.state.automationsNew();
+  Object.assign(ui.state.automationsDraft, { name: 'Morning review', prompt: 'Review recent changes.', timezone: 'Europe/Berlin' });
+  ui.state.automationsSchedulePreview(); await ui.preview();
+}
+async function createAutomation(ui) { await automationDraft(ui); await ui.state.automationsSaveDraft(); }
+async function editAutomation(ui) { await createAutomation(ui); ui.state.automationsEdit(); await ui.preview(); }
+
+test('automations create, open detail, edit and reload the full spec without legacy fields', async () => {
+  const ui = automationUI(), { state } = ui;
+  await automationDraft(ui);
+  assert.equal(state.automationsDraft.enabled, true);
+  assert.equal(state.automationsDraft.workspace, 'worktree'); assert.equal(state.automationsDraft.overlap, 'skip'); assert.equal(state.automationsDraft.timeout, '30m');
+  state.automationsDraft.model = 'sonnet'; state.automationsDraft.workspace = 'repo'; state.automationsDraft.overlap = 'replace';
+  await state.automationsSaveDraft();
+  assert.equal(state.automationsEditing, false); assert.equal(state.automationsDetail, true); assert.equal(state.routeHash(), '#/automations/auto-1');
+  state.automationsEdit(); await ui.preview();
+  state.automationsDraft.prompt = 'Updated instructions'; await state.automationsSaveDraft();
+  const row = ui.definitions.get('auto-1');
+  assert.equal(row.revision, 2); assert.equal(row.prompt, 'Updated instructions'); assert.equal(row.model, 'sonnet'); assert.equal(row.overlap, 'replace');
+  const reloaded = ui.mount('#/automations/auto-1/edit'); await reloaded.applyRoute();
+  assert.equal(reloaded.automationsDraft.prompt, row.prompt); assert.equal(reloaded.automationsDraft.revision, 2); assert.equal(reloaded.automationsDirty(), false);
+  state.automationsDispose(); reloaded.automationsDispose();
+});
+
+for (const [hash, mode] of [['#/automations', 'list'], ['#/automations/new', 'new'], ['#/automations/auto-1', 'detail'], ['#/automations/auto-1/edit', 'edit']]) {
+  test('automation route round-trip and query preservation: ' + mode, async () => {
+    const ui = automationUI(); await createAutomation(ui);
+    const route = hash + '?state=enabled&q=project%3ARepository';
+    const state = ui.mount(route); await state.applyRoute();
+    assert.equal(state.currentView, 'automations'); assert.equal(state.routeHash(), route);
+    assert.equal(state.automationsFilter, 'enabled'); assert.equal(state.automationsQuery, 'project:Repository');
+    assert.equal(state.automationsEditing, mode === 'new' || mode === 'edit');
+    assert.equal(state.automationsDetail, mode === 'detail' || mode === 'edit');
+    if (mode === 'detail' || mode === 'edit') assert.equal(state.automationsSelected, 'auto-1');
+    state.automationsDispose(); ui.state.automationsDispose();
+  });
+}
+
+test('automation saves require each spec field and an authoritative preview for the current timezone', async () => {
+  const ui = automationUI(), { state } = ui; await automationDraft(ui);
+  assert.equal(!!state.automationsCanSave(), true);
+  for (const field of ['name', 'prompt', 'path', 'agent']) {
+    const saved = state.automationsDraft[field]; state.automationsDraft[field] = '  ';
+    assert.equal(!!state.automationsCanSave(), false, field); state.automationsDraft[field] = saved;
+  }
+  state.automationsDraft.timezone = 'UTC'; assert.equal(!!state.automationsCanSave(), false);
+  state.automationsSchedulePreview(); await ui.preview(); assert.equal(!!state.automationsCanSave(), true);
+  ui.behavior.available = false; await state.automationsRefresh(); assert.equal(!!state.automationsCanSave(), false);
+  state.automationsDispose();
+});
+
+test('automation preview debounces cron and intervals, formats timezone and rejects stale responses', async () => {
+  const ui = automationUI(), { state } = ui; await automationDraft(ui);
+  ui.requests.length = 0;
+  state.automationsDraft.schedule = '0 3 * * *'; state.automationsSchedulePreview();
+  state.automationsDraft.schedule = '30m'; state.automationsSchedulePreview();
+  assert.equal(ui.requests.length, 0); await ui.preview();
+  assert.deepEqual(ui.requests.at(-1).body, { schedule: '30m', timezone: 'Europe/Berlin' });
+  assert.deepEqual([...state.automationsPreview], automationFires); assert.match(state.automationsDateLabel(automationFires[0]), /09:00/);
+  assert.equal(state.automationsPreviewHuman, 'Every weekday at 09:00');
+  const older = deferred();
+  ui.behavior.hook = (url, method, body) => url.endsWith('/preview') && body.schedule === '6h' && body.timezone === 'Europe/Berlin' ? older.promise : undefined;
+  state.automationsDraft.schedule = '6h'; state.automationsSchedulePreview(); const pending = ui.preview();
+  state.automationsDraft.timezone = 'Invalid/Zone'; state.automationsSchedulePreview(); await ui.preview();
+  older.resolve(ui.response({ occurrences: ['2030-01-01T00:00:00Z'], human: 'Stale' })); await pending;
+  assert.equal(state.automationsPreview.length, 0); assert.match(state.automationsPreviewError, /Invalid timezone/); assert.equal(!!state.automationsCanSave(), false);
+  for (const schedule of ['', '0 9 * *', '@daily']) {
+    state.automationsDraft.schedule = schedule; state.automationsSchedulePreview();
+    assert.ok(state.automationsPreviewError); assert.equal(state.automationsPreviewLoading, false);
+  }
+  state.automationsDispose();
+});
+
+for (const kind of ['lost body', 'invalid identity', 'invalid revision']) {
+  test('automation create receipt retry is idempotent after ' + kind, async () => {
+    const ui = automationUI(), { state } = ui; await automationDraft(ui);
+    ui.behavior.createResponse = row => kind === 'lost body' ? { ok: true, status: 201, json: async () => { throw new Error('Lost body'); } }
+      : ui.response({ ...row, ...(kind === 'invalid identity' ? { id: '' } : { revision: 0 }) });
+    await state.automationsSaveDraft(true);
+    assert.equal(ui.definitions.size, 1); assert.equal(state.automationsPending, false); assert.match(state.automationsNotice, /Retry save/);
+    assert.equal(ui.runReceipts.size, 0);
+    ui.behavior.createResponse = null; await state.automationsSaveDraft();
+    const posts = ui.requests.filter(r => r.method === 'POST' && r.url === '/api/automations');
+    assert.equal(posts.length, 2); assert.deepEqual(posts[0].body, posts[1].body); assert.equal(ui.definitions.size, 1);
+    assert.equal(ui.runReceipts.size, 1, 'Retry keeps the original save-and-run intent'); assert.equal(state.automationsTab, 'session');
+    state.automationsDispose();
+  });
+}
+
+test('pending saves block duplicate submission and navigation', async () => {
+  const ui = automationUI(), { state } = ui; await automationDraft(ui);
+  const gate = deferred(); ui.behavior.hook = (url, method) => method === 'POST' && url === '/api/automations' ? gate.promise : undefined;
+  const saving = state.automationsSaveDraft();
+  assert.equal(state.automationsPending, true); assert.equal(state.automationsNew(), false);
+  await state.automationsSaveDraft(); await state.gotoView('board');
+  assert.equal(state.currentView, 'automations'); assert.equal(ui.requests.filter(r => r.url === '/api/automations' && r.method === 'POST').length, 1);
+  gate.resolve(ui.response({ error: 'Store unavailable' }, 503)); await saving;
+  assert.equal(state.automationsPending, false); assert.match(state.automationsNotice, /Retry save/); state.automationsDispose();
+});
+
+for (const status of [400, 401, 404, 409, 503]) {
+  test(`automation save ${status} preserves the draft and saved revision`, async () => {
+    const ui = automationUI(), { state } = ui; await editAutomation(ui);
+    state.automationsDraft.prompt = 'Unsaved change'; const baseline = state.automationsBaseline;
+    ui.behavior.hook = (url, method) => method === 'PUT' ? ui.response({ error: 'Rejected ' + status }, status) : undefined;
+    await state.automationsSaveDraft();
+    assert.equal(state.automationsDraft.prompt, 'Unsaved change'); assert.equal(state.automationsBaseline, baseline); assert.equal(ui.definitions.get('auto-1').revision, 1);
+    assert.equal(state.automationsPending, false); assert.match(state.automationsNotice, /Rejected/); assert.equal(!!state.automationsConflict, status === 409);
+    if (status === 401) assert.equal(state.needsAuth, true);
+    state.automationsDispose();
+  });
+}
+
+test('automation SSE invalidation and reconnect preserve dirty drafts and require an explicit reload', async () => {
+  const ui = automationUI(), { state } = ui; await editAutomation(ui);
+  state.companionRefresh = () => {}; state.connectSSE();
+  state.automationsDraft.prompt = 'Unsaved instructions';
+  ui.definitions.set('auto-1', { ...ui.definitions.get('auto-1'), revision: 2, prompt: 'Other browser' });
+  ui.events[0].emit('automations_updated'); await flushMicrotasks(); ui.events[0].emit('open'); await flushMicrotasks();
+  assert.equal(state.automationsDraft.prompt, 'Unsaved instructions'); assert.equal(state.automationsDraft.revision, 1); assert.match(state.automationsConflict, /changed/);
+  const puts = ui.requests.filter(r => r.method === 'PUT').length; await state.automationsSaveDraft(); assert.equal(ui.requests.filter(r => r.method === 'PUT').length, puts);
+  ui.behavior.confirm = false; await state.automationsReload(); assert.equal(state.automationsDraft.prompt, 'Unsaved instructions');
+  ui.behavior.confirm = true; await state.automationsReload(); assert.equal(state.automationsDraft.prompt, 'Other browser'); assert.equal(state.automationsConflict, '');
+  state.automationsDispose(); assert.equal(ui.listeners.has('beforeunload'), false); state._eventSource?.close();
+});
+
+test('late automation detail, list and log responses cannot overwrite a newer view', async () => {
+  const ui = automationUI(), { state } = ui; await createAutomation(ui); await state.automationsBack();
+  const detail = deferred(); ui.behavior.hook = (url, method) => method === 'GET' && url === '/api/automations/auto-1' ? detail.promise : undefined;
+  const selecting = state.automationsSelect(state.automations[0]); state.automationsNew(); state.automationsDraft.prompt = 'New draft';
+  detail.resolve(ui.response(ui.definitions.get('auto-1'))); await selecting;
+  assert.equal(state.automationsSelected, null); assert.equal(state.automationsDraft.prompt, 'New draft');
+  ui.behavior.hook = null; await state.automationsSelect(state.automations[0]); state.automationsEdit(); await ui.preview();
+  const list = deferred(); ui.behavior.hook = (url, method) => method === 'GET' && url === '/api/automations' ? list.promise : undefined;
+  const refreshing = state.automationsRefresh(); state.automationsDraft.prompt = 'Saved during refresh'; await state.automationsSaveDraft();
+  list.resolve(ui.response({ available: true, definitions: [{ ...ui.definitions.get('auto-1'), revision: 1, prompt: 'Stale' }] })); await refreshing;
+  assert.equal(state.automationsRow().revision, 2); assert.equal(state.automationsRow().prompt, 'Saved during refresh');
+  const log = deferred(); ui.behavior.hook = url => url.endsWith('/log') ? log.promise : undefined;
+  const loading = state.automationsOpenRun(state.automationsHistory[0]); state.automationsNew();
+  log.resolve(ui.response({ lines: [{ text: 'Stale log' }] })); await loading;
+  assert.equal(state.automationsLog.some(line => line.text === 'Stale log'), false); state.automationsDispose();
+});
+
+test('automation refresh does not regress a run snapshot at the same definition revision', async () => {
+  const ui = automationUI(), { state } = ui; await createAutomation(ui);
+  const row = ui.definitions.get('auto-1');
+  const run = { automation_id: row.id, n: 30, revision: 4, phase: 'running', trigger: 'manual' };
+  state.automationsUpsert({ ...row, running: true, current_run: run });
+  ui.definitions.set(row.id, { ...row, running: true, current_run: { ...run, revision: 2, phase: 'preparing' } });
+  await state.automationsRefresh(); assert.equal(state.automationsRow().current_run.revision, 4); assert.equal(state.automationsRow().current_run.phase, 'running');
+  state.automationsUpsert({ ...row, running: false, current_run: null, last_run: { ...run, revision: 5, phase: 'terminal', outcome: 'complete' } });
+  await state.automationsRefresh(); assert.equal(state.automationsRow().running, false); assert.equal(state.automationsRow().last_run.revision, 5);
+  state.automationsDispose();
+});
+
+test('automation run rejection clears only the rejected request identity', async () => {
+  const ui = automationUI(), { state } = ui; await createAutomation(ui);
+  ui.behavior.hook = (url, method) => method === 'POST' && url.endsWith('/run') ? ui.response({ error: 'Rejected run' }, 409) : undefined;
+  await state.automationsRun(); assert.equal(Object.keys(state.automationsRunReceipts).length, 0); assert.equal(ui.runReceipts.size, 0);
+  ui.behavior.hook = null; await state.automationsRun();
+  const posts = ui.requests.filter(r => r.url.endsWith('/run')); assert.equal(posts.length, 2); assert.notEqual(posts[0].body.request_id, posts[1].body.request_id);
+  assert.equal(ui.runReceipts.size, 1); state.automationsDispose();
+});
+
+test('automation toggles use saved revisions and structured filters without persisting a dirty draft', async () => {
+  const ui = automationUI(), { state } = ui; await editAutomation(ui);
+  state.automationsFilter = 'enabled'; state.automationsQuery = 'project:Repository agent:example MORNING'; assert.equal(state.automationsRows().length, 1);
+  state.automationsDraft.prompt = 'Unsaved prompt'; await state.automationsToggle(state.automationsRow());
+  assert.equal(ui.definitions.get('auto-1').enabled, false); assert.equal(ui.definitions.get('auto-1').prompt, 'Review recent changes.');
+  assert.equal(state.automationsDraft.prompt, 'Unsaved prompt'); assert.match(state.automationsConflict, /draft is preserved/); assert.equal(state.automationsRows().length, 0);
+  await state.automationsToggle(state.automationsRow()); assert.equal(ui.definitions.get('auto-1').enabled, true);
+  assert.deepEqual(ui.requests.filter(r => /\/(pause|resume)$/.test(r.url)).map(r => r.body), [{ revision: 1 }, { revision: 2 }]); state.automationsDispose();
+});
+
+for (const policy of ['skip', 'queue', 'replace']) {
+  test('automation run retries retain identity and apply overlap: ' + policy, async () => {
+    const ui = automationUI(), { state } = ui; await createAutomation(ui);
+    const row = { ...ui.definitions.get('auto-1'), overlap: policy, running: true, current_run: { n: 29, revision: 1, phase: 'running' } };
+    ui.definitions.set(row.id, row); await state.automationsRefresh();
+    ui.behavior.runResponse = () => { throw new Error('Response lost after allocation'); };
+    await state.automationsRun(); assert.match(state.automationsError, /Retry run now/); assert.equal(ui.runReceipts.size, 1);
+    ui.behavior.runResponse = null; await state.automationsRun();
+    const posts = ui.requests.filter(r => r.url.endsWith('/run'));
+    assert.equal(posts.length, 2); assert.deepEqual(posts[0].body, posts[1].body); assert.equal(ui.runReceipts.size, 1); assert.equal(Object.keys(state.automationsRunReceipts).length, 0);
+    const run = [...ui.runReceipts.values()][0];
+    assert.equal(run.phase, policy === 'skip' ? 'terminal' : policy === 'queue' ? 'queued' : 'running');
+    if (policy === 'skip') assert.equal(run.outcome, 'skipped');
+    await state.automationsStop(); const stop = ui.requests.find(r => r.url.endsWith('/stop'));
+    assert.deepEqual(stop.body, { n: policy === 'replace' ? run.n : 29 }); assert.equal(state.automationsRow().running, false); assert.equal(state.automationsRow().last_run.exit_code, 143);
+    state.automationsDispose();
+  });
+}
+
+for (const phase of ['queued', 'preparing', 'running', 'stopping', 'recovery_required']) {
+  test('automation stop remains available for unfinished phase: ' + phase, async () => {
+    const ui = automationUI(), { state } = ui; await createAutomation(ui);
+    const row = { ...ui.definitions.get('auto-1'), running: phase === 'running', current_run: { n: 29, phase } };
+    ui.definitions.set(row.id, row); await state.automationsRefresh();
+    assert.equal(state.automationsCanStop(), true);
+    await state.automationsStop();
+    assert.deepEqual(ui.requests.find(request => request.url.endsWith('/stop')).body, { n: 29 });
+    assert.equal(state.automationsCanStop(), false); state.automationsDispose();
+  });
+}
+
+test('automation terminal subjects use server-resolved run paths and change identity between runs', async () => {
+  const container = { textContent: '' }, sockets = [];
+  const { ctx, state } = loadKontoraContext({
+    document: { getElementById: id => id === 'automation-terminal-session' ? container : null, querySelector: () => null, documentElement: { style: {} } },
+    WebSocket: class {
+      static OPEN = 1;
+      constructor(url) { this.url = url; this.readyState = 1; sockets.push(this); }
+      send() {}
+      close() { this.readyState = 3; }
+    },
+  });
+  stubXterm(ctx.termState);
+  state.$nextTick = callback => { callback?.(); return Promise.resolve(); };
+  state.currentView = 'automations'; state.automationsDetail = true; state.automationsAvailable = true; state.automationsSelected = 'auto/encoded'; state.automationsTab = 'session';
+  state.selectedTicket = { id: 'unrelated-ticket', status: 'in_progress' };
+  state.automations = [{ id: 'auto/encoded', running: true, current_run: { n: 7, phase: 'running', session: 'server-only-session', window: 'do-not-send' } }];
+  assert.equal(state.outputSubjectKey(), 'automation:auto/encoded:7'); assert.equal(state.outputContainerID('terminal'), 'automation-terminal-session'); assert.equal(state.terminalWanted(), true);
+  await state.openTerminal();
+  assert.equal(sockets.length, 1); assert.match(sockets[0].url, /\/ws\/automations\/auto%2Fencoded\/7\?/);
+  assert.equal(/server-only-session|do-not-send|unrelated-ticket|[?&](session|window)=/.test(sockets[0].url), false);
+  state.closeTerminal(); state.automations[0].current_run = { n: 8, phase: 'running' };
+  assert.equal(state.outputSubjectKey(), 'automation:auto/encoded:8'); await state.openTerminal();
+  assert.equal(sockets.length, 2); assert.match(sockets[1].url, /\/ws\/automations\/auto%2Fencoded\/8\?/); assert.equal(sockets[0].readyState, 3);
+  state.closeTerminal(); state.automationsEditing = true; assert.equal(state.outputSubject(), null); assert.equal(state.terminalWanted(), false);
+  state.currentView = 'board'; assert.equal(state.outputSubjectKey(), 'primary:unrelated-ticket');
+});
+
+test('automation history, strip, logs and meters use returned run data, not ticket occurrences', async () => {
+  const ui = automationUI(), { state } = ui;
+  ui.behavior.available = false; await state.automationsOpen(); assert.equal(state.automationsAvailable, false); assert.match(state.automationsError, /Store locked/);
+  ui.behavior.available = true; await createAutomation(ui);
+  assert.equal(state.automationsHistory.length, 24); assert.equal(state.automationsHistoryTotal, 29);
+  assert.deepEqual([...state.automationsStrip()].map(run => run.n), ui.history.slice(0, 24).map(run => run.n).reverse());
+  assert.equal(state.automationsStripSummary(), '8 complete · 8 failed · 8 skipped');
+  assert.equal(state.automationsRow().runs_total, 214); assert.equal(state.automationsRow().success_rate, 95); assert.equal(state.automationsDuration(state.automationsRow().avg_wall), '4m 12s'); assert.equal(state.automationsCost(state.automationsRow().spend_30d), '$12.34');
+  assert.equal(state.automationsWall(state.automationsHistory[0]), '4m 12s'); assert.equal(state.automationsCost(null), '—');
+  await state.automationsOpenRun(state.automationsHistory[0]); assert.deepEqual(vmValue(state.automationsLog), ui.lines);
+  assert.equal(state.automationsRawURL(), '/api/automations/auto-1/runs/29/log?raw=1');
+  await state.automationsStepRun(1); assert.equal(state.automationsLogRun.n, 28); await state.automationsStepRun(-1); assert.equal(state.automationsLogRun.n, 29);
+  state.automationsAllRuns(); assert.equal(state.automationsLogRun, null);
+  await state.automationsLoadHistory(true); assert.equal(state.automationsHistory.length, 29); assert.equal(new Set(state.automationsHistory.map(run => run.n)).size, 29);
+  state.automationsDispose();
+});
+
+test('automation duplicate resets identity and schedule state; delete uses the captured revision', async () => {
+  const ui = automationUI(), { state } = ui; await createAutomation(ui);
+  state.automationsNew(state.automationsRow()); assert.equal(state.automationsDraft.name, 'Morning review (copy)'); assert.equal(state.automationsDraft.enabled, false); assert.equal(state.automationsDraft.id, undefined);
+  await ui.preview(); await state.automationsSaveDraft(); assert.equal(ui.definitions.size, 2); assert.equal(state.automationsSelected, 'auto-2');
+  state.automationsOpenDelete(); assert.equal(state.automationsDeleteOpen, true); state.automationsCloseDelete(); assert.equal(ui.definitions.size, 2);
+  state.automationsOpenDelete(); await state.automationsDelete(); assert.equal(ui.definitions.size, 1); assert.equal(state.automationsDetail, false); assert.equal(state.routeHash(), '#/automations');
+  assert.deepEqual(ui.requests.find(r => r.method === 'DELETE').body, { revision: 1 }); assert.match(state.automationsToast, /logs kept/); state.automationsDispose();
+});
+
+for (const action of ['select', 'new', 'back', 'navigate', 'hash']) {
+  test('dirty automation drafts guard ' + action, async () => {
+    const ui = automationUI(), { state } = ui; await editAutomation(ui); ui.behavior.confirm = false;
+    state.automationsDraft.prompt = 'Unsaved instructions';
+    if (action === 'select') await state.automationsSelect(state.automationsRow());
+    if (action === 'new') state.automationsNew();
+    if (action === 'back') await state.automationsBack();
+    if (action === 'navigate') await state.gotoView('board');
+    if (action === 'hash') await state.navigateDestination(state.parseHash('#/automations/new'));
+    assert.equal(state.currentView, 'automations'); assert.equal(state.automationsSelected, 'auto-1'); assert.equal(state.automationsEditing, true); assert.equal(state.automationsDraft.prompt, 'Unsaved instructions');
+    let prevented = false; ui.listeners.get('beforeunload')({ preventDefault() { prevented = true; } }); assert.equal(prevented, true);
+    ui.behavior.confirm = true; await state.automationsBack(); assert.equal(state.automationsEditing, false); assert.equal(state.automationsDetail, true); state.automationsDispose();
+  });
+}
+
+function archiveRouteUI(hash = '#/archive/t/kon-history', hook) {
+  const requests = [];
+  const archived = { id: 'kon-history', source: 'primary', status: 'archived', archived_from: 'done', title: 'Historical ticket', description: '# Archived body', body: '# Archived body', history: [] };
+  const live = { id: 'kon-visible', source: 'primary', status: 'open', title: 'Visible ticket', history: [] };
+  const { state, location } = routerState(hash, { fetch: async (url, options) => {
+    requests.push(url);
+    const result = await hook?.(url, options);
+    if (result) return result;
+    if (url === '/api/tickets/archived') return { ok: true, json: async () => ({ tickets: [] }) };
+    if (url === '/api/tickets/kon-history') return { ok: true, json: async () => ({ ...archived }) };
+    if (url === '/api/tickets/kon-visible') return { ok: true, json: async () => ({ ...live }) };
+    assert.equal(url, '/api/tickets/kon-deleted');
+    return { ok: false, status: 404, json: async () => ({ error: 'Not found' }) };
+  } });
+  state.fetchTicketCost = state.fetchChain = state.fetchActivity = () => {};
+  state.tickets = [live];
+  return { state, location, requests, archived };
+}
+
+test('primary history lookup opens an addressable read-only archive without inheriting a secondary source', async () => {
+  const ui = archiveRouteUI('#/t/kon-history'), { state, location } = ui;
+  state.selectedTicket = { id: 'kon-history', source: 'team', status: 'open' };
+  await state.applyRoute();
+  assert.equal(state.currentView, 'archive');
+  assert.equal(state.archiveDetailOpen(), true);
+  assert.equal(state.isSecondary(state.selectedTicket), false);
+  assert.equal(state.editing, false);
+  assert.equal(location.hash, '#/archive/t/kon-history');
+  assert.equal(state.selectedTicket.body, '# Archived body');
+  state.applyTicketUpdate({ ...ui.archived, title: 'Updated through SSE', body: undefined });
+  assert.equal(state.selectedTicket.title, 'Updated through SSE');
+  assert.equal(state.selectedTicket.body, '# Archived body');
+  assert.equal(state.routeHash(), '#/archive/t/kon-history');
+  assert.ok(ui.requests.every(url => !url.includes('/sources/')));
+  const reloaded = archiveRouteUI(location.hash);
+  await reloaded.state.applyRoute();
+  assert.equal(reloaded.state.archiveDetailOpen(), true);
+  assert.equal(reloaded.location.hash, '#/archive/t/kon-history');
+  location.hash = '#/archive'; await state.applyRoute();
+  assert.equal(state.selectedTicket, null);
+  location.hash = '#/archive/t/kon-history'; await state.applyRoute();
+  assert.equal(state.selectedTicket.id, 'kon-history');
+  state.archiveCloseDetail();
+  assert.equal(location.hash, '#/archive');
+});
+
+test('archive reconnect refreshes the selected primary detail and deletion marks its reference missing', async () => {
+  const ui = archiveRouteUI(), { state, location } = ui;
+  await state.applyRoute();
+  const opened = [];
+  state.companionRefresh = () => {};
+  state.resyncTickets = () => {};
+  state.connectSSE = loadKontoraState({ EventSource: makeEventSourceFake(opened) }).connectSSE;
+  state.connectSSE();
+  ui.archived.body = '# Updated after reconnect';
+  opened[0].emit('open'); await flushMicrotasks();
+  assert.equal(state.archiveDetailOpen(), true);
+  assert.equal(state.selectedTicket.body, '# Updated after reconnect');
+  assert.equal(location.hash, '#/archive/t/kon-history');
+  opened[0].emit('ticket_deleted', { id: 'kon-history' });
+  assert.equal(state.selectedTicket, null);
+  assert.equal(location.hash, '#/archive');
+  assert.match(state.error, /Historical ticket kon-history is missing/);
+});
+
+test('deleted history references report a missing ticket instead of opening a successful run', async () => {
+  const { state, location } = archiveRouteUI('#/t/kon-deleted');
+  state.selectedTicket = { id: 'other', source: 'team', status: 'open' };
+  await state.applyRoute();
+  assert.equal(state.selectedTicket, null);
+  assert.match(state.error, /Historical ticket kon-deleted is missing/);
+  assert.equal(location.hash, '#/');
+});
+
+test('a slow primary history lookup cannot replace a later navigation', async () => {
+  const pending = deferred();
+  const { state, location, archived } = archiveRouteUI('#/t/kon-history', url => url === '/api/tickets/kon-history' ? pending.promise : undefined);
+  const lookup = state.applyRoute();
+  location.hash = '#/t/kon-visible'; await state.applyRoute();
+  pending.resolve({ ok: true, json: async () => archived }); await lookup;
+  assert.equal(state.currentView, 'board');
+  assert.equal(state.selectedTicket.id, 'kon-visible');
+  assert.equal(location.hash, '#/t/kon-visible');
+});
+
+for (const resolveInArchive of [false, true]) {
+  test(`Archive without an overlay preserves pending board detail resolved ${resolveInArchive ? 'in Archive' : 'after returning'}`, async () => {
+    const detail = deferred();
+    const { state } = archiveRouteUI('#/', url => url === '/api/tickets/kon-visible' ? detail.promise : undefined);
+    const opening = state.selectTicket(state.tickets[0]);
+    await flushMicrotasks();
+    assert.equal(state.detailLoading, true);
+    await state.gotoView('archive');
+    assert.equal(state.archiveDetailOpen(), false);
+    if (!resolveInArchive) await state.gotoView('board');
+    detail.resolve({ ok: true, json: async () => ({ id: 'kon-visible', status: 'open', title: 'Loaded detail', body: '# Board body', history: [] }) });
+    await opening;
+    if (resolveInArchive) await state.gotoView('board');
+    assert.equal(state.currentView, 'board');
+    assert.equal(state.selectedTicket.id, 'kon-visible');
+    assert.equal(state.selectedTicket.body, '# Board body');
+    assert.equal(state.detailLoading, false);
+    assert.equal(state.error, null);
+  });
+}
+
+test('leaving Archive with its own pending detail still discards the late response', async () => {
+  const detail = deferred();
+  const { state, archived } = archiveRouteUI('#/archive/t/kon-history', url => url === '/api/tickets/kon-history' ? detail.promise : undefined);
+  const opening = state.applyRoute();
+  await flushMicrotasks();
+  assert.equal(state.archiveDetailLoading, true);
+  await state.gotoView('board');
+  await state.selectTicket(state.tickets[0]);
+  detail.resolve({ ok: true, json: async () => archived }); await opening;
+  assert.equal(state.currentView, 'board');
+  assert.equal(state.selectedTicket.id, 'kon-visible');
+  assert.equal(state.archiveDetailLoading, false);
+  assert.equal(state.detailLoading, false);
+});
+
+test('the archive route remains selected through its own hash event and ignores a late list after leaving', async () => {
+  const detail = deferred(), list = deferred();
+  const { state, location, archived } = archiveRouteUI('#/archive/t/kon-history', url =>
+    url === '/api/tickets/kon-history' ? detail.promise : url === '/api/tickets/archived' ? list.promise : undefined);
+  const opening = state.applyRoute();
+  await flushMicrotasks();
+  assert.equal(state.archiveDetailOpen(), true);
+  await state.applyRoute();
+  detail.resolve({ ok: true, json: async () => archived }); await opening;
+  assert.equal(state.selectedTicket.body, '# Archived body');
+  assert.equal(state.archiveDetailLoading, false);
+  location.hash = '#/'; await state.applyRoute();
+  list.resolve({ ok: true, json: async () => ({ tickets: [archived] }) }); await flushMicrotasks();
+  assert.equal(state.archiveRows.length, 0);
+  assert.equal(state.selectedTicket, null);
 });
 
 test("selecting and closing a ticket writes and clears the hash", async () => {
@@ -10017,6 +10528,7 @@ test("normal and archive detail open paths request ticket cost", async () => {
     const requested = [];
     state.fetchTicketCost = (id) => requested.push(id);
     if (archive) {
+      state.currentView = 'archive';
       await state.archiveOpenRow({ id: "kon-archive", title: "Archived", path: "/repo" });
       assert.deepEqual(requested, ["kon-archive"]);
     } else {
@@ -10099,6 +10611,7 @@ test("an archived detail response cannot cross a close and reopen", async () => 
   const state = loadKontoraState({ fetch: () => (++calls === 1 ? first.promise : second.promise) });
   state.fetchTicketCost = () => {};
   const row = { id: "kon-archive", title: "Archive", status: "done" };
+  state.currentView = 'archive';
 
   const oldRequest = state.archiveOpenRow(row);
   state.archiveCloseDetail();

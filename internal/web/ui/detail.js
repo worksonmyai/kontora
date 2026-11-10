@@ -528,8 +528,25 @@ export function kontoraDetail() {
         try { id = decodeURIComponent(raw); } catch (e) { id = raw; }
         return { view: 'board', ticketId: id };
       }
+      const automationsRoute = h.match(/^\/automations(?:\/([^/?]+)(\/edit)?)?(?:\?(.*))?$/);
+      if (automationsRoute) {
+        const params = new URLSearchParams(automationsRoute[3] || '');
+        const filter = params.get('state');
+        let id;
+        try { id = automationsRoute[1] ? decodeURIComponent(automationsRoute[1]) : null; }
+        catch { return { view: 'automations', ticketId: null }; }
+        return { view: 'automations', ticketId: null, automationsId: id === 'new' ? null : id,
+          automationsMode: id === 'new' ? 'new' : automationsRoute[2] ? 'edit' : id ? 'detail' : 'list',
+          automationsFilter: ['enabled', 'paused'].includes(filter) ? filter : 'all', automationsQuery: params.get('q') || '' };
+      }
       if (h === '/new') return { view: 'new', ticketId: null };
       if (h === '/stats') return { view: 'stats', ticketId: null };
+      if (h.startsWith('/archive/t/') && h.length > 11) {
+        const raw = h.slice(11);
+        let id;
+        try { id = decodeURIComponent(raw); } catch { id = raw; }
+        return { view: 'archive', ticketId: id, source: 'primary' };
+      }
       if (h === '/archive') return { view: 'archive', ticketId: null };
       if (h === '/settings') return { view: 'settings', ticketId: null };
       return { view: 'board', ticketId: null };
@@ -537,10 +554,16 @@ export function kontoraDetail() {
 
     // Serialize the current view back to a hash. Inverse of parseHash.
     routeHash() {
-      // The archive's own overlay is not addressable: it opens a ticket the
-      // board list does not hold, so a reloaded #/t/<id> would find nothing and
-      // fall back to the board.
-      if (this.currentView === 'archive') return '#/archive';
+      if (this.currentView === 'automations') {
+        const params = new URLSearchParams();
+        if (this.automationsFilter !== 'all') params.set('state', this.automationsFilter);
+        if (this.automationsQuery) params.set('q', this.automationsQuery);
+        const path = this.automationsEditing && !this.automationsSelected ? '/new'
+          : this.automationsSelected && (this.automationsDetail || this.automationsEditing)
+            ? '/' + encodeURIComponent(this.automationsSelected) + (this.automationsEditing ? '/edit' : '') : '';
+        return '#/automations' + path + (params.size ? '?' + params.toString() : '');
+      }
+      if (this.currentView === 'archive') return this.archiveDetailOpen() ? '#/archive/t/' + encodeURIComponent(this.selectedTicket.id) : '#/archive';
       if (this.currentView === 'new') return '#/new';
       if (this.currentView === 'stats') return '#/stats';
       if (this.currentView === 'settings') return '#/settings';
@@ -571,6 +594,15 @@ export function kontoraDetail() {
         if (this.currentView !== r.view) {
           if (await this.gotoView(r.view, navigation, r) === false || !mine()) return false;
         }
+        if (r.view === 'automations') {
+          if (this.selectedTicket) this.closeDetail(false);
+          if (this.selectedEpic && await this.closeEpic(false) === false) return false;
+          if (!mine()) return false;
+          if (await this.automationsApplyRoute(r, navigation) === false || !mine()) return false;
+          this.automationsFilter = r.automationsFilter || 'all';
+          this.automationsQuery = r.automationsQuery || '';
+          return true;
+        }
         if (this.sheet && (r.ticketId || r.epicId)) this.closeSheet(false);
         // The two overlays are exclusive, so the epic branch closes whichever
         // one the hash does not name.
@@ -582,23 +614,39 @@ export function kontoraDetail() {
           if (await this.closeEpic(false) === false) return;
           if (!mine()) return;
         }
-        if (r.ticketId) {
-          var identity = { source: r.source, id: r.ticketId };
-          var alreadySelected = this.sameTicket(this.selectedTicket, identity);
-          var t = this.allBoardTickets().find(x => this.sameTicket(x, identity));
-          // Board activation precedes selection so output mounts in a visible
-          // container and Stats polling stops before the ticket opens.
-          if (!t && this.selectedTicket) {
-            // The hash names a ticket this board does not have. Fall back to the
-            // board rather than rendering an empty shell.
-            this.closeDetail(false);
+        if (r.view === 'archive') {
+          if (r.ticketId) await this.archiveOpenRow({ id: r.ticketId }, navigation);
+          else if (this.archiveDetailOpen()) this.archiveCloseDetail(false);
+          if (!mine()) return false;
+        } else if (r.ticketId) {
+          const identity = { source: r.source || 'primary', id: r.ticketId };
+          const alreadySelected = this.sameTicket(this.selectedTicket, identity);
+          let t = this.allBoardTickets().find(x => this.sameTicket(x, identity));
+          if (!t && !this.isSecondary(identity)) {
+            try {
+              const response = await fetch('/api/tickets/' + encodeURIComponent(r.ticketId));
+              if (!mine()) return false;
+              if (response.status === 401) this.needsAuth = true;
+              if (!response.ok) throw new Error(response.status === 404 ? 'Historical ticket ' + r.ticketId + ' is missing. It may have been deleted.' : 'Failed to look up ticket (' + response.status + ')');
+              const full = await response.json();
+              if (!mine()) return false;
+              if (full.id !== r.ticketId || this.isSecondary(full)) throw new Error('The primary ticket lookup returned a different ticket.');
+              t = { ...full, source: 'primary' };
+            } catch (error) {
+              if (!mine()) return false;
+              this.error = error.message;
+            }
           }
-          if (t && !alreadySelected) {
+          if (t?.status === 'archived') {
+            if (await this.gotoView('archive', navigation, { view: 'archive', ticketId: t.id }) === false || !mine()) return false;
+            await this.archiveOpenRow(t, navigation);
+            if (!mine()) return false;
+          } else if (t && !alreadySelected) {
             if (this.isMobile) await this.openMobileTicket(t, navigation);
             else await this.selectTicket(t, navigation);
-            if (!mine()) return;
-          }
-        } else if (this.selectedTicket && r.view !== 'archive') {
+            if (!mine()) return false;
+          } else if (!t && this.selectedTicket) this.closeDetail(false);
+        } else if (this.selectedTicket) {
           this.closeDetail(false);
         }
         if (!mine()) return false;

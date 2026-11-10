@@ -173,7 +173,7 @@ func withOwnedBranch(repo, branch string, owner BranchOwnership, fn func(string,
 	if err := validRef(ref); err != nil {
 		return err
 	}
-	if owner.BoardID == "" || owner.ObjectiveID == "" || owner.Generation == 0 {
+	if !owner.valid() {
 		return fmt.Errorf("incomplete branch ownership")
 	}
 	if owner.Worktree != "" {

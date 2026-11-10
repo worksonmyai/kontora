@@ -130,7 +130,8 @@ var Commands = []Command{
 	}},
 	{Name: "review", Group: "Running work", Desc: "Open a ticket's diff in Plannotator on the daemon host", Config: true, Remote: true, TicketID: true},
 	{Name: "annotate", Group: "Running work", Desc: "Open a ticket's markdown in Plannotator on the daemon host", Config: true, Remote: true, TicketID: true},
-	{Name: "attach", Group: "Running work", Desc: "Attach to a running ticket", Config: true, Store: true, Remote: true, TicketID: true, Flags: []Flag{
+	{Name: "automation", Group: "Running work", Desc: "Create a scheduled agent automation", Config: true, Remote: true, Subcommands: []string{"new"}},
+	{Name: "attach", Group: "Running work", Desc: "Attach to a running ticket or automation", Config: true, Store: true, Remote: true, TicketID: true, Flags: []Flag{
 		{Name: "rw", Desc: "Attach in read-write mode"},
 	}},
 	{Name: "start", Group: "Getting started", Desc: "Start the daemon", Config: true, Store: true, Flags: []Flag{

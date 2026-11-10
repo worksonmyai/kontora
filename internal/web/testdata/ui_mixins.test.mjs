@@ -52,6 +52,37 @@ test("no two mixins define the same key", async () => {
   assert.deepEqual(clashes, []);
 });
 
+test("automation mixin owns prefixed state and the full route/action contract", async () => {
+  const { kontoraAutomations } = await import(path.join(uiDir, "automations.js"));
+  const state = kontoraAutomations();
+  assert.deepEqual(Object.keys(state).filter(key => !key.startsWith("automations")), []);
+  for (const name of ["Open", "Refresh", "Select", "New", "Edit", "Back", "ApplyRoute", "Dirty", "ConfirmReplace", "Reload",
+    "SaveDraft", "Run", "Stop", "Toggle", "OpenDelete", "CloseDelete", "Delete", "SchedulePreview", "LoadHistory", "OpenRun", "StepRun", "RawURL", "OutputSubject", "Dispose"]) {
+    assert.equal(typeof state["automations" + name], "function", name);
+  }
+  assert.deepEqual(Object.keys(state.automationsDraft).sort(), ["agent", "enabled", "model", "name", "overlap", "path", "prompt", "schedule", "timeout", "timezone", "workspace"]);
+  assert.equal(state.automationsDraft.schedule, "0 9 * * 1-5");
+  assert.equal(state.automationsDraft.timezone, "UTC");
+  assert.equal(state.automationsDraft.overlap, "skip");
+  assert.equal(state.automationsDraft.enabled, true);
+  const other = kontoraAutomations();
+  state.automationsDraft.name = "Unsaved"; state.automationsRunReceipts.example = "request-1";
+  assert.equal(other.automationsDraft.name, ""); assert.deepEqual(other.automationsRunReceipts, {});
+});
+
+test("automation markup bindings resolve against the merged component", async () => {
+  await import(entry);
+  const merged = globalThis.kontora();
+  const html = fs.readFileSync(path.join(dirname, "../static/index.html"), "utf8");
+  const names = new Set();
+  for (const [, attribute, expression] of html.matchAll(/(x-[\w.:-]+|@[\w.:-]+|:[\w.:-]+)="([^"]*)"/g)) {
+    if (attribute === "x-ref") continue;
+    for (const [name] of expression.matchAll(/\bautomations[A-Z]\w*/g)) names.add(name);
+  }
+  assert.ok(names.size > 60, `only ${names.size} automation bindings found`);
+  assert.deepEqual([...names].filter(name => !Object.hasOwn(merged, name)), []);
+});
+
 test("companion mixin owns only uniquely prefixed companion keys", async () => {
   const { kontoraCompanion } = await import(path.join(uiDir, "companion.js"));
   const keys = Object.keys(kontoraCompanion());

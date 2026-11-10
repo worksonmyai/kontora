@@ -76,6 +76,7 @@ func TestInvocationEnv(t *testing.T) {
 	inv := Invocation{Version: ResultVersion, ID: "inv-123", TicketID: "kon-test", Stage: "implement", ResultPath: filepath.Join(t.TempDir(), "result.json")}
 	env := inv.Env()
 	assert.Equal(t, map[string]string{
+		"KONTORA_RESULT_AUTOMATION": "", "KONTORA_RESULT_RUN_NUMBER": "",
 		"KONTORA_RESULT_VERSION": "1", "KONTORA_INVOCATION_ID": "inv-123", "KONTORA_RESULT_TICKET": "kon-test", "KONTORA_RESULT_STAGE": "implement", "KONTORA_RESULT_FILE": inv.ResultPath,
 	}, env)
 	got, err := InvocationFromEnv(func(k string) string { return env[k] })
@@ -91,7 +92,10 @@ func TestInvocationEnv(t *testing.T) {
 			assert.Equal(t, stageInv, got)
 		})
 	}
-	for key := range env {
+	for key, value := range env {
+		if value == "" {
+			continue
+		}
 		t.Run("missing "+key, func(t *testing.T) {
 			_, err := InvocationFromEnv(func(k string) string {
 				if k == key {
@@ -126,6 +130,35 @@ func TestInvocationEnv(t *testing.T) {
 	}
 	_, err = InvocationFromEnv(nil)
 	require.Error(t, err)
+}
+
+func TestAutomationInvocationEnv(t *testing.T) {
+	inv := Invocation{Version: ResultVersion, ID: "inv-automation-1", AutomationID: "auto-123", RunNumber: 42, ResultPath: filepath.Join(t.TempDir(), "result.json")}
+	env := inv.Env()
+	got, err := InvocationFromEnv(func(k string) string { return env[k] })
+	require.NoError(t, err)
+	assert.Equal(t, inv, got)
+	assert.Equal(t, "auto-123", got.SubjectID())
+	assert.Empty(t, env[ResultTicketEnvVar])
+	assert.Empty(t, env[ResultStageEnvVar])
+	assert.Equal(t, "42", env[ResultRunNumberEnvVar])
+	for _, tt := range []struct{ key, value string }{
+		{ResultAutomationEnvVar, ""}, {ResultAutomationEnvVar, "../auto"}, {ResultAutomationEnvVar, "bad id"},
+		{ResultRunNumberEnvVar, ""}, {ResultRunNumberEnvVar, "0"}, {ResultRunNumberEnvVar, "01"},
+		{ResultRunNumberEnvVar, "-1"}, {ResultRunNumberEnvVar, "+1"}, {ResultRunNumberEnvVar, "18446744073709551616"},
+		{ResultTicketEnvVar, "fake-ticket"}, {ResultStageEnvVar, "fake-stage"},
+	} {
+		t.Run(fmt.Sprintf("%s=%q", tt.key, tt.value), func(t *testing.T) {
+			_, err := InvocationFromEnv(func(k string) string {
+				if k == tt.key {
+					return tt.value
+				}
+				return env[k]
+			})
+			require.Error(t, err)
+		})
+	}
+	assert.Equal(t, "ticket", (Invocation{TicketID: "ticket"}).SubjectID())
 }
 
 func TestPublishResult(t *testing.T) {

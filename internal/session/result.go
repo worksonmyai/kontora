@@ -18,11 +18,13 @@ const (
 	ResultVersion  = 1
 	MaxResultBytes = 32 * 1024
 
-	ResultVersionEnvVar = "KONTORA_RESULT_VERSION"
-	InvocationIDEnvVar  = "KONTORA_INVOCATION_ID"
-	ResultTicketEnvVar  = "KONTORA_RESULT_TICKET"
-	ResultStageEnvVar   = "KONTORA_RESULT_STAGE"
-	ResultFileEnvVar    = "KONTORA_RESULT_FILE"
+	ResultVersionEnvVar    = "KONTORA_RESULT_VERSION"
+	InvocationIDEnvVar     = "KONTORA_INVOCATION_ID"
+	ResultTicketEnvVar     = "KONTORA_RESULT_TICKET"
+	ResultStageEnvVar      = "KONTORA_RESULT_STAGE"
+	ResultFileEnvVar       = "KONTORA_RESULT_FILE"
+	ResultAutomationEnvVar = "KONTORA_RESULT_AUTOMATION"
+	ResultRunNumberEnvVar  = "KONTORA_RESULT_RUN_NUMBER"
 )
 
 // Result describes only the assigned stage, not whole-ticket acceptance.
@@ -37,21 +39,38 @@ type Result struct {
 // be a fresh, absolute artifact path for that invocation, including on retries.
 // The result payload cannot override any of this context.
 type Invocation struct {
-	Version    int    `json:"version"`
-	ID         string `json:"id"`
-	TicketID   string `json:"ticket_id"`
-	Stage      string `json:"stage"`
-	ResultPath string `json:"result_path"`
+	Version      int    `json:"version"`
+	ID           string `json:"id"`
+	TicketID     string `json:"ticket_id,omitempty"`
+	Stage        string `json:"stage,omitempty"`
+	AutomationID string `json:"automation_id,omitempty"`
+	RunNumber    uint64 `json:"run_number,omitempty"`
+	ResultPath   string `json:"result_path"`
+}
+
+// SubjectID is the daemon-bound ticket or automation, never model input.
+func (inv Invocation) SubjectID() string {
+	if inv.AutomationID != "" {
+		return inv.AutomationID
+	}
+	return inv.TicketID
 }
 
 // Env returns the context to overlay AFTER configured agent environment values.
+// Empty values clear inherited context belonging to the other subject kind.
 func (inv Invocation) Env() map[string]string {
+	runNumber := ""
+	if inv.RunNumber != 0 {
+		runNumber = strconv.FormatUint(inv.RunNumber, 10)
+	}
 	return map[string]string{
-		ResultVersionEnvVar: strconv.Itoa(inv.Version),
-		InvocationIDEnvVar:  inv.ID,
-		ResultTicketEnvVar:  inv.TicketID,
-		ResultStageEnvVar:   inv.Stage,
-		ResultFileEnvVar:    inv.ResultPath,
+		ResultAutomationEnvVar: inv.AutomationID,
+		ResultRunNumberEnvVar:  runNumber,
+		ResultVersionEnvVar:    strconv.Itoa(inv.Version),
+		InvocationIDEnvVar:     inv.ID,
+		ResultTicketEnvVar:     inv.TicketID,
+		ResultStageEnvVar:      inv.Stage,
+		ResultFileEnvVar:       inv.ResultPath,
 	}
 }
 
@@ -64,16 +83,30 @@ func InvocationFromEnv(getenv func(string) string) (Invocation, error) {
 	if version := getenv(ResultVersionEnvVar); version != strconv.Itoa(ResultVersion) {
 		return Invocation{}, fmt.Errorf("%s must be %d, got %q", ResultVersionEnvVar, ResultVersion, version)
 	}
-	inv := Invocation{Version: ResultVersion, ID: getenv(InvocationIDEnvVar), TicketID: getenv(ResultTicketEnvVar), Stage: getenv(ResultStageEnvVar), ResultPath: getenv(ResultFileEnvVar)}
-	for _, field := range []struct{ name, value string }{
-		{InvocationIDEnvVar, inv.ID}, {ResultTicketEnvVar, inv.TicketID},
-	} {
-		if !safeInvocationComponent(field.value) {
-			return Invocation{}, fmt.Errorf("%s must be a nonempty safe identifier", field.name)
-		}
+	inv := Invocation{Version: ResultVersion, ID: getenv(InvocationIDEnvVar), TicketID: getenv(ResultTicketEnvVar), Stage: getenv(ResultStageEnvVar), AutomationID: getenv(ResultAutomationEnvVar), ResultPath: getenv(ResultFileEnvVar)}
+	if !safeInvocationComponent(inv.ID) {
+		return Invocation{}, fmt.Errorf("%s must be a nonempty safe identifier", InvocationIDEnvVar)
 	}
-	if !validResultText(inv.Stage) || strings.TrimSpace(inv.Stage) == "" || !SafeStage(inv.Stage) {
-		return Invocation{}, fmt.Errorf("%s must be a nonblank UTF-8 stage name without NUL or path separators", ResultStageEnvVar)
+	run := getenv(ResultRunNumberEnvVar)
+	if inv.AutomationID != "" || run != "" {
+		if inv.TicketID != "" || inv.Stage != "" {
+			return Invocation{}, fmt.Errorf("result invocation cannot mix ticket and automation context")
+		}
+		if !safeInvocationComponent(inv.AutomationID) {
+			return Invocation{}, fmt.Errorf("%s must be a nonempty safe identifier", ResultAutomationEnvVar)
+		}
+		n, err := strconv.ParseUint(run, 10, 64)
+		if err != nil || n == 0 || strconv.FormatUint(n, 10) != run {
+			return Invocation{}, fmt.Errorf("%s must be a positive canonical run number", ResultRunNumberEnvVar)
+		}
+		inv.RunNumber = n
+	} else {
+		if !safeInvocationComponent(inv.TicketID) {
+			return Invocation{}, fmt.Errorf("%s must be a nonempty safe identifier", ResultTicketEnvVar)
+		}
+		if !validResultText(inv.Stage) || strings.TrimSpace(inv.Stage) == "" || !SafeStage(inv.Stage) {
+			return Invocation{}, fmt.Errorf("%s must be a nonblank UTF-8 stage name without NUL or path separators", ResultStageEnvVar)
+		}
 	}
 	if err := validateResultPath(inv.ResultPath); err != nil {
 		return Invocation{}, fmt.Errorf("%s: %w", ResultFileEnvVar, err)

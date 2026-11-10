@@ -18,6 +18,8 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/worksonmyai/kontora/internal/automation"
+
 	"gopkg.in/yaml.v3"
 )
 
@@ -90,34 +92,35 @@ func (m PerAgent) For(agentName string, a Agent) string {
 }
 
 type Config struct {
-	TicketsDir                   string              `yaml:"tickets_dir"`
-	SecondaryTicketsDirs         []string            `yaml:"secondary_tickets_dirs"`
-	BranchPrefix                 string              `yaml:"branch_prefix"`
-	BranchNaming                 BranchNaming        `yaml:"branch_naming"`
-	WorktreesDir                 string              `yaml:"worktrees_dir"`
-	LogsDir                      string              `yaml:"logs_dir"`
-	Editor                       string              `yaml:"editor"`
-	Pager                        string              `yaml:"pager"`
-	DefaultAgent                 string              `yaml:"default_agent"`
-	DefaultPipeline              string              `yaml:"default_pipeline"`
-	MaxConcurrentAgents          int                 `yaml:"max_concurrent_agents"`
-	MaxConcurrentEpicSupervisors int                 `yaml:"max_concurrent_epic_supervisors"`
-	AutoPickUp                   *bool               `yaml:"auto_pick_up"`
-	InstanceName                 string              `yaml:"instance_name"`
-	Author                       string              `yaml:"author"`
-	TmuxSession                  string              `yaml:"tmux_session"`
-	Web                          Web                 `yaml:"web"`
-	Agents                       map[string]Agent    `yaml:"agents"`
-	Stages                       map[string]Stage    `yaml:"stages"`
-	Pipelines                    map[string]Pipeline `yaml:"pipelines"`
-	Projects                     map[string]Project  `yaml:"projects"`
-	Statuses                     []string            `yaml:"statuses"`
-	Environment                  map[string]string   `yaml:"environment"`
-	Hooks                        Hooks               `yaml:"hooks"`
-	Plannotator                  Plannotator         `yaml:"plannotator"`
-	Assistant                    Assistant           `yaml:"assistant"`
-	Metrics                      Metrics             `yaml:"metrics"`
-	Notifications                Notifications       `yaml:"notifications"`
+	TicketsDir                   string                     `yaml:"tickets_dir"`
+	SecondaryTicketsDirs         []string                   `yaml:"secondary_tickets_dirs"`
+	BranchPrefix                 string                     `yaml:"branch_prefix"`
+	BranchNaming                 BranchNaming               `yaml:"branch_naming"`
+	WorktreesDir                 string                     `yaml:"worktrees_dir"`
+	LogsDir                      string                     `yaml:"logs_dir"`
+	Editor                       string                     `yaml:"editor"`
+	Pager                        string                     `yaml:"pager"`
+	DefaultAgent                 string                     `yaml:"default_agent"`
+	DefaultPipeline              string                     `yaml:"default_pipeline"`
+	MaxConcurrentAgents          int                        `yaml:"max_concurrent_agents"`
+	MaxConcurrentEpicSupervisors int                        `yaml:"max_concurrent_epic_supervisors"`
+	AutoPickUp                   *bool                      `yaml:"auto_pick_up"`
+	InstanceName                 string                     `yaml:"instance_name"`
+	Author                       string                     `yaml:"author"`
+	TmuxSession                  string                     `yaml:"tmux_session"`
+	Web                          Web                        `yaml:"web"`
+	Agents                       map[string]Agent           `yaml:"agents"`
+	Stages                       map[string]Stage           `yaml:"stages"`
+	Pipelines                    map[string]Pipeline        `yaml:"pipelines"`
+	Projects                     map[string]Project         `yaml:"projects"`
+	Automations                  map[string]automation.Spec `yaml:"automations"`
+	Statuses                     []string                   `yaml:"statuses"`
+	Environment                  map[string]string          `yaml:"environment"`
+	Hooks                        Hooks                      `yaml:"hooks"`
+	Plannotator                  Plannotator                `yaml:"plannotator"`
+	Assistant                    Assistant                  `yaml:"assistant"`
+	Metrics                      Metrics                    `yaml:"metrics"`
+	Notifications                Notifications              `yaml:"notifications"`
 
 	// SummaryModel selects the model the final summary pass runs with, resolved
 	// against the agent that ran the last stage. It is one top-level field rather
@@ -781,6 +784,7 @@ func (c *Config) SetTicketsDir(dir string) {
 func (c *Config) applyDefaults() {
 	c.applyCoreDefaults()
 	c.applyServiceDefaults()
+	c.applyAutomationDefaults()
 
 	// Agents with no explicit failure_patterns get the built-in defaults. A nil
 	// slice means the key was absent; an explicit [] (non-nil, empty) opts out.
@@ -1090,20 +1094,10 @@ func (c *Config) Validate() error {
 		}
 	}
 
-	if err := c.validateMetrics(); err != nil {
-		return err
-	}
-
-	if err := c.validateNotifications(); err != nil {
-		return err
-	}
-
-	if err := c.validateAssistant(); err != nil {
-		return err
-	}
-
-	if err := c.validateAgentKeyedFields(); err != nil {
-		return err
+	for _, validate := range []func() error{c.validateMetrics, c.validateNotifications, c.validateAssistant, c.validateAgentKeyedFields} {
+		if err := validate(); err != nil {
+			return err
+		}
 	}
 
 	// Validate custom statuses.
@@ -1132,6 +1126,9 @@ func (c *Config) Validate() error {
 		return err
 	}
 
+	if err := c.validateAutomations(); err != nil {
+		return err
+	}
 	return c.validateProjects()
 }
 

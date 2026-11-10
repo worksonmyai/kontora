@@ -91,6 +91,64 @@ Secondary folders need filesystem write access for edits and Claim. Existing man
 board protections still apply. Settings exposes the list, but changing it requires a
 restart. See [Claim](tickets.md#claim-from-a-secondary-folder) for transfer rules.
 
+## Automations
+
+[Automations](automations.md) are scheduled agent runs without tickets or pipelines.
+Manage them through YAML, the dashboard, `kontora automation new`, or the [HTTP API](api.md#automations).
+Dashboard and API mutations write entries under `automations:` in the daemon's configuration file.
+
+```yaml
+automations:
+  morning-report:
+    name: Morning repository report
+    prompt: |
+      Inspect recent changes in {{ .Automation.Path }}.
+      Write the report for run {{ .Run.Number }}.
+    path: ~/projects/app
+    agent: claude
+    model: ""
+    schedule: "0 9 * * 1-5"
+    timezone: Europe/Berlin
+    workspace: worktree
+    overlap: skip
+    timeout: 30m
+    enabled: false
+```
+
+| Field | Meaning and default |
+|-------|---------------------|
+| Map key | Lowercase kebab-case, starts with a letter, at most 100 bytes. |
+| `name` | Required display name, at most 200 bytes. |
+| `prompt` | Required Go template, at most 65,536 bytes. Uses `.Automation`, `.Run`, `.LastRun`, and `file`. |
+| `path` | Required repository path. Supports `~`. |
+| `agent` | Configured agent name. Defaults to `default_agent` when loading YAML. |
+| `model` | Optional model override. Requires an agent that supports model selection. |
+| `schedule` | Required numeric five-field cron or positive whole-minute duration. Minimum interval: `1m`. |
+| `timezone` | IANA timezone; defaults to `UTC`. `Local` is invalid. |
+| `workspace` | `worktree` (default) creates an isolated worktree; `repo` uses the checkout directly. |
+| `overlap` | `skip` (default), `queue` (one pending run), or `replace` (cancel before replacement). |
+| `timeout` | Positive duration; defaults to `30m`. |
+| `enabled` | Enable scheduled runs; defaults to `false`. Manual requests still work when disabled. |
+
+`90m` and `2h` are valid intervals. `30s` and `90s` are invalid.
+Cron accepts digits and `*`, `/`, `-`, `,`; names, seconds fields, and descriptors such as `@daily` are invalid.
+Prompt syntax and agent references are validated with the full configuration before reload.
+See [prompt contexts](automations.md#workspaces-prompts-and-results) for automation-specific fields.
+
+Runs share agent capacity with tickets and work with `auto_pick_up: false`.
+Agent permissions still apply; prompt instructions do not enforce read-only execution.
+Disabling a definition stops future scheduling without cancelling accepted runs.
+Deleting its entry stops unfinished runs. Definition edits do not change already accepted inputs.
+
+Dashboard writes preserve unrelated YAML comments and follow symlinks without replacing the link.
+Entries that use anchors, aliases, or merges require direct YAML edits.
+Stale revisions and external changes cause a conflict instead of overwriting newer configuration.
+
+Runtime history and request receipts live under `~/.kontora/automations/`, scoped to the configuration path.
+`KONTORA_AUTOMATIONS_ROOT` overrides that root. Keep it stable across restarts.
+Run artifacts use `<logs_dir>/automations/<key>/`. Only one local daemon can own a state scope.
+See [storage and backup](automations.md#storage-and-backup) before restoring state.
+
 ## Full example
 
 ```yaml

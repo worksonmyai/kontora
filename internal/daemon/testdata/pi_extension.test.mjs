@@ -139,7 +139,7 @@ function loadExtension(source, ticketID, resultEnv = {}) {
   // Use Function constructor to avoid strict-mode issues with eval.
   const factory = new Function(fullSource + "\nreturn __factory;")();
   const env = { ...resultEnv, KONTORA_TICKET_ID: ticketID };
-  const keys = [...RESULT_ENV_KEYS, "KONTORA_TICKET_ID"];
+  const keys = [...RESULT_ENV_KEYS, "KONTORA_RESULT_AUTOMATION", "KONTORA_RESULT_RUN_NUMBER", "KONTORA_TICKET_ID"];
   const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
   try {
     for (const key of keys) {
@@ -377,6 +377,45 @@ for (const key of RESULT_ENV_KEYS) {
       assert.throws(() => loadExtension(DISABLED_SOURCE, undefined, { ...env, [key]: value }), new RegExp(key));
     });
   }
+}
+
+function automationResultEnv(t) {
+  const { env } = resultFixture(t, DISABLED_SOURCE);
+  delete env.KONTORA_RESULT_TICKET;
+  delete env.KONTORA_RESULT_STAGE;
+  return { ...env, KONTORA_RESULT_AUTOMATION: "auto-123", KONTORA_RESULT_RUN_NUMBER: "7" };
+}
+
+for (const outcome of ["complete", "blocked"]) {
+  test(`automation result binds its subject without a ticket: ${outcome}`, async (t) => {
+    const env = automationResultEnv(t);
+    const api = loadExtension(DISABLED_SOURCE, "inherited-ticket-must-not-be-used", env);
+    assert.equal(api.tools.kontora_note, undefined);
+    assert.equal(api.tools.kontora_summary, undefined);
+    assert.equal(api.tools.kontora_result.label, "Automation Result");
+    api.execHandler = async (_command, args) => {
+      assert.equal(args[3], "auto-123");
+      assert.equal(JSON.parse(readFileSync(args[2], "utf8")).outcome, outcome);
+      return { code: 0, stdout: JSON.stringify({ accepted: true, invocation_id: env.KONTORA_INVOCATION_ID, outcome }) };
+    };
+    const result = await api.tools.kontora_result.execute("call", {
+      outcome, summary: "Done", next_step: "Provide access", automation_id: "untrusted", ticket_id: "fake", run_number: 999,
+    }, undefined, undefined, createFakeContext());
+    assert.match(result.content[0].text, /automation run result accepted/);
+  });
+}
+
+for (const [key, value] of [
+  ["KONTORA_RESULT_AUTOMATION", ""], ["KONTORA_RESULT_AUTOMATION", "../auto"],
+  ["KONTORA_RESULT_RUN_NUMBER", ""], ["KONTORA_RESULT_RUN_NUMBER", "0"],
+  ["KONTORA_RESULT_RUN_NUMBER", "01"], ["KONTORA_RESULT_RUN_NUMBER", "-1"],
+  ["KONTORA_RESULT_RUN_NUMBER", "18446744073709551616"],
+  ["KONTORA_RESULT_TICKET", "fake"], ["KONTORA_RESULT_STAGE", "fake"],
+]) {
+  test(`invalid automation result context: ${key}=${JSON.stringify(value)}`, (t) => {
+    const env = automationResultEnv(t);
+    assert.throws(() => loadExtension(DISABLED_SOURCE, undefined, { ...env, [key]: value }));
+  });
 }
 
 test("unsupported result context version errors", (t) => {

@@ -152,13 +152,17 @@ func TestClampDim(t *testing.T) {
 	tests := []struct {
 		name string
 		in   int
-		want int
+		want uint16
 	}{
+		{"negative", -1, 1},
+		{"zero", 0, 1},
+		{"minimum", 1, 1},
 		{"below the cap", 240, 240},
 		{"at the cap", maxTerminalDim, maxTerminalDim},
 		{"above the cap", maxTerminalDim + 1, maxTerminalDim},
 		// uint16(65536) is 0, which would leave tmux and the pty with no columns.
 		{"past uint16", 65536, maxTerminalDim},
+		{"maximum int", int(^uint(0) >> 1), maxTerminalDim},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

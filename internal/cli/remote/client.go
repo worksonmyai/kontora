@@ -21,6 +21,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/worksonmyai/kontora/internal/automation"
 	"github.com/worksonmyai/kontora/internal/ticket/store"
 	"github.com/worksonmyai/kontora/internal/web"
 )
@@ -402,12 +403,34 @@ func (c *Client) RawConfig() (string, error) {
 	return r.Content, nil
 }
 
+func (c *Client) Automation(id string) (automation.Definition, error) {
+	var row automation.Definition
+	err := c.doJSON(http.MethodGet, "/api/automations/"+url.PathEscape(id), nil, &row)
+	return row, err
+}
+
+func (c *Client) AutomationTerminal(id string, n uint64) (web.AutomationTerminalTarget, error) {
+	var target web.AutomationTerminalTarget
+	err := c.doJSON(http.MethodGet, fmt.Sprintf("/api/automations/%s/runs/%d/terminal", url.PathEscape(id), n), nil, &target)
+	return target, err
+}
+
+func (c *Client) CreateAutomation(requestID, key string, spec automation.Spec) (automation.Definition, error) {
+	var row automation.Definition
+	err := c.doJSON(http.MethodPost, "/api/automations", map[string]any{"request_id": requestID, "key": key, "definition": spec}, &row)
+	return row, err
+}
+
 // PutRawConfig replaces the daemon's on-disk config file with content. The
 // daemon validates it before writing, then reloads it, so most changes apply
 // before the request returns. The settings that need a restart are listed in
 // docs/configuration.md.
 func (c *Client) PutRawConfig(content string) error {
 	return c.doJSON(http.MethodPut, "/api/config/raw", map[string]string{"content": content}, nil)
+}
+
+func (c *Client) PutRawConfigIf(content, expected string) error {
+	return c.doJSON(http.MethodPut, "/api/config/raw", map[string]string{"content": content, "expected_content": expected}, nil)
 }
 
 func (c *Client) postAction(path string) error {

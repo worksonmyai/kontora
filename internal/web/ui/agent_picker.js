@@ -1,4 +1,4 @@
-const AGENT_PICKER_HOSTS = ['init', 'create', 'edit', 'mobile-create'];
+const AGENT_PICKER_HOSTS = ['init', 'create', 'edit', 'mobile-create', 'automations'];
 const AGENT_PICKER_RECENTS_KEY = 'kontora-recent-agents';
 const AGENT_PICKER_RECENTS_MAX = 3;
 const AGENT_PICKER_FILTER_MIN = 6;
@@ -194,7 +194,7 @@ export function kontoraAgentPicker() {
     },
 
     agentPickerTriggerID(host) {
-      return ({ init: 'init-agent', create: 'new-agent', edit: 'edit-agent', 'mobile-create': 'mobile-new-agent' })[host];
+      return ({ init: 'init-agent', create: 'new-agent', edit: 'edit-agent', 'mobile-create': 'mobile-new-agent', automations: 'automation-agent' })[host];
     },
 
     agentPickerFallbackID(host) {
@@ -222,16 +222,18 @@ export function kontoraAgentPicker() {
     },
 
     agentPickerHostLabel(host) {
-      return ({ init: 'start ticket', create: 'new ticket', edit: 'ticket edit', 'mobile-create': 'new ticket' })[host] || 'ticket';
+      return ({ init: 'start ticket', create: 'new ticket', edit: 'ticket edit', 'mobile-create': 'new ticket', automations: 'automation' })[host] || 'ticket';
     },
 
     agentPickerValue(host) {
+      if (host === 'automations') return this.automationsDraft.agent || '';
       if (host === 'init') return this.initForm.agent || '';
       if (host === 'edit') return this.editForm.agent || '';
       return this.createForm.agent || '';
     },
 
     agentPickerPipeline(host) {
+      if (host === 'automations') return '';
       var ticket = host === 'init' ? this.initForm : host === 'edit' ? this.selectedTicket : this.createForm;
       if (ticket?.kind === 'epic') return '';
       if (host === 'init') return this.initForm.pipeline || '';
@@ -381,6 +383,7 @@ export function kontoraAgentPicker() {
       const classes = {
         init: 'h-[39px] rounded-[7px] pl-3 pr-2.5 text-[13px] text-tx',
         create: 'h-[36px] rounded px-2 text-sm text-tx-2',
+        automations: 'h-[36px] rounded px-2 text-sm text-tx-2',
         edit: 'h-8 rounded px-2 text-[13px] text-tx-2',
         'mobile-create': 'h-[42px] rounded-[10px] px-2.5 text-[13px] text-tx-3 bg-surface-950',
       };
@@ -394,6 +397,7 @@ export function kontoraAgentPicker() {
       const classes = {
         init: 'h-[39px] rounded-[7px] px-3 text-[13px] text-tx border-edge-input',
         create: 'h-[36px] rounded px-2 text-sm text-tx-2 border-surface-700/50',
+        automations: 'h-[36px] rounded px-2 text-sm text-tx-2 border-surface-700/50',
         edit: 'h-8 rounded px-2 text-[13px] text-tx-2 border-surface-700/50',
         'mobile-create': 'h-[42px] rounded-[10px] px-2.5 text-[13px] text-tx-3 bg-surface-950 border-surface-700/50',
       };
@@ -553,7 +557,11 @@ export function kontoraAgentPicker() {
     },
 
     agentPickerChoose(host, value, restoreFocus) {
-      if (host === 'init') {
+      if (host === 'automations') {
+        if (this.automationsPending || this.automationsCreate) return;
+        this.automationsDraft.agent = value || this.configCache?.default_agent || this.configCache?.agents?.[0] || '';
+        this.automationsDraftChanged();
+      } else if (host === 'init') {
         this.initForm.agent = value;
         this._initAgentFollowsProject = false;
       } else if (host === 'edit') {

@@ -118,6 +118,12 @@ func TestAddNote(t *testing.T) {
 			wantSub: "old note\n\n**2026-03-06T12:00:00Z · kontora · ",
 		},
 		{
+			name:    "empty notes section followed by another heading",
+			body:    "# Title\n\n## Notes\n## Verification\n\nran the suite\n",
+			opts:    AddNoteOptions{Text: "line one\nline two", At: ts},
+			wantSub: "line one\nline two\n\n## Verification\n\nran the suite\n",
+		},
+		{
 			name:    "empty body",
 			body:    "",
 			opts:    AddNoteOptions{Text: "note on empty", At: ts},

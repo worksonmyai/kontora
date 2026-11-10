@@ -15,11 +15,13 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	_ "time/tzdata"
 
 	"github.com/charmbracelet/lipgloss"
 	charmlog "github.com/charmbracelet/log"
 	"github.com/mattn/go-isatty"
 
+	"github.com/worksonmyai/kontora/internal/automation"
 	"github.com/worksonmyai/kontora/internal/cli"
 	"github.com/worksonmyai/kontora/internal/cli/remote"
 	"github.com/worksonmyai/kontora/internal/cli/tui"
@@ -110,6 +112,7 @@ var handlers = map[string]func(){
 	"review":              func() { cmdPlannotator("review") },
 	"annotate":            func() { cmdPlannotator("annotate") },
 	"attach":              cmdAttach,
+	"automation":          cmdAutomation,
 	"start":               cmdStart,
 	"setup":               cmdSetup,
 	"doctor":              cmdDoctor,
@@ -1478,6 +1481,47 @@ func cmdLogs() {
 	}
 }
 
+func cmdAutomation() {
+	if len(os.Args) < 3 || os.Args[2] != "new" {
+		log.Fatal("usage: kontora automation new --name NAME --prompt-file FILE --path PATH --agent AGENT --schedule SCHEDULE")
+	}
+	fs := flag.NewFlagSet("automation new", flag.ExitOnError)
+	configPath := fs.String("config", defaultConfigPath(), "path to config file")
+	urlFlag, tokenFlag := addRemoteFlags(fs)
+	key := fs.String("key", "", "config key (derived from name when empty)")
+	name := fs.String("name", "", "automation name")
+	promptFile := fs.String("prompt-file", "", "file containing the prompt template")
+	path := fs.String("path", "", "repository path on the daemon host")
+	agent := fs.String("agent", "", "configured agent")
+	model := fs.String("model", "", "model override")
+	schedule := fs.String("schedule", "", "five-field cron or an interval, such as 30m")
+	zone := fs.String("timezone", "UTC", "IANA timezone")
+	workspace := fs.String("workspace", "worktree", "worktree or repo")
+	overlap := fs.String("overlap", "skip", "skip, queue or replace")
+	timeout := fs.String("timeout", "30m", "run timeout")
+	enabled := fs.Bool("enabled", false, "enable scheduled runs")
+	if err := fs.Parse(os.Args[3:]); err != nil {
+		log.Fatal(err)
+	}
+	if *promptFile == "" {
+		fs.Usage()
+		log.Fatal("--prompt-file is required")
+	}
+	body, err := os.ReadFile(*promptFile)
+	if err != nil {
+		log.Fatal(err)
+	}
+	rc := remoteClient(*urlFlag, *tokenFlag)
+	if rc == nil {
+		rc = cli.LocalClient(mustLoadConfig(*configPath))
+	}
+	row, err := cli.NewAutomation(rc, *key, automation.Spec{Name: *name, Prompt: string(body), Path: *path, Agent: *agent, Model: *model, Schedule: *schedule, Timezone: *zone, Workspace: *workspace, Overlap: *overlap, Timeout: *timeout, Enabled: *enabled})
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Printf("created %s · automations.%s\n", row.ID, row.Key)
+}
+
 func cmdAttach() {
 	fs := flag.NewFlagSet("attach", flag.ExitOnError)
 	configPath, ticketsDir := addStoreFlags(fs)
@@ -1489,7 +1533,11 @@ func cmdAttach() {
 		if taskID == "" {
 			log.Fatal("ticket ID is required: kontora attach TICKET_ID")
 		}
-		if err := remote.Attach(context.Background(), rc, mustResolveRemote(rc, taskID), *rw); err != nil {
+		resolved := taskID
+		if !automation.IsID(taskID) {
+			resolved = mustResolveRemote(rc, taskID)
+		}
+		if err := remote.Attach(context.Background(), rc, resolved, *rw); err != nil {
 			log.Fatal(err)
 		}
 		return
@@ -1598,7 +1646,7 @@ func remoteConfigEdit(rc *remote.Client) error {
 		return fmt.Errorf("edited config is invalid, not saving: %w", err)
 	}
 
-	if err := rc.PutRawConfig(string(edited)); err != nil {
+	if err := rc.PutRawConfigIf(string(edited), content); err != nil {
 		return err
 	}
 

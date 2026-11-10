@@ -11,13 +11,24 @@ import (
 	"syscall"
 )
 
-var ErrOwnedBranch = errors.New("branch or worktree belongs to an orchestrator")
+var ErrOwnedBranch = errors.New("branch or worktree belongs to another execution")
 
 type BranchOwnership struct {
-	BoardID     string `json:"board_id"`
-	ObjectiveID string `json:"objective_id"`
-	Generation  uint64 `json:"generation"`
-	Worktree    string `json:"worktree,omitempty"`
+	// Empty Kind preserves the existing orchestrator ownership contract.
+	Kind         string `json:"kind,omitempty"`
+	AutomationID string `json:"automation_id,omitempty"`
+	RunNumber    uint64 `json:"run_number,omitempty"`
+	BoardID      string `json:"board_id,omitempty"`
+	ObjectiveID  string `json:"objective_id,omitempty"`
+	Generation   uint64 `json:"generation,omitempty"`
+	Worktree     string `json:"worktree,omitempty"`
+}
+
+func (o BranchOwnership) valid() bool {
+	if o.Kind == "automation" {
+		return o.AutomationID != "" && o.RunNumber != 0 && o.BoardID == "" && o.ObjectiveID == "" && o.Generation == 0
+	}
+	return o.Kind == "" && o.AutomationID == "" && o.RunNumber == 0 && o.BoardID != "" && o.ObjectiveID != "" && o.Generation != 0
 }
 
 func CommonDir(repo string) (string, error) {
@@ -71,7 +82,7 @@ func withBranchOwnershipSync(repo string, syncParent func(string) error, fn func
 			return fmt.Errorf("invalid branch ownership")
 		}
 		for ref, owner := range leases {
-			if !strings.HasPrefix(ref, "refs/heads/") || owner.BoardID == "" || owner.ObjectiveID == "" || owner.Generation == 0 || (owner.Worktree != "" && !filepath.IsAbs(owner.Worktree)) {
+			if !strings.HasPrefix(ref, "refs/heads/") || !owner.valid() || (owner.Worktree != "" && !filepath.IsAbs(owner.Worktree)) {
 				return fmt.Errorf("invalid branch ownership for %q", ref)
 			}
 		}
@@ -84,7 +95,7 @@ func withBranchOwnershipSync(repo string, syncParent func(string) error, fn func
 // ReserveBranch persists ownership before a managed worktree can be projected.
 // Reservations remain held after projection errors and across daemon restarts.
 func ReserveBranch(repo, branch string, owner BranchOwnership) error {
-	if owner.BoardID == "" || owner.ObjectiveID == "" || owner.Generation == 0 {
+	if !owner.valid() {
 		return fmt.Errorf("incomplete branch ownership")
 	}
 	ref := branchRef(branch)

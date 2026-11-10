@@ -1,0 +1,23 @@
+.automations-view button:disabled { opacity: .5; cursor: not-allowed; }
+.automations-view .automations-table { border-collapse: collapse; }
+.automations-view .automations-table td { overflow: hidden; }
+.automations-view .automations-action { height: 28px; padding: 0 10px; border: 1px solid rgb(var(--edge-input)); border-radius: 7px; background: rgb(var(--surface-900)); font: 11.5px 'JetBrains Mono', monospace; }
+.automations-view .automations-mobile-actions { display: none; }
+.automations-view .automations-log-line > * { min-width: 0; }
+.automations-view .automations-run-strip button { min-width: 3px; min-height: 5px; height: 5px; }
+.automations-view .automations-editor :is(input, textarea):focus { outline: 1px solid rgba(var(--accent), .4); }
+@media (max-width: 1100px) {
+  .automations-view .automations-rail { display: none; }
+  .automations-view .automations-run-strip { flex-wrap: wrap; }
+  .automations-view .automations-meters { border-left: 0; padding-left: 0; }
+}
+@media (max-width: 767px) {
+  .automations-view { width: 100%; min-height: 0; }
+  .automations-view .automations-mobile-actions { display: flex; }
+  .automations-view .automations-editor { padding: 20px 16px; }
+  .automations-view .automations-detail { overflow-y: auto; }
+  .automations-view .automations-run-strip > :first-child { flex-basis: 100%; }
+  .automations-view .automations-meters { width: 100%; justify-content: space-between; gap: 10px; }
+  .automations-view .automations-log-line { grid-template-columns: 54px minmax(0, 1fr); gap: 6px; }
+  .automations-view .automations-log-line > :nth-child(2) { display: none; }
+}

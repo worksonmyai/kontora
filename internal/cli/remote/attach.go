@@ -15,7 +15,9 @@ import (
 	"github.com/coder/websocket"
 	"golang.org/x/term"
 
+	"github.com/worksonmyai/kontora/internal/automation"
 	"github.com/worksonmyai/kontora/internal/ticket"
+	"github.com/worksonmyai/kontora/internal/web"
 )
 
 // termMsg is the JSON frame the daemon's terminal endpoint expects for input
@@ -36,7 +38,17 @@ type termMsg struct {
 // and stdin is not forwarded, so Ctrl-C still interrupts the local process. It
 // returns when the connection closes.
 func Attach(ctx context.Context, c *Client, id string, rw bool) error {
-	if err := checkAttachable(c, id); err != nil {
+	attachID := id
+	if automation.IsID(id) {
+		row, err := c.Automation(id)
+		if err != nil {
+			return err
+		}
+		if !row.Running || row.CurrentRun == nil {
+			return fmt.Errorf("automation %s has no live session", id)
+		}
+		attachID = id + "/" + strconv.FormatUint(row.CurrentRun.N, 10)
+	} else if err := checkAttachable(c, id); err != nil {
 		return err
 	}
 
@@ -50,13 +62,18 @@ func Attach(ctx context.Context, c *Client, id string, rw bool) error {
 		}
 	}
 
-	endpoint, err := wsURL(c.base, id, rw, cols, rows)
+	endpoint, err := wsURL(c.base, attachID, rw, cols, rows)
 	if err != nil {
 		return err
 	}
 
-	opts := &websocket.DialOptions{CompressionMode: websocket.CompressionContextTakeover}
-	if c.token != "" {
+	opts := &websocket.DialOptions{
+		HTTPClient:      c.hc,
+		CompressionMode: websocket.CompressionContextTakeover,
+	}
+	if c.operatorToken != "" {
+		opts.HTTPHeader = http.Header{web.OperatorTokenHeader: {c.operatorToken}}
+	} else if c.token != "" {
 		opts.HTTPHeader = http.Header{"Authorization": {"Bearer " + c.token}}
 	}
 
@@ -73,9 +90,9 @@ func Attach(ctx context.Context, c *Client, id string, rw bool) error {
 		// statuses a user can act on into the reason behind them.
 		switch status {
 		case http.StatusNotFound:
-			return fmt.Errorf("no live terminal session for ticket %s on the daemon", id)
+			return fmt.Errorf("no live terminal session for %s on the daemon", id)
 		case http.StatusUnauthorized, http.StatusForbidden:
-			return fmt.Errorf("the daemon rejected the token for ticket %s", id)
+			return fmt.Errorf("the daemon rejected the token for %s", id)
 		}
 		return fmt.Errorf("connecting to remote terminal: %w", err)
 	}
@@ -197,7 +214,11 @@ func wsURL(base, id string, rw bool, cols, rows int) (string, error) {
 	default:
 		return "", fmt.Errorf("unsupported URL scheme %q", u.Scheme)
 	}
-	u.Path = strings.TrimRight(u.Path, "/") + "/ws/terminal/" + id
+	if strings.HasPrefix(id, "aut-") && strings.Contains(id, "/") {
+		u.Path = strings.TrimRight(u.Path, "/") + "/ws/automations/" + id
+	} else {
+		u.Path = strings.TrimRight(u.Path, "/") + "/ws/terminal/" + id
+	}
 
 	q := u.Query()
 	rwVal := "0"

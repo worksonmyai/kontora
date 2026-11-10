@@ -478,9 +478,47 @@ Prints the figures the dashboard's Stats page shows: throughput, median cycle ti
 | `--project NAME` | Only count tickets for this configured project. |
 | `--pipeline NAME` | Only count tickets for this pipeline. |
 
+### `kontora automation new [flags]`
+
+Creates a scheduled agent definition in the running daemon's YAML configuration. It does not create a ticket.
+The command reads a prompt template from a local file and prints the automation ID and configuration key.
+Local mode needs a running daemon; remote mode uses `--url` and the configured authentication.
+
+```bash
+kontora automation new \
+  --name "Morning repository report" \
+  --prompt-file ./report-prompt.md \
+  --path /home/alex/projects/app \
+  --agent claude \
+  --schedule "0 9 * * 1-5" \
+  --timezone Europe/Berlin
+```
+
+| Flag | Description |
+|------|-------------|
+| `--name NAME` | Required display name. |
+| `--prompt-file FILE` | Required local file containing the Go prompt template. |
+| `--path PATH` | Required repository path on the daemon host. |
+| `--agent NAME` | Required configured agent name. |
+| `--schedule SCHEDULE` | Required numeric five-field cron or whole-minute interval, such as `30m`. Minimum: `1m`. |
+| `--key KEY` | Lowercase kebab-case configuration key. Derived from the name when omitted. |
+| `--model MODEL` | Optional model override for a supported agent. |
+| `--timezone ZONE` | IANA timezone; defaults to `UTC`. |
+| `--workspace MODE` | `worktree` (default) or `repo`. |
+| `--overlap POLICY` | `skip` (default), `queue`, or `replace`. Queue keeps one pending run. |
+| `--timeout DURATION` | Positive run timeout; defaults to `30m`. |
+| `--enabled` | Enable scheduled runs immediately. Scheduling is disabled when this flag is omitted. |
+
+Use the dashboard or [HTTP API](api.md#automations) to edit, delete, pause, resume, run, or stop an automation.
+Manual requests work while scheduling is paused. See [Automations](automations.md) for results, overlap, and recovery.
+
 ### `kontora attach [--rw] TICKET_ID`
 
 Attaches to the running ticket's terminal: the tmux window locally, a WebSocket to the daemon in remote mode. Read-only unless `--rw` is given. Locally, omitting the ticket ID opens a picker of running sessions.
+
+`kontora attach [--rw] AUTOMATION_ID` attaches to the automation's current run using its full ID (`aut-` followed by 32 lowercase hexadecimal characters).
+The daemon resolves and verifies the saved terminal target. Arbitrary session names are not accepted.
+A queued, completed, or unavailable run has no attachable terminal.
 
 ### `kontora review TICKET_ID` / `kontora annotate TICKET_ID`
 

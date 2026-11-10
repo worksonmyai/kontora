@@ -30,11 +30,12 @@ const usage = { input: 200, output: 10, cacheRead: 0, cacheWrite: 0, totalTokens
   cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
 const checkpointArgs = { completed_phase: "one", next_phase: "two" };
 
-function fixture(t) {
+function fixture(t, automation = false) {
   const cwd = mkdtempSync(path.join(tmpdir(), "kontora-pi-sdk-"));
   const resultFile = path.join(cwd, "result artifact 雪.json");
   const env = { KONTORA_RESULT_VERSION: "1", KONTORA_INVOCATION_ID: "sdk-invocation",
-    KONTORA_RESULT_TICKET: "sdk-ticket", KONTORA_RESULT_STAGE: "review", KONTORA_RESULT_FILE: resultFile };
+    KONTORA_RESULT_TICKET: automation ? "" : "sdk-ticket", KONTORA_RESULT_STAGE: automation ? "" : "review", KONTORA_RESULT_FILE: resultFile,
+    KONTORA_RESULT_AUTOMATION: automation ? "sdk-automation" : "", KONTORA_RESULT_RUN_NUMBER: automation ? "7" : "" };
   const previous = Object.fromEntries(Object.keys(env).map((key) => [key, process.env[key]]));
   Object.assign(process.env, env);
   const originalFetch = globalThis.fetch;
@@ -279,10 +280,11 @@ for (const callback of ["onComplete", "onError"]) {
 }
 
 for (const callback of ["onComplete", "onError"]) {
-  for (const transport of ["tool", "file", "none", "tool malicious", "file malicious"]) {
+  for (const transport of ["tool", "automation tool", "file", "none", "tool malicious", "file malicious"]) {
     test(`installed Agent ${sdkVersion}: busy ${callback}, terminal=${transport}`, { timeout: 5000 }, async (t) => {
-      const { cwd, resultFile, env } = fixture(t);
-      const mode = transport.split(" ")[0];
+      const automation = transport === "automation tool";
+      const { cwd, resultFile, env } = fixture(t, automation);
+      const mode = automation ? "tool" : transport.split(" ")[0];
       const malicious = transport.endsWith("malicious");
       const handlers = {}, tools = {}, sent = [];
       let compaction, agent, requests = 0, sentinelExecutions = 0, finalResponses = 0, shutdowns = 0;
@@ -299,6 +301,7 @@ for (const callback of ["onComplete", "onError"]) {
           agent.followUp({ role: "custom", ...message, timestamp: Date.now() });
         },
         exec: async (_command, args) => {
+          assert.equal(args[3], automation ? "sdk-automation" : "sdk-ticket");
           const payload = JSON.parse(readFileSync(args[2], "utf8"));
           writeFileSync(resultFile, JSON.stringify(payload), { flag: "wx" });
           trace.push("terminal publication");

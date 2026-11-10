@@ -340,6 +340,7 @@ export function kontoraApp() {
       this.destroyAgentPicker();
       if (this._routeListener) window.removeEventListener('hashchange', this._routeListener);
       this.closeStats();
+      this.automationsDispose();
       this.closeTerminal();
       this._destroyTerminal();
       this._resetActivity();

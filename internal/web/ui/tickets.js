@@ -87,6 +87,17 @@ export function kontoraTickets() {
       // Desktop and mobile are complementary x-if layers, so only one board
       // exists at a time and crossing the breakpoint rebuilds it.
       this.$watch('isMobile', () => this._onBreakpointChange());
+      const syncAutomationTerminal = () => {
+        if (this.currentView !== 'automations') return;
+        if (this.terminalOpen && (!this.terminalWanted() || this.terminalSubjectKey !== this.outputSubjectKey())) {
+          this.closeTerminal();
+          this.terminalRW = false;
+        }
+        if (this.terminalWanted() && !this.terminalOpen) this.$nextTick(() => this.openTerminal());
+      };
+      this.$watch('automations', syncAutomationTerminal);
+      this.$watch('automationsTab', syncAutomationTerminal);
+      this.$watch('automationsEditing', syncAutomationTerminal);
       this._bindGlobalEvents();
       this.setupAgentPicker();
       // Every startup request is a round trip, which costs most on a phone
@@ -129,6 +140,7 @@ export function kontoraTickets() {
         }
         return;
       }
+      this.automationsRefresh();
       // After the auth check, so a pane on a tokenless session does not fire a
       // second 401 of its own.
       this.initAssistant();
@@ -157,6 +169,8 @@ export function kontoraTickets() {
             this.tickets = this._mergeSnapshot((data.tickets || []).map(t => this.boardEntry(t)), this.tickets, touched);
             this._reconcileSnapshotSelection(this.tickets, false, touched);
             this.recomputeBoard();
+            // Exclude automation sessions, which have their own running count.
+            this.runningAgents = Math.max(0, (data.running_agents || 0) - (data.automation_running_agents || 0));
             this.updateFavicon();
           } catch (e) {
             if (!primaryAgain || this._appDestroyed) throw e;
@@ -341,7 +355,7 @@ export function kontoraTickets() {
     // reads the session tab; mobile has its own tab state and must not depend
     // on a desktop-only value.
     terminalWanted() {
-      return this.currentView === 'board' && this.outputSubject()?.status === 'in_progress' && this.outputTab() === 'session';
+      return ['board', 'automations'].includes(this.currentView) && this.outputSubject()?.status === 'in_progress' && this.outputTab() === 'session';
     },
 
     showTerminalTab() {
@@ -549,9 +563,19 @@ export function kontoraTickets() {
       this._eventSource = es;
       es.addEventListener('open', () => {
         this.companionRefresh();
+        this.automationsRefresh();
+        if (this.currentView === 'archive') {
+          this.archiveLoad();
+          if (this.archiveDetailOpen()) {
+            const row = this.selectedTicket;
+            this._archiveDetailId = null;
+            this.archiveOpenRow(row);
+          }
+        }
         if (initialSnapshot) this._releaseInitialSnapshot();
         else this.resyncTickets();
       });
+      es.addEventListener('automations_updated', () => { this.automationsRefresh(); });
       es.addEventListener('companion_updated', () => { this.companionRefresh(); });
       es.addEventListener('ticket_sources_changed', () => { this.fetchTicketSources(); });
       es.addEventListener('ticket_updated', (e) => {
@@ -569,13 +593,15 @@ export function kontoraTickets() {
       es.addEventListener('ticket_deleted', (e) => {
         const ticket = JSON.parse(e.data);
         this._touchTicket(ticket);
+        const wasSelected = this.sameTicket(this.selectedTicket, ticket);
         this.tickets = this.tickets.filter(t => t.id !== ticket.id);
         this.archiveDropRow(ticket.id);
         if (this.initModal && this.initForm.ticketId === ticket.id) this.closeInitModal();
         else this.refreshInitContext(ticket.id);
         if (this.createForm.parent === ticket.id) this.syncCreatePipeline();
-        if (this.sameTicket(this.selectedTicket, ticket)) {
+        if (wasSelected) {
           this.closeDetail();
+          this.error = 'Historical ticket ' + ticket.id + ' is missing. It may have been deleted.';
         } else if (this._chainHasNode(ticket.id)) {
           // A dep or a dependent of the open ticket is gone: the ladder would
           // keep drawing it, holder and resume pill included.

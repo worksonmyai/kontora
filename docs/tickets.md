@@ -320,6 +320,20 @@ A promotion is deferred, not lost, while a run or a Plannotator session owns the
 
 `kontora run` on a scheduled ticket removes the timestamp and sets `status: todo` in the same save, and queues the ticket even with `auto_pick_up: false`. Every other lifecycle move off `open` drops the timestamp too: `retry`, `skip`, `move`, an `init` that queues the ticket, and parking the ticket for an [annotation run](configuration.md#plannotator). Each of them has already answered the question the schedule was asking. An uploaded `.md` file loses any `scheduled_at` it carries, for the same reason the upload is clamped to `open`: it arrives as a draft, not as a run request.
 
+#### Automations
+
+[Automations](automations.md) run agents directly from entries under `automations:` in the daemon's YAML configuration.
+They do not create tickets, inherit ticket pipelines, or use ticket lifecycle controls.
+Each automation run has its own number, result, terminal, and logs.
+
+Use `scheduled_at` for one-time promotion of an existing ticket.
+Use an automation for a recurring prompt or a manual run of that saved prompt.
+Automations share agent capacity with tickets, but their enabled schedules and manual requests work with `auto_pick_up: false`.
+
+Pause disables future scheduled runs without cancelling accepted runs. Stop targets an automation run; deletion stops its unfinished work.
+Overlap policies are `skip`, `queue`, and `replace`. Queue keeps at most one pending run; replacement waits for confirmed termination.
+Ticket deletion does not affect automation history or receipts.
+
 ### Daemon-managed fields
 
 These are set and updated by the daemon as the ticket progresses through its pipeline. Do not edit them manually while the daemon is running.

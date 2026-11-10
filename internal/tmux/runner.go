@@ -37,9 +37,14 @@ type RunParams struct {
 	// gone. It also disables the noninteractive failure debug shell. Window
 	// absence does not prove that detached descendants stopped.
 	RequireTermination bool
-	Interactive        bool              // when true, use tmux wait-for + /exit flow for hook-based completion
-	SessionID          string            // Claude session ID; daemon uses this for session JSONL materialization
-	Env                map[string]string // environment variables to export in the wrapper script
+	// StableWindowIdentity gates launch until identity has been captured. Either
+	// callback/expectation also enables it. Ordinary tickets keep name targets.
+	StableWindowIdentity bool
+	OnWindowCreated      func(WindowIdentity) error
+	ExpectedIdentity     *WindowIdentity
+	Interactive          bool              // when true, use tmux wait-for + /exit flow for hook-based completion
+	SessionID            string            // Claude session ID; daemon uses this for session JSONL materialization
+	Env                  map[string]string // environment variables to export in the wrapper script
 	// PathDirs are appended to $PATH in the wrapper script. tmux starts the
 	// wrapper through default-shell, so the script runs after that shell built
 	// its own PATH: these are added to it, never substituted for it.
@@ -82,6 +87,38 @@ func (p RunParams) WindowName() string {
 	// The digest separates identities whose normalized names are the same.
 	digest := sha256.Sum256([]byte(fmt.Sprintf("%d:%s%s", len(p.TicketID), p.TicketID, p.AttemptID)))
 	return normalize(p.TicketID) + "--" + normalize(p.AttemptID) + fmt.Sprintf("-%x", digest[:6])
+}
+
+func (p RunParams) stableIdentity() bool {
+	return p.StableWindowIdentity || p.OnWindowCreated != nil || p.ExpectedIdentity != nil
+}
+
+func createRunWindow(p RunParams, script string) (idleTmux, error) {
+	if !p.stableIdentity() {
+		tm := windowTmux{session: p.session(), ticketID: p.WindowName()}
+		return tm, newWindow(p.session(), p.WindowName(), p.Dir, script)
+	}
+	id, err := newWindowIdentity(p.session(), p.WindowName(), p.Dir, script)
+	if err != nil {
+		return nil, err
+	}
+	tm := identityTmux{id: id}
+	if p.ExpectedIdentity != nil && *p.ExpectedIdentity != id {
+		return tm, fmt.Errorf("created tmux window does not match expected identity")
+	}
+	if p.OnWindowCreated != nil {
+		if err := p.OnWindowCreated(id); err != nil {
+			return tm, fmt.Errorf("persisting tmux window identity: %w", err)
+		}
+	}
+	return tm, nil
+}
+
+func pipeRunPane(tm idleTmux, p RunParams) error {
+	if identity, ok := tm.(identityTmux); ok {
+		return identity.pipePane(p.LogFile)
+	}
+	return PipePaneTo(p.session(), p.WindowName(), p.LogFile)
 }
 
 func (p RunParams) terminalReported() bool {
@@ -129,12 +166,10 @@ func Run(ctx context.Context, p RunParams) (process.Result, error) {
 // with /exit.
 func runInteractive(ctx context.Context, p RunParams) (process.Result, error) {
 	cmd := append([]string{p.Binary}, p.Args...)
-	sess := p.session()
-
 	usePipePaneLogging := p.LogFile != ""
 
 	var gateFile string
-	if usePipePaneLogging {
+	if usePipePaneLogging || p.stableIdentity() {
 		g, err := os.CreateTemp("", "kontora-gate-*")
 		if err != nil {
 			return process.Result{}, fmt.Errorf("creating gate file: %w", err)
@@ -151,8 +186,12 @@ func runInteractive(ctx context.Context, p RunParams) (process.Result, error) {
 
 	startedAt := time.Now()
 
-	if err := newWindow(sess, p.WindowName(), p.Dir, scriptPath); err != nil {
+	tm, err := createRunWindow(p, scriptPath)
+	if err != nil {
 		os.Remove(scriptPath)
+		if tm != nil && p.stableIdentity() {
+			return windowResult(tm, -1, startedAt, errors.Join(err, stopWindow(tm)), p.RequireTermination)
+		}
 		return process.Result{ExitCode: -1}, err
 	}
 	if p.OnReady != nil {
@@ -166,13 +205,16 @@ func runInteractive(ctx context.Context, p RunParams) (process.Result, error) {
 		}
 	}()
 
+	if p.stableIdentity() && ctx.Err() != nil {
+		return windowResult(tm, -1, startedAt, errors.Join(ctx.Err(), stopWindow(tm)), p.RequireTermination)
+	}
 	if usePipePaneLogging {
-		if err := PipePaneTo(sess, p.WindowName(), p.LogFile); err != nil {
-			tm := windowTmux{session: sess, ticketID: p.WindowName()}
+		if err := pipeRunPane(tm, p); err != nil {
 			return windowResult(tm, -1, startedAt, errors.Join(err, stopWindow(tm)), p.RequireTermination)
 		}
+	}
+	if gateFile != "" {
 		if err := os.WriteFile(gateFile, []byte("go"), 0o644); err != nil {
-			tm := windowTmux{session: sess, ticketID: p.WindowName()}
 			return windowResult(tm, -1, startedAt, errors.Join(fmt.Errorf("writing gate file: %w", err), stopWindow(tm)), p.RequireTermination)
 		}
 	}
@@ -183,7 +225,6 @@ func runInteractive(ctx context.Context, p RunParams) (process.Result, error) {
 		defer cancel()
 	}
 
-	tm := windowTmux{session: sess, ticketID: p.WindowName()}
 	code, err := idleLoop(ctx, tm, p, startedAt)
 	return windowResult(tm, code, startedAt, err, p.RequireTermination)
 }
@@ -200,10 +241,8 @@ func runStandard(ctx context.Context, p RunParams) (process.Result, error) {
 	os.Remove(exitPath) // Remove so we can detect when the script writes it.
 
 	cmd := append([]string{p.Binary}, p.Args...)
-	sess := p.session()
-
 	var gateFile string
-	if p.LogFile != "" {
+	if p.LogFile != "" || p.stableIdentity() {
 		g, err := os.CreateTemp("", "kontora-gate-*")
 		if err != nil {
 			return process.Result{}, fmt.Errorf("creating gate file: %w", err)
@@ -220,8 +259,12 @@ func runStandard(ctx context.Context, p RunParams) (process.Result, error) {
 
 	startedAt := time.Now()
 
-	if err := newWindow(sess, p.WindowName(), p.Dir, scriptPath); err != nil {
+	tm, err := createRunWindow(p, scriptPath)
+	if err != nil {
 		os.Remove(scriptPath)
+		if tm != nil && p.stableIdentity() {
+			return windowResult(tm, -1, startedAt, errors.Join(err, stopWindow(tm)), p.RequireTermination)
+		}
 		return process.Result{ExitCode: -1}, err
 	}
 	if p.OnReady != nil {
@@ -236,11 +279,15 @@ func runStandard(ctx context.Context, p RunParams) (process.Result, error) {
 		}
 	}()
 
-	tm := windowTmux{session: sess, ticketID: p.WindowName()}
+	if p.stableIdentity() && ctx.Err() != nil {
+		return windowResult(tm, -1, startedAt, errors.Join(ctx.Err(), stopWindow(tm)), p.RequireTermination)
+	}
 	if p.LogFile != "" {
-		if err := PipePaneTo(sess, p.WindowName(), p.LogFile); err != nil {
+		if err := pipeRunPane(tm, p); err != nil {
 			return windowResult(tm, -1, startedAt, errors.Join(err, stopWindow(tm)), p.RequireTermination)
 		}
+	}
+	if gateFile != "" {
 		if err := os.WriteFile(gateFile, []byte("go"), 0o644); err != nil {
 			return windowResult(tm, -1, startedAt, errors.Join(fmt.Errorf("writing gate file: %w", err), stopWindow(tm)), p.RequireTermination)
 		}

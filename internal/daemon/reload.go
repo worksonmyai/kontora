@@ -56,6 +56,9 @@ func (d *Daemon) reloadConfig() error {
 
 	cur := d.config()
 	pinRestartOnly(cur, next, d.log)
+	if err := d.publishAutomationConfig(next); err != nil {
+		return err
+	}
 	d.applyNotifications(next)
 	d.mu.Lock()
 	d.resizePoolsLocked(next.MaxConcurrentAgents, next.MaxConcurrentEpicSupervisors)
@@ -73,6 +76,7 @@ func (d *Daemon) reloadConfig() error {
 	d.queueCond.Broadcast()
 	d.mu.Unlock()
 	d.wakeCompanion()
+	d.automationChanged()
 
 	d.log.Info("config reloaded",
 		"agents", len(next.Agents),

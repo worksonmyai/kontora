@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -13,6 +14,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/worksonmyai/kontora/internal/automation"
+	"github.com/worksonmyai/kontora/internal/cli/remote"
 	"github.com/worksonmyai/kontora/internal/config"
 	"github.com/worksonmyai/kontora/internal/ticket"
 	"github.com/worksonmyai/kontora/internal/ticket/app"
@@ -28,6 +31,9 @@ var ErrCancelled = errors.New("cancelled")
 func Attach(cfg *config.Config, taskID string, readWrite bool) error {
 	if taskID == "" {
 		return attachInteractive(cfg, readWrite)
+	}
+	if automation.IsID(taskID) {
+		return remote.Attach(context.Background(), LocalClient(cfg), taskID, readWrite)
 	}
 	target, err := resolveAttach(cfg.TmuxSessionName(), cfg.TicketsDir, taskID)
 	if err != nil {

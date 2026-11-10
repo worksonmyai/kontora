@@ -627,6 +627,7 @@ type recoveredReservation struct {
 	pool      *slotPool
 	branchKey string
 	finishing bool
+	token     bool
 }
 
 func (d *Daemon) reserveUnparsedExecutionLocked(path string) {

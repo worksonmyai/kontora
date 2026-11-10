@@ -45,18 +45,27 @@ export function kontoraTerminal() {
 
     terminalConnected: false,
     terminalError: null,
+    terminalSubjectKey: null,
+
+    outputSubjectKey() {
+      const subject = this.outputSubject();
+      return subject ? (subject.kind === 'automation' ? 'automation:' + subject.id + ':' + subject.n : (subject.source || 'primary') + ':' + subject.id) : null;
+    },
 
     outputSubject() {
+      if (this.currentView === 'automations') return this.automationsOutputSubject();
       var subject = this.selectedTicket || this.selectedEpic;
       return subject && !this.isSecondary(subject) && (subject.kind !== 'epic' || this.epicIsAgent(subject)) ? subject : null;
     },
 
     outputTab() {
+      if (this.currentView === 'automations') return this.automationsTab;
       if (this.selectedEpic) return this.epicTab;
       return this.isMobile ? (this.detailTab === 'terminal' ? 'session' : this.detailTab) : this.activeTab;
     },
 
     outputContainerID(kind) {
+      if (this.currentView === 'automations') return kind === 'terminal' ? 'automation-terminal-session' : 'automation-log-scroll';
       if (this.selectedEpic) return kind === 'terminal'
         ? (this.isMobile ? 'epic-terminal-mobile' : 'epic-terminal-session')
         : (this.isMobile ? 'epic-activity-scroll-mobile' : 'epic-activity-scroll');
@@ -76,7 +85,8 @@ export function kontoraTerminal() {
     async openTerminal() {
       if (!this.outputSubject() || !this.terminalWanted() || this.terminalOpen) return;
       var seq = ++this._terminalSeq;
-      var ticketId = this.outputSubject().id;
+      var ticketId = this.outputSubjectKey();
+      this.terminalSubjectKey = ticketId;
       this.terminalError = null;
       this.terminalOpen = true;
       this._terminalOpening = true;
@@ -102,7 +112,7 @@ export function kontoraTerminal() {
         }
         await this.$nextTick();
         if (!this.terminalOpen || this._terminalSeq !== seq) return;
-        if (!this.terminalWanted() || this.outputSubject()?.id !== ticketId) {
+        if (!this.terminalWanted() || this.outputSubjectKey() !== ticketId) {
           this.closeTerminal();
           return;
         }
@@ -268,13 +278,16 @@ export function kontoraTerminal() {
       var cols = term.cols;
       var rows = term.rows;
       var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-      var url = proto + '//' + location.host + '/ws/terminal/' + encodeURIComponent(self.outputSubject().id)
+      var subject = self.outputSubject();
+      var subjectKey = self.outputSubjectKey();
+      var path = subject.kind === 'automation' ? '/ws/automations/' + encodeURIComponent(subject.id) + '/' + subject.n : '/ws/terminal/' + encodeURIComponent(subject.id);
+      var url = proto + '//' + location.host + path
         + '?cols=' + cols + '&rows=' + rows + (rw ? '&rw=1' : '');
       var ws = new WebSocket(url);
       ws.binaryType = 'arraybuffer';
       termState.ws = ws;
       ws.onmessage = function(e) {
-        if (!current()) {
+        if (!current() || self.outputSubjectKey() !== subjectKey) {
           ws.close();
           return;
         }
@@ -358,6 +371,7 @@ export function kontoraTerminal() {
       this._disconnectStream();
       this.terminalOpen = false;
       this.terminalConnected = false;
+      this.terminalSubjectKey = null;
     },
 
     toggleTerminalRW() {

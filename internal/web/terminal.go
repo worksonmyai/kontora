@@ -42,8 +42,15 @@ type clientMsg struct {
 	Data string `json:"data,omitempty"`
 }
 
-// Callers reject non-positive dimensions first, so only the upper end is capped.
-func clampDim(v int) int { return min(v, maxTerminalDim) }
+func clampDim(v int) uint16 {
+	if v < 1 {
+		return 1
+	}
+	if v > maxTerminalDim {
+		return maxTerminalDim
+	}
+	return uint16(v)
+}
 
 func (s *Server) handleTerminalWS(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
@@ -65,7 +72,7 @@ func (s *Server) handleTerminalWS(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close(websocket.StatusNormalClosure, "")
 
-	cols, rows := 80, 24
+	cols, rows := uint16(80), uint16(24)
 	if c, err := strconv.Atoi(r.URL.Query().Get("cols")); err == nil && c > 0 {
 		cols = clampDim(c)
 	}
@@ -83,7 +90,7 @@ func (s *Server) handleTerminalWS(w http.ResponseWriter, r *http.Request) {
 	viewSession := fmt.Sprintf("kontora-view-%s-%x", id, rand.Uint32())
 	mainSession := "=" + s.tmuxSession
 	newCmd := exec.Command("tmux", "new-session", "-d", "-t", mainSession, "-s", viewSession,
-		"-x", strconv.Itoa(cols), "-y", strconv.Itoa(rows))
+		"-x", strconv.Itoa(int(cols)), "-y", strconv.Itoa(int(rows)))
 	newCmd.Env = append(os.Environ(), "LANG=en_US.UTF-8")
 	out, err := newCmd.CombinedOutput()
 	if err != nil {
@@ -103,8 +110,8 @@ func (s *Server) handleTerminalWS(w http.ResponseWriter, r *http.Request) {
 	cmd.Env = append(os.Environ(), "TERM=xterm-256color", "LANG=en_US.UTF-8")
 
 	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{
-		Rows: uint16(rows),
-		Cols: uint16(cols),
+		Rows: rows,
+		Cols: cols,
 	})
 	if err != nil {
 		s.log.Error("pty start failed", "err", err, "ticket", id)
@@ -115,7 +122,7 @@ func (s *Server) handleTerminalWS(w http.ResponseWriter, r *http.Request) {
 
 	go func() {
 		defer cancel()
-		s.readClientMessages(ctx, conn, ptmx, viewSession)
+		s.readClientMessages(ctx, conn, ptmx, viewSession, "", rw)
 	}()
 
 	s.log.Info("terminal session connected", "ticket", id, "view_session", viewSession)
@@ -123,7 +130,7 @@ func (s *Server) handleTerminalWS(w http.ResponseWriter, r *http.Request) {
 	s.log.Info("terminal session disconnected", "ticket", id, "view_session", viewSession)
 }
 
-func (s *Server) readClientMessages(ctx context.Context, conn *websocket.Conn, ptmx *os.File, viewSession string) {
+func (s *Server) readClientMessages(ctx context.Context, conn *websocket.Conn, ptmx *os.File, viewSession, socket string, rw bool) {
 	for {
 		_, data, err := conn.Read(ctx)
 		if err != nil {
@@ -137,15 +144,19 @@ func (s *Server) readClientMessages(ctx context.Context, conn *websocket.Conn, p
 		case "resize":
 			if msg.Cols > 0 && msg.Rows > 0 {
 				_ = pty.Setsize(ptmx, &pty.Winsize{
-					Rows: uint16(clampDim(msg.Rows)),
-					Cols: uint16(clampDim(msg.Cols)),
+					Rows: clampDim(msg.Rows),
+					Cols: clampDim(msg.Cols),
 				})
 				// Force tmux to redraw after PTY resize to prevent
 				// rendering artifacts from stale cursor positions.
-				_ = exec.Command("tmux", "refresh-client", "-t", "="+viewSession).Run()
+				args := []string{"refresh-client", "-t", "=" + viewSession}
+				if socket != "" {
+					args = append([]string{"-S", socket}, args...)
+				}
+				_ = exec.Command("tmux", args...).Run()
 			}
 		case "input":
-			if msg.Data != "" {
+			if rw && msg.Data != "" {
 				_, _ = ptmx.WriteString(msg.Data)
 			}
 		}

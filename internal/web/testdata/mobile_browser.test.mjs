@@ -357,7 +357,7 @@ async function terminalRows(page, height, top = 0) {
     if (Math.abs(overlay.height - height) > 1 || Math.abs(overlay.top - top) > 1) return false;
     const box = host.getBoundingClientRect();
     const cell = term._core._renderService.dimensions.css.cell.height;
-    const controls = [...document.querySelectorAll('.mobile-detail-header button, .mobile-terminal-toolbar button, .mobile-detail-actions button')]
+    const controls = [...document.querySelectorAll('.mobile-detail-header button, .mobile-terminal-pane button, .mobile-detail-actions button')]
       .map(el => el.getBoundingClientRect()).filter(rect => rect.width && rect.height);
     return cell > 0 && term.rows >= 8 && box.height >= term.rows * cell &&
       box.bottom <= height + top + 1 && term.element.getBoundingClientRect().top + term.rows * cell <= box.bottom + 1 &&
@@ -370,7 +370,7 @@ async function terminalRows(page, height, top = 0) {
         cell: term?._core._renderService.dimensions.css.cell.height,
         terminal: term?.element?.getBoundingClientRect().toJSON(),
         overlay: host?.closest('.mobile-detail').getBoundingClientRect().toJSON(),
-        controls: [...document.querySelectorAll('.mobile-detail-header button, .mobile-terminal-toolbar button, .mobile-detail-actions button')]
+        controls: [...document.querySelectorAll('.mobile-detail-header button, .mobile-terminal-pane button, .mobile-detail-actions button')]
           .map(el => ({ text: el.textContent, box: el.getBoundingClientRect().toJSON() })).filter(el => el.box.width && el.box.height) };
     });
     throw new Error(`${error.message}: ${JSON.stringify(geometry)}`, { cause: error });
@@ -494,34 +494,34 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
             fixture.records.delete(key);
           });
         }
-        await t.test('native folder filtering retains counts, full paths and errors', async () => {
+        await t.test('combined folders retain counts, search and source errors', async () => {
           fixture.behavior.unavailableFolder = true;
           await page.reload({ waitUntil: 'domcontentloaded' });
           await ready(page);
-          const filter = page.getByRole('combobox', { name: 'Filter by ticket folder', exact: true }).filter({ visible: true });
-          await inViewport(filter);
-          assert.equal(await filter.evaluate(el => el.tagName), 'SELECT');
-          assert.equal(await filter.locator('option[value="unavailable"]').textContent(), unavailablePath + ' (unavailable)');
+          assert.equal(await page.getByRole('combobox', { name: 'Filter by ticket folder', exact: true }).count(), 0);
           const error = page.locator('.mobile-chrome [role="alert"]');
           await visible(error);
           assert.ok((await error.textContent()).includes(unavailablePath + ': Fixture folder unavailable'));
           const open = page.getByRole('navigation', { name: 'Ticket status', exact: true }).getByRole('button').first();
-          for (const [folder, title, count] of [['primary', 'Primary draft', 2], [source, 'Secondary namesake', 1], ['unavailable', null, 0]]) {
-            await filter.selectOption(folder);
-            assert.equal(Number(await open.locator('span').last().textContent()), count);
-            const cards = page.locator('.mobile-board-layer [x-text="ticket.title"]');
-            assert.equal(await cards.count(), count);
-            if (title) assert.ok((await cards.allTextContents()).includes(title));
+          const cards = page.locator('.mobile-board-layer [x-text="ticket.title"]');
+          assert.equal(Number(await open.locator('span').last().textContent()), 3);
+          assert.equal(await cards.count(), 3);
+          const titles = await cards.allTextContents();
+          for (const title of ['Primary draft', 'Secondary namesake']) assert.ok(titles.includes(title));
+          const search = page.getByRole('textbox', { name: 'Filter tickets', exact: true }).filter({ visible: true });
+          for (const title of ['Primary draft', 'Secondary namesake']) {
+            await search.fill(title);
+            await page.waitForFunction(() => document.querySelector('.mobile-status-tabs button span:last-child').textContent === '1');
+            await page.waitForFunction(title => {
+              const cards = document.querySelectorAll('.mobile-board-layer [x-text="ticket.title"]');
+              return cards.length === 1 && cards[0].textContent === title;
+            }, title);
+            assert.deepEqual(await cards.allTextContents(), [title]);
             await visible(error);
             await noPageOverflow(page);
           }
-          await filter.selectOption('primary');
-          const search = page.getByRole('textbox', { name: 'Filter tickets', exact: true }).filter({ visible: true });
-          await search.fill('Primary draft');
-          await page.waitForFunction(() => document.querySelector('.mobile-status-tabs button span:last-child').textContent === '1');
-          assert.deepEqual(await page.locator('.mobile-board-layer [x-text="ticket.title"]').allTextContents(), ['Primary draft']);
           await search.fill('');
-          await page.waitForFunction(() => document.querySelector('.mobile-status-tabs button span:last-child').textContent === '2');
+          await page.waitForFunction(() => document.querySelector('.mobile-status-tabs button span:last-child').textContent === '3');
           fixture.behavior.sourcesFailure = true;
           await page.reload({ waitUntil: 'domcontentloaded' });
           await ready(page);
@@ -764,22 +764,26 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
           assert.equal(mutation?.body.status, 'open');
           assert.equal(mutation.body.scheduled_at, '2099-09-01T09:00:00Z');
         });
-        await t.test('folder filter and card selection keep namesakes distinct', async () => {
+        await t.test('combined board card selection keeps namesakes distinct', async () => {
           await backToBoard(page);
-          const filter = page.getByRole('combobox', { name: 'Filter by ticket folder', exact: true }).filter({ visible: true });
-          await filter.selectOption(source);
+          assert.equal(await page.getByRole('combobox', { name: 'Filter by ticket folder', exact: true }).count(), 0);
           const namesake = width < 768 ? page.getByRole('button').filter({ hasText: 'Secondary namesake', visible: true })
             : page.locator('[data-ticket-id="secondary/kon-draft"]:visible');
           await visible(namesake);
           const primary = width < 768 ? page.getByRole('button').filter({ hasText: 'Primary draft', visible: true })
             : page.locator('[data-ticket-id="kon-draft"]:visible');
-          assert.equal(await primary.count(), 0);
+          await visible(primary);
           await namesake.click();
           await page.waitForURL('**/#/s/secondary/t/kon-draft');
           await ready(page);
           assert.equal(new URL(page.url()).hash, '#/s/secondary/t/kon-draft');
           await backToBoard(page);
-          await filter.selectOption('');
+          await primary.click();
+          await page.waitForURL('**/#/t/kon-draft');
+          await ready(page);
+          assert.equal(new URL(page.url()).hash, '#/t/kon-draft');
+          assert.equal(await page.evaluate(() => Alpine.$data(document.body).selectedTicket?.title), 'Primary draft');
+          await backToBoard(page);
         });
         await t.test('primary description editing saves without replacing notes', async () => {
           await backToBoard(page);

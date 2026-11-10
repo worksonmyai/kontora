@@ -265,9 +265,11 @@ export function kontoraTerminal() {
       var current = function() {
         return self._terminalSeq === seq && self.terminalOpen && termState.ws === ws && termState.term === term;
       };
+      var cols = term.cols;
+      var rows = term.rows;
       var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
       var url = proto + '//' + location.host + '/ws/terminal/' + encodeURIComponent(self.outputSubject().id)
-        + '?cols=' + term.cols + '&rows=' + term.rows + (rw ? '&rw=1' : '');
+        + '?cols=' + cols + '&rows=' + rows + (rw ? '&rw=1' : '');
       var ws = new WebSocket(url);
       ws.binaryType = 'arraybuffer';
       termState.ws = ws;
@@ -282,6 +284,10 @@ export function kontoraTerminal() {
         if (!current() || ws.readyState !== WebSocket.OPEN) return;
         self.terminalConnected = true;
         self.terminalError = null;
+        // Refits while connecting cannot send a resize, so catch up to the current grid.
+        if (term.cols !== cols || term.rows !== rows) {
+          ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
+        }
         // A socket callback cannot open the keyboard. Input starts with a later tap.
         self._setTerminalInput(rw && self.terminalRW);
       };

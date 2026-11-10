@@ -937,6 +937,56 @@ test("refitTerminal skips a container it cannot measure", async () => {
   assert.equal(ctx.termState.fit.fits, fitsWhileVisible, "no reflow against a hidden container");
 });
 
+for (const mobile of [false, true]) {
+  for (const rw of [false, true]) {
+    test(`terminal sends connection-time resizes on open: mobile=${mobile} rw=${rw}`, async () => {
+      const cases = [
+        { name: 'unchanged', sizes: [], want: [] },
+        { name: 'columns changed', sizes: [[100, 24]], want: [{ type: 'resize', cols: 100, rows: 24 }] },
+        { name: 'rows changed', sizes: [[80, 30]], want: [{ type: 'resize', cols: 80, rows: 30 }] },
+        { name: 'resized', sizes: [[100, 30], [120, 40]], want: [{ type: 'resize', cols: 120, rows: 40 }] },
+        { name: 'resized back', sizes: [[100, 30], [80, 24]], want: [] },
+      ];
+      for (const tc of cases) {
+        const WebSocket = class {
+          static OPEN = 1;
+          constructor(url) {
+            this.url = url;
+            this.readyState = 0;
+            this.sent = [];
+          }
+          send(data) { this.sent.push(JSON.parse(data)); }
+          close() { this.readyState = 3; }
+        };
+        const { ctx, state } = await openedTerminal({ WebSocket }, { mobile });
+        if (rw) state.toggleTerminalRW();
+        const ws = ctx.termState.ws;
+        const term = ctx.termState.term;
+        assert.match(ws.url, /cols=80&rows=24/);
+        for (const [cols, rows] of tc.sizes) {
+          ctx.termState.fit.fit = () => { term.cols = cols; term.rows = rows; };
+          state.refitTerminal();
+        }
+        assert.deepEqual(ws.sent, [], `${tc.name}: nothing sent while connecting`);
+        ws.readyState = WebSocket.OPEN;
+        ws.onopen();
+        assert.deepEqual(ws.sent, tc.want, `${tc.name}: latest size sent on open`);
+
+        ctx.termState.fit.fit = () => { term.cols = 130; term.rows = 45; };
+        state.refitTerminal();
+        assert.deepEqual(ws.sent.at(-1), { type: 'resize', cols: 130, rows: 45 }, `${tc.name}: connected resize`);
+        const sent = ws.sent.length;
+        state.toggleTerminalRW();
+        term.cols = 140;
+        ws.readyState = WebSocket.OPEN;
+        ws.onopen();
+        assert.equal(ws.sent.length, sent, `${tc.name}: stale socket cannot send a resize`);
+        state.destroy();
+      }
+    });
+  }
+}
+
 async function mobileInputTerminal(subject) {
   const sockets = [];
   const WebSocket = class {

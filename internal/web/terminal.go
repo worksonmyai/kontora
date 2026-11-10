@@ -72,8 +72,8 @@ func (s *Server) handleTerminalWS(w http.ResponseWriter, r *http.Request) {
 
 	rw := r.URL.Query().Get("rw") == "1"
 
-	// Create a linked tmux session so the web viewer gets independent sizing
-	// without shrinking the pane in the main session.
+	// A linked session gives the viewer its own window selection and cleanup.
+	// The agent window is shared, so viewer sizing affects every client.
 	viewSession := fmt.Sprintf("kontora-view-%s-%x", id, rand.Uint32())
 	mainSession := "=" + s.tmuxSession
 	newCmd := exec.Command("tmux", "new-session", "-d", "-t", mainSession, "-s", viewSession,
@@ -91,7 +91,7 @@ func (s *Server) handleTerminalWS(w http.ResponseWriter, r *http.Request) {
 	// current, so the ticket's window needs no separate select-window spawn.
 	args := []string{"attach-session", "-t", tmux.WindowTarget(viewSession, id)}
 	if !rw {
-		args = append(args, "-r")
+		args = append(args, "-f", "read-only")
 	}
 	cmd := exec.CommandContext(ctx, "tmux", args...)
 	cmd.Env = append(os.Environ(), "TERM=xterm-256color", "LANG=en_US.UTF-8")

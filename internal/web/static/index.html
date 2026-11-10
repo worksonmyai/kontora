@@ -5999,8 +5999,10 @@
       <template x-if="allBoardTickets().length > 0 && boardTickets(mobileColumn().key).length === 0">
         <div style="font-family:'JetBrains Mono',monospace;text-align:center;font-size:12px;color:rgba(var(--surface-600),1);border:1px dashed rgba(var(--surface-700),.6);border-radius:10px;padding:34px 16px;margin-top:6px;" x-text="'∅ ' + mobileColumn().emptyText.toLowerCase()"></div>
       </template>
+      <!-- shrink-0: the touch rule in hack/tailwind.css sets button min-height
+           to 44px, which replaces a column flex item's content-height floor. -->
       <template x-for="ticket in mobileTickets()" :key="ticketKey(ticket)">
-        <button @click="openMobileTicket(ticket)"
+        <button @click="openMobileTicket(ticket)" class="shrink-0"
                 :data-pipe-color="ticketPipeColor(ticket)"
                 :style="'display:flex;flex-direction:column;gap:9px;text-align:left;width:100%;padding:12px 13px;border-radius:11px;background:rgba(var(--surface-900),1);border:1px solid rgba(var(--surface-700),.5);border-left:2px solid ' + (ticket.status==='in_progress' ? 'hsl(var(--st-progress))' : (ticket.status==='paused' ? 'hsl(var(--st-paused) / .8)' : 'hsl(var(--pipe-h) / .55)')) + ';cursor:pointer;' + (ticket.status==='cancelled' ? 'opacity:.62;' : (ticket.status === 'open' && ticket.scheduled_at ? 'opacity:.72;' : '')) + (!ticket.kontora ? 'border-style:dashed;' : '')">
           <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
@@ -6099,7 +6101,7 @@
         </nav>
         <div x-show="epicTab === 'children'" class="flex-1 min-h-0 overflow-y-auto p-4 flex flex-col gap-4">
           <template x-for="c in epicRollup(selectedEpic?.id).children" :key="c.id">
-            <button type="button" @click="openTicketRef(c)" class="text-left font-mono text-xs text-tx-2" x-text="c.id + ' · ' + c.title + ' · ' + statusLabel(c.status)"></button>
+            <button type="button" @click="openTicketRef(c)" class="shrink-0 text-left font-mono text-xs text-tx-2" x-text="c.id + ' · ' + c.title + ' · ' + statusLabel(c.status)"></button>
           </template>
           <div class="flex gap-2">
             <input x-model="epicAddDraft" @keydown.enter.prevent="epicAddChild()" aria-label="New sub-ticket title" placeholder="New sub-ticket" class="min-w-0 flex-1 bg-surface-800 text-tx-2 px-3 py-2 rounded">

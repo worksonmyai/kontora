@@ -869,6 +869,37 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
             fixture.records.delete(key);
           });
         }
+        await t.test('overflowing ticket lists keep each entry at its content height', async () => {
+          const keys = Array.from({ length: 24 }, (_, i) => {
+            const id = `kon-list-${i}`;
+            fixture.records.set(`primary/${id}`, ticket(id, `List fixture ${i} ` + 'with a long title that wraps '.repeat(4).trim(),
+              { parent: { id: 'kon-epic' } }));
+            return `primary/${id}`;
+          });
+          const clipped = (list, entries) => page.evaluate(({ list, entries }) => {
+            const host = document.querySelector(list);
+            const items = [...host.querySelectorAll(entries)];
+            return { overflows: host.scrollHeight > host.clientHeight, count: items.length,
+              shortest: Math.min(...items.map(el => el.scrollHeight)),
+              clipped: items.filter(el => el.scrollHeight > el.clientHeight + 1).map(el => [el.clientHeight, el.scrollHeight]) };
+          }, { list, entries });
+          try {
+            await page.reload({ waitUntil: 'domcontentloaded' });
+            await ready(page);
+            // Only entries taller than the 44px touch minimum, in a list that
+            // overflows, can lose height.
+            const board = await clipped('.mobile-board-layer > .overflow-y-auto', 'button[data-pipe-color]');
+            assert.ok(board.overflows && board.count > keys.length && board.shortest > 44, JSON.stringify(board));
+            assert.deepEqual(board.clipped, []);
+            await routeTo(page, '#/e/kon-epic');
+            const children = await clipped('.mobile-epic > .overflow-y-auto', 'button[x-text]');
+            assert.ok(children.overflows && children.count === keys.length && children.shortest > 44, JSON.stringify(children));
+            assert.deepEqual(children.clipped, []);
+          } finally {
+            for (const key of keys) fixture.records.delete(key);
+            await routeTo(page, '#/');
+          }
+        });
         await t.test('combined folders retain counts, search and source errors', async () => {
           fixture.behavior.unavailableFolder = true;
           await page.reload({ waitUntil: 'domcontentloaded' });

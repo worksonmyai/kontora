@@ -1030,9 +1030,19 @@ func (c *Config) StatusAllowsEdit(s string) bool {
 	return editableStatuses[s] || c.IsCustomStatus(s)
 }
 
-func (c *Config) Validate() error {
+func (c *Config) validateConcurrency() error {
+	if c.MaxConcurrentAgents < 0 {
+		return fmt.Errorf("max_concurrent_agents must not be negative")
+	}
 	if c.MaxConcurrentEpicSupervisors < 0 {
 		return fmt.Errorf("max_concurrent_epic_supervisors must not be negative")
+	}
+	return nil
+}
+
+func (c *Config) Validate() error {
+	if err := c.validateConcurrency(); err != nil {
+		return err
 	}
 	if err := validateBranchNamingMode(c.BranchNaming.Mode); err != nil {
 		return err

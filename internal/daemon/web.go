@@ -1490,7 +1490,18 @@ func (d *Daemon) PutRawConfig(content string) error {
 	if _, err := config.LoadReader(strings.NewReader(content)); err != nil {
 		return fmt.Errorf("%w: %s", web.ErrInvalidConfig, err)
 	}
-	if err := atomicWriteFile(d.configPath, []byte(content), 0o644); err != nil {
+	path := d.configPath
+	info, err := os.Lstat(path)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	if err == nil && info.Mode()&os.ModeSymlink != 0 {
+		path, err = filepath.EvalSymlinks(path)
+		if err != nil {
+			return err
+		}
+	}
+	if err := atomicWriteFile(path, []byte(content), 0o644); err != nil {
 		return err
 	}
 	// The write also fires the config watcher, so a second, idempotent reload

@@ -357,7 +357,7 @@ func (d *Daemon) reconcileRetainedExecutionLocked(t *ticket.Ticket, path string)
 	d.reconcileExecutionLocked(t, path)
 	d.tickets[t.ID] = newTicketState(t, path)
 	if t.Status == ticket.StatusTodo && *d.config().AutoPickUp {
-		d.enqueue(t)
+		d.enqueueAutomatic(t)
 	}
 	return true
 }
@@ -624,8 +624,7 @@ func (d *Daemon) confirmRecoveryTerminationLocked(t *ticket.Ticket) bool {
 }
 
 type recoveredReservation struct {
-	pool      chan struct{}
-	token     bool
+	pool      *slotPool
 	branchKey string
 	finishing bool
 }
@@ -660,15 +659,15 @@ func (d *Daemon) reserveRecoveredExecutionLocked(t *ticket.Ticket, transferredTo
 		commonDir, _ = worktree.CommonDir(expandTilde(repoPath))
 	}
 	transferred := len(transferredToken) != 0 && transferredToken[0]
-	reservation := recoveredReservation{pool: pool, token: transferred || len(pool) < cap(pool)}
+	reservation := recoveredReservation{pool: pool}
 	if commonDir != "" {
 		reservation.branchKey = commonDir + "\x00" + branch
 		if _, exists := d.runningBranches[reservation.branchKey]; !exists {
 			d.runningBranches[reservation.branchKey] = t.ID
 		}
 	}
-	if reservation.token && !transferred {
-		pool <- struct{}{}
+	if !transferred {
+		pool.used++
 	}
 	if d.recoveredReservations == nil {
 		d.recoveredReservations = make(map[string]recoveredReservation)
@@ -686,7 +685,7 @@ func (d *Daemon) reserveRecoveredExecutionLocked(t *ticket.Ticket, transferredTo
 				d.reconcileExecutionLocked(current, ts.filePath)
 				d.setTicketState(t.ID, current, ts.filePath)
 				if current.Status == ticket.StatusTodo && *d.config().AutoPickUp {
-					d.enqueue(current)
+					d.enqueueAutomatic(current)
 				}
 			}
 		})
@@ -735,21 +734,14 @@ func (d *Daemon) releaseRecoveredExecutionLocked(id string) {
 			delete(d.runningBranches, key)
 		}
 	}
-	if reservation.token {
-		<-reservation.pool
-	}
+	reservation.pool.used--
 	d.queueCond.Broadcast()
 }
 
-// Recovery can discover more executions than the configured channel can hold.
-func (d *Daemon) availablePoolSlotsLocked(pool chan struct{}) int {
-	available := cap(pool) - len(pool)
-	for _, reservation := range d.recoveredReservations {
-		if reservation.pool == pool && !reservation.token {
-			available--
-		}
-	}
-	return available
+// Recovery and shrinking can leave a pool over capacity. A negative result
+// blocks new admissions until enough existing executions release their slots.
+func (d *Daemon) availablePoolSlotsLocked(pool *slotPool) int {
+	return pool.limit - pool.used
 }
 
 // patchFinalExecution journals and commits the final transition inside the same

@@ -428,18 +428,18 @@ type Daemon struct {
 	metrics       *metrics.Recorder
 	meterProvider metric.MeterProvider
 
-	// notifier is never nil: New installs a no-op and Run replaces it when the
-	// config names a channel. writeTicketFile and applyWaitMarker call it on
+	// notifier is never nil: New installs a dispatcher, unless WithNotifier
+	// supplies one. writeTicketFile and applyWaitMarker call it on
 	// paths that hold d.mu, so it must never block or do I/O.
 	//
 	// notifierPinned marks one passed to WithNotifier, which outranks the
 	// config the same way an injected meter provider does: a test that hands in
-	// a recorder must see its own, not a dispatcher Run would build.
+	// a recorder must see its own, not a dispatcher New would build.
 	notifier       Notifier
 	notifierPinned bool
 
 	// queueDepth mirrors len(d.queue). It exists so the queue-depth gauge can
-	// be read from the exporter's collect path, which must never take d.mu:
+	// be read from the exporter's collect path without taking d.mu:
 	// that lock is held across tmux fork/exec and ticket file writes.
 	queueDepth atomic.Int64
 
@@ -465,8 +465,8 @@ type Daemon struct {
 	runningBranches       map[string]string  // commonDir\x00branch → ticketID holding the branch
 	recoveredReservations map[string]recoveredReservation
 	pendingFinalizations  map[string]func(*ticket.Ticket)
-	sem                   chan struct{}
-	epicSem               chan struct{}
+	sem                   *slotPool
+	epicSem               *slotPool
 	managedDispatch       *managedDispatch
 	// waiting holds, per ticket, the question its running agent is blocked on,
 	// as the run's marker poller last read it. Only a live run has an entry.
@@ -484,7 +484,7 @@ type Daemon struct {
 	// plannotatorDeferred holds the tickets whose pickup runTicket dropped
 	// because a Plannotator session was open. releasePlannotator offers each of
 	// them again when the session closes.
-	plannotatorDeferred map[string]struct{}
+	plannotatorDeferred map[string]bool
 
 	// selfWrites remembers, per ticket path, the bytes the daemon last wrote
 	// there; a watcher event whose file content matches is the daemon's own.
@@ -601,8 +601,8 @@ func New(cfg *config.Config, opts ...Option) *Daemon {
 		queued:          make(map[string]bool),
 		runningBranches: make(map[string]string),
 		executions:      make(map[string]*executionClaim),
-		sem:             make(chan struct{}, cfg.MaxConcurrentAgents),
-		epicSem:         make(chan struct{}, cfg.MaxConcurrentEpicSupervisors),
+		sem:             &slotPool{limit: cfg.MaxConcurrentAgents},
+		epicSem:         &slotPool{limit: cfg.MaxConcurrentEpicSupervisors},
 		waiting:         make(map[string]waitingState),
 		waitAnnounced:   make(map[string]map[string]bool),
 		notifyWarned:    make(map[string]string),
@@ -610,7 +610,7 @@ func New(cfg *config.Config, opts ...Option) *Daemon {
 
 		scheduleWake:        make(chan struct{}, 1),
 		scheduleRetry:       make(map[string]scheduleBackoff),
-		plannotatorDeferred: make(map[string]struct{}),
+		plannotatorDeferred: make(map[string]bool),
 		selfWrites:          make(map[string]selfWrite),
 		assistant:           newAssistantState(),
 		companion:           newCompanionState(),
@@ -643,9 +643,7 @@ func New(cfg *config.Config, opts ...Option) *Daemon {
 	}
 	d.metrics = rec
 	d.notifierPinned = d.notifier != nil
-	if d.notifier == nil {
-		d.notifier = noopNotifier{}
-	}
+	d.initNotifications()
 	d.svc = d.buildService()
 	return d
 }
@@ -718,7 +716,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 		return fmt.Errorf("creating logs dir: %w", err)
 	}
 
-	// The dispatcher is installed before the scan and before the web server.
+	// The dispatcher is configured before the scan and before the web server.
 	// The scan's seeds are what a later transition diffs against, so a
 	// dispatcher built after it would treat every ticket as newly seen and stay
 	// silent on the first transition after every restart; and the web server
@@ -927,12 +925,19 @@ func (d *Daemon) startMetrics(ctx context.Context, cfg *config.Config) func() {
 	}
 
 	// Registered against whichever recorder is in place; on the no-op one this
-	// costs nothing. The callbacks run on the collect path and so read only
-	// lock-free state: taking d.mu here would stall every export behind a
-	// wedged tmux call or a ticket write.
+	// costs nothing. Pool reads share the scheduler's mutex with admissions,
+	// releases and reload resizing.
 	if err := d.metrics.ObserveScheduler(
-		func() int64 { return int64(len(d.sem) + len(d.epicSem)) },
-		func() int64 { return int64(cap(d.sem) + cap(d.epicSem)) },
+		func() int64 {
+			d.mu.Lock()
+			defer d.mu.Unlock()
+			return int64(d.sem.used + d.epicSem.used)
+		},
+		func() int64 {
+			d.mu.Lock()
+			defer d.mu.Unlock()
+			return int64(d.sem.limit + d.epicSem.limit)
+		},
 		func() int64 { return d.queueDepth.Load() },
 	); err != nil {
 		d.log.Warn("registering scheduler gauges failed", "err", err)
@@ -1056,7 +1061,7 @@ func (d *Daemon) initialScan(dir string) error {
 		}
 		// enqueue applies the readiness guard and logs the dependencies that
 		// hold the ticket back.
-		d.enqueue(t)
+		d.enqueueAutomatic(t)
 	}
 	return nil
 }
@@ -1175,10 +1180,10 @@ func (d *Daemon) adoptObservedTicket(t *ticket.Ticket, path string, observed os.
 				log.Info("skipping auto pick-up", "pipeline", t.Pipeline)
 			} else if !known {
 				log.Info("new ticket", "pipeline", t.Pipeline)
-				d.enqueue(t)
+				d.enqueueAutomatic(t)
 			} else {
 				log.Info("enqueuing", "previous_status", string(prev.ticket.Status), "pipeline", t.Pipeline, "stage", t.Stage)
-				d.enqueue(t)
+				d.enqueueAutomatic(t)
 			}
 		}
 	case ticket.StatusInProgress:
@@ -1206,7 +1211,7 @@ func (d *Daemon) adoptObservedTicket(t *ticket.Ticket, path string, observed os.
 				}
 			}
 			d.tickets[t.ID] = newTicketState(t, path)
-			d.enqueue(t)
+			d.enqueueAutomatic(t)
 			d.broadcastTicketUpdate(t.ID)
 		}
 	case ticket.StatusPaused, ticket.StatusHumanReview, ticket.StatusCancelled, ticket.StatusOpen:
@@ -1434,7 +1439,7 @@ func (d *Daemon) reconcileDependenciesLocked(id string) {
 		}
 		if len(d.blockersLocked(t)) == 0 {
 			if autoPickUp {
-				d.enqueue(t)
+				d.enqueueAutomatic(t)
 			}
 			continue
 		}
@@ -1442,9 +1447,22 @@ func (d *Daemon) reconcileDependenciesLocked(id string) {
 	}
 }
 
-// enqueue adds a ticket to the queue. Must be called with d.mu held.
-// Skips enqueue if the ticket is already queued or blocked by a dependency.
+// enqueue adds an explicit request or pipeline continuation. Unlike automatic
+// pickup, these remain eligible when auto_pick_up is disabled. Requires d.mu.
 func (d *Daemon) enqueue(t *ticket.Ticket) {
+	d.enqueueLocked(t, true)
+}
+
+// enqueueAutomatic adds background pickup work, subject to auto_pick_up at
+// dequeue as well as enqueue time. Requires d.mu.
+func (d *Daemon) enqueueAutomatic(t *ticket.Ticket) {
+	d.enqueueLocked(t, false)
+}
+
+func (d *Daemon) enqueueLocked(t *ticket.Ticket, explicit bool) {
+	if !explicit && !*d.config().AutoPickUp {
+		return
+	}
 	if t == nil || !t.Kontora || d.checkTransferAdmissionLocked(t.ID) != nil || t.HasOwnershipMetadata() || ticket.CheckBoardControl(expandTilde(d.config().TicketsDir)) != nil {
 		return
 	}
@@ -1453,6 +1471,15 @@ func (d *Daemon) enqueue(t *ticket.Ticket) {
 		return
 	}
 	if d.queued[t.ID] {
+		if explicit {
+			for _, item := range d.queue {
+				if item.ticketID == t.ID {
+					item.explicit = true
+					break
+				}
+			}
+			d.queueCond.Signal()
+		}
 		return
 	}
 	if blockers := d.blockersLocked(t); len(blockers) > 0 {
@@ -1461,6 +1488,7 @@ func (d *Daemon) enqueue(t *ticket.Ticket) {
 	}
 	d.queued[t.ID] = true
 	heap.Push(&d.queue, &queueItem{
+		explicit:   explicit,
 		ticketID:   t.ID,
 		created:    derefTime(t.Created),
 		enqueuedAt: time.Now(),
@@ -1485,6 +1513,13 @@ func (d *Daemon) scheduler(ctx context.Context, wg *sync.WaitGroup) {
 // returns its state when it may. Everything here can have changed between the
 // enqueue and this claim. Must be called with d.mu held.
 func (d *Daemon) claimableLocked(ticketID string, log *slog.Logger) (*ticketState, bool) {
+	return d.claimablePickupLocked(ticketID, log, true)
+}
+
+func (d *Daemon) claimablePickupLocked(ticketID string, log *slog.Logger, explicit bool) (*ticketState, bool) {
+	if !explicit && !*d.config().AutoPickUp {
+		return nil, false
+	}
 	ts, ok := d.tickets[ticketID]
 	if !ok {
 		return nil, false
@@ -1514,7 +1549,7 @@ func (d *Daemon) claimableLocked(ticketID string, log *slog.Logger) (*ticketStat
 	// refused because the ticket is running, leaving the notes unapplied.
 	// releasePlannotator offers the ticket again once the session closes.
 	if _, annotating := d.plannotator[ticketID]; annotating {
-		d.plannotatorDeferred[ticketID] = struct{}{}
+		d.deferPlannotatorPickupLocked(ticketID, explicit)
 		log.Info("pickup deferred: a plannotator session is open for this ticket")
 		return nil, false
 	}
@@ -1540,7 +1575,7 @@ func (d *Daemon) requeueAfter(ctx context.Context, ticketID string, delay time.D
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if ts, ok := d.tickets[ticketID]; ok {
-		d.enqueue(ts.ticket)
+		d.enqueueLocked(ts.ticket, pickupExplicit(ctx))
 	}
 }
 
@@ -3464,6 +3499,7 @@ func (d *Daemon) cleanOrphanedWindows() {
 
 type queueItem struct {
 	ticketID string
+	explicit bool // user request or pipeline continuation; bypasses auto_pick_up
 	// created orders the queue: the oldest ticket runs first. It is the ticket's
 	// own creation date, so it says nothing about how long this item has waited.
 	created time.Time

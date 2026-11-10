@@ -47,17 +47,17 @@ func post(ctx context.Context, method, url string, body []byte, hdr map[string]s
 // configuration mistake, a wrong token or a deleted chat, and retrying it would
 // only repeat the same rejection, so it is logged with the status and the start
 // of the body, which is what tells the user what to fix.
-func (d *Dispatcher) deliver(ctx context.Context, ch Channel, e Event) {
-	backoff := d.backoff
+func (d *Dispatcher) deliver(ctx context.Context, ch Channel, e Event, settings deliverySettings) {
+	backoff := settings.backoff
 	for attempt := 1; ; attempt++ {
-		retry, err := d.attempt(ctx, ch, e)
+		retry, err := d.attempt(ctx, ch, e, settings.timeout)
 		if err == nil {
 			d.log.Info("notification sent",
 				"channel", ch.Name(), "ticket", e.TicketID, "status", e.To, "attempts", attempt)
 			d.result(ch.Name(), ResultOK)
 			return
 		}
-		if !retry || attempt >= d.attempts {
+		if !retry || attempt >= settings.attempts {
 			d.log.Warn("notification failed, dropping",
 				"channel", ch.Name(), "ticket", e.TicketID, "status", e.To,
 				"attempts", attempt, "err", err)
@@ -75,8 +75,8 @@ func (d *Dispatcher) deliver(ctx context.Context, ch Channel, e Event) {
 }
 
 // attempt makes one request and reports whether its failure is worth retrying.
-func (d *Dispatcher) attempt(ctx context.Context, ch Channel, e Event) (retry bool, err error) {
-	reqCtx, cancel := context.WithTimeout(ctx, d.timeout)
+func (d *Dispatcher) attempt(ctx context.Context, ch Channel, e Event, timeout time.Duration) (retry bool, err error) {
+	reqCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	req, err := ch.Request(reqCtx, e)

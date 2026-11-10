@@ -134,8 +134,8 @@ func total(m map[string]int64) int64 {
 	return n
 }
 
-// TestMetricsSchedulerGaugesAndQueueWait covers the lock-free scheduler state:
-// the gauges report the semaphore's own numbers, queue depth returns to zero
+// TestMetricsSchedulerGaugesAndQueueWait covers scheduler metrics:
+// the gauges report the slot pools' own numbers, queue depth returns to zero
 // once the queue drains, and every ticket contributes one queue-wait sample.
 func TestMetricsSchedulerGaugesAndQueueWait(t *testing.T) {
 	h := newHarness(t)
@@ -270,10 +270,7 @@ func TestMetricsQueueWaitIncludesTheSlotWait(t *testing.T) {
 		"the ticket that waited for the slot must report that wait")
 }
 
-// TestMetricsGaugeCallbacksDoNotTakeDaemonLock is the deadlock guard: d.mu is
-// held across tmux fork/exec and ticket writes, so a gauge callback that took
-// it would stall every export behind them.
-func TestMetricsGaugeCallbacksDoNotTakeDaemonLock(t *testing.T) {
+func TestMetricsGaugeCallbacksUseDaemonLock(t *testing.T) {
 	h := newHarness(t)
 	cfg := h.defaultConfig("true", "true")
 	cfg.MaxConcurrentAgents = 4
@@ -282,25 +279,29 @@ func TestMetricsGaugeCallbacksDoNotTakeDaemonLock(t *testing.T) {
 	// state directly instead of starting it.
 	defer d.startMetrics(context.Background(), cfg)()
 
-	d.sem <- struct{}{}
-	d.sem <- struct{}{}
-	d.queueDepth.Store(3)
-
-	// Held for the whole collect, the way handleFileChanged holds it across a
-	// tmux call.
 	d.mu.Lock()
-	defer d.mu.Unlock()
+	d.sem.used = 2
+	d.epicSem.used = 1
+	d.queueDepth.Store(3)
 
 	done := make(chan map[string]metricdata.Metrics, 1)
 	go func() { done <- collect() }()
+	select {
+	case <-done:
+		d.mu.Unlock()
+		t.Fatal("pool gauges read state without d.mu")
+	case <-time.After(20 * time.Millisecond):
+	}
+	d.resizePoolsLocked(2, 3)
+	d.mu.Unlock()
 
 	select {
 	case got := <-done:
-		assert.Equal(t, int64(2), gaugeValue(t, got, "kontora.scheduler.active"))
-		assert.Equal(t, int64(cfg.MaxConcurrentAgents+cfg.MaxConcurrentEpicSupervisors), gaugeValue(t, got, "kontora.scheduler.capacity"))
+		assert.Equal(t, int64(3), gaugeValue(t, got, "kontora.scheduler.active"))
+		assert.Equal(t, int64(5), gaugeValue(t, got, "kontora.scheduler.capacity"))
 		assert.Equal(t, int64(3), gaugeValue(t, got, "kontora.queue.depth"))
 	case <-time.After(5 * time.Second):
-		t.Fatal("collection blocked on d.mu")
+		t.Fatal("collection did not resume after releasing d.mu")
 	}
 }
 

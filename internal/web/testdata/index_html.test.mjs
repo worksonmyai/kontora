@@ -6572,6 +6572,232 @@ test("a general key absent from the file is appended without reformatting", asyn
   assert.equal(out.startsWith(SETTINGS_FIXTURE.trimEnd()), true);
 });
 
+test("config_reloaded re-reads a clean Settings form, including a hidden form", async (t) => {
+  for (const view of ["settings", "board"]) await t.test(view, async () => {
+    const listeners = {};
+    const text = SETTINGS_FIXTURE + "instance_name: edited-elsewhere\n";
+    const daemon = settingsFetch({ raw: text });
+    const state = settingsReactive(await settingsState(SETTINGS_FIXTURE, {
+      fetch: daemon.fetch,
+      EventSource: class {
+        addEventListener(name, fn) { listeners[name] = fn; }
+        close() {}
+      },
+    }));
+    state.currentView = view;
+    state.settingsSection = "general";
+    state.connectSSE();
+    listeners.config_reloaded({ data: "{}" });
+    await flushMicrotasks();
+
+    assert.equal(state.currentView, view);
+    assert.equal(state.settingsSection, "general");
+    assert.equal(state.settingsConfig.general.instance_name, "edited-elsewhere");
+    assert.equal(state.settingsBaseline.general.instance_name, "edited-elsewhere");
+    assert.equal(state._settingsRawText, text);
+    assert.equal(state.settingsDirty(), false);
+    assert.equal(state.settingsLoading, false);
+    assert.equal(await state._settingsWrite(), text);
+    if (view === "board") {
+      await state.openSettings();
+      assert.equal(state.settingsConfig.general.instance_name, "edited-elsewhere");
+    }
+  });
+});
+
+test("a reload leaves unopened, dirty, or saving Settings forms alone", async (t) => {
+  for (const mode of ["unopened", "dirty", "saving"]) await t.test(mode, async () => {
+    const daemon = settingsFetch();
+    const state = mode === "unopened" ? loadKontoraState({ fetch: daemon.fetch }) :
+      await settingsState(SETTINGS_FIXTURE, { fetch: daemon.fetch });
+    if (mode === "dirty") state.settingsConfig.general.branch_prefix = "unsaved";
+    if (mode === "saving") state.settingsSaving = true;
+    const config = state.settingsConfig;
+    const raw = state._settingsRawText;
+    await state._settingsRefreshForm();
+    assert.equal(daemon.sent.length, 0);
+    assert.equal(state.settingsConfig, config);
+    assert.equal(state._settingsRawText, raw);
+    if (mode === "dirty") assert.equal(state.settingsConfig.general.branch_prefix, "unsaved");
+  });
+});
+
+test("edits made during any refresh await keep their model and baseline", async (t) => {
+  for (const phase of ["fetch", "json", "yaml"]) await t.test(phase, async () => {
+    const gate = deferred();
+    const response = { ok: true, status: 200, json: async () => ({ content: "instance_name: external\n" }) };
+    const state = await settingsState(SETTINGS_FIXTURE, {
+      fetch: async () => phase === "fetch" ? gate.promise :
+        phase === "json" ? { ...response, json: () => gate.promise } : response,
+    });
+    const yaml = state._settingsYAML;
+    if (phase === "yaml") state._settingsLoadYAML = () => gate.promise;
+    const config = state.settingsConfig;
+    const baseline = state.settingsBaseline;
+    const refresh = state._settingsRefreshForm();
+    await flushMicrotasks();
+    state.settingsConfig.general.branch_prefix = "unsaved";
+    gate.resolve(phase === "fetch" ? response : phase === "json" ? { content: "instance_name: external\n" } : yaml);
+    await refresh;
+
+    assert.equal(state.settingsConfig, config);
+    assert.equal(state.settingsBaseline, baseline);
+    assert.equal(state._settingsRawText, SETTINGS_FIXTURE);
+    assert.equal(state.settingsConfig.general.branch_prefix, "unsaved");
+    assert.deepEqual([...state.settingsChangedPaths()], ["branch_prefix"]);
+    assert.equal(state.settingsLoading, false);
+  });
+});
+
+test("the newest reload wins over a delayed response or error", async (t) => {
+  for (const outcome of ["success", "error"]) await t.test(outcome, async () => {
+    const gate = deferred();
+    let reads = 0;
+    const state = await settingsState(SETTINGS_FIXTURE, {
+      fetch: async () => ++reads === 1 ? gate.promise :
+        { ok: true, status: 200, json: async () => ({ content: "instance_name: newest\n" }) },
+    });
+    const first = state._settingsRefreshForm();
+    await state._settingsRefreshForm();
+    assert.equal(state.settingsConfig.general.instance_name, "newest");
+    if (outcome === "error") gate.reject(new Error("old failure"));
+    else gate.resolve({ ok: true, status: 200, json: async () => ({ content: "instance_name: oldest\n" }) });
+    await first;
+    assert.equal(state.settingsConfig.general.instance_name, "newest");
+    assert.equal(state._settingsRawText, "instance_name: newest\n");
+    assert.equal(state.settingsState, "ok");
+    assert.equal(state.settingsLoadError, "");
+    assert.equal(state.settingsLoading, false);
+  });
+});
+
+test("a reload skipped for edits invalidates an older response even after undo", async () => {
+  const gate = deferred();
+  const state = await settingsState(SETTINGS_FIXTURE, { fetch: () => gate.promise });
+  const config = state.settingsConfig;
+  const original = config.general.branch_prefix;
+  const refresh = state._settingsRefreshForm();
+  config.general.branch_prefix = "draft";
+  await state._settingsRefreshForm();
+  config.general.branch_prefix = original;
+  gate.resolve({ ok: true, status: 200, json: async () => ({ content: "instance_name: stale\n" }) });
+  await refresh;
+  assert.equal(state.settingsConfig, config);
+  assert.equal(state._settingsRawText, SETTINGS_FIXTURE);
+  assert.equal(state.settingsLoading, false);
+});
+
+test("draft inputs survive reloads before and during a fetch", async (t) => {
+  const drafts = {
+    channel: state => { state.settingsNewChannelName = "new-channel"; },
+    header: state => { state.settingsNewHeaderKey.ops = "X-Draft"; },
+    agent: state => { state.settingsNewPerAgentKey.summary_model = "pi-fast"; },
+    stage: state => { state.settingsNewStage = "new-stage"; },
+    environment: state => { state.settingsNewEnvKey = "NEW_KEY"; },
+    status: state => { state.settingsNewStatus = "needs_check"; },
+  };
+  for (const [name, edit] of Object.entries(drafts)) {
+    for (const phase of ["before", "during"]) await t.test(`${name}: ${phase}`, async () => {
+      const gate = deferred();
+      let reads = 0;
+      const state = await settingsState(SETTINGS_FIXTURE, { fetch: () => { reads++; return gate.promise; } });
+      const config = state.settingsConfig;
+      if (phase === "before") edit(state);
+      const refresh = state._settingsRefreshForm();
+      if (phase === "during") edit(state);
+      const draft = JSON.stringify([state.settingsNewChannelName, state.settingsNewHeaderKey,
+        state.settingsNewPerAgentKey, state.settingsNewStage, state.settingsNewEnvKey, state.settingsNewStatus]);
+      gate.resolve({ ok: true, status: 200, json: async () => ({ content: "instance_name: external\n" }) });
+      await refresh;
+      assert.equal(reads, phase === "before" ? 0 : 1);
+      assert.equal(state.settingsConfig, config);
+      assert.equal(JSON.stringify([state.settingsNewChannelName, state.settingsNewHeaderKey,
+        state.settingsNewPerAgentKey, state.settingsNewStage, state.settingsNewEnvKey, state.settingsNewStatus]), draft);
+      assert.equal(state.settingsLoading, false);
+    });
+  }
+});
+
+test("a failed background refresh keeps the editor and can retry on reopen", async (t) => {
+  const html = fs.readFileSync(htmlPath, "utf8");
+  assert.match(html, /x-show="!settingsLoading && settingsLoadError"/);
+  assert.match(html, /@click="_settingsRefreshForm\(true\)"/);
+  for (const failure of ["network", "http", "yaml"]) await t.test(failure, async () => {
+    let reads = 0;
+    const state = await settingsState(SETTINGS_FIXTURE, {
+      fetch: async () => {
+        if (++reads > 1) return { ok: true, status: 200, json: async () => ({ content: "instance_name: recovered\n" }) };
+        if (failure === "network") throw new Error("offline");
+        if (failure === "http") return { ok: false, status: 503 };
+        return { ok: true, status: 200, json: async () => ({ content: "invalid: [\n" }) };
+      },
+    });
+    const config = state.settingsConfig;
+    await state._settingsRefreshForm();
+    assert.equal(state.settingsState, "ok");
+    assert.equal(state.settingsConfig, config);
+    assert.equal(state._settingsRawText, SETTINGS_FIXTURE);
+    assert.ok(state.settingsLoadError);
+    assert.equal(state.settingsLoading, false);
+    await state.openSettings();
+    assert.equal(reads, 2);
+    assert.equal(state.settingsConfig.general.instance_name, "recovered");
+    assert.equal(state.settingsLoadError, "");
+  });
+});
+
+test("an older refresh cannot replace a saved or discarded form", async (t) => {
+  for (const action of ["save", "discard"]) await t.test(action, async () => {
+    const gate = deferred();
+    const daemon = settingsFetch();
+    let reads = 0;
+    const state = await settingsState(SETTINGS_FIXTURE, {
+      fetch: (url, init) => url === "/api/config/raw" && !init?.method && ++reads === 1 ? gate.promise : daemon.fetch(url, init),
+    });
+    const refresh = state._settingsRefreshForm();
+    state.settingsConfig.general.branch_prefix = "saved";
+    if (action === "save") assert.equal(await state.saveSettings(), true);
+    else state.discardSettings();
+    const raw = state._settingsRawText;
+    const config = state.settingsConfig;
+    gate.resolve({ ok: true, status: 200, json: async () => ({ content: "instance_name: old-response\n" }) });
+    await refresh;
+    assert.equal(state.settingsConfig, config);
+    assert.equal(state._settingsRawText, raw);
+    assert.equal(state.settingsDirty(), false);
+  });
+});
+
+test("duplicate reload events keep the save confirmation and open controls", async () => {
+  const state = await settingsState(SETTINGS_FIXTURE, { fetch: settingsFetch().fetch });
+  state.settingsSavedAt = "12:34";
+  state.settingsSavedRestart = true;
+  state.settingsOpenStage = "plan";
+  const config = state.settingsConfig;
+  await Promise.all([state._settingsRefreshForm(), state._settingsRefreshForm()]);
+  assert.equal(state.settingsConfig, config);
+  assert.equal(state.settingsSavedAt, "12:34");
+  assert.equal(state.settingsSavedRestart, true);
+  assert.equal(state.settingsOpenStage, "plan");
+  assert.equal(state.settingsLoading, false);
+});
+
+test("a reload during the initial Settings load supersedes the old read", async () => {
+  const gate = deferred();
+  let reads = 0;
+  const state = loadKontoraState({
+    fetch: async () => ++reads === 1 ? gate.promise :
+      { ok: true, status: 200, json: async () => ({ content: "instance_name: newest\n" }) },
+  });
+  state._settingsYAML = await import(yamlPath);
+  const open = state.openSettings();
+  await state._settingsRefreshForm();
+  gate.resolve({ ok: true, status: 200, json: async () => ({ content: "instance_name: oldest\n" }) });
+  await open;
+  assert.equal(state.settingsConfig.general.instance_name, "newest");
+  assert.equal(state.settingsLoading, false);
+});
+
 test("501 and 401 produce explicit states instead of an empty form", async () => {
   const unavailable = loadKontoraState({ fetch: async () => ({ status: 501, ok: false }) });
   await unavailable.openSettings();
@@ -6682,12 +6908,47 @@ test("client validation blocks the request before it is sent", async () => {
   assert.equal(state.settingsConfig.agents.claude.binary, "");
 });
 
-test("saving a restart-only field says so", async () => {
-  const state = await settingsState(SETTINGS_FIXTURE, { fetch: settingsFetch().fetch });
+test("saving a restart-only field says so", async (t) => {
+  for (const [section, key, value] of [["web", "port", "9090"], ["plannotator", "reviews_dir", "~/new-reviews"]]) {
+    await t.test(section + "." + key, async () => {
+      const state = await settingsState(SETTINGS_FIXTURE, { fetch: settingsFetch().fetch });
+      state.settingsConfig[section][key] = value;
+      assert.equal(await state.saveSettings(), true);
+      assert.equal(state.settingsSavedRestart, true);
+    });
+  }
+});
 
-  state.settingsConfig.web.port = "9090";
-  assert.equal(await state.saveSettings(), true);
-  assert.equal(state.settingsSavedRestart, true);
+test("the restart list contains exactly the pinned fields the form edits", async () => {
+  const state = await settingsState();
+  const pinned = [
+    "tickets_dir", "secondary_tickets_dirs", "worktrees_dir", "logs_dir", "instance_name",
+    "web.host", "web.port", "web.token", "plannotator.reviews_dir",
+  ];
+  for (const path of pinned) assert.equal(state.settingsIsRestartOnly(path), true, path);
+  const live = [
+    "max_concurrent_agents", "max_concurrent_epic_supervisors", "auto_pick_up", "branch_prefix",
+    "plannotator.binary", "plannotator.timeout", "notifications", "notifications.enabled",
+    "notifications.default", "notifications.attempts", "notifications.backoff", "notifications.timeout",
+    "notifications.channels.ops", "notifications.channels.ops.url", "projects.kontora.notify_channels",
+  ];
+  for (const path of live) assert.equal(state.settingsIsRestartOnly(path), false, path);
+
+  state.settingsConfig.plannotator.reviews_dir = "~/new-reviews";
+  assert.deepEqual([...state.settingsChangedPaths()], ["plannotator.reviews_dir"]);
+  assert.equal(state.settingsRestartPending(), 1);
+});
+
+test("the Settings markup has no stale notification or worker restart markers", () => {
+  const html = fs.readFileSync(htmlPath, "utf8");
+  const notifications = html.split("<!-- ===== notifications ===== -->")[1].split("<!-- =====")[0];
+  assert.ok(notifications);
+  assert.doesNotMatch(notifications, /restart/i);
+  const workers = html.split("x.key === 'max_concurrent_agents'")[1].split("x.key === 'default_agent'")[0];
+  assert.ok(workers);
+  assert.doesNotMatch(workers, /restart/i);
+  const plannotator = html.split("<!-- ===== plannotator ===== -->")[1].split("<!-- =====")[0];
+  assert.match(plannotator, /x-show="settingsIsRestartOnly\('plannotator\.' \+ f\.key\)"[^>]*>restart<\/span>/);
 });
 
 test("discard restores the baseline without writing", async () => {
@@ -6891,7 +7152,7 @@ test("index.html wires the settings shell to the guard and the section rail", ()
   // settingsState === 'ok' template, and every editable control is inside it.
   const empty = html.slice(
     html.indexOf(`settingsState === 'unavailable'`),
-    html.indexOf(`settingsState === 'parse-error'`),
+    html.indexOf(`!settingsLoading && settingsLoadError`),
   );
   assert.equal(/x-model|saveSettings/.test(empty), false);
   const editable = html.indexOf(`<template x-if="settingsState === 'ok'">`);
@@ -7357,13 +7618,19 @@ test("an absent notifications block reads as enabled with nothing configured", a
   assert.equal(state.settingsSectionSummary("notifications"), "no channels");
 });
 
-test("every notifications edit is one the daemon only picks up on a restart", async () => {
-  const state = await settingsState(SETTINGS_NOTIFY_FIXTURE);
+test("notification and concurrency edits save without restart markers", async () => {
+  const daemon = settingsFetch({ raw: SETTINGS_NOTIFY_FIXTURE });
+  const state = await settingsState(SETTINGS_NOTIFY_FIXTURE, { fetch: daemon.fetch });
 
   state.settingsConfig.notifications.attempts = "5";
   state.settingsNotifChannel("ops").url = "https://example.com/hooks/other";
-  assert.equal(state.settingsRestartPending(), 2);
-  assert.equal(state.settingsIsRestartOnly("notifications.channels.ops"), true);
+  state.settingsConfig.general.max_concurrent_agents = "6";
+  state.settingsConfig.general.max_concurrent_epic_supervisors = "2";
+  assert.equal(state.settingsRestartPending(), 0);
+  assert.equal(state.settingsIsRestartOnly("notifications"), false);
+  assert.equal(state.settingsIsRestartOnly("notifications.channels.ops"), false);
+  assert.equal(await state.saveSettings(), true);
+  assert.equal(state.settingsSavedRestart, false);
 });
 
 test("editing the notifications block writes only the keys that changed", async () => {
@@ -7573,7 +7840,9 @@ test("the notifications summary and the advisory say what the daemon will do", a
   const state = await settingsState(SETTINGS_NOTIFY_FIXTURE);
 
   assert.equal(state.settingsSectionSummary("notifications"), "2 channels · default tg-me");
-  assert.match(state.settingsNotifAdvisory(), /until the daemon restarts/);
+  assert.match(state.settingsNotifAdvisory(), /applies notification changes without a restart/);
+  assert.match(state.settingsNotifAdvisory(), /A new or changed channel whose secret cannot be read is skipped/);
+  assert.match(state.settingsNotifAdvisory(), /Unchanged channel definitions keep their running credentials/);
   state.settingsConfig.notifications.enabled = false;
   assert.match(state.settingsNotifAdvisory(), /^Delivery is off/);
   state.settingsConfig.notifications.default = [];
@@ -17187,11 +17456,12 @@ test('epic controls and brief surfaces are available in both responsive layouts'
   assert.equal(html.split('Transcript truncated. Open the full raw stage log; it may show a different attempt.').length - 1, 2);
 });
 
-test('supervisor capacity is a restart-only integer with a default of four', async () => {
+test('supervisor capacity reloads live and defaults to four', async () => {
   const state = await settingsState();
   const field = state.settingsGeneralFields.find(f => f.key === 'max_concurrent_epic_supervisors');
   assert.equal(field.placeholder, '4');
-  assert.equal(state.settingsIsRestartOnly(field.key), true);
+  assert.equal(state.settingsIsRestartOnly(field.key), false);
+  assert.doesNotMatch(field.help, /restart/i);
   assert.ok(state.settingsGeneralTextRows('execution').some(f => f.key === field.key));
   state.settingsConfig.general.max_concurrent_epic_supervisors = '6';
   assert.match(await state._settingsWrite(), /^max_concurrent_epic_supervisors: 6$/m);

@@ -80,6 +80,6 @@ func TestExecutionRealTmuxAPIRetryReleasesCapacity(t *testing.T) {
 	assert.Empty(t, d.running)
 	assert.Empty(t, d.runningBranches)
 	assert.Empty(t, d.executions)
-	assert.Empty(t, d.sem)
+	assert.Zero(t, d.sem.used)
 	d.mu.Unlock()
 }

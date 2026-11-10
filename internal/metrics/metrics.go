@@ -321,9 +321,9 @@ func (r *Recorder) Notification(ctx context.Context, channel, result string) {
 
 // ObserveScheduler registers the three scheduler gauges against one callback.
 //
-// The callback runs on the exporter's collect path. Every function passed here
-// must read lock-free state only: taking a lock the daemon holds across a
-// subprocess or a file write would stall collection behind it.
+// The callback runs on the exporter's collect path. Each function must
+// synchronize reads with concurrent updates. Taking a lock the daemon holds
+// across a subprocess or a file write can stall collection behind it.
 func (r *Recorder) ObserveScheduler(active, capacity, queued func() int64) error {
 	if r == nil {
 		return nil

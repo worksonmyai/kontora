@@ -184,8 +184,9 @@ func effectiveClaimBranch(cfg *config.Config, t *ticket.Ticket) string {
 }
 
 func (d *Daemon) claimExecution(ctx context.Context, cfg *config.Config, id string, log *slog.Logger) (context.Context, context.CancelFunc, *ticket.Ticket, string, string, error) {
+	explicit := pickupExplicit(ctx)
 	d.mu.Lock()
-	ts, ok := d.claimableLocked(id, log)
+	ts, ok := d.claimablePickupLocked(id, log, explicit)
 	if !ok {
 		d.mu.Unlock()
 		return nil, nil, nil, "", "", errExecutionChanged
@@ -221,12 +222,12 @@ func (d *Daemon) claimExecution(ctx context.Context, cfg *config.Config, id stri
 			return errExecutionChanged
 		}
 		if _, reviewing := d.plannotator[id]; reviewing {
-			d.plannotatorDeferred[id] = struct{}{}
+			d.deferPlannotatorPickupLocked(id, explicit)
 			return errExecutionChanged
 		}
 		if !dispatchPoolMatches(ctx, t) {
 			d.setTicketState(id, t.Clone(), st.FilePath)
-			d.enqueue(t)
+			d.enqueueLocked(t, explicit)
 			return errExecutionChanged
 		}
 		for _, dep := range t.Deps {

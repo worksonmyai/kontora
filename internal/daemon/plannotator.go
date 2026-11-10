@@ -137,6 +137,10 @@ func (d *Daemon) StartPlannotatorReview(id string) error {
 	return nil
 }
 
+func (d *Daemon) deferPlannotatorPickupLocked(id string, explicit bool) {
+	d.plannotatorDeferred[id] = d.plannotatorDeferred[id] || explicit
+}
+
 // releasePlannotator ends a ticket's Plannotator session and replaces the pickup
 // the open session cost it. runTicket drops such a pickup rather than queueing
 // behind a session that may stay open for as long as its timeout allows, so
@@ -154,7 +158,7 @@ func (d *Daemon) releasePlannotator(id string) {
 		// open, and its deadline was left out of the timer's scan.
 		d.signalSchedule()
 	}
-	_, deferred := d.plannotatorDeferred[id]
+	explicit, deferred := d.plannotatorDeferred[id]
 	delete(d.plannotatorDeferred, id)
 	if !deferred {
 		return
@@ -163,7 +167,7 @@ func (d *Daemon) releasePlannotator(id string) {
 		return
 	}
 	if ts, ok := d.tickets[id]; ok && ts.ticket.Status == ticket.StatusTodo {
-		d.enqueue(ts.ticket)
+		d.enqueueLocked(ts.ticket, explicit)
 	}
 }
 

@@ -135,7 +135,7 @@ func TestManagedConcurrentCompletions(t *testing.T) {
 		}
 	}
 	releaseOnce.Do(func() { close(release) })
-	require.Eventually(t, func() bool { return len(d.sem) == 0 }, 5*time.Second, time.Millisecond)
+	require.Eventually(t, func() bool { return poolUsed(d, d.sem) == 0 }, 5*time.Second, time.Millisecond)
 	state, err := store.State()
 	require.NoError(t, err)
 	for _, attempt := range state.Attempts {

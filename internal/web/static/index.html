@@ -4484,10 +4484,13 @@
               <p class="text-[12px] leading-[1.6] text-tx-3 m-0">This daemon is running without a config file, so there is nothing to edit here. On the daemon host, run <span class="font-mono text-tx-2">kontora setup</span> to create one, or <span class="font-mono text-tx-2">kontora setup --agent</span> to have a coding agent do it. Then restart the daemon and reload this page.</p>
             </div>
 
-            <div x-show="!settingsLoading && settingsState === 'parse-error'" x-cloak
+            <div x-show="!settingsLoading && settingsLoadError" x-cloak
                  class="border border-err/30 bg-err/10 rounded-lg p-5">
               <div class="font-mono text-[10px] font-bold tracking-[.1em] uppercase text-err mb-1.5">could not read config.yaml</div>
               <p class="font-mono text-[11.5px] leading-[1.6] text-tx-2 m-0 whitespace-pre-wrap break-words" x-text="settingsLoadError"></p>
+              <p x-show="settingsConfig" class="text-[12px] text-tx-3">Showing the last loaded config.</p>
+              <button type="button" @click="_settingsRefreshForm(true)" :disabled="settingsDirty() || _settingsHasDrafts() || settingsSaving"
+                      class="font-mono text-sm text-accent disabled:opacity-50">retry</button>
             </div>
 
             <template x-if="settingsState === 'ok'">
@@ -4687,7 +4690,6 @@
                       <div class="flex flex-col gap-1 min-w-0">
                         <span class="flex items-center gap-[7px] flex-wrap">
                           <label id="gen-max_concurrent_agents-label" for="gen-max_concurrent_agents" class="font-mono text-[12.5px] text-tx-2">max_concurrent_agents</label>
-                          <span class="font-mono text-[9.5px] uppercase tracking-[.08em] text-warn bg-warn/10 border border-warn/[0.22] rounded px-[5px] py-px">restart</span>
                         </span>
                         <span class="text-[11.5px] leading-[1.55] text-tx-4" x-text="f.help"></span>
                       </div>
@@ -4723,7 +4725,7 @@
                           <span class="font-mono text-[11px] text-tx-4" x-text="settingsSlotsLabel()"></span>
                         </div>
                         <span class="font-mono text-[10.5px] text-tx-faint"
-                              x-text="settingsPathDirty('max_concurrent_agents') ? 'changed — takes effect after a daemon restart' : (settingsConcurrency().trim() ? '' : 'default · ' + f.placeholder)"></span>
+                              x-text="settingsConcurrency().trim() ? '' : 'default · ' + f.placeholder"></span>
                       </div>
                     </div>
 
@@ -5263,6 +5265,7 @@
                         <div class="flex flex-col gap-1 min-w-0">
                           <span class="flex items-center gap-[7px] flex-wrap">
                             <label :for="'pl-' + f.key" class="font-mono text-[12.5px] text-tx-2" x-text="f.key"></label>
+                            <span x-show="settingsIsRestartOnly('plannotator.' + f.key)" class="font-mono text-[9.5px] uppercase tracking-[.08em] text-warn bg-warn/10 border border-warn/[0.22] rounded px-[5px] py-px">restart</span>
                             <span x-show="!settingsConfig.plannotator[f.key]" class="font-mono text-[9.5px] uppercase tracking-[.08em] text-tx-faint border border-surface-700/70 rounded px-[5px] py-px">default</span>
                           </span>
                           <span class="text-[11.5px] leading-[1.55] text-tx-4" x-text="f.help"></span>
@@ -5271,7 +5274,7 @@
                           <input :id="'pl-' + f.key" type="text" x-model="settingsConfig.plannotator[f.key]" :placeholder="f.placeholder"
                                  class="w-full max-w-[30rem] bg-surface-800 border rounded-[7px] py-2 px-3 font-mono text-[12.5px] text-tx-2 focus:outline-none focus:border-accent/40"
                                  :class="f.key === 'timeout' && !settingsDurationValid(settingsConfig.plannotator[f.key]) ? 'border-err' : 'border-edge-input'">
-                          <span class="font-mono text-[10.5px] text-tx-faint" x-text="settingsConfig.plannotator[f.key] ? '' : 'default · ' + f.placeholder"></span>
+                          <span class="font-mono text-[10.5px] text-tx-faint" x-text="settingsIsRestartOnly('plannotator.' + f.key) && settingsPathDirty('plannotator.' + f.key) ? 'changed; restart the daemon to apply' : (settingsConfig.plannotator[f.key] ? '' : 'default · ' + f.placeholder)"></span>
                         </div>
                       </div>
                     </template>
@@ -5288,14 +5291,13 @@
                     <header class="flex items-baseline gap-2.5 p-[13px] px-[18px] bg-surface-850/45 border-b border-surface-700/40" data-pipe-color="mauve">
                       <span class="w-1.5 h-1.5 rounded-full self-center shrink-0" style="background: hsl(var(--pipe-h))"></span>
                       <h2 class="m-0 font-mono text-[12.5px] font-bold text-tx-hi tracking-[.02em]">delivery</h2>
-                      <span class="text-[11.5px] text-tx-4">How hard the daemon tries. The whole block needs a restart.</span>
+                      <span class="text-[11.5px] text-tx-4">Delivery attempts and retry timing. Changes apply on reload.</span>
                     </header>
                     <div x-show="settingsRowVisible('enabled', 'Off sends nothing, whatever a ticket asks for.', 'notifications')"
                          class="grid grid-cols-1 lg:grid-cols-[232px_minmax(0,1fr)] gap-3 lg:gap-6 p-4 px-[18px] border-t border-surface-700/[0.28] items-start">
                       <div class="flex flex-col gap-1 min-w-0">
                         <span class="flex items-center gap-[7px] flex-wrap">
                           <span class="font-mono text-[12.5px] text-tx-2">enabled</span>
-                          <span class="font-mono text-[9.5px] uppercase tracking-[.08em] text-warn bg-warn/10 border border-warn/[0.22] rounded px-[5px] py-px">restart</span>
                         </span>
                         <span class="text-[11.5px] leading-[1.55] text-tx-4">Off sends nothing, whatever a ticket asks for.</span>
                       </div>
@@ -5320,7 +5322,6 @@
                         <div class="flex flex-col gap-1 min-w-0">
                           <span class="flex items-center gap-[7px] flex-wrap">
                             <label :for="'notif-' + f.key" class="font-mono text-[12.5px] text-tx-2" x-text="f.key"></label>
-                            <span class="font-mono text-[9.5px] uppercase tracking-[.08em] text-warn bg-warn/10 border border-warn/[0.22] rounded px-[5px] py-px">restart</span>
                           </span>
                           <span class="text-[11.5px] leading-[1.55] text-tx-4" x-text="f.help"></span>
                         </div>

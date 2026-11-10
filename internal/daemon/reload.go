@@ -12,6 +12,7 @@ import (
 	"sync"
 
 	"github.com/worksonmyai/kontora/internal/config"
+	"github.com/worksonmyai/kontora/internal/ticket"
 	"github.com/worksonmyai/kontora/internal/watcher"
 	"github.com/worksonmyai/kontora/internal/web"
 )
@@ -55,7 +56,22 @@ func (d *Daemon) reloadConfig() error {
 
 	cur := d.config()
 	pinRestartOnly(cur, next, d.log)
+	d.applyNotifications(next)
+	d.mu.Lock()
+	d.resizePoolsLocked(next.MaxConcurrentAgents, next.MaxConcurrentEpicSupervisors)
 	d.cfg.Store(next)
+	if !*cur.AutoPickUp && *next.AutoPickUp {
+		for _, ts := range d.tickets {
+			if ts.ticket.Status == ticket.StatusTodo {
+				d.enqueueAutomatic(ts.ticket)
+			}
+		}
+	}
+	for _, ts := range d.tickets {
+		d.warnUnmatchedNotifyLocked(next, ts.ticket)
+	}
+	d.queueCond.Broadcast()
+	d.mu.Unlock()
 	d.wakeCompanion()
 
 	d.log.Info("config reloaded",
@@ -76,9 +92,9 @@ func (d *Daemon) reloadConfig() error {
 // running config into next, and warns once per field whose on-disk value
 // differs. These are the values the daemon freezes at construction or in Run:
 // the worktree manager root, the instance name used for ticket claims, the tmux
-// session holding every running agent's window, the semaphore capacity, the web
-// listener, the metric exporter, and the directories the watcher and
-// the initial scan were pointed at. The log directory is pinned too, for a
+// session holding every running agent's window, the web listener, the metric
+// exporter, and the directories the watcher and initial scan were pointed at.
+// The log directory is pinned too, for a
 // different reason: nothing freezes it, but `kontora logs` reads it live, so a
 // change would strand every existing log file. Applying half of one of these
 // settings, writing new tickets to a directory nothing watches for example, is
@@ -116,14 +132,9 @@ func pinRestartOnly(cur, next *config.Config, log *slog.Logger) {
 		warn("tmux_session", cur.TmuxSession, next.TmuxSession)
 		next.TmuxSession = cur.TmuxSession
 	}
-	if next.MaxConcurrentAgents != cur.MaxConcurrentAgents {
-		warn("max_concurrent_agents", cur.MaxConcurrentAgents, next.MaxConcurrentAgents)
-		next.MaxConcurrentAgents = cur.MaxConcurrentAgents
-	}
-
-	if next.MaxConcurrentEpicSupervisors != cur.MaxConcurrentEpicSupervisors {
-		warn("max_concurrent_epic_supervisors", cur.MaxConcurrentEpicSupervisors, next.MaxConcurrentEpicSupervisors)
-		next.MaxConcurrentEpicSupervisors = cur.MaxConcurrentEpicSupervisors
+	if next.Plannotator.ReviewsDir != cur.Plannotator.ReviewsDir {
+		warn("plannotator.reviews_dir", cur.Plannotator.ReviewsDir, next.Plannotator.ReviewsDir)
+		next.Plannotator.ReviewsDir = cur.Plannotator.ReviewsDir
 	}
 
 	// One warning per differing web child, so "port changed" doesn't read as
@@ -164,48 +175,6 @@ func pinRestartOnly(cur, next *config.Config, log *slog.Logger) {
 		warn("metrics.insecure", cur.Metrics.Insecure, next.Metrics.Insecure)
 	}
 	next.Metrics = cur.Metrics
-
-	// The channels and their resolved credentials are built once in Run, so a
-	// live reload would leave the running senders disagreeing with the config.
-	// The channel map is redacted whole rather than diffed: every entry can name
-	// a secret, and there is no field-by-field comparison that is certain not to
-	// put one in the log.
-	if !reflect.DeepEqual(next.Notifications.Enabled, cur.Notifications.Enabled) {
-		warn("notifications.enabled", derefBool(cur.Notifications.Enabled), derefBool(next.Notifications.Enabled))
-	}
-	if !reflect.DeepEqual(next.Notifications.Channels, cur.Notifications.Channels) {
-		warnRedacted("notifications.channels")
-	}
-	if !slices.Equal(next.Notifications.Default, cur.Notifications.Default) {
-		warn("notifications.default", cur.Notifications.Default, next.Notifications.Default)
-	}
-	if next.Notifications.Timeout != cur.Notifications.Timeout {
-		warn("notifications.timeout", cur.Notifications.Timeout, next.Notifications.Timeout)
-	}
-	if !reflect.DeepEqual(next.Notifications.Attempts, cur.Notifications.Attempts) {
-		warn("notifications.attempts", derefInt(cur.Notifications.Attempts), derefInt(next.Notifications.Attempts))
-	}
-	if next.Notifications.Backoff != cur.Notifications.Backoff {
-		warn("notifications.backoff", cur.Notifications.Backoff, next.Notifications.Backoff)
-	}
-	next.Notifications = cur.Notifications
-
-	// Projects reload live while the channels do not, so a reload that adds a
-	// channel and points a project at it leaves that project naming a channel
-	// the running dispatcher has never heard of. NotifyChannelsFor still
-	// returns it, which shadows the default that was working, and every ticket
-	// in the project goes quiet until a restart.
-	for _, name := range slices.Sorted(maps.Keys(next.Projects)) {
-		for _, ch := range next.Projects[name].NotifyChannels {
-			if ch == config.NoneSentinel {
-				continue
-			}
-			if _, ok := next.Notifications.Channels[ch]; !ok {
-				log.Warn("project notify_channels names a channel this daemon has not built; the project is silent until a restart",
-					"project", name, "channel", ch)
-			}
-		}
-	}
 }
 
 func derefBool(b *bool) any {
@@ -213,13 +182,6 @@ func derefBool(b *bool) any {
 		return nil
 	}
 	return *b
-}
-
-func derefInt(i *int) any {
-	if i == nil {
-		return nil
-	}
-	return *i
 }
 
 // configWatchDirs returns the directories to watch for changes to configPath.

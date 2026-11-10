@@ -11,6 +11,21 @@ import (
 	"github.com/worksonmyai/kontora/internal/ticket"
 )
 
+// slotPool accounts for all admitted and recovered executions, even when a
+// resize or crash recovery leaves used above limit. All access requires d.mu.
+// Pools are resized in place so outstanding reservations keep their identity.
+type slotPool struct {
+	limit int
+	used  int
+}
+
+// Requires d.mu, together with publishing the new config.
+func (d *Daemon) resizePoolsLocked(agents, supervisors int) {
+	d.sem.limit = agents
+	d.epicSem.limit = supervisors
+	d.queueCond.Broadcast()
+}
+
 // managedDispatch stays disabled until the authority and integration paths are installed.
 type managedDispatch struct {
 	enabled       bool
@@ -60,7 +75,7 @@ func (d *Daemon) queueManagedJob(job *dispatchJob) error {
 	if job == nil || job.objectiveID == "" || job.attemptID == "" || job.ready == nil || job.reserve == nil || job.run == nil {
 		return errors.New("incomplete managed dispatch request")
 	}
-	if job.slotCount() < 1 || job.slotCount() > cap(d.sem) {
+	if job.slotCount() < 1 || job.slotCount() > d.sem.limit {
 		return errors.New("managed slot request exceeds dispatcher capacity")
 	}
 	for _, queued := range d.managedDispatch.queue {
@@ -101,6 +116,12 @@ func (d *Daemon) readyManagedJobLocked() int {
 }
 
 type dispatchPoolKey struct{}
+type dispatchExplicitKey struct{}
+
+func pickupExplicit(ctx context.Context) bool {
+	explicit, dispatched := ctx.Value(dispatchExplicitKey{}).(bool)
+	return !dispatched || explicit
+}
 
 // dispatchPoolMatches checks the reservation again after dispatch releases the
 // mutex. A ticket can change execution mode before runTicket claims it.
@@ -109,7 +130,7 @@ func dispatchPoolMatches(ctx context.Context, t *ticket.Ticket) bool {
 	return !reserved || epic == t.IsAgentEpic()
 }
 
-func (d *Daemon) ticketPool(t *ticket.Ticket) chan struct{} {
+func (d *Daemon) ticketPool(t *ticket.Ticket) *slotPool {
 	if t.IsAgentEpic() {
 		return d.epicSem
 	}
@@ -120,7 +141,7 @@ func (d *Daemon) ticketPool(t *ticket.Ticket) chan struct{} {
 func (d *Daemon) readyOrdinaryJobLocked() int {
 	eligible := d.queue[:0]
 	for _, item := range d.queue {
-		if _, ok := d.claimableLocked(item.ticketID, d.ticketLog(item.ticketID)); !ok {
+		if _, ok := d.claimablePickupLocked(item.ticketID, d.ticketLog(item.ticketID), item.explicit); !ok {
 			delete(d.queued, item.ticketID)
 			continue
 		}
@@ -175,17 +196,13 @@ func (d *Daemon) dispatch(ctx context.Context, wg *sync.WaitGroup) {
 				d.queueCond.Wait()
 				continue
 			}
-			for range slots {
-				pool <- struct{}{}
-			}
+			pool.used += slots
 			if managed {
 				state := d.managedDispatch
 				job := state.queue[managedIndex]
 				state.queue = append(state.queue[:managedIndex], state.queue[managedIndex+1:]...)
 				if err := job.reserve(); err != nil {
-					for range slots {
-						<-d.sem
-					}
+					pool.used -= slots
 					d.log.Error("managed admission refused", "objective", job.objectiveID, "attempt", job.attemptID, "err", err)
 					continue
 				}
@@ -201,9 +218,7 @@ func (d *Daemon) dispatch(ctx context.Context, wg *sync.WaitGroup) {
 					defer d.mu.Unlock()
 					if stopped {
 						delete(state.active, job.attemptID)
-						for range slots {
-							<-d.sem
-						}
+						pool.used -= slots
 					} else {
 						d.log.Error("managed attempt termination unconfirmed; reservation retained", "objective", job.objectiveID, "attempt", job.attemptID)
 					}
@@ -222,11 +237,12 @@ func (d *Daemon) dispatch(ctx context.Context, wg *sync.WaitGroup) {
 				wg.Go(func() {
 					runCtx := context.WithValue(ctx, ordinaryReservationKey{}, &atomic.Bool{})
 					runCtx = context.WithValue(runCtx, dispatchPoolKey{}, epic)
+					runCtx = context.WithValue(runCtx, dispatchExplicitKey{}, item.explicit)
 					defer func() {
 						d.mu.Lock()
 						defer d.mu.Unlock()
 						if !ordinaryReservationRetained(runCtx) {
-							<-pool
+							pool.used--
 						} else {
 							d.log.Error("ordinary attempt termination unconfirmed; reservation retained", "ticket", item.ticketID)
 						}

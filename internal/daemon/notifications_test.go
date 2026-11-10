@@ -1048,3 +1048,141 @@ notify_channels: [tg]
 		})
 	}
 }
+
+func runNotificationBuilder(t *testing.T, d *Daemon, cfg *config.Config) {
+	t.Helper()
+	run := d.startNotifications(cfg)
+	require.NotNil(t, run)
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan struct{})
+	go func() { defer close(done); run(ctx) }()
+	t.Cleanup(func() { cancel(); <-done })
+}
+
+func TestNotificationsApplySwitchEnableDisableAndAdd(t *testing.T) {
+	for _, mode := range []string{"switch", "enable", "disable", "add"} {
+		t.Run(mode, func(t *testing.T) {
+			h := newHarness(t)
+			a, requestsA := notifyWireServer(t, http.StatusOK, "ok")
+			b, requestsB := notifyWireServer(t, http.StatusOK, "ok")
+			cfg := h.defaultConfig("true", "true")
+			cfg.Notifications = config.Notifications{
+				Channels: map[string]config.NotifyChannel{"hook": {Type: config.NotifyWebhook, URL: a.URL}},
+				Default:  []string{"hook"},
+			}
+			if mode == "enable" {
+				cfg.Notifications.Enabled = new(false)
+			}
+			if mode == "add" {
+				cfg.Notifications.Channels = nil
+			}
+			d := h.newDaemon(cfg)
+			runNotificationBuilder(t, d, cfg)
+			original := d.notifier
+			tkt := &ticket.Ticket{ID: "n-apply", Path: h.repoDir, Status: ticket.StatusTodo,
+				Notify: ticket.NotifyList{Statuses: []string{"done", "paused"}}}
+			d.observe(tkt, notify.OriginObserved)
+
+			next := *cfg
+			next.Notifications.Channels = map[string]config.NotifyChannel{
+				"hook": {Type: config.NotifyWebhook, URL: b.URL, Method: "put", Headers: map[string]string{"X-Reload": "applied"}},
+			}
+			next.Notifications.Enabled = new(mode != "disable")
+			d.applyNotifications(&next)
+			d.cfg.Store(&next)
+			d.applyNotifications(&next)
+			assert.Equal(t, original, d.notifier, "apply must not replace the notifier")
+			tkt.Status = ticket.StatusDone
+			d.observe(tkt, notify.OriginDaemon)
+
+			if mode == "disable" {
+				assert.False(t, d.notifier.Live())
+				assert.Never(t, func() bool { return len(requestsA())+len(requestsB()) > 0 }, 100*time.Millisecond, time.Millisecond)
+				enabled := next
+				enabled.Notifications.Enabled = new(true)
+				d.applyNotifications(&enabled)
+				d.cfg.Store(&enabled)
+				tkt.Status = ticket.StatusPaused
+				d.observe(tkt, notify.OriginDaemon)
+			}
+			require.Eventually(t, func() bool { return len(requestsB()) == 1 }, 2*time.Second, time.Millisecond)
+			assert.Empty(t, requestsA())
+			got := requestsB()[0]
+			assert.Equal(t, http.MethodPut, got.method)
+			assert.Equal(t, "applied", got.header.Get("X-Reload"))
+			var body map[string]any
+			require.NoError(t, json.Unmarshal(got.body, &body))
+			if mode == "disable" {
+				assert.Equal(t, "done", body["from"])
+				assert.Equal(t, "paused", body["to"])
+			} else {
+				assert.Equal(t, "todo", body["from"])
+				assert.Equal(t, "done", body["to"])
+			}
+			assert.Never(t, func() bool { return len(requestsB()) > 1 }, 50*time.Millisecond, time.Millisecond)
+		})
+	}
+}
+
+func TestNotificationsApplySkipsFailedSecretAndKeepsUnchangedCredential(t *testing.T) {
+	h := newHarness(t)
+	srv, requests := notifyWireServer(t, http.StatusOK, "ok")
+	const goodEnv = "KONTORA_TEST_NOTIFY_APPLY_GOOD"
+	const badEnv = "KONTORA_TEST_NOTIFY_APPLY_BAD"
+	const missingEnv = "KONTORA_TEST_NOTIFY_APPLY_MISSING"
+	const secret = "do-not-log-this-credential"
+	t.Setenv(goodEnv, secret)
+	t.Setenv(badEnv, "old-bad-credential")
+	t.Setenv(missingEnv, "")
+	cfg := h.defaultConfig("true", "true")
+	cfg.Notifications = config.Notifications{
+		Channels: map[string]config.NotifyChannel{
+			"good": {Type: config.NotifyWebhook, URL: srv.URL + "/good", SecretEnv: goodEnv},
+			"bad":  {Type: config.NotifyWebhook, URL: srv.URL + "/bad", SecretEnv: badEnv},
+		},
+		Default: []string{"good", "bad"},
+	}
+	logs := &syncBuilder{}
+	d := h.newDaemon(cfg, WithLogger(slog.New(slog.NewTextHandler(logs, nil))))
+	runNotificationBuilder(t, d, cfg)
+	tkt := &ticket.Ticket{ID: "n-secret", Path: h.repoDir, Status: ticket.StatusTodo,
+		Notify: ticket.NotifyList{Statuses: []string{"done"}}}
+	d.observe(tkt, notify.OriginObserved)
+
+	t.Setenv(goodEnv, "")
+	next := *cfg
+	next.BranchPrefix = "new-prefix"
+	next.Notifications.Attempts = new(1)
+	next.Notifications.Channels = map[string]config.NotifyChannel{
+		"good": cfg.Notifications.Channels["good"],
+		"bad":  {Type: config.NotifyWebhook, URL: srv.URL + "/bad", SecretEnv: missingEnv},
+	}
+	d.applyNotifications(&next)
+	d.cfg.Store(&next)
+	firstLogs := logs.String()
+	d.applyNotifications(&next)
+	assert.Equal(t, firstLogs, logs.String(), "an unchanged definition must not retry its failed secret")
+	assert.Equal(t, "new-prefix", d.config().BranchPrefix)
+	tkt.Status = ticket.StatusDone
+	d.observe(tkt, notify.OriginDaemon)
+	require.Eventually(t, func() bool { return len(requests()) == 1 }, 2*time.Second, time.Millisecond)
+	assert.Equal(t, "/good", requests()[0].path)
+	assert.Equal(t, "Bearer "+secret, requests()[0].header.Get("Authorization"))
+	assert.Contains(t, firstLogs, "notification channel dropped")
+	assert.Contains(t, firstLogs, "channel=bad")
+	assert.Contains(t, firstLogs, missingEnv)
+	assert.NotContains(t, logs.String(), secret)
+	assert.NotContains(t, logs.String(), "old-bad-credential")
+	assert.Never(t, func() bool { return len(requests()) > 1 }, 50*time.Millisecond, time.Millisecond)
+}
+
+func TestNotificationsApplyKeepsInjectedNotifier(t *testing.T) {
+	h := newHarness(t)
+	cfg := h.defaultConfig("true", "true")
+	rec := &notifyRecorder{}
+	d := h.newDaemon(cfg, WithNotifier(rec))
+	d.initNotifications()
+	assert.Nil(t, d.startNotifications(cfg))
+	d.applyNotifications(cfg)
+	assert.Same(t, rec, d.notifier)
+}

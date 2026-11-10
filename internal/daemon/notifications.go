@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"maps"
 	"net/http"
+	"reflect"
 	"slices"
 	"strings"
+	"sync"
 
 	"github.com/worksonmyai/kontora/internal/config"
 	"github.com/worksonmyai/kontora/internal/notify"
@@ -18,9 +20,8 @@ import (
 // Notifier is the seam the daemon sends ticket observations through. The real
 // one is a *notify.Dispatcher; tests inject a recorder.
 //
-// Live reports whether anything is behind the seam. Building an Observation
-// resolves the project and scans the ticket body for a title, on every daemon
-// write, so the no-op is asked first rather than handed work to discard.
+// Live reports whether any channel is active. An inactive notifier still
+// receives observations to seed ticket statuses.
 type Notifier interface {
 	Live() bool
 	Observe(obs notify.Observation)
@@ -28,10 +29,7 @@ type Notifier interface {
 	Forget(id string)
 }
 
-// noopNotifier is what d.notifier holds until Run builds a dispatcher, and for
-// the whole run when no channel is configured. writeTicketFile and
-// applyWaitMarker are hot paths, so the seam is never nil and no call site
-// carries a check.
+// noopNotifier discards observations when a caller explicitly needs no notifier.
 type noopNotifier struct{}
 
 func (noopNotifier) Live() bool                                        { return false }
@@ -39,11 +37,20 @@ func (noopNotifier) Observe(notify.Observation)                        {}
 func (noopNotifier) Waiting(string, []string, []string, notify.Fields) {}
 func (noopNotifier) Forget(string)                                     {}
 
-// liveNotifier adds Live to the dispatcher, which has no reason to carry a
-// method that is always true.
-type liveNotifier struct{ *notify.Dispatcher }
+type liveNotifier struct {
+	*notify.Dispatcher
+	state *notificationState
+}
 
-func (liveNotifier) Live() bool { return true }
+type notificationState struct {
+	mu       sync.Mutex
+	channels map[string]builtNotifyChannel
+}
+
+type builtNotifyChannel struct {
+	definition config.NotifyChannel
+	channel    notify.Channel
+}
 
 // notifyTarget is where one ticket's notifications go and what they render
 // from. Both the status path and the waiting path need all three.
@@ -83,6 +90,7 @@ func (d *Daemon) notifyTarget(t *ticket.Ticket) notifyTarget {
 // transition would diff against a status nobody recorded.
 func (d *Daemon) observe(t *ticket.Ticket, origin notify.Origin) {
 	if !d.notifier.Live() {
+		d.notifier.Observe(notify.Observation{Origin: notify.OriginObserved, ID: t.ID, Status: string(t.Status)})
 		return
 	}
 	target := d.notifyTarget(t)
@@ -205,63 +213,81 @@ func (d *Daemon) forgetNotifyLocked(id string) {
 	delete(d.waitAnnounced, id)
 }
 
-// startNotifications installs the dispatcher the config describes and returns
-// its worker loop, or nil when there is nothing to run. A channel whose
-// credential will not resolve warns and is dropped, keeping the rest; no
-// channel at all leaves the no-op in place.
-//
-// Installing and running are separate because they belong at different points
-// of Run: d.notifier has to be in place before the initial scan seeds it and
-// before the web server serves a request that reads it, while the worker needs
-// the cancellable context that only exists further down.
+// initNotifications runs only during construction, before lock-free readers
+// can access d.notifier.
+func (d *Daemon) initNotifications() {
+	if d.notifierPinned {
+		return
+	}
+	d.notifier = liveNotifier{
+		Dispatcher: notify.New(notify.Options{
+			Log: d.log,
+			OnResult: func(channel, result string) {
+				d.metrics.Notification(context.Background(), channel, result)
+			},
+		}),
+		state: &notificationState{channels: make(map[string]builtNotifyChannel)},
+	}
+}
+
 func (d *Daemon) startNotifications(cfg *config.Config) func(context.Context) {
 	if d.notifierPinned {
 		return nil
 	}
-	if cfg.Notifications.Enabled != nil && !*cfg.Notifications.Enabled {
-		d.log.Info("notifications disabled by config")
-		return nil
+	d.applyNotifications(cfg)
+	return d.notifier.(liveNotifier).Run
+}
+
+// applyNotifications runs before publishing cfg. Failed secrets remove only
+// their channel; unchanged definitions keep their resolved credentials.
+func (d *Daemon) applyNotifications(cfg *config.Config) {
+	if d.notifierPinned {
+		return
 	}
-	if len(cfg.Notifications.Channels) == 0 {
-		return nil
-	}
+	n := d.notifier.(liveNotifier)
+	n.state.mu.Lock()
+	defer n.state.mu.Unlock()
 
 	var channels []notify.Channel
-	for _, name := range slices.Sorted(maps.Keys(cfg.Notifications.Channels)) {
-		ch, err := buildNotifyChannel(name, cfg.Notifications.Channels[name])
-		if err != nil {
-			d.log.Warn("notification channel dropped", "channel", name, "err", err)
-			continue
+	next := make(map[string]builtNotifyChannel)
+	if cfg.Notifications.Enabled == nil || *cfg.Notifications.Enabled {
+		for _, name := range slices.Sorted(maps.Keys(cfg.Notifications.Channels)) {
+			definition := cfg.Notifications.Channels[name]
+			built, ok := n.state.channels[name]
+			if !ok || !reflect.DeepEqual(built.definition, definition) {
+				ch, err := buildNotifyChannel(name, definition)
+				definition.Headers = maps.Clone(definition.Headers)
+				built = builtNotifyChannel{definition: definition, channel: ch}
+				if err != nil {
+					d.log.Warn("notification channel dropped", "channel", name, "err", err)
+				} else {
+					d.log.Info("notification channel ready", "channel", name, "type", definition.Type,
+						"secret_source", definition.SecretSource())
+				}
+			}
+			next[name] = built
+			if built.channel != nil {
+				channels = append(channels, built.channel)
+			}
 		}
-		channels = append(channels, ch)
-		d.log.Info("notification channel ready",
-			"channel", name, "type", cfg.Notifications.Channels[name].Type,
-			"secret_source", cfg.Notifications.Channels[name].SecretSource())
+	} else {
+		for name, definition := range cfg.Notifications.Channels {
+			if built, ok := n.state.channels[name]; ok && reflect.DeepEqual(built.definition, definition) {
+				next[name] = built
+			}
+		}
 	}
-	if len(channels) == 0 {
-		d.log.Warn("notifications configured but no channel could be built, continuing without them")
-		return nil
-	}
-
 	var attempts int
 	if a := cfg.Notifications.Attempts; a != nil {
 		attempts = *a
 	}
-	dispatcher := notify.New(notify.Options{
+	n.Apply(notify.Options{
 		Channels: channels,
 		Attempts: attempts,
 		Backoff:  cfg.Notifications.Backoff.Duration,
 		Timeout:  cfg.Notifications.Timeout.Duration,
-		Log:      d.log,
-		OnResult: func(channel, result string) {
-			d.metrics.Notification(context.Background(), channel, result)
-		},
 	})
-	d.notifier = liveNotifier{dispatcher}
-	// Observe never blocks and the queue is buffered, so anything observed
-	// between here and the worker starting waits in the queue rather than being
-	// lost.
-	return dispatcher.Run
+	n.state.channels = next
 }
 
 func buildNotifyChannel(name string, c config.NotifyChannel) (notify.Channel, error) {
@@ -279,7 +305,7 @@ func buildNotifyChannel(name string, c config.NotifyChannel) (notify.Channel, er
 			ChannelName: name,
 			URL:         c.URL,
 			Method:      strings.ToUpper(cmp.Or(c.Method, http.MethodPost)),
-			Headers:     c.Headers,
+			Headers:     maps.Clone(c.Headers),
 			Token:       secret,
 		}, nil
 	default:

@@ -1474,7 +1474,7 @@ func TestDaemon_RawConfig(t *testing.T) {
 
 	// A valid replacement is written to disk and reloaded before the call
 	// returns. Live fields take effect; restart-only fields keep their running
-	// value (max_concurrent_agents is pinned, branch_prefix is not).
+	// value.
 	inMemoryBefore := d.config()
 	const updated = "max_concurrent_agents: 7\nbranch_prefix: reloaded\nagents:\n  claude:\n    binary: claude\n"
 	require.NoError(t, d.PutRawConfig(updated))
@@ -1484,8 +1484,7 @@ func TestDaemon_RawConfig(t *testing.T) {
 	assert.Equal(t, updated, string(onDisk))
 	assert.NotSame(t, inMemoryBefore, d.config(), "a saved config must be reloaded in memory")
 	assert.Equal(t, "reloaded", d.config().BranchPrefix, "live fields take effect immediately")
-	assert.Equal(t, h.cfg.MaxConcurrentAgents, d.config().MaxConcurrentAgents,
-		"max_concurrent_agents is restart-only and stays pinned")
+	assert.Equal(t, 7, d.config().MaxConcurrentAgents)
 
 	// An invalid config is rejected before the write, so the on-disk file and
 	// the running config are both left intact.

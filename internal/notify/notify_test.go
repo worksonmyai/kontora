@@ -222,13 +222,16 @@ func TestWaitingStaysOutOfTheRememberedStatus(t *testing.T) {
 type blockingChannel struct {
 	url     string
 	release chan struct{}
+	started chan struct{}
 	calls   atomic.Int64
 }
 
 func (b *blockingChannel) Name() string { return "tg" }
 
 func (b *blockingChannel) Request(ctx context.Context, _ Event) (*http.Request, error) {
-	b.calls.Add(1)
+	if b.calls.Add(1) == 1 && b.started != nil {
+		close(b.started)
+	}
 	<-b.release
 	return post(ctx, http.MethodPost, b.url, []byte(`{}`), nil)
 }
@@ -573,7 +576,7 @@ func TestOneStuckChannelDoesNotHoldUpAnother(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	defer srv.Close()
 
-	stuck := &blockingChannel{url: srv.URL, release: make(chan struct{})}
+	stuck := &blockingChannel{url: srv.URL, release: make(chan struct{}), started: make(chan struct{})}
 	healthy := &captureChannel{name: "mm", url: srv.URL}
 	d := New(Options{Channels: []Channel{stuck, healthy}, Backoff: time.Millisecond})
 	ctx, cancel := context.WithCancel(t.Context())
@@ -582,9 +585,18 @@ func TestOneStuckChannelDoesNotHoldUpAnother(t *testing.T) {
 	defer func() { close(stuck.release); cancel(); <-done }()
 
 	want := []string{"done"}
-	chans := []string{"tg", "mm"}
-	d.Observe(Observation{Origin: OriginDaemon, ID: "kon-a", Status: "todo", Want: want, Channels: chans})
-	d.Observe(Observation{Origin: OriginDaemon, ID: "kon-a", Status: "done", Want: want, Channels: chans})
+	d.Observe(Observation{Origin: OriginDaemon, ID: "kon-a", Status: "todo", Want: want, Channels: []string{"tg"}})
+	d.Observe(Observation{Origin: OriginDaemon, ID: "kon-a", Status: "done", Want: want, Channels: []string{"tg"}})
+
+	// The healthy worker can run first, so its progress cannot prove the other request started.
+	select {
+	case <-stuck.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("stuck channel did not start its request")
+	}
+
+	d.Observe(Observation{Origin: OriginDaemon, ID: "kon-b", Status: "todo", Want: want, Channels: []string{"mm"}})
+	d.Observe(Observation{Origin: OriginDaemon, ID: "kon-b", Status: "done", Want: want, Channels: []string{"mm"}})
 
 	events := waitForEvents(t, healthy, 1)
 	assert.Equal(t, "done", events[0].To)

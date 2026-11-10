@@ -76,7 +76,7 @@ func (d *Daemon) reloadConfig() error {
 	d.queueCond.Broadcast()
 	d.mu.Unlock()
 	d.wakeCompanion()
-	d.signalAutomations()
+	d.automationChanged()
 
 	d.log.Info("config reloaded",
 		"agents", len(next.Agents),

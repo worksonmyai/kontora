@@ -257,13 +257,13 @@ func materializeUploadMerges(content []byte) ([]byte, error) {
 		return content, nil
 	}
 
-	// Validate aliases with the YAML decoder's expansion limit before copying nodes.
-	var validated map[string]any
-	if err := root.Decode(&validated); err != nil {
+	budget := uploadYAMLBudget{nodes: 10_000, slots: 10_000, textBytes: 8 << 20}
+	root, err = expandUploadAliases(root, make(map[*yaml.Node]bool), &budget)
+	if err != nil {
 		return nil, err
 	}
-	root, err = expandUploadAliases(root, make(map[*yaml.Node]bool))
-	if err != nil {
+	var validated map[string]any
+	if err := root.Decode(&validated); err != nil {
 		return nil, err
 	}
 	var fields map[string]yaml.Node
@@ -292,15 +292,37 @@ func materializeUploadMerges(content []byte) ([]byte, error) {
 	return []byte("---\n" + string(out) + "---\n" + body), nil
 }
 
+type uploadYAMLBudget struct {
+	nodes     int
+	slots     int
+	textBytes int
+}
+
 // Removing a merge can remove anchors that other imported fields still reference.
-func expandUploadAliases(node *yaml.Node, active map[*yaml.Node]bool) (*yaml.Node, error) {
+func expandUploadAliases(node *yaml.Node, active map[*yaml.Node]bool, budget *uploadYAMLBudget) (*yaml.Node, error) {
+	// The decoder skips shadowed merge values, but this copy visits every node.
+	if budget.nodes == 0 {
+		return nil, fmt.Errorf("YAML expansion limit exceeded in upload")
+	}
+	budget.nodes--
 	if active[node] {
 		return nil, fmt.Errorf("cyclic YAML alias in upload")
 	}
 	active[node] = true
 	defer delete(active, node)
 	if node.Kind == yaml.AliasNode {
-		return expandUploadAliases(node.Alias, active)
+		return expandUploadAliases(node.Alias, active, budget)
+	}
+	if len(node.Content) > budget.slots {
+		return nil, fmt.Errorf("YAML expansion limit exceeded in upload")
+	}
+	budget.slots -= len(node.Content)
+	// Strings share storage in the copy, but marshaling emits each occurrence.
+	for _, text := range []string{node.Tag, node.Value, node.HeadComment, node.LineComment, node.FootComment} {
+		if len(text) > budget.textBytes {
+			return nil, fmt.Errorf("YAML expansion limit exceeded in upload")
+		}
+		budget.textBytes -= len(text)
 	}
 	cloned := *node
 	cloned.Anchor = ""
@@ -310,7 +332,7 @@ func expandUploadAliases(node *yaml.Node, active map[*yaml.Node]bool) (*yaml.Nod
 	cloned.Content = make([]*yaml.Node, len(node.Content))
 	for i, child := range node.Content {
 		var err error
-		cloned.Content[i], err = expandUploadAliases(child, active)
+		cloned.Content[i], err = expandUploadAliases(child, active, budget)
 		if err != nil {
 			return nil, err
 		}

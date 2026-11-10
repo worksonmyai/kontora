@@ -156,10 +156,13 @@ func automationYAML(content []byte, key string, spec *automation.Spec) ([]byte, 
 	if entries.Kind != yaml.MappingNode || entries.Anchor != "" {
 		return nil, errors.New("automations must be an unaliased mapping")
 	}
+	// Deleting an explicit entry can expose an inherited entry from a merge anywhere in the mapping.
 	for i := 0; i < len(entries.Content); i += 2 {
 		if entries.Content[i].Value == "<<" {
 			return nil, errors.New("automation edits do not support YAML merges")
 		}
+	}
+	for i := 0; i < len(entries.Content); i += 2 {
 		if entries.Content[i].Value != key {
 			continue
 		}

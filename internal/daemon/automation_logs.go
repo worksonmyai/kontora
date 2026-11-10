@@ -42,7 +42,18 @@ func (d *Daemon) lockAutomationLogs() error {
 }
 
 func openAutomationArtifact(path string) (*os.File, error) {
-	return os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_APPEND|syscall.O_NOFOLLOW, 0o600)
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_APPEND|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	info, err := f.Stat()
+	if err != nil {
+		return nil, errors.Join(err, f.Close())
+	}
+	if !info.Mode().IsRegular() {
+		return nil, errors.Join(errors.New("run artifact is not a regular file"), f.Close())
+	}
+	return f, nil
 }
 
 func (d *Daemon) automationEvent(run automation.Run, kind, text string) error {
@@ -51,8 +62,15 @@ func (d *Daemon) automationEvent(run automation.Run, kind, text string) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
-	if err := json.NewEncoder(f).Encode(automation.LogLine{At: time.Now(), Source: "kontora", Kind: kind, Text: text}); err != nil {
+	return writeAutomationEvent(f, automation.LogLine{At: time.Now(), Source: "kontora", Kind: kind, Text: text})
+}
+
+func writeAutomationEvent(f interface {
+	io.WriteCloser
+	Sync() error
+}, line automation.LogLine) (err error) {
+	defer func() { err = errors.Join(err, f.Close()) }()
+	if err := json.NewEncoder(f).Encode(line); err != nil {
 		return err
 	}
 	return f.Sync()
@@ -150,7 +168,7 @@ func (d *Daemon) AutomationLog(id string, n uint64) ([]automation.LogLine, strin
 }
 
 func readAutomationArtifact(path string) ([]byte, error) {
-	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return nil, err
 	}

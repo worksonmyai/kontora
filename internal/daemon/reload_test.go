@@ -1138,13 +1138,69 @@ func TestReload_BroadcastsConfigReloaded(t *testing.T) {
 				require.NoError(t, err)
 			}
 
-			select {
-			case ev := <-ch:
-				require.False(t, tc.wantErr, "a rejected reload must not broadcast")
-				assert.Equal(t, "config_reloaded", ev.Type)
+			var eventTypes []string
+			for len(ch) > 0 {
+				ev := <-ch
+				eventTypes = append(eventTypes, ev.Type)
 				assert.Empty(t, ev.Ticket.ID)
-			case <-time.After(500 * time.Millisecond):
-				require.True(t, tc.wantErr, "timed out waiting for config_reloaded")
+			}
+			if tc.wantErr {
+				assert.Empty(t, eventTypes, "a rejected reload must not broadcast")
+			} else {
+				assert.ElementsMatch(t, []string{"config_reloaded", "automations_updated"}, eventTypes)
+			}
+		})
+	}
+}
+
+func TestReload_AutomationChangesBroadcastUpdates(t *testing.T) {
+	for _, action := range []string{"pause", "delete", "rejected"} {
+		t.Run(action, func(t *testing.T) {
+			_, d, def, _ := automationFixture(t)
+			before, err := os.ReadFile(d.configPath)
+			require.NoError(t, err)
+			spec := def.Spec
+			spec.Enabled = false
+			after, err := automationYAML(before, def.Key, &spec)
+			require.NoError(t, err)
+			switch action {
+			case "delete":
+				after, err = automationYAML(before, def.Key, nil)
+				require.NoError(t, err)
+			case "rejected":
+				after = append(after, []byte("unknown_field: x\n")...)
+			}
+			require.NoError(t, os.WriteFile(d.configPath, after, 0o640))
+			events, unsubscribe := d.Subscribe()
+			defer unsubscribe()
+			require.Empty(t, d.automationWake)
+
+			err = d.reloadConfig()
+			if action == "rejected" {
+				require.Error(t, err)
+				assert.Empty(t, events, "a rejected reload must not broadcast")
+				assert.Empty(t, d.automationWake, "a rejected reload must not wake the scheduler")
+				current, err := d.GetAutomation(def.ID)
+				require.NoError(t, err)
+				assert.Equal(t, def, current)
+				return
+			}
+			require.NoError(t, err)
+			require.Len(t, d.automationWake, 1, "a successful reload must wake the scheduler")
+			var eventTypes []string
+			for len(events) > 0 {
+				event := <-events
+				eventTypes = append(eventTypes, event.Type)
+				assert.Empty(t, event.Ticket.ID)
+			}
+			assert.ElementsMatch(t, []string{"automations_updated", "config_reloaded"}, eventTypes)
+			rows, err := d.ListAutomations()
+			require.NoError(t, err)
+			if action == "delete" {
+				assert.Empty(t, rows)
+			} else {
+				require.Len(t, rows, 1)
+				assert.False(t, rows[0].Enabled)
 			}
 		})
 	}

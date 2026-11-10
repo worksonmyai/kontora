@@ -5,7 +5,7 @@
 .automations-view .automations-mobile-actions { display: none; }
 .automations-view .automations-log-line > * { min-width: 0; }
 .automations-view .automations-run-strip button { min-width: 3px; min-height: 5px; height: 5px; }
-.automations-view .automations-editor :is(input, textarea):focus { outline: 1px solid rgb(var(--accent) / .4); }
+.automations-view .automations-editor :is(input, textarea):focus { outline: 1px solid rgba(var(--accent), .4); }
 @media (max-width: 1100px) {
   .automations-view .automations-rail { display: none; }
   .automations-view .automations-run-strip { flex-wrap: wrap; }

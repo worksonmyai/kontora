@@ -363,7 +363,7 @@ func mintNoteID(notes []Note) (string, error) {
 
 // replaceLines swaps lines[start:end] for with, leaving the input untouched.
 func replaceLines(lines []string, start, end int, with []string) []string {
-	out := make([]string, 0, len(lines)-(end-start)+len(with))
+	out := make([]string, 0)
 	out = append(out, lines[:start]...)
 	out = append(out, with...)
 	return append(out, lines[end:]...)

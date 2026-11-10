@@ -267,6 +267,59 @@ func TestAutomationConfigSharedYAMLIsNotRewritten(t *testing.T) {
 	}
 }
 
+func TestAutomationConfigMergeRefused(t *testing.T) {
+	for _, position := range []string{"before target", "after target"} {
+		for _, action := range []string{"create", "update", "delete"} {
+			t.Run(position+"/"+action, func(t *testing.T) {
+				_, d, def, _ := automationFixture(t)
+				before, err := os.ReadFile(d.configPath)
+				require.NoError(t, err)
+				var doc yaml.Node
+				require.NoError(t, yaml.Unmarshal(before, &doc))
+				inherited := def.Spec
+				inherited.Prompt = "Inherited automation must not become active"
+				var merged yaml.Node
+				require.NoError(t, merged.Encode(map[string]automation.Spec{def.Key: inherited}))
+				for i := 0; i < len(doc.Content[0].Content); i += 2 {
+					if doc.Content[0].Content[i].Value != "automations" {
+						continue
+					}
+					entries := doc.Content[0].Content[i+1]
+					merge := []*yaml.Node{{Kind: yaml.ScalarNode, Tag: "!!merge", Value: "<<"}, &merged}
+					if position == "before target" {
+						entries.Content = append(merge, entries.Content...)
+					} else {
+						entries.Content = append(entries.Content, merge...)
+					}
+				}
+				before, err = yaml.Marshal(&doc)
+				require.NoError(t, err)
+				require.NoError(t, os.WriteFile(d.configPath, before, 0o640))
+				require.NoError(t, d.reloadConfig())
+				current, err := d.GetAutomation(def.ID)
+				require.NoError(t, err)
+				require.Equal(t, def.Spec, current.Spec)
+				switch action {
+				case "create":
+					_, err = d.CreateAutomation("merge-create", "new-report", def.Spec)
+				case "update":
+					_, err = d.UpdateAutomation(def.ID, def.Revision, def.Spec)
+				case "delete":
+					err = d.DeleteAutomation(def.ID, def.Revision)
+				}
+				require.ErrorIs(t, err, automation.ErrValidation)
+				require.ErrorContains(t, err, "YAML merges")
+				after, err := os.ReadFile(d.configPath)
+				require.NoError(t, err)
+				assert.Equal(t, before, after)
+				current, err = d.GetAutomation(def.ID)
+				require.NoError(t, err)
+				assert.Equal(t, def, current)
+			})
+		}
+	}
+}
+
 func TestAutomationConfigReconcileRevision(t *testing.T) {
 	_, d, def, now := automationFixture(t)
 	before, err := os.ReadFile(d.configPath)

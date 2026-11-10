@@ -98,7 +98,7 @@ func (v *automationViewer) close() {
 	_ = v.command(ctx, false, "kill-session", "-t", target).Run()
 }
 
-func createAutomationViewer(ctx context.Context, target AutomationTerminalTarget, cols, rows int) (_ *automationViewer, err error) {
+func createAutomationViewer(ctx context.Context, target AutomationTerminalTarget, cols, rows uint16) (_ *automationViewer, err error) {
 	if present, err := tmux.InspectWindowIdentity(target.Identity); err != nil || !present {
 		return nil, fmt.Errorf("automation window is unavailable: %v", err)
 	}
@@ -109,7 +109,7 @@ func createAutomationViewer(ctx context.Context, target AutomationTerminalTarget
 		}
 	}()
 	out, err := v.run(ctx, "new-session", "-d", "-P", "-F", "#{session_id}\t#{window_index}", "-s", v.name,
-		"-x", strconv.Itoa(cols), "-y", strconv.Itoa(rows), "--", "/bin/sleep", "300")
+		"-x", strconv.Itoa(int(cols)), "-y", strconv.Itoa(int(rows)), "--", "/bin/sleep", "300")
 	if err != nil {
 		return nil, err
 	}
@@ -177,7 +177,7 @@ func (s *Server) handleAutomationTerminalWS(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	defer conn.Close(websocket.StatusNormalClosure, "")
-	cols, rows := 80, 24
+	cols, rows := uint16(80), uint16(24)
 	if value, err := strconv.Atoi(r.URL.Query().Get("cols")); err == nil && value > 0 {
 		cols = clampDim(value)
 	}
@@ -206,7 +206,7 @@ func (s *Server) handleAutomationTerminalWS(w http.ResponseWriter, r *http.Reque
 		args = append(args, "-r")
 	}
 	cmd := view.command(ctx, true, args...)
-	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: uint16(rows), Cols: uint16(cols)})
+	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: rows, Cols: cols})
 	if err != nil {
 		conn.Close(websocket.StatusInternalError, "cannot start terminal")
 		return

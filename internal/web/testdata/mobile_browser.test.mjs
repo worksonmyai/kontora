@@ -716,6 +716,16 @@ describe('desktop automation handoff', { concurrency: 2 }, () => {
         assert.match(await preview.innerText(), /automations:[\s\S]*repository-review-copy:[\s\S]*prompt:[\s\S]*overlap: skip/);
         await automationToken(preview, 'backgroundColor', '--surface-deep'); await automationToken(model(page, 'automationsDraft.name'), 'backgroundColor', '--surface-800');
         assert.match(await editor.locator('label').first().evaluate(el => getComputedStyle(el).fontFamily), /JetBrains Mono/);
+        for (const field of [model(page, 'automationsDraft.name'), model(page, 'automationsDraft.prompt')]) {
+          await field.focus();
+          const outline = await field.evaluate(el => {
+            const style = getComputedStyle(el), probe = document.createElement('span');
+            probe.style.color = 'rgba(var(--accent), .4)'; el.parentElement.append(probe);
+            const expected = getComputedStyle(probe).color; probe.remove();
+            return { style: style.outlineStyle, width: style.outlineWidth, color: style.outlineColor, expected };
+          });
+          assert.equal(outline.style, 'solid'); assert.equal(outline.width, '1px'); assert.equal(outline.color, outline.expected);
+        }
         await page.waitForFunction(() => !Alpine.$data(document.body).automationsToast);
         await noPageOverflow(page); await automationScreenshot(page, `${width}-${theme}-editor`);
         await automationSaveReady(page); await automationButton(page, '▷ save & run now').click();
@@ -906,12 +916,12 @@ async function openAssistantControl(page) {
 async function observationHidden(page) {
   for (const selector of ['.companion-header', '.companion-cat', '.companion-status', '.companion-count',
     '.companion-rail-cat', '.companion-inbox', '.companion-evidence', '.companion-chat-hint']) {
-    assert.equal(await page.locator(`${selector}:visible`).count(), 0, `${selector} must be hidden without observation`);
+    await expect(page.locator(`${selector}:visible`), `${selector} must be hidden without observation`).toHaveCount(0);
   }
-  assert.equal(await page.getByRole('button', { name: 'Inbox', exact: true }).filter({ visible: true }).count(), 0);
-  assert.equal(await page.getByText(companionQuestion, { exact: true }).filter({ visible: true }).count(), 0);
-  assert.equal(await page.getByText(`Recorded reply for ${companionTitle}.`, { exact: true }).filter({ visible: true }).count(), 0);
-  assert.equal(await page.getByText('An explanation is still running.', { exact: true }).filter({ visible: true }).count(), 0);
+  await expect(page.getByRole('button', { name: 'Inbox', exact: true }).filter({ visible: true })).toHaveCount(0);
+  await expect(page.getByText(companionQuestion, { exact: true }).filter({ visible: true })).toHaveCount(0);
+  await expect(page.getByText(`Recorded reply for ${companionTitle}.`, { exact: true }).filter({ visible: true })).toHaveCount(0);
+  await expect(page.getByText('An explanation is still running.', { exact: true }).filter({ visible: true })).toHaveCount(0);
 }
 async function refreshObservation(page, fixture, enabled) {
   fixture.behavior.companionSnapshot = { ...fixture.behavior.companionSnapshot, enabled,

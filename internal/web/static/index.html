@@ -1555,12 +1555,12 @@
         </button>
         <div class="mobile-wordmark">
           <span style="font-family:'JetBrains Mono',monospace;font-weight:700;font-size:16px;letter-spacing:.04em;color:rgba(var(--tx-2),1);">kontora</span>
+          <span class="running-pill mobile-running-pill" :class="runningAgents === 0 ? 'is-idle' : ''" :aria-label="runningAgents + ' running'">
+            <span class="running-pill-dot" :class="runningAgents > 0 ? 'pulse-dot' : ''"></span>
+            <span style="color:rgba(var(--tx),1);" x-text="runningAgents"></span>
+            <span class="mobile-running-label" style="color:rgba(var(--surface-600),1);">running</span>
+          </span>
         </div>
-        <span class="running-pill mobile-running-pill" :class="runningAgents === 0 ? 'is-idle' : ''" :aria-label="runningAgents + ' running'">
-          <span class="running-pill-dot" :class="runningAgents > 0 ? 'pulse-dot' : ''"></span>
-          <span style="color:rgba(var(--tx),1);" x-text="runningAgents"></span>
-          <span class="mobile-running-label" style="color:rgba(var(--surface-600),1);">running</span>
-        </span>
         <button id="assistant-mobile-trigger" @click="openAssistantSheet()" data-pipe-color="mauve" style="width:34px;height:34px;border:1px solid rgba(var(--surface-700),.6);background:rgba(var(--surface-900),1);color:hsl(var(--pipe-h));border-radius:8px;display:flex;align-items:center;justify-content:center;flex:none;" aria-label="Assistant">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z"/></svg>
         </button>
@@ -1594,7 +1594,7 @@
           </template>
         </div>
       </div>
-      <nav x-show="currentView === 'board'" class="mobile-status-tabs" aria-label="Ticket status">
+      <nav x-show="currentView === 'board'" x-ref="mobileStatusTabs" class="mobile-status-tabs" aria-label="Ticket status">
         <template x-for="(col, ci) in columns" :key="col.key">
           <button @click="setActiveColumn(ci)" :aria-pressed="activeColumn === ci"
                   :style="'display:flex;align-items:center;gap:7px;flex:none;padding:9px 6px 11px;border:none;background:transparent;cursor:pointer;border-bottom:2px solid ' + (activeColumn===ci ? 'hsl('+col.tint+')' : 'transparent') + ';color:' + (activeColumn===ci ? 'hsl('+col.tint+')' : 'rgba(var(--tx-3),1)') + ';'">

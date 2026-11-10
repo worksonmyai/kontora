@@ -14,6 +14,7 @@ const widths = [320, 390, 767, 768, 769, 1023, 1024, 1280];
 const themes = ['dark', 'light'];
 const source = 'secondary';
 const sourcePath = '/fixtures/team-tickets';
+const unavailablePath = '/fixtures/' + 'unavailable-folder-'.repeat(12);
 const longID = 'kon-' + 'long-identifier-'.repeat(12);
 const tail = '\n## Notes\n\nProtected note identity: browser-note-1\n\n## Audit\nDo not edit this tail.\n';
 const stamp = '2026-10-01T10:00:00Z';
@@ -67,7 +68,7 @@ function fixtures() {
     projects: [{ name: 'Fixture repository', path: '/fixtures/repository-with-a-long-name', agent: 'fixture-agent', pipeline: 'standard' }],
     custom_statuses: [], stages: ['plan', 'code'] };
   const requests = [], mutations = [], sockets = [], socketRoutes = [], messages = [], violations = [], expectedHTTPFailures = [];
-  const behavior = { createFailure: null, createWait: null, saveFailure: null, outputRevision: 0 };
+  const behavior = { createFailure: null, createWait: null, saveFailure: null, outputRevision: 0, unavailableFolder: false, sourcesFailure: false };
   let rawConfig = 'tickets_dir: /fixtures/primary\nauto_pick_up: false\nmax_concurrent_agents: 3\nagents:\n  fixture-agent:\n    binary: pi\n';
   const list = folder => [...records.values()].filter(t => t.source === folder && !t.archived_at);
   const json = (route, value, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(value) });
@@ -81,10 +82,16 @@ function fixtures() {
     if (method === 'GET') {
       switch (path) {
         case '/api/config': return json(route, config);
-        case '/api/ticket-sources': return json(route, [
-          { id: 'primary', path: '/fixtures/primary', available: true },
-          { id: source, path: sourcePath, available: true },
-        ]);
+        case '/api/ticket-sources':
+          if (behavior.sourcesFailure) {
+            expectedHTTPFailures.push(base + path);
+            return json(route, { error: 'Sources offline' }, 503);
+          }
+          return json(route, [
+            { id: 'primary', path: '/fixtures/primary', available: true },
+            { id: source, path: sourcePath, available: true },
+            ...(behavior.unavailableFolder ? [{ id: 'unavailable', path: unavailablePath, available: false, error: 'Fixture folder unavailable' }] : []),
+          ]);
         case '/api/tickets': return json(route, { tickets: list('primary'), running_agents: 1 });
         case `/api/sources/${source}/tickets`: return json(route, list(source));
         case '/api/assistant': return json(route, { enabled: true, hint: '', autonomy: 'ask' });
@@ -321,6 +328,16 @@ async function backToBoard(page) {
   await page.waitForFunction(() => !Alpine.$data(document.body).selectedTicket && !Alpine.$data(document.body).selectedEpic);
 }
 
+async function swipeBoard(page, dx) {
+  await page.locator('.mobile-board-layer [\\@touchend]').evaluate((el, dx) => {
+    for (const [name, x] of [['touchstart', 160], ['touchend', 160 + dx]]) {
+      const event = new Event(name, { bubbles: true });
+      Object.defineProperty(event, 'changedTouches', { value: [{ clientX: x, clientY: 300 }] });
+      el.dispatchEvent(event);
+    }
+  }, dx);
+}
+
 async function visualViewport(page, height, top = 0) {
   await page.evaluate(({ height, top }) => {
     Object.defineProperties(window.visualViewport, {
@@ -362,6 +379,159 @@ async function terminalRows(page, height, top = 0) {
 }
 
 describe('embedded responsive browser UI', { concurrency: 4 }, () => {
+  for (const width of [320, 390]) for (const theme of themes) {
+    test(`board chrome and status navigation ${width}px / ${theme}`, async t => {
+      await withPage(t, width, theme, async (page, fixture) => {
+        await t.test('running count shares the app row without shrinking actions', async () => {
+          const bar = page.locator('.mobile-app-bar');
+          const mark = await bar.locator('.mobile-wordmark').boundingBox();
+          const pill = await bar.locator('.mobile-running-pill').boundingBox();
+          assert.ok(pill.y >= mark.y && pill.y + pill.height <= mark.y + mark.height + 1, 'Running count stays within the wordmark block');
+          const running = [...fixture.records.values()].filter(ticket => ticket.source === 'primary' && ticket.status === 'in_progress').length;
+          assert.equal(await bar.locator('.mobile-running-pill').getAttribute('aria-label'), `${running} running`);
+          for (const name of ['Open navigation', 'Assistant', 'Toggle theme', 'New ticket']) {
+            const control = bar.getByRole('button', { name, exact: true });
+            await inViewport(control);
+            const box = await control.boundingBox();
+            assert.ok(box.width >= 44 && box.height >= 44);
+            assert.ok(mark.y >= box.y - 1 && mark.y + mark.height <= box.y + box.height + 1, 'Wordmark and count fit in the action row');
+          }
+          await inViewport(page.getByRole('textbox', { name: 'Filter tickets', exact: true }).filter({ visible: true }));
+          await noPageOverflow(page);
+        });
+        await t.test('offscreen activation and swipes reveal the pressed status only', async () => {
+          const strip = page.getByRole('navigation', { name: 'Ticket status', exact: true });
+          const buttons = strip.getByRole('button');
+          assert.equal(await strip.evaluate(el => getComputedStyle(el).backgroundAttachment), 'local, local, scroll, scroll');
+          const labels = await page.evaluate(() => Alpine.$data(document.body).columns.map(col => col.label));
+          assert.deepEqual(await buttons.locator('span:nth-child(2)').allTextContents(), labels);
+          const last = buttons.last();
+          const before = await last.boundingBox();
+          assert.ok(before.x + before.width > width, 'The last status starts offscreen');
+          const y = await page.evaluate(() => scrollY);
+          await last.evaluate(el => el.focus({ preventScroll: true }));
+          await page.keyboard.press('Enter');
+          const selected = async index => {
+            await page.waitForFunction(index => {
+              const strip = document.querySelector('.mobile-status-tabs');
+              const buttons = strip.querySelectorAll('button');
+              const button = buttons[index];
+              const box = button.getBoundingClientRect(), view = strip.getBoundingClientRect();
+              const style = getComputedStyle(strip);
+              const left = view.left + strip.clientLeft + parseFloat(style.paddingLeft);
+              const right = view.left + strip.clientLeft + strip.clientWidth - parseFloat(style.paddingRight);
+              return button.getAttribute('aria-pressed') === 'true' &&
+                [...buttons].filter(el => el.getAttribute('aria-pressed') === 'true').length === 1 &&
+                box.left >= left - 1 && box.right <= right + 1;
+            }, index);
+            assert.equal(await page.evaluate(() => scrollY), y, 'Status scrolling must not move the page');
+            const count = Number(await buttons.nth(index).locator('span').last().textContent());
+            assert.equal(await page.locator('.mobile-board-layer [x-text="ticket.title"]').count(), count, 'Count matches displayed cards');
+          };
+          await selected(labels.length - 1);
+          assert.equal(await last.evaluate(el => document.activeElement === el), true, 'Activation keeps keyboard focus');
+          const swipe = dx => swipeBoard(page, dx);
+          for (let index = labels.length - 2; index >= 0; --index) {
+            await swipe(100);
+            await selected(index);
+            assert.equal(await last.evaluate(el => document.activeElement === el), true, 'Swipes must not change keyboard focus');
+          }
+          for (let index = 1; index < labels.length; ++index) {
+            await swipe(-100);
+            await selected(index);
+          }
+          await swipe(-100);
+          await selected(labels.length - 1);
+          await buttons.first().click();
+          await selected(0);
+          await swipe(100);
+          await selected(0);
+          await noPageOverflow(page);
+        });
+        for (const scenario of [
+          { name: 'oversized status', status: 'awaiting_external_dependency_approval_review', oversized: true },
+          { name: 'safe-area status', status: 'awaiting_user_review', padding: '44px' },
+          { name: 'oversized safe-area status', status: 'awaiting_external_dependency_approval_review', padding: '44px', oversized: true },
+        ]) {
+          await t.test(`${scenario.name} stays aligned after boundary activation and swipes`, async () => {
+            const key = `${source}/kon-geometry`;
+            fixture.records.set(key, ticket('kon-geometry', 'Status geometry fixture', { source, status: scenario.status, kontora: false }));
+            await page.reload({ waitUntil: 'domcontentloaded' });
+            await ready(page);
+            const strip = page.getByRole('navigation', { name: 'Ticket status', exact: true });
+            if (scenario.padding) await strip.evaluate((el, padding) => {
+              el.style.paddingLeft = padding;
+              el.style.paddingRight = padding;
+            }, scenario.padding);
+            const last = strip.getByRole('button').last();
+            await last.evaluate(el => el.focus({ preventScroll: true }));
+            const y = await page.evaluate(() => scrollY);
+            await page.keyboard.press('Enter');
+            await page.waitForFunction(() => document.querySelector('.mobile-status-tabs button:last-child')?.getAttribute('aria-pressed') === 'true');
+            await page.evaluate(() => Alpine.nextTick());
+            const geometry = () => last.evaluate(el => {
+              const strip = el.parentElement, view = strip.getBoundingClientRect(), box = el.getBoundingClientRect();
+              const style = getComputedStyle(strip);
+              return { left: box.left, right: box.right, width: box.width, scroll: strip.scrollLeft,
+                safeLeft: view.left + strip.clientLeft + parseFloat(style.paddingLeft),
+                safeRight: view.left + strip.clientLeft + strip.clientWidth - parseFloat(style.paddingRight) };
+            });
+            const initial = await geometry();
+            assert.equal(initial.width > initial.safeRight - initial.safeLeft, !!scenario.oversized, 'Fixture exercises the intended width');
+            if (scenario.oversized) assert.ok(Math.abs(initial.left - initial.safeLeft) <= 1, JSON.stringify(initial));
+            else assert.ok(initial.left >= initial.safeLeft - 1 && initial.right <= initial.safeRight + 1, JSON.stringify(initial));
+            for (const action of ['swipe', 'activate', 'swipe', 'activate']) {
+              if (action === 'swipe') await swipeBoard(page, -100);
+              else await page.keyboard.press('Enter');
+              await page.evaluate(() => Alpine.nextTick());
+              const repeated = await geometry();
+              assert.ok(Math.abs(repeated.scroll - initial.scroll) <= 1, `Boundary ${action} moved the strip: ${JSON.stringify({ initial, repeated })}`);
+              assert.equal(await last.getAttribute('aria-pressed'), 'true');
+              assert.equal(await last.evaluate(el => document.activeElement === el), true);
+              assert.equal(await page.evaluate(() => scrollY), y);
+            }
+            await noPageOverflow(page);
+            fixture.records.delete(key);
+          });
+        }
+        await t.test('native folder filtering retains counts, full paths and errors', async () => {
+          fixture.behavior.unavailableFolder = true;
+          await page.reload({ waitUntil: 'domcontentloaded' });
+          await ready(page);
+          const filter = page.getByRole('combobox', { name: 'Filter by ticket folder', exact: true }).filter({ visible: true });
+          await inViewport(filter);
+          assert.equal(await filter.evaluate(el => el.tagName), 'SELECT');
+          assert.equal(await filter.locator('option[value="unavailable"]').textContent(), unavailablePath + ' (unavailable)');
+          const error = page.locator('.mobile-chrome [role="alert"]');
+          await visible(error);
+          assert.ok((await error.textContent()).includes(unavailablePath + ': Fixture folder unavailable'));
+          const open = page.getByRole('navigation', { name: 'Ticket status', exact: true }).getByRole('button').first();
+          for (const [folder, title, count] of [['primary', 'Primary draft', 2], [source, 'Secondary namesake', 1], ['unavailable', null, 0]]) {
+            await filter.selectOption(folder);
+            assert.equal(Number(await open.locator('span').last().textContent()), count);
+            const cards = page.locator('.mobile-board-layer [x-text="ticket.title"]');
+            assert.equal(await cards.count(), count);
+            if (title) assert.ok((await cards.allTextContents()).includes(title));
+            await visible(error);
+            await noPageOverflow(page);
+          }
+          await filter.selectOption('primary');
+          const search = page.getByRole('textbox', { name: 'Filter tickets', exact: true }).filter({ visible: true });
+          await search.fill('Primary draft');
+          await page.waitForFunction(() => document.querySelector('.mobile-status-tabs button span:last-child').textContent === '1');
+          assert.deepEqual(await page.locator('.mobile-board-layer [x-text="ticket.title"]').allTextContents(), ['Primary draft']);
+          await search.fill('');
+          await page.waitForFunction(() => document.querySelector('.mobile-status-tabs button span:last-child').textContent === '2');
+          fixture.behavior.sourcesFailure = true;
+          await page.reload({ waitUntil: 'domcontentloaded' });
+          await ready(page);
+          await visible(error);
+          assert.ok((await error.textContent()).includes('Failed to load ticket sources'));
+          await noPageOverflow(page);
+        });
+      });
+    });
+  }
   for (const width of [320, 390]) for (const theme of themes) {
     test(`terminal visible geometry ${width}px / ${theme}`, async t => {
       await withPage(t, width, theme, async (page, fixture) => {

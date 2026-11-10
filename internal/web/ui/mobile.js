@@ -10,6 +10,7 @@ export function kontoraMobile() {
   let lifecycle = null;
   let sheetFocus = null;
   let descriptionSequence = 0;
+  let columnScrollSequence = 0;
 
   return {
     initMobile() {
@@ -51,6 +52,7 @@ export function kontoraMobile() {
     destroyMobile() {
       const owner = lifecycle;
       lifecycle = null;
+      ++columnScrollSequence;
       ++descriptionSequence;
       this.closeAgentPicker(false);
       this.flushEditSave();
@@ -102,6 +104,7 @@ export function kontoraMobile() {
     },
 
     mobileBreakpointChanged() {
+      ++columnScrollSequence;
       ++descriptionSequence;
       this.flushEditSave();
       this.editingBody = false;
@@ -111,6 +114,7 @@ export function kontoraMobile() {
     // Navigation guards must run before this cleanup.
     mobileBeforeNavigate(view) {
       if (view === this.currentView) return;
+      ++columnScrollSequence;
       ++descriptionSequence;
       if (this.isMobile) {
         this.flushEditSave();
@@ -261,6 +265,28 @@ export function kontoraMobile() {
 
     setActiveColumn(i) {
       this.activeColumn = Math.max(0, Math.min(i, this.columns.length - 1));
+      const sequence = ++columnScrollSequence;
+      const owner = lifecycle;
+      const strip = this.$refs?.mobileStatusTabs;
+      if (!owner || !strip || !this.isMobile || this._appDestroyed) return;
+      this.$nextTick(() => {
+        if (sequence !== columnScrollSequence || lifecycle !== owner || this._appDestroyed || !this.isMobile ||
+            this.currentView !== 'board' || this.selectedTicket || this.selectedEpic || this.sheet ||
+            this.$refs?.mobileStatusTabs !== strip || !strip.isConnected || !strip.getClientRects().length) return;
+        this.activeColumn = Math.max(0, Math.min(this.activeColumn, this.columns.length - 1));
+        const button = strip.querySelectorAll('button')[this.activeColumn];
+        if (!button) return;
+        const bounds = strip.getBoundingClientRect();
+        const selected = button.getBoundingClientRect();
+        const style = getComputedStyle(strip);
+        const left = bounds.left + strip.clientLeft + (parseFloat(style.paddingLeft) || 0);
+        const right = bounds.left + strip.clientLeft + strip.clientWidth - (parseFloat(style.paddingRight) || 0);
+        // Oversized labels stay start-aligned so repeated boundary swipes cannot alternate edges.
+        const delta = selected.right - selected.left > right - left || selected.left < left
+          ? selected.left - left : Math.max(0, selected.right - right);
+        // scrollIntoView can also scroll the page and its vertical ancestors.
+        if (delta) strip.scrollBy({ left: delta, behavior: 'instant' });
+      });
     },
 
     // Horizontal swipe on the card list moves between status columns. Mirrors

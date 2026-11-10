@@ -7706,6 +7706,102 @@ function mobileLifecycleDOM({ visualViewport = true } = {}) {
   };
 }
 
+for (const scenario of [
+  { name: 'right overflow', requested: 3, expected: 3, left: 310, right: 450, scroll: 130 },
+  { name: 'left overflow', requested: 1, expected: 1, left: -70, right: 70, scroll: -70 },
+  { name: 'already visible', requested: 1, expected: 1, left: 30, right: 170 },
+  { name: 'oversized right overflow', requested: 999, expected: 4, left: 310, right: 680, scroll: 310, repeat: true },
+  { name: 'oversized left overflow', requested: -1, expected: 0, left: -50, right: 320, scroll: -50, repeat: true },
+  { name: 'oversized spanning both edges', requested: 4, expected: 4, left: -25, right: 345, scroll: -25, repeat: true },
+  { name: 'oversized aligned start', requested: 4, expected: 4, left: 0, right: 370, repeat: true },
+  { name: 'right safe padding', requested: 3, expected: 3, left: 210, right: 310, paddingRight: 44, scroll: 34, repeat: true },
+  { name: 'left safe padding', requested: 1, expected: 1, left: 10, right: 150, paddingLeft: 44, scroll: -34, repeat: true },
+  { name: 'inside safe edges', requested: 1, expected: 1, left: 44, right: 276, paddingLeft: 44, paddingRight: 44, repeat: true },
+  { name: 'oversized within padded strip', requested: 4, expected: 4, left: 44, right: 300, paddingLeft: 44, paddingRight: 44, repeat: true },
+  { name: 'padded border offset', requested: 3, expected: 3, left: 210, right: 310, paddingRight: 44, clientLeft: 2, scroll: 32, repeat: true },
+  { name: 'past last column', requested: 999, expected: 4, left: 310, right: 450, scroll: 130 },
+  { name: 'before first column', requested: -1, expected: 0, left: -70, right: 70, scroll: -70 },
+  { name: 'columns removed before tick', requested: 4, expected: 1, shrink: 2, left: 310, right: 450, scroll: 130 },
+  { name: 'empty columns before tick', requested: 4, expected: 0, shrink: 0 },
+  { name: 'superseded selection', requested: 3, next: 0, expected: 0, left: -70, right: 70, scroll: -70 },
+  ...['route', 'route roundtrip', 'ticket', 'epic', 'sheet', 'desktop', 'breakpoint roundtrip', 'removed', 'replaced', 'hidden', 'destroyed', 'app destroyed'].map(stop =>
+    ({ name: stop, requested: 3, expected: 3, left: 310, right: 450, stop })),
+]) {
+  test(`mobile status selection scrolls only the live strip: ${scenario.name}`, () => {
+    const dom = mobileLifecycleDOM();
+    dom.overrides.getComputedStyle = () => ({ paddingLeft: `${scenario.paddingLeft || 0}px`, paddingRight: `${scenario.paddingRight || 0}px` });
+    const { state } = pickerState({ overrides: dom.overrides });
+    state.initMobile();
+    const ticks = [], scrolls = [], reads = [];
+    let offset = 0;
+    state.$nextTick = cb => { ticks.push(cb); };
+    const button = { getBoundingClientRect() { reads.push('button'); return { left: scenario.left - offset, right: scenario.right - offset }; } };
+    const strip = { isConnected: true, clientLeft: scenario.clientLeft || 0, clientWidth: 320,
+      getClientRects: () => [{}],
+      getBoundingClientRect() { reads.push('strip'); return { left: 0, right: 320 }; },
+      querySelectorAll: () => state.columns.map(() => button),
+      scrollBy(options) { scrolls.push(vmValue(options)); offset += options.left; },
+    };
+    state.$refs = { mobileStatusTabs: strip };
+    state.setActiveColumn(scenario.requested);
+    assert.equal(scrolls.length, 0, 'wait for Alpine to update the selected status');
+    if (scenario.shrink !== undefined) state._builtinColumns = state._builtinColumns.slice(0, scenario.shrink);
+    if (scenario.next !== undefined) state.setActiveColumn(scenario.next);
+    if (scenario.stop === 'route' || scenario.stop === 'route roundtrip') {
+      state.mobileBeforeNavigate('stats');
+      state.currentView = scenario.stop === 'route' ? 'stats' : 'board';
+    }
+    if (scenario.stop === 'ticket') state.selectedTicket = { id: 'kon-a' };
+    if (scenario.stop === 'epic') state.selectedEpic = { id: 'kon-a' };
+    if (scenario.stop === 'sheet') state.sheet = { type: 'navigation' };
+    if (scenario.stop === 'desktop') state.isMobile = false;
+    if (scenario.stop === 'breakpoint roundtrip') state.mobileBreakpointChanged();
+    if (scenario.stop === 'removed') strip.isConnected = false;
+    if (scenario.stop === 'replaced') state.$refs.mobileStatusTabs = { ...strip };
+    if (scenario.stop === 'hidden') strip.getClientRects = () => [];
+    if (scenario.stop === 'destroyed') { state.destroyMobile(); state.initMobile(); }
+    if (scenario.stop === 'app destroyed') state._appDestroyed = true;
+    ticks.splice(0).forEach(cb => cb());
+    assert.equal(state.activeColumn, scenario.expected);
+    assert.deepEqual(scrolls, scenario.scroll === undefined ? [] : [{ left: scenario.scroll, behavior: 'instant' }]);
+    if (scenario.stop || scenario.shrink === 0) assert.deepEqual(reads, [], 'teardown must not measure the old board');
+    else assert.deepEqual(reads, ['strip', 'button'], 'only the latest selection measures the strip');
+    if (scenario.repeat) {
+      const count = scrolls.length;
+      for (let i = 0; i < 3; ++i) {
+        state.setActiveColumn(scenario.requested);
+        ticks.splice(0).forEach(cb => cb());
+        assert.equal(state.activeColumn, scenario.expected);
+        assert.equal(scrolls.length, count, 'repeating the same selection must not oscillate');
+      }
+    }
+    state.destroyMobile();
+  });
+}
+
+for (const scenario of [
+  { name: 'left swipe', start: 0, dx: -100, dy: 5, expected: 1 },
+  { name: 'right swipe', start: 1, dx: 100, dy: 5, expected: 0 },
+  { name: 'last column', start: 4, dx: -100, dy: 5, expected: 4 },
+  { name: 'first column', start: 0, dx: 100, dy: 5, expected: 0 },
+  { name: 'short swipe', start: 0, dx: -55, dy: 0, expected: 0 },
+  { name: 'vertical swipe', start: 0, dx: -100, dy: 100, expected: 0 },
+  ...['ticket', 'epic', 'sheet'].map(stop => ({ name: stop, start: 0, dx: -100, dy: 0, expected: 0, stop })),
+]) {
+  test(`mobile board swipe preserves thresholds and clamps: ${scenario.name}`, () => {
+    const { state } = pickerState();
+    state.$nextTick = cb => cb();
+    state.activeColumn = scenario.start;
+    if (scenario.stop === 'ticket') state.selectedTicket = { id: 'kon-a' };
+    if (scenario.stop === 'epic') state.selectedEpic = { id: 'kon-a' };
+    if (scenario.stop === 'sheet') state.sheet = { type: 'navigation' };
+    const touch = (x, y) => ({ changedTouches: [{ clientX: x, clientY: y }] });
+    state.onBoardTouchStart(touch(150, 200));
+    state.onBoardTouchEnd(touch(150 + scenario.dx, 200 + scenario.dy));
+    assert.equal(state.activeColumn, scenario.expected);
+  });
+}
+
 for (const geometry of [
   { name: 'no visualViewport', viewport: undefined, expected: { top: 0, left: 0, width: 600, height: 800, bottom: 0 } },
   { name: 'offset visualViewport', viewport: { offsetTop: 30, offsetLeft: 15, width: 320, height: 400 }, expected: { top: 30, left: 15, width: 320, height: 400, bottom: 370 } },

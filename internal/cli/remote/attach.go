@@ -55,7 +55,7 @@ func Attach(ctx context.Context, c *Client, id string, rw bool) error {
 		return err
 	}
 
-	opts := &websocket.DialOptions{}
+	opts := &websocket.DialOptions{CompressionMode: websocket.CompressionContextTakeover}
 	if c.token != "" {
 		opts.HTTPHeader = http.Header{"Authorization": {"Bearer " + c.token}}
 	}

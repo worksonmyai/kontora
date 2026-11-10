@@ -52,7 +52,13 @@ func (s *Server) handleTerminalWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{OriginPatterns: s.wsPatterns})
+	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
+		OriginPatterns: s.wsPatterns,
+		// tmux repaints repeat across frames, so a deflate window kept between
+		// messages compresses them several times over on a remote link. The cost
+		// is about 1.2 MB per viewer.
+		CompressionMode: websocket.CompressionContextTakeover,
+	})
 	if err != nil {
 		s.log.Error("websocket accept failed", "err", err)
 		return

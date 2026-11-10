@@ -52,12 +52,14 @@ func TestHandleTerminalWS_SessionExists_UpgradesWebSocket(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	conn, resp, err := websocket.Dial(ctx, fmt.Sprintf("ws://%s/ws/terminal/%s?cols=80&rows=24", srv.Addr(), taskID), nil)
+	conn, resp, err := websocket.Dial(ctx, fmt.Sprintf("ws://%s/ws/terminal/%s?cols=80&rows=24", srv.Addr(), taskID),
+		&websocket.DialOptions{CompressionMode: websocket.CompressionContextTakeover})
 	require.NoError(t, err)
 	if resp != nil && resp.Body != nil {
 		defer resp.Body.Close()
 	}
 	defer func() { _ = conn.CloseNow() }()
+	assert.Contains(t, resp.Header.Get("Sec-WebSocket-Extensions"), "permessage-deflate")
 
 	// Send some output to the tmux window. Through tmux.SendKeys, not a raw
 	// send-keys: the viewer this test just dialled is a read-only client, and a

@@ -67,7 +67,7 @@ When the web server is enabled, the following endpoints are exposed:
 | `GET /api/automations/{id}/runs/{n}/terminal` | Resolve the run's terminal identity on the server. |
 | `GET /ws/automations/{id}/{n}` | WebSocket terminal for a server-resolved automation run. |
 | `GET /api/events` | Server-Sent Events stream of ticket updates, companion invalidations, and automation invalidations. |
-| `GET /ws/terminal/{id}` | Read-only WebSocket relay of a running agent's tmux session. |
+| `GET /ws/terminal/{id}` | WebSocket terminal for a running agent. Read-only by default; `rw=1` enables input. See [Terminal streams](#terminal-streams). |
 | `GET /health` | Health check (returns 200). |
 
 Each `agent_infos` entry in `GET /api/config` reports the model and effort that Kontora detects. Kontora reads the agent's `effort` field and supported CLI flags. Pipeline and stage overrides are not applied. Both response fields are always present. An empty value means Kontora detected no setting.
@@ -230,6 +230,35 @@ The server verifies the saved terminal identity. Client-supplied session or wind
 
 The `automations_updated` Server-Sent Events event contains `{}`.
 Refetch definitions and visible history after invalidation or reconnect, without replacing unsaved drafts.
+
+### Terminal streams
+
+`GET /ws/terminal/{id}` accepts `cols` and `rows` for the initial terminal size
+(default 80 by 24, maximum 1000 each). Without `stream=pane`, binary frames contain
+the tmux-rendered attach stream. Existing CLI clients can keep using that protocol.
+
+With `stream=pane`, binary frames contain the agent pane's raw terminal output.
+The first frame is a JSON text message: `{"type":"reset","cols":200,"rows":50}`.
+Reset and resize the terminal to those dimensions before processing the following
+binary frames. They restore up to 5000 history lines and the visible screen, then
+continue with live output. Another reset and snapshot follow a pane size change
+or an output queue overflow. Binary frames are at most 32 KiB.
+
+Clients send JSON text messages:
+
+- `{"type":"resize","cols":200,"rows":50}` requests a new size for the shared pane.
+  The most recent viewer to request a size controls that pane's dimensions.
+- `{"type":"input","data":"hello\n"}` sends UTF-8 input only with `rw=1`.
+  Read-only pane streams discard input messages.
+
+Pane-stream clients must suppress replies to `CSI c`, `CSI > c`, `CSI n`,
+`CSI ? n`, `CSI $ p`, `CSI ? $ p` and `DCS $ q`.
+Suppress OSC 4/10/11/12 only when every colour specification is `?`.
+The browser registers xterm.js parser handlers for these queries. tmux answers
+supported queries itself; unmatched palette queries remain unanswered.
+Focus reports remain input. Inline applications get local scrollback;
+applications using the alternate screen do not. Snapshots cannot restore the
+current text attributes, saved cursor, character sets or custom tab stops from tmux.
 
 ### Secondary ticket sources
 

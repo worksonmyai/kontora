@@ -78,7 +78,7 @@ function fixtures(options = {}) {
     projects: [{ name: 'Fixture repository', path: '/fixtures/repository-with-a-long-name', agent: 'fixture-agent', pipeline: 'standard' }],
     custom_statuses: [], stages: ['plan', 'code'], channels: [], default_channels: [], ...options.config };
   const requests = [], mutations = [], sockets = [], socketRoutes = [], messages = [], violations = [], expectedHTTPFailures = [];
-  const behavior = { createFailure: null, createWait: null, saveFailure: null, outputRevision: 0, activityEvents: null,
+  const behavior = { createFailure: null, createWait: null, saveFailure: null, outputRevision: 0, activityEvents: null, bracketedPaste: false,
     automationFailure: null, automationWait: null, automationsAvailable: true, loseCreate: false, loseRun: false,
     unavailableFolder: false, sourcesFailure: false, configFailure: options.configFailure || false,
     assistantConfig: options.assistantConfig || { enabled: true, hint: '', autonomy: 'ask' },
@@ -352,23 +352,33 @@ function fixtures(options = {}) {
         assert.equal(url.origin, base.replace('http:', 'ws:'));
         assert.ok(['/ws/terminal/kon-live', '/ws/terminal/' + supervisorID].includes(url.pathname)
           || /^\/ws\/automations\/[^/]+\/\d+$/.test(url.pathname), `Unknown socket: ${url}`);
-        if (url.pathname.startsWith('/ws/automations/')) {
+        const paneStream = !url.pathname.startsWith('/ws/automations/');
+        if (!paneStream) {
           const [, , , id, n] = url.pathname.split('/');
           const row = definitions.get(id); assert.ok(row?.running); assert.equal(Number(n), row.current_run.n);
         }
-        assert.ok([...url.searchParams.keys()].every(k => ['cols', 'rows', 'rw'].includes(k)));
+        assert.ok([...url.searchParams.keys()].every(k => ['cols', 'rows', 'rw', 'stream'].includes(k)));
+        assert.equal(url.searchParams.get('stream'), paneStream ? 'pane' : null);
         assert.ok(Number(url.searchParams.get('cols')) > 0 && Number(url.searchParams.get('rows')) > 0);
         sockets.push(url);
         socketRoutes.push(ws);
         // Do not call connectToServer(): there is no terminal server at all.
-        ws.send(Buffer.from('Offline fixture terminal\r\n$ '));
+        const snapshot = (cols, rows) => {
+          if (paneStream) ws.send(JSON.stringify({ type: 'reset', cols, rows }));
+          ws.send(Buffer.from('Offline fixture terminal\r\n$ ' + (behavior.bracketedPaste ? '\x1b[?2004h' : '')));
+        };
         ws.onMessage(message => {
           try {
             const data = JSON.parse(String(message));
             assert.ok(['resize', 'input'].includes(data.type));
             messages.push({ url, ...data });
+            if (data.type === 'resize') {
+              assert.ok(Number.isInteger(data.cols) && data.cols > 0 && Number.isInteger(data.rows) && data.rows > 0);
+              snapshot(data.cols, data.rows);
+            }
           } catch (error) { violations.push(error.message); }
         });
+        snapshot(Number(url.searchParams.get('cols')), Number(url.searchParams.get('rows')));
       } catch (error) {
         violations.push(error.message);
         ws.close({ code: 1008, reason: 'Unknown fixture socket' });
@@ -860,7 +870,7 @@ async function terminalGridFits(page, fixture, minRows = 1) {
   assert.equal(await page.locator('.xterm:visible').count(), 1);
 }
 
-async function terminalRows(page, height, top = 0) {
+async function terminalRows(page, height, top = 0, grid = true) {
   await page.waitForFunction(({ height, top }) => {
     const host = document.getElementById('terminal-container-mobile');
     const term = window.termState.term;
@@ -885,7 +895,7 @@ async function terminalRows(page, height, top = 0) {
     });
     throw new Error(`${error.message}: ${JSON.stringify(geometry)}`, { cause: error });
   });
-  await terminalGridFits(page, undefined, 8);
+  if (grid) await terminalGridFits(page, undefined, 8);
 }
 
 function observationOptions(options = {}) {
@@ -1319,6 +1329,7 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
         await page.waitForFunction(() => Alpine.$data(document.body).terminalConnected);
         await page.getByRole('button', { name: 'Enable input', exact: true }).filter({ visible: true }).click();
         await page.waitForFunction(() => Alpine.$data(document.body).terminalConnected);
+        fixture.behavior.bracketedPaste = true;
         fixture.socketRoutes.at(-1).send(Buffer.from('\x1b[?2004h'));
         await page.waitForFunction(() => termState.term.modes.bracketedPasteMode);
         await page.clock.install();
@@ -1449,6 +1460,113 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
       });
     });
   }
+  test('pane snapshots batch writes and preserve received output across socket close', async t => {
+    await withPage(t, 1280, 'dark', async (page, fixture) => {
+      await openTerminalSubject(page, 'kon-live');
+      await terminalGridFits(page, fixture);
+      await page.evaluate(() => {
+        const term = window.termState.term;
+        const stats = window.__paneStats = { received: 0, submitted: 0, parsed: 0, pending: 0, peakPending: 0 };
+        const write = term.write.bind(term);
+        term.write = (data, callback) => {
+          stats.submitted++;
+          stats.peakPending = Math.max(stats.peakPending, ++stats.pending);
+          write(data, () => { stats.parsed++; stats.pending--; callback?.(); });
+        };
+        window.termState.ws.addEventListener('message', event => {
+          if (typeof event.data !== 'string') stats.received++;
+        });
+      });
+      const ws = fixture.socketRoutes.at(-1);
+      const { cols, rows } = await page.evaluate(() => ({ cols: window.termState.term.cols, rows: window.termState.term.rows }));
+      ws.send(JSON.stringify({ type: 'reset', cols: 201, rows: 50 }));
+      const snapshot = Buffer.from(Array.from({ length: 5000 }, (_, i) =>
+        `\x1b[0m${String(i).padStart(4, '0')} ${'x'.repeat(160)}\x1b[0m`).join('\r\n'));
+      let sent = 0;
+      for (let offset = 0; offset < snapshot.length; offset += 32768) {
+        ws.send(snapshot.subarray(offset, offset + 32768));
+        sent++;
+      }
+      ws.send(JSON.stringify({ type: 'reset', cols, rows }));
+      ws.send(Buffer.from('final snapshot\r\nfinal output'));
+      sent++;
+      ws.close({ code: 1000, reason: 'Fixture complete' });
+      await page.waitForFunction(() => {
+        const term = window.termState.term;
+        return window.termState.ws === null && term.buffer.active.baseY === 0
+          && term.buffer.active.getLine(0)?.translateToString(true) === 'final snapshot'
+          && term.buffer.active.getLine(1)?.translateToString(true) === 'final output';
+      }).catch(async error => {
+        t.diagnostic(JSON.stringify(await page.evaluate(() => window.__paneStats)));
+        throw error;
+      });
+      const stats = await page.evaluate(() => window.__paneStats);
+      t.diagnostic(JSON.stringify({ snapshotBytes: snapshot.length, sent, ...stats }));
+      assert.equal(stats.received, sent);
+      assert.equal(stats.submitted, sent);
+      assert.equal(stats.parsed, sent);
+      assert.ok(stats.peakPending > 1, 'consecutive frames reach xterm before earlier write callbacks finish');
+    });
+  });
+
+  test('read-only pane history scrolls locally without socket input', async t => {
+    await withPage(t, 1280, 'dark', async (page, fixture) => {
+      await openTerminalSubject(page, 'kon-live');
+      await terminalGridFits(page, fixture);
+      const ws = fixture.socketRoutes.at(-1);
+      ws.send(Buffer.from(Array.from({ length: 400 }, (_, i) => `history-${i}\r\n`).join('') + 'history-end'));
+      await page.waitForFunction(() => {
+        const term = window.termState.term;
+        return term.buffer.active.baseY > 300
+          && term.buffer.active.getLine(term.buffer.active.baseY + term.rows - 1)?.translateToString(true) === 'history-end';
+      });
+      const before = fixture.messages.length;
+      await page.locator('.xterm:visible').hover();
+      await page.mouse.wheel(0, -1200);
+      await page.waitForFunction(() => {
+        const buffer = window.termState.term.buffer.active;
+        return buffer.viewportY < buffer.baseY;
+      });
+      assert.equal(fixture.messages.length, before, 'scrolling is local, with no input or resize message');
+      assert.equal(await page.evaluate(() => Alpine.$data(document.body).terminalRW), false);
+    });
+  });
+  for (const width of [390, 1280]) {
+    test(`pane resets, reply suppression and focus reports / ${width}px`, async t => {
+      await withPage(t, width, 'dark', async (page, fixture) => {
+        await openTerminalSubject(page, 'kon-live');
+        await terminalGridFits(page, fixture);
+        await page.getByRole('button', { name: width < 768 ? 'Enable input' : 'read-only', exact: true })
+          .filter({ visible: true }).click();
+        await page.waitForFunction(() => Alpine.$data(document.body).terminalRW && Alpine.$data(document.body).terminalConnected);
+        await terminalGridFits(page, fixture);
+        const ws = fixture.socketRoutes.at(-1);
+        const { cols, rows } = await page.evaluate(() => ({ cols: window.termState.term.cols, rows: window.termState.term.rows }));
+        const inputCount = () => fixture.messages.filter(message => message.type === 'input').length;
+        const before = inputCount();
+        const marker = 'queries-processed';
+        ws.send(Buffer.from('\x1b[c\x1b[>c\x1b[5n\x1b[6n\x1b[?6n\x1b[4$p\x1b[?25$p'
+          + '\x1bP$qm\x1b\\\x1b]4;0;?;1;?\x07\x1b]10;?\x07\x1b]11;?\x07\x1b]12;?\x07'
+          + `\x1b[${rows};1H${marker}`));
+        await page.waitForFunction(marker => {
+          const term = window.termState.term;
+          return term.buffer.active.getLine(term.buffer.active.baseY + term.rows - 1)?.translateToString(true) === marker;
+        }, marker);
+        assert.equal(inputCount(), before, 'terminal queries must not produce input replies');
+
+        ws.send(Buffer.from('old output\r\n'.repeat(5000)));
+        ws.send(JSON.stringify({ type: 'reset', cols, rows }));
+        ws.send(Buffer.from('fresh snapshot'));
+        await page.waitForFunction(() => {
+          const term = window.termState.term;
+          return term.buffer.active.baseY === 0 && term.buffer.active.getLine(0)?.translateToString(true) === 'fresh snapshot';
+        });
+        ws.send(Buffer.from('\x1b[?1004h'));
+        await expect.poll(() => fixture.messages.filter(message => message.type === 'input' && /^\x1b\[[IO]$/.test(message.data)).length).toBeGreaterThan(0);
+        assert.equal(fixture.messages.filter(message => message.type === 'input').every(message => message.url.searchParams.get('rw') === '1'), true);
+      });
+    });
+  }
   for (const width of [320, 390]) for (const theme of themes) {
     test(`terminal visible geometry ${width}px / ${theme}`, async t => {
       await withPage(t, width, theme, async (page, fixture) => {
@@ -1477,7 +1595,8 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
           await page.locator('#terminal-container-mobile .xterm-screen').click();
           await page.keyboard.type('must-not-send');
           assert.equal(fixture.messages.filter(message => message.type === 'input').length, inputs);
-          await terminalRows(page, height, height === 900 ? 0 : 12);
+          // A connecting socket cannot request the grid for the smaller input toolbar.
+          await terminalRows(page, height, height === 900 ? 0 : 12, false);
           await page.evaluate(() => {
             window.__fixtureHoldOpen = false;
             window.__fixturePendingOpens.splice(0).forEach(open => open());
@@ -1508,7 +1627,8 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
           await fixture.socketRoutes.at(-1).close({ code: 1000, reason: 'Fixture disconnect' });
           await visible(page.locator('.mobile-terminal-pane [role="alert"]'));
           assert.equal(await status.textContent(), 'Disconnected');
-          await terminalRows(page, height, height === 900 ? 0 : 12);
+          // The error banner changes the container, but only a server reset can resize the grid.
+          await terminalRows(page, height, height === 900 ? 0 : 12, false);
           await page.getByRole('button', { name: 'retry connection', exact: true }).filter({ visible: true }).click();
           await page.waitForFunction(() => Alpine.$data(document.body).terminalConnected);
         }

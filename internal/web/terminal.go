@@ -84,6 +84,10 @@ func (s *Server) handleTerminalWS(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	rw := r.URL.Query().Get("rw") == "1"
+	if r.URL.Query().Get("stream") == "pane" {
+		s.handlePaneTerminal(ctx, conn, id, int(cols), int(rows), rw)
+		return
+	}
 
 	// A linked session gives the viewer its own window selection and cleanup.
 	// The agent window is shared, so viewer sizing affects every client.
@@ -125,9 +129,9 @@ func (s *Server) handleTerminalWS(w http.ResponseWriter, r *http.Request) {
 		s.readClientMessages(ctx, conn, ptmx, viewSession, "", rw)
 	}()
 
-	s.log.Info("terminal session connected", "ticket", id, "view_session", viewSession)
+	s.log.Info("terminal session connected", "ticket", id, "view_session", viewSession, "rw", rw, "stream", "attach")
 	s.pipeOutput(ctx, conn, ptmx, id, wsWriteTimeout)
-	s.log.Info("terminal session disconnected", "ticket", id, "view_session", viewSession)
+	s.log.Info("terminal session disconnected", "ticket", id, "view_session", viewSession, "rw", rw, "stream", "attach")
 }
 
 func (s *Server) readClientMessages(ctx context.Context, conn *websocket.Conn, ptmx *os.File, viewSession, socket string, rw bool) {

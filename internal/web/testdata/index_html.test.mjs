@@ -214,6 +214,20 @@ function stubXterm(termState) {
       this.disposed = false;
       this.inputListeners = [];
       this.writes = [];
+      this.operations = [];
+      this.resizes = [];
+      this.writeCallbacks = [];
+      this.deferWrites = false;
+      const register = kind => (id, handler) => {
+        this.parserHandlers.push({ kind, id: vmValue(id), handler });
+        return { dispose() {} };
+      };
+      this.parserHandlers = [];
+      this.parser = {
+        registerCsiHandler: register('csi'),
+        registerDcsHandler: register('dcs'),
+        registerOscHandler: register('osc'),
+      };
       this.textarea = {
         readOnly: false,
         focuses: 0,
@@ -223,7 +237,7 @@ function stubXterm(termState) {
       };
       created.push(this);
     }
-    loadAddon() {}
+    loadAddon(addon) { addon.term = this; }
     attachCustomKeyEventHandler(handler) {
       this.keyHandler = handler;
     }
@@ -232,8 +246,22 @@ function stubXterm(termState) {
     }
     reset() {
       this.resets += 1;
+      this.operations.push(['reset']);
     }
-    write(data) { this.writes.push(data); }
+    resize(cols, rows) {
+      this.cols = cols;
+      this.rows = rows;
+      this.resizes.push([cols, rows]);
+      this.operations.push(['resize', cols, rows]);
+    }
+    write(data, callback) {
+      this.writes.push(data);
+      this.operations.push(['write', typeof data === 'string' ? data : Buffer.from(data).toString()]);
+      if (callback) {
+        if (this.deferWrites) this.writeCallbacks.push(callback);
+        else queueMicrotask(callback);
+      }
+    }
     input(data) {
       if (this.options.disableStdin) return;
       this.inputListeners.filter(listener => !listener.disposed).forEach(listener => listener.handler(data));
@@ -259,9 +287,17 @@ function stubXterm(termState) {
   termState.FitAddon = class {
     constructor() {
       this.fits = 0;
+      this.proposals = 0;
+      this.dimensions = { cols: 80, rows: 24 };
+    }
+    proposeDimensions() {
+      this.proposals += 1;
+      return this.dimensions;
     }
     fit() {
       this.fits += 1;
+      const dimensions = this.proposeDimensions();
+      if (dimensions) this.term.resize(dimensions.cols, dimensions.rows);
     }
   };
   termState.Unicode11Addon = class {};
@@ -312,8 +348,9 @@ async function openedTerminal(overrides = {}, { mobile = false } = {}) {
         this.url = url;
         this.readyState = 1;
         this.closed = false;
+        this.sent = [];
       }
-      send() {}
+      send(data) { this.sent.push(JSON.parse(data)); }
       close() {
         this.closed = true;
         this.readyState = 3;
@@ -371,6 +408,7 @@ function makeEventSourceFake(opened = []) {
 function kontoraContext(overrides = {}) {
   const context = {
     console,
+    queueMicrotask,
     setTimeout,
     clearTimeout,
     structuredClone,
@@ -906,6 +944,301 @@ test("terminal scrollback follows the layout that created it", async () => {
   }
 });
 
+test("terminal sockets opt into the pane stream in both input modes", async () => {
+  const { ctx, state } = await liveTerminal();
+  for (const rw of [false, true]) {
+    if (rw) state.toggleTerminalRW();
+    const url = new URL(ctx.termState.ws.url);
+    assert.equal(url.pathname, '/ws/terminal/tst-001');
+    assert.deepEqual(Object.fromEntries(url.searchParams), {
+      cols: '80', rows: '24', stream: 'pane', ...(rw ? { rw: '1' } : {}),
+    });
+    assert.equal(ctx.termState.ws.binaryType, 'arraybuffer');
+  }
+  state.destroy();
+});
+
+test("the fitted grid stays until the first server reset", async () => {
+  const { ctx, state } = await liveTerminal();
+  const { term, fit, ws } = ctx.termState;
+  const resizes = term.resizes.length;
+  fit.dimensions = { cols: 120, rows: 40 };
+  state.refitTerminal();
+  await flushMicrotasks();
+  assert.deepEqual([term.cols, term.rows], [80, 24]);
+  assert.equal(term.resizes.length, resizes);
+  assert.equal(term.resets, 0);
+  assert.deepEqual(ws.sent, [{ type: 'resize', cols: 120, rows: 40 }]);
+  ws.onmessage({ data: '{"type":"reset","cols":110,"rows":35}' });
+  await flushMicrotasks();
+  assert.deepEqual([term.cols, term.rows], [110, 35], 'the pane size can differ from the proposed size');
+  state.destroy();
+});
+
+test("a deferred initial fit cannot overwrite a reset from a racing input toggle", async () => {
+  const frames = [];
+  const { ctx, state } = await openedTerminal({
+    requestAnimationFrame(callback) { frames.push(callback); return frames.length; },
+  });
+  state.toggleTerminalRW();
+  ctx.termState.ws.onmessage({ data: '{"type":"reset","cols":110,"rows":35}' });
+  await flushMicrotasks();
+  frames.forEach(frame => frame());
+  assert.equal(ctx.termState.fit.fits, 0);
+  assert.deepEqual([ctx.termState.term.cols, ctx.termState.term.rows], [110, 35]);
+  state.destroy();
+});
+
+test("pane resets wait for write callbacks and precede their binary snapshots", async () => {
+  const { ctx, state } = await liveTerminal();
+  const { term, ws, fit } = ctx.termState;
+  assert.equal(fit.fits, 1, 'the initial grid is fitted before connecting');
+  assert.deepEqual([term.cols, term.rows], [80, 24]);
+  term.operations.length = 0;
+  term.deferWrites = true;
+  const reset = (cols, rows) => ws.onmessage({ data: JSON.stringify({ type: 'reset', cols, rows }) });
+  const output = text => ws.onmessage({ data: new TextEncoder().encode(text).buffer });
+
+  reset(90, 30);
+  output('snapshot');
+  output('live');
+  reset(100, 40);
+  output('resized snapshot');
+  await flushMicrotasks();
+  assert.deepEqual(term.operations, [['reset'], ['resize', 90, 30], ['write', 'snapshot'], ['write', 'live']]);
+  term.writeCallbacks.shift()();
+  await flushMicrotasks();
+  assert.deepEqual(term.operations.at(-1), ['write', 'live']);
+  assert.deepEqual([term.cols, term.rows], [90, 30], 'the next reset waits for live output');
+  term.writeCallbacks.shift()();
+  await flushMicrotasks();
+  assert.deepEqual(term.operations, [
+    ['reset'], ['resize', 90, 30], ['write', 'snapshot'], ['write', 'live'],
+    ['reset'], ['resize', 100, 40], ['write', 'resized snapshot'],
+  ]);
+  term.writeCallbacks.shift()();
+  state.destroy();
+});
+
+test("consecutive binary frames batch inside xterm while write callbacks are pending", async () => {
+  const { ctx, state } = await liveTerminal();
+  const { term, ws } = ctx.termState;
+  term.deferWrites = true;
+  const output = text => ws.onmessage({ data: new TextEncoder().encode(text).buffer });
+  output('first');
+  await flushMicrotasks();
+  for (let i = 0; i < 27; i++) output(`snapshot-${i}`);
+  await flushMicrotasks();
+  output('live');
+  await flushMicrotasks();
+  assert.equal(term.writes.length, 29, 'no binary frame waits for an earlier write callback');
+  assert.equal(term.writeCallbacks.length, 29);
+  term.writeCallbacks.splice(0).forEach(callback => callback());
+  state.destroy();
+});
+
+test("empty binary frames cannot block a later reset", async () => {
+  const { ctx, state } = await liveTerminal();
+  const { term, ws } = ctx.termState;
+  ws.onmessage({ data: new ArrayBuffer(0) });
+  ws.onmessage({ data: '{"type":"reset","cols":99,"rows":31}' });
+  await flushMicrotasks();
+  assert.deepEqual([term.cols, term.rows], [99, 31]);
+  state.destroy();
+});
+
+test("a new stream reset waits for every write already batched in the reused terminal", async () => {
+  const { ctx, state } = await liveTerminal();
+  const { term, ws: old } = ctx.termState;
+  term.deferWrites = true;
+  for (const text of ['first', 'last']) {
+    old.onmessage({ data: new TextEncoder().encode(text).buffer });
+  }
+  await flushMicrotasks();
+  assert.equal(term.writeCallbacks.length, 2);
+  state.toggleTerminalRW();
+  const ws = ctx.termState.ws;
+  ws.onmessage({ data: '{"type":"reset","cols":99,"rows":31}' });
+  ws.onmessage({ data: new TextEncoder().encode('new snapshot').buffer });
+  term.writeCallbacks.shift()();
+  await flushMicrotasks();
+  assert.equal(term.resets, 0);
+  term.writeCallbacks.shift()();
+  await flushMicrotasks();
+  assert.deepEqual(term.operations.slice(-3), [['reset'], ['resize', 99, 31], ['write', 'new snapshot']]);
+  term.writeCallbacks.shift()();
+  state.destroy();
+});
+
+test("received binary frames survive socket close before the queue drains", async () => {
+  const { ctx, state } = await liveTerminal();
+  const { term, ws } = ctx.termState;
+  for (const text of ['first output', 'final output']) {
+    ws.onmessage({ data: new TextEncoder().encode(text).buffer });
+  }
+  ws.onclose();
+  await flushMicrotasks();
+  assert.deepEqual(term.writes.map(data => Buffer.from(data).toString()), ['first output', 'final output']);
+  state.destroy();
+});
+
+for (const event of ['onclose', 'onerror']) {
+  test(`received output survives ${event}, including frames behind a reset barrier`, async () => {
+    const { ctx, state } = await liveTerminal();
+    const { term, ws } = ctx.termState;
+    term.operations.length = 0;
+    term.deferWrites = true;
+    const output = text => ws.onmessage({ data: new TextEncoder().encode(text).buffer });
+    output('in flight');
+    await flushMicrotasks();
+    ws.onmessage({ data: '{"type":"reset","cols":99,"rows":31}' });
+    output('snapshot');
+    output('final output');
+    ws[event]();
+    assert.equal(ctx.termState.ws, null);
+    assert.equal(state.terminalConnected, false);
+    assert.equal(state.terminalOpen, true);
+    term.writeCallbacks.shift()();
+    await flushMicrotasks();
+    assert.deepEqual(term.operations, [
+      ['write', 'in flight'], ['reset'], ['resize', 99, 31],
+      ['write', 'snapshot'], ['write', 'final output'],
+    ]);
+    output('too late');
+    term.writeCallbacks.splice(0).forEach(callback => callback());
+    await flushMicrotasks();
+    assert.equal(term.writes.length, 3, 'a closed socket cannot accept new output');
+    state.destroy();
+  });
+}
+
+for (const action of ['stream', 'replacement']) {
+  test(`received output is invalidated by ${action} after socket close`, async () => {
+    const { ctx, state } = await liveTerminal();
+    const { term, ws } = ctx.termState;
+    term.deferWrites = true;
+    ws.onmessage({ data: new TextEncoder().encode('in flight').buffer });
+    await flushMicrotasks();
+    ws.onmessage({ data: '{"type":"reset","cols":99,"rows":31}' });
+    ws.onmessage({ data: new TextEncoder().encode('obsolete').buffer });
+    ws.onclose();
+    if (action === 'stream') state._disconnectStream();
+    else {
+      state._destroyTerminal();
+      state._createTerminal(term.element.parentNode);
+    }
+    const resets = term.resets;
+    term.writeCallbacks.shift()();
+    await flushMicrotasks();
+    assert.equal(term.resets, resets);
+    assert.equal(term.writes.length, 1);
+    state.destroy();
+  });
+}
+
+test("unknown and malformed text frames leave the fitted grid unchanged", async () => {
+  const { ctx, state } = await liveTerminal();
+  const { term, ws } = ctx.termState;
+  const operations = term.operations.length;
+  for (const data of ['not JSON', 'null', '{}', '{"type":"other"}',
+    '{"type":"reset","cols":0,"rows":24}', '{"type":"reset","cols":80.5,"rows":24}',
+    '{"type":"reset","cols":80}', '{"type":"reset","cols":80,"rows":-1}']) {
+    ws.onmessage({ data });
+  }
+  await flushMicrotasks();
+  assert.equal(term.operations.length, operations);
+  assert.deepEqual([term.cols, term.rows], [80, 24]);
+  state.destroy();
+});
+
+for (const action of ['toggle', 'ticket', 'reopen', 'disconnect']) {
+  test(`old write callbacks cannot apply queued frames after ${action}`, async () => {
+    const { ctx, state } = await liveTerminal();
+    const { term, ws: old } = ctx.termState;
+    term.deferWrites = true;
+    old.onmessage({ data: new TextEncoder().encode('in flight').buffer });
+    await flushMicrotasks();
+    old.onmessage({ data: '{"type":"reset","cols":99,"rows":31}' });
+    old.onmessage({ data: new TextEncoder().encode('obsolete').buffer });
+    const resets = term.resets;
+    switch (action) {
+      case 'toggle': state.toggleTerminalRW(); break;
+      case 'ticket': await state.selectTicket({ id: 'tst-002', status: 'in_progress' }); break;
+      case 'reopen': state.closeTerminal(); await state.openTerminal(); break;
+      case 'disconnect': old.onclose(); state.reconnectTerminal(); break;
+    }
+    await flushMicrotasks();
+    assert.equal(ctx.termState.term, term);
+    const ws = ctx.termState.ws;
+    assert.notEqual(ws, old);
+    ws.onmessage({ data: '{"type":"reset","cols":120,"rows":40}' });
+    ws.onmessage({ data: new TextEncoder().encode('current snapshot').buffer });
+    await flushMicrotasks();
+    assert.equal(term.resets, resets, 'even a reused terminal waits for the in-flight write');
+    term.writeCallbacks.shift()();
+    await flushMicrotasks();
+    assert.equal(term.resizes.some(([cols]) => cols === 99), false);
+    assert.deepEqual(term.writes.map(data => Buffer.from(data).toString()), ['in flight', 'current snapshot']);
+    assert.deepEqual(term.operations.slice(-3), [['reset'], ['resize', 120, 40], ['write', 'current snapshot']]);
+    old.onmessage({ data: '{"type":"reset","cols":99,"rows":31}' });
+    term.writeCallbacks.shift()();
+    await flushMicrotasks();
+    assert.deepEqual([term.cols, term.rows], [120, 40]);
+    state.destroy();
+  });
+}
+
+test("refit requests proposed dimensions without resizing or clearing the terminal", async () => {
+  const { ctx, state } = await liveTerminal();
+  const { term, fit, ws } = ctx.termState;
+  ws.onmessage({ data: '{"type":"reset","cols":100,"rows":30}' });
+  await flushMicrotasks();
+  const operations = term.operations.length;
+  fit.dimensions = { cols: 120, rows: 40 };
+  state.refitTerminal();
+  assert.deepEqual(ws.sent, [{ type: 'resize', cols: 120, rows: 40 }]);
+  assert.equal(fit.fits, 1);
+  assert.equal(term.operations.length, operations, 'no local write, reset or resize');
+  assert.deepEqual([term.cols, term.rows], [100, 30]);
+  fit.dimensions = undefined;
+  state.refitTerminal();
+  assert.equal(ws.sent.length, 1, 'an unmeasurable grid cannot request a size');
+  state.destroy();
+});
+
+test("reply suppression is registered once and survives terminal reuse", async () => {
+  const { ctx, state } = await liveTerminal();
+  const term = ctx.termState.term;
+  const handlers = term.parserHandlers;
+  assert.deepEqual(handlers.filter(h => h.kind === 'csi').map(h => h.id), [
+    { final: 'c' }, { prefix: '>', final: 'c' },
+    { final: 'n' }, { prefix: '?', final: 'n' },
+    { intermediates: '$', final: 'p' }, { prefix: '?', intermediates: '$', final: 'p' },
+  ]);
+  assert.deepEqual(handlers.filter(h => h.kind === 'dcs').map(h => h.id), [{ intermediates: '$', final: 'q' }]);
+  assert.deepEqual(handlers.filter(h => h.kind === 'osc').map(h => h.id), [4, 10, 11, 12]);
+  for (const h of handlers.filter(h => h.kind !== 'osc')) assert.equal(h.handler(), true);
+  for (const h of handlers.filter(h => h.kind === 'osc')) {
+    const cases = h.id === 4 ? [
+      ['0;?', true], ['0;?;15;?', true], ['0;rgb:ff/00/00', false],
+      ['0;?;1;rgb:ff/00/00', false], ['0;rgb:ff/00/00;1;?', false], ['', false], ['0', false], ['0;?;1', false],
+    ] : [['?', true], ['?;?', true], ['rgb:ff/00/00', false], ['?;rgb:ff/00/00', false], ['rgb:ff/00/00;?', false], ['', false]];
+    for (const [data, want] of cases) assert.equal(h.handler(data), want, `OSC ${h.id}: ${data}`);
+  }
+  state.toggleTerminalRW();
+  state.closeTerminal();
+  await state.openTerminal();
+  ctx.termState.ws.onmessage({ data: '{"type":"reset","cols":80,"rows":24}' });
+  await flushMicrotasks();
+  assert.equal(ctx.termState.term, term);
+  assert.equal(term.parserHandlers.length, 11, 'reconnects and resets cannot add handlers');
+  const ws = ctx.termState.ws;
+  ws.onopen();
+  term.inputListeners.at(-1).handler('\x1b[I');
+  assert.deepEqual(ws.sent, [{ type: 'input', data: '\x1b[I' }], 'focus reports still reach the RW stream');
+  state.destroy();
+});
+
 test("crossing the breakpoint rebuilds the terminal", async () => {
   const { ctx, state } = await liveTerminal();
   const term = ctx.termState.term;
@@ -1043,12 +1376,12 @@ test("a terminal with no container closes instead of stranding the tab", async (
 
 test("refitTerminal skips a container it cannot measure", async () => {
   const { ctx, state } = await liveTerminal();
-  const fitsWhileVisible = ctx.termState.fit.fits;
+  const proposalsWhileVisible = ctx.termState.fit.proposals;
 
   ctx.termState.term.element.clientWidth = 0;
   state.refitTerminal();
 
-  assert.equal(ctx.termState.fit.fits, fitsWhileVisible, "no reflow against a hidden container");
+  assert.equal(ctx.termState.fit.proposals, proposalsWhileVisible, "no size request for a hidden container");
 });
 
 for (const mobile of [false, true]) {
@@ -1078,7 +1411,7 @@ for (const mobile of [false, true]) {
         const term = ctx.termState.term;
         assert.match(ws.url, /cols=80&rows=24/);
         for (const [cols, rows] of tc.sizes) {
-          ctx.termState.fit.fit = () => { term.cols = cols; term.rows = rows; };
+          ctx.termState.fit.dimensions = { cols, rows };
           state.refitTerminal();
         }
         assert.deepEqual(ws.sent, [], `${tc.name}: nothing sent while connecting`);
@@ -1086,7 +1419,7 @@ for (const mobile of [false, true]) {
         ws.onopen();
         assert.deepEqual(ws.sent, tc.want, `${tc.name}: latest size sent on open`);
 
-        ctx.termState.fit.fit = () => { term.cols = 130; term.rows = 45; };
+        ctx.termState.fit.dimensions = { cols: 130, rows: 45 };
         state.refitTerminal();
         assert.deepEqual(ws.sent.at(-1), { type: 'resize', cols: 130, rows: 45 }, `${tc.name}: connected resize`);
         const sent = ws.sent.length;
@@ -10098,7 +10431,16 @@ test('automation terminal subjects use server-resolved run paths and change iden
   assert.equal(state.outputSubjectKey(), 'automation:auto/encoded:7'); assert.equal(state.outputContainerID('terminal'), 'automation-terminal-session'); assert.equal(state.terminalWanted(), true);
   await state.openTerminal();
   assert.equal(sockets.length, 1); assert.match(sockets[0].url, /\/ws\/automations\/auto%2Fencoded\/7\?/);
+  assert.equal(new URL(sockets[0].url).searchParams.has('stream'), false);
   assert.equal(/server-only-session|do-not-send|unrelated-ticket|[?&](session|window)=/.test(sockets[0].url), false);
+  const term = ctx.termState.term;
+  for (const handler of term.parserHandlers) assert.equal(handler.handler('?'), false);
+  ctx.termState.fit.dimensions = { cols: 120, rows: 40 };
+  sockets[0].onopen();
+  assert.deepEqual([term.cols, term.rows], [120, 40]);
+  ctx.termState.fit.dimensions = { cols: 100, rows: 30 };
+  state.refitTerminal();
+  assert.deepEqual([term.cols, term.rows], [100, 30]);
   state.closeTerminal(); state.automations[0].current_run = { n: 8, phase: 'running' };
   assert.equal(state.outputSubjectKey(), 'automation:auto/encoded:8'); await state.openTerminal();
   assert.equal(sockets.length, 2); assert.match(sockets[1].url, /\/ws\/automations\/auto%2Fencoded\/8\?/); assert.equal(sockets[0].readyState, 3);

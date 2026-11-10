@@ -20,9 +20,56 @@ export const termState = {
   resizeObserver: null,
   resizeTimer: null,
   webglRetried: false,
+  paneReset: false,
+  streamSeq: 0,
   // The breakpoint watcher updates isMobile before closing the old terminal.
   mobile: false,
 };
+
+// A terminal can outlive its socket. Keep new resets behind any write already
+// inside xterm, and discard queued frames from streams that no longer own it.
+const terminalWrites = new WeakMap();
+function queueTerminalFrame(term, current, frame) {
+  var queue = terminalWrites.get(term);
+  if (!queue) {
+    queue = { frames: [], pending: 0, scheduled: false };
+    terminalWrites.set(term, queue);
+  }
+  queue.frames.push({ current: current, frame: frame });
+  scheduleTerminalFrames(term, queue);
+}
+
+function scheduleTerminalFrames(term, queue) {
+  if (queue.scheduled) return;
+  queue.scheduled = true;
+  queueMicrotask(function() { drainTerminalFrames(term, queue); });
+}
+
+function drainTerminalFrames(term, queue) {
+  queue.scheduled = false;
+  while (queue.frames.length) {
+    var next = queue.frames[0];
+    if (!next.current()) {
+      queue.frames.shift();
+      continue;
+    }
+    if (next.frame.type === 'reset') {
+      if (queue.pending) return;
+      queue.frames.shift();
+      term.reset();
+      if (next.frame.cols !== undefined) term.resize(next.frame.cols, next.frame.rows);
+    } else {
+      queue.frames.shift();
+      if (!next.frame.length) continue;
+      // xterm batches consecutive writes. Only resets need their callbacks to finish.
+      queue.pending++;
+      term.write(next.frame, function() {
+        queue.pending--;
+        if (!queue.pending && queue.frames.length) scheduleTerminalFrames(term, queue);
+      });
+    }
+  }
+}
 
 // The xterm session: its lifecycle, the websocket, and the terminal theme.
 export function kontoraTerminal() {
@@ -183,14 +230,18 @@ export function kontoraTerminal() {
       if (termState.term && termState.term.element && termState.term.element.parentNode !== container) {
         this._destroyTerminal();
       }
+      var self = this;
+      termState.paneReset = false;
       if (termState.term) {
         // The buffer still holds whatever the last stream wrote into it.
-        termState.term.reset();
+        var term = termState.term;
+        queueTerminalFrame(term, function() {
+          return self._terminalSeq === seq && self.terminalOpen && termState.term === term;
+        }, { type: 'reset' });
       } else {
         this._createTerminal(container);
       }
 
-      var self = this;
       termState.resizeObserver = new ResizeObserver(function() {
         clearTimeout(termState.resizeTimer);
         termState.resizeTimer = setTimeout(function() { self.refitTerminal(); }, 100);
@@ -199,7 +250,7 @@ export function kontoraTerminal() {
 
       requestAnimationFrame(function() {
         if (!termState.term || !self.terminalOpen || self._terminalSeq !== seq) return;
-        termState.fit.fit();
+        if (!termState.paneReset) termState.fit.fit();
         self._connectWs(seq);
       });
     },
@@ -221,6 +272,27 @@ export function kontoraTerminal() {
       term.loadAddon(new termState.Unicode11Addon());
       term.unicode.activeVersion = '11';
       term.open(container);
+      // tmux answers supported queries; xterm replies would become agent input.
+      // Unknown OSC 4 palette queries remain unanswered in control mode.
+      var paneStream = () => this.outputSubject()?.kind !== 'automation';
+      var swallow = function() { return paneStream(); };
+      [
+        { final: 'c' }, { prefix: '>', final: 'c' },
+        { final: 'n' }, { prefix: '?', final: 'n' },
+        { intermediates: '$', final: 'p' }, { prefix: '?', intermediates: '$', final: 'p' },
+      ].forEach(function(id) { term.parser.registerCsiHandler(id, swallow); });
+      term.parser.registerDcsHandler({ intermediates: '$', final: 'q' }, swallow);
+      [4, 10, 11, 12].forEach(function(code) {
+        term.parser.registerOscHandler(code, function(data) {
+          if (!paneStream()) return false;
+          var specs = data.split(';');
+          if (code === 4) {
+            if (!specs.length || specs.length % 2 !== 0) return false;
+            specs = specs.filter(function(_, i) { return i % 2 === 1; });
+          }
+          return specs.every(function(spec) { return spec === '?'; });
+        });
+      });
       // Escape drops read-write mode instead of reaching the agent, and stops
       // there: the body Escape chain would otherwise see a read-only terminal
       // on the same keypress and close the ticket.
@@ -286,6 +358,7 @@ export function kontoraTerminal() {
 
     _connectWs(seq) {
       if (this._terminalSeq !== seq || !this.terminalOpen || !termState.term) return;
+      var streamSeq = ++termState.streamSeq;
       this.terminalConnected = false;
       this._setTerminalInput(false);
       if (termState.inputDisposable) {
@@ -304,17 +377,22 @@ export function kontoraTerminal() {
       var self = this;
       var term = termState.term;
       var rw = this.terminalRW;
+      // Received frames survive socket closure, but not a new stream or navigation.
+      var ownsOutput = function() {
+        return self._terminalSeq === seq && self.terminalOpen && termState.streamSeq === streamSeq && termState.term === term;
+      };
       var current = function() {
-        return self._terminalSeq === seq && self.terminalOpen && termState.ws === ws && termState.term === term;
+        return ownsOutput() && termState.ws === ws;
       };
       var cols = term.cols;
       var rows = term.rows;
       var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
       var subject = self.outputSubject();
       var subjectKey = self.outputSubjectKey();
-      var path = subject.kind === 'automation' ? '/ws/automations/' + encodeURIComponent(subject.id) + '/' + subject.n : '/ws/terminal/' + encodeURIComponent(subject.id);
+      var paneStream = subject.kind !== 'automation';
+      var path = paneStream ? '/ws/terminal/' + encodeURIComponent(subject.id) : '/ws/automations/' + encodeURIComponent(subject.id) + '/' + subject.n;
       var url = proto + '//' + location.host + path
-        + '?cols=' + cols + '&rows=' + rows + (rw ? '&rw=1' : '');
+        + '?cols=' + cols + '&rows=' + rows + (paneStream ? '&stream=pane' : '') + (rw ? '&rw=1' : '');
       var ws = new WebSocket(url);
       ws.binaryType = 'arraybuffer';
       termState.ws = ws;
@@ -323,15 +401,26 @@ export function kontoraTerminal() {
           ws.close();
           return;
         }
-        term.write(new Uint8Array(e.data));
+        if (typeof e.data === 'string') {
+          var frame;
+          try { frame = JSON.parse(e.data); } catch (err) { return; }
+          if (!frame || frame.type !== 'reset' || !Number.isInteger(frame.cols) || frame.cols < 1
+            || !Number.isInteger(frame.rows) || frame.rows < 1) return;
+          termState.paneReset = true;
+          queueTerminalFrame(term, ownsOutput, frame);
+        } else {
+          queueTerminalFrame(term, ownsOutput, new Uint8Array(e.data));
+        }
       };
       ws.onopen = function() {
         if (!current() || ws.readyState !== WebSocket.OPEN) return;
         self.terminalConnected = true;
         self.terminalError = null;
-        // Refits while connecting cannot send a resize, so catch up to the current grid.
-        if (term.cols !== cols || term.rows !== rows) {
-          ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
+        if (!paneStream) termState.fit.fit();
+        // The pane server owns the grid; attach streams use the local terminal size.
+        var dimensions = termState.fit.proposeDimensions();
+        if (dimensions && (dimensions.cols !== cols || dimensions.rows !== rows)) {
+          ws.send(JSON.stringify({ type: 'resize', cols: dimensions.cols, rows: dimensions.rows }));
         }
         // A socket callback cannot open the keyboard. Input starts with a later tap.
         self._setTerminalInput(rw && self.terminalRW);
@@ -364,6 +453,7 @@ export function kontoraTerminal() {
     // it costs no Terminal construction and no new WebGL context. _terminalSeq is
     // left alone: cancelling an in-flight openTerminal is the caller's call.
     _disconnectStream() {
+      termState.streamSeq++;
       if (this.isMobile || termState.mobile) this.terminalRW = false;
       this._setTerminalInput(false);
       this.terminalConnected = false;
@@ -416,20 +506,14 @@ export function kontoraTerminal() {
 
     refitTerminal() {
       if (!termState.term || !termState.fit || !this.terminalOpen) return;
-      // A container hidden by x-show measures zero, and fitting to that would
-      // reflow the whole scrollback twice: once down to nothing, once on return.
       var el = termState.term.element;
       if (!el || !el.clientWidth || !el.clientHeight) return;
-      var oldCols = termState.term.cols;
-      var oldRows = termState.term.rows;
-      termState.fit.fit();
-      if (termState.term.cols === oldCols && termState.term.rows === oldRows) return;
+      var dimensions = termState.fit.proposeDimensions();
+      if (!dimensions || (dimensions.cols === termState.term.cols && dimensions.rows === termState.term.rows)) return;
+      if (this.outputSubject()?.kind === 'automation') termState.fit.fit();
       if (termState.ws && termState.ws.readyState === WebSocket.OPEN) {
-        termState.ws.send(JSON.stringify({ type: 'resize', cols: termState.term.cols, rows: termState.term.rows }));
+        termState.ws.send(JSON.stringify({ type: 'resize', cols: dimensions.cols, rows: dimensions.rows }));
       }
-      // Clear viewport to remove reflow artifacts from cursor-positioned content.
-      // tmux will redraw the screen after receiving the resize via SIGWINCH.
-      termState.term.write('\x1b[2J\x1b[H');
     },
 
     _getTerminalTheme() {

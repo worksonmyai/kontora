@@ -105,45 +105,54 @@ func TestHandleTerminalWS_ViewerSizing(t *testing.T) {
 		{"read-only resized with unrelated client", false, true, true, "210", "1"},
 		{"read-write with unrelated client", true, true, false, "200", "0"},
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			isolateTmux(t)
-			session := uniqueSession(t)
-			id := "sizing"
-			startTmuxWindow(t, session, id)
-			if tt.unrelatedClient {
-				other := session + "-unrelated"
-				startTmuxWindow(t, other, "other")
-				attachNormalClient(t, other)
-			}
-
-			srv := startTerminalTestServer(t, &mockTerminalService{hasSession: true}, session)
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-			url := fmt.Sprintf("ws://%s/ws/terminal/%s?cols=200&rows=50", srv.Addr(), id)
-			if tt.rw {
-				url += "&rw=1"
-			}
-			conn, resp, err := websocket.Dial(ctx, url, nil)
-			require.NoError(t, err)
-			if resp != nil && resp.Body != nil {
-				defer resp.Body.Close()
-			}
-			defer func() { _ = conn.CloseNow() }()
-			go func() {
-				for {
-					if _, _, err := conn.Read(ctx); err != nil {
-						return
+	for _, stream := range []struct {
+		name, query, controlMode string
+	}{
+		{"attach", "", "0"},
+		{"pane", "&stream=pane", "1"},
+	} {
+		t.Run(stream.name, func(t *testing.T) {
+			for _, tt := range tests {
+				t.Run(tt.name, func(t *testing.T) {
+					isolateTmux(t)
+					session := uniqueSession(t)
+					id := "sizing"
+					startTmuxWindow(t, session, id)
+					if tt.unrelatedClient {
+						other := session + "-unrelated"
+						startTmuxWindow(t, other, "other")
+						attachNormalClient(t, other)
 					}
-				}
-			}()
 
-			requireTmuxOutput(t, tt.wantReadOnly, "list-clients", "-F", "#{client_readonly}",
-				"-f", "#{m:kontora-view-*,#{client_session}}")
-			if tt.resize {
-				require.NoError(t, conn.Write(ctx, websocket.MessageText, []byte(`{"type":"resize","cols":210,"rows":55}`)))
+					srv := startTerminalTestServer(t, &mockTerminalService{hasSession: true}, session)
+					ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+					defer cancel()
+					url := fmt.Sprintf("ws://%s/ws/terminal/%s?cols=200&rows=50%s", srv.Addr(), id, stream.query)
+					if tt.rw {
+						url += "&rw=1"
+					}
+					conn, resp, err := websocket.Dial(ctx, url, nil)
+					require.NoError(t, err)
+					if resp != nil && resp.Body != nil {
+						defer resp.Body.Close()
+					}
+					defer func() { _ = conn.CloseNow() }()
+					go func() {
+						for {
+							if _, _, err := conn.Read(ctx); err != nil {
+								return
+							}
+						}
+					}()
+
+					requireTmuxOutput(t, tt.wantReadOnly+" "+stream.controlMode, "list-clients", "-F", "#{client_readonly} #{client_control_mode}",
+						"-f", "#{m:kontora-view-*,#{client_session}}")
+					if tt.resize {
+						require.NoError(t, conn.Write(ctx, websocket.MessageText, []byte(`{"type":"resize","cols":210,"rows":55}`)))
+					}
+					requireTmuxOutput(t, tt.wantWidth, "display-message", "-p", "-t", tmux.WindowTarget(session, id), "#{pane_width}")
+				})
 			}
-			requireTmuxOutput(t, tt.wantWidth, "display-message", "-p", "-t", tmux.WindowTarget(session, id), "#{pane_width}")
 		})
 	}
 }

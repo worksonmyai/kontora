@@ -1,5 +1,42 @@
 # Changelog
 
+## [0.37.0](https://github.com/worksonmyai/kontora/compare/v0.36.0...v0.37.0) - 2026-11-10
+
+- Allow primary aliases in secondary ticket folders
+- Keep mobile board status selection visible
+- Fix mobile terminal layout and input lifecycle
+- Use an integer range for tmux inspection retries
+- Handle tmux shutdown races and await creation navigation
+- Fix mobile epic teardown and browser navigation waits
+- Fix CI toolchain vulnerabilities and browser timeout
+- Fix mobile web behavior and improve phone and tablet usability
+- Fix dependency resolution across ticket folders
+- Fix mobile web behavior and improve phone and tablet usability
+- fix css max width
+- Add secondary ticket folders with safe claiming
+- Require explicit results for supervised runs
+- Preserve deletion approval across shell syntax
+- Guard execution claims against stale ticket state
+- Preserve notes when editing ticket descriptions
+- Reject mismatched worktree reuse
+- Serialize ordinary ticket mutations and dependency decisions
+- Verify selected board before TUI attachment
+- Add project defaults for epic child pipelines
+- Use the parent epic's repository for new child tickets
+- Allow epic supervisors to make local Git decisions without approval
+- Expose epic supervisor output and clarify board progress
+- Record user answers in ticket notes immediately
+- Skip unparseable discovery files during epic activation
+- Run epics with coding-agent supervisors
+- Fix Escape navigation from ticket details
+- Fix tmux window inspection under the C locale
+- Add always-on companion inbox
+- Add checked orchestrator delivery and controls
+- Add standing orchestrator control components
+- Expand ticket chains by default
+- Add shell-safe ticket handoffs
+- Add epic context to child-agent prompts
+
 ## [0.33.0](https://github.com/worksonmyai/kontora/compare/v0.32.0...v0.33.0) - 2026-08-16
 
 - fix linter

@@ -27,6 +27,7 @@ import (
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/metric/noop"
 
+	"github.com/worksonmyai/kontora/internal/automation"
 	"github.com/worksonmyai/kontora/internal/cli"
 	"github.com/worksonmyai/kontora/internal/config"
 	"github.com/worksonmyai/kontora/internal/hook"
@@ -516,6 +517,13 @@ type Daemon struct {
 	assistant *assistantState
 	companion *companionState
 
+	// automationMu serializes management and admission. Never take it under mu.
+	automationMu    sync.Mutex
+	automationStore *automation.Store
+	automationErr   error
+	automationRoot  string
+	automationWake  chan struct{}
+
 	// webAddr is the address the web server listens on, so an assistant turn
 	// can tell its agent where to send its own kontora calls. Empty until the
 	// server starts, and empty for a daemon running without one.
@@ -614,6 +622,8 @@ func New(cfg *config.Config, opts ...Option) *Daemon {
 		selfWrites:          make(map[string]selfWrite),
 		assistant:           newAssistantState(),
 		companion:           newCompanionState(),
+		automationWake:      make(chan struct{}, 1),
+		automationRoot:      os.Getenv("KONTORA_AUTOMATIONS_ROOT"),
 		stats:               newStatsCache(),
 	}
 	d.cfg.Store(cfg)
@@ -765,10 +775,16 @@ func (d *Daemon) Run(ctx context.Context) error {
 		d.cleanOrphanedWindows()
 	}
 
+	stopAutomations := d.startAutomations(tasksDir)
+	defer stopAutomations()
+
 	stopCompanion := d.startCompanion()
 	defer stopCompanion()
 
-	d.log.Info("daemon started", "dir", tasksDir, "tasks", len(d.tickets), "queued", d.queue.Len(), "tmux_session", d.tmuxSession)
+	d.mu.Lock()
+	taskCount, queuedCount := len(d.tickets), d.queue.Len()
+	d.mu.Unlock()
+	d.log.Info("daemon started", "dir", tasksDir, "tasks", taskCount, "queued", queuedCount, "tmux_session", d.tmuxSession)
 
 	if cfg.Web.Enabled != nil && *cfg.Web.Enabled {
 		if cfg.Web.Token == "" && !web.LoopbackHost(cfg.Web.Host) {
@@ -835,6 +851,8 @@ func (d *Daemon) Run(ctx context.Context) error {
 	wg.Go(func() {
 		d.discoverTmuxSocket(ctx, 5*time.Second, 5*time.Second)
 	})
+
+	wg.Go(func() { d.automationLoop(ctx) })
 
 	// Scheduler goroutine.
 	wg.Go(func() {

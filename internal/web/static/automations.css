@@ -1,0 +1,110 @@
+@import url('./automations-tokens.css');
+@import url('./automations-base.css');
+
+.automations-view { flex: 1; min-width: 0; min-height: 0; overflow-y: auto; background: var(--automation-paper); }
+.automations-container { width: 100%; max-width: var(--automation-container); margin: 0 auto; padding: var(--space-xl); }
+.automations-heading { display: flex; align-items: center; justify-content: space-between; gap: var(--space-lg); margin-bottom: var(--space-lg); }
+.automations-heading h1 { margin: 0; font-size: var(--automation-text-heading); letter-spacing: -.025em; line-height: 1.2; }
+.automations-heading p { margin: var(--space-xs) 0 0; font-size: var(--automation-text-body); color: var(--automation-muted); }
+.automations-button { position: relative; display: inline-flex; align-items: center; justify-content: center; gap: var(--space-xs); min-height: 36px; padding: var(--space-xs) var(--space-sm); border: 1px solid var(--automation-field-edge); border-radius: var(--automation-radius); background: var(--automation-clear); color: var(--automation-text); font-weight: 500; }
+.automations-button::before { content: ''; position: absolute; inset: -4px 0; }
+.automations-button-primary { background: var(--automation-accent); color: var(--color-accent-ink); border-color: var(--automation-accent); }
+.automations-button svg { width: 16px; height: 16px; flex-shrink: 0; }
+.automations-status, .automations-alert { margin-bottom: var(--space-md); font-size: var(--automation-text-sm); }
+.automations-alert { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-sm); padding: var(--space-sm); color: var(--automation-error); background: var(--automation-well); overflow-wrap: anywhere; }
+.automations-fields { border: 0; padding: 0; margin: 0; min-width: 0; }
+.automations-history-list { list-style: none; padding: 0; margin: var(--space-md) 0; }
+.automations-history-list li { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-xs); padding-block: var(--space-sm); border-bottom: 1px solid var(--automation-rule); font-size: var(--automation-text-sm); overflow-wrap: anywhere; }
+.automations-history-list li > span { min-width: 0; }
+.automations-history-list a { color: var(--automation-focus); text-decoration: underline; min-height: 44px; display: inline-flex; align-items: center; }
+.automations-history-list button { white-space: normal; text-align: left; }
+.automations-history-pages { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-sm); font-size: var(--automation-text-sm); }
+.automations-disposition { color: var(--automation-ink); font-family: var(--automation-mono); }
+.automations-workspace { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--space-xl); align-items: start; }
+.automations-workspace.has-editor { grid-template-columns: minmax(0, 1fr) minmax(330px, .9fr); }
+.automations-list { min-width: 0; }
+.automations-toolbar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: var(--space-sm); padding-bottom: var(--space-md); }
+.automations-filters { display: flex; gap: var(--space-2xs); }
+.automations-filter { position: relative; min-height: 36px; border: 0; border-radius: var(--automation-radius); padding: var(--space-xs) var(--space-sm); color: var(--automation-muted); background: var(--automation-clear); }
+.automations-filter::before { content: ''; position: absolute; inset: -4px 0; }
+.automations-filter[aria-pressed="true"] { background: var(--automation-selected); color: var(--automation-ink); }
+.automations-search { width: 100%; }
+.automations-view .automations-search input { width: 100%; }
+.automations-view :is(input:not([type="checkbox"]), select, textarea) { min-height: 36px; min-width: 0; padding: var(--space-xs) var(--space-sm); border: 1px solid var(--automation-field-edge); border-radius: var(--automation-radius); background: var(--automation-panel); color: var(--automation-ink); outline: 2px solid var(--automation-clear); outline-offset: -3px; }
+.automations-view input::placeholder, .automations-view textarea::placeholder { color: var(--automation-muted); }
+.automations-table { width: 100%; table-layout: fixed; border-collapse: collapse; }
+.automations-table th:last-child { width: 112px; }
+.automations-table th { padding: var(--space-sm) var(--space-xs); border-block: 1px solid var(--automation-rule); font-size: var(--automation-text-sm); font-weight: 400; text-align: left; white-space: nowrap; color: var(--automation-muted); }
+.automations-table th:first-child, .automations-table td:first-child { padding-left: 0; }
+.automations-table th:last-child, .automations-table td:last-child { padding-right: 0; text-align: right; }
+.automations-table td { padding: var(--space-lg) var(--space-xs); border-bottom: 1px solid var(--automation-rule); vertical-align: middle; }
+.automations-table tr.is-selected { background: var(--automation-panel); }
+.automations-row-title { display: block; width: 100%; min-height: 44px; padding: 0 var(--space-xs); border: 0; background: var(--automation-clear); color: var(--automation-ink); font-weight: 500; text-align: left; white-space: normal !important; overflow-wrap: break-word; min-width: 0; }
+.automations-row-meta { display: flex; flex-wrap: wrap; gap: var(--space-sm); margin-top: var(--space-2xs); padding-left: var(--space-xs); font-size: var(--automation-text-sm); color: var(--automation-muted); overflow-wrap: break-word; }
+.automations-row-meta span { min-width: 0; }
+.automations-row-schedule { overflow-wrap: anywhere; display: block; padding-left: var(--space-xs); margin-top: var(--space-xs); font-size: var(--automation-text-sm); color: var(--automation-text); font-variant-numeric: tabular-nums; }
+.automations-state { min-height: 44px; min-width: 72px; padding: var(--space-xs); border: 0; border-radius: var(--automation-radius); background: var(--automation-clear); color: var(--automation-muted); font-size: var(--automation-text-sm) !important; }
+.automations-state[aria-pressed="true"] { color: var(--automation-focus); }
+.automations-next { display: block; padding-left: var(--space-xs); margin-top: var(--space-2xs); font-size: var(--automation-text-sm); color: var(--automation-muted); font-variant-numeric: tabular-nums; }
+.automations-next::before { content: 'Next: '; }
+.automations-empty { padding: var(--space-xl) var(--space-md); text-align: center; }
+.automations-empty h2 { margin: 0; font-size: var(--automation-text-title); }
+.automations-empty p { margin: var(--space-xs) 0 var(--space-lg); color: var(--automation-muted); }
+.automations-history { margin-top: var(--space-xl); }
+.automations-history h2 { margin: 0 0 var(--space-md); font-size: var(--automation-text-body); }
+.automations-history p { padding-block: var(--space-lg); margin: 0; border-top: 1px solid var(--automation-rule); color: var(--automation-muted); font-size: var(--automation-text-md); line-height: 1.6; }
+.automations-editor { min-width: 0; background: var(--automation-panel); border-radius: var(--automation-radius); }
+.automations-editor-heading { display: flex; align-items: center; justify-content: space-between; gap: var(--space-md); padding: var(--space-lg); border-bottom: 1px solid var(--automation-rule); }
+.automations-editor-heading h2 { margin: 0; font-size: var(--automation-text-title); }
+.automations-icon-button { display: inline-flex; align-items: center; justify-content: center; width: 44px; height: 44px; padding: var(--space-xs); border: 0; border-radius: var(--automation-radius); color: var(--automation-muted); background: var(--automation-clear); }
+.automations-icon-button svg { width: 16px; height: 16px; }
+.automations-form { padding: var(--space-lg); }
+.automations-field { display: flex; flex-direction: column; gap: var(--space-xs); margin-bottom: var(--space-md); min-width: 0; }
+.automations-field label, .automations-field legend { font-size: var(--automation-text-sm); color: var(--automation-text); }
+.automations-field label small { color: var(--automation-muted); font-size: inherit; }
+.automations-form textarea { min-height: 132px; line-height: 1.6; resize: vertical; }
+.automations-pair { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: var(--space-md); }
+.automations-helper { min-height: 1lh; font-size: var(--automation-text-sm); color: var(--automation-muted); margin: 0; overflow-wrap: break-word; }
+.automations-helper.is-error { color: var(--automation-error); }
+.automations-view [aria-invalid="true"] { border-color: var(--automation-error) !important; }
+.automations-schedule { border: 0; border-top: 1px solid var(--automation-rule); margin: var(--space-lg) 0 0; padding: var(--space-lg) 0 0; min-width: 0; }
+.automations-schedule legend { float: left; width: 100%; font-size: var(--automation-text-body); font-weight: 600; color: var(--automation-ink); margin-bottom: var(--space-md); }
+.automations-schedule > .automations-pair { clear: both; }
+.automations-days { display: flex; flex-wrap: wrap; gap: var(--space-2xs); margin-bottom: var(--space-md); }
+.automations-days button { flex: 1; min-width: 40px; min-height: 44px; padding: var(--space-xs) var(--space-2xs); border: 1px solid var(--automation-field-edge); border-radius: var(--automation-radius); color: var(--automation-muted); background: var(--automation-clear); font-size: var(--automation-text-sm); }
+.automations-days button[aria-pressed="true"] { color: var(--automation-ink); border-color: var(--automation-accent); background: var(--automation-selected); }
+.automations-timezone { display: block; margin-bottom: var(--space-md); color: var(--automation-muted); font-size: var(--automation-text-sm); overflow-wrap: break-word; }
+.automations-occurrences { margin: 0; padding: 0; list-style: none; }
+.automations-occurrences li { display: flex; flex-wrap: wrap; justify-content: space-between; gap: var(--space-sm); padding-block: var(--space-xs); border-bottom: 1px solid var(--automation-rule); font-size: var(--automation-text-sm); font-variant-numeric: tabular-nums; }
+.automations-occurrences li:last-child { border: 0; }
+.automations-occurrences time { color: var(--automation-ink); }
+.automations-check { display: flex; align-items: flex-start; gap: var(--space-xs); min-height: 44px; margin-top: var(--space-md); font-size: var(--automation-text-sm); color: var(--automation-text); cursor: pointer; }
+.automations-check input { width: 16px; height: 16px; margin: var(--space-2xs) 0 0; accent-color: var(--automation-accent); }
+.automations-form-footer { border-top: 1px solid var(--automation-rule); padding-top: var(--space-lg); margin-top: var(--space-md); }
+.automations-form-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-md); margin-bottom: var(--space-sm); }
+.automations-form-actions label { display: inline-flex; align-items: center; gap: var(--space-xs); font-size: var(--automation-text-sm); }
+.automations-form-actions input { accent-color: var(--automation-accent); }
+.automations-save-note { margin: 0; font-size: var(--automation-text-sm); color: var(--automation-muted); min-height: 2lh; }
+.automations-view :is(input, select, textarea):focus-visible { outline: 2px solid var(--automation-focus); outline-offset: -3px; }
+@media (hover: hover) {
+  .automations-button:hover, .automations-filter:hover, .automations-state:hover, .automations-icon-button:hover, .automations-days button:hover { background: var(--automation-selected); color: var(--automation-ink); }
+  .automations-button-primary:hover { background: var(--automation-focus); color: var(--color-accent-ink); }
+  .automations-row-title:hover { color: var(--automation-focus); }
+  .automations-view :is(input, select, textarea):hover { background: var(--automation-well); }
+}
+@media (min-width: 1600px) { .automations-container { padding-inline: var(--space-2xl); } }
+@media (max-width: 1200px) {
+  .automations-container { padding: var(--space-lg); }
+  .automations-workspace.has-editor { grid-template-columns: minmax(0, 1fr); }
+  .automations-editor { max-width: 720px; width: 100%; }
+}
+@media (max-width: 767px) {
+  .automations-container { padding: var(--space-lg) var(--space-md); }
+  .automations-heading { flex-wrap: wrap; gap: var(--space-md); }
+  .automations-heading h1 { font-size: var(--automation-text-heading); }
+  .automations-editor-heading, .automations-form { padding: var(--space-md); }
+  .automations-view :is(input, select, textarea) { font-size: var(--automation-text-body); min-height: 44px; }
+  .automations-heading .automations-button { min-height: 44px; }
+  .automations-pair { gap: var(--space-sm); }
+  .automations-workspace.is-creating .automations-list { display: none; }
+}

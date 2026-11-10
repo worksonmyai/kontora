@@ -201,6 +201,7 @@ export function kontoraArchive() {
     // the view only clears an overlay this view opened, never a board ticket a
     // route change opened on the way out.
     _archiveDetailId: null,
+    _archiveLoadSeq: 0,
 
     archiveRanges: ARCHIVE_RANGES,
     archiveSortKeys: ARCHIVE_SORT_KEYS,
@@ -216,6 +217,8 @@ export function kontoraArchive() {
     // Leaving the view drops its overlay, but must not clear a board ticket
     // selected by another navigation.
     closeArchive() {
+      ++this._archiveLoadSeq;
+      this.archiveDetailLoading = false;
       if (this._archiveDetailId && this.selectedTicket && this.selectedTicket.id === this._archiveDetailId) {
         this._archiveClearDetail();
       }
@@ -231,6 +234,7 @@ export function kontoraArchive() {
     },
 
     async archiveLoad() {
+      const seq = ++this._archiveLoadSeq;
       if (!this.archiveRows.length) this.archiveLoading = true;
       try {
         const res = await fetch('/api/tickets/archived');
@@ -243,12 +247,13 @@ export function kontoraArchive() {
         }
         if (!res.ok) throw new Error('archive request failed (' + res.status + ')');
         const payload = await res.json();
+        if (seq !== this._archiveLoadSeq) return;
         this.archiveRows = payload.tickets || [];
         this.archiveError = null;
       } catch (e) {
-        this.archiveError = String((e && e.message) || e);
+        if (seq === this._archiveLoadSeq) this.archiveError = String((e && e.message) || e);
       } finally {
-        this.archiveLoading = false;
+        if (seq === this._archiveLoadSeq) this.archiveLoading = false;
       }
     },
 
@@ -460,8 +465,8 @@ export function kontoraArchive() {
         && this.selectedTicket.id === this._archiveDetailId;
     },
 
-    async archiveOpenRow(row) {
-      if (!row || !row.id) return;
+    async archiveOpenRow(row, navigation = ++this._navigationSeq) {
+      if (!row || !row.id || this.currentView !== 'archive' || navigation !== this._navigationSeq) return;
       if (this.archiveDetailOpen() && this.selectedTicket.id === row.id && !this.isSecondary(this.selectedTicket)) return;
       this.flushEditSave();
       this.editing = false;
@@ -469,7 +474,7 @@ export function kontoraArchive() {
       ++this._editorGeneration;
       var detailSeq = ++this._ticketDetailSeq;
       var updateSeq = this._selectedTicketUpdateSeq;
-      var mine = () => this._archiveDetailId === row.id && detailSeq === this._ticketDetailSeq;
+      var mine = () => this.currentView === 'archive' && this._archiveDetailId === row.id && detailSeq === this._ticketDetailSeq;
       this.archiveTab = 'ticket';
       this._resetActivity();
       this._resetTicketCost();
@@ -478,24 +483,38 @@ export function kontoraArchive() {
       // The row's fields are enough to draw the header while the body loads.
       // path rides along so the header's [tag] prefix has its fallback before
       // the body lands.
-      this.selectedTicket = { id: row.id, title: row.title, status: 'archived', branch: row.branch, path: row.path };
+      this.selectedTicket = { id: row.id, source: 'primary', title: row.title, status: 'archived', branch: row.branch, path: row.path };
+      this.writeHash();
       this.fetchTicketCost(row.id);
       this.archiveDetailLoading = true;
       try {
         while (mine()) {
           const res = await fetch('/api/tickets/' + encodeURIComponent(row.id));
-          if (!mine() || !res.ok) break;
+          if (!mine()) return;
+          if (res.status === 401) this.needsAuth = true;
+          if (!res.ok) throw new Error(res.status === 404 ? 'Historical ticket ' + row.id + ' is missing. It may have been deleted.' : 'Failed to load ticket details (' + res.status + ')');
           const full = await res.json();
           if (!mine()) return;
           if (updateSeq !== this._selectedTicketUpdateSeq) {
             updateSeq = this._selectedTicketUpdateSeq;
             continue;
           }
-          if (full.id === row.id) this.selectedTicket = full;
+          if (full.id !== row.id || this.isSecondary(full)) throw new Error('The primary ticket lookup returned a different ticket.');
+          if (full.status !== 'archived') {
+            this.archiveCloseDetail(false);
+            await this.navigateDestination({ view: 'board', source: 'primary', ticketId: full.id });
+            return;
+          }
+          this.selectedTicket = { ...full, source: 'primary' };
           break;
         }
       } catch (e) {
-        if (mine()) this.error = 'Failed to load ticket details';
+        if (mine()) {
+          this.error = e.message;
+          this.archiveCloseDetail(false);
+          this.writeHash();
+        }
+        return;
       }
       if (!mine()) return;
       this.archiveDetailLoading = false;
@@ -506,9 +525,11 @@ export function kontoraArchive() {
       if (latest) this.fetchActivity(latest.stage, latest.run);
     },
 
-    archiveCloseDetail() {
+    archiveCloseDetail(writeRoute = true) {
+      if (writeRoute) ++this._navigationSeq;
       this._archiveClearDetail();
       this._archiveDetailId = null;
+      if (writeRoute) this.writeHash();
     },
 
     _archiveClearDetail() {

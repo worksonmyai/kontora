@@ -15,6 +15,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	_ "time/tzdata"
 
 	"github.com/charmbracelet/lipgloss"
 	charmlog "github.com/charmbracelet/log"

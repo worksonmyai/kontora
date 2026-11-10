@@ -222,6 +222,66 @@ func TestClaimedByDecodeAndRoundTrip(t *testing.T) {
 	assert.Contains(t, string(out2), "claimed_by: beta")
 }
 
+func TestAutomationProvenanceRoundTrip(t *testing.T) {
+	for _, tc := range []struct {
+		name, frontmatter, automationID, occurrenceID, scheduledFor string
+	}{
+		{name: "legacy"},
+		{
+			name:         "automation",
+			frontmatter:  "automation_id: auto-1\noccurrence_id: occ-1\nscheduled_for: \"2026-09-01T09:00:00Z\"\n",
+			automationID: "auto-1", occurrenceID: "occ-1", scheduledFor: "2026-09-01T09:00:00Z",
+		},
+		{
+			name:         "hand edited provenance remains visible",
+			frontmatter:  "automation_id: auto-1\noccurrence_id: occ-1\nscheduled_for: invalid\n",
+			automationID: "auto-1", occurrenceID: "occ-1", scheduledFor: "invalid",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tkt, err := ParseBytes([]byte("---\nid: auto-ticket\nkontora: true\nstatus: todo\n" + tc.frontmatter + "---\n# Automation ticket\n"))
+			require.NoError(t, err)
+			assert.Equal(t, tc.automationID, tkt.AutomationID)
+			assert.Equal(t, tc.occurrenceID, tkt.OccurrenceID)
+			assert.Equal(t, tc.scheduledFor, tkt.ScheduledFor)
+			require.NoError(t, tkt.SetField("status", "done"))
+			out, err := tkt.Marshal()
+			require.NoError(t, err)
+			reparsed, err := ParseBytes(out)
+			require.NoError(t, err)
+			assert.Equal(t, tc.automationID, reparsed.AutomationID)
+			assert.Equal(t, tc.occurrenceID, reparsed.OccurrenceID)
+			assert.Equal(t, tc.scheduledFor, reparsed.ScheduledFor)
+			assert.Empty(t, reparsed.ScheduledAt)
+			assert.Empty(t, reparsed.ClaimedBy)
+			assert.Empty(t, reparsed.InvocationID)
+			assert.Nil(t, reparsed.Managed)
+			if tc.frontmatter == "" {
+				for _, key := range []string{"automation_id", "occurrence_id", "scheduled_for"} {
+					assert.NotContains(t, string(out), key+":")
+				}
+			}
+			for _, field := range []struct{ key, value string }{
+				{"automation_id", "auto-2"},
+				{"occurrence_id", "occ-2"},
+				{"scheduled_for", "2026-09-02T09:00:00Z"},
+			} {
+				require.NoError(t, reparsed.SetField(field.key, field.value))
+			}
+			assert.Equal(t, "auto-2", reparsed.AutomationID)
+			assert.Equal(t, "occ-2", reparsed.OccurrenceID)
+			assert.Equal(t, "2026-09-02T09:00:00Z", reparsed.ScheduledFor)
+			out, err = reparsed.Marshal()
+			require.NoError(t, err)
+			reparsed, err = ParseBytes(out)
+			require.NoError(t, err)
+			assert.Equal(t, "auto-2", reparsed.AutomationID)
+			assert.Equal(t, "occ-2", reparsed.OccurrenceID)
+			assert.Equal(t, "2026-09-02T09:00:00Z", reparsed.ScheduledFor)
+		})
+	}
+}
+
 func TestFinalSummaryDecodeAndRoundTrip(t *testing.T) {
 	cases := []struct {
 		name string

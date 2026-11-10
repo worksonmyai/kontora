@@ -16,15 +16,83 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gopkg.in/yaml.v3"
 
 	"github.com/worksonmyai/kontora/internal/cli/remote"
 	"github.com/worksonmyai/kontora/internal/config"
+	"github.com/worksonmyai/kontora/internal/frontmatter"
 	"github.com/worksonmyai/kontora/internal/logfmt"
 	"github.com/worksonmyai/kontora/internal/notify"
 	"github.com/worksonmyai/kontora/internal/stats"
 	"github.com/worksonmyai/kontora/internal/ticket"
 	"github.com/worksonmyai/kontora/internal/web"
 )
+
+func TestDaemon_UploadTicketDropsProvenance(t *testing.T) {
+	const provenance = "automation_id: automation, occurrence_id: occurrence, scheduled_for: '2020-01-01T00:00:00Z'"
+	for _, tc := range []struct {
+		name   string
+		fields string
+	}{
+		{name: "no provenance"},
+		{name: "unrelated merge", fields: "<<: {custom: keep}\n"},
+		{name: "explicit", fields: strings.ReplaceAll(provenance, ", ", "\n") + "\n"},
+		{name: "inline merge", fields: "<<: {" + provenance + ", custom: keep}\n"},
+		{name: "aliased merge", fields: "defaults: &defaults {" + provenance + ", custom: keep}\n<<: *defaults\n"},
+		{name: "nested merge", fields: "<<: {<<: {" + provenance + "}, custom: keep}\n"},
+		{name: "merge sequence", fields: "<<: [{" + provenance + ", custom: first}, {custom: second}]\n"},
+		{name: "aliased merge sequence", fields: "first: &first {" + provenance + ", custom: first}\nsecond: &second {custom: second}\n<<: [*first, *second]\n"},
+		{name: "explicit overrides", fields: "<<: {" + provenance + ", custom: inherited}\nautomation_id: explicit\noccurrence_id: explicit\nscheduled_for: explicit\ncustom: explicit\n"},
+		{name: "empty overrides", fields: "<<: {" + provenance + "}\nautomation_id: ''\noccurrence_id: null\nscheduled_for: ''\n"},
+		{name: "aliases into merge", fields: "<<: &defaults {" + provenance + ", custom: &value keep}\ncopy: *defaults\nvalue: *value\n"},
+		{name: "merged schedule", fields: "<<: {" + provenance + ", scheduled_at: '2020-01-01T00:00:00Z'}\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			d := h.newDaemon(h.cfg)
+			require.NoError(t, d.initialScan(h.tasksDir))
+
+			content := "---\nid: original\nstatus: todo\npath: " + h.repoDir + "\ncreated: 2026-01-01T00:00:00Z\n" + tc.fields +
+				"metadata: {automation_id: custom-data, nested: [one, 2, true]}\n" +
+				"timestamps: [!!timestamp 2026-01-01T00:00:00Z]\n" +
+				"history: [{stage: step1, completed_at: !!timestamp 2026-01-01T00:00:00Z}]\n---\n# Uploaded\n\nBody stays unchanged.\r\n"
+			fm, body, err := frontmatter.Split(content)
+			require.NoError(t, err)
+			var expected map[string]any
+			require.NoError(t, yaml.Unmarshal([]byte(fm), &expected))
+			for _, field := range []string{"automation_id", "occurrence_id", "scheduled_for", ticket.FieldScheduledAt} {
+				delete(expected, field)
+			}
+			expected["status"] = "open"
+
+			info, err := d.UploadTicket([]byte(content))
+			require.NoError(t, err)
+			assert.NotEqual(t, "original", info.ID)
+			assert.Equal(t, "open", info.Status)
+			assert.Empty(t, info.AutomationID)
+			assert.Empty(t, info.OccurrenceID)
+			assert.Empty(t, info.ScheduledFor)
+			assert.Empty(t, info.ScheduledAt)
+
+			got := h.readTask(info.ID + ".md")
+			assert.Empty(t, got.AutomationID)
+			assert.Empty(t, got.OccurrenceID)
+			assert.Empty(t, got.ScheduledFor)
+			assert.Empty(t, got.ScheduledAt)
+			data, err := os.ReadFile(filepath.Join(h.tasksDir, info.ID+".md"))
+			require.NoError(t, err)
+			fm, actualBody, err := frontmatter.Split(string(data))
+			require.NoError(t, err)
+			var actual map[string]any
+			require.NoError(t, yaml.Unmarshal([]byte(fm), &actual))
+			expected["id"] = info.ID
+			assert.Equal(t, expected, actual)
+			assert.Equal(t, body, actualBody)
+			d.promoteDueSchedules(time.Now())
+			assert.Empty(t, d.queuedIDs())
+		})
+	}
+}
 
 func TestDaemon_NewTicketPublicationRefusesCollisions(t *testing.T) {
 	for _, suffix := range []string{".md", ".notes.json"} {

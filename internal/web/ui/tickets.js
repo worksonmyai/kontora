@@ -436,7 +436,19 @@ export function kontoraTickets() {
       if (this._eventSource) this._eventSource.close();
       const es = new EventSource('/api/events');
       this._eventSource = es;
-      es.addEventListener('open', () => { this.companionRefresh(); });
+      es.addEventListener('open', () => {
+        this.companionRefresh();
+        this.automationsRefresh();
+        if (this.currentView === 'archive') {
+          this.archiveLoad();
+          if (this.archiveDetailOpen()) {
+            const row = this.selectedTicket;
+            this._archiveDetailId = null;
+            this.archiveOpenRow(row);
+          }
+        }
+      });
+      es.addEventListener('automations_updated', () => { this.automationsRefresh(); });
       es.addEventListener('companion_updated', () => { this.companionRefresh(); });
       es.addEventListener('ticket_sources_changed', () => { this.fetchTicketSources(); });
       es.addEventListener('ticket_updated', (e) => {
@@ -458,8 +470,11 @@ export function kontoraTickets() {
         if (this.initModal && this.initForm.ticketId === ticket.id) this.closeInitModal();
         else this.refreshInitContext(ticket.id);
         if (this.createForm.parent === ticket.id) this.syncCreatePipeline();
-        if (this.sameTicket(this.selectedTicket, ticket)) {
+        const wasSelected = this.sameTicket(this.selectedTicket, ticket);
+        if (this.currentView === 'archive') this.archiveDropRow(ticket.id);
+        if (wasSelected) {
           this.closeDetail();
+          this.error = 'Historical ticket ' + ticket.id + ' is missing. It may have been deleted.';
         } else if (this._chainHasNode(ticket.id)) {
           // A dep or a dependent of the open ticket is gone: the ladder would
           // keep drawing it, holder and resume pill included.

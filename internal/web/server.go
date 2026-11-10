@@ -90,6 +90,7 @@ func New(svc TicketService, broker *SSEBroker, host string, port int, token stri
 	mux.HandleFunc("POST /api/objectives", s.handleObjectiveControl)
 	mux.HandleFunc("POST /api/objectives/{id}/controls", s.handleObjectiveControl)
 	s.registerSecondaryRoutes(mux)
+	s.registerAutomationRoutes(mux)
 	mux.HandleFunc("GET /api/tickets", s.handleListTickets)
 	mux.HandleFunc("POST /api/tickets", s.handleCreateTicket)
 	mux.HandleFunc("GET /api/stats", s.handleGetStats)

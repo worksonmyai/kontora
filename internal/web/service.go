@@ -498,6 +498,9 @@ type ConfigInfo struct {
 }
 
 type TicketInfo struct {
+	AutomationID  string   `json:"automation_id,omitempty"`
+	OccurrenceID  string   `json:"occurrence_id,omitempty"`
+	ScheduledFor  string   `json:"scheduled_for,omitempty"`
 	Source        string   `json:"source,omitempty"`
 	Revision      string   `json:"revision,omitempty"`
 	CanEdit       bool     `json:"can_edit"`
@@ -882,6 +885,9 @@ func TicketInfoFromView(v app.View) TicketInfo {
 		BaseBranch:      v.BaseBranch,
 		ClaimedBy:       v.ClaimedBy,
 		ScheduledAt:     v.ScheduledAt,
+		AutomationID:    v.AutomationID,
+		OccurrenceID:    v.OccurrenceID,
+		ScheduledFor:    v.ScheduledFor,
 		Stages:          v.Stages,
 		Body:            v.Body,
 		Description:     v.Description,

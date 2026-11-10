@@ -181,6 +181,7 @@ func (d *Daemon) scheduleSetRefusalLocked(id string, t *ticket.Ticket) error {
 // channel is buffered and the send never blocks, so it is safe to call with or
 // without d.mu held.
 func (d *Daemon) signalSchedule() {
+	d.signalAutomations()
 	select {
 	case d.scheduleWake <- struct{}{}:
 	default:

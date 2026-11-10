@@ -68,6 +68,7 @@ var tmuxNameUnsafe = regexp.MustCompile(`[^A-Za-z0-9_-]`)
 
 func newHarness(t *testing.T) *testHarness {
 	t.Helper()
+	t.Setenv("KONTORA_AUTOMATIONS_ROOT", t.TempDir())
 	tasksDir := t.TempDir()
 	wtDir := t.TempDir()
 	logsDir := t.TempDir()
@@ -130,9 +131,10 @@ func (h *testHarness) defaultConfig(agent1Binary, agent2Binary string) *config.C
 }
 
 func (h *testHarness) newDaemon(cfg *config.Config, opts ...Option) *Daemon {
-	base := make([]Option, 0, 6+len(opts))
+	base := make([]Option, 0, 7+len(opts))
 	base = append(base,
 		WithLogger(testLogger(h.t)),
+		WithAutomationRoot(filepath.Join(h.logsDir, "automations")),
 		WithDebounce(50*time.Millisecond),
 		WithLockPath(h.lockPath),
 		WithRunner(DirectRunner),

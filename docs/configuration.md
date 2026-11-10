@@ -87,6 +87,25 @@ Secondary folders need filesystem write access for edits and Claim. Existing man
 board protections still apply. Settings exposes the list, but changing it requires a
 restart. See [Claim](tickets.md#claim-from-a-secondary-folder) for transfer rules.
 
+## Recurring automations
+
+Manage [recurring automations](automations.md) through the web dashboard or HTTP API, not YAML.
+Definitions use a configured agent, a repository, instructions, and an explicit IANA timezone.
+New definitions start disabled and default to skipping overlap.
+
+Automation tickets run standalone with the selected agent. Project and global pipeline defaults do not apply.
+Enabled automations explicitly queue eligible tickets even with `auto_pick_up: false`.
+Ordinary concurrency limits, dependencies, ownership checks, worktrees, hooks, and agent permissions still apply.
+Instructions do not create enforced read-only execution.
+
+The daemon revalidates the agent and repository before admitting new work.
+Removing an agent or making a repository unavailable can stop later occurrences.
+Disabling a definition stops future creation without cancelling existing tickets.
+
+Definitions and history live under `~/.kontora/automations/`, scoped to the resolved primary ticket directory.
+`KONTORA_AUTOMATIONS_ROOT` overrides that parent directory for isolated environments and tests. Keep it stable across restarts.
+Only one local daemon can own a scope. See [storage and backup](automations.md#storage-and-backup) before moving or restoring state.
+
 ## Full example
 
 ```yaml

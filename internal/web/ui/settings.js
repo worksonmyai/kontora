@@ -1314,6 +1314,13 @@ export function kontoraSettings() {
         this.settingsGuard = true;
         return false;
       }
+      if (this.currentView === 'automations' && view !== 'automations') {
+        if (!this.automationsConfirmReplace()) return false;
+        this.automationsEditing = false;
+        this.automationsSelected = null;
+        ++this._automationsEditorSeq;
+        this.automationsCancelPreview();
+      }
       // currentView changes nowhere else, and applyRoute routes even a ticket
       // hash through here, so this one call covers every path out of Stats.
       if (view !== 'board' && this.selectedEpic) {
@@ -1332,6 +1339,7 @@ export function kontoraSettings() {
       if (this.currentView === 'stats' && view !== 'stats') this.closeStats();
       if (this.currentView === 'archive' && view !== 'archive') this.closeArchive();
       if (view !== 'board' && this.selectedTicket && this.epicIsAgent(this.selectedTicket)) this.closeDetail(false);
+      if (view === 'automations') { this.currentView = 'automations'; await this.openAutomations(); if (navigation !== this._navigationSeq) return false; this.writeHash(); return; }
       if (view === 'stats') { this.currentView = 'stats'; this.openStats(); this.writeHash(); return; }
       if (view === 'archive') { this.currentView = 'archive'; this.openArchive(); this.writeHash(); return; }
       if (view === 'settings') { await this.openSettings(); this.writeHash(); return; }

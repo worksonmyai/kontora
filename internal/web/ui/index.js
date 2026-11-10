@@ -9,6 +9,7 @@
 import { kontoraActivity } from './activity.js';
 import { kontoraAgentPicker } from './agent_picker.js';
 import { kontoraApp } from './app.js';
+import { kontoraAutomations } from './automations.js';
 import { kontoraArchive, archiveDerive } from './archive.js';
 import { kontoraAssistant, assistantStream } from './assistant.js';
 import { kontoraBoard } from './board.js';
@@ -52,6 +53,7 @@ function merge(...mixins) {
 function kontora() {
   return merge(
     kontoraApp(),
+    kontoraAutomations(),
     kontoraTickets(),
     kontoraSources(),
     kontoraCreate(),

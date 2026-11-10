@@ -707,17 +707,28 @@ func TestUploadDropsTheSchedule(t *testing.T) {
 	d := h.newDaemon(h.cfg)
 	require.NoError(t, d.initialScan(h.tasksDir))
 
-	content := "---\nid: up-a\nkontora: true\nstatus: todo\nscheduled_at: \"2020-01-01T00:00:00Z\"\npath: " +
+	content := "---\nid: up-a\nkontora: true\nstatus: todo\nscheduled_at: \"2020-01-01T00:00:00Z\"\nautomation_id: automation\noccurrence_id: occurrence\nscheduled_for: \"2020-01-01T00:00:00Z\"\npath: " +
 		h.repoDir + "\n---\n# Uploaded\n"
 
 	info, err := d.UploadTicket([]byte(content))
 	require.NoError(t, err)
 	assert.Equal(t, "open", info.Status)
 	assert.Empty(t, info.ScheduledAt)
+	assert.Empty(t, info.AutomationID)
+	assert.Empty(t, info.OccurrenceID)
+	assert.Empty(t, info.ScheduledFor)
 
 	got := h.readTask(info.ID + ".md")
 	assert.Equal(t, ticket.StatusOpen, got.Status)
 	assert.Empty(t, got.ScheduledAt)
+	assert.Empty(t, got.AutomationID)
+	assert.Empty(t, got.OccurrenceID)
+	assert.Empty(t, got.ScheduledFor)
+	data, err := got.Marshal()
+	require.NoError(t, err)
+	for _, field := range []string{"automation_id", "occurrence_id", "scheduled_for"} {
+		assert.NotContains(t, string(data), field+":")
+	}
 
 	d.promoteDueSchedules(time.Now())
 	assert.Empty(t, d.queuedIDs(), "an upload must not queue itself")

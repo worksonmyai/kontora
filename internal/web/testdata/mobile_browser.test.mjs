@@ -60,7 +60,18 @@ function fixtures() {
     projects: [{ name: 'Fixture repository', path: '/fixtures/repository-with-a-long-name', agent: 'fixture-agent', pipeline: 'standard' }],
     custom_statuses: [], stages: ['plan', 'code'] };
   const requests = [], mutations = [], sockets = [], violations = [], expectedHTTPFailures = [];
-  const behavior = { createFailure: null, createWait: null, saveFailure: null, outputRevision: 0 };
+  const behavior = { createFailure: null, createWait: null, saveFailure: null, outputRevision: 0,
+    automationFailure: null, automationWait: null, automationsAvailable: true };
+  const definitions = new Map([['auto-review', { id: 'auto-review', revision: 1, schedule_revision: 1,
+    name: 'Repository review', path: config.projects[0].path, agent: 'fixture-agent', instructions: 'Review recent changes.',
+    schedule: { frequency: 'weekdays', days: [1], time: '09:00', timezone: 'Europe/Berlin' },
+    enabled: false, skip_overlap: true, next: '2026-11-10T08:00:00Z' }]]);
+  const receipts = new Map();
+  const occurrences = [
+    { id: 'occ-archived', revision: 1, automation_id: 'auto-review', schedule_revision: 1, scheduled_for: stamp, ticket_id: 'kon-archived', phase: 'admitted', reason: '' },
+    { id: 'occ-blocked', revision: 2, automation_id: 'auto-review', schedule_revision: 1, scheduled_for: stamp, ticket_id: '', phase: 'blocked', reason: 'Publication is uncertain', payload: { instructions: 'INTERNAL OCCURRENCE PAYLOAD' } },
+    { id: 'occ-deleted', revision: 1, automation_id: 'auto-review', schedule_revision: 1, scheduled_for: stamp, ticket_id: 'kon-deleted', phase: 'admitted', reason: '' },
+  ];
   let rawConfig = 'tickets_dir: /fixtures/primary\nauto_pick_up: false\nmax_concurrent_agents: 3\nagents:\n  fixture-agent:\n    binary: pi\n';
   const list = folder => [...records.values()].filter(t => t.source === folder && !t.archived_at);
   const json = (route, value, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(value) });
@@ -69,8 +80,67 @@ function fixtures() {
     const request = route.request(), method = request.method(), path = url.pathname;
     requests.push(`${method} ${path}`);
     const allowedQuery = path === '/api/stats' ? ['range', 'project', 'pipeline']
+      : /\/occurrences$/.test(path) ? ['offset', 'limit']
       : /\/(logs|activity)$/.test(path) ? ['stage', 'run', 'offset', 'limit', 'after'] : [];
     assert.ok([...url.searchParams.keys()].every(k => allowedQuery.includes(k)), `Unexpected query: ${url}`);
+    if (path === '/api/automations' && method === 'GET') return json(route, { available: behavior.automationsAvailable,
+      error: behavior.automationsAvailable ? undefined : 'Automation store locked', definitions: [...definitions.values()] });
+    if (path === '/api/automations/preview' && method === 'POST') {
+      const schedule = request.postDataJSON();
+      assert.ok(schedule.timezone && schedule.time && schedule.frequency);
+      if (schedule.timezone === 'Invalid/Zone') {
+        expectedHTTPFailures.push(base + path);
+        return json(route, { error: 'Invalid timezone' }, 400);
+      }
+      return json(route, { occurrences: ['2026-11-10T08:00:00Z', '2026-11-11T08:00:00Z', '2026-11-12T08:00:00Z'] });
+    }
+    if (path === '/api/automations' && method === 'POST') {
+      if (behavior.automationWait) await behavior.automationWait;
+      if (behavior.automationFailure) {
+        expectedHTTPFailures.push(base + path);
+        return json(route, { error: behavior.automationFailure.error }, behavior.automationFailure.status);
+      }
+      const body = request.postDataJSON();
+      assert.ok(body.request_id && body.definition.instructions);
+      if (receipts.has(body.request_id)) return json(route, receipts.get(body.request_id));
+      const definition = { ...body.definition, id: 'auto-created-' + receipts.size, revision: 1, schedule_revision: 1 };
+      definitions.set(definition.id, definition); receipts.set(body.request_id, definition);
+      mutations.push({ method, path, body });
+      return json(route, definition, 201);
+    }
+    const automationMatch = path.match(/^\/api\/automations\/([^/]+)(?:\/occurrences(?:\/([^/]+)\/skip)?)?$/);
+    if (automationMatch) {
+      const definition = definitions.get(automationMatch[1]);
+      assert.ok(definition, 'Unknown fixture automation');
+      if (method === 'GET' && path.endsWith('/occurrences')) {
+        assert.equal(url.searchParams.get('limit'), '20');
+        const offset = Number(url.searchParams.get('offset'));
+        return json(route, { occurrences: definition.id === 'auto-review' ? occurrences.slice(offset, offset + 20) : [], total: definition.id === 'auto-review' ? occurrences.length : 0 });
+      }
+      if (method === 'POST' && automationMatch[2]) {
+        const occurrence = occurrences.find(row => row.id === automationMatch[2]);
+        const body = request.postDataJSON();
+        assert.equal(body.revision, occurrence.revision);
+        occurrence.phase = 'skipped'; occurrence.revision++;
+        mutations.push({ method, path, body });
+        return json(route, occurrence);
+      }
+      if (method === 'GET') return json(route, definition);
+      assert.equal(method, 'PUT');
+      if (behavior.automationWait) await behavior.automationWait;
+      if (behavior.automationFailure) {
+        expectedHTTPFailures.push(base + path);
+        return json(route, { error: behavior.automationFailure.error }, behavior.automationFailure.status);
+      }
+      const body = request.postDataJSON();
+      if (body.revision !== definition.revision) {
+        expectedHTTPFailures.push(base + path);
+        return json(route, { error: 'Revision conflict' }, 409);
+      }
+      const saved = { ...body, revision: definition.revision + 1 };
+      definitions.set(saved.id, saved); mutations.push({ method, path, body });
+      return json(route, saved);
+    }
     if (method === 'GET') {
       switch (path) {
         case '/api/config': return json(route, config);
@@ -115,8 +185,12 @@ function fixtures() {
       const folder = match[1] ? decodeURIComponent(match[1]) : 'primary';
       const id = decodeURIComponent(match[2]), action = match[3];
       const record = records.get(key(folder, id));
+      if (folder === 'primary' && id === 'kon-deleted' && !action && method === 'GET') {
+        expectedHTTPFailures.push(base + path);
+        return json(route, { error: 'Ticket not found' }, 404);
+      }
       assert.ok(record, `Unknown source-qualified ticket: ${folder}/${id}`);
-      if (method === 'GET' && !action) return json(route, record);
+      if (method === 'GET' && !action) return json(route, record.archived_at ? { ...record, status: 'archived', archived_from: record.status } : record);
       if (method === 'PUT' && !action) {
         const body = request.postDataJSON();
         assert.ok(!('body' in body), 'Description edits must not replace the protected tail');
@@ -186,7 +260,7 @@ function fixtures() {
       }
     });
   }
-  return { install, records, requests, mutations, sockets, violations, behavior, expectedHTTPFailures };
+  return { install, records, definitions, occurrences, requests, mutations, sockets, violations, behavior, expectedHTTPFailures };
 }
 
 async function withPage(t, width, theme, run) {
@@ -251,7 +325,7 @@ async function ready(page) {
   await page.waitForFunction(() => {
     if (!window.Alpine) return false;
     const app = Alpine.$data(document.body);
-    return !app.loading && app._applyingRoute === null && !app.detailLoading && !app.settingsLoading;
+    return !app.loading && app._applyingRoute === null && !app.detailLoading && !app.settingsLoading && !app.automationsLoading && !app.archiveDetailLoading;
   });
   await page.evaluate(() => document.fonts.ready);
 }
@@ -275,6 +349,86 @@ async function backToBoard(page) {
   await routeTo(page, '#/');
   await page.waitForFunction(() => !Alpine.$data(document.body).selectedTicket && !Alpine.$data(document.body).selectedEpic);
 }
+
+describe('API-backed Automations', { concurrency: 2 }, () => {
+  for (const width of [320, 768, 1280]) for (const theme of themes) {
+    test(`save, conflicts, history and archive navigation / ${width}px / ${theme}`, { timeout: 60000 }, async t => {
+      await withPage(t, width, theme, async (page, fixture) => {
+        await openTicket(page, 'kon-draft', source);
+        await routeTo(page, '#/automations');
+        const view = page.locator('.automations-view');
+        await view.getByRole('button', { name: 'New automation', exact: true }).first().click();
+        assert.equal(await model(page, 'automationsDraft.enabled').isChecked(), false);
+        assert.equal(await model(page, 'automationsDraft.skipOverlap').isChecked(), true);
+        await model(page, 'automationsDraft.name').fill('Daily fixture review');
+        await model(page, 'automationsDraft.prompt').fill('Review with ordinary agent permissions.');
+        await model(page, 'automationsDraft.frequency').selectOption('weekly');
+        const tuesday = view.getByRole('button', { name: 'Tue', exact: true });
+        await tuesday.focus(); await page.keyboard.press('Space');
+        assert.equal(await tuesday.getAttribute('aria-pressed'), 'true');
+        await model(page, 'automationsDraft.timezone').fill('Invalid/Zone');
+        await visible(view.getByText('Invalid timezone', { exact: true }));
+        await model(page, 'automationsDraft.timezone').fill('Europe/Berlin');
+        await page.waitForFunction(() => Alpine.$data(document.body).automationsPreview.length === 3);
+        assert.match(await view.locator('.automations-occurrences').innerText(), /09:00/);
+        await noPageOverflow(page);
+        let release;
+        fixture.behavior.automationWait = new Promise(resolve => { release = resolve; });
+        fixture.behavior.automationFailure = { status: 503, error: 'Automation store unavailable' };
+        await view.getByRole('button', { name: 'Save automation', exact: true }).focus();
+        await page.keyboard.press('Enter');
+        assert.equal(await model(page, 'automationsDraft.name').isDisabled(), true);
+        assert.equal(await view.getByRole('button', { name: 'Saving…', exact: true }).isDisabled(), true);
+        release();
+        await visible(view.getByText(/Automation store unavailable/));
+        fixture.behavior.automationWait = null; fixture.behavior.automationFailure = null;
+        await view.getByRole('button', { name: 'Retry save', exact: true }).click();
+        await visible(view.getByText('Automation saved.', { exact: true }));
+        assert.equal(fixture.definitions.size, 2);
+        await page.reload({ waitUntil: 'domcontentloaded' }); await ready(page);
+        await view.getByRole('button', { name: 'Daily fixture review', exact: true }).click();
+        assert.equal(await model(page, 'automationsDraft.prompt').inputValue(), 'Review with ordinary agent permissions.');
+        assert.equal(await model(page, 'automationsDraft.timezone').inputValue(), 'Europe/Berlin');
+        const definition = [...fixture.definitions.values()].find(row => row.name === 'Daily fixture review');
+        fixture.definitions.set(definition.id, { ...definition, revision: definition.revision + 1, instructions: 'Saved by another browser.' });
+        await model(page, 'automationsDraft.prompt').fill('My unsaved instructions');
+        await view.getByRole('button', { name: 'Save automation', exact: true }).click();
+        await visible(view.getByRole('button', { name: 'Reload saved version', exact: true }));
+        assert.equal(await model(page, 'automationsDraft.prompt').inputValue(), 'My unsaved instructions');
+        page.once('dialog', dialog => dialog.accept());
+        await view.getByRole('button', { name: 'Reload saved version', exact: true }).click();
+        await page.waitForFunction(() => Alpine.$data(document.body).automationsDraft.prompt === 'Saved by another browser.');
+        await view.getByRole('button', { name: 'Repository review', exact: true }).click();
+        await visible(view.locator('.automations-history-list').getByText('Publication is uncertain', { exact: true }));
+        assert.equal(await view.getByText('INTERNAL OCCURRENCE PAYLOAD').count(), 0);
+        page.once('dialog', dialog => dialog.dismiss());
+        await view.getByRole('button', { name: 'Acknowledge as skipped', exact: true }).click();
+        assert.equal(fixture.occurrences[1].phase, 'blocked');
+        page.once('dialog', dialog => dialog.accept());
+        await view.getByRole('button', { name: 'Acknowledge as skipped', exact: true }).click();
+        await page.waitForFunction(() => Alpine.$data(document.body).automationsHistory.some(row => row.id === 'occ-blocked' && row.phase === 'skipped'));
+        await view.getByRole('link', { name: 'kon-deleted', exact: true }).click();
+        await visible(page.getByText('Historical ticket kon-deleted is missing. It may have been deleted.', { exact: true }));
+        await routeTo(page, '#/automations');
+        await view.getByRole('button', { name: 'Repository review', exact: true }).click();
+        await view.getByRole('link', { name: 'kon-archived', exact: true }).click();
+        await page.waitForURL('**/#/archive/t/kon-archived'); await ready(page);
+        await visible(page.locator('.archive-detail:visible'));
+        assert.equal(await page.evaluate(() => Alpine.$data(document.body).selectedTicket.source), 'primary');
+        await noPageOverflow(page);
+        await page.reload({ waitUntil: 'domcontentloaded' }); await ready(page);
+        await visible(page.locator('.archive-detail:visible'));
+        assert.equal(new URL(page.url()).hash, '#/archive/t/kon-archived');
+        await page.goBack(); await ready(page);
+        assert.equal(new URL(page.url()).hash, '#/automations');
+        await page.goForward(); await ready(page);
+        await visible(page.locator('.archive-detail:visible'));
+        assert.equal(new URL(page.url()).hash, '#/archive/t/kon-archived');
+        assert.ok(!fixture.requests.some(request => request.includes('/sources/secondary/tickets/kon-archived')));
+      });
+    });
+  }
+});
 
 describe('embedded responsive browser UI', { concurrency: 4 }, () => {
   for (const width of widths) for (const theme of themes) {
@@ -329,6 +483,7 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
         for (const [route, selector] of [
           ['#/new', '[x-model="createForm.title"]'],
           ['#/stats', '.stats-title'],
+          ['#/automations', '#automations-title'],
           ['#/archive', '[aria-label="Filter archive"]'],
           ['#/settings', width <= 1100 ? '#settings-mobile-section' : '[aria-label="Search settings"]'],
         ]) {
@@ -358,7 +513,7 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
           await page.locator('#archive-view .archive-table-scroll').getByTitle('Archived fixture', { exact: true }).click();
           await visible(page.locator('.archive-detail:visible'));
           await page.waitForFunction(() => !Alpine.$data(document.body).archiveDetailLoading);
-          assert.equal(new URL(page.url()).hash, '#/archive');
+          assert.equal(new URL(page.url()).hash, '#/archive/t/kon-archived');
           assert.equal(await page.evaluate(() => Alpine.$data(document.body).archiveDetailOpen()), true);
           const header = page.locator('.archive-detail-header');
           for (const name of ['restore to board', 'copy id', 'Close']) {
@@ -859,7 +1014,8 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
         await openTicket(page, 'kon-live');
         for (const width of [...widths, 390]) {
           await page.setViewportSize({ width, height: 900 });
-          await page.waitForFunction(mobile => Alpine.$data(document.body).isMobile === mobile, width < 768);
+          await page.waitForFunction(width => Alpine.$data(document.body).isMobile === (width < 768)
+            && document.documentElement.style.getPropertyValue('--mobile-vv-width') === width + 'px', width);
           const terminal = page.locator('#terminal-session:visible, #terminal-container-mobile:visible');
           await visible(terminal.locator('.xterm'));
           await page.waitForFunction(() => Alpine.$data(document.body).terminalConnected);

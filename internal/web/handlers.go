@@ -819,7 +819,7 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			var data []byte
-			if ev.Type == "config_reloaded" || ev.Type == "companion_updated" {
+			if ev.Type == "config_reloaded" || ev.Type == "companion_updated" || ev.Type == "automations_updated" {
 				// Carries no ticket. Without this the zero TicketInfo would go
 				// out and read as an event about a ticket with an empty id.
 				data = []byte("{}")

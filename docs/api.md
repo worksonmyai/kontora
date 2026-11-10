@@ -52,7 +52,14 @@ When the web server is enabled, the following endpoints are exposed:
 | `POST /api/assistant/threads/{id}/stop` | Cancel the turn the chat is running. |
 | `POST /api/assistant/gate/{gid}` | Answer a change the assistant is waiting on (`{"decision": "approve"\|"skip"}`). |
 | `POST /api/assistant/gate/ask` | The agent side of the tool gate, called by the claude `PreToolUse` hook and the pi `tool_call` handler. Authenticated by the per-turn secret in the agent's environment, not by the web token alone. Blocks while a change waits on the user. |
-| `GET /api/events` | Server-Sent Events stream of ticket updates and companion invalidations. |
+| `GET /api/automations` | Definition list and availability. See [Automations](#automations). |
+| `POST /api/automations` | Create a disabled definition with a persistent request identity. |
+| `POST /api/automations/preview` | Validate a schedule and return its next three dates. |
+| `GET /api/automations/{id}` | Full automation definition. |
+| `PUT /api/automations/{id}` | Replace editable definition fields using the current revision. |
+| `GET /api/automations/{id}/occurrences` | Paginated occurrence history. |
+| `POST /api/automations/{id}/occurrences/{occurrence_id}/skip` | Acknowledge an unresolved occurrence without creating replacement work. |
+| `GET /api/events` | Server-Sent Events stream of ticket updates, companion invalidations, and automation invalidations. |
 | `GET /ws/terminal/{id}` | Read-only WebSocket relay of a running agent's tmux session. |
 | `GET /health` | Health check (returns 200). |
 
@@ -67,6 +74,143 @@ Each `agent_infos` entry in `GET /api/config` reports the model and effort that 
 | `tmux_socket` | The existing server's absolute socket path, discovered in the background. Omitted until discovery succeeds or if the session disappears. Discovery does not start a server. |
 
 The daemon captures directory identity when it opens the store. Retargeting a store symlink or editing restart-only settings does not change that identity. Socket discovery does not delay config responses. Automatic local TUI connections require matching filesystem directory identity. Missing identity, including responses from older daemons, selects read-only file mode. A missing socket disables attachment without disabling ticket actions on a verified board. Explicit remote clients do not require these fields. Initial verification does not protect a long-lived client against server replacement at the same address.
+
+### Automations
+
+See [Recurring automations](automations.md) for timing, overlap, storage, and recovery policies.
+All automation routes use the existing shared-token, Host, and origin protections.
+Without a configured token or authority mode, ordinary local access remains available.
+With authority mode enabled, automation routes require an operator credential in `X-Kontora-Operator-Token`.
+Worker attempt capabilities cannot read or mutate automations.
+
+Send `Content-Type: application/json` for request bodies.
+Automation handlers accept one JSON object, limited to 64 KiB, and reject unknown fields and trailing JSON values.
+Errors use `{"error":"..."}`:
+
+| Status | Meaning |
+|--------|---------|
+| `400` | Invalid fields, schedule, JSON, or acknowledgement. |
+| `404` | Definition or occurrence not found. |
+| `409` | Stale revision or conflicting create-request identity. |
+| `503` | Automation storage unavailable. |
+
+#### Definitions and creation
+
+`GET /api/automations` returns `{"available":true,"definitions":[...]}`.
+An empty list is `[]`, never `null`.
+If the optional service or its storage is unavailable, the list still returns `200`:
+
+```json
+{"available":false,"error":"automation storage unavailable","definitions":[]}
+```
+
+Other management and history routes return `503` when the service is unavailable.
+Stateless schedule preview remains available.
+
+`POST /api/automations` accepts:
+
+```json
+{
+  "request_id": "report-creation-1",
+  "definition": {
+    "name": "Morning repository report",
+    "path": "/home/alex/projects/app",
+    "agent": "claude",
+    "instructions": "Inspect recent changes and report potential regressions.",
+    "schedule": {
+      "frequency": "weekly",
+      "days": [1, 2, 3, 4, 5],
+      "time": "09:00",
+      "timezone": "Europe/Berlin"
+    },
+    "enabled": false,
+    "skip_overlap": true
+  }
+}
+```
+
+Use an existing repository and a configured agent name.
+`request_id` must be nonblank and at most 200 bytes. Keep it unchanged when retrying the same creation request.
+Repeating the identity with the same inputs returns the recorded result without creating another definition.
+Reusing the identity for different inputs returns `409`.
+Success returns `201` with the definition, including on a retry.
+
+New definitions must be disabled. Omitted `skip_overlap` defaults to `true`; send `false` to permit overlap.
+Create requests cannot supply a nonempty `id`, nonzero revision, or a nonzero `next` cursor.
+Unknown provenance or runtime fields are rejected.
+
+Definition responses contain:
+
+| Field | Meaning |
+|-------|---------|
+| `id` | Stable definition identity, assigned by the server. |
+| `revision` | Current unsigned revision for edits. |
+| `schedule_revision` | Server-managed schedule identity; non-schedule edits preserve it. |
+| `name`, `path`, `agent`, `instructions` | Editable ticket inputs. |
+| `schedule` | Calendar schedule described below. |
+| `enabled` | Whether future ticket creation is enabled. |
+| `skip_overlap` | Whether unfinished work from this automation blocks later occurrences. |
+| `next` | Server-managed RFC 3339 cursor for the next slot; disabled definitions do not run it. |
+
+`GET /api/automations/{id}` returns one definition directly.
+`PUT /api/automations/{id}` accepts a definition directly, without the `definition` wrapper.
+Send all editable fields and the current nonzero `revision`; PUT is not a partial update.
+The body ID can be omitted, but must match the URL when present.
+`next` and `schedule_revision` can be omitted. A nonzero `schedule_revision` must match the current server value.
+The server ignores submitted `next` values and preserves its current cursor, which can advance without changing the editable revision.
+Clients cannot move the schedule cursor.
+
+Update success returns `200` with the new revision. Enabling and disabling also use PUT.
+A stale edit returns `409` without overwriting the saved definition.
+Refetch after a conflict, then reconcile the saved fields with the unsaved draft before retrying.
+
+#### Schedule preview
+
+`POST /api/automations/preview` accepts the schedule directly:
+
+```json
+{"frequency":"weekly","days":[1,3,5],"time":"09:00","timezone":"Europe/Berlin"}
+```
+
+`frequency` is `daily`, `weekdays`, or `weekly`.
+Only weekly schedules accept selected `days`, with `0` for Sunday through `6` for Saturday.
+Weekly days must be nonempty and unique. Daily and weekdays schedules omit `days` or send `[]`.
+`time` uses `HH:MM`; `timezone` must be an explicit IANA name. `Local` is invalid.
+
+Success returns `200` with `{"occurrences":["...","...","..."]}`.
+Each entry is an RFC 3339 instant after the current server time.
+The server uses the saved timezone, skips nonexistent local times, and selects the earliest instant for repeated local times.
+Preview does not save a definition or create tickets.
+
+#### History and acknowledgement
+
+`GET /api/automations/{id}/occurrences?offset=0&limit=50` returns:
+
+```json
+{"occurrences":[],"total":0}
+```
+
+History is chronological. `offset` starts at zero and defaults to `0`.
+`limit` defaults to `50` and must be between `1` and `200`.
+An offset beyond the last record returns an empty page with the unchanged total.
+Invalid, negative, overflowing, or repeated pagination parameters return `400`.
+
+Occurrence records include `id`, `revision`, `automation_id`, `schedule_revision`, `scheduled_for`, `ticket_id`, `phase`, `reason`, `payload`, `count`, and `through`.
+`count` is the number of slots represented. A skipped range also sets `through` to its last scheduled instant.
+`payload` is the frozen definition used for admission.
+`phase` and `reason` describe scheduling and publication, independently of the linked ticket's status.
+Publication success does not prove execution success.
+History remains after ticket deletion; a missing ticket is not recreated from a saved receipt.
+
+`POST /api/automations/{id}/occurrences/{occurrence_id}/skip` accepts `{"revision":7}`.
+The revision is the occurrence's current nonzero revision, not the definition's revision.
+Success returns `200` with the updated occurrence. Only unresolved occurrences can be acknowledged.
+Skip never creates replacement work or releases execution reservations.
+A stale occurrence revision returns `409`; inspect refreshed history before retrying.
+
+The `automations_updated` Server-Sent Events event always contains `{}`.
+Clients must refetch definitions and visible history after invalidation and reconnect, without replacing unsaved form edits.
+There are no delete-definition or run-now endpoints.
 
 ### Secondary ticket sources
 

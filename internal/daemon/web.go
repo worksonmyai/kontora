@@ -16,8 +16,12 @@ import (
 	"strings"
 	"time"
 
+	"gopkg.in/yaml.v3"
+
+	"github.com/worksonmyai/kontora/internal/automation"
 	"github.com/worksonmyai/kontora/internal/cli"
 	"github.com/worksonmyai/kontora/internal/config"
+	"github.com/worksonmyai/kontora/internal/frontmatter"
 	"github.com/worksonmyai/kontora/internal/logfmt"
 	"github.com/worksonmyai/kontora/internal/notify"
 	"github.com/worksonmyai/kontora/internal/ticket"
@@ -70,15 +74,25 @@ func (d *Daemon) GetTicket(id string) (web.TicketInfo, error) {
 
 // CreateTicket creates a new ticket file and registers it in the daemon.
 func (d *Daemon) CreateTicket(req web.CreateTicketRequest) (web.TicketInfo, error) {
+	return d.createTicket(req, nil)
+}
+
+func (d *Daemon) createTicket(req web.CreateTicketRequest, occurrence *automation.Occurrence) (web.TicketInfo, error) {
 	release, admissionErr := d.ordinaryMutationAdmission("")
 	if admissionErr != nil {
 		return web.TicketInfo{}, admissionErr
 	}
 	defer release()
 	cfg := d.config()
-	id, err := cli.GenerateID(cfg, req.Path)
-	if err != nil {
-		return web.TicketInfo{}, fmt.Errorf("generating ticket id: %w", err)
+	var id string
+	var err error
+	if occurrence != nil {
+		id = occurrence.TicketID
+	} else {
+		id, err = cli.GenerateID(cfg, req.Path)
+		if err != nil {
+			return web.TicketInfo{}, fmt.Errorf("generating ticket id: %w", err)
+		}
 	}
 
 	filePath := filepath.Join(config.ExpandTilde(cfg.TicketsDir), id+".md")
@@ -102,7 +116,7 @@ func (d *Daemon) CreateTicket(req web.CreateTicketRequest) (web.TicketInfo, erro
 	// registers the ticket that the event would have registered.
 	d.recordSelfWriteBlind(filePath)
 
-	_, err = cli.New(cfg, cli.NewOpts{
+	opts := cli.NewOpts{
 		ID:          id,
 		Path:        req.Path,
 		Pipeline:    req.Pipeline,
@@ -116,10 +130,16 @@ func (d *Daemon) CreateTicket(req web.CreateTicketRequest) (web.TicketInfo, erro
 		Kind:        req.Kind,
 		Parent:      req.Parent,
 		NoEdit:      true,
-	})
+	}
+	if occurrence != nil {
+		opts.AutomationID = occurrence.AutomationID
+		opts.OccurrenceID = occurrence.ID
+		opts.ScheduledFor = occurrence.ScheduledFor.UTC().Format(time.RFC3339)
+	}
+	_, err = cli.New(cfg, opts)
 	if err != nil {
-		// Nothing was created, so the reservation must go: the next ticket gets
-		// this id back, and its creation event has to be acted on.
+		// Publication can fail after the final name appears. Let the watcher
+		// observe any visible file; automation recovery verifies provenance.
 		d.forgetSelfWrite(filePath)
 		return web.TicketInfo{}, fmt.Errorf("creating ticket: %w", mapAppError(err))
 	}
@@ -137,7 +157,7 @@ func (d *Daemon) CreateTicket(req web.CreateTicketRequest) (web.TicketInfo, erro
 	// neither handleFileChanged nor writeTicketFile.
 	d.observe(t, notify.OriginObserved)
 	d.warnUnmatchedNotifyLocked(cfg, t)
-	if t.Status == "todo" {
+	if t.Status == "todo" && occurrence == nil {
 		d.enqueue(t)
 	}
 	// A new child moves its epic; a new epic settles against whatever children
@@ -163,6 +183,10 @@ func (d *Daemon) UploadTicket(content []byte) (web.TicketInfo, error) {
 	}
 	defer release()
 	cfg := d.config()
+	content, err := materializeUploadMerges(content)
+	if err != nil {
+		return web.TicketInfo{}, fmt.Errorf("invalid ticket file: %w", err)
+	}
 	t, err := ticket.ParseBytes(content)
 	if err != nil {
 		return web.TicketInfo{}, fmt.Errorf("invalid ticket file: %w", err)
@@ -199,6 +223,12 @@ func (d *Daemon) UploadTicket(content []byte) (web.TicketInfo, error) {
 		return web.TicketInfo{}, fmt.Errorf("clearing %s: %w", ticket.FieldScheduledAt, err)
 	}
 
+	for _, field := range []string{"automation_id", "occurrence_id", "scheduled_for"} {
+		if err := t.DeleteField(field); err != nil {
+			return web.TicketInfo{}, fmt.Errorf("clearing %s: %w", field, err)
+		}
+	}
+
 	// Ensure created timestamp exists.
 	if t.Created == nil {
 		now := time.Now().UTC()
@@ -221,6 +251,89 @@ func (d *Daemon) UploadTicket(content []byte) (web.TicketInfo, error) {
 	d.mu.Unlock()
 
 	return info, nil
+}
+
+// Materialize root merges so DeleteField cannot expose inherited provenance or schedules.
+func materializeUploadMerges(content []byte) ([]byte, error) {
+	fm, body, err := frontmatter.Split(string(content))
+	if err != nil {
+		return nil, err
+	}
+	var doc yaml.Node
+	if err := yaml.Unmarshal([]byte(fm), &doc); err != nil {
+		return nil, err
+	}
+	if len(doc.Content) == 0 || doc.Content[0].Kind != yaml.MappingNode {
+		return content, nil
+	}
+	root := doc.Content[0]
+	hasMerge := false
+	for i := 0; i < len(root.Content); i += 2 {
+		hasMerge = hasMerge || root.Content[i].Tag == "!!merge"
+	}
+	if !hasMerge {
+		return content, nil
+	}
+
+	// Validate aliases with the YAML decoder's expansion limit before copying nodes.
+	var validated map[string]any
+	if err := root.Decode(&validated); err != nil {
+		return nil, err
+	}
+	root, err = expandUploadAliases(root, make(map[*yaml.Node]bool))
+	if err != nil {
+		return nil, err
+	}
+	var fields map[string]yaml.Node
+	if err := root.Decode(&fields); err != nil {
+		return nil, err
+	}
+	original := root.Content
+	root.Content = nil
+	for i := 0; i < len(original); i += 2 {
+		key := original[i]
+		if key.Tag == "!!merge" {
+			continue
+		}
+		value := fields[key.Value]
+		root.Content = append(root.Content, key, &value)
+		delete(fields, key.Value)
+	}
+	for _, key := range slices.Sorted(maps.Keys(fields)) {
+		value := fields[key]
+		root.Content = append(root.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key}, &value)
+	}
+	out, err := yaml.Marshal(root)
+	if err != nil {
+		return nil, err
+	}
+	return []byte("---\n" + string(out) + "---\n" + body), nil
+}
+
+// Removing a merge can remove anchors that other imported fields still reference.
+func expandUploadAliases(node *yaml.Node, active map[*yaml.Node]bool) (*yaml.Node, error) {
+	if active[node] {
+		return nil, fmt.Errorf("cyclic YAML alias in upload")
+	}
+	active[node] = true
+	defer delete(active, node)
+	if node.Kind == yaml.AliasNode {
+		return expandUploadAliases(node.Alias, active)
+	}
+	cloned := *node
+	cloned.Anchor = ""
+	if cloned.Kind == yaml.ScalarNode && cloned.Tag != "!!str" {
+		cloned.Style |= yaml.TaggedStyle
+	}
+	cloned.Content = make([]*yaml.Node, len(node.Content))
+	for i, child := range node.Content {
+		var err error
+		cloned.Content[i], err = expandUploadAliases(child, active)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return &cloned, nil
 }
 
 // GetConfig returns available pipelines, agents and the daemon's runtime identity.
@@ -1539,6 +1652,7 @@ func (d *Daemon) HasTerminalSession(id string) bool {
 // broadcastTicketUpdate sends a ticket_updated event for the given ticket ID.
 // Must be called with d.mu held.
 func (d *Daemon) broadcastTicketUpdate(id string) {
+	d.signalAutomations()
 	d.wakeCompanion()
 	if d.broker == nil {
 		return
@@ -1567,6 +1681,7 @@ func (d *Daemon) broadcastTicketUpdateLocking(id string) {
 // broadcastTicketDeleted sends a ticket_deleted event for the given ticket.
 // Must be called with d.mu held.
 func (d *Daemon) broadcastTicketDeleted(ts *ticketState) {
+	d.signalAutomations()
 	d.wakeCompanion()
 	if d.broker == nil || ts == nil {
 		return

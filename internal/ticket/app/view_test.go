@@ -1,14 +1,56 @@
 package app
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/worksonmyai/kontora/internal/config"
 	"github.com/worksonmyai/kontora/internal/ticket"
 )
+
+func TestBuildView_AutomationProvenance(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		tk   ticket.Ticket
+	}{
+		{name: "legacy"},
+		{name: "automation", tk: ticket.Ticket{
+			AutomationID: "auto-1", OccurrenceID: "occ-1", ScheduledFor: "2026-09-01T09:00:00Z",
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, detail := range []bool{false, true} {
+				view := BuildView(&config.Config{}, &tc.tk, detail)
+				assert.Equal(t, tc.tk.AutomationID, view.AutomationID)
+				assert.Equal(t, tc.tk.OccurrenceID, view.OccurrenceID)
+				assert.Equal(t, tc.tk.ScheduledFor, view.ScheduledFor)
+				assert.Empty(t, view.ScheduledAt)
+				assert.Empty(t, view.ClaimedBy)
+				assert.Empty(t, view.InvocationID)
+				assert.Nil(t, view.Managed)
+				encoded, err := json.Marshal(view)
+				require.NoError(t, err)
+				var fields map[string]any
+				require.NoError(t, json.Unmarshal(encoded, &fields))
+				for key, want := range map[string]string{
+					"automation_id": tc.tk.AutomationID,
+					"occurrence_id": tc.tk.OccurrenceID,
+					"scheduled_for": tc.tk.ScheduledFor,
+				} {
+					if want == "" {
+						assert.NotContains(t, fields, key)
+					} else {
+						assert.Equal(t, want, fields[key])
+					}
+				}
+			}
+		})
+	}
+}
 
 func TestBuildView_ImportedHistory(t *testing.T) {
 	start := time.Now().Add(-time.Hour)

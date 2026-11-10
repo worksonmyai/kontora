@@ -8,6 +8,7 @@
   <title>kontora</title>
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><circle cx='8' cy='8' r='7' fill='%235b6078'/></svg>">
   <link rel="stylesheet" href="/app.css">
+  <link rel="stylesheet" href="/automations.css">
   <!-- The fonts are reachable only through an @font-face inside fonts.css, so
        without these the browser cannot start them until that file has parsed.
        Only the latin subsets are preloaded; latin-ext loads on demand. -->
@@ -1633,6 +1634,13 @@
                 :class="currentView === 'board' ? 'bg-surface-850 text-tx' : 'text-tx-3 hover:bg-surface-900 hover:text-tx-2'">
           <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 14 14" fill="none" class="opacity-80"><rect x="2" y="2" width="3" height="10" rx="0.8" stroke="currentColor" stroke-width="1.1"/><rect x="6" y="2" width="3" height="6" rx="0.8" stroke="currentColor" stroke-width="1.1"/><rect x="10" y="2" width="2" height="8" rx="0.8" stroke="currentColor" stroke-width="1.1"/></svg>
           <span>Dashboard</span>
+        </button>
+        <button type="button" @click="gotoView('automations')"
+                class="automations-nav flex items-center gap-2.5 h-7 px-2.5 rounded text-[13px] transition-colors"
+                :aria-current="currentView === 'automations' ? 'page' : null"
+                :class="currentView === 'automations' ? 'bg-surface-850 text-tx' : 'text-tx-3 hover:bg-surface-900 hover:text-tx-2'">
+          <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="m13 2-3 8H4l7 12 3-8h6L13 2Z"/></svg>
+          <span>Automations</span>
         </button>
         <button @click="gotoView('stats')"
                 class="flex items-center gap-2.5 h-7 px-2.5 rounded text-[13px] transition-colors"
@@ -3742,6 +3750,174 @@
          every node and every Alpine binding it ever drew, and these three draw
          by far the most. Their state lives on the component, so a rebuild
          restores what the reader left behind. -->
+
+    <template x-if="!loading && currentView === 'automations'">
+      <section class="automations-view" aria-labelledby="automations-title">
+        <div class="automations-container">
+          <header class="automations-heading">
+            <div>
+              <h1 id="automations-title">Automations</h1>
+              <p>Run agents on a schedule you set.</p>
+            </div>
+            <button type="button" class="automations-button automations-button-primary" x-ref="automationNew" :disabled="!automationsAvailable || automationsPending" @click="automationsNew()">
+              <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+              New automation
+            </button>
+          </header>
+          <p class="automations-status" role="status" x-show="automationsLoading">Loading automations…</p>
+          <div class="automations-alert" role="alert" x-show="automationsError">
+            <span x-text="automationsError"></span>
+            <button type="button" class="automations-button" :disabled="automationsLoading" @click="automationsRefresh()">Retry</button>
+          </div>
+          <div class="automations-workspace" :class="{ 'has-editor': automationsEditing, 'is-creating': automationsEditing && !automationsSelected }">
+            <div class="automations-list">
+              <div class="automations-toolbar">
+                <div class="automations-filters" role="group" aria-label="Filter automations">
+                  <template x-for="filter in [{ key: 'all', label: 'All' }, { key: 'enabled', label: 'Enabled' }, { key: 'paused', label: 'Paused' }]" :key="filter.key">
+                    <button type="button" class="automations-filter" :aria-pressed="automationsFilter === filter.key" @click="automationsFilter = filter.key; writeHash()" x-text="filter.label"></button>
+                  </template>
+                </div>
+                <label class="automations-search">
+                  <input type="search" name="automation-search" aria-label="Search automations" placeholder="Search automations…" x-model="automationsQuery" @input.debounce.200ms="writeHash()">
+                </label>
+              </div>
+              <table class="automations-table" x-show="automationsRows().length">
+                <thead><tr><th scope="col">Automation</th><th scope="col">Schedule state</th></tr></thead>
+                <tbody>
+                  <template x-for="automation in automationsRows()" :key="automation.id">
+                    <tr :class="{ 'is-selected': automationsSelected === automation.id }">
+                      <td>
+                        <button type="button" class="automations-row-title" @click="automationsSelect(automation)" :aria-pressed="automationsSelected === automation.id" x-text="automation.name"></button>
+                        <div class="automations-row-meta"><span x-text="automationsRepository(automation)"></span><span x-text="automation.agent || 'No agent selected'"></span><span x-text="'Revision ' + automation.revision"></span></div>
+                        <span class="automations-row-schedule" x-text="automationsSchedule(automation)"></span>
+                        <span class="automations-next" x-show="automation.enabled" x-text="automationsNextLabel(automation)"></span>
+                      </td>
+                      <td><button type="button" class="automations-state" :aria-label="(automation.enabled ? 'Pause ' : 'Enable ') + automation.name" :disabled="!automationsAvailable || automationsPending || !!automationsToggling[automation.id]" :aria-pressed="automation.enabled" @click="automationsToggle(automation)" x-text="automationsToggling[automation.id] ? 'Saving…' : automation.enabled ? 'Enabled' : 'Paused'"></button></td>
+                    </tr>
+                  </template>
+                </tbody>
+              </table>
+              <div class="automations-empty" x-show="automationsAvailable && !automationsLoading && !automationsRows().length">
+                <h2 x-text="automations.length ? 'No matching automations' : 'No automations yet'"></h2>
+                <p x-text="automations.length ? 'Try another name or schedule state.' : 'Choose an agent, give it instructions and set a schedule.'"></p>
+                <button type="button" class="automations-button" x-show="automations.length" @click="automationsFilter = 'all'; automationsQuery = ''; writeHash()">Clear filters</button>
+                <button type="button" class="automations-button" x-show="!automations.length" :disabled="automationsPending" @click="automationsNew()">New automation</button>
+              </div>
+              <section class="automations-history" aria-labelledby="automation-history-title">
+                <h2 id="automation-history-title">Occurrence history</h2>
+                <p x-show="!automationsHistoryID">Select an automation to see its occurrences.</p>
+                <template x-if="automationsHistoryID">
+                  <div>
+                    <p>Occurrence disposition is separate from ticket execution status.</p>
+                    <p role="status" x-show="automationsHistoryLoading">Loading history…</p>
+                    <p role="alert" class="automations-alert" x-show="automationsHistoryError" x-text="automationsHistoryError"></p>
+                    <button type="button" class="automations-button" :disabled="automationsHistoryLoading" @click="automationsLoadHistory(automationsHistoryOffset)">Refresh history</button>
+                    <p x-show="!automationsHistoryLoading && !automationsHistoryError && !automationsHistory.length">No occurrences recorded.</p>
+                    <ol class="automations-history-list">
+                      <template x-for="occurrence in automationsHistory" :key="occurrence.id">
+                        <li>
+                          <time :datetime="occurrence.scheduled_for" x-text="automationsDateLabel(occurrence.scheduled_for, occurrence.timezone)"></time>
+                          <span x-show="occurrence.count > 1" x-text="occurrence.count + ' missed slots through ' + automationsDateLabel(occurrence.through, occurrence.timezone)"></span>
+                          <span class="automations-disposition" x-text="occurrence.phase"></span>
+                          <span x-text="occurrence.reason || ''"></span>
+                          <a x-show="occurrence.ticket_id" :href="'#/t/' + encodeURIComponent(occurrence.ticket_id)" x-text="occurrence.ticket_id" @click.prevent="navigateDestination({ view: 'board', source: 'primary', ticketId: occurrence.ticket_id })"></a>
+                          <span x-show="!occurrence.ticket_id">No ticket</span>
+                          <button type="button" class="automations-button" x-show="occurrence.phase === 'blocked'" :disabled="!automationsAvailable || !!automationsRecovering" @click="automationsSkip(occurrence)" x-text="automationsRecovering === occurrence.id ? 'Acknowledging…' : 'Acknowledge as skipped'"></button>
+                        </li>
+                      </template>
+                    </ol>
+                    <nav class="automations-history-pages" aria-label="Occurrence history pages">
+                      <button type="button" class="automations-button" :disabled="automationsHistoryLoading || automationsHistoryOffset === 0" @click="automationsLoadHistory(Math.max(0, automationsHistoryOffset - 20))">Previous</button>
+                      <span x-text="automationsHistoryTotal ? (automationsHistoryOffset + 1) + '–' + Math.min(automationsHistoryOffset + 20, automationsHistoryTotal) + ' of ' + automationsHistoryTotal : '0 occurrences'"></span>
+                      <button type="button" class="automations-button" :disabled="automationsHistoryLoading || automationsHistoryOffset + 20 >= automationsHistoryTotal" @click="automationsLoadHistory(automationsHistoryOffset + 20)">Next</button>
+                    </nav>
+                  </div>
+                </template>
+              </section>
+            </div>
+            <template x-if="automationsEditing">
+              <section class="automations-editor" aria-labelledby="automation-editor-title">
+                <header class="automations-editor-heading">
+                  <h2 id="automation-editor-title" x-text="automationsSelected ? 'Edit automation' : 'New automation'"></h2>
+                  <button type="button" class="automations-icon-button" aria-label="Close automation editor" :disabled="automationsPending" @click="automationsCloseEditor()"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="m6 6 12 12M6 18 18 6"/></svg></button>
+                </header>
+                <div class="automations-alert" role="alert" x-show="automationsConflict">
+                  <span x-text="automationsConflict"></span>
+                  <button type="button" class="automations-button" :disabled="automationsPending" @click="automationsReload()">Reload saved version</button>
+                </div>
+                <form class="automations-form" @submit.prevent="automationsSaveDraft()" @input="automationsSchedulePreview()" @change="automationsSchedulePreview()" :aria-busy="automationsPending" novalidate>
+                  <fieldset class="automations-fields" :disabled="automationsPending">
+                  <div class="automations-field">
+                    <label for="automation-name">Name <small>(required)</small></label>
+                    <input id="automation-name" x-ref="automationName" name="automation-name" autocomplete="off" x-model="automationsDraft.name" :aria-invalid="!!automationsErrors.name" aria-required="true" aria-describedby="automation-name-help" placeholder="Morning repository review">
+                    <p id="automation-name-help" class="automations-helper" :class="{ 'is-error': automationsErrors.name }" x-text="automationsErrors.name || 'A short name for this recurring task.'"></p>
+                  </div>
+                  <div class="automations-pair">
+                    <div class="automations-field">
+                      <label for="automation-path">Repository <small>(required)</small></label>
+                      <input id="automation-path" name="automation-path" list="automation-projects" autocomplete="off" x-model="automationsDraft.path" :aria-invalid="!!automationsErrors.path" aria-required="true" aria-describedby="automation-path-help" placeholder="~/projects/repository">
+                      <datalist id="automation-projects"><template x-for="project in configCache?.projects || []" :key="project.path"><option :value="project.path" x-text="project.name"></option></template></datalist>
+                      <p id="automation-path-help" class="automations-helper" :class="{ 'is-error': automationsErrors.path }" x-text="automationsErrors.path || 'Working directory for the agent.'"></p>
+                    </div>
+                    <div class="automations-field">
+                      <label for="automation-agent">Agent <small>(required)</small></label>
+                      <select id="automation-agent" name="automation-agent" x-model="automationsDraft.agent" :aria-invalid="!!automationsErrors.agent" aria-required="true" aria-describedby="automation-agent-help">
+                        <option value="">Choose an agent</option>
+                        <template x-for="agent in configCache?.agents || []" :key="agent"><option :value="agent" x-text="agent"></option></template>
+                      </select>
+                      <p id="automation-agent-help" class="automations-helper" :class="{ 'is-error': automationsErrors.agent }" x-text="automationsErrors.agent || 'From your configured agents.'"></p>
+                    </div>
+                  </div>
+                  <div class="automations-field">
+                    <label for="automation-prompt">Instructions <small>(required)</small></label>
+                    <textarea id="automation-prompt" name="automation-prompt" x-model="automationsDraft.prompt" :aria-invalid="!!automationsErrors.prompt" aria-required="true" aria-describedby="automation-prompt-help" placeholder="Review recent changes and report regressions. Do not edit files."></textarea>
+                    <p id="automation-prompt-help" class="automations-helper" :class="{ 'is-error': automationsErrors.prompt }" x-text="automationsErrors.prompt || 'Instructions for each new ticket. Agents use their ordinary permissions.'"></p>
+                  </div>
+                  <fieldset class="automations-schedule">
+                    <legend>Schedule</legend>
+                    <div class="automations-pair">
+                      <div class="automations-field">
+                        <label for="automation-frequency">Repeat</label>
+                        <select id="automation-frequency" name="automation-frequency" x-model="automationsDraft.frequency"><option value="daily">Every day</option><option value="weekdays">Weekdays</option><option value="weekly">Selected days</option></select>
+                      </div>
+                      <div class="automations-field">
+                        <label for="automation-time">At <small>(required)</small></label>
+                        <input id="automation-time" name="automation-time" type="time" x-model="automationsDraft.time" :aria-invalid="!!automationsErrors.schedule" aria-required="true" aria-describedby="automation-schedule-help">
+                      </div>
+                    </div>
+                    <div class="automations-days" x-show="automationsDraft.frequency === 'weekly'" role="group" aria-label="Days of the week">
+                      <template x-for="day in automationsDays" :key="day.value"><button type="button" :aria-pressed="automationsDraft.days.includes(day.value)" @click="automationsToggleDay(day.value)" x-text="day.label"></button></template>
+                    </div>
+                    <p id="automation-schedule-help" class="automations-helper" :class="{ 'is-error': automationsErrors.schedule }" x-text="automationsErrors.schedule || ''" aria-live="polite"></p>
+                    <div class="automations-field">
+                      <label for="automation-timezone">Timezone <small>(required)</small></label>
+                      <input id="automation-timezone" name="automation-timezone" list="automation-timezones" x-model="automationsDraft.timezone" :aria-invalid="!!automationsPreviewError" aria-required="true" placeholder="Europe/Berlin">
+                      <datalist id="automation-timezones"><option value="UTC"></option><template x-for="zone in automationsTimezones" :key="zone"><option :value="zone"></option></template></datalist>
+                    </div>
+                    <p class="automations-helper" role="status" x-show="automationsPreviewLoading">Calculating schedule…</p>
+                    <p class="automations-helper is-error" role="alert" x-show="automationsPreviewError" x-text="automationsPreviewError"></p>
+                    <ol class="automations-occurrences" aria-label="Next three schedule occurrences">
+                      <template x-for="(date, index) in automationsDates()" :key="date.toISOString()">
+                        <li><span x-text="index === 0 ? 'Next occurrence' : 'Then'"></span><time :datetime="date.toISOString()" x-text="automationsDateLabel(date)"></time></li>
+                      </template>
+                    </ol>
+                    <label class="automations-check"><input type="checkbox" name="automation-skip-overlap" x-model="automationsDraft.skipOverlap"><span>Skip when an earlier ticket is unfinished or execution-reserved</span></label>
+                  </fieldset>
+                  <footer class="automations-form-footer">
+                    <div class="automations-form-actions">
+                      <label><input type="checkbox" name="automation-enabled" x-model="automationsDraft.enabled" :disabled="!automationsSelected">Enable schedule</label>
+                      <button type="submit" class="automations-button automations-button-primary" :disabled="!automationsAvailable || !!automationsConflict || !!automationsToggling[automationsSelected]" x-text="automationsPending ? 'Saving…' : _automationsCreate ? 'Retry save' : 'Save automation'"></button>
+                    </div>
+                    <p class="automations-save-note" role="status" x-text="automationsNotice || (automationsSelected ? 'Pausing does not cancel existing tickets.' : 'Save this automation paused first, then enable its schedule.')"></p>
+                  </footer>
+                  </fieldset>
+                </form>
+              </section>
+            </template>
+          </div>
+        </div>
+      </section>
+    </template>
 
     <!-- Stats -->
     <template x-if="!loading && currentView === 'stats'">
@@ -6607,7 +6783,7 @@
 
           <template x-if="sheet.type === 'navigation'">
             <nav class="mobile-navigation" aria-label="Main navigation">
-              <template x-for="view in [{ key: 'board', label: 'Dashboard' }, { key: 'new', label: 'New ticket' }, { key: 'stats', label: 'Stats' }, { key: 'archive', label: 'Archive' }, { key: 'settings', label: 'Settings' }]" :key="view.key">
+              <template x-for="view in [{ key: 'board', label: 'Dashboard' }, { key: 'new', label: 'New ticket' }, { key: 'automations', label: 'Automations' }, { key: 'stats', label: 'Stats' }, { key: 'archive', label: 'Archive' }, { key: 'settings', label: 'Settings' }]" :key="view.key">
                 <button type="button" @click="if (view.key === currentView) closeSheet(); else await gotoView(view.key)"
                         :aria-current="currentView === view.key ? 'page' : null" x-text="view.label"></button>
               </template>

@@ -1,6 +1,13 @@
 // Ticket store and app lifecycle: the columns, the initial load, the SSE
 // stream that keeps them current, and the per-ticket presentation helpers.
+
+// How long the first load waits for the event stream before taking its
+// snapshots anyway.
+const SSE_OPEN_WAIT_MS = 1500;
+
 export function kontoraTickets() {
+  // Resolves the first load's wait for the event stream; null once released.
+  let initialSnapshot = null;
   let primaryFlight = null;
   let primaryAgain = false;
   let detailFlight = null;
@@ -82,21 +89,36 @@ export function kontoraTickets() {
       this.$watch('isMobile', () => this._onBreakpointChange());
       this._bindGlobalEvents();
       this.setupAgentPicker();
+      // Every startup request is a round trip, which costs most on a phone
+      // talking to a remote daemon, so they overlap. The ticket snapshots wait
+      // for the stream to open: a snapshot taken after the subscription misses
+      // no event, so the first open needs no second copy of every list. A
+      // stream that does not open in time (a proxy holding its headers) must
+      // not hold the board; its late open resynchronizes as any reconnect does.
+      var subscribed = new Promise(resolve => { initialSnapshot = resolve; });
+      this.connectSSE();
+      var config = (async () => {
+        try {
+          var cfgRes = await fetch('/api/config');
+          if (cfgRes.status === 401) this.needsAuth = true;
+          else if (cfgRes.ok) this.configCache = await cfgRes.json();
+        } catch (e) {
+          this.error = 'Failed to load config';
+        }
+      })();
+      await Promise.race([subscribed, new Promise(resolve => setTimeout(resolve, SSE_OPEN_WAIT_MS))]);
+      initialSnapshot = null;
       try {
-        var cfgRes = await fetch('/api/config');
-        if (cfgRes.status === 401) this.needsAuth = true;
-        else if (cfgRes.ok) this.configCache = await cfgRes.json();
-      } catch (e) {
-        this.error = 'Failed to load config';
-      }
-      try {
-        await this.fetchTasks();
-        await this.fetchTicketSources();
+        await Promise.all([this.fetchTasks(), this.fetchTicketSources(), config]);
       } catch (e) {
         if (!this.needsAuth) this.error = 'Failed to load tickets';
       }
       this.loading = false;
       if (this.needsAuth) {
+        // The stream answers 401 too; retrying it would only repeat that.
+        clearTimeout(this._sseReconnect);
+        this._eventSource?.close();
+        this._eventSource = null;
         // Show the login modal instead of a board with a generic error toast.
         // A leftover ?token= in the URL means the previous attempt's token was
         // rejected (a valid one would have been consumed and stripped by the
@@ -107,7 +129,6 @@ export function kontoraTickets() {
         }
         return;
       }
-      this.connectSSE();
       // After the auth check, so a pane on a tokenless session does not fire a
       // second 401 of its own.
       this.initAssistant();
@@ -152,6 +173,12 @@ export function kontoraTickets() {
       var current = tickets.find(t => this.sameTicket(t, selected));
       if (current) this.queueTicketUpdate({ ...selected, ...current });
       else if (!this.archiveDetailOpen() && this._claimKey !== this.ticketKey(selected)) this.closeDetail();
+    },
+
+    _releaseInitialSnapshot() {
+      var release = initialSnapshot;
+      initialSnapshot = null;
+      if (release) release();
     },
 
     async resyncTickets() {
@@ -516,11 +543,15 @@ export function kontoraTickets() {
     },
 
     connectSSE() {
-      if (this._appDestroyed) return;
+      if (this._appDestroyed || this.needsAuth) return;
       if (this._eventSource) this._eventSource.close();
       const es = new EventSource('/api/events');
       this._eventSource = es;
-      es.addEventListener('open', () => { this.companionRefresh(); this.resyncTickets(); });
+      es.addEventListener('open', () => {
+        this.companionRefresh();
+        if (initialSnapshot) this._releaseInitialSnapshot();
+        else this.resyncTickets();
+      });
       es.addEventListener('companion_updated', () => { this.companionRefresh(); });
       es.addEventListener('ticket_sources_changed', () => { this.fetchTicketSources(); });
       es.addEventListener('ticket_updated', (e) => {
@@ -584,6 +615,8 @@ export function kontoraTickets() {
       });
       es.onerror = () => {
         es.close();
+        // Waiting for a stream that failed only delays the board.
+        this._releaseInitialSnapshot();
         // Drop any in-flight markers: if a plannotator run completes while SSE
         // is disconnected, we'll never see the finished event and the button
         // would stay disabled until a full page refresh.

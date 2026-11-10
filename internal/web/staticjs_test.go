@@ -70,7 +70,9 @@ func TestMobileBrowserJS(t *testing.T) {
 		if name == "" {
 			name = "index.html"
 		}
-		if r.Method != http.MethodGet || assets[name] == nil || r.URL.RawQuery != "" {
+		query := r.URL.Query()
+		query.Del("v")
+		if r.Method != http.MethodGet || assets[name] == nil || len(query) > 0 {
 			mu.Lock()
 			leaked = append(leaked, r.Method+" "+r.URL.String())
 			mu.Unlock()
@@ -129,7 +131,7 @@ func writeBundle(t *testing.T) string {
 		t.Fatalf("building the UI bundle: %v", err)
 	}
 	path := filepath.Join(t.TempDir(), "app.js")
-	if err := os.WriteFile(path, bundle, 0o600); err != nil {
+	if err := os.WriteFile(path, bundle.js, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	return path

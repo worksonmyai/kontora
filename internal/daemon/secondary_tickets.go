@@ -28,7 +28,20 @@ type secondaryCatalog struct {
 	source      web.TicketSourceInfo
 	tickets     map[string]*ticketState
 	projections map[string][sha256.Size]byte
+	files       secondaryFileCache
 	observer    secondaryObserver
+}
+
+// secondaryFileCache holds each document's last parse by file name. A large
+// folder is mostly unchanged between observations, and reading and parsing
+// every file again dominated the cost of each list and detail read.
+type secondaryFileCache map[string]secondaryCachedFile
+
+type secondaryCachedFile struct {
+	identity fileIdentity
+	digest   string
+	// Shared by every observation that reuses it, so nothing may modify it.
+	ticket *ticket.Ticket
 }
 
 type secondaryGeneration struct {
@@ -91,7 +104,9 @@ func (o *secondaryObserver) wait() {
 }
 
 type secondaryObservation struct {
-	stored      *app.StoredTicket
+	stored *app.StoredTicket
+	// digest is the SHA-256 of the document bytes stored was parsed from.
+	digest      string
 	modTime     time.Time
 	revision    string
 	revisionErr error
@@ -104,22 +119,36 @@ type secondarySnapshot struct {
 	children     map[string][]string
 	related      map[string][]string
 	admissionErr error
+	// files is the cache for the next observation of the same folder.
+	files secondaryFileCache
 }
 
 // Read each document and sidecar once under the lock used by cooperating edits
 // and Claim. Hash those bytes, not a later disk read that may describe another edit.
-func observeSecondary(dir string, read func(string) ([]byte, os.FileInfo, error)) (*secondarySnapshot, error) {
+//
+// A document whose identity matches its entry in cache is not read again: its
+// digest and parse come from the earlier read of the same bytes. A nil cache
+// reads everything.
+func observeSecondary(dir string, read func(string) ([]byte, os.FileInfo, error), cache secondaryFileCache) (*secondarySnapshot, error) {
 	if _, err := os.ReadDir(dir); err != nil {
 		return nil, err
 	}
 	snapshot := &secondarySnapshot{
 		tickets: make(map[string]*secondaryObservation), blocks: make(map[string][]string),
 		children: make(map[string][]string), related: make(map[string][]string),
+		files: make(secondaryFileCache, len(cache)),
 	}
 	err := ticket.WithBoardMutation(dir, func() error {
+		readStart := time.Now()
 		entries, err := os.ReadDir(dir)
 		if err != nil {
 			return err
+		}
+		// Taken under the same lock, so a sidecar missing here is missing for
+		// every cooperating writer too, and needs no read of its own.
+		names := make(map[string]bool, len(entries))
+		for _, entry := range entries {
+			names[entry.Name()] = true
 		}
 		snapshot.admissionErr = ticket.CheckBoardControl(dir)
 		for _, entry := range entries {
@@ -127,15 +156,8 @@ func observeSecondary(dir string, read func(string) ([]byte, os.FileInfo, error)
 				continue
 			}
 			path := filepath.Join(dir, entry.Name())
-			md, stat, err := read(path)
-			if err != nil {
-				if !errors.Is(err, os.ErrNotExist) && snapshot.admissionErr == nil {
-					snapshot.admissionErr = err
-				}
-				continue
-			}
-			t, err := ticket.ParseBytes(md)
-			if err != nil {
+			t, digest, modTime, ok := snapshot.document(path, entry.Name(), read, cache, readStart)
+			if !ok {
 				continue
 			}
 			if t.HasOwnershipMetadata() && snapshot.admissionErr == nil {
@@ -144,13 +166,18 @@ func observeSecondary(dir string, read func(string) ([]byte, os.FileInfo, error)
 			if !ticket.IsSafeID(t.ID) || !ticket.IsCanonicalPath(path, t.ID) {
 				continue
 			}
-			observed := &secondaryObservation{stored: &app.StoredTicket{Ticket: t, FilePath: path}, modTime: stat.ModTime()}
-			reactions, _, err := read(filepath.Join(dir, t.ID+".notes.json"))
-			exists := !errors.Is(err, os.ErrNotExist)
-			if err != nil && exists {
-				observed.revisionErr = err
+			observed := &secondaryObservation{stored: &app.StoredTicket{Ticket: t, FilePath: path}, digest: digest, modTime: modTime}
+			var reactions []byte
+			var readErr error
+			exists := names[t.ID+".notes.json"]
+			if exists {
+				reactions, _, readErr = read(filepath.Join(dir, t.ID+".notes.json"))
+				exists = !errors.Is(readErr, os.ErrNotExist)
+			}
+			if readErr != nil && exists {
+				observed.revisionErr = readErr
 			} else {
-				observed.revision = secondaryRevision(md, reactions, exists)
+				observed.revision = secondaryRevision(digest, reactions, exists)
 				if exists {
 					if err := json.Unmarshal(reactions, &observed.reactions); err != nil {
 						observed.revisionErr = err
@@ -175,6 +202,38 @@ func observeSecondary(dir string, read func(string) ([]byte, os.FileInfo, error)
 		return nil
 	})
 	return snapshot, err
+}
+
+// document returns the parsed ticket at path and the digest of its bytes,
+// from cache when the file is unchanged. A read error or unparsable file
+// reports false; a read error other than absence also refuses admission.
+func (s *secondarySnapshot) document(path, name string, read func(string) ([]byte, os.FileInfo, error), cache secondaryFileCache, readStart time.Time) (*ticket.Ticket, string, time.Time, bool) {
+	if cached, ok := cache[name]; ok {
+		if info, err := os.Lstat(path); err == nil {
+			if id, ok := identityOf(info); ok && id == cached.identity {
+				s.files[name] = cached
+				return cached.ticket, cached.digest, id.mtime, true
+			}
+		}
+	}
+	md, stat, err := read(path)
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) && s.admissionErr == nil {
+			s.admissionErr = err
+		}
+		return nil, "", time.Time{}, false
+	}
+	t, err := ticket.ParseBytes(md)
+	if err != nil {
+		return nil, "", time.Time{}, false
+	}
+	digest := sha256Hex(md)
+	// stat came from the open file before its bytes were read, so a write
+	// during the read shows up as a changed identity next time.
+	if id, ok := identityOf(stat); ok && id.settledBefore(readStart) {
+		s.files[name] = secondaryCachedFile{identity: id, digest: digest, ticket: t}
+	}
+	return t, digest, stat.ModTime(), true
 }
 
 func readSecondaryFile(path string) ([]byte, os.FileInfo, error) {
@@ -204,12 +263,13 @@ func readSecondaryFile(path string) ([]byte, os.FileInfo, error) {
 }
 
 // Keep the wire revision identical to store.Revision, including sidecar absence.
-func secondaryRevision(md, reactions []byte, exists bool) string {
-	digest := func(data []byte) string {
-		sum := sha256.Sum256(data)
-		return hex.EncodeToString(sum[:])
-	}
-	return digest([]byte(fmt.Sprintf("%s:%t:%s", digest(md), exists, digest(reactions))))
+func secondaryRevision(mdDigest string, reactions []byte, exists bool) string {
+	return sha256Hex([]byte(fmt.Sprintf("%s:%t:%s", mdDigest, exists, sha256Hex(reactions))))
+}
+
+func sha256Hex(data []byte) string {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
 }
 
 func (d *Daemon) isTransferBlocked(id string) bool {
@@ -364,7 +424,15 @@ func (d *Daemon) refreshSecondary(id string) {
 }
 
 func (d *Daemon) observeAndPublishSecondary(id, dir string) (map[string]web.TicketInfo, error) {
-	snapshot, err := observeSecondary(dir, readSecondaryFile)
+	// The observer runs one observation per source at a time, so nothing else
+	// replaces files between this read and the write below.
+	d.secondaryMu.Lock()
+	var files secondaryFileCache
+	if catalog := d.secondary[id]; catalog != nil {
+		files = catalog.files
+	}
+	d.secondaryMu.Unlock()
+	snapshot, err := observeSecondary(dir, readSecondaryFile, files)
 	if err != nil {
 		d.setSecondaryUnavailable(id, err)
 		return nil, err
@@ -375,13 +443,13 @@ func (d *Daemon) observeAndPublishSecondary(id, dir string) (map[string]web.Tick
 	infos := make(map[string]web.TicketInfo, len(snapshot.tickets))
 	projections := make(map[string][sha256.Size]byte, len(snapshot.tickets))
 	for ticketID, observed := range snapshot.tickets {
-		next[ticketID] = newTicketState(observed.stored.Ticket, observed.stored.FilePath)
+		next[ticketID] = &ticketState{ticket: observed.stored.Ticket, filePath: observed.stored.FilePath, modTime: observed.modTime}
 		info := d.secondaryTicketInfo(&cfg, id, observed, snapshot)
-		data, err := json.Marshal(info)
+		projection, err := secondaryProjection(info, observed.digest)
 		if err != nil {
 			return nil, err
 		}
-		infos[ticketID], projections[ticketID] = info, sha256.Sum256(data)
+		infos[ticketID], projections[ticketID] = info, projection
 	}
 	d.secondaryMu.Lock()
 	catalog := d.secondary[id]
@@ -391,7 +459,7 @@ func (d *Daemon) observeAndPublishSecondary(id, dir string) (map[string]web.Tick
 	}
 	old := catalog.projections
 	wasAvailable := catalog.source.Available
-	catalog.tickets, catalog.projections = next, projections
+	catalog.tickets, catalog.projections, catalog.files = next, projections, snapshot.files
 	catalog.source.Available, catalog.source.Error = true, ""
 	d.secondaryMu.Unlock()
 	d.reconcileSecondaryDependencies()
@@ -413,6 +481,27 @@ func (d *Daemon) observeAndPublishSecondary(id, dir string) (map[string]web.Tick
 		}
 	}
 	return infos, nil
+}
+
+// secondaryProjection fingerprints everything a reader can see of info. The
+// body text and note text come from the document bytes alone, so the document
+// digest stands in for them: encoding them took longer than reading and
+// parsing the whole folder.
+func secondaryProjection(info web.TicketInfo, digest string) ([sha256.Size]byte, error) {
+	info.Body, info.Description, info.DescriptionTail = "", nil, nil
+	info.Notes = slices.Clone(info.Notes)
+	for i := range info.Notes {
+		info.Notes[i].Text = ""
+	}
+	data, err := json.Marshal(info)
+	if err != nil {
+		return [sha256.Size]byte{}, err
+	}
+	h := sha256.New()
+	h.Write([]byte(digest))
+	h.Write([]byte{0})
+	h.Write(data)
+	return [sha256.Size]byte(h.Sum(nil)), nil
 }
 
 func (d *Daemon) ListTicketSources() []web.TicketSourceInfo {

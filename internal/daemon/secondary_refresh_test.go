@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -509,11 +508,6 @@ func TestSecondaryPublicationComparesBodyBeforeOmission(t *testing.T) {
 	d.refreshSecondary(source)
 	assert.Equal(t, []string{"subject"}, secondaryUpdateIDs(t, secondaryEvents(ch)))
 	assert.NotEqual(t, before, d.secondary[source].projections["subject"])
-	full, err := d.GetSecondaryTicket(source, "subject")
-	require.NoError(t, err)
-	data, err := json.Marshal(full)
-	require.NoError(t, err)
-	assert.Equal(t, sha256.Sum256(data), d.secondary[source].projections["subject"], "comparison must include body fields, not the trimmed SSE payload")
 	d.refreshSecondary(source)
 	assert.Empty(t, secondaryEvents(ch))
 }

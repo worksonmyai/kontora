@@ -174,7 +174,8 @@ function fixtures() {
         assert.equal(url.origin, base, `External request: ${url}`);
         if (url.pathname.startsWith('/api/')) return await api(route, url);
         assert.equal(route.request().method(), 'GET');
-        assert.ok(assets.has(url.pathname) && !url.search, `Unknown asset: ${url}`);
+        // index.html names its scripts and stylesheets with a ?v= content hash.
+        assert.ok(assets.has(url.pathname) && (!url.search || /^\?v=[0-9a-f]+$/.test(url.search)), `Unknown asset: ${url}`);
         return await route.continue();
       } catch (error) {
         violations.push(error.message);

@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"io/fs"
+	"maps"
 	"net/http"
 	"os"
 	"path"
@@ -25,6 +26,7 @@ var assetContentTypes = map[string]string{
 	".js":    "text/javascript; charset=utf-8",
 	".mjs":   "text/javascript; charset=utf-8",
 	".css":   "text/css; charset=utf-8",
+	".map":   "application/json",
 	".woff2": "font/woff2",
 	".png":   "image/png",
 }
@@ -38,9 +40,10 @@ const (
 	// actually changes, and the reply carries no body either way.
 	cacheRevalidate = "no-cache"
 
-	// uiBundleAsset is the name the compiled UI modules are served under. It
-	// is the one asset with no file behind it.
-	uiBundleAsset = "app.js"
+	// uiBundleAsset is the name the compiled UI modules are served under.
+	// It and its sourcemap are the only assets with no file behind them.
+	uiBundleAsset    = "app.js"
+	uiSourceMapAsset = "app.js.map"
 )
 
 // staticAsset is one embedded UI file, read into memory once with everything a
@@ -52,6 +55,10 @@ type staticAsset struct {
 	cacheControl string
 	body         []byte
 	etag         string
+	// version is the content hash index.html puts in this asset's URL as
+	// ?v=. Requested under it, the bytes can never change, so they are cached
+	// without revalidation. Empty for assets the document does not version.
+	version string
 	// gzipETag is empty when the asset goes out as-is: already-compressed
 	// bytes, or a file gzip does not shrink. gzipBody is then nil too.
 	gzipETag string
@@ -91,36 +98,83 @@ func buildAssets() (map[string]*staticAsset, error) {
 	// resolves the asset itself, so under KONTORA_WEB_DIR the table entry is
 	// left out rather than freezing one reading of a working copy.
 	if devWebDir() == "" {
-		a, err := embeddedUIAsset()
+		ui, err := embeddedUIAssets()
 		if err != nil {
 			return nil, err
 		}
-		assets[uiBundleAsset] = a
+		maps.Copy(assets, ui)
+		// Only here: under KONTORA_WEB_DIR any asset can change on the next
+		// request, so no URL may promise fixed bytes.
+		versionAssetURLs(assets)
 	}
 
 	return assets, nil
 }
 
-// embeddedUIAsset is the compiled-in bundle, packed for serving once.
-var embeddedUIAsset = sync.OnceValues(func() (*staticAsset, error) {
+// versionAssetURLs points index.html at /<name>?v=<content hash> for each
+// script and stylesheet it loads that would otherwise revalidate. A page load
+// then waits for one revalidation round trip, the document's, instead of the
+// document's and then its subresources'. On a phone talking to a remote daemon
+// that round trip is the slowest part of a reload.
+//
+// Fonts keep their plain URLs: fonts.css names them without a version, and a
+// preload under a different URL would download each font twice.
+func versionAssetURLs(assets map[string]*staticAsset) {
+	index := assets["index.html"]
+	if index == nil {
+		return
+	}
+	html := index.body
+	for name, a := range assets {
+		ext := path.Ext(name)
+		if a.cacheControl != cacheRevalidate || (ext != ".js" && ext != ".css") {
+			continue
+		}
+		ref := []byte(`"/` + name + `"`)
+		if !bytes.Contains(html, ref) {
+			continue
+		}
+		a.version = strings.Trim(a.etag, `"`)[:12]
+		html = bytes.ReplaceAll(html, ref, []byte(`"/`+name+`?v=`+a.version+`"`))
+	}
+	assets["index.html"] = newAsset("index.html", html)
+}
+
+// embeddedUIAssets is the compiled-in bundle and its sourcemap, packed for
+// serving once. Only DevTools asks for the map, so it is compressed on its
+// first request rather than at startup.
+var embeddedUIAssets = sync.OnceValues(func() (map[string]*staticAsset, error) {
 	bundle, err := embeddedUIBundle()
 	if err != nil {
 		return nil, err
 	}
-	return newAsset(uiBundleAsset, bundle), nil
+	sourceMap := newLazyAsset(uiSourceMapAsset, bundle.sourceMap)
+	sourceMap.gzipBody = sync.OnceValue(sourceMap.gzipBody)
+	return map[string]*staticAsset{
+		uiBundleAsset:    newAsset(uiBundleAsset, bundle.js),
+		uiSourceMapAsset: sourceMap,
+	}, nil
 })
 
-// uiAsset is the /app.js response: the working copy compiled fresh when
-// KONTORA_WEB_DIR is set, and the bundle packed at startup otherwise.
-func uiAsset() (*staticAsset, error) {
+// uiAsset is the /app.js or /app.js.map response: the working copy compiled
+// fresh when KONTORA_WEB_DIR is set, and the bundle packed at startup
+// otherwise.
+func uiAsset(name string) (*staticAsset, error) {
 	if devWebDir() == "" {
-		return embeddedUIAsset()
+		ui, err := embeddedUIAssets()
+		if err != nil {
+			return nil, err
+		}
+		return ui[name], nil
 	}
 	bundle, err := uiBundle()
 	if err != nil {
 		return nil, err
 	}
-	return newLazyAsset(uiBundleAsset, bundle), nil
+	if name == uiSourceMapAsset {
+		return newLazyAsset(name, bundle.sourceMap), nil
+	}
+	return newLazyAsset(name, bundle.js), nil
 }
 
 // devAsset reads one file of the working copy under KONTORA_WEB_DIR, so an
@@ -204,7 +258,7 @@ func ContentETag(body []byte, suffix string) string {
 // the browser undo a second layer.
 func compressibleAsset(name string) bool {
 	switch path.Ext(name) {
-	case ".html", ".js", ".mjs", ".css":
+	case ".html", ".js", ".mjs", ".css", ".map":
 		return true
 	}
 	return false
@@ -249,13 +303,13 @@ func (s *Server) serveAsset(w http.ResponseWriter, r *http.Request) {
 	}
 	a := s.assets[name]
 	switch {
-	case name == uiBundleAsset:
+	case name == uiBundleAsset || name == uiSourceMapAsset:
 		// Under KONTORA_WEB_DIR this compiles the working copy, which is what
 		// makes a browser reload pick up an edit. A build that fails must not
 		// fall back to the last good bundle; the message goes to the log
 		// rather than the body, because this response needs no auth.
 		var err error
-		if a, err = uiAsset(); err != nil {
+		if a, err = uiAsset(name); err != nil {
 			s.log.Error("building the web UI", "err", err)
 			http.Error(w, "the web UI failed to build; see the daemon log", http.StatusInternalServerError)
 			return
@@ -276,7 +330,11 @@ func (s *Server) serveAsset(w http.ResponseWriter, r *http.Request) {
 		// load anything. Everything else keeps the baseline policy.
 		h.Set("Content-Security-Policy", documentCSP)
 	}
-	h.Set("Cache-Control", a.cacheControl)
+	if a.version != "" && r.URL.Query().Get("v") == a.version {
+		h.Set("Cache-Control", cacheImmutable)
+	} else {
+		h.Set("Cache-Control", a.cacheControl)
+	}
 	body, etag := a.body, a.etag
 	sendGzip := false
 	if a.gzipETag != "" {

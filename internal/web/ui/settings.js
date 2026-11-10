@@ -577,7 +577,7 @@ export function kontoraSettings() {
         const res = await fetch('/api/config/raw', {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ content }),
+          body: JSON.stringify({ content, expected_content: this._settingsRawText }),
         });
         if (res.status === 401) { this.needsAuth = true; return false; }
         if (res.status === 204) {
@@ -603,11 +603,8 @@ export function kontoraSettings() {
       }
     },
 
-    // PUT replaces the whole file and the daemon takes no precondition, so a
-    // Settings tab left open would overwrite an edit made meanwhile in $EDITOR,
-    // by kontora init, or from a second tab. Re-read the file right before
-    // writing it. That narrows the window rather than closing it; only an
-    // If-Match on the daemon would close it.
+    // The early read gives a clearer conflict message. expected_content on the
+    // write also catches changes made between this read and the PUT.
     async _settingsStale() {
       const res = await fetch('/api/config/raw');
       if (!res.ok) return false;
@@ -1316,10 +1313,7 @@ export function kontoraSettings() {
       }
       if (this.currentView === 'automations' && view !== 'automations') {
         if (!this.automationsConfirmReplace()) return false;
-        this.automationsEditing = false;
-        this.automationsSelected = null;
-        ++this._automationsEditorSeq;
-        this.automationsCancelPreview();
+        this.automationsLeave();
       }
       // currentView changes nowhere else, and applyRoute routes even a ticket
       // hash through here, so this one call covers every path out of Stats.
@@ -1339,7 +1333,16 @@ export function kontoraSettings() {
       if (this.currentView === 'stats' && view !== 'stats') this.closeStats();
       if (this.currentView === 'archive' && view !== 'archive') this.closeArchive();
       if (view !== 'board' && this.selectedTicket && this.epicIsAgent(this.selectedTicket)) this.closeDetail(false);
-      if (view === 'automations') { this.currentView = 'automations'; await this.openAutomations(); if (navigation !== this._navigationSeq) return false; this.writeHash(); return; }
+      if (view === 'automations') {
+        if (this.currentView === 'automations' && typeof destination === 'string') {
+          if (await this.automationsBack(false, true) === false || navigation !== this._navigationSeq) return false;
+        }
+        this.currentView = 'automations';
+        await this.automationsOpen();
+        if (navigation !== this._navigationSeq) return false;
+        this.writeHash();
+        return true;
+      }
       if (view === 'stats') { this.currentView = 'stats'; this.openStats(); this.writeHash(); return; }
       if (view === 'archive') { this.currentView = 'archive'; this.openArchive(); this.writeHash(); return; }
       if (view === 'settings') { await this.openSettings(); this.writeHash(); return; }

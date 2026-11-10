@@ -1,22 +1,82 @@
 package web
 
 import (
+	"fmt"
+	"maps"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/worksonmyai/kontora/internal/automation"
 )
 
 var automationProtectedRoutes = []struct{ method, path, body string }{
 	{"GET", "/api/automations", ""},
-	{"POST", "/api/automations", `{"request_id":"r1","definition":{}}`},
-	{"POST", "/api/automations/preview", `{"frequency":"daily","time":"09:00","timezone":"UTC"}`},
+	{"POST", "/api/automations", `{"request_id":"r1","key":"daily-report","definition":{}}`},
+	{"POST", "/api/automations/preview", `{"schedule":"0 9 * * *","timezone":"UTC"}`},
 	{"GET", "/api/automations/a1", ""},
-	{"PUT", "/api/automations/a1", `{"revision":7}`},
-	{"GET", "/api/automations/a1/occurrences", ""},
-	{"POST", "/api/automations/a1/occurrences/o1/skip", `{"revision":1}`},
+	{"PUT", "/api/automations/a1", `{"revision":7,"definition":{}}`},
+	{"DELETE", "/api/automations/a1", `{"revision":7}`},
+	{"POST", "/api/automations/a1/run", `{"request_id":"r1"}`},
+	{"POST", "/api/automations/a1/stop", `{"n":1}`},
+	{"POST", "/api/automations/a1/pause", `{"revision":7}`},
+	{"POST", "/api/automations/a1/resume", `{"revision":7}`},
+	{"GET", "/api/automations/a1/runs", ""},
+	{"GET", "/api/automations/a1/runs/1/log", ""},
+	{"GET", "/api/automations/a1/runs/1/log?raw=1", ""},
+}
+
+func automationTokenQuery(path, query string) string {
+	if strings.Contains(path, "?") {
+		return strings.Replace(query, "?", "&", 1)
+	}
+	return query
+}
+
+type automationTerminalMockService struct{ automationMockService }
+
+func (m *automationTerminalMockService) AutomationTerminal(id string, n uint64) (AutomationTerminalTarget, error) {
+	m.calls = append(m.calls, "terminal:"+id)
+	m.n = n
+	return AutomationTerminalTarget{}, automation.ErrNotFound
+}
+
+func TestAutomationTerminalTransport(t *testing.T) {
+	for _, path := range []string{"/api/automations/a1/runs/7/terminal", "/ws/automations/a1/7"} {
+		for _, authority := range []bool{false, true} {
+			for _, tc := range []struct {
+				name    string
+				headers map[string]string
+				allowed bool
+			}{
+				{"missing", nil, false},
+				{"foreign host", map[string]string{"Host": "evil.example", "Authorization": "Bearer secret", OperatorTokenHeader: "operator-secret"}, false},
+				{"foreign origin", map[string]string{"Origin": "https://evil.example", "Authorization": "Bearer secret", OperatorTokenHeader: "operator-secret"}, false},
+				{"authorized", map[string]string{"Authorization": "Bearer secret", OperatorTokenHeader: "operator-secret"}, true},
+			} {
+				t.Run(path+"/"+tc.name+"/authority="+fmt.Sprint(authority), func(t *testing.T) {
+					svc := &automationTerminalMockService{}
+					var opts []ServerOption
+					if authority {
+						opts = append(opts, WithAuthority(*testAuthorityConfig()))
+					}
+					srv := automationTestServer(t, svc, "secret", opts...)
+					w := automationRequest(srv, "GET", path+"?session=untrusted&window=untrusted", "", tc.headers)
+					if tc.allowed {
+						require.Equal(t, 404, w.Code, w.Body.String())
+						assert.Equal(t, []string{"terminal:a1"}, svc.calls)
+						assert.Equal(t, uint64(7), svc.n)
+					} else {
+						assert.Contains(t, []int{401, 403}, w.Code)
+						assert.Empty(t, svc.calls)
+					}
+				})
+			}
+		}
+	}
 }
 
 func TestAutomationSharedTokenProtection(t *testing.T) {
@@ -38,7 +98,7 @@ func TestAutomationSharedTokenProtection(t *testing.T) {
 			} {
 				t.Run(tc.name, func(t *testing.T) {
 					svc.calls = nil
-					w := automationRequest(srv, route.method, route.path+tc.query, route.body, tc.headers)
+					w := automationRequest(srv, route.method, route.path+automationTokenQuery(route.path, tc.query), route.body, tc.headers)
 					if tc.allowed {
 						assert.Less(t, w.Code, 300, w.Body.String())
 					} else {
@@ -71,9 +131,7 @@ func TestAutomationHostAndOriginProtection(t *testing.T) {
 		} {
 			t.Run(route.method+" "+route.path+"/"+tc.name, func(t *testing.T) {
 				headers := map[string]string{"Authorization": "Bearer secret"}
-				for key, value := range tc.headers {
-					headers[key] = value
-				}
+				maps.Copy(headers, tc.headers)
 				svc.calls = nil
 				w := automationRequest(srv, route.method, route.path, route.body, headers)
 				if tc.want == 0 {
@@ -102,9 +160,8 @@ func TestAutomationMediaTypeAndUnsupportedActions(t *testing.T) {
 		}
 	}
 	for _, route := range []struct{ method, path string }{
-		{"DELETE", "/api/automations/a1"},
-		{"POST", "/api/automations/a1/run"},
-		{"POST", "/api/automations/a1/run-now"},
+		{"PATCH", "/api/automations/a1"},
+		{"PUT", "/api/automations/a1/run"},
 	} {
 		svc.calls = nil
 		w := automationRequest(srv, route.method, route.path, `{}`, nil)

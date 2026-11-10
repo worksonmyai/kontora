@@ -18,7 +18,6 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/worksonmyai/kontora/internal/automation"
 	"github.com/worksonmyai/kontora/internal/cli"
 	"github.com/worksonmyai/kontora/internal/config"
 	"github.com/worksonmyai/kontora/internal/frontmatter"
@@ -36,7 +35,7 @@ import (
 func (d *Daemon) RunningAgents() int {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	return len(d.running)
+	return len(d.running) + int(d.automationActive.Load())
 }
 
 // ListTickets returns info for all tracked tickets.
@@ -74,10 +73,10 @@ func (d *Daemon) GetTicket(id string) (web.TicketInfo, error) {
 
 // CreateTicket creates a new ticket file and registers it in the daemon.
 func (d *Daemon) CreateTicket(req web.CreateTicketRequest) (web.TicketInfo, error) {
-	return d.createTicket(req, nil)
+	return d.createTicket(req)
 }
 
-func (d *Daemon) createTicket(req web.CreateTicketRequest, occurrence *automation.Occurrence) (web.TicketInfo, error) {
+func (d *Daemon) createTicket(req web.CreateTicketRequest) (web.TicketInfo, error) {
 	release, admissionErr := d.ordinaryMutationAdmission("")
 	if admissionErr != nil {
 		return web.TicketInfo{}, admissionErr
@@ -86,13 +85,9 @@ func (d *Daemon) createTicket(req web.CreateTicketRequest, occurrence *automatio
 	cfg := d.config()
 	var id string
 	var err error
-	if occurrence != nil {
-		id = occurrence.TicketID
-	} else {
-		id, err = cli.GenerateID(cfg, req.Path)
-		if err != nil {
-			return web.TicketInfo{}, fmt.Errorf("generating ticket id: %w", err)
-		}
+	id, err = cli.GenerateID(cfg, req.Path)
+	if err != nil {
+		return web.TicketInfo{}, fmt.Errorf("generating ticket id: %w", err)
 	}
 
 	filePath := filepath.Join(config.ExpandTilde(cfg.TicketsDir), id+".md")
@@ -131,15 +126,8 @@ func (d *Daemon) createTicket(req web.CreateTicketRequest, occurrence *automatio
 		Parent:      req.Parent,
 		NoEdit:      true,
 	}
-	if occurrence != nil {
-		opts.AutomationID = occurrence.AutomationID
-		opts.OccurrenceID = occurrence.ID
-		opts.ScheduledFor = occurrence.ScheduledFor.UTC().Format(time.RFC3339)
-	}
 	_, err = cli.New(cfg, opts)
 	if err != nil {
-		// Publication can fail after the final name appears. Let the watcher
-		// observe any visible file; automation recovery verifies provenance.
 		d.forgetSelfWrite(filePath)
 		return web.TicketInfo{}, fmt.Errorf("creating ticket: %w", mapAppError(err))
 	}
@@ -157,7 +145,7 @@ func (d *Daemon) createTicket(req web.CreateTicketRequest, occurrence *automatio
 	// neither handleFileChanged nor writeTicketFile.
 	d.observe(t, notify.OriginObserved)
 	d.warnUnmatchedNotifyLocked(cfg, t)
-	if t.Status == "todo" && occurrence == nil {
+	if t.Status == "todo" {
 		d.enqueue(t)
 	}
 	// A new child moves its epic; a new epic settles against whatever children
@@ -221,12 +209,6 @@ func (d *Daemon) UploadTicket(content []byte) (web.TicketInfo, error) {
 	}
 	if err := t.ClearSchedule(); err != nil {
 		return web.TicketInfo{}, fmt.Errorf("clearing %s: %w", ticket.FieldScheduledAt, err)
-	}
-
-	for _, field := range []string{"automation_id", "occurrence_id", "scheduled_for"} {
-		if err := t.DeleteField(field); err != nil {
-			return web.TicketInfo{}, fmt.Errorf("clearing %s: %w", field, err)
-		}
 	}
 
 	// Ensure created timestamp exists.
@@ -389,6 +371,8 @@ func (d *Daemon) GetConfig() web.ConfigInfo {
 		}
 	}
 	return web.ConfigInfo{
+		ConfigPath:      d.configPath,
+		LogsDir:         cfg.LogsDir,
 		TicketsDir:      ticketsDir,
 		TmuxSession:     d.tmuxSession,
 		TmuxSocket:      socket,
@@ -1597,23 +1581,9 @@ func (d *Daemon) GetRawConfig() (string, error) {
 // pinRestartOnly. If the write succeeds but the reload fails, the file stays on
 // disk and the running config is unchanged.
 func (d *Daemon) PutRawConfig(content string) error {
-	if d.configPath == "" {
-		return web.ErrConfigPathNotSet
-	}
-	if _, err := config.LoadReader(strings.NewReader(content)); err != nil {
-		return fmt.Errorf("%w: %s", web.ErrInvalidConfig, err)
-	}
-	if err := atomicWriteFile(d.configPath, []byte(content), 0o644); err != nil {
-		return err
-	}
-	// The write also fires the config watcher, so a second, idempotent reload
-	// usually follows. Reloading here as well keeps the behaviour the same
-	// whether or not the config path is a symlink, which the watcher's coverage
-	// depends on.
-	if err := d.reloadConfig(); err != nil {
-		return fmt.Errorf("config saved but reload failed: %w", err)
-	}
-	return nil
+	d.configMutationMu.Lock()
+	defer d.configMutationMu.Unlock()
+	return d.replaceConfig(content, nil)
 }
 
 // atomicWriteFile writes data to a temp file in the same directory and renames

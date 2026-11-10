@@ -145,21 +145,23 @@ type RunnerFunc func(ctx context.Context, p RunnerParams) (process.Result, error
 
 // RunnerParams contains the parameters passed to a RunnerFunc.
 type RunnerParams struct {
-	Binary             string
-	Args               []string
-	Dir                string
-	Timeout            time.Duration
-	TicketID           string // ticket ID; also the tmux window name when AttemptID is empty
-	AttemptID          string
-	ReplaceEnv         bool
-	RequireTermination bool
-	SessionName        string            // tmux session; ignored by DirectRunner
-	LogFile            string            // path for agent output log (PTY capture or materialized session log)
-	Interactive        bool              // use interactive tmux wait-for flow (for Claude agents)
-	SessionID          string            // Claude session ID; used for session JSONL materialization after agent exit
-	SessionDir         string            // pi session directory; used for session JSONL materialization after agent exit
-	Env                map[string]string // environment variables to set for the agent process
-	OnReady            func()            // called after the agent process is running (e.g. tmux window created)
+	Binary               string
+	Args                 []string
+	Dir                  string
+	Timeout              time.Duration
+	TicketID             string // ticket ID; also the tmux window name when AttemptID is empty
+	AttemptID            string
+	ReplaceEnv           bool
+	RequireTermination   bool
+	SessionName          string            // tmux session; ignored by DirectRunner
+	LogFile              string            // path for agent output log (PTY capture or materialized session log)
+	Interactive          bool              // use interactive tmux wait-for flow (for Claude agents)
+	SessionID            string            // Claude session ID; used for session JSONL materialization after agent exit
+	SessionDir           string            // pi session directory; used for session JSONL materialization after agent exit
+	Env                  map[string]string // environment variables to set for the agent process
+	OnReady              func()            // called after the agent process is running (e.g. tmux window created)
+	StableWindowIdentity bool
+	OnWindowCreated      func(tmux.WindowIdentity) error
 	// OnIdle is asked what to do each time an interactive agent signals it is
 	// idle. Nil, which is every run but a checkpointing Claude one, finishes the
 	// run on the first signal. DirectRunner ignores it: without a terminal there
@@ -233,23 +235,25 @@ func tmuxRunner(ctx context.Context, p RunnerParams) (process.Result, error) {
 		return process.Result{}, fmt.Errorf("tmux replacement environment requires the managed authority integration")
 	}
 	return tmux.Run(ctx, tmux.RunParams{
-		Binary:             p.Binary,
-		Args:               p.Args,
-		Dir:                p.Dir,
-		Timeout:            p.Timeout,
-		TicketID:           p.TicketID,
-		AttemptID:          p.AttemptID,
-		SessionName:        p.SessionName,
-		LogFile:            p.LogFile,
-		Interactive:        p.Interactive,
-		SessionID:          p.SessionID,
-		Env:                p.Env,
-		PathDirs:           process.CommonBinDirs(),
-		OnReady:            p.OnReady,
-		OnIdle:             p.OnIdle,
-		CompactChannel:     p.CompactChannel,
-		RequireTermination: p.RequireTermination,
-		TerminalReported:   p.TerminalReported,
+		Binary:               p.Binary,
+		Args:                 p.Args,
+		Dir:                  p.Dir,
+		Timeout:              p.Timeout,
+		TicketID:             p.TicketID,
+		AttemptID:            p.AttemptID,
+		SessionName:          p.SessionName,
+		LogFile:              p.LogFile,
+		Interactive:          p.Interactive,
+		SessionID:            p.SessionID,
+		Env:                  p.Env,
+		PathDirs:             process.CommonBinDirs(),
+		OnReady:              p.OnReady,
+		OnIdle:               p.OnIdle,
+		CompactChannel:       p.CompactChannel,
+		RequireTermination:   p.RequireTermination,
+		TerminalReported:     p.TerminalReported,
+		StableWindowIdentity: p.StableWindowIdentity,
+		OnWindowCreated:      p.OnWindowCreated,
 	})
 }
 
@@ -518,11 +522,18 @@ type Daemon struct {
 	companion *companionState
 
 	// automationMu serializes management and admission. Never take it under mu.
-	automationMu    sync.Mutex
-	automationStore *automation.Store
-	automationErr   error
-	automationRoot  string
-	automationWake  chan struct{}
+	automationMu              sync.Mutex
+	automationStore           *automation.Store
+	automationErr             error
+	automationRoot            string
+	automationWake            chan struct{}
+	automationExecutions      map[string]*automationExecution
+	automationJobs            []*automationDispatchJob
+	preferAutomation          bool
+	automationActive          atomic.Int64
+	automationLogLock         *os.File
+	automationRecoveryBlocked bool
+	configMutationMu          sync.Mutex
 
 	// webAddr is the address the web server listens on, so an assistant turn
 	// can tell its agent where to send its own kontora calls. Empty until the
@@ -777,6 +788,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 
 	stopAutomations := d.startAutomations(tasksDir)
 	defer stopAutomations()
+	d.recoverAutomationRuns()
 
 	stopCompanion := d.startCompanion()
 	defer stopCompanion()

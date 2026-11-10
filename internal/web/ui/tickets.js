@@ -62,6 +62,17 @@ export function kontoraTickets() {
       // Desktop and mobile are complementary x-if layers, so only one board
       // exists at a time and crossing the breakpoint rebuilds it.
       this.$watch('isMobile', () => this._onBreakpointChange());
+      const syncAutomationTerminal = () => {
+        if (this.currentView !== 'automations') return;
+        if (this.terminalOpen && (!this.terminalWanted() || this.terminalSubjectKey !== this.outputSubjectKey())) {
+          this.closeTerminal();
+          this.terminalRW = false;
+        }
+        if (this.terminalWanted() && !this.terminalOpen) this.$nextTick(() => this.openTerminal());
+      };
+      this.$watch('automations', syncAutomationTerminal);
+      this.$watch('automationsTab', syncAutomationTerminal);
+      this.$watch('automationsEditing', syncAutomationTerminal);
       this._bindGlobalEvents();
       this.setupAgentPicker();
       try {
@@ -89,6 +100,7 @@ export function kontoraTickets() {
         }
         return;
       }
+      this.automationsRefresh();
       this.connectSSE();
       // After the auth check, so a pane on a tokenless session does not fire a
       // second 401 of its own.
@@ -112,7 +124,7 @@ export function kontoraTickets() {
       this.recomputeBoard();
       // recomputeBoard derives runningAgents from in_progress kontora tickets;
       // prefer the daemon's authoritative running count at load.
-      this.runningAgents = data.running_agents || 0;
+      this.runningAgents = Math.max(0, (data.running_agents || 0) - (data.automation_running_agents || 0));
       this.updateFavicon();
     },
 
@@ -229,7 +241,7 @@ export function kontoraTickets() {
     // reads the session tab; mobile has its own tab state and must not depend
     // on a desktop-only value.
     terminalWanted() {
-      return this.currentView === 'board' && this.outputSubject()?.status === 'in_progress' && this.outputTab() === 'session';
+      return ['board', 'automations'].includes(this.currentView) && this.outputSubject()?.status === 'in_progress' && this.outputTab() === 'session';
     },
 
     showTerminalTab() {

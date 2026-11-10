@@ -56,6 +56,28 @@ func TestReportResult(t *testing.T) {
 	}
 }
 
+func TestReportAutomationResult(t *testing.T) {
+	for _, subject := range []string{"auto-test", "", "fake-ticket", "auto-t"} {
+		t.Run("subject="+subject, func(t *testing.T) {
+			inv := session.Invocation{Version: 1, ID: "inv-auto-7", AutomationID: "auto-test", RunNumber: 7, ResultPath: filepath.Join(t.TempDir(), "result.json")}
+			env := inv.Env()
+			var out bytes.Buffer
+			err := ReportResult(subject, "", strings.NewReader(`{"outcome":"complete","summary":"Automation finished."}`), &out, func(k string) string { return env[k] })
+			if subject != inv.AutomationID {
+				require.Error(t, err)
+				assert.Empty(t, out.String())
+				assert.NoFileExists(t, inv.ResultPath)
+				return
+			}
+			require.NoError(t, err)
+			assert.JSONEq(t, `{"accepted":true,"invocation_id":"inv-auto-7","outcome":"complete"}`, out.String())
+			got, err := session.ReadResult(inv.ResultPath)
+			require.NoError(t, err)
+			assert.Equal(t, "Automation finished.", got.Summary)
+		})
+	}
+}
+
 func TestReportResultInvocationIsolation(t *testing.T) {
 	dir := t.TempDir()
 	old := session.Invocation{Version: 1, ID: "old", TicketID: "kon-test", Stage: "implement", ResultPath: filepath.Join(dir, "old.json")}

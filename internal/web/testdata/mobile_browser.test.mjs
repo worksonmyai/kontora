@@ -2,6 +2,9 @@
 import assert from 'node:assert/strict';
 import { after, before, describe, test } from 'node:test';
 import { createRequire } from 'node:module';
+import { mkdir } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { chromium, webkit } from 'playwright';
 
 const require = createRequire(import.meta.url);
@@ -54,24 +57,27 @@ function fixtures() {
         exit_code: 0, run_outcome: 'complete', summary: 'Second code run complete.' },
     ] }));
   put(ticket('kon-epic', 'Passive fixture epic', { kind: 'epic', epic_mode: 'passive' }));
-  const config = { pipelines: ['standard'], default_pipeline: 'standard',
+  const config = { config_path: '/fixtures/config.yaml', pipelines: ['standard'], default_pipeline: 'standard',
     pipeline_infos: [{ name: 'standard', stages: ['plan', 'code'] }],
     agents: ['fixture-agent'], agent_infos: [{ name: 'fixture-agent', binary: 'pi' }],
     projects: [{ name: 'Fixture repository', path: '/fixtures/repository-with-a-long-name', agent: 'fixture-agent', pipeline: 'standard' }],
     custom_statuses: [], stages: ['plan', 'code'] };
   const requests = [], mutations = [], sockets = [], violations = [], expectedHTTPFailures = [];
   const behavior = { createFailure: null, createWait: null, saveFailure: null, outputRevision: 0,
-    automationFailure: null, automationWait: null, automationsAvailable: true };
-  const definitions = new Map([['auto-review', { id: 'auto-review', revision: 1, schedule_revision: 1,
-    name: 'Repository review', path: config.projects[0].path, agent: 'fixture-agent', instructions: 'Review recent changes.',
-    schedule: { frequency: 'weekdays', days: [1], time: '09:00', timezone: 'Europe/Berlin' },
-    enabled: false, skip_overlap: true, next: '2026-11-10T08:00:00Z' }]]);
-  const receipts = new Map();
-  const occurrences = [
-    { id: 'occ-archived', revision: 1, automation_id: 'auto-review', schedule_revision: 1, scheduled_for: stamp, ticket_id: 'kon-archived', phase: 'admitted', reason: '' },
-    { id: 'occ-blocked', revision: 2, automation_id: 'auto-review', schedule_revision: 1, scheduled_for: stamp, ticket_id: '', phase: 'blocked', reason: 'Publication is uncertain', payload: { instructions: 'INTERNAL OCCURRENCE PAYLOAD' } },
-    { id: 'occ-deleted', revision: 1, automation_id: 'auto-review', schedule_revision: 1, scheduled_for: stamp, ticket_id: 'kon-deleted', phase: 'admitted', reason: '' },
-  ];
+    automationFailure: null, automationWait: null, automationsAvailable: true, loseCreate: false, loseRun: false };
+  const fires = ['2026-11-10T08:00:00Z', '2026-11-11T08:00:00Z', '2026-11-12T08:00:00Z', '2026-11-13T08:00:00Z'];
+  const runs = Array.from({ length: 29 }, (_, i) => ({ automation_id: 'auto-review', key: 'repository-review', n: 29 - i, revision: 3,
+    invocation_id: 'fixture-' + i, phase: 'terminal', outcome: ['complete', 'failed', 'skipped'][i % 3], trigger: i % 2 ? 'manual' : 'schedule',
+    scheduled_for: fires[0], accepted_at: fires[0], started_at: fires[0], completed_at: '2026-11-10T08:04:12Z',
+    exit_code: i % 3 === 1 ? 1 : 0, result: 'Fixture result for run ' + (29 - i), cost: i % 3 === 2 ? null : '0.31' }));
+  const definitions = new Map([['auto-review', { id: 'auto-review', key: 'repository-review', revision: 1,
+    name: 'Repository review', project: 'Fixture repository', path: config.projects[0].path, agent: 'fixture-agent', model: 'sonnet', prompt: 'Review recent changes. {{ .Run.Number }}',
+    schedule: '0 9 * * 1-5', schedule_human: 'Every weekday at 09:00', timezone: 'Europe/Berlin', workspace: 'worktree', overlap: 'skip', timeout: '30m',
+    enabled: false, running: false, created_at: stamp, next: fires[0], next_runs: fires, last_run: runs[0], runs_total: 214, success_rate: 95, avg_wall: 252,
+    spend_30d: '12.34', priced_runs: 19, tracked_runs: 20 }]]);
+  const receipts = new Map(), runReceipts = new Map();
+  const specFields = ['agent', 'enabled', 'model', 'name', 'overlap', 'path', 'prompt', 'schedule', 'timeout', 'timezone', 'workspace'];
+  const spec = value => assert.deepEqual(Object.keys(value).sort(), specFields);
   let rawConfig = 'tickets_dir: /fixtures/primary\nauto_pick_up: false\nmax_concurrent_agents: 3\nagents:\n  fixture-agent:\n    binary: pi\n';
   const list = folder => [...records.values()].filter(t => t.source === folder && !t.archived_at);
   const json = (route, value, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(value) });
@@ -80,19 +86,21 @@ function fixtures() {
     const request = route.request(), method = request.method(), path = url.pathname;
     requests.push(`${method} ${path}`);
     const allowedQuery = path === '/api/stats' ? ['range', 'project', 'pipeline']
-      : /\/occurrences$/.test(path) ? ['offset', 'limit']
+      : /\/runs$/.test(path) ? ['offset', 'limit']
+      : /\/runs\/\d+\/log$/.test(path) ? ['raw']
       : /\/(logs|activity)$/.test(path) ? ['stage', 'run', 'offset', 'limit', 'after'] : [];
     assert.ok([...url.searchParams.keys()].every(k => allowedQuery.includes(k)), `Unexpected query: ${url}`);
     if (path === '/api/automations' && method === 'GET') return json(route, { available: behavior.automationsAvailable,
       error: behavior.automationsAvailable ? undefined : 'Automation store locked', definitions: [...definitions.values()] });
     if (path === '/api/automations/preview' && method === 'POST') {
       const schedule = request.postDataJSON();
-      assert.ok(schedule.timezone && schedule.time && schedule.frequency);
+      assert.deepEqual(Object.keys(schedule).sort(), ['schedule', 'timezone']);
+      assert.equal(typeof schedule.schedule, 'string'); assert.ok(schedule.timezone);
       if (schedule.timezone === 'Invalid/Zone') {
         expectedHTTPFailures.push(base + path);
         return json(route, { error: 'Invalid timezone' }, 400);
       }
-      return json(route, { occurrences: ['2026-11-10T08:00:00Z', '2026-11-11T08:00:00Z', '2026-11-12T08:00:00Z'] });
+      return json(route, { occurrences: fires, human: 'Every weekday at 09:00' });
     }
     if (path === '/api/automations' && method === 'POST') {
       if (behavior.automationWait) await behavior.automationWait;
@@ -101,45 +109,71 @@ function fixtures() {
         return json(route, { error: behavior.automationFailure.error }, behavior.automationFailure.status);
       }
       const body = request.postDataJSON();
-      assert.ok(body.request_id && body.definition.instructions);
+      assert.deepEqual(Object.keys(body).sort(), ['definition', 'key', 'request_id']);
+      assert.ok(body.request_id && body.key); spec(body.definition);
       if (receipts.has(body.request_id)) return json(route, receipts.get(body.request_id));
-      const definition = { ...body.definition, id: 'auto-created-' + receipts.size, revision: 1, schedule_revision: 1 };
-      definitions.set(definition.id, definition); receipts.set(body.request_id, definition);
+      const definition = { ...body.definition, key: body.key, id: 'auto-created-' + receipts.size, revision: 1, running: false, created_at: stamp,
+        next: fires[0], next_runs: fires, schedule_human: 'Every weekday at 09:00', runs_total: 0, success_rate: null, avg_wall: null, spend_30d: null };
+      definitions.set(definition.id, definition); receipts.set(body.request_id, structuredClone(definition));
       mutations.push({ method, path, body });
+      if (behavior.loseCreate) { behavior.loseCreate = false; expectedHTTPFailures.push(base + path); return json(route, { error: 'Create response lost after commit' }, 503); }
       return json(route, definition, 201);
     }
-    const automationMatch = path.match(/^\/api\/automations\/([^/]+)(?:\/occurrences(?:\/([^/]+)\/skip)?)?$/);
+    const automationMatch = path.match(/^\/api\/automations\/([^/]+)(?:\/(run|stop|pause|resume|runs)(?:\/(\d+)\/(log|terminal))?)?$/);
     if (automationMatch) {
-      const definition = definitions.get(automationMatch[1]);
-      assert.ok(definition, 'Unknown fixture automation');
-      if (method === 'GET' && path.endsWith('/occurrences')) {
-        assert.equal(url.searchParams.get('limit'), '20');
-        const offset = Number(url.searchParams.get('offset'));
-        return json(route, { occurrences: definition.id === 'auto-review' ? occurrences.slice(offset, offset + 20) : [], total: definition.id === 'auto-review' ? occurrences.length : 0 });
+      const definition = definitions.get(automationMatch[1]), action = automationMatch[2];
+      if (!definition) { expectedHTTPFailures.push(base + path); return json(route, { error: 'Automation not found' }, 404); }
+      if (method === 'GET' && action === 'runs') {
+        const history = runs.filter(run => run.automation_id === definition.id);
+        if (automationMatch[3]) {
+          const n = Number(automationMatch[3]); assert.ok(history.some(run => run.n === n));
+          if (automationMatch[4] === 'terminal') {
+            assert.ok(definition.running && definition.current_run.n === n);
+            return json(route, { session: 'fixture-automation-session', window: '@7', identity: { window_id: '@7', session_id: '$3' } });
+          }
+          const lines = [{ at: fires[0], source: 'kontora', kind: 'lifecycle', text: `automation ${definition.id} · run #${n} · trigger schedule` },
+            { at: fires[0], source: 'agent', kind: 'tool_call', text: 'Inspect repository' },
+            { at: fires[0], source: 'agent', kind: 'success', text: 'No regressions <script>not markup</script>' }];
+          const raw = lines.map(line => line.text).join('\n') + '\n';
+          if (url.searchParams.get('raw') === '1') return route.fulfill({ contentType: 'text/plain; charset=utf-8', body: raw });
+          return json(route, { lines, raw });
+        }
+        const offset = Number(url.searchParams.get('offset')), limit = Number(url.searchParams.get('limit'));
+        assert.ok(limit >= 20 && limit <= 100); return json(route, { runs: history.slice(offset, offset + limit), total: history.length });
       }
-      if (method === 'POST' && automationMatch[2]) {
-        const occurrence = occurrences.find(row => row.id === automationMatch[2]);
-        const body = request.postDataJSON();
-        assert.equal(body.revision, occurrence.revision);
-        occurrence.phase = 'skipped'; occurrence.revision++;
-        mutations.push({ method, path, body });
-        return json(route, occurrence);
-      }
-      if (method === 'GET') return json(route, definition);
-      assert.equal(method, 'PUT');
-      if (behavior.automationWait) await behavior.automationWait;
-      if (behavior.automationFailure) {
-        expectedHTTPFailures.push(base + path);
-        return json(route, { error: behavior.automationFailure.error }, behavior.automationFailure.status);
-      }
+      if (method === 'GET' && !action) return json(route, definition);
       const body = request.postDataJSON();
-      if (body.revision !== definition.revision) {
-        expectedHTTPFailures.push(base + path);
-        return json(route, { error: 'Revision conflict' }, 409);
+      mutations.push({ method, path, body });
+      if (method === 'POST' && action === 'run') {
+        assert.deepEqual(Object.keys(body), ['request_id']); assert.ok(body.request_id);
+        const key = definition.id + ':' + body.request_id;
+        if (!runReceipts.has(key)) {
+          const run = { automation_id: definition.id, key: definition.key, n: Math.max(0, ...runs.filter(run => run.automation_id === definition.id).map(run => run.n)) + 1,
+            revision: 1, invocation_id: body.request_id, phase: definition.running && definition.overlap === 'skip' ? 'terminal' : definition.running && definition.overlap === 'queue' ? 'queued' : 'running',
+            outcome: definition.running && definition.overlap === 'skip' ? 'skipped' : '', trigger: 'manual', accepted_at: fires[0], started_at: fires[0] };
+          runs.unshift(run); runReceipts.set(key, run);
+          if (run.phase === 'running') definitions.set(definition.id, { ...definition, running: true, current_run: run, runs_total: (definition.runs_total || 0) + 1 });
+        }
+        if (behavior.loseRun) { behavior.loseRun = false; expectedHTTPFailures.push(base + path); return json(route, { error: 'Run response lost after allocation' }, 503); }
+        return json(route, runReceipts.get(key), 202);
       }
-      const saved = { ...body, revision: definition.revision + 1 };
-      definitions.set(saved.id, saved); mutations.push({ method, path, body });
-      return json(route, saved);
+      if (method === 'POST' && action === 'stop') {
+        assert.deepEqual(body, { n: definition.current_run.n });
+        const stopped = { ...definition.current_run, phase: 'terminal', outcome: 'failed', exit_code: 143, completed_at: '2026-11-10T08:04:12Z', result: 'stopped by user' };
+        runs.splice(runs.findIndex(run => run.automation_id === definition.id && run.n === body.n), 1, stopped);
+        definitions.set(definition.id, { ...definition, running: false, current_run: null, last_run: stopped }); return json(route, stopped, 202);
+      }
+      if (behavior.automationWait) await behavior.automationWait;
+      if (behavior.automationFailure) { expectedHTTPFailures.push(base + path); return json(route, { error: behavior.automationFailure.error }, behavior.automationFailure.status); }
+      if (body.revision !== definition.revision) { expectedHTTPFailures.push(base + path); return json(route, { error: 'Revision conflict' }, 409); }
+      if (method === 'DELETE' && !action) { assert.deepEqual(Object.keys(body), ['revision']); definitions.delete(definition.id); return route.fulfill({ status: 204 }); }
+      if (method === 'POST' && ['pause', 'resume'].includes(action)) {
+        assert.deepEqual(Object.keys(body), ['revision']); const saved = { ...definition, enabled: action === 'resume', revision: definition.revision + 1 };
+        definitions.set(saved.id, saved); return json(route, saved);
+      }
+      assert.equal(method, 'PUT'); assert.equal(action, undefined); assert.deepEqual(Object.keys(body).sort(), ['definition', 'revision']); spec(body.definition);
+      const saved = { ...definition, ...body.definition, revision: definition.revision + 1 };
+      definitions.set(saved.id, saved); return json(route, saved);
     }
     if (method === 'GET') {
       switch (path) {
@@ -242,7 +276,11 @@ function fixtures() {
       try {
         const url = new URL(ws.url());
         assert.equal(url.origin, base.replace('http:', 'ws:'));
-        assert.equal(url.pathname, '/ws/terminal/kon-live');
+        assert.ok(url.pathname === '/ws/terminal/kon-live' || /^\/ws\/automations\/[^/]+\/\d+$/.test(url.pathname), `Unknown socket: ${url}`);
+        if (url.pathname.startsWith('/ws/automations/')) {
+          const [, , , id, n] = url.pathname.split('/');
+          const row = definitions.get(id); assert.ok(row?.running); assert.equal(Number(n), row.current_run.n);
+        }
         assert.ok([...url.searchParams.keys()].every(k => ['cols', 'rows', 'rw'].includes(k)));
         assert.ok(Number(url.searchParams.get('cols')) > 0 && Number(url.searchParams.get('rows')) > 0);
         sockets.push(url);
@@ -260,19 +298,28 @@ function fixtures() {
       }
     });
   }
-  return { install, records, definitions, occurrences, requests, mutations, sockets, violations, behavior, expectedHTTPFailures };
+  return { install, records, definitions, runs, receipts, runReceipts, requests, mutations, sockets, violations, behavior, expectedHTTPFailures };
 }
 
-async function withPage(t, width, theme, run) {
+async function withPage(t, width, theme, run, options = {}) {
   const context = await browser.newContext({ viewport: { width, height: 900 }, colorScheme: theme,
     reducedMotion: 'reduce', serviceWorkers: 'block', locale: 'en-US', timezoneId: 'UTC' });
   const fixture = fixtures(), errors = [];
   await fixture.install(context);
-  await context.addInitScript(theme => {
+  await context.addInitScript(({ theme, sidebar }) => {
     localStorage.setItem('kontora-theme', theme);
     localStorage.setItem('kontora-assistant-open', '0');
-    localStorage.setItem('kontora-sidebar-hidden', '1');
-  }, theme);
+    localStorage.setItem('kontora-sidebar-hidden', sidebar ? '0' : '1');
+    window.__fixtureSSE = [];
+    window.EventSource = class extends EventTarget {
+      constructor(url) {
+        super(); this.url = url; this.closed = false; window.__fixtureSSE.push(this);
+        fetch(url).then(() => { if (!this.closed) this.emit('open'); });
+      }
+      emit(type, data = {}) { if (!this.closed) this.dispatchEvent(new MessageEvent(type, { data: JSON.stringify(data) })); }
+      close() { this.closed = true; }
+    };
+  }, { theme, sidebar: options.sidebar });
   const page = await context.newPage();
   page.setDefaultTimeout(4000);
   page.setDefaultNavigationTimeout(15000);
@@ -350,84 +397,249 @@ async function backToBoard(page) {
   await page.waitForFunction(() => !Alpine.$data(document.body).selectedTicket && !Alpine.$data(document.body).selectedEpic);
 }
 
+const automationButton = (page, name) => page.getByRole('button', { name, exact: true }).filter({ visible: true });
+async function emitAutomationEvent(page, type = 'automations_updated') {
+  await page.evaluate(type => window.__fixtureSSE.filter(stream => !stream.closed && stream.url === '/api/events').forEach(stream => stream.emit(type)), type);
+  await ready(page);
+}
+async function automationPreviewReady(page) {
+  await page.waitForFunction(() => { const app = Alpine.$data(document.body); return app.automationsPreview.length === 4 && !app.automationsPreviewLoading; });
+}
+async function automationSaveReady(page) {
+  await page.waitForFunction(() => !!Alpine.$data(document.body).automationsCanSave());
+}
+async function automationDetailReady(page, id) {
+  await page.waitForFunction(id => { const app = Alpine.$data(document.body); return app.automationsSelected === id && app.automationsDetail && !app.automationsEditing && !app.automationsHistoryLoading; }, id);
+  await ready(page);
+}
+
 describe('API-backed Automations', { concurrency: 2 }, () => {
-  for (const width of [320, 768, 1280]) for (const theme of themes) {
-    test(`save, conflicts, history and archive navigation / ${width}px / ${theme}`, { timeout: 60000 }, async t => {
+  for (const width of [320, 390, 767, 768, 1280]) for (const theme of themes) {
+    test(`routes, editor controls, retry, conflict and dirty guards / ${width}px / ${theme}`, { timeout: 60000 }, async t => {
       await withPage(t, width, theme, async (page, fixture) => {
         await openTicket(page, 'kon-draft', source);
         await routeTo(page, '#/automations');
-        const view = page.locator('.automations-view');
-        await view.getByRole('button', { name: 'New automation', exact: true }).first().click();
-        assert.equal(await model(page, 'automationsDraft.enabled').isChecked(), false);
-        assert.equal(await model(page, 'automationsDraft.skipOverlap').isChecked(), true);
+        await automationButton(page, 'new automation').first().click();
+        await page.waitForURL('**/#/automations/new');
+        const view = page.locator('.automations-view'), editor = page.locator('.automations-editor');
+        assert.equal(await view.getByRole('switch', { name: 'Runs on schedule' }).getAttribute('aria-checked'), 'true');
         await model(page, 'automationsDraft.name').fill('Daily fixture review');
         await model(page, 'automationsDraft.prompt').fill('Review with ordinary agent permissions.');
-        await model(page, 'automationsDraft.frequency').selectOption('weekly');
-        const tuesday = view.getByRole('button', { name: 'Tue', exact: true });
-        await tuesday.focus(); await page.keyboard.press('Space');
-        assert.equal(await tuesday.getAttribute('aria-pressed'), 'true');
+        await model(page, 'automationsDraft.path').fill('/fixtures/repository-with-a-long-name');
+        await model(page, 'automationsDraft.model').fill('opus');
+        await model(page, 'automationsDraft.timeout').fill('45m');
+        const agent = editor.locator('#automation-agent:visible');
+        const fallback = editor.locator('select');
+        if (await agent.count()) { await agent.click(); await page.getByRole('option', { name: /fixture-agent/ }).click(); }
+        else if (await fallback.count()) await fallback.selectOption('fixture-agent');
+        for (const name of ['every hour', 'every 6h', 'daily 09:00', 'weekdays 09:00', 'nightly 03:00', 'mondays 10:00']) {
+          await automationButton(page, name).click(); assert.equal(await automationButton(page, name).getAttribute('aria-pressed'), 'true');
+        }
+        await model(page, 'automationsDraft.schedule').fill('0 9 * *');
+        await visible(view.getByText(/cron takes 5 fields/));
+        await model(page, 'automationsDraft.schedule').fill('30m');
         await model(page, 'automationsDraft.timezone').fill('Invalid/Zone');
         await visible(view.getByText('Invalid timezone', { exact: true }));
+        await model(page, 'automationsDraft.schedule').fill('0 9 * * 1-5');
         await model(page, 'automationsDraft.timezone').fill('Europe/Berlin');
-        await page.waitForFunction(() => Alpine.$data(document.body).automationsPreview.length === 3);
-        assert.match(await view.locator('.automations-occurrences').innerText(), /09:00/);
-        await noPageOverflow(page);
-        let release;
-        fixture.behavior.automationWait = new Promise(resolve => { release = resolve; });
-        fixture.behavior.automationFailure = { status: 503, error: 'Automation store unavailable' };
-        await view.getByRole('button', { name: 'Save automation', exact: true }).focus();
-        await page.keyboard.press('Enter');
+        await automationPreviewReady(page);
+        assert.match(await editor.locator('ol').innerText(), /09:00/);
+        for (const value of ['repo', 'worktree']) { await view.getByRole('group', { name: 'Workspace' }).getByRole('button', { name: value, exact: true }).click(); }
+        for (const value of ['queue', 'replace', 'skip']) {
+          const button = view.getByRole('group', { name: 'If still running' }).getByRole('button', { name: value, exact: true }); await button.click(); assert.equal(await button.getAttribute('aria-pressed'), 'true');
+        }
+        await view.getByRole('switch', { name: 'Runs on schedule' }).click();
+        await noPageOverflow(page); await automationSaveReady(page);
+        fixture.behavior.loseCreate = true;
+        await automationButton(page, 'create automation').click();
+        await visible(view.getByText(/Create response lost after commit/));
         assert.equal(await model(page, 'automationsDraft.name').isDisabled(), true);
-        assert.equal(await view.getByRole('button', { name: 'Saving…', exact: true }).isDisabled(), true);
-        release();
-        await visible(view.getByText(/Automation store unavailable/));
-        fixture.behavior.automationWait = null; fixture.behavior.automationFailure = null;
-        await view.getByRole('button', { name: 'Retry save', exact: true }).click();
-        await visible(view.getByText('Automation saved.', { exact: true }));
-        assert.equal(fixture.definitions.size, 2);
-        await page.reload({ waitUntil: 'domcontentloaded' }); await ready(page);
-        await view.getByRole('button', { name: 'Daily fixture review', exact: true }).click();
+        await automationButton(page, 'retry save').click();
+        await automationDetailReady(page, 'auto-created-0'); assert.equal(fixture.definitions.size, 2);
+        assert.equal(new URL(page.url()).hash, '#/automations/auto-created-0');
+        const saved = fixture.definitions.get('auto-created-0'); assert.equal(saved.model, 'opus'); assert.equal(saved.timeout, '45m'); assert.equal(saved.enabled, false); assert.equal(saved.overlap, 'skip');
+        await page.reload({ waitUntil: 'domcontentloaded' }); await automationDetailReady(page, saved.id);
+        await automationButton(page, 'edit').click(); await page.waitForURL('**/#/automations/auto-created-0/edit');
         assert.equal(await model(page, 'automationsDraft.prompt').inputValue(), 'Review with ordinary agent permissions.');
-        assert.equal(await model(page, 'automationsDraft.timezone').inputValue(), 'Europe/Berlin');
-        const definition = [...fixture.definitions.values()].find(row => row.name === 'Daily fixture review');
-        fixture.definitions.set(definition.id, { ...definition, revision: definition.revision + 1, instructions: 'Saved by another browser.' });
         await model(page, 'automationsDraft.prompt').fill('My unsaved instructions');
-        await view.getByRole('button', { name: 'Save automation', exact: true }).click();
-        await visible(view.getByRole('button', { name: 'Reload saved version', exact: true }));
+        page.once('dialog', dialog => dialog.dismiss()); await automationButton(page, 'cancel').click();
         assert.equal(await model(page, 'automationsDraft.prompt').inputValue(), 'My unsaved instructions');
-        page.once('dialog', dialog => dialog.accept());
-        await view.getByRole('button', { name: 'Reload saved version', exact: true }).click();
+        page.once('dialog', dialog => dialog.dismiss()); await page.evaluate(() => { location.hash = '#/automations'; });
+        await page.waitForURL('**/#/automations/auto-created-0/edit');
+        fixture.definitions.set(saved.id, { ...saved, revision: 2, prompt: 'Saved by another browser.' });
+        await automationSaveReady(page); await automationButton(page, 'save changes').click();
+        await visible(automationButton(page, 'reload saved version'));
+        assert.equal(await model(page, 'automationsDraft.prompt').inputValue(), 'My unsaved instructions');
+        page.once('dialog', dialog => dialog.accept()); await automationButton(page, 'reload saved version').click();
         await page.waitForFunction(() => Alpine.$data(document.body).automationsDraft.prompt === 'Saved by another browser.');
-        await view.getByRole('button', { name: 'Repository review', exact: true }).click();
-        await visible(view.locator('.automations-history-list').getByText('Publication is uncertain', { exact: true }));
-        assert.equal(await view.getByText('INTERNAL OCCURRENCE PAYLOAD').count(), 0);
-        page.once('dialog', dialog => dialog.dismiss());
-        await view.getByRole('button', { name: 'Acknowledge as skipped', exact: true }).click();
-        assert.equal(fixture.occurrences[1].phase, 'blocked');
-        page.once('dialog', dialog => dialog.accept());
-        await view.getByRole('button', { name: 'Acknowledge as skipped', exact: true }).click();
-        await page.waitForFunction(() => Alpine.$data(document.body).automationsHistory.some(row => row.id === 'occ-blocked' && row.phase === 'skipped'));
-        await view.getByRole('link', { name: 'kon-deleted', exact: true }).click();
-        await visible(page.getByText('Historical ticket kon-deleted is missing. It may have been deleted.', { exact: true }));
-        await routeTo(page, '#/automations');
-        await view.getByRole('button', { name: 'Repository review', exact: true }).click();
-        await view.getByRole('link', { name: 'kon-archived', exact: true }).click();
-        await page.waitForURL('**/#/archive/t/kon-archived'); await ready(page);
-        await visible(page.locator('.archive-detail:visible'));
-        assert.equal(await page.evaluate(() => Alpine.$data(document.body).selectedTicket.source), 'primary');
+        await model(page, 'automationsDraft.prompt').fill('SSE draft stays local');
+        fixture.definitions.set(saved.id, { ...fixture.definitions.get(saved.id), revision: 3, prompt: 'SSE saved prompt' });
+        await emitAutomationEvent(page); await visible(automationButton(page, 'reload saved version'));
+        await emitAutomationEvent(page, 'open'); assert.equal(await model(page, 'automationsDraft.prompt').inputValue(), 'SSE draft stays local');
+        page.once('dialog', dialog => dialog.accept()); await automationButton(page, 'cancel').click(); await automationDetailReady(page, saved.id);
         await noPageOverflow(page);
-        await page.reload({ waitUntil: 'domcontentloaded' }); await ready(page);
-        await visible(page.locator('.archive-detail:visible'));
-        assert.equal(new URL(page.url()).hash, '#/archive/t/kon-archived');
-        await page.goBack(); await ready(page);
-        assert.equal(new URL(page.url()).hash, '#/automations');
-        await page.goForward(); await ready(page);
-        await visible(page.locator('.archive-detail:visible'));
-        assert.equal(new URL(page.url()).hash, '#/archive/t/kon-archived');
-        assert.ok(!fixture.requests.some(request => request.includes('/sources/secondary/tickets/kon-archived')));
+      });
+    });
+    test(`run history, logs, meters, session, stop and delete / ${width}px / ${theme}`, { timeout: 45000 }, async t => {
+      await withPage(t, width, theme, async (page, fixture) => {
+        await routeTo(page, '#/automations/auto-review'); await automationDetailReady(page, 'auto-review');
+        const detail = page.locator('.automations-detail');
+        assert.match(await detail.locator('.automations-meters').innerText(), /214[\s\S]*95%[\s\S]*4m 12s/);
+        assert.equal(await detail.locator('.automations-run-strip button').count(), 24);
+        assert.match(await detail.locator('.automations-run-strip').innerText(), /8 complete · 8 failed · 8 skipped/);
+        assert.match(await detail.locator('tbody tr').first().innerText(), /#29[\s\S]*complete[\s\S]*schedule[\s\S]*4m 12s[\s\S]*0[\s\S]*\$0.31[\s\S]*Fixture result for run 29/);
+        await automationButton(page, 'show more').click(); await page.waitForFunction(() => Alpine.$data(document.body).automationsHistory.length === 29);
+        await noPageOverflow(page);
+        await automationButton(page, '#29').click(); await visible(detail.getByText('Inspect repository', { exact: true }));
+        await noPageOverflow(page);
+        await visible(detail.getByText('No regressions <script>not markup</script>', { exact: true }));
+        assert.equal(await detail.locator('script').count(), 0);
+        const raw = detail.getByRole('link', { name: '⧉ raw', exact: true });
+        assert.equal(await raw.getAttribute('href'), '/api/automations/auto-review/runs/29/log?raw=1');
+        const popupPromise = page.waitForEvent('popup'); await raw.click(); const popup = await popupPromise; await popup.waitForLoadState();
+        assert.match(await popup.locator('body').innerText(), /automation auto-review · run #29/); await popup.close();
+        await automationButton(page, '↓ older').click(); await visible(detail.getByText('run #28', { exact: true }));
+        await automationButton(page, '↑ newer').click(); await visible(detail.getByText('run #29', { exact: true }));
+        await automationButton(page, '← all runs').click();
+        await detail.getByRole('tab', { name: 'prompt', exact: true }).click(); await visible(detail.getByText('Review recent changes. {{ .Run.Number }}', { exact: true }));
+        await automationButton(page, width < 768 ? 'resume' : 'resume schedule').click();
+        await page.waitForFunction(() => Alpine.$data(document.body).automationsRow()?.enabled);
+        await automationButton(page, width < 768 ? 'pause' : 'pause schedule').click();
+        await page.waitForFunction(() => !Alpine.$data(document.body).automationsRow()?.enabled);
+        fixture.behavior.loseRun = true; await automationButton(page, 'run now').click();
+        await visible(page.getByText(/Run response lost after allocation/).filter({ visible: true }).first());
+        await automationButton(page, width < 768 ? 'run now' : 'retry run now').click();
+        await page.waitForFunction(() => Alpine.$data(document.body).automationsTab === 'session' && Alpine.$data(document.body).terminalOpen);
+        await visible(page.locator('#automation-terminal-session .xterm'));
+        await page.waitForFunction(() => Alpine.$data(document.body).terminalConnected);
+        await noPageOverflow(page);
+        assert.equal(fixture.runReceipts.size, 1); const posts = fixture.mutations.filter(m => m.path.endsWith('/run'));
+        assert.equal(posts.length, 2); assert.deepEqual(posts[0].body, posts[1].body);
+        assert.ok(fixture.sockets.some(url => url.pathname === '/ws/automations/auto-review/30'));
+        await automationButton(page, 'read-only').click(); await visible(automationButton(page, 'read-write'));
+        await automationButton(page, 'read-write').click(); await visible(automationButton(page, 'read-only'));
+        await automationButton(page, '⇣ follow').click();
+        await automationButton(page, 'read-only').click();
+        const running = fixture.definitions.get('auto-review');
+        const replacement = { ...running.current_run, n: 31, invocation_id: 'fixture-sse-replacement' };
+        fixture.runs.unshift(replacement); fixture.definitions.set(running.id, { ...running, current_run: replacement });
+        await emitAutomationEvent(page);
+        await page.waitForFunction(() => { const app = Alpine.$data(document.body); return app.terminalSubjectKey === 'automation:auto-review:31' && app.terminalConnected; });
+        assert.ok(fixture.sockets.some(url => url.pathname === '/ws/automations/auto-review/31'));
+        await visible(automationButton(page, 'read-only'));
+        await automationButton(page, width < 768 ? 'stop' : '✕ stop run').click();
+        await page.waitForFunction(() => !Alpine.$data(document.body).automationsRow()?.running);
+        assert.equal(fixture.definitions.get('auto-review').last_run.result, 'stopped by user');
+        assert.equal(fixture.mutations.findLast(m => m.path.endsWith('/stop')).body.n, 31);
+        if (width >= 768) { await automationButton(page, 'More automation actions').click(); await page.getByRole('menuitem', { name: 'delete automation', exact: true }).click(); }
+        else await automationButton(page, 'delete').click();
+        const dialog = page.getByRole('dialog', { name: 'Delete automation', exact: true }); await visible(dialog);
+        await dialog.getByRole('button', { name: 'cancel', exact: true }).click(); assert.equal(fixture.definitions.size, 1);
+        if (width >= 768) { await automationButton(page, 'More automation actions').click(); await page.getByRole('menuitem', { name: 'delete automation', exact: true }).click(); }
+        else await automationButton(page, 'delete').click();
+        await dialog.getByRole('button', { name: 'delete automation', exact: true }).click();
+        await page.waitForURL('**/#/automations'); assert.equal(fixture.definitions.size, 0);
+        await visible(page.getByText(/deleted auto-review · logs kept/)); await noPageOverflow(page);
       });
     });
   }
+});
+
+async function automationScreenshot(page, label) {
+  const directory = process.env.KONTORA_BROWSER_SCREENSHOTS || join(tmpdir(), 'kontora-automation-browser');
+  await mkdir(directory, { recursive: true });
+  const png = await page.screenshot({ path: join(directory, `${engine}-${label}.png`), animations: 'disabled' });
+  assert.equal(png.subarray(1, 4).toString(), 'PNG'); assert.ok(png.length > 10000);
+}
+async function automationToken(locator, property, token) {
+  const colors = await locator.evaluate((el, { property, token }) => {
+    const probe = document.createElement('span'); probe.style.color = token.startsWith('--') ? `rgb(var(${token}))` : token; el.parentElement.append(probe);
+    const expected = getComputedStyle(probe).color, actual = getComputedStyle(el)[property]; probe.remove(); return { actual, expected };
+  }, { property, token });
+  assert.equal(colors.actual, colors.expected, `${property} must use ${token}`);
+}
+function near(actual, expected, label) { assert.ok(Math.abs(actual - expected) <= 1, `${label}: ${actual}, expected ${expected}`); }
+
+describe('desktop automation handoff', { concurrency: 2 }, () => {
+  for (const width of [1280, 1600]) for (const theme of themes) {
+    test(`visible sidebar, list/detail/editor geometry and tokens / ${width}px / ${theme}`, { timeout: 45000 }, async t => {
+      await withPage(t, width, theme, async (page, fixture) => {
+        await routeTo(page, '#/automations');
+        const sidebar = page.locator('#main-content > aside:visible'), view = page.locator('.automations-view');
+        await inViewport(sidebar); near((await sidebar.boundingBox()).width, 220, 'sidebar');
+        assert.equal(await sidebar.locator('nav > button').nth(1).getAttribute('aria-current'), 'page');
+        const row = view.locator('.automations-table tbody tr').first(); near((await row.boundingBox()).height, 36, 'list row');
+        near((await view.locator('.automations-table thead tr').boundingBox()).height, 28, 'table header');
+        const toggle = row.getByRole('switch'); near((await toggle.boundingBox()).width, 1.75 * 17, 'row switch'); near((await toggle.boundingBox()).height, 17, 'row switch');
+        await automationToken(view, 'backgroundColor', '--surface-frame');
+        assert.match(await row.locator('td').nth(1).evaluate(el => getComputedStyle(el).fontFamily), /JetBrains Mono/);
+        await noPageOverflow(page); await automationScreenshot(page, `${width}-${theme}-list`);
+        await toggle.click(); await page.waitForFunction(() => Alpine.$data(document.body).automations[0].enabled);
+        assert.equal(new URL(page.url()).hash, '#/automations');
+        await row.getByRole('button', { name: /Fixture repository.*Repository review/ }).click(); await automationDetailReady(page, 'auto-review');
+        const detail = view.locator('.automations-detail'), rail = detail.locator('.automations-rail');
+        near((await detail.boundingBox()).x, 220, 'detail retains sidebar'); near((await rail.boundingBox()).width, 308, 'detail rail'); await inViewport(rail);
+        near((await detail.locator('h1').evaluate(el => parseFloat(getComputedStyle(el).fontSize))), 19, 'identity title');
+        near((await detail.locator('tbody tr').first().boundingBox()).height, 32, 'run row');
+        near((await detail.locator('.automations-run-strip button').first().boundingBox()).height, 5, 'run strip');
+        await automationToken(detail.locator('tbody tr').nth(0).locator('td').nth(1), 'color', '--ok');
+        await automationToken(detail.locator('tbody tr').nth(1).locator('td').nth(1), 'color', 'hsl(var(--st-cancel))');
+        await automationToken(detail.locator('tbody tr').nth(2).locator('td').nth(1), 'color', '--tx-faint');
+        await automationToken(detail, 'backgroundColor', '--surface-950');
+        assert.match(await rail.innerText(), /12.34[\s\S]*19 of 20 runs priced/); await noPageOverflow(page); await automationScreenshot(page, `${width}-${theme}-detail`);
+        await automationButton(page, '#29').click(); await visible(detail.getByText('Inspect repository', { exact: true }));
+        const log = detail.locator('.automations-log-line').first();
+        const grid = await log.evaluate(el => getComputedStyle(el).gridTemplateColumns.split(' ').map(parseFloat));
+        near(grid[0], 62, 'log time column'); near(grid[1], 58, 'log source column');
+        await automationToken(detail.locator('.automations-log-line').nth(1).locator('span').last(), 'color', '--accent-bright');
+        await automationToken(detail.locator('.automations-log-line').nth(2).locator('span').last(), 'color', '--ok');
+        await automationButton(page, '← all runs').click();
+        await automationButton(page, 'More automation actions').click(); await page.getByRole('menuitem', { name: 'duplicate', exact: true }).click();
+        await page.waitForURL('**/#/automations/new');
+        assert.equal(await model(page, 'automationsDraft.name').inputValue(), 'Repository review (copy)');
+        assert.equal(await view.getByRole('switch', { name: 'Runs on schedule' }).getAttribute('aria-checked'), 'false');
+        const editor = view.locator('.automations-editor'), preview = view.locator('aside:visible'); await visible(preview);
+        near((await preview.boundingBox()).width, 420, 'YAML preview'); near((await view.boundingBox()).x, 220, 'editor retains sidebar');
+        await page.waitForFunction(() => Alpine.$data(document.body).automationsYAML.includes('enabled: false'));
+        assert.match(await preview.innerText(), /automations:[\s\S]*repository-review-copy:[\s\S]*prompt:[\s\S]*overlap: skip/);
+        await automationToken(preview, 'backgroundColor', '--surface-deep'); await automationToken(model(page, 'automationsDraft.name'), 'backgroundColor', '--surface-800');
+        assert.match(await editor.locator('label').first().evaluate(el => getComputedStyle(el).fontFamily), /JetBrains Mono/);
+        await page.waitForFunction(() => !Alpine.$data(document.body).automationsToast);
+        await noPageOverflow(page); await automationScreenshot(page, `${width}-${theme}-editor`);
+        await automationSaveReady(page); await automationButton(page, '▷ save & run now').click();
+        await page.waitForFunction(() => Alpine.$data(document.body).automationsTab === 'session' && !Alpine.$data(document.body).automationsEditing);
+        assert.equal(fixture.definitions.size, 2); assert.equal(fixture.runReceipts.size, 1);
+        for (const phase of ['queued', 'preparing', 'recovery_required']) {
+          await page.evaluate(phase => { const row = Alpine.$data(document.body).automationsRow(); row.running = false; row.current_run.phase = phase; }, phase);
+          await visible(automationButton(page, '✕ stop run'));
+        }
+        await automationButton(page, '✕ stop run').click(); await page.waitForFunction(() => !Alpine.$data(document.body).automationsRow()?.running);
+        await automationButton(page, 'edit').click(); await page.waitForURL('**/#/automations/auto-created-0/edit');
+        await page.reload({ waitUntil: 'domcontentloaded' }); await ready(page); await visible(model(page, 'automationsDraft.name'));
+        assert.equal(await model(page, 'automationsDraft.name').inputValue(), 'Repository review (copy)');
+        await automationButton(page, 'cancel').click(); await automationDetailReady(page, 'auto-created-0');
+        await sidebar.getByRole('button', { name: /Automations/ }).click(); await page.waitForURL('**/#/automations');
+      }, { sidebar: true });
+    });
+  }
+});
+
+describe('historical primary ticket navigation from other views', () => {
+  for (const width of [320, 1280]) test(`archive route reload and Back/Forward / ${width}px`, async t => {
+    await withPage(t, width, 'dark', async (page, fixture) => {
+      await openTicket(page, 'kon-draft', source); await routeTo(page, '#/automations');
+      await page.evaluate(() => { location.hash = '#/t/kon-deleted'; });
+      await visible(page.getByText('Historical ticket kon-deleted is missing. It may have been deleted.', { exact: true }));
+      await routeTo(page, '#/automations');
+      await page.evaluate(() => { location.hash = '#/archive/t/kon-archived'; });
+      await page.waitForURL('**/#/archive/t/kon-archived'); await ready(page); await visible(page.locator('.archive-detail:visible'));
+      assert.equal(await page.evaluate(() => Alpine.$data(document.body).selectedTicket.source), 'primary');
+      await page.reload({ waitUntil: 'domcontentloaded' }); await ready(page); await visible(page.locator('.archive-detail:visible'));
+      await page.goBack(); await page.waitForURL('**/#/automations'); await ready(page);
+      await page.goForward(); await page.waitForURL('**/#/archive/t/kon-archived'); await ready(page); await visible(page.locator('.archive-detail:visible'));
+      assert.ok(!fixture.requests.some(request => request.includes('/sources/secondary/tickets/kon-archived'))); await noPageOverflow(page);
+    });
+  });
 });
 
 describe('embedded responsive browser UI', { concurrency: 4 }, () => {
@@ -483,7 +695,7 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
         for (const [route, selector] of [
           ['#/new', '[x-model="createForm.title"]'],
           ['#/stats', '.stats-title'],
-          ['#/automations', '#automations-title'],
+          ['#/automations', '.automations-view .stats-title'],
           ['#/archive', '[aria-label="Filter archive"]'],
           ['#/settings', width <= 1100 ? '#settings-mobile-section' : '[aria-label="Search settings"]'],
         ]) {

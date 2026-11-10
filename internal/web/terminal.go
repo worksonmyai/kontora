@@ -109,7 +109,7 @@ func (s *Server) handleTerminalWS(w http.ResponseWriter, r *http.Request) {
 
 	go func() {
 		defer cancel()
-		s.readClientMessages(ctx, conn, ptmx, viewSession)
+		s.readClientMessages(ctx, conn, ptmx, viewSession, "", rw)
 	}()
 
 	s.log.Info("terminal session connected", "ticket", id, "view_session", viewSession)
@@ -117,7 +117,7 @@ func (s *Server) handleTerminalWS(w http.ResponseWriter, r *http.Request) {
 	s.log.Info("terminal session disconnected", "ticket", id, "view_session", viewSession)
 }
 
-func (s *Server) readClientMessages(ctx context.Context, conn *websocket.Conn, ptmx *os.File, viewSession string) {
+func (s *Server) readClientMessages(ctx context.Context, conn *websocket.Conn, ptmx *os.File, viewSession, socket string, rw bool) {
 	for {
 		_, data, err := conn.Read(ctx)
 		if err != nil {
@@ -136,10 +136,14 @@ func (s *Server) readClientMessages(ctx context.Context, conn *websocket.Conn, p
 				})
 				// Force tmux to redraw after PTY resize to prevent
 				// rendering artifacts from stale cursor positions.
-				_ = exec.Command("tmux", "refresh-client", "-t", "="+viewSession).Run()
+				args := []string{"refresh-client", "-t", "=" + viewSession}
+				if socket != "" {
+					args = append([]string{"-S", socket}, args...)
+				}
+				_ = exec.Command("tmux", args...).Run()
 			}
 		case "input":
-			if msg.Data != "" {
+			if rw && msg.Data != "" {
 				_, _ = ptmx.WriteString(msg.Data)
 			}
 		}

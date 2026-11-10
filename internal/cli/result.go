@@ -16,12 +16,15 @@ import (
 // invocation. inputFile, when present, must be absolute; otherwise stdin is read.
 // It needs neither ticket-store access nor daemon connectivity. An acknowledgement
 // is emitted only after immutable publication (including identical resubmission).
-func ReportResult(ticketID, inputFile string, stdin io.Reader, out io.Writer, getenv func(string) string) error {
+func ReportResult(subjectID, inputFile string, stdin io.Reader, out io.Writer, getenv func(string) string) error {
 	inv, err := session.InvocationFromEnv(getenv)
 	if err != nil {
 		return err
 	}
-	if ticketID == "" || ticketID != inv.TicketID {
+	if subjectID == "" || subjectID != inv.SubjectID() {
+		if inv.AutomationID != "" {
+			return fmt.Errorf("result automation must exactly match invocation automation %q", inv.AutomationID)
+		}
 		return fmt.Errorf("result ticket must exactly match invocation ticket %q", inv.TicketID)
 	}
 	input := stdin

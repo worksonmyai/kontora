@@ -2,189 +2,126 @@ package automation
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
+
+	"github.com/robfig/cron/v3"
 )
 
-func (s Schedule) Validate() error {
-	switch s.Frequency {
-	case "daily", "weekdays":
-		if len(s.Days) != 0 {
-			return validation("days are only valid for weekly schedules")
-		}
-	case "weekly":
-		if len(s.Days) == 0 || len(s.Days) > 7 {
-			return validation("weekly schedules need days (Sunday=0)")
-		}
-		var seen [7]bool
-		for _, d := range s.Days {
-			if d < 0 || d > 6 || seen[d] {
-				return validation("invalid or duplicate weekday")
-			}
-			seen[d] = true
-		}
-	default:
-		return validation("unsupported frequency %q", s.Frequency)
-	}
-	if len(s.Time) != 5 || s.Time[2] != ':' {
-		return validation("time must be HH:MM")
-	}
-	if _, err := time.Parse("15:04", s.Time); err != nil {
-		return validation("time must be HH:MM")
-	}
-	if s.Timezone == "" || s.Timezone == "Local" || s.Timezone == "localtime" || strings.ContainsAny(s.Timezone, "\\\x00") || strings.HasPrefix(s.Timezone, "/") || strings.Contains(s.Timezone, "..") || len(s.Timezone) > 200 {
-		return validation("timezone must be an explicit IANA name")
-	}
-	if _, err := time.LoadLocation(s.Timezone); err != nil {
-		return validation("invalid IANA timezone: %v", err)
-	}
-	return nil
+type Schedule struct {
+	cron     cron.Schedule
+	interval time.Duration
+	location *time.Location
 }
 
-func (s Schedule) selected(day time.Weekday) bool {
-	switch s.Frequency {
-	case "daily":
-		return true
-	case "weekdays":
-		return day != time.Saturday && day != time.Sunday
-	default:
-		for _, d := range s.Days {
-			if int(day) == d {
-				return true
-			}
-		}
-		return false
+func Compile(schedule, timezone string) (*Schedule, error) {
+	if timezone == "" {
+		timezone = "UTC"
 	}
-}
-
-func (s Schedule) Next(after time.Time) (time.Time, error) {
-	if err := s.Validate(); err != nil {
-		return time.Time{}, err
+	if timezone == "Local" || timezone == "localtime" || len(timezone) > 200 || strings.HasPrefix(timezone, "/") || strings.Contains(timezone, "..") || strings.ContainsAny(timezone, "\\\x00") {
+		return nil, validation("timezone must be an explicit IANA name")
 	}
-	if after.Year() < 1 || after.Year() > 9999 {
-		return time.Time{}, validation("after is out of range")
-	}
-	end := after.AddDate(0, 0, 16)
-	ceiling := time.Date(9999, 12, 31, 23, 59, 59, 999999999, time.UTC)
-	if end.After(ceiling) {
-		end = ceiling
-	}
-	first, _, _, err := s.between(after.Add(time.Nanosecond), end)
+	loc, err := time.LoadLocation(timezone)
 	if err != nil {
-		return time.Time{}, err
+		return nil, validation("invalid IANA timezone: %v", err)
 	}
-	if first.IsZero() {
-		return time.Time{}, validation("no next occurrence in supported date range")
+	if strings.TrimSpace(schedule) == "" {
+		return nil, validation("a schedule is required")
 	}
-	return first, nil
+	fields := strings.Fields(schedule)
+	if len(fields) == 1 && !strings.ContainsAny(schedule, "* /,-") {
+		if d, err := time.ParseDuration(schedule); err == nil {
+			if d < time.Minute || d%time.Minute != 0 {
+				return nil, validation("interval must be a positive whole number of minutes")
+			}
+			return &Schedule{interval: d, location: loc}, nil
+		}
+	}
+	if len(fields) != 5 {
+		return nil, validation("cron takes 5 fields (minute hour day month weekday), got %d", len(fields))
+	}
+	for _, field := range fields {
+		for _, r := range field {
+			if (r < '0' || r > '9') && !strings.ContainsRune("*/-,", r) {
+				return nil, validation("cron fields take digits, *, /, - and , only")
+			}
+		}
+	}
+	parser := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
+	parsed, err := parser.Parse(strings.Join(fields, " "))
+	if err != nil {
+		return nil, validation("invalid cron: %v", err)
+	}
+	// Starting in a leap year admits February 29 but rejects calendars with no possible date.
+	if parsed.Next(time.Date(2000, 1, 1, 0, 0, 0, 0, loc)).IsZero() {
+		return nil, validation("cron has no possible occurrence")
+	}
+	return &Schedule{cron: parsed, location: loc}, nil
 }
 
-func (s Schedule) Preview(after time.Time, n int) ([]time.Time, error) {
-	if err := s.Validate(); err != nil {
-		return nil, err
+func (s *Schedule) Next(after time.Time) time.Time {
+	if s.interval != 0 {
+		return after.Add(s.interval).In(s.location)
 	}
-	if n < 0 || n > 1000 {
+	return s.cron.Next(after.In(s.location))
+}
+
+func Preview(schedule, timezone string, after time.Time, count int) ([]time.Time, error) {
+	if count < 0 || count > 1000 {
 		return nil, validation("preview count must be between 0 and 1000")
 	}
-	result := make([]time.Time, 0, n)
-	for range n {
-		next, err := s.Next(after)
-		if err != nil {
-			return nil, err
-		}
-		result = append(result, next)
-		after = next
+	if !validInstant(after) {
+		return nil, validation("after is out of range")
 	}
-	return result, nil
-}
-
-func (s Schedule) LatestDue(first, now time.Time) (time.Time, int64, error) {
-	if err := s.Validate(); err != nil {
-		return time.Time{}, 0, err
-	}
-	if !validInstant(first) || !validInstant(now) {
-		return time.Time{}, 0, validation("due range is out of bounds")
-	}
-	_, latest, count, err := s.between(first, now)
-	return latest, count, err
-}
-
-func (s Schedule) between(first, now time.Time) (earliest, latest time.Time, count int64, err error) {
-	loc, err := time.LoadLocation(s.Timezone)
+	s, err := Compile(schedule, timezone)
 	if err != nil {
-		return earliest, latest, 0, fmt.Errorf("%w: %v", ErrValidation, err)
+		return nil, err
 	}
-	clock, _ := time.Parse("15:04", s.Time)
-	for cursor := first.UTC(); !cursor.After(now); {
-		local := cursor.In(loc)
-		_, offset := local.Zone()
-		start, end := local.ZoneBounds()
-		if !start.IsZero() {
-			start = start.UTC()
+	out := make([]time.Time, 0, count)
+	for range count {
+		after = s.Next(after)
+		if !validInstant(after) {
+			return nil, validation("no next occurrence in supported date range")
 		}
-		if !end.IsZero() {
-			end = end.UTC()
-		}
-		lo, hi := cursor, now.UTC()
-		if !end.IsZero() && !end.After(cursor) {
-			end = time.Date(cursor.Year()+1, 1, 1, 0, 0, 0, 0, time.UTC)
-		}
-		if !end.IsZero() && !end.After(hi) {
-			hi = end.Add(-time.Nanosecond)
-		}
-		if !start.IsZero() {
-			_, previous := start.Add(-time.Nanosecond).In(loc).Zone()
-			if previous > offset {
-				foldEnd := start.Add(time.Duration(previous-offset) * time.Second)
-				if lo.Before(foldEnd) {
-					lo = foldEnd
-				}
-			}
-		}
-		if !lo.After(hi) {
-			wallLo := lo.Add(time.Duration(offset) * time.Second)
-			wallHi := hi.Add(time.Duration(offset) * time.Second)
-			a := time.Date(wallLo.Year(), wallLo.Month(), wallLo.Day(), clock.Hour(), clock.Minute(), 0, 0, time.UTC)
-			b := time.Date(wallHi.Year(), wallHi.Month(), wallHi.Day(), clock.Hour(), clock.Minute(), 0, 0, time.UTC)
-			if a.Before(wallLo) {
-				a = a.AddDate(0, 0, 1)
-			}
-			if b.After(wallHi) {
-				b = b.AddDate(0, 0, -1)
-			}
-			if !a.After(b) {
-				days := (b.Unix()-a.Unix())/86400 + 1
-				perWeek := int64(0)
-				for d := range 7 {
-					if s.selected(time.Weekday(d)) {
-						perWeek++
-					}
-				}
-				n := days / 7 * perWeek
-				for d := int64(0); d < days%7; d++ {
-					if s.selected(time.Weekday((int64(a.Weekday()) + d) % 7)) {
-						n++
-					}
-				}
-				if n > 0 {
-					for !s.selected(a.Weekday()) {
-						a = a.AddDate(0, 0, 1)
-					}
-					for !s.selected(b.Weekday()) {
-						b = b.AddDate(0, 0, -1)
-					}
-					if earliest.IsZero() {
-						earliest = a.Add(-time.Duration(offset) * time.Second)
-					}
-					latest = b.Add(-time.Duration(offset) * time.Second)
-					count += n
-				}
-			}
-		}
-		if end.IsZero() || end.After(now) {
-			break
-		}
-		cursor = end.UTC()
+		out = append(out, after)
 	}
-	return earliest, latest, count, nil
+	return out, nil
+}
+
+func Human(schedule string) string {
+	if d, err := time.ParseDuration(schedule); err == nil && d >= time.Minute && d%time.Minute == 0 {
+		if d == time.Hour {
+			return "every hour"
+		}
+		if d%time.Hour == 0 {
+			return fmt.Sprintf("every %dh", d/time.Hour)
+		}
+		return fmt.Sprintf("every %dm", d/time.Minute)
+	}
+	f := strings.Fields(schedule)
+	if len(f) != 5 {
+		return schedule
+	}
+	if f[0] == "0" && f[1] == "*" && strings.Join(f[2:], " ") == "* * *" {
+		return "every hour, on the hour"
+	}
+	if f[0] == "0" && strings.HasPrefix(f[1], "*/") && strings.Join(f[2:], " ") == "* * *" {
+		return "every " + strings.TrimPrefix(f[1], "*/") + "h"
+	}
+	m, me := strconv.Atoi(f[0])
+	h, he := strconv.Atoi(f[1])
+	if me == nil && he == nil && f[2] == "*" && f[3] == "*" {
+		clock := fmt.Sprintf("%02d:%02d", h, m)
+		if f[4] == "*" {
+			return "daily at " + clock
+		}
+		if f[4] == "1-5" {
+			return "weekdays at " + clock
+		}
+		if d, e := strconv.Atoi(f[4]); e == nil && d >= 0 && d <= 6 {
+			return time.Weekday(d).String() + " at " + clock
+		}
+	}
+	return strings.Join(f, " ")
 }

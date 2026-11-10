@@ -3,10 +3,10 @@ package automation
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"strings"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -14,521 +14,382 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-var storeNow = instant("2026-03-02T08:00:00Z")
-
-func definition() Definition {
-	return Definition{Name: "Daily review", Path: "~/projects/kontora", Agent: "reviewer", Instructions: "Review changes.\nReport regressions.", Schedule: Schedule{Frequency: "weekly", Days: []int{1, 3, 5}, Time: "09:00", Timezone: "UTC"}}
-}
-
-func openStore(t *testing.T, root, primary string) *Store {
+func openTestStore(t *testing.T) (*Store, string, time.Time) {
 	t.Helper()
-	s, err := Open(root, primary)
+	s, err := Open(t.TempDir(), "test-scope")
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, s.Close()) })
-	return s
+	now := time.Now().UTC().Truncate(time.Second).Add(-time.Hour)
+	require.NoError(t, s.Reconcile(map[string]Spec{"nightly": testSpec()}, now))
+	defs, err := s.List()
+	require.NoError(t, err)
+	require.Len(t, defs, 1)
+	return s, defs[0].ID, now
 }
 
-func createDefinition(t *testing.T, s *Store) Definition {
-	t.Helper()
-	d, err := s.Create("create", definition(), storeNow)
+func TestStoreReconcileAndTombstones(t *testing.T) {
+	s, id, now := openTestStore(t)
+	first, err := s.Get(id)
 	require.NoError(t, err)
-	return d
-}
-
-func TestStoreDefinitionsAndReceipts(t *testing.T) {
-	root, primary := t.TempDir(), t.TempDir()
-	s := openStore(t, root, primary)
-	input := definition()
-	input.Enabled = true
-	input.Next = storeNow.Add(-time.Hour)
-	d, err := s.Create("request-1", input, storeNow)
+	require.NoError(t, s.Reconcile(map[string]Spec{"nightly": testSpec().Normalize()}, now.Add(time.Minute)))
+	same, err := s.Get(id)
 	require.NoError(t, err)
-	require.True(t, validID(d.ID))
-	require.Equal(t, uint64(1), d.Revision)
-	require.Equal(t, uint64(1), d.ScheduleRevision)
-	require.False(t, d.Enabled)
-	require.False(t, d.SkipOverlap)
-	require.Equal(t, instant("2026-03-02T09:00:00Z"), d.Next)
-	original := cloneDefinition(d)
-	d.Schedule.Days[0] = 0
-	got, err := s.Get(d.ID)
+	require.Equal(t, first, same)
+	r, found, err := s.Allocate(id, "manual", "request", time.Time{}, time.Time{}, now)
 	require.NoError(t, err)
-	require.Equal(t, original, got)
-	list, err := s.List()
+	require.False(t, found)
+	require.Equal(t, uint64(1), r.N)
+	spec := testSpec()
+	spec.Name = "Renamed"
+	spec.Schedule = "6h"
+	require.NoError(t, s.Reconcile(map[string]Spec{"nightly": spec}, now.Add(time.Minute)))
+	updated, err := s.Get(id)
 	require.NoError(t, err)
-	require.Len(t, list, 1)
-	list[0].Schedule.Days[0] = 0
-	got, err = s.Get(d.ID)
+	require.Equal(t, first.Revision+1, updated.Revision)
+	require.Equal(t, first.CreatedAt, updated.CreatedAt)
+	require.Equal(t, now.Add(time.Minute+6*time.Hour), updated.Next)
+	frozen, err := s.GetRun(id, r.N)
 	require.NoError(t, err)
-	require.Equal(t, original, got)
-
-	now := instant("2026-03-03T10:00:00Z")
-	got.Enabled = true
-	got.Next = storeNow
-	updated, err := s.Update(got, now)
+	require.Equal(t, first.Spec, frozen.Spec)
+	require.NoError(t, s.Reconcile(nil, now.Add(2*time.Minute)))
+	defs, err := s.List()
 	require.NoError(t, err)
-	require.Equal(t, uint64(2), updated.Revision)
-	require.Equal(t, uint64(1), updated.ScheduleRevision)
-	require.Equal(t, instant("2026-03-04T09:00:00Z"), updated.Next)
-	_, err = s.Update(got, now)
-	require.ErrorIs(t, err, ErrConflict)
-	updated.Instructions = "Changed instructions"
-	updated, err = s.Update(updated, now)
-	require.NoError(t, err)
-	require.Equal(t, uint64(1), updated.ScheduleRevision)
-	updated.Schedule.Time = "10:00"
-	updated, err = s.Update(updated, now)
-	require.NoError(t, err)
-	require.Equal(t, uint64(2), updated.ScheduleRevision)
-	require.Equal(t, instant("2026-03-04T10:00:00Z"), updated.Next)
-	require.NoError(t, s.SetNext(updated.ID, instant("2026-03-06T10:00:00Z")))
-	current, err := s.Get(updated.ID)
-	require.NoError(t, err)
-	require.Equal(t, updated.Revision, current.Revision)
-	require.Equal(t, updated.ScheduleRevision, current.ScheduleRevision)
-	updated.Name = "Renamed"
-	updated, err = s.Update(updated, now)
-	require.NoError(t, err)
-	require.Equal(t, current.Next, updated.Next)
-
-	replay, err := s.Create("request-1", input, now)
-	require.NoError(t, err)
-	require.Equal(t, original, replay)
-	input.Name = "Different"
-	_, err = s.Create("request-1", input, now)
-	require.ErrorIs(t, err, ErrConflict)
-	require.NoError(t, s.Close())
-	s = openStore(t, root, primary)
-	input = definition()
-	input.Enabled = true
-	input.Next = storeNow.Add(-time.Hour)
-	replay, err = s.Create("request-1", input, now)
-	require.NoError(t, err)
-	require.Equal(t, original, replay)
-	got, err = s.Get(original.ID)
-	require.NoError(t, err)
-	require.Equal(t, updated, got)
-	_, err = s.Get("missing")
+	require.Empty(t, defs)
+	_, err = s.Get(id)
 	require.ErrorIs(t, err, ErrNotFound)
-}
-
-func TestStoreRescheduleAndEnable(t *testing.T) {
-	s := openStore(t, t.TempDir(), t.TempDir())
-	d := createDefinition(t, s)
-	d.Enabled = true
-	d, err := s.Update(d, instant("2026-03-02T09:00:00Z"))
+	unfinished, err := s.UnfinishedRuns()
 	require.NoError(t, err)
-	require.Equal(t, instant("2026-03-04T09:00:00Z"), d.Next)
-	d.Enabled = false
-	d, err = s.Update(d, instant("2026-03-06T10:00:00Z"))
-	require.NoError(t, err)
-	require.Equal(t, instant("2026-03-04T09:00:00Z"), d.Next)
-	d.Enabled = true
-	d, err = s.Update(d, instant("2026-03-06T10:00:00Z"))
-	require.NoError(t, err)
-	require.Equal(t, instant("2026-03-09T09:00:00Z"), d.Next)
-	d.Enabled = false
-	d.Schedule.Time = "11:00"
-	d, err = s.Update(d, instant("2026-03-06T10:00:00Z"))
-	require.NoError(t, err)
-	require.Equal(t, instant("2026-03-06T11:00:00Z"), d.Next)
-	before := d.ScheduleRevision
-	d.Schedule.Days = []int{5, 3, 1}
-	d, err = s.Update(d, storeNow)
-	require.NoError(t, err)
-	require.Equal(t, before, d.ScheduleRevision)
-	require.ErrorIs(t, s.SetNext(d.ID, d.Next.Add(-time.Hour)), ErrConflict)
-	require.ErrorIs(t, s.SetNext(d.ID, d.Next.Add(time.Hour)), ErrValidation)
-	require.ErrorIs(t, s.SetNext(d.ID, time.Time{}), ErrValidation)
-}
-
-func TestStoreOccurrenceFreezeAndRevisions(t *testing.T) {
-	root, primary := t.TempDir(), t.TempDir()
-	s := openStore(t, root, primary)
-	d := createDefinition(t, s)
-	o, err := s.SaveOccurrence(Occurrence{AutomationID: d.ID, ScheduleRevision: d.ScheduleRevision, ScheduledFor: d.Next, Phase: "reserved"})
-	require.NoError(t, err)
-	require.True(t, validID(o.ID))
-	require.Equal(t, uint64(1), o.Revision)
-	require.Equal(t, d, o.Payload)
-	_, err = s.SaveOccurrence(Occurrence{AutomationID: d.ID, ScheduleRevision: d.ScheduleRevision, ScheduledFor: d.Next, Phase: "reserved"})
-	require.ErrorIs(t, err, ErrConflict)
-	stale := o
-	o.Phase = "publishing"
-	o.TicketID = "kon-test"
-	o, err = s.SaveOccurrence(o)
-	require.NoError(t, err)
-	require.Equal(t, uint64(2), o.Revision)
-	_, err = s.SaveOccurrence(stale)
-	require.ErrorIs(t, err, ErrConflict)
-	for _, change := range []func(*Occurrence){
-		func(o *Occurrence) { o.Payload.Instructions = "Replaced" },
-		func(o *Occurrence) { o.Payload.Schedule.Days[0] = 0 },
-		func(o *Occurrence) { o.TicketID = "kon-other" },
-		func(o *Occurrence) { o.ScheduledFor = o.ScheduledFor.AddDate(0, 0, 2) },
-		func(o *Occurrence) { o.ScheduleRevision++ },
-		func(o *Occurrence) { o.Phase = "reserved" },
-	} {
-		changed := o
-		changed.Payload = cloneDefinition(o.Payload)
-		change(&changed)
-		_, err = s.SaveOccurrence(changed)
-		require.ErrorIs(t, err, ErrConflict)
-	}
-	d.Instructions = "New instructions"
-	d.Schedule.Time = "10:00"
-	d, err = s.Update(d, storeNow)
-	require.NoError(t, err)
-	o.Phase = "admitted"
-	o, err = s.SaveOccurrence(o)
-	require.NoError(t, err)
-	require.Equal(t, uint64(3), o.Revision)
-	require.NotEqual(t, d.Instructions, o.Payload.Instructions)
-	require.NotEqual(t, d.ScheduleRevision, o.ScheduleRevision)
-	frozen := o
-	frozen.Payload = cloneDefinition(o.Payload)
-	o.Payload.Schedule.Days[0] = 0
-	occurrences, err := s.Occurrences(d.ID)
-	require.NoError(t, err)
-	require.Equal(t, []Occurrence{frozen}, occurrences)
-	occurrences[0].Payload.Schedule.Days[0] = 0
-	require.NoError(t, s.Close())
-	s = openStore(t, root, primary)
-	occurrences, err = s.Occurrences(d.ID)
-	require.NoError(t, err)
-	require.Equal(t, []Occurrence{frozen}, occurrences)
-	frozen.Phase = "failed"
-	_, err = s.SaveOccurrence(frozen)
-	require.ErrorIs(t, err, ErrConflict)
-	_, err = s.Occurrences("missing")
+	require.Equal(t, []Run{r}, unfinished)
+	_, _, err = s.Allocate(id, "manual", "new", time.Time{}, time.Time{}, now)
 	require.ErrorIs(t, err, ErrNotFound)
+	replay, found, err := s.Allocate(id, "manual", "request", time.Time{}, time.Time{}, now)
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Equal(t, r, replay)
+	require.NoError(t, s.Reconcile(map[string]Spec{"nightly": spec}, now.Add(3*time.Minute)))
+	defs, err = s.List()
+	require.NoError(t, err)
+	require.Len(t, defs, 1)
+	require.NotEqual(t, id, defs[0].ID)
+	r2, _, err := s.Allocate(defs[0].ID, "manual", "request", time.Time{}, time.Time{}, now.Add(3*time.Minute))
+	require.NoError(t, err)
+	require.Equal(t, uint64(2), r2.N)
+	oldRuns, err := s.Runs(id)
+	require.NoError(t, err)
+	require.Len(t, oldRuns, 1)
+	defs, err = s.List()
+	require.NoError(t, err)
+	invalid := spec
+	invalid.Overlap = "bad"
+	require.ErrorIs(t, s.Reconcile(map[string]Spec{"nightly": invalid}, now), ErrValidation)
+	after, err := s.List()
+	require.NoError(t, err)
+	require.Equal(t, defs, after)
 }
 
-func TestStoreValidation(t *testing.T) {
-	s := openStore(t, t.TempDir(), t.TempDir())
-	for _, tt := range []struct {
-		name   string
-		change func(*Definition)
-	}{
-		{"name", func(d *Definition) { d.Name = " " }},
-		{"long name", func(d *Definition) { d.Name = strings.Repeat("x", 201) }},
-		{"path", func(d *Definition) { d.Path = "" }},
-		{"nul", func(d *Definition) { d.Path = "bad\x00path" }},
-		{"agent", func(d *Definition) { d.Agent = "" }},
-		{"instructions", func(d *Definition) { d.Instructions = "" }},
-		{"long instructions", func(d *Definition) { d.Instructions = strings.Repeat("x", 65537) }},
-		{"invalid utf8", func(d *Definition) { d.Name = string([]byte{0xff}) }},
-		{"schedule", func(d *Definition) { d.Schedule.Timezone = "Local" }},
-		{"identity", func(d *Definition) { d.ID = newID() }},
-		{"revision", func(d *Definition) { d.Revision = 1 }},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			d := definition()
-			tt.change(&d)
-			_, err := s.Create(tt.name, d, storeNow)
-			require.ErrorIs(t, err, ErrValidation)
-		})
-	}
-	_, err := s.Create("", definition(), storeNow)
+func TestStoreReceiptsAndCursorTransaction(t *testing.T) {
+	s, id, now := openTestStore(t)
+	d, err := s.Get(id)
+	require.NoError(t, err)
+	next := d.Next.Add(24 * time.Hour)
+	r, found, err := s.Allocate(id, "schedule", "slot", d.Next, next, now)
+	require.NoError(t, err)
+	require.False(t, found)
+	require.Equal(t, "queued", r.Phase)
+	require.Equal(t, uint64(1), r.Revision)
+	require.NotEmpty(t, r.InvocationID)
+	d2, err := s.Get(id)
+	require.NoError(t, err)
+	require.Equal(t, next, d2.Next)
+	require.Equal(t, d.Revision, d2.Revision)
+	replay, found, err := s.Allocate(id, "schedule", "slot", d.Next, next.Add(24*time.Hour), now.Add(time.Minute))
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Equal(t, r, replay)
+	d2, err = s.Get(id)
+	require.NoError(t, err)
+	require.Equal(t, next, d2.Next)
+	_, _, err = s.Allocate(id, "schedule", "slot", d.Next.Add(time.Minute), next, now)
+	require.ErrorIs(t, err, ErrConflict)
+	_, _, err = s.Allocate(id, "manual", "slot", time.Time{}, time.Time{}, now)
+	require.ErrorIs(t, err, ErrConflict)
+	_, _, err = s.Allocate(id, "manual", "manual", time.Time{}, next.Add(time.Minute), now)
 	require.ErrorIs(t, err, ErrValidation)
-	_, err = s.Create("request", definition(), time.Time{})
-	require.ErrorIs(t, err, ErrValidation)
-	d := createDefinition(t, s)
-	for _, change := range []func(*Occurrence){
-		func(o *Occurrence) { o.Phase = "unknown" },
-		func(o *Occurrence) { o.ScheduledFor = o.ScheduledFor.Add(time.Hour) },
-		func(o *Occurrence) { o.Phase = "admitted" },
-		func(o *Occurrence) { o.ID = "not-random" },
-		func(o *Occurrence) { o.Reason = strings.Repeat("x", 4097) },
-	} {
-		o := Occurrence{AutomationID: d.ID, ScheduleRevision: 1, ScheduledFor: d.Next, Phase: "reserved"}
-		change(&o)
-		_, err := s.SaveOccurrence(o)
-		require.ErrorIs(t, err, ErrValidation)
-	}
-	for _, phase := range []string{"skipped", "blocked", "failed"} {
-		next, err := d.Schedule.Next(d.Next)
-		require.NoError(t, err)
-		d.Next = next
-		_, err = s.SaveOccurrence(Occurrence{AutomationID: d.ID, ScheduleRevision: 1, ScheduledFor: next, Phase: phase})
-		require.NoError(t, err)
-	}
-}
-
-func TestStoreSaveFailures(t *testing.T) {
-	for _, stage := range []string{"create", "write", "sync", "close", "rename", "sync_dir"} {
-		t.Run(stage, func(t *testing.T) {
-			root, primary := t.TempDir(), t.TempDir()
-			s := openStore(t, root, primary)
-			d := createDefinition(t, s)
-			before, err := os.ReadFile(filepath.Join(s.dir, "state.json"))
-			require.NoError(t, err)
-			injected := errors.New("injected failure")
-			s.fault = func(at string) error {
-				if at == stage {
-					return injected
-				}
-				return nil
-			}
-			input := definition()
-			input.Name = "Second"
-			_, err = s.Create("second", input, storeNow)
-			require.ErrorIs(t, err, ErrUnavailable)
-			require.ErrorIs(t, err, injected)
-			s.fault = nil
-			_, err = s.List()
-			require.ErrorIs(t, err, ErrUnavailable)
-			_, err = s.Get(d.ID)
-			require.ErrorIs(t, err, ErrUnavailable)
-			_, err = s.Create("second", input, storeNow)
-			require.ErrorIs(t, err, ErrUnavailable)
-			result, found, err := s.CreateReceipt("create", definition())
-			require.ErrorIs(t, err, ErrUnavailable)
-			require.False(t, found)
-			require.Empty(t, result)
-			_, err = s.Update(d, storeNow)
-			require.ErrorIs(t, err, ErrUnavailable)
-			_, err = s.Occurrences(d.ID)
-			require.ErrorIs(t, err, ErrUnavailable)
-			_, err = s.SaveOccurrence(Occurrence{})
-			require.ErrorIs(t, err, ErrUnavailable)
-			require.ErrorIs(t, s.SetNext(d.ID, d.Next), ErrUnavailable)
-			after, err := os.ReadFile(filepath.Join(s.dir, "state.json"))
-			require.NoError(t, err)
-			if stage != "sync_dir" {
-				require.Equal(t, before, after)
-			}
-			temps, err := filepath.Glob(filepath.Join(s.dir, ".state-*"))
-			require.NoError(t, err)
-			require.Empty(t, temps)
-			require.NoError(t, s.Close())
-			s = openStore(t, root, primary)
-			second, err := s.Create("second", input, storeNow)
-			require.NoError(t, err)
-			replay, err := s.Create("second", input, storeNow)
-			require.NoError(t, err)
-			require.Equal(t, second, replay)
-			list, err := s.List()
-			require.NoError(t, err)
-			require.Len(t, list, 2)
-		})
-	}
-}
-
-func TestStoreStrictSnapshots(t *testing.T) {
-	for _, tt := range []struct {
-		name   string
-		mutate func([]byte) []byte
-	}{
-		{"empty", func(_ []byte) []byte { return []byte{} }},
-		{"truncated", func(b []byte) []byte { return b[:len(b)/2] }},
-		{"trailing", func(b []byte) []byte { return append(b, []byte("{}")...) }},
-		{"null", func(_ []byte) []byte { return []byte("null") }},
-		{"version", func(b []byte) []byte { return []byte(strings.Replace(string(b), `"version":1`, `"version":2`, 1)) }},
-		{"duplicate", func(b []byte) []byte {
-			return []byte(strings.Replace(string(b), `"version":1`, `"version":1,"version":1`, 1))
-		}},
-		{"unknown", func(b []byte) []byte {
-			return []byte(strings.Replace(string(b), `"version":1`, `"version":1,"unknown":1`, 1))
-		}},
-		{"case insensitive", func(b []byte) []byte { return []byte(strings.Replace(string(b), `"version":1`, `"Version":1`, 1)) }},
-		{"missing field", func(b []byte) []byte { return []byte(strings.ReplaceAll(string(b), `"enabled":false,`, "")) }},
-		{"missing primary directory", func(b []byte) []byte {
-			var fields map[string]json.RawMessage
-			require.NoError(t, json.Unmarshal(b, &fields))
-			delete(fields, "primary_dir")
-			out, err := json.Marshal(fields)
-			require.NoError(t, err)
-			return out
-		}},
-		{"receipt input changed", func(b []byte) []byte {
-			var st snapshot
-			require.NoError(t, json.Unmarshal(b, &st))
-			r := st.Receipts["create"]
-			r.Input.Enabled = true
-			st.Receipts["create"] = r
-			out, err := json.Marshal(st)
-			require.NoError(t, err)
-			return out
-		}},
-		{"receipt result changed", func(b []byte) []byte {
-			var st snapshot
-			require.NoError(t, json.Unmarshal(b, &st))
-			r := st.Receipts["create"]
-			r.Result.Name = "Not the accepted name"
-			st.Receipts["create"] = r
-			out, err := json.Marshal(st)
-			require.NoError(t, err)
-			return out
-		}},
-		{"zero revision", func(b []byte) []byte { return []byte(strings.ReplaceAll(string(b), `"revision":1`, `"revision":0`)) }},
-		{"null days", func(b []byte) []byte { return []byte(strings.ReplaceAll(string(b), `"days":[1,3,5]`, `"days":null`)) }},
-		{"scope", func(b []byte) []byte {
-			var st snapshot
-			require.NoError(t, json.Unmarshal(b, &st))
-			st.Scope = strings.Repeat("0", 64)
-			out, err := json.Marshal(st)
-			require.NoError(t, err)
-			return out
-		}},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			root, primary := t.TempDir(), t.TempDir()
-			s := openStore(t, root, primary)
-			createDefinition(t, s)
-			path := filepath.Join(s.dir, "state.json")
-			data, err := os.ReadFile(path)
-			require.NoError(t, err)
-			require.NoError(t, s.Close())
-			bad := tt.mutate(data)
-			require.NoError(t, os.WriteFile(path, bad, 0600))
-			other, err := Open(root, primary)
-			require.ErrorIs(t, err, ErrUnavailable)
-			require.Nil(t, other)
-			after, err := os.ReadFile(path)
-			require.NoError(t, err)
-			require.Equal(t, bad, after)
-		})
-	}
-}
-
-func TestStoreOwnershipScopesAndPermissions(t *testing.T) {
-	root, primary := t.TempDir(), t.TempDir()
-	s := openStore(t, root, primary)
-	alias := filepath.Join(t.TempDir(), "alias")
-	require.NoError(t, os.Symlink(primary, alias))
-	for _, path := range []string{primary, alias, filepath.Join(primary, "unused", "..")} {
-		other, err := Open(root, path)
-		require.ErrorIs(t, err, ErrUnavailable)
-		require.Nil(t, other)
-	}
-	other := openStore(t, root, t.TempDir())
-	createDefinition(t, s)
-	list, err := other.List()
+	_, _, err = s.Allocate(id, "manual", "manual", time.Time{}, time.Time{}, now)
 	require.NoError(t, err)
-	require.Empty(t, list)
-	for path, mode := range map[string]os.FileMode{root: 0700, s.dir: 0700, filepath.Join(s.dir, "store.lock"): 0600, filepath.Join(s.dir, "state.json"): 0600} {
-		info, err := os.Stat(path)
-		require.NoError(t, err)
-		require.Equal(t, mode, info.Mode().Perm())
-	}
-	checkLockProcess(t, root, primary, true)
-	before, err := os.Stat(filepath.Join(s.dir, "store.lock"))
+	require.NoError(t, s.SetNext(id, next.Add(24*time.Hour)))
+	require.ErrorIs(t, s.SetNext(id, next), ErrConflict)
+	d2, err = s.Get(id)
 	require.NoError(t, err)
-	require.NoError(t, s.Close())
-	require.NoError(t, s.Close())
-	checkLockProcess(t, root, primary, false)
-	after, err := os.Stat(filepath.Join(s.dir, "store.lock"))
+	require.Equal(t, d.Revision, d2.Revision)
+	implicit, found, err := s.Allocate(id, "schedule", "", next, time.Time{}, now)
 	require.NoError(t, err)
-	require.True(t, os.SameFile(before, after))
-	_, err = s.List()
-	require.ErrorIs(t, err, ErrUnavailable)
-}
-
-func checkLockProcess(t *testing.T, root, primary string, busy bool) {
-	t.Helper()
-	cmd := exec.Command(os.Args[0], "-test.run=^TestAutomationLockProcess$")
-	cmd.Env = append(os.Environ(), "AUTOMATION_LOCK_ROOT="+root, "AUTOMATION_LOCK_PRIMARY="+primary)
-	if busy {
-		cmd.Env = append(cmd.Env, "AUTOMATION_LOCK_BUSY=1")
-	}
-	output, err := cmd.CombinedOutput()
-	require.NoError(t, err, "%s", output)
-}
-
-func TestAutomationLockProcess(t *testing.T) {
-	root := os.Getenv("AUTOMATION_LOCK_ROOT")
-	if root == "" {
-		t.Skip("subprocess helper")
-	}
-	s, err := Open(root, os.Getenv("AUTOMATION_LOCK_PRIMARY"))
-	if os.Getenv("AUTOMATION_LOCK_BUSY") == "1" {
-		require.ErrorIs(t, err, ErrUnavailable)
-		require.Nil(t, s)
-	} else {
-		require.NoError(t, err)
-		require.NoError(t, s.Close())
-	}
-}
-
-func TestStoreFilesystemProtection(t *testing.T) {
-	for _, kind := range []string{"snapshot symlink", "snapshot directory", "lock symlink", "scope symlink", "external change", "deleted snapshot"} {
-		t.Run(kind, func(t *testing.T) {
-			root, primary := t.TempDir(), t.TempDir()
-			s := openStore(t, root, primary)
-			createDefinition(t, s)
-			path := filepath.Join(s.dir, "state.json")
-			switch kind {
-			case "external change":
-				require.NoError(t, os.WriteFile(path, []byte("broken"), 0600))
-				_, err := s.List()
-				require.ErrorIs(t, err, ErrUnavailable)
-				return
-			case "deleted snapshot":
-				require.NoError(t, os.Remove(path))
-				_, err := s.List()
-				require.ErrorIs(t, err, ErrUnavailable)
-				return
-			}
-			require.NoError(t, s.Close())
-			switch kind {
-			case "snapshot symlink":
-				target := filepath.Join(t.TempDir(), "target")
-				require.NoError(t, os.WriteFile(target, []byte("preserve"), 0600))
-				require.NoError(t, os.Remove(path))
-				require.NoError(t, os.Symlink(target, path))
-			case "snapshot directory":
-				require.NoError(t, os.Remove(path))
-				require.NoError(t, os.Mkdir(path, 0700))
-			case "lock symlink":
-				path = filepath.Join(s.dir, "store.lock")
-				require.NoError(t, os.Remove(path))
-				require.NoError(t, os.Symlink(filepath.Join(t.TempDir(), "target"), path))
-			case "scope symlink":
-				moved := s.dir + "-moved"
-				require.NoError(t, os.Rename(s.dir, moved))
-				require.NoError(t, os.Symlink(moved, s.dir))
-			}
-			other, err := Open(root, primary)
-			require.ErrorIs(t, err, ErrUnavailable)
-			require.Nil(t, other)
-		})
-	}
-}
-
-func TestStoreDefaultRootAndMissingPrimary(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	s := openStore(t, "", filepath.Join(t.TempDir(), "not-created", "tickets"))
-	expected, err := canonical(filepath.Join(home, ".kontora", "automations"))
+	require.False(t, found)
+	implicit2, found, err := s.Allocate(id, "schedule", "", next, time.Time{}, now)
 	require.NoError(t, err)
-	require.Equal(t, expected, filepath.Dir(s.dir))
-	_, err = Open(t.TempDir(), "")
-	require.ErrorIs(t, err, ErrValidation)
+	require.True(t, found)
+	require.Equal(t, implicit, implicit2)
+	runs, err := s.Runs(id)
+	require.NoError(t, err)
+	require.Len(t, runs, 3)
+	require.Greater(t, runs[0].N, runs[1].N)
 }
 
-func TestStoreConcurrentRequests(t *testing.T) {
-	s := openStore(t, t.TempDir(), t.TempDir())
+func TestStoreCallbackAtomicityAndIsolation(t *testing.T) {
+	s, id, now := openTestStore(t)
+	r, _, err := s.Allocate(id, "manual", "request", time.Time{}, time.Time{}, now)
+	require.NoError(t, err)
+	var retained *Run
+	updated, err := s.UpdateRun(id, r.N, func(r *Run) error {
+		retained = r
+		r.Phase = "running"
+		r.StartedAt = now
+		r.ExitCode = new(0)
+		r.Cost = new("0.31")
+		r.Result = "0"
+		return nil
+	})
+	require.NoError(t, err)
+	retained.Result = "changed"
+	*retained.ExitCode = 99
+	*retained.Cost = "99"
+	*updated.ExitCode = 88
+	*updated.Cost = "88"
+	saved, err := s.GetRun(id, r.N)
+	require.NoError(t, err)
+	require.Equal(t, "0", saved.Result)
+	require.Equal(t, 0, *saved.ExitCode)
+	require.Equal(t, "0.31", *saved.Cost)
+	sentinel := errors.New("abort")
+	_, err = s.UpdateRun(id, r.N, func(r *Run) error { r.Result = "discard"; *r.Cost = "999"; return sentinel })
+	require.ErrorIs(t, err, sentinel)
+	saved2, err := s.GetRun(id, r.N)
+	require.NoError(t, err)
+	require.Equal(t, saved, saved2)
+	_, err = s.UpdateRun(id, r.N, func(r *Run) error { r.Spec.Name = "not frozen"; return nil })
+	require.ErrorIs(t, err, ErrConflict)
 	var wg sync.WaitGroup
-	ids := make(chan string, 20)
-	errs := make(chan error, 20)
-	for range 20 {
-		wg.Go(func() { d, err := s.Create("one-request", definition(), storeNow); ids <- d.ID; errs <- err })
+	errs := make(chan error, 40)
+	for range 40 {
+		wg.Go(func() {
+			_, err := s.UpdateRun(id, r.N, func(r *Run) error { n, err := strconv.Atoi(r.Result); r.Result = strconv.Itoa(n + 1); return err })
+			errs <- err
+		})
 	}
 	wg.Wait()
-	close(ids)
 	close(errs)
-	var id string
-	for got := range ids {
-		if id == "" {
-			id = got
-		}
-		require.Equal(t, id, got)
-	}
 	for err := range errs {
 		require.NoError(t, err)
 	}
-	list, err := s.List()
+	saved, err = s.GetRun(id, r.N)
 	require.NoError(t, err)
-	require.Len(t, list, 1)
+	require.Equal(t, "40", saved.Result)
+	require.Equal(t, uint64(42), saved.Revision)
+	defs, err := s.List()
+	require.NoError(t, err)
+	require.True(t, defs[0].Running)
+	*defs[0].CurrentRun.Cost = "777"
+	saved, err = s.GetRun(id, r.N)
+	require.NoError(t, err)
+	require.Equal(t, "0.31", *saved.Cost)
+}
+
+func TestStoreConcurrentAllocationReceipts(t *testing.T) {
+	s, id, now := openTestStore(t)
+	var wg sync.WaitGroup
+	results := make(chan Run, 30)
+	errs := make(chan error, 30)
+	for range 30 {
+		wg.Go(func() {
+			r, _, err := s.Allocate(id, "manual", "same-request", time.Time{}, time.Time{}, now)
+			results <- r
+			errs <- err
+		})
+	}
+	wg.Wait()
+	close(results)
+	close(errs)
+	for err := range errs {
+		require.NoError(t, err)
+	}
+	for r := range results {
+		require.Equal(t, uint64(1), r.N)
+	}
+	runs, err := s.Runs(id)
+	require.NoError(t, err)
+	require.Len(t, runs, 1)
+}
+
+func TestStoreAggregatesFullHistory(t *testing.T) {
+	s, id, now := openTestStore(t)
+	d, err := s.Get(id)
+	require.NoError(t, err)
+	require.Nil(t, d.SuccessRate)
+	require.Nil(t, d.AvgWall)
+	require.Nil(t, d.Spend30d)
+	for i, outcome := range []string{"complete", "failed", "skipped", "complete"} {
+		accepted := now
+		if i == 3 {
+			accepted = now.AddDate(0, 0, -40)
+		}
+		r, _, err := s.Allocate(id, "manual", fmt.Sprintf("r%d", i), time.Time{}, time.Time{}, accepted)
+		require.NoError(t, err)
+		_, err = s.UpdateRun(id, r.N, func(r *Run) error {
+			r.Phase = "terminal"
+			r.Outcome = outcome
+			r.CompletedAt = accepted.Add(2 * time.Minute)
+			if outcome != "skipped" {
+				r.StartedAt = accepted
+			}
+			if i == 0 {
+				r.Cost = new("0.31")
+			}
+			return nil
+		})
+		require.NoError(t, err)
+	}
+	d, err = s.Get(id)
+	require.NoError(t, err)
+	require.Equal(t, 4, d.RunsTotal)
+	require.InDelta(t, 200.0/3, *d.SuccessRate, 0.0001)
+	require.Equal(t, 120.0, *d.AvgWall)
+	require.Equal(t, 1, d.PricedRuns)
+	require.Equal(t, 2, d.TrackedRuns)
+	require.Equal(t, "0.310000", *d.Spend30d)
+	require.False(t, d.Running)
+	require.Equal(t, uint64(4), d.LastRun.N)
+}
+
+func TestStoreDurabilityPermissionsAndLock(t *testing.T) {
+	root := t.TempDir()
+	s, err := Open(root, "scope")
+	require.NoError(t, err)
+	_, err = Open(root, "scope")
+	require.ErrorIs(t, err, ErrUnavailable)
+	other, err := Open(root, "other")
+	require.NoError(t, err)
+	require.NoError(t, other.Close())
+	now := time.Now().UTC().Truncate(time.Second)
+	require.NoError(t, s.Reconcile(map[string]Spec{"nightly": testSpec()}, now))
+	defs, err := s.List()
+	require.NoError(t, err)
+	r, _, err := s.Allocate(defs[0].ID, "manual", "request", time.Time{}, time.Time{}, now)
+	require.NoError(t, err)
+	for _, path := range []string{root, s.dir, filepath.Join(s.dir, "state.json"), filepath.Join(s.dir, "store.lock")} {
+		info, err := os.Stat(path)
+		require.NoError(t, err)
+		want := os.FileMode(0600)
+		if info.IsDir() {
+			want = 0700
+		}
+		require.Equal(t, want, info.Mode().Perm())
+	}
+	require.NoError(t, s.Close())
+	require.NoError(t, s.Close())
+	_, err = s.List()
+	require.ErrorIs(t, err, ErrUnavailable)
+	s, err = Open(root, "scope")
+	require.NoError(t, err)
+	defer s.Close()
+	replay, found, err := s.Allocate(defs[0].ID, "manual", "request", time.Time{}, time.Time{}, now)
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Equal(t, r, replay)
+	require.NoError(t, s.Reconcile(nil, now))
+	require.NoError(t, s.Close())
+	s, err = Open(root, "scope")
+	require.NoError(t, err)
+	defer s.Close()
+	unfinished, err := s.UnfinishedRuns()
+	require.NoError(t, err)
+	require.Equal(t, []Run{r}, unfinished)
+	require.NoError(t, s.Reconcile(map[string]Spec{"nightly": testSpec()}, now))
+	defs, err = s.List()
+	require.NoError(t, err)
+	require.NotEqual(t, r.AutomationID, defs[0].ID)
+	nextRun, _, err := s.Allocate(defs[0].ID, "manual", "request", time.Time{}, time.Time{}, now)
+	require.NoError(t, err)
+	require.Equal(t, uint64(2), nextRun.N)
+}
+
+func TestStoreFailedAllocationIsAtomic(t *testing.T) {
+	for _, stage := range []string{"create", "write", "sync", "close", "rename", "sync_dir"} {
+		t.Run(stage, func(t *testing.T) {
+			root := t.TempDir()
+			s, err := Open(root, "scope")
+			require.NoError(t, err)
+			now := time.Now().UTC()
+			require.NoError(t, s.Reconcile(map[string]Spec{"nightly": testSpec()}, now))
+			defs, err := s.List()
+			require.NoError(t, err)
+			d := defs[0]
+			next := d.Next.Add(24 * time.Hour)
+			s.fault = func(current string) error {
+				if current == stage {
+					return errors.New("disk fault")
+				}
+				return nil
+			}
+			_, _, err = s.Allocate(d.ID, "schedule", "slot", d.Next, next, now)
+			require.ErrorIs(t, err, ErrUnavailable)
+			_, err = s.List()
+			require.ErrorIs(t, err, ErrUnavailable)
+			require.NoError(t, s.Close())
+			s, err = Open(root, "scope")
+			require.NoError(t, err)
+			defer s.Close()
+			persisted, err := s.Get(d.ID)
+			require.NoError(t, err)
+			runs, err := s.Runs(d.ID)
+			require.NoError(t, err)
+			if stage == "sync_dir" {
+				require.Len(t, runs, 1)
+				require.Equal(t, next, persisted.Next)
+			} else {
+				require.Empty(t, runs)
+				require.Equal(t, d.Next, persisted.Next)
+			}
+			_, found, err := s.Allocate(d.ID, "schedule", "slot", d.Next, next, now)
+			require.NoError(t, err)
+			require.Equal(t, stage == "sync_dir", found)
+		})
+	}
+}
+
+func TestStoreRejectsExternalChangesAndCorruption(t *testing.T) {
+	s, _, _ := openTestStore(t)
+	require.NoError(t, os.WriteFile(filepath.Join(s.dir, "state.json"), append(s.data, ' '), 0600))
+	_, err := s.List()
+	require.ErrorIs(t, err, ErrUnavailable)
+	for _, change := range []string{"missing", "duplicate", "trailing", "unknown", "null"} {
+		t.Run(change, func(t *testing.T) {
+			root := t.TempDir()
+			s, err := Open(root, "scope")
+			require.NoError(t, err)
+			path := filepath.Join(s.dir, "state.json")
+			data := s.data
+			require.NoError(t, s.Close())
+			var fields map[string]json.RawMessage
+			require.NoError(t, json.Unmarshal(data, &fields))
+			switch change {
+			case "missing":
+				delete(fields, "counters")
+				data, err = json.Marshal(fields)
+			case "duplicate":
+				data = append([]byte(`{"version":2,`), data[1:]...)
+			case "trailing":
+				data = append(data, []byte(`{}`)...)
+			case "unknown":
+				fields["extra"] = json.RawMessage(`1`)
+				data, err = json.Marshal(fields)
+			case "null":
+				fields["counters"] = json.RawMessage(`null`)
+				data, err = json.Marshal(fields)
+			}
+			require.NoError(t, err)
+			require.NoError(t, os.WriteFile(path, data, 0600))
+			_, err = Open(root, "scope")
+			require.ErrorIs(t, err, ErrUnavailable)
+		})
+	}
 }

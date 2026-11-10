@@ -1901,17 +1901,14 @@ func TestShowConfig_RedactsWebToken(t *testing.T) {
 }
 
 func TestNew_StatusAndDescription(t *testing.T) {
-	type testCase struct {
-		name             string
-		status           string
-		body             string
-		provenance       NewOpts
-		wantScheduledFor string
-		wantErr          string
-		wantStatus       string
-		wantContent      []string
-	}
-	cases := []testCase{
+	cases := []struct {
+		name        string
+		status      string
+		body        string
+		wantErr     string
+		wantStatus  string
+		wantContent []string
+	}{
 		{
 			name:        "open creation writes open from the first state",
 			status:      "open",
@@ -1928,61 +1925,6 @@ func TestNew_StatusAndDescription(t *testing.T) {
 			status:  "in_progress",
 			wantErr: "status must be",
 		},
-		{
-			name:             "automation provenance does not schedule execution",
-			provenance:       NewOpts{AutomationID: "auto-1", OccurrenceID: "occ-1", ScheduledFor: "2099-09-01T11:00:00+02:00"},
-			wantScheduledFor: "2099-09-01T09:00:00Z",
-			wantStatus:       "status: todo",
-		},
-		{
-			name:             "past provenance is allowed on an open ticket",
-			status:           "open",
-			provenance:       NewOpts{AutomationID: "auto-1", OccurrenceID: "occ-1", ScheduledFor: "2020-01-01T00:00:00Z"},
-			wantScheduledFor: "2020-01-01T00:00:00Z",
-			wantStatus:       "status: open",
-		},
-		{
-			name:             "fractional provenance preserves the instant",
-			provenance:       NewOpts{AutomationID: "123", OccurrenceID: "true", ScheduledFor: "2026-09-01T11:00:00.123456789+02:00"},
-			wantScheduledFor: "2026-09-01T09:00:00.123456789Z",
-			wantStatus:       "status: todo",
-		},
-	}
-	for _, provenance := range []NewOpts{
-		{AutomationID: "auto-1"},
-		{OccurrenceID: "occ-1"},
-		{ScheduledFor: "2026-09-01T09:00:00Z"},
-		{AutomationID: "auto-1", OccurrenceID: "occ-1"},
-		{AutomationID: "auto-1", ScheduledFor: "2026-09-01T09:00:00Z"},
-		{OccurrenceID: "occ-1", ScheduledFor: "2026-09-01T09:00:00Z"},
-	} {
-		cases = append(cases, testCase{
-			name:       fmt.Sprintf("incomplete provenance %v", provenance),
-			provenance: provenance,
-			wantErr:    "must be set together",
-		})
-	}
-	for _, instant := range []string{"tomorrow", "2026-09-01", "2026-09-01T09:00:00", "0001-01-01T00:00:00Z", "0000-01-01T00:00:00Z", "0001-01-01T00:00:00+01:00", "9999-12-31T23:59:59-01:00"} {
-		cases = append(cases, testCase{
-			name:       "invalid scheduled_for " + instant,
-			provenance: NewOpts{AutomationID: "auto-1", OccurrenceID: "occ-1", ScheduledFor: instant},
-			wantErr:    "scheduled_for must be a valid RFC 3339 instant",
-		})
-	}
-	for _, id := range []string{".", "..", "../escape", "a/b", `a\b`, "a..b", "a\x00b", "a\nb", "a\rb", "a\tb", " ", " a", "a ", "a: b", "a#b", "a\x7fb", "a\u2028b"} {
-		for _, field := range []string{"automation_id", "occurrence_id"} {
-			provenance := NewOpts{AutomationID: "auto-1", OccurrenceID: "occ-1", ScheduledFor: "2026-09-01T09:00:00Z"}
-			if field == "automation_id" {
-				provenance.AutomationID = id
-			} else {
-				provenance.OccurrenceID = id
-			}
-			cases = append(cases, testCase{
-				name:       fmt.Sprintf("unsafe %s %q", field, id),
-				provenance: provenance,
-				wantErr:    "unsafe " + field,
-			})
-		}
 	}
 
 	for _, tc := range cases {
@@ -1992,45 +1934,21 @@ func TestNew_StatusAndDescription(t *testing.T) {
 			repoDir := initTestRepo(t)
 
 			id, err := New(cfg, NewOpts{
-				Path:         repoDir,
-				Title:        "Draft ticket",
-				Status:       tc.status,
-				Body:         tc.body,
-				NoEdit:       true,
-				AutomationID: tc.provenance.AutomationID,
-				OccurrenceID: tc.provenance.OccurrenceID,
-				ScheduledFor: tc.provenance.ScheduledFor,
+				Path:   repoDir,
+				Title:  "Draft ticket",
+				Status: tc.status,
+				Body:   tc.body,
+				NoEdit: true,
 			})
 			if tc.wantErr != "" {
 				require.ErrorContains(t, err, tc.wantErr)
-				entries, readErr := os.ReadDir(dir)
-				require.NoError(t, readErr)
-				assert.Empty(t, entries)
 				return
 			}
 			require.NoError(t, err)
 
 			data, err := os.ReadFile(filepath.Join(dir, id+".md"))
 			require.NoError(t, err)
-			tkt, err := ticket.ParseBytes(data)
-			require.NoError(t, err)
-			assert.Equal(t, tc.provenance.AutomationID, tkt.AutomationID)
-			assert.Equal(t, tc.provenance.OccurrenceID, tkt.OccurrenceID)
-			assert.Equal(t, tc.wantScheduledFor, tkt.ScheduledFor)
-			assert.Empty(t, tkt.ScheduledAt)
-			assert.Empty(t, tkt.ClaimedBy)
-			assert.Empty(t, tkt.InvocationID)
-			assert.Nil(t, tkt.Managed)
 			content := string(data)
-			if tc.provenance.AutomationID == "" {
-				for _, key := range []string{"automation_id", "occurrence_id", "scheduled_for"} {
-					assert.NotContains(t, content, key+":")
-				}
-			} else {
-				assert.Contains(t, content, fmt.Sprintf("automation_id: %q", tkt.AutomationID))
-				assert.Contains(t, content, fmt.Sprintf("occurrence_id: %q", tkt.OccurrenceID))
-				assert.Contains(t, content, fmt.Sprintf("scheduled_for: %q", tc.wantScheduledFor))
-			}
 			assert.Contains(t, content, tc.wantStatus)
 			for _, want := range tc.wantContent {
 				assert.Contains(t, content, want)

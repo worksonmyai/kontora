@@ -55,7 +55,9 @@ func (d *Daemon) reloadConfig() error {
 
 	cur := d.config()
 	pinRestartOnly(cur, next, d.log)
-	d.cfg.Store(next)
+	if err := d.publishAutomationConfig(next); err != nil {
+		return err
+	}
 	d.wakeCompanion()
 	d.signalAutomations()
 

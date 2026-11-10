@@ -224,14 +224,11 @@ type ManagedOwnership struct {
 }
 
 type Ticket struct {
-	AutomationID string            `yaml:"automation_id,omitempty"`
-	OccurrenceID string            `yaml:"occurrence_id,omitempty"`
-	ScheduledFor string            `yaml:"scheduled_for,omitempty"`
-	Managed      *ManagedOwnership `yaml:"managed,omitempty"`
-	ID           string            `yaml:"id"`
-	Kontora      bool              `yaml:"kontora"`
-	Status       Status            `yaml:"status"`
-	Kind         Kind              `yaml:"kind,omitempty"`
+	Managed *ManagedOwnership `yaml:"managed,omitempty"`
+	ID      string            `yaml:"id"`
+	Kontora bool              `yaml:"kontora"`
+	Status  Status            `yaml:"status"`
+	Kind    Kind              `yaml:"kind,omitempty"`
 	// EpicExecution is empty for passive grouping or "agent" for a supervisor.
 	EpicExecution string     `yaml:"epic_execution,omitempty"`
 	Pipeline      string     `yaml:"pipeline"`

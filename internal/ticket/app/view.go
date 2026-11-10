@@ -11,9 +11,6 @@ import (
 // View is the domain-level projection of a ticket.
 // Adapters (HTTP handlers, TUI renderers) convert from this.
 type View struct {
-	AutomationID  string `json:"automation_id,omitempty"`
-	OccurrenceID  string `json:"occurrence_id,omitempty"`
-	ScheduledFor  string `json:"scheduled_for,omitempty"`
 	Managed       *ticket.ManagedOwnership
 	ID            string
 	Title         string
@@ -118,9 +115,6 @@ type HistoryView struct {
 func BuildView(cfg *config.Config, t *ticket.Ticket, detail bool) View {
 	t = t.Clone()
 	v := View{
-		AutomationID:  t.AutomationID,
-		OccurrenceID:  t.OccurrenceID,
-		ScheduledFor:  t.ScheduledFor,
 		Managed:       t.Managed,
 		ID:            t.ID,
 		Title:         t.Title(),

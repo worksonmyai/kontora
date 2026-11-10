@@ -54,13 +54,7 @@ func RenderWithOptions(tmpl string, data Data, workDir string, opts Options) (st
 	}
 
 	funcMap := template.FuncMap{
-		"file": func(name string) (string, error) {
-			b, err := os.ReadFile(filepath.Join(workDir, name))
-			if err != nil {
-				return "", fmt.Errorf("file %q: %w", name, err)
-			}
-			return string(b), nil
-		},
+		"file": fileHelper(workDir),
 		"plannotatorReview": func() string {
 			path, ok := feedbackPath(opts, data, logger, "plannotatorReview", ".md")
 			if !ok {

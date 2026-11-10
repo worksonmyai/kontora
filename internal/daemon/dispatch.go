@@ -159,10 +159,30 @@ func (d *Daemon) dispatch(ctx context.Context, wg *sync.WaitGroup) {
 			managedIndex := d.readyManagedJobLocked()
 			ordinaryIndex := d.readyOrdinaryJobLocked()
 			hasOrdinary := ordinaryIndex >= 0
+			if len(d.automationJobs) > 0 && d.availablePoolSlotsLocked(d.sem) > 0 && (d.preferAutomation || (!hasOrdinary && managedIndex < 0)) {
+				job := d.automationJobs[0]
+				d.automationJobs = d.automationJobs[1:]
+				d.sem <- struct{}{}
+				d.preferAutomation = false
+				d.mu.Unlock()
+				wg.Go(func() {
+					stopped := job.run(ctx)
+					d.mu.Lock()
+					defer d.mu.Unlock()
+					if stopped {
+						<-d.sem
+					} else {
+						d.log.Error("automation termination unconfirmed; capacity retained", "invocation", job.key)
+					}
+					d.queueCond.Broadcast()
+				})
+				break
+			}
 			if !hasOrdinary && managedIndex < 0 {
 				d.queueCond.Wait()
 				continue
 			}
+			d.preferAutomation = true
 			managed := managedIndex >= 0 && (!hasOrdinary || d.managedDispatch.preferManaged)
 			slots := 1
 			pool := d.sem

@@ -40,7 +40,12 @@ type Context struct {
 	Project    string
 	ExitCode   *int
 	// RunOutcome is the pre-hook agent outcome; later validation may reject it.
-	RunOutcome string
+	RunOutcome   string
+	AutomationID string
+	RunNumber    uint64
+	// RequireTermination opts into verified process-group shutdown, even on success.
+	// Uncertainty stops the sequence regardless of a hook's Fatal policy.
+	RequireTermination bool
 }
 
 func (c Context) env() []string {
@@ -56,6 +61,12 @@ func (c Context) env() []string {
 		"KONTORA_PROJECT=" + c.Project,
 		"KONTORA_RUN_OUTCOME=" + c.RunOutcome,
 	}
+	env = append(env, "KONTORA_AUTOMATION_ID="+c.AutomationID)
+	runNumber := ""
+	if c.RunNumber != 0 {
+		runNumber = strconv.FormatUint(c.RunNumber, 10)
+	}
+	env = append(env, "KONTORA_RUN_NUMBER="+runNumber)
 	if c.ExitCode != nil {
 		env = append(env, "KONTORA_EXIT_CODE="+strconv.Itoa(*c.ExitCode))
 	}
@@ -68,18 +79,22 @@ func (c Context) env() []string {
 // cancelled ctx stops the sequence whatever the policy, and its error is
 // returned so the caller can tell a cancellation from a hook that went wrong.
 func Run(ctx context.Context, specs []Spec, hc Context, out io.Writer, onWarn func(Spec, error)) error {
+	return run(ctx, specs, hc, out, onWarn, runOne)
+}
+
+func run(ctx context.Context, specs []Spec, hc Context, out io.Writer, onWarn func(Spec, error), execute func(context.Context, Spec, Context, []string, io.Writer, string) error) error {
 	env := hc.env()
 	for i, spec := range specs {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 		name := label(hc.Event, spec, i)
-		err := runOne(ctx, spec, hc, env, out, name)
+		err := execute(ctx, spec, hc, env, out, name)
 		if err == nil {
 			continue
 		}
 		err = fmt.Errorf("hook %s: %w", name, err)
-		if spec.Fatal || ctx.Err() != nil {
+		if spec.Fatal || ctx.Err() != nil || (hc.RequireTermination && errors.Is(err, process.ErrTerminationUncertain)) {
 			return err
 		}
 		if onWarn != nil {
@@ -106,18 +121,34 @@ func runOne(ctx context.Context, spec Spec, hc Context, env []string, out io.Wri
 	// that a killed command is reported as a timeout instead of as the exit
 	// code its termination signal produces. Both routes terminate the same way.
 	result, err := process.Run(runCtx, process.RunParams{
-		Binary: "/bin/sh",
-		Args:   []string{"-c", spec.Run},
-		Dir:    hc.Worktree,
-		Stdout: out,
-		Stderr: out,
-		Env:    env,
+		Binary:             "/bin/sh",
+		Args:               []string{"-c", spec.Run},
+		Dir:                hc.Worktree,
+		Stdout:             out,
+		Stderr:             out,
+		Env:                env,
+		RequireTermination: hc.RequireTermination,
 	})
+	return executionError(ctx.Err(), runCtx.Err(), spec.Timeout, result, err, hc.RequireTermination)
+}
+
+func executionError(ctxErr, runCtxErr error, timeout time.Duration, result process.Result, err error, requireTermination bool) error {
+	// Cancellation and timeout must not erase an uncertain shutdown. Preserve
+	// legacy warning behavior unless the caller opted into termination safety.
+	var evidence error
+	if requireTermination {
+		evidence = err
+		if result.Termination != process.TerminationNotStarted && result.Termination != process.TerminationProcessGroupGone {
+			evidence = errors.Join(evidence, process.ErrTerminationUncertain)
+		}
+	}
 	switch {
-	case ctx.Err() != nil:
-		return ctx.Err()
-	case errors.Is(runCtx.Err(), context.DeadlineExceeded):
-		return fmt.Errorf("timed out after %s", spec.Timeout)
+	case ctxErr != nil:
+		return errors.Join(ctxErr, evidence)
+	case errors.Is(runCtxErr, context.DeadlineExceeded):
+		return errors.Join(fmt.Errorf("timed out after %s: %w", timeout, context.DeadlineExceeded), evidence)
+	case evidence != nil:
+		return evidence
 	case err != nil:
 		return err
 	case result.ExitCode != 0:

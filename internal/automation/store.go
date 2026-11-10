@@ -8,32 +8,46 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"math"
+	"math/big"
 	"os"
 	"path/filepath"
 	"reflect"
 	"sort"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
 	"unicode/utf8"
 )
 
-const snapshotVersion = 1
+const snapshotVersion = 2
+
+type storedDefinition struct {
+	Spec      Spec      `json:"spec"`
+	ID        string    `json:"id"`
+	Key       string    `json:"key"`
+	Revision  uint64    `json:"revision"`
+	CreatedAt time.Time `json:"created_at"`
+	Next      time.Time `json:"next"`
+	Deleted   bool      `json:"deleted"`
+}
 
 type receipt struct {
-	Fingerprint string     `json:"fingerprint"`
-	Input       Definition `json:"input"`
-	Result      Definition `json:"result"`
+	AutomationID string    `json:"automation_id"`
+	N            uint64    `json:"n"`
+	Trigger      string    `json:"trigger"`
+	ScheduledFor time.Time `json:"scheduled_for"`
 }
 
 type snapshot struct {
-	Version     int                   `json:"version"`
-	Scope       string                `json:"scope"`
-	PrimaryDir  string                `json:"primary_dir"`
-	Definitions map[string]Definition `json:"definitions"`
-	Occurrences map[string]Occurrence `json:"occurrences"`
-	Receipts    map[string]receipt    `json:"receipts"`
+	Version     int                         `json:"version"`
+	Scope       string                      `json:"scope"`
+	Definitions map[string]storedDefinition `json:"definitions"`
+	Runs        map[string]Run              `json:"runs"`
+	Counters    map[string]uint64           `json:"counters"`
+	Receipts    map[string]receipt          `json:"receipts"`
 }
 
 type Store struct {
@@ -65,13 +79,9 @@ func canonical(path string) (string, error) {
 	return resolved, err
 }
 
-func Open(root, primaryDir string) (*Store, error) {
-	if primaryDir == "" {
-		return nil, validation("primary ticket directory is required")
-	}
-	primary, err := canonical(primaryDir)
-	if err != nil {
-		return nil, fmt.Errorf("%w: canonical ticket directory: %v", ErrUnavailable, err)
+func Open(root, scope string) (*Store, error) {
+	if scope == "" || !textValid(scope, 4096, false) {
+		return nil, validation("scope is required")
 	}
 	if root == "" {
 		home, err := os.UserHomeDir()
@@ -80,13 +90,12 @@ func Open(root, primaryDir string) (*Store, error) {
 		}
 		root = filepath.Join(home, ".kontora", "automations")
 	}
-	root, err = canonical(root)
+	root, err := canonical(root)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrUnavailable, err)
 	}
-	hash := sha256.Sum256([]byte(primary))
-	scope := hex.EncodeToString(hash[:])
-	dir := filepath.Join(root, scope)
+	hash := sha256.Sum256([]byte(scope))
+	dir := filepath.Join(root, hex.EncodeToString(hash[:]))
 	if err := privateDirectory(root); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrUnavailable, err)
 	}
@@ -114,7 +123,7 @@ func Open(root, primaryDir string) (*Store, error) {
 	}
 	data, err := readSnapshot(filepath.Join(dir, "state.json"))
 	if errors.Is(err, os.ErrNotExist) {
-		s.state = snapshot{Version: snapshotVersion, Scope: scope, PrimaryDir: primary, Definitions: map[string]Definition{}, Occurrences: map[string]Occurrence{}, Receipts: map[string]receipt{}}
+		s.state = snapshot{Version: snapshotVersion, Scope: scope, Definitions: map[string]storedDefinition{}, Runs: map[string]Run{}, Counters: map[string]uint64{}, Receipts: map[string]receipt{}}
 		if err := s.save(s.state); err != nil {
 			return fail(err)
 		}
@@ -125,8 +134,8 @@ func Open(root, primaryDir string) (*Store, error) {
 		if err := decodeSnapshot(data, &s.state); err != nil {
 			return fail(err)
 		}
-		if s.state.Scope != scope || s.state.PrimaryDir != primary {
-			return fail(errors.New("snapshot scope or primary directory mismatch"))
+		if s.state.Scope != scope {
+			return fail(errors.New("snapshot scope mismatch"))
 		}
 		if err := os.Chmod(filepath.Join(dir, "state.json"), 0600); err != nil {
 			return fail(err)
@@ -156,14 +165,12 @@ func makeDirectory(path string) error {
 	}
 	return syncDirectory(parent)
 }
-
 func privateDirectory(path string) error {
 	if err := makeDirectory(path); err != nil {
 		return err
 	}
 	return os.Chmod(path, 0700)
 }
-
 func readSnapshot(path string) ([]byte, error) {
 	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 	if err != nil {
@@ -179,7 +186,6 @@ func readSnapshot(path string) ([]byte, error) {
 	}
 	return io.ReadAll(f)
 }
-
 func uniqueJSON(dec *json.Decoder) error {
 	token, err := dec.Token()
 	if err != nil {
@@ -218,7 +224,6 @@ func uniqueJSON(dec *json.Decoder) error {
 	_, err = dec.Token()
 	return err
 }
-
 func decodeSnapshot(data []byte, state *snapshot) error {
 	if !utf8.Valid(data) {
 		return errors.New("invalid snapshot UTF-8")
@@ -242,14 +247,19 @@ func decodeSnapshot(data []byte, state *snapshot) error {
 }
 
 func strictShape(data []byte, typ reflect.Type) error {
+	if typ.Kind() == reflect.Pointer {
+		if bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
+			return nil
+		}
+		return strictShape(data, typ.Elem())
+	}
 	if bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
 		return errors.New("null snapshot field")
 	}
 	if typ == reflect.TypeFor[time.Time]() {
 		return nil
 	}
-	switch typ.Kind() {
-	case reflect.Struct:
+	if typ.Kind() == reflect.Struct {
 		var fields map[string]json.RawMessage
 		if err := json.Unmarshal(data, &fields); err != nil {
 			return err
@@ -257,8 +267,7 @@ func strictShape(data []byte, typ reflect.Type) error {
 		if len(fields) != typ.NumField() {
 			return errors.New("missing or unknown snapshot field")
 		}
-		for i := range typ.NumField() {
-			field := typ.Field(i)
+		for field := range typ.Fields() {
 			value, ok := fields[field.Tag.Get("json")]
 			if !ok {
 				return errors.New("missing snapshot field")
@@ -267,7 +276,7 @@ func strictShape(data []byte, typ reflect.Type) error {
 				return err
 			}
 		}
-	case reflect.Map:
+	} else if typ.Kind() == reflect.Map {
 		var values map[string]json.RawMessage
 		if err := json.Unmarshal(data, &values); err != nil {
 			return err
@@ -277,134 +286,109 @@ func strictShape(data []byte, typ reflect.Type) error {
 				return err
 			}
 		}
-	case reflect.Slice:
-		var values []json.RawMessage
-		if err := json.Unmarshal(data, &values); err != nil {
-			return err
-		}
-		for _, value := range values {
-			if err := strictShape(value, typ.Elem()); err != nil {
-				return err
-			}
-		}
 	}
 	return nil
 }
 
-func validPersistedDefinition(d Definition) bool {
-	if !validID(d.ID) || d.Revision == 0 || d.ScheduleRevision == 0 || d.ScheduleRevision > d.Revision || validateDefinition(d) != nil || !validInstant(d.Next) {
-		return false
+func runKey(id string, n uint64) string { return fmt.Sprintf("%s/%d", id, n) }
+func validateRun(r Run) error {
+	if !validID(r.AutomationID) || ValidateKey(r.Key) != nil || r.N == 0 || r.Revision == 0 || r.InvocationID == "" || !validInstant(r.AcceptedAt) || r.Spec.Validate() != nil {
+		return validation("invalid run identity or frozen spec")
 	}
-	next, err := d.Schedule.Next(d.Next.Add(-time.Nanosecond))
-	return err == nil && next.Equal(d.Next)
-}
-
-func validateOccurrence(o Occurrence) error {
-	if !validID(o.ID) || o.Revision == 0 || !validID(o.AutomationID) || o.ScheduleRevision == 0 || !validInstant(o.ScheduledFor) || !textValid(o.TicketID, 200, false) || !textValid(o.Reason, 4096, true) {
-		return validation("invalid occurrence identity or fields")
+	if r.Trigger != "manual" && r.Trigger != "schedule" {
+		return validation("invalid run trigger")
 	}
-	switch o.Phase {
-	case "reserved", "publishing", "admitted", "skipped", "blocked", "failed":
+	if r.Trigger == "schedule" && !validInstant(r.ScheduledFor) {
+		return validation("scheduled run needs scheduled_for")
+	}
+	switch r.Phase {
+	case "queued", "preparing", "running", "stopping", "recovery_required":
+		if r.Outcome != "" || !r.CompletedAt.IsZero() {
+			return validation("nonterminal run has a terminal result")
+		}
+	case "terminal":
+		if r.Outcome != "complete" && r.Outcome != "failed" && r.Outcome != "skipped" {
+			return validation("invalid run outcome")
+		}
+		if !validInstant(r.CompletedAt) {
+			return validation("terminal run needs completed_at")
+		}
 	default:
-		return validation("invalid occurrence phase")
+		return validation("invalid run phase")
 	}
-	if o.Count < 1 {
-		return validation("occurrence count must be positive")
+	if !r.StartedAt.IsZero() && (!validInstant(r.StartedAt) || r.StartedAt.Before(r.AcceptedAt)) {
+		return validation("invalid started_at")
 	}
-	if !o.Through.IsZero() {
-		if !validInstant(o.Through) || o.Through.Before(o.ScheduledFor) {
-			return validation("invalid occurrence range")
+	if !r.CompletedAt.IsZero() && (r.CompletedAt.Before(r.AcceptedAt) || (!r.StartedAt.IsZero() && r.CompletedAt.Before(r.StartedAt))) {
+		return validation("invalid completed_at")
+	}
+	if r.Cost != nil {
+		if _, ok := parseCost(*r.Cost); !ok {
+			return validation("cost must be a nonnegative decimal")
 		}
-		latest, count, err := o.Payload.Schedule.LatestDue(o.ScheduledFor, o.Through)
-		if err != nil || !latest.Equal(o.Through) || count != o.Count {
-			return validation("invalid occurrence range count")
-		}
-	} else if o.Count != 1 {
-		return validation("range end is required for multiple slots")
-	}
-	if o.Count > 1 && (o.Phase != "skipped" || o.TicketID != "") {
-		return validation("only skipped occurrences may cover multiple slots")
-	}
-	if o.Phase == "admitted" && o.TicketID == "" {
-		return validation("admitted occurrence requires ticket ID")
-	}
-	if !validPersistedDefinition(o.Payload) || o.Payload.ID != o.AutomationID || o.Payload.ScheduleRevision != o.ScheduleRevision {
-		return validation("invalid frozen payload")
-	}
-	next, err := o.Payload.Schedule.Next(o.ScheduledFor.Add(-time.Nanosecond))
-	if err != nil || !next.Equal(o.ScheduledFor) {
-		return validation("occurrence is not a scheduled slot")
 	}
 	return nil
+}
+func validStoredDefinition(d storedDefinition) bool {
+	return validID(d.ID) && ValidateKey(d.Key) == nil && d.Revision > 0 && validInstant(d.CreatedAt) && d.Spec.Validate() == nil && d.Spec == d.Spec.Normalize() && validInstant(d.Next)
 }
 
 func validateSnapshot(st snapshot) error {
-	if st.Version != snapshotVersion || len(st.Scope) != 64 || st.Definitions == nil || st.Occurrences == nil || st.Receipts == nil {
+	if st.Version != snapshotVersion || st.Scope == "" || st.Definitions == nil || st.Runs == nil || st.Counters == nil || st.Receipts == nil {
 		return errors.New("invalid snapshot header")
 	}
-	if !filepath.IsAbs(st.PrimaryDir) || filepath.Clean(st.PrimaryDir) != st.PrimaryDir {
-		return errors.New("invalid primary ticket directory")
-	}
-	hash := sha256.Sum256([]byte(st.PrimaryDir))
-	if st.Scope != hex.EncodeToString(hash[:]) {
-		return errors.New("snapshot scope does not match primary directory")
-	}
+	active := map[string]bool{}
 	for id, d := range st.Definitions {
-		if id != d.ID || !validPersistedDefinition(d) {
+		if id != d.ID || !validStoredDefinition(d) {
 			return errors.New("invalid definition")
 		}
-	}
-	slots := map[string]bool{}
-	ordered := make([]Occurrence, 0, len(st.Occurrences))
-	for id, o := range st.Occurrences {
-		d, ok := st.Definitions[o.AutomationID]
-		key := slotKey(o)
-		if id != o.ID || !ok || o.Payload.Revision > d.Revision || o.ScheduleRevision > d.ScheduleRevision || validateOccurrence(o) != nil || slots[key] {
-			return errors.New("invalid occurrence")
+		if !d.Deleted {
+			if active[d.Key] {
+				return errors.New("duplicate active key")
+			}
+			active[d.Key] = true
 		}
-		slots[key] = true
-		ordered = append(ordered, o)
-	}
-	sort.Slice(ordered, func(i, j int) bool {
-		a, b := ordered[i], ordered[j]
-		if a.AutomationID != b.AutomationID {
-			return a.AutomationID < b.AutomationID
-		}
-		if a.ScheduleRevision != b.ScheduleRevision {
-			return a.ScheduleRevision < b.ScheduleRevision
-		}
-		return a.ScheduledFor.Before(b.ScheduledFor)
-	})
-	for i := 1; i < len(ordered); i++ {
-		if rangesOverlap(ordered[i-1], ordered[i]) {
-			return errors.New("overlapping occurrence ranges")
+		if _, ok := st.Counters[d.Key]; !ok {
+			return errors.New("missing key counter")
 		}
 	}
-	created := map[string]bool{}
-	for id, r := range st.Receipts {
-		d, ok := st.Definitions[r.Result.ID]
-		if !validRequestID(id) || !ok || len(r.Fingerprint) != 64 || !validPersistedDefinition(r.Result) || r.Result.Revision != 1 || r.Result.ScheduleRevision != 1 || r.Result.Enabled || r.Result.Revision > d.Revision {
-			return errors.New("invalid receipt")
+	numbers := map[string]bool{}
+	for key, r := range st.Runs {
+		d, ok := st.Definitions[r.AutomationID]
+		number := runKey(r.Key, r.N)
+		if !ok || key != runKey(r.AutomationID, r.N) || r.Key != d.Key || r.N > st.Counters[r.Key] || validateRun(r) != nil || numbers[number] {
+			return errors.New("invalid run")
 		}
-		if _, err := hex.DecodeString(r.Fingerprint); err != nil {
-			return err
-		}
-		fp, err := fingerprint(r.Input)
-		if err != nil || fp != r.Fingerprint || created[r.Result.ID] {
-			return errors.New("receipt fingerprint mismatch or duplicate receipt")
-		}
-		if validateDefinition(r.Input) != nil || r.Input.ID != "" || r.Input.Revision != 0 || r.Input.ScheduleRevision != 0 {
-			return errors.New("invalid receipt input")
-		}
-		expected := createInput(r.Input)
-		expected.ID, expected.Revision, expected.ScheduleRevision, expected.Next = r.Result.ID, 1, 1, r.Result.Next
-		if !reflect.DeepEqual(expected, r.Result) {
-			return errors.New("receipt result does not match input")
-		}
-		created[r.Result.ID] = true
+		numbers[number] = true
 	}
-	if len(created) != len(st.Definitions) {
-		return errors.New("missing create receipt")
+	for key := range st.Counters {
+		if ValidateKey(key) != nil {
+			return errors.New("invalid key counter")
+		}
+	}
+	return validateReceipts(st)
+}
+
+func validateReceipts(st snapshot) error {
+	seen := make(map[string]bool, len(st.Runs))
+	for key, receipt := range st.Receipts {
+		runID := runKey(receipt.AutomationID, receipt.N)
+		r, ok := st.Runs[runID]
+		if !ok || r.Trigger != receipt.Trigger || !r.ScheduledFor.Equal(receipt.ScheduledFor) || seen[runID] {
+			return errors.New("invalid allocation receipt")
+		}
+		prefix := receipt.AutomationID + "/request/"
+		if requestID, ok := strings.CutPrefix(key, prefix); ok {
+			if requestID == "" || !textValid(requestID, 200, false) {
+				return errors.New("invalid request receipt")
+			}
+		} else if receipt.Trigger != "schedule" || key != receipt.AutomationID+"/schedule/"+receipt.ScheduledFor.UTC().Format(time.RFC3339Nano) {
+			return errors.New("invalid scheduled receipt")
+		}
+		seen[runID] = true
+	}
+	if len(seen) != len(st.Runs) {
+		return errors.New("missing allocation receipt")
 	}
 	return nil
 }
@@ -423,22 +407,94 @@ func (s *Store) available() error {
 	}
 	return nil
 }
-
 func (s *Store) copyState() snapshot {
 	st := s.state
-	st.Definitions = make(map[string]Definition, len(s.state.Definitions))
-	for k, v := range s.state.Definitions {
-		st.Definitions[k] = v
+	st.Definitions = maps.Clone(s.state.Definitions)
+	st.Runs = make(map[string]Run, len(s.state.Runs))
+	for k, v := range s.state.Runs {
+		st.Runs[k] = cloneRun(v)
 	}
-	st.Occurrences = make(map[string]Occurrence, len(s.state.Occurrences))
-	for k, v := range s.state.Occurrences {
-		st.Occurrences[k] = v
-	}
-	st.Receipts = make(map[string]receipt, len(s.state.Receipts))
-	for k, v := range s.state.Receipts {
-		st.Receipts[k] = v
-	}
+	st.Counters = maps.Clone(s.state.Counters)
+	st.Receipts = maps.Clone(s.state.Receipts)
 	return st
+}
+
+func (s *Store) Reconcile(specs map[string]Spec, now time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.available(); err != nil {
+		return err
+	}
+	if !validInstant(now) {
+		return validation("now is out of range")
+	}
+	normalized := make(map[string]Spec, len(specs))
+	for key, spec := range specs {
+		if err := ValidateKey(key); err != nil {
+			return err
+		}
+		spec = spec.Normalize()
+		if err := spec.Validate(); err != nil {
+			return fmt.Errorf("%s: %w", key, err)
+		}
+		normalized[key] = spec
+	}
+	st := s.copyState()
+	live := map[string]string{}
+	changed := false
+	for id, d := range st.Definitions {
+		if d.Deleted {
+			continue
+		}
+		live[d.Key] = id
+		if _, ok := normalized[d.Key]; !ok {
+			if d.Revision == math.MaxUint64 {
+				return ErrConflict
+			}
+			d.Deleted = true
+			d.Revision++
+			st.Definitions[id] = d
+			changed = true
+		}
+	}
+	keys := make([]string, 0, len(normalized))
+	for key := range normalized {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		spec := normalized[key]
+		id, exists := live[key]
+		if !exists {
+			id = "aut-" + newID()
+			schedule, _ := Compile(spec.Schedule, spec.Timezone)
+			st.Definitions[id] = storedDefinition{Spec: spec, ID: id, Key: key, Revision: 1, CreatedAt: now.UTC(), Next: schedule.Next(now).UTC()}
+			if _, ok := st.Counters[key]; !ok {
+				st.Counters[key] = 0
+			}
+			changed = true
+			continue
+		}
+		d := st.Definitions[id]
+		if d.Spec == spec {
+			continue
+		}
+		if d.Revision == math.MaxUint64 {
+			return ErrConflict
+		}
+		if d.Spec.Schedule != spec.Schedule || d.Spec.Timezone != spec.Timezone || (!d.Spec.Enabled && spec.Enabled) {
+			schedule, _ := Compile(spec.Schedule, spec.Timezone)
+			d.Next = schedule.Next(now).UTC()
+		}
+		d.Spec = spec
+		d.Revision++
+		st.Definitions[id] = d
+		changed = true
+	}
+	if !changed {
+		return nil
+	}
+	return s.save(st)
 }
 
 func (s *Store) List() ([]Definition, error) {
@@ -448,13 +504,15 @@ func (s *Store) List() ([]Definition, error) {
 		return nil, err
 	}
 	out := make([]Definition, 0, len(s.state.Definitions))
+	now := time.Now()
 	for _, d := range s.state.Definitions {
-		out = append(out, cloneDefinition(d))
+		if !d.Deleted {
+			out = append(out, s.definition(d, now))
+		}
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	sort.Slice(out, func(i, j int) bool { return out[i].Key < out[j].Key })
 	return out, nil
 }
-
 func (s *Store) Get(id string) (Definition, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -462,177 +520,22 @@ func (s *Store) Get(id string) (Definition, error) {
 		return Definition{}, err
 	}
 	d, ok := s.state.Definitions[id]
-	if !ok {
+	if !ok || d.Deleted {
 		return Definition{}, ErrNotFound
 	}
-	return cloneDefinition(d), nil
+	return s.definition(d, time.Now()), nil
 }
-
-func validRequestID(id string) bool { return id != "" && textValid(id, 200, false) }
-
-func createInput(d Definition) Definition {
-	d = cloneDefinition(d)
-	d.ID = ""
-	d.Revision = 0
-	d.ScheduleRevision = 0
-	d.Next = time.Time{}
-	d.Enabled = false
-	sort.Ints(d.Schedule.Days)
-	return d
-}
-
-// Retries must match the decoded payload, including weekday order; nil and empty weekdays are equivalent.
-func fingerprint(d Definition) (string, error) {
-	data, err := json.Marshal(cloneDefinition(d))
-	if err != nil {
-		return "", validation("invalid create payload: %v", err)
-	}
-	h := sha256.Sum256(data)
-	return hex.EncodeToString(h[:]), nil
-}
-
-// CreateReceipt skips live resource validation so retries survive agent or repository removal.
-func (s *Store) CreateReceipt(requestID string, input Definition) (Definition, bool, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if err := s.available(); err != nil {
-		return Definition{}, false, err
-	}
-	return s.createReceipt(requestID, input)
-}
-
-func (s *Store) createReceipt(requestID string, input Definition) (Definition, bool, error) {
-	if !validRequestID(requestID) {
-		return Definition{}, false, validation("request ID is required (max 200 bytes)")
-	}
-	r, ok := s.state.Receipts[requestID]
-	if !ok {
-		return Definition{}, false, nil
-	}
-	fp, err := fingerprint(input)
-	if err != nil || r.Fingerprint != fp {
-		return Definition{}, false, ErrConflict
-	}
-	return cloneDefinition(r.Result), true, nil
-}
-
-func (s *Store) Create(requestID string, input Definition, now time.Time) (Definition, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if err := s.available(); err != nil {
-		return Definition{}, err
-	}
-	if result, found, err := s.createReceipt(requestID, input); found || err != nil {
-		return result, err
-	}
-	if err := validateDefinition(input); err != nil {
-		return Definition{}, err
-	}
-	if input.ID != "" || input.Revision != 0 || input.ScheduleRevision != 0 {
-		return Definition{}, validation("new definition must not have an identity or revision")
-	}
-	fp, err := fingerprint(input)
-	if err != nil {
-		return Definition{}, err
-	}
-	if !validInstant(now) {
-		return Definition{}, validation("now is out of range")
-	}
-	d := createInput(input)
-	for {
-		d.ID = newID()
-		if _, exists := s.state.Definitions[d.ID]; !exists {
-			break
+func (s *Store) runs(id string) []Run {
+	out := []Run{}
+	for _, r := range s.state.Runs {
+		if r.AutomationID == id {
+			out = append(out, cloneRun(r))
 		}
 	}
-	d.Revision = 1
-	d.ScheduleRevision = 1
-	next, err := d.Schedule.Next(now)
-	if err != nil {
-		return Definition{}, err
-	}
-	d.Next = next
-	st := s.copyState()
-	st.Definitions[d.ID] = d
-	st.Receipts[requestID] = receipt{Fingerprint: fp, Input: cloneDefinition(input), Result: d}
-	if err := s.save(st); err != nil {
-		return Definition{}, err
-	}
-	return cloneDefinition(d), nil
+	sort.Slice(out, func(i, j int) bool { return out[i].N > out[j].N })
+	return out
 }
-
-func sameSchedule(a, b Schedule) bool {
-	a.Days = append([]int{}, a.Days...)
-	b.Days = append([]int{}, b.Days...)
-	sort.Ints(a.Days)
-	sort.Ints(b.Days)
-	return reflect.DeepEqual(a, b)
-}
-
-func (s *Store) Update(input Definition, now time.Time) (Definition, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if err := s.available(); err != nil {
-		return Definition{}, err
-	}
-	old, ok := s.state.Definitions[input.ID]
-	if !ok {
-		return Definition{}, ErrNotFound
-	}
-	if input.Revision != old.Revision || input.ScheduleRevision != old.ScheduleRevision {
-		return Definition{}, ErrConflict
-	}
-	if err := validateDefinition(input); err != nil {
-		return Definition{}, err
-	}
-	if !validInstant(now) {
-		return Definition{}, validation("now is out of range")
-	}
-	if old.Revision == math.MaxUint64 {
-		return Definition{}, ErrConflict
-	}
-	d := cloneDefinition(input)
-	d.Revision++
-	d.Next = old.Next
-	sort.Ints(d.Schedule.Days)
-	changed := !sameSchedule(d.Schedule, old.Schedule)
-	if changed {
-		d.ScheduleRevision++
-	}
-	if changed || (d.Enabled && !old.Enabled) {
-		after := now
-		if !changed {
-			// A saved occurrence can precede its cursor save. Do not select that slot again.
-			for _, o := range s.state.Occurrences {
-				if o.AutomationID != d.ID || o.ScheduleRevision != d.ScheduleRevision {
-					continue
-				}
-				end := o.Through
-				if end.IsZero() {
-					end = o.ScheduledFor
-				}
-				if end.After(after) {
-					after = end
-				}
-			}
-		}
-		next, err := d.Schedule.Next(after)
-		if err != nil {
-			return Definition{}, err
-		}
-		if changed || next.After(old.Next) {
-			d.Next = next
-		}
-	}
-	st := s.copyState()
-	st.Definitions[d.ID] = d
-	if err := s.save(st); err != nil {
-		return Definition{}, err
-	}
-	return cloneDefinition(d), nil
-}
-
-func (s *Store) Occurrences(id string) ([]Occurrence, error) {
+func (s *Store) Runs(id string) ([]Run, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := s.available(); err != nil {
@@ -641,108 +544,175 @@ func (s *Store) Occurrences(id string) ([]Occurrence, error) {
 	if _, ok := s.state.Definitions[id]; !ok {
 		return nil, ErrNotFound
 	}
-	out := []Occurrence{}
-	for _, o := range s.state.Occurrences {
-		if o.AutomationID == id {
-			o.Payload = cloneDefinition(o.Payload)
-			out = append(out, o)
+	return s.runs(id), nil
+}
+
+// UnfinishedRuns includes tombstoned automations so deletion cannot hide a process that still needs recovery.
+func (s *Store) UnfinishedRuns() ([]Run, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.available(); err != nil {
+		return nil, err
+	}
+	out := []Run{}
+	for _, run := range s.state.Runs {
+		if run.Phase != "terminal" {
+			out = append(out, cloneRun(run))
 		}
 	}
 	sort.Slice(out, func(i, j int) bool {
-		if out[i].ScheduledFor.Equal(out[j].ScheduledFor) {
-			return out[i].ID < out[j].ID
+		if !out[i].AcceptedAt.Equal(out[j].AcceptedAt) {
+			return out[i].AcceptedAt.After(out[j].AcceptedAt)
 		}
-		return out[i].ScheduledFor.Before(out[j].ScheduledFor)
+		if out[i].AutomationID != out[j].AutomationID {
+			return out[i].AutomationID < out[j].AutomationID
+		}
+		return out[i].N > out[j].N
 	})
 	return out, nil
 }
 
-func slotKey(o Occurrence) string {
-	return fmt.Sprintf("%s/%d/%s", o.AutomationID, o.ScheduleRevision, o.ScheduledFor.UTC().Format(time.RFC3339Nano))
-}
-
-func rangesOverlap(a, b Occurrence) bool {
-	if a.AutomationID != b.AutomationID || a.ScheduleRevision != b.ScheduleRevision {
-		return false
-	}
-	aEnd, bEnd := a.Through, b.Through
-	if aEnd.IsZero() {
-		aEnd = a.ScheduledFor
-	}
-	if bEnd.IsZero() {
-		bEnd = b.ScheduledFor
-	}
-	return !a.ScheduledFor.After(bEnd) && !b.ScheduledFor.After(aEnd)
-}
-
-func terminal(phase string) bool { return phase != "reserved" && phase != "publishing" }
-
-func (s *Store) SaveOccurrence(o Occurrence) (Occurrence, error) {
+func (s *Store) GetRun(id string, n uint64) (Run, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := s.available(); err != nil {
-		return Occurrence{}, err
+		return Run{}, err
 	}
-	d, ok := s.state.Definitions[o.AutomationID]
+	r, ok := s.state.Runs[runKey(id, n)]
 	if !ok {
-		return Occurrence{}, ErrNotFound
+		return Run{}, ErrNotFound
 	}
-	old, exists := s.state.Occurrences[o.ID]
-	if exists {
-		if o.Revision != old.Revision || old.Revision == math.MaxUint64 {
-			return Occurrence{}, ErrConflict
-		}
-		if o.AutomationID != old.AutomationID || o.ScheduleRevision != old.ScheduleRevision || !o.ScheduledFor.Equal(old.ScheduledFor) || !o.Through.Equal(old.Through) || o.Count != old.Count || !reflect.DeepEqual(o.Payload, old.Payload) || (old.TicketID != "" && o.TicketID != old.TicketID) || (terminal(old.Phase) && o.Phase != old.Phase && !(old.Phase == "blocked" && o.Phase == "skipped")) || (old.Phase == "publishing" && o.Phase == "reserved") {
-			return Occurrence{}, ErrConflict
-		}
-	} else {
-		if o.Revision != 0 {
-			return Occurrence{}, ErrConflict
-		}
-		if o.ID == "" {
-			for {
-				o.ID = newID()
-				if _, exists := s.state.Occurrences[o.ID]; !exists {
-					break
-				}
-			}
-		}
-		if o.ScheduleRevision != d.ScheduleRevision {
-			return Occurrence{}, ErrConflict
-		}
-		if o.Payload.ID == "" {
-			o.Payload = cloneDefinition(d)
-		} else {
-			payload, current := cloneDefinition(o.Payload), cloneDefinition(d)
-			payload.Next = current.Next
-			if !reflect.DeepEqual(payload, current) {
-				return Occurrence{}, ErrConflict
-			}
-		}
-		if o.Count == 0 {
-			o.Count = 1
-		}
-		for _, other := range s.state.Occurrences {
-			if rangesOverlap(other, o) {
-				return Occurrence{}, ErrConflict
-			}
-		}
-	}
-	o.Revision++
-	o.ScheduledFor = o.ScheduledFor.UTC()
-	o.Payload = cloneDefinition(o.Payload)
-	if err := validateOccurrence(o); err != nil {
-		return Occurrence{}, err
-	}
-	st := s.copyState()
-	st.Occurrences[o.ID] = o
-	if err := s.save(st); err != nil {
-		return Occurrence{}, err
-	}
-	o.Payload = cloneDefinition(o.Payload)
-	return o, nil
+	return cloneRun(r), nil
 }
 
+func (s *Store) Allocate(id, trigger, requestID string, scheduledFor, next, now time.Time, admissions ...Admission) (Run, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.available(); err != nil {
+		return Run{}, false, err
+	}
+	if trigger != "manual" && trigger != "schedule" {
+		return Run{}, false, validation("invalid trigger")
+	}
+	if !textValid(requestID, 200, false) || (trigger == "manual" && requestID == "") {
+		return Run{}, false, validation("request ID is required (max 200 bytes)")
+	}
+	if trigger == "schedule" && !validInstant(scheduledFor) {
+		return Run{}, false, validation("scheduled_for is required")
+	}
+	receiptKey := id + "/request/" + requestID
+	if requestID == "" {
+		receiptKey = id + "/schedule/" + scheduledFor.UTC().Format(time.RFC3339Nano)
+	}
+	if receipt, ok := s.state.Receipts[receiptKey]; ok {
+		if receipt.Trigger != trigger || !receipt.ScheduledFor.Equal(scheduledFor) {
+			return Run{}, false, ErrConflict
+		}
+		return cloneRun(s.state.Runs[runKey(id, receipt.N)]), true, nil
+	}
+	d, ok := s.state.Definitions[id]
+	if !ok || d.Deleted {
+		return Run{}, false, ErrNotFound
+	}
+	if !validInstant(now) {
+		return Run{}, false, validation("now is out of range")
+	}
+	if !next.IsZero() && (!validInstant(next) || next.Before(d.Next) || trigger != "schedule") {
+		return Run{}, false, validation("invalid next cursor")
+	}
+	if s.state.Counters[d.Key] == math.MaxUint64 {
+		return Run{}, false, ErrConflict
+	}
+	if len(admissions) > 1 {
+		return Run{}, false, validation("one admission decision is required")
+	}
+	decision := Admission{}
+	if len(admissions) == 1 {
+		decision = admissions[0]
+	}
+	r := Run{AutomationID: id, Key: d.Key, N: s.state.Counters[d.Key] + 1, Revision: 1, InvocationID: "inv-" + newID(), Phase: "queued", Trigger: trigger, ScheduledFor: scheduledFor.UTC(), AcceptedAt: now.UTC(), Spec: d.Spec}
+	if decision.SkipReason != "" {
+		r.Phase, r.Outcome, r.Result, r.CompletedAt = "terminal", "skipped", decision.SkipReason, now.UTC()
+	}
+	st := s.copyState()
+	if err := applyAdmission(st, id, decision, now); err != nil {
+		return Run{}, false, err
+	}
+	st.Counters[d.Key] = r.N
+	st.Runs[runKey(id, r.N)] = r
+	st.Receipts[receiptKey] = receipt{AutomationID: id, N: r.N, Trigger: trigger, ScheduledFor: r.ScheduledFor}
+	if !next.IsZero() {
+		d.Next = next.UTC()
+		st.Definitions[id] = d
+	}
+	if err := s.save(st); err != nil {
+		return Run{}, false, err
+	}
+	return cloneRun(r), false, nil
+}
+
+func applyAdmission(st snapshot, id string, decision Admission, now time.Time) error {
+	for _, number := range decision.Supersede {
+		key := runKey(id, number)
+		previous, exists := st.Runs[key]
+		if !exists || previous.Phase != "queued" || previous.Revision == math.MaxUint64 {
+			return ErrConflict
+		}
+		previous.Phase, previous.Outcome, previous.Result, previous.CompletedAt = "terminal", "skipped", "superseded by a replacement", now.UTC()
+		previous.Revision++
+		st.Runs[key] = previous
+	}
+	for _, number := range decision.StopQueued {
+		key := runKey(id, number)
+		previous, exists := st.Runs[key]
+		if !exists || previous.Phase != "queued" || previous.Revision == math.MaxUint64 {
+			return ErrConflict
+		}
+		previous.Phase, previous.StopReason = "stopping", "replaced by a newer run"
+		previous.Revision++
+		st.Runs[key] = previous
+	}
+	return nil
+}
+
+func (s *Store) UpdateRun(id string, n uint64, fn func(*Run) error) (Run, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.available(); err != nil {
+		return Run{}, err
+	}
+	old, ok := s.state.Runs[runKey(id, n)]
+	if !ok {
+		return Run{}, ErrNotFound
+	}
+	if fn == nil {
+		return Run{}, validation("run callback is required")
+	}
+	if old.Revision == math.MaxUint64 {
+		return Run{}, ErrConflict
+	}
+	r := cloneRun(old)
+	if err := fn(&r); err != nil {
+		return Run{}, err
+	}
+	if r.AutomationID != old.AutomationID || r.Key != old.Key || r.N != old.N || r.Revision != old.Revision || r.InvocationID != old.InvocationID || r.Spec != old.Spec || r.Trigger != old.Trigger || !r.AcceptedAt.Equal(old.AcceptedAt) || !r.ScheduledFor.Equal(old.ScheduledFor) {
+		return Run{}, ErrConflict
+	}
+	if old.Phase == "terminal" && (r.Phase != "terminal" || r.Outcome != old.Outcome) {
+		return Run{}, ErrConflict
+	}
+	r.Revision++
+	if err := validateRun(r); err != nil {
+		return Run{}, err
+	}
+	st := s.copyState()
+	// The callback can retain its argument, so persisted pointers must not share that argument.
+	st.Runs[runKey(id, n)] = cloneRun(r)
+	if err := s.save(st); err != nil {
+		return Run{}, err
+	}
+	return cloneRun(r), nil
+}
 func (s *Store) SetNext(id string, next time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -750,7 +720,7 @@ func (s *Store) SetNext(id string, next time.Time) error {
 		return err
 	}
 	d, ok := s.state.Definitions[id]
-	if !ok {
+	if !ok || d.Deleted {
 		return ErrNotFound
 	}
 	if !validInstant(next) {
@@ -763,12 +733,90 @@ func (s *Store) SetNext(id string, next time.Time) error {
 		return nil
 	}
 	d.Next = next.UTC()
-	if !validPersistedDefinition(d) {
-		return validation("next cursor must be a scheduled slot")
-	}
 	st := s.copyState()
 	st.Definitions[id] = d
 	return s.save(st)
+}
+
+func parseCost(value string) (*big.Rat, bool) {
+	if value == "" || strings.ContainsAny(value, "/eE+- ") {
+		return nil, false
+	}
+	dots := 0
+	for _, r := range value {
+		if r == '.' {
+			dots++
+		} else if r < '0' || r > '9' {
+			return nil, false
+		}
+	}
+	if dots > 1 {
+		return nil, false
+	}
+	n, ok := new(big.Rat).SetString(value)
+	return n, ok && n.Sign() >= 0
+}
+func (s *Store) definition(stored storedDefinition, now time.Time) Definition {
+	d := Definition{Spec: stored.Spec, ID: stored.ID, Key: stored.Key, Revision: stored.Revision, CreatedAt: stored.CreatedAt, Next: stored.Next, NextRuns: []time.Time{}, ScheduleHuman: Human(stored.Spec.Schedule)}
+	if schedule, err := Compile(d.Schedule, d.Timezone); err == nil {
+		next := d.Next
+		if !d.Enabled && next.Before(now) {
+			next = schedule.Next(now)
+		}
+		for range 4 {
+			if !validInstant(next) {
+				break
+			}
+			d.NextRuns = append(d.NextRuns, next)
+			next = schedule.Next(next)
+		}
+	}
+	runs := s.runs(d.ID)
+	d.RunsTotal = len(runs)
+	complete, finished, walls := 0, 0, 0
+	wall := 0.0
+	spend := new(big.Rat)
+	for _, r := range runs {
+		if d.LastRun == nil && r.Phase == "terminal" {
+			last := cloneRun(r)
+			d.LastRun = &last
+		}
+		if r.Phase != "terminal" && (d.CurrentRun == nil || (d.CurrentRun.Phase == "queued" && r.Phase != "queued")) {
+			current := cloneRun(r)
+			d.CurrentRun = &current
+			d.Running = r.Phase == "running" || (r.Phase == "stopping" && r.WindowID != "")
+		}
+		if r.Phase != "terminal" || r.Outcome == "skipped" {
+			continue
+		}
+		finished++
+		if r.Outcome == "complete" {
+			complete++
+		}
+		if !r.StartedAt.IsZero() {
+			wall += r.CompletedAt.Sub(r.StartedAt).Seconds()
+			walls++
+		}
+		if !r.StartedAt.IsZero() && !r.StartedAt.Before(now.Add(-30*24*time.Hour)) && !r.StartedAt.After(now) {
+			d.TrackedRuns++
+			if r.Cost != nil {
+				if cost, ok := parseCost(*r.Cost); ok {
+					spend.Add(spend, cost)
+					d.PricedRuns++
+				}
+			}
+		}
+	}
+	if finished > 0 {
+		d.SuccessRate = new(float64(complete) * 100 / float64(finished))
+	}
+	if walls > 0 {
+		d.AvgWall = new(wall / float64(walls))
+	}
+	if d.PricedRuns > 0 {
+		d.Spend30d = new(spend.FloatString(6))
+	}
+	return d
 }
 
 func (s *Store) fail(stage string) error {
@@ -777,7 +825,6 @@ func (s *Store) fail(stage string) error {
 	}
 	return nil
 }
-
 func (s *Store) save(st snapshot) error {
 	if err := validateSnapshot(st); err != nil {
 		return fmt.Errorf("%w: %v", ErrValidation, err)
@@ -795,7 +842,6 @@ func (s *Store) save(st snapshot) error {
 	s.data = data
 	return nil
 }
-
 func (s *Store) replace(data []byte) error {
 	if err := s.fail("create"); err != nil {
 		return err
@@ -832,7 +878,6 @@ func (s *Store) replace(data []byte) error {
 	}
 	return syncDirectory(s.dir)
 }
-
 func syncDirectory(path string) error {
 	dir, err := os.Open(path)
 	if err != nil {
@@ -840,7 +885,6 @@ func syncDirectory(path string) error {
 	}
 	return errors.Join(dir.Sync(), dir.Close())
 }
-
 func (s *Store) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

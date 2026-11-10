@@ -527,10 +527,16 @@ export function kontoraDetail() {
         try { id = decodeURIComponent(raw); } catch (e) { id = raw; }
         return { view: 'board', ticketId: id };
       }
-      if (h === '/automations' || h.startsWith('/automations?')) {
-        const params = new URLSearchParams(h.split('?')[1] || '');
+      const automationsRoute = h.match(/^\/automations(?:\/([^/?]+)(\/edit)?)?(?:\?(.*))?$/);
+      if (automationsRoute) {
+        const params = new URLSearchParams(automationsRoute[3] || '');
         const filter = params.get('state');
-        return { view: 'automations', ticketId: null, automationFilter: ['enabled', 'paused'].includes(filter) ? filter : 'all', automationQuery: params.get('q') || '' };
+        let id;
+        try { id = automationsRoute[1] ? decodeURIComponent(automationsRoute[1]) : null; }
+        catch { return { view: 'automations', ticketId: null }; }
+        return { view: 'automations', ticketId: null, automationsId: id === 'new' ? null : id,
+          automationsMode: id === 'new' ? 'new' : automationsRoute[2] ? 'edit' : id ? 'detail' : 'list',
+          automationsFilter: ['enabled', 'paused'].includes(filter) ? filter : 'all', automationsQuery: params.get('q') || '' };
       }
       if (h === '/new') return { view: 'new', ticketId: null };
       if (h === '/stats') return { view: 'stats', ticketId: null };
@@ -551,7 +557,10 @@ export function kontoraDetail() {
         const params = new URLSearchParams();
         if (this.automationsFilter !== 'all') params.set('state', this.automationsFilter);
         if (this.automationsQuery) params.set('q', this.automationsQuery);
-        return '#/automations' + (params.size ? '?' + params.toString() : '');
+        const path = this.automationsEditing && !this.automationsSelected ? '/new'
+          : this.automationsSelected && (this.automationsDetail || this.automationsEditing)
+            ? '/' + encodeURIComponent(this.automationsSelected) + (this.automationsEditing ? '/edit' : '') : '';
+        return '#/automations' + path + (params.size ? '?' + params.toString() : '');
       }
       if (this.currentView === 'archive') return this.archiveDetailOpen() ? '#/archive/t/' + encodeURIComponent(this.selectedTicket.id) : '#/archive';
       if (this.currentView === 'new') return '#/new';
@@ -585,8 +594,13 @@ export function kontoraDetail() {
           if (await this.gotoView(r.view, navigation, r) === false || !mine()) return false;
         }
         if (r.view === 'automations') {
-          this.automationsFilter = r.automationFilter || 'all';
-          this.automationsQuery = r.automationQuery || '';
+          if (this.selectedTicket) this.closeDetail(false);
+          if (this.selectedEpic && await this.closeEpic(false) === false) return false;
+          if (!mine()) return false;
+          if (await this.automationsApplyRoute(r, navigation) === false || !mine()) return false;
+          this.automationsFilter = r.automationsFilter || 'all';
+          this.automationsQuery = r.automationsQuery || '';
+          return true;
         }
         if (this.sheet && (r.ticketId || r.epicId)) this.closeSheet(false);
         // The two overlays are exclusive, so the epic branch closes whichever

@@ -216,7 +216,8 @@ func checkFetchMetadata(r *http.Request) error {
 // body, so run/pause/retry/skip and the plannotator routes arrive without one.
 // Those stay covered by the Origin and Sec-Fetch-Site checks above.
 func writeWithUnsupportedMediaType(r *http.Request) bool {
-	if r.Method != http.MethodPost && r.Method != http.MethodPut {
+	automationWrite := strings.HasPrefix(r.URL.Path, "/api/automations/") && (r.Method == http.MethodDelete || r.Method == http.MethodPatch)
+	if r.Method != http.MethodPost && r.Method != http.MethodPut && !automationWrite {
 		return false
 	}
 	header := r.Header.Get("Content-Type")

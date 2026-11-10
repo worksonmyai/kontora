@@ -14,7 +14,7 @@ import (
 	"github.com/worksonmyai/kontora/internal/automation"
 )
 
-const automationRequestMax = 64 << 10
+const automationRequestMax = 512 << 10
 
 func (s *Server) registerAutomationRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/automations", s.handleAutomations)
@@ -22,8 +22,15 @@ func (s *Server) registerAutomationRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/automations/preview", s.handleAutomationPreview)
 	mux.HandleFunc("GET /api/automations/{id}", s.handleAutomation)
 	mux.HandleFunc("PUT /api/automations/{id}", s.handleUpdateAutomation)
-	mux.HandleFunc("GET /api/automations/{id}/occurrences", s.handleAutomationOccurrences)
-	mux.HandleFunc("POST /api/automations/{id}/occurrences/{occurrence_id}/skip", s.handleSkipAutomationOccurrence)
+	mux.HandleFunc("DELETE /api/automations/{id}", s.handleDeleteAutomation)
+	mux.HandleFunc("POST /api/automations/{id}/run", s.handleRunAutomation)
+	mux.HandleFunc("POST /api/automations/{id}/stop", s.handleStopAutomation)
+	mux.HandleFunc("POST /api/automations/{id}/pause", s.handlePauseAutomation)
+	mux.HandleFunc("POST /api/automations/{id}/resume", s.handlePauseAutomation)
+	mux.HandleFunc("GET /api/automations/{id}/runs", s.handleAutomationRuns)
+	mux.HandleFunc("GET /api/automations/{id}/runs/{n}/log", s.handleAutomationLog)
+	mux.HandleFunc("GET /api/automations/{id}/runs/{n}/terminal", s.handleAutomationTerminal)
+	mux.HandleFunc("GET /ws/automations/{id}/{n}", s.handleAutomationTerminalWS)
 }
 
 func (s *Server) automationService(w http.ResponseWriter) (AutomationService, bool) {
@@ -42,7 +49,7 @@ func (s *Server) handleAutomations(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, response)
 		return
 	}
-	definitions, err := svc.ListAutomations()
+	rows, err := svc.ListAutomations()
 	if err != nil {
 		if !errors.Is(err, automation.ErrUnavailable) {
 			writeAutomationError(w, err)
@@ -51,8 +58,8 @@ func (s *Server) handleAutomations(w http.ResponseWriter, _ *http.Request) {
 		response.Error = err.Error()
 	} else {
 		response.Available = true
-		if definitions != nil {
-			response.Definitions = definitions
+		if rows != nil {
+			response.Definitions = rows
 		}
 	}
 	writeJSON(w, http.StatusOK, response)
@@ -63,12 +70,12 @@ func (s *Server) handleAutomation(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	definition, err := svc.GetAutomation(r.PathValue("id"))
+	row, err := svc.GetAutomation(r.PathValue("id"))
 	if err != nil {
 		writeAutomationError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, definition)
+	writeJSON(w, http.StatusOK, row)
 }
 
 func (s *Server) handleCreateAutomation(w http.ResponseWriter, r *http.Request) {
@@ -77,36 +84,24 @@ func (s *Server) handleCreateAutomation(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	var req struct {
-		RequestID  string `json:"request_id"`
-		Definition *struct {
-			automation.Definition
-			SkipOverlap *bool `json:"skip_overlap"`
-		} `json:"definition"`
+		RequestID  string           `json:"request_id"`
+		Key        string           `json:"key"`
+		Definition *automation.Spec `json:"definition"`
 	}
 	if err := decodeAutomationJSON(w, r, &req); err != nil {
 		writeJSONError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if strings.TrimSpace(req.RequestID) == "" || len(req.RequestID) > 200 || req.Definition == nil {
+	if req.Definition == nil || strings.TrimSpace(req.RequestID) == "" || len(req.RequestID) > 200 {
 		writeJSONError(w, http.StatusBadRequest, "request_id (at most 200 bytes) and definition are required")
 		return
 	}
-	input := req.Definition.Definition
-	if input.ID != "" || input.Revision != 0 || input.ScheduleRevision != 0 || !input.Next.IsZero() {
-		writeJSONError(w, http.StatusBadRequest, "id, revision, schedule_revision and next are server-managed")
-		return
-	}
-	if input.Enabled {
-		writeJSONError(w, http.StatusBadRequest, "new automations must be disabled")
-		return
-	}
-	input.SkipOverlap = req.Definition.SkipOverlap == nil || *req.Definition.SkipOverlap
-	definition, err := svc.CreateAutomation(req.RequestID, input)
+	row, err := svc.CreateAutomation(req.RequestID, req.Key, *req.Definition)
 	if err != nil {
 		writeAutomationError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, definition)
+	writeJSON(w, http.StatusCreated, row)
 }
 
 func (s *Server) handleUpdateAutomation(w http.ResponseWriter, r *http.Request) {
@@ -114,93 +109,27 @@ func (s *Server) handleUpdateAutomation(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		return
 	}
-	var input automation.Definition
-	if err := decodeAutomationJSON(w, r, &input); err != nil {
+	var req struct {
+		Revision   uint64           `json:"revision"`
+		Definition *automation.Spec `json:"definition"`
+	}
+	if err := decodeAutomationJSON(w, r, &req); err != nil {
 		writeJSONError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	id := r.PathValue("id")
-	if input.Revision == 0 || (input.ID != "" && input.ID != id) {
-		writeJSONError(w, http.StatusBadRequest, "revision is required and id must match the URL")
+	if req.Revision == 0 || req.Definition == nil {
+		writeJSONError(w, http.StatusBadRequest, "revision and definition are required")
 		return
 	}
-	current, err := svc.GetAutomation(id)
+	row, err := svc.UpdateAutomation(r.PathValue("id"), req.Revision, *req.Definition)
 	if err != nil {
 		writeAutomationError(w, err)
 		return
 	}
-	if input.Revision != current.Revision {
-		writeAutomationError(w, automation.ErrConflict)
-		return
-	}
-	// The scheduler can advance next without changing the editable revision.
-	if input.ScheduleRevision != 0 && input.ScheduleRevision != current.ScheduleRevision {
-		writeJSONError(w, http.StatusBadRequest, "schedule_revision is server-managed")
-		return
-	}
-	input.ID, input.ScheduleRevision, input.Next = id, current.ScheduleRevision, current.Next
-	definition, err := svc.UpdateAutomation(input)
-	if err != nil {
-		writeAutomationError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, definition)
+	writeJSON(w, http.StatusOK, row)
 }
 
-func (s *Server) handleAutomationPreview(w http.ResponseWriter, r *http.Request) {
-	var schedule automation.Schedule
-	if err := decodeAutomationJSON(w, r, &schedule); err != nil {
-		writeJSONError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	if err := schedule.Validate(); err != nil {
-		writeAutomationError(w, err)
-		return
-	}
-	occurrences, err := schedule.Preview(time.Now(), 3)
-	if err != nil {
-		writeAutomationError(w, err)
-		return
-	}
-	if occurrences == nil {
-		occurrences = []time.Time{}
-	}
-	writeJSON(w, http.StatusOK, struct {
-		Occurrences []time.Time `json:"occurrences"`
-	}{occurrences})
-}
-
-func (s *Server) handleAutomationOccurrences(w http.ResponseWriter, r *http.Request) {
-	svc, ok := s.automationService(w)
-	if !ok {
-		return
-	}
-	offset, err := automationPageParam(r, "offset", 0, 0, int(^uint(0)>>1))
-	if err != nil {
-		writeJSONError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	limit, err := automationPageParam(r, "limit", 50, 1, 200)
-	if err != nil {
-		writeJSONError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	occurrences, err := svc.AutomationOccurrences(r.PathValue("id"))
-	if err != nil {
-		writeAutomationError(w, err)
-		return
-	}
-	total := len(occurrences)
-	start := min(offset, total)
-	end := start + min(limit, total-start)
-	page := occurrences[start:end]
-	if page == nil {
-		page = []automation.Occurrence{}
-	}
-	writeJSON(w, http.StatusOK, AutomationOccurrencesResponse{Occurrences: page, Total: total})
-}
-
-func (s *Server) handleSkipAutomationOccurrence(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleDeleteAutomation(w http.ResponseWriter, r *http.Request) {
 	svc, ok := s.automationService(w)
 	if !ok {
 		return
@@ -216,12 +145,170 @@ func (s *Server) handleSkipAutomationOccurrence(w http.ResponseWriter, r *http.R
 		writeJSONError(w, http.StatusBadRequest, "revision is required")
 		return
 	}
-	occurrence, err := svc.SkipAutomationOccurrence(r.PathValue("id"), r.PathValue("occurrence_id"), req.Revision)
+	if err := svc.DeleteAutomation(r.PathValue("id"), req.Revision); err != nil {
+		writeAutomationError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleRunAutomation(w http.ResponseWriter, r *http.Request) {
+	svc, ok := s.automationService(w)
+	if !ok {
+		return
+	}
+	var req struct {
+		RequestID string `json:"request_id"`
+	}
+	if err := decodeAutomationJSON(w, r, &req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if strings.TrimSpace(req.RequestID) == "" || len(req.RequestID) > 200 {
+		writeJSONError(w, http.StatusBadRequest, "request_id is required (at most 200 bytes)")
+		return
+	}
+	run, err := svc.RunAutomation(r.PathValue("id"), req.RequestID)
 	if err != nil {
 		writeAutomationError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, occurrence)
+	writeJSON(w, http.StatusAccepted, run)
+}
+
+func (s *Server) handleStopAutomation(w http.ResponseWriter, r *http.Request) {
+	svc, ok := s.automationService(w)
+	if !ok {
+		return
+	}
+	var req struct {
+		N uint64 `json:"n"`
+	}
+	if err := decodeAutomationJSON(w, r, &req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if req.N == 0 {
+		writeJSONError(w, http.StatusBadRequest, "n is required")
+		return
+	}
+	run, err := svc.StopAutomation(r.PathValue("id"), req.N)
+	if err != nil {
+		writeAutomationError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, run)
+}
+
+func (s *Server) handlePauseAutomation(w http.ResponseWriter, r *http.Request) {
+	svc, ok := s.automationService(w)
+	if !ok {
+		return
+	}
+	var req struct {
+		Revision uint64 `json:"revision"`
+	}
+	if err := decodeAutomationJSON(w, r, &req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if req.Revision == 0 {
+		writeJSONError(w, http.StatusBadRequest, "revision is required")
+		return
+	}
+	row, err := svc.GetAutomation(r.PathValue("id"))
+	if err != nil {
+		writeAutomationError(w, err)
+		return
+	}
+	row.Enabled = strings.HasSuffix(r.URL.Path, "/resume")
+	row, err = svc.UpdateAutomation(row.ID, req.Revision, row.Spec)
+	if err != nil {
+		writeAutomationError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, row)
+}
+
+func (s *Server) handleAutomationPreview(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Schedule string `json:"schedule"`
+		Timezone string `json:"timezone"`
+	}
+	if err := decodeAutomationJSON(w, r, &req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if req.Timezone == "" {
+		req.Timezone = "UTC"
+	}
+	dates, err := automation.Preview(req.Schedule, req.Timezone, time.Now(), 4)
+	if err != nil {
+		writeAutomationError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, struct {
+		Occurrences []time.Time `json:"occurrences"`
+		Human       string      `json:"human"`
+	}{dates, automation.Human(req.Schedule)})
+}
+
+func (s *Server) handleAutomationRuns(w http.ResponseWriter, r *http.Request) {
+	svc, ok := s.automationService(w)
+	if !ok {
+		return
+	}
+	offset, err := automationPageParam(r, "offset", 0, 0, int(^uint(0)>>1))
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	limit, err := automationPageParam(r, "limit", 20, 1, 200)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	runs, err := svc.AutomationRuns(r.PathValue("id"))
+	if err != nil {
+		writeAutomationError(w, err)
+		return
+	}
+	start := min(offset, len(runs))
+	end := start + min(limit, len(runs)-start)
+	page := runs[start:end]
+	if page == nil {
+		page = []automation.Run{}
+	}
+	writeJSON(w, http.StatusOK, AutomationRunsResponse{Runs: page, Total: len(runs)})
+}
+
+func (s *Server) handleAutomationLog(w http.ResponseWriter, r *http.Request) {
+	svc, ok := s.automationService(w)
+	if !ok {
+		return
+	}
+	n, err := strconv.ParseUint(r.PathValue("n"), 10, 64)
+	if err != nil || n == 0 {
+		writeJSONError(w, http.StatusBadRequest, "invalid run number")
+		return
+	}
+	lines, raw, err := svc.AutomationLog(r.PathValue("id"), n)
+	if err != nil {
+		writeAutomationError(w, err)
+		return
+	}
+	if r.URL.Query().Get("raw") == "1" {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		_, _ = io.WriteString(w, raw)
+		return
+	}
+	if lines == nil {
+		lines = []automation.LogLine{}
+	}
+	writeJSON(w, http.StatusOK, struct {
+		Lines []automation.LogLine `json:"lines"`
+		Raw   string               `json:"raw"`
+	}{lines, raw})
 }
 
 func automationPageParam(r *http.Request, name string, fallback, minimum, maximum int) (int, error) {
@@ -242,7 +329,7 @@ func decodeAutomationJSON(w http.ResponseWriter, r *http.Request, dst any) error
 	r.Body = http.MaxBytesReader(w, r.Body, automationRequestMax)
 	data, err := io.ReadAll(r.Body)
 	if err != nil {
-		return errors.New("invalid JSON body (maximum 64 KiB)")
+		return errors.New("invalid JSON body (maximum 512 KiB)")
 	}
 	data = bytes.TrimSpace(data)
 	if len(data) == 0 || data[0] != '{' {

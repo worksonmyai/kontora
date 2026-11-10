@@ -29,17 +29,14 @@ func yamlQuote(s string) string {
 }
 
 type NewOpts struct {
-	ID           string // Pre-generated ID; if empty, GenerateID is called.
-	AutomationID string
-	OccurrenceID string
-	ScheduledFor string
-	Path         string
-	Pipeline     string
-	Agent        string
-	Status       string
-	Title        string
-	Body         string
-	Branch       string
+	ID       string // Pre-generated ID; if empty, GenerateID is called.
+	Path     string
+	Pipeline string
+	Agent    string
+	Status   string
+	Title    string
+	Body     string
+	Branch   string
 	// BaseBranch names the branch the work branch starts from. Empty means the
 	// repository's default branch.
 	BaseBranch string
@@ -61,9 +58,6 @@ type NewOpts struct {
 func New(cfg *config.Config, opts NewOpts) (string, error) {
 	if opts.Title == "" {
 		return "", fmt.Errorf("title is required")
-	}
-	if err := checkAutomationOpts(&opts); err != nil {
-		return "", err
 	}
 	if opts.ScheduledAt != "" {
 		at, err := ticket.ParseSchedule(opts.ScheduledAt)
@@ -176,15 +170,11 @@ func ticketFrontmatter(id string, opts NewOpts, created string) string {
 	if opts.ScheduledAt != "" {
 		scheduled = fmt.Sprintf("scheduled_at: %q\n", opts.ScheduledAt)
 	}
-	provenance := ""
-	if opts.AutomationID != "" {
-		provenance = fmt.Sprintf("automation_id: %q\noccurrence_id: %q\nscheduled_for: %q\n", opts.AutomationID, opts.OccurrenceID, opts.ScheduledFor)
-	}
 	body := "\n"
 	if opts.Body != "" {
 		body = "\n" + opts.Body + "\n"
 	}
-	return fmt.Sprintf("---\nid: %s\nkontora: true\n%s%sstatus: %s\n%s%s%s%s%s%s%spath: %s\ncreated: %s\n---\n# %s\n%s",
+	return fmt.Sprintf("---\nid: %s\nkontora: true\n%s%sstatus: %s\n%s%s%s%s%s%spath: %s\ncreated: %s\n---\n# %s\n%s",
 		id,
 		line("kind", opts.Kind),
 		line("epic_execution", opts.EpicExecution),
@@ -195,33 +185,7 @@ func ticketFrontmatter(id string, opts NewOpts, created string) string {
 		line("base_branch", opts.BaseBranch),
 		scheduled,
 		line("parent", opts.Parent),
-		provenance,
 		yamlQuote(opts.Path), created, opts.Title, body)
-}
-
-func checkAutomationOpts(opts *NewOpts) error {
-	if opts.AutomationID == "" && opts.OccurrenceID == "" && opts.ScheduledFor == "" {
-		return nil
-	}
-	if opts.AutomationID == "" || opts.OccurrenceID == "" || opts.ScheduledFor == "" {
-		return fmt.Errorf("automation_id, occurrence_id and scheduled_for must be set together")
-	}
-	for _, field := range []struct{ name, value string }{
-		{"automation_id", opts.AutomationID},
-		{"occurrence_id", opts.OccurrenceID},
-	} {
-		if !ticket.IsSafeID(field.value) || strings.ContainsFunc(field.value, func(r rune) bool {
-			return !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_' || r == '.')
-		}) {
-			return fmt.Errorf("unsafe %s %q", field.name, field.value)
-		}
-	}
-	at, err := time.Parse(time.RFC3339, opts.ScheduledFor)
-	if err != nil || at.IsZero() || at.UTC().Year() < 1 || at.UTC().Year() > 9999 {
-		return fmt.Errorf("scheduled_for must be a valid RFC 3339 instant, got %q", opts.ScheduledFor)
-	}
-	opts.ScheduledFor = at.UTC().Format(time.RFC3339Nano)
-	return nil
 }
 
 // checkEpicOpts validates the epic-only rules and settles the status an epic is

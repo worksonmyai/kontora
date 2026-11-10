@@ -316,22 +316,19 @@ A promotion is deferred, not lost, while a run or a Plannotator session owns the
 
 `kontora run` on a scheduled ticket removes the timestamp and sets `status: todo` in the same save, and queues the ticket even with `auto_pick_up: false`. Every other lifecycle move off `open` drops the timestamp too: `retry`, `skip`, `move`, an `init` that queues the ticket, and parking the ticket for an [annotation run](configuration.md#plannotator). Each of them has already answered the question the schedule was asking. An uploaded `.md` file loses any `scheduled_at` it carries, for the same reason the upload is clamped to `open`: it arrives as a draft, not as a run request.
 
-#### Recurring automations
+#### Automations
 
-[Automations](automations.md) create a separate ordinary ticket for each admitted calendar occurrence.
-Each ticket uses the selected agent and repository, with the saved instructions as its body.
-Automation tickets run standalone without inheriting a project or global pipeline.
-Enabled automations request execution even with `auto_pick_up: false`; ordinary admission limits still apply.
-This differs from one-time `scheduled_at` promotion described above.
+[Automations](automations.md) run agents directly from entries under `automations:` in the daemon's YAML configuration.
+They do not create tickets, inherit ticket pipelines, or use ticket lifecycle controls.
+Each automation run has its own number, result, terminal, and logs.
 
-Disabling an automation does not pause or cancel its existing tickets.
-With overlap prevention enabled, queued, paused, `human_review`, and execution-reserved tickets block later occurrences from that automation.
-Occurrence history is separate from the ticket's execution history and survives ticket deletion.
-Deleting a ticket with a stored receipt does not cause the automation to recreate it.
+Use `scheduled_at` for one-time promotion of an existing ticket.
+Use an automation for a recurring prompt or a manual run of that saved prompt.
+Automations share agent capacity with tickets, but their enabled schedules and manual requests work with `auto_pick_up: false`.
 
-The daemon writes `automation_id`, `occurrence_id`, and `scheduled_for` as provenance.
-These fields identify the originating definition, occurrence, and scheduled instant. They do not grant ownership or execution authority.
-Uploaded markdown loses automation provenance, so an imported ticket cannot impersonate a scheduled occurrence.
+Pause disables future scheduled runs without cancelling accepted runs. Stop targets an automation run; deletion stops its unfinished work.
+Overlap policies are `skip`, `queue`, and `replace`. Queue keeps at most one pending run; replacement waits for confirmed termination.
+Ticket deletion does not affect automation history or receipts.
 
 ### Daemon-managed fields
 
@@ -347,9 +344,6 @@ These are set and updated by the daemon as the ticket progresses through its pip
 | `branch` | Git worktree branch. Set it before pickup to choose the name. If empty, the default is `<prefix>/<title-slug>-<ticket-id>`; [`branch_naming`](configuration.md#branch-naming) mode `off` uses `<prefix>/<ticket-id>`. The daemon stores a slug name before worktree creation and stores the ID-derived name after worktree creation succeeds. |
 | `history` | List of completed stage records. |
 | `imported_history_count` | Number of history entries imported by Claim. Imported rows never use local artifact or cost enrichment. |
-| `automation_id` | Originating recurring automation. Provenance only; not an authority credential. |
-| `occurrence_id` | Stored occurrence identity used to reconcile ticket publication. |
-| `scheduled_for` | RFC 3339 scheduled instant for that occurrence. |
 | `last_error` | Error message from the last failed stage run. |
 | `summary` | Summary of the stage run that ended most recently: the text the agent wrote with `kontora summary`, or its final session message as a fallback. Cleared when a new stage starts; each stage keeps its own copy on its `history` entry. |
 | `final_summary` | Summary of the whole ticket, written after a run ends the pipeline successfully or a rework run succeeds, and at least two runs recorded a summary. The agent that ran that stage writes it from the ticket text and every recorded run summary, in one non-interactive pass with no tools and a two-minute timeout. It opens with a few sentences on what the ticket asked for, then describes what was done; a ticket whose body says nothing beyond its title gets the description alone. It is not a copy of any run: `summary` and the `history` entries keep their own text. Cleared when a new run starts. Generation is best effort: a failure leaves the field empty and is reported in the daemon log, so a ticket can finish without it. |

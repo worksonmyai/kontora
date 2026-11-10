@@ -1,35 +1,9 @@
-export const automationDays = [
-  { value: 1, label: 'Mon' }, { value: 2, label: 'Tue' },
-  { value: 3, label: 'Wed' }, { value: 4, label: 'Thu' },
-  { value: 5, label: 'Fri' }, { value: 6, label: 'Sat' },
-  { value: 0, label: 'Sun' },
-];
+import { termState } from './terminal.js';
 
-function blankAutomation() {
-  return { id: null, revision: 0, schedule_revision: 0, name: '', path: '', agent: '', prompt: '', frequency: 'weekdays', time: '09:00', timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC', days: [1], enabled: false, skipOverlap: true };
-}
-
-function automationDraft(row) {
-  if (!row || typeof row.id !== 'string' || !row.id || !Number.isSafeInteger(row.revision) || row.revision < 1
-    || !Number.isSafeInteger(row.schedule_revision) || row.schedule_revision < 1
-    || !['name', 'path', 'agent', 'instructions'].every(key => typeof row[key] === 'string')
-    || typeof row.enabled !== 'boolean' || typeof row.skip_overlap !== 'boolean'
-    || !row.schedule || !['daily', 'weekdays', 'weekly'].includes(row.schedule.frequency)
-    || typeof row.schedule.time !== 'string' || typeof row.schedule.timezone !== 'string'
-    || (row.schedule.days != null && !Array.isArray(row.schedule.days))) {
-    throw new Error('Invalid automation response.');
-  }
-  return { id: row.id, revision: row.revision, schedule_revision: row.schedule_revision,
-    name: row.name, path: row.path, agent: row.agent, prompt: row.instructions,
-    ...row.schedule, days: [...(row.schedule.days || [])], enabled: row.enabled, skipOverlap: row.skip_overlap };
-}
-
-function automationDefinition(draft) {
-  return { ...(draft.id ? { id: draft.id } : {}), revision: draft.revision, schedule_revision: draft.schedule_revision,
-    name: draft.name.trim(), path: draft.path.trim(), agent: draft.agent, instructions: draft.prompt.trim(),
-    schedule: { frequency: draft.frequency, days: draft.frequency === 'weekly' ? [...draft.days] : [], time: draft.time, timezone: draft.timezone.trim() },
-    enabled: draft.enabled, skip_overlap: draft.skipOverlap };
-}
+const automationsFields = ['name', 'prompt', 'path', 'agent', 'model', 'schedule', 'timezone', 'workspace', 'overlap', 'timeout', 'enabled'];
+const automationsBlank = () => ({ name: '', prompt: '', path: '', agent: '', model: '', schedule: '0 9 * * 1-5', timezone: 'UTC', workspace: 'worktree', overlap: 'skip', timeout: '30m', enabled: true });
+const automationsSpec = draft => Object.fromEntries(automationsFields.map(key => [key, draft[key]]));
+const automationsID = () => crypto.randomUUID?.() || Array.from(crypto.getRandomValues(new Uint8Array(16)), value => value.toString(16).padStart(2, '0')).join('');
 
 export function kontoraAutomations() {
   return {
@@ -42,37 +16,56 @@ export function kontoraAutomations() {
     automationsPending: false,
     automationsToggling: {},
     automationsSelected: null,
+    automationsDetail: false,
     automationsEditing: false,
-    automationsDraft: blankAutomation(),
+    automationsDraft: automationsBlank(),
+    automationsBaseline: '',
     automationsErrors: {},
     automationsFilter: 'all',
     automationsQuery: '',
-    automationsDays: automationDays,
+    automationsTab: 'runs',
+    automationsMenu: false,
+    automationsDeleteOpen: false,
+    automationsDeleteTarget: null,
+    automationsToast: '',
+    automationsToastTimer: null,
     automationsNotice: '',
-    automationsBaseline: '',
     automationsPreview: [],
+    automationsPreviewHuman: '',
     automationsPreviewLoading: false,
     automationsPreviewError: '',
+    automationsPreviewKey: '',
+    automationsPreviewValidKey: '',
+    automationsPreviewTimer: null,
+    automationsYAML: '',
+    automationsYAMLSeq: 0,
     automationsHistory: [],
-    automationsHistoryID: null,
-    automationsHistoryOffset: 0,
     automationsHistoryTotal: 0,
     automationsHistoryLoading: false,
     automationsHistoryError: '',
-    automationsRecovering: null,
-    automationsTimezones: typeof Intl.supportedValuesOf === 'function' ? Intl.supportedValuesOf('timeZone') : ['UTC'],
-    _automationsLoadSeq: 0,
-    _automationsEditorSeq: 0,
-    _automationsPreviewSeq: 0,
-    _automationsPreviewTimer: null,
-    _automationsPreviewKey: '',
-    _automationsHistorySeq: 0,
-    _automationsCreate: null,
+    automationsLogRun: null,
+    automationsLog: [],
+    automationsLogLoading: false,
+    automationsLogError: '',
+    automationsLoadSeq: 0,
+    automationsEditorSeq: 0,
+    automationsPreviewSeq: 0,
+    automationsHistorySeq: 0,
+    automationsLogSeq: 0,
+    automationsCreate: null,
+    automationsRunReceipts: {},
+    automationsBeforeUnload: null,
+    automationsPresets: [
+      { label: 'every hour', value: '0 * * * *' }, { label: 'every 6h', value: '0 */6 * * *' },
+      { label: 'daily 09:00', value: '0 9 * * *' }, { label: 'weekdays 09:00', value: '0 9 * * 1-5' },
+      { label: 'nightly 03:00', value: '0 3 * * *' }, { label: 'mondays 10:00', value: '0 10 * * 1' },
+    ],
+    automationsTimezones: typeof Intl.supportedValuesOf === 'function' ? Intl.supportedValuesOf('timeZone') : [],
 
     async automationsRequest(path = '', options = {}) {
       const res = await fetch('/api/automations' + path, options);
       if (res.status === 401) this.needsAuth = true;
-      const data = await res.json().catch(error => {
+      const data = res.status === 204 ? null : await res.json().catch(error => {
         if (res.ok) throw error;
         return {};
       });
@@ -84,334 +77,577 @@ export function kontoraAutomations() {
       return data;
     },
 
-    async openAutomations() {
+    automationsJSON(method, body) {
+      return { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) };
+    },
+
+    async automationsOpen() {
       this.automationsInitialized = true;
+      if (!this.automationsBeforeUnload) {
+        this.automationsBeforeUnload = event => {
+          if (!this.automationsDirty() && !this.automationsPending && !this.automationsCreate) return;
+          event.preventDefault();
+          event.returnValue = '';
+        };
+        window.addEventListener('beforeunload', this.automationsBeforeUnload);
+      }
+      if (!this.configCache) {
+        try {
+          const res = await fetch('/api/config');
+          if (res.ok) this.configCache = await res.json();
+        } catch { /* The editor can still accept an explicit agent and path. */ }
+      }
       await this.automationsRefresh();
     },
 
     async automationsRefresh() {
-      if (!this.automationsInitialized || this._appDestroyed) return;
-      const seq = ++this._automationsLoadSeq;
+      if (this._appDestroyed) return;
+      this.automationsInitialized = true;
+      const seq = ++this.automationsLoadSeq;
       this.automationsLoading = true;
       try {
         const data = await this.automationsRequest();
-        if (seq !== this._automationsLoadSeq) return;
+        if (seq !== this.automationsLoadSeq) return;
+        const previous = this.automationsRow();
         this.automationsAvailable = data.available === true;
         this.automationsError = data.error || (data.available ? '' : 'Automations are unavailable.');
         this.automations = (data.definitions || []).map(row => {
-          const previous = this.automations.find(existing => existing.id === row.id);
-          return previous?.revision > row.revision ? previous : row;
+          const old = this.automations.find(item => item.id === row.id);
+          return this.automationsDefinitionNewer(old, row) ? old : row;
         });
-        const row = this.automations.find(row => row.id === this.automationsSelected);
-        if (row && !this.automationsPending) {
-          if (this.automationsDirty()) {
-            if (row.revision !== this.automationsDraft.revision) this.automationsConflict = 'This automation changed on the server. Your unsaved changes are preserved. Reload the saved version before editing again.';
-          } else this.automationsAdopt(row);
-        } else if (this.automationsSelected && !row && data.available) {
-          this.automationsConflict = 'This automation is no longer available. Your draft is preserved.';
+        const row = this.automationsRow();
+        if (this.automationsEditing && this.automationsSelected && !this.automationsPending) {
+          if (!row || row.revision !== this.automationsDraft.revision) {
+            this.automationsConflict = 'The saved automation changed. Your draft is preserved. Reload the saved version before saving.';
+          }
         }
-        if (this.automationsHistoryID) await this.automationsLoadHistory(this.automationsHistoryOffset);
+        if (this.automationsDetail && !this.automationsEditing) {
+          if (!row) this.automationsError = 'This automation is no longer available.';
+          if (previous?.current_run?.n !== row?.current_run?.n || previous?.running !== row?.running) {
+            this.closeTerminal();
+            this.terminalRW = false;
+          }
+          if (!row?.running && this.automationsTab === 'session') this.automationsTab = 'runs';
+          if (row?.running && this.automationsTab === 'session') this.$nextTick(() => this.openTerminal());
+          await this.automationsLoadHistory(false);
+        }
       } catch (error) {
-        if (seq === this._automationsLoadSeq) {
+        if (seq === this.automationsLoadSeq) {
           this.automationsError = error.message;
           if (error.status === 503) this.automationsAvailable = false;
         }
       } finally {
-        if (seq === this._automationsLoadSeq) this.automationsLoading = false;
+        if (seq === this.automationsLoadSeq) this.automationsLoading = false;
       }
     },
 
-    automationsDefaults() {
-      const project = this.configCache?.projects?.[0];
-      return { path: project?.path || '', agent: project?.agent || this.configCache?.agents?.[0] || '' };
-    },
-
+    automationsRow() { return this.automations.find(row => row.id === this.automationsSelected) || null; },
+    automationsRunningCount() { return this.automations.filter(row => row.running).length; },
     automationsRows() {
-      const query = this.automationsQuery.trim().toLowerCase();
-      return this.automations.filter(row =>
-        (this.automationsFilter === 'all' || (this.automationsFilter === 'enabled' ? row.enabled : !row.enabled))
-        && `${row.name} ${row.path} ${row.agent}`.toLowerCase().includes(query));
+      const tokens = this.automationsQuery.toLowerCase().match(/(?:[^\s"]+|"[^"]*")+/g) || [];
+      return this.automations.filter(row => (this.automationsFilter === 'all' || (this.automationsFilter === 'enabled' ? row.enabled : !row.enabled))
+        && tokens.every(token => {
+          const [field, ...value] = token.split(':');
+          const needle = value.join(':').replaceAll('"', '');
+          if (field === 'project' && value.length) return this.automationsProject(row).toLowerCase().includes(needle);
+          if (field === 'agent' && value.length) return (row.agent || '').toLowerCase().includes(needle);
+          return [row.id, row.key, row.name, row.schedule, row.schedule_human, row.path, row.agent, this.automationsProject(row)].join(' ').toLowerCase().includes(token.replaceAll('"', ''));
+        }));
     },
-
-    automationsDirty() {
-      return this.automationsEditing && JSON.stringify(this.automationsDraft) !== this.automationsBaseline;
+    automationsProject(row) {
+      return (typeof row?.project === 'string' ? row.project : row?.project?.name) || (this.configCache?.projects || []).find(project => project.path === row?.path)?.name || '';
     },
-
+    automationsProjectColor(row) {
+      const project = (this.configCache?.projects || []).find(project => project.path === row?.path || project.name === this.automationsProject(row));
+      return this.pipelineColorByName(project?.pipeline || this.pathBasename(row?.path || ''));
+    },
+    automationsKey() {
+      if (this.automationsDraft.key) return this.automationsDraft.key;
+      const slug = this.automationsDraft.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'untitled';
+      return (/^[a-z]/.test(slug) ? slug : 'automation-' + slug).slice(0, 100).replace(/-$/, '');
+    },
+    automationsDirty() { return this.automationsEditing && JSON.stringify(this.automationsDraft) !== this.automationsBaseline; },
     automationsConfirmReplace() {
       if (this.automationsPending) return false;
-      return !this.automationsDirty() || window.confirm('Discard unsaved changes to this automation?');
+      return (!this.automationsDirty() && !this.automationsCreate) || window.confirm(this.automationsCreate
+        ? 'The create request is unconfirmed. Leave without retrying? The automation may already exist.' : 'Discard unsaved automation changes?');
     },
-
     automationsAdopt(row) {
-      const current = this.automations.find(existing => existing.id === row.id);
-      if (current?.revision > row.revision) row = current;
-      if (this.automationsDraft.id === row.id && this.automationsDraft.revision > row.revision) return;
-      const draft = automationDraft(row);
-      this.automations = this.automations.map(existing => existing.id === row.id && existing.revision < row.revision ? row : existing);
-      this.automationsDraft = draft;
+      this.automationsDraft = { ...automationsBlank(), ...automationsSpec(row), id: row.id, key: row.key, revision: row.revision };
       this.automationsBaseline = JSON.stringify(this.automationsDraft);
       this.automationsConflict = '';
       this.automationsErrors = {};
-      this.automationsSchedulePreview();
+      this.automationsDraftChanged();
     },
-
-    async automationsSelect(row) {
-      if (!this.automationsConfirmReplace()) return false;
-      const seq = ++this._automationsEditorSeq;
-      this.automationsSelected = row.id;
-      this.automationsEditing = true;
-      this._automationsCreate = null;
-      this.automationsNotice = '';
-      this.automationsAdopt(row);
-      this.automationsHistoryID = row.id;
-      this.automationsHistory = [];
-      this.automationsLoadHistory(0);
-      const baseline = this.automationsBaseline;
-      try {
-        const full = await this.automationsRequest('/' + encodeURIComponent(row.id));
-        if (seq !== this._automationsEditorSeq || this.automationsSelected !== row.id || full.revision < this.automationsDraft.revision) return;
-        if (this.automationsBaseline === baseline && !this.automationsDirty()) this.automationsAdopt(full);
-        else if (full.revision !== this.automationsDraft.revision) this.automationsConflict = 'This automation changed on the server. Your unsaved changes are preserved.';
-      } catch (error) {
-        if (seq === this._automationsEditorSeq) this.automationsNotice = error.message;
-      }
+    automationsDefinitionNewer(a, b) {
+      if (!a) return false;
+      if (a.revision !== b.revision) return a.revision > b.revision;
+      const latest = row => [row.current_run, row.last_run].filter(Boolean).sort((x, y) => y.n - x.n || y.revision - x.revision)[0];
+      const x = latest(a), y = latest(b);
+      return !!x && (!y || x.n > y.n || (x.n === y.n && x.revision > y.revision));
     },
-
-    async automationsReload() {
-      const row = this.automations.find(row => row.id === this.automationsSelected);
-      if (row) await this.automationsSelect(row);
-    },
-
-    automationsNew() {
-      if (!this.automationsConfirmReplace()) return false;
-      ++this._automationsEditorSeq;
-      this.automationsSelected = null;
-      this._automationsCreate = null;
-      this.automationsDraft = { ...blankAutomation(), ...this.automationsDefaults() };
-      this.automationsBaseline = JSON.stringify(this.automationsDraft);
-      this.automationsEditing = true;
-      this.automationsErrors = {};
-      this.automationsNotice = '';
-      this.automationsConflict = '';
-      this.automationsHistoryID = null;
-      ++this._automationsHistorySeq;
-      this.automationsHistory = [];
-      this.automationsSchedulePreview();
-      this.$nextTick(() => this.$refs.automationName?.focus());
-    },
-
-    automationsCloseEditor() {
-      if (!this.automationsConfirmReplace()) return false;
-      ++this._automationsEditorSeq;
-      this.automationsEditing = false;
-      this.automationsSelected = null;
-      this.automationsCancelPreview();
-      this.$nextTick(() => this.$refs.automationNew?.focus());
-    },
-
-    automationsToggleDay(day) {
-      const days = this.automationsDraft.days;
-      this.automationsDraft.days = days.includes(day) ? days.filter(value => value !== day) : [...days, day];
-      this.automationsSchedulePreview();
-    },
-
-    automationsSchedule(row) {
-      const schedule = row.schedule || row;
-      const frequency = schedule.frequency === 'daily' ? 'Every day'
-        : schedule.frequency === 'weekdays' ? 'Weekdays'
-          : automationDays.filter(day => (schedule.days || []).includes(day.value)).map(day => day.label).join(', ') || 'Choose days';
-      return frequency + ' at ' + schedule.time + ' · ' + schedule.timezone;
-    },
-
-    automationsCancelPreview() {
-      clearTimeout(this._automationsPreviewTimer);
-      ++this._automationsPreviewSeq;
-      this._automationsPreviewKey = '';
-      this.automationsPreviewLoading = false;
-      this.automationsPreview = [];
-    },
-
-    automationsSchedulePreview() {
-      if (!this.automationsEditing) return;
-      const schedule = automationDefinition(this.automationsDraft).schedule;
-      const key = JSON.stringify(schedule);
-      if (key === this._automationsPreviewKey) return;
-      this.automationsCancelPreview();
-      this._automationsPreviewKey = key;
-      const seq = this._automationsPreviewSeq;
-      this.automationsPreviewError = '';
-      this.automationsPreviewLoading = true;
-      this._automationsPreviewTimer = setTimeout(async () => {
-        try {
-          const data = await this.automationsRequest('/preview', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: key });
-          if (seq !== this._automationsPreviewSeq) return;
-          this.automationsPreview = data.occurrences || [];
-        } catch (error) {
-          if (seq === this._automationsPreviewSeq) this.automationsPreviewError = error.message;
-        } finally {
-          if (seq === this._automationsPreviewSeq) this.automationsPreviewLoading = false;
-        }
-      }, 300);
-    },
-
-    automationsDates() {
-      return this.automationsPreview.map(value => new Date(value));
-    },
-
-    automationsDateLabel(date, timezone = this.automationsDraft.timezone) {
-      if (!date || !Number.isFinite(new Date(date).getTime())) return '—';
-      try {
-        return new Intl.DateTimeFormat(undefined, { timeZone: timezone, timeZoneName: 'short', weekday: 'short', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(new Date(date));
-      } catch { return 'Invalid timezone'; }
-    },
-
-    automationsNextLabel(row) {
-      return !row.enabled ? 'Paused' : row.next ? this.automationsDateLabel(row.next, row.schedule.timezone) : 'No next occurrence';
-    },
-
-    automationsRepository(row) {
-      const project = (this.configCache?.projects || []).find(project => project.path === row.path);
-      return project?.name || row.path.split('/').filter(Boolean).at(-1) || 'No repository selected';
-    },
-
-    async automationsToggle(row) {
-      if (!this.automationsAvailable || this.automationsPending || this.automationsToggling[row.id]) return;
-      this.automationsToggling[row.id] = true;
-      this.automationsError = '';
-      try {
-        const full = await this.automationsRequest('/' + encodeURIComponent(row.id));
-        if (full.revision !== row.revision) {
-          const error = new Error('This automation changed on the server. Refresh before changing its state.');
-          error.status = 409;
-          throw error;
-        }
-        const saved = await this.automationsRequest('/' + encodeURIComponent(row.id), { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...full, enabled: !row.enabled }) });
-        const current = this.automationsUpsert(saved);
-        if (this.automationsSelected === row.id) {
-          if (!this.automationsDirty()) this.automationsAdopt(current);
-          else this.automationsConflict = 'The saved state changed. Your unsaved changes are preserved. Reload the saved version before editing again.';
-        }
-      } catch (error) {
-        this.automationsError = error.message;
-        if (error.status === 409 && this.automationsSelected === row.id) this.automationsConflict = error.message;
-      } finally {
-        delete this.automationsToggling[row.id];
-      }
-    },
-
-    automationsValidate() {
-      const draft = this.automationsDraft;
-      const errors = {};
-      if (!draft.name.trim()) errors.name = 'Enter a name for this automation.';
-      if (!draft.path.trim()) errors.path = 'Choose a repository or enter its path.';
-      if (!draft.agent) errors.agent = 'Choose a configured agent.';
-      if (!draft.prompt.trim()) errors.prompt = 'Enter the instructions for each run.';
-      if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(draft.time) || (draft.frequency === 'weekly' && !draft.days.length) || !draft.timezone.trim()) errors.schedule = 'Choose a valid time and timezone. If Repeat is set to Selected days, choose at least one day.';
-      this.automationsErrors = errors;
-      return Object.keys(errors).length === 0;
-    },
-
     automationsUpsert(row) {
-      automationDraft(row);
-      const current = this.automations.find(existing => existing.id === row.id);
-      if (current?.revision > row.revision) return current;
-      this.automations = [...this.automations.filter(existing => existing.id !== row.id), row];
-      ++this._automationsLoadSeq;
+      if (typeof row?.id !== 'string' || !row.id || !Number.isSafeInteger(row.revision) || row.revision < 1) throw new Error('Invalid automation response.');
+      const old = this.automations.find(item => item.id === row.id);
+      if (this.automationsDefinitionNewer(old, row)) return old;
+      this.automations = old ? this.automations.map(item => item.id === row.id ? row : item) : [...this.automations, row];
+      ++this.automationsLoadSeq;
       this.automationsLoading = false;
       return row;
     },
 
-    async automationsSaveDraft() {
-      if (this.automationsPending || !this.automationsAvailable || this.automationsConflict || this.automationsToggling[this.automationsSelected]) return;
+    async automationsSelect(row, writeRoute = true) {
+      if (this.automationsSelected === row.id && this.automationsDetail && !this.automationsEditing) return true;
+      if (!this.automationsConfirmReplace()) return false;
+      const seq = ++this.automationsEditorSeq;
+      this.closeAgentPicker(false);
+      this.closeTerminal();
+      this.terminalRW = false;
+      this.automationsCancelPreview();
+      this.automationsSelected = row.id;
+      this.automationsDetail = true;
+      this.automationsEditing = false;
+      this.automationsMenu = false;
+      this.automationsCreate = null;
+      this.automationsConflict = '';
       this.automationsNotice = '';
-      if (!this._automationsCreate && !this.automationsValidate()) {
-        this.$nextTick(() => document.querySelector('.automations-editor [aria-invalid="true"]')?.focus());
-        return;
+      this.automationsHistory = [];
+      this.automationsHistoryTotal = 0;
+      this.automationsHistoryLoading = true;
+      this.automationsLogRun = null;
+      ++this.automationsLogSeq;
+      this.automationsTab = row.running ? 'session' : 'runs';
+      if (writeRoute) this.writeHash();
+      try {
+        const full = await this.automationsRequest('/' + encodeURIComponent(row.id));
+        if (seq !== this.automationsEditorSeq || this.automationsSelected !== row.id) return false;
+        if (full.id !== row.id) throw new Error('The server returned a different automation.');
+        const current = this.automationsUpsert(full);
+        this.automationsTab = current.running ? 'session' : 'runs';
+        await this.automationsLoadHistory(false);
+        if (seq !== this.automationsEditorSeq) return false;
+        if (this.automationsTab === 'session') this.$nextTick(() => this.openTerminal());
+        return true;
+      } catch (error) {
+        if (seq === this.automationsEditorSeq) {
+          this.automationsError = error.message;
+          this.automationsHistoryLoading = false;
+        }
+        return false;
       }
-      const seq = this._automationsEditorSeq;
-      const snapshot = JSON.stringify(this.automationsDraft);
+    },
+
+    automationsNew(copy = null, writeRoute = true) {
+      if (!this.automationsConfirmReplace()) return false;
+      ++this.automationsEditorSeq;
+      this.closeTerminal();
+      this.terminalRW = false;
+      this.closeAgentPicker(false);
+      this.automationsCancelPreview();
+      this.automationsSelected = null;
+      this.automationsDetail = false;
+      this.automationsEditing = true;
+      this.automationsCreate = null;
+      this.automationsMenu = false;
+      const project = this.configCache?.projects?.[0];
+      this.automationsDraft = copy ? { ...automationsSpec(copy), name: copy.name + ' (copy)', enabled: false }
+        : { ...automationsBlank(), path: project?.path || '', agent: project?.agent || this.configCache?.default_agent || this.configCache?.agents?.[0] || '' };
+      this.automationsBaseline = JSON.stringify(this.automationsDraft);
+      this.automationsErrors = {};
+      this.automationsConflict = '';
+      this.automationsNotice = '';
+      this.automationsDraftChanged();
+      if (writeRoute) this.writeHash();
+      this.$nextTick(() => this.$refs.automationName?.focus());
+      return true;
+    },
+    automationsEdit(row = this.automationsRow(), writeRoute = true) {
+      if (!row || !this.automationsConfirmReplace()) return false;
+      ++this.automationsEditorSeq;
+      this.closeTerminal();
+      this.terminalRW = false;
+      this.automationsSelected = row.id;
+      this.automationsDetail = true;
+      this.automationsEditing = true;
+      this.automationsMenu = false;
+      this.automationsCreate = null;
+      this.automationsNotice = '';
+      this.automationsAdopt(row);
+      if (writeRoute) this.writeHash();
+      return true;
+    },
+    automationsLeave() {
+      ++this.automationsEditorSeq;
+      ++this.automationsHistorySeq;
+      ++this.automationsLogSeq;
+      this.closeAgentPicker(false);
+      this.closeTerminal();
+      this.terminalRW = false;
+      this.automationsEditing = false;
+      this.automationsDetail = false;
+      this.automationsSelected = null;
+      this.automationsCreate = null;
+      this.automationsDeleteOpen = false;
+      this.automationsMenu = false;
+      this.automationsCancelPreview();
+    },
+    async automationsBack(writeRoute = true, list = false) {
+      if (!this.automationsConfirmReplace()) return false;
+      const row = this.automationsRow();
+      if (this.automationsEditing && row && !list) {
+        this.automationsEditing = false;
+        this.automationsDetail = false;
+        await this.automationsSelect(row, false);
+      } else this.automationsLeave();
+      if (writeRoute) this.writeHash();
+      return true;
+    },
+    async automationsApplyRoute(route, navigation) {
+      const mode = route.automationsMode || 'list';
+      if (mode === 'new') return this.automationsEditing && !this.automationsSelected ? true : this.automationsNew(null, false);
+      if (mode === 'list') return !this.automationsDetail && !this.automationsEditing ? true : this.automationsBack(false, true);
+      if (this.automationsSelected === route.automationsId && (mode === 'edit') === this.automationsEditing) return true;
+      if (this.automationsSelected === route.automationsId && this.automationsEditing) return this.automationsBack(false);
+      const row = this.automations.find(item => item.id === route.automationsId) || { id: route.automationsId };
+      if (await this.automationsSelect(row, false) === false || navigation !== this._navigationSeq) return false;
+      return mode === 'edit' ? this.automationsEdit(this.automationsRow(), false) : true;
+    },
+    async automationsReload() {
+      if (!this.automationsConfirmReplace()) return false;
+      const id = this.automationsSelected;
+      const seq = ++this.automationsEditorSeq;
+      try {
+        const row = await this.automationsRequest('/' + encodeURIComponent(id));
+        if (seq !== this.automationsEditorSeq || id !== this.automationsSelected) return false;
+        this.automationsAdopt(this.automationsUpsert(row));
+        return true;
+      } catch (error) { if (seq === this.automationsEditorSeq) this.automationsNotice = error.message; return false; }
+    },
+
+    automationsCancelPreview() {
+      clearTimeout(this.automationsPreviewTimer);
+      ++this.automationsPreviewSeq;
+      this.automationsPreviewKey = '';
+      this.automationsPreviewValidKey = '';
+      this.automationsPreviewLoading = false;
+      this.automationsPreview = [];
+    },
+    automationsScheduleError() {
+      const value = this.automationsDraft.schedule.trim();
+      if (!value) return 'A schedule is required.';
+      if (/^(?:\d+(?:h|m|s))+$/.test(value)) return '';
+      const fields = value.split(/\s+/);
+      if (fields.length !== 5) return 'cron takes 5 fields (minute hour day month weekday), got ' + fields.length;
+      if (fields.some(field => !/^[\d*/,-]+$/.test(field))) return 'cron fields take digits, *, /, - and , only';
+      return '';
+    },
+    automationsSchedulePreview(force = false) {
+      if (!this.automationsEditing) return;
+      const key = JSON.stringify({ schedule: this.automationsDraft.schedule, timezone: this.automationsDraft.timezone });
+      if (!force && key === this.automationsPreviewKey) return;
+      this.automationsCancelPreview();
+      this.automationsPreviewKey = key;
+      this.automationsPreviewHuman = '';
+      this.automationsPreviewError = this.automationsScheduleError();
+      if (this.automationsPreviewError) return;
+      const seq = this.automationsPreviewSeq;
+      this.automationsPreviewLoading = true;
+      this.automationsPreviewTimer = setTimeout(async () => {
+        try {
+          const data = await this.automationsRequest('/preview', this.automationsJSON('POST', JSON.parse(key)));
+          if (seq !== this.automationsPreviewSeq) return;
+          this.automationsPreview = data.occurrences || [];
+          this.automationsPreviewHuman = data.human || '';
+          this.automationsPreviewValidKey = key;
+        } catch (error) {
+          if (seq === this.automationsPreviewSeq) this.automationsPreviewError = error.message;
+        } finally { if (seq === this.automationsPreviewSeq) this.automationsPreviewLoading = false; }
+      }, 250);
+    },
+    async automationsDraftChanged() {
+      this.automationsSchedulePreview();
+      const seq = ++this.automationsYAMLSeq;
+      const key = this.automationsKey();
+      const spec = automationsSpec(this.automationsDraft);
+      try {
+        const yaml = await import('/vendor/yaml@2.8.1/yaml.mjs');
+        const text = yaml.stringify({ automations: { [key]: spec } }, { lineWidth: 0 });
+        if (seq === this.automationsYAMLSeq) this.automationsYAML = text;
+      } catch (error) { if (seq === this.automationsYAMLSeq) this.automationsYAML = 'Preview unavailable: ' + error.message; }
+    },
+    automationsYAMLLines() {
+      return this.automationsYAML.trimEnd().split('\n').map(text => ({ text: text || ' ',
+        class: text === 'automations:' ? 'text-tx-4' : /^ {2}\S/.test(text) ? 'text-st-open'
+          : /^ {4}enabled: false$/.test(text) ? 'text-st-paused' : /^ {6}/.test(text) ? 'text-tx-2' : 'text-tx-3' }));
+    },
+    automationsCanSave() {
+      return this.automationsAvailable && !this.automationsPending && !this.automationsConflict && !this.automationsToggling[this.automationsSelected]
+        && (this.automationsCreate || (this.automationsDraft.name.trim() && this.automationsDraft.path.trim() && this.automationsDraft.agent.trim() && this.automationsDraft.prompt.trim()
+          && this.automationsPreviewValidKey === JSON.stringify({ schedule: this.automationsDraft.schedule, timezone: this.automationsDraft.timezone })));
+    },
+    async automationsSaveDraft(runNow = false) {
+      if (!this.automationsCanSave()) return;
       const draft = this.automationsDraft;
-      if (!draft.id && !this._automationsCreate) {
-        this._automationsCreate = { request_id: typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : Array.from(crypto.getRandomValues(new Uint8Array(16)), value => value.toString(16).padStart(2, '0')).join(''), definition: { ...automationDefinition(draft), enabled: false } };
+      const seq = this.automationsEditorSeq;
+      if (!draft.id && !this.automationsCreate) this.automationsCreate = { request_id: automationsID(), key: this.automationsKey(), definition: automationsSpec(draft), runNow };
+      const create = this.automationsCreate;
+      this.automationsPending = true;
+      this.automationsNotice = '';
+      let saved;
+      try {
+        const payload = create ? { request_id: create.request_id, key: create.key, definition: create.definition }
+          : { revision: draft.revision, definition: automationsSpec(draft) };
+        saved = this.automationsUpsert(await this.automationsRequest(draft.id ? '/' + encodeURIComponent(draft.id) : '', this.automationsJSON(draft.id ? 'PUT' : 'POST', payload)));
+        if (seq !== this.automationsEditorSeq) return;
+        this.automationsCreate = null;
+        this.automationsSelected = saved.id;
+        this.automationsAdopt(saved);
+        this.automationsNotify((create ? 'created' : 'saved') + ' automations.' + saved.key);
+      } catch (error) {
+        if (seq !== this.automationsEditorSeq) return;
+        if (error.status >= 400 && error.status < 500) this.automationsCreate = null;
+        this.automationsNotice = error.message + (this.automationsCreate ? ' Retry save to confirm the original request.' : '');
+        if (error.status === 409) this.automationsConflict = 'The saved automation changed. Your draft is preserved. Reload the saved version before saving.';
+      } finally { this.automationsPending = false; }
+      if (!saved || seq !== this.automationsEditorSeq) return;
+      if (await this.automationsSelect(saved)) {
+        if (create ? create.runNow : runNow) await this.automationsRun(saved);
       }
-      const create = this._automationsCreate;
+    },
+
+    async automationsToggle(row) {
+      if (!row || !this.automationsAvailable || this.automationsPending || this.automationsToggling[row.id]) return;
+      this.automationsToggling[row.id] = true;
+      this.automationsError = '';
+      try {
+        const saved = await this.automationsRequest('/' + encodeURIComponent(row.id) + (row.enabled ? '/pause' : '/resume'), this.automationsJSON('POST', { revision: row.revision }));
+        this.automationsUpsert(saved);
+        if (this.automationsEditing && this.automationsSelected === row.id && this.automationsDraft.revision !== saved.revision) {
+          this.automationsConflict = 'The schedule state changed. Your draft is preserved. Reload the saved version before saving.';
+        }
+        this.automationsNotify(row.id + ' schedule ' + (saved.enabled ? 'resumed' : 'paused'));
+      } catch (error) { this.automationsError = error.message; }
+      finally { delete this.automationsToggling[row.id]; }
+    },
+    async automationsRun(row = this.automationsRow()) {
+      if (!row || !this.automationsAvailable || this.automationsPending) return;
+      const request = this.automationsRunReceipts[row.id] ||= automationsID();
+      this.automationsError = '';
       this.automationsPending = true;
       try {
-        const saved = await this.automationsRequest(draft.id ? '/' + encodeURIComponent(draft.id) : '', {
-          method: draft.id ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(draft.id ? automationDefinition(draft) : create),
-        });
-        const baseline = automationDraft(saved);
-        const current = this.automationsUpsert(saved);
-        if (seq !== this._automationsEditorSeq) return;
-        this._automationsCreate = null;
-        this.automationsSelected = saved.id;
-        // A retried creation uses its original payload, even if the user edited the draft after a lost response.
-        const matches = create ? JSON.stringify(automationDefinition(this.automationsDraft)) === JSON.stringify(create.definition) : JSON.stringify(this.automationsDraft) === snapshot;
-        if (matches) this.automationsAdopt(current);
-        else {
-          if (this.automationsDraft.revision <= saved.revision) {
-            this.automationsDraft = { ...this.automationsDraft, id: saved.id, revision: saved.revision, schedule_revision: saved.schedule_revision };
-            this.automationsBaseline = JSON.stringify(baseline);
-          }
-          if (current.revision > this.automationsDraft.revision) this.automationsConflict = 'This automation changed on the server. Your unsaved changes are preserved. Reload the saved version before editing again.';
-        }
-        this.automationsNotice = this.automationsDirty() ? 'The original request was saved. Your later edits are still unsaved.' : 'Automation saved.';
-        this.automationsHistoryID = saved.id;
-        await this.automationsLoadHistory(0);
+        const run = this.automationsCheckRun(await this.automationsRequest('/' + encodeURIComponent(row.id) + '/run', this.automationsJSON('POST', { request_id: request })), row.id);
+        delete this.automationsRunReceipts[row.id];
+        this.automationsNotify(run.outcome === 'skipped' ? row.id + ' is already running · overlap: skip' : 'started ' + row.id + ' · run #' + run.n);
+        await this.automationsRefresh();
+        if (this.automationsSelected === row.id && this.automationsRow()?.running) this.automationsSwitchTab('session');
       } catch (error) {
-        if (seq !== this._automationsEditorSeq) return;
-        if (error.status === 400) this._automationsCreate = null;
-        this.automationsNotice = error.message + (this._automationsCreate ? ' Retry save to confirm the original request without creating a duplicate.' : '');
-        if (error.status === 409) this.automationsConflict = 'This automation changed on the server. Your draft is preserved. Reload the saved version before editing again.';
-      } finally {
-        this.automationsPending = false;
-      }
+        if (error.status >= 400 && error.status < 500) delete this.automationsRunReceipts[row.id];
+        this.automationsError = error.message + (this.automationsRunReceipts[row.id] ? ' Retry run now to confirm the same request.' : '');
+      } finally { this.automationsPending = false; }
+    },
+    automationsCheckRun(run, id) {
+      if (run?.automation_id !== id || !Number.isSafeInteger(run.n) || run.n < 1) throw new Error('Invalid automation run response.');
+      return run;
+    },
+    automationsCanStop(row = this.automationsRow()) { return !!row?.current_run && row.current_run.phase !== 'terminal'; },
+    async automationsStop() {
+      const row = this.automationsRow();
+      if (!row?.current_run || this.automationsPending) return;
+      this.automationsError = '';
+      this.automationsPending = true;
+      try {
+        const run = await this.automationsRequest('/' + encodeURIComponent(row.id) + '/stop', this.automationsJSON('POST', { n: row.current_run.n }));
+        this.automationsNotify((run.phase === 'terminal' ? 'stopped ' : 'stop requested for ') + row.id + ' · run #' + run.n);
+        await this.automationsRefresh();
+      } catch (error) { this.automationsError = error.message; }
+      finally { this.automationsPending = false; }
+    },
+    automationsOpenDelete() {
+      if (!this.automationsRow() || this.automationsPending) return;
+      this.automationsDeleteTarget = { ...this.automationsRow() };
+      this.automationsError = '';
+      this.automationsDeleteOpen = true;
+      this.automationsMenu = false;
+      this.$nextTick(() => this.$refs.automationsDeleteCancel?.focus());
+    },
+    automationsCloseDelete() {
+      if (this.automationsPending) return;
+      this.automationsDeleteOpen = false;
+      this.$nextTick(() => [...document.querySelectorAll('[data-automations-menu-trigger], [data-automations-delete-trigger]')].find(button => button.getClientRects().length)?.focus());
+    },
+    automationsTrapDelete(event) {
+      const buttons = [...event.currentTarget.querySelectorAll('button:not(:disabled)')].filter(button => button.getClientRects().length);
+      if (!buttons.length) { event.preventDefault(); return; }
+      const index = buttons.indexOf(document.activeElement);
+      if (event.shiftKey && index <= 0) { event.preventDefault(); buttons.at(-1).focus(); }
+      else if (!event.shiftKey && (index < 0 || index === buttons.length - 1)) { event.preventDefault(); buttons[0].focus(); }
+    },
+    async automationsDelete() {
+      const row = this.automationsDeleteTarget;
+      if (!row || this.automationsPending) return;
+      this.automationsError = '';
+      this.automationsPending = true;
+      try {
+        await this.automationsRequest('/' + encodeURIComponent(row.id), this.automationsJSON('DELETE', { revision: row.revision }));
+        this.automations = this.automations.filter(item => item.id !== row.id);
+        ++this.automationsLoadSeq;
+        this.automationsLoading = false;
+        this.automationsLeave();
+        this.writeHash();
+        this.automationsNotify('deleted ' + row.id + ' · logs kept');
+      } catch (error) { this.automationsError = error.message; }
+      finally { this.automationsPending = false; }
+    },
+    automationsNotify(text) {
+      clearTimeout(this.automationsToastTimer);
+      this.automationsToast = text;
+      this.automationsToastTimer = setTimeout(() => { this.automationsToast = ''; }, 2400);
     },
 
-    automationsHistoryTimezone() {
-      return this.automations.find(row => row.id === this.automationsHistoryID)?.schedule.timezone || 'UTC';
-    },
-
-    async automationsLoadHistory(offset = 0) {
-      const id = this.automationsHistoryID;
-      if (!id) return;
-      const seq = ++this._automationsHistorySeq;
+    async automationsLoadHistory(more = false) {
+      const id = this.automationsSelected;
+      if (!id || !this.automationsDetail) return;
+      const seq = ++this.automationsHistorySeq;
+      const offset = more ? this.automationsHistory.length : 0;
+      const limit = more ? 20 : Math.min(200, Math.max(24, this.automationsHistory.length));
       this.automationsHistoryLoading = true;
       this.automationsHistoryError = '';
       try {
-        const data = await this.automationsRequest('/' + encodeURIComponent(id) + '/occurrences?offset=' + offset + '&limit=20');
-        if (seq !== this._automationsHistorySeq || id !== this.automationsHistoryID) return;
-        this.automationsHistory = (data.occurrences || []).map(({ payload, ...row }) => ({ ...row, timezone: payload?.schedule?.timezone || this.automationsHistoryTimezone() }));
-        this.automationsHistoryTotal = data.total;
-        this.automationsHistoryOffset = offset;
-      } catch (error) {
-        if (seq === this._automationsHistorySeq) this.automationsHistoryError = error.message;
-      } finally {
-        if (seq === this._automationsHistorySeq) this.automationsHistoryLoading = false;
-      }
+        const data = await this.automationsRequest('/' + encodeURIComponent(id) + '/runs?offset=' + offset + '&limit=' + limit);
+        if (seq !== this.automationsHistorySeq || id !== this.automationsSelected) return;
+        const page = data.runs || [];
+        this.automationsHistory = more
+          ? [...this.automationsHistory, ...page.filter(run => !this.automationsHistory.some(old => old.n === run.n))]
+          : [...page, ...this.automationsHistory.filter(run => page.length && run.n < page.at(-1).n)];
+        this.automationsHistoryTotal = data.total || 0;
+      } catch (error) { if (seq === this.automationsHistorySeq) this.automationsHistoryError = error.message; }
+      finally { if (seq === this.automationsHistorySeq) this.automationsHistoryLoading = false; }
     },
-
-    async automationsSkip(row) {
-      if (this.automationsRecovering || !this.automationsAvailable) return;
-      if (!window.confirm('Mark this unresolved occurrence skipped? This does not create a replacement ticket or release any execution reservation.')) return;
-      this.automationsRecovering = row.id;
-      this.automationsHistoryError = '';
+    automationsFollow() { termState.term?.scrollToBottom(); },
+    automationsReconnect() {
+      this.closeTerminal();
+      this.$nextTick(() => this.openTerminal());
+    },
+    automationsSwitchTab(tab) {
+      if (tab === 'session' && !this.automationsRow()?.running) tab = 'runs';
+      this.automationsTab = tab;
+      this.automationsMenu = false;
+      if (tab === 'session') this.$nextTick(() => this.terminalOpen ? this.refitTerminal() : this.openTerminal());
+    },
+    automationsOutputSubject() {
+      const row = this.automationsRow();
+      const run = row?.current_run;
+      if (this.currentView !== 'automations' || !this.automationsDetail || this.automationsEditing || !row?.running || !run) return null;
+      return { ...row, kind: 'automation', status: 'in_progress', automation_id: row.id, n: run.n, run: run.n, current_run: run };
+    },
+    automationsRunActive(run) { return !!run && ['preparing', 'running', 'stopping'].includes(run.phase); },
+    automationsOutcome(run) { return run?.outcome || run?.phase || '—'; },
+    automationsOutcomeClass(run) {
+      if (run?.outcome === 'complete') return 'text-ok';
+      if (run?.outcome === 'failed' || run?.phase === 'recovery_required') return 'text-st-cancel';
+      if (this.automationsRunActive(run)) return 'text-st-progress';
+      return 'text-tx-faint';
+    },
+    automationsStrip() { return this.automationsHistory.slice(0, 24).slice().reverse(); },
+    automationsStripSummary() {
+      const runs = this.automationsHistory.slice(0, 24);
+      return ['complete', 'failed', 'skipped'].map(outcome => runs.filter(run => run.outcome === outcome).length + ' ' + outcome).join(' · ');
+    },
+    automationsStripStyle(run) {
+      const token = run.outcome === 'complete' ? 'hsl(var(--st-done) / .5)' : run.outcome === 'failed' ? 'hsl(var(--st-cancel) / .75)' : this.automationsRunActive(run) ? 'hsl(var(--st-progress) / .22)' : 'rgb(var(--surface-700))';
+      return { background: token };
+    },
+    async automationsOpenRun(run) {
+      if (this.automationsRunActive(run) && this.automationsRow()?.current_run?.n === run.n) { this.automationsSwitchTab('session'); return; }
+      this.automationsTab = 'runs';
+      this.automationsLogRun = run;
+      this.automationsLog = [];
+      this.automationsLogError = '';
+      this.automationsLogLoading = true;
+      const seq = ++this.automationsLogSeq;
+      const id = this.automationsSelected;
       try {
-        await this.automationsRequest('/' + encodeURIComponent(row.automation_id) + '/occurrences/' + encodeURIComponent(row.id) + '/skip', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ revision: row.revision }) });
-        await this.automationsRefresh();
-      } catch (error) {
-        this.automationsHistoryError = error.status === 409 ? 'This occurrence changed. Refresh history before acknowledging it.' : error.message;
-      } finally {
-        this.automationsRecovering = null;
-      }
+        const data = await this.automationsRequest('/' + encodeURIComponent(id) + '/runs/' + run.n + '/log');
+        if (seq === this.automationsLogSeq && id === this.automationsSelected) this.automationsLog = data.lines || [];
+      } catch (error) { if (seq === this.automationsLogSeq) this.automationsLogError = error.message; }
+      finally { if (seq === this.automationsLogSeq) this.automationsLogLoading = false; }
     },
-
+    automationsAllRuns() { ++this.automationsLogSeq; this.automationsLogRun = null; this.automationsLogLoading = false; },
+    automationsRunIndex() { return this.automationsHistory.findIndex(run => run.n === this.automationsLogRun?.n); },
+    async automationsStepRun(delta) {
+      const id = this.automationsSelected;
+      const n = this.automationsLogRun?.n;
+      let index = this.automationsRunIndex();
+      if (index < 0) return;
+      if (delta > 0 && index + 1 >= this.automationsHistory.length && this.automationsHistory.length < this.automationsHistoryTotal) await this.automationsLoadHistory(true);
+      if (id !== this.automationsSelected || n !== this.automationsLogRun?.n) return;
+      index = this.automationsRunIndex();
+      const run = this.automationsHistory[index + delta];
+      if (run) await this.automationsOpenRun(run);
+    },
+    automationsRawURL() { return '/api/automations/' + encodeURIComponent(this.automationsSelected) + '/runs/' + this.automationsLogRun?.n + '/log?raw=1'; },
+    automationsLogClass(line) {
+      return ({ tool_call: 'text-accent-bright', tool_result: 'text-tx-log', success: 'text-ok', warning: 'text-warn', error: 'text-err', lifecycle: 'text-tx-3' })[line.kind] || 'text-tx';
+    },
+    automationsLogTime(value) { return Date.parse(value) > 0 ? new Date(value).toLocaleTimeString([], { hour12: false }) : '—'; },
+    automationsWall(run) {
+      const start = Date.parse(run?.started_at);
+      if (!Number.isFinite(start) || start <= 0) return '—';
+      const completed = Date.parse(run.completed_at);
+      const end = completed > 0 ? completed : (this.now || Date.now());
+      return this.automationsDuration(Math.max(0, (Number(end) - start) / 1000));
+    },
+    automationsDuration(seconds) {
+      if (seconds == null || !Number.isFinite(Number(seconds))) return '—';
+      const s = Math.floor(Number(seconds));
+      return s >= 3600 ? Math.floor(s / 3600) + 'h ' + Math.floor(s % 3600 / 60) + 'm' : Math.floor(s / 60) + 'm ' + s % 60 + 's';
+    },
+    automationsDateLabel(value, timezone = this.automationsRow()?.timezone || this.automationsDraft.timezone) {
+      if (!value || !Number.isFinite(Date.parse(value)) || Date.parse(value) < 0) return '—';
+      try { return new Intl.DateTimeFormat(undefined, { timeZone: timezone || 'UTC', weekday: 'short', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(new Date(value)); }
+      catch { return 'Invalid timezone'; }
+    },
+    automationsRunTimestamp(run, completed = false) {
+      return (completed ? [run?.completed_at, run?.started_at, run?.accepted_at, run?.scheduled_for]
+        : [run?.started_at, run?.accepted_at, run?.scheduled_for]).find(value => Date.parse(value) > 0) || '';
+    },
+    automationsRelative(value) {
+      if (!(Date.parse(value) > 0)) return '—';
+      const diff = Date.parse(value) - Number(this.now || Date.now());
+      if (!Number.isFinite(diff)) return '—';
+      const minutes = Math.max(1, Math.round(Math.abs(diff) / 60000));
+      const label = minutes >= 1440 ? Math.floor(minutes / 1440) + 'd' : minutes >= 60 ? Math.floor(minutes / 60) + 'h ' + minutes % 60 + 'm' : minutes + 'm';
+      return diff >= 0 ? 'in ' + label : label + ' ago';
+    },
+    automationsNextLabel(row) {
+      if (!row.enabled) return 'paused';
+      if (!(Date.parse(row.next) > 0)) return '—';
+      try {
+        const time = new Intl.DateTimeFormat(undefined, { timeZone: row.timezone || 'UTC', weekday: 'short', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(new Date(row.next));
+        return time + ' · ' + this.automationsRelative(row.next);
+      } catch { return 'Invalid timezone'; }
+    },
+    automationsCost(value) { return value == null || value === '' ? '—' : this.formatCostUSD(value) || '—'; },
+    automationsConfigPath() { return this.configCache?.config_path || 'Config path unavailable'; },
+    automationsLogDir(row) {
+      const root = this.configCache?.logs_dir;
+      return root && row?.key ? root.replace(/\/+$/, '') + '/automations/' + row.key + '/' : 'Log directory unavailable';
+    },
+    automationsRailDetails(row) {
+      return [ ['id', row.id], ['key', row.key], ['agent', row.agent || 'default'], ['model', row.model || 'agent default'], ['path', row.path],
+        ['workspace', row.workspace === 'repo' ? 'repo checkout' : 'fresh worktree per run'], ['overlap', row.overlap], ['timeout', row.timeout],
+        ['logs', this.automationsLogDir(row)], ['created', this.automationsDateLabel(row.created_at, row.timezone)] ];
+    },
     automationsDispose() {
       this.automationsCancelPreview();
-      ++this._automationsLoadSeq;
-      ++this._automationsHistorySeq;
-      ++this._automationsEditorSeq;
+      clearTimeout(this.automationsToastTimer);
+      window.removeEventListener('beforeunload', this.automationsBeforeUnload);
+      this.automationsBeforeUnload = null;
+      ++this.automationsLoadSeq;
+      ++this.automationsHistorySeq;
+      ++this.automationsLogSeq;
+      ++this.automationsEditorSeq;
+      ++this.automationsYAMLSeq;
     },
   };
 }

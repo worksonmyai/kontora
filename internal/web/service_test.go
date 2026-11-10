@@ -13,52 +13,6 @@ import (
 	"github.com/worksonmyai/kontora/internal/ticket/app"
 )
 
-func TestTicketInfoFromView_AutomationProvenance(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		tk   ticket.Ticket
-	}{
-		{name: "legacy"},
-		{name: "automation", tk: ticket.Ticket{
-			AutomationID: "auto-1", OccurrenceID: "occ-1", ScheduledFor: "2026-09-01T09:00:00Z",
-		}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			for _, detail := range []bool{false, true} {
-				info := TicketInfoFromView(app.BuildView(&config.Config{}, &tc.tk, detail))
-				assert.Equal(t, tc.tk.AutomationID, info.AutomationID)
-				assert.Equal(t, tc.tk.OccurrenceID, info.OccurrenceID)
-				assert.Equal(t, tc.tk.ScheduledFor, info.ScheduledFor)
-				assert.Empty(t, info.ScheduledAt)
-				assert.Empty(t, info.ClaimedBy)
-				assert.Empty(t, info.InvocationID)
-				encoded, err := json.Marshal(info)
-				require.NoError(t, err)
-				var fields map[string]any
-				require.NoError(t, json.Unmarshal(encoded, &fields))
-				for key, want := range map[string]string{
-					"automation_id": tc.tk.AutomationID,
-					"occurrence_id": tc.tk.OccurrenceID,
-					"scheduled_for": tc.tk.ScheduledFor,
-				} {
-					if want == "" {
-						assert.NotContains(t, fields, key)
-					} else {
-						assert.Equal(t, want, fields[key])
-					}
-				}
-				var req CreateTicketRequest
-				require.NoError(t, json.Unmarshal(encoded, &req))
-				public, err := json.Marshal(req)
-				require.NoError(t, err)
-				for _, key := range []string{"automation_id", "occurrence_id", "scheduled_for"} {
-					assert.NotContains(t, string(public), `"`+key+`"`)
-				}
-			}
-		})
-	}
-}
-
 func TestTicketInfoFromView_Description(t *testing.T) {
 	for _, body := range []string{"", "# Title\n", "# Title\n\n \t## Notes \r\nraw\n## Later\nkeep"} {
 		t.Run(body, func(t *testing.T) {

@@ -385,6 +385,7 @@ function kontoraContext(overrides = {}) {
     window: {
       innerWidth: 1200,
       addEventListener() {},
+      removeEventListener() {},
       getComputedStyle() {
         return {};
       },
@@ -399,6 +400,7 @@ function kontoraContext(overrides = {}) {
       hasFocus() {
         return true;
       },
+      querySelectorAll() { return []; },
       // Prose writes mark ticket ids, which walks the text nodes. The stub
       // elements here are not a tree, so the walk finds nothing; fakeProseDom
       // is the harness that exercises the marking itself.
@@ -6593,7 +6595,7 @@ test("index.html wires the settings shell to the guard and the section rail", ()
   assert.ok(direct[0].index > html.indexOf(`x-show="col.key === 'open' && colHover"`));
 
   // The guard closes before the create form and every other overlay below it.
-  assert.match(html, /else if \(settingsGuard\) settingsGuard = false; else if \(sheet\) closeSheet\(\); else if \(currentView === 'new'\)/);
+  assert.match(html, /else if \(settingsGuard\) settingsGuard = false;[\s\S]*?else if \(automationsDeleteOpen\) automationsCloseDelete\(\);[\s\S]*?else if \(sheet\) closeSheet\(\); else if \(currentView === 'new'\)/);
 
   assert.match(html, /<template x-if="!loading && currentView === 'settings'">/);
   assert.match(html, /w-\[214px\][^"]*bg-surface-frame border-r border-surface-700\/50/);
@@ -8187,7 +8189,7 @@ test("the shared picker markup wires all hosts, ARIA, Popover, and fallback beha
   const html = fs.readFileSync(htmlPath, "utf8");
 
   const hosts = [...html.matchAll(/x-data="\{ pickerHost: '([^']+)' \}" x-html="agentPickerControl"/g)].map((match) => match[1]);
-  assert.deepEqual(hosts.sort(), ["create", "edit", "init", "mobile-create"]);
+  assert.deepEqual(hosts.sort(), ["automations", "create", "edit", "init", "mobile-create"]);
   assert.match(uiSource, /popover="manual" role="presentation"/);
   assert.match(uiSource, /role="listbox" tabindex="-1"/);
   assert.match(uiSource, /role="option" :aria-selected="row\.selected"/);
@@ -8196,7 +8198,7 @@ test("the shared picker markup wires all hosts, ARIA, Popover, and fallback beha
   assert.match(uiSource, /x-show="!_agentPickerPopoverSupported"/);
   assert.match(uiSource, /<div x-show="_agentPickerPopoverSupported" :id="agentPickerPanelID/);
   assert.match(uiSource, /typeof HTMLElement\.prototype\.showPopover === 'function'/);
-  assert.equal((html.match(/:for="_agentPickerPopoverSupported \? agentPickerTriggerID/g) || []).length, 4);
+  assert.equal((html.match(/:for="_agentPickerPopoverSupported \? agentPickerTriggerID/g) || []).length, hosts.length);
   assert.equal(/x-model="(?:initForm|editForm|createForm)\.agent"/.test(html), false);
   assert.match(html, /\.agent-picker-pop \{ animation: agent-picker-pop 0\.12s ease-out; \}/);
   assert.match(html, /\.agent-picker-pop \{ animation: none; \}/);
@@ -9017,13 +9019,21 @@ test("the hash router maps each route to a view", async () => {
   }
 });
 
+const automationSpecFields = ['agent', 'enabled', 'model', 'name', 'overlap', 'path', 'prompt', 'schedule', 'timeout', 'timezone', 'workspace'];
+const automationFires = ['2026-11-10T08:00:00Z', '2026-11-11T08:00:00Z', '2026-11-12T08:00:00Z', '2026-11-13T08:00:00Z'];
+
 function automationUI() {
-  const definitions = new Map(), receipts = new Map(), requests = [], timers = new Map();
+  const definitions = new Map(), receipts = new Map(), runReceipts = new Map(), requests = [], timers = new Map(), events = [], listeners = new Map();
   let timer = 0, next = 1;
-  const behavior = { available: true, hook: null, confirm: true };
+  const behavior = { available: true, hook: null, confirm: true, createResponse: null, runResponse: null };
   const response = (data, status = 200) => ({ ok: status < 400, status, json: async () => structuredClone(data) });
-  const history = Array.from({ length: 23 }, (_, i) => ({ id: 'occ-' + i, revision: 1, automation_id: 'auto-1', schedule_revision: 1,
-    scheduled_for: '2026-11-10T08:00:00Z', phase: i ? 'admitted' : 'blocked', reason: i ? '' : 'Publication is uncertain', ticket_id: i ? 'kon-history' : '', payload: { instructions: 'INTERNAL PAYLOAD', schedule: { timezone: 'America/New_York' } } }));
+  const history = Array.from({ length: 29 }, (_, i) => ({ automation_id: 'auto-1', key: 'morning-review', n: 29 - i, revision: 3,
+    invocation_id: 'invocation-' + i, phase: 'terminal', outcome: ['complete', 'failed', 'skipped'][i % 3], trigger: i % 2 ? 'manual' : 'schedule',
+    scheduled_for: automationFires[0], accepted_at: automationFires[0], started_at: automationFires[0], completed_at: '2026-11-10T08:04:12Z',
+    exit_code: i % 3 === 1 ? 1 : 0, result: 'Result from run ' + (29 - i), cost: i % 3 === 2 ? null : '0.31' }));
+  const lines = [{ at: automationFires[0], source: 'kontora', kind: 'lifecycle', text: 'automation auto-1 · run #29 · trigger schedule' },
+    { at: automationFires[0], source: 'agent', kind: 'tool_call', text: 'Inspect repository' },
+    { at: automationFires[0], source: 'agent', kind: 'success', text: 'No regressions found <script>not markup</script>' }];
   const fetch = async (url, options = {}) => {
     const method = options.method || 'GET', body = options.body ? JSON.parse(options.body) : undefined;
     requests.push({ url, method, body });
@@ -9031,387 +9041,349 @@ function automationUI() {
     if (intercepted) return intercepted;
     if (url === '/api/automations' && method === 'GET') return response({ available: behavior.available, error: behavior.available ? undefined : 'Store locked', definitions: [...definitions.values()] });
     if (url === '/api/automations/preview' && method === 'POST') {
-      if (body.frequency !== 'weekly') assert.deepEqual(body.days, []);
-      return body.timezone === 'Invalid/Zone' ? response({ error: 'Invalid timezone' }, 400) : response({ occurrences: ['2026-11-10T08:00:00Z', '2026-11-11T08:00:00Z', '2026-11-12T08:00:00Z'] });
+      assert.deepEqual(Object.keys(body).sort(), ['schedule', 'timezone']);
+      assert.equal(typeof body.schedule, 'string');
+      return body.timezone === 'Invalid/Zone' ? response({ error: 'Invalid timezone' }, 400) : response({ occurrences: automationFires, human: 'Every weekday at 09:00' });
     }
     if (url === '/api/automations' && method === 'POST') {
-      assert.ok(body.request_id);
-      if (body.definition.schedule.frequency !== 'weekly') assert.deepEqual(body.definition.schedule.days, []);
+      assert.deepEqual(Object.keys(body).sort(), ['definition', 'key', 'request_id']);
+      assert.ok(body.request_id && body.key);
+      assert.deepEqual(Object.keys(body.definition).sort(), automationSpecFields);
       if (receipts.has(body.request_id)) return behavior.createResponse?.(receipts.get(body.request_id)) || response(receipts.get(body.request_id));
-      const row = { ...body.definition, id: 'auto-' + next++, revision: 1, schedule_revision: 1 };
-      definitions.set(row.id, row);
-      receipts.set(body.request_id, row);
+      const row = { ...body.definition, id: 'auto-' + next++, key: body.key, revision: 1, created_at: automationFires[0], next: automationFires[0], next_runs: automationFires,
+        schedule_human: 'Every weekday at 09:00', project: 'Repository', running: false, runs_total: 214, success_rate: 95, avg_wall: 252, spend_30d: '12.34', priced_runs: 19, tracked_runs: 20 };
+      definitions.set(row.id, row); receipts.set(body.request_id, structuredClone(row));
       return behavior.createResponse?.(row) || response(row, 201);
     }
-    const match = url.match(/^\/api\/automations\/([^/?]+)(?:\/occurrences(?:\?offset=(\d+)&limit=20|\/([^/]+)\/skip))?$/);
+    const parsed = new URL(url, 'http://fixture'), match = parsed.pathname.match(/^\/api\/automations\/([^/]+)(?:\/(run|stop|pause|resume|runs)(?:\/(\d+)\/log)?)?$/);
     assert.ok(match, 'Unexpected automation request: ' + method + ' ' + url);
-    const row = definitions.get(match[1]);
+    const row = definitions.get(match[1]), action = match[2];
     if (!row) return response({ error: 'Not found' }, 404);
-    if (match[2] !== undefined) return response({ occurrences: history.slice(Number(match[2]), Number(match[2]) + 20), total: history.length });
-    if (match[3]) {
-      const occurrence = history.find(row => row.id === match[3]);
-      assert.equal(body.revision, occurrence.revision);
-      occurrence.phase = 'skipped'; occurrence.revision++;
-      return response(occurrence);
+    if (method === 'GET' && action === 'runs') {
+      if (match[3]) return response({ lines, raw: lines.map(line => line.text).join('\n') });
+      const offset = Number(parsed.searchParams.get('offset')), limit = Number(parsed.searchParams.get('limit'));
+      assert.ok(limit >= 20 && limit <= 100);
+      return response({ runs: history.slice(offset, offset + limit), total: history.length });
     }
-    if (method === 'GET') return response(row);
-    assert.equal(method, 'PUT');
+    if (method === 'POST' && action === 'run') {
+      assert.deepEqual(Object.keys(body), ['request_id']); assert.ok(body.request_id);
+      const key = row.id + ':' + body.request_id;
+      if (!runReceipts.has(key)) {
+        const run = { automation_id: row.id, key: row.key, n: history.length + 1, revision: 1, invocation_id: body.request_id, trigger: 'manual', accepted_at: automationFires[0],
+          phase: row.running && row.overlap === 'queue' ? 'queued' : row.running && row.overlap === 'skip' ? 'terminal' : 'running', outcome: row.running && row.overlap === 'skip' ? 'skipped' : '' };
+        runReceipts.set(key, run); history.unshift(run);
+        if (run.phase === 'running') definitions.set(row.id, { ...row, running: true, current_run: run });
+      }
+      return behavior.runResponse?.(runReceipts.get(key)) || response(runReceipts.get(key), 202);
+    }
+    if (method === 'POST' && action === 'stop') {
+      assert.deepEqual(body, { n: row.current_run.n });
+      const run = { ...row.current_run, phase: 'terminal', outcome: 'failed', exit_code: 143, result: 'stopped by user' };
+      definitions.set(row.id, { ...row, running: false, current_run: null, last_run: run });
+      return response(run, 202);
+    }
+    if (method === 'GET' && !action) return response(row);
     if (body.revision !== row.revision) return response({ error: 'Revision conflict' }, 409);
-    const saved = { ...body, revision: row.revision + 1 };
-    definitions.set(saved.id, saved);
-    return response(saved);
+    if (method === 'DELETE' && !action) { definitions.delete(row.id); return response(null, 204); }
+    if (method === 'POST' && ['pause', 'resume'].includes(action)) {
+      assert.deepEqual(Object.keys(body), ['revision']);
+      const saved = { ...row, revision: row.revision + 1, enabled: action === 'resume' };
+      definitions.set(row.id, saved); return response(saved);
+    }
+    assert.equal(method, 'PUT'); assert.equal(action, undefined);
+    assert.deepEqual(Object.keys(body).sort(), ['definition', 'revision']);
+    assert.deepEqual(Object.keys(body.definition).sort(), automationSpecFields);
+    const saved = { ...row, ...body.definition, revision: row.revision + 1 };
+    definitions.set(saved.id, saved); return response(saved);
   };
-  function mount() {
-    const state = loadKontoraState({ fetch, setTimeout: fn => { timers.set(++timer, fn); return timer; }, clearTimeout: id => timers.delete(id), window: { innerWidth: 1200, confirm: () => behavior.confirm } });
-    state.$nextTick = callback => callback?.(); state.$refs = {};
-    state.configCache = { projects: [{ name: 'Repository', path: '/example/repository' }], agents: ['example-agent'] };
+  function mount(hash = '#/automations') {
+    const location = { protocol: 'http:', host: 'fixture', hash };
+    const state = loadKontoraState({ fetch, location, EventSource: makeEventSourceFake(events),
+      setTimeout: fn => { timers.set(++timer, fn); return timer; }, clearTimeout: id => timers.delete(id),
+      window: { innerWidth: 1280, confirm: () => behavior.confirm, addEventListener: (name, fn) => listeners.set(name, fn), removeEventListener: name => listeners.delete(name) } });
+    state.$nextTick = callback => { callback?.(); return Promise.resolve(); }; state.$refs = {};
+    state.configCache = { projects: [{ name: 'Repository', path: '/example/repository', agent: 'example-agent' }], agents: ['example-agent'] };
+    state.openTerminal = state.closeTerminal = () => {};
+    state.currentView = 'automations';
     return state;
   }
-  return { state: mount(), mount, definitions, requests, history, behavior, response,
+  return { state: mount(), mount, definitions, requests, history, lines, events, listeners, receipts, runReceipts, behavior, response,
     async preview() { const jobs = [...timers.values()]; timers.clear(); await Promise.all(jobs.map(fn => fn())); } };
 }
 
-async function createAutomation(ui) {
-  const { state } = ui;
-  await state.openAutomations();
-  state.automationsNew();
-  state.automationsDraft.name = ' Morning review ';
-  state.automationsDraft.prompt = ' Review recent changes. ';
-  state.automationsDraft.timezone = 'Europe/Berlin';
-  await state.automationsSaveDraft();
+async function automationDraft(ui) {
+  await ui.state.automationsOpen(); ui.state.automationsNew();
+  Object.assign(ui.state.automationsDraft, { name: 'Morning review', prompt: 'Review recent changes.', timezone: 'Europe/Berlin' });
+  ui.state.automationsSchedulePreview(); await ui.preview();
 }
+async function createAutomation(ui) { await automationDraft(ui); await ui.state.automationsSaveDraft(); }
+async function editAutomation(ui) { await createAutomation(ui); ui.state.automationsEdit(); await ui.preview(); }
 
-test('automations persist API definitions, revisions and disabled defaults across reload', async () => {
+test('automations create, open detail, edit and reload the full spec without legacy fields', async () => {
   const ui = automationUI(), { state } = ui;
-  await state.openAutomations();
-  assert.equal(state.automations.length, 0);
-  state.automationsNew();
+  await automationDraft(ui);
+  assert.equal(state.automationsDraft.enabled, true);
+  assert.equal(state.automationsDraft.workspace, 'worktree'); assert.equal(state.automationsDraft.overlap, 'skip'); assert.equal(state.automationsDraft.timeout, '30m');
+  state.automationsDraft.model = 'sonnet'; state.automationsDraft.workspace = 'repo'; state.automationsDraft.overlap = 'replace';
   await state.automationsSaveDraft();
-  assert.deepEqual(Object.keys(state.automationsErrors).sort(), ['name', 'prompt']);
-  state.automationsDraft.name = ' Morning review '; state.automationsDraft.prompt = ' Review recent changes. ';
-  await state.automationsSaveDraft();
-  const created = ui.definitions.get('auto-1');
-  assert.equal(created.name, 'Morning review');
-  assert.equal(created.instructions, 'Review recent changes.');
-  assert.equal(created.enabled, false);
-  assert.equal(created.skip_overlap, true);
-  assert.deepEqual(created.schedule.days, []);
-  state.automationsDraft.prompt = 'Updated instructions';
-  await state.automationsSaveDraft();
-  assert.equal(ui.definitions.get('auto-1').revision, 2);
-  const reloaded = ui.mount();
-  await reloaded.openAutomations();
-  await reloaded.automationsSelect(reloaded.automations[0]);
-  assert.equal(reloaded.automationsDraft.prompt, 'Updated instructions');
-  assert.equal(reloaded.automationsDraft.revision, 2);
-  assert.equal(reloaded.automationsDirty(), false);
+  assert.equal(state.automationsEditing, false); assert.equal(state.automationsDetail, true); assert.equal(state.routeHash(), '#/automations/auto-1');
+  state.automationsEdit(); await ui.preview();
+  state.automationsDraft.prompt = 'Updated instructions'; await state.automationsSaveDraft();
+  const row = ui.definitions.get('auto-1');
+  assert.equal(row.revision, 2); assert.equal(row.prompt, 'Updated instructions'); assert.equal(row.model, 'sonnet'); assert.equal(row.overlap, 'replace');
+  const reloaded = ui.mount('#/automations/auto-1/edit'); await reloaded.applyRoute();
+  assert.equal(reloaded.automationsDraft.prompt, row.prompt); assert.equal(reloaded.automationsDraft.revision, 2); assert.equal(reloaded.automationsDirty(), false);
   state.automationsDispose(); reloaded.automationsDispose();
 });
 
-test('automation preview is debounced, authoritative and protects against stale responses', async () => {
-  const ui = automationUI(), { state } = ui;
-  await state.openAutomations(); state.automationsNew();
-  state.automationsDraft.timezone = 'Europe/Berlin'; state.automationsSchedulePreview();
-  state.automationsDraft.time = '03:45'; state.automationsSchedulePreview();
-  assert.equal(ui.requests.filter(r => r.url.endsWith('/preview')).length, 0);
-  await ui.preview();
-  assert.equal(ui.requests.filter(r => r.url.endsWith('/preview')).length, 1);
-  assert.equal(ui.requests.at(-1).body.timezone, 'Europe/Berlin');
-  assert.equal(ui.requests.at(-1).body.time, '03:45');
-  assert.deepEqual([...state.automationsDates()].map(date => date.toISOString()), ['2026-11-10T08:00:00.000Z', '2026-11-11T08:00:00.000Z', '2026-11-12T08:00:00.000Z']);
-  assert.match(state.automationsDateLabel(state.automationsDates()[0]), /09:00/);
+for (const [hash, mode] of [['#/automations', 'list'], ['#/automations/new', 'new'], ['#/automations/auto-1', 'detail'], ['#/automations/auto-1/edit', 'edit']]) {
+  test('automation route round-trip and query preservation: ' + mode, async () => {
+    const ui = automationUI(); await createAutomation(ui);
+    const route = hash + '?state=enabled&q=project%3ARepository';
+    const state = ui.mount(route); await state.applyRoute();
+    assert.equal(state.currentView, 'automations'); assert.equal(state.routeHash(), route);
+    assert.equal(state.automationsFilter, 'enabled'); assert.equal(state.automationsQuery, 'project:Repository');
+    assert.equal(state.automationsEditing, mode === 'new' || mode === 'edit');
+    assert.equal(state.automationsDetail, mode === 'detail' || mode === 'edit');
+    if (mode === 'detail' || mode === 'edit') assert.equal(state.automationsSelected, 'auto-1');
+    state.automationsDispose(); ui.state.automationsDispose();
+  });
+}
+
+test('automation saves require each spec field and an authoritative preview for the current timezone', async () => {
+  const ui = automationUI(), { state } = ui; await automationDraft(ui);
+  assert.equal(!!state.automationsCanSave(), true);
+  for (const field of ['name', 'prompt', 'path', 'agent']) {
+    const saved = state.automationsDraft[field]; state.automationsDraft[field] = '  ';
+    assert.equal(!!state.automationsCanSave(), false, field); state.automationsDraft[field] = saved;
+  }
+  state.automationsDraft.timezone = 'UTC'; assert.equal(!!state.automationsCanSave(), false);
+  state.automationsSchedulePreview(); await ui.preview(); assert.equal(!!state.automationsCanSave(), true);
+  ui.behavior.available = false; await state.automationsRefresh(); assert.equal(!!state.automationsCanSave(), false);
+  state.automationsDispose();
+});
+
+test('automation preview debounces cron and intervals, formats timezone and rejects stale responses', async () => {
+  const ui = automationUI(), { state } = ui; await automationDraft(ui);
+  ui.requests.length = 0;
+  state.automationsDraft.schedule = '0 3 * * *'; state.automationsSchedulePreview();
+  state.automationsDraft.schedule = '30m'; state.automationsSchedulePreview();
+  assert.equal(ui.requests.length, 0); await ui.preview();
+  assert.deepEqual(ui.requests.at(-1).body, { schedule: '30m', timezone: 'Europe/Berlin' });
+  assert.deepEqual([...state.automationsPreview], automationFires); assert.match(state.automationsDateLabel(automationFires[0]), /09:00/);
+  assert.equal(state.automationsPreviewHuman, 'Every weekday at 09:00');
   const older = deferred();
-  ui.behavior.hook = (url, method, body) => url.endsWith('/preview') && body.time === '04:00' && body.timezone === 'Europe/Berlin' ? older.promise : undefined;
-  state.automationsDraft.time = '04:00'; state.automationsSchedulePreview();
-  const pending = ui.preview();
-  state.automationsDraft.timezone = 'Invalid/Zone'; state.automationsSchedulePreview();
-  await ui.preview();
-  assert.match(state.automationsPreviewError, /Invalid timezone/);
-  older.resolve(ui.response({ occurrences: ['2030-01-01T00:00:00Z'] })); await pending;
-  assert.equal(state.automationsPreview.length, 0);
-  assert.match(state.automationsPreviewError, /Invalid timezone/);
+  ui.behavior.hook = (url, method, body) => url.endsWith('/preview') && body.schedule === '6h' && body.timezone === 'Europe/Berlin' ? older.promise : undefined;
+  state.automationsDraft.schedule = '6h'; state.automationsSchedulePreview(); const pending = ui.preview();
+  state.automationsDraft.timezone = 'Invalid/Zone'; state.automationsSchedulePreview(); await ui.preview();
+  older.resolve(ui.response({ occurrences: ['2030-01-01T00:00:00Z'], human: 'Stale' })); await pending;
+  assert.equal(state.automationsPreview.length, 0); assert.match(state.automationsPreviewError, /Invalid timezone/); assert.equal(!!state.automationsCanSave(), false);
+  for (const schedule of ['', '0 9 * *', '@daily']) {
+    state.automationsDraft.schedule = schedule; state.automationsSchedulePreview();
+    assert.ok(state.automationsPreviewError); assert.equal(state.automationsPreviewLoading, false);
+  }
   state.automationsDispose();
 });
 
-test('automation creation retries retain the original request identity and payload', async () => {
-  const ui = automationUI(), { state } = ui;
-  await state.openAutomations(); state.automationsNew();
-  state.automationsDraft.name = 'Review'; state.automationsDraft.prompt = 'First instructions';
-  let lost = true;
-  const gate = deferred();
-  ui.behavior.hook = async (url, method) => {
-    if (url === '/api/automations' && method === 'POST' && lost) { await gate.promise; throw new Error('Response lost'); }
-  };
-  const saving = state.automationsSaveDraft();
-  assert.equal(state.automationsPending, true);
-  assert.equal(state.automationsNew(), false);
-  await state.automationsSaveDraft();
-  gate.resolve(); await saving;
-  assert.match(state.automationsNotice, /Retry save/);
-  state.automationsDraft.prompt = 'Later edit'; lost = false;
-  await state.automationsSaveDraft();
-  const posts = ui.requests.filter(r => r.method === 'POST' && r.url === '/api/automations');
-  assert.equal(posts.length, 2);
-  assert.deepEqual(posts[0].body, posts[1].body);
-  assert.equal(ui.definitions.size, 1);
-  assert.equal(ui.definitions.get('auto-1').instructions, 'First instructions');
-  assert.equal(state.automationsDraft.prompt, 'Later edit');
-  assert.equal(state.automationsDirty(), true);
-  await state.automationsSaveDraft();
-  assert.equal(ui.definitions.get('auto-1').instructions, 'Later edit');
-  state.automationsDispose();
-});
-
-for (const [label, malformed] of [
-  ['unreadable JSON', () => ({ ok: true, status: 201, json: async () => { throw new Error('Truncated JSON'); } })],
-  ['empty object', ui => ui.response({})],
-  ['null', ui => ui.response(null)],
-  ['missing schedule', (ui, row) => ui.response({ ...row, schedule: undefined })],
-  ['missing identity', (ui, row) => ui.response({ ...row, id: undefined })],
-  ['invalid revision', (ui, row) => ui.response({ ...row, revision: 0 })],
-  ['invalid instructions', (ui, row) => ui.response({ ...row, instructions: null })],
-]) {
-  test(`committed automation creation with ${label} preserves its identity until a valid receipt`, async () => {
-    const ui = automationUI(), { state } = ui;
-    await state.openAutomations(); state.automationsNew();
-    state.automationsDraft.name = 'Review'; state.automationsDraft.prompt = 'Original instructions';
-    const draft = JSON.stringify(state.automationsDraft), baseline = state.automationsBaseline;
-    ui.behavior.createResponse = row => malformed(ui, row);
-    await state.automationsSaveDraft();
-    assert.equal(ui.definitions.size, 1);
-    assert.equal(state.automations.length, 0);
-    assert.equal(state.automationsSelected, null);
-    assert.equal(JSON.stringify(state.automationsDraft), draft);
-    assert.equal(state.automationsBaseline, baseline);
-    assert.equal(state.automationsPending, false);
-    assert.match(state.automationsNotice, /Retry save/);
-    state.automationsDraft.prompt = 'Later edit';
-    ui.behavior.createResponse = null;
-    await state.automationsSaveDraft();
+for (const kind of ['lost body', 'invalid identity', 'invalid revision']) {
+  test('automation create receipt retry is idempotent after ' + kind, async () => {
+    const ui = automationUI(), { state } = ui; await automationDraft(ui);
+    ui.behavior.createResponse = row => kind === 'lost body' ? { ok: true, status: 201, json: async () => { throw new Error('Lost body'); } }
+      : ui.response({ ...row, ...(kind === 'invalid identity' ? { id: '' } : { revision: 0 }) });
+    await state.automationsSaveDraft(true);
+    assert.equal(ui.definitions.size, 1); assert.equal(state.automationsPending, false); assert.match(state.automationsNotice, /Retry save/);
+    assert.equal(ui.runReceipts.size, 0);
+    ui.behavior.createResponse = null; await state.automationsSaveDraft();
     const posts = ui.requests.filter(r => r.method === 'POST' && r.url === '/api/automations');
-    assert.equal(posts.length, 2);
-    assert.deepEqual(posts[0].body, posts[1].body);
-    assert.equal(ui.definitions.size, 1);
-    assert.equal(state.automationsSelected, 'auto-1');
-    assert.equal(state.automationsDraft.prompt, 'Later edit');
-    assert.equal(state.automationsDirty(), true);
-    assert.equal(state._automationsCreate, null);
+    assert.equal(posts.length, 2); assert.deepEqual(posts[0].body, posts[1].body); assert.equal(ui.definitions.size, 1);
+    assert.equal(ui.runReceipts.size, 1, 'Retry keeps the original save-and-run intent'); assert.equal(state.automationsTab, 'session');
     state.automationsDispose();
   });
 }
 
-test('a malformed successful PUT response leaves the saved list and editor baseline unchanged', async () => {
-  const ui = automationUI(), { state } = ui;
-  await createAutomation(ui);
-  const baseline = state.automationsBaseline;
-  state.automationsDraft.prompt = 'Unsaved instructions';
-  const draft = JSON.stringify(state.automationsDraft);
-  ui.behavior.hook = (url, method) => method === 'PUT' ? ui.response({ id: 'auto-1', revision: 2 }) : undefined;
-  await state.automationsSaveDraft();
-  assert.equal(state.automations[0].revision, 1);
-  assert.equal(state.automationsBaseline, baseline);
-  assert.equal(JSON.stringify(state.automationsDraft), draft);
-  assert.equal(state.automationsDirty(), true);
-  assert.equal(state.automationsPending, false);
-  assert.match(state.automationsNotice, /Invalid automation response/);
-  state.automationsDispose();
+test('pending saves block duplicate submission and navigation', async () => {
+  const ui = automationUI(), { state } = ui; await automationDraft(ui);
+  const gate = deferred(); ui.behavior.hook = (url, method) => method === 'POST' && url === '/api/automations' ? gate.promise : undefined;
+  const saving = state.automationsSaveDraft();
+  assert.equal(state.automationsPending, true); assert.equal(state.automationsNew(), false);
+  await state.automationsSaveDraft(); await state.gotoView('board');
+  assert.equal(state.currentView, 'automations'); assert.equal(ui.requests.filter(r => r.url === '/api/automations' && r.method === 'POST').length, 1);
+  gate.resolve(ui.response({ error: 'Store unavailable' }, 503)); await saving;
+  assert.equal(state.automationsPending, false); assert.match(state.automationsNotice, /Retry save/); state.automationsDispose();
 });
 
-for (const laterEdit of [false, true]) {
-  test(`an old creation receipt cannot replace a newer refresh${laterEdit ? ' with later edits' : ''}`, async () => {
-    const ui = automationUI(), { state } = ui;
-    ui.behavior.createResponse = () => ({ ok: true, status: 201, json: async () => { throw new Error('Lost body'); } });
-    await createAutomation(ui);
-    const newer = { ...ui.definitions.get('auto-1'), revision: 2, enabled: true, instructions: 'Other browser' };
-    ui.definitions.set(newer.id, newer);
-    await state.automationsRefresh();
-    if (laterEdit) state.automationsDraft.prompt = 'Later edit';
-    ui.behavior.createResponse = null;
-    await state.automationsSaveDraft();
-    assert.equal(state.automations[0].revision, 2);
-    assert.equal(state.automations[0].enabled, true);
-    assert.equal(state.automationsDraft.prompt, laterEdit ? 'Later edit' : newer.instructions);
-    assert.equal(state.automationsDraft.revision, laterEdit ? 1 : 2);
-    assert.equal(state.automationsDirty(), laterEdit);
-    assert.equal(!!state.automationsConflict, laterEdit);
-    assert.equal(state.automationsDraft.enabled, !laterEdit);
-    assert.equal(ui.definitions.size, 1);
-    state.automationsDispose();
-  });
-}
-
-for (const operation of ['save', 'toggle']) {
-  for (const laterEdit of [false, true]) {
-    test(`a delayed ${operation} response cannot replace newer list or editor revisions${laterEdit ? ' with unsaved edits' : ''}`, async () => {
-      const ui = automationUI(), { state } = ui;
-      await createAutomation(ui);
-      const delayed = deferred();
-      let saved;
-      ui.behavior.hook = (url, method, body) => {
-        if (method !== 'PUT') return;
-        saved = { ...body, revision: 2 };
-        ui.definitions.set(saved.id, saved);
-        return delayed.promise;
-      };
-      if (operation === 'save') state.automationsDraft.prompt = 'Saved instructions';
-      else if (laterEdit) state.automationsDraft.prompt = 'Later edit';
-      const saving = operation === 'save' ? state.automationsSaveDraft() : state.automationsToggle(state.automations[0]);
-      await flushMicrotasks();
-      assert.equal(saved.revision, 2);
-      const newer = { ...saved, revision: 3, enabled: !saved.enabled, instructions: 'Newest instructions' };
-      ui.definitions.set(newer.id, newer);
-      if (operation === 'save' && laterEdit) state.automationsDraft.prompt = 'Later edit';
-      await state.automationsRefresh();
-      delayed.resolve(ui.response(saved)); await saving;
-      assert.equal(state.automations[0].revision, 3);
-      assert.equal(state.automations[0].instructions, newer.instructions);
-      assert.equal(state.automations[0].enabled, newer.enabled);
-      assert.equal(state.automationsDraft.prompt, laterEdit ? 'Later edit' : newer.instructions);
-      assert.equal(state.automationsDraft.revision, laterEdit ? (operation === 'save' ? 2 : 1) : 3);
-      assert.equal(state.automationsDirty(), laterEdit);
-      assert.equal(!!state.automationsConflict, laterEdit);
-      if (!laterEdit) assert.equal(state.automationsDraft.enabled, newer.enabled);
-      state.automationsDispose();
-    });
-  }
-}
-
-for (const frequency of ['daily', 'weekdays', 'weekly']) {
-  for (const invalid of ['time', 'timezone', 'days']) {
-    test(`automation schedule guidance for ${frequency} with invalid ${invalid}`, async () => {
-      const ui = automationUI(), { state } = ui;
-      await state.openAutomations(); state.automationsNew();
-      Object.assign(state.automationsDraft, { name: 'Review', prompt: 'Instructions', frequency, time: '09:00', timezone: 'UTC', days: [1] });
-      state.automationsDraft[invalid] = invalid === 'days' ? [] : '';
-      const valid = invalid === 'days' && frequency !== 'weekly';
-      assert.equal(state.automationsValidate(), valid);
-      assert.equal(state.automationsErrors.schedule, valid ? undefined : 'Choose a valid time and timezone. If Repeat is set to Selected days, choose at least one day.');
-      state.automationsDispose();
-    });
-  }
-}
-
-test('invalidation and reconnect preserve dirty automation drafts and report conflicts', async () => {
-  const ui = automationUI(), { state } = ui;
-  await createAutomation(ui);
-  const opened = [];
-  state.companionRefresh = () => {};
-  state.connectSSE = loadKontoraState({ EventSource: makeEventSourceFake(opened) }).connectSSE;
-  state.connectSSE();
-  state.automationsDraft.prompt = 'Unsaved instructions';
-  ui.definitions.set('auto-1', { ...ui.definitions.get('auto-1'), revision: 2, instructions: 'Other browser' });
-  opened[0].emit('automations_updated'); await flushMicrotasks();
-  assert.equal(state.automationsDraft.prompt, 'Unsaved instructions');
-  assert.equal(state.automationsDraft.revision, 1);
-  assert.match(state.automationsConflict, /changed on the server/);
-  opened[0].emit('open'); await flushMicrotasks();
-  assert.equal(state.automationsDraft.prompt, 'Unsaved instructions');
-  const puts = ui.requests.filter(r => r.method === 'PUT').length;
-  await state.automationsSaveDraft();
-  assert.equal(ui.requests.filter(r => r.method === 'PUT').length, puts);
-  ui.behavior.confirm = false;
-  await state.automationsReload();
-  assert.equal(state.automationsDraft.prompt, 'Unsaved instructions');
-  ui.behavior.confirm = true;
-  await state.automationsReload();
-  assert.equal(state.automationsDraft.prompt, 'Other browser');
-  assert.equal(state.automationsConflict, '');
-  state.automationsDispose();
-});
-
-for (const status of [400, 404, 409, 503]) {
-  test(`automation save ${status} leaves the draft and saved row unchanged`, async () => {
-    const ui = automationUI(), { state } = ui;
-    await createAutomation(ui);
-    state.automationsDraft.prompt = 'Unsaved change';
+for (const status of [400, 401, 404, 409, 503]) {
+  test(`automation save ${status} preserves the draft and saved revision`, async () => {
+    const ui = automationUI(), { state } = ui; await editAutomation(ui);
+    state.automationsDraft.prompt = 'Unsaved change'; const baseline = state.automationsBaseline;
     ui.behavior.hook = (url, method) => method === 'PUT' ? ui.response({ error: 'Rejected ' + status }, status) : undefined;
     await state.automationsSaveDraft();
-    assert.equal(state.automationsDraft.prompt, 'Unsaved change');
-    assert.equal(ui.definitions.get('auto-1').instructions, 'Review recent changes.');
-    assert.equal(state.automationsPending, false);
-    assert.match(state.automationsNotice, /Rejected/);
-    assert.equal(!!state.automationsConflict, status === 409);
+    assert.equal(state.automationsDraft.prompt, 'Unsaved change'); assert.equal(state.automationsBaseline, baseline); assert.equal(ui.definitions.get('auto-1').revision, 1);
+    assert.equal(state.automationsPending, false); assert.match(state.automationsNotice, /Rejected/); assert.equal(!!state.automationsConflict, status === 409);
+    if (status === 401) assert.equal(state.needsAuth, true);
     state.automationsDispose();
   });
 }
 
-test('late automation selection and list responses cannot replace a newer editor', async () => {
-  const ui = automationUI(), { state } = ui;
-  await createAutomation(ui);
-  const pending = deferred();
-  ui.behavior.hook = (url, method) => method === 'GET' && url === '/api/automations/auto-1' ? pending.promise : undefined;
-  const selecting = state.automationsSelect(state.automations[0]);
-  state.automationsNew(); state.automationsDraft.prompt = 'New draft';
-  pending.resolve(ui.response({ ...ui.definitions.get('auto-1'), instructions: 'Old response' })); await selecting;
-  assert.equal(state.automationsSelected, null);
-  assert.equal(state.automationsDraft.prompt, 'New draft');
-  assert.equal(state.automationsDirty(), true);
-  ui.behavior.confirm = true; ui.behavior.hook = null;
-  await state.automationsSelect(state.automations[0]);
-  const list = deferred();
-  ui.behavior.hook = (url, method) => method === 'GET' && url === '/api/automations' ? list.promise : undefined;
-  const refreshing = state.automationsRefresh();
-  state.automationsDraft.prompt = 'Saved during refresh'; await state.automationsSaveDraft();
-  list.resolve(ui.response({ available: true, definitions: [{ ...ui.definitions.get('auto-1'), revision: 1, instructions: 'Stale list' }] })); await refreshing;
-  assert.equal(state.automationsDraft.prompt, 'Saved during refresh');
-  assert.equal(state.automations[0].revision, 2);
+test('automation SSE invalidation and reconnect preserve dirty drafts and require an explicit reload', async () => {
+  const ui = automationUI(), { state } = ui; await editAutomation(ui);
+  state.companionRefresh = () => {}; state.connectSSE();
+  state.automationsDraft.prompt = 'Unsaved instructions';
+  ui.definitions.set('auto-1', { ...ui.definitions.get('auto-1'), revision: 2, prompt: 'Other browser' });
+  ui.events[0].emit('automations_updated'); await flushMicrotasks(); ui.events[0].emit('open'); await flushMicrotasks();
+  assert.equal(state.automationsDraft.prompt, 'Unsaved instructions'); assert.equal(state.automationsDraft.revision, 1); assert.match(state.automationsConflict, /changed/);
+  const puts = ui.requests.filter(r => r.method === 'PUT').length; await state.automationsSaveDraft(); assert.equal(ui.requests.filter(r => r.method === 'PUT').length, puts);
+  ui.behavior.confirm = false; await state.automationsReload(); assert.equal(state.automationsDraft.prompt, 'Unsaved instructions');
+  ui.behavior.confirm = true; await state.automationsReload(); assert.equal(state.automationsDraft.prompt, 'Other browser'); assert.equal(state.automationsConflict, '');
+  state.automationsDispose(); assert.equal(ui.listeners.has('beforeunload'), false); state._eventSource?.close();
+});
+
+test('late automation detail, list and log responses cannot overwrite a newer view', async () => {
+  const ui = automationUI(), { state } = ui; await createAutomation(ui); await state.automationsBack();
+  const detail = deferred(); ui.behavior.hook = (url, method) => method === 'GET' && url === '/api/automations/auto-1' ? detail.promise : undefined;
+  const selecting = state.automationsSelect(state.automations[0]); state.automationsNew(); state.automationsDraft.prompt = 'New draft';
+  detail.resolve(ui.response(ui.definitions.get('auto-1'))); await selecting;
+  assert.equal(state.automationsSelected, null); assert.equal(state.automationsDraft.prompt, 'New draft');
+  ui.behavior.hook = null; await state.automationsSelect(state.automations[0]); state.automationsEdit(); await ui.preview();
+  const list = deferred(); ui.behavior.hook = (url, method) => method === 'GET' && url === '/api/automations' ? list.promise : undefined;
+  const refreshing = state.automationsRefresh(); state.automationsDraft.prompt = 'Saved during refresh'; await state.automationsSaveDraft();
+  list.resolve(ui.response({ available: true, definitions: [{ ...ui.definitions.get('auto-1'), revision: 1, prompt: 'Stale' }] })); await refreshing;
+  assert.equal(state.automationsRow().revision, 2); assert.equal(state.automationsRow().prompt, 'Saved during refresh');
+  const log = deferred(); ui.behavior.hook = url => url.endsWith('/log') ? log.promise : undefined;
+  const loading = state.automationsOpenRun(state.automationsHistory[0]); state.automationsNew();
+  log.resolve(ui.response({ lines: [{ text: 'Stale log' }] })); await loading;
+  assert.equal(state.automationsLog.some(line => line.text === 'Stale log'), false); state.automationsDispose();
+});
+
+test('automation refresh does not regress a run snapshot at the same definition revision', async () => {
+  const ui = automationUI(), { state } = ui; await createAutomation(ui);
+  const row = ui.definitions.get('auto-1');
+  const run = { automation_id: row.id, n: 30, revision: 4, phase: 'running', trigger: 'manual' };
+  state.automationsUpsert({ ...row, running: true, current_run: run });
+  ui.definitions.set(row.id, { ...row, running: true, current_run: { ...run, revision: 2, phase: 'preparing' } });
+  await state.automationsRefresh(); assert.equal(state.automationsRow().current_run.revision, 4); assert.equal(state.automationsRow().current_run.phase, 'running');
+  state.automationsUpsert({ ...row, running: false, current_run: null, last_run: { ...run, revision: 5, phase: 'terminal', outcome: 'complete' } });
+  await state.automationsRefresh(); assert.equal(state.automationsRow().running, false); assert.equal(state.automationsRow().last_run.revision, 5);
   state.automationsDispose();
 });
 
-test('automation toggles use saved definitions without writing a dirty draft', async () => {
-  const ui = automationUI(), { state } = ui;
-  await createAutomation(ui);
-  state.automationsFilter = 'paused'; assert.equal(state.automationsRows().length, 1);
-  state.automationsQuery = 'MORNING'; assert.equal(state.automationsRows().length, 1);
-  state.automationsDraft.prompt = 'Unsaved prompt';
-  await state.automationsToggle(state.automations[0]);
-  assert.equal(ui.definitions.get('auto-1').enabled, true);
-  assert.equal(ui.definitions.get('auto-1').instructions, 'Review recent changes.');
-  assert.equal(state.automationsDraft.prompt, 'Unsaved prompt');
-  assert.equal(state.automationsDraft.enabled, false);
-  assert.match(state.automationsConflict, /unsaved changes/);
-  assert.equal(state.automationsRows().length, 0);
-  state.automationsDispose();
+test('automation run rejection clears only the rejected request identity', async () => {
+  const ui = automationUI(), { state } = ui; await createAutomation(ui);
+  ui.behavior.hook = (url, method) => method === 'POST' && url.endsWith('/run') ? ui.response({ error: 'Rejected run' }, 409) : undefined;
+  await state.automationsRun(); assert.equal(Object.keys(state.automationsRunReceipts).length, 0); assert.equal(ui.runReceipts.size, 0);
+  ui.behavior.hook = null; await state.automationsRun();
+  const posts = ui.requests.filter(r => r.url.endsWith('/run')); assert.equal(posts.length, 2); assert.notEqual(posts[0].body.request_id, posts[1].body.request_id);
+  assert.equal(ui.runReceipts.size, 1); state.automationsDispose();
 });
 
-test('automation availability, history pagination and explicit recovery acknowledgement', async () => {
-  const ui = automationUI(), { state } = ui;
-  ui.behavior.available = false; await state.openAutomations();
-  assert.equal(state.automationsAvailable, false); assert.match(state.automationsError, /Store locked/);
-  ui.behavior.available = true; await createAutomation(ui);
-  assert.equal(state.automationsHistory.length, 20);
-  assert.equal(state.automationsHistoryTotal, 23);
-  assert.ok(state.automationsHistory.every(row => !('payload' in row)));
-  assert.ok(state.automationsHistory.every(row => row.timezone === 'America/New_York'));
-  const blocked = state.automationsHistory[0];
-  ui.behavior.confirm = false; await state.automationsSkip(blocked);
-  assert.equal(ui.history[0].phase, 'blocked');
-  ui.behavior.confirm = true; await state.automationsSkip(blocked);
-  assert.equal(ui.history[0].phase, 'skipped');
-  assert.deepEqual(ui.requests.find(r => r.url.endsWith('/skip')).body, { revision: 1 });
-  await state.automationsLoadHistory(20);
-  assert.equal(state.automationsHistory.length, 3);
-  assert.equal(state.automationsHistoryOffset, 20);
-  state.automationsDispose();
+test('automation toggles use saved revisions and structured filters without persisting a dirty draft', async () => {
+  const ui = automationUI(), { state } = ui; await editAutomation(ui);
+  state.automationsFilter = 'enabled'; state.automationsQuery = 'project:Repository agent:example MORNING'; assert.equal(state.automationsRows().length, 1);
+  state.automationsDraft.prompt = 'Unsaved prompt'; await state.automationsToggle(state.automationsRow());
+  assert.equal(ui.definitions.get('auto-1').enabled, false); assert.equal(ui.definitions.get('auto-1').prompt, 'Review recent changes.');
+  assert.equal(state.automationsDraft.prompt, 'Unsaved prompt'); assert.match(state.automationsConflict, /draft is preserved/); assert.equal(state.automationsRows().length, 0);
+  await state.automationsToggle(state.automationsRow()); assert.equal(ui.definitions.get('auto-1').enabled, true);
+  assert.deepEqual(ui.requests.filter(r => /\/(pause|resume)$/.test(r.url)).map(r => r.body), [{ revision: 1 }, { revision: 2 }]); state.automationsDispose();
 });
 
-test('unsaved automation changes can block replacement and route navigation', async () => {
-  for (const action of ['select', 'new', 'close', 'navigate']) {
-    const ui = automationUI(), { state } = ui;
-    state.currentView = 'automations'; await createAutomation(ui);
-    ui.behavior.confirm = false;
-    state.automationsDraft.prompt = 'Unsaved instructions';
-    const selected = state.automationsSelected;
-    if (action === 'select') await state.automationsSelect(state.automations[0]);
-    if (action === 'new') state.automationsNew();
-    if (action === 'close') state.automationsCloseEditor();
-    if (action === 'navigate') await state.gotoView('board');
-    assert.equal(state.currentView, 'automations', action);
-    assert.equal(state.automationsSelected, selected, action);
-    assert.equal(state.automationsDraft.prompt, 'Unsaved instructions', action);
+for (const policy of ['skip', 'queue', 'replace']) {
+  test('automation run retries retain identity and apply overlap: ' + policy, async () => {
+    const ui = automationUI(), { state } = ui; await createAutomation(ui);
+    const row = { ...ui.definitions.get('auto-1'), overlap: policy, running: true, current_run: { n: 29, revision: 1, phase: 'running' } };
+    ui.definitions.set(row.id, row); await state.automationsRefresh();
+    ui.behavior.runResponse = () => { throw new Error('Response lost after allocation'); };
+    await state.automationsRun(); assert.match(state.automationsError, /Retry run now/); assert.equal(ui.runReceipts.size, 1);
+    ui.behavior.runResponse = null; await state.automationsRun();
+    const posts = ui.requests.filter(r => r.url.endsWith('/run'));
+    assert.equal(posts.length, 2); assert.deepEqual(posts[0].body, posts[1].body); assert.equal(ui.runReceipts.size, 1); assert.equal(Object.keys(state.automationsRunReceipts).length, 0);
+    const run = [...ui.runReceipts.values()][0];
+    assert.equal(run.phase, policy === 'skip' ? 'terminal' : policy === 'queue' ? 'queued' : 'running');
+    if (policy === 'skip') assert.equal(run.outcome, 'skipped');
+    await state.automationsStop(); const stop = ui.requests.find(r => r.url.endsWith('/stop'));
+    assert.deepEqual(stop.body, { n: policy === 'replace' ? run.n : 29 }); assert.equal(state.automationsRow().running, false); assert.equal(state.automationsRow().last_run.exit_code, 143);
     state.automationsDispose();
-  }
+  });
+}
+
+for (const phase of ['queued', 'preparing', 'running', 'stopping', 'recovery_required']) {
+  test('automation stop remains available for unfinished phase: ' + phase, async () => {
+    const ui = automationUI(), { state } = ui; await createAutomation(ui);
+    const row = { ...ui.definitions.get('auto-1'), running: phase === 'running', current_run: { n: 29, phase } };
+    ui.definitions.set(row.id, row); await state.automationsRefresh();
+    assert.equal(state.automationsCanStop(), true);
+    await state.automationsStop();
+    assert.deepEqual(ui.requests.find(request => request.url.endsWith('/stop')).body, { n: 29 });
+    assert.equal(state.automationsCanStop(), false); state.automationsDispose();
+  });
+}
+
+test('automation terminal subjects use server-resolved run paths and change identity between runs', async () => {
+  const container = { textContent: '' }, sockets = [];
+  const { ctx, state } = loadKontoraContext({
+    document: { getElementById: id => id === 'automation-terminal-session' ? container : null, querySelector: () => null, documentElement: { style: {} } },
+    WebSocket: class {
+      static OPEN = 1;
+      constructor(url) { this.url = url; this.readyState = 1; sockets.push(this); }
+      send() {}
+      close() { this.readyState = 3; }
+    },
+  });
+  stubXterm(ctx.termState);
+  state.$nextTick = callback => { callback?.(); return Promise.resolve(); };
+  state.currentView = 'automations'; state.automationsDetail = true; state.automationsAvailable = true; state.automationsSelected = 'auto/encoded'; state.automationsTab = 'session';
+  state.selectedTicket = { id: 'unrelated-ticket', status: 'in_progress' };
+  state.automations = [{ id: 'auto/encoded', running: true, current_run: { n: 7, phase: 'running', session: 'server-only-session', window: 'do-not-send' } }];
+  assert.equal(state.outputSubjectKey(), 'automation:auto/encoded:7'); assert.equal(state.outputContainerID('terminal'), 'automation-terminal-session'); assert.equal(state.terminalWanted(), true);
+  await state.openTerminal();
+  assert.equal(sockets.length, 1); assert.match(sockets[0].url, /\/ws\/automations\/auto%2Fencoded\/7\?/);
+  assert.equal(/server-only-session|do-not-send|unrelated-ticket|[?&](session|window)=/.test(sockets[0].url), false);
+  state.closeTerminal(); state.automations[0].current_run = { n: 8, phase: 'running' };
+  assert.equal(state.outputSubjectKey(), 'automation:auto/encoded:8'); await state.openTerminal();
+  assert.equal(sockets.length, 2); assert.match(sockets[1].url, /\/ws\/automations\/auto%2Fencoded\/8\?/); assert.equal(sockets[0].readyState, 3);
+  state.closeTerminal(); state.automationsEditing = true; assert.equal(state.outputSubject(), null); assert.equal(state.terminalWanted(), false);
+  state.currentView = 'board'; assert.equal(state.outputSubjectKey(), 'primary:unrelated-ticket');
 });
+
+test('automation history, strip, logs and meters use returned run data, not ticket occurrences', async () => {
+  const ui = automationUI(), { state } = ui;
+  ui.behavior.available = false; await state.automationsOpen(); assert.equal(state.automationsAvailable, false); assert.match(state.automationsError, /Store locked/);
+  ui.behavior.available = true; await createAutomation(ui);
+  assert.equal(state.automationsHistory.length, 24); assert.equal(state.automationsHistoryTotal, 29);
+  assert.deepEqual([...state.automationsStrip()].map(run => run.n), ui.history.slice(0, 24).map(run => run.n).reverse());
+  assert.equal(state.automationsStripSummary(), '8 complete · 8 failed · 8 skipped');
+  assert.equal(state.automationsRow().runs_total, 214); assert.equal(state.automationsRow().success_rate, 95); assert.equal(state.automationsDuration(state.automationsRow().avg_wall), '4m 12s'); assert.equal(state.automationsCost(state.automationsRow().spend_30d), '$12.34');
+  assert.equal(state.automationsWall(state.automationsHistory[0]), '4m 12s'); assert.equal(state.automationsCost(null), '—');
+  await state.automationsOpenRun(state.automationsHistory[0]); assert.deepEqual(vmValue(state.automationsLog), ui.lines);
+  assert.equal(state.automationsRawURL(), '/api/automations/auto-1/runs/29/log?raw=1');
+  await state.automationsStepRun(1); assert.equal(state.automationsLogRun.n, 28); await state.automationsStepRun(-1); assert.equal(state.automationsLogRun.n, 29);
+  state.automationsAllRuns(); assert.equal(state.automationsLogRun, null);
+  await state.automationsLoadHistory(true); assert.equal(state.automationsHistory.length, 29); assert.equal(new Set(state.automationsHistory.map(run => run.n)).size, 29);
+  state.automationsDispose();
+});
+
+test('automation duplicate resets identity and schedule state; delete uses the captured revision', async () => {
+  const ui = automationUI(), { state } = ui; await createAutomation(ui);
+  state.automationsNew(state.automationsRow()); assert.equal(state.automationsDraft.name, 'Morning review (copy)'); assert.equal(state.automationsDraft.enabled, false); assert.equal(state.automationsDraft.id, undefined);
+  await ui.preview(); await state.automationsSaveDraft(); assert.equal(ui.definitions.size, 2); assert.equal(state.automationsSelected, 'auto-2');
+  state.automationsOpenDelete(); assert.equal(state.automationsDeleteOpen, true); state.automationsCloseDelete(); assert.equal(ui.definitions.size, 2);
+  state.automationsOpenDelete(); await state.automationsDelete(); assert.equal(ui.definitions.size, 1); assert.equal(state.automationsDetail, false); assert.equal(state.routeHash(), '#/automations');
+  assert.deepEqual(ui.requests.find(r => r.method === 'DELETE').body, { revision: 1 }); assert.match(state.automationsToast, /logs kept/); state.automationsDispose();
+});
+
+for (const action of ['select', 'new', 'back', 'navigate', 'hash']) {
+  test('dirty automation drafts guard ' + action, async () => {
+    const ui = automationUI(), { state } = ui; await editAutomation(ui); ui.behavior.confirm = false;
+    state.automationsDraft.prompt = 'Unsaved instructions';
+    if (action === 'select') await state.automationsSelect(state.automationsRow());
+    if (action === 'new') state.automationsNew();
+    if (action === 'back') await state.automationsBack();
+    if (action === 'navigate') await state.gotoView('board');
+    if (action === 'hash') await state.navigateDestination(state.parseHash('#/automations/new'));
+    assert.equal(state.currentView, 'automations'); assert.equal(state.automationsSelected, 'auto-1'); assert.equal(state.automationsEditing, true); assert.equal(state.automationsDraft.prompt, 'Unsaved instructions');
+    let prevented = false; ui.listeners.get('beforeunload')({ preventDefault() { prevented = true; } }); assert.equal(prevented, true);
+    ui.behavior.confirm = true; await state.automationsBack(); assert.equal(state.automationsEditing, false); assert.equal(state.automationsDetail, true); state.automationsDispose();
+  });
+}
 
 function archiveRouteUI(hash = '#/archive/t/kon-history', hook) {
   const requests = [];

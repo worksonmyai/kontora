@@ -2,538 +2,540 @@ package daemon
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/worksonmyai/kontora/internal/automation"
-	"github.com/worksonmyai/kontora/internal/cli"
 	"github.com/worksonmyai/kontora/internal/config"
-	"github.com/worksonmyai/kontora/internal/ticket"
-	"github.com/worksonmyai/kontora/internal/web"
+	"github.com/worksonmyai/kontora/internal/process"
+	"gopkg.in/yaml.v3"
 )
 
 func automationFixture(t *testing.T) (*testHarness, *Daemon, automation.Definition, time.Time) {
 	t.Helper()
 	h := newHarness(t)
+	for _, key := range []string{"KONTORA_TICKETS_DIR", "TICKETS_DIR"} {
+		t.Setenv(key, "")
+	}
 	h.cfg.AutoPickUp = new(false)
-	h.cfg.DefaultPipeline = "one-stage"
-	d := h.newDaemon(h.cfg)
-	stop := d.startAutomations(h.tasksDir)
-	t.Cleanup(stop)
-	now := time.Date(2026, 8, 10, 9, 1, 0, 0, time.UTC)
-	def, err := d.automationStore.Create("fixture", automation.Definition{Name: "Recurring task", Path: h.repoDir, Agent: "agent1", Instructions: "Do the task", Schedule: automation.Schedule{Frequency: "daily", Time: "09:00", Timezone: "UTC"}, SkipOverlap: true}, now.Add(-2*time.Minute))
+	h.cfg.TmuxSession = fmt.Sprintf("auto-test-%x", sha256.Sum256([]byte(t.Name())))[:50]
+	h.cfg.Web.Enabled = new(false)
+	h.cfg.Automations = map[string]automation.Spec{"daily-report": {
+		Name: "Daily report", Prompt: "Inspect the repository.", Path: h.repoDir, Agent: "agent1", Schedule: "1m", Enabled: true,
+	}}
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	b, err := yaml.Marshal(h.cfg)
 	require.NoError(t, err)
-	def.Enabled = true
-	def, err = d.automationStore.Update(def, now.Add(-2*time.Minute))
+	require.NoError(t, os.WriteFile(path, append([]byte("# operator configuration\n"), b...), 0o640))
+	cfg, err := config.Load(path)
 	require.NoError(t, err)
-	return h, d, def, now
+	h.cfg = cfg
+	d := h.newDaemon(cfg, WithConfigPath(path))
+	closeStore := d.startAutomations(h.tasksDir)
+	t.Cleanup(closeStore)
+	require.NoError(t, d.automationErr)
+	require.NoError(t, d.automationStore.Reconcile(cfg.Automations, time.Now()))
+	rows, err := d.ListAutomations()
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	return h, d, rows[0], time.Now().UTC().Truncate(time.Second)
 }
 
-func fixtureOccurrence(t *testing.T, d *Daemon, def automation.Definition, phase string) automation.Occurrence {
+func automationClose(t *testing.T, d *Daemon) {
 	t.Helper()
-	id, err := cli.GenerateID(d.config(), def.Path)
-	require.NoError(t, err)
-	o, err := d.automationStore.SaveOccurrence(automation.Occurrence{ID: automationOccurrenceID(def, def.Next), AutomationID: def.ID, ScheduleRevision: def.ScheduleRevision, ScheduledFor: def.Next, TicketID: id, Payload: def, Phase: phase, Count: 1})
-	require.NoError(t, err)
-	return o
+	d.automationMu.Lock()
+	defer d.automationMu.Unlock()
+	for _, execution := range d.automationExecutions {
+		execution.cancel()
+	}
+	if d.automationStore != nil {
+		require.NoError(t, d.automationStore.Close())
+		d.automationStore = nil
+	}
+	if d.automationLogLock != nil {
+		require.NoError(t, d.automationLogLock.Close())
+		d.automationLogLock = nil
+	}
 }
 
-func publishFixtureOccurrence(t *testing.T, d *Daemon, o automation.Occurrence, status string) string {
+func automationAssertNoTickets(t *testing.T, h *testHarness) {
 	t.Helper()
-	_, err := cli.New(d.config(), cli.NewOpts{ID: o.TicketID, Title: o.Payload.Name, Path: o.Payload.Path, Agent: o.Payload.Agent, Pipeline: config.NoneSentinel, Body: o.Payload.Instructions, Status: "open", NoEdit: true, AutomationID: o.AutomationID, OccurrenceID: o.ID, ScheduledFor: o.ScheduledFor.Format(time.RFC3339)})
-	require.NoError(t, err)
-	path := d.automationTicketPath(o)
-	tk, err := ticket.ParseFile(path)
-	require.NoError(t, err)
-	require.NoError(t, tk.SetField("status", status))
-	data, err := tk.Marshal()
-	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(path, data, 0o644))
-	return path
-}
-
-func TestAutomationPublicationRecovery(t *testing.T) {
-	for _, tc := range []struct {
-		name, phase, published, want string
-		remove                       bool
-		conflict                     bool
-		paused                       bool
-		rollback                     bool
-	}{
-		{name: "reserved publishes", phase: "reserved", want: "admitted"},
-		{name: "publishing adopts todo", phase: "publishing", published: "todo", want: "admitted"},
-		{name: "publishing does not reopen paused", phase: "publishing", published: "paused", want: "admitted"},
-		{name: "publishing does not reopen archived", phase: "publishing", published: "archived", want: "admitted"},
-		{name: "publishing does not reopen done", phase: "publishing", published: "done", want: "admitted"},
-		{name: "reserved waits after clock rollback", phase: "reserved", rollback: true, want: "reserved"},
-		{name: "publishing missing is ambiguous", phase: "publishing", want: "blocked"},
-		{name: "publication then deletion is ambiguous", phase: "publishing", published: "todo", remove: true, want: "blocked"},
-		{name: "different provenance blocks", phase: "publishing", published: "todo", conflict: true, want: "blocked"},
-		{name: "paused reserved skips", phase: "reserved", paused: true, want: "skipped"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			_, d, def, now := automationFixture(t)
-			o := fixtureOccurrence(t, d, def, tc.phase)
-			var before []byte
-			if tc.published != "" {
-				path := publishFixtureOccurrence(t, d, o, tc.published)
-				if tc.conflict {
-					tk, err := ticket.ParseFile(path)
-					require.NoError(t, err)
-					require.NoError(t, tk.DeleteField("occurrence_id"))
-					data, err := tk.Marshal()
-					require.NoError(t, err)
-					require.NoError(t, os.WriteFile(path, data, 0o644))
-				}
-				before, _ = os.ReadFile(path)
-				if tc.remove {
-					require.NoError(t, os.Remove(path))
-				}
-			}
-			if tc.rollback {
-				now = now.Add(-2 * time.Minute)
-			}
-			if tc.paused {
-				def.Enabled = false
-				var err error
-				def, err = d.automationStore.Update(def, now)
-				require.NoError(t, err)
-			}
-			require.NoError(t, d.reconcileAutomationsLocked(now))
-			records, err := d.automationStore.Occurrences(def.ID)
-			require.NoError(t, err)
-			require.Len(t, records, 1)
-			require.Equal(t, tc.want, records[0].Phase)
-			if tc.want == "blocked" {
-				require.Equal(t, time.Minute, d.automationWaitLocked(now))
-			}
-			if before != nil && !tc.remove {
-				after, err := os.ReadFile(d.automationTicketPath(o))
-				require.NoError(t, err)
-				require.Equal(t, before, after)
-			}
-			require.NoError(t, d.reconcileAutomationsLocked(now))
-			again, err := d.automationStore.Occurrences(def.ID)
-			require.NoError(t, err)
-			require.Equal(t, records, again)
-		})
-	}
-}
-
-func TestAutomationDueDisposition(t *testing.T) {
-	for _, tc := range []struct {
-		name          string
-		advance       time.Duration
-		overlapStatus string
-		invalid       string
-		reserved      bool
-		recover       bool
-		permit        bool
-		want          string
-		count         int64
-	}{
-		{name: "due publishes standalone", want: "admitted", count: 1},
-		{name: "late skips", advance: 5 * time.Minute, want: "skipped", count: 1},
-		{name: "removed agent fails admission", invalid: "agent", want: "failed", count: 1},
-		{name: "removed repository fails admission", invalid: "repository", want: "failed", count: 1},
-		{name: "outage compresses missed range", advance: 7 * 24 * time.Hour, want: "admitted", count: 7},
-		{name: "paused ticket blocks", overlapStatus: "paused", want: "skipped", count: 1},
-		{name: "human review blocks", overlapStatus: "human_review", want: "skipped", count: 1},
-		{name: "completed does not block", overlapStatus: "done", want: "admitted", count: 1},
-		{name: "recovered completed publication does not block", overlapStatus: "done", recover: true, want: "admitted", count: 1},
-		{name: "recovered paused publication blocks", overlapStatus: "paused", recover: true, want: "skipped", count: 1},
-		{name: "recovered reserved completion blocks", overlapStatus: "done", recover: true, reserved: true, want: "skipped", count: 1},
-		{name: "reserved completed blocks", overlapStatus: "done", reserved: true, want: "skipped", count: 1},
-		{name: "overlap can be permitted", overlapStatus: "paused", permit: true, want: "admitted", count: 1},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			_, d, def, now := automationFixture(t)
-			if tc.permit {
-				def.SkipOverlap = false
-				var err error
-				def, err = d.automationStore.Update(def, now)
-				require.NoError(t, err)
-			}
-			if tc.invalid == "agent" {
-				delete(d.config().Agents, "agent1")
-			} else if tc.invalid == "repository" {
-				require.NoError(t, os.RemoveAll(def.Path))
-			}
-			if tc.overlapStatus != "" {
-				o := fixtureOccurrence(t, d, def, "publishing")
-				path := publishFixtureOccurrence(t, d, o, "todo")
-				tk, err := ticket.ParseFile(path)
-				require.NoError(t, err)
-				require.NoError(t, tk.SetField("status", tc.overlapStatus))
-				data, err := tk.Marshal()
-				require.NoError(t, err)
-				require.NoError(t, os.WriteFile(path, data, 0o644))
-				if !tc.recover {
-					o.Phase = "admitted"
-					_, err = d.automationStore.SaveOccurrence(o)
-					require.NoError(t, err)
-				}
-				if tc.reserved {
-					d.running[o.TicketID] = func() {}
-				}
-				if !tc.recover {
-					next, err := def.Schedule.Next(def.Next)
-					require.NoError(t, err)
-					require.NoError(t, d.automationStore.SetNext(def.ID, next))
-					def.Next = next
-				}
-				now = now.AddDate(0, 0, 1)
-			}
-			require.NoError(t, d.reconcileAutomationsLocked(now.Add(tc.advance)))
-			records, err := d.automationStore.Occurrences(def.ID)
-			require.NoError(t, err)
-			last := records[len(records)-1]
-			require.Equal(t, tc.want, last.Phase)
-			if tc.recover {
-				require.Len(t, records, 2)
-				require.Equal(t, "admitted", records[0].Phase)
-			}
-			if tc.advance > 24*time.Hour {
-				require.Equal(t, tc.count, records[0].Count)
-				require.False(t, records[0].Through.IsZero())
-			}
-			if tc.want == "admitted" {
-				tk, err := ticket.ParseFile(d.automationTicketPath(last))
-				require.NoError(t, err)
-				require.Equal(t, "", tk.Pipeline)
-				require.Equal(t, "agent1", tk.Agent)
-				require.True(t, d.queued[tk.ID])
-				require.Empty(t, d.running[tk.ID])
-			}
-			saved, err := d.automationStore.Get(def.ID)
-			require.NoError(t, err)
-			require.True(t, saved.Next.After(now.Add(tc.advance)))
-		})
-	}
-}
-
-func TestAutomationGenerateIDFailureIsLocal(t *testing.T) {
-	h, d, _, now := automationFixture(t)
-	input := automation.Definition{Name: "Healthy task", Path: h.repoDir, Agent: "agent1", Instructions: "Do the task", Schedule: automation.Schedule{Frequency: "daily", Time: "09:00", Timezone: "UTC"}, SkipOverlap: true}
-	other, err := d.automationStore.Create("other", input, now.Add(-2*time.Minute))
-	require.NoError(t, err)
-	other.Enabled = true
-	_, err = d.automationStore.Update(other, now.Add(-2*time.Minute))
-	require.NoError(t, err)
-	defs, err := d.automationStore.List()
-	require.NoError(t, err)
-	require.Len(t, defs, 2)
-	bad, good := defs[0], defs[1]
-	bad.Path = filepath.Join(h.repoDir, "项目")
-	require.NoError(t, os.Mkdir(bad.Path, 0o700))
-	bad, err = d.automationStore.Update(bad, now.Add(-2*time.Minute))
-	require.NoError(t, err)
-	require.NoError(t, d.validateAutomation(bad))
-	_, idErr := cli.GenerateID(d.config(), bad.Path)
-	require.ErrorContains(t, idErr, "cannot derive prefix")
-
-	require.NoError(t, d.reconcileAutomationsLocked(now))
-	failed, err := d.AutomationOccurrences(bad.ID)
-	require.NoError(t, err)
-	require.Len(t, failed, 1)
-	require.Equal(t, "failed", failed[0].Phase)
-	require.Contains(t, failed[0].Reason, idErr.Error())
-	require.Empty(t, failed[0].TicketID)
-	admitted, err := d.AutomationOccurrences(good.ID)
-	require.NoError(t, err)
-	require.Len(t, admitted, 1)
-	require.Equal(t, "admitted", admitted[0].Phase)
-	require.True(t, d.queued[admitted[0].TicketID])
-	for _, def := range []automation.Definition{bad, good} {
-		saved, err := d.GetAutomation(def.ID)
-		require.NoError(t, err)
-		require.Equal(t, def.Next.AddDate(0, 0, 1), saved.Next)
-	}
-
-	require.NoError(t, d.reconcileAutomationsLocked(now.Add(automationLateness)))
-	again, err := d.AutomationOccurrences(bad.ID)
-	require.NoError(t, err)
-	require.Equal(t, failed, again)
-	again, err = d.AutomationOccurrences(good.ID)
-	require.NoError(t, err)
-	require.Equal(t, admitted, again)
 	files, err := filepath.Glob(filepath.Join(h.tasksDir, "*.md"))
 	require.NoError(t, err)
-	require.Equal(t, []string{d.automationTicketPath(admitted[0])}, files)
+	assert.Empty(t, files)
 }
 
-func TestAutomationReservedCursorRecovery(t *testing.T) {
+// Run one dispatch job without a tmux server or the daemon's background scheduler.
+func automationTakeJob(t *testing.T, d *Daemon) *automationDispatchJob {
+	t.Helper()
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	require.NotEmpty(t, d.automationJobs)
+	job := d.automationJobs[0]
+	d.automationJobs = d.automationJobs[1:]
+	return job
+}
+
+func TestAutomationOverlap(t *testing.T) {
+	for _, trigger := range []string{"manual", "schedule"} {
+		for _, overlap := range []string{"skip", "queue", "replace"} {
+			t.Run(trigger+"/"+overlap, func(t *testing.T) {
+				h, d, def, now := automationFixture(t)
+				spec := def.Spec
+				spec.Overlap = overlap
+				def, err := d.UpdateAutomation(def.ID, def.Revision, spec)
+				require.NoError(t, err)
+				first, err := d.RunAutomation(def.ID, "first")
+				require.NoError(t, err)
+				var second automation.Run
+				if trigger == "manual" {
+					second, err = d.RunAutomation(def.ID, "second")
+				} else {
+					now = def.Next
+					require.NoError(t, d.automationTick(now))
+					runs, e := d.AutomationRuns(def.ID)
+					require.NoError(t, e)
+					require.Len(t, runs, 2)
+					second = runs[0]
+				}
+				require.NoError(t, err)
+				assert.Equal(t, trigger, second.Trigger)
+				assert.Equal(t, uint64(2), second.N)
+				assert.Equal(t, spec, second.Spec)
+				saved, err := d.GetAutomation(def.ID)
+				require.NoError(t, err)
+				assert.Equal(t, def.Revision, saved.Revision, "cursor and admission must not change the editable revision")
+				if trigger == "schedule" {
+					assert.Equal(t, now, second.ScheduledFor)
+					assert.True(t, saved.Next.After(now))
+					require.NoError(t, d.automationTick(now))
+					runs, e := d.AutomationRuns(def.ID)
+					require.NoError(t, e)
+					require.Len(t, runs, 2)
+				}
+				first, err = d.automationStore.GetRun(def.ID, first.N)
+				require.NoError(t, err)
+				switch overlap {
+				case "skip":
+					assert.Equal(t, "terminal", second.Phase)
+					assert.Equal(t, "skipped", second.Outcome)
+					assert.Equal(t, "queued", first.Phase)
+				case "queue":
+					assert.Equal(t, "queued", second.Phase)
+					assert.Equal(t, "queued", first.Phase)
+				case "replace":
+					assert.Equal(t, "queued", second.Phase)
+					assert.Equal(t, "stopping", first.Phase)
+					assert.Contains(t, first.StopReason, "replaced")
+				}
+				automationAssertNoTickets(t, h)
+			})
+		}
+	}
+}
+
+func TestAutomationOverlapQueueBounds(t *testing.T) {
+	for _, overlap := range []string{"queue", "replace"} {
+		t.Run(overlap, func(t *testing.T) {
+			_, d, def, now := automationFixture(t)
+			spec := def.Spec
+			spec.Overlap = overlap
+			def, err := d.UpdateAutomation(def.ID, def.Revision, spec)
+			require.NoError(t, err)
+			first, err := d.RunAutomation(def.ID, "first")
+			require.NoError(t, err)
+			second, err := d.RunAutomation(def.ID, "second")
+			require.NoError(t, err)
+			third, err := d.RunAutomation(def.ID, "third")
+			require.NoError(t, err)
+			runs, err := d.AutomationRuns(def.ID)
+			require.NoError(t, err)
+			require.Len(t, runs, 3)
+			if overlap == "queue" {
+				assert.Equal(t, "terminal", third.Phase)
+				assert.Equal(t, "skipped", third.Outcome)
+				assert.Contains(t, third.Result, "queue is full")
+			} else {
+				second, err = d.automationStore.GetRun(def.ID, second.N)
+				require.NoError(t, err)
+				assert.Equal(t, "terminal", second.Phase)
+				assert.Equal(t, "skipped", second.Outcome)
+				assert.Contains(t, second.Result, "superseded")
+				second = third
+			}
+			// The pending run cannot start until cancellation of the first run is confirmed.
+			require.NoError(t, d.automationTick(now))
+			assert.Len(t, d.automationJobs, 1)
+			_, err = d.StopAutomation(def.ID, first.N)
+			require.NoError(t, err)
+			assert.True(t, automationTakeJob(t, d).run(context.Background()))
+			first, err = d.automationStore.GetRun(def.ID, first.N)
+			require.NoError(t, err)
+			assert.Equal(t, "terminal", first.Phase)
+			require.NoError(t, d.automationTick(now))
+			require.Len(t, d.automationJobs, 1)
+			assert.Equal(t, second.N, d.automationExecutions[def.ID].run.N)
+		})
+	}
+}
+
+func TestAutomationManualReceiptsAndFrozenSpec(t *testing.T) {
+	h, d, def, _ := automationFixture(t)
+	first, err := d.RunAutomation(def.ID, "same-request")
+	require.NoError(t, err)
+	replay, err := d.RunAutomation(def.ID, "same-request")
+	require.NoError(t, err)
+	assert.Equal(t, first, replay)
+	assert.Len(t, d.automationJobs, 1)
+	spec := def.Spec
+	spec.Prompt = "New instructions"
+	spec.Enabled = false
+	def, err = d.UpdateAutomation(def.ID, def.Revision, spec)
+	require.NoError(t, err)
+	replay, err = d.RunAutomation(def.ID, "same-request")
+	require.NoError(t, err)
+	assert.Equal(t, first, replay)
+	assert.NotEqual(t, spec, replay.Spec)
+	next, err := d.RunAutomation(def.ID, "different-request")
+	require.NoError(t, err)
+	assert.Equal(t, uint64(2), next.N)
+	assert.Equal(t, spec, next.Spec)
+	_, err = d.StopAutomation(def.ID, first.N)
+	require.NoError(t, err)
+	assert.True(t, automationTakeJob(t, d).run(context.Background()))
+	automationClose(t, d)
+	closeStore := d.startAutomations(h.tasksDir)
+	defer closeStore()
+	replay, err = d.RunAutomation(def.ID, "same-request")
+	require.NoError(t, err)
+	assert.Equal(t, first.N, replay.N)
+	assert.Equal(t, first.InvocationID, replay.InvocationID)
+	assert.Equal(t, "terminal", replay.Phase)
+	runs, err := d.AutomationRuns(def.ID)
+	require.NoError(t, err)
+	assert.Len(t, runs, 2)
+	automationAssertNoTickets(t, h)
+}
+
+func TestAutomationScheduleDisposition(t *testing.T) {
 	for _, tc := range []struct {
-		name            string
-		toggle          bool
-		reconcilePaused bool
-		edit            bool
-		want            string
+		name           string
+		enabled        bool
+		age            time.Duration
+		phase, outcome string
+		count          int
 	}{
-		{name: "unchanged reservation publishes", want: "admitted"},
-		{name: "instruction edit preserves frozen reservation", edit: true, want: "admitted"},
-		{name: "re-enable before paused reconciliation skips old reservation", toggle: true, want: "skipped"},
-		{name: "paused reconciliation skips old reservation", toggle: true, reconcilePaused: true, want: "skipped"},
+		{"due", true, 0, "queued", "", 1},
+		{"recent slot", true, 30 * time.Second, "queued", "", 1},
+		{"missed slot", true, 10 * time.Minute, "terminal", "skipped", 1},
+		{"paused", false, 0, "", "", 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h, d, def, _ := automationFixture(t)
-			o := fixtureOccurrence(t, d, def, "reserved")
-			require.NoError(t, d.automationStore.Close())
-			var err error
-			d.automationStore, err = automation.Open(d.automationRoot, h.tasksDir)
-			require.NoError(t, err)
-			rollback := o.ScheduledFor.Add(-time.Minute)
-			require.NoError(t, d.reconcileAutomationsLocked(rollback))
-			records, err := d.AutomationOccurrences(def.ID)
-			require.NoError(t, err)
-			require.Equal(t, []automation.Occurrence{o}, records)
-
-			if tc.toggle {
-				def.Enabled = false
-				def, err = d.automationStore.Update(def, rollback)
-				require.NoError(t, err)
-				if tc.reconcilePaused {
-					require.NoError(t, d.reconcileAutomationsLocked(rollback))
-				}
-				def.Enabled = true
-			}
-			if tc.toggle || tc.edit {
-				def.Instructions = "New instructions for future occurrences"
-				def, err = d.automationStore.Update(def, rollback)
+			if !tc.enabled {
+				spec := def.Spec
+				spec.Enabled = false
+				var err error
+				def, err = d.UpdateAutomation(def.ID, def.Revision, spec)
 				require.NoError(t, err)
 			}
-			require.Equal(t, o.ScheduleRevision, def.ScheduleRevision)
-			if tc.toggle {
-				require.Equal(t, o.ScheduledFor.AddDate(0, 0, 1), def.Next)
-			} else {
-				require.Equal(t, o.ScheduledFor, def.Next)
-			}
-			require.NoError(t, d.reconcileAutomationsLocked(rollback))
-			records, err = d.AutomationOccurrences(def.ID)
+			slot := def.Next
+			now := slot.Add(tc.age)
+			require.NoError(t, d.automationTick(now))
+			require.NoError(t, d.automationTick(now))
+			runs, err := d.AutomationRuns(def.ID)
 			require.NoError(t, err)
-			require.Len(t, records, 1)
-			if tc.toggle {
-				require.Equal(t, "skipped", records[0].Phase)
-			} else {
-				require.Equal(t, "reserved", records[0].Phase)
-			}
-
-			now := o.ScheduledFor.Add(time.Minute)
-			require.NoError(t, d.reconcileAutomationsLocked(now))
-			records, err = d.AutomationOccurrences(def.ID)
-			require.NoError(t, err)
-			require.Len(t, records, 1)
-			require.Equal(t, tc.want, records[0].Phase)
-			require.Equal(t, o.Payload, records[0].Payload)
-			require.Equal(t, tc.want == "admitted", d.queued[o.TicketID])
-			if tc.want == "admitted" {
-				tk, err := ticket.ParseFile(d.automationTicketPath(o))
-				require.NoError(t, err)
-				require.True(t, automationMatches(tk, o))
-				require.Contains(t, tk.Body, o.Payload.Instructions)
-			} else {
-				_, err := os.Stat(d.automationTicketPath(o))
-				require.ErrorIs(t, err, os.ErrNotExist)
-			}
+			require.Len(t, runs, tc.count)
 			saved, err := d.GetAutomation(def.ID)
 			require.NoError(t, err)
-			require.Equal(t, o.ScheduledFor.AddDate(0, 0, 1), saved.Next)
-			require.NoError(t, d.reconcileAutomationsLocked(now))
-			again, err := d.AutomationOccurrences(def.ID)
-			require.NoError(t, err)
-			require.Equal(t, records, again)
+			assert.Equal(t, def.Revision, saved.Revision)
+			if tc.count > 0 {
+				assert.Equal(t, tc.phase, runs[0].Phase)
+				assert.Equal(t, tc.outcome, runs[0].Outcome)
+				assert.Equal(t, slot, runs[0].ScheduledFor)
+				assert.Equal(t, slot.Add(tc.age.Truncate(time.Minute)+time.Minute), saved.Next)
+			}
+			automationAssertNoTickets(t, h)
 		})
 	}
 }
 
-func TestAutomationReceiptDeletionAndAcknowledgement(t *testing.T) {
+func TestAutomationStopBeforeLaunch(t *testing.T) {
+	h, d, def, _ := automationFixture(t)
+	first, err := d.RunAutomation(def.ID, "run")
+	require.NoError(t, err)
+	stopped, err := d.StopAutomation(def.ID, first.N)
+	require.NoError(t, err)
+	assert.Equal(t, "stopping", stopped.Phase)
+	assert.True(t, automationTakeJob(t, d).run(context.Background()))
+	stopped, err = d.StopAutomation(def.ID, first.N)
+	require.NoError(t, err)
+	assert.Equal(t, "terminal", stopped.Phase)
+	assert.Equal(t, "skipped", stopped.Outcome)
+	_, err = d.StopAutomation(def.ID, 999)
+	require.ErrorIs(t, err, automation.ErrNotFound)
+	automationAssertNoTickets(t, h)
+}
+
+func TestAutomationExecution(t *testing.T) {
 	for _, tc := range []struct {
-		name                        string
-		receipt, existing, retained bool
+		name, script, outcome, reason string
+		exit                          int
 	}{
-		{name: "recorded receipt is not recreated", receipt: true},
-		{name: "ambiguous publication needs acknowledgement"},
-		{name: "acknowledged visible work still blocks overlap", existing: true},
-		{name: "acknowledgement retains execution reservation", retained: true},
+		{"complete", `printf '%s' '{"outcome":"complete","summary":"Report ready"}' > "$KONTORA_RESULT_FILE"; echo agent-output`, "complete", "Report ready", 0},
+		{"blocked", `printf '%s' '{"outcome":"blocked","summary":"Need access","next_step":"Grant access"}' > "$KONTORA_RESULT_FILE"`, "failed", "Grant access", 0},
+		{"missing result", `true`, "failed", "result protocol", 0},
+		{"invalid result", `printf '%s' '{"outcome":"complete"}' > "$KONTORA_RESULT_FILE"`, "failed", "result protocol", 0},
+		{"nonzero exit", `exit 7`, "failed", "exited with code 7", 7},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, d, def, now := automationFixture(t)
-			if tc.receipt {
-				require.NoError(t, d.reconcileAutomationsLocked(now))
-				records, err := d.automationStore.Occurrences(def.ID)
+			h, d, def, _ := automationFixture(t)
+			cfg := *d.config()
+			cfg.Agents = map[string]config.Agent{"agent1": {Binary: "/bin/sh", Args: []string{"-c", tc.script}}}
+			d.cfg.Store(&cfg)
+			run, err := d.RunAutomation(def.ID, "run")
+			require.NoError(t, err)
+			assert.True(t, automationTakeJob(t, d).run(context.Background()))
+			run, err = d.automationStore.GetRun(def.ID, run.N)
+			require.NoError(t, err)
+			assert.Equal(t, "terminal", run.Phase)
+			assert.Equal(t, tc.outcome, run.Outcome)
+			assert.Contains(t, run.Result, tc.reason)
+			require.NotNil(t, run.ExitCode)
+			assert.Equal(t, tc.exit, *run.ExitCode)
+			require.NotNil(t, run.ObservedExitCode)
+			assert.Equal(t, tc.exit, *run.ObservedExitCode)
+			assert.Nil(t, run.Cost, "missing usage must not appear as zero spend")
+			assert.False(t, run.StartedAt.IsZero())
+			assert.False(t, run.CompletedAt.IsZero())
+			assert.NotEmpty(t, run.BaseCommit)
+			assert.Equal(t, fmt.Sprintf("auto/%s-%d", def.Key, run.N), run.Branch)
+			lines, raw, err := d.AutomationLog(def.ID, run.N)
+			require.NoError(t, err)
+			assert.NotEmpty(t, lines)
+			assert.Contains(t, raw, tc.reason)
+			if tc.name == "complete" {
+				assert.Contains(t, raw, "agent-output")
+			}
+			require.NotEmpty(t, run.LogPath)
+			_, err = os.Stat(run.LogPath)
+			require.NoError(t, err)
+			automationAssertNoTickets(t, h)
+		})
+	}
+}
+
+func TestAutomationExecutionCancellation(t *testing.T) {
+	for _, reason := range []string{"stop", "timeout"} {
+		t.Run(reason, func(t *testing.T) {
+			h, d, def, _ := automationFixture(t)
+			if reason == "timeout" {
+				spec := def.Spec
+				spec.Timeout = "1s"
+				spec.Workspace = "repo"
+				var err error
+				def, err = d.UpdateAutomation(def.ID, def.Revision, spec)
 				require.NoError(t, err)
-				require.NoError(t, os.Remove(d.automationTicketPath(records[0])))
-				require.NoError(t, d.reconcileAutomationsLocked(now))
-				_, err = os.Stat(d.automationTicketPath(records[0]))
-				require.ErrorIs(t, err, os.ErrNotExist)
+			}
+			ready := make(chan RunnerParams, 1)
+			d.runner = func(ctx context.Context, p RunnerParams) (process.Result, error) {
+				if p.OnReady != nil {
+					p.OnReady()
+				}
+				ready <- p
+				<-ctx.Done()
+				return process.Result{ExitCode: 143, Termination: process.TerminationProcessGroupGone}, ctx.Err()
+			}
+			run, err := d.RunAutomation(def.ID, "run")
+			require.NoError(t, err)
+			done := make(chan bool, 1)
+			job := automationTakeJob(t, d)
+			go func() { done <- job.run(context.Background()) }()
+			var p RunnerParams
+			select {
+			case p = <-ready:
+			case <-time.After(5 * time.Second):
+				t.Fatal("runner did not start")
+			}
+			assert.True(t, p.RequireTermination)
+			assert.True(t, p.StableWindowIdentity)
+			if reason == "stop" {
+				stopped, e := d.StopAutomation(def.ID, run.N)
+				require.NoError(t, e)
+				assert.Equal(t, "stopping", stopped.Phase)
+			}
+			select {
+			case stopped := <-done:
+				assert.True(t, stopped)
+			case <-time.After(5 * time.Second):
+				t.Fatal("automation did not cancel")
+			}
+			run, err = d.automationStore.GetRun(def.ID, run.N)
+			require.NoError(t, err)
+			assert.Equal(t, "terminal", run.Phase)
+			assert.Equal(t, "failed", run.Outcome)
+			if reason == "stop" {
+				assert.Contains(t, run.Result, "stopped by user")
 			} else {
-				o := fixtureOccurrence(t, d, def, "publishing")
-				if tc.existing {
-					publishFixtureOccurrence(t, d, o, "todo")
-					o.Phase, o.Reason = "blocked", "durability uncertain"
-					_, err := d.automationStore.SaveOccurrence(o)
-					require.NoError(t, err)
-				} else {
-					require.NoError(t, d.reconcileAutomationsLocked(now))
-				}
-				if tc.retained {
-					d.running[o.TicketID] = func() {}
-				}
-				records, err := d.AutomationOccurrences(def.ID)
-				require.NoError(t, err)
-				o = records[0]
-				_, err = d.SkipAutomationOccurrence(def.ID, o.ID, o.Revision-1)
-				require.ErrorIs(t, err, automation.ErrConflict)
-				saved, err := d.SkipAutomationOccurrence(def.ID, o.ID, o.Revision)
-				require.NoError(t, err)
-				require.Equal(t, "skipped", saved.Phase)
-				if tc.existing {
-					tk, err := ticket.ParseFile(d.automationTicketPath(o))
-					require.NoError(t, err)
-					require.Equal(t, ticket.StatusTodo, tk.Status)
-				} else {
-					_, err = os.Stat(d.automationTicketPath(o))
-					require.ErrorIs(t, err, os.ErrNotExist)
-				}
-				records, err = d.AutomationOccurrences(def.ID)
-				require.NoError(t, err)
-				require.Equal(t, tc.existing || tc.retained, d.automationOverlap(records))
-				if tc.retained {
-					require.NotNil(t, d.running[o.TicketID])
-				}
-				def, err = d.automationStore.Get(def.ID)
-				require.NoError(t, err)
-				require.True(t, def.Next.After(time.Now()))
+				assert.Contains(t, run.Result, "timeout after 1s")
 			}
+			automationAssertNoTickets(t, h)
 		})
 	}
 }
 
-func TestAutomationReadmission(t *testing.T) {
-	for _, tc := range []struct {
-		name, status            string
-		dependency, reservation bool
-		want                    bool
-	}{
-		{name: "explicit admission without auto pickup", status: "todo", want: true},
-		{name: "dependency later releases", status: "todo", dependency: true, want: true},
-		{name: "reservation later releases", status: "todo", reservation: true, want: true},
-		{name: "paused never reopens", status: "paused"},
-		{name: "review never reopens", status: "human_review"},
-		{name: "done never reopens", status: "done"},
-		{name: "archived never reopens", status: "archived"},
-	} {
+func TestAutomationPromptContext(t *testing.T) {
+	h, d, def, _ := automationFixture(t)
+	require.NoError(t, os.WriteFile(filepath.Join(h.repoDir, "context.txt"), []byte("repository context"), 0o600))
+	previous, _, err := d.automationStore.Allocate(def.ID, "manual", "previous", time.Time{}, time.Time{}, time.Now().Add(-2*time.Minute))
+	require.NoError(t, err)
+	_, err = d.automationStore.UpdateRun(def.ID, previous.N, func(r *automation.Run) error {
+		r.StartedAt = time.Now().Add(-time.Minute)
+		r.CompletedAt = time.Now()
+		r.Phase = "terminal"
+		r.Outcome = "complete"
+		r.Result = "Previous report"
+		return nil
+	})
+	require.NoError(t, err)
+	skipped, _, err := d.automationStore.Allocate(def.ID, "manual", "skipped", time.Time{}, time.Time{}, time.Now())
+	require.NoError(t, err)
+	_, err = d.skipAutomationLocked(skipped, "overlap")
+	require.NoError(t, err)
+	spec := def.Spec
+	spec.Prompt = `{{ .Automation.Key }}|{{ .Run.Number }}|{{ .Run.Trigger }}|{{ .Run.Branch }}|{{ .LastRun.Result }}|{{ file "context.txt" }}`
+	spec.Workspace = "repo"
+	def, err = d.UpdateAutomation(def.ID, def.Revision, spec)
+	require.NoError(t, err)
+	captured := make(chan RunnerParams, 1)
+	d.runner = func(_ context.Context, p RunnerParams) (process.Result, error) {
+		captured <- p
+		return process.Result{ExitCode: 0, Termination: process.TerminationProcessGroupGone}, nil
+	}
+	run, err := d.RunAutomation(def.ID, "current")
+	require.NoError(t, err)
+	assert.True(t, automationTakeJob(t, d).run(context.Background()))
+	p := <-captured
+	require.NotEmpty(t, p.Args)
+	saved, err := d.automationStore.GetRun(def.ID, run.N)
+	require.NoError(t, err)
+	assert.Contains(t, p.Args[len(p.Args)-1], fmt.Sprintf("daily-report|3|manual|%s|Previous report|repository context", saved.Branch))
+	assert.Contains(t, p.Args[len(p.Args)-1], "kontora result --input-file")
+	assert.Contains(t, p.Args[len(p.Args)-1], def.ID)
+	repo, err := filepath.EvalSymlinks(h.repoDir)
+	require.NoError(t, err)
+	assert.Equal(t, repo, p.Dir)
+	assert.Equal(t, def.ID, p.Env["KONTORA_AUTOMATION_ID"])
+	assert.Equal(t, "3", p.Env["KONTORA_RUN_NUMBER"])
+	assert.Equal(t, def.ID, p.Env["KONTORA_RESULT_AUTOMATION"])
+	assert.Equal(t, "3", p.Env["KONTORA_RESULT_RUN_NUMBER"])
+	assert.Empty(t, p.Env["KONTORA_TICKET_ID"])
+	assert.Empty(t, p.Env["KONTORA_RESULT_TICKET"])
+	assert.Empty(t, p.Env["KONTORA_RESULT_STAGE"])
+	assert.Equal(t, run.InvocationID, p.Env["KONTORA_INVOCATION_ID"])
+	automationAssertNoTickets(t, h)
+}
+
+func TestAutomationPromptRenderFailure(t *testing.T) {
+	for _, tc := range []struct{ name, template string }{{"ticket", `{{ .Ticket.ID }}`}, {"file", `{{ file "missing.txt" }}`}} {
 		t.Run(tc.name, func(t *testing.T) {
-			h, d, def, now := automationFixture(t)
-			o := fixtureOccurrence(t, d, def, "publishing")
-			path := publishFixtureOccurrence(t, d, o, "todo")
-			tk, err := ticket.ParseFile(path)
+			h, d, def, _ := automationFixture(t)
+			input := def.Spec
+			input.Prompt = tc.template
+			input.Workspace = "repo"
+			def, err := d.UpdateAutomation(def.ID, def.Revision, input)
 			require.NoError(t, err)
-			require.NoError(t, tk.SetField("status", tc.status))
-			if tc.dependency {
-				require.NoError(t, tk.SetField("deps", []string{"prerequisite"}))
+			called := false
+			d.runner = func(context.Context, RunnerParams) (process.Result, error) {
+				called = true
+				return process.Result{}, nil
 			}
-			data, err := tk.Marshal()
+			run, err := d.RunAutomation(def.ID, "run")
 			require.NoError(t, err)
-			require.NoError(t, os.WriteFile(path, data, 0o644))
-			if tc.reservation {
-				d.executions[o.TicketID] = &executionClaim{}
-			}
-			require.NoError(t, d.reconcileAutomationsLocked(now))
-			if tc.dependency || tc.reservation {
-				require.False(t, d.queued[o.TicketID])
-			}
-			if tc.dependency {
-				dep, err := ticket.ParseBytes([]byte("---\nid: prerequisite\nstatus: done\n---\n# Prerequisite\n"))
-				require.NoError(t, err)
-				d.tickets[dep.ID] = newTicketState(dep, filepath.Join(h.tasksDir, "prerequisite.md"))
-			}
-			if tc.reservation {
-				delete(d.executions, o.TicketID)
-			}
-			require.NoError(t, d.reconcileAutomationsLocked(now))
-			require.Equal(t, tc.want, d.queued[o.TicketID])
+			assert.True(t, automationTakeJob(t, d).run(context.Background()))
+			run, err = d.automationStore.GetRun(def.ID, run.N)
+			require.NoError(t, err)
+			assert.Equal(t, "terminal", run.Phase)
+			assert.Equal(t, "failed", run.Outcome)
+			assert.Contains(t, run.Result, "template")
+			assert.False(t, called, "rendering must fail before an agent starts")
+			automationAssertNoTickets(t, h)
 		})
 	}
 }
 
-func TestAutomationLifecycle(t *testing.T) {
-	h := newHarness(t)
-	h.cfg.AutoPickUp = new(false)
-	root := t.TempDir()
-	seed := h.newDaemon(h.cfg, WithAutomationRoot(root))
-	stop := seed.startAutomations(h.tasksDir)
-	now := time.Now().UTC()
-	def, err := seed.automationStore.Create("lifecycle", automation.Definition{Name: "Run agent", Path: h.repoDir, Agent: "agent1", Instructions: "Do the task", Schedule: automation.Schedule{Frequency: "daily", Time: now.Format("15:04"), Timezone: "UTC"}, SkipOverlap: true}, now.Add(-24*time.Hour))
+func TestAutomationRecoveryBlocksOverlap(t *testing.T) {
+	h, d, def, _ := automationFixture(t)
+	first, err := d.RunAutomation(def.ID, "first")
 	require.NoError(t, err)
-	def.Enabled = true
-	def, err = seed.automationStore.Update(def, now.Add(-24*time.Hour))
+	_, err = d.automationStore.UpdateRun(def.ID, first.N, func(r *automation.Run) error { r.Phase = "running"; r.StartedAt = time.Now(); return nil })
 	require.NoError(t, err)
-	o := fixtureOccurrence(t, seed, def, "publishing")
-	path := publishFixtureOccurrence(t, seed, o, "todo")
-	tk, err := ticket.ParseFile(path)
+	automationClose(t, d)
+	stop := d.startAutomations(h.tasksDir)
+	defer stop()
+	d.recoverAutomationRuns()
+	first, err = d.automationStore.GetRun(def.ID, first.N)
 	require.NoError(t, err)
-	require.NoError(t, tk.SetField("deps", []string{"prerequisite"}))
-	data, err := tk.Marshal()
+	assert.Equal(t, "recovery_required", first.Phase)
+	assert.Empty(t, first.Outcome)
+	assert.Contains(t, first.Result, "termination recovery")
+	next, err := d.RunAutomation(def.ID, "next")
 	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(path, data, 0o644))
-	stop()
-	d := h.newDaemon(h.cfg, WithAutomationRoot(root))
+	assert.Equal(t, "terminal", next.Phase)
+	assert.Equal(t, "skipped", next.Outcome)
+	_, err = d.StopAutomation(def.ID, first.N)
+	require.NoError(t, err)
+	d.background.Wait()
+	first, err = d.automationStore.GetRun(def.ID, first.N)
+	require.NoError(t, err)
+	assert.Equal(t, "recovery_required", first.Phase, "missing terminal identity cannot prove termination")
+	automationAssertNoTickets(t, h)
+}
+
+func TestAutomationDaemonLifecycle(t *testing.T) {
+	h, seed, def, _ := automationFixture(t)
+	automationClose(t, seed)
+	cfg := *h.cfg
+	cfg.Agents = map[string]config.Agent{"agent1": {Binary: "/bin/sh", Args: []string{"-c", `printf '%s' '{"outcome":"complete","summary":"Done"}' > "$KONTORA_RESULT_FILE"`}}}
+	d := h.newDaemon(&cfg, WithConfigPath(seed.configPath))
 	ctx, cancel := context.WithCancel(context.Background())
 	errCh := make(chan error, 1)
 	go func() { errCh <- d.Run(ctx) }()
-	t.Cleanup(func() { cancel(); require.NoError(t, <-errCh) })
-	require.Eventually(t, func() bool {
-		records, e := d.AutomationOccurrences(def.ID)
-		return e == nil && len(records) > 0 && records[0].Phase == "admitted"
-	}, 5*time.Second, 20*time.Millisecond)
-	require.Equal(t, ticket.StatusTodo, h.readTask(o.TicketID+".md").Status)
-	h.writeTicket("prerequisite.md", fmt.Sprintf("---\nid: prerequisite\nstatus: done\npath: %s\n---\n# Prerequisite\n", h.repoDir))
-	h.waitForStatus(o.TicketID+".md", ticket.StatusDone, 10*time.Second)
-	records, err := d.AutomationOccurrences(def.ID)
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case err := <-errCh:
+			require.NoError(t, err)
+		case <-time.After(10 * time.Second):
+			t.Error("daemon did not stop")
+		}
+	})
+	require.Eventually(t, func() bool { _, err := d.ListAutomations(); return err == nil }, 5*time.Second, 10*time.Millisecond)
+	run, err := d.RunAutomation(def.ID, "lifecycle")
 	require.NoError(t, err)
-	require.Equal(t, o.TicketID, records[0].TicketID)
-}
-
-func TestAutomationManagementReplay(t *testing.T) {
-	for _, change := range []string{"agent removed", "repository removed", "definition edited"} {
-		t.Run(change, func(t *testing.T) {
-			h, d, _, _ := automationFixture(t)
-			input := automation.Definition{Name: "Management retry", Path: h.repoDir, Agent: "agent1", Instructions: "Keep this request", Schedule: automation.Schedule{Frequency: "daily", Time: "09:00", Timezone: "UTC"}, SkipOverlap: true}
-			created, err := d.CreateAutomation("management-retry", input)
-			require.NoError(t, err)
-			switch change {
-			case "agent removed":
-				delete(h.cfg.Agents, "agent1")
-			case "repository removed":
-				require.NoError(t, os.RemoveAll(h.repoDir))
-			case "definition edited":
-				updated := created
-				updated.Instructions = "Later instructions"
-				_, err := d.UpdateAutomation(updated)
-				require.NoError(t, err)
-			}
-			replayed, err := d.CreateAutomation("management-retry", input)
-			require.NoError(t, err)
-			require.Equal(t, created, replayed)
-			input.Instructions = "Different request"
-			_, err = d.CreateAutomation("management-retry", input)
-			require.ErrorIs(t, err, automation.ErrConflict)
-		})
-	}
+	require.Eventually(t, func() bool {
+		runs, e := d.AutomationRuns(def.ID)
+		return e == nil && len(runs) > 0 && runs[0].N == run.N && runs[0].Phase == "terminal"
+	}, 5*time.Second, 10*time.Millisecond)
+	runs, err := d.AutomationRuns(def.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "complete", runs[0].Outcome, runs[0].Result)
+	automationAssertNoTickets(t, h)
 }
 
 func TestAutomationScopeUnavailable(t *testing.T) {
 	h, d, _, _ := automationFixture(t)
-	other := h.newDaemon(h.cfg, WithAutomationRoot(d.automationRoot))
-	stop := other.startAutomations(h.tasksDir)
-	defer stop()
+	other := h.newDaemon(h.cfg, WithConfigPath(d.configPath), WithAutomationRoot(d.automationRoot))
+	closeStore := other.startAutomations(h.tasksDir)
+	defer closeStore()
 	_, err := other.ListAutomations()
 	require.ErrorIs(t, err, automation.ErrUnavailable)
-	_, err = other.CreateTicket(web.CreateTicketRequest{Path: h.repoDir, Title: "Ordinary draft", Status: "open"})
-	require.NoError(t, err)
+	assert.Contains(t, strings.ToLower(err.Error()), "lock")
 }

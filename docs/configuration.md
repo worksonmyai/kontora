@@ -1147,8 +1147,15 @@ health. Kontora preserves the existing file and refuses read-state updates it
 cannot save. Ordinary task execution and notifications continue.
 
 The `assistant` block reloads live. Disabling the companion stops observation
-and prevents new companion requests, but retains stored data. A requested turn
-already running remains stoppable through the existing Stop action.
+and prevents new companion requests. The dashboard hides Kotik's controls,
+Inbox and saved companion conversations, including any selected transcript and
+evidence. It does not restore a remembered companion conversation while observation
+is disabled. Ordinary Chat and History navigation remain available.
+
+Companion settings remain available, and Kontora keeps the stored data.
+Re-enable observation in Assistant settings to show the inbox and saved companion
+conversations again.
+A requested turn already running remains stoppable through the existing Stop action.
 
 Kotik is not a complete audit log. Polling and combined wake signals can miss
 short-lived transitions. Kotik cannot reconstruct every event while the daemon

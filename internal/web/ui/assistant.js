@@ -382,6 +382,40 @@ export function kontoraAssistant() {
       }
     },
 
+    assistantVisibleThreads() {
+      return this.assistantThreads.filter(thread => thread.purpose !== 'companion' || this.companionEnabled());
+    },
+
+    assistantThreadVisible() {
+      return !this.companionThread() || this.companionEnabled();
+    },
+
+    assistantShowHistory() {
+      this._assistantSelectionSeq++;
+      this.assistantView = 'history';
+      return this.assistantLoadThreads();
+    },
+
+    assistantShowChat() {
+      if (this.assistantView !== 'thread' || !this.assistantThread || !this.assistantThreadVisible()) {
+        this._assistantSelectionSeq++;
+      }
+      if (!this.assistantThreadVisible()) {
+        this._assistantLoadSeq++;
+        this._assistantCloseStream();
+        this._stopAssistantPoll();
+        this._assistantClearPartial();
+        this._assistantSetStreaming(false);
+        this.assistantThread = null;
+        this.assistantMessages = [];
+        this.assistantEvents = [];
+        this._assistantCursor = 0;
+        this._assistantETag = '';
+        assistantStore('kontora-assistant-thread', '');
+      }
+      this.assistantView = 'thread';
+    },
+
     async assistantNewThread() {
       if (!this.assistantEnabled()) return null;
       this._assistantSelectionSeq++;
@@ -405,7 +439,7 @@ export function kontoraAssistant() {
     },
 
     async assistantSelectThread(id, opts) {
-      this._assistantSelectionSeq++;
+      const selectionSeq = ++this._assistantSelectionSeq;
       const quiet = !!(opts && opts.quiet);
       // Before the fetch: a frame in flight for the old thread must not paint
       // into the new one.
@@ -414,6 +448,11 @@ export function kontoraAssistant() {
       try {
         const res = await this._assistantFetch('/api/assistant/threads/' + encodeURIComponent(id));
         const thread = await res.json();
+        if (thread.purpose === 'companion') {
+          if (!this.companionSnapshot) await this.companionRefresh();
+          if (!this.companionEnabled()) return false;
+        }
+        if (selectionSeq !== this._assistantSelectionSeq) return false;
         this._assistantAdopt(thread, thread.messages || []);
         this.assistantEvents = [];
         this._assistantCursor = 0;
@@ -426,6 +465,7 @@ export function kontoraAssistant() {
       } catch (e) {
         // A thread the browser remembered but the daemon has dropped is not an
         // error worth showing: the pane simply opens empty.
+        if (selectionSeq !== this._assistantSelectionSeq) return false;
         if (!quiet) this.assistantError = String(e.message || e);
         this.assistantThread = null;
         assistantStore('kontora-assistant-thread', '');
@@ -536,6 +576,7 @@ export function kontoraAssistant() {
 
     async stopAssistantTurn() {
       if (!this.assistantThread) return;
+      this.assistantError = null;
       try {
         await this._assistantFetch('/api/assistant/threads/' + encodeURIComponent(this.assistantThread.id) + '/stop', { method: 'POST' });
       } catch (e) {
@@ -617,6 +658,7 @@ export function kontoraAssistant() {
         return;
       }
       const data = await res.json();
+      if (seq !== this._assistantLoadSeq || !this.assistantThread || this.assistantThread.id !== thread.id) return;
       this._assistantETag = res.headers && res.headers.get ? (res.headers.get('ETag') || '') : '';
       this._mergeAssistantActivity(data);
       this._armAssistantPoll();
@@ -996,7 +1038,7 @@ export function kontoraAssistant() {
       if (this.assistantMenu) { this.assistantMenu = null; return true; }
       if (this.assistantAutonomyOpen) { this.assistantAutonomyOpen = false; return true; }
       if (this.assistantGate) { this.resolveAssistantGate(false); return true; }
-      if (this.assistantView === 'history') { this.assistantView = 'thread'; return true; }
+      if (this.assistantView === 'history') { this.assistantShowChat(); return true; }
       if (this.assistantOpen) { this.closeAssistant(); return true; }
       return false;
     },

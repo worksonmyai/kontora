@@ -14558,7 +14558,7 @@ test("no assistant agent replaces the composer with the configure hint", async (
   const html = fs.readFileSync(htmlPath, "utf8");
   assert.match(html, /x-if="!assistantEnabled\(\) && !companionThread\(\) && assistantView === 'thread'"[\s\S]{0,200}?id="assistant-configure"/);
   const composer = html.slice(html.indexOf('<!-- Composer -->'));
-  assert.match(composer.slice(0, 200), /x-if="\(assistantEnabled\(\) \|\| companionThread\(\)\) && assistantView === 'thread'"/);
+  assert.match(composer.slice(0, 200), /x-if="\(assistantEnabled\(\) \|\| companionThread\(\)\) && assistantView === 'thread' && assistantThreadVisible\(\)"/);
   assert.ok(composer.includes('id="assistant-input"'));
 });
 
@@ -17637,6 +17637,120 @@ test("companion inbox works without an agent and never starts a passive turn", a
   assert.equal(state.companionTimer, null);
 });
 
+for (const path of ["GET", "PATCH", "PATCH with failed refresh"]) {
+  for (const view of ["inbox", "thread", "history"]) {
+    test(`disabled ${path} snapshot reconciles ${view} without changing a running ordinary chat`, async () => {
+      const { state, routes, requests } = companionState();
+      await state.companionRefresh();
+      state.assistantThread = { id: "abc123", running: true };
+      state.assistantMessages = [{ n: 1, text: "Ordinary question" }];
+      state.assistantDraft = "Unsent text";
+      state.assistantView = view;
+      state._assistantSetStreaming(true);
+      const thread = state.assistantThread, messages = state.assistantMessages;
+      const disabled = { ...COMPANION_SNAPSHOT, enabled: false, revision: 8 };
+      routes["/api/assistant/companion"] = path === "PATCH with failed refresh" ? { __status: 503, error: "offline" } : disabled;
+      routes["/api/assistant/companion/items/q%2F1"] = disabled;
+      if (path === "GET") await state.companionRefresh();
+      else await state.companionRead(COMPANION_SNAPSHOT.items[0], true);
+      await flushMicrotasks();
+      assert.equal(state.companionEnabled(), false);
+      assert.equal(state.assistantView, view === "inbox" ? "thread" : view);
+      assert.equal(state.assistantThread, thread);
+      assert.equal(state.assistantMessages, messages);
+      assert.equal(state.assistantDraft, "Unsent text");
+      assert.equal(state.assistantStreaming, true);
+      assert.equal(state.companionDisconnected, path === "PATCH with failed refresh");
+      state.companionOpenInbox();
+      assert.notEqual(state.assistantView, "inbox");
+      assert.equal(requests.some(r => r.init?.method === "POST"), false);
+      state.destroy();
+    });
+  }
+}
+
+for (const snapshot of [null, { ...COMPANION_SNAPSHOT, enabled: false }, COMPANION_SNAPSHOT,
+  { ...COMPANION_SNAPSHOT, health: "degraded" }]) {
+  test(`companion visibility follows resolved snapshot: ${snapshot ? snapshot.enabled + '/' + snapshot.health : 'unknown'}`, () => {
+    const { state, requests } = companionState();
+    state.companionSnapshot = snapshot;
+    state.settingsConfig = { assistant: { companion: { enabled: !snapshot?.enabled } } };
+    assert.equal(state.companionEnabled(), Boolean(snapshot?.enabled));
+    if (!snapshot?.enabled) {
+      state.companionOpenInbox();
+      assert.equal(state.assistantView, "thread");
+      assert.equal(requests.length, 0);
+    }
+    state.destroy();
+  });
+}
+
+for (const running of [false, true]) {
+  test(`disabling a selected companion hides its transcript without changing state: running=${running}`, async () => {
+    const { state, requests } = companionState();
+    state.assistantThread = { id: "ksaved", purpose: "companion", running, evidence: [{ revision: 1 }] };
+    state.assistantMessages = [{ n: 1, text: "Saved question" }];
+    state.assistantDraft = "Unsent follow-up";
+    state._assistantSetStreaming(running);
+    const thread = state.assistantThread, messages = state.assistantMessages;
+    state._companionAdoptSnapshot({ ...COMPANION_SNAPSHOT, enabled: false });
+    assert.equal(state.assistantThreadVisible(), false);
+    assert.equal(state.companionThread(), true, "hidden companion threads must not become ordinary chats");
+    assert.equal(state.assistantStreaming, running);
+    assert.equal(state.assistantThread, thread);
+    assert.equal(state.assistantMessages, messages);
+    assert.equal(state.assistantDraft, "Unsent follow-up");
+    await state.sendAssistantMessage();
+    assert.equal(requests.some(r => r.init?.method === "POST"), false);
+    state._companionAdoptSnapshot(COMPANION_SNAPSHOT);
+    assert.equal(state.assistantThreadVisible(), true);
+    assert.equal(state.assistantThread, thread);
+    state._companionAdoptSnapshot({ ...COMPANION_SNAPSHOT, enabled: false });
+    state._assistantCursor = 42;
+    state._assistantETag = "companion-activity";
+    state.assistantShowChat();
+    assert.equal(state.assistantThread, null);
+    assert.equal(state.assistantThreadVisible(), true);
+    assert.equal(state.assistantView, "thread");
+    assert.equal(state.assistantDraft, "Unsent follow-up");
+    assert.equal(state._assistantCursor, 0);
+    assert.equal(state._assistantETag, "");
+    state.destroy();
+  });
+}
+
+for (const delayed of ["response", "json"]) {
+  test(`companion activity cannot enter ordinary Chat after hidden selection is cleared: delayed ${delayed}`, async () => {
+    const response = deferred();
+    const body = deferred();
+    const payload = { running: true, messages: [{ n: 1, text: "Hidden companion question" }],
+      tape: { events: [{ kind: "text", text: "Hidden companion reply" }] }, partial: "Hidden partial", partial_gen: 1 };
+    const { state } = companionState({ fetch: async () => response.promise });
+    state.assistantThread = { id: "ksaved", purpose: "companion" };
+    state._companionAdoptSnapshot(COMPANION_SNAPSHOT);
+    const pending = state._loadAssistantActivity();
+    if (delayed === "json") {
+      response.resolve({ ok: true, headers: { get: () => "old-companion" }, json: () => body.promise });
+      await flushMicrotasks();
+    }
+    state._companionAdoptSnapshot({ ...COMPANION_SNAPSHOT, enabled: false });
+    state.assistantShowChat();
+    body.resolve(payload);
+    response.resolve({ ok: true, headers: { get: () => "old-companion" }, json: async () => payload });
+    await pending;
+    assert.equal(state.assistantThread, null);
+    assert.equal(state.assistantThreadVisible(), true);
+    assert.deepEqual(vmValue(state.assistantMessages), []);
+    assert.deepEqual(vmValue(state.assistantEvents), []);
+    assert.equal(state.assistantPartial, "");
+    assert.equal(state.assistantStreaming, false);
+    assert.equal(state._assistantCursor, 0);
+    assert.equal(state._assistantETag, "");
+    assert.equal(state._assistantPoll, null);
+    state.destroy();
+  });
+}
+
 test("reading an item changes only companion state with its expected revision", async () => {
   const { state, requests, routes } = companionState();
   await state.companionRefresh();
@@ -17686,11 +17800,13 @@ test("degraded and disconnected attention stays visible and blocks read writes",
   routes["/api/assistant/companion"] = { ...COMPANION_SNAPSHOT, health: "degraded", error: "storage is read-only" };
   await state.companionRefresh();
   assert.equal(state.companionState(), "degraded");
+  assert.equal(state.companionEnabled(), true);
   assert.equal(state.companionCanWrite(), false);
   routes["/api/assistant/companion"] = { __status: 503, error: "offline" };
   await state.companionRefresh();
   assert.equal(state.companionState(), "disconnected");
   assert.equal(state.companionItems().length, 3, "a failed fetch must not empty saved attention");
+  assert.equal(state.companionEnabled(), true);
   assert.match(state.companionError, /may be stale/);
   routes["/api/assistant/companion"] = COMPANION_SNAPSHOT;
   await state.companionRefresh();
@@ -17703,10 +17819,12 @@ test("SSE invalidation and reconnect rebuild the inbox without payload data or m
   state.connectSSE();
   streams[0].emit("open", {});
   await flushMicrotasks();
-  routes["/api/assistant/companion"] = { ...COMPANION_SNAPSHOT, revision: 8, items: [] };
+  routes["/api/assistant/companion"] = { ...COMPANION_SNAPSHOT, enabled: false, revision: 8, items: [] };
   streams[0].emit("companion_updated", "");
   await flushMicrotasks();
   assert.equal(state.companionItems().length, 0);
+  assert.equal(state.companionEnabled(), false);
+  assert.equal(state.assistantView, "thread");
   streams[0].onerror();
   assert.equal(state.companionState(), "disconnected");
   runTimers();
@@ -17714,6 +17832,8 @@ test("SSE invalidation and reconnect rebuild the inbox without payload data or m
   streams[1].emit("open", {});
   await flushMicrotasks();
   assert.equal(state.companionSnapshot.revision, 10);
+  assert.equal(state.companionEnabled(), true);
+  assert.equal(state.assistantView, "thread");
   assert.equal(state.companionCounts(), "2 active / 2 unread");
   assert.equal(requests.some(r => r.init?.method === "POST"), false);
   state.destroy();
@@ -17723,14 +17843,14 @@ test("focus and the 30 second fallback revalidate settled evidence without atten
   const handlers = new Map();
   const intervals = new Map();
   const calls = [];
-  let outdated = false;
+  let outdated = false, enabled = false;
   const state = loadKontoraState({
     window: { innerWidth: 1200, addEventListener: (name, fn) => handlers.set(name, fn), removeEventListener: name => handlers.delete(name) },
     setInterval: (fn, ms) => { intervals.set(ms, fn); return ms; },
     clearInterval: id => intervals.delete(id),
     fetch: async (url, init) => {
       calls.push({ url, init });
-      const body = url === "/api/assistant/companion" ? COMPANION_SNAPSHOT :
+      const body = url === "/api/assistant/companion" ? { ...COMPANION_SNAPSHOT, enabled } :
         { running: false, evidence: [{ revision: 7, outdated }] };
       return { ok: true, json: async () => body };
     },
@@ -17741,11 +17861,15 @@ test("focus and the 30 second fallback revalidate settled evidence without atten
   await state.companionInit();
   await flushMicrotasks();
   assert.ok(intervals.has(30000));
+  assert.equal(state.companionEnabled(), false);
   assert.equal(state.companionEvidence()[0].outdated, false);
+  enabled = true;
   outdated = true;
   handlers.get("focus")();
   await flushMicrotasks();
   assert.equal(state.companionEvidence()[0].outdated, true);
+  assert.equal(state.companionEnabled(), true);
+  assert.equal(state.assistantView, "thread");
   state.assistantThread.evidence[0].outdated = false;
   intervals.get(30000)();
   await flushMicrotasks();
@@ -17761,20 +17885,42 @@ test("focus and the 30 second fallback revalidate settled evidence without atten
   assert.equal(calls.length, count);
 });
 
-test("an old inbox response cannot overwrite a newer saved read snapshot", async () => {
+test("an old disabled inbox response cannot overwrite a newer snapshot or selection", async () => {
   let release;
   const readSnapshot = { ...COMPANION_SNAPSHOT, revision: 8, items: [] };
   const { state } = companionState({ fetch: async (url, init) => {
     if (init?.method === "PATCH") return { ok: true, json: async () => readSnapshot };
-    return new Promise(resolve => { release = () => resolve({ ok: true, json: async () => COMPANION_SNAPSHOT }); });
+    return new Promise(resolve => { release = () => resolve({ ok: true, json: async () => ({ ...COMPANION_SNAPSHOT, enabled: false }) }); });
   } });
   state.companionSnapshot = COMPANION_SNAPSHOT;
+  state.assistantView = "inbox";
   const pending = state.companionRefresh();
   await state.companionRead(COMPANION_SNAPSHOT.items[0], true);
   release();
   await pending;
   // The queued reconciliation may now fetch again; the fenced first GET cannot paint revision 7.
   assert.equal(state.companionSnapshot.revision, 8);
+  assert.equal(state.companionEnabled(), true);
+  assert.equal(state.assistantView, "inbox");
+  state.destroy();
+});
+
+test("an old disabled PATCH response cannot replace a newer snapshot or selection", async () => {
+  const patch = deferred();
+  const { state } = companionState({ fetch: async (url, init) => {
+    if (init?.method === "PATCH") return patch.promise;
+    return { ok: true, json: async () => ({ ...COMPANION_SNAPSHOT, revision: 9 }) };
+  } });
+  state.companionSnapshot = COMPANION_SNAPSHOT;
+  state.assistantView = "inbox";
+  const pending = state.companionRead(COMPANION_SNAPSHOT.items[0], true);
+  await state.companionRefresh();
+  patch.resolve({ ok: true, json: async () => ({ ...COMPANION_SNAPSHOT, enabled: false, revision: 8 }) });
+  await pending;
+  await flushMicrotasks();
+  assert.equal(state.companionSnapshot.revision, 9);
+  assert.equal(state.companionEnabled(), true);
+  assert.equal(state.assistantView, "inbox");
   state.destroy();
 });
 
@@ -17808,20 +17954,69 @@ test("explicit companion explanations keep counts visible while thinking and use
   state.destroy();
 });
 
-test("a disabled companion cannot start another explanation but its running turn stays stoppable", async () => {
-  const { state, requests } = companionState();
-  state.companionSnapshot = { ...COMPANION_SNAPSHOT, enabled: false, ai_available: true };
-  state.assistantThread = { id: "krunning", purpose: "companion", running: true };
-  state._assistantSetStreaming(true);
-  assert.equal(state.companionState(), "thinking");
-  assert.equal(state.companionCanAsk(), false);
-  await state.companionSend("followup", "More detail", []);
-  await state.stopAssistantTurn();
-  const sends = requests.filter(r => r.init?.method === "POST");
-  assert.equal(sends.length, 1);
-  assert.equal(sends[0].url, "/api/assistant/threads/krunning/stop");
-  state.destroy();
-});
+for (const failure of [null, "network", "HTTP 503"]) {
+  test(`a disabled companion cannot start another explanation but its running turn stays stoppable: ${failure || 'success'}`, async () => {
+    let stopFailure = failure;
+    const { state, requests } = companionState({ fetch: async () => {
+      if (stopFailure === "network") throw new Error("Stop network failure");
+      if (stopFailure) return { ok: false, status: 503, json: async () => ({ error: "Stop unavailable" }) };
+      return { ok: true };
+    } });
+    state.companionSnapshot = { ...COMPANION_SNAPSHOT, enabled: false, ai_available: true };
+    state.assistantThread = { id: "krunning", purpose: "companion", running: true };
+    state._assistantSetStreaming(true);
+    assert.equal(state.companionState(), "thinking");
+    assert.equal(state.companionCanAsk(), false);
+    await state.companionSend("followup", "More detail", []);
+    await state.stopAssistantTurn();
+    const sends = requests.filter(r => r.init?.method === "POST");
+    assert.equal(sends.length, 1);
+    assert.equal(sends[0].url, "/api/assistant/threads/krunning/stop");
+    if (failure) {
+      assert.match(state.assistantError, /^Stop /);
+      assert.equal(state.assistantStreaming, true);
+      stopFailure = null;
+      await state.stopAssistantTurn();
+    }
+    assert.equal(state.assistantError, null);
+    state.destroy();
+  });
+}
+
+for (const kind of ["briefing", "investigation"]) {
+  for (const navigation of ["unchanged", "Chat", "History", "History then Chat", "re-enabled"]) {
+    test(`disabled snapshot preserves an admitted Inbox ${kind} unless navigation changes: ${navigation}`, async () => {
+      const admission = deferred();
+      const thread = { id: "kadmitted", purpose: "companion", running: true };
+      const { state, requests } = companionState({ fetch: async url => {
+        if (url === "/api/assistant/companion/messages") return admission.promise;
+        return { ok: true, json: async () => url.includes("/activity") ? { running: true } : {} };
+      } });
+      state.companionSnapshot = { ...COMPANION_SNAPSHOT, ai_available: true };
+      state.assistantOpen = true;
+      state.assistantView = "inbox";
+      const pending = state.companionSend(kind, "Explain this attention", ["kon-1"]);
+      state._companionAdoptSnapshot({ ...COMPANION_SNAPSHOT, enabled: false });
+      assert.equal(state.assistantView, "thread");
+      if (navigation === "Chat") state.assistantShowChat();
+      if (navigation.startsWith("History")) state.assistantShowHistory();
+      if (navigation === "History then Chat") state.assistantShowChat();
+      if (navigation === "re-enabled") state._companionAdoptSnapshot(COMPANION_SNAPSHOT);
+      const adopts = navigation === "unchanged" || navigation === "re-enabled";
+      admission.resolve({ ok: true, json: async () => thread });
+      await pending;
+      assert.equal(state.assistantThread?.id || null, adopts ? thread.id : null);
+      assert.equal(state.assistantStreaming, adopts);
+      assert.equal(state.assistantThreadVisible(), !adopts || navigation === "re-enabled");
+      assert.equal(state.assistantView, navigation === "History" ? "history" : "thread");
+      if (adopts) {
+        await state.stopAssistantTurn();
+        assert.equal(requests.at(-1).url, "/api/assistant/threads/kadmitted/stop");
+      }
+      state.destroy();
+    });
+  }
+}
 
 for (const revision of [7, 8]) {
   test(`attention refresh revalidates settled evidence at revision ${revision}`, async () => {
@@ -17875,7 +18070,7 @@ for (const change of ["chat", "draft", "view", "roundtrip", "pending selection",
       await state.assistantSelectThread(other.id);
       await state.assistantSelectThread(original.id);
     }
-    if (change === "view") state.assistantView = "history";
+    if (change === "view") state.assistantShowHistory();
     if (change === "pending selection") navigation = state.assistantSelectThread(other.id);
     if (change === "new chat") navigation = state.assistantNewThread();
     state.assistantDraft = "New unsent text";
@@ -17913,41 +18108,111 @@ test("an inbox investigation preserves an unrelated draft", async () => {
   state.destroy();
 });
 
-test("a successful companion followup clears only its submitted draft", async () => {
-  const { state } = companionState({ routes: {
-    "/api/assistant/companion/messages": { id: "kfollowup", purpose: "companion", turns: 2 },
-  } });
-  state.companionSnapshot = { ...COMPANION_SNAPSHOT, ai_available: true };
-  state.assistantThread = { id: "kfollowup", purpose: "companion" };
-  state.assistantDraft = "  Explain the capture  ";
-  await state.sendAssistantMessage();
-  assert.equal(state.assistantDraft, "");
-  assert.equal(state.assistantMessages[0].text, "Explain the capture");
-  state.destroy();
-});
+for (const clickChat of [false, true]) {
+  test(`a successful companion followup clears only its submitted draft: repeat Chat=${clickChat}`, async () => {
+    const admission = deferred();
+    const { state } = companionState({ fetch: async url => {
+      if (url === "/api/assistant/companion/messages") return admission.promise;
+      return { ok: true, json: async () => url.includes("/activity") ? { running: true } : {} };
+    } });
+    state.assistantOpen = true;
+    state.companionSnapshot = { ...COMPANION_SNAPSHOT, ai_available: true };
+    state.assistantThread = { id: "kfollowup", purpose: "companion" };
+    state.assistantDraft = "  Explain the capture  ";
+    const pending = state.sendAssistantMessage();
+    if (clickChat) state.assistantShowChat();
+    admission.resolve({ ok: true, json: async () => ({ id: "kfollowup", purpose: "companion", turns: 2, running: true }) });
+    await pending;
+    assert.equal(state.assistantDraft, "");
+    assert.equal(state.assistantMessages[0].text, "Explain the capture");
+    assert.equal(state.assistantStreaming, true);
+    assert.notEqual(state._assistantPoll, null);
+    state.destroy();
+  });
+}
 
 for (const entry of ["startup", "desktop", "mobile", "history"]) {
-  test(`saved companion history is available without observation or an agent: ${entry}`, async () => {
+  test(`disabled observation hides saved companion history and restores it on re-enable: ${entry}`, async () => {
     const thread = { id: "ksaved", purpose: "companion", running: false };
-    const { state, requests } = companionState({ store: { "kontora-assistant-open": entry === "startup" ? "1" : "0" }, routes: {
-      "/api/assistant/threads": { threads: [thread] },
+    const ordinary = { id: "abc123", running: false };
+    const { state, requests, routes, store } = companionState({ store: {
+      "kontora-assistant-open": entry === "startup" ? "1" : "0",
+      "kontora-assistant-thread": entry === "startup" ? thread.id : "",
+    }, routes: {
+      "/api/assistant/companion": { ...COMPANION_SNAPSHOT, enabled: false },
+      "/api/assistant/threads": { threads: [thread, ordinary] },
       "/api/assistant/threads/ksaved": thread,
       "/api/assistant/threads/ksaved/activity": { running: false, evidence: [{ revision: 1, outdated: true }] },
     } });
-    state.companionSnapshot = { ...COMPANION_SNAPSHOT, enabled: false, ai_available: false };
     await state.initAssistant();
     if (entry === "desktop") state.toggleAssistant();
     if (entry === "mobile") { state.isMobile = true; state.openAssistantSheet(); }
-    if (entry === "history") { state.assistantView = "history"; await state.assistantLoadThreads(); }
-    await flushMicrotasks();
+    if (entry === "history") state.assistantView = "history";
+    await state.assistantLoadThreads();
     assert.equal(state.assistantEnabled(), false);
-    assert.deepEqual(vmValue(state.assistantThreads), [thread]);
-    await state.assistantSelectThread(thread.id);
+    assert.deepEqual(vmValue(state.assistantVisibleThreads()), [ordinary]);
+    assert.equal(state.assistantThread, null);
+    assert.equal(await state.assistantSelectThread(thread.id), false);
+    assert.equal(requests.some(r => r.url.includes("/ksaved/activity")), false);
+    if (entry === "startup") assert.equal(store["kontora-assistant-thread"], thread.id);
+    const view = state.assistantView;
+    routes["/api/assistant/companion"] = COMPANION_SNAPSHOT;
+    await state.companionRefresh();
+    assert.equal(state.assistantView, view);
+    assert.deepEqual(vmValue(state.assistantVisibleThreads()), [thread, ordinary]);
+    assert.equal(await state.assistantSelectThread(thread.id), true);
     assert.equal(state.companionEvidence()[0].outdated, true);
     assert.equal(state.companionCanAsk(), false);
-    assert.equal(requests.some(r => r.init?.method === "POST"), false);
+    assert.equal(requests.some(r => r.init?.method), false);
     state.destroy();
   });
+}
+
+for (const enabled of [false, true]) {
+  test(`ordinary remembered chats restore independently of observation: ${enabled}`, async () => {
+    const thread = { id: "abc123", running: false };
+    const { state } = companionState({ store: { "kontora-assistant-thread": thread.id }, routes: {
+      "/api/assistant": { enabled: true },
+      "/api/assistant/companion": { ...COMPANION_SNAPSHOT, enabled },
+      "/api/assistant/threads/abc123": thread,
+    } });
+    await state.initAssistant();
+    assert.equal(state.assistantThread.id, thread.id);
+    assert.equal(state.assistantThreadVisible(), true);
+    state.destroy();
+  });
+}
+
+for (const enabled of [false, true, null]) {
+  for (const navigation of ["unchanged", "Chat", "History", "ordinary thread"]) {
+    test(`remembered companion waits for an initial snapshot without replacing navigation: ${enabled}/${navigation}`, async () => {
+      const snapshot = deferred();
+      const thread = { id: "ksaved", purpose: "companion", running: false };
+      const ordinary = { id: "abc123", running: false };
+      const { state } = companionState({ store: { "kontora-assistant-thread": thread.id }, fetch: async url => {
+        if (url === "/api/assistant/companion") return snapshot.promise;
+        const body = url === "/api/assistant/threads/ksaved" ? thread :
+          url === "/api/assistant/threads/abc123" ? ordinary : {};
+        return { ok: true, json: async () => body };
+      } });
+      const refresh = state.companionRefresh();
+      const restore = state.initAssistant();
+      await flushMicrotasks();
+      assert.equal(state.assistantThread, null);
+      assert.equal(state.companionEnabled(), false);
+      if (navigation === "Chat") state.assistantShowChat();
+      if (navigation === "History") state.assistantShowHistory();
+      if (navigation === "ordinary thread") await state.assistantSelectThread(ordinary.id);
+      snapshot.resolve({ ok: enabled !== null, status: enabled === null ? 503 : 200,
+        json: async () => enabled === null ? { error: "offline" } : { ...COMPANION_SNAPSHOT, enabled } });
+      await Promise.all([refresh, restore]);
+      const expected = navigation === "ordinary thread" ? ordinary.id :
+        enabled && navigation === "unchanged" ? thread.id : null;
+      assert.equal(state.assistantThread?.id || null, expected);
+      assert.equal(state.assistantView, navigation === "History" ? "history" : "thread");
+      state.destroy();
+    });
+  }
 }
 
 for (const mobile of [false, true]) {
@@ -18007,6 +18272,19 @@ test("desktop and mobile reuse the companion inbox, state text, evidence, and mi
   }
   assert.match(state.companionHeaderMarkup, /role="status" x-text="companionState\(\)"/);
   assert.match(state.companionHeaderMarkup, /companionCounts\(\)/);
+  assert.match(state.companionHeaderMarkup, /class="companion-header" x-show="companionEnabled\(\)" x-cloak/);
+  assert.match(state.companionHeaderMarkup, /x-show="companionEnabled\(\)" x-cloak @click="companionOpenInbox\(\)"/);
+  assert.match(state.companionHeaderMarkup, /@click="assistantShowChat\(\)"/);
+  assert.match(state.companionHeaderMarkup, /@click="assistantShowHistory\(\)"/);
+  assert.match(html, /id="assistant-history" @click="assistantView === 'history' \? assistantShowChat\(\) : assistantShowHistory\(\)"/);
+  assert.match(state.companionHeaderMarkup, /x-text="companionEnabled\(\) && companionThread\(\) \? companionName\(\) \+ ' chat' : 'Chat'"/);
+  assert.match(state.companionHeaderMarkup, /x-show="companionThread\(\) && assistantStreaming" @click="stopAssistantTurn\(\)"/);
+  assert.match(state.companionHeaderMarkup, /x-show="companionEnabled\(\) && companionThread\(\) && !companionSnapshot\?\.ai_available"/);
+  assert.equal(html.split(`x-show="companionEnabled() && assistantView === 'inbox'" x-cloak`).length - 1, 2);
+  assert.equal(html.split(`x-show="assistantView === 'thread' && assistantThreadVisible()"`).length - 1, 2);
+  assert.equal(html.split(`x-for="t in assistantVisibleThreads()"`).length - 1, 2);
+  assert.match(html, /class="companion-rail-cat" x-show="companionEnabled\(\)" x-cloak/);
+  assert.match(state.companionEvidenceMarkup, /x-show="companionEnabled\(\) && companionThread\(\)" x-cloak/);
   assert.match(state.companionInboxMarkup, /Reading an item does not answer a question or change a ticket/);
   assert.match(state.companionInboxMarkup, /companionSnapshot\?\.hint/);
   assert.match(state.companionEvidenceMarkup, /packet\.sources/);

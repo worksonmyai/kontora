@@ -23,6 +23,11 @@ const liveTitle = 'Running fixture with a long title explaining terminal keyboar
 const liveBranch = 'fixture/mobile-terminal-keyboard-layout-and-input-lifecycle-with-long-metadata';
 const liveAgent = 'fixture-agent-with-a-long-descriptive-name';
 const supervisorID = 'abcdef-abcd';
+const companionThreadID = 'k0123456789abcdef';
+const ordinaryThreadID = 'a0123456789abcdef';
+const companionTitle = 'Saved observation';
+const ordinaryTitle = 'Saved ordinary chat';
+const companionQuestion = 'Explain the saved attention.';
 let browser;
 const engine = process.env.KONTORA_BROWSER_ENGINE;
 assert.ok(['chromium', 'webkit'].includes(engine), 'The Go runner must select a browser engine');
@@ -42,6 +47,7 @@ function ticket(id, title, extra = {}) {
 // Keys include source and id so a primary PUT cannot save a secondary namesake.
 function fixtures(options = {}) {
   const records = new Map();
+  const assistantThreads = new Map((options.assistantThreads || []).map(thread => [thread.id, structuredClone(thread)]));
   const key = (folder, id) => `${folder}/${id}`;
   const put = t => records.set(key(t.source, t.id), t);
   put(ticket('kon-draft', 'Primary draft', options.ticket));
@@ -70,7 +76,10 @@ function fixtures(options = {}) {
     custom_statuses: [], stages: ['plan', 'code'], channels: [], default_channels: [], ...options.config };
   const requests = [], mutations = [], sockets = [], socketRoutes = [], messages = [], violations = [], expectedHTTPFailures = [];
   const behavior = { createFailure: null, createWait: null, saveFailure: null, outputRevision: 0, unavailableFolder: false, sourcesFailure: false,
-    configFailure: options.configFailure || false };
+    configFailure: options.configFailure || false,
+    assistantConfig: options.assistantConfig || { enabled: true, hint: '', autonomy: 'ask' },
+    companionSnapshot: structuredClone(options.companionSnapshot || { enabled: true, name: 'Kotik', health: 'ok', ai_available: false, items: [], revision: 1 }),
+    companionWait: options.companionWait || null, companionFailure: null, assistantStopFailure: null };
   let releaseConfig = () => {}, configReads = 0;
   // Startup awaits config before showing tickets. Fail that read, then hold
   // retries so the real UI can open the start dialog with config still null.
@@ -83,6 +92,7 @@ function fixtures(options = {}) {
     const request = route.request(), method = request.method(), path = url.pathname;
     requests.push(`${method} ${path}`);
     const allowedQuery = path === '/api/stats' ? ['range', 'project', 'pipeline']
+      : /^\/api\/assistant\/threads\/[^/]+\/activity$/.test(path) ? ['after']
       : /\/(logs|activity)$/.test(path) ? ['stage', 'run', 'offset', 'limit', 'after'] : [];
     assert.ok([...url.searchParams.keys()].every(k => allowedQuery.includes(k)), `Unexpected query: ${url}`);
     if (method === 'GET') {
@@ -106,9 +116,15 @@ function fixtures(options = {}) {
           ]);
         case '/api/tickets': return json(route, { tickets: list('primary'), running_agents: 1 });
         case `/api/sources/${source}/tickets`: return json(route, list(source));
-        case '/api/assistant': return json(route, { enabled: true, hint: '', autonomy: 'ask' });
-        case '/api/assistant/threads': return json(route, { threads: [] });
-        case '/api/assistant/companion': return json(route, { enabled: true, name: 'Kotik', health: 'ok', ai_available: false, items: [], revision: 1 });
+        case '/api/assistant': return json(route, behavior.assistantConfig);
+        case '/api/assistant/threads': return json(route, { threads: [...assistantThreads.values()].map(({ messages, ...thread }) => thread) });
+        case '/api/assistant/companion':
+          if (behavior.companionWait) await behavior.companionWait;
+          if (behavior.companionFailure) {
+            expectedHTTPFailures.push(base + path);
+            return json(route, { error: behavior.companionFailure }, 503);
+          }
+          return json(route, behavior.companionSnapshot);
         case '/api/events': return route.fulfill({ contentType: 'text/event-stream', body: 'retry: 3600000\n\n: offline fixture\n\n' });
         case '/api/config/raw': return json(route, { content: rawConfig });
         case '/api/stats': return json(route, { totals: { done: 1, runs: 2, first_pass_pct: 50 }, live: {}, days: [], buckets: [], stages: [], agents: [], projects: [] });
@@ -135,6 +151,36 @@ function fixtures(options = {}) {
       put(created);
       mutations.push({ method, path, body, ticket: structuredClone(created) });
       return json(route, created, 201);
+    }
+    const assistantMatch = path.match(/^\/api\/assistant\/threads\/([^/]+)(?:\/(activity|stream|stop))?$/);
+    if (assistantMatch) {
+      const id = decodeURIComponent(assistantMatch[1]), action = assistantMatch[2];
+      const thread = assistantThreads.get(id);
+      assert.ok(thread, `Unknown assistant thread: ${id}`);
+      if (method === 'GET' && !action) return json(route, thread);
+      if (method === 'GET' && action === 'activity') {
+        const after = url.searchParams.get('after');
+        assert.ok(after !== null && /^\d+$/.test(after), 'Assistant activity requires a numeric cursor');
+        return json(route, { running: thread.running, autonomy: thread.autonomy, messages: thread.messages,
+          evidence: thread.evidence, offset: 0, tape: { events: [{ kind: 'text', text: `Recorded reply for ${thread.title}.` }] },
+          partial: thread.running ? 'An explanation is still running.' : '', partial_gen: thread.running ? 1 : 0 });
+      }
+      if (method === 'GET' && action === 'stream') {
+        return route.fulfill({ contentType: 'text/event-stream', body: thread.running
+          ? 'retry: 3600000\n\nevent: reset\ndata: {"gen":1,"text":"An explanation is still running."}\n\n'
+          : 'event: done\ndata: {}\n\n' });
+      }
+      if (method === 'POST' && action === 'stop') {
+        assert.ok(thread.running, 'Stop must target a running assistant thread');
+        assert.equal(request.postData(), null);
+        if (behavior.assistantStopFailure) {
+          expectedHTTPFailures.push(base + path);
+          return json(route, { error: behavior.assistantStopFailure }, 503);
+        }
+        thread.running = false;
+        mutations.push({ method, path });
+        return route.fulfill({ status: 204 });
+      }
     }
     const match = path.match(/^\/api(?:\/sources\/([^/]+))?\/tickets\/([^/]+)(?:\/(cost|chain|changes|logs|activity|move|pause|retry|init))?$/);
     if (match) {
@@ -251,7 +297,7 @@ function fixtures(options = {}) {
       };
     });
   }
-  return { install, records, requests, mutations, sockets, socketRoutes, messages, violations, behavior, expectedHTTPFailures, releaseConfig };
+  return { install, records, assistantThreads, requests, mutations, sockets, socketRoutes, messages, violations, behavior, expectedHTTPFailures, releaseConfig };
 }
 
 async function withPage(t, width, theme, run, options = {}) {
@@ -259,11 +305,12 @@ async function withPage(t, width, theme, run, options = {}) {
     reducedMotion: 'reduce', serviceWorkers: 'block', locale: 'en-US', timezoneId: 'UTC' });
   const fixture = fixtures(options), errors = [];
   await fixture.install(context);
-  await context.addInitScript(theme => {
+  await context.addInitScript(({ theme, savedThread, assistantOpen }) => {
     localStorage.setItem('kontora-theme', theme);
-    localStorage.setItem('kontora-assistant-open', '0');
+    localStorage.setItem('kontora-assistant-open', assistantOpen ? '1' : '0');
+    if (savedThread) localStorage.setItem('kontora-assistant-thread', savedThread);
     localStorage.setItem('kontora-sidebar-hidden', '1');
-  }, theme);
+  }, { theme, savedThread: options.savedThread, assistantOpen: options.assistantOpen });
   const page = await context.newPage();
   page.setDefaultTimeout(4000);
   page.setDefaultNavigationTimeout(15000);
@@ -465,6 +512,245 @@ async function terminalRows(page, height, top = 0) {
     throw new Error(`${error.message}: ${JSON.stringify(geometry)}`, { cause: error });
   });
   await terminalGridFits(page, undefined, 8);
+}
+
+function observationOptions(options = {}) {
+  return {
+    companionSnapshot: { enabled: false, name: 'Kotik', health: 'ok', ai_available: true, revision: 1,
+      items: [{ id: 'attention-1', ticket_id: 'kon-draft', title: 'Saved attention', condition: 'needs_review',
+        active: true, read: false, revision: 1, first_seen: stamp }] },
+    assistantThreads: [
+      { id: companionThreadID, title: companionTitle, purpose: 'companion', autonomy: 'read', running: false,
+        created_at: stamp, updated_at: stamp, turns: 1, writes: 0,
+        messages: [{ n: 1, text: companionQuestion, at: stamp }],
+        evidence: [{ id: 'capture-1', captured_at: stamp, revision: 1, sources: { tickets: 'saved-revision' } }] },
+      { id: ordinaryThreadID, title: ordinaryTitle, autonomy: 'ask', running: false,
+        created_at: stamp, updated_at: stamp, turns: 1, writes: 0,
+        messages: [{ n: 1, text: 'What is on the board?', at: stamp }] },
+    ],
+    ...options,
+  };
+}
+
+const assistantSurface = page => page.locator('#assistant-pane:visible, #assistant-sheet:visible');
+async function openAssistantControl(page) {
+  if (!await assistantSurface(page).isVisible()) {
+    await page.getByRole('button', { name: 'Assistant', exact: true }).filter({ visible: true }).click();
+  }
+  await visible(assistantSurface(page).getByRole('navigation', { name: 'Assistant views', exact: true }));
+}
+async function observationHidden(page) {
+  for (const selector of ['.companion-header', '.companion-cat', '.companion-status', '.companion-count',
+    '.companion-rail-cat', '.companion-inbox', '.companion-evidence', '.companion-chat-hint']) {
+    assert.equal(await page.locator(`${selector}:visible`).count(), 0, `${selector} must be hidden without observation`);
+  }
+  assert.equal(await page.getByRole('button', { name: 'Inbox', exact: true }).filter({ visible: true }).count(), 0);
+  assert.equal(await page.getByText(companionQuestion, { exact: true }).filter({ visible: true }).count(), 0);
+  assert.equal(await page.getByText(`Recorded reply for ${companionTitle}.`, { exact: true }).filter({ visible: true }).count(), 0);
+  assert.equal(await page.getByText('An explanation is still running.', { exact: true }).filter({ visible: true }).count(), 0);
+}
+async function refreshObservation(page, fixture, enabled) {
+  fixture.behavior.companionSnapshot = { ...fixture.behavior.companionSnapshot, enabled,
+    revision: fixture.behavior.companionSnapshot.revision + 1 };
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await page.waitForFunction(revision => Alpine.$data(document.body).companionSnapshot?.revision === revision,
+    fixture.behavior.companionSnapshot.revision);
+}
+async function ordinaryChatNavigation(page) {
+  const surface = assistantSurface(page);
+  const tabs = surface.getByRole('navigation', { name: 'Assistant views', exact: true });
+  await tabs.getByRole('button', { name: 'Chat', exact: true }).click();
+  await visible(surface.getByRole('textbox', { name: 'Message the assistant', exact: true }));
+  assert.equal(await tabs.getByRole('button', { name: 'Chat', exact: true }).getAttribute('aria-pressed'), 'true');
+  await tabs.getByRole('button', { name: 'History', exact: true }).click();
+  assert.equal(await tabs.getByRole('button', { name: 'History', exact: true }).getAttribute('aria-pressed'), 'true');
+  await visible(surface.getByRole('button', { name: new RegExp('^' + ordinaryTitle) }));
+  assert.equal(await surface.getByRole('button', { name: new RegExp('^' + companionTitle) }).count(), 0);
+  await surface.getByRole('button', { name: new RegExp('^' + ordinaryTitle) }).click();
+  await visible(surface.getByText('What is on the board?', { exact: true }));
+  await visible(surface.getByText(`Recorded reply for ${ordinaryTitle}.`, { exact: true }));
+  await tabs.getByRole('button', { name: 'History', exact: true }).click();
+  await tabs.getByRole('button', { name: 'Chat', exact: true }).click();
+  await visible(surface.getByText('What is on the board?', { exact: true }));
+}
+async function observationSettings(page, width) {
+  if (width < 768) {
+    await page.getByRole('dialog', { name: 'Assistant', exact: true }).getByRole('button', { name: 'Close', exact: true }).click();
+    await page.getByRole('button', { name: 'Open navigation', exact: true }).click();
+    await page.getByRole('navigation', { name: 'Main navigation', exact: true }).getByRole('button', { name: 'Settings', exact: true }).click();
+  } else {
+    await page.getByRole('button', { name: 'Close the assistant', exact: true }).click();
+    await page.getByRole('button', { name: 'Open command palette', exact: true }).filter({ visible: true }).click();
+    await page.locator('#palette-row-nav-settings').click();
+  }
+  await ready(page);
+  assert.equal(new URL(page.url()).hash, '#/settings');
+  if (width < 768) await page.locator('#settings-mobile-section').selectOption('assistant');
+  else await page.getByRole('navigation', { name: 'Settings sections', exact: true }).getByText('assistant', { exact: true }).click();
+  const toggle = page.getByRole('checkbox', { name: 'Enable observation', exact: true });
+  await toggle.scrollIntoViewIfNeeded();
+  await inViewport(toggle);
+  await visible(page.getByRole('region', { name: 'Companion settings', exact: true }));
+}
+
+for (const width of [390, 1280]) {
+  for (const delayed of [false, true]) {
+    test(`Kotik observation disabled at startup${delayed ? ' after an unknown snapshot' : ''} / ${width}px`, async t => {
+      let release;
+      const options = observationOptions({ savedThread: companionThreadID, assistantOpen: true,
+        companionWait: delayed ? new Promise(resolve => { release = resolve; }) : null });
+      await withPage(t, width, 'dark', async (page, fixture) => {
+        try {
+          await openAssistantControl(page);
+          await page.waitForFunction(() => !!Alpine.$data(document.body).assistantAgent);
+          const surface = assistantSurface(page);
+          const tabs = surface.getByRole('navigation', { name: 'Assistant views', exact: true });
+          await tabs.getByRole('button', { name: 'History', exact: true }).click();
+          await visible(surface.getByRole('button', { name: new RegExp('^' + ordinaryTitle) }));
+          assert.equal(await surface.getByRole('button', { name: new RegExp('^' + companionTitle) }).count(), 0);
+          await observationHidden(page);
+          if (delayed) {
+            assert.equal(await page.evaluate(() => Alpine.$data(document.body).companionSnapshot), null);
+            assert.ok(fixture.requests.includes(`GET /api/assistant/threads/${companionThreadID}`));
+            await tabs.getByRole('button', { name: 'Chat', exact: true }).click();
+            await visible(surface.getByRole('textbox', { name: 'Message the assistant', exact: true }));
+            await tabs.getByRole('button', { name: 'History', exact: true }).click();
+            await observationHidden(page);
+            release();
+          }
+          await page.waitForFunction(() => Alpine.$data(document.body).companionSnapshot?.enabled === false &&
+            !Alpine.$data(document.body).companionFetchPending);
+          await observationHidden(page);
+          assert.ok(!fixture.requests.includes(`GET /api/assistant/threads/${companionThreadID}/activity`),
+            'Disabled or unknown observation must not restore the saved companion transcript');
+          await ordinaryChatNavigation(page);
+          await observationHidden(page);
+          await observationSettings(page, width);
+          await refreshObservation(page, fixture, true);
+          await openAssistantControl(page);
+          await assistantSurface(page).getByRole('navigation', { name: 'Assistant views', exact: true })
+            .getByRole('button', { name: 'History', exact: true }).click();
+          await assistantSurface(page).getByRole('button', { name: new RegExp('^' + companionTitle) }).click();
+          await visible(assistantSurface(page).getByText(companionQuestion, { exact: true }));
+          await assistantSurface(page).locator('.companion-evidence > summary').click();
+          await visible(assistantSurface(page).getByText('Source revisions: {"tickets":"saved-revision"}', { exact: true }));
+          assert.deepEqual([...fixture.assistantThreads.values()], options.assistantThreads, 'Re-enabling must preserve saved chats and evidence');
+          assert.deepEqual(fixture.mutations, []);
+        } finally { release?.(); }
+      }, options);
+    });
+  }
+
+  test(`Kotik observation live disable hides a running chat but retains header Stop / ${width}px`, async t => {
+    const options = observationOptions();
+    options.companionSnapshot.enabled = true;
+    options.assistantThreads[0].running = true;
+    await withPage(t, width, 'dark', async (page, fixture) => {
+      await openAssistantControl(page);
+      const surface = assistantSurface(page);
+      await surface.getByRole('navigation', { name: 'Assistant views', exact: true }).getByRole('button', { name: 'History', exact: true }).click();
+      await surface.getByRole('button', { name: new RegExp('^' + companionTitle) }).click();
+      await visible(surface.getByText(companionQuestion, { exact: true }));
+      await visible(surface.getByText('An explanation is still running.', { exact: true }));
+      await surface.locator('.companion-evidence > summary').click();
+      await visible(surface.getByText('Source revisions: {"tickets":"saved-revision"}', { exact: true }));
+      await visible(surface.locator('.companion-header .companion-cat'));
+      assert.equal(await surface.locator('.companion-status').innerText(), 'Kotik\nthinking');
+      assert.equal(await surface.locator('.companion-count').textContent(), '1 active / 1 unread');
+      if (width === 1280) {
+        await page.getByRole('button', { name: 'Collapse the assistant to a rail', exact: true }).click();
+        await visible(page.locator('#assistant-rail .companion-rail-cat'));
+      }
+      await refreshObservation(page, fixture, false);
+      await observationHidden(page);
+      if (width === 1280) {
+        await visible(page.locator('#assistant-rail'));
+        await page.getByRole('button', { name: 'Expand the assistant', exact: true }).click();
+      }
+      await observationHidden(page);
+      assert.equal(await surface.getByRole('textbox', { name: 'Message the assistant', exact: true }).count(), 0);
+      const stop = surface.getByRole('navigation', { name: 'Assistant views', exact: true }).getByRole('button', { name: 'Stop', exact: true });
+      await inViewport(stop);
+      fixture.behavior.assistantStopFailure = 'The running explanation could not be stopped.';
+      await stop.click();
+      await visible(surface.getByText(fixture.behavior.assistantStopFailure, { exact: true }));
+      assert.equal(await page.evaluate(() => Alpine.$data(document.body).assistantStreaming), true);
+      assert.equal(fixture.assistantThreads.get(companionThreadID).running, true);
+      await observationHidden(page);
+      fixture.behavior.assistantStopFailure = null;
+      await stop.click();
+      await page.waitForFunction(() => !Alpine.$data(document.body).assistantStreaming);
+      await stop.waitFor({ state: 'hidden' });
+      assert.equal(await surface.getByText('The running explanation could not be stopped.', { exact: true }).count(), 0);
+      await ordinaryChatNavigation(page);
+      await observationHidden(page);
+      assert.deepEqual(fixture.mutations, [{ method: 'POST', path: `/api/assistant/threads/${companionThreadID}/stop` }]);
+      assert.deepEqual(fixture.requests.filter(request => request.startsWith('POST /api/assistant/')), [
+        `POST /api/assistant/threads/${companionThreadID}/stop`,
+        `POST /api/assistant/threads/${companionThreadID}/stop`,
+      ], 'Disabling observation must not start another companion turn');
+      await refreshObservation(page, fixture, true);
+      await surface.getByRole('navigation', { name: 'Assistant views', exact: true }).getByRole('button', { name: 'History', exact: true }).click();
+      await visible(surface.getByRole('button', { name: new RegExp('^' + companionTitle) }));
+      await surface.getByRole('button', { name: new RegExp('^' + companionTitle) }).click();
+      await visible(surface.getByText(companionQuestion, { exact: true }));
+      assert.equal(fixture.assistantThreads.get(companionThreadID).running, false);
+    }, options);
+  });
+
+  for (const state of ['missing agent', 'degraded', 'disconnected']) {
+    test(`Kotik observation enabled with ${state} retains controls / ${width}px`, async t => {
+      const options = observationOptions();
+      Object.assign(options.companionSnapshot, { enabled: true, ai_available: state !== 'missing agent',
+        health: state === 'degraded' ? 'degraded' : 'ok', hint: 'Configure an assistant agent for explanations.' });
+      if (state === 'missing agent') options.assistantConfig = { enabled: false, hint: 'Configure an assistant agent.', autonomy: 'ask' };
+      await withPage(t, width, 'dark', async (page, fixture) => {
+        await page.waitForFunction(() => Alpine.$data(document.body).companionSnapshot?.enabled === true);
+        await openAssistantControl(page);
+        const surface = assistantSurface(page);
+        const tabs = surface.getByRole('navigation', { name: 'Assistant views', exact: true });
+        await tabs.getByRole('button', { name: 'Inbox', exact: true }).click();
+        if (state === 'disconnected') {
+          fixture.behavior.companionFailure = 'Fixture companion offline';
+          await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+          await page.waitForFunction(() => Alpine.$data(document.body).companionDisconnected);
+        }
+        await visible(surface.locator('.companion-header .companion-cat'));
+        assert.equal(await surface.locator('.companion-status').innerText(), `Kotik\n${state === 'missing agent' ? 'needs you' : state}`);
+        assert.equal(await surface.locator('.companion-count').textContent(), '1 active / 1 unread');
+        for (const name of ['Inbox', 'Chat', 'History']) await inViewport(tabs.getByRole('button', { name, exact: true }));
+        await visible(surface.getByRole('region', { name: 'Shared companion inbox', exact: true }));
+        for (const name of ['Refresh', 'Set changes checkpoint', 'Brief me', 'Mark read', 'Investigate']) {
+          await visible(surface.getByRole('button', { name, exact: true }));
+        }
+        assert.equal(await surface.getByRole('button', { name: 'Set changes checkpoint', exact: true }).isDisabled(), state !== 'missing agent');
+        assert.equal(await surface.getByRole('button', { name: 'Brief me', exact: true }).isDisabled(), state !== 'degraded');
+        await tabs.getByRole('button', { name: 'History', exact: true }).click();
+        await visible(surface.getByRole('button', { name: new RegExp('^' + companionTitle) }));
+        await visible(surface.getByRole('button', { name: new RegExp('^' + ordinaryTitle) }));
+        await tabs.getByRole('button', { name: 'Chat', exact: true }).click();
+        if (state === 'missing agent') await visible(surface.getByText('Configure an assistant agent.', { exact: true }));
+        else await visible(surface.getByRole('textbox', { name: 'Message the assistant', exact: true }));
+        await tabs.getByRole('button', { name: 'Inbox', exact: true }).click();
+        if (width === 1280) {
+          await page.getByRole('button', { name: 'Collapse the assistant to a rail', exact: true }).click();
+          const cat = page.locator('#assistant-rail .companion-rail-cat');
+          await inViewport(cat);
+          assert.equal(await cat.getAttribute('aria-label'),
+            `Kotik: ${state === 'missing agent' ? 'needs you' : state}, 1 active / 1 unread`);
+          await cat.click();
+          await visible(surface.getByRole('region', { name: 'Shared companion inbox', exact: true }));
+        }
+        fixture.behavior.companionFailure = null;
+        await refreshObservation(page, fixture, false);
+        await observationHidden(page);
+        await tabs.getByRole('button', { name: 'Chat', exact: true }).click();
+        if (state === 'missing agent') await visible(surface.getByText('Configure an assistant agent.', { exact: true }));
+        else await visible(surface.getByRole('textbox', { name: 'Message the assistant', exact: true }));
+        assert.deepEqual(fixture.mutations, []);
+      }, options);
+    });
+  }
 }
 
 describe('embedded responsive browser UI', { concurrency: 4 }, () => {

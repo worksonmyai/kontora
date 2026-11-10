@@ -5705,14 +5705,14 @@
           <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z"/></svg>
         </span>
         <span class="font-mono text-[12px] font-semibold text-tx-2 truncate flex-1 min-w-0"
-              x-text="assistantView === 'history' ? 'chats' : (assistantThread ? assistantThread.title : 'assistant')"></span>
+              x-text="assistantView === 'history' ? 'chats' : (assistantThread && assistantThreadVisible() ? assistantThread.title : 'assistant')"></span>
         <span x-show="assistantStreaming" class="w-1.5 h-1.5 rounded-full pulse-dot shrink-0" style="background: hsl(var(--pipe-h))" aria-label="working"></span>
         <button id="assistant-new" @click="assistantNewThread()" x-show="assistantEnabled()"
                 class="w-6 h-6 rounded text-surface-600 hover:text-tx-2 transition-colors flex items-center justify-center shrink-0"
                 aria-label="New chat" title="New chat">
           <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
         </button>
-        <button id="assistant-history" @click="assistantView = assistantView === 'history' ? 'thread' : 'history'; if (assistantView === 'history') assistantLoadThreads()"
+        <button id="assistant-history" @click="assistantView === 'history' ? assistantShowChat() : assistantShowHistory()"
                 class="w-6 h-6 rounded transition-colors flex items-center justify-center shrink-0"
                 :class="assistantView === 'history' ? 'text-tx-2' : 'text-surface-600 hover:text-tx-2'"
                 aria-label="Chat history" title="Chat history">
@@ -5731,7 +5731,7 @@
       </div>
 
       <div class="companion-surface" x-html="companionHeaderMarkup"></div>
-      <div class="companion-inbox-view" x-show="assistantView === 'inbox'" x-html="companionInboxMarkup"></div>
+      <div class="companion-inbox-view" x-show="companionEnabled() && assistantView === 'inbox'" x-cloak x-html="companionInboxMarkup"></div>
 
       <!-- Context strip: what a bare "it" would mean in this chat. -->
       <div x-show="assistantView === 'thread' && !companionThread() && assistantContext.length" x-cloak
@@ -5744,10 +5744,10 @@
 
       <!-- Chat history -->
       <div x-show="assistantView === 'history'" x-cloak class="flex-1 min-h-0 overflow-y-auto p-2">
-        <template x-if="!assistantThreads.length">
+        <template x-if="!assistantVisibleThreads().length">
           <p class="font-mono text-[11.5px] text-surface-600 p-3 m-0">No chats yet.</p>
         </template>
-        <template x-for="t in assistantThreads" :key="t.id">
+        <template x-for="t in assistantVisibleThreads()" :key="t.id">
           <div class="group flex items-center gap-2 px-2.5 py-2 rounded hover:bg-surface-900 transition-colors">
             <button @click="assistantSelectThread(t.id)" class="flex-1 min-w-0 text-left">
               <span class="block text-[12.5px] text-tx-2 truncate" x-text="t.title"></span>
@@ -5764,7 +5764,7 @@
       </div>
 
       <!-- Thread -->
-      <div id="assistant-thread" x-show="assistantView === 'thread'" @scroll.passive="assistantThreadScrolled()" class="flex-1 min-h-0 overflow-y-auto px-3 py-3 flex flex-col gap-3">
+      <div id="assistant-thread" x-show="assistantView === 'thread' && assistantThreadVisible()" @scroll.passive="assistantThreadScrolled()" class="flex-1 min-h-0 overflow-y-auto px-3 py-3 flex flex-col gap-3">
         <div x-show="companionThread()" x-html="companionEvidenceMarkup"></div>
 
         <!-- Empty state. Shown before the first message of the first chat. -->
@@ -5878,7 +5878,7 @@
       </template>
 
       <!-- Composer -->
-      <template x-if="(assistantEnabled() || companionThread()) && assistantView === 'thread'">
+      <template x-if="(assistantEnabled() || companionThread()) && assistantView === 'thread' && assistantThreadVisible()">
       <div class="shrink-0 border-t border-surface-700 p-2 relative">
 
         <!-- The slash and mention menus, over the composer. -->
@@ -5933,9 +5933,9 @@
                   class="ml-auto font-mono text-[11.5px] h-[24px] px-3 rounded-[6px] bg-accent text-accent-fg hover:bg-accent-bright transition-colors disabled:opacity-40">send</button>
         </div>
 
-        <p x-show="assistantError" x-cloak class="font-mono text-[10.5px] text-err mt-1.5 m-0" x-text="assistantError"></p>
       </div>
       </template>
+      <p x-show="assistantError" x-cloak role="status" class="font-mono text-[10.5px] text-err mt-1.5 m-0" x-text="assistantError"></p>
     </aside>
     </template>
 
@@ -5948,7 +5948,7 @@
         <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z"/></svg>
       </button>
       <span x-show="assistantStreaming" class="w-1.5 h-1.5 rounded-full pulse-dot" style="background: hsl(var(--pipe-h))" aria-label="working"></span>
-      <button type="button" class="companion-rail-cat" @click="toggleAssistantRail(); companionOpenInbox()" :aria-label="companionName() + ': ' + companionState() + ', ' + companionCounts()" :title="companionState() + ': ' + companionCounts()">
+      <button type="button" class="companion-rail-cat" x-show="companionEnabled()" x-cloak @click="toggleAssistantRail(); companionOpenInbox()" :aria-label="companionName() + ': ' + companionState() + ', ' + companionCounts()" :title="companionState() + ': ' + companionCounts()">
         <span class="companion-cat" :data-state="companionState()" aria-hidden="true"></span>
         <span x-text="(companionSnapshot?.items || []).filter(i => i.active).length + '/' + (companionSnapshot?.items || []).filter(i => !i.read).length" aria-hidden="true"></span>
       </button>
@@ -6637,12 +6637,12 @@
               </div>
 
               <div class="companion-surface" x-html="companionHeaderMarkup"></div>
-              <div class="companion-inbox-view" x-show="assistantView === 'inbox'" x-html="companionInboxMarkup"></div>
+              <div class="companion-inbox-view" x-show="companionEnabled() && assistantView === 'inbox'" x-cloak x-html="companionInboxMarkup"></div>
               <div x-show="assistantView === 'history'" class="companion-inbox-view companion-history">
-                <p x-show="!assistantThreads.length">No chats yet.</p>
-                <template x-for="t in assistantThreads" :key="t.id"><button type="button" @click="assistantSelectThread(t.id)" x-text="t.title"></button></template>
+                <p x-show="!assistantVisibleThreads().length">No chats yet.</p>
+                <template x-for="t in assistantVisibleThreads()" :key="t.id"><button type="button" @click="assistantSelectThread(t.id)" x-text="t.title"></button></template>
               </div>
-              <div id="assistant-sheet-thread" x-show="assistantView === 'thread'" @scroll.passive="assistantThreadScrolled()" class="mobile-assistant-thread">
+              <div id="assistant-sheet-thread" x-show="assistantView === 'thread' && assistantThreadVisible()" @scroll.passive="assistantThreadScrolled()" class="mobile-assistant-thread">
                 <div x-show="companionThread()" x-html="companionEvidenceMarkup"></div>
                 <template x-if="!assistantMessages.length && !assistantEvents.length">
                   <p style="margin:auto 0;font-size:13px;line-height:1.6;color:rgba(var(--surface-600),1);text-align:center;" x-text="companionThread() ? 'Ask about the captured records. The companion cannot run commands or change tickets.' : 'Ask about the board. It drives Kontora with the same verbs the CLI uses.'"></p>
@@ -6705,7 +6705,7 @@
                 </div>
               </template>
 
-              <template x-if="(assistantEnabled() || companionThread()) && assistantView === 'thread'">
+              <template x-if="(assistantEnabled() || companionThread()) && assistantView === 'thread' && assistantThreadVisible()">
                 <div style="padding:12px 18px 4px;border-top:1px solid rgba(var(--surface-700),.4);display:flex;flex-direction:column;gap:9px;">
                   <textarea x-model="assistantDraft" rows="2" placeholder="Ask about the board\u2026" aria-label="Message the assistant"
                             style="width:100%;padding:10px 12px;font-size:13.5px;line-height:1.5;border-radius:10px;background:rgba(var(--surface-950),1);border:1px solid rgba(var(--surface-700),.6);color:rgba(var(--tx),1);outline:none;resize:none;font-family:'DM Sans',sans-serif;"></textarea>
@@ -6721,9 +6721,9 @@
                             :style="'margin-left:auto;height:34px;padding:0 16px;border-radius:9px;font-family:\'JetBrains Mono\',monospace;font-size:13px;' + (!assistantDraft.trim() ? 'border:1px solid rgba(var(--surface-700),.7);background:rgba(var(--surface-950),1);color:rgba(var(--surface-600),1);' : 'border:1px solid rgba(var(--accent),1);background:rgba(var(--accent),1);color:rgba(var(--accent-fg),1);font-weight:600;')"
                             x-text="assistantStreaming ? 'working\u2026' : 'send'"></button>
                   </div>
-                  <p x-show="assistantError" role="status" class="companion-note" x-text="assistantError"></p>
                 </div>
               </template>
+              <p x-show="assistantError" x-cloak role="status" class="companion-note" x-text="assistantError"></p>
             </div>
           </template>
 

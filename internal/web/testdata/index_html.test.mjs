@@ -234,6 +234,14 @@ function stubXterm(termState) {
       this.resets += 1;
     }
     write(data) { this.writes.push(data); }
+    input(data) {
+      if (this.options.disableStdin) return;
+      this.inputListeners.filter(listener => !listener.disposed).forEach(listener => listener.handler(data));
+    }
+    paste(text) {
+      if (this.options.disableStdin) return;
+      this.input('\x1b[200~' + text.replace(/\n/g, '\r') + '\x1b[201~');
+    }
     onData(handler) {
       const listener = { handler, disposed: false, dispose() { this.disposed = true; } };
       this.inputListeners.push(listener);
@@ -795,6 +803,107 @@ test("toggling read-write reconnects the stream but keeps the terminal", async (
   assert.equal(firstWs.closed, true);
   assert.match(ctx.termState.ws.url, /rw=1/);
   assert.equal(term.options.cursorBlink, true, "cursor follows the mode");
+});
+
+test("terminal key bar uses the current read-write stream without focus", async () => {
+  const keys = [['Escape', '\x1b'], ['Tab', '\t'], ['Shift+Tab', '\x1b[Z'], ['Up', '\x1b[A'],
+    ['Down', '\x1b[B'], ['Right', '\x1b[C'], ['Left', '\x1b[D'], ['Ctrl+C', '\x03'], ['Enter', '\r']];
+  for (const mode of ['ready', 'read-only', 'connecting', 'stale-socket', 'stale-generation', 'closed-socket']) {
+    const { ctx, state } = await openedTerminal({}, { mobile: true });
+    const sent = [];
+    if (mode !== 'read-only') state.toggleTerminalRW();
+    const ws = ctx.termState.ws;
+    ws.send = frame => sent.push(JSON.parse(frame));
+    if (mode !== 'connecting') ws.onopen();
+    if (mode === 'stale-socket') ctx.termState.ws = {};
+    if (mode === 'stale-generation') state._terminalSeq++;
+    if (mode === 'closed-socket') ws.readyState = 3;
+    assert.deepEqual(vmValue(state.terminalKeys.map(key => [key.name, key.bytes])), keys);
+    for (const [name, bytes] of keys) {
+      state.sendTerminalKey(bytes);
+      if (mode === 'ready') assert.deepEqual(sent.at(-1), { type: 'input', data: bytes }, name);
+    }
+    assert.equal(sent.length, mode === 'ready' ? keys.length : 0, mode);
+    assert.equal(ctx.termState.term.textarea.focuses, 0, mode);
+    assert.equal(state.terminalRW, mode !== 'read-only', mode);
+  }
+});
+
+test("compose strips controls and sends Enter only to the captured session", async () => {
+  const cases = [
+    { name: 'multiline', text: 'первая\nвторая', clean: 'первая\rвторая' },
+    { name: 'controls', text: 'a\x1b[201~b\x00\x03\x7f\x85\r\t\n', clean: 'a[201~b\t\r' },
+    { name: 'socket replaced', replace: 'socket', noEnter: true },
+    { name: 'terminal replaced', replace: 'terminal', noEnter: true },
+    { name: 'input disabled', replace: 'read-only', noEnter: true },
+    { name: 'disconnected', replace: 'disconnected', noEnter: true },
+    { name: 'connecting', before: 'connecting', noSend: true },
+    { name: 'read-only', before: 'read-only', noSend: true },
+    { name: 'empty', text: '\x1b\x00', noSend: true },
+  ];
+  for (const tc of cases) {
+    const timers = [], sent = [];
+    const { ctx, state } = await openedTerminal({ setTimeout(fn, ms) { timers.push({ fn, ms }); } }, { mobile: true });
+    state.toggleTerminalRW();
+    const ws = ctx.termState.ws;
+    ws.send = frame => sent.push(JSON.parse(frame));
+    if (tc.before !== 'connecting') ws.onopen();
+    if (tc.before === 'read-only') state.toggleTerminalRW();
+    timers.length = 0;
+    assert.equal(state.sendTerminalCompose(tc.text ?? 'hello'), !tc.noSend, tc.name);
+    const paste = '\x1b[200~' + (tc.clean ?? 'hello') + '\x1b[201~';
+    assert.deepEqual(sent, tc.noSend ? [] : [{ type: 'input', data: paste }], tc.name);
+    if (tc.noSend) { assert.equal(timers.length, 0, tc.name); continue; }
+    assert.equal(timers.length, 1, tc.name);
+    assert.equal(timers[0].ms, 150, tc.name);
+    if (tc.replace === 'socket') {
+      state.toggleTerminalRW();
+      state.toggleTerminalRW();
+      ctx.termState.ws.send = frame => sent.push(JSON.parse(frame));
+      ctx.termState.ws.onopen();
+      assert.notEqual(ctx.termState.ws, ws);
+    }
+    if (tc.replace === 'terminal') ctx.termState.term = {};
+    if (tc.replace === 'read-only') state.toggleTerminalRW();
+    if (tc.replace === 'disconnected') ws.onclose();
+    timers[0].fn();
+    assert.deepEqual(sent, tc.noEnter ? [{ type: 'input', data: paste }] :
+      [{ type: 'input', data: paste }, { type: 'input', data: '\r' }], tc.name);
+    assert.equal(ctx.termState.term.textarea?.focuses || 0, 0, tc.name);
+  }
+});
+
+test("phone terminal compact mode follows the selected ticket or supervisor session", () => {
+  const cases = [
+    { name: 'ticket input', detailTab: 'terminal', rw: true, height: 900, compact: true },
+    { name: 'ticket short viewport', detailTab: 'terminal', height: 360, compact: true },
+    { name: 'ticket reading', detailTab: 'terminal', height: 900, compact: false },
+    { name: 'supervisor input', epic: true, epicTab: 'session', rw: true, height: 900, compact: true },
+    { name: 'supervisor short viewport', epic: true, epicTab: 'session', height: 360, compact: true },
+    { name: 'supervisor reading', epic: true, epicTab: 'session', height: 900, compact: false },
+    { name: 'supervisor activity', epic: true, epicTab: 'activity', detailTab: 'terminal', height: 360, compact: false },
+    { name: 'ticket activity', detailTab: 'activity', height: 360, compact: false },
+    { name: 'desktop', detailTab: 'terminal', mobile: false, rw: true, height: 360, compact: false },
+  ];
+  for (const tc of cases) {
+    const state = loadKontoraState();
+    Object.assign(state, { isMobile: tc.mobile ?? true, selectedEpic: tc.epic ? { id: 'supervisor' } : null,
+      epicTab: tc.epicTab, detailTab: tc.detailTab, terminalRW: !!tc.rw, mobileViewportHeight: tc.height });
+    assert.equal(state.mobileTerminalCompact(), tc.compact, tc.name);
+  }
+});
+
+test("terminal scrollback follows the layout that created it", async () => {
+  for (const mobile of [true, false]) {
+    const { ctx } = await openedTerminal({}, { mobile });
+    assert.equal(ctx.termState.term.options.scrollback, mobile ? 0 : 5000);
+    ctx.termState.term.options.disableStdin = true;
+    const sent = [];
+    ctx.termState.term.onData(data => sent.push(data));
+    ctx.termState.term.input('ignored');
+    ctx.termState.term.paste('ignored');
+    assert.deepEqual(sent, []);
+  }
 });
 
 test("crossing the breakpoint rebuilds the terminal", async () => {
@@ -10225,6 +10334,16 @@ test("mobileSwitchTab drives the terminal without touching the desktop tab", () 
       },
     },
     {
+      name: "opening the mobile activity transcript",
+      tab: "activity",
+      status: "in_progress",
+      check: (s, calls) => {
+        assert.equal(s.detailTab, "activity");
+        assert.deepEqual(calls, ["close", "activity:plan:0"]);
+        assert.equal(s.terminalWanted(), false);
+      },
+    },
+    {
       name: "leaving it for the logs tab",
       tab: "logs",
       status: "in_progress",
@@ -10246,6 +10365,7 @@ test("mobileSwitchTab drives the terminal without touching the desktop tab", () 
     state.openTerminal = () => calls.push("open");
     state.closeTerminal = () => calls.push("close");
     state.fetchStageLogs = () => {};
+    state.fetchActivity = (stage, run) => calls.push(`activity:${stage}:${run}`);
 
     state.mobileSwitchTab(c.tab);
 
@@ -10894,8 +11014,8 @@ test("index.html binds the transcript to the windowed tail", () => {
   assert.match(html, /x-for="\{ ev, idx \} in visibleTapeEvents\(\)" :key="idx"/);
   // Tool state is read by the full-array index, never by the window offset.
   assert.match(html, /@click="toggleTool\(ev, idx\)"/);
-  // Ticket activity plus desktop and mobile embedded epic activity.
-  assert.equal((html.match(/toolExpanded\(ev, idx\)/g) || []).length, 6);
+  // Desktop and phone ticket activity plus both embedded epic layouts.
+  assert.equal((html.match(/toolExpanded\(ev, idx\)/g) || []).length, 8);
   assert.equal(/\b(toggleTool|toolExpanded)\(ev, i\)/.test(html), false);
   // One control above the first rendered event, carrying the hidden count.
   assert.match(html, /<template x-if="hiddenTapeEventCount\(\) > 0">/);
@@ -10919,7 +11039,7 @@ test("index.html marks a live run and holds back the finished-run states", () =>
   // A run in flight with nothing recorded yet is waiting, not empty, and says
   // so once for both the structured and the plaintext source.
   assert.match(html, /x-if="!activityLoading && activity\?\.live && !tapeEvents\(\)\.length && !activity\.content"/);
-  assert.equal((html.match(/Waiting for the agent's first step/g) || []).length, 3);
+  assert.equal((html.match(/Waiting for the agent's first step/g) || []).length, 4);
   assert.match(html, /x-if="!tapeEvents\(\)\.length && !activity\?\.live"/);
 });
 
@@ -11088,6 +11208,152 @@ function activityHarness(responses, ticket = RUNNING_TICKET) {
     },
   };
 }
+
+test("phone activity fetches its target, polls, and re-arms the cached live transcript", async () => {
+  const h = activityHarness([
+    [200, livePayload([tapeEvent(0)]), '"a"'],
+    [200, livePayload([tapeEvent(1)], { offset: 1 }), '"b"'],
+    [200, livePayload([tapeEvent(2)], { offset: 2 }), '"c"'],
+  ]);
+  Object.assign(h.state, { isMobile: true, activeTab: 'ticket', detailTab: 'terminal', terminalOpen: true });
+  let closed = 0;
+  h.state.closeTerminal = () => { closed++; h.state.terminalOpen = false; };
+
+  h.state.mobileSwitchTab('activity');
+  await flushMicrotasks();
+  assert.equal(closed, 1);
+  assert.equal(h.state.activeTab, 'ticket');
+  assert.equal(h.state.outputContainerID('activity'), 'activity-scroll');
+  assert.match(h.calls[0].url, /\/api\/tickets\/kon-1\/activity\?stage=commit&run=0$/);
+  assert.equal(h.pending(), 1);
+  assert.equal(h.delay(), 2000);
+  await h.tick();
+  assert.deepEqual(h.state.tapeEvents().map(e => e.text), ['line 0', 'line 1']);
+
+  h.state.mobileSwitchTab('ticket');
+  assert.equal(h.pending(), 0, 'leaving the phone pane stops the poll');
+  h.state.mobileSwitchTab('activity');
+  assert.equal(h.calls.length, 2, 'returning to a cached live tape does not replace it');
+  assert.equal(h.pending(), 1);
+  await h.tick();
+  assert.deepEqual(h.state.tapeEvents().map(e => e.text), ['line 0', 'line 1', 'line 2']);
+  h.state.mobileSwitchTab('ticket');
+});
+
+for (const hiddenTab of ['ticket', 'terminal']) for (const live of [false, true]) {
+  for (const advance of ['stage', 'attempt']) for (const explicit of [false, true]) {
+    test(`phone activity resumes the correct target after hidden ${advance}: tab=${hiddenTab}, live=${live}, explicit=${explicit}`, async () => {
+      const initial = { ...RUNNING_TICKET, stage: 'plan', history: [], started_at: '2026-08-08T11:00:00Z' };
+      const h = activityHarness([
+        [200, livePayload([tapeEvent(0)], { live })],
+        [200, livePayload([tapeEvent(1)])],
+      ], initial);
+      Object.assign(h.state, { isMobile: true, activeTab: 'ticket', detailTab: 'ticket', tickets: [initial] });
+      h.state.openTerminal = () => {};
+      h.state.mobileSwitchTab('activity');
+      await flushMicrotasks();
+      h.state._activityExplicit = explicit;
+      h.state.mobileSwitchTab(hiddenTab);
+      h.state.applyTicketUpdate({ ...initial, stage: advance === 'stage' ? 'code' : 'plan',
+        started_at: '2026-08-08T11:01:00Z', history: [{ stage: 'plan', run: 0, exit_code: 0 }] });
+      assert.equal(h.calls.length, 1, 'hidden activity does not fetch');
+
+      h.state.mobileSwitchTab('activity');
+      await flushMicrotasks();
+      if (explicit) {
+        assert.equal(h.calls.length, 1, 'intentional historical selection survives');
+        assert.equal(h.state.activityStage, 'plan');
+        assert.equal(h.state.activityRun, 0);
+        assert.equal(h.pending(), live ? 1 : 0);
+      } else {
+        assert.equal(h.calls.length, 2, 'automatic selection refreshes a stale cached transcript');
+        assert.match(h.calls[1].url, advance === 'stage' ? /activity\?stage=code&run=0$/ : /activity\?stage=plan&run=1$/);
+        assert.deepEqual(h.state.tapeEvents().map(e => e.text), ['line 1']);
+        assert.equal(h.pending(), 1);
+      }
+      assert.equal(h.state.activeTab, 'ticket');
+      h.state.mobileSwitchTab('ticket');
+    });
+  }
+}
+
+for (const initialTab of ['activity', 'terminal']) {
+  test(`phone ${initialTab} shows the completed transcript when the run ends`, async () => {
+    const h = activityHarness([
+      [200, livePayload([tapeEvent(0)]), '"a"'],
+      [200, livePayload([tapeEvent(0), tapeEvent(1)], { live: false }), '"done"'],
+    ]);
+    Object.assign(h.state, { isMobile: true, activeTab: 'ticket', detailTab: 'activity', tickets: [RUNNING_TICKET] });
+    h.state.mobileSwitchTab('activity');
+    await flushMicrotasks();
+    if (initialTab === 'terminal') {
+      h.state.openTerminal = () => {};
+      h.state.mobileSwitchTab('terminal');
+    }
+
+    h.state.applyTicketUpdate({ ...RUNNING_TICKET, status: 'human_review',
+      history: [...RUNNING_TICKET.history, { stage: 'commit', run: 0, exit_code: 0 }] });
+    await flushMicrotasks();
+
+    assert.equal(h.state.detailTab, 'activity');
+    assert.equal(h.state.activeTab, 'ticket');
+    assert.deepEqual(h.state.tapeEvents().map(e => e.text), ['line 0', 'line 1']);
+    assert.equal(h.state.activity.live, false);
+    assert.equal(h.calls.length, 2, 'completion reads the final transcript once');
+    assert.equal(h.pending(), 0);
+  });
+}
+
+test("phone activity on a finished ticket opens the last completed run without polling", async () => {
+  const h = activityHarness([[200, { source: 'log', content: 'finished' }]], TAPE_TICKET);
+  Object.assign(h.state, { isMobile: true, activeTab: 'summary' });
+  h.state.mobileSwitchTab('activity');
+  await flushMicrotasks();
+  assert.match(h.calls[0].url, /activity\?stage=review&run=1$/);
+  assert.equal(h.state.activity.content, 'finished');
+  assert.equal(h.state.activeTab, 'summary');
+  assert.equal(h.pending(), 0);
+});
+
+test("activity survives a breakpoint round trip and refreshes in both layouts", () => {
+  const state = pageState(RUNNING_TICKET);
+  const asked = [];
+  state.activeTab = 'activity';
+  state.activityStage = 'commit';
+  state.activityRun = 0;
+  state.closeTerminal = () => {};
+  state._destroyTerminal = () => {};
+  state._mountBoard = () => {};
+  state.fetchActivity = (stage, run) => asked.push([stage, run]);
+  state.$nextTick = fn => fn();
+
+  state.isMobile = true;
+  state._onBreakpointChange();
+  assert.equal(state.detailTab, 'activity');
+  assert.equal(state.outputTab(), 'activity');
+  state.isMobile = false;
+  state._onBreakpointChange();
+  assert.equal(state.activeTab, 'activity');
+  assert.deepEqual(asked, [['commit', 0], ['commit', 0]]);
+});
+
+test("phone activity markup has a follow toggle, shared scroller, retry and no run picker", () => {
+  const html = fs.readFileSync(htmlPath, 'utf8');
+  const pane = html.slice(html.indexOf('<div x-show="!isSecondary(selectedTicket) && detailTab===\'activity\'"')).split('<!-- logs (stage history) -->')[0];
+  assert.match(pane, /detailTab==='activity'/);
+  assert.match(pane, /id="activity-scroll"/);
+  assert.match(pane, /@click="toggleLogFollow\(\)" :aria-pressed="logFollow"/);
+  assert.match(pane, /@click="fetchActivity\(activityStage, activityRun\)"/);
+  assert.match(pane, /x-for="\{ ev, idx \} in visibleTapeEvents\(\)"/);
+  assert.match(pane, /x-html="renderLogHTML\(activity.content\)"/);
+  assert.doesNotMatch(pane, /<select|selectOutputRun|openActivity/);
+  assert.equal((html.match(/id="activity-scroll"/g) || []).length, 2);
+
+  const tabs = html.split('<template x-if="!isSecondary(selectedTicket) && mobileHasRun(selectedTicket)">')[1].split('</template>')[0];
+  assert.match(tabs, /class="mobile-detail-tabs flex overflow-x-auto"/);
+  assert.equal((tabs.match(/class="shrink-0 whitespace-nowrap"/g) || []).length, 4);
+  assert.match(tabs, /@click="mobileSwitchTab\('activity'\)" :aria-pressed="detailTab === 'activity'"/);
+});
 
 test("a running stage keeps polling its transcript every two seconds", async () => {
   const h = activityHarness([
@@ -16903,6 +17169,31 @@ for (const mobile of [false, true]) {
   });
 }
 
+for (const mobile of [false, true]) for (const structured of [false, true]) {
+  test(`activity Raw ignores a different cached Logs stage: mobile=${mobile}, structured=${structured}`, async () => {
+    const opened = [], blobs = [], reads = [];
+    const { state } = loadKontoraContext({
+      Blob,
+      URL: { createObjectURL: blob => { blobs.push(blob); return 'blob:activity-log'; } },
+      window: { open: url => opened.push(url) },
+      fetch: async url => {
+        reads.push(url);
+        return { ok: true, json: async () => ({ content: 'code raw output' }) };
+      },
+    });
+    Object.assign(state, { isMobile: mobile, selectedTicket: { id: 'kon-1', status: 'in_progress', stage: 'code' },
+      detailTab: 'activity', activeTab: 'activity', activityStage: 'code', activityRun: 0,
+      activity: structured ? { tape: { events: [] } } : { content: 'code plaintext output' },
+      logViewStage: 'plan', logViewContent: 'plan cached output' });
+
+    await state.openRawLog();
+
+    assert.deepEqual(opened, ['blob:activity-log']);
+    assert.equal(await blobs[0].text(), structured ? 'code raw output' : 'code plaintext output');
+    assert.deepEqual(reads, structured ? ['/api/tickets/kon-1/logs?stage=code'] : []);
+  });
+}
+
 for (const owner of ['worker', 'epic']) {
   for (const pollStatus of [200, 304]) {
     for (const delayed of ['response', 'json']) {
@@ -17966,7 +18257,7 @@ test('epic controls and brief surfaces are available in both responsive layouts'
   }
   assert.equal(html.match(/x-for="r in outputRuns\(\)"/g).length, 2);
   assert.equal(html.match(/@change="selectOutputRun\(\$event.target.value\)"/g).length, 2);
-  assert.equal(html.split('Transcript truncated. Open the full raw stage log; it may show a different attempt.').length - 1, 2);
+  assert.equal(html.split('Transcript truncated. Open the full raw stage log; it may show a different attempt.').length - 1, 3);
 });
 
 test('supervisor capacity reloads live and defaults to four', async () => {

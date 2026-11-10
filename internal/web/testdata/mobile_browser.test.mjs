@@ -78,7 +78,7 @@ function fixtures(options = {}) {
     projects: [{ name: 'Fixture repository', path: '/fixtures/repository-with-a-long-name', agent: 'fixture-agent', pipeline: 'standard' }],
     custom_statuses: [], stages: ['plan', 'code'], channels: [], default_channels: [], ...options.config };
   const requests = [], mutations = [], sockets = [], socketRoutes = [], messages = [], violations = [], expectedHTTPFailures = [];
-  const behavior = { createFailure: null, createWait: null, saveFailure: null, outputRevision: 0,
+  const behavior = { createFailure: null, createWait: null, saveFailure: null, outputRevision: 0, activityEvents: null,
     automationFailure: null, automationWait: null, automationsAvailable: true, loseCreate: false, loseRun: false,
     unavailableFolder: false, sourcesFailure: false, configFailure: options.configFailure || false,
     assistantConfig: options.assistantConfig || { enabled: true, hint: '', autonomy: 'ask' },
@@ -316,7 +316,7 @@ function fixtures(options = {}) {
           case 'changes': return json(route, { base: 'main', files: [], commits: [] });
           case 'logs': return json(route, { content: `${id} ${url.searchParams.get('stage') || 'code'} fixture log revision ${behavior.outputRevision}\n` });
           case 'activity': return json(route, { live: record.status === 'in_progress', source: 'events',
-            tape: { events: [{ kind: 'text', text: `Fixture activity revision ${behavior.outputRevision}` }] } });
+            tape: { events: behavior.activityEvents || [{ kind: 'text', text: `Fixture activity revision ${behavior.outputRevision}` }] } });
         }
       }
       if (method === 'POST' && ['move', 'pause', 'retry', 'init'].includes(action)) {
@@ -1312,12 +1312,151 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
       });
     });
   }
+  for (const theme of themes) {
+    test(`phone compose paste and cancellation / ${theme}`, async t => {
+      await withPage(t, 390, theme, async (page, fixture) => {
+        await openTicket(page, 'kon-live');
+        await page.waitForFunction(() => Alpine.$data(document.body).terminalConnected);
+        await page.getByRole('button', { name: 'Enable input', exact: true }).filter({ visible: true }).click();
+        await page.waitForFunction(() => Alpine.$data(document.body).terminalConnected);
+        fixture.socketRoutes.at(-1).send(Buffer.from('\x1b[?2004h'));
+        await page.waitForFunction(() => termState.term.modes.bracketedPasteMode);
+        await page.clock.install();
+        for (const cancel of [false, true]) {
+          await page.locator('.mobile-detail .mobile-terminal-keys').getByRole('button', { name: 'Compose', exact: true }).click();
+          const dialog = page.getByRole('dialog', { name: 'Compose message', exact: true });
+          await visible(dialog);
+          await dialog.getByRole('textbox', { name: 'Message', exact: true }).fill('первая\nвторая');
+          const before = fixture.messages.filter(message => message.type === 'input').length;
+          await dialog.getByRole('button', { name: 'Send', exact: true }).click();
+          await dialog.waitFor({ state: 'hidden' });
+          await expect.poll(() => fixture.messages.filter(message => message.type === 'input')[before]?.data)
+            .toBe('\x1b[200~первая\rвторая\x1b[201~');
+          if (cancel) await page.evaluate(() => Alpine.$data(document.body).toggleTerminalRW());
+          await page.clock.runFor(150);
+          if (!cancel) await expect.poll(() => fixture.messages.filter(message => message.type === 'input').length).toBe(before + 2);
+          assert.deepEqual(fixture.messages.filter(message => message.type === 'input').slice(before).map(message => message.data),
+            cancel ? ['\x1b[200~первая\rвторая\x1b[201~'] : ['\x1b[200~первая\rвторая\x1b[201~', '\r']);
+        }
+      });
+    });
+    test(`phone activity polling, completion and tab reachability / ${theme}`, async t => {
+      await withPage(t, 320, theme, async (page, fixture) => {
+        await openTicket(page, 'kon-live');
+        const detail = page.locator('.mobile-detail');
+        const tabs = detail.locator('.mobile-detail-tabs');
+        const geometry = await tabs.evaluate(el => ({ scroll: el.scrollWidth, client: el.clientWidth, wrap: getComputedStyle(el).flexWrap }));
+        assert.ok(geometry.scroll > geometry.client, JSON.stringify(geometry));
+        assert.equal(geometry.wrap, 'nowrap');
+        await detail.getByRole('button', { name: '▤ ticket', exact: true }).click();
+        assert.ok(await tabs.evaluate(el => el.scrollLeft > 0));
+        await page.setViewportSize({ width: 390, height: 900 });
+        const activeTab = await page.evaluate(() => Alpine.$data(document.body).activeTab);
+        await detail.getByRole('button', { name: 'activity', exact: true }).click();
+        await visible(detail.locator('#activity-scroll').getByText('Fixture activity revision 0', { exact: true }));
+        assert.equal(await page.evaluate(() => Alpine.$data(document.body).activeTab), activeTab);
+        assert.equal(await page.evaluate(() => Alpine.$data(document.body).terminalOpen), false);
+        assert.equal(await page.locator('#activity-scroll').count(), 1);
+        await page.waitForRequest(request => new URL(request.url()).pathname === '/api/tickets/kon-live/activity', { timeout: 6000 });
+        const follow = detail.getByRole('button', { name: /follow/i });
+        await visible(follow);
+        const before = await follow.getAttribute('aria-pressed');
+        await follow.click();
+        assert.notEqual(await follow.getAttribute('aria-pressed'), before);
+        await follow.click();
+        const record = fixture.records.get('primary/kon-live');
+        record.status = 'human_review';
+        fixture.behavior.outputRevision = 1;
+        await page.evaluate(record => Alpine.$data(document.body).applyTicketUpdate(record), record);
+        await visible(detail.locator('#activity-scroll').getByText('Fixture activity revision 1', { exact: true }));
+        assert.equal(await page.evaluate(() => Alpine.$data(document.body).detailTab), 'activity');
+        assert.equal(await page.evaluate(() => Alpine.$data(document.body).activity.live), false);
+        await noPageOverflow(page);
+      });
+    });
+    test(`phone activity resumes a new stage and exports its Raw log / ${theme}`, async t => {
+      await withPage(t, 390, theme, async (page, fixture) => {
+        await openTicket(page, 'kon-live');
+        const detail = page.locator('.mobile-detail');
+        await detail.getByRole('button', { name: 'activity', exact: true }).click();
+        await visible(detail.locator('#activity-scroll').getByText('Fixture activity revision 0', { exact: true }));
+        await detail.getByRole('button', { name: '≡ logs', exact: true }).click();
+        await detail.getByRole('button', { name: /^plan:/ }).click();
+        await visible(detail.getByText('kon-live plan fixture log revision 0', { exact: true }));
+        const record = fixture.records.get('primary/kon-live');
+        record.history.push({ stage: 'code', run: 0, started_at: stamp, completed_at: stamp, exit_code: 0 });
+        record.stage = 'test';
+        record.started_at = '2026-10-01T10:01:00Z';
+        fixture.behavior.outputRevision = 1;
+        await page.evaluate(record => Alpine.$data(document.body).applyTicketUpdate(record), record);
+        await detail.getByRole('button', { name: 'activity', exact: true }).click();
+        await visible(detail.locator('#activity-scroll').getByText('Fixture activity revision 1', { exact: true }));
+        assert.equal(await page.evaluate(() => Alpine.$data(document.body).activityStage), 'test');
+        const popupPromise = page.waitForEvent('popup');
+        await detail.getByRole('button', { name: '⧉ raw', exact: true }).click();
+        const popup = await popupPromise;
+        await popup.waitForLoadState('domcontentloaded');
+        assert.equal(await popup.locator('body').innerText(), 'kon-live test fixture log revision 1\n');
+        await popup.close();
+      });
+    });
+    for (const width of [320, 390]) {
+      test(`phone cached activity follows on reveal ${width}px / ${theme}`, async t => {
+        await withPage(t, width, theme, async (page, fixture) => {
+          fixture.behavior.activityEvents = Array.from({ length: 80 }, (_, i) => ({ kind: 'text', text: `Cached activity event ${i}` }));
+          await openTicket(page, 'kon-done');
+          await page.waitForFunction(() => Alpine.$data(document.body).activity?.tape?.events.length === 80);
+          await page.evaluate(() => Alpine.nextTick());
+          await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+          assert.equal(await page.evaluate(() => Alpine.$data(document.body).detailTab), 'ticket');
+          const reads = fixture.requests.filter(request => request === 'GET /api/tickets/kon-done/activity').length;
+          const detail = page.locator('.mobile-detail');
+          await detail.getByRole('button', { name: 'activity', exact: true }).click();
+          const scroller = detail.locator('#activity-scroll');
+          await visible(scroller.getByText('Cached activity event 79', { exact: true }));
+          await page.evaluate(() => Alpine.nextTick());
+          await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+          const geometry = await scroller.evaluate(el => ({ height: el.scrollHeight, client: el.clientHeight, top: el.scrollTop }));
+          assert.ok(geometry.height > geometry.client, 'Cached transcript overflows');
+          assert.ok(geometry.height - geometry.client - geometry.top <= 1, `Follow opens at the newest event: ${JSON.stringify(geometry)}`);
+          assert.equal(fixture.requests.filter(request => request === 'GET /api/tickets/kon-done/activity').length, reads, 'Reveal reuses the completed transcript');
+          await detail.getByRole('button', { name: /follow/i }).click();
+          await scroller.evaluate(el => { el.scrollTop = 200; });
+          const top = await scroller.evaluate(el => el.scrollTop);
+          await detail.getByRole('button', { name: '▤ ticket', exact: true }).click();
+          await detail.getByRole('button', { name: 'activity', exact: true }).click();
+          await visible(scroller);
+          await page.evaluate(() => Alpine.nextTick());
+          assert.equal(await scroller.evaluate(el => el.scrollTop), top, 'Follow off preserves the reading position');
+          await detail.getByRole('button', { name: /follow/i }).click();
+          await expect.poll(() => scroller.evaluate(el => el.scrollHeight - el.clientHeight - el.scrollTop)).toBeLessThanOrEqual(1);
+        });
+      });
+    }
+    test(`activity breakpoint roundtrip / ${theme}`, async t => {
+      await withPage(t, 1280, theme, async page => {
+        await openTicket(page, 'kon-live');
+        await page.getByRole('button', { name: 'activity', exact: true }).filter({ visible: true }).click();
+        await visible(page.locator('#activity-scroll').getByText('Fixture activity revision 0', { exact: true }));
+        await page.setViewportSize({ width: 390, height: 900 });
+        await page.waitForFunction(() => Alpine.$data(document.body).isMobile && Alpine.$data(document.body).detailTab === 'activity');
+        await visible(page.locator('.mobile-detail #activity-scroll'));
+        assert.equal(await page.locator('#activity-scroll').count(), 1);
+        await page.setViewportSize({ width: 1280, height: 900 });
+        await page.waitForFunction(() => !Alpine.$data(document.body).isMobile && Alpine.$data(document.body).activeTab === 'activity');
+        await visible(page.locator('#activity-scroll').getByText('Fixture activity revision 0', { exact: true }));
+        assert.equal(await page.locator('#activity-scroll').count(), 1);
+      });
+    });
+  }
   for (const width of [320, 390]) for (const theme of themes) {
     test(`terminal visible geometry ${width}px / ${theme}`, async t => {
       await withPage(t, width, theme, async (page, fixture) => {
         await openTicket(page, 'kon-live');
         await visible(page.locator('#terminal-container-mobile .xterm'));
         await page.waitForFunction(() => Alpine.$data(document.body).terminalConnected);
+        assert.equal(await page.locator('#terminal-container-mobile').evaluate(el => el.clientWidth), width - 14);
+        assert.equal(await page.evaluate(() => termState.term.options.scrollback), 0);
         for (const height of [360, 420, 900]) {
           await visualViewport(page, height, height === 900 ? 0 : 12);
           assert.equal(await page.evaluate(() => innerHeight), 900, 'Only the visual viewport shrinks');
@@ -1331,6 +1470,10 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
           assert.equal(await page.locator('.mobile-detail-actions').isVisible(), false);
           assert.equal(await page.locator('#terminal-container-mobile textarea').evaluate(el => el.readOnly), true);
           const inputs = fixture.messages.filter(message => message.type === 'input').length;
+          const keys = page.locator('.mobile-detail .mobile-terminal-keys');
+          for (const button of await keys.getByRole('button').all()) assert.equal(await button.isDisabled(), true);
+          await keys.getByRole('button', { name: 'Escape', exact: true }).dispatchEvent('click');
+          assert.equal(fixture.messages.filter(message => message.type === 'input').length, inputs);
           await page.locator('#terminal-container-mobile .xterm-screen').click();
           await page.keyboard.type('must-not-send');
           assert.equal(fixture.messages.filter(message => message.type === 'input').length, inputs);
@@ -1344,6 +1487,14 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
           assert.equal(await page.locator('#terminal-container-mobile textarea').evaluate(el => el === document.activeElement), false,
             'A tap during connection must not open the keyboard when readiness changes');
           await terminalRows(page, height, height === 900 ? 0 : 12);
+          for (const [name, data] of [['Escape', '\x1b'], ['Tab', '\t'], ['Shift+Tab', '\x1b[Z'],
+            ['Up', '\x1b[A'], ['Down', '\x1b[B'], ['Right', '\x1b[C'], ['Left', '\x1b[D'], ['Ctrl+C', '\x03'], ['Enter', '\r']]) {
+            await keys.getByRole('button', { name, exact: true }).click();
+            await expect.poll(() => fixture.messages.filter(message => message.type === 'input').at(-1)?.data).toBe(data);
+            assert.equal(fixture.messages.filter(message => message.type === 'input').at(-1).url.searchParams.get('rw'), '1');
+            assert.equal(await page.evaluate(() => Alpine.$data(document.body).terminalRW), true);
+            assert.equal(await page.locator('#terminal-container-mobile textarea').evaluate(el => el === document.activeElement), false);
+          }
           await page.locator('#terminal-container-mobile .xterm-screen').click();
           await page.keyboard.type('fixture-input');
           await page.waitForFunction(() => document.activeElement?.classList.contains('xterm-helper-textarea'));
@@ -2018,6 +2169,11 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
         await epic.getByRole('button', { name: 'Enable input', exact: true }).click();
         await page.waitForFunction(() => Alpine.$data(document.body).terminalConnected);
         assert.equal(await page.locator('#epic-terminal-mobile textarea').evaluate(el => el.readOnly), false);
+        await epic.getByRole('button', { name: 'Escape', exact: true }).click();
+        await expect.poll(() => fixture.messages.filter(message => message.type === 'input').at(-1)?.data).toBe('\x1b');
+        assert.equal(fixture.messages.filter(message => message.type === 'input').at(-1).url.searchParams.get('rw'), '1');
+        assert.equal(await page.evaluate(() => Alpine.$data(document.body).terminalRW), true);
+        assert.equal(await page.locator('#epic-terminal-mobile textarea').evaluate(el => el === document.activeElement), false);
         await page.locator('#epic-terminal-mobile .xterm-screen').click();
         await page.keyboard.type('supervisor-input');
         for (const height of [420, 360, 900]) {
@@ -2028,6 +2184,7 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
             return Math.abs(box.height - height) < 1 && Math.abs(box.top - top) < 1;
           }, { height, top });
           assert.equal(await page.evaluate(() => innerHeight), 900, 'Only the visual viewport shrinks');
+          await terminalGridFits(page, fixture, 8);
           const done = epic.getByRole('button', { name: 'Done typing', exact: true });
           const box = await done.boundingBox();
           assert.ok(box && box.width >= 44 && box.height >= 44 && box.x >= 0 && box.x + box.width <= width &&
@@ -2077,6 +2234,7 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
                 Math.abs(parseFloat(document.documentElement.style.getPropertyValue('--mobile-vv-width')) - width) < 1);
             }, { width });
             await terminalGridFits(page, fixture);
+            assert.equal(await page.evaluate(() => termState.term.options.scrollback), width < 768 ? 0 : 5000);
             assert.equal(new URL(page.url()).hash, `#/${id === supervisorID ? 'e' : 't'}/${id}`);
             await inViewport(page.locator(terminalSelector));
             await noPageOverflow(page);

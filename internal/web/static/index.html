@@ -6239,7 +6239,7 @@
 
     <!-- ===== Ticket detail (full-screen overlay) ===== -->
     <template x-if="selectedEpic && currentView === 'board'">
-      <section class="mobile-epic fixed inset-0 z-40 bg-surface-950 flex flex-col" aria-label="Epic overview">
+      <section class="mobile-epic fixed inset-0 z-40 bg-surface-950 flex flex-col" :class="mobileTerminalCompact() ? 'mobile-terminal-compact' : ''" aria-label="Epic overview">
         <header class="shrink-0 p-4 border-b border-surface-700 flex flex-col gap-3">
           <button type="button" @click="closeEpic()" class="text-left font-mono text-xs text-accent">back to board</button>
           <h1 class="text-lg text-tx-hi" x-text="selectedEpic?.title"></h1>
@@ -6340,6 +6340,14 @@
                 <div x-show="terminalError" class="shrink-0 px-3 pb-3 flex items-center gap-3 font-mono text-xs text-err" role="alert">
                   <span class="whitespace-pre-wrap break-words" x-text="terminalError"></span>
                   <button type="button" @click="reconnectTerminal()" class="shrink-0 underline">retry connection</button>
+                </div>
+                <div x-show="terminalRW" class="mobile-terminal-keys" role="group" aria-label="Terminal keys">
+                  <template x-for="key in terminalKeys" :key="key.name">
+                    <button type="button" @pointerdown.prevent @click="sendTerminalKey(key.bytes)"
+                            :aria-label="key.name" :disabled="!terminalConnected" x-text="key.label"></button>
+                  </template>
+                  <button type="button" x-show="terminalConnected" @pointerdown.prevent @click="openComposeSheet()"
+                          :disabled="!terminalConnected">Compose</button>
                 </div>
                 <div class="mobile-terminal-frame" :class="terminalRW ? 'mobile-terminal-input' : ''">
                   <div id="epic-terminal-mobile" class="mobile-terminal-host"></div>
@@ -6482,13 +6490,15 @@
           </template>
         </div>
         <template x-if="!isSecondary(selectedTicket) && mobileHasRun(selectedTicket)">
-          <div style="display:flex;gap:18px;padding:0 16px;">
-            <button @click="mobileSwitchTab(mobileFirstTab())" :aria-pressed="detailTab === mobileFirstTab()"
+          <div class="mobile-detail-tabs flex overflow-x-auto" style="gap:18px;padding:0 16px;">
+            <button class="shrink-0 whitespace-nowrap" @click="mobileSwitchTab(mobileFirstTab())" :aria-pressed="detailTab === mobileFirstTab()"
                     :style="'border:none;background:transparent;padding:10px 0;font-family:\'JetBrains Mono\',monospace;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;cursor:pointer;border-bottom:2px solid ' + (detailTab===mobileFirstTab() ? 'rgba(var(--accent),1)' : 'transparent') + ';color:' + (detailTab===mobileFirstTab() ? 'rgba(var(--tx),1)' : 'rgba(var(--surface-600),1)') + ';'"
                     x-text="mobileFirstTabLabel()"></button>
-            <button x-show="selectedTicket?.status === 'in_progress'" @click="mobileSwitchTab('logs')" :aria-pressed="detailTab === 'logs'"
+            <button class="shrink-0 whitespace-nowrap" x-show="selectedTicket?.status === 'in_progress'" @click="mobileSwitchTab('logs')" :aria-pressed="detailTab === 'logs'"
                     :style="'border:none;background:transparent;padding:10px 0;font-family:\'JetBrains Mono\',monospace;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;cursor:pointer;border-bottom:2px solid ' + (detailTab==='logs' ? 'rgba(var(--accent),1)' : 'transparent') + ';color:' + (detailTab==='logs' ? 'rgba(var(--tx),1)' : 'rgba(var(--surface-600),1)') + ';'">≡ logs</button>
-            <button @click="mobileSwitchTab('ticket')" :aria-pressed="detailTab === 'ticket'"
+            <button class="shrink-0 whitespace-nowrap" @click="mobileSwitchTab('activity')" :aria-pressed="detailTab === 'activity'"
+                    :style="'border:none;background:transparent;padding:10px 0;font-family:\'JetBrains Mono\',monospace;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;cursor:pointer;border-bottom:2px solid ' + (detailTab==='activity' ? 'rgba(var(--accent),1)' : 'transparent') + ';color:' + (detailTab==='activity' ? 'rgba(var(--tx),1)' : 'rgba(var(--surface-600),1)') + ';'">activity</button>
+            <button class="shrink-0 whitespace-nowrap" @click="mobileSwitchTab('ticket')" :aria-pressed="detailTab === 'ticket'"
                     :style="'border:none;background:transparent;padding:10px 0;font-family:\'JetBrains Mono\',monospace;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;cursor:pointer;border-bottom:2px solid ' + (detailTab==='ticket' ? 'rgba(var(--accent),1)' : 'transparent') + ';color:' + (detailTab==='ticket' ? 'rgba(var(--tx),1)' : 'rgba(var(--surface-600),1)') + ';'">▤ ticket</button>
           </div>
         </template>
@@ -6508,8 +6518,112 @@
             <span class="whitespace-pre-wrap break-words" x-text="terminalError"></span>
             <button type="button" @click="reconnectTerminal()" class="shrink-0 underline">retry connection</button>
           </div>
+          <div x-show="terminalRW" class="mobile-terminal-keys" role="group" aria-label="Terminal keys">
+            <template x-for="key in terminalKeys" :key="key.name">
+              <button type="button" @pointerdown.prevent @click="sendTerminalKey(key.bytes)"
+                      :aria-label="key.name" :disabled="!terminalConnected" x-text="key.label"></button>
+            </template>
+            <button type="button" x-show="terminalConnected" @pointerdown.prevent @click="openComposeSheet()"
+                    :disabled="!terminalConnected">Compose</button>
+          </div>
           <div class="mobile-terminal-frame" :class="terminalRW ? 'mobile-terminal-input' : ''">
             <div id="terminal-container-mobile" class="mobile-terminal-host"></div>
+          </div>
+        </div>
+
+        <div x-show="!isSecondary(selectedTicket) && detailTab==='activity'" class="flex-1 min-h-0 flex flex-col">
+          <div class="shrink-0 p-3 flex items-center gap-2">
+            <button type="button" @click="toggleLogFollow()" :aria-pressed="logFollow"
+                    class="font-mono text-[10px] px-2 py-1 rounded-md border border-edge-input"
+                    :class="logFollow ? 'text-tx-2' : 'text-surface-600'">⇣ follow</button>
+            <button type="button" @click="openRawLog()"
+                    class="font-mono text-[10px] px-2 py-1 rounded-md border border-edge-input text-tx-3">⧉ raw</button>
+          </div>
+          <div class="shrink-0 px-4 flex items-center gap-2 flex-wrap">
+            <span class="side-label">activity</span>
+            <span class="font-mono text-[11px] text-tx-3" x-text="activityStage || 'latest'"></span>
+            <span x-show="activityRun > 0" class="font-mono text-[10.5px] text-surface-600" x-text="'attempt ' + (activityRun + 1)"></span>
+            <span x-show="activity?.live" class="font-mono text-[10.5px] px-2 py-[2px] rounded-full border border-st-progress/40 text-st-progress">live</span>
+            <span x-show="activity?.tape?.model" class="font-mono text-[10.5px] px-2 py-[2px] rounded-full border border-surface-700 text-tx-faint" x-text="activity?.tape?.model"></span>
+            <span x-show="activityEffort()" class="font-mono text-[10.5px] px-2 py-[2px] rounded-full border border-surface-700 text-tx-faint" x-text="activityEffort()"></span>
+            <span x-show="tapeTokens(activity?.tape)" class="font-mono text-[10.5px] text-surface-600" x-text="tapeTokens(activity?.tape) + ' tokens'"></span>
+          </div>
+          <div x-show="activity?.stale && !activity?.live" class="shrink-0 px-4 pt-2 font-mono text-[11px] text-warn">
+            Showing the latest run of this stage. No structured record was kept for attempt <span x-text="activityRun + 1"></span>.
+          </div>
+          <div x-show="activity?.tape?.truncated" class="shrink-0 px-4 pt-2 font-mono text-[11px] text-surface-600">Transcript truncated. Open the full raw stage log; it may show a different attempt.</div>
+          <!-- The desktop activity-scroll lives in !isMobile, so this id is shared.
+               x-show reveals the pane on an animation frame, after Alpine's next tick. -->
+          <div id="activity-scroll" class="flex-1 min-h-0 overflow-y-auto px-4 pt-3 pb-4"
+               x-effect="activity; if (detailTab === 'activity' && logFollow) $nextTick(() => requestAnimationFrame(() => { if (detailTab === 'activity' && logFollow) $el.scrollTop = $el.scrollHeight; }))">
+            <template x-if="activityLoading">
+              <p class="font-mono text-xs text-surface-600">Loading activity...</p>
+            </template>
+            <template x-if="!activityLoading && activityError">
+              <div class="font-mono text-xs text-err" role="alert">
+                <p class="whitespace-pre-wrap break-words" x-text="activityError"></p>
+                <button type="button" @click="fetchActivity(activityStage, activityRun)" class="underline">retry activity</button>
+              </div>
+            </template>
+            <template x-if="!activityLoading && !activityError && !activity && !runningRun()">
+              <p class="font-mono text-xs text-surface-600">No completed stage yet.</p>
+            </template>
+            <template x-if="!activityLoading && activity?.live && !tapeEvents().length && !activity.content">
+              <p class="font-mono text-xs text-surface-600">Waiting for the agent's first step...</p>
+            </template>
+            <template x-if="!activityLoading && activity?.tape">
+              <div class="flex flex-col gap-px">
+                <template x-if="!tapeEvents().length && !activity?.live">
+                  <p class="font-mono text-xs text-surface-600">This run produced no recorded activity.</p>
+                </template>
+                <template x-if="hiddenTapeEventCount() > 0">
+                  <button type="button" @click="loadEarlierTapeEvents()"
+                          class="self-start my-2 font-mono text-[11px] text-tx-3 border border-surface-700 rounded-md px-3 py-1 hover:text-tx hover:border-surface-600 transition-colors"
+                          x-text="'load earlier events (' + hiddenTapeEventCount() + ' hidden)'"></button>
+                </template>
+                <template x-for="{ ev, idx } in visibleTapeEvents()" :key="idx">
+                  <div>
+                    <template x-if="ev.kind === 'model'">
+                      <div class="flex items-center gap-3 py-2">
+                        <span class="font-mono text-[10.5px] px-2 py-[2px] rounded-full border border-surface-700 text-tx-faint" x-text="ev.model"></span>
+                        <span class="flex-1 h-px bg-surface-700/70"></span>
+                        <span class="font-mono text-[10.5px] text-tx-faint" x-text="eventTime(ev)"></span>
+                      </div>
+                    </template>
+                    <template x-if="ev.kind === 'text'">
+                      <div class="flex gap-3 py-1">
+                        <span x-show="!tapePartial('time')" class="shrink-0 w-[46px] font-mono text-[10.5px] text-tx-faint" x-text="eventTime(ev)"></span>
+                        <div class="flex-1 min-w-0 border-l-2 border-accent/45 pl-3">
+                          <p class="m-0 text-[14.5px] leading-[1.6] text-tx [text-wrap:pretty] whitespace-pre-wrap break-words" x-text="ev.text"></p>
+                        </div>
+                      </div>
+                    </template>
+                    <template x-if="ev.kind === 'tool'">
+                      <div class="flex gap-3 py-[2px]">
+                        <span x-show="!tapePartial('time')" class="shrink-0 w-[46px] font-mono text-[10.5px] text-tx-faint pt-1" x-text="eventTime(ev)"></span>
+                        <div class="flex-1 min-w-0 rounded-md transition-colors cursor-pointer"
+                             :class="toolFailed(ev) ? 'border-l-2 border-st-cancel/60 bg-st-cancel/[0.06] rounded-r-md px-3 py-[7px]' : 'px-[9px] py-1 hover:bg-surface-900'"
+                             @click="toggleTool(ev, idx)">
+                          <div class="flex items-baseline gap-[9px] min-w-0">
+                            <span class="shrink-0 min-w-[42px] font-mono text-[11.5px] font-bold"
+                                  :class="toolFailed(ev) ? 'text-st-cancel' : 'text-accent-bright'" x-text="ev.tool"></span>
+                            <span class="flex-1 min-w-0 font-mono text-[11.5px] text-tx-3 truncate" x-text="(ev.arg || '').trim()"></span>
+                            <span class="shrink-0 font-mono text-[11px] text-surface-600" x-show="ev.summary" x-text="'⎿ ' + ev.summary"></span>
+                            <span x-show="toolFailed(ev)" class="shrink-0 font-mono text-[11px] text-st-cancel">failed</span>
+                          </div>
+                          <pre x-show="toolExpanded(ev, idx) && ev.result"
+                               class="mt-2 mb-0 max-h-[320px] overflow-auto font-mono text-[11px] leading-[1.7] text-tx-log whitespace-pre-wrap break-words" x-text="ev.result"></pre>
+                          <p x-show="toolExpanded(ev, idx) && ev.truncated" class="mt-1 mb-0 font-mono text-[10.5px] text-surface-600">result truncated</p>
+                        </div>
+                      </div>
+                    </template>
+                  </div>
+                </template>
+              </div>
+            </template>
+            <template x-if="!activityLoading && activity && !activity.tape && activity.content">
+              <pre class="m-0 font-mono text-xs leading-[1.85] text-tx-log whitespace-pre-wrap break-words" x-html="renderLogHTML(activity.content)"></pre>
+            </template>
           </div>
         </div>
 
@@ -6709,7 +6823,7 @@
           <div class="mobile-sheet-handle" aria-hidden="true"></div>
           <div class="mobile-sheet-heading">
             <h2 id="mobile-sheet-title" class="font-mono text-sm text-tx-2 m-0"
-                x-text="({ navigation: 'Navigation', actions: 'Ticket actions', schedule: 'Start later', assistant: 'Assistant', new: 'New ticket' })[sheet.type] || 'Ticket' "></h2>
+                x-text="({ navigation: 'Navigation', actions: 'Ticket actions', schedule: 'Start later', assistant: 'Assistant', new: 'New ticket', compose: 'Compose message' })[sheet.type] || 'Ticket' "></h2>
             <button type="button" @click="closeSheet()" class="mobile-sheet-close" data-mobile-sheet-initial-focus>Close</button>
           </div>
 
@@ -6720,6 +6834,20 @@
                         :aria-current="currentView === view.key ? 'page' : null" x-text="view.label"></button>
               </template>
             </nav>
+          </template>
+
+          <template x-if="sheet.type === 'compose'">
+            <form @submit.prevent="submitComposeMobile()" class="flex flex-col gap-3 p-4 overflow-y-auto">
+              <label for="mobile-compose-message" class="font-mono text-xs text-tx-3">Message</label>
+              <textarea id="mobile-compose-message" x-model="mobileComposeDraft" rows="5"
+                        class="w-full p-3 rounded-md border border-edge-input bg-surface-deep text-tx text-base"
+                        placeholder="Write a message to the agent"></textarea>
+              <div class="flex gap-3">
+                <button type="button" @click="closeSheet()" class="mobile-sheet-close">Cancel</button>
+                <button type="submit" :disabled="!terminalRW || !terminalConnected || !mobileComposeDraft.trim()"
+                        class="mobile-sheet-primary">Send</button>
+              </div>
+            </form>
           </template>
 
           <!-- actions sheet -->

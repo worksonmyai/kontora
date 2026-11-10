@@ -553,9 +553,9 @@ export function kontoraBoard() {
       this._stopActivityPoll();
       if (this.selectedTicket) {
         if (this.isMobile) this.detailTab = this.activeTab === 'session' ? 'terminal'
-          : (this.activeTab === 'activity' ? 'logs' : 'ticket');
+          : (this.activeTab === 'activity' ? 'activity' : 'ticket');
         else if (this.detailTab === 'terminal') this.activeTab = 'session';
-        else if (this.detailTab === 'logs') this.activeTab = 'activity';
+        else if (['activity', 'logs'].includes(this.detailTab)) this.activeTab = 'activity';
         else if (['session', 'activity'].includes(this.activeTab)) this.activeTab = 'ticket';
       }
       this.$nextTick(() => {

@@ -52,6 +52,37 @@ export function kontoraTerminal() {
       return subject ? (subject.kind === 'automation' ? 'automation:' + subject.id + ':' + subject.n : (subject.source || 'primary') + ':' + subject.id) : null;
     },
 
+    terminalKeys: [
+      { label: 'Esc', name: 'Escape', bytes: '\x1b' },
+      { label: 'Tab', name: 'Tab', bytes: '\t' },
+      { label: '⇤', name: 'Shift+Tab', bytes: '\x1b[Z' },
+      { label: '↑', name: 'Up', bytes: '\x1b[A' },
+      { label: '↓', name: 'Down', bytes: '\x1b[B' },
+      { label: '→', name: 'Right', bytes: '\x1b[C' },
+      { label: '←', name: 'Left', bytes: '\x1b[D' },
+      { label: '^C', name: 'Ctrl+C', bytes: '\x03' },
+      { label: '↵', name: 'Enter', bytes: '\r' },
+    ],
+
+    sendTerminalKey(bytes) {
+      if (!this.terminalRW || !this.terminalConnected) return;
+      termState.term?.input(bytes);
+    },
+
+    sendTerminalCompose(text) {
+      if (!this.terminalRW || !this.terminalConnected || !termState.term || !termState.ws) return false;
+      var clean = text.replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, '');
+      if (!clean.trim()) return false;
+      var term = termState.term;
+      var ws = termState.ws;
+      term.paste(clean);
+      setTimeout(() => {
+        // A mode toggle keeps the Terminal but replaces its socket.
+        if (termState.term === term && termState.ws === ws) this.sendTerminalKey('\r');
+      }, 150);
+      return true;
+    },
+
     outputSubject() {
       if (this.currentView === 'automations') return this.automationsOutputSubject();
       var subject = this.selectedTicket || this.selectedEpic;
@@ -182,7 +213,8 @@ export function kontoraTerminal() {
         fontFamily: "'JetBrains Mono', monospace",
         cursorBlink: this.terminalRW,
         disableStdin: this.isMobile,
-        scrollback: 5000,
+        // tmux uses the alternate screen; zero also removes FitAddon's scrollbar reserve.
+        scrollback: this.isMobile ? 0 : 5000,
         allowProposedApi: true,
       });
       term.loadAddon(fit);

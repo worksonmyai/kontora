@@ -261,7 +261,7 @@ export function kontoraActivity() {
           this.activityRun = completed.run;
           if (this.selectedEpic) this.epicSwitchTab('activity');
           else if (!this.isMobile) this.switchTab('activity');
-          else this.mobileSwitchTab('logs');
+          else this.mobileSwitchTab('activity');
         } else if (this.outputTab() === 'activity') {
           if (!this._activityExplicit && completed &&
               (completed.stage !== this.activityStage || completed.run !== this.activityRun)) {

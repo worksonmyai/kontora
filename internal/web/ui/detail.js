@@ -1501,12 +1501,14 @@ export function kontoraDetail() {
       var subject = this.outputSubject();
       if (!subject || this._appDestroyed) return;
       var generation = this._rawLogEpoch;
-      var content = this.selectedEpic ? null : this.logViewContent;
+      var viewingActivity = this.outputTab() === 'activity';
+      var content = this.selectedEpic || viewingActivity ? null : this.logViewContent;
       if (content === null && this.activity && !this.activity.tape) content = this.activity.content;
       if (content === null || content === undefined) {
         try {
           var url = '/api/tickets/' + encodeURIComponent(subject.id) + '/logs';
-          var stage = this.activityStage || this.logViewStage || subject.stage;
+          var stage = viewingActivity ? this.activityStage : this.logViewStage;
+          stage = stage || subject.stage;
           if (stage) url += '?stage=' + encodeURIComponent(stage);
           var res = await fetch(url);
           if (res.ok) {

@@ -1,5 +1,5 @@
 // The phone-width layer, gated on isMobile: a status tab strip and card list
-// for the board, a full-screen tabbed detail (terminal / logs / ticket), and
+// for the board, a full-screen tabbed detail (terminal / logs / activity / ticket), and
 // bottom sheets for actions and the new-ticket form. It reuses the desktop
 // board's ticket data and operations — only the layout and a few view-state
 // fields (activeColumn, detailTab, sheet) are its own.
@@ -90,7 +90,8 @@ export function kontoraMobile() {
     mobileViewportHeight: 0,
 
     mobileTerminalCompact() {
-      return this.isMobile && this.detailTab === 'terminal' &&
+      var session = this.selectedEpic ? this.epicTab === 'session' : this.detailTab === 'terminal';
+      return this.isMobile && session &&
         (this.terminalRW || (this.mobileViewportHeight > 0 && this.mobileViewportHeight < 500));
     },
 
@@ -388,6 +389,14 @@ export function kontoraMobile() {
           var stage = t.stage;
           if (!stage && t.history && t.history.length) stage = t.history[t.history.length - 1].stage;
           this.fetchStageLogs(t.id, stage);
+        } else if (tab === 'activity') {
+          var target = this._activityExplicit && this.activityStage !== null
+            ? { stage: this.activityStage, run: this.activityRun } : this.activityTarget();
+          if (target && (!this.activity || target.stage !== this.activityStage || target.run !== this.activityRun)) {
+            this.fetchActivity(target.stage, target.run);
+          } else if (this.activity?.live) {
+            this._armActivityPoll(this.activityStage, this.activityRun, true);
+          }
         }
       }
     },
@@ -467,6 +476,21 @@ export function kontoraMobile() {
         cancelled:    { label: 'delete',    run: function() { self.openDeleteModal(); } },
       };
       return map[t && t.status] || { label: 'more', run: function() { self.openActionsSheet(t); } };
+    },
+
+    mobileComposeDraft: '',
+
+    openComposeSheet() {
+      if (this._appDestroyed || !this.terminalRW || !this.terminalConnected) return;
+      this.closeAgentPicker(false);
+      this.sheet = { type: 'compose' };
+      this._syncMobileSheet();
+    },
+
+    submitComposeMobile() {
+      if (this.sheet?.type !== 'compose' || !this.sendTerminalCompose(this.mobileComposeDraft)) return;
+      this.mobileComposeDraft = '';
+      this.closeSheet();
     },
 
     openActionsSheet(t) {

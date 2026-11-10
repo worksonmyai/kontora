@@ -36,6 +36,10 @@ export function kontoraNotify() {
       return NOTIFY_MODES;
     },
 
+    notifyHasChannels() {
+      return (this.configCache?.channels || []).length > 0;
+    },
+
     // Every status a chip is offered for: the board's, the configured custom
     // ones, and the pseudo-status `waiting`, which is in NOTIFY_STATUSES
     // because a blocked agent is the thing people most want to hear about.

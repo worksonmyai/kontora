@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { after, before, describe, test } from 'node:test';
 import { createRequire } from 'node:module';
 import { chromium, webkit } from 'playwright';
+import { expect } from 'playwright/test';
 
 const require = createRequire(import.meta.url);
 assert.equal(require('playwright/package.json').version, '1.65.0');
@@ -39,11 +40,11 @@ function ticket(id, title, extra = {}) {
 }
 
 // Keys include source and id so a primary PUT cannot save a secondary namesake.
-function fixtures() {
+function fixtures(options = {}) {
   const records = new Map();
   const key = (folder, id) => `${folder}/${id}`;
   const put = t => records.set(key(t.source, t.id), t);
-  put(ticket('kon-draft', 'Primary draft'));
+  put(ticket('kon-draft', 'Primary draft', options.ticket));
   put(ticket(longID, 'Long identifier fixture'));
   put(ticket('kon-archived', 'Archived fixture', { status: 'done', archived_at: stamp }));
   put(ticket('kon-draft', 'Secondary namesake', { source, kontora: false,
@@ -66,9 +67,14 @@ function fixtures() {
     pipeline_infos: [{ name: 'standard', stages: ['plan', 'code'] }],
     agents: ['fixture-agent'], agent_infos: [{ name: 'fixture-agent', binary: 'pi' }],
     projects: [{ name: 'Fixture repository', path: '/fixtures/repository-with-a-long-name', agent: 'fixture-agent', pipeline: 'standard' }],
-    custom_statuses: [], stages: ['plan', 'code'] };
+    custom_statuses: [], stages: ['plan', 'code'], channels: [], default_channels: [], ...options.config };
   const requests = [], mutations = [], sockets = [], socketRoutes = [], messages = [], violations = [], expectedHTTPFailures = [];
-  const behavior = { createFailure: null, createWait: null, saveFailure: null, outputRevision: 0, unavailableFolder: false, sourcesFailure: false };
+  const behavior = { createFailure: null, createWait: null, saveFailure: null, outputRevision: 0, unavailableFolder: false, sourcesFailure: false,
+    configFailure: options.configFailure || false };
+  let releaseConfig = () => {}, configReads = 0;
+  // Startup awaits config before showing tickets. Fail that read, then hold
+  // retries so the real UI can open the start dialog with config still null.
+  const configWait = options.configRetryPending ? new Promise(resolve => { releaseConfig = resolve; }) : null;
   let rawConfig = 'tickets_dir: /fixtures/primary\nauto_pick_up: false\nmax_concurrent_agents: 3\nagents:\n  fixture-agent:\n    binary: pi\n';
   const list = folder => [...records.values()].filter(t => t.source === folder && !t.archived_at);
   const json = (route, value, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(value) });
@@ -81,7 +87,13 @@ function fixtures() {
     assert.ok([...url.searchParams.keys()].every(k => allowedQuery.includes(k)), `Unexpected query: ${url}`);
     if (method === 'GET') {
       switch (path) {
-        case '/api/config': return json(route, config);
+        case '/api/config':
+          if (behavior.configFailure || (options.configRetryPending && ++configReads === 1)) {
+            expectedHTTPFailures.push(base + path);
+            return json(route, { error: 'Configuration temporarily unavailable' }, 503);
+          }
+          if (configWait) await configWait;
+          return json(route, config);
         case '/api/ticket-sources':
           if (behavior.sourcesFailure) {
             expectedHTTPFailures.push(base + path);
@@ -239,13 +251,13 @@ function fixtures() {
       };
     });
   }
-  return { install, records, requests, mutations, sockets, socketRoutes, messages, violations, behavior, expectedHTTPFailures };
+  return { install, records, requests, mutations, sockets, socketRoutes, messages, violations, behavior, expectedHTTPFailures, releaseConfig };
 }
 
-async function withPage(t, width, theme, run) {
+async function withPage(t, width, theme, run, options = {}) {
   const context = await browser.newContext({ viewport: { width, height: 900 }, colorScheme: theme,
     reducedMotion: 'reduce', serviceWorkers: 'block', locale: 'en-US', timezoneId: 'UTC' });
-  const fixture = fixtures(), errors = [];
+  const fixture = fixtures(options), errors = [];
   await fixture.install(context);
   await context.addInitScript(theme => {
     localStorage.setItem('kontora-theme', theme);
@@ -266,6 +278,7 @@ async function withPage(t, width, theme, run) {
     await ready(page);
     await run(page, fixture);
   } finally {
+    fixture.releaseConfig();
     await context.close();
     assert.deepEqual(fixture.violations, [], 'Unexpected requests (all must be explicitly modelled)');
     assert.deepEqual(errors, [], 'Browser/Alpine/console errors');
@@ -1281,6 +1294,177 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
         }
         assert.ok(fixture.sockets.length >= 3);
       });
+    });
+  }
+});
+
+describe('start-dialog notification availability', () => {
+  async function openStartDialog(page) {
+    await openTicket(page, 'kon-draft');
+    await page.getByRole('button', { name: /^(queue|initialize|start)$/i }).filter({ visible: true }).first().click();
+    const dialog = page.getByRole('dialog', { name: /Primary draft$/ });
+    await visible(dialog);
+    return dialog;
+  }
+
+  async function choices(page) {
+    return page.evaluate(() => {
+      const form = Alpine.$data(document.body).initForm;
+      return { notify: [...form.notify], notify_channels: [...form.notifyChannels] };
+    });
+  }
+
+  async function unavailableControls(dialog, loading = false) {
+    const group = dialog.getByRole('group', { name: 'notify me', exact: true });
+    assert.equal(await group.getAttribute('aria-describedby'), loading ? 'init-notify-loading' : 'init-notify-unavailable');
+    await expect(group).toHaveAccessibleDescription(loading
+      ? 'Waiting for notification configuration. If loading does not finish, close and reopen this dialog to retry.'
+      : /No notification channels are configured\..*To start without notifications, select off first, even if it is already selected\. Configure notifications/);
+    assert.equal(await group.getByRole('radiogroup', { name: 'notify me', exact: true }).count(), 1);
+    assert.equal(await group.getByRole('radio').count(), 3);
+    for (const radio of await group.getByRole('radio').all()) {
+      const off = (await radio.textContent()).trim().toLowerCase() === 'off';
+      assert.equal(await radio.isDisabled(), loading || !off);
+    }
+    assert.equal(await dialog.getByRole('button', { name: 'custom', exact: true }).isDisabled(), true);
+    const chips = dialog.locator('button.notify-chip');
+    assert.ok(await chips.count(), 'Custom status controls exist even when collapsed');
+    for (const chip of await chips.all()) assert.equal(await chip.isDisabled(), true);
+  }
+
+  async function noChannelGuidance(dialog) {
+    const help = dialog.locator('#init-notify-help');
+    await visible(help);
+    assert.match((await help.innerText()).replace(/\s+/g, ' '), /No notification channels are configured\..*notifications\.channels.*restart the daemon\. To start without notifications, select off first, even if it is already selected\./);
+    const link = help.getByRole('link');
+    assert.equal(await link.getAttribute('href'), 'https://worksonmyai.github.io/kontora/configuration/#notifications');
+    assert.equal(await link.getAttribute('target'), '_blank');
+    assert.deepEqual((await link.getAttribute('rel')).split(/\s+/).sort(), ['noopener', 'noreferrer']);
+    await link.scrollIntoViewIfNeeded();
+    await inViewport(link);
+  }
+
+  async function start(page, fixture, dialog) {
+    const [response] = await Promise.all([
+      page.waitForResponse(r => r.url() === base + '/api/tickets/kon-draft/init' && r.request().method() === 'POST'),
+      dialog.getByRole('button', { name: 'start ticket', exact: true }).click(),
+    ]);
+    assert.equal(response.status(), 200);
+    await dialog.waitFor({ state: 'hidden' });
+    assert.equal(fixture.mutations.length, 1, 'Notification choices must not autosave before init');
+    const mutation = fixture.mutations[0];
+    assert.equal(mutation.method, 'POST');
+    assert.equal(mutation.path, '/api/tickets/kon-draft/init');
+    return { notify: mutation.body.notify, notify_channels: mutation.body.notify_channels };
+  }
+
+  for (const width of [1280, 390]) {
+    test(`no configured channels, already off / ${width}px`, async t => {
+      await withPage(t, width, 'dark', async (page, fixture) => {
+        const dialog = await openStartDialog(page);
+        await unavailableControls(dialog);
+        await noChannelGuidance(dialog);
+        const off = dialog.getByRole('radio', { name: 'off', exact: true });
+        assert.equal(await off.getAttribute('aria-checked'), 'true');
+        const submit = dialog.getByRole('button', { name: 'start ticket', exact: true });
+        assert.equal(await submit.isDisabled(), false);
+        await inViewport(submit);
+        await noPageOverflow(page);
+        assert.deepEqual(await start(page, fixture, dialog), { notify: [], notify_channels: [] });
+      }, { config: { channels: [], default_channels: [] }, ticket: { notify: [], notify_channels: [] } });
+    });
+  }
+
+  for (const notify of [['paused', 'done'], []]) {
+    test(`removed channel keeps initial choices until explicit Off recovery / ${notify.length ? 'enabled' : 'already off'}`, async t => {
+      const initial = { notify, notify_channels: ['removed-channel'] };
+      await withPage(t, 1280, 'dark', async (page, fixture) => {
+        const dialog = await openStartDialog(page);
+        await unavailableControls(dialog);
+        await noChannelGuidance(dialog);
+        assert.deepEqual(await choices(page), initial);
+        assert.equal(await dialog.getByRole('radio', { name: 'off', exact: true }).getAttribute('aria-checked'), String(!notify.length));
+        for (const status of ['paused', 'done']) {
+          assert.equal(await dialog.locator(`.notify-chip[data-status="${status}"]`).getAttribute('aria-pressed'), String(notify.includes(status)));
+        }
+        assert.deepEqual(fixture.mutations, []);
+        await dialog.getByRole('radio', { name: 'off', exact: true }).click();
+        assert.deepEqual(await choices(page), { notify: [], notify_channels: [] });
+        assert.equal(await dialog.getByRole('radio', { name: 'off', exact: true }).getAttribute('aria-checked'), 'true');
+        assert.deepEqual(await start(page, fixture, dialog), { notify: [], notify_channels: [] });
+      }, { config: { channels: [], default_channels: [] }, ticket: initial });
+    });
+  }
+
+  test('one configured channel without an inherited route enables choices and requires a channel', async t => {
+    await withPage(t, 390, 'dark', async (page, fixture) => {
+      const dialog = await openStartDialog(page);
+      const group = dialog.getByRole('radiogroup', { name: 'notify me', exact: true });
+      for (const radio of await group.getByRole('radio').all()) assert.equal(await radio.isDisabled(), false);
+      assert.equal(await dialog.getByRole('button', { name: 'custom', exact: true }).isDisabled(), false);
+      assert.equal(await dialog.locator('#init-notify-help').isVisible(), false);
+      const notificationGroup = dialog.getByRole('group', { name: 'notify me', exact: true });
+      assert.equal(await notificationGroup.getAttribute('aria-describedby'), null);
+      await expect(notificationGroup).toHaveAccessibleDescription('');
+      const needs = group.getByRole('radio', { name: 'when it needs me', exact: true });
+      await needs.click();
+      assert.deepEqual(await choices(page), { notify: ['paused', 'human_review', 'waiting'], notify_channels: [] });
+      const submit = dialog.getByRole('button', { name: 'start ticket', exact: true });
+      assert.equal(await submit.isDisabled(), false);
+      await submit.click();
+      const error = dialog.getByText('Choose a notification channel, configure an inherited route, or turn notifications off.', { exact: true });
+      await visible(error);
+      assert.deepEqual(fixture.mutations, []);
+      assert.equal(fixture.requests.includes('POST /api/tickets/kon-draft/init'), false);
+      const channel = dialog.getByRole('button', { name: 'ops', exact: true });
+      assert.equal(await channel.isDisabled(), false);
+      await channel.click();
+      await error.waitFor({ state: 'hidden' });
+      await group.getByRole('radio', { name: 'off', exact: true }).click();
+      assert.deepEqual(await choices(page), { notify: [], notify_channels: ['ops'] });
+      await needs.click();
+      assert.equal(await channel.getAttribute('aria-pressed'), 'true');
+      assert.deepEqual(await start(page, fixture, dialog), {
+        notify: ['paused', 'human_review', 'waiting'], notify_channels: ['ops'],
+      });
+    }, { config: { channels: ['ops'], default_channels: [] }, ticket: { notify: [], notify_channels: [] } });
+  });
+
+  for (const pending of [true, false]) {
+    test(`${pending ? 'pending' : 'failed'} config disables even Off without changing initial choices`, async t => {
+      const initial = { notify: ['paused'], notify_channels: ['ops'] };
+      await withPage(t, 1280, 'dark', async (page, fixture) => {
+        const failure = pending ? null : page.waitForResponse(r => r.url() === base + '/api/config' && r.status() === 503);
+        let dialog = await openStartDialog(page);
+        if (failure) await failure;
+        await unavailableControls(dialog, true);
+        const help = dialog.locator('#init-notify-help');
+        await visible(help);
+        assert.match(await help.innerText(), /loading/i);
+        assert.equal(await help.getByRole('link').isVisible(), false);
+        assert.deepEqual(await choices(page), initial);
+        assert.deepEqual(fixture.mutations, []);
+        if (pending) {
+          fixture.releaseConfig();
+        } else {
+          fixture.behavior.configFailure = false;
+          await dialog.getByRole('button', { name: 'cancel', exact: true }).click();
+          dialog = await openStartDialog(page);
+        }
+        await page.waitForFunction(() => {
+          const radios = document.querySelectorAll('[aria-labelledby="init-modal-title"] [role="radio"]');
+          return radios.length === 3 && [...radios].every(radio => !radio.disabled);
+        });
+        await help.waitFor({ state: 'hidden' });
+        const group = dialog.getByRole('group', { name: 'notify me', exact: true });
+        assert.equal(await group.getAttribute('aria-describedby'), null);
+        await expect(group).toHaveAccessibleDescription('');
+        assert.equal(await dialog.getByRole('button', { name: 'custom', exact: true }).isDisabled(), false);
+        assert.equal(await dialog.getByRole('button', { name: 'ops', exact: true }).isDisabled(), false);
+        assert.deepEqual(await choices(page), initial);
+        assert.deepEqual(await start(page, fixture, dialog), initial);
+      }, { configRetryPending: pending, configFailure: !pending,
+        config: { channels: ['ops'], default_channels: ['ops'] }, ticket: initial });
     });
   }
 });

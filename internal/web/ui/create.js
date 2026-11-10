@@ -528,6 +528,13 @@ export function kontoraCreate() {
       document.getElementById(ticket.kind === 'epic' ? 'init-agent' : 'init-pipeline')?.focus();
     },
 
+    initPickNotifyMode(key) {
+      if (!this.configCache || (!this.notifyHasChannels() && key !== 'off')) return;
+      this.notifyPickMode(this.initForm, key);
+      if (key === 'off' && !this.notifyHasChannels()) this.initForm.notifyChannels = [];
+      this.initNotifyOpen = false;
+    },
+
     onInitPipelineChange() {
       this.initForm.pipeline = this.initForm.kind === 'epic' ? ''
         : this.pipelinePreview(this.initForm.pipelineChoice, this._initInherited);

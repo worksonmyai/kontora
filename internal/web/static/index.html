@@ -1117,23 +1117,28 @@
                channel is stated rather than asked for. An unrouted notification
                exposes the channel picker so the ticket cannot start silently.
                The full status set is one click away under `custom`. -->
-          <div class="flex flex-col gap-[8px]">
+          <div class="flex flex-col gap-[8px]" role="group" aria-label="notify me"
+               :aria-describedby="!configCache ? 'init-notify-loading' : (!notifyHasChannels() ? 'init-notify-unavailable' : null)">
             <label class="font-mono text-[11px] tracking-[.06em] uppercase text-tx-faint">notify me</label>
             <div class="flex items-center gap-[10px] flex-wrap">
               <div class="notify-seg" role="radiogroup" aria-label="notify me">
                 <template x-for="m in notifyModes()" :key="m.key">
                   <button type="button" role="radio" :aria-checked="notifyModeOf(initForm) === m.key"
-                          @click="notifyPickMode(initForm, m.key); initNotifyOpen = false"
+                          :disabled="!configCache || (!notifyHasChannels() && m.key !== 'off')"
+                          class="disabled:opacity-50 disabled:cursor-not-allowed"
+                          @click="initPickNotifyMode(m.key)"
                           x-text="m.label"></button>
                 </template>
               </div>
               <span x-show="!notifyPicksChannel(initForm)" class="font-mono text-[11px] text-surface-600" x-text="notifyWhere(initForm)"></span>
-              <button type="button" class="ml-auto font-mono text-[11px] text-accent hover:underline"
+              <button type="button" class="ml-auto font-mono text-[11px] text-accent hover:underline disabled:opacity-50 disabled:cursor-not-allowed"
+                      :disabled="!configCache || !notifyHasChannels()"
                       :aria-expanded="initNotifyOpen" @click="initNotifyOpen = !initNotifyOpen">custom</button>
             </div>
             <div x-show="initNotifyOpen" class="flex flex-wrap items-center gap-[6px] px-[10px] py-[9px] bg-surface-800 border border-surface-700 rounded-[7px]">
               <template x-for="s in notifyStatuses()" :key="s">
-                <button type="button" class="notify-chip" :data-status="s"
+                <button type="button" class="notify-chip disabled:opacity-50 disabled:cursor-not-allowed" :data-status="s"
+                        :disabled="!configCache || !notifyHasChannels()"
                         :data-on="notifyStatusOn(initForm, s) ? '1' : null"
                         :aria-pressed="notifyStatusOn(initForm, s)"
                         @click="notifyToggleStatus(initForm, s)" x-text="s"></button>
@@ -1145,7 +1150,8 @@
               <div class="flex flex-col gap-[6px]">
                 <div class="flex flex-wrap items-center gap-[6px]">
                   <template x-for="c in notifyChannelChips(initForm)" :key="c.key">
-                    <button type="button" class="notify-chip" :data-kind="c.kind"
+                    <button type="button" class="notify-chip disabled:opacity-50 disabled:cursor-not-allowed" :data-kind="c.kind"
+                            :disabled="!configCache || !notifyHasChannels()"
                             :data-on="c.on ? '1' : null" :aria-pressed="c.on"
                             @click="notifyToggleChannel(initForm, c)" x-text="c.label"></button>
                   </template>
@@ -1153,6 +1159,12 @@
                 <p class="m-0 text-[11px] leading-[1.5] text-surface-600" x-text="notifyChannelHint(initForm)"></p>
               </div>
             </template>
+            <p id="init-notify-help" x-show="!configCache || !notifyHasChannels()" class="m-0 text-[11px] leading-[1.5] text-surface-600">
+              <span id="init-notify-loading" x-show="!configCache">Waiting for notification configuration. If loading does not finish, close and reopen this dialog to retry.</span>
+              <span id="init-notify-unavailable" x-show="configCache && !notifyHasChannels()">No notification channels are configured. Add a channel in <code>notifications.channels</code>, then restart the daemon. To start without notifications, select off first, even if it is already selected.
+                <a href="https://worksonmyai.github.io/kontora/configuration/#notifications" target="_blank" rel="noopener noreferrer" class="text-accent hover:underline">Configure notifications</a>
+              </span>
+            </p>
             <p class="m-0 font-mono text-[11px] text-tx-3" x-text="notifyEcho(initForm)"></p>
           </div>
           <p x-show="initForm.kind === 'epic'" class="text-[11px] text-surface-600">All sub-tickets must use this repository. Pausing stops only the supervisor; child agents keep running.</p>

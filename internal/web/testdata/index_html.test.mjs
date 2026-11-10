@@ -17152,7 +17152,7 @@ test('supervisor capacity is a restart-only integer with a default of four', asy
 // ─── notify row ───
 
 // One channel, one project, so the resolution has all three levels to walk.
-function notifyState(overrides = {}) {
+function notifyState(overrides = {}, config = {}) {
   const state = loadKontoraState(overrides);
   state.configCache = {
     pipelines: ["build"],
@@ -17160,9 +17160,107 @@ function notifyState(overrides = {}) {
     channels: ["tg"],
     default_channels: ["tg"],
     projects: [{ name: "kontora", path: "~/projects/kontora", resolved_path: "/home/a/projects/kontora" }],
+    ...config,
   };
   return state;
 }
+
+for (const [name, config, expected] of [
+  ["loading", null, false],
+  ["omitted channels", {}, false],
+  ["null channels", { channels: null }, false],
+  ["empty channels", { channels: [] }, false],
+  ["one channel without a route", { channels: ["tg"] }, true],
+  ["multiple channels", { channels: ["tg", "ops"] }, true],
+]) {
+  test(`notification availability follows configured channels: ${name}`, () => {
+    const state = notifyState();
+    state.configCache = config;
+    assert.equal(state.notifyHasChannels(), expected);
+  });
+}
+
+for (const [name, config, key, allowed, channels] of [
+  ["loading Off", null, "off", false, ["removed"]],
+  ["loading enabled", null, "needs", false, ["removed"]],
+  ["unavailable enabled", { channels: [] }, "done", false, ["removed"]],
+  ["removed channel Off", { channels: [] }, "off", true, []],
+  ["omitted channels Off", {}, "off", true, []],
+  ["null channels Off", { channels: null }, "off", true, []],
+  ["configured channel Off", { channels: ["tg"] }, "off", true, ["tg"]],
+  ["configured channel enabled", { channels: ["tg"] }, "needs", true, ["tg"]],
+]) {
+  test(`the init notification preset handles ${name}`, () => {
+    const state = notifyState();
+    state.configCache = config;
+    const selected = config?.channels?.length ? ["tg"] : ["removed"];
+    state.initForm = { notify: ["done"], notifyChannels: selected };
+    state.initNotifyOpen = true;
+    state.initError = "previous error";
+    state.initPickNotifyMode(key);
+    assert.deepEqual(vmValue(state.initForm.notify), allowed ? (key === "off" ? [] : ["paused", "human_review", "waiting"]) : ["done"]);
+    assert.deepEqual(vmValue(state.initForm.notifyChannels), channels);
+    assert.equal(state.initNotifyOpen, !allowed);
+    assert.equal(state.initError, allowed ? null : "previous error");
+  });
+}
+
+for (const recover of [false, true]) {
+  test(`the init modal starts without channels${recover ? " after explicit Off recovery" : " when already off"}`, async () => {
+    const seen = [];
+    const ticket = { id: "kon-1", path: "~/projects/kontora", notify: recover ? ["done"] : [], notify_channels: recover ? ["removed"] : [] };
+    const state = notifyState({ fetch: async (url, options) => {
+      seen.push({ url, options });
+      return { ok: true, json: async () => ticket };
+    } }, { channels: [], default_channels: [] });
+    state.$nextTick = () => Promise.resolve();
+    await state.openInitModal(ticket);
+    assert.deepEqual(vmValue(state.initForm.notify), ticket.notify);
+    assert.deepEqual(vmValue(state.initForm.notifyChannels), ticket.notify_channels);
+    assert.equal(state.initNotifyOpen, false);
+    if (recover) state.initPickNotifyMode("off");
+    await state.submitInitTicket();
+    const posts = seen.filter(r => r.options?.method === "POST");
+    assert.equal(posts.length, 1);
+    assert.equal(posts[0].url, "/api/tickets/kon-1/init");
+    const body = JSON.parse(posts[0].options.body);
+    assert.deepEqual(body.notify, []);
+    assert.deepEqual(body.notify_channels, []);
+    assert.equal(state.initError, null);
+    assert.equal(state.initModal, false);
+  });
+}
+
+test("refreshing running channels changes availability without changing the init draft", () => {
+  const state = notifyState();
+  state.initModal = true;
+  state.initForm = { notify: ["done"], notifyChannels: ["removed"] };
+  state.settingsConfig = { notifications: { channels: { unsaved: {} } } };
+  for (const channels of [[], ["tg"], [], ["tg", "ops"]]) {
+    state.configCache = { ...state.configCache, channels };
+    assert.equal(state.notifyHasChannels(), channels.length > 0);
+    assert.deepEqual(vmValue(state.initForm.notify), ["done"]);
+    assert.deepEqual(vmValue(state.initForm.notifyChannels), ["removed"]);
+  }
+});
+
+test("the start dialog binds notification availability and accessible configuration guidance", () => {
+  const html = fs.readFileSync(htmlPath, 'utf8');
+  const modal = html.slice(html.indexOf('role="group" aria-label="notify me"'), html.indexOf('<!-- Delete ticket modal -->'));
+  assert.match(modal, /:aria-describedby="!configCache \? 'init-notify-loading' : \(!notifyHasChannels\(\) \? 'init-notify-unavailable' : null\)"/);
+  assert.match(modal, /:disabled="!configCache \|\| \(!notifyHasChannels\(\) && m\.key !== 'off'\)"/);
+  assert.match(modal, /@click="initPickNotifyMode\(m\.key\)"/);
+  assert.doesNotMatch(modal, /notifyPickMode\(initForm/);
+  assert.equal((modal.match(/:disabled="!configCache \|\| !notifyHasChannels\(\)"/g) || []).length, 3);
+  assert.equal((modal.match(/disabled:opacity-50 disabled:cursor-not-allowed/g) || []).length, 5);
+  assert.match(modal, /id="init-notify-help" x-show="!configCache \|\| !notifyHasChannels\(\)"/);
+  assert.match(modal, /id="init-notify-loading" x-show="!configCache">Waiting for notification configuration\. If loading does not finish, close and reopen this dialog to retry\./);
+  assert.match(modal, /id="init-notify-unavailable" x-show="configCache && !notifyHasChannels\(\)">No notification channels/);
+  assert.match(modal, /To start without notifications, select off first, even if it is already selected\./);
+  assert.match(modal, /notifications\.channels<\/code>, then restart the daemon/);
+  assert.match(modal, /<a href="https:\/\/worksonmyai\.github\.io\/kontora\/configuration\/#notifications" target="_blank" rel="noopener noreferrer"[^>]*>Configure notifications<\/a>/);
+  assert.match(modal, /<\/template>\s*<p id="init-notify-help"/);
+});
 
 test("the notify mode is read off the statuses instead of being stored beside them", () => {
   const state = notifyState();

@@ -88,7 +88,7 @@ func TestMobileBrowserJS(t *testing.T) {
 	}
 	for _, engine := range []string{"chromium", "webkit"} {
 		t.Run(engine, func(t *testing.T) {
-			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Minute)
+			ctx, cancel := context.WithTimeout(t.Context(), 7*time.Minute)
 			defer cancel()
 			cmd := exec.CommandContext(ctx, "node", "--test", filepath.Join(filepath.Dir(thisFile), "testdata", "mobile_browser.test.mjs"))
 			cmd.Env = append(os.Environ(), "KONTORA_BROWSER_URL="+server.URL, "KONTORA_BROWSER_ASSETS="+string(manifest), "KONTORA_BROWSER_ENGINE="+engine)

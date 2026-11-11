@@ -333,11 +333,17 @@ function fixtures(options = {}) {
     // Install BOTH interception layers before creating/navigating the page.
     // No catch-all API success, external fallthrough, service worker or live WS.
     await context.route('**/*', async route => {
-      const url = new URL(route.request().url());
+      const request = route.request(), url = new URL(request.url());
       try {
         assert.equal(url.origin, base, `External request: ${url}`);
+        if (url.protocol === 'blob:') {
+          // WebKit intercepts Raw log popups even though Blob URLs never reach the server.
+          assert.equal(request.method(), 'GET');
+          assert.ok(request.isNavigationRequest(), `Unexpected Blob request: ${url}`);
+          return await route.continue();
+        }
         if (url.pathname.startsWith('/api/')) return await api(route, url);
-        assert.equal(route.request().method(), 'GET');
+        assert.equal(request.method(), 'GET');
         // index.html names its scripts and stylesheets with a ?v= content hash.
         assert.ok(assets.has(url.pathname) && (!url.search || /^\?v=[0-9a-f]+$/.test(url.search)), `Unknown asset: ${url}`);
         return await route.continue();
@@ -1407,6 +1413,9 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
         await detail.getByRole('button', { name: '⧉ raw', exact: true }).click();
         const popup = await popupPromise;
         await popup.waitForLoadState('domcontentloaded');
+        const url = new URL(popup.url());
+        assert.equal(url.protocol, 'blob:');
+        assert.equal(url.origin, base);
         assert.equal(await popup.locator('body').innerText(), 'kon-live test fixture log revision 1\n');
         await popup.close();
       });
@@ -2059,6 +2068,34 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
       });
     });
   }
+  test('the harness permits only same-origin GET navigations for Blob requests', async () => {
+    const fixture = fixtures();
+    let handler;
+    // Chromium can resolve Blob URLs without routing them, so exercise the handler directly.
+    await fixture.install({
+      route: async (pattern, callback) => { assert.equal(pattern, '**/*'); handler = callback; },
+      routeWebSocket: async () => {},
+      addInitScript: async () => {},
+    });
+    const local = `blob:${base}/01234567-89ab-4cde-8f01-23456789abcd`;
+    for (const { url, method, navigation, allowed } of [
+      { url: local, method: 'GET', navigation: true, allowed: true },
+      { url: local, method: 'GET', navigation: false, allowed: false },
+      { url: local, method: 'POST', navigation: true, allowed: false },
+      { url: 'blob:https://external.invalid/fixture', method: 'GET', navigation: true, allowed: false },
+      { url: 'blob:null/fixture', method: 'GET', navigation: true, allowed: false },
+    ]) {
+      const actions = [], violations = fixture.violations.length;
+      await handler({
+        request: () => ({ url: () => url, method: () => method, isNavigationRequest: () => navigation }),
+        continue: async () => { actions.push('continue'); },
+        abort: async reason => { actions.push(reason); },
+      });
+      const label = `${method} ${url} navigation=${navigation}`;
+      assert.deepEqual(actions, [allowed ? 'continue' : 'blockedbyclient'], label);
+      assert.equal(fixture.violations.length, violations + (allowed ? 0 : 1), label);
+    }
+  });
   test('the harness rejects unmodelled API, asset, external HTTP and WebSocket requests', async () => {
     const context = await browser.newContext({ serviceWorkers: 'block' });
     const fixture = fixtures();

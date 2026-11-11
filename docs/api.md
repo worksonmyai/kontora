@@ -259,6 +259,8 @@ supported queries itself; unmatched palette queries remain unanswered.
 Focus reports remain input. Inline applications get local scrollback;
 applications using the alternate screen do not. Snapshots cannot restore the
 current text attributes, saved cursor, character sets or custom tab stops from tmux.
+With tmux before 3.7, snapshots also reset bracketed paste and synchronized output
+because tmux does not expose those modes.
 
 ### Secondary ticket sources
 

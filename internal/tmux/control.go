@@ -332,8 +332,9 @@ func (c *Control) ResizeCommand(cols, rows int) string {
 }
 
 // window_panes guards against a window becoming multi-pane after setup.
-// The final field contains existing mode flags in snapshotFlagModes order.
-const snapshotFormat = "#{pane_width}|#{pane_height}|#{cursor_x}|#{cursor_y}|#{alternate_on}|#{history_size}|#{pane_private_modes}|#{keypad_flag}|#{insert_flag}|#{scroll_region_upper}|#{scroll_region_lower}|#{window_panes}|#{keypad_cursor_flag}#{origin_flag}#{wrap_flag}#{cursor_flag}#{mouse_standard_flag}#{mouse_button_flag}#{mouse_all_flag}#{mouse_utf8_flag}#{mouse_sgr_flag}#{bracket_paste_flag}#{synchronized_output_flag}"
+// The final field contains mode flags in snapshotFlagModes order.
+// tmux before 3.7 lacks paste and synchronized-output formats; use zero.
+const snapshotFormat = "#{pane_width}|#{pane_height}|#{cursor_x}|#{cursor_y}|#{alternate_on}|#{history_size}|#{pane_private_modes}|#{keypad_flag}|#{insert_flag}|#{scroll_region_upper}|#{scroll_region_lower}|#{window_panes}|#{keypad_cursor_flag}#{origin_flag}#{wrap_flag}#{cursor_flag}#{mouse_standard_flag}#{mouse_button_flag}#{mouse_all_flag}#{mouse_utf8_flag}#{mouse_sgr_flag}#{?bracket_paste_flag,1,0}#{?synchronized_output_flag,1,0}"
 
 var snapshotFlagModes = [...]int{1, 6, 7, 25, 1000, 1002, 1003, 1005, 1006, 2004, 2026}
 

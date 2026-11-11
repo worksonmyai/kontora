@@ -364,20 +364,29 @@ func TestControlSnapshotModeFormats(t *testing.T) {
 			require.NoError(t, err)
 			defer c.Close()
 			ch := controlEvents(c)
-			hasPrivateModes := strings.Contains("\n"+controlTmux(t, "display-message", "-a", "-t", c.paneTarget()), "\npane_private_modes=")
+			formats := "\n" + controlTmux(t, "display-message", "-a", "-t", c.paneTarget())
+			hasPrivateModes := strings.Contains(formats, "\npane_private_modes=")
+			hasPasteFlag := strings.Contains(formats, "\nbracket_paste_flag=")
 			var first Snapshot
-			for _, format := range []string{"installed", "unsupported"} {
+			for _, format := range []string{"installed", "unsupported", "legacy"} {
 				t.Run(format, func(t *testing.T) {
 					line := c.SnapshotCommand(0)
-					if format == "unsupported" {
+					if format != "installed" {
 						// Unknown keys expand empty, as pane_private_modes does in tmux 3.7c.
 						line = strings.Replace(line, "#{pane_private_modes}", "#{kontora_unsupported_private_modes}", 1)
+					}
+					if format == "legacy" {
+						line = strings.NewReplacer("bracket_paste_flag", "kontora_unsupported_paste", "synchronized_output_flag", "kontora_unsupported_sync").Replace(line)
 					}
 					require.NoError(t, c.Send(line))
 					replies := controlReplies(t, ch, 5)
 					fields := strings.Split(string(replies[0]), "|")
 					require.Len(t, fields, 13)
-					assert.Equal(t, tt.flags, fields[12])
+					flags := tt.flags
+					if !hasPasteFlag || format == "legacy" {
+						flags = flags[:9] + "00"
+					}
+					assert.Equal(t, flags, fields[12])
 					if format == "installed" && hasPrivateModes && tt.set {
 						assert.Equal(t, "7,25,2004", fields[6])
 					} else {
@@ -388,7 +397,8 @@ func TestControlSnapshotModeFormats(t *testing.T) {
 					restore := string(s.Data[bytes.LastIndex(s.Data, fmt.Appendf(nil, "\x1b[1;%dr", s.Rows)):])
 					for _, mode := range []int{7, 25, 2004} {
 						setting, opposite := 'l', 'h'
-						if tt.set {
+						pasteAvailable := hasPasteFlag || (format == "installed" && hasPrivateModes)
+						if tt.set && (mode != 2004 || (pasteAvailable && format != "legacy")) {
 							setting, opposite = opposite, setting
 						}
 						assert.Contains(t, restore, fmt.Sprintf("\x1b[?%d%c", mode, setting))
@@ -396,7 +406,7 @@ func TestControlSnapshotModeFormats(t *testing.T) {
 					}
 					if format == "installed" {
 						first = s
-					} else {
+					} else if format == "unsupported" {
 						assert.Equal(t, first, s)
 					}
 				})

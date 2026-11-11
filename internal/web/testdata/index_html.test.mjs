@@ -2412,6 +2412,77 @@ test("_cardHTML neutralizes HTML in interpolated text (no XSS)", () => {
   assert.match(html, /&lt;img src=x onerror=alert\(1\)&gt;/);
 });
 
+const CARD_PROGRESS_TICKET = {
+  id: "kon-progress", title: "Pipeline progress", kontora: true,
+  status: "in_progress", stage: "code", stages: ["plan", "code", "review"],
+};
+const CARD_PROGRESS_CASES = [
+  { name: "first of three", patch: { stage: "plan" }, percent: 17, label: "Stage 1 of 3: plan" },
+  { name: "middle of three", patch: {}, percent: 50, label: "Stage 2 of 3: code" },
+  { name: "last of three", patch: { stage: "review" }, percent: 83, label: "Stage 3 of 3: review" },
+  { name: "first of two", patch: { stage: "plan", stages: ["plan", "code"] }, percent: 25, label: "Stage 1 of 2: plan" },
+  { name: "last of two", patch: { stages: ["plan", "code"] }, percent: 75, label: "Stage 2 of 2: code" },
+  { name: "child ticket", patch: { parent: { id: "kon-epic" } }, percent: 50, label: "Stage 2 of 3: code" },
+  { name: "uninitialized ticket", patch: { kontora: false }, percent: 50, label: "Stage 2 of 3: code" },
+  { name: "standalone supervisor", patch: { kind: "epic", epic_execution: "agent" } },
+  { name: "supervisor with children", patch: { kind: "epic", epic_execution: "agent", children: [{ id: "kon-child" }] } },
+  ...["open", "todo", "paused", "human_review", "done", "cancelled", "archived"].map(status => ({ name: status, patch: { status } })),
+  { name: "missing status", patch: { status: undefined } },
+  { name: "missing stages", patch: { stages: undefined } },
+  { name: "null stages", patch: { stages: null } },
+  { name: "empty stages", patch: { stages: [] } },
+  { name: "single stage", patch: { stages: ["code"] } },
+  { name: "unknown stage", patch: { stage: "retired" } },
+  { name: "missing stage", patch: { stage: undefined } },
+];
+
+test("cardStageProgress returns null without a ticket", () => {
+  const state = loadKontoraState();
+  assert.equal(state.cardStageProgress(null), null);
+  assert.equal(state.cardStageProgress(undefined), null);
+});
+
+for (const c of CARD_PROGRESS_CASES) {
+  test(`cardStageProgress and desktop render: ${c.name}`, () => {
+    const state = loadKontoraState();
+    const ticket = { ...CARD_PROGRESS_TICKET, ...c.patch };
+    const progress = state.cardStageProgress(ticket);
+    const html = state._cardHTML(ticket, { key: "in_progress" });
+    if (c.percent === undefined) {
+      assert.equal(progress, null);
+      assert.doesNotMatch(html, /class="card-progress"/);
+      return;
+    }
+    assert.deepEqual({ ...progress }, { percent: c.percent, label: c.label });
+    const bar = html.match(/<div class="card-progress"[^>]*>/)?.[0];
+    assert.ok(bar);
+    assert.match(bar, /role="img"/);
+    assert.ok(bar.includes(`aria-label="${c.label}"`));
+    assert.ok(bar.includes(`title="${c.label}"`));
+    assert.doesNotMatch(bar, /aria-valuenow|aria-valuemin|aria-valuemax/);
+    assert.ok(html.includes(`style="width:${c.percent}%"`));
+  });
+}
+
+test("_cardHTML uses the progress helper and escapes its accessible stage label", () => {
+  const state = loadKontoraState();
+  const stage = `review <&> "quoted" 'stage'`;
+  const ticket = { ...CARD_PROGRESS_TICKET, stage, stages: ["plan", stage] };
+  const html = state._cardHTML(ticket, { key: "in_progress" });
+  const label = 'Stage 2 of 2: review &lt;&amp;&gt; &quot;quoted&quot; &#39;stage&#39;';
+  assert.ok(html.includes(`aria-label="${label}"`));
+  assert.ok(html.includes(`title="${label}"`));
+
+  let received;
+  state.cardStageProgress = t => { received = t; return { percent: 42, label: "Shared progress" }; };
+  const shared = state._cardHTML(ticket, { key: "in_progress" });
+  assert.equal(received, ticket);
+  assert.match(shared, /aria-label="Shared progress"/);
+  assert.match(shared, /width:42%/);
+  state.cardStageProgress = () => null;
+  assert.doesNotMatch(state._cardHTML(ticket, { key: "in_progress" }), /class="card-progress"/);
+});
+
 test("_cardHTML renders an in-progress card with selection, glyph, bars, and a live duration span", () => {
   const state = loadKontoraState();
   state.selectedTicket = { id: "sta-2" };
@@ -3277,7 +3348,13 @@ test("mobile cards keep their content and state hooks without decorative indicat
   for (const name of ['mobile-card-row', 'mobile-card-meta', 'mobile-card-id']) {
     assert.match(cards, new RegExp(`class="[^"]*\\b${name}\\b`));
   }
-  assert.match(cards, /<p\b[^>]*class="mobile-card-title"[^>]*x-text="ticket\.title"/);
+  const title = cards.match(/<p\b[^>]*class="mobile-card-title"[^>]*>([\s\S]*?)<\/p>/)?.[1];
+  assert.ok(title, 'mobile title has separate tag and text spans');
+  assert.match(title, /<template x-if="parseTitleTag\(ticket\)\.tag">[\s\S]*?<span\b[^>]*class="title-tag"/);
+  assert.match(title, /:data-pipe-color="pipelineColorByName\(parseTitleTag\(ticket\)\.tag\)"/);
+  assert.match(title, /x-text="'\[' \+ parseTitleTag\(ticket\)\.tag \+ '\] '"/);
+  assert.match(title, /<span\b[^>]*x-text="parseTitleTag\(ticket\)\.rest"/);
+  assert.doesNotMatch(title, /x-html=|x-text="ticket\.title"/);
   assert.match(cards, /x-show="showPipelineBadges"/);
   assert.match(cards, /x-if="showAgentMeta && ticket\.agent"/);
   for (const expression of ['ticket.id', 'ticket.agent', 'sourceLabel(ticket)']) {
@@ -3293,6 +3370,18 @@ test("mobile cards keep their content and state hooks without decorative indicat
   assert.match(cards, /epicCardInfo\(ticket\)\.done/);
   assert.match(cards, /formatDuration\(ticket\)/);
   assert.doesNotMatch(cards, /border-left:|pulse-dot|waiting-dot/);
+});
+
+test("mobile cards use the shared progress helper behind a conditional template", () => {
+  const html = fs.readFileSync(htmlPath, 'utf8');
+  const cards = html.split('x-for="ticket in mobileTickets()"')[1].split('<!-- ===== Ticket detail')[0];
+  const progress = [...cards.matchAll(/<template x-if="([^"]+)">([\s\S]*?)<\/template>/g)]
+    .find(([, , body]) => /class="card-progress"/.test(body));
+  assert.ok(progress, 'excluded tickets must not mount a progress bar');
+  assert.equal(progress[1], 'cardStageProgress(ticket)');
+  assert.match(progress[2], /:aria-label="cardStageProgress\(ticket\)\.label"/);
+  assert.match(progress[2], /:style="[^"]*cardStageProgress\(ticket\)\.percent[^"]*%[^"]*"/);
+  assert.doesNotMatch(progress[2], /indexOf\(|Math\.round\(/);
 });
 
 test("mobile sheets retain their dialog heading and actions without repeated titles or dots", () => {
@@ -11052,17 +11141,69 @@ test("mobile output tab labels are plain without changing their targets", () => 
   assert.equal(state.mobileFirstTabLabel(), 'Logs');
 });
 
-test("mobile stage styles distinguish state and leave geometry to CSS", () => {
-  const state = pageState({ id: 'kon-mobile', stage: 'code', stages: ['plan', 'code', 'test'] });
-  assert.equal(state.mobileStageStyle('code'),
-    'background:rgba(var(--surface-800),1);color:rgba(var(--tx),1);border:1px solid rgba(var(--surface-700),1);');
-  assert.equal(state.mobileStageStyle('plan'), 'color:rgba(var(--tx-3),1);');
-  assert.equal(state.mobileStageStyle('test'), 'color:rgba(var(--tx-2),1);');
-  for (const stage of ['plan', 'code', 'test']) {
-    for (const declaration of state.mobileStageStyle(stage).split(';').filter(Boolean)) {
-      assert.ok(['color', 'background', 'border'].includes(declaration.split(':')[0]), declaration);
-    }
-  }
+for (const [status, name, segmentState, token, fill, label] of [
+  ['in_progress', 'code', 'running', '--st-progress', '50%', 'Running'],
+  ['in_progress', 'retired', 'done', '--st-done', '100%', 'Recorded or earlier stage'],
+  ['in_progress', 'cost-only', 'done', '--st-done', '100%', 'Recorded or earlier stage'],
+  ['in_progress', 'test', 'queued', '--surface-600', '0%', 'Not started'],
+  ['paused', 'code', 'done', '--st-paused', '50%', 'paused'],
+  ['human_review', 'code', 'done', '--st-review', '50%', 'human review'],
+]) {
+  test(`mobile ribbon segment styling: ${status} ${name}`, () => {
+    const state = pageState({ id: 'kon-mobile', status, stage: 'code', stages: ['plan', 'code', 'test'] });
+    const seg = { name, state: segmentState };
+    const color = token === '--surface-600' ? `rgb(var(${token}))` : `hsl(var(${token}))`;
+    const foreground = segmentState === 'queued' ? 'rgb(var(--tx-2))' : color;
+    assert.equal(state.mobileStageStyle(seg), `color:${foreground};--mobile-stage-color:${color};--mobile-stage-fill:${fill};`);
+    assert.equal(state.mobileStageState(seg), label);
+    state.logViewStage = name;
+    assert.equal(state.mobileStageStyle(seg), `color:${foreground};--mobile-stage-color:${color};--mobile-stage-fill:${fill};`, 'viewed log does not change execution color');
+  });
+}
+
+for (const [name, history, cost, expected, current = 'code'] of [
+  ['plan', [], null, 'Recorded or earlier stage'],
+  ['plan', [], null, 'Ticket marked done; no recorded run', 'removed'],
+  ['code', [], null, 'Ticket marked done; no recorded run'],
+  ['test', [], null, 'Ticket marked done; no recorded run'],
+  ['retired', [], null, 'Ticket marked done; no recorded run'],
+  ['test', [{ stage: 'test' }], null, 'Recorded or earlier stage'],
+  ['historical', [{ stage: 'historical' }], null, 'Recorded or earlier stage'],
+  ['default', [], { name: 'default', tracked_runs: 1 }, 'Recorded or earlier stage'],
+]) {
+  test(`mobile done-stage evidence: ${name}, current ${current}, history ${history.length}, cost ${!!cost}`, () => {
+    const state = pageState({ id: 'kon-done', status: 'done', stage: current, stages: ['plan', 'code', 'test', 'retired'], history });
+    state.ticketCost = { id: 'kon-done', stages: cost ? [cost] : [] };
+    const seg = state.stageRibbon().find(seg => seg.name === name);
+    assert.equal(state.mobileStageState(seg), expected);
+  });
+}
+
+for (const [history, tracked, status, expected] of [
+  [[], 1, 'done', '1 tracked run · duration unavailable'],
+  [[], 2, 'done', '2 tracked runs · duration unavailable'],
+  [[], 1, 'in_progress', '1 tracked run · 0s'],
+  [[{ stage: 'code', started_at: '2026-08-08T11:00:00Z', completed_at: '2026-08-08T11:00:10Z' }], 1, 'done', '10s · 1 runs'],
+  [[], 0, 'done', '0s · 0 runs'],
+]) {
+  test(`mobile stage metadata: history ${history.length}, tracked ${tracked}, ${status}`, () => {
+    const state = pageState({ id: 'kon-cost', status, stage: 'code', stages: ['code'], history });
+    state.ticketCost = { id: 'kon-cost', stages: [{ name: 'code', tracked_runs: tracked }] };
+    const seg = state.stageRibbon()[0];
+    assert.equal(state.mobileStageMeta(seg), expected);
+    assert.equal(seg.runs, history.length, 'presentation must not change History-based navigation');
+  });
+}
+
+test('mobile progress strip is noninteractive and hidden with secondary metadata', () => {
+  const html = fs.readFileSync(htmlPath, 'utf8');
+  const mobile = html.slice(html.indexOf('<div x-show="isMobile && selectedTicket'));
+  const strip = mobile.split('aria-label="Pipeline stage progress"')[1].split('</div>\n          </template>')[0];
+  assert.match(strip, /x-for="seg in stageRibbon\(\)"/);
+  assert.doesNotMatch(strip, /<button|@click/);
+  assert.match(mobile, /!isSecondary\(selectedTicket\) && !epicIsAgent\(selectedTicket\) && detailTab !== 'logs'/);
+  assert.match(mobile, /:aria-current="logViewStage === seg.name \? 'step' : null"/);
+  assert.match(mobile, /@click="clickStage\(seg.name\)"/);
 });
 
 test("mobile schedule text keeps absolute and relative times with plain punctuation", () => {

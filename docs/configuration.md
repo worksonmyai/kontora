@@ -628,7 +628,7 @@ The `file` function is how stages communicate — an earlier stage writes a file
 
 ### Stage handoffs
 
-Kontora appends handoff instructions to nonempty stage, standalone, resumed, annotation, and rework prompts. These instructions require a results note. In a pipeline, the next stage reads the note.
+Kontora appends handoff instructions to nonempty stage, standalone, resumed, annotation, and rework prompts. These instructions require a results note. In a pipeline, the next stage reads the note. The note covers the outcome, decisions and their reasons, open problems, and test status. It does not restate the ticket or list commands, timings, or temporary log paths. In a pipeline, limits in the stage instructions, such as not committing, apply to that stage only, so agents do not record them as user instructions.
 
 Before asking clarification questions, ticket agents must read the current ticket with `kontora view TICKET_ID`. They must reuse applicable recorded answers and ask only about missing, conflicting, or changed requirements.
 

@@ -2909,11 +2909,15 @@ func buildOperationalAppendix(taskID, filePath, wtPath string, isPipeline bool, 
 	b.WriteString("Submit the answer note using the shared handoff instructions above before continuing work or asking another question round.\n")
 	b.WriteString("Do not defer answer notes until a phase boundary or completion. Continue only after confirming the answer note was saved.\n")
 	b.WriteString("\nIMPORTANT: When you finish your work, write your results as a note on the ticket.\n")
-	b.WriteString("Use the method above. Include all relevant details so they are preserved.")
+	b.WriteString("Use the method above. Write what a reader needs to continue the work: the outcome, decisions and their reasons, open problems, and test status in one or two lines.")
 	if isPipeline {
 		b.WriteString(" The next stage of the pipeline will read this note to continue the work.")
 	}
-	b.WriteString("\nAlso record a few-line summary of what this run did using the same method.\n")
+	b.WriteString("\nDo not restate the ticket or earlier notes. Do not list commands, timings, or temporary log paths.\n")
+	if isPipeline {
+		b.WriteString("Limits in the stage instructions, such as not committing, apply to this stage only. Do not record them as user instructions.\n")
+	}
+	b.WriteString("Also record a few-line summary of what this run did using the same method.\n")
 	if checkpointKind != "" {
 		b.WriteString("\n\n## Phase checkpoints\n")
 		b.WriteString("At each boundary between top-level ticket phases:\n")

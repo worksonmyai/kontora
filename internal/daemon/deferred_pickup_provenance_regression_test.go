@@ -40,6 +40,7 @@ func TestDeferredPickupAnnotationReloadProvenance(t *testing.T) {
 			started := make(chan string, 4)
 			d := h.newAnnotationDaemon(func(_ context.Context, p RunnerParams) (process.Result, error) {
 				started <- p.TicketID
+				publishCompleteResult(t, p)
 				return process.Result{StartedAt: time.Now(), ExitedAt: time.Now(), Termination: process.TerminationProcessGroupGone}, nil
 			}, WithConfigPath(rh.configPath))
 			_, stop := startAnnotationDaemon(t, h, d, id, h.annotationTicketMD(id, "open", ""))

@@ -444,6 +444,9 @@ See [API Reference](api.md) for the full list of endpoints.
 
 Map of agent name to its binary and arguments. The rendered prompt is appended as the last argument.
 
+Custom agents must support the mandatory [ticket result transport](cli.md#ticket-results).
+There is no result opt-out, including for standalone workers.
+
 Kontora resolves `binary` as an executable and passes `args` literally.
 It does not use shell functions or aliases, or read your interactive shell configuration.
 Configure wrappers explicitly in `binary` and `args`; an alias around `claude` does not wrap Kontora's runs.
@@ -503,20 +506,25 @@ provide one, it includes `the turn stopped: <stopReason>`.
 A structured session failure pauses the ticket before pipeline evaluation. The
 daemon runs the matching `stage_end` hooks, but does not consume a retry, advance
 the stage, or add a successful history row. The reason is stored in `last_error`
-and a system note, and appears in ticket views and pause notifications.
+and the failed history row, and appears in ticket views and pause notifications.
 
 If a Pi run writes no session file, the daemon does not inspect an older file.
 It uses the process exit code and the configured output patterns instead.
+The daemon still requires a valid result before advancing the ticket.
 
 ### Resuming after a restart
 
-For ordinary, unsupervised execution, when the daemon stops while an agent is mid-stage, the ticket goes back to `todo` and the stage is scheduled again. Supervised executions first follow the [reconciliation rules](#supervised-recovery) below. The worktree and branch survive, so without resume the agent starts a new conversation on top of its own half-finished work, with no memory of why it made those changes. Resume reattaches the stage to the conversation it was in, and sends `resume_prompt` instead of the stage prompt so the agent continues rather than starts over.
+When the daemon stops mid-stage, all ticket executions first follow the [reconciliation rules](#ticket-recovery) below.
+Recovery can pause a ticket rather than schedule replacement work. When recovery
+permits another launch, the worktree and branch survive. Without conversation
+resume, the agent starts fresh on top of its half-finished work. Resume reuses
+the interrupted conversation and sends `resume_prompt` instead of the stage prompt.
 
 The daemon writes `<logs_dir>/<ticket-id>/<stage>.session` while a stage's agent runs and deletes it as soon as the agent returns. A record left on disk therefore means the daemon itself went away. It is not part of the ticket file: everything it points at, including the Claude session files under `~/.claude/projects/`, is local to one machine.
 
 The record is keyed by stage and holds one session, so the next run of the same stage overwrites it. Which session each individual run wrote is kept in the ticket's history instead, as [`session_kind` and `session_ref`](tickets.md#history), which are identifiers rather than paths for the same machine-local reason.
 
-Conversation reuse requires every condition below. Otherwise the stage runs fresh and logs why. This does not bypass supervised termination and result reconciliation, which can pause the ticket.
+Conversation reuse requires every condition below. Otherwise the stage runs fresh and logs why. This does not bypass termination checks or result reconciliation, which can pause any ticket.
 
 - The agent is `claude` or `pi` and its `resume` is not `false`.
 - The record names this same stage, this same agent, this daemon's `instance_name`, and this worktree.
@@ -525,71 +533,85 @@ Conversation reuse requires every condition below. Otherwise the stage runs fres
 
 Pausing a ticket and running `kontora retry` are deliberate restarts: the daemon is still up when the agent dies, so the record is already gone and the stage starts over.
 
-An agent that had in fact finished its work can exit within a second of resuming, which the tmux startup guard reads as a crash. Rather than pause the ticket, the daemon runs the stage once more from its normal prompt in a new session. That fallback happens at most once per scheduled stage and does not consume a pipeline retry. It only covers a resumed run that failed inside its first two seconds: a run that failed later did work that is now in the worktree, so the ticket pauses instead of repeating it. A submitted supervised result, including an early blocked result, prevents this resume-to-fresh fallback.
+An agent that had in fact finished its work can exit within a second of resuming, which the tmux startup guard reads as a crash. Rather than pause the ticket, the daemon runs the stage once more from its normal prompt in a new session. That fallback happens at most once per scheduled stage and does not consume a pipeline retry. It only covers a resumed run that failed inside its first two seconds: a run that failed later did work that is now in the worktree, so the ticket pauses instead of repeating it. A submitted terminal result, including an early blocked result, prevents this resume-to-fresh fallback.
 
-### Supervised recovery
+### Ticket recovery
 
-Activated epic supervisors and their actual children (including rework) require
-invocation-bound results. Scope is snapshotted from actual membership for each
-invocation and retained for recovery, not inferred from display order or whether
-the supervisor is running. Passive-epic children, unrelated tickets, annotations,
-and assistant-only executions keep their existing result requirements. The
-shared local-authority, result, and escalation instructions are delivered on
-fresh, resumed, and rework runs independently of the replaceable `system_prompt`.
-This does not rewrite stored pipelines or bypass review stages.
+All ticket executions require invocation-bound results, with no opt-out. This
+includes pipeline stages, standalone workers, passive-epic children, activated
+supervisors, and their children, on fresh, resumed, and rework runs.
+Annotation-only runs, dashboard assistants, and summary generation are excluded.
+Automations keep their existing result contract. Result instructions apply
+independently of the replaceable `system_prompt`.
+
+The daemon still snapshots actual epic membership for local-authority instructions
+and recovery. Display order or a running supervisor does not prove membership.
+Within verified epic scope, local-authority and escalation instructions also apply
+on fresh, resumed, and rework runs independently of `system_prompt`.
+Mandatory reporting does not make ordinary workers supervisors or expand Git
+authority. Stored pipelines, review stages, and existing authority limits remain.
+`complete` is the agent's stage report, not independent proof of acceptance.
+Tests, hooks, review stages, and human review remain responsible for acceptance.
 
 The daemon records active invocation metadata before launch, independently of
 optional conversation-resume records, and binds result context after configured
 environment merging. Every physical launch, including retries and resume-to-fresh
-fallback, has a fresh identity. See [result schema, environment, and commands](cli.md#supervised-results).
+fallback, has a fresh identity. See [result schema, environment, and commands](cli.md#ticket-results).
 The daemon records the previous invocation identity before binding the new identity to the ticket.
 It starts the runner after writing the binding and marking the invocation journal `running`.
 
-Startup and stale-self-claim recovery reconcile owned supervised work before
-enqueueing replacement work. They load the complete ticket set and recorded scope,
-confirm termination, and reconcile reports and pending finalization. Foreign
-claims and explicit operator lifecycle changes win.
-Owned supervised windows without journals are also checked, including paused or todo tickets.
-Recovery preserves their operator-selected status while retaining resources until termination is confirmed.
+Startup and stale-self-claim recovery reconcile all owned ticket executions before
+enqueueing replacement work. Ordinary workers use invocation journals and the
+same recovery safeguards as supervisors and their children. Recovery loads the
+complete ticket set and recorded scope, confirms termination, and reconciles
+reports and pending finalization. Foreign claims and explicit operator lifecycle changes win.
+Owned legacy ticket windows without journals also require termination checks,
+including for paused or `todo` tickets. Recovery preserves operator-selected status
+while retaining resources until termination is confirmed.
 Failed cleanup or persistence must not enqueue replacement work. Unknown termination retains the reservation
 and prevents branch reuse; disappearance of a tmux window does not prove arbitrary
-detached descendants stopped. Logs are retained rather than a supervised debug
-shell. A terminal report stops checkpoint continuations, but is not itself a
-request to kill the agent; normal shutdown must finish and termination be checked.
+detached descendants stopped. Logs are retained rather than a debug shell.
+A terminal report stops checkpoint continuations, but does not request termination.
+Normal shutdown must finish, and the daemon must confirm termination.
 
-Supervised Pi ticket agents require TUI mode inside tmux. The daemon refuses
+All Pi ticket executions require TUI mode inside tmux. The daemon refuses
 `--print`/`-p` and `--mode json`/`rpc` for these runs. Pi's TUI abort clears
 queued work after the ordinary final response; its non-TUI abort does not.
 Queue cancellation also applies when that response is truncated or attempts a blocked tool.
 Reporting does not cancel tool calls already prepared in the same parallel batch.
-Unrelated tickets and dashboard assistant modes are unchanged.
+Dashboard assistant modes are unchanged.
 
 | Interrupted state | Recovery |
 |---|---|
 | No terminal report, confirmed termination | Resume the same stage under a fresh invocation identity. |
-| Blocked or malformed report | Pause and expose the reason; preserve worktree and retry count. |
+| Blocked or malformed report | Pause and expose the reason; preserve stage, `attempt`, and worktree. |
 | Complete report without confirmed completion | Resume the same stage for inspection; do not advance from the report alone. |
 | Persisted replayable final transition | Apply idempotently without repeating history or hooks. |
 | Finalization interrupted with uncertain hook effects | Pause for inspection rather than rerunning hooks. |
 
 Finalization writes a marker **before hooks**, then persists a replayable
-transition **after hooks and child checks**. Invocation identity prevents duplicate
-history rows. Metadata is retired only after atomic ticket replacement succeeds.
+transition **after hooks and final validation, including applicable child checks**.
+Invocation identity prevents duplicate history rows. Metadata is retired only after atomic ticket replacement succeeds.
 These guarantees cover daemon-process recovery, not exactly-once arbitrary shell
 effects or host-power-loss durability. Metrics are emitted once per logical run
 within a live daemon; exactly-once telemetry across restarts is not promised.
 
-A blocked report, or a missing/invalid report after clean execution, pauses the
-same stage without entering `on_failure: retry` or `back`. Execution/provider
-failure cannot become success through a complete report. Save escalation answers
-immediately; saving an answer, reading a notification, or dismissing attention
-does not restart work. Retry requires explicit operator action and must inspect
-saved decisions, child state, worktrees, dirty files, and interrupted Git operations.
+A blocked report, or a missing/malformed report after a clean exit, pauses the
+same stage, preserving `attempt` and the worktree. It never enters
+`on_failure: retry` or `back`. A complete report cannot override interruption,
+execution/provider failure, hooks, or final validation. Waiting for a question's
+answer is not terminal blockage; report `blocked` only when execution must stop.
+Save escalation answers immediately. Saving an answer, reading a notification,
+or dismissing attention does not restart work. Retry requires explicit operator
+action and inspection of saved decisions, applicable child state, worktrees,
+dirty files, and interrupted Git operations.
 
-Upgrade CLI and daemon together. Verify effective Pi/Claude instructions before
-enabling autonomous local commits; do not restart live epics or migrate existing
-ticket state as part of rollout. These are workflow/instruction guarantees, not
-an OS publication boundary or independent proof that an agent's claims are true.
+Upgrade CLI and daemon together under operator control. Custom agents need a
+working result transport before running tickets. Verify effective Pi/Claude
+instructions before enabling autonomous local commits. Do not restart live
+executions or migrate existing ticket statuses as part of rollout. These are
+workflow/instruction guarantees, not an OS publication boundary or independent
+proof that an agent's claims are true.
 
 ## stages
 
@@ -676,7 +698,7 @@ If a launched submission fails or lacks acknowledgement, read the ticket before 
 
 Every stage agent is also given a short brief, appended to its own system prompt with `--append-system-prompt`. The stage prompt says what to do; the brief says who is in charge of the ticket.
 
-Kontora decides the ticket's next status from the execution and, for supervised work, its explicit result and final validation. Exit zero alone cannot advance supervised work. An agent that sets the status itself is not signalling an outcome, it is overriding one: the daemon reads any such write as a human's, kills the run and discards the exit, so the step's `on_success` never applies and no final summary is written. An owned supervised run may still record a failed cancellation history entry. The built-in brief states that, points the agent at the shared [handoff instructions](#stage-handoffs), and names the verbs the CLI refuses.
+Kontora decides every ticket execution's next status from execution checks, its explicit result, and final validation. Exit zero alone cannot advance work. An agent that sets the status itself is not signalling an outcome, it is overriding one: the daemon reads any such write as a human's, kills the run and discards the exit, so the step's `on_success` never applies and no final summary is written. An owned ticket execution may still record a failed cancellation history entry. The built-in brief states that, points the agent at the shared [handoff instructions](#stage-handoffs), and names the verbs the CLI refuses.
 
 Those refusals are real, not advice. The daemon exports `KONTORA_TICKET_ID` to the agent, and `done`, `cancel`, `move`, `pause`, `retry`, `skip`, `set-stage` and `schedule` aimed at that ticket are rejected before anything is written, as is `archive`, which sweeps the whole store. A prefix counts: `kontora done kon-q` is refused while `kon-q88f` is running. Everything else, `note` and `summary` included, is untouched, and the same commands work normally against any other ticket and from any shell outside a run.
 
@@ -703,7 +725,7 @@ pipelines:
 |-------|----------|--------|-------------|
 | `stage` | yes | — | Stage to run at this pipeline step. |
 | `agent` | yes | — | Agent to run the stage. |
-| `on_success` | yes | `next`, `done`, `human_review`, or a custom status | What to do when the agent exits 0. |
+| `on_success` | yes | `next`, `done`, `human_review`, or a custom status | What to do after a clean exit, a valid `complete` report, and successful final validation. |
 | `on_failure` | yes | `retry`, `back`, `pause`, `human_review`, or a custom status | What to do when the agent exits non-zero. |
 | `max_retries` | no | integer (default `0`) | Maximum retry attempts (only relevant when `on_failure=retry`). |
 
@@ -930,7 +952,7 @@ receives the daemon's own environment plus:
 | `KONTORA_AGENT` | The configured name of the agent the stage runs. |
 | `KONTORA_PROJECT` | The `projects:` entry that matched, empty when none did. |
 | `KONTORA_EXIT_CODE` | Runner exit status (synthesized for interactive Claude), unchanged by semantic reporting. Set for `stage_end` only. |
-| `KONTORA_RUN_OUTCOME` | Pre-hook semantic agent outcome for supervised execution. Later hook failures or epic child checks can still reject completion; this is not the final history outcome. |
+| `KONTORA_RUN_OUTCOME` | Pre-hook semantic agent outcome for ticket execution. Later hook failures or final validation, including epic child checks, can still reject completion; this is not the final history outcome. |
 
 The top-level `environment:` map is deliberately not merged in: it configures
 agent processes, not hooks. There is no templating in `run` — write
@@ -940,8 +962,8 @@ agent processes, not hooks. There is no templating in `run` — write
 
 A hook that exits non-zero or exceeds its timeout pauses the ticket when its
 resolved `on_failure` is `pause`, and is logged and skipped past when it is
-`warn`. A pause records the failure in `last_error` and as a ticket note, and
-stops the hooks after it in the same event.
+`warn`. A pause adds a ticket note and stops later hooks in the same event.
+It sets `last_error` unless the `stage_end` rules below preserve an existing reason.
 
 A `worktree_created` failure under `pause` removes the worktree the daemon
 created in that pickup before pausing, so retrying the ticket creates it again
@@ -951,12 +973,13 @@ pause reason then names it, and the next pickup runs the `worktree_created`
 hooks again on the worktree that is still there rather than treating it as
 ready. The same applies when the daemon is stopped while these hooks run.
 
-A `stage_end` failure does not change what the pipeline decided: the stage's
-history, its next stage, and its `last_error` are recorded as they would have
-been, and only the status is forced to `paused` on top. The hook's message goes
-into `last_error` only when the pipeline recorded none. A ticket the pipeline
-had completed loses its `completed_at` with the pause, because the run is not
-over.
+A `stage_end` failure under `pause` rejects an otherwise `complete` outcome
+before pipeline evaluation. The ticket stays on the same stage and `attempt`,
+with a failed history row. Already blocked, invalid, or failed runs retain their
+outcome and pipeline transition before the daemon forces the status to `paused`.
+The hook's reason fills `last_error` only when it is empty. The daemon also adds
+a ticket note and clears `completed_at`. Under `warn`, the daemon logs and skips
+the hook failure without rejecting completion.
 
 Copying a gitignored file does not make a worktree dirty, so cleanup on
 completion still works. A hook that writes a tracked file does block removal.

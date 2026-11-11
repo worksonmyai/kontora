@@ -142,6 +142,37 @@ put a ticket there.
 The daemon picks up ordinary tickets and agent epics with `kontora: true` and
 `status: todo`. A passive epic is never picked up, even if its file says `todo`.
 
+## Ticket results
+
+Every ticket execution must submit invocation-bound `complete` or `blocked`, with
+no opt-out. Pipeline stages, standalone workers, passive-epic children, activated
+supervisors, and their children all report on fresh, resumed, and rework runs.
+The requirement is independent of a custom `system_prompt`. Annotation-only
+runs, dashboard assistants, and summary generation are excluded. Automations
+keep their existing result contract.
+
+Complete is the agent's report that its assigned stage is complete. Independent
+tests, hooks, review stages, and human review remain responsible for acceptance.
+A review stage can complete while fixes remain for later stages. Notes, summaries,
+and exit zero cannot replace the report.
+
+A blocked result, or a missing/malformed report after a clean exit, pauses the
+same stage, preserving `attempt` and the worktree. It never enters pipeline retry/back policies.
+Complete cannot override interruption, execution/provider failures, hooks, or
+final validation, including epic child checks. Waiting for a question's answer
+is not terminal blockage; report blocked only when execution must stop.
+`ls --blocked` still lists dependency-blocked `todo` tickets, not paused executions.
+
+Ordinary workers remain workers. Mandatory results grant no new commit, merge,
+rebase, or publication authority. Ordinary invocation journals and legacy ticket
+windows without journals follow the same recovery safeguards. See
+`kontora skills show pipelines 'Ticket results and recovery'` and
+`kontora skills show cli 'kontora result'` for recovery, schema, and transports.
+
+Upgrade CLI and daemon together under operator control. Custom agents must
+support the result transport. Do not restart live executions or migrate existing
+ticket statuses as part of rollout.
+
 ## Relations
 
 `deps` names the tickets this one waits on. The scheduler holds the ticket in
@@ -309,15 +340,12 @@ costs, and a recommended default. Save the question and answer together immediat
 on the current ticket, preserving selected options and free text and distinguishing
 operator answers from assumptions; confirm persistence before continuing. Do not
 silently weaken acceptance requirements or substitute emulation for required
-real-device evidence. If no authorized work remains, submit blocked and stop.
+real-device evidence. If execution must stop because no authorized work remains,
+submit blocked and stop.
 
-Supervisors and their actual children must submit an invocation-bound `complete`
-or `blocked` result for the current stage, including resumed and rework execution,
-independently of a custom `system_prompt`. Stage completion is not whole-ticket
-acceptance. Missing/invalid reports after clean execution pause the same stage;
-notes and exit zero are not substitutes. Unrelated tickets, passive-epic children,
-annotations, and assistant-only runs retain their existing requirements. See
-`kontora skills show cli 'kontora result'` for schema, environment, and transports.
+Supervisors and children follow the same mandatory ticket result contract as
+ordinary workers. Reporting does not expand the local-delivery exception above.
+See `kontora skills show tickets 'Ticket results'`.
 
 The supervisor must not publish or make off-machine writes, including through
 children, scripts, or tools. This prohibits pushes, pull requests, remote issues
@@ -427,14 +455,15 @@ history:
     session_ref: 2f1e0c7a-9b3e-4d21-8f77-0c1a5e6b2d44
 ```
 
-Supervised records may also have `run_outcome`, `outcome_reason`, and
+Ticket records may also have `run_outcome`, `outcome_reason`, and
 `invocation_id`. `exit_code` is runner exit status (synthesized for interactive
 Claude), not task delivery. `-1` means recovery could not observe the runner
-status. The semantic outcome is final after hooks and child
-checks; blocked with exit zero is not completed delivery. Legacy entries without
-`run_outcome` remain unverified task outcomes: do not infer completion from their
-exit codes or prose. Summaries, statistics, metrics, and CLI/browser views must
-preserve that distinction. A standalone supervised child's real history is not
+status. The semantic outcome is final after hooks and final validation,
+including applicable epic child checks. Blocked with exit zero is not completed delivery.
+Legacy entries without `run_outcome` remain unknown/unverified task outcomes.
+Do not infer completion from their exit codes or prose.
+Summaries, statistics, metrics, and CLI/browser views must
+preserve that distinction. A standalone ticket execution's real history is not
 also counted as a synthetic legacy run.
 
 `model` and `effort` are what the run resolved to, not what the agent reported

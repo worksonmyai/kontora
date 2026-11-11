@@ -60,7 +60,7 @@ func TestEpicAgentInterruptedAccountingSurvivesRetry(t *testing.T) {
 				line += strings.ReplaceAll(piAssistantLine(input, 20, 0, 0), "2026-08-11T02:07:44.744Z", stamp)
 				require.NoError(t, os.MkdirAll(p.SessionDir, 0o755))
 				require.NoError(t, os.WriteFile(filepath.Join(p.SessionDir, fmt.Sprintf("session-%d.jsonl", attempt)), []byte(line), 0o644))
-				result := process.Result{StartedAt: started, ExitedAt: time.Now()}
+				result := process.Result{StartedAt: started, ExitedAt: time.Now(), Termination: process.TerminationProcessGroupGone}
 				if tc.runnerFailure && attempt == 1 {
 					result.ExitCode = -1
 					return result, assert.AnError
@@ -125,7 +125,7 @@ func TestEpicAgentPauseDuringChildRefresh(t *testing.T) {
 	d := h.newDaemon(h.cfg, WithRunner(func(_ context.Context, p RunnerParams) (process.Result, error) {
 		completeEpicInvocation(t, p)
 		now := time.Now()
-		return process.Result{StartedAt: now, ExitedAt: now}, nil
+		return process.Result{StartedAt: now, ExitedAt: now, Termination: process.TerminationProcessGroupGone}, nil
 	}))
 	path := h.writeTicket("epc-a.md", h.agentEpicMD("epc-a", "todo", "epc-c1"))
 	tk, err := ticket.ParseFile(path)

@@ -42,7 +42,7 @@ func TestSelfCloseDuringStageDiscardsTheRun(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t)
-			cfg := h.defaultConfig("true", "true")
+			cfg := h.cfg
 			cfg.Pipelines["park-stage"] = config.Pipeline{
 				{Stage: "step1", Agent: "agent1", OnSuccess: "human_review", OnFailure: "pause"},
 			}

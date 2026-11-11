@@ -30,6 +30,7 @@ import (
 	"github.com/worksonmyai/kontora/internal/logfmt"
 	"github.com/worksonmyai/kontora/internal/notify"
 	"github.com/worksonmyai/kontora/internal/process"
+	"github.com/worksonmyai/kontora/internal/session"
 	"github.com/worksonmyai/kontora/internal/testutil"
 	"github.com/worksonmyai/kontora/internal/ticket"
 	"github.com/worksonmyai/kontora/internal/tmux"
@@ -92,8 +93,43 @@ func newHarness(t *testing.T) *testHarness {
 		repoName:    filepath.Base(repoDir),
 		tmuxSession: session,
 	}
-	h.cfg = h.defaultConfig("true", "true")
+	success := successfulAgentScript(t)
+	h.cfg = h.defaultConfig(success, success)
 	return h
+}
+
+// publishCompleteResult is called explicitly by fixtures that finish their work.
+// Neither the runner nor the harness infers success from an exit code.
+func publishCompleteResult(t *testing.T, p RunnerParams) {
+	t.Helper()
+	inv, err := session.InvocationFromEnv(func(key string) string { return p.Env[key] })
+	require.NoError(t, err)
+	_, err = session.PublishResult(inv.ResultPath, session.Result{Outcome: "complete", Summary: "Fixture work completed."})
+	require.NoError(t, err)
+}
+
+// TestDaemonPublishCompleteHelper lets shell agents use the atomic publisher.
+func TestDaemonPublishCompleteHelper(t *testing.T) {
+	if os.Getenv("KONTORA_TEST_PUBLISH_COMPLETE") != "1" {
+		return
+	}
+	inv, err := session.InvocationFromEnv(os.Getenv)
+	require.NoError(t, err)
+	_, err = session.PublishResult(inv.ResultPath, session.Result{Outcome: "complete", Summary: "Fixture work completed."})
+	require.NoError(t, err)
+}
+
+func successfulAgentScript(t *testing.T) string {
+	t.Helper()
+	binary, err := os.Executable()
+	require.NoError(t, err)
+	path := filepath.Join(t.TempDir(), "complete-agent")
+	script := "#!/bin/sh\nset -eu\n" +
+		"sleep \"${KONTORA_TEST_AGENT_DELAY:-0}\"\n" +
+		"KONTORA_TEST_PUBLISH_COMPLETE=1 '" + strings.ReplaceAll(binary, "'", "'\\''") + "'" +
+		" -test.run '^TestDaemonPublishCompleteHelper$'\n"
+	require.NoError(t, os.WriteFile(path, []byte(script), 0o755))
+	return path
 }
 
 func (h *testHarness) defaultConfig(agent1Binary, agent2Binary string) *config.Config {
@@ -309,10 +345,12 @@ func TestFullPipeline(t *testing.T) {
 	require.Len(t, result.History, 2)
 	for i, entry := range result.History {
 		assert.Equal(t, 0, entry.ExitCode, "history[%d]", i)
+		assert.Equal(t, ticket.RunOutcomeComplete, entry.RunOutcome, "history[%d]", i)
+		assert.NotEmpty(t, entry.InvocationID, "history[%d]", i)
 	}
-
 	cancel()
 	require.NoError(t, <-errCh)
+	assert.NoFileExists(t, executionPath(h.cfg, "tst-001"))
 }
 
 // TestTicketBaseBranch covers the two ends of base_branch through the daemon:
@@ -427,11 +465,11 @@ func TestFailureRetry(t *testing.T) {
 
 func TestConcurrencyLimit(t *testing.T) {
 	h := newHarness(t)
-	cfg := h.defaultConfig("sleep", "sleep")
+	cfg := h.cfg
 	cfg.MaxConcurrentAgents = 1
 	cfg.Agents = map[string]config.Agent{
-		"agent1": {Binary: "sleep", Args: []string{"0.3"}},
-		"agent2": {Binary: "sleep", Args: []string{"0.3"}},
+		"agent1": {Binary: successfulAgentScript(t), Environment: map[string]string{"KONTORA_TEST_AGENT_DELAY": "0.3"}},
+		"agent2": {Binary: successfulAgentScript(t), Environment: map[string]string{"KONTORA_TEST_AGENT_DELAY": "0.3"}},
 	}
 	cfg.Stages["step1"] = config.Stage{Prompt: ""}
 	cfg.Stages["step2"] = config.Stage{Prompt: ""}
@@ -558,8 +596,8 @@ created: 2026-01-01T00:00:00Z
 
 func TestUserPause(t *testing.T) {
 	h := newHarness(t)
-	cfg := h.defaultConfig("sleep", "sleep")
-	cfg.Agents["agent1"] = config.Agent{Binary: "sleep", Args: []string{"10"}}
+	cfg := h.cfg
+	cfg.Agents["agent1"] = config.Agent{Binary: successfulAgentScript(t), Environment: map[string]string{"KONTORA_TEST_AGENT_DELAY": "10"}}
 	cfg.Stages["step1"] = config.Stage{Prompt: ""}
 	d := h.newDaemon(cfg)
 
@@ -598,8 +636,8 @@ func TestUserPause(t *testing.T) {
 
 func TestExternalSetOpen(t *testing.T) {
 	h := newHarness(t)
-	cfg := h.defaultConfig("sleep", "sleep")
-	cfg.Agents["agent1"] = config.Agent{Binary: "sleep", Args: []string{"10"}}
+	cfg := h.cfg
+	cfg.Agents["agent1"] = config.Agent{Binary: successfulAgentScript(t), Environment: map[string]string{"KONTORA_TEST_AGENT_DELAY": "10"}}
 	cfg.Stages["step1"] = config.Stage{Prompt: ""}
 	d := h.newDaemon(cfg)
 
@@ -638,8 +676,8 @@ func TestExternalSetOpen(t *testing.T) {
 
 func TestMoveTicketToOpenKillsAgent(t *testing.T) {
 	h := newHarness(t)
-	cfg := h.defaultConfig("sleep", "sleep")
-	cfg.Agents["agent1"] = config.Agent{Binary: "sleep", Args: []string{"10"}}
+	cfg := h.cfg
+	cfg.Agents["agent1"] = config.Agent{Binary: successfulAgentScript(t), Environment: map[string]string{"KONTORA_TEST_AGENT_DELAY": "10"}}
 	cfg.Stages["step1"] = config.Stage{Prompt: ""}
 	d := h.newDaemon(cfg)
 
@@ -672,8 +710,8 @@ func TestMoveTicketToOpenKillsAgent(t *testing.T) {
 
 func TestExternalSetDone(t *testing.T) {
 	h := newHarness(t)
-	cfg := h.defaultConfig("sleep", "sleep")
-	cfg.Agents["agent1"] = config.Agent{Binary: "sleep", Args: []string{"10"}}
+	cfg := h.cfg
+	cfg.Agents["agent1"] = config.Agent{Binary: successfulAgentScript(t), Environment: map[string]string{"KONTORA_TEST_AGENT_DELAY": "10"}}
 	cfg.Stages["step1"] = config.Stage{Prompt: ""}
 	d := h.newDaemon(cfg)
 
@@ -712,8 +750,8 @@ func TestExternalSetDone(t *testing.T) {
 
 func TestExternalSetArchived(t *testing.T) {
 	h := newHarness(t)
-	cfg := h.defaultConfig("sleep", "sleep")
-	cfg.Agents["agent1"] = config.Agent{Binary: "sleep", Args: []string{"10"}}
+	cfg := h.cfg
+	cfg.Agents["agent1"] = config.Agent{Binary: successfulAgentScript(t), Environment: map[string]string{"KONTORA_TEST_AGENT_DELAY": "10"}}
 	cfg.Stages["step1"] = config.Stage{Prompt: ""}
 	d := h.newDaemon(cfg)
 
@@ -821,7 +859,8 @@ func TestNoteInstructionAppended(t *testing.T) {
 	var captured []string
 	capturingRunner := func(_ context.Context, p RunnerParams) (process.Result, error) {
 		captured = append(captured, p.Args...)
-		return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now()}, nil
+		publishCompleteResult(t, p)
+		return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now(), Termination: process.TerminationProcessGroupGone}, nil
 	}
 
 	d := New(h.cfg,
@@ -1041,7 +1080,8 @@ func TestSimpleTaskNoteInstructionAndContext(t *testing.T) {
 	var captured []string
 	capturingRunner := func(_ context.Context, p RunnerParams) (process.Result, error) {
 		captured = append(captured, p.Args...)
-		return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now()}, nil
+		publishCompleteResult(t, p)
+		return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now(), Termination: process.TerminationProcessGroupGone}, nil
 	}
 
 	d := New(h.cfg,
@@ -1122,7 +1162,8 @@ func TestAgentInteractiveMode(t *testing.T) {
 						extensionContent = string(data)
 					}
 				}
-				return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now()}, nil
+				publishCompleteResult(t, p)
+				return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now(), Termination: process.TerminationWindowGone}, nil
 			}
 
 			d := New(cfg,
@@ -1221,7 +1262,8 @@ func TestPiCheckpointExtension(t *testing.T) {
 					}
 				}
 				promptContent = renderedPrompt(p)
-				return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now()}, nil
+				publishCompleteResult(t, p)
+				return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now(), Termination: process.TerminationWindowGone}, nil
 			}
 
 			d := New(cfg,
@@ -1290,7 +1332,8 @@ func TestPiSessionLogMaterialization(t *testing.T) {
 			}, "\n")
 			require.NoError(t, os.WriteFile(sessionFile, []byte(jsonl), 0o644))
 		}
-		return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now()}, nil
+		publishCompleteResult(t, p)
+		return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now(), Termination: process.TerminationWindowGone}, nil
 	}
 
 	cfg := h.defaultConfig("pi", "pi")
@@ -1355,7 +1398,8 @@ func TestPiSessionLogMaterializationMissing(t *testing.T) {
 			jsonl := `{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"step1 session text."}]}}`
 			require.NoError(t, os.WriteFile(filepath.Join(p.SessionDir, "session-step1.jsonl"), []byte(jsonl), 0o644))
 		}
-		return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now()}, nil
+		publishCompleteResult(t, p)
+		return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now(), Termination: process.TerminationWindowGone}, nil
 	}
 
 	cfg := h.defaultConfig("pi", "pi")
@@ -1448,7 +1492,8 @@ func TestAgentEnvironmentOverride(t *testing.T) {
 	var captured RunnerParams
 	capturingRunner := func(_ context.Context, p RunnerParams) (process.Result, error) {
 		captured = p
-		return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now()}, nil
+		publishCompleteResult(t, p)
+		return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now(), Termination: process.TerminationProcessGroupGone}, nil
 	}
 
 	d := New(h.cfg,
@@ -1590,7 +1635,7 @@ func TestCrashRecoveryClaims(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t)
-			cfg := h.defaultConfig("true", "true")
+			cfg := h.cfg
 			autoPickUp := tc.autoPickUp
 			cfg.AutoPickUp = &autoPickUp
 
@@ -1785,8 +1830,8 @@ func TestNonCanonicalFilesIgnored(t *testing.T) {
 // file untouched (no status, history, or last_error write).
 func TestForeignClaimYield(t *testing.T) {
 	h := newHarness(t)
-	cfg := h.defaultConfig("sleep", "sleep")
-	cfg.Agents["agent1"] = config.Agent{Binary: "sleep", Args: []string{"10"}}
+	cfg := h.cfg
+	cfg.Agents["agent1"] = config.Agent{Binary: successfulAgentScript(t), Environment: map[string]string{"KONTORA_TEST_AGENT_DELAY": "10"}}
 	cfg.Stages["step1"] = config.Stage{Prompt: ""}
 	d := h.newDaemon(cfg)
 
@@ -1869,7 +1914,8 @@ func TestSimpleTicketExitForeignClaimGuard(t *testing.T) {
 	ticketPath := filepath.Join(h.tasksDir, "tst-sg.md")
 
 	var d *Daemon
-	runner := func(_ context.Context, _ RunnerParams) (process.Result, error) {
+	runner := func(_ context.Context, p RunnerParams) (process.Result, error) {
+		publishCompleteResult(t, p)
 		if tk, err := ticket.ParseFile(ticketPath); err == nil {
 			_ = tk.SetField("claimed_by", "other-host")
 			if data, mErr := tk.Marshal(); mErr == nil {
@@ -1877,7 +1923,7 @@ func TestSimpleTicketExitForeignClaimGuard(t *testing.T) {
 				_ = os.WriteFile(ticketPath, data, 0o644)
 			}
 		}
-		return process.Result{ExitCode: 0, ExitedAt: time.Now()}, nil
+		return process.Result{ExitCode: 0, ExitedAt: time.Now(), Termination: process.TerminationProcessGroupGone}, nil
 	}
 	d = New(cfg,
 		WithLogger(testLogger(t)),
@@ -2196,7 +2242,11 @@ func TestGeneratedBranchCleanupOnDone(t *testing.T) {
 	h := newHarness(t)
 	h.cfg.BranchNaming.Mode = config.BranchNamingModeSlug
 	h.cfg.Agents["agent1"] = config.Agent{Binary: "sh", Args: []string{"-c", "sleep 30", "--"}}
-	d := h.newDaemon(h.cfg)
+	started := make(chan struct{})
+	d := h.newDaemon(h.cfg, WithRunner(func(ctx context.Context, p RunnerParams) (process.Result, error) {
+		close(started)
+		return DirectRunner(ctx, p)
+	}))
 
 	const id = "tst-clean"
 	const wantBranch = "kontora/fix-retry-cleanup-tst-clean"
@@ -2226,6 +2276,11 @@ created: 2026-01-01T00:00:00Z
 		return err == nil && strings.TrimSpace(string(out)) == wantBranch
 	}, 5*time.Second, 20*time.Millisecond)
 
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("runner did not start")
+	}
 	running := h.readTask(id + ".md")
 	assert.Equal(t, wantBranch, running.Branch)
 	assert.Equal(t, "main", running.BaseBranch)
@@ -2591,6 +2646,41 @@ func TestSimpleTask(t *testing.T) {
 	require.NoError(t, <-errCh)
 }
 
+// A real zero-exit process must still pause without a terminal result. Keep
+// these agents deliberately separate from the successful shell fixture.
+func TestOrdinaryMissingResultPauses(t *testing.T) {
+	for _, standalone := range []bool{false, true} {
+		name := "pipeline"
+		if standalone {
+			name = "standalone"
+		}
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t)
+			cfg := h.defaultConfig("true", "true")
+			d := h.newDaemon(cfg)
+			md := h.taskMD("tst-missing", "todo", "retry-stage")
+			if standalone {
+				md = simpleTaskMD("tst-missing", "todo", h.repoDir)
+			}
+			h.writeTicket("tst-missing.md", md)
+			require.NoError(t, d.initialScan(h.tasksDir))
+			d.runTicket(context.Background(), "tst-missing")
+			d.background.Wait()
+			got := h.readTask("tst-missing.md")
+			assert.Equal(t, ticket.StatusPaused, got.Status)
+			assert.Nil(t, got.CompletedAt)
+			assert.Zero(t, got.Attempt, "missing results cannot trigger ordinary retries")
+			require.Len(t, got.History, 1)
+			assert.Zero(t, got.History[0].ExitCode)
+			assert.Equal(t, ticket.RunOutcomeProtocolError, got.History[0].RunOutcome)
+			assert.NotEmpty(t, got.History[0].InvocationID)
+			assert.Contains(t, got.LastError, "result protocol:")
+			assert.NoFileExists(t, executionPath(cfg, "tst-missing"))
+			assert.DirExists(t, filepath.Join(h.wtDir, h.repoName, "tst-missing"), "missing results retain the worktree")
+		})
+	}
+}
+
 func TestSimpleTaskBranchOverride(t *testing.T) {
 	h := newHarness(t)
 	d := h.newDaemon(h.cfg)
@@ -2650,7 +2740,8 @@ func TestSimpleTaskOperationalAppendix(t *testing.T) {
 	var captured []string
 	capturingRunner := func(_ context.Context, p RunnerParams) (process.Result, error) {
 		captured = append(captured, p.Args...)
-		return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now()}, nil
+		publishCompleteResult(t, p)
+		return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now(), Termination: process.TerminationProcessGroupGone}, nil
 	}
 
 	d := New(h.cfg,
@@ -2712,7 +2803,8 @@ func TestSessionLogMaterialization(t *testing.T) {
 			}, "\n")
 			require.NoError(t, os.WriteFile(sessionFile, []byte(jsonl), 0o644))
 		}
-		return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now()}, nil
+		publishCompleteResult(t, p)
+		return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now(), Termination: process.TerminationWindowGone}, nil
 	}
 
 	cfg := h.defaultConfig("claude", "true")
@@ -2769,7 +2861,8 @@ func TestSessionLogMaterializationMissing(t *testing.T) {
 		// Simulate pipe-pane writing raw PTY output to the log file.
 		require.NoError(t, os.MkdirAll(filepath.Dir(p.LogFile), 0o755))
 		require.NoError(t, os.WriteFile(p.LogFile, []byte("raw PTY fallback output"), 0o644))
-		return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now()}, nil
+		publishCompleteResult(t, p)
+		return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now(), Termination: process.TerminationWindowGone}, nil
 	}
 
 	cfg := h.defaultConfig("claude", "true")
@@ -2824,7 +2917,8 @@ func TestPipelinePausesOnClaudeAPIError(t *testing.T) {
 			`{"type":"assistant","isApiErrorMessage":true,"message":{"model":"<synthetic>","content":[{"type":"text","text":"You've hit your limit · resets 5pm (Europe/Amsterdam)"}]}}`,
 		}, "\n")
 		require.NoError(t, os.WriteFile(sessionFile, []byte(jsonl), 0o644))
-		return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now()}, nil
+		publishCompleteResult(t, p)
+		return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now(), Termination: process.TerminationWindowGone}, nil
 	}
 
 	cfg := h.defaultConfig("claude", "claude")
@@ -2851,7 +2945,10 @@ func TestPipelinePausesOnClaudeAPIError(t *testing.T) {
 	// The clean exit must not be read as success: the ticket stays on the
 	// first stage instead of advancing to step2.
 	assert.Equal(t, "step1", result.Stage)
-	assert.Empty(t, result.History, "a quota failure should not record a success history entry")
+	require.Len(t, result.History, 1)
+	assert.Equal(t, ticket.RunOutcomeFailed, result.History[0].RunOutcome, "complete cannot override a provider error")
+	assert.Zero(t, result.History[0].ExitCode)
+	assert.Contains(t, result.History[0].OutcomeReason, "hit your limit")
 	assert.Contains(t, result.LastError, "hit your limit")
 
 	cancel()
@@ -2872,8 +2969,9 @@ func TestPipelinePausesOnPiProviderError(t *testing.T) {
 			time.Now().UTC().Format(time.RFC3339Nano),
 		)
 		require.NoError(t, os.WriteFile(filepath.Join(p.SessionDir, "session.jsonl"), []byte(line), 0o644))
+		publishCompleteResult(t, p)
 		now := time.Now()
-		return process.Result{ExitCode: 0, StartedAt: now, ExitedAt: now}, nil
+		return process.Result{ExitCode: 0, StartedAt: now, ExitedAt: now, Termination: process.TerminationWindowGone}, nil
 	}
 
 	cfg := h.defaultConfig("pi", "pi")
@@ -2903,9 +3001,11 @@ func TestPipelinePausesOnPiProviderError(t *testing.T) {
 	result := h.waitForStatus("tst-pi-error.md", ticket.StatusPaused, 10*time.Second)
 	assert.Equal(t, "step1", result.Stage)
 	assert.Zero(t, result.Attempt)
-	assert.Empty(t, result.History, "a provider failure should not record a successful run")
+	require.Len(t, result.History, 1)
+	assert.Equal(t, ticket.RunOutcomeFailed, result.History[0].RunOutcome, "complete cannot override a provider error")
+	assert.Zero(t, result.History[0].ExitCode)
 	assert.Equal(t, "agent error: Provided authentication token is expired.", result.LastError)
-	assert.Contains(t, result.Body, "agent error: Provided authentication token is expired.")
+	assert.Equal(t, result.LastError, result.History[0].OutcomeReason)
 	assert.Equal(t, []string{"stage_start", "stage_end 0"}, waitForLines(t, eventLog, 2))
 
 	select {
@@ -2931,7 +3031,8 @@ func TestPipelinePausesOnFailurePattern(t *testing.T) {
 	runner := func(_ context.Context, p RunnerParams) (process.Result, error) {
 		require.NoError(t, os.MkdirAll(filepath.Dir(p.LogFile), 0o755))
 		require.NoError(t, os.WriteFile(p.LogFile, []byte("working...\nError: quota exceeded for today\n"), 0o644))
-		return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now()}, nil
+		publishCompleteResult(t, p)
+		return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now(), Termination: process.TerminationProcessGroupGone}, nil
 	}
 
 	cfg := h.defaultConfig("some-agent", "some-agent")
@@ -2977,10 +3078,11 @@ func TestFailurePatternNotPoisonedByPreviousAttempt(t *testing.T) {
 		defer f.Close()
 		if attempt == 1 {
 			_, _ = f.WriteString("attempt 1\nError: quota exceeded for today\n")
-			return process.Result{ExitCode: 1, StartedAt: time.Now(), ExitedAt: time.Now()}, nil
+			return process.Result{ExitCode: 1, StartedAt: time.Now(), ExitedAt: time.Now(), Termination: process.TerminationProcessGroupGone}, nil
 		}
 		_, _ = f.WriteString("attempt 2\nall good\n")
-		return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now()}, nil
+		publishCompleteResult(t, p)
+		return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now(), Termination: process.TerminationProcessGroupGone}, nil
 	}
 
 	cfg := h.defaultConfig("some-agent", "some-agent")
@@ -3019,7 +3121,8 @@ func TestNonClaudeAgentStillUsesPipePaneLogging(t *testing.T) {
 	var capturedParams RunnerParams
 	capturingRunner := func(_ context.Context, p RunnerParams) (process.Result, error) {
 		capturedParams = p
-		return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now()}, nil
+		publishCompleteResult(t, p)
+		return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now(), Termination: process.TerminationProcessGroupGone}, nil
 	}
 
 	cfg := h.defaultConfig("some-agent", "true")
@@ -3061,7 +3164,7 @@ func TestExitTailUsesOutputAttribute(t *testing.T) {
 		// Write log content so tailFile finds something.
 		require.NoError(t, os.MkdirAll(filepath.Dir(p.LogFile), 0o755))
 		require.NoError(t, os.WriteFile(p.LogFile, []byte("agent error output"), 0o644))
-		return process.Result{ExitCode: 1, StartedAt: time.Now(), ExitedAt: time.Now()}, nil
+		return process.Result{ExitCode: 1, StartedAt: time.Now(), ExitedAt: time.Now(), Termination: process.TerminationProcessGroupGone}, nil
 	}
 
 	cfg := h.defaultConfig("some-agent", "true")
@@ -3102,7 +3205,7 @@ func TestWebServerPortBound(t *testing.T) {
 	defer ln.Close()
 
 	port := ln.Addr().(*net.TCPAddr).Port
-	cfg := h.defaultConfig("true", "true")
+	cfg := h.cfg
 	enabled := true
 	cfg.Web.Enabled = &enabled
 	cfg.Web.Host = "127.0.0.1"
@@ -3129,10 +3232,12 @@ func TestSimpleTaskCompletedAt(t *testing.T) {
 	h := newHarness(t)
 
 	// Use a runner that returns zero ExitedAt to test the fallback.
-	zeroTimeRunner := func(_ context.Context, _ RunnerParams) (process.Result, error) {
+	zeroTimeRunner := func(_ context.Context, p RunnerParams) (process.Result, error) {
+		publishCompleteResult(t, p)
 		return process.Result{
-			ExitCode:  0,
-			StartedAt: time.Now(),
+			ExitCode:    0,
+			StartedAt:   time.Now(),
+			Termination: process.TerminationProcessGroupGone,
 			// ExitedAt intentionally left zero.
 		}, nil
 	}
@@ -3164,13 +3269,13 @@ func TestSimpleTaskCompletedAt(t *testing.T) {
 	require.NoError(t, <-errCh)
 }
 
-func TestPauseTicketWritesReasonNote(t *testing.T) {
+func TestRunnerFailureRecordsReason(t *testing.T) {
 	h := newHarness(t)
 
-	// Runner that always fails with ExitCode=-1 triggers the
-	// "runner failed" pauseTicket path (pre-spawn failure).
+	// A refused runner invocation is a failed execution, not a missing-result
+	// protocol error, even though it cannot publish a result.
 	failRunner := func(_ context.Context, _ RunnerParams) (process.Result, error) {
-		return process.Result{ExitCode: -1}, fmt.Errorf("connection refused")
+		return process.Result{ExitCode: -1, Termination: process.TerminationProcessGroupGone}, fmt.Errorf("connection refused")
 	}
 
 	d := New(h.cfg,
@@ -3192,8 +3297,12 @@ func TestPauseTicketWritesReasonNote(t *testing.T) {
 	h.writeTicket("tst-pr1.md", h.taskMD("tst-pr1", "todo", "one-stage"))
 
 	result := h.waitForStatus("tst-pr1.md", ticket.StatusPaused, 10*time.Second)
-	assert.Contains(t, result.Body, "## Notes")
-	assert.Contains(t, result.Body, "runner failed: connection refused")
+	assert.Equal(t, "runner failed: connection refused", result.LastError)
+	require.Len(t, result.History, 1)
+	assert.Equal(t, ticket.RunOutcomeFailed, result.History[0].RunOutcome)
+	assert.Equal(t, result.LastError, result.History[0].OutcomeReason)
+	assert.Equal(t, -1, result.History[0].ExitCode)
+	assert.NoFileExists(t, executionPath(h.cfg, "tst-pr1"))
 
 	cancel()
 	require.NoError(t, <-errCh)
@@ -3208,7 +3317,7 @@ func TestAgentBinaryMissing(t *testing.T) {
 	var runnerCalled bool
 	trackingRunner := func(_ context.Context, _ RunnerParams) (process.Result, error) {
 		runnerCalled = true
-		return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now()}, nil
+		return process.Result{ExitCode: -1, Termination: process.TerminationProcessGroupGone}, assert.AnError
 	}
 
 	failingLookup := func(binary string) (string, error) {
@@ -3254,13 +3363,13 @@ func TestRunnerError_CapturesLogTailAndPath(t *testing.T) {
 	failRunner := func(_ context.Context, p RunnerParams) (process.Result, error) {
 		if p.LogFile != "" {
 			if err := os.MkdirAll(filepath.Dir(p.LogFile), 0o755); err != nil {
-				return process.Result{ExitCode: -1}, fmt.Errorf("create log dir: %w", err)
+				return process.Result{ExitCode: -1, Termination: process.TerminationProcessGroupGone}, fmt.Errorf("create log dir: %w", err)
 			}
 			if err := os.WriteFile(p.LogFile, []byte(marker+"\n"), 0o644); err != nil {
-				return process.Result{ExitCode: -1}, fmt.Errorf("write log file: %w", err)
+				return process.Result{ExitCode: -1, Termination: process.TerminationProcessGroupGone}, fmt.Errorf("write log file: %w", err)
 			}
 		}
-		return process.Result{ExitCode: -1}, fmt.Errorf("boom")
+		return process.Result{ExitCode: -1, Termination: process.TerminationProcessGroupGone}, fmt.Errorf("boom")
 	}
 
 	d := New(h.cfg,
@@ -3296,12 +3405,12 @@ func TestRunnerError_CapturesLogTailAndPath(t *testing.T) {
 
 func TestAgentOverride_Pipeline(t *testing.T) {
 	h := newHarness(t)
-	// agent1=true (default for step1), agent2=true
-	// But we'll capture what binary is actually spawned.
+	// Capture what binary is actually spawned instead of the default agent.
 	var capturedBinary string
 	capturingRunner := func(_ context.Context, p RunnerParams) (process.Result, error) {
 		capturedBinary = p.Binary
-		return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now()}, nil
+		publishCompleteResult(t, p)
+		return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now(), Termination: process.TerminationProcessGroupGone}, nil
 	}
 
 	cfg := h.defaultConfig("true", "true")
@@ -3354,7 +3463,8 @@ func TestAgentOverride_SimpleTask(t *testing.T) {
 	var capturedBinary string
 	capturingRunner := func(_ context.Context, p RunnerParams) (process.Result, error) {
 		capturedBinary = p.Binary
-		return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now()}, nil
+		publishCompleteResult(t, p)
+		return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now(), Termination: process.TerminationProcessGroupGone}, nil
 	}
 
 	cfg := h.defaultConfig("true", "true")
@@ -3600,7 +3710,8 @@ func TestStageOverrides(t *testing.T) {
 				WithLockPath(h.lockPath),
 				WithRunner(func(_ context.Context, p RunnerParams) (process.Result, error) {
 					captured = p
-					return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now()}, nil
+					publishCompleteResult(t, p)
+					return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now(), Termination: process.TerminationWindowGone}, nil
 				}),
 				WithAgentLookup(passthroughAgentLookup),
 				WithSkipOrphanCleanup(),
@@ -3651,8 +3762,9 @@ func TestStageRunRecordsTheAgentThatRan(t *testing.T) {
 			`; printf '%s\n' "$edited" > "$KONTORA_TICKET_FILE"`,
 	}}}
 
-	d := h.newDaemon(h.cfg, WithRunner(func(_ context.Context, _ RunnerParams) (process.Result, error) {
-		return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now()}, nil
+	d := h.newDaemon(h.cfg, WithRunner(func(_ context.Context, p RunnerParams) (process.Result, error) {
+		publishCompleteResult(t, p)
+		return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now(), Termination: process.TerminationWindowGone}, nil
 	}))
 	stop := runDaemon(t, d)
 
@@ -3721,7 +3833,7 @@ func TestStageOverrideUnsupportedAgentPauses(t *testing.T) {
 				WithLockPath(h.lockPath),
 				WithRunner(func(_ context.Context, _ RunnerParams) (process.Result, error) {
 					spawned++
-					return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now()}, nil
+					return process.Result{ExitCode: -1, Termination: process.TerminationProcessGroupGone}, assert.AnError
 				}),
 				WithAgentLookup(passthroughAgentLookup),
 				WithSkipOrphanCleanup(),
@@ -3820,7 +3932,7 @@ func TestPauseTicket_LastError(t *testing.T) {
 	h := newHarness(t)
 
 	failRunner := func(_ context.Context, _ RunnerParams) (process.Result, error) {
-		return process.Result{ExitCode: -1}, fmt.Errorf("connection refused")
+		return process.Result{ExitCode: -1, Termination: process.TerminationProcessGroupGone}, fmt.Errorf("connection refused")
 	}
 
 	d := New(h.cfg,
@@ -3862,12 +3974,13 @@ func TestRetryTicket_ClearsLastError(t *testing.T) {
 	h := newHarness(t)
 
 	var attempt int
-	runner := func(_ context.Context, _ RunnerParams) (process.Result, error) {
+	runner := func(_ context.Context, p RunnerParams) (process.Result, error) {
 		attempt++
 		if attempt == 1 {
-			return process.Result{ExitCode: -1}, fmt.Errorf("first attempt fails")
+			return process.Result{ExitCode: -1, Termination: process.TerminationProcessGroupGone}, fmt.Errorf("first attempt fails")
 		}
-		return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now()}, nil
+		publishCompleteResult(t, p)
+		return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now(), Termination: process.TerminationProcessGroupGone}, nil
 	}
 
 	d := New(h.cfg,
@@ -3916,7 +4029,7 @@ func TestRetryTicket_ChangedEpicBranchRefusesOldWorktree(t *testing.T) {
 			calls := make(chan RunnerParams, 3)
 			d := h.newDaemon(h.cfg, WithRunner(func(_ context.Context, p RunnerParams) (process.Result, error) {
 				calls <- p
-				return process.Result{ExitCode: -1, StartedAt: time.Now(), ExitedAt: time.Now()}, assert.AnError
+				return process.Result{ExitCode: -1, StartedAt: time.Now(), ExitedAt: time.Now(), Termination: process.TerminationWindowGone}, assert.AnError
 			}))
 			h.writeTicket("epc-retry.md", h.agentEpicMD("epc-retry", "todo"))
 			h.writeTicket("epc-next.md", h.agentEpicMD("epc-next", "paused"))
@@ -3982,8 +4095,8 @@ func TestRetryTicket_ChangedEpicBranchRefusesOldWorktree(t *testing.T) {
 
 func TestPauseTicket_ManualPause_NoLastError(t *testing.T) {
 	h := newHarness(t)
-	cfg := h.defaultConfig("sleep", "sleep")
-	cfg.Agents["agent1"] = config.Agent{Binary: "sleep", Args: []string{"30"}}
+	cfg := h.cfg
+	cfg.Agents["agent1"] = config.Agent{Binary: successfulAgentScript(t), Environment: map[string]string{"KONTORA_TEST_AGENT_DELAY": "30"}}
 	cfg.Stages["step1"] = config.Stage{Prompt: ""}
 	d := h.newDaemon(cfg)
 
@@ -4013,7 +4126,7 @@ func TestHandleAgentExit_PipelinePause_SetsLastError(t *testing.T) {
 
 	// Use a runner that exits with code 1 — on_failure=pause will trigger ActionPause.
 	failRunner := func(_ context.Context, _ RunnerParams) (process.Result, error) {
-		return process.Result{ExitCode: 1, StartedAt: time.Now(), ExitedAt: time.Now()}, nil
+		return process.Result{ExitCode: 1, StartedAt: time.Now(), ExitedAt: time.Now(), Termination: process.TerminationProcessGroupGone}, nil
 	}
 
 	cfg := h.defaultConfig("true", "true")
@@ -4047,15 +4160,18 @@ func TestHandleAgentExit_PipelinePause_SetsLastError(t *testing.T) {
 
 	info, err := d.GetTicket("tst-le4")
 	require.NoError(t, err)
-	assert.Contains(t, info.LastError, "agent exited with code 1")
-	assert.Contains(t, info.LastError, "stage: step1")
+	assert.Equal(t, "agent exited with code 1", info.LastError)
+	assert.Equal(t, "step1", info.Stage)
 	assert.NotContains(t, info.LastError, "see log:")
 	assert.NotEmpty(t, info.LastLog)
 
 	// Verify last_error is persisted in frontmatter.
 	tkt := h.readTask("tst-le4.md")
-	assert.Contains(t, tkt.LastError, "agent exited with code 1")
-	assert.Contains(t, tkt.LastError, "stage: step1")
+	assert.Equal(t, "agent exited with code 1", tkt.LastError)
+	require.Len(t, tkt.History, 1)
+	assert.Equal(t, "step1", tkt.History[0].Stage)
+	assert.Equal(t, ticket.RunOutcomeFailed, tkt.History[0].RunOutcome)
+	assert.Equal(t, 1, tkt.History[0].ExitCode)
 	assert.NotContains(t, tkt.LastError, "see log:")
 	assert.NotEmpty(t, tkt.LastLog)
 
@@ -4202,8 +4318,8 @@ func TestAutoPickUpDisabled(t *testing.T) {
 
 func TestSchedulerRejectsConcurrentSameBranch(t *testing.T) {
 	h := newHarness(t)
-	cfg := h.defaultConfig("sleep", "sleep")
-	cfg.Agents["agent1"] = config.Agent{Binary: "sleep", Args: []string{"5"}}
+	cfg := h.cfg
+	cfg.Agents["agent1"] = config.Agent{Binary: successfulAgentScript(t), Environment: map[string]string{"KONTORA_TEST_AGENT_DELAY": "5"}}
 	cfg.Stages["step1"] = config.Stage{Prompt: ""}
 	d := h.newDaemon(cfg)
 
@@ -4381,14 +4497,15 @@ func TestStageSummaryCapture(t *testing.T) {
 	h := newHarness(t)
 	ticketPath := filepath.Join(h.tasksDir, "tst-sum.md")
 
-	runner := func(_ context.Context, _ RunnerParams) (process.Result, error) {
+	runner := func(_ context.Context, p RunnerParams) (process.Result, error) {
 		tk, err := ticket.ParseFile(ticketPath)
 		require.NoError(t, err)
 		require.NoError(t, tk.SetField("summary", "agent-written summary"))
 		data, err := tk.Marshal()
 		require.NoError(t, err)
 		require.NoError(t, os.WriteFile(ticketPath, data, 0o644))
-		return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now()}, nil
+		publishCompleteResult(t, p)
+		return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now(), Termination: process.TerminationProcessGroupGone}, nil
 	}
 
 	d := New(h.cfg,
@@ -4430,7 +4547,8 @@ func TestStageSummaryFallback(t *testing.T) {
 			`{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Implemented the fix and ran the tests."}]}}`,
 		}, "\n")
 		require.NoError(t, os.WriteFile(filepath.Join(p.SessionDir, "session.jsonl"), []byte(jsonl), 0o644))
-		return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now()}, nil
+		publishCompleteResult(t, p)
+		return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now(), Termination: process.TerminationWindowGone}, nil
 	}
 
 	cfg := h.defaultConfig("pi", "pi")
@@ -4477,7 +4595,8 @@ func TestStageSummaryPerStageRetention(t *testing.T) {
 			require.NoError(t, err)
 			require.NoError(t, os.WriteFile(ticketPath, data, 0o644))
 		}
-		return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now()}, nil
+		publishCompleteResult(t, p)
+		return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now(), Termination: process.TerminationProcessGroupGone}, nil
 	}
 
 	d := New(h.cfg,
@@ -4517,7 +4636,7 @@ func piSessionRunner(exitCode int) RunnerFunc {
 			_ = os.WriteFile(filepath.Join(p.SessionDir, "session.jsonl"), []byte(line), 0o644)
 		}
 		now := time.Now()
-		return process.Result{ExitCode: exitCode, StartedAt: now, ExitedAt: now}, nil
+		return process.Result{ExitCode: exitCode, StartedAt: now, ExitedAt: now, Termination: process.TerminationWindowGone}, nil
 	}
 }
 
@@ -4592,8 +4711,9 @@ func TestActivityFollowsTheRunningStage(t *testing.T) {
 		info, err := d.GetActivity(web.ActivityQuery{ID: p.TicketID, Stage: "step1", Run: 0})
 		midRun <- reading{info: info, err: err}
 
+		publishCompleteResult(t, p)
 		now := time.Now()
-		return process.Result{ExitCode: 0, StartedAt: now, ExitedAt: now}, nil
+		return process.Result{ExitCode: 0, StartedAt: now, ExitedAt: now, Termination: process.TerminationWindowGone}, nil
 	}
 	d = New(cfg,
 		WithLogger(testLogger(t)),
@@ -4752,8 +4872,9 @@ func TestHistoryRecordsTheSession(t *testing.T) {
 				if tt.run != nil {
 					tt.run(t, p)
 				}
+				publishCompleteResult(t, p)
 				now := time.Now()
-				return process.Result{ExitCode: 0, StartedAt: now, ExitedAt: now}, nil
+				return process.Result{ExitCode: 0, StartedAt: now, ExitedAt: now, Termination: process.TerminationProcessGroupGone}, nil
 			}
 			d := h.newDaemon(h.cfg, WithRunner(runner))
 
@@ -4822,7 +4943,8 @@ func TestClaudeCheckpointWiring(t *testing.T) {
 					}
 				}
 				prompt = renderedPrompt(p)
-				return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now()}, nil
+				publishCompleteResult(t, p)
+				return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now(), Termination: process.TerminationWindowGone}, nil
 			}
 
 			d := h.newDaemon(cfg, WithRunner(capturingRunner))
@@ -4905,7 +5027,8 @@ func TestClaudeCheckpointTwoPhaseRun(t *testing.T) {
 		require.NoError(t, cli.PhaseComplete(sidecar, "Phase 2: b", "Phase 3: c", time.Now(), io.Discard))
 		decisions = append(decisions, p.OnIdle(runCtx, tmux.IdleEvent{}))
 
-		return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now()}, nil
+		publishCompleteResult(t, p)
+		return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now(), Termination: process.TerminationWindowGone}, nil
 	}
 
 	d := h.newDaemon(cfg, WithRunner(runner))

@@ -8,7 +8,7 @@ import (
 	"github.com/worksonmyai/kontora/internal/config"
 )
 
-func validateSupervisedAgent(agent config.Agent) error {
+func validateResultAgent(agent config.Agent) error {
 	if !agent.IsPi() {
 		return nil
 	}
@@ -27,7 +27,7 @@ func validateSupervisedAgent(agent config.Agent) error {
 			mode, modeFlag = args[i+1], true
 		}
 		if arg == "-p" || arg == "--print" || modeFlag && (mode == "json" || mode == "rpc") {
-			return fmt.Errorf("supervised Pi requires TUI mode to cancel queued continuation after its final answer; remove --print/-p and --mode json/rpc from this agent's arguments")
+			return fmt.Errorf("pi result reporting requires TUI mode to cancel queued continuation after its final answer; remove --print/-p and --mode json/rpc from this agent's arguments")
 		}
 	}
 	return nil

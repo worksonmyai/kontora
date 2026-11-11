@@ -40,6 +40,7 @@ func TestReload_SlotPoolAdmission(t *testing.T) {
 					started <- p.TicketID
 					select {
 					case <-release[p.TicketID]:
+						publishCompleteResult(t, p)
 					case <-ctx.Done():
 					}
 					return process.Result{StartedAt: time.Now(), ExitedAt: time.Now(), Termination: process.TerminationProcessGroupGone}, nil
@@ -145,8 +146,10 @@ func TestReload_DisablesQueuedAutomaticPickup(t *testing.T) {
 			select {
 			case <-releaseFirst:
 			case <-ctx.Done():
+				return process.Result{Termination: process.TerminationProcessGroupGone}, ctx.Err()
 			}
 		}
+		publishCompleteResult(t, p)
 		return process.Result{StartedAt: time.Now(), ExitedAt: time.Now(), Termination: process.TerminationProcessGroupGone}, nil
 	}))
 	h.writeTicket("disable-first.md", h.taskMD("disable-first", "todo", "one-stage"))

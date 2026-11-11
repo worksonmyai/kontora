@@ -401,8 +401,8 @@ Supervisors and children must investigate prerequisites, reuse saved decisions,
 resolve permitted local setup, and continue independent work. Escalations name
 attempted checks, a concrete resource/authority/scope question, options, costs,
 and a recommended default. Save answers immediately. Do not silently weaken
-requirements or replace required real-device evidence with emulation. If no
-authorized work remains, submit blocked. Retry requires explicit operator action;
+requirements or replace required real-device evidence with emulation. If execution
+must stop because no authorized work remains, submit blocked. Retry requires explicit operator action;
 saving an answer, reading a notification, or dismissing attention does not restart
 execution. Publication and off-machine writes remain prohibited, including through
 children, scripts, or tools; read-only lookups are allowed. These authority limits
@@ -422,38 +422,52 @@ Upgrade every daemon and client sharing the ticket directory before activation.
 Older versions treat all epics as passive and can overwrite supervisor status.
 Do not run mixed versions against activated epics.
 
-### Supervised outcomes and recovery
+### Ticket outcomes and recovery
 
-Activated epic supervisors and their actual children, including child rework,
-require invocation-bound `complete` or `blocked` results. This is not an additional
-HTTP lifecycle endpoint: agents use Pi's `kontora_result` or `kontora result`
-with daemon-bound execution context. See [schema, environment, and CLI transport](cli.md#supervised-results).
-Unrelated tickets, passive-epic children, annotations, and assistant-only runs
-retain their existing result requirements. Completing a stage is not whole-ticket
-completion or human acceptance.
+All ticket executions require invocation-bound `complete` or `blocked` results,
+with no opt-out. This includes pipeline stages, standalone workers, passive-epic
+children, activated supervisors, and their children on fresh, resumed, and rework
+runs. Annotation-only runs, dashboard assistants, and summary generation are
+excluded. Automations keep their existing result contract.
 
-Blocked results and missing/invalid results after a clean supervised run pause
-the same stage, retaining worktree and retry count. Complete reports do not
-override execution/provider failure, hooks, or child validation. History exposes
+This is not an additional HTTP lifecycle endpoint. Agents use Pi's `kontora_result`
+or `kontora result` with daemon-bound execution context. Custom agents must support
+this transport. See [schema, environment, and CLI transport](cli.md#ticket-results).
+`complete` is the agent's stage report, not proof of whole-ticket completion or
+human acceptance. Independent tests, hooks, review stages, and human review remain
+responsible for acceptance. Reporting does not make ordinary workers supervisors
+or expand commit, merge, rebase, or publication authority.
+
+Blocked results and missing/malformed results after a clean exit pause the same
+stage, retaining `attempt` and the worktree without entering pipeline `retry` or
+`back` policies. Waiting for a question's answer is not terminal blockage.
+`ls --blocked` still selects dependency-blocked `todo` tickets, not paused executions.
+Complete reports cannot override interruption, execution/provider failure, hooks,
+or final validation, including epic child checks. History exposes
 optional `run_outcome`, `outcome_reason`, and `invocation_id` separately from
 `exit_code` (runner exit status, or `-1` when recovery could not observe it).
-Outcomes are final after hooks and child checks.
-Rows without semantic outcomes are legacy, unverified task outcomes; exit zero
+Outcomes are final after hooks and final validation.
+Rows without semantic outcomes are legacy, unknown/unverified task outcomes; exit zero
 or old prose must not be reinterpreted as verified completion. The same distinction
-applies to summaries, statistics, and metrics. Standalone supervised runs with
+applies to summaries, statistics, and metrics. Standalone ticket executions with
 real history are not also counted as synthetic legacy runs.
 
-Recovery reconciles invocation metadata, reports, and finalization before
-replacement. It confirms termination first; uncertainty retains reservations and
-prevents branch reuse. A marker precedes hooks, and a replayable transition is
-persisted after hooks and child checks. Replay uses invocation identity to avoid
-duplicate history and does not rerun hooks. Unknown hook effects pause for
+Recovery reconciles invocation journals, reports, and finalization for all ticket
+executions before replacement. Ordinary workers follow the same safeguards as
+supervisors and their children. Recovery also checks termination of owned legacy
+ticket windows without journals, preserving operator-selected status. It confirms
+termination first; uncertainty retains reservations and prevents branch reuse.
+Failed cleanup or persistence must not enqueue replacement work.
+A marker precedes hooks, and a replayable transition is persisted after hooks
+and final validation, including applicable child checks. Replay uses invocation
+identity to avoid duplicate history and does not rerun hooks. Unknown hook effects pause for
 inspection. Atomic ticket replacement must succeed before metadata is retired.
 Foreign ownership and operator lifecycle changes take precedence. See
-[recovery rules](configuration.md#supervised-recovery) for all interrupted states.
+[recovery rules](configuration.md#ticket-recovery) for all interrupted states.
 This covers daemon-process recovery, not exactly-once shell effects, exactly-once
 telemetry across restart, or host-power-loss durability. Upgrade CLI and daemon
-together; do not restart live epics or migrate ticket state as part of rollout.
+together under operator control. Do not restart live executions or migrate
+existing ticket statuses as part of rollout.
 
 ### Companion
 

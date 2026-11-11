@@ -231,16 +231,11 @@ or scope decision, including attempted checks, concrete options, costs, and a
 recommended default. Save the question and answer together immediately on the
 current ticket, distinguishing operator answers from assumptions, and confirm
 persistence before continuing. Do not silently weaken acceptance requirements or
-substitute emulation for required real-device evidence. If no authorized work
-remains, submit `blocked` with an actionable `next_step` and stop.
+substitute emulation for required real-device evidence. If execution must stop
+because no authorized work remains, submit `blocked` with an actionable `next_step`.
 
-Activated supervisors and their children must submit an invocation-bound
-`complete` or `blocked` result for each stage, including resumed and rework
-execution. The requirement is independent of a custom `system_prompt`. Missing
-or invalid results after a clean run pause the same stage; notes or exit zero do
-not substitute for a report. Unrelated tickets, passive-epic children,
-annotations, and assistant-only runs retain their existing requirements.
-See [Supervised results](cli.md#supervised-results) for schema and transports.
+Supervisors and children follow the same mandatory [ticket result contract](#ticket-results)
+as ordinary workers. Reporting does not expand the local-delivery exception above.
 
 The supervisor must not publish or make off-machine writes, including through children, scripts, or tools. This prohibits pushes, pull requests, remote issues or comments, messages, uploads, and releases. Read-only external lookups are allowed. Results and progress notes stay local. These are agent instructions, not runtime enforcement.
 
@@ -364,7 +359,7 @@ These are set and updated by the daemon as the ticket progresses through its pip
 | `last_error` | Error message from the last failed stage run. |
 | `summary` | Summary of the stage run that ended most recently: the text the agent wrote with `kontora summary`, or its final session message as a fallback. Cleared when a new stage starts; each stage keeps its own copy on its `history` entry. |
 | `final_summary` | Summary of the whole ticket, written after a run ends the pipeline successfully or a rework run succeeds, and at least two runs recorded a summary. The agent that ran that stage writes it from the ticket text and every recorded run summary, in one non-interactive pass with no tools and a two-minute timeout. It opens with a few sentences on what the ticket asked for, then describes what was done; a ticket whose body says nothing beyond its title gets the description alone. It is not a copy of any run: `summary` and the `history` entries keep their own text. Cleared when a new run starts. Generation is best effort: a failure leaves the field empty and is reported in the daemon log, so a ticket can finish without it. |
-| `claimed_by` | The daemon [`instance_name`](configuration.md) that last picked the ticket up. Written in the same update that sets `status: in_progress`. Consulted only while the ticket is `in_progress`; a stale value on a `todo` or `done` ticket is ignored. |
+| `claimed_by` | The daemon [`instance_name`](configuration.md) that last picked the ticket up. Written in the same update that sets `status: in_progress`. Recovery also checks matching self-claims on `todo` or `done` tickets, even without an invocation journal. It preserves operator-selected status and holds capacity and the branch until termination is confirmed. |
 
 ### Custom fields
 
@@ -409,6 +404,37 @@ open → todo → in_progress → done ──────→ archived
 
 The daemon only picks up tickets that have both `kontora: true` and `status: todo`. A non-Kontora ticket can still appear in any status column, but Kontora will not start or resume work on it until you initialize it. To pause a running Kontora ticket, use `kontora pause <id>` or set `status: paused` in the file — the daemon will detect the change and stop the agent.
 
+## Ticket results
+
+All ticket executions must submit an invocation-bound `complete` or `blocked`
+result, with no opt-out. Pipeline stages, standalone workers, passive-epic
+children, activated supervisors, and their children all report on fresh,
+resumed, and rework runs. The requirement is independent of a custom `system_prompt`.
+Annotation-only runs, dashboard assistants, and summary generation are excluded.
+Automations keep their existing result contract.
+
+`complete` is the agent's report that its assigned stage is complete. Independent
+tests, hooks, review stages, and human review remain responsible for acceptance.
+A review stage can complete while fixes remain for later stages. Neither exit
+zero nor notes prove completion or replace the report.
+
+A `blocked` report, or a missing/malformed report after a clean exit, pauses the
+same stage, preserving `attempt` and the worktree. It does not enter pipeline
+`retry` or `back` policies. A complete report cannot override interruption,
+execution/provider failures, hooks, or final validation, including epic child checks.
+Waiting for a question's answer is not terminal blockage; report `blocked` only
+when execution must stop. `kontora ls --blocked` still lists dependency-blocked
+`todo` tickets, not paused executions.
+
+Ordinary workers remain workers. Mandatory results grant no new commit, merge,
+rebase, or publication authority. Ordinary invocation journals and legacy ticket
+windows without journals follow the same [recovery safeguards](configuration.md#ticket-recovery).
+Legacy outcomes remain unknown/unverified; do not infer success from exit codes or prose.
+
+Upgrade CLI and daemon together under operator control. Custom agents must support
+the [result transport](cli.md#ticket-results). Do not restart live executions or
+migrate existing ticket statuses as part of rollout.
+
 ## Dependency-aware scheduling
 
 The daemon starts an agent for a `kontora: true` ticket in `todo` only when every id in its `deps` names a ticket that no longer holds work: `human_review`, `done`, `cancelled`, `archived`, or the legacy `closed` that tickets from the external ticket CLI carry. `human_review` releases dependents because the agent has finished and only a person's verdict is left; the review can still send the ticket back, and a dependent that is already running then keeps going. Every other status blocks, including a custom one. So does an id with no ticket file, because nothing on disk says whether that work is finished.
@@ -438,11 +464,15 @@ Ready tickets run oldest `created` first among tickets whose capacity pool has a
 
 ## Running on multiple machines
 
-When a `tickets_dir` is synced across machines (iCloud, Syncthing, ...), two daemons can see the same tickets. File sync is eventually consistent, so there is no cross-machine lock; instead each daemon records its [`instance_name`](configuration.md) in `claimed_by` when it picks a ticket up, and consults that claim before acting on an `in_progress` ticket:
+When a `tickets_dir` is synced across machines (iCloud, Syncthing, ...), two daemons can see the same tickets.
+File sync is eventually consistent, so there is no cross-machine lock.
+Each daemon records its [`instance_name`](configuration.md) in `claimed_by` when it picks a ticket up.
+The daemon checks that claim before acting on running work or recovering a matching self-claim:
 
 - **Crash recovery** on startup resets an `in_progress` ticket back to `todo` only when `claimed_by` is empty or matches this daemon. A ticket claimed by another instance is left running; starting a second daemon no longer steals or kills the first's work.
 - **During a run**, if a foreign claim arrives through sync, the daemon cancels its own agent and leaves the file untouched. The losing worktree is kept (it may hold unpushed commits).
-- **Both sides can briefly claim** the same `todo` ticket within the sync window. Once sync settles, one claim wins and the other daemon yields; a ticket left `in_progress` with a self-claim but no running agent is reset to `todo` and re-enqueued.
+- **Both sides can briefly claim** the same `todo` ticket within the sync window. Once sync settles, one claim wins and the other daemon yields. Recovery reconciles a stale self-claim before it can reset an `in_progress` ticket to `todo` and enqueue replacement work.
+- **Recovery checks matching self-claims** on `todo` or `done` tickets too, even without an invocation journal. It preserves operator-selected status and holds capacity and the branch until termination is confirmed. See [ticket recovery](configuration.md#ticket-recovery).
 
 There is no automatic takeover of a claim by claim age or a heartbeat. If the owning machine goes offline mid-run, its tickets stay `in_progress` until that daemon restarts or someone manually sets `status: todo`. Two machines that share a hostname must set `instance_name` explicitly, or the protection cannot tell them apart.
 
@@ -505,16 +535,17 @@ history:
     session_ref: pi-sessions/code/01JC9F3K7Q.jsonl
 ```
 
-Supervised history may also carry `run_outcome`, `outcome_reason`, and
+Ticket history may also carry `run_outcome`, `outcome_reason`, and
 `invocation_id`. These describe the final semantic outcome, its reason, and the
 physical invocation, separately from `exit_code` (runner exit status, synthesized
 for interactive Claude). An exit code of `-1` means recovery could not observe
-the runner status. Outcomes are finalized after hooks and epic child
-checks, not merely copied from the submitted report. A blocked run with exit zero
-is not completed delivery. Histories without `run_outcome` remain unverified task
-outcomes: preserve their runner status without inferring completion from exit
+the runner status. Outcomes are finalized after hooks and final validation,
+including applicable epic child checks. They are not merely copied from the submitted report.
+A blocked run with exit zero is not completed delivery. Histories without
+`run_outcome` remain unknown/unverified task outcomes. Preserve their runner
+status without inferring completion from exit
 codes or old prose. CLI, browser, summaries, statistics, and metrics must keep
-this distinction. Standalone supervised children record real history and must
+this distinction. Standalone ticket executions record real history and must
 not also be counted as synthetic legacy runs.
 
 `model` and `effort` are what the agent ran with for that run, resolved from the

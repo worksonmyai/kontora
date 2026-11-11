@@ -81,7 +81,7 @@ func TestExecutionExceptionalFailuresPreserveMutations(t *testing.T) {
 					require.NoError(t, d.AddNote("tst-failure", web.AddNoteRequest{Text: "saved instruction"}))
 					require.NoError(t, d.SetSummary("tst-failure", "saved summary"))
 					now := time.Now()
-					result := process.Result{StartedAt: now, ExitedAt: now.Add(time.Second)}
+					result := process.Result{StartedAt: now, ExitedAt: now.Add(time.Second), Termination: process.TerminationProcessGroupGone}
 					switch failure {
 					case "timeout":
 						return result, context.DeadlineExceeded
@@ -108,7 +108,14 @@ func TestExecutionExceptionalFailuresPreserveMutations(t *testing.T) {
 				assert.Equal(t, want, got.Status)
 				assert.Contains(t, got.Body, "saved instruction")
 				assert.Equal(t, "saved summary", got.Summary)
-				assert.Empty(t, got.History)
+				if failure == "cancel-during-hook" {
+					assert.Empty(t, got.History, "a hook's lifecycle override still wins")
+				} else {
+					require.Len(t, got.History, 1)
+					assert.Equal(t, ticket.RunOutcomeFailed, got.History[0].RunOutcome)
+					assert.Equal(t, "saved summary", got.History[0].Summary)
+					assert.NotEmpty(t, got.History[0].InvocationID)
+				}
 				assert.Empty(t, d.running)
 				assert.Empty(t, d.runningBranches)
 				assert.Empty(t, d.executions)
@@ -128,10 +135,11 @@ func TestExecutionResultRejectsChangedIdentity(t *testing.T) {
 			h := newHarness(t)
 			path := h.writeTicket("tst-stale.md", h.taskMD("tst-stale", "todo", "two-stage"))
 			var d *Daemon
-			d = h.newDaemon(h.cfg, WithRunner(func(context.Context, RunnerParams) (process.Result, error) {
+			d = h.newDaemon(h.cfg, WithRunner(func(_ context.Context, p RunnerParams) (process.Result, error) {
+				publishCompleteResult(t, p)
 				require.NoError(t, d.mutateTicket("tst-stale", func(tk *ticket.Ticket) error { return tk.SetField(change.key, change.value) }))
 				now := time.Now()
-				return process.Result{StartedAt: now, ExitedAt: now}, nil
+				return process.Result{StartedAt: now, ExitedAt: now, Termination: process.TerminationProcessGroupGone}, nil
 			}))
 			d.tickets["tst-stale"] = newTicketState(h.readTask("tst-stale.md"), path)
 			d.runTicket(context.Background(), "tst-stale")

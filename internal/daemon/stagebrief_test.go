@@ -13,6 +13,7 @@ import (
 
 	"github.com/worksonmyai/kontora/internal/config"
 	"github.com/worksonmyai/kontora/internal/process"
+	"github.com/worksonmyai/kontora/internal/ticket"
 )
 
 func TestStageBrief(t *testing.T) {
@@ -21,7 +22,10 @@ func TestStageBrief(t *testing.T) {
 
 		assert.Contains(t, got, "kon-q88f")
 		assert.Contains(t, got, `stage "commit"`)
-		assert.Contains(t, got, "Exit 0")
+		assert.Contains(t, got, "Submit a terminal complete or blocked result")
+		assert.Contains(t, got, "A clean exit alone does not complete the stage")
+		assert.Contains(t, got, "Notes and summaries do not replace the required terminal result")
+		assert.NotContains(t, got, "Exit 0")
 		for _, verb := range []string{"done", "cancel", "move", "pause", "retry", "skip", "set-stage", "schedule"} {
 			assert.Contains(t, got, verb, "the brief must name every verb rejectSelfMove refuses")
 		}
@@ -39,6 +43,40 @@ func TestStageBrief(t *testing.T) {
 	t.Run("a blank override falls back to the built-in", func(t *testing.T) {
 		assert.Equal(t, stageBrief("", "kon-1", "step1"), stageBrief("   \n", "kon-1", "step1"))
 	})
+}
+
+func TestStageResultInstructions(t *testing.T) {
+	got := stageResultInstructions()
+	for _, clause := range []string{
+		"## Mandatory stage result",
+		"kontora_result({outcome, summary, next_step?})",
+		"kontora result --input-file /absolute/path/result.json TICKET_ID",
+		"Use the actual current ticket ID", "Do not supply or override invocation identity",
+		"unique scratch file outside the repository", "stdin",
+		`outcome "complete" or "blocked"`, "summary is required", "blocked also requires next_step",
+		"current stage's assigned work, not the whole ticket",
+		"review stage can be complete with findings",
+		"assigned implementation or required acceptance evidence remains unmet",
+		"Fixture work alone is not complete", "production foundations",
+		"Report blocked when requirements or authority prevent further work",
+		"Missing or invalid results pause the same stage", "clean runner exit alone cannot advance it",
+		"Notes, summaries, final prose, questions, and checkpoints are not terminal results",
+		"Check the acknowledgement", "Identical resubmission is idempotent",
+		"conflicting result cannot replace", "Do not use notes as a fallback",
+		"does not override execution failures, timeouts, provider errors, hooks, child checks, or human acceptance",
+		"Do not change your own lifecycle status",
+		"## Prerequisites and escalation", "Read saved decisions", "investigate the missing prerequisite",
+		"Continue independent authorized work", "concrete question", "options, their costs",
+		"recommended default", "Save the question and answer together immediately",
+		"Do not weaken acceptance requirements", "Do not substitute emulation",
+		"Retry requires explicit operator action", "Saving an answer", "dismissing attention",
+		"children, branches, worktrees, dirty files, and interrupted Git operations",
+	} {
+		assert.Contains(t, got, clause)
+	}
+	for _, authority := range []string{"## Supervised", "no per-commit approval", "may merge", "may rebase", "may install"} {
+		assert.NotContains(t, got, authority, "reporting must not grant supervision authority")
+	}
 }
 
 // The flag exists on claude and pi only. A third-kind agent is given no brief,
@@ -110,6 +148,7 @@ func TestStageBriefOnASpawnedRun(t *testing.T) {
 			var captured RunnerParams
 			runner := func(_ context.Context, p RunnerParams) (process.Result, error) {
 				captured = p
+				completeEpicInvocation(t, p)
 				return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now()}, nil
 			}
 
@@ -129,6 +168,107 @@ func TestStageBriefOnASpawnedRun(t *testing.T) {
 			idx := slices.Index(captured.Args, "--append-system-prompt")
 			require.NotEqual(t, -1, idx, "args: %s", strings.Join(captured.Args, " "))
 			tc.want(t, captured.Args[idx+1])
+			got := renderedPrompt(captured)
+			assert.Contains(t, got, stageResultInstructions())
+			assert.NotContains(t, got, "## Supervised local delivery")
+			assert.NotContains(t, got, "## Epic supervisor")
+		})
+	}
+}
+
+func TestStageResultInstructionsSurviveCustomPrompts(t *testing.T) {
+	for _, scope := range []string{"ordinary", "passive epic child", "activated epic child"} {
+		for _, resume := range []bool{false, true} {
+			name := scope + "/fresh"
+			if resume {
+				name = scope + "/resume"
+			}
+			t.Run(name, func(t *testing.T) {
+				rd := newResumeDaemon(t, "claude", func(_ context.Context, _ int, p RunnerParams) (process.Result, error) {
+					completeEpicInvocation(t, p)
+					now := time.Now()
+					return process.Result{StartedAt: now, ExitedAt: now}, nil
+				})
+				rd.cfg.SystemPrompt = "Custom brief: do not commit."
+				rd.cfg.ResumePrompt = "Custom continuation for {{ .Ticket.ID }}"
+				stage := rd.cfg.Stages[resumeStage]
+				stage.Prompt = ""
+				rd.cfg.Stages[resumeStage] = stage
+				md := rd.h.taskMD(resumeTicketID, "todo", "one-stage")
+				if scope != "ordinary" {
+					parent := rd.h.epicMD("epc-parent", "open")
+					if scope == "activated epic child" {
+						parent = rd.h.agentEpicMD("epc-parent", "paused")
+					}
+					rd.h.writeTicket("epc-parent.md", parent)
+					md = strings.Replace(md, "kontora: true\n", "kontora: true\nparent: epc-parent\n", 1)
+				}
+				if resume {
+					rd.plantRecord(t, agentKindClaude, nil)
+				}
+				rd.runWith(t, md, ticket.StatusDone)
+				spawns := rd.invocations(t)
+				require.Len(t, spawns, 1)
+				got := renderedPrompt(spawns[0])
+				assert.Contains(t, got, stageResultInstructions())
+				assert.Equal(t, 1, strings.Count(got, "## Mandatory stage result"))
+				assert.Contains(t, spawns[0].Args, "Custom brief: do not commit.")
+				assert.NotContains(t, got, "## Epic supervisor")
+				if scope == "activated epic child" {
+					assert.Contains(t, got, supervisedInstructions("epc-parent"))
+				} else {
+					assert.NotContains(t, got, "## Supervised local delivery")
+					assert.NotContains(t, got, "no per-commit approval")
+				}
+				if resume {
+					assert.Contains(t, got, "Custom continuation for "+resumeTicketID)
+					assert.Contains(t, spawns[0].Args, "--resume")
+				}
+			})
+		}
+	}
+}
+
+func TestReworkStageResultInstructionsSurviveCustomPrompts(t *testing.T) {
+	for _, scope := range []string{"ordinary", "passive epic child", "activated epic child"} {
+		t.Run(scope, func(t *testing.T) {
+			h := newEpicAgentHarness(t)
+			h.cfg.ReworkIsBuiltin = true
+			h.cfg.SystemPrompt = "Custom brief: do not commit."
+			h.cfg.Stages[config.ReworkStageName] = config.Stage{Prompt: ""}
+			h.cfg.Agents["agent1"] = config.Agent{Binary: "claude"}
+			var captured RunnerParams
+			d := h.newDaemon(h.cfg, WithRunner(func(_ context.Context, p RunnerParams) (process.Result, error) {
+				captured = p
+				completeEpicInvocation(t, p)
+				now := time.Now()
+				return process.Result{StartedAt: now, ExitedAt: now}, nil
+			}), WithFinalSummarySpawner(func(context.Context, FinalSummaryParams) (string, error) { return "Summary", nil }))
+			fields := "kontora: true\nstage: rework\n"
+			if scope != "ordinary" {
+				parent := h.epicMD("epc-parent", "open")
+				if scope == "activated epic child" {
+					parent = h.agentEpicMD("epc-parent", "paused")
+				}
+				h.writeTicket("epc-parent.md", parent)
+				fields += "parent: epc-parent\n"
+			}
+			md := strings.Replace(h.taskMD("tst-rework", "todo", "one-stage"), "kontora: true\n", fields, 1)
+			h.writeTicket("tst-rework.md", md)
+			require.NoError(t, d.initialScan(h.tasksDir))
+			d.runTicket(context.Background(), "tst-rework")
+			assert.Equal(t, ticket.StatusHumanReview, h.readTask("tst-rework.md").Status)
+			got := renderedPrompt(captured)
+			assert.Contains(t, got, stageResultInstructions())
+			assert.Equal(t, 1, strings.Count(got, "## Mandatory stage result"))
+			assert.Contains(t, captured.Args, "Custom brief: do not commit.")
+			assert.NotContains(t, got, "## Epic supervisor")
+			if scope == "activated epic child" {
+				assert.Contains(t, got, supervisedInstructions("epc-parent"))
+			} else {
+				assert.NotContains(t, got, "## Supervised local delivery")
+				assert.NotContains(t, got, "no per-commit approval")
+			}
 		})
 	}
 }

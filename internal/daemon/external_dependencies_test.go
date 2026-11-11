@@ -154,7 +154,8 @@ func TestSecondaryDependencyWatcherStartsPrimaryOnly(t *testing.T) {
 	launched := make(chan string, 4)
 	d := h.newDaemon(h.cfg, WithRunner(func(_ context.Context, p RunnerParams) (process.Result, error) {
 		launched <- p.TicketID
-		return process.Result{}, nil
+		publishCompleteResult(t, p)
+		return process.Result{Termination: process.TerminationProcessGroupGone}, nil
 	}))
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

@@ -318,7 +318,7 @@ func TestDaemon_RetryTicket(t *testing.T) {
 
 func TestDaemon_SkipStage(t *testing.T) {
 	h := newHarness(t)
-	cfg := h.defaultConfig("sleep", "true")
+	cfg := h.defaultConfig("sleep", h.cfg.Agents["agent2"].Binary)
 	cfg.Agents["agent1"] = config.Agent{Binary: "sleep", Args: []string{"30"}}
 	cfg.Stages["step1"] = config.Stage{Prompt: ""}
 	cfg.Stages["step2"] = config.Stage{Prompt: ""}
@@ -348,7 +348,7 @@ func TestDaemon_SkipStage(t *testing.T) {
 	// Skip step1 → step2.
 	require.NoError(t, d.SkipStage("tst-s01"))
 
-	// Agent2 is "true" so it should complete quickly.
+	// Agent2 explicitly publishes completion, so step2 should finish quickly.
 	h.waitForStatus("tst-s01.md", ticket.StatusDone, 10*time.Second)
 
 	result := h.readTask("tst-s01.md")

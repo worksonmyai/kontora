@@ -702,9 +702,10 @@ func TestReload_AppliesStageAndAgent(t *testing.T) {
 
 	d := h.newDaemonWithConfig(t, h.yaml(configOpts{}), WithRunner(capturing))
 
+	reloadedAgent := successfulAgentScript(t)
 	h.writeConfig(t, h.yaml(configOpts{
 		step1Prompt:  "REWRITTEN PROMPT for {{ .Ticket.ID }}",
-		agent1Binary: "echo",
+		agent1Binary: reloadedAgent,
 		agent1Args:   "    args: [\"--reloaded\"]\n",
 	}))
 	require.NoError(t, d.reloadConfig())
@@ -721,7 +722,7 @@ func TestReload_AppliesStageAndAgent(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 	require.Len(t, params, 1)
-	assert.Equal(t, "echo", params[0].Binary, "the next stage must use the reloaded binary")
+	assert.Equal(t, reloadedAgent, params[0].Binary, "the next stage must use the reloaded binary")
 	joined := strings.Join(params[0].Args, " ")
 	assert.Contains(t, joined, "--reloaded", "the next stage must use the reloaded args")
 	assert.Contains(t, joined, "REWRITTEN PROMPT", "the next stage must use the reloaded prompt")
@@ -735,11 +736,12 @@ func TestReload_AppliesStageAndAgent(t *testing.T) {
 // the agent binary of the other.
 func TestReload_UsesConsistentSnapshot(t *testing.T) {
 	h := newReloadHarness(t)
+	success := successfulAgentScript(t)
 
 	fixture := func(tag string) string {
 		return h.yaml(configOpts{
 			step1Prompt:  tag + " prompt for {{ .Ticket.ID }}",
-			agent1Binary: "echo",
+			agent1Binary: success,
 			agent1Args:   fmt.Sprintf("    args: [%q]\n", tag),
 		})
 	}

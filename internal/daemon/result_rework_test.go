@@ -28,7 +28,10 @@ func TestReworkFinalizationReplay(t *testing.T) {
 		{name: "supervised complete replay", supervised: true, report: "complete", failWrite: true, outcome: "success", want: ticket.StatusHumanReview},
 		{name: "supervised blocked", supervised: true, report: "blocked", outcome: "blocked", want: ticket.StatusPaused},
 		{name: "supervised blocked replay", supervised: true, report: "blocked", failWrite: true, outcome: "blocked", want: ticket.StatusPaused},
-		{name: "unsupervised complete", outcome: "success", want: ticket.StatusHumanReview},
+		{name: "ordinary complete", report: "complete", outcome: "success", want: ticket.StatusHumanReview},
+		{name: "ordinary complete replay", report: "complete", failWrite: true, outcome: "success", want: ticket.StatusHumanReview},
+		{name: "ordinary blocked", report: "blocked", outcome: "blocked", want: ticket.StatusPaused},
+		{name: "ordinary missing", outcome: "protocol_error", want: ticket.StatusPaused},
 		{name: "unsupervised failure", exit: 1, outcome: "failure", want: ticket.StatusPaused},
 	}
 	for _, tc := range cases {
@@ -56,12 +59,10 @@ func TestReworkFinalizationReplay(t *testing.T) {
 			calls := 0
 			d, collect := h.newMetricsDaemon(h.cfg, WithRunner(func(_ context.Context, p RunnerParams) (process.Result, error) {
 				calls++
-				assert.Equal(t, tc.supervised, p.RequireTermination)
-				if tc.supervised {
+				assert.True(t, p.RequireTermination)
+				if tc.report != "" {
 					_, err := session.PublishResult(p.Env["KONTORA_RESULT_FILE"], session.Result{Outcome: tc.report, Summary: "Feedback inspected", NextStep: "Provide evidence"})
 					require.NoError(t, err)
-				} else {
-					assert.Empty(t, p.Env["KONTORA_RESULT_FILE"])
 				}
 				fresh := h.readTask("tst-rework-replay.md")
 				require.NoError(t, fresh.SetField("summary", "Feedback inspected"))
@@ -124,13 +125,15 @@ func TestReworkFinalizationReplay(t *testing.T) {
 			assert.Equal(t, config.ReworkStageName, got.Stage)
 			require.Len(t, got.History, 2)
 			assert.Equal(t, tc.exit, got.History[1].ExitCode)
-			if tc.supervised {
-				assert.Equal(t, tc.report, string(got.History[1].RunOutcome))
-				assert.NotEmpty(t, got.History[1].InvocationID)
-			} else {
-				assert.Empty(t, got.History[1].RunOutcome)
-				assert.Empty(t, got.History[1].InvocationID)
+			wantOutcome := tc.report
+			if wantOutcome == "" {
+				wantOutcome = "failed"
+				if tc.exit == 0 {
+					wantOutcome = "protocol_error"
+				}
 			}
+			assert.Equal(t, wantOutcome, string(got.History[1].RunOutcome))
+			assert.NotEmpty(t, got.History[1].InvocationID)
 			assert.Empty(t, got.InvocationID)
 			assert.NoFileExists(t, executionPath(h.cfg, got.ID))
 			if tc.want == ticket.StatusHumanReview {
@@ -149,10 +152,12 @@ func TestReworkFinalizationReplay(t *testing.T) {
 	}
 }
 
-func TestSupervisedReworkOutcomes(t *testing.T) {
+func TestResultReworkOutcomes(t *testing.T) {
 	cases := []struct {
 		name, report, provider, hook, outcome string
 		exit                                  int
+		ordinary                              bool
+		interruption                          error
 		want                                  ticket.Status
 	}{
 		{name: "missing", outcome: "protocol_error", want: ticket.StatusPaused},
@@ -162,6 +167,11 @@ func TestSupervisedReworkOutcomes(t *testing.T) {
 		{name: "blocked provider failure", report: "blocked", provider: "PROVIDER FAILED", outcome: "failed", want: ticket.StatusPaused},
 		{name: "complete hook failure", report: "complete", hook: "exit 1", outcome: "failed", want: ticket.StatusPaused},
 		{name: "complete runner failure", report: "complete", exit: 1, outcome: "failed", want: ticket.StatusPaused},
+		{name: "complete zero exit timeout", report: "complete", interruption: context.DeadlineExceeded, outcome: "failed", want: ticket.StatusPaused},
+	}
+	for _, tc := range cases {
+		tc.name, tc.ordinary = "ordinary/"+tc.name, true
+		cases = append(cases, tc)
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -178,7 +188,7 @@ func TestSupervisedReworkOutcomes(t *testing.T) {
 			d := h.newDaemon(h.cfg, WithRunner(func(_ context.Context, p RunnerParams) (process.Result, error) {
 				calls++
 				assert.True(t, p.RequireTermination)
-				assert.Contains(t, renderedPrompt(p), "## Mandatory supervised result")
+				assert.Contains(t, renderedPrompt(p), "## Mandatory stage result")
 				inv, err := session.InvocationFromEnv(func(k string) string { return p.Env[k] })
 				require.NoError(t, err)
 				assert.Equal(t, config.ReworkStageName, inv.Stage)
@@ -191,10 +201,14 @@ func TestSupervisedReworkOutcomes(t *testing.T) {
 					require.NoError(t, os.WriteFile(p.LogFile, []byte(tc.provider), 0o600))
 				}
 				now := time.Now()
-				return process.Result{StartedAt: now, ExitedAt: now, ExitCode: tc.exit}, nil
+				return process.Result{StartedAt: now, ExitedAt: now, ExitCode: tc.exit, Interruption: tc.interruption}, nil
 			}), WithFinalSummarySpawner(func(context.Context, FinalSummaryParams) (string, error) { return "Summary", nil }))
 			h.writeTicket("epc-parent.md", h.agentEpicMD("epc-parent", "paused"))
-			md := strings.Replace(h.taskMD("tst-child", "todo", "one-stage"), "kontora: true\n", "kontora: true\nparent: epc-parent\nstage: rework\n", 1)
+			fields := "kontora: true\nstage: rework\n"
+			if !tc.ordinary {
+				fields += "parent: epc-parent\n"
+			}
+			md := strings.Replace(h.taskMD("tst-child", "todo", "one-stage"), "kontora: true\n", fields, 1)
 			h.writeTicket("tst-child.md", md)
 			require.NoError(t, d.initialScan(h.tasksDir))
 			d.runTicket(context.Background(), "tst-child")

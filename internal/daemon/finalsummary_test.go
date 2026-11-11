@@ -826,13 +826,13 @@ func stageSummaryRunner(t *testing.T, ticketPath string) RunnerFunc {
 		if err := os.WriteFile(ticketPath, data, 0o644); err != nil {
 			return process.Result{}, err
 		}
-		return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now()}, nil
+		publishCompleteResult(t, p)
+		return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now(), Termination: process.TerminationProcessGroupGone}, nil
 	}
 }
 
-// TestFinalSummaryTerminalStates runs whole pipelines to their terminal state
-// and checks that a ticket-level summary is generated exactly when more than
-// one run recorded one, whichever way the pipeline ends.
+// TestFinalSummaryTerminalStates runs whole pipelines to their terminal state.
+// Only successful completion with multiple run summaries starts the summary pass.
 func TestFinalSummaryTerminalStates(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -840,8 +840,10 @@ func TestFinalSummaryTerminalStates(t *testing.T) {
 		wantStatus ticket.Status
 		wantRuns   int
 		// wantSummary is the per-run summary the ticket must keep.
-		wantSummary string
-		wantFinal   string
+		wantSummary      string
+		wantFinal        string
+		lastInterruption error
+		wantLastOutcome  ticket.RunOutcome
 	}{
 		{
 			name: "two stages ending in done",
@@ -849,10 +851,11 @@ func TestFinalSummaryTerminalStates(t *testing.T) {
 				{Stage: "step1", Agent: "agent1", OnSuccess: "next", OnFailure: "pause"},
 				{Stage: "step2", Agent: "agent1", OnSuccess: "done", OnFailure: "pause"},
 			},
-			wantStatus:  ticket.StatusDone,
-			wantRuns:    2,
-			wantSummary: "step2 summary",
-			wantFinal:   "the whole ticket",
+			wantStatus:      ticket.StatusDone,
+			wantRuns:        2,
+			wantSummary:     "step2 summary",
+			wantFinal:       "the whole ticket",
+			wantLastOutcome: ticket.RunOutcomeComplete,
 		},
 		{
 			// A successful park is the other way a pipeline ends, and the
@@ -860,21 +863,35 @@ func TestFinalSummaryTerminalStates(t *testing.T) {
 			name: "two stages parked in human_review",
 			pipeline: config.Pipeline{
 				{Stage: "step1", Agent: "agent1", OnSuccess: "next", OnFailure: "pause"},
-				{Stage: "step2", Agent: "agent1", OnSuccess: "human_review", OnFailure: "pause"},
+				{Stage: "step2", Agent: "agent1", OnSuccess: "human_review", OnFailure: "human_review"},
 			},
-			wantStatus:  ticket.StatusHumanReview,
-			wantRuns:    2,
-			wantSummary: "step2 summary",
-			wantFinal:   "the whole ticket",
+			wantStatus:      ticket.StatusHumanReview,
+			wantRuns:        2,
+			wantSummary:     "step2 summary",
+			wantFinal:       "the whole ticket",
+			wantLastOutcome: ticket.RunOutcomeComplete,
+		},
+		{
+			name: "zero-exit interruption parked in human_review",
+			pipeline: config.Pipeline{
+				{Stage: "step1", Agent: "agent1", OnSuccess: "next", OnFailure: "pause"},
+				{Stage: "step2", Agent: "agent1", OnSuccess: "human_review", OnFailure: "human_review"},
+			},
+			wantStatus:       ticket.StatusHumanReview,
+			wantRuns:         2,
+			wantSummary:      "step2 summary",
+			lastInterruption: context.DeadlineExceeded,
+			wantLastOutcome:  ticket.RunOutcomeFailed,
 		},
 		{
 			name: "one stage has nothing to synthesize",
 			pipeline: config.Pipeline{
 				{Stage: "step1", Agent: "agent1", OnSuccess: "done", OnFailure: "pause"},
 			},
-			wantStatus:  ticket.StatusDone,
-			wantRuns:    1,
-			wantSummary: "step1 summary",
+			wantStatus:      ticket.StatusDone,
+			wantRuns:        1,
+			wantSummary:     "step1 summary",
+			wantLastOutcome: ticket.RunOutcomeComplete,
 		},
 	}
 
@@ -885,12 +902,24 @@ func TestFinalSummaryTerminalStates(t *testing.T) {
 			h.cfg.Pipelines["under-test"] = tc.pipeline
 			ticketPath := filepath.Join(h.tasksDir, "tst-fin.md")
 
+			summaryRunner := stageSummaryRunner(t, ticketPath)
+			runner := func(ctx context.Context, p RunnerParams) (process.Result, error) {
+				require.True(t, p.RequireTermination)
+				result, err := summaryRunner(ctx, p)
+				if strings.HasPrefix(filepath.Base(p.LogFile), "step2.") {
+					// A timeout can stop a process that handles termination and exits zero.
+					// The complete report must not override the runner's interruption.
+					result.Interruption = tc.lastInterruption
+				}
+				return result, err
+			}
+
 			var spawns summarySpawns
 			d := New(h.cfg,
 				WithLogger(testLogger(t)),
 				WithDebounce(50*time.Millisecond),
 				WithLockPath(h.lockPath),
-				WithRunner(stageSummaryRunner(t, ticketPath)),
+				WithRunner(runner),
 				WithAgentLookup(passthroughAgentLookup),
 				WithSkipOrphanCleanup(),
 				WithFinalSummarySpawner(spawns.spawner("the whole ticket")),
@@ -912,12 +941,19 @@ func TestFinalSummaryTerminalStates(t *testing.T) {
 			assert.Equal(t, tc.wantFinal, result.FinalSummary)
 			assert.Equal(t, tc.wantSummary, result.Summary, "the per-run summary must be left alone")
 			require.Len(t, result.History, tc.wantRuns)
+			last := result.History[len(result.History)-1]
+			assert.Zero(t, last.ExitCode)
+			assert.Equal(t, tc.wantLastOutcome, last.RunOutcome)
+			assert.NotEmpty(t, last.InvocationID)
+			if tc.lastInterruption != nil {
+				assert.Contains(t, last.OutcomeReason, tc.lastInterruption.Error())
+			}
 			for i, entry := range result.History {
 				assert.Equal(t, entry.Stage+" summary", entry.Summary, "history[%d] summary must be left alone", i)
 			}
 
 			if tc.wantFinal == "" {
-				assert.Empty(t, spawns.all(), "a single run summary must not start the pass")
+				assert.Empty(t, spawns.all(), "unsuccessful or single-run completion must not start the pass")
 			} else {
 				prompt := spawns.only(t).prompt()
 				for _, entry := range result.History {
@@ -933,6 +969,9 @@ func TestFinalSummaryTerminalStates(t *testing.T) {
 			entries, err := os.ReadDir(filepath.Join(h.logsDir, "tst-fin"))
 			require.NoError(t, err)
 			for _, e := range entries {
+				if e.IsDir() && e.Name() == "results" {
+					continue // Mandatory stage results, not a summary-pass artifact.
+				}
 				assert.Regexp(t, `^step[0-9]+\.`, e.Name(), "only stage runs write to the log directory")
 			}
 
@@ -1004,7 +1043,7 @@ func TestFinalSummaryRetriedStageInput(t *testing.T) {
 	ticketPath := filepath.Join(h.tasksDir, "tst-fry.md")
 
 	var runs int
-	runner := func(_ context.Context, _ RunnerParams) (process.Result, error) {
+	runner := func(_ context.Context, p RunnerParams) (process.Result, error) {
 		runs++
 		tk, err := ticket.ParseFile(ticketPath)
 		require.NoError(t, err)
@@ -1015,8 +1054,10 @@ func TestFinalSummaryRetriedStageInput(t *testing.T) {
 		exit := 0
 		if runs == 1 {
 			exit = 1
+		} else {
+			publishCompleteResult(t, p)
 		}
-		return process.Result{ExitCode: exit, StartedAt: time.Now(), ExitedAt: time.Now()}, nil
+		return process.Result{ExitCode: exit, StartedAt: time.Now(), ExitedAt: time.Now(), Termination: process.TerminationProcessGroupGone}, nil
 	}
 
 	var spawns summarySpawns
@@ -1041,8 +1082,8 @@ func TestFinalSummaryRetriedStageInput(t *testing.T) {
 	prompt := spawns.only(t).prompt()
 	assert.Contains(t, prompt, "Test ticket tst-fry", "the ticket text reaches the pass")
 	assert.Contains(t, prompt, "Keep the retried stage in the input.")
-	assert.Contains(t, prompt, "stage step1, run 0, unverified task outcome (runner exit status 1)")
-	assert.Contains(t, prompt, "stage step1, run 1, unverified task outcome (runner exit status 0)")
+	assert.Contains(t, prompt, "stage step1, run 0, failed (runner exit status 1)")
+	assert.Contains(t, prompt, "stage step1, run 1, complete (runner exit status 0)")
 	assert.Less(t, strings.Index(prompt, "attempt 1"), strings.Index(prompt, "attempt 2"))
 
 	stop()
@@ -1359,11 +1400,12 @@ func TestFinalSummaryClearedOnNextRun(t *testing.T) {
 	ticketPath := filepath.Join(h.tasksDir, "tst-fcl.md")
 
 	duringRun := make(chan string, 4)
-	runner := func(_ context.Context, _ RunnerParams) (process.Result, error) {
+	runner := func(_ context.Context, p RunnerParams) (process.Result, error) {
 		tk, err := ticket.ParseFile(ticketPath)
 		require.NoError(t, err)
 		duringRun <- tk.FinalSummary
-		return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now()}, nil
+		publishCompleteResult(t, p)
+		return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now(), Termination: process.TerminationProcessGroupGone}, nil
 	}
 
 	d := New(h.cfg,
@@ -1392,7 +1434,6 @@ func TestFinalSummaryClearedOnNextRun(t *testing.T) {
 // one either.
 func TestFinalSummaryUntouchedWithoutAPipeline(t *testing.T) {
 	h := newHarness(t)
-	h.cfg.Agents["agent1"] = config.Agent{Binary: "true"}
 
 	d := New(h.cfg,
 		WithLogger(testLogger(t)),

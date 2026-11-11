@@ -141,6 +141,7 @@ func TestSharedDispatchMultiSlot(t *testing.T) {
 		ordinaryStarted <- params.TicketID
 		select {
 		case <-ordinaryRelease[params.TicketID]:
+			publishCompleteResult(t, params)
 		case <-ctx.Done():
 		}
 		return process.Result{StartedAt: started, ExitedAt: time.Now(), Termination: process.TerminationProcessGroupGone}, nil
@@ -291,6 +292,7 @@ func TestEpicUncertainExecutionRetainsOnlySupervisorPool(t *testing.T) {
 		if p.TicketID == "uncertain" {
 			return result, process.ErrTerminationUncertain
 		}
+		publishCompleteResult(t, p)
 		result.Termination = process.TerminationProcessGroupGone
 		return result, nil
 	}))

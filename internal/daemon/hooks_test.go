@@ -85,7 +85,7 @@ func TestHooksLifecycleOrder(t *testing.T) {
 		config.HookStageStart: {appendHook("before", orderLog, "$KONTORA_EVENT")},
 		config.HookStageEnd:   {appendHook("after", orderLog, "$KONTORA_EVENT")},
 	}
-	h.cfg.Agents["agent1"] = config.Agent{Binary: writeScript(t, fmt.Sprintf("echo agent >> %s\n", orderLog))}
+	h.cfg.Agents["agent1"] = config.Agent{Binary: writeScript(t, fmt.Sprintf("echo agent >> %s\nmkdir -p \"$(dirname \"$KONTORA_RESULT_FILE\")\"\nprintf '%%s\\n' '{\"outcome\":\"complete\",\"summary\":\"Agent finished.\"}' > \"$KONTORA_RESULT_FILE\"\n", orderLog))}
 
 	d := h.newDaemon(h.cfg)
 	stop := startDaemon(t, d)
@@ -249,7 +249,7 @@ func TestHooksFailurePolicy(t *testing.T) {
 				Run:       "exit 1",
 				OnFailure: tt.onFailure,
 			}}}
-			h.cfg.Agents["agent1"] = config.Agent{Binary: writeScript(t, fmt.Sprintf("echo agent >> %s\n", ranFile))}
+			h.cfg.Agents["agent1"] = config.Agent{Binary: writeScript(t, fmt.Sprintf("echo agent >> %s\nmkdir -p \"$(dirname \"$KONTORA_RESULT_FILE\")\"\nprintf '%%s\\n' '{\"outcome\":\"complete\",\"summary\":\"Agent finished.\"}' > \"$KONTORA_RESULT_FILE\"\n", ranFile))}
 
 			d := h.newDaemon(h.cfg)
 			stop := startDaemon(t, d)
@@ -376,6 +376,12 @@ func TestHooksWorktreeReuseAndAnnotation(t *testing.T) {
 		},
 	}
 
+	// This fixture also performs a non-stage annotation, which has no result
+	// contract. Only its actual stage executions publish completion.
+	for name, agent := range h.cfg.Agents {
+		agent.Binary = writeScript(t, fmt.Sprintf("if [ -n \"${KONTORA_RESULT_FILE:-}\" ]; then exec %q \"$@\"; fi\n", agent.Binary))
+		h.cfg.Agents[name] = agent
+	}
 	d := h.newAnnotationDaemon(DirectRunner)
 	_, stop := startAnnotationDaemon(t, h, d, "tst-h06",
 		h.ticketMDWithPipeline("tst-h06", "todo", "pipeline: two-stage\n", ""))
@@ -547,7 +553,8 @@ func TestHooksSimpleTicketStageEndPauseKeepsSummary(t *testing.T) {
 		require.NoError(t, os.WriteFile(filepath.Join(p.SessionDir, "session.jsonl"),
 			[]byte(`{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Copied the config."}]}}`),
 			0o644))
-		return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now()}, nil
+		publishCompleteResult(t, p)
+		return process.Result{ExitCode: 0, StartedAt: time.Now(), ExitedAt: time.Now(), Termination: process.TerminationProcessGroupGone}, nil
 	}
 
 	cfg := h.defaultConfig("pi", "pi")

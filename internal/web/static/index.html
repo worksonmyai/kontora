@@ -1575,28 +1575,27 @@
           <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
         </button>
         <div class="mobile-wordmark">
-          <span style="font-family:'JetBrains Mono',monospace;font-weight:700;font-size:16px;letter-spacing:.04em;color:rgba(var(--tx-2),1);">kontora</span>
+          <span class="mobile-label" style="font-weight:700;color:rgba(var(--tx-2),1);">kontora</span>
           <span class="running-pill mobile-running-pill" :class="runningAgents + automationsRunningCount() === 0 ? 'is-idle' : ''" :aria-label="(runningAgents + automationsRunningCount()) + ' running'">
-            <span class="running-pill-dot" :class="runningAgents + automationsRunningCount() > 0 ? 'pulse-dot' : ''"></span>
             <span style="color:rgba(var(--tx),1);" x-text="runningAgents + automationsRunningCount()"></span>
             <span class="mobile-running-label" style="color:rgba(var(--surface-600),1);">running</span>
           </span>
         </div>
-        <button id="assistant-mobile-trigger" @click="openAssistantSheet()" data-pipe-color="mauve" style="width:34px;height:34px;border:1px solid rgba(var(--surface-700),.6);background:rgba(var(--surface-900),1);color:hsl(var(--pipe-h));border-radius:8px;display:flex;align-items:center;justify-content:center;flex:none;" aria-label="Assistant">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z"/></svg>
+        <button id="assistant-mobile-trigger" @click="openAssistantSheet()" data-pipe-color="mauve" class="mobile-icon-button" aria-label="Assistant">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 11.5a8.5 8.5 0 0 1-8.5 8.5H4l-3 3V11.5a10 10 0 0 1 20 0z"/></svg>
         </button>
         <button @click="toggleTheme()" style="width:34px;height:34px;border:1px solid rgba(var(--surface-700),.6);background:rgba(var(--surface-900),1);color:rgba(var(--surface-600),1);border-radius:8px;display:flex;align-items:center;justify-content:center;flex:none;" aria-label="Toggle theme">
           <svg x-show="!lightTheme" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
           <svg x-show="lightTheme" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
         </button>
-        <button @click="openNewSheet()" class="mobile-new-button" style="height:34px;padding:0 12px;border:1px solid rgba(var(--accent),1);background:rgba(var(--accent),1);color:rgba(var(--accent-fg),1);border-radius:8px;display:flex;align-items:center;gap:5px;font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:600;flex:none;" aria-label="New ticket">
+        <button @click="openNewSheet()" class="mobile-new-button mobile-primary" aria-label="New ticket">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg><span class="mobile-new-label">new</span>
         </button>
       </div>
       <div x-show="currentView === 'board'" class="mobile-board-search" style="padding:0 16px 10px;">
         <div style="position:relative;display:flex;align-items:center;">
           <svg style="position:absolute;left:11px;width:14px;height:14px;color:rgba(var(--surface-600),1);" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
-          <input x-model="searchQuery" placeholder="Filter, or project:name" aria-label="Filter tickets" style="width:100%;height:38px;padding:0 12px 0 34px;font-family:'JetBrains Mono',monospace;font-size:13px;border-radius:9px;background:rgba(var(--surface-900),1);border:1px solid rgba(var(--surface-700),.5);color:rgba(var(--tx),1);outline:none;"/>
+          <input x-model="searchQuery" placeholder="Filter, or project:name" aria-label="Filter tickets" style="width:100%;height:38px;padding:0 12px 0 34px;border-radius:9px;background:rgba(var(--surface-900),1);border:1px solid rgba(var(--surface-700),.5);color:rgba(var(--tx),1);"/>
         </div>
       </div>
       <div x-show="currentView === 'board' && (sourcesError || ticketSources.some(s => s.available === false))" class="px-4 pb-2">
@@ -1611,9 +1610,8 @@
         <template x-for="(col, ci) in columns" :key="col.key">
           <button @click="setActiveColumn(ci)" :aria-pressed="activeColumn === ci"
                   :style="'display:flex;align-items:center;gap:7px;flex:none;padding:9px 6px 11px;border:none;background:transparent;cursor:pointer;border-bottom:2px solid ' + (activeColumn===ci ? 'hsl('+col.tint+')' : 'transparent') + ';color:' + (activeColumn===ci ? 'hsl('+col.tint+')' : 'rgba(var(--tx-3),1)') + ';'">
-            <span :style="'width:7px;height:7px;border-radius:9999px;flex:none;background:hsl('+col.tint+');'"></span>
-            <span style="font-family:'JetBrains Mono',monospace;font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;white-space:nowrap;" x-text="col.label"></span>
-            <span :style="'font-family:\'JetBrains Mono\',monospace;font-size:10px;font-weight:700;padding:1px 6px;border-radius:9999px;' + (activeColumn===ci ? 'color:hsl('+col.tint+');background:hsl('+col.tint+' / .15);' : 'color:rgba(var(--surface-600),1);background:rgba(var(--surface-800),1);')" x-text="boardTickets(col.key).length"></span>
+            <span class="whitespace-nowrap" x-text="col.label"></span>
+            <span class="mobile-status-count" x-text="boardTickets(col.key).length"></span>
           </button>
         </template>
       </nav>
@@ -6158,78 +6156,81 @@
       <template x-if="!loading && allBoardTickets().length === 0 && !sourcesError && !ticketSources.some(s => s.available === false)">
         <div id="board-empty-mobile" style="border:1px solid rgba(var(--surface-700),.6);border-radius:12px;background:rgba(var(--surface-900),1);padding:18px 16px;margin-top:6px;display:flex;flex-direction:column;gap:12px;">
           <div style="font-size:15px;font-weight:600;color:rgba(var(--tx),1);">The board is empty</div>
-          <p style="font-size:12.5px;line-height:1.6;color:rgba(var(--tx-3),1);margin:0;">A ticket is one piece of work. Kontora gives it a git worktree and runs the pipeline stages on it.</p>
-          <button @click="openNewSheet()" style="height:42px;border-radius:10px;border:1px solid rgba(var(--accent),1);background:rgba(var(--accent),1);color:rgba(var(--accent-fg),1);font-family:'JetBrains Mono',monospace;font-size:13px;font-weight:700;">New ticket</button>
-          <p style="font-size:11.5px;line-height:1.6;color:rgba(var(--tx-3),1);margin:0;">Agents, stages, and pipelines live in the config file on the daemon host. To create or change them, give a coding agent running there this request:</p>
+          <p class="mobile-prose text-tx-3 m-0">A ticket is one piece of work. Kontora gives it a git worktree and runs the pipeline stages on it.</p>
+          <button @click="openNewSheet()" class="mobile-primary">New ticket</button>
+          <p class="mobile-prose text-tx-3 m-0">Agents, stages, and pipelines live in the config file on the daemon host. To create or change them, give a coding agent running there this request:</p>
           <!-- Shown, not only copied: the clipboard needs a secure context, and
                a phone on a tailnet over plain HTTP does not have one. -->
           <div style="font-family:'JetBrains Mono',monospace;font-size:11.5px;line-height:1.55;color:rgba(var(--tx-2),1);background:rgba(var(--surface-850),1);border:1px solid rgba(var(--surface-700),.7);border-radius:8px;padding:10px;word-break:break-word;" x-text="agentSetupRequest"></div>
-          <button @click="copyCmd(agentSetupRequest)" style="height:38px;border-radius:10px;border:1px solid rgba(var(--surface-700),.7);background:rgba(var(--surface-850),1);color:rgba(var(--tx-3),1);font-family:'JetBrains Mono',monospace;font-size:12.5px;font-weight:600;" x-text="copiedCmd === agentSetupRequest ? '\u2713 copied' : 'copy request'"></button>
+          <button @click="copyCmd(agentSetupRequest)" class="mobile-control" x-text="copiedCmd === agentSetupRequest ? '\u2713 copied' : 'copy request'"></button>
         </div>
       </template>
       <template x-if="allBoardTickets().length > 0 && boardTickets(mobileColumn().key).length === 0">
-        <div style="font-family:'JetBrains Mono',monospace;text-align:center;font-size:12px;color:rgba(var(--surface-600),1);border:1px dashed rgba(var(--surface-700),.6);border-radius:10px;padding:34px 16px;margin-top:6px;" x-text="'∅ ' + mobileColumn().emptyText.toLowerCase()"></div>
+        <div class="mobile-label text-tx-3" style="text-align:center;border:1px dashed rgba(var(--surface-700),.6);border-radius:10px;padding:34px 16px;margin-top:6px;" x-text="mobileColumn().emptyText"></div>
       </template>
       <!-- shrink-0: the touch rule in hack/tailwind.css sets button min-height
            to 44px, which replaces a column flex item's content-height floor. -->
       <template x-for="ticket in mobileTickets()" :key="ticketKey(ticket)">
-        <button @click="openMobileTicket(ticket)" class="shrink-0"
+        <button @click="openMobileTicket(ticket)" class="mobile-card shrink-0"
                 :data-pipe-color="ticketPipeColor(ticket)"
-                :style="'display:flex;flex-direction:column;gap:9px;text-align:left;width:100%;padding:12px 13px;border-radius:11px;background:rgba(var(--surface-900),1);border:1px solid rgba(var(--surface-700),.5);border-left:2px solid ' + (ticket.status==='in_progress' ? 'hsl(var(--st-progress))' : (ticket.status==='paused' ? 'hsl(var(--st-paused) / .8)' : 'hsl(var(--pipe-h) / .55)')) + ';cursor:pointer;' + (ticket.status==='cancelled' ? 'opacity:.62;' : (ticket.status === 'open' && ticket.scheduled_at ? 'opacity:.72;' : '')) + (!ticket.kontora ? 'border-style:dashed;' : '')">
-          <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
-            <div style="display:flex;align-items:center;gap:8px;min-width:0;">
+                :style="(ticket.status==='cancelled' ? 'opacity:.62;' : (ticket.status === 'open' && ticket.scheduled_at ? 'opacity:.72;' : '')) + (!ticket.kontora ? 'border-style:dashed;' : '')">
+          <div class="mobile-card-row">
+            <div class="mobile-card-context">
               <span x-show="epicIsAgent(ticket)" class="pipe-tag">Supervisor</span>
-              <span class="pipe-tag" x-show="showPipelineBadges" style="overflow:hidden;text-overflow:ellipsis;max-width:100%;" x-text="ticketTagLabel(ticket)"></span>
+              <span class="pipe-tag" x-show="showPipelineBadges" x-text="mobileTagLabel(ticket)"></span>
               <template x-if="ticket.status==='in_progress'">
-                <span style="display:flex;align-items:center;gap:5px;font-family:'JetBrains Mono',monospace;font-size:11px;color:hsl(var(--st-progress));flex:none;">
-                  <span class="pulse-dot">●</span><span x-text="epicIsAgent(ticket) ? 'supervising' : ticket.stage"></span>
+                <span class="mobile-card-state text-st-progress">
+                  <span x-text="epicIsAgent(ticket) ? 'supervising' : ticket.stage"></span>
                 </span>
               </template>
               <template x-if="epicIsAgent(ticket) && ticket.status === 'paused'">
-                <span class="card-glyph-paused" style="display:flex;align-items:center;gap:5px;font-family:'JetBrains Mono',monospace;font-size:11px;flex:none;">
-                  <span>⏸</span><span>paused</span>
+                <span class="card-glyph-paused mobile-card-state">
+                  <span>paused</span>
                 </span>
               </template>
               <template x-if="epicIsAgent(ticket) && ticket.status === 'todo'">
-                <span style="display:flex;align-items:center;gap:5px;font-family:'JetBrains Mono',monospace;font-size:11px;color:rgba(var(--surface-600),1);flex:none;">
-                  <span>◌</span><span>queued</span>
+                <span class="mobile-card-state">
+                  <span>queued</span>
                 </span>
+              </template>
+              <template x-if="!epicIsAgent(ticket) && ticket.status === 'todo'">
+                <span class="mobile-card-state">Queued</span>
+              </template>
+              <template x-if="!epicIsAgent(ticket) && ticket.status === 'paused'">
+                <span class="mobile-card-state">Paused</span>
               </template>
               <template x-if="ticket.status === 'open' && scheduleChip(ticket)">
                 <span class="sched-chip">
                   <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15.5 14"/></svg>
                   <span x-text="scheduleChip(ticket).abs"></span>
-                  <span x-show="scheduleChip(ticket).rel" class="sched-chip-rel" x-text="'· ' + scheduleChip(ticket).rel"></span>
+                  <span x-show="scheduleChip(ticket).rel" class="sched-chip-rel" x-text="'in ' + scheduleChip(ticket).rel"></span>
                 </span>
               </template>
               <template x-if="ticket.waiting_for_input">
                 <span class="waiting-chip">
-                  <span class="waiting-dot pulse-dot"></span>needs input
+                  needs input
                   <span x-text="waitingFor(ticket)"></span>
                 </span>
               </template>
             </div>
             <template x-if="!ticket.kontora">
-              <span style="padding:1px 7px;border-radius:9999px;border:1px solid hsl(var(--st-paused) / .25);background:hsl(var(--st-paused) / .12);color:hsl(var(--st-paused));font-family:'JetBrains Mono',monospace;font-size:9px;white-space:nowrap;flex:none;">not init'd</span>
+              <span class="mobile-label text-warn">not init'd</span>
             </template>
           </div>
-          <p :style="'font-size:13.5px;line-height:1.45;color:rgba(var(--tx),1);margin:0;' + (ticket.status==='cancelled' ? 'text-decoration:line-through;text-decoration-color:rgba(var(--surface-600),.6);' : '')" x-text="ticket.title"></p>
+          <p class="mobile-card-title" :style="ticket.status==='cancelled' ? 'text-decoration:line-through;text-decoration-color:rgba(var(--surface-600),.6);' : ''" x-text="ticket.title"></p>
           <template x-if="epicCardInfo(ticket)">
             <span class="font-mono text-[11px] text-tx-3" :title="epicCardInfo(ticket).title || epicCardInfo(ticket).id"
                   x-text="'Epic: ' + epicCardInfo(ticket).done + ' of ' + epicCardInfo(ticket).total + ' done'"></span>
           </template>
-          <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;font-family:'JetBrains Mono',monospace;font-size:11px;color:rgba(var(--surface-600),1);">
-            <span style="display:flex;align-items:center;gap:7px;min-width:0;">
-              <span style="white-space:nowrap;" x-text="ticket.id"></span>
-              <span x-show="isSecondary(ticket)" class="truncate text-accent" :title="sourceLabel(ticket)" x-text="sourceLabel(ticket)"></span>
+          <div class="mobile-card-meta">
+            <span class="mobile-card-identity">
+              <span class="mobile-card-id" :title="ticket.id" x-text="ticket.id"></span>
+              <span x-show="isSecondary(ticket)" class="mobile-technical text-accent" :title="sourceLabel(ticket)" x-text="sourceLabel(ticket)"></span>
               <template x-if="showAgentMeta && ticket.agent">
-                <span style="display:flex;align-items:center;gap:6px;min-width:0;">
-                  <span style="color:rgba(var(--edge-faint),1);">·</span>
-                  <span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" x-text="ticket.agent"></span>
-                </span>
+                <span x-text="ticket.agent"></span>
               </template>
             </span>
-            <span style="flex:none;" x-text="ticket.status==='in_progress' && ticket.started_at ? formatDuration(ticket) : (reviewFinishedAt(ticket) ? finishedAgo(reviewFinishedAt(ticket)) : timeAgo(ticket.created_at))"></span>
+            <span x-text="ticket.status==='in_progress' && ticket.started_at ? formatDuration(ticket) : (reviewFinishedAt(ticket) ? finishedAgo(reviewFinishedAt(ticket)) : timeAgo(ticket.created_at))"></span>
           </div>
         </button>
       </template>
@@ -6243,9 +6244,14 @@
         <header class="shrink-0 p-4 border-b border-surface-700 flex flex-col gap-3">
           <button type="button" @click="closeEpic()" class="text-left font-mono text-xs text-accent">back to board</button>
           <h1 class="text-lg text-tx-hi" x-text="selectedEpic?.title"></h1>
-          <p class="font-mono text-xs text-tx-3" x-text="epicDescription(selectedEpic)"></p>
+          <div class="mobile-epic-meta mobile-label text-tx-3">
+            <span class="mobile-technical" x-text="selectedEpic?.path"></span>
+            <span x-text="epicIsAgent(selectedEpic) ? 'Supervisor: ' + statusLabel(selectedEpic?.status) : 'passive epic'"></span>
+            <span x-text="selectedEpic?.agent"></span>
+            <span :class="selectedEpic?.branch ? 'mobile-technical' : ''" x-text="selectedEpic?.branch || 'no branch yet'"></span>
+          </div>
           <span x-show="selectedEpic?.waiting_for_input" class="waiting-chip" :title="'Waiting for input: ' + waitingLabel(selectedEpic)">
-            <span class="waiting-dot pulse-dot"></span>needs input
+            needs input
             <span x-text="waitingFor(selectedEpic)"></span>
           </span>
           <div class="flex flex-wrap gap-2">
@@ -6262,17 +6268,19 @@
         </header>
         <nav class="shrink-0 flex gap-5 px-4 pt-3 overflow-x-auto border-b border-surface-700" aria-label="Epic tabs">
           <button type="button" x-show="epicIsAgent(selectedEpic)" @click="epicSwitchTab('session')" :aria-pressed="epicTab === 'session'"
-                  class="font-mono text-xs pb-2 border-b-2" :class="epicTab === 'session' ? 'border-accent text-tx-hi' : 'border-transparent text-surface-600'">session</button>
+                  class="mobile-tab" :class="epicTab === 'session' ? 'border-accent text-tx-hi' : 'border-transparent text-surface-600'">Terminal</button>
           <button type="button" x-show="epicIsAgent(selectedEpic)" @click="epicSwitchTab('activity')" :aria-pressed="epicTab === 'activity'"
-                  class="font-mono text-xs pb-2 border-b-2" :class="epicTab === 'activity' ? 'border-accent text-tx-hi' : 'border-transparent text-surface-600'">activity</button>
+                  class="mobile-tab" :class="epicTab === 'activity' ? 'border-accent text-tx-hi' : 'border-transparent text-surface-600'">Activity</button>
           <button type="button" @click="epicSwitchTab('children')" :aria-pressed="epicTab === 'children'"
-                  class="shrink-0 font-mono text-xs pb-2 border-b-2" :class="epicTab === 'children' ? 'border-accent text-tx-hi' : 'border-transparent text-surface-600'">sub-tickets + brief</button>
+                  class="mobile-tab" :class="epicTab === 'children' ? 'border-accent text-tx-hi' : 'border-transparent text-surface-600'">Ticket</button>
           <button type="button" @click="epicSwitchTab('notes')" :aria-pressed="epicTab === 'notes'"
-                  class="font-mono text-xs pb-2 border-b-2" :class="epicTab === 'notes' ? 'border-accent text-tx-hi' : 'border-transparent text-surface-600'">notes</button>
+                  class="mobile-tab" :class="epicTab === 'notes' ? 'border-accent text-tx-hi' : 'border-transparent text-surface-600'">Notes</button>
         </nav>
         <div x-show="epicTab === 'children'" class="flex-1 min-h-0 overflow-y-auto p-4 flex flex-col gap-4">
           <template x-for="c in epicRollup(selectedEpic?.id).children" :key="c.id">
-            <button type="button" @click="openTicketRef(c)" class="shrink-0 text-left font-mono text-xs text-tx-2" x-text="c.id + ' · ' + c.title + ' · ' + statusLabel(c.status)"></button>
+            <button type="button" @click="openTicketRef(c)" class="mobile-epic-child shrink-0 text-left mobile-label text-tx-2">
+              <span class="mobile-technical" x-text="c.id"></span>: <span x-text="c.title"></span> (<span x-text="statusLabel(c.status)"></span>)
+            </button>
           </template>
           <div class="flex gap-2">
             <input x-model="epicAddDraft" @keydown.enter.prevent="epicAddChild()" aria-label="New sub-ticket title" placeholder="New sub-ticket" class="min-w-0 flex-1 bg-surface-800 text-tx-2 px-3 py-2 rounded">
@@ -6314,7 +6322,7 @@
                 <select aria-label="Supervisor output run" :value="outputRunKey()" @change="selectOutputRun($event.target.value)"
                         :disabled="!outputRuns().length" class="min-w-0 bg-surface-900 border border-edge-input rounded-md px-2 py-1 text-tx-2">
                   <template x-for="r in outputRuns()" :key="r.key">
-                    <option :value="r.key" :selected="r.key === outputRunKey()" x-text="r.label"></option>
+                    <option :value="r.key" :selected="r.key === outputRunKey()" x-text="r.label.replaceAll(' · ', ', ')"></option>
                   </template>
                 </select>
               </label>
@@ -6330,7 +6338,7 @@
               <div x-show="outputSubject()?.status === 'in_progress'" class="flex-1 min-h-0 flex flex-col">
                 <div class="mobile-terminal-toolbar">
                   <div class="mobile-epic-terminal-context">
-                    <span class="truncate" :title="outputSubject()?.id" x-text="'tmux · ' + outputSubject()?.id"></span>
+                    <span class="truncate mobile-technical" :title="outputSubject()?.id" x-text="'tmux: ' + outputSubject()?.id"></span>
                     <span :class="terminalConnected ? 'text-st-progress' : 'text-surface-600'" x-text="terminalConnected ? 'connected' : (terminalError ? 'disconnected' : 'connecting…')" role="status"></span>
                   </div>
                   <button type="button" @click="toggleTerminalRW()" :disabled="!terminalOpen || !!terminalError" :aria-pressed="terminalRW"
@@ -6466,9 +6474,9 @@
           </button>
         </div>
         <div class="mobile-detail-secondary" style="align-items:center;gap:8px;padding:0 16px 10px;flex-wrap:wrap;">
-          <span class="pipe-tag" :data-pipe-color="selectedTicket ? ticketPipeColor(selectedTicket) : 'none'" x-text="selectedTicket ? ticketTagLabel(selectedTicket) : ''"></span>
+          <span class="pipe-tag" :data-pipe-color="selectedTicket ? ticketPipeColor(selectedTicket) : 'none'" x-text="selectedTicket ? mobileTagLabel(selectedTicket) : ''"></span>
           <span class="status-chip" :data-status="selectedTicket?.status" x-text="selectedTicket?.status"></span>
-          <span class="font-mono text-[11px] text-tx-3 break-all" x-text="sourceLabel(selectedTicket)"></span>
+          <span class="mobile-technical text-tx-3 break-all" x-text="sourceLabel(selectedTicket)"></span>
           <span x-show="isSecondary(selectedTicket) && !ticketCanClaim(selectedTicket)" class="w-full font-mono text-[11px] text-warn" x-text="selectedTicket?.refusal_reason || 'This ticket cannot be claimed.'"></span>
           <template x-if="scheduleLabel(selectedTicket)">
             <button @click="canSchedule(selectedTicket) && openScheduleSheet(selectedTicket)" class="sched-chip" :disabled="!canSchedule(selectedTicket)" :style="canSchedule(selectedTicket) ? 'cursor:pointer;' : 'cursor:default;'">
@@ -6477,29 +6485,25 @@
             </button>
           </template>
           <template x-if="selectedTicket?.waiting_for_input">
-            <span class="waiting-chip" :title="'Waiting for input — ' + waitingLabel(selectedTicket)">
-              <span class="waiting-dot pulse-dot"></span>needs input
+            <span class="waiting-chip" :title="'Waiting for input: ' + waitingLabel(selectedTicket)">
+              needs input
               <span x-text="waitingFor(selectedTicket)"></span>
             </span>
           </template>
           <span x-show="!isSecondary(selectedTicket) && mobileTicketCostLabel()" :title="costTooltip(currentTicketCost())" :aria-label="costTooltip(currentTicketCost())"
-                style="padding:2px 8px;border-radius:9999px;border:1px solid rgba(var(--surface-700),.5);font-family:'JetBrains Mono',monospace;font-size:11px;color:rgba(var(--tx-2),1);"
+                class="mobile-label text-tx-2"
                 x-text="mobileTicketCostLabel()"></span>
           <template x-if="selectedTicket && !selectedTicket.kontora">
-            <span style="padding:2px 8px;border-radius:9999px;border:1px solid hsl(var(--st-paused) / .25);background:hsl(var(--st-paused) / .12);color:hsl(var(--st-paused));font-family:'JetBrains Mono',monospace;font-size:11px;">not a kontora ticket</span>
+            <span class="mobile-label text-warn">not a kontora ticket</span>
           </template>
         </div>
         <template x-if="!isSecondary(selectedTicket) && mobileHasRun(selectedTicket)">
-          <div class="mobile-detail-tabs flex overflow-x-auto" style="gap:18px;padding:0 16px;">
-            <button class="shrink-0 whitespace-nowrap" @click="mobileSwitchTab(mobileFirstTab())" :aria-pressed="detailTab === mobileFirstTab()"
-                    :style="'border:none;background:transparent;padding:10px 0;font-family:\'JetBrains Mono\',monospace;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;cursor:pointer;border-bottom:2px solid ' + (detailTab===mobileFirstTab() ? 'rgba(var(--accent),1)' : 'transparent') + ';color:' + (detailTab===mobileFirstTab() ? 'rgba(var(--tx),1)' : 'rgba(var(--surface-600),1)') + ';'"
+          <div class="mobile-detail-tabs flex overflow-x-auto">
+            <button class="mobile-tab" @click="mobileSwitchTab(mobileFirstTab())" :aria-pressed="detailTab === mobileFirstTab()"
                     x-text="mobileFirstTabLabel()"></button>
-            <button class="shrink-0 whitespace-nowrap" x-show="selectedTicket?.status === 'in_progress'" @click="mobileSwitchTab('logs')" :aria-pressed="detailTab === 'logs'"
-                    :style="'border:none;background:transparent;padding:10px 0;font-family:\'JetBrains Mono\',monospace;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;cursor:pointer;border-bottom:2px solid ' + (detailTab==='logs' ? 'rgba(var(--accent),1)' : 'transparent') + ';color:' + (detailTab==='logs' ? 'rgba(var(--tx),1)' : 'rgba(var(--surface-600),1)') + ';'">≡ logs</button>
-            <button class="shrink-0 whitespace-nowrap" @click="mobileSwitchTab('activity')" :aria-pressed="detailTab === 'activity'"
-                    :style="'border:none;background:transparent;padding:10px 0;font-family:\'JetBrains Mono\',monospace;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;cursor:pointer;border-bottom:2px solid ' + (detailTab==='activity' ? 'rgba(var(--accent),1)' : 'transparent') + ';color:' + (detailTab==='activity' ? 'rgba(var(--tx),1)' : 'rgba(var(--surface-600),1)') + ';'">activity</button>
-            <button class="shrink-0 whitespace-nowrap" @click="mobileSwitchTab('ticket')" :aria-pressed="detailTab === 'ticket'"
-                    :style="'border:none;background:transparent;padding:10px 0;font-family:\'JetBrains Mono\',monospace;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;cursor:pointer;border-bottom:2px solid ' + (detailTab==='ticket' ? 'rgba(var(--accent),1)' : 'transparent') + ';color:' + (detailTab==='ticket' ? 'rgba(var(--tx),1)' : 'rgba(var(--surface-600),1)') + ';'">▤ ticket</button>
+            <button class="mobile-tab" x-show="selectedTicket?.status === 'in_progress'" @click="mobileSwitchTab('logs')" :aria-pressed="detailTab === 'logs'">Logs</button>
+            <button class="mobile-tab" @click="mobileSwitchTab('activity')" :aria-pressed="detailTab === 'activity'">Activity</button>
+            <button class="mobile-tab" @click="mobileSwitchTab('ticket')" :aria-pressed="detailTab === 'ticket'">Ticket</button>
           </div>
         </template>
       </div>
@@ -6635,23 +6639,23 @@
               <template x-for="(seg, si) in stageRibbon()" :key="seg.name">
                 <span style="display:flex;align-items:center;gap:7px;flex:none;">
                   <template x-if="si>0"><span style="color:rgba(var(--surface-700),1);">→</span></template>
-                  <button type="button" @click="clickStage(seg.name)" :style="mobileStageStyle(seg.name)"
+                  <button type="button" @click="clickStage(seg.name)" class="mobile-stage-control" :style="mobileStageStyle(seg.name)"
                           :title="costTooltip(seg.cost)" :aria-label="seg.name + ': ' + costTooltip(seg.cost)"
                           x-text="mobileStageLabel(seg)"></button>
                 </span>
               </template>
             </div>
           </template>
-          <div style="font-family:'JetBrains Mono',monospace;font-size:11px;color:rgba(var(--surface-600),1);margin-bottom:12px;">stage <span style="color:rgba(var(--tx-2),1);" x-text="logViewStage || selectedTicket?.stage || '—'"></span> · tap a stage to switch</div>
+          <div class="mobile-label text-tx-3 mb-3">Stage <span class="text-tx-2" x-text="logViewStage || selectedTicket?.stage || '—'"></span>. Tap a stage to switch.</div>
           <div style="padding:13px 14px;border-radius:10px;background:rgba(var(--surface-deep),1);border:1px solid rgba(var(--surface-700),.4);">
             <template x-if="logViewLoading">
-              <div style="font-family:'JetBrains Mono',monospace;font-size:11.5px;color:rgba(var(--surface-600),1);">Loading logs…</div>
+              <div class="mobile-label text-tx-3">Loading logs…</div>
             </template>
             <template x-if="!logViewLoading && logViewContent">
               <pre style="font-family:'JetBrains Mono',monospace;font-size:11.5px;line-height:1.6;white-space:pre-wrap;word-break:break-word;color:rgba(var(--tx),1);margin:0;" x-text="logViewContent"></pre>
             </template>
             <template x-if="!logViewLoading && !logViewContent">
-              <div style="font-family:'JetBrains Mono',monospace;font-size:11.5px;color:rgba(var(--surface-600),1);">No logs for this stage.</div>
+              <div class="mobile-label text-tx-3">No logs for this stage.</div>
             </template>
           </div>
         </div>
@@ -6659,9 +6663,9 @@
         <!-- ticket (body) -->
         <div x-show="detailTab==='ticket'" class="overflow-y-auto" style="flex:1;min-height:0;padding:18px 16px 24px;">
           <template x-if="selectedTicket?.last_error">
-            <div role="alert" style="border-left:3px solid rgba(var(--err),1);padding-left:12px;margin-bottom:18px;font-family:'JetBrains Mono',monospace;font-size:12px;white-space:pre-wrap;overflow-wrap:anywhere;color:rgba(var(--err),1);" x-text="selectedTicket.last_error"></div>
+            <div role="alert" class="mobile-prose text-err" style="border-left:3px solid rgba(var(--err),1);padding-left:12px;margin-bottom:18px;white-space:pre-wrap;overflow-wrap:anywhere;" x-text="selectedTicket.last_error"></div>
           </template>
-          <h1 style="font-family:'JetBrains Mono',monospace;font-size:19px;font-weight:700;line-height:1.35;color:rgba(var(--tx),1);margin:0 0 18px;overflow-wrap:anywhere;" x-text="selectedTicket?.title"></h1>
+          <h1 class="mobile-ticket-title" x-text="selectedTicket?.title"></h1>
           <button type="button" x-show="!isSecondary(selectedTicket) && mobileHasRun(selectedTicket)" @click="copyCmd('kontora attach ' + selectedTicket?.id)"
                   class="copyable font-mono text-xs text-tx-3 mb-4 break-all" aria-label="Copy attach command"
                   x-text="copiedCmd === 'kontora attach ' + selectedTicket?.id ? 'Copied' : 'kontora attach ' + selectedTicket?.id"></button>
@@ -6669,24 +6673,24 @@
                stage summaries stay below in their own card. -->
           <template x-if="finalSummary()">
             <div style="border:1px solid rgba(var(--accent),.3);border-radius:12px;background:rgba(var(--surface-900),1);padding:12px 14px;margin-bottom:20px;">
-              <div style="margin-bottom:8px;font-family:'JetBrains Mono',monospace;font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:rgba(var(--accent-bright),1);">Final outcome</div>
+              <div class="mobile-label text-accent-bright mb-2">Final outcome</div>
               <div class="ticket-prose text-sm" x-effect="setProse($el, finalSummary())"></div>
             </div>
           </template>
           <!-- Summary card: what the last stage run did, plus the branch's commits. -->
           <template x-if="selectedTicket?.summary">
             <div style="border:1px solid rgba(var(--surface-700),.4);border-radius:12px;background:rgba(var(--surface-900),1);padding:12px 14px;margin-bottom:20px;">
-              <div style="display:flex;align-items:baseline;gap:8px;margin-bottom:8px;font-family:'JetBrains Mono',monospace;font-size:11px;">
-                <span style="text-transform:uppercase;letter-spacing:.06em;color:rgba(var(--surface-600),1);">Summary</span>
+              <div class="mobile-label" style="display:flex;align-items:baseline;gap:8px;margin-bottom:8px;">
+                <span class="text-tx-3">Summary</span>
                 <template x-if="summaryStage()">
-                  <span style="color:rgba(var(--surface-600),1);" x-text="'· ' + summaryStage()"></span>
+                  <span class="text-tx-3" x-text="summaryStage()"></span>
                 </template>
               </div>
               <div class="ticket-prose text-sm" x-effect="setProse($el, selectedTicket.summary)"></div>
               <template x-if="!isSecondary(selectedTicket) && ticketChanges?.commits?.length">
                 <div style="margin-top:10px;padding-top:10px;border-top:1px solid rgba(var(--surface-700),.3);font-family:'JetBrains Mono',monospace;font-size:11px;">
                   <div style="color:rgba(var(--surface-600),1);margin-bottom:6px;"
-                       x-text="ticketChanges.commits.length + ' commit' + (ticketChanges.commits.length === 1 ? '' : 's') + ' · ' + ticketChanges.files.length + ' file' + (ticketChanges.files.length === 1 ? '' : 's') + ' vs ' + ticketChanges.base"></div>
+                       x-text="ticketChanges.commits.length + ' commit' + (ticketChanges.commits.length === 1 ? '' : 's') + ', ' + ticketChanges.files.length + ' file' + (ticketChanges.files.length === 1 ? '' : 's') + ' vs ' + ticketChanges.base"></div>
                   <template x-for="c in ticketChanges.commits" :key="c.sha">
                     <div style="display:flex;align-items:baseline;gap:8px;min-width:0;line-height:1.7;">
                       <span style="color:rgba(var(--surface-600),1);flex:none;" x-text="c.sha"></span>
@@ -6699,41 +6703,41 @@
           </template>
           <div style="border:1px solid rgba(var(--surface-700),.4);border-radius:12px;overflow:hidden;background:rgba(var(--surface-900),1);margin-bottom:20px;">
             <div style="display:flex;align-items:flex-start;gap:12px;padding:11px 14px;border-bottom:1px solid rgba(var(--surface-700),.3);">
-              <span style="font-family:'JetBrains Mono',monospace;font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:rgba(var(--surface-600),1);width:74px;flex:none;padding-top:1px;">Pipeline</span>
-              <span style="font-family:'JetBrains Mono',monospace;font-size:12px;color:rgba(var(--tx-2),1);flex:1;min-width:0;word-break:break-all;line-height:1.5;" x-text="selectedTicket && !selectedTicket.kontora ? '— (not initialized)' : (selectedTicket?.pipeline || '—')"></span>
+              <span class="mobile-meta-label mobile-label">Pipeline</span>
+              <span class="mobile-meta-value mobile-label" x-text="selectedTicket && !selectedTicket.kontora ? '— (not initialized)' : (selectedTicket?.pipeline || '—')"></span>
             </div>
             <div style="display:flex;align-items:flex-start;gap:12px;padding:11px 14px;border-bottom:1px solid rgba(var(--surface-700),.3);">
-              <span style="font-family:'JetBrains Mono',monospace;font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:rgba(var(--surface-600),1);width:74px;flex:none;padding-top:1px;">Agent</span>
-              <span style="font-family:'JetBrains Mono',monospace;font-size:12px;color:rgba(var(--tx-2),1);flex:1;min-width:0;word-break:break-all;line-height:1.5;" x-text="selectedTicket?.agent || 'Default'"></span>
+              <span class="mobile-meta-label mobile-label">Agent</span>
+              <span class="mobile-meta-value mobile-label" x-text="selectedTicket?.agent || 'Default'"></span>
             </div>
             <div style="display:flex;align-items:flex-start;gap:12px;padding:11px 14px;border-bottom:1px solid rgba(var(--surface-700),.3);">
-              <span style="font-family:'JetBrains Mono',monospace;font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:rgba(var(--surface-600),1);width:74px;flex:none;padding-top:1px;">Path</span>
-              <span style="font-family:'JetBrains Mono',monospace;font-size:12px;color:rgba(var(--tx-2),1);flex:1;min-width:0;word-break:break-all;line-height:1.5;" x-text="selectedTicket?.path || '—'"></span>
+              <span class="mobile-meta-label mobile-label">Path</span>
+              <span class="mobile-meta-value mobile-technical" x-text="selectedTicket?.path || '—'"></span>
             </div>
             <div style="display:flex;align-items:flex-start;gap:12px;padding:11px 14px;border-bottom:1px solid rgba(var(--surface-700),.3);">
-              <span style="font-family:'JetBrains Mono',monospace;font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:rgba(var(--surface-600),1);width:74px;flex:none;padding-top:1px;">Branch</span>
-              <span style="font-family:'JetBrains Mono',monospace;font-size:12px;color:rgba(var(--tx-2),1);flex:1;min-width:0;word-break:break-all;line-height:1.5;" x-text="selectedTicket?.branch || '—'"></span>
+              <span class="mobile-meta-label mobile-label">Branch</span>
+              <span class="mobile-meta-value mobile-technical" x-text="selectedTicket?.branch || '—'"></span>
             </div>
             <div style="display:flex;align-items:flex-start;gap:12px;padding:11px 14px;border-bottom:1px solid rgba(var(--surface-700),.3);">
-              <span style="font-family:'JetBrains Mono',monospace;font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:rgba(var(--surface-600),1);width:74px;flex:none;padding-top:1px;">Base</span>
-              <span style="font-family:'JetBrains Mono',monospace;font-size:12px;color:rgba(var(--tx-2),1);flex:1;min-width:0;word-break:break-all;line-height:1.5;" x-text="selectedTicket?.base_branch || 'repo default'"></span>
+              <span class="mobile-meta-label mobile-label">Base</span>
+              <span class="mobile-meta-value mobile-technical" x-text="selectedTicket?.base_branch || 'repo default'"></span>
             </div>
             <!-- Read-only here. The phone layer has no editor for any of these
                  rows, and notify is not the field to give it its first one. -->
             <div style="display:flex;align-items:flex-start;gap:12px;padding:11px 14px;border-bottom:1px solid rgba(var(--surface-700),.3);">
-              <span style="font-family:'JetBrains Mono',monospace;font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:rgba(var(--surface-600),1);width:74px;flex:none;padding-top:1px;">Notify</span>
-              <span style="font-family:'JetBrains Mono',monospace;font-size:12px;color:rgba(var(--tx-2),1);flex:1;min-width:0;word-break:break-all;line-height:1.5;" x-text="notifyRailLabel()"></span>
+              <span class="mobile-meta-label mobile-label">Notify</span>
+              <span class="mobile-meta-value mobile-label" x-text="notifyRailLabel()"></span>
             </div>
             <template x-if="mobileHasRun(selectedTicket) && selectedTicket?.stage">
               <div style="display:flex;align-items:flex-start;gap:12px;padding:11px 14px;border-bottom:1px solid rgba(var(--surface-700),.3);">
-                <span style="font-family:'JetBrains Mono',monospace;font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:rgba(var(--surface-600),1);width:74px;flex:none;padding-top:1px;">Stage</span>
-                <span style="font-family:'JetBrains Mono',monospace;font-size:12px;color:rgba(var(--tx-2),1);flex:1;min-width:0;word-break:break-all;line-height:1.5;" x-text="selectedTicket.stage"></span>
+                <span class="mobile-meta-label mobile-label">Stage</span>
+                <span class="mobile-meta-value mobile-label" x-text="selectedTicket.stage"></span>
               </div>
             </template>
             <template x-if="selectedTicket?.status==='in_progress' && selectedTicket?.started_at">
               <div style="display:flex;align-items:flex-start;gap:12px;padding:11px 14px;">
-                <span style="font-family:'JetBrains Mono',monospace;font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:rgba(var(--surface-600),1);width:74px;flex:none;padding-top:1px;">Running</span>
-                <span style="font-family:'JetBrains Mono',monospace;font-size:12px;color:rgba(var(--tx-2),1);flex:1;min-width:0;word-break:break-all;line-height:1.5;" x-text="formatDuration(selectedTicket)"></span>
+                <span class="mobile-meta-label mobile-label">Running</span>
+                <span class="mobile-meta-value mobile-label" x-text="formatDuration(selectedTicket)"></span>
               </div>
             </template>
           </div>
@@ -6790,7 +6794,7 @@
               <template x-for="(h, hi) in selectedTicket?.history || []" :key="hi">
                 <div class="border-t border-surface-700 pt-3 font-mono text-[11px] text-tx-3">
                   <span x-text="historyLabel(h)"></span>
-                  <span x-show="h.imported" class="text-tx-faint"> · imported</span>
+                  <span x-show="h.imported" class="text-tx-faint"> (imported)</span>
                   <p x-text="[h.started_at, h.completed_at].filter(Boolean).map(at => formatAbsDate(at)).join(' / ')"></p>
                   <p x-show="h.summary" class="whitespace-pre-wrap" x-text="h.summary"></p>
                 </div>
@@ -6802,9 +6806,8 @@
 
       <!-- action bar -->
       <div x-show="ticketCanControl(selectedTicket)" class="mobile-detail-actions">
-        <button @click="mobileSecondaryAction(selectedTicket).run()" style="flex:1;height:46px;border-radius:11px;border:1px solid rgba(var(--surface-700),.7);background:rgba(var(--surface-900),1);color:rgba(var(--tx-3),1);font-family:'JetBrains Mono',monospace;font-size:14px;font-weight:600;" x-text="mobileSecondaryAction(selectedTicket).label"></button>
-        <button @click="mobilePrimaryAction(selectedTicket).run()" style="flex:1.4;height:46px;border-radius:11px;border:1px solid rgba(var(--accent),1);background:rgba(var(--accent),1);color:rgba(var(--accent-fg),1);font-family:'JetBrains Mono',monospace;font-size:14px;font-weight:700;display:flex;align-items:center;justify-content:center;gap:8px;">
-          <span style="width:7px;height:7px;border-radius:9999px;background:rgba(var(--accent-fg),.55);flex:none;"></span>
+        <button @click="mobileSecondaryAction(selectedTicket).run()" class="mobile-control" x-text="mobileSecondaryAction(selectedTicket).label"></button>
+        <button @click="mobilePrimaryAction(selectedTicket).run()" class="mobile-primary">
           <span x-text="mobilePrimaryAction(selectedTicket).label"></span>
         </button>
       </div>
@@ -6822,7 +6825,7 @@
              tabindex="-1" x-ref="mobileSheetDialog" data-mobile-sheet-dialog>
           <div class="mobile-sheet-handle" aria-hidden="true"></div>
           <div class="mobile-sheet-heading">
-            <h2 id="mobile-sheet-title" class="font-mono text-sm text-tx-2 m-0"
+            <h2 id="mobile-sheet-title" class="mobile-label text-tx-2 m-0"
                 x-text="({ navigation: 'Navigation', actions: 'Ticket actions', schedule: 'Start later', assistant: 'Assistant', new: 'New ticket', compose: 'Compose message' })[sheet.type] || 'Ticket' "></h2>
             <button type="button" @click="closeSheet()" class="mobile-sheet-close" data-mobile-sheet-initial-focus>Close</button>
           </div>
@@ -6854,13 +6857,12 @@
           <template x-if="sheet.type==='actions' && ticketCanControl(sheet.ticket)">
             <div style="display:flex;flex-direction:column;min-height:0;">
               <div style="padding:0 18px 12px;border-bottom:1px solid rgba(var(--surface-700),.4);">
-                <div style="font-family:'JetBrains Mono',monospace;font-size:11px;color:rgba(var(--surface-600),1);" x-text="sheet.ticket.id"></div>
+                <div class="mobile-technical text-tx-3" x-text="sheet.ticket.id"></div>
                 <div style="font-size:14px;color:rgba(var(--tx),1);line-height:1.4;margin-top:3px;" x-text="sheet.ticket.title"></div>
               </div>
               <div style="overflow-y:auto;padding:6px 0;">
                 <template x-for="(a, ai) in mobileSheetActions(sheet.ticket)" :key="ai">
-                  <button @click="a.run()" :style="'display:flex;align-items:center;gap:11px;width:100%;text-align:left;padding:14px 20px;border:none;background:transparent;font-family:\'JetBrains Mono\',monospace;font-size:14px;cursor:pointer;font-weight:' + (a.kind==='primary' ? '700' : '500') + ';color:' + mobileActionColor(a.kind) + ';'">
-                    <span :style="'width:6px;height:6px;border-radius:9999px;flex:none;background:' + mobileActionDotColor(a.kind) + ';'"></span>
+                  <button @click="a.run()" class="mobile-action-row" :data-kind="a.kind" :style="'color:' + mobileActionColor(a.kind) + ';'">
                     <span x-text="a.label"></span>
                   </button>
                 </template>
@@ -6872,24 +6874,22 @@
           <template x-if="sheet.type==='schedule' && ticketCanControl(sheet.ticket)">
             <div style="display:flex;flex-direction:column;min-height:0;">
               <div style="padding:0 18px 14px;border-bottom:1px solid rgba(var(--surface-700),.4);">
-                <div style="font-family:'JetBrains Mono',monospace;font-size:11px;color:rgba(var(--surface-600),1);" x-text="sheet.ticket.id + ' · ' + sheet.ticket.status"></div>
-                <div style="font-size:16px;font-weight:600;color:rgba(var(--tx),1);margin-top:3px;">Start later</div>
+                <div class="mobile-label text-tx-3"><span class="mobile-technical" x-text="sheet.ticket.id"></span>: <span x-text="sheet.ticket.status"></span></div>
                 <template x-if="mobileScheduleCurrent(sheet.ticket)">
-                  <div style="display:flex;align-items:center;gap:7px;margin-top:8px;font-family:'JetBrains Mono',monospace;font-size:11.5px;color:hsl(var(--st-open));">
+                  <div class="mobile-label" style="display:flex;align-items:center;gap:7px;margin-top:8px;color:hsl(var(--st-open));">
                     <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15.5 14"/></svg>
                     <span x-text="mobileScheduleCurrent(sheet.ticket)"></span>
                   </div>
                 </template>
               </div>
               <div style="overflow-y:auto;padding:14px 18px 0;display:flex;flex-direction:column;gap:10px;">
-                <div style="font-family:'JetBrains Mono',monospace;font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:rgba(var(--surface-600),1);">when</div>
+                <div class="mobile-label text-tx-3">When</div>
 
                 <template x-for="p in mobileSchedulePresets()" :key="p.key">
                   <button @click="mobileSchedulePick(p)"
                           :style="'display:flex;align-items:center;gap:12px;height:52px;padding:0 14px;border-radius:11px;width:100%;text-align:left;' + (mobileSchedulePresetSelected(p) ? 'background:hsl(var(--st-open) / .12);border:1px solid hsl(var(--st-open) / .4);' : 'background:rgba(var(--surface-950),1);border:1px solid rgba(var(--surface-700),.6);')">
-                    <span class="font-mono text-[13px] shrink-0" :style="mobileSchedulePresetSelected(p) ? 'color:hsl(var(--st-open));' : 'color:rgba(var(--surface-600),1);'" aria-hidden="true">◷</span>
                     <span style="flex:1;min-width:0;font-size:14.5px;color:rgba(var(--tx),1);" x-text="p.label"></span>
-                    <span class="font-mono text-[12px] shrink-0" :style="mobileSchedulePresetSelected(p) ? 'color:hsl(var(--st-open));' : 'color:rgba(var(--surface-600),1);'" x-text="p.rel"></span>
+                    <span class="mobile-label shrink-0 text-tx-3" :style="mobileSchedulePresetSelected(p) ? 'color:hsl(var(--st-open));' : ''" x-text="p.rel"></span>
                   </button>
                 </template>
 
@@ -6897,8 +6897,8 @@
                      duration, with the native picker behind the icon. -->
                 <div style="display:flex;align-items:center;gap:12px;height:52px;padding:0 14px;border-radius:11px;background:rgba(var(--surface-950),1);border:1px solid rgba(var(--surface-700),.6);">
                   <input x-model="scheduleDraft" @input="scheduleError = null" type="text" inputmode="text" aria-label="Start date or duration"
-                         placeholder="2099-09-01 09:00 · 24h · 3d"
-                         style="flex:1;min-width:0;background:transparent;border:0;outline:none;font-family:'JetBrains Mono',monospace;font-size:14px;color:rgba(var(--tx),1);"/>
+                         placeholder="2099-09-01 09:00, 24h, 3d" class="mobile-technical"
+                         style="flex:1;min-width:0;background:transparent;border:0;color:rgba(var(--tx),1);"/>
                   <button style="color:rgba(var(--tx-3),1);display:flex;flex:none;width:44px;height:44px;align-items:center;justify-content:flex-end;background:transparent;border:0;" aria-label="Pick a date"
                           @click="$refs.mobileSchedulePicker.showPicker ? $refs.mobileSchedulePicker.showPicker() : $refs.mobileSchedulePicker.click()">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="17" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="16" y1="2" x2="16" y2="6"/></svg>
@@ -6907,18 +6907,17 @@
                          class="sr-only" @change="onMobileSchedulePicked($event.target.value)"/>
                 </div>
 
-                <p x-show="mobileScheduleConsequence()" style="margin:0;font-family:'JetBrains Mono',monospace;font-size:11px;line-height:1.6;color:rgba(var(--surface-600),1);" x-text="mobileScheduleConsequence()"></p>
+                <p x-show="mobileScheduleConsequence()" class="mobile-label text-tx-3 m-0" x-text="mobileScheduleConsequence()"></p>
                 <div x-show="scheduleError" style="font-size:12px;color:rgba(var(--err),1);" x-text="scheduleError"></div>
 
                 <div style="display:flex;gap:10px;margin-top:4px;">
                   <button @click="sheet.ticket.scheduled_at ? clearScheduleSheet(sheet.ticket) : closeSheet()" :disabled="scheduleSubmitting"
-                          style="flex:1;height:46px;border-radius:11px;border:1px solid rgba(var(--surface-700),.7);background:rgba(var(--surface-950),1);color:rgba(var(--tx-3),1);font-family:'JetBrains Mono',monospace;font-size:14px;font-weight:600;"
+                          class="mobile-control flex-1"
                           x-text="sheet.ticket.scheduled_at ? 'clear' : 'cancel'"></button>
                   <button @click="submitScheduleMobile(sheet.ticket)" :disabled="scheduleSubmitting || !mobileScheduleParsed().iso" class="mobile-sheet-primary"
                           x-text="scheduleSubmitting ? 'saving…' : 'schedule'"></button>
                 </div>
-                <button @click="runNowFromSheet(sheet.ticket)"
-                        style="align-self:center;font-family:'JetBrains Mono',monospace;font-size:12.5px;color:rgba(var(--tx-3),1);padding:11px 12px;background:transparent;border:0;min-height:44px;">run now instead</button>
+                <button @click="runNowFromSheet(sheet.ticket)" class="mobile-label text-tx-3 self-center p-3">run now instead</button>
               </div>
             </div>
           </template>
@@ -6927,12 +6926,12 @@
           <template x-if="sheet.type==='assistant'">
             <div id="assistant-sheet" class="mobile-assistant-sheet">
               <div style="display:flex;align-items:center;gap:8px;padding:0 18px 12px;border-bottom:1px solid rgba(var(--surface-700),.4);">
-                <span data-pipe-color="mauve" style="color:hsl(var(--pipe-h));display:flex;flex:none;" aria-hidden="true">
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z"/></svg>
+                <span class="text-tx-3 flex shrink-0" aria-hidden="true">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.5 8.5 0 0 1-8.5 8.5H4l-3 3V11.5a10 10 0 0 1 20 0z"/></svg>
                 </span>
                 <span style="flex:1;min-width:0;font-size:15px;font-weight:600;color:rgba(var(--tx),1);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"
                       x-text="assistantThread ? assistantThread.title : 'assistant'"></span>
-                <span x-show="assistantStreaming" class="pulse-dot" data-pipe-color="mauve" style="width:6px;height:6px;border-radius:9999px;background:hsl(var(--pipe-h));flex:none;" aria-label="working"></span>
+                <span x-show="assistantStreaming" class="mobile-label text-tx-3" role="status">Working</span>
                 <button @click="assistantNewThread()" x-show="assistantEnabled()" style="width:28px;height:28px;border:none;background:transparent;color:rgba(var(--surface-600),1);flex:none;" aria-label="New chat">
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
                 </button>
@@ -6947,17 +6946,17 @@
               <div id="assistant-sheet-thread" x-show="assistantView === 'thread' && assistantThreadVisible()" @scroll.passive="assistantThreadScrolled()" class="mobile-assistant-thread">
                 <div x-show="companionThread()" x-html="companionEvidenceMarkup"></div>
                 <template x-if="!assistantMessages.length && !assistantEvents.length">
-                  <p style="margin:auto 0;font-size:13px;line-height:1.6;color:rgba(var(--surface-600),1);text-align:center;" x-text="companionThread() ? 'Ask about the captured records. The companion cannot run commands or change tickets.' : 'Ask about the board. It drives Kontora with the same verbs the CLI uses.'"></p>
+                  <p class="mobile-prose text-tx-3" style="margin:auto 0;text-align:center;" x-text="companionThread() ? 'Ask about the captured records. The companion cannot run commands or change tickets.' : 'Ask about the board. It drives Kontora with the same verbs the CLI uses.'"></p>
                 </template>
                 <template x-for="row in assistantThreadRows()" :key="'s' + row.key">
                   <div :style="row.msg ? 'align-self:flex-end;max-width:85%;border-radius:12px;padding:8px 11px;background:rgba(var(--surface-850),1);border:1px solid rgba(var(--surface-700),.6);' : 'min-width:0;'">
                     <template x-if="row.msg">
-                      <span style="font-size:13.5px;line-height:1.5;color:rgba(var(--tx),1);white-space:pre-wrap;" x-text="row.msg.text"></span>
+                      <span class="mobile-prose text-tx whitespace-pre-wrap" x-text="row.msg.text"></span>
                     </template>
                     <template x-if="row.event">
                       <div style="min-width:0;">
                         <template x-if="row.event.kind === 'text'">
-                          <div style="font-size:13.5px;line-height:1.6;color:rgba(var(--tx-2),1);" x-effect="setProse($el, row.event.text)"></div>
+                          <div class="mobile-prose text-tx-2" x-effect="setProse($el, row.event.text)"></div>
                         </template>
                         <template x-if="row.event.kind === 'tool'">
                           <button @click="toggleAssistantTool(row.event, row.index)" style="display:flex;align-items:center;gap:8px;width:100%;text-align:left;min-width:0;border:1px solid rgba(var(--surface-700),.6);background:rgba(var(--surface-900),1);border-radius:8px;padding:7px 10px;">
@@ -6971,7 +6970,7 @@
                   </div>
                 </template>
                 <template x-if="assistantPartial">
-                  <div id="assistant-sheet-partial" style="min-width:0;font-size:13.5px;line-height:1.6;color:rgba(var(--tx-2),1);white-space:pre-wrap;"><span x-text="assistantPartial"></span><span x-show="assistantPartialTyping" class="kblink" aria-hidden="true">▋</span></div>
+                  <div id="assistant-sheet-partial" class="mobile-prose min-w-0 text-tx-2 whitespace-pre-wrap"><span x-text="assistantPartial"></span><span x-show="assistantPartialTyping" class="kblink" aria-hidden="true">▋</span></div>
                 </template>
 
                 <template x-if="assistantPartialTool">
@@ -6981,21 +6980,19 @@
                 </template>
 
                 <template x-if="assistantStreaming && !assistantGate">
-                  <div data-pipe-color="mauve" aria-live="polite"
-                       style="display:flex;align-items:center;gap:8px;font-family:'JetBrains Mono',monospace;font-size:12px;color:rgba(var(--surface-600),1);">
-                    <span class="pulse-dot" style="width:6px;height:6px;border-radius:9999px;background:hsl(var(--pipe-h));flex:none;"></span>
+                  <div data-pipe-color="mauve" aria-live="polite" class="mobile-label text-tx-3 flex items-center gap-2">
                     <span x-text="assistantWorkingLabel()"></span>
-                    <button @click="stopAssistantTurn()" style="margin-left:auto;border:none;background:transparent;color:rgba(var(--surface-600),1);font-family:'JetBrains Mono',monospace;font-size:12px;">stop</button>
+                    <button @click="stopAssistantTurn()" class="mobile-label text-tx-3 ml-auto">stop</button>
                   </div>
                 </template>
 
                 <template x-if="assistantGate">
                   <div style="border:1px solid rgba(var(--warn),.6);background:rgba(var(--surface-900),1);border-radius:11px;padding:11px;display:flex;flex-direction:column;gap:9px;">
-                    <span style="font-family:'JetBrains Mono',monospace;font-size:11px;text-transform:uppercase;letter-spacing:.1em;color:rgba(var(--warn),1);" x-text="assistantApprovalLabel()"></span>
+                    <span class="mobile-label text-warn" x-text="assistantApprovalLabel()"></span>
                     <code style="font-family:'JetBrains Mono',monospace;font-size:12px;line-height:1.5;color:rgba(var(--tx-2),1);word-break:break-word;" x-text="assistantGate.arg"></code>
                     <div style="display:flex;gap:9px;">
-                      <button @click="resolveAssistantGate(true)" style="flex:1;height:38px;border-radius:9px;border:1px solid rgba(var(--accent),1);background:rgba(var(--accent),1);color:rgba(var(--accent-fg),1);font-family:'JetBrains Mono',monospace;font-size:13px;font-weight:600;">approve</button>
-                      <button @click="resolveAssistantGate(false)" style="flex:1;height:38px;border-radius:9px;border:1px solid rgba(var(--surface-700),.7);background:rgba(var(--surface-950),1);color:rgba(var(--tx-3),1);font-family:'JetBrains Mono',monospace;font-size:13px;">skip</button>
+                      <button @click="resolveAssistantGate(true)" class="mobile-primary flex-1">approve</button>
+                      <button @click="resolveAssistantGate(false)" class="mobile-control flex-1">skip</button>
                     </div>
                   </div>
                 </template>
@@ -7003,24 +7000,24 @@
 
               <template x-if="!assistantEnabled() && !companionThread() && assistantView === 'thread'">
                 <div style="padding:14px 18px;border-top:1px solid rgba(var(--surface-700),.4);">
-                  <p style="margin:0;font-size:13px;line-height:1.55;color:rgba(var(--tx-3),1);" x-text="assistantAgent ? assistantAgent.hint : 'Loading\u2026'"></p>
+                  <p class="mobile-prose text-tx-3 m-0" x-text="assistantAgent ? assistantAgent.hint : 'Loading\u2026'"></p>
                 </div>
               </template>
 
               <template x-if="(assistantEnabled() || companionThread()) && assistantView === 'thread' && assistantThreadVisible()">
                 <div style="padding:12px 18px 4px;border-top:1px solid rgba(var(--surface-700),.4);display:flex;flex-direction:column;gap:9px;">
-                  <textarea x-model="assistantDraft" rows="2" placeholder="Ask about the board\u2026" aria-label="Message the assistant"
-                            style="width:100%;padding:10px 12px;font-size:13.5px;line-height:1.5;border-radius:10px;background:rgba(var(--surface-950),1);border:1px solid rgba(var(--surface-700),.6);color:rgba(var(--tx),1);outline:none;resize:none;font-family:'DM Sans',sans-serif;"></textarea>
+                  <textarea x-model="assistantDraft" rows="2" placeholder="Ask about the board\u2026" aria-label="Message the assistant" class="mobile-control mobile-prose w-full" style="resize:none;"></textarea>
                   <div style="display:flex;align-items:center;gap:9px;">
                     <template x-for="mode in assistantAutonomies()" :key="'sa' + mode.key">
                       <button x-show="!companionThread()" @click="setAssistantAutonomy(mode.key)"
-                              :style="'height:30px;padding:0 10px;border-radius:8px;font-family:\'JetBrains Mono\',monospace;font-size:12px;border:1px solid rgba(var(--surface-700),.6);background:' + (assistantAutonomy === mode.key ? 'rgba(var(--surface-800),1)' : 'transparent') + ';color:' + (assistantAutonomy === mode.key ? 'rgba(var(--tx),1)' : 'rgba(var(--surface-600),1)') + ';'"
+                              class="mobile-control"
+                              :style="assistantAutonomy === mode.key ? 'background:rgba(var(--surface-800),1);color:rgba(var(--tx),1);' : ''"
                               x-text="mode.key"></button>
                     </template>
                     <span x-show="companionThread()" class="companion-note">Observation only</span>
                     <button x-show="assistantStreaming" @click="stopAssistantTurn()" class="companion-stop">Stop</button>
                     <button @click="sendAssistantMessage()" :disabled="assistantStreaming || !assistantDraft.trim() || (companionThread() && !companionCanAsk())"
-                            :style="'margin-left:auto;height:34px;padding:0 16px;border-radius:9px;font-family:\'JetBrains Mono\',monospace;font-size:13px;' + (!assistantDraft.trim() ? 'border:1px solid rgba(var(--surface-700),.7);background:rgba(var(--surface-950),1);color:rgba(var(--surface-600),1);' : 'border:1px solid rgba(var(--accent),1);background:rgba(var(--accent),1);color:rgba(var(--accent-fg),1);font-weight:600;')"
+                            class="mobile-primary ml-auto"
                             x-text="assistantStreaming ? 'working\u2026' : 'send'"></button>
                   </div>
                 </div>
@@ -7033,17 +7030,16 @@
           <template x-if="sheet.type==='new'">
             <div style="display:flex;flex-direction:column;min-height:0;">
               <div style="padding:0 18px 14px;border-bottom:1px solid rgba(var(--surface-700),.4);">
-                <div style="font-size:16px;font-weight:600;color:rgba(var(--tx),1);">New ticket</div>
-                <div style="font-size:12px;color:rgba(var(--surface-600),1);margin-top:2px;">Create a ticket for an agent to pick up.</div>
+                <div class="mobile-label text-tx-3 mt-0.5">Create a ticket for an agent to pick up.</div>
               </div>
               <div style="overflow-y:auto;padding:16px 18px;display:flex;flex-direction:column;gap:14px;">
                 <div>
-                  <div style="font-family:'JetBrains Mono',monospace;font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:rgba(var(--surface-600),1);margin-bottom:6px;">Title (required)</div>
-                  <input x-model="createForm.title" required aria-label="Ticket title" placeholder="What should the agent build?" style="width:100%;height:42px;padding:0 12px;font-size:14px;border-radius:10px;background:rgba(var(--surface-950),1);border:1px solid rgba(var(--surface-700),.6);color:rgba(var(--tx),1);outline:none;"/>
+                  <div class="mobile-label text-tx-3 mb-1.5">Title (required)</div>
+                  <input x-model="createForm.title" required aria-label="Ticket title" placeholder="What should the agent build?" class="mobile-control w-full text-left"/>
                 </div>
                 <div>
-                  <div style="font-family:'JetBrains Mono',monospace;font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:rgba(var(--surface-600),1);margin-bottom:6px;">Path (required)</div>
-                  <input x-model="createForm.path" required @input="onCreatePathChange()" aria-label="Repository path" placeholder="~/projects/myrepo" style="width:100%;height:42px;padding:0 12px;font-family:'JetBrains Mono',monospace;font-size:13px;border-radius:10px;background:rgba(var(--surface-950),1);border:1px solid rgba(var(--surface-700),.6);color:rgba(var(--tx),1);outline:none;"/>
+                  <div class="mobile-label text-tx-3 mb-1.5">Path (required)</div>
+                  <input x-model="createForm.path" required @input="onCreatePathChange()" aria-label="Repository path" placeholder="~/projects/myrepo" class="mobile-control mobile-technical w-full"/>
                 </div>
                 <label class="font-mono text-xs text-tx-3">Kind
                   <select x-model="createForm.kind" @change="syncCreatePipeline()" class="bg-surface-800 text-tx-2 px-3 py-2 rounded">
@@ -7053,31 +7049,31 @@
                 </label>
                 <div style="display:flex;gap:12px;">
                   <div x-show="createForm.kind !== 'epic'" style="flex:1;min-width:0;">
-                    <div style="font-family:'JetBrains Mono',monospace;font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:rgba(var(--surface-600),1);margin-bottom:6px;">Pipeline</div>
-                    <select x-model="createForm.pipelineChoice" @change="onPipelineChange()" aria-label="Pipeline" style="width:100%;height:42px;padding:0 10px;font-family:'JetBrains Mono',monospace;font-size:13px;border-radius:10px;background:rgba(var(--surface-950),1);border:1px solid rgba(var(--surface-700),.6);color:rgba(var(--tx-3),1);outline:none;">
+                    <div class="mobile-label text-tx-3 mb-1.5">Pipeline</div>
+                    <select x-model="createForm.pipelineChoice" @change="onPipelineChange()" aria-label="Pipeline" class="mobile-control w-full">
                       <option value="inherit" x-text="inheritedPipelineLabel(createPipelineDefaults())"></option>
                       <option value="none">none (single run, no stages)</option>
                       <template x-for="p in (configCache?.pipelines || [])" :key="p"><option :value="'pipeline:' + p" x-text="p"></option></template>
                     </select>
                   </div>
                   <div style="flex:1;min-width:0;">
-                    <label id="mobile-new-agent-label" :for="_agentPickerPopoverSupported ? agentPickerTriggerID('mobile-create') : agentPickerFallbackID('mobile-create')" style="font-family:'JetBrains Mono',monospace;font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:rgba(var(--surface-600),1);margin-bottom:6px;display:block;">Agent</label>
+                    <label id="mobile-new-agent-label" :for="_agentPickerPopoverSupported ? agentPickerTriggerID('mobile-create') : agentPickerFallbackID('mobile-create')" class="mobile-label text-tx-3 mb-1.5 block">Agent</label>
                     <div x-data="{ pickerHost: 'mobile-create' }" x-html="agentPickerControl"></div>
                   </div>
                 </div>
                 <div x-show="createForm.kind !== 'epic'">
-                  <div style="font-family:'JetBrains Mono',monospace;font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:rgba(var(--surface-600),1);margin-bottom:6px;">Start at</div>
-                  <input @change="onMobileCreateSchedulePicked($event.target.value)" aria-label="Start at" type="datetime-local" :min="scheduleMin()" style="width:100%;height:42px;padding:0 12px;font-family:'JetBrains Mono',monospace;font-size:13px;border-radius:10px;background:rgba(var(--surface-950),1);border:1px solid rgba(var(--surface-700),.6);color:rgba(var(--tx),1);outline:none;"/>
-                  <div style="font-size:11px;color:rgba(var(--surface-600),1);margin-top:5px;">Your local time. The ticket waits in open until then.</div>
+                  <div class="mobile-label text-tx-3 mb-1.5">Start at</div>
+                  <input @change="onMobileCreateSchedulePicked($event.target.value)" aria-label="Start at" type="datetime-local" :min="scheduleMin()" class="mobile-control w-full"/>
+                  <div class="mobile-label text-tx-3 mt-1">Your local time. The ticket waits in open until then.</div>
                   <p x-show="createScheduleError()" role="alert" class="font-mono text-xs text-err mt-2" x-text="createScheduleError()"></p>
                 </div>
                 <div>
-                  <div style="font-family:'JetBrains Mono',monospace;font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:rgba(var(--surface-600),1);margin-bottom:6px;">Body</div>
-                  <textarea x-model="createForm.body" aria-label="Ticket body" placeholder="Context, acceptance criteria, links…" style="width:100%;height:84px;padding:10px 12px;font-size:13.5px;line-height:1.5;border-radius:10px;background:rgba(var(--surface-950),1);border:1px solid rgba(var(--surface-700),.6);color:rgba(var(--tx),1);outline:none;resize:none;font-family:'DM Sans',sans-serif;"></textarea>
+                  <div class="mobile-label text-tx-3 mb-1.5">Body</div>
+                  <textarea x-model="createForm.body" aria-label="Ticket body" placeholder="Context, acceptance criteria, links…" class="mobile-control mobile-prose w-full" style="height:84px;resize:none;"></textarea>
                 </div>
-                <p x-show="createError" x-cloak role="alert" class="font-mono text-sm text-err whitespace-pre-wrap break-words" x-text="createError"></p>
+                <p x-show="createError" x-cloak role="alert" class="mobile-prose text-err whitespace-pre-wrap break-words" x-text="createError"></p>
                 <div class="mobile-create-actions">
-                  <button @click="closeSheet()" style="flex:1;height:46px;border-radius:11px;border:1px solid rgba(var(--surface-700),.7);background:rgba(var(--surface-950),1);color:rgba(var(--tx-3),1);font-family:'JetBrains Mono',monospace;font-size:14px;font-weight:600;">cancel</button>
+                  <button @click="closeSheet()" class="mobile-control">cancel</button>
                   <button @click="submitCreateTicketMobile()" :disabled="createSubmitting || !createForm.title.trim() || !createForm.path.trim() || createBlocked()" class="mobile-sheet-primary" x-text="createSubmitting ? 'creating…' : 'create ticket'"></button>
                 </div>
               </div>

@@ -1,6 +1,24 @@
+/* Hallmark · checked: 2026-11-11 · genre: modern-minimal (inferred) · scope: app
+ * built: the project · redesign: polish · mobile surfaces only · v2.0.0 */
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+:root {
+  --font-body:'DM Sans',sans-serif;
+  --font-technical:'JetBrains Mono',monospace;
+  --mobile-text-body:16px;
+  --mobile-text-label:14px;
+  --mobile-text-meta:13px;
+  --mobile-text-title:20px;
+  --mobile-space-xs:4px;
+  --mobile-space-sm:8px;
+  --mobile-space-md:12px;
+  --mobile-space-lg:16px;
+  --mobile-radius-control:10px;
+  --mobile-radius-card:11px;
+  --mobile-duration:120ms;
+}
 
 /* Theme palettes. They live here rather than in an inline <style> the theme
    script rewrites, because app.css is render-blocking, so the right palette is
@@ -307,6 +325,80 @@
   .desktop-header { gap:10px; }
   .card-menu-btn { opacity:1; }
 }
+@media (max-width:767px) {
+  html, body { overflow-x:clip; }
+  .mobile-chrome, .mobile-board-layer, .mobile-sheet-panel { font-family:var(--font-body); font-size:var(--mobile-text-label); }
+  .mobile-board-layer :where(button:not(.mobile-terminal-keys button):not(.copyable),label,.side-label,h1,h2,h3), .mobile-sheet-panel :where(button,label) { font-family:var(--font-body); font-size:var(--mobile-text-label); text-transform:none; letter-spacing:0; }
+  .mobile-board-layer > div:first-child button, .mobile-detail-secondary .font-mono { font-family:var(--font-body); font-size:var(--mobile-text-meta); }
+  .mobile-epic > header p { font-family:var(--font-body); font-size:var(--mobile-text-body); }
+  .mobile-epic > header h1 { font-size:var(--mobile-text-title); min-width:0; overflow-wrap:anywhere; }
+  .mobile-sheet-heading #mobile-sheet-title { font:600 var(--mobile-text-body)/1.4 var(--font-body); }
+  .mobile-board-layer .side-label { font-family:var(--font-body); font-size:var(--mobile-text-meta); text-transform:none; letter-spacing:0; }
+  .mobile-board-layer .rounded-full { border:0; border-radius:0; background:transparent; padding:0; font-family:var(--font-body); font-size:var(--mobile-text-meta); }
+  .mobile-board-layer .mobile-label, .mobile-chrome .mobile-label, .mobile-sheet-panel .mobile-label { font:400 var(--mobile-text-meta)/1.5 var(--font-body); text-transform:none; letter-spacing:0; }
+  .mobile-board-layer .mobile-prose, .mobile-sheet-panel .mobile-prose { font:400 var(--mobile-text-body)/1.6 var(--font-body); }
+  .mobile-board-layer .mobile-technical, .mobile-sheet-panel .mobile-technical { font-family:var(--font-technical); font-size:var(--mobile-text-meta); }
+  .mobile-board-layer .ticket-prose { font-family:var(--font-body); font-size:var(--mobile-text-body); }
+  .mobile-board-layer .ticket-prose :is(h1,h2,h3,h4,th) { font-family:var(--font-body); letter-spacing:0; text-transform:none; }
+  .mobile-board-layer .ticket-prose :is(code,pre) { font-family:var(--font-technical); }
+  .mobile-board-layer .mobile-label, .mobile-board-layer .mobile-prose { text-transform:none; letter-spacing:0; }
+  .mobile-chrome .mobile-running-pill { font-family:var(--font-body); font-size:var(--mobile-text-meta); }
+  .mobile-chrome .mobile-status-tabs button { font:600 var(--mobile-text-meta)/1.4 var(--font-body); }
+  .mobile-status-count { padding:1px var(--mobile-space-xs); font-variant-numeric:tabular-nums; }
+  .mobile-app-bar .mobile-new-button { display:flex; align-items:center; justify-content:center; }
+  .mobile-sheet-panel :is(input,select,textarea) { font-weight:400; }
+  .mobile-sheet-panel label:has(> [x-model="createForm.kind"]) { display:flex; flex-direction:column; gap:var(--mobile-space-xs); }
+  .mobile-board-layer .mobile-card { display:flex; flex-direction:column; gap:9px; width:100%; padding:12px 13px; text-align:left; border:1px solid rgb(var(--edge-card)); border-radius:var(--mobile-radius-card); background:rgb(var(--surface-900)); min-width:0; cursor:pointer; }
+  .mobile-card-row, .mobile-card-meta { display:flex; align-items:center; justify-content:space-between; gap:var(--mobile-space-sm); flex-wrap:wrap; min-width:0; }
+  .mobile-card-context, .mobile-card-identity { display:flex; align-items:center; gap:var(--mobile-space-sm); flex-wrap:wrap; min-width:0; max-width:100%; }
+  .mobile-card-meta { font:400 var(--mobile-text-meta)/1.5 var(--font-body); color:rgb(var(--tx-3)); }
+  .mobile-card-meta > span:last-child { flex:none; }
+  .mobile-card-id { font-family:var(--font-technical); display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; overflow:hidden; }
+  .mobile-epic-meta { display:flex; flex-wrap:wrap; gap:var(--mobile-space-xs) var(--mobile-space-sm); }
+  .mobile-epic-meta > span { min-width:0; max-width:100%; overflow-wrap:anywhere; }
+  .mobile-card :is(span,p) { min-width:0; overflow-wrap:anywhere; max-width:100%; }
+  .mobile-card-title { font:400 var(--mobile-text-body)/1.45 var(--font-body); color:rgb(var(--tx)); margin:0; }
+  .mobile-card-state { font:400 var(--mobile-text-meta)/1.5 var(--font-body); color:rgb(var(--tx-2)); }
+  .mobile-board-layer .mobile-card :is(.pipe-tag,.sched-chip,.waiting-chip), .mobile-detail-secondary :is(.pipe-tag,.status-chip,.sched-chip,.waiting-chip), .mobile-epic > header .waiting-chip { padding:0; border:0; border-radius:0; background:transparent; font:400 var(--mobile-text-meta)/1.5 var(--font-body); letter-spacing:0; text-transform:none; white-space:normal; flex-wrap:wrap; }
+  .mobile-board-layer .mobile-card .pipe-tag { color:rgb(var(--tx-3)); }
+  .mobile-detail .mobile-detail-secondary .status-chip::before { content:none; animation:none; }
+  .mobile-detail .mobile-detail-tabs { gap:18px; padding:0 var(--mobile-space-lg); }
+  .mobile-tab { flex:none; white-space:nowrap; border:0; border-bottom:2px solid transparent; background:transparent; padding:10px 0; font:600 var(--mobile-text-label)/1.4 var(--font-body); color:rgb(var(--tx-3)); cursor:pointer; }
+  .mobile-tab[aria-pressed="true"] { border-bottom-color:rgb(var(--accent)); color:rgb(var(--tx)); }
+  .mobile-detail .mobile-detail-secondary { font:400 var(--mobile-text-meta)/1.5 var(--font-body); }
+  .mobile-detail .mobile-ticket-title { margin:0 0 18px; font:700 var(--mobile-text-title)/1.35 var(--font-body); color:rgb(var(--tx)); overflow-wrap:anywhere; min-width:0; }
+  .mobile-meta-label { width:74px; flex:none; padding-top:1px; color:rgb(var(--tx-3)); }
+  .mobile-meta-value { flex:1; min-width:0; overflow-wrap:anywhere; color:rgb(var(--tx-2)); line-height:1.5; }
+  .mobile-control, .mobile-primary, .mobile-sheet-panel .mobile-sheet-close, .mobile-sheet-panel .mobile-sheet-primary { min-height:44px; padding:var(--mobile-space-sm) var(--mobile-space-md); border:1px solid rgb(var(--edge-input)); border-radius:var(--mobile-radius-control); background:rgb(var(--surface-900)); color:rgb(var(--tx-2)); font:600 var(--mobile-text-label)/1.4 var(--font-body); }
+  .mobile-detail-actions > .mobile-control, .mobile-create-actions > .mobile-control { flex:1; }
+  .mobile-primary, .mobile-sheet-panel .mobile-sheet-primary { border-color:rgb(var(--accent)); background:rgb(var(--accent)); color:rgb(var(--accent-fg)); }
+  .mobile-detail-actions > .mobile-primary { flex:1.4; }
+  .mobile-sheet-panel .mobile-action-row { display:flex; align-items:center; gap:var(--mobile-space-md); width:100%; text-align:left; padding:14px 20px; border:0; background:transparent; font:500 var(--mobile-text-label)/1.5 var(--font-body); cursor:pointer; }
+  .mobile-sheet-panel .mobile-action-row[data-kind="primary"] { font-weight:700; }
+  .mobile-stage-control { font:400 var(--mobile-text-meta)/1.5 var(--font-body); padding:var(--mobile-space-xs) 10px; border-radius:6px; white-space:nowrap; flex:none; }
+  .mobile-terminal-toolbar { font:400 var(--mobile-text-meta)/1.3 var(--font-body); }
+  .mobile-terminal-keys button { font-family:var(--font-technical); }
+  .mobile-terminal-keys button:last-child { font-family:var(--font-body); }
+  .mobile-sheet-panel :is(.companion-status,.companion-count,.companion-note,.companion-item-meta,.companion-tabs button,.companion-actions button,.companion-stop,.companion-history button) { font-family:var(--font-body); font-size:var(--mobile-text-meta); }
+  .mobile-sheet-panel .companion-status > :last-child { font:400 var(--mobile-text-meta)/1.4 var(--font-body); }
+  .mobile-sheet-panel .companion-inbox { font-size:var(--mobile-text-body); }
+  .mobile-sheet-panel .companion-actions button { white-space:normal; }
+  .mobile-chrome :is(button,input,select,textarea):focus-visible, .mobile-board-layer :is(button,input,select,textarea,[tabindex]):focus-visible, .mobile-sheet-panel :is(button,input,select,textarea,summary,[tabindex]):focus-visible { outline:2px solid rgb(var(--accent)); outline-offset:2px; }
+  .mobile-chrome input:focus-visible, .mobile-board-layer :is(input,textarea):focus-visible, .mobile-sheet-panel :is(input,textarea):focus-visible { outline-offset:-3px; }
+  .mobile-chrome button:disabled, .mobile-board-layer button:disabled, .mobile-sheet-panel button:disabled { opacity:.5; cursor:not-allowed; }
+  .mobile-control:active:not(:disabled), .mobile-primary:active:not(:disabled), .mobile-sheet-panel .mobile-action-row:active { filter:brightness(.9); }
+  .mobile-board-layer .detail-enter, .mobile-sheet-viewport .mobile-sheet-panel, .mobile-sheet-viewport .mobile-sheet-scrim { animation-duration:var(--mobile-duration); animation-timing-function:ease-out; }
+  .mobile-chrome :is(button,a), .mobile-board-layer :is(button,a), .mobile-sheet-panel :is(button,a) { transition-property:color,background-color,border-color,opacity; transition-duration:var(--mobile-duration); }
+  .mobile-chrome .pulse-dot, .mobile-board-layer .pulse-dot, .mobile-sheet-panel .pulse-dot, .mobile-sheet-panel .kblink { animation:none; }
+}
+@media (max-width:767px) and (hover:hover) {
+  .mobile-control:hover:not(:disabled), .mobile-sheet-panel .mobile-sheet-close:hover:not(:disabled), .mobile-board-layer .mobile-card:hover, .mobile-sheet-panel .mobile-action-row:hover { background:rgb(var(--surface-850)); }
+  .mobile-primary:hover:not(:disabled), .mobile-sheet-panel .mobile-sheet-primary:hover:not(:disabled) { background:rgb(var(--accent-bright)); }
+}
+@media (max-width:767px) and (prefers-reduced-motion:reduce) {
+  .mobile-chrome *, .mobile-board-layer *, .mobile-sheet-panel *, .mobile-sheet-panel, .mobile-sheet-scrim { animation:none !important; transition:none !important; scroll-behavior:auto; }
+}
+
 /* The inline page stylesheet removes input outlines. */
 .app-shell input:focus-visible, .app-shell select:focus-visible, .app-shell textarea:focus-visible { outline:2px solid rgb(var(--accent)); outline-offset:2px; }
 .app-shell label:has(> select:focus-visible) { outline:2px solid rgb(var(--accent)); outline-offset:2px; }

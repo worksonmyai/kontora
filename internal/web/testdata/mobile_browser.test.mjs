@@ -1,6 +1,6 @@
 // Run through make test-browser against embedded assets, never a daemon.
 import assert from 'node:assert/strict';
-import { after, before, describe, test } from 'node:test';
+import { after, before, describe, test as nodeTest } from 'node:test';
 import { createRequire } from 'node:module';
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -14,6 +14,12 @@ const base = process.env.KONTORA_BROWSER_URL;
 assert.ok(base, 'Run make test-browser (the Go test provides embedded loopback assets)');
 assert.equal(new URL(base).hostname, '127.0.0.1');
 const assets = new Set(JSON.parse(process.env.KONTORA_BROWSER_ASSETS));
+// The embedded Go runner cannot pass Node CLI filters.
+const browserFilter = process.env.KONTORA_BROWSER_TEST_FILTER;
+function test(name, options, run) {
+  if (typeof options === 'function') { run = options; options = {}; }
+  return nodeTest(name, { ...options, skip: options?.skip || (browserFilter && !new RegExp(browserFilter).test(name)) }, run);
+}
 const widths = [320, 390, 767, 768, 769, 1023, 1024, 1280];
 const themes = ['dark', 'light'];
 const source = 'secondary';
@@ -72,6 +78,8 @@ function fixtures(options = {}) {
         exit_code: 0, run_outcome: 'complete', summary: 'Second code run complete.' },
     ] }));
   put(ticket('kon-epic', 'Passive fixture epic', { kind: 'epic', epic_mode: 'passive' }));
+  for (const record of options.records || []) put(record);
+  if (options.empty) records.clear();
   const config = { config_path: '/fixtures/config.yaml', pipelines: ['standard'], default_pipeline: 'standard',
     pipeline_infos: [{ name: 'standard', stages: ['plan', 'code'] }],
     agents: ['fixture-agent'], agent_infos: [{ name: 'fixture-agent', binary: 'pi' }],
@@ -429,7 +437,7 @@ function fixtures(options = {}) {
 
 async function withPage(t, width, theme, run, options = {}) {
   const context = await browser.newContext({ viewport: { width, height: 900 }, colorScheme: theme,
-    reducedMotion: 'reduce', serviceWorkers: 'block', locale: 'en-US', timezoneId: 'UTC' });
+    reducedMotion: options.reducedMotion || 'reduce', serviceWorkers: 'block', locale: 'en-US', timezoneId: 'UTC' });
   const fixture = fixtures(options), errors = [];
   await fixture.install(context);
   await context.addInitScript(({ theme, sidebar, savedThread, assistantOpen }) => {
@@ -679,6 +687,392 @@ async function automationScreenshot(page, label) {
   const png = await page.screenshot({ path: join(directory, `${engine}-${label}.png`), animations: 'disabled' });
   assert.equal(png.subarray(1, 4).toString(), 'PNG'); assert.ok(png.length > 10000);
 }
+// Fixture-only before/after evidence; the output directory must be outside the checkout.
+const captureDirectory = process.env.KONTORA_MOBILE_CAPTURE_DIR;
+const polishRecords = () => [
+  ticket('kon-queued', 'Queued ordinary ticket', { status: 'todo', agent: liveAgent }),
+  ticket('kon-paused', 'Paused ordinary ticket', { status: 'paused', agent: liveAgent }),
+  ticket('kon-attention', 'Agent needs an answer before continuing', { status: 'in_progress',
+    waiting_for_input: true, waiting_since: stamp, started_at: stamp, agent: liveAgent }),
+  ticket('kon-scheduled', 'Scheduled pickup with long pipeline metadata', { scheduled_at: '2099-09-01T09:00:00Z' }),
+  ticket(longID, 'Long identifiers must stay inside their card alongside source and agent metadata',
+    { source, status: 'in_progress', started_at: stamp, agent: liveAgent,
+      pipeline: 'pipeline-' + 'long-metadata-'.repeat(8) }),
+];
+async function mobileCapture(page, width, theme, state) {
+  await page.evaluate(() => document.fonts.ready);
+  const directory = join(captureDirectory, engine, `${width}-${theme}`);
+  await mkdir(directory, { recursive: true });
+  const png = await page.screenshot({ path: join(directory, `${state}.png`), animations: 'disabled' });
+  assert.equal(png.subarray(1, 4).toString(), 'PNG');
+  assert.ok(png.length > 1000, `Empty capture: ${state}`);
+}
+async function closeCaptureSheet(page) {
+  const dialog = page.getByRole('dialog').filter({ visible: true });
+  await dialog.getByRole('button', { name: 'Close', exact: true }).click();
+  await dialog.waitFor({ state: 'hidden' });
+}
+
+describe('mobile polish fixture evidence', () => {
+  for (const width of [320, 390, 1280]) for (const theme of themes) {
+    test(`polish captures / ${width}px / ${theme}`, { skip: !captureDirectory, timeout: 90000 }, async t => {
+      await withPage(t, width, theme, async (page, fixture) => {
+        await mobileCapture(page, width, theme, 'board-open-scheduled-secondary');
+        if (width < 768) {
+          const status = page.getByRole('navigation', { name: 'Ticket status', exact: true });
+          await status.getByRole('button', { name: /in progress/i }).click();
+          await visible(page.locator('.mobile-board-layer [x-text="ticket.title"]').filter({ hasText: 'Queued ordinary ticket' }));
+          await mobileCapture(page, width, theme, 'board-running-queued-paused-attention');
+          await page.locator('.mobile-board-layer button[data-pipe-color]').filter({ hasText: 'kon-queued' }).scrollIntoViewIfNeeded();
+          await mobileCapture(page, width, theme, 'board-queued-paused');
+          await page.locator('.mobile-board-layer button[data-pipe-color]').filter({ hasText: longID }).scrollIntoViewIfNeeded();
+          await mobileCapture(page, width, theme, 'board-long-secondary-id');
+        }
+        await openTicket(page, 'kon-live');
+        const detail = page.locator('.mobile-detail');
+        if (width < 768) {
+          // Accept old labels so the same fixtures can capture the baseline.
+          await detail.getByRole('button', { name: /^(▤ ticket|Ticket)$/ }).click();
+          await mobileCapture(page, width, theme, 'detail-ticket');
+          await detail.getByRole('button', { name: /^activity$/i }).click();
+          await visible(detail.locator('#activity-scroll').getByText('Fixture activity revision 0', { exact: true }));
+          await mobileCapture(page, width, theme, 'detail-activity');
+          await detail.getByRole('button', { name: /^(≡ logs|Logs)$/ }).click();
+          await mobileCapture(page, width, theme, 'detail-logs');
+          await detail.getByRole('button', { name: /^(›_ terminal|Terminal)$/ }).click();
+          await page.waitForFunction(() => Alpine.$data(document.body).terminalConnected);
+          await page.setViewportSize({ width, height: 360 });
+          await mobileCapture(page, width, theme, 'detail-terminal-short');
+          await detail.getByRole('button', { name: 'Enable input', exact: true }).click();
+          await page.waitForFunction(() => Alpine.$data(document.body).terminalConnected);
+          await detail.getByRole('button', { name: 'Compose', exact: true }).click();
+          await page.getByRole('dialog', { name: 'Compose message' }).getByRole('textbox', { name: 'Message', exact: true }).fill('Fixture-only multiline message\nNo live daemon or agent.');
+          await mobileCapture(page, width, theme, 'compose-short');
+          await closeCaptureSheet(page);
+          await page.setViewportSize({ width, height: 900 });
+        } else await mobileCapture(page, width, theme, 'desktop-detail');
+        await routeTo(page, '#/e/' + supervisorID);
+        if (width < 768) await page.locator('.mobile-epic').getByRole('button', { name: /^(session|Terminal)$/ }).click();
+        await mobileCapture(page, width, theme, 'supervisor');
+        await backToBoard(page);
+        if (width < 768) {
+          await page.getByRole('button', { name: 'Open navigation', exact: true }).click();
+          await mobileCapture(page, width, theme, 'navigation');
+          await closeCaptureSheet(page);
+          await openTicket(page, 'kon-draft');
+          await page.getByRole('button', { name: 'Actions', exact: true }).click();
+          await mobileCapture(page, width, theme, 'actions');
+          await page.getByRole('dialog', { name: 'Ticket actions' }).getByRole('button', { name: 'Schedule…', exact: true }).click();
+          await page.getByRole('textbox', { name: 'Start date or duration', exact: true }).fill('2h');
+          await mobileCapture(page, width, theme, 'schedule');
+          await closeCaptureSheet(page);
+          await backToBoard(page);
+        }
+        await page.getByRole('button', { name: 'New ticket', exact: true }).filter({ visible: true }).first().click();
+        await model(page, 'createForm.title').fill('Fixture creation error remains readable');
+        await model(page, 'createForm.path').fill('/fixtures/repository-with-a-long-name');
+        fixture.behavior.createFailure = 'Fixture error: repository permission denied; draft retained. Please retry.';
+        await page.getByRole('button', { name: 'create ticket', exact: true }).filter({ visible: true }).click();
+        await visible(page.locator('[x-text="createError"]').filter({ visible: true }));
+        await mobileCapture(page, width, theme, 'create-error');
+        if (width < 768) {
+          await closeCaptureSheet(page);
+          await page.getByRole('button', { name: 'Assistant', exact: true }).filter({ visible: true }).click();
+          const assistant = page.getByRole('dialog', { name: 'Assistant', exact: true });
+          await mobileCapture(page, width, theme, 'assistant-inbox-empty');
+          await assistant.getByRole('button', { name: 'History', exact: true }).click();
+          await visible(assistant.getByText('No chats yet.', { exact: true }));
+          await mobileCapture(page, width, theme, 'assistant-history-empty');
+          await assistant.getByRole('button', { name: 'Chat', exact: true }).click();
+          await page.getByRole('textbox', { name: 'Message the assistant', exact: true }).fill('Unsent fixture draft');
+          await mobileCapture(page, width, theme, 'assistant-chat');
+          await closeCaptureSheet(page);
+        }
+        assert.equal(fixture.mutations.length, 0, 'Captures never submit successful mutations');
+      }, { records: polishRecords(), sidebar: width >= 768 });
+      await withPage(t, width, theme, async page => {
+        await visible(page.locator(width < 768 ? '#board-empty-mobile' : '#board-empty-desktop'));
+        await mobileCapture(page, width, theme, 'board-empty');
+      }, { empty: true, sidebar: width >= 768 });
+      await withPage(t, width, theme, async (page, fixture) => {
+        fixture.behavior.unavailableFolder = true;
+        await page.reload({ waitUntil: 'domcontentloaded' }); await ready(page);
+        await visible(page.getByRole('alert').filter({ visible: true }).first());
+        await mobileCapture(page, width, theme, 'source-error');
+      }, { records: polishRecords(), sidebar: width >= 768 });
+    });
+  }
+});
+
+async function polishTypography(surface) {
+  const roles = await surface.locator('.mobile-label, .mobile-prose, .mobile-card-title, .mobile-card-meta, .mobile-control, .mobile-primary, .mobile-tab, .mobile-technical, .mobile-card-id, .side-label').evaluateAll(elements =>
+    elements.filter(el => el.getClientRects().length && getComputedStyle(el).visibility !== 'hidden').map(el => {
+      const css = getComputedStyle(el);
+      return { text: el.textContent.trim().slice(0, 80), technical: el.matches('.mobile-technical, .mobile-card-id'),
+        family: css.fontFamily, transform: css.textTransform, tracking: css.letterSpacing,
+        size: parseFloat(css.fontSize), prose: el.matches('.mobile-prose, .mobile-card-title') };
+    }));
+  assert.ok(roles.length, 'Presentation roles must be rendered, not an empty shell');
+  for (const role of roles) {
+    assert.match(role.family, role.technical ? /JetBrains Mono/ : /DM Sans/, JSON.stringify(role));
+    if (!role.technical) {
+      assert.equal(role.transform, 'none', JSON.stringify(role));
+      assert.ok(role.tracking === 'normal' || parseFloat(role.tracking) === 0, JSON.stringify(role));
+      assert.ok(role.size >= (role.prose ? 16 : 13), JSON.stringify(role));
+    }
+  }
+}
+async function polishControls(surface) {
+  const controls = await surface.locator('button, a[href], input:not([type="checkbox"]):not([type="radio"]):not(.sr-only):not(.xterm-helper-textarea), select, textarea:not(.xterm-helper-textarea)').evaluateAll(elements =>
+    elements.filter(el => el.getClientRects().length && getComputedStyle(el).visibility !== 'hidden').map(el => {
+      const box = el.getBoundingClientRect();
+      return { text: el.getAttribute('aria-label') || el.textContent.trim().slice(0, 60),
+        width: box.width, height: box.height, native: el.matches('input, select, textarea'), size: parseFloat(getComputedStyle(el).fontSize) };
+    }));
+  assert.ok(controls.length, 'Controls must be present');
+  for (const control of controls) {
+    assert.ok(control.width >= 43.9 && control.height >= 43.9, `Touch target below 44px: ${JSON.stringify(control)}`);
+    if (control.native) assert.ok(control.size >= 16, `Native input focus zoom risk: ${JSON.stringify(control)}`);
+  }
+}
+async function immediateFocus(locator) {
+  await locator.scrollIntoViewIfNeeded();
+  await locator.page().keyboard.press('Tab');
+  const focus = await locator.evaluate(el => {
+    el.focus({ preventScroll: true });
+    const css = getComputedStyle(el);
+    return { visible: el.matches(':focus-visible'), active: document.activeElement === el,
+      style: css.outlineStyle, width: parseFloat(css.outlineWidth), color: css.outlineColor };
+  });
+  assert.ok(focus.active && focus.visible && focus.style !== 'none' && focus.width >= 2 &&
+    !/transparent|rgba\([^)]*, 0\)$/.test(focus.color), `Focus must appear synchronously: ${JSON.stringify(focus)}`);
+}
+async function polishMotion(page, reducedMotion) {
+  const animations = await page.evaluate(() => document.getAnimations().filter(animation => {
+    const el = animation.effect?.target;
+    return el?.closest('.mobile-chrome, .mobile-board-layer, .mobile-sheet-panel, .mobile-sheet-scrim') && !el.closest('.xterm');
+  }).map(animation => ({ name: animation.animationName || animation.transitionProperty,
+    duration: animation.effect.getTiming().duration, iterations: animation.effect.getTiming().iterations })));
+  for (const animation of animations) {
+    assert.notEqual(animation.iterations, Infinity, `Continuous chrome animation: ${JSON.stringify(animation)}`);
+    assert.ok(animation.duration <= (reducedMotion === 'reduce' ? 1 : 200), JSON.stringify(animation));
+    assert.ok(!['width', 'height', 'top', 'left', 'all'].includes(animation.name), JSON.stringify(animation));
+  }
+}
+async function polishCardGeometry(page) {
+  const geometry = await page.locator('.mobile-board-layer .mobile-card').evaluateAll(cards => {
+    const outside = [], overlaps = [];
+    const boxes = cards.map(card => {
+      const box = card.getBoundingClientRect();
+      if (card.scrollWidth > card.clientWidth + 1 || card.scrollHeight > card.clientHeight + 1) outside.push({ card: card.textContent.slice(0, 80), scroll: true });
+      for (const row of card.querySelectorAll('.mobile-card-row, .mobile-card-meta, .mobile-card-context, .mobile-card-identity')) {
+        const children = [...row.children].filter(el => el.getClientRects().length).map(el => el.getBoundingClientRect());
+        for (let i = 0; i < children.length; i++) for (let j = i + 1; j < children.length; j++) {
+          const a = children[i], b = children[j];
+          if (Math.min(a.right, b.right) - Math.max(a.left, b.left) > 1 && Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top) > 1) {
+            overlaps.push({ row: row.className, children: [i, j] });
+          }
+        }
+      }
+      for (const el of card.querySelectorAll('*')) {
+        if (!el.getClientRects().length || getComputedStyle(el).visibility === 'hidden') continue;
+        const child = el.getBoundingClientRect();
+        if (child.left < box.left - 1 || child.right > box.right + 1 || child.top < box.top - 1 || child.bottom > box.bottom + 1) {
+          outside.push({ card: card.querySelector('.mobile-card-id')?.textContent, tag: el.tagName, text: el.textContent.slice(0, 80) });
+        }
+      }
+      return box;
+    });
+    for (let i = 1; i < boxes.length; i++) if (boxes[i - 1].bottom > boxes[i].top + 1) overlaps.push(i);
+    return { count: cards.length, outside, overlaps };
+  });
+  assert.ok(geometry.count > 0, 'Fixture cards must render');
+  assert.deepEqual(geometry.outside, [], 'Every card descendant stays inside the boundary');
+  assert.deepEqual(geometry.overlaps, [], 'Card rows and adjacent cards do not overlap');
+  await noPageOverflow(page);
+}
+
+describe('mobile polish presentation', { concurrency: 2 }, () => {
+  for (const width of [320, 390]) for (const theme of themes) for (const reducedMotion of ['no-preference', 'reduce']) {
+    test(`polish board semantics and geometry / ${width}px / ${theme} / ${reducedMotion}`, { timeout: 45000 }, async t => {
+      await withPage(t, width, theme, async (page, fixture) => {
+        const board = page.locator('.mobile-board-layer');
+        const card = id => board.locator('.mobile-card').filter({ has: page.locator('.mobile-card-id', { hasText: id }) });
+        await visible(card('kon-scheduled').locator('.sched-chip'));
+        await polishCardGeometry(page);
+        await page.getByRole('navigation', { name: 'Ticket status', exact: true }).getByRole('button', { name: /in progress/i }).click();
+        for (const [id, label] of [['kon-queued', 'Queued'], ['kon-paused', 'Paused']]) {
+          await visible(card(id).getByText(label, { exact: true }));
+        }
+        const attention = card('kon-attention').locator('.waiting-chip');
+        await visible(attention);
+        assert.match(await attention.textContent(), /needs input/i);
+        const elapsed = attention.locator('[x-text="waitingFor(ticket)"]');
+        assert.match(await elapsed.textContent(), /\d/);
+        assert.equal(await attention.locator('.waiting-dot, .pulse-dot').count(), 0, 'Attention is text, not a decorative dot');
+        const supervisor = card(supervisorID);
+        await visible(supervisor.getByText('Supervisor', { exact: true }));
+        await visible(supervisor.getByText('supervising', { exact: true }));
+        assert.equal(await supervisor.getByText('Queued', { exact: true }).count(), 0);
+        assert.equal(await supervisor.getByText('Paused', { exact: true }).count(), 0);
+        assert.equal(await supervisor.getByText('code', { exact: true }).count(), 0, 'Supervisors do not acquire pipeline progress');
+        const secondary = card(longID);
+        await secondary.scrollIntoViewIfNeeded();
+        await visible(secondary.getByText(sourcePath, { exact: true }));
+        assert.equal(await secondary.locator('.mobile-card-id').textContent(), longID);
+        assert.equal(await secondary.locator('.mobile-card-id').getAttribute('title'), longID);
+        assert.ok(await secondary.evaluate(el => el.classList.contains('shrink-0') && el.hasAttribute('data-pipe-color')));
+        await polishCardGeometry(page);
+        await polishTypography(board);
+        await polishControls(board);
+        await immediateFocus(secondary);
+        await polishMotion(page, reducedMotion);
+        for (const enabled of [false, true]) {
+          await routeTo(page, '#/settings');
+          await page.locator('#settings-mobile-section').selectOption('display');
+          for (const name of ['pipeline_badges', 'agent_meta']) {
+            const toggle = page.getByRole('switch', { name, exact: true });
+            assert.equal(await toggle.getAttribute('aria-checked'), String(!enabled));
+            await toggle.click();
+            assert.equal(await toggle.getAttribute('aria-checked'), String(enabled));
+          }
+          await backToBoard(page);
+          await page.getByRole('navigation', { name: 'Ticket status', exact: true }).getByRole('button', { name: /in progress/i }).click();
+          assert.equal(await card('kon-live').locator('[x-show="showPipelineBadges"]').isVisible(), enabled);
+          assert.equal(await card('kon-live').locator('[x-show="showPipelineBadges"]').textContent(), 'standard');
+          assert.equal(await card('kon-live').getByText(liveAgent, { exact: true }).count(), enabled ? 1 : 0);
+          await visible(card('kon-queued').getByText('Queued', { exact: true }));
+          await visible(card('kon-paused').getByText('Paused', { exact: true }));
+          await polishCardGeometry(page);
+        }
+        assert.deepEqual(fixture.mutations, [], 'Display preferences remain browser-local');
+      }, { records: polishRecords(), reducedMotion });
+    });
+    test(`polish detail tabs and sheets / ${width}px / ${theme} / ${reducedMotion}`, { timeout: 60000 }, async t => {
+      await withPage(t, width, theme, async (page, fixture) => {
+        await openTicket(page, 'kon-live');
+        const detail = page.locator('.mobile-detail');
+        const tabs = detail.locator('.mobile-detail-tabs');
+        const status = detail.locator('.mobile-detail-secondary .status-chip');
+        await visible(status);
+        assert.deepEqual(await status.evaluate(el => {
+          const css = getComputedStyle(el, '::before');
+          return { content: css.content, animation: css.animationName };
+        }), { content: 'none', animation: 'none' }, 'Running metadata has no decorative status pulse');
+        await polishMotion(page, reducedMotion);
+        assert.deepEqual(await tabs.getByRole('button').filter({ visible: true }).allTextContents(), ['Terminal', 'Logs', 'Activity', 'Ticket']);
+        for (const label of ['Terminal', 'Logs', 'Activity', 'Ticket']) {
+          const tab = tabs.getByRole('button', { name: label, exact: true });
+          await tab.scrollIntoViewIfNeeded(); await tab.click();
+          await inViewport(tab);
+          assert.equal(await tab.getAttribute('aria-pressed'), 'true');
+          assert.equal(await tabs.locator('[aria-pressed="true"]').count(), 1);
+          await immediateFocus(tab);
+          if (label === 'Activity') await visible(detail.locator('.side-label'));
+          await polishTypography(detail);
+          await polishControls(detail);
+        }
+        await tabs.getByRole('button', { name: 'Terminal', exact: true }).click();
+        await page.waitForFunction(() => Alpine.$data(document.body).terminalConnected);
+        // With WebGL, xterm paints glyphs on canvas; the wrapper's inherited CSS font is
+        // not the terminal renderer's font.
+        assert.match(await page.evaluate(() => termState.term.options.fontFamily), /JetBrains Mono/);
+        const resizeGeometry = await page.evaluate(() => {
+          const term = termState.term;
+          const { cols, rows } = term;
+          const screen = document.querySelector('.mobile-detail .xterm-screen');
+          screen.getBoundingClientRect();
+          try {
+            term.resize(cols + 3, rows + 2);
+            return [screen, ...screen.querySelectorAll('canvas')].map(el => {
+              const css = getComputedStyle(el);
+              return { tag: el.tagName, expected: [parseFloat(el.style.width), parseFloat(el.style.height)],
+                actual: [parseFloat(css.width), parseFloat(css.height)] };
+            });
+          } finally {
+            term.resize(cols, rows);
+          }
+        });
+        assert.ok(resizeGeometry.length, 'A terminal renderer must be present');
+        for (const geometry of resizeGeometry) {
+          assert.deepEqual(geometry.actual, geometry.expected, `Terminal resize must be immediate: ${JSON.stringify(geometry)}`);
+        }
+        await page.setViewportSize({ width, height: 360 });
+        await terminalGridFits(page, fixture, 8);
+        await detail.getByRole('button', { name: 'Enable input', exact: true }).click();
+        await page.waitForFunction(() => Alpine.$data(document.body).terminalConnected);
+        await detail.getByRole('button', { name: 'Compose', exact: true }).click();
+        const compose = page.getByRole('dialog', { name: 'Compose message', exact: true });
+        await polishTypography(compose); await polishControls(compose);
+        await immediateFocus(compose.getByRole('textbox', { name: 'Message', exact: true }));
+        await polishMotion(page, reducedMotion);
+        await closeCaptureSheet(page);
+        await page.setViewportSize({ width, height: 900 });
+        await backToBoard(page);
+        await page.getByRole('button', { name: 'Assistant', exact: true }).filter({ visible: true }).click();
+        const assistant = page.getByRole('dialog', { name: 'Assistant', exact: true });
+        await polishTypography(assistant); await polishControls(assistant);
+        await assistant.getByRole('button', { name: 'Chat', exact: true }).click();
+        await polishControls(assistant);
+        await immediateFocus(assistant.getByRole('textbox', { name: 'Message the assistant', exact: true }));
+        await polishMotion(page, reducedMotion);
+        await closeCaptureSheet(page);
+        for (const name of ['Open navigation', 'New ticket']) {
+          await page.getByRole('button', { name, exact: true }).filter({ visible: true }).click();
+          const heading = name === 'Open navigation' ? 'Navigation' : 'New ticket';
+          const dialog = page.getByRole('dialog', { name: heading, exact: true });
+          await visible(dialog);
+          assert.equal(await dialog.getByRole('heading', { name: heading, exact: true }).count(), 1);
+          assert.equal(await dialog.getByText(heading, { exact: true }).count(), 1, 'Sheet content does not repeat its accessible heading');
+          await polishTypography(dialog);
+          await polishControls(dialog);
+          await immediateFocus(dialog.getByRole('button', { name: 'Close', exact: true }));
+          await polishMotion(page, reducedMotion);
+          if (heading === 'New ticket') {
+            const submit = dialog.getByRole('button', { name: 'create ticket', exact: true });
+            assert.equal(await submit.isDisabled(), true);
+            assert.ok(await submit.evaluate(el => parseFloat(getComputedStyle(el).opacity) < 1 || getComputedStyle(el).cursor === 'not-allowed'), 'Disabled state differs beyond color');
+            await immediateFocus(model(page, 'createForm.title'));
+            await model(page, 'createForm.title').fill('Recoverable creation error');
+            await model(page, 'createForm.path').fill('/fixtures/repository-with-a-long-name');
+            fixture.behavior.createFailure = 'Fixture error: draft retained. Please retry.';
+            await submit.click();
+            const error = dialog.getByRole('alert');
+            await visible(error);
+            assert.equal(await error.textContent(), fixture.behavior.createFailure);
+            assert.match(await error.evaluate(el => getComputedStyle(el).fontFamily), /DM Sans/, 'Error prose uses the body face');
+            assert.ok(await error.evaluate(el => parseFloat(getComputedStyle(el).fontSize) >= 16), 'Error prose remains readable');
+            await polishControls(dialog);
+          }
+          await closeCaptureSheet(page);
+        }
+        await openTicket(page, 'kon-draft');
+        await detail.getByRole('button', { name: 'Actions', exact: true }).click();
+        const actions = page.getByRole('dialog', { name: 'Ticket actions', exact: true });
+        await polishTypography(actions); await polishControls(actions);
+        await actions.getByRole('button', { name: 'Schedule…', exact: true }).click();
+        const schedule = page.getByRole('dialog', { name: 'Start later', exact: true });
+        assert.equal(await schedule.getByRole('heading', { name: 'Start later', exact: true }).count(), 1);
+        assert.equal(await schedule.getByText('Start later', { exact: true }).count(), 1);
+        await polishTypography(schedule); await polishControls(schedule);
+        await immediateFocus(schedule.getByRole('textbox', { name: 'Start date or duration', exact: true }));
+        await closeCaptureSheet(page);
+        await routeTo(page, '#/e/' + supervisorID);
+        const epic = page.locator('.mobile-epic');
+        for (const label of ['Terminal', 'Activity']) {
+          const tab = epic.getByRole('button', { name: label, exact: true });
+          await tab.scrollIntoViewIfNeeded(); await tab.click();
+          await inViewport(tab);
+          assert.equal(await tab.getAttribute('aria-pressed'), 'true');
+        }
+        await polishTypography(epic); await polishControls(epic);
+        await noPageOverflow(page);
+        assert.deepEqual(fixture.mutations, [], 'Presentation checks never invoke operational actions');
+      }, { records: polishRecords(), reducedMotion });
+    });
+  }
+});
+
 async function automationToken(locator, property, token) {
   const colors = await locator.evaluate((el, { property, token }) => {
     const probe = document.createElement('span'); probe.style.color = token.startsWith('--') ? `rgb(var(${token}))` : token; el.parentElement.append(probe);
@@ -806,7 +1200,7 @@ let markerSequence = 0;
 async function openTerminalSubject(page, id) {
   if (id === supervisorID) {
     await routeTo(page, '#/e/' + id);
-    await page.getByRole('button', { name: 'session', exact: true }).filter({ visible: true }).click();
+    await page.getByRole('button', { name: page.viewportSize().width < 768 ? 'Terminal' : 'session', exact: true }).filter({ visible: true }).click();
   } else await openTicket(page, id);
 }
 
@@ -1169,7 +1563,7 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
           const buttons = strip.getByRole('button');
           assert.equal(await strip.evaluate(el => getComputedStyle(el).backgroundAttachment), 'local, local, scroll, scroll');
           const labels = await page.evaluate(() => Alpine.$data(document.body).columns.map(col => col.label));
-          assert.deepEqual(await buttons.locator('span:nth-child(2)').allTextContents(), labels);
+          assert.deepEqual(await buttons.locator('[x-text="col.label"]').allTextContents(), labels);
           const last = buttons.last();
           const before = await last.boundingBox();
           assert.ok(before.x + before.width > width, 'The last status starts offscreen');
@@ -1214,9 +1608,9 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
           await noPageOverflow(page);
         });
         for (const scenario of [
-          { name: 'oversized status', status: 'awaiting_external_dependency_approval_review', oversized: true },
+          { name: 'oversized status', status: 'awaiting_external_dependency_approval_review_before_production_deployment', oversized: true },
           { name: 'safe-area status', status: 'awaiting_user_review', padding: '44px' },
-          { name: 'oversized safe-area status', status: 'awaiting_external_dependency_approval_review', padding: '44px', oversized: true },
+          { name: 'oversized safe-area status', status: 'awaiting_external_dependency_approval_review_before_production_deployment', padding: '44px', oversized: true },
         ]) {
           await t.test(`${scenario.name} stays aligned after boundary activation and swipes`, async () => {
             const key = `${source}/kon-geometry`;
@@ -1282,7 +1676,7 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
             assert.ok(board.overflows && board.count > keys.length && board.shortest > 44, JSON.stringify(board));
             assert.deepEqual(board.clipped, []);
             await routeTo(page, '#/e/kon-epic');
-            const children = await clipped('.mobile-epic > .overflow-y-auto', 'button[x-text]');
+            const children = await clipped('.mobile-epic > .overflow-y-auto', '.mobile-epic-child');
             assert.ok(children.overflows && children.count === keys.length && children.shortest > 44, JSON.stringify(children));
             assert.deepEqual(children.clipped, []);
           } finally {
@@ -1363,13 +1757,19 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
         const detail = page.locator('.mobile-detail');
         const tabs = detail.locator('.mobile-detail-tabs');
         const geometry = await tabs.evaluate(el => ({ scroll: el.scrollWidth, client: el.clientWidth, wrap: getComputedStyle(el).flexWrap }));
-        assert.ok(geometry.scroll > geometry.client, JSON.stringify(geometry));
         assert.equal(geometry.wrap, 'nowrap');
-        await detail.getByRole('button', { name: '▤ ticket', exact: true }).click();
-        assert.ok(await tabs.evaluate(el => el.scrollLeft > 0));
+        if (geometry.scroll > geometry.client + 1) {
+          assert.match(await tabs.evaluate(el => getComputedStyle(el).overflowX), /auto|scroll/);
+        }
+        const ticketTab = detail.getByRole('button', { name: 'Ticket', exact: true });
+        await ticketTab.scrollIntoViewIfNeeded();
+        await ticketTab.click();
+        await inViewport(ticketTab);
+        assert.equal(await ticketTab.getAttribute('aria-pressed'), 'true');
+        if (geometry.scroll > geometry.client + 1) assert.ok(await tabs.evaluate(el => el.scrollLeft > 0));
         await page.setViewportSize({ width: 390, height: 900 });
         const activeTab = await page.evaluate(() => Alpine.$data(document.body).activeTab);
-        await detail.getByRole('button', { name: 'activity', exact: true }).click();
+        await detail.getByRole('button', { name: 'Activity', exact: true }).click();
         await visible(detail.locator('#activity-scroll').getByText('Fixture activity revision 0', { exact: true }));
         assert.equal(await page.evaluate(() => Alpine.$data(document.body).activeTab), activeTab);
         assert.equal(await page.evaluate(() => Alpine.$data(document.body).terminalOpen), false);
@@ -1395,9 +1795,9 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
       await withPage(t, 390, theme, async (page, fixture) => {
         await openTicket(page, 'kon-live');
         const detail = page.locator('.mobile-detail');
-        await detail.getByRole('button', { name: 'activity', exact: true }).click();
+        await detail.getByRole('button', { name: 'Activity', exact: true }).click();
         await visible(detail.locator('#activity-scroll').getByText('Fixture activity revision 0', { exact: true }));
-        await detail.getByRole('button', { name: '≡ logs', exact: true }).click();
+        await detail.getByRole('button', { name: 'Logs', exact: true }).click();
         await detail.getByRole('button', { name: /^plan:/ }).click();
         await visible(detail.getByText('kon-live plan fixture log revision 0', { exact: true }));
         const record = fixture.records.get('primary/kon-live');
@@ -1406,7 +1806,7 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
         record.started_at = '2026-10-01T10:01:00Z';
         fixture.behavior.outputRevision = 1;
         await page.evaluate(record => Alpine.$data(document.body).applyTicketUpdate(record), record);
-        await detail.getByRole('button', { name: 'activity', exact: true }).click();
+        await detail.getByRole('button', { name: 'Activity', exact: true }).click();
         await visible(detail.locator('#activity-scroll').getByText('Fixture activity revision 1', { exact: true }));
         assert.equal(await page.evaluate(() => Alpine.$data(document.body).activityStage), 'test');
         const popupPromise = page.waitForEvent('popup');
@@ -1431,7 +1831,7 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
           assert.equal(await page.evaluate(() => Alpine.$data(document.body).detailTab), 'ticket');
           const reads = fixture.requests.filter(request => request === 'GET /api/tickets/kon-done/activity').length;
           const detail = page.locator('.mobile-detail');
-          await detail.getByRole('button', { name: 'activity', exact: true }).click();
+          await detail.getByRole('button', { name: 'Activity', exact: true }).click();
           const scroller = detail.locator('#activity-scroll');
           await visible(scroller.getByText('Cached activity event 79', { exact: true }));
           await page.evaluate(() => Alpine.nextTick());
@@ -1443,8 +1843,8 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
           await detail.getByRole('button', { name: /follow/i }).click();
           await scroller.evaluate(el => { el.scrollTop = 200; });
           const top = await scroller.evaluate(el => el.scrollTop);
-          await detail.getByRole('button', { name: '▤ ticket', exact: true }).click();
-          await detail.getByRole('button', { name: 'activity', exact: true }).click();
+          await detail.getByRole('button', { name: 'Ticket', exact: true }).click();
+          await detail.getByRole('button', { name: 'Activity', exact: true }).click();
           await visible(scroller);
           await page.evaluate(() => Alpine.nextTick());
           assert.equal(await scroller.evaluate(el => el.scrollTop), top, 'Follow off preserves the reading position');
@@ -1651,21 +2051,21 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
         }
         const detail = page.locator('.mobile-detail');
         assert.equal(await detail.locator('.mobile-detail-title').textContent(), liveTitle);
-        await detail.getByRole('button', { name: '≡ logs', exact: true }).click();
-        assert.equal(await detail.getByRole('button', { name: '≡ logs', exact: true }).getAttribute('aria-pressed'), 'true');
+        await detail.getByRole('button', { name: 'Logs', exact: true }).click();
+        assert.equal(await detail.getByRole('button', { name: 'Logs', exact: true }).getAttribute('aria-pressed'), 'true');
         const stages = detail.getByLabel('Stages and cost estimates');
         await visible(stages);
         assert.equal(await stages.getByRole('button').count(), 3, 'Each stage has one control, including unpriced stages');
         assert.match(await stages.textContent(), /1\/2/);
         await stages.getByRole('button', { name: /^test:/ }).click();
-        assert.equal(await detail.getByRole('button', { name: '≡ logs', exact: true }).getAttribute('aria-pressed'), 'true');
+        assert.equal(await detail.getByRole('button', { name: 'Logs', exact: true }).getAttribute('aria-pressed'), 'true');
         await stages.getByRole('button', { name: /^plan:/ }).click();
         await visible(detail.getByText('kon-live plan fixture log revision 0', { exact: true }));
         await stages.getByRole('button', { name: /^code:/ }).click();
         await page.waitForFunction(() => Alpine.$data(document.body).detailTab === 'terminal' && Alpine.$data(document.body).terminalConnected);
-        await detail.getByRole('button', { name: '≡ logs', exact: true }).click();
+        await detail.getByRole('button', { name: 'Logs', exact: true }).click();
         assert.equal(await detail.locator('.mobile-detail-title').textContent(), liveTitle);
-        await detail.getByRole('button', { name: '▤ ticket', exact: true }).click();
+        await detail.getByRole('button', { name: 'Ticket', exact: true }).click();
         assert.equal(await detail.locator('h1[x-text="selectedTicket?.title"]').textContent(), liveTitle);
         await visible(detail.getByText(liveAgent, { exact: true }));
         await visible(detail.getByText(liveBranch, { exact: true }));
@@ -1673,13 +2073,13 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
         await copy.focus();
         await page.keyboard.press('Enter');
         assert.equal(await page.evaluate(() => window.__fixtureCopied), 'kontora attach kon-live');
-        await detail.getByRole('button', { name: '›_ terminal', exact: true }).click();
+        await detail.getByRole('button', { name: 'Terminal', exact: true }).click();
         await page.waitForFunction(() => Alpine.$data(document.body).terminalConnected);
         assert.equal(await page.locator('#terminal-container-mobile textarea').evaluate(el => el.readOnly), true);
         await page.getByRole('button', { name: 'Enable input', exact: true }).filter({ visible: true }).click();
         await page.waitForFunction(() => Alpine.$data(document.body).terminalConnected);
-        await detail.getByRole('button', { name: '≡ logs', exact: true }).click();
-        await detail.getByRole('button', { name: '›_ terminal', exact: true }).click();
+        await detail.getByRole('button', { name: 'Logs', exact: true }).click();
+        await detail.getByRole('button', { name: 'Terminal', exact: true }).click();
         await page.waitForFunction(() => Alpine.$data(document.body).terminalConnected);
         assert.equal(await page.locator('#terminal-container-mobile textarea').evaluate(el => el.readOnly), true);
       });
@@ -1967,7 +2367,7 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
           await backToBoard(page);
           await openTicket(page, 'kon-done');
           if (width < 768) {
-            await page.getByRole('button', { name: '▤ ticket', exact: true }).click();
+            await page.getByRole('button', { name: 'Ticket', exact: true }).click();
             await visible(page.getByText('Second code run complete.', { exact: true }).filter({ visible: true }));
           } else {
             const cards = page.locator('.stage-card-head:visible');
@@ -2320,7 +2720,7 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
       await withPage(t, width, theme, async (page, fixture) => {
         await routeTo(page, '#/e/' + supervisorID);
         const epic = page.locator('.mobile-epic');
-        await epic.getByRole('button', { name: 'session', exact: true }).click();
+        await epic.getByRole('button', { name: 'Terminal', exact: true }).click();
         await visible(page.locator('#epic-terminal-mobile .xterm'));
         await page.waitForFunction(() => Alpine.$data(document.body).terminalConnected);
         await epic.getByRole('button', { name: 'Enable input', exact: true }).click();
@@ -2365,8 +2765,8 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
         await visible(epic.getByRole('button', { name: 'Enable input', exact: true }));
         await epic.getByRole('button', { name: 'Enable input', exact: true }).click();
         await page.waitForFunction(() => Alpine.$data(document.body).terminalConnected);
-        await epic.getByRole('button', { name: 'activity', exact: true }).click();
-        await epic.getByRole('button', { name: 'session', exact: true }).click();
+        await epic.getByRole('button', { name: 'Activity', exact: true }).click();
+        await epic.getByRole('button', { name: 'Terminal', exact: true }).click();
         await page.waitForFunction(() => Alpine.$data(document.body).terminalConnected);
         assert.equal(await page.locator('#epic-terminal-mobile textarea').evaluate(el => el.readOnly), true);
         assert.ok(fixture.sockets.every(url => url.pathname === '/ws/terminal/' + supervisorID));

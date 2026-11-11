@@ -338,7 +338,10 @@ export function kontoraMobile() {
       return this.selectedTicket && this.selectedTicket.status === 'in_progress' ? 'terminal' : 'logs';
     },
     mobileFirstTabLabel() {
-      return this.selectedTicket && this.selectedTicket.status === 'in_progress' ? '›_ terminal' : '≡ logs';
+      return this.selectedTicket && this.selectedTicket.status === 'in_progress' ? 'Terminal' : 'Logs';
+    },
+    mobileTagLabel(t) {
+      return t?.pipeline || this.pathBasename(t?.path) || '—';
     },
 
     async openMobileTicket(t, navigation = ++this._navigationSeq) {
@@ -406,30 +409,29 @@ export function kontoraMobile() {
       var label = this.costLabel(cost);
       if (!label) return '';
       if (cost.priced_runs < cost.tracked_runs) {
-        label += ' · ' + cost.priced_runs + '/' + cost.tracked_runs;
+        label += ' (' + cost.priced_runs + '/' + cost.tracked_runs + ' runs priced)';
       }
       return 'est. ' + label;
     },
 
     mobileStageLabel(seg) {
       if (!seg.cost || !seg.cost.tracked_runs) return seg.name;
-      var label = seg.name + ' · ' + this.costLabel(seg.cost);
+      var label = seg.name + ': ' + this.costLabel(seg.cost);
       if (seg.cost.priced_runs < seg.cost.tracked_runs) {
-        label += ' · ' + seg.cost.priced_runs + '/' + seg.cost.tracked_runs;
+        label += ' (' + seg.cost.priced_runs + '/' + seg.cost.tracked_runs + ' runs priced)';
       }
       return label;
     },
 
     // Inline style for one chip in the logs-tab stage strip.
     mobileStageStyle(stage) {
-      var base = "font-family:'JetBrains Mono',monospace;font-size:12px;padding:4px 10px;border-radius:6px;white-space:nowrap;flex:none;";
       var t = this.selectedTicket;
       var stages = (t && t.stages) || [];
       var cur = stages.indexOf(t && t.stage);
       var i = stages.indexOf(stage);
-      if (i === cur) return base + 'background:rgba(var(--surface-800),1);color:rgba(var(--tx),1);border:1px solid rgba(var(--surface-700),1);';
-      if (cur >= 0 && i < cur) return base + 'color:rgba(var(--surface-600),1);';
-      return base + 'color:rgba(var(--surface-700),1);';
+      if (i === cur) return 'background:rgba(var(--surface-800),1);color:rgba(var(--tx),1);border:1px solid rgba(var(--surface-700),1);';
+      if (cur >= 0 && i < cur) return 'color:rgba(var(--tx-3),1);';
+      return 'color:rgba(var(--tx-2),1);';
     },
 
     // Status-aware action-bar buttons. The primary performs the main transition
@@ -577,13 +579,13 @@ export function kontoraMobile() {
       return 'Sent as ' + isoWithOffset(parsed.at) + '. Stays open until then; pickup still needs auto_pick_up and resolved dependencies.';
     },
 
-    // The current schedule as the sheet header states it: "starts Fri 09:00 ·
+    // The current schedule as the sheet header states it: "starts Fri 09:00,
     // in 18h". Empty for a ticket with none, where the header has nothing to
     // report yet.
     mobileScheduleCurrent(t) {
       var chip = this.scheduleChip(t);
       if (!chip) return '';
-      return 'starts ' + chip.abs + (chip.rel ? ' · in ' + chip.rel : '');
+      return 'starts ' + chip.abs + (chip.rel ? ', in ' + chip.rel : '');
     },
 
     onMobileSchedulePicked(value) {
@@ -695,12 +697,6 @@ export function kontoraMobile() {
       if (kind === 'warn') return 'hsl(var(--st-paused))';
       if (kind === 'primary') return 'rgba(var(--accent),1)';
       return 'rgba(var(--tx-2),1)';
-    },
-    mobileActionDotColor(kind) {
-      if (kind === 'danger') return 'rgba(var(--err),1)';
-      if (kind === 'warn') return 'hsl(var(--st-paused))';
-      if (kind === 'primary') return 'rgba(var(--accent),1)';
-      return 'rgba(var(--surface-600),1)';
     },
   };
 }

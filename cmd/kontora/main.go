@@ -27,6 +27,7 @@ import (
 	"github.com/worksonmyai/kontora/internal/cli/tui"
 	"github.com/worksonmyai/kontora/internal/config"
 	"github.com/worksonmyai/kontora/internal/daemon"
+	"github.com/worksonmyai/kontora/internal/ticket"
 	"github.com/worksonmyai/kontora/internal/ticket/app"
 	"github.com/worksonmyai/kontora/internal/web"
 )
@@ -526,10 +527,14 @@ func cmdView() {
 	fs := flag.NewFlagSet("view", flag.ExitOnError)
 	configPath, ticketsDir := addStoreFlags(fs)
 	bodyOnly := fs.Bool("body", false, "print only the ticket body")
+	notesOnly := fs.Bool("notes", false, "print only the notes: the body from its ## Notes heading to the end")
 	urlFlag, tokenFlag := addRemoteFlags(fs)
 	taskID := parseTicketFlags(fs, os.Args[2:])
 	if taskID == "" {
 		log.Fatal("ticket ID is required: kontora view TICKET_ID")
+	}
+	if *bodyOnly && *notesOnly {
+		log.Fatal("--body and --notes cannot be combined")
 	}
 
 	if rc := remoteClient(*urlFlag, *tokenFlag); rc != nil {
@@ -541,6 +546,11 @@ func cmdView() {
 		// `update --body-file` writes back.
 		if *bodyOnly {
 			fmt.Print(info.Body)
+			return
+		}
+		if *notesOnly {
+			_, notes := ticket.SplitDescription(info.Body)
+			fmt.Print(notes)
 			return
 		}
 		err = cli.Page(cli.PagerCommand(""), func(w io.Writer) error {
@@ -557,6 +567,12 @@ func cmdView() {
 
 	if *bodyOnly {
 		if err := cli.ViewBody(cfg, taskID, os.Stdout); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
+	if *notesOnly {
+		if err := cli.ViewNotes(cfg, taskID, os.Stdout); err != nil {
 			log.Fatal(err)
 		}
 		return

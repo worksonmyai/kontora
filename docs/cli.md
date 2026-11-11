@@ -148,10 +148,13 @@ Prints the ticket's status, pipeline position, and body.
 | Flag | Description |
 |------|-------------|
 | `--body` | Print only the stored markdown body: no metadata, no styling, no synthesized relation sections. |
+| `--notes` | Print only the body from its `## Notes` heading to the end. Prints nothing for a ticket without notes. Cannot be combined with `--body`. |
 
 `--body` prints exactly what the file holds after the closing frontmatter delimiter, which is what `kontora update --body-file` writes back. Reading a body out, editing it, and writing it back changes nothing else in the ticket.
 
-The default output goes through the [pager](#environment-variables) when one is set and stdout is a terminal. `--body` never does, so the round trip stays byte-stable.
+`--notes` is for a reader that needs the history, not the plan. A long ticket's full output can exceed an agent's tool-output limit; the notes alone are usually much shorter.
+
+The default output goes through the [pager](#environment-variables) when one is set and stdout is a terminal. `--body` and `--notes` never do, so the round trip stays byte-stable.
 
 ### `kontora edit TICKET_ID`
 

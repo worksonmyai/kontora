@@ -989,6 +989,7 @@ func assertSafeHandoff(t *testing.T, got, taskID string, isPipeline bool) {
 	for _, want := range []string{
 		"## Handoff instructions",
 		"Prefer `kontora_note` and `kontora_summary` when available",
+		"`kontora view --notes " + taskID + "` prints only the notes",
 		"bound to the current ticket",
 		"file-writing tool",
 		"unique scratch paths outside the repository",

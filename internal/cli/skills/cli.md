@@ -246,11 +246,15 @@ checked at creation the way a `todo` one does.
 
 ## kontora view
 
-`kontora view [--body] TICKET_ID` — print the ticket's status, pipeline
+`kontora view [--body | --notes] TICKET_ID` — print the ticket's status, pipeline
 position and body.
 
 `--body` prints only the stored markdown after the frontmatter, unstyled and
 unpaged, which is exactly what `kontora update --body-file` writes back.
+
+`--notes` prints only the body from its `## Notes` heading to the end, unstyled
+and unpaged. Use it when you need the ticket history and the full output is too
+long to read in one tool call.
 
 ## kontora edit
 

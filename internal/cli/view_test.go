@@ -123,3 +123,38 @@ func TestViewBody(t *testing.T) {
 
 	assert.Equal(t, body, buf.String(), "the output must equal the file after the closing delimiter")
 }
+
+func TestViewNotes(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "notes section",
+			body: "# A title\n\nSome text.\n\n## Notes\n\n**2026-03-06T12:00:00Z · claude · q88f**\n\none\n",
+			want: "## Notes\n\n**2026-03-06T12:00:00Z · claude · q88f**\n\none\n",
+		},
+		{
+			name: "text after a heading inside the notes stays",
+			body: "# A title\n\n## Notes\n\nreview: done\n\n## Code review\n\nLGTM.\n",
+			want: "## Notes\n\nreview: done\n\n## Code review\n\nLGTM.\n",
+		},
+		{
+			name: "no notes",
+			body: "# A title\n\nSome text.\n",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			cfg := &config.Config{TicketsDir: dir}
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "tst-001.md"),
+				[]byte("---\nid: tst-001\nstatus: todo\nkontora: true\n---\n"+tc.body), 0o644))
+
+			var buf bytes.Buffer
+			require.NoError(t, ViewNotes(cfg, "tst", &buf))
+			assert.Equal(t, tc.want, buf.String())
+		})
+	}
+}

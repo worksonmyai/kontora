@@ -118,6 +118,18 @@ func ViewBody(cfg *config.Config, taskID string, w io.Writer) error {
 	return err
 }
 
+// ViewNotes prints the body from its "## Notes" heading to the end. It prints
+// nothing for a ticket without notes.
+func ViewNotes(cfg *config.Config, taskID string, w io.Writer) error {
+	t, err := readTicketByID(cfg, taskID)
+	if err != nil {
+		return err
+	}
+	_, notes := ticket.SplitDescription(t.Body)
+	_, err = io.WriteString(w, notes)
+	return err
+}
+
 func readTicketByID(cfg *config.Config, taskID string) (*ticket.Ticket, error) {
 	tasksDir := config.ExpandTilde(cfg.TicketsDir)
 	resolvedID, err := resolveTaskID(tasksDir, taskID)

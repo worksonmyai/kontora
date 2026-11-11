@@ -303,13 +303,13 @@
     [data-pipe-color="rose"]   { --pipe-h: 349 89% 72%; }
     [data-pipe-color="mauve"]  { --pipe-h: 261 85% 79%; }
     [data-pipe-color="none"]   { --pipe-h: 240 10% 55%; }
-    [data-theme='light'][data-pipe-color="indigo"] { --pipe-h: 221 70% 45%; }
-    [data-theme='light'][data-pipe-color="cyan"]   { --pipe-h: 202 80% 35%; }
-    [data-theme='light'][data-pipe-color="amber"]  { --pipe-h: 35  75% 38%; }
-    [data-theme='light'][data-pipe-color="green"]  { --pipe-h: 89 60% 30%; }
-    [data-theme='light'][data-pipe-color="rose"]   { --pipe-h: 349 65% 45%; }
-    [data-theme='light'][data-pipe-color="mauve"]  { --pipe-h: 261 60% 48%; }
-    [data-theme='light'][data-pipe-color="none"]   { --pipe-h: 240 10% 35%; }
+    [data-theme='light'] [data-pipe-color="indigo"] { --pipe-h: 221 70% 45%; }
+    [data-theme='light'] [data-pipe-color="cyan"]   { --pipe-h: 202 80% 35%; }
+    [data-theme='light'] [data-pipe-color="amber"]  { --pipe-h: 35  75% 38%; }
+    [data-theme='light'] [data-pipe-color="green"]  { --pipe-h: 89 60% 30%; }
+    [data-theme='light'] [data-pipe-color="rose"]   { --pipe-h: 349 65% 45%; }
+    [data-theme='light'] [data-pipe-color="mauve"]  { --pipe-h: 261 60% 48%; }
+    [data-theme='light'] [data-pipe-color="none"]   { --pipe-h: 240 10% 35%; }
 
     /* Column header: status-colored name + count over a tinted 2px rule (1c). */
     .col-head {
@@ -6197,7 +6197,7 @@
                 <span class="mobile-card-state">Queued</span>
               </template>
               <template x-if="!epicIsAgent(ticket) && ticket.status === 'paused'">
-                <span class="mobile-card-state">Paused</span>
+                <span class="card-glyph-paused mobile-card-state">Paused</span>
               </template>
               <template x-if="ticket.status === 'open' && scheduleChip(ticket)">
                 <span class="sched-chip">
@@ -6217,10 +6217,20 @@
               <span class="mobile-label text-warn">not init'd</span>
             </template>
           </div>
-          <p class="mobile-card-title" :style="ticket.status==='cancelled' ? 'text-decoration:line-through;text-decoration-color:rgba(var(--surface-600),.6);' : ''" x-text="ticket.title"></p>
+          <p class="mobile-card-title" :style="ticket.status==='cancelled' ? 'text-decoration:line-through;text-decoration-color:rgba(var(--surface-600),.6);' : ''">
+            <template x-if="parseTitleTag(ticket).tag"><span class="title-tag" :data-pipe-color="pipelineColorByName(parseTitleTag(ticket).tag)" x-text="'[' + parseTitleTag(ticket).tag + '] '"></span></template><span x-text="parseTitleTag(ticket).rest"></span>
+          </p>
+          <template x-if="cardStageProgress(ticket)">
+            <div class="card-progress" role="img" :aria-label="cardStageProgress(ticket).label" :title="cardStageProgress(ticket).label">
+              <div :style="'width:' + cardStageProgress(ticket).percent + '%'"></div>
+            </div>
+          </template>
           <template x-if="epicCardInfo(ticket)">
-            <span class="font-mono text-[11px] text-tx-3" :title="epicCardInfo(ticket).title || epicCardInfo(ticket).id"
+            <span class="mobile-label" :data-pipe-color="pipelineColorByName(epicCardInfo(ticket).id)" style="color:hsl(var(--pipe-h) / 0.9)" :title="epicCardInfo(ticket).title || epicCardInfo(ticket).id"
                   x-text="'Epic: ' + epicCardInfo(ticket).done + ' of ' + epicCardInfo(ticket).total + ' done'"></span>
+          </template>
+          <template x-if="ticket.attempt > 0 && ticket.status !== 'done' && ticket.status !== 'cancelled'">
+            <span class="mobile-label text-err" x-text="'retry ' + ticket.attempt"></span>
           </template>
           <div class="mobile-card-meta">
             <span class="mobile-card-identity">
@@ -6462,7 +6472,7 @@
           </button>
           <div class="mobile-detail-heading">
             <span class="font-mono text-[11px] text-tx-3" x-text="selectedTicket?.id"></span>
-            <span class="mobile-detail-title" x-text="selectedTicket?.title" :title="selectedTicket?.title"></span>
+            <span class="mobile-detail-title" :title="selectedTicket?.title"><span x-show="parseTitleTag(selectedTicket || {}).tag" class="title-tag" :data-pipe-color="pipelineColorByName(parseTitleTag(selectedTicket || {}).tag)" x-text="'[' + parseTitleTag(selectedTicket || {}).tag + ']'"></span><span class="mobile-detail-title-text" x-text="parseTitleTag(selectedTicket || {}).rest"></span></span>
           </div>
           <button type="button" x-show="isSecondary(selectedTicket)" @click="claimTicket()"
                   :disabled="!ticketCanClaim(selectedTicket) || claimSubmitting" :title="selectedTicket?.refusal_reason || 'Move into primary without starting work. Related tickets are not moved; references resolve in primary.'"
@@ -6475,7 +6485,9 @@
         </div>
         <div class="mobile-detail-secondary" style="align-items:center;gap:8px;padding:0 16px 10px;flex-wrap:wrap;">
           <span class="pipe-tag" :data-pipe-color="selectedTicket ? ticketPipeColor(selectedTicket) : 'none'" x-text="selectedTicket ? mobileTagLabel(selectedTicket) : ''"></span>
-          <span class="status-chip" :data-status="selectedTicket?.status" x-text="selectedTicket?.status"></span>
+          <span class="status-chip" :data-status="selectedTicket?.status" x-text="statusLabel(selectedTicket?.status)"></span>
+          <span x-show="selectedTicket?.agent" class="mobile-label text-tx-3" x-text="selectedTicket?.agent"></span>
+          <span x-show="selectedTicket?.branch" class="mobile-technical text-tx-3" x-text="selectedTicket?.branch"></span>
           <span class="mobile-technical text-tx-3 break-all" x-text="sourceLabel(selectedTicket)"></span>
           <span x-show="isSecondary(selectedTicket) && !ticketCanClaim(selectedTicket)" class="w-full font-mono text-[11px] text-warn" x-text="selectedTicket?.refusal_reason || 'This ticket cannot be claimed.'"></span>
           <template x-if="scheduleLabel(selectedTicket)">
@@ -6495,6 +6507,16 @@
                 x-text="mobileTicketCostLabel()"></span>
           <template x-if="selectedTicket && !selectedTicket.kontora">
             <span class="mobile-label text-warn">not a kontora ticket</span>
+          </template>
+          <template x-if="selectedTicket && !isSecondary(selectedTicket) && !epicIsAgent(selectedTicket) && detailTab !== 'logs' && stageRibbon().length">
+            <div class="mobile-stage-strip" role="list" aria-label="Pipeline stage progress">
+              <template x-for="seg in stageRibbon()" :key="seg.name">
+                <div class="mobile-stage-segment" role="listitem" :style="mobileStageStyle(seg)" :aria-label="seg.name + ': ' + mobileStageState(seg)">
+                  <span x-text="seg.name"></span>
+                  <span class="mobile-stage-track" aria-hidden="true"><span></span></span>
+                </div>
+              </template>
+            </div>
           </template>
         </div>
         <template x-if="!isSecondary(selectedTicket) && mobileHasRun(selectedTicket)">
@@ -6639,9 +6661,13 @@
               <template x-for="(seg, si) in stageRibbon()" :key="seg.name">
                 <span style="display:flex;align-items:center;gap:7px;flex:none;">
                   <template x-if="si>0"><span style="color:rgba(var(--surface-700),1);">→</span></template>
-                  <button type="button" @click="clickStage(seg.name)" class="mobile-stage-control" :style="mobileStageStyle(seg.name)"
-                          :title="costTooltip(seg.cost)" :aria-label="seg.name + ': ' + costTooltip(seg.cost)"
-                          x-text="mobileStageLabel(seg)"></button>
+                  <button type="button" @click="clickStage(seg.name)" class="mobile-stage-control" :style="mobileStageStyle(seg)"
+                          :aria-current="logViewStage === seg.name ? 'step' : null"
+                          :title="costTooltip(seg.cost)" :aria-label="seg.name + ': ' + mobileStageState(seg) + '. ' + mobileStageMeta(seg) + '. ' + costTooltip(seg.cost)">
+                    <span x-text="mobileStageLabel(seg)"></span>
+                    <span class="mobile-stage-track" aria-hidden="true"><span></span></span>
+                    <span class="mobile-stage-meta" x-text="mobileStageMeta(seg)"></span>
+                  </button>
                 </span>
               </template>
             </div>
@@ -6665,7 +6691,7 @@
           <template x-if="selectedTicket?.last_error">
             <div role="alert" class="mobile-prose text-err" style="border-left:3px solid rgba(var(--err),1);padding-left:12px;margin-bottom:18px;white-space:pre-wrap;overflow-wrap:anywhere;" x-text="selectedTicket.last_error"></div>
           </template>
-          <h1 class="mobile-ticket-title" x-text="selectedTicket?.title"></h1>
+          <h1 class="mobile-ticket-title"><span x-show="parseTitleTag(selectedTicket || {}).tag" class="title-tag" :data-pipe-color="pipelineColorByName(parseTitleTag(selectedTicket || {}).tag)" x-text="'[' + parseTitleTag(selectedTicket || {}).tag + ']' + ' '"></span><span x-text="parseTitleTag(selectedTicket || {}).rest"></span></h1>
           <button type="button" x-show="!isSecondary(selectedTicket) && mobileHasRun(selectedTicket)" @click="copyCmd('kontora attach ' + selectedTicket?.id)"
                   class="copyable font-mono text-xs text-tx-3 mb-4 break-all" aria-label="Copy attach command"
                   x-text="copiedCmd === 'kontora attach ' + selectedTicket?.id ? 'Copied' : 'kontora attach ' + selectedTicket?.id"></button>

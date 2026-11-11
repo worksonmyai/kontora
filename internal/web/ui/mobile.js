@@ -423,15 +423,35 @@ export function kontoraMobile() {
       return label;
     },
 
-    // Inline style for one chip in the logs-tab stage strip.
-    mobileStageStyle(stage) {
+    mobileStageMeta(seg) {
+      if (!seg.runs && seg.cost?.tracked_runs > 0) {
+        var runs = seg.cost.tracked_runs;
+        var duration = seg.state === 'running' ? seg.meta : 'duration unavailable';
+        return runs + ' tracked ' + (runs === 1 ? 'run' : 'runs') + ' · ' + duration;
+      }
+      return seg.meta + ' · ' + seg.runs + ' runs';
+    },
+
+    mobileStageState(seg) {
       var t = this.selectedTicket;
-      var stages = (t && t.stages) || [];
-      var cur = stages.indexOf(t && t.stage);
-      var i = stages.indexOf(stage);
-      if (i === cur) return 'background:rgba(var(--surface-800),1);color:rgba(var(--tx),1);border:1px solid rgba(var(--surface-700),1);';
-      if (cur >= 0 && i < cur) return 'color:rgba(var(--tx-3),1);';
-      return 'color:rgba(var(--tx-2),1);';
+      if (seg.name === t?.stage && ['paused', 'human_review'].includes(t.status)) return this.statusLabel(t.status);
+      if (t?.status === 'done' && !seg.runs && !(seg.cost?.tracked_runs > 0)) {
+        var stages = t.stages || [];
+        var index = stages.indexOf(seg.name);
+        if (index < 0 || index >= stages.indexOf(t.stage)) return 'Ticket marked done; no recorded run';
+      }
+      return { running: 'Running', done: 'Recorded or earlier stage', queued: 'Not started' }[seg.state];
+    },
+
+    mobileStageStyle(seg) {
+      var t = this.selectedTicket;
+      var token = { running: '--st-progress', done: '--st-done', queued: '--surface-600' }[seg.state];
+      var current = seg.name === t?.stage && ['paused', 'human_review'].includes(t.status);
+      if (current) token = t.status === 'paused' ? '--st-paused' : '--st-review';
+      var color = token === '--surface-600' ? 'rgb(var(' + token + '))' : 'hsl(var(' + token + '))';
+      var fill = current || seg.state === 'running' ? '50%' : (seg.state === 'done' ? '100%' : '0%');
+      var foreground = seg.state === 'queued' && !current ? 'rgb(var(--tx-2))' : color;
+      return 'color:' + foreground + ';--mobile-stage-color:' + color + ';--mobile-stage-fill:' + fill + ';';
     },
 
     // Status-aware action-bar buttons. The primary performs the main transition

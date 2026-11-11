@@ -314,7 +314,8 @@ function fixtures(options = {}) {
       assert.equal(folder, 'primary', 'Secondary tickets cannot use control/output endpoints');
       if (method === 'GET') {
         switch (action) {
-          case 'cost': if (id === 'kon-live') return json(route, { id, cost_usd: '0.42', tracked_runs: 3, priced_runs: 2,
+          case 'cost': if (options.costs?.[id]) return json(route, options.costs[id]);
+            if (id === 'kon-live') return json(route, { id, cost_usd: '0.42', tracked_runs: 3, priced_runs: 2,
             stages: [{ name: 'plan', cost_usd: '0.30', tracked_runs: 1, priced_runs: 1 },
               { name: 'code', cost_usd: '0.12', tracked_runs: 2, priced_runs: 1 }], runs: [] });
             return json(route, { id, cost_usd: record.history.length || record.status === 'in_progress' ? '0.12' : null,
@@ -714,14 +715,14 @@ async function closeCaptureSheet(page) {
 }
 
 describe('mobile polish fixture evidence', () => {
-  for (const width of [320, 390, 1280]) for (const theme of themes) {
+  for (const width of [320, 390, 767, 768, 1280]) for (const theme of themes) {
     test(`polish captures / ${width}px / ${theme}`, { skip: !captureDirectory, timeout: 90000 }, async t => {
       await withPage(t, width, theme, async (page, fixture) => {
         await mobileCapture(page, width, theme, 'board-open-scheduled-secondary');
         if (width < 768) {
           const status = page.getByRole('navigation', { name: 'Ticket status', exact: true });
           await status.getByRole('button', { name: /in progress/i }).click();
-          await visible(page.locator('.mobile-board-layer [x-text="ticket.title"]').filter({ hasText: 'Queued ordinary ticket' }));
+          await visible(page.locator('.mobile-board-layer .mobile-card-title').filter({ hasText: 'Queued ordinary ticket' }));
           await mobileCapture(page, width, theme, 'board-running-queued-paused-attention');
           await page.locator('.mobile-board-layer button[data-pipe-color]').filter({ hasText: 'kon-queued' }).scrollIntoViewIfNeeded();
           await mobileCapture(page, width, theme, 'board-queued-paused');
@@ -891,6 +892,226 @@ async function polishCardGeometry(page) {
   assert.deepEqual(geometry.overlaps, [], 'Card rows and adjacent cards do not overlap');
   await noPageOverflow(page);
 }
+
+const pipePalettes = {
+  dark: ['221 89% 72%', '202 100% 75%', '35 66% 64%', '89 51% 61%', '349 89% 72%', '261 85% 79%', '240 10% 55%'],
+  light: ['221 70% 45%', '202 80% 35%', '35 75% 38%', '89 60% 30%', '349 65% 45%', '261 60% 48%', '240 10% 35%'],
+};
+async function fixedColor(locator, property, value) {
+  const colors = await locator.evaluate((el, { property, value }) => {
+    const probe = document.createElement('span');
+    probe.style.color = value; el.append(probe);
+    const expected = getComputedStyle(probe).color;
+    probe.remove();
+    return { actual: getComputedStyle(el)[property], expected };
+  }, { property, value });
+  assert.equal(colors.actual, colors.expected, `${property}: ${value}`);
+}
+
+async function readableStageLabel(locator) {
+  const ratio = await locator.evaluate(el => {
+    const rgb = value => value.match(/[\d.]+/g).slice(0, 3).map(Number);
+    const luminance = channels => channels.map(c => {
+      const v = c / 255;
+      return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
+    }).reduce((sum, v, i) => sum + v * [0.2126, 0.7152, 0.0722][i], 0);
+    let surface = el;
+    while (getComputedStyle(surface).backgroundColor === 'rgba(0, 0, 0, 0)') surface = surface.parentElement;
+    const foreground = luminance(rgb(getComputedStyle(el).color));
+    const background = luminance(rgb(getComputedStyle(surface).backgroundColor));
+    return (Math.max(foreground, background) + 0.05) / (Math.min(foreground, background) + 0.05);
+  });
+  assert.ok(ratio >= 4.5, `Stage label contrast ${ratio.toFixed(2)}:1 must reach 4.5:1`);
+}
+
+describe('mobile desktop parity', () => {
+  for (const width of [320, 390]) for (const theme of themes) {
+    test(`parity review title geometry and run evidence / ${width}px / ${theme}`, async t => {
+      const done = ticket('kon-evidence', 'Fix login', { status: 'done', stage: 'code', stages: ['plan', 'code', 'test'], history: [] });
+      const standalone = ticket('kon-synthetic', 'Standalone', { status: 'done', pipeline: '', stage: '', stages: [], history: [] });
+      const cost = { id: standalone.id, cost_usd: '0.10', tracked_runs: 1, priced_runs: 1,
+        stages: [{ name: 'default', cost_usd: '0.10', tracked_runs: 1, priced_runs: 1 }], runs: [] };
+      await withPage(t, width, theme, async (page, fixture) => {
+        await openTicket(page, done.id);
+        const detail = page.locator('.mobile-detail');
+        await detail.getByRole('button', { name: 'Ticket', exact: true }).click();
+        for (const path of ['/fixtures/repository-with-a-long-name', '/fixtures/customer-relationship-management-service']) {
+          const record = fixture.records.get('primary/' + done.id);
+          record.path = path;
+          await page.evaluate(record => window.__fixtureSSE.filter(stream => !stream.closed && stream.url === '/api/events').forEach(stream => stream.emit('ticket_updated', record)), record);
+          const title = detail.locator('.mobile-detail-title');
+          await expect(title.locator('.title-tag')).toHaveText('[' + path.split('/').pop() + ']');
+          await page.evaluate(() => document.fonts.ready);
+          const geometry = await title.evaluate(el => {
+            const range = document.createRange();
+            const text = el.querySelector('[x-text="parseTitleTag(selectedTicket || {}).rest"]');
+            range.selectNodeContents(text);
+            const glyphs = range.getBoundingClientRect(), box = el.getBoundingClientRect();
+            return { left: glyphs.left, right: glyphs.right, boxLeft: box.left, boxRight: box.right };
+          });
+          assert.ok(geometry.left >= geometry.boxLeft && geometry.right <= geometry.boxRight,
+            `The real title must remain fully visible with inferred prefix ${path}: ${JSON.stringify(geometry)}`);
+        }
+        const strip = detail.getByRole('list', { name: 'Pipeline stage progress' });
+        for (const stage of ['code', 'test']) {
+          await expect(strip.getByRole('listitem', { name: stage + ': Ticket marked done; no recorded run', exact: true })).toBeVisible();
+        }
+        if (captureDirectory) await mobileCapture(page, width, theme, 'parity-review-title');
+        await detail.getByRole('button', { name: 'Logs', exact: true }).click();
+        const stages = detail.getByLabel('Stages and cost estimates');
+        for (const stage of ['code', 'test']) {
+          assert.match(await stages.getByRole('button', { name: new RegExp('^' + stage + ':') }).getAttribute('aria-label'), /Ticket marked done; no recorded run/);
+        }
+        await backToBoard(page);
+        await openTicket(page, standalone.id);
+        await detail.getByRole('button', { name: 'Logs', exact: true }).click();
+        const synthetic = detail.getByLabel('Stages and cost estimates').getByRole('button', { name: /^default:/ });
+        await expect(synthetic.locator('.mobile-stage-meta')).toHaveText('1 tracked run · duration unavailable');
+        assert.match(await synthetic.getAttribute('aria-label'), /1 tracked run · duration unavailable/);
+        assert.match(await synthetic.getAttribute('aria-label'), /1 of 1 runs priced/);
+        assert.doesNotMatch(await synthetic.getAttribute('aria-label'), /0s|0 runs/);
+        if (captureDirectory) await mobileCapture(page, width, theme, 'parity-review-synthetic');
+        assert.deepEqual(fixture.mutations, []);
+      }, { records: [done, standalone], costs: { [standalone.id]: cost } });
+    });
+  }
+  for (const width of [320, 390]) for (const theme of themes) {
+    test(`parity progress identity preferences and history / ${width}px / ${theme}`, async t => {
+      const live = ticket('kon-live', '[a] Independently colored title', { status: 'in_progress', stage: 'code',
+        stages: ['plan', 'code', 'test'], pipeline: 'b', parent: { id: 'c' }, attempt: 2,
+        started_at: stamp, branch: liveBranch, agent: liveAgent, can_edit: false,
+        history: [{ stage: 'plan', run: 0, started_at: stamp, completed_at: stamp, exit_code: 0 },
+          { stage: 'retired', run: 1, started_at: stamp, completed_at: stamp, exit_code: 1 }] });
+      const cost = { id: live.id, cost_usd: '0.42', tracked_runs: 3, priced_runs: 2,
+        stages: [{ name: 'cost-only', cost_usd: '0.42', tracked_runs: 1, priced_runs: 1 }], runs: [] };
+      await withPage(t, width, theme, async (page, fixture) => {
+        const board = page.locator('.mobile-board-layer');
+        const card = () => board.locator('.mobile-card').filter({ hasText: 'kon-live' });
+        const runningColumn = async () => page.getByRole('navigation', { name: 'Ticket status', exact: true }).getByRole('button', { name: /in progress/i }).click();
+        await runningColumn();
+        const progress = card().locator('.card-progress');
+        assert.equal(await progress.getAttribute('aria-label'), 'Stage 2 of 3: code');
+        assert.equal(await progress.locator('div').evaluate(el => el.style.width), '50%');
+        await visible(card().getByText('retry 2', { exact: true }));
+        await fixedColor(card().locator('.title-tag'), 'color', `hsl(${pipePalettes[theme][1]})`);
+        await fixedColor(card().getByText('Epic: 0 of 1 done', { exact: true }), 'color', `hsl(${pipePalettes[theme][3]} / 0.9)`);
+        assert.equal(await board.locator('.mobile-card').filter({ hasText: supervisorID }).locator('.card-progress').count(), 0);
+        await polishCardGeometry(page);
+        if (captureDirectory) await mobileCapture(page, width, theme, 'parity-independent-colors-progress');
+        await routeTo(page, '#/settings');
+        await page.locator('#settings-mobile-section').selectOption('display');
+        for (const name of ['pipeline_badges', 'agent_meta']) await page.getByRole('switch', { name, exact: true }).click();
+        await backToBoard(page);
+        await page.reload({ waitUntil: 'domcontentloaded' }); await ready(page);
+        await runningColumn();
+        for (const resizedWidth of [width, 768, 767, width]) {
+          await page.setViewportSize({ width: resizedWidth, height: 900 });
+          if (resizedWidth < 768) {
+            await visible(card());
+            assert.equal(await card().locator('.pipe-tag:visible').count(), 0);
+            assert.equal(await card().getByText(liveAgent, { exact: true }).count(), 0);
+            await visible(progress);
+            await visible(board.locator('.mobile-card').filter({ hasText: supervisorID }).getByText('Supervisor', { exact: true }));
+          } else {
+            const desktop = page.locator('[data-ticket-id="kon-live"]');
+            await visible(desktop);
+            assert.equal(await desktop.locator('.pipe-tag').count(), 0);
+            assert.equal(await desktop.getByText(liveAgent, { exact: true }).count(), 0);
+            await visible(desktop.locator('.card-progress'));
+          }
+        }
+        await openTicket(page, 'kon-live');
+        const detail = page.locator('.mobile-detail');
+        const secondary = detail.locator('.mobile-detail-secondary');
+        await visible(secondary.locator('.pipe-tag'));
+        await visible(secondary.getByText(liveAgent, { exact: true }));
+        await visible(secondary.getByText(liveBranch, { exact: true }));
+        await fixedColor(detail.locator('.mobile-detail-title .title-tag'), 'color', `hsl(${pipePalettes[theme][1]})`);
+        const strip = detail.getByRole('list', { name: 'Pipeline stage progress' });
+        await visible(strip);
+        await page.setViewportSize({ width, height: 360 });
+        await expect(secondary).toBeHidden();
+        await expect(strip).toBeHidden();
+        await page.setViewportSize({ width, height: 900 });
+        await expect(strip).toBeVisible();
+        await detail.getByRole('button', { name: 'Ticket', exact: true }).click();
+        await visible(strip);
+        assert.equal(await strip.getByRole('button').count(), 0);
+        assert.equal(await strip.getByRole('listitem').count(), 5, 'configured, historical and cost-only stages remain');
+        await readableStageLabel(strip.getByRole('listitem', { name: 'test: Not started', exact: true }));
+        await detail.getByRole('button', { name: 'Logs', exact: true }).click();
+        assert.equal(await strip.count(), 0);
+        const stages = detail.getByLabel('Stages and cost estimates');
+        const code = stages.getByRole('button', { name: /^code:/ });
+        const retired = stages.getByRole('button', { name: /^retired:/ });
+        await readableStageLabel(stages.getByRole('button', { name: /^test:/ }));
+        const color = theme === 'dark' ? '35 66% 64%' : '35 75% 38%';
+        await fixedColor(code, 'color', `hsl(${color})`);
+        await fixedColor(retired, 'color', `hsl(${pipePalettes[theme][3]})`);
+        assert.match(await retired.getAttribute('aria-label'), /Recorded or earlier stage/);
+        assert.doesNotMatch(await retired.getAttribute('aria-label'), /success|succeeded/i);
+        await fixedColor(stages.getByRole('button', { name: /^cost-only:/ }), 'color', `hsl(${pipePalettes[theme][3]})`);
+        await retired.click();
+        await expect(retired).toHaveAttribute('aria-current', 'step');
+        assert.equal(await code.getAttribute('aria-current'), null);
+        await fixedColor(code, 'color', `hsl(${color})`);
+        assert.equal(await retired.evaluate(el => getComputedStyle(el).outlineStyle), 'solid');
+        await visible(detail.getByText('kon-live retired fixture log revision 0', { exact: true }));
+        if (captureDirectory) await mobileCapture(page, width, theme, 'parity-history-current-log');
+        const record = fixture.records.get('primary/kon-live');
+        for (const [status, hue] of [['paused', theme === 'dark' ? '23 92% 70%' : '23 80% 40%'],
+          ['human_review', theme === 'dark' ? '261 85% 79%' : '261 60% 48%']]) {
+          record.status = status;
+          await page.evaluate(record => window.__fixtureSSE.filter(stream => !stream.closed && stream.url === '/api/events').forEach(stream => stream.emit('ticket_updated', record)), record);
+          await expect(secondary.locator('.status-chip')).toHaveAttribute('data-status', status);
+          await fixedColor(code, 'color', `hsl(${hue})`);
+          for (const [property, alpha] of [['color', ''], ['backgroundColor', ' / 0.1'], ['borderTopColor', ' / 0.26']]) {
+            await fixedColor(secondary.locator('.status-chip'), property, `hsl(${hue}${alpha})`);
+          }
+        }
+        record.status = 'in_progress'; record.stage = 'test';
+        await page.evaluate(record => window.__fixtureSSE.filter(stream => !stream.closed && stream.url === '/api/events').forEach(stream => stream.emit('ticket_updated', record)), record);
+        await backToBoard(page); await runningColumn();
+        await expect(progress).toHaveAttribute('aria-label', 'Stage 3 of 3: test');
+        assert.equal(await progress.locator('div').evaluate(el => el.style.width), '83%');
+        await page.setViewportSize({ width: 1280, height: 900 });
+        await expect(page.locator('[data-ticket-id="kon-live"] .card-progress')).toHaveAttribute('aria-label', 'Stage 3 of 3: test');
+        assert.equal(await page.locator('[data-ticket-id="kon-live"] .card-progress > div').evaluate(el => el.style.width), '83%');
+        assert.deepEqual(fixture.mutations, []);
+      }, { records: [live, ticket('c', 'Parent epic', { kind: 'epic', epic_mode: 'passive' })], costs: { 'kon-live': cost } });
+    });
+  }
+  for (const width of [320, 390, 767, 768, 1280]) {
+    test(`parity badge palettes and live theme / ${width}px`, async t => {
+      const names = ['f', 'a', 'b', 'c', 'd', 'e', ''];
+      const records = names.map((pipeline, i) => ticket('palette-' + i, '[a] Independent title', { pipeline, path: '', parent: { id: 'e' } }));
+      records.push(ticket('e', 'Palette epic', { kind: 'epic', epic_mode: 'passive' }));
+      await withPage(t, width, 'dark', async page => {
+        for (const theme of themes) {
+          for (let i = 0; i < names.length; i++) {
+            const card = width < 768 ? page.locator('.mobile-card').filter({ hasText: 'palette-' + i })
+              : page.locator('[data-ticket-id="palette-' + i + '"]');
+            const badge = card.locator('.pipe-tag').filter({ visible: true }).first();
+            await visible(badge);
+            for (const [property, alpha] of [['color', ''], ['backgroundColor', ' / 0.1'], ['borderTopColor', ' / 0.26']]) {
+              await fixedColor(badge, property, `hsl(${pipePalettes[theme][i]}${alpha})`);
+            }
+            await fixedColor(card.locator('.title-tag'), 'color', `hsl(${pipePalettes[theme][1]})`);
+            await fixedColor(card.getByText('Epic: 0 of 7 done', { exact: true }), 'color', `hsl(${pipePalettes[theme][5]} / 0.9)`);
+          }
+          if (theme === 'dark') await page.getByRole('button', { name: 'Toggle theme', exact: true }).filter({ visible: true }).click();
+        }
+        if (width < 768) {
+          await page.getByRole('navigation', { name: 'Ticket status', exact: true }).getByRole('button', { name: /in progress/i }).click();
+          const running = page.locator('.mobile-card').filter({ hasText: 'kon-live' });
+          await fixedColor(running.locator('.mobile-card-state'), 'color', 'hsl(35 75% 38%)');
+          const paused = page.locator('.mobile-card').filter({ hasText: 'kon-paused' });
+          await fixedColor(paused.locator('.mobile-card-state'), 'color', 'hsl(23 80% 40% / 0.8)');
+        }
+      }, { records: [...records, ...polishRecords()] });
+    });
+  }
+});
 
 describe('mobile polish presentation', { concurrency: 2 }, () => {
   for (const width of [320, 390]) for (const theme of themes) for (const reducedMotion of ['no-preference', 'reduce']) {
@@ -1585,7 +1806,7 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
             }, index);
             assert.equal(await page.evaluate(() => scrollY), y, 'Status scrolling must not move the page');
             const count = Number(await buttons.nth(index).locator('span').last().textContent());
-            assert.equal(await page.locator('.mobile-board-layer [x-text="ticket.title"]').count(), count, 'Count matches displayed cards');
+            assert.equal(await page.locator('.mobile-board-layer .mobile-card-title').count(), count, 'Count matches displayed cards');
           };
           await selected(labels.length - 1);
           assert.equal(await last.evaluate(el => document.activeElement === el), true, 'Activation keeps keyboard focus');
@@ -1693,7 +1914,7 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
           await visible(error);
           assert.ok((await error.textContent()).includes(unavailablePath + ': Fixture folder unavailable'));
           const open = page.getByRole('navigation', { name: 'Ticket status', exact: true }).getByRole('button').first();
-          const cards = page.locator('.mobile-board-layer [x-text="ticket.title"]');
+          const cards = page.locator('.mobile-board-layer [x-text="parseTitleTag(ticket).rest"]');
           assert.equal(Number(await open.locator('span').last().textContent()), 3);
           assert.equal(await cards.count(), 3);
           const titles = await cards.allTextContents();
@@ -1703,7 +1924,7 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
             await search.fill(title);
             await page.waitForFunction(() => document.querySelector('.mobile-status-tabs button span:last-child').textContent === '1');
             await page.waitForFunction(title => {
-              const cards = document.querySelectorAll('.mobile-board-layer [x-text="ticket.title"]');
+              const cards = document.querySelectorAll('.mobile-board-layer [x-text="parseTitleTag(ticket).rest"]');
               return cards.length === 1 && cards[0].textContent === title;
             }, title);
             assert.deepEqual(await cards.allTextContents(), [title]);
@@ -2050,7 +2271,7 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
           await terminalRows(page, height);
         }
         const detail = page.locator('.mobile-detail');
-        assert.equal(await detail.locator('.mobile-detail-title').textContent(), liveTitle);
+        assert.equal(await detail.locator('.mobile-detail-title [x-text="parseTitleTag(selectedTicket || {}).rest"]').textContent(), liveTitle);
         await detail.getByRole('button', { name: 'Logs', exact: true }).click();
         assert.equal(await detail.getByRole('button', { name: 'Logs', exact: true }).getAttribute('aria-pressed'), 'true');
         const stages = detail.getByLabel('Stages and cost estimates');
@@ -2064,11 +2285,11 @@ describe('embedded responsive browser UI', { concurrency: 4 }, () => {
         await stages.getByRole('button', { name: /^code:/ }).click();
         await page.waitForFunction(() => Alpine.$data(document.body).detailTab === 'terminal' && Alpine.$data(document.body).terminalConnected);
         await detail.getByRole('button', { name: 'Logs', exact: true }).click();
-        assert.equal(await detail.locator('.mobile-detail-title').textContent(), liveTitle);
+        assert.equal(await detail.locator('.mobile-detail-title [x-text="parseTitleTag(selectedTicket || {}).rest"]').textContent(), liveTitle);
         await detail.getByRole('button', { name: 'Ticket', exact: true }).click();
-        assert.equal(await detail.locator('h1[x-text="selectedTicket?.title"]').textContent(), liveTitle);
-        await visible(detail.getByText(liveAgent, { exact: true }));
-        await visible(detail.getByText(liveBranch, { exact: true }));
+        assert.equal(await detail.locator('h1 [x-text="parseTitleTag(selectedTicket || {}).rest"]').textContent(), liveTitle);
+        await visible(detail.locator('.mobile-detail-secondary').getByText(liveAgent, { exact: true }));
+        await visible(detail.locator('.mobile-detail-secondary').getByText(liveBranch, { exact: true }));
         const copy = detail.getByRole('button', { name: 'Copy attach command', exact: true });
         await copy.focus();
         await page.keyboard.press('Enter');

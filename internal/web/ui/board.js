@@ -132,6 +132,18 @@ export function kontoraBoard() {
         + this._escapeHtml('∅ ' + col.emptyText.toLowerCase()) + '</div>';
     },
 
+    // Stage position is the only progress signal, so the current stage counts as half done.
+    cardStageProgress(ticket) {
+      if (!ticket || this.epicIsAgent(ticket) || ticket.status !== 'in_progress' ||
+          !ticket.stages || ticket.stages.length < 2) return null;
+      var index = ticket.stages.indexOf(ticket.stage);
+      if (index < 0) return null;
+      return {
+        percent: Math.round(((index + 0.5) / ticket.stages.length) * 100),
+        label: 'Stage ' + (index + 1) + ' of ' + ticket.stages.length + ': ' + ticket.stage,
+      };
+    },
+
     // Build one card's HTML. Every interpolated string is escaped.
     _cardHTML(ticket, col) {
       var esc = (s) => this._escapeHtml(s);
@@ -200,17 +212,11 @@ export function kontoraBoard() {
         ? '<span class="px-1.5 py-px rounded-full border border-warn/20 bg-warn/10 text-warn text-[10px] font-mono shrink-0">not a kontora ticket</span>'
         : '';
 
-      // Single-track progress bar: running tickets on multi-stage pipelines.
-      // The current stage counts as half done — the stage index is the only
-      // progress signal available.
-      var progress = '';
-      if (!supervisor && ticket.status === 'in_progress' && ticket.stages && ticket.stages.length > 1) {
-        var ci = ticket.stages.indexOf(ticket.stage);
-        if (ci >= 0) {
-          var pct = Math.round(((ci + 0.5) / ticket.stages.length) * 100);
-          progress = '<div class="card-progress" title="' + esc('stage ' + (ci + 1) + '/' + ticket.stages.length + ': ' + ticket.stage) + '"><div style="width:' + pct + '%"></div></div>';
-        }
-      }
+      var stageProgress = this.cardStageProgress(ticket);
+      var progress = stageProgress
+        ? '<div class="card-progress" role="img" aria-label="' + esc(stageProgress.label) + '"'
+          + ' title="' + esc(stageProgress.label) + '"><div style="width:' + stageProgress.percent + '%"></div></div>'
+        : '';
 
       var agent = (this.showAgentMeta && ticket.agent)
         ? '<span class="flex items-center gap-1.5 min-w-0"><span class="text-edge-faint">·</span>'

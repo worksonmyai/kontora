@@ -3266,6 +3266,95 @@ test("index.html shares routed pages and builds board layers exclusively", () =>
   }
 });
 
+test("mobile cards keep their content and state hooks without decorative indicators", () => {
+  const html = fs.readFileSync(htmlPath, 'utf8');
+  const cards = html.split('x-for="ticket in mobileTickets()"')[1].split('<!-- ===== Ticket detail')[0];
+  assert.match(html, /x-for="ticket in mobileTickets\(\)" :key="ticketKey\(ticket\)"/);
+  const card = cards.match(/<button\b[^>]*@click="openMobileTicket\(ticket\)"[^>]*>/)?.[0];
+  assert.ok(card);
+  assert.match(card, /class="[^"]*\bshrink-0\b/);
+  assert.match(card, /:data-pipe-color="ticketPipeColor\(ticket\)"/);
+  for (const name of ['mobile-card-row', 'mobile-card-meta', 'mobile-card-id']) {
+    assert.match(cards, new RegExp(`class="[^"]*\\b${name}\\b`));
+  }
+  assert.match(cards, /<p\b[^>]*class="mobile-card-title"[^>]*x-text="ticket\.title"/);
+  assert.match(cards, /x-show="showPipelineBadges"/);
+  assert.match(cards, /x-if="showAgentMeta && ticket\.agent"/);
+  for (const expression of ['ticket.id', 'ticket.agent', 'sourceLabel(ticket)']) {
+    assert.ok(cards.includes(`x-text="${expression}"`), expression);
+  }
+  assert.match(cards, /x-if="!ticket\.kontora"/);
+  assert.match(cards, /not init'd/);
+  assert.match(cards, /ticket\.status\s*===\s*'cancelled'[\s\S]*?text-decoration:line-through/);
+  assert.match(cards, /ticket\.status\s*===\s*'open' && ticket\.scheduled_at/);
+  assert.match(cards, /scheduleChip\(ticket\)\.abs/);
+  assert.match(cards, /scheduleChip\(ticket\)\.rel/);
+  assert.match(cards, /epicIsAgent\(ticket\) \? 'supervising' : ticket\.stage/);
+  assert.match(cards, /epicCardInfo\(ticket\)\.done/);
+  assert.match(cards, /formatDuration\(ticket\)/);
+  assert.doesNotMatch(cards, /border-left:|pulse-dot|waiting-dot/);
+});
+
+test("mobile sheets retain their dialog heading and actions without repeated titles or dots", () => {
+  const html = fs.readFileSync(htmlPath, 'utf8');
+  const sheets = html.split('<template x-if="isMobile && sheet">')[1];
+  assert.ok(sheets);
+  assert.match(sheets, /role="dialog" aria-modal="true" aria-labelledby="mobile-sheet-title"/);
+  assert.match(sheets, /<h2 id="mobile-sheet-title"[^>]*x-text="[^"]*schedule: 'Start later'[^"]*new: 'New ticket'/);
+  assert.match(sheets, /@click="closeSheet\(\)" class="mobile-sheet-close" data-mobile-sheet-initial-focus>Close<\/button>/);
+  const creation = sheets.split('<template x-if="sheet.type===\'new\'">')[1];
+  const schedule = sheets.split('<template x-if="sheet.type===\'schedule\' && ticketCanControl(sheet.ticket)">')[1]
+    ?.split('<!-- assistant sheet')[0];
+  assert.ok(creation);
+  assert.ok(schedule);
+  assert.doesNotMatch(creation, />\s*New ticket\s*</i);
+  assert.doesNotMatch(schedule, />\s*Start later\s*</i);
+  assert.match(creation, /@click="submitCreateTicketMobile\(\)"/);
+  assert.match(schedule, /@click="submitScheduleMobile\(sheet\.ticket\)"/);
+  assert.match(sheets, /x-if="sheet.type==='actions' && ticketCanControl\(sheet\.ticket\)"/);
+  assert.match(sheets, /x-for="\(a, ai\) in mobileSheetActions\(sheet\.ticket\)"/);
+  assert.match(sheets, /@click="a\.run\(\)"/);
+  const actions = html.slice(html.indexOf('<!-- action bar -->'), html.indexOf('<!-- schedule sheet:'));
+  assert.match(actions, /@click="mobilePrimaryAction\(selectedTicket\)\.run\(\)"/);
+  assert.match(actions, /@click="mobileSecondaryAction\(selectedTicket\)\.run\(\)"/);
+  assert.doesNotMatch(actions, /width:[67]px;height:[67]px;border-radius:9999px|mobileActionDotColor/);
+  assert.doesNotMatch(uiSource + html, /mobileActionDotColor/);
+});
+
+test("mobile typography, focus and motion contracts stay phone-scoped", () => {
+  const css = fs.readFileSync(path.join(dirname, '../../../hack/tailwind.css'), 'utf8');
+  assert.match(css, /--font-body:\s*'DM Sans',sans-serif/);
+  assert.match(css, /--font-technical:\s*'JetBrains Mono',monospace/);
+  assert.match(css, /--mobile-text-body:\s*16px/);
+  assert.match(css, /--mobile-text-label:\s*14px/);
+  assert.match(css, /--mobile-text-meta:\s*13px/);
+  const mobile = [...css.matchAll(/@media \(max-width:767px\) \{((?:[^{}]|\{[^{}]*\})*)\}/g)]
+    .map(([, rules]) => rules).join('\n');
+  assert.ok(mobile);
+  assert.match(mobile, /\.mobile-chrome, \.mobile-board-layer, \.mobile-sheet-panel \{[^}]*font-family:var\(--font-body\)/);
+  assert.match(mobile, /\.mobile-board-layer \.mobile-technical[^{}]*\{[^}]*font-family:var\(--font-technical\)/);
+  assert.match(mobile, /\.mobile-board-layer \.ticket-prose :is\(code,pre\) \{[^}]*font-family:var\(--font-technical\)/);
+  assert.match(mobile, /\.mobile-tab \{[^}]*flex:none;[^}]*white-space:nowrap;[^}]*var\(--font-body\)/);
+  assert.match(mobile, /\.mobile-tab\[aria-pressed="true"\] \{[^}]*border-bottom-color:/);
+  assert.match(mobile, /\.mobile-stage-control \{[^}]*font:[^}]*padding:[^}]*border-radius:/);
+  assert.match(mobile, /\.mobile-card-row, \.mobile-card-meta \{[^}]*flex-wrap:wrap;[^}]*min-width:0/);
+  assert.match(mobile, /\.mobile-card :is\(span,p\) \{[^}]*overflow-wrap:anywhere/);
+  const focus = mobile.match(/([^{}]*\.mobile-chrome[^{}]*:focus-visible[^{}]*)\{([^}]*)\}/);
+  assert.ok(focus);
+  assert.match(focus[1], /\.mobile-board-layer[^{}]*:focus-visible/);
+  assert.match(focus[1], /\.mobile-sheet-panel[^{}]*:focus-visible/);
+  assert.match(focus[2], /outline:2px solid rgb\(var\(--accent\)\)/);
+  assert.doesNotMatch(focus[2], /transition|animation/);
+  assert.match(mobile, /\.mobile-board-layer button:disabled[^{}]*\{[^}]*opacity:[^}]*cursor:not-allowed/);
+  assert.match(mobile, /\.mobile-detail button[^{}]*\{[^}]*min-width:44px;[^}]*min-height:44px/);
+  assert.match(mobile, /input:not\(\.xterm-helper-textarea\)[^{}]*\{[^}]*font-size:16px !important/);
+  assert.match(mobile, /\.mobile-chrome \.pulse-dot[^{}]*\.mobile-board-layer \.pulse-dot[^{}]*\{[^}]*animation:none/);
+  assert.match(mobile, /\.mobile-board-layer \.detail-enter[^{}]*\{[^}]*animation-duration:var\(--mobile-duration\)/);
+  const reduced = css.match(/@media \(max-width:767px\) and \(prefers-reduced-motion:reduce\) \{((?:[^{}]|\{[^{}]*\})*)\}/)?.[1];
+  assert.ok(reduced);
+  assert.match(reduced, /\.mobile-chrome \*[^{}]*\.mobile-board-layer \*[^{}]*\.mobile-sheet-panel \*[^{}]*\{[^}]*animation:none !important;[^}]*transition:none !important;[^}]*scroll-behavior:auto/);
+});
+
 test("_mountBoard rebuilds the board and binds the delegated handler per mount", () => {
   const board = fakeBoard(["open", "in_progress", "human_review", "done", "cancelled"]);
   const state = loadKontoraState({ document: board.document });
@@ -10935,6 +11024,62 @@ test("run estimates use the History index instead of legacy run numbers", () => 
   assert.match(state.stageCardMeta(cards[0]), /\$0\.20/);
 });
 
+for (const [ticket, label] of [
+  [{ pipeline: 'build-And-Test', path: '/repo' }, 'build-And-Test'],
+  [{ path: '/projects/Repo-Name' }, 'Repo-Name'],
+  [{}, '—'],
+  [null, '—'],
+]) {
+  test(`mobile pipeline metadata preserves source case: ${label}`, () => {
+    assert.equal(loadKontoraState().mobileTagLabel(ticket), label);
+  });
+}
+
+test("mobile output tab labels are plain without changing their targets", () => {
+  const state = pageState({ id: 'kon-mobile', status: 'in_progress' });
+  for (const [status, tab, label] of [
+    ['in_progress', 'terminal', 'Terminal'],
+    ['paused', 'logs', 'Logs'],
+    ['done', 'logs', 'Logs'],
+    ['todo', 'logs', 'Logs'],
+  ]) {
+    state.selectedTicket.status = status;
+    assert.equal(state.mobileFirstTab(), tab, status);
+    assert.equal(state.mobileFirstTabLabel(), label, status);
+  }
+  state.selectedTicket = null;
+  assert.equal(state.mobileFirstTab(), 'logs');
+  assert.equal(state.mobileFirstTabLabel(), 'Logs');
+});
+
+test("mobile stage styles distinguish state and leave geometry to CSS", () => {
+  const state = pageState({ id: 'kon-mobile', stage: 'code', stages: ['plan', 'code', 'test'] });
+  assert.equal(state.mobileStageStyle('code'),
+    'background:rgba(var(--surface-800),1);color:rgba(var(--tx),1);border:1px solid rgba(var(--surface-700),1);');
+  assert.equal(state.mobileStageStyle('plan'), 'color:rgba(var(--tx-3),1);');
+  assert.equal(state.mobileStageStyle('test'), 'color:rgba(var(--tx-2),1);');
+  for (const stage of ['plan', 'code', 'test']) {
+    for (const declaration of state.mobileStageStyle(stage).split(';').filter(Boolean)) {
+      assert.ok(['color', 'background', 'border'].includes(declaration.split(':')[0]), declaration);
+    }
+  }
+});
+
+test("mobile schedule text keeps absolute and relative times with plain punctuation", () => {
+  const state = pageState({ id: 'kon-mobile', status: 'open' });
+  for (const [chip, expected] of [
+    [null, ''],
+    [{ abs: 'Fri 09:00', rel: '' }, 'starts Fri 09:00'],
+    [{ abs: 'Fri 09:00', rel: '18h' }, 'starts Fri 09:00, in 18h'],
+  ]) {
+    state.scheduleChip = ticket => {
+      assert.equal(ticket, state.selectedTicket);
+      return chip;
+    };
+    assert.equal(state.mobileScheduleCurrent(state.selectedTicket), expected);
+  }
+});
+
 test("mobile costs remain visible for running, retried and unpriced tickets", () => {
   const state = pageState({
     id: "kon-mobile", status: "in_progress", stage: "code", stages: ["plan", "code"],
@@ -10949,9 +11094,9 @@ test("mobile costs remain visible for running, retried and unpriced tickets", ()
   };
 
   assert.equal(state.mobileHasRun(state.selectedTicket), true);
-  assert.equal(state.mobileTicketCostLabel(), "est. $0.10+ · 1/2");
+  assert.equal(state.mobileTicketCostLabel(), "est. $0.10+ (1/2 runs priced)");
   assert.deepEqual(Array.from(state.stageRibbon(), (seg) => state.mobileStageLabel(seg)),
-    ["plan · $0.10", "code", "retired · unknown · 0/1"]);
+    ["plan: $0.10", "code", "retired: unknown (0/1 runs priced)"]);
 
   state.selectedTicket.status = "todo";
   assert.equal(state.mobileHasRun(state.selectedTicket), true, "a retried ticket keeps its run tabs");
@@ -11693,8 +11838,18 @@ test("phone activity markup has a follow toggle, shared scroller, retry and no r
 
   const tabs = html.split('<template x-if="!isSecondary(selectedTicket) && mobileHasRun(selectedTicket)">')[1].split('</template>')[0];
   assert.match(tabs, /class="mobile-detail-tabs flex overflow-x-auto"/);
-  assert.equal((tabs.match(/class="shrink-0 whitespace-nowrap"/g) || []).length, 4);
+  assert.equal((tabs.match(/class="mobile-tab"/g) || []).length, 4);
   assert.match(tabs, /@click="mobileSwitchTab\('activity'\)" :aria-pressed="detailTab === 'activity'"/);
+  assert.match(tabs, /@click="mobileSwitchTab\(mobileFirstTab\(\)\)" :aria-pressed="detailTab === mobileFirstTab\(\)"[\s\S]*?x-text="mobileFirstTabLabel\(\)"/);
+  for (const [tab, label] of [['logs', 'Logs'], ['activity', 'Activity'], ['ticket', 'Ticket']]) {
+    const button = [...tabs.matchAll(/<button\b[^>]*>([\s\S]*?)<\/button>/g)]
+      .find(([markup]) => markup.includes(`@click="mobileSwitchTab('${tab}')"`));
+    assert.ok(button, tab + ' remains reachable');
+    assert.equal(button[1].trim(), label);
+    assert.ok(button[0].includes(`:aria-pressed="detailTab === '${tab}'"`));
+    if (tab === 'logs') assert.match(button[0], /x-show="selectedTicket\?\.status === 'in_progress'"/);
+  }
+  assert.doesNotMatch(tabs, /text-transform:uppercase|letter-spacing:|JetBrains Mono/);
 });
 
 test("a running stage keeps polling its transcript every two seconds", async () => {
@@ -13204,7 +13359,7 @@ test("both summary views put the ticket-level outcome above the stage summaries"
   assert.match(mobile, /x-if="selectedTicket\?\.last_error"[\s\S]*?role="alert"[^>]*x-text="selectedTicket\.last_error"/);
   assert.ok(mobile.indexOf('x-text="selectedTicket.last_error"') < mobile.indexOf('x-if="selectedTicket?.summary"'));
   assert.ok(mobile.indexOf('x-if="finalSummary()"') < mobile.indexOf('x-if="selectedTicket?.summary"'));
-  assert.match(mobile, /x-text="'\u00b7 ' \+ summaryStage\(\)"/);
+  assert.match(mobile, /<template x-if="summaryStage\(\)">\s*<span\b[^>]*x-text="summaryStage\(\)"/);
 });
 
 test("the summary rail wraps on a container query, not a viewport one", () => {
@@ -14704,9 +14859,17 @@ test("index.html badges a waiting ticket in the detail header and both mobile la
   // Three ticket badges with elapsed time, plus both embedded epic headers.
   assert.equal(html.match(/class="waiting-chip"/g).length, 5);
   assert.equal(html.match(/waitingFor\((selectedTicket|ticket)\)/g).length, 3);
-  // The chip reuses the review hue and the shared pulse animation.
+  // The chip reuses the review hue and, on desktop, the shared pulse animation.
   assert.match(html, /\.waiting-chip \{[^}]*--st-review/s);
-  assert.match(html, /class="waiting-dot pulse-dot"/);
+  const mobile = html.slice(html.indexOf('class="mobile-board-layer"'));
+  for (const subject of ['ticket', 'selectedTicket', 'selectedEpic']) {
+    const badge = [...mobile.matchAll(/<span\b[^>]*class="waiting-chip"[^>]*>([\s\S]*?)<\/span>\s*<\/span>/g)]
+      .find(([, content]) => content.includes(`waitingFor(${subject})`));
+    assert.ok(badge, subject + ' retains an attention badge');
+    assert.match(badge[1], /needs input/);
+    assert.match(badge[1], new RegExp(`x-text="waitingFor\\(${subject}\\)"`));
+    assert.doesNotMatch(badge[0], /pulse-dot|waiting-dot/);
+  }
 });
 
 test("the board badge's question uses the wrapping tip, not the nowrap one", () => {
@@ -18477,6 +18640,7 @@ for (const [status, label] of [['in_progress', 'supervising'], ['todo', 'queued'
       const statusTemplate = [...mobileCards.matchAll(/<template x-if="([^"]+)">([\s\S]*?)<\/template>/g)]
         .find(([, , content]) => content.includes('>' + label + '</span>'));
       assert.ok(statusTemplate, 'mobile supervisor card names ' + label);
+      assert.doesNotMatch(statusTemplate[2], /⏸|◌|pulse-dot/);
       const visible = t => vm.runInNewContext(statusTemplate[1], {
         ticket: t, epicIsAgent: t => state.epicIsAgent(t), mobileColumn: () => ({ key: 'in_progress' }),
         showPipelineBadges: false, showAgentMeta: false,
@@ -18484,6 +18648,28 @@ for (const [status, label] of [['in_progress', 'supervising'], ['todo', 'queued'
       assert.equal(visible(ticket), true);
       assert.equal(visible({ ...ticket, status: 'in_progress' }), false);
       assert.equal(visible({ ...ticket, kind: 'ticket' }), false);
+    }
+    state.destroy();
+  });
+}
+
+for (const [status, label] of [['paused', 'Paused'], ['todo', 'Queued']]) {
+  test(`ordinary mobile cards name ${label} separately from supervisors`, () => {
+    const { state, epic } = epicSupervisorUI({ status });
+    const cards = fs.readFileSync(htmlPath, 'utf8').split('x-for="ticket in mobileTickets()"')[1]
+      .split('<!-- ===== Ticket detail')[0];
+    const statusTemplate = [...cards.matchAll(/<template x-if="([^"]+)">([\s\S]*?)<\/template>/g)]
+      .find(([, , content]) => content.includes('>' + label + '</span>'));
+    assert.ok(statusTemplate, 'ordinary card names ' + label);
+    const visible = ticket => vm.runInNewContext(statusTemplate[1], {
+      ticket, epicIsAgent: t => state.epicIsAgent(t), mobileColumn: () => ({ key: 'in_progress' }),
+      showPipelineBadges: false, showAgentMeta: false,
+    });
+    const ordinary = { ...epic, kind: 'ticket' };
+    assert.equal(visible(ordinary), true, 'state remains visible with metadata preferences off');
+    assert.equal(visible(epic), false, 'supervisors retain their existing wording');
+    for (const other of ['open', 'in_progress', 'paused', 'todo', 'done', 'cancelled'].filter(s => s !== status)) {
+      assert.equal(visible({ ...ordinary, status: other }), false, other);
     }
     state.destroy();
   });

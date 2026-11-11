@@ -150,6 +150,11 @@ The daemon picks up ordinary tickets and agent epics with `kontora: true` and
 because the agent's work is done and only a person's verdict is left. Any other
 status blocks, and so does an id with no file behind it.
 
+A `human_review` dependency's commits are usually not merged yet. When the
+dependent's worktree lacks the tip of such a dependency's `branch`, the prompt
+names the branch and commit under `## Unmerged dependencies`. Kontora does not
+merge it.
+
 `links` is a symmetric "related" list and means nothing to the scheduler.
 `parent` names the epic that groups a ticket. Create a child with
 `kontora new --parent EPIC_ID`. To move an existing ticket into or out of an

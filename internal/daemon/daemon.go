@@ -134,6 +134,7 @@ func (d *Daemon) renderTicketPrompt(cfg *config.Config, tmpl string, t *ticket.T
 	rendered += fmt.Sprintf("\nTicket: %s", filePath)
 	rendered += fmt.Sprintf("\nWorkspace: %s", wtPath)
 	rendered += d.epicPromptContext(t.Parent)
+	rendered += d.dependencyPromptContext(t, wtPath)
 
 	return rendered, nil
 }

@@ -3,6 +3,7 @@ package worktree
 import (
 	"bufio"
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -396,6 +397,39 @@ func isDirty(wtPath string) (bool, error) {
 		return false, fmt.Errorf("git status: %w", err)
 	}
 	return len(strings.TrimSpace(string(out))) > 0, nil
+}
+
+// UnmergedBranchTip returns the tip commit of the local branch when HEAD in dir
+// does not contain it. It returns "" when the branch does not exist or HEAD
+// already contains its tip.
+func UnmergedBranchTip(dir, branch string) (string, error) {
+	cmd := exec.Command("git", "rev-parse", "--verify", "--quiet", "refs/heads/"+branch+"^{commit}")
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		if exitCode(err) == 1 {
+			return "", nil
+		}
+		return "", fmt.Errorf("git rev-parse %s: %w", branch, err)
+	}
+	tip := strings.TrimSpace(string(out))
+
+	cmd = exec.Command("git", "merge-base", "--is-ancestor", tip, "HEAD")
+	cmd.Dir = dir
+	if err := cmd.Run(); err != nil {
+		if exitCode(err) == 1 {
+			return tip, nil
+		}
+		return "", fmt.Errorf("git merge-base %s HEAD: %w", branch, err)
+	}
+	return "", nil
+}
+
+func exitCode(err error) int {
+	if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
+		return exitErr.ExitCode()
+	}
+	return -1
 }
 
 func isAlreadyGone(output string) bool {

@@ -5,12 +5,15 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/worksonmyai/kontora/internal/process"
 	"github.com/worksonmyai/kontora/internal/ticket"
 	"github.com/worksonmyai/kontora/internal/web"
 )
@@ -423,6 +426,69 @@ func TestRefusedRelationIsAnInvalidState(t *testing.T) {
 			require.Error(t, err)
 			assert.ErrorIs(t, err, web.ErrInvalidState)
 			assert.Contains(t, err.Error(), tc.wantErr)
+		})
+	}
+}
+
+// TestUnmergedDependencyInPrompt covers the prompt section that names a
+// human_review dependency whose commits the dependent's worktree lacks.
+func TestUnmergedDependencyInPrompt(t *testing.T) {
+	cases := []struct {
+		name      string
+		depStatus string
+		depBranch string
+		merged    bool
+		want      bool
+	}{
+		{name: "human_review branch missing from worktree", depStatus: "human_review", depBranch: "kontora/dep", want: true},
+		{name: "human_review branch already merged", depStatus: "human_review", depBranch: "kontora/dep", merged: true},
+		{name: "done dependency", depStatus: "done", depBranch: "kontora/dep"},
+		{name: "branch does not exist", depStatus: "human_review", depBranch: "kontora/gone"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			mustGit(t, h.repoDir, "branch", "kontora/dep")
+			mustGit(t, h.repoDir, "checkout", "kontora/dep")
+			mustGit(t, h.repoDir, "commit", "--allow-empty", "-m", "dependency work")
+			mustGit(t, h.repoDir, "checkout", "main")
+			if tc.merged {
+				mustGit(t, h.repoDir, "merge", "--ff-only", "kontora/dep")
+			}
+
+			dep := h.depTaskMD("dep-a", tc.depStatus, "2026-01-01T00:00:00Z")
+			dep = strings.Replace(dep, "---\n# ", "branch: "+tc.depBranch+"\n---\n# ", 1)
+			h.writeTicket("dep-a.md", dep)
+			h.writeTicket("dep-b.md", h.depTaskMD("dep-b", "todo", "2026-01-02T00:00:00Z", "dep-a"))
+
+			var prompts []string
+			var mu sync.Mutex
+			runner := func(_ context.Context, p RunnerParams) (process.Result, error) {
+				mu.Lock()
+				prompts = append(prompts, renderedPrompt(p))
+				mu.Unlock()
+				now := time.Now()
+				return process.Result{StartedAt: now, ExitedAt: now}, nil
+			}
+			d := h.newDaemon(h.cfg, WithRunner(runner))
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			errCh := make(chan error, 1)
+			go func() { errCh <- d.Run(ctx) }()
+
+			h.waitForStatus("dep-b.md", ticket.StatusDone, 10*time.Second)
+			cancel()
+			require.NoError(t, <-errCh)
+
+			mu.Lock()
+			defer mu.Unlock()
+			require.Len(t, prompts, 1)
+			if tc.want {
+				assert.Contains(t, prompts[0], "## Unmerged dependencies")
+				assert.Contains(t, prompts[0], "- dep-a: branch `kontora/dep` at ")
+			} else {
+				assert.NotContains(t, prompts[0], "## Unmerged dependencies")
+			}
 		})
 	}
 }

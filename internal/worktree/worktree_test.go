@@ -639,6 +639,42 @@ func TestCreateCustomBranch(t *testing.T) {
 	assertBranch(t, path, "my-feature-branch")
 }
 
+func TestUnmergedBranchTip(t *testing.T) {
+	cases := []struct {
+		name    string
+		branch  string
+		merge   bool
+		wantTip bool
+	}{
+		{name: "branch ahead of HEAD", branch: "dep", wantTip: true},
+		{name: "branch merged into HEAD", branch: "dep", merge: true},
+		{name: "missing branch", branch: "gone"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			repoDir := initRepoWithBranch(t, "main")
+			mustGit(t, repoDir, "checkout", "-b", "dep")
+			mustGit(t, repoDir, "commit", "--allow-empty", "-m", "dep work")
+			mustGit(t, repoDir, "checkout", "main")
+			if tc.merge {
+				mustGit(t, repoDir, "merge", "--ff-only", "dep")
+			}
+			wt, _, err := New(t.TempDir()).Create(CreateOpts{
+				RepoPath: repoDir, RepoName: "myrepo", TaskID: "tkt-1", Branch: "feature/x",
+			})
+			require.NoError(t, err)
+
+			tip, err := UnmergedBranchTip(wt, tc.branch)
+			require.NoError(t, err)
+			if tc.wantTip {
+				assert.Equal(t, revParse(t, repoDir, "dep"), tip)
+			} else {
+				assert.Empty(t, tip)
+			}
+		})
+	}
+}
+
 func assertBranch(t *testing.T, dir, wantBranch string) {
 	t.Helper()
 	cmd := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD")

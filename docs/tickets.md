@@ -409,6 +409,8 @@ The daemon only picks up tickets that have both `kontora: true` and `status: tod
 
 The daemon starts an agent for a `kontora: true` ticket in `todo` only when every id in its `deps` names a ticket that no longer holds work: `human_review`, `done`, `cancelled`, `archived`, or the legacy `closed` that tickets from the external ticket CLI carry. `human_review` releases dependents because the agent has finished and only a person's verdict is left; the review can still send the ticket back, and a dependent that is already running then keeps going. Every other status blocks, including a custom one. So does an id with no ticket file, because nothing on disk says whether that work is finished.
 
+A dependency in `human_review` usually has commits that nobody merged yet, so the dependent's worktree does not contain them. When a `human_review` dependency has a local `branch` whose tip the dependent's worktree lacks, Kontora names that branch and its commit in the dependent's prompt under `## Unmerged dependencies`. It does not merge the branch.
+
 Primary dependencies first look for the exact ID in `tickets_dir`. If absent, they
 look in configured secondary folders. A unique match supplies its status, including
 completed work in another folder. A primary namesake always takes precedence, even

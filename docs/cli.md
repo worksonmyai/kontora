@@ -1,8 +1,8 @@
 # CLI Reference
 
-`kontora <command> [flags] [arguments]`. There is no command framework: every verb is a flat top-level word, and flags use Go's `flag` package, so `-flag` and `--flag` both work.
+Use the CLI to create tickets, control runs, and inspect results: `kontora <command> [flags] [arguments]`.
 
-Run `kontora help` for the same list of commands this page documents.
+New to Kontora? Follow [Getting started](getting-started.md) for your first ticket and run. Run `kontora help` for the command list.
 
 ## Common flags
 
@@ -13,7 +13,7 @@ Run `kontora help` for the same list of commands this page documents.
 | `--url URL` | every command that can drive a daemon | Remote daemon URL. A non-empty value switches the command into [remote mode](#remote-mode). Defaults to `$KONTORA_URL`. |
 | `--token TOKEN` | the same commands | Bearer token for the remote daemon. Defaults to `$KONTORA_TOKEN`. |
 
-For `note` and `summary`, put all flags before the ticket ID, even when reading stdin. Their parser stops at the first positional argument. For `new`, put flags before the title. Other verbs accept flags before, between, or after positional arguments: `kontora pause abc --config ~/k.yaml` matches `kontora pause --config ~/k.yaml abc`.
+Put flags before the ticket ID, title, or other positional arguments. Both `-flag` and `--flag` work.
 
 ## Ticket IDs
 
@@ -44,57 +44,6 @@ Commands that take a `TICKET_ID` accept a unique prefix, except for `result`, wh
 The tickets dir is resolved `--tickets-dir` → `$KONTORA_TICKETS_DIR` → `$TICKETS_DIR` → `tickets_dir:` → `~/.kontora/tickets`, and the pager `$KONTORA_PAGER` → `$TICKET_PAGER` → `$PAGER` → `pager:` → none.
 
 Note that unlike every other setting, the environment beats the config file for the tickets dir. A stray export therefore changes which store every command reads, and a daemon that cannot see the variable — one started by launchd or systemd, which pass a minimal environment — keeps reading the file. `kontora doctor` names the source that won and warns when the two disagree.
-
-## Supervised results
-
-### `kontora result [--input-file /absolute/path/result.json] TICKET_ID`
-
-Submit the current invocation's terminal result. Without `--input-file`, read JSON
-from stdin. Put flags before the ticket ID. This command requires daemon-supplied
-invocation context; outside a bound invocation it fails rather than succeeding as
-a no-op. Do not set these variables yourself or use another invocation's context.
-The daemon binds result variables after configured agent environment merging.
-
-```json
-{
-  "outcome": "blocked",
-  "summary": "Required native-device evidence is unavailable.",
-  "next_step": "Provide device access or explicitly change the proof-first requirement."
-}
-```
-
-Only `outcome`, `summary`, and optional `next_step` are accepted. `outcome` is
-`complete` or `blocked`; `summary` must be nonblank, and `blocked` requires a
-nonblank `next_step`. All fields are strings. Payloads must be valid UTF-8 JSON,
-at most 32 KiB, with no NULs, duplicate or unknown fields, or trailing content.
-Incompatible context versions are rejected. Invocation identity is not a payload
-field. Use a file-writing tool to create a unique scratch file outside the repo,
-then submit it; do not interpolate generated JSON into shell commands.
-
-Pi also exposes `kontora_result({outcome, summary, next_step?})`, independently of
-checkpoint compaction. It submits through the CLI without a shell and checks the
-acknowledgement. Check acknowledgement with either transport: identical
-resubmission is idempotent; a conflicting submission cannot replace the first
-result. A late result cannot finalize a replacement invocation. Notes, summaries,
-final prose, question markers, and phase checkpoints are not terminal results.
-
-Activated epic supervisors and their children, including rework, must report.
-Passive-epic children, unrelated tickets, annotations, and assistant-only runs
-retain their existing result requirements. `complete` means the assigned current
-stage is complete, not the whole ticket or human acceptance. Review completion
-can still leave fixes for later stages. Fixture work is not complete if the
-stage still requires production foundations or other acceptance evidence.
-
-`blocked`, or a missing/invalid result after a clean supervised run, pauses the
-same stage without consuming a retry or deleting the worktree. It does not enter
-pipeline `retry` or `back` policies. A complete report cannot override execution
-or provider failures, hooks, or epic child validation. The daemon owns lifecycle
-transitions; do not mark your own ticket done. See [recovery](configuration.md#supervised-recovery)
-for interrupted runs and [local authority](tickets.md#epics) for escalation.
-
-Upgrade the CLI and daemon together. Verify effective Pi/Claude instructions
-before enabling autonomous local commits. Do not use rollout to restart live
-epics or migrate existing ticket state.
 
 ## Tickets
 
@@ -169,7 +118,7 @@ Creates a ticket and prints its ID. Locally, omitting `--path` with `--parent EP
 | `--path PATH` | Repository the ticket works in. |
 | `--pipeline NAME` | Explicit pipeline, or `none` to skip all pipeline defaults and run standalone. |
 | `--agent NAME` | Agent to use, or `none` to skip the project default. |
-| `--branch NAME` | Work branch name. Defaults to `<branch_prefix>/<id>`. |
+| `--branch NAME` | Work branch name. Defaults to `<branch_prefix>/<title-slug>-<ticket-id>`. With `branch_naming.mode: off` or a title that yields no slug, uses `<branch_prefix>/<ticket-id>`. |
 | `--base-branch NAME` | Branch the work branch starts from. Defaults to the repository's default branch. |
 | `--status STATUS` | `open` or `todo`. Defaults to `todo`. |
 | `--kind KIND` | `epic` for a ticket that groups others. See [Epics](tickets.md#epics). |
@@ -226,6 +175,8 @@ A passive epic's brief is editable in every status. An activated agent epic uses
 ### `kontora delete TICKET_ID -f`
 
 Deletes the ticket's markdown file. `-f` or `--yes` is required. The worktree is not cleaned up; cancel the ticket first if you want the normal cleanup path.
+
+Deleting an epic locally leaves its children's `parent` references unchanged. Use remote mode, the dashboard, or the API to clear those references during deletion. No child ticket is deleted.
 
 ### `kontora init TICKET_ID [flags]`
 
@@ -294,13 +245,15 @@ Stops a running ticket and parks it in `paused`. A ticket that already closed ca
 
 ### `kontora retry TICKET_ID`
 
-Resets a non-running ticket to `todo` with the attempt counter cleared, and re-enqueues it.
+Resets an initialized ticket to `todo` with the attempt counter cleared. Refused for tickets in `in_progress`, `todo`, or `archived`, and for passive epics.
 
-Acceptance means queued, not started. Before preparing a replacement workspace, the daemon checks for leftover tmux windows. Duplicate windows or uncertain cleanup prevent replacement and preserve execution reservations. Inspect `last_error` and the prior window before retrying again.
+Local mode only updates the ticket file. With `auto_pick_up: false`, follow retry with `kontora run TICKET_ID`. Remote mode and dashboard/API retry queue dependency-ready work even with automatic pickup off.
+
+Queueing does not mean the run has started. Before preparing a replacement workspace, the daemon checks for leftover tmux windows. Duplicate windows or uncertain cleanup prevent replacement and preserve execution reservations. Inspect `last_error` and the prior window before retrying again.
 
 ### `kontora cancel TICKET_ID` / `kontora done TICKET_ID`
 
-Move the ticket to `cancelled` or `done`, stopping any running agent and cleaning up its worktree.
+Move the ticket to `cancelled` or `done`. The daemon stops any running agent and removes a clean worktree, but preserves uncommitted changes. The branch remains. Neither command commits or merges changes.
 
 ### `kontora move TICKET_ID STATUS`
 
@@ -343,7 +296,7 @@ Notes trim surrounding whitespace and reject empty text. Summaries preserve spac
 
 | Flag | Description |
 |------|-------------|
-| `--author NAME` | Who the note is from. Defaults to `$KONTORA_AGENT`, which the daemon exports to every agent it spawns, and then to the config's [`author`](configuration.md#author). |
+| `--author NAME` | Who the note is from. Defaults to `$KONTORA_AGENT`, which the daemon exports to every agent it spawns, and then to the config's [`author`](configuration.md#top-level-fields). |
 | `--reply-to NOTE_ID` | The 4-character id of the note this replies to. One level only: replying to a reply is refused. |
 
 These note flags must precede the ticket ID:
@@ -466,7 +419,7 @@ kontora too, holds another ticket's bytes.
 
 ### `kontora changes TICKET_ID`
 
-Prints the commits on the ticket's branch and the per-file line counts against its base. Needs a running daemon.
+Prints the commits on the ticket's branch and the per-file line counts against its base. Needs a running daemon. Uncommitted and untracked files are not included; inspect them in the ticket's worktree.
 
 ### `kontora stats [flags]`
 
@@ -488,7 +441,7 @@ Local mode needs a running daemon; remote mode uses `--url` and the configured a
 kontora automation new \
   --name "Morning repository report" \
   --prompt-file ./report-prompt.md \
-  --path /home/alex/projects/app \
+  --path /srv/projects/app \
   --agent claude \
   --schedule "0 9 * * 1-5" \
   --timezone Europe/Berlin
@@ -523,6 +476,57 @@ A queued, completed, or unavailable run has no attachable terminal.
 ### `kontora review TICKET_ID` / `kontora annotate TICKET_ID`
 
 Open the ticket's diff, or its markdown, in [Plannotator](https://plannotator.ai). The daemon spawns the binary, so in remote mode the window opens on the daemon host, not on the caller's screen. `review` needs the ticket to be in `human_review`.
+
+## Supervised results
+
+### `kontora result [--input-file /absolute/path/result.json] TICKET_ID`
+
+Submit the current invocation's terminal result. Without `--input-file`, read JSON
+from stdin. Put flags before the ticket ID. This command requires daemon-supplied
+invocation context; outside a bound invocation it fails rather than succeeding as
+a no-op. Do not set these variables yourself or use another invocation's context.
+The daemon binds result variables after configured agent environment merging.
+
+```json
+{
+  "outcome": "blocked",
+  "summary": "Required native-device evidence is unavailable.",
+  "next_step": "Provide device access or explicitly change the proof-first requirement."
+}
+```
+
+Only `outcome`, `summary`, and optional `next_step` are accepted. `outcome` is
+`complete` or `blocked`; `summary` must be nonblank, and `blocked` requires a
+nonblank `next_step`. All fields are strings. Payloads must be valid UTF-8 JSON,
+at most 32 KiB, with no NULs, duplicate or unknown fields, or trailing content.
+Incompatible context versions are rejected. Invocation identity is not a payload
+field. Use a file-writing tool to create a unique scratch file outside the repo,
+then submit it; do not interpolate generated JSON into shell commands.
+
+Pi also exposes `kontora_result({outcome, summary, next_step?})`, independently of
+checkpoint compaction. It submits through the CLI without a shell and checks the
+acknowledgement. Check acknowledgement with either transport: identical
+resubmission is idempotent; a conflicting submission cannot replace the first
+result. A late result cannot finalize a replacement invocation. Notes, summaries,
+final prose, question markers, and phase checkpoints are not terminal results.
+
+Activated epic supervisors and their children, including rework, must report.
+Passive-epic children, unrelated tickets, annotations, and assistant-only runs
+retain their existing result requirements. `complete` means the assigned current
+stage is complete, not the whole ticket or human acceptance. Review completion
+can still leave fixes for later stages. Fixture work is not complete if the
+stage still requires production foundations or other acceptance evidence.
+
+`blocked`, or a missing/invalid result after a clean supervised run, pauses the
+same stage without consuming a retry or deleting the worktree. It does not enter
+pipeline `retry` or `back` policies. A complete report cannot override execution
+or provider failures, hooks, or epic child validation. The daemon owns lifecycle
+transitions; do not mark your own ticket done. See [recovery](configuration.md#supervised-recovery)
+for interrupted runs and [local authority](tickets.md#epics) for escalation.
+
+Upgrade the CLI and daemon together. Verify effective Pi/Claude instructions
+before enabling autonomous local commits. Do not use rollout to restart live
+epics or migrate existing ticket state.
 
 ## Analysis
 
@@ -616,9 +620,9 @@ Prints the version.
 
 ## Remote mode
 
-Setting `--url` or `KONTORA_URL` points every client command at a daemon over HTTP instead of the local files. See [Remote mode](https://github.com/worksonmyai/kontora#remote-mode) in the README for the daemon-side setup.
+Setting `--url` or `KONTORA_URL` points every client command at a daemon over HTTP instead of the local files. See [Remote access](remote.md) for daemon-side setup.
 
-Supported: `ls`, `view`, `new`, `init`, `update`, `delete`, `run`, `schedule`, `pause`, `retry`, `cancel`, `done`, `move`, `skip`, `set-stage`, `note`, `summary`, `logs`, `activity`, `changes`, `stats`, `review`, `annotate`, `config`, `attach`.
+Supported: `ls`, `view`, `new`, `init`, `update`, `delete`, `run`, `schedule`, `pause`, `retry`, `cancel`, `done`, `move`, `skip`, `set-stage`, `note`, `summary`, `dep`, `undep`, `link`, `unlink`, `logs`, `activity`, `changes`, `stats`, `automation new`, `review`, `annotate`, `config`, `attach`.
 
 Rejected, because they act on local files: `edit`, `search`, `archive`, `estimate-compaction`, `sessions`, `doctor`, `start`, `setup`.
 

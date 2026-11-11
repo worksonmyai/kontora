@@ -51,6 +51,10 @@ file nothing reads.
    write, and where automation stops for human review. Get an explicit yes.
 4. Write the file only after the user agrees and after validation passes.
 
+An ordinary `kontora new` defaults to `todo`. With `auto_pick_up: true` (the default),
+a running daemon can start it immediately.
+Use `new --status open` for a draft, then an explicit `kontora run` after review.
+
 ## Interview
 
 Ask about each of these. Skip a question when the current config already answers
@@ -74,15 +78,18 @@ it and the user does not want it changed.
 - Should Kotik observe ticket attention? It is off by default and shares one
   inbox and read state across devices. Model explanations run only when requested.
 
-Kontora runs a configured binary directly with `exec`. It does not start a
-shell, so shell functions, aliases, and shell-only PATH entries do not apply.
-A wrapper command has to be spelled out in `binary` and `args`:
+Kontora resolves `binary` as an executable and passes `args` literally.
+It does not use shell functions or aliases, or read your interactive shell configuration.
+A wrapper must be configured explicitly in `binary` and `args`.
+
+Use this example only if the user already has `nono` and a configured profile.
+Replace `<existing-profile>` with that profile's actual name. Kontora does not install or create profiles.
 
 ```yaml
 agents:
   claude:
     binary: nono
-    args: ["run", "--profile", "claude", "--", "claude", "--dangerously-skip-permissions"]
+    args: ["run", "--profile", "<existing-profile>", "--", "claude", "--dangerously-skip-permissions"]
 ```
 
 Kontora reads the real agent through the `--` separator for `nono` and `op`, so
@@ -90,12 +97,13 @@ resume support still works behind those two wrappers.
 
 ## Config shape
 
-Top-level keys: `tickets_dir`, `logs_dir`, `worktrees_dir`, `branch_prefix`,
-`branch_naming`, `editor`, `default_agent`, `default_pipeline`,
-`max_concurrent_agents`,
-`auto_pick_up`, `instance_name`, `tmux_session`, `statuses`, `environment`,
-`hooks`, `resume_prompt`, `annotation_prompt`, `summary_model`, `web`,
-`agents`, `stages`, `pipelines`, `projects`, `plannotator`, `assistant`.
+Top-level keys: `tickets_dir`, `secondary_tickets_dirs`, `logs_dir`, `worktrees_dir`,
+`branch_prefix`, `branch_naming`, `editor`, `pager`, `default_agent`, `default_pipeline`,
+`max_concurrent_agents`, `max_concurrent_epic_supervisors`, `auto_pick_up`,
+`instance_name`, `author`, `tmux_session`, `statuses`, `environment`, `hooks`,
+`system_prompt`, `resume_prompt`, `annotation_prompt`, `summary_model`, `summary_effort`,
+`web`, `agents`, `stages`, `pipelines`, `projects`, `automations`, `plannotator`,
+`assistant`, `metrics`, `notifications`.
 
 ```yaml
 tickets_dir: ~/.kontora/tickets
@@ -145,7 +153,7 @@ projects:
 ```
 
 Without `prefix`, a ticket ID takes the first alphanumeric of each `-` or `_`
-separated segment of the directory name (`grafana-assistant-app` gives `gaa`),
+separated segment of the directory name (`customer-portal-app` gives `cpa`),
 falling back to the name's first 3 alphanumerics when that gives fewer than two
 (`kontora` gives `kon`). Set `prefix` only to override that.
 
@@ -158,7 +166,8 @@ reads it.
 
 `on_success` accepts `next`, `done`, `human_review`, or a custom status from
 `statuses:`. `on_failure` accepts `retry`, `back`, `pause`, `human_review`, or a
-custom status. `max_retries` applies to `retry`.
+custom status. `max_retries` applies to `retry` and defaults to `0` when omitted.
+With `on_failure: retry` and no retry budget, the first failure pauses the ticket.
 
 A project's `agent` is stamped into each new ticket for that repository, and a
 ticket-level agent replaces the agent on every step of its pipeline at runtime.
@@ -358,17 +367,29 @@ found when that stage starts, not before. Read every prompt you write.
 ## After the write
 
 A running daemon reloads these without a restart: `agents`, `stages`,
-`pipelines`, `projects`, `statuses`, `environment`, `auto_pick_up`,
-`default_agent`, `default_pipeline`, `branch_prefix`, `branch_naming`, `editor`, `resume_prompt`,
-`annotation_prompt`, `summary_model`, `plannotator`, and `assistant`.
+`pipelines`, `projects`, `automations`, `statuses`, `environment`, `hooks`,
+`auto_pick_up`, `default_agent`, `default_pipeline`, `branch_prefix`, `branch_naming`,
+`author`, `system_prompt`, `resume_prompt`, `annotation_prompt`, `summary_model`,
+`summary_effort`, `max_concurrent_agents`, `max_concurrent_epic_supervisors`,
+`notifications`, and `assistant`. The `plannotator` block reloads live except for
+`plannotator.reviews_dir`. The CLI reads `editor` and `pager` on the next command.
+
+Both concurrency limits apply to the next admission. Raising a limit lets queued
+work start. Lowering a limit does not stop running agents; new work waits until
+usage falls below the limit.
+
+Enabling `auto_pick_up` queues existing eligible `todo` tickets. Disabling it
+stops automatic starts, including tickets already queued. Explicit runs,
+pipeline continuations, recovery, and scheduled automations remain possible.
+
 Disabling `assistant.companion.enabled` stops observation and prevents new
 companion requests. Disabling retains stored data. An already-running requested
 turn remains stoppable.
 
-These need a daemon restart: `tickets_dir`, `worktrees_dir`, `logs_dir`,
-`instance_name`, `tmux_session`, `max_concurrent_agents`, and the whole `web`
-block. The daemon keeps the running value and logs one warning per field that
-differs on disk.
+These need a daemon restart: `tickets_dir`, `secondary_tickets_dirs`, `worktrees_dir`,
+`logs_dir`, `instance_name`, `tmux_session`, `plannotator.reviews_dir`, and the whole
+`web` and `metrics` blocks. The daemon keeps the running value and logs one warning
+per field that differs on disk.
 
 A running agent keeps the prompt, arguments, model, timeout, and binary it
 started with. An edit takes effect on the next stage that spawns. Changes to project
@@ -379,11 +400,19 @@ stored nonempty pipelines before applying defaults.
 A reload is all-or-nothing: an invalid file is logged and the daemon keeps
 running on the previous config.
 
-Tell the user what to do next. `kontora start` runs until Ctrl-C, so the second
-command needs another terminal, and `kontora new` needs `--path` unless it runs
-inside the repository:
+Suggest these next steps. Do not start the daemon or create tickets without the user's approval.
+Replace the example repository path with the user's actual path.
 
-    kontora start
-    kontora new --path ~/projects/myrepo "Add a health check endpoint"
+If no daemon is running, start it in one terminal. It runs until Ctrl-C:
+
+    kontora start --config [[ .ConfigPath ]]
+
+In another terminal, create a draft:
+
+    kontora new --config [[ .ConfigPath ]] --status open --path ~/projects/myrepo "Add a health check endpoint"
+
+Review the ticket before starting work. Replace `TICKET_ID` with the ID printed by `new`:
+
+    kontora run --config [[ .ConfigPath ]] TICKET_ID
 
 The daemon watches the config file, so a later edit reloads on its own.

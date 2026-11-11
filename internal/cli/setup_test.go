@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -95,7 +96,7 @@ func TestBuildConfigYAML(t *testing.T) {
 			name: "multiple agents without claude",
 			ans: &SetupAnswers{
 				Agents: map[string]agentArgs{
-					"pi":       {Binary: "pi", Args: "-p --no-session"},
+					"pi":       {Binary: "pi", Args: "-p --no-session --model custom-model"},
 					"opencode": {Binary: "opencode"},
 				},
 				TicketsDir:          "/tmp/tickets",
@@ -137,10 +138,42 @@ func TestBuildConfigYAML(t *testing.T) {
 			// Verify the generated YAML parses into a valid config
 			cfg, err := config.LoadReader(strings.NewReader(yaml))
 			require.NoError(t, err, "generated YAML:\n%s", yaml)
-			assert.NotEmpty(t, cfg.Agents)
-			assert.NotEmpty(t, cfg.Pipelines)
+			assert.Len(t, cfg.Agents, len(tc.ans.Agents))
+			for name, agent := range tc.ans.Agents {
+				assert.Equal(t, agent.Binary, cfg.Agents[name].Binary)
+				if agent.Args == "" {
+					assert.Empty(t, cfg.Agents[name].Args)
+				} else {
+					assert.Equal(t, strings.Fields(agent.Args), cfg.Agents[name].Args)
+				}
+			}
 			assert.Contains(t, cfg.Agents, cfg.DefaultAgent)
+			assert.Equal(t, tc.ans.MaxConcurrentAgents, cfg.MaxConcurrentAgents)
 			assert.Equal(t, tc.ans.DefaultPipeline, cfg.DefaultPipeline)
+			assert.Len(t, cfg.Pipelines, 2)
+			assert.Equal(t, config.Pipeline{
+				{Stage: "code", Agent: cfg.DefaultAgent, OnSuccess: "human_review", OnFailure: "pause"},
+			}, cfg.Pipelines["default"])
+			assert.Equal(t, config.Pipeline{
+				{Stage: "implement", Agent: cfg.DefaultAgent, OnSuccess: "next", OnFailure: "pause"},
+				{Stage: "review", Agent: cfg.DefaultAgent, OnSuccess: "next", OnFailure: "retry", MaxRetries: 1},
+				{Stage: "fix-review", Agent: cfg.DefaultAgent, OnSuccess: "next", OnFailure: "retry", MaxRetries: 1},
+				{Stage: "commit", Agent: cfg.DefaultAgent, OnSuccess: "human_review", OnFailure: "retry", MaxRetries: 1},
+			}, cfg.Pipelines["implement-review-commit"])
+
+			code := cfg.Stages["code"]
+			assert.Equal(t, 30*time.Minute, code.Timeout.Duration)
+			for _, instruction := range []string{
+				"{{ .Ticket.Description }}",
+				"Implement the ticket requirements.",
+				"Run the relevant tests.",
+				"Report failures and any work you could not verify.",
+				"Do not commit, push, or create a pull request.",
+			} {
+				assert.Contains(t, code.Prompt, instruction)
+			}
+			assert.Contains(t, cfg.Stages["commit"].Prompt, "You have full authorization to commit.")
+			assert.Contains(t, cfg.Stages["commit"].Prompt, "Do not push or create a pull request.")
 		})
 	}
 }
@@ -245,6 +278,31 @@ func TestWriteSetupConfig_Validation(t *testing.T) {
 				_, err := os.Stat(path)
 				assert.ErrorIs(t, err, os.ErrNotExist, "%s must not be created", path)
 			}
+		})
+	}
+}
+
+func TestSetupNextSteps(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		path       string
+		configFlag string
+	}{
+		{"custom path", "/tmp/config.yaml", " --config '/tmp/config.yaml'"},
+		{"shell characters", "/tmp/a'b $HOME/config.yaml", " --config '/tmp/a'\\''b $HOME/config.yaml'"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			printSetupNextSteps(&buf, tc.path)
+			out := buf.String()
+			for _, command := range []string{"doctor", "start", "new", "edit", "run", "setup"} {
+				assert.Contains(t, out, "kontora "+command+tc.configFlag)
+			}
+			assert.Contains(t, out, " --status open --path ~/projects/myrepo")
+			assert.Contains(t, out, "Keep that terminal open. In another terminal")
+			assert.Contains(t, out, "Replace TICKET_ID with the printed ID")
+			assert.Less(t, strings.Index(out, "kontora new"), strings.Index(out, "kontora edit"))
+			assert.Less(t, strings.Index(out, "kontora edit"), strings.Index(out, "kontora run"))
 		})
 	}
 }
@@ -604,13 +662,22 @@ func TestSetupModel_PipelineChoice(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			m := setupModel{step: stepPipelines, selectedAgents: []string{"claude"}, argsInputs: map[string]textinput.Model{"claude": newSetupInput("")}}
+			m := initialSetupModel()
+			m.agentChecked = map[string]bool{"pi": true}
+			m = updateSetup(m, "enter")
+			assert.Empty(t, m.argsInputs["pi"].Value())
+			m.step = stepPipelines
 			for _, k := range tc.keys {
 				m = updateSetup(m, k)
 			}
 
 			view := m.View()
 			assert.Contains(t, view, "Which one do new tickets run?")
+			assert.Contains(t, view, "stops at human_review without a commit or push")
+			assert.Contains(t, view, "commits locally, then stops at human_review")
+			assert.Contains(t, view, "It does not push or create a pull request.")
+			assert.Contains(t, view, "with no stage timeout")
+			assert.Contains(t, view, "On success, it finishes as done.")
 			// Every choice carries its own lines, so adding one to the table is
 			// all it takes to list it.
 			for _, p := range setupPipelines {
@@ -625,6 +692,17 @@ func TestSetupModel_PipelineChoice(t *testing.T) {
 			m = updateSetup(m, "enter")
 			assert.Equal(t, stepConfirm, m.step)
 			assert.Equal(t, tc.want, m.answers().DefaultPipeline)
+
+			cfg, err := config.LoadReader(strings.NewReader(buildConfigYAML(m.answers())))
+			require.NoError(t, err)
+			assert.Equal(t, "pi", cfg.DefaultAgent)
+			assert.Equal(t, "pi", cfg.Agents["pi"].Binary)
+			assert.Empty(t, cfg.Agents["pi"].Args)
+			assert.Equal(t, 3, cfg.MaxConcurrentAgents)
+			assert.Equal(t, tc.want, cfg.DefaultPipeline)
+			assert.Len(t, cfg.Pipelines, 2)
+			assert.Contains(t, cfg.Pipelines, "default")
+			assert.Contains(t, cfg.Pipelines, "implement-review-commit")
 		})
 	}
 }

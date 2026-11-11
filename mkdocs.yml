@@ -1,6 +1,6 @@
 site_name: Kontora
 site_url: https://worksonmyai.github.io/kontora
-site_description: Agent orchestration tool. Multi-stage pipelines, git worktree isolation, kanban board.
+site_description: Run AI coding agents on tickets and review their changes from a web or terminal board.
 repo_url: https://github.com/worksonmyai/kontora
 repo_name: worksonmyai/kontora
 
@@ -29,10 +29,24 @@ theme:
     - toc.follow
 
 nav:
-  - CLI: cli.md
-  - Configuration: configuration.md
-  - Tickets: tickets.md
-  - API: api.md
+  - Getting started: getting-started.md
+  - Guides:
+      - Remote access: remote.md
+      - Automations: automations.md
+  - Reference:
+      - CLI: cli.md
+      - Configuration: configuration.md
+      - Tickets: tickets.md
+      - API: api.md
+  - Development:
+      - Orchestrator components (disabled): orchestrator.md
+
+exclude_docs: |
+  /README.md
+
+validation:
+  links:
+    anchors: warn
 
 extra_css:
   - stylesheets/extra.css

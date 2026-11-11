@@ -122,7 +122,8 @@ Later configuration changes apply to new runs.
 
 The agent must publish an explicit result with `kontora result --input-file <absolute-json-file> <automation-id>`.
 The JSON contains `outcome` (`complete` or `blocked`), `summary`, and `next_step` when blocked.
-A zero process exit alone is not completion. Missing or invalid results, blocked results, nonzero exits, cancellation, and timeouts produce failed runs.
+A zero process exit alone is not completion. Missing or invalid results, blocked results, nonzero exits, and timeouts produce failed runs.
+Cancellation before a queued run starts produces `skipped`. Cancellation after execution starts, including during preparation, produces `failed` once termination is confirmed.
 
 ## History, logs, and recovery
 

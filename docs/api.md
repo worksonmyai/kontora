@@ -1,5 +1,19 @@
 # API Reference
 
+The API uses the web server's authentication. In shared-token mode, a configured `web.token` is required for `/api/*` and `/ws/*`.
+Send it in `Authorization: Bearer`; browser clients can use the `kontora_token` cookie or `token` query parameter.
+Without a token, ordinary access requires no credentials. The static UI and `GET /health` remain public.
+
+API responses are JSON unless noted otherwise. Send `Content-Type: application/json` for JSON request bodies; ticket uploads use `multipart/form-data`.
+Host and origin checks apply independently of authentication, including when no token is configured.
+See [Remote access](remote.md) and [Host and origin checks](configuration.md#host-and-origin-checks) for setup and restrictions.
+
+With `KONTORA_URL` and `KONTORA_TOKEN` set, this read-only request fetches statistics:
+
+```bash
+curlie GET "${KONTORA_URL%/}/api/stats" "Authorization:Bearer $KONTORA_TOKEN"
+```
+
 When the web server is enabled, the following endpoints are exposed:
 
 | Endpoint | Description |
@@ -9,6 +23,7 @@ When the web server is enabled, the following endpoints are exposed:
 | `POST /api/tickets` | Create a new ticket (JSON body: `title`, `path`, optional `pipeline`, `agent`, `status`, `body`, `branch`, `base_branch`, `scheduled_at`, `kind`, `parent`). A `scheduled_at` creates the ticket `open` and cannot be combined with another status; one that is malformed or already past answers 400. |
 | `GET /api/tickets/{id}` | Get ticket details (JSON). |
 | `GET /api/tickets/{id}/cost` | Estimate the cost of finished tracked runs from their activity sidecars and the bundled model-price catalog. |
+| `GET /api/tickets/{id}/activity` | Get a run's structured activity, with a plaintext log fallback. Accepts `stage`, `run`, and `after` (for live activity); supports `ETag`/`If-None-Match` revalidation. |
 | `DELETE /api/tickets/{id}` | Delete the ticket markdown file without worktree cleanup. Requires `X-Kontora-Confirm: delete-ticket-file`. Only deletes files inside `tickets_dir`. |
 | `POST /api/tickets/{id}/run` | Queue a ticket. On a passive epic, explicitly activate a supervisor. See [Epics](#epics). |
 | `POST /api/tickets/{id}/pause` | Pause a running ticket. On an agent epic, stop only its supervisor; running children continue. |
@@ -18,9 +33,12 @@ When the web server is enabled, the following endpoints are exposed:
 | `POST /api/tickets/{id}/schedule` | Set or clear the ticket's future pickup time (`{"scheduled_at": "<RFC 3339>"}` or `{"clear": true}` body). A `scheduled_at` that is malformed or already past answers 400. Clearing is refused only while the ticket is running. Answers the updated ticket. See [scheduled pickup](tickets.md#scheduled-pickup). |
 | `POST /api/tickets/{id}/move` | Set ticket status (`{"status": "..."}` body). |
 | `GET /api/tickets/archived` | The archived tickets, one row per ticket, for the Archive view. |
+| `GET /api/stats` | Aggregate ticket and run statistics (JSON). Optional filters: `range` (`1d`, `1w`, `30d`, `90d`, or `all`; default `90d`), `project`, and `pipeline`. |
 | `POST /api/tickets/{id}/archive` | Archive a closed ticket (optional `{"note": "..."}` body). |
 | `POST /api/tickets/{id}/restore` | Return an archived ticket to the status it was archived from. |
 | `GET /api/config` | Available pipelines, agents, and projects (JSON). `agents` remains the sorted agent-name list; `agent_infos` adds sorted `{name, model, effort}` metadata for each agent. The top-level `default_pipeline` exposes the global pipeline default. Projects are sorted by name and carry `name`, `path`, `resolved_path` (`~` expanded), `pipeline`, `epic_child_pipeline`, `agent`, and `notify_channels`. `channels` and `default_channels` are the configured notification channel names and `notifications.default`; names only, never a chat id or a webhook URL. |
+| `GET /api/config/raw` | Read the full on-disk YAML configuration as JSON `content`, without redaction. See [Raw configuration](#raw-configuration). |
+| `PUT /api/config/raw` | Validate, replace, and reload the configuration using `content` and optional `expected_content`. See [Raw configuration](#raw-configuration). |
 | `GET /api/tickets/{id}/logs` | Get agent logs for a ticket (optional `?stage=` query param). |
 | `POST /api/tickets/{id}/summary` | Set the ticket's `summary` field (`{"text": "..."}` body). |
 | `GET /api/tickets/{id}/changes` | Commits and changed files on the ticket's branch relative to its `base_branch`, or the repo's default branch when unset. Empty payload when the ticket has no branch or the branch was deleted. |
@@ -82,6 +100,23 @@ Each `agent_infos` entry in `GET /api/config` reports the model and effort that 
 
 The daemon captures directory identity when it opens the store. Retargeting a store symlink or editing restart-only settings does not change that identity. Socket discovery does not delay config responses. Automatic local TUI connections require matching filesystem directory identity. Missing identity, including responses from older daemons, selects read-only file mode. A missing socket disables attachment without disabling ticket actions on a verified board. Explicit remote clients do not require these fields. Initial verification does not protect a long-lived client against server replacement at the same address.
 
+### Raw configuration
+
+`GET /api/config/raw` returns `{"content":"<YAML>"}` containing the daemon's on-disk configuration.
+The response is not redacted and can include tokens, webhook URLs, and other credentials stored in the file.
+Treat the response as sensitive.
+
+`PUT /api/config/raw` accepts a JSON object:
+
+- `content` is the complete replacement YAML, not a partial update.
+- Optional `expected_content` must exactly match the current file contents. A mismatch returns `409` without saving.
+  Omitting it or sending `null` does not protect against changes since the client's last read.
+
+PUT validates a single YAML document before saving and reloading it. Invalid configuration returns `400`; success returns `204`.
+There is no check-only mode: a `check` field or query parameter does not prevent saving.
+[Restart-only settings](configuration.md#what-needs-a-restart) keep their running values until restart.
+If reload fails after saving, the file remains changed even though the request returns an error.
+
 ### Automations
 
 See [Automations](automations.md) for timing, overlap, workspaces, and recovery.
@@ -124,7 +159,7 @@ Other management and history routes return `503` when unavailable. Stateless pre
   "definition": {
     "name": "Morning repository report",
     "prompt": "Inspect recent changes and report potential regressions.",
-    "path": "/home/alex/projects/app",
+    "path": "/srv/projects/app",
     "agent": "claude",
     "model": "",
     "schedule": "0 9 * * 1-5",
@@ -702,9 +737,11 @@ single chat.
 
 `POST /api/assistant/gate/{gid}` answers 404 after the change is answered or its
 turn ends, so a stale card cannot resolve twice. `POST /api/assistant/gate/ask`
-answers 403 when the secret does not match the chat's current turn. This prevents
-unrelated local processes from approving their own writes against a tokenless
-loopback daemon.
+answers 403 when the per-turn nonce does not match the chat's current turn.
+Only the agent-side `/gate/ask` route checks that nonce. The approval route
+uses shared web authentication and Host/origin checks, not the nonce.
+Local processes are trusted, including with a tokenless loopback daemon.
+Tool approval is not an OS sandbox.
 
 ## Notes
 
@@ -722,7 +759,7 @@ All five answer 200 with the whole ticket, so a caller replaces its copy rather 
 
 Every note the daemon writes carries a 4-character `id`, unique within the ticket, which is what `{noteID}` names. A note written before the format carried one is addressed as `#<index>` — its position in `notes` — and acting on it mints a real id in the same write. An id no note carries answers 404.
 
-An empty `author` signs as the daemon's configured [`author`](configuration.md#author), and so does an empty reaction `actor`. An author containing `·`, a newline or `**` is rejected with 400: the separator is what holds the byline together.
+An empty `author` signs as the daemon's configured [`author`](configuration.md#top-level-fields), and so does an empty reaction `actor`. An author containing `·`, a newline or `**` is rejected with 400: the separator is what holds the byline together.
 
 A `parent` makes the note a reply. One level only: a `parent` naming a note that is itself a reply answers 409 and writes nothing. Deleting a note deletes its replies with it.
 

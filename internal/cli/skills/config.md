@@ -8,8 +8,10 @@ pipelines, agents and custom statuses.
 Upgrade all clients and daemon binaries that read the config before adding
 `epic_child_pipeline`. Older strict-YAML loaders reject the key.
 
-The file is found at `$KONTORA_CONFIG`, then `./.kontora/config.yaml`, then
-`$XDG_CONFIG_HOME/kontora/config.yaml`, then `~/.config/kontora/config.yaml`.
+`--config` selects the file explicitly. Otherwise Kontora uses `$KONTORA_CONFIG`,
+then an existing `./.kontora/config.yaml`, then `$XDG_CONFIG_HOME/kontora/config.yaml`
+(or `~/.config/kontora/config.yaml` when `XDG_CONFIG_HOME` is unset).
+Kontora reads one file, without merging.
 
 Only the fields worth knowing when answering a question about a board are here.
 Read `kontora config` for what a particular board actually runs.
@@ -25,9 +27,9 @@ Read `kontora config` for what a particular board actually runs.
 | `branch_naming` | `mode: slug` | How a ticket with an empty `branch` is named. `off` uses `<prefix>/<id>`. |
 | `default_agent` | inferred | Agent for tickets with no pipeline. Defaults to `claude` when an agent has that name, otherwise the only agent. |
 | `default_pipeline` | — | Pipeline fallback after applicable project defaults. Must name a configured pipeline. |
-| `max_concurrent_agents` | `3` | Maximum worker runs at once, excluding epic supervisors. |
-| `max_concurrent_epic_supervisors` | `4` | Maximum epic supervisors in a separate pool. Zero or omission uses `4`; negative values are rejected. Requires restart. |
-| `auto_pick_up` | `true` | Whether the daemon claims new `todo` tickets on its own. |
+| `max_concurrent_agents` | `3` | Maximum worker runs at once, excluding epic supervisors. Zero or omission uses `3`; negative values are rejected. Reloads live without stopping running workers. |
+| `max_concurrent_epic_supervisors` | `4` | Maximum epic supervisors in a separate pool. Zero or omission uses `4`; negative values are rejected. Reloads live without stopping running supervisors. |
+| `auto_pick_up` | `true` | Automatically claim eligible `todo` tickets. Reloads live. Disabling it does not stop explicit runs, pipeline continuations, recovery, or scheduled automations. |
 | `instance_name` | hostname | Identifies this daemon when several share a synced `tickets_dir`. Written to `claimed_by`. |
 | `tmux_session` | `kontora` | The tmux session agent windows go in. |
 | `statuses` | — | Extra parked statuses beyond the built-ins. |
@@ -73,12 +75,17 @@ agents:
 An agent name is what a pipeline step, a ticket's `agent` field and
 `assistant.agent` all refer to.
 
+Kontora resolves `binary` as an executable and passes `args` literally.
+Shell functions and aliases do not apply. Configure wrappers explicitly in
+`binary` and `args`.
+
 ## stages and pipelines
 
 `stages:` maps a stage name to its prompt template, timeout, model and effort.
 `pipelines:` maps a pipeline name to an ordered list of steps, each naming a
 stage, an agent and its success and failure policies. See the `pipelines`
-topic.
+topic. A step's `max_retries` defaults to `0` when omitted.
+With `on_failure: retry` and no retry budget, the first failure pauses the ticket.
 
 ## projects
 
@@ -119,6 +126,9 @@ For ordinary tickets, pipeline precedence is:
 Missing or ordinary-ticket parents do not qualify for the child default. Epics
 never get a pipeline; supervisors run standalone. Pipeline and agent resolution
 are independent, including when the caller passes `--pipeline none`.
+
+A project's `agent` becomes a ticket-level override for every pipeline step.
+Leave it unset to keep each step's configured agent.
 
 Kontora stamps defaults into frontmatter at creation or initialization. Existing
 assignments are not migrated. Config reloads, reparenting and detail-path edits do
@@ -235,17 +245,29 @@ A question that disappears is no longer observed, not proven answered.
 ## Reloading
 
 The daemon watches its config file, and `SIGHUP` reloads it too. `agents`,
-`stages`, `pipelines`, `projects`, `statuses`, `environment`, `auto_pick_up`,
-`default_agent`, `default_pipeline`, the branch settings and the `assistant` block.
-All reload live. Run settings apply to the next run, never to one already going.
+`stages`, `pipelines`, `projects`, `automations`, `statuses`, `environment`, `hooks`,
+`auto_pick_up`, `default_agent`, `default_pipeline`, the branch settings,
+`author`, `system_prompt`, `resume_prompt`, `annotation_prompt`, `summary_model`,
+`summary_effort`, `notifications`, and `assistant` all reload live.
+The `plannotator` block reloads live except for `plannotator.reviews_dir`.
+The CLI reads `editor` and `pager` on the next command.
+Run settings apply to the next run, never to one already going.
 Pipeline defaults affect later creation and initialization, not existing assignments.
 Initialization preserves stored nonempty pipelines.
 An invalid child-pipeline reference rejects the reload and keeps the running config.
 
+`max_concurrent_agents` and `max_concurrent_epic_supervisors` reload live.
+Raising a limit lets queued work start. Lowering a limit does not stop running
+agents; new work waits until usage falls below the limit.
+
+Enabling `auto_pick_up` queues existing eligible `todo` tickets. Disabling it
+stops automatic starts, including tickets already queued. Explicit runs,
+pipeline continuations, recovery, and scheduled automations remain possible.
+
 Disabling the companion stops observation and blocks new companion requests without deleting stored
 data. An already-running requested turn remains stoppable.
 
-`tickets_dir`, `worktrees_dir`, `logs_dir`, `instance_name`, `tmux_session`,
-`max_concurrent_agents`, `max_concurrent_epic_supervisors` and the whole `web` and `metrics` blocks need a
-restart: a reload keeps the running value and logs a warning naming the one it
-ignored. A file that fails to load leaves the running configuration in place.
+These need a restart: `tickets_dir`, `secondary_tickets_dirs`, `worktrees_dir`,
+`logs_dir`, `instance_name`, `tmux_session`, `plannotator.reviews_dir`, and the whole
+`web` and `metrics` blocks. A reload keeps the running value and logs a warning
+naming each ignored field. A file that fails to load leaves the running configuration in place.

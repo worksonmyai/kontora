@@ -2,6 +2,8 @@
 
 Tickets are markdown files with YAML frontmatter. They live in the directory specified by `tickets_dir` in the [configuration](configuration.md). Any tool that can write a markdown file — a text editor, Obsidian, a script — is a valid client.
 
+For your first ticket and run, follow [Getting started](getting-started.md). This page describes the ticket file format and lifecycle.
+
 Kontora lists every valid ticket file that has an `id`, even when the file does not have `kontora: true`. Files without an `id` are treated as ordinary notes and are hidden. Tickets without `kontora: true` are shown with a `not a kontora ticket` marker and must be initialized before Kontora will run an agent for them.
 
 Deleting the markdown file removes the ticket from the daemon and web UI, but does not clean up any git worktree. If you want the normal cleanup path, cancel the ticket before deleting its file.
@@ -77,7 +79,7 @@ can defeat that protection.
 
 ### User-defined fields
 
-These are set when creating a ticket (manually or via `kontora new`). `notify` and `notify_channels` are the exception: `kontora new` does not take them, so they come from the dashboard's `notify me` row, from `kontora update`, or from a hand edit.
+Set these fields when creating a ticket, manually or with `kontora new`. For `notify` and `notify_channels`, use the dashboard, [API](#notifications), or a hand edit. Neither `kontora new` nor `kontora update` has notification flags.
 
 | Field | Required | Default | Description |
 |-------|----------|---------|-------------|
@@ -131,7 +133,14 @@ path: ~/projects/kontora
 children: [kon-b12e, kon-c04d, kon-9b31]   # order only
 ```
 
-Create one with `kontora new -kind epic`, and file a ticket under it with `kontora new -parent kon-e7c1` or `POST /api/tickets/{id}/parent`. Both creation paths check the parent the same way `POST .../parent` does: it has to exist and it has to be an epic. Epics do not nest: setting `parent` on a ticket whose `kind` is `epic` is refused.
+Create an epic and an open child:
+
+```bash
+kontora new --kind epic --status open "Add authentication"
+kontora new --parent EPIC_ID --status open "Implement the login API"
+```
+
+Replace `EPIC_ID` with the ID printed by the first command. To file an existing ticket under an epic, use `POST /api/tickets/{id}/parent`. Both child creation and reparenting require an existing epic. Epics do not nest: setting `parent` on a ticket whose `kind` is `epic` is refused.
 
 An ordinary child of any actual epic can use the matching project's
 `epic_child_pipeline`. This applies under passive and agent epics, independently of
@@ -243,7 +252,7 @@ Upgrade every daemon and client sharing the ticket directory before activating a
 
 `children` orders the sub-tickets and nothing else. Membership is what each child's `parent` says, so an id here that names no child is ignored on read, and a child the list does not name sorts after every child it does, by `created`. Dragging a row on the epic page writes this one list, and writes no child file.
 
-Deleting an epic keeps its work: every child has its `parent` cleared, and no child file is deleted or archived.
+Deleting an epic through the dashboard or API, including CLI remote mode, clears each child's `parent`. Local `kontora delete` and direct file deletion leave those references unchanged. No child file is deleted or archived.
 
 #### Base branch
 
@@ -286,7 +295,7 @@ Three things that would otherwise make a ticket quiet with no explanation are wa
 
 Both fields are editable from the dashboard. The start-ticket modal uses `notify me`; the details rail uses `notify`. The row has three presets: off, when it needs me (`[paused, human_review, waiting]`), and when it is finished (`[human_review, done]`). The full status set is behind `custom`.
 
-The start-ticket modal disables notification controls while configuration loads. With no configured channels, only off is available. Add a channel under [`notifications.channels`](configuration.md#notifications), then restart the daemon to enable the other controls. The modal links to these instructions in a separate tab, so the draft stays open. You can start with notifications off without configuring a channel.
+The start-ticket modal disables notification controls while configuration loads. With no configured channels, only off is available. Add a channel under [`notifications.channels`](configuration.md#notifications). Channel changes reload without a daemon restart. The modal links to these instructions in a separate tab, so the draft stays open. You can start with notifications off without configuring a channel.
 
 Opening the modal preserves existing preferences. Choosing off with no configured channels clears both notification fields, including references to removed channels. When channels are configured, off keeps the ticket's channel choices.
 
@@ -311,7 +320,7 @@ The timestamp is a one-time trigger, not a status. A scheduled ticket sits in th
 
 At or after that instant the daemon writes `status: todo` and removes `scheduled_at` in one save, then hands the ticket to the ordinary pickup rules. It does not bypass them:
 
-- With [`auto_pick_up: false`](configuration.md#auto_pick_up) the ticket becomes `todo` and waits there for an explicit `kontora run`.
+- With [`auto_pick_up: false`](configuration.md#top-level-fields) the ticket becomes `todo` and waits there for an explicit `kontora run`.
 - An unresolved dependency keeps it out of the queue, and [dependency-aware scheduling](#dependency-aware-scheduling) queues it once the dependency closes.
 
 The daemon rebuilds its wake-ups from the ticket files at startup, so a schedule survives a restart. One whose deadline passed while the daemon was down is promoted on the first pass after the initial scan.
@@ -545,14 +554,14 @@ Positional text remains supported. Stdin removes trailing LF characters, and not
 kontora summary TICKET_ID < /absolute/path/summary.txt
 ```
 
-Summaries preserve spaces and internal newlines after stdin removes trailing LF characters. The CLI does not truncate summaries; later stage capture cuts text above 4,000 bytes and appends `\n[truncated]`. See the [CLI reference](cli.md#kontora-note-ticket_id-text--kontora-summary-ticket_id-text) for native input limits and process-list visibility.
+Summaries preserve spaces and internal newlines after stdin removes trailing LF characters. The CLI does not truncate summaries; later stage capture cuts text above 4,000 bytes and appends `\n[truncated]`. See the [CLI reference](cli.md#kontora-note-ticket_id-text-kontora-summary-ticket_id-text) for native input limits and process-list visibility.
 
 A note is a bold byline followed by its text. The byline is a `·`-separated field list: timestamp, author, note id, then optional flags.
 
 ```
 ## Notes
 
-**2026-03-06T12:00:00Z · alexander · q88f**
+**2026-03-06T12:00:00Z · developer · q88f**
 
 Use the existing search index, don't create a new one.
 
@@ -567,7 +576,7 @@ paused: stage-end hook failed
 
 The id is 4 lowercase alphanumerics, unique within the ticket, and it is what the [note endpoints](api.md#notes) address. `re:<id>` makes the note a reply to that id; one level only, so a reply cannot be replied to, and deleting a note deletes its replies with it. `edited` marks a note whose text was replaced.
 
-The author is a plain name and cannot contain `·`, a newline or `**`. Kontora signs its own notes `kontora`, an agent signs with its configured name from `$KONTORA_AGENT`, and a person signs with the [`author`](configuration.md#author) config field. A ticket that pauses gets a `kontora` note carrying the reason, which is why a pause shows up in the conversation rather than as a lifecycle row.
+The author is a plain name and cannot contain `·`, a newline or `**`. Kontora signs its own notes `kontora`, an agent signs with its configured name from `$KONTORA_AGENT`, and a person signs with the [`author`](configuration.md#top-level-fields) config field. A ticket that pauses gets a `kontora` note carrying the reason, which is why a pause shows up in the conversation rather than as a lifecycle row.
 
 A byline that does not match this grammar is left alone: `**2026-03-06T12:00:00Z**` written before this format, or anything hand-typed, still parses, with no author and no id. Such a note is addressed by position (`#0`, `#1`) until something acts on it, at which point it is minted a real id in the same write.
 
@@ -581,12 +590,12 @@ The prefix comes from the directory name (the ticket's `path` field): the first 
 
 | Directory | Prefix |
 |-----------|--------|
-| `astra-l` | `al` |
-| `grafana-assistant-app` | `gaa` |
-| `deployment_tools` | `dt` |
-| `hackathon-17-haimdall-sigil-sdk` | `h1hss` |
+| `alpha-lib` | `al` |
+| `customer-portal-app` | `cpa` |
+| `build_tools` | `bt` |
+| `demo-17-sample-client-sdk` | `d1scs` |
 | `kontora` | `kon` |
-| `sigil` | `sig` |
+| `sample` | `sam` |
 
 A project can pin a prefix instead of deriving one, with [`prefix`](configuration.md#projects) in its config entry.
 

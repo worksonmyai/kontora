@@ -1,11 +1,11 @@
 # kontora CLI
 
-Every verb is a flat top-level word: `kontora <verb> [flags] [arguments]`.
-Flags use Go's `flag` package, so `-flag` and `--flag` both work.
+Use `kontora <command> [flags] [arguments]` to create tickets, control runs,
+and inspect results. Both `-flag` and `--flag` work.
 
-For `note` and `summary`, put all flags before the ticket ID. Go's flag parser
-stops at that first positional argument. For `new`, put flags before the title.
-Other verbs also accept flags after positional arguments.
+Put flags before positional arguments. For `new`, put them before the title;
+for `edit`, before the ticket ID.
+For `note` and `summary`, put all flags before the ticket ID, including when using stdin.
 
 Verbs that take a `TICKET_ID` accept a unique prefix, except for `result`,
 which requires the exact invocation ticket ID. `kontora view kon-q` finds
@@ -133,8 +133,8 @@ daemon host.
 
 Supported: `ls`, `view`, `new`, `init`, `update`, `delete`, `run`, `schedule`,
 `pause`, `retry`, `cancel`, `done`, `move`, `skip`, `set-stage`, `note`,
-`summary`, `logs`, `activity`, `changes`, `stats`, `review`, `annotate`,
-`config`, `attach`.
+`summary`, `dep`, `undep`, `link`, `unlink`, `logs`, `activity`, `changes`,
+`stats`, `automation new`, `review`, `annotate`, `config`, `attach`.
 
 Rejected, because they act on local files: `edit`, `search`, `archive`,
 `estimate-compaction`, `sessions`, `doctor`, `start`, `setup`.
@@ -371,8 +371,13 @@ On an agent epic, this stops only the supervisor. Running children continue.
 
 ## kontora retry
 
-`kontora retry TICKET_ID` — reset a non-running ticket to `todo` with the
-attempt counter cleared, and re-enqueue it. Refused on your own ticket.
+`kontora retry TICKET_ID` — reset an initialized ticket to `todo` with the
+attempt counter cleared. Refused for `in_progress`, `todo`, `archived`, passive
+epics, and your own ticket.
+
+Local mode only updates the ticket file. With `auto_pick_up: false`, follow retry
+with `kontora run TICKET_ID`. Remote mode and dashboard/API retry queue
+dependency-ready work even with automatic pickup off.
 
 ## kontora done
 
@@ -523,6 +528,7 @@ In the run column, `-` marks the per-stage log and `?` a file no run claims.
 
 `kontora changes TICKET_ID` — print the commits on the ticket's branch and the
 per-file line counts against its base. Needs a running daemon.
+Uncommitted and untracked files are not included; inspect them in the ticket's worktree.
 
 ## kontora stats
 
@@ -628,8 +634,5 @@ Takes no flags and talks to nothing.
 
 `kontora help` — print the command list. `kontora <verb> -h` prints that verb's
 own usage and exits without doing anything. Write it with nothing after the
-flag: `kontora note kon-1 -h` appends a note reading `-h`, because `note`,
-`summary` and `new` take free-form text as their last argument and parse flags
-only once, so the parser has already stopped at the ticket id. The other verbs
-re-parse after every positional, so `kontora delete kon-1 -h` does print usage,
-but the safe form is the same for all of them.
+flag: `kontora note kon-1 -h` appends a note reading `-h` instead of showing help.
+Use `kontora note -h`, without a ticket ID.

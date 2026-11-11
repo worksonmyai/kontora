@@ -190,9 +190,15 @@ func TestSkills(t *testing.T) {
 			want: []string{"only the supervisor", "Running children continue"},
 		},
 		{
-			name: "config reference exposes separate supervisor capacity",
+			name: "config reference exposes live worker and supervisor capacity",
 			args: []string{"show", "config", "Top-level fields"},
-			want: []string{"max_concurrent_epic_supervisors", "`4`", "negative values are rejected", "Requires restart", "four agent processes", "oldest eligible", "Unconfirmed", "Upgrade every daemon"},
+			want: []string{
+				"max_concurrent_agents", "max_concurrent_epic_supervisors", "`4`", "negative values are rejected",
+				"Reloads live without stopping running workers", "Reloads live without stopping running supervisors",
+				"four agent processes", "oldest eligible", "Unconfirmed", "Upgrade every daemon",
+				"auto_pick_up", "explicit runs, pipeline continuations, recovery, or scheduled automations",
+			},
+			notWant: []string{"Requires restart"},
 		},
 		{
 			name: "project reference exposes epic child defaults and request precedence",
@@ -205,6 +211,7 @@ func TestSkills(t *testing.T) {
 				"Existing\nassignments are not migrated", "detail-path edits", "Raw uploads and daemon startup",
 				"not durable provenance", "later\ninitialization can fill the blank", "neither accepts\n`none`",
 				"inheritance omits `pipeline`; standalone sends `none`", "lexical",
+				"ticket-level override for every pipeline step", "Leave it unset to keep each step's configured agent",
 			},
 		},
 		{
@@ -213,7 +220,22 @@ func TestSkills(t *testing.T) {
 			want: []string{
 				"Upgrade all clients and daemon binaries", "before adding\n`epic_child_pipeline`",
 				"Older strict-YAML loaders reject the key", "`default_pipeline` |",
+				"`--config` selects the file explicitly", "`$KONTORA_CONFIG`",
+				"when `XDG_CONFIG_HOME` is unset", "without merging",
 			},
+		},
+		{
+			name: "agent reference requires explicit executable wrappers",
+			args: []string{"show", "config", "agents"},
+			want: []string{
+				"resolves `binary` as an executable", "passes `args` literally",
+				"Shell functions and aliases do not apply", "Configure wrappers explicitly",
+			},
+		},
+		{
+			name: "config reference gives omitted retries a zero budget",
+			args: []string{"show", "config", "stages and pipelines"},
+			want: []string{"`max_retries` defaults to `0` when omitted", "the first failure pauses the ticket"},
 		},
 		{
 			name: "pipeline defaults reference is available as a section",
@@ -238,13 +260,17 @@ func TestSkills(t *testing.T) {
 			},
 		},
 		{
-			name: "reload reference pins both capacities",
+			name: "reload reference applies both capacities live",
 			args: []string{"show", "config", "Reloading"},
 			want: []string{
-				"max_concurrent_agents", "max_concurrent_epic_supervisors", "restart",
+				"`max_concurrent_agents` and `max_concurrent_epic_supervisors` reload live",
+				"Raising a limit lets queued work start", "Lowering a limit does not stop running",
+				"new work waits until usage falls below the limit",
 				"default_pipeline", "Run settings apply to the next run", "later creation and initialization",
 				"not existing assignments", "preserves stored nonempty pipelines", "invalid child-pipeline reference",
-				"keeps the running config",
+				"keeps the running config", "except for `plannotator.reviews_dir`",
+				"Enabling `auto_pick_up` queues existing eligible `todo` tickets",
+				"including tickets already queued", "recovery, and scheduled automations remain possible",
 			},
 		},
 		{
@@ -326,6 +352,22 @@ func TestSkills(t *testing.T) {
 				assert.NotContains(t, buf.String(), notWant)
 			}
 		})
+	}
+}
+
+func TestConfigSkillRestartOnlyFields(t *testing.T) {
+	var buf bytes.Buffer
+	require.NoError(t, Skills(&buf, []string{"show", "config", "Reloading"}))
+	_, restart, ok := strings.Cut(buf.String(), "These need a restart:")
+	require.True(t, ok)
+	for _, field := range []string{
+		"tickets_dir", "secondary_tickets_dirs", "worktrees_dir", "logs_dir",
+		"instance_name", "tmux_session", "plannotator.reviews_dir", "web", "metrics",
+	} {
+		assert.Contains(t, restart, "`"+field+"`")
+	}
+	for _, field := range []string{"max_concurrent_agents", "max_concurrent_epic_supervisors"} {
+		assert.NotContains(t, restart, field)
 	}
 }
 

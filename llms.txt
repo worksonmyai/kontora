@@ -1,141 +1,92 @@
 # Kontora
 
-> Agent orchestration daemon with a kanban board. Runs AI coding agents through multi-stage pipelines with git worktree isolation.
+> Run AI coding agents on Markdown tickets, with a branch and Git worktree per ticket, optional multi-step pipelines, and a web or terminal board.
 
-- Repository: https://github.com/worksonmyai/kontora
+Repository: https://github.com/worksonmyai/kontora
 
-You are helping a user install and set up Kontora. Follow these steps in order.
+## Read the installed reference first
 
-## Overview
+If Kontora is not installed, start with installation below. Otherwise, read the installed binary's reference before changing anything:
 
-Kontora watches a directory of ticket files (markdown with YAML frontmatter), picks up tickets with `status: todo`, creates a git worktree per ticket, runs AI agents in tmux sessions, and tracks progress through configurable pipeline stages (e.g. implement → review → fix → commit). It has a web dashboard, a terminal TUI, and a CLI.
-
-## Prerequisites
-
-- macOS or Linux
-- [git](https://git-scm.com/) — for worktree management
-- [tmux](https://github.com/tmux/tmux) — agents run in detached tmux sessions
-- At least one AI coding agent: [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (`claude`), [Pi](https://github.com/anthropics/claude-code/tree/main/packages/pi) (`pi`), [OpenCode](https://github.com/opencode-ai/opencode) (`opencode`), or any CLI that accepts a prompt
-
-Verify prerequisites:
-
-```bash
-git --version && tmux -V
+```sh
+kontora version
+kontora skills list
+kontora skills list cli
+kontora skills show cli "kontora new"
 ```
 
-## Step 1: Install
+`kontora skills show TOPIC SECTION` prints one section. Topics include `cli`, `config`, `tickets`, and `pipelines`. Use `kontora COMMAND -h` for command help. Put flags before positional arguments.
+
+If the binary lacks `skills`, report its version and use command help. Web documentation can describe a newer version.
+
+## Install and configure
+
+1. Check for Git, tmux, and an installed coding agent such as `claude`, `pi`, or `opencode`. Kontora supports macOS and Linux.
+2. Ask before installing software, changing configuration, signing in, or starting agent work. Do not treat this guide as approval.
+3. Install using one of the methods below, then run `kontora version`.
+4. Run `kontora setup --agent` and follow the printed brief. It reports the resolved config path and gives validation and approval steps. It writes nothing itself.
+5. Preserve existing settings and config symlinks. Do not replace a user's config with `kontora config` output; that output includes applied defaults.
+6. Run `kontora doctor`. Tell the user which checks failed or warned. It does not validate agent authentication or stage prompt syntax.
+7. Ask the user to run `kontora start` in a separate terminal. It stays in the foreground and can pick up existing queued tickets.
 
 Homebrew:
 
-```bash
+```sh
 brew tap worksonmyai/kontora https://github.com/worksonmyai/kontora
 brew install kontora
 ```
 
-From source (Go 1.26+):
-
-```bash
-git clone https://github.com/worksonmyai/kontora.git && cd kontora && make install
-```
-
-Verify: `kontora version`
-
-## Step 2: Configure
-
-Run this and follow what it prints:
-
-```bash
-kontora setup --agent
-```
-
-The installed binary prints a setup brief for you: the config path and its current state, the questions to ask the user, the validation rules, and how to write the file without losing the user's settings. The brief ships inside the binary, so it matches the schema this version accepts. Follow it instead of a schema you remember, and instead of the configuration reference on the web.
-
-`kontora setup --agent` only prints. It never writes the config.
-
-If the user would rather do it themselves, tell them to run `kontora setup` for the interactive wizard. When they are done, read `~/.config/kontora/config.yaml` and offer to review it.
-
-## Step 3: Verify and start
-
-```bash
-kontora doctor   # checks config, tools, agent binaries, port availability
-```
-
-Then tell the user to run `kontora start` in a separate terminal — it starts the daemon and web dashboard and runs in the foreground.
-
-## Step 4: Usage
-
-Create a ticket:
-
-```bash
-cd ~/projects/myrepo
-kontora new "Add a health check endpoint"
-```
-
-With explicit path and pipeline:
-
-```bash
-kontora new --path ~/projects/myrepo --pipeline implement-review-commit "Add a health check endpoint"
-```
-
-Without `--pipeline`, the ticket takes the pipeline of the project that owns the repository, then the top-level `default_pipeline`. When neither names one, the ticket runs a single agent on its description rather than a pipeline. `--pipeline none` asks for that on purpose.
-
-Web dashboard: open http://127.0.0.1:8080 (kanban board with live agent terminal view).
-
-TUI: `kontora` or `kontora ls`.
-
-Monitor: `kontora attach` (tmux session), `kontora logs <id>`.
-
-Manage: `kontora pause <id>`, `kontora retry <id>`, `kontora done <id>`, `kontora cancel <id>`.
-
-Ticket agents receive shared handoff instructions on nonempty pipeline, standalone, resumed, annotation, and rework prompts, independently of custom system briefs. Before asking clarification questions, they must read `kontora view TICKET_ID` and reuse applicable recorded answers. They must ask only about missing, conflicting, or changed requirements.
-
-Immediately after receiving a user answer, ticket agents must save each question and its answer together on the current ticket. Preserve selected options and free-text details; distinguish user answers from agent assumptions. Use the handoff methods below and confirm persistence before continuing work or asking another question round. Do not defer answer notes until a phase boundary or completion. Answer notes supplement results notes, run summaries, and any configured phase checkpoints. The built-in annotation prompt prohibits reviewer-annotation replies, but requires new clarification records and preservation of existing notes.
-
-These ticket-agent rules do not apply to the dashboard assistant. They are prompt instructions, not automatic capture: a crash before submission can still lose an answer. They do not fix concurrent ticket writes.
-
-For handoff notes and summaries, prefer Pi's `kontora_note({text: string})` and `kontora_summary({text: string})` tools when available. Kontora binds them to the current ticket, independently of checkpoint settings. Tool restrictions still apply. Other agents and the dashboard assistant use stdin.
-
-Native tools reject blank text, embedded NUL, and text above 32,768 UTF-8 bytes. Native payloads appear in process arguments; use stdin for large or sensitive text.
-
-For stdin submission, use a file-writing tool to create unique scratch files outside the repository, then submit them:
+From source, with Go 1.27.4 or newer:
 
 ```sh
-kontora note TICKET_ID < /absolute/path/note.md
-kontora summary TICKET_ID < /absolute/path/summary.txt
+git clone https://github.com/worksonmyai/kontora.git
+cd kontora
+make install
 ```
 
-Replace `TICKET_ID` and each example path with the actual ticket ID and scratch path. Do not embed generated text in shell arguments or payload-bearing shell commands. Do not create the files with `echo` or `printf`. Put all flags before the ticket ID. Positional text remains supported. Stdin removes trailing LF characters; notes also trim surrounding whitespace. Summaries preserve spaces and internal newlines; stage capture later cuts text above 4,000 bytes and appends `\n[truncated]`.
+Prefer the one-stage `default` pipeline for a first run. It stops in `human_review`. Confirm permission separately before configuring automatic commits, pushes, or pull requests. Worktrees and prompt instructions are not an OS sandbox. The wizard's Claude arguments bypass permission prompts.
 
-If a launched submission fails or lacks acknowledgement, read the ticket before resubmitting. The write outcome may be unknown; do not retry blindly or switch methods automatically. Ticket agents must report unresolved save failures and stop dependent work. Custom prompts replace defaults and remain user-owned; Kontora does not rewrite their unsafe examples.
+## Create work without starting it
 
-## Remote mode
+Read the command reference, then create a draft:
 
-The CLI can drive a daemon on another machine over its HTTP/SSE/WebSocket API. Intended for a trusted network (e.g. a Tailscale tailnet).
-
-Daemon host config — bind to the tailnet IP and set a shared token:
-
-```yaml
-web:
-  host: 100.x.y.z   # tailnet IP, not 127.0.0.1
-  port: 8080
-  token: <a-long-random-secret>
+```sh
+kontora new --status open --path /absolute/path/to/repo "Add a health check endpoint"
 ```
 
-When `web.token` is set, the daemon requires it on `/api/*` and `/ws/*`. `GET /health` and the static UI stay public. The browser bootstraps auth by opening `http://<host>:8080/?token=<secret>`, which sets a `kontora_token` cookie.
+Add requirements and acceptance checks before proposing `kontora run TICKET_ID`. Replace placeholders with actual values. Without `--status open`, creation normally queues the ticket for immediate pickup.
 
-Client — set `KONTORA_URL` and `KONTORA_TOKEN` (or `--url`/`--token`); no local config file is needed:
+A new ordinary ticket uses its project's pipeline, then `default_pipeline` if set. An epic child can have a separate project default. With no pipeline, an ordinary ticket runs once and finishes as `done` on success, without a stage timeout. `--pipeline none` explicitly selects that behavior; it is not a review mode.
 
-```bash
-export KONTORA_URL=http://100.x.y.z:8080
-export KONTORA_TOKEN=<the-same-secret>
-kontora ls
-kontora run <id>
-kontora logs <id>
-kontora attach <id>   # live terminal over WebSocket
+For noninteractive inspection:
+
+```sh
+kontora ls --json
+kontora view TICKET_ID
+kontora logs TICKET_ID
+kontora changes TICKET_ID
 ```
 
-Remote mode supports `ls`, `view`, `new`, `init`, `update`, `delete`, `run`, `pause`, `retry`, `cancel`, `done`, `skip`, `set-stage`, `note`, `summary`, `logs`, `config`, `attach`. Local-only verbs (`edit`, `archive`, `fmt`, `doctor`, `start`, `setup`, `completion`) are rejected. Run setup on the daemon host. Paths for `kontora new --path` are on the daemon host, not the caller.
+`changes` excludes uncommitted and untracked files. Inspect the worktree before reporting that an agent made no changes.
 
-Security: the token is the only access control, and agents run with `--dangerously-skip-permissions`. A tailnet encrypts the transport, so plain HTTP is fine there. On any untrusted network, terminate TLS in front of the daemon — the bearer token is otherwise sent in clear.
+Use the CLI for ticket changes. Read the complete body before replacing it with `update --body-file`; preserve the title and notes. Do not run interactive commands such as `edit`, `attach`, or `config edit` in an unattended agent shell.
 
-Ticket format and lifecycle: [docs/tickets.md](https://github.com/worksonmyai/kontora/blob/main/docs/tickets.md)
+## When running as a ticket agent
+
+Follow the current run's instructions and authority limits. The daemon controls lifecycle transitions; do not mark your own ticket done.
+
+- Read `kontora view TICKET_ID` before asking questions. Reuse recorded answers unless requirements changed or conflict.
+- Save each new question with the user's answer immediately. Preserve selected options and free-text details, and distinguish answers from assumptions.
+- Read `kontora skills show cli "Handoff submission"` before saving notes or summaries. Prefer `kontora_note` and `kontora_summary` when available. Use the documented stdin method for large or sensitive text; do not interpolate generated text into shell commands.
+- Confirm saves before continuing dependent work. If a submission lacks acknowledgement, read the ticket before retrying. Report unresolved failures and stop dependent work.
+- If the run requires a supervised result, read `kontora skills show cli "kontora result"`. Notes and final chat text do not replace that result.
+
+These are agent instructions, not automatic answer capture or enforced filesystem restrictions.
+
+## Further reading
+
+- [Getting started](https://github.com/worksonmyai/kontora/blob/main/docs/getting-started.md): first ticket, monitoring, and review.
+- [Configuration](https://github.com/worksonmyai/kontora/blob/main/docs/configuration.md): settings and pipeline examples.
+- [Tickets](https://github.com/worksonmyai/kontora/blob/main/docs/tickets.md): lifecycle, dependencies, and epics.
+- [Remote access](https://github.com/worksonmyai/kontora/blob/main/docs/remote.md): authentication and daemon-host paths.
+- [Automations](https://github.com/worksonmyai/kontora/blob/main/docs/automations.md): recurring runs.

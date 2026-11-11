@@ -21,9 +21,10 @@ var knownAgents = map[string]agentInfo{
 		binary:      "claude",
 		defaultArgs: "--dangerously-skip-permissions",
 	},
+	// Supervised Pi needs TUI mode. Keep sessions for recovery.
 	"pi": {
 		binary:      "pi",
-		defaultArgs: "-p --no-session",
+		defaultArgs: "",
 	},
 	"opencode": {
 		binary:      "opencode",
@@ -61,22 +62,23 @@ var setupPipelines = []struct {
 	{
 		name: "default",
 		desc: []string{
-			"Single-stage: sends the ticket description to the agent and runs",
-			"it to completion. Good for simple, self-contained tickets.",
+			"One code stage implements the ticket and runs relevant tests.",
+			"On success, it stops at human_review without a commit or push.",
 		},
 	},
 	{
 		name: "implement-review-commit",
 		desc: []string{
 			"Multi-stage pipeline: implement → review → fix-review → commit.",
-			"The agent implements the ticket, a second pass reviews the code,",
-			"a third pass fixes any issues found, then commits the result.",
+			"On success, it commits locally, then stops at human_review.",
+			"It does not push or create a pull request.",
 		},
 	},
 	{
 		desc: []string{
-			"New tickets run one agent on their description. Both pipelines",
-			"stay in the config, for --pipeline on a single ticket.",
+			"One agent pass on the ticket description, with no stage timeout.",
+			"On success, it finishes as done.",
+			"Both pipelines stay in the config for --pipeline on a ticket.",
 		},
 	},
 }
@@ -835,6 +837,11 @@ func buildConfigYAML(ans *SetupAnswers) string {
 	b.WriteString("  code:\n")
 	b.WriteString("    prompt: |\n")
 	b.WriteString("      {{ .Ticket.Description }}\n")
+	b.WriteString("\n")
+	b.WriteString("      Implement the ticket requirements.\n")
+	b.WriteString("      Run the relevant tests.\n")
+	b.WriteString("      Report failures and any work you could not verify.\n")
+	b.WriteString("      Do not commit, push, or create a pull request.\n")
 	b.WriteString("    timeout: 30m\n")
 	b.WriteString("\n")
 	b.WriteString("  implement:\n")
@@ -867,7 +874,8 @@ func buildConfigYAML(ans *SetupAnswers) string {
 	b.WriteString("      implementation of the ticket {{ .Ticket.ID }}.\n")
 	b.WriteString("\n")
 	b.WriteString("      You have full authorization to commit.\n")
-	b.WriteString("      Do not ask for confirmation — just do it.\n")
+	b.WriteString("      Do not ask for confirmation.\n")
+	b.WriteString("      Do not push or create a pull request.\n")
 	b.WriteString("    timeout: 5m\n")
 	b.WriteString("\n")
 
@@ -984,14 +992,23 @@ func RunSetup(configPath string, w io.Writer) error {
 		return err
 	}
 
+	printSetupNextSteps(w, configPath)
+	return nil
+}
+
+func printSetupNextSteps(w io.Writer, configPath string) {
+	configFlag := " --config '" + strings.ReplaceAll(configPath, "'", "'\\''") + "'"
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, styleBold.Render("Next steps:"))
-	fmt.Fprintf(w, "  %s  %s\n", styleCyan.Render("kontora doctor"), styleFaint.Render("Verify setup"))
-	fmt.Fprintf(w, "  %s  %s\n", styleCyan.Render("kontora start"), styleFaint.Render("Start the daemon"))
-	fmt.Fprintf(w, "  %s  %s\n", styleCyan.Render("kontora new --path ~/projects/myrepo \"My first ticket\""), styleFaint.Render("Create a ticket"))
-	fmt.Fprintf(w, "  %s  %s\n", styleCyan.Render("kontora setup --agent"), styleFaint.Render("Refine the config with a coding agent"))
-
-	return nil
+	fmt.Fprintf(w, "  %s\n", styleCyan.Render("kontora doctor"+configFlag))
+	fmt.Fprintf(w, "  %s\n", styleCyan.Render("kontora start"+configFlag))
+	fmt.Fprintln(w, "Keep that terminal open. In another terminal, create a draft:")
+	fmt.Fprintln(w, "Replace ~/projects/myrepo with your repository's main checkout.")
+	fmt.Fprintf(w, "  %s\n", styleCyan.Render("kontora new"+configFlag+" --status open --path ~/projects/myrepo \"My first ticket\""))
+	fmt.Fprintln(w, "Replace TICKET_ID with the printed ID. Add requirements before running:")
+	fmt.Fprintf(w, "  %s\n", styleCyan.Render("kontora edit"+configFlag+" TICKET_ID"))
+	fmt.Fprintf(w, "  %s\n", styleCyan.Render("kontora run"+configFlag+" TICKET_ID"))
+	fmt.Fprintf(w, "  %s  %s\n", styleCyan.Render("kontora setup"+configFlag+" --agent"), styleFaint.Render("Refine the config with a coding agent"))
 }
 
 // runSetupFn is the function used to run the setup wizard.

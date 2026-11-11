@@ -1,6 +1,21 @@
 # Documentation
 
-- [Configuration Reference](configuration.md) — all config fields, defaults, validation rules, and prompt template syntax.
-- [Ticket Format](tickets.md) — frontmatter fields, status lifecycle, history, notes, and ticket ID format.
-- [Automations](automations.md): configuration-backed agent runs, cron and interval schedules, overlap, results, logs, and recovery.
-- [Standing orchestrator components](orchestrator.md): disabled execution, checked delivery, evidence, and operator controls.
+Start with [Getting started](getting-started.md) to configure an agent, run your first ticket, and review its changes.
+
+## Guides
+
+- [Remote access](remote.md): connect to a daemon on another machine.
+- [Automations](automations.md): schedule recurring agent tasks without tickets.
+
+## Reference
+
+- [CLI](cli.md): commands, flags, and environment variables.
+- [Configuration](configuration.md): agents, pipelines, project defaults, and optional settings.
+- [Tickets](tickets.md): file format, lifecycle, dependencies, and epics.
+- [API](api.md): HTTP endpoints used by the board and remote CLI.
+
+For coding agents, start with [llms.txt](https://raw.githubusercontent.com/worksonmyai/kontora/main/llms.txt) or run `kontora skills list` for the installed version's reference.
+
+## Development
+
+[Orchestrator components](orchestrator.md) describes unfinished orchestration code. It is disabled in the production daemon and is not needed to run tickets or automations.

@@ -139,14 +139,15 @@ The following commands remain available to ordinary operators:
   Final skip marks the ticket done without recording a successful run.
 - `kontora set-stage ID STAGE` — select a named pipeline stage without retrying.
   Status and attempt stay unchanged; a `todo` ticket remains eligible for pickup.
-- `kontora retry ID` — reset a non-running ticket to `todo` with the attempt
-  counter cleared, and re-enqueue it. This is what resumes a `paused` ticket.
+- `kontora retry ID` — reset an initialized ticket to `todo` with the attempt
+  counter cleared. Refused for `in_progress`, `todo`, `archived`, and passive epics.
+  Use it to prepare a `paused` ticket to run again.
 - `kontora pause ID` — stop the running agent and park the ticket in `paused`.
 - `kontora run ID` — enqueue an `open` or `todo` ticket.
 
-Daemon/API skip queues dependency-ready work even with `auto_pick_up: false`.
-Disk-only skip does not enqueue; use `kontora run TICKET_ID` afterward when
-automatic pickup is off.
+Daemon/API retry and skip queue dependency-ready work even with `auto_pick_up: false`.
+Local CLI retry and skip only update the ticket file; they do not enqueue.
+Use `kontora run TICKET_ID` afterward when automatic pickup is off.
 
 `skip` and `set-stage` require a pipeline and stopped execution. Pause first,
 wait for termination, and close any active Plannotator review. A persisted

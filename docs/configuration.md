@@ -1,6 +1,18 @@
 # Configuration Reference
 
-Kontora reads configuration from a YAML file. It checks these paths in order: `.kontora/config.yaml` in the current directory, then `$XDG_CONFIG_HOME/kontora/config.yaml` (or `~/.config/kontora/config.yaml` if unset). Override with `--config`. Unknown fields are rejected. See also: [Ticket Format](tickets.md).
+For a first run, see [Getting started](getting-started.md). For ticket fields, see [Ticket Format](tickets.md).
+
+Sections: [Examples](#minimal-example), [Top-level fields](#top-level-fields),
+[Agents](#agents), [Pipelines](#pipelines), [Projects](#projects), [Reloading](#reloading-the-config).
+
+Kontora reads one YAML file, selected in this order:
+
+1. `--config`.
+2. `$KONTORA_CONFIG`.
+3. `.kontora/config.yaml` in the current directory, if it exists.
+4. `$XDG_CONFIG_HOME/kontora/config.yaml`, or `~/.config/kontora/config.yaml` when `XDG_CONFIG_HOME` is unset.
+
+Kontora does not merge these files. Unknown fields are rejected.
 
 ## Creating the config
 
@@ -34,11 +46,20 @@ kontora doctor   # validate config, tools, agent binaries, port
 kontora start    # start the daemon; runs until Ctrl-C
 ```
 
-Then, in another terminal:
+Then, in another terminal, create a draft:
 
 ```bash
-kontora new --path ~/projects/myrepo "Add a health check endpoint"
+kontora new --status open --path ~/projects/myrepo "Add a health check endpoint"
 ```
+
+Review the ticket, then run it explicitly. Replace `TICKET_ID` with the ID printed by `new`:
+
+```bash
+kontora run TICKET_ID
+```
+
+Without `--status open`, an ordinary `kontora new` creates a `todo` ticket.
+With the default `auto_pick_up: true`, a running daemon can start it immediately.
 
 ## Minimal example
 
@@ -52,7 +73,11 @@ agents:
 
 stages:
   code:
-    prompt: Write code.
+    prompt: |
+      {{ .Ticket.Description }}
+
+      Do NOT commit or push. Only implement the code and run tests.
+    timeout: 30m
 
 pipelines:
   default:
@@ -151,12 +176,19 @@ See [storage and backup](automations.md#storage-and-backup) before restoring sta
 
 ## Full example
 
+The default below runs one code stage, then stops at `human_review`.
+Selecting `implement-review-commit` opts into local commits before `human_review`, not after human approval.
+Use that pipeline only when the user authorizes commits. It does not authorize pushes or pull requests.
+These prompt instructions are not a sandbox.
+
 ```yaml
 tickets_dir: ~/.kontora/tickets
 branch_prefix: kontora
 worktrees_dir: ~/.kontora/worktrees
 logs_dir: ~/.kontora/logs
 editor: nvim
+default_agent: claude-sonnet
+default_pipeline: default
 max_concurrent_agents: 3
 max_concurrent_epic_supervisors: 4
 
@@ -185,6 +217,8 @@ stages:
   code:
     prompt: |
       {{ .Ticket.Description }}
+
+      Do NOT commit or push. Only implement the code and run tests.
     timeout: 30m
   implement:
     prompt: |
@@ -213,7 +247,8 @@ stages:
       implementation of the ticket {{ .Ticket.ID }}.
 
       You have full authorization to commit.
-      Do not ask for confirmation — just do it.
+      Do not ask for confirmation.
+      Do NOT push or open a pull request.
     timeout: 5m
 
 pipelines:
@@ -259,8 +294,9 @@ pipelines:
 | `pager` | no | none | Pager for `kontora view`, `logs` and `activity`, split on whitespace. Used only when stdout is a terminal. `$KONTORA_PAGER`, `$TICKET_PAGER` and `$PAGER` all outrank it, and it has no effect in remote mode, which reads no config. |
 | `default_agent` | no | (inferred) | Agent used for tickets without a pipeline. Defaults to `claude` if an agent with that name exists, otherwise inferred when there is exactly one agent. Must be set explicitly when multiple agents are defined and none is named `claude`. |
 | `default_pipeline` | no | — | Pipeline a new ticket takes when neither the command line nor a matching project names one (see [projects](#projects)). Unset, such a ticket runs one agent on its description instead. Must name a configured pipeline. |
-| `max_concurrent_agents` | no | `3` | Maximum simultaneous worker runs. Epic supervisors use a separate pool. Negative values are rejected. Reload changes the limit without stopping running agents. |
+| `max_concurrent_agents` | no | `3` | Maximum simultaneous worker runs. Epic supervisors use a separate pool. Zero or omission uses `3`; negative values are rejected. Reload changes the limit without stopping running agents. |
 | `max_concurrent_epic_supervisors` | no | `4` | Maximum simultaneous epic supervisors, in addition to worker capacity. Zero or omission uses `4`; negative values are rejected. Reload changes the limit without stopping running supervisors. |
+| `auto_pick_up` | no | `true` | Automatically claim eligible `todo` tickets. Set `false` to require explicit starts for new work. Explicit runs, pipeline continuations, and recovery remain possible. Reloads live; see [pickup behavior](#what-reloads-live). |
 | `instance_name` | no | `os.Hostname()` | Identifies this daemon when several run against one synced `tickets_dir`. Written to a ticket's `claimed_by` on pickup so daemons don't steal or kill each other's work (see [multi-machine tickets](tickets.md#running-on-multiple-machines)). Falls back to `default` if the hostname can't be read. Two machines that share a hostname must set this explicitly, or the protection can't tell them apart. |
 | `author` | no | the OS user | The name a note written by a person is signed with: the web composer's, and a bare `kontora note`. An agent's own note is signed with `$KONTORA_AGENT` instead, and Kontora's own with `kontora` (see [notes](tickets.md#notes)). Cannot contain `·`, a newline or `**`. |
 | `tmux_session` | no | `kontora` | The tmux session the daemon puts agent windows in. Allowed characters are `A-Z a-z 0-9 _ -`, 1 to 64 of them, and the name cannot start with `-`. Set a distinct value per daemon when you run more than one on a machine: startup cleanup, `kontora attach`, the TUI, and the web terminal are all scoped to this session, and two daemons sharing it can also signal each other's agents through the tmux `wait-for` channel when their ticket IDs collide. |
@@ -326,16 +362,13 @@ projects:
 
 ## web
 
-Optional HTTP server for monitoring and controlling tickets from a browser.
+Optional HTTP server for monitoring and controlling tickets from a browser. The example listens only on this machine. See [Remote access](remote.md) before changing the bind address.
 
 ```yaml
 web:
   enabled: true
-  host: 0.0.0.0
-  port: 9090
-  token: ""
-  allowed_hosts:
-    - kontora.tailnet.ts.net
+  host: 127.0.0.1
+  port: 8080
 ```
 
 | Field | Required | Default | Description |
@@ -384,13 +417,19 @@ external. One user-visible consequence: an `<img>` in a ticket body or note
 pointing at a remote URL does not load. Inline it as a `data:` URI or serve it
 from the daemon.
 
-When a token is set, the CLI can drive the daemon remotely with `KONTORA_URL` and `KONTORA_TOKEN` (see the Remote mode section of the README). The token is the only access control and agents run with `--dangerously-skip-permissions`; a tailnet encrypts the transport, but on untrusted networks put the daemon behind TLS.
+The CLI connects remotely with `KONTORA_URL` and `KONTORA_TOKEN`. See [Remote access](remote.md) for authentication, encryption, and daemon-host paths.
 
 See [API Reference](api.md) for the full list of endpoints.
 
 ## agents
 
-Map of agent name to its binary and arguments. Any CLI tool that accepts a prompt on stdin or as an argument can be an agent.
+Map of agent name to its binary and arguments. The rendered prompt is appended as the last argument.
+
+Kontora resolves `binary` as an executable and passes `args` literally.
+It does not use shell functions or aliases, or read your interactive shell configuration.
+Configure wrappers explicitly in `binary` and `args`; an alias around `claude` does not wrap Kontora's runs.
+Binary lookup uses the daemon's `PATH`, then `~/.local/bin`, `/opt/homebrew/bin`, `/usr/local/bin`, `/usr/bin`, and `/bin`.
+Use an absolute binary path when needed.
 
 ```yaml
 agents:
@@ -658,7 +697,7 @@ pipelines:
 - A custom status declared in top-level `statuses:` — park the ticket in that status.
 
 **`on_failure`**:
-- `retry` — re-run the same stage (up to `max_retries`, then pause).
+- `retry` — re-run the same stage (up to `max_retries`, then pause). Omitting `max_retries` means `0`, so the first failure pauses without a retry.
 - `back` — go back to the previous stage. Not allowed on the first stage.
 - `pause` — set the ticket to `paused`.
 - `human_review` — park the ticket in `human_review`.
@@ -699,7 +738,7 @@ projects:
 | `path` | yes | Repository the entry applies to. |
 | `pipeline` | no | Ordinary pipeline default at creation or initialization. |
 | `epic_child_pipeline` | no | Pipeline default for ordinary tickets whose resolved parent is an epic, passive or agent. Falls back to `pipeline` when unset. |
-| `agent` | no | Agent written into new tickets for this repository. |
+| `agent` | no | Agent written into new tickets for this repository. A ticket-level agent overrides the agent on every pipeline step. |
 | `prefix` | no | Ticket-ID prefix for this repository, instead of one derived from the directory name. Lowercase letters and digits only. |
 | `branch_prefix` | no | Overrides the top-level `branch_prefix` for this repository. |
 | `branch_naming` | no | Overrides the top-level [`branch_naming`](#branch-naming) mode for this repository. |
@@ -741,6 +780,9 @@ and bypasses. These instructions are not runtime enforcement; see
 Agent selection remains independent. A pipeline override or `--pipeline none`
 still allows the project to supply the agent. Initialization preserves a stored
 agent unless the request overrides it.
+A ticket-level agent replaces the configured agent on every pipeline step, not just the first.
+Set a project's `agent` only when one agent should run the whole pipeline for that repository.
+Leave it unset to keep each step's agent.
 
 Existing assignments are not migrated. A config reload, reparenting, or a path
 edit in ticket details does not replace the stored pipeline. Operators must
@@ -1509,7 +1551,8 @@ usage falls below the limit.
 
 Enabling `auto_pick_up` queues existing claimable `todo` tickets. Disabling it
 stops automatic starts, including tickets already queued. Explicit runs and
-pipeline continuations still start.
+pipeline continuations still start. Recovery of interrupted work and scheduled
+automations are not disabled by `auto_pick_up: false`.
 
 Editing `projects`, including `epic_child_pipeline`, or `default_pipeline` reloads live.
 The new defaults affect later creation and initialization, without rewriting existing

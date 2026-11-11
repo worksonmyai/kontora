@@ -3,7 +3,9 @@
 [![CI](https://github.com/worksonmyai/kontora/actions/workflows/ci.yml/badge.svg)](https://github.com/worksonmyai/kontora/actions/workflows/ci.yml)
 [![Go Report Card](https://goreportcard.com/badge/github.com/worksonmyai/kontora)](https://goreportcard.com/report/github.com/worksonmyai/kontora)
 
-Kontora is an agent orchestration tool. You write tickets as markdown files, it runs AI agents through multi-step pipelines, each in its own git worktree and tmux session.
+Kontora runs AI coding agents on tasks you write as Markdown tickets. You can queue work across repositories, watch agents in a web or terminal board, and review their changes.
+
+Each ticket gets a branch and a separate checkout, called a Git worktree. Use one agent run per ticket, or a pipeline that implements, reviews, and fixes code in separate steps.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/dark.png">
@@ -12,34 +14,23 @@ Kontora is an agent orchestration tool. You write tickets as markdown files, it 
 </picture>
 
 <details>
-<summary>ticket terminal view</summary>
+<summary>Live agent terminal</summary>
 <br>
-<img alt="The Kontora dashboard with a ticket open on its terminal tab, showing live agent output" src="docs/dark-tmux.png">
+<img alt="A ticket's terminal tab showing live agent output" src="docs/dark-tmux.png">
 </details>
-
-## Features
-
-- **Multi-stage pipelines** with per-stage retry and failure policies (implement, review, fix, commit)
-- **Git worktree isolation** per ticket, so agents never conflict
-- **Dependency-aware scheduling**: a ticket waits until every ticket it depends on is closed
-- **Any agent** that has a CLI (Claude Code, Pi, etc.)
-- **Web dashboard and TUI** kanban board
-- **Per-ticket cost estimates** from recorded token usage and an offline model-price catalog
 
 ## Install
 
-Ask your AI agent:
+You need macOS or Linux, Git, tmux, and an installed coding agent such as Claude Code, Pi, or OpenCode. Sign in to your agent before using it with Kontora.
 
-> Help me install and set up Kontora: https://raw.githubusercontent.com/worksonmyai/kontora/main/llms.txt
-
-Or install manually:
+With Homebrew:
 
 ```bash
 brew tap worksonmyai/kontora https://github.com/worksonmyai/kontora
 brew install kontora
 ```
 
-Or build from source (requires Go 1.26+):
+Or build from source with Go 1.27.4 or newer:
 
 ```bash
 git clone https://github.com/worksonmyai/kontora.git
@@ -47,213 +38,60 @@ cd kontora
 make install
 ```
 
-What changed in each release is in [CHANGELOG.md](CHANGELOG.md).
+To ask a coding agent for help:
 
-## Quick start
+> Help me install and set up Kontora: https://raw.githubusercontent.com/worksonmyai/kontora/main/llms.txt
 
-Create the config:
+## Run your first ticket
+
+Create a config and check your tools:
 
 ```bash
 kontora setup
+kontora doctor
 ```
 
-The wizard walks you through agent selection, directories, and settings, then writes `~/.config/kontora/config.yaml`.
+Choose the `default` pipeline for your first run. It asks the agent to implement and test, then waits in `human_review`. The optional `implement-review-commit` pipeline also commits before waiting for you. Neither starter pipeline asks the agent to push.
 
-To have a coding agent write the config instead, run `kontora setup --agent`. It prints a brief for the agent to follow and writes nothing itself. The brief is embedded in the binary, so it describes the schema the installed version accepts. Use the same command later to add agents, stages, pipelines, or projects.
+The wizard normally writes `~/.config/kontora/config.yaml`. It does not overwrite an existing config. For agent-assisted configuration, use `kontora setup --agent`; it prints instructions without writing anything.
 
-Start the daemon:
+> [!WARNING]
+> The wizard's Claude arguments include `--dangerously-skip-permissions`. Worktrees separate checkouts, but do not restrict an agent's filesystem or network access. Use agent permissions or an external sandbox appropriate for your repositories.
+
+Start the daemon, which runs tickets and serves the board. Keep this terminal open until you stop it with Ctrl-C:
 
 ```bash
 kontora start
 ```
 
-Create a ticket:
+In another terminal, create a draft in your repository:
 
 ```bash
-cd ~/projects/myproject
-kontora new "Add a health check endpoint"
+cd ~/projects/myrepo
+kontora new --status open "Add a health check endpoint"
 ```
 
-Kontora picks it up, creates a git worktree, runs the agent, and marks the ticket done on success (or pauses it on failure).
-
-Open the web dashboard at http://127.0.0.1:8080 or use the TUI:
+The command prints a ticket ID. Replace `TICKET_ID` below with that ID:
 
 ```bash
-kontora        # kanban board TUI
-kontora attach # attach to the agent's tmux session
+kontora edit TICKET_ID
+kontora run TICKET_ID
 ```
 
-Every command, flag, and environment variable is listed in [docs/cli.md](docs/cli.md).
+Add the requirements and expected tests before running. Without `--status open`, `kontora new` creates a queued ticket that a running daemon can pick up immediately.
 
-## Configuration
+Open http://127.0.0.1:8080 or run `kontora` for the terminal board. When the ticket reaches `human_review`, inspect its changes before closing it. Kontora does not automatically merge the ticket's branch.
 
-Config is stored in `~/.config/kontora/config.yaml` and defines five things: agents, stages, pipelines, projects, and hooks.
+See [Getting started](docs/getting-started.md) for monitoring, review, retries, and configuration choices.
 
-**Agents** are binaries kontora spawns — Claude Code, Aider, or anything with a CLI:
+## Next steps
 
-```yaml
-agents:
-  claude:
-    binary: claude
-    args: ["--dangerously-skip-permissions", "--model", "sonnet"]
-```
+- [Configuration](docs/configuration.md): choose agents, pipelines, and per-repository defaults.
+- [CLI reference](docs/cli.md): create, run, inspect, and manage tickets.
+- [Tickets](docs/tickets.md): dependencies, epics, schedules, and file format.
+- [Automations](docs/automations.md): recurring agent tasks without tickets.
+- [Remote access](docs/remote.md): use a daemon on another machine.
+- [API reference](docs/api.md): integrate with the board or inspect [cost estimates](docs/api.md#cost-estimates).
+- [Changelog](CHANGELOG.md): release history.
 
-The `args` set the model this agent runs on by default. A stage can override it.
-
-> [!WARNING]
-> The default config runs Claude Code with `--dangerously-skip-permissions`.
-
-**Stages** are prompt templates. They tell the agent what to do, and on which model:
-
-```yaml
-stages:
-  code:
-    prompt: |
-      {{ .Ticket.Description }}
-    timeout: 30m
-  commit:
-    prompt: Stage, commit, and push.
-    timeout: 5m
-    model: haiku
-```
-
-Templates use Go syntax. `{{ .Ticket.Title }}`, `{{ .Ticket.Description }}`, `{{ file "PLAN.md" }}` (reads a file from the worktree).
-
-**Pipelines** wire stages to agents in sequence, with success/failure policies per step:
-
-```yaml
-pipelines:
-  default:
-    - stage: code
-      agent: claude
-      on_success: human_review
-      on_failure: pause
-
-  implement-review-commit:
-    - stage: implement
-      agent: claude
-      on_success: next
-      on_failure: pause
-    - stage: review
-      agent: claude
-      on_success: next
-      on_failure: retry
-      max_retries: 1
-    - stage: commit
-      agent: claude
-      on_success: human_review
-      on_failure: retry
-      max_retries: 1
-```
-
-Stages share a git worktree. Artifacts are passed as files — one stage writes `PLAN.md`, the next reads it via `{{ file "PLAN.md" }}`.
-
-`default_pipeline` names the pipeline a new ticket runs when neither `--pipeline` nor its project names one:
-
-```yaml
-default_pipeline: implement-review-commit
-```
-
-Leave it unset and such a ticket runs one agent on its description, with no stages.
-
-**Projects** are optional. Each one names a repository and the pipeline, agent, and branch prefix that new tickets for it should default to:
-
-```yaml
-projects:
-  kontora:
-    path: ~/projects/kontora
-    pipeline: implement-review-commit
-    agent: claude
-    branch_prefix: kontora
-```
-
-`kontora new --path ~/projects/kontora "..."` then writes both fields into the ticket. Pass `--pipeline none` for a standalone ticket instead.
-
-**Hooks** run your own shell commands at lifecycle boundaries. A fresh worktree carries no gitignored files, so this is where the `.env` an agent needs comes from:
-
-```yaml
-projects:
-  kontora:
-    path: ~/projects/kontora
-    hooks:
-      worktree_created:
-        - name: copy env file
-          run: cp "$KONTORA_REPO_PATH/.env" .env
-```
-
-Hooks run in the worktree, get the ticket's context as `KONTORA_*` variables, and by default pause the ticket when one fails.
-
-Full reference: [docs/configuration.md](docs/configuration.md)
-
-## Model price estimates
-
-Ticket details estimate each finished run from the token counts in its activity
-sidecar. Ticket and stage totals show coverage when a sidecar or model rate is
-missing, so an unknown cost is not displayed as zero. See the [cost API
-reference](docs/api.md#cost-estimates) for the payload and limits.
-
-Kontora ships an offline snapshot of OpenRouter's standard top-provider text
-token rates. Model pricing data is provided by
-[OpenRouter](https://openrouter.ai/). Builds and tests do not contact OpenRouter.
-Maintainers refresh the committed snapshot explicitly:
-
-```bash
-make model-prices
-```
-
-Old runs use the snapshot in the current binary, not the price from the day they
-ran. Conditional prices and model calls without complete activity sidecars are
-not included, so the result is an estimate rather than a bill.
-
-## Remote mode
-
-The CLI can drive a daemon running on another machine over the same HTTP API the web UI uses. This is meant for a trusted network such as a [Tailscale](https://tailscale.com) tailnet.
-
-On the daemon host, bind the web server to the tailnet IP and set a shared token:
-
-```yaml
-web:
-  host: 100.x.y.z   # tailnet IP, not 127.0.0.1
-  port: 8080
-  token: <a-long-random-secret>
-```
-
-Instead of writing the token into the config file, you can pass it to `kontora start` through the `KONTORA_WEB_TOKEN` environment variable, which overrides `web.token`. This lets a deployment inject it from a secret. It is a daemon-side setting, unrelated to the CLI's own `KONTORA_TOKEN`.
-
-When `web.token` is set, the daemon requires it on every `/api/*` and `/ws/*` request. `GET /health` and the static UI stay public. The browser UI keeps working: open `http://<host>:8080/?token=<secret>` once and it stores a `kontora_token` cookie for subsequent API, SSE, and WebSocket calls.
-
-From another host, point the CLI at the daemon with `KONTORA_URL` and `KONTORA_TOKEN` (or `--url`/`--token`):
-
-```bash
-export KONTORA_URL=http://100.x.y.z:8080
-export KONTORA_TOKEN=<the-same-secret>
-
-kontora ls
-kontora run <id>
-kontora logs <id>
-kontora attach <id>   # live terminal over WebSocket
-```
-
-Remote mode needs no local config file. It supports `ls`, `view`, `new`, `init`, `update`, `delete`, `run`, `schedule`, `pause`, `retry`, `cancel`, `done`, `move`, `skip`, `set-stage`, `note`, `summary`, `logs`, `config`, and `attach`. Verbs that act on local files (`edit`, `search`, `archive`, `doctor`, `start`, `setup`) are rejected in remote mode. `fmt` and `completion` touch neither the daemon nor a config file, so they keep working. Configure the daemon host by running `kontora setup` there. Paths passed to `kontora new --path` refer to the daemon host's filesystem, not the caller's.
-
-> [!WARNING]
-> The token is the only thing gating remote access, and the default config runs agents with `--dangerously-skip-permissions` (effectively remote code execution). On a tailnet the transport is already encrypted, so plain HTTP is acceptable. On any untrusted network, put the daemon behind TLS (e.g. a reverse proxy) — the token alone is sent in clear over plain HTTP.
-
-## Tickets
-
-Tickets are markdown files with YAML frontmatter, inspired by [wedow/ticket](https://github.com/wedow/ticket):
-
-```yaml
----
-id: kon-q88f
-kontora: true
-status: todo
-pipeline: default
-path: ~/projects/kontora
----
-# Add GoReleaser to kontora
-
-Automate GitHub Releases with zig cc cross-compilation.
-```
-
-Create them with `kontora new` or write them by hand. Kontora lists any valid ticket with an `id`, but `kontora: true` is required before the daemon will execute it; otherwise the UI marks it as `not a kontora ticket`. Full reference: [docs/tickets.md](docs/tickets.md)
+Tickets are Markdown files with YAML frontmatter, inspired by [wedow/ticket](https://github.com/wedow/ticket). No database is required.

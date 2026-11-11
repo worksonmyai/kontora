@@ -15,7 +15,3 @@ Start with [Getting started](getting-started.md) to configure an agent, run your
 - [API](api.md): HTTP endpoints used by the board and remote CLI.
 
 For coding agents, start with [llms.txt](https://raw.githubusercontent.com/worksonmyai/kontora/main/llms.txt) or run `kontora skills list` for the installed version's reference.
-
-## Development
-
-[Orchestrator components](orchestrator.md) describes unfinished orchestration code. It is disabled in the production daemon and is not needed to run tickets or automations.

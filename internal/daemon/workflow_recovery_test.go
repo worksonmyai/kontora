@@ -236,6 +236,10 @@ func TestWorkflowRecoveryPreservesOperatorState(t *testing.T) {
 					require.NoError(t, f.tkt.SetField("graph_state", state))
 				case "new invocation":
 					require.NoError(t, f.tkt.SetField("invocation_id", "new-invocation"))
+					f.d.windows.list = func(string) ([]string, error) {
+						t.Fatal("stale graph journal must not inspect a replacement invocation's window")
+						return []string{f.tkt.ID}, nil
+					}
 				case "foreign claim":
 					require.NoError(t, f.tkt.SetField("claimed_by", "other-instance"))
 				case "imported ownership":
@@ -280,7 +284,15 @@ func TestWorkflowRecoveryPreservesOperatorState(t *testing.T) {
 				assert.Equal(t, before.InvocationID, got.InvocationID)
 				assert.Equal(t, before.GraphState, got.GraphState)
 				assert.Empty(t, got.History)
-				assert.Equal(t, pendingHook, f.d.sem.used > 0)
+				assert.Equal(t, pendingHook || change == "new invocation", f.d.sem.used > 0)
+				if change == "new invocation" {
+					assert.Contains(t, f.d.recoveredReservations, got.ID)
+					assert.Equal(t, got.ID, f.d.runningBranches[f.rec.RepoCommonDir+"\x00"+f.rec.Branch])
+					rec, err := loadExecution(f.h.cfg, got.ID)
+					require.NoError(t, err)
+					assert.Equal(t, f.rec, rec)
+					assert.Equal(t, got.InvocationID, f.reconcile(t).InvocationID)
+				}
 			})
 		}
 	}

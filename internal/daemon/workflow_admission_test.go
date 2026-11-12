@@ -379,31 +379,43 @@ func TestWorkflowAdmissionStaleCompletion(t *testing.T) {
 	}
 }
 
-func TestWorkflowAdmissionInterruptedCheck(t *testing.T) {
+func TestWorkflowAdmissionInterruptedNode(t *testing.T) {
 	for _, tc := range []struct {
-		name       string
-		invocation bool
-		journal    bool
-		reason     string
+		name         string
+		invocation   bool
+		journal      bool
+		reason       string
+		agent        bool
+		interruption error
+		runnerErr    error
 	}{
-		{name: "invocation and journal", invocation: true, journal: true, reason: "journal requires recovery"},
-		{name: "invocation only", invocation: true, reason: "recovery acknowledgement"},
-		{name: "journal only", journal: true, reason: "journal requires recovery"},
+		{name: "invocation and journal", invocation: true, journal: true, interruption: context.DeadlineExceeded, reason: "journal requires recovery"},
+		{name: "invocation only", invocation: true, interruption: context.DeadlineExceeded, reason: "recovery acknowledgement"},
+		{name: "journal only", journal: true, interruption: context.DeadlineExceeded, reason: "journal requires recovery"},
+		{name: "agent interruption", invocation: true, journal: true, agent: true, interruption: context.DeadlineExceeded, reason: "journal requires recovery"},
+		{name: "check timeout error", invocation: true, journal: true, runnerErr: fmt.Errorf("runner timeout: %w", context.DeadlineExceeded), reason: "journal requires recovery"},
+		{name: "agent timeout error", invocation: true, journal: true, agent: true, runnerErr: fmt.Errorf("runner timeout: %w", context.DeadlineExceeded), reason: "journal requires recovery"},
+		{name: "check cancellation error", invocation: true, journal: true, runnerErr: fmt.Errorf("runner stopped: %w", context.Canceled), reason: "journal requires recovery"},
+		{name: "agent cancellation error", invocation: true, journal: true, agent: true, runnerErr: fmt.Errorf("runner stopped: %w", context.Canceled), reason: "journal requires recovery"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t)
 			graph := workflowAdmissionGraph()
-			graph.Nodes[0] = config.WorkflowNode{ID: "work", Type: "check", Command: "exit 0", Timeout: config.Duration{Duration: time.Minute}}
-			graph.Edges[0].From.Port = "pass"
-			graph.Edges[1].From.Port = "fail"
+			if !tc.agent {
+				graph.Nodes[0] = config.WorkflowNode{ID: "work", Type: "check", Command: "exit 0", Timeout: config.Duration{Duration: time.Minute}}
+				graph.Edges[0].From.Port = "pass"
+				graph.Edges[1].From.Port = "fail"
+			}
 			h.cfg.Pipelines["graph"] = config.PipelineDefinition{Graph: graph}
 			var calls int
 			d := h.newDaemon(h.cfg, WithRunner(func(_ context.Context, p RunnerParams) (process.Result, error) {
 				calls++
-				require.Equal(t, "/bin/sh", p.Binary)
-				require.Equal(t, []string{"-c", "exit 0"}, p.Args)
+				if !tc.agent {
+					require.Equal(t, "/bin/sh", p.Binary)
+					require.Equal(t, []string{"-c", "exit 0"}, p.Args)
+				}
 				now := time.Now()
-				return process.Result{StartedAt: now, ExitedAt: now, Termination: process.TerminationProcessGroupGone, Interruption: context.DeadlineExceeded}, nil
+				return process.Result{StartedAt: now, ExitedAt: now, Termination: process.TerminationProcessGroupGone, Interruption: tc.interruption}, tc.runnerErr
 			}))
 			d.graphWorkflowsReady = true
 			path := h.writeTicket("tst-interrupted.md", h.taskMD("tst-interrupted", "todo", "graph"))

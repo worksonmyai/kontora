@@ -648,6 +648,10 @@ func (d *Daemon) reconcileGraphExecutionLocked(cfg *config.Config, t *ticket.Tic
 		d.reserveRecoveredExecutionLocked(t)
 		return true
 	}
+	if t.InvocationID != "" && t.InvocationID != rec.Invocation.ID && !preparingExecutionBindingMatches(t, rec) {
+		d.reserveRecoveredExecutionLocked(t)
+		return true
+	}
 	if rec.HookTermination == "pending" {
 		d.pauseGraphRecoveryLocked(t, path, rec, "workflow recovery: hook termination is unconfirmed; inspect hook processes before Retry", true)
 		return true
@@ -1146,8 +1150,10 @@ func (d *Daemon) recordValidatedRun(ctx context.Context, stage, agent, pipelineN
 	if ctx.Err() != nil {
 		outcome = metrics.OutcomeCancelled
 	}
-	elapsed := run.Result.ExitedAt.Sub(run.Result.StartedAt)
-	elapsed = max(elapsed, 0)
+	var elapsed time.Duration
+	if !run.Result.StartedAt.IsZero() && !run.Result.ExitedAt.IsZero() {
+		elapsed = max(run.Result.ExitedAt.Sub(run.Result.StartedAt), 0)
+	}
 	d.metrics.StageRun(ctx, metrics.StageAttrs{Stage: stage, Agent: agent, Pipeline: pipelineName,
 		Outcome: outcome, ExitCode: run.Result.ExitCode}, elapsed)
 }

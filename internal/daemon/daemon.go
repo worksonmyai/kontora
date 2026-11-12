@@ -2750,7 +2750,7 @@ func (d *Daemon) runAgentOnce(taskCtx context.Context, t *ticket.Ticket, p spawn
 	logStart := fileSize(params.LogFile)
 	eventsFile := stageEventsPath(p.cfg, p.ticketID, p.stageName, p.run)
 	result, runnerErr := d.runner(taskCtx, params)
-	recordRunnerTermination(execution, result)
+	recordRunnerResult(execution, &result, runnerErr)
 	if workflowTerminationUncertain(p, result, runnerErr) {
 		d.retainUncertainExecution(taskCtx, t, execution)
 		p.log.Error("runner termination unconfirmed; execution state retained", "err", runnerErr)

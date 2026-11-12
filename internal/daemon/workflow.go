@@ -172,9 +172,12 @@ func workflowTerminationUncertain(p spawnAgentParams, result process.Result, err
 	return p.graphState != nil && result.Termination == process.TerminationUnknown
 }
 
-func recordRunnerTermination(rec *executionRecord, result process.Result) {
+func recordRunnerResult(rec *executionRecord, result *process.Result, err error) {
 	if rec != nil {
 		rec.RunnerTermination = result.Termination
+		if rec.GraphBefore != nil {
+			preserveWorkflowInterruption(result, err)
+		}
 	}
 }
 
@@ -370,10 +373,14 @@ func (d *Daemon) finishGraphTicket(root, task context.Context, cfg *config.Confi
 		InvocationID: rec.Invocation.ID, Outcome: run.Outcome, Verdict: run.Verdict, ExitCode: run.Result.ExitCode,
 		InfrastructureError: run.ForcePause, Interrupted: run.Result.Interruption != nil || task.Err() != nil}
 	after := pipeline.AdvanceGraph(cfg.Pipelines[t.Pipeline].Graph, t.Stage, t.GraphState, completion)
-	if after.Reason != "" && run.OutcomeReason != "" {
-		after.Reason = run.OutcomeReason
+	if after.Reason != "" && run.OutcomeReason != "" && (run.Outcome != "complete" || run.ForcePause) {
+		after.Reason += ": " + run.OutcomeReason
 	}
-	finish := func(saved *ticket.Ticket) { d.finishWorkflowExit(root, saved, p, node, run) }
+	finish := func(saved *ticket.Ticket) {
+		// Recovery invokes this callback after commit, when the task context may already be cancelled.
+		d.recordValidatedRun(context.WithoutCancel(root), node.ID, p.agentName, saved.Pipeline, run)
+		d.finishWorkflowExit(root, saved, p, node, run)
+	}
 	saved, err := d.patchFinalExecution(context.WithoutCancel(task), t, path, rec, func(current *ticket.Ticket) error {
 		appendRunHistory(current, run, p.agentName, node.ID, p.run)
 		if err := installGraphAdvance(current, after); err != nil {

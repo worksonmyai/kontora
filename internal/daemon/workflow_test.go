@@ -17,6 +17,7 @@ import (
 	"github.com/worksonmyai/kontora/internal/process"
 	"github.com/worksonmyai/kontora/internal/session"
 	"github.com/worksonmyai/kontora/internal/ticket"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 )
 
 func workflowTestGraph() *config.WorkflowGraph {
@@ -51,15 +52,18 @@ func TestWorkflowExecution(t *testing.T) {
 		blocked       bool
 		endStatus     string
 		dirty         bool
+		reason        string
+		outcome       string
 	}{
 		{name: "approval", approveAt: 1, status: ticket.StatusHumanReview, runs: 2},
 		{name: "done cleans worktree", approveAt: 1, endStatus: "done", status: ticket.StatusDone, runs: 2},
 		{name: "done preserves dirty worktree", approveAt: 1, endStatus: "done", status: ticket.StatusDone, runs: 2, dirty: true},
 		{name: "three repairs then approval", approveAt: 4, status: ticket.StatusHumanReview, runs: 8, loops: 3},
-		{name: "exhaustion", status: ticket.StatusPaused, runs: 8, loops: 3},
-		{name: "undeclared verdict", status: ticket.StatusPaused, runs: 2, badVerdict: true},
-		{name: "missing report", status: ticket.StatusPaused, runs: 2, missingReport: true},
-		{name: "blocked review", status: ticket.StatusPaused, runs: 2, blocked: true},
+		{name: "exhaustion", status: ticket.StatusPaused, runs: 8, loops: 3, reason: "loop revise exhausted"},
+		{name: "invalid end status", approveAt: 1, endStatus: "todo", status: ticket.StatusPaused, runs: 2, reason: "invalid end status"},
+		{name: "undeclared verdict", status: ticket.StatusPaused, runs: 2, badVerdict: true, reason: "executable protocol error", outcome: "protocol_error"},
+		{name: "missing report", status: ticket.StatusPaused, runs: 2, missingReport: true, reason: "executable protocol error", outcome: "protocol_error"},
+		{name: "blocked review", status: ticket.StatusPaused, runs: 2, blocked: true, reason: "executable blocked", outcome: "blocked"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t)
@@ -107,16 +111,22 @@ func TestWorkflowExecution(t *testing.T) {
 				now := time.Now()
 				return process.Result{StartedAt: now, ExitedAt: now, Termination: process.TerminationProcessGroupGone}, err
 			}
-			d := h.newDaemon(cfg, WithRunner(runner), WithFinalSummarySpawner(spawns.spawner("workflow summary")))
+			d, collect := h.newMetricsDaemon(cfg, WithRunner(runner), WithFinalSummarySpawner(spawns.spawner("workflow summary")))
 			d.graphWorkflowsReady = true
 			h.writeTicket("tst-graph.md", h.taskMD("tst-graph", "todo", "graph"))
 			ctx, cancel := context.WithCancel(context.Background())
 			errCh := make(chan error, 1)
 			go func() { errCh <- d.Run(ctx) }()
-			t.Cleanup(func() { cancel(); require.NoError(t, <-errCh) })
+			stop := sync.OnceFunc(func() { cancel(); require.NoError(t, <-errCh) })
+			t.Cleanup(stop)
 			got := h.waitForStatus("tst-graph.md", tc.status, 15*time.Second)
 			require.Len(t, got.History, tc.runs)
 			require.Equal(t, tc.loops, got.GraphState.LoopCounts["revise"])
+			reason := tc.reason
+			if tc.outcome != "" {
+				reason += ": " + got.History[len(got.History)-1].OutcomeReason
+			}
+			require.Equal(t, reason, got.LastError)
 			wtPath := filepath.Join(h.wtDir, h.repoName, "tst-graph")
 			if tc.status == ticket.StatusDone && !tc.dirty {
 				require.Eventually(t, func() bool { _, err := os.Stat(wtPath); return os.IsNotExist(err) }, 5*time.Second, 10*time.Millisecond)
@@ -135,6 +145,15 @@ func TestWorkflowExecution(t *testing.T) {
 				require.False(t, visits[row.NodeVisitID])
 				visits[row.NodeVisitID] = true
 			}
+			stop()
+			outcomes := map[string]int64{"success": int64(tc.runs)}
+			if tc.outcome != "" {
+				outcomes["success"]--
+				outcomes[tc.outcome] = 1
+			}
+			requireWorkflowRunMetrics(t, collect(), outcomes,
+				map[string]int64{"implement": int64(tc.runs / 2), "review": int64(tc.runs / 2)},
+				map[string]int64{"agent1": int64(tc.runs / 2), "agent2": int64(tc.runs / 2)})
 			mu.Lock()
 			defer mu.Unlock()
 			require.Len(t, launches, tc.runs)
@@ -182,13 +201,16 @@ func TestWorkflowCheck(t *testing.T) {
 				{From: config.WorkflowPort{Node: "test", Port: "fail"}, To: "fail"},
 			}}}
 			calls := make(chan RunnerParams, 1)
-			d := h.newDaemon(cfg, WithRunner(func(_ context.Context, p RunnerParams) (process.Result, error) {
+			d, collect := h.newMetricsDaemon(cfg, WithRunner(func(_ context.Context, p RunnerParams) (process.Result, error) {
 				calls <- p
 				if tc.dirty {
 					require.NoError(t, os.WriteFile(filepath.Join(p.Dir, "keep.txt"), []byte("work"), 0o600))
 				}
 				now := time.Now()
-				return process.Result{ExitCode: tc.exit, StartedAt: now, ExitedAt: now, Termination: process.TerminationProcessGroupGone, Interruption: tc.interruption}, tc.runnerErr
+				if tc.runnerErr != nil {
+					return process.Result{ExitCode: -1, ExitedAt: now, Termination: process.TerminationNotStarted}, tc.runnerErr
+				}
+				return process.Result{ExitCode: tc.exit, StartedAt: now, ExitedAt: now, Termination: process.TerminationProcessGroupGone, Interruption: tc.interruption}, nil
 			}))
 			d.graphWorkflowsReady = true
 			path := h.writeTicket("tst-check.md", h.taskMD("tst-check", "todo", "graph"))
@@ -198,7 +220,8 @@ func TestWorkflowCheck(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			errCh := make(chan error, 1)
 			go func() { errCh <- d.Run(ctx) }()
-			t.Cleanup(func() { cancel(); require.NoError(t, <-errCh) })
+			stop := sync.OnceFunc(func() { cancel(); require.NoError(t, <-errCh) })
+			t.Cleanup(stop)
 			got := h.waitForStatus("tst-check.md", tc.status, 10*time.Second)
 			require.Len(t, got.History, 1)
 			launch := <-calls
@@ -221,8 +244,41 @@ func TestWorkflowCheck(t *testing.T) {
 				require.Empty(t, got.GraphState.Transitions)
 				require.Equal(t, "test", got.Stage)
 			}
+			stop()
+			measured := collect()
+			if tc.interruption != nil {
+				require.NotContains(t, measured, "kontora.stage.runs")
+				require.NotContains(t, measured, "kontora.stage.duration")
+			} else {
+				outcome := "success"
+				if tc.exit != 0 || tc.runnerErr != nil {
+					outcome = "failure"
+				}
+				requireWorkflowRunMetrics(t, measured, map[string]int64{outcome: 1},
+					map[string]int64{"test": 1}, map[string]int64{"": 1})
+				require.Zero(t, histogramPoint(t, measured["kontora.stage.duration"]).Sum)
+			}
 		})
 	}
+}
+
+func requireWorkflowRunMetrics(t *testing.T, measured map[string]metricdata.Metrics, outcomes, stages, agents map[string]int64) {
+	t.Helper()
+	runs, ok := measured["kontora.stage.runs"]
+	require.True(t, ok, "committed workflow invocations must record stage runs")
+	require.Equal(t, outcomes, sumByAttr(t, runs, "outcome"))
+	require.Equal(t, stages, sumByAttr(t, runs, "stage"))
+	require.Equal(t, agents, sumByAttr(t, runs, "agent"))
+	require.Equal(t, map[string]int64{"graph": total(outcomes)}, sumByAttr(t, runs, "pipeline"))
+	duration, ok := measured["kontora.stage.duration"]
+	require.True(t, ok, "committed workflow invocations must record stage duration")
+	hist, ok := duration.Data.(metricdata.Histogram[float64])
+	require.True(t, ok)
+	var count uint64
+	for _, point := range hist.DataPoints {
+		count += point.Count
+	}
+	require.Equal(t, uint64(total(outcomes)), count)
 }
 
 func TestWorkflowHookPairing(t *testing.T) {
@@ -299,6 +355,102 @@ func TestWorkflowHookPairing(t *testing.T) {
 				require.Equal(t, ticket.StatusPaused, h.readTask("tst-hooks.md").Status)
 			}
 		})
+	}
+}
+
+func TestWorkflowFinalizationMetrics(t *testing.T) {
+	for _, kind := range []string{"agent", "check"} {
+		for _, mode := range []string{"replay", "hook failure replay", "shutdown replay", "stale exit"} {
+			t.Run(kind+"/"+mode, func(t *testing.T) {
+				h := newHarness(t)
+				node := config.WorkflowNode{ID: "work", Type: kind}
+				port, agent := "pass", ""
+				if kind == "agent" {
+					node.Stage, node.Agent = "step1", "agent1"
+					port, agent = "complete", "agent1"
+					h.cfg.Agents[agent] = config.Agent{Binary: "claude"}
+				} else {
+					node.Command = "exit 0"
+					node.Timeout = config.Duration{Duration: time.Minute}
+				}
+				h.cfg.Pipelines["graph"] = config.PipelineDefinition{Graph: &config.WorkflowGraph{
+					Version: 2, Entry: node.ID,
+					Nodes: []config.WorkflowNode{node, {ID: "end", Type: "end", Status: "human_review"}},
+					Edges: []config.WorkflowEdge{{From: config.WorkflowPort{Node: node.ID, Port: port}, To: "end"}},
+				}}
+				if mode != "stale exit" {
+					command := `chmod 444 "$KONTORA_TICKET_FILE"`
+					if mode == "hook failure replay" {
+						command += "; exit 1"
+					}
+					h.cfg.Hooks = config.Hooks{config.HookStageEnd: {{Run: command, OnFailure: "pause"}}}
+				}
+				path := h.writeTicket("tst-metrics.md", h.taskMD("tst-metrics", "todo", "graph"))
+				t.Cleanup(func() { require.NoError(t, os.Chmod(path, 0o644)) })
+				calls := 0
+				d, collect := h.newMetricsDaemon(h.cfg, WithRunner(func(_ context.Context, p RunnerParams) (process.Result, error) {
+					calls++
+					if kind == "agent" {
+						_, err := session.PublishResult(p.Env[session.ResultFileEnvVar], session.Result{Outcome: "complete", Summary: "node finished"}, 2)
+						require.NoError(t, err)
+					}
+					if mode == "stale exit" {
+						current := h.readTask("tst-metrics.md")
+						require.NoError(t, current.SetField("status", "open"))
+						data, err := current.Marshal()
+						require.NoError(t, err)
+						require.NoError(t, os.WriteFile(path, data, 0o644))
+					}
+					started := time.Now()
+					return process.Result{StartedAt: started, ExitedAt: started.Add(2 * time.Second), Termination: process.TerminationProcessGroupGone}, nil
+				}), WithFinalSummarySpawner(func(context.Context, FinalSummaryParams) (string, error) { return "summary", nil }))
+				d.graphWorkflowsReady = true
+				d.windows.list = func(string) ([]string, error) { return nil, nil }
+				d.tickets["tst-metrics"] = newTicketState(h.readTask("tst-metrics.md"), path)
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				d.runTicket(ctx, "tst-metrics")
+				d.background.Wait()
+				before := collect()
+				require.NotContains(t, before, "kontora.stage.runs", "an uncommitted transition must not record a run")
+				require.NotContains(t, before, "kontora.stage.duration")
+				if mode == "stale exit" {
+					require.Equal(t, ticket.StatusOpen, h.readTask("tst-metrics.md").Status)
+					require.Equal(t, 1, calls)
+					return
+				}
+				rec, err := loadExecution(h.cfg, "tst-metrics")
+				require.NoError(t, err)
+				require.Equal(t, "transition", rec.Phase)
+				require.Contains(t, d.pendingFinalizations, rec.Invocation.ID)
+				if mode == "shutdown replay" {
+					cancel()
+				}
+				d.handleFileChanged(path)
+				d.background.Wait()
+				require.NotContains(t, collect(), "kontora.stage.runs", "a failed replay must not record a run")
+				require.NoError(t, os.Chmod(path, 0o644))
+				for range 3 {
+					d.handleFileChanged(path)
+					d.background.Wait()
+				}
+				got := h.readTask("tst-metrics.md")
+				outcome, status := "success", ticket.StatusHumanReview
+				if mode == "hook failure replay" {
+					outcome, status = "failure", ticket.StatusPaused
+				}
+				require.Equal(t, status, got.Status)
+				require.Len(t, got.History, 1)
+				require.Empty(t, got.InvocationID)
+				require.Empty(t, d.pendingFinalizations)
+				require.NoFileExists(t, executionPath(h.cfg, got.ID))
+				require.Equal(t, 1, calls)
+				measured := collect()
+				requireWorkflowRunMetrics(t, measured, map[string]int64{outcome: 1},
+					map[string]int64{node.ID: 1}, map[string]int64{agent: 1})
+				require.Equal(t, float64(2), histogramPoint(t, measured["kontora.stage.duration"]).Sum)
+			})
+		}
 	}
 }
 

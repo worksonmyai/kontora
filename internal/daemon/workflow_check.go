@@ -25,6 +25,7 @@ func (d *Daemon) runCheckNode(ctx context.Context, cfg *config.Config, t *ticket
 		return run
 	}
 	result, err := d.runner(ctx, params)
+	preserveWorkflowInterruption(&result, err)
 	run.Result = result
 	rec.RunnerTermination = result.Termination
 	if errors.Is(err, process.ErrTerminationUncertain) || result.Termination == process.TerminationUnknown {
@@ -47,4 +48,10 @@ func (d *Daemon) runCheckNode(ctx context.Context, cfg *config.Config, t *ticket
 		}
 	}
 	return run
+}
+
+func preserveWorkflowInterruption(result *process.Result, err error) {
+	if result.Interruption == nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
+		result.Interruption = err
+	}
 }

@@ -6250,8 +6250,17 @@
 
     <!-- ===== Ticket detail (full-screen overlay) ===== -->
     <template x-if="selectedEpic && currentView === 'board'">
-      <section class="mobile-epic fixed inset-0 z-40 bg-surface-950 flex flex-col" :class="mobileTerminalCompact() ? 'mobile-terminal-compact' : ''" aria-label="Epic overview">
-        <header class="shrink-0 p-4 border-b border-surface-700 flex flex-col gap-3">
+      <section class="mobile-epic fixed inset-0 z-40 bg-surface-950 flex flex-col" :class="{ 'mobile-terminal-compact': mobileTerminalCompact(), 'mobile-terminal-typing': mobileTerminalTyping() }" aria-label="Epic overview">
+        <div x-show="mobileTerminalTyping()" class="mobile-detail-header mobile-epic-typing-header">
+          <div class="mobile-terminal-bar">
+            <button type="button" @click="closeEpic()" aria-label="Back"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M15 18l-6-6 6-6"/></svg></button>
+            <span class="mobile-terminal-dot" :class="terminalConnected ? 'connected' : ''" aria-hidden="true"></span>
+            <span class="mobile-terminal-id" x-text="selectedEpic?.id"></span>
+            <span class="mobile-terminal-title" x-text="selectedEpic?.title"></span>
+            <button type="button" @pointerdown.prevent @click="mobileFinishTerminalInput()" class="mobile-input-done">Done</button>
+          </div>
+        </div>
+        <header class="mobile-epic-resting-header shrink-0 p-4 border-b border-surface-700 flex flex-col gap-3">
           <button type="button" @click="closeEpic()" class="text-left font-mono text-xs text-accent">back to board</button>
           <h1 class="text-lg text-tx-hi" x-text="selectedEpic?.title"></h1>
           <div class="mobile-epic-meta mobile-label text-tx-3">
@@ -6346,29 +6355,31 @@
             <div x-show="epicTab === 'session'" class="flex-1 min-h-0 flex flex-col">
               <p x-show="outputSubject()?.status !== 'in_progress'" class="p-4 font-mono text-xs text-surface-600" x-text="outputNoRunText()"></p>
               <div x-show="outputSubject()?.status === 'in_progress'" class="flex-1 min-h-0 flex flex-col">
-                <div class="mobile-terminal-toolbar">
-                  <div class="mobile-epic-terminal-context">
-                    <span class="truncate mobile-technical" :title="outputSubject()?.id" x-text="'tmux: ' + outputSubject()?.id"></span>
-                    <span :class="terminalConnected ? 'text-st-progress' : 'text-surface-600'" x-text="terminalConnected ? 'connected' : (terminalError ? 'disconnected' : 'connecting…')" role="status"></span>
-                  </div>
-                  <button type="button" @click="toggleTerminalRW()" :disabled="!terminalOpen || !!terminalError" :aria-pressed="terminalRW"
-                          class="px-2 py-1 rounded-md border border-edge-input disabled:opacity-40"
-                          :class="terminalRW ? 'text-err bg-err/10 border-err/40' : 'text-tx-3'" x-text="terminalRW ? 'Done typing' : 'Enable input'"></button>
-                </div>
-                <div x-show="terminalError" class="shrink-0 px-3 pb-3 flex items-center gap-3 font-mono text-xs text-err" role="alert">
+                <span class="mobile-terminal-status" role="status" x-text="terminalConnected ? (mobileTerminalInputTarget === 'terminal' ? 'Tap terminal to type' : 'Connected') : (terminalError ? 'Disconnected' : 'Connecting…')"></span>
+                <div x-show="terminalError" class="mobile-terminal-error shrink-0 px-3 pb-3 flex items-center gap-3 font-mono text-xs text-err" role="alert">
                   <span class="whitespace-pre-wrap break-words" x-text="terminalError"></span>
                   <button type="button" @click="reconnectTerminal()" class="shrink-0 underline">retry connection</button>
                 </div>
-                <div x-show="terminalRW" class="mobile-terminal-keys" role="group" aria-label="Terminal keys">
-                  <template x-for="key in terminalKeys" :key="key.name">
-                    <button type="button" @pointerdown.prevent @click="sendTerminalKey(key.bytes)"
-                            :aria-label="key.name" :disabled="!terminalConnected" x-text="key.label"></button>
-                  </template>
-                  <button type="button" x-show="terminalConnected" @pointerdown.prevent @click="openComposeSheet()"
-                          :disabled="!terminalConnected">Compose</button>
-                </div>
                 <div class="mobile-terminal-frame" :class="terminalRW ? 'mobile-terminal-input' : ''">
                   <div id="epic-terminal-mobile" class="mobile-terminal-host"></div>
+                </div>
+                <div x-show="mobileCanCompose()" class="mobile-terminal-dock">
+                  <div x-show="mobileTerminalTyping()" class="mobile-terminal-keys" role="group" aria-label="Terminal keys">
+                    <template x-for="key in terminalKeys" :key="key.name">
+                      <button type="button" @pointerdown.prevent @click="sendTerminalKey(key.bytes)"
+                              :aria-label="key.name" :disabled="!terminalRW || !terminalConnected" x-text="key.label"></button>
+                    </template>
+                  </div>
+                  <div class="mobile-terminal-compose-row">
+                    <textarea id="mobile-epic-terminal-compose" x-ref="mobileEpicTerminalCompose" data-mobile-terminal-input
+                              x-model="mobileComposeDraft" x-effect="mobileComposeDraft; $nextTick(() => mobileResizeCompose($el))"
+                              @focus="mobileBeginTerminalCompose($el)" @input="mobileResizeCompose($el)"
+                              @keydown.escape.stop.prevent="mobileFinishTerminalInput()" rows="1" aria-label="Message the agent"
+                              placeholder="Message the agent…" class="mobile-terminal-compose"></textarea>
+                    <button type="button" x-show="!mobileTerminalTyping()" @pointerdown.prevent @click="mobileBeginTerminalDirect()" class="mobile-terminal-direct">Type in terminal</button>
+                    <button type="button" x-show="mobileTerminalTyping()" @pointerdown.prevent @click="submitComposeMobile()"
+                            :disabled="!terminalRW || !terminalConnected || !mobileComposeDraft.trim()" class="mobile-terminal-send">Send</button>
+                  </div>
                 </div>
               </div>
             </div>
@@ -6463,9 +6474,21 @@
       </section>
     </template>
 
-    <div x-show="isMobile && selectedTicket && currentView === 'board'" x-cloak class="mobile-detail detail-enter" :class="mobileTerminalCompact() ? 'mobile-terminal-compact' : ''">
+    <div x-show="isMobile && selectedTicket && currentView === 'board'" x-cloak class="mobile-detail detail-enter" :class="{ 'mobile-terminal-compact': mobileTerminalCompact(), 'mobile-terminal-typing': mobileTerminalTyping(), 'mobile-editor-focus': mobileDescriptionFocused() }">
       <!-- header -->
       <div class="mobile-detail-header">
+        <div x-show="mobileTerminalTyping()" class="mobile-terminal-bar">
+          <button type="button" @click="closeDetail()" aria-label="Back"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M15 18l-6-6 6-6"/></svg></button>
+          <span class="mobile-terminal-dot" :class="terminalConnected ? 'connected' : ''" aria-hidden="true"></span>
+          <span class="mobile-terminal-id" x-text="selectedTicket?.id"></span>
+          <span class="mobile-terminal-title" x-text="selectedTicket?.title"></span>
+          <button type="button" @pointerdown.prevent @click="mobileFinishTerminalInput()" class="mobile-input-done">Done</button>
+        </div>
+        <div x-show="mobileDescriptionFocused()" class="mobile-editor-bar">
+          <div class="mobile-editor-heading"><span x-text="selectedTicket?.id"></span><span>Description</span></div>
+          <span role="status" x-text="editSubmitting ? 'Saving…' : (editSaved ? 'Saved' : '')"></span>
+          <button type="button" @pointerdown.prevent @click="mobileFinishDescriptionEdit()" class="mobile-input-done">Done</button>
+        </div>
         <div class="mobile-detail-context">
           <button @click="closeDetail()" style="width:32px;height:32px;margin-left:-4px;border:none;background:transparent;color:rgba(var(--tx-3),1);display:flex;align-items:center;justify-content:center;flex:none;" aria-label="Back">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
@@ -6531,29 +6554,35 @@
       </div>
 
       <!-- content -->
-      <div style="flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden;">
+      <div class="mobile-detail-content">
 
         <!-- terminal (live; in_progress) -->
         <div x-show="!isSecondary(selectedTicket) && detailTab==='terminal'" class="mobile-terminal-pane">
-          <div class="mobile-terminal-toolbar">
-            <span role="status" x-text="terminalConnected ? (terminalRW ? 'Tap terminal to type' : 'Read-only') : (terminalError ? 'Disconnected' : 'Connecting…')"></span>
-            <button type="button" @click="toggleTerminalRW()" :aria-pressed="terminalRW" :disabled="!terminalOpen || !!terminalError"
-                    :class="terminalRW ? 'text-err' : 'text-tx-3'" x-text="terminalRW ? 'Done typing' : 'Enable input'"></button>
-          </div>
+          <span class="mobile-terminal-status" role="status" x-text="terminalConnected ? (mobileTerminalInputTarget === 'terminal' ? 'Tap terminal to type' : 'Connected') : (terminalError ? 'Disconnected' : 'Connecting…')"></span>
           <div x-show="terminalError" class="mobile-terminal-error shrink-0 px-3 pb-3 flex items-center gap-3 font-mono text-xs text-err" role="alert">
             <span class="whitespace-pre-wrap break-words" x-text="terminalError"></span>
             <button type="button" @click="reconnectTerminal()" class="shrink-0 underline">retry connection</button>
           </div>
-          <div x-show="terminalRW" class="mobile-terminal-keys" role="group" aria-label="Terminal keys">
-            <template x-for="key in terminalKeys" :key="key.name">
-              <button type="button" @pointerdown.prevent @click="sendTerminalKey(key.bytes)"
-                      :aria-label="key.name" :disabled="!terminalConnected" x-text="key.label"></button>
-            </template>
-            <button type="button" x-show="terminalConnected" @pointerdown.prevent @click="openComposeSheet()"
-                    :disabled="!terminalConnected">Compose</button>
-          </div>
           <div class="mobile-terminal-frame" :class="terminalRW ? 'mobile-terminal-input' : ''">
             <div id="terminal-container-mobile" class="mobile-terminal-host"></div>
+          </div>
+          <div x-show="mobileCanCompose()" class="mobile-terminal-dock">
+            <div x-show="mobileTerminalTyping()" class="mobile-terminal-keys" role="group" aria-label="Terminal keys">
+              <template x-for="key in terminalKeys" :key="key.name">
+                <button type="button" @pointerdown.prevent @click="sendTerminalKey(key.bytes)"
+                        :aria-label="key.name" :disabled="!terminalRW || !terminalConnected" x-text="key.label"></button>
+              </template>
+            </div>
+            <div class="mobile-terminal-compose-row">
+              <textarea id="mobile-terminal-compose" x-ref="mobileTerminalCompose" data-mobile-terminal-input
+                        x-model="mobileComposeDraft" x-effect="mobileComposeDraft; $nextTick(() => mobileResizeCompose($el))"
+                        @focus="mobileBeginTerminalCompose($el)" @input="mobileResizeCompose($el)"
+                        @keydown.escape.stop.prevent="mobileFinishTerminalInput()" rows="1" aria-label="Message the agent"
+                        placeholder="Message the agent…" class="mobile-terminal-compose"></textarea>
+              <button type="button" x-show="!mobileTerminalTyping()" @pointerdown.prevent @click="mobileBeginTerminalDirect()" class="mobile-terminal-direct">Type in terminal</button>
+              <button type="button" x-show="mobileTerminalTyping()" @pointerdown.prevent @click="submitComposeMobile()"
+                      :disabled="!terminalRW || !terminalConnected || !mobileComposeDraft.trim()" class="mobile-terminal-send">Send</button>
+            </div>
           </div>
         </div>
 
@@ -6687,7 +6716,7 @@
         </div>
 
         <!-- ticket (body) -->
-        <div x-show="detailTab==='ticket'" class="overflow-y-auto" style="flex:1;min-height:0;padding:18px 16px 24px;">
+        <div x-show="detailTab==='ticket'" class="mobile-ticket-pane overflow-y-auto">
           <template x-if="selectedTicket?.last_error">
             <div role="alert" class="mobile-prose text-err" style="border-left:3px solid rgba(var(--err),1);padding-left:12px;margin-bottom:18px;white-space:pre-wrap;overflow-wrap:anywhere;" x-text="selectedTicket.last_error"></div>
           </template>
@@ -6786,16 +6815,12 @@
           <template x-if="!isSecondary(selectedTicket) && mobileCanEditDescription()">
             <div class="mobile-description mb-4">
               <template x-if="editing && editingBody">
-                <div class="flex flex-col gap-2">
-                  <div class="flex items-center justify-between gap-2">
-                    <label for="mobile-description-editor" class="font-mono text-[12px] text-tx-3">Description</label>
-                    <button type="button" @pointerdown.prevent @click="mobileFinishDescriptionEdit()" class="font-mono text-[12px] text-accent">Done</button>
-                  </div>
+                <div class="mobile-description-editor flex flex-col">
                   <textarea id="mobile-description-editor" x-ref="mobileDescriptionEditor" x-model="editForm.body"
                             @input="mobileDescriptionInput($event.target.value)" @blur="mobileFinishDescriptionEdit()"
-                            @keydown.escape.stop.prevent="mobileFinishDescriptionEdit()" rows="10"
+                            @keydown.escape.stop.prevent="mobileFinishDescriptionEdit()" aria-label="Description"
                             class="w-full bg-surface-900 border border-edge-input rounded px-3 py-2 font-mono text-tx-2"></textarea>
-                  <span x-show="editSubmitting" role="status" class="font-mono text-[11px] text-tx-3">saving…</span>
+                  <div x-show="error" role="alert" class="mobile-editor-error" x-text="error"></div>
                 </div>
               </template>
               <template x-if="!editing || !editingBody">
@@ -6852,7 +6877,7 @@
           <div class="mobile-sheet-handle" aria-hidden="true"></div>
           <div class="mobile-sheet-heading">
             <h2 id="mobile-sheet-title" class="mobile-label text-tx-2 m-0"
-                x-text="({ navigation: 'Navigation', actions: 'Ticket actions', schedule: 'Start later', assistant: 'Assistant', new: 'New ticket', compose: 'Compose message' })[sheet.type] || 'Ticket' "></h2>
+                x-text="({ navigation: 'Navigation', actions: 'Ticket actions', schedule: 'Start later', assistant: 'Assistant', new: 'New ticket' })[sheet.type] || 'Ticket' "></h2>
             <button type="button" @click="closeSheet()" class="mobile-sheet-close" data-mobile-sheet-initial-focus>Close</button>
           </div>
 
@@ -6863,20 +6888,6 @@
                         :aria-current="currentView === view.key ? 'page' : null" x-text="view.label"></button>
               </template>
             </nav>
-          </template>
-
-          <template x-if="sheet.type === 'compose'">
-            <form @submit.prevent="submitComposeMobile()" class="flex flex-col gap-3 p-4 overflow-y-auto">
-              <label for="mobile-compose-message" class="font-mono text-xs text-tx-3">Message</label>
-              <textarea id="mobile-compose-message" x-model="mobileComposeDraft" rows="5"
-                        class="w-full p-3 rounded-md border border-edge-input bg-surface-deep text-tx text-base"
-                        placeholder="Write a message to the agent"></textarea>
-              <div class="flex gap-3">
-                <button type="button" @click="closeSheet()" class="mobile-sheet-close">Cancel</button>
-                <button type="submit" :disabled="!terminalRW || !terminalConnected || !mobileComposeDraft.trim()"
-                        class="mobile-sheet-primary">Send</button>
-              </div>
-            </form>
           </template>
 
           <!-- actions sheet -->

@@ -843,6 +843,49 @@ test("toggling read-write reconnects the stream but keeps the terminal", async (
   assert.equal(term.options.cursorBlink, true, "cursor follows the mode");
 });
 
+for (const mobile of [false, true]) {
+  test(`setting terminal permission is idempotent and keeps terminal handles: mobile=${mobile}`, async () => {
+    const { ctx, state } = await openedTerminal({}, { mobile });
+    const term = ctx.termState.term, webgl = ctx.termState.webgl, ro = ctx.termState.ws;
+    state.setTerminalRW(false);
+    assert.equal(ctx.termState.ws, ro, 'repeated RO does not reconnect');
+    state.setTerminalRW(true);
+    const rw = ctx.termState.ws;
+    assert.notEqual(rw, ro);
+    assert.equal(ro.closed, true);
+    state.setTerminalRW(true);
+    assert.equal(ctx.termState.ws, rw, 'repeated RW does not reconnect while connecting');
+    rw.onopen();
+    const listener = ctx.termState.inputDisposable;
+    state.setTerminalRW(true);
+    assert.equal(ctx.termState.ws, rw, 'repeated RW does not reconnect after opening');
+    assert.equal(ctx.termState.inputDisposable, listener);
+    assert.equal(state.terminalConnected, true);
+    state.setTerminalRW(false);
+    const next = ctx.termState.ws;
+    assert.notEqual(next, rw);
+    assert.equal(rw.closed, true);
+    state.setTerminalRW(false);
+    assert.equal(ctx.termState.ws, next);
+    assert.equal(ctx.termState.term, term);
+    assert.equal(ctx.termState.webgl, webgl);
+    state.destroy();
+  });
+}
+
+test('terminal permission can be requested before startup without opening a stream', () => {
+  const state = loadKontoraState();
+  const connects = [];
+  state._connectWs = seq => connects.push(seq);
+  state.setTerminalRW(true);
+  state.setTerminalRW(true);
+  assert.equal(state.terminalRW, true);
+  assert.deepEqual(connects, []);
+  state.toggleTerminalRW();
+  assert.equal(state.terminalRW, false);
+  assert.deepEqual(connects, []);
+});
+
 test("terminal key bar uses the current read-write stream without focus", async () => {
   const keys = [['Escape', '\x1b'], ['Tab', '\t'], ['Shift+Tab', '\x1b[Z'], ['Up', '\x1b[A'],
     ['Down', '\x1b[B'], ['Right', '\x1b[C'], ['Left', '\x1b[D'], ['Ctrl+C', '\x03'], ['Enter', '\r']];
@@ -875,6 +918,9 @@ test("compose strips controls and sends Enter only to the captured session", asy
     { name: 'terminal replaced', replace: 'terminal', noEnter: true },
     { name: 'input disabled', replace: 'read-only', noEnter: true },
     { name: 'disconnected', replace: 'disconnected', noEnter: true },
+    { name: 'Done', replace: 'done', noEnter: true },
+    { name: 'hardware Escape', replace: 'escape', noEnter: true },
+    { name: 'generation replaced', replace: 'generation', noEnter: true },
     { name: 'connecting', before: 'connecting', noSend: true },
     { name: 'read-only', before: 'read-only', noSend: true },
     { name: 'empty', text: '\x1b\x00', noSend: true },
@@ -904,6 +950,9 @@ test("compose strips controls and sends Enter only to the captured session", asy
     if (tc.replace === 'terminal') ctx.termState.term = {};
     if (tc.replace === 'read-only') state.toggleTerminalRW();
     if (tc.replace === 'disconnected') ws.onclose();
+    if (tc.replace === 'done') state.mobileFinishTerminalInput();
+    if (tc.replace === 'escape') ctx.termState.term.keyHandler({ type: 'keydown', key: 'Escape', preventDefault() {}, stopPropagation() {} });
+    if (tc.replace === 'generation') state.closeTerminal();
     timers[0].fn();
     assert.deepEqual(sent, tc.noEnter ? [{ type: 'input', data: paste }] :
       [{ type: 'input', data: paste }, { type: 'input', data: '\r' }], tc.name);
@@ -913,10 +962,13 @@ test("compose strips controls and sends Enter only to the captured session", asy
 
 test("phone terminal compact mode follows the selected ticket or supervisor session", () => {
   const cases = [
-    { name: 'ticket input', detailTab: 'terminal', rw: true, height: 900, compact: true },
+    { name: 'ticket composer', detailTab: 'terminal', target: 'composer', height: 900, compact: true },
+    { name: 'ticket direct input', detailTab: 'terminal', target: 'terminal', height: 900, compact: true },
+    { name: 'RW without input ownership', detailTab: 'terminal', rw: true, height: 900, compact: false },
     { name: 'ticket short viewport', detailTab: 'terminal', height: 360, compact: true },
     { name: 'ticket reading', detailTab: 'terminal', height: 900, compact: false },
-    { name: 'supervisor input', epic: true, epicTab: 'session', rw: true, height: 900, compact: true },
+    { name: 'supervisor composer', epic: true, epicTab: 'session', target: 'composer', height: 900, compact: true },
+    { name: 'supervisor direct input', epic: true, epicTab: 'session', target: 'terminal', height: 900, compact: true },
     { name: 'supervisor short viewport', epic: true, epicTab: 'session', height: 360, compact: true },
     { name: 'supervisor reading', epic: true, epicTab: 'session', height: 900, compact: false },
     { name: 'supervisor activity', epic: true, epicTab: 'activity', detailTab: 'terminal', height: 360, compact: false },
@@ -925,8 +977,10 @@ test("phone terminal compact mode follows the selected ticket or supervisor sess
   ];
   for (const tc of cases) {
     const state = loadKontoraState();
-    Object.assign(state, { isMobile: tc.mobile ?? true, selectedEpic: tc.epic ? { id: 'supervisor' } : null,
-      epicTab: tc.epicTab, detailTab: tc.detailTab, terminalRW: !!tc.rw, mobileViewportHeight: tc.height });
+    const subject = { id: 'subject', status: 'in_progress', ...(tc.epic ? { kind: 'epic', epic_execution: 'agent' } : {}) };
+    Object.assign(state, { isMobile: tc.mobile ?? true, selectedEpic: tc.epic ? subject : null, selectedTicket: tc.epic ? null : subject,
+      epicTab: tc.epicTab, detailTab: tc.detailTab, terminalRW: !!tc.rw, mobileViewportHeight: tc.height,
+      mobileTerminalInputTarget: tc.target ?? null });
     assert.equal(state.mobileTerminalCompact(), tc.compact, tc.name);
   }
 });
@@ -1246,9 +1300,10 @@ test("crossing the breakpoint rebuilds the terminal", async () => {
 
   state._onBreakpointChange();
 
-  assert.equal(term.disposed, true, "the container's layout layer is gone");
   assert.equal(ctx.termState.term, null);
   assert.equal(ctx.termState.webgl, null);
+  await flushMicrotasks();
+  assert.equal(term.disposed, true, "the old renderer is disposed after its queued viewport callbacks");
 });
 
 test("a lost webgl context is retried once before falling back", async () => {
@@ -1434,7 +1489,7 @@ for (const mobile of [false, true]) {
   }
 }
 
-async function mobileInputTerminal(subject) {
+async function mobileInputTerminal(subject, overrides = {}) {
   const sockets = [];
   const WebSocket = class {
     static OPEN = 1;
@@ -1448,16 +1503,218 @@ async function mobileInputTerminal(subject) {
     close() { this.readyState = 3; this.closed = true; }
   };
   if (subject === 'epic') {
-    const ui = epicSupervisorUI({ mobile: true, overrides: { WebSocket } });
+    const ui = epicSupervisorUI({ mobile: true, overrides: { WebSocket, ...overrides } });
     await ui.state.openEpic(ui.epic.id);
     ui.state.epicWatchAgent();
     await flushMicrotasks();
     return { ...ui, sockets };
   }
-  return { ...await openedTerminal({ WebSocket }, { mobile: true }), sockets };
+  return { ...await openedTerminal({ WebSocket, ...overrides }, { mobile: true }), sockets };
+}
+
+test('mobile composer drafts follow output subject identity and stay in memory', () => {
+  const state = loadKontoraState();
+  state.isMobile = true;
+  state.detailTab = 'terminal';
+  const ticket = { id: 'same', status: 'in_progress' };
+  state.selectedTicket = ticket;
+  state.mobileComposeDraft = 'Ticket draft\nsecond line';
+  assert.equal(state.mobileComposeDrafts['primary:same'], 'Ticket draft\nsecond line');
+  state.selectedTicket = { id: 'other', status: 'in_progress' };
+  assert.equal(state.mobileComposeDraft, '');
+  state.mobileComposeDraft = 'Other draft';
+  state.selectedTicket = { ...ticket, source: 'team' };
+  assert.equal(state.mobileComposeDraft, '', 'secondary namesakes cannot read primary drafts');
+  state.mobileComposeDraft = 'Rejected';
+  assert.equal(state.mobileComposeDrafts['team:same'], undefined);
+  state.selectedTicket = null;
+  assert.equal(state.mobileComposeDraft, '');
+  state.mobileComposeDraft = 'No subject';
+  state.selectedTicket = ticket;
+  assert.equal(state.mobileComposeDraft, 'Ticket draft\nsecond line');
+  state.mobileFinishTerminalInput();
+  assert.equal(state.mobileComposeDraft, 'Ticket draft\nsecond line');
+  const epic = { id: 'supervisor', kind: 'epic', epic_execution: 'agent', status: 'in_progress' };
+  state.selectedTicket = null;
+  state.selectedEpic = epic;
+  state.epicTab = 'session';
+  state.mobileComposeDraft = 'Supervisor draft';
+  state.selectedEpic = null;
+  state.selectedTicket = { ...epic };
+  assert.equal(state.mobileComposeDraft, 'Supervisor draft', 'supervisor overview and detail share a subject');
+  assert.equal(loadKontoraState().mobileComposeDrafts['primary:same'], undefined, 'a new application has no old drafts');
+});
+
+for (const excluded of ['desktop', 'automation', 'other view', 'secondary', 'passive epic', 'completed', 'other tab', 'destroyed']) {
+  test(`mobile input entry ignores excluded surface: ${excluded}`, () => {
+    const state = loadKontoraState();
+    Object.assign(state, { isMobile: true, detailTab: 'terminal', selectedTicket: { id: 'subject', status: 'in_progress' } });
+    if (excluded === 'desktop') state.isMobile = false;
+    if (excluded === 'automation') { state.currentView = 'automations'; state.automationsOutputSubject = () => ({ kind: 'automation', id: 'job', n: 1, status: 'in_progress' }); }
+    if (excluded === 'other view') state.currentView = 'stats';
+    if (excluded === 'secondary') state.selectedTicket.source = 'team';
+    if (excluded === 'passive epic') Object.assign(state.selectedTicket, { kind: 'epic', epic_execution: 'passive' });
+    if (excluded === 'completed') state.selectedTicket.status = 'done';
+    if (excluded === 'other tab') state.detailTab = 'activity';
+    if (excluded === 'destroyed') state._appDestroyed = true;
+    assert.equal(state.mobileCanCompose(), false);
+    state.setTerminalRW = () => assert.fail('excluded composer changed terminal permissions');
+    state.mobileBeginTerminalCompose({});
+    state.mobileBeginTerminalDirect();
+    assert.equal(state.submitComposeMobile(), false);
+    assert.equal(state.mobileTerminalInputTarget, null);
+  });
+}
+
+async function inlineMobileTerminal(subject) {
+  const dom = mobileLifecycleDOM();
+  const host = dom.node({ class: 'mobile-terminal-host' });
+  dom.elements[subject === 'epic' ? 'epic-terminal-mobile' : 'terminal-container-mobile'] = host;
+  const computed = { getPropertyValue: () => '', visibility: 'visible', lineHeight: '22.4px', paddingTop: '10px', paddingBottom: '10px',
+    borderTopWidth: '1px', borderBottomWidth: '1px' };
+  const ui = await mobileInputTerminal(subject, { ...dom.overrides, getComputedStyle: () => computed });
+  dom.runFrame();
+  const dock = dom.node({ class: 'mobile-terminal-dock' });
+  const composer = dom.node({ 'data-mobile-terminal-input': '', class: 'mobile-terminal-compose' }, dock);
+  composer.scrollHeight = 42;
+  const textarea = dom.node({ class: 'xterm-helper-textarea' }, host);
+  ui.ctx.termState.term.textarea = textarea;
+  ui.state._setTerminalInput(false);
+  ui.state.$refs = { [subject === 'epic' ? 'mobileEpicTerminalCompose' : 'mobileTerminalCompose']: composer };
+  ui.state.initMobile();
+  ui.state.automationsDispose = () => {};
+  return { ...ui, dom, composer, textarea, host, dock, computed };
 }
 
 for (const subject of ['ticket', 'epic']) {
+  test(`mobile ${subject} composer owns input synchronously before connection and transfers without reconnecting`, async () => {
+    const { state, ctx, sockets, dom, composer, textarea } = await inlineMobileTerminal(subject);
+    composer.focus();
+    state.mobileBeginTerminalCompose(composer);
+    assert.equal(state.mobileTerminalInputTarget, 'composer');
+    assert.equal(state.mobileTerminalTyping(), true);
+    assert.equal(state.terminalRW, true);
+    assert.equal(state.terminalConnected, false);
+    assert.equal(dom.document.activeElement, composer);
+    const rw = ctx.termState.ws, count = sockets.length;
+    state.mobileComposeDraft = 'first\nsecond';
+    assert.equal(state.submitComposeMobile(), false);
+    state.sendTerminalKey('\r');
+    ctx.termState.term.input('not queued');
+    assert.deepEqual(rw.sent, []);
+    assert.equal(state.mobileComposeDraft, 'first\nsecond');
+    rw.readyState = 1;
+    rw.onopen();
+    assert.equal(dom.document.activeElement, composer, 'opening a socket cannot blur the native composer');
+    assert.equal(composer.focuses.length, 1, 'opening a socket cannot focus the composer again');
+    assert.equal(textarea.focuses.length, 0, 'opening a socket cannot focus xterm');
+    assert.deepEqual(rw.sent, []);
+    state.mobileBeginTerminalCompose(composer);
+    state.mobileBeginTerminalDirect();
+    assert.equal(dom.document.activeElement, composer, 'direct entry waits for a user tap on xterm');
+    textarea.focus();
+    dom.document.emit('focusin', { target: textarea });
+    assert.equal(state.mobileTerminalInputTarget, 'terminal');
+    composer.focus();
+    state.mobileBeginTerminalCompose(composer);
+    assert.equal(state.mobileTerminalInputTarget, 'composer');
+    assert.equal(ctx.termState.ws, rw);
+    assert.equal(sockets.length, count, 'focus transfer cannot replace the writable socket');
+    assert.equal(state.mobileComposeDraft, 'first\nsecond');
+    state.mobileFinishTerminalInput();
+    const ro = ctx.termState.ws;
+    state.mobileFinishTerminalInput();
+    assert.equal(ctx.termState.ws, ro, 'Done is idempotent');
+    assert.equal(state.mobileTerminalInputTarget, null);
+    assert.equal(state.terminalRW, false);
+    assert.equal(composer.blurs, 1);
+    assert.equal(state.mobileComposeDraft, 'first\nsecond');
+    state.destroy();
+  });
+
+  test(`mobile ${subject} inline Send clears only a locally accepted draft and retains focus`, async () => {
+    const { state, ctx, composer, dom } = await inlineMobileTerminal(subject);
+    composer.focus();
+    state.mobileBeginTerminalCompose(composer);
+    const ws = ctx.termState.ws;
+    state.mobileComposeDraft = 'local\ntext';
+    assert.equal(state.submitComposeMobile(), false);
+    assert.equal(state.mobileComposeDraft, 'local\ntext');
+    ws.readyState = 1;
+    ws.onopen();
+    const other = 'primary:unrelated';
+    state.mobileComposeDrafts[other] = 'Other subject draft';
+    state.mobileComposeDraft = '\x00\x1b';
+    assert.equal(state.submitComposeMobile(), false, 'sanitation can reject a nonempty draft');
+    assert.equal(state.mobileComposeDraft, '\x00\x1b');
+    state.mobileComposeDraft = 'local\ntext';
+    const key = state.terminalSubjectKey;
+    state.terminalSubjectKey = 'primary:stale';
+    assert.equal(state.submitComposeMobile(), false, 'Send cannot target another subject socket');
+    assert.equal(state.mobileComposeDraft, 'local\ntext');
+    state.terminalSubjectKey = key;
+    assert.equal(state.submitComposeMobile(), true);
+    assert.deepEqual(ws.sent, [{ type: 'input', data: '\x1b[200~local\rtext\x1b[201~' }]);
+    assert.equal(state.mobileComposeDraft, '');
+    assert.equal(state.mobileComposeDrafts[other], 'Other subject draft');
+    assert.equal(composer.style.height, '44px');
+    assert.equal(dom.document.activeElement, composer);
+    assert.equal(composer.focuses.length, 1);
+    assert.equal(state.sheet, null, 'inline Send never opens or closes a sheet');
+    state.mobileFinishTerminalInput();
+    state.destroy();
+  });
+
+  for (const action of ['disconnect', 'error', 'teardown', 'breakpoint']) {
+    test(`mobile ${subject} native composer blurs and retains its draft on ${action}`, async () => {
+      const { state, ctx, sockets, dom, composer } = await inlineMobileTerminal(subject);
+      composer.focus();
+      state.mobileBeginTerminalCompose(composer);
+      state.mobileComposeDraft = 'Unsent native draft';
+      const key = state.outputSubjectKey(), count = sockets.length, ws = ctx.termState.ws;
+      if (action === 'disconnect') ws.onclose();
+      if (action === 'error') ws.onerror();
+      if (action === 'teardown') state.closeTerminal();
+      if (action === 'breakpoint') {
+        state.isMobile = false;
+        state._mountBoard = () => {};
+        state._onBreakpointChange();
+      }
+      assert.equal(state.terminalRW, false);
+      assert.equal(state.mobileTerminalInputTarget, null);
+      assert.equal(dom.document.activeElement, null);
+      assert.equal(composer.blurs, 1);
+      assert.equal(state.mobileComposeDrafts[key], 'Unsent native draft');
+      assert.equal(sockets.length, count, 'cleanup does not open another stream');
+      if (action === 'breakpoint') assert.ok(sockets.every(socket => socket.closed), 'no stream outlives the old layout');
+      if (action === 'disconnect' || action === 'error') {
+        assert.equal(state.terminalOpen, true, 'the terminal and Retry remain available');
+        assert.match(state.terminalError, /disconnected.*Retry/);
+        state.mobileFinishTerminalInput();
+        assert.equal(ctx.termState.ws, null, 'late Done does not reconnect');
+      }
+      state.destroy();
+    });
+  }
+
+  test(`mobile ${subject} composer height caps at four lines and recalculates after viewport changes`, async () => {
+    const { state, dom, composer, computed } = await inlineMobileTerminal(subject);
+    for (const [height, expected] of [[20, 44], [70, 72], [500, 111.6], [42, 44]]) {
+      composer.scrollHeight = height;
+      state.mobileResizeCompose(composer);
+      assert.equal(composer.style.height, expected + 'px');
+    }
+    composer.scrollHeight = 80;
+    dom.window.emit('resize');
+    dom.runFrame();
+    assert.equal(composer.style.height, '82px');
+    computed.lineHeight = '24px';
+    composer.scrollHeight = 500;
+    state.mobileResizeCompose(composer);
+    assert.equal(composer.style.height, '118px', 'the cap uses measured font metrics and borders');
+    state.destroy();
+  });
+
   test(`mobile ${subject} input waits for the current RW socket without focusing or queueing`, async () => {
     const { ctx, state, sockets } = await mobileInputTerminal(subject);
     const term = ctx.termState.term;
@@ -1507,10 +1764,13 @@ for (const subject of ['ticket', 'epic']) {
     state.destroy();
   });
 
-  for (const action of ['stream', 'teardown', 'close', 'error', 'tab', 'selection', 'detail', 'breakpoint', 'escape']) {
+  for (const action of ['stream', 'teardown', 'close', 'error', 'tab', 'selection', 'detail', 'breakpoint', 'escape', 'composer Escape', 'completion', 'navigation']) {
     test(`mobile ${subject} input resets on ${action} and stale callbacks stay inert`, async () => {
       const { ctx, state, sockets } = await mobileInputTerminal(subject);
-      state.toggleTerminalRW();
+      state.mobileBeginTerminalDirect();
+      state.mobileComposeDraft = 'Retained unsent draft';
+      const subjectKey = state.outputSubjectKey();
+      const socketCount = sockets.length;
       const term = ctx.termState.term;
       const rw = ctx.termState.ws;
       rw.readyState = 1;
@@ -1519,6 +1779,9 @@ for (const subject of ['ticket', 'epic']) {
       term.focus();
       const blurs = term.textarea.blurs;
       switch (action) {
+        case 'composer Escape': state.mobileFinishTerminalInput(); break;
+        case 'completion': state.applyTicketUpdate({ ...state.outputSubject(), status: 'done' }); break;
+        case 'navigation': await state.gotoView('stats'); break;
         case 'stream': state._disconnectStream(); break;
         case 'teardown': state.closeTerminal(); break;
         case 'close': rw.onclose(); break;
@@ -1550,6 +1813,11 @@ for (const subject of ['ticket', 'epic']) {
       }
       await flushMicrotasks();
       assert.equal(state.terminalRW, false);
+      assert.equal(state.mobileTerminalInputTarget, null);
+      assert.equal(state.mobileComposeDrafts[subjectKey], 'Retained unsent draft');
+      if (['stream', 'teardown', 'close', 'error'].includes(action)) {
+        assert.equal(sockets.length, socketCount, 'cleanup must not reconnect the stream');
+      }
       assert.equal(term.textarea.readOnly, true);
       assert.equal(term.options.disableStdin, true);
       assert.ok(term.textarea.blurs > blurs);
@@ -1573,13 +1841,17 @@ for (const subject of ['ticket', 'epic']) {
 
   test(`mobile ${subject} reconnects RO after a disconnect and ignores a replaced RW socket`, async () => {
     const { ctx, state } = await mobileInputTerminal(subject);
-    state.toggleTerminalRW();
+    state.mobileBeginTerminalDirect();
+    state.mobileComposeDraft = 'Keep this subject draft';
     const first = ctx.termState.ws;
     const term = ctx.termState.term;
     const listener = term.inputListeners.at(-1);
     state.toggleTerminalRW();
     state.toggleTerminalRW();
     const current = ctx.termState.ws;
+    state.mobileBeginTerminalDirect();
+    assert.equal(ctx.termState.ws, current, 'ownership changes do not replace the RW stream');
+    assert.equal(state.mobileTerminalInputTarget, 'terminal');
     first.readyState = 1;
     first.onopen();
     listener.handler('replaced');
@@ -1592,8 +1864,13 @@ for (const subject of ['ticket', 'epic']) {
     first.onerror();
     assert.equal(state.terminalConnected, true);
     assert.equal(term.textarea.readOnly, false);
+    assert.equal(state.mobileTerminalInputTarget, 'terminal', 'stale disconnects cannot end current input');
     current.onclose();
     assert.equal(state.terminalRW, false);
+    assert.equal(state.mobileTerminalInputTarget, null);
+    assert.equal(state.mobileComposeDraft, 'Keep this subject draft');
+    state.mobileFinishTerminalInput();
+    assert.equal(ctx.termState.ws, null, 'Done after disconnect cannot reconnect or enable input');
     state.reconnectTerminal();
     await flushMicrotasks();
     assert.doesNotMatch(ctx.termState.ws.url, /rw=1/);
@@ -1601,6 +1878,70 @@ for (const subject of ['ticket', 'epic']) {
     state.destroy();
   });
 }
+
+for (const region of ['dock', 'host', 'bar', 'outside', 'unrelated blur']) for (const socketOpens of [false, true]) {
+  test(`deferred terminal focusout reconciles the new focus in ${region}, socket opens=${socketOpens}`, async () => {
+    const { state, ctx, dom, composer, dock, host } = await inlineMobileTerminal('ticket');
+    composer.focus();
+    state.mobileBeginTerminalCompose(composer);
+    const rw = ctx.termState.ws;
+    const ticks = [];
+    state.$nextTick = cb => ticks.push(cb);
+    dom.document.emit('focusout', { target: region === 'unrelated blur' ? dom.node({}) : composer });
+    assert.equal(state.mobileTerminalInputTarget, 'composer', 'focusout must wait for the next active element');
+    const parent = region === 'dock' ? dock : region === 'host' ? host
+      : region === 'bar' ? dom.node({ class: 'mobile-terminal-bar' }) : null;
+    const next = dom.node({}, parent);
+    next.focus();
+    dom.document.emit('focusin', { target: next });
+    if (socketOpens) {
+      rw.readyState = 1;
+      rw.onopen();
+    }
+    ticks.splice(0).forEach(cb => cb());
+    assert.equal(state.terminalRW, region !== 'outside');
+    if (region !== 'outside') assert.equal(ctx.termState.ws, rw);
+    else assert.equal(state.mobileTerminalInputTarget, null);
+    state.destroy();
+  });
+}
+
+for (const boundary of ['subject', 'teardown', 'breakpoint', 'lifecycle', 'destroyed', 'new input']) {
+  test(`deferred terminal focusout cannot clear newer ownership after ${boundary}`, async () => {
+    const { state, ctx, dom, composer } = await inlineMobileTerminal('ticket');
+    state.mobileBeginTerminalCompose(composer);
+    const ticks = [];
+    state.$nextTick = cb => ticks.push(cb);
+    state._mobileTerminalFocusout({ target: composer });
+    if (boundary === 'subject') state.selectedTicket = { id: 'new', status: 'in_progress' };
+    if (boundary === 'teardown') state.closeTerminal();
+    if (boundary === 'breakpoint') state.mobileBreakpointChanged();
+    if (boundary === 'lifecycle') { state.destroyMobile(); state.initMobile(); }
+    if (boundary === 'destroyed') state._appDestroyed = true;
+    if (boundary !== 'destroyed') state.mobileBeginTerminalDirect();
+    const target = state.mobileTerminalInputTarget, socket = ctx.termState.ws;
+    dom.document.activeElement = null;
+    ticks.splice(0).forEach(cb => cb());
+    assert.equal(state.mobileTerminalInputTarget, target);
+    assert.equal(ctx.termState.ws, socket);
+    state._appDestroyed = false;
+    state.destroy();
+  });
+}
+
+test('terminal input cleanup never blurs the description editor', async () => {
+  const { state, dom, composer, textarea } = await inlineMobileTerminal('ticket');
+  const description = dom.node({ id: 'mobile-description-editor' });
+  state.mobileComposeDraft = 'Keep draft';
+  for (const active of [composer, textarea, description]) {
+    active.focus();
+    state.mobileResetTerminalInput();
+    assert.equal(dom.document.activeElement, active === description ? description : null);
+  }
+  assert.equal(description.blurs, 0);
+  assert.equal(state.mobileComposeDraft, 'Keep draft');
+  state.destroy();
+});
 
 for (const mobile of [false, true]) {
   test(`replaced input listeners cannot send to an old socket: mobile=${mobile}`, async () => {
@@ -3410,6 +3751,48 @@ test("mobile sheets retain their dialog heading and actions without repeated tit
   assert.doesNotMatch(uiSource + html, /mobileActionDotColor/);
 });
 
+test('both phone terminals use mounted native inline composers without a Compose sheet', () => {
+  const html = fs.readFileSync(htmlPath, 'utf8');
+  for (const [id, ref] of [['mobile-terminal-compose', 'mobileTerminalCompose'], ['mobile-epic-terminal-compose', 'mobileEpicTerminalCompose']]) {
+    const field = html.match(new RegExp(`<textarea\\b[^>]*id="${id}"[\\s\\S]*?<\\/textarea>`))?.[0];
+    assert.ok(field, id);
+    assert.match(field, new RegExp(`x-ref="${ref}"`));
+    assert.match(field, /data-mobile-terminal-input/);
+    assert.match(field, /x-model="mobileComposeDraft"/);
+    assert.match(field, /@focus="mobileBeginTerminalCompose\(\$el\)"/);
+    assert.match(field, /@input="mobileResizeCompose\(\$el\)"/);
+    assert.match(field, /x-effect="mobileComposeDraft;[^"\n]*mobileResizeCompose\(\$el\)/);
+    assert.match(field, /@keydown.escape.stop.prevent="mobileFinishTerminalInput\(\)"/);
+    assert.match(field, /rows="1"/);
+    assert.doesNotMatch(field, /disabled|readonly|x-if|x-show|keydown.enter|autocorrect="off"|spellcheck="false"/i);
+    const dock = html.slice(html.indexOf(field), html.indexOf(field) + 1500);
+    assert.match(dock, /@click="mobileBeginTerminalDirect\(\)"[^>]*>Type in terminal<\/button>/);
+    assert.match(dock, /@pointerdown.prevent @click="submitComposeMobile\(\)"/);
+    assert.match(dock, /:disabled="!terminalRW \|\| !terminalConnected \|\| !mobileComposeDraft.trim\(\)"/);
+  }
+  assert.equal([...html.matchAll(/@pointerdown.prevent @click="sendTerminalKey\(key.bytes\)"/g)].length, 2);
+  assert.equal([...html.matchAll(/@pointerdown.prevent @click="mobileFinishTerminalInput\(\)"/g)].length, 2);
+  assert.doesNotMatch(html + uiSource, /openComposeSheet|sheet\.type\s*===?\s*'compose'|compose:\s*'Compose'/);
+  assert.doesNotMatch(html, />Compose<\/button>|Enable input|Done typing/);
+  for (const id of ['terminal-container-mobile', 'epic-terminal-mobile']) {
+    assert.match(html, new RegExp(`id="${id}" class="mobile-terminal-host"`));
+  }
+});
+
+test('focused phone description uses the shared editor and acknowledgement state', () => {
+  const html = fs.readFileSync(htmlPath, 'utf8');
+  const field = html.match(/<textarea\b[^>]*id="mobile-description-editor"[^>]*>/)?.[0];
+  assert.ok(field);
+  assert.match(field, /x-model="editForm.body"/);
+  assert.match(field, /@input="mobileDescriptionInput\(\$event.target.value\)"/);
+  assert.match(field, /@keydown.escape.stop.prevent="mobileFinishDescriptionEdit\(\)"/);
+  assert.doesNotMatch(field, /rows="10"|min-height:220px/);
+  assert.match(html, /'mobile-editor-focus': mobileDescriptionFocused\(\)/);
+  assert.match(html, /x-show="mobileDescriptionFocused\(\)" class="mobile-editor-bar"/);
+  assert.match(html, /role="status" x-text="editSubmitting \? 'Saving…' : \(editSaved \? 'Saved' : ''\)"/);
+  assert.match(html, /role="alert" class="mobile-editor-error" x-text="error"/);
+});
+
 test("mobile typography, focus and motion contracts stay phone-scoped", () => {
   const css = fs.readFileSync(path.join(dirname, '../../../hack/tailwind.css'), 'utf8');
   assert.match(css, /--font-body:\s*'DM Sans',sans-serif/);
@@ -4512,6 +4895,7 @@ test('mobile paused-with-history description starts an editor and focuses withou
   assert.equal(state._editorGeneration, generation + 1);
   assert.equal(state.editing, true);
   assert.equal(state.editingBody, true);
+  assert.equal(state.mobileDescriptionFocused(), true);
   assert.equal(state.editForm.body, ui.stored().description);
   assert.deepEqual(focused, [{ preventScroll: true }]);
   const tail = ui.stored().description_tail, notes = vmValue(ui.stored().notes);
@@ -4520,6 +4904,7 @@ test('mobile paused-with-history description starts an editor and focuses withou
   assert.equal(await state.mobileFinishDescriptionEdit(), true);
   assert.equal(state._editDebounce, null);
   assert.equal(state.editingBody, false);
+  assert.equal(state.mobileDescriptionFocused(), false);
   assert.equal(ui.stored().description, '# Phone draft\n');
   assert.equal(ui.stored().description_tail, tail);
   assert.deepEqual(vmValue(ui.stored().notes), notes);
@@ -4721,6 +5106,7 @@ for (const lock of ['desktop', 'logs tab', 'loading', 'missing ticket', 'seconda
     const body = state.editForm.body;
     state.editingBody = false;
     assert.equal(state.mobileCanEditDescription(), false);
+    assert.equal(state.mobileDescriptionFocused(), false);
     assert.equal(await state.mobileBeginDescriptionEdit(), false);
     state.mobileDescriptionInput('must not enter draft');
     assert.equal(state.editForm.body, body);
@@ -8631,7 +9017,7 @@ function mobileLifecycleDOM({ visualViewport = true } = {}) {
   function node(attrs = {}, parent = null) {
     const attributes = new Map(Object.entries(attrs));
     const el = {
-      parent, isConnected: true, tabIndex: 0, offsetParent: {}, style: {}, focuses: [],
+      parent, isConnected: true, tabIndex: 0, offsetParent: {}, style: {}, focuses: [], blurs: 0,
       hasAttribute: name => attributes.has(name),
       getAttribute: name => attributes.get(name) ?? null,
       setAttribute(name, value) { attributes.set(name, value); },
@@ -8639,6 +9025,7 @@ function mobileLifecycleDOM({ visualViewport = true } = {}) {
       contains(target) { for (; target; target = target.parent) if (target === el) return true; return false; },
       closest(selector) {
         for (let target = el; target; target = target.parent) {
+          if (target.matches(selector)) return target;
           if (selector === '[data-agent-picker-panel]' && target.hasAttribute('data-agent-picker-panel')) return target;
           if (selector === '[inert]' && target.hasAttribute('inert')) return target;
           if (selector === '[inert], [hidden], [aria-hidden="true"]' &&
@@ -8646,10 +9033,18 @@ function mobileLifecycleDOM({ visualViewport = true } = {}) {
         }
         return null;
       },
-      matches: selector => selector === ':disabled' && el.hasAttribute('disabled'),
+      matches: selector => selector.split(',').some(part => {
+        const s = part.trim();
+        if (s === ':disabled') return el.hasAttribute('disabled');
+        if (s === '[data-mobile-terminal-input]') return el.hasAttribute('data-mobile-terminal-input');
+        if (s === '.mobile-terminal-host .xterm-helper-textarea') {
+          return el.matches('.xterm-helper-textarea') && !!el.parent?.closest('.mobile-terminal-host');
+        }
+        return /^\.[\w-]+$/.test(s) && (el.getAttribute('class') || '').split(/\s+/).includes(s.slice(1));
+      }),
       getClientRects: () => [{}],
       focus(options = {}) { el.focuses.push(vmValue(options)); document.activeElement = el; },
-      blur() { if (document.activeElement === el) document.activeElement = null; },
+      blur() { ++el.blurs; if (document.activeElement === el) document.activeElement = null; },
     };
     return el;
   }
@@ -8793,7 +9188,8 @@ for (const visualViewport of [false, true]) {
     state.initMobile();
     state.initMobile();
     assert.equal(dom.window.listeners.length, 1);
-    assert.equal(dom.document.listeners.length, 2);
+    assert.deepEqual(dom.document.listeners.map(l => l.name), ['keydown', 'focusin', 'focusout']);
+    assert.ok(dom.document.listeners.every(l => l.options === true));
     assert.equal(dom.viewport?.listeners.length || 0, visualViewport ? 2 : 0);
     assert.equal(watches.size, 1);
     assert.equal(state.isMobile, true);
@@ -18220,8 +18616,10 @@ test('epic terminal remounts into the replacement breakpoint container and destr
   state.isMobile = true;
   state._onBreakpointChange();
   assert.equal(sockets[0].closed, true);
-  assert.equal(desktop.disposed, true);
+  assert.equal(desktop.disposed, false);
   assert.equal(ctx.termState.term, null);
+  await clock.tick([...clock.timers].find(([, timer]) => timer.ms === 0)[0]);
+  assert.equal(desktop.disposed, true);
   assert.equal(state.selectedEpic.id, epic.id);
   await flushMicrotasks();
   const phone = ctx.termState.term;
@@ -18231,8 +18629,9 @@ test('epic terminal remounts into the replacement breakpoint container and destr
   await flushMicrotasks();
   assert.ok(state._activityPoll !== null);
   state.destroy();
-  assert.equal(phone.disposed, true);
   assert.equal(ctx.termState.ws, null);
+  await clock.tick([...clock.timers].find(([, timer]) => timer.ms === 0)[0]);
+  assert.equal(phone.disposed, true);
   assert.equal(ctx.termState.term, null);
   assert.equal(state.activity, null);
   assert.equal(state._activityPoll, null);

@@ -228,7 +228,7 @@ export function kontoraTerminal() {
       // A terminal whose element sits somewhere else lost its layout layer when
       // the breakpoint changed, and cannot be reattached.
       if (termState.term && termState.term.element && termState.term.element.parentNode !== container) {
-        this._destroyTerminal();
+        this._destroyTerminal({ preserveInput: true });
       }
       var self = this;
       termState.paneReset = false;
@@ -351,8 +351,10 @@ export function kontoraTerminal() {
       // terminalRW resets to false on ticket switch and detail close.
       term.options.cursorBlink = this.terminalRW && (!mobile || ready);
       if (term.textarea) {
+        var readinessBlur = mobile && ready && term.textarea.readOnly && document.activeElement === term.textarea;
         if (mobile && (!ready || term.textarea.readOnly)) term.blur();
         term.textarea.readOnly = mobile && !ready;
+        if (readinessBlur) this.mobileTerminalInputReady();
       }
     },
 
@@ -430,7 +432,10 @@ export function kontoraTerminal() {
         termState.ws = null;
         self.terminalConnected = false;
         self.terminalError = 'Terminal disconnected. Retry to reconnect.';
-        if (self.isMobile || termState.mobile) self.terminalRW = false;
+        if (self.isMobile || termState.mobile) {
+          self.mobileResetTerminalInput();
+          self.terminalRW = false;
+        }
         self._setTerminalInput(false);
         if (termState.inputDisposable) {
           termState.inputDisposable.dispose();
@@ -452,9 +457,12 @@ export function kontoraTerminal() {
     // Ends the stream and its listeners but keeps the terminal, so returning to
     // it costs no Terminal construction and no new WebGL context. _terminalSeq is
     // left alone: cancelling an in-flight openTerminal is the caller's call.
-    _disconnectStream() {
+    _disconnectStream({ preserveInput = false } = {}) {
       termState.streamSeq++;
-      if (this.isMobile || termState.mobile) this.terminalRW = false;
+      if (!preserveInput && (this.isMobile || termState.mobile)) {
+        this.mobileResetTerminalInput();
+        this.terminalRW = false;
+      }
       this._setTerminalInput(false);
       this.terminalConnected = false;
       clearTimeout(termState.resizeTimer);
@@ -475,11 +483,15 @@ export function kontoraTerminal() {
     },
 
     // Browsers cap live WebGL contexts, so this runs only when the container
-    // itself is going away: crossing the 768px breakpoint.
-    _destroyTerminal() {
-      this._disconnectStream();
+    // itself is going away, including across the 768px breakpoint.
+    _destroyTerminal(options = {}) {
+      this._disconnectStream(options);
       if (termState.term) {
-        try { termState.term.dispose(); } catch (e) {}
+        var term = termState.term;
+        // xterm 5.5 leaves viewport callbacks pending after open() and reset().
+        requestAnimationFrame(function() {
+          setTimeout(function() { try { term.dispose(); } catch (e) {} }, 0);
+        });
       }
       termState.term = null;
       termState.fit = null;
@@ -496,12 +508,18 @@ export function kontoraTerminal() {
       this.terminalSubjectKey = null;
     },
 
-    toggleTerminalRW() {
-      this.terminalRW = !this.terminalRW;
+    setTerminalRW(enabled) {
+      if (!enabled && (this.isMobile || termState.mobile)) this.mobileResetTerminalInput();
+      if (this.terminalRW === enabled) return;
+      this.terminalRW = enabled;
       if (!this.terminalOpen || !termState.term) return;
       // Read-only is a flag on the tmux attach, so the mode change needs a fresh
       // stream. The terminal and its WebGL context stay.
       this._connectWs(this._terminalSeq);
+    },
+
+    toggleTerminalRW() {
+      this.setTerminalRW(!this.terminalRW);
     },
 
     refitTerminal() {

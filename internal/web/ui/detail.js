@@ -2,6 +2,24 @@ import { isoToLocalInput, parseScheduleInput, runSeconds, scheduleChipLabel, sch
 import { highlightMarkdown } from './markdown.js';
 import { termState } from './terminal.js';
 
+const SETTINGS_ROUTE_KEYS = ['general', 'environment', 'agents', 'stages', 'pipelines', 'projects',
+  'web', 'assistant', 'plannotator', 'notifications', 'statuses', 'display'];
+const HISTORY_KEY = '__kontoraHistory';
+const HISTORY_DESTINATION = Symbol('settings history destination');
+const historyIdentity = () => Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
+function historyMetadata(state) {
+  const m = state?.[HISTORY_KEY];
+  return m && typeof m.id === 'string' && typeof m.entry === 'string' && Number.isSafeInteger(m.index) ? m : null;
+}
+function historyState(metadata) {
+  return { ...history.state, [HISTORY_KEY]: { id: metadata.id, entry: metadata.entry, index: metadata.index } };
+}
+function historySignature(entry) { return JSON.stringify([entry.id, entry.entry, entry.hash]); }
+function historyPosition() {
+  const index = window.navigation?.currentEntry?.index;
+  return Number.isSafeInteger(index) && index >= 0 ? index : null;
+}
+
 // The ticket detail panel: summary, stage rail, inline editing, stage logs
 // and the actions the panel offers.
 export function kontoraDetail() {
@@ -550,7 +568,15 @@ export function kontoraDetail() {
         return { view: 'archive', ticketId: id, source: 'primary' };
       }
       if (h === '/archive') return { view: 'archive', ticketId: null };
-      if (h === '/settings') return { view: 'settings', ticketId: null };
+      if (h === '/settings' || h.startsWith('/settings/') || h.startsWith('/settings?')) {
+        const [path, query = ''] = h.split(/\?(.*)/s);
+        let section;
+        try { section = decodeURIComponent(path.slice('/settings/'.length)); } catch { section = ''; }
+        const params = new URLSearchParams(query);
+        return { view: 'settings', ticketId: null,
+          settingsSection: SETTINGS_ROUTE_KEYS.includes(section) ? section : 'general',
+          settingsQuery: params.get('q') || '', settingsField: params.get('field') || '' };
+      }
       return { view: 'board', ticketId: null };
     },
 
@@ -568,33 +594,254 @@ export function kontoraDetail() {
       if (this.currentView === 'archive') return this.archiveDetailOpen() ? '#/archive/t/' + encodeURIComponent(this.selectedTicket.id) : '#/archive';
       if (this.currentView === 'new') return '#/new';
       if (this.currentView === 'stats') return '#/stats';
-      if (this.currentView === 'settings') return '#/settings';
+      if (this.currentView === 'settings') {
+        const params = new URLSearchParams();
+        if (this.settingsQuery) params.set('q', this.settingsQuery);
+        if (this.settingsField) params.set('field', this.settingsField);
+        const section = SETTINGS_ROUTE_KEYS.includes(this.settingsSection) ? this.settingsSection : 'general';
+        return '#/settings/' + section + (params.size ? '?' + params.toString() : '');
+      }
       if (this.isSecondary(this.selectedTicket)) return '#/s/' + encodeURIComponent(this.selectedTicket.source) + '/t/' + encodeURIComponent(this.selectedTicket.id);
       if (this.selectedTicket) return '#/t/' + encodeURIComponent(this.selectedTicket.id);
       if (this.selectedEpic) return '#/e/' + encodeURIComponent(this.selectedEpic.id);
       return '#/';
     },
 
-    writeHash() {
-      if (this._applyingRoute === this._navigationSeq) return;
-      var next = this.routeHash();
+    writeHash({ replace = false } = {}) {
+      const adapter = this._settingsHistory;
+      if (this._applyingRoute === this._navigationSeq || adapter?.routing === this._navigationSeq) return;
+      if (adapter?.motion) {
+        adapter.deferredWrite = { navigation: this._navigationSeq, replace };
+        return;
+      }
+      const next = this.routeHash();
       if (location.hash === next) return;
-      location.hash = next;
+      if (!adapter) {
+        if (replace && typeof history !== 'undefined' && history.replaceState) history.replaceState(history.state, '', next);
+        else location.hash = next;
+        return;
+      }
+      this.cancelSettingsHistory();
+      // Another navigation may supersede an asynchronous route before it is
+      // accepted. Index the physical entry, not that older accepted route.
+      const physical = historyMetadata(history.state) || adapter.current;
+      const entry = { id: physical.id, index: physical.index + (replace ? 0 : 1),
+        entry: replace ? physical.entry : historyIdentity(), hash: next };
+      history[replace ? 'replaceState' : 'pushState'](historyState(entry), '', next);
+      adapter.length = history.length;
+      if (!replace) adapter.tip = entry.index;
+      adapter.current = entry;
+      adapter.observed = entry;
+      adapter.seen = historySignature(entry);
+      this._settingsHistoryRemember();
     },
 
-    // Drive state from the hash. Browser Back and a pasted link both land here.
-    // Every branch is a no-op when the state already matches, so the hashchange
-    // fired by our own writeHash costs nothing.
+    // Own BOTH route listeners. App-created entries use the History API (which
+    // emits neither event); a native traversal emits both events, handled once.
+    setupSettingsHistory() {
+      if (this._settingsHistory) return;
+      const initial = historyMetadata(history.state) || { id: historyIdentity(), entry: historyIdentity(), index: 0 };
+      history.replaceState(historyState(initial), '', location.hash || '#/');
+      const current = { ...initial, hash: location.hash };
+      const position = historyPosition();
+      const adapter = { current, observed: current, seen: null, routing: null,
+        length: history.length, tip: initial.index, offset: position === null ? null : position - initial.index,
+        pending: null, motion: null, resuming: null, deferredWrite: null,
+        listener: event => { void this._settingsHistoryChanged(false, event.type); } };
+      try {
+        const saved = JSON.parse(sessionStorage.getItem(HISTORY_KEY));
+        if (saved?.id === initial.id && Number.isSafeInteger(saved.tip) && saved.tip >= initial.index) adapter.tip = saved.tip;
+      } catch { /* Storage can be unavailable in private browsing. */ }
+      this._settingsHistory = adapter;
+      this._settingsHistoryRemember();
+      window.addEventListener('popstate', adapter.listener);
+      window.addEventListener('hashchange', adapter.listener);
+    },
+
+    _settingsHistoryRemember() {
+      const adapter = this._settingsHistory;
+      if (!adapter) return;
+      try { sessionStorage.setItem(HISTORY_KEY, JSON.stringify({ id: adapter.current.id, tip: adapter.tip })); }
+      catch { /* Storage can be unavailable in private browsing. */ }
+    },
+
+    destroySettingsHistory() {
+      const adapter = this._settingsHistory;
+      if (!adapter) return;
+      window.removeEventListener('popstate', adapter.listener);
+      window.removeEventListener('hashchange', adapter.listener);
+      this.cancelSettingsHistory();
+      adapter.resuming?.resolve(false);
+      if (adapter.routing === this._navigationSeq) ++this._navigationSeq;
+      this._settingsHistory = null;
+    },
+
+    // Keep editing must drop the continuation, not rewrite the hash. A queued
+    // compensating go() still finishes, but does not create a navigation owner.
+    cancelSettingsHistory() {
+      const adapter = this._settingsHistory;
+      if (!adapter) return;
+      adapter.pending?.resolve?.(false);
+      adapter.pending = null;
+    },
+
+    // Save/Discard passes the guard destination back through Alpine's proxy.
+    // A primitive token survives that wrapping; object identity does not.
+    // Resume by traversal, never a push that would destroy Forward history.
+    resumeSettingsHistory(target) {
+      const adapter = this._settingsHistory;
+      const pending = adapter?.pending;
+      if (!pending || pending.route[HISTORY_DESTINATION] !== target?.[HISTORY_DESTINATION] || this.settingsGuard) return null;
+      if (!pending.promise) pending.promise = new Promise(resolve => { pending.resolve = resolve; });
+      pending.resume = true;
+      const promise = pending.promise;
+      if (!adapter.motion) this._settingsHistoryContinue();
+      return promise;
+    },
+
+    _settingsHistoryContinue() {
+      const adapter = this._settingsHistory;
+      const pending = adapter?.pending;
+      if (!pending?.resume) return;
+      adapter.pending = null;
+      const delta = pending.to.index - adapter.current.index;
+      if (!pending.traversable || !delta) {
+        // A missing traversal delta must not become go(0), which reloads.
+        void this.navigateDestination({ ...pending.route, replace: true }).then(pending.resolve);
+        return;
+      }
+      adapter.resuming = pending;
+      history.go(delta);
+    },
+
+    async _settingsHistoryChanged(force = false, eventType) {
+      const adapter = this._settingsHistory;
+      if (!adapter) return;
+      let metadata = historyMetadata(history.state);
+      const known = metadata?.id === adapter.current.id;
+      // Hash assignments can emit popstate before hashchange, so waiting for
+      // stack growth alone misses new entries that replace managed Forward.
+      const position = historyPosition();
+      const index = position !== null && adapter.offset !== null ? position - adapter.offset : null;
+      const newBranch = !known && index === null && adapter.observed.index < adapter.tip;
+      // An unknown popstate can also predate setup, so the Forward span alone
+      // is not sufficient evidence to compensate a refused route by traversal.
+      const forward = adapter.tip - adapter.observed.index;
+      const truncated = newBranch && history.length < adapter.length && history.length === adapter.length - forward + 1;
+      const traversable = known || index !== null || history.length > adapter.length || truncated || eventType !== 'popstate';
+      if (!known) {
+        metadata = { id: adapter.current.id, index: index ?? adapter.observed.index + (traversable || newBranch ? 1 : 0), entry: historyIdentity() };
+        history.replaceState(historyState(metadata), '', location.hash);
+        if ((traversable || newBranch) && (index === null || index > adapter.observed.index)) adapter.tip = metadata.index;
+      }
+      adapter.length = history.length;
+      this._settingsHistoryRemember();
+      const to = { ...metadata, hash: location.hash };
+      const signature = historySignature(to);
+      if (!force && signature === adapter.seen) return;
+      adapter.seen = signature;
+      const previous = adapter.observed;
+      adapter.observed = to;
+      if (adapter.motion) {
+        const motion = adapter.motion;
+        if (to.entry === motion.target.entry && to.id === motion.target.id) {
+          adapter.current = to;
+          adapter.motion = null;
+          const deferred = adapter.deferredWrite;
+          adapter.deferredWrite = null;
+          if (deferred?.navigation === this._navigationSeq) this.writeHash({ replace: deferred.replace });
+          else this._settingsHistoryContinue();
+          return;
+        }
+        if (to.index - previous.index === motion.delta) {
+          // A rapid second Back can run before our compensating go(). Its
+          // relative delta then lands short of the origin. Correct only after
+          // that go finishes; never queue competing compensating traversals.
+          motion.delta = motion.target.index - to.index;
+          if (motion.delta) history.go(motion.delta);
+          return;
+        }
+      }
+      const from = adapter.current;
+      this.cancelSettingsHistory();
+      const route = { ...this.parseHash(to.hash), [HISTORY_DESTINATION]: Symbol() };
+      const navigation = ++this._navigationSeq;
+      adapter.routing = navigation;
+      const result = await this.navigateDestination(route, navigation);
+      if (adapter.routing === navigation) adapter.routing = null;
+      if (!this._settingsHistory || navigation !== this._navigationSeq) return false;
+      if (result === false) {
+        // A rejected route may already have changed its section or detail view.
+        // Restore the accepted presentation without revealing a field behind
+        // the leave dialog, and keep that restoration off the browser stack.
+        adapter.routing = navigation;
+        await this.navigateDestination({ ...this.parseHash(from.hash), restore: true }, navigation);
+        if (adapter.routing === navigation) adapter.routing = null;
+        if (!this._settingsHistory || navigation !== this._navigationSeq) return false;
+        const delta = traversable ? from.index - to.index : 0;
+        if (this.settingsGuard && this.settingsGuardTarget?.[HISTORY_DESTINATION] === route[HISTORY_DESTINATION]) {
+          adapter.pending = { from, to, route, traversable: !!delta };
+        }
+        if (adapter.motion) {
+          // The latest user traversal replaces the guard destination, but the
+          // already queued compensation remains the sole owner of restoration.
+        } else if (delta) {
+          // A newer refusal can finish after the queued compensation has
+          // already restored the origin. Restore from the observed physical
+          // entry, not the destination captured before awaiting the guard.
+          // Otherwise a second go(delta) can overshoot (or emit no event at
+          // the stack boundary), leaving motion and its continuation stuck.
+          const remaining = from.index - adapter.observed.index;
+          if (remaining) {
+            adapter.motion = { target: from, delta: remaining };
+            history.go(remaining);
+          } else {
+            this._settingsHistoryContinue();
+          }
+        } else {
+          // Unmanaged replaceState cannot be traversed. Restore in place, still
+          // without pushing or cutting off the browser's Forward stack.
+          history.replaceState(historyState(from), '', from.hash);
+          adapter.observed = from;
+          adapter.seen = historySignature(from);
+        }
+      } else {
+        adapter.current = to;
+        if (adapter.motion) adapter.motion.target = to;
+        this.writeHash({ replace: true });
+      }
+      if (adapter.resuming) {
+        adapter.resuming.resolve(result !== false);
+        adapter.resuming = null;
+      }
+      return result;
+    },
+
+    // Apply the current hash. Managed history events call
+    // _settingsHistoryChanged(); the fallback hashchange listener calls applyRoute().
     async applyRoute() {
-      return this.navigateDestination(this.parseHash(location.hash));
+      if (this._settingsHistory) return this._settingsHistoryChanged(true);
+      return this.navigateDestination({ ...this.parseHash(location.hash), replace: true });
     },
 
-    async navigateDestination(r, navigation = ++this._navigationSeq) {
+    async navigateDestination(r, navigation) {
+      const resumed = this.resumeSettingsHistory(r);
+      if (resumed) return resumed;
+      if (navigation == null) navigation = ++this._navigationSeq;
       var mine = () => navigation === this._navigationSeq;
+      if (this.currentView === 'settings') ++this._settingsRevealSeq;
       this._applyingRoute = navigation;
       try {
         if (this.currentView !== r.view) {
           if (await this.gotoView(r.view, navigation, r) === false || !mine()) return false;
+        }
+        if (r.view === 'settings') {
+          this.settingsSection = SETTINGS_ROUTE_KEYS.includes(r.settingsSection) ? r.settingsSection : 'general';
+          this.settingsQuery = r.settingsQuery || '';
+          this.settingsField = r.settingsField || '';
+          // Restoring a guarded route must not move focus behind its dialog.
+          if (!r.restore && this.settingsApplyRoute) await this.settingsApplyRoute(r, navigation);
+          return mine();
         }
         if (r.view === 'automations') {
           if (this.selectedTicket) this.closeDetail(false);
@@ -656,7 +903,7 @@ export function kontoraDetail() {
         return true;
       } finally {
         if (this._applyingRoute === navigation) this._applyingRoute = null;
-        if (mine()) this.writeHash();
+        if (mine()) this.writeHash({ replace: !!r.replace });
       }
     },
 

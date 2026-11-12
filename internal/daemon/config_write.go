@@ -49,7 +49,7 @@ func (d *Daemon) replaceConfig(content string, expected *string) error {
 		return err
 	}
 	if err := d.reloadConfig(); err != nil {
-		return fmt.Errorf("config saved but reload failed: %w", err)
+		return &web.ConfigSavedReloadError{Err: err}
 	}
 	return nil
 }

@@ -115,7 +115,23 @@ Treat the response as sensitive.
 PUT validates a single YAML document before saving and reloading it. Invalid configuration returns `400`; success returns `204`.
 There is no check-only mode: a `check` field or query parameter does not prevent saving.
 [Restart-only settings](configuration.md#what-needs-a-restart) keep their running values until restart.
-If reload fails after saving, the file remains changed even though the request returns an error.
+If reload fails after saving, PUT returns `500` with this response:
+
+```json
+{
+  "error": "config saved but reload failed: <reason>",
+  "code": "config_saved_reload_failed"
+}
+```
+
+The file contains the submitted YAML, but the daemon could not reload it.
+This response is `500` even if the reload failure wraps a conflict.
+A `409` response means the daemon refused the write before saving.
+The `code` field is additive; older clients still report failure through the unchanged `error` field.
+Clients can use the submitted YAML as their saved baseline, but must show the reload failure.
+To retry applying the configuration, send an explicit conditional PUT with the saved YAML as `expected_content`.
+Do not automatically retry after a transport failure or an unrecognized response: the save outcome is uncertain.
+A successful reload does not remove the restart requirement for restart-only settings.
 
 ### Automations
 

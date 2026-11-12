@@ -199,6 +199,7 @@ export function kontoraAutomations() {
     async automationsSelect(row, writeRoute = true) {
       if (this.automationsSelected === row.id && this.automationsDetail && !this.automationsEditing) return true;
       if (!this.automationsConfirmReplace()) return false;
+      if (writeRoute) ++this._navigationSeq;
       const seq = ++this.automationsEditorSeq;
       this.closeAgentPicker(false);
       this.closeTerminal();
@@ -239,6 +240,7 @@ export function kontoraAutomations() {
 
     automationsNew(copy = null, writeRoute = true) {
       if (!this.automationsConfirmReplace()) return false;
+      if (writeRoute) ++this._navigationSeq;
       ++this.automationsEditorSeq;
       this.closeTerminal();
       this.terminalRW = false;
@@ -263,6 +265,7 @@ export function kontoraAutomations() {
     },
     automationsEdit(row = this.automationsRow(), writeRoute = true) {
       if (!row || !this.automationsConfirmReplace()) return false;
+      if (writeRoute) ++this._navigationSeq;
       ++this.automationsEditorSeq;
       this.closeTerminal();
       this.terminalRW = false;
@@ -293,6 +296,7 @@ export function kontoraAutomations() {
     },
     async automationsBack(writeRoute = true, list = false) {
       if (!this.automationsConfirmReplace()) return false;
+      if (writeRoute) ++this._navigationSeq;
       const row = this.automationsRow();
       if (this.automationsEditing && row && !list) {
         this.automationsEditing = false;

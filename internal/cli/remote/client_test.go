@@ -163,6 +163,29 @@ func TestClient_PutRawConfig_ValidationErrorSurfaced(t *testing.T) {
 	assert.Contains(t, err.Error(), "invalid config")
 }
 
+func TestClient_PutRawConfig_SavedReloadFailureSurfaced(t *testing.T) {
+	const message = "config saved but reload failed: reconcile unavailable"
+	requests := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		assert.Equal(t, http.MethodPut, r.Method)
+		assert.Equal(t, "/api/config/raw", r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"error": message,
+			"code":  "config_saved_reload_failed",
+		})
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "")
+	err := c.PutRawConfig("foo: bar\n")
+	require.EqualError(t, err, message)
+	assert.True(t, isHTTPStatus(err, http.StatusInternalServerError))
+	assert.Equal(t, 1, requests, "the client must not retry a saved configuration")
+}
+
 func TestClient_ResolveID(t *testing.T) {
 	tickets := []web.TicketInfo{
 		{ID: "abc123def"},
